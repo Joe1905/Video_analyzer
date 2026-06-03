@@ -569,10 +569,23 @@ INDEX_HTML = r"""<!doctype html>
       return `${title}：\n${items.map(item => `- ${typeof item === "string" ? item : pretty(item)}`).join("\n")}\n`;
     }
 
+    function responseText(value) {
+      if (value === null || value === undefined) return "";
+      if (typeof value === "string") return value;
+      if (typeof value.response === "string") return value.response;
+      return pretty(value);
+    }
+
+    function cleanText(value) {
+      return responseText(value).replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+    }
+
     function formatExtractionReport(value) {
       if (!value || typeof value !== "object") return pretty(value);
       const metadata = value.metadata || {};
       const transcript = value.transcript || {};
+      const videoDescription = cleanText(value.video_description);
+      const frameAnalyses = Array.isArray(value.frame_analyses) ? value.frame_analyses : [];
       const lines = [];
       lines.push("提取内容");
       lines.push("");
@@ -580,6 +593,19 @@ INDEX_HTML = r"""<!doctype html>
       lines.push(labelValue("处理帧数", metadata.frames_processed || metadata.frames_extracted).trim());
       lines.push(labelValue("音频语言", metadata.audio_language).trim());
       lines.push(labelValue("转写成功", metadata.transcription_successful === undefined ? "" : (metadata.transcription_successful ? "是" : "否")).trim());
+      if (videoDescription) {
+        lines.push("");
+        lines.push("视频画面总述：");
+        lines.push(videoDescription);
+      }
+      if (frameAnalyses.length) {
+        lines.push("");
+        lines.push("逐帧视觉分析：");
+        frameAnalyses.forEach((frame, index) => {
+          const text = cleanText(frame);
+          if (text) lines.push(`\n[帧 ${index + 1}]\n${text}`);
+        });
+      }
       lines.push("");
       lines.push("转写文本：");
       lines.push(transcript.text || "无转写文本");
