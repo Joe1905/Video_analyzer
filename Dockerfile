@@ -4,6 +4,10 @@ ARG HTTP_PROXY=
 ARG HTTPS_PROXY=
 ARG http_proxy=
 ARG https_proxy=
+ARG ALL_PROXY=
+ARG all_proxy=
+ARG NO_PROXY=
+ARG no_proxy=
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -11,7 +15,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     HTTP_PROXY= \
     HTTPS_PROXY= \
     http_proxy= \
-    https_proxy=
+    https_proxy= \
+    ALL_PROXY= \
+    all_proxy= \
+    NO_PROXY= \
+    no_proxy=
 
 WORKDIR /workspace
 

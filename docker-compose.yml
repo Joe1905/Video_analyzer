@@ -16,6 +16,14 @@ services:
       MAX_FRAMES: ${MAX_FRAMES:-20}
       WHISPER_MODEL: ${WHISPER_MODEL:-small}
       LANGUAGE: ${LANGUAGE:-zh}
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+      ALL_PROXY: ""
+      all_proxy: ""
+      NO_PROXY: ""
+      no_proxy: ""
     working_dir: /workspace
     volumes:
       - ./videos:/workspace/videos
@@ -43,6 +51,14 @@ services:
       WHISPER_MODEL: ${WHISPER_MODEL:-small}
       LANGUAGE: ${LANGUAGE:-zh}
       WEB_PORT: "4000"
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+      ALL_PROXY: ""
+      all_proxy: ""
+      NO_PROXY: ""
+      no_proxy: ""
     working_dir: /workspace
     volumes:
       - ./videos:/workspace/videos
