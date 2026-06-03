@@ -16,6 +16,7 @@ services:
       MAX_FRAMES: ${MAX_FRAMES:-20}
       WHISPER_MODEL: ${WHISPER_MODEL:-small}
       LANGUAGE: ${LANGUAGE:-zh}
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
       HTTP_PROXY: ""
       HTTPS_PROXY: ""
       http_proxy: ""
@@ -50,6 +51,7 @@ services:
       MAX_FRAMES: ${MAX_FRAMES:-20}
       WHISPER_MODEL: ${WHISPER_MODEL:-small}
       LANGUAGE: ${LANGUAGE:-zh}
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
       WEB_PORT: "4000"
       HTTP_PROXY: ""
       HTTPS_PROXY: ""

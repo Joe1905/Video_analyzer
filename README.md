@@ -44,6 +44,7 @@ VISION_API_KEY=your-vision-api-key
 VISION_API_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 VISION_MODEL=qwen3-vl-flash
 DEEPSEEK_API_KEY=your-deepseek-api-key
+HF_ENDPOINT=https://hf-mirror.com
 ```
 
 Build the Docker image:

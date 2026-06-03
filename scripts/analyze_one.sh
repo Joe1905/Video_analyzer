@@ -29,6 +29,8 @@ fi
 
 VISION_API_URL="${VISION_API_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}"
 VISION_MODEL="${VISION_MODEL:-qwen3-vl-flash}"
+HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
+export HF_ENDPOINT
 
 required_vars=(VISION_API_KEY VISION_API_URL VISION_MODEL)
 for name in "${required_vars[@]}"; do
@@ -48,6 +50,8 @@ if [ ! -f "$video_path" ]; then
 fi
 
 mkdir -p "$output_dir"
+rm -f output/analysis.json output/audio.wav
+rm -rf output/frames
 
 video-analyzer "$video_path" \
   --client openai_api \
@@ -59,3 +63,14 @@ video-analyzer "$video_path" \
   --keep-frames \
   --whisper-model "${WHISPER_MODEL:-small}" \
   --language "${LANGUAGE:-zh}"
+
+if [ ! -f "${output_dir}/analysis.json" ] && [ -f output/analysis.json ]; then
+  mv output/analysis.json "$output_dir/"
+  if [ -f output/audio.wav ]; then
+    mv output/audio.wav "$output_dir/"
+  fi
+  if [ -d output/frames ]; then
+    rm -rf "${output_dir}/frames"
+    mv output/frames "$output_dir/"
+  fi
+fi
