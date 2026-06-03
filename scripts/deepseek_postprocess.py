@@ -22,9 +22,13 @@ def load_analysis(path: Path) -> dict:
 
 def build_prompt(analysis: dict) -> str:
     return (
-        "你是短视频内容审核助手。请根据 video-analyzer 的 analysis.json 判断视频内容风险，"
-        "输出严格 JSON，不要使用 Markdown。JSON 字段包括："
-        "risk_level（low/medium/high）、summary、issues（数组）、recommended_action。"
+        "You are a short-video content audit analyst. Review the provided video-analyzer "
+        "analysis.json and produce a practical Simplified Chinese audit report. "
+        "Return strict parseable JSON only, without Markdown. Use these exact keys: "
+        "risk_level (low/medium/high), summary, content_overview, transcript_notes, "
+        "visual_notes, risk_reasons (array), issues (array), recommended_action, "
+        "publish_suggestion. Keep the values concise but specific to this video; do not invent "
+        "facts that are not supported by the transcript or frame analysis."
         "\n\nanalysis.json:\n"
         f"{json.dumps(analysis, ensure_ascii=False, indent=2)}"
     )
@@ -42,7 +46,7 @@ def call_deepseek(api_key: str, prompt: str, api_url: str, model: str) -> dict:
             "messages": [
                 {
                     "role": "system",
-                    "content": "你只输出可解析的 JSON。",
+                    "content": "Return strict parseable JSON only.",
                 },
                 {
                     "role": "user",

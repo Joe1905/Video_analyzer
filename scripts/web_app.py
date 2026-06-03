@@ -345,7 +345,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     .output {
       display: grid;
-      grid-template-rows: auto minmax(0, 1fr);
+      grid-template-rows: auto auto minmax(0, 1fr);
       min-height: 560px;
     }
     .section-title {
@@ -558,6 +558,60 @@ INDEX_HTML = r"""<!doctype html>
       return JSON.stringify(value, null, 2);
     }
 
+    function labelValue(label, value) {
+      if (value === null || value === undefined || value === "") return "";
+      if (Array.isArray(value) && !value.length) return "";
+      return `${label}：${Array.isArray(value) ? value.join("、") : value}\n`;
+    }
+
+    function listSection(title, items) {
+      if (!Array.isArray(items) || !items.length) return `${title}：无\n`;
+      return `${title}：\n${items.map(item => `- ${typeof item === "string" ? item : pretty(item)}`).join("\n")}\n`;
+    }
+
+    function formatExtractionReport(value) {
+      if (!value || typeof value !== "object") return pretty(value);
+      const metadata = value.metadata || {};
+      const transcript = value.transcript || {};
+      const lines = [];
+      lines.push("提取内容");
+      lines.push("");
+      lines.push(labelValue("模型", metadata.model).trim());
+      lines.push(labelValue("处理帧数", metadata.frames_processed || metadata.frames_extracted).trim());
+      lines.push(labelValue("音频语言", metadata.audio_language).trim());
+      lines.push(labelValue("转写成功", metadata.transcription_successful === undefined ? "" : (metadata.transcription_successful ? "是" : "否")).trim());
+      lines.push("");
+      lines.push("转写文本：");
+      lines.push(transcript.text || "无转写文本");
+      if (Array.isArray(transcript.segments) && transcript.segments.length) {
+        lines.push("");
+        lines.push("分段转写：");
+        transcript.segments.forEach(segment => {
+          const start = Number.isFinite(segment.start) ? segment.start.toFixed(2) : "?";
+          const end = Number.isFinite(segment.end) ? segment.end.toFixed(2) : "?";
+          lines.push(`- ${start}s-${end}s  ${segment.text || ""}`);
+        });
+      }
+      return lines.filter(line => line !== "").join("\n");
+    }
+
+    function formatAuditReport(value) {
+      if (!value || typeof value !== "object") return pretty(value);
+      const lines = [];
+      lines.push("分析结果");
+      lines.push("");
+      lines.push(labelValue("风险等级", value.risk_level).trim());
+      lines.push(labelValue("内容摘要", value.summary).trim());
+      lines.push(labelValue("内容概览", value.content_overview).trim());
+      lines.push(labelValue("转写要点", value.transcript_notes).trim());
+      lines.push(labelValue("画面要点", value.visual_notes).trim());
+      lines.push(listSection("风险原因", value.risk_reasons).trim());
+      lines.push(listSection("问题点", value.issues).trim());
+      lines.push(labelValue("建议动作", value.recommended_action).trim());
+      lines.push(labelValue("发布建议", value.publish_suggestion).trim());
+      return lines.filter(line => line !== "").join("\n\n");
+    }
+
     function renderOutput(job) {
       if (!job) {
         outputBox.textContent = "{}";
@@ -568,12 +622,13 @@ INDEX_HTML = r"""<!doctype html>
       if (state.currentTab === "content") {
         outputTitle.textContent = state.showOriginal ? "Qwen 输出内容，原文" : "Qwen 输出内容，DeepSeek 翻译";
         value = state.showOriginal ? job.analysis : (job.analysis_zh || job.analysis);
+        outputBox.textContent = state.showOriginal ? pretty(value) : formatExtractionReport(value);
       } else {
         outputTitle.textContent = state.showOriginal ? "DeepSeek 分析内容，原文" : "DeepSeek 分析内容，中文";
         value = state.showOriginal ? job.audit_result : (job.audit_result_zh || job.audit_result);
+        outputBox.textContent = state.showOriginal ? pretty(value) : formatAuditReport(value);
       }
       sourceToggle.textContent = state.showOriginal ? "显示中文" : "显示原文";
-      outputBox.textContent = pretty(value);
     }
 
     async function loadSavedResult(name) {
