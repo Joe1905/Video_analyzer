@@ -9,6 +9,7 @@ It reads videos from `videos/`, writes analyzer output to `output/<video-file-na
 - `Dockerfile`: builds the analyzer image and installs `video-analyzer`.
 - `docker-compose.yml`: runs the service with local `videos/` and `output/` mounts.
 - `scripts/analyze_one.sh`: analyzes one video with an OpenAI-compatible vision API client.
+- `scripts/translate_analysis.py`: translates `analysis.json` into `analysis_zh.json`.
 - `scripts/deepseek_postprocess.py`: reads `analysis.json` and writes `audit_result.json`.
 - `scripts/web_app.py`: serves the upload/analyze/result web UI.
 - `scripts/run_web.sh`: starts the web UI on port `4000`, or the next available port.
@@ -70,7 +71,7 @@ The page supports:
 - uploading a video into `videos/`
 - starting `video-analyzer`
 - optional DeepSeek postprocess
-- viewing `analysis.json`, `audit_result.json`, and runtime logs
+- viewing `analysis.json`, `analysis_zh.json`, `audit_result.json`, and runtime logs
 
 ## Analyze One Video
 

@@ -122,6 +122,11 @@ def run_job(job_id: str) -> None:
         output_dir = OUTPUT_DIR / job.filename
         job.output_dir = str(output_dir.relative_to(ROOT))
         run_command(job, ["bash", str(SCRIPTS_DIR / "analyze_one.sh"), job.filename])
+        if os.getenv("DEEPSEEK_API_KEY"):
+            try:
+                run_command(job, ["python", str(SCRIPTS_DIR / "translate_analysis.py"), str(output_dir)])
+            except Exception as exc:
+                append_log(job, f"Translation skipped: {exc}")
         if job.postprocess:
             run_command(job, ["python", str(SCRIPTS_DIR / "deepseek_postprocess.py"), str(output_dir)])
         with jobs_lock:
@@ -148,6 +153,7 @@ def public_job(job: Job) -> dict[str, Any]:
         "error": job.error,
         "log": job.log[-200:],
         "analysis": read_json(output_dir / "analysis.json"),
+        "analysis_zh": read_json(output_dir / "analysis_zh.json"),
         "audit_result": read_json(output_dir / "audit_result.json"),
     }
 
@@ -194,6 +200,7 @@ class Handler(BaseHTTPRequestHandler):
                     "status": "saved",
                     "output_dir": str(output_dir.relative_to(ROOT)),
                     "analysis": read_json(output_dir / "analysis.json"),
+                    "analysis_zh": read_json(output_dir / "analysis_zh.json"),
                     "audit_result": read_json(output_dir / "audit_result.json"),
                     "log": [],
                 },
@@ -485,6 +492,7 @@ INDEX_HTML = r"""<!doctype html>
     <section class="output">
       <div class="tabs">
         <button class="tab active" data-tab="analysis">analysis.json</button>
+        <button class="tab" data-tab="analysisZh">analysis_zh.json</button>
         <button class="tab" data-tab="audit">audit_result.json</button>
         <button class="tab" data-tab="log">运行日志</button>
       </div>
@@ -516,6 +524,7 @@ INDEX_HTML = r"""<!doctype html>
         return;
       }
       if (state.currentTab === "analysis") outputBox.textContent = pretty(job.analysis);
+      if (state.currentTab === "analysisZh") outputBox.textContent = pretty(job.analysis_zh);
       if (state.currentTab === "audit") outputBox.textContent = pretty(job.audit_result);
       if (state.currentTab === "log") outputBox.textContent = (job.log || []).join("\n");
     }
@@ -524,7 +533,7 @@ INDEX_HTML = r"""<!doctype html>
       if (!name) return;
       const response = await fetch(`/api/result?filename=${encodeURIComponent(name)}`);
       const result = await response.json();
-      if (result.analysis || result.audit_result) {
+      if (result.analysis || result.analysis_zh || result.audit_result) {
         state.currentJob = null;
         renderOutput(result);
         setStatus(`${name}: 已加载已有输出`, "ok");
