@@ -1,0 +1,20 @@
+name: short-video-analyzer
+
+services:
+  analyzer:
+    build:
+      context: .
+    image: short-video-analyzer:latest
+    env_file:
+      - .env
+    working_dir: /workspace
+    volumes:
+      - ./videos:/workspace/videos
+      - ./output:/workspace/output
+      - ./scripts:/workspace/scripts:ro
+    networks:
+      - analyzer
+
+networks:
+  analyzer:
+    name: short-video-analyzer-net
