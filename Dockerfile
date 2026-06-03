@@ -17,9 +17,9 @@ WORKDIR /workspace
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
+        ca-certificates \
         ffmpeg \
         git \
-        build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --upgrade pip \
