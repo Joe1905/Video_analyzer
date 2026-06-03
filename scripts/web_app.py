@@ -180,6 +180,24 @@ class Handler(BaseHTTPRequestHandler):
                 if path.is_file():
                     files.append({"name": path.name, "size": path.stat().st_size})
             return json_response(self, HTTPStatus.OK, files)
+        if parsed.path == "/api/result":
+            try:
+                filename = safe_filename(parse_qs(parsed.query).get("filename", [""])[0])
+            except ValueError as exc:
+                return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            output_dir = OUTPUT_DIR / filename
+            return json_response(
+                self,
+                HTTPStatus.OK,
+                {
+                    "filename": filename,
+                    "status": "saved",
+                    "output_dir": str(output_dir.relative_to(ROOT)),
+                    "analysis": read_json(output_dir / "analysis.json"),
+                    "audit_result": read_json(output_dir / "audit_result.json"),
+                    "log": [],
+                },
+            )
         return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
 
     def do_POST(self) -> None:
@@ -502,11 +520,26 @@ INDEX_HTML = r"""<!doctype html>
       if (state.currentTab === "log") outputBox.textContent = (job.log || []).join("\n");
     }
 
+    async function loadSavedResult(name) {
+      if (!name) return;
+      const response = await fetch(`/api/result?filename=${encodeURIComponent(name)}`);
+      const result = await response.json();
+      if (result.analysis || result.audit_result) {
+        state.currentJob = null;
+        renderOutput(result);
+        setStatus(`${name}: 已加载已有输出`, "ok");
+      } else {
+        outputBox.textContent = "{}";
+        setStatus(`${name}: 等待分析`);
+      }
+    }
+
     function selectFile(name) {
       state.selectedFile = name;
       currentFile.textContent = name || "未选择视频";
       analyzeBtn.disabled = !name;
       [...fileList.children].forEach(item => item.classList.toggle("selected", item.dataset.name === name));
+      loadSavedResult(name).catch(error => setStatus(error.message, "bad"));
     }
 
     async function refreshFiles() {
