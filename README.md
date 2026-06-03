@@ -8,7 +8,7 @@ It reads videos from `videos/`, writes analyzer output to `output/<video-file-na
 
 - `Dockerfile`: builds the analyzer image and installs `video-analyzer`.
 - `docker-compose.yml`: runs the service with local `videos/` and `output/` mounts.
-- `scripts/analyze_one.sh`: analyzes one video with Gemini through the OpenAI-compatible API client.
+- `scripts/analyze_one.sh`: analyzes one video with an OpenAI-compatible vision API client.
 - `scripts/deepseek_postprocess.py`: reads `analysis.json` and writes `audit_result.json`.
 - `.env.example`: template for required API settings.
 
@@ -38,9 +38,9 @@ nano .env
 Set these values:
 
 ```env
-GEMINI_API_KEY=your-gemini-api-key
-GEMINI_API_URL=https://generativelanguage.googleapis.com/v1beta/openai
-GEMINI_MODEL=gemini-2.5-flash
+VISION_API_KEY=your-vision-api-key
+VISION_API_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+VISION_MODEL=qwen3-vl-flash
 DEEPSEEK_API_KEY=your-deepseek-api-key
 ```
 
@@ -69,8 +69,8 @@ bash scripts/analyze_one.sh test.mp4
 The script uses these defaults:
 
 - `--client openai_api`
-- `--api-url "$GEMINI_API_URL"`
-- `--model "$GEMINI_MODEL"`
+- `--api-url "$VISION_API_URL"`
+- `--model "$VISION_MODEL"`
 - `--output "output/test.mp4"`
 - `--max-frames 20`
 - `--keep-frames`

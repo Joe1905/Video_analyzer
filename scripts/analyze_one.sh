@@ -27,7 +27,10 @@ if [ -f ".env" ]; then
   set +a
 fi
 
-required_vars=(GEMINI_API_KEY GEMINI_API_URL GEMINI_MODEL)
+VISION_API_URL="${VISION_API_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}"
+VISION_MODEL="${VISION_MODEL:-qwen3-vl-flash}"
+
+required_vars=(VISION_API_KEY VISION_API_URL VISION_MODEL)
 for name in "${required_vars[@]}"; do
   if [ "${!name:-}" = "" ]; then
     echo "Missing required environment variable: $name"
@@ -48,9 +51,9 @@ mkdir -p "$output_dir"
 
 video-analyzer "$video_path" \
   --client openai_api \
-  --api-key "$GEMINI_API_KEY" \
-  --api-url "$GEMINI_API_URL" \
-  --model "$GEMINI_MODEL" \
+  --api-key "$VISION_API_KEY" \
+  --api-url "$VISION_API_URL" \
+  --model "$VISION_MODEL" \
   --output "$output_dir" \
   --max-frames "${MAX_FRAMES:-20}" \
   --keep-frames \

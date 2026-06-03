@@ -9,9 +9,9 @@ services:
         https_proxy: ""
     image: short-video-analyzer:latest
     environment:
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      GEMINI_API_URL: ${GEMINI_API_URL:-}
-      GEMINI_MODEL: ${GEMINI_MODEL:-}
+      VISION_API_KEY: ${VISION_API_KEY:-}
+      VISION_API_URL: ${VISION_API_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      VISION_MODEL: ${VISION_MODEL:-qwen3-vl-flash}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       MAX_FRAMES: ${MAX_FRAMES:-20}
       WHISPER_MODEL: ${WHISPER_MODEL:-small}
