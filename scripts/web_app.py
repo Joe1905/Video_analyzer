@@ -129,6 +129,20 @@ def run_job(job_id: str) -> None:
                 append_log(job, f"Translation skipped: {exc}")
         if job.postprocess:
             run_command(job, ["python", str(SCRIPTS_DIR / "deepseek_postprocess.py"), str(output_dir)])
+            if os.getenv("DEEPSEEK_API_KEY"):
+                try:
+                    run_command(
+                        job,
+                        [
+                            "python",
+                            str(SCRIPTS_DIR / "translate_analysis.py"),
+                            str(output_dir / "audit_result.json"),
+                            "--output",
+                            str(output_dir / "audit_result_zh.json"),
+                        ],
+                    )
+                except Exception as exc:
+                    append_log(job, f"Audit translation skipped: {exc}")
         with jobs_lock:
             job.status = "complete"
             job.updated_at = time.time()
@@ -155,6 +169,7 @@ def public_job(job: Job) -> dict[str, Any]:
         "analysis": read_json(output_dir / "analysis.json"),
         "analysis_zh": read_json(output_dir / "analysis_zh.json"),
         "audit_result": read_json(output_dir / "audit_result.json"),
+        "audit_result_zh": read_json(output_dir / "audit_result_zh.json"),
     }
 
 
@@ -202,6 +217,7 @@ class Handler(BaseHTTPRequestHandler):
                     "analysis": read_json(output_dir / "analysis.json"),
                     "analysis_zh": read_json(output_dir / "analysis_zh.json"),
                     "audit_result": read_json(output_dir / "audit_result.json"),
+                    "audit_result_zh": read_json(output_dir / "audit_result_zh.json"),
                     "log": [],
                 },
             )
@@ -413,6 +429,26 @@ INDEX_HTML = r"""<!doctype html>
       border-color: var(--accent);
       color: var(--accent);
     }
+    .output-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      background: #fbfcfe;
+    }
+    .output-title {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .small-button {
+      min-height: 32px;
+      padding: 5px 10px;
+      font-size: 13px;
+    }
     pre {
       margin: 0;
       padding: 16px;
@@ -491,21 +527,25 @@ INDEX_HTML = r"""<!doctype html>
     </section>
     <section class="output">
       <div class="tabs">
-        <button class="tab active" data-tab="analysis">analysis.json</button>
-        <button class="tab" data-tab="analysisZh">analysis_zh.json</button>
-        <button class="tab" data-tab="audit">audit_result.json</button>
-        <button class="tab" data-tab="log">运行日志</button>
+        <button class="tab active" data-tab="content">提取内容（中文）</button>
+        <button class="tab" data-tab="audit">分析结果（中文）</button>
+      </div>
+      <div class="output-toolbar">
+        <p class="output-title" id="outputTitle">Qwen 输出内容，DeepSeek 翻译</p>
+        <button id="sourceToggle" class="secondary small-button" type="button">显示原文</button>
       </div>
       <pre id="outputBox">{}</pre>
     </section>
   </main>
   <script>
-    const state = { selectedFile: "", currentJob: null, currentTab: "analysis", timer: null };
+    const state = { selectedFile: "", currentJob: null, currentResult: null, currentTab: "content", showOriginal: false, timer: null };
     const fileList = document.getElementById("fileList");
     const statusBox = document.getElementById("statusBox");
     const outputBox = document.getElementById("outputBox");
     const currentFile = document.getElementById("currentFile");
     const analyzeBtn = document.getElementById("analyzeBtn");
+    const sourceToggle = document.getElementById("sourceToggle");
+    const outputTitle = document.getElementById("outputTitle");
 
     function setStatus(message, kind = "") {
       statusBox.className = "status " + kind;
@@ -523,21 +563,30 @@ INDEX_HTML = r"""<!doctype html>
         outputBox.textContent = "{}";
         return;
       }
-      if (state.currentTab === "analysis") outputBox.textContent = pretty(job.analysis);
-      if (state.currentTab === "analysisZh") outputBox.textContent = pretty(job.analysis_zh);
-      if (state.currentTab === "audit") outputBox.textContent = pretty(job.audit_result);
-      if (state.currentTab === "log") outputBox.textContent = (job.log || []).join("\n");
+      state.currentResult = job;
+      let value = null;
+      if (state.currentTab === "content") {
+        outputTitle.textContent = state.showOriginal ? "Qwen 输出内容，原文" : "Qwen 输出内容，DeepSeek 翻译";
+        value = state.showOriginal ? job.analysis : (job.analysis_zh || job.analysis);
+      } else {
+        outputTitle.textContent = state.showOriginal ? "DeepSeek 分析内容，原文" : "DeepSeek 分析内容，中文";
+        value = state.showOriginal ? job.audit_result : (job.audit_result_zh || job.audit_result);
+      }
+      sourceToggle.textContent = state.showOriginal ? "显示中文" : "显示原文";
+      outputBox.textContent = pretty(value);
     }
 
     async function loadSavedResult(name) {
       if (!name) return;
       const response = await fetch(`/api/result?filename=${encodeURIComponent(name)}`);
       const result = await response.json();
-      if (result.analysis || result.analysis_zh || result.audit_result) {
+      if (result.analysis || result.analysis_zh || result.audit_result || result.audit_result_zh) {
         state.currentJob = null;
+        state.currentResult = result;
         renderOutput(result);
         setStatus(`${name}: 已加载已有输出`, "ok");
       } else {
+        state.currentResult = null;
         outputBox.textContent = "{}";
         setStatus(`${name}: 等待分析`);
       }
@@ -614,6 +663,8 @@ INDEX_HTML = r"""<!doctype html>
         return;
       }
       state.currentJob = job.id;
+      state.currentResult = job;
+      state.showOriginal = false;
       pollJob();
       if (state.timer) clearInterval(state.timer);
       state.timer = setInterval(pollJob, 2500);
@@ -623,6 +674,7 @@ INDEX_HTML = r"""<!doctype html>
       if (!state.currentJob) return;
       const response = await fetch(`/api/job?id=${encodeURIComponent(state.currentJob)}`);
       const job = await response.json();
+      state.currentResult = job;
       renderOutput(job);
       if (job.status === "running" || job.status === "queued") {
         setStatus(`${job.filename}: ${job.status}`);
@@ -637,12 +689,21 @@ INDEX_HTML = r"""<!doctype html>
     document.getElementById("uploadBtn").onclick = uploadVideo;
     document.getElementById("refreshBtn").onclick = refreshFiles;
     analyzeBtn.onclick = startAnalyze;
+    sourceToggle.onclick = () => {
+      state.showOriginal = !state.showOriginal;
+      renderOutput(state.currentResult);
+    };
     document.querySelectorAll(".tab").forEach(tab => {
       tab.onclick = () => {
         document.querySelectorAll(".tab").forEach(item => item.classList.remove("active"));
         tab.classList.add("active");
         state.currentTab = tab.dataset.tab;
-        if (state.currentJob) pollJob();
+        state.showOriginal = false;
+        if (state.currentJob) {
+          pollJob();
+        } else {
+          renderOutput(state.currentResult);
+        }
       };
     });
     refreshFiles().catch(error => setStatus(error.message, "bad"));

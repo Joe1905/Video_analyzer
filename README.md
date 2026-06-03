@@ -2,14 +2,14 @@
 
 Dockerized short-video analysis service based on [`byjlw/video-analyzer`](https://github.com/byjlw/video-analyzer).
 
-It reads videos from `videos/`, writes analyzer output to `output/<video-file-name>/`, and can optionally post-process `analysis.json` with the DeepSeek API into `audit_result.json`.
+It reads videos from `videos/`, writes analyzer output to `output/<video-file-name>/`, translates analyzer output with DeepSeek, and can optionally post-process `analysis.json` with the DeepSeek API into `audit_result.json`.
 
 ## Files
 
 - `Dockerfile`: builds the analyzer image and installs `video-analyzer`.
 - `docker-compose.yml`: runs the service with local `videos/` and `output/` mounts.
 - `scripts/analyze_one.sh`: analyzes one video with an OpenAI-compatible vision API client.
-- `scripts/translate_analysis.py`: translates `analysis.json` into `analysis_zh.json`.
+- `scripts/translate_analysis.py`: translates analyzer or audit JSON output into Simplified Chinese.
 - `scripts/deepseek_postprocess.py`: reads `analysis.json` and writes `audit_result.json`.
 - `scripts/web_app.py`: serves the upload/analyze/result web UI.
 - `scripts/run_web.sh`: starts the web UI on port `4000`, or the next available port.
@@ -71,7 +71,8 @@ The page supports:
 - uploading a video into `videos/`
 - starting `video-analyzer`
 - optional DeepSeek postprocess
-- viewing `analysis.json`, `analysis_zh.json`, `audit_result.json`, and runtime logs
+- viewing two result tabs: `提取内容（中文）` for Qwen output and `分析结果（中文）` for DeepSeek audit output
+- switching each result tab back to the original English JSON with `显示原文`
 
 ## Analyze One Video
 
@@ -108,6 +109,7 @@ Analyzer output is written to:
 
 ```text
 output/test.mp4/analysis.json
+output/test.mp4/analysis_zh.json
 ```
 
 ## DeepSeek Postprocess
@@ -124,6 +126,7 @@ The audit result is written to:
 
 ```text
 output/test.mp4/audit_result.json
+output/test.mp4/audit_result_zh.json
 ```
 
 ## Direct Compose Usage
