@@ -10,6 +10,8 @@ It reads videos from `videos/`, writes analyzer output to `output/<video-file-na
 - `docker-compose.yml`: runs the service with local `videos/` and `output/` mounts.
 - `scripts/analyze_one.sh`: analyzes one video with an OpenAI-compatible vision API client.
 - `scripts/deepseek_postprocess.py`: reads `analysis.json` and writes `audit_result.json`.
+- `scripts/web_app.py`: serves the upload/analyze/result web UI.
+- `scripts/run_web.sh`: starts the web UI on port `4000`, or the next available port.
 - `.env.example`: template for required API settings.
 
 ## Ubuntu Server Setup
@@ -51,6 +53,23 @@ docker compose -p short-video-analyzer build
 ```
 
 If the server uses legacy Compose, use `docker-compose -p short-video-analyzer build`.
+
+## Web UI
+
+Start the web UI:
+
+```bash
+bash scripts/run_web.sh
+```
+
+The script starts at port `4000` and automatically advances to the next available port if needed. Open the printed URL in your browser.
+
+The page supports:
+
+- uploading a video into `videos/`
+- starting `video-analyzer`
+- optional DeepSeek postprocess
+- viewing `analysis.json`, `audit_result.json`, and runtime logs
 
 ## Analyze One Video
 

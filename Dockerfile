@@ -27,4 +27,6 @@ RUN pip install --upgrade pip \
 
 COPY scripts/ /workspace/scripts/
 
+EXPOSE 4000
+
 CMD ["bash"]

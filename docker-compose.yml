@@ -24,5 +24,34 @@ services:
     networks:
       - analyzer
 
+  web:
+    build:
+      context: .
+      args:
+        HTTP_PROXY: ""
+        HTTPS_PROXY: ""
+        http_proxy: ""
+        https_proxy: ""
+    image: short-video-analyzer:latest
+    command: python scripts/web_app.py
+    environment:
+      VISION_API_KEY: ${VISION_API_KEY:-}
+      VISION_API_URL: ${VISION_API_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      VISION_MODEL: ${VISION_MODEL:-qwen3-vl-flash}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      MAX_FRAMES: ${MAX_FRAMES:-20}
+      WHISPER_MODEL: ${WHISPER_MODEL:-small}
+      LANGUAGE: ${LANGUAGE:-zh}
+      WEB_PORT: "4000"
+    working_dir: /workspace
+    volumes:
+      - ./videos:/workspace/videos
+      - ./output:/workspace/output
+      - ./scripts:/workspace/scripts:ro
+    ports:
+      - "${WEB_PORT:-4000}:4000"
+    networks:
+      - analyzer
+
 networks:
   analyzer:
