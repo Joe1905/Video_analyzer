@@ -2,6 +2,11 @@ services:
   analyzer:
     build:
       context: .
+      args:
+        HTTP_PROXY: ""
+        HTTPS_PROXY: ""
+        http_proxy: ""
+        https_proxy: ""
     image: short-video-analyzer:latest
     environment:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
