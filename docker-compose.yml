@@ -26,4 +26,3 @@ services:
 
 networks:
   analyzer:
-    name: short-video-analyzer-net

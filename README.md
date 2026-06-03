@@ -119,7 +119,7 @@ Open a shell in the container:
 docker compose -p short-video-analyzer run --rm analyzer bash
 ```
 
-Run Compose with `-p short-video-analyzer` to keep the project, containers, and network isolated from other Docker applications on the same server. The Compose file does not publish any host ports and does not set a fixed container name, while still allowing outbound API calls.
+Run Compose with `-p short-video-analyzer` to keep the project, containers, and network isolated from other Docker applications on the same server. The Compose file does not publish any host ports and does not set fixed container or network names, while still allowing outbound API calls.
 
 ## Git Notes
 
