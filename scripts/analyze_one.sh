@@ -9,11 +9,15 @@ fi
 
 if ! command -v video-analyzer >/dev/null 2>&1; then
   if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
-    exec docker compose run --rm analyzer bash scripts/analyze_one.sh "$@"
+    exec docker compose -p short-video-analyzer run --rm analyzer bash scripts/analyze_one.sh "$@"
+  fi
+
+  if command -v docker-compose >/dev/null 2>&1; then
+    exec docker-compose -p short-video-analyzer run --rm analyzer bash scripts/analyze_one.sh "$@"
   fi
 
   echo "video-analyzer is not installed. Run through Docker Compose:"
-  echo "docker compose run --rm analyzer bash scripts/analyze_one.sh $1"
+  echo "docker compose -p short-video-analyzer run --rm analyzer bash scripts/analyze_one.sh $1"
   exit 127
 fi
 

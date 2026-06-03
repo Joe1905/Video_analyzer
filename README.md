@@ -47,8 +47,10 @@ DEEPSEEK_API_KEY=your-deepseek-api-key
 Build the Docker image:
 
 ```bash
-docker compose build
+docker compose -p short-video-analyzer build
 ```
+
+If the server uses legacy Compose, use `docker-compose -p short-video-analyzer build`.
 
 ## Analyze One Video
 
@@ -92,8 +94,10 @@ output/test.mp4/analysis.json
 After `analysis.json` is generated, run:
 
 ```bash
-docker compose run --rm analyzer python scripts/deepseek_postprocess.py output/test.mp4
+docker compose -p short-video-analyzer run --rm analyzer python scripts/deepseek_postprocess.py output/test.mp4
 ```
+
+With legacy Compose, use `docker-compose -p short-video-analyzer run --rm analyzer python scripts/deepseek_postprocess.py output/test.mp4`.
 
 The audit result is written to:
 
@@ -106,16 +110,16 @@ output/test.mp4/audit_result.json
 You can also run the analyzer script explicitly inside the container:
 
 ```bash
-docker compose run --rm analyzer bash scripts/analyze_one.sh test.mp4
+docker compose -p short-video-analyzer run --rm analyzer bash scripts/analyze_one.sh test.mp4
 ```
 
 Open a shell in the container:
 
 ```bash
-docker compose run --rm analyzer bash
+docker compose -p short-video-analyzer run --rm analyzer bash
 ```
 
-The Compose project is named `short-video-analyzer`, does not publish any host ports, and does not set a fixed container name. This keeps it isolated from other Docker applications on the same server while still allowing outbound API calls.
+Run Compose with `-p short-video-analyzer` to keep the project, containers, and network isolated from other Docker applications on the same server. The Compose file does not publish any host ports and does not set a fixed container name, while still allowing outbound API calls.
 
 ## Git Notes
 
