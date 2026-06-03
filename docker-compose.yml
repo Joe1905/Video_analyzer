@@ -3,8 +3,14 @@ services:
     build:
       context: .
     image: short-video-analyzer:latest
-    env_file:
-      - .env
+    environment:
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_API_URL: ${GEMINI_API_URL:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      MAX_FRAMES: ${MAX_FRAMES:-20}
+      WHISPER_MODEL: ${WHISPER_MODEL:-small}
+      LANGUAGE: ${LANGUAGE:-zh}
     working_dir: /workspace
     volumes:
       - ./videos:/workspace/videos
