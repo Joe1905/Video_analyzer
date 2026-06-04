@@ -53,6 +53,7 @@ mkdir -p "$output_dir"
 rm -f output/analysis.json output/audio.wav
 rm -rf output/frames
 
+start_epoch="$(date +%s)"
 video-analyzer "$video_path" \
   --client openai_api \
   --api-key "$VISION_API_KEY" \
@@ -74,3 +75,6 @@ if [ ! -f "${output_dir}/analysis.json" ] && [ -f output/analysis.json ]; then
     mv output/frames "$output_dir/"
   fi
 fi
+
+elapsed_seconds="$(( $(date +%s) - start_epoch ))"
+python scripts/standardize_analysis.py "$output_dir" --mode analyzer --elapsed-seconds "$elapsed_seconds"

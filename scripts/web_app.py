@@ -28,6 +28,7 @@ class Job:
     id: str
     filename: str
     postprocess: bool
+    analysis_mode: str
     status: str = "queued"
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
@@ -88,6 +89,12 @@ def read_json(path: Path) -> Any | None:
         return json.load(file)
 
 
+def mode_from_analysis(analysis: Any) -> str | None:
+    if isinstance(analysis, dict):
+        return analysis.get("processing_mode")
+    return None
+
+
 def append_log(job: Job, line: str) -> None:
     with jobs_lock:
         job.log.append(line.rstrip())
@@ -121,7 +128,19 @@ def run_job(job_id: str) -> None:
     try:
         output_dir = OUTPUT_DIR / job.filename
         job.output_dir = str(output_dir.relative_to(ROOT))
-        run_command(job, ["bash", str(SCRIPTS_DIR / "analyze_one.sh"), job.filename])
+        if job.analysis_mode == "direct_video":
+            run_command(
+                job,
+                [
+                    "python",
+                    str(SCRIPTS_DIR / "direct_video_analyze.py"),
+                    job.filename,
+                    "--output-dir",
+                    str(output_dir),
+                ],
+            )
+        else:
+            run_command(job, ["bash", str(SCRIPTS_DIR / "analyze_one.sh"), job.filename])
         if os.getenv("DEEPSEEK_API_KEY"):
             try:
                 run_command(job, ["python", str(SCRIPTS_DIR / "translate_analysis.py"), str(output_dir)])
@@ -160,6 +179,7 @@ def public_job(job: Job) -> dict[str, Any]:
         "id": job.id,
         "filename": job.filename,
         "postprocess": job.postprocess,
+        "analysis_mode": job.analysis_mode,
         "status": job.status,
         "created_at": job.created_at,
         "updated_at": job.updated_at,
@@ -182,7 +202,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         if parsed.path == "/":
-            return text_response(self, HTTPStatus.OK, INDEX_HTML, "text/html; charset=utf-8")
+            html = INDEX_HTML.replace(
+                "__DEFAULT_ANALYSIS_MODE__",
+                os.getenv("ANALYSIS_MODE", "analyzer"),
+            )
+            return text_response(self, HTTPStatus.OK, html, "text/html; charset=utf-8")
         if parsed.path == "/api/jobs":
             with jobs_lock:
                 payload = [public_job(job) for job in sorted(jobs.values(), key=lambda item: item.created_at, reverse=True)]
@@ -207,6 +231,7 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
             output_dir = OUTPUT_DIR / filename
+            analysis = read_json(output_dir / "analysis.json")
             return json_response(
                 self,
                 HTTPStatus.OK,
@@ -214,7 +239,8 @@ class Handler(BaseHTTPRequestHandler):
                     "filename": filename,
                     "status": "saved",
                     "output_dir": str(output_dir.relative_to(ROOT)),
-                    "analysis": read_json(output_dir / "analysis.json"),
+                    "analysis_mode": mode_from_analysis(analysis),
+                    "analysis": analysis,
                     "analysis_zh": read_json(output_dir / "analysis_zh.json"),
                     "audit_result": read_json(output_dir / "audit_result.json"),
                     "audit_result_zh": read_json(output_dir / "audit_result_zh.json"),
@@ -268,13 +294,21 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(body.decode("utf-8") or "{}")
             filename = safe_filename(str(payload.get("filename", "")))
             postprocess = bool(payload.get("postprocess", False))
+            analysis_mode = str(payload.get("analysis_mode") or os.getenv("ANALYSIS_MODE", "analyzer"))
+            if analysis_mode not in {"analyzer", "direct_video"}:
+                raise ValueError("analysis_mode must be analyzer or direct_video")
         except (json.JSONDecodeError, ValueError) as exc:
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
         if not (VIDEOS_DIR / filename).is_file():
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": f"Video file not found: {filename}"})
 
-        job = Job(id=str(uuid.uuid4()), filename=filename, postprocess=postprocess)
+        job = Job(
+            id=str(uuid.uuid4()),
+            filename=filename,
+            postprocess=postprocess,
+            analysis_mode=analysis_mode,
+        )
         with jobs_lock:
             jobs[job.id] = job
         thread = threading.Thread(target=run_job, args=(job.id,), daemon=True)
@@ -517,6 +551,13 @@ INDEX_HTML = r"""<!doctype html>
       </div>
       <div>
         <p class="section-title">分析选项</p>
+        <label for="analysisMode">处理方式</label>
+        <select id="analysisMode">
+          <option value="analyzer">关键帧提取模式（video-analyzer）</option>
+          <option value="direct_video">直接视频理解模式（Qwen）</option>
+        </select>
+      </div>
+      <div>
         <label class="check">
           <input id="postprocess" type="checkbox">
           DeepSeek 后处理
@@ -538,6 +579,7 @@ INDEX_HTML = r"""<!doctype html>
     </section>
   </main>
   <script>
+    window.DEFAULT_ANALYSIS_MODE = "__DEFAULT_ANALYSIS_MODE__";
     const state = { selectedFile: "", currentJob: null, currentResult: null, currentTab: "content", showOriginal: false, timer: null };
     const fileList = document.getElementById("fileList");
     const statusBox = document.getElementById("statusBox");
@@ -569,6 +611,18 @@ INDEX_HTML = r"""<!doctype html>
       return `${title}：\n${items.map(item => `- ${typeof item === "string" ? item : pretty(item)}`).join("\n")}\n`;
     }
 
+    function usageSummary(usage) {
+      if (!usage || typeof usage !== "object") return "";
+      const parts = [];
+      parts.push(labelValue("输入 Tokens", usage.input_tokens).trim());
+      parts.push(labelValue("输出 Tokens", usage.output_tokens).trim());
+      parts.push(labelValue("总 Tokens", usage.total_tokens).trim());
+      parts.push(labelValue("API 调用次数", usage.api_calls).trim());
+      parts.push(labelValue("总耗时", usage.elapsed_seconds === null || usage.elapsed_seconds === undefined ? "" : `${usage.elapsed_seconds}s`).trim());
+      parts.push(labelValue("估算费用", usage.estimated_cost_usd === null || usage.estimated_cost_usd === undefined ? "" : `$${usage.estimated_cost_usd}`).trim());
+      return parts.filter(item => item).join("\n");
+    }
+
     function responseText(value) {
       if (value === null || value === undefined) return "";
       if (typeof value === "string") return value;
@@ -586,17 +640,55 @@ INDEX_HTML = r"""<!doctype html>
       const transcript = value.transcript || {};
       const videoDescription = cleanText(value.video_description);
       const frameAnalyses = Array.isArray(value.frame_analyses) ? value.frame_analyses : [];
+      const timeline = Array.isArray(value.timeline) ? value.timeline : [];
+      const visualEvidence = Array.isArray(value.visual_evidence) ? value.visual_evidence : [];
       const lines = [];
       lines.push("提取内容");
       lines.push("");
-      lines.push(labelValue("模型", metadata.model).trim());
+      lines.push(labelValue("处理模式", value.processing_mode).trim());
+      lines.push(labelValue("模型", value.vision_model || metadata.model).trim());
+      lines.push(labelValue("音频模式", value.audio_mode).trim());
       lines.push(labelValue("处理帧数", metadata.frames_processed || metadata.frames_extracted).trim());
-      lines.push(labelValue("音频语言", metadata.audio_language).trim());
-      lines.push(labelValue("转写成功", metadata.transcription_successful === undefined ? "" : (metadata.transcription_successful ? "是" : "否")).trim());
+      const audioLanguage = transcript.language || metadata.audio_language;
+      const transcriptSuccessful = transcript.successful === undefined ? metadata.transcription_successful : transcript.successful;
+      lines.push(labelValue("音频语言", audioLanguage).trim());
+      lines.push(labelValue("转写成功", transcriptSuccessful === undefined ? "" : (transcriptSuccessful ? "是" : "否")).trim());
+      const usageText = usageSummary(value.usage);
+      if (usageText) {
+        lines.push("");
+        lines.push("Token 与耗时：");
+        lines.push(usageText);
+      }
+      if (value.summary) {
+        lines.push("");
+        lines.push("模型总结：");
+        lines.push(cleanText(value.summary));
+      }
       if (videoDescription) {
         lines.push("");
         lines.push("视频画面总述：");
         lines.push(videoDescription);
+      }
+      if (timeline.length) {
+        lines.push("");
+        lines.push("时间线：");
+        timeline.forEach((item, index) => {
+          if (typeof item === "string") {
+            lines.push(`- ${item}`);
+          } else {
+            const range = item.time_range || item.timestamp || `片段 ${index + 1}`;
+            const visual = item.visual ? `画面：${item.visual}` : "";
+            const audio = item.audio ? `音频：${item.audio}` : "";
+            lines.push(`- ${range} ${[visual, audio].filter(Boolean).join("；")}`);
+          }
+        });
+      }
+      if (visualEvidence.length) {
+        lines.push("");
+        lines.push("视觉证据：");
+        visualEvidence.forEach((item, index) => {
+          lines.push(`- ${typeof item === "string" ? item : (item.description || item.visual || pretty(item))}`);
+        });
       }
       if (frameAnalyses.length) {
         lines.push("");
@@ -734,6 +826,7 @@ INDEX_HTML = r"""<!doctype html>
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           filename: state.selectedFile,
+          analysis_mode: document.getElementById("analysisMode").value,
           postprocess: document.getElementById("postprocess").checked
         })
       });
@@ -769,6 +862,7 @@ INDEX_HTML = r"""<!doctype html>
 
     document.getElementById("uploadBtn").onclick = uploadVideo;
     document.getElementById("refreshBtn").onclick = refreshFiles;
+    document.getElementById("analysisMode").value = window.DEFAULT_ANALYSIS_MODE || "analyzer";
     analyzeBtn.onclick = startAnalyze;
     sourceToggle.onclick = () => {
       state.showOriginal = !state.showOriginal;

@@ -31,7 +31,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --upgrade pip \
-    && pip install "video-analyzer @ git+https://github.com/byjlw/video-analyzer.git" requests
+    && pip install "video-analyzer @ git+https://github.com/byjlw/video-analyzer.git" requests openai-whisper
 
 COPY scripts/ /workspace/scripts/
 

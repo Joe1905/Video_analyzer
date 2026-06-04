@@ -22,8 +22,10 @@ def load_analysis(path: Path) -> dict:
 
 def build_prompt(analysis: dict) -> str:
     return (
-        "You are a short-video content audit analyst. Review the provided video-analyzer "
+        "You are a short-video content audit analyst. Review the provided standardized "
         "analysis.json and produce a practical Simplified Chinese audit report. "
+        "The analysis may come from key-frame extraction or direct video understanding; "
+        "use summary, transcript, timeline, and visual_evidence when available. "
         "Return strict parseable JSON only, without Markdown. Use these exact keys: "
         "risk_level (low/medium/high), summary, content_overview, transcript_notes, "
         "visual_notes, risk_reasons (array), issues (array), recommended_action, "
