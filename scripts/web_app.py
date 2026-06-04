@@ -325,66 +325,84 @@ INDEX_HTML = r"""<!doctype html>
   <style>
     :root {
       color-scheme: light;
-      --bg: #f7f8fa;
+      --bg: #eef2f7;
       --panel: #ffffff;
-      --line: #d9dee7;
-      --text: #18202f;
-      --muted: #657083;
-      --accent: #1967d2;
-      --accent-strong: #0f4da0;
+      --panel-soft: #f8fafc;
+      --line: #d6deea;
+      --line-strong: #b8c5d8;
+      --text: #142033;
+      --muted: #607089;
+      --accent: #2563eb;
+      --accent-strong: #1d4ed8;
+      --accent-soft: #eaf1ff;
       --danger: #b42318;
       --ok: #087443;
-      --code: #111827;
+      --code: #0d1628;
+      --shadow: 0 18px 45px rgba(15, 23, 42, 0.10);
+      --shadow-soft: 0 8px 24px rgba(15, 23, 42, 0.07);
     }
     * { box-sizing: border-box; }
+    html, body { height: 100%; }
     body {
       margin: 0;
-      background: var(--bg);
+      overflow: hidden;
+      background:
+        linear-gradient(135deg, rgba(37, 99, 235, 0.10), transparent 34%),
+        linear-gradient(315deg, rgba(14, 165, 233, 0.08), transparent 38%),
+        var(--bg);
       color: var(--text);
       font-family: Inter, "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
     }
     header {
-      height: 64px;
+      height: 66px;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 0 24px;
+      padding: 0 28px;
       border-bottom: 1px solid var(--line);
-      background: var(--panel);
+      background: rgba(255, 255, 255, 0.88);
+      backdrop-filter: blur(12px);
     }
     h1 {
       margin: 0;
-      font-size: 19px;
-      font-weight: 650;
+      font-size: 20px;
+      font-weight: 750;
       letter-spacing: 0;
     }
     main {
       display: grid;
-      grid-template-columns: minmax(300px, 420px) minmax(0, 1fr);
+      grid-template-columns: minmax(320px, 430px) minmax(0, 1fr);
       gap: 18px;
       padding: 18px;
-      min-height: calc(100vh - 64px);
+      height: calc(100vh - 66px);
+      min-height: 0;
+      overflow: hidden;
     }
     section {
       background: var(--panel);
       border: 1px solid var(--line);
-      border-radius: 8px;
+      border-radius: 12px;
       min-width: 0;
+      box-shadow: var(--shadow-soft);
     }
     .controls {
       padding: 18px;
       display: grid;
       gap: 16px;
       align-content: start;
+      min-height: 0;
+      overflow: auto;
     }
     .output {
       display: grid;
       grid-template-rows: auto auto minmax(0, 1fr);
-      min-height: 560px;
+      min-height: 0;
+      overflow: hidden;
+      box-shadow: var(--shadow);
     }
     .section-title {
       font-size: 14px;
-      font-weight: 650;
+      font-weight: 760;
       margin: 0 0 10px;
     }
     label {
@@ -397,10 +415,25 @@ INDEX_HTML = r"""<!doctype html>
       width: 100%;
       min-height: 40px;
       border: 1px solid var(--line);
-      border-radius: 6px;
-      padding: 8px;
+      border-radius: 9px;
+      padding: 9px 10px;
       background: #fff;
       color: var(--text);
+      outline: none;
+      transition: border-color 160ms ease, box-shadow 160ms ease;
+    }
+    input[type="file"]:focus, select:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+    }
+    input[type="file"]::file-selector-button {
+      margin-right: 10px;
+      border: 0;
+      border-radius: 7px;
+      background: var(--accent-soft);
+      color: var(--accent-strong);
+      padding: 7px 10px;
+      font-weight: 700;
     }
     .row {
       display: flex;
@@ -418,16 +451,24 @@ INDEX_HTML = r"""<!doctype html>
     button {
       min-height: 40px;
       border: 1px solid var(--accent);
-      border-radius: 6px;
+      border-radius: 9px;
       background: var(--accent);
       color: white;
       padding: 8px 12px;
-      font-weight: 600;
+      font-weight: 750;
       cursor: pointer;
+      transition: transform 120ms ease, background 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+      box-shadow: 0 8px 18px rgba(37, 99, 235, 0.18);
+    }
+    button:hover:not(:disabled) {
+      background: var(--accent-strong);
+      border-color: var(--accent-strong);
+      transform: translateY(-1px);
     }
     button.secondary {
       background: #fff;
       color: var(--accent);
+      box-shadow: none;
     }
     button:disabled {
       opacity: 0.55;
@@ -436,10 +477,10 @@ INDEX_HTML = r"""<!doctype html>
     .status {
       min-height: 42px;
       border: 1px solid var(--line);
-      border-radius: 6px;
-      padding: 10px;
+      border-radius: 9px;
+      padding: 10px 12px;
       color: var(--muted);
-      background: #fbfcfe;
+      background: var(--panel-soft);
       font-size: 13px;
       overflow-wrap: anywhere;
     }
@@ -447,30 +488,33 @@ INDEX_HTML = r"""<!doctype html>
       display: flex;
       align-items: center;
       gap: 8px;
-      padding: 12px;
+      padding: 12px 14px;
       border-bottom: 1px solid var(--line);
       overflow-x: auto;
+      background: #ffffff;
     }
     .tab {
       min-height: 34px;
-      padding: 6px 10px;
+      padding: 6px 12px;
       border-color: var(--line);
       background: #fff;
       color: var(--text);
       white-space: nowrap;
+      box-shadow: none;
     }
     .tab.active {
       border-color: var(--accent);
       color: var(--accent);
+      background: var(--accent-soft);
     }
     .output-toolbar {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 12px;
-      padding: 10px 12px;
+      padding: 10px 14px;
       border-bottom: 1px solid var(--line);
-      background: #fbfcfe;
+      background: var(--panel-soft);
     }
     .output-title {
       margin: 0;
@@ -485,15 +529,32 @@ INDEX_HTML = r"""<!doctype html>
     }
     pre {
       margin: 0;
-      padding: 16px;
-      overflow: auto;
+      height: 100%;
       min-height: 0;
-      background: #0f172a;
+      padding: 18px 20px;
+      overflow: auto;
+      border-radius: 0 0 12px 12px;
+      background: var(--code);
       color: #e6edf7;
-      font-size: 12px;
-      line-height: 1.55;
+      font-size: 13px;
+      line-height: 1.68;
       white-space: pre-wrap;
       word-break: break-word;
+      scrollbar-color: #607089 #111827;
+      scrollbar-width: thin;
+    }
+    pre::-webkit-scrollbar, .controls::-webkit-scrollbar, .file-list::-webkit-scrollbar {
+      width: 10px;
+      height: 10px;
+    }
+    pre::-webkit-scrollbar-track, .controls::-webkit-scrollbar-track, .file-list::-webkit-scrollbar-track {
+      background: rgba(148, 163, 184, 0.16);
+    }
+    pre::-webkit-scrollbar-thumb, .controls::-webkit-scrollbar-thumb, .file-list::-webkit-scrollbar-thumb {
+      background: rgba(96, 112, 137, 0.7);
+      border-radius: 999px;
+      border: 2px solid transparent;
+      background-clip: padding-box;
     }
     .file-list {
       display: grid;
@@ -507,29 +568,76 @@ INDEX_HTML = r"""<!doctype html>
       justify-content: space-between;
       gap: 12px;
       border: 1px solid var(--line);
-      border-radius: 6px;
-      padding: 8px;
+      border-radius: 9px;
+      padding: 9px 10px;
       background: #fff;
       color: var(--text);
       text-align: left;
+      box-shadow: none;
     }
     .file-item.selected {
       border-color: var(--accent);
+      background: var(--accent-soft);
     }
     .muted { color: var(--muted); }
     .ok { color: var(--ok); }
     .bad { color: var(--danger); }
+    .drop-overlay {
+      position: fixed;
+      inset: 14px;
+      z-index: 20;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      border: 2px dashed rgba(37, 99, 235, 0.55);
+      border-radius: 18px;
+      background: rgba(239, 246, 255, 0.86);
+      color: var(--accent-strong);
+      backdrop-filter: blur(12px);
+      box-shadow: var(--shadow);
+      pointer-events: none;
+    }
+    .drop-overlay.active {
+      display: flex;
+    }
+    .drop-card {
+      display: grid;
+      gap: 8px;
+      min-width: min(420px, 86vw);
+      padding: 26px 30px;
+      border: 1px solid rgba(37, 99, 235, 0.18);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.92);
+      text-align: center;
+    }
+    .drop-card strong {
+      font-size: 18px;
+    }
+    .drop-card span {
+      color: var(--muted);
+      font-size: 13px;
+    }
     @media (max-width: 860px) {
       header { padding: 0 14px; }
+      body { overflow: auto; }
       main {
         grid-template-columns: 1fr;
+        height: auto;
+        min-height: calc(100vh - 66px);
+        overflow: visible;
         padding: 12px;
       }
-      .output { min-height: 460px; }
+      .output { height: 70vh; min-height: 460px; }
     }
   </style>
 </head>
 <body>
+  <div class="drop-overlay" id="dropOverlay">
+    <div class="drop-card">
+      <strong>松手上传视频</strong>
+      <span>文件会保存到 videos/，上传后自动选中。</span>
+    </div>
+  </div>
   <header>
     <h1>Short Video Analyzer</h1>
     <div class="muted" id="currentFile">未选择视频</div>
@@ -588,6 +696,8 @@ INDEX_HTML = r"""<!doctype html>
     const analyzeBtn = document.getElementById("analyzeBtn");
     const sourceToggle = document.getElementById("sourceToggle");
     const outputTitle = document.getElementById("outputTitle");
+    const dropOverlay = document.getElementById("dropOverlay");
+    let dragDepth = 0;
 
     function setStatus(message, kind = "") {
       statusBox.className = "status " + kind;
@@ -797,14 +907,19 @@ INDEX_HTML = r"""<!doctype html>
       }
     }
 
-    async function uploadVideo() {
+    async function uploadVideo(file = null) {
       const input = document.getElementById("videoFile");
-      if (!input.files.length) {
+      const videoFile = file || input.files[0];
+      if (!videoFile) {
         setStatus("请选择一个视频文件。", "bad");
         return;
       }
+      if (!videoFile.type.startsWith("video/")) {
+        setStatus("请拖入视频文件。", "bad");
+        return;
+      }
       const form = new FormData();
-      form.append("video", input.files[0]);
+      form.append("video", videoFile);
       setStatus("正在上传...");
       const response = await fetch("/api/upload", { method: "POST", body: form });
       const payload = await response.json();
@@ -860,10 +975,30 @@ INDEX_HTML = r"""<!doctype html>
       setStatus(job.status === "complete" ? `${job.filename}: 完成` : `${job.filename}: ${job.error || "失败"}`, job.status === "complete" ? "ok" : "bad");
     }
 
-    document.getElementById("uploadBtn").onclick = uploadVideo;
+    document.getElementById("uploadBtn").onclick = () => uploadVideo();
     document.getElementById("refreshBtn").onclick = refreshFiles;
     document.getElementById("analysisMode").value = window.DEFAULT_ANALYSIS_MODE || "analyzer";
     analyzeBtn.onclick = startAnalyze;
+    window.addEventListener("dragenter", event => {
+      event.preventDefault();
+      dragDepth += 1;
+      dropOverlay.classList.add("active");
+    });
+    window.addEventListener("dragover", event => {
+      event.preventDefault();
+    });
+    window.addEventListener("dragleave", event => {
+      event.preventDefault();
+      dragDepth = Math.max(0, dragDepth - 1);
+      if (dragDepth === 0) dropOverlay.classList.remove("active");
+    });
+    window.addEventListener("drop", event => {
+      event.preventDefault();
+      dragDepth = 0;
+      dropOverlay.classList.remove("active");
+      const file = event.dataTransfer.files && event.dataTransfer.files[0];
+      if (file) uploadVideo(file).catch(error => setStatus(error.message, "bad"));
+    });
     sourceToggle.onclick = () => {
       state.showOriginal = !state.showOriginal;
       renderOutput(state.currentResult);
