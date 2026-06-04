@@ -70,6 +70,18 @@ def parse_json_content(content: str) -> Any:
     return json.loads(stripped)
 
 
+def compact_for_translation(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: compact_for_translation(item)
+            for key, item in value.items()
+            if key != "raw_model_output"
+        }
+    if isinstance(value, list):
+        return [compact_for_translation(item) for item in value]
+    return value
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Translate analysis.json to Simplified Chinese.")
     parser.add_argument(
@@ -105,7 +117,7 @@ def main() -> int:
         analysis_path = analysis_path / "analysis.json"
 
     try:
-        analysis = load_json(analysis_path)
+        analysis = compact_for_translation(load_json(analysis_path))
         api_response = call_deepseek(
             api_key=api_key,
             api_url=args.api_url,

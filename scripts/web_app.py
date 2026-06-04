@@ -579,6 +579,97 @@ INDEX_HTML = r"""<!doctype html>
       line-height: 1.68;
       scrollbar-color: #607089 #111827;
     }
+    .report-doc {
+      display: grid;
+      gap: 16px;
+      max-width: 1180px;
+    }
+    .report-hero {
+      display: grid;
+      gap: 8px;
+      padding: 18px 20px;
+      border: 1px solid rgba(37, 99, 235, 0.14);
+      border-radius: 12px;
+      background:
+        linear-gradient(135deg, rgba(37, 99, 235, 0.10), transparent 42%),
+        #ffffff;
+    }
+    .report-kicker {
+      color: var(--accent-strong);
+      font-size: 12px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .report-hero h2 {
+      margin: 0;
+      color: var(--text);
+      font-size: 22px;
+      line-height: 1.25;
+    }
+    .report-hero p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .report-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      gap: 10px;
+    }
+    .metric {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 11px 12px;
+      background: #fff;
+    }
+    .metric span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .metric strong {
+      display: block;
+      margin-top: 5px;
+      color: var(--text);
+      font-size: 14px;
+      overflow-wrap: anywhere;
+    }
+    .report-section {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fff;
+      overflow: hidden;
+    }
+    .report-section h3 {
+      margin: 0;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel-soft);
+      color: var(--text);
+      font-size: 15px;
+    }
+    .report-section .body {
+      padding: 15px 16px;
+      color: #243044;
+      font-size: 14px;
+      white-space: pre-wrap;
+    }
+    .report-list {
+      display: grid;
+      gap: 10px;
+      margin: 0;
+      padding: 15px 16px;
+      list-style: none;
+    }
+    .report-list li {
+      border-left: 3px solid rgba(37, 99, 235, 0.28);
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: #f8fafc;
+      white-space: pre-wrap;
+    }
     .report-output::-webkit-scrollbar, .controls::-webkit-scrollbar, .file-list::-webkit-scrollbar {
       width: 10px;
       height: 10px;
@@ -780,6 +871,34 @@ INDEX_HTML = r"""<!doctype html>
       return responseText(value).replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
     }
 
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"']/g, char => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;"
+      }[char]));
+    }
+
+    function metric(label, value) {
+      if (value === null || value === undefined || value === "") return "";
+      return `<div class="metric"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`;
+    }
+
+    function section(title, body) {
+      const text = cleanText(body);
+      if (!text) return "";
+      return `<section class="report-section"><h3>${escapeHtml(title)}</h3><div class="body">${escapeHtml(text)}</div></section>`;
+    }
+
+    function listHtml(title, items, mapper = item => item) {
+      if (!Array.isArray(items) || !items.length) return "";
+      const rows = items.map((item, index) => cleanText(mapper(item, index))).filter(Boolean);
+      if (!rows.length) return "";
+      return `<section class="report-section"><h3>${escapeHtml(title)}</h3><ul class="report-list">${rows.map(row => `<li>${escapeHtml(row)}</li>`).join("")}</ul></section>`;
+    }
+
     function formatExtractionReport(value) {
       if (!value || typeof value !== "object") return pretty(value);
       const metadata = value.metadata || {};
@@ -788,92 +907,74 @@ INDEX_HTML = r"""<!doctype html>
       const frameAnalyses = Array.isArray(value.frame_analyses) ? value.frame_analyses : [];
       const timeline = Array.isArray(value.timeline) ? value.timeline : [];
       const visualEvidence = Array.isArray(value.visual_evidence) ? value.visual_evidence : [];
-      const lines = [];
-      lines.push("提取内容");
-      lines.push("");
-      lines.push(labelValue("处理模式", value.processing_mode).trim());
-      lines.push(labelValue("模型", value.vision_model || metadata.model).trim());
-      lines.push(labelValue("音频模式", value.audio_mode).trim());
-      lines.push(labelValue("处理帧数", metadata.frames_processed || metadata.frames_extracted).trim());
       const audioLanguage = transcript.language || metadata.audio_language;
       const transcriptSuccessful = transcript.successful === undefined ? metadata.transcription_successful : transcript.successful;
-      lines.push(labelValue("音频语言", audioLanguage).trim());
-      lines.push(labelValue("转写成功", transcriptSuccessful === undefined ? "" : (transcriptSuccessful ? "是" : "否")).trim());
-      const usageText = usageSummary(value.usage);
-      if (usageText) {
-        lines.push("");
-        lines.push("Token 与耗时：");
-        lines.push(usageText);
-      }
-      if (value.summary) {
-        lines.push("");
-        lines.push("模型总结：");
-        lines.push(cleanText(value.summary));
-      }
-      if (videoDescription) {
-        lines.push("");
-        lines.push("视频画面总述：");
-        lines.push(videoDescription);
-      }
-      if (timeline.length) {
-        lines.push("");
-        lines.push("时间线：");
-        timeline.forEach((item, index) => {
-          if (typeof item === "string") {
-            lines.push(`- ${item}`);
-          } else {
-            const range = item.time_range || item.timestamp || `片段 ${index + 1}`;
-            const visual = item.visual ? `画面：${item.visual}` : "";
-            const audio = item.audio ? `音频：${item.audio}` : "";
-            lines.push(`- ${range} ${[visual, audio].filter(Boolean).join("；")}`);
-          }
-        });
-      }
-      if (visualEvidence.length) {
-        lines.push("");
-        lines.push("视觉证据：");
-        visualEvidence.forEach((item, index) => {
-          lines.push(`- ${typeof item === "string" ? item : (item.description || item.visual || pretty(item))}`);
-        });
-      }
-      if (frameAnalyses.length) {
-        lines.push("");
-        lines.push("逐帧视觉分析：");
-        frameAnalyses.forEach((frame, index) => {
-          const text = cleanText(frame);
-          if (text) lines.push(`\n[帧 ${index + 1}]\n${text}`);
-        });
-      }
-      lines.push("");
-      lines.push("转写文本：");
-      lines.push(transcript.text || "无转写文本");
-      if (Array.isArray(transcript.segments) && transcript.segments.length) {
-        lines.push("");
-        lines.push("分段转写：");
-        transcript.segments.forEach(segment => {
+      const usage = value.usage || {};
+      const timelineRows = timeline.map((item, index) => {
+        if (typeof item === "string") return item;
+        const range = item.time_range || item.timestamp || `片段 ${index + 1}`;
+        const visual = item.visual ? `画面：${item.visual}` : "";
+        const audio = item.audio ? `音频：${item.audio}` : "";
+        return `${range}\n${[visual, audio].filter(Boolean).join("\n")}`;
+      });
+      const segmentRows = Array.isArray(transcript.segments) ? transcript.segments.map(segment => {
           const start = Number.isFinite(segment.start) ? segment.start.toFixed(2) : "?";
           const end = Number.isFinite(segment.end) ? segment.end.toFixed(2) : "?";
-          lines.push(`- ${start}s-${end}s  ${segment.text || ""}`);
-        });
-      }
-      return lines.filter(line => line !== "").join("\n");
+          return `${start}s-${end}s  ${segment.text || ""}`;
+      }) : [];
+      return `
+        <article class="report-doc">
+          <div class="report-hero">
+            <div class="report-kicker">Qwen Video Extraction</div>
+            <h2>提取内容报告</h2>
+            <p>${escapeHtml(value.summary ? cleanText(value.summary).slice(0, 180) : "视频内容、画面证据和音频转写的结构化整理。")}</p>
+          </div>
+          <div class="report-grid">
+            ${metric("处理模式", value.processing_mode)}
+            ${metric("视觉模型", value.vision_model || metadata.model)}
+            ${metric("音频模式", value.audio_mode)}
+            ${metric("处理帧数", metadata.frames_processed || metadata.frames_extracted)}
+            ${metric("音频语言", audioLanguage)}
+            ${metric("转写成功", transcriptSuccessful === undefined ? "" : (transcriptSuccessful ? "是" : "否"))}
+            ${metric("输入 Tokens", usage.input_tokens)}
+            ${metric("输出 Tokens", usage.output_tokens)}
+            ${metric("总 Tokens", usage.total_tokens)}
+            ${metric("API 调用", usage.api_calls)}
+            ${metric("总耗时", usage.elapsed_seconds === null || usage.elapsed_seconds === undefined ? "" : `${usage.elapsed_seconds}s`)}
+          </div>
+          ${section("模型总结", value.summary)}
+          ${section("视频画面总述", videoDescription)}
+          ${listHtml("时间线", timelineRows)}
+          ${listHtml("视觉证据", visualEvidence, item => typeof item === "string" ? item : (item.description || item.visual || pretty(item)))}
+          ${listHtml("逐帧视觉分析", frameAnalyses, (frame, index) => `[帧 ${index + 1}]\n${cleanText(frame)}`)}
+          ${section("转写文本", transcript.text || "无转写文本")}
+          ${listHtml("分段转写", segmentRows)}
+        </article>
+      `;
     }
 
     function formatAuditReport(value) {
       if (!value || typeof value !== "object") return pretty(value);
-      const lines = [];
-      lines.push("分析结果");
-      lines.push("");
-      lines.push(labelValue("风险等级", value.risk_level).trim());
-      lines.push(labelValue("内容摘要", value.summary).trim());
-      lines.push(labelValue("内容概览", value.content_overview).trim());
-      lines.push(labelValue("转写要点", value.transcript_notes).trim());
-      lines.push(labelValue("画面要点", value.visual_notes).trim());
-      lines.push(listSection("风险原因", value.risk_reasons).trim());
-      lines.push(listSection("问题点", value.issues).trim());
-      lines.push(labelValue("建议动作", value.recommended_action).trim());
-      lines.push(labelValue("发布建议", value.publish_suggestion).trim());
-      return lines.filter(line => line !== "").join("\n\n");
+      return `
+        <article class="report-doc">
+          <div class="report-hero">
+            <div class="report-kicker">DeepSeek Audit</div>
+            <h2>分析结果报告</h2>
+            <p>${escapeHtml(value.summary || "基于提取内容生成的风险和发布建议。")}</p>
+          </div>
+          <div class="report-grid">
+            ${metric("风险等级", value.risk_level)}
+            ${metric("建议动作", value.recommended_action)}
+            ${metric("发布建议", value.publish_suggestion)}
+          </div>
+          ${section("内容摘要", value.summary)}
+          ${section("内容概览", value.content_overview)}
+          ${section("转写要点", value.transcript_notes)}
+          ${section("画面要点", value.visual_notes)}
+          ${listHtml("风险原因", value.risk_reasons)}
+          ${listHtml("问题点", value.issues)}
+        </article>
+      `;
     }
 
     function renderOutput(job) {
@@ -888,11 +989,13 @@ INDEX_HTML = r"""<!doctype html>
       if (state.currentTab === "content") {
         outputTitle.textContent = state.showOriginal ? "Qwen 输出内容，原文" : "Qwen 输出内容，DeepSeek 翻译";
         value = state.showOriginal ? job.analysis : (job.analysis_zh || job.analysis);
-        outputBox.textContent = state.showOriginal ? pretty(value) : formatExtractionReport(value);
+        if (state.showOriginal) outputBox.textContent = pretty(value);
+        else outputBox.innerHTML = formatExtractionReport(value);
       } else {
         outputTitle.textContent = state.showOriginal ? "DeepSeek 分析内容，原文" : "DeepSeek 分析内容，中文";
         value = state.showOriginal ? job.audit_result : (job.audit_result_zh || job.audit_result);
-        outputBox.textContent = state.showOriginal ? pretty(value) : formatAuditReport(value);
+        if (state.showOriginal) outputBox.textContent = pretty(value);
+        else outputBox.innerHTML = formatAuditReport(value);
       }
       sourceToggle.textContent = state.showOriginal ? "显示中文" : "显示原文";
     }
