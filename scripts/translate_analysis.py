@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 import sys
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,17 @@ import requests
 
 DEFAULT_API_URL = "https://api.deepseek.com/v1/chat/completions"
 DEFAULT_MODEL = "deepseek-chat"
+DEFAULT_BATCH_CHARS = 8000
+SKIP_STRING_KEYS = {
+    "schema_version",
+    "processing_mode",
+    "vision_model",
+    "audio_mode",
+    "model",
+    "language",
+    "upload_mode",
+    "video_file",
+}
 
 
 def load_json(path: Path) -> Any:
@@ -20,12 +32,12 @@ def load_json(path: Path) -> Any:
         return json.load(file)
 
 
-def call_deepseek(api_key: str, api_url: str, model: str, analysis: Any) -> dict:
+def call_deepseek(api_key: str, api_url: str, model: str, items: list[dict[str, str]]) -> dict:
     prompt = (
-        "Translate the following video analysis JSON into Simplified Chinese. "
-        "Preserve the original JSON structure and keys exactly. Translate only human-readable string values. "
-        "Do not add commentary. Return strict parseable JSON only.\n\n"
-        f"{json.dumps(analysis, ensure_ascii=False, indent=2)}"
+        "Translate each item's text into Simplified Chinese. Preserve line breaks, numbers, timestamps, "
+        "frame labels, speaker meaning, and technical terms where appropriate. Return strict parseable JSON only "
+        'with this shape: {"items":[{"id":"...","text":"translated text"}]}. Do not add commentary.\n\n'
+        f"{json.dumps({'items': items}, ensure_ascii=False, indent=2)}"
     )
     response = requests.post(
         api_url,
@@ -82,6 +94,90 @@ def compact_for_translation(value: Any) -> Any:
     return value
 
 
+def should_translate(path: tuple[Any, ...], value: str) -> bool:
+    if not value.strip():
+        return False
+    key = str(path[-1]) if path else ""
+    if key in SKIP_STRING_KEYS:
+        return False
+    if value.startswith("data:") or value.startswith("http://") or value.startswith("https://"):
+        return False
+    return any(("A" <= char <= "Z") or ("a" <= char <= "z") for char in value)
+
+
+def collect_strings(value: Any, path: tuple[Any, ...] = ()) -> list[tuple[tuple[Any, ...], str]]:
+    if isinstance(value, dict):
+        rows: list[tuple[tuple[Any, ...], str]] = []
+        for key, item in value.items():
+            rows.extend(collect_strings(item, (*path, key)))
+        return rows
+    if isinstance(value, list):
+        rows = []
+        for index, item in enumerate(value):
+            rows.extend(collect_strings(item, (*path, index)))
+        return rows
+    if isinstance(value, str) and should_translate(path, value):
+        return [(path, value)]
+    return []
+
+
+def set_path(value: Any, path: tuple[Any, ...], text: str) -> None:
+    cursor = value
+    for key in path[:-1]:
+        cursor = cursor[key]
+    cursor[path[-1]] = text
+
+
+def batches(rows: list[tuple[tuple[Any, ...], str]], max_chars: int) -> list[list[tuple[tuple[Any, ...], str]]]:
+    result: list[list[tuple[tuple[Any, ...], str]]] = []
+    current: list[tuple[tuple[Any, ...], str]] = []
+    size = 0
+    for row in rows:
+        row_size = len(row[1])
+        if current and size + row_size > max_chars:
+            result.append(current)
+            current = []
+            size = 0
+        current.append(row)
+        size += row_size
+    if current:
+        result.append(current)
+    return result
+
+
+def translate_in_batches(
+    api_key: str,
+    api_url: str,
+    model: str,
+    payload: Any,
+    max_chars: int,
+) -> Any:
+    translated = deepcopy(payload)
+    rows = collect_strings(payload)
+    if not rows:
+        return translated
+
+    for batch_index, batch in enumerate(batches(rows, max_chars), start=1):
+        items = [
+            {
+                "id": str(index),
+                "text": text,
+            }
+            for index, (_path, text) in enumerate(batch)
+        ]
+        api_response = call_deepseek(api_key=api_key, api_url=api_url, model=model, items=items)
+        content = extract_content(api_response)
+        parsed = parse_json_content(content)
+        translated_items = parsed.get("items", []) if isinstance(parsed, dict) else []
+        by_id = {str(item.get("id")): item.get("text", "") for item in translated_items if isinstance(item, dict)}
+        for index, (path, original) in enumerate(batch):
+            text = by_id.get(str(index), original)
+            set_path(translated, path, text)
+        print(f"Translated batch {batch_index} ({len(batch)} strings)", file=sys.stderr)
+
+    return translated
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Translate analysis.json to Simplified Chinese.")
     parser.add_argument(
@@ -105,6 +201,12 @@ def main() -> int:
         default=os.getenv("DEEPSEEK_MODEL", DEFAULT_MODEL),
         help=f"DeepSeek model name. Defaults to {DEFAULT_MODEL}.",
     )
+    parser.add_argument(
+        "--batch-chars",
+        type=int,
+        default=int(os.getenv("TRANSLATION_BATCH_CHARS", str(DEFAULT_BATCH_CHARS))),
+        help=f"Approximate max characters per translation batch. Defaults to {DEFAULT_BATCH_CHARS}.",
+    )
     args = parser.parse_args()
 
     api_key = os.getenv("DEEPSEEK_API_KEY")
@@ -118,13 +220,13 @@ def main() -> int:
 
     try:
         analysis = compact_for_translation(load_json(analysis_path))
-        api_response = call_deepseek(
+        translated = translate_in_batches(
             api_key=api_key,
             api_url=args.api_url,
             model=args.model,
-            analysis=analysis,
+            payload=analysis,
+            max_chars=args.batch_chars,
         )
-        translated = parse_json_content(extract_content(api_response))
 
         output_path = Path(args.output) if args.output else analysis_path.parent / "analysis_zh.json"
         output_path.parent.mkdir(parents=True, exist_ok=True)
