@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import mimetypes
 import os
 import shutil
 import subprocess
@@ -12,6 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
+from urllib.parse import unquote
 import cgi
 
 
@@ -207,6 +209,12 @@ class Handler(BaseHTTPRequestHandler):
                 os.getenv("ANALYSIS_MODE", "analyzer"),
             )
             return text_response(self, HTTPStatus.OK, html, "text/html; charset=utf-8")
+        if parsed.path.startswith("/video/"):
+            try:
+                filename = safe_filename(unquote(parsed.path.removeprefix("/video/")))
+            except ValueError as exc:
+                return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            return self.serve_video(VIDEOS_DIR / filename)
         if parsed.path == "/api/jobs":
             with jobs_lock:
                 payload = [public_job(job) for job in sorted(jobs.values(), key=lambda item: item.created_at, reverse=True)]
@@ -248,6 +256,51 @@ class Handler(BaseHTTPRequestHandler):
                 },
             )
         return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
+
+    def serve_video(self, path: Path) -> None:
+        if not path.is_file():
+            return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Video not found"})
+
+        file_size = path.stat().st_size
+        content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        range_header = self.headers.get("Range")
+        start = 0
+        end = file_size - 1
+        status = HTTPStatus.OK
+
+        if range_header and range_header.startswith("bytes="):
+            status = HTTPStatus.PARTIAL_CONTENT
+            range_value = range_header.removeprefix("bytes=").split(",", 1)[0]
+            start_text, _, end_text = range_value.partition("-")
+            if start_text:
+                start = int(start_text)
+            if end_text:
+                end = int(end_text)
+            end = min(end, file_size - 1)
+            if start > end or start >= file_size:
+                self.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+                self.send_header("Content-Range", f"bytes */{file_size}")
+                self.end_headers()
+                return
+
+        length = end - start + 1
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Length", str(length))
+        if status == HTTPStatus.PARTIAL_CONTENT:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
+        self.end_headers()
+
+        with path.open("rb") as file:
+            file.seek(start)
+            remaining = length
+            while remaining > 0:
+                chunk = file.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                remaining -= len(chunk)
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
@@ -761,14 +814,32 @@ INDEX_HTML = r"""<!doctype html>
       white-space: nowrap;
       font-weight: 700;
     }
+    .file-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+    .play-button,
     .danger-button {
       min-height: 30px;
       padding: 4px 9px;
-      border-color: #fecaca;
       background: #fff;
-      color: var(--danger);
       box-shadow: none;
       font-size: 12px;
+    }
+    .play-button {
+      border-color: #bfdbfe;
+      color: var(--accent-strong);
+    }
+    .play-button:hover:not(:disabled) {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+      color: var(--accent-strong);
+    }
+    .danger-button {
+      border-color: #fecaca;
+      color: var(--danger);
     }
     .danger-button:hover:not(:disabled) {
       border-color: var(--danger);
@@ -1156,7 +1227,10 @@ INDEX_HTML = r"""<!doctype html>
             <span class="file-name">${escapeHtml(file.name)}</span>
             <span class="muted">${Math.round(file.size / 1024 / 1024 * 10) / 10} MB</span>
           </span>
-          <button class="danger-button" type="button">删除</button>
+          <span class="file-actions">
+            <button class="play-button" type="button">播放</button>
+            <button class="danger-button" type="button">删除</button>
+          </span>
         `;
         item.onclick = () => selectFile(file.name);
         item.onkeydown = event => {
@@ -1168,6 +1242,10 @@ INDEX_HTML = r"""<!doctype html>
         item.querySelector(".danger-button").onclick = event => {
           event.stopPropagation();
           deleteFile(file.name).catch(error => setStatus(error.message, "bad"));
+        };
+        item.querySelector(".play-button").onclick = event => {
+          event.stopPropagation();
+          window.open(`/video/${encodeURIComponent(file.name)}`, "_blank", "noopener");
         };
         fileList.appendChild(item);
       });
