@@ -255,6 +255,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_upload()
         if parsed.path == "/api/analyze":
             return self.handle_analyze()
+        if parsed.path == "/api/delete":
+            return self.handle_delete()
         return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
 
     def handle_upload(self) -> None:
@@ -294,6 +296,7 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(body.decode("utf-8") or "{}")
             filename = safe_filename(str(payload.get("filename", "")))
             postprocess = bool(payload.get("postprocess", False))
+            reset_output = bool(payload.get("reset_output", False))
             analysis_mode = str(payload.get("analysis_mode") or os.getenv("ANALYSIS_MODE", "analyzer"))
             if analysis_mode not in {"analyzer", "direct_video"}:
                 raise ValueError("analysis_mode must be analyzer or direct_video")
@@ -302,6 +305,11 @@ class Handler(BaseHTTPRequestHandler):
 
         if not (VIDEOS_DIR / filename).is_file():
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": f"Video file not found: {filename}"})
+
+        if reset_output:
+            output_dir = OUTPUT_DIR / filename
+            if output_dir.is_dir():
+                shutil.rmtree(output_dir)
 
         job = Job(
             id=str(uuid.uuid4()),
@@ -314,6 +322,40 @@ class Handler(BaseHTTPRequestHandler):
         thread = threading.Thread(target=run_job, args=(job.id,), daemon=True)
         thread.start()
         return json_response(self, HTTPStatus.ACCEPTED, public_job(job))
+
+    def handle_delete(self) -> None:
+        content_length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(content_length)
+        try:
+            payload = json.loads(body.decode("utf-8") or "{}")
+            filename = safe_filename(str(payload.get("filename", "")))
+        except (json.JSONDecodeError, ValueError) as exc:
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+
+        video_path = VIDEOS_DIR / filename
+        output_dir = OUTPUT_DIR / filename
+        deleted_video = False
+        deleted_output = False
+        if video_path.is_file():
+            video_path.unlink()
+            deleted_video = True
+        if output_dir.is_dir():
+            shutil.rmtree(output_dir)
+            deleted_output = True
+
+        with jobs_lock:
+            for job_id in [job_id for job_id, job in jobs.items() if job.filename == filename]:
+                del jobs[job_id]
+
+        return json_response(
+            self,
+            HTTPStatus.OK,
+            {
+                "filename": filename,
+                "deleted_video": deleted_video,
+                "deleted_output": deleted_output,
+            },
+        )
 
 
 INDEX_HTML = r"""<!doctype html>
@@ -693,6 +735,7 @@ INDEX_HTML = r"""<!doctype html>
       width: 100%;
       display: flex;
       justify-content: space-between;
+      align-items: center;
       gap: 12px;
       border: 1px solid var(--line);
       border-radius: 9px;
@@ -705,6 +748,32 @@ INDEX_HTML = r"""<!doctype html>
     .file-item.selected {
       border-color: var(--accent);
       background: var(--accent-soft);
+    }
+    .file-meta {
+      min-width: 0;
+      display: grid;
+      gap: 3px;
+      flex: 1;
+    }
+    .file-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-weight: 700;
+    }
+    .danger-button {
+      min-height: 30px;
+      padding: 4px 9px;
+      border-color: #fecaca;
+      background: #fff;
+      color: var(--danger);
+      box-shadow: none;
+      font-size: 12px;
+    }
+    .danger-button:hover:not(:disabled) {
+      border-color: var(--danger);
+      background: #fff1f2;
+      color: var(--danger);
     }
     .muted { color: var(--muted); }
     .ok { color: var(--ok); }
@@ -814,7 +883,7 @@ INDEX_HTML = r"""<!doctype html>
   </main>
   <script>
     window.DEFAULT_ANALYSIS_MODE = "__DEFAULT_ANALYSIS_MODE__";
-    const state = { selectedFile: "", currentJob: null, currentResult: null, currentTab: "content", showOriginal: false, postprocess: false, timer: null };
+    const state = { selectedFile: "", currentJob: null, currentResult: null, currentTab: "content", showOriginal: false, postprocess: false, hasOutput: false, timer: null };
     const fileList = document.getElementById("fileList");
     const statusBox = document.getElementById("statusBox");
     const outputBox = document.getElementById("outputBox");
@@ -1005,29 +1074,67 @@ INDEX_HTML = r"""<!doctype html>
       postprocessToggle.setAttribute("aria-pressed", state.postprocess ? "true" : "false");
     }
 
+    function hasResultPayload(result) {
+      return Boolean(result && (result.analysis || result.analysis_zh || result.audit_result || result.audit_result_zh));
+    }
+
+    function renderAnalyzeButton() {
+      analyzeBtn.textContent = state.hasOutput ? "重新分析" : "开始分析";
+      analyzeBtn.disabled = !state.selectedFile;
+    }
+
     async function loadSavedResult(name) {
       if (!name) return;
       const response = await fetch(`/api/result?filename=${encodeURIComponent(name)}`);
       const result = await response.json();
-      if (result.analysis || result.analysis_zh || result.audit_result || result.audit_result_zh) {
+      if (hasResultPayload(result)) {
         state.currentJob = null;
         state.currentResult = result;
+        state.hasOutput = true;
         renderOutput(result);
         setStatus(`${name}: 已加载已有输出`, "ok");
       } else {
         state.currentResult = null;
+        state.hasOutput = false;
         outputBox.className = "report-output";
         outputBox.textContent = "{}";
         setStatus(`${name}: 等待分析`);
       }
+      renderAnalyzeButton();
     }
 
     function selectFile(name) {
       state.selectedFile = name;
       currentFile.textContent = name || "未选择视频";
-      analyzeBtn.disabled = !name;
+      state.hasOutput = false;
+      renderAnalyzeButton();
       [...fileList.children].forEach(item => item.classList.toggle("selected", item.dataset.name === name));
       loadSavedResult(name).catch(error => setStatus(error.message, "bad"));
+    }
+
+    async function deleteFile(name) {
+      if (!name) return;
+      if (!confirm(`删除 ${name} 及其所有分析输出？`)) return;
+      const response = await fetch("/api/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: name })
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        setStatus(payload.error || "删除失败", "bad");
+        return;
+      }
+      if (state.selectedFile === name) {
+        state.selectedFile = "";
+        state.currentResult = null;
+        state.currentJob = null;
+        state.hasOutput = false;
+        outputBox.className = "report-output";
+        outputBox.textContent = "{}";
+      }
+      setStatus(`${name}: 已删除`, "ok");
+      await refreshFiles();
     }
 
     async function refreshFiles() {
@@ -1040,11 +1147,28 @@ INDEX_HTML = r"""<!doctype html>
         return;
       }
       files.forEach(file => {
-        const item = document.createElement("button");
+        const item = document.createElement("div");
         item.className = "file-item";
+        item.tabIndex = 0;
         item.dataset.name = file.name;
-        item.innerHTML = `<span>${file.name}</span><span class="muted">${Math.round(file.size / 1024 / 1024 * 10) / 10} MB</span>`;
+        item.innerHTML = `
+          <span class="file-meta">
+            <span class="file-name">${escapeHtml(file.name)}</span>
+            <span class="muted">${Math.round(file.size / 1024 / 1024 * 10) / 10} MB</span>
+          </span>
+          <button class="danger-button" type="button">删除</button>
+        `;
         item.onclick = () => selectFile(file.name);
+        item.onkeydown = event => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            selectFile(file.name);
+          }
+        };
+        item.querySelector(".danger-button").onclick = event => {
+          event.stopPropagation();
+          deleteFile(file.name).catch(error => setStatus(error.message, "bad"));
+        };
         fileList.appendChild(item);
       });
       if (!state.selectedFile || !files.some(file => file.name === state.selectedFile)) {
@@ -1082,14 +1206,16 @@ INDEX_HTML = r"""<!doctype html>
     async function startAnalyze() {
       if (!state.selectedFile) return;
       analyzeBtn.disabled = true;
-      setStatus("分析任务已提交...");
+      const resetOutput = state.hasOutput;
+      setStatus(resetOutput ? "正在清空旧输出并重新分析..." : "分析任务已提交...");
       const response = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           filename: state.selectedFile,
           analysis_mode: document.getElementById("analysisMode").value,
-          postprocess: state.postprocess
+          postprocess: state.postprocess,
+          reset_output: resetOutput
         })
       });
       const job = await response.json();
@@ -1101,6 +1227,7 @@ INDEX_HTML = r"""<!doctype html>
       state.currentJob = job.id;
       state.currentResult = job;
       state.showOriginal = false;
+      state.hasOutput = false;
       pollJob();
       if (state.timer) clearInterval(state.timer);
       state.timer = setInterval(pollJob, 2500);
@@ -1119,6 +1246,8 @@ INDEX_HTML = r"""<!doctype html>
       if (state.timer) clearInterval(state.timer);
       state.timer = null;
       analyzeBtn.disabled = !state.selectedFile;
+      state.hasOutput = job.status === "complete";
+      renderAnalyzeButton();
       setStatus(job.status === "complete" ? `${job.filename}: 完成` : `${job.filename}: ${job.error || "失败"}`, job.status === "complete" ? "ok" : "bad");
     }
 
