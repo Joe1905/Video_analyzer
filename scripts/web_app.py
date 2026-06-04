@@ -441,13 +441,6 @@ INDEX_HTML = r"""<!doctype html>
       gap: 10px;
       flex-wrap: wrap;
     }
-    .check {
-      display: flex;
-      gap: 8px;
-      align-items: center;
-      color: var(--text);
-      font-size: 14px;
-    }
     button {
       min-height: 40px;
       border: 1px solid var(--accent);
@@ -527,30 +520,73 @@ INDEX_HTML = r"""<!doctype html>
       padding: 5px 10px;
       font-size: 13px;
     }
-    pre {
+    .toggle-button {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      border-color: var(--line);
+      background: #fff;
+      color: var(--text);
+      box-shadow: none;
+      text-align: left;
+    }
+    .toggle-button::after {
+      content: "关闭";
+      min-width: 46px;
+      border-radius: 999px;
+      padding: 3px 9px;
+      background: #edf2f7;
+      color: var(--muted);
+      font-size: 12px;
+      text-align: center;
+    }
+    .toggle-button.active {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+      color: var(--accent-strong);
+    }
+    .toggle-button.active::after {
+      content: "开启";
+      background: var(--accent);
+      color: #fff;
+    }
+    .report-output {
       margin: 0;
       height: 100%;
       min-height: 0;
-      padding: 18px 20px;
+      padding: 22px 24px;
       overflow: auto;
       border-radius: 0 0 12px 12px;
-      background: var(--code);
-      color: #e6edf7;
+      background:
+        linear-gradient(180deg, rgba(248, 250, 252, 0.92), rgba(255, 255, 255, 0.98)),
+        #fff;
+      color: var(--text);
       font-size: 13px;
-      line-height: 1.68;
+      line-height: 1.78;
       white-space: pre-wrap;
       word-break: break-word;
-      scrollbar-color: #607089 #111827;
+      border-left: 4px solid rgba(37, 99, 235, 0.22);
+      scrollbar-color: #9aa8bd #eef2f7;
       scrollbar-width: thin;
     }
-    pre::-webkit-scrollbar, .controls::-webkit-scrollbar, .file-list::-webkit-scrollbar {
+    .report-output.raw-output {
+      background: var(--code);
+      color: #e6edf7;
+      border-left-color: rgba(96, 165, 250, 0.45);
+      font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+      line-height: 1.68;
+      scrollbar-color: #607089 #111827;
+    }
+    .report-output::-webkit-scrollbar, .controls::-webkit-scrollbar, .file-list::-webkit-scrollbar {
       width: 10px;
       height: 10px;
     }
-    pre::-webkit-scrollbar-track, .controls::-webkit-scrollbar-track, .file-list::-webkit-scrollbar-track {
+    .report-output::-webkit-scrollbar-track, .controls::-webkit-scrollbar-track, .file-list::-webkit-scrollbar-track {
       background: rgba(148, 163, 184, 0.16);
     }
-    pre::-webkit-scrollbar-thumb, .controls::-webkit-scrollbar-thumb, .file-list::-webkit-scrollbar-thumb {
+    .report-output::-webkit-scrollbar-thumb, .controls::-webkit-scrollbar-thumb, .file-list::-webkit-scrollbar-thumb {
       background: rgba(96, 112, 137, 0.7);
       border-radius: 999px;
       border: 2px solid transparent;
@@ -666,10 +702,9 @@ INDEX_HTML = r"""<!doctype html>
         </select>
       </div>
       <div>
-        <label class="check">
-          <input id="postprocess" type="checkbox">
-          DeepSeek 后处理
-        </label>
+        <button id="postprocessToggle" class="toggle-button" type="button" aria-pressed="false">
+          生成 DeepSeek 分析报告
+        </button>
       </div>
       <button id="analyzeBtn" disabled>开始分析</button>
       <div class="status" id="statusBox">等待上传或选择视频。</div>
@@ -683,12 +718,12 @@ INDEX_HTML = r"""<!doctype html>
         <p class="output-title" id="outputTitle">Qwen 输出内容，DeepSeek 翻译</p>
         <button id="sourceToggle" class="secondary small-button" type="button">显示原文</button>
       </div>
-      <pre id="outputBox">{}</pre>
+      <div id="outputBox" class="report-output">{}</div>
     </section>
   </main>
   <script>
     window.DEFAULT_ANALYSIS_MODE = "__DEFAULT_ANALYSIS_MODE__";
-    const state = { selectedFile: "", currentJob: null, currentResult: null, currentTab: "content", showOriginal: false, timer: null };
+    const state = { selectedFile: "", currentJob: null, currentResult: null, currentTab: "content", showOriginal: false, postprocess: false, timer: null };
     const fileList = document.getElementById("fileList");
     const statusBox = document.getElementById("statusBox");
     const outputBox = document.getElementById("outputBox");
@@ -696,6 +731,7 @@ INDEX_HTML = r"""<!doctype html>
     const analyzeBtn = document.getElementById("analyzeBtn");
     const sourceToggle = document.getElementById("sourceToggle");
     const outputTitle = document.getElementById("outputTitle");
+    const postprocessToggle = document.getElementById("postprocessToggle");
     const dropOverlay = document.getElementById("dropOverlay");
     let dragDepth = 0;
 
@@ -842,10 +878,12 @@ INDEX_HTML = r"""<!doctype html>
 
     function renderOutput(job) {
       if (!job) {
+        outputBox.className = "report-output";
         outputBox.textContent = "{}";
         return;
       }
       state.currentResult = job;
+      outputBox.className = state.showOriginal ? "report-output raw-output" : "report-output";
       let value = null;
       if (state.currentTab === "content") {
         outputTitle.textContent = state.showOriginal ? "Qwen 输出内容，原文" : "Qwen 输出内容，DeepSeek 翻译";
@@ -859,6 +897,11 @@ INDEX_HTML = r"""<!doctype html>
       sourceToggle.textContent = state.showOriginal ? "显示中文" : "显示原文";
     }
 
+    function renderPostprocessToggle() {
+      postprocessToggle.classList.toggle("active", state.postprocess);
+      postprocessToggle.setAttribute("aria-pressed", state.postprocess ? "true" : "false");
+    }
+
     async function loadSavedResult(name) {
       if (!name) return;
       const response = await fetch(`/api/result?filename=${encodeURIComponent(name)}`);
@@ -870,6 +913,7 @@ INDEX_HTML = r"""<!doctype html>
         setStatus(`${name}: 已加载已有输出`, "ok");
       } else {
         state.currentResult = null;
+        outputBox.className = "report-output";
         outputBox.textContent = "{}";
         setStatus(`${name}: 等待分析`);
       }
@@ -942,7 +986,7 @@ INDEX_HTML = r"""<!doctype html>
         body: JSON.stringify({
           filename: state.selectedFile,
           analysis_mode: document.getElementById("analysisMode").value,
-          postprocess: document.getElementById("postprocess").checked
+          postprocess: state.postprocess
         })
       });
       const job = await response.json();
@@ -978,6 +1022,11 @@ INDEX_HTML = r"""<!doctype html>
     document.getElementById("uploadBtn").onclick = () => uploadVideo();
     document.getElementById("refreshBtn").onclick = refreshFiles;
     document.getElementById("analysisMode").value = window.DEFAULT_ANALYSIS_MODE || "analyzer";
+    postprocessToggle.onclick = () => {
+      state.postprocess = !state.postprocess;
+      renderPostprocessToggle();
+    };
+    renderPostprocessToggle();
     analyzeBtn.onclick = startAnalyze;
     window.addEventListener("dragenter", event => {
       event.preventDefault();
