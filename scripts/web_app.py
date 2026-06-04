@@ -23,6 +23,13 @@ OUTPUT_DIR = ROOT / "output"
 SCRIPTS_DIR = ROOT / "scripts"
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 SAFE_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+DEFAULT_ANALYSIS_PROMPT = (
+    "Analyze this short video directly. Return strict JSON only, no Markdown. "
+    "Use these exact keys: summary, timeline, visual_evidence. "
+    "timeline must be an array of short chronological events with time_range, visual, audio fields. "
+    "visual_evidence must be an array of concrete observations from the video frames. "
+    "Be specific and do not invent unsupported facts."
+)
 
 
 @dataclass
@@ -37,6 +44,7 @@ class Job:
     log: list[str] = field(default_factory=list)
     output_dir: str | None = None
     error: str | None = None
+    analysis_prompt: str = ""
 
 
 jobs: dict[str, Job] = {}
@@ -103,11 +111,15 @@ def append_log(job: Job, line: str) -> None:
         job.updated_at = time.time()
 
 
-def run_command(job: Job, command: list[str]) -> None:
+def run_command(job: Job, command: list[str], env_extra: dict[str, str] | None = None) -> None:
     append_log(job, f"$ {' '.join(command)}")
+    env = os.environ.copy()
+    if env_extra:
+        env.update(env_extra)
     process = subprocess.Popen(
         command,
         cwd=ROOT,
+        env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -130,6 +142,10 @@ def run_job(job_id: str) -> None:
     try:
         output_dir = OUTPUT_DIR / job.filename
         job.output_dir = str(output_dir.relative_to(ROOT))
+        output_dir.mkdir(parents=True, exist_ok=True)
+        prompt = job.analysis_prompt.strip() or DEFAULT_ANALYSIS_PROMPT
+        prompt_file = output_dir / "analysis_prompt.txt"
+        prompt_file.write_text(prompt, encoding="utf-8")
         if job.analysis_mode == "direct_video":
             run_command(
                 job,
@@ -139,10 +155,16 @@ def run_job(job_id: str) -> None:
                     job.filename,
                     "--output-dir",
                     str(output_dir),
+                    "--prompt-file",
+                    str(prompt_file),
                 ],
             )
         else:
-            run_command(job, ["bash", str(SCRIPTS_DIR / "analyze_one.sh"), job.filename])
+            run_command(
+                job,
+                ["bash", str(SCRIPTS_DIR / "analyze_one.sh"), job.filename],
+                env_extra={"ANALYSIS_PROMPT_FILE": str(prompt_file)},
+            )
         if os.getenv("DEEPSEEK_API_KEY"):
             try:
                 run_command(job, ["python", str(SCRIPTS_DIR / "translate_analysis.py"), str(output_dir)])
@@ -247,6 +269,8 @@ class Handler(BaseHTTPRequestHandler):
                 os.getenv("ANALYSIS_MODE", "analyzer"),
             )
             return text_response(self, HTTPStatus.OK, html, "text/html; charset=utf-8")
+        if parsed.path == "/api/prompt":
+            return json_response(self, HTTPStatus.OK, {"prompt": DEFAULT_ANALYSIS_PROMPT})
         if parsed.path.startswith("/video/"):
             try:
                 filename = safe_filename(unquote(parsed.path.removeprefix("/video/")))
@@ -391,8 +415,11 @@ class Handler(BaseHTTPRequestHandler):
             postprocess = bool(payload.get("postprocess", False))
             reset_output = bool(payload.get("reset_output", False))
             analysis_mode = str(payload.get("analysis_mode") or os.getenv("ANALYSIS_MODE", "analyzer"))
+            analysis_prompt = str(payload.get("analysis_prompt") or "").strip()
             if analysis_mode not in {"analyzer", "direct_video"}:
                 raise ValueError("analysis_mode must be analyzer or direct_video")
+            if len(analysis_prompt) > 12000:
+                raise ValueError("analysis_prompt is too long")
         except (json.JSONDecodeError, ValueError) as exc:
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
@@ -409,6 +436,7 @@ class Handler(BaseHTTPRequestHandler):
             filename=filename,
             postprocess=postprocess,
             analysis_mode=analysis_mode,
+            analysis_prompt=analysis_prompt,
         )
         with jobs_lock:
             jobs[job.id] = job
@@ -614,6 +642,29 @@ INDEX_HTML = r"""<!doctype html>
       width: 16px;
       height: 16px;
       accent-color: var(--accent);
+    }
+    .prompt-panel {
+      display: none;
+      gap: 8px;
+    }
+    .prompt-panel.active {
+      display: grid;
+    }
+    .prompt-panel textarea {
+      width: 100%;
+      min-height: 180px;
+      resize: vertical;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      padding: 10px 12px;
+      background: #fff;
+      color: var(--text);
+      font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      outline: none;
+    }
+    .prompt-panel textarea:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
     }
     button {
       min-height: 40px;
@@ -980,6 +1031,13 @@ INDEX_HTML = r"""<!doctype html>
         </select>
       </div>
       <div>
+        <button id="promptToggle" class="secondary" type="button">显示当前提示词</button>
+      </div>
+      <div id="promptPanel" class="prompt-panel">
+        <label for="analysisPrompt">分析提示词</label>
+        <textarea id="analysisPrompt" spellcheck="false"></textarea>
+      </div>
+      <div>
         <label class="check">
           <input id="autoPostprocess" type="checkbox">
           自动生成 DeepSeek 分析
@@ -1017,6 +1075,9 @@ INDEX_HTML = r"""<!doctype html>
     const outputTitle = document.getElementById("outputTitle");
     const autoPostprocess = document.getElementById("autoPostprocess");
     const manualPostprocessBtn = document.getElementById("manualPostprocessBtn");
+    const promptToggle = document.getElementById("promptToggle");
+    const promptPanel = document.getElementById("promptPanel");
+    const analysisPrompt = document.getElementById("analysisPrompt");
     const dropOverlay = document.getElementById("dropOverlay");
     let dragDepth = 0;
 
@@ -1204,6 +1265,24 @@ INDEX_HTML = r"""<!doctype html>
       manualPostprocessBtn.disabled = !state.selectedFile || !state.hasOutput || Boolean(state.currentJob);
     }
 
+    async function loadDefaultPrompt() {
+      const response = await fetch("/api/prompt");
+      const payload = await response.json();
+      analysisPrompt.value = payload.prompt || "";
+    }
+
+    function togglePromptPanel() {
+      const active = !promptPanel.classList.contains("active");
+      promptPanel.classList.toggle("active", active);
+      promptToggle.textContent = active ? "隐藏当前提示词" : "显示当前提示词";
+      if (active) analysisPrompt.focus();
+    }
+
+    function promptFromResult(result) {
+      const prompt = result && result.analysis && result.analysis.metadata && result.analysis.metadata.analysis_prompt;
+      return typeof prompt === "string" && prompt.trim() ? prompt : "";
+    }
+
     async function loadSavedResult(name) {
       if (!name) return;
       const response = await fetch(`/api/result?filename=${encodeURIComponent(name)}`);
@@ -1212,6 +1291,8 @@ INDEX_HTML = r"""<!doctype html>
         state.currentJob = null;
         state.currentResult = result;
         state.hasOutput = true;
+        const savedPrompt = promptFromResult(result);
+        if (savedPrompt) analysisPrompt.value = savedPrompt;
         renderOutput(result);
         setStatus(`${name}: 已加载已有输出`, "ok");
       } else {
@@ -1343,6 +1424,7 @@ INDEX_HTML = r"""<!doctype html>
         body: JSON.stringify({
           filename: state.selectedFile,
           analysis_mode: document.getElementById("analysisMode").value,
+          analysis_prompt: analysisPrompt.value,
           postprocess: autoPostprocess.checked,
           reset_output: resetOutput
         })
@@ -1410,6 +1492,7 @@ INDEX_HTML = r"""<!doctype html>
     document.getElementById("refreshBtn").onclick = refreshFiles;
     document.getElementById("analysisMode").value = window.DEFAULT_ANALYSIS_MODE || "analyzer";
     manualPostprocessBtn.onclick = startManualPostprocess;
+    promptToggle.onclick = togglePromptPanel;
     analyzeBtn.onclick = startAnalyze;
     window.addEventListener("dragenter", event => {
       event.preventDefault();
@@ -1449,6 +1532,7 @@ INDEX_HTML = r"""<!doctype html>
       };
     });
     refreshFiles().catch(error => setStatus(error.message, "bad"));
+    loadDefaultPrompt().catch(error => setStatus(error.message, "bad"));
   </script>
 </body>
 </html>

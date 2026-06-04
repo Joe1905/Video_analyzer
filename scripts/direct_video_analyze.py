@@ -21,6 +21,13 @@ SCHEMA_VERSION = "1.0"
 MAX_BASE64_BYTES = 7 * 1024 * 1024
 DEFAULT_API_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 DEFAULT_MODEL = "qwen3-vl-flash"
+DEFAULT_ANALYSIS_PROMPT = (
+    "Analyze this short video directly. Return strict JSON only, no Markdown. "
+    "Use these exact keys: summary, timeline, visual_evidence. "
+    "timeline must be an array of short chronological events with time_range, visual, audio fields. "
+    "visual_evidence must be an array of concrete observations from the video frames. "
+    "Be specific and do not invent unsupported facts."
+)
 
 
 def load_env_file() -> None:
@@ -84,15 +91,9 @@ def transcribe_audio(video_path: Path, language: str, whisper_model: str) -> dic
     }
 
 
-def build_prompt(transcript: dict[str, Any]) -> str:
-    return (
-        "Analyze this short video directly. Return strict JSON only, no Markdown. "
-        "Use these exact keys: summary, timeline, visual_evidence. "
-        "timeline must be an array of short chronological events with time_range, visual, audio fields. "
-        "visual_evidence must be an array of concrete observations from the video frames. "
-        "Be specific and do not invent unsupported facts.\n\n"
-        f"Whisper transcript:\n{json.dumps(transcript, ensure_ascii=False, indent=2)}"
-    )
+def build_prompt(transcript: dict[str, Any], analysis_prompt: str) -> str:
+    prompt = analysis_prompt.strip() or DEFAULT_ANALYSIS_PROMPT
+    return f"{prompt}\n\nWhisper transcript:\n{json.dumps(transcript, ensure_ascii=False, indent=2)}"
 
 
 def call_vision_api(
@@ -102,6 +103,7 @@ def call_vision_api(
     video_url: str,
     fps: float,
     transcript: dict[str, Any],
+    analysis_prompt: str,
 ) -> tuple[dict[str, Any], float]:
     started = time.monotonic()
     response = requests.post(
@@ -125,7 +127,7 @@ def call_vision_api(
                         },
                         {
                             "type": "text",
-                            "text": build_prompt(transcript),
+                            "text": build_prompt(transcript, analysis_prompt),
                         },
                     ],
                 }
@@ -199,6 +201,7 @@ def main() -> int:
     parser.add_argument("--audio-mode", default=os.getenv("DIRECT_VIDEO_AUDIO_MODE", "whisper"))
     parser.add_argument("--upload-mode", default=os.getenv("DIRECT_VIDEO_UPLOAD_MODE", "auto"))
     parser.add_argument("--public-url", default=os.getenv("DIRECT_VIDEO_PUBLIC_URL", ""))
+    parser.add_argument("--prompt-file", default=os.getenv("ANALYSIS_PROMPT_FILE", ""))
     parser.add_argument("--language", default=os.getenv("LANGUAGE", "zh"))
     parser.add_argument("--whisper-model", default=os.getenv("WHISPER_MODEL", "small"))
     args = parser.parse_args()
@@ -226,6 +229,11 @@ def main() -> int:
     if args.audio_mode != "whisper":
         raise ValueError("Only DIRECT_VIDEO_AUDIO_MODE=whisper is currently supported")
     transcript = transcribe_audio(video_path, args.language, args.whisper_model)
+    analysis_prompt = DEFAULT_ANALYSIS_PROMPT
+    if args.prompt_file:
+        prompt_path = Path(args.prompt_file)
+        if prompt_path.is_file():
+            analysis_prompt = prompt_path.read_text(encoding="utf-8").strip() or DEFAULT_ANALYSIS_PROMPT
 
     api_response, api_elapsed = call_vision_api(
         api_key=args.api_key,
@@ -234,6 +242,7 @@ def main() -> int:
         video_url=video_url,
         fps=args.fps,
         transcript=transcript,
+        analysis_prompt=analysis_prompt,
     )
     content = extract_content(api_response)
     try:
@@ -257,6 +266,7 @@ def main() -> int:
             "fps": args.fps,
             "upload_mode": upload_mode,
             "api_elapsed_seconds": round(api_elapsed, 3),
+            "analysis_prompt": analysis_prompt,
         },
         "summary": summary,
         "transcript": transcript,

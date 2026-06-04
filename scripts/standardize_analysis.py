@@ -65,6 +65,8 @@ def standardize_analyzer(raw: dict[str, Any], output_dir: Path, elapsed_seconds:
     video_description = raw.get("video_description")
     model = metadata.get("model") or os.getenv("VISION_MODEL", "")
     api_calls = len(frame_analyses) + (1 if video_description else 0)
+    prompt_path = output_dir / "analysis_prompt.txt"
+    analysis_prompt = prompt_path.read_text(encoding="utf-8").strip() if prompt_path.is_file() else ""
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -75,6 +77,7 @@ def standardize_analyzer(raw: dict[str, Any], output_dir: Path, elapsed_seconds:
             **metadata,
             "output_dir": str(output_dir),
             "standardized_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "analysis_prompt": analysis_prompt,
         },
         "summary": response_text(video_description),
         "transcript": {
