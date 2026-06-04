@@ -175,6 +175,44 @@ def run_job(job_id: str) -> None:
             job.log.append(str(exc))
 
 
+def run_postprocess_job(job_id: str) -> None:
+    with jobs_lock:
+        job = jobs[job_id]
+        job.status = "running"
+        job.updated_at = time.time()
+
+    try:
+        output_dir = OUTPUT_DIR / job.filename
+        job.output_dir = str(output_dir.relative_to(ROOT))
+        if not (output_dir / "analysis.json").is_file():
+            raise FileNotFoundError(f"analysis.json not found: {output_dir / 'analysis.json'}")
+
+        run_command(job, ["python", str(SCRIPTS_DIR / "deepseek_postprocess.py"), str(output_dir)])
+        if os.getenv("DEEPSEEK_API_KEY"):
+            try:
+                run_command(
+                    job,
+                    [
+                        "python",
+                        str(SCRIPTS_DIR / "translate_analysis.py"),
+                        str(output_dir / "audit_result.json"),
+                        "--output",
+                        str(output_dir / "audit_result_zh.json"),
+                    ],
+                )
+            except Exception as exc:
+                append_log(job, f"Audit translation skipped: {exc}")
+        with jobs_lock:
+            job.status = "complete"
+            job.updated_at = time.time()
+    except Exception as exc:
+        with jobs_lock:
+            job.status = "failed"
+            job.error = str(exc)
+            job.updated_at = time.time()
+            job.log.append(str(exc))
+
+
 def public_job(job: Job) -> dict[str, Any]:
     output_dir = OUTPUT_DIR / job.filename
     return {
@@ -308,6 +346,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_upload()
         if parsed.path == "/api/analyze":
             return self.handle_analyze()
+        if parsed.path == "/api/postprocess":
+            return self.handle_postprocess()
         if parsed.path == "/api/delete":
             return self.handle_delete()
         return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
@@ -373,6 +413,33 @@ class Handler(BaseHTTPRequestHandler):
         with jobs_lock:
             jobs[job.id] = job
         thread = threading.Thread(target=run_job, args=(job.id,), daemon=True)
+        thread.start()
+        return json_response(self, HTTPStatus.ACCEPTED, public_job(job))
+
+    def handle_postprocess(self) -> None:
+        content_length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(content_length)
+        try:
+            payload = json.loads(body.decode("utf-8") or "{}")
+            filename = safe_filename(str(payload.get("filename", "")))
+        except (json.JSONDecodeError, ValueError) as exc:
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+
+        output_dir = OUTPUT_DIR / filename
+        if not (output_dir / "analysis.json").is_file():
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": f"analysis.json not found for {filename}"})
+
+        analysis = read_json(output_dir / "analysis.json")
+        job = Job(
+            id=str(uuid.uuid4()),
+            filename=filename,
+            postprocess=True,
+            analysis_mode=mode_from_analysis(analysis) or "postprocess",
+        )
+        job.output_dir = str(output_dir.relative_to(ROOT))
+        with jobs_lock:
+            jobs[job.id] = job
+        thread = threading.Thread(target=run_postprocess_job, args=(job.id,), daemon=True)
         thread.start()
         return json_response(self, HTTPStatus.ACCEPTED, public_job(job))
 
@@ -536,6 +603,18 @@ INDEX_HTML = r"""<!doctype html>
       gap: 10px;
       flex-wrap: wrap;
     }
+    .check {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      color: var(--text);
+      font-size: 14px;
+    }
+    .check input {
+      width: 16px;
+      height: 16px;
+      accent-color: var(--accent);
+    }
     button {
       min-height: 40px;
       border: 1px solid var(--accent);
@@ -614,38 +693,6 @@ INDEX_HTML = r"""<!doctype html>
       min-height: 32px;
       padding: 5px 10px;
       font-size: 13px;
-    }
-    .toggle-button {
-      width: 100%;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      border-color: var(--line);
-      background: #fff;
-      color: var(--text);
-      box-shadow: none;
-      text-align: left;
-    }
-    .toggle-button::after {
-      content: "关闭";
-      min-width: 46px;
-      border-radius: 999px;
-      padding: 3px 9px;
-      background: #edf2f7;
-      color: var(--muted);
-      font-size: 12px;
-      text-align: center;
-    }
-    .toggle-button.active {
-      border-color: var(--accent);
-      background: var(--accent-soft);
-      color: var(--accent-strong);
-    }
-    .toggle-button.active::after {
-      content: "开启";
-      background: var(--accent);
-      color: #fff;
     }
     .report-output {
       margin: 0;
@@ -933,8 +980,14 @@ INDEX_HTML = r"""<!doctype html>
         </select>
       </div>
       <div>
-        <button id="postprocessToggle" class="toggle-button" type="button" aria-pressed="false">
-          生成 DeepSeek 分析报告
+        <label class="check">
+          <input id="autoPostprocess" type="checkbox">
+          自动生成 DeepSeek 分析
+        </label>
+      </div>
+      <div>
+        <button id="manualPostprocessBtn" class="secondary" type="button" disabled>
+          手动生成分析报告
         </button>
       </div>
       <button id="analyzeBtn" disabled>开始分析</button>
@@ -954,7 +1007,7 @@ INDEX_HTML = r"""<!doctype html>
   </main>
   <script>
     window.DEFAULT_ANALYSIS_MODE = "__DEFAULT_ANALYSIS_MODE__";
-    const state = { selectedFile: "", currentJob: null, currentResult: null, currentTab: "content", showOriginal: false, postprocess: false, hasOutput: false, timer: null };
+    const state = { selectedFile: "", currentJob: null, currentResult: null, currentTab: "content", showOriginal: false, hasOutput: false, timer: null };
     const fileList = document.getElementById("fileList");
     const statusBox = document.getElementById("statusBox");
     const outputBox = document.getElementById("outputBox");
@@ -962,7 +1015,8 @@ INDEX_HTML = r"""<!doctype html>
     const analyzeBtn = document.getElementById("analyzeBtn");
     const sourceToggle = document.getElementById("sourceToggle");
     const outputTitle = document.getElementById("outputTitle");
-    const postprocessToggle = document.getElementById("postprocessToggle");
+    const autoPostprocess = document.getElementById("autoPostprocess");
+    const manualPostprocessBtn = document.getElementById("manualPostprocessBtn");
     const dropOverlay = document.getElementById("dropOverlay");
     let dragDepth = 0;
 
@@ -1140,11 +1194,6 @@ INDEX_HTML = r"""<!doctype html>
       sourceToggle.textContent = state.showOriginal ? "显示中文" : "显示原文";
     }
 
-    function renderPostprocessToggle() {
-      postprocessToggle.classList.toggle("active", state.postprocess);
-      postprocessToggle.setAttribute("aria-pressed", state.postprocess ? "true" : "false");
-    }
-
     function hasResultPayload(result) {
       return Boolean(result && (result.analysis || result.analysis_zh || result.audit_result || result.audit_result_zh));
     }
@@ -1152,6 +1201,7 @@ INDEX_HTML = r"""<!doctype html>
     function renderAnalyzeButton() {
       analyzeBtn.textContent = state.hasOutput ? "重新分析" : "开始分析";
       analyzeBtn.disabled = !state.selectedFile;
+      manualPostprocessBtn.disabled = !state.selectedFile || !state.hasOutput || Boolean(state.currentJob);
     }
 
     async function loadSavedResult(name) {
@@ -1284,6 +1334,7 @@ INDEX_HTML = r"""<!doctype html>
     async function startAnalyze() {
       if (!state.selectedFile) return;
       analyzeBtn.disabled = true;
+      manualPostprocessBtn.disabled = true;
       const resetOutput = state.hasOutput;
       setStatus(resetOutput ? "正在清空旧输出并重新分析..." : "分析任务已提交...");
       const response = await fetch("/api/analyze", {
@@ -1292,7 +1343,7 @@ INDEX_HTML = r"""<!doctype html>
         body: JSON.stringify({
           filename: state.selectedFile,
           analysis_mode: document.getElementById("analysisMode").value,
-          postprocess: state.postprocess,
+          postprocess: autoPostprocess.checked,
           reset_output: resetOutput
         })
       });
@@ -1311,6 +1362,31 @@ INDEX_HTML = r"""<!doctype html>
       state.timer = setInterval(pollJob, 2500);
     }
 
+    async function startManualPostprocess() {
+      if (!state.selectedFile || !state.hasOutput) return;
+      manualPostprocessBtn.disabled = true;
+      setStatus("DeepSeek 分析任务已提交...");
+      const response = await fetch("/api/postprocess", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: state.selectedFile })
+      });
+      const job = await response.json();
+      if (!response.ok) {
+        setStatus(job.error || "提交失败", "bad");
+        renderAnalyzeButton();
+        return;
+      }
+      state.currentJob = job.id;
+      state.currentResult = job;
+      state.currentTab = "audit";
+      state.showOriginal = false;
+      document.querySelectorAll(".tab").forEach(item => item.classList.toggle("active", item.dataset.tab === "audit"));
+      pollJob();
+      if (state.timer) clearInterval(state.timer);
+      state.timer = setInterval(pollJob, 2500);
+    }
+
     async function pollJob() {
       if (!state.currentJob) return;
       const response = await fetch(`/api/job?id=${encodeURIComponent(state.currentJob)}`);
@@ -1323,8 +1399,9 @@ INDEX_HTML = r"""<!doctype html>
       }
       if (state.timer) clearInterval(state.timer);
       state.timer = null;
+      state.currentJob = null;
       analyzeBtn.disabled = !state.selectedFile;
-      state.hasOutput = job.status === "complete";
+      state.hasOutput = job.status === "complete" || hasResultPayload(job);
       renderAnalyzeButton();
       setStatus(job.status === "complete" ? `${job.filename}: 完成` : `${job.filename}: ${job.error || "失败"}`, job.status === "complete" ? "ok" : "bad");
     }
@@ -1332,11 +1409,7 @@ INDEX_HTML = r"""<!doctype html>
     document.getElementById("uploadBtn").onclick = () => uploadVideo();
     document.getElementById("refreshBtn").onclick = refreshFiles;
     document.getElementById("analysisMode").value = window.DEFAULT_ANALYSIS_MODE || "analyzer";
-    postprocessToggle.onclick = () => {
-      state.postprocess = !state.postprocess;
-      renderPostprocessToggle();
-    };
-    renderPostprocessToggle();
+    manualPostprocessBtn.onclick = startManualPostprocess;
     analyzeBtn.onclick = startAnalyze;
     window.addEventListener("dragenter", event => {
       event.preventDefault();
