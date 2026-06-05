@@ -13,7 +13,7 @@ Videos are read from `videos/`. Results are written to `output/<video-file-name>
 - `docker-compose.yml`: runs the service with local `videos/` and `output/` mounts.
 - `scripts/analyze_one.sh`: runs the existing key-frame `video-analyzer` flow.
 - `scripts/direct_video_analyze.py`: sends a small full video to Qwen using `video_url` content.
-- `scripts/tiktok_download.py`: downloads a public TikTok or Douyin video into `videos/`.
+- `scripts/tiktok_download.py`: downloads a public TikTok or Douyin video into `videos/` (`yt-dlp` for TikTok, Playwright media capture for Douyin).
 - `scripts/standardize_analysis.py`: normalizes `video-analyzer` output to the shared schema.
 - `scripts/translate_analysis.py`: translates analyzer or audit JSON output into Simplified Chinese.
 - `scripts/deepseek_postprocess.py`: reads `analysis.json` and writes `audit_result.json`.
@@ -117,7 +117,7 @@ curl -X POST http://127.0.0.1:4000/api/download \
   -d '{"url":"https://v.douyin.com/xxxxxx/"}'
 ```
 
-The API accepts only `http` or `https` URLs whose host is under `tiktok.com`, `tiktokv.com`, `douyin.com`, or `iesdouyin.com`. Downloaded videos are saved as `videos/shortvideo_<platform>_<id>.mp4` when possible and then appear in the existing uploaded-video list.
+The API accepts only `http` or `https` URLs whose host is under `tiktok.com`, `tiktokv.com`, `douyin.com`, or `iesdouyin.com`. TikTok uses `yt-dlp`; Douyin uses Playwright to open the page and capture the largest media response. Downloaded videos are saved as `videos/shortvideo_<platform>_<id>.mp4` when possible and then appear in the existing uploaded-video list.
 
 Size limit is controlled by:
 

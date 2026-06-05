@@ -220,9 +220,17 @@ def run_download_job(job_id: str) -> None:
             job.status = "complete"
             job.updated_at = time.time()
     except Exception as exc:
+        useful_log = next(
+            (
+                line
+                for line in reversed(job.log)
+                if line and not line.startswith("$ ") and not line.startswith("Command failed with exit code")
+            ),
+            "",
+        )
         with download_jobs_lock:
             job.status = "failed"
-            job.error = str(exc)
+            job.error = useful_log or str(exc)
             job.updated_at = time.time()
             job.log.append(str(exc))
 
