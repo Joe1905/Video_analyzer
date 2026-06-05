@@ -36,7 +36,7 @@ RUN pip install --upgrade pip \
 RUN pip install yt-dlp playwright httpx \
     && python -m playwright install --with-deps chromium
 
-RUN pip install "curl_cffi>=0.14,<0.15"
+RUN pip install -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn "curl_cffi>=0.14,<0.15"
 
 COPY scripts/ /workspace/scripts/
 
