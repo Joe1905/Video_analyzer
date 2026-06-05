@@ -84,14 +84,13 @@ def has_douyin_media_keywords(url: str) -> bool:
         keyword in url
         for keyword in (
             "douyinvod.com",
-            "douyinstatic.com",
             "v1-",
             "v3-",
             "v5-",
             "v6-",
             "v9-",
             "playwm",
-            "play/",
+            "/play/",
         )
     )
 
@@ -259,12 +258,6 @@ async def download_douyin_with_playwright(url: str, output_dir: Path, max_bytes:
                         "The server browser may be seeing a login, risk-control, or blank page."
                     )
 
-                best = max(candidate_media, key=lambda item: int(item["size"]))
-                best_url = best["url"]
-                if best["size"]:
-                    print(f"Selected media candidate: {best['size'] / 1024 / 1024:.2f} MB from {best.get('source')}")
-                else:
-                    print(f"Selected media candidate with unknown size from {best.get('source')}")
                 headers = {"User-Agent": DESKTOP_USER_AGENT, "Referer": "https://www.douyin.com/"}
                 if cookie_header:
                     headers["Cookie"] = cookie_header
@@ -276,15 +269,33 @@ async def download_douyin_with_playwright(url: str, output_dir: Path, max_bytes:
                 }
                 if douyin_proxy:
                     client_kwargs["proxy"] = douyin_proxy
+                sorted_candidates = sorted(
+                    candidate_media,
+                    key=lambda item: (1 if int(item["size"]) > 0 else 0, int(item["size"])),
+                    reverse=True,
+                )
+                downloaded = False
                 async with httpx.AsyncClient(**client_kwargs) as client:
-                    response = await client.get(best_url, follow_redirects=True)
-                    if response.status_code != 200:
-                        raise RuntimeError(f"Media download failed: HTTP {response.status_code}")
-                    if len(response.content) < 500 * 1024:
-                        raise RuntimeError(f"Downloaded media is too small: {len(response.content)} bytes")
-                    if len(response.content) > max_bytes:
-                        raise RuntimeError(f"Downloaded media exceeds max size: {len(response.content)} bytes")
-                    target.write_bytes(response.content)
+                    for candidate in sorted_candidates:
+                        if candidate["size"]:
+                            print(f"Trying media candidate: {candidate['size'] / 1024 / 1024:.2f} MB from {candidate.get('source')}")
+                        else:
+                            print(f"Trying media candidate with unknown size from {candidate.get('source')}")
+                        response = await client.get(candidate["url"], follow_redirects=True)
+                        if response.status_code != 200:
+                            print(f"Skipping candidate: HTTP {response.status_code}")
+                            continue
+                        if len(response.content) < 500 * 1024:
+                            print(f"Skipping candidate: too small ({len(response.content)} bytes)")
+                            continue
+                        if len(response.content) > max_bytes:
+                            print(f"Skipping candidate: too large ({len(response.content)} bytes)")
+                            continue
+                        target.write_bytes(response.content)
+                        downloaded = True
+                        break
+                if not downloaded:
+                    raise RuntimeError(f"No captured Douyin media candidate produced a usable video. candidates={len(sorted_candidates)}")
 
                 title = await page.title()
                 return {
