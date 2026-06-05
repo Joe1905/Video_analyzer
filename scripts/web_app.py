@@ -121,6 +121,14 @@ def text_response(handler: BaseHTTPRequestHandler, status: int, body: str, conte
     handler.wfile.write(encoded)
 
 
+def write_sse_event(handler: BaseHTTPRequestHandler, payload: Any) -> None:
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    handler.wfile.write(b"data: ")
+    handler.wfile.write(body)
+    handler.wfile.write(b"\n\n")
+    handler.wfile.flush()
+
+
 def read_json(path: Path) -> Any | None:
     if not path.is_file():
         return None
@@ -405,6 +413,9 @@ class Handler(BaseHTTPRequestHandler):
             if payload is None:
                 return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Job not found"})
             return json_response(self, HTTPStatus.OK, payload)
+        if parsed.path == "/api/job-events":
+            job_id = parse_qs(parsed.query).get("id", [""])[0]
+            return self.stream_job_events(job_id)
         if parsed.path == "/api/download-job":
             job_id = parse_qs(parsed.query).get("id", [""])[0]
             with download_jobs_lock:
@@ -413,6 +424,9 @@ class Handler(BaseHTTPRequestHandler):
             if payload is None:
                 return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Download job not found"})
             return json_response(self, HTTPStatus.OK, payload)
+        if parsed.path == "/api/download-events":
+            job_id = parse_qs(parsed.query).get("id", [""])[0]
+            return self.stream_download_events(job_id)
         if parsed.path == "/api/files":
             files = []
             for path in sorted(VIDEOS_DIR.glob("*")):
@@ -442,6 +456,48 @@ class Handler(BaseHTTPRequestHandler):
                 },
             )
         return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
+
+    def stream_job_events(self, job_id: str) -> None:
+        self.stream_events(job_id, jobs_lock, jobs, public_job, "Job not found")
+
+    def stream_download_events(self, job_id: str) -> None:
+        self.stream_events(job_id, download_jobs_lock, download_jobs, public_download_job, "Download job not found")
+
+    def stream_events(self, job_id: str, lock: threading.Lock, store: dict[str, Any], serializer: Any, missing_message: str) -> None:
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+
+        last_marker: tuple[Any, ...] | None = None
+        while True:
+            with lock:
+                job = store.get(job_id)
+                payload = serializer(job) if job else None
+
+            if payload is None:
+                try:
+                    write_sse_event(self, {"status": "missing", "error": missing_message})
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                return
+
+            marker = (
+                payload.get("status"),
+                payload.get("updated_at"),
+                len(payload.get("log") or []),
+                payload.get("error"),
+            )
+            try:
+                if marker != last_marker:
+                    write_sse_event(self, payload)
+                    last_marker = marker
+                if payload.get("status") not in {"queued", "running"}:
+                    return
+                time.sleep(1)
+            except (BrokenPipeError, ConnectionResetError):
+                return
 
     def serve_video(self, path: Path) -> None:
         if not path.is_file():
@@ -1215,7 +1271,7 @@ INDEX_HTML = r"""<!doctype html>
   </main>
   <script>
     window.DEFAULT_ANALYSIS_MODE = "__DEFAULT_ANALYSIS_MODE__";
-    const state = { selectedFile: "", currentJob: null, currentResult: null, currentTab: "content", showOriginal: false, hasOutput: false, timer: null };
+    const state = { selectedFile: "", currentJob: null, currentResult: null, currentTab: "content", showOriginal: false, hasOutput: false };
     const fileList = document.getElementById("fileList");
     const statusBox = document.getElementById("statusBox");
     const outputBox = document.getElementById("outputBox");
@@ -1232,7 +1288,8 @@ INDEX_HTML = r"""<!doctype html>
     const analysisPrompt = document.getElementById("analysisPrompt");
     const dropOverlay = document.getElementById("dropOverlay");
     let dragDepth = 0;
-    let downloadTimer = null;
+    let downloadEvents = null;
+    let jobEvents = null;
 
     function setStatus(message, kind = "") {
       statusBox.className = "status " + kind;
@@ -1559,27 +1616,49 @@ INDEX_HTML = r"""<!doctype html>
         downloadBtn.disabled = false;
         return;
       }
-      pollDownloadJob(job.id);
-      if (downloadTimer) clearInterval(downloadTimer);
-      downloadTimer = setInterval(() => pollDownloadJob(job.id), 2000);
+      openDownloadEvents(job.id);
     }
 
-    async function pollDownloadJob(id) {
-      const response = await fetch(`/api/download-job?id=${encodeURIComponent(id)}`);
-      const job = await response.json();
-      if (!response.ok) {
+    function latestJobLog(job) {
+      if (!job || !Array.isArray(job.log) || !job.log.length) return "";
+      const line = job.log[job.log.length - 1] || "";
+      return line.length > 180 ? `${line.slice(0, 180)}...` : line;
+    }
+
+    function closeDownloadEvents() {
+      if (downloadEvents) {
+        downloadEvents.close();
+        downloadEvents = null;
+      }
+    }
+
+    function openDownloadEvents(id) {
+      closeDownloadEvents();
+      downloadEvents = new EventSource(`/api/download-events?id=${encodeURIComponent(id)}`);
+      downloadEvents.onmessage = async event => {
+        const job = JSON.parse(event.data);
+        handleDownloadJob(job);
+      };
+      downloadEvents.onerror = () => {
+        closeDownloadEvents();
+        downloadBtn.disabled = false;
+        setStatus("视频下载连接中断，请刷新后查看任务结果。", "bad");
+      };
+    }
+
+    async function handleDownloadJob(job) {
+      if (job.status === "missing") {
+        closeDownloadEvents();
         setStatus(job.error || "下载任务不存在", "bad");
         downloadBtn.disabled = false;
-        if (downloadTimer) clearInterval(downloadTimer);
-        downloadTimer = null;
         return;
       }
       if (job.status === "running" || job.status === "queued") {
-        setStatus(`视频下载中：${job.status}`);
+        const log = latestJobLog(job);
+        setStatus(`视频下载中：${job.status}${log ? ` - ${log}` : ""}`);
         return;
       }
-      if (downloadTimer) clearInterval(downloadTimer);
-      downloadTimer = null;
+      closeDownloadEvents();
       downloadBtn.disabled = false;
       if (job.status !== "complete") {
         setStatus(`视频下载失败：${job.error || "未知错误"}`, "bad");
@@ -1643,9 +1722,7 @@ INDEX_HTML = r"""<!doctype html>
       state.currentResult = job;
       state.showOriginal = false;
       state.hasOutput = false;
-      pollJob();
-      if (state.timer) clearInterval(state.timer);
-      state.timer = setInterval(pollJob, 2500);
+      openJobEvents(job.id);
     }
 
     async function startManualPostprocess() {
@@ -1668,23 +1745,48 @@ INDEX_HTML = r"""<!doctype html>
       state.currentTab = "audit";
       state.showOriginal = false;
       document.querySelectorAll(".tab").forEach(item => item.classList.toggle("active", item.dataset.tab === "audit"));
-      pollJob();
-      if (state.timer) clearInterval(state.timer);
-      state.timer = setInterval(pollJob, 2500);
+      openJobEvents(job.id);
     }
 
-    async function pollJob() {
-      if (!state.currentJob) return;
-      const response = await fetch(`/api/job?id=${encodeURIComponent(state.currentJob)}`);
-      const job = await response.json();
+    function closeJobEvents() {
+      if (jobEvents) {
+        jobEvents.close();
+        jobEvents = null;
+      }
+    }
+
+    function openJobEvents(id) {
+      closeJobEvents();
+      jobEvents = new EventSource(`/api/job-events?id=${encodeURIComponent(id)}`);
+      jobEvents.onmessage = event => {
+        const job = JSON.parse(event.data);
+        handleJobUpdate(job);
+      };
+      jobEvents.onerror = () => {
+        closeJobEvents();
+        analyzeBtn.disabled = !state.selectedFile;
+        renderAnalyzeButton();
+        setStatus("分析任务连接中断，请刷新后查看任务结果。", "bad");
+      };
+    }
+
+    function handleJobUpdate(job) {
+      if (job.status === "missing") {
+        closeJobEvents();
+        state.currentJob = null;
+        analyzeBtn.disabled = !state.selectedFile;
+        renderAnalyzeButton();
+        setStatus(job.error || "任务不存在", "bad");
+        return;
+      }
       state.currentResult = job;
       renderOutput(job);
       if (job.status === "running" || job.status === "queued") {
-        setStatus(`${job.filename}: ${job.status}`);
+        const log = latestJobLog(job);
+        setStatus(`${job.filename}: ${job.status}${log ? ` - ${log}` : ""}`);
         return;
       }
-      if (state.timer) clearInterval(state.timer);
-      state.timer = null;
+      closeJobEvents();
       state.currentJob = null;
       analyzeBtn.disabled = !state.selectedFile;
       state.hasOutput = job.status === "complete" || hasResultPayload(job);
@@ -1735,11 +1837,7 @@ INDEX_HTML = r"""<!doctype html>
         tab.classList.add("active");
         state.currentTab = tab.dataset.tab;
         state.showOriginal = false;
-        if (state.currentJob) {
-          pollJob();
-        } else {
-          renderOutput(state.currentResult);
-        }
+        renderOutput(state.currentResult);
       };
     });
     refreshFiles().catch(error => setStatus(error.message, "bad"));

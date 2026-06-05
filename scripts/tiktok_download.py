@@ -346,6 +346,10 @@ def main() -> int:
         "restrictfilenames": True,
         "windowsfilenames": True,
         "max_filesize": args.max_bytes,
+        "socket_timeout": 30,
+        "retries": 2,
+        "fragment_retries": 2,
+        "impersonate": "chrome",
         "quiet": False,
         "no_warnings": False,
     }
