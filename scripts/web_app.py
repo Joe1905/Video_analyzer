@@ -481,6 +481,7 @@ class Handler(BaseHTTPRequestHandler):
                     write_sse_event(self, {"status": "missing", "error": missing_message})
                 except (BrokenPipeError, ConnectionResetError):
                     pass
+                self.close_connection = True
                 return
 
             marker = (
@@ -494,9 +495,11 @@ class Handler(BaseHTTPRequestHandler):
                     write_sse_event(self, payload)
                     last_marker = marker
                 if payload.get("status") not in {"queued", "running"}:
+                    self.close_connection = True
                     return
                 time.sleep(1)
             except (BrokenPipeError, ConnectionResetError):
+                self.close_connection = True
                 return
 
     def serve_video(self, path: Path) -> None:
