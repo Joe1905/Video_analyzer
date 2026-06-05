@@ -33,6 +33,8 @@ RUN apt-get update \
 RUN pip install --upgrade pip \
     && pip install "video-analyzer @ git+https://github.com/byjlw/video-analyzer.git" requests openai-whisper
 
+RUN pip install yt-dlp
+
 COPY scripts/ /workspace/scripts/
 
 EXPOSE 4000

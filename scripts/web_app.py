@@ -23,6 +23,7 @@ OUTPUT_DIR = ROOT / "output"
 SCRIPTS_DIR = ROOT / "scripts"
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 SAFE_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+ALLOWED_TIKTOK_HOST_SUFFIXES = ("tiktok.com", "tiktokv.com")
 DEFAULT_ANALYSIS_PROMPT = (
     "Analyze this short video directly. Return strict JSON only, no Markdown. "
     "Use these exact keys: summary, timeline, visual_evidence. "
@@ -47,8 +48,23 @@ class Job:
     analysis_prompt: str = ""
 
 
+@dataclass
+class DownloadJob:
+    id: str
+    url: str
+    status: str = "queued"
+    created_at: float = field(default_factory=time.time)
+    updated_at: float = field(default_factory=time.time)
+    log: list[str] = field(default_factory=list)
+    filename: str | None = None
+    error: str | None = None
+    result: dict[str, Any] | None = None
+
+
 jobs: dict[str, Job] = {}
 jobs_lock = threading.Lock()
+download_jobs: dict[str, DownloadJob] = {}
+download_jobs_lock = threading.Lock()
 
 
 def load_env_file() -> None:
@@ -71,6 +87,19 @@ def safe_filename(filename: str) -> str:
     cleaned = "".join(ch for ch in name if ch in SAFE_CHARS)
     if not cleaned or cleaned in {".", ".."}:
         raise ValueError("Invalid filename")
+    return cleaned
+
+
+def validate_tiktok_url(url: str) -> str:
+    cleaned = url.strip()
+    parsed = urlparse(cleaned)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("Only http/https TikTok URLs are supported")
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if not any(host == suffix or host.endswith(f".{suffix}") for suffix in ALLOWED_TIKTOK_HOST_SUFFIXES):
+        raise ValueError("Only TikTok URLs are supported")
+    if len(cleaned) > 2048:
+        raise ValueError("URL is too long")
     return cleaned
 
 
@@ -131,6 +160,71 @@ def run_command(job: Job, command: list[str], env_extra: dict[str, str] | None =
     code = process.wait()
     if code != 0:
         raise RuntimeError(f"Command failed with exit code {code}: {' '.join(command)}")
+
+
+def append_download_log(job: DownloadJob, line: str) -> None:
+    with download_jobs_lock:
+        job.log.append(line.rstrip())
+        job.updated_at = time.time()
+
+
+def run_download_command(job: DownloadJob, command: list[str]) -> None:
+    append_download_log(job, f"$ {' '.join(command)}")
+    process = subprocess.Popen(
+        command,
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    assert process.stdout is not None
+    for line in process.stdout:
+        append_download_log(job, line)
+    code = process.wait()
+    if code != 0:
+        raise RuntimeError(f"Command failed with exit code {code}: {' '.join(command)}")
+
+
+def run_download_job(job_id: str) -> None:
+    with download_jobs_lock:
+        job = download_jobs[job_id]
+        job.status = "running"
+        job.updated_at = time.time()
+
+    result_path = OUTPUT_DIR / "download_jobs" / f"{job_id}.json"
+    try:
+        VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
+        result_path.parent.mkdir(parents=True, exist_ok=True)
+        run_download_command(
+            job,
+            [
+                "python",
+                str(SCRIPTS_DIR / "tiktok_download.py"),
+                job.url,
+                "--output-dir",
+                str(VIDEOS_DIR),
+                "--result-json",
+                str(result_path),
+            ],
+        )
+        result = read_json(result_path)
+        if not isinstance(result, dict) or not result.get("filename"):
+            raise RuntimeError("Downloader did not return a video filename")
+        filename = safe_filename(str(result["filename"]))
+        if not (VIDEOS_DIR / filename).is_file():
+            raise FileNotFoundError(f"Downloaded file not found: {filename}")
+        with download_jobs_lock:
+            job.filename = filename
+            job.result = result
+            job.status = "complete"
+            job.updated_at = time.time()
+    except Exception as exc:
+        with download_jobs_lock:
+            job.status = "failed"
+            job.error = str(exc)
+            job.updated_at = time.time()
+            job.log.append(str(exc))
 
 
 def run_job(job_id: str) -> None:
@@ -255,6 +349,20 @@ def public_job(job: Job) -> dict[str, Any]:
     }
 
 
+def public_download_job(job: DownloadJob) -> dict[str, Any]:
+    return {
+        "id": job.id,
+        "url": job.url,
+        "status": job.status,
+        "created_at": job.created_at,
+        "updated_at": job.updated_at,
+        "filename": job.filename,
+        "error": job.error,
+        "log": job.log[-80:],
+        "result": job.result,
+    }
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "ShortVideoAnalyzer/1.0"
 
@@ -288,6 +396,14 @@ class Handler(BaseHTTPRequestHandler):
                 payload = public_job(job) if job else None
             if payload is None:
                 return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Job not found"})
+            return json_response(self, HTTPStatus.OK, payload)
+        if parsed.path == "/api/download-job":
+            job_id = parse_qs(parsed.query).get("id", [""])[0]
+            with download_jobs_lock:
+                job = download_jobs.get(job_id)
+                payload = public_download_job(job) if job else None
+            if payload is None:
+                return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Download job not found"})
             return json_response(self, HTTPStatus.OK, payload)
         if parsed.path == "/api/files":
             files = []
@@ -368,6 +484,8 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/api/upload":
             return self.handle_upload()
+        if parsed.path == "/api/download":
+            return self.handle_download()
         if parsed.path == "/api/analyze":
             return self.handle_analyze()
         if parsed.path == "/api/postprocess":
@@ -375,6 +493,22 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/delete":
             return self.handle_delete()
         return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
+
+    def handle_download(self) -> None:
+        content_length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(content_length)
+        try:
+            payload = json.loads(body.decode("utf-8") or "{}")
+            url = validate_tiktok_url(str(payload.get("url", "")))
+        except (json.JSONDecodeError, ValueError) as exc:
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+
+        job = DownloadJob(id=str(uuid.uuid4()), url=url)
+        with download_jobs_lock:
+            download_jobs[job.id] = job
+        thread = threading.Thread(target=run_download_job, args=(job.id,), daemon=True)
+        thread.start()
+        return json_response(self, HTTPStatus.ACCEPTED, public_download_job(job))
 
     def handle_upload(self) -> None:
         content_length = int(self.headers.get("Content-Length", "0"))
@@ -601,7 +735,7 @@ INDEX_HTML = r"""<!doctype html>
       color: var(--muted);
       margin-bottom: 6px;
     }
-    input[type="file"], select {
+    input[type="file"], input[type="url"], select {
       width: 100%;
       min-height: 40px;
       border: 1px solid var(--line);
@@ -612,7 +746,7 @@ INDEX_HTML = r"""<!doctype html>
       outline: none;
       transition: border-color 160ms ease, box-shadow 160ms ease;
     }
-    input[type="file"]:focus, select:focus {
+    input[type="file"]:focus, input[type="url"]:focus, select:focus {
       border-color: var(--accent);
       box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
     }
@@ -1010,6 +1144,14 @@ INDEX_HTML = r"""<!doctype html>
   <main>
     <section class="controls">
       <div>
+        <p class="section-title">TikTok 链接下载</p>
+        <label for="tiktokUrl">公开视频链接</label>
+        <input id="tiktokUrl" type="url" placeholder="https://www.tiktok.com/@user/video/...">
+      </div>
+      <div class="row">
+        <button id="downloadBtn" type="button">下载视频</button>
+      </div>
+      <div>
         <p class="section-title">输入视频</p>
         <label for="videoFile">上传到 videos/</label>
         <input id="videoFile" type="file" accept="video/*">
@@ -1070,6 +1212,8 @@ INDEX_HTML = r"""<!doctype html>
     const statusBox = document.getElementById("statusBox");
     const outputBox = document.getElementById("outputBox");
     const currentFile = document.getElementById("currentFile");
+    const tiktokUrl = document.getElementById("tiktokUrl");
+    const downloadBtn = document.getElementById("downloadBtn");
     const analyzeBtn = document.getElementById("analyzeBtn");
     const sourceToggle = document.getElementById("sourceToggle");
     const outputTitle = document.getElementById("outputTitle");
@@ -1080,6 +1224,7 @@ INDEX_HTML = r"""<!doctype html>
     const analysisPrompt = document.getElementById("analysisPrompt");
     const dropOverlay = document.getElementById("dropOverlay");
     let dragDepth = 0;
+    let downloadTimer = null;
 
     function setStatus(message, kind = "") {
       statusBox.className = "status " + kind;
@@ -1387,6 +1532,57 @@ INDEX_HTML = r"""<!doctype html>
       }
     }
 
+    async function startDownload() {
+      const url = tiktokUrl.value.trim();
+      if (!url) {
+        setStatus("请输入 TikTok 视频链接。", "bad");
+        return;
+      }
+      downloadBtn.disabled = true;
+      setStatus("TikTok 下载任务已提交...");
+      const response = await fetch("/api/download", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url })
+      });
+      const job = await response.json();
+      if (!response.ok) {
+        setStatus(job.error || "下载任务提交失败", "bad");
+        downloadBtn.disabled = false;
+        return;
+      }
+      pollDownloadJob(job.id);
+      if (downloadTimer) clearInterval(downloadTimer);
+      downloadTimer = setInterval(() => pollDownloadJob(job.id), 2000);
+    }
+
+    async function pollDownloadJob(id) {
+      const response = await fetch(`/api/download-job?id=${encodeURIComponent(id)}`);
+      const job = await response.json();
+      if (!response.ok) {
+        setStatus(job.error || "下载任务不存在", "bad");
+        downloadBtn.disabled = false;
+        if (downloadTimer) clearInterval(downloadTimer);
+        downloadTimer = null;
+        return;
+      }
+      if (job.status === "running" || job.status === "queued") {
+        setStatus(`TikTok 下载中：${job.status}`);
+        return;
+      }
+      if (downloadTimer) clearInterval(downloadTimer);
+      downloadTimer = null;
+      downloadBtn.disabled = false;
+      if (job.status !== "complete") {
+        setStatus(`TikTok 下载失败：${job.error || "未知错误"}`, "bad");
+        return;
+      }
+      setStatus(`${job.filename}: 下载完成`, "ok");
+      tiktokUrl.value = "";
+      await refreshFiles();
+      selectFile(job.filename);
+    }
+
     async function uploadVideo(file = null) {
       const input = document.getElementById("videoFile");
       const videoFile = file || input.files[0];
@@ -1488,6 +1684,13 @@ INDEX_HTML = r"""<!doctype html>
       setStatus(job.status === "complete" ? `${job.filename}: 完成` : `${job.filename}: ${job.error || "失败"}`, job.status === "complete" ? "ok" : "bad");
     }
 
+    downloadBtn.onclick = startDownload;
+    tiktokUrl.onkeydown = event => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        startDownload();
+      }
+    };
     document.getElementById("uploadBtn").onclick = () => uploadVideo();
     document.getElementById("refreshBtn").onclick = refreshFiles;
     document.getElementById("analysisMode").value = window.DEFAULT_ANALYSIS_MODE || "analyzer";

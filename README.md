@@ -5,14 +5,15 @@ Dockerized short-video analysis service with two processing modes:
 - `analyzer`: key-frame extraction through [`byjlw/video-analyzer`](https://github.com/byjlw/video-analyzer).
 - `direct_video`: sends the full video directly to a Qwen OpenAI-compatible vision API.
 
-Videos are read from `videos/`. Results are written to `output/<video-file-name>/`. Both processing modes produce the same normalized `analysis.json` schema, so DeepSeek postprocess works the same way for both.
+Videos are read from `videos/`. Results are written to `output/<video-file-name>/`. The web UI can also download public TikTok videos into `videos/` before analysis. Both processing modes produce the same normalized `analysis.json` schema, so DeepSeek postprocess works the same way for both.
 
 ## Files
 
-- `Dockerfile`: builds the analyzer image and installs `video-analyzer`, Whisper, ffmpeg, and requests.
+- `Dockerfile`: builds the analyzer image and installs `video-analyzer`, Whisper, ffmpeg, requests, and `yt-dlp`.
 - `docker-compose.yml`: runs the service with local `videos/` and `output/` mounts.
 - `scripts/analyze_one.sh`: runs the existing key-frame `video-analyzer` flow.
 - `scripts/direct_video_analyze.py`: sends a small full video to Qwen using `video_url` content.
+- `scripts/tiktok_download.py`: downloads a public TikTok video into `videos/`.
 - `scripts/standardize_analysis.py`: normalizes `video-analyzer` output to the shared schema.
 - `scripts/translate_analysis.py`: translates analyzer or audit JSON output into Simplified Chinese.
 - `scripts/deepseek_postprocess.py`: reads `analysis.json` and writes `audit_result.json`.
@@ -41,6 +42,7 @@ DIRECT_VIDEO_MODEL=qwen3-vl-flash
 DIRECT_VIDEO_FPS=2
 DIRECT_VIDEO_AUDIO_MODE=whisper
 DIRECT_VIDEO_UPLOAD_MODE=auto
+TIKTOK_MAX_BYTES=2147483648
 
 DEEPSEEK_API_KEY=your-deepseek-api-key
 HF_ENDPOINT=https://hf-mirror.com
@@ -89,12 +91,39 @@ The script starts at port `4000` and automatically advances to the next availabl
 
 The page supports:
 
+- downloading a public TikTok video URL into `videos/`
 - uploading a video into `videos/`
 - choosing `关键帧提取模式（video-analyzer）` or `直接视频理解模式（Qwen）`
+- showing and editing the analysis prompt before a run
 - optional DeepSeek postprocess
 - showing processing mode, model, token usage, estimated cost, and total elapsed time
 - viewing `提取内容（中文）` and `分析结果（中文）`
 - switching each result tab back to original JSON with `显示原文`
+
+## TikTok Download
+
+The downloader is exposed on the same web port as the analyzer but uses separate endpoints:
+
+```text
+POST /api/download
+GET /api/download-job?id=<job-id>
+```
+
+Example API call:
+
+```bash
+curl -X POST http://127.0.0.1:4000/api/download \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"https://www.tiktok.com/@user/video/1234567890"}'
+```
+
+The API accepts only `http` or `https` URLs whose host is under `tiktok.com` or `tiktokv.com`. Downloaded videos are saved as `videos/tiktok_<id>.mp4` when possible and then appear in the existing uploaded-video list.
+
+Size limit is controlled by:
+
+```env
+TIKTOK_MAX_BYTES=2147483648
+```
 
 ## Processing Modes
 
