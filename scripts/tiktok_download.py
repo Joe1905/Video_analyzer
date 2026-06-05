@@ -332,12 +332,14 @@ def main() -> int:
     try:
         url = validate_short_video_url(args.url)
         from yt_dlp import YoutubeDL
+        from yt_dlp.networking.impersonate import ImpersonateTarget
     except Exception as exc:
-        print(str(exc), file=sys.stderr)
+        print(str(exc) or repr(exc), file=sys.stderr)
         return 2
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    impersonate_target = os.getenv("TIKTOK_IMPERSONATE_TARGET", "chrome-136:macos-15").strip()
     options = {
         "format": "bv*+ba/b[ext=mp4]/best",
         "merge_output_format": "mp4",
@@ -349,10 +351,11 @@ def main() -> int:
         "socket_timeout": 30,
         "retries": 2,
         "fragment_retries": 2,
-        "impersonate": "chrome",
         "quiet": False,
         "no_warnings": False,
     }
+    if impersonate_target:
+        options["impersonate"] = ImpersonateTarget.from_str(impersonate_target)
     tiktok_proxy = proxy_for_tiktok()
     if tiktok_proxy:
         options["proxy"] = tiktok_proxy
@@ -381,7 +384,8 @@ def main() -> int:
             write_json(Path(args.result_json), result)
         print(json.dumps(result, ensure_ascii=False))
     except Exception as exc:
-        print(f"Short-video download failed: {exc}", file=sys.stderr)
+        detail = str(exc) or repr(exc)
+        print(f"Short-video download failed: {detail}", file=sys.stderr)
         return 1
     return 0
 
