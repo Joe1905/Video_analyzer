@@ -5,7 +5,7 @@ Dockerized short-video analysis service with two processing modes:
 - `analyzer`: key-frame extraction through [`byjlw/video-analyzer`](https://github.com/byjlw/video-analyzer).
 - `direct_video`: sends the full video directly to a Qwen OpenAI-compatible vision API.
 
-Videos are read from `videos/`. Results are written to `output/<video-file-name>/`. The web UI can also download public TikTok videos into `videos/` before analysis. Both processing modes produce the same normalized `analysis.json` schema, so DeepSeek postprocess works the same way for both.
+Videos are read from `videos/`. Results are written to `output/<video-file-name>/`. The web UI can also download public TikTok or Douyin videos into `videos/` before analysis. Both processing modes produce the same normalized `analysis.json` schema, so DeepSeek postprocess works the same way for both.
 
 ## Files
 
@@ -13,7 +13,7 @@ Videos are read from `videos/`. Results are written to `output/<video-file-name>
 - `docker-compose.yml`: runs the service with local `videos/` and `output/` mounts.
 - `scripts/analyze_one.sh`: runs the existing key-frame `video-analyzer` flow.
 - `scripts/direct_video_analyze.py`: sends a small full video to Qwen using `video_url` content.
-- `scripts/tiktok_download.py`: downloads a public TikTok video into `videos/`.
+- `scripts/tiktok_download.py`: downloads a public TikTok or Douyin video into `videos/`.
 - `scripts/standardize_analysis.py`: normalizes `video-analyzer` output to the shared schema.
 - `scripts/translate_analysis.py`: translates analyzer or audit JSON output into Simplified Chinese.
 - `scripts/deepseek_postprocess.py`: reads `analysis.json` and writes `audit_result.json`.
@@ -91,7 +91,7 @@ The script starts at port `4000` and automatically advances to the next availabl
 
 The page supports:
 
-- downloading a public TikTok video URL into `videos/`
+- downloading a public TikTok or Douyin video URL into `videos/`
 - uploading a video into `videos/`
 - choosing `关键帧提取模式（video-analyzer）` or `直接视频理解模式（Qwen）`
 - showing and editing the analysis prompt before a run
@@ -100,7 +100,7 @@ The page supports:
 - viewing `提取内容（中文）` and `分析结果（中文）`
 - switching each result tab back to original JSON with `显示原文`
 
-## TikTok Download
+## TikTok / Douyin Download
 
 The downloader is exposed on the same web port as the analyzer but uses separate endpoints:
 
@@ -114,10 +114,10 @@ Example API call:
 ```bash
 curl -X POST http://127.0.0.1:4000/api/download \
   -H 'Content-Type: application/json' \
-  -d '{"url":"https://www.tiktok.com/@user/video/1234567890"}'
+  -d '{"url":"https://v.douyin.com/xxxxxx/"}'
 ```
 
-The API accepts only `http` or `https` URLs whose host is under `tiktok.com` or `tiktokv.com`. Downloaded videos are saved as `videos/tiktok_<id>.mp4` when possible and then appear in the existing uploaded-video list.
+The API accepts only `http` or `https` URLs whose host is under `tiktok.com`, `tiktokv.com`, `douyin.com`, or `iesdouyin.com`. Downloaded videos are saved as `videos/shortvideo_<platform>_<id>.mp4` when possible and then appear in the existing uploaded-video list.
 
 Size limit is controlled by:
 

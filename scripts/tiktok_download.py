@@ -11,17 +11,19 @@ from urllib.parse import urlparse
 ALLOWED_HOST_SUFFIXES = (
     "tiktok.com",
     "tiktokv.com",
+    "douyin.com",
+    "iesdouyin.com",
 )
 
 
-def validate_tiktok_url(url: str) -> str:
+def validate_short_video_url(url: str) -> str:
     cleaned = url.strip()
     parsed = urlparse(cleaned)
     if parsed.scheme not in {"http", "https"}:
-        raise ValueError("Only http/https TikTok URLs are supported")
+        raise ValueError("Only http/https short-video URLs are supported")
     host = (parsed.hostname or "").lower().rstrip(".")
     if not any(host == suffix or host.endswith(f".{suffix}") for suffix in ALLOWED_HOST_SUFFIXES):
-        raise ValueError("Only TikTok URLs are supported")
+        raise ValueError("Only TikTok or Douyin URLs are supported")
     return cleaned
 
 
@@ -49,15 +51,15 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Download a public TikTok video into videos/.")
-    parser.add_argument("url", help="TikTok video URL")
+    parser = argparse.ArgumentParser(description="Download a public TikTok or Douyin video into videos/.")
+    parser.add_argument("url", help="TikTok or Douyin video URL")
     parser.add_argument("--output-dir", default="videos")
     parser.add_argument("--result-json", default="")
     parser.add_argument("--max-bytes", type=int, default=int(os.getenv("TIKTOK_MAX_BYTES", str(2 * 1024 * 1024 * 1024))))
     args = parser.parse_args()
 
     try:
-        url = validate_tiktok_url(args.url)
+        url = validate_short_video_url(args.url)
         from yt_dlp import YoutubeDL
     except Exception as exc:
         print(str(exc), file=sys.stderr)
@@ -68,7 +70,7 @@ def main() -> int:
     options = {
         "format": "bv*+ba/b[ext=mp4]/best",
         "merge_output_format": "mp4",
-        "outtmpl": str(output_dir / "tiktok_%(id)s.%(ext)s"),
+        "outtmpl": str(output_dir / "shortvideo_%(extractor_key)s_%(id)s.%(ext)s"),
         "noplaylist": True,
         "restrictfilenames": True,
         "windowsfilenames": True,
@@ -96,7 +98,7 @@ def main() -> int:
             write_json(Path(args.result_json), result)
         print(json.dumps(result, ensure_ascii=False))
     except Exception as exc:
-        print(f"TikTok download failed: {exc}", file=sys.stderr)
+        print(f"Short-video download failed: {exc}", file=sys.stderr)
         return 1
     return 0
 

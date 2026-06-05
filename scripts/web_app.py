@@ -23,7 +23,7 @@ OUTPUT_DIR = ROOT / "output"
 SCRIPTS_DIR = ROOT / "scripts"
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 SAFE_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
-ALLOWED_TIKTOK_HOST_SUFFIXES = ("tiktok.com", "tiktokv.com")
+ALLOWED_SHORT_VIDEO_HOST_SUFFIXES = ("tiktok.com", "tiktokv.com", "douyin.com", "iesdouyin.com")
 DEFAULT_ANALYSIS_PROMPT = (
     "Analyze this short video directly. Return strict JSON only, no Markdown. "
     "Use these exact keys: summary, timeline, visual_evidence. "
@@ -90,14 +90,14 @@ def safe_filename(filename: str) -> str:
     return cleaned
 
 
-def validate_tiktok_url(url: str) -> str:
+def validate_short_video_url(url: str) -> str:
     cleaned = url.strip()
     parsed = urlparse(cleaned)
     if parsed.scheme not in {"http", "https"}:
-        raise ValueError("Only http/https TikTok URLs are supported")
+        raise ValueError("Only http/https short-video URLs are supported")
     host = (parsed.hostname or "").lower().rstrip(".")
-    if not any(host == suffix or host.endswith(f".{suffix}") for suffix in ALLOWED_TIKTOK_HOST_SUFFIXES):
-        raise ValueError("Only TikTok URLs are supported")
+    if not any(host == suffix or host.endswith(f".{suffix}") for suffix in ALLOWED_SHORT_VIDEO_HOST_SUFFIXES):
+        raise ValueError("Only TikTok or Douyin URLs are supported")
     if len(cleaned) > 2048:
         raise ValueError("URL is too long")
     return cleaned
@@ -499,7 +499,7 @@ class Handler(BaseHTTPRequestHandler):
         body = self.rfile.read(content_length)
         try:
             payload = json.loads(body.decode("utf-8") or "{}")
-            url = validate_tiktok_url(str(payload.get("url", "")))
+            url = validate_short_video_url(str(payload.get("url", "")))
         except (json.JSONDecodeError, ValueError) as exc:
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
@@ -1144,9 +1144,9 @@ INDEX_HTML = r"""<!doctype html>
   <main>
     <section class="controls">
       <div>
-        <p class="section-title">TikTok 链接下载</p>
+        <p class="section-title">TikTok / 抖音链接下载</p>
         <label for="tiktokUrl">公开视频链接</label>
-        <input id="tiktokUrl" type="url" placeholder="https://www.tiktok.com/@user/video/...">
+        <input id="tiktokUrl" type="url" placeholder="https://www.tiktok.com/@user/video/... 或 https://v.douyin.com/...">
       </div>
       <div class="row">
         <button id="downloadBtn" type="button">下载视频</button>
@@ -1535,11 +1535,11 @@ INDEX_HTML = r"""<!doctype html>
     async function startDownload() {
       const url = tiktokUrl.value.trim();
       if (!url) {
-        setStatus("请输入 TikTok 视频链接。", "bad");
+        setStatus("请输入 TikTok 或抖音视频链接。", "bad");
         return;
       }
       downloadBtn.disabled = true;
-      setStatus("TikTok 下载任务已提交...");
+      setStatus("视频下载任务已提交...");
       const response = await fetch("/api/download", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1567,14 +1567,14 @@ INDEX_HTML = r"""<!doctype html>
         return;
       }
       if (job.status === "running" || job.status === "queued") {
-        setStatus(`TikTok 下载中：${job.status}`);
+        setStatus(`视频下载中：${job.status}`);
         return;
       }
       if (downloadTimer) clearInterval(downloadTimer);
       downloadTimer = null;
       downloadBtn.disabled = false;
       if (job.status !== "complete") {
-        setStatus(`TikTok 下载失败：${job.error || "未知错误"}`, "bad");
+        setStatus(`视频下载失败：${job.error || "未知错误"}`, "bad");
         return;
       }
       setStatus(`${job.filename}: 下载完成`, "ok");
