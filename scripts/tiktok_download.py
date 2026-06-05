@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -78,6 +79,23 @@ def media_id_from_url(url: str) -> str:
     return compact[:80] or "unknown"
 
 
+def has_douyin_media_keywords(url: str) -> bool:
+    return any(
+        keyword in url
+        for keyword in (
+            "douyinvod.com",
+            "douyinstatic.com",
+            "v1-",
+            "v3-",
+            "v5-",
+            "v6-",
+            "v9-",
+            "playwm",
+            "play/",
+        )
+    )
+
+
 def pick_downloaded_path(info: dict[str, Any], fallback: Path) -> Path:
     requested = info.get("requested_downloads")
     if isinstance(requested, list):
@@ -133,101 +151,156 @@ async def download_douyin_with_playwright(url: str, output_dir: Path, max_bytes:
     candidate_media: list[dict[str, Any]] = []
 
     async with async_playwright() as p:
-        launch_options = {
-            "headless": True,
+        launch_options: dict[str, Any] = {
+            "headless": os.getenv("DOUYIN_HEADLESS", "true").lower() != "false",
             "args": [
                 "--disable-blink-features=AutomationControlled",
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
+                "--disable-gpu",
             ],
         }
         douyin_proxy = proxy_for_douyin()
         if douyin_proxy:
             launch_options["proxy"] = {"server": douyin_proxy}
-        browser = await p.chromium.launch(**launch_options)
-        context = await browser.new_context(
-            user_agent=DESKTOP_USER_AGENT,
-            viewport={"width": 1280, "height": 720},
-            locale="zh-CN",
-        )
-        cookie_header = douyin_cookie_header()
-        if cookie_header:
-            await context.add_cookies(playwright_cookies_from_header(cookie_header))
-        await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
-        page = await context.new_page()
 
-        async def handle_response(response):
-            try:
-                content_type = response.headers.get("content-type", "").lower()
-                if "video" not in content_type and "audio" not in content_type:
-                    return
-                content_length = int(response.headers.get("content-length", "0") or 0)
-                if content_length < 500 * 1024:
-                    return
-                if content_length > max_bytes:
-                    return
-                media_url = response.url
-                if any(item["url"] == media_url for item in candidate_media):
-                    return
-                print(f"Captured media candidate: {content_length / 1024 / 1024:.2f} MB {media_url[:120]}")
-                candidate_media.append({"url": media_url, "size": content_length})
-            except Exception as exc:
-                print(f"Skipping response: {exc}")
+        def add_candidate(media_url: str, size: int, source: str) -> None:
+            if not media_url.startswith("http"):
+                return
+            if any(blocked in media_url for blocked in ("ads", "pre-roll", "commercial")):
+                return
+            if size > max_bytes:
+                return
+            if any(item["url"] == media_url for item in candidate_media):
+                return
+            candidate_media.append({"url": media_url, "size": size, "source": source})
+            size_text = f"{size / 1024 / 1024:.2f} MB" if size else "unknown size"
+            print(f"Captured media candidate ({source}): {size_text} {media_url[:140]}")
 
-        try:
-            page.on("response", handle_response)
-            print(f"Opening Douyin page with Playwright: {resolved_url}")
-            await page.goto(resolved_url, timeout=60000, wait_until="domcontentloaded")
-            try:
-                await page.keyboard.press("Escape")
-            except Exception:
-                pass
-
-            started = asyncio.get_running_loop().time()
-            while asyncio.get_running_loop().time() - started < 10:
-                if candidate_media and asyncio.get_running_loop().time() - started > 3:
-                    break
-                await asyncio.sleep(1)
-
-            if not candidate_media:
-                raise RuntimeError("No large Douyin media response was captured. The page may require fresh browser cookies.")
-
-            best = max(candidate_media, key=lambda item: int(item["size"]))
-            print(f"Selected media candidate: {best['size'] / 1024 / 1024:.2f} MB")
-            headers = {"User-Agent": DESKTOP_USER_AGENT, "Referer": "https://www.douyin.com/"}
+        with tempfile.TemporaryDirectory(prefix="douyin_browser_") as profile_dir:
+            context = await p.chromium.launch_persistent_context(
+                profile_dir,
+                user_agent=DESKTOP_USER_AGENT,
+                viewport={"width": 1280, "height": 720},
+                locale="zh-CN",
+                **launch_options,
+            )
+            cookie_header = douyin_cookie_header()
             if cookie_header:
-                headers["Cookie"] = cookie_header
-            client_kwargs = {
-                "headers": headers,
-                "verify": False,
-                "timeout": 120.0,
-                "trust_env": False,
-            }
-            if douyin_proxy:
-                client_kwargs["proxy"] = douyin_proxy
-            async with httpx.AsyncClient(**client_kwargs) as client:
-                response = await client.get(best["url"], follow_redirects=True)
-                if response.status_code != 200:
-                    raise RuntimeError(f"Media download failed: HTTP {response.status_code}")
-                if len(response.content) > max_bytes:
-                    raise RuntimeError(f"Downloaded media exceeds max size: {len(response.content)} bytes")
-                target.write_bytes(response.content)
+                await context.add_cookies(playwright_cookies_from_header(cookie_header))
+            await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
+            page = await context.new_page()
 
-            title = await page.title()
-            return {
-                "filename": target.name,
-                "path": str(target),
-                "size": target.stat().st_size,
-                "id": video_id,
-                "title": title,
-                "uploader": None,
-                "duration": None,
-                "webpage_url": resolved_url,
-                "downloader": "playwright",
-            }
-        finally:
-            await context.close()
-            await browser.close()
+            async def handle_request(request):
+                try:
+                    request_url = request.url
+                    if has_douyin_media_keywords(request_url):
+                        add_candidate(request_url, 0, "request")
+                except Exception as exc:
+                    print(f"Skipping request: {exc}")
+
+            async def handle_response(response):
+                try:
+                    response_url = response.url
+                    content_type = response.headers.get("content-type", "").lower()
+                    looks_like_media = "video" in content_type or "audio" in content_type or has_douyin_media_keywords(response_url)
+                    if not looks_like_media:
+                        return
+                    content_length = int(response.headers.get("content-length", "0") or 0)
+                    if content_length and content_length < 500 * 1024:
+                        return
+                    add_candidate(response_url, content_length, "response")
+                except Exception as exc:
+                    print(f"Skipping response: {exc}")
+
+            try:
+                page.on("request", handle_request)
+                page.on("response", handle_response)
+                print("Opening Douyin home page to warm anonymous browser state")
+                await page.goto("https://www.douyin.com/", timeout=60000, wait_until="domcontentloaded")
+                await page.wait_for_timeout(1500)
+                print(f"Opening Douyin page with Playwright: {resolved_url}")
+                await page.goto(resolved_url, timeout=60000, wait_until="domcontentloaded")
+                try:
+                    await page.keyboard.press("Escape")
+                    close_button = await page.query_selector(".dy-account-close, [data-e2e='modal-close-inner-button']")
+                    if close_button:
+                        await close_button.click(timeout=1000)
+                except Exception:
+                    pass
+
+                try:
+                    video = await page.query_selector("video")
+                    if video:
+                        await video.click(timeout=1000)
+                        src = await video.evaluate("(node) => node.currentSrc || node.src || ''")
+                        if isinstance(src, str) and src.startswith("http"):
+                            add_candidate(src, 0, "dom-video")
+                except Exception as exc:
+                    print(f"DOM video probe failed: {exc}")
+
+                try:
+                    await page.keyboard.press("Space")
+                except Exception:
+                    pass
+
+                started = asyncio.get_running_loop().time()
+                while asyncio.get_running_loop().time() - started < 14:
+                    if candidate_media and asyncio.get_running_loop().time() - started > 5:
+                        break
+                    await asyncio.sleep(1)
+
+                if not candidate_media:
+                    title = await page.title()
+                    current_url = page.url
+                    raise RuntimeError(
+                        "No Douyin media response was captured after browser warm-up. "
+                        f"title={title!r} current_url={current_url!r}. "
+                        "The server browser may be seeing a login, risk-control, or blank page."
+                    )
+
+                best = max(candidate_media, key=lambda item: int(item["size"]))
+                best_url = best["url"]
+                if best["size"]:
+                    print(f"Selected media candidate: {best['size'] / 1024 / 1024:.2f} MB from {best.get('source')}")
+                else:
+                    print(f"Selected media candidate with unknown size from {best.get('source')}")
+                headers = {"User-Agent": DESKTOP_USER_AGENT, "Referer": "https://www.douyin.com/"}
+                if cookie_header:
+                    headers["Cookie"] = cookie_header
+                client_kwargs = {
+                    "headers": headers,
+                    "verify": False,
+                    "timeout": 120.0,
+                    "trust_env": False,
+                }
+                if douyin_proxy:
+                    client_kwargs["proxy"] = douyin_proxy
+                async with httpx.AsyncClient(**client_kwargs) as client:
+                    response = await client.get(best_url, follow_redirects=True)
+                    if response.status_code != 200:
+                        raise RuntimeError(f"Media download failed: HTTP {response.status_code}")
+                    if len(response.content) < 500 * 1024:
+                        raise RuntimeError(f"Downloaded media is too small: {len(response.content)} bytes")
+                    if len(response.content) > max_bytes:
+                        raise RuntimeError(f"Downloaded media exceeds max size: {len(response.content)} bytes")
+                    target.write_bytes(response.content)
+
+                title = await page.title()
+                return {
+                    "filename": target.name,
+                    "path": str(target),
+                    "size": target.stat().st_size,
+                    "id": video_id,
+                    "title": title,
+                    "uploader": None,
+                    "duration": None,
+                    "webpage_url": resolved_url,
+                    "downloader": "playwright",
+                    "candidate_count": len(candidate_media),
+                }
+            finally:
+                await context.close()
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
