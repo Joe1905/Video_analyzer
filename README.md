@@ -43,6 +43,8 @@ DIRECT_VIDEO_FPS=2
 DIRECT_VIDEO_AUDIO_MODE=whisper
 DIRECT_VIDEO_UPLOAD_MODE=auto
 TIKTOK_MAX_BYTES=2147483648
+TIKTOK_PROXY_URL=
+DOUYIN_PROXY_URL=
 DOUYIN_COOKIE=
 
 DEEPSEEK_API_KEY=your-deepseek-api-key
@@ -125,6 +127,14 @@ Size limit is controlled by:
 ```env
 TIKTOK_MAX_BYTES=2147483648
 ```
+
+TikTok may require a US-region proxy. In a Docker bridge container, use the Docker host gateway instead of `127.0.0.1` for a proxy running on the server host:
+
+```env
+TIKTOK_PROXY_URL=http://172.17.0.1:7890
+```
+
+`DOUYIN_PROXY_URL` is optional and usually should stay empty for China-region Douyin access.
 
 Some Douyin links require fresh browser cookies even when Playwright is used. Export a normal browser cookie header for `douyin.com` and put it in `.env` when needed:
 

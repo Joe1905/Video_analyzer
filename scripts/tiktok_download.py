@@ -45,6 +45,14 @@ def douyin_cookie_header() -> str:
     return os.getenv("DOUYIN_COOKIE", "").strip()
 
 
+def proxy_for_tiktok() -> str:
+    return os.getenv("TIKTOK_PROXY_URL", "").strip()
+
+
+def proxy_for_douyin() -> str:
+    return os.getenv("DOUYIN_PROXY_URL", "").strip()
+
+
 def playwright_cookies_from_header(cookie_header: str) -> list[dict[str, Any]]:
     cookies = []
     for part in cookie_header.split(";"):
@@ -93,7 +101,17 @@ async def resolve_final_url(url: str) -> str:
     cookie_header = douyin_cookie_header()
     if cookie_header:
         headers["Cookie"] = cookie_header
-    async with httpx.AsyncClient(headers=headers, follow_redirects=True, verify=False, timeout=30.0, trust_env=False) as client:
+    client_kwargs = {
+        "headers": headers,
+        "follow_redirects": True,
+        "verify": False,
+        "timeout": 30.0,
+        "trust_env": False,
+    }
+    douyin_proxy = proxy_for_douyin()
+    if douyin_proxy:
+        client_kwargs["proxy"] = douyin_proxy
+    async with httpx.AsyncClient(**client_kwargs) as client:
         response = await client.get(url)
         return str(response.url)
 
@@ -115,14 +133,18 @@ async def download_douyin_with_playwright(url: str, output_dir: Path, max_bytes:
     candidate_media: list[dict[str, Any]] = []
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=True,
-            args=[
+        launch_options = {
+            "headless": True,
+            "args": [
                 "--disable-blink-features=AutomationControlled",
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
             ],
-        )
+        }
+        douyin_proxy = proxy_for_douyin()
+        if douyin_proxy:
+            launch_options["proxy"] = {"server": douyin_proxy}
+        browser = await p.chromium.launch(**launch_options)
         context = await browser.new_context(
             user_agent=DESKTOP_USER_AGENT,
             viewport={"width": 1280, "height": 720},
@@ -175,7 +197,15 @@ async def download_douyin_with_playwright(url: str, output_dir: Path, max_bytes:
             headers = {"User-Agent": DESKTOP_USER_AGENT, "Referer": "https://www.douyin.com/"}
             if cookie_header:
                 headers["Cookie"] = cookie_header
-            async with httpx.AsyncClient(headers=headers, verify=False, timeout=120.0, trust_env=False) as client:
+            client_kwargs = {
+                "headers": headers,
+                "verify": False,
+                "timeout": 120.0,
+                "trust_env": False,
+            }
+            if douyin_proxy:
+                client_kwargs["proxy"] = douyin_proxy
+            async with httpx.AsyncClient(**client_kwargs) as client:
                 response = await client.get(best["url"], follow_redirects=True)
                 if response.status_code != 200:
                     raise RuntimeError(f"Media download failed: HTTP {response.status_code}")
@@ -235,6 +265,10 @@ def main() -> int:
         "quiet": False,
         "no_warnings": False,
     }
+    tiktok_proxy = proxy_for_tiktok()
+    if tiktok_proxy:
+        options["proxy"] = tiktok_proxy
+        print(f"Using TikTok proxy: {tiktok_proxy}")
 
     try:
         if is_douyin_url(url):
