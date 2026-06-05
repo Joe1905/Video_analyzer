@@ -43,6 +43,7 @@ DIRECT_VIDEO_FPS=2
 DIRECT_VIDEO_AUDIO_MODE=whisper
 DIRECT_VIDEO_UPLOAD_MODE=auto
 TIKTOK_MAX_BYTES=2147483648
+DOUYIN_COOKIE=
 
 DEEPSEEK_API_KEY=your-deepseek-api-key
 HF_ENDPOINT=https://hf-mirror.com
@@ -124,6 +125,14 @@ Size limit is controlled by:
 ```env
 TIKTOK_MAX_BYTES=2147483648
 ```
+
+Some Douyin links require fresh browser cookies even when Playwright is used. Export a normal browser cookie header for `douyin.com` and put it in `.env` when needed:
+
+```env
+DOUYIN_COOKIE=passport_csrf_token=...; sid_guard=...; ...
+```
+
+Do not commit `.env`.
 
 ## Processing Modes
 

@@ -41,6 +41,27 @@ def is_douyin_url(url: str) -> bool:
     return host == "douyin.com" or host.endswith(".douyin.com") or host == "iesdouyin.com" or host.endswith(".iesdouyin.com")
 
 
+def douyin_cookie_header() -> str:
+    return os.getenv("DOUYIN_COOKIE", "").strip()
+
+
+def playwright_cookies_from_header(cookie_header: str) -> list[dict[str, Any]]:
+    cookies = []
+    for part in cookie_header.split(";"):
+        name, sep, value = part.strip().partition("=")
+        if not sep or not name:
+            continue
+        cookies.append(
+            {
+                "name": name,
+                "value": value,
+                "domain": ".douyin.com",
+                "path": "/",
+            }
+        )
+    return cookies
+
+
 def media_id_from_url(url: str) -> str:
     match = re.search(r"/video/(\d+)", url)
     if match:
@@ -69,6 +90,9 @@ async def resolve_final_url(url: str) -> str:
     import httpx
 
     headers = {"User-Agent": DESKTOP_USER_AGENT}
+    cookie_header = douyin_cookie_header()
+    if cookie_header:
+        headers["Cookie"] = cookie_header
     async with httpx.AsyncClient(headers=headers, follow_redirects=True, verify=False, timeout=30.0, trust_env=False) as client:
         response = await client.get(url)
         return str(response.url)
@@ -104,6 +128,9 @@ async def download_douyin_with_playwright(url: str, output_dir: Path, max_bytes:
             viewport={"width": 1280, "height": 720},
             locale="zh-CN",
         )
+        cookie_header = douyin_cookie_header()
+        if cookie_header:
+            await context.add_cookies(playwright_cookies_from_header(cookie_header))
         await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
         page = await context.new_page()
 
@@ -146,6 +173,8 @@ async def download_douyin_with_playwright(url: str, output_dir: Path, max_bytes:
             best = max(candidate_media, key=lambda item: int(item["size"]))
             print(f"Selected media candidate: {best['size'] / 1024 / 1024:.2f} MB")
             headers = {"User-Agent": DESKTOP_USER_AGENT, "Referer": "https://www.douyin.com/"}
+            if cookie_header:
+                headers["Cookie"] = cookie_header
             async with httpx.AsyncClient(headers=headers, verify=False, timeout=120.0, trust_env=False) as client:
                 response = await client.get(best["url"], follow_redirects=True)
                 if response.status_code != 200:
