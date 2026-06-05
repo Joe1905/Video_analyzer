@@ -379,6 +379,58 @@ def public_download_job(job: DownloadJob) -> dict[str, Any]:
     }
 
 
+def check_ip_route(name: str, proxy_url: str | None = None) -> dict[str, Any]:
+    import httpx
+
+    payload: dict[str, Any] = {
+        "name": name,
+        "proxy_url": proxy_url or "",
+        "ok": False,
+        "ip": "",
+        "country": "",
+        "country_name": "",
+        "is_us": False,
+        "error": "",
+    }
+    client_kwargs: dict[str, Any] = {
+        "timeout": 12.0,
+        "follow_redirects": True,
+        "trust_env": False,
+    }
+    if proxy_url:
+        client_kwargs["proxy"] = proxy_url
+    try:
+        with httpx.Client(**client_kwargs) as client:
+            response = client.get("https://ipapi.co/json/")
+            response.raise_for_status()
+            data = response.json()
+        country = str(data.get("country_code") or data.get("country") or "").upper()
+        payload.update(
+            {
+                "ok": True,
+                "ip": str(data.get("ip") or ""),
+                "country": country,
+                "country_name": str(data.get("country_name") or ""),
+                "is_us": country == "US",
+            }
+        )
+    except Exception as exc:
+        payload["error"] = str(exc) or repr(exc)
+    return payload
+
+
+def public_network_check() -> dict[str, Any]:
+    tiktok_proxy = os.getenv("TIKTOK_PROXY_URL", "").strip()
+    direct = check_ip_route("direct")
+    proxy = check_ip_route("proxy", tiktok_proxy) if tiktok_proxy else None
+    return {
+        "tiktok_proxy_url": tiktok_proxy,
+        "direct": direct,
+        "proxy": proxy,
+        "proxy_is_us": bool(proxy and proxy.get("is_us")),
+    }
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "ShortVideoAnalyzer/1.0"
 
@@ -395,6 +447,8 @@ class Handler(BaseHTTPRequestHandler):
             return text_response(self, HTTPStatus.OK, html, "text/html; charset=utf-8")
         if parsed.path == "/api/prompt":
             return json_response(self, HTTPStatus.OK, {"prompt": DEFAULT_ANALYSIS_PROMPT})
+        if parsed.path == "/api/network-check":
+            return json_response(self, HTTPStatus.OK, public_network_check())
         if parsed.path.startswith("/video/"):
             try:
                 filename = safe_filename(unquote(parsed.path.removeprefix("/video/")))
@@ -1217,6 +1271,7 @@ INDEX_HTML = r"""<!doctype html>
       </div>
       <div class="row">
         <button id="downloadBtn" type="button">下载视频</button>
+        <button id="networkCheckBtn" class="secondary" type="button">检测代理出口</button>
       </div>
       <div>
         <p class="section-title">输入视频</p>
@@ -1281,6 +1336,7 @@ INDEX_HTML = r"""<!doctype html>
     const currentFile = document.getElementById("currentFile");
     const tiktokUrl = document.getElementById("tiktokUrl");
     const downloadBtn = document.getElementById("downloadBtn");
+    const networkCheckBtn = document.getElementById("networkCheckBtn");
     const analyzeBtn = document.getElementById("analyzeBtn");
     const sourceToggle = document.getElementById("sourceToggle");
     const outputTitle = document.getElementById("outputTitle");
@@ -1622,6 +1678,34 @@ INDEX_HTML = r"""<!doctype html>
       openDownloadEvents(job.id);
     }
 
+    function formatRouteCheck(route) {
+      if (!route) return "未配置";
+      if (!route.ok) return `失败：${route.error || "未知错误"}`;
+      const country = route.country_name ? `${route.country_name} (${route.country})` : route.country;
+      return `${route.ip || "未知 IP"} / ${country || "未知地区"} / ${route.is_us ? "美国出口" : "非美国出口"}`;
+    }
+
+    async function checkNetwork() {
+      networkCheckBtn.disabled = true;
+      setStatus("正在检测服务器外网和代理出口...");
+      try {
+        const response = await fetch("/api/network-check");
+        const payload = await response.json();
+        if (!response.ok) {
+          setStatus(payload.error || "代理出口检测失败", "bad");
+          return;
+        }
+        const direct = formatRouteCheck(payload.direct);
+        const proxy = formatRouteCheck(payload.proxy);
+        const kind = payload.proxy && payload.proxy.ok && payload.proxy.is_us ? "ok" : "bad";
+        setStatus(`直连：${direct}；代理：${proxy}`, kind);
+      } catch (error) {
+        setStatus(`代理出口检测失败：${error.message}`, "bad");
+      } finally {
+        networkCheckBtn.disabled = false;
+      }
+    }
+
     function latestJobLog(job) {
       if (!job || !Array.isArray(job.log) || !job.log.length) return "";
       const line = job.log[job.log.length - 1] || "";
@@ -1798,6 +1882,7 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     downloadBtn.onclick = startDownload;
+    networkCheckBtn.onclick = checkNetwork;
     tiktokUrl.onkeydown = event => {
       if (event.key === "Enter") {
         event.preventDefault();
