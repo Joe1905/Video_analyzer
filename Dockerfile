@@ -33,8 +33,10 @@ RUN apt-get update \
 RUN pip install --upgrade pip \
     && pip install "video-analyzer @ git+https://github.com/byjlw/video-analyzer.git" requests openai-whisper
 
-RUN pip install yt-dlp playwright httpx curl_cffi \
+RUN pip install yt-dlp playwright httpx \
     && python -m playwright install --with-deps chromium
+
+RUN pip install curl_cffi
 
 COPY scripts/ /workspace/scripts/
 
