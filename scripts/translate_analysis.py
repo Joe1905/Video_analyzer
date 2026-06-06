@@ -65,11 +65,62 @@ def call_deepseek(api_key: str, api_url: str, model: str, items: list[dict[str, 
     return response.json()
 
 
+def call_deepseek_text(api_key: str, api_url: str, model: str, text: str) -> str:
+    response = requests.post(
+        api_url,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You are a translation engine. Return only the Simplified Chinese translation, no JSON, no Markdown.",
+                },
+                {
+                    "role": "user",
+                    "content": "Translate this text into Simplified Chinese. Preserve timestamps, numbers, labels, and line breaks where useful.\n\n" + text,
+                },
+            ],
+            "temperature": 0,
+        },
+        timeout=180,
+    )
+    response.raise_for_status()
+    return extract_content(response.json()).strip()
+
+
 def extract_content(api_response: dict) -> str:
     try:
         return api_response["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:
         raise ValueError("Unexpected DeepSeek API response shape") from exc
+
+
+def escape_control_chars_in_strings(value: str) -> str:
+    result: list[str] = []
+    in_string = False
+    escaped = False
+    for char in value:
+        if escaped:
+            result.append(char)
+            escaped = False
+            continue
+        if char == "\\":
+            result.append(char)
+            escaped = True
+            continue
+        if char == '"':
+            in_string = not in_string
+            result.append(char)
+            continue
+        if in_string and ord(char) < 32:
+            result.append(f"\\u{ord(char):04x}")
+            continue
+        result.append(char)
+    return "".join(result)
 
 
 def parse_json_content(content: str) -> Any:
@@ -79,7 +130,10 @@ def parse_json_content(content: str) -> Any:
         if stripped.startswith("json"):
             stripped = stripped[4:]
         stripped = stripped.strip()
-    return json.loads(stripped)
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        return json.loads(escape_control_chars_in_strings(stripped))
 
 
 def compact_for_translation(value: Any) -> Any:
@@ -165,15 +219,21 @@ def translate_in_batches(
             }
             for index, (_path, text) in enumerate(batch)
         ]
-        api_response = call_deepseek(api_key=api_key, api_url=api_url, model=model, items=items)
-        content = extract_content(api_response)
-        parsed = parse_json_content(content)
-        translated_items = parsed.get("items", []) if isinstance(parsed, dict) else []
-        by_id = {str(item.get("id")): item.get("text", "") for item in translated_items if isinstance(item, dict)}
-        for index, (path, original) in enumerate(batch):
-            text = by_id.get(str(index), original)
-            set_path(translated, path, text)
-        print(f"Translated batch {batch_index} ({len(batch)} strings)", file=sys.stderr)
+        try:
+            api_response = call_deepseek(api_key=api_key, api_url=api_url, model=model, items=items)
+            content = extract_content(api_response)
+            parsed = parse_json_content(content)
+            translated_items = parsed.get("items", []) if isinstance(parsed, dict) else []
+            by_id = {str(item.get("id")): item.get("text", "") for item in translated_items if isinstance(item, dict)}
+            for index, (path, original) in enumerate(batch):
+                text = by_id.get(str(index), original)
+                set_path(translated, path, text)
+            print(f"Translated batch {batch_index} ({len(batch)} strings)", file=sys.stderr)
+        except Exception as exc:
+            print(f"Batch {batch_index} JSON translation failed, falling back to single-text translation: {exc}", file=sys.stderr)
+            for path, original in batch:
+                set_path(translated, path, call_deepseek_text(api_key=api_key, api_url=api_url, model=model, text=original))
+            print(f"Translated batch {batch_index} with fallback ({len(batch)} strings)", file=sys.stderr)
 
     return translated
 
