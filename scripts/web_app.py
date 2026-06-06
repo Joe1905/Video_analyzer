@@ -21,6 +21,7 @@ ROOT = Path.cwd()
 VIDEOS_DIR = ROOT / "videos"
 OUTPUT_DIR = ROOT / "output"
 SCRIPTS_DIR = ROOT / "scripts"
+INDEX_HTML_PATH = SCRIPTS_DIR / "web_index.html"
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 SAFE_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
 ALLOWED_SHORT_VIDEO_HOST_SUFFIXES = ("tiktok.com", "tiktokv.com", "douyin.com", "iesdouyin.com")
@@ -61,10 +62,31 @@ class DownloadJob:
     result: dict[str, Any] | None = None
 
 
+@dataclass
+class ShopJob:
+    id: str
+    url: str
+    source_type: str
+    region: str
+    max_pages: int
+    review_pages: int
+    analyze: bool
+    related_videos: bool
+    prompt: str = ""
+    status: str = "queued"
+    created_at: float = field(default_factory=time.time)
+    updated_at: float = field(default_factory=time.time)
+    log: list[str] = field(default_factory=list)
+    output_dir: str | None = None
+    error: str | None = None
+
+
 jobs: dict[str, Job] = {}
 jobs_lock = threading.Lock()
 download_jobs: dict[str, DownloadJob] = {}
 download_jobs_lock = threading.Lock()
+shop_jobs: dict[str, ShopJob] = {}
+shop_jobs_lock = threading.Lock()
 
 
 def load_env_file() -> None:
@@ -192,6 +214,89 @@ def run_download_command(job: DownloadJob, command: list[str]) -> None:
     code = process.wait()
     if code != 0:
         raise RuntimeError(f"Command failed with exit code {code}: {' '.join(command)}")
+
+
+def append_shop_log(job: ShopJob, line: str) -> None:
+    with shop_jobs_lock:
+        job.log.append(line.rstrip())
+        job.updated_at = time.time()
+
+
+def run_shop_command(job: ShopJob, command: list[str]) -> None:
+    append_shop_log(job, f"$ {' '.join(command)}")
+    process = subprocess.Popen(
+        command,
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    assert process.stdout is not None
+    for line in process.stdout:
+        append_shop_log(job, line)
+    code = process.wait()
+    if code != 0:
+        raise RuntimeError(f"Command failed with exit code {code}: {' '.join(command)}")
+
+
+def run_shop_job(job_id: str) -> None:
+    with shop_jobs_lock:
+        job = shop_jobs[job_id]
+        job.status = "running"
+        job.updated_at = time.time()
+
+    output_dir = OUTPUT_DIR / "tiktok_shop" / job_id
+    extract_path = output_dir / "shop_extract.json"
+    analysis_path = output_dir / "shop_analysis.json"
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        with shop_jobs_lock:
+            job.output_dir = str(output_dir.relative_to(ROOT))
+            job.updated_at = time.time()
+
+        command = [
+            "python",
+            str(SCRIPTS_DIR / "sociavault_tiktok_shop.py"),
+            job.url,
+            "--source-type",
+            job.source_type,
+            "--region",
+            job.region,
+            "--max-pages",
+            str(job.max_pages),
+            "--review-pages",
+            str(job.review_pages),
+            "--output",
+            str(extract_path),
+        ]
+        if job.related_videos:
+            command.append("--related-videos")
+        run_shop_command(job, command)
+
+        if job.analyze:
+            run_shop_command(
+                job,
+                [
+                    "python",
+                    str(SCRIPTS_DIR / "deepseek_shop_analyze.py"),
+                    str(extract_path),
+                    "--output",
+                    str(analysis_path),
+                    "--prompt",
+                    job.prompt,
+                ],
+            )
+
+        with shop_jobs_lock:
+            job.status = "complete"
+            job.updated_at = time.time()
+    except Exception as exc:
+        with shop_jobs_lock:
+            job.status = "failed"
+            job.error = str(exc)
+            job.updated_at = time.time()
+            job.log.append(str(exc))
 
 
 def run_download_job(job_id: str) -> None:
@@ -379,6 +484,28 @@ def public_download_job(job: DownloadJob) -> dict[str, Any]:
     }
 
 
+def public_shop_job(job: ShopJob) -> dict[str, Any]:
+    output_dir = OUTPUT_DIR / "tiktok_shop" / job.id
+    return {
+        "id": job.id,
+        "url": job.url,
+        "source_type": job.source_type,
+        "region": job.region,
+        "max_pages": job.max_pages,
+        "review_pages": job.review_pages,
+        "analyze": job.analyze,
+        "related_videos": job.related_videos,
+        "status": job.status,
+        "created_at": job.created_at,
+        "updated_at": job.updated_at,
+        "output_dir": job.output_dir,
+        "error": job.error,
+        "log": job.log[-120:],
+        "extract": read_json(output_dir / "shop_extract.json"),
+        "analysis": read_json(output_dir / "shop_analysis.json"),
+    }
+
+
 def check_ip_route(name: str, proxy_url: str | None = None) -> dict[str, Any]:
     import httpx
 
@@ -440,11 +567,14 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         if parsed.path == "/":
-            html = INDEX_HTML.replace(
+            template = INDEX_HTML_PATH.read_text(encoding="utf-8") if INDEX_HTML_PATH.is_file() else INDEX_HTML
+            html = template.replace(
                 "__DEFAULT_ANALYSIS_MODE__",
                 os.getenv("ANALYSIS_MODE", "analyzer"),
             )
             return text_response(self, HTTPStatus.OK, html, "text/html; charset=utf-8")
+        if parsed.path == "/shop":
+            return text_response(self, HTTPStatus.OK, SHOP_HTML, "text/html; charset=utf-8")
         if parsed.path == "/api/prompt":
             return json_response(self, HTTPStatus.OK, {"prompt": DEFAULT_ANALYSIS_PROMPT})
         if parsed.path == "/api/network-check":
@@ -481,6 +611,17 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/download-events":
             job_id = parse_qs(parsed.query).get("id", [""])[0]
             return self.stream_download_events(job_id)
+        if parsed.path == "/api/shop-job":
+            job_id = parse_qs(parsed.query).get("id", [""])[0]
+            with shop_jobs_lock:
+                job = shop_jobs.get(job_id)
+                payload = public_shop_job(job) if job else None
+            if payload is None:
+                return json_response(self, HTTPStatus.NOT_FOUND, {"error": "TikTok Shop job not found"})
+            return json_response(self, HTTPStatus.OK, payload)
+        if parsed.path == "/api/shop-events":
+            job_id = parse_qs(parsed.query).get("id", [""])[0]
+            return self.stream_shop_events(job_id)
         if parsed.path == "/api/files":
             files = []
             for path in sorted(VIDEOS_DIR.glob("*")):
@@ -516,6 +657,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def stream_download_events(self, job_id: str) -> None:
         self.stream_events(job_id, download_jobs_lock, download_jobs, public_download_job, "Download job not found")
+
+    def stream_shop_events(self, job_id: str) -> None:
+        self.stream_events(job_id, shop_jobs_lock, shop_jobs, public_shop_job, "TikTok Shop job not found")
 
     def stream_events(self, job_id: str, lock: threading.Lock, store: dict[str, Any], serializer: Any, missing_message: str) -> None:
         self.send_response(HTTPStatus.OK)
@@ -607,6 +751,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_upload()
         if parsed.path == "/api/download":
             return self.handle_download()
+        if parsed.path == "/api/shop-extract":
+            return self.handle_shop_extract()
         if parsed.path == "/api/analyze":
             return self.handle_analyze()
         if parsed.path == "/api/postprocess":
@@ -631,6 +777,49 @@ class Handler(BaseHTTPRequestHandler):
         thread.start()
         return json_response(self, HTTPStatus.ACCEPTED, public_download_job(job))
 
+    def handle_shop_extract(self) -> None:
+        content_length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(content_length)
+        try:
+            payload = json.loads(body.decode("utf-8") or "{}")
+            url = str(payload.get("url", "")).strip()
+            source_type = str(payload.get("source_type") or "product")
+            region = str(payload.get("region") or os.getenv("SOCIAVAULT_REGION", "US")).strip().upper()
+            max_pages = int(payload.get("max_pages") or os.getenv("SOCIAVAULT_MAX_PAGES", "1"))
+            review_pages = int(payload.get("review_pages") or os.getenv("SOCIAVAULT_REVIEW_PAGES", "1"))
+            prompt = str(payload.get("prompt") or "").strip()
+            analyze = bool(payload.get("analyze", True))
+            related_videos = bool(payload.get("related_videos", False))
+            if source_type not in {"shop", "product"}:
+                raise ValueError("source_type must be shop or product")
+            if not url or len(url) > 2048:
+                raise ValueError("A TikTok Shop URL is required")
+            if max_pages < 1 or max_pages > 20:
+                raise ValueError("max_pages must be between 1 and 20")
+            if review_pages < 0 or review_pages > 20:
+                raise ValueError("review_pages must be between 0 and 20")
+            if len(prompt) > 6000:
+                raise ValueError("prompt is too long")
+        except (json.JSONDecodeError, ValueError) as exc:
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+
+        job = ShopJob(
+            id=str(uuid.uuid4()),
+            url=url,
+            source_type=source_type,
+            region=region,
+            max_pages=max_pages,
+            review_pages=review_pages,
+            analyze=analyze,
+            related_videos=related_videos,
+            prompt=prompt,
+        )
+        with shop_jobs_lock:
+            shop_jobs[job.id] = job
+        thread = threading.Thread(target=run_shop_job, args=(job.id,), daemon=True)
+        thread.start()
+        return json_response(self, HTTPStatus.ACCEPTED, public_shop_job(job))
+
     def handle_upload(self) -> None:
         content_length = int(self.headers.get("Content-Length", "0"))
         if content_length <= 0 or content_length > MAX_UPLOAD_BYTES:
@@ -645,21 +834,32 @@ class Handler(BaseHTTPRequestHandler):
                 "CONTENT_LENGTH": str(content_length),
             },
         )
-        file_item = form["video"] if "video" in form else None
-        if file_item is None or not getattr(file_item, "filename", None):
+        try:
+            raw_file_items = form["video"]
+        except KeyError:
+            raw_file_items = []
+        if not isinstance(raw_file_items, list):
+            raw_file_items = [raw_file_items]
+        file_items = [item for item in raw_file_items if getattr(item, "filename", None)]
+        if not file_items:
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Missing video file"})
 
-        try:
-            filename = safe_filename(file_item.filename)
-        except ValueError as exc:
-            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
-
         VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
-        target = VIDEOS_DIR / filename
-        with target.open("wb") as file:
-            shutil.copyfileobj(file_item.file, file)
+        files = []
+        errors = []
+        for file_item in file_items:
+            original_name = str(getattr(file_item, "filename", ""))
+            try:
+                filename = safe_filename(original_name)
+                target = VIDEOS_DIR / filename
+                with target.open("wb") as file:
+                    shutil.copyfileobj(file_item.file, file)
+                files.append({"filename": filename, "size": target.stat().st_size})
+            except Exception as exc:
+                errors.append({"filename": original_name, "error": str(exc)})
 
-        return json_response(self, HTTPStatus.OK, {"filename": filename, "size": target.stat().st_size})
+        status = HTTPStatus.OK if files else HTTPStatus.BAD_REQUEST
+        return json_response(self, status, {"files": files, "errors": errors})
 
     def handle_analyze(self) -> None:
         content_length = int(self.headers.get("Content-Length", "0"))
@@ -761,1175 +961,341 @@ class Handler(BaseHTTPRequestHandler):
         )
 
 
-INDEX_HTML = r"""<!doctype html>
+INDEX_HTML = '<!doctype html>\n<html lang="zh-CN">\n<head>\n<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">\n<title>Short Video Analyzer</title>\n<style>\n:root{--bg:#eef3f8;--card:#fff;--soft:#f7f9fc;--line:#d7e0ec;--text:#142033;--muted:#607089;--blue:#2563eb;--blue2:#1d4ed8;--blueSoft:#eaf1ff;--red:#b42318;--green:#087443;--dark:#0d1628;--shadow:0 18px 45px rgba(15,23,42,.10)}*{box-sizing:border-box}body{margin:0;background:linear-gradient(135deg,rgba(37,99,235,.10),transparent 34%),var(--bg);color:var(--text);font-family:"Segoe UI",system-ui,sans-serif}header{height:66px;display:flex;align-items:center;justify-content:space-between;padding:0 28px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.92);position:sticky;top:0;z-index:5}h1{font-size:20px;margin:0}.page{display:none;min-height:calc(100vh - 66px);padding:18px}.page.active{display:block}.grid{display:grid;grid-template-columns:minmax(320px,430px) minmax(0,1fr);gap:18px}.detail-grid{display:grid;grid-template-columns:minmax(260px,360px) minmax(0,1fr);gap:18px;height:calc(100vh - 102px)}.card{border:1px solid var(--line);border-radius:12px;background:var(--card);box-shadow:var(--shadow);overflow:hidden}.stack{display:grid;gap:16px;padding:18px}.title{font-weight:800;margin:0 0 10px}label{display:block;margin-bottom:7px;color:var(--muted);font-size:13px;font-weight:650}input,select,textarea{width:100%;border:1px solid var(--line);border-radius:9px;background:#fff;color:var(--text);outline:none}input,select{min-height:40px;padding:8px 11px}textarea{min-height:170px;padding:10px 12px;resize:vertical;font:13px/1.55 Consolas,monospace}button{min-height:40px;border:1px solid var(--blue);border-radius:9px;background:var(--blue);color:#fff;padding:8px 13px;font-weight:750;cursor:pointer;box-shadow:0 8px 18px rgba(37,99,235,.18)}button.secondary{background:#fff;color:var(--blue);box-shadow:none}button.danger{background:#fff;border-color:#fecaca;color:var(--red);box-shadow:none}button.small{min-height:32px;padding:5px 10px;font-size:13px}button:disabled{opacity:.55;cursor:not-allowed}.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.muted{color:var(--muted)}.status{min-height:42px;border:1px solid var(--line);border-radius:9px;padding:10px 12px;background:var(--soft);color:var(--muted);font-size:13px;overflow-wrap:anywhere}.status.ok{background:#ecfdf3;color:var(--green)}.status.bad{background:#fff1f2;color:var(--red)}.check{display:flex;align-items:center;gap:9px;color:var(--text);font-size:14px;font-weight:650}.check input{width:auto;min-height:auto}.prompt{display:none}.prompt.active{display:block}.log-wrap{display:grid;grid-template-rows:auto minmax(360px,1fr);min-height:calc(100vh - 102px)}.head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 18px;border-bottom:1px solid var(--line);background:#fff}.head h2{margin:0;font-size:18px}.log{margin:0;overflow:auto;padding:18px;background:var(--dark);color:#e6edf7;font:13px/1.7 Consolas,monospace;white-space:pre-wrap;word-break:break-word}.files{display:grid;gap:8px;max-height:260px;overflow:auto}.detail-files{padding:14px;overflow:auto}.file{display:flex;justify-content:space-between;align-items:center;gap:12px;border:1px solid var(--line);border-radius:9px;padding:10px;background:#fff;cursor:pointer}.file.selected{border-color:var(--blue);background:var(--blueSoft)}.file-name{font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.file-meta{min-width:0;display:grid;gap:4px}.file-actions{display:flex;gap:6px}.tabs{display:flex;gap:8px;padding:12px 14px;border-bottom:1px solid var(--line)}.tab{background:#fff;color:var(--text);border-color:var(--line);box-shadow:none}.tab.active{color:var(--blue);border-color:var(--blue);background:var(--blueSoft)}.toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 14px;border-bottom:1px solid var(--line);background:var(--soft)}.out{min-height:0;overflow:auto;padding:22px 24px;border-left:4px solid rgba(37,99,235,.22);white-space:pre-wrap;word-break:break-word;line-height:1.75}.out.raw{background:var(--dark);color:#e6edf7;font-family:Consolas,monospace}.report{display:grid;gap:14px;max-width:1180px}.hero,.section,.metric{border:1px solid var(--line);border-radius:12px;background:#fff}.hero{padding:18px 20px;background:linear-gradient(135deg,rgba(37,99,235,.10),transparent 42%),#fff}.hero h2{margin:4px 0;font-size:22px}.hero p{margin:0;color:var(--muted)}.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px}.metric{padding:10px 12px}.metric span{display:block;color:var(--muted);font-size:12px;font-weight:750}.metric strong{display:block;margin-top:5px}.section h3{margin:0;padding:12px 16px;border-bottom:1px solid var(--line);background:var(--soft);font-size:15px}.section div{padding:14px 16px}.drop{position:fixed;inset:14px;z-index:20;display:none;align-items:center;justify-content:center;border:2px dashed rgba(37,99,235,.55);border-radius:18px;background:rgba(239,246,255,.86);color:var(--blue2);pointer-events:none}.drop.active{display:flex}.drop>div{padding:26px 30px;border-radius:14px;background:#fff;text-align:center}@media(max-width:900px){.grid,.detail-grid{grid-template-columns:1fr;height:auto}.log-wrap{min-height:520px}.card.result{height:72vh;min-height:520px}}\n</style>\n</head>\n<body>\n<div id="drop" class="drop"><div><strong>??????</strong><br><span class="muted">??????????</span></div></div>\n<header><h1>Short Video Analyzer</h1><div id="current" class="muted">??</div></header>\n<main id="home" class="page active"><div class="grid"><section class="card stack">\n<div><p class="title">TikTok / ??????</p><label>??????</label><input id="url" type="url" placeholder="https://www.tiktok.com/@user/video/... ? https://v.douyin.com/..."></div><div class="row"><button id="download">????</button><button id="network" class="secondary">??????</button></div>\n<div><p class="title">??????</p><label>??? videos/</label><input id="videoFile" type="file" accept="video/*" multiple></div><div class="row"><button id="upload">??</button><button id="refresh" class="secondary">????</button></div>\n<div><p class="title">?????</p><div id="homeFiles" class="files"></div></div>\n<div><p class="title">????</p><label>????</label><select id="mode"><option value="analyzer">????????video-analyzer?</option><option value="direct_video">?????????Qwen?</option></select></div><button id="promptBtn" class="secondary">???????</button><div id="promptPanel" class="prompt"><label>?????</label><textarea id="prompt"></textarea></div>\n<label class="check"><input id="autoPost" type="checkbox">???? DeepSeek ??</label><div class="row"><button id="analyze" disabled>????</button><button id="post" class="secondary" disabled>????????</button></div><div id="status" class="status">?????????????</div>\n</section><section class="card log-wrap"><div class="head"><div><h2>????</h2><div class="muted">?????????????????????</div></div><button id="clearLog" class="secondary small">????</button></div><pre id="log" class="log">????...</pre></section></div></main>\n<main id="detail" class="page"><div class="detail-grid"><section class="card" style="display:grid;grid-template-rows:auto 1fr"><div class="head" style="display:grid"><button id="back" class="secondary">????</button><div><h2>?????</h2><div class="muted">???????</div></div></div><div id="detailFiles" class="detail-files files"></div></section><section class="card result" style="display:grid;grid-template-rows:auto auto minmax(0,1fr)"><div class="tabs"><button class="tab active" data-tab="content">????????</button><button class="tab" data-tab="audit">????????</button></div><div class="toolbar"><b id="outTitle">Qwen ?????DeepSeek ??</b><div class="row"><button id="source" class="secondary small">????</button><button id="json" class="secondary small">???? JSON</button></div></div><div id="out" class="out">{}</div></section></div></main>\n<script>\nwindow.DEFAULT_ANALYSIS_MODE="__DEFAULT_ANALYSIS_MODE__";\nconst S={file:"",files:[],result:null,job:null,tab:"content",raw:false,has:false,logs:[]};\nconst $=id=>document.getElementById(id), home=$(\'home\'), detail=$(\'detail\'), current=$(\'current\'), status=$(\'status\'), log=$(\'log\'), out=$(\'out\'); let de=null, je=null, drag=0;\nfunction esc(v){return String(v??\'\').replace(/[&<>"\']/g,c=>({\'&\':\'&amp;\',\'<\':\'&lt;\',\'>\':\'&gt;\',\'"\':\'&quot;\',"\'":\'&#39;\'}[c]))} function pretty(v){return v==null?\'{}\':typeof v===\'string\'?v:JSON.stringify(v,null,2)} function clean(v){let s=typeof v===\'string\'?v:(v&&typeof v.response===\'string\'?v.response:pretty(v));return s.replace(/^```(?:json)?\\s*/i,\'\').replace(/\\s*```$/i,\'\').trim()} function bytes(n){return `${Math.round(Number(n||0)/1024/1024*10)/10} MB`} function setStatus(m,k=\'\'){status.className=\'status \'+k;status.textContent=m} function addLog(m){S.logs.push(`[${new Date().toLocaleTimeString()}] ${m}`);if(S.logs.length>500)S.logs.splice(0,S.logs.length-500);log.textContent=S.logs.join(\'\\n\')||\'????...\';log.scrollTop=log.scrollHeight}\nfunction metric(k,v){return v==null||v===\'\'?\'\':`<div class="metric"><span>${esc(k)}</span><strong>${esc(v)}</strong></div>`} function sec(t,b){b=clean(b);return b?`<section class="section"><h3>${esc(t)}</h3><div>${esc(b)}</div></section>`:\'\'} function list(t,a,map=x=>x){if(!Array.isArray(a)||!a.length)return\'\';return `<section class="section"><h3>${esc(t)}</h3><div>${a.map((x,i)=>`- ${esc(clean(map(x,i)))}`).join(\'\\n\')}</div></section>`} function has(r){return !!(r&&(r.analysis||r.analysis_zh||r.audit_result||r.audit_result_zh))}\nfunction extraction(v){if(!v||typeof v!==\'object\')return pretty(v);const md=v.metadata||{},tr=v.transcript||{},u=v.usage||{},tl=Array.isArray(v.timeline)?v.timeline:[],ve=Array.isArray(v.visual_evidence)?v.visual_evidence:[],fa=Array.isArray(v.frame_analyses)?v.frame_analyses:[];return `<article class="report"><div class="hero"><small>Qwen Video Extraction</small><h2>??????</h2><p>${esc(clean(v.summary)||\'?????????????????????\')}</p></div><div class="metrics">${metric(\'????\',v.processing_mode)}${metric(\'????\',v.vision_model||md.model)}${metric(\'????\',v.audio_mode)}${metric(\'????\',md.frames_processed||md.frames_extracted)}${metric(\'????\',tr.language||md.audio_language)}${metric(\'?? Tokens\',u.input_tokens)}${metric(\'?? Tokens\',u.output_tokens)}${metric(\'? Tokens\',u.total_tokens)}${metric(\'API ??\',u.api_calls)}${metric(\'???\',u.elapsed_seconds==null?\'\':u.elapsed_seconds+\'s\')}</div>${sec(\'????\',v.summary)}${sec(\'??????\',v.video_description)}${list(\'???\',tl,x=>typeof x===\'string\'?x:`${x.time_range||x.timestamp||\'\'}\\n${x.visual||\'\'}\\n${x.audio||\'\'}`)}${list(\'????\',ve,x=>typeof x===\'string\'?x:(x.description||x.visual||pretty(x)))}${list(\'??????\',fa,(x,i)=>`[? ${i+1}]\\n${clean(x)}`)}${sec(\'????\',tr.text||\'?????\')}</article>`}\nfunction audit(v){if(!v||typeof v!==\'object\')return pretty(v);return `<article class="report"><div class="hero"><small>DeepSeek Audit</small><h2>??????</h2><p>${esc(v.summary||\'?????????????????\')}</p></div><div class="metrics">${metric(\'????\',v.risk_level)}${metric(\'????\',v.recommended_action)}${metric(\'????\',v.publish_suggestion)}</div>${sec(\'????\',v.summary)}${sec(\'????\',v.content_overview)}${sec(\'????\',v.transcript_notes)}${sec(\'????\',v.visual_notes)}${list(\'????\',v.risk_reasons)}${list(\'???\',v.issues)}</article>`}\nfunction renderOut(r){S.result=r;out.className=S.raw?\'out raw\':\'out\';let v;if(S.tab===\'content\'){v=S.raw?r?.analysis:(r?.analysis_zh||r?.analysis);$(\'json\').style.display=\'inline-flex\';$(\'outTitle\').textContent=S.raw?\'Qwen ??????? JSON\':\'Qwen ?????DeepSeek ??\';S.raw?out.textContent=pretty(v):out.innerHTML=extraction(v)}else{v=S.raw?r?.audit_result:(r?.audit_result_zh||r?.audit_result);$(\'json\').style.display=\'none\';$(\'outTitle\').textContent=S.raw?\'DeepSeek ???????\':\'DeepSeek ???????\';S.raw?out.textContent=pretty(v):out.innerHTML=audit(v)}$(\'source\').textContent=S.raw?\'????\':\'????\'}\nfunction buttons(){ $(\'analyze\').textContent=S.has?\'????\':\'????\'; $(\'analyze\').disabled=!S.file; $(\'post\').disabled=!S.file||!S.has||!!S.job }\nfunction renderFiles(){for(const [id,detailMode] of [[\'homeFiles\',false],[\'detailFiles\',true]]){const box=$(id);box.innerHTML=\'\';if(!S.files.length){box.innerHTML=\'<div class="muted">videos/ ??????</div>\';continue}S.files.forEach(f=>{const el=document.createElement(\'div\');el.className=\'file\'+(f.name===S.file?\' selected\':\'\');el.innerHTML=`<span class="file-meta"><span class="file-name">${esc(f.name)}</span><span class="muted">${bytes(f.size)}</span></span>${detailMode?\'\':`<span class="file-actions"><button class="secondary small">??</button><button class="danger small">??</button></span>`}`;el.onclick=()=>toDetail(f.name);if(!detailMode){const b=el.querySelectorAll(\'button\');b[0].onclick=e=>{e.stopPropagation();open(\'/video/\'+encodeURIComponent(f.name),\'_blank\',\'noopener\')};b[1].onclick=e=>{e.stopPropagation();delFile(f.name)}}box.appendChild(el)})}buttons()}\nfunction view(v,f=\'\'){home.classList.toggle(\'active\',v===\'home\');detail.classList.toggle(\'active\',v===\'detail\');current.textContent=v===\'detail\'&&f?f:\'??\'} function toHome(){location.hash=\'\';view(\'home\')} function toDetail(f){location.hash=\'detail=\'+encodeURIComponent(f)} function route(){const h=location.hash.slice(1);if(h.startsWith(\'detail=\')){select(decodeURIComponent(h.slice(7)),false);view(\'detail\',S.file)}else{view(\'home\');renderFiles()}}\nasync function refresh(){const r=await fetch(\'/api/files\');S.files=await r.json();if(!Array.isArray(S.files))S.files=[];renderFiles()} async function loadResult(name){const r=await fetch(\'/api/result?filename=\'+encodeURIComponent(name)),j=await r.json();if(r.ok&&has(j)){S.result=j;S.has=true;const p=j.analysis&&j.analysis.metadata&&j.analysis.metadata.analysis_prompt;if(p)$(\'prompt\').value=p;renderOut(j);setStatus(name+\': ???????\',\'ok\')}else{S.result=null;S.has=false;out.textContent=\'{}\';setStatus(name+\': ????\')}buttons()} function select(name,openDetail=true){S.file=name;current.textContent=name||\'??\';S.has=false;renderFiles();if(name)loadResult(name).catch(e=>setStatus(e.message,\'bad\'));if(openDetail&&name)toDetail(name)}\nasync function upload(files=null){const input=$(\'videoFile\'),arr=Array.from(files||input.files||[]);if(!arr.length)return setStatus(\'????????????\',\'bad\');const bad=arr.filter(f=>!f.type.startsWith(\'video/\'));if(bad.length){addLog(\'??????????????\'+bad.map(f=>f.name).join(\', \'));return setStatus(\'????????\',\'bad\')}const form=new FormData();arr.forEach(f=>form.append(\'video\',f));addLog(`???? ${arr.length} ????`);setStatus(\'????...\');const r=await fetch(\'/api/upload\',{method:\'POST\',body:form}),p=await r.json(),ok=Array.isArray(p.files)?p.files:[],err=Array.isArray(p.errors)?p.errors:[];ok.forEach(f=>addLog(`?????${f.filename} (${bytes(f.size)})`));err.forEach(e=>addLog(`?????${e.filename||\'????\'} - ${e.error||\'????\'}`));if(!r.ok&&!ok.length)return setStatus(p.error||\'????\',\'bad\');setStatus(`??????? ${ok.length} ???? ${err.length} ?`,err.length?\'bad\':\'ok\');input.value=\'\';await refresh();if(ok.length)select(ok.at(-1).filename,false)}\nasync function delFile(name){if(!confirm(`?? ${name} ?????????`))return;const r=await fetch(\'/api/delete\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({filename:name})}),p=await r.json();if(!r.ok)return setStatus(p.error||\'????\',\'bad\');addLog(\'?????\'+name);if(S.file===name){S.file=\'\';S.result=null;S.has=false;toHome()}await refresh()}\nfunction closeD(){if(de){de.close();de=null}}function closeJ(){if(je){je.close();je=null}} function lastLog(j){return j&&Array.isArray(j.log)&&j.log.length?j.log.at(-1):\'\'}\nasync function startDownload(){const url=$(\'url\').value.trim();if(!url)return setStatus(\'??? TikTok ????????\',\'bad\');$(\'download\').disabled=true;addLog(\'???????\'+url);const r=await fetch(\'/api/download\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({url})}),j=await r.json();if(!r.ok){$(\'download\').disabled=false;return setStatus(j.error||\'????????\',\'bad\')}closeD();de=new EventSource(\'/api/download-events?id=\'+encodeURIComponent(j.id));de.onmessage=async e=>{const j=JSON.parse(e.data),l=lastLog(j);if(l)addLog(\'???\'+l);if(j.status===\'running\'||j.status===\'queued\')return setStatus(`??????${j.status}`);closeD();$(\'download\').disabled=false;if(j.status!==\'complete\')return setStatus(\'???????\'+(j.error||\'????\'),\'bad\');setStatus(j.filename+\': ????\',\'ok\');$(\'url\').value=\'\';await refresh();select(j.filename,false)};de.onerror=()=>{closeD();$(\'download\').disabled=false;setStatus(\'????????\',\'bad\')}}\nasync function checkNet(){$(\'network\').disabled=true;setStatus(\'??????????????...\');try{const r=await fetch(\'/api/network-check\'),p=await r.json();const fmt=x=>!x?\'???\':(!x.ok?\'???\'+(x.error||\'????\'):`${x.ip||\'?? IP\'} / ${x.country_name||x.country||\'????\'} / ${x.is_us?\'????\':\'?????\'}`);addLog(\'???\'+fmt(p.direct));addLog(\'???\'+fmt(p.proxy));setStatus(`???${fmt(p.direct)}????${fmt(p.proxy)}`,p.proxy&&p.proxy.ok&&p.proxy.is_us?\'ok\':\'bad\')}catch(e){setStatus(e.message,\'bad\')}finally{$(\'network\').disabled=false}}\nasync function analyze(){if(!S.file)return;$(\'analyze\').disabled=true;$(\'post\').disabled=true;const reset=S.has;addLog(`${S.file}: ${reset?\'??????????\':\'??????\'}`);const r=await fetch(\'/api/analyze\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({filename:S.file,analysis_mode:$(\'mode\').value,analysis_prompt:$(\'prompt\').value,postprocess:$(\'autoPost\').checked,reset_output:reset})}),j=await r.json();if(!r.ok){setStatus(j.error||\'????\',\'bad\');return buttons()}S.job=j.id;openJob(j.id)}\nasync function postprocess(){if(!S.file||!S.has)return;const r=await fetch(\'/api/postprocess\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({filename:S.file})}),j=await r.json();if(!r.ok)return setStatus(j.error||\'????\',\'bad\');S.tab=\'audit\';document.querySelectorAll(\'.tab\').forEach(x=>x.classList.toggle(\'active\',x.dataset.tab===\'audit\'));S.job=j.id;openJob(j.id)}\nfunction openJob(id){closeJ();je=new EventSource(\'/api/job-events?id=\'+encodeURIComponent(id));je.onmessage=e=>{const j=JSON.parse(e.data),l=lastLog(j);if(l)addLog(`${j.filename}: ${l}`);S.result=j;if(location.hash.startsWith(\'#detail=\'))renderOut(j);if(j.status===\'running\'||j.status===\'queued\')return setStatus(`${j.filename}: ${j.status}`);closeJ();S.job=null;S.has=j.status===\'complete\'||has(j);buttons();setStatus(j.status===\'complete\'?`${j.filename}: ??`:`${j.filename}: ${j.error||\'??\'}`,j.status===\'complete\'?\'ok\':\'bad\')};je.onerror=()=>{closeJ();buttons();setStatus(\'????????\',\'bad\')}}\nfunction downloadJson(){const a=S.result&&S.result.analysis;if(!a)return setStatus(\'??????? analysis.json?\',\'bad\');const name=`${S.file||\'video\'}.analysis.json`,blob=new Blob([JSON.stringify(a,null,2)],{type:\'application/json;charset=utf-8\'}),url=URL.createObjectURL(blob),link=document.createElement(\'a\');link.href=url;link.download=name;document.body.appendChild(link);link.click();link.remove();URL.revokeObjectURL(url);addLog(\'???? JSON?\'+name)}\n$(\'download\').onclick=startDownload;$(\'network\').onclick=checkNet;$(\'upload\').onclick=()=>upload();$(\'refresh\').onclick=()=>refresh().then(()=>addLog(\'????????\'));$(\'analyze\').onclick=analyze;$(\'post\').onclick=postprocess;$(\'back\').onclick=toHome;$(\'clearLog\').onclick=()=>{S.logs=[];log.textContent=\'????...\'};$(\'source\').onclick=()=>{S.raw=!S.raw;renderOut(S.result)};$(\'json\').onclick=downloadJson;$(\'mode\').value=window.DEFAULT_ANALYSIS_MODE||\'analyzer\';$(\'promptBtn\').onclick=()=>{const p=$(\'promptPanel\');p.classList.toggle(\'active\');$(\'promptBtn\').textContent=p.classList.contains(\'active\')?\'???????\':\'???????\'};document.querySelectorAll(\'.tab\').forEach(t=>t.onclick=()=>{document.querySelectorAll(\'.tab\').forEach(x=>x.classList.remove(\'active\'));t.classList.add(\'active\');S.tab=t.dataset.tab;S.raw=false;renderOut(S.result)});addEventListener(\'hashchange\',route);addEventListener(\'dragenter\',e=>{e.preventDefault();drag++;$(\'drop\').classList.add(\'active\')});addEventListener(\'dragover\',e=>e.preventDefault());addEventListener(\'dragleave\',e=>{e.preventDefault();drag=Math.max(0,drag-1);if(!drag)$(\'drop\').classList.remove(\'active\')});addEventListener(\'drop\',e=>{e.preventDefault();drag=0;$(\'drop\').classList.remove(\'active\');if(e.dataTransfer.files.length)upload(e.dataTransfer.files)});fetch(\'/api/prompt\').then(r=>r.json()).then(p=>$(\'prompt\').value=p.prompt||\'\').catch(()=>{});refresh().then(route).catch(e=>setStatus(e.message,\'bad\'));\n</script>\n</body>\n</html>'
+
+
+
+SHOP_HTML = r"""<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Short Video Analyzer</title>
+  <title>TikTok Shop Extractor</title>
   <style>
     :root {
-      color-scheme: light;
-      --bg: #eef2f7;
-      --panel: #ffffff;
-      --panel-soft: #f8fafc;
-      --line: #d6deea;
-      --line-strong: #b8c5d8;
-      --text: #142033;
-      --muted: #607089;
-      --accent: #2563eb;
-      --accent-strong: #1d4ed8;
-      --accent-soft: #eaf1ff;
-      --danger: #b42318;
-      --ok: #087443;
-      --code: #0d1628;
-      --shadow: 0 18px 45px rgba(15, 23, 42, 0.10);
-      --shadow-soft: 0 8px 24px rgba(15, 23, 42, 0.07);
+      color: #172033;
+      background: #eef1f6;
+      font-family: "Microsoft YaHei", "Segoe UI", Arial, sans-serif;
     }
     * { box-sizing: border-box; }
-    html, body { height: 100%; }
-    body {
-      margin: 0;
-      overflow: hidden;
-      background:
-        linear-gradient(135deg, rgba(37, 99, 235, 0.10), transparent 34%),
-        linear-gradient(315deg, rgba(14, 165, 233, 0.08), transparent 38%),
-        var(--bg);
-      color: var(--text);
-      font-family: Inter, "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+    body { margin: 0; }
+    button, input, select, textarea { font: inherit; }
+    button {
+      border: 0;
+      border-radius: 6px;
+      padding: 10px 14px;
+      color: #fff;
+      background: #1f6feb;
+      cursor: pointer;
     }
-    header {
-      height: 66px;
+    button.secondary { color: #243044; background: #e6ebf2; }
+    button:disabled { cursor: wait; opacity: 0.65; }
+    input, select, textarea {
+      width: 100%;
+      border: 1px solid #c9d2df;
+      border-radius: 6px;
+      padding: 10px 11px;
+      color: #172033;
+      background: #fff;
+    }
+    textarea { min-height: 130px; resize: vertical; }
+    label {
+      display: grid;
+      gap: 6px;
+      color: #526173;
+      font-size: 13px;
+    }
+    h1, h2, h3, p { margin: 0; }
+    .app-shell {
+      display: grid;
+      grid-template-columns: 360px minmax(0, 1fr);
+      min-height: 100vh;
+    }
+    .side-panel {
+      border-right: 1px solid #d5dce7;
+      background: #f8fafc;
+    }
+    .panel-header, .form { display: grid; gap: 14px; padding: 18px; }
+    .panel-header { border-bottom: 1px solid #dce3ec; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .check { display: flex; align-items: center; gap: 8px; color: #243044; }
+    .check input { width: auto; }
+    .workspace {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      min-width: 0;
+      padding: 20px;
+      gap: 16px;
+    }
+    .workspace-header {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 0 28px;
-      border-bottom: 1px solid var(--line);
-      background: rgba(255, 255, 255, 0.88);
-      backdrop-filter: blur(12px);
-    }
-    h1 {
-      margin: 0;
-      font-size: 20px;
-      font-weight: 750;
-      letter-spacing: 0;
-    }
-    main {
-      display: grid;
-      grid-template-columns: minmax(320px, 430px) minmax(0, 1fr);
-      gap: 18px;
-      padding: 18px;
-      height: calc(100vh - 66px);
-      min-height: 0;
-      overflow: hidden;
-    }
-    section {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      min-width: 0;
-      box-shadow: var(--shadow-soft);
-    }
-    .controls {
-      padding: 18px;
-      display: grid;
       gap: 16px;
-      align-content: start;
-      min-height: 0;
-      overflow: auto;
-    }
-    .output {
-      display: grid;
-      grid-template-rows: auto auto minmax(0, 1fr);
-      min-height: 0;
-      overflow: hidden;
-      box-shadow: var(--shadow);
-    }
-    .section-title {
-      font-size: 14px;
-      font-weight: 760;
-      margin: 0 0 10px;
-    }
-    label {
-      display: block;
-      font-size: 13px;
-      color: var(--muted);
-      margin-bottom: 6px;
-    }
-    input[type="file"], input[type="url"], select {
-      width: 100%;
-      min-height: 40px;
-      border: 1px solid var(--line);
-      border-radius: 9px;
-      padding: 9px 10px;
-      background: #fff;
-      color: var(--text);
-      outline: none;
-      transition: border-color 160ms ease, box-shadow 160ms ease;
-    }
-    input[type="file"]:focus, input[type="url"]:focus, select:focus {
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
-    }
-    input[type="file"]::file-selector-button {
-      margin-right: 10px;
-      border: 0;
-      border-radius: 7px;
-      background: var(--accent-soft);
-      color: var(--accent-strong);
-      padding: 7px 10px;
-      font-weight: 700;
-    }
-    .row {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      flex-wrap: wrap;
-    }
-    .check {
-      display: flex;
-      gap: 8px;
-      align-items: center;
-      color: var(--text);
-      font-size: 14px;
-    }
-    .check input {
-      width: 16px;
-      height: 16px;
-      accent-color: var(--accent);
-    }
-    .prompt-panel {
-      display: none;
-      gap: 8px;
-    }
-    .prompt-panel.active {
-      display: grid;
-    }
-    .prompt-panel textarea {
-      width: 100%;
-      min-height: 180px;
-      resize: vertical;
-      border: 1px solid var(--line);
-      border-radius: 9px;
-      padding: 10px 12px;
-      background: #fff;
-      color: var(--text);
-      font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
-      outline: none;
-    }
-    .prompt-panel textarea:focus {
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
-    }
-    button {
-      min-height: 40px;
-      border: 1px solid var(--accent);
-      border-radius: 9px;
-      background: var(--accent);
-      color: white;
-      padding: 8px 12px;
-      font-weight: 750;
-      cursor: pointer;
-      transition: transform 120ms ease, background 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
-      box-shadow: 0 8px 18px rgba(37, 99, 235, 0.18);
-    }
-    button:hover:not(:disabled) {
-      background: var(--accent-strong);
-      border-color: var(--accent-strong);
-      transform: translateY(-1px);
-    }
-    button.secondary {
-      background: #fff;
-      color: var(--accent);
-      box-shadow: none;
-    }
-    button:disabled {
-      opacity: 0.55;
-      cursor: not-allowed;
     }
     .status {
-      min-height: 42px;
-      border: 1px solid var(--line);
-      border-radius: 9px;
-      padding: 10px 12px;
-      color: var(--muted);
-      background: var(--panel-soft);
-      font-size: 13px;
+      border: 1px solid #d9e1eb;
+      border-radius: 8px;
+      padding: 12px;
+      color: #536273;
+      background: #fff;
       overflow-wrap: anywhere;
     }
-    .tabs {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 12px 14px;
-      border-bottom: 1px solid var(--line);
-      overflow-x: auto;
-      background: #ffffff;
+    .status.ok { color: #087443; background: #ecfdf3; }
+    .status.bad { color: #b42318; background: #fff1f2; }
+    .result-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(300px, 420px);
+      gap: 16px;
+      min-height: 0;
     }
-    .tab {
-      min-height: 34px;
-      padding: 6px 12px;
-      border-color: var(--line);
+    .card {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      min-height: 520px;
+      border: 1px solid #d9e1eb;
+      border-radius: 8px;
       background: #fff;
-      color: var(--text);
-      white-space: nowrap;
-      box-shadow: none;
+      overflow: hidden;
     }
-    .tab.active {
-      border-color: var(--accent);
-      color: var(--accent);
-      background: var(--accent-soft);
-    }
-    .output-toolbar {
+    .card-head {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 12px;
-      padding: 10px 14px;
-      border-bottom: 1px solid var(--line);
-      background: var(--panel-soft);
+      padding: 14px 16px;
+      border-bottom: 1px solid #dfe6ee;
     }
-    .output-title {
-      margin: 0;
-      color: var(--muted);
-      font-size: 13px;
-      font-weight: 700;
-    }
-    .small-button {
-      min-height: 32px;
-      padding: 5px 10px;
-      font-size: 13px;
-    }
-    .report-output {
-      margin: 0;
-      height: 100%;
+    .tabs { display: flex; gap: 8px; }
+    .tab { color: #243044; background: #edf2f8; }
+    .tab.active { color: #fff; background: #1f6feb; }
+    pre {
       min-height: 0;
-      padding: 22px 24px;
+      margin: 0;
+      padding: 16px;
       overflow: auto;
-      border-radius: 0 0 12px 12px;
-      background:
-        linear-gradient(180deg, rgba(248, 250, 252, 0.92), rgba(255, 255, 255, 0.98)),
-        #fff;
-      color: var(--text);
-      font-size: 13px;
-      line-height: 1.78;
       white-space: pre-wrap;
       word-break: break-word;
-      border-left: 4px solid rgba(37, 99, 235, 0.22);
-      scrollbar-color: #9aa8bd #eef2f7;
-      scrollbar-width: thin;
+      color: #162033;
+      font: 13px/1.55 Consolas, "Microsoft YaHei", monospace;
     }
-    .report-output.raw-output {
-      background: var(--code);
-      color: #e6edf7;
-      border-left-color: rgba(96, 165, 250, 0.45);
-      font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
-      line-height: 1.68;
-      scrollbar-color: #607089 #111827;
-    }
-    .report-doc {
-      display: grid;
-      gap: 16px;
-      max-width: 1180px;
-    }
-    .report-hero {
-      display: grid;
-      gap: 8px;
-      padding: 18px 20px;
-      border: 1px solid rgba(37, 99, 235, 0.14);
-      border-radius: 12px;
-      background:
-        linear-gradient(135deg, rgba(37, 99, 235, 0.10), transparent 42%),
-        #ffffff;
-    }
-    .report-kicker {
-      color: var(--accent-strong);
-      font-size: 12px;
-      font-weight: 800;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-    }
-    .report-hero h2 {
-      margin: 0;
-      color: var(--text);
-      font-size: 22px;
-      line-height: 1.25;
-    }
-    .report-hero p {
-      margin: 0;
-      color: var(--muted);
-      font-size: 14px;
-    }
-    .report-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-      gap: 10px;
-    }
-    .metric {
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      padding: 11px 12px;
-      background: #fff;
-    }
-    .metric span {
-      display: block;
-      color: var(--muted);
-      font-size: 12px;
-      font-weight: 700;
-    }
-    .metric strong {
-      display: block;
-      margin-top: 5px;
-      color: var(--text);
-      font-size: 14px;
-      overflow-wrap: anywhere;
-    }
+    .report { padding: 16px; overflow: auto; line-height: 1.62; }
     .report-section {
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      background: #fff;
-      overflow: hidden;
-    }
-    .report-section h3 {
-      margin: 0;
-      padding: 12px 16px;
-      border-bottom: 1px solid var(--line);
-      background: var(--panel-soft);
-      color: var(--text);
-      font-size: 15px;
-    }
-    .report-section .body {
-      padding: 15px 16px;
-      color: #243044;
-      font-size: 14px;
-      white-space: pre-wrap;
-    }
-    .report-list {
-      display: grid;
-      gap: 10px;
-      margin: 0;
-      padding: 15px 16px;
-      list-style: none;
-    }
-    .report-list li {
-      border-left: 3px solid rgba(37, 99, 235, 0.28);
-      padding: 8px 10px;
+      border: 1px solid #e0e6ef;
       border-radius: 8px;
-      background: #f8fafc;
-      white-space: pre-wrap;
+      padding: 12px;
+      margin-bottom: 10px;
+      background: #fbfcfe;
     }
-    .report-output::-webkit-scrollbar, .controls::-webkit-scrollbar, .file-list::-webkit-scrollbar {
-      width: 10px;
-      height: 10px;
-    }
-    .report-output::-webkit-scrollbar-track, .controls::-webkit-scrollbar-track, .file-list::-webkit-scrollbar-track {
-      background: rgba(148, 163, 184, 0.16);
-    }
-    .report-output::-webkit-scrollbar-thumb, .controls::-webkit-scrollbar-thumb, .file-list::-webkit-scrollbar-thumb {
-      background: rgba(96, 112, 137, 0.7);
-      border-radius: 999px;
-      border: 2px solid transparent;
-      background-clip: padding-box;
-    }
-    .file-list {
-      display: grid;
-      gap: 8px;
-      max-height: 180px;
-      overflow: auto;
-    }
-    .file-item {
-      width: 100%;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 12px;
-      border: 1px solid var(--line);
-      border-radius: 9px;
-      padding: 9px 10px;
-      background: #fff;
-      color: var(--text);
-      text-align: left;
-      box-shadow: none;
-    }
-    .file-item.selected {
-      border-color: var(--accent);
-      background: var(--accent-soft);
-    }
-    .file-meta {
-      min-width: 0;
-      display: grid;
-      gap: 3px;
-      flex: 1;
-    }
-    .file-name {
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      font-weight: 700;
-    }
-    .file-actions {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      flex-shrink: 0;
-    }
-    .play-button,
-    .danger-button {
-      min-height: 30px;
-      padding: 4px 9px;
-      background: #fff;
-      box-shadow: none;
-      font-size: 12px;
-    }
-    .play-button {
-      border-color: #bfdbfe;
-      color: var(--accent-strong);
-    }
-    .play-button:hover:not(:disabled) {
-      border-color: var(--accent);
-      background: var(--accent-soft);
-      color: var(--accent-strong);
-    }
-    .danger-button {
-      border-color: #fecaca;
-      color: var(--danger);
-    }
-    .danger-button:hover:not(:disabled) {
-      border-color: var(--danger);
-      background: #fff1f2;
-      color: var(--danger);
-    }
-    .muted { color: var(--muted); }
-    .ok { color: var(--ok); }
-    .bad { color: var(--danger); }
-    .drop-overlay {
-      position: fixed;
-      inset: 14px;
-      z-index: 20;
-      display: none;
-      align-items: center;
-      justify-content: center;
-      border: 2px dashed rgba(37, 99, 235, 0.55);
-      border-radius: 18px;
-      background: rgba(239, 246, 255, 0.86);
-      color: var(--accent-strong);
-      backdrop-filter: blur(12px);
-      box-shadow: var(--shadow);
-      pointer-events: none;
-    }
-    .drop-overlay.active {
-      display: flex;
-    }
-    .drop-card {
-      display: grid;
-      gap: 8px;
-      min-width: min(420px, 86vw);
-      padding: 26px 30px;
-      border: 1px solid rgba(37, 99, 235, 0.18);
-      border-radius: 14px;
-      background: rgba(255, 255, 255, 0.92);
-      text-align: center;
-    }
-    .drop-card strong {
-      font-size: 18px;
-    }
-    .drop-card span {
-      color: var(--muted);
-      font-size: 13px;
-    }
-    @media (max-width: 860px) {
-      header { padding: 0 14px; }
-      body { overflow: auto; }
-      main {
-        grid-template-columns: 1fr;
-        height: auto;
-        min-height: calc(100vh - 66px);
-        overflow: visible;
-        padding: 12px;
-      }
-      .output { height: 70vh; min-height: 460px; }
+    .report-section h3 { margin-bottom: 8px; font-size: 15px; }
+    .log { color: #dbe7ff; background: #101827; }
+    .muted { color: #667589; font-size: 13px; }
+    @media (max-width: 960px) {
+      .app-shell, .result-layout { grid-template-columns: 1fr; }
+      .side-panel { border-right: 0; border-bottom: 1px solid #d5dce7; }
+      .row { grid-template-columns: 1fr; }
     }
   </style>
 </head>
 <body>
-  <div class="drop-overlay" id="dropOverlay">
-    <div class="drop-card">
-      <strong>松手上传视频</strong>
-      <span>文件会保存到 videos/，上传后自动选中。</span>
-    </div>
-  </div>
-  <header>
-    <h1>Short Video Analyzer</h1>
-    <div class="muted" id="currentFile">未选择视频</div>
-  </header>
-  <main>
-    <section class="controls">
-      <div>
-        <p class="section-title">TikTok / 抖音链接下载</p>
-        <label for="tiktokUrl">公开视频链接</label>
-        <input id="tiktokUrl" type="url" placeholder="https://www.tiktok.com/@user/video/... 或 https://v.douyin.com/...">
-      </div>
-      <div class="row">
-        <button id="downloadBtn" type="button">下载视频</button>
-        <button id="networkCheckBtn" class="secondary" type="button">检测代理出口</button>
-      </div>
-      <div>
-        <p class="section-title">输入视频</p>
-        <label for="videoFile">上传到 videos/</label>
-        <input id="videoFile" type="file" accept="video/*">
-      </div>
-      <div class="row">
-        <button id="uploadBtn">上传</button>
-        <button id="refreshBtn" class="secondary">刷新列表</button>
-      </div>
-      <div>
-        <p class="section-title">已上传视频</p>
-        <div class="file-list" id="fileList"></div>
-      </div>
-      <div>
-        <p class="section-title">分析选项</p>
-        <label for="analysisMode">处理方式</label>
-        <select id="analysisMode">
-          <option value="analyzer">关键帧提取模式（video-analyzer）</option>
-          <option value="direct_video">直接视频理解模式（Qwen）</option>
-        </select>
-      </div>
-      <div>
-        <button id="promptToggle" class="secondary" type="button">显示当前提示词</button>
-      </div>
-      <div id="promptPanel" class="prompt-panel">
-        <label for="analysisPrompt">分析提示词</label>
-        <textarea id="analysisPrompt" spellcheck="false"></textarea>
-      </div>
-      <div>
-        <label class="check">
-          <input id="autoPostprocess" type="checkbox">
-          自动生成 DeepSeek 分析
-        </label>
-      </div>
-      <div>
-        <button id="manualPostprocessBtn" class="secondary" type="button" disabled>
-          手动生成分析报告
-        </button>
-      </div>
-      <button id="analyzeBtn" disabled>开始分析</button>
-      <div class="status" id="statusBox">等待上传或选择视频。</div>
-    </section>
-    <section class="output">
-      <div class="tabs">
-        <button class="tab active" data-tab="content">提取内容（中文）</button>
-        <button class="tab" data-tab="audit">分析结果（中文）</button>
-      </div>
-      <div class="output-toolbar">
-        <p class="output-title" id="outputTitle">Qwen 输出内容，DeepSeek 翻译</p>
-        <button id="sourceToggle" class="secondary small-button" type="button">显示原文</button>
-      </div>
-      <div id="outputBox" class="report-output">{}</div>
+  <main class="app-shell">
+    <aside class="side-panel">
+      <header class="panel-header">
+        <h1>TikTok Shop 提取</h1>
+        <p class="muted">使用 SociaVault 提取店铺或商品数据，可选择接 DeepSeek 生成中文分析。</p>
+      </header>
+      <section class="form">
+        <label>TikTok Shop 链接<input id="shopUrl" type="url" placeholder="https://www.tiktok.com/..."></label>
+        <div class="row">
+          <label>类型<select id="sourceType"><option value="product">商品详情 + 评论</option><option value="shop">店铺商品列表</option></select></label>
+          <label>地区<input id="region" value="US" maxlength="8"></label>
+        </div>
+        <div class="row">
+          <label>店铺页数<input id="maxPages" type="number" min="1" max="20" value="1"></label>
+          <label>评论页数<input id="reviewPages" type="number" min="0" max="20" value="1"></label>
+        </div>
+        <label class="check"><input id="relatedVideos" type="checkbox">提取商品关联视频</label>
+        <label class="check"><input id="analyze" type="checkbox" checked>使用 DeepSeek 生成中文分析</label>
+        <label>分析补充要求<textarea id="prompt" placeholder="例如：重点看卖点、评论痛点、适合做短视频的脚本方向。"></textarea></label>
+        <button id="runBtn" type="button">开始提取</button>
+        <a class="muted" href="/">返回视频分析页</a>
+        <div id="status" class="status">等待输入 TikTok Shop 链接。</div>
+      </section>
+    </aside>
+    <section class="workspace">
+      <header class="workspace-header">
+        <div>
+          <h2>提取结果</h2>
+          <p class="muted" id="outputDir">结果会保存到 output/tiktok_shop/&lt;job-id&gt;/</p>
+        </div>
+      </header>
+      <section class="result-layout">
+        <article class="card">
+          <div class="card-head">
+            <div class="tabs">
+              <button class="tab active" data-tab="analysis" type="button">中文分析</button>
+              <button class="tab" data-tab="extract" type="button">原始提取</button>
+            </div>
+            <button id="rawToggle" class="secondary" type="button">显示 JSON</button>
+          </div>
+          <div id="result" class="report">暂无结果。</div>
+        </article>
+        <article class="card">
+          <div class="card-head"><h3>任务日志</h3><button id="clearLog" class="secondary" type="button">清空</button></div>
+          <pre id="log" class="log">等待任务...</pre>
+        </article>
+      </section>
     </section>
   </main>
   <script>
-    window.DEFAULT_ANALYSIS_MODE = "__DEFAULT_ANALYSIS_MODE__";
-    const state = { selectedFile: "", currentJob: null, currentResult: null, currentTab: "content", showOriginal: false, hasOutput: false };
-    const fileList = document.getElementById("fileList");
-    const statusBox = document.getElementById("statusBox");
-    const outputBox = document.getElementById("outputBox");
-    const currentFile = document.getElementById("currentFile");
-    const tiktokUrl = document.getElementById("tiktokUrl");
-    const downloadBtn = document.getElementById("downloadBtn");
-    const networkCheckBtn = document.getElementById("networkCheckBtn");
-    const analyzeBtn = document.getElementById("analyzeBtn");
-    const sourceToggle = document.getElementById("sourceToggle");
-    const outputTitle = document.getElementById("outputTitle");
-    const autoPostprocess = document.getElementById("autoPostprocess");
-    const manualPostprocessBtn = document.getElementById("manualPostprocessBtn");
-    const promptToggle = document.getElementById("promptToggle");
-    const promptPanel = document.getElementById("promptPanel");
-    const analysisPrompt = document.getElementById("analysisPrompt");
-    const dropOverlay = document.getElementById("dropOverlay");
-    let dragDepth = 0;
-    let downloadEvents = null;
-    let jobEvents = null;
+    const runBtn = document.querySelector("#runBtn");
+    const statusBox = document.querySelector("#status");
+    const logBox = document.querySelector("#log");
+    const resultBox = document.querySelector("#result");
+    const outputDir = document.querySelector("#outputDir");
+    const rawToggle = document.querySelector("#rawToggle");
+    const state = { job: null, events: null, tab: "analysis", raw: false, lastLogLength: 0 };
 
     function setStatus(message, kind = "") {
-      statusBox.className = "status " + kind;
+      statusBox.className = `status ${kind}`.trim();
       statusBox.textContent = message;
     }
-
-    function pretty(value) {
-      if (value === null || value === undefined) return "{}";
-      if (typeof value === "string") return value;
-      return JSON.stringify(value, null, 2);
-    }
-
-    function labelValue(label, value) {
-      if (value === null || value === undefined || value === "") return "";
-      if (Array.isArray(value) && !value.length) return "";
-      return `${label}：${Array.isArray(value) ? value.join("、") : value}\n`;
-    }
-
-    function listSection(title, items) {
-      if (!Array.isArray(items) || !items.length) return `${title}：无\n`;
-      return `${title}：\n${items.map(item => `- ${typeof item === "string" ? item : pretty(item)}`).join("\n")}\n`;
-    }
-
-    function usageSummary(usage) {
-      if (!usage || typeof usage !== "object") return "";
-      const parts = [];
-      parts.push(labelValue("输入 Tokens", usage.input_tokens).trim());
-      parts.push(labelValue("输出 Tokens", usage.output_tokens).trim());
-      parts.push(labelValue("总 Tokens", usage.total_tokens).trim());
-      parts.push(labelValue("API 调用次数", usage.api_calls).trim());
-      parts.push(labelValue("总耗时", usage.elapsed_seconds === null || usage.elapsed_seconds === undefined ? "" : `${usage.elapsed_seconds}s`).trim());
-      parts.push(labelValue("估算费用", usage.estimated_cost_usd === null || usage.estimated_cost_usd === undefined ? "" : `$${usage.estimated_cost_usd}`).trim());
-      return parts.filter(item => item).join("\n");
-    }
-
-    function responseText(value) {
-      if (value === null || value === undefined) return "";
-      if (typeof value === "string") return value;
-      if (typeof value.response === "string") return value.response;
-      return pretty(value);
-    }
-
-    function cleanText(value) {
-      return responseText(value).replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
-    }
-
+    function pretty(value) { return JSON.stringify(value ?? {}, null, 2); }
     function escapeHtml(value) {
-      return String(value ?? "").replace(/[&<>"']/g, char => ({
-        "&": "&amp;",
-        "<": "&lt;",
-        ">": "&gt;",
-        '"': "&quot;",
-        "'": "&#39;"
-      }[char]));
+      return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;");
     }
-
-    function metric(label, value) {
-      if (value === null || value === undefined || value === "") return "";
-      return `<div class="metric"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`;
+    function appendLog(lines) {
+      const next = Array.isArray(lines) ? lines : [lines];
+      if (!next.length) return;
+      const current = logBox.textContent === "等待任务..." ? "" : logBox.textContent;
+      logBox.textContent = `${current}${current ? "\n" : ""}${next.join("\n")}`;
+      logBox.scrollTop = logBox.scrollHeight;
     }
-
-    function section(title, body) {
-      const text = cleanText(body);
-      if (!text) return "";
-      return `<section class="report-section"><h3>${escapeHtml(title)}</h3><div class="body">${escapeHtml(text)}</div></section>`;
+    function section(title, value) {
+      if (value === undefined || value === null || value === "") return "";
+      const body = Array.isArray(value)
+        ? `<ul>${value.map(item => `<li>${escapeHtml(typeof item === "string" ? item : pretty(item))}</li>`).join("")}</ul>`
+        : `<p>${escapeHtml(typeof value === "string" ? value : pretty(value))}</p>`;
+      return `<section class="report-section"><h3>${escapeHtml(title)}</h3>${body}</section>`;
     }
-
-    function listHtml(title, items, mapper = item => item) {
-      if (!Array.isArray(items) || !items.length) return "";
-      const rows = items.map((item, index) => cleanText(mapper(item, index))).filter(Boolean);
-      if (!rows.length) return "";
-      return `<section class="report-section"><h3>${escapeHtml(title)}</h3><ul class="report-list">${rows.map(row => `<li>${escapeHtml(row)}</li>`).join("")}</ul></section>`;
+    function renderReport(value) {
+      if (!value || typeof value !== "object") return `<pre>${escapeHtml(pretty(value))}</pre>`;
+      return [
+        section("概要", value.summary),
+        section("产品定位", value.product_positioning),
+        section("销售信号", value.sales_signals),
+        section("评论洞察", value.review_insights),
+        section("内容机会", value.content_opportunities),
+        section("风险点", value.risk_flags),
+        section("建议动作", value.recommended_actions),
+        section("下一步问题", value.next_questions),
+      ].join("") || `<pre>${escapeHtml(pretty(value))}</pre>`;
     }
-
-    function formatExtractionReport(value) {
-      if (!value || typeof value !== "object") return pretty(value);
-      const metadata = value.metadata || {};
-      const transcript = value.transcript || {};
-      const videoDescription = cleanText(value.video_description);
-      const frameAnalyses = Array.isArray(value.frame_analyses) ? value.frame_analyses : [];
-      const timeline = Array.isArray(value.timeline) ? value.timeline : [];
-      const visualEvidence = Array.isArray(value.visual_evidence) ? value.visual_evidence : [];
-      const audioLanguage = transcript.language || metadata.audio_language;
-      const transcriptSuccessful = transcript.successful === undefined ? metadata.transcription_successful : transcript.successful;
-      const usage = value.usage || {};
-      const timelineRows = timeline.map((item, index) => {
-        if (typeof item === "string") return item;
-        const range = item.time_range || item.timestamp || `片段 ${index + 1}`;
-        const visual = item.visual ? `画面：${item.visual}` : "";
-        const audio = item.audio ? `音频：${item.audio}` : "";
-        return `${range}\n${[visual, audio].filter(Boolean).join("\n")}`;
-      });
-      const segmentRows = Array.isArray(transcript.segments) ? transcript.segments.map(segment => {
-          const start = Number.isFinite(segment.start) ? segment.start.toFixed(2) : "?";
-          const end = Number.isFinite(segment.end) ? segment.end.toFixed(2) : "?";
-          return `${start}s-${end}s  ${segment.text || ""}`;
-      }) : [];
-      return `
-        <article class="report-doc">
-          <div class="report-hero">
-            <div class="report-kicker">Qwen Video Extraction</div>
-            <h2>提取内容报告</h2>
-            <p>${escapeHtml(value.summary ? cleanText(value.summary).slice(0, 180) : "视频内容、画面证据和音频转写的结构化整理。")}</p>
-          </div>
-          <div class="report-grid">
-            ${metric("处理模式", value.processing_mode)}
-            ${metric("视觉模型", value.vision_model || metadata.model)}
-            ${metric("音频模式", value.audio_mode)}
-            ${metric("处理帧数", metadata.frames_processed || metadata.frames_extracted)}
-            ${metric("音频语言", audioLanguage)}
-            ${metric("转写成功", transcriptSuccessful === undefined ? "" : (transcriptSuccessful ? "是" : "否"))}
-            ${metric("输入 Tokens", usage.input_tokens)}
-            ${metric("输出 Tokens", usage.output_tokens)}
-            ${metric("总 Tokens", usage.total_tokens)}
-            ${metric("API 调用", usage.api_calls)}
-            ${metric("总耗时", usage.elapsed_seconds === null || usage.elapsed_seconds === undefined ? "" : `${usage.elapsed_seconds}s`)}
-          </div>
-          ${section("模型总结", value.summary)}
-          ${section("视频画面总述", videoDescription)}
-          ${listHtml("时间线", timelineRows)}
-          ${listHtml("视觉证据", visualEvidence, item => typeof item === "string" ? item : (item.description || item.visual || pretty(item)))}
-          ${listHtml("逐帧视觉分析", frameAnalyses, (frame, index) => `[帧 ${index + 1}]\n${cleanText(frame)}`)}
-          ${section("转写文本", transcript.text || "无转写文本")}
-          ${listHtml("分段转写", segmentRows)}
-        </article>
-      `;
+    function currentValue() {
+      if (!state.job) return null;
+      return state.tab === "analysis" ? state.job.analysis || null : state.job.extract || null;
     }
-
-    function formatAuditReport(value) {
-      if (!value || typeof value !== "object") return pretty(value);
-      return `
-        <article class="report-doc">
-          <div class="report-hero">
-            <div class="report-kicker">DeepSeek Audit</div>
-            <h2>分析结果报告</h2>
-            <p>${escapeHtml(value.summary || "基于提取内容生成的风险和发布建议。")}</p>
-          </div>
-          <div class="report-grid">
-            ${metric("风险等级", value.risk_level)}
-            ${metric("建议动作", value.recommended_action)}
-            ${metric("发布建议", value.publish_suggestion)}
-          </div>
-          ${section("内容摘要", value.summary)}
-          ${section("内容概览", value.content_overview)}
-          ${section("转写要点", value.transcript_notes)}
-          ${section("画面要点", value.visual_notes)}
-          ${listHtml("风险原因", value.risk_reasons)}
-          ${listHtml("问题点", value.issues)}
-        </article>
-      `;
-    }
-
-    function renderOutput(job) {
-      if (!job) {
-        outputBox.className = "report-output";
-        outputBox.textContent = "{}";
+    function renderResult() {
+      const value = currentValue();
+      rawToggle.textContent = state.raw ? "显示报告" : "显示 JSON";
+      if (!value) {
+        resultBox.textContent = "暂无结果。";
         return;
       }
-      state.currentResult = job;
-      outputBox.className = state.showOriginal ? "report-output raw-output" : "report-output";
-      let value = null;
-      if (state.currentTab === "content") {
-        outputTitle.textContent = state.showOriginal ? "Qwen 输出内容，原文" : "Qwen 输出内容，DeepSeek 翻译";
-        value = state.showOriginal ? job.analysis : (job.analysis_zh || job.analysis);
-        if (state.showOriginal) outputBox.textContent = pretty(value);
-        else outputBox.innerHTML = formatExtractionReport(value);
-      } else {
-        outputTitle.textContent = state.showOriginal ? "DeepSeek 分析内容，原文" : "DeepSeek 分析内容，中文";
-        value = state.showOriginal ? job.audit_result : (job.audit_result_zh || job.audit_result);
-        if (state.showOriginal) outputBox.textContent = pretty(value);
-        else outputBox.innerHTML = formatAuditReport(value);
-      }
-      sourceToggle.textContent = state.showOriginal ? "显示中文" : "显示原文";
-    }
-
-    function hasResultPayload(result) {
-      return Boolean(result && (result.analysis || result.analysis_zh || result.audit_result || result.audit_result_zh));
-    }
-
-    function renderAnalyzeButton() {
-      analyzeBtn.textContent = state.hasOutput ? "重新分析" : "开始分析";
-      analyzeBtn.disabled = !state.selectedFile;
-      manualPostprocessBtn.disabled = !state.selectedFile || !state.hasOutput || Boolean(state.currentJob);
-    }
-
-    async function loadDefaultPrompt() {
-      const response = await fetch("/api/prompt");
-      const payload = await response.json();
-      analysisPrompt.value = payload.prompt || "";
-    }
-
-    function togglePromptPanel() {
-      const active = !promptPanel.classList.contains("active");
-      promptPanel.classList.toggle("active", active);
-      promptToggle.textContent = active ? "隐藏当前提示词" : "显示当前提示词";
-      if (active) analysisPrompt.focus();
-    }
-
-    function promptFromResult(result) {
-      const prompt = result && result.analysis && result.analysis.metadata && result.analysis.metadata.analysis_prompt;
-      return typeof prompt === "string" && prompt.trim() ? prompt : "";
-    }
-
-    async function loadSavedResult(name) {
-      if (!name) return;
-      const response = await fetch(`/api/result?filename=${encodeURIComponent(name)}`);
-      const result = await response.json();
-      if (hasResultPayload(result)) {
-        state.currentJob = null;
-        state.currentResult = result;
-        state.hasOutput = true;
-        const savedPrompt = promptFromResult(result);
-        if (savedPrompt) analysisPrompt.value = savedPrompt;
-        renderOutput(result);
-        setStatus(`${name}: 已加载已有输出`, "ok");
-      } else {
-        state.currentResult = null;
-        state.hasOutput = false;
-        outputBox.className = "report-output";
-        outputBox.textContent = "{}";
-        setStatus(`${name}: 等待分析`);
-      }
-      renderAnalyzeButton();
-    }
-
-    function selectFile(name) {
-      state.selectedFile = name;
-      currentFile.textContent = name || "未选择视频";
-      state.hasOutput = false;
-      renderAnalyzeButton();
-      [...fileList.children].forEach(item => item.classList.toggle("selected", item.dataset.name === name));
-      loadSavedResult(name).catch(error => setStatus(error.message, "bad"));
-    }
-
-    async function deleteFile(name) {
-      if (!name) return;
-      if (!confirm(`删除 ${name} 及其所有分析输出？`)) return;
-      const response = await fetch("/api/delete", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ filename: name })
-      });
-      const payload = await response.json();
-      if (!response.ok) {
-        setStatus(payload.error || "删除失败", "bad");
+      if (state.raw || state.tab === "extract") {
+        resultBox.innerHTML = `<pre>${escapeHtml(pretty(value))}</pre>`;
         return;
       }
-      if (state.selectedFile === name) {
-        state.selectedFile = "";
-        state.currentResult = null;
-        state.currentJob = null;
-        state.hasOutput = false;
-        outputBox.className = "report-output";
-        outputBox.textContent = "{}";
-      }
-      setStatus(`${name}: 已删除`, "ok");
-      await refreshFiles();
+      resultBox.innerHTML = renderReport(value);
     }
-
-    async function refreshFiles() {
-      const response = await fetch("/api/files");
-      const files = await response.json();
-      fileList.innerHTML = "";
-      if (!files.length) {
-        fileList.innerHTML = '<div class="muted">videos/ 目录暂无视频</div>';
-        selectFile("");
+    function closeEvents() {
+      if (state.events) {
+        state.events.close();
+        state.events = null;
+      }
+    }
+    function handleJob(job) {
+      state.job = job;
+      if (job.output_dir) outputDir.textContent = `结果目录：${job.output_dir}`;
+      if (Array.isArray(job.log) && job.log.length > state.lastLogLength) {
+        appendLog(job.log.slice(state.lastLogLength));
+        state.lastLogLength = job.log.length;
+      }
+      renderResult();
+      if (job.status === "queued" || job.status === "running") {
+        setStatus(`任务运行中：${job.status}`);
         return;
       }
-      files.forEach(file => {
-        const item = document.createElement("div");
-        item.className = "file-item";
-        item.tabIndex = 0;
-        item.dataset.name = file.name;
-        item.innerHTML = `
-          <span class="file-meta">
-            <span class="file-name">${escapeHtml(file.name)}</span>
-            <span class="muted">${Math.round(file.size / 1024 / 1024 * 10) / 10} MB</span>
-          </span>
-          <span class="file-actions">
-            <button class="play-button" type="button">播放</button>
-            <button class="danger-button" type="button">删除</button>
-          </span>
-        `;
-        item.onclick = () => selectFile(file.name);
-        item.onkeydown = event => {
-          if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            selectFile(file.name);
-          }
-        };
-        item.querySelector(".danger-button").onclick = event => {
-          event.stopPropagation();
-          deleteFile(file.name).catch(error => setStatus(error.message, "bad"));
-        };
-        item.querySelector(".play-button").onclick = event => {
-          event.stopPropagation();
-          window.open(`/video/${encodeURIComponent(file.name)}`, "_blank", "noopener");
-        };
-        fileList.appendChild(item);
-      });
-      if (!state.selectedFile || !files.some(file => file.name === state.selectedFile)) {
-        selectFile(files[0].name);
-      } else {
-        selectFile(state.selectedFile);
-      }
+      closeEvents();
+      runBtn.disabled = false;
+      setStatus(job.status === "complete" ? "TikTok Shop 提取完成。" : (job.error || "TikTok Shop 提取失败。"), job.status === "complete" ? "ok" : "bad");
     }
-
-    async function startDownload() {
-      const url = tiktokUrl.value.trim();
+    async function startJob() {
+      const url = document.querySelector("#shopUrl").value.trim();
       if (!url) {
-        setStatus("请输入 TikTok 或抖音视频链接。", "bad");
+        setStatus("请输入 TikTok Shop 链接。", "bad");
         return;
       }
-      downloadBtn.disabled = true;
-      setStatus("视频下载任务已提交...");
-      const response = await fetch("/api/download", {
+      closeEvents();
+      state.job = null;
+      state.lastLogLength = 0;
+      logBox.textContent = "提交任务...";
+      resultBox.textContent = "暂无结果。";
+      runBtn.disabled = true;
+      setStatus("正在提交任务...");
+      const payload = {
+        url,
+        source_type: document.querySelector("#sourceType").value,
+        region: document.querySelector("#region").value.trim() || "US",
+        max_pages: Number(document.querySelector("#maxPages").value || 1),
+        review_pages: Number(document.querySelector("#reviewPages").value || 0),
+        related_videos: document.querySelector("#relatedVideos").checked,
+        analyze: document.querySelector("#analyze").checked,
+        prompt: document.querySelector("#prompt").value
+      };
+      const response = await fetch("/api/shop-extract", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url })
+        body: JSON.stringify(payload)
       });
       const job = await response.json();
       if (!response.ok) {
-        setStatus(job.error || "下载任务提交失败", "bad");
-        downloadBtn.disabled = false;
+        runBtn.disabled = false;
+        setStatus(job.error || "任务提交失败。", "bad");
+        appendLog(job.error || "任务提交失败。");
         return;
       }
-      openDownloadEvents(job.id);
-    }
-
-    function formatRouteCheck(route) {
-      if (!route) return "未配置";
-      if (!route.ok) return `失败：${route.error || "未知错误"}`;
-      const country = route.country_name ? `${route.country_name} (${route.country})` : route.country;
-      return `${route.ip || "未知 IP"} / ${country || "未知地区"} / ${route.is_us ? "美国出口" : "非美国出口"}`;
-    }
-
-    async function checkNetwork() {
-      networkCheckBtn.disabled = true;
-      setStatus("正在检测服务器外网和代理出口...");
-      try {
-        const response = await fetch("/api/network-check");
-        const payload = await response.json();
-        if (!response.ok) {
-          setStatus(payload.error || "代理出口检测失败", "bad");
-          return;
-        }
-        const direct = formatRouteCheck(payload.direct);
-        const proxy = formatRouteCheck(payload.proxy);
-        const kind = payload.proxy && payload.proxy.ok && payload.proxy.is_us ? "ok" : "bad";
-        setStatus(`直连：${direct}；代理：${proxy}`, kind);
-      } catch (error) {
-        setStatus(`代理出口检测失败：${error.message}`, "bad");
-      } finally {
-        networkCheckBtn.disabled = false;
-      }
-    }
-
-    function latestJobLog(job) {
-      if (!job || !Array.isArray(job.log) || !job.log.length) return "";
-      const line = job.log[job.log.length - 1] || "";
-      return line.length > 180 ? `${line.slice(0, 180)}...` : line;
-    }
-
-    function closeDownloadEvents() {
-      if (downloadEvents) {
-        downloadEvents.close();
-        downloadEvents = null;
-      }
-    }
-
-    function openDownloadEvents(id) {
-      closeDownloadEvents();
-      downloadEvents = new EventSource(`/api/download-events?id=${encodeURIComponent(id)}`);
-      downloadEvents.onmessage = async event => {
-        const job = JSON.parse(event.data);
-        handleDownloadJob(job);
-      };
-      downloadEvents.onerror = () => {
-        closeDownloadEvents();
-        downloadBtn.disabled = false;
-        setStatus("视频下载连接中断，请刷新后查看任务结果。", "bad");
+      handleJob(job);
+      state.events = new EventSource(`/api/shop-events?id=${encodeURIComponent(job.id)}`);
+      state.events.onmessage = event => handleJob(JSON.parse(event.data));
+      state.events.onerror = () => {
+        closeEvents();
+        runBtn.disabled = false;
+        setStatus("任务连接中断，请刷新任务结果。", "bad");
       };
     }
-
-    async function handleDownloadJob(job) {
-      if (job.status === "missing") {
-        closeDownloadEvents();
-        setStatus(job.error || "下载任务不存在", "bad");
-        downloadBtn.disabled = false;
-        return;
-      }
-      if (job.status === "running" || job.status === "queued") {
-        const log = latestJobLog(job);
-        setStatus(`视频下载中：${job.status}${log ? ` - ${log}` : ""}`);
-        return;
-      }
-      closeDownloadEvents();
-      downloadBtn.disabled = false;
-      if (job.status !== "complete") {
-        setStatus(`视频下载失败：${job.error || "未知错误"}`, "bad");
-        return;
-      }
-      setStatus(`${job.filename}: 下载完成`, "ok");
-      tiktokUrl.value = "";
-      await refreshFiles();
-      selectFile(job.filename);
-    }
-
-    async function uploadVideo(file = null) {
-      const input = document.getElementById("videoFile");
-      const videoFile = file || input.files[0];
-      if (!videoFile) {
-        setStatus("请选择一个视频文件。", "bad");
-        return;
-      }
-      if (!videoFile.type.startsWith("video/")) {
-        setStatus("请拖入视频文件。", "bad");
-        return;
-      }
-      const form = new FormData();
-      form.append("video", videoFile);
-      setStatus("正在上传...");
-      const response = await fetch("/api/upload", { method: "POST", body: form });
-      const payload = await response.json();
-      if (!response.ok) {
-        setStatus(payload.error || "上传失败", "bad");
-        return;
-      }
-      setStatus(`已上传 ${payload.filename}`, "ok");
-      await refreshFiles();
-      selectFile(payload.filename);
-    }
-
-    async function startAnalyze() {
-      if (!state.selectedFile) return;
-      analyzeBtn.disabled = true;
-      manualPostprocessBtn.disabled = true;
-      const resetOutput = state.hasOutput;
-      setStatus(resetOutput ? "正在清空旧输出并重新分析..." : "分析任务已提交...");
-      const response = await fetch("/api/analyze", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          filename: state.selectedFile,
-          analysis_mode: document.getElementById("analysisMode").value,
-          analysis_prompt: analysisPrompt.value,
-          postprocess: autoPostprocess.checked,
-          reset_output: resetOutput
-        })
-      });
-      const job = await response.json();
-      if (!response.ok) {
-        setStatus(job.error || "提交失败", "bad");
-        analyzeBtn.disabled = false;
-        return;
-      }
-      state.currentJob = job.id;
-      state.currentResult = job;
-      state.showOriginal = false;
-      state.hasOutput = false;
-      openJobEvents(job.id);
-    }
-
-    async function startManualPostprocess() {
-      if (!state.selectedFile || !state.hasOutput) return;
-      manualPostprocessBtn.disabled = true;
-      setStatus("DeepSeek 分析任务已提交...");
-      const response = await fetch("/api/postprocess", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ filename: state.selectedFile })
-      });
-      const job = await response.json();
-      if (!response.ok) {
-        setStatus(job.error || "提交失败", "bad");
-        renderAnalyzeButton();
-        return;
-      }
-      state.currentJob = job.id;
-      state.currentResult = job;
-      state.currentTab = "audit";
-      state.showOriginal = false;
-      document.querySelectorAll(".tab").forEach(item => item.classList.toggle("active", item.dataset.tab === "audit"));
-      openJobEvents(job.id);
-    }
-
-    function closeJobEvents() {
-      if (jobEvents) {
-        jobEvents.close();
-        jobEvents = null;
-      }
-    }
-
-    function openJobEvents(id) {
-      closeJobEvents();
-      jobEvents = new EventSource(`/api/job-events?id=${encodeURIComponent(id)}`);
-      jobEvents.onmessage = event => {
-        const job = JSON.parse(event.data);
-        handleJobUpdate(job);
-      };
-      jobEvents.onerror = () => {
-        closeJobEvents();
-        analyzeBtn.disabled = !state.selectedFile;
-        renderAnalyzeButton();
-        setStatus("分析任务连接中断，请刷新后查看任务结果。", "bad");
-      };
-    }
-
-    function handleJobUpdate(job) {
-      if (job.status === "missing") {
-        closeJobEvents();
-        state.currentJob = null;
-        analyzeBtn.disabled = !state.selectedFile;
-        renderAnalyzeButton();
-        setStatus(job.error || "任务不存在", "bad");
-        return;
-      }
-      state.currentResult = job;
-      renderOutput(job);
-      if (job.status === "running" || job.status === "queued") {
-        const log = latestJobLog(job);
-        setStatus(`${job.filename}: ${job.status}${log ? ` - ${log}` : ""}`);
-        return;
-      }
-      closeJobEvents();
-      state.currentJob = null;
-      analyzeBtn.disabled = !state.selectedFile;
-      state.hasOutput = job.status === "complete" || hasResultPayload(job);
-      renderAnalyzeButton();
-      setStatus(job.status === "complete" ? `${job.filename}: 完成` : `${job.filename}: ${job.error || "失败"}`, job.status === "complete" ? "ok" : "bad");
-    }
-
-    downloadBtn.onclick = startDownload;
-    networkCheckBtn.onclick = checkNetwork;
-    tiktokUrl.onkeydown = event => {
-      if (event.key === "Enter") {
-        event.preventDefault();
-        startDownload();
-      }
+    runBtn.onclick = () => startJob().catch(error => {
+      runBtn.disabled = false;
+      setStatus(error.message, "bad");
+      appendLog(error.message);
+    });
+    rawToggle.onclick = () => {
+      state.raw = !state.raw;
+      renderResult();
     };
-    document.getElementById("uploadBtn").onclick = () => uploadVideo();
-    document.getElementById("refreshBtn").onclick = refreshFiles;
-    document.getElementById("analysisMode").value = window.DEFAULT_ANALYSIS_MODE || "analyzer";
-    manualPostprocessBtn.onclick = startManualPostprocess;
-    promptToggle.onclick = togglePromptPanel;
-    analyzeBtn.onclick = startAnalyze;
-    window.addEventListener("dragenter", event => {
-      event.preventDefault();
-      dragDepth += 1;
-      dropOverlay.classList.add("active");
-    });
-    window.addEventListener("dragover", event => {
-      event.preventDefault();
-    });
-    window.addEventListener("dragleave", event => {
-      event.preventDefault();
-      dragDepth = Math.max(0, dragDepth - 1);
-      if (dragDepth === 0) dropOverlay.classList.remove("active");
-    });
-    window.addEventListener("drop", event => {
-      event.preventDefault();
-      dragDepth = 0;
-      dropOverlay.classList.remove("active");
-      const file = event.dataTransfer.files && event.dataTransfer.files[0];
-      if (file) uploadVideo(file).catch(error => setStatus(error.message, "bad"));
-    });
-    sourceToggle.onclick = () => {
-      state.showOriginal = !state.showOriginal;
-      renderOutput(state.currentResult);
+    document.querySelector("#clearLog").onclick = () => {
+      state.lastLogLength = 0;
+      logBox.textContent = "等待任务...";
     };
-    document.querySelectorAll(".tab").forEach(tab => {
-      tab.onclick = () => {
+    document.querySelectorAll(".tab").forEach(button => {
+      button.onclick = () => {
         document.querySelectorAll(".tab").forEach(item => item.classList.remove("active"));
-        tab.classList.add("active");
-        state.currentTab = tab.dataset.tab;
-        state.showOriginal = false;
-        renderOutput(state.currentResult);
+        button.classList.add("active");
+        state.tab = button.dataset.tab;
+        state.raw = false;
+        renderResult();
       };
     });
-    refreshFiles().catch(error => setStatus(error.message, "bad"));
-    loadDefaultPrompt().catch(error => setStatus(error.message, "bad"));
   </script>
 </body>
 </html>

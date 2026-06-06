@@ -17,6 +17,8 @@ Videos are read from `videos/`. Results are written to `output/<video-file-name>
 - `scripts/standardize_analysis.py`: normalizes `video-analyzer` output to the shared schema.
 - `scripts/translate_analysis.py`: translates analyzer or audit JSON output into Simplified Chinese.
 - `scripts/deepseek_postprocess.py`: reads `analysis.json` and writes `audit_result.json`.
+- `scripts/sociavault_tiktok_shop.py`: extracts TikTok Shop product, review, or storefront data through SociaVault.
+- `scripts/deepseek_shop_analyze.py`: turns TikTok Shop extraction JSON into a Chinese DeepSeek analysis report.
 - `scripts/web_app.py`: serves the upload/analyze/result web UI.
 - `scripts/run_web.sh`: starts the web UI on port `4000`, or the next available port.
 - `.env.example`: template for runtime settings.
@@ -46,6 +48,12 @@ TIKTOK_MAX_BYTES=2147483648
 TIKTOK_PROXY_URL=
 DOUYIN_PROXY_URL=
 DOUYIN_COOKIE=
+
+SOCIAVAULT_API_KEY=your-sociavault-api-key
+SOCIAVAULT_API_BASE=https://api.sociavault.com
+SOCIAVAULT_REGION=US
+SOCIAVAULT_MAX_PAGES=1
+SOCIAVAULT_REVIEW_PAGES=1
 
 DEEPSEEK_API_KEY=your-deepseek-api-key
 HF_ENDPOINT=https://hf-mirror.com
@@ -102,6 +110,30 @@ The page supports:
 - showing processing mode, model, token usage, estimated cost, and total elapsed time
 - viewing `提取内容（中文）` and `分析结果（中文）`
 - switching each result tab back to original JSON with `显示原文`
+
+## TikTok Shop Extraction
+
+A separate TikTok Shop page is available at:
+
+```text
+http://<server>:4000/shop
+```
+
+It calls SociaVault with `SOCIAVAULT_API_KEY` to extract either a TikTok Shop product detail plus reviews, or a storefront product list. If `DEEPSEEK_API_KEY` is configured, it can also generate a Chinese product and content analysis report.
+
+Results are saved under:
+
+```text
+output/tiktok_shop/<job-id>/
+```
+
+The page uses separate endpoints and does not change the existing video analyzer page:
+
+```text
+POST /api/shop-extract
+GET /api/shop-events?id=<job-id>
+GET /api/shop-job?id=<job-id>
+```
 
 ## TikTok / Douyin Download
 
