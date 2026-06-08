@@ -190,6 +190,92 @@ def read_json(path: Path) -> Any | None:
         return json.load(file)
 
 
+def shop_job_record_path(job_id: str) -> Path:
+    return OUTPUT_DIR / "tiktok_shop" / job_id / "job.json"
+
+
+def shop_job_record(job: ShopJob) -> dict[str, Any]:
+    return {
+        "id": job.id,
+        "url": job.url,
+        "source_type": job.source_type,
+        "region": job.region,
+        "max_pages": job.max_pages,
+        "review_pages": job.review_pages,
+        "analyze": job.analyze,
+        "related_videos": job.related_videos,
+        "prompt": job.prompt,
+        "status": job.status,
+        "created_at": job.created_at,
+        "updated_at": job.updated_at,
+        "output_dir": job.output_dir,
+        "error": job.error,
+        "log": job.log[-200:],
+    }
+
+
+def write_shop_job_record(job: ShopJob) -> None:
+    if not job.output_dir:
+        return
+    path = shop_job_record_path(job.id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as file:
+        json.dump(shop_job_record(job), file, ensure_ascii=False, indent=2)
+        file.write("\n")
+
+
+def public_shop_record_from_dir(output_dir: Path, include_payload: bool = False) -> dict[str, Any] | None:
+    if not output_dir.is_dir():
+        return None
+    job_id = output_dir.name
+    record = read_json(output_dir / "job.json")
+    extract = read_json(output_dir / "shop_extract.json")
+    analysis = read_json(output_dir / "shop_analysis.json")
+    if not isinstance(record, dict):
+        mtimes = [path.stat().st_mtime for path in (output_dir / "shop_extract.json", output_dir / "shop_analysis.json") if path.is_file()]
+        if not mtimes:
+            return None
+        extract_obj = extract if isinstance(extract, dict) else {}
+        record = {
+            "id": job_id,
+            "url": extract_obj.get("product_url") or extract_obj.get("shop_url") or extract_obj.get("query") or "",
+            "source_type": extract_obj.get("source_type") or "unknown",
+            "region": extract_obj.get("region") or "",
+            "max_pages": extract_obj.get("pages_requested") or 1,
+            "review_pages": extract_obj.get("review_pages_requested") or 0,
+            "analyze": analysis is not None,
+            "related_videos": False,
+            "prompt": "",
+            "status": "complete" if extract is not None else "failed",
+            "created_at": min(mtimes),
+            "updated_at": max(mtimes),
+            "output_dir": str(output_dir.relative_to(ROOT)),
+            "error": None,
+            "log": [],
+        }
+    record.setdefault("id", job_id)
+    record.setdefault("output_dir", str(output_dir.relative_to(ROOT)))
+    record["has_extract"] = extract is not None
+    record["has_analysis"] = analysis is not None
+    if include_payload:
+        record["extract"] = extract
+        record["analysis"] = analysis
+    return record
+
+
+def list_shop_records(limit: int = 50) -> list[dict[str, Any]]:
+    root = OUTPUT_DIR / "tiktok_shop"
+    if not root.is_dir():
+        return []
+    records = []
+    for output_dir in root.iterdir():
+        record = public_shop_record_from_dir(output_dir, include_payload=False)
+        if record:
+            records.append(record)
+    records.sort(key=lambda item: item.get("updated_at") or item.get("created_at") or 0, reverse=True)
+    return records[:limit]
+
+
 def clean_report_value(value: Any) -> str:
     if value is None:
         return ""
@@ -410,6 +496,7 @@ def append_shop_log(job: ShopJob, line: str) -> None:
     with shop_jobs_lock:
         job.log.append(line.rstrip())
         job.updated_at = time.time()
+        write_shop_job_record(job)
 
 
 def run_shop_command(job: ShopJob, command: list[str]) -> None:
@@ -444,6 +531,7 @@ def run_shop_job(job_id: str) -> None:
         with shop_jobs_lock:
             job.output_dir = str(output_dir.relative_to(ROOT))
             job.updated_at = time.time()
+            write_shop_job_record(job)
 
         command = [
             "python",
@@ -481,12 +569,14 @@ def run_shop_job(job_id: str) -> None:
         with shop_jobs_lock:
             job.status = "complete"
             job.updated_at = time.time()
+            write_shop_job_record(job)
     except Exception as exc:
         with shop_jobs_lock:
             job.status = "failed"
             job.error = str(exc)
             job.updated_at = time.time()
             job.log.append(str(exc))
+            write_shop_job_record(job)
 
 
 def append_metrics_log(job: MetricsJob, line: str) -> None:
@@ -736,6 +826,8 @@ def public_download_job(job: DownloadJob) -> dict[str, Any]:
 
 def public_shop_job(job: ShopJob) -> dict[str, Any]:
     output_dir = OUTPUT_DIR / "tiktok_shop" / job.id
+    extract = read_json(output_dir / "shop_extract.json")
+    analysis = read_json(output_dir / "shop_analysis.json")
     return {
         "id": job.id,
         "url": job.url,
@@ -748,11 +840,13 @@ def public_shop_job(job: ShopJob) -> dict[str, Any]:
         "status": job.status,
         "created_at": job.created_at,
         "updated_at": job.updated_at,
-        "output_dir": job.output_dir,
+        "output_dir": job.output_dir or str(output_dir.relative_to(ROOT)),
         "error": job.error,
         "log": job.log[-120:],
-        "extract": read_json(output_dir / "shop_extract.json"),
-        "analysis": read_json(output_dir / "shop_analysis.json"),
+        "has_extract": extract is not None,
+        "has_analysis": analysis is not None,
+        "extract": extract,
+        "analysis": analysis,
     }
 
 
@@ -878,11 +972,20 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/download-events":
             job_id = parse_qs(parsed.query).get("id", [""])[0]
             return self.stream_download_events(job_id)
+        if parsed.path == "/api/shop-records":
+            limit_raw = parse_qs(parsed.query).get("limit", ["50"])[0]
+            try:
+                limit = max(1, min(200, int(limit_raw)))
+            except ValueError:
+                limit = 50
+            return json_response(self, HTTPStatus.OK, {"records": list_shop_records(limit)})
         if parsed.path == "/api/shop-job":
             job_id = parse_qs(parsed.query).get("id", [""])[0]
             with shop_jobs_lock:
                 job = shop_jobs.get(job_id)
                 payload = public_shop_job(job) if job else None
+            if payload is None:
+                payload = public_shop_record_from_dir(OUTPUT_DIR / "tiktok_shop" / job_id, include_payload=True)
             if payload is None:
                 return json_response(self, HTTPStatus.NOT_FOUND, {"error": "TikTok Shop job not found"})
             return json_response(self, HTTPStatus.OK, payload)
@@ -1133,6 +1236,10 @@ class Handler(BaseHTTPRequestHandler):
             related_videos=related_videos,
             prompt=prompt,
         )
+        output_dir = OUTPUT_DIR / "tiktok_shop" / job.id
+        output_dir.mkdir(parents=True, exist_ok=True)
+        job.output_dir = str(output_dir.relative_to(ROOT))
+        write_shop_job_record(job)
         with shop_jobs_lock:
             shop_jobs[job.id] = job
         thread = threading.Thread(target=run_shop_job, args=(job.id,), daemon=True)
@@ -1476,6 +1583,13 @@ SHOP_HTML = r"""<!doctype html>
     .report-section h3 { margin-bottom: 8px; font-size: 15px; }
     .log { color: #dbe7ff; background: #101827; }
     .muted { color: #667589; font-size: 13px; }
+    .history-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 4px; }
+    .history-head button { min-height: 30px; padding: 4px 9px; }
+    .records { display: grid; gap: 8px; max-height: 240px; overflow: auto; }
+    .record { border: 1px solid #d9e1eb; border-radius: 8px; padding: 9px; background: #fff; cursor: pointer; }
+    .record.active { border-color: #1f6feb; background: #eef4ff; }
+    .record strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .record span { display: block; color: #667589; font-size: 12px; margin-top: 3px; }
     @media (max-width: 960px) {
       .app-shell, .result-layout { grid-template-columns: 1fr; }
       .side-panel { border-right: 0; border-bottom: 1px solid #d5dce7; }
@@ -1540,7 +1654,7 @@ SHOP_HTML = r"""<!doctype html>
     const resultBox = document.querySelector("#result");
     const outputDir = document.querySelector("#outputDir");
     const rawToggle = document.querySelector("#rawToggle");
-    const state = { job: null, events: null, tab: "analysis", raw: false, lastLogLength: 0 };
+    const state = { job: null, events: null, tab: "analysis", raw: false, lastLogLength: 0, records: [] };
 
     function setStatus(message, kind = "") {
       statusBox.className = `status ${kind}`.trim();
@@ -1580,6 +1694,50 @@ SHOP_HTML = r"""<!doctype html>
     function currentValue() {
       if (!state.job) return null;
       return state.tab === "analysis" ? state.job.analysis || null : state.job.extract || null;
+    }
+    function typeLabel(value) {
+      return { product: "商品+评论", details: "商品详情", reviews: "商品评论", shop: "店铺搜索", search: "商品搜索" }[value] || value || "未知";
+    }
+    function recordTitle(record) {
+      return record.url || record.query || record.id || "未命名记录";
+    }
+    function formatTime(ts) {
+      if (!ts) return "";
+      return new Date(ts * 1000).toLocaleString();
+    }
+    function renderRecords() {
+      const box = document.querySelector("#records");
+      if (!box) return;
+      if (!state.records.length) {
+        box.textContent = "暂无记录。";
+        return;
+      }
+      box.innerHTML = state.records.map(record => `<div class="record ${state.job && state.job.id === record.id ? "active" : ""}" data-id="${escapeHtml(record.id)}"><strong>${escapeHtml(recordTitle(record))}</strong><span>${escapeHtml(typeLabel(record.source_type))} / ${escapeHtml(record.status || "")}</span><span>${escapeHtml(formatTime(record.updated_at || record.created_at))}</span></div>`).join("");
+      box.querySelectorAll(".record").forEach(item => item.onclick = () => loadRecord(item.dataset.id));
+    }
+    async function refreshRecords() {
+      const response = await fetch("/api/shop-records?limit=80");
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "读取历史记录失败");
+      state.records = Array.isArray(payload.records) ? payload.records : [];
+      renderRecords();
+    }
+    async function loadRecord(id) {
+      if (!id) return;
+      closeEvents();
+      const response = await fetch(`/api/shop-job?id=${encodeURIComponent(id)}`);
+      const job = await response.json();
+      if (!response.ok) {
+        setStatus(job.error || "读取记录失败", "bad");
+        return;
+      }
+      state.job = job;
+      state.lastLogLength = Array.isArray(job.log) ? job.log.length : 0;
+      logBox.textContent = Array.isArray(job.log) && job.log.length ? job.log.join("\n") : "无日志...";
+      if (job.output_dir) outputDir.textContent = `结果目录：${job.output_dir}`;
+      renderResult();
+      renderRecords();
+      setStatus(`已加载历史记录：${job.status || ""}`, job.status === "failed" ? "bad" : "ok");
     }
     function renderResult() {
       const value = currentValue();
@@ -1687,7 +1845,9 @@ SHOP_HTML = r"""<!doctype html>
       logBox.textContent = "等待任务...";
     };
     document.querySelector("#sourceType").onchange = updateSourceMode;
+    document.querySelector("#refreshRecords").onclick = () => refreshRecords().catch(error => setStatus(error.message, "bad"));
     updateSourceMode();
+    refreshRecords().catch(error => appendLog(error.message));
     document.querySelectorAll(".tab").forEach(button => {
       button.onclick = () => {
         document.querySelectorAll(".tab").forEach(item => item.classList.remove("active"));
