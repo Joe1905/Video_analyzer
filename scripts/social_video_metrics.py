@@ -4,6 +4,8 @@ import asyncio
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -225,15 +227,175 @@ def response_text(response: Any) -> str:
     return str(value or "")
 
 
-def fetch_with_scrapling(url: str, platform: str, timeout_ms: int, wait_ms: int) -> dict[str, Any]:
-    from scrapling.fetchers import StealthyFetcher
+def parse_mcp_text(text: str) -> Any:
+    cleaned = text.strip()
+    if not cleaned:
+        return ""
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        return text
 
+
+def content_from_mcp_result(result: Any) -> Any:
+    structured = getattr(result, "structuredContent", None) or getattr(result, "structured_content", None)
+    if structured:
+        return structured
+    content = getattr(result, "content", None) or []
+    values: list[Any] = []
+    for item in content:
+        item_type = getattr(item, "type", None)
+        text = getattr(item, "text", None)
+        if item_type == "text" and text is not None:
+            values.append(parse_mcp_text(text))
+        elif text is not None:
+            values.append(text)
+    if len(values) == 1:
+        return values[0]
+    return values
+
+
+def find_text_payload(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        for key in ("content", "html", "text", "body", "markdown"):
+            item = value.get(key)
+            if isinstance(item, str):
+                return item
+        for item in value.values():
+            found = find_text_payload(item)
+            if found:
+                return found
+    if isinstance(value, list):
+        for item in value:
+            found = find_text_payload(item)
+            if found:
+                return found
+    return ""
+
+
+def find_first_key(value: Any, names: tuple[str, ...]) -> Any:
+    if isinstance(value, dict):
+        for name in names:
+            if name in value and value[name] not in (None, ""):
+                return value[name]
+        for item in value.values():
+            found = find_first_key(item, names)
+            if found not in (None, ""):
+                return found
+    if isinstance(value, list):
+        for item in value:
+            found = find_first_key(item, names)
+            if found not in (None, ""):
+                return found
+    return None
+
+
+def mcp_tool_name(tool: Any) -> str:
+    if isinstance(tool, dict):
+        return str(tool.get("name") or "")
+    return str(getattr(tool, "name", "") or "")
+
+
+def mcp_tool_schema_properties(tool: Any) -> set[str]:
+    if isinstance(tool, dict):
+        schema = tool.get("inputSchema") or tool.get("input_schema") or {}
+    else:
+        schema = getattr(tool, "inputSchema", None) or getattr(tool, "input_schema", None) or {}
+    if isinstance(schema, dict) and isinstance(schema.get("properties"), dict):
+        return set(schema["properties"].keys())
+    return set()
+
+
+def filter_tool_args(tool: Any, args: dict[str, Any]) -> dict[str, Any]:
+    properties = mcp_tool_schema_properties(tool)
+    if not properties:
+        return args
+    return {key: value for key, value in args.items() if key in properties}
+
+
+class McpStdioClient:
+    def __init__(self, command: str, args: list[str]) -> None:
+        self.command = command
+        self.args = args
+        self.next_id = 1
+        self.process: subprocess.Popen[str] | None = None
+
+    def __enter__(self) -> "McpStdioClient":
+        self.process = subprocess.Popen(
+            [self.command, *self.args],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            cwd=ROOT,
+            bufsize=1,
+        )
+        self.request(
+            "initialize",
+            {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "video-analyzer", "version": "1.0"},
+            },
+        )
+        self.notify("notifications/initialized", {})
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        if not self.process:
+            return
+        self.process.terminate()
+        try:
+            self.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+
+    def send(self, payload: dict[str, Any]) -> None:
+        if not self.process or not self.process.stdin:
+            raise RuntimeError("MCP process is not running")
+        self.process.stdin.write(json.dumps(payload, separators=(",", ":")) + "\n")
+        self.process.stdin.flush()
+
+    def notify(self, method: str, params: dict[str, Any]) -> None:
+        self.send({"jsonrpc": "2.0", "method": method, "params": params})
+
+    def request(self, method: str, params: dict[str, Any] | None = None) -> Any:
+        request_id = self.next_id
+        self.next_id += 1
+        payload: dict[str, Any] = {"jsonrpc": "2.0", "id": request_id, "method": method}
+        if params is not None:
+            payload["params"] = params
+        self.send(payload)
+        if not self.process or not self.process.stdout:
+            raise RuntimeError("MCP process stdout is not available")
+        while True:
+            line = self.process.stdout.readline()
+            if not line:
+                raise RuntimeError(f"MCP process exited while waiting for {method}")
+            try:
+                message = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if message.get("id") != request_id:
+                continue
+            if message.get("error"):
+                raise RuntimeError(json.dumps(message["error"], ensure_ascii=False))
+            return message.get("result")
+
+
+def call_scrapling_mcp(url: str, platform: str, timeout_ms: int, wait_ms: int) -> dict[str, Any]:
+
+    command = os.getenv("SCRAPLING_MCP_COMMAND", "").strip() or shutil.which("scrapling") or "scrapling"
     headers = {"User-Agent": DESKTOP_USER_AGENT}
     cookie_header = cookie_header_for(platform)
     if cookie_header:
         headers["Cookie"] = cookie_header
 
-    fetch_kwargs: dict[str, Any] = {
+    base_args: dict[str, Any] = {
+        "url": url,
         "headless": True,
         "humanize": True,
         "geoip": bool(proxy_for(platform)),
@@ -246,19 +408,44 @@ def fetch_with_scrapling(url: str, platform: str, timeout_ms: int, wait_ms: int)
     }
     proxy = proxy_for(platform)
     if proxy:
-        fetch_kwargs["proxy"] = proxy
-    try:
-        response = StealthyFetcher.fetch(url, **fetch_kwargs)
-    except TypeError:
-        response = StealthyFetcher().fetch(url, **fetch_kwargs)
+        base_args["proxy"] = proxy
 
-    html = response_text(response)
-    payload = extract_from_html(html)
-    payload["fetcher"] = "scrapling_stealthy"
-    payload["status"] = getattr(response, "status", None) or getattr(response, "status_code", None)
-    payload["final_url"] = str(getattr(response, "url", "") or url)
-    payload["html_length"] = len(html)
-    return payload
+    errors: list[str] = []
+    with McpStdioClient(command, ["mcp"]) as session:
+        listed = session.request("tools/list") or {}
+        tool_items = listed.get("tools") if isinstance(listed, dict) else []
+        tools = {mcp_tool_name(tool): tool for tool in tool_items if mcp_tool_name(tool)}
+        selected = [name for name in ("get", "fetch", "stealthy_fetch", "fetch_page") if name in tools]
+        if not selected:
+            raise RuntimeError(f"Scrapling MCP tools not found. Available tools: {', '.join(sorted(tools))}")
+
+        last_payload: dict[str, Any] | None = None
+        for tool_name in selected:
+            args = filter_tool_args(tools[tool_name], base_args)
+            try:
+                raw = session.request("tools/call", {"name": tool_name, "arguments": args})
+                html = find_text_payload(raw)
+                payload = extract_from_html(html)
+                payload["fetcher"] = f"scrapling_mcp:{tool_name}"
+                payload["mcp_tool"] = tool_name
+                payload["status"] = find_first_key(raw, ("status", "status_code"))
+                payload["final_url"] = str(find_first_key(raw, ("url", "final_url", "real_url")) or url)
+                payload["html_length"] = len(html)
+                last_payload = payload
+                if html and payload["json_candidate_count"]:
+                    return payload
+                if html and tool_name == selected[-1]:
+                    return payload
+            except Exception as exc:
+                errors.append(f"{tool_name}: {exc}")
+        if last_payload is not None:
+            last_payload["scrapling_error"] = "; ".join(errors)
+            return last_payload
+        raise RuntimeError("; ".join(errors) or "Scrapling MCP returned no usable result")
+
+
+def fetch_with_scrapling_mcp(url: str, platform: str, timeout_ms: int, wait_ms: int) -> dict[str, Any]:
+    return call_scrapling_mcp(url, platform, timeout_ms, wait_ms)
 
 
 def fetch_with_playwright(url: str, platform: str, timeout_ms: int, wait_ms: int) -> dict[str, Any]:
@@ -308,7 +495,7 @@ def fetch_with_playwright(url: str, platform: str, timeout_ms: int, wait_ms: int
 
 def fetch_page_data(url: str, platform: str, timeout_ms: int, wait_ms: int) -> dict[str, Any]:
     try:
-        return fetch_with_scrapling(url, platform, timeout_ms, wait_ms)
+        return fetch_with_scrapling_mcp(url, platform, timeout_ms, wait_ms)
     except Exception as exc:
         fallback = fetch_with_playwright(url, platform, timeout_ms, wait_ms)
         fallback["scrapling_error"] = str(exc)
@@ -401,7 +588,7 @@ def build_result(url: str, timeout_ms: int, wait_ms: int) -> dict[str, Any]:
         "raw_stat_samples": page_data.get("raw_stat_samples") or [],
         "usage": {
             "elapsed_seconds": round(time.monotonic() - started, 3),
-            "uses_scrapling": page_data.get("fetcher") == "scrapling_stealthy",
+            "uses_scrapling": str(page_data.get("fetcher") or "").startswith("scrapling_mcp:"),
         },
     }
 

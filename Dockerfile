@@ -33,8 +33,9 @@ RUN apt-get update \
 RUN pip install --upgrade pip \
     && pip install "video-analyzer @ git+https://github.com/byjlw/video-analyzer.git" requests openai-whisper
 
-RUN pip install yt-dlp playwright httpx "scrapling[fetchers]" \
-    && python -m playwright install --with-deps chromium
+RUN pip install yt-dlp playwright httpx "scrapling[ai]" \
+    && python -m playwright install --with-deps chromium \
+    && scrapling install
 
 RUN pip install -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn "curl_cffi>=0.15,<0.16"
 

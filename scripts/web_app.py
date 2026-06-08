@@ -1314,7 +1314,7 @@ METRICS_HTML = r"""<!doctype html>
       <label>公开视频链接<input id="url" placeholder="https://www.tiktok.com/@user/video/... 或 https://www.douyin.com/video/..."></label>
       <button id="run" type="button">提取数据</button>
       <div id="status" class="status">等待输入 TikTok / 抖音视频链接。</div>
-      <p class="muted">使用 Scrapling stealth 抓取页面公开数据；TikTok 会额外用 yt-dlp 补充点赞、评论、播放等字段。登录、风控或地区限制会导致部分字段为空。</p>
+      <p class="muted">使用 Scrapling MCP 按 get / fetch / stealthy_fetch 链路抓取页面公开数据；TikTok 会额外用 yt-dlp 补充点赞、评论、播放等字段。登录、风控或地区限制会导致部分字段为空。</p>
     </section>
     <section class="workspace">
       <div class="head">
