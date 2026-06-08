@@ -15,6 +15,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 from urllib.parse import unquote
 import cgi
+from html import escape as html_escape
 
 
 ROOT = Path.cwd()
@@ -81,12 +82,26 @@ class ShopJob:
     error: str | None = None
 
 
+@dataclass
+class MetricsJob:
+    id: str
+    url: str
+    status: str = "queued"
+    created_at: float = field(default_factory=time.time)
+    updated_at: float = field(default_factory=time.time)
+    log: list[str] = field(default_factory=list)
+    output_dir: str | None = None
+    error: str | None = None
+
+
 jobs: dict[str, Job] = {}
 jobs_lock = threading.Lock()
 download_jobs: dict[str, DownloadJob] = {}
 download_jobs_lock = threading.Lock()
 shop_jobs: dict[str, ShopJob] = {}
 shop_jobs_lock = threading.Lock()
+metrics_jobs: dict[str, MetricsJob] = {}
+metrics_jobs_lock = threading.Lock()
 
 
 def load_env_file() -> None:
@@ -143,6 +158,23 @@ def text_response(handler: BaseHTTPRequestHandler, status: int, body: str, conte
     handler.wfile.write(encoded)
 
 
+def binary_response(
+    handler: BaseHTTPRequestHandler,
+    status: int,
+    body: bytes,
+    content_type: str,
+    filename: str | None = None,
+) -> None:
+    handler.send_response(status)
+    handler.send_header("Content-Type", content_type)
+    handler.send_header("Content-Length", str(len(body)))
+    if filename:
+        quoted = filename.replace('"', "")
+        handler.send_header("Content-Disposition", f'attachment; filename="{quoted}"')
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
 def write_sse_event(handler: BaseHTTPRequestHandler, payload: Any) -> None:
     body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     handler.wfile.write(b"data: ")
@@ -156,6 +188,164 @@ def read_json(path: Path) -> Any | None:
         return None
     with path.open("r", encoding="utf-8") as file:
         return json.load(file)
+
+
+def clean_report_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.startswith("```"):
+            stripped = stripped.removeprefix("```json").removeprefix("```").strip()
+            stripped = stripped.removesuffix("```").strip()
+        return stripped
+    return json.dumps(value, ensure_ascii=False, indent=2)
+
+
+def report_section(title: str, value: Any) -> str:
+    text = clean_report_value(value)
+    if not text:
+        return ""
+    return (
+        '<section class="report-section">'
+        f"<h3>{html_escape(title)}</h3>"
+        f'<div class="content">{html_escape(text)}</div>'
+        "</section>"
+    )
+
+
+def report_list(title: str, values: Any) -> str:
+    if not isinstance(values, list) or not values:
+        return ""
+    lines: list[str] = []
+    for item in values:
+        if isinstance(item, dict):
+            parts = []
+            if item.get("time_range") or item.get("timestamp"):
+                parts.append(str(item.get("time_range") or item.get("timestamp")))
+            if item.get("visual") or item.get("description"):
+                parts.append(f"画面：{item.get('visual') or item.get('description')}")
+            if item.get("audio"):
+                parts.append(f"音频：{item.get('audio')}")
+            lines.append("\n".join(parts) or clean_report_value(item))
+        else:
+            lines.append(clean_report_value(item))
+    return report_section(title, "\n\n".join(f"- {line}" for line in lines if line))
+
+
+def metric_item(label: str, value: Any) -> str:
+    if value is None or value == "":
+        return ""
+    return (
+        '<div class="metric">'
+        f"<span>{html_escape(label)}</span>"
+        f"<b>{html_escape(str(value))}</b>"
+        "</div>"
+    )
+
+
+def build_report_html(filename: str, tab: str, payload: dict[str, Any]) -> str:
+    is_audit = tab == "audit"
+    title = "分析结果报告" if is_audit else "提取内容报告"
+    eyebrow = "DeepSeek Audit" if is_audit else "Qwen Video Extraction"
+    summary = clean_report_value(payload.get("summary")) or "暂无摘要。"
+
+    if is_audit:
+        metrics = "".join(
+            [
+                metric_item("风险等级", payload.get("risk_level")),
+                metric_item("建议动作", payload.get("recommended_action")),
+                metric_item("发布建议", payload.get("publish_suggestion")),
+            ]
+        )
+        sections = "".join(
+            [
+                report_section("内容摘要", payload.get("summary")),
+                report_section("内容概览", payload.get("content_overview")),
+                report_section("转写要点", payload.get("transcript_notes")),
+                report_section("画面要点", payload.get("visual_notes")),
+                report_list("风险原因", payload.get("risk_reasons")),
+                report_list("问题点", payload.get("issues")),
+            ]
+        )
+    else:
+        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        transcript = payload.get("transcript") if isinstance(payload.get("transcript"), dict) else {}
+        usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+        metrics = "".join(
+            [
+                metric_item("处理模式", payload.get("processing_mode")),
+                metric_item("视觉模型", payload.get("vision_model") or metadata.get("model")),
+                metric_item("音频模式", payload.get("audio_mode")),
+                metric_item("处理帧数", metadata.get("frames_processed") or metadata.get("frames_extracted")),
+                metric_item("音频语言", transcript.get("language") or metadata.get("audio_language")),
+                metric_item("输入 Tokens", usage.get("input_tokens")),
+                metric_item("输出 Tokens", usage.get("output_tokens")),
+                metric_item("总 Tokens", usage.get("total_tokens")),
+                metric_item("API 调用", usage.get("api_calls")),
+                metric_item("总耗时", f"{usage.get('elapsed_seconds')}s" if usage.get("elapsed_seconds") is not None else None),
+            ]
+        )
+        sections = "".join(
+            [
+                report_section("模型总结", payload.get("summary")),
+                report_section(
+                    "视频画面总述",
+                    payload.get("video_description")
+                    or payload.get("opening_description")
+                    or payload.get("narrative_development"),
+                ),
+                report_list("时间线", payload.get("timeline")),
+                report_list("视觉证据", payload.get("visual_evidence")),
+                report_section("转写文本", transcript.get("text") or "无转写文本"),
+            ]
+        )
+
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+body{{margin:0;background:#f6f8fb;color:#111827;font-family:"Noto Sans CJK SC","Microsoft YaHei",Arial,sans-serif}}
+.page{{padding:34px}}.doc-head{{margin-bottom:18px;padding-bottom:14px;border-bottom:2px solid #1d4ed8}}
+.doc-head h1{{margin:0;font-size:26px}}.doc-head p{{margin:8px 0 0;color:#64748b}}
+.report{{display:flex;flex-direction:column;gap:14px}}.hero{{border:1px solid #d6deea;border-radius:12px;padding:18px;background:#fff}}
+.eyebrow{{color:#64748b;font-size:12px;font-weight:800;text-transform:uppercase}}.hero h2{{margin:8px 0;font-size:24px}}
+.hero p{{margin:0;line-height:1.75}}.metrics{{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}}
+.metric,.report-section{{border:1px solid #d6deea;border-radius:10px;background:#fff}}.metric{{padding:11px}}
+.metric span{{display:block;color:#64748b;font-size:12px;font-weight:700}}.metric b{{display:block;margin-top:5px}}
+.report-section{{overflow:hidden;break-inside:avoid}}.report-section h3{{margin:0;padding:11px 13px;border-bottom:1px solid #d6deea;background:#f8fafc;font-size:15px}}
+.report-section .content{{padding:12px 13px;line-height:1.8;white-space:pre-wrap}}
+</style>
+</head>
+<body>
+<main class="page">
+<div class="doc-head"><h1>{html_escape(title)} - {html_escape(filename)}</h1><p>导出时间：{time.strftime("%Y-%m-%d %H:%M:%S")}</p></div>
+<article class="report">
+<div class="hero"><div class="eyebrow">{html_escape(eyebrow)}</div><h2>{html_escape(title)}</h2><p>{html_escape(summary)}</p></div>
+<div class="metrics">{metrics}</div>
+{sections}
+</article>
+</main>
+</body>
+</html>"""
+
+
+def render_pdf_bytes(html: str) -> bytes:
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page(viewport={"width": 1240, "height": 1754})
+            page.set_content(html, wait_until="load")
+            return page.pdf(
+                format="A4",
+                print_background=True,
+                margin={"top": "14mm", "right": "14mm", "bottom": "14mm", "left": "14mm"},
+            )
+        finally:
+            browser.close()
 
 
 def mode_from_analysis(analysis: Any) -> str | None:
@@ -293,6 +483,66 @@ def run_shop_job(job_id: str) -> None:
             job.updated_at = time.time()
     except Exception as exc:
         with shop_jobs_lock:
+            job.status = "failed"
+            job.error = str(exc)
+            job.updated_at = time.time()
+            job.log.append(str(exc))
+
+
+def append_metrics_log(job: MetricsJob, line: str) -> None:
+    with metrics_jobs_lock:
+        job.log.append(line.rstrip())
+        job.updated_at = time.time()
+
+
+def run_metrics_command(job: MetricsJob, command: list[str]) -> None:
+    append_metrics_log(job, f"$ {' '.join(command)}")
+    process = subprocess.Popen(
+        command,
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    assert process.stdout is not None
+    for line in process.stdout:
+        append_metrics_log(job, line)
+    code = process.wait()
+    if code != 0:
+        raise RuntimeError(f"Command failed with exit code {code}: {' '.join(command)}")
+
+
+def run_metrics_job(job_id: str) -> None:
+    with metrics_jobs_lock:
+        job = metrics_jobs[job_id]
+        job.status = "running"
+        job.updated_at = time.time()
+
+    output_dir = OUTPUT_DIR / "social_metrics" / job_id
+    metrics_path = output_dir / "metrics.json"
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        with metrics_jobs_lock:
+            job.output_dir = str(output_dir.relative_to(ROOT))
+            job.updated_at = time.time()
+
+        run_metrics_command(
+            job,
+            [
+                "python",
+                str(SCRIPTS_DIR / "social_video_metrics.py"),
+                job.url,
+                "--output",
+                str(metrics_path),
+            ],
+        )
+
+        with metrics_jobs_lock:
+            job.status = "complete"
+            job.updated_at = time.time()
+    except Exception as exc:
+        with metrics_jobs_lock:
             job.status = "failed"
             job.error = str(exc)
             job.updated_at = time.time()
@@ -506,6 +756,21 @@ def public_shop_job(job: ShopJob) -> dict[str, Any]:
     }
 
 
+def public_metrics_job(job: MetricsJob) -> dict[str, Any]:
+    output_dir = OUTPUT_DIR / "social_metrics" / job.id
+    return {
+        "id": job.id,
+        "url": job.url,
+        "status": job.status,
+        "created_at": job.created_at,
+        "updated_at": job.updated_at,
+        "output_dir": job.output_dir,
+        "error": job.error,
+        "log": job.log[-120:],
+        "metrics": read_json(output_dir / "metrics.json"),
+    }
+
+
 def check_ip_route(name: str, proxy_url: str | None = None) -> dict[str, Any]:
     import httpx
 
@@ -575,6 +840,8 @@ class Handler(BaseHTTPRequestHandler):
             return text_response(self, HTTPStatus.OK, html, "text/html; charset=utf-8")
         if parsed.path == "/shop":
             return text_response(self, HTTPStatus.OK, SHOP_HTML, "text/html; charset=utf-8")
+        if parsed.path == "/metrics":
+            return text_response(self, HTTPStatus.OK, METRICS_HTML, "text/html; charset=utf-8")
         if parsed.path == "/api/prompt":
             return json_response(self, HTTPStatus.OK, {"prompt": DEFAULT_ANALYSIS_PROMPT})
         if parsed.path == "/api/network-check":
@@ -622,6 +889,17 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/shop-events":
             job_id = parse_qs(parsed.query).get("id", [""])[0]
             return self.stream_shop_events(job_id)
+        if parsed.path == "/api/video-metrics-job":
+            job_id = parse_qs(parsed.query).get("id", [""])[0]
+            with metrics_jobs_lock:
+                job = metrics_jobs.get(job_id)
+                payload = public_metrics_job(job) if job else None
+            if payload is None:
+                return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Video metrics job not found"})
+            return json_response(self, HTTPStatus.OK, payload)
+        if parsed.path == "/api/video-metrics-events":
+            job_id = parse_qs(parsed.query).get("id", [""])[0]
+            return self.stream_metrics_events(job_id)
         if parsed.path == "/api/files":
             files = []
             for path in sorted(VIDEOS_DIR.glob("*")):
@@ -650,6 +928,34 @@ class Handler(BaseHTTPRequestHandler):
                     "log": [],
                 },
             )
+        if parsed.path == "/api/export-pdf":
+            query = parse_qs(parsed.query)
+            try:
+                filename = safe_filename(query.get("filename", [""])[0])
+            except ValueError as exc:
+                return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            tab = query.get("tab", ["audit"])[0]
+            if tab not in {"audit", "content"}:
+                return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Invalid tab"})
+            output_dir = OUTPUT_DIR / filename
+            source = "audit_result_zh.json" if tab == "audit" else "analysis_zh.json"
+            fallback = "audit_result.json" if tab == "audit" else "analysis.json"
+            payload = read_json(output_dir / source) or read_json(output_dir / fallback)
+            if not isinstance(payload, dict):
+                return json_response(self, HTTPStatus.NOT_FOUND, {"error": f"Report not found for {filename}"})
+            try:
+                html = build_report_html(filename, tab, payload)
+                pdf = render_pdf_bytes(html)
+            except Exception as exc:
+                return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"PDF export failed: {exc}"})
+            suffix = "audit" if tab == "audit" else "analysis"
+            return binary_response(
+                self,
+                HTTPStatus.OK,
+                pdf,
+                "application/pdf",
+                filename=f"{filename}.{suffix}.pdf",
+            )
         return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
 
     def stream_job_events(self, job_id: str) -> None:
@@ -660,6 +966,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def stream_shop_events(self, job_id: str) -> None:
         self.stream_events(job_id, shop_jobs_lock, shop_jobs, public_shop_job, "TikTok Shop job not found")
+
+    def stream_metrics_events(self, job_id: str) -> None:
+        self.stream_events(job_id, metrics_jobs_lock, metrics_jobs, public_metrics_job, "Video metrics job not found")
 
     def stream_events(self, job_id: str, lock: threading.Lock, store: dict[str, Any], serializer: Any, missing_message: str) -> None:
         self.send_response(HTTPStatus.OK)
@@ -753,6 +1062,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_download()
         if parsed.path == "/api/shop-extract":
             return self.handle_shop_extract()
+        if parsed.path == "/api/video-metrics":
+            return self.handle_video_metrics()
         if parsed.path == "/api/analyze":
             return self.handle_analyze()
         if parsed.path == "/api/postprocess":
@@ -764,10 +1075,18 @@ class Handler(BaseHTTPRequestHandler):
     def handle_download(self) -> None:
         content_length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(content_length)
+        attempted_url = ""
         try:
             payload = json.loads(body.decode("utf-8") or "{}")
-            url = validate_short_video_url(str(payload.get("url", "")))
+            attempted_url = str(payload.get("url", ""))
+            url = validate_short_video_url(attempted_url)
         except (json.JSONDecodeError, ValueError) as exc:
+            job = DownloadJob(id=str(uuid.uuid4()), url=attempted_url, status="failed")
+            job.error = str(exc)
+            job.log.append(str(exc))
+            with download_jobs_lock:
+                download_jobs[job.id] = job
+                write_download_job_log(job)
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
         job = DownloadJob(id=str(uuid.uuid4()), url=url)
@@ -819,6 +1138,22 @@ class Handler(BaseHTTPRequestHandler):
         thread = threading.Thread(target=run_shop_job, args=(job.id,), daemon=True)
         thread.start()
         return json_response(self, HTTPStatus.ACCEPTED, public_shop_job(job))
+
+    def handle_video_metrics(self) -> None:
+        content_length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(content_length)
+        try:
+            payload = json.loads(body.decode("utf-8") or "{}")
+            url = validate_short_video_url(str(payload.get("url", "")))
+        except (json.JSONDecodeError, ValueError) as exc:
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+
+        job = MetricsJob(id=str(uuid.uuid4()), url=url)
+        with metrics_jobs_lock:
+            metrics_jobs[job.id] = job
+        thread = threading.Thread(target=run_metrics_job, args=(job.id,), daemon=True)
+        thread.start()
+        return json_response(self, HTTPStatus.ACCEPTED, public_metrics_job(job))
 
     def handle_upload(self) -> None:
         content_length = int(self.headers.get("Content-Length", "0"))
@@ -960,6 +1295,57 @@ class Handler(BaseHTTPRequestHandler):
             },
         )
 
+
+METRICS_HTML = r"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Video Metrics Extractor</title>
+  <style>
+    :root{--bg:#eef2f6;--card:#fff;--line:#d6deea;--text:#111827;--muted:#667589;--blue:#1d4ed8;--soft:#f6f8fb;--red:#b42318;--green:#047857;--dark:#101827}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Aptos,"Segoe UI",system-ui,sans-serif}header{height:64px;display:flex;align-items:center;justify-content:space-between;padding:0 28px;background:#fff;border-bottom:1px solid var(--line)}main{display:grid;grid-template-columns:360px minmax(0,1fr);gap:16px;padding:18px;height:calc(100vh - 64px)}section{border:1px solid var(--line);border-radius:10px;background:var(--card);overflow:hidden}.side{padding:18px;display:flex;flex-direction:column;gap:14px}.workspace{display:grid;grid-template-rows:auto minmax(0,1fr);min-height:0}.head{padding:16px 18px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:12px;align-items:center}.grid{display:grid;grid-template-columns:minmax(0,1fr) 420px;gap:16px;padding:16px;min-height:0}.card{display:grid;grid-template-rows:auto minmax(0,1fr);min-height:0;border:1px solid var(--line);border-radius:10px;background:#fff;overflow:hidden}.card h3{margin:0;padding:12px 14px;border-bottom:1px solid var(--line);background:var(--soft);font-size:15px}label{display:grid;gap:7px;color:#475569;font-weight:700;font-size:13px}input{width:100%;border:1px solid #c6d1df;border-radius:8px;padding:10px 12px}button{min-height:38px;border:1px solid var(--blue);border-radius:8px;background:var(--blue);color:#fff;padding:8px 13px;font-weight:800;cursor:pointer}button.secondary{background:#fff;color:var(--text);border-color:var(--line)}button:disabled{opacity:.55;cursor:not-allowed}.status{padding:11px 12px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--muted);overflow-wrap:anywhere}.status.ok{background:#ecfdf5;color:var(--green)}.status.bad{background:#fff1f2;color:var(--red)}.muted{color:var(--muted);font-size:13px}pre{margin:0;min-height:0;overflow:auto;padding:14px;white-space:pre-wrap;word-break:break-word}.log{background:var(--dark);color:#dbeafe;font:12px/1.6 Consolas,monospace}.report{padding:16px;overflow:auto;line-height:1.65}.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px}.metric{border:1px solid var(--line);border-radius:8px;padding:10px;background:#fff}.metric span{display:block;color:var(--muted);font-size:12px}.metric b{display:block;margin-top:4px}.block{border:1px solid var(--line);border-radius:8px;padding:12px;background:#fbfcfe;margin-top:10px}.tabs{display:flex;gap:8px}.tab{background:#fff;color:var(--text);border-color:var(--line)}.tab.active{background:var(--blue);color:#fff;border-color:var(--blue)}@media(max-width:980px){main,.grid{grid-template-columns:1fr;height:auto}main{height:auto}.card{min-height:360px}}
+  </style>
+</head>
+<body>
+  <header><h1>短视频互动数据提取</h1><a class="muted" href="/">返回视频分析</a></header>
+  <main>
+    <section class="side">
+      <label>公开视频链接<input id="url" placeholder="https://www.tiktok.com/@user/video/... 或 https://www.douyin.com/video/..."></label>
+      <button id="run" type="button">提取数据</button>
+      <div id="status" class="status">等待输入 TikTok / 抖音视频链接。</div>
+      <p class="muted">使用 Scrapling stealth 抓取页面公开数据；TikTok 会额外用 yt-dlp 补充点赞、评论、播放等字段。登录、风控或地区限制会导致部分字段为空。</p>
+    </section>
+    <section class="workspace">
+      <div class="head">
+        <div><b>结果</b><div id="output" class="muted">结果保存到 output/social_metrics/&lt;job-id&gt;/</div></div>
+        <div class="tabs"><button class="tab active" data-tab="report">报告</button><button class="tab" data-tab="json">JSON</button></div>
+      </div>
+      <div class="grid">
+        <article class="card"><h3>公开视频数据</h3><div id="result" class="report">暂无结果。</div></article>
+        <article class="card"><h3>任务日志</h3><pre id="log" class="log">等待任务...</pre></article>
+      </div>
+    </section>
+  </main>
+  <script>
+    const runBtn=document.querySelector("#run"),statusBox=document.querySelector("#status"),logBox=document.querySelector("#log"),resultBox=document.querySelector("#result"),outputBox=document.querySelector("#output");
+    const state={job:null,events:null,tab:"report",lastLogLength:0};
+    function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]))}
+    function pretty(v){return JSON.stringify(v??{},null,2)}
+    function setStatus(m,k=""){statusBox.className=`status ${k}`.trim();statusBox.textContent=m}
+    function addLog(lines){const next=Array.isArray(lines)?lines:[lines];if(!next.length)return;const cur=logBox.textContent==="等待任务..."?"":logBox.textContent;logBox.textContent=`${cur}${cur?"\n":""}${next.join("\n")}`;logBox.scrollTop=logBox.scrollHeight}
+    function metric(label,value){return value===undefined||value===null||value===""?"":`<div class="metric"><span>${esc(label)}</span><b>${esc(value)}</b></div>`}
+    function block(title,value){if(!value||typeof value!=="object")return"";return `<div class="block"><b>${esc(title)}</b><pre>${esc(pretty(value))}</pre></div>`}
+    function renderReport(data){if(!data)return"暂无结果。";const m=data.metrics||{},a=data.author||{},meta=data.page_meta||{},fetch=data.page_fetch||{};return `<div class="metrics">${metric("平台",data.platform)}${metric("点赞",m.like_count)}${metric("评论",m.comment_count)}${metric("分享/转发",m.share_count||m.repost_count)}${metric("播放",m.play_count||m.view_count)}${metric("收藏",m.favorite_count)}${metric("粉丝",a.follower_count||a.channel_follower_count)}${metric("作品数",a.video_count)}${metric("抓取器",fetch.fetcher)}</div>${block("作者",a)}${block("页面信息",meta)}${block("抓取诊断",fetch)}${data.yt_dlp_error?`<div class="block"><b>yt-dlp 提示</b><pre>${esc(data.yt_dlp_error)}</pre></div>`:""}`}
+    function render(){const data=state.job&&state.job.metrics;if(state.tab==="json"){resultBox.innerHTML=`<pre>${esc(pretty(data))}</pre>`;return}resultBox.innerHTML=renderReport(data)}
+    function closeEvents(){if(state.events){state.events.close();state.events=null}}
+    function handleJob(job){state.job=job;if(job.output_dir)outputBox.textContent=`结果目录：${job.output_dir}`;if(Array.isArray(job.log)&&job.log.length>state.lastLogLength){addLog(job.log.slice(state.lastLogLength));state.lastLogLength=job.log.length}render();if(job.status==="queued"||job.status==="running"){setStatus(`任务运行中：${job.status}`);return}closeEvents();runBtn.disabled=false;setStatus(job.status==="complete"?"提取完成。":(job.error||"提取失败。"),job.status==="complete"?"ok":"bad")}
+    async function start(){const url=document.querySelector("#url").value.trim();if(!url)return setStatus("请输入视频链接。","bad");closeEvents();state.job=null;state.lastLogLength=0;logBox.textContent="提交任务...";resultBox.textContent="暂无结果。";runBtn.disabled=true;setStatus("正在提交任务...");const r=await fetch("/api/video-metrics",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url})});const job=await r.json();if(!r.ok){runBtn.disabled=false;setStatus(job.error||"提交失败。","bad");addLog(job.error||"提交失败。");return}handleJob(job);state.events=new EventSource(`/api/video-metrics-events?id=${encodeURIComponent(job.id)}`);state.events.onmessage=e=>handleJob(JSON.parse(e.data));state.events.onerror=()=>{closeEvents();runBtn.disabled=false;setStatus("任务连接中断。","bad")}}
+    runBtn.onclick=()=>start().catch(e=>{runBtn.disabled=false;setStatus(e.message,"bad");addLog(e.message)});
+    document.querySelectorAll(".tab").forEach(btn=>btn.onclick=()=>{document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));btn.classList.add("active");state.tab=btn.dataset.tab;render()});
+  </script>
+</body>
+</html>"""
 
 INDEX_HTML = '<!doctype html>\n<html lang="zh-CN">\n<head>\n<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">\n<title>Short Video Analyzer</title>\n<style>\n:root{--bg:#eef3f8;--card:#fff;--soft:#f7f9fc;--line:#d7e0ec;--text:#142033;--muted:#607089;--blue:#2563eb;--blue2:#1d4ed8;--blueSoft:#eaf1ff;--red:#b42318;--green:#087443;--dark:#0d1628;--shadow:0 18px 45px rgba(15,23,42,.10)}*{box-sizing:border-box}body{margin:0;background:linear-gradient(135deg,rgba(37,99,235,.10),transparent 34%),var(--bg);color:var(--text);font-family:"Segoe UI",system-ui,sans-serif}header{height:66px;display:flex;align-items:center;justify-content:space-between;padding:0 28px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.92);position:sticky;top:0;z-index:5}h1{font-size:20px;margin:0}.page{display:none;min-height:calc(100vh - 66px);padding:18px}.page.active{display:block}.grid{display:grid;grid-template-columns:minmax(320px,430px) minmax(0,1fr);gap:18px}.detail-grid{display:grid;grid-template-columns:minmax(260px,360px) minmax(0,1fr);gap:18px;height:calc(100vh - 102px)}.card{border:1px solid var(--line);border-radius:12px;background:var(--card);box-shadow:var(--shadow);overflow:hidden}.stack{display:grid;gap:16px;padding:18px}.title{font-weight:800;margin:0 0 10px}label{display:block;margin-bottom:7px;color:var(--muted);font-size:13px;font-weight:650}input,select,textarea{width:100%;border:1px solid var(--line);border-radius:9px;background:#fff;color:var(--text);outline:none}input,select{min-height:40px;padding:8px 11px}textarea{min-height:170px;padding:10px 12px;resize:vertical;font:13px/1.55 Consolas,monospace}button{min-height:40px;border:1px solid var(--blue);border-radius:9px;background:var(--blue);color:#fff;padding:8px 13px;font-weight:750;cursor:pointer;box-shadow:0 8px 18px rgba(37,99,235,.18)}button.secondary{background:#fff;color:var(--blue);box-shadow:none}button.danger{background:#fff;border-color:#fecaca;color:var(--red);box-shadow:none}button.small{min-height:32px;padding:5px 10px;font-size:13px}button:disabled{opacity:.55;cursor:not-allowed}.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.muted{color:var(--muted)}.status{min-height:42px;border:1px solid var(--line);border-radius:9px;padding:10px 12px;background:var(--soft);color:var(--muted);font-size:13px;overflow-wrap:anywhere}.status.ok{background:#ecfdf3;color:var(--green)}.status.bad{background:#fff1f2;color:var(--red)}.check{display:flex;align-items:center;gap:9px;color:var(--text);font-size:14px;font-weight:650}.check input{width:auto;min-height:auto}.prompt{display:none}.prompt.active{display:block}.log-wrap{display:grid;grid-template-rows:auto minmax(360px,1fr);min-height:calc(100vh - 102px)}.head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 18px;border-bottom:1px solid var(--line);background:#fff}.head h2{margin:0;font-size:18px}.log{margin:0;overflow:auto;padding:18px;background:var(--dark);color:#e6edf7;font:13px/1.7 Consolas,monospace;white-space:pre-wrap;word-break:break-word}.files{display:grid;gap:8px;max-height:260px;overflow:auto}.detail-files{padding:14px;overflow:auto}.file{display:flex;justify-content:space-between;align-items:center;gap:12px;border:1px solid var(--line);border-radius:9px;padding:10px;background:#fff;cursor:pointer}.file.selected{border-color:var(--blue);background:var(--blueSoft)}.file-name{font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.file-meta{min-width:0;display:grid;gap:4px}.file-actions{display:flex;gap:6px}.tabs{display:flex;gap:8px;padding:12px 14px;border-bottom:1px solid var(--line)}.tab{background:#fff;color:var(--text);border-color:var(--line);box-shadow:none}.tab.active{color:var(--blue);border-color:var(--blue);background:var(--blueSoft)}.toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 14px;border-bottom:1px solid var(--line);background:var(--soft)}.out{min-height:0;overflow:auto;padding:22px 24px;border-left:4px solid rgba(37,99,235,.22);white-space:pre-wrap;word-break:break-word;line-height:1.75}.out.raw{background:var(--dark);color:#e6edf7;font-family:Consolas,monospace}.report{display:grid;gap:14px;max-width:1180px}.hero,.section,.metric{border:1px solid var(--line);border-radius:12px;background:#fff}.hero{padding:18px 20px;background:linear-gradient(135deg,rgba(37,99,235,.10),transparent 42%),#fff}.hero h2{margin:4px 0;font-size:22px}.hero p{margin:0;color:var(--muted)}.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px}.metric{padding:10px 12px}.metric span{display:block;color:var(--muted);font-size:12px;font-weight:750}.metric strong{display:block;margin-top:5px}.section h3{margin:0;padding:12px 16px;border-bottom:1px solid var(--line);background:var(--soft);font-size:15px}.section div{padding:14px 16px}.drop{position:fixed;inset:14px;z-index:20;display:none;align-items:center;justify-content:center;border:2px dashed rgba(37,99,235,.55);border-radius:18px;background:rgba(239,246,255,.86);color:var(--blue2);pointer-events:none}.drop.active{display:flex}.drop>div{padding:26px 30px;border-radius:14px;background:#fff;text-align:center}@media(max-width:900px){.grid,.detail-grid{grid-template-columns:1fr;height:auto}.log-wrap{min-height:520px}.card.result{height:72vh;min-height:520px}}\n</style>\n</head>\n<body>\n<div id="drop" class="drop"><div><strong>??????</strong><br><span class="muted">??????????</span></div></div>\n<header><h1>Short Video Analyzer</h1><div id="current" class="muted">??</div></header>\n<main id="home" class="page active"><div class="grid"><section class="card stack">\n<div><p class="title">TikTok / ??????</p><label>??????</label><input id="url" type="url" placeholder="https://www.tiktok.com/@user/video/... ? https://v.douyin.com/..."></div><div class="row"><button id="download">????</button><button id="network" class="secondary">??????</button></div>\n<div><p class="title">??????</p><label>??? videos/</label><input id="videoFile" type="file" accept="video/*" multiple></div><div class="row"><button id="upload">??</button><button id="refresh" class="secondary">????</button></div>\n<div><p class="title">?????</p><div id="homeFiles" class="files"></div></div>\n<div><p class="title">????</p><label>????</label><select id="mode"><option value="analyzer">????????video-analyzer?</option><option value="direct_video">?????????Qwen?</option></select></div><button id="promptBtn" class="secondary">???????</button><div id="promptPanel" class="prompt"><label>?????</label><textarea id="prompt"></textarea></div>\n<label class="check"><input id="autoPost" type="checkbox">???? DeepSeek ??</label><div class="row"><button id="analyze" disabled>????</button><button id="post" class="secondary" disabled>????????</button></div><div id="status" class="status">?????????????</div>\n</section><section class="card log-wrap"><div class="head"><div><h2>????</h2><div class="muted">?????????????????????</div></div><button id="clearLog" class="secondary small">????</button></div><pre id="log" class="log">????...</pre></section></div></main>\n<main id="detail" class="page"><div class="detail-grid"><section class="card" style="display:grid;grid-template-rows:auto 1fr"><div class="head" style="display:grid"><button id="back" class="secondary">????</button><div><h2>?????</h2><div class="muted">???????</div></div></div><div id="detailFiles" class="detail-files files"></div></section><section class="card result" style="display:grid;grid-template-rows:auto auto minmax(0,1fr)"><div class="tabs"><button class="tab active" data-tab="content">????????</button><button class="tab" data-tab="audit">????????</button></div><div class="toolbar"><b id="outTitle">Qwen ?????DeepSeek ??</b><div class="row"><button id="source" class="secondary small">????</button><button id="json" class="secondary small">???? JSON</button></div></div><div id="out" class="out">{}</div></section></div></main>\n<script>\nwindow.DEFAULT_ANALYSIS_MODE="__DEFAULT_ANALYSIS_MODE__";\nconst S={file:"",files:[],result:null,job:null,tab:"content",raw:false,has:false,logs:[]};\nconst $=id=>document.getElementById(id), home=$(\'home\'), detail=$(\'detail\'), current=$(\'current\'), status=$(\'status\'), log=$(\'log\'), out=$(\'out\'); let de=null, je=null, drag=0;\nfunction esc(v){return String(v??\'\').replace(/[&<>"\']/g,c=>({\'&\':\'&amp;\',\'<\':\'&lt;\',\'>\':\'&gt;\',\'"\':\'&quot;\',"\'":\'&#39;\'}[c]))} function pretty(v){return v==null?\'{}\':typeof v===\'string\'?v:JSON.stringify(v,null,2)} function clean(v){let s=typeof v===\'string\'?v:(v&&typeof v.response===\'string\'?v.response:pretty(v));return s.replace(/^```(?:json)?\\s*/i,\'\').replace(/\\s*```$/i,\'\').trim()} function bytes(n){return `${Math.round(Number(n||0)/1024/1024*10)/10} MB`} function setStatus(m,k=\'\'){status.className=\'status \'+k;status.textContent=m} function addLog(m){S.logs.push(`[${new Date().toLocaleTimeString()}] ${m}`);if(S.logs.length>500)S.logs.splice(0,S.logs.length-500);log.textContent=S.logs.join(\'\\n\')||\'????...\';log.scrollTop=log.scrollHeight}\nfunction metric(k,v){return v==null||v===\'\'?\'\':`<div class="metric"><span>${esc(k)}</span><strong>${esc(v)}</strong></div>`} function sec(t,b){b=clean(b);return b?`<section class="section"><h3>${esc(t)}</h3><div>${esc(b)}</div></section>`:\'\'} function list(t,a,map=x=>x){if(!Array.isArray(a)||!a.length)return\'\';return `<section class="section"><h3>${esc(t)}</h3><div>${a.map((x,i)=>`- ${esc(clean(map(x,i)))}`).join(\'\\n\')}</div></section>`} function has(r){return !!(r&&(r.analysis||r.analysis_zh||r.audit_result||r.audit_result_zh))}\nfunction extraction(v){if(!v||typeof v!==\'object\')return pretty(v);const md=v.metadata||{},tr=v.transcript||{},u=v.usage||{},tl=Array.isArray(v.timeline)?v.timeline:[],ve=Array.isArray(v.visual_evidence)?v.visual_evidence:[],fa=Array.isArray(v.frame_analyses)?v.frame_analyses:[];return `<article class="report"><div class="hero"><small>Qwen Video Extraction</small><h2>??????</h2><p>${esc(clean(v.summary)||\'?????????????????????\')}</p></div><div class="metrics">${metric(\'????\',v.processing_mode)}${metric(\'????\',v.vision_model||md.model)}${metric(\'????\',v.audio_mode)}${metric(\'????\',md.frames_processed||md.frames_extracted)}${metric(\'????\',tr.language||md.audio_language)}${metric(\'?? Tokens\',u.input_tokens)}${metric(\'?? Tokens\',u.output_tokens)}${metric(\'? Tokens\',u.total_tokens)}${metric(\'API ??\',u.api_calls)}${metric(\'???\',u.elapsed_seconds==null?\'\':u.elapsed_seconds+\'s\')}</div>${sec(\'????\',v.summary)}${sec(\'??????\',v.video_description)}${list(\'???\',tl,x=>typeof x===\'string\'?x:`${x.time_range||x.timestamp||\'\'}\\n${x.visual||\'\'}\\n${x.audio||\'\'}`)}${list(\'????\',ve,x=>typeof x===\'string\'?x:(x.description||x.visual||pretty(x)))}${list(\'??????\',fa,(x,i)=>`[? ${i+1}]\\n${clean(x)}`)}${sec(\'????\',tr.text||\'?????\')}</article>`}\nfunction audit(v){if(!v||typeof v!==\'object\')return pretty(v);return `<article class="report"><div class="hero"><small>DeepSeek Audit</small><h2>??????</h2><p>${esc(v.summary||\'?????????????????\')}</p></div><div class="metrics">${metric(\'????\',v.risk_level)}${metric(\'????\',v.recommended_action)}${metric(\'????\',v.publish_suggestion)}</div>${sec(\'????\',v.summary)}${sec(\'????\',v.content_overview)}${sec(\'????\',v.transcript_notes)}${sec(\'????\',v.visual_notes)}${list(\'????\',v.risk_reasons)}${list(\'???\',v.issues)}</article>`}\nfunction renderOut(r){S.result=r;out.className=S.raw?\'out raw\':\'out\';let v;if(S.tab===\'content\'){v=S.raw?r?.analysis:(r?.analysis_zh||r?.analysis);$(\'json\').style.display=\'inline-flex\';$(\'outTitle\').textContent=S.raw?\'Qwen ??????? JSON\':\'Qwen ?????DeepSeek ??\';S.raw?out.textContent=pretty(v):out.innerHTML=extraction(v)}else{v=S.raw?r?.audit_result:(r?.audit_result_zh||r?.audit_result);$(\'json\').style.display=\'none\';$(\'outTitle\').textContent=S.raw?\'DeepSeek ???????\':\'DeepSeek ???????\';S.raw?out.textContent=pretty(v):out.innerHTML=audit(v)}$(\'source\').textContent=S.raw?\'????\':\'????\'}\nfunction buttons(){ $(\'analyze\').textContent=S.has?\'????\':\'????\'; $(\'analyze\').disabled=!S.file; $(\'post\').disabled=!S.file||!S.has||!!S.job }\nfunction renderFiles(){for(const [id,detailMode] of [[\'homeFiles\',false],[\'detailFiles\',true]]){const box=$(id);box.innerHTML=\'\';if(!S.files.length){box.innerHTML=\'<div class="muted">videos/ ??????</div>\';continue}S.files.forEach(f=>{const el=document.createElement(\'div\');el.className=\'file\'+(f.name===S.file?\' selected\':\'\');el.innerHTML=`<span class="file-meta"><span class="file-name">${esc(f.name)}</span><span class="muted">${bytes(f.size)}</span></span>${detailMode?\'\':`<span class="file-actions"><button class="secondary small">??</button><button class="danger small">??</button></span>`}`;el.onclick=()=>toDetail(f.name);if(!detailMode){const b=el.querySelectorAll(\'button\');b[0].onclick=e=>{e.stopPropagation();open(\'/video/\'+encodeURIComponent(f.name),\'_blank\',\'noopener\')};b[1].onclick=e=>{e.stopPropagation();delFile(f.name)}}box.appendChild(el)})}buttons()}\nfunction view(v,f=\'\'){home.classList.toggle(\'active\',v===\'home\');detail.classList.toggle(\'active\',v===\'detail\');current.textContent=v===\'detail\'&&f?f:\'??\'} function toHome(){location.hash=\'\';view(\'home\')} function toDetail(f){location.hash=\'detail=\'+encodeURIComponent(f)} function route(){const h=location.hash.slice(1);if(h.startsWith(\'detail=\')){select(decodeURIComponent(h.slice(7)),false);view(\'detail\',S.file)}else{view(\'home\');renderFiles()}}\nasync function refresh(){const r=await fetch(\'/api/files\');S.files=await r.json();if(!Array.isArray(S.files))S.files=[];renderFiles()} async function loadResult(name){const r=await fetch(\'/api/result?filename=\'+encodeURIComponent(name)),j=await r.json();if(r.ok&&has(j)){S.result=j;S.has=true;const p=j.analysis&&j.analysis.metadata&&j.analysis.metadata.analysis_prompt;if(p)$(\'prompt\').value=p;renderOut(j);setStatus(name+\': ???????\',\'ok\')}else{S.result=null;S.has=false;out.textContent=\'{}\';setStatus(name+\': ????\')}buttons()} function select(name,openDetail=true){S.file=name;current.textContent=name||\'??\';S.has=false;renderFiles();if(name)loadResult(name).catch(e=>setStatus(e.message,\'bad\'));if(openDetail&&name)toDetail(name)}\nasync function upload(files=null){const input=$(\'videoFile\'),arr=Array.from(files||input.files||[]);if(!arr.length)return setStatus(\'????????????\',\'bad\');const bad=arr.filter(f=>!f.type.startsWith(\'video/\'));if(bad.length){addLog(\'??????????????\'+bad.map(f=>f.name).join(\', \'));return setStatus(\'????????\',\'bad\')}const form=new FormData();arr.forEach(f=>form.append(\'video\',f));addLog(`???? ${arr.length} ????`);setStatus(\'????...\');const r=await fetch(\'/api/upload\',{method:\'POST\',body:form}),p=await r.json(),ok=Array.isArray(p.files)?p.files:[],err=Array.isArray(p.errors)?p.errors:[];ok.forEach(f=>addLog(`?????${f.filename} (${bytes(f.size)})`));err.forEach(e=>addLog(`?????${e.filename||\'????\'} - ${e.error||\'????\'}`));if(!r.ok&&!ok.length)return setStatus(p.error||\'????\',\'bad\');setStatus(`??????? ${ok.length} ???? ${err.length} ?`,err.length?\'bad\':\'ok\');input.value=\'\';await refresh();if(ok.length)select(ok.at(-1).filename,false)}\nasync function delFile(name){if(!confirm(`?? ${name} ?????????`))return;const r=await fetch(\'/api/delete\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({filename:name})}),p=await r.json();if(!r.ok)return setStatus(p.error||\'????\',\'bad\');addLog(\'?????\'+name);if(S.file===name){S.file=\'\';S.result=null;S.has=false;toHome()}await refresh()}\nfunction closeD(){if(de){de.close();de=null}}function closeJ(){if(je){je.close();je=null}} function lastLog(j){return j&&Array.isArray(j.log)&&j.log.length?j.log.at(-1):\'\'}\nasync function startDownload(){const url=$(\'url\').value.trim();if(!url)return setStatus(\'??? TikTok ????????\',\'bad\');$(\'download\').disabled=true;addLog(\'???????\'+url);const r=await fetch(\'/api/download\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({url})}),j=await r.json();if(!r.ok){$(\'download\').disabled=false;return setStatus(j.error||\'????????\',\'bad\')}closeD();de=new EventSource(\'/api/download-events?id=\'+encodeURIComponent(j.id));de.onmessage=async e=>{const j=JSON.parse(e.data),l=lastLog(j);if(l)addLog(\'???\'+l);if(j.status===\'running\'||j.status===\'queued\')return setStatus(`??????${j.status}`);closeD();$(\'download\').disabled=false;if(j.status!==\'complete\')return setStatus(\'???????\'+(j.error||\'????\'),\'bad\');setStatus(j.filename+\': ????\',\'ok\');$(\'url\').value=\'\';await refresh();select(j.filename,false)};de.onerror=()=>{closeD();$(\'download\').disabled=false;setStatus(\'????????\',\'bad\')}}\nasync function checkNet(){$(\'network\').disabled=true;setStatus(\'??????????????...\');try{const r=await fetch(\'/api/network-check\'),p=await r.json();const fmt=x=>!x?\'???\':(!x.ok?\'???\'+(x.error||\'????\'):`${x.ip||\'?? IP\'} / ${x.country_name||x.country||\'????\'} / ${x.is_us?\'????\':\'?????\'}`);addLog(\'???\'+fmt(p.direct));addLog(\'???\'+fmt(p.proxy));setStatus(`???${fmt(p.direct)}????${fmt(p.proxy)}`,p.proxy&&p.proxy.ok&&p.proxy.is_us?\'ok\':\'bad\')}catch(e){setStatus(e.message,\'bad\')}finally{$(\'network\').disabled=false}}\nasync function analyze(){if(!S.file)return;$(\'analyze\').disabled=true;$(\'post\').disabled=true;const reset=S.has;addLog(`${S.file}: ${reset?\'??????????\':\'??????\'}`);const r=await fetch(\'/api/analyze\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({filename:S.file,analysis_mode:$(\'mode\').value,analysis_prompt:$(\'prompt\').value,postprocess:$(\'autoPost\').checked,reset_output:reset})}),j=await r.json();if(!r.ok){setStatus(j.error||\'????\',\'bad\');return buttons()}S.job=j.id;openJob(j.id)}\nasync function postprocess(){if(!S.file||!S.has)return;const r=await fetch(\'/api/postprocess\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({filename:S.file})}),j=await r.json();if(!r.ok)return setStatus(j.error||\'????\',\'bad\');S.tab=\'audit\';document.querySelectorAll(\'.tab\').forEach(x=>x.classList.toggle(\'active\',x.dataset.tab===\'audit\'));S.job=j.id;openJob(j.id)}\nfunction openJob(id){closeJ();je=new EventSource(\'/api/job-events?id=\'+encodeURIComponent(id));je.onmessage=e=>{const j=JSON.parse(e.data),l=lastLog(j);if(l)addLog(`${j.filename}: ${l}`);S.result=j;if(location.hash.startsWith(\'#detail=\'))renderOut(j);if(j.status===\'running\'||j.status===\'queued\')return setStatus(`${j.filename}: ${j.status}`);closeJ();S.job=null;S.has=j.status===\'complete\'||has(j);buttons();setStatus(j.status===\'complete\'?`${j.filename}: ??`:`${j.filename}: ${j.error||\'??\'}`,j.status===\'complete\'?\'ok\':\'bad\')};je.onerror=()=>{closeJ();buttons();setStatus(\'????????\',\'bad\')}}\nfunction downloadJson(){const a=S.result&&S.result.analysis;if(!a)return setStatus(\'??????? analysis.json?\',\'bad\');const name=`${S.file||\'video\'}.analysis.json`,blob=new Blob([JSON.stringify(a,null,2)],{type:\'application/json;charset=utf-8\'}),url=URL.createObjectURL(blob),link=document.createElement(\'a\');link.href=url;link.download=name;document.body.appendChild(link);link.click();link.remove();URL.revokeObjectURL(url);addLog(\'???? JSON?\'+name)}\n$(\'download\').onclick=startDownload;$(\'network\').onclick=checkNet;$(\'upload\').onclick=()=>upload();$(\'refresh\').onclick=()=>refresh().then(()=>addLog(\'????????\'));$(\'analyze\').onclick=analyze;$(\'post\').onclick=postprocess;$(\'back\').onclick=toHome;$(\'clearLog\').onclick=()=>{S.logs=[];log.textContent=\'????...\'};$(\'source\').onclick=()=>{S.raw=!S.raw;renderOut(S.result)};$(\'json\').onclick=downloadJson;$(\'mode\').value=window.DEFAULT_ANALYSIS_MODE||\'analyzer\';$(\'promptBtn\').onclick=()=>{const p=$(\'promptPanel\');p.classList.toggle(\'active\');$(\'promptBtn\').textContent=p.classList.contains(\'active\')?\'???????\':\'???????\'};document.querySelectorAll(\'.tab\').forEach(t=>t.onclick=()=>{document.querySelectorAll(\'.tab\').forEach(x=>x.classList.remove(\'active\'));t.classList.add(\'active\');S.tab=t.dataset.tab;S.raw=false;renderOut(S.result)});addEventListener(\'hashchange\',route);addEventListener(\'dragenter\',e=>{e.preventDefault();drag++;$(\'drop\').classList.add(\'active\')});addEventListener(\'dragover\',e=>e.preventDefault());addEventListener(\'dragleave\',e=>{e.preventDefault();drag=Math.max(0,drag-1);if(!drag)$(\'drop\').classList.remove(\'active\')});addEventListener(\'drop\',e=>{e.preventDefault();drag=0;$(\'drop\').classList.remove(\'active\');if(e.dataTransfer.files.length)upload(e.dataTransfer.files)});fetch(\'/api/prompt\').then(r=>r.json()).then(p=>$(\'prompt\').value=p.prompt||\'\').catch(()=>{});refresh().then(route).catch(e=>setStatus(e.message,\'bad\'));\n</script>\n</body>\n</html>'
 
