@@ -1109,8 +1109,8 @@ class Handler(BaseHTTPRequestHandler):
             prompt = str(payload.get("prompt") or "").strip()
             analyze = bool(payload.get("analyze", True))
             related_videos = bool(payload.get("related_videos", False))
-            if source_type not in {"shop", "product"}:
-                raise ValueError("source_type must be shop or product")
+            if source_type not in {"product", "details", "reviews", "shop", "search"}:
+                raise ValueError("source_type must be product, details, reviews, shop, or search")
             if not url or len(url) > 2048:
                 raise ValueError("A TikTok Shop URL is required")
             if max_pages < 1 or max_pages > 20:
@@ -1491,9 +1491,9 @@ SHOP_HTML = r"""<!doctype html>
         <p class="muted">使用 SociaVault 提取店铺或商品数据，可选择接 DeepSeek 生成中文分析。</p>
       </header>
       <section class="form">
-        <label>TikTok Shop 链接<input id="shopUrl" type="url" placeholder="https://www.tiktok.com/..."></label>
+        <label><span id="targetLabel">TikTok Shop 链接</span><input id="shopUrl" placeholder="https://shop.tiktok.com/..."></label>
         <div class="row">
-          <label>类型<select id="sourceType"><option value="product">商品详情 + 评论</option><option value="shop">店铺商品列表</option></select></label>
+          <label>类型<select id="sourceType"><option value="product">商品详情 + 评论</option><option value="details">商品详情</option><option value="reviews">商品评论</option><option value="shop">店铺商品列表</option><option value="search">商品搜索</option></select></label>
           <label>地区<input id="region" value="US" maxlength="8"></label>
         </div>
         <div class="row">
@@ -1600,6 +1600,19 @@ SHOP_HTML = r"""<!doctype html>
         state.events = null;
       }
     }
+    function updateSourceMode() {
+      const sourceType = document.querySelector("#sourceType").value;
+      const target = document.querySelector("#shopUrl");
+      const targetLabel = document.querySelector("#targetLabel");
+      const maxPages = document.querySelector("#maxPages");
+      const reviewPages = document.querySelector("#reviewPages");
+      const relatedVideos = document.querySelector("#relatedVideos");
+      targetLabel.textContent = sourceType === "search" ? "搜索关键词" : "TikTok Shop 链接 / 商品 ID";
+      target.placeholder = sourceType === "search" ? "例如：cat toy" : "https://shop.tiktok.com/... 或商品 ID";
+      maxPages.disabled = !["shop", "search"].includes(sourceType);
+      reviewPages.disabled = !["product", "reviews"].includes(sourceType);
+      relatedVideos.disabled = !["product", "details"].includes(sourceType);
+    }
     function handleJob(job) {
       state.job = job;
       if (job.output_dir) outputDir.textContent = `结果目录：${job.output_dir}`;
@@ -1619,7 +1632,7 @@ SHOP_HTML = r"""<!doctype html>
     async function startJob() {
       const url = document.querySelector("#shopUrl").value.trim();
       if (!url) {
-        setStatus("请输入 TikTok Shop 链接。", "bad");
+        setStatus("请输入 TikTok Shop 链接、商品 ID 或搜索关键词。", "bad");
         return;
       }
       closeEvents();
@@ -1673,6 +1686,8 @@ SHOP_HTML = r"""<!doctype html>
       state.lastLogLength = 0;
       logBox.textContent = "等待任务...";
     };
+    document.querySelector("#sourceType").onchange = updateSourceMode;
+    updateSourceMode();
     document.querySelectorAll(".tab").forEach(button => {
       button.onclick = () => {
         document.querySelectorAll(".tab").forEach(item => item.classList.remove("active"));

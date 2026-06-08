@@ -17,6 +17,7 @@ DEFAULT_REGION = "US"
 SHOP_PRODUCTS_PATH = "/v1/scrape/tiktok-shop/products"
 PRODUCT_DETAILS_PATH = "/v1/scrape/tiktok-shop/product-details"
 PRODUCT_REVIEWS_PATH = "/v1/scrape/tiktok-shop/product-reviews"
+SHOP_SEARCH_PATH = "/v1/scrape/tiktok-shop/search"
 
 
 def load_env_file() -> None:
@@ -44,6 +45,21 @@ def validate_tiktok_shop_url(url: str) -> str:
     return cleaned
 
 
+def validate_target_for_source(source_type: str, target: str) -> str:
+    cleaned = target.strip()
+    if not cleaned:
+        raise ValueError("A TikTok Shop URL, product ID, or search query is required")
+    if source_type == "search":
+        if len(cleaned) > 500:
+            raise ValueError("Search query is too long")
+        return cleaned
+    if source_type == "reviews" and not cleaned.startswith(("http://", "https://")):
+        if not cleaned.isdigit():
+            raise ValueError("Product reviews require a TikTok Shop URL or numeric product ID")
+        return cleaned
+    return validate_tiktok_shop_url(cleaned)
+
+
 def write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as file:
@@ -67,6 +83,8 @@ def response_items(data: Any) -> list[Any]:
         if isinstance(value, list):
             return value
         if isinstance(value, dict):
+            if value and all(isinstance(item, dict) for item in value.values()):
+                return list(value.values())
             nested = response_items(value)
             if nested:
                 return nested
@@ -90,7 +108,8 @@ class SociaVaultClient:
             params=cleaned_params,
             timeout=self.timeout,
         )
-        response.raise_for_status()
+        if response.status_code >= 400:
+            raise requests.HTTPError(f"{response.status_code} {response.reason}: {response.text[:1000]}", response=response)
         data = response.json()
         if not isinstance(data, dict):
             raise ValueError("Unexpected SociaVault response shape")
@@ -129,7 +148,7 @@ def collect_shop_products(client: SociaVaultClient, url: str, region: str, max_p
     }
 
 
-def collect_product(client: SociaVaultClient, url: str, region: str, review_pages: int, related_videos: bool) -> dict[str, Any]:
+def collect_product_details(client: SociaVaultClient, url: str, region: str, related_videos: bool) -> dict[str, Any]:
     details = client.get(
         PRODUCT_DETAILS_PATH,
         {
@@ -138,7 +157,16 @@ def collect_product(client: SociaVaultClient, url: str, region: str, review_page
             "get_related_videos": str(related_videos).lower(),
         },
     )
-    product_id = str(first_present(details, ("product_id", "productId", "id")) or "")
+    return {
+        "source_type": "details",
+        "product_url": url,
+        "region": region,
+        "details": details,
+    }
+
+
+def collect_product_reviews(client: SociaVaultClient, target: str, region: str, review_pages: int) -> dict[str, Any]:
+    product_id = "" if target.startswith(("http://", "https://")) else target
     reviews = []
     raw_review_pages = []
     for page in range(1, review_pages + 1):
@@ -146,7 +174,7 @@ def collect_product(client: SociaVaultClient, url: str, region: str, review_page
         if product_id:
             params["product_id"] = product_id
         else:
-            params["url"] = url
+            params["url"] = target
         data = client.get(PRODUCT_REVIEWS_PATH, params)
         raw_review_pages.append(data)
         page_reviews = response_items(data)
@@ -155,11 +183,10 @@ def collect_product(client: SociaVaultClient, url: str, region: str, review_page
             break
         print(f"Fetched product reviews page {page}; reviews={len(page_reviews)}")
     return {
-        "source_type": "product",
-        "product_url": url,
+        "source_type": "reviews",
+        "product_url": target if target.startswith(("http://", "https://")) else "",
         "region": region,
         "product_id": product_id,
-        "details": details,
         "review_pages_requested": review_pages,
         "review_pages_fetched": len(raw_review_pages),
         "review_count": len(reviews),
@@ -168,11 +195,51 @@ def collect_product(client: SociaVaultClient, url: str, region: str, review_page
     }
 
 
+def collect_product(client: SociaVaultClient, url: str, region: str, review_pages: int, related_videos: bool) -> dict[str, Any]:
+    details_result = collect_product_details(client, url, region, related_videos)
+    details = details_result["details"]
+    product_id = str(first_present(details, ("product_id", "productId", "id")) or "")
+    reviews_result = collect_product_reviews(client, product_id or url, region, review_pages)
+    return {
+        "source_type": "product",
+        "product_url": url,
+        "region": region,
+        "product_id": product_id or reviews_result.get("product_id", ""),
+        "details": details,
+        "review_pages_requested": reviews_result["review_pages_requested"],
+        "review_pages_fetched": reviews_result["review_pages_fetched"],
+        "review_count": reviews_result["review_count"],
+        "reviews": reviews_result["reviews"],
+        "raw_review_pages": reviews_result["raw_review_pages"],
+    }
+
+
+def collect_shop_search(client: SociaVaultClient, query: str, max_pages: int) -> dict[str, Any]:
+    pages = []
+    products = []
+    for page in range(1, max_pages + 1):
+        data = client.get(SHOP_SEARCH_PATH, {"query": query, "page": page})
+        pages.append(data)
+        products.extend(response_items(data))
+        if not response_items(data):
+            break
+        print(f"Fetched shop search page {page}; products={len(response_items(data))}")
+    return {
+        "source_type": "search",
+        "query": query,
+        "pages_requested": max_pages,
+        "pages_fetched": len(pages),
+        "product_count": len(products),
+        "products": products,
+        "raw_pages": pages,
+    }
+
+
 def main() -> int:
     load_env_file()
     parser = argparse.ArgumentParser(description="Extract TikTok Shop data with SociaVault.")
-    parser.add_argument("url", help="TikTok Shop or TikTok Shop product URL")
-    parser.add_argument("--source-type", choices=("shop", "product"), default="product")
+    parser.add_argument("target", help="TikTok Shop URL, product ID, or search query")
+    parser.add_argument("--source-type", choices=("product", "details", "reviews", "shop", "search"), default="product")
     parser.add_argument("--region", default=os.getenv("SOCIAVAULT_REGION", DEFAULT_REGION))
     parser.add_argument("--max-pages", type=int, default=int(os.getenv("SOCIAVAULT_MAX_PAGES", "1")))
     parser.add_argument("--review-pages", type=int, default=int(os.getenv("SOCIAVAULT_REVIEW_PAGES", "1")))
@@ -194,13 +261,19 @@ def main() -> int:
         return 1
 
     try:
-        url = validate_tiktok_shop_url(args.url)
+        target = validate_target_for_source(args.source_type, args.target)
         client = SociaVaultClient(args.api_key, args.api_base, args.timeout)
         started = time.monotonic()
         if args.source_type == "shop":
-            result = collect_shop_products(client, url, args.region, args.max_pages)
+            result = collect_shop_products(client, target, args.region, args.max_pages)
+        elif args.source_type == "details":
+            result = collect_product_details(client, target, args.region, args.related_videos)
+        elif args.source_type == "reviews":
+            result = collect_product_reviews(client, target, args.region, args.review_pages)
+        elif args.source_type == "search":
+            result = collect_shop_search(client, target, args.max_pages)
         else:
-            result = collect_product(client, url, args.region, args.review_pages, args.related_videos)
+            result = collect_product(client, target, args.region, args.review_pages, args.related_videos)
         result["usage"] = {
             "api_provider": "sociavault",
             "api_base": args.api_base.rstrip("/"),
