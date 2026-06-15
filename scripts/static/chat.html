@@ -119,7 +119,33 @@ function renderMessages(scroll=true){if(!S.messages.length){showEmptyChat(true);
 function pruneRenderedMessages(){const keys=new Set();S.messages.forEach(m=>{if(m.id)keys.add(String(m.id));if(m._clientId)keys.add(String(m._clientId))});msgBox.querySelectorAll(".msg").forEach(el=>{const id=el.dataset.msgId||"";const cid=el.dataset.clientMsgId||"";if((id||cid)&&!keys.has(id)&&!keys.has(cid))el.remove()})}
 function cacheTag(result){const c=result&&result.cache;if(!c)return"";return `<span class="cache-tag ${c.hit?'hit':'live'}">${c.hit?'缓存命中':'实时调用'}</span>`}
 function closeSSE(){if(S.sse){S.sse.close();S.sse=null}}
-function renderToolCards(m){const calls=m.tool_calls||[];if(!calls.length)return"";const results=m.tool_results||[];const cards=calls.map(function(t,i){const name=(t&&t.function&&t.function.name)||"tool";const r=results[i];let status;if(r){const ok=!!(r.result&&r.result.ok);status=`<div class="tool-status ${ok?'ok':'err'}">${ok?'✓':'✗'} ${esc(r.tool_name||name)}: ${ok?'成功':'失败'}${cacheTag(r.result)}</div>`}else{status='<div class="tool-status">执行中...</div>'}return `<div class="tool-card"><div class="tool-name">🔧 ${esc(name)}</div>${status}</div>`}).join("");const done=m.status==="done"&&String(m.content||"").trim();return done?`<details class="tool-log"><summary>工具调用记录 (${calls.length})</summary>${cards}</details>`:`<div class="tool-log">${cards}</div>`}
+function toolArgs(t){try{const raw=t&&t.function&&t.function.arguments;if(!raw)return{};return typeof raw==="string"?JSON.parse(raw):(raw||{})}catch(e){return{}}}
+function firstArg(args,names){for(const n of names){const v=args&&args[n];if(v!==undefined&&v!==null&&String(v).trim())return String(v).trim()}return""}
+function shortValue(v){v=String(v||"").trim();if(!v)return"";if(v.length>80)v=v.slice(0,77)+"...";return v}
+function toolDisplayName(name,args,running=false){
+  const keyword=shortValue(firstArg(args,["keyword","query","q","search_query","term"]));
+  const url=shortValue(firstArg(args,["url","video_url","product_url","shop_url","canonical_url"]));
+  const id=shortValue(firstArg(args,["product_id","video_id","music_id","user_id","sec_uid","asin","shop_id"]));
+  const target=keyword||id||url;
+  const doing=running?"正在":"";
+  const map={
+    tiktok_shop_search: target?`${doing}对 ${target} 进行 TikTok Shop 产品检索`:"TikTok Shop 产品检索",
+    tiktok_shop_product: target?`${doing}获取 TikTok Shop 商品详情：${target}`:"TikTok Shop 商品详情获取",
+    tiktok_shop_details: target?`${doing}获取 TikTok Shop 商品详情：${target}`:"TikTok Shop 商品详情获取",
+    tiktok_shop_reviews: target?`${doing}获取 TikTok Shop 商品评论：${target}`:"TikTok Shop 商品评论获取",
+    tiktok_search_keyword: target?`${doing}检索 TikTok 关键词：${target}`:"TikTok 关键词检索",
+    tiktok_search_users: target?`${doing}搜索 TikTok 用户：${target}`:"TikTok 用户搜索",
+    tiktok_search_hashtag: target?`${doing}检索 TikTok 话题：${target}`:"TikTok 话题检索",
+    tiktok_search_music: target?`${doing}检索 TikTok 音乐：${target}`:"TikTok 音乐检索",
+    tiktok_search_top: target?`${doing}查询 TikTok 热门内容：${target}`:"TikTok 热门内容查询",
+    tiktok_transcript: target?`${doing}获取 TikTok 视频文本：${target}`:"TikTok 视频文本获取",
+    video_download: target?`${doing}下载视频：${target}`:"视频下载",
+    amazon_search_keyword: target?`${doing}对 ${target} 进行 Amazon 商品检索`:"Amazon 商品检索",
+    amazon_scrape_asin: target?`${doing}抓取 Amazon ASIN：${target}`:"Amazon ASIN 抓取",
+  };
+  return map[name]||`${doing}${name}${target?`：${target}`:""}`;
+}
+function renderToolCards(m){const calls=m.tool_calls||[];if(!calls.length)return"";const results=m.tool_results||[];const cards=calls.map(function(t,i){const name=(t&&t.function&&t.function.name)||"tool";const args=toolArgs(t);const r=results[i];const title=toolDisplayName(name,args,!r);let status;if(r){const ok=!!(r.result&&r.result.ok);const resultName=toolDisplayName(r.tool_name||name,args,false);status=`<div class="tool-status ${ok?'ok':'err'}">${ok?'✓':'✗'} ${esc(resultName)}: ${ok?'成功':'失败'}${cacheTag(r.result)}</div>`}else{status='<div class="tool-status">执行中...</div>'}return `<div class="tool-card"><div class="tool-name">🔧 ${esc(title)}</div>${status}</div>`}).join("");const done=m.status==="done"&&String(m.content||"").trim();return done?`<details class="tool-log"><summary>工具调用记录 (${calls.length})</summary>${cards}</details>`:`<div class="tool-log">${cards}</div>`}
 function pendingTooLong(){const now=Date.now()/1000;return S.messages.some(m=>m&&m.role==="assistant"&&m.status==="pending"&&now-Number(m.created_at||m._startedAt||now)>12)}
 function subscribeSSE(sid,am){
   const es=new EventSource(`/api/chat/events?session=${encodeURIComponent(sid)}`);
