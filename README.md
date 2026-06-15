@@ -21,6 +21,7 @@ Videos are read from `videos/`. Results are written to `output/<video-file-name>
 - `scripts/deepseek_shop_analyze.py`: turns TikTok Shop extraction JSON into a Chinese DeepSeek analysis report.
 - `scripts/web_app.py`: serves the upload/analyze/result web UI.
 - `scripts/run_web.sh`: starts the web UI on port `4000`, or the next available port.
+- `scripts/setup_amazon_scraper.sh`: checks or installs the ClawHub `amazon-scraper` Docker image on the remote server.
 - `.env.example`: template for runtime settings.
 
 ## Environment
@@ -55,6 +56,10 @@ SOCIAVAULT_REGION=US
 SOCIAVAULT_MAX_PAGES=1
 SOCIAVAULT_REVIEW_PAGES=1
 
+AMAZON_PROXY=
+AMAZON_PROXIES=
+AMAZON_MAX_PAGES=1
+
 DEEPSEEK_API_KEY=your-deepseek-api-key
 HF_ENDPOINT=https://hf-mirror.com
 ```
@@ -79,6 +84,7 @@ cd Video_analyzer
 mkdir -p videos output
 cp .env.example .env
 nano .env
+bash scripts/setup_amazon_scraper.sh
 docker compose -p short-video-analyzer build
 ```
 
@@ -110,6 +116,52 @@ The page supports:
 - showing processing mode, model, token usage, estimated cost, and total elapsed time
 - viewing `提取内容（中文）` and `分析结果（中文）`
 - switching each result tab back to original JSON with `显示原文`
+
+## Amazon Scraper
+
+A separate Amazon scraper page is available at:
+
+```text
+http://<server>:4000/amazon
+```
+
+It calls the ClawHub `jiafar/amazon-scraper` skill through its Docker image:
+
+```bash
+docker run --rm --network host -e AMAZON_PROXY -e AMAZON_PROXIES amazon-scraper node assets/amazon_handler.js "<amazon-url>" --pages 1
+```
+
+The page supports Amazon URLs, ASINs, and keyword searches. It intentionally uses only `assets/amazon_handler.js`; the skill's generic non-Amazon scraping mode is not exposed.
+
+Results are saved under:
+
+```text
+output/amazon/<job-id>/result.json
+```
+
+`bash scripts/run_web.sh` runs `scripts/setup_amazon_scraper.sh` before starting Compose. The setup script is idempotent: if the `amazon-scraper` image already exists it exits successfully; otherwise it runs `openclaw skills install amazon-scraper`. If the remote server does not have the OpenClaw CLI, install it or build the skill manually before starting the web service.
+
+The web container needs access to the host Docker socket so it can start the scraper container:
+
+```yaml
+- /var/run/docker.sock:/var/run/docker.sock
+```
+
+Optional proxy settings:
+
+```env
+AMAZON_PROXY=http://user:pass@host:port
+AMAZON_PROXIES=http://u:p@h1:8001,http://u:p@h2:8002
+AMAZON_MAX_PAGES=1
+```
+
+The scraper container uses `--network host` so `AMAZON_PROXY` can reference `127.0.0.1`. If the host proxy is on `127.0.0.1:7890`, set:
+
+```env
+AMAZON_PROXY=http://127.0.0.1:7890
+```
+
+Docker bridge networking on some hosts cannot forward container-to-host traffic. `--network host` is the reliable workaround.
 
 ## TikTok Shop Extraction
 

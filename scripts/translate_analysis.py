@@ -3,11 +3,13 @@ import argparse
 import json
 import os
 import sys
+import time
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 import requests
+from api_cache import record_api_call
 
 
 DEFAULT_API_URL = "https://api.deepseek.com/v1/chat/completions"
@@ -39,6 +41,7 @@ def call_deepseek(api_key: str, api_url: str, model: str, items: list[dict[str, 
         'with this shape: {"items":[{"id":"...","text":"translated text"}]}. Do not add commentary.\n\n'
         f"{json.dumps({'items': items}, ensure_ascii=False, indent=2)}"
     )
+    started = time.monotonic()
     response = requests.post(
         api_url,
         headers={
@@ -62,10 +65,19 @@ def call_deepseek(api_key: str, api_url: str, model: str, items: list[dict[str, 
         timeout=180,
     )
     response.raise_for_status()
-    return response.json()
+    data = response.json()
+    record_api_call(
+        "deepseek",
+        "translate_items",
+        {"api_url": api_url, "model": model, "items_count": len(items), "items_sha256": __import__("hashlib").sha256(json.dumps(items, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()},
+        data,
+        elapsed_ms=int((time.monotonic() - started) * 1000),
+    )
+    return data
 
 
 def call_deepseek_text(api_key: str, api_url: str, model: str, text: str) -> str:
+    started = time.monotonic()
     response = requests.post(
         api_url,
         headers={
@@ -89,7 +101,15 @@ def call_deepseek_text(api_key: str, api_url: str, model: str, text: str) -> str
         timeout=180,
     )
     response.raise_for_status()
-    return extract_content(response.json()).strip()
+    data = response.json()
+    record_api_call(
+        "deepseek",
+        "translate_text",
+        {"api_url": api_url, "model": model, "text_sha256": __import__("hashlib").sha256(text.encode("utf-8")).hexdigest()},
+        data,
+        elapsed_ms=int((time.monotonic() - started) * 1000),
+    )
+    return extract_content(data).strip()
 
 
 def extract_content(api_response: dict) -> str:

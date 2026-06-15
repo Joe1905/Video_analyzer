@@ -23,12 +23,27 @@ done
 echo "Starting web UI on http://localhost:${port}"
 export WEB_PORT="$port"
 
+bash scripts/setup_amazon_scraper.sh || echo "Warning: amazon-scraper setup skipped" >&2
+
+IMAGE="short-video-analyzer:latest"
+echo "Building ${IMAGE} with host networking for proxy access..."
+docker build --network host \
+  --build-arg HTTP_PROXY \
+  --build-arg HTTPS_PROXY \
+  --build-arg http_proxy \
+  --build-arg https_proxy \
+  --build-arg ALL_PROXY \
+  --build-arg all_proxy \
+  --build-arg NO_PROXY \
+  --build-arg no_proxy \
+  -t "${IMAGE}" .
+
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
-  exec docker compose -p short-video-analyzer up --build web
+  exec docker compose -p short-video-analyzer up web
 fi
 
 if command -v docker-compose >/dev/null 2>&1; then
-  exec docker-compose -p short-video-analyzer up --build web
+  exec docker-compose -p short-video-analyzer up web
 fi
 
 echo "Docker Compose is required to run the web UI."

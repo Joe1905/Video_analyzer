@@ -9,6 +9,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+from api_cache import get_cached, store_response
+from proxy_state import ensure_us_proxy
 
 ALLOWED_HOST_SUFFIXES = (
     "tiktok.com",
@@ -77,6 +79,38 @@ def media_id_from_url(url: str) -> str:
         return match.group(1)
     compact = re.sub(r"[^a-zA-Z0-9]+", "_", urlparse(url).path).strip("_")
     return compact[:80] or "unknown"
+
+
+def normalized_video_url(url: str) -> str:
+    parsed = urlparse(url.strip())
+    host = (parsed.hostname or "").lower().rstrip(".")
+    return parsed._replace(scheme=(parsed.scheme or "https").lower(), netloc=host, fragment="").geturl()
+
+
+def video_cache_request(url: str) -> dict[str, Any]:
+    return {"url": normalized_video_url(url)}
+
+
+def video_cache_metadata(result: dict[str, Any], source_url: str) -> dict[str, Any]:
+    entity_id = result.get("id") or media_id_from_url(str(result.get("webpage_url") or source_url))
+    return {
+        "entity_type": "short_video",
+        "entity_id": str(entity_id or normalized_video_url(source_url)),
+        "title": result.get("title"),
+        "author": result.get("uploader"),
+        "source_url": str(result.get("webpage_url") or source_url),
+    }
+
+
+def with_download_cache_meta(result: dict[str, Any], hit: bool) -> dict[str, Any]:
+    payload = dict(result)
+    payload["_cache"] = {
+        "hit": hit,
+        "provider": "short_video_download",
+        "endpoint": "download",
+        "label": "缓存命中" if hit else "实时调用",
+    }
+    return payload
 
 
 def has_douyin_media_keywords(url: str) -> bool:
@@ -331,15 +365,26 @@ def main() -> int:
 
     try:
         url = validate_short_video_url(args.url)
+        output_dir = Path(args.output_dir)
+        cached = get_cached("short_video_download", "download", video_cache_request(url))
+        if isinstance(cached, dict) and cached.get("filename"):
+            cached_path = output_dir / Path(str(cached["filename"])).name
+            if cached_path.is_file():
+                result = with_download_cache_meta(dict(cached), True)
+                result["path"] = str(cached_path)
+                if args.result_json:
+                    write_json(Path(args.result_json), result)
+                print(json.dumps(result, ensure_ascii=False))
+                return 0
+            print(f"[API_CACHE] miss provider=short_video_download endpoint=download reason=file_missing filename={cached.get('filename')}", flush=True)
         from yt_dlp import YoutubeDL
         from yt_dlp.networking.impersonate import ImpersonateTarget
     except Exception as exc:
         print(str(exc) or repr(exc), file=sys.stderr)
         return 2
 
-    output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    impersonate_target = os.getenv("TIKTOK_IMPERSONATE_TARGET", "chrome-136:macos-15").strip()
+    impersonate_target = os.getenv("TIKTOK_IMPERSONATE_TARGET", "").strip()
     options = {
         "format": "bv*+ba/b[ext=mp4]/best",
         "merge_output_format": "mp4",
@@ -355,7 +400,10 @@ def main() -> int:
         "no_warnings": False,
     }
     if impersonate_target:
-        options["impersonate"] = ImpersonateTarget.from_str(impersonate_target)
+        try:
+            options["impersonate"] = ImpersonateTarget.from_str(impersonate_target)
+        except Exception as exc:
+            print(f"Skipping unavailable impersonate target {impersonate_target!r}: {exc}", flush=True)
     tiktok_proxy = proxy_for_tiktok()
     if tiktok_proxy:
         options["proxy"] = tiktok_proxy
@@ -365,6 +413,7 @@ def main() -> int:
         if is_douyin_url(url):
             result = asyncio.run(download_douyin_with_playwright(url, output_dir, args.max_bytes))
         else:
+            ensure_us_proxy("tiktok")
             with YoutubeDL(options) as ydl:
                 info = ydl.extract_info(url, download=True)
                 fallback = Path(ydl.prepare_filename(info))
@@ -380,6 +429,16 @@ def main() -> int:
                 "webpage_url": info.get("webpage_url") or url,
                 "downloader": "yt-dlp",
             }
+        if args.result_json:
+            write_json(Path(args.result_json), result)
+        store_response(
+            "short_video_download",
+            "download",
+            video_cache_request(url),
+            result,
+            metadata=video_cache_metadata(result, url),
+        )
+        result = with_download_cache_meta(result, False)
         if args.result_json:
             write_json(Path(args.result_json), result)
         print(json.dumps(result, ensure_ascii=False))

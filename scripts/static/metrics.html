@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TikTok 数据提取</title>
+<style>
+:root{
+  --bg:#f6f8fb;--surface:#fff;--text:#0f172a;--text2:#475569;--text3:#94a3b8;
+  --border:#e2e8f0;--border2:#f1f5f9;--brand:#2563eb;--brand2:#1d4ed8;
+  --brand-soft:#eff6ff;--green:#059669;--green-soft:#ecfdf5;--red:#dc2626;
+  --red-soft:#fef2f2;--amber:#d97706;--amber-soft:#fffbeb;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.04);--shadow:0 1px 3px rgba(0,0,0,.06),0 1px 2px rgba(0,0,0,.04);
+  --shadow-md:0 4px 6px -1px rgba(0,0,0,.06),0 2px 4px -2px rgba(0,0,0,.04);
+  --radius-sm:8px;--radius:12px;--radius-lg:16px;
+}
+*{box-sizing:border-box;margin:0}
+html,body{height:100%}
+body{background:var(--bg);color:var(--text);font-family:"Segoe UI",system-ui,-apple-system,sans-serif;overflow:hidden;line-height:1.5}
+button,input,select,textarea{font:inherit;color:inherit}
+button{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:38px;border:1px solid transparent;border-radius:var(--radius-sm);padding:8px 16px;font-weight:600;font-size:13px;cursor:pointer;transition:.15s ease;white-space:nowrap}
+button.primary{background:var(--brand);color:#fff;box-shadow:0 1px 2px rgba(37,99,235,.2)}
+button.primary:hover{background:var(--brand2);transform:translateY(-1px);box-shadow:0 4px 8px rgba(37,99,235,.25)}
+button.primary:disabled{opacity:.5;cursor:not-allowed;transform:none;box-shadow:none}
+button.secondary{background:var(--surface);color:var(--text);border-color:var(--border)}
+button.secondary:hover{background:var(--brand-soft);border-color:var(--brand);color:var(--brand)}
+button.ghost{background:transparent;color:var(--text2);border-color:transparent}
+button.ghost:hover{background:var(--border2);color:var(--text)}
+button.sm{min-height:30px;padding:4px 10px;font-size:12px;border-radius:6px}
+input,select,textarea{width:100%;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);padding:9px 12px;font-size:13px;outline:none;transition:.15s ease}
+input:focus,select:focus,textarea:focus{border-color:var(--brand);box-shadow:0 0 0 3px rgba(37,99,235,.1)}
+input::placeholder{color:var(--text3)}textarea{min-height:140px;resize:vertical;font:12px/1.6 ui-monospace,Consolas,monospace}
+header{height:60px;display:flex;align-items:center;justify-content:space-between;padding:0 24px;background:rgba(255,255,255,.8);border-bottom:1px solid var(--border);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px)}
+header h1{font-size:18px;font-weight:700;letter-spacing:-.3px}
+.nav-links{display:flex;gap:6px;align-items:center}.nav-links a{text-decoration:none;font-size:13px;font-weight:600;color:var(--text2);padding:6px 12px;border-radius:var(--radius-sm);transition:.15s ease;border:1px solid transparent;display:inline-flex;align-items:center;justify-content:center;min-width:36px;min-height:36px}.nav-links a:hover{background:var(--border2);color:var(--text);border-color:var(--border)}.nav-links a.active{background:var(--brand-soft);color:var(--brand);border-color:var(--brand)}
+main{display:grid;grid-template-columns:360px minmax(0,1fr);gap:16px;padding:18px;height:calc(100vh - 60px)}
+.side{display:flex;flex-direction:column;gap:14px;padding:18px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);box-shadow:var(--shadow-sm);overflow-y:auto}
+.workspace{display:grid;grid-template-rows:auto minmax(0,1fr);min-height:0}
+.workspace .head{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;background:var(--border2);border-radius:var(--radius) var(--radius) 0 0;border:1px solid var(--border);border-bottom:none}
+.grid2{display:grid;grid-template-columns:minmax(0,1fr) 420px;gap:16px;min-height:0;padding:0;margin-top:0}
+.grid2 .card{display:grid;grid-template-rows:auto minmax(0,1fr);min-height:0;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);overflow:hidden;box-shadow:var(--shadow-sm)}
+.grid2 .card h3{margin:0;padding:12px 14px;border-bottom:1px solid var(--border);background:var(--border2);font-size:14px}
+label{display:grid;gap:5px;color:var(--text2);font-weight:700;font-size:12px}
+.status{min-height:42px;border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;background:var(--border2);color:var(--text2);font-size:12px;overflow-wrap:anywhere}.status.ok{background:var(--green-soft);color:var(--green);border-color:#a7f3d0}.status.bad{background:var(--red-soft);color:var(--red);border-color:#fecaca}
+.param-row{display:none}.param-row.show{display:grid;gap:5px}
+.metric{display:flex;flex-direction:column;border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;background:var(--surface)}.metric span{font-size:11px;color:var(--text2);font-weight:600}.metric b{font-size:16px;margin-top:3px}
+pre.log2{min-height:0;margin:0;padding:14px;overflow:auto;white-space:pre-wrap;word-break:break-word;font:12px/1.55 ui-monospace,Consolas,monospace;color:var(--text2);background:var(--bg)}
+.report{padding:16px;overflow:auto;line-height:1.65}.tabs{display:flex;gap:6px}.tabs .tab-btn{background:var(--surface);color:var(--text2);border-color:var(--border);font-size:12px;min-height:30px;border-radius:6px}.tabs .tab-btn.active{background:var(--brand);color:#fff;border-color:var(--brand)}
+.muted{color:var(--text2);font-size:13px}
+@media(max-width:980px){main,.grid2{grid-template-columns:1fr;height:auto}.grid2 .card{min-height:360px}}
+</style>
+</head>
+<body>
+<header><h1>TikTok 数据提取</h1><nav class="nav-links"><a href="/" title="AI 聊天">🏠</a><a href="/amazon" title="Amazon">📦</a><a href="/shop" title="Shop">🛍️</a><a href="/metrics" class="active" title="数据">🎵</a><a href="/extract" title="视频分析">🎬</a></nav></header>
+<main>
+  <section class="side">
+    <label>API 端点
+      <select id="endpoint">
+        <optgroup label="用户数据">
+          <option value="profile">用户主页</option>
+          <option value="videos">用户视频列表</option>
+          <option value="videos-popular">热门视频</option>
+          <option value="followers">粉丝列表</option>
+          <option value="following">关注列表</option>
+          <option value="demographics">受众画像</option>
+        </optgroup>
+        <optgroup label="视频内容">
+          <option value="video-info" selected>视频详情</option>
+          <option value="comments">视频评论</option>
+          <option value="comment-replies">评论回复</option>
+          <option value="transcript">视频字幕</option>
+          <option value="live">直播状态</option>
+        </optgroup>
+        <optgroup label="搜索发现">
+          <option value="search-users">搜索用户</option>
+          <option value="search-hashtag">话题标签</option>
+          <option value="search-keyword">关键词搜索</option>
+          <option value="search-music">搜索音乐</option>
+          <option value="search-top">热门搜索</option>
+          <option value="trending">趋势视频</option>
+        </optgroup>
+        <optgroup label="热门 & 创作者">
+          <option value="creators-popular">热门创作者</option>
+          <option value="hashtags-popular">热门标签</option>
+        </optgroup>
+        <optgroup label="音乐音频">
+          <option value="music-popular">热门音乐</option>
+          <option value="music-info">音乐详情</option>
+          <option value="music-videos">音乐视频</option>
+        </optgroup>
+      </select>
+    </label>
+    <div id="paramVideo" class="param-row show"><label>视频链接<input id="target" placeholder="https://www.tiktok.com/@user/video/123"></label></div>
+    <div id="paramHandle" class="param-row"><label>TikTok 用户名<input id="handle" placeholder="@用户名"></label></div>
+    <div id="paramQuery" class="param-row"><label>搜索关键词<input id="query" placeholder="搜索内容"></label></div>
+    <div id="paramHashtag" class="param-row"><label>话题标签<input id="hashtag" placeholder="标签名（不带 #）"></label></div>
+    <div id="paramSound" class="param-row"><label>Sound ID<input id="soundId" placeholder="Sound ID"></label></div>
+    <div id="paramCount" class="param-row show"><label>返回数量<input id="count" type="number" min="1" max="100" value="10"></label></div>
+    <div id="paramNone" class="param-row"><label class="muted">此端点无需参数</label></div>
+    <button id="run" class="primary">提取数据</button>
+    <div id="status" class="status">选择端点和参数，点击提取数据。</div>
+  </section>
+  <section class="workspace">
+    <div class="head">
+      <div><b>结果</b><div id="output" class="muted">结果保存到 output/tiktok_api/&lt;job-id&gt;/</div></div>
+      <div class="tabs"><button class="tab-btn active" data-tab="report">报告</button><button class="tab-btn" data-tab="json">JSON</button></div>
+    </div>
+    <div class="grid2">
+      <article class="card"><h3>TikTok 数据</h3><div id="result" class="report">暂无结果。</div></article>
+      <article class="card"><div style="display:flex;justify-content:space-between;align-items:center;padding:12px 14px;border-bottom:1px solid var(--border);background:var(--border2)"><h3 style="margin:0;font-size:14px;border:none;padding:0;background:transparent">任务日志</h3><button id="clearLog2" class="ghost sm" onclick="document.querySelector('#log').textContent='等待任务...'">清空</button></div><pre id="log" class="log2">等待任务...</pre></article>
+    </div>
+  </section>
+</main>
+<script>
+const runBtn=document.querySelector("#run"),statusBox=document.querySelector("#status"),logBox=document.querySelector("#log"),resultBox=document.querySelector("#result"),outputBox2=document.querySelector("#output");
+const state={job:null,events:null,tab:"report",lastLogLength:0};
+const EP_PARAMS={"profile":["handle","count"],"videos":["handle","count"],"videos-popular":["none","count"],"followers":["handle","count"],"following":["handle","count"],"demographics":["handle"],"video-info":["video","count"],"comments":["video","count"],"comment-replies":["video","count"],"transcript":["video"],"live":["handle"],"search-users":["query","count"],"search-hashtag":["hashtag","count"],"search-keyword":["query","count"],"search-music":["query","count"],"search-top":["query","count"],"trending":["none"],"creators-popular":["none","count"],"hashtags-popular":["none","count"],"music-popular":["none","count"],"music-info":["sound"],"music-videos":["sound","count"]};
+function showParams(ep){document.querySelectorAll(".param-row").forEach(function(r){r.classList.remove("show")});var needed=EP_PARAMS[ep]||[];if(needed.indexOf("none")===0&&needed.length===1){document.querySelector("#paramNone").classList.add("show");return}if(needed.indexOf("video")>=0)document.querySelector("#paramVideo").classList.add("show");if(needed.indexOf("handle")>=0)document.querySelector("#paramHandle").classList.add("show");if(needed.indexOf("query")>=0)document.querySelector("#paramQuery").classList.add("show");if(needed.indexOf("hashtag")>=0)document.querySelector("#paramHashtag").classList.add("show");if(needed.indexOf("sound")>=0)document.querySelector("#paramSound").classList.add("show");if(needed.indexOf("count")>=0)document.querySelector("#paramCount").classList.add("show")}
+document.querySelector("#endpoint").onchange=function(){showParams(this.value)};showParams("video-info");
+function esc(v){return String(v||"").replace(/[&<>"']/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]})}
+function pretty(v){return JSON.stringify(v||{},null,2)}
+function setStatus(m,k){k=k||"";statusBox.className="status "+k;statusBox.textContent=m}
+function addLog(lines){var next=Array.isArray(lines)?lines:[lines];if(!next.length)return;var cur=logBox.textContent==="等待任务..."?"":logBox.textContent;logBox.textContent=cur+(cur?"\n":"")+next.join("\n");logBox.scrollTop=logBox.scrollHeight}
+function renderReport(data){if(!data)return"暂无结果。";var m=data._meta||{};var u=data.user||(data.data||{}).user||{},s=data.stats||(data.data||{}).stats||{};if(u.uniqueId||s.followerCount){return'<div style="display:grid;gap:12px"><div style="display:flex;align-items:center;gap:14px">'+(u.avatarLarger?'<img src="'+esc(u.avatarLarger)+'" style="width:64px;height:64px;border-radius:50%">':"")+'<div><b style="font-size:18px">'+esc(u.nickname||u.uniqueId||"")+'</b><div class="muted">@'+esc(u.uniqueId||"")+'</div></div></div><div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px"><div class="metric"><span>粉丝</span><b>'+esc(s.followerCount||"")+'</b></div><div class="metric"><span>关注</span><b>'+esc(s.followingCount||"")+'</b></div><div class="metric"><span>获赞</span><b>'+esc(s.heartCount||"")+'</b></div><div class="metric"><span>视频</span><b>'+esc(s.videoCount||"")+'</b></div></div></div>'}var aweme=data.aweme_list||(data.data||{}).aweme_list;if(aweme&&typeof aweme==="object"){var videos=Object.values(aweme);if(videos.length)return"<div>共 "+videos.length+" 个视频</div>"+videos.slice(0,50).map(function(v){return'<div style="margin:8px 0;padding:8px;border:1px solid var(--border);border-radius:8px"><b>'+esc(v.desc||"(无描述)")+'</b><div class="muted">播放:'+esc((v.statistics||{}).playCount||"")+' | ❤'+esc((v.statistics||{}).diggCount||"")+'</div></div>'}).join("")}var results=data.results||(data.data||{}).results;if(results&&Array.isArray(results)){return"<div>"+results.length+" 条结果</div><pre>"+esc(pretty(results).substring(0,5000))+"</pre>"}return"<pre>"+esc(pretty(data).substring(0,10000))+"</pre>"}
+function render(){var data=state.job&&state.job.result;if(state.tab==="json"){resultBox.innerHTML="<pre>"+esc(pretty(data))+"</pre>";return}resultBox.innerHTML=renderReport(data)}
+function closeEvents(){if(state.events){state.events.close();state.events=null}}
+function handleJob(job){state.job=job;if(job.output_dir)outputBox2.textContent="结果目录："+job.output_dir;if(Array.isArray(job.log)&&job.log.length>state.lastLogLength){addLog(job.log.slice(state.lastLogLength));state.lastLogLength=job.log.length}render();if(job.status==="queued"||job.status==="running"){setStatus("任务运行中："+job.status);return}closeEvents();runBtn.disabled=false;setStatus(job.status==="complete"?"提取完成。":(job.error||"提取失败。"),job.status==="complete"?"ok":"bad")}
+async function start(){var ep=document.querySelector("#endpoint").value;var needed=EP_PARAMS[ep]||[];var target="";if(needed.indexOf("video")>=0)target=document.querySelector("#target").value.trim();else if(needed.indexOf("handle")>=0)target=document.querySelector("#handle").value.trim();else if(needed.indexOf("query")>=0)target=document.querySelector("#query").value.trim();else if(needed.indexOf("hashtag")>=0)target=document.querySelector("#hashtag").value.trim();else if(needed.indexOf("sound")>=0)target=document.querySelector("#soundId").value.trim();if(!target&&needed.indexOf("none")<0)return setStatus("请输入必填参数。","bad");closeEvents();state.job=null;state.lastLogLength=0;logBox.textContent="提交任务...";resultBox.textContent="暂无结果。";runBtn.disabled=true;setStatus("正在提交任务...");var r=await fetch("/api/video-metrics",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({target:target,endpoint:ep})});var job=await r.json();if(!r.ok){runBtn.disabled=false;setStatus(job.error||"提交失败。","bad");addLog(job.error||"提交失败。");return}handleJob(job);state.events=new EventSource("/api/video-metrics-events?id="+encodeURIComponent(job.id));state.events.onmessage=function(e){handleJob(JSON.parse(e.data))};state.events.onerror=function(){closeEvents();runBtn.disabled=false;setStatus("任务连接中断。","bad")}}
+runBtn.onclick=function(){start().catch(function(e){runBtn.disabled=false;setStatus(e.message,"bad");addLog(e.message)})};
+document.querySelectorAll(".tab-btn").forEach(function(btn){btn.onclick=function(){document.querySelectorAll(".tab-btn").forEach(function(x){x.classList.remove("active")});btn.classList.add("active");state.tab=btn.dataset.tab;render()}});
+</script>
+</body>
+</html>

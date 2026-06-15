@@ -3,9 +3,11 @@ import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import requests
+from api_cache import record_api_call
 
 
 DEFAULT_API_URL = "https://api.deepseek.com/v1/chat/completions"
@@ -20,7 +22,14 @@ def load_analysis(path: Path) -> dict:
         return json.load(file)
 
 
-def build_prompt(analysis: dict) -> str:
+def build_prompt(analysis: dict, user_prompt: str = "") -> str:
+    if user_prompt.strip():
+        return (
+            f"{user_prompt.strip()}\n\n"
+            "Return strict parseable JSON only, without Markdown.\n\n"
+            "analysis.json:\n"
+            f"{json.dumps(analysis, ensure_ascii=False, indent=2)}"
+        )
     return (
         "You are a short-video content audit analyst. Review the provided standardized "
         "analysis.json and produce a practical Simplified Chinese audit report. "
@@ -37,6 +46,7 @@ def build_prompt(analysis: dict) -> str:
 
 
 def call_deepseek(api_key: str, prompt: str, api_url: str, model: str) -> dict:
+    started = time.monotonic()
     response = requests.post(
         api_url,
         headers={
@@ -60,7 +70,15 @@ def call_deepseek(api_key: str, prompt: str, api_url: str, model: str) -> dict:
         timeout=120,
     )
     response.raise_for_status()
-    return response.json()
+    data = response.json()
+    record_api_call(
+        "deepseek",
+        "postprocess",
+        {"api_url": api_url, "model": model, "prompt_sha256": __import__("hashlib").sha256(prompt.encode("utf-8")).hexdigest()},
+        data,
+        elapsed_ms=int((time.monotonic() - started) * 1000),
+    )
+    return data
 
 
 def extract_content(api_response: dict) -> str:
@@ -106,6 +124,11 @@ def main() -> int:
         default=os.getenv("DEEPSEEK_MODEL", DEFAULT_MODEL),
         help=f"DeepSeek model name. Defaults to {DEFAULT_MODEL}.",
     )
+    parser.add_argument(
+        "--prompt",
+        default="",
+        help="User-defined analysis prompt. Overrides the default audit analyst prompt.",
+    )
     args = parser.parse_args()
 
     api_key = os.getenv("DEEPSEEK_API_KEY")
@@ -121,7 +144,7 @@ def main() -> int:
         analysis = load_analysis(analysis_path)
         api_response = call_deepseek(
             api_key=api_key,
-            prompt=build_prompt(analysis),
+            prompt=build_prompt(analysis, args.prompt),
             api_url=args.api_url,
             model=args.model,
         )

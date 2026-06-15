@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TikTok Shop 提取</title>
+<style>
+:root{
+  --bg:#f6f8fb;--surface:#fff;--text:#0f172a;--text2:#475569;--text3:#94a3b8;
+  --border:#e2e8f0;--border2:#f1f5f9;--brand:#2563eb;--brand2:#1d4ed8;
+  --brand-soft:#eff6ff;--green:#059669;--green-soft:#ecfdf5;--red:#dc2626;
+  --red-soft:#fef2f2;--amber:#d97706;--amber-soft:#fffbeb;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.04);--shadow:0 1px 3px rgba(0,0,0,.06),0 1px 2px rgba(0,0,0,.04);
+  --shadow-md:0 4px 6px -1px rgba(0,0,0,.06),0 2px 4px -2px rgba(0,0,0,.04);
+  --radius-sm:8px;--radius:12px;--radius-lg:16px;
+}
+*{box-sizing:border-box;margin:0}
+html,body{height:100%}
+body{background:var(--bg);color:var(--text);font-family:"Segoe UI",system-ui,-apple-system,sans-serif;overflow:hidden;line-height:1.5}
+button,input,select,textarea{font:inherit;color:inherit}
+button{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:38px;border:1px solid transparent;border-radius:var(--radius-sm);padding:8px 16px;font-weight:600;font-size:13px;cursor:pointer;transition:.15s ease;white-space:nowrap}
+button.primary{background:var(--brand);color:#fff;box-shadow:0 1px 2px rgba(37,99,235,.2)}
+button.primary:hover{background:var(--brand2);transform:translateY(-1px);box-shadow:0 4px 8px rgba(37,99,235,.25)}
+button.primary:disabled{opacity:.5;cursor:not-allowed;transform:none;box-shadow:none}
+button.secondary{background:var(--surface);color:var(--text);border-color:var(--border)}
+button.secondary:hover{background:var(--brand-soft);border-color:var(--brand);color:var(--brand)}
+button.ghost{background:transparent;color:var(--text2);border-color:transparent}
+button.ghost:hover{background:var(--border2);color:var(--text)}
+button.sm{min-height:30px;padding:4px 10px;font-size:12px;border-radius:6px}
+input,select,textarea{width:100%;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);padding:9px 12px;font-size:13px;outline:none;transition:.15s ease}
+input:focus,select:focus,textarea:focus{border-color:var(--brand);box-shadow:0 0 0 3px rgba(37,99,235,.1)}
+input::placeholder{color:var(--text3)}textarea{min-height:130px;resize:vertical;font:12px/1.6 ui-monospace,Consolas,monospace}
+header{height:60px;display:flex;align-items:center;justify-content:space-between;padding:0 24px;background:rgba(255,255,255,.8);border-bottom:1px solid var(--border);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px)}
+header h1{font-size:18px;font-weight:700;letter-spacing:-.3px}
+.nav-links{display:flex;gap:6px;align-items:center}.nav-links a{text-decoration:none;font-size:13px;font-weight:600;color:var(--text2);padding:6px 12px;border-radius:var(--radius-sm);transition:.15s ease;border:1px solid transparent;display:inline-flex;align-items:center;justify-content:center;min-width:36px;min-height:36px}.nav-links a:hover{background:var(--border2);color:var(--text);border-color:var(--border)}.nav-links a.active{background:var(--brand-soft);color:var(--brand);border-color:var(--brand)}
+.app-shell{display:grid;grid-template-columns:360px minmax(0,1fr);height:calc(100vh - 60px)}
+.side-panel{border-right:1px solid var(--border);background:var(--surface);overflow-y:auto}
+.panel-header{padding:18px 18px 14px;border-bottom:1px solid var(--border)}.panel-header h1{font-size:16px;font-weight:700}
+.form{display:grid;gap:14px;padding:18px}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+label{display:grid;gap:5px;color:var(--text2);font-size:12px;font-weight:700}
+.check{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:600}.check input{width:auto;accent-color:var(--brand)}
+.status{min-height:42px;border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;background:var(--border2);color:var(--text2);font-size:12px;overflow-wrap:anywhere}.status.ok{background:var(--green-soft);color:var(--green);border-color:#a7f3d0}.status.bad{background:var(--red-soft);color:var(--red);border-color:#fecaca}
+.workspace{display:grid;grid-template-rows:auto minmax(0,1fr);min-width:0;padding:20px;gap:16px}
+.workspace-header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 16px;background:var(--border2);border:1px solid var(--border);border-radius:var(--radius) var(--radius) 0 0;border-bottom:none}.workspace-header h2{font-size:16px;margin:0}.workspace-header .muted{color:var(--text3);font-size:13px}
+.result-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(300px,420px);gap:16px;min-height:0}
+.card{display:grid;grid-template-rows:auto minmax(0,1fr);min-height:480px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);overflow:hidden;box-shadow:var(--shadow-sm)}
+.card-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px;border-bottom:1px solid var(--border)}
+.card-head h3{font-size:14px;margin:0}
+.tabs{display:flex;gap:6px}.tabs .tab-btn{background:var(--surface);color:var(--text2);border-color:var(--border);font-size:12px;min-height:30px;border-radius:6px}.tabs .tab-btn.active{background:var(--brand);color:#fff;border-color:var(--brand)}
+pre{min-height:0;margin:0;padding:16px;overflow:auto;white-space:pre-wrap;word-break:break-word;font:12px/1.55 ui-monospace,Consolas,monospace}
+.log-card pre{color:var(--text2);background:var(--bg)}
+.report{padding:16px;overflow:auto;line-height:1.62;font-size:14px}
+.report-section{border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px;margin-bottom:10px;background:var(--border2)}.report-section h3{margin-bottom:8px;font-size:14px}
+.back-link{color:var(--text2);text-decoration:none;font-size:13px}.back-link:hover{color:var(--brand)}
+.muted{color:var(--text2);font-size:13px}
+@media(max-width:960px){.app-shell,.result-layout{grid-template-columns:1fr}.side-panel{border-right:0;border-bottom:1px solid var(--border)}.row2{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header><h1>TikTok Shop 提取</h1><nav class="nav-links"><a href="/" title="AI 聊天">🏠</a><a href="/amazon" title="Amazon">📦</a><a href="/shop" class="active" title="Shop">🛍️</a><a href="/metrics" title="数据">🎵</a><a href="/extract" title="视频分析">🎬</a></nav></header>
+<main class="app-shell">
+  <aside class="side-panel">
+    <div class="panel-header"><h1>TikTok Shop 提取</h1></div>
+    <section class="form">
+      <label><span id="targetLabel">TikTok Shop 链接</span><input id="shopUrl" placeholder="https://shop.tiktok.com/..."></label>
+      <div class="row2">
+        <label>类型<select id="sourceType"><option value="product">商品详情 + 评论</option><option value="details">商品详情</option><option value="reviews">商品评论</option><option value="shop">店铺商品列表</option><option value="search">商品搜索</option></select></label>
+        <label>地区<input id="region" value="US" maxlength="8"></label>
+      </div>
+      <div class="row2">
+        <label>店铺页数<input id="maxPages" type="number" min="1" max="20" value="1"></label>
+        <label>评论页数<input id="reviewPages" type="number" min="0" max="20" value="1"></label>
+      </div>
+      <label class="check"><input id="relatedVideos" type="checkbox">提取商品关联视频</label>
+      <label class="check"><input id="analyze" type="checkbox" checked>使用 DeepSeek 生成中文分析</label>
+      <label>分析补充要求<textarea id="prompt" placeholder="例如：重点看卖点、评论痛点、适合做短视频的脚本方向。"></textarea></label>
+      <button id="runBtn" class="primary">开始提取</button>
+      <a class="back-link" href="/">← 返回视频分析页</a>
+      <div id="status" class="status">等待输入 TikTok Shop 链接。</div>
+    </section>
+  </aside>
+  <section class="workspace">
+    <header class="workspace-header">
+      <div><h2>提取结果</h2><p class="muted" id="outputDir">结果保存到 output/tiktok_shop/&lt;job-id&gt;/</p></div>
+    </header>
+    <section class="result-layout">
+      <article class="card">
+        <div class="card-head">
+          <div class="tabs"><button class="tab-btn active" data-tab="analysis" type="button">中文分析</button><button class="tab-btn" data-tab="extract" type="button">原始提取</button></div>
+          <button id="rawToggle" class="secondary sm">显示 JSON</button>
+        </div>
+        <div id="result" class="report">暂无结果。</div>
+      </article>
+      <article class="card log-card">
+        <div class="card-head" style="background:var(--border2)"><h3>任务日志</h3><button id="clearLog" class="ghost sm">清空</button></div>
+        <pre id="log">等待任务...</pre>
+      </article>
+    </section>
+  </section>
+</main>
+<script>
+/* Preserved from original SHOP_HTML — zero functional changes */
+const runBtn = document.querySelector("#runBtn");
+const statusBox = document.querySelector("#status");
+const logBox = document.querySelector("#log");
+const resultBox = document.querySelector("#result");
+const outputDir = document.querySelector("#outputDir");
+const rawToggle = document.querySelector("#rawToggle");
+const state = { job: null, events: null, tab: "analysis", raw: false, lastLogLength: 0 };
+
+function setStatus(message, kind = "") {
+  statusBox.className = `status ${kind}`.trim();
+  statusBox.textContent = message;
+}
+function pretty(value) { return JSON.stringify(value ?? {}, null, 2); }
+function escapeHtml(value) {
+  return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;");
+}
+function appendLog(lines) {
+  const next = Array.isArray(lines) ? lines : [lines];
+  if (!next.length) return;
+  const current = logBox.textContent === "等待任务..." ? "" : logBox.textContent;
+  logBox.textContent = `${current}${current ? "\n" : ""}${next.join("\n")}`;
+  logBox.scrollTop = logBox.scrollHeight;
+}
+function section(title, value) {
+  if (value === undefined || value === null || value === "") return "";
+  const body = Array.isArray(value)
+    ? `<ul>${value.map(item => `<li>${escapeHtml(typeof item === "string" ? item : pretty(item))}</li>`).join("")}</ul>`
+    : `<p>${escapeHtml(typeof value === "string" ? value : pretty(value))}</p>`;
+  return `<section class="report-section"><h3>${escapeHtml(title)}</h3>${body}</section>`;
+}
+function renderReport(value) {
+  if (!value || typeof value !== "object") return `<pre>${escapeHtml(pretty(value))}</pre>`;
+  return [
+    section("概要", value.summary),
+    section("产品定位", value.product_positioning),
+    section("销售信号", value.sales_signals),
+    section("评论洞察", value.review_insights),
+    section("内容机会", value.content_opportunities),
+    section("风险点", value.risk_flags),
+    section("建议动作", value.recommended_actions),
+    section("下一步问题", value.next_questions),
+  ].join("") || `<pre>${escapeHtml(pretty(value))}</pre>`;
+}
+function currentValue() {
+  if (!state.job) return null;
+  return state.tab === "analysis" ? state.job.analysis || null : state.job.extract || null;
+}
+function renderResult() {
+  const value = currentValue();
+  rawToggle.textContent = state.raw ? "显示报告" : "显示 JSON";
+  if (!value) {
+    resultBox.textContent = "暂无结果。";
+    return;
+  }
+  if (state.raw || state.tab === "extract") {
+    resultBox.innerHTML = `<pre>${escapeHtml(pretty(value))}</pre>`;
+    return;
+  }
+  resultBox.innerHTML = renderReport(value);
+}
+function closeEvents() {
+  if (state.events) { state.events.close(); state.events = null; }
+}
+function updateSourceMode() {
+  const sourceType = document.querySelector("#sourceType").value;
+  const target = document.querySelector("#shopUrl");
+  const targetLabel = document.querySelector("#targetLabel");
+  const maxPages = document.querySelector("#maxPages");
+  const reviewPages = document.querySelector("#reviewPages");
+  const relatedVideos = document.querySelector("#relatedVideos");
+  targetLabel.textContent = sourceType === "search" ? "搜索关键词" : "TikTok Shop 链接 / 商品 ID";
+  target.placeholder = sourceType === "search" ? "例如：cat toy" : "https://shop.tiktok.com/... 或商品 ID";
+  maxPages.disabled = !["shop", "search"].includes(sourceType);
+  reviewPages.disabled = !["product", "reviews"].includes(sourceType);
+  relatedVideos.disabled = !["product", "details"].includes(sourceType);
+}
+function handleJob(job) {
+  state.job = job;
+  if (job.output_dir) outputDir.textContent = `结果目录：${job.output_dir}`;
+  if (Array.isArray(job.log) && job.log.length > state.lastLogLength) {
+    appendLog(job.log.slice(state.lastLogLength));
+    state.lastLogLength = job.log.length;
+  }
+  renderResult();
+  if (job.status === "queued" || job.status === "running") {
+    setStatus(`任务运行中：${job.status}`);
+    return;
+  }
+  closeEvents();
+  runBtn.disabled = false;
+  setStatus(job.status === "complete" ? "TikTok Shop 提取完成。" : (job.error || "TikTok Shop 提取失败。"), job.status === "complete" ? "ok" : "bad");
+}
+async function startJob() {
+  const url = document.querySelector("#shopUrl").value.trim();
+  if (!url) { setStatus("请输入 TikTok Shop 链接、商品 ID 或搜索关键词。", "bad"); return; }
+  closeEvents(); state.job = null; state.lastLogLength = 0;
+  logBox.textContent = "提交任务..."; resultBox.textContent = "暂无结果。"; runBtn.disabled = true; setStatus("正在提交任务...");
+  const payload = { url, source_type: document.querySelector("#sourceType").value, region: document.querySelector("#region").value.trim() || "US", max_pages: Number(document.querySelector("#maxPages").value || 1), review_pages: Number(document.querySelector("#reviewPages").value || 0), related_videos: document.querySelector("#relatedVideos").checked, analyze: document.querySelector("#analyze").checked, prompt: document.querySelector("#prompt").value };
+  const response = await fetch("/api/shop-extract", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+  const job = await response.json();
+  if (!response.ok) { runBtn.disabled = false; setStatus(job.error || "提交失败。", "bad"); appendLog(job.error || "提交失败。"); return; }
+  handleJob(job);
+  state.events = new EventSource(`/api/shop-events?id=${encodeURIComponent(job.id)}`);
+  state.events.onmessage = e => handleJob(JSON.parse(e.data));
+  state.events.onerror = () => { closeEvents(); runBtn.disabled = false; setStatus("任务连接中断。", "bad"); };
+}
+runBtn.onclick = () => startJob().catch(error => { runBtn.disabled = false; setStatus(error.message, "bad"); appendLog(error.message); });
+document.querySelector("#sourceType").onchange = updateSourceMode;
+document.querySelector("#clearLog").onclick = () => { state.lastLogLength = 0; logBox.textContent = "等待任务..."; };
+rawToggle.onclick = () => { state.raw = !state.raw; renderResult(); };
+document.querySelectorAll(".tab-btn").forEach(button => {
+  button.onclick = () => { document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active")); button.classList.add("active"); state.tab = button.dataset.tab; state.raw = false; renderResult(); };
+});
+updateSourceMode();
+</script>
+</body>
+</html>

@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Amazon 爬虫</title>
+<style>
+:root{
+  --bg:#f6f8fb;--surface:#fff;--text:#0f172a;--text2:#475569;--text3:#94a3b8;
+  --border:#e2e8f0;--border2:#f1f5f9;--brand:#2563eb;--brand2:#1d4ed8;
+  --brand-soft:#eff6ff;--green:#059669;--green-soft:#ecfdf5;--red:#dc2626;
+  --red-soft:#fef2f2;--amber:#d97706;--amber-soft:#fffbeb;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.04);--shadow:0 1px 3px rgba(0,0,0,.06),0 1px 2px rgba(0,0,0,.04);
+  --shadow-md:0 4px 6px -1px rgba(0,0,0,.06),0 2px 4px -2px rgba(0,0,0,.04);
+  --radius-sm:8px;--radius:12px;--radius-lg:16px;
+}
+*{box-sizing:border-box;margin:0}
+html,body{height:100%}
+body{background:var(--bg);color:var(--text);font-family:"Segoe UI",system-ui,-apple-system,sans-serif;overflow:hidden;line-height:1.5}
+button,input,select,textarea{font:inherit;color:inherit}
+button{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:38px;border:1px solid transparent;border-radius:var(--radius-sm);padding:8px 16px;font-weight:600;font-size:13px;cursor:pointer;transition:.15s ease;white-space:nowrap}
+button.primary{background:var(--brand);color:#fff;box-shadow:0 1px 2px rgba(37,99,235,.2)}
+button.primary:hover{background:var(--brand2);transform:translateY(-1px);box-shadow:0 4px 8px rgba(37,99,235,.25)}
+button.primary:disabled{opacity:.5;cursor:not-allowed;transform:none;box-shadow:none}
+button.secondary{background:var(--surface);color:var(--text);border-color:var(--border)}
+button.secondary:hover{background:var(--brand-soft);border-color:var(--brand);color:var(--brand)}
+button.ghost{background:transparent;color:var(--text2);border-color:transparent}
+button.ghost:hover{background:var(--border2);color:var(--text)}
+button.sm{min-height:30px;padding:4px 10px;font-size:12px;border-radius:6px}
+input,select,textarea{width:100%;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);padding:9px 12px;font-size:13px;outline:none;transition:.15s ease}
+input:focus,select:focus,textarea:focus{border-color:var(--brand);box-shadow:0 0 0 3px rgba(37,99,235,.1)}
+input::placeholder{color:var(--text3)}textarea{min-height:140px;resize:vertical;font:12px/1.6 ui-monospace,Consolas,monospace}
+header{height:60px;display:flex;align-items:center;justify-content:space-between;padding:0 24px;background:rgba(255,255,255,.8);border-bottom:1px solid var(--border);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px)}
+header h1{font-size:18px;font-weight:700;letter-spacing:-.3px}
+.nav-links{display:flex;gap:6px;align-items:center}.nav-links a{text-decoration:none;font-size:13px;font-weight:600;color:var(--text2);padding:6px 12px;border-radius:var(--radius-sm);transition:.15s ease;border:1px solid transparent;display:inline-flex;align-items:center;justify-content:center;min-width:36px;min-height:36px}.nav-links a:hover{background:var(--border2);color:var(--text);border-color:var(--border)}.nav-links a.active{background:var(--brand-soft);color:var(--brand);border-color:var(--brand)}
+main{display:grid;grid-template-columns:360px minmax(0,1fr);gap:16px;padding:18px;height:calc(100vh - 60px)}
+.side{display:flex;flex-direction:column;gap:14px;padding:18px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);box-shadow:var(--shadow-sm);overflow-y:auto}
+.workspace{display:grid;grid-template-rows:auto minmax(0,1fr);min-height:0}
+.workspace .head{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;background:var(--border2);border-radius:var(--radius) var(--radius) 0 0;border:1px solid var(--border);border-bottom:none}
+.grid2{display:grid;grid-template-columns:minmax(0,1fr) 420px;gap:16px;min-height:0;padding:0;margin-top:0}
+.grid2 .card{display:grid;grid-template-rows:auto minmax(0,1fr);min-height:0;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);overflow:hidden;box-shadow:var(--shadow-sm)}
+.grid2 .card h3{margin:0;padding:12px 14px;border-bottom:1px solid var(--border);background:var(--border2);font-size:14px}
+label{display:grid;gap:5px;color:var(--text2);font-weight:700;font-size:12px}
+.status{min-height:42px;border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;background:var(--border2);color:var(--text2);font-size:12px;overflow-wrap:anywhere}.status.ok{background:var(--green-soft);color:var(--green);border-color:#a7f3d0}.status.bad{background:var(--red-soft);color:var(--red);border-color:#fecaca}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.report{min-height:0;overflow:auto;padding:14px}
+.metrics2{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-bottom:14px}
+.metric2{border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px;background:var(--surface)}.metric2 span{display:block;color:var(--text2);font-size:11px;font-weight:600}.metric2 b{display:block;margin-top:4px;overflow-wrap:anywhere}
+table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:9px 8px;border-bottom:1px solid var(--border);text-align:left;vertical-align:top}th{position:sticky;top:0;background:var(--border2);z-index:1;font-size:12px;font-weight:700;color:var(--text2)}td a{color:var(--brand)}
+pre.log2{color:var(--text2);background:var(--bg);min-height:0;margin:0;padding:14px;overflow:auto;white-space:pre-wrap;word-break:break-word;font:12px/1.55 ui-monospace,Consolas,monospace}
+.tabs{display:flex;gap:6px}.tabs .tab-btn{background:var(--surface);color:var(--text2);border-color:var(--border);font-size:12px;min-height:30px;border-radius:6px}.tabs .tab-btn.active{background:var(--brand);color:#fff;border-color:var(--brand)}
+.muted{color:var(--text2);font-size:13px}
+@media(max-width:980px){main,.grid2{grid-template-columns:1fr;height:auto}.grid2 .card{min-height:360px}}
+</style>
+</head>
+<body>
+<header><h1>Amazon 爬虫</h1><nav class="nav-links"><a href="/" title="AI 聊天">🏠</a><a href="/amazon" class="active" title="Amazon">📦</a><a href="/shop" title="Shop">🛍️</a><a href="/metrics" title="数据">🎵</a><a href="/extract" title="视频分析">🎬</a></nav></header>
+<main>
+  <section class="side">
+    <label>输入类型
+      <select id="targetType">
+        <option value="url">Amazon 链接</option>
+        <option value="asin">ASIN</option>
+        <option value="keyword">关键词搜索</option>
+      </select>
+    </label>
+    <label><span id="targetLabel">Amazon 链接</span>
+      <input id="target" placeholder="https://www.amazon.com/s?k=feather+duster">
+    </label>
+    <div class="row2">
+      <label>页数<input id="pages" type="number" min="1" max="5" value="1"></label>
+      <label>模式<input value="amazon_handler.js" disabled></label>
+    </div>
+    <button id="run" class="primary">开始抓取</button>
+    <div id="status" class="status">等待输入 Amazon 链接、ASIN 或关键词。</div>
+    <p class="muted">结果保存到 output/amazon/&lt;job-id&gt;/result.json。非 Amazon 站点的抓取功能已禁用。</p>
+  </section>
+  <section class="workspace">
+    <div class="head">
+      <div><b>结果</b><div id="output" class="muted">暂无任务。</div></div>
+      <div class="tabs"><button class="tab-btn active" data-tab="table" type="button">表格</button><button class="tab-btn" data-tab="json" type="button">JSON</button></div>
+    </div>
+    <div class="grid2">
+      <article class="card"><h3>Amazon 商品</h3><div id="result" class="report">暂无结果。</div></article>
+      <article class="card"><div style="display:flex;justify-content:space-between;align-items:center;padding:12px 14px;border-bottom:1px solid var(--border);background:var(--border2)"><h3 style="margin:0;font-size:14px;border:none;padding:0;background:transparent">任务日志</h3><button id="clearLog" class="ghost sm">清空</button></div><pre id="log" class="log2">等待任务...</pre></article>
+    </div>
+  </section>
+</main>
+<script>
+/* Preserved from original AMAZON_HTML — zero functional changes */
+const runBtn2 = document.querySelector("#run");
+const statusBox2 = document.querySelector("#status");
+const logBox2 = document.querySelector("#log");
+const resultBox2 = document.querySelector("#result");
+const outputBox = document.querySelector("#output");
+const targetType = document.querySelector("#targetType");
+const target = document.querySelector("#target");
+const pages = document.querySelector("#pages");
+const state2 = { job: null, events: null, tab: "table", lastLogLength: 0 };
+
+function escapeHtml2(value) {
+  return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;");
+}
+function pretty2(value) { return JSON.stringify(value ?? {}, null, 2); }
+function setStatus2(message, kind = "") {
+  statusBox2.className = `status ${kind}`.trim();
+  statusBox2.textContent = message;
+}
+function appendLog2(lines) {
+  const next = Array.isArray(lines) ? lines : [lines];
+  if (!next.length) return;
+  const current = logBox2.textContent === "等待任务..." ? "" : logBox2.textContent;
+  logBox2.textContent = `${current}${current ? "\n" : ""}${next.join("\n")}`;
+  logBox2.scrollTop = logBox2.scrollHeight;
+}
+function closeEvents2() { if (state2.events) { state2.events.close(); state2.events = null; } }
+function updateTargetMode() {
+  const type = targetType.value;
+  const label2 = document.querySelector("#targetLabel");
+  if (type === "asin") { label2.textContent = "ASIN"; target.placeholder = "B001TQ6IHS"; }
+  else if (type === "keyword") { label2.textContent = "关键词"; target.placeholder = "feather duster"; }
+  else { label2.textContent = "Amazon 链接"; target.placeholder = "https://www.amazon.com/gp/bestsellers/electronics"; }
+}
+function metric2(label, value) {
+  if (value === undefined || value === null || value === "") return "";
+  return `<div class="metric2"><span>${escapeHtml2(label)}</span><b>${escapeHtml2(value)}</b></div>`;
+}
+function productsFor(result) {
+  if (!result || typeof result !== "object") return [];
+  if (Array.isArray(result.products)) return result.products;
+  if (Array.isArray(result.items)) return result.items;
+  if (Array.isArray(result.results)) return result.results;
+  return [];
+}
+function renderTable(result) {
+  if (!result) return "暂无结果。";
+  const products = productsFor(result);
+  const metrics = `<div class="metrics2">${metric2("状态", result.status)}${metric2("类型", result.type)}${metric2("分类", result.category)}${metric2("商品数", result.totalProducts ?? products.length)}${metric2("抓取时间", result.scrapedAt)}</div>`;
+  if (!products.length) return `${metrics}<pre>${escapeHtml2(pretty2(result))}</pre>`;
+  const rows = products.map(item => {
+    const url = item.url ? `<a href="${escapeHtml2(item.url)}" target="_blank" rel="noopener">打开</a>` : "";
+    return `<tr><td>${escapeHtml2(item.rank ?? "")}</td><td>${escapeHtml2(item.title ?? "")}</td><td>${escapeHtml2(item.asin ?? "")}</td><td>${escapeHtml2(item.priceStr ?? item.price ?? "")}</td><td>${escapeHtml2(item.rating ?? "")}</td><td>${escapeHtml2(item.reviews ?? "")}</td><td>${escapeHtml2(item.boughtPastMonth ?? "")}</td><td>${escapeHtml2(item.sponsored ?? "")}</td><td>${url}</td></tr>`;
+  }).join("");
+  return `${metrics}<table><thead><tr><th>排名</th><th>标题</th><th>ASIN</th><th>价格</th><th>评分</th><th>评论数</th><th>月销量</th><th>广告</th><th>链接</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+function render2() {
+  const result = state2.job && state2.job.result;
+  if (state2.tab === "json") { resultBox2.innerHTML = `<pre>${escapeHtml2(pretty2(result))}</pre>`; }
+  else { resultBox2.innerHTML = renderTable(result); }
+}
+function handleJob2(job) {
+  state2.job = job;
+  if (job.output_dir) outputBox.textContent = `输出目录：${job.output_dir}`;
+  if (Array.isArray(job.log) && job.log.length > state2.lastLogLength) {
+    appendLog2(job.log.slice(state2.lastLogLength));
+    state2.lastLogLength = job.log.length;
+  }
+  render2();
+  if (job.status === "queued" || job.status === "running") { setStatus2(`任务运行中：${job.status}`); return; }
+  closeEvents2(); runBtn2.disabled = false;
+  setStatus2(job.status === "complete" ? "Amazon 抓取完成。" : (job.error || "Amazon 抓取失败。"), job.status === "complete" ? "ok" : "bad");
+}
+async function startJob2() {
+  const value = target.value.trim();
+  if (!value) { setStatus2("请输入 Amazon 链接、ASIN 或关键词。", "bad"); return; }
+  closeEvents2(); state2.job = null; state2.lastLogLength = 0; logBox2.textContent = "正在提交任务..."; resultBox2.textContent = "暂无结果。"; runBtn2.disabled = true; setStatus2("正在提交任务...");
+  const response = await fetch("/api/amazon-scrape", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ target: value, target_type: targetType.value, pages: Number(pages.value || 1) }) });
+  const job = await response.json();
+  if (!response.ok) { runBtn2.disabled = false; setStatus2(job.error || "提交失败。", "bad"); appendLog2(job.error || "提交失败。"); return; }
+  handleJob2(job);
+  state2.events = new EventSource(`/api/amazon-events?id=${encodeURIComponent(job.id)}`);
+  state2.events.onmessage = event => handleJob2(JSON.parse(event.data));
+  state2.events.onerror = () => { closeEvents2(); runBtn2.disabled = false; setStatus2("任务连接中断。", "bad"); };
+}
+runBtn2.onclick = () => startJob2().catch(error => { runBtn2.disabled = false; setStatus2(error.message, "bad"); appendLog2(error.message); });
+document.querySelector("#clearLog").onclick = () => { state2.lastLogLength = 0; logBox2.textContent = "等待任务..."; };
+document.querySelectorAll(".tab-btn").forEach(button => { button.onclick = () => { document.querySelectorAll(".tab-btn").forEach(item => item.classList.remove("active")); button.classList.add("active"); state2.tab = button.dataset.tab; render2(); }; });
+targetType.onchange = updateTargetMode;
+updateTargetMode();
+</script>
+</body>
+</html>

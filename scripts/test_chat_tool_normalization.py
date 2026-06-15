@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+"""Smoke tests for chat tool result normalization."""
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+
+from web_app import normalize_tool_result  # noqa: E402
+
+
+def test_tiktok_search_keeps_analysis_fields() -> None:
+    raw = {
+        "ok": True,
+        "elapsed": 1.2,
+        "data": {
+            "raw_ref": "output/chat_tools/tiktok_search-keyword_test.json",
+            "raw_bytes": 2_300_000,
+            "data": {
+                "success": True,
+                "data": {
+                    "search_item_list": {
+                        "0": {
+                            "aweme_info": {
+                                "aweme_id": "video1",
+                                "desc": "AI companion plush toy demo",
+                                "author": {"nickname": "Toy Lab", "unique_id": "toylab"},
+                                "statistics": {
+                                    "play_count": 1200000,
+                                    "digg_count": 54000,
+                                    "comment_count": 900,
+                                    "share_count": 2100,
+                                },
+                                "music": {"title": "demo sound"},
+                                "text_extra": [{"hashtag_name": "aitoys"}],
+                                "share_url": "https://www.tiktok.com/@toylab/video/video1",
+                                "avatar_thumb": {
+                                    "url_list": [
+                                        "https://p16-common-sign.tiktokcdn-us.com/huge?x-signature=abc"
+                                    ]
+                                },
+                            }
+                        }
+                    }
+                },
+            },
+        },
+    }
+
+    result = normalize_tool_result("tiktok_search_keyword", raw)
+    encoded = json.dumps(result, ensure_ascii=False)
+    assert result["ok"] is True
+    assert result["kind"] == "tiktok_items"
+    assert result["enough_data"] is True
+    assert result["raw_ref"] == "output/chat_tools/tiktok_search-keyword_test.json"
+    assert result["items"][0]["description"] == "AI companion plush toy demo"
+    assert result["items"][0]["author"] == "Toy Lab"
+    assert result["items"][0]["play_count"] == 1200000
+    assert "tiktokcdn" not in encoded
+    assert len(encoded) < 3000
+
+
+def test_amazon_keeps_product_fields() -> None:
+    raw = {
+        "ok": True,
+        "elapsed": 0.8,
+        "data": {
+            "raw_ref": "output/chat_tools/amazon_keyword_test.json",
+            "raw_bytes": 120000,
+            "data": {
+                "status": "SUCCESS",
+                "type": "search",
+                "category": "Toys",
+                "products": [
+                    {
+                        "asin": "B000000001",
+                        "title": "AI Plush Companion",
+                        "priceStr": "$39.99",
+                        "rating": 4.6,
+                        "reviews": 321,
+                        "boughtPastMonth": "1K+",
+                        "bullets": ["Talks with kids", "Soft plush body"],
+                        "url": "https://www.amazon.com/dp/B000000001",
+                    }
+                ],
+            },
+        },
+    }
+
+    result = normalize_tool_result("amazon_search_keyword", raw)
+    assert result["ok"] is True
+    assert result["kind"] == "amazon_products"
+    assert result["enough_data"] is True
+    assert result["products"][0]["asin"] == "B000000001"
+    assert result["products"][0]["title"] == "AI Plush Companion"
+    assert result["products"][0]["price"] == "$39.99"
+    assert result["products"][0]["reviews"] == 321
+
+
+if __name__ == "__main__":
+    test_tiktok_search_keeps_analysis_fields()
+    test_amazon_keeps_product_fields()
+    print("chat tool normalization tests passed")

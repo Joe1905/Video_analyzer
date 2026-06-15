@@ -3,10 +3,14 @@ services:
     build:
       context: .
       args:
-        HTTP_PROXY: ""
-        HTTPS_PROXY: ""
-        http_proxy: ""
-        https_proxy: ""
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        http_proxy: ${http_proxy:-}
+        https_proxy: ${https_proxy:-}
+        ALL_PROXY: ${ALL_PROXY:-}
+        all_proxy: ${all_proxy:-}
+        NO_PROXY: ${NO_PROXY:-}
+        no_proxy: ${no_proxy:-}
     image: short-video-analyzer:latest
     environment:
       VISION_API_KEY: ${VISION_API_KEY:-}
@@ -27,6 +31,8 @@ services:
       SOCIAVAULT_MAX_PAGES: ${SOCIAVAULT_MAX_PAGES:-1}
       SOCIAVAULT_REVIEW_PAGES: ${SOCIAVAULT_REVIEW_PAGES:-1}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      API_CACHE_ENABLED: ${API_CACHE_ENABLED:-1}
+      API_CACHE_TTL_SECONDS: ${API_CACHE_TTL_SECONDS:-604800}
       MAX_FRAMES: ${MAX_FRAMES:-20}
       WHISPER_MODEL: ${WHISPER_MODEL:-small}
       LANGUAGE: ${LANGUAGE:-zh}
@@ -43,6 +49,7 @@ services:
     volumes:
       - ./videos:/workspace/videos
       - ./output:/workspace/output
+      - ./data:/workspace/data
       - ./scripts:/workspace/scripts:ro
     networks:
       - analyzer
@@ -51,10 +58,14 @@ services:
     build:
       context: .
       args:
-        HTTP_PROXY: ""
-        HTTPS_PROXY: ""
-        http_proxy: ""
-        https_proxy: ""
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        http_proxy: ${http_proxy:-}
+        https_proxy: ${https_proxy:-}
+        ALL_PROXY: ${ALL_PROXY:-}
+        all_proxy: ${all_proxy:-}
+        NO_PROXY: ${NO_PROXY:-}
+        no_proxy: ${no_proxy:-}
     image: short-video-analyzer:latest
     command: python scripts/web_app.py
     environment:
@@ -75,12 +86,17 @@ services:
       SOCIAVAULT_REGION: ${SOCIAVAULT_REGION:-US}
       SOCIAVAULT_MAX_PAGES: ${SOCIAVAULT_MAX_PAGES:-1}
       SOCIAVAULT_REVIEW_PAGES: ${SOCIAVAULT_REVIEW_PAGES:-1}
+      AMAZON_PROXY: ${AMAZON_PROXY:-}
+      AMAZON_PROXIES: ${AMAZON_PROXIES:-}
+      AMAZON_MAX_PAGES: ${AMAZON_MAX_PAGES:-1}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      API_CACHE_ENABLED: ${API_CACHE_ENABLED:-1}
+      API_CACHE_TTL_SECONDS: ${API_CACHE_TTL_SECONDS:-604800}
       MAX_FRAMES: ${MAX_FRAMES:-20}
       WHISPER_MODEL: ${WHISPER_MODEL:-small}
       LANGUAGE: ${LANGUAGE:-zh}
       HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
-      WEB_PORT: "4000"
+      WEB_PORT: ${WEB_PORT:-4002}
       HTTP_PROXY: ""
       HTTPS_PROXY: ""
       http_proxy: ""
@@ -93,11 +109,10 @@ services:
     volumes:
       - ./videos:/workspace/videos
       - ./output:/workspace/output
+      - ./data:/workspace/data
       - ./scripts:/workspace/scripts:ro
-    ports:
-      - "${WEB_PORT:-4000}:4000"
-    networks:
-      - analyzer
+      - /var/run/docker.sock:/var/run/docker.sock
+    network_mode: host
 
 networks:
   analyzer:

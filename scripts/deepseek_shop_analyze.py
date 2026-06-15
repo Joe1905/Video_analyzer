@@ -3,10 +3,12 @@ import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
 import requests
+from api_cache import record_api_call
 
 
 ROOT = Path.cwd()
@@ -54,6 +56,7 @@ def build_prompt(extracted: Any, user_prompt: str) -> str:
 
 
 def call_deepseek(api_key: str, api_url: str, model: str, prompt: str) -> dict[str, Any]:
+    started = time.monotonic()
     response = requests.post(
         api_url,
         headers={
@@ -71,7 +74,15 @@ def call_deepseek(api_key: str, api_url: str, model: str, prompt: str) -> dict[s
         timeout=180,
     )
     response.raise_for_status()
-    return response.json()
+    data = response.json()
+    record_api_call(
+        "deepseek",
+        "shop_analyze",
+        {"api_url": api_url, "model": model, "prompt_sha256": __import__("hashlib").sha256(prompt.encode("utf-8")).hexdigest()},
+        data,
+        elapsed_ms=int((time.monotonic() - started) * 1000),
+    )
+    return data
 
 
 def extract_content(api_response: dict[str, Any]) -> str:

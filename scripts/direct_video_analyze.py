@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
+from api_cache import record_api_call
 
 
 ROOT = Path.cwd()
@@ -138,7 +139,22 @@ def call_vision_api(
     )
     elapsed = time.monotonic() - started
     response.raise_for_status()
-    return response.json(), elapsed
+    data = response.json()
+    record_api_call(
+        "qwen_vision",
+        "direct_video_analyze",
+        {
+            "api_url": api_url.rstrip("/") + "/chat/completions",
+            "model": model,
+            "fps": fps,
+            "video_url_sha256": __import__("hashlib").sha256(video_url.encode("utf-8")).hexdigest(),
+            "transcript_sha256": __import__("hashlib").sha256(json.dumps(transcript, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest(),
+            "prompt_sha256": __import__("hashlib").sha256(analysis_prompt.encode("utf-8")).hexdigest(),
+        },
+        data,
+        elapsed_ms=int(elapsed * 1000),
+    )
+    return data, elapsed
 
 
 def extract_content(api_response: dict[str, Any]) -> str:

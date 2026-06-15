@@ -2,6 +2,7 @@
 import json
 import mimetypes
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -12,20 +13,68 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote_plus, urlparse
 from urllib.parse import unquote
 import cgi
 from html import escape as html_escape
 
+# SociaVault TikTok endpoints (mirrored from sociavault_tiktok.py)
+TIKTOK_ENDPOINTS: dict[str, str] = {
+    "profile": "/v1/scrape/tiktok/profile",
+    "videos": "/v1/scrape/tiktok/videos",
+    "videos-popular": "/v1/scrape/tiktok/videos/popular",
+    "followers": "/v1/scrape/tiktok/followers",
+    "following": "/v1/scrape/tiktok/following",
+    "video-info": "/v1/scrape/tiktok/video-info",
+    "comments": "/v1/scrape/tiktok/comments",
+    "comment-replies": "/v1/scrape/tiktok/comment-replies",
+    "transcript": "/v1/scrape/tiktok/transcript",
+    "demographics": "/v1/scrape/tiktok/demographics",
+    "live": "/v1/scrape/tiktok/live",
+    "search-users": "/v1/scrape/tiktok/search/users",
+    "search-hashtag": "/v1/scrape/tiktok/search/hashtag",
+    "search-keyword": "/v1/scrape/tiktok/search/keyword",
+    "search-music": "/v1/scrape/tiktok/search/music",
+    "search-top": "/v1/scrape/tiktok/search/top",
+    "trending": "/v1/scrape/tiktok/trending",
+    "creators-popular": "/v1/scrape/tiktok/creators/popular",
+    "hashtags-popular": "/v1/scrape/tiktok/hashtags/popular",
+    "music-popular": "/v1/scrape/tiktok/music/popular",
+    "music-info": "/v1/scrape/tiktok/music/info",
+    "music-videos": "/v1/scrape/tiktok/music/videos",
+}
 
 ROOT = Path.cwd()
+DATA_DIR = ROOT / "data"
 VIDEOS_DIR = ROOT / "videos"
 OUTPUT_DIR = ROOT / "output"
 SCRIPTS_DIR = ROOT / "scripts"
 INDEX_HTML_PATH = SCRIPTS_DIR / "web_index.html"
+
+import sys
+sys.path.insert(0, str(SCRIPTS_DIR))
+from chat_session import ChatStore, Message, load_sessions_from_disk
+from sociavault_usage import read_sociavault_usage
+from tools import execute_tool, get_tools_for_model, list_tools
+from video_queue import video_queue, STATUS_META
+from api_cache import get_cached_or_call, record_api_call
+from api_cache import get_cached, store_response
+from tiktok_download import video_cache_metadata, video_cache_request, with_download_cache_meta
+from video_registry import (
+    get_video_by_filename,
+    mark_extracted,
+    platform_for_url,
+    register_from_payload,
+    register_video,
+)
+from proxy_state import ensure_us_proxy
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 SAFE_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
 ALLOWED_SHORT_VIDEO_HOST_SUFFIXES = ("tiktok.com", "tiktokv.com", "douyin.com", "iesdouyin.com")
+ALLOWED_AMAZON_HOST_SUFFIXES = ("amazon.com",)
+ASIN_RE = re.compile(r"^[A-Z0-9]{10}$", re.IGNORECASE)
+PROMPT_FILE = DATA_DIR / "analysis_prompt.txt"
+LEGACY_PROMPT_FILE = ROOT / "analysis_prompt.txt"
 DEFAULT_ANALYSIS_PROMPT = (
     "Analyze this short video directly. Return strict JSON only, no Markdown. "
     "Use these exact keys: summary, timeline, visual_evidence. "
@@ -33,6 +82,26 @@ DEFAULT_ANALYSIS_PROMPT = (
     "visual_evidence must be an array of concrete observations from the video frames. "
     "Be specific and do not invent unsupported facts."
 )
+DEFAULT_SOCIA_VAULT_API_BASE = "https://api.sociavault.com"
+VIDEO_INFO_TTL_SECONDS = 24 * 60 * 60
+VIDEO_MEDIA_TTL_SECONDS = 30 * 24 * 60 * 60
+
+
+def load_prompt() -> str:
+    if PROMPT_FILE.is_file():
+        content = PROMPT_FILE.read_text(encoding="utf-8").strip()
+        if content:
+            return content
+    if LEGACY_PROMPT_FILE.is_file():
+        content = LEGACY_PROMPT_FILE.read_text(encoding="utf-8").strip()
+        if content:
+            return content
+    return DEFAULT_ANALYSIS_PROMPT
+
+
+def save_prompt(text: str) -> None:
+    PROMPT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    PROMPT_FILE.write_text(text.strip() + "\n", encoding="utf-8")
 
 
 @dataclass
@@ -85,7 +154,23 @@ class ShopJob:
 @dataclass
 class MetricsJob:
     id: str
+    target: str
+    endpoint: str
+    status: str = "queued"
+    created_at: float = field(default_factory=time.time)
+    updated_at: float = field(default_factory=time.time)
+    log: list[str] = field(default_factory=list)
+    output_dir: str | None = None
+    error: str | None = None
+
+
+@dataclass
+class AmazonJob:
+    id: str
+    target: str
+    target_type: str
     url: str
+    pages: int
     status: str = "queued"
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
@@ -102,6 +187,12 @@ shop_jobs: dict[str, ShopJob] = {}
 shop_jobs_lock = threading.Lock()
 metrics_jobs: dict[str, MetricsJob] = {}
 metrics_jobs_lock = threading.Lock()
+amazon_jobs: dict[str, AmazonJob] = {}
+amazon_jobs_lock = threading.Lock()
+
+# Chat system
+chat_store = ChatStore()
+chat_tool_config: set[str] | None = None  # None = all tools enabled
 
 
 def load_env_file() -> None:
@@ -140,6 +231,44 @@ def validate_short_video_url(url: str) -> str:
     return cleaned
 
 
+def output_dir_for_filename(filename: str) -> Path:
+    registry_record = get_video_by_filename(filename)
+    if registry_record:
+        return OUTPUT_DIR / str(registry_record.get("extraction_dir") or filename)
+    return OUTPUT_DIR / filename
+
+
+def validate_amazon_url(url: str) -> str:
+    cleaned = url.strip()
+    parsed = urlparse(cleaned)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("Only http/https Amazon URLs are supported")
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if not any(host == suffix or host.endswith(f".{suffix}") for suffix in ALLOWED_AMAZON_HOST_SUFFIXES):
+        raise ValueError("Only amazon.com URLs are supported")
+    if len(cleaned) > 2048:
+        raise ValueError("URL is too long")
+    return cleaned
+
+
+def amazon_url_for_target(target: str, target_type: str) -> str:
+    cleaned = target.strip()
+    if not cleaned:
+        raise ValueError("Amazon URL, ASIN, or keyword is required")
+    if target_type == "url":
+        return validate_amazon_url(cleaned)
+    if target_type == "asin":
+        asin = cleaned.upper()
+        if not ASIN_RE.match(asin):
+            raise ValueError("ASIN must be 10 letters or digits")
+        return f"https://www.amazon.com/dp/{asin}"
+    if target_type == "keyword":
+        if len(cleaned) > 200:
+            raise ValueError("Keyword is too long")
+        return f"https://www.amazon.com/s?k={quote_plus(cleaned)}"
+    raise ValueError("target_type must be url, asin, or keyword")
+
+
 def json_response(handler: BaseHTTPRequestHandler, status: int, payload: Any) -> None:
     body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
     handler.send_response(status)
@@ -154,6 +283,7 @@ def text_response(handler: BaseHTTPRequestHandler, status: int, body: str, conte
     handler.send_response(status)
     handler.send_header("Content-Type", content_type)
     handler.send_header("Content-Length", str(len(encoded)))
+    handler.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
     handler.end_headers()
     handler.wfile.write(encoded)
 
@@ -190,90 +320,11 @@ def read_json(path: Path) -> Any | None:
         return json.load(file)
 
 
-def shop_job_record_path(job_id: str) -> Path:
-    return OUTPUT_DIR / "tiktok_shop" / job_id / "job.json"
-
-
-def shop_job_record(job: ShopJob) -> dict[str, Any]:
-    return {
-        "id": job.id,
-        "url": job.url,
-        "source_type": job.source_type,
-        "region": job.region,
-        "max_pages": job.max_pages,
-        "review_pages": job.review_pages,
-        "analyze": job.analyze,
-        "related_videos": job.related_videos,
-        "prompt": job.prompt,
-        "status": job.status,
-        "created_at": job.created_at,
-        "updated_at": job.updated_at,
-        "output_dir": job.output_dir,
-        "error": job.error,
-        "log": job.log[-200:],
-    }
-
-
-def write_shop_job_record(job: ShopJob) -> None:
-    if not job.output_dir:
-        return
-    path = shop_job_record_path(job.id)
+def write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as file:
-        json.dump(shop_job_record(job), file, ensure_ascii=False, indent=2)
+        json.dump(payload, file, ensure_ascii=False, indent=2)
         file.write("\n")
-
-
-def public_shop_record_from_dir(output_dir: Path, include_payload: bool = False) -> dict[str, Any] | None:
-    if not output_dir.is_dir():
-        return None
-    job_id = output_dir.name
-    record = read_json(output_dir / "job.json")
-    extract = read_json(output_dir / "shop_extract.json")
-    analysis = read_json(output_dir / "shop_analysis.json")
-    if not isinstance(record, dict):
-        mtimes = [path.stat().st_mtime for path in (output_dir / "shop_extract.json", output_dir / "shop_analysis.json") if path.is_file()]
-        if not mtimes:
-            return None
-        extract_obj = extract if isinstance(extract, dict) else {}
-        record = {
-            "id": job_id,
-            "url": extract_obj.get("product_url") or extract_obj.get("shop_url") or extract_obj.get("query") or "",
-            "source_type": extract_obj.get("source_type") or "unknown",
-            "region": extract_obj.get("region") or "",
-            "max_pages": extract_obj.get("pages_requested") or 1,
-            "review_pages": extract_obj.get("review_pages_requested") or 0,
-            "analyze": analysis is not None,
-            "related_videos": False,
-            "prompt": "",
-            "status": "complete" if extract is not None else "failed",
-            "created_at": min(mtimes),
-            "updated_at": max(mtimes),
-            "output_dir": str(output_dir.relative_to(ROOT)),
-            "error": None,
-            "log": [],
-        }
-    record.setdefault("id", job_id)
-    record.setdefault("output_dir", str(output_dir.relative_to(ROOT)))
-    record["has_extract"] = extract is not None
-    record["has_analysis"] = analysis is not None
-    if include_payload:
-        record["extract"] = extract
-        record["analysis"] = analysis
-    return record
-
-
-def list_shop_records(limit: int = 50) -> list[dict[str, Any]]:
-    root = OUTPUT_DIR / "tiktok_shop"
-    if not root.is_dir():
-        return []
-    records = []
-    for output_dir in root.iterdir():
-        record = public_shop_record_from_dir(output_dir, include_payload=False)
-        if record:
-            records.append(record)
-    records.sort(key=lambda item: item.get("updated_at") or item.get("created_at") or 0, reverse=True)
-    return records[:limit]
 
 
 def clean_report_value(value: Any) -> str:
@@ -333,27 +384,28 @@ def metric_item(label: str, value: Any) -> str:
 def build_report_html(filename: str, tab: str, payload: dict[str, Any]) -> str:
     is_audit = tab == "audit"
     title = "分析结果报告" if is_audit else "提取内容报告"
-    eyebrow = "DeepSeek Audit" if is_audit else "Qwen Video Extraction"
+    eyebrow = "DeepSeek 分析" if is_audit else "Qwen Video Extraction"
     summary = clean_report_value(payload.get("summary")) or "暂无摘要。"
 
     if is_audit:
-        metrics = "".join(
-            [
-                metric_item("风险等级", payload.get("risk_level")),
-                metric_item("建议动作", payload.get("recommended_action")),
-                metric_item("发布建议", payload.get("publish_suggestion")),
-            ]
-        )
-        sections = "".join(
-            [
-                report_section("内容摘要", payload.get("summary")),
-                report_section("内容概览", payload.get("content_overview")),
-                report_section("转写要点", payload.get("transcript_notes")),
-                report_section("画面要点", payload.get("visual_notes")),
-                report_list("风险原因", payload.get("risk_reasons")),
-                report_list("问题点", payload.get("issues")),
-            ]
-        )
+        # Generic render: any JSON key → section/metric/list
+        metrics_parts = []
+        sections_parts = []
+        for key, val in payload.items():
+            if key == "raw_result":
+                continue
+            if val is None or val == "":
+                continue
+            if isinstance(val, str):
+                sections_parts.append(report_section(key, val))
+            elif isinstance(val, list):
+                sections_parts.append(report_list(key, val))
+            elif isinstance(val, (int, float)):
+                metrics_parts.append(metric_item(key, val))
+            elif isinstance(val, dict):
+                sections_parts.append(report_section(key, json.dumps(val, ensure_ascii=False, indent=2)))
+        metrics = "".join(metrics_parts)
+        sections = "".join(sections_parts)
     else:
         metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
         transcript = payload.get("transcript") if isinstance(payload.get("transcript"), dict) else {}
@@ -476,27 +528,329 @@ def append_download_log(job: DownloadJob, line: str) -> None:
 
 def run_download_command(job: DownloadJob, command: list[str]) -> None:
     append_download_log(job, f"$ {' '.join(command)}")
-    process = subprocess.Popen(
-        command,
-        cwd=ROOT,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-    )
-    assert process.stdout is not None
-    for line in process.stdout:
+    timeout = int(os.getenv("DOWNLOAD_COMMAND_TIMEOUT", "210"))
+    try:
+        result = subprocess.run(
+            command,
+            cwd=ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        if exc.stdout:
+            for line in str(exc.stdout).splitlines():
+                append_download_log(job, line)
+        raise RuntimeError(f"Command timed out after {timeout}s: {' '.join(command)}") from exc
+    for line in (result.stdout or "").splitlines():
         append_download_log(job, line)
-    code = process.wait()
-    if code != 0:
-        raise RuntimeError(f"Command failed with exit code {code}: {' '.join(command)}")
+    if result.returncode != 0:
+        raise RuntimeError(f"Command failed with exit code {result.returncode}: {' '.join(command)}")
+
+
+def cache_log_label(payload: Any) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    cache = payload.get("_cache")
+    if isinstance(cache, dict) and "hit" in cache:
+        label = "缓存命中" if cache.get("hit") else "实时调用"
+        provider = cache.get("provider") or ""
+        endpoint = cache.get("endpoint") or ""
+        suffix = f" ({provider}/{endpoint})" if provider or endpoint else ""
+        return label + suffix
+    return None
+
+
+def _score_media_candidate(path: str, url: str) -> int:
+    lowered = f"{path} {url}".lower()
+    score = 0
+    if ".video.play_addr.url_list" in lowered and ".bit_rate." not in lowered:
+        score += 260
+    if "download_no_watermark_addr.url_list" in lowered:
+        score += 240
+    if "download_addr.url_list" in lowered:
+        score += 220
+    if ".bit_rate." in lowered:
+        score -= 120
+    for word, points in (
+        ("h264", 90),
+        ("download", 100),
+        ("no_watermark", 80),
+        ("nowatermark", 80),
+        ("play_addr", 70),
+        ("playaddr", 70),
+        ("video_url", 60),
+        ("video", 40),
+        (".mp4", 30),
+        ("bytevc2", -160),
+        ("bytevc1", -80),
+        ("watermark", -40),
+    ):
+        if word in lowered:
+            score += points
+    return score
+
+
+def _iter_media_url_candidates(value: Any, path: str = "") -> list[tuple[int, str, str]]:
+    candidates: list[tuple[int, str, str]] = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            child_path = f"{path}.{key}" if path else str(key)
+            candidates.extend(_iter_media_url_candidates(child, child_path))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            candidates.extend(_iter_media_url_candidates(child, f"{path}[{index}]"))
+    elif isinstance(value, str) and value.startswith(("http://", "https://")):
+        lowered = f"{path} {value}".lower()
+        if any(word in lowered for word in ("cover", "avatar", "thumbnail", "image", "music", "audio", "subtitle")):
+            return []
+        if not any(word in lowered for word in ("video", "download", "play", ".mp4", "mime_type=video", "mime=video")):
+            return []
+        candidates.append((_score_media_candidate(path, value), path, value))
+    return candidates
+
+
+def _sociavault_video_id(payload: Any, fallback_url: str) -> str:
+    def walk(value: Any) -> str | None:
+        if isinstance(value, dict):
+            for key in ("id", "video_id", "aweme_id", "item_id"):
+                raw = value.get(key)
+                if raw not in (None, ""):
+                    return str(raw)
+            for child in value.values():
+                found = walk(child)
+                if found:
+                    return found
+        elif isinstance(value, list):
+            for child in value:
+                found = walk(child)
+                if found:
+                    return found
+        return None
+
+    found = walk(payload)
+    if found:
+        return re.sub(r"[^A-Za-z0-9_-]+", "_", found).strip("_")[:80] or "unknown"
+    match = re.search(r"/video/(\d+)", fallback_url)
+    if match:
+        return match.group(1)
+    return uuid.uuid4().hex[:12]
+
+
+def _download_direct_media(job: DownloadJob, media_url: str, source_url: str, payload: Any) -> dict[str, Any]:
+    import requests
+
+    ensure_us_proxy("tiktok", log=lambda line: append_download_log(job, line))
+    parsed = urlparse(media_url)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("SociaVault media URL is not http/https")
+    max_bytes = int(os.getenv("TIKTOK_MAX_BYTES", str(2 * 1024 * 1024 * 1024)))
+    video_id = _sociavault_video_id(payload, source_url)
+    suffix = Path(parsed.path).suffix.lower()
+    if suffix not in {".mp4", ".mov", ".m4v", ".webm"}:
+        suffix = ".mp4"
+    target = VIDEOS_DIR / safe_filename(f"shortvideo_SociaVault_{video_id}{suffix}")
+    temp_target = target.with_suffix(target.suffix + ".part")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0 Safari/537.36",
+        "Referer": source_url,
+    }
+    proxy = os.getenv("TIKTOK_PROXY_URL", "").strip()
+    attempts: list[tuple[str, dict[str, str] | None]] = []
+    if proxy:
+        attempts.append((f"proxy={proxy}", {"http": proxy, "https": proxy}))
+    attempts.append(("direct", None))
+
+    append_download_log(job, f"SociaVault 媒体直链下载：{media_url[:180]}")
+    try:
+        errors = []
+        for attempt_label, proxies in attempts:
+            temp_target.unlink(missing_ok=True)
+            try:
+                append_download_log(job, f"SociaVault media direct attempt: {attempt_label}")
+                with requests.get(media_url, headers=headers, proxies=proxies, stream=True, timeout=(8, 60)) as response:
+                    response.raise_for_status()
+                    content_length = int(response.headers.get("Content-Length") or 0)
+                    if content_length > max_bytes:
+                        raise RuntimeError(f"SociaVault media is too large: {content_length} bytes")
+                    downloaded = 0
+                    with temp_target.open("wb") as file:
+                        for chunk in response.iter_content(chunk_size=1024 * 1024):
+                            if not chunk:
+                                continue
+                            downloaded += len(chunk)
+                            if downloaded > max_bytes:
+                                raise RuntimeError(f"SociaVault media exceeded max size: {downloaded} bytes")
+                            file.write(chunk)
+                break
+            except Exception as exc:
+                errors.append(f"{attempt_label}: {exc}")
+        else:
+            raise RuntimeError(" / ".join(errors))
+        if temp_target.stat().st_size < 500 * 1024:
+            size = temp_target.stat().st_size
+            raise RuntimeError(f"SociaVault media file is too small: {size} bytes")
+        temp_target.replace(target)
+    except Exception:
+        temp_target.unlink(missing_ok=True)
+        raise
+    return {
+        "filename": target.name,
+        "path": str(target),
+        "size": target.stat().st_size,
+        "id": video_id,
+        "title": None,
+        "uploader": None,
+        "duration": None,
+        "webpage_url": source_url,
+        "downloader": "sociavault-video-info",
+        "media_url": media_url,
+    }
+
+
+def _sociavault_video_info_request(url: str) -> dict[str, Any]:
+    api_base = os.getenv("SOCIAVAULT_API_BASE", DEFAULT_SOCIA_VAULT_API_BASE).rstrip("/")
+    return {"api_base": api_base, "endpoint": "video-info", "params": {"url": url}}
+
+
+def try_cached_download_result(job: DownloadJob, result_path: Path) -> bool:
+    cached = get_cached("short_video_download", "download", video_cache_request(job.url))
+    if not isinstance(cached, dict) or not cached.get("filename"):
+        return False
+    filename = safe_filename(str(cached["filename"]))
+    cached_path = VIDEOS_DIR / filename
+    if not cached_path.is_file():
+        append_download_log(job, f"下载结果缓存文件不存在，继续重新下载：{filename}")
+        return False
+    result = with_download_cache_meta(dict(cached), True)
+    result["path"] = str(cached_path)
+    write_json(result_path, result)
+    append_download_log(job, "下载结果缓存命中，复用本地视频文件。")
+    return True
+
+
+def store_download_result(job: DownloadJob, result: dict[str, Any]) -> dict[str, Any]:
+    if result.get("id"):
+        register_video(
+            video_id=str(result.get("id")),
+            platform=platform_for_url(job.url),
+            source_url=str(result.get("webpage_url") or job.url),
+            filename=str(result.get("filename") or ""),
+            title=str(result.get("title") or ""),
+            author=str(result.get("uploader") or ""),
+        )
+    store_response(
+        "short_video_download",
+        "download",
+        video_cache_request(job.url),
+        result,
+        metadata=video_cache_metadata(result, job.url),
+    )
+    return with_download_cache_meta(result, False)
+
+
+def _media_cache_payload(url: str, payload: Any) -> dict[str, Any]:
+    candidates = sorted(_iter_media_url_candidates(payload), key=lambda item: item[0], reverse=True)
+    return {
+        "source_url": url,
+        "video_id": _sociavault_video_id(payload, url),
+        "candidates": [
+            {"score": score, "path": path, "url": media_url}
+            for score, path, media_url in candidates[:12]
+        ],
+    }
+
+
+def _try_media_cache_payload_download(job: DownloadJob, payload: Any, result_path: Path, source_label: str) -> bool:
+    raw_candidates = payload.get("candidates") if isinstance(payload, dict) else []
+    candidates = [item for item in raw_candidates if isinstance(item, dict) and item.get("url")]
+    for item in candidates:
+        item["score"] = _score_media_candidate(str(item.get("path") or ""), str(item.get("url") or ""))
+    candidates.sort(key=lambda item: int(item.get("score") or 0), reverse=True)
+    append_download_log(job, f"{source_label} 媒体地址缓存返回 {len(candidates)} 个候选地址。")
+    for item in candidates[:12]:
+        path = str(item.get("path") or "")
+        media_url = str(item.get("url") or "")
+        score = item.get("score")
+        try:
+            append_download_log(job, f"{source_label} 尝试候选地址 score={score} path={path}")
+            result = _download_direct_media(job, media_url, job.url, payload)
+            result["video_info_source"] = source_label
+            if isinstance(payload, dict) and isinstance(payload.get("_cache"), dict):
+                result["media_cache"] = payload["_cache"]
+            result = store_download_result(job, result)
+            write_json(result_path, result)
+            return True
+        except Exception as exc:
+            append_download_log(job, f"{source_label} 候选地址不可用：{exc}")
+    return False
+
+
+def _try_video_info_payload_download(job: DownloadJob, payload: Any, result_path: Path, source_label: str) -> bool:
+    register_from_payload(payload, source_url=job.url)
+    media_payload = _media_cache_payload(job.url, payload)
+    if media_payload["candidates"]:
+        store_response(
+            "sociavault_tiktok_media",
+            "video-info-media",
+            _sociavault_video_info_request(job.url),
+            media_payload,
+            ttl_seconds=VIDEO_MEDIA_TTL_SECONDS,
+            metadata={"entity_type": "tiktok_video_media", "entity_id": media_payload.get("video_id"), "source_url": job.url},
+        )
+    return _try_media_cache_payload_download(job, media_payload, result_path, source_label)
+
+
+def try_cached_video_info_download(job: DownloadJob, result_path: Path) -> bool:
+    payload = get_cached(
+        "sociavault_tiktok_media",
+        "video-info-media",
+        _sociavault_video_info_request(job.url),
+        ttl_seconds=VIDEO_MEDIA_TTL_SECONDS,
+    )
+    if not isinstance(payload, dict):
+        append_download_log(job, "媒体地址缓存未命中。")
+        return False
+    return _try_media_cache_payload_download(job, payload, result_path, "缓存")
+
+
+def try_sociavault_video_info_download(job: DownloadJob, result_path: Path) -> bool:
+    if not os.getenv("SOCIAVAULT_API_KEY", "").strip():
+        append_download_log(job, "未配置 SOCIAVAULT_API_KEY，跳过 SociaVault video-info。")
+        return False
+    output_path = result_path.with_suffix(".sociavault-video-info.json")
+    try:
+        run_download_command(
+            job,
+            [
+                "python",
+                str(SCRIPTS_DIR / "sociavault_tiktok.py"),
+                "--endpoint",
+                "video-info",
+                "--url",
+                job.url,
+                "--output",
+                str(output_path),
+            ],
+        )
+        payload = read_json(output_path)
+        if _try_video_info_payload_download(job, payload, result_path, "SociaVault API"):
+            result = read_json(result_path)
+            if isinstance(result, dict):
+                result["sociavault_video_info"] = str(output_path.relative_to(ROOT))
+                write_json(result_path, result)
+            return True
+        return False
+    except Exception as exc:
+        append_download_log(job, f"SociaVault video-info 下载链路失败，回退原下载器：{exc}")
+        return False
 
 
 def append_shop_log(job: ShopJob, line: str) -> None:
     with shop_jobs_lock:
         job.log.append(line.rstrip())
         job.updated_at = time.time()
-        write_shop_job_record(job)
 
 
 def run_shop_command(job: ShopJob, command: list[str]) -> None:
@@ -531,7 +885,6 @@ def run_shop_job(job_id: str) -> None:
         with shop_jobs_lock:
             job.output_dir = str(output_dir.relative_to(ROOT))
             job.updated_at = time.time()
-            write_shop_job_record(job)
 
         command = [
             "python",
@@ -569,14 +922,12 @@ def run_shop_job(job_id: str) -> None:
         with shop_jobs_lock:
             job.status = "complete"
             job.updated_at = time.time()
-            write_shop_job_record(job)
     except Exception as exc:
         with shop_jobs_lock:
             job.status = "failed"
             job.error = str(exc)
             job.updated_at = time.time()
             job.log.append(str(exc))
-            write_shop_job_record(job)
 
 
 def append_metrics_log(job: MetricsJob, line: str) -> None:
@@ -609,30 +960,176 @@ def run_metrics_job(job_id: str) -> None:
         job.status = "running"
         job.updated_at = time.time()
 
-    output_dir = OUTPUT_DIR / "social_metrics" / job_id
-    metrics_path = output_dir / "metrics.json"
+    output_dir = OUTPUT_DIR / "tiktok_api" / job_id
+    metrics_path = output_dir / "result.json"
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
         with metrics_jobs_lock:
             job.output_dir = str(output_dir.relative_to(ROOT))
             job.updated_at = time.time()
 
-        run_metrics_command(
-            job,
-            [
-                "python",
-                str(SCRIPTS_DIR / "social_video_metrics.py"),
-                job.url,
-                "--output",
-                str(metrics_path),
-            ],
-        )
+        cmd = [
+            "python",
+            str(SCRIPTS_DIR / "sociavault_tiktok.py"),
+            "--endpoint", job.endpoint,
+            "--output", str(metrics_path),
+        ]
+        if job.target:
+            if job.target.startswith("http"):
+                cmd.extend(["--url", job.target])
+            elif job.target.startswith("#"):
+                cmd.extend(["--hashtag", job.target.lstrip("#")])
+            elif job.target.startswith("@"):
+                cmd.extend(["--handle", job.target.lstrip("@")])
+            elif job.endpoint in ("music-info", "music-videos"):
+                cmd.extend(["--sound-id", job.target])
+            elif job.endpoint.startswith("search-"):
+                cmd.extend(["--query", job.target])
+            else:
+                cmd.extend(["--handle", job.target])
+
+        run_metrics_command(job, cmd)
+        if job.endpoint == "video-info" and metrics_path.is_file():
+            register_from_payload(read_json(metrics_path), source_url=job.target)
 
         with metrics_jobs_lock:
             job.status = "complete"
             job.updated_at = time.time()
     except Exception as exc:
         with metrics_jobs_lock:
+            job.status = "failed"
+            job.error = str(exc)
+            job.updated_at = time.time()
+            job.log.append(str(exc))
+
+
+def append_amazon_log(job: AmazonJob, line: str) -> None:
+    with amazon_jobs_lock:
+        job.log.append(line.rstrip())
+        job.updated_at = time.time()
+
+
+def parse_json_from_process_output(output: str) -> Any:
+    text = output.strip()
+    if not text:
+        raise ValueError("amazon-scraper returned no output")
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        decoder = json.JSONDecoder()
+        parsed_values = []
+        for match in re.finditer(r"{", text):
+            try:
+                value, _ = decoder.raw_decode(text[match.start() :])
+            except json.JSONDecodeError:
+                continue
+            parsed_values.append(value)
+        if not parsed_values:
+            raise ValueError("amazon-scraper output did not contain JSON")
+        # Return the largest parsed object — the scraper result is always the
+        # largest JSON, while nested empty objects like "details":{} are tiny.
+        parsed_values.sort(key=lambda v: len(json.dumps(v)), reverse=True)
+        return parsed_values[0]
+
+
+def run_amazon_command(job: AmazonJob, command: list[str]) -> tuple[str, int]:
+    append_amazon_log(job, f"$ {' '.join(command)}")
+    env = os.environ.copy()
+    process = subprocess.Popen(
+        command,
+        cwd=ROOT,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    assert process.stdout is not None
+    output_lines = []
+    for line in process.stdout:
+        output_lines.append(line)
+        append_amazon_log(job, line)
+    code = process.wait()
+    output = "".join(output_lines)
+    if code != 0:
+        append_amazon_log(job, f"Command exited with code {code}")
+    return output, code
+
+
+def run_amazon_job(job_id: str) -> None:
+    with amazon_jobs_lock:
+        job = amazon_jobs[job_id]
+        job.status = "running"
+        job.updated_at = time.time()
+
+    output_dir = OUTPUT_DIR / "amazon" / job_id
+    result_path = output_dir / "result.json"
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        with amazon_jobs_lock:
+            job.output_dir = str(output_dir.relative_to(ROOT))
+            job.updated_at = time.time()
+
+        def normalized_amazon_url(value: str) -> str:
+            parsed = urlparse(value.strip())
+            host = (parsed.hostname or "").lower()
+            return parsed._replace(scheme=(parsed.scheme or "https").lower(), netloc=host, fragment="").geturl()
+
+        def fetch_amazon() -> dict[str, Any]:
+            ensure_us_proxy("amazon", log=lambda line: append_amazon_log(job, line))
+            command = [
+                "docker",
+                "run",
+                "--rm",
+                "--network", "host",
+                "-e", "AMAZON_PROXY",
+                "-e", "AMAZON_PROXIES",
+                "amazon-scraper",
+                "node",
+                "assets/amazon_handler.js",
+                job.url,
+                "--pages",
+                str(job.pages),
+            ]
+            output, code = run_amazon_command(job, command)
+            parsed = parse_json_from_process_output(output)
+            if code != 0 and not (isinstance(parsed, dict) and parsed.get("status") == "ERROR"):
+                raise RuntimeError(f"amazon-scraper exited with code {code}")
+            return parsed
+
+        result = get_cached_or_call(
+            "amazon_scraper",
+            "web",
+            {"url": normalized_amazon_url(job.url), "pages": int(job.pages)},
+            fetch_amazon,
+            metadata_builder=lambda payload: {
+                "entity_type": "amazon",
+                "entity_id": str((payload.get("products") or [{}])[0].get("asin") or normalized_amazon_url(job.url)) if isinstance(payload, dict) else normalized_amazon_url(job.url),
+                "title": str((payload.get("products") or [{}])[0].get("title") or "") if isinstance(payload, dict) else "",
+                "source_url": normalized_amazon_url(job.url),
+            },
+        )
+        cache_label = cache_log_label(result)
+        if cache_label:
+            append_amazon_log(job, cache_label)
+        result_path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+        with amazon_jobs_lock:
+            if not (isinstance(result, dict) and result.get("status") == "ERROR"):
+                job.status = "complete"
+            else:
+                job.status = "failed"
+                job.error = str(result.get("message") or "amazon-scraper failed") if isinstance(result, dict) else "amazon-scraper failed"
+            job.updated_at = time.time()
+    except FileNotFoundError:
+        message = "Docker CLI is not available in the web container"
+        with amazon_jobs_lock:
+            job.status = "failed"
+            job.error = message
+            job.updated_at = time.time()
+            job.log.append(message)
+    except Exception as exc:
+        with amazon_jobs_lock:
             job.status = "failed"
             job.error = str(exc)
             job.updated_at = time.time()
@@ -649,24 +1146,47 @@ def run_download_job(job_id: str) -> None:
     try:
         VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
         result_path.parent.mkdir(parents=True, exist_ok=True)
-        run_download_command(
-            job,
-            [
-                "python",
-                str(SCRIPTS_DIR / "tiktok_download.py"),
-                job.url,
-                "--output-dir",
-                str(VIDEOS_DIR),
-                "--result-json",
-                str(result_path),
-            ],
-        )
+        if not try_cached_download_result(job, result_path) and not try_cached_video_info_download(job, result_path):
+            crawler_error: Exception | None = None
+            try:
+                append_download_log(job, "缓存地址不可用，使用原下载器下载。")
+                run_download_command(
+                    job,
+                    [
+                        "python",
+                        str(SCRIPTS_DIR / "tiktok_download.py"),
+                        job.url,
+                        "--output-dir",
+                        str(VIDEOS_DIR),
+                        "--result-json",
+                        str(result_path),
+                    ],
+                )
+            except Exception as exc:
+                crawler_error = exc
+                append_download_log(job, f"原下载器失败，最后降级调用 SociaVault video-info：{exc}")
+                if not try_sociavault_video_info_download(job, result_path):
+                    raise RuntimeError(
+                        "视频下载失败：缓存地址不可用，原下载器失败，SociaVault video-info 也没有可用下载地址。"
+                    ) from crawler_error
         result = read_json(result_path)
         if not isinstance(result, dict) or not result.get("filename"):
             raise RuntimeError("Downloader did not return a video filename")
+        cache_label = cache_log_label(result)
+        if cache_label:
+            append_download_log(job, cache_label)
         filename = safe_filename(str(result["filename"]))
         if not (VIDEOS_DIR / filename).is_file():
             raise FileNotFoundError(f"Downloaded file not found: {filename}")
+        if result.get("id"):
+            register_video(
+                video_id=str(result.get("id")),
+                platform=platform_for_url(job.url),
+                source_url=str(result.get("webpage_url") or job.url),
+                filename=filename,
+                title=str(result.get("title") or ""),
+                author=str(result.get("uploader") or ""),
+            )
         with download_jobs_lock:
             job.filename = filename
             job.result = result
@@ -695,7 +1215,7 @@ def run_job(job_id: str) -> None:
         job.updated_at = time.time()
 
     try:
-        output_dir = OUTPUT_DIR / job.filename
+        output_dir = output_dir_for_filename(job.filename)
         job.output_dir = str(output_dir.relative_to(ROOT))
         output_dir.mkdir(parents=True, exist_ok=True)
         prompt = job.analysis_prompt.strip() or DEFAULT_ANALYSIS_PROMPT
@@ -718,8 +1238,9 @@ def run_job(job_id: str) -> None:
             run_command(
                 job,
                 ["bash", str(SCRIPTS_DIR / "analyze_one.sh"), job.filename],
-                env_extra={"ANALYSIS_PROMPT_FILE": str(prompt_file)},
+                env_extra={"ANALYSIS_PROMPT_FILE": str(prompt_file), "ANALYSIS_OUTPUT_DIR": str(output_dir)},
             )
+        mark_extracted(job.filename, output_dir.name)
         if os.getenv("DEEPSEEK_API_KEY"):
             try:
                 run_command(job, ["python", str(SCRIPTS_DIR / "translate_analysis.py"), str(output_dir)])
@@ -759,7 +1280,7 @@ def run_postprocess_job(job_id: str) -> None:
         job.updated_at = time.time()
 
     try:
-        output_dir = OUTPUT_DIR / job.filename
+        output_dir = output_dir_for_filename(job.filename)
         job.output_dir = str(output_dir.relative_to(ROOT))
         if not (output_dir / "analysis.json").is_file():
             raise FileNotFoundError(f"analysis.json not found: {output_dir / 'analysis.json'}")
@@ -791,7 +1312,7 @@ def run_postprocess_job(job_id: str) -> None:
 
 
 def public_job(job: Job) -> dict[str, Any]:
-    output_dir = OUTPUT_DIR / job.filename
+    output_dir = output_dir_for_filename(job.filename)
     return {
         "id": job.id,
         "filename": job.filename,
@@ -826,8 +1347,6 @@ def public_download_job(job: DownloadJob) -> dict[str, Any]:
 
 def public_shop_job(job: ShopJob) -> dict[str, Any]:
     output_dir = OUTPUT_DIR / "tiktok_shop" / job.id
-    extract = read_json(output_dir / "shop_extract.json")
-    analysis = read_json(output_dir / "shop_analysis.json")
     return {
         "id": job.id,
         "url": job.url,
@@ -840,28 +1359,45 @@ def public_shop_job(job: ShopJob) -> dict[str, Any]:
         "status": job.status,
         "created_at": job.created_at,
         "updated_at": job.updated_at,
-        "output_dir": job.output_dir or str(output_dir.relative_to(ROOT)),
+        "output_dir": job.output_dir,
         "error": job.error,
         "log": job.log[-120:],
-        "has_extract": extract is not None,
-        "has_analysis": analysis is not None,
-        "extract": extract,
-        "analysis": analysis,
+        "extract": read_json(output_dir / "shop_extract.json"),
+        "analysis": read_json(output_dir / "shop_analysis.json"),
     }
 
 
 def public_metrics_job(job: MetricsJob) -> dict[str, Any]:
-    output_dir = OUTPUT_DIR / "social_metrics" / job.id
+    output_dir = OUTPUT_DIR / "tiktok_api" / job.id
     return {
         "id": job.id,
-        "url": job.url,
+        "target": job.target,
+        "endpoint": job.endpoint,
         "status": job.status,
         "created_at": job.created_at,
         "updated_at": job.updated_at,
         "output_dir": job.output_dir,
         "error": job.error,
         "log": job.log[-120:],
-        "metrics": read_json(output_dir / "metrics.json"),
+        "result": read_json(output_dir / "result.json"),
+    }
+
+
+def public_amazon_job(job: AmazonJob) -> dict[str, Any]:
+    output_dir = OUTPUT_DIR / "amazon" / job.id
+    return {
+        "id": job.id,
+        "target": job.target,
+        "target_type": job.target_type,
+        "url": job.url,
+        "pages": job.pages,
+        "status": job.status,
+        "created_at": job.created_at,
+        "updated_at": job.updated_at,
+        "output_dir": job.output_dir,
+        "error": job.error,
+        "log": job.log[-120:],
+        "result": read_json(output_dir / "result.json"),
     }
 
 
@@ -917,6 +1453,927 @@ def public_network_check() -> dict[str, Any]:
     }
 
 
+def slim_tool_result(obj: Any, depth: int = 0) -> Any:
+    """Compress tool result by removing bloat (long URLs, deep nested objects)."""
+    if isinstance(obj, dict):
+        filtered = {}
+        for k, v in obj.items():
+            if isinstance(v, str) and len(v) > 500 and any(x in v for x in ("tiktokcdn", "x-expires", "x-signature")):
+                continue
+            if depth >= 2 and isinstance(v, (dict, list)):
+                continue
+            if depth >= 3:
+                continue
+            filtered[k] = slim_tool_result(v, depth + 1) if isinstance(v, (dict, list)) else v
+        return filtered
+    if isinstance(obj, list):
+        if len(obj) > 20:
+            obj = obj[:20]
+        return [slim_tool_result(item, depth + 1) if isinstance(item, (dict, list)) else item for item in obj]
+    return obj
+
+
+def _unwrap_tool_data(result: dict[str, Any]) -> tuple[Any, str | None, int | None]:
+    """Return actual tool payload plus optional raw file metadata."""
+    data = result.get("data") if isinstance(result, dict) else None
+    if isinstance(data, dict) and "data" in data and ("raw_ref" in data or "raw_bytes" in data):
+        return data.get("data"), data.get("raw_ref"), data.get("raw_bytes")
+    return data, None, None
+
+
+def _tool_cache_info(result: dict[str, Any], payload: Any) -> dict[str, Any] | None:
+    def find_cache(value: Any, depth: int = 0) -> dict[str, Any] | None:
+        if depth > 5:
+            return None
+        if isinstance(value, dict):
+            cache = value.get("_cache")
+            if isinstance(cache, dict) and "hit" in cache:
+                return cache
+            for child in value.values():
+                found = find_cache(child, depth + 1)
+                if found:
+                    return found
+        elif isinstance(value, list):
+            for child in value[:20]:
+                found = find_cache(child, depth + 1)
+                if found:
+                    return found
+        return None
+
+    candidates = []
+    if isinstance(payload, dict):
+        candidates.append(payload.get("_cache"))
+    data = result.get("data") if isinstance(result, dict) else None
+    if isinstance(data, dict):
+        candidates.append(data.get("_cache"))
+        nested = data.get("data")
+        if isinstance(nested, dict):
+            candidates.append(nested.get("_cache"))
+    for candidate in candidates:
+        if isinstance(candidate, dict) and "hit" in candidate:
+            return {
+                "hit": bool(candidate.get("hit")),
+                "label": str(candidate.get("label") or ("缓存命中" if candidate.get("hit") else "实时调用")),
+                "provider": candidate.get("provider"),
+                "endpoint": candidate.get("endpoint"),
+            }
+    candidate = find_cache(result)
+    if isinstance(candidate, dict) and "hit" in candidate:
+        return {
+            "hit": bool(candidate.get("hit")),
+            "label": str(candidate.get("label") or ("cache_hit" if candidate.get("hit") else "live_call")),
+            "provider": candidate.get("provider"),
+            "endpoint": candidate.get("endpoint"),
+        }
+    return None
+
+
+def _compact_text(value: Any, limit: int = 240) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"\s+", " ", text)
+    return text[:limit]
+
+
+def _as_items(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        def sort_key(item: tuple[Any, Any]) -> tuple[int, str]:
+            key, _ = item
+            try:
+                return (0, f"{int(key):08d}")
+            except (TypeError, ValueError):
+                return (1, str(key))
+        return [v for _, v in sorted(value.items(), key=sort_key)]
+    return []
+
+
+def _first_present(*values: Any) -> Any:
+    for value in values:
+        if value not in (None, "", [], {}):
+            return value
+    return None
+
+
+def _first_url(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        urls = value.get("url_list")
+        if isinstance(urls, list) and urls:
+            return str(urls[0])
+        for key in ("url", "uri"):
+            if value.get(key):
+                return str(value[key])
+    return ""
+
+
+def _tiktok_video_url(aweme: dict[str, Any], author: dict[str, Any] | None = None) -> str:
+    direct = _first_present(
+        aweme.get("share_url"),
+        aweme.get("shareUrl"),
+        aweme.get("url"),
+        aweme.get("web_url"),
+        aweme.get("webUrl"),
+    )
+    if direct:
+        return str(direct).strip()
+    video_id = _first_present(aweme.get("aweme_id"), aweme.get("id"), aweme.get("video_id"), aweme.get("item_id"))
+    author = author or (aweme.get("author") if isinstance(aweme.get("author"), dict) else {})
+    handle = _first_present(author.get("unique_id"), author.get("uniqueId"), aweme.get("author_unique_id"))
+    if video_id and handle:
+        return f"https://www.tiktok.com/@{handle}/video/{video_id}"
+    if video_id:
+        return f"https://www.tiktok.com/video/{video_id}"
+    return ""
+
+
+def _extract_media_urls(value: Any, limit: int = 8) -> list[str]:
+    urls: list[str] = []
+    seen: set[str] = set()
+
+    def add(url: Any) -> None:
+        if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+            return
+        lowered = url.lower()
+        if any(word in lowered for word in ("avatar", "cover", "jpeg", ".jpg", ".png", ".webp")):
+            return
+        if url in seen:
+            return
+        seen.add(url)
+        urls.append(url)
+
+    def walk(obj: Any, path: str = "") -> None:
+        if len(urls) >= limit:
+            return
+        if isinstance(obj, dict):
+            if path and any(word in path.lower() for word in ("play_addr", "download_addr", "play_url", "download_url", "video")):
+                candidate = _first_url(obj)
+                if candidate:
+                    add(candidate)
+            for key, child in obj.items():
+                walk(child, f"{path}.{key}" if path else str(key))
+        elif isinstance(obj, list):
+            for child in obj:
+                walk(child, path)
+        elif isinstance(obj, str):
+            add(obj)
+
+    walk(value)
+    return urls[:limit]
+
+
+def _tiktok_count(stats: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in stats:
+            return stats.get(key)
+    return None
+
+
+def _extract_tiktok_items(payload: Any, limit: int = 20) -> list[dict[str, Any]]:
+    data = payload.get("data", payload) if isinstance(payload, dict) else payload
+    search_list = None
+    if isinstance(data, dict):
+        search_list = _first_present(
+            data.get("search_item_list"),
+            data.get("item_list"),
+            data.get("aweme_list"),
+            data.get("items"),
+            data.get("videos"),
+        )
+    items: list[dict[str, Any]] = []
+    for raw in _as_items(search_list)[:limit]:
+        aweme = raw.get("aweme_info", raw) if isinstance(raw, dict) else {}
+        if not isinstance(aweme, dict):
+            continue
+        author = aweme.get("author") if isinstance(aweme.get("author"), dict) else {}
+        stats = aweme.get("statistics") if isinstance(aweme.get("statistics"), dict) else {}
+        music = aweme.get("music") or aweme.get("added_sound_music_info") or {}
+        hashtags = []
+        for tag in _as_items(aweme.get("text_extra")):
+            if isinstance(tag, dict):
+                name = _first_present(tag.get("hashtag_name"), tag.get("hashtagName"))
+                if name:
+                    hashtags.append(str(name))
+        items.append({
+            "id": _first_present(aweme.get("aweme_id"), aweme.get("id")),
+            "description": _compact_text(_first_present(aweme.get("desc"), aweme.get("description"), aweme.get("title")), 320),
+            "author": _compact_text(_first_present(author.get("nickname"), aweme.get("author"), author.get("unique_id")), 120),
+            "handle": _compact_text(_first_present(author.get("unique_id"), author.get("sec_uid")), 120),
+            "play_count": _tiktok_count(stats, "play_count", "playCount"),
+            "like_count": _tiktok_count(stats, "digg_count", "like_count", "likeCount"),
+            "comment_count": _tiktok_count(stats, "comment_count", "commentCount"),
+            "share_count": _tiktok_count(stats, "share_count", "shareCount"),
+            "duration": _first_present(aweme.get("duration"), aweme.get("video", {}).get("duration") if isinstance(aweme.get("video"), dict) else None),
+            "create_time": aweme.get("create_time"),
+            "hashtags": hashtags[:8],
+            "music": _compact_text(_first_present(music.get("title") if isinstance(music, dict) else None, music.get("music_name") if isinstance(music, dict) else None), 160),
+            "url": _tiktok_video_url(aweme, author),
+        })
+    return [item for item in items if any(v not in (None, "", [], {}) for v in item.values())]
+
+
+def _extract_tiktok_video_info(payload: Any) -> dict[str, Any]:
+    data = payload.get("data", payload) if isinstance(payload, dict) else payload
+    aweme = data
+    if isinstance(data, dict):
+        aweme = _first_present(
+            data.get("aweme_detail"),
+            data.get("aweme_info"),
+            data.get("itemInfo", {}).get("itemStruct") if isinstance(data.get("itemInfo"), dict) else None,
+            data.get("video"),
+            data.get("item"),
+            data,
+        )
+    if not isinstance(aweme, dict):
+        return {}
+    author = aweme.get("author") if isinstance(aweme.get("author"), dict) else {}
+    stats = aweme.get("statistics") if isinstance(aweme.get("statistics"), dict) else {}
+    music = aweme.get("music") or aweme.get("added_sound_music_info") or {}
+    video = aweme.get("video") if isinstance(aweme.get("video"), dict) else {}
+    media_urls = _extract_media_urls(video or aweme)
+    return {
+        "id": _first_present(aweme.get("aweme_id"), aweme.get("id"), aweme.get("video_id"), aweme.get("item_id")),
+        "description": _compact_text(_first_present(aweme.get("desc"), aweme.get("description"), aweme.get("title")), 500),
+        "author": _compact_text(_first_present(author.get("nickname"), author.get("unique_id")), 160),
+        "handle": _compact_text(_first_present(author.get("unique_id"), author.get("uniqueId"), author.get("sec_uid")), 160),
+        "url": _tiktok_video_url(aweme, author),
+        "play_count": _tiktok_count(stats, "play_count", "playCount"),
+        "like_count": _tiktok_count(stats, "digg_count", "like_count", "likeCount"),
+        "comment_count": _tiktok_count(stats, "comment_count", "commentCount"),
+        "share_count": _tiktok_count(stats, "share_count", "shareCount"),
+        "duration": _first_present(aweme.get("duration"), video.get("duration")),
+        "music_title": _compact_text(_first_present(music.get("title") if isinstance(music, dict) else None, music.get("music_name") if isinstance(music, dict) else None), 180),
+        "music_url": _first_url(_first_present(music.get("play_url") if isinstance(music, dict) else None, music.get("playUrl") if isinstance(music, dict) else None)),
+        "media_urls": media_urls,
+    }
+
+
+def _extract_tiktok_music_items(payload: Any, limit: int = 12) -> list[dict[str, Any]]:
+    data = payload.get("data", payload) if isinstance(payload, dict) else payload
+    music_list = None
+    if isinstance(data, dict):
+        music_list = _first_present(data.get("music"), data.get("music_info_list"), data.get("items"), data.get("sounds"))
+    items: list[dict[str, Any]] = []
+    for raw in _as_items(music_list)[:limit]:
+        music = raw.get("music", raw) if isinstance(raw, dict) else {}
+        if not isinstance(music, dict):
+            continue
+        play_url = _first_url(_first_present(music.get("play_url"), music.get("playUrl"), music.get("preview_url")))
+        cover_url = _first_url(_first_present(music.get("cover_thumb"), music.get("cover_medium"), music.get("cover_large")))
+        sound_id = _first_present(music.get("id_str"), music.get("id"), music.get("mid"), music.get("music_id"))
+        items.append({
+            "sound_id": sound_id,
+            "title": _compact_text(_first_present(music.get("title"), music.get("music_name"), music.get("name")), 180),
+            "author": _compact_text(_first_present(music.get("author"), music.get("authorName"), music.get("owner_nickname")), 140),
+            "album": _compact_text(music.get("album"), 160),
+            "duration": _first_present(music.get("duration"), music.get("duration_high_precision")),
+            "play_url": play_url,
+            "cover_url": cover_url,
+            "tiktok_music_url": f"https://www.tiktok.com/music/{quote_plus(str(_first_present(music.get('title'), 'sound')))}-{sound_id}" if sound_id else "",
+        })
+    return [item for item in items if any(v not in (None, "", [], {}) for v in item.values())]
+
+
+def _extract_amazon_products(payload: Any, limit: int = 20) -> list[dict[str, Any]]:
+    products = payload.get("products") if isinstance(payload, dict) else []
+    items: list[dict[str, Any]] = []
+    for product in _as_items(products)[:limit]:
+        if not isinstance(product, dict):
+            continue
+        details = product.get("details") if isinstance(product.get("details"), dict) else {}
+        items.append({
+            "asin": product.get("asin"),
+            "title": _compact_text(_first_present(product.get("title"), product.get("name")), 320),
+            "price": _first_present(product.get("priceStr"), product.get("price")),
+            "rating": product.get("rating"),
+            "reviews": _first_present(product.get("reviews"), product.get("reviewCount")),
+            "bsr": _first_present(product.get("bsr"), details.get("Best Sellers Rank")),
+            "bought_past_month": product.get("boughtPastMonth"),
+            "date_first_available": _first_present(product.get("dateFirstAvailable"), details.get("Date First Available")),
+            "category": _first_present(product.get("category"), payload.get("category") if isinstance(payload, dict) else None),
+            "bullets": [_compact_text(v, 220) for v in _as_items(product.get("bullets"))[:8]],
+            "url": _compact_text(_first_present(product.get("url"), product.get("productUrl")), 300),
+        })
+    return [item for item in items if any(v not in (None, "", [], {}) for v in item.values())]
+
+
+def _extract_shop_products(payload: Any, limit: int = 20) -> list[dict[str, Any]]:
+    products = payload.get("products") if isinstance(payload, dict) else []
+    items: list[dict[str, Any]] = []
+    for product in _as_items(products)[:limit]:
+        if not isinstance(product, dict):
+            continue
+        price = product.get("product_price_info") if isinstance(product.get("product_price_info"), dict) else {}
+        sold = product.get("sold_info") if isinstance(product.get("sold_info"), dict) else {}
+        seller = product.get("seller_info") if isinstance(product.get("seller_info"), dict) else {}
+        rating = product.get("rate_info") if isinstance(product.get("rate_info"), dict) else {}
+        seo = product.get("seo_url") if isinstance(product.get("seo_url"), dict) else {}
+        labels = product.get("product_label_info") if isinstance(product.get("product_label_info"), dict) else {}
+        label_texts = []
+        for label in _as_items(labels):
+            if isinstance(label, dict) and label.get("text"):
+                label_texts.append(str(label["text"]))
+        items.append({
+            "product_id": product.get("product_id"),
+            "title": _compact_text(product.get("title"), 360),
+            "price": _first_present(price.get("sale_price_format"), price.get("single_product_price_format")),
+            "currency": _first_present(price.get("currency_symbol"), price.get("currency_name")),
+            "discount": price.get("discount_format"),
+            "sold_count": sold.get("sold_count"),
+            "rating": _first_present(rating.get("score"), rating.get("rating")),
+            "review_count": _first_present(rating.get("review_count"), rating.get("reviewCount")),
+            "shop_name": seller.get("shop_name"),
+            "labels": label_texts[:4],
+            "category": product.get("category_breadcrumb"),
+            "url": _first_present(seo.get("canonical_url"), product.get("product_url")),
+        })
+    return [item for item in items if any(v not in (None, "", [], {}) for v in item.values())]
+
+
+def normalize_tool_result(tool_name: str, result: dict[str, Any]) -> dict[str, Any]:
+    """Keep analysis-ready fields for the model/UI while storing raw payloads by reference."""
+    if not isinstance(result, dict):
+        return {"ok": False, "error": "Invalid tool result", "summary": result}
+    if ("kind" in result or "summary" in result) and "data" not in result:
+        return result
+    normalized: dict[str, Any] = {
+        "ok": bool(result.get("ok")),
+        "elapsed": result.get("elapsed"),
+    }
+    if not result.get("ok"):
+        normalized["error"] = result.get("error", "Tool failed")
+        return normalized
+
+    payload, raw_ref, raw_bytes = _unwrap_tool_data(result)
+    cache_info = _tool_cache_info(result, payload)
+    if cache_info:
+        normalized["cache"] = cache_info
+    if raw_ref:
+        normalized["raw_ref"] = raw_ref
+    if raw_bytes is not None:
+        normalized["raw_bytes"] = raw_bytes
+
+    if tool_name in {"tiktok_search_music", "tiktok_music_popular", "tiktok_music_info"}:
+        music_items = _extract_tiktok_music_items(payload)
+        normalized.update({
+            "kind": "tiktok_music",
+            "music_total": len(music_items),
+            "music": music_items,
+            "enough_data": bool(music_items),
+            "suggested_next_action": "answer_from_results" if music_items else "try_different_query",
+        })
+        return normalized
+
+    if tool_name == "tiktok_video_info":
+        video_info = _extract_tiktok_video_info(payload)
+        normalized.update({
+            "kind": "tiktok_video",
+            "video": video_info,
+            "enough_data": bool(video_info),
+            "suggested_next_action": "answer_from_results" if video_info else "try_different_query",
+        })
+        return normalized
+
+    if tool_name.startswith("tiktok_search_") or tool_name in {"tiktok_trending", "tiktok_videos", "tiktok_videos_popular"}:
+        items = _extract_tiktok_items(payload)
+        normalized.update({
+            "kind": "tiktok_items",
+            "items_total": len(items),
+            "items": items,
+            "enough_data": bool(items),
+            "suggested_next_action": "answer_from_results" if items else "try_different_query",
+        })
+        return normalized
+
+    if tool_name.startswith("amazon_"):
+        products = _extract_amazon_products(payload)
+        has_product_detail = any(
+            item.get("title") or item.get("price") or item.get("rating") or item.get("reviews") or item.get("bullets")
+            for item in products
+        )
+        is_not_found = isinstance(payload, dict) and str(payload.get("category", "")).lower() == "page not found"
+        normalized.update({
+            "kind": "amazon_products",
+            "status": payload.get("status") if isinstance(payload, dict) else None,
+            "page_type": payload.get("type") if isinstance(payload, dict) else None,
+            "category": payload.get("category") if isinstance(payload, dict) else None,
+            "breadcrumbs": payload.get("breadcrumbs") if isinstance(payload, dict) else None,
+            "products_total": len(products),
+            "products": products,
+            "enough_data": bool(products) and has_product_detail and not is_not_found,
+            "suggested_next_action": "answer_from_results" if has_product_detail and not is_not_found else "try_different_query",
+        })
+        return normalized
+
+    if tool_name.startswith("tiktok_shop_"):
+        products = _extract_shop_products(payload)
+        normalized.update({
+            "kind": "tiktok_shop_products",
+            "source_type": payload.get("source_type") if isinstance(payload, dict) else None,
+            "query": payload.get("query") if isinstance(payload, dict) else None,
+            "products_total": len(products),
+            "products": products,
+            "enough_data": bool(products),
+            "suggested_next_action": "answer_from_results" if products else "try_different_query",
+        })
+        return normalized
+
+    if tool_name == "video_download" and isinstance(payload, dict):
+        normalized.update({
+            "kind": "video_download",
+            "filename": payload.get("filename"),
+            "size": payload.get("size"),
+            "downloader": payload.get("downloader"),
+            "raw_ref": raw_ref or payload.get("raw_ref"),
+            "enough_data": bool(payload.get("filename")),
+        })
+        return normalized
+
+    normalized["summary"] = slim_tool_result(result)
+    normalized["enough_data"] = True
+    return normalized
+
+
+def normalize_stored_chat_tool_results() -> int:
+    """Migrate old sessions that persisted full raw tool payloads."""
+    changed = 0
+    with chat_store._lock:
+        for session in chat_store.sessions.values():
+            for message in session.messages:
+                if not message.tool_results:
+                    continue
+                for tool_result in message.tool_results:
+                    if not isinstance(tool_result, dict):
+                        continue
+                    tool_name = tool_result.get("tool_name", "")
+                    result = tool_result.get("result")
+                    if not isinstance(result, dict):
+                        continue
+                    normalized = normalize_tool_result(tool_name, result)
+                    if normalized != result:
+                        tool_result["result"] = normalized
+                        changed += 1
+    if changed:
+        chat_store._schedule_save()
+        print(f"[CHAT] normalized {changed} stored tool results", flush=True)
+    return changed
+
+def mark_interrupted_chat_messages() -> int:
+    """Mark assistant messages that could not finish before a restart/interruption."""
+    changed = 0
+    interrupted_text = "服务器中断，稍后再试。"
+    incomplete_tools_text = "服务器中断，稍后再试。"
+    with chat_store._lock:
+        for session in chat_store.sessions.values():
+            for message in session.messages:
+                if message.role != "assistant":
+                    continue
+                tool_calls = message.tool_calls or []
+                tool_results = message.tool_results or []
+                has_incomplete_tools = bool(tool_calls) and len(tool_results) < len(tool_calls)
+                if message.status == "pending" or has_incomplete_tools:
+                    if message.status != "error":
+                        message.status = "error"
+                        changed += 1
+                    if not message.content:
+                        message.content = incomplete_tools_text if has_incomplete_tools else interrupted_text
+                        changed += 1
+    if changed:
+        chat_store._schedule_save()
+        print(f"[CHAT] marked {changed} interrupted stored messages", flush=True)
+    return changed
+
+
+def is_music_link_query(text: str) -> bool:
+    lowered = (text or "").lower()
+    has_music = any(word in lowered for word in ("music", "sound", "audio", "bgm", "song", "remix", "音乐", "音频", "原声", "歌曲"))
+    has_link = any(word in lowered for word in ("link", "url", "链接", "地址", "有没有", "有吗", "哪里"))
+    return has_music and has_link
+
+
+def music_link_search_query(text: str) -> str:
+    query = str(text or "")
+    query = re.sub(
+        r"(有没有|有无|是否有|音频链接|音乐链接|声音链接|下载链接|链接|地址|url|URL|吗|么|呢|\?)",
+        " ",
+        query,
+        flags=re.IGNORECASE,
+    )
+    query = re.sub(r"\s+", " ", query).strip(" -—_:：，,。")
+    return query or str(text or "").strip()
+
+
+def is_media_availability_query(text: str) -> bool:
+    lowered = (text or "").lower()
+    has_media = any(word in lowered for word in ("video", "audio", "music", "sound", "bgm", "视频", "音频", "音乐", "链接"))
+    asks_exists = any(word in lowered for word in ("有没有", "有无", "是否有", "有没有", "有吗", "有么", "find", "show me"))
+    return has_media and asks_exists
+
+
+MUSIC_QUERY_TOOLS = {"tiktok_search_music", "tiktok_music_info", "tiktok_music_videos", "tiktok_music_popular"}
+
+AMAZON_TOOLS = {"amazon_scrape_url", "amazon_scrape_asin", "amazon_search_keyword"}
+TIKTOK_SHOP_TOOLS = {"tiktok_shop_product", "tiktok_shop_details", "tiktok_shop_reviews", "tiktok_shop_search"}
+TIKTOK_USER_TOOLS = {
+    "tiktok_profile",
+    "tiktok_videos",
+    "tiktok_videos_popular",
+    "tiktok_followers",
+    "tiktok_following",
+    "tiktok_demographics",
+    "tiktok_live",
+}
+TIKTOK_VIDEO_TOOLS = {"tiktok_video_info", "tiktok_comments", "tiktok_comment_replies", "tiktok_transcript"}
+TIKTOK_CONTENT_TOOLS = {
+    "tiktok_search_users",
+    "tiktok_search_hashtag",
+    "tiktok_search_keyword",
+    "tiktok_search_top",
+    "tiktok_trending",
+    "tiktok_creators_popular",
+    "tiktok_hashtags_popular",
+    "tiktok_videos_popular",
+}
+VIDEO_ANALYSIS_TOOLS = {"video_download", "video_analyze", "video_direct_analyze", "tiktok_video_info"}
+PRODUCT_RESEARCH_TOOLS = (
+    AMAZON_TOOLS
+    | TIKTOK_SHOP_TOOLS
+    | {"tiktok_search_keyword", "tiktok_search_top", "tiktok_trending", "tiktok_hashtags_popular"}
+)
+
+
+def _contains_any(text: str, words: tuple[str, ...]) -> bool:
+    lowered = (text or "").lower()
+    return any(word in lowered for word in words)
+
+
+def route_chat_intent(text: str) -> dict[str, Any]:
+    lowered = (text or "").lower()
+    has_tiktok_url = "tiktok.com" in lowered or "douyin.com" in lowered
+    has_video_url = has_tiktok_url and ("/video/" in lowered or "/v/" in lowered or "vm.tiktok.com" in lowered)
+    has_amazon = "amazon." in lowered or _contains_any(lowered, ("asin",))
+    has_shop = _contains_any(lowered, ("tiktok shop", "shop/pdp", "商品", "店铺", "小店", "橱窗"))
+    has_product = _contains_any(
+        lowered,
+        ("product", "market", "category", "research", "competitor", "selection", "选品", "商品", "品类", "市场", "竞品", "调研", "大卖", "热卖", "热度", "爆款"),
+    )
+    has_analysis = _contains_any(lowered, ("analyze", "analysis", "download", "report", "解析", "分析", "下载", "报告", "提取"))
+    has_user = _contains_any(lowered, ("profile", "user", "creator", "followers", "达人", "用户", "账号", "作者", "粉丝", "主页"))
+    has_trend = _contains_any(lowered, ("trend", "trending", "hot", "viral", "hashtag", "keyword", "热门", "趋势", "热搜", "话题", "标签", "搜索"))
+
+    if is_music_link_query(text):
+        return {"intent": "music_link", "tools": MUSIC_QUERY_TOOLS, "max_rounds": 2}
+    if is_media_availability_query(text):
+        return {"intent": "media_availability", "tools": TIKTOK_CONTENT_TOOLS | TIKTOK_VIDEO_TOOLS | MUSIC_QUERY_TOOLS, "max_rounds": 3}
+    if has_video_url and has_analysis:
+        return {"intent": "video_analysis", "tools": VIDEO_ANALYSIS_TOOLS, "max_rounds": 3}
+    if has_video_url:
+        return {"intent": "tiktok_video", "tools": TIKTOK_VIDEO_TOOLS | MUSIC_QUERY_TOOLS, "max_rounds": 3}
+    if has_shop and not has_amazon and not has_product:
+        return {"intent": "tiktok_shop", "tools": TIKTOK_SHOP_TOOLS, "max_rounds": 3}
+    if has_amazon and not has_shop and not has_product:
+        return {"intent": "amazon_product", "tools": AMAZON_TOOLS, "max_rounds": 3}
+    if has_product:
+        return {"intent": "product_research", "tools": PRODUCT_RESEARCH_TOOLS, "max_rounds": 4}
+    if has_user:
+        return {"intent": "tiktok_user", "tools": TIKTOK_USER_TOOLS | {"tiktok_search_users"}, "max_rounds": 4}
+    if has_tiktok_url or has_trend:
+        return {"intent": "tiktok_content", "tools": TIKTOK_CONTENT_TOOLS | MUSIC_QUERY_TOOLS, "max_rounds": 4}
+    return {"intent": "general", "tools": None, "max_rounds": 5}
+
+
+def tools_for_chat_intent(user_text: str, enabled: set[str] | None) -> tuple[list[dict], dict[str, Any]]:
+    route = route_chat_intent(user_text)
+    route_tools = route.get("tools")
+    if route_tools is None:
+        selected = enabled
+    elif enabled is None:
+        selected = set(route_tools)
+    else:
+        selected = set(route_tools) & enabled
+    return get_tools_for_model(selected), route
+
+
+def run_chat_deepseek(session, assistant_msg, user_text: str) -> None:
+    """Background thread: call DeepSeek with tool calling, stream results via SSE."""
+    import requests as req
+    api_key = os.getenv("DEEPSEEK_API_KEY", "")
+    api_url = os.getenv("DEEPSEEK_API_URL", "https://api.deepseek.com/v1")
+    model = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+
+    if not api_key:
+        chat_store.update_message(session, assistant_msg, "错误：未配置 DEEPSEEK_API_KEY", status="error")
+        return
+
+    messages = [{"role": "system", "content": (
+        "你是短视频分析助手。使用提供的工具帮助用户分析 Amazon 商品、TikTok 数据和视频内容。"
+        "工具结果已经被整理成可分析摘要；当结果里 enough_data=true 或 suggested_next_action=answer_from_results 时，"
+        "必须基于现有结果直接分析，不要继续调用同类搜索工具。用中文回复，简洁专业。"
+        "如果 video_download 或 video_analyze 返回失败，必须明确说明没有完成真实视频下载/画面分析；"
+        "此时只能基于 TikTok 元数据、账号信息或评论做初步判断，不得声称已经看过视频内容。"
+    )}]
+    for m in session.messages[-20:]:
+        if m.id == assistant_msg.id:
+            continue
+        tool_calls = m.tool_calls or []
+        tool_results = m.tool_results or []
+        if tool_calls and len(tool_results) < len(tool_calls):
+            if m.content:
+                messages.append({"role": m.role, "content": m.content})
+            else:
+                messages.append({"role": m.role, "content": "上一次工具调用被中断，结果不完整，已忽略这轮工具上下文。"})
+            continue
+
+        md = {"role": m.role, "content": m.content}
+        if tool_calls:
+            md["tool_calls"] = tool_calls
+        messages.append(md)
+        # Add tool result messages for each tool call (required by DeepSeek API)
+        if tool_results:
+            for i, tr in enumerate(tool_results):
+                tc = tool_calls[i] if i < len(tool_calls) else None
+                tid = tc["id"] if tc else f"call_{i}"
+                tr_content = json.dumps(normalize_tool_result(tr.get("tool_name", ""), tr.get("result", {})), ensure_ascii=False)
+                messages.append({"role": "tool", "tool_call_id": tid, "content": tr_content})
+
+    tools, intent_route = tools_for_chat_intent(user_text, chat_tool_config)
+    music_link_query = intent_route.get("intent") == "music_link"
+    max_tool_rounds = int(intent_route.get("max_rounds") or 5)
+    messages.append({
+        "role": "system",
+        "content": (
+            f"Intent route: {intent_route.get('intent')}. Only use the exposed tools. "
+            "If a tool result has enough_data=true or suggested_next_action=answer_from_results, answer directly. "
+            "For product research, compare TikTok Shop demand/sales signals and Amazon product/price/review signals when both are available. "
+            "For media availability/link questions, if tool results include url, play_url, tiktok_music_url, media_urls, or music_url, paste the usable links directly in the answer."
+        ),
+    })
+    print(
+        f"[CHAT] intent={intent_route.get('intent')} tools={len(tools) if tools else 0} max_rounds={max_tool_rounds}",
+        flush=True,
+    )
+    if music_link_query:
+        music_query = music_link_search_query(user_text)
+        tool_call = {
+            "id": f"call_music_{uuid.uuid4().hex[:12]}",
+            "type": "function",
+            "function": {
+                "name": "tiktok_search_music",
+                "arguments": json.dumps({"query": music_query, "count": 10}, ensure_ascii=False),
+            },
+        }
+        assistant_msg.tool_calls = [tool_call]
+        assistant_msg.tool_results = []
+        chat_store.broadcast(
+            session.id,
+            "update",
+            {"messageId": assistant_msg.id, "tool_calls": assistant_msg.tool_calls, "tool_results": []},
+        )
+        result = execute_tool("tiktok_search_music", {"query": music_query, "count": 10})
+        normalized_result = normalize_tool_result("tiktok_search_music", result)
+        assistant_msg.tool_results.append({"tool_name": "tiktok_search_music", "result": normalized_result})
+        messages.append({"role": "assistant", "content": "", "tool_calls": [tool_call]})
+        messages.append({"role": "tool", "tool_call_id": tool_call["id"], "content": json.dumps(normalized_result, ensure_ascii=False)})
+        chat_store.broadcast(
+            session.id,
+            "update",
+            {"messageId": assistant_msg.id, "tool_calls": assistant_msg.tool_calls, "tool_results": assistant_msg.tool_results},
+        )
+        tools = []
+        max_tool_rounds = 1
+        messages.append({
+            "role": "system",
+            "content": "用户只是在问音乐/音频链接。必须基于刚才的 tiktok_search_music 工具结果回答，直接列出最匹配音乐的 play_url 和 TikTok music URL；不要说没有能力提供链接，除非工具结果里确实没有 URL。",
+        })
+    for _ in range(max_tool_rounds):
+        try:
+            payload = {"model": model, "messages": messages, "tools": tools or None, "temperature": 0.2}
+            payload_str = json.dumps(payload, ensure_ascii=False)
+            print(f"[CHAT] DeepSeek request: {len(messages)} msgs, {len(payload_str)} bytes, tools={len(tools) if tools else 0}", flush=True)
+            request_started = time.monotonic()
+            resp = req.post(
+                api_url.rstrip("/") + "/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                data=payload_str.encode("utf-8"),
+                timeout=120,
+            )
+            if resp.status_code >= 400:
+                print(f"[CHAT] DeepSeek {resp.status_code}: {resp.text[:500]}", flush=True)
+            resp.raise_for_status()
+            body = resp.json()
+            record_api_call(
+                "deepseek",
+                "chat",
+                {
+                    "api_url": api_url.rstrip("/") + "/chat/completions",
+                    "model": model,
+                    "payload_sha256": __import__("hashlib").sha256(payload_str.encode("utf-8")).hexdigest(),
+                    "message_count": len(messages),
+                    "tool_count": len(tools) if tools else 0,
+                },
+                body,
+                elapsed_ms=int((time.monotonic() - request_started) * 1000),
+            )
+            choice = body["choices"][0]
+            msg = choice["message"]
+
+            if msg.get("tool_calls"):
+                tool_calls = msg["tool_calls"]
+                assistant_msg.tool_calls = tool_calls
+                messages.append({"role": "assistant", "content": msg.get("content") or "", "tool_calls": tool_calls})
+                assistant_msg.tool_results = []
+                chat_store.broadcast(session.id, "update", {"messageId": assistant_msg.id, "tool_calls": tool_calls, "tool_results": []})
+
+                for tc in tool_calls:
+                    fn_name = tc["function"]["name"]
+                    try:
+                        fn_args = json.loads(tc["function"]["arguments"])
+                    except json.JSONDecodeError:
+                        fn_args = {}
+                    result = execute_tool(fn_name, fn_args)
+                    normalized_result = normalize_tool_result(fn_name, result)
+                    messages.append({"role": "tool", "tool_call_id": tc["id"], "content": json.dumps(normalized_result, ensure_ascii=False)})
+                    assistant_msg.tool_results.append({"tool_name": fn_name, "result": normalized_result})
+                    chat_store.broadcast(session.id, "update", {"messageId": assistant_msg.id, "tool_calls": tool_calls, "tool_results": assistant_msg.tool_results})
+                if music_link_query and any(
+                    isinstance(tr.get("result"), dict) and tr["result"].get("enough_data")
+                    for tr in assistant_msg.tool_results
+                ):
+                    tools = []
+                    messages.append({
+                        "role": "system",
+                        "content": "用户只是在问音乐/音频链接。已有音乐搜索结果后必须直接回答，列出最匹配的音乐名称、作者、sound_id、play_url 或 TikTok music URL；不要再调用任何工具。",
+                    })
+            else:
+                content = msg.get("content", "")
+                chat_store.update_message(session, assistant_msg, content, status="done")
+                chat_store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": content})
+                return
+        except Exception as exc:
+            err_text = str(exc)
+            if hasattr(exc, 'response'):
+                try:
+                    err_text += " | body: " + exc.response.text[:300]
+                except Exception:
+                    pass
+            print(f"[CHAT] DeepSeek error: {err_text}", flush=True)
+            chat_store.update_message(session, assistant_msg, f"请求失败：{exc}", status="error")
+            return
+
+    chat_store.update_message(session, assistant_msg, "工具调用次数过多，请缩小问题范围。", status="error")
+
+
+def execute_queue_job(filename: str, job_type: str, progress: dict) -> None:
+    """Called by VideoQueue worker to run an analysis or report job sequentially."""
+    registry_record = get_video_by_filename(filename)
+    extraction_dir_name = str(registry_record.get("extraction_dir") or filename) if registry_record else filename
+    output_dir = OUTPUT_DIR / extraction_dir_name
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if job_type == "analyze":
+        video_queue.set_progress(filename, "extracting", 10, job_type, f"{filename}: 开始解析视频")
+        # Skip if already analyzed or complete
+        current = video_queue.get_status(filename)
+        if current in ("analyzed", "complete"):
+            video_queue.set_progress(filename, "completed", 100, job_type, f"{filename}: 已有解析结果，跳过")
+            return
+        if registry_record and registry_record.get("extracted_at") and registry_record.get("extraction_dir"):
+            existing_dir = OUTPUT_DIR / str(registry_record["extraction_dir"])
+            if (existing_dir / "analysis.json").is_file():
+                video_queue.set_status(filename, "analyzed")
+                video_queue.set_progress(filename, "completed", 100, job_type, f"{filename}: 同一 TikTok 视频已提取，跳过重复提取")
+                return
+        analysis_path = output_dir / "analysis.json"
+        if analysis_path.is_file():
+            video_queue.set_status(filename, "analyzed")
+            video_queue.set_progress(filename, "completed", 100, job_type, f"{filename}: 已加载已有解析结果")
+            return
+
+        # Load prompt from file if exists, else use default
+        prompt = DEFAULT_ANALYSIS_PROMPT
+        prompt_file = output_dir / "analysis_prompt.txt"
+        if not prompt_file.is_file():
+            root_prompt = ROOT / "analysis_prompt.txt"
+            if root_prompt.is_file():
+                prompt = root_prompt.read_text(encoding="utf-8").strip() or prompt
+            prompt_file.write_text(prompt, encoding="utf-8")
+
+        video_queue.set_progress(filename, "extracting", 20, job_type, f"{filename}: 正在调用视频解析脚本")
+        analysis_mode = os.getenv("ANALYSIS_MODE", "analyzer")
+        env = os.environ.copy()
+        env["ANALYSIS_PROMPT_FILE"] = str(prompt_file)
+        env["ANALYSIS_OUTPUT_DIR"] = str(output_dir)
+        if analysis_mode == "direct_video":
+            cmd = [
+                "python",
+                str(SCRIPTS_DIR / "direct_video_analyze.py"),
+                filename,
+                "--output-dir",
+                str(output_dir),
+                "--prompt-file",
+                str(prompt_file),
+            ]
+        else:
+            cmd = ["bash", str(SCRIPTS_DIR / "analyze_one.sh"), filename]
+        subprocess.run(cmd, cwd=ROOT, check=True, env=env)
+        mark_extracted(filename, extraction_dir_name)
+        video_queue.set_status(filename, "analyzed")
+        video_queue.set_progress(filename, "extracting", 65, job_type, f"{filename}: 视频解析完成")
+
+        # Translate
+        if os.getenv("DEEPSEEK_API_KEY"):
+            video_queue.set_progress(filename, "translating", 75, job_type, f"{filename}: 正在翻译提取结果")
+            try:
+                subprocess.run(["python", str(SCRIPTS_DIR / "translate_analysis.py"), str(output_dir)],
+                               cwd=ROOT, check=True, env=os.environ.copy())
+            except Exception:
+                video_queue.set_progress(filename, "translating", 80, job_type, f"{filename}: 翻译提取结果失败，已跳过")
+
+        # Generate short Chinese title via LLM
+        import re as _re
+        title = filename[:6]
+        try:
+            import requests as _req
+            _api_key = os.getenv("DEEPSEEK_API_KEY", "")
+            if _api_key:
+                video_queue.set_progress(filename, "titling", 88, job_type, f"{filename}: 正在生成短标题")
+                _text = ""
+                for _src in ["audit_result_zh.json", "analysis_zh.json", "analysis.json"]:
+                    _sp = output_dir / _src
+                    if _sp.is_file():
+                        _data = json.loads(_sp.read_text(encoding="utf-8"))
+                        _text = _data.get("content_overview") or _data.get("summary") or ""
+                        if isinstance(_text, dict):
+                            _text = str(_text.get("response", ""))
+                        if _text:
+                            break
+                if _text and len(_text) > 20:
+                    _text = _text[:500]
+                    _title_payload = {"model": "deepseek-chat", "messages": [
+                        {"role": "system", "content": "你是一个标题生成器。根据视频内容描述，生成6字以内的中文短标题。格式：地点+人物/动作。只输出标题本身，不要引号不要解释不要标点。"},
+                        {"role": "user", "content": f"视频内容：{_text}\n\n6字以内短标题："}
+                    ], "temperature": 0.3, "max_tokens": 15}
+                    _title_started = time.monotonic()
+                    _resp = _req.post(
+                        "https://api.deepseek.com/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {_api_key}", "Content-Type": "application/json"},
+                        json=_title_payload,
+                        timeout=15,
+                    )
+                    _title_body = _resp.json()
+                    record_api_call(
+                        "deepseek",
+                        "video_title",
+                        {
+                            "api_url": "https://api.deepseek.com/v1/chat/completions",
+                            "model": "deepseek-chat",
+                            "payload_sha256": __import__("hashlib").sha256(json.dumps(_title_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest(),
+                        },
+                        _title_body,
+                        elapsed_ms=int((time.monotonic() - _title_started) * 1000),
+                        metadata={"entity_type": "video", "entity_id": filename, "source_url": filename},
+                    )
+                    _title = _title_body["choices"][0]["message"]["content"].strip()
+                    _title = _title.replace('"','').replace('「','').replace('」','').replace('\n','').replace(' ','')
+                    _title = "".join(_re.findall(r"[一-鿿\w]", _title))[:6]
+                    if _title:
+                        title = _title
+        except Exception:
+            pass
+        video_queue.set_title(filename, title)
+        video_queue.set_progress(filename, "completed", 100, job_type, f"{filename}: 解析完成")
+
+    elif job_type == "report":
+        video_queue.set_progress(filename, "auditing", 10, job_type, f"{filename}: 开始生成报告")
+        current = video_queue.get_status(filename)
+        if current == "complete":
+            video_queue.set_progress(filename, "completed", 100, job_type, f"{filename}: 已有报告，跳过")
+            return
+        if (output_dir / "audit_result.json").is_file():
+            video_queue.set_status(filename, "complete")
+            video_queue.set_progress(filename, "completed", 100, job_type, f"{filename}: 已加载已有报告")
+            return
+        video_queue.set_progress(filename, "auditing", 25, job_type, f"{filename}: 正在调用 DeepSeek 生成报告")
+        cmd = ["python", str(SCRIPTS_DIR / "deepseek_postprocess.py"), str(output_dir)]
+        prompt_file = output_dir / "analysis_prompt.txt"
+        if prompt_file.is_file():
+            cmd.extend(["--prompt", prompt_file.read_text(encoding="utf-8").strip()])
+        subprocess.run(cmd, cwd=ROOT, check=True, env=os.environ.copy())
+        video_queue.set_progress(filename, "auditing", 70, job_type, f"{filename}: 报告生成完成")
+        if os.getenv("DEEPSEEK_API_KEY"):
+            video_queue.set_progress(filename, "translating_audit", 80, job_type, f"{filename}: 正在翻译报告")
+            try:
+                subprocess.run(["python", str(SCRIPTS_DIR / "translate_analysis.py"),
+                               str(output_dir / "audit_result.json"),
+                               "--output", str(output_dir / "audit_result_zh.json")],
+                               cwd=ROOT, check=True, env=os.environ.copy())
+            except Exception:
+                video_queue.set_progress(filename, "translating_audit", 85, job_type, f"{filename}: 翻译报告失败，已跳过")
+        video_queue.set_status(filename, "complete")
+        video_queue.set_progress(filename, "completed", 100, job_type, f"{filename}: 报告完成")
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "ShortVideoAnalyzer/1.0"
 
@@ -925,7 +2382,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path == "/":
+        if parsed.path == "/" or parsed.path == "/chat":
+            chat_html = (SCRIPTS_DIR / "static" / "chat.html").read_text(encoding="utf-8")
+            return text_response(self, HTTPStatus.OK, chat_html, "text/html; charset=utf-8")
+        if parsed.path == "/extract":
             template = INDEX_HTML_PATH.read_text(encoding="utf-8") if INDEX_HTML_PATH.is_file() else INDEX_HTML
             html = template.replace(
                 "__DEFAULT_ANALYSIS_MODE__",
@@ -936,10 +2396,87 @@ class Handler(BaseHTTPRequestHandler):
             return text_response(self, HTTPStatus.OK, SHOP_HTML, "text/html; charset=utf-8")
         if parsed.path == "/metrics":
             return text_response(self, HTTPStatus.OK, METRICS_HTML, "text/html; charset=utf-8")
+        if parsed.path == "/amazon":
+            return text_response(self, HTTPStatus.OK, AMAZON_HTML, "text/html; charset=utf-8")
         if parsed.path == "/api/prompt":
-            return json_response(self, HTTPStatus.OK, {"prompt": DEFAULT_ANALYSIS_PROMPT})
+            return json_response(self, HTTPStatus.OK, {"prompt": load_prompt()})
+        if parsed.path == "/api/chat/sessions":
+            return json_response(self, HTTPStatus.OK, chat_store.list_sessions())
+        if parsed.path == "/api/chat/tools":
+            return json_response(self, HTTPStatus.OK, list_tools())
+        if parsed.path == "/api/chat/tool-config":
+            return json_response(self, HTTPStatus.OK, {"enabled": list(chat_tool_config) if chat_tool_config is not None else None})
+        if parsed.path.startswith("/api/chat/sessions/") and "/messages" in parsed.path:
+            parts = parsed.path.split("/")
+            sid = parts[4] if len(parts) > 4 else ""
+            session = chat_store.get_session(sid)
+            if not session:
+                return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Session not found"})
+            qs = parse_qs(parsed.query)
+            def public_message(m: Message) -> dict[str, Any]:
+                return {
+                    "id": m.id,
+                    "role": m.role,
+                    "content": m.content,
+                    "tool_calls": m.tool_calls,
+                    "tool_results": m.tool_results,
+                    "status": m.status,
+                    "created_at": m.created_at,
+                }
+
+            use_legacy_paging = "offset" in qs or "limit" in qs
+            if use_legacy_paging and "max_bytes" not in qs:
+                offset = max(0, int(qs.get("offset", [0])[0]))
+                limit = max(1, min(int(qs.get("limit", [50])[0]), 100))
+                msgs = session.messages[offset:offset + limit]
+                payload_messages = [public_message(m) for m in msgs]
+                loaded_bytes = len(json.dumps(payload_messages, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+                return json_response(self, HTTPStatus.OK, {
+                    "messages": payload_messages,
+                    "total": len(session.messages),
+                    "has_more": (offset + limit) < len(session.messages),
+                    "next_before": msgs[0].created_at if msgs else None,
+                    "loaded_bytes": loaded_bytes,
+                })
+
+            max_bytes = max(1024, min(int(qs.get("max_bytes", [120000])[0]), 500000))
+            before_raw = qs.get("before", [""])[0]
+            before = float(before_raw) if before_raw not in ("", None) else None
+            selected: list[tuple[int, dict[str, Any], int]] = []
+            loaded_bytes = 2
+            for index in range(len(session.messages) - 1, -1, -1):
+                message = session.messages[index]
+                created_at = float(message.created_at or 0)
+                if before is not None and created_at >= before:
+                    continue
+                item = public_message(message)
+                item_bytes = len(json.dumps(item, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) + 1
+                if selected and loaded_bytes + item_bytes > max_bytes:
+                    break
+                selected.append((index, item, item_bytes))
+                loaded_bytes += item_bytes
+                if loaded_bytes >= max_bytes:
+                    break
+            selected.reverse()
+            payload_messages = [item for _, item, _ in selected]
+            first_index = selected[0][0] if selected else None
+            return json_response(self, HTTPStatus.OK, {
+                "messages": payload_messages,
+                "total": len(session.messages),
+                "has_more": bool(first_index is not None and first_index > 0),
+                "next_before": payload_messages[0]["created_at"] if payload_messages else None,
+                "loaded_bytes": loaded_bytes,
+            })
+        if parsed.path == "/api/chat/events":
+            return self.stream_chat_events(parse_qs(parsed.query).get("session", [""])[0])
+        if parsed.path.startswith("/api/chat/sessions/") and parsed.path.endswith("/delete"):
+            sid = parsed.path.split("/")[4]
+            deleted = chat_store.delete_session(sid)
+            return json_response(self, HTTPStatus.OK, {"deleted": deleted})
         if parsed.path == "/api/network-check":
             return json_response(self, HTTPStatus.OK, public_network_check())
+        if parsed.path == "/api/sociavault-usage":
+            return json_response(self, HTTPStatus.OK, read_sociavault_usage())
         if parsed.path.startswith("/video/"):
             try:
                 filename = safe_filename(unquote(parsed.path.removeprefix("/video/")))
@@ -972,20 +2509,11 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/download-events":
             job_id = parse_qs(parsed.query).get("id", [""])[0]
             return self.stream_download_events(job_id)
-        if parsed.path == "/api/shop-records":
-            limit_raw = parse_qs(parsed.query).get("limit", ["50"])[0]
-            try:
-                limit = max(1, min(200, int(limit_raw)))
-            except ValueError:
-                limit = 50
-            return json_response(self, HTTPStatus.OK, {"records": list_shop_records(limit)})
         if parsed.path == "/api/shop-job":
             job_id = parse_qs(parsed.query).get("id", [""])[0]
             with shop_jobs_lock:
                 job = shop_jobs.get(job_id)
                 payload = public_shop_job(job) if job else None
-            if payload is None:
-                payload = public_shop_record_from_dir(OUTPUT_DIR / "tiktok_shop" / job_id, include_payload=True)
             if payload is None:
                 return json_response(self, HTTPStatus.NOT_FOUND, {"error": "TikTok Shop job not found"})
             return json_response(self, HTTPStatus.OK, payload)
@@ -1003,18 +2531,42 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/video-metrics-events":
             job_id = parse_qs(parsed.query).get("id", [""])[0]
             return self.stream_metrics_events(job_id)
+        if parsed.path == "/api/amazon-job":
+            job_id = parse_qs(parsed.query).get("id", [""])[0]
+            with amazon_jobs_lock:
+                job = amazon_jobs.get(job_id)
+                payload = public_amazon_job(job) if job else None
+            if payload is None:
+                return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Amazon job not found"})
+            return json_response(self, HTTPStatus.OK, payload)
+        if parsed.path == "/api/amazon-events":
+            job_id = parse_qs(parsed.query).get("id", [""])[0]
+            return self.stream_amazon_events(job_id)
         if parsed.path == "/api/files":
             files = []
-            for path in sorted(VIDEOS_DIR.glob("*")):
+            for path in sorted(VIDEOS_DIR.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True):
                 if path.is_file():
-                    files.append({"name": path.name, "size": path.stat().st_size})
+                    name = path.name
+                    meta = video_queue.get_status_meta(name)
+                    files.append({
+                        "name": name, "size": path.stat().st_size, "mtime": path.stat().st_mtime,
+                        "status": video_queue.get_status(name),
+                        "status_label": meta["label"], "status_color": meta["color"], "status_bg": meta["bg"],
+                        "title": video_queue.get_title(name),
+                    })
             return json_response(self, HTTPStatus.OK, files)
+        if parsed.path == "/api/queue-state":
+            return json_response(self, HTTPStatus.OK, video_queue.get_queue_state())
+        if parsed.path == "/api/queue-progress":
+            return json_response(self, HTTPStatus.OK, video_queue.get_progress())
+        if parsed.path == "/api/status-stream":
+            return self.stream_status_events()
         if parsed.path == "/api/result":
             try:
                 filename = safe_filename(parse_qs(parsed.query).get("filename", [""])[0])
             except ValueError as exc:
                 return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
-            output_dir = OUTPUT_DIR / filename
+            output_dir = output_dir_for_filename(filename)
             analysis = read_json(output_dir / "analysis.json")
             return json_response(
                 self,
@@ -1040,7 +2592,7 @@ class Handler(BaseHTTPRequestHandler):
             tab = query.get("tab", ["audit"])[0]
             if tab not in {"audit", "content"}:
                 return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Invalid tab"})
-            output_dir = OUTPUT_DIR / filename
+            output_dir = output_dir_for_filename(filename)
             source = "audit_result_zh.json" if tab == "audit" else "analysis_zh.json"
             fallback = "audit_result.json" if tab == "audit" else "analysis.json"
             payload = read_json(output_dir / source) or read_json(output_dir / fallback)
@@ -1072,6 +2624,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def stream_metrics_events(self, job_id: str) -> None:
         self.stream_events(job_id, metrics_jobs_lock, metrics_jobs, public_metrics_job, "Video metrics job not found")
+
+    def stream_amazon_events(self, job_id: str) -> None:
+        self.stream_events(job_id, amazon_jobs_lock, amazon_jobs, public_amazon_job, "Amazon job not found")
 
     def stream_events(self, job_id: str, lock: threading.Lock, store: dict[str, Any], serializer: Any, missing_message: str) -> None:
         self.send_response(HTTPStatus.OK)
@@ -1163,14 +2718,22 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_upload()
         if parsed.path == "/api/download":
             return self.handle_download()
+        if parsed.path == "/api/chat/ask":
+            return self.handle_chat_ask()
+        if parsed.path == "/api/chat/tool-config":
+            return self.handle_chat_tool_config()
         if parsed.path == "/api/shop-extract":
             return self.handle_shop_extract()
         if parsed.path == "/api/video-metrics":
             return self.handle_video_metrics()
+        if parsed.path == "/api/amazon-scrape":
+            return self.handle_amazon_scrape()
         if parsed.path == "/api/analyze":
             return self.handle_analyze()
         if parsed.path == "/api/postprocess":
             return self.handle_postprocess()
+        if parsed.path == "/api/prompt":
+            return self.handle_save_prompt()
         if parsed.path == "/api/delete":
             return self.handle_delete()
         return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
@@ -1236,10 +2799,6 @@ class Handler(BaseHTTPRequestHandler):
             related_videos=related_videos,
             prompt=prompt,
         )
-        output_dir = OUTPUT_DIR / "tiktok_shop" / job.id
-        output_dir.mkdir(parents=True, exist_ok=True)
-        job.output_dir = str(output_dir.relative_to(ROOT))
-        write_shop_job_record(job)
         with shop_jobs_lock:
             shop_jobs[job.id] = job
         thread = threading.Thread(target=run_shop_job, args=(job.id,), daemon=True)
@@ -1251,16 +2810,52 @@ class Handler(BaseHTTPRequestHandler):
         body = self.rfile.read(content_length)
         try:
             payload = json.loads(body.decode("utf-8") or "{}")
-            url = validate_short_video_url(str(payload.get("url", "")))
+            target = str(payload.get("target", "")).strip()
+            endpoint = str(payload.get("endpoint", "video-info")).strip()
+            if endpoint not in TIKTOK_ENDPOINTS:
+                raise ValueError(f"Unknown endpoint: {endpoint}")
+            if not target and endpoint not in ("trending", "music-popular"):
+                raise ValueError("target is required for this endpoint")
+            if len(target) > 2048:
+                raise ValueError("target is too long")
         except (json.JSONDecodeError, ValueError) as exc:
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
-        job = MetricsJob(id=str(uuid.uuid4()), url=url)
+        job = MetricsJob(id=str(uuid.uuid4()), target=target, endpoint=endpoint)
         with metrics_jobs_lock:
             metrics_jobs[job.id] = job
         thread = threading.Thread(target=run_metrics_job, args=(job.id,), daemon=True)
         thread.start()
         return json_response(self, HTTPStatus.ACCEPTED, public_metrics_job(job))
+
+    def handle_amazon_scrape(self) -> None:
+        content_length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(content_length)
+        try:
+            payload = json.loads(body.decode("utf-8") or "{}")
+            target = str(payload.get("target", "")).strip()
+            target_type = str(payload.get("target_type") or "url").strip()
+            max_pages = int(os.getenv("AMAZON_MAX_PAGES", "1") or "1")
+            max_pages = max(1, min(max_pages, 5))
+            pages = int(payload.get("pages") or max_pages)
+            if pages < 1 or pages > 5:
+                raise ValueError("pages must be between 1 and 5")
+            url = amazon_url_for_target(target, target_type)
+        except (json.JSONDecodeError, ValueError) as exc:
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+
+        job = AmazonJob(
+            id=str(uuid.uuid4()),
+            target=target,
+            target_type=target_type,
+            url=url,
+            pages=pages,
+        )
+        with amazon_jobs_lock:
+            amazon_jobs[job.id] = job
+        thread = threading.Thread(target=run_amazon_job, args=(job.id,), daemon=True)
+        thread.start()
+        return json_response(self, HTTPStatus.ACCEPTED, public_amazon_job(job))
 
     def handle_upload(self) -> None:
         content_length = int(self.headers.get("Content-Length", "0"))
@@ -1323,23 +2918,18 @@ class Handler(BaseHTTPRequestHandler):
         if not (VIDEOS_DIR / filename).is_file():
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": f"Video file not found: {filename}"})
 
+        output_dir = output_dir_for_filename(filename)
         if reset_output:
-            output_dir = OUTPUT_DIR / filename
             if output_dir.is_dir():
                 shutil.rmtree(output_dir)
 
-        job = Job(
-            id=str(uuid.uuid4()),
-            filename=filename,
-            postprocess=postprocess,
-            analysis_mode=analysis_mode,
-            analysis_prompt=analysis_prompt,
-        )
-        with jobs_lock:
-            jobs[job.id] = job
-        thread = threading.Thread(target=run_job, args=(job.id,), daemon=True)
-        thread.start()
-        return json_response(self, HTTPStatus.ACCEPTED, public_job(job))
+        # Save user prompt to file so queue executor can use it
+        if analysis_prompt:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (output_dir / "analysis_prompt.txt").write_text(analysis_prompt, encoding="utf-8")
+
+        video_queue.enqueue(filename, "analyze")
+        return json_response(self, HTTPStatus.ACCEPTED, {"status": "queued", "filename": filename})
 
     def handle_postprocess(self) -> None:
         content_length = int(self.headers.get("Content-Length", "0"))
@@ -1347,26 +2937,112 @@ class Handler(BaseHTTPRequestHandler):
         try:
             payload = json.loads(body.decode("utf-8") or "{}")
             filename = safe_filename(str(payload.get("filename", "")))
+            analysis_prompt = str(payload.get("analysis_prompt") or "").strip()
         except (json.JSONDecodeError, ValueError) as exc:
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
-        output_dir = OUTPUT_DIR / filename
+        output_dir = output_dir_for_filename(filename)
         if not (output_dir / "analysis.json").is_file():
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": f"analysis.json not found for {filename}"})
 
-        analysis = read_json(output_dir / "analysis.json")
-        job = Job(
-            id=str(uuid.uuid4()),
-            filename=filename,
-            postprocess=True,
-            analysis_mode=mode_from_analysis(analysis) or "postprocess",
-        )
-        job.output_dir = str(output_dir.relative_to(ROOT))
-        with jobs_lock:
-            jobs[job.id] = job
-        thread = threading.Thread(target=run_postprocess_job, args=(job.id,), daemon=True)
+        # Save user prompt for DeepSeek report
+        if analysis_prompt:
+            (output_dir / "analysis_prompt.txt").write_text(analysis_prompt, encoding="utf-8")
+
+        video_queue.enqueue(filename, "report")
+        return json_response(self, HTTPStatus.ACCEPTED, {"status": "queued", "filename": filename})
+
+    def handle_save_prompt(self) -> None:
+        content_length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(content_length)
+        try:
+            payload = json.loads(body.decode("utf-8") or "{}")
+            text = str(payload.get("prompt", "")).strip()
+            if not text:
+                raise ValueError("prompt is required")
+            if len(text) > 12000:
+                raise ValueError("prompt is too long")
+            save_prompt(text)
+            return json_response(self, HTTPStatus.OK, {"status": "saved"})
+        except (json.JSONDecodeError, ValueError) as exc:
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+
+    def handle_chat_ask(self) -> None:
+        content_length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(content_length)
+        try:
+            payload = json.loads(body.decode("utf-8") or "{}")
+            session_id = str(payload.get("sessionId", "default")).strip() or "default"
+            text = str(payload.get("message", "")).strip()
+            if not text:
+                return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "消息不能为空"})
+        except (json.JSONDecodeError, ValueError) as exc:
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+
+        session = chat_store.get_or_create(session_id)
+        user_msg = Message(id=str(uuid.uuid4()), role="user", content=text)
+        chat_store.add_message(session, user_msg)
+        if not session.title:
+            session.title = text[:40] + ("..." if len(text) > 40 else "")
+
+        assistant_msg = Message(id=str(uuid.uuid4()), role="assistant", content="", status="pending")
+        chat_store.add_message(session, assistant_msg)
+
+        thread = threading.Thread(target=run_chat_deepseek, args=(session, assistant_msg, text), daemon=True)
         thread.start()
-        return json_response(self, HTTPStatus.ACCEPTED, public_job(job))
+        return json_response(self, HTTPStatus.ACCEPTED, {
+            "sessionId": session_id,
+            "userMessage": {"id": user_msg.id, "role": "user", "content": user_msg.content, "status": user_msg.status, "created_at": user_msg.created_at},
+            "message": {"id": assistant_msg.id, "role": "assistant", "content": "", "status": "pending"},
+        })
+
+    def handle_chat_tool_config(self) -> None:
+        content_length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(content_length)
+        try:
+            payload = json.loads(body.decode("utf-8") or "{}")
+            enabled = payload.get("enabled")
+            global chat_tool_config
+            if enabled is None:
+                chat_tool_config = None
+            elif isinstance(enabled, list):
+                chat_tool_config = set(enabled)
+            return json_response(self, HTTPStatus.OK, {"status": "saved"})
+        except Exception as exc:
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+
+    def stream_status_events(self) -> None:
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+        video_queue.register_sse(self)
+        try:
+            write_sse_event(self, {"type": "status_update", "queue": video_queue.get_queue_state(), "progress": video_queue.get_progress()})
+            while not self.wfile.closed:
+                time.sleep(15)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            video_queue.unregister_sse(self)
+            self.close_connection = True
+
+    def stream_chat_events(self, session_id: str) -> None:
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+        chat_store.register_sse(session_id, self)
+        try:
+            while not self.wfile.closed:
+                time.sleep(5)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            chat_store.unregister_sse(session_id, self)
+            self.close_connection = True
 
     def handle_delete(self) -> None:
         content_length = int(self.headers.get("Content-Length", "0"))
@@ -1403,470 +3079,28 @@ class Handler(BaseHTTPRequestHandler):
         )
 
 
-METRICS_HTML = r"""<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Video Metrics Extractor</title>
-  <style>
-    :root{--bg:#eef2f6;--card:#fff;--line:#d6deea;--text:#111827;--muted:#667589;--blue:#1d4ed8;--soft:#f6f8fb;--red:#b42318;--green:#047857;--dark:#101827}
-    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Aptos,"Segoe UI",system-ui,sans-serif}header{height:64px;display:flex;align-items:center;justify-content:space-between;padding:0 28px;background:#fff;border-bottom:1px solid var(--line)}main{display:grid;grid-template-columns:360px minmax(0,1fr);gap:16px;padding:18px;height:calc(100vh - 64px)}section{border:1px solid var(--line);border-radius:10px;background:var(--card);overflow:hidden}.side{padding:18px;display:flex;flex-direction:column;gap:14px}.workspace{display:grid;grid-template-rows:auto minmax(0,1fr);min-height:0}.head{padding:16px 18px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:12px;align-items:center}.grid{display:grid;grid-template-columns:minmax(0,1fr) 420px;gap:16px;padding:16px;min-height:0}.card{display:grid;grid-template-rows:auto minmax(0,1fr);min-height:0;border:1px solid var(--line);border-radius:10px;background:#fff;overflow:hidden}.card h3{margin:0;padding:12px 14px;border-bottom:1px solid var(--line);background:var(--soft);font-size:15px}label{display:grid;gap:7px;color:#475569;font-weight:700;font-size:13px}input{width:100%;border:1px solid #c6d1df;border-radius:8px;padding:10px 12px}button{min-height:38px;border:1px solid var(--blue);border-radius:8px;background:var(--blue);color:#fff;padding:8px 13px;font-weight:800;cursor:pointer}button.secondary{background:#fff;color:var(--text);border-color:var(--line)}button:disabled{opacity:.55;cursor:not-allowed}.status{padding:11px 12px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--muted);overflow-wrap:anywhere}.status.ok{background:#ecfdf5;color:var(--green)}.status.bad{background:#fff1f2;color:var(--red)}.muted{color:var(--muted);font-size:13px}pre{margin:0;min-height:0;overflow:auto;padding:14px;white-space:pre-wrap;word-break:break-word}.log{background:var(--dark);color:#dbeafe;font:12px/1.6 Consolas,monospace}.report{padding:16px;overflow:auto;line-height:1.65}.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px}.metric{border:1px solid var(--line);border-radius:8px;padding:10px;background:#fff}.metric span{display:block;color:var(--muted);font-size:12px}.metric b{display:block;margin-top:4px}.block{border:1px solid var(--line);border-radius:8px;padding:12px;background:#fbfcfe;margin-top:10px}.tabs{display:flex;gap:8px}.tab{background:#fff;color:var(--text);border-color:var(--line)}.tab.active{background:var(--blue);color:#fff;border-color:var(--blue)}@media(max-width:980px){main,.grid{grid-template-columns:1fr;height:auto}main{height:auto}.card{min-height:360px}}
-  </style>
-</head>
-<body>
-  <header><h1>短视频互动数据提取</h1><a class="muted" href="/">返回视频分析</a></header>
-  <main>
-    <section class="side">
-      <label>公开视频链接<input id="url" placeholder="https://www.tiktok.com/@user/video/... 或 https://www.douyin.com/video/..."></label>
-      <button id="run" type="button">提取数据</button>
-      <div id="status" class="status">等待输入 TikTok / 抖音视频链接。</div>
-      <p class="muted">使用 Scrapling MCP 按 get / fetch / stealthy_fetch 链路抓取页面公开数据；TikTok 会额外用 yt-dlp 补充点赞、评论、播放等字段。登录、风控或地区限制会导致部分字段为空。</p>
-    </section>
-    <section class="workspace">
-      <div class="head">
-        <div><b>结果</b><div id="output" class="muted">结果保存到 output/social_metrics/&lt;job-id&gt;/</div></div>
-        <div class="tabs"><button class="tab active" data-tab="report">报告</button><button class="tab" data-tab="json">JSON</button></div>
-      </div>
-      <div class="grid">
-        <article class="card"><h3>公开视频数据</h3><div id="result" class="report">暂无结果。</div></article>
-        <article class="card"><h3>任务日志</h3><pre id="log" class="log">等待任务...</pre></article>
-      </div>
-    </section>
-  </main>
-  <script>
-    const runBtn=document.querySelector("#run"),statusBox=document.querySelector("#status"),logBox=document.querySelector("#log"),resultBox=document.querySelector("#result"),outputBox=document.querySelector("#output");
-    const state={job:null,events:null,tab:"report",lastLogLength:0};
-    function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]))}
-    function pretty(v){return JSON.stringify(v??{},null,2)}
-    function setStatus(m,k=""){statusBox.className=`status ${k}`.trim();statusBox.textContent=m}
-    function addLog(lines){const next=Array.isArray(lines)?lines:[lines];if(!next.length)return;const cur=logBox.textContent==="等待任务..."?"":logBox.textContent;logBox.textContent=`${cur}${cur?"\n":""}${next.join("\n")}`;logBox.scrollTop=logBox.scrollHeight}
-    function metric(label,value){return value===undefined||value===null||value===""?"":`<div class="metric"><span>${esc(label)}</span><b>${esc(value)}</b></div>`}
-    function block(title,value){if(!value||typeof value!=="object")return"";return `<div class="block"><b>${esc(title)}</b><pre>${esc(pretty(value))}</pre></div>`}
-    function renderReport(data){if(!data)return"暂无结果。";const m=data.metrics||{},a=data.author||{},meta=data.page_meta||{},fetch=data.page_fetch||{};return `<div class="metrics">${metric("平台",data.platform)}${metric("点赞",m.like_count)}${metric("评论",m.comment_count)}${metric("分享/转发",m.share_count||m.repost_count)}${metric("播放",m.play_count||m.view_count)}${metric("收藏",m.favorite_count)}${metric("粉丝",a.follower_count||a.channel_follower_count)}${metric("作品数",a.video_count)}${metric("抓取器",fetch.fetcher)}</div>${block("作者",a)}${block("页面信息",meta)}${block("抓取诊断",fetch)}${data.yt_dlp_error?`<div class="block"><b>yt-dlp 提示</b><pre>${esc(data.yt_dlp_error)}</pre></div>`:""}`}
-    function render(){const data=state.job&&state.job.metrics;if(state.tab==="json"){resultBox.innerHTML=`<pre>${esc(pretty(data))}</pre>`;return}resultBox.innerHTML=renderReport(data)}
-    function closeEvents(){if(state.events){state.events.close();state.events=null}}
-    function handleJob(job){state.job=job;if(job.output_dir)outputBox.textContent=`结果目录：${job.output_dir}`;if(Array.isArray(job.log)&&job.log.length>state.lastLogLength){addLog(job.log.slice(state.lastLogLength));state.lastLogLength=job.log.length}render();if(job.status==="queued"||job.status==="running"){setStatus(`任务运行中：${job.status}`);return}closeEvents();runBtn.disabled=false;setStatus(job.status==="complete"?"提取完成。":(job.error||"提取失败。"),job.status==="complete"?"ok":"bad")}
-    async function start(){const url=document.querySelector("#url").value.trim();if(!url)return setStatus("请输入视频链接。","bad");closeEvents();state.job=null;state.lastLogLength=0;logBox.textContent="提交任务...";resultBox.textContent="暂无结果。";runBtn.disabled=true;setStatus("正在提交任务...");const r=await fetch("/api/video-metrics",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url})});const job=await r.json();if(!r.ok){runBtn.disabled=false;setStatus(job.error||"提交失败。","bad");addLog(job.error||"提交失败。");return}handleJob(job);state.events=new EventSource(`/api/video-metrics-events?id=${encodeURIComponent(job.id)}`);state.events.onmessage=e=>handleJob(JSON.parse(e.data));state.events.onerror=()=>{closeEvents();runBtn.disabled=false;setStatus("任务连接中断。","bad")}}
-    runBtn.onclick=()=>start().catch(e=>{runBtn.disabled=false;setStatus(e.message,"bad");addLog(e.message)});
-    document.querySelectorAll(".tab").forEach(btn=>btn.onclick=()=>{document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));btn.classList.add("active");state.tab=btn.dataset.tab;render()});
-  </script>
-</body>
-</html>"""
+METRICS_HTML = (SCRIPTS_DIR / "static" / "metrics.html").read_text(encoding="utf-8")
 
 INDEX_HTML = '<!doctype html>\n<html lang="zh-CN">\n<head>\n<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">\n<title>Short Video Analyzer</title>\n<style>\n:root{--bg:#eef3f8;--card:#fff;--soft:#f7f9fc;--line:#d7e0ec;--text:#142033;--muted:#607089;--blue:#2563eb;--blue2:#1d4ed8;--blueSoft:#eaf1ff;--red:#b42318;--green:#087443;--dark:#0d1628;--shadow:0 18px 45px rgba(15,23,42,.10)}*{box-sizing:border-box}body{margin:0;background:linear-gradient(135deg,rgba(37,99,235,.10),transparent 34%),var(--bg);color:var(--text);font-family:"Segoe UI",system-ui,sans-serif}header{height:66px;display:flex;align-items:center;justify-content:space-between;padding:0 28px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.92);position:sticky;top:0;z-index:5}h1{font-size:20px;margin:0}.page{display:none;min-height:calc(100vh - 66px);padding:18px}.page.active{display:block}.grid{display:grid;grid-template-columns:minmax(320px,430px) minmax(0,1fr);gap:18px}.detail-grid{display:grid;grid-template-columns:minmax(260px,360px) minmax(0,1fr);gap:18px;height:calc(100vh - 102px)}.card{border:1px solid var(--line);border-radius:12px;background:var(--card);box-shadow:var(--shadow);overflow:hidden}.stack{display:grid;gap:16px;padding:18px}.title{font-weight:800;margin:0 0 10px}label{display:block;margin-bottom:7px;color:var(--muted);font-size:13px;font-weight:650}input,select,textarea{width:100%;border:1px solid var(--line);border-radius:9px;background:#fff;color:var(--text);outline:none}input,select{min-height:40px;padding:8px 11px}textarea{min-height:170px;padding:10px 12px;resize:vertical;font:13px/1.55 Consolas,monospace}button{min-height:40px;border:1px solid var(--blue);border-radius:9px;background:var(--blue);color:#fff;padding:8px 13px;font-weight:750;cursor:pointer;box-shadow:0 8px 18px rgba(37,99,235,.18)}button.secondary{background:#fff;color:var(--blue);box-shadow:none}button.danger{background:#fff;border-color:#fecaca;color:var(--red);box-shadow:none}button.small{min-height:32px;padding:5px 10px;font-size:13px}button:disabled{opacity:.55;cursor:not-allowed}.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.muted{color:var(--muted)}.status{min-height:42px;border:1px solid var(--line);border-radius:9px;padding:10px 12px;background:var(--soft);color:var(--muted);font-size:13px;overflow-wrap:anywhere}.status.ok{background:#ecfdf3;color:var(--green)}.status.bad{background:#fff1f2;color:var(--red)}.check{display:flex;align-items:center;gap:9px;color:var(--text);font-size:14px;font-weight:650}.check input{width:auto;min-height:auto}.prompt{display:none}.prompt.active{display:block}.log-wrap{display:grid;grid-template-rows:auto minmax(360px,1fr);min-height:calc(100vh - 102px)}.head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 18px;border-bottom:1px solid var(--line);background:#fff}.head h2{margin:0;font-size:18px}.log{margin:0;overflow:auto;padding:18px;background:var(--dark);color:#e6edf7;font:13px/1.7 Consolas,monospace;white-space:pre-wrap;word-break:break-word}.files{display:grid;gap:8px;max-height:260px;overflow:auto}.detail-files{padding:14px;overflow:auto}.file{display:flex;justify-content:space-between;align-items:center;gap:12px;border:1px solid var(--line);border-radius:9px;padding:10px;background:#fff;cursor:pointer}.file.selected{border-color:var(--blue);background:var(--blueSoft)}.file-name{font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.file-meta{min-width:0;display:grid;gap:4px}.file-actions{display:flex;gap:6px}.tabs{display:flex;gap:8px;padding:12px 14px;border-bottom:1px solid var(--line)}.tab{background:#fff;color:var(--text);border-color:var(--line);box-shadow:none}.tab.active{color:var(--blue);border-color:var(--blue);background:var(--blueSoft)}.toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 14px;border-bottom:1px solid var(--line);background:var(--soft)}.out{min-height:0;overflow:auto;padding:22px 24px;border-left:4px solid rgba(37,99,235,.22);white-space:pre-wrap;word-break:break-word;line-height:1.75}.out.raw{background:var(--dark);color:#e6edf7;font-family:Consolas,monospace}.report{display:grid;gap:14px;max-width:1180px}.hero,.section,.metric{border:1px solid var(--line);border-radius:12px;background:#fff}.hero{padding:18px 20px;background:linear-gradient(135deg,rgba(37,99,235,.10),transparent 42%),#fff}.hero h2{margin:4px 0;font-size:22px}.hero p{margin:0;color:var(--muted)}.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px}.metric{padding:10px 12px}.metric span{display:block;color:var(--muted);font-size:12px;font-weight:750}.metric strong{display:block;margin-top:5px}.section h3{margin:0;padding:12px 16px;border-bottom:1px solid var(--line);background:var(--soft);font-size:15px}.section div{padding:14px 16px}.drop{position:fixed;inset:14px;z-index:20;display:none;align-items:center;justify-content:center;border:2px dashed rgba(37,99,235,.55);border-radius:18px;background:rgba(239,246,255,.86);color:var(--blue2);pointer-events:none}.drop.active{display:flex}.drop>div{padding:26px 30px;border-radius:14px;background:#fff;text-align:center}@media(max-width:900px){.grid,.detail-grid{grid-template-columns:1fr;height:auto}.log-wrap{min-height:520px}.card.result{height:72vh;min-height:520px}}\n</style>\n</head>\n<body>\n<div id="drop" class="drop"><div><strong>??????</strong><br><span class="muted">??????????</span></div></div>\n<header><h1>Short Video Analyzer</h1><div id="current" class="muted">??</div></header>\n<main id="home" class="page active"><div class="grid"><section class="card stack">\n<div><p class="title">TikTok / ??????</p><label>??????</label><input id="url" type="url" placeholder="https://www.tiktok.com/@user/video/... ? https://v.douyin.com/..."></div><div class="row"><button id="download">????</button><button id="network" class="secondary">??????</button></div>\n<div><p class="title">??????</p><label>??? videos/</label><input id="videoFile" type="file" accept="video/*" multiple></div><div class="row"><button id="upload">??</button><button id="refresh" class="secondary">????</button></div>\n<div><p class="title">?????</p><div id="homeFiles" class="files"></div></div>\n<div><p class="title">????</p><label>????</label><select id="mode"><option value="analyzer">????????video-analyzer?</option><option value="direct_video">?????????Qwen?</option></select></div><button id="promptBtn" class="secondary">???????</button><div id="promptPanel" class="prompt"><label>?????</label><textarea id="prompt"></textarea></div>\n<label class="check"><input id="autoPost" type="checkbox">???? DeepSeek ??</label><div class="row"><button id="analyze" disabled>????</button><button id="post" class="secondary" disabled>????????</button></div><div id="status" class="status">?????????????</div>\n</section><section class="card log-wrap"><div class="head"><div><h2>????</h2><div class="muted">?????????????????????</div></div><button id="clearLog" class="secondary small">????</button></div><pre id="log" class="log">????...</pre></section></div></main>\n<main id="detail" class="page"><div class="detail-grid"><section class="card" style="display:grid;grid-template-rows:auto 1fr"><div class="head" style="display:grid"><button id="back" class="secondary">????</button><div><h2>?????</h2><div class="muted">???????</div></div></div><div id="detailFiles" class="detail-files files"></div></section><section class="card result" style="display:grid;grid-template-rows:auto auto minmax(0,1fr)"><div class="tabs"><button class="tab active" data-tab="content">????????</button><button class="tab" data-tab="audit">????????</button></div><div class="toolbar"><b id="outTitle">Qwen ?????DeepSeek ??</b><div class="row"><button id="source" class="secondary small">????</button><button id="json" class="secondary small">???? JSON</button></div></div><div id="out" class="out">{}</div></section></div></main>\n<script>\nwindow.DEFAULT_ANALYSIS_MODE="__DEFAULT_ANALYSIS_MODE__";\nconst S={file:"",files:[],result:null,job:null,tab:"content",raw:false,has:false,logs:[]};\nconst $=id=>document.getElementById(id), home=$(\'home\'), detail=$(\'detail\'), current=$(\'current\'), status=$(\'status\'), log=$(\'log\'), out=$(\'out\'); let de=null, je=null, drag=0;\nfunction esc(v){return String(v??\'\').replace(/[&<>"\']/g,c=>({\'&\':\'&amp;\',\'<\':\'&lt;\',\'>\':\'&gt;\',\'"\':\'&quot;\',"\'":\'&#39;\'}[c]))} function pretty(v){return v==null?\'{}\':typeof v===\'string\'?v:JSON.stringify(v,null,2)} function clean(v){let s=typeof v===\'string\'?v:(v&&typeof v.response===\'string\'?v.response:pretty(v));return s.replace(/^```(?:json)?\\s*/i,\'\').replace(/\\s*```$/i,\'\').trim()} function bytes(n){return `${Math.round(Number(n||0)/1024/1024*10)/10} MB`} function setStatus(m,k=\'\'){status.className=\'status \'+k;status.textContent=m} function addLog(m){S.logs.push(`[${new Date().toLocaleTimeString()}] ${m}`);if(S.logs.length>500)S.logs.splice(0,S.logs.length-500);log.textContent=S.logs.join(\'\\n\')||\'????...\';log.scrollTop=log.scrollHeight}\nfunction metric(k,v){return v==null||v===\'\'?\'\':`<div class="metric"><span>${esc(k)}</span><strong>${esc(v)}</strong></div>`} function sec(t,b){b=clean(b);return b?`<section class="section"><h3>${esc(t)}</h3><div>${esc(b)}</div></section>`:\'\'} function list(t,a,map=x=>x){if(!Array.isArray(a)||!a.length)return\'\';return `<section class="section"><h3>${esc(t)}</h3><div>${a.map((x,i)=>`- ${esc(clean(map(x,i)))}`).join(\'\\n\')}</div></section>`} function has(r){return !!(r&&(r.analysis||r.analysis_zh||r.audit_result||r.audit_result_zh))}\nfunction extraction(v){if(!v||typeof v!==\'object\')return pretty(v);const md=v.metadata||{},tr=v.transcript||{},u=v.usage||{},tl=Array.isArray(v.timeline)?v.timeline:[],ve=Array.isArray(v.visual_evidence)?v.visual_evidence:[],fa=Array.isArray(v.frame_analyses)?v.frame_analyses:[];return `<article class="report"><div class="hero"><small>Qwen Video Extraction</small><h2>??????</h2><p>${esc(clean(v.summary)||\'?????????????????????\')}</p></div><div class="metrics">${metric(\'????\',v.processing_mode)}${metric(\'????\',v.vision_model||md.model)}${metric(\'????\',v.audio_mode)}${metric(\'????\',md.frames_processed||md.frames_extracted)}${metric(\'????\',tr.language||md.audio_language)}${metric(\'?? Tokens\',u.input_tokens)}${metric(\'?? Tokens\',u.output_tokens)}${metric(\'? Tokens\',u.total_tokens)}${metric(\'API ??\',u.api_calls)}${metric(\'???\',u.elapsed_seconds==null?\'\':u.elapsed_seconds+\'s\')}</div>${sec(\'????\',v.summary)}${sec(\'??????\',v.video_description)}${list(\'???\',tl,x=>typeof x===\'string\'?x:`${x.time_range||x.timestamp||\'\'}\\n${x.visual||\'\'}\\n${x.audio||\'\'}`)}${list(\'????\',ve,x=>typeof x===\'string\'?x:(x.description||x.visual||pretty(x)))}${list(\'??????\',fa,(x,i)=>`[? ${i+1}]\\n${clean(x)}`)}${sec(\'????\',tr.text||\'?????\')}</article>`}\nfunction audit(v){if(!v||typeof v!==\'object\')return pretty(v);return `<article class="report"><div class="hero"><small>DeepSeek Audit</small><h2>??????</h2><p>${esc(v.summary||\'?????????????????\')}</p></div><div class="metrics">${metric(\'????\',v.risk_level)}${metric(\'????\',v.recommended_action)}${metric(\'????\',v.publish_suggestion)}</div>${sec(\'????\',v.summary)}${sec(\'????\',v.content_overview)}${sec(\'????\',v.transcript_notes)}${sec(\'????\',v.visual_notes)}${list(\'????\',v.risk_reasons)}${list(\'???\',v.issues)}</article>`}\nfunction renderOut(r){S.result=r;out.className=S.raw?\'out raw\':\'out\';let v;if(S.tab===\'content\'){v=S.raw?r?.analysis:(r?.analysis_zh||r?.analysis);$(\'json\').style.display=\'inline-flex\';$(\'outTitle\').textContent=S.raw?\'Qwen ??????? JSON\':\'Qwen ?????DeepSeek ??\';S.raw?out.textContent=pretty(v):out.innerHTML=extraction(v)}else{v=S.raw?r?.audit_result:(r?.audit_result_zh||r?.audit_result);$(\'json\').style.display=\'none\';$(\'outTitle\').textContent=S.raw?\'DeepSeek ???????\':\'DeepSeek ???????\';S.raw?out.textContent=pretty(v):out.innerHTML=audit(v)}$(\'source\').textContent=S.raw?\'????\':\'????\'}\nfunction buttons(){ $(\'analyze\').textContent=S.has?\'????\':\'????\'; $(\'analyze\').disabled=!S.file; $(\'post\').disabled=!S.file||!S.has||!!S.job }\nfunction renderFiles(){for(const [id,detailMode] of [[\'homeFiles\',false],[\'detailFiles\',true]]){const box=$(id);box.innerHTML=\'\';if(!S.files.length){box.innerHTML=\'<div class="muted">videos/ ??????</div>\';continue}S.files.forEach(f=>{const el=document.createElement(\'div\');el.className=\'file\'+(f.name===S.file?\' selected\':\'\');el.innerHTML=`<span class="file-meta"><span class="file-name">${esc(f.name)}</span><span class="muted">${bytes(f.size)}</span></span>${detailMode?\'\':`<span class="file-actions"><button class="secondary small">??</button><button class="danger small">??</button></span>`}`;el.onclick=()=>toDetail(f.name);if(!detailMode){const b=el.querySelectorAll(\'button\');b[0].onclick=e=>{e.stopPropagation();open(\'/video/\'+encodeURIComponent(f.name),\'_blank\',\'noopener\')};b[1].onclick=e=>{e.stopPropagation();delFile(f.name)}}box.appendChild(el)})}buttons()}\nfunction view(v,f=\'\'){home.classList.toggle(\'active\',v===\'home\');detail.classList.toggle(\'active\',v===\'detail\');current.textContent=v===\'detail\'&&f?f:\'??\'} function toHome(){location.hash=\'\';view(\'home\')} function toDetail(f){location.hash=\'detail=\'+encodeURIComponent(f)} function route(){const h=location.hash.slice(1);if(h.startsWith(\'detail=\')){select(decodeURIComponent(h.slice(7)),false);view(\'detail\',S.file)}else{view(\'home\');renderFiles()}}\nasync function refresh(){const r=await fetch(\'/api/files\');S.files=await r.json();if(!Array.isArray(S.files))S.files=[];renderFiles()} async function loadResult(name){const r=await fetch(\'/api/result?filename=\'+encodeURIComponent(name)),j=await r.json();if(r.ok&&has(j)){S.result=j;S.has=true;const p=j.analysis&&j.analysis.metadata&&j.analysis.metadata.analysis_prompt;if(p)$(\'prompt\').value=p;renderOut(j);setStatus(name+\': ???????\',\'ok\')}else{S.result=null;S.has=false;out.textContent=\'{}\';setStatus(name+\': ????\')}buttons()} function select(name,openDetail=true){S.file=name;current.textContent=name||\'??\';S.has=false;renderFiles();if(name)loadResult(name).catch(e=>setStatus(e.message,\'bad\'));if(openDetail&&name)toDetail(name)}\nasync function upload(files=null){const input=$(\'videoFile\'),arr=Array.from(files||input.files||[]);if(!arr.length)return setStatus(\'????????????\',\'bad\');const bad=arr.filter(f=>!f.type.startsWith(\'video/\'));if(bad.length){addLog(\'??????????????\'+bad.map(f=>f.name).join(\', \'));return setStatus(\'????????\',\'bad\')}const form=new FormData();arr.forEach(f=>form.append(\'video\',f));addLog(`???? ${arr.length} ????`);setStatus(\'????...\');const r=await fetch(\'/api/upload\',{method:\'POST\',body:form}),p=await r.json(),ok=Array.isArray(p.files)?p.files:[],err=Array.isArray(p.errors)?p.errors:[];ok.forEach(f=>addLog(`?????${f.filename} (${bytes(f.size)})`));err.forEach(e=>addLog(`?????${e.filename||\'????\'} - ${e.error||\'????\'}`));if(!r.ok&&!ok.length)return setStatus(p.error||\'????\',\'bad\');setStatus(`??????? ${ok.length} ???? ${err.length} ?`,err.length?\'bad\':\'ok\');input.value=\'\';await refresh();if(ok.length)select(ok.at(-1).filename,false)}\nasync function delFile(name){if(!confirm(`?? ${name} ?????????`))return;const r=await fetch(\'/api/delete\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({filename:name})}),p=await r.json();if(!r.ok)return setStatus(p.error||\'????\',\'bad\');addLog(\'?????\'+name);if(S.file===name){S.file=\'\';S.result=null;S.has=false;toHome()}await refresh()}\nfunction closeD(){if(de){de.close();de=null}}function closeJ(){if(je){je.close();je=null}} function lastLog(j){return j&&Array.isArray(j.log)&&j.log.length?j.log.at(-1):\'\'}\nasync function startDownload(){const url=$(\'url\').value.trim();if(!url)return setStatus(\'??? TikTok ????????\',\'bad\');$(\'download\').disabled=true;addLog(\'???????\'+url);const r=await fetch(\'/api/download\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({url})}),j=await r.json();if(!r.ok){$(\'download\').disabled=false;return setStatus(j.error||\'????????\',\'bad\')}closeD();de=new EventSource(\'/api/download-events?id=\'+encodeURIComponent(j.id));de.onmessage=async e=>{const j=JSON.parse(e.data),l=lastLog(j);if(l)addLog(\'???\'+l);if(j.status===\'running\'||j.status===\'queued\')return setStatus(`??????${j.status}`);closeD();$(\'download\').disabled=false;if(j.status!==\'complete\')return setStatus(\'???????\'+(j.error||\'????\'),\'bad\');setStatus(j.filename+\': ????\',\'ok\');$(\'url\').value=\'\';await refresh();select(j.filename,false)};de.onerror=()=>{closeD();$(\'download\').disabled=false;setStatus(\'????????\',\'bad\')}}\nasync function checkNet(){$(\'network\').disabled=true;setStatus(\'??????????????...\');try{const r=await fetch(\'/api/network-check\'),p=await r.json();const fmt=x=>!x?\'???\':(!x.ok?\'???\'+(x.error||\'????\'):`${x.ip||\'?? IP\'} / ${x.country_name||x.country||\'????\'} / ${x.is_us?\'????\':\'?????\'}`);addLog(\'???\'+fmt(p.direct));addLog(\'???\'+fmt(p.proxy));setStatus(`???${fmt(p.direct)}????${fmt(p.proxy)}`,p.proxy&&p.proxy.ok&&p.proxy.is_us?\'ok\':\'bad\')}catch(e){setStatus(e.message,\'bad\')}finally{$(\'network\').disabled=false}}\nasync function analyze(){if(!S.file)return;$(\'analyze\').disabled=true;$(\'post\').disabled=true;const reset=S.has;addLog(`${S.file}: ${reset?\'??????????\':\'??????\'}`);const r=await fetch(\'/api/analyze\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({filename:S.file,analysis_mode:$(\'mode\').value,analysis_prompt:$(\'prompt\').value,postprocess:$(\'autoPost\').checked,reset_output:reset})}),j=await r.json();if(!r.ok){setStatus(j.error||\'????\',\'bad\');return buttons()}S.job=j.id;openJob(j.id)}\nasync function postprocess(){if(!S.file||!S.has)return;const r=await fetch(\'/api/postprocess\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({filename:S.file})}),j=await r.json();if(!r.ok)return setStatus(j.error||\'????\',\'bad\');S.tab=\'audit\';document.querySelectorAll(\'.tab\').forEach(x=>x.classList.toggle(\'active\',x.dataset.tab===\'audit\'));S.job=j.id;openJob(j.id)}\nfunction openJob(id){closeJ();je=new EventSource(\'/api/job-events?id=\'+encodeURIComponent(id));je.onmessage=e=>{const j=JSON.parse(e.data),l=lastLog(j);if(l)addLog(`${j.filename}: ${l}`);S.result=j;if(location.hash.startsWith(\'#detail=\'))renderOut(j);if(j.status===\'running\'||j.status===\'queued\')return setStatus(`${j.filename}: ${j.status}`);closeJ();S.job=null;S.has=j.status===\'complete\'||has(j);buttons();setStatus(j.status===\'complete\'?`${j.filename}: ??`:`${j.filename}: ${j.error||\'??\'}`,j.status===\'complete\'?\'ok\':\'bad\')};je.onerror=()=>{closeJ();buttons();setStatus(\'????????\',\'bad\')}}\nfunction downloadJson(){const a=S.result&&S.result.analysis;if(!a)return setStatus(\'??????? analysis.json?\',\'bad\');const name=`${S.file||\'video\'}.analysis.json`,blob=new Blob([JSON.stringify(a,null,2)],{type:\'application/json;charset=utf-8\'}),url=URL.createObjectURL(blob),link=document.createElement(\'a\');link.href=url;link.download=name;document.body.appendChild(link);link.click();link.remove();URL.revokeObjectURL(url);addLog(\'???? JSON?\'+name)}\n$(\'download\').onclick=startDownload;$(\'network\').onclick=checkNet;$(\'upload\').onclick=()=>upload();$(\'refresh\').onclick=()=>refresh().then(()=>addLog(\'????????\'));$(\'analyze\').onclick=analyze;$(\'post\').onclick=postprocess;$(\'back\').onclick=toHome;$(\'clearLog\').onclick=()=>{S.logs=[];log.textContent=\'????...\'};$(\'source\').onclick=()=>{S.raw=!S.raw;renderOut(S.result)};$(\'json\').onclick=downloadJson;$(\'mode\').value=window.DEFAULT_ANALYSIS_MODE||\'analyzer\';$(\'promptBtn\').onclick=()=>{const p=$(\'promptPanel\');p.classList.toggle(\'active\');$(\'promptBtn\').textContent=p.classList.contains(\'active\')?\'???????\':\'???????\'};document.querySelectorAll(\'.tab\').forEach(t=>t.onclick=()=>{document.querySelectorAll(\'.tab\').forEach(x=>x.classList.remove(\'active\'));t.classList.add(\'active\');S.tab=t.dataset.tab;S.raw=false;renderOut(S.result)});addEventListener(\'hashchange\',route);addEventListener(\'dragenter\',e=>{e.preventDefault();drag++;$(\'drop\').classList.add(\'active\')});addEventListener(\'dragover\',e=>e.preventDefault());addEventListener(\'dragleave\',e=>{e.preventDefault();drag=Math.max(0,drag-1);if(!drag)$(\'drop\').classList.remove(\'active\')});addEventListener(\'drop\',e=>{e.preventDefault();drag=0;$(\'drop\').classList.remove(\'active\');if(e.dataTransfer.files.length)upload(e.dataTransfer.files)});fetch(\'/api/prompt\').then(r=>r.json()).then(p=>$(\'prompt\').value=p.prompt||\'\').catch(()=>{});refresh().then(route).catch(e=>setStatus(e.message,\'bad\'));\n</script>\n</body>\n</html>'
 
 
+ 
+AMAZON_HTML_PATH = SCRIPTS_DIR / "static" / "amazon.html"
+AMAZON_HTML = AMAZON_HTML_PATH.read_text(encoding="utf-8") if AMAZON_HTML_PATH.is_file() else ""
 
-SHOP_HTML = r"""<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>TikTok Shop Extractor</title>
-  <style>
-    :root {
-      color: #172033;
-      background: #eef1f6;
-      font-family: "Microsoft YaHei", "Segoe UI", Arial, sans-serif;
-    }
-    * { box-sizing: border-box; }
-    body { margin: 0; }
-    button, input, select, textarea { font: inherit; }
-    button {
-      border: 0;
-      border-radius: 6px;
-      padding: 10px 14px;
-      color: #fff;
-      background: #1f6feb;
-      cursor: pointer;
-    }
-    button.secondary { color: #243044; background: #e6ebf2; }
-    button:disabled { cursor: wait; opacity: 0.65; }
-    input, select, textarea {
-      width: 100%;
-      border: 1px solid #c9d2df;
-      border-radius: 6px;
-      padding: 10px 11px;
-      color: #172033;
-      background: #fff;
-    }
-    textarea { min-height: 130px; resize: vertical; }
-    label {
-      display: grid;
-      gap: 6px;
-      color: #526173;
-      font-size: 13px;
-    }
-    h1, h2, h3, p { margin: 0; }
-    .app-shell {
-      display: grid;
-      grid-template-columns: 360px minmax(0, 1fr);
-      min-height: 100vh;
-    }
-    .side-panel {
-      border-right: 1px solid #d5dce7;
-      background: #f8fafc;
-    }
-    .panel-header, .form { display: grid; gap: 14px; padding: 18px; }
-    .panel-header { border-bottom: 1px solid #dce3ec; }
-    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-    .check { display: flex; align-items: center; gap: 8px; color: #243044; }
-    .check input { width: auto; }
-    .workspace {
-      display: grid;
-      grid-template-rows: auto minmax(0, 1fr);
-      min-width: 0;
-      padding: 20px;
-      gap: 16px;
-    }
-    .workspace-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 16px;
-    }
-    .status {
-      border: 1px solid #d9e1eb;
-      border-radius: 8px;
-      padding: 12px;
-      color: #536273;
-      background: #fff;
-      overflow-wrap: anywhere;
-    }
-    .status.ok { color: #087443; background: #ecfdf3; }
-    .status.bad { color: #b42318; background: #fff1f2; }
-    .result-layout {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) minmax(300px, 420px);
-      gap: 16px;
-      min-height: 0;
-    }
-    .card {
-      display: grid;
-      grid-template-rows: auto minmax(0, 1fr);
-      min-height: 520px;
-      border: 1px solid #d9e1eb;
-      border-radius: 8px;
-      background: #fff;
-      overflow: hidden;
-    }
-    .card-head {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      padding: 14px 16px;
-      border-bottom: 1px solid #dfe6ee;
-    }
-    .tabs { display: flex; gap: 8px; }
-    .tab { color: #243044; background: #edf2f8; }
-    .tab.active { color: #fff; background: #1f6feb; }
-    pre {
-      min-height: 0;
-      margin: 0;
-      padding: 16px;
-      overflow: auto;
-      white-space: pre-wrap;
-      word-break: break-word;
-      color: #162033;
-      font: 13px/1.55 Consolas, "Microsoft YaHei", monospace;
-    }
-    .report { padding: 16px; overflow: auto; line-height: 1.62; }
-    .report-section {
-      border: 1px solid #e0e6ef;
-      border-radius: 8px;
-      padding: 12px;
-      margin-bottom: 10px;
-      background: #fbfcfe;
-    }
-    .report-section h3 { margin-bottom: 8px; font-size: 15px; }
-    .log { color: #dbe7ff; background: #101827; }
-    .muted { color: #667589; font-size: 13px; }
-    .history-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 4px; }
-    .history-head button { min-height: 30px; padding: 4px 9px; }
-    .records { display: grid; gap: 8px; max-height: 240px; overflow: auto; }
-    .record { border: 1px solid #d9e1eb; border-radius: 8px; padding: 9px; background: #fff; cursor: pointer; }
-    .record.active { border-color: #1f6feb; background: #eef4ff; }
-    .record strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .record span { display: block; color: #667589; font-size: 12px; margin-top: 3px; }
-    @media (max-width: 960px) {
-      .app-shell, .result-layout { grid-template-columns: 1fr; }
-      .side-panel { border-right: 0; border-bottom: 1px solid #d5dce7; }
-      .row { grid-template-columns: 1fr; }
-    }
-  </style>
-</head>
-<body>
-  <main class="app-shell">
-    <aside class="side-panel">
-      <header class="panel-header">
-        <h1>TikTok Shop 提取</h1>
-        <p class="muted">使用 SociaVault 提取店铺或商品数据，可选择接 DeepSeek 生成中文分析。</p>
-      </header>
-      <section class="form">
-        <label><span id="targetLabel">TikTok Shop 链接</span><input id="shopUrl" placeholder="https://shop.tiktok.com/..."></label>
-        <div class="row">
-          <label>类型<select id="sourceType"><option value="product">商品详情 + 评论</option><option value="details">商品详情</option><option value="reviews">商品评论</option><option value="shop">店铺商品列表</option><option value="search">商品搜索</option></select></label>
-          <label>地区<input id="region" value="US" maxlength="8"></label>
-        </div>
-        <div class="row">
-          <label>店铺页数<input id="maxPages" type="number" min="1" max="20" value="1"></label>
-          <label>评论页数<input id="reviewPages" type="number" min="0" max="20" value="1"></label>
-        </div>
-        <label class="check"><input id="relatedVideos" type="checkbox">提取商品关联视频</label>
-        <label class="check"><input id="analyze" type="checkbox" checked>使用 DeepSeek 生成中文分析</label>
-        <label>分析补充要求<textarea id="prompt" placeholder="例如：重点看卖点、评论痛点、适合做短视频的脚本方向。"></textarea></label>
-        <button id="runBtn" type="button">开始提取</button>
-        <a class="muted" href="/">返回视频分析页</a>
-        <div id="status" class="status">等待输入 TikTok Shop 链接。</div>
-      </section>
-    </aside>
-    <section class="workspace">
-      <header class="workspace-header">
-        <div>
-          <h2>提取结果</h2>
-          <p class="muted" id="outputDir">结果会保存到 output/tiktok_shop/&lt;job-id&gt;/</p>
-        </div>
-      </header>
-      <section class="result-layout">
-        <article class="card">
-          <div class="card-head">
-            <div class="tabs">
-              <button class="tab active" data-tab="analysis" type="button">中文分析</button>
-              <button class="tab" data-tab="extract" type="button">原始提取</button>
-            </div>
-            <button id="rawToggle" class="secondary" type="button">显示 JSON</button>
-          </div>
-          <div id="result" class="report">暂无结果。</div>
-        </article>
-        <article class="card">
-          <div class="card-head"><h3>任务日志</h3><button id="clearLog" class="secondary" type="button">清空</button></div>
-          <pre id="log" class="log">等待任务...</pre>
-        </article>
-      </section>
-    </section>
-  </main>
-  <script>
-    const runBtn = document.querySelector("#runBtn");
-    const statusBox = document.querySelector("#status");
-    const logBox = document.querySelector("#log");
-    const resultBox = document.querySelector("#result");
-    const outputDir = document.querySelector("#outputDir");
-    const rawToggle = document.querySelector("#rawToggle");
-    const state = { job: null, events: null, tab: "analysis", raw: false, lastLogLength: 0, records: [] };
 
-    function setStatus(message, kind = "") {
-      statusBox.className = `status ${kind}`.trim();
-      statusBox.textContent = message;
-    }
-    function pretty(value) { return JSON.stringify(value ?? {}, null, 2); }
-    function escapeHtml(value) {
-      return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;");
-    }
-    function appendLog(lines) {
-      const next = Array.isArray(lines) ? lines : [lines];
-      if (!next.length) return;
-      const current = logBox.textContent === "等待任务..." ? "" : logBox.textContent;
-      logBox.textContent = `${current}${current ? "\n" : ""}${next.join("\n")}`;
-      logBox.scrollTop = logBox.scrollHeight;
-    }
-    function section(title, value) {
-      if (value === undefined || value === null || value === "") return "";
-      const body = Array.isArray(value)
-        ? `<ul>${value.map(item => `<li>${escapeHtml(typeof item === "string" ? item : pretty(item))}</li>`).join("")}</ul>`
-        : `<p>${escapeHtml(typeof value === "string" ? value : pretty(value))}</p>`;
-      return `<section class="report-section"><h3>${escapeHtml(title)}</h3>${body}</section>`;
-    }
-    function renderReport(value) {
-      if (!value || typeof value !== "object") return `<pre>${escapeHtml(pretty(value))}</pre>`;
-      return [
-        section("概要", value.summary),
-        section("产品定位", value.product_positioning),
-        section("销售信号", value.sales_signals),
-        section("评论洞察", value.review_insights),
-        section("内容机会", value.content_opportunities),
-        section("风险点", value.risk_flags),
-        section("建议动作", value.recommended_actions),
-        section("下一步问题", value.next_questions),
-      ].join("") || `<pre>${escapeHtml(pretty(value))}</pre>`;
-    }
-    function currentValue() {
-      if (!state.job) return null;
-      return state.tab === "analysis" ? state.job.analysis || null : state.job.extract || null;
-    }
-    function typeLabel(value) {
-      return { product: "商品+评论", details: "商品详情", reviews: "商品评论", shop: "店铺搜索", search: "商品搜索" }[value] || value || "未知";
-    }
-    function recordTitle(record) {
-      return record.url || record.query || record.id || "未命名记录";
-    }
-    function formatTime(ts) {
-      if (!ts) return "";
-      return new Date(ts * 1000).toLocaleString();
-    }
-    function renderRecords() {
-      const box = document.querySelector("#records");
-      if (!box) return;
-      if (!state.records.length) {
-        box.textContent = "暂无记录。";
-        return;
-      }
-      box.innerHTML = state.records.map(record => `<div class="record ${state.job && state.job.id === record.id ? "active" : ""}" data-id="${escapeHtml(record.id)}"><strong>${escapeHtml(recordTitle(record))}</strong><span>${escapeHtml(typeLabel(record.source_type))} / ${escapeHtml(record.status || "")}</span><span>${escapeHtml(formatTime(record.updated_at || record.created_at))}</span></div>`).join("");
-      box.querySelectorAll(".record").forEach(item => item.onclick = () => loadRecord(item.dataset.id));
-    }
-    async function refreshRecords() {
-      const response = await fetch("/api/shop-records?limit=80");
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || "读取历史记录失败");
-      state.records = Array.isArray(payload.records) ? payload.records : [];
-      renderRecords();
-    }
-    async function loadRecord(id) {
-      if (!id) return;
-      closeEvents();
-      const response = await fetch(`/api/shop-job?id=${encodeURIComponent(id)}`);
-      const job = await response.json();
-      if (!response.ok) {
-        setStatus(job.error || "读取记录失败", "bad");
-        return;
-      }
-      state.job = job;
-      state.lastLogLength = Array.isArray(job.log) ? job.log.length : 0;
-      logBox.textContent = Array.isArray(job.log) && job.log.length ? job.log.join("\n") : "无日志...";
-      if (job.output_dir) outputDir.textContent = `结果目录：${job.output_dir}`;
-      renderResult();
-      renderRecords();
-      setStatus(`已加载历史记录：${job.status || ""}`, job.status === "failed" ? "bad" : "ok");
-    }
-    function renderResult() {
-      const value = currentValue();
-      rawToggle.textContent = state.raw ? "显示报告" : "显示 JSON";
-      if (!value) {
-        resultBox.textContent = "暂无结果。";
-        return;
-      }
-      if (state.raw || state.tab === "extract") {
-        resultBox.innerHTML = `<pre>${escapeHtml(pretty(value))}</pre>`;
-        return;
-      }
-      resultBox.innerHTML = renderReport(value);
-    }
-    function closeEvents() {
-      if (state.events) {
-        state.events.close();
-        state.events = null;
-      }
-    }
-    function updateSourceMode() {
-      const sourceType = document.querySelector("#sourceType").value;
-      const target = document.querySelector("#shopUrl");
-      const targetLabel = document.querySelector("#targetLabel");
-      const maxPages = document.querySelector("#maxPages");
-      const reviewPages = document.querySelector("#reviewPages");
-      const relatedVideos = document.querySelector("#relatedVideos");
-      targetLabel.textContent = sourceType === "search" ? "搜索关键词" : "TikTok Shop 链接 / 商品 ID";
-      target.placeholder = sourceType === "search" ? "例如：cat toy" : "https://shop.tiktok.com/... 或商品 ID";
-      maxPages.disabled = !["shop", "search"].includes(sourceType);
-      reviewPages.disabled = !["product", "reviews"].includes(sourceType);
-      relatedVideos.disabled = !["product", "details"].includes(sourceType);
-    }
-    function handleJob(job) {
-      state.job = job;
-      if (job.output_dir) outputDir.textContent = `结果目录：${job.output_dir}`;
-      if (Array.isArray(job.log) && job.log.length > state.lastLogLength) {
-        appendLog(job.log.slice(state.lastLogLength));
-        state.lastLogLength = job.log.length;
-      }
-      renderResult();
-      if (job.status === "queued" || job.status === "running") {
-        setStatus(`任务运行中：${job.status}`);
-        return;
-      }
-      closeEvents();
-      runBtn.disabled = false;
-      setStatus(job.status === "complete" ? "TikTok Shop 提取完成。" : (job.error || "TikTok Shop 提取失败。"), job.status === "complete" ? "ok" : "bad");
-    }
-    async function startJob() {
-      const url = document.querySelector("#shopUrl").value.trim();
-      if (!url) {
-        setStatus("请输入 TikTok Shop 链接、商品 ID 或搜索关键词。", "bad");
-        return;
-      }
-      closeEvents();
-      state.job = null;
-      state.lastLogLength = 0;
-      logBox.textContent = "提交任务...";
-      resultBox.textContent = "暂无结果。";
-      runBtn.disabled = true;
-      setStatus("正在提交任务...");
-      const payload = {
-        url,
-        source_type: document.querySelector("#sourceType").value,
-        region: document.querySelector("#region").value.trim() || "US",
-        max_pages: Number(document.querySelector("#maxPages").value || 1),
-        review_pages: Number(document.querySelector("#reviewPages").value || 0),
-        related_videos: document.querySelector("#relatedVideos").checked,
-        analyze: document.querySelector("#analyze").checked,
-        prompt: document.querySelector("#prompt").value
-      };
-      const response = await fetch("/api/shop-extract", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      });
-      const job = await response.json();
-      if (!response.ok) {
-        runBtn.disabled = false;
-        setStatus(job.error || "任务提交失败。", "bad");
-        appendLog(job.error || "任务提交失败。");
-        return;
-      }
-      handleJob(job);
-      state.events = new EventSource(`/api/shop-events?id=${encodeURIComponent(job.id)}`);
-      state.events.onmessage = event => handleJob(JSON.parse(event.data));
-      state.events.onerror = () => {
-        closeEvents();
-        runBtn.disabled = false;
-        setStatus("任务连接中断，请刷新任务结果。", "bad");
-      };
-    }
-    runBtn.onclick = () => startJob().catch(error => {
-      runBtn.disabled = false;
-      setStatus(error.message, "bad");
-      appendLog(error.message);
-    });
-    rawToggle.onclick = () => {
-      state.raw = !state.raw;
-      renderResult();
-    };
-    document.querySelector("#clearLog").onclick = () => {
-      state.lastLogLength = 0;
-      logBox.textContent = "等待任务...";
-    };
-    document.querySelector("#sourceType").onchange = updateSourceMode;
-    document.querySelector("#refreshRecords").onclick = () => refreshRecords().catch(error => setStatus(error.message, "bad"));
-    updateSourceMode();
-    refreshRecords().catch(error => appendLog(error.message));
-    document.querySelectorAll(".tab").forEach(button => {
-      button.onclick = () => {
-        document.querySelectorAll(".tab").forEach(item => item.classList.remove("active"));
-        button.classList.add("active");
-        state.tab = button.dataset.tab;
-        state.raw = false;
-        renderResult();
-      };
-    });
-  </script>
-</body>
-</html>
-"""
+SHOP_HTML_PATH = SCRIPTS_DIR / "static" / "shop.html"
+SHOP_HTML = SHOP_HTML_PATH.read_text(encoding="utf-8") if SHOP_HTML_PATH.is_file() else ""
 
 
 def main() -> int:
     load_env_file()
     VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    load_sessions_from_disk(chat_store)
+    mark_interrupted_chat_messages()
+    normalize_stored_chat_tool_results()
+    video_queue.start(execute_queue_job)
     port = int(os.getenv("WEB_PORT", "4000"))
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     print(f"Web UI listening on http://0.0.0.0:{port}")

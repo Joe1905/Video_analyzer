@@ -9,6 +9,8 @@ from typing import Any
 from urllib.parse import urlparse
 
 import requests
+from api_cache import get_cached_or_call
+from sociavault_usage import update_sociavault_usage_from_response
 
 
 ROOT = Path.cwd()
@@ -99,21 +101,42 @@ class SociaVaultClient:
 
     def get(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
         cleaned_params = {key: value for key, value in params.items() if value not in (None, "")}
-        response = requests.get(
-            self.api_base + path,
-            headers={
-                "X-API-Key": self.api_key,
-                "Accept": "application/json",
+        request_key = {"api_base": self.api_base, "path": path, "params": cleaned_params}
+
+        def fetch() -> dict[str, Any]:
+            response = requests.get(
+                self.api_base + path,
+                headers={
+                    "X-API-Key": self.api_key,
+                    "Accept": "application/json",
+                },
+                params=cleaned_params,
+                timeout=self.timeout,
+            )
+            response_body: Any | None = None
+            try:
+                response_body = response.json()
+            except ValueError:
+                response_body = None
+            update_sociavault_usage_from_response(response, response_body)
+            if response.status_code >= 400:
+                raise requests.HTTPError(f"{response.status_code} {response.reason}: {response.text[:1000]}", response=response)
+            data = response_body
+            if not isinstance(data, dict):
+                raise ValueError("Unexpected SociaVault response shape")
+            return data
+
+        return get_cached_or_call(
+            "sociavault_tiktok_shop",
+            path,
+            request_key,
+            fetch,
+            metadata_builder=lambda data: {
+                "entity_type": "tiktok_shop",
+                "entity_id": str(first_present(cleaned_params, ("url", "product_id", "query")) or path),
+                "source_url": str(cleaned_params.get("url") or ""),
             },
-            params=cleaned_params,
-            timeout=self.timeout,
         )
-        if response.status_code >= 400:
-            raise requests.HTTPError(f"{response.status_code} {response.reason}: {response.text[:1000]}", response=response)
-        data = response.json()
-        if not isinstance(data, dict):
-            raise ValueError("Unexpected SociaVault response shape")
-        return data
 
 
 def collect_shop_products(client: SociaVaultClient, url: str, region: str, max_pages: int) -> dict[str, Any]:

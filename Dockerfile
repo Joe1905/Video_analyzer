@@ -11,21 +11,15 @@ ARG no_proxy=
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    HTTP_PROXY= \
-    HTTPS_PROXY= \
-    http_proxy= \
-    https_proxy= \
-    ALL_PROXY= \
-    all_proxy= \
-    NO_PROXY= \
-    no_proxy=
+    PIP_NO_CACHE_DIR=1
 
 WORKDIR /workspace
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
+        docker-cli \
+        docker.io \
         ffmpeg \
         git \
     && rm -rf /var/lib/apt/lists/*

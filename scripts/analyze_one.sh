@@ -42,7 +42,7 @@ done
 
 video_name="$1"
 video_path="videos/${video_name}"
-output_dir="output/${video_name}"
+output_dir="${ANALYSIS_OUTPUT_DIR:-output/${video_name}}"
 
 if [ ! -f "$video_path" ]; then
   echo "Video file not found: $video_path"
