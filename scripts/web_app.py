@@ -2106,6 +2106,7 @@ def run_chat_deepseek(session, assistant_msg, user_text: str) -> None:
             f"Intent route: {intent_route.get('intent')}. Only use the exposed tools. "
             "If a tool result has enough_data=true or suggested_next_action=answer_from_results, answer directly. "
             "For product research, compare TikTok Shop demand/sales signals and Amazon product/price/review signals when both are available. "
+            "For TikTok Shop category research that asks for comments/reviews, first use tiktok_shop_search, then use product_id or canonical_url/product URL from those search results to call tiktok_shop_product for selected products; do not call tiktok_shop_reviews alone unless product details are already known. "
             "For media availability/link questions, if tool results include url, play_url, tiktok_music_url, media_urls, or music_url, paste the usable links directly in the answer."
         ),
     })
@@ -2180,10 +2181,10 @@ def run_chat_deepseek(session, assistant_msg, user_text: str) -> None:
 
             if msg.get("tool_calls"):
                 tool_calls = msg["tool_calls"]
-                assistant_msg.tool_calls = tool_calls
+                assistant_msg.tool_calls = list(assistant_msg.tool_calls or []) + tool_calls
                 messages.append({"role": "assistant", "content": msg.get("content") or "", "tool_calls": tool_calls})
-                assistant_msg.tool_results = []
-                chat_store.broadcast(session.id, "update", {"messageId": assistant_msg.id, "tool_calls": tool_calls, "tool_results": []})
+                assistant_msg.tool_results = list(assistant_msg.tool_results or [])
+                chat_store.broadcast(session.id, "update", {"messageId": assistant_msg.id, "tool_calls": assistant_msg.tool_calls, "tool_results": assistant_msg.tool_results})
 
                 for tc in tool_calls:
                     fn_name = tc["function"]["name"]
@@ -2195,7 +2196,7 @@ def run_chat_deepseek(session, assistant_msg, user_text: str) -> None:
                     normalized_result = normalize_tool_result(fn_name, result)
                     messages.append({"role": "tool", "tool_call_id": tc["id"], "content": json.dumps(normalized_result, ensure_ascii=False)})
                     assistant_msg.tool_results.append({"tool_name": fn_name, "result": normalized_result})
-                    chat_store.broadcast(session.id, "update", {"messageId": assistant_msg.id, "tool_calls": tool_calls, "tool_results": assistant_msg.tool_results})
+                    chat_store.broadcast(session.id, "update", {"messageId": assistant_msg.id, "tool_calls": assistant_msg.tool_calls, "tool_results": assistant_msg.tool_results})
                 if music_link_query and any(
                     isinstance(tr.get("result"), dict) and tr["result"].get("enough_data")
                     for tr in assistant_msg.tool_results

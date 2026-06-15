@@ -622,7 +622,7 @@ def _override_tool_schema(name: str, description: str, properties: dict[str, dic
 
 _override_tool_schema(
     "tiktok_shop_product",
-    "Get TikTok Shop product details plus reviews. Use only a TikTok Shop PDP URL like https://www.tiktok.com/shop/pdp/... or a product id from tiktok_shop_search. Do not pass normal TikTok /video/ URLs.",
+    "Get TikTok Shop product details plus reviews/comments. Use this after tiktok_shop_search when the user asks for product details, reviews, comments, complaints, or sentiment. Pass a TikTok Shop PDP URL, canonical_url/product_url, or numeric product_id from tiktok_shop_search. Do not pass normal TikTok /video/ URLs.",
     {"url": {"type": "string", "description": "TikTok Shop product URL containing /shop/pdp/ or a numeric product_id. Not a TikTok /video/ URL."}},
 )
 _override_tool_schema(
@@ -632,12 +632,12 @@ _override_tool_schema(
 )
 _override_tool_schema(
     "tiktok_shop_reviews",
-    "Get TikTok Shop product reviews. Use only a TikTok Shop PDP URL like https://www.tiktok.com/shop/pdp/... or a numeric product_id. Do not pass normal TikTok /video/ URLs.",
+    "Get TikTok Shop product reviews only. Prefer tiktok_shop_product when the user also needs product details or when starting from search results, because product detail context is usually needed. Use only a TikTok Shop PDP URL/canonical_url/product_url or numeric product_id. Do not pass normal TikTok /video/ URLs.",
     {"url": {"type": "string", "description": "TikTok Shop product URL containing /shop/pdp/ or numeric product_id. Not a TikTok /video/ URL."}},
 )
 _override_tool_schema(
     "tiktok_shop_search",
-    "Search TikTok Shop products. The result includes product_id, title, price, sold_count, shop_name, labels, and product URL; if enough_data=true, answer product-selection questions directly from these results instead of calling detail tools.",
+    "Search TikTok Shop products. The result includes product_id, title, price, sold_count, shop_name, labels, and product URL/canonical_url when available. For category/product-selection questions, answer from these results if enough_data=true. If the user asks for reviews/comments for specific products, use product_id or canonical_url from these results in tiktok_shop_product as the next tool call.",
     {"query": {"type": "string", "description": "Product search keywords, e.g. 'quiet book travel busy book'. Not a URL."}},
 )
 _override_tool_schema(
