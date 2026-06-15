@@ -10,6 +10,7 @@ from typing import Any
 
 import requests
 from api_cache import get_cached_or_call
+from entity_registry import find_user, get_entity, videos_for_user
 from sociavault_usage import update_sociavault_usage_from_response
 
 ROOT = Path.cwd()
@@ -70,6 +71,69 @@ def first_present(data: dict[str, Any], names: tuple[str, ...]) -> Any:
     return None
 
 
+def _video_id_from_url(url: str) -> str:
+    import re
+    match = re.search(r"/video/(\d+)", str(url or ""))
+    return match.group(1) if match else ""
+
+
+def registry_fallback(endpoint: str, params: dict[str, Any]) -> dict[str, Any] | None:
+    if endpoint == "videos":
+        handle = str(first_present(params, ("handle", "user_id", "sec_uid")) or "").strip().lstrip("@")
+        items = videos_for_user(handle, int(params.get("count") or 50))
+        if items:
+            return {
+                "ok": True,
+                "source": "entity_registry",
+                "fallback_reason": "api_miss_or_empty",
+                "videos": items,
+                "data": {"videos": items},
+                "_cache": {"hit": True, "provider": "entity_registry", "endpoint": "tiktok_user_videos", "label": "?????"},
+            }
+    if endpoint == "profile":
+        handle = str(first_present(params, ("handle", "user_id", "sec_uid")) or "").strip().lstrip("@")
+        user = find_user(handle)
+        if user:
+            snapshot = (user.get("extra") or {}).get("snapshot") if isinstance(user.get("extra"), dict) else None
+            data = dict(snapshot) if isinstance(snapshot, dict) else {}
+            data.setdefault("uid", user.get("entity_id"))
+            data.setdefault("unique_id", user.get("author") or user.get("title"))
+            data.setdefault("url", user.get("source_url"))
+            data["_entity_registry"] = {"hit": True, "last_seen_at": user.get("last_seen_at")}
+            return {"ok": True, "source": "entity_registry", "profile": data, "data": data, "_cache": {"hit": True, "provider": "entity_registry", "endpoint": "tiktok_user", "label": "?????"}}
+    if endpoint == "video-info":
+        video_id = _video_id_from_url(str(params.get("url") or "")) or str(first_present(params, ("video_id", "aweme_id", "item_id")) or "")
+        entity = get_entity("tiktok_video", video_id) if video_id else None
+        if entity:
+            extra = entity.get("extra") or {}
+            snapshot = extra.get("snapshot") if isinstance(extra.get("snapshot"), dict) else {}
+            data = dict(snapshot) if snapshot else {}
+            data.setdefault("aweme_id", entity.get("entity_id"))
+            data.setdefault("video_id", entity.get("entity_id"))
+            data.setdefault("desc", entity.get("title"))
+            data.setdefault("url", entity.get("source_url"))
+            data.setdefault("author", {"unique_id": entity.get("author")})
+            if extra.get("stats"):
+                data.setdefault("statistics", extra.get("stats"))
+            data["_entity_registry"] = {"hit": True, "last_seen_at": entity.get("last_seen_at"), "source_url": entity.get("source_url")}
+            return {"ok": True, "source": "entity_registry", "video": data, "data": data, "_cache": {"hit": True, "provider": "entity_registry", "endpoint": "tiktok_video", "label": "?????"}}
+    return None
+
+
+def is_empty_api_result(endpoint: str, payload: dict[str, Any]) -> bool:
+    if endpoint == "videos":
+        for key in ("videos", "items", "aweme_list", "data"):
+            value = payload.get(key)
+            if isinstance(value, list) and value:
+                return False
+            if isinstance(value, dict):
+                nested = value.get("videos") or value.get("items") or value.get("aweme_list")
+                if isinstance(nested, list) and nested:
+                    return False
+        return True
+    return False
+
+
 def call_api(api_key: str, api_base: str, endpoint: str, params: dict[str, Any], timeout: float) -> dict[str, Any]:
     path = ENDPOINTS[endpoint]
     cleaned = {k: v for k, v in params.items() if v not in (None, "")}
@@ -98,18 +162,29 @@ def call_api(api_key: str, api_base: str, endpoint: str, params: dict[str, Any],
             raise ValueError("Unexpected SociaVault response shape")
         return data
 
-    return get_cached_or_call(
-        "sociavault_tiktok",
-        endpoint,
-        request_key,
-        fetch,
-        ttl_seconds=VIDEO_INFO_TTL_SECONDS if endpoint == "video-info" else None,
-        metadata_builder=lambda data: {
-            "entity_type": "tiktok",
-            "entity_id": str(first_present(cleaned, ("url", "handle", "query", "hashtag", "sound_id")) or endpoint),
-            "source_url": str(cleaned.get("url") or ""),
-        },
-    )
+    try:
+        data = get_cached_or_call(
+            "sociavault_tiktok",
+            endpoint,
+            request_key,
+            fetch,
+            ttl_seconds=VIDEO_INFO_TTL_SECONDS if endpoint == "video-info" else None,
+            metadata_builder=lambda data: {
+                "entity_type": "tiktok",
+                "entity_id": str(first_present(cleaned, ("url", "handle", "query", "hashtag", "sound_id")) or endpoint),
+                "source_url": str(cleaned.get("url") or ""),
+            },
+        )
+    except Exception:
+        fallback = registry_fallback(endpoint, cleaned)
+        if fallback is not None:
+            return fallback
+        raise
+    if is_empty_api_result(endpoint, data):
+        fallback = registry_fallback(endpoint, cleaned)
+        if fallback is not None:
+            return fallback
+    return data
 
 
 def build_params(args: argparse.Namespace) -> dict[str, Any]:

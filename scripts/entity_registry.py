@@ -13,7 +13,7 @@ ROOT = Path.cwd()
 DB_PATH = ROOT / "data" / "entity_registry.sqlite"
 DAY_SECONDS = 24 * 60 * 60
 DEFAULT_TTL_SECONDS = DAY_SECONDS
-STABLE_TTL_SECONDS = 30 * DAY_SECONDS
+STABLE_TTL_SECONDS = 10 * 365 * DAY_SECONDS
 
 
 def _connect() -> sqlite3.Connection:
@@ -76,6 +76,29 @@ def _nested(value: dict[str, Any], *names: str) -> dict[str, Any]:
         if isinstance(child, dict):
             return child
     return {}
+
+
+def _compact_extra(value: dict[str, Any], limit: int = 50000) -> dict[str, Any]:
+    try:
+        text = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:
+        return {}
+    if len(text) <= limit:
+        return value
+    return {"_truncated": True, "keys": sorted(map(str, value.keys()))[:80]}
+
+
+def _stats(value: dict[str, Any]) -> dict[str, Any]:
+    stats = _nested(value, "statistics", "stats", "statistics_info", "stats_info")
+    out: dict[str, Any] = {}
+    for key in (
+        "play_count", "playCount", "digg_count", "diggCount", "like_count", "likeCount",
+        "comment_count", "commentCount", "share_count", "shareCount", "collect_count", "collectCount",
+    ):
+        found = value.get(key, stats.get(key) if isinstance(stats, dict) else None)
+        if found not in (None, "", [], {}):
+            out[key] = found
+    return out
 
 
 def register_entity(
@@ -171,6 +194,11 @@ def _register_user(value: dict[str, Any], provider: str, endpoint: str) -> int:
         author=handle,
         provider=provider,
         endpoint=endpoint,
+        extra={
+            "handle": handle,
+            "nickname": _first_present(value, ("nickname", "nickName", "display_name", "displayName")),
+            "snapshot": _compact_extra(value),
+        },
     )
     return 1
 
@@ -196,15 +224,26 @@ def _register_video(value: dict[str, Any], provider: str, endpoint: str) -> int:
         return 0
     author = _nested(value, "author")
     music = _nested(value, "music", "added_sound_music_info", "music_info")
+    author_handle = str(_first_present(author, ("unique_id", "uniqueId", "nickname")) or _first_present(value, ("author_unique_id", "authorUniqueId")) or "")
+    author_id = _first_present(author, ("uid", "user_id", "userId", "sec_uid", "secUid", "id")) or _first_present(value, ("author_id", "authorId", "sec_uid", "secUid"))
+    source_url = str(_first_present(value, ("share_url", "shareUrl", "webpage_url", "url")) or "")
+    if not source_url and author_handle:
+        source_url = f"https://www.tiktok.com/@{author_handle}/video/{video_id}"
     register_entity(
         "tiktok_video",
         video_id,
-        source_url=str(_first_present(value, ("share_url", "shareUrl", "webpage_url", "url")) or ""),
+        source_url=source_url,
         title=str(_first_present(value, ("desc", "description", "title")) or ""),
-        author=str(_first_present(author, ("unique_id", "uniqueId", "nickname")) or ""),
+        author=author_handle,
         provider=provider,
         endpoint=endpoint,
-        extra={"music_id": _first_present(music, ("id", "mid", "music_id", "musicId"))},
+        extra={
+            "author_id": author_id,
+            "author_handle": author_handle,
+            "music_id": _first_present(music, ("id", "mid", "music_id", "musicId")),
+            "stats": _stats(value),
+            "snapshot": _compact_extra(value),
+        },
     )
     return 1
 
@@ -265,3 +304,95 @@ def register_entities_from_payload(payload: Any, *, provider: str = "", endpoint
     except Exception as exc:
         print(f"[ENTITY_REGISTRY] scan failed provider={provider} endpoint={endpoint}: {exc}", flush=True)
         return 0
+
+
+
+def _row_to_entity(row: sqlite3.Row | tuple[Any, ...]) -> dict[str, Any]:
+    keys = ["entity_type", "entity_id", "canonical_key", "source_url", "title", "author", "provider", "endpoint", "first_seen_at", "last_seen_at", "expires_at", "hit_count", "extra_json"]
+    data = dict(zip(keys, row))
+    extra_raw = data.pop("extra_json", "") or ""
+    try:
+        data["extra"] = json.loads(extra_raw) if extra_raw else {}
+    except Exception:
+        data["extra"] = {}
+    return data
+
+
+def get_entity(entity_type: str, entity_id: Any) -> dict[str, Any] | None:
+    clean_id = _clean_id(entity_id)
+    if not clean_id:
+        return None
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT entity_type, entity_id, canonical_key, source_url, title, author,
+                   provider, endpoint, first_seen_at, last_seen_at, expires_at, hit_count, extra_json
+            FROM entities WHERE entity_type = ? AND entity_id = ?
+            """,
+            (_clean_id(entity_type).lower(), clean_id),
+        ).fetchone()
+    return _row_to_entity(row) if row else None
+
+
+def find_user(identifier: str) -> dict[str, Any] | None:
+    needle = str(identifier or "").strip().lstrip("@").lower()
+    if not needle:
+        return None
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT entity_type, entity_id, canonical_key, source_url, title, author,
+                   provider, endpoint, first_seen_at, last_seen_at, expires_at, hit_count, extra_json
+            FROM entities WHERE entity_type = 'tiktok_user'
+            """
+        ).fetchall()
+    for row in rows:
+        entity = _row_to_entity(row)
+        extra = entity.get("extra") or {}
+        values = [entity.get("entity_id"), entity.get("title"), entity.get("author"), extra.get("handle"), extra.get("nickname")]
+        if any(str(v or "").strip().lstrip("@").lower() == needle for v in values):
+            return entity
+    return None
+
+
+def videos_for_user(identifier: str, limit: int = 50) -> list[dict[str, Any]]:
+    needle = str(identifier or "").strip().lstrip("@").lower()
+    if not needle:
+        return []
+    user = find_user(needle)
+    user_ids = {needle}
+    if user:
+        user_ids.add(str(user.get("entity_id") or "").lower())
+        extra = user.get("extra") or {}
+        user_ids.add(str(extra.get("handle") or "").strip().lstrip("@").lower())
+        user_ids.add(str(extra.get("nickname") or "").strip().lstrip("@").lower())
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT entity_type, entity_id, canonical_key, source_url, title, author,
+                   provider, endpoint, first_seen_at, last_seen_at, expires_at, hit_count, extra_json
+            FROM entities WHERE entity_type = 'tiktok_video'
+            ORDER BY last_seen_at DESC
+            """
+        ).fetchall()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        entity = _row_to_entity(row)
+        extra = entity.get("extra") or {}
+        values = [entity.get("author"), extra.get("author_handle"), extra.get("author_id")]
+        if not any(str(v or "").strip().lstrip("@").lower() in user_ids for v in values):
+            continue
+        snapshot = extra.get("snapshot") if isinstance(extra.get("snapshot"), dict) else {}
+        item = dict(snapshot) if snapshot else {}
+        item.setdefault("aweme_id", entity.get("entity_id"))
+        item.setdefault("video_id", entity.get("entity_id"))
+        item.setdefault("desc", entity.get("title"))
+        item.setdefault("url", entity.get("source_url"))
+        item.setdefault("author", {"unique_id": entity.get("author")})
+        if extra.get("stats"):
+            item.setdefault("statistics", extra.get("stats"))
+        item["_entity_registry"] = {"hit": True, "last_seen_at": entity.get("last_seen_at"), "source_url": entity.get("source_url")}
+        out.append(item)
+        if len(out) >= limit:
+            break
+    return out
