@@ -49,7 +49,12 @@ header{height:60px;display:flex;align-items:center;justify-content:space-between
 .msg .time{font-size:10px;color:var(--text3);margin-top:3px;padding:0 4px}
 .tool-log{margin:4px 0}.tool-log summary{cursor:pointer;color:var(--text2);font-size:12px;font-weight:700;margin:4px 0 6px}.tool-card{margin:4px 0;background:var(--border2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 14px;font-size:12px}.tool-card .tool-name{font-weight:700;color:var(--brand);margin-bottom:4px}.tool-card .tool-status{font-size:11px}.tool-card .tool-status.ok{color:var(--green)}.tool-card .tool-status.err{color:var(--red)}.cache-tag{display:inline-flex;align-items:center;margin-left:6px;border:1px solid var(--border);border-radius:999px;padding:1px 7px;background:#fff;color:var(--text2);font-size:10px;font-weight:700}.cache-tag.hit{border-color:#bfdbfe;background:#eff6ff;color:#1d4ed8}.cache-tag.live{border-color:#bbf7d0;background:#f0fdf4;color:#047857}
 .input-bar{display:flex;gap:8px;padding:14px 20px;border-top:1px solid var(--border);background:var(--surface);align-items:flex-end}
-.input-bar textarea{flex:1;min-height:42px;max-height:120px;padding:10px 14px;border-radius:20px}
+.composer{flex:1;display:flex;flex-direction:column;gap:6px}
+.input-bar textarea{width:100%;min-height:42px;max-height:120px;padding:10px 14px;border-radius:20px}
+.quote-preview{display:none;border:1px solid var(--border);border-left:3px solid var(--brand);background:var(--border2);border-radius:10px;padding:8px 10px;font-size:12px;color:var(--text2)}
+.quote-preview.show{display:block}.quote-preview .quote-head{display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:4px;color:var(--text);font-weight:700}.quote-preview .quote-text{max-height:72px;overflow:auto;white-space:pre-wrap;line-height:1.45}
+.quote-toolbar{position:fixed;z-index:60;display:none;background:var(--surface);border:1px solid var(--border);box-shadow:0 8px 30px rgba(15,23,42,.16);border-radius:10px;padding:5px}
+.quote-toolbar.show{display:flex}
 .load-more{text-align:center;padding:8px;color:var(--text3);font-size:12px;cursor:pointer}.load-more:hover{color:var(--brand)}
 .empty-chat{display:flex;align-items:center;justify-content:center;height:100%;color:var(--text3);font-size:15px;text-align:center;flex-direction:column;gap:8px}.empty-chat b{color:var(--text);font-size:20px}
 /* Modal */
@@ -75,12 +80,19 @@ header{height:60px;display:flex;align-items:center;justify-content:space-between
   <main class="chat-main">
     <div class="messages" id="messages"><div class="empty-chat" id="emptyChat"><b>👋 AI 短视频分析助手</b><span>选择一个工具或直接输入问题</span></div></div>
     <div class="input-bar">
-      <textarea id="input" rows="1" placeholder="输入消息，Enter 发送..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();send()}"></textarea>
+      <div class="composer">
+        <div class="quote-preview" id="quotePreview">
+          <div class="quote-head"><span>引用内容</span><button class="ghost sm" id="clearQuote" title="取消引用">×</button></div>
+          <div class="quote-text" id="quotePreviewText"></div>
+        </div>
+        <textarea id="input" rows="1" placeholder="输入消息，Enter 发送..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();send()}"></textarea>
+      </div>
       <button id="toolBtn" class="secondary sm" title="工具选择">🎯</button>
       <button id="sendBtn" class="primary" onclick="send()">发送</button>
     </div>
   </main>
 </div>
+<div class="quote-toolbar" id="quoteToolbar"><button class="secondary sm" id="quoteAskBtn">引用提问</button></div>
 <div class="modal-overlay" id="toolModal">
   <div class="modal-box">
     <div class="modal-head"><span>🔧 工具选择</span><button class="ghost sm" onclick="closeModal()">✕</button></div>
@@ -93,8 +105,9 @@ header{height:60px;display:flex;align-items:center;justify-content:space-between
   </div>
 </div>
 <script>
-const S={sessionId:"default",sessions:[],messages:[],enabledTools:null,nextBefore:null,hasMore:false,loading:false,sse:null};
+const S={sessionId:"default",sessions:[],messages:[],enabledTools:null,nextBefore:null,hasMore:false,loading:false,sse:null,quote:null,selectionText:""};
 const $=id=>document.getElementById(id),msgBox=$("messages"),input=$("input"),emptyChat=$("emptyChat");
+const quoteToolbar=$("quoteToolbar"),quotePreview=$("quotePreview"),quotePreviewText=$("quotePreviewText");
 const SESSION_KEY="videoAnalyzer.chat.sessionId";
 
 function formatTime(ts){if(!ts)return"未同步";return new Date(ts*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false})}
@@ -119,6 +132,42 @@ function renderMessages(scroll=true){if(!S.messages.length){showEmptyChat(true);
 function pruneRenderedMessages(){const keys=new Set();S.messages.forEach(m=>{if(m.id)keys.add(String(m.id));if(m._clientId)keys.add(String(m._clientId))});msgBox.querySelectorAll(".msg").forEach(el=>{const id=el.dataset.msgId||"";const cid=el.dataset.clientMsgId||"";if((id||cid)&&!keys.has(id)&&!keys.has(cid))el.remove()})}
 function cacheTag(result){const c=result&&result.cache;if(!c)return"";return `<span class="cache-tag ${c.hit?'hit':'live'}">${c.hit?'缓存命中':'实时调用'}</span>`}
 function closeSSE(){if(S.sse){S.sse.close();S.sse=null}}
+function hideQuoteToolbar(){quoteToolbar.classList.remove("show")}
+function currentAssistantSelection(){
+  const sel=window.getSelection();
+  if(!sel||sel.rangeCount===0||sel.isCollapsed)return null;
+  const text=sel.toString().replace(/\s+/g," ").trim();
+  if(text.length<2)return null;
+  const range=sel.getRangeAt(0);
+  let node=range.commonAncestorContainer;
+  if(node.nodeType===3)node=node.parentElement;
+  const bubble=node&&node.closest?node.closest(".msg.assistant .bubble"):null;
+  if(!bubble||!msgBox.contains(bubble))return null;
+  return {text,rect:range.getBoundingClientRect()};
+}
+function showQuoteToolbar(){
+  setTimeout(()=>{
+    const picked=currentAssistantSelection();
+    if(!picked){hideQuoteToolbar();return}
+    S.selectionText=picked.text.slice(0,2000);
+    const left=Math.min(window.innerWidth-130,Math.max(8,picked.rect.left));
+    const top=Math.max(8,picked.rect.top-42);
+    quoteToolbar.style.left=left+"px";
+    quoteToolbar.style.top=top+"px";
+    quoteToolbar.classList.add("show");
+  },0);
+}
+function setQuote(text){
+  S.quote=String(text||"").trim().slice(0,2000);
+  if(!S.quote){clearQuote();return}
+  quotePreviewText.textContent=S.quote;
+  quotePreview.classList.add("show");
+}
+function clearQuote(){
+  S.quote=null;
+  quotePreviewText.textContent="";
+  quotePreview.classList.remove("show");
+}
 function toolArgs(t){try{const raw=t&&t.function&&t.function.arguments;if(!raw)return{};return typeof raw==="string"?JSON.parse(raw):(raw||{})}catch(e){return{}}}
 function firstArg(args,names){for(const n of names){const v=args&&args[n];if(v!==undefined&&v!==null&&String(v).trim())return String(v).trim()}return""}
 function shortValue(v){v=String(v||"").trim();if(!v)return"";if(v.length>80)v=v.slice(0,77)+"...";return v}
@@ -183,16 +232,19 @@ function subscribeSSE(sid,am){
 }
 function renderMsg(m,scroll=true){var id=String(m.id||"");var clientId=String(m._clientId||id);var div=null;if(id)div=msgBox.querySelector(`[data-msg-id="${CSS.escape(id)}"]`);if(!div&&clientId)div=msgBox.querySelector(`[data-client-msg-id="${CSS.escape(clientId)}"]`);if(!div){div=document.createElement("div");msgBox.appendChild(div)}if(id)div.dataset.msgId=id;if(clientId)div.dataset.clientMsgId=clientId;div.className="msg "+m.role;var body="";if(m.role==="user"){body='<div class="bubble">'+esc(m.content)+'</div>'}else if(m.role==="assistant"){var c=m.content||"";if(m.status==="pending")c="思考中...";else c=md(c);body=renderToolCards(m)+'<div class="bubble">'+c+'</div>'}var ts='';if(m.created_at){var d=new Date(m.created_at*1000);ts='<div class="time">'+d.toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false})+'</div>'}body+=ts;div.innerHTML=body;if(scroll)msgBox.scrollTop=msgBox.scrollHeight}
 async function send(){
-  const text=input.value.trim();
-  if(!text||S.loading)return;
+  const rawText=input.value.trim();
+  if(!rawText||S.loading)return;
+  const quoteText=S.quote?String(S.quote).trim():"";
+  const text=quoteText?`引用内容：\n> ${quoteText.replace(/\n/g,"\n> ")}\n\n我的问题：${rawText}`:rawText;
   input.value="";
+  clearQuote();
   closeSSE();
   if(!S.messages.length)showEmptyChat(false);
   const started=Date.now()/1000;
   const userCid="user-"+Date.now().toString(36)+"-"+Math.random().toString(36).slice(2,7);
   const um={id:userCid,_clientId:userCid,role:"user",content:text,status:"done",created_at:started};
   S.messages.push(um);
-  ensureLocalSession(text.slice(0,40)+(text.length>40?"...":""));
+  ensureLocalSession(rawText.slice(0,40)+(rawText.length>40?"...":""));
   renderMsg(um);
   renderSessions();
   const cid="pending-"+Date.now().toString(36)+"-"+Math.random().toString(36).slice(2,7);
@@ -207,7 +259,7 @@ async function send(){
     if(!r.ok){
       am.content=j.error||"请求失败";
       am.status="error";
-      ensureLocalSession(text.slice(0,40)+(text.length>40?"...":""));
+      ensureLocalSession(rawText.slice(0,40)+(rawText.length>40?"...":""));
       renderMsg(am,false);
       pruneRenderedMessages();
       return;
@@ -220,7 +272,7 @@ async function send(){
     am.id=j.message.id;
     S.sessionId=j.sessionId;
     rememberSession(j.sessionId);
-    ensureLocalSession(text.slice(0,40)+(text.length>40?"...":""));
+    ensureLocalSession(rawText.slice(0,40)+(rawText.length>40?"...":""));
     renderMsg(am,false);
     pruneRenderedMessages();
     loadSessions();
@@ -239,6 +291,11 @@ $("toolSelectAll").onclick=function(){document.querySelectorAll("#toolModalBody 
 $("toolSave").onclick=async()=>{const checks=document.querySelectorAll("#toolModalBody input[type=checkbox]");const all=Array.from(checks).filter(c=>c.checked).map(c=>c.value);if(all.length===checks.length)S.enabledTools=null;else S.enabledTools=all;await fetch("/api/chat/tool-config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:S.enabledTools})});closeModal()}
 $("toolBtn").onclick=openModal;
 $("toolModal").onclick=e=>{if(e.target===$("toolModal"))closeModal()}
+msgBox.addEventListener("mouseup",showQuoteToolbar);
+msgBox.addEventListener("keyup",showQuoteToolbar);
+$("quoteAskBtn").onclick=()=>{if(S.selectionText)setQuote(S.selectionText);hideQuoteToolbar();window.getSelection()?.removeAllRanges();input.focus()};
+$("clearQuote").onclick=clearQuote;
+document.addEventListener("mousedown",e=>{if(!quoteToolbar.contains(e.target))hideQuoteToolbar()});
 function esc(v){return String(v||"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]))}
 function inlineMd(v){let s=esc(v);s=s.replace(/`([^`]+)`/g,'<code>$1</code>');s=s.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,function(_,text,url){const safe=esc(url);return `<a href="${safe}" target="_blank" rel="noopener noreferrer">${text}</a>`});s=s.replace(/\*\*(.+?)\*\*/g,'<b>$1</b>');s=s.replace(/(^|[^\*])\*([^\*]+)\*/g,'$1<i>$2</i>');return s}
 function splitTableRow(line){let t=String(line||"").trim();if(t.startsWith("|"))t=t.slice(1);if(t.endsWith("|"))t=t.slice(0,-1);return t.split("|").map(c=>c.trim())}
