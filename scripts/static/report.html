@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>每日热点视频报告</title>
+<style>
+:root{--bg:#f6f8fb;--surface:#fff;--text:#0f172a;--text2:#475569;--text3:#94a3b8;--border:#e2e8f0;--border2:#f1f5f9;--brand:#2563eb;--brand2:#1d4ed8;--brand-soft:#eff6ff;--green:#059669;--green-soft:#ecfdf5;--red:#dc2626;--red-soft:#fef2f2;--amber:#d97706;--amber-soft:#fffbeb;--radius:10px}
+*{box-sizing:border-box;margin:0}
+body{background:var(--bg);color:var(--text);font-family:"Segoe UI",system-ui,-apple-system,sans-serif;line-height:1.5}
+button{border:1px solid transparent;border-radius:8px;min-height:36px;padding:8px 14px;font-weight:700;cursor:pointer;background:var(--brand);color:#fff}
+button:hover{background:var(--brand2)}button:disabled{opacity:.55;cursor:not-allowed}
+button.secondary{background:#fff;color:var(--brand);border-color:var(--border)}
+header{height:60px;display:flex;align-items:center;justify-content:space-between;padding:0 24px;background:rgba(255,255,255,.86);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:3;backdrop-filter:blur(16px)}
+h1{font-size:18px}.nav-links{display:flex;gap:6px;align-items:center}.nav-links a{text-decoration:none;font-size:13px;font-weight:700;color:var(--text2);padding:6px 12px;border-radius:8px;border:1px solid transparent}.nav-links a:hover{background:var(--border2);color:var(--text)}.nav-links a.active{background:var(--brand-soft);color:var(--brand);border-color:var(--brand)}
+main{padding:20px;display:grid;gap:16px;max-width:1280px;margin:0 auto}
+.hero,.panel,.video{border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);box-shadow:0 1px 2px rgba(15,23,42,.04)}
+.hero{padding:18px;display:flex;justify-content:space-between;gap:16px;align-items:flex-start}.hero h2{font-size:22px;margin-bottom:6px}.muted{color:var(--text2);font-size:13px}.status{display:inline-flex;align-items:center;border-radius:999px;padding:3px 9px;font-size:12px;font-weight:800;background:var(--border2);color:var(--text2)}.status.complete{background:var(--green-soft);color:var(--green)}.status.failed{background:var(--red-soft);color:var(--red)}.status.missing{background:var(--amber-soft);color:var(--amber)}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px}.metric{border:1px solid var(--border);border-radius:8px;padding:10px 12px;background:#fff}.metric span{display:block;color:var(--text2);font-size:12px;font-weight:700}.metric b{display:block;margin-top:4px;font-size:16px}
+.panel{padding:16px}.panel h3{font-size:15px;margin-bottom:10px}.sources{display:flex;flex-wrap:wrap;gap:8px}.source{border:1px solid var(--border);border-radius:999px;background:var(--border2);padding:5px 9px;color:var(--text2);font-size:12px;font-weight:700}
+.videos{display:grid;gap:10px}.video{padding:14px;display:grid;grid-template-columns:52px minmax(0,1fr) auto;gap:12px;align-items:start}.rank{width:40px;height:40px;border-radius:8px;background:var(--brand-soft);color:var(--brand);display:flex;align-items:center;justify-content:center;font-weight:900}.video h3{font-size:15px;margin-bottom:5px;word-break:break-word}.video-meta{display:flex;flex-wrap:wrap;gap:8px;color:var(--text2);font-size:12px}.video-meta span{border:1px solid var(--border);border-radius:999px;padding:3px 7px;background:#fff}.score{text-align:right;font-weight:900;color:var(--brand)}.actions{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}.raw{display:none;grid-column:1/-1;background:#0f172a;color:#e2e8f0;border-radius:8px;padding:12px;overflow:auto;white-space:pre-wrap;font:12px/1.55 Consolas,monospace}.raw.show{display:block}
+.empty{border:1px dashed var(--border);border-radius:var(--radius);padding:28px;text-align:center;color:var(--text2);background:#fff}
+@media(max-width:760px){.hero{display:grid}.video{grid-template-columns:40px minmax(0,1fr)}.score{grid-column:1/-1;text-align:left}.actions{justify-content:flex-start}header{padding:0 14px}.nav-links a{padding:6px 8px}}
+</style>
+</head>
+<body>
+<header><h1>每日热点视频报告</h1><nav class="nav-links"><a href="/">首页</a><a href="/report" class="active">报告</a><a href="/metrics">数据</a><a href="/extract">视频分析</a></nav></header>
+<main>
+  <section class="hero">
+    <div>
+      <h2 id="title">今日热点报告</h2>
+      <div id="summary" class="muted">正在加载...</div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <span id="status" class="status">loading</span>
+      <button id="run">生成今日报告</button>
+    </div>
+  </section>
+  <section class="stats" id="stats"></section>
+  <section class="panel">
+    <h3>采集来源</h3>
+    <div id="sources" class="sources"></div>
+  </section>
+  <section class="videos" id="videos"></section>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+let current=null;
+function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]))}
+function fmtTime(ts){return ts?new Date(ts*1000).toLocaleString("zh-CN",{hour12:false}):"-"}
+function metric(label,value){return `<div class="metric"><span>${esc(label)}</span><b>${esc(value??"-")}</b></div>`}
+function statusLabel(s){return {complete:"已生成",failed:"生成失败",missing:"待生成",running:"生成中"}[s]||s}
+function render(data){
+  current=data;
+  const exists=!!data.exists;
+  const status=data.status||"missing";
+  $("status").className="status "+status;
+  $("status").textContent=statusLabel(status);
+  $("title").textContent=`${data.report_date||""} 热点视频报告`;
+  $("run").disabled=status==="running";
+  $("summary").textContent=exists?`更新时间：${fmtTime(data.updated_at)}，区域：${data.region||"-"}，视频数：${data.video_count||0}${data.error?"，错误："+data.error:""}`:"今日还没有生成热点报告。";
+  const videos=Array.isArray(data.videos)?data.videos:[];
+  $("stats").innerHTML=[
+    metric("状态",statusLabel(status)),
+    metric("视频数",videos.length),
+    metric("区域",data.region||"-"),
+    metric("更新时间",fmtTime(data.updated_at))
+  ].join("");
+  const sources=Array.isArray(data.sources)?data.sources:[];
+  $("sources").innerHTML=sources.length?sources.map(s=>`<span class="source">${esc(s.label||s.endpoint)} ${esc(s.params?JSON.stringify(s.params):"")}</span>`).join(""):`<span class="muted">暂无采集来源</span>`;
+  if(!videos.length){
+    $("videos").innerHTML=`<div class="empty">${status==="failed"?"报告生成失败，请检查 SociaVault 配置或日志。":"暂无热点视频，点击生成今日报告。"}</div>`;
+    return;
+  }
+  $("videos").innerHTML=videos.map((v,i)=>{
+    const m=v.metrics||{};
+    return `<article class="video">
+      <div class="rank">${i+1}</div>
+      <div>
+        <h3>${esc(v.title||"(无标题)")}</h3>
+        <div class="video-meta">
+          ${v.author?`<span>@${esc(v.author)}</span>`:""}
+          <span>播放 ${esc(m.play_count||0)}</span><span>赞 ${esc(m.like_count||0)}</span><span>评 ${esc(m.comment_count||0)}</span><span>转 ${esc(m.share_count||0)}</span><span>藏 ${esc(m.favorite_count||0)}</span>
+          <span>${esc(v.source_label||v.source_endpoint||"")}</span>
+        </div>
+        <div class="actions">
+          ${v.source_url?`<a href="${esc(v.source_url)}" target="_blank" rel="noopener noreferrer"><button class="secondary">原始链接</button></a>`:""}
+          <button class="secondary" onclick="toggleRaw(${i})">原始 JSON</button>
+        </div>
+      </div>
+      <div class="score">热度分<br>${esc(v.hot_score||0)}</div>
+      <pre class="raw" id="raw-${i}">${esc(JSON.stringify(v.raw||{},null,2))}</pre>
+    </article>`;
+  }).join("");
+}
+function toggleRaw(i){$("raw-"+i)?.classList.toggle("show")}
+async function loadToday(){const r=await fetch("/api/report/today?raw=1");const data=await r.json();render(data)}
+async function runReport(){
+  $("run").disabled=true;
+  $("status").className="status running";
+  $("status").textContent="生成中";
+  try{
+    const r=await fetch("/api/report/run",{method:"POST"});
+    const data=await r.json();
+    render(data);
+  }catch(e){
+    $("summary").textContent=e.message;
+  }finally{
+    $("run").disabled=false;
+  }
+}
+$("run").onclick=runReport;
+loadToday().catch(e=>{$("summary").textContent=e.message;$("status").textContent="加载失败"});
+</script>
+</body>
+</html>

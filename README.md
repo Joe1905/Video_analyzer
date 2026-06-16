@@ -55,6 +55,10 @@ SOCIAVAULT_API_BASE=https://api.sociavault.com
 SOCIAVAULT_REGION=US
 SOCIAVAULT_MAX_PAGES=1
 SOCIAVAULT_REVIEW_PAGES=1
+HOT_VIDEO_REGION=US
+HOT_VIDEO_KEYWORDS=viral
+HOT_VIDEO_SOURCE_COUNT=30
+HOT_VIDEO_REPORT_LIMIT=20
 
 AMAZON_PROXY=
 AMAZON_PROXIES=
@@ -116,6 +120,39 @@ The page supports:
 - showing processing mode, model, token usage, estimated cost, and total elapsed time
 - viewing `提取内容（中文）` and `分析结果（中文）`
 - switching each result tab back to original JSON with `显示原文`
+
+## Daily Hot Video Report
+
+A daily hot-video report page is available on the same web port:
+
+```text
+http://<server>:4000/report
+```
+
+The home page shows a banner for today's report. The v1 report manually collects TikTok hot-video candidates through SociaVault, stores the daily snapshot in local SQLite, and displays the ranked list. It does not generate a knowledge base or DeepSeek strategy summary yet.
+
+The report API uses separate endpoints:
+
+```text
+GET /api/report/today
+GET /api/report/history
+POST /api/report/run
+```
+
+Results are stored in:
+
+```text
+data/hot_video_report.sqlite
+```
+
+Optional settings:
+
+```env
+HOT_VIDEO_REGION=US
+HOT_VIDEO_KEYWORDS=viral,makeup,fitness
+HOT_VIDEO_SOURCE_COUNT=30
+HOT_VIDEO_REPORT_LIMIT=20
+```
 
 ## Amazon Scraper
 

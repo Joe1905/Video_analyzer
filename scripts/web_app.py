@@ -59,6 +59,7 @@ from tools import execute_tool, get_tools_for_model, list_tools
 from video_queue import video_queue, STATUS_META
 from api_cache import get_cached_or_call, record_api_call
 from api_cache import get_cached, store_response
+from hot_video_report import get_report, list_reports, run_report
 from tiktok_download import video_cache_metadata, video_cache_request, with_download_cache_meta
 from video_registry import (
     get_video_by_filename,
@@ -382,9 +383,9 @@ def metric_item(label: str, value: Any) -> str:
 
 
 def build_report_html(filename: str, tab: str, payload: dict[str, Any]) -> str:
-    is_audit = tab == "audit"
-    title = "分析结果报告" if is_audit else "提取内容报告"
-    eyebrow = "DeepSeek 分析" if is_audit else "Qwen Video Extraction"
+    is_audit = tab in {"audit", "feedback"}
+    title = "反馈结果报告" if tab == "feedback" else ("分析结果报告" if is_audit else "提取内容报告")
+    eyebrow = "DeepSeek 反馈" if tab == "feedback" else ("DeepSeek 分析" if is_audit else "Qwen Video Extraction")
     summary = clean_report_value(payload.get("summary")) or "暂无摘要。"
 
     if is_audit:
@@ -1241,27 +1242,8 @@ def run_job(job_id: str) -> None:
                 env_extra={"ANALYSIS_PROMPT_FILE": str(prompt_file), "ANALYSIS_OUTPUT_DIR": str(output_dir)},
             )
         mark_extracted(job.filename, output_dir.name)
-        if os.getenv("DEEPSEEK_API_KEY"):
-            try:
-                run_command(job, ["python", str(SCRIPTS_DIR / "translate_analysis.py"), str(output_dir)])
-            except Exception as exc:
-                append_log(job, f"Translation skipped: {exc}")
         if job.postprocess:
             run_command(job, ["python", str(SCRIPTS_DIR / "deepseek_postprocess.py"), str(output_dir)])
-            if os.getenv("DEEPSEEK_API_KEY"):
-                try:
-                    run_command(
-                        job,
-                        [
-                            "python",
-                            str(SCRIPTS_DIR / "translate_analysis.py"),
-                            str(output_dir / "audit_result.json"),
-                            "--output",
-                            str(output_dir / "audit_result_zh.json"),
-                        ],
-                    )
-                except Exception as exc:
-                    append_log(job, f"Audit translation skipped: {exc}")
         with jobs_lock:
             job.status = "complete"
             job.updated_at = time.time()
@@ -1286,20 +1268,6 @@ def run_postprocess_job(job_id: str) -> None:
             raise FileNotFoundError(f"analysis.json not found: {output_dir / 'analysis.json'}")
 
         run_command(job, ["python", str(SCRIPTS_DIR / "deepseek_postprocess.py"), str(output_dir)])
-        if os.getenv("DEEPSEEK_API_KEY"):
-            try:
-                run_command(
-                    job,
-                    [
-                        "python",
-                        str(SCRIPTS_DIR / "translate_analysis.py"),
-                        str(output_dir / "audit_result.json"),
-                        "--output",
-                        str(output_dir / "audit_result_zh.json"),
-                    ],
-                )
-            except Exception as exc:
-                append_log(job, f"Audit translation skipped: {exc}")
         with jobs_lock:
             job.status = "complete"
             job.updated_at = time.time()
@@ -1328,6 +1296,8 @@ def public_job(job: Job) -> dict[str, Any]:
         "analysis_zh": read_json(output_dir / "analysis_zh.json"),
         "audit_result": read_json(output_dir / "audit_result.json"),
         "audit_result_zh": read_json(output_dir / "audit_result_zh.json"),
+        "feedback_result": read_json(output_dir / "feedback_result.json"),
+        "feedback_result_zh": read_json(output_dir / "feedback_result_zh.json"),
     }
 
 
@@ -2282,15 +2252,6 @@ def execute_queue_job(filename: str, job_type: str, progress: dict) -> None:
         video_queue.set_status(filename, "analyzed")
         video_queue.set_progress(filename, "extracting", 65, job_type, f"{filename}: 视频解析完成")
 
-        # Translate
-        if os.getenv("DEEPSEEK_API_KEY"):
-            video_queue.set_progress(filename, "translating", 75, job_type, f"{filename}: 正在翻译提取结果")
-            try:
-                subprocess.run(["python", str(SCRIPTS_DIR / "translate_analysis.py"), str(output_dir)],
-                               cwd=ROOT, check=True, env=os.environ.copy())
-            except Exception:
-                video_queue.set_progress(filename, "translating", 80, job_type, f"{filename}: 翻译提取结果失败，已跳过")
-
         # Generate short Chinese title via LLM
         import re as _re
         title = filename[:6]
@@ -2362,15 +2323,6 @@ def execute_queue_job(filename: str, job_type: str, progress: dict) -> None:
             cmd.extend(["--prompt", prompt_file.read_text(encoding="utf-8").strip()])
         subprocess.run(cmd, cwd=ROOT, check=True, env=os.environ.copy())
         video_queue.set_progress(filename, "auditing", 70, job_type, f"{filename}: 报告生成完成")
-        if os.getenv("DEEPSEEK_API_KEY"):
-            video_queue.set_progress(filename, "translating_audit", 80, job_type, f"{filename}: 正在翻译报告")
-            try:
-                subprocess.run(["python", str(SCRIPTS_DIR / "translate_analysis.py"),
-                               str(output_dir / "audit_result.json"),
-                               "--output", str(output_dir / "audit_result_zh.json")],
-                               cwd=ROOT, check=True, env=os.environ.copy())
-            except Exception:
-                video_queue.set_progress(filename, "translating_audit", 85, job_type, f"{filename}: 翻译报告失败，已跳过")
         video_queue.set_status(filename, "complete")
         video_queue.set_progress(filename, "completed", 100, job_type, f"{filename}: 报告完成")
 
@@ -2386,6 +2338,9 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/" or parsed.path == "/chat":
             chat_html = (SCRIPTS_DIR / "static" / "chat.html").read_text(encoding="utf-8")
             return text_response(self, HTTPStatus.OK, chat_html, "text/html; charset=utf-8")
+        if parsed.path == "/report":
+            report_html = (SCRIPTS_DIR / "static" / "report.html").read_text(encoding="utf-8")
+            return text_response(self, HTTPStatus.OK, report_html, "text/html; charset=utf-8")
         if parsed.path == "/extract":
             template = INDEX_HTML_PATH.read_text(encoding="utf-8") if INDEX_HTML_PATH.is_file() else INDEX_HTML
             html = template.replace(
@@ -2478,6 +2433,15 @@ class Handler(BaseHTTPRequestHandler):
             return json_response(self, HTTPStatus.OK, public_network_check())
         if parsed.path == "/api/sociavault-usage":
             return json_response(self, HTTPStatus.OK, read_sociavault_usage())
+        if parsed.path == "/api/report/today":
+            include_raw = parse_qs(parsed.query).get("raw", ["0"])[0] in {"1", "true", "yes"}
+            return json_response(self, HTTPStatus.OK, get_report(include_raw=include_raw))
+        if parsed.path == "/api/report/history":
+            try:
+                limit = int(parse_qs(parsed.query).get("limit", ["30"])[0])
+            except ValueError:
+                limit = 30
+            return json_response(self, HTTPStatus.OK, list_reports(limit))
         if parsed.path.startswith("/video/"):
             try:
                 filename = safe_filename(unquote(parsed.path.removeprefix("/video/")))
@@ -2581,6 +2545,8 @@ class Handler(BaseHTTPRequestHandler):
                     "analysis_zh": read_json(output_dir / "analysis_zh.json"),
                     "audit_result": read_json(output_dir / "audit_result.json"),
                     "audit_result_zh": read_json(output_dir / "audit_result_zh.json"),
+                    "feedback_result": read_json(output_dir / "feedback_result.json"),
+                    "feedback_result_zh": read_json(output_dir / "feedback_result_zh.json"),
                     "log": [],
                 },
             )
@@ -2591,11 +2557,15 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
             tab = query.get("tab", ["audit"])[0]
-            if tab not in {"audit", "content"}:
+            if tab not in {"audit", "content", "feedback"}:
                 return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Invalid tab"})
             output_dir = output_dir_for_filename(filename)
-            source = "audit_result_zh.json" if tab == "audit" else "analysis_zh.json"
-            fallback = "audit_result.json" if tab == "audit" else "analysis.json"
+            sources = {
+                "content": ("analysis_zh.json", "analysis.json"),
+                "audit": ("audit_result_zh.json", "audit_result.json"),
+                "feedback": ("feedback_result_zh.json", "feedback_result.json"),
+            }
+            source, fallback = sources[tab]
             payload = read_json(output_dir / source) or read_json(output_dir / fallback)
             if not isinstance(payload, dict):
                 return json_response(self, HTTPStatus.NOT_FOUND, {"error": f"Report not found for {filename}"})
@@ -2604,7 +2574,7 @@ class Handler(BaseHTTPRequestHandler):
                 pdf = render_pdf_bytes(html)
             except Exception as exc:
                 return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"PDF export failed: {exc}"})
-            suffix = "audit" if tab == "audit" else "analysis"
+            suffix = {"content": "analysis", "audit": "audit", "feedback": "feedback"}[tab]
             return binary_response(
                 self,
                 HTTPStatus.OK,
@@ -2727,17 +2697,29 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_shop_extract()
         if parsed.path == "/api/video-metrics":
             return self.handle_video_metrics()
+        if parsed.path == "/api/report/run":
+            return self.handle_report_run()
         if parsed.path == "/api/amazon-scrape":
             return self.handle_amazon_scrape()
         if parsed.path == "/api/analyze":
             return self.handle_analyze()
         if parsed.path == "/api/postprocess":
             return self.handle_postprocess()
+        if parsed.path == "/api/translate":
+            return self.handle_translate()
+        if parsed.path == "/api/feedback":
+            return self.handle_feedback()
         if parsed.path == "/api/prompt":
             return self.handle_save_prompt()
         if parsed.path == "/api/delete":
             return self.handle_delete()
         return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
+
+    def handle_report_run(self) -> None:
+        try:
+            return json_response(self, HTTPStatus.OK, run_report())
+        except Exception as exc:
+            return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
 
     def handle_download(self) -> None:
         content_length = int(self.headers.get("Content-Length", "0"))
@@ -2952,6 +2934,93 @@ class Handler(BaseHTTPRequestHandler):
 
         video_queue.enqueue(filename, "report")
         return json_response(self, HTTPStatus.ACCEPTED, {"status": "queued", "filename": filename})
+
+    def handle_translate(self) -> None:
+        content_length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(content_length)
+        try:
+            payload = json.loads(body.decode("utf-8") or "{}")
+            filename = safe_filename(str(payload.get("filename", "")))
+            tab = str(payload.get("tab") or "").strip()
+            if tab not in {"content", "audit", "feedback"}:
+                raise ValueError("tab must be content, audit, or feedback")
+        except (json.JSONDecodeError, ValueError) as exc:
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+
+        output_dir = output_dir_for_filename(filename)
+        files = {
+            "content": ("analysis.json", "analysis_zh.json"),
+            "audit": ("audit_result.json", "audit_result_zh.json"),
+            "feedback": ("feedback_result.json", "feedback_result_zh.json"),
+        }
+        source_name, output_name = files[tab]
+        source_path = output_dir / source_name
+        output_path = output_dir / output_name
+        if not source_path.is_file():
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": f"{source_name} not found for {filename}"})
+
+        try:
+            subprocess.run(
+                [
+                    "python",
+                    str(SCRIPTS_DIR / "translate_analysis.py"),
+                    str(source_path),
+                    "--output",
+                    str(output_path),
+                ],
+                cwd=ROOT,
+                check=True,
+                env=os.environ.copy(),
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            message = (exc.stderr or exc.stdout or str(exc)).strip()
+            return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": message or "Translation failed"})
+
+        return json_response(self, HTTPStatus.OK, {"status": "translated", "filename": filename, "tab": tab})
+
+    def handle_feedback(self) -> None:
+        content_length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(content_length)
+        try:
+            payload = json.loads(body.decode("utf-8") or "{}")
+            filename = safe_filename(str(payload.get("filename", "")))
+            feedback_prompt = str(payload.get("feedback_prompt") or "").strip()
+            if len(feedback_prompt) > 12000:
+                raise ValueError("feedback_prompt is too long")
+        except (json.JSONDecodeError, ValueError) as exc:
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+
+        output_dir = output_dir_for_filename(filename)
+        if not (output_dir / "analysis.json").is_file():
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": f"analysis.json not found for {filename}"})
+        if not (output_dir / "audit_result.json").is_file():
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": f"audit_result.json not found for {filename}"})
+
+        cmd = [
+            "python",
+            str(SCRIPTS_DIR / "deepseek_feedback.py"),
+            str(output_dir),
+            "--output",
+            str(output_dir / "feedback_result.json"),
+        ]
+        if feedback_prompt:
+            cmd.extend(["--prompt", feedback_prompt])
+        try:
+            subprocess.run(
+                cmd,
+                cwd=ROOT,
+                check=True,
+                env=os.environ.copy(),
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            message = (exc.stderr or exc.stdout or str(exc)).strip()
+            return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": message or "Feedback generation failed"})
+
+        return json_response(self, HTTPStatus.OK, {"status": "generated", "filename": filename})
 
     def handle_save_prompt(self) -> None:
         content_length = int(self.headers.get("Content-Length", "0"))
