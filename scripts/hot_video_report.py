@@ -344,19 +344,26 @@ def _cover_url(node: dict[str, Any]) -> str:
         "thumbnail_url",
         "thumbnailUrl",
         "origin_cover",
+        "originCover",
         "dynamic_cover",
+        "dynamicCover",
         "play_addr",
+        "playAddr",
     )
     found = _find_nested(node, names)
     if isinstance(found, str) and found.startswith(("http://", "https://")):
         return found
     if isinstance(found, dict):
-        url = _find_nested(found, ("url", "uri", "download_url", "display_url"))
+        url = _find_nested(found, ("url", "uri", "download_url", "downloadUrl", "display_url", "displayUrl"))
         if isinstance(url, str) and url.startswith(("http://", "https://")):
             return url
         urls = _find_nested(found, ("url_list", "urlList"))
         if isinstance(urls, list):
             for item in urls:
+                if isinstance(item, str) and item.startswith(("http://", "https://")):
+                    return item
+        if isinstance(urls, dict):
+            for item in urls.values():
                 if isinstance(item, str) and item.startswith(("http://", "https://")):
                     return item
     if isinstance(found, list):
@@ -527,6 +534,56 @@ def save_settings(payload: dict[str, Any]) -> dict[str, Any]:
             )
         conn.commit()
     return get_settings()
+
+
+def backfill_cover_urls(report_date: str | None = None) -> dict[str, Any]:
+    date = report_date or today_key()
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT rv.platform, rv.video_id, rv.raw_json
+            FROM hot_report_videos rv
+            WHERE rv.report_date = ? AND (rv.cover_url IS NULL OR rv.cover_url = '')
+            """,
+            (date,),
+        ).fetchall()
+        if not rows:
+            master_rows = conn.execute(
+                """
+                SELECT platform, video_id, raw_json
+                FROM hot_video_master
+                WHERE cover_url IS NULL OR cover_url = ''
+                """
+            ).fetchall()
+            updated = 0
+            for platform, video_id, raw_json in master_rows:
+                raw = _json_loads(raw_json, {})
+                cover_url = _cover_url(raw)
+                if cover_url:
+                    conn.execute(
+                        "UPDATE hot_video_master SET cover_url = ?, updated_at = ? WHERE platform = ? AND video_id = ?",
+                        (cover_url, time.time(), platform, video_id),
+                    )
+                    updated += 1
+            conn.commit()
+            return {"updated": updated, "report_date": date, "source": "master"}
+        updated = 0
+        now = time.time()
+        for platform, video_id, raw_json in rows:
+            raw = _json_loads(raw_json, {})
+            cover_url = _cover_url(raw)
+            if cover_url:
+                conn.execute(
+                    "UPDATE hot_report_videos SET cover_url = ?, updated_at = ? WHERE report_date = ? AND platform = ? AND video_id = ?",
+                    (cover_url, now, date, platform, video_id),
+                )
+                conn.execute(
+                    "UPDATE hot_video_master SET cover_url = ?, updated_at = ? WHERE platform = ? AND video_id = ?",
+                    (cover_url, now, platform, video_id),
+                )
+                updated += 1
+        conn.commit()
+        return {"updated": updated, "report_date": date, "source": "report_videos"}
 
 
 def get_report(report_date: str | None = None, include_raw: bool = False, detail: bool = True) -> dict[str, Any]:

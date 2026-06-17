@@ -60,6 +60,7 @@ from video_queue import video_queue, STATUS_META
 from api_cache import get_cached_or_call, record_api_call
 from api_cache import get_cached, store_response
 from hot_video_report import (
+    backfill_cover_urls,
     get_report,
     get_report_runtime_status,
     get_settings as get_report_settings,
@@ -2460,6 +2461,9 @@ class Handler(BaseHTTPRequestHandler):
             return json_response(self, HTTPStatus.OK, list_reports(limit))
         if parsed.path == "/api/report/settings":
             return json_response(self, HTTPStatus.OK, {**get_report_settings(), **get_report_runtime_status()})
+        if parsed.path == "/api/report/backfill-covers" and self.command == "POST":
+            result = backfill_cover_urls()
+            return json_response(self, HTTPStatus.OK, result)
         if parsed.path.startswith("/video/"):
             try:
                 filename = safe_filename(unquote(parsed.path.removeprefix("/video/")))
