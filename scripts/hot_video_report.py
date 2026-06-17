@@ -420,14 +420,13 @@ def _published_at_from_row(metrics_json: str | None, raw_json: str | None, repor
         published_at = _extract_publish_time(raw)
         if published_at is not None:
             return published_at
-    return None
+    return _parse_report_date_to_ts(report_date)
 
 
 def _cleanup_expired_video_records(conn: sqlite3.Connection, recency_days: int | None = None) -> dict[str, int]:
     days = max(1, _to_int(recency_days if recency_days is not None else os.getenv("HOT_VIDEO_RECENT_DAYS", "7")))
     cutoff_ts = time.time() - days * 86400
     latest_publish_by_key: dict[tuple[str, str], float] = {}
-    no_publish_keys: set[tuple[str, str]] = set()
     seen_keys: set[tuple[str, str]] = set()
 
     report_rows = conn.execute(
@@ -441,7 +440,6 @@ def _cleanup_expired_video_records(conn: sqlite3.Connection, recency_days: int |
         seen_keys.add(key)
         published_at = _published_at_from_row(metrics_json, raw_json, str(report_date or ""))
         if published_at is None:
-            no_publish_keys.add(key)
             continue
         if key not in latest_publish_by_key or published_at > latest_publish_by_key[key]:
             latest_publish_by_key[key] = float(published_at)
@@ -450,7 +448,7 @@ def _cleanup_expired_video_records(conn: sqlite3.Connection, recency_days: int |
         (platform, video_id)
         for (platform, video_id), published_at in latest_publish_by_key.items()
         if published_at <= 0 or published_at < cutoff_ts
-    } | no_publish_keys
+    }
     # Remove stale records from all report days by identity.
     for platform, video_id in stale_keys:
         conn.execute("DELETE FROM hot_report_videos WHERE platform = ? AND video_id = ?", (platform, video_id))
@@ -927,9 +925,9 @@ def list_reports(limit: int = 30) -> list[dict[str, Any]]:
 
 def _source_requests(region: str, count: int) -> list[tuple[str, dict[str, Any], str]]:
     keywords = ["viral"]
-    requests = [("trending", {"region": region, "count": count, "trim": "true"}, f"trending:{region}")]
+    requests = [("trending", {"region": region, "count": count}, f"trending:{region}")]
     for keyword in keywords:
-        requests.append(("search-top", {"query": keyword, "region": region, "count": count, "trim": "true"}, f"search-top:{keyword}"))
+        requests.append(("search-top", {"query": keyword, "region": region, "count": count}, f"search-top:{keyword}"))
     return requests
 
 
