@@ -88,6 +88,7 @@ ALLOWED_SHORT_VIDEO_HOST_SUFFIXES = ("tiktok.com", "tiktokv.com", "douyin.com", 
 ALLOWED_AMAZON_HOST_SUFFIXES = ("amazon.com",)
 ASIN_RE = re.compile(r"^[A-Z0-9]{10}$", re.IGNORECASE)
 PROMPT_FILE = DATA_DIR / "analysis_prompt.txt"
+FEEDBACK_PROMPT_FILE = DATA_DIR / "feedback_prompt.txt"
 LEGACY_PROMPT_FILE = ROOT / "analysis_prompt.txt"
 DEFAULT_ANALYSIS_PROMPT = (
     "Analyze this short video directly. Return strict JSON only, no Markdown. "
@@ -96,6 +97,46 @@ DEFAULT_ANALYSIS_PROMPT = (
     "visual_evidence must be an array of concrete observations from the video frames. "
     "Be specific and do not invent unsupported facts."
 )
+DEFAULT_FEEDBACK_PROMPT = """请基于视频提取内容和分析结果，给出可执行的视频改进反馈。重点指出内容表达、开头吸引力、节奏、画面、字幕/口播、卖点呈现、信任感和转化引导的问题，并给出优先级明确的修改建议。
+
+只返回严格可解析 JSON，不要 Markdown，不要代码块，不要额外解释。JSON 结构必须符合：
+{
+  "summary": "一句话总结视频当前最大改进方向",
+  "overall_score": 0-100,
+  "priority_actions": [
+    {
+      "priority": "high|medium|low",
+      "problem": "具体问题",
+      "why_it_matters": "为什么影响完播/互动/转化",
+      "fix": "可直接执行的修改建议",
+      "example": "可替换的文案、镜头或剪辑示例"
+    }
+  ],
+  "opening_feedback": {
+    "problem": "开头前3秒的问题",
+    "fix": "开头改法",
+    "example_hook": "建议使用的新开头钩子"
+  },
+  "content_feedback": {
+    "strengths": ["已有优点"],
+    "issues": ["内容表达问题"],
+    "fixes": ["内容改进建议"]
+  },
+  "visual_feedback": {
+    "issues": ["画面、构图、节奏、字幕问题"],
+    "fixes": ["视觉改进建议"]
+  },
+  "audio_feedback": {
+    "issues": ["口播、音乐、音效问题"],
+    "fixes": ["音频改进建议"]
+  },
+  "conversion_feedback": {
+    "issues": ["卖点、信任感、行动引导问题"],
+    "fixes": ["转化改进建议"],
+    "cta_examples": ["可直接使用的行动引导文案"]
+  },
+  "rewrite_brief": "给剪辑/拍摄人员的改版说明"
+}"""
 DEFAULT_SOCIA_VAULT_API_BASE = "https://api.sociavault.com"
 VIDEO_INFO_TTL_SECONDS = 24 * 60 * 60
 VIDEO_MEDIA_TTL_SECONDS = 30 * 24 * 60 * 60
@@ -116,6 +157,19 @@ def load_prompt() -> str:
 def save_prompt(text: str) -> None:
     PROMPT_FILE.parent.mkdir(parents=True, exist_ok=True)
     PROMPT_FILE.write_text(text.strip() + "\n", encoding="utf-8")
+
+
+def load_feedback_prompt() -> str:
+    if FEEDBACK_PROMPT_FILE.is_file():
+        content = FEEDBACK_PROMPT_FILE.read_text(encoding="utf-8").strip()
+        if content:
+            return content
+    return DEFAULT_FEEDBACK_PROMPT
+
+
+def save_feedback_prompt(text: str) -> None:
+    FEEDBACK_PROMPT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    FEEDBACK_PROMPT_FILE.write_text(text.strip() + "\n", encoding="utf-8")
 
 
 @dataclass
@@ -2370,7 +2424,7 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path.startswith("/assets/"):
             return self.serve_static_asset(parsed.path.removeprefix("/assets/"))
         if parsed.path == "/api/prompt":
-            return json_response(self, HTTPStatus.OK, {"prompt": load_prompt()})
+            return json_response(self, HTTPStatus.OK, {"prompt": load_prompt(), "feedback_prompt": load_feedback_prompt()})
         if parsed.path == "/api/chat/sessions":
             return json_response(self, HTTPStatus.OK, chat_store.list_sessions())
         if parsed.path == "/api/chat/tools":
@@ -2999,6 +3053,11 @@ class Handler(BaseHTTPRequestHandler):
         if analysis_prompt:
             (output_dir / "analysis_prompt.txt").write_text(analysis_prompt, encoding="utf-8")
 
+        for report_name in ("audit_result.json", "audit_result_zh.json"):
+            report_path = output_dir / report_name
+            if report_path.is_file():
+                report_path.unlink()
+
         video_queue.enqueue(filename, "report")
         return json_response(self, HTTPStatus.ACCEPTED, {"status": "queued", "filename": filename})
 
@@ -3094,13 +3153,21 @@ class Handler(BaseHTTPRequestHandler):
         body = self.rfile.read(content_length)
         try:
             payload = json.loads(body.decode("utf-8") or "{}")
-            text = str(payload.get("prompt", "")).strip()
+            kind = str(payload.get("kind") or "analysis").strip()
+            if "feedback_prompt" in payload:
+                kind = "feedback"
+                text = str(payload.get("feedback_prompt") or "").strip()
+            else:
+                text = str(payload.get("prompt", "")).strip()
             if not text:
                 raise ValueError("prompt is required")
             if len(text) > 12000:
                 raise ValueError("prompt is too long")
+            if kind == "feedback":
+                save_feedback_prompt(text)
+                return json_response(self, HTTPStatus.OK, {"status": "saved", "kind": "feedback"})
             save_prompt(text)
-            return json_response(self, HTTPStatus.OK, {"status": "saved"})
+            return json_response(self, HTTPStatus.OK, {"status": "saved", "kind": "analysis"})
         except (json.JSONDecodeError, ValueError) as exc:
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
