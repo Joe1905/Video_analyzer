@@ -154,14 +154,38 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
     )
     existing_tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
     if "hot_videos" in existing_tables:
+        hot_columns = {row[1] for row in conn.execute("PRAGMA table_info(hot_videos)").fetchall()}
+        aliases = [
+            "report_id",
+            "report_date",
+            "platform",
+            "video_id",
+            "title",
+            "author",
+            "source_url",
+            "source_endpoint",
+            "source_label",
+            "source_rank",
+            "hot_score",
+            "metrics_json",
+            "raw_json",
+            "created_at",
+            "updated_at",
+        ]
+
+        def select_expr(name: str, fallback: str = "''") -> str:
+            if name in hot_columns:
+                return name
+            return f"{fallback} AS {name}"
+
         rows = conn.execute(
-            """
-            SELECT report_id, report_date, platform, video_id, source_endpoint, source_label,
-                   source_rank, hot_score, metrics_json, raw_json, created_at, updated_at
+            f"""
+            SELECT {", ".join(select_expr(name, "'{}'" if name.endswith("_json") else "0" if name.endswith("_at") or name in {"source_rank", "hot_score"} else "''") for name in aliases)}
             FROM hot_videos
             """
         ).fetchall()
         for row in rows:
+            item = dict(zip(aliases, row))
             conn.execute(
                 """
                 INSERT OR IGNORE INTO hot_report_videos (
@@ -169,7 +193,46 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
                     source_rank, report_rank, hot_score, metrics_json, raw_json, created_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (*row[:7], int(row[6] or 0), *row[7:]),
+                (
+                    item["report_id"],
+                    item["report_date"],
+                    item["platform"],
+                    item["video_id"],
+                    item["source_endpoint"],
+                    item["source_label"],
+                    int(item["source_rank"] or 0),
+                    int(item["source_rank"] or 0),
+                    int(item["hot_score"] or 0),
+                    item["metrics_json"] or "{}",
+                    item["raw_json"] or "{}",
+                    float(item["created_at"] or time.time()),
+                    float(item["updated_at"] or time.time()),
+                ),
+            )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO hot_video_master (
+                    platform, video_id, title, author, source_url, cover_url, first_seen_date,
+                    last_seen_date, latest_hot_score, max_hot_score, latest_metrics_json,
+                    raw_json, hidden_from_analyzer, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                """,
+                (
+                    item["platform"],
+                    item["video_id"],
+                    item["title"],
+                    item["author"],
+                    item["source_url"],
+                    item["report_date"],
+                    item["report_date"],
+                    int(item["hot_score"] or 0),
+                    int(item["hot_score"] or 0),
+                    item["metrics_json"] or "{}",
+                    item["raw_json"] or "{}",
+                    float(item["created_at"] or time.time()),
+                    float(item["updated_at"] or time.time()),
+                ),
             )
 
 
