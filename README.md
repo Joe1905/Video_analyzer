@@ -146,6 +146,10 @@ It uses the existing SociaVault settings, especially `SOCIAVAULT_API_KEY`, `SOCI
 Recent-window filtering for hot-videos is controlled by `HOT_VIDEO_RECENT_DAYS` (default: `7`), so only videos published in the last N days are considered by default.
 Expired videos that are older than this window are cleaned from report records on report queries/sync runs, so old cards disappear end-to-end.
 
+Report pipeline safeguards:
+- `REPORT_JOB_TIMEOUT` (seconds, default `1800`) limits total time spent on a single `/api/report/run` task.
+- `REPORT_DEEPSEEK_TIMEOUT` (seconds, default `180`) limits each per-video deep-dive audit call.
+
 ## Amazon Scraper
 
 A separate Amazon scraper page is available at:

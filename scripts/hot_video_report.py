@@ -32,6 +32,7 @@ DB_PATH = ROOT / "data" / "hot_video_report.sqlite"
 REPORT_COVER_DIR = ROOT / "data" / "report_covers"
 DEFAULT_API_BASE = "https://api.sociavault.com"
 DEFAULT_TZ = "Asia/Shanghai"
+DEFAULT_REPORT_JOB_TIMEOUT_SECONDS = 30 * 60
 
 _scheduler_started = False
 _scheduler_lock = threading.Lock()
@@ -289,6 +290,19 @@ def _to_int(value: Any) -> int:
         except ValueError:
             return 0
     return 0
+
+
+def _to_float(value: Any, default: float = 0.0) -> float:
+    if value in (None, "") or isinstance(value, bool):
+        return default
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return default
+    return default
 
 
 def _recent_window_days() -> int:
@@ -1097,7 +1111,11 @@ def _run_deepseek_report(output_dir: Path) -> dict[str, Any]:
     if audit_path.is_file():
         return _json_loads(audit_path.read_text(encoding="utf-8"), {})
     cmd = [sys.executable, str(SCRIPTS_DIR / "deepseek_postprocess.py"), str(output_dir)]
-    subprocess.run(cmd, cwd=ROOT, check=True, env=os.environ.copy())
+    timeout = _to_float(os.getenv("REPORT_DEEPSEEK_TIMEOUT", "180"), 180.0)
+    try:
+        subprocess.run(cmd, cwd=ROOT, check=True, env=os.environ.copy(), timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"DeepSeek postprocess timed out after {timeout}s: {exc}")
     return _json_loads(audit_path.read_text(encoding="utf-8") if audit_path.is_file() else "", {})
 
 
@@ -1372,9 +1390,38 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
                 for report_rank, item in enumerate(ranked, start=1):
                     _upsert_video(conn, report_id, date, item, report_rank)
                 conn.commit()
+
+                job_timeout = _to_float(os.getenv("REPORT_JOB_TIMEOUT", str(DEFAULT_REPORT_JOB_TIMEOUT_SECONDS)), DEFAULT_REPORT_JOB_TIMEOUT_SECONDS)
+                deadline = time.time() + max(60.0, job_timeout)
+                timed_out = False
                 for item in ranked[:analysis_limit]:
+                    if time.time() >= deadline:
+                        timed_out = True
+                        break
                     _process_video(conn, date, item)
+
                 success_videos = _load_success_videos(conn, date)
+                if timed_out:
+                    if len(success_videos) >= 3:
+                        report_json, markdown = _generate_daily_summary(date, success_videos)
+                        _finish_report(
+                            conn,
+                            report_id,
+                            date,
+                            "partial_failed",
+                            f"Report job reached timeout ({int(job_timeout)}s), kept partial results",
+                            report_json=report_json,
+                            report_markdown=markdown,
+                        )
+                        return get_report(date, include_raw=True)
+                    _finish_report(
+                        conn,
+                        report_id,
+                        date,
+                        "partial_failed" if success_videos else "failed",
+                        f"Report job reached timeout ({int(job_timeout)}s) before enough videos were processed",
+                    )
+                    return get_report(date, include_raw=True)
                 if len(success_videos) >= 3:
                     report_json, markdown = _generate_daily_summary(date, success_videos)
                     _finish_report(conn, report_id, date, "complete", report_json=report_json, report_markdown=markdown)
