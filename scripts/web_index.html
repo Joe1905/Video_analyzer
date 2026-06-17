@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
@@ -37,7 +37,7 @@ header{height:60px;display:flex;align-items:center;justify-content:space-between
 header h1{font-size:18px;font-weight:700;letter-spacing:-.3px}
 header .pill{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--border);border-radius:999px;padding:5px 12px;background:var(--surface);font-size:12px;font-weight:600;color:var(--text2)}
 header .pill .dot{width:7px;height:7px;border-radius:50%;background:var(--green)}header .pill .dot.idle{background:var(--text3)}
-.nav-links{display:flex;gap:6px;align-items:center}.nav-links a{text-decoration:none;font-size:12px;font-weight:600;color:var(--text2);padding:6px 12px;border-radius:var(--radius-sm);transition:.15s ease;border:1px solid transparent}.nav-links a:hover{background:var(--border2);color:var(--text);border-color:var(--border)}.nav-links a.active{background:var(--brand-soft);color:var(--brand);border-color:var(--brand)}
+.nav-links{display:flex;gap:8px;align-items:center;padding:4px;border:1px solid var(--border);border-radius:14px;background:rgba(255,255,255,.78);box-shadow:0 1px 2px rgba(15,23,42,.04)}.nav-links a{text-decoration:none;font-size:12px;font-weight:800;color:var(--text2);padding:6px 10px;border-radius:10px;transition:.15s ease;border:1px solid transparent;display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:34px}.nav-links a:hover{background:var(--border2);color:var(--text);border-color:var(--border)}.nav-links a.active{background:var(--brand);color:#fff;border-color:var(--brand);box-shadow:0 6px 14px rgba(37,99,235,.18)}.nav-ico{width:22px;height:22px;border-radius:7px;display:inline-flex;align-items:center;justify-content:center;background:var(--border2);color:var(--text2);font-size:13px;line-height:1}.nav-links a.active .nav-ico{background:rgba(255,255,255,.2);color:#fff}.nav-label{line-height:1}
 
 .page{display:none;height:calc(100vh - 60px);overflow:hidden}.page.active{display:flex;flex-direction:column}
 .main-shell{flex:1;min-height:0;display:grid;grid-template-columns:400px minmax(0,1fr);gap:0;overflow:hidden}
@@ -151,7 +151,7 @@ header .pill .dot{width:7px;height:7px;border-radius:50%;background:var(--green)
 </head>
 <body>
 <div id="drop" class="drop-overlay"><div class="drop-card"><b>松手以上传视频</b><p>支持一次拖入多个视频文件</p></div></div>
-<header><h1>短视频分析器</h1><nav class="nav-links"><a href="/" title="AI 聊天">🏠</a><a href="/amazon" title="Amazon">📦</a><a href="/shop" title="Shop">🛍️</a><a href="/metrics" title="数据">🎵</a><a href="/extract" class="active" title="视频分析">🎬</a></nav></header>
+<header><h1>短视频分析器</h1><nav class="nav-links"><a href="/" title="AI 聊天"><span class="nav-ico">⌂</span><span class="nav-label">首页</span></a><a href="/report" title="每日报告"><span class="nav-ico">日</span><span class="nav-label">日报</span></a><a href="/amazon" title="Amazon"><span class="nav-ico">A</span><span class="nav-label">Amazon</span></a><a href="/shop" title="Shop"><span class="nav-ico">店</span><span class="nav-label">Shop</span></a><a href="/metrics" title="数据"><span class="nav-ico">数</span><span class="nav-label">数据</span></a><a href="/extract" class="active" title="视频分析"><span class="nav-ico">析</span><span class="nav-label">分析</span></a></nav></header>
 
 <main id="home" class="page active">
   <div class="main-shell">

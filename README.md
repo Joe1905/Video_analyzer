@@ -55,10 +55,6 @@ SOCIAVAULT_API_BASE=https://api.sociavault.com
 SOCIAVAULT_REGION=US
 SOCIAVAULT_MAX_PAGES=1
 SOCIAVAULT_REVIEW_PAGES=1
-HOT_VIDEO_REGION=US
-HOT_VIDEO_KEYWORDS=viral
-HOT_VIDEO_SOURCE_COUNT=30
-HOT_VIDEO_REPORT_LIMIT=20
 
 AMAZON_PROXY=
 AMAZON_PROXIES=
@@ -145,14 +141,7 @@ Results are stored in:
 data/hot_video_report.sqlite
 ```
 
-Optional settings:
-
-```env
-HOT_VIDEO_REGION=US
-HOT_VIDEO_KEYWORDS=viral,makeup,fitness
-HOT_VIDEO_SOURCE_COUNT=30
-HOT_VIDEO_REPORT_LIMIT=20
-```
+It uses the existing SociaVault settings, especially `SOCIAVAULT_API_KEY`, `SOCIAVAULT_API_BASE`, and `SOCIAVAULT_REGION`.
 
 ## Amazon Scraper
 

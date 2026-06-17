@@ -105,14 +105,6 @@ def _to_int(value: Any) -> int:
     return 0
 
 
-def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
-    try:
-        value = int(os.getenv(name, str(default)).strip())
-    except ValueError:
-        value = default
-    return max(minimum, min(value, maximum))
-
-
 def _first_present(data: dict[str, Any], names: tuple[str, ...]) -> Any:
     for name in names:
         value = data.get(name)
@@ -298,7 +290,7 @@ def list_reports(limit: int = 30) -> list[dict[str, Any]]:
 
 
 def _source_requests(region: str, count: int) -> list[tuple[str, dict[str, Any], str]]:
-    keywords = [item.strip() for item in os.getenv("HOT_VIDEO_KEYWORDS", "viral").split(",") if item.strip()]
+    keywords = ["viral"]
     requests = [("trending", {"region": region, "count": count, "trim": "true"}, f"trending:{region}")]
     for keyword in keywords:
         requests.append(
@@ -350,9 +342,9 @@ def _finish_report(conn: sqlite3.Connection, report_id: str, report_date: str, s
 
 def run_report(report_date: str | None = None) -> dict[str, Any]:
     date = report_date or today_key()
-    region = os.getenv("HOT_VIDEO_REGION", os.getenv("SOCIAVAULT_REGION", "US")).strip() or "US"
-    count = _env_int("HOT_VIDEO_SOURCE_COUNT", 30, 1, 100)
-    limit = _env_int("HOT_VIDEO_REPORT_LIMIT", 20, 1, 100)
+    region = os.getenv("SOCIAVAULT_REGION", "US").strip() or "US"
+    count = 30
+    limit = 20
     api_key = os.getenv("SOCIAVAULT_API_KEY", "").strip()
     api_base = os.getenv("SOCIAVAULT_API_BASE", DEFAULT_API_BASE).rstrip("/")
     sources = [{"endpoint": endpoint, "label": label, "params": params} for endpoint, params, label in _source_requests(region, count)]
