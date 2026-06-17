@@ -291,6 +291,10 @@ def _to_int(value: Any) -> int:
     return 0
 
 
+def _recent_window_days() -> int:
+    return max(1, _to_int(os.getenv("HOT_VIDEO_RECENT_DAYS", "7")))
+
+
 def _first_present(data: dict[str, Any], names: tuple[str, ...]) -> Any:
     for name in names:
         value = data.get(name)
@@ -327,6 +331,146 @@ def _metric(node: dict[str, Any], names: tuple[str, ...]) -> int:
             if found not in (None, "", [], {}):
                 return _to_int(found)
     return 0
+
+
+def _to_timestamp(value: Any) -> float | None:
+    if value in (None, "", [], {}):
+        return None
+    if isinstance(value, (int, float)):
+        if value <= 0:
+            return None
+        return float(value)
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return None
+        if re.fullmatch(r"\d+", value):
+            numeric = float(value)
+            if numeric > 1_000_000_000_000:
+                return numeric / 1000
+            return numeric
+        try:
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return dt.timestamp()
+        except Exception:
+            try:
+                return float(value)
+            except Exception:
+                return None
+    return None
+
+
+def _extract_publish_time(node: dict[str, Any]) -> float | None:
+    found = _find_nested(
+        node,
+        ("create_time", "createTime", "create_at", "createAt", "publish_time", "publishTime", "create_time_utc", "origin_create_at"),
+    )
+    ts = _to_timestamp(found)
+    if ts is not None:
+        return ts
+    found = _find_nested(node, ("video",))
+    if isinstance(found, dict):
+        nested = _find_nested(
+            found,
+            (
+                "create_time",
+                "createTime",
+                "create_at",
+                "createAt",
+                "publish_time",
+                "publishTime",
+                "origin_create_at",
+            ),
+        )
+        return _to_timestamp(nested)
+    return None
+
+
+def _parse_report_date_to_ts(report_date: str) -> float | None:
+    if not report_date:
+        return None
+    try:
+        return datetime.fromisoformat(report_date).replace(tzinfo=ZoneInfo(DEFAULT_TZ)).timestamp()
+    except Exception:
+        return None
+
+
+def _published_at_from_row(metrics_json: str | None, raw_json: str | None, report_date: str = "") -> float | None:
+    metrics = _json_loads(metrics_json, {})
+    if isinstance(metrics, dict):
+        published_at = _to_timestamp(metrics.get("published_at"))
+        if published_at is not None:
+            return published_at
+    raw = _json_loads(raw_json, {})
+    if isinstance(raw, dict):
+        published_at = _extract_publish_time(raw)
+        if published_at is not None:
+            return published_at
+    return _parse_report_date_to_ts(report_date)
+
+
+def _cleanup_expired_video_records(conn: sqlite3.Connection, recency_days: int | None = None) -> dict[str, int]:
+    days = max(1, _to_int(recency_days if recency_days is not None else os.getenv("HOT_VIDEO_RECENT_DAYS", "7")))
+    cutoff_ts = time.time() - days * 86400
+    latest_publish_by_key: dict[tuple[str, str], float] = {}
+    seen_keys: set[tuple[str, str]] = set()
+
+    report_rows = conn.execute(
+        """
+        SELECT report_date, platform, video_id, metrics_json, raw_json
+        FROM hot_report_videos
+        """
+    ).fetchall()
+    for report_date, platform, video_id, metrics_json, raw_json in report_rows:
+        key = (str(platform), str(video_id))
+        seen_keys.add(key)
+        published_at = _published_at_from_row(metrics_json, raw_json, str(report_date or ""))
+        if published_at is None:
+            continue
+        if key not in latest_publish_by_key or published_at > latest_publish_by_key[key]:
+            latest_publish_by_key[key] = float(published_at)
+
+    stale_keys = {
+        (platform, video_id)
+        for (platform, video_id), published_at in latest_publish_by_key.items()
+        if published_at <= 0 or published_at < cutoff_ts
+    }
+    # Remove stale records from all report days by identity.
+    for platform, video_id in stale_keys:
+        conn.execute("DELETE FROM hot_report_videos WHERE platform = ? AND video_id = ?", (platform, video_id))
+    if stale_keys:
+        conn.executemany(
+            "DELETE FROM hot_video_master WHERE platform = ? AND video_id = ?",
+            list(stale_keys),
+        )
+
+    # Remove master items that are only historical and now too old by last_seen_date.
+    master_rows = conn.execute(
+        """
+        SELECT platform, video_id, last_seen_date
+        FROM hot_video_master
+        """
+    ).fetchall()
+    stale_from_master: list[tuple[str, str]] = []
+    for platform, video_id, last_seen_date in master_rows:
+        key = (str(platform), str(video_id))
+        if key in seen_keys:
+            continue
+        last_seen_ts = _parse_report_date_to_ts(str(last_seen_date or ""))
+        if last_seen_ts is not None and last_seen_ts < cutoff_ts:
+            stale_from_master.append((str(platform), str(video_id)))
+
+    if stale_from_master:
+        conn.executemany("DELETE FROM hot_video_master WHERE platform = ? AND video_id = ?", stale_from_master)
+
+    conn.execute(
+        "DELETE FROM daily_reports WHERE status != 'running' AND report_date NOT IN (SELECT DISTINCT report_date FROM hot_report_videos)"
+    )
+    conn.commit()
+    return {
+        "expired_report_videos": len(stale_keys),
+        "expired_master_videos": len(stale_from_master),
+    }
 
 
 def _source_url(node: dict[str, Any]) -> str:
@@ -520,6 +664,9 @@ def _normalize_video(node: dict[str, Any], endpoint: str, label: str, rank: int)
         + metrics["favorite_count"] * 10
         + max(0, 100 - rank) * 1_000
     )
+    published_at = _extract_publish_time(node)
+    if published_at:
+        metrics["published_at"] = published_at
     return {
         "platform": "tiktok",
         "video_id": video_id,
@@ -696,6 +843,7 @@ def backfill_cover_urls(report_date: str | None = None) -> dict[str, Any]:
 def get_report(report_date: str | None = None, include_raw: bool = False, detail: bool = True) -> dict[str, Any]:
     date = report_date or today_key()
     with _connect() as conn:
+        _cleanup_expired_video_records(conn, _recent_window_days())
         report_row = conn.execute(
             """
             SELECT id, report_date, status, region, sources_json, video_count, error,
@@ -737,6 +885,7 @@ def list_reports(limit: int = 30) -> list[dict[str, Any]]:
     retention_days = int(settings["retention_days"])
     cutoff = (datetime.now(ZoneInfo(settings["timezone"])) - timedelta(days=retention_days - 1)).strftime("%Y-%m-%d")
     with _connect() as conn:
+        _cleanup_expired_video_records(conn, _recent_window_days())
         rows = conn.execute(
             """
             SELECT id, report_date, status, region, sources_json, video_count, error,
@@ -1186,6 +1335,7 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
     count = 30
     detail_limit = 20
     analysis_limit = int(settings["analysis_limit"])
+    recency_days = _recent_window_days()
     api_key = os.getenv("SOCIAVAULT_API_KEY", "").strip()
     api_base = os.getenv("SOCIAVAULT_API_BASE", DEFAULT_API_BASE).rstrip("/")
     sources = [{"endpoint": endpoint, "label": label, "params": params} for endpoint, params, label in _source_requests(region, count)]
@@ -1196,6 +1346,7 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
     try:
         with _connect() as conn:
             _cleanup_old_reports(conn)
+            _cleanup_expired_video_records(conn, recency_days)
             report_id = _start_report(conn, date, region, sources, scheduled=scheduled)
             if not api_key:
                 error = "Missing required environment variable: SOCIAVAULT_API_KEY"
@@ -1203,11 +1354,16 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
                 return get_report(date, include_raw=True)
             try:
                 candidates: dict[tuple[str, str], dict[str, Any]] = {}
+                now_ts = time.time()
+                cutoff_ts = now_ts - recency_days * 86400
                 for endpoint, params, label in _source_requests(region, count):
                     payload = call_api(api_key, api_base, endpoint, params, float(os.getenv("SOCIAVAULT_TIMEOUT", "180")))
                     for rank, node in enumerate(_iter_video_nodes(payload), start=1):
                         item = _normalize_video(node, endpoint, label, rank)
                         if not item["video_id"]:
+                            continue
+                        published_at = item.get("metrics", {}).get("published_at")
+                        if isinstance(published_at, (int, float)) and published_at > 0 and published_at < cutoff_ts:
                             continue
                         key = (item["platform"], item["video_id"])
                         if key not in candidates or item["hot_score"] > candidates[key]["hot_score"]:

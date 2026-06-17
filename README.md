@@ -143,6 +143,9 @@ data/hot_video_report.sqlite
 
 It uses the existing SociaVault settings, especially `SOCIAVAULT_API_KEY`, `SOCIAVAULT_API_BASE`, and `SOCIAVAULT_REGION`.
 
+Recent-window filtering for hot-videos is controlled by `HOT_VIDEO_RECENT_DAYS` (default: `7`), so only videos published in the last N days are considered by default.
+Expired videos that are older than this window are cleaned from report records on report queries/sync runs, so old cards disappear end-to-end.
+
 ## Amazon Scraper
 
 A separate Amazon scraper page is available at:
