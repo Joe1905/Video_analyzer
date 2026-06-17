@@ -29,12 +29,19 @@ def _connect() -> sqlite3.Connection:
             author TEXT,
             extraction_dir TEXT,
             extracted_at REAL,
+            source TEXT,
+            hidden_from_analyzer INTEGER NOT NULL DEFAULT 0,
             created_at REAL NOT NULL,
             updated_at REAL NOT NULL,
             PRIMARY KEY (platform, video_id)
         )
         """
     )
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(videos)").fetchall()}
+    if "source" not in existing:
+        conn.execute("ALTER TABLE videos ADD COLUMN source TEXT")
+    if "hidden_from_analyzer" not in existing:
+        conn.execute("ALTER TABLE videos ADD COLUMN hidden_from_analyzer INTEGER NOT NULL DEFAULT 0")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_videos_filename ON videos(filename)")
     conn.commit()
     return conn
@@ -87,6 +94,8 @@ def register_video(
     title: str = "",
     author: str = "",
     extraction_dir: str = "",
+    source: str = "",
+    hidden_from_analyzer: bool | None = None,
 ) -> dict[str, Any]:
     clean_video_id = _clean_id(video_id)
     if not clean_video_id:
@@ -99,18 +108,37 @@ def register_video(
             """
             INSERT INTO videos (
                 platform, video_id, canonical_key, source_url, filename, title, author,
-                extraction_dir, created_at, updated_at
+                extraction_dir, source, hidden_from_analyzer, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(platform, video_id) DO UPDATE SET
                 source_url = COALESCE(NULLIF(excluded.source_url, ''), source_url),
                 filename = COALESCE(NULLIF(excluded.filename, ''), filename),
                 title = COALESCE(NULLIF(excluded.title, ''), title),
                 author = COALESCE(NULLIF(excluded.author, ''), author),
                 extraction_dir = COALESCE(NULLIF(excluded.extraction_dir, ''), extraction_dir),
+                source = COALESCE(NULLIF(excluded.source, ''), source),
+                hidden_from_analyzer = CASE
+                    WHEN hidden_from_analyzer = 0 THEN 0
+                    WHEN excluded.hidden_from_analyzer = 0 THEN hidden_from_analyzer
+                    ELSE excluded.hidden_from_analyzer
+                END,
                 updated_at = excluded.updated_at
             """,
-            (platform, clean_video_id, canonical_key, source_url, filename, title, author, extraction_dir, now, now),
+            (
+                platform,
+                clean_video_id,
+                canonical_key,
+                source_url,
+                filename,
+                title,
+                author,
+                extraction_dir,
+                source,
+                1 if hidden_from_analyzer else 0,
+                now,
+                now,
+            ),
         )
         conn.commit()
     return get_video(platform, clean_video_id) or {}
@@ -158,7 +186,7 @@ def get_video(platform: str, video_id: str) -> dict[str, Any] | None:
         row = conn.execute(
             """
             SELECT platform, video_id, canonical_key, source_url, filename, title, author,
-                   extraction_dir, extracted_at, created_at, updated_at
+                   extraction_dir, extracted_at, source, hidden_from_analyzer, created_at, updated_at
             FROM videos
             WHERE platform = ? AND video_id = ?
             """,
@@ -168,7 +196,7 @@ def get_video(platform: str, video_id: str) -> dict[str, Any] | None:
         return None
     keys = (
         "platform", "video_id", "canonical_key", "source_url", "filename", "title",
-        "author", "extraction_dir", "extracted_at", "created_at", "updated_at",
+        "author", "extraction_dir", "extracted_at", "source", "hidden_from_analyzer", "created_at", "updated_at",
     )
     return dict(zip(keys, row))
 
@@ -178,7 +206,7 @@ def get_video_by_filename(filename: str) -> dict[str, Any] | None:
         row = conn.execute(
             """
             SELECT platform, video_id, canonical_key, source_url, filename, title, author,
-                   extraction_dir, extracted_at, created_at, updated_at
+                   extraction_dir, extracted_at, source, hidden_from_analyzer, created_at, updated_at
             FROM videos
             WHERE filename = ?
             ORDER BY updated_at DESC
@@ -190,7 +218,7 @@ def get_video_by_filename(filename: str) -> dict[str, Any] | None:
         return None
     keys = (
         "platform", "video_id", "canonical_key", "source_url", "filename", "title",
-        "author", "extraction_dir", "extracted_at", "created_at", "updated_at",
+        "author", "extraction_dir", "extracted_at", "source", "hidden_from_analyzer", "created_at", "updated_at",
     )
     return dict(zip(keys, row))
 
@@ -204,6 +232,25 @@ def mark_extracted(filename: str, extraction_dir: str) -> None:
         conn.execute(
             "UPDATE videos SET extraction_dir = ?, extracted_at = ?, updated_at = ? WHERE platform = ? AND video_id = ?",
             (extraction_dir, now, now, record["platform"], record["video_id"]),
+        )
+        conn.commit()
+
+
+def is_hidden_from_analyzer(filename: str) -> bool:
+    record = get_video_by_filename(filename)
+    return bool(record and int(record.get("hidden_from_analyzer") or 0))
+
+
+def set_hidden_from_analyzer(platform: str, video_id: str, hidden: bool) -> None:
+    now = time.time()
+    with _connect() as conn:
+        conn.execute(
+            """
+            UPDATE videos
+            SET hidden_from_analyzer = ?, updated_at = ?
+            WHERE platform = ? AND video_id = ?
+            """,
+            (1 if hidden else 0, now, platform, video_id),
         )
         conn.commit()
 

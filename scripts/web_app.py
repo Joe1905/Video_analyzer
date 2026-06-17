@@ -59,10 +59,19 @@ from tools import execute_tool, get_tools_for_model, list_tools
 from video_queue import video_queue, STATUS_META
 from api_cache import get_cached_or_call, record_api_call
 from api_cache import get_cached, store_response
-from hot_video_report import get_report, list_reports, run_report
+from hot_video_report import (
+    get_report,
+    get_report_runtime_status,
+    get_settings as get_report_settings,
+    list_reports,
+    run_report,
+    save_settings as save_report_settings,
+    start_report_scheduler,
+)
 from tiktok_download import video_cache_metadata, video_cache_request, with_download_cache_meta
 from video_registry import (
     get_video_by_filename,
+    is_hidden_from_analyzer,
     mark_extracted,
     platform_for_url,
     register_from_payload,
@@ -2437,13 +2446,20 @@ class Handler(BaseHTTPRequestHandler):
             return json_response(self, HTTPStatus.OK, read_sociavault_usage())
         if parsed.path == "/api/report/today":
             include_raw = parse_qs(parsed.query).get("raw", ["0"])[0] in {"1", "true", "yes"}
-            return json_response(self, HTTPStatus.OK, get_report(include_raw=include_raw))
+            return json_response(self, HTTPStatus.OK, get_report(include_raw=include_raw, detail=include_raw))
+        if parsed.path == "/api/report":
+            qs = parse_qs(parsed.query)
+            include_raw = qs.get("raw", ["0"])[0] in {"1", "true", "yes"}
+            report_date = qs.get("date", [""])[0] or None
+            return json_response(self, HTTPStatus.OK, get_report(report_date, include_raw=include_raw, detail=True))
         if parsed.path == "/api/report/history":
             try:
                 limit = int(parse_qs(parsed.query).get("limit", ["30"])[0])
             except ValueError:
                 limit = 30
             return json_response(self, HTTPStatus.OK, list_reports(limit))
+        if parsed.path == "/api/report/settings":
+            return json_response(self, HTTPStatus.OK, {**get_report_settings(), **get_report_runtime_status()})
         if parsed.path.startswith("/video/"):
             try:
                 filename = safe_filename(unquote(parsed.path.removeprefix("/video/")))
@@ -2514,6 +2530,8 @@ class Handler(BaseHTTPRequestHandler):
             for path in sorted(VIDEOS_DIR.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True):
                 if path.is_file():
                     name = path.name
+                    if is_hidden_from_analyzer(name):
+                        continue
                     meta = video_queue.get_status_meta(name)
                     files.append({
                         "name": name, "size": path.stat().st_size, "mtime": path.stat().st_mtime,
@@ -2711,6 +2729,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_video_metrics()
         if parsed.path == "/api/report/run":
             return self.handle_report_run()
+        if parsed.path == "/api/report/settings":
+            return self.handle_report_settings()
         if parsed.path == "/api/amazon-scrape":
             return self.handle_amazon_scrape()
         if parsed.path == "/api/analyze":
@@ -2730,6 +2750,18 @@ class Handler(BaseHTTPRequestHandler):
     def handle_report_run(self) -> None:
         try:
             return json_response(self, HTTPStatus.OK, run_report())
+        except Exception as exc:
+            return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+
+    def handle_report_settings(self) -> None:
+        content_length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(content_length)
+        try:
+            payload = json.loads(body.decode("utf-8") or "{}")
+            settings = save_report_settings(payload)
+            return json_response(self, HTTPStatus.OK, settings)
+        except (json.JSONDecodeError, ValueError) as exc:
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
         except Exception as exc:
             return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
 
@@ -3183,6 +3215,7 @@ def main() -> int:
     mark_interrupted_chat_messages()
     normalize_stored_chat_tool_results()
     video_queue.start(execute_queue_job)
+    start_report_scheduler()
     port = int(os.getenv("WEB_PORT", "4000"))
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     print(f"Web UI listening on http://0.0.0.0:{port}")
