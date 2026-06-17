@@ -466,15 +466,11 @@ def _prepare_cover_asset(video: dict[str, Any]) -> dict[str, Any]:
     cover = str(video.get("cover_url") or "")
     platform = str(video.get("platform") or "")
     video_id = str(video.get("video_id") or "")
-    local = ""
-    if cover.startswith("/report-cover/"):
-        local = cover
-    elif cover.startswith(("http://", "https://")):
-        local = _download_cover_asset(cover, platform, video_id)
-    if not local:
-        local = _snapshot_cover_asset(str(video.get("local_filename") or ""), platform, video_id)
+    local = _existing_cover_asset(platform, video_id)
     if local:
         video["cover_url"] = local
+    elif cover:
+        video["cover_url"] = cover
     return video
 
 
@@ -646,8 +642,9 @@ def backfill_cover_urls(report_date: str | None = None) -> dict[str, Any]:
     with _connect() as conn:
         rows = conn.execute(
             """
-            SELECT rv.platform, rv.video_id, rv.raw_json
+            SELECT rv.platform, rv.video_id, rv.raw_json, COALESCE(rv.local_filename, m.local_filename)
             FROM hot_report_videos rv
+            LEFT JOIN hot_video_master m ON m.platform = rv.platform AND m.video_id = rv.video_id
             WHERE rv.report_date = ? AND (rv.cover_url IS NULL OR rv.cover_url = '')
             """,
             (date,),
@@ -664,27 +661,32 @@ def backfill_cover_urls(report_date: str | None = None) -> dict[str, Any]:
             for platform, video_id, raw_json in master_rows:
                 raw = _json_loads(raw_json, {})
                 cover_url = _cover_url(raw)
+                cover_asset = _download_cover_asset(cover_url, platform, video_id) if cover_url else ""
                 if cover_url:
                     conn.execute(
                         "UPDATE hot_video_master SET cover_url = ?, updated_at = ? WHERE platform = ? AND video_id = ?",
-                        (cover_url, time.time(), platform, video_id),
+                        (cover_asset or cover_url, time.time(), platform, video_id),
                     )
                     updated += 1
             conn.commit()
             return {"updated": updated, "report_date": date, "source": "master"}
         updated = 0
         now = time.time()
-        for platform, video_id, raw_json in rows:
+        for platform, video_id, raw_json, filename in rows:
             raw = _json_loads(raw_json, {})
             cover_url = _cover_url(raw)
-            if cover_url:
+            cover_asset = _download_cover_asset(cover_url, platform, video_id) if cover_url else ""
+            if not cover_asset:
+                cover_asset = _snapshot_cover_asset(str(filename or ""), platform, video_id)
+            final_cover = cover_asset or cover_url
+            if final_cover:
                 conn.execute(
                     "UPDATE hot_report_videos SET cover_url = ?, updated_at = ? WHERE report_date = ? AND platform = ? AND video_id = ?",
-                    (cover_url, now, date, platform, video_id),
+                    (final_cover, now, date, platform, video_id),
                 )
                 conn.execute(
                     "UPDATE hot_video_master SET cover_url = ?, updated_at = ? WHERE platform = ? AND video_id = ?",
-                    (cover_url, now, platform, video_id),
+                    (final_cover, now, platform, video_id),
                 )
                 updated += 1
         conn.commit()
@@ -994,26 +996,32 @@ def _process_video(conn: sqlite3.Connection, report_date: str, item: dict[str, A
         audit = _run_deepseek_report(output_dir)
         registry = get_video(platform, video_id) or get_video_by_filename(filename) or {}
         extraction_dir = str(registry.get("extraction_dir") or output_dir.name)
+        cover_asset = _download_cover_asset(str(item.get("cover_url") or ""), platform, video_id)
+        if not cover_asset:
+            cover_asset = _snapshot_cover_asset(filename, platform, video_id)
         conn.execute(
             """
             UPDATE hot_video_master
             SET local_filename = COALESCE(NULLIF(?, ''), local_filename),
                 extraction_dir = COALESCE(NULLIF(?, ''), extraction_dir),
+                cover_url = COALESCE(NULLIF(?, ''), cover_url),
                 updated_at = ?
             WHERE platform = ? AND video_id = ?
             """,
-            (filename, extraction_dir, now, platform, video_id),
+            (filename, extraction_dir, cover_asset, now, platform, video_id),
         )
         conn.execute(
             """
             UPDATE hot_report_videos
             SET process_status = 'complete', process_error = NULL, local_filename = ?, extraction_dir = ?,
+                cover_url = COALESCE(NULLIF(?, ''), cover_url),
                 analysis_json = ?, audit_json = ?, updated_at = ?
             WHERE report_date = ? AND platform = ? AND video_id = ?
             """,
             (
                 filename,
                 extraction_dir,
+                cover_asset,
                 json.dumps(analysis, ensure_ascii=False, sort_keys=True),
                 json.dumps(audit, ensure_ascii=False, sort_keys=True),
                 now,
