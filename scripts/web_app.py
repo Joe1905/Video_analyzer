@@ -2354,6 +2354,8 @@ class Handler(BaseHTTPRequestHandler):
             return text_response(self, HTTPStatus.OK, METRICS_HTML, "text/html; charset=utf-8")
         if parsed.path == "/amazon":
             return text_response(self, HTTPStatus.OK, AMAZON_HTML, "text/html; charset=utf-8")
+        if parsed.path.startswith("/assets/"):
+            return self.serve_static_asset(parsed.path.removeprefix("/assets/"))
         if parsed.path == "/api/prompt":
             return json_response(self, HTTPStatus.OK, {"prompt": load_prompt()})
         if parsed.path == "/api/chat/sessions":
@@ -2637,6 +2639,16 @@ class Handler(BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError):
                 self.close_connection = True
                 return
+
+    def serve_static_asset(self, relative_path: str) -> None:
+        asset_root = (SCRIPTS_DIR / "static" / "assets").resolve()
+        asset_path = (asset_root / unquote(relative_path)).resolve()
+        if asset_path != asset_root and asset_root not in asset_path.parents:
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Invalid asset path"})
+        if not asset_path.is_file():
+            return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Asset not found"})
+        content_type = mimetypes.guess_type(asset_path.name)[0] or "application/octet-stream"
+        return binary_response(self, HTTPStatus.OK, asset_path.read_bytes(), content_type)
 
     def serve_video(self, path: Path) -> None:
         if not path.is_file():
