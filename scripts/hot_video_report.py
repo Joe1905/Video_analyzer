@@ -642,51 +642,51 @@ def backfill_cover_urls(report_date: str | None = None) -> dict[str, Any]:
     with _connect() as conn:
         rows = conn.execute(
             """
-            SELECT rv.platform, rv.video_id, rv.raw_json, COALESCE(rv.local_filename, m.local_filename)
+            SELECT rv.platform, rv.video_id, rv.raw_json, COALESCE(rv.local_filename, m.local_filename),
+                   COALESCE(rv.cover_url, m.cover_url, '')
             FROM hot_report_videos rv
             LEFT JOIN hot_video_master m ON m.platform = rv.platform AND m.video_id = rv.video_id
-            WHERE rv.report_date = ? AND (rv.cover_url IS NULL OR rv.cover_url = '')
+            WHERE rv.report_date = ? AND COALESCE(rv.cover_url, m.cover_url, '') NOT LIKE '/report-cover/%'
             """,
             (date,),
         ).fetchall()
         if not rows:
             master_rows = conn.execute(
                 """
-                SELECT platform, video_id, raw_json
+                SELECT platform, video_id, raw_json, cover_url
                 FROM hot_video_master
-                WHERE cover_url IS NULL OR cover_url = ''
+                WHERE COALESCE(cover_url, '') NOT LIKE '/report-cover/%'
                 """
             ).fetchall()
             updated = 0
-            for platform, video_id, raw_json in master_rows:
+            for platform, video_id, raw_json, current_cover in master_rows:
                 raw = _json_loads(raw_json, {})
-                cover_url = _cover_url(raw)
+                cover_url = str(current_cover or "") or _cover_url(raw)
                 cover_asset = _download_cover_asset(cover_url, platform, video_id) if cover_url else ""
-                if cover_url:
+                if cover_asset:
                     conn.execute(
                         "UPDATE hot_video_master SET cover_url = ?, updated_at = ? WHERE platform = ? AND video_id = ?",
-                        (cover_asset or cover_url, time.time(), platform, video_id),
+                        (cover_asset, time.time(), platform, video_id),
                     )
                     updated += 1
             conn.commit()
             return {"updated": updated, "report_date": date, "source": "master"}
         updated = 0
         now = time.time()
-        for platform, video_id, raw_json, filename in rows:
+        for platform, video_id, raw_json, filename, current_cover in rows:
             raw = _json_loads(raw_json, {})
-            cover_url = _cover_url(raw)
+            cover_url = str(current_cover or "") or _cover_url(raw)
             cover_asset = _download_cover_asset(cover_url, platform, video_id) if cover_url else ""
             if not cover_asset:
                 cover_asset = _snapshot_cover_asset(str(filename or ""), platform, video_id)
-            final_cover = cover_asset or cover_url
-            if final_cover:
+            if cover_asset:
                 conn.execute(
                     "UPDATE hot_report_videos SET cover_url = ?, updated_at = ? WHERE report_date = ? AND platform = ? AND video_id = ?",
-                    (final_cover, now, date, platform, video_id),
+                    (cover_asset, now, date, platform, video_id),
                 )
                 conn.execute(
                     "UPDATE hot_video_master SET cover_url = ?, updated_at = ? WHERE platform = ? AND video_id = ?",
-                    (final_cover, now, platform, video_id),
+                    (cover_asset, now, platform, video_id),
                 )
                 updated += 1
         conn.commit()
