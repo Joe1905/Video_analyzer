@@ -822,6 +822,7 @@ def _finish_report(
     video_count = int(row[0] if row else 0)
     success_count = int(row[1] if row and row[1] is not None else 0)
     failed_count = int(row[2] if row and row[2] is not None else 0)
+    llm_generated_marker = 1 if report_json else None
     conn.execute(
         """
         UPDATE daily_reports
