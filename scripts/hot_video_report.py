@@ -11,6 +11,9 @@ import sys
 import threading
 import time
 import uuid
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -26,6 +29,7 @@ SCRIPTS_DIR = ROOT / "scripts"
 OUTPUT_DIR = ROOT / "output"
 VIDEOS_DIR = ROOT / "videos"
 DB_PATH = ROOT / "data" / "hot_video_report.sqlite"
+REPORT_COVER_DIR = ROOT / "data" / "report_covers"
 DEFAULT_API_BASE = "https://api.sociavault.com"
 DEFAULT_TZ = "Asia/Shanghai"
 
@@ -373,6 +377,107 @@ def _cover_url(node: dict[str, Any]) -> str:
     return ""
 
 
+def _cover_asset_name(platform: str, video_id: str, suffix: str = ".jpg") -> str:
+    safe_platform = re.sub(r"[^A-Za-z0-9_-]+", "_", platform or "video").strip("_") or "video"
+    safe_id = re.sub(r"[^A-Za-z0-9_-]+", "_", video_id or uuid.uuid4().hex).strip("_") or uuid.uuid4().hex
+    return f"{safe_platform}_{safe_id}{suffix}"
+
+
+def _cover_asset_url(filename: str) -> str:
+    return "/report-cover/" + urllib.parse.quote(filename)
+
+
+def _existing_cover_asset(platform: str, video_id: str) -> str:
+    REPORT_COVER_DIR.mkdir(parents=True, exist_ok=True)
+    prefix = _cover_asset_name(platform, video_id, "").rstrip(".")
+    for path in REPORT_COVER_DIR.glob(prefix + ".*"):
+        if path.is_file() and path.stat().st_size > 0:
+            return _cover_asset_url(path.name)
+    return ""
+
+
+def _cover_suffix(url: str, content_type: str = "") -> str:
+    parsed = urllib.parse.urlparse(url)
+    ext = Path(parsed.path).suffix.lower()
+    if ext in {".jpg", ".jpeg", ".png", ".webp"}:
+        return ".jpg" if ext == ".jpeg" else ext
+    if "png" in content_type:
+        return ".png"
+    if "webp" in content_type:
+        return ".webp"
+    return ".jpg"
+
+
+def _download_cover_asset(url: str, platform: str, video_id: str) -> str:
+    if not url or url.startswith("/report-cover/"):
+        return url
+    cached = _existing_cover_asset(platform, video_id)
+    if cached:
+        return cached
+    REPORT_COVER_DIR.mkdir(parents=True, exist_ok=True)
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            content_type = resp.headers.get("Content-Type", "")
+            body = resp.read(4_000_000)
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return ""
+    if not body or not (content_type.startswith("image/") or body[:4] in (b"\xff\xd8\xff\xe0", b"\xff\xd8\xff\xe1", b"\x89PNG")):
+        return ""
+    name = _cover_asset_name(platform, video_id, _cover_suffix(url, content_type))
+    path = REPORT_COVER_DIR / name
+    path.write_bytes(body)
+    return _cover_asset_url(name)
+
+
+def _snapshot_cover_asset(filename: str, platform: str, video_id: str) -> str:
+    if not filename:
+        return ""
+    cached = _existing_cover_asset(platform, video_id)
+    if cached:
+        return cached
+    video_path = VIDEOS_DIR / filename
+    if not video_path.is_file():
+        return ""
+    REPORT_COVER_DIR.mkdir(parents=True, exist_ok=True)
+    name = _cover_asset_name(platform, video_id, ".jpg")
+    path = REPORT_COVER_DIR / name
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-ss",
+        "00:00:01",
+        "-i",
+        str(video_path),
+        "-frames:v",
+        "1",
+        "-vf",
+        "scale=540:-1",
+        str(path),
+    ]
+    try:
+        subprocess.run(cmd, cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=12, check=True)
+    except (subprocess.SubprocessError, OSError):
+        return ""
+    return _cover_asset_url(name) if path.is_file() and path.stat().st_size > 0 else ""
+
+
+def _prepare_cover_asset(video: dict[str, Any]) -> dict[str, Any]:
+    cover = str(video.get("cover_url") or "")
+    platform = str(video.get("platform") or "")
+    video_id = str(video.get("video_id") or "")
+    local = ""
+    if cover.startswith("/report-cover/"):
+        local = cover
+    elif cover.startswith(("http://", "https://")):
+        local = _download_cover_asset(cover, platform, video_id)
+    if not local:
+        local = _snapshot_cover_asset(str(video.get("local_filename") or ""), platform, video_id)
+    if local:
+        video["cover_url"] = local
+    return video
+
+
 def _looks_like_video(node: dict[str, Any]) -> bool:
     video_id = _first_present(node, ("aweme_id", "awemeId", "video_id", "videoId", "item_id", "itemId", "id"))
     has_text = _first_present(node, ("desc", "description", "title", "caption")) not in (None, "", [], {})
@@ -620,7 +725,8 @@ def get_report(report_date: str | None = None, include_raw: bool = False, detail
             ).fetchall()
     report = _row_to_report(report_row)
     report["exists"] = True
-    report["videos"] = [_row_to_video(row, include_raw=include_raw) for row in rows] if detail else []
+    videos = [_row_to_video(row, include_raw=include_raw) for row in rows] if detail else []
+    report["videos"] = [_prepare_cover_asset(video) for video in videos] if detail else []
     return report
 
 
@@ -942,6 +1048,17 @@ def _build_summary_prompt(report_date: str, videos: list[dict[str, Any]]) -> str
             }
         )
     return (
+        "You are a senior short-video growth analyst. Based on multiple hot-video "
+        "extraction results and analysis results, generate a daily report in Chinese. "
+        "Return strict JSON only. Do not return Markdown. Required JSON keys: "
+        "summary, common_patterns, hook_analysis, visual_patterns, topic_angles, "
+        "execution_tactics, reusable_ideas, risks, next_actions. Focus on why these "
+        "videos became hits, what patterns they share, and what can be reused in topic "
+        "selection, hooks, scripts, visual rhythm, and interaction design.\n\n"
+        f"report_date: {report_date}\nvideo_items:\n"
+        f"{json.dumps(compact_videos, ensure_ascii=False, indent=2)}"
+    )
+    return (
         "你是短视频爆款研究员。请基于多个热视频的结构化提取内容和分析结果，生成一份中文日报。"
         "只返回严格 JSON，不要 Markdown。JSON keys 必须包含：summary, common_patterns, hook_analysis, "
         "visual_patterns, topic_angles, execution_tactics, reusable_ideas, risks, next_actions。"
@@ -1019,6 +1136,38 @@ def _cleanup_old_reports(conn: sqlite3.Connection) -> None:
     conn.execute("DELETE FROM hot_report_videos WHERE report_date < ?", (cutoff,))
     conn.execute("DELETE FROM daily_reports WHERE report_date < ?", (cutoff,))
     conn.commit()
+
+
+def recover_interrupted_reports() -> dict[str, Any]:
+    recovered: list[str] = []
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT id, report_date FROM daily_reports WHERE status = 'running'"
+        ).fetchall()
+        for report_id, report_date in rows:
+            counts = conn.execute(
+                """
+                SELECT
+                  SUM(CASE WHEN process_status = 'complete' THEN 1 ELSE 0 END),
+                  SUM(CASE WHEN process_status = 'failed' THEN 1 ELSE 0 END)
+                FROM hot_report_videos WHERE report_date = ?
+                """,
+                (report_date,),
+            ).fetchone()
+            success_count = int(counts[0] if counts and counts[0] is not None else 0)
+            failed_count = int(counts[1] if counts and counts[1] is not None else 0)
+            if success_count:
+                status = "partial_failed"
+                error = "Report task was interrupted before the daily summary was generated. Click generate to retry."
+            elif failed_count:
+                status = "failed"
+                error = "Report task was interrupted after video processing failures. Click generate to retry."
+            else:
+                status = "failed"
+                error = "Report task was interrupted before video processing started. Click generate to retry."
+            _finish_report(conn, str(report_id), str(report_date), status, error)
+            recovered.append(str(report_date))
+    return {"recovered": recovered}
 
 
 def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[str, Any]:
@@ -1121,5 +1270,6 @@ def start_report_scheduler() -> None:
         if _scheduler_started:
             return
         _scheduler_started = True
+        recover_interrupted_reports()
         threading.Thread(target=_scheduler_worker, daemon=True).start()
         threading.Thread(target=_scheduler_loop, daemon=True).start()

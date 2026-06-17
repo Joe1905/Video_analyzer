@@ -60,11 +60,14 @@ from video_queue import video_queue, STATUS_META
 from api_cache import get_cached_or_call, record_api_call
 from api_cache import get_cached, store_response
 from hot_video_report import (
+    REPORT_COVER_DIR,
     backfill_cover_urls,
+    enqueue_report,
     get_report,
     get_report_runtime_status,
     get_settings as get_report_settings,
     list_reports,
+    recover_interrupted_reports,
     run_report,
     save_settings as save_report_settings,
     start_report_scheduler,
@@ -2464,6 +2467,16 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/report/backfill-covers" and self.command == "POST":
             result = backfill_cover_urls()
             return json_response(self, HTTPStatus.OK, result)
+        if parsed.path.startswith("/report-cover/"):
+            try:
+                filename = safe_filename(unquote(parsed.path.removeprefix("/report-cover/")))
+            except ValueError as exc:
+                return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            path = REPORT_COVER_DIR / filename
+            if not path.is_file():
+                return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Cover not found"})
+            content_type = mimetypes.guess_type(path.name)[0] or "image/jpeg"
+            return binary_response(self, HTTPStatus.OK, path.read_bytes(), content_type)
         if parsed.path.startswith("/video/"):
             try:
                 filename = safe_filename(unquote(parsed.path.removeprefix("/video/")))
@@ -2735,6 +2748,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_report_run()
         if parsed.path == "/api/report/settings":
             return self.handle_report_settings()
+        if parsed.path == "/api/report/backfill-covers":
+            result = backfill_cover_urls()
+            return json_response(self, HTTPStatus.OK, result)
         if parsed.path == "/api/amazon-scrape":
             return self.handle_amazon_scrape()
         if parsed.path == "/api/analyze":
@@ -2753,7 +2769,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def handle_report_run(self) -> None:
         try:
-            return json_response(self, HTTPStatus.OK, run_report())
+            recover_interrupted_reports()
+            payload = enqueue_report()
+            payload["report"] = get_report(include_raw=False, detail=False)
+            return json_response(self, HTTPStatus.ACCEPTED, payload)
         except Exception as exc:
             return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
 
