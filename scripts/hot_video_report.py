@@ -856,6 +856,80 @@ def _enrich_missing_publish_time(
     return merged, True
 
 
+def _collect_hot_video_candidates(
+    report_date: str,
+    region: str,
+    target_count: int,
+    recency_days: int,
+    api_key: str,
+    api_base: str,
+    api_timeout: float,
+    counts: dict[str, int],
+) -> tuple[dict[tuple[str, str], dict[str, Any]], list[str]]:
+    candidates: dict[tuple[str, str], dict[str, Any]] = {}
+    source_count = max(1, len(_split_csv_env("HOT_VIDEO_POPULAR_SORTS", "views,likes")))
+    cutoff_ts = time.time() - recency_days * 86400
+    max_pages = max(1, _to_int(os.getenv("HOT_VIDEO_POPULAR_MAX_PAGES", "5")))
+    popular_failed = True
+    source_errors: list[str] = []
+
+    def collect_from(endpoint: str, params: dict[str, Any], label: str) -> None:
+        nonlocal popular_failed
+        _progress_payload(report_date, "running", "collecting", 6, f"Collecting source: {label}", counts)
+        payload = call_api(api_key, api_base, endpoint, params, api_timeout)
+        if endpoint == "videos-popular":
+            popular_failed = False
+        for rank, node in enumerate(_iter_video_nodes(payload), start=1):
+            counts["collected"] += 1
+            item = _normalize_video(node, endpoint, label, rank)
+            if not item["video_id"]:
+                continue
+            counts["candidate_count"] += 1
+            published_at = item.get("metrics", {}).get("published_at")
+            if not isinstance(published_at, (int, float)) or published_at <= 0:
+                item, enriched = _enrich_missing_publish_time(item, api_key, api_base, api_timeout)
+                if enriched:
+                    counts["enriched_count"] += 1
+                published_at = item.get("metrics", {}).get("published_at")
+            if not isinstance(published_at, (int, float)) or published_at <= 0:
+                counts["skipped_missing_time"] += 1
+                continue
+            if published_at < cutoff_ts:
+                counts["skipped_old"] += 1
+                continue
+            counts["recent_count"] += 1
+            key = (item["platform"], item["video_id"])
+            if key not in candidates or item["hot_score"] > candidates[key]["hot_score"]:
+                candidates[key] = item
+        _progress_payload(report_date, "running", "filtering", 18, f"{label} complete, valid candidates: {len(candidates)}", counts)
+
+    page = 1
+    while len(candidates) < target_count and page <= max_pages:
+        remaining = target_count - len(candidates)
+        total_fetch = max(1, remaining * 2)
+        per_source_count = max(1, (total_fetch + source_count - 1) // source_count)
+        page_success = False
+        for endpoint, params, label in _popular_source_requests(region, per_source_count, page, recency_days):
+            try:
+                collect_from(endpoint, params, label)
+                page_success = True
+            except Exception as exc:
+                source_errors.append(f"{label}: {exc}")
+        if not page_success:
+            break
+        page += 1
+
+    if popular_failed and not candidates:
+        fallback_count = max(target_count * 2, 10)
+        for endpoint, params, label in _legacy_source_requests(region, fallback_count):
+            try:
+                collect_from(endpoint, params, f"fallback:{label}")
+            except Exception as exc:
+                source_errors.append(f"fallback:{label}: {exc}")
+
+    return candidates, source_errors
+
+
 def _row_to_report(row: sqlite3.Row | tuple[Any, ...]) -> dict[str, Any]:
     keys = (
         "id",
@@ -1082,12 +1156,36 @@ def list_reports(limit: int = 30) -> list[dict[str, Any]]:
     return items
 
 
-def _source_requests(region: str, count: int) -> list[tuple[str, dict[str, Any], str]]:
+def _split_csv_env(name: str, default: str) -> list[str]:
+    values = [item.strip() for item in os.getenv(name, default).split(",")]
+    return [item for item in values if item]
+
+
+def _popular_source_requests(region: str, count: int, page: int, recency_days: int) -> list[tuple[str, dict[str, Any], str]]:
+    sorts = _split_csv_env("HOT_VIDEO_POPULAR_SORTS", "views,likes")
+    requests = []
+    for sort in sorts:
+        params = {
+            "region": region,
+            "count": count,
+            "page": page,
+            "days": recency_days,
+            "sort_by": sort,
+        }
+        requests.append(("videos-popular", params, f"videos-popular:{sort}:p{page}"))
+    return requests
+
+
+def _legacy_source_requests(region: str, count: int) -> list[tuple[str, dict[str, Any], str]]:
     keywords = ["viral"]
     requests = [("trending", {"region": region, "count": count}, f"trending:{region}")]
     for keyword in keywords:
         requests.append(("search-top", {"query": keyword, "region": region, "count": count}, f"search-top:{keyword}"))
     return requests
+
+
+def _source_requests(region: str, count: int) -> list[tuple[str, dict[str, Any], str]]:
+    return _popular_source_requests(region, count, 1, _recent_window_days())
 
 
 def _start_report(conn: sqlite3.Connection, report_date: str, region: str, sources: list[dict[str, Any]], scheduled: bool = False) -> str:
@@ -1509,13 +1607,18 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
     settings = get_settings()
     date = report_date or today_key()
     region = os.getenv("SOCIAVAULT_REGION", "US").strip() or "US"
-    count = 30
-    detail_limit = 20
     analysis_limit = int(settings["analysis_limit"])
+    target_count = analysis_limit
     recency_days = _recent_window_days()
     api_key = os.getenv("SOCIAVAULT_API_KEY", "").strip()
     api_base = os.getenv("SOCIAVAULT_API_BASE", DEFAULT_API_BASE).rstrip("/")
-    sources = [{"endpoint": endpoint, "label": label, "params": params} for endpoint, params, label in _source_requests(region, count)]
+    source_count = max(1, len(_split_csv_env("HOT_VIDEO_POPULAR_SORTS", "views,likes")))
+    first_total_fetch = target_count * 2
+    first_per_source_count = max(1, (first_total_fetch + source_count - 1) // source_count)
+    sources = [
+        {"endpoint": endpoint, "label": label, "params": params}
+        for endpoint, params, label in _popular_source_requests(region, first_per_source_count, 1, recency_days)
+    ]
     counts = {
         "collected": 0,
         "candidate_count": 0,
@@ -1542,39 +1645,21 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
                 _progress_payload(date, "failed", "finished", 100, error, counts)
                 return get_report(date, include_raw=True)
             try:
-                candidates: dict[tuple[str, str], dict[str, Any]] = {}
-                now_ts = time.time()
-                cutoff_ts = now_ts - recency_days * 86400
                 api_timeout = float(os.getenv("SOCIAVAULT_TIMEOUT", "180"))
-                for endpoint, params, label in _source_requests(region, count):
-                    _progress_payload(date, "running", "collecting", 6, f"采集来源：{label}", counts)
-                    payload = call_api(api_key, api_base, endpoint, params, api_timeout)
-                    for rank, node in enumerate(_iter_video_nodes(payload), start=1):
-                        counts["collected"] += 1
-                        item = _normalize_video(node, endpoint, label, rank)
-                        if not item["video_id"]:
-                            continue
-                        counts["candidate_count"] += 1
-                        published_at = item.get("metrics", {}).get("published_at")
-                        if not isinstance(published_at, (int, float)) or published_at <= 0:
-                            item, enriched = _enrich_missing_publish_time(item, api_key, api_base, api_timeout)
-                            if enriched:
-                                counts["enriched_count"] += 1
-                            published_at = item.get("metrics", {}).get("published_at")
-                        if not isinstance(published_at, (int, float)) or published_at <= 0:
-                            counts["skipped_missing_time"] += 1
-                            continue
-                        if published_at < cutoff_ts:
-                            counts["skipped_old"] += 1
-                            continue
-                        counts["recent_count"] += 1
-                        key = (item["platform"], item["video_id"])
-                        if key not in candidates or item["hot_score"] > candidates[key]["hot_score"]:
-                            candidates[key] = item
-                    _progress_payload(date, "running", "filtering", 18, f"{label} 采集完成，有效候选 {len(candidates)} 条", counts)
-                ranked = sorted(candidates.values(), key=lambda item: item["hot_score"], reverse=True)[:detail_limit]
+                candidates, source_errors = _collect_hot_video_candidates(
+                    date,
+                    region,
+                    target_count,
+                    recency_days,
+                    api_key,
+                    api_base,
+                    api_timeout,
+                    counts,
+                )
+                ranked = sorted(candidates.values(), key=lambda item: item["hot_score"], reverse=True)[:target_count]
                 if not ranked:
-                    error = f"No hot videos published in the last {recency_days} days"
+                    suffix = f"; source errors: {' | '.join(source_errors[:3])}" if source_errors else ""
+                    error = f"No hot videos published in the last {recency_days} days{suffix}"
                     _finish_report(conn, report_id, date, "failed", error)
                     _progress_payload(date, "failed", "finished", 100, error, counts)
                     return get_report(date, include_raw=True)

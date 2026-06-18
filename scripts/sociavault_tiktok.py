@@ -201,6 +201,10 @@ def build_params(args: argparse.Namespace) -> dict[str, Any]:
         params["sound_id"] = args.sound_id
     if args.count is not None:
         params["count"] = args.count
+    if getattr(args, "days", None) is not None:
+        params["days"] = args.days
+    if getattr(args, "page", None) is not None:
+        params["page"] = args.page
     if args.sort_by:
         params["sort_by"] = args.sort_by
     if args.cursor:
@@ -230,6 +234,8 @@ def main() -> int:
     parser.add_argument("--hashtag", default="", help="Hashtag (without #)")
     parser.add_argument("--sound-id", default="", help="Music/sound ID")
     parser.add_argument("--count", type=int, default=10, help="Number of results (default: 10)")
+    parser.add_argument("--days", type=int, default=None, help="Lookback window in days for endpoints that support it")
+    parser.add_argument("--page", type=int, default=None, help="Page number for endpoints that support it")
     parser.add_argument("--sort-by", default="", help="Sort order (e.g. most-liked, date-posted)")
     parser.add_argument("--cursor", default="", help="Pagination cursor")
     parser.add_argument("--trim", action="store_true", help="Request trimmed response")
