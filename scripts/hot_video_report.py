@@ -919,13 +919,36 @@ def _collect_hot_video_candidates(
             break
         page += 1
 
-    if popular_failed and not candidates:
-        fallback_count = max(target_count * 2, 10)
-        for endpoint, params, label in _legacy_source_requests(region, fallback_count):
-            try:
-                collect_from(endpoint, params, f"fallback:{label}")
-            except Exception as exc:
-                source_errors.append(f"fallback:{label}: {exc}")
+    if len(candidates) < target_count:
+        fallback_max = max(target_count * 2, _to_int(os.getenv("HOT_VIDEO_FALLBACK_SOURCE_COUNT_MAX", "80")))
+        fallback_count = max((target_count - len(candidates)) * 2, 10)
+        used_counts: set[int] = set()
+        while len(candidates) < target_count and fallback_count <= fallback_max:
+            if fallback_count in used_counts:
+                fallback_count += max((target_count - len(candidates)) * 2, 10)
+                continue
+            used_counts.add(fallback_count)
+            before = len(candidates)
+            _progress_payload(
+                report_date,
+                "running",
+                "collecting",
+                12,
+                f"Popular source insufficient, fallback count={fallback_count}, current valid={len(candidates)}/{target_count}",
+                counts,
+            )
+            for endpoint, params, label in _legacy_source_requests(region, fallback_count):
+                try:
+                    collect_from(endpoint, params, f"fallback:{label}:c{fallback_count}")
+                except Exception as exc:
+                    source_errors.append(f"fallback:{label}:c{fallback_count}: {exc}")
+            if len(candidates) >= target_count:
+                break
+            remaining = target_count - len(candidates)
+            next_count = fallback_count + max(remaining * 2, 10)
+            if len(candidates) == before and next_count <= fallback_count:
+                break
+            fallback_count = next_count
 
     return candidates, source_errors
 

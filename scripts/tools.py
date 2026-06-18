@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import shutil
 import subprocess
 import time
 import uuid
@@ -22,6 +23,8 @@ SAFE_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789
 DEFAULT_SOCIA_VAULT_API_BASE = "https://api.sociavault.com"
 VIDEO_INFO_TTL_SECONDS = 24 * 60 * 60
 VIDEO_MEDIA_TTL_SECONDS = 30 * 24 * 60 * 60
+AUDIO_ONLY_SUFFIXES = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav"}
+VIDEO_SUFFIXES = {".m4v", ".mov", ".mp4", ".webm"}
 
 
 def _video_output_dir(filename: str) -> Path:
@@ -202,6 +205,127 @@ def _video_id_from_payload(payload: Any, fallback_url: str) -> str:
     return uuid.uuid4().hex[:12]
 
 
+def _download_path_from_data(data: dict[str, Any]) -> Path | None:
+    filename = str(data.get("filename") or "").strip()
+    raw_path = str(data.get("path") or "").strip()
+    if raw_path:
+        path = Path(raw_path)
+        if not path.is_absolute():
+            path = ROOT / path
+        return path
+    if filename:
+        return VIDEOS_DIR / Path(filename).name
+    return None
+
+
+def _probe_media(path: Path) -> dict[str, Any]:
+    if path.suffix.lower() in AUDIO_ONLY_SUFFIXES:
+        return {"ok": False, "reason": f"audio-only suffix {path.suffix.lower()}", "video_stream": None}
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        return {"ok": path.suffix.lower() in VIDEO_SUFFIXES, "reason": "ffprobe unavailable", "video_stream": None}
+    result = subprocess.run(
+        [
+            ffprobe,
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-show_streams",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        cwd=ROOT,
+    )
+    if result.returncode != 0:
+        return {"ok": False, "reason": result.stderr or result.stdout or f"ffprobe exit {result.returncode}", "video_stream": None}
+    try:
+        payload = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        return {"ok": False, "reason": f"ffprobe json error: {exc}", "video_stream": None}
+    streams = payload.get("streams") if isinstance(payload, dict) else []
+    video_stream = next((stream for stream in streams if isinstance(stream, dict) and stream.get("codec_type") == "video"), None)
+    if not video_stream:
+        return {"ok": False, "reason": "no video stream", "video_stream": None}
+    return {"ok": True, "reason": "", "video_stream": video_stream}
+
+
+def _needs_h264_transcode(path: Path, probe: dict[str, Any]) -> bool:
+    stream = probe.get("video_stream") if isinstance(probe, dict) else None
+    codec = str((stream or {}).get("codec_name") or "").lower()
+    if codec not in {"h264", "avc1"}:
+        return True
+    return path.suffix.lower() not in {".mp4", ".m4v", ".mov"}
+
+
+def _transcode_for_analyzer(path: Path) -> Path:
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("ffmpeg unavailable; cannot normalize video encoding")
+    target = path.with_name(f"{path.stem}_h264.mp4")
+    if target.is_file():
+        target_probe = _probe_media(target)
+        if target_probe.get("ok") and not _needs_h264_transcode(target, target_probe):
+            return target
+    temp_target = target.with_name(target.name + ".part.mp4")
+    temp_target.unlink(missing_ok=True)
+    result = subprocess.run(
+        [
+            ffmpeg,
+            "-y",
+            "-i",
+            str(path),
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a?",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "23",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-movflags",
+            "+faststart",
+            str(temp_target),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=int(os.getenv("VIDEO_TRANSCODE_TIMEOUT", "300")),
+        cwd=ROOT,
+    )
+    if result.returncode != 0:
+        temp_target.unlink(missing_ok=True)
+        raise RuntimeError(result.stderr or result.stdout or f"ffmpeg exit {result.returncode}")
+    temp_target.replace(target)
+    return target
+
+
+def _ensure_analyzer_video(data: dict[str, Any], source_url: str) -> dict[str, Any]:
+    path = _download_path_from_data(data)
+    if not path or not path.is_file():
+        raise RuntimeError(f"downloaded file missing: {data.get('filename') or data.get('path')}")
+    probe = _probe_media(path)
+    if not probe.get("ok"):
+        raise RuntimeError(f"downloaded file is not an analyzable video: {probe.get('reason')}")
+    if _needs_h264_transcode(path, probe):
+        original = path
+        path = _transcode_for_analyzer(path)
+        data["transcoded_from"] = original.name
+        data["transcode"] = {"video_codec": "h264", "audio_codec": "aac", "source": original.name}
+    data["filename"] = path.name
+    data["path"] = str(path)
+    data["size"] = path.stat().st_size
+    data.setdefault("webpage_url", source_url)
+    return data
+
+
 def _download_direct_media(media_url: str, source_url: str, payload: Any) -> dict:
     import requests
 
@@ -257,7 +381,7 @@ def _download_direct_media(media_url: str, source_url: str, payload: Any) -> dic
     except Exception:
         temp_target.unlink(missing_ok=True)
         raise
-    return {
+    return _ensure_analyzer_video({
         "filename": target.name,
         "path": str(target),
         "size": target.stat().st_size,
@@ -268,7 +392,7 @@ def _download_direct_media(media_url: str, source_url: str, payload: Any) -> dic
         "webpage_url": source_url,
         "downloader": "sociavault-video-info",
         "media_url": media_url,
-    }
+    }, source_url)
 
 
 def _sociavault_video_info_request(url: str) -> dict[str, Any]:
@@ -289,8 +413,19 @@ def _cached_download_result(url: str, result_path: Path) -> dict | None:
     if not cached_path.is_file():
         print(f"[API_CACHE] miss provider=short_video_download endpoint=download reason=file_missing filename={cached.get('filename')}", flush=True)
         return None
-    data = with_download_cache_meta(dict(cached), True)
-    data["path"] = str(cached_path)
+    try:
+        data = _ensure_analyzer_video(dict(cached), url)
+    except Exception as exc:
+        print(f"[API_CACHE] miss provider=short_video_download endpoint=download reason=invalid_video filename={cached.get('filename')} error={exc}", flush=True)
+        return None
+    store_response(
+        "short_video_download",
+        "download",
+        video_cache_request(url),
+        data,
+        metadata=video_cache_metadata(data, url),
+    )
+    data = with_download_cache_meta(data, True)
     if data.get("id"):
         register_video(
             video_id=str(data.get("id")),
@@ -304,6 +439,7 @@ def _cached_download_result(url: str, result_path: Path) -> dict | None:
 
 
 def _store_download_result(url: str, data: dict[str, Any]) -> dict[str, Any]:
+    data = _ensure_analyzer_video(dict(data), url)
     if data.get("id"):
         register_video(
             video_id=str(data.get("id")),
@@ -390,6 +526,47 @@ def _cached_video_info_download(url: str, result_path: Path) -> dict | None:
     return _try_media_cache_payload_download(url, payload, result_path, "cached-media")
 
 
+def _api_video_info_download(url: str, result_path: Path, crawler_error: str = "") -> dict | None:
+    info_path = OUTPUT_DIR / f"tiktok_video-info_{uuid.uuid4().hex[:8]}.json"
+    api_cmd = [
+        "python",
+        str(SCRIPTS_DIR / "sociavault_tiktok.py"),
+        "--endpoint",
+        "video-info",
+        "--url",
+        url,
+        "--output",
+        str(info_path),
+    ]
+    api_result = subprocess.run(api_cmd, capture_output=True, text=True, timeout=180, cwd=ROOT)
+    _forward_child_output(api_result)
+    if api_result.returncode != 0:
+        if crawler_error:
+            raise RuntimeError(
+                "Video download failed: original downloader failed, and SociaVault video-info failed too.\n"
+                f"Original downloader: {crawler_error}\n"
+                f"SociaVault: {api_result.stderr or api_result.stdout or f'Exit code {api_result.returncode}'}"
+            )
+        print(f"[VIDEO_DOWNLOAD] api video-info failed: {api_result.stderr or api_result.stdout or api_result.returncode}", flush=True)
+        return None
+    payload = json.loads(info_path.read_text(encoding="utf-8"))
+    register_from_payload(payload, source_url=url)
+    api_download = _try_video_info_payload_download(url, payload, result_path, "api")
+    if api_download:
+        data = api_download.get("data")
+        if isinstance(data, dict):
+            data["sociavault_video_info"] = str(info_path.relative_to(ROOT))
+            result_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            api_download["raw_bytes"] = result_path.stat().st_size
+        return api_download
+    if crawler_error:
+        raise RuntimeError(
+            "Video download failed: original downloader failed, and SociaVault video-info had no usable video media URL.\n"
+            f"Original downloader: {crawler_error}\n"
+        )
+    return None
+
+
 def _run_tiktok_api(endpoint: str, **kwargs) -> dict:
     cmd = ["python", str(SCRIPTS_DIR / "sociavault_tiktok.py"), "--endpoint", endpoint]
     for key, value in kwargs.items():
@@ -435,6 +612,10 @@ def _run_video_download(url: str) -> dict:
     if cached_result:
         return cached_result
 
+    api_result = _api_video_info_download(url, result_path)
+    if api_result:
+        return api_result
+
     cmd = [
         "python",
         str(SCRIPTS_DIR / "tiktok_download.py"),
@@ -451,7 +632,14 @@ def _run_video_download(url: str) -> dict:
         if result.returncode == 0 and result_path.is_file():
             data = json.loads(result_path.read_text(encoding="utf-8"))
             if isinstance(data, dict):
-                data = _store_download_result(url, data)
+                try:
+                    data = _store_download_result(url, data)
+                except Exception as exc:
+                    crawler_error = f"original downloader returned unusable media: {exc}"
+                    retry_result = _api_video_info_download(url, result_path, crawler_error)
+                    if retry_result:
+                        return retry_result
+                    raise RuntimeError(crawler_error)
                 result_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             return {"raw_ref": str(result_path.relative_to(ROOT)), "raw_bytes": result_path.stat().st_size, "data": data}
         crawler_error = result.stderr or result.stdout or f"Exit code {result.returncode}"
