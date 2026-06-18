@@ -39,6 +39,8 @@ _scheduler_lock = threading.Lock()
 _job_queue: queue.Queue[str] = queue.Queue()
 _active_job_lock = threading.Lock()
 _active_job: str | None = None
+_progress_lock = threading.Lock()
+_progress_by_date: dict[str, dict[str, Any]] = {}
 
 
 def today_key() -> str:
@@ -309,6 +311,50 @@ def _recent_window_days() -> int:
     return max(1, _to_int(os.getenv("HOT_VIDEO_RECENT_DAYS", "7")))
 
 
+def _progress_payload(
+    report_date: str,
+    status: str,
+    stage: str,
+    progress: int,
+    message: str,
+    counts: dict[str, int] | None = None,
+) -> dict[str, Any]:
+    payload = {
+        "report_date": report_date,
+        "status": status,
+        "stage": stage,
+        "progress": max(0, min(100, int(progress))),
+        "message": message,
+        "counts": counts or {},
+        "updated_at": time.time(),
+    }
+    with _progress_lock:
+        previous = _progress_by_date.get(report_date) or {}
+        merged_counts = dict(previous.get("counts") or {})
+        merged_counts.update(payload["counts"])
+        payload["counts"] = merged_counts
+        _progress_by_date[report_date] = payload
+    return payload
+
+
+def get_report_progress(report_date: str | None = None) -> dict[str, Any]:
+    date = report_date or today_key()
+    with _progress_lock:
+        payload = dict(_progress_by_date.get(date) or {})
+    if payload:
+        return payload
+    report = get_report(date, include_raw=False, detail=False)
+    return {
+        "report_date": date,
+        "status": report.get("status", "missing"),
+        "stage": "finished" if report.get("status") in {"complete", "partial_failed", "failed"} else "queued",
+        "progress": 100 if report.get("status") in {"complete", "partial_failed", "failed"} else 0,
+        "message": str(report.get("error") or report.get("status") or "missing"),
+        "counts": {},
+        "updated_at": report.get("updated_at") or time.time(),
+    }
+
+
 def _first_present(data: dict[str, Any], names: tuple[str, ...]) -> Any:
     for name in names:
         value = data.get(name)
@@ -377,7 +423,19 @@ def _to_timestamp(value: Any) -> float | None:
 def _extract_publish_time(node: dict[str, Any]) -> float | None:
     found = _find_nested(
         node,
-        ("create_time", "createTime", "create_at", "createAt", "publish_time", "publishTime", "create_time_utc", "origin_create_at"),
+        (
+            "create_time",
+            "createTime",
+            "create_at",
+            "createAt",
+            "publish_time",
+            "publishTime",
+            "create_time_utc",
+            "origin_create_at",
+            "origin_create_time",
+            "create_time_ms",
+            "publish_time_ms",
+        ),
     )
     ts = _to_timestamp(found)
     if ts is not None:
@@ -394,6 +452,9 @@ def _extract_publish_time(node: dict[str, Any]) -> float | None:
                 "publish_time",
                 "publishTime",
                 "origin_create_at",
+                "origin_create_time",
+                "create_time_ms",
+                "publish_time_ms",
             ),
         )
         return _to_timestamp(nested)
@@ -420,7 +481,7 @@ def _published_at_from_row(metrics_json: str | None, raw_json: str | None, repor
         published_at = _extract_publish_time(raw)
         if published_at is not None:
             return published_at
-    return _parse_report_date_to_ts(report_date)
+    return None
 
 
 def _cleanup_expired_video_records(conn: sqlite3.Connection, recency_days: int | None = None) -> dict[str, int]:
@@ -440,6 +501,7 @@ def _cleanup_expired_video_records(conn: sqlite3.Connection, recency_days: int |
         seen_keys.add(key)
         published_at = _published_at_from_row(metrics_json, raw_json, str(report_date or ""))
         if published_at is None:
+            latest_publish_by_key[key] = 0
             continue
         if key not in latest_publish_by_key or published_at > latest_publish_by_key[key]:
             latest_publish_by_key[key] = float(published_at)
@@ -634,16 +696,54 @@ def _prepare_cover_asset(video: dict[str, Any]) -> dict[str, Any]:
 
 def _looks_like_video(node: dict[str, Any]) -> bool:
     video_id = _first_present(node, ("aweme_id", "awemeId", "video_id", "videoId", "item_id", "itemId", "id"))
-    has_text = _first_present(node, ("desc", "description", "title", "caption")) not in (None, "", [], {})
-    has_stats = any(
-        _metric(node, names) > 0
-        for names in (
-            ("play_count", "playCount", "view_count", "viewCount"),
-            ("digg_count", "diggCount", "like_count", "likeCount"),
-            ("comment_count", "commentCount"),
+    if not video_id:
+        return False
+    keys = set(node.keys())
+    stat_only_keys = {
+        "aweme_id",
+        "video_id",
+        "id",
+        "collect_count",
+        "comment_count",
+        "digg_count",
+        "download_count",
+        "forward_count",
+        "lose_comment_count",
+        "lose_count",
+        "play_count",
+        "repost_count",
+        "share_count",
+        "whatsapp_share_count",
+    }
+    if keys and keys.issubset(stat_only_keys):
+        return False
+    has_main_shape = any(
+        key in node
+        for key in (
+            "desc",
+            "description",
+            "caption",
+            "url",
+            "share_url",
+            "shareUrl",
+            "webpage_url",
+            "video",
+            "statistics",
+            "stats",
+            "author",
+            "create_time",
+            "createTime",
+            "create_time_utc",
+            "publish_time",
+            "publishTime",
         )
     )
-    return bool(video_id and (has_text or has_stats))
+    has_video_media = isinstance(node.get("video"), dict) and any(
+        key in node["video"] for key in ("play_addr", "download_addr", "cover", "origin_cover", "dynamic_cover")
+    )
+    has_stats = isinstance(node.get("statistics"), dict) or isinstance(node.get("stats"), dict)
+    has_title_only_music_shape = "play_url" in keys and "matched_song" not in keys and "video" not in keys
+    return bool(has_main_shape and (has_video_media or has_stats or "create_time" in keys or "url" in keys) and not has_title_only_music_shape)
 
 
 def _iter_video_nodes(value: Any) -> list[dict[str, Any]]:
@@ -695,6 +795,65 @@ def _normalize_video(node: dict[str, Any], endpoint: str, label: str, rank: int)
         "metrics": metrics,
         "raw": node,
     }
+
+
+def _deep_merge_dict(base: dict[str, Any], extra: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in extra.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge_dict(merged[key], value)
+        elif value not in (None, "", [], {}):
+            merged[key] = value
+    return merged
+
+
+def _extract_video_info_node(payload: dict[str, Any]) -> dict[str, Any]:
+    for key in ("aweme", "aweme_detail", "item", "video", "data"):
+        value = payload.get(key)
+        if isinstance(value, dict) and _looks_like_video(value):
+            return value
+        if isinstance(value, dict):
+            nested = _extract_video_info_node(value)
+            if nested:
+                return nested
+    nodes = [node for node in _iter_video_nodes(payload) if _looks_like_video(node)]
+    return nodes[0] if nodes else {}
+
+
+def _enrich_missing_publish_time(
+    item: dict[str, Any],
+    api_key: str,
+    api_base: str,
+    timeout: float,
+) -> tuple[dict[str, Any], bool]:
+    if item.get("metrics", {}).get("published_at"):
+        return item, False
+    source_url = str(item.get("source_url") or "").strip()
+    if not source_url and item.get("video_id"):
+        source_url = f"https://www.tiktok.com/@unknown/video/{item['video_id']}"
+    if not source_url:
+        return item, False
+    try:
+        payload = call_api(api_key, api_base, "video-info", {"url": source_url}, timeout)
+    except Exception:
+        return item, False
+    node = _extract_video_info_node(payload)
+    if not node:
+        return item, False
+    enriched = _normalize_video(node, item["source_endpoint"], item["source_label"], int(item["source_rank"]))
+    if enriched.get("video_id") and enriched["video_id"] != item["video_id"]:
+        return item, False
+    merged = dict(item)
+    merged["title"] = enriched.get("title") or item.get("title", "")
+    merged["author"] = enriched.get("author") or item.get("author", "")
+    merged["source_url"] = enriched.get("source_url") or item.get("source_url", "")
+    merged["cover_url"] = enriched.get("cover_url") or item.get("cover_url", "")
+    merged["metrics"] = _deep_merge_dict(item.get("metrics") or {}, enriched.get("metrics") or {})
+    merged["raw"] = _deep_merge_dict(item.get("raw") or {}, enriched.get("raw") or {})
+    published_at = _extract_publish_time(merged["raw"])
+    if published_at:
+        merged["metrics"]["published_at"] = published_at
+    return merged, True
 
 
 def _row_to_report(row: sqlite3.Row | tuple[Any, ...]) -> dict[str, Any]:
@@ -1357,10 +1516,21 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
     api_key = os.getenv("SOCIAVAULT_API_KEY", "").strip()
     api_base = os.getenv("SOCIAVAULT_API_BASE", DEFAULT_API_BASE).rstrip("/")
     sources = [{"endpoint": endpoint, "label": label, "params": params} for endpoint, params, label in _source_requests(region, count)]
+    counts = {
+        "collected": 0,
+        "candidate_count": 0,
+        "recent_count": 0,
+        "enriched_count": 0,
+        "skipped_old": 0,
+        "skipped_missing_time": 0,
+        "analyzed_success": 0,
+        "analyzed_failed": 0,
+    }
 
     with _active_job_lock:
         global _active_job
         _active_job = date
+    _progress_payload(date, "running", "collecting", 3, "开始采集热点视频", counts)
     try:
         with _connect() as conn:
             _cleanup_old_reports(conn)
@@ -1369,40 +1539,88 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
             if not api_key:
                 error = "Missing required environment variable: SOCIAVAULT_API_KEY"
                 _finish_report(conn, report_id, date, "failed", error)
+                _progress_payload(date, "failed", "finished", 100, error, counts)
                 return get_report(date, include_raw=True)
             try:
                 candidates: dict[tuple[str, str], dict[str, Any]] = {}
                 now_ts = time.time()
                 cutoff_ts = now_ts - recency_days * 86400
+                api_timeout = float(os.getenv("SOCIAVAULT_TIMEOUT", "180"))
                 for endpoint, params, label in _source_requests(region, count):
-                    payload = call_api(api_key, api_base, endpoint, params, float(os.getenv("SOCIAVAULT_TIMEOUT", "180")))
+                    _progress_payload(date, "running", "collecting", 6, f"采集来源：{label}", counts)
+                    payload = call_api(api_key, api_base, endpoint, params, api_timeout)
                     for rank, node in enumerate(_iter_video_nodes(payload), start=1):
+                        counts["collected"] += 1
                         item = _normalize_video(node, endpoint, label, rank)
                         if not item["video_id"]:
                             continue
+                        counts["candidate_count"] += 1
                         published_at = item.get("metrics", {}).get("published_at")
-                        if isinstance(published_at, (int, float)) and published_at > 0 and published_at < cutoff_ts:
+                        if not isinstance(published_at, (int, float)) or published_at <= 0:
+                            item, enriched = _enrich_missing_publish_time(item, api_key, api_base, api_timeout)
+                            if enriched:
+                                counts["enriched_count"] += 1
+                            published_at = item.get("metrics", {}).get("published_at")
+                        if not isinstance(published_at, (int, float)) or published_at <= 0:
+                            counts["skipped_missing_time"] += 1
                             continue
+                        if published_at < cutoff_ts:
+                            counts["skipped_old"] += 1
+                            continue
+                        counts["recent_count"] += 1
                         key = (item["platform"], item["video_id"])
                         if key not in candidates or item["hot_score"] > candidates[key]["hot_score"]:
                             candidates[key] = item
+                    _progress_payload(date, "running", "filtering", 18, f"{label} 采集完成，有效候选 {len(candidates)} 条", counts)
                 ranked = sorted(candidates.values(), key=lambda item: item["hot_score"], reverse=True)[:detail_limit]
+                if not ranked:
+                    error = f"No hot videos published in the last {recency_days} days"
+                    _finish_report(conn, report_id, date, "failed", error)
+                    _progress_payload(date, "failed", "finished", 100, error, counts)
+                    return get_report(date, include_raw=True)
+                _progress_payload(date, "running", "filtering", 24, f"筛选出最近 {recency_days} 天热点视频 {len(ranked)} 条", counts)
                 for report_rank, item in enumerate(ranked, start=1):
                     _upsert_video(conn, report_id, date, item, report_rank)
                 conn.commit()
+                _progress_payload(date, "running", "downloading", 30, f"已入库 {len(ranked)} 条，开始处理 Top {min(analysis_limit, len(ranked))}", counts)
 
                 job_timeout = _to_float(os.getenv("REPORT_JOB_TIMEOUT", str(DEFAULT_REPORT_JOB_TIMEOUT_SECONDS)), DEFAULT_REPORT_JOB_TIMEOUT_SECONDS)
                 deadline = time.time() + max(60.0, job_timeout)
                 timed_out = False
-                for item in ranked[:analysis_limit]:
+                total_to_process = max(1, min(analysis_limit, len(ranked)))
+                for index, item in enumerate(ranked[:analysis_limit], start=1):
                     if time.time() >= deadline:
                         timed_out = True
                         break
+                    record = get_video(item["platform"], item["video_id"]) or {}
+                    filename = str(record.get("filename") or "")
+                    extraction_dir = str(record.get("extraction_dir") or "")
+                    output_dir = _output_dir_for_filename(filename) if filename else None
+                    has_analysis = bool(output_dir and (output_dir / "analysis.json").is_file())
+                    if not filename:
+                        stage = "downloading"
+                        message = f"下载视频 {index}/{total_to_process}"
+                    elif not extraction_dir or not has_analysis:
+                        stage = "extracting"
+                        message = f"解析视频 {index}/{total_to_process}"
+                    else:
+                        stage = "analyzing"
+                        message = f"分析视频 {index}/{total_to_process}"
+                    _progress_payload(date, "running", stage, 30 + int(index / total_to_process * 50), message, counts)
                     _process_video(conn, date, item)
+                    row = conn.execute(
+                        "SELECT process_status FROM hot_report_videos WHERE report_date = ? AND platform = ? AND video_id = ?",
+                        (date, item["platform"], item["video_id"]),
+                    ).fetchone()
+                    if row and row[0] == "complete":
+                        counts["analyzed_success"] += 1
+                    else:
+                        counts["analyzed_failed"] += 1
 
                 success_videos = _load_success_videos(conn, date)
                 if timed_out:
                     if len(success_videos) >= 3:
+                        _progress_payload(date, "running", "summarizing", 88, "处理超时，使用成功项生成日报", counts)
                         report_json, markdown = _generate_daily_summary(date, success_videos)
                         _finish_report(
                             conn,
@@ -1413,6 +1631,7 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
                             report_json=report_json,
                             report_markdown=markdown,
                         )
+                        _progress_payload(date, "partial_failed", "finished", 100, "任务超时，已保留部分日报结果", counts)
                         return get_report(date, include_raw=True)
                     _finish_report(
                         conn,
@@ -1421,16 +1640,24 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
                         "partial_failed" if success_videos else "failed",
                         f"Report job reached timeout ({int(job_timeout)}s) before enough videos were processed",
                     )
+                    _progress_payload(date, "partial_failed" if success_videos else "failed", "finished", 100, "任务超时，成功分析视频不足", counts)
                     return get_report(date, include_raw=True)
                 if len(success_videos) >= 3:
+                    _progress_payload(date, "running", "summarizing", 88, "开始生成爆款日报", counts)
                     report_json, markdown = _generate_daily_summary(date, success_videos)
                     _finish_report(conn, report_id, date, "complete", report_json=report_json, report_markdown=markdown)
+                    _progress_payload(date, "complete", "finished", 100, "日报生成完成", counts)
                 elif success_videos:
-                    _finish_report(conn, report_id, date, "partial_failed", f"Only {len(success_videos)} videos analyzed successfully")
+                    error = f"Only {len(success_videos)} videos analyzed successfully"
+                    _finish_report(conn, report_id, date, "partial_failed", error)
+                    _progress_payload(date, "partial_failed", "finished", 100, error, counts)
                 else:
-                    _finish_report(conn, report_id, date, "failed", "No videos analyzed successfully")
+                    error = "No videos analyzed successfully"
+                    _finish_report(conn, report_id, date, "failed", error)
+                    _progress_payload(date, "failed", "finished", 100, error, counts)
             except Exception as exc:
                 _finish_report(conn, report_id, date, "failed", str(exc))
+                _progress_payload(date, "failed", "finished", 100, str(exc), counts)
     finally:
         with _active_job_lock:
             _active_job = None
@@ -1446,7 +1673,9 @@ def get_report_runtime_status() -> dict[str, Any]:
 def enqueue_report(report_date: str | None = None) -> dict[str, Any]:
     date = report_date or today_key()
     _job_queue.put(date)
-    return {"queued": True, "report_date": date, **get_report_runtime_status()}
+    _progress_payload(date, "queued", "queued", 0, "日报任务已排队", {})
+    status = get_report_runtime_status()
+    return {"queued": True, "report_date": date, "active_date": status.get("active_date"), "queued_dates": status.get("queued", [])}
 
 
 def _scheduler_worker() -> None:

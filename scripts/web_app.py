@@ -64,6 +64,7 @@ from hot_video_report import (
     backfill_cover_urls,
     enqueue_report,
     get_report,
+    get_report_progress,
     get_report_runtime_status,
     get_settings as get_report_settings,
     list_reports,
@@ -2518,6 +2519,9 @@ class Handler(BaseHTTPRequestHandler):
             return json_response(self, HTTPStatus.OK, list_reports(limit))
         if parsed.path == "/api/report/settings":
             return json_response(self, HTTPStatus.OK, {**get_report_settings(), **get_report_runtime_status()})
+        if parsed.path == "/api/report/events":
+            report_date = parse_qs(parsed.query).get("date", [""])[0] or None
+            return self.stream_report_events(report_date)
         if parsed.path == "/api/report/backfill-covers" and self.command == "POST":
             result = backfill_cover_urls()
             return json_response(self, HTTPStatus.OK, result)
@@ -2689,6 +2693,35 @@ class Handler(BaseHTTPRequestHandler):
 
     def stream_amazon_events(self, job_id: str) -> None:
         self.stream_events(job_id, amazon_jobs_lock, amazon_jobs, public_amazon_job, "Amazon job not found")
+
+    def stream_report_events(self, report_date: str | None) -> None:
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+
+        last_marker: tuple[Any, ...] | None = None
+        while True:
+            payload = get_report_progress(report_date)
+            marker = (
+                payload.get("status"),
+                payload.get("stage"),
+                payload.get("progress"),
+                payload.get("message"),
+                payload.get("updated_at"),
+            )
+            try:
+                if marker != last_marker:
+                    write_sse_event(self, payload)
+                    last_marker = marker
+                if payload.get("status") not in {"queued", "running"}:
+                    self.close_connection = True
+                    return
+                time.sleep(1)
+            except (BrokenPipeError, ConnectionResetError):
+                self.close_connection = True
+                return
 
     def stream_events(self, job_id: str, lock: threading.Lock, store: dict[str, Any], serializer: Any, missing_message: str) -> None:
         self.send_response(HTTPStatus.OK)
