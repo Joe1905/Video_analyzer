@@ -117,8 +117,16 @@ header .pill .dot{width:7px;height:7px;border-radius:50%;background:var(--green)
 .tab-btn.active{background:var(--brand);color:#fff;border-color:var(--brand)}
 .detail-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border);background:var(--border2)}
 .detail-toolbar .ttl{font-size:13px;font-weight:700}
-.outlet{min-height:0;overflow:auto;padding:24px;background:var(--bg);line-height:1.75;word-break:break-word}
+.report-area{min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 270px;background:var(--bg)}
+.outlet{min-height:0;overflow:auto;padding:24px;background:var(--bg);line-height:1.75;word-break:break-word;scroll-behavior:smooth}
 .outlet.raw{background:#0f172a;color:#e2e8f0;font:12px/1.6 ui-monospace,Consolas,monospace;white-space:pre-wrap}
+.report-toc{min-height:0;overflow:auto;padding:16px 18px;border-left:1px solid var(--border);background:var(--bg)}
+.report-toc.empty{display:none}
+.report-toc .toc-title{font-size:13px;font-weight:800;margin-bottom:10px}
+.report-toc .toc-list{display:grid;gap:6px}
+.report-toc button{width:100%;min-height:30px;text-align:left;border:0;background:transparent;color:var(--text2);box-shadow:none;padding:6px 8px;border-radius:6px;font-size:12px;font-weight:650;line-height:1.35}
+.report-toc button:hover{background:var(--border2);color:var(--text)}
+.report-toc button.active{background:#eaf1ff;color:var(--brand)}
 
 .report{display:flex;flex-direction:column;gap:14px;max-width:1180px}
 .hero{border:1px solid var(--border);border-radius:var(--radius);padding:20px 24px;background:linear-gradient(135deg,#eff6ff,#fff 62%)}
@@ -145,6 +153,8 @@ header .pill .dot{width:7px;height:7px;border-radius:50%;background:var(--green)
   .left-panel{overflow:visible;border-right:0;max-height:none}
   .right-panel{min-height:480px}
   .detail-shell{grid-template-columns:1fr}
+  .report-area{grid-template-columns:1fr}
+  .report-toc{display:none}
   .outlet{min-height:60vh}
 }
 </style>
@@ -198,7 +208,10 @@ header .pill .dot{width:7px;height:7px;border-radius:50%;background:var(--green)
     <section class="detail-main">
       <div class="tabs"><button class="tab-btn active" data-tab="content">提取内容</button><button class="tab-btn" data-tab="audit">分析结果</button><button class="tab-btn" data-tab="feedback">反馈结果</button></div>
       <div class="detail-toolbar"><span class="ttl" id="outTitle">Qwen 输出内容</span><div style="display:flex;gap:4px"><button id="translate" class="secondary sm">手动翻译</button><button id="source" class="secondary sm">显示原文</button><button id="pdf" class="secondary sm">导出 PDF</button><button id="json" class="secondary sm">下载 JSON</button></div></div>
-      <div id="out" class="outlet"><div class="empty-state"><div><b>选择视频查看报告</b><span style="display:block;color:var(--text3);font-size:13px;margin-top:2px">详情会显示提取内容、分析结果、Token 消耗和耗时。</span></div></div></div>
+      <div class="report-area">
+        <div id="out" class="outlet"><div class="empty-state"><div><b>选择视频查看报告</b><span style="display:block;color:var(--text3);font-size:13px;margin-top:2px">详情会显示提取内容、分析结果、Token 消耗和耗时。</span></div></div></div>
+        <aside id="toc" class="report-toc empty" aria-label="报告目录"></aside>
+      </div>
       <div class="detail-log" id="detailLogPanel">
         <div class="log-head"><span class="log-title"><span class="log-dot"></span>运行日志</span><button id="clearLog" class="ghost sm">清空</button></div>
         <pre id="log" class="log-body">等待任务...</pre>
@@ -269,7 +282,7 @@ const DEFAULT_FEEDBACK_PROMPT=`请基于视频提取内容和分析结果，给�
   "rewrite_brief": "给剪辑/拍摄人员的改版说明"
 }`;
 const S={file:"",files:[],result:null,job:null,tab:"content",raw:false,has:false,logs:[],feedbackPrompt:DEFAULT_FEEDBACK_PROMPT,promptTab:"analysis"};
-const $=id=>document.getElementById(id),home=$("home"),detail=$("detail"),status=$("status"),log=$("log"),out=$("out");
+const $=id=>document.getElementById(id),home=$("home"),detail=$("detail"),status=$("status"),log=$("log"),out=$("out"),toc=$("toc");
 let de=null,je=null,drag=0;
 const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]));
 const pretty=v=>v==null?"{}":typeof v==="string"?v:JSON.stringify(v,null,2);
@@ -285,7 +298,9 @@ function list(t,a,map=x=>x){if(!Array.isArray(a)||!a.length)return"";return`<sec
 function has(r){return!!(r&&(r.analysis||r.analysis_zh||r.audit_result||r.audit_result_zh||r.feedback_result||r.feedback_result_zh))}
 function extraction(value){const v=normalized(value);if(!v||typeof v!=="object")return esc(pretty(v));const meta=v.metadata||{},tr=v.transcript||{},u=v.usage||{},tl=Array.isArray(v.timeline)?v.timeline:[],ve=Array.isArray(v.visual_evidence)?v.visual_evidence:[];return`<article class="report"><div class="hero"><div class="kicker">Qwen Video Extraction</div><h2>提取内容报告</h2><p>${md(clean(v.summary)||"视频内容、画面证据和音频转写的结构化整理。")}</p></div><div class="metrics-grid">${metric("处理模式",v.processing_mode)}${metric("视觉模型",v.vision_model||meta.model)}${metric("音频模式",v.audio_mode)}${metric("处理帧数",meta.frames_processed||meta.frames_extracted)}${metric("音频语言",tr.language||meta.audio_language)}${metric("转写成功",tr.success===undefined?"":tr.success?"是":"否")}${metric("输入 Tokens",u.input_tokens)}${metric("输出 Tokens",u.output_tokens)}${metric("总 Tokens",u.total_tokens)}${metric("API 调用",u.api_calls)}${metric("总耗时",u.elapsed_seconds==null?"":u.elapsed_seconds+"s")}${metric("估算费用",u.estimated_cost_usd==null?"":"$"+u.estimated_cost_usd)}</div>${sec("模型总结",v.summary)}${sec("视频画面总述",v.video_description||v.opening_description||v.narrative_development)}${list("时间线",tl,x=>typeof x==="string"?x:`${x.time_range||x.timestamp||""}\n画面：${x.visual||x.description||""}\n音频：${x.audio||""}`)}${list("视觉证据",ve,x=>typeof x==="string"?x:(x.description||x.visual||pretty(x)))}${sec("转写文本",tr.text||"无转写文本")}</article>`}
 function audit(v,kind="audit"){if(!v||typeof v!=="object")return esc(pretty(v));const keys=Object.keys(v).filter(k=>k!=='raw_result');let meta='';let body='';keys.forEach(k=>{const val=v[k];if(val===null||val===undefined||val==='')return;if(typeof val==='string'){body+=sec(k,val)}else if(Array.isArray(val)){body+=list(k,val)}else if(typeof val==='object'){body+=sec(k,pretty(val))}else{meta+=metric(k,val)}});const isFeedback=kind==="feedback";return`<article class="report"><div class="hero"><div class="kicker">${isFeedback?"DeepSeek 反馈":"DeepSeek 分析"}</div><h2>${isFeedback?"反馈结果报告":"分析结果报告"}</h2></div>${meta?`<div class="metrics-grid">${meta}</div>`:''}${body}</article>`}
-function renderOut(r){S.result=r;out.className=S.raw?"outlet raw":"outlet";let v;if(S.tab==="content"){v=S.raw?r?.analysis:(r?.analysis_zh||r?.analysis);$("json").style.display="inline-flex";$("outTitle").textContent=S.raw?"Qwen 输出内容，原文 JSON":(r?.analysis_zh?"Qwen 输出内容，已翻译":"Qwen 输出内容");S.raw?out.textContent=pretty(v):out.innerHTML=extraction(v)}else if(S.tab==="audit"){v=S.raw?r?.audit_result:(r?.audit_result_zh||r?.audit_result);$("json").style.display="none";$("outTitle").textContent=S.raw?"DeepSeek 分析内容，原文":(r?.audit_result_zh?"DeepSeek 分析内容，已翻译":"DeepSeek 分析内容");S.raw?out.textContent=pretty(v):out.innerHTML=audit(v)}else{v=S.raw?r?.feedback_result:(r?.feedback_result_zh||r?.feedback_result);$("json").style.display="none";$("outTitle").textContent=S.raw?"DeepSeek 反馈内容，原文":(r?.feedback_result_zh?"DeepSeek 反馈内容，已翻译":"DeepSeek 反馈内容");S.raw?out.textContent=pretty(v):out.innerHTML=audit(v,"feedback")}$("pdf").style.display=S.raw?"none":"inline-flex";$("source").textContent=S.raw?"显示结果":"显示原文";$("translate").disabled=!S.file||S.raw||!v}
+function clearToc(){toc.className="report-toc empty";toc.innerHTML=""}
+function renderToc(){if(!toc||S.raw)return clearToc();const nodes=[...out.querySelectorAll(".hero,.report-sec")];const items=nodes.map((node,i)=>{const title=node.querySelector("h2,h3")?.textContent?.trim();if(!title)return null;node.id=`report-section-${i}`;return{node,title}}).filter(Boolean);if(items.length<2)return clearToc();toc.className="report-toc";toc.innerHTML=`<div class="toc-title">目录</div><div class="toc-list">${items.map((x,i)=>`<button type="button" data-target="${x.node.id}" class="${i===0?"active":""}">${esc(x.title)}</button>`).join("")}</div>`;toc.querySelectorAll("button").forEach(btn=>btn.onclick=()=>{toc.querySelectorAll("button").forEach(x=>x.classList.remove("active"));btn.classList.add("active");const target=$(btn.dataset.target);if(target){const top=target.getBoundingClientRect().top-out.getBoundingClientRect().top+out.scrollTop-8;out.scrollTo({top,behavior:"smooth"})}})}
+function renderOut(r){S.result=r;out.className=S.raw?"outlet raw":"outlet";let v;if(S.tab==="content"){v=S.raw?r?.analysis:(r?.analysis_zh||r?.analysis);$("json").style.display="inline-flex";$("outTitle").textContent=S.raw?"Qwen 输出内容，原文 JSON":(r?.analysis_zh?"Qwen 输出内容，已翻译":"Qwen 输出内容");S.raw?out.textContent=pretty(v):out.innerHTML=extraction(v)}else if(S.tab==="audit"){v=S.raw?r?.audit_result:(r?.audit_result_zh||r?.audit_result);$("json").style.display="none";$("outTitle").textContent=S.raw?"DeepSeek 分析内容，原文":(r?.audit_result_zh?"DeepSeek 分析内容，已翻译":"DeepSeek 分析内容");S.raw?out.textContent=pretty(v):out.innerHTML=audit(v)}else{v=S.raw?r?.feedback_result:(r?.feedback_result_zh||r?.feedback_result);$("json").style.display="none";$("outTitle").textContent=S.raw?"DeepSeek 反馈内容，原文":(r?.feedback_result_zh?"DeepSeek 反馈内容，已翻译":"DeepSeek 反馈内容");S.raw?out.textContent=pretty(v):out.innerHTML=audit(v,"feedback")}$("pdf").style.display=S.raw?"none":"inline-flex";$("source").textContent=S.raw?"显示结果":"显示原文";$("translate").disabled=!S.file||S.raw||!v;renderToc()}
 function setResultTab(tab){S.tab=tab;S.raw=false;document.querySelectorAll(".tab-btn").forEach(x=>x.classList.toggle("active",x.dataset.tab===tab));renderOut(S.result)}
 function jobLabel(t){return t==="report"?"报告":"解析"}
 function stepText(p){if(!p)return"";return p.message||`${p.current||""}: ${p.label||p.step||""}`.trim()}
@@ -298,7 +313,7 @@ function view(v,f=""){home.classList.toggle("active",v==="home");detail.classLis
 function toHome(){location.hash="";view("home")}function toDetail(f){if(!f){view("detail",S.file||"");renderFiles();return}location.hash="detail="+encodeURIComponent(f)}
 function route(){const h=location.hash.slice(1);if(h.startsWith("detail=")){select(decodeURIComponent(h.slice(7)),false);view("detail",S.file)}else{view("home");renderFiles()}}
 async function refresh(){const r=await fetch("/api/files");S.files=await r.json();if(!Array.isArray(S.files))S.files=[];renderFiles()}
-async function loadResult(name){const r=await fetch("/api/result?filename="+encodeURIComponent(name)),j=await r.json();if(r.ok&&has(j)){S.result=j;S.has=true;renderOut(j);setStatus(name+": 已加载已有输出","ok")}else{S.result=null;S.has=false;out.innerHTML='<div class="empty-state"><div><b>还没有分析结果</b><span style="display:block;color:var(--text3);font-size:13px;margin-top:2px">返回主页启动分析后，这里会显示报告。</span></div></div>';setStatus(name+": 等待分析")}buttons()}
+async function loadResult(name){const r=await fetch("/api/result?filename="+encodeURIComponent(name)),j=await r.json();if(r.ok&&has(j)){S.result=j;S.has=true;renderOut(j);setStatus(name+": 已加载已有输出","ok")}else{S.result=null;S.has=false;out.innerHTML='<div class="empty-state"><div><b>还没有分析结果</b><span style="display:block;color:var(--text3);font-size:13px;margin-top:2px">返回主页启动分析后，这里会显示报告。</span></div></div>';clearToc();setStatus(name+": 等待分析")}buttons()}
 function select(name,openDetail=true){S.file=name;S.has=false;renderFiles();if(name)loadResult(name).catch(e=>setStatus(e.message,"bad"));if(openDetail&&name)toDetail(name)}
 async function upload(files=null){const input=$("videoFile"),arr=Array.from(files||input.files||[]);if(!arr.length)return setStatus("请选择至少一个视频文件。","bad");const bad=arr.filter(f=>!f.type.startsWith("video/"));if(bad.length){addLog("上传被拦截，存在非视频文件："+bad.map(f=>f.name).join(", "));return setStatus("请选择视频文件。","bad")}const form=new FormData();arr.forEach(f=>form.append("video",f));addLog(`开始上传 ${arr.length} 个视频。`);const r=await fetch("/api/upload",{method:"POST",body:form}),p=await r.json(),ok=Array.isArray(p.files)?p.files:[],err=Array.isArray(p.errors)?p.errors:[];ok.forEach(f=>addLog(`上传成功：${f.filename} (${bytes(f.size)})`));err.forEach(e=>addLog(`上传失败：${e.filename||"未知文件"} - ${e.error||"未知错误"}`));if(!r.ok&&!ok.length)return setStatus(p.error||"上传失败","bad");setStatus(`上传完成：成功 ${ok.length} 个，失败 ${err.length} 个`,err.length?"bad":"ok");input.value="";await refresh();if(ok.length)select(ok.at(-1).filename,false)}
 async function delFile(name){if(!confirm(`删除 ${name} 及其所有分析输出？`))return;const r=await fetch("/api/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({filename:name})});if(!r.ok)return setStatus("删除失败","bad");addLog("删除完成："+name);if(S.file===name){S.file="";S.result=null;S.has=false;toHome()}await refresh()}
