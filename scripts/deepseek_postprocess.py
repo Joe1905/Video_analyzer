@@ -5,6 +5,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import requests
 from api_cache import record_api_call
@@ -12,6 +13,7 @@ from api_cache import record_api_call
 
 DEFAULT_API_URL = "https://api.deepseek.com/v1/chat/completions"
 DEFAULT_MODEL = "deepseek-chat"
+DEFAULT_MAX_TOKENS = 4096
 
 
 def load_analysis(path: Path) -> dict:
@@ -22,7 +24,57 @@ def load_analysis(path: Path) -> dict:
         return json.load(file)
 
 
+def truncate_text(value: Any, limit: int = 4000) -> Any:
+    if not isinstance(value, str) or len(value) <= limit:
+        return value
+    return value[:limit].rstrip() + f"\n...[truncated {len(value) - limit} chars]"
+
+
+def compact_transcript(transcript: Any) -> dict:
+    if not isinstance(transcript, dict):
+        return {}
+    return {
+        "text": truncate_text(transcript.get("text", ""), 6000),
+        "language": transcript.get("language"),
+        "successful": transcript.get("successful", transcript.get("success")),
+    }
+
+
+def compact_items(value: Any, limit: int = 80) -> Any:
+    if not isinstance(value, list):
+        return value
+    compacted = []
+    for item in value[:limit]:
+        if isinstance(item, str):
+            compacted.append(truncate_text(item, 1200))
+        elif isinstance(item, dict):
+            compacted.append({k: truncate_text(v, 1200) for k, v in item.items() if k != "words"})
+        else:
+            compacted.append(item)
+    return compacted
+
+
+def compact_analysis(analysis: dict) -> dict:
+    metadata = analysis.get("metadata") if isinstance(analysis.get("metadata"), dict) else {}
+    return {
+        "schema_version": analysis.get("schema_version"),
+        "processing_mode": analysis.get("processing_mode"),
+        "vision_model": analysis.get("vision_model") or metadata.get("model"),
+        "audio_mode": analysis.get("audio_mode"),
+        "metadata": {
+            "frames_processed": metadata.get("frames_processed") or metadata.get("frames_extracted"),
+            "duration_processed": metadata.get("duration_processed"),
+            "audio_language": metadata.get("audio_language"),
+        },
+        "summary": truncate_text(analysis.get("summary", ""), 6000),
+        "transcript": compact_transcript(analysis.get("transcript")),
+        "timeline": compact_items(analysis.get("timeline")),
+        "visual_evidence": compact_items(analysis.get("visual_evidence")),
+    }
+
+
 def build_prompt(analysis: dict, user_prompt: str = "") -> str:
+    analysis = compact_analysis(analysis)
     if user_prompt.strip():
         return (
             f"{user_prompt.strip()}\n\n"
@@ -45,7 +97,7 @@ def build_prompt(analysis: dict, user_prompt: str = "") -> str:
     )
 
 
-def call_deepseek(api_key: str, prompt: str, api_url: str, model: str) -> dict:
+def call_deepseek(api_key: str, prompt: str, api_url: str, model: str, max_tokens: int) -> dict:
     started = time.monotonic()
     response = requests.post(
         api_url,
@@ -66,6 +118,8 @@ def call_deepseek(api_key: str, prompt: str, api_url: str, model: str) -> dict:
                 },
             ],
             "temperature": 0.2,
+            "max_tokens": max_tokens,
+            "response_format": {"type": "json_object"},
         },
         timeout=120,
     )
@@ -83,7 +137,11 @@ def call_deepseek(api_key: str, prompt: str, api_url: str, model: str) -> dict:
 
 def extract_content(api_response: dict) -> str:
     try:
-        return api_response["choices"][0]["message"]["content"]
+        choice = api_response["choices"][0]
+        finish_reason = choice.get("finish_reason")
+        if finish_reason in {"length", "max_tokens"}:
+            raise ValueError(f"DeepSeek output was truncated: finish_reason={finish_reason}")
+        return choice["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:
         raise ValueError("Unexpected DeepSeek API response shape") from exc
 
@@ -129,6 +187,12 @@ def main() -> int:
         default="",
         help="User-defined analysis prompt. Overrides the default audit analyst prompt.",
     )
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=int(os.getenv("DEEPSEEK_POSTPROCESS_MAX_TOKENS", str(DEFAULT_MAX_TOKENS))),
+        help="Maximum DeepSeek output tokens for audit JSON.",
+    )
     args = parser.parse_args()
 
     api_key = os.getenv("DEEPSEEK_API_KEY")
@@ -147,12 +211,10 @@ def main() -> int:
             prompt=build_prompt(analysis, args.prompt),
             api_url=args.api_url,
             model=args.model,
+            max_tokens=args.max_tokens,
         )
         content = extract_content(api_response)
-        try:
-            audit_result = parse_json_content(content)
-        except json.JSONDecodeError:
-            audit_result = {"raw_result": content}
+        audit_result = parse_json_content(content)
 
         output_path = Path(args.output) if args.output else analysis_path.parent / "audit_result.json"
         output_path.parent.mkdir(parents=True, exist_ok=True)

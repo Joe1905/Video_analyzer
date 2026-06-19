@@ -22,6 +22,7 @@ SCHEMA_VERSION = "1.0"
 MAX_BASE64_BYTES = 7 * 1024 * 1024
 DEFAULT_API_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 DEFAULT_MODEL = "qwen3-vl-flash"
+DEFAULT_MAX_TOKENS = 8192
 DEFAULT_ANALYSIS_PROMPT = (
     "Analyze this short video directly. Return strict JSON only, no Markdown. "
     "Use these exact keys: summary, timeline, visual_evidence. "
@@ -105,6 +106,7 @@ def call_vision_api(
     fps: float,
     transcript: dict[str, Any],
     analysis_prompt: str,
+    max_tokens: int,
 ) -> tuple[dict[str, Any], float]:
     started = time.monotonic()
     response = requests.post(
@@ -134,6 +136,7 @@ def call_vision_api(
                 }
             ],
             "temperature": 0.1,
+            "max_tokens": max_tokens,
         },
         timeout=300,
     )
@@ -147,6 +150,7 @@ def call_vision_api(
             "api_url": api_url.rstrip("/") + "/chat/completions",
             "model": model,
             "fps": fps,
+            "max_tokens": max_tokens,
             "video_url_sha256": __import__("hashlib").sha256(video_url.encode("utf-8")).hexdigest(),
             "transcript_sha256": __import__("hashlib").sha256(json.dumps(transcript, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest(),
             "prompt_sha256": __import__("hashlib").sha256(analysis_prompt.encode("utf-8")).hexdigest(),
@@ -159,7 +163,11 @@ def call_vision_api(
 
 def extract_content(api_response: dict[str, Any]) -> str:
     try:
-        return api_response["choices"][0]["message"]["content"]
+        choice = api_response["choices"][0]
+        finish_reason = choice.get("finish_reason")
+        if finish_reason in {"length", "max_tokens"}:
+            raise ValueError(f"Vision API output was truncated: finish_reason={finish_reason}")
+        return choice["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:
         raise ValueError("Unexpected vision API response shape") from exc
 
@@ -220,6 +228,12 @@ def main() -> int:
     parser.add_argument("--prompt-file", default=os.getenv("ANALYSIS_PROMPT_FILE", ""))
     parser.add_argument("--language", default=os.getenv("LANGUAGE", "zh"))
     parser.add_argument("--whisper-model", default=os.getenv("WHISPER_MODEL", "small"))
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=int(os.getenv("DIRECT_VIDEO_MAX_TOKENS", str(DEFAULT_MAX_TOKENS))),
+        help="Maximum Qwen output tokens for direct video JSON.",
+    )
     args = parser.parse_args()
 
     if not args.api_key:
@@ -259,12 +273,10 @@ def main() -> int:
         fps=args.fps,
         transcript=transcript,
         analysis_prompt=analysis_prompt,
+        max_tokens=args.max_tokens,
     )
     content = extract_content(api_response)
-    try:
-        parsed = parse_json_content(content)
-    except json.JSONDecodeError:
-        parsed = {"summary": content, "timeline": [], "visual_evidence": []}
+    parsed = parse_json_content(content)
 
     elapsed = time.monotonic() - started
     usage = usage_from_response(api_response, elapsed)
