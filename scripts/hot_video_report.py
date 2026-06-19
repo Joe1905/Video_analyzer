@@ -876,7 +876,8 @@ def _collect_hot_video_candidates(
     def collect_from(endpoint: str, params: dict[str, Any], label: str) -> None:
         nonlocal popular_failed
         _progress_payload(report_date, "running", "collecting", 6, f"Collecting source: {label}", counts)
-        payload = call_api(api_key, api_base, endpoint, params, api_timeout)
+        cache_policy = os.getenv("HOT_VIDEO_SOURCE_CACHE_POLICY", "record_only").strip() or "record_only"
+        payload = call_api(api_key, api_base, endpoint, params, api_timeout, cache_policy=cache_policy)
         if endpoint == "videos-popular":
             popular_failed = False
         for rank, node in enumerate(_iter_video_nodes(payload), start=1):

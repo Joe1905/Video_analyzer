@@ -134,7 +134,14 @@ def is_empty_api_result(endpoint: str, payload: dict[str, Any]) -> bool:
     return False
 
 
-def call_api(api_key: str, api_base: str, endpoint: str, params: dict[str, Any], timeout: float) -> dict[str, Any]:
+def call_api(
+    api_key: str,
+    api_base: str,
+    endpoint: str,
+    params: dict[str, Any],
+    timeout: float,
+    cache_policy: str = "read_write",
+) -> dict[str, Any]:
     path = ENDPOINTS[endpoint]
     cleaned = {k: v for k, v in params.items() if v not in (None, "")}
     request_key = {"api_base": api_base.rstrip("/"), "endpoint": endpoint, "params": cleaned}
@@ -169,6 +176,7 @@ def call_api(api_key: str, api_base: str, endpoint: str, params: dict[str, Any],
             request_key,
             fetch,
             ttl_seconds=VIDEO_INFO_TTL_SECONDS if endpoint == "video-info" else None,
+            cache_policy=cache_policy,
             metadata_builder=lambda data: {
                 "entity_type": "tiktok",
                 "entity_id": str(first_present(cleaned, ("url", "handle", "query", "hashtag", "sound_id")) or endpoint),
