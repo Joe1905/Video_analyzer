@@ -549,6 +549,18 @@ def _cleanup_expired_video_records(conn: sqlite3.Connection, recency_days: int |
     }
 
 
+def _existing_report_video_keys(conn: sqlite3.Connection, report_date: str) -> set[tuple[str, str]]:
+    rows = conn.execute(
+        """
+        SELECT DISTINCT platform, video_id
+        FROM hot_report_videos
+        WHERE report_date != ?
+        """,
+        (report_date,),
+    ).fetchall()
+    return {(str(platform), str(video_id)) for platform, video_id in rows}
+
+
 def _source_url(node: dict[str, Any]) -> str:
     found = _first_present(node, ("share_url", "shareUrl", "webpage_url", "url"))
     if isinstance(found, str) and found.startswith(("http://", "https://")):
@@ -865,8 +877,10 @@ def _collect_hot_video_candidates(
     api_base: str,
     api_timeout: float,
     counts: dict[str, int],
+    excluded_keys: set[tuple[str, str]] | None = None,
 ) -> tuple[dict[tuple[str, str], dict[str, Any]], list[str]]:
     candidates: dict[tuple[str, str], dict[str, Any]] = {}
+    excluded_keys = excluded_keys or set()
     source_count = max(1, len(_split_csv_env("HOT_VIDEO_POPULAR_SORTS", "views,likes")))
     cutoff_ts = time.time() - recency_days * 86400
     max_pages = max(1, _to_int(os.getenv("HOT_VIDEO_POPULAR_MAX_PAGES", "5")))
@@ -900,6 +914,9 @@ def _collect_hot_video_candidates(
                 continue
             counts["recent_count"] += 1
             key = (item["platform"], item["video_id"])
+            if key in excluded_keys:
+                counts["skipped_duplicate_report"] = counts.get("skipped_duplicate_report", 0) + 1
+                continue
             if key not in candidates or item["hot_score"] > candidates[key]["hot_score"]:
                 candidates[key] = item
         _progress_payload(report_date, "running", "filtering", 18, f"{label} complete, valid candidates: {len(candidates)}", counts)
@@ -1650,6 +1667,7 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
         "enriched_count": 0,
         "skipped_old": 0,
         "skipped_missing_time": 0,
+        "skipped_duplicate_report": 0,
         "analyzed_success": 0,
         "analyzed_failed": 0,
     }
@@ -1663,6 +1681,7 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
             _cleanup_old_reports(conn)
             _cleanup_expired_video_records(conn, recency_days)
             report_id = _start_report(conn, date, region, sources, scheduled=scheduled)
+            excluded_keys = _existing_report_video_keys(conn, date)
             if not api_key:
                 error = "Missing required environment variable: SOCIAVAULT_API_KEY"
                 _finish_report(conn, report_id, date, "failed", error)
@@ -1679,11 +1698,17 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
                     api_base,
                     api_timeout,
                     counts,
+                    excluded_keys,
                 )
                 ranked = sorted(candidates.values(), key=lambda item: item["hot_score"], reverse=True)[:target_count]
                 if not ranked:
                     suffix = f"; source errors: {' | '.join(source_errors[:3])}" if source_errors else ""
-                    error = f"No hot videos published in the last {recency_days} days{suffix}"
+                    duplicate_note = (
+                        f"; skipped already reported videos: {counts.get('skipped_duplicate_report', 0)}"
+                        if counts.get("skipped_duplicate_report")
+                        else ""
+                    )
+                    error = f"No new unique hot videos published in the last {recency_days} days{duplicate_note}{suffix}"
                     _finish_report(conn, report_id, date, "failed", error)
                     _progress_payload(date, "failed", "finished", 100, error, counts)
                     return get_report(date, include_raw=True)
