@@ -37,6 +37,11 @@ services:
       WHISPER_MODEL: ${WHISPER_MODEL:-small}
       LANGUAGE: ${LANGUAGE:-zh}
       HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
+      HF_HOME: ${HF_HOME:-/workspace/data/model_cache/huggingface}
+      HF_HUB_CACHE: ${HF_HUB_CACHE:-/workspace/data/model_cache/huggingface/hub}
+      HUGGINGFACE_HUB_CACHE: ${HUGGINGFACE_HUB_CACHE:-/workspace/data/model_cache/huggingface/hub}
+      TRANSFORMERS_CACHE: ${TRANSFORMERS_CACHE:-/workspace/data/model_cache/huggingface/transformers}
+      XDG_CACHE_HOME: ${XDG_CACHE_HOME:-/workspace/data/model_cache}
       HTTP_PROXY: ""
       HTTPS_PROXY: ""
       http_proxy: ""
@@ -96,6 +101,11 @@ services:
       WHISPER_MODEL: ${WHISPER_MODEL:-small}
       LANGUAGE: ${LANGUAGE:-zh}
       HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
+      HF_HOME: ${HF_HOME:-/workspace/data/model_cache/huggingface}
+      HF_HUB_CACHE: ${HF_HUB_CACHE:-/workspace/data/model_cache/huggingface/hub}
+      HUGGINGFACE_HUB_CACHE: ${HUGGINGFACE_HUB_CACHE:-/workspace/data/model_cache/huggingface/hub}
+      TRANSFORMERS_CACHE: ${TRANSFORMERS_CACHE:-/workspace/data/model_cache/huggingface/transformers}
+      XDG_CACHE_HOME: ${XDG_CACHE_HOME:-/workspace/data/model_cache}
       WEB_PORT: ${WEB_PORT:-4002}
       HTTP_PROXY: ""
       HTTPS_PROXY: ""
