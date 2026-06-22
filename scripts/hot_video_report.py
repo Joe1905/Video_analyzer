@@ -980,6 +980,23 @@ def _collect_hot_video_candidates(
             break
         page += 1
 
+    page = 1
+    popular_source_count = max(1, len(_split_csv_env("HOT_VIDEO_POPULAR_SORTS", "views,likes")))
+    while len(candidates) < target_count and page <= max_pages:
+        remaining = target_count - len(candidates)
+        total_fetch = max(20, remaining * 3)
+        per_source_count = max(1, (total_fetch + popular_source_count - 1) // popular_source_count)
+        page_success = False
+        for endpoint, params, label in _popular_source_requests(region, per_source_count, page, recency_days):
+            try:
+                collect_from(endpoint, params, label, stream_min_views, "stream")
+                page_success = True
+            except Exception as exc:
+                source_errors.append(f"{label}: {exc}")
+        if not page_success:
+            break
+        page += 1
+
     if len(candidates) < target_count:
         fallback_max = max(target_count * 2, _to_int(os.getenv("HOT_VIDEO_FALLBACK_SOURCE_COUNT_MAX", "80")))
         fallback_count = max((target_count - len(candidates)) * 2, 10)
@@ -1282,6 +1299,7 @@ def _source_requests(region: str, count: int) -> list[tuple[str, dict[str, Any],
     for keyword in _split_csv_env("HOT_VIDEO_KEYWORDS", "AI toys"):
         requests.append(("search-top", {"query": keyword, "region": region, "count": count}, f"topic-search:{keyword}"))
     requests.extend(_trending_source_requests(region, count, 1))
+    requests.extend(_popular_source_requests(region, max(1, count // 2), 1, _recent_window_days()))
     return requests
 
 
