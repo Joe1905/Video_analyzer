@@ -142,7 +142,7 @@ DEFAULT_FEEDBACK_PROMPT = """请基于视频提取内容和分析结果，给出
 }"""
 DEFAULT_SOCIA_VAULT_API_BASE = "https://api.sociavault.com"
 VIDEO_INFO_TTL_SECONDS = 24 * 60 * 60
-VIDEO_MEDIA_TTL_SECONDS = 30 * 24 * 60 * 60
+VIDEO_MEDIA_TTL_SECONDS = int(os.getenv("VIDEO_MEDIA_TTL_SECONDS", "900"))
 
 
 def load_prompt() -> str:
@@ -834,6 +834,9 @@ def _media_cache_payload(url: str, payload: Any) -> dict[str, Any]:
 
 
 def _try_media_cache_payload_download(job: DownloadJob, payload: Any, result_path: Path, source_label: str) -> bool:
+    if source_label.startswith("缓存") and media_cache_is_stale(payload):
+        append_download_log(job, "媒体地址缓存已过期，刷新 SociaVault video-info。")
+        return False
     raw_candidates = payload.get("candidates") if isinstance(payload, dict) else []
     candidates = [item for item in raw_candidates if isinstance(item, dict) and item.get("url")]
     for item in candidates:
@@ -856,6 +859,18 @@ def _try_media_cache_payload_download(job: DownloadJob, payload: Any, result_pat
         except Exception as exc:
             append_download_log(job, f"{source_label} 候选地址不可用：{exc}")
     return False
+
+
+def media_cache_is_stale(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return True
+    cache_meta = payload.get("_cache")
+    if not isinstance(cache_meta, dict):
+        return False
+    age = cache_meta.get("age_seconds")
+    if age is None:
+        return False
+    return float(age) > VIDEO_MEDIA_TTL_SECONDS
 
 
 def _try_video_info_payload_download(job: DownloadJob, payload: Any, result_path: Path, source_label: str) -> bool:

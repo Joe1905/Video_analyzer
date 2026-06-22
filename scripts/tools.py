@@ -22,7 +22,7 @@ VIDEOS_DIR = ROOT / "videos"
 SAFE_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
 DEFAULT_SOCIA_VAULT_API_BASE = "https://api.sociavault.com"
 VIDEO_INFO_TTL_SECONDS = 24 * 60 * 60
-VIDEO_MEDIA_TTL_SECONDS = 30 * 24 * 60 * 60
+VIDEO_MEDIA_TTL_SECONDS = int(os.getenv("VIDEO_MEDIA_TTL_SECONDS", "900"))
 AUDIO_ONLY_SUFFIXES = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav"}
 VIDEO_SUFFIXES = {".m4v", ".mov", ".mp4", ".webm"}
 
@@ -472,6 +472,9 @@ def _media_cache_payload(url: str, payload: Any) -> dict[str, Any]:
 
 
 def _try_media_cache_payload_download(url: str, payload: Any, result_path: Path, source_label: str) -> dict | None:
+    if source_label.startswith("cached") and _media_cache_is_stale(payload):
+        print(f"[VIDEO_DOWNLOAD] cached media ignored: stale signed URLs", flush=True)
+        return None
     raw_candidates = payload.get("candidates") if isinstance(payload, dict) else []
     candidates = [item for item in raw_candidates if isinstance(item, dict) and item.get("url")]
     for item in candidates:
@@ -497,6 +500,18 @@ def _try_media_cache_payload_download(url: str, payload: Any, result_path: Path,
     if errors:
         print("[VIDEO_DOWNLOAD] direct media failures: " + " | ".join(errors[:4]), flush=True)
     return None
+
+
+def _media_cache_is_stale(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return True
+    cache_meta = payload.get("_cache")
+    if not isinstance(cache_meta, dict):
+        return False
+    age = cache_meta.get("age_seconds")
+    if age is None:
+        return False
+    return float(age) > VIDEO_MEDIA_TTL_SECONDS
 
 
 def _try_video_info_payload_download(url: str, payload: Any, result_path: Path, source_label: str) -> dict | None:
