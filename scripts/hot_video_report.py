@@ -906,7 +906,7 @@ def _collect_hot_video_candidates(
     candidates: dict[tuple[str, str], dict[str, Any]] = {}
     excluded_keys = excluded_keys or set()
     cutoff_ts = time.time() - recency_days * 86400
-    max_pages = max(1, _to_int(os.getenv("HOT_VIDEO_POPULAR_MAX_PAGES", "5")))
+    max_pages = max(1, _to_int(os.getenv("HOT_VIDEO_POPULAR_MAX_PAGES", "15")))
     source_errors: list[str] = []
     topic_keywords = _split_csv_env("HOT_VIDEO_KEYWORDS", "AI toys")
     topic_min_views = max(0, _to_int(os.getenv("HOT_VIDEO_TOPIC_MIN_PLAY_COUNT", "5000")))
@@ -968,7 +968,7 @@ def _collect_hot_video_candidates(
     page = 1
     while len(candidates) < target_count and page <= max_pages:
         remaining = target_count - len(candidates)
-        fetch_count = max(1, remaining * 2)
+        fetch_count = max(20, remaining * 3)
         page_success = False
         for endpoint, params, label in _trending_source_requests(region, fetch_count, page):
             try:
