@@ -7,7 +7,6 @@ import queue
 import re
 import sqlite3
 import subprocess
-import sys
 import threading
 import time
 import uuid
@@ -21,11 +20,10 @@ from zoneinfo import ZoneInfo
 
 from deepseek_postprocess import DEFAULT_API_URL, DEFAULT_MODEL, call_deepseek, extract_content, parse_json_content
 from sociavault_tiktok import call_api
-from tools import execute_tool
+from tools import _iter_media_url_candidates, execute_tool
 from video_registry import get_video, get_video_by_filename, register_video, set_hidden_from_analyzer
 
 ROOT = Path.cwd()
-SCRIPTS_DIR = ROOT / "scripts"
 OUTPUT_DIR = ROOT / "output"
 VIDEOS_DIR = ROOT / "videos"
 DB_PATH = ROOT / "data" / "hot_video_report.sqlite"
@@ -772,6 +770,12 @@ def _is_photo_mode_post(node: dict[str, Any]) -> bool:
     return bool(video.get("image_post_info") or video.get("imagePostInfo"))
 
 
+def _has_usable_video_media(node: dict[str, Any]) -> bool:
+    if not isinstance(node, dict):
+        return False
+    return bool(_iter_media_url_candidates(node))
+
+
 def _iter_video_nodes(value: Any) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     if isinstance(value, dict):
@@ -943,6 +947,13 @@ def _collect_hot_video_candidates(
             play_count = int(item.get("metrics", {}).get("play_count") or 0)
             if play_count < min_play_count:
                 counts[f"skipped_low_views_{bucket}"] = counts.get(f"skipped_low_views_{bucket}", 0) + 1
+                continue
+            if not _has_usable_video_media(item.get("raw") or {}):
+                item, enriched = _enrich_missing_publish_time(item, api_key, api_base, api_timeout)
+                if enriched:
+                    counts["enriched_count"] += 1
+            if not _has_usable_video_media(item.get("raw") or {}):
+                counts["skipped_no_video_media"] = counts.get("skipped_no_video_media", 0) + 1
                 continue
             item["selection_bucket"] = bucket
             item["metrics"]["selection_min_play_count"] = min_play_count
@@ -1480,54 +1491,6 @@ def _output_dir_for_filename(filename: str) -> Path:
     return OUTPUT_DIR / filename
 
 
-def _run_deepseek_report(output_dir: Path) -> dict[str, Any]:
-    audit_path = output_dir / "audit_result.json"
-    prompt = _load_current_analysis_prompt()
-    if audit_path.is_file() and _output_prompt_matches(output_dir, prompt):
-        return _json_loads(audit_path.read_text(encoding="utf-8"), {})
-    cmd = [sys.executable, str(SCRIPTS_DIR / "deepseek_postprocess.py"), str(output_dir)]
-    if prompt:
-        cmd.extend(["--prompt", prompt])
-    timeout = _to_float(os.getenv("REPORT_DEEPSEEK_TIMEOUT", "180"), 180.0)
-    try:
-        subprocess.run(cmd, cwd=ROOT, check=True, env=os.environ.copy(), timeout=timeout)
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(f"DeepSeek postprocess timed out after {timeout}s: {exc}")
-    return _json_loads(audit_path.read_text(encoding="utf-8") if audit_path.is_file() else "", {})
-
-
-def _load_current_analysis_prompt() -> str:
-    for path in (ROOT / "data" / "analysis_prompt.txt", ROOT / "analysis_prompt.txt"):
-        if path.is_file():
-            content = path.read_text(encoding="utf-8").strip()
-            if content:
-                return content
-    return ""
-
-
-def _output_prompt_matches(output_dir: Path, prompt: str) -> bool:
-    if not prompt:
-        return True
-    prompt_path = output_dir / "analysis_prompt.txt"
-    return prompt_path.is_file() and prompt_path.read_text(encoding="utf-8").strip() == prompt.strip()
-
-
-def _prepare_output_prompt(output_dir: Path, prompt: str) -> bool:
-    if not prompt:
-        return False
-    prompt_path = output_dir / "analysis_prompt.txt"
-    previous = prompt_path.read_text(encoding="utf-8").strip() if prompt_path.is_file() else ""
-    changed = previous != prompt.strip()
-    output_dir.mkdir(parents=True, exist_ok=True)
-    prompt_path.write_text(prompt.strip() + "\n", encoding="utf-8")
-    if changed:
-        for name in ("analysis.json", "analysis_zh.json", "audit_result.json", "audit_result_zh.json"):
-            path = output_dir / name
-            if path.is_file():
-                path.unlink()
-    return changed
-
-
 def _process_video(conn: sqlite3.Connection, report_date: str, item: dict[str, Any]) -> None:
     now = time.time()
     platform = item["platform"]
@@ -1562,16 +1525,13 @@ def _process_video(conn: sqlite3.Connection, report_date: str, item: dict[str, A
             if not was_visible_manual_video:
                 set_hidden_from_analyzer(platform, video_id, True)
         output_dir = _output_dir_for_filename(filename)
-        prompt = _load_current_analysis_prompt()
-        _prepare_output_prompt(output_dir, prompt)
         analysis_path = output_dir / "analysis.json"
         if not analysis_path.is_file():
             result = execute_tool("video_analyze", {"filename": filename})
             if not result.get("ok"):
-                raise RuntimeError(str(result.get("error") or "analysis failed"))
+                raise RuntimeError(str(result.get("error") or "video extraction failed"))
         output_dir = _output_dir_for_filename(filename)
         analysis = _json_loads((output_dir / "analysis.json").read_text(encoding="utf-8") if (output_dir / "analysis.json").is_file() else "", {})
-        audit = _run_deepseek_report(output_dir)
         registry = get_video(platform, video_id) or get_video_by_filename(filename) or {}
         extraction_dir = str(registry.get("extraction_dir") or output_dir.name)
         cover_asset = _download_cover_asset(str(item.get("cover_url") or ""), platform, video_id)
@@ -1601,7 +1561,7 @@ def _process_video(conn: sqlite3.Connection, report_date: str, item: dict[str, A
                 extraction_dir,
                 cover_asset,
                 json.dumps(analysis, ensure_ascii=False, sort_keys=True),
-                json.dumps(audit, ensure_ascii=False, sort_keys=True),
+                None,
                 now,
                 report_date,
                 platform,
@@ -1679,11 +1639,92 @@ def _markdown_from_report(report: dict[str, Any]) -> str:
     return "\n\n".join(parts)
 
 
+def _trim_text(value: Any, limit: int = 1200) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "..."
+
+
+def _compact_extraction(analysis: Any) -> dict[str, Any]:
+    if not isinstance(analysis, dict):
+        return {"raw": _trim_text(analysis, 1600)}
+    transcript = analysis.get("transcript") if isinstance(analysis.get("transcript"), dict) else {}
+    timeline = analysis.get("timeline") if isinstance(analysis.get("timeline"), list) else []
+    evidence = analysis.get("visual_evidence") if isinstance(analysis.get("visual_evidence"), list) else []
+    frames = analysis.get("frame_analyses") if isinstance(analysis.get("frame_analyses"), list) else []
+    return {
+        "summary": _trim_text(analysis.get("summary") or analysis.get("video_description"), 900),
+        "transcript": _trim_text(transcript.get("text") if isinstance(transcript, dict) else "", 1600),
+        "timeline": timeline[:8],
+        "visual_evidence": evidence[:8],
+        "frame_analyses": [_trim_text(item, 700) for item in frames[:6]],
+    }
+
+
+def _compact_summary_video(video: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "rank": video.get("report_rank"),
+        "title": video.get("title"),
+        "author": video.get("author"),
+        "metrics": video.get("metrics"),
+        "hot_score": video.get("hot_score"),
+        "extraction": _compact_extraction(video.get("analysis")),
+    }
+
+
+def _summary_prompt(report_date: str, video_items: list[dict[str, Any]], partial_summaries: list[dict[str, Any]] | None = None) -> str:
+    payload: dict[str, Any] = {"report_date": report_date}
+    if partial_summaries is None:
+        payload["video_items"] = video_items
+    else:
+        payload["partial_summaries"] = partial_summaries
+    return (
+        "你是资深短视频增长分析师。请基于热视频的结构化提取内容生成中文日报。"
+        "不要调用或假设额外的单视频分析结果，只使用输入里的标题、指标、转写、时间线和视觉证据。"
+        "重点解释这些视频为什么可能成为爆款、共通性是什么、可复用到选题和脚本的方法是什么。"
+        "只返回严格 JSON，不要 Markdown，不要代码块。JSON keys 必须包含："
+        "summary, common_patterns, hook_analysis, visual_patterns, topic_angles, "
+        "execution_tactics, reusable_ideas, risks, next_actions。\n\n"
+        f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
+    )
+
+
+def _chunk_summary_prompt(report_date: str, chunk_index: int, video_items: list[dict[str, Any]]) -> str:
+    payload = {"report_date": report_date, "chunk_index": chunk_index, "video_items": video_items}
+    return (
+        "你是短视频研究助理。请把这一组热视频提取内容压缩成可供最终日报使用的中文结构化摘要。"
+        "只保留爆款原因、开头钩子、节奏/视觉、选题角度、互动机制、风险。"
+        "只返回严格 JSON，不要 Markdown。JSON keys: key_observations, patterns, reusable_points, risks。\n\n"
+        f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
+    )
+
+
 def _generate_daily_summary(report_date: str, success_videos: list[dict[str, Any]]) -> tuple[dict[str, Any], str]:
     api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("Missing required environment variable: DEEPSEEK_API_KEY")
-    prompt = _build_summary_prompt(report_date, success_videos)
+    video_items = [_compact_summary_video(video) for video in success_videos]
+    prompt = _summary_prompt(report_date, video_items)
+    prompt_limit = _to_int(os.getenv("REPORT_SUMMARY_PROMPT_CHAR_LIMIT", "28000"))
+    if len(prompt) > prompt_limit and len(video_items) > 1:
+        chunk_size = max(2, _to_int(os.getenv("REPORT_SUMMARY_CHUNK_SIZE", "4")))
+        partials: list[dict[str, Any]] = []
+        for index in range(0, len(video_items), chunk_size):
+            chunk_prompt = _chunk_summary_prompt(report_date, index // chunk_size + 1, video_items[index : index + chunk_size])
+            chunk_response = call_deepseek(
+                api_key=api_key,
+                prompt=chunk_prompt,
+                api_url=os.getenv("DEEPSEEK_API_URL", DEFAULT_API_URL),
+                model=os.getenv("DEEPSEEK_MODEL", DEFAULT_MODEL),
+                max_tokens=_to_int(os.getenv("REPORT_DEEPSEEK_CHUNK_MAX_TOKENS", "1800")),
+            )
+            chunk_content = extract_content(chunk_response)
+            try:
+                partials.append(parse_json_content(chunk_content))
+            except Exception:
+                partials.append({"raw_result": chunk_content})
+        prompt = _summary_prompt(report_date, [], partial_summaries=partials)
     max_tokens = _to_int(os.getenv("REPORT_DEEPSEEK_MAX_TOKENS", os.getenv("DEEPSEEK_POSTPROCESS_MAX_TOKENS", "4096")))
     response = call_deepseek(
         api_key=api_key,
@@ -1793,6 +1834,7 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
         "skipped_old": 0,
         "skipped_missing_time": 0,
         "skipped_photo_mode": 0,
+        "skipped_no_video_media": 0,
         "skipped_low_views_topic": 0,
         "skipped_low_views_stream": 0,
         "skipped_duplicate_report": 0,
@@ -1866,7 +1908,7 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
                         stage = "extracting"
                         message = f"解析视频 {index}/{total_to_process}"
                     else:
-                        stage = "analyzing"
+                        stage = "extracting"
                         message = f"分析视频 {index}/{total_to_process}"
                     _progress_payload(date, "running", stage, 30 + int(index / total_to_process * 50), message, counts)
                     _process_video(conn, date, item)
