@@ -62,6 +62,7 @@ from api_cache import get_cached, store_response
 from hot_video_report import (
     REPORT_COVER_DIR,
     backfill_cover_urls,
+    delete_report,
     enqueue_report,
     get_report,
     get_report_progress,
@@ -91,6 +92,7 @@ ASIN_RE = re.compile(r"^[A-Z0-9]{10}$", re.IGNORECASE)
 PROMPT_FILE = DATA_DIR / "analysis_prompt.txt"
 FEEDBACK_PROMPT_FILE = DATA_DIR / "feedback_prompt.txt"
 LEGACY_PROMPT_FILE = ROOT / "analysis_prompt.txt"
+MAX_PROMPT_CHARS = 50000
 DEFAULT_ANALYSIS_PROMPT = (
     "Analyze this short video directly. Return strict JSON only, no Markdown. "
     "Use these exact keys: summary, timeline, visual_evidence. "
@@ -2833,6 +2835,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_video_metrics()
         if parsed.path == "/api/report/run":
             return self.handle_report_run()
+        if parsed.path == "/api/report/delete":
+            return self.handle_report_delete()
         if parsed.path == "/api/report/settings":
             return self.handle_report_settings()
         if parsed.path == "/api/report/backfill-covers":
@@ -2860,6 +2864,18 @@ class Handler(BaseHTTPRequestHandler):
             payload = enqueue_report()
             payload["report"] = get_report(include_raw=False, detail=False)
             return json_response(self, HTTPStatus.ACCEPTED, payload)
+        except Exception as exc:
+            return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+
+    def handle_report_delete(self) -> None:
+        content_length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(content_length)
+        try:
+            payload = json.loads(body.decode("utf-8") or "{}")
+            result = delete_report(str(payload.get("date") or payload.get("report_date") or ""))
+            return json_response(self, HTTPStatus.OK, result)
+        except (json.JSONDecodeError, ValueError) as exc:
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
         except Exception as exc:
             return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
 
@@ -3194,8 +3210,8 @@ class Handler(BaseHTTPRequestHandler):
                 text = str(payload.get("prompt", "")).strip()
             if not text:
                 raise ValueError("prompt is required")
-            if len(text) > 12000:
-                raise ValueError("prompt is too long")
+            if len(text) > MAX_PROMPT_CHARS:
+                raise ValueError(f"prompt is too long; max {MAX_PROMPT_CHARS} characters")
             if kind == "feedback":
                 save_feedback_prompt(text)
                 return json_response(self, HTTPStatus.OK, {"status": "saved", "kind": "feedback"})

@@ -192,6 +192,11 @@ data/hot_video_report.sqlite
 
 Chat/session/cache state lives under `data/` and should not be committed.
 
+## Hot Report Known Failure Modes
+
+- Daily summary generation must pass an explicit `max_tokens` value into `deepseek_postprocess.call_deepseek`; otherwise reports can finish video analysis but fail before writing the LLM summary.
+- TikTok Photo Mode/image posts can expose music or audio-only media while lacking a real video stream. Hot-report collection should filter these before download/analysis instead of treating `.mp3`/`.m4a` output as an encoding problem.
+
 ## Analysis Schema
 
 Both `analyzer` and `direct_video` modes should produce the shared `analysis.json` schema:

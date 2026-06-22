@@ -758,6 +758,18 @@ def _looks_like_video(node: dict[str, Any]) -> bool:
     return bool(has_main_shape and (has_video_media or has_stats or "create_time" in keys or "url" in keys) and not has_title_only_music_shape)
 
 
+def _is_photo_mode_post(node: dict[str, Any]) -> bool:
+    """TikTok Photo Mode posts can expose audio URLs but no analyzable video stream."""
+    if not isinstance(node, dict):
+        return False
+    if node.get("image_post_info") or node.get("imagePostInfo"):
+        return True
+    video = node.get("video")
+    if not isinstance(video, dict):
+        return False
+    return bool(video.get("image_post_info") or video.get("imagePostInfo"))
+
+
 def _iter_video_nodes(value: Any) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     if isinstance(value, dict):
@@ -896,6 +908,9 @@ def _collect_hot_video_candidates(
             popular_failed = False
         for rank, node in enumerate(_iter_video_nodes(payload), start=1):
             counts["collected"] += 1
+            if _is_photo_mode_post(node):
+                counts["skipped_photo_mode"] = counts.get("skipped_photo_mode", 0) + 1
+                continue
             item = _normalize_video(node, endpoint, label, rank)
             if not item["video_id"]:
                 continue
@@ -1218,8 +1233,10 @@ def _popular_source_requests(region: str, count: int, page: int, recency_days: i
 
 
 def _legacy_source_requests(region: str, count: int) -> list[tuple[str, dict[str, Any], str]]:
-    keywords = ["viral"]
-    requests = [("trending", {"region": region, "count": count}, f"trending:{region}")]
+    keywords = _split_csv_env("HOT_VIDEO_KEYWORDS", "AI toys")
+    requests: list[tuple[str, dict[str, Any], str]] = []
+    if os.getenv("HOT_VIDEO_INCLUDE_TRENDING", "0").strip() in {"1", "true", "yes"}:
+        requests.append(("trending", {"region": region, "count": count}, f"trending:{region}"))
     for keyword in keywords:
         requests.append(("search-top", {"query": keyword, "region": region, "count": count}, f"search-top:{keyword}"))
     return requests
@@ -1571,11 +1588,13 @@ def _generate_daily_summary(report_date: str, success_videos: list[dict[str, Any
     if not api_key:
         raise RuntimeError("Missing required environment variable: DEEPSEEK_API_KEY")
     prompt = _build_summary_prompt(report_date, success_videos)
+    max_tokens = _to_int(os.getenv("REPORT_DEEPSEEK_MAX_TOKENS", os.getenv("DEEPSEEK_POSTPROCESS_MAX_TOKENS", "4096")))
     response = call_deepseek(
         api_key=api_key,
         prompt=prompt,
         api_url=os.getenv("DEEPSEEK_API_URL", DEFAULT_API_URL),
         model=os.getenv("DEEPSEEK_MODEL", DEFAULT_MODEL),
+        max_tokens=max_tokens,
     )
     content = extract_content(response)
     try:
@@ -1610,6 +1629,19 @@ def _cleanup_old_reports(conn: sqlite3.Connection) -> None:
     conn.execute("DELETE FROM hot_report_videos WHERE report_date < ?", (cutoff,))
     conn.execute("DELETE FROM daily_reports WHERE report_date < ?", (cutoff,))
     conn.commit()
+
+
+def delete_report(report_date: str) -> dict[str, Any]:
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", report_date or ""):
+        raise ValueError("report_date must be YYYY-MM-DD")
+    with _connect() as conn:
+        row = conn.execute("SELECT id FROM daily_reports WHERE report_date = ?", (report_date,)).fetchone()
+        conn.execute("DELETE FROM hot_report_videos WHERE report_date = ?", (report_date,))
+        conn.execute("DELETE FROM daily_reports WHERE report_date = ?", (report_date,))
+        conn.commit()
+    with _progress_lock:
+        _progress_by_date.pop(report_date, None)
+    return {"deleted": bool(row), "report_date": report_date}
 
 
 def recover_interrupted_reports() -> dict[str, Any]:
@@ -1667,6 +1699,7 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
         "enriched_count": 0,
         "skipped_old": 0,
         "skipped_missing_time": 0,
+        "skipped_photo_mode": 0,
         "skipped_duplicate_report": 0,
         "analyzed_success": 0,
         "analyzed_failed": 0,
