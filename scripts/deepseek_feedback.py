@@ -37,9 +37,15 @@ def resolve_paths(path: Path) -> tuple[Path, Path]:
     return path / "analysis.json", path / "audit_result.json"
 
 
-def build_prompt(analysis: dict, audit_result: dict, user_prompt: str) -> str:
+def build_prompt(
+    analysis: dict,
+    audit_result: dict,
+    user_prompt: str,
+    social_context: dict | None = None,
+    social_insights: dict | None = None,
+) -> str:
     prompt = user_prompt.strip() or DEFAULT_FEEDBACK_PROMPT
-    return (
+    body = (
         f"{prompt}\n\n"
         "Return strict parseable JSON only, without Markdown.\n\n"
         "analysis.json:\n"
@@ -47,6 +53,11 @@ def build_prompt(analysis: dict, audit_result: dict, user_prompt: str) -> str:
         "audit_result.json:\n"
         f"{json.dumps(audit_result, ensure_ascii=False, indent=2)}"
     )
+    if social_context:
+        body += "\n\nsocial_context.json:\n" + json.dumps(social_context, ensure_ascii=False, indent=2)
+    if social_insights:
+        body += "\n\nsocial_insights.json:\n" + json.dumps(social_insights, ensure_ascii=False, indent=2)
+    return body
 
 
 def call_deepseek(api_key: str, prompt: str, api_url: str, model: str) -> dict:
@@ -136,9 +147,13 @@ def main() -> int:
         analysis_path, audit_path = resolve_paths(base_path)
         analysis = read_json(analysis_path)
         audit_result = read_json(audit_path)
+        social_context_path = analysis_path.parent / "social_context.json"
+        social_insights_path = analysis_path.parent / "social_insights.json"
+        social_context = read_json(social_context_path) if social_context_path.is_file() else None
+        social_insights = read_json(social_insights_path) if social_insights_path.is_file() else None
         api_response = call_deepseek(
             api_key=api_key,
-            prompt=build_prompt(analysis, audit_result, args.prompt),
+            prompt=build_prompt(analysis, audit_result, args.prompt, social_context, social_insights),
             api_url=args.api_url,
             model=args.model,
         )

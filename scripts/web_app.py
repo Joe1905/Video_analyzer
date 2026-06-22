@@ -55,6 +55,7 @@ import sys
 sys.path.insert(0, str(SCRIPTS_DIR))
 from chat_session import ChatStore, Message, load_sessions_from_disk
 from sociavault_usage import read_sociavault_usage
+from sociavault_tiktok import call_api as call_sociavault_tiktok_api
 from tools import execute_tool, get_tools_for_model, list_tools
 from video_queue import video_queue, STATUS_META
 from api_cache import get_cached_or_call, record_api_call
@@ -143,6 +144,8 @@ DEFAULT_FEEDBACK_PROMPT = """请基于视频提取内容和分析结果，给出
 DEFAULT_SOCIA_VAULT_API_BASE = "https://api.sociavault.com"
 VIDEO_INFO_TTL_SECONDS = 24 * 60 * 60
 VIDEO_MEDIA_TTL_SECONDS = int(os.getenv("VIDEO_MEDIA_TTL_SECONDS", "900"))
+SOCIAL_COMMENT_COUNT = int(os.getenv("SOCIAL_COMMENT_COUNT", "50"))
+SOCIAL_API_TIMEOUT = float(os.getenv("SOCIAL_API_TIMEOUT", "45"))
 
 
 def load_prompt() -> str:
@@ -260,6 +263,8 @@ metrics_jobs: dict[str, MetricsJob] = {}
 metrics_jobs_lock = threading.Lock()
 amazon_jobs: dict[str, AmazonJob] = {}
 amazon_jobs_lock = threading.Lock()
+social_jobs_lock = threading.Lock()
+social_jobs_running: set[str] = set()
 
 # Chat system
 chat_store = ChatStore()
@@ -307,6 +312,362 @@ def output_dir_for_filename(filename: str) -> Path:
     if registry_record:
         return OUTPUT_DIR / str(registry_record.get("extraction_dir") or filename)
     return OUTPUT_DIR / filename
+
+
+def nested_get(data: Any, names: tuple[str, ...]) -> Any:
+    if not isinstance(data, dict):
+        return None
+    for name in names:
+        if name in data and data[name] not in (None, ""):
+            return data[name]
+    for value in data.values():
+        if isinstance(value, dict):
+            found = nested_get(value, names)
+            if found not in (None, ""):
+                return found
+    return None
+
+
+def nested_list(data: Any, names: tuple[str, ...]) -> list[Any]:
+    if isinstance(data, list):
+        return data
+    if not isinstance(data, dict):
+        return []
+    for name in names:
+        value = data.get(name)
+        if isinstance(value, list):
+            return value
+        if isinstance(value, dict):
+            found = nested_list(value, names)
+            if found:
+                return found
+    for value in data.values():
+        found = nested_list(value, names)
+        if found:
+            return found
+    return []
+
+
+def compact_video_info(payload: dict[str, Any]) -> dict[str, Any]:
+    source = payload.get("video") or payload.get("data") or payload
+    if not isinstance(source, dict):
+        source = payload
+    stats = source.get("statistics") or source.get("stats") or {}
+    author = source.get("author") or source.get("author_info") or {}
+    if not isinstance(stats, dict):
+        stats = {}
+    if not isinstance(author, dict):
+        author = {}
+    return {
+        "id": source.get("id") or source.get("aweme_id") or source.get("video_id") or source.get("item_id"),
+        "description": source.get("desc") or source.get("description") or source.get("title"),
+        "url": source.get("url") or source.get("share_url") or source.get("webpage_url"),
+        "created_at": source.get("create_time") or source.get("created_at") or source.get("createTime"),
+        "duration": source.get("duration") or source.get("video_duration"),
+        "author": {
+            "id": author.get("id") or author.get("uid") or author.get("sec_uid"),
+            "unique_id": author.get("unique_id") or author.get("uniqueId") or author.get("nickname"),
+            "nickname": author.get("nickname") or author.get("name"),
+        },
+        "metrics": {
+            "play_count": stats.get("play_count") or stats.get("playCount") or source.get("play_count"),
+            "like_count": stats.get("digg_count") or stats.get("like_count") or stats.get("likeCount") or source.get("like_count"),
+            "comment_count": stats.get("comment_count") or stats.get("commentCount") or source.get("comment_count"),
+            "share_count": stats.get("share_count") or stats.get("shareCount") or source.get("share_count"),
+            "collect_count": stats.get("collect_count") or stats.get("collectCount") or source.get("collect_count"),
+        },
+    }
+
+
+def creator_handle_from_video_info(payload: dict[str, Any]) -> str:
+    info = compact_video_info(payload)
+    author = info.get("author") if isinstance(info.get("author"), dict) else {}
+    for value in (author.get("unique_id"), author.get("nickname")):
+        handle = str(value or "").strip().lstrip("@")
+        if handle:
+            return handle
+    return ""
+
+
+def compact_comments(payload: dict[str, Any]) -> dict[str, Any]:
+    items = nested_list(payload, ("comments", "items", "data", "comment_list"))
+    comments: list[dict[str, Any]] = []
+    for item in items[:SOCIAL_COMMENT_COUNT]:
+        if not isinstance(item, dict):
+            continue
+        user = item.get("user") or item.get("author") or {}
+        if not isinstance(user, dict):
+            user = {}
+        comments.append({
+            "text": item.get("text") or item.get("comment") or item.get("content"),
+            "like_count": item.get("digg_count") or item.get("like_count") or item.get("likes"),
+            "reply_count": item.get("reply_comment_total") or item.get("reply_count"),
+            "created_at": item.get("create_time") or item.get("created_at"),
+            "user": user.get("unique_id") or user.get("nickname") or user.get("name"),
+        })
+    return {"count": len(items), "sample_count": len(comments), "items": comments}
+
+
+def compact_profile(payload: dict[str, Any]) -> dict[str, Any]:
+    source = payload.get("profile") or payload.get("user") or payload.get("data") or payload
+    if not isinstance(source, dict):
+        source = payload
+    stats = source.get("stats") or source.get("statistics") or source.get("statsV2") or {}
+    if not isinstance(stats, dict):
+        stats = {}
+    return {
+        "id": source.get("id") or source.get("uid") or source.get("sec_uid"),
+        "unique_id": source.get("unique_id") or source.get("uniqueId") or source.get("username"),
+        "nickname": source.get("nickname") or source.get("name"),
+        "signature": source.get("signature") or source.get("bio"),
+        "verified": source.get("verified"),
+        "region": source.get("region"),
+        "metrics": {
+            "follower_count": stats.get("follower_count") or stats.get("followerCount") or source.get("follower_count"),
+            "following_count": stats.get("following_count") or stats.get("followingCount") or source.get("following_count"),
+            "heart_count": stats.get("heart_count") or stats.get("heartCount") or source.get("heart_count"),
+            "video_count": stats.get("video_count") or stats.get("videoCount") or source.get("video_count"),
+            "digg_count": stats.get("digg_count") or stats.get("diggCount") or source.get("digg_count"),
+        },
+    }
+
+
+def social_source_url(filename: str) -> str:
+    record = get_video_by_filename(filename) or {}
+    url = str(record.get("source_url") or "").strip()
+    if not url:
+        return ""
+    try:
+        return validate_short_video_url(url)
+    except ValueError:
+        return ""
+
+
+def social_status_label(status: str) -> dict[str, str]:
+    labels = {
+        "complete": ("数据已获取", "#087443", "#ecfdf3"),
+        "partial": ("部分缺失", "#a15c07", "#fff7ed"),
+        "unavailable": ("无原始链接", "#64748b", "#f1f5f9"),
+        "failed": ("获取失败", "#b42318", "#fff1f2"),
+        "running": ("数据获取中", "#2563eb", "#eaf1ff"),
+        "missing": ("未获取", "#94a3b8", "#f1f5f9"),
+    }
+    label, color, bg = labels.get(status, labels["missing"])
+    return {"social_status": status, "social_label": label, "social_color": color, "social_bg": bg}
+
+
+def summarize_social_status(context: Any) -> dict[str, str]:
+    if not isinstance(context, dict):
+        return social_status_label("missing")
+    return social_status_label(str(context.get("status") or "missing"))
+
+
+def write_social_running(filename: str, source_url: str) -> None:
+    output_dir = output_dir_for_filename(filename)
+    write_json(output_dir / "social_context.json", {
+        "filename": filename,
+        "source_url": source_url,
+        "status": "running",
+        "updated_at": time.time(),
+        "items": {
+            "video_info": {"status": "running"},
+            "comments": {"status": "running"},
+            "creator_profile": {"status": "running"},
+        },
+    })
+
+
+def build_social_unavailable(filename: str, reason: str) -> dict[str, Any]:
+    return {
+        "filename": filename,
+        "source_url": "",
+        "status": "unavailable",
+        "updated_at": time.time(),
+        "items": {
+            "video_info": {"status": "unavailable", "error": reason},
+            "comments": {"status": "unavailable", "error": reason},
+            "creator_profile": {"status": "unavailable", "error": reason},
+        },
+    }
+
+
+def social_item(status: str, data: Any = None, error: str = "") -> dict[str, Any]:
+    item = {"status": status}
+    if data not in (None, ""):
+        item["data"] = data
+    if error:
+        item["error"] = error
+    return item
+
+
+def fetch_social_context(filename: str, generate_insights: bool = True) -> dict[str, Any]:
+    source_url = social_source_url(filename)
+    output_dir = output_dir_for_filename(filename)
+    if not source_url:
+        context = build_social_unavailable(filename, "No TikTok/Douyin source URL is available for this video.")
+        write_json(output_dir / "social_context.json", context)
+        return context
+
+    api_key = os.getenv("SOCIAVAULT_API_KEY", "").strip()
+    if not api_key:
+        context = build_social_unavailable(filename, "Missing SOCIAVAULT_API_KEY.")
+        context["source_url"] = source_url
+        context["status"] = "failed"
+        write_json(output_dir / "social_context.json", context)
+        return context
+
+    api_base = os.getenv("SOCIAVAULT_API_BASE", DEFAULT_SOCIA_VAULT_API_BASE)
+    items: dict[str, dict[str, Any]] = {}
+    video_info_payload: dict[str, Any] | None = None
+    try:
+        video_info_payload = call_sociavault_tiktok_api(
+            api_key,
+            api_base,
+            "video-info",
+            {"url": source_url},
+            SOCIAL_API_TIMEOUT,
+        )
+        items["video_info"] = social_item("ok", compact_video_info(video_info_payload))
+    except Exception as exc:
+        items["video_info"] = social_item("failed", error=str(exc))
+
+    try:
+        comments_payload = call_sociavault_tiktok_api(
+            api_key,
+            api_base,
+            "comments",
+            {"url": source_url, "count": SOCIAL_COMMENT_COUNT},
+            SOCIAL_API_TIMEOUT,
+        )
+        items["comments"] = social_item("ok", compact_comments(comments_payload))
+    except Exception as exc:
+        items["comments"] = social_item("failed", error=str(exc))
+
+    record = get_video_by_filename(filename) or {}
+    handle = ""
+    if video_info_payload:
+        handle = creator_handle_from_video_info(video_info_payload)
+    if not handle:
+        handle = str(record.get("author") or "").strip().lstrip("@")
+    if handle:
+        try:
+            profile_payload = call_sociavault_tiktok_api(
+                api_key,
+                api_base,
+                "profile",
+                {"handle": handle},
+                SOCIAL_API_TIMEOUT,
+            )
+            items["creator_profile"] = social_item("ok", compact_profile(profile_payload))
+        except Exception as exc:
+            items["creator_profile"] = social_item("failed", error=str(exc))
+    else:
+        items["creator_profile"] = social_item("unavailable", error="Creator handle was not available.")
+
+    ok_count = sum(1 for item in items.values() if item.get("status") == "ok")
+    status = "complete" if ok_count == 3 else ("partial" if ok_count else "failed")
+    context = {
+        "filename": filename,
+        "source_url": source_url,
+        "status": status,
+        "updated_at": time.time(),
+        "items": items,
+    }
+    write_json(output_dir / "social_context.json", context)
+    if generate_insights and ok_count:
+        try:
+            generate_social_insights(filename)
+        except Exception as exc:
+            context["insights_error"] = str(exc)
+            write_json(output_dir / "social_context.json", context)
+    return context
+
+
+def generate_social_insights(filename: str) -> dict[str, Any] | None:
+    output_dir = output_dir_for_filename(filename)
+    context_path = output_dir / "social_context.json"
+    if not context_path.is_file():
+        raise FileNotFoundError(f"social_context.json not found for {filename}")
+    subprocess.run(
+        [
+            "python",
+            str(SCRIPTS_DIR / "deepseek_social_insights.py"),
+            str(output_dir),
+            "--output",
+            str(output_dir / "social_insights.json"),
+        ],
+        cwd=ROOT,
+        check=True,
+        env=os.environ.copy(),
+        capture_output=True,
+        text=True,
+    )
+    return read_json(output_dir / "social_insights.json")
+
+
+def run_social_context_job(filename: str, generate_insights: bool = True) -> None:
+    try:
+        fetch_social_context(filename, generate_insights=generate_insights)
+    except Exception as exc:
+        output_dir = output_dir_for_filename(filename)
+        context = read_json(output_dir / "social_context.json")
+        if not isinstance(context, dict):
+            context = {"filename": filename, "source_url": social_source_url(filename), "items": {}}
+        context["status"] = "failed"
+        context["updated_at"] = time.time()
+        context["error"] = str(exc)
+        write_json(output_dir / "social_context.json", context)
+    finally:
+        with social_jobs_lock:
+            social_jobs_running.discard(filename)
+
+
+def start_social_context_job(filename: str, generate_insights: bool = True) -> bool:
+    with social_jobs_lock:
+        if filename in social_jobs_running:
+            return False
+        social_jobs_running.add(filename)
+    write_social_running(filename, social_source_url(filename))
+    thread = threading.Thread(target=run_social_context_job, args=(filename, generate_insights), daemon=True)
+    thread.start()
+    return True
+
+
+def social_tab_payload(filename: str, tab: str) -> dict[str, Any]:
+    output_dir = output_dir_for_filename(filename)
+    context = read_json(output_dir / "social_context.json") or {}
+    insights = read_json(output_dir / "social_insights.json") or {}
+    items = context.get("items") if isinstance(context, dict) else {}
+    if not isinstance(items, dict):
+        items = {}
+    key_map = {"comments": "comments", "data": "video_info", "creator": "creator_profile"}
+    insight_keys = {
+        "comments": ("comment_insights", "comment_analysis"),
+        "data": ("data_insights", "data_analysis"),
+        "creator": ("creator_insights", "creator_analysis"),
+    }
+    selected = items.get(key_map.get(tab, ""), {}) if isinstance(items, dict) else {}
+    if not isinstance(selected, dict):
+        selected = {}
+    insight = None
+    if isinstance(insights, dict):
+        for key in insight_keys.get(tab, ()):
+            if insights.get(key):
+                insight = insights.get(key)
+                break
+    titles = {"comments": "评论区分析", "data": "数据分析", "creator": "博主分析"}
+    payload = {
+        "summary": context.get("status") if isinstance(context, dict) else "missing",
+        "status": selected.get("status") or context.get("status") if isinstance(context, dict) else "missing",
+        "updated_at": context.get("updated_at") if isinstance(context, dict) else None,
+        "source_url": context.get("source_url") if isinstance(context, dict) else "",
+        titles.get(tab, "外部数据"): selected.get("data") or selected.get("error") or "无可用数据",
+    }
+    if insight:
+        payload["DeepSeek 洞察"] = insight
+    elif insights:
+        payload["DeepSeek 洞察"] = insights
+    return payload
 
 
 def validate_amazon_url(url: str) -> str:
@@ -453,9 +814,23 @@ def metric_item(label: str, value: Any) -> str:
 
 
 def build_report_html(filename: str, tab: str, payload: dict[str, Any]) -> str:
-    is_audit = tab in {"audit", "feedback"}
-    title = "反馈结果报告" if tab == "feedback" else ("分析结果报告" if is_audit else "提取内容报告")
-    eyebrow = "DeepSeek 反馈" if tab == "feedback" else ("DeepSeek 分析" if is_audit else "Qwen Video Extraction")
+    is_audit = tab in {"audit", "feedback", "comments", "data", "creator"}
+    title_map = {
+        "feedback": "反馈结果报告",
+        "audit": "分析结果报告",
+        "comments": "评论区分析报告",
+        "data": "数据分析报告",
+        "creator": "博主分析报告",
+    }
+    eyebrow_map = {
+        "feedback": "DeepSeek 反馈",
+        "audit": "DeepSeek 分析",
+        "comments": "SociaVault Comments",
+        "data": "SociaVault Video Data",
+        "creator": "SociaVault Creator Profile",
+    }
+    title = title_map.get(tab, "提取内容报告")
+    eyebrow = eyebrow_map.get(tab, "Qwen Video Extraction")
     summary = clean_report_value(payload.get("summary")) or "暂无摘要。"
 
     if is_audit:
@@ -1278,6 +1653,7 @@ def run_download_job(job_id: str) -> None:
             job.result = result
             job.status = "complete"
             job.updated_at = time.time()
+        start_social_context_job(filename, generate_insights=True)
     except Exception as exc:
         useful_log = next(
             (
@@ -2625,11 +3001,13 @@ class Handler(BaseHTTPRequestHandler):
                     if is_hidden_from_analyzer(name):
                         continue
                     meta = video_queue.get_status_meta(name)
+                    social_meta = summarize_social_status(read_json(output_dir_for_filename(name) / "social_context.json"))
                     files.append({
                         "name": name, "size": path.stat().st_size, "mtime": path.stat().st_mtime,
                         "status": video_queue.get_status(name),
                         "status_label": meta["label"], "status_color": meta["color"], "status_bg": meta["bg"],
                         "title": video_queue.get_title(name),
+                        **social_meta,
                     })
             return json_response(self, HTTPStatus.OK, files)
         if parsed.path == "/api/queue-state":
@@ -2645,6 +3023,7 @@ class Handler(BaseHTTPRequestHandler):
                 return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
             output_dir = output_dir_for_filename(filename)
             analysis = read_json(output_dir / "analysis.json")
+            social_context = read_json(output_dir / "social_context.json")
             return json_response(
                 self,
                 HTTPStatus.OK,
@@ -2659,9 +3038,22 @@ class Handler(BaseHTTPRequestHandler):
                     "audit_result_zh": read_json(output_dir / "audit_result_zh.json"),
                     "feedback_result": read_json(output_dir / "feedback_result.json"),
                     "feedback_result_zh": read_json(output_dir / "feedback_result_zh.json"),
+                    "social_context": social_context,
+                    "social_insights": read_json(output_dir / "social_insights.json"),
                     "log": [],
                 },
             )
+        if parsed.path == "/api/social-context":
+            try:
+                filename = safe_filename(parse_qs(parsed.query).get("filename", [""])[0])
+            except ValueError as exc:
+                return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            output_dir = output_dir_for_filename(filename)
+            return json_response(self, HTTPStatus.OK, {
+                "filename": filename,
+                "social_context": read_json(output_dir / "social_context.json"),
+                "social_insights": read_json(output_dir / "social_insights.json"),
+            })
         if parsed.path == "/api/export-pdf":
             query = parse_qs(parsed.query)
             try:
@@ -2669,7 +3061,7 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
             tab = query.get("tab", ["audit"])[0]
-            if tab not in {"audit", "content", "feedback"}:
+            if tab not in {"audit", "content", "feedback", "comments", "data", "creator"}:
                 return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Invalid tab"})
             output_dir = output_dir_for_filename(filename)
             sources = {
@@ -2677,8 +3069,11 @@ class Handler(BaseHTTPRequestHandler):
                 "audit": ("audit_result_zh.json", "audit_result.json"),
                 "feedback": ("feedback_result_zh.json", "feedback_result.json"),
             }
-            source, fallback = sources[tab]
-            payload = read_json(output_dir / source) or read_json(output_dir / fallback)
+            if tab in sources:
+                source, fallback = sources[tab]
+                payload = read_json(output_dir / source) or read_json(output_dir / fallback)
+            else:
+                payload = social_tab_payload(filename, tab)
             if not isinstance(payload, dict):
                 return json_response(self, HTTPStatus.NOT_FOUND, {"error": f"Report not found for {filename}"})
             try:
@@ -2686,7 +3081,7 @@ class Handler(BaseHTTPRequestHandler):
                 pdf = render_pdf_bytes(html)
             except Exception as exc:
                 return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"PDF export failed: {exc}"})
-            suffix = {"content": "analysis", "audit": "audit", "feedback": "feedback"}[tab]
+            suffix = {"content": "analysis", "audit": "audit", "feedback": "feedback", "comments": "comments", "data": "data", "creator": "creator"}[tab]
             return binary_response(
                 self,
                 HTTPStatus.OK,
@@ -2867,6 +3262,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_translate()
         if parsed.path == "/api/feedback":
             return self.handle_feedback()
+        if parsed.path == "/api/social-context/refresh":
+            return self.handle_social_context_refresh()
+        if parsed.path == "/api/social-insights":
+            return self.handle_social_insights()
         if parsed.path == "/api/prompt":
             return self.handle_save_prompt()
         if parsed.path == "/api/delete":
@@ -3060,6 +3459,7 @@ class Handler(BaseHTTPRequestHandler):
                 with target.open("wb") as file:
                     shutil.copyfileobj(file_item.file, file)
                 files.append({"filename": filename, "size": target.stat().st_size})
+                start_social_context_job(filename, generate_insights=False)
             except Exception as exc:
                 errors.append({"filename": original_name, "error": str(exc)})
 
@@ -3211,6 +3611,44 @@ class Handler(BaseHTTPRequestHandler):
             return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": message or "Feedback generation failed"})
 
         return json_response(self, HTTPStatus.OK, {"status": "generated", "filename": filename})
+
+    def handle_social_context_refresh(self) -> None:
+        content_length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(content_length)
+        try:
+            payload = json.loads(body.decode("utf-8") or "{}")
+            filename = safe_filename(str(payload.get("filename", "")))
+        except (json.JSONDecodeError, ValueError) as exc:
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+
+        if not (VIDEOS_DIR / filename).is_file():
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": f"Video file not found: {filename}"})
+        started = start_social_context_job(filename, generate_insights=True)
+        output_dir = output_dir_for_filename(filename)
+        return json_response(self, HTTPStatus.ACCEPTED, {
+            "status": "queued" if started else "running",
+            "filename": filename,
+            "social_context": read_json(output_dir / "social_context.json"),
+            "social_insights": read_json(output_dir / "social_insights.json"),
+        })
+
+    def handle_social_insights(self) -> None:
+        content_length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(content_length)
+        try:
+            payload = json.loads(body.decode("utf-8") or "{}")
+            filename = safe_filename(str(payload.get("filename", "")))
+        except (json.JSONDecodeError, ValueError) as exc:
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+
+        try:
+            insights = generate_social_insights(filename)
+        except subprocess.CalledProcessError as exc:
+            message = (exc.stderr or exc.stdout or str(exc)).strip()
+            return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": message or "Social insights generation failed"})
+        except Exception as exc:
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+        return json_response(self, HTTPStatus.OK, {"status": "generated", "filename": filename, "social_insights": insights})
 
     def handle_save_prompt(self) -> None:
         content_length = int(self.headers.get("Content-Length", "0"))
