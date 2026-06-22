@@ -794,14 +794,7 @@ def _normalize_video(node: dict[str, Any], endpoint: str, label: str, rank: int)
         "share_count": _metric(node, ("share_count", "shareCount", "repost_count", "repostCount")),
         "favorite_count": _metric(node, ("collect_count", "collectCount", "favorite_count", "favoriteCount")),
     }
-    hot_score = (
-        metrics["play_count"]
-        + metrics["like_count"] * 8
-        + metrics["comment_count"] * 15
-        + metrics["share_count"] * 20
-        + metrics["favorite_count"] * 10
-        + max(0, 100 - rank) * 1_000
-    )
+    hot_score = _score_hot_video(metrics, rank)
     published_at = _extract_publish_time(node)
     if published_at:
         metrics["published_at"] = published_at
@@ -819,6 +812,25 @@ def _normalize_video(node: dict[str, Any], endpoint: str, label: str, rank: int)
         "metrics": metrics,
         "raw": node,
     }
+
+
+def _score_hot_video(metrics: dict[str, int], rank: int) -> int:
+    play_count = int(metrics.get("play_count") or 0)
+    like_count = int(metrics.get("like_count") or 0)
+    comment_count = int(metrics.get("comment_count") or 0)
+    share_count = int(metrics.get("share_count") or 0)
+    favorite_count = int(metrics.get("favorite_count") or 0)
+    engagement = like_count + comment_count * 3 + share_count * 2 + favorite_count
+    engagement_rate_bonus = int((engagement / max(play_count, 1)) * 100_000) if play_count else 0
+    return int(
+        play_count
+        + like_count * 20
+        + comment_count * 80
+        + share_count * 60
+        + favorite_count * 20
+        + engagement_rate_bonus
+        + max(0, 50 - rank) * 100
+    )
 
 
 def _deep_merge_dict(base: dict[str, Any], extra: dict[str, Any]) -> dict[str, Any]:
@@ -893,19 +905,17 @@ def _collect_hot_video_candidates(
 ) -> tuple[dict[tuple[str, str], dict[str, Any]], list[str]]:
     candidates: dict[tuple[str, str], dict[str, Any]] = {}
     excluded_keys = excluded_keys or set()
-    source_count = max(1, len(_split_csv_env("HOT_VIDEO_POPULAR_SORTS", "views,likes")))
     cutoff_ts = time.time() - recency_days * 86400
     max_pages = max(1, _to_int(os.getenv("HOT_VIDEO_POPULAR_MAX_PAGES", "5")))
-    popular_failed = True
     source_errors: list[str] = []
+    topic_keywords = _split_csv_env("HOT_VIDEO_KEYWORDS", "AI toys")
+    topic_min_views = max(0, _to_int(os.getenv("HOT_VIDEO_TOPIC_MIN_PLAY_COUNT", "5000")))
+    stream_min_views = max(0, _to_int(os.getenv("HOT_VIDEO_STREAM_MIN_PLAY_COUNT", "10000")))
 
-    def collect_from(endpoint: str, params: dict[str, Any], label: str) -> None:
-        nonlocal popular_failed
+    def collect_from(endpoint: str, params: dict[str, Any], label: str, min_play_count: int, bucket: str) -> None:
         _progress_payload(report_date, "running", "collecting", 6, f"Collecting source: {label}", counts)
         cache_policy = os.getenv("HOT_VIDEO_SOURCE_CACHE_POLICY", "record_only").strip() or "record_only"
         payload = call_api(api_key, api_base, endpoint, params, api_timeout, cache_policy=cache_policy)
-        if endpoint == "videos-popular":
-            popular_failed = False
         for rank, node in enumerate(_iter_video_nodes(payload), start=1):
             counts["collected"] += 1
             if _is_photo_mode_post(node):
@@ -928,6 +938,12 @@ def _collect_hot_video_candidates(
                 counts["skipped_old"] += 1
                 continue
             counts["recent_count"] += 1
+            play_count = int(item.get("metrics", {}).get("play_count") or 0)
+            if play_count < min_play_count:
+                counts[f"skipped_low_views_{bucket}"] = counts.get(f"skipped_low_views_{bucket}", 0) + 1
+                continue
+            item["selection_bucket"] = bucket
+            item["metrics"]["selection_min_play_count"] = min_play_count
             key = (item["platform"], item["video_id"])
             if key in excluded_keys:
                 counts["skipped_duplicate_report"] = counts.get("skipped_duplicate_report", 0) + 1
@@ -936,15 +952,27 @@ def _collect_hot_video_candidates(
                 candidates[key] = item
         _progress_payload(report_date, "running", "filtering", 18, f"{label} complete, valid candidates: {len(candidates)}", counts)
 
+    topic_fetch = max(target_count * 2, 20)
+    for keyword in topic_keywords:
+        try:
+            collect_from(
+                "search-top",
+                {"query": keyword, "region": region, "count": topic_fetch},
+                f"topic-search:{keyword}",
+                topic_min_views,
+                "topic",
+            )
+        except Exception as exc:
+            source_errors.append(f"topic-search:{keyword}: {exc}")
+
     page = 1
     while len(candidates) < target_count and page <= max_pages:
         remaining = target_count - len(candidates)
-        total_fetch = max(1, remaining * 2)
-        per_source_count = max(1, (total_fetch + source_count - 1) // source_count)
+        fetch_count = max(1, remaining * 2)
         page_success = False
-        for endpoint, params, label in _popular_source_requests(region, per_source_count, page, recency_days):
+        for endpoint, params, label in _trending_source_requests(region, fetch_count, page):
             try:
-                collect_from(endpoint, params, label)
+                collect_from(endpoint, params, label, stream_min_views, "stream")
                 page_success = True
             except Exception as exc:
                 source_errors.append(f"{label}: {exc}")
@@ -972,7 +1000,7 @@ def _collect_hot_video_candidates(
             )
             for endpoint, params, label in _legacy_source_requests(region, fallback_count):
                 try:
-                    collect_from(endpoint, params, f"fallback:{label}:c{fallback_count}")
+                    collect_from(endpoint, params, f"fallback:{label}:c{fallback_count}", stream_min_views, "stream")
                 except Exception as exc:
                     source_errors.append(f"fallback:{label}:c{fallback_count}: {exc}")
             if len(candidates) >= target_count:
@@ -1232,6 +1260,13 @@ def _popular_source_requests(region: str, count: int, page: int, recency_days: i
     return requests
 
 
+def _trending_source_requests(region: str, count: int, page: int) -> list[tuple[str, dict[str, Any], str]]:
+    params = {"region": region, "count": count}
+    if page > 1:
+        params["page"] = page
+    return [("trending", params, f"trending:{region}:p{page}")]
+
+
 def _legacy_source_requests(region: str, count: int) -> list[tuple[str, dict[str, Any], str]]:
     keywords = _split_csv_env("HOT_VIDEO_KEYWORDS", "AI toys")
     requests: list[tuple[str, dict[str, Any], str]] = []
@@ -1243,7 +1278,11 @@ def _legacy_source_requests(region: str, count: int) -> list[tuple[str, dict[str
 
 
 def _source_requests(region: str, count: int) -> list[tuple[str, dict[str, Any], str]]:
-    return _popular_source_requests(region, count, 1, _recent_window_days())
+    requests: list[tuple[str, dict[str, Any], str]] = []
+    for keyword in _split_csv_env("HOT_VIDEO_KEYWORDS", "AI toys"):
+        requests.append(("search-top", {"query": keyword, "region": region, "count": count}, f"topic-search:{keyword}"))
+    requests.extend(_trending_source_requests(region, count, 1))
+    return requests
 
 
 def _start_report(conn: sqlite3.Connection, report_date: str, region: str, sources: list[dict[str, Any]], scheduled: bool = False) -> str:
@@ -1423,15 +1462,50 @@ def _output_dir_for_filename(filename: str) -> Path:
 
 def _run_deepseek_report(output_dir: Path) -> dict[str, Any]:
     audit_path = output_dir / "audit_result.json"
-    if audit_path.is_file():
+    prompt = _load_current_analysis_prompt()
+    if audit_path.is_file() and _output_prompt_matches(output_dir, prompt):
         return _json_loads(audit_path.read_text(encoding="utf-8"), {})
     cmd = [sys.executable, str(SCRIPTS_DIR / "deepseek_postprocess.py"), str(output_dir)]
+    if prompt:
+        cmd.extend(["--prompt", prompt])
     timeout = _to_float(os.getenv("REPORT_DEEPSEEK_TIMEOUT", "180"), 180.0)
     try:
         subprocess.run(cmd, cwd=ROOT, check=True, env=os.environ.copy(), timeout=timeout)
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(f"DeepSeek postprocess timed out after {timeout}s: {exc}")
     return _json_loads(audit_path.read_text(encoding="utf-8") if audit_path.is_file() else "", {})
+
+
+def _load_current_analysis_prompt() -> str:
+    for path in (ROOT / "data" / "analysis_prompt.txt", ROOT / "analysis_prompt.txt"):
+        if path.is_file():
+            content = path.read_text(encoding="utf-8").strip()
+            if content:
+                return content
+    return ""
+
+
+def _output_prompt_matches(output_dir: Path, prompt: str) -> bool:
+    if not prompt:
+        return True
+    prompt_path = output_dir / "analysis_prompt.txt"
+    return prompt_path.is_file() and prompt_path.read_text(encoding="utf-8").strip() == prompt.strip()
+
+
+def _prepare_output_prompt(output_dir: Path, prompt: str) -> bool:
+    if not prompt:
+        return False
+    prompt_path = output_dir / "analysis_prompt.txt"
+    previous = prompt_path.read_text(encoding="utf-8").strip() if prompt_path.is_file() else ""
+    changed = previous != prompt.strip()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    prompt_path.write_text(prompt.strip() + "\n", encoding="utf-8")
+    if changed:
+        for name in ("analysis.json", "analysis_zh.json", "audit_result.json", "audit_result_zh.json"):
+            path = output_dir / name
+            if path.is_file():
+                path.unlink()
+    return changed
 
 
 def _process_video(conn: sqlite3.Connection, report_date: str, item: dict[str, Any]) -> None:
@@ -1468,6 +1542,8 @@ def _process_video(conn: sqlite3.Connection, report_date: str, item: dict[str, A
             if not was_visible_manual_video:
                 set_hidden_from_analyzer(platform, video_id, True)
         output_dir = _output_dir_for_filename(filename)
+        prompt = _load_current_analysis_prompt()
+        _prepare_output_prompt(output_dir, prompt)
         analysis_path = output_dir / "analysis.json"
         if not analysis_path.is_file():
             result = execute_tool("video_analyze", {"filename": filename})
@@ -1685,12 +1761,9 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
     recency_days = _recent_window_days()
     api_key = os.getenv("SOCIAVAULT_API_KEY", "").strip()
     api_base = os.getenv("SOCIAVAULT_API_BASE", DEFAULT_API_BASE).rstrip("/")
-    source_count = max(1, len(_split_csv_env("HOT_VIDEO_POPULAR_SORTS", "views,likes")))
-    first_total_fetch = target_count * 2
-    first_per_source_count = max(1, (first_total_fetch + source_count - 1) // source_count)
     sources = [
         {"endpoint": endpoint, "label": label, "params": params}
-        for endpoint, params, label in _popular_source_requests(region, first_per_source_count, 1, recency_days)
+        for endpoint, params, label in _source_requests(region, target_count * 2)
     ]
     counts = {
         "collected": 0,
@@ -1700,6 +1773,8 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
         "skipped_old": 0,
         "skipped_missing_time": 0,
         "skipped_photo_mode": 0,
+        "skipped_low_views_topic": 0,
+        "skipped_low_views_stream": 0,
         "skipped_duplicate_report": 0,
         "analyzed_success": 0,
         "analyzed_failed": 0,
