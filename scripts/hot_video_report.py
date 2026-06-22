@@ -762,9 +762,11 @@ def _is_photo_mode_post(node: dict[str, Any]) -> bool:
     """TikTok Photo Mode posts can expose audio URLs but no analyzable video stream."""
     if not isinstance(node, dict):
         return False
+    video = node.get("video")
+    if isinstance(video, dict) and any(key in video for key in ("bit_rate", "play_addr", "download_addr")):
+        return False
     if node.get("image_post_info") or node.get("imagePostInfo"):
         return True
-    video = node.get("video")
     if not isinstance(video, dict):
         return False
     return bool(video.get("image_post_info") or video.get("imagePostInfo"))
