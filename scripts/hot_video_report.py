@@ -1353,6 +1353,40 @@ def _source_requests(region: str, count: int, topic_keywords: list[str] | None =
     return requests
 
 
+def _rank_with_topic_guarantees(
+    candidates: list[dict[str, Any]],
+    topic_keywords: list[str],
+    target_count: int,
+) -> list[dict[str, Any]]:
+    selected: list[dict[str, Any]] = []
+    selected_keys: set[tuple[str, str]] = set()
+    sorted_candidates = sorted(candidates, key=lambda item: item["hot_score"], reverse=True)
+    if topic_keywords and target_count >= len(topic_keywords):
+        for keyword in topic_keywords:
+            label = f"topic-search:{keyword}"
+            topic_items = [
+                item
+                for item in sorted_candidates
+                if item.get("selection_bucket") == "topic" and item.get("source_label") == label
+            ]
+            if not topic_items:
+                continue
+            item = topic_items[0]
+            key = (item["platform"], item["video_id"])
+            if key not in selected_keys:
+                selected.append(item)
+                selected_keys.add(key)
+    for item in sorted_candidates:
+        if len(selected) >= target_count:
+            break
+        key = (item["platform"], item["video_id"])
+        if key in selected_keys:
+            continue
+        selected.append(item)
+        selected_keys.add(key)
+    return selected[:target_count]
+
+
 def _start_report(conn: sqlite3.Connection, report_date: str, region: str, sources: list[dict[str, Any]], scheduled: bool = False) -> str:
     now = time.time()
     report_id = uuid.uuid4().hex
@@ -1909,7 +1943,8 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
                     counts,
                     excluded_keys,
                 )
-                ranked = sorted(candidates.values(), key=lambda item: item["hot_score"], reverse=True)[:target_count]
+                ranked = _rank_with_topic_guarantees(list(candidates.values()), topic_keywords, target_count)
+                counts["topic_guaranteed_count"] = sum(1 for item in ranked if item.get("selection_bucket") == "topic")
                 if not ranked:
                     suffix = f"; source errors: {' | '.join(source_errors[:3])}" if source_errors else ""
                     duplicate_note = (
