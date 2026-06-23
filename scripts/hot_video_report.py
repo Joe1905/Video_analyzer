@@ -1241,7 +1241,7 @@ def get_report(report_date: str | None = None, include_raw: bool = False, detail
                 FROM hot_report_videos rv
                 JOIN hot_video_master m ON m.platform = rv.platform AND m.video_id = rv.video_id
                 LEFT JOIN hot_video_master v ON v.platform = rv.platform AND v.video_id = rv.video_id
-                WHERE rv.report_date = ?
+                WHERE rv.report_date = ? AND rv.process_status = 'complete'
                 ORDER BY rv.report_rank ASC, rv.hot_score DESC
                 """,
                 (date,),
@@ -1440,9 +1440,9 @@ def _finish_report(
         """,
         (report_date,),
     ).fetchone()
-    video_count = int(row[0] if row else 0)
     success_count = int(row[1] if row and row[1] is not None else 0)
     failed_count = int(row[2] if row and row[2] is not None else 0)
+    video_count = success_count
     llm_generated_marker = 1 if report_json else None
     conn.execute(
         """
@@ -1891,12 +1891,13 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
     analysis_limit = int(settings["analysis_limit"])
     topic_keywords = list(settings.get("topic_keywords") or _split_csv_env("HOT_VIDEO_KEYWORDS", "AI toys"))
     target_count = analysis_limit
+    candidate_target_count = max(target_count * 3, target_count + 10)
     recency_days = _recent_window_days()
     api_key = os.getenv("SOCIAVAULT_API_KEY", "").strip()
     api_base = os.getenv("SOCIAVAULT_API_BASE", DEFAULT_API_BASE).rstrip("/")
     sources = [
         {"endpoint": endpoint, "label": label, "params": params}
-        for endpoint, params, label in _source_requests(region, target_count * 2, topic_keywords)
+        for endpoint, params, label in _source_requests(region, candidate_target_count, topic_keywords)
     ]
     counts = {
         "collected": 0,
@@ -1934,7 +1935,7 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
                 candidates, source_errors = _collect_hot_video_candidates(
                     date,
                     region,
-                    target_count,
+                    candidate_target_count,
                     recency_days,
                     topic_keywords,
                     api_key,
@@ -1943,8 +1944,8 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
                     counts,
                     excluded_keys,
                 )
-                ranked = _rank_with_topic_guarantees(list(candidates.values()), topic_keywords, target_count)
-                counts["topic_guaranteed_count"] = sum(1 for item in ranked if item.get("selection_bucket") == "topic")
+                ranked = _rank_with_topic_guarantees(list(candidates.values()), topic_keywords, candidate_target_count)
+                counts["topic_guaranteed_count"] = sum(1 for item in ranked[:target_count] if item.get("selection_bucket") == "topic")
                 if not ranked:
                     suffix = f"; source errors: {' | '.join(source_errors[:3])}" if source_errors else ""
                     duplicate_note = (
@@ -1956,20 +1957,21 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
                     _finish_report(conn, report_id, date, "failed", error)
                     _progress_payload(date, "failed", "finished", 100, error, counts)
                     return get_report(date, include_raw=True)
-                _progress_payload(date, "running", "filtering", 24, f"筛选出最近 {recency_days} 天热点视频 {len(ranked)} 条", counts)
-                for report_rank, item in enumerate(ranked, start=1):
-                    _upsert_video(conn, report_id, date, item, report_rank)
-                conn.commit()
-                _progress_payload(date, "running", "downloading", 30, f"已入库 {len(ranked)} 条，开始处理 Top {min(analysis_limit, len(ranked))}", counts)
+                _progress_payload(date, "running", "filtering", 24, f"筛选出最近 {recency_days} 天候选视频 {len(ranked)} 条", counts)
+                _progress_payload(date, "running", "downloading", 30, f"开始处理候选视频，目标成功 {analysis_limit} 条", counts)
 
                 job_timeout = _to_float(os.getenv("REPORT_JOB_TIMEOUT", str(DEFAULT_REPORT_JOB_TIMEOUT_SECONDS)), DEFAULT_REPORT_JOB_TIMEOUT_SECONDS)
                 deadline = time.time() + max(60.0, job_timeout)
                 timed_out = False
-                total_to_process = max(1, min(analysis_limit, len(ranked)))
-                for index, item in enumerate(ranked[:analysis_limit], start=1):
+                total_to_process = max(1, len(ranked))
+                for index, item in enumerate(ranked, start=1):
+                    if counts["analyzed_success"] >= analysis_limit:
+                        break
                     if time.time() >= deadline:
                         timed_out = True
                         break
+                    _upsert_video(conn, report_id, date, item, index)
+                    conn.commit()
                     record = get_video(item["platform"], item["video_id"]) or {}
                     filename = str(record.get("filename") or "")
                     extraction_dir = str(record.get("extraction_dir") or "")
