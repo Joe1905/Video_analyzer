@@ -331,6 +331,8 @@ def nested_get(data: Any, names: tuple[str, ...]) -> Any:
 def nested_list(data: Any, names: tuple[str, ...]) -> list[Any]:
     if isinstance(data, list):
         return data
+    if isinstance(data, dict) and data and all(str(key).isdigit() for key in data):
+        return [data[key] for key in sorted(data, key=lambda item: int(str(item)))]
     if not isinstance(data, dict):
         return []
     for name in names:
@@ -350,6 +352,8 @@ def nested_list(data: Any, names: tuple[str, ...]) -> list[Any]:
 
 def compact_video_info(payload: dict[str, Any]) -> dict[str, Any]:
     source = payload.get("video") or payload.get("data") or payload
+    if isinstance(source, dict) and isinstance(source.get("aweme_detail"), dict):
+        source = source["aweme_detail"]
     if not isinstance(source, dict):
         source = payload
     stats = source.get("statistics") or source.get("stats") or {}
