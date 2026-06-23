@@ -1775,7 +1775,12 @@ def _generate_daily_summary(report_date: str, success_videos: list[dict[str, Any
     api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("Missing required environment variable: DEEPSEEK_API_KEY")
-    video_items = [_compact_summary_video(video) for video in success_videos]
+    normalized_videos = []
+    for index, video in enumerate(success_videos, start=1):
+        normalized = dict(video)
+        normalized["report_rank"] = index
+        normalized_videos.append(normalized)
+    video_items = [_compact_summary_video(video) for video in normalized_videos]
     prompt = _summary_prompt(report_date, video_items)
     prompt_limit = _to_int(os.getenv("REPORT_SUMMARY_PROMPT_CHAR_LIMIT", "28000"))
     if len(prompt) > prompt_limit and len(video_items) > 1:
