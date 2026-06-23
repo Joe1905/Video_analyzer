@@ -248,6 +248,7 @@ def _ensure_default_settings(conn: sqlite3.Connection) -> None:
         "timezone": DEFAULT_TZ,
         "analysis_limit": "10",
         "retention_days": "30",
+        "topic_keywords": json.dumps(_split_csv_env("HOT_VIDEO_KEYWORDS", "AI toys"), ensure_ascii=False),
     }
     for key, value in defaults.items():
         conn.execute(
@@ -903,6 +904,7 @@ def _collect_hot_video_candidates(
     region: str,
     target_count: int,
     recency_days: int,
+    topic_keywords: list[str],
     api_key: str,
     api_base: str,
     api_timeout: float,
@@ -914,7 +916,6 @@ def _collect_hot_video_candidates(
     cutoff_ts = time.time() - recency_days * 86400
     max_pages = max(1, _to_int(os.getenv("HOT_VIDEO_POPULAR_MAX_PAGES", "15")))
     source_errors: list[str] = []
-    topic_keywords = _split_csv_env("HOT_VIDEO_KEYWORDS", "AI toys")
     topic_min_views = max(0, _to_int(os.getenv("HOT_VIDEO_TOPIC_MIN_PLAY_COUNT", "5000")))
     stream_min_views = max(0, _to_int(os.getenv("HOT_VIDEO_STREAM_MIN_PLAY_COUNT", "10000")))
 
@@ -1106,11 +1107,16 @@ def get_settings() -> dict[str, Any]:
     with _connect() as conn:
         rows = conn.execute("SELECT key, value FROM report_settings").fetchall()
     values = {str(k): str(v) for k, v in rows}
+    topics = _normalize_topic_keywords(
+        values.get("topic_keywords"),
+        fallback=_split_csv_env("HOT_VIDEO_KEYWORDS", "AI toys"),
+    )
     return {
         "schedule_time": values.get("schedule_time", "05:00"),
         "timezone": values.get("timezone", DEFAULT_TZ),
         "analysis_limit": _to_int(values.get("analysis_limit", "10")) or 10,
         "retention_days": _to_int(values.get("retention_days", "30")) or 30,
+        "topic_keywords": topics,
     }
 
 
@@ -1126,6 +1132,11 @@ def save_settings(payload: dict[str, Any]) -> dict[str, Any]:
     retention_days = max(1, min(_to_int(payload.get("retention_days", current["retention_days"])), 30))
     timezone = str(payload.get("timezone", current["timezone"]) or DEFAULT_TZ)
     ZoneInfo(timezone)
+    topic_keywords = _normalize_topic_keywords(payload.get("topic_keywords", current.get("topic_keywords", [])))
+    if not topic_keywords:
+        raise ValueError("topic_keywords must contain at least one topic")
+    if len(topic_keywords) > analysis_limit:
+        raise ValueError("topic_keywords count must be less than or equal to analysis_limit")
     now = time.time()
     with _connect() as conn:
         for key, value in {
@@ -1133,6 +1144,7 @@ def save_settings(payload: dict[str, Any]) -> dict[str, Any]:
             "timezone": timezone,
             "analysis_limit": str(analysis_limit),
             "retention_days": str(retention_days),
+            "topic_keywords": json.dumps(topic_keywords, ensure_ascii=False),
         }.items():
             conn.execute(
                 """
@@ -1275,6 +1287,31 @@ def _split_csv_env(name: str, default: str) -> list[str]:
     return [item for item in values if item]
 
 
+def _normalize_topic_keywords(value: Any, fallback: list[str] | None = None) -> list[str]:
+    if value in (None, ""):
+        raw_items = fallback or []
+    elif isinstance(value, str):
+        parsed = _json_loads(value, None)
+        raw_items = parsed if isinstance(parsed, list) else value.split(",")
+    elif isinstance(value, list):
+        raw_items = value
+    else:
+        raw_items = []
+    topics: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        topic = re.sub(r"\s+", " ", str(item or "")).strip()
+        if not topic:
+            continue
+        topic = topic[:80]
+        key = topic.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        topics.append(topic)
+    return topics
+
+
 def _popular_source_requests(region: str, count: int, page: int, recency_days: int) -> list[tuple[str, dict[str, Any], str]]:
     sorts = _split_csv_env("HOT_VIDEO_POPULAR_SORTS", "views,likes")
     requests = []
@@ -1298,7 +1335,7 @@ def _trending_source_requests(region: str, count: int, page: int) -> list[tuple[
 
 
 def _legacy_source_requests(region: str, count: int) -> list[tuple[str, dict[str, Any], str]]:
-    keywords = _split_csv_env("HOT_VIDEO_KEYWORDS", "AI toys")
+    keywords = get_settings().get("topic_keywords") or _split_csv_env("HOT_VIDEO_KEYWORDS", "AI toys")
     requests: list[tuple[str, dict[str, Any], str]] = []
     if os.getenv("HOT_VIDEO_INCLUDE_TRENDING", "0").strip() in {"1", "true", "yes"}:
         requests.append(("trending", {"region": region, "count": count}, f"trending:{region}"))
@@ -1307,9 +1344,9 @@ def _legacy_source_requests(region: str, count: int) -> list[tuple[str, dict[str
     return requests
 
 
-def _source_requests(region: str, count: int) -> list[tuple[str, dict[str, Any], str]]:
+def _source_requests(region: str, count: int, topic_keywords: list[str] | None = None) -> list[tuple[str, dict[str, Any], str]]:
     requests: list[tuple[str, dict[str, Any], str]] = []
-    for keyword in _split_csv_env("HOT_VIDEO_KEYWORDS", "AI toys"):
+    for keyword in (topic_keywords or _split_csv_env("HOT_VIDEO_KEYWORDS", "AI toys")):
         requests.append(("search-top", {"query": keyword, "region": region, "count": count}, f"topic-search:{keyword}"))
     requests.extend(_trending_source_requests(region, count, 1))
     requests.extend(_popular_source_requests(region, max(1, count // 2), 1, _recent_window_days()))
@@ -1818,13 +1855,14 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
     date = report_date or today_key()
     region = os.getenv("SOCIAVAULT_REGION", "US").strip() or "US"
     analysis_limit = int(settings["analysis_limit"])
+    topic_keywords = list(settings.get("topic_keywords") or _split_csv_env("HOT_VIDEO_KEYWORDS", "AI toys"))
     target_count = analysis_limit
     recency_days = _recent_window_days()
     api_key = os.getenv("SOCIAVAULT_API_KEY", "").strip()
     api_base = os.getenv("SOCIAVAULT_API_BASE", DEFAULT_API_BASE).rstrip("/")
     sources = [
         {"endpoint": endpoint, "label": label, "params": params}
-        for endpoint, params, label in _source_requests(region, target_count * 2)
+        for endpoint, params, label in _source_requests(region, target_count * 2, topic_keywords)
     ]
     counts = {
         "collected": 0,
@@ -1864,6 +1902,7 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
                     region,
                     target_count,
                     recency_days,
+                    topic_keywords,
                     api_key,
                     api_base,
                     api_timeout,
