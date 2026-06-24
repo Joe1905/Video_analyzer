@@ -87,6 +87,8 @@ from video_registry import (
 from proxy_state import ensure_us_proxy
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 SAFE_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+AUDIO_ONLY_SUFFIXES = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav"}
+ANALYZER_VIDEO_SUFFIXES = {".m4v", ".mov", ".mp4", ".webm"}
 ALLOWED_SHORT_VIDEO_HOST_SUFFIXES = ("tiktok.com", "tiktokv.com", "douyin.com", "iesdouyin.com")
 ALLOWED_AMAZON_HOST_SUFFIXES = ("amazon.com",)
 ASIN_RE = re.compile(r"^[A-Z0-9]{10}$", re.IGNORECASE)
@@ -1373,6 +1375,10 @@ def try_cached_download_result(job: DownloadJob, result_path: Path) -> bool:
     if not cached_path.is_file():
         append_download_log(job, f"下载结果缓存文件不存在，继续重新下载：{filename}")
         return False
+    if cached_path.suffix.lower() in AUDIO_ONLY_SUFFIXES:
+        cached_path.unlink(missing_ok=True)
+        append_download_log(job, f"删除缓存命中的无效音频文件，重新下载：{filename}")
+        return False
     result = with_download_cache_meta(dict(cached), True)
     result["path"] = str(cached_path)
     write_json(result_path, result)
@@ -1827,6 +1833,17 @@ def run_download_job(job_id: str) -> None:
                         str(result_path),
                     ],
                 )
+                result = read_json(result_path)
+                filename = safe_filename(str(result.get("filename") or "")) if isinstance(result, dict) else ""
+                if filename and Path(filename).suffix.lower() in AUDIO_ONLY_SUFFIXES:
+                    audio_path = VIDEOS_DIR / filename
+                    audio_path.unlink(missing_ok=True)
+                    crawler_error = RuntimeError(f"original downloader returned audio-only media: {filename}")
+                    append_download_log(job, f"删除无效音频文件并降级到 SociaVault video-info：{filename}")
+                    if not try_sociavault_video_info_download(job, result_path):
+                        raise RuntimeError(
+                            "视频下载失败：原下载器只返回音频文件，SociaVault video-info 也没有可用下载地址。"
+                        ) from crawler_error
             except Exception as exc:
                 crawler_error = exc
                 append_download_log(job, f"原下载器失败，最后降级调用 SociaVault video-info：{exc}")
@@ -3201,6 +3218,8 @@ class Handler(BaseHTTPRequestHandler):
             files = []
             for path in sorted(VIDEOS_DIR.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True):
                 if path.is_file():
+                    if path.suffix.lower() not in ANALYZER_VIDEO_SUFFIXES:
+                        continue
                     name = path.name
                     if is_hidden_from_analyzer(name):
                         continue
