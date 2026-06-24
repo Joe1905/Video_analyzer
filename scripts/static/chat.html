@@ -43,6 +43,12 @@ body.report-banner-visible .chat-shell{height:calc(100vh - 112px)}
 .msg.assistant .bubble code{background:var(--border2);border:1px solid var(--border);border-radius:5px;padding:1px 5px;font-size:12px}
 .msg.assistant .bubble ul,.msg.assistant .bubble ol{margin:8px 0;padding-left:22px}
 .msg.assistant .bubble li{margin:3px 0}
+.msg-actions{display:flex;align-items:center;gap:6px;margin-top:6px;padding-left:4px}
+.msg-actions button{color:var(--text3)}
+.msg-actions button:hover{color:var(--brand)}
+.msg-action-status{font-size:11px;color:var(--text3);min-height:18px}
+.msg-action-status.err{color:var(--red)}
+.msg-action-status.ok{color:var(--green)}
 .md-table-wrap{overflow-x:auto;margin:10px 0;border:1px solid var(--border);border-radius:8px;background:#fff}
 .md-table{width:100%;border-collapse:collapse;font-size:13px;min-width:420px}
 .md-table th,.md-table td{border-bottom:1px solid var(--border);border-right:1px solid var(--border);padding:8px 10px;text-align:left;vertical-align:top}
@@ -234,7 +240,91 @@ function subscribeSSE(sid,am){
     loadSessions();
   };
 }
-function renderMsg(m,scroll=true){var id=String(m.id||"");var clientId=String(m._clientId||id);var div=null;if(id)div=msgBox.querySelector(`[data-msg-id="${CSS.escape(id)}"]`);if(!div&&clientId)div=msgBox.querySelector(`[data-client-msg-id="${CSS.escape(clientId)}"]`);if(!div){div=document.createElement("div");msgBox.appendChild(div)}if(id)div.dataset.msgId=id;if(clientId)div.dataset.clientMsgId=clientId;div.className="msg "+m.role;var body="";if(m.role==="user"){body='<div class="bubble">'+esc(m.content)+'</div>'}else if(m.role==="assistant"){var c=m.content||"";if(m.status==="pending")c="思考中...";else c=md(c);body=renderToolCards(m)+'<div class="bubble">'+c+'</div>'}var ts='';if(m.created_at){var d=new Date(m.created_at*1000);ts='<div class="time">'+d.toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false})+'</div>'}body+=ts;div.innerHTML=body;if(scroll)msgBox.scrollTop=msgBox.scrollHeight}
+function chatPdfName(){
+  const d=new Date(),pad=n=>String(n).padStart(2,"0");
+  return `chat-reply-${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}.pdf`;
+}
+async function copyChatReply(text,statusEl){
+  try{
+    if(navigator.clipboard&&window.isSecureContext){
+      await navigator.clipboard.writeText(text);
+    }else{
+      const ta=document.createElement("textarea");
+      ta.value=text;ta.setAttribute("readonly","");
+      ta.style.position="fixed";ta.style.left="-9999px";
+      document.body.appendChild(ta);ta.select();document.execCommand("copy");ta.remove();
+    }
+    statusEl.textContent="已复制";statusEl.className="msg-action-status ok";
+  }catch(e){
+    statusEl.textContent="复制失败";statusEl.className="msg-action-status err";
+  }
+}
+async function exportChatReplyPdf(messageId,button,statusEl){
+  if(!messageId)return;
+  const original=button.textContent;
+  button.disabled=true;button.textContent="生成中";
+  statusEl.textContent="";statusEl.className="msg-action-status";
+  try{
+    const r=await fetch("/api/chat/export-pdf",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:S.sessionId,messageId})});
+    if(!r.ok){
+      let msg="PDF 导出失败";
+      try{const p=await r.json();msg=p.error||msg}catch(e){}
+      throw new Error(msg);
+    }
+    const blob=await r.blob();
+    const href=URL.createObjectURL(blob),link=document.createElement("a");
+    link.href=href;link.download=chatPdfName();
+    document.body.appendChild(link);link.click();link.remove();URL.revokeObjectURL(href);
+    statusEl.textContent="已下载";statusEl.className="msg-action-status ok";
+  }catch(e){
+    statusEl.textContent=e.message||"PDF 导出失败";statusEl.className="msg-action-status err";
+  }finally{
+    button.disabled=false;button.textContent=original;
+  }
+}
+function bindMessageActions(div,m){
+  const actions=div.querySelector(".msg-actions");
+  if(!actions)return;
+  const statusEl=actions.querySelector(".msg-action-status");
+  const copyBtn=actions.querySelector(".copy-reply");
+  const pdfBtn=actions.querySelector(".export-reply-pdf");
+  if(copyBtn)copyBtn.onclick=()=>copyChatReply(String(m.content||""),statusEl);
+  if(pdfBtn)pdfBtn.onclick=()=>exportChatReplyPdf(String(m.id||""),pdfBtn,statusEl);
+}
+function isFinishedAssistant(m){
+  const status=String(m&&m.status||"done").toLowerCase();
+  return m&&m.role==="assistant"&&String(m.content||"").trim()&&status!=="pending"&&status!=="error";
+}
+function renderMsg(m,scroll=true){
+  var id=String(m.id||""),clientId=String(m._clientId||id),div=null;
+  if(id)div=msgBox.querySelector(`[data-msg-id="${CSS.escape(id)}"]`);
+  if(!div&&clientId)div=msgBox.querySelector(`[data-client-msg-id="${CSS.escape(clientId)}"]`);
+  if(!div){div=document.createElement("div");msgBox.appendChild(div)}
+  if(id)div.dataset.msgId=id;
+  if(clientId)div.dataset.clientMsgId=clientId;
+  div.className="msg "+m.role;
+  var body="";
+  if(m.role==="user"){
+    body='<div class="bubble">'+esc(m.content)+'</div>';
+  }else if(m.role==="assistant"){
+    var c=m.content||"";
+    if(m.status==="pending")c="思考中...";
+    else c=md(c);
+    body=renderToolCards(m)+'<div class="bubble">'+c+'</div>';
+    if(isFinishedAssistant(m)){
+      body+='<div class="msg-actions"><button type="button" class="ghost sm export-reply-pdf">导出 PDF</button><button type="button" class="ghost sm copy-reply">复制</button><span class="msg-action-status" aria-live="polite"></span></div>';
+    }
+  }
+  var ts="";
+  if(m.created_at){
+    var d=new Date(m.created_at*1000);
+    ts='<div class="time">'+d.toLocaleString("zh-CN",{timeZone:"Asia/Shanghai",hour12:false})+'</div>';
+  }
+  body+=ts;
+  div.innerHTML=body;
+  bindMessageActions(div,m);
+  if(scroll)msgBox.scrollTop=msgBox.scrollHeight;
+}
 async function send(){
   const rawText=input.value.trim();
   if(!rawText||S.loading)return;

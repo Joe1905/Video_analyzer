@@ -919,6 +919,206 @@ body{{margin:0;background:#f6f8fb;color:#111827;font-family:"Noto Sans CJK SC","
 </html>"""
 
 
+def chat_split_table_row(line: str) -> list[str]:
+    text = str(line or "").strip()
+    if text.startswith("|"):
+        text = text[1:]
+    if text.endswith("|"):
+        text = text[:-1]
+    return [cell.strip() for cell in text.split("|")]
+
+
+def chat_is_table_separator(line: str) -> bool:
+    cells = chat_split_table_row(line)
+    return len(cells) > 1 and all(re.fullmatch(r":?-{3,}:?", cell or "") for cell in cells)
+
+
+def chat_inline_markdown(text: str) -> str:
+    escaped = html_escape(str(text or ""))
+    tokens: list[str] = []
+
+    def keep(html: str) -> str:
+        token = f"\x00{len(tokens)}\x00"
+        tokens.append(html)
+        return token
+
+    escaped = re.sub(
+        r"`([^`]+)`",
+        lambda match: keep(f"<code>{match.group(1)}</code>"),
+        escaped,
+    )
+    escaped = re.sub(
+        r"\[([^\]]+)\]\((https?://[^)\s]+)\)",
+        lambda match: keep(
+            f'<a href="{html_escape(match.group(2), quote=True)}">{match.group(1)}</a>'
+        ),
+        escaped,
+    )
+
+    def auto_link(match: re.Match[str]) -> str:
+        url = match.group(0)
+        tail = ""
+        while url and url[-1] in "),.;:!?，。；：！？）":
+            tail = url[-1] + tail
+            url = url[:-1]
+        safe = html_escape(url, quote=True)
+        return f'<a href="{safe}">{url}</a>{tail}'
+
+    escaped = re.sub(r"https?://[^\s<]+", auto_link, escaped)
+    escaped = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", escaped)
+    escaped = re.sub(r"(^|[^\*])\*([^\*]+)\*", r"\1<em>\2</em>", escaped)
+    return re.sub(r"\x00(\d+)\x00", lambda match: tokens[int(match.group(1))], escaped)
+
+
+def chat_render_table(lines: list[str], start: int) -> tuple[str, int]:
+    headers = chat_split_table_row(lines[start])
+    index = start + 2
+    rows: list[list[str]] = []
+    while index < len(lines) and "|" in lines[index] and lines[index].strip():
+        rows.append(chat_split_table_row(lines[index]))
+        index += 1
+    head_html = "".join(f"<th>{chat_inline_markdown(header)}</th>" for header in headers)
+    body_parts = []
+    for row in rows:
+        body_parts.append(
+            "<tr>"
+            + "".join(
+                f"<td>{chat_inline_markdown(row[col] if col < len(row) else '')}</td>"
+                for col in range(len(headers))
+            )
+            + "</tr>"
+        )
+    html = (
+        '<div class="md-table-wrap"><table class="md-table"><thead><tr>'
+        + head_html
+        + "</tr></thead><tbody>"
+        + "".join(body_parts)
+        + "</tbody></table></div>"
+    )
+    return html, index
+
+
+def chat_markdown_to_html(markdown: str) -> str:
+    lines = str(markdown or "").replace("\r\n", "\n").split("\n")
+    out: list[str] = []
+    index = 0
+    in_code = False
+    code_lang = ""
+    code_lines: list[str] = []
+
+    while index < len(lines):
+        line = lines[index]
+        stripped = line.strip()
+        fence = re.match(r"^```([\w+-]*)\s*$", stripped)
+        if fence:
+            if in_code:
+                lang_class = f' class="language-{html_escape(code_lang, quote=True)}"' if code_lang else ""
+                out.append(f"<pre><code{lang_class}>{html_escape(chr(10).join(code_lines))}</code></pre>")
+                in_code = False
+                code_lang = ""
+                code_lines = []
+            else:
+                in_code = True
+                code_lang = fence.group(1)
+                code_lines = []
+            index += 1
+            continue
+        if in_code:
+            code_lines.append(line)
+            index += 1
+            continue
+        if not stripped:
+            index += 1
+            continue
+        if index + 1 < len(lines) and "|" in line and chat_is_table_separator(lines[index + 1]):
+            table_html, index = chat_render_table(lines, index)
+            out.append(table_html)
+            continue
+        heading = re.match(r"^(#{1,3})\s+(.+)$", stripped)
+        if heading:
+            level = len(heading.group(1))
+            out.append(f"<h{level}>{chat_inline_markdown(heading.group(2))}</h{level}>")
+            index += 1
+            continue
+        if re.fullmatch(r"---+", stripped):
+            out.append("<hr>")
+            index += 1
+            continue
+        if re.match(r"^[-*]\s+", stripped):
+            items: list[str] = []
+            while index < len(lines) and re.match(r"^[-*]\s+", lines[index].strip()):
+                item = re.sub(r"^[-*]\s+", "", lines[index].strip())
+                items.append(f"<li>{chat_inline_markdown(item)}</li>")
+                index += 1
+            out.append("<ul>" + "".join(items) + "</ul>")
+            continue
+        if re.match(r"^\d+[.)]\s+", stripped):
+            items = []
+            while index < len(lines) and re.match(r"^\d+[.)]\s+", lines[index].strip()):
+                item = re.sub(r"^\d+[.)]\s+", "", lines[index].strip())
+                items.append(f"<li>{chat_inline_markdown(item)}</li>")
+                index += 1
+            out.append("<ol>" + "".join(items) + "</ol>")
+            continue
+
+        paragraph = [stripped]
+        index += 1
+        while index < len(lines):
+            next_line = lines[index]
+            next_trim = next_line.strip()
+            if (
+                not next_trim
+                or re.match(r"^(#{1,3})\s+", next_trim)
+                or re.match(r"^[-*]\s+", next_trim)
+                or re.match(r"^\d+[.)]\s+", next_trim)
+                or re.match(r"^```", next_trim)
+                or (index + 1 < len(lines) and "|" in next_line and chat_is_table_separator(lines[index + 1]))
+            ):
+                break
+            paragraph.append(next_trim)
+            index += 1
+        out.append("<p>" + "<br>".join(chat_inline_markdown(part) for part in paragraph) + "</p>")
+
+    if in_code:
+        lang_class = f' class="language-{html_escape(code_lang, quote=True)}"' if code_lang else ""
+        out.append(f"<pre><code{lang_class}>{html_escape(chr(10).join(code_lines))}</code></pre>")
+    return "".join(out)
+
+
+def build_chat_reply_pdf_html(message: Message) -> str:
+    created = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(message.created_at or time.time())))
+    exported = time.strftime("%Y-%m-%d %H:%M:%S")
+    content_html = chat_markdown_to_html(message.content)
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+body{{margin:0;background:#f6f8fb;color:#111827;font-family:"Noto Sans CJK SC","Microsoft YaHei",Arial,sans-serif}}
+.page{{padding:34px}}.doc-head{{margin-bottom:18px;padding-bottom:14px;border-bottom:2px solid #2563eb}}
+.doc-head h1{{margin:0;font-size:26px}}.doc-head p{{margin:8px 0 0;color:#64748b;font-size:12px}}
+.reply{{border:1px solid #d6deea;border-radius:12px;background:#fff;padding:20px 22px;line-height:1.75;font-size:14px}}
+.reply h1,.reply h2,.reply h3{{margin:4px 0 12px;line-height:1.35}}.reply h1{{font-size:24px}}.reply h2{{font-size:20px}}.reply h3{{font-size:17px}}
+.reply p{{margin:10px 0}}.reply ul,.reply ol{{margin:10px 0;padding-left:24px}}.reply li{{margin:4px 0}}
+.reply a{{color:#2563eb;text-decoration:none;font-weight:600;word-break:break-all}}
+.reply code{{background:#f1f5f9;border:1px solid #e2e8f0;border-radius:5px;padding:1px 5px;font-size:12px}}
+.reply pre{{margin:12px 0;padding:12px 14px;border-radius:8px;background:#0f172a;color:#e2e8f0;white-space:pre-wrap;word-break:break-word}}
+.reply pre code{{background:transparent;border:0;color:inherit;padding:0}}
+.reply hr{{border:0;border-top:1px solid #d6deea;margin:16px 0}}
+.md-table-wrap{{overflow:hidden;margin:12px 0;border:1px solid #d6deea;border-radius:8px}}
+.md-table{{width:100%;border-collapse:collapse;font-size:13px}}.md-table th,.md-table td{{border-bottom:1px solid #d6deea;border-right:1px solid #d6deea;padding:8px 10px;text-align:left;vertical-align:top}}
+.md-table th:last-child,.md-table td:last-child{{border-right:0}}.md-table tr:last-child td{{border-bottom:0}}.md-table th{{background:#f8fafc;font-weight:800}}
+</style>
+</head>
+<body>
+<main class="page">
+<div class="doc-head"><h1>AI 回复导出</h1><p>消息时间：{html_escape(created)} · 导出时间：{html_escape(exported)}</p></div>
+<article class="reply">{content_html}</article>
+</main>
+</body>
+</html>"""
+
+
 def render_pdf_bytes(html: str) -> bytes:
     from playwright.sync_api import sync_playwright
 
@@ -3241,6 +3441,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_download()
         if parsed.path == "/api/chat/ask":
             return self.handle_chat_ask()
+        if parsed.path == "/api/chat/export-pdf":
+            return self.handle_chat_export_pdf()
         if parsed.path == "/api/chat/tool-config":
             return self.handle_chat_tool_config()
         if parsed.path == "/api/shop-extract":
@@ -3705,6 +3907,45 @@ class Handler(BaseHTTPRequestHandler):
             "userMessage": {"id": user_msg.id, "role": "user", "content": user_msg.content, "status": user_msg.status, "created_at": user_msg.created_at},
             "message": {"id": assistant_msg.id, "role": "assistant", "content": "", "status": "pending"},
         })
+
+    def handle_chat_export_pdf(self) -> None:
+        content_length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(content_length)
+        try:
+            payload = json.loads(body.decode("utf-8") or "{}")
+            session_id = str(payload.get("sessionId", "")).strip()
+            message_id = str(payload.get("messageId", "")).strip()
+            if not session_id or not message_id:
+                raise ValueError("sessionId and messageId are required")
+        except (json.JSONDecodeError, ValueError) as exc:
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+
+        session = chat_store.get_session(session_id)
+        if not session:
+            return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Session not found"})
+
+        message = next((m for m in session.messages if m.id == message_id), None)
+        if not message:
+            return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Message not found"})
+        if message.role != "assistant":
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Only assistant replies can be exported"})
+        if str(message.status or "done").lower() in {"pending", "error"} or not str(message.content or "").strip():
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Assistant reply is not ready"})
+
+        try:
+            html = build_chat_reply_pdf_html(message)
+            pdf = render_pdf_bytes(html)
+        except Exception as exc:
+            return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"PDF export failed: {exc}"})
+
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        return binary_response(
+            self,
+            HTTPStatus.OK,
+            pdf,
+            "application/pdf",
+            filename=f"chat-reply-{stamp}.pdf",
+        )
 
     def handle_chat_tool_config(self) -> None:
         content_length = int(self.headers.get("Content-Length", "0"))
