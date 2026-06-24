@@ -95,6 +95,7 @@ ASIN_RE = re.compile(r"^[A-Z0-9]{10}$", re.IGNORECASE)
 PROMPT_FILE = DATA_DIR / "analysis_prompt.txt"
 FEEDBACK_PROMPT_FILE = DATA_DIR / "feedback_prompt.txt"
 LEGACY_PROMPT_FILE = ROOT / "analysis_prompt.txt"
+ANALYZER_MEDIA_FLAGS_FILE = DATA_DIR / "analyzer_media_flags.json"
 MAX_PROMPT_CHARS = 50000
 DEFAULT_ANALYSIS_PROMPT = (
     "Analyze this short video directly. Return strict JSON only, no Markdown. "
@@ -765,6 +766,85 @@ def write_json(path: Path, payload: Any) -> None:
         file.write("\n")
 
 
+def _media_flag_key(path: Path) -> str:
+    try:
+        return str(path.relative_to(ROOT)).replace("\\", "/")
+    except ValueError:
+        return path.name
+
+
+def _read_media_flags() -> dict[str, Any]:
+    data = read_json(ANALYZER_MEDIA_FLAGS_FILE)
+    return data if isinstance(data, dict) else {}
+
+
+def _write_media_flags(flags: dict[str, Any]) -> None:
+    write_json(ANALYZER_MEDIA_FLAGS_FILE, flags)
+
+
+def _probe_analyzer_video(path: Path) -> tuple[bool, str]:
+    if path.suffix.lower() not in ANALYZER_VIDEO_SUFFIXES:
+        return False, f"unsupported suffix {path.suffix.lower()}"
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        return False, "ffprobe unavailable"
+    result = subprocess.run(
+        [ffprobe, "-v", "error", "-print_format", "json", "-show_streams", str(path)],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        cwd=ROOT,
+    )
+    if result.returncode != 0:
+        return False, (result.stderr or result.stdout or f"ffprobe exit {result.returncode}")[:300]
+    try:
+        payload = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        return False, f"ffprobe json error: {exc}"
+    streams = payload.get("streams") if isinstance(payload, dict) else []
+    has_video = any(isinstance(stream, dict) and stream.get("codec_type") == "video" for stream in streams)
+    return (True, "") if has_video else (False, "no video stream")
+
+
+def analyzer_media_is_valid(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    if path.suffix.lower() not in ANALYZER_VIDEO_SUFFIXES:
+        return False
+    stat = path.stat()
+    key = _media_flag_key(path)
+    flags = _read_media_flags()
+    cached = flags.get(key)
+    if (
+        isinstance(cached, dict)
+        and cached.get("size") == stat.st_size
+        and abs(float(cached.get("mtime") or 0) - stat.st_mtime) < 0.001
+    ):
+        return bool(cached.get("valid"))
+    valid, reason = _probe_analyzer_video(path)
+    flags[key] = {
+        "valid": valid,
+        "reason": reason,
+        "size": stat.st_size,
+        "mtime": stat.st_mtime,
+        "checked_at": time.time(),
+    }
+    _write_media_flags(flags)
+    return valid
+
+
+def ensure_analyzer_media_or_delete(path: Path) -> None:
+    if analyzer_media_is_valid(path):
+        return
+    flags = _read_media_flags()
+    reason = ""
+    cached = flags.get(_media_flag_key(path))
+    if isinstance(cached, dict):
+        reason = str(cached.get("reason") or "")
+    path.unlink(missing_ok=True)
+    raise RuntimeError(f"invalid analyzer video: {reason or path.name}")
+
+
 def clean_report_value(value: Any) -> str:
     if value is None:
         return ""
@@ -1344,6 +1424,7 @@ def _download_direct_media(job: DownloadJob, media_url: str, source_url: str, pa
             size = temp_target.stat().st_size
             raise RuntimeError(f"SociaVault media file is too small: {size} bytes")
         temp_target.replace(target)
+        ensure_analyzer_media_or_delete(target)
     except Exception:
         temp_target.unlink(missing_ok=True)
         raise
@@ -1378,6 +1459,10 @@ def try_cached_download_result(job: DownloadJob, result_path: Path) -> bool:
     if cached_path.suffix.lower() in AUDIO_ONLY_SUFFIXES:
         cached_path.unlink(missing_ok=True)
         append_download_log(job, f"删除缓存命中的无效音频文件，重新下载：{filename}")
+        return False
+    if not analyzer_media_is_valid(cached_path):
+        cached_path.unlink(missing_ok=True)
+        append_download_log(job, f"删除缓存命中的无效视频文件，重新下载：{filename}")
         return False
     result = with_download_cache_meta(dict(cached), True)
     result["path"] = str(cached_path)
@@ -1844,6 +1929,16 @@ def run_download_job(job_id: str) -> None:
                         raise RuntimeError(
                             "视频下载失败：原下载器只返回音频文件，SociaVault video-info 也没有可用下载地址。"
                         ) from crawler_error
+                elif filename:
+                    try:
+                        ensure_analyzer_media_or_delete(VIDEOS_DIR / filename)
+                    except Exception as exc:
+                        crawler_error = exc
+                        append_download_log(job, f"删除无效视频文件并降级到 SociaVault video-info：{filename}，原因：{exc}")
+                        if not try_sociavault_video_info_download(job, result_path):
+                            raise RuntimeError(
+                                "视频下载失败：原下载器返回的文件不可分析，SociaVault video-info 也没有可用下载地址。"
+                            ) from crawler_error
             except Exception as exc:
                 crawler_error = exc
                 append_download_log(job, f"原下载器失败，最后降级调用 SociaVault video-info：{exc}")
@@ -3220,6 +3315,8 @@ class Handler(BaseHTTPRequestHandler):
                 if path.is_file():
                     if path.suffix.lower() not in ANALYZER_VIDEO_SUFFIXES:
                         continue
+                    if not analyzer_media_is_valid(path):
+                        continue
                     name = path.name
                     if is_hidden_from_analyzer(name):
                         continue
@@ -3683,6 +3780,7 @@ class Handler(BaseHTTPRequestHandler):
                 target = VIDEOS_DIR / filename
                 with target.open("wb") as file:
                     shutil.copyfileobj(file_item.file, file)
+                ensure_analyzer_media_or_delete(target)
                 files.append({"filename": filename, "size": target.stat().st_size})
                 start_social_context_job(filename, generate_insights=False)
             except Exception as exc:

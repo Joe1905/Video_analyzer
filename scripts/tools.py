@@ -313,8 +313,7 @@ def _ensure_analyzer_video(data: dict[str, Any], source_url: str) -> dict[str, A
         raise RuntimeError(f"downloaded file missing: {data.get('filename') or data.get('path')}")
     probe = _probe_media(path)
     if not probe.get("ok"):
-        if path.suffix.lower() in AUDIO_ONLY_SUFFIXES:
-            path.unlink(missing_ok=True)
+        path.unlink(missing_ok=True)
         raise RuntimeError(f"downloaded file is not an analyzable video: {probe.get('reason')}")
     if _needs_h264_transcode(path, probe):
         original = path
