@@ -919,10 +919,11 @@ def _collect_hot_video_candidates(
     topic_min_views = max(0, _to_int(os.getenv("HOT_VIDEO_TOPIC_MIN_PLAY_COUNT", "5000")))
     stream_min_views = max(0, _to_int(os.getenv("HOT_VIDEO_STREAM_MIN_PLAY_COUNT", "10000")))
 
-    def collect_from(endpoint: str, params: dict[str, Any], label: str, min_play_count: int, bucket: str) -> None:
+    def collect_from(endpoint: str, params: dict[str, Any], label: str, min_play_count: int, bucket: str) -> int:
         _progress_payload(report_date, "running", "collecting", 6, f"Collecting source: {label}", counts)
         cache_policy = os.getenv("HOT_VIDEO_SOURCE_CACHE_POLICY", "record_only").strip() or "record_only"
         payload = call_api(api_key, api_base, endpoint, params, api_timeout, cache_policy=cache_policy)
+        before_count = len(candidates)
         for rank, node in enumerate(_iter_video_nodes(payload), start=1):
             counts["collected"] += 1
             if _is_photo_mode_post(node):
@@ -965,26 +966,35 @@ def _collect_hot_video_candidates(
             if key not in candidates or item["hot_score"] > candidates[key]["hot_score"]:
                 candidates[key] = item
         _progress_payload(report_date, "running", "filtering", 18, f"{label} complete, valid candidates: {len(candidates)}", counts)
+        return len(candidates) - before_count
 
     topic_fetch = max(target_count * 2, 20)
     for keyword in topic_keywords:
+        before_topic = len(candidates)
         try:
-            collect_from(
-                "search-top",
-                {"query": keyword, "region": region, "count": topic_fetch},
-                f"topic-search:{keyword}",
-                topic_min_views,
-                "topic",
-            )
+            for endpoint, params, label in _topic_source_requests(keyword, region, topic_fetch, recency_days, fallback=False):
+                collect_from(endpoint, params, label, topic_min_views, "topic")
         except Exception as exc:
             source_errors.append(f"topic-search:{keyword}: {exc}")
+        if len(candidates) > before_topic:
+            continue
+        counts["topic_fallback_sources"] = counts.get("topic_fallback_sources", 0) + 1
+        for endpoint, params, label in _topic_source_requests(keyword, region, topic_fetch, recency_days, fallback=True):
+            try:
+                collect_from(endpoint, params, label, topic_min_views, "topic")
+                if len(candidates) > before_topic:
+                    break
+            except Exception as exc:
+                source_errors.append(f"{label}: {exc}")
 
     page = 1
     while len(candidates) < target_count and page <= max_pages:
         remaining = target_count - len(candidates)
-        fetch_count = max(20, remaining * 3)
+        total_fetch = max(20, remaining * 3)
+        popular_source_count = max(1, len(_split_csv_env("HOT_VIDEO_POPULAR_SORTS", "views,likes")))
+        per_source_count = max(1, (total_fetch + popular_source_count - 1) // popular_source_count)
         page_success = False
-        for endpoint, params, label in _trending_source_requests(region, fetch_count, page):
+        for endpoint, params, label in _popular_source_requests(region, per_source_count, page, recency_days):
             try:
                 collect_from(endpoint, params, label, stream_min_views, "stream")
                 page_success = True
@@ -995,13 +1005,11 @@ def _collect_hot_video_candidates(
         page += 1
 
     page = 1
-    popular_source_count = max(1, len(_split_csv_env("HOT_VIDEO_POPULAR_SORTS", "views,likes")))
     while len(candidates) < target_count and page <= max_pages:
         remaining = target_count - len(candidates)
-        total_fetch = max(20, remaining * 3)
-        per_source_count = max(1, (total_fetch + popular_source_count - 1) // popular_source_count)
+        fetch_count = max(20, remaining * 3)
         page_success = False
-        for endpoint, params, label in _popular_source_requests(region, per_source_count, page, recency_days):
+        for endpoint, params, label in _trending_source_requests(region, fetch_count, page):
             try:
                 collect_from(endpoint, params, label, stream_min_views, "stream")
                 page_success = True
@@ -1327,6 +1335,41 @@ def _popular_source_requests(region: str, count: int, page: int, recency_days: i
     return requests
 
 
+def _topic_source_requests(
+    keyword: str,
+    region: str,
+    count: int,
+    recency_days: int,
+    fallback: bool = False,
+) -> list[tuple[str, dict[str, Any], str]]:
+    topic = str(keyword or "").strip()
+    if not topic:
+        return []
+    common = {"query": topic, "region": region, "count": count, "days": recency_days}
+    if not fallback:
+        params = dict(common)
+        params["sort_by"] = os.getenv("HOT_VIDEO_TOPIC_SORT_BY", "create_time").strip() or "create_time"
+        return [("search-top", params, f"topic-search-top:{topic}")]
+    requests: list[tuple[str, dict[str, Any], str]] = [
+        ("search-keyword", dict(common), f"topic-search-keyword:{topic}"),
+        (
+            "search-top",
+            {**common, "page": 2, "sort_by": os.getenv("HOT_VIDEO_TOPIC_SORT_BY", "create_time").strip() or "create_time"},
+            f"topic-search-top:{topic}:p2",
+        ),
+    ]
+    hashtag = re.sub(r"^\s*#", "", topic).strip()
+    if hashtag and " " not in hashtag:
+        requests.append(
+            (
+                "search-hashtag",
+                {"hashtag": hashtag, "region": region, "count": count, "days": recency_days},
+                f"topic-search-hashtag:{hashtag}",
+            )
+        )
+    return requests
+
+
 def _trending_source_requests(region: str, count: int, page: int) -> list[tuple[str, dict[str, Any], str]]:
     params = {"region": region, "count": count}
     if page > 1:
@@ -1347,9 +1390,9 @@ def _legacy_source_requests(region: str, count: int) -> list[tuple[str, dict[str
 def _source_requests(region: str, count: int, topic_keywords: list[str] | None = None) -> list[tuple[str, dict[str, Any], str]]:
     requests: list[tuple[str, dict[str, Any], str]] = []
     for keyword in (topic_keywords or _split_csv_env("HOT_VIDEO_KEYWORDS", "AI toys")):
-        requests.append(("search-top", {"query": keyword, "region": region, "count": count}, f"topic-search:{keyword}"))
-    requests.extend(_trending_source_requests(region, count, 1))
+        requests.extend(_topic_source_requests(keyword, region, count, _recent_window_days(), fallback=False))
     requests.extend(_popular_source_requests(region, max(1, count // 2), 1, _recent_window_days()))
+    requests.extend(_trending_source_requests(region, count, 1))
     return requests
 
 
@@ -1363,11 +1406,19 @@ def _rank_with_topic_guarantees(
     sorted_candidates = sorted(candidates, key=lambda item: item["hot_score"], reverse=True)
     if topic_keywords and target_count >= len(topic_keywords):
         for keyword in topic_keywords:
-            label = f"topic-search:{keyword}"
+            label_prefix = "topic-search-"
+            topic_names = {str(keyword or "").strip(), re.sub(r"^\s*#", "", str(keyword or "")).strip()}
+            topic_names.discard("")
             topic_items = [
                 item
                 for item in sorted_candidates
-                if item.get("selection_bucket") == "topic" and item.get("source_label") == label
+                if item.get("selection_bucket") == "topic"
+                and str(item.get("source_label") or "").startswith(label_prefix)
+                and any(
+                    str(item.get("source_label") or "").endswith(f":{name}")
+                    or f":{name}:" in str(item.get("source_label") or "")
+                    for name in topic_names
+                )
             ]
             if not topic_items:
                 continue
@@ -1916,6 +1967,7 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
         "skipped_low_views_topic": 0,
         "skipped_low_views_stream": 0,
         "skipped_duplicate_report": 0,
+        "topic_fallback_sources": 0,
         "analyzed_success": 0,
         "analyzed_failed": 0,
     }
