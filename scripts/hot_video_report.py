@@ -1360,6 +1360,24 @@ def get_report(report_date: str | None = None, include_raw: bool = False, detail
     return report
 
 
+def _translate_analysis_payload(analysis: Any) -> Any:
+    if not analysis:
+        raise ValueError("analysis not found for report video")
+
+    from translate_analysis import DEFAULT_BATCH_CHARS, translate_in_batches
+
+    api_key = os.getenv("DEEPSEEK_API_KEY")
+    if not api_key:
+        raise ValueError("DEEPSEEK_API_KEY is required for translation")
+    return translate_in_batches(
+        api_key=api_key,
+        api_url=os.getenv("DEEPSEEK_API_URL", DEFAULT_API_URL),
+        model=os.getenv("DEEPSEEK_MODEL", DEFAULT_MODEL),
+        payload=analysis,
+        max_chars=int(os.getenv("TRANSLATION_BATCH_CHARS", str(DEFAULT_BATCH_CHARS))),
+    )
+
+
 def translate_report_video_analysis(report_date: str, platform: str, video_id: str) -> dict[str, Any]:
     date = str(report_date or today_key()).strip()
     platform = str(platform or "").strip()
@@ -1381,21 +1399,7 @@ def translate_report_video_analysis(report_date: str, platform: str, video_id: s
         cached = _json_loads(row[1], None)
         if cached:
             return {"status": "cached", "report_date": date, "platform": platform, "video_id": video_id, "analysis_zh": cached}
-        if not analysis:
-            raise ValueError("analysis not found for report video")
-
-        from translate_analysis import DEFAULT_BATCH_CHARS, translate_in_batches
-
-        api_key = os.getenv("DEEPSEEK_API_KEY")
-        if not api_key:
-            raise ValueError("DEEPSEEK_API_KEY is required for translation")
-        translated = translate_in_batches(
-            api_key=api_key,
-            api_url=os.getenv("DEEPSEEK_API_URL", DEFAULT_API_URL),
-            model=os.getenv("DEEPSEEK_MODEL", DEFAULT_MODEL),
-            payload=analysis,
-            max_chars=int(os.getenv("TRANSLATION_BATCH_CHARS", str(DEFAULT_BATCH_CHARS))),
-        )
+        translated = _translate_analysis_payload(analysis)
         conn.execute(
             """
             UPDATE hot_report_videos
@@ -1833,6 +1837,12 @@ def _process_video(conn: sqlite3.Connection, report_date: str, item: dict[str, A
             "analysis": analysis,
         }
         social_context, insight = _ensure_video_insight(conn, report_date, platform, video_id, video_for_insight)
+        analysis_zh = None
+        if os.getenv("REPORT_AUTO_TRANSLATE_ANALYSIS", "1").strip().lower() not in {"0", "false", "no", "off"}:
+            try:
+                analysis_zh = _translate_analysis_payload(analysis)
+            except Exception as translate_exc:
+                print(f"[hot-report] analysis translation failed for {platform}:{video_id}: {translate_exc}")
         conn.execute(
             """
             UPDATE hot_video_master
@@ -1849,7 +1859,8 @@ def _process_video(conn: sqlite3.Connection, report_date: str, item: dict[str, A
             UPDATE hot_report_videos
             SET process_status = 'complete', process_error = NULL, local_filename = ?, extraction_dir = ?,
                 cover_url = COALESCE(NULLIF(?, ''), cover_url),
-                analysis_json = ?, audit_json = ?, social_context_json = ?, insight_json = ?,
+                analysis_json = ?, analysis_zh_json = COALESCE(?, analysis_zh_json),
+                audit_json = ?, social_context_json = ?, insight_json = ?,
                 insight_generated_at = COALESCE(insight_generated_at, ?), updated_at = ?
             WHERE report_date = ? AND platform = ? AND video_id = ?
             """,
@@ -1858,6 +1869,7 @@ def _process_video(conn: sqlite3.Connection, report_date: str, item: dict[str, A
                 extraction_dir,
                 cover_asset,
                 json.dumps(analysis, ensure_ascii=False, sort_keys=True),
+                json.dumps(analysis_zh, ensure_ascii=False, sort_keys=True) if analysis_zh else None,
                 None,
                 json.dumps(social_context, ensure_ascii=False, sort_keys=True, default=str),
                 json.dumps(insight, ensure_ascii=False, sort_keys=True, default=str),
