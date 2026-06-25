@@ -113,6 +113,7 @@ def _connect() -> sqlite3.Connection:
             local_filename TEXT,
             extraction_dir TEXT,
             analysis_json TEXT,
+            analysis_zh_json TEXT,
             audit_json TEXT,
             social_context_json TEXT,
             insight_json TEXT,
@@ -163,6 +164,7 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
     add_missing(
         "hot_report_videos",
         {
+            "analysis_zh_json": "TEXT",
             "social_context_json": "TEXT",
             "insight_json": "TEXT",
             "insight_generated_at": "REAL",
@@ -1111,6 +1113,7 @@ def _row_to_video(row: sqlite3.Row | tuple[Any, ...], include_raw: bool = False)
         "process_status",
         "process_error",
         "analysis_json",
+        "analysis_zh_json",
         "audit_json",
         "social_context_json",
         "insight_json",
@@ -1122,6 +1125,7 @@ def _row_to_video(row: sqlite3.Row | tuple[Any, ...], include_raw: bool = False)
     data["metrics"] = _json_loads(data.pop("metrics_json"), {})
     raw = _json_loads(data.pop("raw_json"), {})
     data["analysis"] = _json_loads(data.pop("analysis_json"), None)
+    data["analysis_zh"] = _json_loads(data.pop("analysis_zh_json"), None)
     data["audit_result"] = _json_loads(data.pop("audit_json"), None)
     data["social_context"] = _json_loads(data.pop("social_context_json"), None)
     data["insight"] = _json_loads(data.pop("insight_json"), None)
@@ -1264,7 +1268,7 @@ def get_report(report_date: str | None = None, include_raw: bool = False, detail
                        COALESCE(rv.local_filename, m.local_filename), COALESCE(rv.extraction_dir, m.extraction_dir),
                        rv.source_endpoint, rv.source_label, rv.source_rank, rv.report_rank, rv.hot_score,
                        rv.metrics_json, rv.raw_json, rv.process_status, rv.process_error,
-                       rv.analysis_json, rv.audit_json, rv.social_context_json, rv.insight_json,
+                       rv.analysis_json, rv.analysis_zh_json, rv.audit_json, rv.social_context_json, rv.insight_json,
                        rv.insight_generated_at, rv.created_at, rv.updated_at
                 FROM hot_report_videos rv
                 JOIN hot_video_master m ON m.platform = rv.platform AND m.video_id = rv.video_id
@@ -1279,6 +1283,54 @@ def get_report(report_date: str | None = None, include_raw: bool = False, detail
     videos = [_row_to_video(row, include_raw=include_raw) for row in rows] if detail else []
     report["videos"] = [_prepare_cover_asset(video) for video in videos] if detail else []
     return report
+
+
+def translate_report_video_analysis(report_date: str, platform: str, video_id: str) -> dict[str, Any]:
+    date = str(report_date or today_key()).strip()
+    platform = str(platform or "").strip()
+    video_id = str(video_id or "").strip()
+    if not date or not platform or not video_id:
+        raise ValueError("report_date, platform and video_id are required")
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT analysis_json, analysis_zh_json
+            FROM hot_report_videos
+            WHERE report_date = ? AND platform = ? AND video_id = ?
+            """,
+            (date, platform, video_id),
+        ).fetchone()
+        if not row:
+            raise ValueError("report video not found")
+        analysis = _json_loads(row[0], None)
+        cached = _json_loads(row[1], None)
+        if cached:
+            return {"status": "cached", "report_date": date, "platform": platform, "video_id": video_id, "analysis_zh": cached}
+        if not analysis:
+            raise ValueError("analysis not found for report video")
+
+        from translate_analysis import DEFAULT_BATCH_CHARS, translate_in_batches
+
+        api_key = os.getenv("DEEPSEEK_API_KEY")
+        if not api_key:
+            raise ValueError("DEEPSEEK_API_KEY is required for translation")
+        translated = translate_in_batches(
+            api_key=api_key,
+            api_url=os.getenv("DEEPSEEK_API_URL", DEFAULT_API_URL),
+            model=os.getenv("DEEPSEEK_MODEL", DEFAULT_MODEL),
+            payload=analysis,
+            max_chars=int(os.getenv("TRANSLATION_BATCH_CHARS", str(DEFAULT_BATCH_CHARS))),
+        )
+        conn.execute(
+            """
+            UPDATE hot_report_videos
+            SET analysis_zh_json = ?, updated_at = ?
+            WHERE report_date = ? AND platform = ? AND video_id = ?
+            """,
+            (json.dumps(translated, ensure_ascii=False, sort_keys=True), time.time(), date, platform, video_id),
+        )
+        conn.commit()
+    return {"status": "translated", "report_date": date, "platform": platform, "video_id": video_id, "analysis_zh": translated}
 
 
 def list_reports(limit: int = 30) -> list[dict[str, Any]]:
@@ -2360,7 +2412,7 @@ def _load_success_videos(conn: sqlite3.Connection, report_date: str) -> list[dic
         SELECT m.platform, m.video_id, m.title, m.author, m.source_url, COALESCE(rv.cover_url, m.cover_url),
                rv.local_filename, rv.extraction_dir, rv.source_endpoint, rv.source_label,
                rv.source_rank, rv.report_rank, rv.hot_score, rv.metrics_json, rv.raw_json,
-               rv.process_status, rv.process_error, rv.analysis_json, rv.audit_json,
+               rv.process_status, rv.process_error, rv.analysis_json, rv.analysis_zh_json, rv.audit_json,
                rv.social_context_json, rv.insight_json, rv.insight_generated_at,
                rv.created_at, rv.updated_at
         FROM hot_report_videos rv

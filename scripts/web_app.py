@@ -75,6 +75,7 @@ from hot_video_report import (
     run_report,
     save_settings as save_report_settings,
     start_report_scheduler,
+    translate_report_video_analysis,
 )
 from tiktok_download import video_cache_metadata, video_cache_request, with_download_cache_meta
 from video_registry import (
@@ -3723,6 +3724,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_report_delete()
         if parsed.path == "/api/report/settings":
             return self.handle_report_settings()
+        if parsed.path == "/api/report/translate":
+            return self.handle_report_translate()
         if parsed.path == "/api/report/backfill-covers":
             result = backfill_cover_urls()
             return json_response(self, HTTPStatus.OK, result)
@@ -3774,6 +3777,22 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(body.decode("utf-8") or "{}")
             settings = save_report_settings(payload)
             return json_response(self, HTTPStatus.OK, settings)
+        except (json.JSONDecodeError, ValueError) as exc:
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+        except Exception as exc:
+            return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+
+    def handle_report_translate(self) -> None:
+        content_length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(content_length)
+        try:
+            payload = json.loads(body.decode("utf-8") or "{}")
+            result = translate_report_video_analysis(
+                str(payload.get("date") or payload.get("report_date") or ""),
+                str(payload.get("platform") or ""),
+                str(payload.get("video_id") or ""),
+            )
+            return json_response(self, HTTPStatus.OK, result)
         except (json.JSONDecodeError, ValueError) as exc:
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
         except Exception as exc:
