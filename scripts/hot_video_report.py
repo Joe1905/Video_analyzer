@@ -1870,7 +1870,7 @@ def _report_item_to_text(item: Any) -> str:
         return _inline_report_text(item)
     title = _inline_report_text(item.get("title"))
     rank = _inline_report_text(item.get("rank"))
-    head = f"\u89c6\u9891 {rank}" if rank else "\u89c6\u9891"
+    head = f"**\u89c6\u9891 {rank}**" if rank else "**\u89c6\u9891**"
     if title:
         head = f"{head}\uff5c{title}"
     parts = [head]
@@ -1879,8 +1879,8 @@ def _report_item_to_text(item: Any) -> str:
             continue
         text = _inline_report_text(value)
         if text:
-            parts.append(f"{_label_for_report_key(str(key))}\uff1a{text}")
-    return "\n".join(parts)
+            parts.append(f"  - **{_label_for_report_key(str(key))}**\uff1a{text}")
+    return "\n\n".join(parts)
 
 
 def _normalize_report_for_display(report: dict[str, Any]) -> dict[str, Any]:
@@ -1915,7 +1915,10 @@ def _markdown_value(value: Any, depth: int = 0) -> list[str]:
             else:
                 text = _inline_report_text(item)
                 if text:
-                    lines.append(f"{indent}- {text}")
+                    if "\n" in text:
+                        lines.append(f"{indent}{text}")
+                    else:
+                        lines.append(f"{indent}- {text}")
         return lines
     if isinstance(value, dict):
         lines = []
