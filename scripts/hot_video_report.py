@@ -1903,7 +1903,11 @@ def _normalize_report_for_display(report: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(report)
     for key, value in list(normalized.items()):
         if key == "video_deep_dives" and isinstance(value, list):
-            normalized[key] = [_report_item_to_text(item) for item in value if item]
+            normalized[key] = [
+                _report_item_to_text(item) if isinstance(item, dict) else _bold_report_line_labels(_inline_report_text(item))
+                for item in value
+                if item
+            ]
         elif isinstance(value, list):
             normalized[key] = [
                 _report_item_to_text(item) if isinstance(item, dict) else _bold_report_line_labels(_inline_report_text(item))
