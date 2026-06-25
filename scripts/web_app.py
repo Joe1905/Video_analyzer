@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import hmac
 import mimetypes
 import os
 import re
@@ -715,6 +716,140 @@ def json_response(handler: BaseHTTPRequestHandler, status: int, payload: Any) ->
     handler.send_header("Content-Length", str(len(body)))
     handler.end_headers()
     handler.wfile.write(body)
+
+
+def _report_bot_authorized(handler: BaseHTTPRequestHandler, query: dict[str, list[str]]) -> bool:
+    expected = os.getenv("REPORT_BOT_TOKEN", "").strip()
+    if not expected:
+        return True
+    auth = handler.headers.get("Authorization", "").strip()
+    supplied = ""
+    if auth.lower().startswith("bearer "):
+        supplied = auth[7:].strip()
+    if not supplied:
+        supplied = query.get("token", [""])[0].strip()
+    return bool(supplied) and hmac.compare_digest(supplied, expected)
+
+
+def _report_detail_url(handler: BaseHTTPRequestHandler, report_date: str) -> str:
+    host = handler.headers.get("Host", "").strip()
+    path = f"/report?date={report_date}"
+    if not host:
+        return path
+    proto = "https" if handler.headers.get("X-Forwarded-Proto", "").lower() == "https" else "http"
+    return f"{proto}://{host}{path}"
+
+
+def _coerce_int(value: Any) -> int:
+    try:
+        return int(float(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _compact_report_text(value: Any, max_len: int = 600) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        text = value.strip()
+    elif isinstance(value, list):
+        text = "；".join(_compact_report_text(item, max_len=max_len) for item in value if item)
+    elif isinstance(value, dict):
+        parts = []
+        for key, item in value.items():
+            item_text = _compact_report_text(item, max_len=max_len)
+            if item_text:
+                parts.append(f"{key}: {item_text}")
+        text = "；".join(parts)
+    else:
+        text = str(value).strip()
+    text = re.sub(r"\s+", " ", text)
+    return text[:max_len].rstrip() + ("..." if len(text) > max_len else "")
+
+
+def _metric_from_video(video: dict[str, Any], key: str) -> int:
+    return _coerce_int((video.get("metrics") or {}).get(key))
+
+
+def _format_report_count(value: int) -> str:
+    value = _coerce_int(value)
+    if value >= 10000:
+        rounded = round(value / 10000, 1)
+        return f"{rounded:g}万"
+    return str(value)
+
+
+def _build_feishu_report_payload(
+    handler: BaseHTTPRequestHandler,
+    report_date: str | None = None,
+    limit: int = 10,
+) -> dict[str, Any]:
+    report = get_report(report_date, include_raw=False, detail=True)
+    videos = list(report.get("videos") or [])[: max(1, min(limit, 20))]
+    report_body = report.get("report") or {}
+    markdown = str(report.get("report_markdown") or "").strip()
+    summary = (
+        _compact_report_text(report_body.get("summary") if isinstance(report_body, dict) else "")
+        or _compact_report_text(report_body.get("overall_conclusion") if isinstance(report_body, dict) else "")
+        or _compact_report_text(markdown, max_len=800)
+    )
+    date = str(report.get("report_date") or report_date or "")
+    title = f"{date} 爆款视频日报" if date else "爆款视频日报"
+    compact_videos = []
+    for index, video in enumerate(videos, start=1):
+        compact_videos.append(
+            {
+                "rank": _coerce_int(video.get("report_rank")) or index,
+                "platform": video.get("platform") or "",
+                "video_id": video.get("video_id") or "",
+                "title": video.get("title") or "无标题",
+                "author": video.get("author") or "",
+                "source_label": video.get("source_label") or "",
+                "source_endpoint": video.get("source_endpoint") or "",
+                "source_url": video.get("source_url") or "",
+                "cover_url": video.get("cover_url") or "",
+                "hot_score": _coerce_int(video.get("hot_score")),
+                "play_count": _metric_from_video(video, "play_count"),
+                "like_count": _metric_from_video(video, "like_count"),
+                "comment_count": _metric_from_video(video, "comment_count"),
+                "share_count": _metric_from_video(video, "share_count"),
+                "favorite_count": _metric_from_video(video, "favorite_count"),
+                "published_at": (video.get("metrics") or {}).get("published_at"),
+            }
+        )
+    lines = [
+        f"**{title}**",
+        f"状态：{report.get('status', 'missing')}｜视频：{report.get('video_count', len(compact_videos))}｜成功：{report.get('analysis_success_count', 0)}｜失败：{report.get('analysis_failed_count', 0)}",
+    ]
+    if summary:
+        lines.extend(["", f"总体结论：{summary}"])
+    if compact_videos:
+        lines.extend(["", "Top 视频："])
+        for item in compact_videos[:10]:
+            title_text = _compact_report_text(item["title"], max_len=80) or "无标题"
+            lines.append(
+                f"{item['rank']}. {title_text}｜播放 {_format_report_count(item['play_count'])}｜热度 {_format_report_count(item['hot_score'])}"
+            )
+    detail_url = _report_detail_url(handler, date) if date else "/report"
+    lines.extend(["", f"详情：{detail_url}"])
+    return {
+        "ok": bool(report.get("exists")),
+        "exists": bool(report.get("exists")),
+        "report_date": date,
+        "status": report.get("status", "missing"),
+        "title": title,
+        "summary": summary,
+        "url": detail_url,
+        "generated_at": report.get("llm_generated_at") or report.get("updated_at") or "",
+        "video_count": report.get("video_count", len(compact_videos)),
+        "analysis_success_count": report.get("analysis_success_count", 0),
+        "analysis_failed_count": report.get("analysis_failed_count", 0),
+        "error": report.get("error") or "",
+        "report": report_body,
+        "report_markdown": markdown,
+        "videos": compact_videos,
+        "feishu_text": "\n".join(lines),
+    }
 
 
 def text_response(handler: BaseHTTPRequestHandler, status: int, body: str, content_type: str) -> None:
@@ -3215,6 +3350,18 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/report/today":
             include_raw = parse_qs(parsed.query).get("raw", ["0"])[0] in {"1", "true", "yes"}
             return json_response(self, HTTPStatus.OK, get_report(include_raw=include_raw, detail=include_raw))
+        if parsed.path == "/api/report/feishu":
+            qs = parse_qs(parsed.query)
+            if not _report_bot_authorized(self, qs):
+                return json_response(self, HTTPStatus.UNAUTHORIZED, {"error": "Unauthorized"})
+            report_date = qs.get("date", [""])[0].strip() or None
+            if report_date and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", report_date):
+                return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "date must be YYYY-MM-DD"})
+            try:
+                limit = int(qs.get("limit", ["10"])[0])
+            except ValueError:
+                limit = 10
+            return json_response(self, HTTPStatus.OK, _build_feishu_report_payload(self, report_date, limit=limit))
         if parsed.path == "/api/report":
             qs = parse_qs(parsed.query)
             include_raw = qs.get("raw", ["0"])[0] in {"1", "true", "yes"}

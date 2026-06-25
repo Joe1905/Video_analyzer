@@ -67,7 +67,7 @@ $("run").onclick=async()=>{ $("run").disabled=true; progressLines=[]; try{if(!(a
 $("topicConfig").onclick=openTopicModal;$("analysisLimit").onchange=()=>{renderTopicButton();if(settingsTopics.length>Number($("analysisLimit").value||10))$("settingsMsg").textContent="话题数不能超过采集视频数";};
 $("saveSettings").onclick=saveReportSettings;
 $("closeModal").onclick=()=>$("modal").classList.remove("show");$("modal").onclick=e=>{if(e.target===$("modal"))$("modal").classList.remove("show")};document.addEventListener("click",e=>{if(!e.target.closest(".video-card")&&!e.target.closest(".menu"))$("menu").classList.remove("show")});
-loadSettings().catch(()=>{});loadToday().catch(e=>{$("summary").textContent=e.message});
+const INITIAL_REPORT_DATE=new URLSearchParams(location.search).get("date");loadSettings().catch(()=>{});(INITIAL_REPORT_DATE?loadDate(INITIAL_REPORT_DATE):loadToday()).catch(e=>{$("summary").textContent=e.message});
 </script>
 </body>
 </html>
