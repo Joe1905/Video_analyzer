@@ -1084,7 +1084,10 @@ def _row_to_report(row: sqlite3.Row | tuple[Any, ...]) -> dict[str, Any]:
     )
     data = dict(zip(keys, row))
     data["sources"] = _json_loads(data.pop("sources_json"), [])
-    data["report"] = _json_loads(data.pop("report_json"), None)
+    report = _json_loads(data.pop("report_json"), None)
+    if isinstance(report, dict):
+        report = _normalize_report_for_display(report)
+    data["report"] = report
     return data
 
 
@@ -1891,7 +1894,8 @@ def _bold_report_line_labels(text: str) -> str:
             return match.group(0)
         return f"{prefix}**{label}**"
 
-    text = re.sub(r"(^|\n)(\s*视频\s*\d+｜[^\n]+)", repl, str(text or ""))
+    text = str(text or "")
+    text = re.sub(r"(^|\n)(\s*视频\s*\d+｜[^\n]+)", repl, text)
     return re.sub(r"(^|\n)(\s*[\u4e00-\u9fa5A-Za-z0-9/]{2,14}：)", repl, text)
 
 
