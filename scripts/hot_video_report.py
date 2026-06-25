@@ -1810,6 +1810,139 @@ def _markdown_from_report(report: dict[str, Any]) -> str:
     return "\n\n".join(parts)
 
 
+REPORT_SECTION_LABELS = {
+    "summary": "\u603b\u4f53\u7ed3\u8bba",
+    "overall_conclusion": "\u603b\u4f53\u7ed3\u8bba",
+    "common_patterns": "\u7206\u6b3e\u5171\u901a\u6027",
+    "hook_analysis": "\u5f00\u5934\u4e0e\u94a9\u5b50",
+    "visual_patterns": "\u89c6\u89c9\u4e0e\u8282\u594f",
+    "topic_angles": "\u9009\u9898\u89d2\u5ea6",
+    "execution_tactics": "\u6267\u884c\u624b\u6cd5",
+    "video_deep_dives": "\u9010\u6761\u7206\u70b9\u62c6\u89e3",
+    "reusable_ideas": "\u53ef\u590d\u7528\u9009\u9898",
+    "risks": "\u98ce\u9669",
+    "next_actions": "\u4e0b\u4e00\u6b65",
+}
+
+REPORT_VALUE_LABELS = {
+    "rank": "\u6392\u540d",
+    "title": "\u6807\u9898",
+    "boom_reason": "\u7206\u70b9\u539f\u56e0",
+    "core_boom_reason": "\u6838\u5fc3\u7206\u70b9",
+    "hook": "\u5f00\u5934\u94a9\u5b50",
+    "structure": "\u5185\u5bb9\u7ed3\u6784",
+    "content_structure": "\u5185\u5bb9\u7ed3\u6784",
+    "visual_language": "\u89c6\u89c9\u8bed\u8a00",
+    "audience_trigger": "\u53d7\u4f17\u89e6\u53d1\u70b9",
+    "comment_signal": "\u8bc4\u8bba\u4fe1\u53f7",
+    "creator_context": "\u535a\u4e3b\u80cc\u666f",
+    "engagement_driver": "\u4e92\u52a8\u9a71\u52a8",
+    "replicable_formula": "\u53ef\u590d\u7528\u516c\u5f0f",
+    "adaptation_ideas": "\u6539\u7f16\u65b9\u5411",
+    "weakness_or_risk": "\u98ce\u9669\u6216\u4e0d\u53ef\u590d\u5236\u70b9",
+    "risk": "\u98ce\u9669",
+    "evidence_quotes": "\u8bc1\u636e\u6458\u8981",
+    "one_sentence": "\u4e00\u53e5\u8bdd\u6982\u62ec",
+}
+
+
+def _label_for_report_key(key: str) -> str:
+    return REPORT_VALUE_LABELS.get(key) or REPORT_SECTION_LABELS.get(key) or str(key)
+
+
+def _inline_report_text(value: Any) -> str:
+    if value in (None, "", [], {}):
+        return ""
+    if isinstance(value, dict):
+        parts = []
+        for key, item in value.items():
+            text = _inline_report_text(item)
+            if text:
+                parts.append(f"{_label_for_report_key(str(key))}\uff1a{text}")
+        return "\uff1b".join(parts)
+    if isinstance(value, list):
+        return "\uff1b".join(_inline_report_text(item) for item in value if item)
+    return str(value).strip()
+
+
+def _report_item_to_text(item: Any) -> str:
+    if not isinstance(item, dict):
+        return _inline_report_text(item)
+    title = _inline_report_text(item.get("title"))
+    rank = _inline_report_text(item.get("rank"))
+    head = f"\u89c6\u9891 {rank}" if rank else "\u89c6\u9891"
+    if title:
+        head = f"{head}\uff5c{title}"
+    parts = [head]
+    for key, value in item.items():
+        if key in {"rank", "title"} or value in (None, "", [], {}):
+            continue
+        text = _inline_report_text(value)
+        if text:
+            parts.append(f"{_label_for_report_key(str(key))}\uff1a{text}")
+    return "\n".join(parts)
+
+
+def _normalize_report_for_display(report: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(report)
+    for key, value in list(normalized.items()):
+        if key == "video_deep_dives" and isinstance(value, list):
+            normalized[key] = [_report_item_to_text(item) for item in value if item]
+        elif isinstance(value, list):
+            normalized[key] = [_report_item_to_text(item) if isinstance(item, dict) else _inline_report_text(item) for item in value if item]
+        elif isinstance(value, dict):
+            normalized[key] = _inline_report_text(value)
+    return normalized
+
+
+def _markdown_value(value: Any, depth: int = 0) -> list[str]:
+    if value in (None, "", [], {}):
+        return []
+    indent = "  " * depth
+    if isinstance(value, list):
+        lines: list[str] = []
+        for item in value:
+            if isinstance(item, dict):
+                head = _report_item_to_text({"rank": item.get("rank"), "title": item.get("title")}).strip()
+                item_title = head or "\u9879\u76ee"
+                lines.append(f"{indent}- {item_title}")
+                for key, child in item.items():
+                    if key in {"rank", "title"} or child in (None, "", [], {}):
+                        continue
+                    child_text = _inline_report_text(child)
+                    if child_text:
+                        lines.append(f"{indent}  - **{_label_for_report_key(str(key))}**\uff1a{child_text}")
+            else:
+                text = _inline_report_text(item)
+                if text:
+                    lines.append(f"{indent}- {text}")
+        return lines
+    if isinstance(value, dict):
+        lines = []
+        for key, child in value.items():
+            child_text = _inline_report_text(child)
+            if child_text:
+                lines.append(f"{indent}- **{_label_for_report_key(str(key))}**\uff1a{child_text}")
+        return lines
+    return [f"{indent}{value}"]
+
+
+def _markdown_from_report(report: dict[str, Any]) -> str:
+    title = _inline_report_text(report.get("summary") or report.get("overall_conclusion")) or "\u7206\u6b3e\u89c6\u9891\u65e5\u62a5"
+    parts = [f"# {title}"]
+    for key, label in REPORT_SECTION_LABELS.items():
+        if key in {"summary", "overall_conclusion"}:
+            continue
+        value = report.get(key)
+        if not value:
+            continue
+        lines = _markdown_value(value)
+        if lines:
+            parts.append(f"## {label}")
+            parts.extend(lines)
+    return "\n\n".join(parts)
+
+
 def _trim_text(value: Any, limit: int = 1200) -> str:
     text = str(value or "").strip()
     if len(text) <= limit:
@@ -2185,6 +2318,10 @@ def _generate_daily_summary(report_date: str, success_videos: list[dict[str, Any
         report = parse_json_content(content)
     except Exception:
         report = {"summary": content, "raw_result": content}
+    if isinstance(report, dict):
+        markdown = _markdown_from_report(report)
+        report = _normalize_report_for_display(report)
+        return report, markdown
     return report, _markdown_from_report(report)
 
 
