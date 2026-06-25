@@ -2108,6 +2108,7 @@ def _summary_prompt_v2(report_date: str, video_items: list[dict[str, Any]], part
         "\u8bf7\u57fa\u4e8e\u8f93\u5165\u4e2d\u7684\u5355\u89c6\u9891\u7206\u6b3e\u62c6\u89e3\uff0c\u751f\u6210\u4e2d\u6587\u6df1\u5ea6\u65e5\u62a5\u3002\n"
         "\u65e5\u62a5\u4e0d\u8981\u6d45\u5c1d\u8f84\u6b62\uff1a\u5fc5\u987b\u5148\u7ed9\u603b\u4f53\u5224\u65ad\uff0c\u518d\u603b\u7ed3\u8de8\u89c6\u9891\u5171\u6027\uff0c\u5e76\u9010\u6761\u63d0\u70bc\u6bcf\u4e2a\u89c6\u9891\u7684\u6838\u5fc3\u7206\u70b9\u3002\n"
         "\u4e0d\u8981\u7f16\u9020\u8f93\u5165\u4e4b\u5916\u7684\u4fe1\u606f\uff1b\u5982\u679c\u67d0\u6761\u62c6\u89e3\u8bc1\u636e\u4e0d\u8db3\uff0c\u9700\u8981\u5728\u98ce\u9669\u91cc\u8bf4\u660e\u3002\n"
+        "\u8f93\u51fa\u8981\u5145\u5206\u4f46\u514b\u5236\uff1avideo_deep_dives \u6bcf\u6761\u4e0d\u8d85\u8fc7 450 \u4e2a\u4e2d\u6587\u5b57\uff0c\u5176\u4ed6\u6bcf\u4e2a\u5206\u533a\u4e0d\u8d85\u8fc7 6 \u6761\u8981\u70b9\u3002\n"
         "\u53ea\u8fd4\u56de\u4e25\u683c JSON\uff0c\u4e0d\u8981 Markdown\uff0c\u4e0d\u8981\u4ee3\u7801\u5757\u3002"
         "JSON keys \u5fc5\u987b\u5305\u542b\uff1asummary, common_patterns, hook_analysis, visual_patterns, topic_angles, execution_tactics, "
         "video_deep_dives, reusable_ideas, risks, next_actions\u3002\n"
@@ -2158,7 +2159,7 @@ def _generate_daily_summary(report_date: str, success_videos: list[dict[str, Any
             except Exception:
                 partials.append({"raw_result": chunk_content})
         prompt = _summary_prompt_v2(report_date, [], partial_summaries=partials)
-    max_tokens = _to_int(os.getenv("REPORT_DEEPSEEK_MAX_TOKENS", os.getenv("DEEPSEEK_POSTPROCESS_MAX_TOKENS", "4096")))
+    max_tokens = _to_int(os.getenv("REPORT_DEEPSEEK_MAX_TOKENS", os.getenv("DEEPSEEK_POSTPROCESS_MAX_TOKENS", "8192")))
     response = call_deepseek(
         api_key=api_key,
         prompt=prompt,
@@ -2166,7 +2167,20 @@ def _generate_daily_summary(report_date: str, success_videos: list[dict[str, Any
         model=os.getenv("DEEPSEEK_MODEL", DEFAULT_MODEL),
         max_tokens=max_tokens,
     )
-    content = extract_content(response)
+    try:
+        content = extract_content(response)
+    except ValueError as exc:
+        retry_max_tokens = _to_int(os.getenv("REPORT_DEEPSEEK_RETRY_MAX_TOKENS", "12000"))
+        if "truncated" not in str(exc) or retry_max_tokens <= max_tokens:
+            raise
+        response = call_deepseek(
+            api_key=api_key,
+            prompt=prompt,
+            api_url=os.getenv("DEEPSEEK_API_URL", DEFAULT_API_URL),
+            model=os.getenv("DEEPSEEK_MODEL", DEFAULT_MODEL),
+            max_tokens=retry_max_tokens,
+        )
+        content = extract_content(response)
     try:
         report = parse_json_content(content)
     except Exception:
