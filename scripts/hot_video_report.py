@@ -1883,15 +1883,33 @@ def _report_item_to_text(item: Any) -> str:
     return "\n\n".join(parts)
 
 
+def _bold_report_line_labels(text: str) -> str:
+    def repl(match: re.Match[str]) -> str:
+        prefix = match.group(1)
+        label = match.group(2)
+        if label.startswith("**"):
+            return match.group(0)
+        return f"{prefix}**{label}**"
+
+    text = re.sub(r"(^|\n)(\s*视频\s*\d+｜[^\n]+)", repl, str(text or ""))
+    return re.sub(r"(^|\n)(\s*[\u4e00-\u9fa5A-Za-z0-9/]{2,14}：)", repl, text)
+
+
 def _normalize_report_for_display(report: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(report)
     for key, value in list(normalized.items()):
         if key == "video_deep_dives" and isinstance(value, list):
             normalized[key] = [_report_item_to_text(item) for item in value if item]
         elif isinstance(value, list):
-            normalized[key] = [_report_item_to_text(item) if isinstance(item, dict) else _inline_report_text(item) for item in value if item]
+            normalized[key] = [
+                _report_item_to_text(item) if isinstance(item, dict) else _bold_report_line_labels(_inline_report_text(item))
+                for item in value
+                if item
+            ]
         elif isinstance(value, dict):
             normalized[key] = _inline_report_text(value)
+        elif isinstance(value, str):
+            normalized[key] = _bold_report_line_labels(value)
     return normalized
 
 
@@ -1913,7 +1931,7 @@ def _markdown_value(value: Any, depth: int = 0) -> list[str]:
                     if child_text:
                         lines.append(f"{indent}  - **{_label_for_report_key(str(key))}**\uff1a{child_text}")
             else:
-                text = _inline_report_text(item)
+                text = _bold_report_line_labels(_inline_report_text(item))
                 if text:
                     if "\n" in text:
                         lines.append(f"{indent}{text}")
