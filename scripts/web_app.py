@@ -3255,6 +3255,9 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/report":
             report_html = (SCRIPTS_DIR / "static" / "report.html").read_text(encoding="utf-8")
             return text_response(self, HTTPStatus.OK, report_html, "text/html; charset=utf-8")
+        if parsed.path == "/report/player":
+            player_html = (SCRIPTS_DIR / "static" / "report_player.html").read_text(encoding="utf-8")
+            return text_response(self, HTTPStatus.OK, player_html, "text/html; charset=utf-8")
         if parsed.path == "/extract":
             template = INDEX_HTML_PATH.read_text(encoding="utf-8") if INDEX_HTML_PATH.is_file() else INDEX_HTML
             html = template.replace(
