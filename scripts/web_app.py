@@ -366,7 +366,6 @@ def compact_video_info(payload: dict[str, Any]) -> dict[str, Any]:
         stats = {}
     if not isinstance(author, dict):
         author = {}
-    feishu_text = markdown or "\n".join(lines)
     return {
         "id": source.get("id") or source.get("aweme_id") or source.get("video_id") or source.get("item_id"),
         "description": source.get("desc") or source.get("description") or source.get("title"),
@@ -834,6 +833,7 @@ def _build_feishu_report_payload(
             )
     detail_url = _report_detail_url(handler, date) if date else "/report"
     lines.extend(["", f"详情：{detail_url}"])
+    feishu_text = markdown or "\n".join(lines)
     return {
         "ok": bool(report.get("exists")),
         "exists": bool(report.get("exists")),
