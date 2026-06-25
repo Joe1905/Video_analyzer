@@ -815,6 +815,7 @@ def _build_feishu_report_payload(
                 "share_count": _metric_from_video(video, "share_count"),
                 "favorite_count": _metric_from_video(video, "favorite_count"),
                 "published_at": (video.get("metrics") or {}).get("published_at"),
+                "insight": video.get("insight") or {},
             }
         )
     lines = [

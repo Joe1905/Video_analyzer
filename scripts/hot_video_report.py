@@ -114,6 +114,9 @@ def _connect() -> sqlite3.Connection:
             extraction_dir TEXT,
             analysis_json TEXT,
             audit_json TEXT,
+            social_context_json TEXT,
+            insight_json TEXT,
+            insight_generated_at REAL,
             cover_url TEXT,
             created_at REAL NOT NULL,
             updated_at REAL NOT NULL,
@@ -155,6 +158,14 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
             "analysis_failed_count": "INTEGER NOT NULL DEFAULT 0",
             "llm_generated_at": "REAL",
             "scheduled_at": "REAL",
+        },
+    )
+    add_missing(
+        "hot_report_videos",
+        {
+            "social_context_json": "TEXT",
+            "insight_json": "TEXT",
+            "insight_generated_at": "REAL",
         },
     )
     existing_tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
@@ -1098,6 +1109,9 @@ def _row_to_video(row: sqlite3.Row | tuple[Any, ...], include_raw: bool = False)
         "process_error",
         "analysis_json",
         "audit_json",
+        "social_context_json",
+        "insight_json",
+        "insight_generated_at",
         "created_at",
         "updated_at",
     )
@@ -1106,6 +1120,8 @@ def _row_to_video(row: sqlite3.Row | tuple[Any, ...], include_raw: bool = False)
     raw = _json_loads(data.pop("raw_json"), {})
     data["analysis"] = _json_loads(data.pop("analysis_json"), None)
     data["audit_result"] = _json_loads(data.pop("audit_json"), None)
+    data["social_context"] = _json_loads(data.pop("social_context_json"), None)
+    data["insight"] = _json_loads(data.pop("insight_json"), None)
     if include_raw:
         data["raw"] = raw
     return data
@@ -1245,7 +1261,8 @@ def get_report(report_date: str | None = None, include_raw: bool = False, detail
                        COALESCE(rv.local_filename, m.local_filename), COALESCE(rv.extraction_dir, m.extraction_dir),
                        rv.source_endpoint, rv.source_label, rv.source_rank, rv.report_rank, rv.hot_score,
                        rv.metrics_json, rv.raw_json, rv.process_status, rv.process_error,
-                       rv.analysis_json, rv.audit_json, rv.created_at, rv.updated_at
+                       rv.analysis_json, rv.audit_json, rv.social_context_json, rv.insight_json,
+                       rv.insight_generated_at, rv.created_at, rv.updated_at
                 FROM hot_report_videos rv
                 JOIN hot_video_master m ON m.platform = rv.platform AND m.video_id = rv.video_id
                 LEFT JOIN hot_video_master v ON v.platform = rv.platform AND v.video_id = rv.video_id
@@ -1672,6 +1689,20 @@ def _process_video(conn: sqlite3.Connection, report_date: str, item: dict[str, A
         cover_asset = _download_cover_asset(str(item.get("cover_url") or ""), platform, video_id)
         if not cover_asset:
             cover_asset = _snapshot_cover_asset(filename, platform, video_id)
+        video_for_insight = {
+            "platform": platform,
+            "video_id": video_id,
+            "title": item.get("title", ""),
+            "author": item.get("author", ""),
+            "source_url": source_url,
+            "source_label": item.get("source_label", ""),
+            "report_rank": item.get("report_rank"),
+            "metrics": item.get("metrics") or {},
+            "hot_score": item.get("hot_score"),
+            "raw": item.get("raw") or {},
+            "analysis": analysis,
+        }
+        social_context, insight = _ensure_video_insight(conn, report_date, platform, video_id, video_for_insight)
         conn.execute(
             """
             UPDATE hot_video_master
@@ -1688,7 +1719,8 @@ def _process_video(conn: sqlite3.Connection, report_date: str, item: dict[str, A
             UPDATE hot_report_videos
             SET process_status = 'complete', process_error = NULL, local_filename = ?, extraction_dir = ?,
                 cover_url = COALESCE(NULLIF(?, ''), cover_url),
-                analysis_json = ?, audit_json = ?, updated_at = ?
+                analysis_json = ?, audit_json = ?, social_context_json = ?, insight_json = ?,
+                insight_generated_at = COALESCE(insight_generated_at, ?), updated_at = ?
             WHERE report_date = ? AND platform = ? AND video_id = ?
             """,
             (
@@ -1697,6 +1729,9 @@ def _process_video(conn: sqlite3.Connection, report_date: str, item: dict[str, A
                 cover_asset,
                 json.dumps(analysis, ensure_ascii=False, sort_keys=True),
                 None,
+                json.dumps(social_context, ensure_ascii=False, sort_keys=True, default=str),
+                json.dumps(insight, ensure_ascii=False, sort_keys=True, default=str),
+                now,
                 now,
                 report_date,
                 platform,
@@ -1758,6 +1793,7 @@ def _markdown_from_report(report: dict[str, Any]) -> str:
         "visual_patterns": "视觉与节奏",
         "topic_angles": "选题角度",
         "execution_tactics": "执行手法",
+        "video_deep_dives": "逐条爆点拆解",
         "reusable_ideas": "可复用选题",
         "risks": "风险",
         "next_actions": "下一步",
@@ -1779,6 +1815,128 @@ def _trim_text(value: Any, limit: int = 1200) -> str:
     if len(text) <= limit:
         return text
     return text[:limit].rstrip() + "..."
+
+
+def _trim_json_payload(value: Any, limit: int) -> Any:
+    text = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    if len(text) <= limit:
+        return value
+    return {"truncated": True, "text": text[:limit].rstrip() + "..."}
+
+
+def _nested_list(data: Any, names: tuple[str, ...]) -> list[Any]:
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict) and data and all(str(key).isdigit() for key in data):
+        return [data[key] for key in sorted(data, key=lambda item: int(str(item)))]
+    if not isinstance(data, dict):
+        return []
+    for name in names:
+        value = data.get(name)
+        if isinstance(value, list):
+            return value
+        if isinstance(value, dict):
+            found = _nested_list(value, names)
+            if found:
+                return found
+    for value in data.values():
+        found = _nested_list(value, names)
+        if found:
+            return found
+    return []
+
+
+def _compact_comments_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    items = _nested_list(payload, ("comments", "items", "data", "comment_list"))
+    comments: list[dict[str, Any]] = []
+    limit = max(0, _to_int(os.getenv("REPORT_VIDEO_COMMENT_COUNT", "20")))
+    for item in items[:limit]:
+        if not isinstance(item, dict):
+            continue
+        user = item.get("user") or item.get("author") or {}
+        if not isinstance(user, dict):
+            user = {}
+        comments.append(
+            {
+                "text": _trim_text(item.get("text") or item.get("comment") or item.get("content"), 500),
+                "like_count": _to_int(item.get("digg_count") or item.get("like_count") or item.get("likes")),
+                "reply_count": _to_int(item.get("reply_comment_total") or item.get("reply_count")),
+                "created_at": item.get("create_time") or item.get("created_at"),
+                "user": user.get("unique_id") or user.get("nickname") or user.get("name"),
+            }
+        )
+    return {"count": len(items), "sample_count": len(comments), "items": comments}
+
+
+def _compact_profile_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    source = payload.get("profile") or payload.get("user") or payload.get("data") or payload
+    if not isinstance(source, dict):
+        source = payload
+    stats = source.get("stats") or source.get("statistics") or source.get("statsV2") or {}
+    if not isinstance(stats, dict):
+        stats = {}
+    return {
+        "id": source.get("id") or source.get("uid") or source.get("sec_uid"),
+        "unique_id": source.get("unique_id") or source.get("uniqueId") or source.get("username"),
+        "nickname": source.get("nickname") or source.get("name"),
+        "signature": _trim_text(source.get("signature") or source.get("bio"), 500),
+        "verified": source.get("verified"),
+        "region": source.get("region"),
+        "metrics": {
+            "follower_count": _to_int(stats.get("follower_count") or stats.get("followerCount") or source.get("follower_count")),
+            "following_count": _to_int(stats.get("following_count") or stats.get("followingCount") or source.get("following_count")),
+            "heart_count": _to_int(stats.get("heart_count") or stats.get("heartCount") or source.get("heart_count")),
+            "video_count": _to_int(stats.get("video_count") or stats.get("videoCount") or source.get("video_count")),
+            "digg_count": _to_int(stats.get("digg_count") or stats.get("diggCount") or source.get("digg_count")),
+        },
+    }
+
+
+def _creator_handle_from_video(video: dict[str, Any]) -> str:
+    raw = video.get("raw") if isinstance(video.get("raw"), dict) else {}
+    candidates = [
+        _find_nested(raw, ("unique_id", "uniqueId", "sec_uid", "secUid")),
+        video.get("author"),
+    ]
+    for value in candidates:
+        handle = str(value or "").strip().lstrip("@")
+        if handle and "/" not in handle and " " not in handle:
+            return handle
+    return ""
+
+
+def _fetch_video_social_context(video: dict[str, Any]) -> dict[str, Any]:
+    api_key = os.getenv("SOCIAVAULT_API_KEY", "").strip()
+    api_base = os.getenv("SOCIAVAULT_API_BASE", DEFAULT_API_BASE).rstrip("/")
+    timeout = float(os.getenv("SOCIAVAULT_TIMEOUT", "180"))
+    source_url = str(video.get("source_url") or "").strip()
+    context: dict[str, Any] = {
+        "video_url": source_url,
+        "comments": {"status": "unavailable", "error": ""},
+        "creator_profile": {"status": "unavailable", "error": ""},
+    }
+    if not api_key:
+        context["comments"]["error"] = "Missing SOCIAVAULT_API_KEY"
+        context["creator_profile"]["error"] = "Missing SOCIAVAULT_API_KEY"
+        return context
+    if source_url:
+        try:
+            payload = call_api(api_key, api_base, "comments", {"url": source_url}, timeout)
+            context["comments"] = {"status": "ok", "data": _compact_comments_payload(payload)}
+        except Exception as exc:
+            context["comments"] = {"status": "failed", "error": str(exc)}
+    else:
+        context["comments"]["error"] = "missing source_url"
+    handle = _creator_handle_from_video(video)
+    if handle:
+        try:
+            payload = call_api(api_key, api_base, "profile", {"handle": handle}, timeout)
+            context["creator_profile"] = {"status": "ok", "handle": handle, "data": _compact_profile_payload(payload)}
+        except Exception as exc:
+            context["creator_profile"] = {"status": "failed", "handle": handle, "error": str(exc)}
+    else:
+        context["creator_profile"]["error"] = "missing creator handle"
+    return context
 
 
 def _compact_extraction(analysis: Any) -> dict[str, Any]:
@@ -1804,8 +1962,112 @@ def _compact_summary_video(video: dict[str, Any]) -> dict[str, Any]:
         "author": video.get("author"),
         "metrics": video.get("metrics"),
         "hot_score": video.get("hot_score"),
-        "extraction": _compact_extraction(video.get("analysis")),
+        "source_label": video.get("source_label"),
+        "insight": video.get("insight") or {},
+        "extraction_fallback": _compact_extraction(video.get("analysis")) if not video.get("insight") else {},
     }
+
+
+def _video_insight_prompt(video: dict[str, Any], social_context: dict[str, Any]) -> str:
+    analysis_limit = max(3000, _to_int(os.getenv("REPORT_VIDEO_INSIGHT_ANALYSIS_CHAR_LIMIT", "18000")))
+    payload = {
+        "video": {
+            "rank": video.get("report_rank"),
+            "platform": video.get("platform"),
+            "video_id": video.get("video_id"),
+            "title": video.get("title"),
+            "author": video.get("author"),
+            "source_url": video.get("source_url"),
+            "source_label": video.get("source_label"),
+            "metrics": video.get("metrics"),
+            "hot_score": video.get("hot_score"),
+            "raw_video_metadata": _trim_json_payload(video.get("raw") or {}, 6000),
+        },
+        "full_video_extraction": _trim_json_payload(video.get("analysis") or {}, analysis_limit),
+        "social_context": social_context,
+    }
+    return (
+        "你是资深短视频爆款拆解分析师。请基于输入中的完整单视频解析内容、评论区样本、博主信息和视频指标，"
+        "为这一条视频生成深度中文拆解。\n"
+        "要求：\n"
+        "1. 只使用输入证据，不要编造未出现的信息；证据不足时明确写“证据不足”。\n"
+        "2. 不要泛泛写“节奏快、情绪强”，必须说清楚具体画面、台词、评论或指标如何支撑判断。\n"
+        "3. 输出要能被日报直接引用，重点解释为什么它可能成为爆款，以及如何复用。\n"
+        "4. 只返回严格 JSON，不要 Markdown，不要代码块。\n"
+        "JSON keys 必须包含：one_sentence, core_boom_reason, hook, content_structure, visual_language, "
+        "audience_trigger, comment_signal, creator_context, engagement_driver, replicable_formula, "
+        "adaptation_ideas, weakness_or_risk, evidence_quotes。\n\n"
+        f"{json.dumps(payload, ensure_ascii=False, indent=2, default=str)}"
+    )
+
+
+def _generate_video_insight(video: dict[str, Any], social_context: dict[str, Any]) -> dict[str, Any]:
+    api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("Missing required environment variable: DEEPSEEK_API_KEY")
+    response = call_deepseek(
+        api_key=api_key,
+        prompt=_video_insight_prompt(video, social_context),
+        api_url=os.getenv("DEEPSEEK_API_URL", DEFAULT_API_URL),
+        model=os.getenv("DEEPSEEK_MODEL", DEFAULT_MODEL),
+        max_tokens=_to_int(os.getenv("REPORT_VIDEO_INSIGHT_MAX_TOKENS", "2200")),
+    )
+    content = extract_content(response)
+    try:
+        return parse_json_content(content)
+    except Exception:
+        return {"raw_result": content}
+
+
+def _ensure_video_insight(
+    conn: sqlite3.Connection,
+    report_date: str,
+    platform: str,
+    video_id: str,
+    video: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    row = conn.execute(
+        """
+        SELECT social_context_json, insight_json
+        FROM hot_report_videos
+        WHERE report_date = ? AND platform = ? AND video_id = ?
+        """,
+        (report_date, platform, video_id),
+    ).fetchone()
+    social_context = _json_loads(row[0], None) if row else None
+    insight = _json_loads(row[1], None) if row else None
+    if isinstance(insight, dict) and insight:
+        return social_context or {}, insight
+    if not isinstance(social_context, dict) or not social_context:
+        social_context = _fetch_video_social_context(video)
+    try:
+        insight = _generate_video_insight(video, social_context)
+    except Exception as exc:
+        insight = {
+            "error": str(exc),
+            "one_sentence": video.get("title") or "",
+            "core_boom_reason": "单视频拆解生成失败，日报将退回使用解析摘要。",
+            "extraction_fallback": _compact_extraction(video.get("analysis")),
+        }
+    now = time.time()
+    conn.execute(
+        """
+        UPDATE hot_report_videos
+        SET social_context_json = ?, insight_json = ?, insight_generated_at = ?, updated_at = ?
+        WHERE report_date = ? AND platform = ? AND video_id = ?
+        """,
+        (
+            json.dumps(social_context, ensure_ascii=False, sort_keys=True, default=str),
+            json.dumps(insight, ensure_ascii=False, sort_keys=True, default=str),
+            now,
+            now,
+            report_date,
+            platform,
+            video_id,
+        ),
+    )
+    conn.commit()
+    return social_context, insight
 
 
 def _summary_prompt(report_date: str, video_items: list[dict[str, Any]], partial_summaries: list[dict[str, Any]] | None = None) -> str:
@@ -1835,6 +2097,37 @@ def _chunk_summary_prompt(report_date: str, chunk_index: int, video_items: list[
     )
 
 
+def _summary_prompt_v2(report_date: str, video_items: list[dict[str, Any]], partial_summaries: list[dict[str, Any]] | None = None) -> str:
+    payload: dict[str, Any] = {"report_date": report_date}
+    if partial_summaries is None:
+        payload["video_insights"] = video_items
+    else:
+        payload["partial_summaries"] = partial_summaries
+    return (
+        "\u4f60\u662f\u8d44\u6df1\u77ed\u89c6\u9891\u589e\u957f\u7814\u7a76\u5458\u3002"
+        "\u8bf7\u57fa\u4e8e\u8f93\u5165\u4e2d\u7684\u5355\u89c6\u9891\u7206\u6b3e\u62c6\u89e3\uff0c\u751f\u6210\u4e2d\u6587\u6df1\u5ea6\u65e5\u62a5\u3002\n"
+        "\u65e5\u62a5\u4e0d\u8981\u6d45\u5c1d\u8f84\u6b62\uff1a\u5fc5\u987b\u5148\u7ed9\u603b\u4f53\u5224\u65ad\uff0c\u518d\u603b\u7ed3\u8de8\u89c6\u9891\u5171\u6027\uff0c\u5e76\u9010\u6761\u63d0\u70bc\u6bcf\u4e2a\u89c6\u9891\u7684\u6838\u5fc3\u7206\u70b9\u3002\n"
+        "\u4e0d\u8981\u7f16\u9020\u8f93\u5165\u4e4b\u5916\u7684\u4fe1\u606f\uff1b\u5982\u679c\u67d0\u6761\u62c6\u89e3\u8bc1\u636e\u4e0d\u8db3\uff0c\u9700\u8981\u5728\u98ce\u9669\u91cc\u8bf4\u660e\u3002\n"
+        "\u53ea\u8fd4\u56de\u4e25\u683c JSON\uff0c\u4e0d\u8981 Markdown\uff0c\u4e0d\u8981\u4ee3\u7801\u5757\u3002"
+        "JSON keys \u5fc5\u987b\u5305\u542b\uff1asummary, common_patterns, hook_analysis, visual_patterns, topic_angles, execution_tactics, "
+        "video_deep_dives, reusable_ideas, risks, next_actions\u3002\n"
+        "\u5176\u4e2d video_deep_dives \u5fc5\u987b\u662f\u6570\u7ec4\uff0c\u6bcf\u6761\u5305\u542b rank, title, boom_reason, hook, structure, "
+        "audience_trigger, engagement_driver, replicable_formula, risk\u3002\n\n"
+        f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
+    )
+
+
+def _chunk_summary_prompt_v2(report_date: str, chunk_index: int, video_items: list[dict[str, Any]]) -> str:
+    payload = {"report_date": report_date, "chunk_index": chunk_index, "video_insights": video_items}
+    return (
+        "\u4f60\u662f\u77ed\u89c6\u9891\u7814\u7a76\u52a9\u7406\u3002"
+        "\u8bf7\u628a\u8fd9\u4e00\u7ec4\u5355\u89c6\u9891\u7206\u6b3e\u62c6\u89e3\u538b\u7f29\u6210\u53ef\u4f9b\u6700\u7ec8\u65e5\u62a5\u4f7f\u7528\u7684\u4e2d\u6587\u7ed3\u6784\u5316\u6458\u8981\u3002"
+        "\u5fc5\u987b\u4fdd\u7559\u6bcf\u6761\u89c6\u9891\u7684\u6838\u5fc3\u7206\u70b9\u3001\u5f00\u5934\u94a9\u5b50\u3001\u7ed3\u6784\u3001\u4e92\u52a8\u673a\u5236\u3001\u53ef\u590d\u7528\u516c\u5f0f\u548c\u98ce\u9669\u3002"
+        "\u53ea\u8fd4\u56de\u4e25\u683c JSON\uff0c\u4e0d\u8981 Markdown\u3002JSON keys: key_observations, video_deep_dives, patterns, reusable_points, risks\u3002\n\n"
+        f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
+    )
+
+
 def _generate_daily_summary(report_date: str, success_videos: list[dict[str, Any]]) -> tuple[dict[str, Any], str]:
     api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
     if not api_key:
@@ -1845,13 +2138,13 @@ def _generate_daily_summary(report_date: str, success_videos: list[dict[str, Any
         normalized["report_rank"] = index
         normalized_videos.append(normalized)
     video_items = [_compact_summary_video(video) for video in normalized_videos]
-    prompt = _summary_prompt(report_date, video_items)
+    prompt = _summary_prompt_v2(report_date, video_items)
     prompt_limit = _to_int(os.getenv("REPORT_SUMMARY_PROMPT_CHAR_LIMIT", "28000"))
     if len(prompt) > prompt_limit and len(video_items) > 1:
         chunk_size = max(2, _to_int(os.getenv("REPORT_SUMMARY_CHUNK_SIZE", "4")))
         partials: list[dict[str, Any]] = []
         for index in range(0, len(video_items), chunk_size):
-            chunk_prompt = _chunk_summary_prompt(report_date, index // chunk_size + 1, video_items[index : index + chunk_size])
+            chunk_prompt = _chunk_summary_prompt_v2(report_date, index // chunk_size + 1, video_items[index : index + chunk_size])
             chunk_response = call_deepseek(
                 api_key=api_key,
                 prompt=chunk_prompt,
@@ -1864,7 +2157,7 @@ def _generate_daily_summary(report_date: str, success_videos: list[dict[str, Any
                 partials.append(parse_json_content(chunk_content))
             except Exception:
                 partials.append({"raw_result": chunk_content})
-        prompt = _summary_prompt(report_date, [], partial_summaries=partials)
+        prompt = _summary_prompt_v2(report_date, [], partial_summaries=partials)
     max_tokens = _to_int(os.getenv("REPORT_DEEPSEEK_MAX_TOKENS", os.getenv("DEEPSEEK_POSTPROCESS_MAX_TOKENS", "4096")))
     response = call_deepseek(
         api_key=api_key,
@@ -1888,6 +2181,7 @@ def _load_success_videos(conn: sqlite3.Connection, report_date: str) -> list[dic
                rv.local_filename, rv.extraction_dir, rv.source_endpoint, rv.source_label,
                rv.source_rank, rv.report_rank, rv.hot_score, rv.metrics_json, rv.raw_json,
                rv.process_status, rv.process_error, rv.analysis_json, rv.audit_json,
+               rv.social_context_json, rv.insight_json, rv.insight_generated_at,
                rv.created_at, rv.updated_at
         FROM hot_report_videos rv
         JOIN hot_video_master m ON m.platform = rv.platform AND m.video_id = rv.video_id
@@ -2040,6 +2334,7 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
                     if time.time() >= deadline:
                         timed_out = True
                         break
+                    item["report_rank"] = index
                     _upsert_video(conn, report_id, date, item, index)
                     conn.commit()
                     record = get_video(item["platform"], item["video_id"]) or {}
