@@ -1427,6 +1427,19 @@ def _rank_with_topic_guarantees(
             if key not in selected_keys:
                 selected.append(item)
                 selected_keys.add(key)
+    for bucket in ("topic", "stream"):
+        for item in sorted_candidates:
+            if len(selected) >= target_count:
+                break
+            if item.get("selection_bucket") != bucket:
+                continue
+            key = (item["platform"], item["video_id"])
+            if key in selected_keys:
+                continue
+            selected.append(item)
+            selected_keys.add(key)
+        if len(selected) >= target_count:
+            break
     for item in sorted_candidates:
         if len(selected) >= target_count:
             break
