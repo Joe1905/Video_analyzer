@@ -1134,6 +1134,79 @@ def _row_to_video(row: sqlite3.Row | tuple[Any, ...], include_raw: bool = False)
     return data
 
 
+def _report_player_base_url() -> str:
+    configured = (
+        os.getenv("REPORT_LAN_BASE_URL")
+        or os.getenv("REPORT_PUBLIC_BASE_URL")
+        or os.getenv("WEB_PUBLIC_BASE_URL")
+        or ""
+    ).strip()
+    if configured:
+        return configured.rstrip("/")
+    host = (os.getenv("REPORT_LAN_HOST") or os.getenv("LAN_HOST") or "192.168.1.254").strip()
+    port = (os.getenv("REPORT_LAN_PORT") or os.getenv("WEB_PORT") or "4000").strip()
+    return f"http://{host}:{port}".rstrip("/")
+
+
+def _report_player_url(report_date: str, video: dict[str, Any]) -> str:
+    params = urllib.parse.urlencode(
+        {
+            "date": report_date,
+            "platform": video.get("platform") or "",
+            "video_id": video.get("video_id") or "",
+        }
+    )
+    return f"{_report_player_base_url()}/report/player?{params}"
+
+
+def _link_report_video_heading(text: str, rank: int, url: str) -> str:
+    if not text or not rank or not url or url in text:
+        return text
+    linked = f"[**视频 {rank}**]({url})"
+    pattern = re.compile(rf"(?<!\[)\*\*视频\s*{re.escape(str(rank))}\*\*")
+    updated, count = pattern.subn(linked, text, count=1)
+    if count:
+        return updated
+    pattern = re.compile(rf"(?<!\[)\b视频\s*{re.escape(str(rank))}\b")
+    return pattern.sub(linked, text, count=1)
+
+
+def _attach_report_player_links(report: dict[str, Any], videos: list[dict[str, Any]], report_date: str) -> None:
+    if not videos:
+        return
+    rank_links: dict[int, str] = {}
+    for index, video in enumerate(videos, start=1):
+        if not video.get("platform") or not video.get("video_id"):
+            continue
+        rank = _to_int(video.get("report_rank")) or index
+        rank_links[rank] = _report_player_url(report_date, video)
+
+    def link_value(value: Any) -> Any:
+        if isinstance(value, list):
+            linked = []
+            for index, item in enumerate(value, start=1):
+                rank = _to_int(item.get("rank")) if isinstance(item, dict) else index
+                if isinstance(item, str) and rank in rank_links:
+                    linked.append(_link_report_video_heading(item, rank, rank_links[rank]))
+                elif isinstance(item, dict):
+                    linked.append({key: link_value(child) for key, child in item.items()})
+                else:
+                    linked.append(item)
+            return linked
+        if isinstance(value, dict):
+            return {key: link_value(child) for key, child in value.items()}
+        return value
+
+    body = report.get("report")
+    if isinstance(body, dict):
+        report["report"] = link_value(body)
+    markdown = str(report.get("report_markdown") or "")
+    for rank, url in rank_links.items():
+        markdown = _link_report_video_heading(markdown, rank, url)
+    if markdown:
+        report["report_markdown"] = markdown
+
+
 def get_settings() -> dict[str, Any]:
     with _connect() as conn:
         rows = conn.execute("SELECT key, value FROM report_settings").fetchall()
@@ -1282,6 +1355,8 @@ def get_report(report_date: str | None = None, include_raw: bool = False, detail
     report["exists"] = True
     videos = [_row_to_video(row, include_raw=include_raw) for row in rows] if detail else []
     report["videos"] = [_prepare_cover_asset(video) for video in videos] if detail else []
+    if detail:
+        _attach_report_player_links(report, report["videos"], date)
     return report
 
 
