@@ -3294,9 +3294,21 @@ def ensure_sellersprite_chat_server() -> tuple[bool, str]:
             cwd=SELLERSPRITE_CHAT_DIR,
             env=env,
         )
-        time.sleep(0.35)
-        if SELLERSPRITE_CHAT_PROCESS.poll() is not None:
-            return False, f"SellerSprite chat server exited with code {SELLERSPRITE_CHAT_PROCESS.returncode}"
+        for _ in range(50):
+            if SELLERSPRITE_CHAT_PROCESS.poll() is not None:
+                return False, f"SellerSprite chat server exited with code {SELLERSPRITE_CHAT_PROCESS.returncode}"
+            try:
+                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=0.2)
+                conn.request("GET", "/api/sessions")
+                resp = conn.getresponse()
+                resp.read()
+                conn.close()
+                if resp.status < 500:
+                    break
+            except Exception:
+                time.sleep(0.1)
+        else:
+            return False, "SellerSprite chat server did not become ready"
         print(f"[SELLERSPRITE] chat server listening on 127.0.0.1:{port}", flush=True)
         return True, ""
 
