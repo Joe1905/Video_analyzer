@@ -11,6 +11,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -3821,6 +3822,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/amazon/api/chat/export-pdf":
+            return self.handle_sellersprite_chat_export_pdf()
         if parsed.path.startswith("/amazon/"):
             return proxy_sellersprite_chat(self)
         if parsed.path == "/api/upload":
@@ -4358,6 +4361,66 @@ class Handler(BaseHTTPRequestHandler):
             pdf,
             "application/pdf",
             filename=f"chat-reply-{stamp}.pdf",
+        )
+
+    def handle_sellersprite_chat_export_pdf(self) -> None:
+        content_length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(content_length)
+        try:
+            payload = json.loads(body.decode("utf-8") or "{}")
+            session_id = str(payload.get("sessionId", "")).strip()
+            message_id = str(payload.get("messageId", "")).strip()
+            if not session_id or not message_id:
+                raise ValueError("sessionId and messageId are required")
+        except (json.JSONDecodeError, ValueError) as exc:
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+
+        sessions_path = SELLERSPRITE_CHAT_DATA_DIR / "sessions.json"
+        try:
+            stored = json.loads(sessions_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Session data not found"})
+        except json.JSONDecodeError as exc:
+            return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"Session data is invalid: {exc}"})
+
+        sessions = stored if isinstance(stored, list) else stored.get("sessions", [])
+        session = next((item for item in sessions if str(item.get("id", "")) == session_id), None)
+        if not session:
+            return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Session not found"})
+        messages = session.get("messages") if isinstance(session, dict) else []
+        message = next((item for item in messages or [] if str(item.get("id", "")) == message_id), None)
+        if not message:
+            return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Message not found"})
+        if message.get("role") != "assistant":
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Only assistant replies can be exported"})
+        if str(message.get("status") or "done").lower() in {"pending", "error"} or not str(message.get("content") or "").strip():
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Assistant reply is not ready"})
+
+        created_raw = message.get("createdAt")
+        try:
+            created_at = datetime.fromisoformat(str(created_raw).replace("Z", "+00:00")).timestamp() if created_raw else time.time()
+        except ValueError:
+            created_at = time.time()
+
+        try:
+            html = build_chat_reply_pdf_html(Message(
+                id=message_id,
+                role="assistant",
+                content=str(message.get("content") or ""),
+                status=str(message.get("status") or "done"),
+                created_at=created_at,
+            ))
+            pdf = render_pdf_bytes(html)
+        except Exception as exc:
+            return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"PDF export failed: {exc}"})
+
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        return binary_response(
+            self,
+            HTTPStatus.OK,
+            pdf,
+            "application/pdf",
+            filename=f"sellersprite-reply-{stamp}.pdf",
         )
 
     def handle_chat_tool_config(self) -> None:
