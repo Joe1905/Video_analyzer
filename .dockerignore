@@ -1,0 +1,12 @@
+.git
+.env
+.env.*
+backups/
+data/
+videos/
+output/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.claude/
+.codebuddy/
