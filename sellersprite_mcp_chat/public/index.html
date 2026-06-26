@@ -1,637 +1,125 @@
 <!doctype html>
 <html lang="zh-CN">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>SellerSprite MCP Chat</title>
-    <style>
-      :root {
-        --bg: #f6f7f9;
-        --panel: #ffffff;
-        --side: #eef5f2;
-        --text: #17202a;
-        --muted: #667085;
-        --line: #d9dee7;
-        --accent: #1d6f64;
-        --accent-strong: #14574e;
-        --soft: #eaf7f3;
-        --danger: #b42318;
-        --code: #f1f4f8;
-      }
-      * { box-sizing: border-box; }
-      html, body { height: 100%; }
-      body {
-        margin: 0;
-        overflow: hidden;
-        background: var(--bg);
-        color: var(--text);
-        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
-      }
-      .app { display: grid; grid-template-columns: 340px minmax(0, 1fr); height: 100%; min-height: 0; }
-      aside { border-right: 1px solid var(--line); background: var(--side); padding: 24px; overflow-y: auto; min-height: 0; }
-      main { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-width: 0; min-height: 0; height: 100%; }
-      header { border-bottom: 1px solid var(--line); background: var(--panel); padding: 20px 24px 16px; }
-      h1, h2, p { margin: 0; }
-      h1 { font-size: 20px; line-height: 1.25; }
-      h2 { margin-top: 28px; margin-bottom: 10px; font-size: 15px; }
-      ul { margin: 0; padding-left: 18px; color: #44546a; font-size: 13px; line-height: 1.7; }
-      .hint { margin-top: 4px; color: var(--muted); font-size: 13px; line-height: 1.5; }
-      .brand { display: flex; gap: 12px; align-items: center; }
-      .mark { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 8px; background: var(--accent); color: white; font-weight: 700; }
-      .session { margin-top: 16px; padding: 10px 12px; border: 1px solid #c9ded8; border-radius: 8px; background: #f9fffc; color: #40566b; font-size: 12px; word-break: break-all; }
-      .session-list { display: grid; gap: 8px; margin-top: 10px; }
-      .session-item {
-        display: block;
-        width: 100%;
-        border: 1px solid #c9ded8;
-        border-radius: 8px;
-        background: white;
-        color: #203245;
-        padding: 10px;
-        text-align: left;
-        font-size: 12px;
-        font-weight: 500;
-      }
-      .session-item:hover { background: #edf8f5; }
-      .session-item.active { border-color: var(--accent); background: #e2f3ef; }
-      .session-item strong { display: block; margin-bottom: 4px; color: #123a35; font-size: 12px; }
-      .session-item span { display: block; overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
-      .session-row { display: grid; grid-template-columns: minmax(0, 1fr) 28px; gap: 6px; align-items: stretch; }
-      .session-delete {
-        width: 28px;
-        min-width: 28px;
-        border: 1px solid #f2b8b5;
-        background: white;
-        color: var(--danger);
-        padding: 0;
-        font-size: 16px;
-      }
-      .session-delete:hover { background: #fff4f3; }
-      .quick { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
-      button { border: 0; border-radius: 8px; background: var(--accent); color: white; font-weight: 700; cursor: pointer; }
-      button:hover { background: var(--accent-strong); }
-      button:disabled { cursor: not-allowed; opacity: 0.55; }
-      .quick button, .danger-button { height: auto; min-width: auto; border: 1px solid #b7d6cf; background: white; color: var(--accent-strong); padding: 8px 12px; font-size: 13px; }
-      .quick button:hover { background: #edf8f5; }
-      .danger-button { margin-top: 12px; border-color: #f2b8b5; color: var(--danger); }
-      .danger-button:hover { background: #fff4f3; }
-      .messages { min-height: 0; overflow-y: scroll; padding: 24px; scrollbar-gutter: stable; }
-      .load-more {
-        display: none;
-        margin: 0 auto 18px;
-        border: 1px solid #b7d6cf;
-        background: white;
-        color: var(--accent-strong);
-        padding: 8px 14px;
-        font-size: 13px;
-      }
-      .load-more:hover { background: #edf8f5; }
-      .load-more.visible { display: block; }
-      .message { max-width: min(840px, 80%); margin-bottom: 24px; border: 1px solid #cfd7e3; border-radius: 8px; background: white; padding: 16px; box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04); }
-      .message.user { margin-left: auto; border-color: #a9d8cf; background: var(--soft); }
-      .message.error { border-color: #f4b4ad; background: #fff7f6; }
-      .message.pending { opacity: 0.72; }
-      .role { color: #52627a; font-size: 12px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; }
-      .time-line, .request-line { margin-top: 8px; color: #44546a; font-size: 12px; }
-      .request-line { color: #174f75; }
-      .tool-log { margin-top: 10px; border: 1px solid #d9dee7; border-radius: 8px; background: #fbfcfe; }
-      .tool-log summary { cursor: pointer; padding: 9px 12px; color: #40566b; font-size: 12px; font-weight: 800; }
-      .tool-card { margin: 0 10px 10px; border: 1px solid #d9dee7; border-radius: 8px; background: white; padding: 10px 12px; font-size: 12px; }
-      .tool-name { color: var(--accent-strong); font-weight: 800; }
-      .tool-args { margin-top: 5px; color: #667085; word-break: break-word; }
-      .tool-status { margin-top: 6px; font-weight: 700; }
-      .tool-status.ok { color: #087443; }
-      .tool-status.err { color: var(--danger); }
-      .cache-tag { display: inline-flex; align-items: center; margin-left: 6px; border: 1px solid var(--line); border-radius: 999px; padding: 1px 7px; background: #fff; color: #667085; font-size: 10px; font-weight: 800; }
-      .cache-tag.hit { border-color: #bfdbfe; background: #eff6ff; color: #1d4ed8; }
-      .cache-tag.live { border-color: #bbf7d0; background: #f0fdf4; color: #047857; }
-      .markdown { margin-top: 8px; line-height: 1.65; }
-      .markdown p, .markdown ul, .markdown ol, .markdown table { margin: 8px 0 0; }
-      .markdown table { display: block; max-width: 100%; overflow: auto; border-collapse: collapse; }
-      .markdown th, .markdown td { border: 1px solid var(--line); padding: 6px 8px; text-align: left; vertical-align: top; }
-      code { border-radius: 4px; background: var(--code); padding: 2px 5px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 0.9em; }
-      form { display: grid; grid-template-columns: 56px minmax(0, 1fr) 92px; gap: 12px; align-items: end; border-top: 1px solid var(--line); background: var(--panel); padding: 16px 24px; }
-      textarea { width: 100%; min-height: 56px; max-height: 150px; resize: vertical; border: 1px solid #cfd7e3; border-radius: 8px; padding: 14px; font: inherit; line-height: 1.45; }
-      textarea:focus { border-color: var(--accent); outline: 2px solid rgba(29, 111, 100, 0.16); }
-      #submit { height: 56px; }
-      .icon-button { display: grid; place-items: center; width: 56px; height: 56px; border: 1px solid #b7d6cf; background: var(--accent); color: white; font-size: 26px; line-height: 1; }
-      .icon-button:hover { background: var(--accent-strong); color: white; }
-      .file-input { display: none; }
-      .attachment-preview { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
-      .attachment-chip { position: relative; width: 72px; height: 72px; overflow: hidden; border: 1px solid var(--line); border-radius: 8px; }
-      .attachment-chip img { width: 100%; height: 100%; object-fit: cover; }
-      .attachment-chip button { position: absolute; top: 4px; right: 4px; width: 22px; height: 22px; border-radius: 999px; background: rgba(0, 0, 0, 0.72); color: white; font-size: 12px; }
-      .status { display: inline-flex; margin-top: 16px; border: 1px solid #b7d6cf; border-radius: 8px; background: white; padding: 6px 10px; color: #315c55; font-size: 12px; }
-      @media (max-width: 780px) {
-        .app { grid-template-columns: 1fr; }
-        aside { display: none; }
-        .message { max-width: 100%; }
-        form { grid-template-columns: 48px minmax(0, 1fr); }
-        #submit { grid-column: 1 / -1; }
-      }
-    </style>
-  </head>
-  <body>
-    <div class="app">
-      <aside>
-        <div class="brand">
-          <div class="mark">S</div>
-          <div>
-            <h1>SellerSprite MCP &#23545;&#35805;</h1>
-            <p class="hint">DeepSeek + Model Context Protocol tools</p>
-          </div>
-        </div>
-        <div class="session">&#24403;&#21069; session: <span id="session-label"></span></div>
-        <h2>Sessions</h2>
-        <div id="session-list" class="session-list"></div>
-        <h2>&#21487;&#20197;&#30452;&#25509;&#38382;</h2>
-        <ul>
-          <li>&#26597; US &#31449; ASIN B0CXYZ1234 &#30340;&#31454;&#21697;&#25968;&#25454;</li>
-          <li>&#24110;&#25105;&#30475;&#20851;&#38190;&#35789; coffee maker &#30340;&#25628;&#32034;&#37327;</li>
-          <li>&#35782;&#21035;&#36825;&#24352;&#22270;&#37324;&#30340;&#25991;&#23383;</li>
-          <li>&#20320;&#33021;&#24110;&#25105;&#35843;&#29992;&#21738;&#20123; SellerSprite &#24037;&#20855;&#65311;</li>
-        </ul>
-        <h2>&#36816;&#34892;&#35201;&#27714;</h2>
-        <p class="hint">&#26381;&#21153;&#31471;&#35835;&#21462; <code>DEEPSEEK_API_KEY</code> &#21644; <code>SELLERSPRITE_SECRET_KEY</code>&#12290;</p>
-        <div class="quick">
-          <button type="button" id="new-session">&#26032;&#22686;&#31383;&#21475;</button>
-          <button type="button" id="guide-button">&#20351;&#29992;&#25163;&#20876;</button>
-          <button type="button" data-text="你能帮我调用哪些 SellerSprite 工具？">&#24037;&#20855;&#35828;&#26126;</button>
-          <button type="button" data-text="查 US 站 ASIN B0CXYZ1234 的竞品数据">ASIN &#31034;&#20363;</button>
-        </div>
-        <button id="clear-chat" class="danger-button" type="button">&#21024;&#38500;&#24403;&#21069; session &#32842;&#22825;&#35760;&#24405;</button>
-        <div id="status" class="status">connecting...</div>
-      </aside>
-      <main>
-        <header>
-          <h1>&#23616;&#22495;&#32593;&#20849;&#20139;&#23545;&#35805;</h1>
-          <p class="hint">&#21516;&#19968; session &#20869;&#21516;&#27493;&#28040;&#24687;&#65307;&#28857;&#20987;&#8220;&#26032;&#22686;&#31383;&#21475;&#8221;&#20250;&#25171;&#24320;&#29420;&#31435;&#19978;&#19979;&#25991;&#12290;Enter &#21457;&#36865;&#65292;Shift+Enter &#25442;&#34892;&#12290;</p>
-        </header>
-        <section id="messages" class="messages" aria-live="polite">
-          <button id="load-more" class="load-more" type="button">加载更早消息</button>
-        </section>
-        <form id="chat-form">
-          <input id="image-input" class="file-input" type="file" accept="image/*" multiple />
-          <button id="upload" class="icon-button" type="button" title="upload image" aria-label="upload image">+</button>
-          <div class="composer">
-            <div id="attachment-preview" class="attachment-preview"></div>
-            <textarea id="message" placeholder="输入自然语言问题，或粘贴图片后按 Enter 发送"></textarea>
-          </div>
-          <button id="submit" type="submit">&#21457;&#36865;</button>
-        </form>
-      </main>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SellerSprite 对话</title>
+<style>
+:root{--bg:#f6f8fb;--surface:#fff;--text:#0f172a;--text2:#475569;--text3:#94a3b8;--border:#e2e8f0;--border2:#f1f5f9;--brand:#2563eb;--brand2:#1d4ed8;--brand-soft:#eff6ff;--green:#059669;--green-soft:#ecfdf5;--red:#dc2626;--red-soft:#fef2f2;--radius-sm:8px;--radius:12px;--radius-lg:16px}
+*{box-sizing:border-box;margin:0}
+html,body{height:100%}
+body{background:var(--bg);color:var(--text);font-family:"Segoe UI",system-ui,-apple-system,sans-serif;overflow:hidden;line-height:1.5}
+button,input,textarea{font:inherit;color:inherit}
+button{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:36px;border:1px solid transparent;border-radius:var(--radius-sm);padding:8px 14px;font-weight:600;font-size:13px;cursor:pointer;transition:.15s ease;white-space:nowrap}
+button.primary{background:var(--brand);color:#fff}button.primary:hover{background:var(--brand2)}
+button.secondary{background:var(--surface);color:var(--text);border-color:var(--border)}button.secondary:hover{background:var(--brand-soft);border-color:var(--brand)}
+button.ghost{background:transparent;color:var(--text2)}button.ghost:hover{background:var(--border2)}
+button.sm{min-height:28px;padding:3px 8px;font-size:11px;border-radius:6px}button.danger{color:var(--red)}button.danger:hover{background:var(--red-soft)}
+button:disabled{opacity:.55;cursor:not-allowed}
+textarea{width:100%;border:1px solid var(--border);border-radius:20px;background:var(--surface);padding:10px 14px;font-size:13px;outline:none;resize:none;min-height:42px;max-height:120px}
+textarea:focus{border-color:var(--brand);box-shadow:0 0 0 3px rgba(37,99,235,.1)}
+header{height:60px;display:flex;align-items:center;justify-content:space-between;padding:0 24px;background:rgba(255,255,255,.8);border-bottom:1px solid var(--border);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px)}
+header h1{font-size:18px;font-weight:700}
+.app-nav{height:48px;display:flex;align-items:center;gap:4px;padding:4px;border:1px solid #e5e7eb;border-radius:14px;background:rgba(255,255,255,.94);box-shadow:0 1px 2px rgba(15,23,42,.04),0 8px 24px rgba(15,23,42,.03);overflow-x:auto;scrollbar-width:none}.app-nav::-webkit-scrollbar{display:none}
+.app-nav__item{height:38px;display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:0 14px;border:1px solid transparent;border-radius:10px;color:#64748b;text-decoration:none;font-size:13px;font-weight:650;line-height:1;white-space:nowrap;transition:.16s ease}
+.app-nav__item svg{width:18px;height:18px;stroke:#94a3b8;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round;fill:none;flex:0 0 18px}
+.app-nav__item:hover{background:#f8fafc;color:#334155;border-color:#eef2f7}.app-nav__item:hover svg{stroke:#64748b}
+.app-nav__item.active{background:#eff6ff;color:#2563eb;border-color:#bfdbfe}.app-nav__item.active svg{stroke:#2563eb}
+.chat-shell{display:grid;grid-template-columns:280px minmax(0,1fr);height:calc(100vh - 60px)}
+.sidebar{background:var(--surface);border-right:1px solid var(--border);display:grid;grid-template-rows:auto minmax(0,1fr);overflow:hidden}
+.sidebar-head{padding:14px 16px;border-bottom:1px solid var(--border);display:grid;gap:10px}
+.session-list{overflow-y:auto}
+.session-item{padding:12px 16px;cursor:pointer;border-bottom:1px solid var(--border2);display:flex;justify-content:space-between;align-items:center;gap:8px;transition:.1s ease}
+.session-item:hover{background:var(--border2)}.session-item.active{background:var(--brand-soft);border-left:3px solid var(--brand);padding-left:13px}
+.session-item .info{min-width:0;flex:1}.session-item .title{font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.session-item .meta{font-size:11px;color:var(--text3);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.session-item .del-btn{display:none;color:var(--text3);min-height:auto;padding:4px 6px;font-size:14px}.session-item:hover .del-btn{display:inline-flex}
+.chat-main{display:grid;grid-template-rows:minmax(0,1fr) auto;min-height:0}
+.messages{overflow-y:auto;padding:20px 24px;display:flex;flex-direction:column;gap:16px}
+.msg{display:flex;flex-direction:column;max-width:80%}.msg.user{align-self:flex-end;align-items:flex-end}.msg.assistant{align-self:flex-start}
+.msg .bubble{padding:12px 16px;border-radius:var(--radius);line-height:1.6;font-size:14px;word-break:break-word}.msg .time{font-size:10px;color:var(--text3);margin-top:3px;padding:0 4px}
+.msg.user .bubble{background:var(--brand);color:#fff;border-bottom-right-radius:4px}
+.msg.assistant .bubble{background:var(--surface);border:1px solid var(--border);border-bottom-left-radius:4px}
+.msg.assistant .bubble h1,.msg.assistant .bubble h2,.msg.assistant .bubble h3{margin:4px 0 10px;font-size:16px;line-height:1.4}
+.msg.assistant .bubble h1{font-size:18px}.msg.assistant .bubble h2{font-size:17px}.msg.assistant .bubble p{margin:8px 0}.msg.assistant .bubble hr{border:0;border-top:1px solid var(--border);margin:14px 0}
+.msg.assistant .bubble code{background:var(--border2);border:1px solid var(--border);border-radius:5px;padding:1px 5px;font-size:12px}.msg.assistant .bubble ul,.msg.assistant .bubble ol{margin:8px 0;padding-left:22px}.msg.assistant .bubble li{margin:3px 0}
+.md-table-wrap{overflow-x:auto;margin:10px 0;border:1px solid var(--border);border-radius:8px;background:#fff}.md-table{width:100%;border-collapse:collapse;font-size:13px;min-width:420px}.md-table th,.md-table td{border-bottom:1px solid var(--border);border-right:1px solid var(--border);padding:8px 10px;text-align:left;vertical-align:top}.md-table th:last-child,.md-table td:last-child{border-right:0}.md-table tr:last-child td{border-bottom:0}.md-table th{background:var(--border2);font-weight:800;color:var(--text)}
+.tool-log{margin:4px 0}.tool-log summary{cursor:pointer;color:var(--text2);font-size:12px;font-weight:700;margin:4px 0 6px}.tool-card{margin:4px 0;background:var(--border2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 14px;font-size:12px}.tool-card .tool-name{font-weight:700;color:var(--brand);margin-bottom:4px}.tool-card .tool-args{color:var(--text2);word-break:break-word}.tool-card .tool-status{font-size:11px;margin-top:4px}.tool-card .tool-status.ok{color:var(--green)}.tool-card .tool-status.err{color:var(--red)}
+.cache-tag{display:inline-flex;align-items:center;margin-left:6px;border:1px solid var(--border);border-radius:999px;padding:1px 7px;background:#fff;color:var(--text2);font-size:10px;font-weight:700}.cache-tag.hit{border-color:#bfdbfe;background:#eff6ff;color:#1d4ed8}.cache-tag.live{border-color:#bbf7d0;background:#f0fdf4;color:#047857}
+.input-bar{display:flex;gap:8px;padding:14px 20px;border-top:1px solid var(--border);background:var(--surface);align-items:flex-end}.composer{flex:1;display:flex;flex-direction:column;gap:6px}.file-input{display:none}.attachment-preview{display:flex;flex-wrap:wrap;gap:8px}.attachment-chip{position:relative;width:56px;height:56px;overflow:hidden;border:1px solid var(--border);border-radius:8px}.attachment-chip img{width:100%;height:100%;object-fit:cover}.attachment-chip button{position:absolute;top:3px;right:3px;min-height:20px;width:20px;padding:0;border-radius:999px;background:rgba(15,23,42,.72);color:#fff;font-size:11px}
+.empty-chat{display:flex;align-items:center;justify-content:center;height:100%;color:var(--text3);font-size:15px;text-align:center;flex-direction:column;gap:8px}.empty-chat b{color:var(--text);font-size:20px}.load-more{text-align:center;padding:8px;color:var(--text3);font-size:12px;cursor:pointer}.load-more:hover{color:var(--brand)}
+@media(max-width:800px){.chat-shell{grid-template-columns:1fr}.sidebar{display:none}.msg{max-width:100%}.app-nav__label{display:none}}
+</style>
+</head>
+<body>
+<header>
+  <h1>SellerSprite 对话</h1>
+  <nav class="app-nav" aria-label="主导航">
+    <a class="app-nav__item" href="/" title="AI 聊天"><svg viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/></svg><span class="app-nav__label">首页</span></a>
+    <a class="app-nav__item" href="/report" title="每日报告"><svg viewBox="0 0 24 24"><path d="M7 3h7l4 4v14H7z"/><path d="M14 3v5h5"/><path d="M10 12h6"/><path d="M10 16h4"/></svg><span class="app-nav__label">日报</span></a>
+    <a class="app-nav__item active" href="/amazon" title="Amazon"><svg viewBox="0 0 24 24"><path d="M4 7.5 12 3l8 4.5v9L12 21l-8-4.5z"/><path d="M4 7.5 12 12l8-4.5"/><path d="M12 12v9"/></svg><span class="app-nav__label">Amazon</span></a>
+    <a class="app-nav__item" href="/shop" title="Shop"><svg viewBox="0 0 24 24"><path d="M6 8h12l1 13H5z"/><path d="M9 8V6a3 3 0 0 1 6 0v2"/><path d="M5 11h14"/></svg><span class="app-nav__label">Shop</span></a>
+    <a class="app-nav__item" href="/metrics" title="数据"><svg viewBox="0 0 24 24"><path d="M4 19V5"/><path d="M20 19H4"/><path d="M8 16v-5"/><path d="M12 16V8"/><path d="M16 16v-7"/></svg><span class="app-nav__label">数据</span></a>
+    <a class="app-nav__item" href="/extract" title="视频分析"><svg viewBox="0 0 24 24"><path d="M4 5h16v14H4z"/><path d="m10 9 5 3-5 3z"/><path d="M8 21h8"/><path d="M12 19v2"/></svg><span class="app-nav__label">分析</span></a>
+  </nav>
+</header>
+<div class="chat-shell">
+  <aside class="sidebar">
+    <div class="sidebar-head">
+      <button class="primary" style="width:100%" id="newSession">+ 新建对话</button>
+      <button class="secondary sm" id="guideBtn">使用手册</button>
     </div>
-    <script>
-      const form = document.querySelector("#chat-form");
-      const input = document.querySelector("#message");
-      const submit = document.querySelector("#submit");
-      const upload = document.querySelector("#upload");
-      const clearChat = document.querySelector("#clear-chat");
-      const guideButton = document.querySelector("#guide-button");
-      const newSession = document.querySelector("#new-session");
-      const sessionLabel = document.querySelector("#session-label");
-      const sessionList = document.querySelector("#session-list");
-      const imageInput = document.querySelector("#image-input");
-      const attachmentPreview = document.querySelector("#attachment-preview");
-      const messages = document.querySelector("#messages");
-      const loadMore = document.querySelector("#load-more");
-      const status = document.querySelector("#status");
-      const rendered = new Map();
-      const pendingAttachments = [];
-      const MESSAGE_PAGE_CHARS = 20000;
-      let eventSource = null;
-      let hasMoreMessages = false;
-      let nextBeforeMessage = null;
-      let loadingOlderMessages = false;
-
-      function makeId() {
-        if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") {
-          return globalThis.crypto.randomUUID();
-        }
-        return `session-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-      }
-
-      const url = new URL(window.location.href);
-      let sessionId = url.searchParams.get("session") || "";
-      if (!sessionId) {
-        sessionId = makeId();
-      }
-      sessionLabel.textContent = sessionId;
-
-      function setSession(nextSessionId) {
-        sessionId = nextSessionId;
-        const next = new URL(window.location.href);
-        next.searchParams.set("session", sessionId);
-        window.history.replaceState(null, "", next);
-        sessionLabel.textContent = sessionId;
-      }
-
-      function api(path, params = {}) {
-        const prefixedPath = path.startsWith("/amazon/") ? path : `/amazon${path}`;
-        const next = new URL(prefixedPath, window.location.origin);
-        next.searchParams.set("session", sessionId);
-        Object.entries(params).forEach(([key, value]) => {
-          if (value !== undefined && value !== null && value !== "") next.searchParams.set(key, value);
-        });
-        return next.pathname + next.search;
-      }
-
-      function shortId(value) {
-        return value.length > 14 ? `${value.slice(0, 8)}...${value.slice(-4)}` : value;
-      }
-
-      function formatTime(value) {
-        if (!value) return "";
-        return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date(value));
-      }
-
-      function roleLabel(role) {
-        if (role === "user") return "You";
-        if (role === "assistant") return "SellerSprite MCP";
-        return role || "System";
-      }
-
-      function cacheTag(result) {
-        const cache = result?.cache || result?.data?._cache || result?._cache;
-        if (!cache || typeof cache.hit === "undefined") return "";
-        const hit = Boolean(cache.hit);
-        return `<span class="cache-tag ${hit ? "hit" : "live"}">${hit ? "缓存命中" : "实时调用"}</span>`;
-      }
-
-      function toolArgs(toolCall, fallbackArgs) {
-        if (fallbackArgs && typeof fallbackArgs === "object") return fallbackArgs;
-        try {
-          const raw = toolCall?.function?.arguments;
-          return typeof raw === "string" ? JSON.parse(raw) : raw || {};
-        } catch {
-          return {};
-        }
-      }
-
-      function shortJson(value) {
-        const text = JSON.stringify(value || {});
-        return text.length > 220 ? `${text.slice(0, 217)}...` : text;
-      }
-
-      function renderToolLog(message) {
-        const results = Array.isArray(message?.raw?.toolResults) ? message.raw.toolResults : [];
-        if (!results.length) return null;
-        const details = document.createElement("details");
-        details.className = "tool-log";
-        details.open = message.status === "pending";
-        const summary = document.createElement("summary");
-        summary.textContent = `工具调用记录 (${results.length})`;
-        details.append(summary);
-        for (const item of results) {
-          const card = document.createElement("div");
-          card.className = "tool-card";
-          const name = item?.toolCall?.function?.name || item?.result?.request?.apiPath || "unknown_tool";
-          const args = toolArgs(item?.toolCall, item?.args);
-          const ok = Boolean(item?.result?.ok);
-          const err = item?.result?.error?.message || item?.result?.error?.code || "";
-          card.innerHTML = [
-            `<div class="tool-name">${escapeHtml(name)}</div>`,
-            `<div class="tool-args">${escapeHtml(shortJson(args))}</div>`,
-            `<div class="tool-status ${ok ? "ok" : "err"}">${ok ? "成功" : "失败"}${cacheTag(item?.result)}</div>`,
-            err ? `<div class="tool-args">${escapeHtml(err)}</div>` : "",
-          ].join("");
-          details.append(card);
-        }
-        return details;
-      }
-
-      function escapeHtml(value) {
-        return String(value || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
-      }
-
-      function inlineMarkdown(value) {
-        return escapeHtml(value).replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>").replace(/\*([^*]+)\*/g, "<em>$1</em>");
-      }
-
-      function renderMarkdown(value) {
-        const lines = String(value || "").replace(/\r\n/g, "\n").split("\n");
-        const blocks = [];
-        let i = 0;
-        while (i < lines.length) {
-          if (!lines[i].trim()) { i += 1; continue; }
-          const tableLines = [];
-          while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) tableLines.push(lines[i++]);
-          if (tableLines.length >= 2 && /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(tableLines[1])) {
-            const rows = tableLines.filter((_, index) => index !== 1).map((line) => line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => inlineMarkdown(cell.trim())));
-            const header = rows.shift() || [];
-            blocks.push(`<table><thead><tr>${header.map((cell) => `<th>${cell}</th>`).join("")}</tr></thead><tbody>${rows.map((row) => `<tr>${row.map((cell) => `<td>${cell}</td>`).join("")}</tr>`).join("")}</tbody></table>`);
-            continue;
-          }
-          if (tableLines.length) { blocks.push(`<p>${inlineMarkdown(tableLines.join("\n")).replace(/\n/g, "<br>")}</p>`); continue; }
-          const listLines = [];
-          while (i < lines.length && /^\s*(-|\d+\.)\s+/.test(lines[i])) listLines.push(lines[i++]);
-          if (listLines.length) {
-            const ordered = /^\s*\d+\.\s+/.test(listLines[0]);
-            const tag = ordered ? "ol" : "ul";
-            blocks.push(`<${tag}>${listLines.map((line) => `<li>${inlineMarkdown(line.replace(/^\s*(-|\d+\.)\s+/, ""))}</li>`).join("")}</${tag}>`);
-            continue;
-          }
-          const paragraph = [];
-          while (i < lines.length && lines[i].trim() && !/^\s*\|.*\|\s*$/.test(lines[i]) && !/^\s*(-|\d+\.)\s+/.test(lines[i])) paragraph.push(lines[i++]);
-          blocks.push(`<p>${inlineMarkdown(paragraph.join("\n")).replace(/\n/g, "<br>")}</p>`);
-        }
-        return blocks.join("");
-      }
-
-      function scrollMessageToTop(article) {
-        requestAnimationFrame(() => { messages.scrollTop = article.offsetTop - messages.offsetTop; });
-      }
-
-      function resetMessageList() {
-        messages.innerHTML = "";
-        messages.append(loadMore);
-        rendered.clear();
-      }
-
-      function updateLoadMoreButton() {
-        loadMore.classList.toggle("visible", hasMoreMessages || loadingOlderMessages);
-        loadMore.disabled = loadingOlderMessages || !hasMoreMessages;
-        loadMore.textContent = loadingOlderMessages ? "加载中..." : "加载更早消息";
-      }
-
-      async function fetchGuideMessage() {
-        const response = await fetch(api("/api/guide"));
-        const result = await response.json();
-        if (!result.ok) throw new Error("guide load failed");
-        return result.guide;
-      }
-
-      async function showGuideMessage() {
-        const guide = await fetchGuideMessage();
-        upsertMessage({ ...guide, id: `guide-${Date.now()}`, createdAt: new Date().toISOString() });
-      }
-
-      function renderContent(article, message) {
-        article.innerHTML = "";
-        const label = document.createElement("div");
-        label.className = "role";
-        label.textContent = roleLabel(message.role);
-        article.append(label);
-        if (message.createdAt) {
-          const time = document.createElement("div");
-          time.className = "time-line";
-          time.textContent = formatTime(message.createdAt);
-          article.append(time);
-        }
-        const toolLog = renderToolLog(message);
-        if (toolLog) article.append(toolLog);
-        else if (message.request) {
-          const request = document.createElement("div");
-          request.className = "request-line";
-          request.textContent = `${message.request.method} ${message.request.apiPath}`;
-          article.append(request);
-        }
-        const text = document.createElement("div");
-        text.className = message.role === "assistant" ? "markdown" : "";
-        if (message.role === "assistant") text.innerHTML = renderMarkdown(message.content || "");
-        else text.textContent = message.content || "";
-        article.append(text);
-      }
-
-      function upsertMessage(message, shouldScroll = true, position = "append") {
-        let article = rendered.get(message.id);
-        if (!article) {
-          article = document.createElement("article");
-          rendered.set(message.id, article);
-          if (position === "prepend") loadMore.after(article);
-          else messages.append(article);
-        }
-        article.className = `message ${message.role === "user" ? "user" : ""} ${message.status === "error" ? "error" : ""} ${message.status === "pending" ? "pending" : ""}`.trim();
-        renderContent(article, message);
-        if (shouldScroll) scrollMessageToTop(article);
-      }
-
-      function renderAttachmentPreview() {
-        attachmentPreview.innerHTML = "";
-        pendingAttachments.forEach((attachment, index) => {
-          const chip = document.createElement("div");
-          chip.className = "attachment-chip";
-          const img = document.createElement("img");
-          img.src = attachment.dataUrl;
-          img.alt = attachment.name || "image";
-          const remove = document.createElement("button");
-          remove.type = "button";
-          remove.textContent = "x";
-          remove.title = "remove image";
-          remove.addEventListener("click", () => { pendingAttachments.splice(index, 1); renderAttachmentPreview(); });
-          chip.append(img, remove);
-          attachmentPreview.append(chip);
-        });
-      }
-
-      function fileToAttachment(file) {
-        return new Promise((resolve, reject) => {
-          if (!file.type.startsWith("image/")) return resolve(null);
-          if (file.size > 6 * 1024 * 1024) return reject(new Error("image exceeds 6MB"));
-          const reader = new FileReader();
-          reader.onload = () => resolve({ name: file.name || "pasted-image", type: file.type, size: file.size, dataUrl: reader.result });
-          reader.onerror = () => reject(new Error("image read failed"));
-          reader.readAsDataURL(file);
-        });
-      }
-
-      async function addFiles(files) {
-        const images = Array.from(files || []).filter((file) => file.type.startsWith("image/"));
-        if (!images.length) return;
-        const attachments = (await Promise.all(images.map(fileToAttachment))).filter(Boolean);
-        pendingAttachments.push(...attachments);
-        pendingAttachments.splice(6);
-        renderAttachmentPreview();
-      }
-
-      async function loadMessages() {
-        const response = await fetch(api("/api/messages", { maxChars: MESSAGE_PAGE_CHARS }));
-        const result = await response.json();
-        resetMessageList();
-        hasMoreMessages = Boolean(result.hasMore);
-        nextBeforeMessage = result.nextBefore || null;
-        updateLoadMoreButton();
-        result.messages.forEach((message) => upsertMessage(message, false));
-        if (!result.messages.length) return showGuideMessage();
-        const latest = rendered.get(result.messages.at(-1).id);
-        if (latest) scrollMessageToTop(latest);
-      }
-
-      async function loadOlderMessages() {
-        if (!hasMoreMessages || !nextBeforeMessage || loadingOlderMessages) return;
-        loadingOlderMessages = true;
-        updateLoadMoreButton();
-        const previousHeight = messages.scrollHeight;
-        try {
-          const response = await fetch(api("/api/messages", { before: nextBeforeMessage, maxChars: MESSAGE_PAGE_CHARS }));
-          const result = await response.json();
-          hasMoreMessages = Boolean(result.hasMore);
-          nextBeforeMessage = result.nextBefore || null;
-          [...result.messages].reverse().forEach((message) => upsertMessage(message, false, "prepend"));
-          messages.scrollTop += messages.scrollHeight - previousHeight;
-        } finally {
-          loadingOlderMessages = false;
-          updateLoadMoreButton();
-        }
-      }
-
-      async function loadSessions() {
-        const response = await fetch("/amazon/api/sessions");
-        const result = await response.json();
-        if (!result.ok) return;
-        sessionList.innerHTML = "";
-        const exists = result.sessions.some((item) => item.id === sessionId);
-        const draft = exists
-          ? []
-          : [{ id: sessionId, title: "新窗口", messageCount: 0, lastMessage: "", updatedAt: new Date().toISOString(), draft: true }];
-        const items = [...draft, ...result.sessions];
-        items.forEach((session) => {
-          const row = document.createElement("div");
-          row.className = "session-row";
-          const button = document.createElement("button");
-          button.type = "button";
-          button.className = `session-item ${session.id === sessionId ? "active" : ""}`.trim();
-          const title = document.createElement("strong");
-          title.textContent = session.title || shortId(session.id);
-          const meta = document.createElement("span");
-          meta.textContent = session.draft ? "未开始对话" : session.lastMessage || `${session.messageCount || 0} messages`;
-          button.append(title, meta);
-          button.addEventListener("click", async () => {
-            if (session.id === sessionId) return;
-            setSession(session.id);
-            connectEvents();
-            await loadMessages();
-            await loadSessions();
-          });
-          row.append(button);
-          if ((session.messageCount || 0) > 0) {
-            const remove = document.createElement("button");
-            remove.type = "button";
-            remove.className = "session-delete";
-            remove.title = "delete session";
-            remove.textContent = "x";
-            remove.addEventListener("click", async (event) => {
-              event.stopPropagation();
-              if (!window.confirm("Delete this session?")) return;
-              await fetch(apiForSession("/api/session", session.id), { method: "DELETE" });
-              if (session.id === sessionId) {
-                setSession(makeId());
-                connectEvents();
-                await loadMessages();
-              }
-              await loadSessions();
-            });
-            row.append(remove);
-          }
-          sessionList.append(row);
-        });
-      }
-
-      function apiForSession(path, id) {
-        const prefixedPath = path.startsWith("/amazon/") ? path : `/amazon${path}`;
-        const next = new URL(prefixedPath, window.location.origin);
-        next.searchParams.set("session", id);
-        return next.pathname + next.search;
-      }
-
-      function connectEvents() {
-        if (eventSource) eventSource.close();
-        eventSource = new EventSource(api("/api/events"));
-        eventSource.addEventListener("ready", () => { status.textContent = "synced"; });
-        eventSource.addEventListener("message", (event) => {
-          upsertMessage(JSON.parse(event.data));
-          loadSessions().catch(() => {});
-        });
-        eventSource.addEventListener("clear", () => {
-          resetMessageList();
-          hasMoreMessages = false;
-          nextBeforeMessage = null;
-          updateLoadMoreButton();
-          showGuideMessage().catch(() => {});
-          loadSessions().catch(() => {});
-        });
-        eventSource.onerror = () => { status.textContent = "sync reconnecting..."; };
-      }
-
-      async function ask(message, attachments = []) {
-        submit.disabled = true;
-        submit.textContent = "Sending";
-        try {
-          const response = await fetch(api("/api/ask"), {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ sessionId, message, attachments }),
-          });
-          if (!response.ok && response.status !== 202) {
-            const result = await response.json();
-            throw new Error(result.data?.message || "request failed");
-          }
-          connectEvents();
-          await loadMessages();
-          loadSessions().catch(() => {});
-        } catch (error) {
-          upsertMessage({ id: `client-error-${Date.now()}`, role: "assistant", status: "error", createdAt: new Date().toISOString(), content: error.message || "request failed" });
-        } finally {
-          submit.disabled = false;
-          submit.textContent = "\u53d1\u9001";
-          input.focus();
-        }
-      }
-
-      form.addEventListener("submit", (event) => {
-        event.preventDefault();
-        const value = input.value.trim();
-        if (!value && !pendingAttachments.length) return;
-        const attachments = pendingAttachments.splice(0);
-        renderAttachmentPreview();
-        input.value = "";
-        ask(value, attachments);
-      });
-
-      input.addEventListener("keydown", (event) => {
-        if (event.key === "Enter" && !event.shiftKey) {
-          event.preventDefault();
-          form.requestSubmit();
-        }
-      });
-      messages.addEventListener("scroll", () => {
-        if (messages.scrollTop <= 24) loadOlderMessages().catch(() => {});
-      });
-      loadMore.addEventListener("click", () => loadOlderMessages().catch(() => {}));
-      upload.addEventListener("click", () => imageInput.click());
-      imageInput.addEventListener("change", () => {
-        addFiles(imageInput.files).catch((error) => upsertMessage({ id: `client-error-${Date.now()}`, role: "assistant", status: "error", createdAt: new Date().toISOString(), content: error.message }));
-        imageInput.value = "";
-      });
-      input.addEventListener("paste", (event) => {
-        const files = Array.from(event.clipboardData?.files || []);
-        if (files.some((file) => file.type.startsWith("image/"))) addFiles(files).catch(() => {});
-      });
-      clearChat.addEventListener("click", async () => {
-        if (!window.confirm("Delete current session messages?")) return;
-        await fetch(api("/api/messages/clear"), { method: "POST" });
-        await loadSessions();
-      });
-      newSession.addEventListener("click", () => {
-        setSession(makeId());
-        resetMessageList();
-        hasMoreMessages = false;
-        nextBeforeMessage = null;
-        updateLoadMoreButton();
-        connectEvents();
-        showGuideMessage().catch(() => {});
-        loadSessions().catch(() => {});
-      });
-      guideButton.addEventListener("click", () => showGuideMessage().catch(() => {}));
-      document.querySelectorAll(".quick button[data-text]").forEach((button) => {
-        button.addEventListener("click", () => { input.value = button.dataset.text; input.focus(); });
-      });
-
-      updateLoadMoreButton();
-      Promise.all([loadMessages(), loadSessions()]).then(connectEvents).catch((error) => {
-        status.textContent = "sync init failed";
-        upsertMessage({ id: "init-error", role: "assistant", status: "error", createdAt: new Date().toISOString(), content: error.message || "init failed" });
-      });
-    </script>
-  </body>
+    <div class="session-list" id="sessionList"></div>
+  </aside>
+  <main class="chat-main">
+    <div class="messages" id="messages"><div class="empty-chat" id="emptyChat"><b>SellerSprite MCP</b><span>输入 Amazon 选品、ASIN、关键词或类目问题</span></div></div>
+    <div class="input-bar">
+      <input id="imageInput" class="file-input" type="file" accept="image/*" multiple>
+      <button id="uploadBtn" class="secondary" title="上传图片">+</button>
+      <div class="composer">
+        <div id="attachmentPreview" class="attachment-preview"></div>
+        <textarea id="input" rows="1" placeholder="输入自然语言问题，Enter 发送，Shift+Enter 换行"></textarea>
+      </div>
+      <button id="sendBtn" class="primary">发送</button>
+    </div>
+  </main>
+</div>
+<script>
+const S={sessionId:"",sessions:[],messages:[],sse:null,loading:false,nextBefore:null,hasMore:false,attachments:[]};
+const $=id=>document.getElementById(id),msgBox=$("messages"),emptyChat=$("emptyChat"),input=$("input");
+const SESSION_KEY="videoAnalyzer.sellersprite.sessionId";
+function makeId(){return crypto.randomUUID?crypto.randomUUID():`session-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,10)}`}
+function initSession(){const url=new URL(location.href);S.sessionId=url.searchParams.get("session")||localStorage.getItem(SESSION_KEY)||makeId();rememberSession(S.sessionId)}
+function rememberSession(id){S.sessionId=id;try{localStorage.setItem(SESSION_KEY,id)}catch(e){}const url=new URL(location.href);url.searchParams.set("session",id);history.replaceState(null,"",url)}
+function api(path,params={}){const u=new URL(`/amazon${path}`,location.origin);u.searchParams.set("session",S.sessionId);Object.entries(params).forEach(([k,v])=>{if(v!==undefined&&v!==null&&v!=="")u.searchParams.set(k,v)});return u.pathname+u.search}
+function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]))}
+function formatTime(v){if(!v)return"";const d=typeof v==="number"?new Date(v*1000):new Date(v);return d.toLocaleString("zh-CN",{timeZone:"Asia/Shanghai",hour12:false})}
+function inlineMd(v){let s=esc(v);const keep=[];s=s.replace(/`([^`]+)`/g,(_,c)=>{const k=`\0${keep.length}\0`;keep.push(`<code>${c}</code>`);return k});s=s.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,(_,t,u)=>`<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${esc(t)}</a>`);s=s.replace(/\*\*(.+?)\*\*/g,"<b>$1</b>");s=s.replace(/\0(\d+)\0/g,(_,i)=>keep[Number(i)]||"");return s}
+function splitTableRow(line){let t=String(line||"").trim();if(t.startsWith("|"))t=t.slice(1);if(t.endsWith("|"))t=t.slice(0,-1);return t.split("|").map(c=>c.trim())}
+function isTableSeparator(line){const cells=splitTableRow(line);return cells.length>1&&cells.every(c=>/^:?-{3,}:?$/.test(c))}
+function renderTable(lines,start){const headers=splitTableRow(lines[start]);let i=start+2,rows=[];while(i<lines.length&&lines[i].includes("|")&&lines[i].trim()){rows.push(splitTableRow(lines[i]));i++}let html='<div class="md-table-wrap"><table class="md-table"><thead><tr>'+headers.map(h=>'<th>'+inlineMd(h)+'</th>').join("")+'</tr></thead><tbody>';rows.forEach(r=>{html+='<tr>'+headers.map((_,idx)=>'<td>'+inlineMd(r[idx]||"")+'</td>').join("")+'</tr>'});return {html:html+"</tbody></table></div>",next:i}}
+function md(v){const lines=String(v||"").replace(/\r\n/g,"\n").split("\n");let out=[],i=0;while(i<lines.length){let line=lines[i],trim=line.trim();if(!trim){i++;continue}if(i+1<lines.length&&line.includes("|")&&isTableSeparator(lines[i+1])){const t=renderTable(lines,i);out.push(t.html);i=t.next;continue}let h=trim.match(/^(#{1,3})\s+(.+)$/);if(h){out.push(`<h${h[1].length}>${inlineMd(h[2])}</h${h[1].length}>`);i++;continue}if(/^---+$/.test(trim)){out.push("<hr>");i++;continue}if(/^[-*]\s+/.test(trim)){let items=[];while(i<lines.length&&/^[-*]\s+/.test(lines[i].trim())){items.push("<li>"+inlineMd(lines[i].trim().replace(/^[-*]\s+/,""))+"</li>");i++}out.push("<ul>"+items.join("")+"</ul>");continue}if(/^\d+[.)]\s+/.test(trim)){let items=[];while(i<lines.length&&/^\d+[.)]\s+/.test(lines[i].trim())){items.push("<li>"+inlineMd(lines[i].trim().replace(/^\d+[.)]\s+/,""))+"</li>");i++}out.push("<ol>"+items.join("")+"</ol>");continue}let p=[trim];i++;while(i<lines.length&&lines[i].trim()&&!lines[i].match(/^(#{1,3})\s+/)&&!(i+1<lines.length&&lines[i].includes("|")&&isTableSeparator(lines[i+1]))&&!/^[-*]\s+/.test(lines[i].trim())&&!/^\d+[.)]\s+/.test(lines[i].trim())){p.push(lines[i].trim());i++}out.push("<p>"+inlineMd(p.join("<br>"))+"</p>")}return out.join("")}
+function cacheTag(result){const c=result?.cache||result?.data?._cache;if(!c||typeof c.hit==="undefined")return"";return `<span class="cache-tag ${c.hit?"hit":"live"}">${c.hit?"缓存命中":"实时调用"}</span>`}
+function toolArgs(t,fallback){if(fallback&&typeof fallback==="object")return fallback;try{const raw=t?.function?.arguments;return typeof raw==="string"?JSON.parse(raw):(raw||{})}catch(e){return{}}}
+function shortJson(v){const s=JSON.stringify(v||{});return s.length>220?s.slice(0,217)+"...":s}
+function renderToolLog(m){const results=Array.isArray(m?.raw?.toolResults)?m.raw.toolResults:[];if(!results.length)return"";const cards=results.map(item=>{const name=item?.toolCall?.function?.name||item?.result?.request?.apiPath||"unknown_tool";const ok=!!item?.result?.ok;const args=toolArgs(item?.toolCall,item?.args);const err=item?.result?.error?.message||item?.result?.error?.code||"";return `<div class="tool-card"><div class="tool-name">${esc(name)}</div><div class="tool-args">${esc(shortJson(args))}</div><div class="tool-status ${ok?"ok":"err"}">${ok?"成功":"失败"}${cacheTag(item?.result)}</div>${err?`<div class="tool-args">${esc(err)}</div>`:""}</div>`}).join("");return `<details class="tool-log" ${m.status==="pending"?"open":""}><summary>工具调用记录 (${results.length})</summary>${cards}</details>`}
+function showEmpty(show){if(show&&!emptyChat.parentNode)msgBox.appendChild(emptyChat);emptyChat.style.display=show?"flex":"none"}
+function renderMsg(m,scroll=true){let div=msgBox.querySelector(`[data-id="${CSS.escape(String(m.id||""))}"]`);if(!div){div=document.createElement("div");msgBox.appendChild(div)}div.dataset.id=m.id||"";div.className="msg "+(m.role==="user"?"user":"assistant");let body=m.role==="user"?`<div class="bubble">${esc(m.content)}</div>`:renderToolLog(m)+`<div class="bubble">${m.status==="pending"?"思考中...":md(m.content||"")}</div>`;if(m.createdAt)body+=`<div class="time">${formatTime(m.createdAt)}</div>`;div.innerHTML=body;if(scroll)msgBox.scrollTop=msgBox.scrollHeight}
+function renderMessages(scroll=true){msgBox.innerHTML="";if(S.hasMore){const more=document.createElement("div");more.className="load-more";more.textContent="加载更早消息";more.onclick=loadOlder;msgBox.appendChild(more)}S.messages.forEach(m=>renderMsg(m,false));showEmpty(!S.messages.length);if(scroll)msgBox.scrollTop=msgBox.scrollHeight}
+async function loadSessions(){const r=await fetch("/amazon/api/sessions");const d=await r.json();S.sessions=d.sessions||[];renderSessions()}
+function renderSessions(){const list=$("sessionList");list.innerHTML="";const items=S.sessions.some(s=>s.id===S.sessionId)?S.sessions:[{id:S.sessionId,title:"新对话",messageCount:0,lastMessage:"未开始对话"},...S.sessions];items.forEach(s=>{const el=document.createElement("div");el.className="session-item"+(s.id===S.sessionId?" active":"");el.innerHTML=`<div class="info"><div class="title">${esc(s.title||s.id)}</div><div class="meta">${esc(s.lastMessage||((s.messageCount||0)+" 条消息"))}</div></div>${s.messageCount?'<button class="ghost del-btn">×</button>':""}`;el.onclick=e=>{if(e.target.closest("button"))return;switchSession(s.id)};const del=el.querySelector("button");if(del)del.onclick=e=>{e.stopPropagation();deleteSession(s.id)};list.appendChild(el)})}
+async function loadMessages(){const r=await fetch(api("/api/messages",{maxChars:20000}));const d=await r.json();S.messages=d.messages||[];S.nextBefore=d.nextBefore||null;S.hasMore=!!d.hasMore;renderMessages(true);if(!S.messages.length)showGuide()}
+async function loadOlder(){if(!S.hasMore||!S.nextBefore)return;const oldHeight=msgBox.scrollHeight;const r=await fetch(api("/api/messages",{before:S.nextBefore,maxChars:20000}));const d=await r.json();S.messages=[...(d.messages||[]),...S.messages];S.nextBefore=d.nextBefore||null;S.hasMore=!!d.hasMore;renderMessages(false);msgBox.scrollTop=msgBox.scrollHeight-oldHeight}
+async function showGuide(){const r=await fetch(api("/api/guide"));const d=await r.json();if(d.guide)renderMsg({...d.guide,id:"guide"},true)}
+function closeSSE(){if(S.sse){S.sse.close();S.sse=null}}
+function connectEvents(){closeSSE();const es=new EventSource(api("/api/events"));S.sse=es;es.addEventListener("message",e=>{const m=JSON.parse(e.data);const idx=S.messages.findIndex(x=>x.id===m.id);if(idx>=0)S.messages[idx]=m;else S.messages.push(m);showEmpty(false);renderMsg(m);loadSessions().catch(()=>{})});es.addEventListener("clear",()=>{S.messages=[];renderMessages();loadSessions().catch(()=>{})})}
+async function switchSession(id){rememberSession(id);closeSSE();await loadMessages();await loadSessions();connectEvents()}
+async function deleteSession(id){if(!confirm("删除此对话？"))return;await fetch(apiForSession("/api/session",id),{method:"DELETE"});if(id===S.sessionId){rememberSession(makeId());S.messages=[];renderMessages()}await loadSessions()}
+function apiForSession(path,id){const u=new URL(`/amazon${path}`,location.origin);u.searchParams.set("session",id);return u.pathname+u.search}
+async function send(){const text=input.value.trim();if((!text&&!S.attachments.length)||S.loading)return;S.loading=true;input.value="";const attachments=S.attachments.splice(0);renderAttachments();showEmpty(false);const started=new Date().toISOString();const user={id:"u-"+Date.now(),role:"user",content:text,createdAt:started,status:"done"};S.messages.push(user);renderMsg(user);const pending={id:"a-"+Date.now(),role:"assistant",content:"思考中...",createdAt:started,status:"pending"};S.messages.push(pending);renderMsg(pending);try{const r=await fetch(api("/api/ask"),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:S.sessionId,message:text,attachments})});if(!r.ok&&r.status!==202){let d={};try{d=await r.json()}catch(e){}throw new Error(d?.data?.message||d?.error||"请求失败")}connectEvents();setTimeout(()=>loadMessages().catch(()=>{}),700);loadSessions().catch(()=>{})}catch(e){pending.status="error";pending.content=e.message||"请求失败";renderMsg(pending,false)}finally{S.loading=false}}
+function fileToAttachment(file){return new Promise((resolve,reject)=>{if(!file.type.startsWith("image/"))return resolve(null);if(file.size>6*1024*1024)return reject(new Error("image exceeds 6MB"));const reader=new FileReader();reader.onload=()=>resolve({name:file.name||"image",type:file.type,size:file.size,dataUrl:reader.result});reader.onerror=()=>reject(new Error("image read failed"));reader.readAsDataURL(file)})}
+async function addFiles(files){const items=(await Promise.all(Array.from(files||[]).filter(f=>f.type.startsWith("image/")).map(fileToAttachment))).filter(Boolean);S.attachments.push(...items);S.attachments.splice(6);renderAttachments()}
+function renderAttachments(){const box=$("attachmentPreview");box.innerHTML="";S.attachments.forEach((a,i)=>{const chip=document.createElement("div");chip.className="attachment-chip";chip.innerHTML=`<img src="${esc(a.dataUrl)}" alt=""><button type="button">×</button>`;chip.querySelector("button").onclick=()=>{S.attachments.splice(i,1);renderAttachments()};box.appendChild(chip)})}
+$("sendBtn").onclick=send;input.onkeydown=e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send()}};$("newSession").onclick=()=>switchSession(makeId());$("guideBtn").onclick=showGuide;$("uploadBtn").onclick=()=>$("imageInput").click();$("imageInput").onchange=e=>addFiles(e.target.files).catch(err=>alert(err.message));
+initSession();loadSessions().then(loadMessages).then(connectEvents).catch(e=>{msgBox.innerHTML=`<div class="empty-chat"><b>加载失败</b><span>${esc(e.message)}</span></div>`});
+</script>
+</body>
 </html>
