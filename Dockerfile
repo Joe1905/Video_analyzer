@@ -22,7 +22,6 @@ RUN apt-get update \
         docker.io \
         ffmpeg \
         git \
-        nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --upgrade pip \
@@ -39,6 +38,10 @@ RUN pip install yt-dlp playwright httpx "scrapling[ai]" \
     && scrapling install
 
 RUN pip install -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn "curl_cffi>=0.15,<0.16"
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY scripts/ /workspace/scripts/
 COPY sellersprite_mcp_chat/ /workspace/sellersprite_mcp_chat/
