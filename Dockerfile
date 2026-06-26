@@ -22,6 +22,7 @@ RUN apt-get update \
         docker.io \
         ffmpeg \
         git \
+        nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --upgrade pip \
@@ -40,6 +41,7 @@ RUN pip install yt-dlp playwright httpx "scrapling[ai]" \
 RUN pip install -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn "curl_cffi>=0.15,<0.16"
 
 COPY scripts/ /workspace/scripts/
+COPY sellersprite_mcp_chat/ /workspace/sellersprite_mcp_chat/
 
 EXPOSE 4000
 

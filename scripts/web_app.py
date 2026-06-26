@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import hmac
+import http.client
 import mimetypes
 import os
 import re
@@ -51,6 +52,10 @@ VIDEOS_DIR = ROOT / "videos"
 OUTPUT_DIR = ROOT / "output"
 SCRIPTS_DIR = ROOT / "scripts"
 INDEX_HTML_PATH = SCRIPTS_DIR / "web_index.html"
+SELLERSPRITE_CHAT_DIR = ROOT / "sellersprite_mcp_chat"
+SELLERSPRITE_CHAT_DATA_DIR = DATA_DIR / "sellersprite_mcp"
+SELLERSPRITE_CHAT_PROCESS: subprocess.Popen | None = None
+SELLERSPRITE_CHAT_LOCK = threading.Lock()
 
 import sys
 sys.path.insert(0, str(SCRIPTS_DIR))
@@ -3242,6 +3247,106 @@ def execute_queue_job(filename: str, job_type: str, progress: dict) -> None:
         video_queue.set_progress(filename, "completed", 100, job_type, f"{filename}: 报告完成")
 
 
+def sellersprite_chat_port() -> int:
+    try:
+        return int(os.getenv("SELLERSPRITE_CHAT_PORT", "4101"))
+    except ValueError:
+        return 4101
+
+
+def ensure_sellersprite_chat_server() -> tuple[bool, str]:
+    global SELLERSPRITE_CHAT_PROCESS
+    if not (SELLERSPRITE_CHAT_DIR / "server.js").is_file():
+        return False, f"SellerSprite chat server not found: {SELLERSPRITE_CHAT_DIR / 'server.js'}"
+
+    port = sellersprite_chat_port()
+    with SELLERSPRITE_CHAT_LOCK:
+        if SELLERSPRITE_CHAT_PROCESS and SELLERSPRITE_CHAT_PROCESS.poll() is None:
+            return True, ""
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=0.6)
+            conn.request("GET", "/api/sessions")
+            resp = conn.getresponse()
+            resp.read()
+            conn.close()
+            if resp.status < 500:
+                return True, ""
+        except Exception:
+            pass
+
+        node = shutil.which("node")
+        if not node:
+            return False, "node executable not found in web container"
+
+        SELLERSPRITE_CHAT_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        env = os.environ.copy()
+        env.update(
+            {
+                "HOST": "127.0.0.1",
+                "PORT": str(port),
+                "DATA_DIR": str(SELLERSPRITE_CHAT_DATA_DIR),
+                "SELLERSPRITE_MCP_URL": os.getenv("SELLERSPRITE_MCP_URL", "https://mcp.sellersprite.com/mcp"),
+                "SELLERSPRITE_CACHE_TTL_SECONDS": os.getenv("SELLERSPRITE_CACHE_TTL_SECONDS", "86400"),
+            }
+        )
+        SELLERSPRITE_CHAT_PROCESS = subprocess.Popen(
+            [node, "server.js"],
+            cwd=SELLERSPRITE_CHAT_DIR,
+            env=env,
+        )
+        time.sleep(0.35)
+        if SELLERSPRITE_CHAT_PROCESS.poll() is not None:
+            return False, f"SellerSprite chat server exited with code {SELLERSPRITE_CHAT_PROCESS.returncode}"
+        print(f"[SELLERSPRITE] chat server listening on 127.0.0.1:{port}", flush=True)
+        return True, ""
+
+
+def proxy_sellersprite_chat(handler: BaseHTTPRequestHandler) -> None:
+    ok, error = ensure_sellersprite_chat_server()
+    if not ok:
+        return json_response(handler, HTTPStatus.BAD_GATEWAY, {"error": error})
+
+    parsed = urlparse(handler.path)
+    target_path = parsed.path.removeprefix("/amazon") or "/"
+    target = target_path + (f"?{parsed.query}" if parsed.query else "")
+    body = None
+    if handler.command in {"POST", "PUT", "PATCH"}:
+        length = int(handler.headers.get("Content-Length", "0") or "0")
+        body = handler.rfile.read(length) if length else b""
+
+    headers = {
+        key: value
+        for key, value in handler.headers.items()
+        if key.lower() not in {"host", "connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade"}
+    }
+    headers["Host"] = f"127.0.0.1:{sellersprite_chat_port()}"
+
+    conn_timeout = None if target_path == "/api/events" else 180
+    conn = http.client.HTTPConnection("127.0.0.1", sellersprite_chat_port(), timeout=conn_timeout)
+    try:
+        conn.request(handler.command, target, body=body, headers=headers)
+        resp = conn.getresponse()
+        handler.send_response(resp.status)
+        for key, value in resp.getheaders():
+            if key.lower() in {"connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade"}:
+                continue
+            handler.send_header(key, value)
+        handler.end_headers()
+        while True:
+            chunk = resp.read(65536)
+            if not chunk:
+                break
+            handler.wfile.write(chunk)
+            handler.wfile.flush()
+    except (BrokenPipeError, ConnectionResetError):
+        pass
+    except Exception as exc:
+        if not handler.wfile.closed:
+            return json_response(handler, HTTPStatus.BAD_GATEWAY, {"error": f"SellerSprite proxy failed: {exc}"})
+    finally:
+        conn.close()
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "ShortVideoAnalyzer/1.0"
 
@@ -3250,6 +3355,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/amazon" or parsed.path.startswith("/amazon/"):
+            return proxy_sellersprite_chat(self)
         if parsed.path == "/" or parsed.path == "/chat":
             chat_html = (SCRIPTS_DIR / "static" / "chat.html").read_text(encoding="utf-8")
             return text_response(self, HTTPStatus.OK, chat_html, "text/html; charset=utf-8")
@@ -3270,8 +3377,6 @@ class Handler(BaseHTTPRequestHandler):
             return text_response(self, HTTPStatus.OK, SHOP_HTML, "text/html; charset=utf-8")
         if parsed.path == "/metrics":
             return text_response(self, HTTPStatus.OK, METRICS_HTML, "text/html; charset=utf-8")
-        if parsed.path == "/amazon":
-            return text_response(self, HTTPStatus.OK, AMAZON_HTML, "text/html; charset=utf-8")
         if parsed.path.startswith("/assets/"):
             return self.serve_static_asset(parsed.path.removeprefix("/assets/"))
         if parsed.path == "/api/prompt":
@@ -3704,6 +3809,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/amazon/"):
+            return proxy_sellersprite_chat(self)
         if parsed.path == "/api/upload":
             return self.handle_upload()
         if parsed.path == "/api/download":
@@ -3747,6 +3854,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_save_prompt()
         if parsed.path == "/api/delete":
             return self.handle_delete()
+        return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
+
+    def do_DELETE(self) -> None:
+        parsed = urlparse(self.path)
+        if parsed.path.startswith("/amazon/"):
+            return proxy_sellersprite_chat(self)
         return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
 
     def handle_report_run(self) -> None:

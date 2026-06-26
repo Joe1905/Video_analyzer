@@ -1,0 +1,637 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SellerSprite MCP Chat</title>
+    <style>
+      :root {
+        --bg: #f6f7f9;
+        --panel: #ffffff;
+        --side: #eef5f2;
+        --text: #17202a;
+        --muted: #667085;
+        --line: #d9dee7;
+        --accent: #1d6f64;
+        --accent-strong: #14574e;
+        --soft: #eaf7f3;
+        --danger: #b42318;
+        --code: #f1f4f8;
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; }
+      body {
+        margin: 0;
+        overflow: hidden;
+        background: var(--bg);
+        color: var(--text);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+      }
+      .app { display: grid; grid-template-columns: 340px minmax(0, 1fr); height: 100%; min-height: 0; }
+      aside { border-right: 1px solid var(--line); background: var(--side); padding: 24px; overflow-y: auto; min-height: 0; }
+      main { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-width: 0; min-height: 0; height: 100%; }
+      header { border-bottom: 1px solid var(--line); background: var(--panel); padding: 20px 24px 16px; }
+      h1, h2, p { margin: 0; }
+      h1 { font-size: 20px; line-height: 1.25; }
+      h2 { margin-top: 28px; margin-bottom: 10px; font-size: 15px; }
+      ul { margin: 0; padding-left: 18px; color: #44546a; font-size: 13px; line-height: 1.7; }
+      .hint { margin-top: 4px; color: var(--muted); font-size: 13px; line-height: 1.5; }
+      .brand { display: flex; gap: 12px; align-items: center; }
+      .mark { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 8px; background: var(--accent); color: white; font-weight: 700; }
+      .session { margin-top: 16px; padding: 10px 12px; border: 1px solid #c9ded8; border-radius: 8px; background: #f9fffc; color: #40566b; font-size: 12px; word-break: break-all; }
+      .session-list { display: grid; gap: 8px; margin-top: 10px; }
+      .session-item {
+        display: block;
+        width: 100%;
+        border: 1px solid #c9ded8;
+        border-radius: 8px;
+        background: white;
+        color: #203245;
+        padding: 10px;
+        text-align: left;
+        font-size: 12px;
+        font-weight: 500;
+      }
+      .session-item:hover { background: #edf8f5; }
+      .session-item.active { border-color: var(--accent); background: #e2f3ef; }
+      .session-item strong { display: block; margin-bottom: 4px; color: #123a35; font-size: 12px; }
+      .session-item span { display: block; overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
+      .session-row { display: grid; grid-template-columns: minmax(0, 1fr) 28px; gap: 6px; align-items: stretch; }
+      .session-delete {
+        width: 28px;
+        min-width: 28px;
+        border: 1px solid #f2b8b5;
+        background: white;
+        color: var(--danger);
+        padding: 0;
+        font-size: 16px;
+      }
+      .session-delete:hover { background: #fff4f3; }
+      .quick { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+      button { border: 0; border-radius: 8px; background: var(--accent); color: white; font-weight: 700; cursor: pointer; }
+      button:hover { background: var(--accent-strong); }
+      button:disabled { cursor: not-allowed; opacity: 0.55; }
+      .quick button, .danger-button { height: auto; min-width: auto; border: 1px solid #b7d6cf; background: white; color: var(--accent-strong); padding: 8px 12px; font-size: 13px; }
+      .quick button:hover { background: #edf8f5; }
+      .danger-button { margin-top: 12px; border-color: #f2b8b5; color: var(--danger); }
+      .danger-button:hover { background: #fff4f3; }
+      .messages { min-height: 0; overflow-y: scroll; padding: 24px; scrollbar-gutter: stable; }
+      .load-more {
+        display: none;
+        margin: 0 auto 18px;
+        border: 1px solid #b7d6cf;
+        background: white;
+        color: var(--accent-strong);
+        padding: 8px 14px;
+        font-size: 13px;
+      }
+      .load-more:hover { background: #edf8f5; }
+      .load-more.visible { display: block; }
+      .message { max-width: min(840px, 80%); margin-bottom: 24px; border: 1px solid #cfd7e3; border-radius: 8px; background: white; padding: 16px; box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04); }
+      .message.user { margin-left: auto; border-color: #a9d8cf; background: var(--soft); }
+      .message.error { border-color: #f4b4ad; background: #fff7f6; }
+      .message.pending { opacity: 0.72; }
+      .role { color: #52627a; font-size: 12px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; }
+      .time-line, .request-line { margin-top: 8px; color: #44546a; font-size: 12px; }
+      .request-line { color: #174f75; }
+      .tool-log { margin-top: 10px; border: 1px solid #d9dee7; border-radius: 8px; background: #fbfcfe; }
+      .tool-log summary { cursor: pointer; padding: 9px 12px; color: #40566b; font-size: 12px; font-weight: 800; }
+      .tool-card { margin: 0 10px 10px; border: 1px solid #d9dee7; border-radius: 8px; background: white; padding: 10px 12px; font-size: 12px; }
+      .tool-name { color: var(--accent-strong); font-weight: 800; }
+      .tool-args { margin-top: 5px; color: #667085; word-break: break-word; }
+      .tool-status { margin-top: 6px; font-weight: 700; }
+      .tool-status.ok { color: #087443; }
+      .tool-status.err { color: var(--danger); }
+      .cache-tag { display: inline-flex; align-items: center; margin-left: 6px; border: 1px solid var(--line); border-radius: 999px; padding: 1px 7px; background: #fff; color: #667085; font-size: 10px; font-weight: 800; }
+      .cache-tag.hit { border-color: #bfdbfe; background: #eff6ff; color: #1d4ed8; }
+      .cache-tag.live { border-color: #bbf7d0; background: #f0fdf4; color: #047857; }
+      .markdown { margin-top: 8px; line-height: 1.65; }
+      .markdown p, .markdown ul, .markdown ol, .markdown table { margin: 8px 0 0; }
+      .markdown table { display: block; max-width: 100%; overflow: auto; border-collapse: collapse; }
+      .markdown th, .markdown td { border: 1px solid var(--line); padding: 6px 8px; text-align: left; vertical-align: top; }
+      code { border-radius: 4px; background: var(--code); padding: 2px 5px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 0.9em; }
+      form { display: grid; grid-template-columns: 56px minmax(0, 1fr) 92px; gap: 12px; align-items: end; border-top: 1px solid var(--line); background: var(--panel); padding: 16px 24px; }
+      textarea { width: 100%; min-height: 56px; max-height: 150px; resize: vertical; border: 1px solid #cfd7e3; border-radius: 8px; padding: 14px; font: inherit; line-height: 1.45; }
+      textarea:focus { border-color: var(--accent); outline: 2px solid rgba(29, 111, 100, 0.16); }
+      #submit { height: 56px; }
+      .icon-button { display: grid; place-items: center; width: 56px; height: 56px; border: 1px solid #b7d6cf; background: var(--accent); color: white; font-size: 26px; line-height: 1; }
+      .icon-button:hover { background: var(--accent-strong); color: white; }
+      .file-input { display: none; }
+      .attachment-preview { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+      .attachment-chip { position: relative; width: 72px; height: 72px; overflow: hidden; border: 1px solid var(--line); border-radius: 8px; }
+      .attachment-chip img { width: 100%; height: 100%; object-fit: cover; }
+      .attachment-chip button { position: absolute; top: 4px; right: 4px; width: 22px; height: 22px; border-radius: 999px; background: rgba(0, 0, 0, 0.72); color: white; font-size: 12px; }
+      .status { display: inline-flex; margin-top: 16px; border: 1px solid #b7d6cf; border-radius: 8px; background: white; padding: 6px 10px; color: #315c55; font-size: 12px; }
+      @media (max-width: 780px) {
+        .app { grid-template-columns: 1fr; }
+        aside { display: none; }
+        .message { max-width: 100%; }
+        form { grid-template-columns: 48px minmax(0, 1fr); }
+        #submit { grid-column: 1 / -1; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <aside>
+        <div class="brand">
+          <div class="mark">S</div>
+          <div>
+            <h1>SellerSprite MCP &#23545;&#35805;</h1>
+            <p class="hint">DeepSeek + Model Context Protocol tools</p>
+          </div>
+        </div>
+        <div class="session">&#24403;&#21069; session: <span id="session-label"></span></div>
+        <h2>Sessions</h2>
+        <div id="session-list" class="session-list"></div>
+        <h2>&#21487;&#20197;&#30452;&#25509;&#38382;</h2>
+        <ul>
+          <li>&#26597; US &#31449; ASIN B0CXYZ1234 &#30340;&#31454;&#21697;&#25968;&#25454;</li>
+          <li>&#24110;&#25105;&#30475;&#20851;&#38190;&#35789; coffee maker &#30340;&#25628;&#32034;&#37327;</li>
+          <li>&#35782;&#21035;&#36825;&#24352;&#22270;&#37324;&#30340;&#25991;&#23383;</li>
+          <li>&#20320;&#33021;&#24110;&#25105;&#35843;&#29992;&#21738;&#20123; SellerSprite &#24037;&#20855;&#65311;</li>
+        </ul>
+        <h2>&#36816;&#34892;&#35201;&#27714;</h2>
+        <p class="hint">&#26381;&#21153;&#31471;&#35835;&#21462; <code>DEEPSEEK_API_KEY</code> &#21644; <code>SELLERSPRITE_SECRET_KEY</code>&#12290;</p>
+        <div class="quick">
+          <button type="button" id="new-session">&#26032;&#22686;&#31383;&#21475;</button>
+          <button type="button" id="guide-button">&#20351;&#29992;&#25163;&#20876;</button>
+          <button type="button" data-text="你能帮我调用哪些 SellerSprite 工具？">&#24037;&#20855;&#35828;&#26126;</button>
+          <button type="button" data-text="查 US 站 ASIN B0CXYZ1234 的竞品数据">ASIN &#31034;&#20363;</button>
+        </div>
+        <button id="clear-chat" class="danger-button" type="button">&#21024;&#38500;&#24403;&#21069; session &#32842;&#22825;&#35760;&#24405;</button>
+        <div id="status" class="status">connecting...</div>
+      </aside>
+      <main>
+        <header>
+          <h1>&#23616;&#22495;&#32593;&#20849;&#20139;&#23545;&#35805;</h1>
+          <p class="hint">&#21516;&#19968; session &#20869;&#21516;&#27493;&#28040;&#24687;&#65307;&#28857;&#20987;&#8220;&#26032;&#22686;&#31383;&#21475;&#8221;&#20250;&#25171;&#24320;&#29420;&#31435;&#19978;&#19979;&#25991;&#12290;Enter &#21457;&#36865;&#65292;Shift+Enter &#25442;&#34892;&#12290;</p>
+        </header>
+        <section id="messages" class="messages" aria-live="polite">
+          <button id="load-more" class="load-more" type="button">加载更早消息</button>
+        </section>
+        <form id="chat-form">
+          <input id="image-input" class="file-input" type="file" accept="image/*" multiple />
+          <button id="upload" class="icon-button" type="button" title="upload image" aria-label="upload image">+</button>
+          <div class="composer">
+            <div id="attachment-preview" class="attachment-preview"></div>
+            <textarea id="message" placeholder="输入自然语言问题，或粘贴图片后按 Enter 发送"></textarea>
+          </div>
+          <button id="submit" type="submit">&#21457;&#36865;</button>
+        </form>
+      </main>
+    </div>
+    <script>
+      const form = document.querySelector("#chat-form");
+      const input = document.querySelector("#message");
+      const submit = document.querySelector("#submit");
+      const upload = document.querySelector("#upload");
+      const clearChat = document.querySelector("#clear-chat");
+      const guideButton = document.querySelector("#guide-button");
+      const newSession = document.querySelector("#new-session");
+      const sessionLabel = document.querySelector("#session-label");
+      const sessionList = document.querySelector("#session-list");
+      const imageInput = document.querySelector("#image-input");
+      const attachmentPreview = document.querySelector("#attachment-preview");
+      const messages = document.querySelector("#messages");
+      const loadMore = document.querySelector("#load-more");
+      const status = document.querySelector("#status");
+      const rendered = new Map();
+      const pendingAttachments = [];
+      const MESSAGE_PAGE_CHARS = 20000;
+      let eventSource = null;
+      let hasMoreMessages = false;
+      let nextBeforeMessage = null;
+      let loadingOlderMessages = false;
+
+      function makeId() {
+        if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") {
+          return globalThis.crypto.randomUUID();
+        }
+        return `session-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+      }
+
+      const url = new URL(window.location.href);
+      let sessionId = url.searchParams.get("session") || "";
+      if (!sessionId) {
+        sessionId = makeId();
+      }
+      sessionLabel.textContent = sessionId;
+
+      function setSession(nextSessionId) {
+        sessionId = nextSessionId;
+        const next = new URL(window.location.href);
+        next.searchParams.set("session", sessionId);
+        window.history.replaceState(null, "", next);
+        sessionLabel.textContent = sessionId;
+      }
+
+      function api(path, params = {}) {
+        const prefixedPath = path.startsWith("/amazon/") ? path : `/amazon${path}`;
+        const next = new URL(prefixedPath, window.location.origin);
+        next.searchParams.set("session", sessionId);
+        Object.entries(params).forEach(([key, value]) => {
+          if (value !== undefined && value !== null && value !== "") next.searchParams.set(key, value);
+        });
+        return next.pathname + next.search;
+      }
+
+      function shortId(value) {
+        return value.length > 14 ? `${value.slice(0, 8)}...${value.slice(-4)}` : value;
+      }
+
+      function formatTime(value) {
+        if (!value) return "";
+        return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date(value));
+      }
+
+      function roleLabel(role) {
+        if (role === "user") return "You";
+        if (role === "assistant") return "SellerSprite MCP";
+        return role || "System";
+      }
+
+      function cacheTag(result) {
+        const cache = result?.cache || result?.data?._cache || result?._cache;
+        if (!cache || typeof cache.hit === "undefined") return "";
+        const hit = Boolean(cache.hit);
+        return `<span class="cache-tag ${hit ? "hit" : "live"}">${hit ? "缓存命中" : "实时调用"}</span>`;
+      }
+
+      function toolArgs(toolCall, fallbackArgs) {
+        if (fallbackArgs && typeof fallbackArgs === "object") return fallbackArgs;
+        try {
+          const raw = toolCall?.function?.arguments;
+          return typeof raw === "string" ? JSON.parse(raw) : raw || {};
+        } catch {
+          return {};
+        }
+      }
+
+      function shortJson(value) {
+        const text = JSON.stringify(value || {});
+        return text.length > 220 ? `${text.slice(0, 217)}...` : text;
+      }
+
+      function renderToolLog(message) {
+        const results = Array.isArray(message?.raw?.toolResults) ? message.raw.toolResults : [];
+        if (!results.length) return null;
+        const details = document.createElement("details");
+        details.className = "tool-log";
+        details.open = message.status === "pending";
+        const summary = document.createElement("summary");
+        summary.textContent = `工具调用记录 (${results.length})`;
+        details.append(summary);
+        for (const item of results) {
+          const card = document.createElement("div");
+          card.className = "tool-card";
+          const name = item?.toolCall?.function?.name || item?.result?.request?.apiPath || "unknown_tool";
+          const args = toolArgs(item?.toolCall, item?.args);
+          const ok = Boolean(item?.result?.ok);
+          const err = item?.result?.error?.message || item?.result?.error?.code || "";
+          card.innerHTML = [
+            `<div class="tool-name">${escapeHtml(name)}</div>`,
+            `<div class="tool-args">${escapeHtml(shortJson(args))}</div>`,
+            `<div class="tool-status ${ok ? "ok" : "err"}">${ok ? "成功" : "失败"}${cacheTag(item?.result)}</div>`,
+            err ? `<div class="tool-args">${escapeHtml(err)}</div>` : "",
+          ].join("");
+          details.append(card);
+        }
+        return details;
+      }
+
+      function escapeHtml(value) {
+        return String(value || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+      }
+
+      function inlineMarkdown(value) {
+        return escapeHtml(value).replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>").replace(/\*([^*]+)\*/g, "<em>$1</em>");
+      }
+
+      function renderMarkdown(value) {
+        const lines = String(value || "").replace(/\r\n/g, "\n").split("\n");
+        const blocks = [];
+        let i = 0;
+        while (i < lines.length) {
+          if (!lines[i].trim()) { i += 1; continue; }
+          const tableLines = [];
+          while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) tableLines.push(lines[i++]);
+          if (tableLines.length >= 2 && /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(tableLines[1])) {
+            const rows = tableLines.filter((_, index) => index !== 1).map((line) => line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => inlineMarkdown(cell.trim())));
+            const header = rows.shift() || [];
+            blocks.push(`<table><thead><tr>${header.map((cell) => `<th>${cell}</th>`).join("")}</tr></thead><tbody>${rows.map((row) => `<tr>${row.map((cell) => `<td>${cell}</td>`).join("")}</tr>`).join("")}</tbody></table>`);
+            continue;
+          }
+          if (tableLines.length) { blocks.push(`<p>${inlineMarkdown(tableLines.join("\n")).replace(/\n/g, "<br>")}</p>`); continue; }
+          const listLines = [];
+          while (i < lines.length && /^\s*(-|\d+\.)\s+/.test(lines[i])) listLines.push(lines[i++]);
+          if (listLines.length) {
+            const ordered = /^\s*\d+\.\s+/.test(listLines[0]);
+            const tag = ordered ? "ol" : "ul";
+            blocks.push(`<${tag}>${listLines.map((line) => `<li>${inlineMarkdown(line.replace(/^\s*(-|\d+\.)\s+/, ""))}</li>`).join("")}</${tag}>`);
+            continue;
+          }
+          const paragraph = [];
+          while (i < lines.length && lines[i].trim() && !/^\s*\|.*\|\s*$/.test(lines[i]) && !/^\s*(-|\d+\.)\s+/.test(lines[i])) paragraph.push(lines[i++]);
+          blocks.push(`<p>${inlineMarkdown(paragraph.join("\n")).replace(/\n/g, "<br>")}</p>`);
+        }
+        return blocks.join("");
+      }
+
+      function scrollMessageToTop(article) {
+        requestAnimationFrame(() => { messages.scrollTop = article.offsetTop - messages.offsetTop; });
+      }
+
+      function resetMessageList() {
+        messages.innerHTML = "";
+        messages.append(loadMore);
+        rendered.clear();
+      }
+
+      function updateLoadMoreButton() {
+        loadMore.classList.toggle("visible", hasMoreMessages || loadingOlderMessages);
+        loadMore.disabled = loadingOlderMessages || !hasMoreMessages;
+        loadMore.textContent = loadingOlderMessages ? "加载中..." : "加载更早消息";
+      }
+
+      async function fetchGuideMessage() {
+        const response = await fetch(api("/api/guide"));
+        const result = await response.json();
+        if (!result.ok) throw new Error("guide load failed");
+        return result.guide;
+      }
+
+      async function showGuideMessage() {
+        const guide = await fetchGuideMessage();
+        upsertMessage({ ...guide, id: `guide-${Date.now()}`, createdAt: new Date().toISOString() });
+      }
+
+      function renderContent(article, message) {
+        article.innerHTML = "";
+        const label = document.createElement("div");
+        label.className = "role";
+        label.textContent = roleLabel(message.role);
+        article.append(label);
+        if (message.createdAt) {
+          const time = document.createElement("div");
+          time.className = "time-line";
+          time.textContent = formatTime(message.createdAt);
+          article.append(time);
+        }
+        const toolLog = renderToolLog(message);
+        if (toolLog) article.append(toolLog);
+        else if (message.request) {
+          const request = document.createElement("div");
+          request.className = "request-line";
+          request.textContent = `${message.request.method} ${message.request.apiPath}`;
+          article.append(request);
+        }
+        const text = document.createElement("div");
+        text.className = message.role === "assistant" ? "markdown" : "";
+        if (message.role === "assistant") text.innerHTML = renderMarkdown(message.content || "");
+        else text.textContent = message.content || "";
+        article.append(text);
+      }
+
+      function upsertMessage(message, shouldScroll = true, position = "append") {
+        let article = rendered.get(message.id);
+        if (!article) {
+          article = document.createElement("article");
+          rendered.set(message.id, article);
+          if (position === "prepend") loadMore.after(article);
+          else messages.append(article);
+        }
+        article.className = `message ${message.role === "user" ? "user" : ""} ${message.status === "error" ? "error" : ""} ${message.status === "pending" ? "pending" : ""}`.trim();
+        renderContent(article, message);
+        if (shouldScroll) scrollMessageToTop(article);
+      }
+
+      function renderAttachmentPreview() {
+        attachmentPreview.innerHTML = "";
+        pendingAttachments.forEach((attachment, index) => {
+          const chip = document.createElement("div");
+          chip.className = "attachment-chip";
+          const img = document.createElement("img");
+          img.src = attachment.dataUrl;
+          img.alt = attachment.name || "image";
+          const remove = document.createElement("button");
+          remove.type = "button";
+          remove.textContent = "x";
+          remove.title = "remove image";
+          remove.addEventListener("click", () => { pendingAttachments.splice(index, 1); renderAttachmentPreview(); });
+          chip.append(img, remove);
+          attachmentPreview.append(chip);
+        });
+      }
+
+      function fileToAttachment(file) {
+        return new Promise((resolve, reject) => {
+          if (!file.type.startsWith("image/")) return resolve(null);
+          if (file.size > 6 * 1024 * 1024) return reject(new Error("image exceeds 6MB"));
+          const reader = new FileReader();
+          reader.onload = () => resolve({ name: file.name || "pasted-image", type: file.type, size: file.size, dataUrl: reader.result });
+          reader.onerror = () => reject(new Error("image read failed"));
+          reader.readAsDataURL(file);
+        });
+      }
+
+      async function addFiles(files) {
+        const images = Array.from(files || []).filter((file) => file.type.startsWith("image/"));
+        if (!images.length) return;
+        const attachments = (await Promise.all(images.map(fileToAttachment))).filter(Boolean);
+        pendingAttachments.push(...attachments);
+        pendingAttachments.splice(6);
+        renderAttachmentPreview();
+      }
+
+      async function loadMessages() {
+        const response = await fetch(api("/api/messages", { maxChars: MESSAGE_PAGE_CHARS }));
+        const result = await response.json();
+        resetMessageList();
+        hasMoreMessages = Boolean(result.hasMore);
+        nextBeforeMessage = result.nextBefore || null;
+        updateLoadMoreButton();
+        result.messages.forEach((message) => upsertMessage(message, false));
+        if (!result.messages.length) return showGuideMessage();
+        const latest = rendered.get(result.messages.at(-1).id);
+        if (latest) scrollMessageToTop(latest);
+      }
+
+      async function loadOlderMessages() {
+        if (!hasMoreMessages || !nextBeforeMessage || loadingOlderMessages) return;
+        loadingOlderMessages = true;
+        updateLoadMoreButton();
+        const previousHeight = messages.scrollHeight;
+        try {
+          const response = await fetch(api("/api/messages", { before: nextBeforeMessage, maxChars: MESSAGE_PAGE_CHARS }));
+          const result = await response.json();
+          hasMoreMessages = Boolean(result.hasMore);
+          nextBeforeMessage = result.nextBefore || null;
+          [...result.messages].reverse().forEach((message) => upsertMessage(message, false, "prepend"));
+          messages.scrollTop += messages.scrollHeight - previousHeight;
+        } finally {
+          loadingOlderMessages = false;
+          updateLoadMoreButton();
+        }
+      }
+
+      async function loadSessions() {
+        const response = await fetch("/amazon/api/sessions");
+        const result = await response.json();
+        if (!result.ok) return;
+        sessionList.innerHTML = "";
+        const exists = result.sessions.some((item) => item.id === sessionId);
+        const draft = exists
+          ? []
+          : [{ id: sessionId, title: "新窗口", messageCount: 0, lastMessage: "", updatedAt: new Date().toISOString(), draft: true }];
+        const items = [...draft, ...result.sessions];
+        items.forEach((session) => {
+          const row = document.createElement("div");
+          row.className = "session-row";
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = `session-item ${session.id === sessionId ? "active" : ""}`.trim();
+          const title = document.createElement("strong");
+          title.textContent = session.title || shortId(session.id);
+          const meta = document.createElement("span");
+          meta.textContent = session.draft ? "未开始对话" : session.lastMessage || `${session.messageCount || 0} messages`;
+          button.append(title, meta);
+          button.addEventListener("click", async () => {
+            if (session.id === sessionId) return;
+            setSession(session.id);
+            connectEvents();
+            await loadMessages();
+            await loadSessions();
+          });
+          row.append(button);
+          if ((session.messageCount || 0) > 0) {
+            const remove = document.createElement("button");
+            remove.type = "button";
+            remove.className = "session-delete";
+            remove.title = "delete session";
+            remove.textContent = "x";
+            remove.addEventListener("click", async (event) => {
+              event.stopPropagation();
+              if (!window.confirm("Delete this session?")) return;
+              await fetch(apiForSession("/api/session", session.id), { method: "DELETE" });
+              if (session.id === sessionId) {
+                setSession(makeId());
+                connectEvents();
+                await loadMessages();
+              }
+              await loadSessions();
+            });
+            row.append(remove);
+          }
+          sessionList.append(row);
+        });
+      }
+
+      function apiForSession(path, id) {
+        const prefixedPath = path.startsWith("/amazon/") ? path : `/amazon${path}`;
+        const next = new URL(prefixedPath, window.location.origin);
+        next.searchParams.set("session", id);
+        return next.pathname + next.search;
+      }
+
+      function connectEvents() {
+        if (eventSource) eventSource.close();
+        eventSource = new EventSource(api("/api/events"));
+        eventSource.addEventListener("ready", () => { status.textContent = "synced"; });
+        eventSource.addEventListener("message", (event) => {
+          upsertMessage(JSON.parse(event.data));
+          loadSessions().catch(() => {});
+        });
+        eventSource.addEventListener("clear", () => {
+          resetMessageList();
+          hasMoreMessages = false;
+          nextBeforeMessage = null;
+          updateLoadMoreButton();
+          showGuideMessage().catch(() => {});
+          loadSessions().catch(() => {});
+        });
+        eventSource.onerror = () => { status.textContent = "sync reconnecting..."; };
+      }
+
+      async function ask(message, attachments = []) {
+        submit.disabled = true;
+        submit.textContent = "Sending";
+        try {
+          const response = await fetch(api("/api/ask"), {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ sessionId, message, attachments }),
+          });
+          if (!response.ok && response.status !== 202) {
+            const result = await response.json();
+            throw new Error(result.data?.message || "request failed");
+          }
+          connectEvents();
+          await loadMessages();
+          loadSessions().catch(() => {});
+        } catch (error) {
+          upsertMessage({ id: `client-error-${Date.now()}`, role: "assistant", status: "error", createdAt: new Date().toISOString(), content: error.message || "request failed" });
+        } finally {
+          submit.disabled = false;
+          submit.textContent = "\u53d1\u9001";
+          input.focus();
+        }
+      }
+
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const value = input.value.trim();
+        if (!value && !pendingAttachments.length) return;
+        const attachments = pendingAttachments.splice(0);
+        renderAttachmentPreview();
+        input.value = "";
+        ask(value, attachments);
+      });
+
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && !event.shiftKey) {
+          event.preventDefault();
+          form.requestSubmit();
+        }
+      });
+      messages.addEventListener("scroll", () => {
+        if (messages.scrollTop <= 24) loadOlderMessages().catch(() => {});
+      });
+      loadMore.addEventListener("click", () => loadOlderMessages().catch(() => {}));
+      upload.addEventListener("click", () => imageInput.click());
+      imageInput.addEventListener("change", () => {
+        addFiles(imageInput.files).catch((error) => upsertMessage({ id: `client-error-${Date.now()}`, role: "assistant", status: "error", createdAt: new Date().toISOString(), content: error.message }));
+        imageInput.value = "";
+      });
+      input.addEventListener("paste", (event) => {
+        const files = Array.from(event.clipboardData?.files || []);
+        if (files.some((file) => file.type.startsWith("image/"))) addFiles(files).catch(() => {});
+      });
+      clearChat.addEventListener("click", async () => {
+        if (!window.confirm("Delete current session messages?")) return;
+        await fetch(api("/api/messages/clear"), { method: "POST" });
+        await loadSessions();
+      });
+      newSession.addEventListener("click", () => {
+        setSession(makeId());
+        resetMessageList();
+        hasMoreMessages = false;
+        nextBeforeMessage = null;
+        updateLoadMoreButton();
+        connectEvents();
+        showGuideMessage().catch(() => {});
+        loadSessions().catch(() => {});
+      });
+      guideButton.addEventListener("click", () => showGuideMessage().catch(() => {}));
+      document.querySelectorAll(".quick button[data-text]").forEach((button) => {
+        button.addEventListener("click", () => { input.value = button.dataset.text; input.focus(); });
+      });
+
+      updateLoadMoreButton();
+      Promise.all([loadMessages(), loadSessions()]).then(connectEvents).catch((error) => {
+        status.textContent = "sync init failed";
+        upsertMessage({ id: "init-error", role: "assistant", status: "error", createdAt: new Date().toISOString(), content: error.message || "init failed" });
+      });
+    </script>
+  </body>
+</html>
