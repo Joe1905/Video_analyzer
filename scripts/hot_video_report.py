@@ -39,6 +39,8 @@ _active_job_lock = threading.Lock()
 _active_job: str | None = None
 _progress_lock = threading.Lock()
 _progress_by_date: dict[str, dict[str, Any]] = {}
+_translation_job_lock = threading.Lock()
+_translation_jobs: set[tuple[str, str, str]] = set()
 
 
 def today_key() -> str:
@@ -1412,6 +1414,38 @@ def translate_report_video_analysis(report_date: str, platform: str, video_id: s
     return {"status": "translated", "report_date": date, "platform": platform, "video_id": video_id, "analysis_zh": translated}
 
 
+def _auto_translate_enabled() -> bool:
+    return os.getenv("REPORT_AUTO_TRANSLATE_ANALYSIS", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _run_report_video_translation_job(report_date: str, platform: str, video_id: str) -> None:
+    key = (report_date, platform, video_id)
+    try:
+        result = translate_report_video_analysis(report_date, platform, video_id)
+        print(f"[hot-report] background translation {result.get('status')} for {platform}:{video_id}")
+    except Exception as exc:
+        print(f"[hot-report] background translation failed for {platform}:{video_id}: {exc}")
+    finally:
+        with _translation_job_lock:
+            _translation_jobs.discard(key)
+
+
+def _enqueue_report_video_translation(report_date: str, platform: str, video_id: str) -> None:
+    if not _auto_translate_enabled() or not report_date or not platform or not video_id:
+        return
+    key = (str(report_date), str(platform), str(video_id))
+    with _translation_job_lock:
+        if key in _translation_jobs:
+            return
+        _translation_jobs.add(key)
+    threading.Thread(
+        target=_run_report_video_translation_job,
+        args=key,
+        daemon=True,
+        name=f"hot-report-translate-{key[1]}-{key[2]}",
+    ).start()
+
+
 def list_reports(limit: int = 30) -> list[dict[str, Any]]:
     settings = get_settings()
     retention_days = int(settings["retention_days"])
@@ -1781,6 +1815,7 @@ def _process_video(conn: sqlite3.Connection, report_date: str, item: dict[str, A
     now = time.time()
     platform = item["platform"]
     video_id = item["video_id"]
+    completed = False
     record = get_video(platform, video_id) or {}
     filename = str(record.get("filename") or "")
     extraction_dir = str(record.get("extraction_dir") or "")
@@ -1837,12 +1872,6 @@ def _process_video(conn: sqlite3.Connection, report_date: str, item: dict[str, A
             "analysis": analysis,
         }
         social_context, insight = _ensure_video_insight(conn, report_date, platform, video_id, video_for_insight)
-        analysis_zh = None
-        if os.getenv("REPORT_AUTO_TRANSLATE_ANALYSIS", "1").strip().lower() not in {"0", "false", "no", "off"}:
-            try:
-                analysis_zh = _translate_analysis_payload(analysis)
-            except Exception as translate_exc:
-                print(f"[hot-report] analysis translation failed for {platform}:{video_id}: {translate_exc}")
         conn.execute(
             """
             UPDATE hot_video_master
@@ -1859,7 +1888,7 @@ def _process_video(conn: sqlite3.Connection, report_date: str, item: dict[str, A
             UPDATE hot_report_videos
             SET process_status = 'complete', process_error = NULL, local_filename = ?, extraction_dir = ?,
                 cover_url = COALESCE(NULLIF(?, ''), cover_url),
-                analysis_json = ?, analysis_zh_json = COALESCE(?, analysis_zh_json),
+                analysis_json = ?,
                 audit_json = ?, social_context_json = ?, insight_json = ?,
                 insight_generated_at = COALESCE(insight_generated_at, ?), updated_at = ?
             WHERE report_date = ? AND platform = ? AND video_id = ?
@@ -1869,7 +1898,6 @@ def _process_video(conn: sqlite3.Connection, report_date: str, item: dict[str, A
                 extraction_dir,
                 cover_asset,
                 json.dumps(analysis, ensure_ascii=False, sort_keys=True),
-                json.dumps(analysis_zh, ensure_ascii=False, sort_keys=True) if analysis_zh else None,
                 None,
                 json.dumps(social_context, ensure_ascii=False, sort_keys=True, default=str),
                 json.dumps(insight, ensure_ascii=False, sort_keys=True, default=str),
@@ -1880,6 +1908,7 @@ def _process_video(conn: sqlite3.Connection, report_date: str, item: dict[str, A
                 video_id,
             ),
         )
+        completed = True
     except Exception as exc:
         conn.execute(
             """
@@ -1890,6 +1919,8 @@ def _process_video(conn: sqlite3.Connection, report_date: str, item: dict[str, A
             (str(exc), now, report_date, platform, video_id),
         )
     conn.commit()
+    if completed:
+        _enqueue_report_video_translation(report_date, platform, video_id)
 
 
 def _build_summary_prompt(report_date: str, videos: list[dict[str, Any]]) -> str:
