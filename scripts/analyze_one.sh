@@ -124,3 +124,42 @@ elapsed_seconds="$(( $(date +%s) - start_epoch ))"
 log "standardizing analysis elapsed_seconds=${elapsed_seconds}"
 python scripts/standardize_analysis.py "$output_dir" --mode analyzer --elapsed-seconds "$elapsed_seconds"
 log "standardization finished"
+
+if [ "${ANALYZER_DIRECT_FALLBACK:-1}" != "0" ]; then
+  zero_frame_analysis="$(
+    python - "$output_dir/analysis.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text(encoding="utf-8"))
+metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+frames_extracted = int(metadata.get("frames_extracted") or 0)
+frames_processed = int(metadata.get("frames_processed") or 0)
+timeline_count = len(data.get("timeline") or [])
+summary = str(data.get("summary") or "")
+if frames_extracted <= 0 and frames_processed <= 0 and timeline_count <= 0 and summary:
+    print("1")
+else:
+    print("0")
+PY
+  )"
+  if [ "$zero_frame_analysis" = "1" ]; then
+    log "zero-frame analyzer result detected; falling back to direct video input analysis"
+    if [ -f "${output_dir}/analysis.json" ]; then
+      cp "${output_dir}/analysis.json" "${output_dir}/analysis_analyzer_zero_frames.json"
+    fi
+    if [ -f "${output_dir}/analysis_raw.json" ]; then
+      cp "${output_dir}/analysis_raw.json" "${output_dir}/analysis_raw_analyzer_zero_frames.json"
+    fi
+    direct_args=("$video_name" --output-dir "$output_dir")
+    if [ "${ANALYSIS_PROMPT_FILE:-}" != "" ] && [ -f "$ANALYSIS_PROMPT_FILE" ]; then
+      direct_args+=(--prompt-file "$ANALYSIS_PROMPT_FILE")
+    fi
+    python scripts/direct_video_analyze.py "${direct_args[@]}"
+    log "direct video fallback finished"
+  fi
+else
+  log "ANALYZER_DIRECT_FALLBACK=0; skipping direct video fallback check"
+fi
