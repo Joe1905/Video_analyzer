@@ -873,7 +873,7 @@ const server = http.createServer((req, res) => {
   if (req.method === "GET" && url.pathname === "/api/guide") {
     return sendJson(res, 200, { ok: true, guide: createMessage("assistant", USER_GUIDE_MESSAGE, { id: "guide", status: "done" }) });
   }
-  if (req.method === "GET" && url.pathname === "/api/events") return handleEvents(req, res, existingSession);
+  if (req.method === "GET" && url.pathname === "/api/events") return handleEvents(req, res, getSession(sessionId));
   if (req.method === "POST" && url.pathname === "/api/messages/clear") return handleClearMessages(res, existingSession);
   if (req.method === "POST" && url.pathname === "/api/recover-last") return handleRecoverLast(res, existingSession);
   if (req.method === "DELETE" && url.pathname === "/api/session") return handleDeleteSession(res, sessionId);
