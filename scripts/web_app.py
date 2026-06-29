@@ -3345,12 +3345,20 @@ def proxy_sellersprite_chat(handler: BaseHTTPRequestHandler) -> None:
                 continue
             handler.send_header(key, value)
         handler.end_headers()
-        while True:
-            chunk = resp.read(65536)
-            if not chunk:
-                break
-            handler.wfile.write(chunk)
-            handler.wfile.flush()
+        if target_path == "/api/events":
+            while True:
+                line = resp.readline()
+                if not line:
+                    break
+                handler.wfile.write(line)
+                handler.wfile.flush()
+        else:
+            while True:
+                chunk = resp.read(65536)
+                if not chunk:
+                    break
+                handler.wfile.write(chunk)
+                handler.wfile.flush()
     except (BrokenPipeError, ConnectionResetError):
         pass
     except Exception as exc:
