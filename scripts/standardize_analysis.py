@@ -2,12 +2,17 @@
 import argparse
 import json
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Any
 
 
 SCHEMA_VERSION = "1.0"
+
+
+def log(message: str) -> None:
+    print(f"[standardize_analysis] {message}", file=sys.stderr)
 
 
 def read_json(path: Path) -> Any:
@@ -67,6 +72,17 @@ def standardize_analyzer(raw: dict[str, Any], output_dir: Path, elapsed_seconds:
     api_calls = len(frame_analyses) + (1 if video_description else 0)
     prompt_path = output_dir / "analysis_prompt.txt"
     analysis_prompt = prompt_path.read_text(encoding="utf-8").strip() if prompt_path.is_file() else ""
+    frames_dir = output_dir / "frames"
+    frames_on_disk = len([path for path in frames_dir.rglob("*") if path.is_file()]) if frames_dir.is_dir() else 0
+    log(
+        "raw metadata "
+        f"frames_extracted={metadata.get('frames_extracted')} "
+        f"frames_processed={metadata.get('frames_processed')} "
+        f"frame_analyses={len(frame_analyses)} "
+        f"has_video_description={bool(video_description)} "
+        f"transcription_successful={metadata.get('transcription_successful')} "
+        f"frames_on_disk={frames_on_disk}"
+    )
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -120,11 +136,26 @@ def main() -> int:
 
     raw = read_json(analysis_path)
     if isinstance(raw, dict) and raw.get("schema_version") == SCHEMA_VERSION:
+        metadata = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
+        log(
+            "analysis already standardized "
+            f"frames_extracted={metadata.get('frames_extracted')} "
+            f"frames_processed={metadata.get('frames_processed')} "
+            f"timeline={len(raw.get('timeline') or [])}"
+        )
         return 0
 
     standardized = standardize_analyzer(raw, output_dir, args.elapsed_seconds)
     write_json(output_dir / "analysis_raw.json", raw)
     write_json(analysis_path, standardized)
+    metadata = standardized.get("metadata", {})
+    log(
+        "wrote standardized analysis "
+        f"frames_extracted={metadata.get('frames_extracted')} "
+        f"frames_processed={metadata.get('frames_processed')} "
+        f"timeline={len(standardized.get('timeline') or [])} "
+        f"summary_chars={len(standardized.get('summary') or '')}"
+    )
     return 0
 
 

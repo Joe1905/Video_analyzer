@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+log() {
+  printf '[analyze_one] %s\n' "$*" >&2
+}
+
 if [ "${1:-}" = "" ]; then
   echo "Usage: bash scripts/analyze_one.sh <video-file-name>"
   echo "Example: bash scripts/analyze_one.sh test.mp4"
@@ -50,6 +54,22 @@ if [ ! -f "$video_path" ]; then
 fi
 
 mkdir -p "$output_dir"
+log "video_name=${video_name}"
+log "video_path=${video_path}"
+log "output_dir=${output_dir}"
+log "VISION_API_URL=${VISION_API_URL}"
+log "VISION_MODEL=${VISION_MODEL}"
+log "MAX_FRAMES=${MAX_FRAMES:-20}"
+log "WHISPER_MODEL=${WHISPER_MODEL:-small}"
+log "LANGUAGE=${LANGUAGE:-zh}"
+if command -v ffprobe >/dev/null 2>&1; then
+  log "ffprobe input follows"
+  ffprobe -v error \
+    -show_entries format=duration,size:stream=index,codec_type,codec_name,width,height,duration,nb_frames,r_frame_rate \
+    -of json "$video_path" >&2 || log "ffprobe failed"
+else
+  log "ffprobe unavailable"
+fi
 rm -f output/analysis.json output/audio.wav
 rm -rf output/frames
 
@@ -66,6 +86,7 @@ if [ "${ANALYSIS_PROMPT_FILE:-}" != "" ] && [ -f "$ANALYSIS_PROMPT_FILE" ]; then
   fi
 fi
 
+log "starting video-analyzer"
 video-analyzer "$video_path" \
   --client openai_api \
   --api-key "$VISION_API_KEY" \
@@ -77,8 +98,18 @@ video-analyzer "$video_path" \
   --whisper-model "${WHISPER_MODEL:-small}" \
   --language "${LANGUAGE:-zh}" \
   "${prompt_args[@]}"
+log "video-analyzer finished"
+log "output_dir file list after analyzer"
+find "$output_dir" -maxdepth 2 -type f -printf '%p %s bytes\n' 2>/dev/null | sort >&2 || true
+if [ -d "${output_dir}/frames" ]; then
+  log "output_dir frames count=$(find "${output_dir}/frames" -type f | wc -l | tr -d ' ')"
+fi
+if [ -d output/frames ]; then
+  log "legacy output/frames count=$(find output/frames -type f | wc -l | tr -d ' ')"
+fi
 
 if [ ! -f "${output_dir}/analysis.json" ] && [ -f output/analysis.json ]; then
+  log "moving legacy output artifacts into ${output_dir}"
   mv output/analysis.json "$output_dir/"
   if [ -f output/audio.wav ]; then
     mv output/audio.wav "$output_dir/"
@@ -90,4 +121,6 @@ if [ ! -f "${output_dir}/analysis.json" ] && [ -f output/analysis.json ]; then
 fi
 
 elapsed_seconds="$(( $(date +%s) - start_epoch ))"
+log "standardizing analysis elapsed_seconds=${elapsed_seconds}"
 python scripts/standardize_analysis.py "$output_dir" --mode analyzer --elapsed-seconds "$elapsed_seconds"
+log "standardization finished"
