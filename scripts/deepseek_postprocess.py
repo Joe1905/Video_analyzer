@@ -16,6 +16,13 @@ DEFAULT_MODEL = "deepseek-chat"
 DEFAULT_MAX_TOKENS = 4096
 
 
+def normalize_chat_completions_url(api_url: str) -> str:
+    url = str(api_url or DEFAULT_API_URL).strip().rstrip("/")
+    if url.endswith("/chat/completions"):
+        return url
+    return url + "/chat/completions"
+
+
 def load_analysis(path: Path) -> dict:
     if not path.is_file():
         raise FileNotFoundError(f"analysis.json not found: {path}")
@@ -99,6 +106,7 @@ def build_prompt(analysis: dict, user_prompt: str = "") -> str:
 
 def call_deepseek(api_key: str, prompt: str, api_url: str, model: str, max_tokens: int) -> dict:
     started = time.monotonic()
+    api_url = normalize_chat_completions_url(api_url)
     response = requests.post(
         api_url,
         headers={

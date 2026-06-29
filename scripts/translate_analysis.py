@@ -27,6 +27,13 @@ SKIP_STRING_KEYS = {
 }
 
 
+def normalize_chat_completions_url(api_url: str) -> str:
+    url = str(api_url or DEFAULT_API_URL).strip().rstrip("/")
+    if url.endswith("/chat/completions"):
+        return url
+    return url + "/chat/completions"
+
+
 def load_json(path: Path) -> Any:
     if not path.is_file():
         raise FileNotFoundError(f"analysis.json not found: {path}")
@@ -35,6 +42,7 @@ def load_json(path: Path) -> Any:
 
 
 def call_deepseek(api_key: str, api_url: str, model: str, items: list[dict[str, str]]) -> dict:
+    api_url = normalize_chat_completions_url(api_url)
     prompt = (
         "Translate each item's text into Simplified Chinese. Preserve line breaks, numbers, timestamps, "
         "frame labels, speaker meaning, and technical terms where appropriate. Return strict parseable JSON only "
@@ -78,6 +86,7 @@ def call_deepseek(api_key: str, api_url: str, model: str, items: list[dict[str, 
 
 def call_deepseek_text(api_key: str, api_url: str, model: str, text: str) -> str:
     started = time.monotonic()
+    api_url = normalize_chat_completions_url(api_url)
     response = requests.post(
         api_url,
         headers={
