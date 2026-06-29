@@ -30,7 +30,7 @@ DB_PATH = ROOT / "data" / "hot_video_report.sqlite"
 REPORT_COVER_DIR = ROOT / "data" / "report_covers"
 DEFAULT_API_BASE = "https://api.sociavault.com"
 DEFAULT_TZ = "Asia/Shanghai"
-DEFAULT_REPORT_JOB_TIMEOUT_SECONDS = 30 * 60
+DEFAULT_REPORT_JOB_TIMEOUT_SECONDS = 60 * 60
 
 _scheduler_started = False
 _scheduler_lock = threading.Lock()
@@ -1092,6 +1092,7 @@ def _row_to_report(row: sqlite3.Row | tuple[Any, ...]) -> dict[str, Any]:
     if isinstance(report, dict):
         report = _normalize_report_for_display(report)
     data["report"] = report
+    data["target_video_count"] = int(get_settings().get("analysis_limit") or 10)
     return data
 
 
@@ -1890,7 +1891,7 @@ def _process_video(conn: sqlite3.Connection, report_date: str, item: dict[str, A
                 cover_url = COALESCE(NULLIF(?, ''), cover_url),
                 analysis_json = ?,
                 audit_json = ?, social_context_json = ?, insight_json = ?,
-                insight_generated_at = COALESCE(insight_generated_at, ?), updated_at = ?
+                insight_generated_at = ?, updated_at = ?
             WHERE report_date = ? AND platform = ? AND video_id = ?
             """,
             (
@@ -2351,6 +2352,25 @@ def _generate_video_insight(video: dict[str, Any], social_context: dict[str, Any
         return {"raw_result": content}
 
 
+def _is_valid_video_insight(insight: Any) -> bool:
+    if not isinstance(insight, dict) or not insight:
+        return False
+    if str(insight.get("error") or "").strip():
+        return False
+    failure_markers = (
+        "generated failed",
+        "generation failed",
+        "生成失败",
+        "拆解生成失败",
+        "API错误",
+        "API 错误",
+        "Client Error",
+        "Not Found",
+    )
+    text = json.dumps(insight, ensure_ascii=False, default=str)
+    return not any(marker in text for marker in failure_markers)
+
+
 def _ensure_video_insight(
     conn: sqlite3.Connection,
     report_date: str,
@@ -2368,7 +2388,7 @@ def _ensure_video_insight(
     ).fetchone()
     social_context = _json_loads(row[0], None) if row else None
     insight = _json_loads(row[1], None) if row else None
-    if isinstance(insight, dict) and insight:
+    if _is_valid_video_insight(insight):
         return social_context or {}, insight
     if not isinstance(social_context, dict) or not social_context:
         social_context = _fetch_video_social_context(video)
@@ -2625,6 +2645,7 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
         "skipped_low_views_stream": 0,
         "skipped_duplicate_report": 0,
         "topic_fallback_sources": 0,
+        "target_count": target_count,
         "analyzed_success": 0,
         "analyzed_failed": 0,
     }
@@ -2714,36 +2735,22 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
 
                 success_videos = _load_success_videos(conn, date)
                 if timed_out:
-                    if len(success_videos) >= 3:
-                        _progress_payload(date, "running", "summarizing", 88, "处理超时，使用成功项生成日报", counts)
-                        report_json, markdown = _generate_daily_summary(date, success_videos)
-                        _finish_report(
-                            conn,
-                            report_id,
-                            date,
-                            "partial_failed",
-                            f"Report job reached timeout ({int(job_timeout)}s), kept partial results",
-                            report_json=report_json,
-                            report_markdown=markdown,
-                        )
-                        _progress_payload(date, "partial_failed", "finished", 100, "任务超时，已保留部分日报结果", counts)
-                        return get_report(date, include_raw=True)
                     _finish_report(
                         conn,
                         report_id,
                         date,
                         "partial_failed" if success_videos else "failed",
-                        f"Report job reached timeout ({int(job_timeout)}s) before enough videos were processed",
+                        f"Report job reached timeout ({int(job_timeout)}s) before target videos were processed: {len(success_videos)}/{analysis_limit}",
                     )
-                    _progress_payload(date, "partial_failed" if success_videos else "failed", "finished", 100, "任务超时，成功分析视频不足", counts)
+                    _progress_payload(date, "partial_failed" if success_videos else "failed", "finished", 100, f"任务超时，成功视频 {len(success_videos)}/{analysis_limit}", counts)
                     return get_report(date, include_raw=True)
-                if len(success_videos) >= 3:
+                if len(success_videos) >= analysis_limit:
                     _progress_payload(date, "running", "summarizing", 88, "开始生成爆款日报", counts)
-                    report_json, markdown = _generate_daily_summary(date, success_videos)
+                    report_json, markdown = _generate_daily_summary(date, success_videos[:analysis_limit])
                     _finish_report(conn, report_id, date, "complete", report_json=report_json, report_markdown=markdown)
                     _progress_payload(date, "complete", "finished", 100, "日报生成完成", counts)
                 elif success_videos:
-                    error = f"Only {len(success_videos)} videos analyzed successfully"
+                    error = f"Only {len(success_videos)}/{analysis_limit} videos analyzed successfully"
                     _finish_report(conn, report_id, date, "partial_failed", error)
                     _progress_payload(date, "partial_failed", "finished", 100, error, counts)
                 else:
