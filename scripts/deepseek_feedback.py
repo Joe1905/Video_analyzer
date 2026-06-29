@@ -34,6 +34,8 @@ def resolve_paths(path: Path) -> tuple[Path, Path]:
         return path / "analysis.json", path / "audit_result.json"
     if path.name == "analysis.json":
         return path, path.parent / "audit_result.json"
+    if path.name == "direct_analysis.json":
+        return path, path.parent / "direct_audit_result.json"
     return path / "analysis.json", path / "audit_result.json"
 
 
@@ -135,6 +137,7 @@ def main() -> int:
         help=f"DeepSeek model name. Defaults to {DEFAULT_MODEL}.",
     )
     parser.add_argument("--prompt", default="", help="User-defined feedback prompt.")
+    parser.add_argument("--audit", default="", help="Explicit audit result JSON path.")
     args = parser.parse_args()
 
     api_key = os.getenv("DEEPSEEK_API_KEY")
@@ -145,6 +148,8 @@ def main() -> int:
     base_path = Path(args.analysis_path or "output/analysis.json")
     try:
         analysis_path, audit_path = resolve_paths(base_path)
+        if args.audit:
+            audit_path = Path(args.audit)
         analysis = read_json(analysis_path)
         audit_result = read_json(audit_path)
         social_context_path = analysis_path.parent / "social_context.json"

@@ -3245,16 +3245,24 @@ def execute_queue_job(filename: str, job_type: str, progress: dict) -> None:
 
     elif job_type == "report":
         video_queue.set_progress(filename, "auditing", 10, job_type, f"{filename}: 开始生成报告")
+        source_file = output_dir / "report_source.txt"
+        analysis_source = "direct" if source_file.is_file() and source_file.read_text(encoding="utf-8").strip() == "direct" else "standard"
+        analysis_name = "direct_analysis.json" if analysis_source == "direct" else "analysis.json"
+        audit_name = "direct_audit_result.json" if analysis_source == "direct" else "audit_result.json"
+        analysis_path = output_dir / analysis_name
+        audit_path = output_dir / audit_name
         current = video_queue.get_status(filename)
-        if current == "complete":
+        if current == "complete" and audit_path.is_file():
             video_queue.set_progress(filename, "completed", 100, job_type, f"{filename}: 已有报告，跳过")
             return
-        if (output_dir / "audit_result.json").is_file():
+        if not analysis_path.is_file():
+            raise FileNotFoundError(f"{analysis_name} not found for {filename}")
+        if audit_path.is_file():
             video_queue.set_status(filename, "complete")
             video_queue.set_progress(filename, "completed", 100, job_type, f"{filename}: 已加载已有报告")
             return
         video_queue.set_progress(filename, "auditing", 25, job_type, f"{filename}: 正在调用 DeepSeek 生成报告")
-        cmd = ["python", str(SCRIPTS_DIR / "deepseek_postprocess.py"), str(output_dir)]
+        cmd = ["python", str(SCRIPTS_DIR / "deepseek_postprocess.py"), str(analysis_path), "--output", str(audit_path)]
         prompt_file = output_dir / "analysis_prompt.txt"
         if prompt_file.is_file():
             cmd.extend(["--prompt", prompt_file.read_text(encoding="utf-8").strip()])
@@ -3653,8 +3661,12 @@ class Handler(BaseHTTPRequestHandler):
                     "direct_analysis_zh": read_json(output_dir / "direct_analysis_zh.json"),
                     "audit_result": read_json(output_dir / "audit_result.json"),
                     "audit_result_zh": read_json(output_dir / "audit_result_zh.json"),
+                    "direct_audit_result": read_json(output_dir / "direct_audit_result.json"),
+                    "direct_audit_result_zh": read_json(output_dir / "direct_audit_result_zh.json"),
                     "feedback_result": read_json(output_dir / "feedback_result.json"),
                     "feedback_result_zh": read_json(output_dir / "feedback_result_zh.json"),
+                    "direct_feedback_result": read_json(output_dir / "direct_feedback_result.json"),
+                    "direct_feedback_result_zh": read_json(output_dir / "direct_feedback_result_zh.json"),
                     "social_context": social_context,
                     "social_insights": read_json(output_dir / "social_insights.json"),
                     "log": [],
@@ -3687,6 +3699,12 @@ class Handler(BaseHTTPRequestHandler):
                 "audit": ("audit_result_zh.json", "audit_result.json"),
                 "feedback": ("feedback_result_zh.json", "feedback_result.json"),
             }
+            source_mode = query.get("source", ["standard"])[0]
+            if source_mode == "direct":
+                if tab == "audit":
+                    sources["audit"] = ("direct_audit_result_zh.json", "direct_audit_result.json")
+                elif tab == "feedback":
+                    sources["feedback"] = ("direct_feedback_result_zh.json", "direct_feedback_result.json")
             if tab in sources:
                 source, fallback = sources[tab]
                 payload = read_json(output_dir / source) or read_json(output_dir / fallback)
@@ -4162,18 +4180,32 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(body.decode("utf-8") or "{}")
             filename = safe_filename(str(payload.get("filename", "")))
             analysis_prompt = str(payload.get("analysis_prompt") or "").strip()
+            analysis_source = str(payload.get("analysis_source") or payload.get("source") or "standard").strip()
+            if analysis_source not in {"standard", "direct"}:
+                raise ValueError("analysis_source must be standard or direct")
         except (json.JSONDecodeError, ValueError) as exc:
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
         output_dir = output_dir_for_filename(filename)
-        if not (output_dir / "analysis.json").is_file():
-            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": f"analysis.json not found for {filename}"})
+        analysis_name = "direct_analysis.json" if analysis_source == "direct" else "analysis.json"
+        audit_names = ("direct_audit_result.json", "direct_audit_result_zh.json") if analysis_source == "direct" else ("audit_result.json", "audit_result_zh.json")
+        if not (output_dir / analysis_name).is_file():
+            if analysis_source == "direct":
+                output_dir.mkdir(parents=True, exist_ok=True)
+                (output_dir / "analysis_mode.txt").write_text("direct_video", encoding="utf-8")
+                (output_dir / "report_source.txt").write_text("direct", encoding="utf-8")
+                video_queue.enqueue(filename, "analyze")
+                video_queue.enqueue(filename, "report")
+                return json_response(self, HTTPStatus.ACCEPTED, {"status": "queued", "filename": filename, "queued": ["analyze", "report"]})
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": f"{analysis_name} not found for {filename}"})
 
         # Save user prompt for DeepSeek report
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "report_source.txt").write_text(analysis_source, encoding="utf-8")
         if analysis_prompt:
             (output_dir / "analysis_prompt.txt").write_text(analysis_prompt, encoding="utf-8")
 
-        for report_name in ("audit_result.json", "audit_result_zh.json"):
+        for report_name in audit_names:
             report_path = output_dir / report_name
             if report_path.is_file():
                 report_path.unlink()
@@ -4188,6 +4220,9 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(body.decode("utf-8") or "{}")
             filename = safe_filename(str(payload.get("filename", "")))
             tab = str(payload.get("tab") or "").strip()
+            source_mode = str(payload.get("analysis_source") or payload.get("source") or "standard").strip()
+            if source_mode not in {"standard", "direct"}:
+                raise ValueError("analysis_source must be standard or direct")
             if tab not in {"content", "direct", "audit", "feedback"}:
                 raise ValueError("tab must be content, direct, audit, or feedback")
         except (json.JSONDecodeError, ValueError) as exc:
@@ -4200,6 +4235,11 @@ class Handler(BaseHTTPRequestHandler):
             "audit": ("audit_result.json", "audit_result_zh.json"),
             "feedback": ("feedback_result.json", "feedback_result_zh.json"),
         }
+        if source_mode == "direct":
+            if tab == "audit":
+                files["audit"] = ("direct_audit_result.json", "direct_audit_result_zh.json")
+            elif tab == "feedback":
+                files["feedback"] = ("direct_feedback_result.json", "direct_feedback_result_zh.json")
         source_name, output_name = files[tab]
         source_path = output_dir / source_name
         output_path = output_dir / output_name
@@ -4234,23 +4274,31 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(body.decode("utf-8") or "{}")
             filename = safe_filename(str(payload.get("filename", "")))
             feedback_prompt = str(payload.get("feedback_prompt") or "").strip()
+            analysis_source = str(payload.get("analysis_source") or payload.get("source") or "standard").strip()
+            if analysis_source not in {"standard", "direct"}:
+                raise ValueError("analysis_source must be standard or direct")
             if len(feedback_prompt) > 12000:
                 raise ValueError("feedback_prompt is too long")
         except (json.JSONDecodeError, ValueError) as exc:
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
         output_dir = output_dir_for_filename(filename)
-        if not (output_dir / "analysis.json").is_file():
-            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": f"analysis.json not found for {filename}"})
-        if not (output_dir / "audit_result.json").is_file():
-            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": f"audit_result.json not found for {filename}"})
+        analysis_name = "direct_analysis.json" if analysis_source == "direct" else "analysis.json"
+        audit_name = "direct_audit_result.json" if analysis_source == "direct" else "audit_result.json"
+        feedback_name = "direct_feedback_result.json" if analysis_source == "direct" else "feedback_result.json"
+        if not (output_dir / analysis_name).is_file():
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": f"{analysis_name} not found for {filename}", "missing": "analysis"})
+        if not (output_dir / audit_name).is_file():
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": f"{audit_name} not found for {filename}", "missing": "audit"})
 
         cmd = [
             "python",
             str(SCRIPTS_DIR / "deepseek_feedback.py"),
-            str(output_dir),
+            str(output_dir / analysis_name),
             "--output",
-            str(output_dir / "feedback_result.json"),
+            str(output_dir / feedback_name),
+            "--audit",
+            str(output_dir / audit_name),
         ]
         if feedback_prompt:
             cmd.extend(["--prompt", feedback_prompt])
