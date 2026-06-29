@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -1046,6 +1047,7 @@ def metric_item(label: str, value: Any) -> str:
 def build_report_html(filename: str, tab: str, payload: dict[str, Any]) -> str:
     is_audit = tab in {"audit", "feedback", "comments", "data", "creator"}
     title_map = {
+        "direct": "直接提取内容报告",
         "feedback": "反馈结果报告",
         "audit": "分析结果报告",
         "comments": "评论区分析报告",
@@ -1053,6 +1055,7 @@ def build_report_html(filename: str, tab: str, payload: dict[str, Any]) -> str:
         "creator": "博主分析报告",
     }
     eyebrow_map = {
+        "direct": "Direct LLM Extraction",
         "feedback": "DeepSeek 反馈",
         "audit": "DeepSeek 分析",
         "comments": "SociaVault Comments",
@@ -3125,18 +3128,25 @@ def execute_queue_job(filename: str, job_type: str, progress: dict) -> None:
 
     if job_type == "analyze":
         video_queue.set_progress(filename, "extracting", 10, job_type, f"{filename}: 开始解析视频")
+        mode_file = output_dir / "analysis_mode.txt"
+        analysis_mode = os.getenv("ANALYSIS_MODE", "analyzer")
+        if mode_file.is_file():
+            mode_value = mode_file.read_text(encoding="utf-8").strip()
+            if mode_value in {"analyzer", "direct_video"}:
+                analysis_mode = mode_value
+        is_direct = analysis_mode == "direct_video"
+        analysis_path = output_dir / ("direct_analysis.json" if is_direct else "analysis.json")
         # Skip if already analyzed or complete
         current = video_queue.get_status(filename)
-        if current in ("analyzed", "complete"):
+        if current in ("analyzed", "complete") and analysis_path.is_file():
             video_queue.set_progress(filename, "completed", 100, job_type, f"{filename}: 已有解析结果，跳过")
             return
-        if registry_record and registry_record.get("extracted_at") and registry_record.get("extraction_dir"):
+        if not is_direct and registry_record and registry_record.get("extracted_at") and registry_record.get("extraction_dir"):
             existing_dir = OUTPUT_DIR / str(registry_record["extraction_dir"])
             if (existing_dir / "analysis.json").is_file():
                 video_queue.set_status(filename, "analyzed")
                 video_queue.set_progress(filename, "completed", 100, job_type, f"{filename}: 同一 TikTok 视频已提取，跳过重复提取")
                 return
-        analysis_path = output_dir / "analysis.json"
         if analysis_path.is_file():
             video_queue.set_status(filename, "analyzed")
             video_queue.set_progress(filename, "completed", 100, job_type, f"{filename}: 已加载已有解析结果")
@@ -3152,24 +3162,30 @@ def execute_queue_job(filename: str, job_type: str, progress: dict) -> None:
             prompt_file.write_text(prompt, encoding="utf-8")
 
         video_queue.set_progress(filename, "extracting", 20, job_type, f"{filename}: 正在调用视频解析脚本")
-        analysis_mode = os.getenv("ANALYSIS_MODE", "analyzer")
         env = os.environ.copy()
         env["ANALYSIS_PROMPT_FILE"] = str(prompt_file)
         env["ANALYSIS_OUTPUT_DIR"] = str(output_dir)
-        if analysis_mode == "direct_video":
-            cmd = [
-                "python",
-                str(SCRIPTS_DIR / "direct_video_analyze.py"),
-                filename,
-                "--output-dir",
-                str(output_dir),
-                "--prompt-file",
-                str(prompt_file),
-            ]
+        if is_direct:
+            with tempfile.TemporaryDirectory(prefix="direct_", dir=str(output_dir)) as tmp:
+                tmp_dir = Path(tmp)
+                cmd = [
+                    "python",
+                    str(SCRIPTS_DIR / "direct_video_analyze.py"),
+                    filename,
+                    "--output-dir",
+                    str(tmp_dir),
+                    "--prompt-file",
+                    str(prompt_file),
+                ]
+                subprocess.run(cmd, cwd=ROOT, check=True, env=env)
+                direct_source = tmp_dir / "analysis.json"
+                if not direct_source.is_file():
+                    raise FileNotFoundError(f"direct analysis.json not found: {direct_source}")
+                shutil.move(str(direct_source), str(output_dir / "direct_analysis.json"))
         else:
             cmd = ["bash", str(SCRIPTS_DIR / "analyze_one.sh"), filename]
-        subprocess.run(cmd, cwd=ROOT, check=True, env=env)
-        mark_extracted(filename, extraction_dir_name)
+            subprocess.run(cmd, cwd=ROOT, check=True, env=env)
+            mark_extracted(filename, extraction_dir_name)
         video_queue.set_status(filename, "analyzed")
         video_queue.set_progress(filename, "extracting", 65, job_type, f"{filename}: 视频解析完成")
 
@@ -3182,7 +3198,7 @@ def execute_queue_job(filename: str, job_type: str, progress: dict) -> None:
             if _api_key:
                 video_queue.set_progress(filename, "titling", 88, job_type, f"{filename}: 正在生成短标题")
                 _text = ""
-                for _src in ["audit_result_zh.json", "analysis_zh.json", "analysis.json"]:
+                for _src in ["audit_result_zh.json", "analysis_zh.json", "analysis.json", "direct_analysis_zh.json", "direct_analysis.json"]:
                     _sp = output_dir / _src
                     if _sp.is_file():
                         _data = json.loads(_sp.read_text(encoding="utf-8"))
@@ -3633,6 +3649,8 @@ class Handler(BaseHTTPRequestHandler):
                     "analysis_mode": mode_from_analysis(analysis),
                     "analysis": analysis,
                     "analysis_zh": read_json(output_dir / "analysis_zh.json"),
+                    "direct_analysis": read_json(output_dir / "direct_analysis.json"),
+                    "direct_analysis_zh": read_json(output_dir / "direct_analysis_zh.json"),
                     "audit_result": read_json(output_dir / "audit_result.json"),
                     "audit_result_zh": read_json(output_dir / "audit_result_zh.json"),
                     "feedback_result": read_json(output_dir / "feedback_result.json"),
@@ -3660,11 +3678,12 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
             tab = query.get("tab", ["audit"])[0]
-            if tab not in {"audit", "content", "feedback", "comments", "data", "creator"}:
+            if tab not in {"audit", "content", "direct", "feedback", "comments", "data", "creator"}:
                 return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Invalid tab"})
             output_dir = output_dir_for_filename(filename)
             sources = {
                 "content": ("analysis_zh.json", "analysis.json"),
+                "direct": ("direct_analysis_zh.json", "direct_analysis.json"),
                 "audit": ("audit_result_zh.json", "audit_result.json"),
                 "feedback": ("feedback_result_zh.json", "feedback_result.json"),
             }
@@ -3680,7 +3699,7 @@ class Handler(BaseHTTPRequestHandler):
                 pdf = render_pdf_bytes(html)
             except Exception as exc:
                 return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"PDF export failed: {exc}"})
-            suffix = {"content": "analysis", "audit": "audit", "feedback": "feedback", "comments": "comments", "data": "data", "creator": "creator"}[tab]
+            suffix = {"content": "analysis", "direct": "direct_analysis", "audit": "audit", "feedback": "feedback", "comments": "comments", "data": "data", "creator": "creator"}[tab]
             return binary_response(
                 self,
                 HTTPStatus.OK,
@@ -4118,12 +4137,19 @@ class Handler(BaseHTTPRequestHandler):
 
         output_dir = output_dir_for_filename(filename)
         if reset_output:
-            if output_dir.is_dir():
+            if analysis_mode == "direct_video":
+                output_dir.mkdir(parents=True, exist_ok=True)
+                for output_name in ("direct_analysis.json", "direct_analysis_zh.json"):
+                    output_path = output_dir / output_name
+                    if output_path.is_file():
+                        output_path.unlink()
+            elif output_dir.is_dir():
                 shutil.rmtree(output_dir)
 
         # Save user prompt to file so queue executor can use it
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "analysis_mode.txt").write_text(analysis_mode, encoding="utf-8")
         if analysis_prompt:
-            output_dir.mkdir(parents=True, exist_ok=True)
             (output_dir / "analysis_prompt.txt").write_text(analysis_prompt, encoding="utf-8")
 
         video_queue.enqueue(filename, "analyze")
@@ -4162,14 +4188,15 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(body.decode("utf-8") or "{}")
             filename = safe_filename(str(payload.get("filename", "")))
             tab = str(payload.get("tab") or "").strip()
-            if tab not in {"content", "audit", "feedback"}:
-                raise ValueError("tab must be content, audit, or feedback")
+            if tab not in {"content", "direct", "audit", "feedback"}:
+                raise ValueError("tab must be content, direct, audit, or feedback")
         except (json.JSONDecodeError, ValueError) as exc:
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
         output_dir = output_dir_for_filename(filename)
         files = {
             "content": ("analysis.json", "analysis_zh.json"),
+            "direct": ("direct_analysis.json", "direct_analysis_zh.json"),
             "audit": ("audit_result.json", "audit_result_zh.json"),
             "feedback": ("feedback_result.json", "feedback_result_zh.json"),
         }
