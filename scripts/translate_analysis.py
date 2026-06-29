@@ -15,6 +15,7 @@ from api_cache import record_api_call
 DEFAULT_API_URL = "https://api.deepseek.com/v1/chat/completions"
 DEFAULT_MODEL = "deepseek-chat"
 DEFAULT_BATCH_CHARS = 8000
+DEFAULT_TEXT_CHUNK_CHARS = 3000
 SKIP_STRING_KEYS = {
     "schema_version",
     "processing_mode",
@@ -119,6 +120,46 @@ def call_deepseek_text(api_key: str, api_url: str, model: str, text: str) -> str
         elapsed_ms=int((time.monotonic() - started) * 1000),
     )
     return extract_content(data).strip()
+
+
+def split_text_chunks(text: str, max_chars: int) -> list[str]:
+    max_chars = max(500, int(max_chars or DEFAULT_TEXT_CHUNK_CHARS))
+    if len(text) <= max_chars:
+        return [text]
+    chunks: list[str] = []
+    remaining = text
+    while remaining:
+        if len(remaining) <= max_chars:
+            chunks.append(remaining)
+            break
+        window = remaining[:max_chars]
+        split_at = max(
+            window.rfind("\n\n"),
+            window.rfind("\n"),
+            window.rfind(". "),
+            window.rfind("。"),
+            window.rfind("; "),
+            window.rfind("；"),
+        )
+        if split_at < max_chars * 0.45:
+            split_at = max_chars
+        else:
+            split_at += 1
+        chunks.append(remaining[:split_at])
+        remaining = remaining[split_at:].lstrip()
+    return [chunk for chunk in chunks if chunk]
+
+
+def translate_text_chunked(api_key: str, api_url: str, model: str, text: str, max_chars: int) -> str:
+    chunks = split_text_chunks(text, max_chars)
+    if len(chunks) == 1:
+        return call_deepseek_text(api_key=api_key, api_url=api_url, model=model, text=text)
+    translated_chunks = []
+    for index, chunk in enumerate(chunks, start=1):
+        translated = call_deepseek_text(api_key=api_key, api_url=api_url, model=model, text=chunk)
+        translated_chunks.append(translated)
+        print(f"Translated long text chunk {index}/{len(chunks)} ({len(chunk)} chars)", file=sys.stderr)
+    return "\n".join(translated_chunks)
 
 
 def extract_content(api_response: dict) -> str:
@@ -261,7 +302,17 @@ def translate_in_batches(
         except Exception as exc:
             print(f"Batch {batch_index} JSON translation failed, falling back to single-text translation: {exc}", file=sys.stderr)
             for path, original in batch:
-                set_path(translated, path, call_deepseek_text(api_key=api_key, api_url=api_url, model=model, text=original))
+                set_path(
+                    translated,
+                    path,
+                    translate_text_chunked(
+                        api_key=api_key,
+                        api_url=api_url,
+                        model=model,
+                        text=original,
+                        max_chars=min(max_chars, int(os.getenv("TRANSLATION_TEXT_CHUNK_CHARS", str(DEFAULT_TEXT_CHUNK_CHARS)))),
+                    ),
+                )
             print(f"Translated batch {batch_index} with fallback ({len(batch)} strings)", file=sys.stderr)
 
     return translated

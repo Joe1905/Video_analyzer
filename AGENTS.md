@@ -196,6 +196,8 @@ Chat/session/cache state lives under `data/` and should not be committed.
 
 - Daily summary generation must pass an explicit `max_tokens` value into `deepseek_postprocess.call_deepseek`; otherwise reports can finish video analysis but fail before writing the LLM summary.
 - TikTok Photo Mode/image posts can expose music or audio-only media while lacking a real video stream. Hot-report collection should filter these before download/analysis instead of treating `.mp3`/`.m4a` output as an encoding problem.
+- Hot reports currently can be marked `complete` with fewer than the configured `analysis_limit` videos because generation starts when successful videos are `>= 3`. This should be fixed so the target ingested/successful video count is exposed globally to the backend and UI, collection/processing continues until the target is met, and the report is only completed after that target is satisfied. The report job timeout can be relaxed to support this.
+- Hot-report single-video deep-dive cache entries in `hot_report_videos.insight_json` can contain failure placeholders, for example old DeepSeek endpoint errors. These placeholders must not be treated as valid cache hits; later report regeneration should detect `error` or "generated failed" placeholder content, recompute the single-video insight, and then regenerate the daily summary.
 
 ## Analysis Schema
 
