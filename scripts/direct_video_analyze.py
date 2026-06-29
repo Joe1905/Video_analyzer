@@ -179,7 +179,14 @@ def parse_json_content(content: str) -> Any:
         if stripped.startswith("json"):
             stripped = stripped[4:]
         stripped = stripped.strip()
-    return json.loads(stripped)
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        start = stripped.find("{")
+        end = stripped.rfind("}")
+        if start >= 0 and end > start:
+            return json.loads(stripped[start : end + 1])
+        raise
 
 
 def usage_from_response(api_response: dict[str, Any], elapsed_seconds: float) -> dict[str, Any]:
@@ -276,7 +283,15 @@ def main() -> int:
         max_tokens=args.max_tokens,
     )
     content = extract_content(api_response)
-    parsed = parse_json_content(content)
+    parse_error = ""
+    try:
+        parsed = parse_json_content(content)
+    except json.JSONDecodeError as exc:
+        parse_error = str(exc)
+        parsed = {
+            "summary": content.strip() or "Direct video model returned empty content.",
+            "raw_text": content,
+        }
 
     elapsed = time.monotonic() - started
     usage = usage_from_response(api_response, elapsed)
@@ -301,6 +316,8 @@ def main() -> int:
         "timeline": timeline,
         "visual_evidence": visual_evidence,
         "raw_model_output": api_response,
+        "raw_model_text": content,
+        "parse_error": parse_error,
         "usage": usage,
     }
     write_json(output_dir / "analysis.json", analysis)
