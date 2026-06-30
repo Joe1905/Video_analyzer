@@ -686,9 +686,9 @@ async function synthesizeSellerSpriteAnswer(conversation, deepseekResponses, too
     finalConversation.pop();
   }
   finalConversation.push({
-    role: "system",
+    role: "user",
     content:
-      `Tool boundary reached: ${reason}. Do not call any more tools. Use only the SellerSprite tool results already present in the conversation to write the final Chinese Markdown answer. If the data is partial, say which parts are partial, but still summarize usable findings. Do not invent missing numeric values.`,
+      `工具调用边界已触发：${reason}。现在必须停止调用工具，直接基于上文已有 SellerSprite 工具结果输出最终中文 Markdown 总结。禁止输出任何 DSML、tool_calls、invoke、parameter、JSON 工具请求或伪工具调用标签。如果数据不完整，请说明是部分分析，但仍要整理已有数据中的可用发现。不要编造缺失数值。`,
   });
   const response = await callDeepSeek({
     model: DEEPSEEK_MODEL,
@@ -696,11 +696,50 @@ async function synthesizeSellerSpriteAnswer(conversation, deepseekResponses, too
   });
   deepseekResponses.push(sanitizeDeepSeekPayload(response));
   const assistant = response.choices?.[0]?.message || {};
+  const content = assistant.content || "";
+  if (/DSML|tool_calls|invoke name=|parameter name=/i.test(content)) {
+    return {
+      content: formatToolBoundaryFallback(toolResults, reason),
+      request: firstRequest,
+      raw: { deepseek: deepseekResponses, toolResults, toolBoundary: reason, boundaryFallback: true },
+    };
+  }
   return {
-    content: assistant.content || "已达到工具调用边界，但没有拿到可用总结。请缩小问题范围后重试。",
+    content: content || "已达到工具调用边界，但没有拿到可用总结。请缩小问题范围后重试。",
     request: firstRequest,
     raw: { deepseek: deepseekResponses, toolResults, toolBoundary: reason },
   };
+}
+
+function formatToolBoundaryFallback(toolResults, reason) {
+  const successful = (toolResults || []).filter((item) => item?.result?.ok);
+  const failed = (toolResults || []).filter((item) => item?.result?.ok === false);
+  const lines = successful.map((item, index) => {
+    const name = item?.toolCall?.function?.name || item?.result?.request?.apiPath || "unknown_tool";
+    const cache = item?.result?.cache?.label ? `，${item.result.cache.label}` : "";
+    return `${index + 1}. \`${name}\`：成功${cache}`;
+  });
+  const failedLines = failed.map((item) => {
+    const name = item?.toolCall?.function?.name || item?.result?.request?.apiPath || "unknown_tool";
+    const code = item?.result?.error?.code || item?.result?.error?.message || "ERROR";
+    return `- \`${name}\`：${code}`;
+  });
+  return [
+    "### 已停止继续调用工具",
+    "",
+    `本轮已触发工具调用边界：\`${reason}\`。模型仍尝试继续发起工具调用，为避免循环和消耗次数，系统已停止后续调用。`,
+    "",
+    "### 已成功获取的数据",
+    "",
+    lines.length ? lines.join("\n") : "- 暂无成功工具结果",
+    "",
+    failedLines.length ? "### 跳过或失败的数据\n\n" + failedLines.join("\n") + "\n" : "",
+    "### 下一步建议",
+    "",
+    "- 如果要继续做类目分析，请指定更明确的类目节点、关键词或筛选条件。",
+    "- 如果要分析单品，请直接给 ASIN；ASIN 查询会走更适合的工具集合。",
+    "- 如果要减少工具调用，可直接说明只查市场概览、只查产品列表或只查价格分布。",
+  ].filter(Boolean).join("\n");
 }
 
 async function callDeepSeek(payload) {
