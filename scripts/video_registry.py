@@ -11,6 +11,10 @@ from urllib.parse import urlparse
 
 ROOT = Path.cwd()
 DB_PATH = ROOT / "data" / "video_registry.sqlite"
+SOURCE_WEB_MANUAL = "web_manual"
+SOURCE_HOT_REPORT = "hot_report"
+SOURCE_API_UPLOAD = "api_upload"
+VISIBLE_ANALYZER_SOURCES = {SOURCE_WEB_MANUAL, ""}
 
 
 def _connect() -> sqlite3.Connection:
@@ -117,7 +121,10 @@ def register_video(
                 title = COALESCE(NULLIF(excluded.title, ''), title),
                 author = COALESCE(NULLIF(excluded.author, ''), author),
                 extraction_dir = COALESCE(NULLIF(excluded.extraction_dir, ''), extraction_dir),
-                source = COALESCE(NULLIF(excluded.source, ''), source),
+                source = CASE
+                    WHEN source = 'web_manual' AND excluded.source != 'web_manual' THEN source
+                    ELSE COALESCE(NULLIF(excluded.source, ''), source)
+                END,
                 hidden_from_analyzer = CASE
                     WHEN hidden_from_analyzer = 0 THEN 0
                     WHEN excluded.hidden_from_analyzer = 0 THEN hidden_from_analyzer
@@ -144,7 +151,13 @@ def register_video(
     return get_video(platform, clean_video_id) or {}
 
 
-def register_from_payload(payload: Any, source_url: str = "", filename: str = "") -> dict[str, Any]:
+def register_from_payload(
+    payload: Any,
+    source_url: str = "",
+    filename: str = "",
+    source: str = "",
+    hidden_from_analyzer: bool | None = None,
+) -> dict[str, Any]:
     video_id = find_video_id(payload, source_url)
     if not video_id:
         return {}
@@ -178,6 +191,8 @@ def register_from_payload(payload: Any, source_url: str = "", filename: str = ""
         filename=filename,
         title=title,
         author=author,
+        source=source,
+        hidden_from_analyzer=hidden_from_analyzer,
     )
 
 
@@ -239,6 +254,15 @@ def mark_extracted(filename: str, extraction_dir: str) -> None:
 def is_hidden_from_analyzer(filename: str) -> bool:
     record = get_video_by_filename(filename)
     return bool(record and int(record.get("hidden_from_analyzer") or 0))
+
+
+def analyzer_visible_source(filename: str) -> bool:
+    record = get_video_by_filename(filename)
+    if not record:
+        return True
+    if int(record.get("hidden_from_analyzer") or 0):
+        return False
+    return str(record.get("source") or "") in VISIBLE_ANALYZER_SOURCES
 
 
 def set_hidden_from_analyzer(platform: str, video_id: str, hidden: bool) -> None:

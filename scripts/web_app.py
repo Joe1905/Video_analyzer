@@ -87,12 +87,15 @@ from hot_video_report import (
 )
 from tiktok_download import video_cache_metadata, video_cache_request, with_download_cache_meta
 from video_registry import (
+    SOURCE_API_UPLOAD,
+    SOURCE_WEB_MANUAL,
+    analyzer_visible_source,
     get_video_by_filename,
-    is_hidden_from_analyzer,
     mark_extracted,
     platform_for_url,
     register_from_payload,
     register_video,
+    set_hidden_from_analyzer,
 )
 from proxy_state import ensure_us_proxy
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
@@ -210,6 +213,7 @@ class Job:
 class DownloadJob:
     id: str
     url: str
+    source: str = SOURCE_API_UPLOAD
     status: str = "queued"
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
@@ -295,6 +299,35 @@ def load_env_file() -> None:
             continue
         key, value = line.split("=", 1)
         os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+def normalize_video_source(value: Any, default: str = SOURCE_API_UPLOAD) -> str:
+    source = str(value or default).strip().lower()
+    aliases = {
+        "manual": SOURCE_WEB_MANUAL,
+        "web": SOURCE_WEB_MANUAL,
+        "web_upload": SOURCE_WEB_MANUAL,
+        "web_url": SOURCE_WEB_MANUAL,
+        "manual_web": SOURCE_WEB_MANUAL,
+        "web_manual": SOURCE_WEB_MANUAL,
+        "api": SOURCE_API_UPLOAD,
+        "api_upload": SOURCE_API_UPLOAD,
+        "api_url": SOURCE_API_UPLOAD,
+        "interface": SOURCE_API_UPLOAD,
+        "hot": "hot_report",
+        "hot_report": "hot_report",
+        "report": "hot_report",
+    }
+    return aliases.get(source, default)
+
+
+def video_source_hidden(source: str) -> bool:
+    return normalize_video_source(source) != SOURCE_WEB_MANUAL
+
+
+def make_web_manual_visible(source: str, platform: str, video_id: str) -> None:
+    if normalize_video_source(source) == SOURCE_WEB_MANUAL and video_id:
+        set_hidden_from_analyzer(platform, video_id, False)
 
 
 def safe_filename(filename: str) -> str:
@@ -1775,6 +1808,20 @@ def try_cached_download_result(job: DownloadJob, result_path: Path) -> bool:
         return False
     result = with_download_cache_meta(dict(cached), True)
     result["path"] = str(cached_path)
+    if result.get("id"):
+        video_id = str(result.get("id"))
+        platform = platform_for_url(job.url)
+        register_video(
+            video_id=video_id,
+            platform=platform,
+            source_url=str(result.get("webpage_url") or job.url),
+            filename=filename,
+            title=str(result.get("title") or ""),
+            author=str(result.get("uploader") or ""),
+            source=job.source,
+            hidden_from_analyzer=video_source_hidden(job.source),
+        )
+        make_web_manual_visible(job.source, platform, video_id)
     write_json(result_path, result)
     append_download_log(job, "下载结果缓存命中，复用本地视频文件。")
     return True
@@ -1782,14 +1829,19 @@ def try_cached_download_result(job: DownloadJob, result_path: Path) -> bool:
 
 def store_download_result(job: DownloadJob, result: dict[str, Any]) -> dict[str, Any]:
     if result.get("id"):
+        video_id = str(result.get("id"))
+        platform = platform_for_url(job.url)
         register_video(
-            video_id=str(result.get("id")),
-            platform=platform_for_url(job.url),
+            video_id=video_id,
+            platform=platform,
             source_url=str(result.get("webpage_url") or job.url),
             filename=str(result.get("filename") or ""),
             title=str(result.get("title") or ""),
             author=str(result.get("uploader") or ""),
+            source=job.source,
+            hidden_from_analyzer=video_source_hidden(job.source),
         )
+        make_web_manual_visible(job.source, platform, video_id)
     store_response(
         "short_video_download",
         "download",
@@ -1853,7 +1905,14 @@ def media_cache_is_stale(payload: Any) -> bool:
 
 
 def _try_video_info_payload_download(job: DownloadJob, payload: Any, result_path: Path, source_label: str) -> bool:
-    register_from_payload(payload, source_url=job.url)
+    record = register_from_payload(
+        payload,
+        source_url=job.url,
+        source=job.source,
+        hidden_from_analyzer=video_source_hidden(job.source),
+    )
+    if record:
+        make_web_manual_visible(job.source, str(record.get("platform") or platform_for_url(job.url)), str(record.get("video_id") or ""))
     media_payload = _media_cache_payload(job.url, payload)
     if media_payload["candidates"]:
         store_response(
@@ -2265,14 +2324,19 @@ def run_download_job(job_id: str) -> None:
         if not (VIDEOS_DIR / filename).is_file():
             raise FileNotFoundError(f"Downloaded file not found: {filename}")
         if result.get("id"):
+            video_id = str(result.get("id"))
+            platform = platform_for_url(job.url)
             register_video(
-                video_id=str(result.get("id")),
-                platform=platform_for_url(job.url),
+                video_id=video_id,
+                platform=platform,
                 source_url=str(result.get("webpage_url") or job.url),
                 filename=filename,
                 title=str(result.get("title") or ""),
                 author=str(result.get("uploader") or ""),
+                source=job.source,
+                hidden_from_analyzer=video_source_hidden(job.source),
             )
+            make_web_manual_visible(job.source, platform, video_id)
         with download_jobs_lock:
             job.filename = filename
             job.result = result
@@ -3867,7 +3931,7 @@ class Handler(BaseHTTPRequestHandler):
                     if not analyzer_media_is_valid(path):
                         continue
                     name = path.name
-                    if is_hidden_from_analyzer(name):
+                    if not analyzer_visible_source(name):
                         continue
                     meta = video_queue.get_status_meta(name)
                     social_meta = summarize_social_status(read_json(output_dir_for_filename(name) / "social_context.json"))
@@ -4225,6 +4289,7 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(body.decode("utf-8") or "{}")
             attempted_url = str(payload.get("url", ""))
             url = validate_short_video_url(attempted_url)
+            source = normalize_video_source(payload.get("source_tag") or payload.get("source"), SOURCE_API_UPLOAD)
         except (json.JSONDecodeError, ValueError) as exc:
             job = DownloadJob(id=str(uuid.uuid4()), url=attempted_url, status="failed")
             job.error = str(exc)
@@ -4234,7 +4299,7 @@ class Handler(BaseHTTPRequestHandler):
                 write_download_job_log(job)
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
-        job = DownloadJob(id=str(uuid.uuid4()), url=url)
+        job = DownloadJob(id=str(uuid.uuid4()), url=url, source=source)
         with download_jobs_lock:
             download_jobs[job.id] = job
         thread = threading.Thread(target=run_download_job, args=(job.id,), daemon=True)
@@ -4359,6 +4424,7 @@ class Handler(BaseHTTPRequestHandler):
         file_items = [item for item in raw_file_items if getattr(item, "filename", None)]
         if not file_items:
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Missing video file"})
+        source = normalize_video_source(form.getfirst("source_tag") or form.getfirst("source"), SOURCE_API_UPLOAD)
 
         VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
         files = []
@@ -4371,6 +4437,15 @@ class Handler(BaseHTTPRequestHandler):
                 with target.open("wb") as file:
                     shutil.copyfileobj(file_item.file, file)
                 ensure_analyzer_media_or_delete(target)
+                register_video(
+                    video_id=filename,
+                    platform="local",
+                    filename=filename,
+                    title=filename,
+                    source=source,
+                    hidden_from_analyzer=video_source_hidden(source),
+                )
+                make_web_manual_visible(source, "local", filename)
                 files.append({"filename": filename, "size": target.stat().st_size})
                 start_social_context_job(filename, generate_insights=False)
             except Exception as exc:
