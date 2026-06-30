@@ -956,6 +956,16 @@ def build_frames_sheet(output_dir: Path, thumb_width: int = 320, columns: int = 
     return out.getvalue(), len(frame_paths)
 
 
+def list_extracted_frames(output_dir: Path) -> list[Path]:
+    frames_dir = output_dir / "frames"
+    if not frames_dir.is_dir():
+        return []
+    return sorted(
+        [p for p in frames_dir.iterdir() if p.is_file() and p.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}],
+        key=lambda p: p.name,
+    )
+
+
 def write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as file:
@@ -3626,6 +3636,41 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("X-Frame-Count", str(count))
             self.end_headers()
             self.wfile.write(payload)
+            return
+        if parsed.path == "/api/frames":
+            query = parse_qs(parsed.query)
+            try:
+                filename = safe_filename(query.get("filename", [""])[0])
+            except ValueError as exc:
+                return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            frames = list_extracted_frames(output_dir_for_filename(filename))
+            return json_response(
+                self,
+                HTTPStatus.OK,
+                {
+                    "filename": filename,
+                    "count": len(frames),
+                    "frames": [{"name": path.name, "index": idx} for idx, path in enumerate(frames)],
+                },
+            )
+        if parsed.path == "/api/frame-image":
+            query = parse_qs(parsed.query)
+            try:
+                filename = safe_filename(query.get("filename", [""])[0])
+                frame_name = safe_filename(query.get("frame", [""])[0])
+            except ValueError as exc:
+                return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            frame_path = output_dir_for_filename(filename) / "frames" / frame_name
+            if not frame_path.is_file():
+                return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Frame not found"})
+            content_type = mimetypes.guess_type(frame_path.name)[0] or "image/jpeg"
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(frame_path.stat().st_size))
+            self.send_header("Cache-Control", "public, max-age=3600")
+            self.end_headers()
+            with frame_path.open("rb") as file:
+                shutil.copyfileobj(file, self.wfile)
             return
         if parsed.path == "/api/jobs":
             with jobs_lock:
