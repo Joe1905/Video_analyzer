@@ -911,7 +911,7 @@ def build_frames_sheet(output_dir: Path, thumb_width: int = 320, columns: int = 
         raise FileNotFoundError("frames directory not found")
     frame_paths = sorted(
         [p for p in frames_dir.iterdir() if p.is_file() and p.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}],
-        key=lambda p: p.name,
+        key=frame_sort_key,
     )
     if not frame_paths:
         raise FileNotFoundError("no extracted frames found")
@@ -956,14 +956,114 @@ def build_frames_sheet(output_dir: Path, thumb_width: int = 320, columns: int = 
     return out.getvalue(), len(frame_paths)
 
 
+def frame_sort_key(path: Path) -> tuple[int, str]:
+    match = re.search(r"(\d+)", path.stem)
+    return (int(match.group(1)) if match else 10**9, path.name)
+
+
 def list_extracted_frames(output_dir: Path) -> list[Path]:
     frames_dir = output_dir / "frames"
     if not frames_dir.is_dir():
         return []
     return sorted(
         [p for p in frames_dir.iterdir() if p.is_file() and p.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}],
-        key=lambda p: p.name,
+        key=frame_sort_key,
     )
+
+
+def format_seconds(value: float) -> str:
+    minutes = int(value // 60)
+    seconds = value - minutes * 60
+    return f"{minutes:02d}:{seconds:05.2f}"
+
+
+def frame_timestamps(output_dir: Path) -> dict[int, str]:
+    timestamps: dict[int, str] = {}
+    for name in ("analysis_raw.json", "analysis.json"):
+        data = read_json(output_dir / name)
+        if not isinstance(data, dict):
+            continue
+        items = data.get("frame_analyses") or data.get("timeline") or []
+        if not isinstance(items, list):
+            continue
+        for idx, item in enumerate(items):
+            text = json.dumps(item, ensure_ascii=False) if not isinstance(item, str) else item
+            match = re.search(r"Frame\s+(\d+)\s*\(([\d.]+)\s*seconds?\)", text, re.IGNORECASE)
+            if match:
+                timestamps[int(match.group(1))] = format_seconds(float(match.group(2)))
+                continue
+            match = re.search(r"([\d.]+)\s*seconds?", text, re.IGNORECASE)
+            if match and idx not in timestamps:
+                timestamps[idx] = format_seconds(float(match.group(1)))
+    return timestamps
+
+
+def frame_index(path: Path, fallback: int) -> int:
+    match = re.search(r"(\d+)", path.stem)
+    return int(match.group(1)) if match else fallback
+
+
+def build_frames_export(output_dir: Path, max_size: int = 2000) -> tuple[bytes, int]:
+    frame_paths = list_extracted_frames(output_dir)
+    if not frame_paths:
+        raise FileNotFoundError("no extracted frames found")
+
+    from PIL import Image, ImageDraw, ImageFont
+
+    max_size = max(800, min(max_size, 2000))
+    padding = 10
+    label_h = 34
+    with Image.open(frame_paths[0]) as first:
+        aspect = max(0.1, first.height / max(1, first.width))
+
+    best: tuple[float, int, int, int] | None = None
+    n = len(frame_paths)
+    for columns in range(1, min(n, 10) + 1):
+        rows = (n + columns - 1) // columns
+        width_limit = (max_size - (columns + 1) * padding) / columns
+        height_limit = (max_size - (rows + 1) * padding - rows * label_h) / (rows * aspect)
+        tile_w = int(min(width_limit, height_limit))
+        if tile_w <= 0:
+            continue
+        score = tile_w * tile_w * columns * rows
+        if best is None or score > best[0]:
+            best = (score, columns, rows, tile_w)
+    if best is None:
+        raise ValueError("Unable to fit frames within 2K canvas")
+
+    _, columns, rows, tile_w = best
+    tile_img_h = max(1, int(tile_w * aspect))
+    cell_h = tile_img_h + label_h
+    sheet_w = columns * tile_w + (columns + 1) * padding
+    sheet_h = rows * cell_h + (rows + 1) * padding
+    sheet = Image.new("RGB", (sheet_w, sheet_h), "white")
+    draw = ImageDraw.Draw(sheet)
+    try:
+        font = ImageFont.truetype("DejaVuSans.ttf", max(13, min(18, label_h - 12)))
+    except Exception:
+        font = ImageFont.load_default()
+
+    timestamps = frame_timestamps(output_dir)
+    for pos, path in enumerate(frame_paths):
+        row, col = divmod(pos, columns)
+        x = padding + col * (tile_w + padding)
+        y = padding + row * (cell_h + padding)
+        with Image.open(path) as img:
+            img = img.convert("RGB")
+            thumb = Image.new("RGB", (tile_w, tile_img_h), (241, 245, 249))
+            ratio = min(tile_w / max(1, img.width), tile_img_h / max(1, img.height))
+            resized = img.resize((max(1, int(img.width * ratio)), max(1, int(img.height * ratio))), Image.LANCZOS)
+            thumb.paste(resized, ((tile_w - resized.width) // 2, (tile_img_h - resized.height) // 2))
+        sheet.paste(thumb, (x, y))
+        label_y = y + tile_img_h
+        draw.rectangle((x, label_y, x + tile_w, label_y + label_h), fill=(15, 23, 42))
+        idx = frame_index(path, pos)
+        label = timestamps.get(idx) or f"Frame {idx}"
+        draw.text((x + 10, label_y + 8), label, fill=(255, 255, 255), font=font)
+
+    out = BytesIO()
+    sheet.save(out, format="PNG", optimize=True)
+    return out.getvalue(), len(frame_paths)
 
 
 def write_json(path: Path, payload: Any) -> None:
@@ -3643,16 +3743,41 @@ class Handler(BaseHTTPRequestHandler):
                 filename = safe_filename(query.get("filename", [""])[0])
             except ValueError as exc:
                 return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
-            frames = list_extracted_frames(output_dir_for_filename(filename))
+            output_dir = output_dir_for_filename(filename)
+            frames = list_extracted_frames(output_dir)
+            timestamps = frame_timestamps(output_dir)
             return json_response(
                 self,
                 HTTPStatus.OK,
                 {
                     "filename": filename,
                     "count": len(frames),
-                    "frames": [{"name": path.name, "index": idx} for idx, path in enumerate(frames)],
+                    "frames": [
+                        {"name": path.name, "index": idx, "timestamp": timestamps.get(frame_index(path, idx), "")}
+                        for idx, path in enumerate(frames)
+                    ],
                 },
             )
+        if parsed.path == "/api/frames-export":
+            query = parse_qs(parsed.query)
+            try:
+                filename = safe_filename(query.get("filename", [""])[0])
+            except ValueError as exc:
+                return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            try:
+                payload, count = build_frames_export(output_dir_for_filename(filename), max_size=2000)
+            except FileNotFoundError as exc:
+                return json_response(self, HTTPStatus.NOT_FOUND, {"error": str(exc)})
+            except Exception as exc:
+                return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"Frame export failed: {exc}"})
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}.frames.png"')
+            self.send_header("X-Frame-Count", str(count))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
         if parsed.path == "/api/frame-image":
             query = parse_qs(parsed.query)
             try:
@@ -3668,6 +3793,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(frame_path.stat().st_size))
             self.send_header("Cache-Control", "public, max-age=3600")
+            if query.get("download", ["0"])[0] == "1":
+                self.send_header("Content-Disposition", f'attachment; filename="{filename}.{frame_name}"')
             self.end_headers()
             with frame_path.open("rb") as file:
                 shutil.copyfileobj(file, self.wfile)
