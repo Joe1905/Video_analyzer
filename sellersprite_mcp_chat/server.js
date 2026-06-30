@@ -611,75 +611,6 @@ function shouldRequireSellerSpriteTool(text) {
   );
 }
 
-function hasAsin(text) {
-  return /\bB0[A-Z0-9]{8}\b/i.test(String(text || ""));
-}
-
-function pickTools(allTools, names) {
-  const wanted = new Set(names);
-  return allTools.filter((tool) => wanted.has(tool.name));
-}
-
-function sellerSpriteToolPlan(text, allTools) {
-  const value = String(text || "");
-  const has = (pattern) => pattern.test(value);
-  const coreMarketTools = ["product_node", "market_research", "product_research"];
-  const marketDistributionTools = [
-    "market_research_statistics",
-    "market_price_distribution",
-    "market_rating_distribution",
-    "market_ratings_count_distribution",
-    "market_listing_date_distribution",
-    "market_listing_trend_distribution",
-    "market_product_demand_trend",
-    "market_product_concentration",
-    "market_brand_concentration",
-    "market_seller_concentration",
-    "market_seller_type_concentration",
-    "market_seller_country_distribution",
-    "market_ebc_distribution",
-  ];
-  let intent = "market";
-  let names = coreMarketTools;
-  let maxRounds = 4;
-  let maxToolCalls = 4;
-
-  if (hasAsin(value)) {
-    intent = "asin";
-    names = ["asin_detail", "asin_prediction", "asin_sales_trend", "keepa_info", "traffic_keyword_stat", "traffic_listing_stat", "review", "asin_coupon_trend", "asin_detail_with_coupon_trend"];
-    maxRounds = 5;
-    maxToolCalls = 7;
-  } else if (has(/商标|trademark/i)) {
-    intent = "trademark";
-    names = ["trademark_list", "trademark_detail", "trademark_stats", "trademark_country_list"];
-    maxRounds = 3;
-    maxToolCalls = 3;
-  } else if (has(/ABA|Google|关键词|搜索词|keyword|流量词/i)) {
-    intent = "keyword";
-    names = ["keyword_research", "keyword_research_trends", "keyword_miner", "keyword_order", "aba_research_weekly", "aba_research_monthly", "aba_research_trend", "google_trend"];
-    maxRounds = 4;
-    maxToolCalls = 4;
-  } else if (has(/集中度|分布|趋势|上架|评分|价格|卖家|品牌|EBC|A\+/i)) {
-    intent = "market_detail";
-    names = [...coreMarketTools, ...marketDistributionTools];
-    maxRounds = 4;
-    maxToolCalls = 5;
-  } else if (has(/新品|筛选|机会|竞品|产品列表|商品列表|挖掘/i)) {
-    intent = "product_research";
-    names = ["product_node", "market_research", "product_research"];
-    maxRounds = 4;
-    maxToolCalls = 4;
-  }
-
-  const selectedTools = pickTools(allTools, names);
-  return {
-    intent,
-    tools: selectedTools.length ? selectedTools : pickTools(allTools, coreMarketTools),
-    maxRounds,
-    maxToolCalls,
-  };
-}
-
 async function synthesizeSellerSpriteAnswer(conversation, deepseekResponses, toolResults, firstRequest, reason) {
   const finalConversation = conversation.slice();
   while (finalConversation.length && finalConversation.at(-1)?.role === "assistant" && Array.isArray(finalConversation.at(-1)?.tool_calls)) {
@@ -764,7 +695,6 @@ async function answerWithDeepSeek(session, userText) {
   if (history.at(-1)?.role === "user" && history.at(-1)?.content === userText) history.pop();
 
   const tools = await mcpClient.listTools();
-  const toolPlan = sellerSpriteToolPlan(userText, tools);
   const conversation = [
     {
       role: "system",
@@ -783,17 +713,12 @@ async function answerWithDeepSeek(session, userText) {
     content:
       "When a SellerSprite tool result has ok:false but at least one previous SellerSprite tool result has ok:true, continue using only the successful tool data. Mention the failed tool name and error code briefly at the end as skipped data. Do not invent missing values from failed tools.",
   });
-  conversation.splice(2, 0, {
-    role: "system",
-    content:
-      `SellerSprite tool boundary: detected intent=${toolPlan.intent}. Only call tools needed for this intent. Prefer the minimum sufficient calls. For category or broad-market questions, first locate the category with product_node, then use market_research and product_research if needed; do not keep refining categories after usable data is returned. Once there is usable product or market data, stop calling tools and write the final Markdown answer. Do not call ASIN traffic, review, trademark, or coupon tools unless the user explicitly asks for that intent or gives an ASIN.`,
-  });
 
-  for (let step = 0; step < toolPlan.maxRounds; step += 1) {
+  for (let step = 0; step < 6; step += 1) {
     const response = await callDeepSeek({
       model: DEEPSEEK_MODEL,
       messages: conversation,
-      tools: toolPlan.tools.map(toDeepSeekTool),
+      tools: tools.map(toDeepSeekTool),
       tool_choice: "auto",
     });
     deepseekResponses.push(sanitizeDeepSeekPayload(response));
@@ -824,9 +749,6 @@ async function answerWithDeepSeek(session, userText) {
     }
 
     for (const toolCall of toolCalls) {
-      if (toolResults.length >= toolPlan.maxToolCalls) {
-        return synthesizeSellerSpriteAnswer(conversation, deepseekResponses, toolResults, firstRequest, `max tool calls reached for ${toolPlan.intent}`);
-      }
       const name = toolCall.function?.name;
       const args = safeJsonParse(toolCall.function?.arguments, {});
       const result = await callSellerSpriteToolCached(name, args);
@@ -849,16 +771,12 @@ async function answerWithDeepSeek(session, userText) {
       }
       conversation.push({ role: "tool", tool_call_id: toolCall.id, content: JSON.stringify(wrapped) });
     }
-
-    if (toolResults.filter((item) => item?.result?.ok).length >= Math.min(3, toolPlan.maxToolCalls) && toolPlan.intent !== "asin") {
-      return synthesizeSellerSpriteAnswer(conversation, deepseekResponses, toolResults, firstRequest, `enough ${toolPlan.intent} tool data collected`);
-    }
   }
 
   if (toolResults.some((item) => item?.result?.ok)) {
-    return synthesizeSellerSpriteAnswer(conversation, deepseekResponses, toolResults, firstRequest, `max rounds reached for ${toolPlan.intent}`);
+    return synthesizeSellerSpriteAnswer(conversation, deepseekResponses, toolResults, firstRequest, "max tool rounds reached");
   }
-  return { content: "工具连续调用次数过多，且没有拿到可用工具结果。请缩小问题范围后再试。", request: firstRequest, raw: { deepseek: deepseekResponses, toolResults, toolBoundary: `max rounds reached for ${toolPlan.intent}` } };
+  return { content: "本轮没有拿到可用的 SellerSprite 工具结果。请补充更明确的站点、ASIN、关键词或类目节点后重试。", request: firstRequest, raw: { deepseek: deepseekResponses, toolResults, toolBoundary: "max tool rounds reached" } };
 }
 
 async function handleAsk(req, res) {
