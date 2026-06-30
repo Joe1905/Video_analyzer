@@ -21,6 +21,7 @@ from urllib.parse import parse_qs, quote_plus, urlparse
 from urllib.parse import unquote
 import cgi
 from html import escape as html_escape
+from io import BytesIO
 
 # SociaVault TikTok endpoints (mirrored from sociavault_tiktok.py)
 TIKTOK_ENDPOINTS: dict[str, str] = {
@@ -902,6 +903,57 @@ def read_json(path: Path) -> Any | None:
         return None
     with path.open("r", encoding="utf-8") as file:
         return json.load(file)
+
+
+def build_frames_sheet(output_dir: Path, thumb_width: int = 320, columns: int = 4) -> tuple[bytes, int]:
+    frames_dir = output_dir / "frames"
+    if not frames_dir.is_dir():
+        raise FileNotFoundError("frames directory not found")
+    frame_paths = sorted(
+        [p for p in frames_dir.iterdir() if p.is_file() and p.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}],
+        key=lambda p: p.name,
+    )
+    if not frame_paths:
+        raise FileNotFoundError("no extracted frames found")
+
+    from PIL import Image, ImageDraw, ImageFont
+
+    columns = max(1, min(columns, 8))
+    thumb_width = max(160, min(thumb_width, 640))
+    padding = 12
+    label_h = 28
+    thumbs: list[tuple[Any, str]] = []
+    max_cell_h = 0
+    for idx, path in enumerate(frame_paths):
+        with Image.open(path) as img:
+            img = img.convert("RGB")
+            ratio = thumb_width / max(1, img.width)
+            thumb_h = max(1, int(img.height * ratio))
+            thumb = img.resize((thumb_width, thumb_h), Image.LANCZOS)
+        label = f"{idx + 1}. {path.name}"
+        thumbs.append((thumb, label))
+        max_cell_h = max(max_cell_h, thumb.height + label_h)
+
+    rows = (len(thumbs) + columns - 1) // columns
+    width = columns * thumb_width + (columns + 1) * padding
+    height = rows * max_cell_h + (rows + 1) * padding
+    sheet = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(sheet)
+    try:
+        font = ImageFont.truetype("DejaVuSans.ttf", 14)
+    except Exception:
+        font = ImageFont.load_default()
+
+    for idx, (thumb, label) in enumerate(thumbs):
+        row, col = divmod(idx, columns)
+        x = padding + col * (thumb_width + padding)
+        y = padding + row * (max_cell_h + padding)
+        sheet.paste(thumb, (x, y))
+        draw.text((x, y + thumb.height + 7), label[:48], fill=(15, 23, 42), font=font)
+
+    out = BytesIO()
+    sheet.save(out, format="PNG", optimize=True)
+    return out.getvalue(), len(frame_paths)
 
 
 def write_json(path: Path, payload: Any) -> None:
@@ -3553,6 +3605,28 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
             return self.serve_video(VIDEOS_DIR / filename)
+        if parsed.path == "/api/frames-sheet":
+            query = parse_qs(parsed.query)
+            try:
+                filename = safe_filename(query.get("filename", [""])[0])
+                columns = int(query.get("columns", ["4"])[0])
+                thumb_width = int(query.get("thumb_width", ["320"])[0])
+            except (ValueError, TypeError) as exc:
+                return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            try:
+                payload, count = build_frames_sheet(output_dir_for_filename(filename), thumb_width=thumb_width, columns=columns)
+            except FileNotFoundError as exc:
+                return json_response(self, HTTPStatus.NOT_FOUND, {"error": str(exc)})
+            except Exception as exc:
+                return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"Frame sheet failed: {exc}"})
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("X-Frame-Count", str(count))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
         if parsed.path == "/api/jobs":
             with jobs_lock:
                 payload = [public_job(job) for job in sorted(jobs.values(), key=lambda item: item.created_at, reverse=True)]

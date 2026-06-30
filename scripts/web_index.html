@@ -107,6 +107,9 @@ header .pill .dot{width:7px;height:7px;border-radius:50%;background:var(--green)
 .prompt-tab.active{background:var(--brand);color:#fff;border-color:var(--brand)}
 .modal-box .modal-body textarea{min-height:280px;width:100%}
 .modal-box .modal-foot{padding:12px 20px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px}
+.modal-box.frame-modal{width:min(1200px,94vw);height:min(86vh,900px)}
+.frame-view{display:flex;align-items:flex-start;justify-content:center;min-height:320px;background:#f8fafc;border:1px solid var(--border);border-radius:8px;padding:12px;overflow:auto}
+.frame-view img{max-width:none;height:auto;display:block}
 
 /* Detail page */
 .detail-shell{flex:1;min-height:0;display:grid;grid-template-columns:280px minmax(0,1fr);gap:0;overflow:hidden}
@@ -210,7 +213,7 @@ header .pill .dot{width:7px;height:7px;border-radius:50%;background:var(--green)
     </section>
     <section class="detail-main">
       <div class="tabs"><button class="tab-btn active" data-tab="content">提取内容</button><button class="tab-btn" data-tab="direct">直接提取内容</button><button class="tab-btn" data-tab="audit">分析结果</button><button class="tab-btn" data-tab="feedback">反馈结果</button><button class="tab-btn" data-tab="comments">评论区分析</button><button class="tab-btn" data-tab="data">数据分析</button><button class="tab-btn" data-tab="creator">博主分析</button></div>
-      <div class="detail-toolbar"><span class="ttl" id="outTitle">Qwen 输出内容</span><div style="display:flex;gap:4px"><button id="socialRefresh" class="secondary sm" style="display:none">刷新数据</button><button id="socialInsights" class="secondary sm" style="display:none">生成洞察</button><button id="translate" class="secondary sm">手动翻译</button><button id="source" class="secondary sm">显示原文</button><button id="pdf" class="secondary sm">导出 PDF</button><button id="json" class="secondary sm">下载 JSON</button></div></div>
+      <div class="detail-toolbar"><span class="ttl" id="outTitle">Qwen 输出内容</span><div style="display:flex;gap:4px"><button id="socialRefresh" class="secondary sm" style="display:none">刷新数据</button><button id="socialInsights" class="secondary sm" style="display:none">生成洞察</button><button id="translate" class="secondary sm">手动翻译</button><button id="frames" class="secondary sm">查看抽帧</button><button id="source" class="secondary sm">显示原文</button><button id="pdf" class="secondary sm">导出 PDF</button><button id="json" class="secondary sm">下载 JSON</button></div></div>
       <div class="report-area">
         <div id="out" class="outlet"><div class="empty-state"><div><b>选择视频查看报告</b><span style="display:block;color:var(--text3);font-size:13px;margin-top:2px">详情会显示提取内容、分析结果、Token 消耗和耗时。</span></div></div></div>
         <aside id="toc" class="report-toc empty" aria-label="报告目录"></aside>
@@ -238,6 +241,20 @@ header .pill .dot{width:7px;height:7px;border-radius:50%;background:var(--green)
     <div class="modal-foot">
       <button id="promptSave" class="primary">保存</button>
       <button id="promptClose" class="secondary">取消</button>
+    </div>
+  </div>
+</div>
+
+<!-- Frames Modal -->
+<div id="framesModal" class="modal-overlay">
+  <div class="modal-box frame-modal">
+    <div class="modal-head">抽帧预览</div>
+    <div class="modal-body">
+      <div id="framesView" class="frame-view"></div>
+    </div>
+    <div class="modal-foot">
+      <button id="framesOpen" class="secondary">新窗口打开</button>
+      <button id="framesClose" class="secondary">关闭</button>
     </div>
   </div>
 </div>
@@ -350,6 +367,9 @@ async function refreshSocial(){if(!S.file)return;$("socialRefresh").disabled=tru
 async function generateSocialInsights(){if(!S.file)return;$("socialInsights").disabled=true;setStatus("正在生成社交洞察...");addLog(`${S.file}: 生成社交洞察`);try{const r=await fetch("/api/social-insights",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({filename:S.file})});const j=await r.json();if(!r.ok)throw new Error(j.error||"生成洞察失败");await loadResult(S.file);setStatus("社交洞察已生成。","ok")}catch(e){setStatus(e.message,"bad")}finally{renderOut(S.result);buttons()}}
 let statusSSE=null;function connectStatusStream(){if(statusSSE)return;statusSSE=new EventSource("/api/status-stream");statusSSE.onmessage=e=>{try{applyQueueState(JSON.parse(e.data))}catch(err){addLog("状态流解析失败："+err.message)}};statusSSE.onerror=function(){statusSSE.close();statusSSE=null;setTimeout(connectStatusStream,3000)}}connectStatusStream();
 function openJob(id){closeJ();je=new EventSource("/api/job-events?id="+encodeURIComponent(id));je.onmessage=e=>{const j=JSON.parse(e.data),l=lastLog(j);if(l)addLog(`${j.filename}: ${l}`);S.result=j;if(location.hash.startsWith("#detail="))renderOut(j);if(j.status==="running"||j.status==="queued")return setStatus(`${j.filename}: ${j.status}`);closeJ();S.job=null;S.has=j.status==="complete"||has(j);buttons();setStatus(j.status==="complete"?`${j.filename}: 完成`:`${j.filename}: ${j.error||"失败"}`,j.status==="complete"?"ok":"bad")};je.onerror=()=>{closeJ();buttons();setStatus("分析任务连接中断","bad")}}
+let framesBlobUrl="";
+function closeFramesModal(){if(framesBlobUrl){URL.revokeObjectURL(framesBlobUrl);framesBlobUrl=""}$("framesModal").classList.remove("show");$("framesView").innerHTML=""}
+async function showFramesSheet(){if(!S.file)return setStatus("请先选择视频。","bad");const url=`/api/frames-sheet?filename=${encodeURIComponent(S.file)}&columns=4&thumb_width=320`;setStatus("正在加载抽帧预览...");$("frames").disabled=true;try{const r=await fetch(url);if(!r.ok){let msg="没有可查看的抽帧。";try{const p=await r.json();msg=p.error||msg}catch{}throw new Error(msg)}const blob=await r.blob();if(framesBlobUrl)URL.revokeObjectURL(framesBlobUrl);framesBlobUrl=URL.createObjectURL(blob);$("framesView").innerHTML=`<img src="${framesBlobUrl}" alt="抽帧拼接图">`;$("framesOpen").onclick=()=>open(url,"_blank","noopener");$("framesModal").classList.add("show");setStatus("抽帧预览已加载。","ok")}catch(e){setStatus(e.message,"bad")}finally{$("frames").disabled=false}}
 function downloadJson(){const key=isSocialTab()?"social_context":(S.tab==="direct"?"direct_analysis":(S.tab==="feedback"?(sourceMode()==="direct"?"direct_feedback_result":"feedback_result"):(S.tab==="audit"?(sourceMode()==="direct"?"direct_audit_result":"audit_result"):"analysis")));const a=isSocialTab()?{social_context:S.result?.social_context,social_insights:S.result?.social_insights}:(S.result&&S.result[key]);if(!a)return setStatus("当前页签还没有原文 JSON。","bad");const name=`${S.file||"video"}.${key}.json`,blob=new Blob([JSON.stringify(a,null,2)],{type:"application/json;charset=utf-8"}),url=URL.createObjectURL(blob),link=document.createElement("a");link.href=url;link.download=name;document.body.appendChild(link);link.click();link.remove();URL.revokeObjectURL(url);addLog("下载原文 JSON："+name)}
 async function exportPdf(){if(!S.file||!S.result||S.raw)return setStatus("请先切换到报告视图再导出 PDF。","bad");$("pdf").disabled=true;setStatus("正在生成 PDF...");try{const url=`/api/export-pdf?filename=${encodeURIComponent(S.file)}&tab=${encodeURIComponent(S.tab)}&source=${encodeURIComponent(sourceMode())}`;const r=await fetch(url);if(!r.ok){let msg="PDF 导出失败";try{const p=await r.json();msg=p.error||msg}catch{}throw new Error(msg)}const blob=await r.blob();const suffix={content:"analysis",direct:"direct_analysis",audit:"audit",feedback:"feedback",comments:"comments",data:"data",creator:"creator"}[S.tab]||"analysis";const name=`${S.file}.${suffix}.pdf`;const href=URL.createObjectURL(blob),link=document.createElement("a");link.href=href;link.download=name;document.body.appendChild(link);link.click();link.remove();URL.revokeObjectURL(href);addLog("PDF 已下载："+name);setStatus("PDF 已生成并开始下载。","ok")}catch(e){setStatus(e.message,"bad")}finally{$("pdf").disabled=false}}
 
@@ -363,6 +383,9 @@ safeBind("translate","onclick",translateCurrent);
 safeBind("socialRefresh","onclick",refreshSocial);
 safeBind("socialInsights","onclick",generateSocialInsights);
 safeBind("directMode","onchange",()=>{S.raw=false;renderOut(S.result);buttons()});
+safeBind("frames","onclick",showFramesSheet);
+safeBind("framesClose","onclick",closeFramesModal);
+safeBind("framesModal","onclick",e=>{if(e.target===$("framesModal"))closeFramesModal()});
 function setPromptTab(tab){syncPromptDraft();S.promptTab=tab;document.querySelectorAll(".prompt-tab").forEach(x=>x.classList.toggle("active",x.dataset.promptTab===tab));$("promptTextarea").value=promptDraft(tab)}
 safeBind("detailPrompt","onclick",()=>{syncPromptDraft();setPromptTab(S.promptTab||"analysis");$("promptModal").classList.add("show")});
 document.querySelectorAll(".prompt-tab").forEach(t=>t.onclick=()=>setPromptTab(t.dataset.promptTab));
