@@ -369,6 +369,54 @@ Integration rule:
 - If `state=completed`, report fields such as `audit_result` or `direct_audit_result` may also be available.
 - If `state=failed`, display `failure_stage`, `failure_reason`, and useful `download.log` or `job.log` lines.
 
+Get processed social fields:
+
+```http
+GET /api/social-processed?filename=shortvideo_TikTok_123.mp4
+```
+
+Use this endpoint when writing the processed `评论`、`数据`、`博主分析` columns back to a table. It returns summarized, table-ready text plus structured fields. It is different from `/api/result`, which returns the broader saved JSON payload.
+
+Response:
+
+```json
+{
+  "filename": "shortvideo_TikTok_123.mp4",
+  "source_url": "https://www.tiktok.com/@user/video/123",
+  "status": "complete",
+  "updated_at": 1782768386.8711188,
+  "summary": "...",
+  "table_fields": {
+    "评论": "评论洞察或评论样本...",
+    "数据": "播放:1000，点赞:100，评论:20\n数据洞察...",
+    "博主分析": "博主:creator，粉丝:10000，作品:50\n博主洞察..."
+  },
+  "comments": {
+    "status": "ok",
+    "count": 20,
+    "sample_count": 20,
+    "samples": [],
+    "insight": "...",
+    "error": ""
+  },
+  "data": {
+    "status": "ok",
+    "video": {},
+    "metrics": {},
+    "insight": "...",
+    "error": ""
+  },
+  "creator": {
+    "status": "ok",
+    "profile": {},
+    "metrics": {},
+    "insight": "...",
+    "error": ""
+  },
+  "recommended_actions": []
+}
+```
+
 Translate:
 
 ```http
@@ -698,6 +746,7 @@ POST /api/upload
 POST /api/download
 GET  /api/download-job
 GET  /api/video-feedback
+GET  /api/social-processed
 POST /api/analyze
 GET  /api/job
 GET  /api/result

@@ -720,6 +720,113 @@ def social_tab_payload(filename: str, tab: str) -> dict[str, Any]:
     return payload
 
 
+def compact_text(value: Any, max_len: int = 1200) -> str:
+    if value in (None, ""):
+        return ""
+    if isinstance(value, str):
+        text = re.sub(r"^```(?:json)?\s*", "", value.strip(), flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text).strip()
+    else:
+        text = json.dumps(value, ensure_ascii=False, indent=2)
+    text = re.sub(r"\s+\n", "\n", text).strip()
+    return text[:max_len] + ("..." if len(text) > max_len else "")
+
+
+def social_processed_payload(filename: str) -> dict[str, Any]:
+    output_dir = output_dir_for_filename(filename)
+    context = read_json(output_dir / "social_context.json") or {}
+    insights = read_json(output_dir / "social_insights.json") or {}
+    if not isinstance(context, dict):
+        context = {}
+    if not isinstance(insights, dict):
+        insights = {}
+    items = context.get("items") if isinstance(context.get("items"), dict) else {}
+
+    comments_item = items.get("comments") if isinstance(items.get("comments"), dict) else {}
+    video_item = items.get("video_info") if isinstance(items.get("video_info"), dict) else {}
+    creator_item = items.get("creator_profile") if isinstance(items.get("creator_profile"), dict) else {}
+    comments_data = comments_item.get("data") if isinstance(comments_item.get("data"), dict) else {}
+    video_data = video_item.get("data") if isinstance(video_item.get("data"), dict) else {}
+    creator_data = creator_item.get("data") if isinstance(creator_item.get("data"), dict) else {}
+
+    comment_insight = insights.get("comment_insights") or insights.get("comment_analysis") or ""
+    data_insight = insights.get("data_insights") or insights.get("data_analysis") or ""
+    creator_insight = insights.get("creator_insights") or insights.get("creator_analysis") or ""
+    actions = insights.get("recommended_actions") if isinstance(insights.get("recommended_actions"), list) else []
+
+    comment_samples = comments_data.get("items") if isinstance(comments_data.get("items"), list) else []
+    sample_lines = [
+        f"{item.get('user') or '匿名'}：{item.get('text') or ''}".strip()
+        for item in comment_samples[:8]
+        if isinstance(item, dict) and (item.get("text") or item.get("user"))
+    ]
+    comments_text = compact_text(comment_insight, 900)
+    if not comments_text and sample_lines:
+        comments_text = "评论样本：\n" + "\n".join(sample_lines)
+    if not comments_text:
+        comments_text = str(comments_item.get("error") or "未获取到评论。")
+
+    metrics = video_data.get("metrics") if isinstance(video_data.get("metrics"), dict) else {}
+    metric_parts = [
+        ("播放", metrics.get("play_count")),
+        ("点赞", metrics.get("like_count")),
+        ("评论", metrics.get("comment_count")),
+        ("分享", metrics.get("share_count")),
+        ("收藏", metrics.get("collect_count")),
+    ]
+    metric_text = "，".join(f"{name}:{value}" for name, value in metric_parts if value not in (None, ""))
+    data_parts = [part for part in (metric_text, compact_text(data_insight, 900)) if part]
+    data_text = "\n".join(data_parts) or str(video_item.get("error") or "未获取到视频数据。")
+
+    creator_metrics = creator_data.get("metrics") if isinstance(creator_data.get("metrics"), dict) else {}
+    creator_name = creator_data.get("unique_id") or creator_data.get("nickname") or ""
+    creator_metric_parts = [
+        ("粉丝", creator_metrics.get("follower_count")),
+        ("作品", creator_metrics.get("video_count")),
+        ("获赞", creator_metrics.get("heart_count")),
+    ]
+    creator_metric_text = "，".join(f"{name}:{value}" for name, value in creator_metric_parts if value not in (None, ""))
+    creator_head = "，".join(part for part in (f"博主:{creator_name}" if creator_name else "", creator_metric_text) if part)
+    creator_parts = [part for part in (creator_head, compact_text(creator_insight, 900)) if part]
+    creator_text = "\n".join(creator_parts) or str(creator_item.get("error") or "未获取到博主数据。")
+
+    return {
+        "filename": filename,
+        "source_url": context.get("source_url") or "",
+        "status": context.get("status") or "missing",
+        "updated_at": context.get("updated_at"),
+        "summary": insights.get("summary") or "",
+        "table_fields": {
+            "评论": comments_text,
+            "数据": data_text,
+            "博主分析": creator_text,
+        },
+        "comments": {
+            "status": comments_item.get("status") or "missing",
+            "count": comments_data.get("count"),
+            "sample_count": comments_data.get("sample_count"),
+            "samples": comment_samples,
+            "insight": comment_insight,
+            "error": comments_item.get("error") or "",
+        },
+        "data": {
+            "status": video_item.get("status") or "missing",
+            "video": {key: value for key, value in video_data.items() if key != "metrics"} if isinstance(video_data, dict) else {},
+            "metrics": metrics,
+            "insight": data_insight,
+            "error": video_item.get("error") or "",
+        },
+        "creator": {
+            "status": creator_item.get("status") or "missing",
+            "profile": {key: value for key, value in creator_data.items() if key != "metrics"} if isinstance(creator_data, dict) else {},
+            "metrics": creator_metrics,
+            "insight": creator_insight,
+            "error": creator_item.get("error") or "",
+        },
+        "recommended_actions": actions,
+    }
+
+
 def validate_amazon_url(url: str) -> str:
     cleaned = url.strip()
     parsed = urlparse(cleaned)
@@ -4134,6 +4241,12 @@ class Handler(BaseHTTPRequestHandler):
                 "social_context": read_json(output_dir / "social_context.json"),
                 "social_insights": read_json(output_dir / "social_insights.json"),
             })
+        if parsed.path == "/api/social-processed":
+            try:
+                filename = safe_filename(parse_qs(parsed.query).get("filename", [""])[0])
+            except ValueError as exc:
+                return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            return json_response(self, HTTPStatus.OK, social_processed_payload(filename))
         if parsed.path == "/api/export-pdf":
             query = parse_qs(parsed.query)
             try:
