@@ -310,6 +310,65 @@ Response fields:
 }
 ```
 
+Get stable workflow feedback:
+
+```http
+GET /api/video-feedback?filename=shortvideo_TikTok_123.mp4
+GET /api/video-feedback?download_job_id=<download_job_id>
+GET /api/video-feedback?job_id=<analysis_job_id>
+GET /api/video-feedback?download_job_id=<download_job_id>&job_id=<analysis_job_id>
+```
+
+This endpoint is the recommended status interface for external systems. Use it to decide whether `/api/result` is ready instead of guessing from job completion alone.
+
+Stable `state` values:
+
+```text
+downloading      Download job is queued or running.
+uploaded         Video file exists, but extraction has not started.
+queued           Extraction or analysis is queued.
+extracting       Video content extraction is running.
+analyzing        DeepSeek report generation is running.
+analysis_ready   Extraction result exists and /api/result can be read.
+metrics          Social/comment metrics are being collected; /api/result can still be read if has_analysis_text=true.
+completed        Analysis/report is complete.
+failed           Download, extraction, or analysis failed.
+```
+
+Response:
+
+```json
+{
+  "ok": true,
+  "state": "analysis_ready",
+  "label": "分析结果已生成",
+  "filename": "shortvideo_TikTok_123.mp4",
+  "download_job_id": "...",
+  "job_id": "...",
+  "file_ready": true,
+  "extraction_complete": true,
+  "analysis_complete": false,
+  "metrics_complete": false,
+  "has_analysis_text": true,
+  "can_read_result": true,
+  "result_url": "/api/result?filename=shortvideo_TikTok_123.mp4",
+  "queue_status": "analyzed",
+  "progress": {},
+  "failure_stage": "",
+  "failure_reason": "",
+  "download": {},
+  "job": {},
+  "updated_at": 1782768386.8711188
+}
+```
+
+Integration rule:
+
+- Only call `/api/result` when `can_read_result=true`.
+- If `state=analysis_ready`, read extraction fields such as `analysis`, `analysis_zh`, `direct_analysis`, or `direct_analysis_zh`.
+- If `state=completed`, report fields such as `audit_result` or `direct_audit_result` may also be available.
+- If `state=failed`, display `failure_stage`, `failure_reason`, and useful `download.log` or `job.log` lines.
+
 Translate:
 
 ```http
@@ -638,6 +697,7 @@ GET  /api/report/feishu
 POST /api/upload
 POST /api/download
 GET  /api/download-job
+GET  /api/video-feedback
 POST /api/analyze
 GET  /api/job
 GET  /api/result

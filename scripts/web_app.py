@@ -2465,6 +2465,135 @@ def public_download_job(job: DownloadJob) -> dict[str, Any]:
     }
 
 
+def payload_has_content(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        text = value.strip()
+        return bool(text and text not in {"{}", "[]", "null"})
+    if isinstance(value, dict):
+        return any(payload_has_content(item) for item in value.values())
+    if isinstance(value, list):
+        return any(payload_has_content(item) for item in value)
+    return True
+
+
+def build_video_feedback(filename: str = "", download_job_id: str = "", job_id: str = "") -> dict[str, Any]:
+    filename = safe_filename(filename) if filename else ""
+    download_payload = None
+    job_payload = None
+    failure_stage = ""
+    failure_reason = ""
+
+    if download_job_id:
+        with download_jobs_lock:
+            download_job = download_jobs.get(download_job_id)
+            download_payload = public_download_job(download_job) if download_job else None
+        if not download_payload:
+            return {"ok": False, "state": "failed", "error": "Download job not found", "download_job_id": download_job_id}
+        if not filename and download_payload.get("filename"):
+            filename = safe_filename(str(download_payload["filename"]))
+        if download_payload.get("status") == "failed":
+            failure_stage = "download"
+            failure_reason = str(download_payload.get("error") or "")
+
+    if job_id:
+        with jobs_lock:
+            job = jobs.get(job_id)
+            job_payload = public_job(job) if job else None
+        if not job_payload:
+            return {"ok": False, "state": "failed", "error": "Job not found", "job_id": job_id}
+        if not filename and job_payload.get("filename"):
+            filename = safe_filename(str(job_payload["filename"]))
+        if job_payload.get("status") == "failed":
+            failure_stage = "analysis"
+            failure_reason = str(job_payload.get("error") or "")
+
+    output_dir = output_dir_for_filename(filename) if filename else OUTPUT_DIR / "_missing_"
+    video_path = VIDEOS_DIR / filename if filename else None
+    file_ready = bool(filename and video_path and video_path.is_file() and analyzer_media_is_valid(video_path))
+    analysis = read_json(output_dir / "analysis.json")
+    analysis_zh = read_json(output_dir / "analysis_zh.json")
+    direct_analysis = read_json(output_dir / "direct_analysis.json")
+    direct_analysis_zh = read_json(output_dir / "direct_analysis_zh.json")
+    audit = read_json(output_dir / "audit_result.json")
+    audit_zh = read_json(output_dir / "audit_result_zh.json")
+    direct_audit = read_json(output_dir / "direct_audit_result.json")
+    direct_audit_zh = read_json(output_dir / "direct_audit_result_zh.json")
+
+    extraction_complete = any(payload_has_content(item) for item in (analysis, analysis_zh, direct_analysis, direct_analysis_zh))
+    analysis_complete = any(payload_has_content(item) for item in (audit, audit_zh, direct_audit, direct_audit_zh))
+    has_analysis_text = extraction_complete or analysis_complete
+    social_context = read_json(output_dir / "social_context.json")
+    metrics_complete = bool(isinstance(social_context, dict) and social_context.get("status") in {"complete", "partial", "unavailable"})
+
+    queue_status = video_queue.get_status(filename) if filename else "idle"
+    progress = video_queue.get_progress()
+    active_for_file = bool(filename and progress.get("current") == filename)
+    step = str(progress.get("step") or "")
+    if failure_stage:
+        state = "failed"
+    elif download_payload and download_payload.get("status") in {"queued", "running"} and not file_ready:
+        state = "downloading"
+    elif active_for_file and step in {"extracting", "translating", "titling"}:
+        state = "extracting"
+    elif active_for_file and step in {"auditing", "translating_audit"}:
+        state = "analyzing"
+    elif filename in social_jobs_running and not metrics_complete:
+        state = "metrics"
+    elif analysis_complete:
+        state = "completed"
+    elif extraction_complete:
+        state = "analysis_ready"
+    elif queue_status in {"queued_analyze", "queued_report"}:
+        state = "queued"
+    elif queue_status in {"analyzing"}:
+        state = "extracting"
+    elif queue_status in {"reporting"}:
+        state = "analyzing"
+    elif file_ready:
+        state = "uploaded"
+    else:
+        state = "queued" if filename else "failed"
+        if not filename:
+            failure_reason = failure_reason or "filename is required unless a known job id is provided"
+
+    labels = {
+        "downloading": "下载中",
+        "uploaded": "已上传",
+        "queued": "待处理",
+        "extracting": "解析中",
+        "analyzing": "分析中",
+        "analysis_ready": "分析结果已生成",
+        "metrics": "评论采集中",
+        "completed": "已完成",
+        "failed": "失败",
+    }
+    can_read_result = state in {"analysis_ready", "metrics", "completed"} and has_analysis_text
+    return {
+        "ok": state != "failed",
+        "state": state,
+        "label": labels.get(state, state),
+        "filename": filename,
+        "download_job_id": download_job_id,
+        "job_id": job_id,
+        "file_ready": file_ready,
+        "extraction_complete": extraction_complete,
+        "analysis_complete": analysis_complete,
+        "metrics_complete": metrics_complete,
+        "has_analysis_text": has_analysis_text,
+        "can_read_result": can_read_result,
+        "result_url": f"/api/result?filename={quote_plus(filename)}" if can_read_result else "",
+        "queue_status": queue_status,
+        "progress": progress if active_for_file else {},
+        "failure_stage": failure_stage,
+        "failure_reason": failure_reason,
+        "download": download_payload,
+        "job": job_payload,
+        "updated_at": time.time(),
+    }
+
+
 def public_shop_job(job: ShopJob) -> dict[str, Any]:
     output_dir = OUTPUT_DIR / "tiktok_shop" / job.id
     return {
@@ -3886,6 +4015,18 @@ class Handler(BaseHTTPRequestHandler):
             if payload is None:
                 return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Download job not found"})
             return json_response(self, HTTPStatus.OK, payload)
+        if parsed.path == "/api/video-feedback":
+            query = parse_qs(parsed.query)
+            try:
+                payload = build_video_feedback(
+                    filename=query.get("filename", [""])[0],
+                    download_job_id=query.get("download_job_id", query.get("download_id", [""]))[0],
+                    job_id=query.get("job_id", query.get("id", [""]))[0],
+                )
+            except ValueError as exc:
+                return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            status = HTTPStatus.NOT_FOUND if payload.get("error") else HTTPStatus.OK
+            return json_response(self, status, payload)
         if parsed.path == "/api/download-events":
             job_id = parse_qs(parsed.query).get("id", [""])[0]
             return self.stream_download_events(job_id)
