@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from web_app import normalize_tool_result  # noqa: E402
+from tools import execute_tool, get_tools_for_model, list_tools  # noqa: E402
 
 
 def test_tiktok_search_keeps_analysis_fields() -> None:
@@ -100,7 +101,22 @@ def test_amazon_keeps_product_fields() -> None:
     assert result["products"][0]["reviews"] == 321
 
 
+def test_current_time_tool_is_available() -> None:
+    result = execute_tool("current_time", {})
+    assert result["ok"] is True
+    assert result["data"]["date"]
+    assert result["data"]["time"]
+    assert result["data"]["utc_iso"]
+
+    model_tool_names = {item["function"]["name"] for item in get_tools_for_model()}
+    assert "current_time" in model_tool_names
+
+    categories = {item["category"]: item["tools"] for item in list_tools()}
+    assert any(tool["name"] == "current_time" for tool in categories["系统"])
+
+
 if __name__ == "__main__":
     test_tiktok_search_keeps_analysis_fields()
     test_amazon_keeps_product_fields()
+    test_current_time_tool_is_available()
     print("chat tool normalization tests passed")

@@ -3426,6 +3426,7 @@ def run_chat_deepseek(session, assistant_msg, user_text: str) -> None:
         "你是短视频分析助手。使用提供的工具帮助用户分析 Amazon 商品、TikTok 数据和视频内容。"
         "工具结果已经被整理成可分析摘要；当结果里 enough_data=true 或 suggested_next_action=answer_from_results 时，"
         "必须基于现有结果直接分析，不要继续调用同类搜索工具。用中文回复，简洁专业。"
+        "当用户询问现在、今天、当前时间、日期、星期或时区时间时，必须先调用 current_time 工具，再基于工具结果回答。"
         "如果 video_download 或 video_analyze 返回失败，必须明确说明没有完成真实视频下载/画面分析；"
         "此时只能基于 TikTok 元数据、账号信息或评论做初步判断，不得声称已经看过视频内容。"
     )}]

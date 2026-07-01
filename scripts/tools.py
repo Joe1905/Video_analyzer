@@ -6,9 +6,11 @@ import shutil
 import subprocess
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote_plus, urlparse, urlunparse
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from api_cache import get_cached, get_cached_or_call, store_response
 from proxy_state import ensure_us_proxy
@@ -38,6 +40,30 @@ def _is_tiktok_video_url(value: str) -> bool:
     parsed = urlparse(str(value or ""))
     host = (parsed.hostname or "").lower()
     return ("tiktok.com" in host or "tiktokv.com" in host) and "/video/" in parsed.path
+
+
+def _get_current_time(timezone_name: str = "") -> dict[str, Any]:
+    tz_label = (timezone_name or "").strip()
+    if tz_label:
+        try:
+            tz = ZoneInfo(tz_label)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError(f"Unknown timezone: {tz_label}") from exc
+        now = datetime.now(tz)
+    else:
+        now = datetime.now().astimezone()
+        tz_label = now.tzname() or str(now.tzinfo or "local")
+
+    utc_now = now.astimezone(timezone.utc)
+    return {
+        "timezone": tz_label,
+        "iso": now.isoformat(timespec="seconds"),
+        "date": now.date().isoformat(),
+        "time": now.strftime("%H:%M:%S"),
+        "weekday": now.strftime("%A"),
+        "utc_iso": utc_now.isoformat(timespec="seconds"),
+        "unix_seconds": int(now.timestamp()),
+    }
 
 # ── Amazon Tools ──────────────────────────────────────────────────
 
@@ -733,6 +759,10 @@ def _run_video_direct_analyze(filename: str) -> dict:
 # ── Tool Registry ──────────────────────────────────────────────────
 
 TOOLS: list[dict[str, Any]] = [
+    # System (1)
+    {"name": "current_time", "description": "获取服务器当前日期和时间。用户询问现在、今天、当前时间、日期、星期或时区时间时使用。",
+     "parameters": {"type": "object", "properties": {"timezone": {"type": "string", "description": "可选 IANA 时区名，例如 Asia/Shanghai、UTC、America/Los_Angeles。不填则使用服务器本地时区。"}}}},
+
     # Amazon (3)
     {"name": "amazon_scrape_url", "description": "抓取 Amazon 商品页面数据，输入完整的 Amazon URL，返回商品标题、价格、评分、评论数等结构化数据。",
      "parameters": {"type": "object", "properties": {"url": {"type": "string", "description": "完整的 Amazon 商品或搜索结果 URL"}, "pages": {"type": "integer", "description": "抓取页数，默认1", "default": 1}}, "required": ["url"]}},
@@ -871,7 +901,9 @@ def execute_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
     try:
-        if name == "amazon_scrape_url":
+        if name == "current_time":
+            data = _get_current_time(str(args.get("timezone") or ""))
+        elif name == "amazon_scrape_url":
             data = _amazon_scrape(str(args["url"]), "url", int(args.get("pages", 1)))
         elif name == "amazon_scrape_asin":
             data = _amazon_scrape(str(args["asin"]), "asin", int(args.get("pages", 1)))
@@ -924,6 +956,7 @@ def get_tools_for_model(enabled: set[str] | None = None) -> list[dict]:
 def list_tools() -> list[dict]:
     """List all tools grouped by category for the frontend selector."""
     categories = {
+        "系统": ["current_time"],
         "Amazon": ["amazon_scrape_url", "amazon_scrape_asin", "amazon_search_keyword"],
         "TikTok Shop": ["tiktok_shop_product", "tiktok_shop_details", "tiktok_shop_reviews", "tiktok_shop_search"],
         "TikTok 用户": ["tiktok_profile", "tiktok_videos", "tiktok_videos_popular", "tiktok_followers", "tiktok_following", "tiktok_demographics"],
