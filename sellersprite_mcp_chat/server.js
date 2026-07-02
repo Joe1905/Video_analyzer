@@ -618,8 +618,17 @@ async function synthesizeSellerSpriteAnswer(conversation, deepseekResponses, too
   }
   finalConversation.push({
     role: "user",
-    content:
-      `工具调用边界已触发：${reason}。现在必须停止调用工具，直接基于上文已有 SellerSprite 工具结果输出最终中文 Markdown 总结。禁止输出任何 DSML、tool_calls、invoke、parameter、JSON 工具请求或伪工具调用标签。如果数据不完整，请说明是部分分析，但仍要整理已有数据中的可用发现。不要编造缺失数值。`,
+    content: [
+      `工具调用边界已触发：${reason}。现在必须停止调用工具，直接基于上文已有 SellerSprite 工具结果输出最终中文 Markdown 总结。`,
+      "",
+      "输出要求：",
+      "1. 不要再请求任何工具，不要输出 DSML、tool_calls、invoke、parameter、JSON 工具请求或伪工具调用标签。",
+      "2. 不要只做一句话摘要。即使数据不完整，也要把已获得的数据整理成一份可读的商业分析。",
+      "3. 类目/市场分析至少包含：类目定位、市场规模与容量、价格带、评分/评论、品牌与卖家集中度、头部产品或代表产品、竞争格局、机会点、风险点、可切入产品方向、运营/定价/差异化建议、下一步需要补查的数据。",
+      "4. 单品/ASIN 分析至少包含：产品定位、价格与变体、评分评论、卖点、竞品/替代品、关键词机会、风险、改进方向、是否值得进入、具体行动建议。",
+      "5. 每个建议必须说明依据来自哪些已返回数据；缺失的数据明确写“未获取到”，不要编造数值。",
+      "6. 使用中文 Markdown，优先用二级/三级标题、表格和项目符号，让回答详实、可执行。",
+    ].join("\n"),
   });
   const response = await callDeepSeek({
     model: DEEPSEEK_MODEL,
@@ -698,8 +707,24 @@ async function answerWithDeepSeek(session, userText) {
   const conversation = [
     {
       role: "system",
-      content:
-        "你是 SellerSprite Open API 的中文助手。用户询问 Amazon 选品、ASIN、关键词、品牌、类目、销量、BSR、流量、趋势、OCR 或账户工具能力时，必须优先调用 SellerSprite MCP 工具。不要编造工具返回中没有的数据；如果工具返回未授权、错误或空数据，必须明确说明真实错误，不要给出伪造的实时市场数据；如果你没有实际调用工具，不得声称 API 未授权、次数用尽、已查询到数据或工具异常，只能说明需要调用工具查询。缺少必填参数时先问用户补充。回复只能使用 Markdown 格式，不要输出 HTML/H5 标签（例如 <br>、<div>、<table>、<p>）；需要换行、列表或表格时，使用 Markdown 的空行、列表和表格语法。",
+      content: [
+        "你是 SellerSprite Open API 的中文商业分析助手，面向跨境电商选品、类目研究、ASIN/关键词/品牌/竞品分析。",
+        "",
+        "工具调用原则：",
+        "1. 用户询问 Amazon、亚马逊、ASIN、关键词、品牌、类目、产品、销量、销售额、BSR、流量、趋势、评论、竞品、选品、市场分析或站点数据时，必须先调用 SellerSprite MCP 工具；不要直接凭常识回答。",
+        "2. 如果用户给出 ASIN 或 Amazon URL，先调用适合 ASIN/商品详情的工具；如果用户给出类目/关键词，先定位类目或关键词，再补充市场/产品/分布/竞争数据。",
+        "3. 如果缺少必填参数，先问用户补充；但站点未说明时可默认 US，并在回答中说明默认值。",
+        "4. 没有实际工具结果时，不得声称已查询、API 未授权、次数用尽、工具异常或已得到市场数据。",
+        "5. 工具返回未授权、错误或空数据时，必须说明真实错误；如果已有其他成功工具结果，要继续基于成功结果分析，不要因为部分失败而放弃回答。",
+        "",
+        "回答质量要求：",
+        "1. 不要只给概括结论。用户问类目、市场、产品情况时，输出一份详实报告。",
+        "2. 类目/市场分析至少覆盖：类目定位、市场规模/容量、价格带、评分评论、品牌集中度、卖家集中度、物流/卖家来源、头部产品或代表产品、竞争格局、机会点、风险点、可切入方向、产品改进建议、定价/运营/差异化建议、下一步补查项。",
+        "3. 单品/ASIN 分析至少覆盖：产品基础信息、价格/变体、卖点、评分评论、销量/BSR/趋势、关键词与流量机会、竞品对比、用户痛点、改进方向、进入建议和行动清单。",
+        "4. 具体建议要尽量落到产品形态、功能、价格带、人群、场景、包装、内容营销或供应链动作，不要只写泛泛的“优化产品”。",
+        "5. 所有数字和事实必须来自工具结果；没有拿到的数据明确标注“未获取到”。",
+        "6. 回复只能使用 Markdown，不要输出 HTML/H5 标签（例如 <br>、<div>、<table>、<p>）。",
+      ].join("\n"),
     },
     ...history,
     { role: "user", content: userText },
@@ -710,8 +735,12 @@ async function answerWithDeepSeek(session, userText) {
   const requireToolFirst = shouldRequireSellerSpriteTool(userText);
   conversation.splice(1, 0, {
     role: "system",
-    content:
-      "When a SellerSprite tool result has ok:false but at least one previous SellerSprite tool result has ok:true, continue using only the successful tool data. Mention the failed tool name and error code briefly at the end as skipped data. Do not invent missing values from failed tools.",
+    content: [
+      "When a SellerSprite tool result has ok:false but at least one previous SellerSprite tool result has ok:true, continue using only the successful tool data.",
+      "Mention failed tool names and error codes briefly at the end as skipped or missing data. Do not invent missing values from failed tools.",
+      "If successful SellerSprite results exist, the final answer must be a complete Chinese Markdown business report, not a short refusal or a tool-status summary.",
+      "For category and product-market questions, include actionable recommendations and explain what each recommendation is based on.",
+    ].join(" "),
   });
 
   for (let step = 0; step < 6; step += 1) {
