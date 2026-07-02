@@ -732,6 +732,138 @@ def compact_text(value: Any, max_len: int = 1200) -> str:
     return text[:max_len] + ("..." if len(text) > max_len else "")
 
 
+def social_status_text(status: Any) -> str:
+    value = str(status or "missing").strip().lower()
+    labels = {
+        "ok": "已获取",
+        "complete": "已获取",
+        "completed": "已获取",
+        "partial": "部分缺失",
+        "missing": "缺失",
+        "unavailable": "无可用数据",
+        "failed": "获取失败",
+        "error": "获取失败",
+        "skipped": "已跳过",
+    }
+    return labels.get(value, str(status or "缺失"))
+
+
+def social_time_text(timestamp: Any) -> str:
+    if timestamp in (None, ""):
+        return ""
+    try:
+        return datetime.fromtimestamp(float(timestamp)).strftime("%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError, OSError):
+        return str(timestamp)
+
+
+def format_social_tab_text(tab: str, context: dict[str, Any], insights: dict[str, Any]) -> str:
+    items = context.get("items") if isinstance(context.get("items"), dict) else {}
+    comments_item = items.get("comments") if isinstance(items.get("comments"), dict) else {}
+    video_item = items.get("video_info") if isinstance(items.get("video_info"), dict) else {}
+    creator_item = items.get("creator_profile") if isinstance(items.get("creator_profile"), dict) else {}
+    comments_data = comments_item.get("data") if isinstance(comments_item.get("data"), dict) else {}
+    video_data = video_item.get("data") if isinstance(video_item.get("data"), dict) else {}
+    creator_data = creator_item.get("data") if isinstance(creator_item.get("data"), dict) else {}
+    actions = insights.get("recommended_actions") if isinstance(insights.get("recommended_actions"), list) else []
+
+    configs = {
+        "comments": {
+            "title": "评论区分析",
+            "item": comments_item,
+            "insight": insights.get("comment_insights") or insights.get("comment_analysis") or "",
+            "empty": "未获取到评论。",
+        },
+        "data": {
+            "title": "数据分析",
+            "item": video_item,
+            "insight": insights.get("data_insights") or insights.get("data_analysis") or "",
+            "empty": "未获取到视频数据。",
+        },
+        "creator": {
+            "title": "博主分析",
+            "item": creator_item,
+            "insight": insights.get("creator_insights") or insights.get("creator_analysis") or "",
+            "empty": "未获取到博主数据。",
+        },
+    }
+    config = configs[tab]
+    item = config["item"]
+    lines = [config["title"], "", f"状态：{social_status_text(item.get('status') or context.get('status'))}"]
+    updated = social_time_text(context.get("updated_at"))
+    if updated:
+        lines.append(f"更新时间：{updated}")
+    if context.get("source_url"):
+        lines.append(f"原始链接：{context.get('source_url')}")
+
+    if tab == "comments":
+        comment_samples = comments_data.get("items") if isinstance(comments_data.get("items"), list) else []
+        count = comments_data.get("count")
+        sample_count = comments_data.get("sample_count")
+        if count not in (None, ""):
+            lines.append(f"评论总数：{count}")
+        if sample_count not in (None, ""):
+            lines.append(f"样本数：{sample_count}")
+        sample_lines = [
+            f"- {item.get('user') or '匿名'}：{item.get('text') or ''}".strip()
+            for item in comment_samples[:8]
+            if isinstance(item, dict) and (item.get("text") or item.get("user"))
+        ]
+        if sample_lines:
+            lines.extend(["", "评论样本：", *sample_lines])
+        insight_text = compact_text(config["insight"], 1400)
+        if insight_text:
+            lines.extend(["", "评论洞察：", insight_text])
+    elif tab == "data":
+        metrics = video_data.get("metrics") if isinstance(video_data.get("metrics"), dict) else {}
+        metric_parts = [
+            ("播放", metrics.get("play_count")),
+            ("点赞", metrics.get("like_count")),
+            ("评论", metrics.get("comment_count")),
+            ("分享", metrics.get("share_count")),
+            ("收藏", metrics.get("collect_count")),
+        ]
+        metric_text = "，".join(f"{name}：{value}" for name, value in metric_parts if value not in (None, ""))
+        if metric_text:
+            lines.extend(["", "核心指标：", metric_text])
+        basics = {key: value for key, value in video_data.items() if key != "metrics" and value not in (None, "", [], {})}
+        if basics:
+            lines.extend(["", "视频基础数据：", compact_text(basics, 1000)])
+        insight_text = compact_text(config["insight"], 1400)
+        if insight_text:
+            lines.extend(["", "数据洞察：", insight_text])
+    else:
+        metrics = creator_data.get("metrics") if isinstance(creator_data.get("metrics"), dict) else {}
+        creator_name = creator_data.get("unique_id") or creator_data.get("nickname") or ""
+        if creator_name:
+            lines.append(f"博主：{creator_name}")
+        metric_parts = [
+            ("粉丝", metrics.get("follower_count")),
+            ("关注", metrics.get("following_count")),
+            ("作品", metrics.get("video_count")),
+            ("获赞", metrics.get("heart_count")),
+        ]
+        metric_text = "，".join(f"{name}：{value}" for name, value in metric_parts if value not in (None, ""))
+        if metric_text:
+            lines.extend(["", "博主指标：", metric_text])
+        profile = {key: value for key, value in creator_data.items() if key != "metrics" and value not in (None, "", [], {})}
+        if profile:
+            lines.extend(["", "博主资料：", compact_text(profile, 1000)])
+        insight_text = compact_text(config["insight"], 1400)
+        if insight_text:
+            lines.extend(["", "博主洞察：", insight_text])
+
+    if actions:
+        lines.extend(["", "行动建议："])
+        for action in actions[:8]:
+            lines.append(f"- {compact_text(action, 300)}")
+    if item.get("error"):
+        lines.extend(["", "缺失/失败原因：", str(item.get("error"))])
+    if len(lines) <= 4:
+        lines.append(str(item.get("error") or config["empty"]))
+    return "\n".join(line for line in lines if line is not None).strip()
+
+
 def social_processed_payload(filename: str) -> dict[str, Any]:
     output_dir = output_dir_for_filename(filename)
     context = read_json(output_dir / "social_context.json") or {}
@@ -753,42 +885,13 @@ def social_processed_payload(filename: str) -> dict[str, Any]:
     data_insight = insights.get("data_insights") or insights.get("data_analysis") or ""
     creator_insight = insights.get("creator_insights") or insights.get("creator_analysis") or ""
     actions = insights.get("recommended_actions") if isinstance(insights.get("recommended_actions"), list) else []
-
     comment_samples = comments_data.get("items") if isinstance(comments_data.get("items"), list) else []
-    sample_lines = [
-        f"{item.get('user') or '匿名'}：{item.get('text') or ''}".strip()
-        for item in comment_samples[:8]
-        if isinstance(item, dict) and (item.get("text") or item.get("user"))
-    ]
-    comments_text = compact_text(comment_insight, 900)
-    if not comments_text and sample_lines:
-        comments_text = "评论样本：\n" + "\n".join(sample_lines)
-    if not comments_text:
-        comments_text = str(comments_item.get("error") or "未获取到评论。")
-
     metrics = video_data.get("metrics") if isinstance(video_data.get("metrics"), dict) else {}
-    metric_parts = [
-        ("播放", metrics.get("play_count")),
-        ("点赞", metrics.get("like_count")),
-        ("评论", metrics.get("comment_count")),
-        ("分享", metrics.get("share_count")),
-        ("收藏", metrics.get("collect_count")),
-    ]
-    metric_text = "，".join(f"{name}:{value}" for name, value in metric_parts if value not in (None, ""))
-    data_parts = [part for part in (metric_text, compact_text(data_insight, 900)) if part]
-    data_text = "\n".join(data_parts) or str(video_item.get("error") or "未获取到视频数据。")
-
     creator_metrics = creator_data.get("metrics") if isinstance(creator_data.get("metrics"), dict) else {}
-    creator_name = creator_data.get("unique_id") or creator_data.get("nickname") or ""
-    creator_metric_parts = [
-        ("粉丝", creator_metrics.get("follower_count")),
-        ("作品", creator_metrics.get("video_count")),
-        ("获赞", creator_metrics.get("heart_count")),
-    ]
-    creator_metric_text = "，".join(f"{name}:{value}" for name, value in creator_metric_parts if value not in (None, ""))
-    creator_head = "，".join(part for part in (f"博主:{creator_name}" if creator_name else "", creator_metric_text) if part)
-    creator_parts = [part for part in (creator_head, compact_text(creator_insight, 900)) if part]
-    creator_text = "\n".join(creator_parts) or str(creator_item.get("error") or "未获取到博主数据。")
+
+    comments_text = format_social_tab_text("comments", context, insights)
+    data_text = format_social_tab_text("data", context, insights)
+    creator_text = format_social_tab_text("creator", context, insights)
 
     return {
         "filename": filename,
@@ -807,6 +910,7 @@ def social_processed_payload(filename: str) -> dict[str, Any]:
             "sample_count": comments_data.get("sample_count"),
             "samples": comment_samples,
             "insight": comment_insight,
+            "analysis_text": comments_text,
             "error": comments_item.get("error") or "",
         },
         "data": {
@@ -814,6 +918,7 @@ def social_processed_payload(filename: str) -> dict[str, Any]:
             "video": {key: value for key, value in video_data.items() if key != "metrics"} if isinstance(video_data, dict) else {},
             "metrics": metrics,
             "insight": data_insight,
+            "analysis_text": data_text,
             "error": video_item.get("error") or "",
         },
         "creator": {
@@ -821,6 +926,7 @@ def social_processed_payload(filename: str) -> dict[str, Any]:
             "profile": {key: value for key, value in creator_data.items() if key != "metrics"} if isinstance(creator_data, dict) else {},
             "metrics": creator_metrics,
             "insight": creator_insight,
+            "analysis_text": creator_text,
             "error": creator_item.get("error") or "",
         },
         "recommended_actions": actions,
