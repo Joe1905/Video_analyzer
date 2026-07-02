@@ -84,8 +84,16 @@ def build_prompt(context: dict[str, Any]) -> str:
     )
 
 
+def normalize_chat_completions_url(api_url: str) -> str:
+    url = str(api_url or DEFAULT_API_URL).strip().rstrip("/")
+    if url.endswith("/chat/completions"):
+        return url
+    return url + "/chat/completions"
+
+
 def call_deepseek(api_key: str, prompt: str, api_url: str, model: str, max_tokens: int) -> dict[str, Any]:
     started = time.monotonic()
+    api_url = normalize_chat_completions_url(api_url)
     response = requests.post(
         api_url,
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -122,8 +130,8 @@ def extract_content(api_response: dict[str, Any]) -> str:
     try:
         choice = api_response["choices"][0]
         finish_reason = choice.get("finish_reason")
-        if finish_reason == "length":
-            raise ValueError("DeepSeek response was truncated by max_tokens")
+        if finish_reason in {"length", "max_tokens"}:
+            raise ValueError(f"DeepSeek response was truncated by max_tokens: finish_reason={finish_reason}")
         return choice["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:
         raise ValueError("Unexpected DeepSeek API response shape") from exc
