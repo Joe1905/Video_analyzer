@@ -16,6 +16,7 @@ DEFAULT_API_URL = "https://api.deepseek.com/v1/chat/completions"
 DEFAULT_MODEL = "deepseek-chat"
 DEFAULT_BATCH_CHARS = 8000
 DEFAULT_TEXT_CHUNK_CHARS = 3000
+DEFAULT_MAX_TOKENS = 8192
 SKIP_STRING_KEYS = {
     "schema_version",
     "processing_mode",
@@ -42,7 +43,7 @@ def load_json(path: Path) -> Any:
         return json.load(file)
 
 
-def call_deepseek(api_key: str, api_url: str, model: str, items: list[dict[str, str]]) -> dict:
+def call_deepseek(api_key: str, api_url: str, model: str, items: list[dict[str, str]], max_tokens: int) -> dict:
     api_url = normalize_chat_completions_url(api_url)
     prompt = (
         "Translate each item's text into Simplified Chinese. Preserve line breaks, numbers, timestamps, "
@@ -70,6 +71,8 @@ def call_deepseek(api_key: str, api_url: str, model: str, items: list[dict[str, 
                 },
             ],
             "temperature": 0,
+            "max_tokens": max_tokens,
+            "response_format": {"type": "json_object"},
         },
         timeout=180,
     )
@@ -85,7 +88,7 @@ def call_deepseek(api_key: str, api_url: str, model: str, items: list[dict[str, 
     return data
 
 
-def call_deepseek_text(api_key: str, api_url: str, model: str, text: str) -> str:
+def call_deepseek_text(api_key: str, api_url: str, model: str, text: str, max_tokens: int) -> str:
     started = time.monotonic()
     api_url = normalize_chat_completions_url(api_url)
     response = requests.post(
@@ -107,6 +110,7 @@ def call_deepseek_text(api_key: str, api_url: str, model: str, text: str) -> str
                 },
             ],
             "temperature": 0,
+            "max_tokens": max_tokens,
         },
         timeout=180,
     )
@@ -150,13 +154,13 @@ def split_text_chunks(text: str, max_chars: int) -> list[str]:
     return [chunk for chunk in chunks if chunk]
 
 
-def translate_text_chunked(api_key: str, api_url: str, model: str, text: str, max_chars: int) -> str:
+def translate_text_chunked(api_key: str, api_url: str, model: str, text: str, max_chars: int, max_tokens: int) -> str:
     chunks = split_text_chunks(text, max_chars)
     if len(chunks) == 1:
-        return call_deepseek_text(api_key=api_key, api_url=api_url, model=model, text=text)
+        return call_deepseek_text(api_key=api_key, api_url=api_url, model=model, text=text, max_tokens=max_tokens)
     translated_chunks = []
     for index, chunk in enumerate(chunks, start=1):
-        translated = call_deepseek_text(api_key=api_key, api_url=api_url, model=model, text=chunk)
+        translated = call_deepseek_text(api_key=api_key, api_url=api_url, model=model, text=chunk, max_tokens=max_tokens)
         translated_chunks.append(translated)
         print(f"Translated long text chunk {index}/{len(chunks)} ({len(chunk)} chars)", file=sys.stderr)
     return "\n".join(translated_chunks)
@@ -164,7 +168,11 @@ def translate_text_chunked(api_key: str, api_url: str, model: str, text: str, ma
 
 def extract_content(api_response: dict) -> str:
     try:
-        return api_response["choices"][0]["message"]["content"]
+        choice = api_response["choices"][0]
+        finish_reason = choice.get("finish_reason")
+        if finish_reason in {"length", "max_tokens"}:
+            raise ValueError(f"DeepSeek translation output was truncated: finish_reason={finish_reason}")
+        return choice["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:
         raise ValueError("Unexpected DeepSeek API response shape") from exc
 
@@ -252,6 +260,48 @@ def set_path(value: Any, path: tuple[Any, ...], text: str) -> None:
     cursor[path[-1]] = text
 
 
+
+
+def get_path(value: Any, path: tuple[Any, ...]) -> Any:
+    cursor = value
+    for key in path:
+        cursor = cursor[key]
+    return cursor
+
+
+def looks_truncated_translation(original: str, translated: str) -> bool:
+    source = str(original or "").strip()
+    text = str(translated or "").strip()
+    if len(source) < 120:
+        return False
+    if not text:
+        return True
+    if len(text) < max(30, int(len(source) * 0.18)):
+        return True
+    terminal_chars = ".!?\u3002\uff01\uff1f)]\uff09\"'\u201d\u2019"
+    dangling_chars = "\u7684\u4e86\u5728\u5411\u4e0e\u548c\u53ca\u5e76\u800c\u4f46\u4e3a\u5bf9\u4ece\u5230\u4e2d\u4e0a\uff0c\u4e0b\u3001\uff1b\uff1a"
+    if len(source) >= 220 and text[-1] not in terminal_chars:
+        return text[-1] in dangling_chars or len(text) < int(len(source) * 0.35)
+    return False
+
+
+def suspicious_translation_paths(source_payload: Any, translated_payload: Any) -> list[tuple[Any, ...]]:
+    suspicious: list[tuple[Any, ...]] = []
+    for path, original in collect_strings(source_payload):
+        try:
+            translated = get_path(translated_payload, path)
+        except (KeyError, IndexError, TypeError):
+            suspicious.append(path)
+            continue
+        if isinstance(translated, str) and looks_truncated_translation(original, translated):
+            suspicious.append(path)
+    return suspicious
+
+
+def has_suspicious_translation(source_payload: Any, translated_payload: Any) -> bool:
+    return bool(suspicious_translation_paths(source_payload, translated_payload))
+
+
 def batches(rows: list[tuple[tuple[Any, ...], str]], max_chars: int) -> list[list[tuple[tuple[Any, ...], str]]]:
     result: list[list[tuple[tuple[Any, ...], str]]] = []
     current: list[tuple[tuple[Any, ...], str]] = []
@@ -275,11 +325,13 @@ def translate_in_batches(
     model: str,
     payload: Any,
     max_chars: int,
+    max_tokens: int | None = None,
 ) -> Any:
     translated = deepcopy(payload)
     rows = collect_strings(payload)
     if not rows:
         return translated
+    max_tokens = max(1024, int(max_tokens or os.getenv("TRANSLATION_MAX_TOKENS", str(DEFAULT_MAX_TOKENS))))
 
     for batch_index, batch in enumerate(batches(rows, max_chars), start=1):
         items = [
@@ -290,13 +342,22 @@ def translate_in_batches(
             for index, (_path, text) in enumerate(batch)
         ]
         try:
-            api_response = call_deepseek(api_key=api_key, api_url=api_url, model=model, items=items)
+            api_response = call_deepseek(api_key=api_key, api_url=api_url, model=model, items=items, max_tokens=max_tokens)
             content = extract_content(api_response)
             parsed = parse_json_content(content)
             translated_items = parsed.get("items", []) if isinstance(parsed, dict) else []
             by_id = {str(item.get("id")): item.get("text", "") for item in translated_items if isinstance(item, dict)}
             for index, (path, original) in enumerate(batch):
                 text = by_id.get(str(index), original)
+                if looks_truncated_translation(original, text):
+                    text = translate_text_chunked(
+                        api_key=api_key,
+                        api_url=api_url,
+                        model=model,
+                        text=original,
+                        max_chars=min(max_chars, int(os.getenv("TRANSLATION_TEXT_CHUNK_CHARS", str(DEFAULT_TEXT_CHUNK_CHARS)))),
+                        max_tokens=max_tokens,
+                    )
                 set_path(translated, path, text)
             print(f"Translated batch {batch_index} ({len(batch)} strings)", file=sys.stderr)
         except Exception as exc:
@@ -311,6 +372,7 @@ def translate_in_batches(
                         model=model,
                         text=original,
                         max_chars=min(max_chars, int(os.getenv("TRANSLATION_TEXT_CHUNK_CHARS", str(DEFAULT_TEXT_CHUNK_CHARS)))),
+                        max_tokens=max_tokens,
                     ),
                 )
             print(f"Translated batch {batch_index} with fallback ({len(batch)} strings)", file=sys.stderr)
@@ -347,6 +409,12 @@ def main() -> int:
         default=int(os.getenv("TRANSLATION_BATCH_CHARS", str(DEFAULT_BATCH_CHARS))),
         help=f"Approximate max characters per translation batch. Defaults to {DEFAULT_BATCH_CHARS}.",
     )
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=int(os.getenv("TRANSLATION_MAX_TOKENS", str(DEFAULT_MAX_TOKENS))),
+        help=f"Max DeepSeek output tokens per translation request. Defaults to {DEFAULT_MAX_TOKENS}.",
+    )
     args = parser.parse_args()
 
     api_key = os.getenv("DEEPSEEK_API_KEY")
@@ -366,6 +434,7 @@ def main() -> int:
             model=args.model,
             payload=analysis,
             max_chars=args.batch_chars,
+            max_tokens=args.max_tokens,
         )
 
         output_path = Path(args.output) if args.output else analysis_path.parent / "analysis_zh.json"

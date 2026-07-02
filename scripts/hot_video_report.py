@@ -502,17 +502,20 @@ def _cleanup_expired_video_records(conn: sqlite3.Connection, recency_days: int |
     days = max(1, _to_int(recency_days if recency_days is not None else os.getenv("HOT_VIDEO_RECENT_DAYS", "7")))
     cutoff_ts = time.time() - days * 86400
     latest_publish_by_key: dict[tuple[str, str], float] = {}
+    protected_report_keys: set[tuple[str, str]] = set()
     seen_keys: set[tuple[str, str]] = set()
 
     report_rows = conn.execute(
         """
-        SELECT report_date, platform, video_id, metrics_json, raw_json
+        SELECT report_date, platform, video_id, report_rank, metrics_json, raw_json
         FROM hot_report_videos
         """
     ).fetchall()
-    for report_date, platform, video_id, metrics_json, raw_json in report_rows:
+    for report_date, platform, video_id, report_rank, metrics_json, raw_json in report_rows:
         key = (str(platform), str(video_id))
         seen_keys.add(key)
+        if _to_int(report_rank) > 0:
+            protected_report_keys.add(key)
         published_at = _published_at_from_row(metrics_json, raw_json, str(report_date or ""))
         if published_at is None:
             latest_publish_by_key[key] = 0
@@ -523,7 +526,7 @@ def _cleanup_expired_video_records(conn: sqlite3.Connection, recency_days: int |
     stale_keys = {
         (platform, video_id)
         for (platform, video_id), published_at in latest_publish_by_key.items()
-        if published_at <= 0 or published_at < cutoff_ts
+        if (platform, video_id) not in protected_report_keys and (published_at <= 0 or published_at < cutoff_ts)
     }
     # Remove stale records from all report days by identity.
     for platform, video_id in stale_keys:
@@ -1367,7 +1370,7 @@ def _translate_analysis_payload(analysis: Any) -> Any:
     if not analysis:
         raise ValueError("analysis not found for report video")
 
-    from translate_analysis import DEFAULT_BATCH_CHARS, translate_in_batches
+    from translate_analysis import DEFAULT_BATCH_CHARS, DEFAULT_MAX_TOKENS, translate_in_batches
 
     api_key = os.getenv("DEEPSEEK_API_KEY")
     if not api_key:
@@ -1378,6 +1381,7 @@ def _translate_analysis_payload(analysis: Any) -> Any:
         model=os.getenv("DEEPSEEK_MODEL", DEFAULT_MODEL),
         payload=analysis,
         max_chars=int(os.getenv("TRANSLATION_BATCH_CHARS", str(DEFAULT_BATCH_CHARS))),
+        max_tokens=int(os.getenv("TRANSLATION_MAX_TOKENS", str(DEFAULT_MAX_TOKENS))),
     )
 
 
@@ -1401,7 +1405,10 @@ def translate_report_video_analysis(report_date: str, platform: str, video_id: s
         analysis = _json_loads(row[0], None)
         cached = _json_loads(row[1], None)
         if cached:
-            return {"status": "cached", "report_date": date, "platform": platform, "video_id": video_id, "analysis_zh": cached}
+            from translate_analysis import has_suspicious_translation
+
+            if not has_suspicious_translation(analysis, cached):
+                return {"status": "cached", "report_date": date, "platform": platform, "video_id": video_id, "analysis_zh": cached}
         translated = _translate_analysis_payload(analysis)
         conn.execute(
             """
