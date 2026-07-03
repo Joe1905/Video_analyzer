@@ -54,12 +54,13 @@ function mcpRequestUrl() {
   return `${MCP_REMOTE_URL}${separator}api_key=${encodeURIComponent(FASTMOSS_MCP_API_KEY)}`;
 }
 
-function mcpRequestHeaders() {
+function mcpRequestHeaders(sessionId = null) {
   const headers = {
     "content-type": "application/json",
     accept: "application/json, text/event-stream",
   };
   if (MCP_CHAT_TYPE === "sellersprite") headers["secret-key"] = SELLERSPRITE_SECRET_KEY;
+  if (sessionId) headers["mcp-session-id"] = sessionId;
   return headers;
 }
 
@@ -145,6 +146,7 @@ class RemoteMcpClient {
   constructor() {
     this.initialized = false;
     this.cachedTools = null;
+    this.sessionId = null;
   }
 
   async request(method, params = {}) {
@@ -152,10 +154,12 @@ class RemoteMcpClient {
     const payload = { jsonrpc: "2.0", id: randomUUID(), method, params };
     const response = await fetch(mcpRequestUrl(), {
       method: "POST",
-      headers: mcpRequestHeaders(),
+      headers: mcpRequestHeaders(this.sessionId),
       body: JSON.stringify(payload),
     });
 
+    const nextSessionId = response.headers.get("mcp-session-id");
+    if (nextSessionId) this.sessionId = nextSessionId;
     const text = await response.text();
     const data = parseMcpResponse(text);
     if (!response.ok) throw new Error(data?.error?.message || data?.message || `${MCP_CHAT_LABEL} MCP request failed: ${response.status}`);
