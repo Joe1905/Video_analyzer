@@ -3954,6 +3954,10 @@ def to_model_tool(tool: dict[str, Any], tool_id: str, description: str | None = 
     }
 
 
+def system_chat_tool_ids() -> set[str]:
+    return {prefixed_tool_id("system", name) for name in LOCAL_SYSTEM_TOOLS}
+
+
 def provider_default_enabled_tool_ids(provider: str) -> set[str]:
     provider = normalize_chat_provider(provider)
     default_domains = CHAT_PROVIDER_DEFAULT_DOMAINS.get(provider, CHAT_PROVIDER_DEFAULT_DOMAINS["home"])
@@ -4057,7 +4061,7 @@ def build_tool_catalog(provider: str) -> dict[str, Any]:
     provider = normalize_chat_provider(provider)
     default_domains = CHAT_PROVIDER_DEFAULT_DOMAINS.get(provider, CHAT_PROVIDER_DEFAULT_DOMAINS["home"])
     domains = [
-        {"id": "system", "label": "\u7cfb\u7edf", "categories": [], "defaultSelected": "system" in default_domains},
+        {"id": "system", "label": "\u7cfb\u7edf", "categories": [], "defaultSelected": True, "hidden": True},
         {"id": "function", "label": "\u529f\u80fd", "categories": [], "defaultSelected": "function" in default_domains},
         {"id": "sellersprite", "label": "\u5356\u5bb6\u7cbe\u7075", "categories": [], "defaultSelected": "sellersprite" in default_domains},
         {"id": "fastmoss", "label": "FastMoss", "categories": [], "defaultSelected": "fastmoss" in default_domains},
@@ -6065,6 +6069,7 @@ class Handler(BaseHTTPRequestHandler):
             raw_attachments = payload.get("attachments", [])
             enabled_masks = payload.get("enabledToolMasks") if "enabledToolMasks" in payload else {}
             enabled_tool_ids = decode_tool_masks(enabled_masks) if "enabledToolMasks" in payload else set()
+            enabled_tool_ids.update(system_chat_tool_ids())
             decoded_domains = sorted({split_prefixed_tool_id(tool_id)[0] for tool_id in enabled_tool_ids})
             print(
                 f"[CHAT] received tool masks provider={provider} masks={json.dumps(enabled_masks, ensure_ascii=False, sort_keys=True)} "
