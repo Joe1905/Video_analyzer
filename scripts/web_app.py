@@ -95,7 +95,7 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 from chat_session import ChatStore, Message, load_sessions_from_disk
 from sociavault_usage import read_sociavault_usage
 from sociavault_tiktok import call_api as call_sociavault_tiktok_api
-from tools import execute_tool, get_tools_for_model, list_tools
+from tools import TOOLS, execute_tool, get_tools_for_model, list_tools
 from video_queue import video_queue, STATUS_META
 from api_cache import get_cached_or_call, record_api_call
 from api_cache import get_cached, store_response
@@ -316,6 +316,130 @@ social_jobs_running: set[str] = set()
 # Chat system
 chat_store = ChatStore()
 chat_tool_config: set[str] | None = None  # None = all tools enabled
+
+
+
+CHAT_PROVIDERS = {"home", "amazon", "fastmoss"}
+CHAT_PROVIDER_LABELS = {"home": "\u9996\u9875", "amazon": "Amazon", "fastmoss": "FastMoss"}
+CHAT_PROVIDER_DEFAULT_DOMAINS = {
+    "home": {"system", "function"},
+    "amazon": {"system", "sellersprite"},
+    "fastmoss": {"system", "fastmoss"},
+}
+MCP_TOOL_CACHE: dict[str, dict[str, Any]] = {}
+NAV_ITEMS = [
+    {"key": "home", "href": "/", "label": "\u9996\u9875", "title": "AI \u804a\u5929", "icon": '<path d="M3 10.5 12 3l9 7.5"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/>'},
+    {"key": "report", "href": "/report", "label": "\u65e5\u62a5", "title": "\u6bcf\u65e5\u62a5\u544a", "icon": '<path d="M7 3h7l4 4v14H7z"/><path d="M14 3v5h5"/><path d="M10 12h6"/><path d="M10 16h4"/>'},
+    {"key": "amazon", "href": "/amazon", "label": "Amazon", "title": "Amazon", "icon": '<path d="M4 7.5 12 3l8 4.5v9L12 21l-8-4.5z"/><path d="M4 7.5 12 12l8-4.5"/><path d="M12 12v9"/>'},
+    {"key": "fastmoss", "href": "/fastmoss", "label": "FastMoss", "title": "FastMoss", "icon": '<path d="M4 7.5 12 3l8 4.5v9L12 21l-8-4.5z"/><path d="M4 7.5 12 12l8-4.5"/><path d="M12 12v9"/>'},
+    {"key": "shop", "href": "/shop", "label": "Shop", "title": "Shop", "icon": '<path d="M6 8h12l1 13H5z"/><path d="M9 8V6a3 3 0 0 1 6 0v2"/><path d="M5 11h14"/>'},
+    {"key": "metrics", "href": "/metrics", "label": "\u6570\u636e", "title": "\u6570\u636e", "icon": '<path d="M4 19V5"/><path d="M20 19H4"/><path d="M8 16v-5"/><path d="M12 16V8"/><path d="M16 16v-7"/>'},
+    {"key": "extract", "href": "/extract", "label": "\u5206\u6790", "title": "\u89c6\u9891\u5206\u6790", "icon": '<path d="M4 5h16v14H4z"/><path d="m10 9 5 3-5 3z"/><path d="M8 21h8"/><path d="M12 19v2"/>'},
+]
+APP_NAV_CSS = """
+<style id="unified-app-nav-style">
+.app-nav{height:48px;display:flex;align-items:center;gap:4px;font-family:Inter,"PingFang SC","Microsoft YaHei",system-ui,-apple-system,sans-serif;padding:4px;border:1px solid #e5e7eb;border-radius:14px;background:rgba(255,255,255,.94);box-shadow:0 1px 2px rgba(15,23,42,.04),0 8px 24px rgba(15,23,42,.03);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);overflow-x:auto;scrollbar-width:none}.app-nav::-webkit-scrollbar{display:none}.app-nav__item{height:38px;display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:0 14px;border:1px solid transparent;border-radius:10px;color:#64748b;text-decoration:none;font-size:13px;font-weight:650;line-height:1;white-space:nowrap;transition:background-color .16s ease,color .16s ease,border-color .16s ease,box-shadow .16s ease}.app-nav__item svg{width:18px;height:18px;stroke:#94a3b8;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round;fill:none;flex:0 0 18px;transition:stroke .16s ease}.app-nav__item:hover{background:#f8fafc;color:#334155;border-color:#eef2f7}.app-nav__item:hover svg{stroke:#64748b}.app-nav__item:focus-visible{outline:none;box-shadow:0 0 0 3px rgba(37,99,235,.14)}.app-nav__item.active{background:#eff6ff;color:#2563eb;border-color:#bfdbfe;box-shadow:inset 0 0 0 1px rgba(37,99,235,.05)}.app-nav__item.active svg{stroke:#2563eb}.app-nav__label{line-height:1}@media(max-width:760px){.app-nav{height:46px;max-width:100%;gap:3px}.app-nav__item{height:36px;padding:0 11px}.app-nav__label{display:none}}
+</style>
+""".strip()
+
+
+def normalize_chat_provider(provider: str | None) -> str:
+    value = str(provider or "home").strip().lower()
+    return value if value in CHAT_PROVIDERS else "home"
+
+
+def chat_provider_from_path(path: str) -> str:
+    if path.startswith("/amazon"):
+        return "amazon"
+    if path.startswith("/fastmoss"):
+        return "fastmoss"
+    return "home"
+
+
+def chat_session_key(provider: str, session_id: str) -> str:
+    provider = normalize_chat_provider(provider)
+    sid = str(session_id or "default").strip() or "default"
+    prefix = f"{provider}__"
+    return sid if sid.startswith(prefix) else prefix + sid
+
+
+def public_chat_session_id(provider: str, session_id: str) -> str:
+    prefix = f"{normalize_chat_provider(provider)}__"
+    sid = str(session_id or "")
+    return sid.removeprefix(prefix)
+
+
+def nav_active_key(current_path: str) -> str:
+    path = current_path or "/"
+    if path in {"/", "/chat"}:
+        return "home"
+    for item in NAV_ITEMS[1:]:
+        if path == item["href"] or path.startswith(item["href"] + "/"):
+            return item["key"]
+    return "home"
+
+
+def render_app_nav(current_path: str) -> str:
+    active = nav_active_key(current_path)
+    links = []
+    for item in NAV_ITEMS:
+        cls = "app-nav__item active" if item["key"] == active else "app-nav__item"
+        links.append(
+            f'<a class="{cls}" href="{item["href"]}" title="{html_escape(item["title"])}">'
+            f'<svg viewBox="0 0 24 24" aria-hidden="true">{item["icon"]}</svg>'
+            f'<span class="app-nav__label">{html_escape(item["label"])}</span></a>'
+        )
+    return '<nav class="app-nav" aria-label="\u4e3b\u5bfc\u822a">' + "".join(links) + "</nav>"
+
+
+def inject_unified_nav(html: str, current_path: str) -> str:
+    nav = render_app_nav(current_path)
+    html = re.sub(r'<nav class="app-nav".*?</nav>', nav, html, count=1, flags=re.S)
+    if 'id="unified-app-nav-style"' not in html and "</head>" in html:
+        html = html.replace("</head>", APP_NAV_CSS + "\n</head>", 1)
+    return html
+
+
+
+def provider_session_exists(provider: str, public_id: str) -> str | None:
+    provider = normalize_chat_provider(provider)
+    key = chat_session_key(provider, public_id)
+    if chat_store.get_session(key):
+        return key
+    if provider == "home" and chat_store.get_session(public_id):
+        return public_id
+    return None
+
+
+def public_chat_session_summary(provider: str, summary: dict[str, Any]) -> dict[str, Any] | None:
+    provider = normalize_chat_provider(provider)
+    sid = str(summary.get("id") or "")
+    prefix = f"{provider}__"
+    if sid.startswith(prefix):
+        out = dict(summary)
+        out["id"] = sid.removeprefix(prefix)
+        return out
+    if provider == "home" and "__" not in sid:
+        return dict(summary)
+    return None
+
+
+def list_public_chat_sessions(provider: str) -> list[dict[str, Any]]:
+    rows = []
+    for summary in chat_store.list_sessions():
+        public = public_chat_session_summary(provider, summary)
+        if public is not None:
+            rows.append(public)
+    return rows
+
+
+def serve_chat_template(handler: BaseHTTPRequestHandler, provider: str, path: str) -> None:
+    chat_html = (SCRIPTS_DIR / "static" / "chat.html").read_text(encoding="utf-8")
+    provider = normalize_chat_provider(provider)
+    chat_html = chat_html.replace("__CHAT_PROVIDER__", provider)
+    chat_html = chat_html.replace("__CHAT_PROVIDER_LABEL__", CHAT_PROVIDER_LABELS[provider])
+    chat_html = inject_unified_nav(chat_html, path)
+    return text_response(handler, HTTPStatus.OK, chat_html, "text/html; charset=utf-8")
 
 
 def load_env_file() -> None:
@@ -3535,6 +3659,232 @@ def route_chat_intent(text: str) -> dict[str, Any]:
     return {"intent": "general", "tools": None, "max_rounds": 5}
 
 
+
+LOCAL_SYSTEM_TOOLS = {"current_time"}
+LOCAL_TOOL_CATEGORY_LABELS = {
+    "system": "\u7cfb\u7edf",
+    "function_amazon": "Amazon",
+    "function_shop": "TikTok Shop",
+    "function_user": "TikTok \u7528\u6237",
+    "function_video": "TikTok \u89c6\u9891",
+    "function_search": "TikTok \u641c\u7d22",
+    "function_trend": "TikTok \u8d8b\u52bf",
+    "function_music": "TikTok \u97f3\u4e50",
+    "function_analyze": "\u89c6\u9891\u5206\u6790",
+    "function_other": "\u5176\u4ed6\u529f\u80fd",
+}
+MCP_TOOL_LABELS = {
+    "product_rank_top_selling": "\u5546\u54c1\u9500\u91cf\u6392\u884c",
+    "search_category_by_words": "\u5173\u952e\u8bcd\u641c\u7d22\u7c7b\u76ee",
+    "asin_detail": "ASIN \u8be6\u60c5",
+    "keyword_mining": "\u5173\u952e\u8bcd\u6316\u6398",
+}
+
+
+def prefixed_tool_id(domain: str, name: str) -> str:
+    return f"{domain}__{name}"
+
+
+def split_prefixed_tool_id(tool_id: str) -> tuple[str, str]:
+    value = str(tool_id or "")
+    if "__" not in value:
+        return "function", value
+    domain, name = value.split("__", 1)
+    return domain, name
+
+
+def mcp_bridge_request(chat_type: str, method: str, params: dict[str, Any] | None = None) -> Any:
+    port = ensure_mcp_chat_process(chat_type)
+    payload = json.dumps({"jsonrpc": "2.0", "id": str(uuid.uuid4()), "method": method, "params": params or {}}, ensure_ascii=False).encode("utf-8")
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=180)
+    try:
+        conn.request("POST", "/mcp", body=payload, headers={"Content-Type": "application/json"})
+        resp = conn.getresponse()
+        body = resp.read().decode("utf-8", errors="replace")
+        if resp.status >= 400:
+            raise RuntimeError(f"{chat_type} bridge HTTP {resp.status}: {body[:300]}")
+        data = json.loads(body or "{}")
+        if data.get("error"):
+            raise RuntimeError(json.dumps(data["error"], ensure_ascii=False))
+        return data.get("result")
+    finally:
+        conn.close()
+
+
+def list_mcp_bridge_tools(chat_type: str) -> list[dict[str, Any]]:
+    cached = MCP_TOOL_CACHE.get(chat_type)
+    now = time.time()
+    if cached and now - float(cached.get("ts", 0)) < 300:
+        return list(cached.get("tools") or [])
+    result = mcp_bridge_request(chat_type, "tools/list", {})
+    tools = result.get("tools", []) if isinstance(result, dict) else []
+    if not isinstance(tools, list):
+        tools = []
+    MCP_TOOL_CACHE[chat_type] = {"ts": now, "tools": tools}
+    return tools
+
+
+def local_tool_domain(name: str) -> str:
+    return "system" if name in LOCAL_SYSTEM_TOOLS else "function"
+
+
+def local_tool_category(name: str) -> str:
+    if name in LOCAL_SYSTEM_TOOLS:
+        return "system"
+    if name.startswith("amazon_"):
+        return "function_amazon"
+    if name.startswith("tiktok_shop_"):
+        return "function_shop"
+    if name in TIKTOK_USER_TOOLS:
+        return "function_user"
+    if name in TIKTOK_VIDEO_TOOLS:
+        return "function_video"
+    if name in MUSIC_QUERY_TOOLS:
+        return "function_music"
+    if name in TIKTOK_CONTENT_TOOLS:
+        return "function_search"
+    if name in VIDEO_ANALYSIS_TOOLS:
+        return "function_analyze"
+    return "function_other"
+
+
+def mcp_tool_category(name: str) -> str:
+    lowered = str(name or "").lower()
+    if "rank" in lowered or "top" in lowered:
+        return "\u699c\u5355\u6392\u540d"
+    if "category" in lowered or "node" in lowered:
+        return "\u7c7b\u76ee\u7814\u7a76"
+    if "keyword" in lowered or "search" in lowered:
+        return "\u5173\u952e\u8bcd\u7814\u7a76"
+    if "product" in lowered or "asin" in lowered:
+        return "\u5546\u54c1\u7814\u7a76"
+    return "\u901a\u7528\u5de5\u5177"
+
+
+def tool_label(name: str) -> str:
+    return MCP_TOOL_LABELS.get(name, name)
+
+
+def to_model_tool(tool: dict[str, Any], tool_id: str, description: str | None = None) -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": tool_id,
+            "description": description or tool.get("description") or tool.get("name") or tool_id,
+            "parameters": tool.get("parameters") or tool.get("inputSchema") or {"type": "object", "properties": {}, "additionalProperties": True},
+        },
+    }
+
+
+def build_prefixed_model_tools(enabled_tool_ids: set[str] | None) -> list[dict[str, Any]]:
+    selected = enabled_tool_ids
+    model_tools: list[dict[str, Any]] = []
+    for tool in TOOLS:
+        name = str(tool.get("name") or "")
+        domain = local_tool_domain(name)
+        tool_id = prefixed_tool_id(domain, name)
+        if selected is not None and tool_id not in selected:
+            continue
+        model_tools.append(to_model_tool(tool, tool_id))
+    for domain, chat_type in (("sellersprite", "sellersprite"), ("fastmoss", "fastmoss")):
+        try:
+            tools = list_mcp_bridge_tools(chat_type)
+        except Exception as exc:
+            print(f"[CHAT] {chat_type} tools/list failed: {exc}", flush=True)
+            tools = []
+        for tool in tools:
+            name = str(tool.get("name") or "")
+            if not name:
+                continue
+            tool_id = prefixed_tool_id(domain, name)
+            if selected is not None and tool_id not in selected:
+                continue
+            model_tools.append(to_model_tool(tool, tool_id))
+    return model_tools
+
+
+def build_tool_catalog(provider: str) -> dict[str, Any]:
+    provider = normalize_chat_provider(provider)
+    default_domains = CHAT_PROVIDER_DEFAULT_DOMAINS.get(provider, CHAT_PROVIDER_DEFAULT_DOMAINS["home"])
+    domains = [
+        {"id": "system", "label": "\u7cfb\u7edf", "categories": []},
+        {"id": "function", "label": "\u529f\u80fd", "categories": []},
+        {"id": "sellersprite", "label": "\u5356\u5bb6\u7cbe\u7075", "categories": []},
+        {"id": "fastmoss", "label": "FastMoss", "categories": []},
+    ]
+    by_domain = {d["id"]: d for d in domains}
+    cat_maps: dict[str, dict[str, dict[str, Any]]] = {d["id"]: {} for d in domains}
+
+    def add_tool(domain: str, category_id: str, category_label: str, tool: dict[str, Any]) -> None:
+        cats = cat_maps[domain]
+        if category_id not in cats:
+            cats[category_id] = {"id": category_id, "label": category_label, "tools": []}
+            by_domain[domain]["categories"].append(cats[category_id])
+        cats[category_id]["tools"].append(tool)
+
+    for tool in TOOLS:
+        name = str(tool.get("name") or "")
+        domain = local_tool_domain(name)
+        cat_id = local_tool_category(name)
+        add_tool(domain, cat_id, LOCAL_TOOL_CATEGORY_LABELS.get(cat_id, cat_id), {
+            "id": prefixed_tool_id(domain, name),
+            "name": name,
+            "label": tool_label(name),
+            "description": tool.get("description") or "",
+            "defaultSelected": domain in default_domains,
+        })
+    for domain, chat_type in (("sellersprite", "sellersprite"), ("fastmoss", "fastmoss")):
+        try:
+            tools = list_mcp_bridge_tools(chat_type)
+        except Exception as exc:
+            add_tool(domain, "unavailable", "\u5de5\u5177\u5217\u8868\u672a\u8fde\u63a5", {
+                "id": prefixed_tool_id(domain, "__unavailable"),
+                "name": "__unavailable",
+                "label": "\u5de5\u5177\u5217\u8868\u52a0\u8f7d\u5931\u8d25",
+                "description": str(exc),
+                "disabled": True,
+                "defaultSelected": False,
+            })
+            continue
+        for tool in tools:
+            name = str(tool.get("name") or "")
+            if not name:
+                continue
+            cat = mcp_tool_category(name)
+            add_tool(domain, cat, cat, {
+                "id": prefixed_tool_id(domain, name),
+                "name": name,
+                "label": tool_label(name),
+                "description": tool.get("description") or "",
+                "defaultSelected": domain in default_domains,
+            })
+    return {"provider": provider, "domains": domains}
+
+
+def execute_prefixed_tool(tool_id: str, args: dict[str, Any]) -> dict[str, Any]:
+    domain, name = split_prefixed_tool_id(tool_id)
+    started = time.monotonic()
+    try:
+        if domain in {"system", "function"}:
+            return execute_tool(name, args)
+        if domain in {"sellersprite", "fastmoss"}:
+            chat_type = "sellersprite" if domain == "sellersprite" else "fastmoss"
+            result = mcp_bridge_request(chat_type, "tools/call", {"name": name, "arguments": args or {}})
+            return {"ok": True, "elapsed": round(time.monotonic() - started, 3), "data": result}
+        return {"ok": False, "elapsed": round(time.monotonic() - started, 3), "error": f"Unknown tool domain: {domain}"}
+    except Exception as exc:
+        return {"ok": False, "elapsed": round(time.monotonic() - started, 3), "error": str(exc)}
+
+
+def normalize_prefixed_tool_result(tool_id: str, result: dict[str, Any]) -> dict[str, Any]:
+    domain, name = split_prefixed_tool_id(tool_id)
+    normalized = normalize_tool_result(name, result)
+    if isinstance(normalized, dict):
+        normalized.setdefault("tool_domain", domain)
+        normalized.setdefault("tool_name", name)
+    return normalized
+
+
 def tools_for_chat_intent(user_text: str, enabled: set[str] | None) -> tuple[list[dict], dict[str, Any]]:
     route = route_chat_intent(user_text)
     route_tools = route.get("tools")
@@ -3547,104 +3897,75 @@ def tools_for_chat_intent(user_text: str, enabled: set[str] | None) -> tuple[lis
     return get_tools_for_model(selected), route
 
 
-def run_chat_deepseek(session, assistant_msg, user_text: str) -> None:
-    """Background thread: call DeepSeek with tool calling, stream results via SSE."""
+def run_chat_deepseek(session, assistant_msg, user_text: str, provider: str = "home", enabled_tool_ids: set[str] | None = None) -> None:
+    """Background thread: call DeepSeek with provider-scoped tools and stream results via SSE."""
     import requests as req
+
+    provider = normalize_chat_provider(provider)
     api_key = os.getenv("DEEPSEEK_API_KEY", "")
     api_url = os.getenv("DEEPSEEK_API_URL", "https://api.deepseek.com/v1")
     model = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 
     if not api_key:
-        chat_store.update_message(session, assistant_msg, "错误：未配置 DEEPSEEK_API_KEY", status="error")
+        chat_store.update_message(session, assistant_msg, "Missing DEEPSEEK_API_KEY", status="error")
         return
 
+    domain_hint = {
+        "home": "system/function tools are selected by default.",
+        "amazon": "system/sellersprite tools are selected by default.",
+        "fastmoss": "system/fastmoss tools are selected by default.",
+    }.get(provider, "")
     messages = [{"role": "system", "content": (
-        "你是短视频分析助手。使用提供的工具帮助用户分析 Amazon 商品、TikTok 数据和视频内容。"
-        "工具结果已经被整理成可分析摘要；当结果里 enough_data=true 或 suggested_next_action=answer_from_results 时，"
-        "必须基于现有结果直接分析，不要继续调用同类搜索工具。用中文回复，简洁专业。"
-        "当用户询问现在、今天、当前时间、日期、星期或时区时间时，必须先调用 current_time 工具，再基于工具结果回答。"
-        "如果 video_download 或 video_analyze 返回失败，必须明确说明没有完成真实视频下载/画面分析；"
-        "此时只能基于 TikTok 元数据、账号信息或评论做初步判断，不得声称已经看过视频内容。"
+        "You are a short-video and commerce analysis assistant. Reply in Simplified Chinese. "
+        "Only call tools that are exposed in this request. Tool names are provider-prefixed, for example "
+        "system__current_time, function__tiktok_shop_search, sellersprite__asin_detail, "
+        "fastmoss__product_rank_top_selling. The prefix is a hard execution boundary. "
+        f"Current chat provider is {provider}; {domain_hint} "
+        "When tool results contain enough_data=true or suggested_next_action=answer_from_results, answer from the current results instead of repeatedly calling similar tools. "
+        "If a video download or analysis tool fails, say clearly that real video download/frame analysis was not completed."
     )}]
+
     for m in session.messages[-20:]:
         if m.id == assistant_msg.id:
             continue
         tool_calls = m.tool_calls or []
         tool_results = m.tool_results or []
         if tool_calls and len(tool_results) < len(tool_calls):
-            if m.content:
-                messages.append({"role": m.role, "content": m.content})
-            else:
-                messages.append({"role": m.role, "content": "上一次工具调用被中断，结果不完整，已忽略这轮工具上下文。"})
+            messages.append({"role": m.role, "content": m.content or "Previous tool call was interrupted; incomplete tool context is ignored."})
             continue
-
         md = {"role": m.role, "content": m.content}
         if tool_calls:
             md["tool_calls"] = tool_calls
         messages.append(md)
-        # Add tool result messages for each tool call (required by DeepSeek API)
-        if tool_results:
-            for i, tr in enumerate(tool_results):
-                tc = tool_calls[i] if i < len(tool_calls) else None
-                tid = tc["id"] if tc else f"call_{i}"
-                tr_content = json.dumps(normalize_tool_result(tr.get("tool_name", ""), tr.get("result", {})), ensure_ascii=False)
-                messages.append({"role": "tool", "tool_call_id": tid, "content": tr_content})
+        for i, tr in enumerate(tool_results):
+            tc = tool_calls[i] if i < len(tool_calls) else None
+            tid = tc["id"] if tc else f"call_{i}"
+            tool_name = str(tr.get("tool_name") or "")
+            tr_content = json.dumps(normalize_prefixed_tool_result(tool_name, tr.get("result", {})), ensure_ascii=False)
+            messages.append({"role": "tool", "tool_call_id": tid, "content": tr_content})
 
-    tools, intent_route = tools_for_chat_intent(user_text, chat_tool_config)
-    music_link_query = intent_route.get("intent") == "music_link"
-    max_tool_rounds = int(intent_route.get("max_rounds") or 5)
+    tools = build_prefixed_model_tools(enabled_tool_ids)
+    route = route_chat_intent(user_text)
+    max_tool_rounds = int(route.get("max_rounds") or 5)
     messages.append({
         "role": "system",
         "content": (
-            f"Intent route: {intent_route.get('intent')}. Only use the exposed tools. "
-            "If a tool result has enough_data=true or suggested_next_action=answer_from_results, answer directly. "
-            "For product research, compare TikTok Shop demand/sales signals and Amazon product/price/review signals when both are available. "
-            "For TikTok Shop category research that asks for comments/reviews, first use tiktok_shop_search, then use product_id or canonical_url/product URL from those search results to call tiktok_shop_product for selected products; do not call tiktok_shop_reviews alone unless product details are already known. "
-            "For media availability/link questions, if tool results include url, play_url, tiktok_music_url, media_urls, or music_url, paste the usable links directly in the answer."
+            f"Intent route: {route.get('intent')}. Exposed tool count: {len(tools)}. "
+            "Use only the exposed prefixed tools. Do not invent unprefixed tool names. "
+            "For product/category research, use the currently selected domain tools only; do not cross from FastMoss to SellerSprite unless both domains are selected. "
+            "For current date/time questions, call system__current_time first if it is exposed."
         ),
     })
     print(
-        f"[CHAT] intent={intent_route.get('intent')} tools={len(tools) if tools else 0} max_rounds={max_tool_rounds}",
+        f"[CHAT] provider={provider} enabled={len(enabled_tool_ids or [])} tools={len(tools)} max_rounds={max_tool_rounds}",
         flush=True,
     )
-    if music_link_query:
-        music_query = music_link_search_query(user_text)
-        tool_call = {
-            "id": f"call_music_{uuid.uuid4().hex[:12]}",
-            "type": "function",
-            "function": {
-                "name": "tiktok_search_music",
-                "arguments": json.dumps({"query": music_query, "count": 10}, ensure_ascii=False),
-            },
-        }
-        assistant_msg.tool_calls = [tool_call]
-        assistant_msg.tool_results = []
-        chat_store.broadcast(
-            session.id,
-            "update",
-            {"messageId": assistant_msg.id, "tool_calls": assistant_msg.tool_calls, "tool_results": []},
-        )
-        result = execute_tool("tiktok_search_music", {"query": music_query, "count": 10})
-        normalized_result = normalize_tool_result("tiktok_search_music", result)
-        assistant_msg.tool_results.append({"tool_name": "tiktok_search_music", "result": normalized_result})
-        messages.append({"role": "assistant", "content": "", "tool_calls": [tool_call]})
-        messages.append({"role": "tool", "tool_call_id": tool_call["id"], "content": json.dumps(normalized_result, ensure_ascii=False)})
-        chat_store.broadcast(
-            session.id,
-            "update",
-            {"messageId": assistant_msg.id, "tool_calls": assistant_msg.tool_calls, "tool_results": assistant_msg.tool_results},
-        )
-        tools = []
-        max_tool_rounds = 1
-        messages.append({
-            "role": "system",
-            "content": "用户只是在问音乐/音频链接。必须基于刚才的 tiktok_search_music 工具结果回答，直接列出最匹配音乐的 play_url 和 TikTok music URL；不要说没有能力提供链接，除非工具结果里确实没有 URL。",
-        })
+
     for _ in range(max_tool_rounds):
         try:
             payload = {"model": model, "messages": messages, "tools": tools or None, "temperature": 0.2}
             payload_str = json.dumps(payload, ensure_ascii=False)
-            print(f"[CHAT] DeepSeek request: {len(messages)} msgs, {len(payload_str)} bytes, tools={len(tools) if tools else 0}", flush=True)
+            print(f"[CHAT] DeepSeek request: {len(messages)} msgs, {len(payload_str)} bytes, tools={len(tools)}", flush=True)
             request_started = time.monotonic()
             resp = req.post(
                 api_url.rstrip("/") + "/chat/completions",
@@ -3664,58 +3985,49 @@ def run_chat_deepseek(session, assistant_msg, user_text: str) -> None:
                     "model": model,
                     "payload_sha256": __import__("hashlib").sha256(payload_str.encode("utf-8")).hexdigest(),
                     "message_count": len(messages),
-                    "tool_count": len(tools) if tools else 0,
+                    "tool_count": len(tools),
+                    "provider": provider,
                 },
                 body,
                 elapsed_ms=int((time.monotonic() - request_started) * 1000),
             )
-            choice = body["choices"][0]
-            msg = choice["message"]
-
+            msg = body["choices"][0]["message"]
             if msg.get("tool_calls"):
                 tool_calls = msg["tool_calls"]
                 assistant_msg.tool_calls = list(assistant_msg.tool_calls or []) + tool_calls
-                messages.append({"role": "assistant", "content": msg.get("content") or "", "tool_calls": tool_calls})
                 assistant_msg.tool_results = list(assistant_msg.tool_results or [])
+                messages.append({"role": "assistant", "content": msg.get("content") or "", "tool_calls": tool_calls})
                 chat_store.broadcast(session.id, "update", {"messageId": assistant_msg.id, "tool_calls": assistant_msg.tool_calls, "tool_results": assistant_msg.tool_results})
 
                 for tc in tool_calls:
                     fn_name = tc["function"]["name"]
                     try:
-                        fn_args = json.loads(tc["function"]["arguments"])
+                        fn_args = json.loads(tc["function"].get("arguments") or "{}")
                     except json.JSONDecodeError:
                         fn_args = {}
-                    result = execute_tool(fn_name, fn_args)
-                    normalized_result = normalize_tool_result(fn_name, result)
+                    result = execute_prefixed_tool(fn_name, fn_args)
+                    normalized_result = normalize_prefixed_tool_result(fn_name, result)
                     messages.append({"role": "tool", "tool_call_id": tc["id"], "content": json.dumps(normalized_result, ensure_ascii=False)})
                     assistant_msg.tool_results.append({"tool_name": fn_name, "result": normalized_result})
                     chat_store.broadcast(session.id, "update", {"messageId": assistant_msg.id, "tool_calls": assistant_msg.tool_calls, "tool_results": assistant_msg.tool_results})
-                if music_link_query and any(
-                    isinstance(tr.get("result"), dict) and tr["result"].get("enough_data")
-                    for tr in assistant_msg.tool_results
-                ):
-                    tools = []
-                    messages.append({
-                        "role": "system",
-                        "content": "用户只是在问音乐/音频链接。已有音乐搜索结果后必须直接回答，列出最匹配的音乐名称、作者、sound_id、play_url 或 TikTok music URL；不要再调用任何工具。",
-                    })
-            else:
-                content = msg.get("content", "")
-                chat_store.update_message(session, assistant_msg, content, status="done")
-                chat_store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": content})
-                return
+                continue
+
+            content = msg.get("content", "")
+            chat_store.update_message(session, assistant_msg, content, status="done")
+            chat_store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": content})
+            return
         except Exception as exc:
             err_text = str(exc)
-            if hasattr(exc, 'response'):
+            if hasattr(exc, "response"):
                 try:
                     err_text += " | body: " + exc.response.text[:300]
                 except Exception:
                     pass
             print(f"[CHAT] DeepSeek error: {err_text}", flush=True)
-            chat_store.update_message(session, assistant_msg, f"请求失败：{exc}", status="error")
+            chat_store.update_message(session, assistant_msg, f"Request failed: {exc}", status="error")
             return
 
-    chat_store.update_message(session, assistant_msg, "工具调用次数过多，请缩小问题范围。", status="error")
+    chat_store.update_message(session, assistant_msg, "Too many tool calls; narrow the question.", status="error")
 
 
 def execute_queue_job(filename: str, job_type: str, progress: dict) -> None:
@@ -4039,36 +4351,43 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path == "/amazon" or parsed.path.startswith("/amazon/"):
+        if parsed.path == "/amazon":
+            return serve_chat_template(self, "amazon", parsed.path)
+        if parsed.path == "/fastmoss":
+            return serve_chat_template(self, "fastmoss", parsed.path)
+        if parsed.path.startswith("/amazon/"):
             return proxy_mcp_chat(self, "sellersprite")
-        if parsed.path == "/fastmoss" or parsed.path.startswith("/fastmoss/"):
+        if parsed.path.startswith("/fastmoss/"):
             return proxy_mcp_chat(self, "fastmoss")
         if parsed.path == "/" or parsed.path == "/chat":
-            chat_html = (SCRIPTS_DIR / "static" / "chat.html").read_text(encoding="utf-8")
-            return text_response(self, HTTPStatus.OK, chat_html, "text/html; charset=utf-8")
+            return serve_chat_template(self, "home", parsed.path)
         if parsed.path == "/report":
             report_html = (SCRIPTS_DIR / "static" / "report.html").read_text(encoding="utf-8")
-            return text_response(self, HTTPStatus.OK, report_html, "text/html; charset=utf-8")
+            return text_response(self, HTTPStatus.OK, inject_unified_nav(report_html, parsed.path), "text/html; charset=utf-8")
         if parsed.path == "/report/player":
             player_html = (SCRIPTS_DIR / "static" / "report_player.html").read_text(encoding="utf-8")
-            return text_response(self, HTTPStatus.OK, player_html, "text/html; charset=utf-8")
+            return text_response(self, HTTPStatus.OK, inject_unified_nav(player_html, parsed.path), "text/html; charset=utf-8")
         if parsed.path == "/extract":
             template = INDEX_HTML_PATH.read_text(encoding="utf-8") if INDEX_HTML_PATH.is_file() else INDEX_HTML
             html = template.replace(
                 "__DEFAULT_ANALYSIS_MODE__",
                 os.getenv("ANALYSIS_MODE", "analyzer"),
             )
-            return text_response(self, HTTPStatus.OK, html, "text/html; charset=utf-8")
+            return text_response(self, HTTPStatus.OK, inject_unified_nav(html, parsed.path), "text/html; charset=utf-8")
         if parsed.path == "/shop":
-            return text_response(self, HTTPStatus.OK, SHOP_HTML, "text/html; charset=utf-8")
+            return text_response(self, HTTPStatus.OK, inject_unified_nav(SHOP_HTML, parsed.path), "text/html; charset=utf-8")
         if parsed.path == "/metrics":
-            return text_response(self, HTTPStatus.OK, METRICS_HTML, "text/html; charset=utf-8")
+            return text_response(self, HTTPStatus.OK, inject_unified_nav(METRICS_HTML, parsed.path), "text/html; charset=utf-8")
         if parsed.path.startswith("/assets/"):
             return self.serve_static_asset(parsed.path.removeprefix("/assets/"))
         if parsed.path == "/api/prompt":
             return json_response(self, HTTPStatus.OK, {"prompt": load_prompt(), "feedback_prompt": load_feedback_prompt()})
         if parsed.path == "/api/chat/sessions":
-            return json_response(self, HTTPStatus.OK, chat_store.list_sessions())
+            provider = normalize_chat_provider(parse_qs(parsed.query).get("provider", ["home"])[0])
+            return json_response(self, HTTPStatus.OK, list_public_chat_sessions(provider))
+        if parsed.path == "/api/chat/tool-catalog":
+            provider = normalize_chat_provider(parse_qs(parsed.query).get("provider", ["home"])[0])
+            return json_response(self, HTTPStatus.OK, build_tool_catalog(provider))
         if parsed.path == "/api/chat/tools":
             return json_response(self, HTTPStatus.OK, list_tools())
         if parsed.path == "/api/chat/tool-config":
@@ -4076,10 +4395,12 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path.startswith("/api/chat/sessions/") and "/messages" in parsed.path:
             parts = parsed.path.split("/")
             sid = parts[4] if len(parts) > 4 else ""
-            session = chat_store.get_session(sid)
+            qs = parse_qs(parsed.query)
+            provider = normalize_chat_provider(qs.get("provider", ["home"])[0])
+            stored_sid = provider_session_exists(provider, sid)
+            session = chat_store.get_session(stored_sid) if stored_sid else None
             if not session:
                 return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Session not found"})
-            qs = parse_qs(parsed.query)
             def public_message(m: Message) -> dict[str, Any]:
                 return {
                     "id": m.id,
@@ -4135,10 +4456,16 @@ class Handler(BaseHTTPRequestHandler):
                 "loaded_bytes": loaded_bytes,
             })
         if parsed.path == "/api/chat/events":
-            return self.stream_chat_events(parse_qs(parsed.query).get("session", [""])[0])
+            qs = parse_qs(parsed.query)
+            provider = normalize_chat_provider(qs.get("provider", ["home"])[0])
+            sid = qs.get("session", [""])[0]
+            return self.stream_chat_events(chat_session_key(provider, sid))
         if parsed.path.startswith("/api/chat/sessions/") and parsed.path.endswith("/delete"):
+            qs = parse_qs(parsed.query)
+            provider = normalize_chat_provider(qs.get("provider", ["home"])[0])
             sid = parsed.path.split("/")[4]
-            deleted = chat_store.delete_session(sid)
+            stored_sid = provider_session_exists(provider, sid) or chat_session_key(provider, sid)
+            deleted = chat_store.delete_session(stored_sid)
             return json_response(self, HTTPStatus.OK, {"deleted": deleted})
         if parsed.path == "/api/network-check":
             return json_response(self, HTTPStatus.OK, public_network_check())
@@ -5143,14 +5470,18 @@ class Handler(BaseHTTPRequestHandler):
         body = self.rfile.read(content_length)
         try:
             payload = json.loads(body.decode("utf-8") or "{}")
+            provider = normalize_chat_provider(payload.get("provider"))
             session_id = str(payload.get("sessionId", "default")).strip() or "default"
             text = str(payload.get("message", "")).strip()
+            enabled_raw = payload.get("enabledToolIds")
+            enabled_tool_ids = set(str(x) for x in enabled_raw if isinstance(x, str)) if isinstance(enabled_raw, list) else set()
             if not text:
-                return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "消息不能为空"})
+                return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "message is required"})
         except (json.JSONDecodeError, ValueError) as exc:
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
-        session = chat_store.get_or_create(session_id)
+        stored_session_id = chat_session_key(provider, session_id)
+        session = chat_store.get_or_create(stored_session_id)
         user_msg = Message(id=str(uuid.uuid4()), role="user", content=text)
         chat_store.add_message(session, user_msg)
         if not session.title:
@@ -5159,10 +5490,11 @@ class Handler(BaseHTTPRequestHandler):
         assistant_msg = Message(id=str(uuid.uuid4()), role="assistant", content="", status="pending")
         chat_store.add_message(session, assistant_msg)
 
-        thread = threading.Thread(target=run_chat_deepseek, args=(session, assistant_msg, text), daemon=True)
+        thread = threading.Thread(target=run_chat_deepseek, args=(session, assistant_msg, text, provider, enabled_tool_ids), daemon=True)
         thread.start()
         return json_response(self, HTTPStatus.ACCEPTED, {
             "sessionId": session_id,
+            "provider": provider,
             "userMessage": {"id": user_msg.id, "role": "user", "content": user_msg.content, "status": user_msg.status, "created_at": user_msg.created_at},
             "message": {"id": assistant_msg.id, "role": "assistant", "content": "", "status": "pending"},
         })
@@ -5172,6 +5504,7 @@ class Handler(BaseHTTPRequestHandler):
         body = self.rfile.read(content_length)
         try:
             payload = json.loads(body.decode("utf-8") or "{}")
+            provider = normalize_chat_provider(payload.get("provider"))
             session_id = str(payload.get("sessionId", "")).strip()
             message_id = str(payload.get("messageId", "")).strip()
             if not session_id or not message_id:
@@ -5179,7 +5512,8 @@ class Handler(BaseHTTPRequestHandler):
         except (json.JSONDecodeError, ValueError) as exc:
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
-        session = chat_store.get_session(session_id)
+        stored_session_id = provider_session_exists(provider, session_id) or chat_session_key(provider, session_id)
+        session = chat_store.get_session(stored_session_id)
         if not session:
             return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Session not found"})
 
@@ -5404,9 +5738,17 @@ METRICS_HTML = (SCRIPTS_DIR / "static" / "metrics.html").read_text(encoding="utf
 INDEX_HTML = '<!doctype html>\n<html lang="zh-CN">\n<head>\n<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">\n<title>Short Video Analyzer</title>\n<style>\n:root{--bg:#eef3f8;--card:#fff;--soft:#f7f9fc;--line:#d7e0ec;--text:#142033;--muted:#607089;--blue:#2563eb;--blue2:#1d4ed8;--blueSoft:#eaf1ff;--red:#b42318;--green:#087443;--dark:#0d1628;--shadow:0 18px 45px rgba(15,23,42,.10)}*{box-sizing:border-box}body{margin:0;background:linear-gradient(135deg,rgba(37,99,235,.10),transparent 34%),var(--bg);color:var(--text);font-family:"Segoe UI",system-ui,sans-serif}header{height:66px;display:flex;align-items:center;justify-content:space-between;padding:0 28px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.92);position:sticky;top:0;z-index:5}h1{font-size:20px;margin:0}.page{display:none;min-height:calc(100vh - 66px);padding:18px}.page.active{display:block}.grid{display:grid;grid-template-columns:minmax(320px,430px) minmax(0,1fr);gap:18px}.detail-grid{display:grid;grid-template-columns:minmax(260px,360px) minmax(0,1fr);gap:18px;height:calc(100vh - 102px)}.card{border:1px solid var(--line);border-radius:12px;background:var(--card);box-shadow:var(--shadow);overflow:hidden}.stack{display:grid;gap:16px;padding:18px}.title{font-weight:800;margin:0 0 10px}label{display:block;margin-bottom:7px;color:var(--muted);font-size:13px;font-weight:650}input,select,textarea{width:100%;border:1px solid var(--line);border-radius:9px;background:#fff;color:var(--text);outline:none}input,select{min-height:40px;padding:8px 11px}textarea{min-height:170px;padding:10px 12px;resize:vertical;font:13px/1.55 Consolas,monospace}button{min-height:40px;border:1px solid var(--blue);border-radius:9px;background:var(--blue);color:#fff;padding:8px 13px;font-weight:750;cursor:pointer;box-shadow:0 8px 18px rgba(37,99,235,.18)}button.secondary{background:#fff;color:var(--blue);box-shadow:none}button.danger{background:#fff;border-color:#fecaca;color:var(--red);box-shadow:none}button.small{min-height:32px;padding:5px 10px;font-size:13px}button:disabled{opacity:.55;cursor:not-allowed}.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.muted{color:var(--muted)}.status{min-height:42px;border:1px solid var(--line);border-radius:9px;padding:10px 12px;background:var(--soft);color:var(--muted);font-size:13px;overflow-wrap:anywhere}.status.ok{background:#ecfdf3;color:var(--green)}.status.bad{background:#fff1f2;color:var(--red)}.check{display:flex;align-items:center;gap:9px;color:var(--text);font-size:14px;font-weight:650}.check input{width:auto;min-height:auto}.prompt{display:none}.prompt.active{display:block}.log-wrap{display:grid;grid-template-rows:auto minmax(360px,1fr);min-height:calc(100vh - 102px)}.head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 18px;border-bottom:1px solid var(--line);background:#fff}.head h2{margin:0;font-size:18px}.log{margin:0;overflow:auto;padding:18px;background:var(--dark);color:#e6edf7;font:13px/1.7 Consolas,monospace;white-space:pre-wrap;word-break:break-word}.files{display:grid;gap:8px;max-height:260px;overflow:auto}.detail-files{padding:14px;overflow:auto}.file{display:flex;justify-content:space-between;align-items:center;gap:12px;border:1px solid var(--line);border-radius:9px;padding:10px;background:#fff;cursor:pointer}.file.selected{border-color:var(--blue);background:var(--blueSoft)}.file-name{font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.file-meta{min-width:0;display:grid;gap:4px}.file-actions{display:flex;gap:6px}.tabs{display:flex;gap:8px;padding:12px 14px;border-bottom:1px solid var(--line)}.tab{background:#fff;color:var(--text);border-color:var(--line);box-shadow:none}.tab.active{color:var(--blue);border-color:var(--blue);background:var(--blueSoft)}.toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 14px;border-bottom:1px solid var(--line);background:var(--soft)}.out{min-height:0;overflow:auto;padding:22px 24px;border-left:4px solid rgba(37,99,235,.22);white-space:pre-wrap;word-break:break-word;line-height:1.75}.out.raw{background:var(--dark);color:#e6edf7;font-family:Consolas,monospace}.report{display:grid;gap:14px;max-width:1180px}.hero,.section,.metric{border:1px solid var(--line);border-radius:12px;background:#fff}.hero{padding:18px 20px;background:linear-gradient(135deg,rgba(37,99,235,.10),transparent 42%),#fff}.hero h2{margin:4px 0;font-size:22px}.hero p{margin:0;color:var(--muted)}.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px}.metric{padding:10px 12px}.metric span{display:block;color:var(--muted);font-size:12px;font-weight:750}.metric strong{display:block;margin-top:5px}.section h3{margin:0;padding:12px 16px;border-bottom:1px solid var(--line);background:var(--soft);font-size:15px}.section div{padding:14px 16px}.drop{position:fixed;inset:14px;z-index:20;display:none;align-items:center;justify-content:center;border:2px dashed rgba(37,99,235,.55);border-radius:18px;background:rgba(239,246,255,.86);color:var(--blue2);pointer-events:none}.drop.active{display:flex}.drop>div{padding:26px 30px;border-radius:14px;background:#fff;text-align:center}@media(max-width:900px){.grid,.detail-grid{grid-template-columns:1fr;height:auto}.log-wrap{min-height:520px}.card.result{height:72vh;min-height:520px}}\n</style>\n</head>\n<body>\n<div id="drop" class="drop"><div><strong>??????</strong><br><span class="muted">??????????</span></div></div>\n<header><h1>Short Video Analyzer</h1><div id="current" class="muted">??</div></header>\n<main id="home" class="page active"><div class="grid"><section class="card stack">\n<div><p class="title">TikTok / ??????</p><label>??????</label><input id="url" type="url" placeholder="https://www.tiktok.com/@user/video/... ? https://v.douyin.com/..."></div><div class="row"><button id="download">????</button><button id="network" class="secondary">??????</button></div>\n<div><p class="title">??????</p><label>??? videos/</label><input id="videoFile" type="file" accept="video/*" multiple></div><div class="row"><button id="upload">??</button><button id="refresh" class="secondary">????</button></div>\n<div><p class="title">?????</p><div id="homeFiles" class="files"></div></div>\n<div><p class="title">????</p><label>????</label><select id="mode"><option value="analyzer">????????video-analyzer?</option><option value="direct_video">?????????Qwen?</option></select></div><button id="promptBtn" class="secondary">???????</button><div id="promptPanel" class="prompt"><label>?????</label><textarea id="prompt"></textarea></div>\n<label class="check"><input id="autoPost" type="checkbox">???? DeepSeek ??</label><div class="row"><button id="analyze" disabled>????</button><button id="post" class="secondary" disabled>????????</button></div><div id="status" class="status">?????????????</div>\n</section><section class="card log-wrap"><div class="head"><div><h2>????</h2><div class="muted">?????????????????????</div></div><button id="clearLog" class="secondary small">????</button></div><pre id="log" class="log">????...</pre></section></div></main>\n<main id="detail" class="page"><div class="detail-grid"><section class="card" style="display:grid;grid-template-rows:auto 1fr"><div class="head" style="display:grid"><button id="back" class="secondary">????</button><div><h2>?????</h2><div class="muted">???????</div></div></div><div id="detailFiles" class="detail-files files"></div></section><section class="card result" style="display:grid;grid-template-rows:auto auto minmax(0,1fr)"><div class="tabs"><button class="tab active" data-tab="content">????????</button><button class="tab" data-tab="audit">????????</button></div><div class="toolbar"><b id="outTitle">Qwen ?????DeepSeek ??</b><div class="row"><button id="source" class="secondary small">????</button><button id="json" class="secondary small">???? JSON</button></div></div><div id="out" class="out">{}</div></section></div></main>\n<script>\nwindow.DEFAULT_ANALYSIS_MODE="__DEFAULT_ANALYSIS_MODE__";\nconst S={file:"",files:[],result:null,job:null,tab:"content",raw:false,has:false,logs:[]};\nconst $=id=>document.getElementById(id), home=$(\'home\'), detail=$(\'detail\'), current=$(\'current\'), status=$(\'status\'), log=$(\'log\'), out=$(\'out\'); let de=null, je=null, drag=0;\nfunction esc(v){return String(v??\'\').replace(/[&<>"\']/g,c=>({\'&\':\'&amp;\',\'<\':\'&lt;\',\'>\':\'&gt;\',\'"\':\'&quot;\',"\'":\'&#39;\'}[c]))} function pretty(v){return v==null?\'{}\':typeof v===\'string\'?v:JSON.stringify(v,null,2)} function clean(v){let s=typeof v===\'string\'?v:(v&&typeof v.response===\'string\'?v.response:pretty(v));return s.replace(/^```(?:json)?\\s*/i,\'\').replace(/\\s*```$/i,\'\').trim()} function bytes(n){return `${Math.round(Number(n||0)/1024/1024*10)/10} MB`} function setStatus(m,k=\'\'){status.className=\'status \'+k;status.textContent=m} function addLog(m){S.logs.push(`[${new Date().toLocaleTimeString()}] ${m}`);if(S.logs.length>500)S.logs.splice(0,S.logs.length-500);log.textContent=S.logs.join(\'\\n\')||\'????...\';log.scrollTop=log.scrollHeight}\nfunction metric(k,v){return v==null||v===\'\'?\'\':`<div class="metric"><span>${esc(k)}</span><strong>${esc(v)}</strong></div>`} function sec(t,b){b=clean(b);return b?`<section class="section"><h3>${esc(t)}</h3><div>${esc(b)}</div></section>`:\'\'} function list(t,a,map=x=>x){if(!Array.isArray(a)||!a.length)return\'\';return `<section class="section"><h3>${esc(t)}</h3><div>${a.map((x,i)=>`- ${esc(clean(map(x,i)))}`).join(\'\\n\')}</div></section>`} function has(r){return !!(r&&(r.analysis||r.analysis_zh||r.audit_result||r.audit_result_zh))}\nfunction extraction(v){if(!v||typeof v!==\'object\')return pretty(v);const md=v.metadata||{},tr=v.transcript||{},u=v.usage||{},tl=Array.isArray(v.timeline)?v.timeline:[],ve=Array.isArray(v.visual_evidence)?v.visual_evidence:[],fa=Array.isArray(v.frame_analyses)?v.frame_analyses:[];return `<article class="report"><div class="hero"><small>Qwen Video Extraction</small><h2>??????</h2><p>${esc(clean(v.summary)||\'?????????????????????\')}</p></div><div class="metrics">${metric(\'????\',v.processing_mode)}${metric(\'????\',v.vision_model||md.model)}${metric(\'????\',v.audio_mode)}${metric(\'????\',md.frames_processed||md.frames_extracted)}${metric(\'????\',tr.language||md.audio_language)}${metric(\'?? Tokens\',u.input_tokens)}${metric(\'?? Tokens\',u.output_tokens)}${metric(\'? Tokens\',u.total_tokens)}${metric(\'API ??\',u.api_calls)}${metric(\'???\',u.elapsed_seconds==null?\'\':u.elapsed_seconds+\'s\')}</div>${sec(\'????\',v.summary)}${sec(\'??????\',v.video_description)}${list(\'???\',tl,x=>typeof x===\'string\'?x:`${x.time_range||x.timestamp||\'\'}\\n${x.visual||\'\'}\\n${x.audio||\'\'}`)}${list(\'????\',ve,x=>typeof x===\'string\'?x:(x.description||x.visual||pretty(x)))}${list(\'??????\',fa,(x,i)=>`[? ${i+1}]\\n${clean(x)}`)}${sec(\'????\',tr.text||\'?????\')}</article>`}\nfunction audit(v){if(!v||typeof v!==\'object\')return pretty(v);return `<article class="report"><div class="hero"><small>DeepSeek Audit</small><h2>??????</h2><p>${esc(v.summary||\'?????????????????\')}</p></div><div class="metrics">${metric(\'????\',v.risk_level)}${metric(\'????\',v.recommended_action)}${metric(\'????\',v.publish_suggestion)}</div>${sec(\'????\',v.summary)}${sec(\'????\',v.content_overview)}${sec(\'????\',v.transcript_notes)}${sec(\'????\',v.visual_notes)}${list(\'????\',v.risk_reasons)}${list(\'???\',v.issues)}</article>`}\nfunction renderOut(r){S.result=r;out.className=S.raw?\'out raw\':\'out\';let v;if(S.tab===\'content\'){v=S.raw?r?.analysis:(r?.analysis_zh||r?.analysis);$(\'json\').style.display=\'inline-flex\';$(\'outTitle\').textContent=S.raw?\'Qwen ??????? JSON\':\'Qwen ?????DeepSeek ??\';S.raw?out.textContent=pretty(v):out.innerHTML=extraction(v)}else{v=S.raw?r?.audit_result:(r?.audit_result_zh||r?.audit_result);$(\'json\').style.display=\'none\';$(\'outTitle\').textContent=S.raw?\'DeepSeek ???????\':\'DeepSeek ???????\';S.raw?out.textContent=pretty(v):out.innerHTML=audit(v)}$(\'source\').textContent=S.raw?\'????\':\'????\'}\nfunction buttons(){ $(\'analyze\').textContent=S.has?\'????\':\'????\'; $(\'analyze\').disabled=!S.file; $(\'post\').disabled=!S.file||!S.has||!!S.job }\nfunction renderFiles(){for(const [id,detailMode] of [[\'homeFiles\',false],[\'detailFiles\',true]]){const box=$(id);box.innerHTML=\'\';if(!S.files.length){box.innerHTML=\'<div class="muted">videos/ ??????</div>\';continue}S.files.forEach(f=>{const el=document.createElement(\'div\');el.className=\'file\'+(f.name===S.file?\' selected\':\'\');el.innerHTML=`<span class="file-meta"><span class="file-name">${esc(f.name)}</span><span class="muted">${bytes(f.size)}</span></span>${detailMode?\'\':`<span class="file-actions"><button class="secondary small">??</button><button class="danger small">??</button></span>`}`;el.onclick=()=>toDetail(f.name);if(!detailMode){const b=el.querySelectorAll(\'button\');b[0].onclick=e=>{e.stopPropagation();open(\'/video/\'+encodeURIComponent(f.name),\'_blank\',\'noopener\')};b[1].onclick=e=>{e.stopPropagation();delFile(f.name)}}box.appendChild(el)})}buttons()}\nfunction view(v,f=\'\'){home.classList.toggle(\'active\',v===\'home\');detail.classList.toggle(\'active\',v===\'detail\');current.textContent=v===\'detail\'&&f?f:\'??\'} function toHome(){location.hash=\'\';view(\'home\')} function toDetail(f){location.hash=\'detail=\'+encodeURIComponent(f)} function route(){const h=location.hash.slice(1);if(h.startsWith(\'detail=\')){select(decodeURIComponent(h.slice(7)),false);view(\'detail\',S.file)}else{view(\'home\');renderFiles()}}\nasync function refresh(){const r=await fetch(\'/api/files\');S.files=await r.json();if(!Array.isArray(S.files))S.files=[];renderFiles()} async function loadResult(name){const r=await fetch(\'/api/result?filename=\'+encodeURIComponent(name)),j=await r.json();if(r.ok&&has(j)){S.result=j;S.has=true;const p=j.analysis&&j.analysis.metadata&&j.analysis.metadata.analysis_prompt;if(p)$(\'prompt\').value=p;renderOut(j);setStatus(name+\': ???????\',\'ok\')}else{S.result=null;S.has=false;out.textContent=\'{}\';setStatus(name+\': ????\')}buttons()} function select(name,openDetail=true){S.file=name;current.textContent=name||\'??\';S.has=false;renderFiles();if(name)loadResult(name).catch(e=>setStatus(e.message,\'bad\'));if(openDetail&&name)toDetail(name)}\nasync function upload(files=null){const input=$(\'videoFile\'),arr=Array.from(files||input.files||[]);if(!arr.length)return setStatus(\'????????????\',\'bad\');const bad=arr.filter(f=>!f.type.startsWith(\'video/\'));if(bad.length){addLog(\'??????????????\'+bad.map(f=>f.name).join(\', \'));return setStatus(\'????????\',\'bad\')}const form=new FormData();arr.forEach(f=>form.append(\'video\',f));addLog(`???? ${arr.length} ????`);setStatus(\'????...\');const r=await fetch(\'/api/upload\',{method:\'POST\',body:form}),p=await r.json(),ok=Array.isArray(p.files)?p.files:[],err=Array.isArray(p.errors)?p.errors:[];ok.forEach(f=>addLog(`?????${f.filename} (${bytes(f.size)})`));err.forEach(e=>addLog(`?????${e.filename||\'????\'} - ${e.error||\'????\'}`));if(!r.ok&&!ok.length)return setStatus(p.error||\'????\',\'bad\');setStatus(`??????? ${ok.length} ???? ${err.length} ?`,err.length?\'bad\':\'ok\');input.value=\'\';await refresh();if(ok.length)select(ok.at(-1).filename,false)}\nasync function delFile(name){if(!confirm(`?? ${name} ?????????`))return;const r=await fetch(\'/api/delete\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({filename:name})}),p=await r.json();if(!r.ok)return setStatus(p.error||\'????\',\'bad\');addLog(\'?????\'+name);if(S.file===name){S.file=\'\';S.result=null;S.has=false;toHome()}await refresh()}\nfunction closeD(){if(de){de.close();de=null}}function closeJ(){if(je){je.close();je=null}} function lastLog(j){return j&&Array.isArray(j.log)&&j.log.length?j.log.at(-1):\'\'}\nasync function startDownload(){const url=$(\'url\').value.trim();if(!url)return setStatus(\'??? TikTok ????????\',\'bad\');$(\'download\').disabled=true;addLog(\'???????\'+url);const r=await fetch(\'/api/download\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({url})}),j=await r.json();if(!r.ok){$(\'download\').disabled=false;return setStatus(j.error||\'????????\',\'bad\')}closeD();de=new EventSource(\'/api/download-events?id=\'+encodeURIComponent(j.id));de.onmessage=async e=>{const j=JSON.parse(e.data),l=lastLog(j);if(l)addLog(\'???\'+l);if(j.status===\'running\'||j.status===\'queued\')return setStatus(`??????${j.status}`);closeD();$(\'download\').disabled=false;if(j.status!==\'complete\')return setStatus(\'???????\'+(j.error||\'????\'),\'bad\');setStatus(j.filename+\': ????\',\'ok\');$(\'url\').value=\'\';await refresh();select(j.filename,false)};de.onerror=()=>{closeD();$(\'download\').disabled=false;setStatus(\'????????\',\'bad\')}}\nasync function checkNet(){$(\'network\').disabled=true;setStatus(\'??????????????...\');try{const r=await fetch(\'/api/network-check\'),p=await r.json();const fmt=x=>!x?\'???\':(!x.ok?\'???\'+(x.error||\'????\'):`${x.ip||\'?? IP\'} / ${x.country_name||x.country||\'????\'} / ${x.is_us?\'????\':\'?????\'}`);addLog(\'???\'+fmt(p.direct));addLog(\'???\'+fmt(p.proxy));setStatus(`???${fmt(p.direct)}????${fmt(p.proxy)}`,p.proxy&&p.proxy.ok&&p.proxy.is_us?\'ok\':\'bad\')}catch(e){setStatus(e.message,\'bad\')}finally{$(\'network\').disabled=false}}\nasync function analyze(){if(!S.file)return;$(\'analyze\').disabled=true;$(\'post\').disabled=true;const reset=S.has;addLog(`${S.file}: ${reset?\'??????????\':\'??????\'}`);const r=await fetch(\'/api/analyze\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({filename:S.file,analysis_mode:$(\'mode\').value,analysis_prompt:$(\'prompt\').value,postprocess:$(\'autoPost\').checked,reset_output:reset})}),j=await r.json();if(!r.ok){setStatus(j.error||\'????\',\'bad\');return buttons()}S.job=j.id;openJob(j.id)}\nasync function postprocess(){if(!S.file||!S.has)return;const r=await fetch(\'/api/postprocess\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({filename:S.file})}),j=await r.json();if(!r.ok)return setStatus(j.error||\'????\',\'bad\');S.tab=\'audit\';document.querySelectorAll(\'.tab\').forEach(x=>x.classList.toggle(\'active\',x.dataset.tab===\'audit\'));S.job=j.id;openJob(j.id)}\nfunction openJob(id){closeJ();je=new EventSource(\'/api/job-events?id=\'+encodeURIComponent(id));je.onmessage=e=>{const j=JSON.parse(e.data),l=lastLog(j);if(l)addLog(`${j.filename}: ${l}`);S.result=j;if(location.hash.startsWith(\'#detail=\'))renderOut(j);if(j.status===\'running\'||j.status===\'queued\')return setStatus(`${j.filename}: ${j.status}`);closeJ();S.job=null;S.has=j.status===\'complete\'||has(j);buttons();setStatus(j.status===\'complete\'?`${j.filename}: ??`:`${j.filename}: ${j.error||\'??\'}`,j.status===\'complete\'?\'ok\':\'bad\')};je.onerror=()=>{closeJ();buttons();setStatus(\'????????\',\'bad\')}}\nfunction downloadJson(){const a=S.result&&S.result.analysis;if(!a)return setStatus(\'??????? analysis.json?\',\'bad\');const name=`${S.file||\'video\'}.analysis.json`,blob=new Blob([JSON.stringify(a,null,2)],{type:\'application/json;charset=utf-8\'}),url=URL.createObjectURL(blob),link=document.createElement(\'a\');link.href=url;link.download=name;document.body.appendChild(link);link.click();link.remove();URL.revokeObjectURL(url);addLog(\'???? JSON?\'+name)}\n$(\'download\').onclick=startDownload;$(\'network\').onclick=checkNet;$(\'upload\').onclick=()=>upload();$(\'refresh\').onclick=()=>refresh().then(()=>addLog(\'????????\'));$(\'analyze\').onclick=analyze;$(\'post\').onclick=postprocess;$(\'back\').onclick=toHome;$(\'clearLog\').onclick=()=>{S.logs=[];log.textContent=\'????...\'};$(\'source\').onclick=()=>{S.raw=!S.raw;renderOut(S.result)};$(\'json\').onclick=downloadJson;$(\'mode\').value=window.DEFAULT_ANALYSIS_MODE||\'analyzer\';$(\'promptBtn\').onclick=()=>{const p=$(\'promptPanel\');p.classList.toggle(\'active\');$(\'promptBtn\').textContent=p.classList.contains(\'active\')?\'???????\':\'???????\'};document.querySelectorAll(\'.tab\').forEach(t=>t.onclick=()=>{document.querySelectorAll(\'.tab\').forEach(x=>x.classList.remove(\'active\'));t.classList.add(\'active\');S.tab=t.dataset.tab;S.raw=false;renderOut(S.result)});addEventListener(\'hashchange\',route);addEventListener(\'dragenter\',e=>{e.preventDefault();drag++;$(\'drop\').classList.add(\'active\')});addEventListener(\'dragover\',e=>e.preventDefault());addEventListener(\'dragleave\',e=>{e.preventDefault();drag=Math.max(0,drag-1);if(!drag)$(\'drop\').classList.remove(\'active\')});addEventListener(\'drop\',e=>{e.preventDefault();drag=0;$(\'drop\').classList.remove(\'active\');if(e.dataTransfer.files.length)upload(e.dataTransfer.files)});fetch(\'/api/prompt\').then(r=>r.json()).then(p=>$(\'prompt\').value=p.prompt||\'\').catch(()=>{});refresh().then(route).catch(e=>setStatus(e.message,\'bad\'));\n</script>\n</body>\n</html>'
 
 
+
+
+
  
+
 AMAZON_HTML_PATH = SCRIPTS_DIR / "static" / "amazon.html"
+
 AMAZON_HTML = AMAZON_HTML_PATH.read_text(encoding="utf-8") if AMAZON_HTML_PATH.is_file() else ""
+
+
+
 
 
 SHOP_HTML_PATH = SCRIPTS_DIR / "static" / "shop.html"
