@@ -92,7 +92,7 @@ MCP_CHAT_CONFIGS = {
 
 import sys
 sys.path.insert(0, str(SCRIPTS_DIR))
-from chat_session import ChatStore, Message, load_sessions_from_disk
+from chat_session import ChatStore, Message, Session, load_sessions_from_disk
 from sociavault_usage import read_sociavault_usage
 from sociavault_tiktok import call_api as call_sociavault_tiktok_api
 from tools import TOOLS, execute_tool, get_tools_for_model, list_tools
@@ -314,7 +314,12 @@ social_jobs_lock = threading.Lock()
 social_jobs_running: set[str] = set()
 
 # Chat system
-chat_store = ChatStore()
+chat_store = ChatStore(DATA_DIR / "sessions.json")
+chat_provider_stores = {
+    "home": chat_store,
+    "amazon": ChatStore(SELLERSPRITE_CHAT_DATA_DIR / "chat_sessions.json"),
+    "fastmoss": ChatStore(FASTMOSS_CHAT_DATA_DIR / "chat_sessions.json"),
+}
 chat_tool_config: set[str] | None = None  # None = all tools enabled
 
 
@@ -354,6 +359,129 @@ def chat_provider_from_path(path: str) -> str:
     if path.startswith("/fastmoss"):
         return "fastmoss"
     return "home"
+
+
+def chat_store_for_provider(provider: str | None) -> ChatStore:
+    return chat_provider_stores[normalize_chat_provider(provider)]
+
+
+def legacy_mcp_sessions_path(provider: str) -> Path | None:
+    provider = normalize_chat_provider(provider)
+    if provider == "amazon":
+        return SELLERSPRITE_CHAT_DATA_DIR / "sessions.json"
+    if provider == "fastmoss":
+        return FASTMOSS_CHAT_DATA_DIR / "sessions.json"
+    return None
+
+
+def legacy_created_at(value: Any) -> float:
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value or "").strip()
+    if not text:
+        return time.time()
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return time.time()
+
+
+def read_legacy_mcp_sessions(provider: str) -> list[dict[str, Any]]:
+    path = legacy_mcp_sessions_path(provider)
+    if path is None or not path.is_file():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"Could not read legacy {provider} sessions: {exc}", flush=True)
+        return []
+    if isinstance(data, dict):
+        data = data.get("sessions", [])
+    return data if isinstance(data, list) else []
+
+
+def legacy_mcp_session(provider: str, session_id: str) -> dict[str, Any] | None:
+    wanted = str(session_id or "")
+    for item in read_legacy_mcp_sessions(provider):
+        if isinstance(item, dict) and str(item.get("id") or "") == wanted:
+            return item
+    return None
+
+
+def legacy_mcp_session_to_session(item: dict[str, Any]) -> Session:
+    session = Session(
+        id=str(item.get("id") or ""),
+        title=str(item.get("title") or ""),
+        created_at=str(item.get("created_at") or item.get("createdAt") or ""),
+        updated_at=str(item.get("updated_at") or item.get("updatedAt") or item.get("created_at") or item.get("createdAt") or ""),
+    )
+    for raw in item.get("messages") or []:
+        if not isinstance(raw, dict):
+            continue
+        role = str(raw.get("role") or "user")
+        if role not in {"user", "assistant", "tool"}:
+            role = "assistant"
+        tool_results = raw.get("tool_results") or raw.get("toolResults")
+        session.messages.append(Message(
+            id=str(raw.get("id") or uuid.uuid4()),
+            role=role,
+            content=str(raw.get("content") or ""),
+            tool_calls=raw.get("tool_calls"),
+            tool_results=tool_results if isinstance(tool_results, list) else None,
+            status=str(raw.get("status") or "done"),
+            created_at=legacy_created_at(raw.get("created_at") or raw.get("createdAt")),
+        ))
+    return session
+
+
+def legacy_mcp_session_summaries(provider: str) -> list[dict[str, Any]]:
+    rows = []
+    for item in read_legacy_mcp_sessions(provider):
+        if not isinstance(item, dict):
+            continue
+        sid = str(item.get("id") or "")
+        if not sid:
+            continue
+        messages = item.get("messages") if isinstance(item.get("messages"), list) else []
+        title = str(item.get("title") or "")
+        if not title:
+            first_user = next((m for m in messages if isinstance(m, dict) and m.get("role") == "user" and m.get("content")), None)
+            title = str(first_user.get("content"))[:40] if first_user else "\u65b0\u5bf9\u8bdd"
+        rows.append({
+            "id": sid,
+            "title": title,
+            "created_at": str(item.get("created_at") or item.get("createdAt") or ""),
+            "updated_at": str(item.get("updated_at") or item.get("updatedAt") or item.get("created_at") or item.get("createdAt") or ""),
+            "message_count": len(messages),
+            "legacy": True,
+        })
+    return rows
+
+
+def provider_display_session(provider: str, public_id: str) -> Session | None:
+    provider = normalize_chat_provider(provider)
+    store = chat_store_for_provider(provider)
+    stored_sid = provider_session_exists(provider, public_id)
+    current = store.get_session(stored_sid) if stored_sid else None
+    legacy = legacy_mcp_session(provider, public_id) if provider in {"amazon", "fastmoss"} else None
+    legacy_session = legacy_mcp_session_to_session(legacy) if legacy else None
+    if legacy_session and current:
+        merged = Session(
+            id=public_id,
+            title=current.title or legacy_session.title,
+            created_at=legacy_session.created_at or current.created_at,
+            updated_at=current.updated_at or legacy_session.updated_at,
+        )
+        seen = set()
+        for message in [*legacy_session.messages, *current.messages]:
+            key = str(message.id or "")
+            if key and key in seen:
+                continue
+            if key:
+                seen.add(key)
+            merged.messages.append(message)
+        return merged
+    return current or legacy_session
 
 
 def chat_session_key(provider: str, session_id: str) -> str:
@@ -403,9 +531,12 @@ def inject_unified_nav(html: str, current_path: str) -> str:
 
 def provider_session_exists(provider: str, public_id: str) -> str | None:
     provider = normalize_chat_provider(provider)
+    store = chat_store_for_provider(provider)
     key = chat_session_key(provider, public_id)
-    if chat_store.get_session(key):
+    if store.get_session(key):
         return key
+    if store.get_session(public_id):
+        return public_id
     if provider == "home" and chat_store.get_session(public_id):
         return public_id
     return None
@@ -425,11 +556,16 @@ def public_chat_session_summary(provider: str, summary: dict[str, Any]) -> dict[
 
 
 def list_public_chat_sessions(provider: str) -> list[dict[str, Any]]:
+    provider = normalize_chat_provider(provider)
     rows = []
-    for summary in chat_store.list_sessions():
+    for summary in chat_store_for_provider(provider).list_sessions():
         public = public_chat_session_summary(provider, summary)
         if public is not None:
             rows.append(public)
+    if provider in {"amazon", "fastmoss"}:
+        existing_ids = {str(row.get("id") or "") for row in rows}
+        rows.extend(row for row in legacy_mcp_session_summaries(provider) if str(row.get("id") or "") not in existing_ids)
+        rows.sort(key=lambda row: str(row.get("updated_at") or row.get("created_at") or ""), reverse=True)
     return rows
 
 
@@ -3514,49 +3650,58 @@ def normalize_tool_result(tool_name: str, result: dict[str, Any]) -> dict[str, A
 def normalize_stored_chat_tool_results() -> int:
     """Migrate old sessions that persisted full raw tool payloads."""
     changed = 0
-    with chat_store._lock:
-        for session in chat_store.sessions.values():
-            for message in session.messages:
-                if not message.tool_results:
-                    continue
-                for tool_result in message.tool_results:
-                    if not isinstance(tool_result, dict):
+    changed_stores = set()
+    for store in chat_provider_stores.values():
+        with store._lock:
+            for session in store.sessions.values():
+                for message in session.messages:
+                    if not message.tool_results:
                         continue
-                    tool_name = tool_result.get("tool_name", "")
-                    result = tool_result.get("result")
-                    if not isinstance(result, dict):
-                        continue
-                    normalized = normalize_tool_result(tool_name, result)
-                    if normalized != result:
-                        tool_result["result"] = normalized
-                        changed += 1
+                    for tool_result in message.tool_results:
+                        if not isinstance(tool_result, dict):
+                            continue
+                        tool_name = tool_result.get("tool_name", "")
+                        result = tool_result.get("result")
+                        if not isinstance(result, dict):
+                            continue
+                        normalized = normalize_tool_result(tool_name, result)
+                        if normalized != result:
+                            tool_result["result"] = normalized
+                            changed += 1
+                            changed_stores.add(store)
+    for store in changed_stores:
+        store._schedule_save()
     if changed:
-        chat_store._schedule_save()
         print(f"[CHAT] normalized {changed} stored tool results", flush=True)
     return changed
 
 def mark_interrupted_chat_messages() -> int:
     """Mark assistant messages that could not finish before a restart/interruption."""
     changed = 0
-    interrupted_text = "服务器中断，稍后再试。"
-    incomplete_tools_text = "服务器中断，稍后再试。"
-    with chat_store._lock:
-        for session in chat_store.sessions.values():
-            for message in session.messages:
-                if message.role != "assistant":
-                    continue
-                tool_calls = message.tool_calls or []
-                tool_results = message.tool_results or []
-                has_incomplete_tools = bool(tool_calls) and len(tool_results) < len(tool_calls)
-                if message.status == "pending" or has_incomplete_tools:
-                    if message.status != "error":
-                        message.status = "error"
-                        changed += 1
-                    if not message.content:
-                        message.content = incomplete_tools_text if has_incomplete_tools else interrupted_text
-                        changed += 1
+    changed_stores = set()
+    interrupted_text = "\u670d\u52a1\u5668\u4e2d\u65ad\uff0c\u7a0d\u540e\u518d\u8bd5\u3002"
+    incomplete_tools_text = "\u670d\u52a1\u5668\u4e2d\u65ad\uff0c\u5de5\u5177\u8c03\u7528\u672a\u5b8c\u6210\uff0c\u8bf7\u91cd\u8bd5\u3002"
+    for store in chat_provider_stores.values():
+        with store._lock:
+            for session in store.sessions.values():
+                for message in session.messages:
+                    if message.role != "assistant":
+                        continue
+                    tool_calls = message.tool_calls or []
+                    tool_results = message.tool_results or []
+                    has_incomplete_tools = bool(tool_calls) and len(tool_results) < len(tool_calls)
+                    if message.status == "pending" or has_incomplete_tools:
+                        if message.status != "error":
+                            message.status = "error"
+                            changed += 1
+                            changed_stores.add(store)
+                        if not message.content:
+                            message.content = incomplete_tools_text if has_incomplete_tools else interrupted_text
+                            changed += 1
+                            changed_stores.add(store)
+    for store in changed_stores:
+        store._schedule_save()
     if changed:
-        chat_store._schedule_save()
         print(f"[CHAT] marked {changed} interrupted stored messages", flush=True)
     return changed
 
@@ -3917,7 +4062,7 @@ def tools_for_chat_intent(user_text: str, enabled: set[str] | None) -> tuple[lis
     return get_tools_for_model(selected), route
 
 
-def run_chat_deepseek(session, assistant_msg, user_text: str, provider: str = "home", enabled_tool_ids: set[str] | None = None) -> None:
+def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, provider: str = "home", enabled_tool_ids: set[str] | None = None) -> None:
     """Background thread: call DeepSeek with provider-scoped tools and stream results via SSE."""
     import requests as req
 
@@ -3927,7 +4072,7 @@ def run_chat_deepseek(session, assistant_msg, user_text: str, provider: str = "h
     model = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 
     if not api_key:
-        chat_store.update_message(session, assistant_msg, "Missing DEEPSEEK_API_KEY", status="error")
+        store.update_message(session, assistant_msg, "Missing DEEPSEEK_API_KEY", status="error")
         return
 
     domain_hint = {
@@ -4017,7 +4162,7 @@ def run_chat_deepseek(session, assistant_msg, user_text: str, provider: str = "h
                 assistant_msg.tool_calls = list(assistant_msg.tool_calls or []) + tool_calls
                 assistant_msg.tool_results = list(assistant_msg.tool_results or [])
                 messages.append({"role": "assistant", "content": msg.get("content") or "", "tool_calls": tool_calls})
-                chat_store.broadcast(session.id, "update", {"messageId": assistant_msg.id, "tool_calls": assistant_msg.tool_calls, "tool_results": assistant_msg.tool_results})
+                store.broadcast(session.id, "update", {"messageId": assistant_msg.id, "tool_calls": assistant_msg.tool_calls, "tool_results": assistant_msg.tool_results})
 
                 for tc in tool_calls:
                     fn_name = tc["function"]["name"]
@@ -4029,12 +4174,12 @@ def run_chat_deepseek(session, assistant_msg, user_text: str, provider: str = "h
                     normalized_result = normalize_prefixed_tool_result(fn_name, result)
                     messages.append({"role": "tool", "tool_call_id": tc["id"], "content": json.dumps(normalized_result, ensure_ascii=False)})
                     assistant_msg.tool_results.append({"tool_name": fn_name, "result": normalized_result})
-                    chat_store.broadcast(session.id, "update", {"messageId": assistant_msg.id, "tool_calls": assistant_msg.tool_calls, "tool_results": assistant_msg.tool_results})
+                    store.broadcast(session.id, "update", {"messageId": assistant_msg.id, "tool_calls": assistant_msg.tool_calls, "tool_results": assistant_msg.tool_results})
                 continue
 
             content = msg.get("content", "")
-            chat_store.update_message(session, assistant_msg, content, status="done")
-            chat_store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": content})
+            store.update_message(session, assistant_msg, content, status="done")
+            store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": content})
             return
         except Exception as exc:
             err_text = str(exc)
@@ -4044,10 +4189,10 @@ def run_chat_deepseek(session, assistant_msg, user_text: str, provider: str = "h
                 except Exception:
                     pass
             print(f"[CHAT] DeepSeek error: {err_text}", flush=True)
-            chat_store.update_message(session, assistant_msg, f"Request failed: {exc}", status="error")
+            store.update_message(session, assistant_msg, f"Request failed: {exc}", status="error")
             return
 
-    chat_store.update_message(session, assistant_msg, "Too many tool calls; narrow the question.", status="error")
+    store.update_message(session, assistant_msg, "Too many tool calls; narrow the question.", status="error")
 
 
 def execute_queue_job(filename: str, job_type: str, progress: dict) -> None:
@@ -4417,8 +4562,7 @@ class Handler(BaseHTTPRequestHandler):
             sid = parts[4] if len(parts) > 4 else ""
             qs = parse_qs(parsed.query)
             provider = normalize_chat_provider(qs.get("provider", ["home"])[0])
-            stored_sid = provider_session_exists(provider, sid)
-            session = chat_store.get_session(stored_sid) if stored_sid else None
+            session = provider_display_session(provider, sid)
             if not session:
                 return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Session not found"})
             def public_message(m: Message) -> dict[str, Any]:
@@ -4479,13 +4623,13 @@ class Handler(BaseHTTPRequestHandler):
             qs = parse_qs(parsed.query)
             provider = normalize_chat_provider(qs.get("provider", ["home"])[0])
             sid = qs.get("session", [""])[0]
-            return self.stream_chat_events(chat_session_key(provider, sid))
+            return self.stream_chat_events(provider, chat_session_key(provider, sid))
         if parsed.path.startswith("/api/chat/sessions/") and parsed.path.endswith("/delete"):
             qs = parse_qs(parsed.query)
             provider = normalize_chat_provider(qs.get("provider", ["home"])[0])
             sid = parsed.path.split("/")[4]
             stored_sid = provider_session_exists(provider, sid) or chat_session_key(provider, sid)
-            deleted = chat_store.delete_session(stored_sid)
+            deleted = chat_store_for_provider(provider).delete_session(stored_sid)
             return json_response(self, HTTPStatus.OK, {"deleted": deleted})
         if parsed.path == "/api/network-check":
             return json_response(self, HTTPStatus.OK, public_network_check())
@@ -5500,17 +5644,18 @@ class Handler(BaseHTTPRequestHandler):
         except (json.JSONDecodeError, ValueError) as exc:
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
+        store = chat_store_for_provider(provider)
         stored_session_id = chat_session_key(provider, session_id)
-        session = chat_store.get_or_create(stored_session_id)
+        session = store.get_or_create(stored_session_id)
         user_msg = Message(id=str(uuid.uuid4()), role="user", content=text)
-        chat_store.add_message(session, user_msg)
+        store.add_message(session, user_msg)
         if not session.title:
             session.title = text[:40] + ("..." if len(text) > 40 else "")
 
         assistant_msg = Message(id=str(uuid.uuid4()), role="assistant", content="", status="pending")
-        chat_store.add_message(session, assistant_msg)
+        store.add_message(session, assistant_msg)
 
-        thread = threading.Thread(target=run_chat_deepseek, args=(session, assistant_msg, text, provider, enabled_tool_ids), daemon=True)
+        thread = threading.Thread(target=run_chat_deepseek, args=(store, session, assistant_msg, text, provider, enabled_tool_ids), daemon=True)
         thread.start()
         return json_response(self, HTTPStatus.ACCEPTED, {
             "sessionId": session_id,
@@ -5532,8 +5677,7 @@ class Handler(BaseHTTPRequestHandler):
         except (json.JSONDecodeError, ValueError) as exc:
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
-        stored_session_id = provider_session_exists(provider, session_id) or chat_session_key(provider, session_id)
-        session = chat_store.get_session(stored_session_id)
+        session = provider_display_session(provider, session_id)
         if not session:
             return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Session not found"})
 
@@ -5655,20 +5799,21 @@ class Handler(BaseHTTPRequestHandler):
             video_queue.unregister_sse(self)
             self.close_connection = True
 
-    def stream_chat_events(self, session_id: str) -> None:
+    def stream_chat_events(self, provider: str, session_id: str) -> None:
+        store = chat_store_for_provider(provider)
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "keep-alive")
         self.end_headers()
-        chat_store.register_sse(session_id, self)
+        store.register_sse(session_id, self)
         try:
             while not self.wfile.closed:
                 time.sleep(5)
         except (BrokenPipeError, ConnectionResetError):
             pass
         finally:
-            chat_store.unregister_sse(session_id, self)
+            store.unregister_sse(session_id, self)
             self.close_connection = True
 
     def handle_delete(self) -> None:
@@ -5779,7 +5924,8 @@ def main() -> int:
     load_env_file()
     VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    load_sessions_from_disk(chat_store)
+    for store in chat_provider_stores.values():
+        load_sessions_from_disk(store)
     mark_interrupted_chat_messages()
     normalize_stored_chat_tool_results()
     video_queue.start(execute_queue_job)

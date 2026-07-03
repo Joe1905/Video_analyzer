@@ -41,7 +41,8 @@ class Session:
 
 
 class ChatStore:
-    def __init__(self):
+    def __init__(self, sessions_file: Path | None = None):
+        self.sessions_file = sessions_file or SESSIONS_FILE
         self.sessions: dict[str, Session] = {}
         self.sse_clients: dict[str, set] = {}
         self._save_timer: threading.Timer | None = None
@@ -139,7 +140,8 @@ class ChatStore:
 
 
 def save_sessions_to_disk(store: ChatStore):
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    sessions_file = getattr(store, "sessions_file", SESSIONS_FILE)
+    sessions_file.parent.mkdir(parents=True, exist_ok=True)
     serialized = []
     for s in store.sessions.values():
         serialized.append({
@@ -151,15 +153,16 @@ def save_sessions_to_disk(store: ChatStore):
                 "status": m.status, "created_at": m.created_at,
             } for m in s.messages],
         })
-    with open(SESSIONS_FILE, "w", encoding="utf-8") as f:
+    with open(sessions_file, "w", encoding="utf-8") as f:
         json.dump(serialized, f, ensure_ascii=False, indent=2)
 
 
 def load_sessions_from_disk(store: ChatStore):
-    if not SESSIONS_FILE.is_file():
+    sessions_file = getattr(store, "sessions_file", SESSIONS_FILE)
+    if not sessions_file.is_file():
         return
     try:
-        with open(SESSIONS_FILE, encoding="utf-8") as f:
+        with open(sessions_file, encoding="utf-8") as f:
             saved = json.load(f)
         if not isinstance(saved, list):
             return
