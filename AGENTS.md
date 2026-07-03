@@ -250,7 +250,20 @@ GitHub repo:
 https://github.com/Joe1905/Video_analyzer.git
 ```
 
-Server changes must be synchronized through GitHub. Do not leave manual-only code changes on the production checkout. If a server-side hotfix is unavoidable, copy the exact change back into this repository, commit it, push it, and update the server from GitHub.
+GitHub access rule:
+
+- GitHub `fetch`, `pull`, `push`, and `clone` operations must use the configured proxy path. Prefer explicit `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` / lowercase environment variables, or scoped `git -c http.proxy=... -c https.proxy=...` when the proxy URL is available. Do not commit proxy credentials.
+- If GitHub HTTPS fails during the initial handshake, record the concrete error and proxy state, then switch to the proxy path or another approved authenticated GitHub path. Do not blindly retry direct HTTPS.
+
+Production deploy workflow:
+
+1. Make the change locally and verify it.
+2. Commit the change locally.
+3. Push the commit to GitHub through the proxy.
+4. Update the production checkout from GitHub.
+5. Rebuild/restart the affected server service and verify the endpoint.
+
+Server changes must be synchronized through GitHub. Do not leave manual-only code changes on the production checkout. If GitHub push is blocked by proxy or authentication, stop and report the blocker instead of treating a server-only deploy as complete. If a server-side hotfix is explicitly authorized, copy the exact change back into this repository, commit it, push it to GitHub as soon as access is restored, and update the server from GitHub.
 
 Before deploying or changing server files, check both local and server status:
 
