@@ -4244,6 +4244,9 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
         "fastmoss__product_rank_top_selling. The prefix is a hard execution boundary. "
         f"Current chat provider is {provider}; {domain_hint} "
         "When tool results contain enough_data=true or suggested_next_action=answer_from_results, answer from the current results instead of repeatedly calling similar tools. "
+        "For Amazon/product analysis from a short product phrase, treat the phrase as ambiguous unless the user provides a URL, ASIN, exact category, or target user. "
+        "Do not let derived long-tail keywords override the user's original phrase: if tool results split across pet, human beauty, home appliance, or other meanings, explicitly compare those interpretations and ask for clarification or state which one the evidence supports. "
+        "A useful product analysis must include: query interpretation, data evidence from the tools, market/competition read, opportunity angles, risks, and concrete next validation steps. "
         "If a video download or analysis tool fails, say clearly that real video download/frame analysis was not completed."
     )}]
 
@@ -4280,7 +4283,8 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             "Use only the exposed prefixed tools. Do not invent unprefixed tool names. "
             "Call tools only when the answer requires live or external data; otherwise answer directly from conversation context. "
             "For product/category research, use the currently selected domain tools only; do not cross from FastMoss to SellerSprite unless both domains are selected. "
-            "When the current tool results are enough to answer, stop calling tools and summarize the results in Chinese. "
+            "For ambiguous product phrases, do not collapse to one niche just because a related keyword has data; present competing interpretations and say what extra input would disambiguate. "
+            "When the current tool results are enough to answer, stop calling tools and summarize the results in Chinese with evidence, opportunities, risks, and next steps. "
             "For current date/time questions, call system__current_time first if it is exposed."
         ),
     })
