@@ -9,9 +9,17 @@ const HOST = process.env.HOST || "0.0.0.0";
 const DEEPSEEK_API_URL = process.env.DEEPSEEK_API_URL || "https://api.deepseek.com/v1";
 const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || "deepseek-chat";
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || "";
+const MCP_CHAT_TYPE = (process.env.MCP_CHAT_TYPE || "sellersprite").toLowerCase();
+const MCP_CHAT_LABEL = process.env.MCP_CHAT_LABEL || (MCP_CHAT_TYPE === "fastmoss" ? "FastMoss" : "SellerSprite");
+const MCP_CHAT_BASE_PATH = process.env.MCP_CHAT_BASE_PATH || (MCP_CHAT_TYPE === "fastmoss" ? "/fastmoss" : "/amazon");
 const SELLERSPRITE_SECRET_KEY = process.env.SELLERSPRITE_SECRET_KEY || "";
 const SELLERSPRITE_MCP_URL = process.env.SELLERSPRITE_MCP_URL || "https://mcp.sellersprite.com/mcp";
 const SELLERSPRITE_CACHE_TTL_SECONDS = Number(process.env.SELLERSPRITE_CACHE_TTL_SECONDS || 86400);
+const FASTMOSS_MCP_API_KEY = process.env.FASTMOSS_MCP_API_KEY || process.env.FASTMOSS_API_KEY || "";
+const FASTMOSS_MCP_URL = process.env.FASTMOSS_MCP_URL || "https://mcp.fastmoss.com/mcp";
+const FASTMOSS_CACHE_TTL_SECONDS = Number(process.env.FASTMOSS_CACHE_TTL_SECONDS || 86400);
+const MCP_REMOTE_URL = process.env.MCP_REMOTE_URL || (MCP_CHAT_TYPE === "fastmoss" ? FASTMOSS_MCP_URL : SELLERSPRITE_MCP_URL);
+const MCP_CACHE_TTL_SECONDS = Number(process.env.MCP_CACHE_TTL_SECONDS || (MCP_CHAT_TYPE === "fastmoss" ? FASTMOSS_CACHE_TTL_SECONDS : SELLERSPRITE_CACHE_TTL_SECONDS));
 const PUBLIC_DIR = path.join(__dirname, "public");
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const SESSIONS_FILE = path.join(DATA_DIR, "sessions.json");
@@ -28,6 +36,97 @@ const MIME_TYPES = {
   ".json": "application/json; charset=utf-8",
 };
 
+function providerCacheKey() {
+  return MCP_CHAT_TYPE === "fastmoss" ? "fastmoss_mcp" : "sellersprite_mcp";
+}
+
+function providerKeywordsPattern() {
+  if (MCP_CHAT_TYPE === "fastmoss") {
+    return /FastMoss|TikTok Shop|TikTok|小店|达人|创作者|带货|商品|产品|店铺|竞品|类目|销量|销售额|GMV|直播|短视频|广告|素材|内容|定价|美国|美区|英区|US|UK|creator|shop|product|GMV|trend/i;
+  }
+  return /Amazon|亚马逊|ASIN|asin|关键词|产品|商品|类目|市场|选品|销量|销售额|BSR|竞品|品牌|评论|流量|趋势|抓取|查询|分析|US|UK|DE|JP|智能|家居/i;
+}
+
+function mcpRequestUrl() {
+  if (MCP_CHAT_TYPE !== "fastmoss") return MCP_REMOTE_URL;
+  if (!FASTMOSS_MCP_API_KEY || /[?&]api_key=/.test(MCP_REMOTE_URL)) return MCP_REMOTE_URL;
+  const separator = MCP_REMOTE_URL.includes("?") ? "&" : "?";
+  return `${MCP_REMOTE_URL}${separator}api_key=${encodeURIComponent(FASTMOSS_MCP_API_KEY)}`;
+}
+
+function mcpRequestHeaders() {
+  const headers = {
+    "content-type": "application/json",
+    accept: "application/json, text/event-stream",
+  };
+  if (MCP_CHAT_TYPE === "sellersprite") headers["secret-key"] = SELLERSPRITE_SECRET_KEY;
+  return headers;
+}
+
+function ensureMcpConfigured() {
+  if (MCP_CHAT_TYPE === "sellersprite" && !SELLERSPRITE_SECRET_KEY) throw new Error("请先设置环境变量 SELLERSPRITE_SECRET_KEY。");
+  if (MCP_CHAT_TYPE === "fastmoss" && !FASTMOSS_MCP_API_KEY && !/[?&]api_key=/.test(MCP_REMOTE_URL)) {
+    throw new Error("请先设置环境变量 FASTMOSS_MCP_API_KEY，或在 FASTMOSS_MCP_URL 中包含 api_key。");
+  }
+}
+
+function guideMessage() {
+  if (MCP_CHAT_TYPE === "fastmoss") {
+    return [
+      "### FastMoss MCP 使用手册",
+      "",
+      "直接输入自然语言即可，我会通过 DeepSeek 调用 FastMoss 官方 MCP 工具。",
+      "",
+      "- **选品研究**：查询 TikTok Shop 商品榜单、销量、GMV、趋势和价格带。",
+      "- **竞品店铺**：分析店铺 GMV、渠道构成、热销商品和达人活跃度。",
+      "- **达人建联**：按带货力、垂类、GMV 潜力和受众匹配筛选达人。",
+      "- **内容辅助**：基于真实销售和互动数据生成脚本、钩子和商品文案。",
+      "- **账户能力**：可询问当前 MCP 工具列表和调用方式。",
+      "",
+      "示例：`使用 FastMoss 查看今天美区美妆品类销量前 3 的商品，返回商品名、价格、销量、GMV 和趋势`。",
+    ].join("\n");
+  }
+  return USER_GUIDE_MESSAGE;
+}
+
+function systemPrompt() {
+  if (MCP_CHAT_TYPE === "fastmoss") {
+    return [
+      "你是 FastMoss MCP 的中文 TikTok Shop 商业分析助手，面向跨境电商选品、竞品店铺、达人建联、内容脚本、广告素材和定价分析。",
+      "",
+      "工具调用原则：",
+      "1. 用户询问 TikTok Shop、FastMoss、商品、店铺、达人、带货、销量、GMV、类目、趋势、内容、广告、定价或竞品数据时，必须先调用 FastMoss MCP 工具；不要直接凭常识回答。",
+      "2. 如果缺少必要参数，先问用户补充；地区或时间窗未说明时可默认美区和近期/今天，但要在回答中说明默认值。",
+      "3. 没有实际工具结果时，不得声称已查询实时数据；工具未授权、次数用尽或空数据时，要说明真实错误。",
+      "4. 已有部分成功工具结果时，继续基于成功结果分析，并把缺失数据标注为未获取到。",
+      "",
+      "回答质量要求：",
+      "1. 输出中文 Markdown 商业分析，不要只给一句概括。",
+      "2. 选品/类目分析至少覆盖销量/GMV、价格带、趋势、竞争格局、内容机会、达人合作和下一步动作。",
+      "3. 店铺/竞品分析至少覆盖热销商品、渠道构成、达人活跃度、内容打法、优势风险和可执行建议。",
+      "4. 所有数字和事实必须来自工具结果；没有拿到的数据明确标注未获取到。",
+      "5. 不要输出 HTML/H5 标签。",
+    ].join("\n");
+  }
+  return [
+    "你是 SellerSprite Open API 的中文商业分析助手，面向跨境电商选品、类目研究、ASIN/关键词/品牌/竞品分析。",
+    "",
+    "工具调用原则：",
+    "1. 用户询问 Amazon、亚马逊、ASIN、关键词、品牌、类目、产品、销量、销售额、BSR、流量、趋势、评论、竞品、选品、市场分析或站点数据时，必须先调用 SellerSprite MCP 工具；不要直接凭常识回答。",
+    "2. 如果用户给出 ASIN 或 Amazon URL，先调用适合 ASIN/商品详情的工具；如果用户给出类目/关键词，先定位类目或关键词，再补充市场/产品/分布/竞争数据。",
+    "3. 如果缺少必填参数，先问用户补充；但站点未说明时可默认 US，并在回答中说明默认值。",
+    "4. 没有实际工具结果时，不得声称已查询、API 未授权、次数用尽、工具异常或已得到市场数据。",
+    "5. 工具返回未授权、错误或空数据时，必须说明真实错误；如果已有其他成功工具结果，要继续基于成功结果分析，不要因为部分失败而放弃回答。",
+    "",
+    "回答质量要求：",
+    "1. 不要只给概括结论。用户问类目、市场、产品情况时，输出一份详实报告。",
+    "2. 类目/市场分析至少覆盖：类目定位、市场规模与容量、价格带、评分评论、品牌集中度、卖家集中度、物流/卖家来源、头部产品或代表产品、竞争格局、机会点、风险点、可切入方向、产品改进建议、定价/运营/差异化建议、下一步补查项。",
+    "3. 单品/ASIN 分析至少覆盖：产品基础信息、价格/变体、卖点、评分评论、销量/BSR/趋势、关键词与流量机会、竞品对比、用户痛点、改进方向、进入建议和行动清单。",
+    "4. 具体建议要尽量落到产品形态、功能、价格带、人群、场景、包装、内容营销或供应链动作，不要只写泛泛的‘优化产品’。",
+    "5. 所有数字和事实必须来自工具结果；没有拿到的数据明确标注‘未获取到’。",
+    "6. 回复只能使用 Markdown，不要输出 HTML/H5 标签。",
+  ].join("\n");
+}
 const USER_GUIDE_MESSAGE = [
   "### SellerSprite MCP 使用手册",
   "",
@@ -49,22 +148,18 @@ class RemoteMcpClient {
   }
 
   async request(method, params = {}) {
-    if (!SELLERSPRITE_SECRET_KEY) throw new Error("请先设置环境变量 SELLERSPRITE_SECRET_KEY。");
+    ensureMcpConfigured();
     const payload = { jsonrpc: "2.0", id: randomUUID(), method, params };
-    const response = await fetch(SELLERSPRITE_MCP_URL, {
+    const response = await fetch(mcpRequestUrl(), {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        accept: "application/json, text/event-stream",
-        "secret-key": SELLERSPRITE_SECRET_KEY,
-      },
+      headers: mcpRequestHeaders(),
       body: JSON.stringify(payload),
     });
 
     const text = await response.text();
     const data = parseMcpResponse(text);
-    if (!response.ok) throw new Error(data?.error?.message || data?.message || `SellerSprite MCP 请求失败：${response.status}`);
-    if (data?.error) throw new Error(data.error.message || "SellerSprite MCP 请求失败。");
+    if (!response.ok) throw new Error(data?.error?.message || data?.message || `${MCP_CHAT_LABEL} MCP request failed: ${response.status}`);
+    if (data?.error) throw new Error(data.error.message || `${MCP_CHAT_LABEL} MCP request failed.`);
     return data?.result ?? data;
   }
 
@@ -73,7 +168,7 @@ class RemoteMcpClient {
     await this.request("initialize", {
       protocolVersion: "2024-11-05",
       capabilities: {},
-      clientInfo: { name: "sellersprite-deepseek-chat", version: "0.2.0" },
+      clientInfo: { name: `${MCP_CHAT_TYPE}-deepseek-chat`, version: "0.3.0" },
     });
     this.initialized = true;
   }
@@ -234,7 +329,7 @@ function canonicalJson(value) {
 
 function sellerSpriteCacheKey(toolName, args) {
   return createHash("sha256")
-    .update(canonicalJson({ provider: "sellersprite_mcp", endpoint: toolName, request: args || {} }))
+    .update(canonicalJson({ provider: providerCacheKey(), endpoint: toolName, request: args || {} }))
     .digest("hex");
 }
 
@@ -245,7 +340,7 @@ async function loadToolCache() {
     const parsed = safeJsonParse(raw, {});
     toolCache = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
   } catch (error) {
-    if (error.code !== "ENOENT") console.warn(`Could not load SellerSprite tool cache: ${error.message}`);
+    if (error.code !== "ENOENT") console.warn(`Could not load ${MCP_CHAT_LABEL} tool cache: ${error.message}`);
     toolCache = {};
   }
   return toolCache;
@@ -268,25 +363,25 @@ async function callSellerSpriteToolCached(name, args) {
   const cache = await loadToolCache();
   const key = sellerSpriteCacheKey(name, args);
   const now = Date.now();
-  const ttlMs = Math.max(1, SELLERSPRITE_CACHE_TTL_SECONDS) * 1000;
+  const ttlMs = Math.max(1, MCP_CACHE_TTL_SECONDS) * 1000;
   const entry = cache[key];
   if (entry && now - Number(entry.createdAt || 0) <= ttlMs) {
     entry.hitCount = Number(entry.hitCount || 0) + 1;
     entry.lastHitAt = now;
-    saveToolCache().catch((error) => console.warn(`Could not save SellerSprite tool cache: ${error.message}`));
+    saveToolCache().catch((error) => console.warn(`Could not save ${MCP_CHAT_LABEL} tool cache: ${error.message}`));
     return withCacheMeta(entry.response, {
       hit: true,
       label: "缓存命中",
-      provider: "sellersprite_mcp",
+      provider: providerCacheKey(),
       endpoint: name,
-      ttl_seconds: SELLERSPRITE_CACHE_TTL_SECONDS,
+      ttl_seconds: MCP_CACHE_TTL_SECONDS,
       age_seconds: Math.round((now - Number(entry.createdAt || now)) / 1000),
     });
   }
 
   const response = await mcpClient.callTool(name, args);
   cache[key] = {
-    provider: "sellersprite_mcp",
+    provider: providerCacheKey(),
     endpoint: name,
     request: normalizeCacheValue(args || {}),
     response,
@@ -298,9 +393,9 @@ async function callSellerSpriteToolCached(name, args) {
   return withCacheMeta(response, {
     hit: false,
     label: "实时调用",
-    provider: "sellersprite_mcp",
+    provider: providerCacheKey(),
     endpoint: name,
-    ttl_seconds: SELLERSPRITE_CACHE_TTL_SECONDS,
+    ttl_seconds: MCP_CACHE_TTL_SECONDS,
     age_seconds: 0,
   });
 }
@@ -446,7 +541,7 @@ function recentChatForModel(session) {
     .map((message) => ({
       role: message.role,
       content: message.attachments?.length
-        ? `${message.content || ""}\n\n[用户上传了 ${message.attachments.length} 张图片。图片内容可交给 SellerSprite OCR 相关工具处理，或根据工具参数要求补充。]`
+        ? `${message.content || ""}\n\n[用户上传了 ${message.attachments.length} 张图片。图片内容可交给 MCP OCR 或图片相关工具处理，或根据工具参数要求补充。]`
         : message.content,
     }));
 }
@@ -606,7 +701,7 @@ function isBlockingToolError(error, successfulToolCount) {
 }
 
 function shouldRequireSellerSpriteTool(text) {
-  return /Amazon|亚马逊|ASIN|asin|关键词|产品|商品|类目|市场|选品|销量|销售额|BSR|竞品|品牌|评论|流量|趋势|抓取|查询|分析|US|UK|DE|JP|智能|家居/i.test(
+  return providerKeywordsPattern().test(
     String(text || "")
   );
 }
@@ -707,24 +802,7 @@ async function answerWithDeepSeek(session, userText) {
   const conversation = [
     {
       role: "system",
-      content: [
-        "你是 SellerSprite Open API 的中文商业分析助手，面向跨境电商选品、类目研究、ASIN/关键词/品牌/竞品分析。",
-        "",
-        "工具调用原则：",
-        "1. 用户询问 Amazon、亚马逊、ASIN、关键词、品牌、类目、产品、销量、销售额、BSR、流量、趋势、评论、竞品、选品、市场分析或站点数据时，必须先调用 SellerSprite MCP 工具；不要直接凭常识回答。",
-        "2. 如果用户给出 ASIN 或 Amazon URL，先调用适合 ASIN/商品详情的工具；如果用户给出类目/关键词，先定位类目或关键词，再补充市场/产品/分布/竞争数据。",
-        "3. 如果缺少必填参数，先问用户补充；但站点未说明时可默认 US，并在回答中说明默认值。",
-        "4. 没有实际工具结果时，不得声称已查询、API 未授权、次数用尽、工具异常或已得到市场数据。",
-        "5. 工具返回未授权、错误或空数据时，必须说明真实错误；如果已有其他成功工具结果，要继续基于成功结果分析，不要因为部分失败而放弃回答。",
-        "",
-        "回答质量要求：",
-        "1. 不要只给概括结论。用户问类目、市场、产品情况时，输出一份详实报告。",
-        "2. 类目/市场分析至少覆盖：类目定位、市场规模/容量、价格带、评分评论、品牌集中度、卖家集中度、物流/卖家来源、头部产品或代表产品、竞争格局、机会点、风险点、可切入方向、产品改进建议、定价/运营/差异化建议、下一步补查项。",
-        "3. 单品/ASIN 分析至少覆盖：产品基础信息、价格/变体、卖点、评分评论、销量/BSR/趋势、关键词与流量机会、竞品对比、用户痛点、改进方向、进入建议和行动清单。",
-        "4. 具体建议要尽量落到产品形态、功能、价格带、人群、场景、包装、内容营销或供应链动作，不要只写泛泛的“优化产品”。",
-        "5. 所有数字和事实必须来自工具结果；没有拿到的数据明确标注“未获取到”。",
-        "6. 回复只能使用 Markdown，不要输出 HTML/H5 标签（例如 <br>、<div>、<table>、<p>）。",
-      ].join("\n"),
+      content: systemPrompt(),
     },
     ...history,
     { role: "user", content: userText },
@@ -736,9 +814,9 @@ async function answerWithDeepSeek(session, userText) {
   conversation.splice(1, 0, {
     role: "system",
     content: [
-      "When a SellerSprite tool result has ok:false but at least one previous SellerSprite tool result has ok:true, continue using only the successful tool data.",
+      "When an MCP tool result has ok:false but at least one previous MCP tool result has ok:true, continue using only the successful tool data.",
       "Mention failed tool names and error codes briefly at the end as skipped or missing data. Do not invent missing values from failed tools.",
-      "If successful SellerSprite results exist, the final answer must be a complete Chinese Markdown business report, not a short refusal or a tool-status summary.",
+      "If successful MCP results exist, the final answer must be a complete Chinese Markdown business report, not a short refusal or a tool-status summary.",
       "For category and product-market questions, include actionable recommendations and explain what each recommendation is based on.",
     ].join(" "),
   });
@@ -825,12 +903,12 @@ async function handleAsk(req, res) {
 
     const userMessage = addMessage(session, createMessage("user", text, { attachments }));
     if (!session.title) session.title = summarizeSessionTitle(userMessage.content || userMessage.attachments?.[0]?.name || "Image");
-    assistantMessage = addMessage(session, createMessage("assistant", "正在通过 DeepSeek 和 SellerSprite MCP 处理...", { status: "pending" }));
+    assistantMessage = addMessage(session, createMessage("assistant", `正在通过 DeepSeek 和 ${MCP_CHAT_LABEL} MCP 处理...`, { status: "pending" }));
     sendJson(res, 202, { ok: true, message: assistantMessage });
 
     try {
       const modelText = attachments.length
-        ? `${text || "用户发送了图片。"}\n\n用户上传了图片。如需识别图片文字，请优先考虑调用 SellerSprite OCR 相关工具。`
+        ? `${text || "用户发送了图片。"}\n\n用户上传了图片。如需识别图片文字，请优先考虑调用 MCP OCR 或图片相关工具。`
         : text;
       const answer = await answerWithDeepSeek(session, modelText);
       updateMessage(session, assistantMessage.id, { content: answer.content, request: answer.request, raw: answer.raw, status: "done" });
@@ -961,11 +1039,12 @@ const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   if (req.method === "POST" && url.pathname === "/api/ask") return handleAsk(req, res);
   if (req.method === "GET" && url.pathname === "/api/sessions") return sendJson(res, 200, { ok: true, sessions: listSessions() });
+  if (req.method === "GET" && url.pathname === "/api/meta") return sendJson(res, 200, { ok: true, type: MCP_CHAT_TYPE, label: MCP_CHAT_LABEL, basePath: MCP_CHAT_BASE_PATH });
   const sessionId = getSessionIdFromUrl(url);
   const existingSession = findSession(sessionId);
   if (req.method === "GET" && url.pathname === "/api/messages") return sendJson(res, 200, getMessagesPage(existingSession, url));
   if (req.method === "GET" && url.pathname === "/api/guide") {
-    return sendJson(res, 200, { ok: true, guide: createMessage("assistant", USER_GUIDE_MESSAGE, { id: "guide", status: "done" }) });
+    return sendJson(res, 200, { ok: true, guide: createMessage("assistant", guideMessage(), { id: "guide", status: "done" }) });
   }
   if (req.method === "GET" && url.pathname === "/api/events") return handleEvents(req, res, getSession(sessionId));
   if (req.method === "POST" && url.pathname === "/api/messages/clear") return handleClearMessages(res, existingSession);
@@ -982,7 +1061,7 @@ const server = http.createServer((req, res) => {
 loadSessionsFromDisk().then(() => {
   installShutdownSave();
   server.listen(PORT, HOST, () => {
-    console.log(`SellerSprite MCP + DeepSeek chat running at http://localhost:${PORT}`);
+    console.log(`${MCP_CHAT_LABEL} MCP + DeepSeek chat running at http://localhost:${PORT}`);
     for (const url of lanUrls()) console.log(`LAN: ${url}`);
     console.log(`Session data: ${SESSIONS_FILE}`);
   });

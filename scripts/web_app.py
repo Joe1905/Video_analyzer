@@ -59,6 +59,36 @@ SELLERSPRITE_CHAT_DIR = ROOT / "sellersprite_mcp_chat"
 SELLERSPRITE_CHAT_DATA_DIR = DATA_DIR / "sellersprite_mcp"
 SELLERSPRITE_CHAT_PROCESS: subprocess.Popen | None = None
 SELLERSPRITE_CHAT_LOCK = threading.Lock()
+FASTMOSS_CHAT_DATA_DIR = DATA_DIR / "fastmoss_mcp"
+MCP_CHAT_PROCESSES: dict[str, subprocess.Popen] = {}
+MCP_CHAT_LOCKS = {
+    "sellersprite": SELLERSPRITE_CHAT_LOCK,
+    "fastmoss": threading.Lock(),
+}
+MCP_CHAT_CONFIGS = {
+    "sellersprite": {
+        "type": "sellersprite",
+        "label": "SellerSprite",
+        "base_path": "/amazon",
+        "port_env": "SELLERSPRITE_CHAT_PORT",
+        "default_port": 4101,
+        "data_dir": SELLERSPRITE_CHAT_DATA_DIR,
+        "mcp_url_env": "SELLERSPRITE_MCP_URL",
+        "default_mcp_url": "https://mcp.sellersprite.com/mcp",
+        "cache_ttl_env": "SELLERSPRITE_CACHE_TTL_SECONDS",
+    },
+    "fastmoss": {
+        "type": "fastmoss",
+        "label": "FastMoss",
+        "base_path": "/fastmoss",
+        "port_env": "FASTMOSS_CHAT_PORT",
+        "default_port": 4102,
+        "data_dir": FASTMOSS_CHAT_DATA_DIR,
+        "mcp_url_env": "FASTMOSS_MCP_URL",
+        "default_mcp_url": "https://mcp.fastmoss.com/mcp",
+        "cache_ttl_env": "FASTMOSS_CACHE_TTL_SECONDS",
+    },
+}
 
 import sys
 sys.path.insert(0, str(SCRIPTS_DIR))
@@ -3841,21 +3871,39 @@ def execute_queue_job(filename: str, job_type: str, progress: dict) -> None:
         video_queue.set_progress(filename, "completed", 100, job_type, f"{filename}: 报告完成")
 
 
-def sellersprite_chat_port() -> int:
+def mcp_chat_config(chat_type: str) -> dict[str, Any]:
+    if chat_type not in MCP_CHAT_CONFIGS:
+        raise ValueError(f"Unknown MCP chat type: {chat_type}")
+    return MCP_CHAT_CONFIGS[chat_type]
+
+
+def mcp_chat_port(chat_type: str) -> int:
+    config = mcp_chat_config(chat_type)
     try:
-        return int(os.getenv("SELLERSPRITE_CHAT_PORT", "4101"))
+        return int(os.getenv(str(config["port_env"]), str(config["default_port"])))
     except ValueError:
-        return 4101
+        return int(config["default_port"])
 
 
-def ensure_sellersprite_chat_server() -> tuple[bool, str]:
+def sellersprite_chat_port() -> int:
+    return mcp_chat_port("sellersprite")
+
+
+def ensure_mcp_chat_server(chat_type: str) -> tuple[bool, str]:
     global SELLERSPRITE_CHAT_PROCESS
+    config = mcp_chat_config(chat_type)
+    label = str(config["label"])
     if not (SELLERSPRITE_CHAT_DIR / "server.js").is_file():
-        return False, f"SellerSprite chat server not found: {SELLERSPRITE_CHAT_DIR / 'server.js'}"
+        return False, f"{label} chat server not found: {SELLERSPRITE_CHAT_DIR / 'server.js'}"
 
-    port = sellersprite_chat_port()
-    with SELLERSPRITE_CHAT_LOCK:
-        if SELLERSPRITE_CHAT_PROCESS and SELLERSPRITE_CHAT_PROCESS.poll() is None:
+    port = mcp_chat_port(chat_type)
+    lock = MCP_CHAT_LOCKS[chat_type]
+    with lock:
+        process = MCP_CHAT_PROCESSES.get(chat_type)
+        if process and process.poll() is None:
+            return True, ""
+        if chat_type == "sellersprite" and SELLERSPRITE_CHAT_PROCESS and SELLERSPRITE_CHAT_PROCESS.poll() is None:
+            MCP_CHAT_PROCESSES[chat_type] = SELLERSPRITE_CHAT_PROCESS
             return True, ""
         try:
             conn = http.client.HTTPConnection("127.0.0.1", port, timeout=0.6)
@@ -3872,25 +3920,36 @@ def ensure_sellersprite_chat_server() -> tuple[bool, str]:
         if not node:
             return False, "node executable not found in web container"
 
-        SELLERSPRITE_CHAT_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        data_dir = Path(config["data_dir"])
+        data_dir.mkdir(parents=True, exist_ok=True)
         env = os.environ.copy()
         env.update(
             {
                 "HOST": "127.0.0.1",
                 "PORT": str(port),
-                "DATA_DIR": str(SELLERSPRITE_CHAT_DATA_DIR),
+                "DATA_DIR": str(data_dir),
+                "MCP_CHAT_TYPE": str(config["type"]),
+                "MCP_CHAT_LABEL": label,
+                "MCP_CHAT_BASE_PATH": str(config["base_path"]),
+                "MCP_REMOTE_URL": os.getenv(str(config["mcp_url_env"]), str(config["default_mcp_url"])),
+                "MCP_CACHE_TTL_SECONDS": os.getenv(str(config["cache_ttl_env"]), "86400"),
                 "SELLERSPRITE_MCP_URL": os.getenv("SELLERSPRITE_MCP_URL", "https://mcp.sellersprite.com/mcp"),
                 "SELLERSPRITE_CACHE_TTL_SECONDS": os.getenv("SELLERSPRITE_CACHE_TTL_SECONDS", "86400"),
+                "FASTMOSS_MCP_URL": os.getenv("FASTMOSS_MCP_URL", "https://mcp.fastmoss.com/mcp"),
+                "FASTMOSS_CACHE_TTL_SECONDS": os.getenv("FASTMOSS_CACHE_TTL_SECONDS", "86400"),
             }
         )
-        SELLERSPRITE_CHAT_PROCESS = subprocess.Popen(
+        process = subprocess.Popen(
             [node, "server.js"],
             cwd=SELLERSPRITE_CHAT_DIR,
             env=env,
         )
+        MCP_CHAT_PROCESSES[chat_type] = process
+        if chat_type == "sellersprite":
+            SELLERSPRITE_CHAT_PROCESS = process
         for _ in range(50):
-            if SELLERSPRITE_CHAT_PROCESS.poll() is not None:
-                return False, f"SellerSprite chat server exited with code {SELLERSPRITE_CHAT_PROCESS.returncode}"
+            if process.poll() is not None:
+                return False, f"{label} chat server exited with code {process.returncode}"
             try:
                 conn = http.client.HTTPConnection("127.0.0.1", port, timeout=0.2)
                 conn.request("GET", "/api/sessions")
@@ -3902,18 +3961,25 @@ def ensure_sellersprite_chat_server() -> tuple[bool, str]:
             except Exception:
                 time.sleep(0.1)
         else:
-            return False, "SellerSprite chat server did not become ready"
-        print(f"[SELLERSPRITE] chat server listening on 127.0.0.1:{port}", flush=True)
+            return False, f"{label} chat server did not become ready"
+        print(f"[{label.upper()}] chat server listening on 127.0.0.1:{port}", flush=True)
         return True, ""
 
 
-def proxy_sellersprite_chat(handler: BaseHTTPRequestHandler) -> None:
-    ok, error = ensure_sellersprite_chat_server()
+def ensure_sellersprite_chat_server() -> tuple[bool, str]:
+    return ensure_mcp_chat_server("sellersprite")
+
+
+def proxy_mcp_chat(handler: BaseHTTPRequestHandler, chat_type: str) -> None:
+    config = mcp_chat_config(chat_type)
+    label = str(config["label"])
+    base_path = str(config["base_path"])
+    ok, error = ensure_mcp_chat_server(chat_type)
     if not ok:
         return json_response(handler, HTTPStatus.BAD_GATEWAY, {"error": error})
 
     parsed = urlparse(handler.path)
-    target_path = parsed.path.removeprefix("/amazon") or "/"
+    target_path = parsed.path.removeprefix(base_path) or "/"
     target = target_path + (f"?{parsed.query}" if parsed.query else "")
     body = None
     if handler.command in {"POST", "PUT", "PATCH"}:
@@ -3925,10 +3991,11 @@ def proxy_sellersprite_chat(handler: BaseHTTPRequestHandler) -> None:
         for key, value in handler.headers.items()
         if key.lower() not in {"host", "connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade"}
     }
-    headers["Host"] = f"127.0.0.1:{sellersprite_chat_port()}"
+    port = mcp_chat_port(chat_type)
+    headers["Host"] = f"127.0.0.1:{port}"
 
     conn_timeout = None if target_path == "/api/events" else 180
-    conn = http.client.HTTPConnection("127.0.0.1", sellersprite_chat_port(), timeout=conn_timeout)
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=conn_timeout)
     try:
         conn.request(handler.command, target, body=body, headers=headers)
         resp = conn.getresponse()
@@ -3956,10 +4023,13 @@ def proxy_sellersprite_chat(handler: BaseHTTPRequestHandler) -> None:
         pass
     except Exception as exc:
         if not handler.wfile.closed:
-            return json_response(handler, HTTPStatus.BAD_GATEWAY, {"error": f"SellerSprite proxy failed: {exc}"})
+            return json_response(handler, HTTPStatus.BAD_GATEWAY, {"error": f"{label} proxy failed: {exc}"})
     finally:
         conn.close()
 
+
+def proxy_sellersprite_chat(handler: BaseHTTPRequestHandler) -> None:
+    return proxy_mcp_chat(handler, "sellersprite")
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "ShortVideoAnalyzer/1.0"
@@ -3970,7 +4040,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         if parsed.path == "/amazon" or parsed.path.startswith("/amazon/"):
-            return proxy_sellersprite_chat(self)
+            return proxy_mcp_chat(self, "sellersprite")
+        if parsed.path == "/fastmoss" or parsed.path.startswith("/fastmoss/"):
+            return proxy_mcp_chat(self, "fastmoss")
         if parsed.path == "/" or parsed.path == "/chat":
             chat_html = (SCRIPTS_DIR / "static" / "chat.html").read_text(encoding="utf-8")
             return text_response(self, HTTPStatus.OK, chat_html, "text/html; charset=utf-8")
@@ -4539,9 +4611,13 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         if parsed.path == "/amazon/api/chat/export-pdf":
-            return self.handle_sellersprite_chat_export_pdf()
+            return self.handle_mcp_chat_export_pdf("sellersprite")
+        if parsed.path == "/fastmoss/api/chat/export-pdf":
+            return self.handle_mcp_chat_export_pdf("fastmoss")
         if parsed.path.startswith("/amazon/"):
-            return proxy_sellersprite_chat(self)
+            return proxy_mcp_chat(self, "sellersprite")
+        if parsed.path.startswith("/fastmoss/"):
+            return proxy_mcp_chat(self, "fastmoss")
         if parsed.path == "/api/upload":
             return self.handle_upload()
         if parsed.path == "/api/download":
@@ -4590,7 +4666,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_DELETE(self) -> None:
         parsed = urlparse(self.path)
         if parsed.path.startswith("/amazon/"):
-            return proxy_sellersprite_chat(self)
+            return proxy_mcp_chat(self, "sellersprite")
+        if parsed.path.startswith("/fastmoss/"):
+            return proxy_mcp_chat(self, "fastmoss")
         return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
 
     def handle_report_run(self) -> None:
@@ -5128,7 +5206,7 @@ class Handler(BaseHTTPRequestHandler):
             filename=f"chat-reply-{stamp}.pdf",
         )
 
-    def handle_sellersprite_chat_export_pdf(self) -> None:
+    def handle_mcp_chat_export_pdf(self, chat_type: str) -> None:
         content_length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(content_length)
         try:
@@ -5140,7 +5218,8 @@ class Handler(BaseHTTPRequestHandler):
         except (json.JSONDecodeError, ValueError) as exc:
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
-        sessions_path = SELLERSPRITE_CHAT_DATA_DIR / "sessions.json"
+        config = mcp_chat_config(chat_type)
+        sessions_path = Path(config["data_dir"]) / "sessions.json"
         try:
             stored = json.loads(sessions_path.read_text(encoding="utf-8"))
         except FileNotFoundError:
@@ -5185,9 +5264,11 @@ class Handler(BaseHTTPRequestHandler):
             HTTPStatus.OK,
             pdf,
             "application/pdf",
-            filename=f"sellersprite-reply-{stamp}.pdf",
+            filename=f"{chat_type}-reply-{stamp}.pdf",
         )
 
+    def handle_sellersprite_chat_export_pdf(self) -> None:
+        return self.handle_mcp_chat_export_pdf("sellersprite")
     def handle_chat_tool_config(self) -> None:
         content_length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(content_length)
