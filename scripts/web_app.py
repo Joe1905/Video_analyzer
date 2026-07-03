@@ -4189,8 +4189,10 @@ def chat_request_needs_tools(user_text: str, route: dict[str, Any]) -> bool:
     direct_tool_words = (
         "today", "current", "now", "date", "time",
         "search", "rank", "top", "product", "category", "keyword", "asin", "amazon", "fastmoss",
+        "analysis", "analyze", "market", "competitor", "opportunity", "recommend", "strategy",
         "\u67e5\u8be2", "\u641c\u7d22", "\u6392\u884c", "\u699c\u5355", "\u70ed\u9500", "\u5546\u54c1",
         "\u7c7b\u76ee", "\u5173\u952e\u8bcd", "\u4eca\u5929", "\u5f53\u524d", "\u73b0\u5728", "\u65e5\u671f", "\u65f6\u95f4",
+        "\u5206\u6790", "\u65b9\u5411", "\u5efa\u8bae", "\u673a\u4f1a", "\u5e02\u573a", "\u7ade\u54c1", "\u9009\u54c1", "\u7b56\u7565",
     )
     return any(word in lowered for word in direct_tool_words)
 
@@ -4234,15 +4236,22 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
 
     domain_hint = {
         "home": "system/function tools are selected by default.",
-        "amazon": "system/sellersprite tools are selected by default.",
-        "fastmoss": "system/fastmoss tools are selected by default.",
+        "amazon": "system/sellersprite tools are selected by default; prioritize Amazon keyword, category, competitor, and product evidence.",
+        "fastmoss": "system/fastmoss tools are selected by default; prioritize TikTok Shop category, product, creator, sales, and trend evidence.",
+    }.get(provider, "")
+    provider_style = {
+        "home": "For general analysis, combine available platform data with clear assumptions and operational recommendations.",
+        "amazon": "For Amazon analysis, produce a market-research style answer: query interpretation, keyword/category evidence, demand, competition, price/positioning, opportunity angles, risks, and next validation steps.",
+        "fastmoss": "For FastMoss analysis, produce a TikTok Shop style answer: category trend, product examples, sales/GMV signals, content/creator angle, opportunity, risk, and next validation steps.",
     }.get(provider, "")
     messages = [{"role": "system", "content": (
         "You are a short-video and commerce analysis assistant. Reply in Simplified Chinese. "
         "Only call tools that are exposed in this request. Tool names are provider-prefixed, for example "
         "system__current_time, function__tiktok_shop_search, sellersprite__asin_detail, "
         "fastmoss__product_rank_top_selling. The prefix is a hard execution boundary. "
-        f"Current chat provider is {provider}; {domain_hint} "
+        f"Current chat provider is {provider}; {domain_hint} {provider_style} "
+        "Anti-hallucination rules: do not invent numbers, rankings, prices, ASINs, sales, GMV, brands, dates, or tool outputs. Label unsupported reasoning as inference, and state data gaps explicitly. "
+        "If exposed tools are relevant to the user's analysis request, prefer calling one or more focused tools before the final answer; if no tool is exposed or the selected tools do not fit, say so and answer from clearly marked general knowledge. "
         "When tool results contain enough_data=true or suggested_next_action=answer_from_results, answer from the current results instead of repeatedly calling similar tools. "
         "For Amazon/product analysis from a short product phrase, treat the phrase as ambiguous unless the user provides a URL, ASIN, exact category, or target user. "
         "Do not let derived long-tail keywords override the user's original phrase: if tool results split across pet, human beauty, home appliance, or other meanings, explicitly compare those interpretations and ask for clarification or state which one the evidence supports. "
@@ -4281,10 +4290,11 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
         "content": (
             f"Intent route: {route.get('intent')}. Need tools: {needs_tools}. Exposed tool count: {len(tools)}. "
             "Use only the exposed prefixed tools. Do not invent unprefixed tool names. "
-            "Call tools only when the answer requires live or external data; otherwise answer directly from conversation context. "
+            "For market, product, category, competitor, trend, ranking, sales, GMV, keyword, ASIN, or time-sensitive questions, use the exposed tools before answering whenever at least one relevant tool is available. "
+            "Do not call tools for pure greetings, UI/help questions, or when no exposed tool matches the task. "
             "For product/category research, use the currently selected domain tools only; do not cross from FastMoss to SellerSprite unless both domains are selected. "
             "For ambiguous product phrases, do not collapse to one niche just because a related keyword has data; present competing interpretations and say what extra input would disambiguate. "
-            "When the current tool results are enough to answer, stop calling tools and summarize the results in Chinese with evidence, opportunities, risks, and next steps. "
+            "When the current tool results are enough to answer, stop calling tools and write a detailed Chinese answer with evidence, assumptions, opportunities, risks, action recommendations, and next validation steps. "
             "For current date/time questions, call system__current_time first if it is exposed."
         ),
     })
