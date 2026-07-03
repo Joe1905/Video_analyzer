@@ -3827,10 +3827,10 @@ def build_tool_catalog(provider: str) -> dict[str, Any]:
     provider = normalize_chat_provider(provider)
     default_domains = CHAT_PROVIDER_DEFAULT_DOMAINS.get(provider, CHAT_PROVIDER_DEFAULT_DOMAINS["home"])
     domains = [
-        {"id": "system", "label": "\u7cfb\u7edf", "categories": []},
-        {"id": "function", "label": "\u529f\u80fd", "categories": []},
-        {"id": "sellersprite", "label": "\u5356\u5bb6\u7cbe\u7075", "categories": []},
-        {"id": "fastmoss", "label": "FastMoss", "categories": []},
+        {"id": "system", "label": "\u7cfb\u7edf", "categories": [], "defaultSelected": "system" in default_domains},
+        {"id": "function", "label": "\u529f\u80fd", "categories": [], "defaultSelected": "function" in default_domains},
+        {"id": "sellersprite", "label": "\u5356\u5bb6\u7cbe\u7075", "categories": [], "defaultSelected": "sellersprite" in default_domains},
+        {"id": "fastmoss", "label": "FastMoss", "categories": [], "defaultSelected": "fastmoss" in default_domains},
     ]
     by_domain = {d["id"]: d for d in domains}
     cat_maps: dict[str, dict[str, dict[str, Any]]] = {d["id"]: {} for d in domains}
