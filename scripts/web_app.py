@@ -3966,13 +3966,14 @@ def provider_default_enabled_tool_ids(provider: str) -> set[str]:
     return selected
 
 
-def registered_chat_tool_ids() -> list[str]:
-    ids: list[str] = []
+def registered_chat_tool_ids_by_domain() -> dict[str, list[str]]:
+    ids: dict[str, list[str]] = {domain: [] for domain in CHAT_TOOL_DOMAINS}
     for tool in TOOLS:
         name = str(tool.get("name") or "")
         if not name:
             continue
-        ids.append(prefixed_tool_id(local_tool_domain(name), name))
+        domain = local_tool_domain(name)
+        ids.setdefault(domain, []).append(prefixed_tool_id(domain, name))
     for domain, chat_type in (("sellersprite", "sellersprite"), ("fastmoss", "fastmoss")):
         try:
             tools = list_mcp_bridge_tools(chat_type)
@@ -3982,11 +3983,11 @@ def registered_chat_tool_ids() -> list[str]:
         for tool in tools:
             name = str(tool.get("name") or "")
             if name:
-                ids.append(prefixed_tool_id(domain, name))
+                ids.setdefault(domain, []).append(prefixed_tool_id(domain, name))
     return ids
 
 
-def decode_tool_mask(mask: Any) -> set[str] | None:
+def _decode_hex_mask(mask: Any, ids: list[str]) -> set[str] | None:
     text = str(mask or "").strip().lower()
     if not text:
         return None
@@ -3996,8 +3997,24 @@ def decode_tool_mask(mask: Any) -> set[str] | None:
         value = int(text, 16)
     except ValueError:
         return None
-    ids = registered_chat_tool_ids()
     return {tool_id for bit, tool_id in enumerate(ids) if value & (1 << bit)}
+
+
+def decode_tool_masks(masks: Any) -> set[str] | None:
+    if not isinstance(masks, dict):
+        return None
+    by_domain = registered_chat_tool_ids_by_domain()
+    selected: set[str] = set()
+    saw_mask = False
+    for domain in CHAT_TOOL_DOMAINS:
+        if domain not in masks:
+            continue
+        decoded = _decode_hex_mask(masks.get(domain), by_domain.get(domain, []))
+        if decoded is None:
+            continue
+        saw_mask = True
+        selected.update(decoded)
+    return selected if saw_mask else None
 
 
 def build_prefixed_model_tools(enabled_tool_ids: set[str] | None) -> list[dict[str, Any]]:
@@ -4038,12 +4055,13 @@ def build_tool_catalog(provider: str) -> dict[str, Any]:
     ]
     by_domain = {d["id"]: d for d in domains}
     cat_maps: dict[str, dict[str, dict[str, Any]]] = {d["id"]: {} for d in domains}
-    tool_registry: list[str] = []
+    tool_registries: dict[str, list[str]] = {domain: [] for domain in CHAT_TOOL_DOMAINS}
 
     def add_tool(domain: str, category_id: str, category_label: str, tool: dict[str, Any]) -> None:
         if not tool.get("disabled") and tool.get("id"):
-            tool["maskBit"] = len(tool_registry)
-            tool_registry.append(str(tool["id"]))
+            domain_registry = tool_registries.setdefault(domain, [])
+            tool["domainMaskBit"] = len(domain_registry)
+            domain_registry.append(str(tool["id"]))
         cats = cat_maps[domain]
         if category_id not in cats:
             cats[category_id] = {"id": category_id, "label": category_label, "tools": []}
@@ -4086,7 +4104,13 @@ def build_tool_catalog(provider: str) -> dict[str, Any]:
                 "description": tool.get("description") or "",
                 "defaultSelected": domain in default_domains,
             })
-    return {"provider": provider, "domains": domains, "toolRegistry": tool_registry, "maskEncoding": "hex-lsb"}
+    return {
+        "provider": provider,
+        "domains": domains,
+        "toolRegistries": tool_registries,
+        "maskEncoding": "hex-lsb",
+        "maskLayers": ["domain"],
+    }
 
 
 def execute_prefixed_tool(tool_id: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -5827,11 +5851,8 @@ class Handler(BaseHTTPRequestHandler):
             provider = normalize_chat_provider(payload.get("provider"))
             session_id = str(payload.get("sessionId", "default")).strip() or "default"
             text = str(payload.get("message", "")).strip()
-            enabled_mask = payload.get("enabledToolMask")
-            enabled_tool_ids = decode_tool_mask(enabled_mask) if enabled_mask is not None else None
-            if enabled_tool_ids is None:
-                enabled_raw = payload.get("enabledToolIds")
-                enabled_tool_ids = set(str(x) for x in enabled_raw if isinstance(x, str)) if isinstance(enabled_raw, list) else None
+            enabled_masks = payload.get("enabledToolMasks")
+            enabled_tool_ids = decode_tool_masks(enabled_masks)
             if not text:
                 return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "message is required"})
         except (json.JSONDecodeError, ValueError) as exc:
