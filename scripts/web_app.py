@@ -3694,7 +3694,11 @@ def split_prefixed_tool_id(tool_id: str) -> tuple[str, str]:
 
 
 def mcp_bridge_request(chat_type: str, method: str, params: dict[str, Any] | None = None) -> Any:
-    port = ensure_mcp_chat_process(chat_type)
+    ok, error = ensure_mcp_chat_server(chat_type)
+    if not ok:
+        raise RuntimeError(error or f"{chat_type} bridge failed to start")
+    config = mcp_chat_config(chat_type)
+    port = int(os.getenv(str(config["port_env"]), str(config["default_port"])))
     payload = json.dumps({"jsonrpc": "2.0", "id": str(uuid.uuid4()), "method": method, "params": params or {}}, ensure_ascii=False).encode("utf-8")
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=180)
     try:
