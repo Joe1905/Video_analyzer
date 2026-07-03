@@ -3820,6 +3820,8 @@ LOCAL_TOOL_CATEGORY_LABELS = {
 }
 MCP_TOOL_LABELS = {
     "product_rank_top_selling": "\u5546\u54c1\u9500\u91cf\u6392\u884c",
+    "product_search": "\u5546\u54c1\u641c\u7d22",
+    "product_category_info": "\u5546\u54c1\u7c7b\u76ee\u4fe1\u606f",
     "search_category_by_words": "\u5173\u952e\u8bcd\u641c\u7d22\u7c7b\u76ee",
     "asin_detail": "ASIN \u8be6\u60c5",
     "keyword_mining": "\u5173\u952e\u8bcd\u6316\u6398",
@@ -4050,6 +4052,32 @@ def normalize_prefixed_tool_result(tool_id: str, result: dict[str, Any]) -> dict
     return normalized
 
 
+def chat_request_needs_tools(user_text: str, route: dict[str, Any]) -> bool:
+    intent = str(route.get("intent") or "general")
+    if intent != "general":
+        return True
+    lowered = str(user_text or "").lower()
+    direct_tool_words = (
+        "today", "current", "now", "date", "time",
+        "search", "rank", "top", "product", "category", "keyword", "asin", "amazon", "fastmoss",
+        "\u67e5\u8be2", "\u641c\u7d22", "\u6392\u884c", "\u699c\u5355", "\u70ed\u9500", "\u5546\u54c1",
+        "\u7c7b\u76ee", "\u5173\u952e\u8bcd", "\u4eca\u5929", "\u5f53\u524d", "\u73b0\u5728", "\u65e5\u671f", "\u65f6\u95f4",
+    )
+    return any(word in lowered for word in direct_tool_words)
+
+
+def chat_max_tool_rounds(provider: str, route: dict[str, Any], tool_count: int) -> int:
+    base = int(route.get("max_rounds") or 5)
+    intent = str(route.get("intent") or "general")
+    if provider in {"amazon", "fastmoss"} and intent in {"product_research", "amazon_product", "general"}:
+        base = max(base, 8)
+    if intent in {"product_research", "tiktok_content", "tiktok_user"}:
+        base = max(base, 6)
+    if tool_count >= 20 and intent != "general":
+        base = max(base, 7)
+    return min(base, 10)
+
+
 def tools_for_chat_intent(user_text: str, enabled: set[str] | None) -> tuple[list[dict], dict[str, Any]]:
     route = route_chat_intent(user_text)
     route_tools = route.get("tools")
@@ -4111,13 +4139,18 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
 
     tools = build_prefixed_model_tools(enabled_tool_ids)
     route = route_chat_intent(user_text)
-    max_tool_rounds = int(route.get("max_rounds") or 5)
+    needs_tools = chat_request_needs_tools(user_text, route)
+    if not needs_tools:
+        tools = []
+    max_tool_rounds = chat_max_tool_rounds(provider, route, len(tools))
     messages.append({
         "role": "system",
         "content": (
-            f"Intent route: {route.get('intent')}. Exposed tool count: {len(tools)}. "
+            f"Intent route: {route.get('intent')}. Need tools: {needs_tools}. Exposed tool count: {len(tools)}. "
             "Use only the exposed prefixed tools. Do not invent unprefixed tool names. "
+            "Call tools only when the answer requires live or external data; otherwise answer directly from conversation context. "
             "For product/category research, use the currently selected domain tools only; do not cross from FastMoss to SellerSprite unless both domains are selected. "
+            "When the current tool results are enough to answer, stop calling tools and summarize the results in Chinese. "
             "For current date/time questions, call system__current_time first if it is exposed."
         ),
     })
@@ -4192,7 +4225,52 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             store.update_message(session, assistant_msg, f"Request failed: {exc}", status="error")
             return
 
-    store.update_message(session, assistant_msg, "Too many tool calls; narrow the question.", status="error")
+    try:
+        messages.append({
+            "role": "system",
+            "content": (
+                "The tool-call round limit has been reached. Do not call any more tools. "
+                "Use the tool results already present in the conversation and produce the best possible Simplified Chinese answer now. "
+                "If some data is missing, state the limitation briefly instead of failing."
+            ),
+        })
+        payload = {"model": model, "messages": messages, "tools": None, "temperature": 0.2}
+        payload_str = json.dumps(payload, ensure_ascii=False)
+        print(f"[CHAT] DeepSeek final-after-tool-limit request: {len(messages)} msgs, {len(payload_str)} bytes", flush=True)
+        request_started = time.monotonic()
+        resp = req.post(
+            api_url.rstrip("/") + "/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            data=payload_str.encode("utf-8"),
+            timeout=120,
+        )
+        if resp.status_code >= 400:
+            print(f"[CHAT] DeepSeek final {resp.status_code}: {resp.text[:500]}", flush=True)
+        resp.raise_for_status()
+        body = resp.json()
+        record_api_call(
+            "deepseek",
+            "chat_final_after_tool_limit",
+            {
+                "api_url": api_url.rstrip("/") + "/chat/completions",
+                "model": model,
+                "payload_sha256": __import__("hashlib").sha256(payload_str.encode("utf-8")).hexdigest(),
+                "message_count": len(messages),
+                "tool_count": 0,
+                "provider": provider,
+            },
+            body,
+            elapsed_ms=int((time.monotonic() - request_started) * 1000),
+        )
+        content = body["choices"][0]["message"].get("content", "")
+        store.update_message(session, assistant_msg, content, status="done")
+        store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": content})
+        return
+    except Exception as exc:
+        print(f"[CHAT] DeepSeek final-after-tool-limit error: {exc}", flush=True)
+        fallback = "\u5de5\u5177\u8c03\u7528\u5df2\u8fbe\u5230\u672c\u8f6e\u4e0a\u9650\u3002\u6211\u5df2\u7ecf\u62ff\u5230\u90e8\u5206\u5de5\u5177\u7ed3\u679c\uff0c\u4f46\u6700\u7ec8\u603b\u7ed3\u751f\u6210\u5931\u8d25\uff1b\u8bf7\u7f29\u5c0f\u95ee\u9898\u8303\u56f4\u6216\u6307\u5b9a\u8981\u7ee7\u7eed\u5206\u6790\u7684\u5546\u54c1/\u7c7b\u76ee\u3002"
+        store.update_message(session, assistant_msg, fallback, status="done")
+        store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": fallback})
 
 
 def execute_queue_job(filename: str, job_type: str, progress: dict) -> None:
