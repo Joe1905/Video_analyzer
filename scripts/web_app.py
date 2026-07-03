@@ -4321,6 +4321,7 @@ def call_chat_ocr(server_file_path: str, document_hint: str) -> tuple[str, dict[
 
     started = time.monotonic()
     payload = {
+        "filePath": server_file_path,
         "serverFilePath": server_file_path,
         "documentHint": document_hint or "chat image",
         "structured": True,
@@ -4332,8 +4333,18 @@ def call_chat_ocr(server_file_path: str, document_hint: str) -> tuple[str, dict[
         timeout=90,
     )
     if response.status_code >= 400:
-        print(f"[CHAT OCR] {response.status_code}: {response.text[:300]}", flush=True)
-    response.raise_for_status()
+        print(f"[CHAT OCR] {response.status_code}: {response.text[:500]}", flush=True)
+        try:
+            error_body = response.json()
+        except ValueError:
+            error_body = {}
+        ocr_run = error_body.get("ocrRun") if isinstance(error_body, dict) else None
+        detail = ""
+        if isinstance(ocr_run, dict):
+            detail = str(ocr_run.get("error") or ocr_run.get("status") or "").strip()
+        if not detail and isinstance(error_body, dict):
+            detail = str(error_body.get("error") or error_body.get("message") or "").strip()
+        raise RuntimeError(detail or f"OCR service returned HTTP {response.status_code}")
     data = response.json()
     record_api_call(
         "ocr",
