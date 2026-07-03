@@ -320,11 +320,8 @@ chat_provider_stores = {
     "amazon": ChatStore(SELLERSPRITE_CHAT_DATA_DIR / "chat_sessions.json"),
     "fastmoss": ChatStore(FASTMOSS_CHAT_DATA_DIR / "chat_sessions.json"),
 }
-chat_tool_config: set[str] | None = None  # None = all tools enabled
-
-
-
 CHAT_PROVIDERS = {"home", "amazon", "fastmoss"}
+CHAT_TOOL_DOMAINS = ("system", "function", "sellersprite", "fastmoss")
 CHAT_PROVIDER_LABELS = {"home": "\u9996\u9875", "amazon": "Amazon", "fastmoss": "FastMoss"}
 CHAT_PROVIDER_DEFAULT_DOMAINS = {
     "home": {"system", "function"},
@@ -4767,10 +4764,6 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/chat/tool-catalog":
             provider = normalize_chat_provider(parse_qs(parsed.query).get("provider", ["home"])[0])
             return json_response(self, HTTPStatus.OK, build_tool_catalog(provider))
-        if parsed.path == "/api/chat/tools":
-            return json_response(self, HTTPStatus.OK, list_tools())
-        if parsed.path == "/api/chat/tool-config":
-            return json_response(self, HTTPStatus.OK, {"enabled": list(chat_tool_config) if chat_tool_config is not None else None})
         if parsed.path.startswith("/api/chat/sessions/") and "/messages" in parsed.path:
             parts = parsed.path.split("/")
             sid = parts[4] if len(parts) > 4 else ""
@@ -5331,8 +5324,6 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_chat_ask()
         if parsed.path == "/api/chat/export-pdf":
             return self.handle_chat_export_pdf()
-        if parsed.path == "/api/chat/tool-config":
-            return self.handle_chat_tool_config()
         if parsed.path == "/api/shop-extract":
             return self.handle_shop_extract()
         if parsed.path == "/api/video-metrics":
@@ -5981,21 +5972,6 @@ class Handler(BaseHTTPRequestHandler):
 
     def handle_sellersprite_chat_export_pdf(self) -> None:
         return self.handle_mcp_chat_export_pdf("sellersprite")
-    def handle_chat_tool_config(self) -> None:
-        content_length = int(self.headers.get("Content-Length", "0"))
-        body = self.rfile.read(content_length)
-        try:
-            payload = json.loads(body.decode("utf-8") or "{}")
-            enabled = payload.get("enabled")
-            global chat_tool_config
-            if enabled is None:
-                chat_tool_config = None
-            elif isinstance(enabled, list):
-                chat_tool_config = set(enabled)
-            return json_response(self, HTTPStatus.OK, {"status": "saved"})
-        except Exception as exc:
-            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
-
     def stream_status_events(self) -> None:
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
