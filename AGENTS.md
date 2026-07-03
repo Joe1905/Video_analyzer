@@ -252,7 +252,7 @@ https://github.com/Joe1905/Video_analyzer.git
 
 GitHub access rule:
 
-- GitHub `fetch`, `pull`, `push`, and `clone` operations must use the configured proxy path. Prefer explicit `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` / lowercase environment variables, or scoped `git -c http.proxy=... -c https.proxy=...` when the proxy URL is available. Do not commit proxy credentials.
+- GitHub `fetch`, `pull`, `push`, and `clone` operations must use the configured proxy path. Default to `http://127.0.0.1:7892`; if that fails, retry once with `http://127.0.0.1:7897`. Prefer explicit `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` / lowercase environment variables, or scoped `git -c http.proxy=... -c https.proxy=...` when the proxy URL is available. Do not commit proxy credentials.
 - If GitHub HTTPS fails during the initial handshake, record the concrete error and proxy state, then switch to the proxy path or another approved authenticated GitHub path. Do not blindly retry direct HTTPS.
 
 Production deploy workflow:
