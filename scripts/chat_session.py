@@ -16,6 +16,7 @@ class Message:
     id: str
     role: str  # "user" | "assistant" | "tool"
     content: str
+    attachments: list[dict] | None = None
     tool_calls: list[dict] | None = None
     tool_results: list[dict] | None = None
     status: str = "done"  # "pending" | "done" | "error"
@@ -101,6 +102,9 @@ class ChatStore:
         for msg in session.messages:
             if msg.role == "user" and msg.content:
                 return msg.content[:40] + ("..." if len(msg.content) > 40 else "")
+            if msg.role == "user" and msg.attachments:
+                name = str((msg.attachments[0] or {}).get("name") or "Image")
+                return name[:40] + ("..." if len(name) > 40 else "")
         return "新对话"
 
     def _schedule_save(self):
@@ -149,6 +153,7 @@ def save_sessions_to_disk(store: ChatStore):
             "created_at": s.created_at, "updated_at": s.updated_at,
             "messages": [{
                 "id": m.id, "role": m.role, "content": m.content,
+                "attachments": m.attachments,
                 "tool_calls": m.tool_calls, "tool_results": m.tool_results,
                 "status": m.status, "created_at": m.created_at,
             } for m in s.messages],
@@ -177,6 +182,7 @@ def load_sessions_from_disk(store: ChatStore):
                 session.messages.append(Message(
                     id=m.get("id", ""), role=m.get("role", "user"),
                     content=m.get("content", ""),
+                    attachments=m.get("attachments"),
                     tool_calls=m.get("tool_calls"), tool_results=m.get("tool_results"),
                     status=m.get("status", "done"),
                     created_at=m.get("created_at", time.time()),

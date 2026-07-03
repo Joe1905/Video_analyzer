@@ -44,6 +44,11 @@ services:
       SELLERSPRITE_REDIRECT_PORT: "0"
       API_CACHE_ENABLED: ${API_CACHE_ENABLED:-1}
       API_CACHE_TTL_SECONDS: ${API_CACHE_TTL_SECONDS:-604800}
+      OCR_API_URL: ${OCR_API_URL:-http://127.0.0.1:4000/v1/ocr/extract}
+      OCR_SHARED_DIR: ${OCR_SHARED_DIR:-/home/openclaw/ocr-shared}
+      OCR_SERVER_SHARED_DIR: ${OCR_SERVER_SHARED_DIR:-/home/openclaw/ocr-shared}
+      CHAT_IMAGE_MAX_BYTES: ${CHAT_IMAGE_MAX_BYTES:-6291456}
+      CHAT_IMAGE_MAX_COUNT: ${CHAT_IMAGE_MAX_COUNT:-6}
       MAX_FRAMES: ${MAX_FRAMES:-20}
       WHISPER_MODEL: ${WHISPER_MODEL:-small}
       LANGUAGE: ${LANGUAGE:-zh}
@@ -143,6 +148,7 @@ services:
       - ./output:/workspace/output
       - ./data:/workspace/data
       - ./scripts:/workspace/scripts:ro
+      - ${OCR_SHARED_DIR:-/home/openclaw/ocr-shared}:${OCR_SERVER_SHARED_DIR:-/home/openclaw/ocr-shared}
       - /var/run/docker.sock:/var/run/docker.sock
     network_mode: host
 

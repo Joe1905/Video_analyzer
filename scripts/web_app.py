@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import json
+import base64
+import binascii
 import hmac
 import http.client
 import mimetypes
@@ -192,6 +194,19 @@ VIDEO_INFO_TTL_SECONDS = 24 * 60 * 60
 VIDEO_MEDIA_TTL_SECONDS = int(os.getenv("VIDEO_MEDIA_TTL_SECONDS", "900"))
 SOCIAL_COMMENT_COUNT = int(os.getenv("SOCIAL_COMMENT_COUNT", "50"))
 SOCIAL_API_TIMEOUT = float(os.getenv("SOCIAL_API_TIMEOUT", "45"))
+CHAT_IMAGE_ALLOWED_MIME = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "image/bmp": ".bmp",
+}
+CHAT_IMAGE_MAX_BYTES = int(os.getenv("CHAT_IMAGE_MAX_BYTES", "6291456"))
+CHAT_IMAGE_MAX_COUNT = int(os.getenv("CHAT_IMAGE_MAX_COUNT", "6"))
+OCR_API_URL = os.getenv("OCR_API_URL", "http://127.0.0.1:4000/v1/ocr/extract")
+OCR_SHARED_DIR = Path(os.getenv("OCR_SHARED_DIR", "/home/openclaw/ocr-shared"))
+OCR_SERVER_SHARED_DIR = os.getenv("OCR_SERVER_SHARED_DIR", "/home/openclaw/ocr-shared").rstrip("/")
+CHAT_ATTACHMENT_DIR = OCR_SHARED_DIR / "incoming" / "chat"
 
 
 def load_prompt() -> str:
@@ -4221,6 +4236,177 @@ def tools_for_chat_intent(user_text: str, enabled: set[str] | None) -> tuple[lis
     return get_tools_for_model(selected), route
 
 
+class ChatAttachmentError(ValueError):
+    def __init__(self, message: str, attachments: list[dict[str, Any]] | None = None):
+        super().__init__(message)
+        self.attachments = attachments or []
+
+
+def chat_attachment_public_url(attachment_id: str) -> str:
+    return f"/api/chat/attachments/{quote_plus(attachment_id)}"
+
+
+def chat_attachment_path(attachment_id: str) -> Path | None:
+    if not re.fullmatch(r"[0-9a-f]{32}", str(attachment_id or "")):
+        return None
+    for suffix in CHAT_IMAGE_ALLOWED_MIME.values():
+        path = CHAT_ATTACHMENT_DIR / f"{attachment_id}{suffix}"
+        if path.is_file():
+            return path
+    return None
+
+
+def _decode_chat_image_data_url(item: dict[str, Any], index: int) -> tuple[str, str, bytes]:
+    if not isinstance(item, dict):
+        raise ValueError(f"attachments[{index}] is invalid")
+    name = str(item.get("name") or f"image-{index + 1}").strip()[:120] or f"image-{index + 1}"
+    data_url = str(item.get("dataUrl") or "")
+    match = re.fullmatch(r"data:(image/[a-zA-Z0-9.+-]+);base64,(.+)", data_url, flags=re.DOTALL)
+    if not match:
+        raise ValueError(f"{name}: invalid image data")
+    mime = match.group(1).lower()
+    if mime not in CHAT_IMAGE_ALLOWED_MIME:
+        raise ValueError(f"{name}: unsupported image type")
+    if len(match.group(2)) > int(CHAT_IMAGE_MAX_BYTES * 1.45) + 128:
+        raise ValueError(f"{name}: image exceeds {CHAT_IMAGE_MAX_BYTES} bytes")
+    try:
+        data = base64.b64decode(match.group(2), validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError(f"{name}: invalid image payload") from exc
+    if not data or len(data) > CHAT_IMAGE_MAX_BYTES:
+        raise ValueError(f"{name}: image exceeds {CHAT_IMAGE_MAX_BYTES} bytes")
+    return name, mime, data
+
+
+def _server_ocr_path(local_path: Path) -> str:
+    relative = local_path.relative_to(OCR_SHARED_DIR).as_posix()
+    return f"{OCR_SERVER_SHARED_DIR}/{relative}"
+
+
+def _compact_ocr_text(value: Any, max_chars: int = 8000) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return re.sub(r"\s+", " ", value).strip()[:max_chars]
+    if isinstance(value, list):
+        parts = [_compact_ocr_text(item, max_chars=max_chars) for item in value]
+        return "\n".join(part for part in parts if part).strip()[:max_chars]
+    if isinstance(value, dict):
+        preferred = []
+        for key in ("text", "markdown", "content", "plainText", "plain_text", "fullText", "full_text", "result"):
+            if key in value:
+                text = _compact_ocr_text(value.get(key), max_chars=max_chars)
+                if text:
+                    preferred.append(text)
+        if preferred:
+            return "\n".join(preferred).strip()[:max_chars]
+        leaf_parts = []
+        for key, child in value.items():
+            if key.lower() in {"image", "base64", "dataurl", "data_url"}:
+                continue
+            child_text = _compact_ocr_text(child, max_chars=max_chars)
+            if child_text:
+                leaf_parts.append(f"{key}: {child_text}")
+        if leaf_parts:
+            return "\n".join(leaf_parts).strip()[:max_chars]
+        try:
+            return json.dumps(value, ensure_ascii=False, separators=(",", ":"))[:max_chars]
+        except TypeError:
+            return str(value)[:max_chars]
+    return str(value).strip()[:max_chars]
+
+
+def call_chat_ocr(server_file_path: str, document_hint: str) -> tuple[str, dict[str, Any]]:
+    import requests as req
+
+    started = time.monotonic()
+    payload = {
+        "serverFilePath": server_file_path,
+        "documentHint": document_hint or "chat image",
+        "structured": True,
+    }
+    response = req.post(
+        OCR_API_URL,
+        headers={"Content-Type": "application/json"},
+        json=payload,
+        timeout=90,
+    )
+    if response.status_code >= 400:
+        print(f"[CHAT OCR] {response.status_code}: {response.text[:300]}", flush=True)
+    response.raise_for_status()
+    data = response.json()
+    record_api_call(
+        "ocr",
+        "chat_image_extract",
+        {
+            "api_url": OCR_API_URL,
+            "server_file_path": server_file_path,
+            "document_hint": document_hint,
+        },
+        data,
+        elapsed_ms=int((time.monotonic() - started) * 1000),
+    )
+    text = _compact_ocr_text(data)
+    if not text:
+        raise ValueError("OCR did not return readable text")
+    return text, data
+
+
+def process_chat_attachments(raw_attachments: Any, user_text: str) -> list[dict[str, Any]]:
+    if raw_attachments in (None, ""):
+        return []
+    if not isinstance(raw_attachments, list):
+        raise ValueError("attachments must be an array")
+    if len(raw_attachments) > CHAT_IMAGE_MAX_COUNT:
+        raise ValueError(f"Too many images; maximum is {CHAT_IMAGE_MAX_COUNT}")
+    CHAT_ATTACHMENT_DIR.mkdir(parents=True, exist_ok=True)
+    processed = []
+    for index, item in enumerate(raw_attachments):
+        name, mime, data = _decode_chat_image_data_url(item, index)
+        attachment_id = uuid.uuid4().hex
+        suffix = CHAT_IMAGE_ALLOWED_MIME[mime]
+        local_path = CHAT_ATTACHMENT_DIR / f"{attachment_id}{suffix}"
+        local_path.write_bytes(data)
+        server_file_path = _server_ocr_path(local_path)
+        meta = {
+            "id": attachment_id,
+            "name": name,
+            "type": mime,
+            "size": len(data),
+            "url": chat_attachment_public_url(attachment_id),
+        }
+        try:
+            ocr_text, _ocr_raw = call_chat_ocr(server_file_path, (user_text or name or "chat image")[:120])
+            meta["ocr_text"] = ocr_text
+        except Exception as exc:
+            meta["ocr_error"] = str(exc)
+            processed.append(meta)
+            raise ChatAttachmentError(f"{name}: OCR failed: {exc}", processed) from exc
+        processed.append(meta)
+    return processed
+
+
+def chat_ocr_context(attachments: list[dict] | None) -> str:
+    lines = []
+    for index, item in enumerate(attachments or [], start=1):
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or f"image-{index}")
+        text = str(item.get("ocr_text") or "").strip()
+        if text:
+            lines.append(f"[Image {index}: {name}]\n{text}")
+    return "\n\n".join(lines).strip()
+
+
+def chat_message_content_for_model(message: Message) -> str:
+    content = str(message.content or "")
+    ocr_context = chat_ocr_context(message.attachments)
+    if not ocr_context:
+        return content
+    user_part = content.strip() or "User sent an image."
+    return f"User question:\n{user_part}\n\nImage OCR result:\n{ocr_context}"
+
+
 def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, provider: str = "home", enabled_tool_ids: set[str] | None = None) -> None:
     """Background thread: call DeepSeek with provider-scoped tools and stream results via SSE."""
     import requests as req
@@ -4256,7 +4442,8 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
         "For Amazon/product analysis from a short product phrase, treat the phrase as ambiguous unless the user provides a URL, ASIN, exact category, or target user. "
         "Do not let derived long-tail keywords override the user's original phrase: if tool results split across pet, human beauty, home appliance, or other meanings, explicitly compare those interpretations and ask for clarification or state which one the evidence supports. "
         "A useful product analysis must include: query interpretation, data evidence from the tools, market/competition read, opportunity angles, risks, and concrete next validation steps. "
-        "If a video download or analysis tool fails, say clearly that real video download/frame analysis was not completed."
+        "If a video download or analysis tool fails, say clearly that real video download/frame analysis was not completed. "
+        "When user messages include Image OCR result, treat that section as OCR text extracted from user-uploaded images; do not claim visual details beyond that OCR text unless the user provided them."
     )}]
 
     for m in session.messages[-20:]:
@@ -4265,9 +4452,9 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
         tool_calls = m.tool_calls or []
         tool_results = m.tool_results or []
         if tool_calls and len(tool_results) < len(tool_calls):
-            messages.append({"role": m.role, "content": m.content or "Previous tool call was interrupted; incomplete tool context is ignored."})
+            messages.append({"role": m.role, "content": chat_message_content_for_model(m) or "Previous tool call was interrupted; incomplete tool context is ignored."})
             continue
-        md = {"role": m.role, "content": m.content}
+        md = {"role": m.role, "content": chat_message_content_for_model(m)}
         if tool_calls:
             md["tool_calls"] = tool_calls
         messages.append(md)
@@ -4775,6 +4962,9 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/chat/tool-catalog":
             provider = normalize_chat_provider(parse_qs(parsed.query).get("provider", ["home"])[0])
             return json_response(self, HTTPStatus.OK, build_tool_catalog(provider))
+        if parsed.path.startswith("/api/chat/attachments/"):
+            attachment_id = unquote(parsed.path.rsplit("/", 1)[-1])
+            return self.serve_chat_attachment(attachment_id)
         if parsed.path.startswith("/api/chat/sessions/") and "/messages" in parsed.path:
             parts = parsed.path.split("/")
             sid = parts[4] if len(parts) > 4 else ""
@@ -4788,6 +4978,7 @@ class Handler(BaseHTTPRequestHandler):
                     "id": m.id,
                     "role": m.role,
                     "content": m.content,
+                    "attachments": m.attachments,
                     "tool_calls": m.tool_calls,
                     "tool_results": m.tool_results,
                     "status": m.status,
@@ -5271,6 +5462,13 @@ class Handler(BaseHTTPRequestHandler):
             return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Asset not found"})
         content_type = mimetypes.guess_type(asset_path.name)[0] or "application/octet-stream"
         return binary_response(self, HTTPStatus.OK, asset_path.read_bytes(), content_type)
+
+    def serve_chat_attachment(self, attachment_id: str) -> None:
+        attachment_path = chat_attachment_path(attachment_id)
+        if not attachment_path:
+            return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Attachment not found"})
+        content_type = mimetypes.guess_type(attachment_path.name)[0] or "application/octet-stream"
+        return binary_response(self, HTTPStatus.OK, attachment_path.read_bytes(), content_type)
 
     def serve_video(self, path: Path) -> None:
         if not path.is_file():
@@ -5853,6 +6051,7 @@ class Handler(BaseHTTPRequestHandler):
             provider = normalize_chat_provider(payload.get("provider"))
             session_id = str(payload.get("sessionId", "default")).strip() or "default"
             text = str(payload.get("message", "")).strip()
+            raw_attachments = payload.get("attachments", [])
             enabled_masks = payload.get("enabledToolMasks") if "enabledToolMasks" in payload else {}
             enabled_tool_ids = decode_tool_masks(enabled_masks) if "enabledToolMasks" in payload else set()
             decoded_domains = sorted({split_prefixed_tool_id(tool_id)[0] for tool_id in enabled_tool_ids})
@@ -5861,28 +6060,72 @@ class Handler(BaseHTTPRequestHandler):
                 f"decoded_domains={','.join(decoded_domains) or '-'} decoded_count={len(enabled_tool_ids)}",
                 flush=True,
             )
-            if not text:
-                return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "message is required"})
+            has_attachments = isinstance(raw_attachments, list) and bool(raw_attachments)
+            if not text and not has_attachments:
+                return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "message or image is required"})
         except (json.JSONDecodeError, ValueError) as exc:
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
         store = chat_store_for_provider(provider)
         stored_session_id = chat_session_key(provider, session_id)
         session = store.get_or_create(stored_session_id)
-        user_msg = Message(id=str(uuid.uuid4()), role="user", content=text)
+
+        try:
+            attachments = process_chat_attachments(raw_attachments, text)
+        except ChatAttachmentError as exc:
+            attachments = exc.attachments
+            user_msg = Message(id=str(uuid.uuid4()), role="user", content=text, attachments=attachments)
+            store.add_message(session, user_msg)
+            if not session.title:
+                title_seed = text or (attachments[0].get("name") if attachments else "Image")
+                session.title = str(title_seed)[:40] + ("..." if len(str(title_seed)) > 40 else "")
+            assistant_msg = Message(id=str(uuid.uuid4()), role="assistant", content=str(exc), status="error")
+            store.add_message(session, assistant_msg)
+            return json_response(self, HTTPStatus.ACCEPTED, {
+                "sessionId": session_id,
+                "provider": provider,
+                "userMessage": {
+                    "id": user_msg.id,
+                    "role": "user",
+                    "content": user_msg.content,
+                    "attachments": user_msg.attachments,
+                    "status": user_msg.status,
+                    "created_at": user_msg.created_at,
+                },
+                "message": {
+                    "id": assistant_msg.id,
+                    "role": "assistant",
+                    "content": assistant_msg.content,
+                    "status": "error",
+                    "created_at": assistant_msg.created_at,
+                },
+            })
+        except ValueError as exc:
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+
+        user_msg = Message(id=str(uuid.uuid4()), role="user", content=text, attachments=attachments)
         store.add_message(session, user_msg)
         if not session.title:
-            session.title = text[:40] + ("..." if len(text) > 40 else "")
+            title_seed = text or (attachments[0].get("name") if attachments else "Image")
+            session.title = str(title_seed)[:40] + ("..." if len(str(title_seed)) > 40 else "")
 
+        model_text = chat_message_content_for_model(user_msg)
         assistant_msg = Message(id=str(uuid.uuid4()), role="assistant", content="", status="pending")
         store.add_message(session, assistant_msg)
 
-        thread = threading.Thread(target=run_chat_deepseek, args=(store, session, assistant_msg, text, provider, enabled_tool_ids), daemon=True)
+        thread = threading.Thread(target=run_chat_deepseek, args=(store, session, assistant_msg, model_text, provider, enabled_tool_ids), daemon=True)
         thread.start()
         return json_response(self, HTTPStatus.ACCEPTED, {
             "sessionId": session_id,
             "provider": provider,
-            "userMessage": {"id": user_msg.id, "role": "user", "content": user_msg.content, "status": user_msg.status, "created_at": user_msg.created_at},
+            "userMessage": {
+                "id": user_msg.id,
+                "role": "user",
+                "content": user_msg.content,
+                "attachments": user_msg.attachments,
+                "status": user_msg.status,
+                "created_at": user_msg.created_at,
+            },
             "message": {"id": assistant_msg.id, "role": "assistant", "content": "", "status": "pending"},
         })
 
