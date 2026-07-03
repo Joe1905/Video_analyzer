@@ -569,41 +569,54 @@ function parseSellerSpriteToolPayload(result) {
 }
 
 function getSellerSpriteToolError(result) {
-  if (result?.isError) return { code: "MCP_TOOL_ERROR", message: "SellerSprite MCP 工具返回错误。" };
+  if (result?.isError) return { code: "MCP_TOOL_ERROR", message: `${MCP_CHAT_LABEL} MCP \u5de5\u5177\u8fd4\u56de\u9519\u8bef\u3002` };
   const payload = parseSellerSpriteToolPayload(result);
   if (!payload) return null;
   const code = String(payload.code || "");
   const message = String(payload.message || "");
-  if (code.startsWith("ERROR") || code.includes("UNAUTHORIZED") || message.includes("未授权")) {
-    return { code: code || "SELLERSPRITE_ERROR", message: message || "SellerSprite MCP 工具返回错误。", data: payload.data ?? null };
+  if (code.startsWith("ERROR") || code.includes("UNAUTHORIZED") || message.includes("\u672a\u6388\u6743")) {
+    return { code: code || `${MCP_CHAT_TYPE.toUpperCase()}_ERROR`, message: message || `${MCP_CHAT_LABEL} MCP \u5de5\u5177\u8fd4\u56de\u9519\u8bef\u3002`, data: payload.data ?? null };
   }
   return null;
 }
 
-function formatToolError(toolName, error) {
-  if (error?.code === "ERROR_UNAUTHORIZED" || error?.message?.includes("未授权")) {
+function providerCredentialHints() {
+  if (MCP_CHAT_TYPE === "fastmoss") {
     return [
-      "### SellerSprite MCP 授权异常",
+      "- \u5f53\u524d `FASTMOSS_MCP_API_KEY` \u662f\u5426\u4ecd\u6709\u6548\u3002",
+      "- FastMoss \u8d26\u53f7\u662f\u5426\u6709\u8c03\u7528\u8be5\u5de5\u5177/API \u7684\u6743\u9650\u6216\u989d\u5ea6\u3002",
+      "- FastMoss \u540e\u53f0\u662f\u5426\u9700\u8981\u91cd\u65b0\u751f\u6210\u6216\u7ed1\u5b9a MCP API key\u3002",
+    ];
+  }
+  return [
+    "- \u5f53\u524d `SELLERSPRITE_SECRET_KEY` \u662f\u5426\u4ecd\u6709\u6548\u3002",
+    "- \u8be5\u5bc6\u94a5\u5bf9\u5e94\u8d26\u53f7\u662f\u5426\u6709\u8c03\u7528\u8fd9\u4e2a\u5de5\u5177/API \u7684\u6743\u9650\u3002",
+    "- SellerSprite \u540e\u53f0\u662f\u5426\u9700\u8981\u91cd\u65b0\u751f\u6210\u6216\u7ed1\u5b9a MCP secret\u3002",
+  ];
+}
+
+function formatToolError(toolName, error) {
+  if (error?.code === "ERROR_UNAUTHORIZED" || error?.message?.includes("\u672a\u6388\u6743")) {
+    return [
+      `### ${MCP_CHAT_LABEL} MCP \u6388\u6743\u5f02\u5e38`,
       "",
-      `工具 \`${toolName}\` 返回：\`${error.code || "ERROR"}\`，${error.message || "未授权"}。`,
+      `\u5de5\u5177 \`${toolName}\` \u8fd4\u56de\uff1a\`${error.code || "ERROR"}\`\uff0c${error.message || "\u672a\u6388\u6743"}\u3002`,
       "",
-      "这不是前端显示问题，也不是 DeepSeek 初始回复问题；是 SellerSprite MCP 在实际工具调用阶段拒绝了请求。",
+      `\u8fd9\u4e0d\u662f\u524d\u7aef\u663e\u793a\u95ee\u9898\uff0c\u4e5f\u4e0d\u662f DeepSeek \u521d\u59cb\u56de\u590d\u95ee\u9898\uff1b\u662f ${MCP_CHAT_LABEL} MCP \u5728\u5b9e\u9645\u5de5\u5177\u8c03\u7528\u9636\u6bb5\u62d2\u7edd\u4e86\u8bf7\u6c42\u3002`,
       "",
-      "请检查：",
-      "- 当前 `SELLERSPRITE_SECRET_KEY` 是否仍有效。",
-      "- 该密钥对应账号是否有调用这个工具/API 的权限。",
-      "- SellerSprite 后台是否需要重新生成或绑定 MCP secret。",
+      "\u8bf7\u68c0\u67e5\uff1a",
+      ...providerCredentialHints(),
       "",
-      "我不会基于未授权结果编造实时市场数据。授权恢复后再发送同样的问题即可继续查询。",
+      "\u6211\u4e0d\u4f1a\u57fa\u4e8e\u672a\u6388\u6743\u7ed3\u679c\u7f16\u9020\u5b9e\u65f6\u5e02\u573a\u6570\u636e\u3002\u6388\u6743\u6062\u590d\u540e\u518d\u53d1\u9001\u540c\u6837\u7684\u95ee\u9898\u5373\u53ef\u7ee7\u7eed\u67e5\u8be2\u3002",
     ].join("\n");
   }
 
   return [
-    "### SellerSprite MCP 工具调用失败",
+    `### ${MCP_CHAT_LABEL} MCP \u5de5\u5177\u8c03\u7528\u5931\u8d25`,
     "",
-    `工具 \`${toolName}\` 返回：\`${error?.code || "ERROR"}\`，${error?.message || "未知错误"}。`,
+    `\u5de5\u5177 \`${toolName}\` \u8fd4\u56de\uff1a\`${error?.code || "ERROR"}\`\uff0c${error?.message || "\u672a\u77e5\u9519\u8bef"}\u3002`,
     "",
-    "请调整参数或稍后重试。",
+    "\u8bf7\u8c03\u6574\u53c2\u6570\u6216\u7a0d\u540e\u91cd\u8bd5\u3002",
   ].join("\n");
 }
 
@@ -798,7 +811,7 @@ async function callDeepSeek(payload) {
   return data;
 }
 
-async function answerWithDeepSeek(session, userText) {
+async function answerWithDeepSeek(session, userText, onProgress = null) {
   const history = recentChatForModel(session);
   if (history.at(-1)?.role === "user" && history.at(-1)?.content === userText) history.pop();
 
@@ -814,6 +827,16 @@ async function answerWithDeepSeek(session, userText) {
   const deepseekResponses = [];
   const toolResults = [];
   let firstRequest = null;
+  const emitProgress = () => {
+    if (typeof onProgress === "function") {
+      onProgress({
+        content: `\u6b63\u5728\u8c03\u7528 ${MCP_CHAT_LABEL} MCP \u5de5\u5177...`,
+        request: firstRequest,
+        raw: { deepseek: deepseekResponses, toolResults },
+        status: "pending",
+      });
+    }
+  };
   const requireToolFirst = shouldRequireSellerSpriteTool(userText);
   conversation.splice(1, 0, {
     role: "system",
@@ -841,16 +864,16 @@ async function answerWithDeepSeek(session, userText) {
       if (requireToolFirst && step === 0) {
         return {
           content: [
-            "### 需要实际调用 SellerSprite MCP",
+            `### \u9700\u8981\u5b9e\u9645\u8c03\u7528 ${MCP_CHAT_LABEL} MCP`,
             "",
-            "这个问题属于 Amazon/SellerSprite 数据查询，必须先调用 MCP 工具才能给出结果。",
+            `\u8fd9\u4e2a\u95ee\u9898\u5c5e\u4e8e ${MCP_CHAT_LABEL} \u6570\u636e\u67e5\u8be2\uff0c\u5fc5\u987b\u5148\u8c03\u7528 MCP \u5de5\u5177\u624d\u80fd\u7ed9\u51fa\u7ed3\u679c\u3002`,
             "",
-            "本轮 DeepSeek 没有选择任何工具，因此我不会采纳它的直接回答，也不会编造授权、次数或市场数据。",
+            "\u672c\u8f6e DeepSeek \u6ca1\u6709\u9009\u62e9\u4efb\u4f55\u5de5\u5177\uff0c\u56e0\u6b64\u6211\u4e0d\u4f1a\u91c7\u7eb3\u5b83\u7684\u76f4\u63a5\u56de\u7b54\uff0c\u4e5f\u4e0d\u4f1a\u7f16\u9020\u6388\u6743\u3001\u6b21\u6570\u6216\u5e02\u573a\u6570\u636e\u3002",
             "",
-            "你可以补充更明确的查询条件后重试，例如：",
-            "- 站点：US",
-            "- ASIN、关键词或类目节点",
-            "- 想查的维度：产品列表、类目结构、关键词、销量、竞品等",
+            "\u4f60\u53ef\u4ee5\u8865\u5145\u66f4\u660e\u786e\u7684\u67e5\u8be2\u6761\u4ef6\u540e\u91cd\u8bd5\uff0c\u4f8b\u5982\uff1a",
+            "- US / UK / DE / JP \u7b49\u7ad9\u70b9\u6216\u56fd\u5bb6\u5730\u533a",
+            "- \u5173\u952e\u8bcd\u3001\u7c7b\u76ee\u3001ID\u3001\u540d\u79f0\u6216\u8be6\u60c5\u94fe\u63a5",
+            "- \u60f3\u67e5\u7684\u7ef4\u5ea6\uff1a\u699c\u5355\u3001\u8d8b\u52bf\u3001\u9500\u91cf\u3001\u7ade\u54c1\u7b49",
           ].join("\n"),
           request: firstRequest,
           raw: { deepseek: deepseekResponses, toolResults },
@@ -862,6 +885,9 @@ async function answerWithDeepSeek(session, userText) {
     for (const toolCall of toolCalls) {
       const name = toolCall.function?.name;
       const args = safeJsonParse(toolCall.function?.arguments, {});
+      const toolResultEntry = { toolCall, args, result: null };
+      toolResults.push(toolResultEntry);
+      emitProgress();
       const result = await callSellerSpriteToolCached(name, args);
       const toolError = getSellerSpriteToolError(result);
       const wrapped = {
@@ -873,7 +899,8 @@ async function answerWithDeepSeek(session, userText) {
         cache: result?._cache || null,
       };
       if (!firstRequest) firstRequest = wrapped.request;
-      toolResults.push({ toolCall, args, result: wrapped });
+      toolResultEntry.result = wrapped;
+      emitProgress();
       if (toolError) {
         const successfulToolCount = toolResults.filter((item) => item?.result?.ok).length;
         if (isBlockingToolError(toolError, successfulToolCount)) {
@@ -887,7 +914,7 @@ async function answerWithDeepSeek(session, userText) {
   if (toolResults.some((item) => item?.result?.ok)) {
     return synthesizeSellerSpriteAnswer(conversation, deepseekResponses, toolResults, firstRequest, "max tool rounds reached");
   }
-  return { content: "本轮没有拿到可用的 SellerSprite 工具结果。请补充更明确的站点、ASIN、关键词或类目节点后重试。", request: firstRequest, raw: { deepseek: deepseekResponses, toolResults, toolBoundary: "max tool rounds reached" } };
+  return { content: `\u672c\u8f6e\u6ca1\u6709\u62ff\u5230\u53ef\u7528\u7684 ${MCP_CHAT_LABEL} \u5de5\u5177\u7ed3\u679c\u3002\u8bf7\u8865\u5145\u66f4\u660e\u786e\u7684\u67e5\u8be2\u6761\u4ef6\u540e\u91cd\u8bd5\u3002`, request: firstRequest, raw: { deepseek: deepseekResponses, toolResults, toolBoundary: "max tool rounds reached" } };
 }
 
 async function handleAsk(req, res) {
@@ -914,7 +941,7 @@ async function handleAsk(req, res) {
       const modelText = attachments.length
         ? `${text || "用户发送了图片。"}\n\n用户上传了图片。如需识别图片文字，请优先考虑调用 MCP OCR 或图片相关工具。`
         : text;
-      const answer = await answerWithDeepSeek(session, modelText);
+      const answer = await answerWithDeepSeek(session, modelText, (patch) => updateMessage(session, assistantMessage.id, patch));
       updateMessage(session, assistantMessage.id, { content: answer.content, request: answer.request, raw: answer.raw, status: "done" });
     } catch (error) {
       updateMessage(session, assistantMessage.id, { content: error.message || "请求失败。", raw: { error: error.stack || String(error) }, status: "error" });
