@@ -4043,12 +4043,62 @@ def execute_prefixed_tool(tool_id: str, args: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "elapsed": round(time.monotonic() - started, 3), "error": str(exc)}
 
 
+def mcp_text_content(value: Any) -> str:
+    if not isinstance(value, dict):
+        return ""
+    payload = value.get("data") if "data" in value else value
+    if not isinstance(payload, dict):
+        return ""
+    content = payload.get("content")
+    if not isinstance(content, list):
+        return ""
+    texts: list[str] = []
+    for item in content:
+        if isinstance(item, dict) and isinstance(item.get("text"), str):
+            texts.append(item["text"])
+        elif isinstance(item, str):
+            texts.append(item)
+    return "\n".join(texts).strip()
+
+
+def parse_mcp_text_content(text: str) -> Any:
+    cleaned = str(text or "").strip()
+    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE).strip()
+    cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+    if not cleaned:
+        return None
+    try:
+        return json.loads(cleaned)
+    except Exception:
+        return None
+
+
+def compact_mcp_content(value: Any, max_chars: int = 12000) -> Any:
+    if value is None:
+        return None
+    text = json.dumps(value, ensure_ascii=False, separators=(",", ":")) if not isinstance(value, str) else value
+    if len(text) <= max_chars:
+        return value
+    return text[:max_chars] + "..."
+
+
 def normalize_prefixed_tool_result(tool_id: str, result: dict[str, Any]) -> dict[str, Any]:
     domain, name = split_prefixed_tool_id(tool_id)
     normalized = normalize_tool_result(name, result)
     if isinstance(normalized, dict):
         normalized.setdefault("tool_domain", domain)
         normalized.setdefault("tool_name", name)
+        if domain in {"sellersprite", "fastmoss"}:
+            text = mcp_text_content(result)
+            parsed = parse_mcp_text_content(text)
+            content_value = parsed if parsed is not None else text
+            has_content = payload_has_content(content_value)
+            if text:
+                normalized["mcp_text_preview"] = text[:4000]
+            if parsed is not None:
+                normalized["mcp_data"] = compact_mcp_content(parsed)
+            normalized["enough_data"] = bool(has_content)
+            normalized["suggested_next_action"] = "answer_from_results" if has_content else "try_different_query"
     return normalized
 
 
