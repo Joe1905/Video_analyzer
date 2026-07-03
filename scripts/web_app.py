@@ -4002,16 +4002,13 @@ def decode_tool_masks(masks: Any) -> set[str] | None:
         return None
     by_domain = registered_chat_tool_ids_by_domain()
     selected: set[str] = set()
-    saw_mask = False
     for domain in CHAT_TOOL_DOMAINS:
         if domain not in masks:
             continue
         decoded = _decode_hex_mask(masks.get(domain), by_domain.get(domain, []))
-        if decoded is None:
-            continue
-        saw_mask = True
-        selected.update(decoded)
-    return selected if saw_mask else None
+        if decoded is not None:
+            selected.update(decoded)
+    return selected
 
 
 def build_prefixed_model_tools(enabled_tool_ids: set[str] | None) -> list[dict[str, Any]]:
@@ -5842,8 +5839,14 @@ class Handler(BaseHTTPRequestHandler):
             provider = normalize_chat_provider(payload.get("provider"))
             session_id = str(payload.get("sessionId", "default")).strip() or "default"
             text = str(payload.get("message", "")).strip()
-            enabled_masks = payload.get("enabledToolMasks")
-            enabled_tool_ids = decode_tool_masks(enabled_masks)
+            enabled_masks = payload.get("enabledToolMasks") if "enabledToolMasks" in payload else {}
+            enabled_tool_ids = decode_tool_masks(enabled_masks) if "enabledToolMasks" in payload else set()
+            decoded_domains = sorted({split_prefixed_tool_id(tool_id)[0] for tool_id in enabled_tool_ids})
+            print(
+                f"[CHAT] received tool masks provider={provider} masks={json.dumps(enabled_masks, ensure_ascii=False, sort_keys=True)} "
+                f"decoded_domains={','.join(decoded_domains) or '-'} decoded_count={len(enabled_tool_ids)}",
+                flush=True,
+            )
             if not text:
                 return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "message is required"})
         except (json.JSONDecodeError, ValueError) as exc:
