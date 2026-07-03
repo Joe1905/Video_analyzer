@@ -3773,15 +3773,15 @@ def route_chat_intent(text: str) -> dict[str, Any]:
     lowered = (text or "").lower()
     has_tiktok_url = "tiktok.com" in lowered or "douyin.com" in lowered
     has_video_url = has_tiktok_url and ("/video/" in lowered or "/v/" in lowered or "vm.tiktok.com" in lowered)
-    has_amazon = "amazon." in lowered or _contains_any(lowered, ("asin",))
+    has_amazon = _contains_any(lowered, ("amazon", "asin", "亚马逊", "卖家精灵", "sellersprite"))
     has_shop = _contains_any(lowered, ("tiktok shop", "shop/pdp", "商品", "店铺", "小店", "橱窗"))
     has_product = _contains_any(
         lowered,
-        ("product", "market", "category", "research", "competitor", "selection", "选品", "商品", "品类", "市场", "竞品", "调研", "大卖", "热卖", "热度", "爆款"),
+        ("product", "market", "category", "research", "competitor", "selection", "选品", "商品", "产品", "品类", "类目", "市场", "竞品", "调研", "大卖", "热卖", "热度", "爆款"),
     )
-    has_analysis = _contains_any(lowered, ("analyze", "analysis", "download", "report", "解析", "分析", "下载", "报告", "提取"))
+    has_analysis = _contains_any(lowered, ("analyze", "analysis", "download", "report", "分析", "解析", "下载", "报告", "提取", "看看", "情况"))
     has_user = _contains_any(lowered, ("profile", "user", "creator", "followers", "达人", "用户", "账号", "作者", "粉丝", "主页"))
-    has_trend = _contains_any(lowered, ("trend", "trending", "hot", "viral", "hashtag", "keyword", "热门", "趋势", "热搜", "话题", "标签", "搜索"))
+    has_trend = _contains_any(lowered, ("trend", "trending", "hot", "viral", "hashtag", "keyword", "热门", "趋势", "热搜", "话题", "标签", "搜索", "关键词", "榜单", "排行"))
 
     if is_music_link_query(text):
         return {"intent": "music_link", "tools": MUSIC_QUERY_TOOLS, "max_rounds": 2}
@@ -3795,14 +3795,13 @@ def route_chat_intent(text: str) -> dict[str, Any]:
         return {"intent": "tiktok_shop", "tools": TIKTOK_SHOP_TOOLS, "max_rounds": 3}
     if has_amazon and not has_shop and not has_product:
         return {"intent": "amazon_product", "tools": AMAZON_TOOLS, "max_rounds": 3}
-    if has_product:
+    if has_product or (has_amazon and has_analysis):
         return {"intent": "product_research", "tools": PRODUCT_RESEARCH_TOOLS, "max_rounds": 4}
     if has_user:
         return {"intent": "tiktok_user", "tools": TIKTOK_USER_TOOLS | {"tiktok_search_users"}, "max_rounds": 4}
     if has_tiktok_url or has_trend:
         return {"intent": "tiktok_content", "tools": TIKTOK_CONTENT_TOOLS | MUSIC_QUERY_TOOLS, "max_rounds": 4}
     return {"intent": "general", "tools": None, "max_rounds": 5}
-
 
 
 LOCAL_SYSTEM_TOOLS = {"current_time"}
@@ -3943,6 +3942,64 @@ def to_model_tool(tool: dict[str, Any], tool_id: str, description: str | None = 
     }
 
 
+def provider_default_enabled_tool_ids(provider: str) -> set[str]:
+    provider = normalize_chat_provider(provider)
+    default_domains = CHAT_PROVIDER_DEFAULT_DOMAINS.get(provider, CHAT_PROVIDER_DEFAULT_DOMAINS["home"])
+    selected: set[str] = set()
+    for tool in TOOLS:
+        name = str(tool.get("name") or "")
+        domain = local_tool_domain(name)
+        if domain in default_domains:
+            selected.add(prefixed_tool_id(domain, name))
+    for domain, chat_type in (("sellersprite", "sellersprite"), ("fastmoss", "fastmoss")):
+        if domain not in default_domains:
+            continue
+        try:
+            tools = list_mcp_bridge_tools(chat_type)
+        except Exception as exc:
+            print(f"[CHAT] {chat_type} default tools/list failed: {exc}", flush=True)
+            continue
+        for tool in tools:
+            name = str(tool.get("name") or "")
+            if name:
+                selected.add(prefixed_tool_id(domain, name))
+    return selected
+
+
+def registered_chat_tool_ids() -> list[str]:
+    ids: list[str] = []
+    for tool in TOOLS:
+        name = str(tool.get("name") or "")
+        if not name:
+            continue
+        ids.append(prefixed_tool_id(local_tool_domain(name), name))
+    for domain, chat_type in (("sellersprite", "sellersprite"), ("fastmoss", "fastmoss")):
+        try:
+            tools = list_mcp_bridge_tools(chat_type)
+        except Exception as exc:
+            print(f"[CHAT] {chat_type} registry tools/list failed: {exc}", flush=True)
+            tools = []
+        for tool in tools:
+            name = str(tool.get("name") or "")
+            if name:
+                ids.append(prefixed_tool_id(domain, name))
+    return ids
+
+
+def decode_tool_mask(mask: Any) -> set[str] | None:
+    text = str(mask or "").strip().lower()
+    if not text:
+        return None
+    if text.startswith("0x"):
+        text = text[2:]
+    try:
+        value = int(text, 16)
+    except ValueError:
+        return None
+    ids = registered_chat_tool_ids()
+    return {tool_id for bit, tool_id in enumerate(ids) if value & (1 << bit)}
+
+
 def build_prefixed_model_tools(enabled_tool_ids: set[str] | None) -> list[dict[str, Any]]:
     selected = enabled_tool_ids
     model_tools: list[dict[str, Any]] = []
@@ -3981,8 +4038,12 @@ def build_tool_catalog(provider: str) -> dict[str, Any]:
     ]
     by_domain = {d["id"]: d for d in domains}
     cat_maps: dict[str, dict[str, dict[str, Any]]] = {d["id"]: {} for d in domains}
+    tool_registry: list[str] = []
 
     def add_tool(domain: str, category_id: str, category_label: str, tool: dict[str, Any]) -> None:
+        if not tool.get("disabled") and tool.get("id"):
+            tool["maskBit"] = len(tool_registry)
+            tool_registry.append(str(tool["id"]))
         cats = cat_maps[domain]
         if category_id not in cats:
             cats[category_id] = {"id": category_id, "label": category_label, "tools": []}
@@ -4025,7 +4086,7 @@ def build_tool_catalog(provider: str) -> dict[str, Any]:
                 "description": tool.get("description") or "",
                 "defaultSelected": domain in default_domains,
             })
-    return {"provider": provider, "domains": domains}
+    return {"provider": provider, "domains": domains, "toolRegistry": tool_registry, "maskEncoding": "hex-lsb"}
 
 
 def execute_prefixed_tool(tool_id: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -4187,11 +4248,12 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             tr_content = json.dumps(normalize_prefixed_tool_result(tool_name, tr.get("result", {})), ensure_ascii=False)
             messages.append({"role": "tool", "tool_call_id": tid, "content": tr_content})
 
-    tools = build_prefixed_model_tools(enabled_tool_ids)
     route = route_chat_intent(user_text)
     needs_tools = chat_request_needs_tools(user_text, route)
-    if not needs_tools:
-        tools = []
+    effective_enabled_tool_ids = enabled_tool_ids
+    if needs_tools and effective_enabled_tool_ids is None:
+        effective_enabled_tool_ids = provider_default_enabled_tool_ids(provider)
+    tools = build_prefixed_model_tools(effective_enabled_tool_ids) if needs_tools else []
     max_tool_rounds = chat_max_tool_rounds(provider, route, len(tools))
     messages.append({
         "role": "system",
@@ -4205,7 +4267,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
         ),
     })
     print(
-        f"[CHAT] provider={provider} enabled={len(enabled_tool_ids or [])} tools={len(tools)} max_rounds={max_tool_rounds}",
+        f"[CHAT] provider={provider} enabled={len(enabled_tool_ids or [])} effective={len(effective_enabled_tool_ids or [])} tools={len(tools)} max_rounds={max_tool_rounds}",
         flush=True,
     )
 
@@ -5765,8 +5827,11 @@ class Handler(BaseHTTPRequestHandler):
             provider = normalize_chat_provider(payload.get("provider"))
             session_id = str(payload.get("sessionId", "default")).strip() or "default"
             text = str(payload.get("message", "")).strip()
-            enabled_raw = payload.get("enabledToolIds")
-            enabled_tool_ids = set(str(x) for x in enabled_raw if isinstance(x, str)) if isinstance(enabled_raw, list) else set()
+            enabled_mask = payload.get("enabledToolMask")
+            enabled_tool_ids = decode_tool_mask(enabled_mask) if enabled_mask is not None else None
+            if enabled_tool_ids is None:
+                enabled_raw = payload.get("enabledToolIds")
+                enabled_tool_ids = set(str(x) for x in enabled_raw if isinstance(x, str)) if isinstance(enabled_raw, list) else None
             if not text:
                 return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "message is required"})
         except (json.JSONDecodeError, ValueError) as exc:
@@ -6034,7 +6099,7 @@ INDEX_HTML = '<!doctype html>\n<html lang="zh-CN">\n<head>\n<meta charset="utf-8
 
 
 
- 
+
 
 AMAZON_HTML_PATH = SCRIPTS_DIR / "static" / "amazon.html"
 
