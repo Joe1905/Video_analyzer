@@ -152,6 +152,7 @@ services:
       - ${OCR_SHARED_DIR:-/home/openclaw/ocr-shared}:${OCR_SERVER_SHARED_DIR:-/home/openclaw/ocr-shared}
       - /var/run/docker.sock:/var/run/docker.sock
     network_mode: host
+    restart: unless-stopped
 
   sellersprite-redirect:
     build:
