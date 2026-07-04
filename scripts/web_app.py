@@ -4556,14 +4556,23 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             messages.append({"role": "tool", "tool_call_id": tid, "content": tr_content})
 
     route = route_chat_intent(user_text)
-    force_mcp_tools = provider_forces_mcp_tools(provider)
-    needs_tools = True if force_mcp_tools else chat_request_needs_tools(user_text, route)
+    route_intent = str(route.get("intent") or "general")
+    route_tools = route.get("tools")
+    force_mcp_tools = provider_forces_mcp_tools(provider) and route_intent not in {"web_search", "mcp_interface"}
+    needs_tools = False if route_intent == "mcp_interface" else (True if force_mcp_tools else chat_request_needs_tools(user_text, route))
     effective_enabled_tool_ids = enabled_tool_ids
     if force_mcp_tools:
         effective_enabled_tool_ids = set(enabled_tool_ids or set()) | provider_default_enabled_tool_ids(provider)
     if needs_tools and effective_enabled_tool_ids is None:
         effective_enabled_tool_ids = provider_default_enabled_tool_ids(provider)
-    tools = build_prefixed_model_tools(effective_enabled_tool_ids) if needs_tools else []
+    selected_tool_ids = effective_enabled_tool_ids
+    if needs_tools and route_tools is not None:
+        route_tool_ids = {
+            tool_id if "__" in str(tool_id) else prefixed_tool_id(local_tool_domain(str(tool_id)), str(tool_id))
+            for tool_id in route_tools
+        }
+        selected_tool_ids = route_tool_ids if effective_enabled_tool_ids is None else route_tool_ids & set(effective_enabled_tool_ids)
+    tools = build_prefixed_model_tools(selected_tool_ids) if needs_tools else []
     max_tool_rounds = chat_max_tool_rounds(provider, route, len(tools))
     messages.append({
         "role": "system",
@@ -4571,7 +4580,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             f"Intent route: {route.get('intent')}. Need tools: {needs_tools}. Exposed tool count: {len(tools)}. "
             "Use only the exposed prefixed tools. Do not invent unprefixed tool names. "
             "For market, product, category, competitor, trend, ranking, sales, GMV, keyword, ASIN, or time-sensitive questions, use the exposed tools before answering whenever at least one relevant tool is available. "
-            "For unknown proper nouns, brand/person/product names, or broad public-knowledge questions, call system__web_search before answering whenever it is exposed. Do not use web_search for MCP/API/tool/schema/interface questions; answer from the local tool catalog and project context instead. "
+            "For web_search intent, call system__web_search before the final answer and do not answer from memory. For unknown proper nouns, brand/person/product names, or broad public-knowledge questions, call system__web_search before answering whenever it is exposed. Do not use web_search for MCP/API/tool/schema/interface questions; answer from the local tool catalog and project context instead. "
             "For locked Amazon/FastMoss providers, the selected MCP domain is mandatory: call the relevant sellersprite__ or fastmoss__ tools before the final answer unless the user is only greeting or asking UI/help. "
             "Do not call tools for pure greetings, UI/help questions, or when no exposed tool matches the task. "
             "For product/category research, use the currently selected domain tools only; do not cross from FastMoss to SellerSprite unless both domains are selected. "
