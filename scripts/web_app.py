@@ -4496,7 +4496,9 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     route = route_chat_intent(user_text)
     force_mcp_tools = provider_forces_mcp_tools(provider)
     needs_tools = True if force_mcp_tools else chat_request_needs_tools(user_text, route)
-    effective_enabled_tool_ids = provider_default_enabled_tool_ids(provider) if force_mcp_tools else enabled_tool_ids
+    effective_enabled_tool_ids = enabled_tool_ids
+    if force_mcp_tools:
+        effective_enabled_tool_ids = set(enabled_tool_ids or set()) | provider_default_enabled_tool_ids(provider)
     if needs_tools and effective_enabled_tool_ids is None:
         effective_enabled_tool_ids = provider_default_enabled_tool_ids(provider)
     tools = build_prefixed_model_tools(effective_enabled_tool_ids) if needs_tools else []
