@@ -3810,6 +3810,16 @@ def _contains_any(text: str, words: tuple[str, ...]) -> bool:
 
 
 
+def is_explicit_live_web_query(text: str) -> bool:
+    words = (
+        "web", "internet", "online", "latest", "recent", "news",
+        "\u8054\u7f51", "\u806f\u7db2", "\u4e92\u8054\u7f51", "\u4e92\u806f\u7db2",
+        "\u5168\u7f51", "\u5168\u7db2", "\u7f51\u9875", "\u7db2\u9801",
+        "\u65b0\u95fb", "\u65b0\u805e", "\u6700\u65b0", "bing", "google",
+    )
+    return _contains_any(text, words)
+
+
 def is_mcp_interface_query(text: str) -> bool:
     lowered = (text or "").lower()
     mcp_words = ("mcp", "tool", "tools", "function", "function calling", "schema", "api", "endpoint")
@@ -4620,6 +4630,9 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
 
     route = route_chat_intent(user_text)
     route_intent = str(route.get("intent") or "general")
+    if provider_forces_mcp_tools(provider) and route_intent == "web_search" and not is_explicit_live_web_query(user_text):
+        route = {"intent": f"{provider}_lookup", "tools": None, "max_rounds": 5}
+        route_intent = str(route.get("intent") or "general")
     route_tools = route.get("tools")
     force_mcp_tools = provider_forces_mcp_tools(provider) and route_intent not in {"web_search", "mcp_interface"}
     needs_tools = False if route_intent == "mcp_interface" else (True if force_mcp_tools else chat_request_needs_tools(user_text, route))
