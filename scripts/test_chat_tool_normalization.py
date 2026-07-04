@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from web_app import normalize_tool_result  # noqa: E402
-from tools import execute_tool, get_tools_for_model, list_tools  # noqa: E402
+from tools import execute_tool, get_tools_for_model, list_tools, parse_duckduckgo_html  # noqa: E402
 
 
 def test_tiktok_search_keeps_analysis_fields() -> None:
@@ -115,8 +115,48 @@ def test_current_time_tool_is_available() -> None:
     assert any(tool["name"] == "current_time" for tool in categories["系统"])
 
 
+
+def test_web_search_tool_is_registered_and_normalized() -> None:
+    html = """
+    <div class="result">
+      <div>
+        <a class="result__a" href="/l/?uddg=https%3A%2F%2Fexample.com%2Fnews">Example &amp; News</a>
+        <a class="result__snippet">A concise &lt;b&gt;snippet&lt;/b&gt;.</a>
+      </div>
+    </div>
+    """
+    parsed = parse_duckduckgo_html(html, 3)
+    assert parsed == [{"title": "Example & News", "snippet": "A concise snippet .", "url": "https://example.com/news"}]
+
+    raw = {
+        "ok": True,
+        "elapsed": 0.4,
+        "data": {
+            "ok": True,
+            "query": "latest AI news",
+            "effective_query": "latest AI news",
+            "retrieved_at": "2026-07-04T00:00:00+00:00",
+            "attempts": [{"stage": "html_search", "status": "success", "path": "direct", "result_count": 1}],
+            "errors": [],
+            "results": parsed,
+        },
+    }
+    result = normalize_tool_result("web_search", raw)
+    assert result["ok"] is True
+    assert result["kind"] == "web_search"
+    assert result["search_ok"] is True
+    assert result["enough_data"] is True
+    assert result["results"][0]["url"] == "https://example.com/news"
+
+    model_tool_names = {item["function"]["name"] for item in get_tools_for_model()}
+    assert "web_search" in model_tool_names
+
+    categories = {item["category"]: item["tools"] for item in list_tools()}
+    assert any(tool["name"] == "web_search" for tools in categories.values() for tool in tools)
+
 if __name__ == "__main__":
     test_tiktok_search_keeps_analysis_fields()
     test_amazon_keeps_product_fields()
     test_current_time_tool_is_available()
+    test_web_search_tool_is_registered_and_normalized()
     print("chat tool normalization tests passed")

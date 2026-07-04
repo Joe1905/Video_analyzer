@@ -3579,6 +3579,30 @@ def normalize_tool_result(tool_name: str, result: dict[str, Any]) -> dict[str, A
     if raw_bytes is not None:
         normalized["raw_bytes"] = raw_bytes
 
+    if tool_name == "web_search" and isinstance(payload, dict):
+        results = []
+        for item in payload.get("results") or []:
+            if not isinstance(item, dict):
+                continue
+            results.append({
+                "title": _compact_text(item.get("title"), 240),
+                "snippet": _compact_text(item.get("snippet"), 500),
+                "url": item.get("url"),
+            })
+        normalized.update({
+            "kind": "web_search",
+            "search_ok": bool(payload.get("ok")),
+            "query": payload.get("query"),
+            "effective_query": payload.get("effective_query"),
+            "retrieved_at": payload.get("retrieved_at"),
+            "results_total": len(results),
+            "results": results,
+            "attempts": payload.get("attempts") or [],
+            "errors": payload.get("errors") or [],
+            "enough_data": bool(results),
+            "suggested_next_action": "answer_from_results" if results else "try_different_query",
+        })
+        return normalized
     if tool_name in {"tiktok_search_music", "tiktok_music_popular", "tiktok_music_info"}:
         music_items = _extract_tiktok_music_items(payload)
         normalized.update({
@@ -3817,7 +3841,7 @@ def route_chat_intent(text: str) -> dict[str, Any]:
     return {"intent": "general", "tools": None, "max_rounds": 5}
 
 
-LOCAL_SYSTEM_TOOLS = {"current_time"}
+LOCAL_SYSTEM_TOOLS = {"current_time", "web_search"}
 LOCAL_TOOL_CATEGORY_LABELS = {
     "system": "\u7cfb\u7edf",
     "function_amazon": "Amazon",
@@ -3931,7 +3955,7 @@ MCP_TOOL_WORD_LABELS = {
     "detail": "\u8be6\u60c5", "details": "\u8be6\u60c5", "distribution": "\u5206\u5e03", "ecommerce": "\u7535\u5546", "fans": "\u7c89\u4e1d",
     "follower": "\u7c89\u4e1d", "followers": "\u7c89\u4e1d", "growth": "\u589e\u957f", "keyword": "\u5173\u952e\u8bcd", "keywords": "\u5173\u952e\u8bcd",
     "list": "\u5217\u8868", "live": "\u76f4\u64ad", "market": "\u5e02\u573a", "node": "\u8282\u70b9", "popular": "\u70ed\u95e8", "price": "\u4ef7\u683c",
-    "product": "\u5546\u54c1", "products": "\u5546\u54c1", "rank": "\u699c\u5355", "review": "\u8bc4\u8bba", "reviews": "\u8bc4\u8bba", "search": "\u641c\u7d22",
+    "product": "\u5546\u54c1", "products": "\u5546\u54c1", "rank": "\u699c\u5355", "review": "\u8bc4\u8bba", "reviews": "\u8bc4\u8bba", "search": "\u641c\u7d22", "web": "\u8054\u7f51",
     "selling": "\u70ed\u9500", "shop": "\u5e97\u94fa", "summary": "\u6982\u89c8", "top": "\u70ed\u95e8", "trend": "\u8d8b\u52bf", "trends": "\u8d8b\u52bf",
     "video": "\u89c6\u9891", "videos": "\u89c6\u9891", "word": "\u8bcd", "words": "\u8bcd",
 }
@@ -4213,11 +4237,11 @@ def chat_request_needs_tools(user_text: str, route: dict[str, Any]) -> bool:
         return True
     lowered = str(user_text or "").lower()
     direct_tool_words = (
-        "today", "current", "now", "date", "time",
+        "today", "current", "now", "date", "time", "latest", "news", "recent", "web",
         "search", "rank", "top", "product", "category", "keyword", "asin", "amazon", "fastmoss",
         "analysis", "analyze", "market", "competitor", "opportunity", "recommend", "strategy",
         "\u67e5\u8be2", "\u641c\u7d22", "\u6392\u884c", "\u699c\u5355", "\u70ed\u9500", "\u5546\u54c1",
-        "\u7c7b\u76ee", "\u5173\u952e\u8bcd", "\u4eca\u5929", "\u5f53\u524d", "\u73b0\u5728", "\u65e5\u671f", "\u65f6\u95f4",
+        "\u7c7b\u76ee", "\u5173\u952e\u8bcd", "\u4eca\u5929", "\u5f53\u524d", "\u73b0\u5728", "\u65e5\u671f", "\u65f6\u95f4", "\u6700\u65b0", "\u65b0\u95fb", "\u8054\u7f51",
         "\u5206\u6790", "\u65b9\u5411", "\u5efa\u8bae", "\u673a\u4f1a", "\u5e02\u573a", "\u7ade\u54c1", "\u9009\u54c1", "\u7b56\u7565",
     )
     return any(word in lowered for word in direct_tool_words)

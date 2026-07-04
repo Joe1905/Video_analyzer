@@ -3,13 +3,15 @@ import json
 import os
 import re
 import shutil
+import ssl
 import subprocess
 import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote_plus, urlparse, urlunparse
+from urllib.parse import parse_qs, quote_plus, unquote, urlencode, urlparse, urlunparse
+from urllib.request import Request, build_opener, ProxyHandler, urlopen
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from api_cache import get_cached, get_cached_or_call, store_response
@@ -27,6 +29,14 @@ VIDEO_INFO_TTL_SECONDS = 24 * 60 * 60
 VIDEO_MEDIA_TTL_SECONDS = int(os.getenv("VIDEO_MEDIA_TTL_SECONDS", "900"))
 AUDIO_ONLY_SUFFIXES = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav"}
 VIDEO_SUFFIXES = {".m4v", ".mov", ".mp4", ".webm"}
+SEARCH_MAX_RESULTS = int(os.getenv("SEARCH_MAX_RESULTS", "5"))
+SEARCH_PROXY_URL = (
+    os.getenv("SEARCH_PROXY_URL")
+    or os.getenv("HTTPS_PROXY")
+    or os.getenv("HTTP_PROXY")
+    or os.getenv("ALL_PROXY")
+    or ""
+).strip()
 
 
 def _video_output_dir(filename: str) -> Path:
@@ -63,6 +73,197 @@ def _get_current_time(timezone_name: str = "") -> dict[str, Any]:
         "weekday": now.strftime("%A"),
         "utc_iso": utc_now.isoformat(timespec="seconds"),
         "unix_seconds": int(now.timestamp()),
+    }
+
+
+# Web search ---------------------------------------------------------------
+
+def _clean_search_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _strip_html_tags(value: str) -> str:
+    return re.sub(r"<[^>]+>", " ", str(value or ""))
+
+
+def _decode_html_entities(value: str) -> str:
+    replacements = {
+        "&amp;": "&",
+        "&lt;": "<",
+        "&gt;": ">",
+        "&quot;": '"',
+        "&#39;": "'",
+        "&#x27;": "'",
+    }
+    text = str(value or "")
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _normalize_duckduckgo_url(value: str) -> str:
+    raw = _clean_search_text(value)
+    if not raw:
+        return ""
+    try:
+        parsed = urlparse(raw)
+        if not parsed.scheme:
+            parsed = urlparse(f"https://duckduckgo.com{raw}")
+        params = parse_qs(parsed.query)
+        uddg = params.get("uddg", [""])[0]
+        return unquote(uddg) if uddg else parsed.geturl()
+    except Exception:
+        return raw if raw.startswith(("http://", "https://")) else ""
+
+
+def parse_duckduckgo_html(html: str, max_results: int = 5) -> list[dict[str, str]]:
+    results: list[dict[str, str]] = []
+    source = html or ""
+    block_pattern = re.compile(r'<div[^>]+class="[^"]*result[^"]*"[\s\S]*?</div>\s*</div>', re.I)
+    link_pattern = re.compile(r'<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)</a>', re.I)
+    snippet_pattern = re.compile(r'<a[^>]+class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)</a>', re.I)
+    snippet_div_pattern = re.compile(r'<div[^>]+class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)</div>', re.I)
+    blocks = block_pattern.findall(source) or [source]
+    for block in blocks:
+        if len(results) >= max_results:
+            break
+        link_match = link_pattern.search(block)
+        if not link_match:
+            continue
+        snippet_match = snippet_pattern.search(block) or snippet_div_pattern.search(block)
+        title = _decode_html_entities(_strip_html_tags(_decode_html_entities(_strip_html_tags(link_match.group(2)))))
+        snippet = _decode_html_entities(_strip_html_tags(_decode_html_entities(_strip_html_tags(snippet_match.group(1) if snippet_match else ""))))
+        result_url = _normalize_duckduckgo_url(_decode_html_entities(link_match.group(1)))
+        if title and result_url:
+            results.append({"title": title, "snippet": snippet, "url": result_url})
+    return _dedupe_search_results(results)[:max_results]
+
+
+def _dedupe_search_results(results: list[dict[str, str]]) -> list[dict[str, str]]:
+    seen: set[str] = set()
+    deduped: list[dict[str, str]] = []
+    for result in results:
+        key = result.get("url") or result.get("title") or ""
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(result)
+    return deduped
+
+
+def _collect_duckduckgo_topics(topics: Any, results: list[dict[str, str]], max_results: int) -> None:
+    if not isinstance(topics, list):
+        return
+    for topic in topics:
+        if len(results) >= max_results:
+            return
+        if not isinstance(topic, dict):
+            continue
+        if isinstance(topic.get("Topics"), list):
+            _collect_duckduckgo_topics(topic["Topics"], results, max_results)
+            continue
+        text = _clean_search_text(topic.get("Text"))
+        url = _clean_search_text(topic.get("FirstURL"))
+        if text and url:
+            results.append({"title": text.split(" - ")[0], "snippet": text, "url": url})
+
+
+def _fetch_search_url(url: str, headers: dict[str, str]) -> tuple[int, str, str]:
+    request = Request(url, headers=headers)
+    proxy_url = SEARCH_PROXY_URL
+    paths: list[tuple[str, Any]] = []
+    if proxy_url:
+        normalized_proxy = proxy_url if "://" in proxy_url else f"http://{proxy_url}"
+        paths.append(("proxy", build_opener(ProxyHandler({"http": normalized_proxy, "https": normalized_proxy}))))
+    paths.append(("direct", build_opener(ProxyHandler({}))))
+    last_error: Exception | None = None
+    proxy_error = ""
+    for label, opener in paths:
+        try:
+            with opener.open(request, timeout=15) as response:
+                body = response.read().decode("utf-8", errors="replace")
+                path = label
+                if label == "direct" and proxy_error:
+                    path = f"direct_after_proxy_error:{proxy_error[:160]}"
+                return int(getattr(response, "status", 200)), body, path
+        except Exception as exc:
+            last_error = exc
+            if label == "proxy":
+                proxy_error = str(exc)
+                continue
+            if label == "direct" or not proxy_url:
+                break
+    if last_error:
+        raise last_error
+    with urlopen(request, timeout=15, context=ssl.create_default_context()) as response:
+        body = response.read().decode("utf-8", errors="replace")
+        return int(getattr(response, "status", 200)), body, "default"
+
+
+def _search_instant_answer(query: str, max_results: int) -> tuple[list[dict[str, str]], str]:
+    url = "https://api.duckduckgo.com/?" + urlencode({"q": query, "format": "json", "no_html": "1", "skip_disambig": "1"})
+    status, body, path = _fetch_search_url(url, {"User-Agent": "ShortVideoAnalyzer/0.1"})
+    if status < 200 or status >= 300:
+        raise RuntimeError(f"DuckDuckGo instant answer HTTP {status}")
+    data = json.loads(body or "{}")
+    results: list[dict[str, str]] = []
+    abstract = _clean_search_text(data.get("AbstractText"))
+    if abstract:
+        results.append({
+            "title": _clean_search_text(data.get("Heading")) or query,
+            "snippet": abstract,
+            "url": _clean_search_text(data.get("AbstractURL")) or "https://duckduckgo.com/",
+        })
+    _collect_duckduckgo_topics(data.get("RelatedTopics"), results, max_results)
+    return _dedupe_search_results(results)[:max_results], path
+
+
+def _search_duckduckgo_html(query: str, max_results: int) -> tuple[list[dict[str, str]], str]:
+    url = "https://html.duckduckgo.com/html/?" + urlencode({"q": query})
+    status, body, path = _fetch_search_url(url, {"User-Agent": "Mozilla/5.0 ShortVideoAnalyzer/0.1"})
+    if status < 200 or status >= 300:
+        raise RuntimeError(f"DuckDuckGo HTML search HTTP {status}")
+    return parse_duckduckgo_html(body, max_results), path
+
+
+def _safe_search_stage(stage: str, searcher, attempts: list[dict[str, Any]], errors: list[dict[str, str]]) -> list[dict[str, str]]:
+    started = time.monotonic()
+    try:
+        results, path = searcher()
+        attempts.append({"stage": stage, "status": "success", "path": path, "result_count": len(results), "elapsed_ms": int((time.monotonic() - started) * 1000)})
+        return results
+    except Exception as exc:
+        message = str(exc)
+        attempts.append({"stage": stage, "status": "error", "result_count": 0, "elapsed_ms": int((time.monotonic() - started) * 1000), "error": message})
+        errors.append({"stage": stage, "message": message})
+        return []
+
+
+def _web_search(query: str, max_results: int | None = None) -> dict[str, Any]:
+    normalized_query = _clean_search_text(query)
+    limit = max(1, min(int(max_results or SEARCH_MAX_RESULTS or 5), 8))
+    retrieved_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    attempts: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    if not normalized_query:
+        return {"ok": False, "query": normalized_query, "retrieved_at": retrieved_at, "attempts": attempts, "errors": errors, "results": [], "reply": "Search query is empty."}
+    instant_results = _safe_search_stage("instant_answer", lambda: _search_instant_answer(normalized_query, limit), attempts, errors)
+    results = instant_results or _safe_search_stage("html_search", lambda: _search_duckduckgo_html(normalized_query, limit), attempts, errors)
+    ok = bool(results)
+    reply_lines = [f"Web search results for: {normalized_query}"] if ok else ["No reliable web search results were found."]
+    for index, result in enumerate(results[:3], 1):
+        snippet = f": {result.get('snippet')}" if result.get("snippet") else ""
+        reply_lines.append(f"{index}. {result.get('title', '')}{snippet}")
+        reply_lines.append(str(result.get("url") or ""))
+    return {
+        "ok": ok,
+        "query": normalized_query,
+        "effective_query": normalized_query,
+        "retrieved_at": retrieved_at,
+        "attempts": attempts,
+        "errors": errors,
+        "results": results,
+        "reply": "\n".join(reply_lines),
     }
 
 # ── Amazon Tools ──────────────────────────────────────────────────
@@ -759,10 +960,12 @@ def _run_video_direct_analyze(filename: str) -> dict:
 # ── Tool Registry ──────────────────────────────────────────────────
 
 TOOLS: list[dict[str, Any]] = [
-    # System (1)
+    # System (2)
     {"name": "current_time", "description": "获取服务器当前日期和时间。用户询问现在、今天、当前时间、日期、星期或时区时间时使用。",
      "parameters": {"type": "object", "properties": {"timezone": {"type": "string", "description": "可选 IANA 时区名，例如 Asia/Shanghai、UTC、America/Los_Angeles。不填则使用服务器本地时区。"}}}},
 
+    {"name": "web_search", "description": "Search the live web with DuckDuckGo and return concise source results with title, snippet, URL, retrieval time, and connection attempts. Use for latest/current/news questions or when the user explicitly asks to search online.",
+     "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "Search query."}, "max_results": {"type": "integer", "description": "Number of results to return, 1-8. Default follows SEARCH_MAX_RESULTS.", "default": 5}}, "required": ["query"]}},
     # Amazon (3)
     {"name": "amazon_scrape_url", "description": "抓取 Amazon 商品页面数据，输入完整的 Amazon URL，返回商品标题、价格、评分、评论数等结构化数据。",
      "parameters": {"type": "object", "properties": {"url": {"type": "string", "description": "完整的 Amazon 商品或搜索结果 URL"}, "pages": {"type": "integer", "description": "抓取页数，默认1", "default": 1}}, "required": ["url"]}},
@@ -903,6 +1106,8 @@ def execute_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
     try:
         if name == "current_time":
             data = _get_current_time(str(args.get("timezone") or ""))
+        elif name == "web_search":
+            data = _web_search(str(args["query"]), args.get("max_results"))
         elif name == "amazon_scrape_url":
             data = _amazon_scrape(str(args["url"]), "url", int(args.get("pages", 1)))
         elif name == "amazon_scrape_asin":
@@ -956,7 +1161,7 @@ def get_tools_for_model(enabled: set[str] | None = None) -> list[dict]:
 def list_tools() -> list[dict]:
     """List all tools grouped by category for the frontend selector."""
     categories = {
-        "系统": ["current_time"],
+        "系统": ["current_time", "web_search"],
         "Amazon": ["amazon_scrape_url", "amazon_scrape_asin", "amazon_search_keyword"],
         "TikTok Shop": ["tiktok_shop_product", "tiktok_shop_details", "tiktok_shop_reviews", "tiktok_shop_search"],
         "TikTok 用户": ["tiktok_profile", "tiktok_videos", "tiktok_videos_popular", "tiktok_followers", "tiktok_following", "tiktok_demographics"],
