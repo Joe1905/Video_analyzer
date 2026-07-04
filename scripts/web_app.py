@@ -4087,6 +4087,21 @@ def system_chat_tool_ids() -> set[str]:
     return {prefixed_tool_id("system", name) for name in LOCAL_SYSTEM_TOOLS}
 
 
+LOCKED_PROVIDER_SYSTEM_TOOL_ALLOWLIST = {prefixed_tool_id("system", "current_time")}
+
+
+def filter_locked_provider_tool_ids(provider: str, tool_ids: set[str] | None) -> set[str]:
+    provider = normalize_chat_provider(provider)
+    default_domains = CHAT_PROVIDER_DEFAULT_DOMAINS.get(provider, set())
+    mcp_domains = {domain for domain in default_domains if domain in {"sellersprite", "fastmoss"}}
+    filtered: set[str] = set()
+    for tool_id in tool_ids or set():
+        domain, _ = split_prefixed_tool_id(str(tool_id))
+        if domain in mcp_domains or tool_id in LOCKED_PROVIDER_SYSTEM_TOOL_ALLOWLIST:
+            filtered.add(tool_id)
+    return filtered
+
+
 def provider_forces_mcp_tools(provider: str) -> bool:
     return normalize_chat_provider(provider) in FORCED_MCP_CHAT_PROVIDERS
 
@@ -4639,6 +4654,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     effective_enabled_tool_ids = enabled_tool_ids
     if force_mcp_tools:
         effective_enabled_tool_ids = set(enabled_tool_ids or set()) | provider_default_enabled_tool_ids(provider)
+        effective_enabled_tool_ids = filter_locked_provider_tool_ids(provider, effective_enabled_tool_ids)
     if needs_tools and effective_enabled_tool_ids is None:
         effective_enabled_tool_ids = provider_default_enabled_tool_ids(provider)
     selected_tool_ids = effective_enabled_tool_ids
@@ -6603,3 +6619,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

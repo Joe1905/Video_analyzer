@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from web_app import normalize_tool_result, route_chat_intent  # noqa: E402
+from web_app import filter_locked_provider_tool_ids, normalize_tool_result, provider_default_enabled_tool_ids, route_chat_intent  # noqa: E402
 from tools import execute_tool, get_tools_for_model, list_tools, parse_bing_html, parse_duckduckgo_html  # noqa: E402
 
 
@@ -123,6 +123,12 @@ def test_web_search_route_exposes_web_search_tool() -> None:
 
 
 
+def test_locked_amazon_provider_filters_system_web_search() -> None:
+    selected = filter_locked_provider_tool_ids("amazon", provider_default_enabled_tool_ids("amazon"))
+    assert "system__web_search" not in selected
+    assert "system__current_time" in selected
+    assert any(tool_id.startswith("sellersprite__") for tool_id in selected)
+
 def test_web_search_tool_is_registered_and_normalized() -> None:
     html = """
     <div class="result">
@@ -174,5 +180,7 @@ if __name__ == "__main__":
     test_amazon_keeps_product_fields()
     test_current_time_tool_is_available()
     test_web_search_route_exposes_web_search_tool()
+    test_locked_amazon_provider_filters_system_web_search()
     test_web_search_tool_is_registered_and_normalized()
     print("chat tool normalization tests passed")
+
