@@ -140,6 +140,8 @@ def test_web_search_tool_is_registered_and_normalized() -> None:
     <div class="b_caption"><p>Useful search snippet.</p></div></li>
     """
     assert parse_bing_html(bing_html, 3) == [{"title": "Example Story", "snippet": "Useful search snippet.", "url": "https://example.com/story"}]
+    unsafe_html = '<li class="b_algo"><h2><a href="https://example.com/porn">Bad</a></h2><p>adult porn result</p></li>'
+    assert parse_bing_html(unsafe_html, 3) == []
 
     raw = {
         "ok": True,

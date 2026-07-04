@@ -1,4 +1,5 @@
 """AI Chat Tool Registry — 32 tools wrapping existing API scripts."""
+import base64
 import json
 import os
 import re
@@ -119,6 +120,32 @@ def _normalize_duckduckgo_url(value: str) -> str:
         return raw if raw.startswith(("http://", "https://")) else ""
 
 
+def _normalize_bing_url(value: str) -> str:
+    raw = _decode_html_entities(value)
+    try:
+        parsed = urlparse(raw)
+        params = parse_qs(parsed.query)
+        encoded = params.get("u", [""])[0]
+        if encoded.startswith("a1"):
+            payload = encoded[2:]
+            padding = "=" * (-len(payload) % 4)
+            decoded = base64.urlsafe_b64decode((payload + padding).encode("ascii")).decode("utf-8", errors="replace")
+            if decoded.startswith(("http://", "https://")):
+                return decoded
+        return parsed.geturl()
+    except Exception:
+        return raw
+
+
+def _is_safe_search_result(title: str, snippet: str, url: str) -> bool:
+    combined = f"{title} {snippet} {url}".lower()
+    blocked_terms = (
+        "porn", "xhamster", "xvideos", "xnxx", "onlyfans", "nsfw", "adult",
+        "sissy", "hypno", "cocksuck", "blowjob", "escort", "camgirl",
+    )
+    return not any(term in combined for term in blocked_terms)
+
+
 def parse_duckduckgo_html(html: str, max_results: int = 5) -> list[dict[str, str]]:
     results: list[dict[str, str]] = []
     source = html or ""
@@ -154,11 +181,11 @@ def parse_bing_html(html: str, max_results: int = 5) -> list[dict[str, str]]:
         link_match = link_pattern.search(block)
         if not link_match:
             continue
-        url = _decode_html_entities(link_match.group(1))
+        url = _normalize_bing_url(link_match.group(1))
         title = _decode_html_entities(_strip_html_tags(link_match.group(2)))
         snippet_match = snippet_pattern.search(block)
         snippet = _decode_html_entities(_strip_html_tags(snippet_match.group(1) if snippet_match else ""))
-        if title and url.startswith(("http://", "https://")):
+        if title and url.startswith(("http://", "https://")) and _is_safe_search_result(title, snippet, url):
             results.append({"title": title, "snippet": snippet, "url": url})
     return _dedupe_search_results(results)[:max_results]
 
@@ -251,7 +278,7 @@ def _search_duckduckgo_html(query: str, max_results: int) -> tuple[list[dict[str
 
 
 def _search_bing_html(query: str, max_results: int) -> tuple[list[dict[str, str]], str]:
-    url = "https://www.bing.com/search?" + urlencode({"q": query})
+    url = "https://www.bing.com/search?" + urlencode({"q": query, "adlt": "strict", "safeSearch": "strict", "setlang": "zh-Hans"})
     status, body, path = _fetch_search_url(url, {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"})
     if status < 200 or status >= 300:
         raise RuntimeError(f"Bing HTML search HTTP {status}")
