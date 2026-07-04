@@ -4658,7 +4658,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     if needs_tools and effective_enabled_tool_ids is None:
         effective_enabled_tool_ids = provider_default_enabled_tool_ids(provider)
     selected_tool_ids = effective_enabled_tool_ids
-    if needs_tools and route_tools is not None:
+    if needs_tools and route_tools is not None and not force_mcp_tools:
         route_tool_ids = {
             tool_id if "__" in str(tool_id) else prefixed_tool_id(local_tool_domain(str(tool_id)), str(tool_id))
             for tool_id in route_tools

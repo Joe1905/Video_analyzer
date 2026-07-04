@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from web_app import filter_locked_provider_tool_ids, normalize_tool_result, provider_default_enabled_tool_ids, route_chat_intent  # noqa: E402
+from web_app import build_prefixed_model_tools, chat_request_needs_tools, filter_locked_provider_tool_ids, normalize_tool_result, provider_default_enabled_tool_ids, provider_forces_mcp_tools, route_chat_intent  # noqa: E402
 from tools import execute_tool, get_tools_for_model, list_tools, parse_bing_html, parse_duckduckgo_html  # noqa: E402
 
 
@@ -129,6 +129,18 @@ def test_locked_amazon_provider_filters_system_web_search() -> None:
     assert "system__current_time" in selected
     assert any(tool_id.startswith("sellersprite__") for tool_id in selected)
 
+def test_locked_amazon_product_route_keeps_sellersprite_tools() -> None:
+    provider = "amazon"
+    route = route_chat_intent("分析一下这个产品在亚马逊类目情况Bark Collars")
+    route_intent = str(route.get("intent") or "general")
+    force_mcp_tools = provider_forces_mcp_tools(provider) and route_intent not in {"web_search", "mcp_interface"}
+    assert force_mcp_tools is True
+    effective = filter_locked_provider_tool_ids(provider, provider_default_enabled_tool_ids(provider))
+    tools = build_prefixed_model_tools(effective) if chat_request_needs_tools("Bark Collars", route) or force_mcp_tools else []
+    names = {item["function"]["name"] for item in tools}
+    assert "system__web_search" not in names
+    assert any(name.startswith("sellersprite__") for name in names)
+
 def test_web_search_tool_is_registered_and_normalized() -> None:
     html = """
     <div class="result">
@@ -181,6 +193,7 @@ if __name__ == "__main__":
     test_current_time_tool_is_available()
     test_web_search_route_exposes_web_search_tool()
     test_locked_amazon_provider_filters_system_web_search()
+    test_locked_amazon_product_route_keeps_sellersprite_tools()
     test_web_search_tool_is_registered_and_normalized()
     print("chat tool normalization tests passed")
 
