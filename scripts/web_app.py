@@ -3806,8 +3806,35 @@ def _contains_any(text: str, words: tuple[str, ...]) -> bool:
     return any(word in lowered for word in words)
 
 
+
+
+def is_mcp_interface_query(text: str) -> bool:
+    lowered = (text or "").lower()
+    mcp_words = ("mcp", "tool", "tools", "function", "function calling", "schema", "api", "endpoint")
+    zh_mcp_words = (
+        "\u63a5\u53e3", "\u5de5\u5177", "\u51fd\u6570", "\u8c03\u7528", "\u53c2\u6570",
+        "\u914d\u7f6e", "\u95e8\u7981", "\u7cfb\u7edf\u5de5\u5177", "\u80fd\u529b",
+    )
+    if not (_contains_any(lowered, mcp_words) or _contains_any(lowered, zh_mcp_words)):
+        return False
+    interface_words = (
+        "schema", "api", "endpoint", "catalog", "tool", "tools",
+        "\u63a5\u53e3", "\u53c2\u6570", "\u8c03\u7528", "\u600e\u4e48", "\u600e\u6a23",
+        "\u5982\u4f55", "\u54ea\u4e9b", "\u5217\u8868", "\u5f52\u7c7b", "\u6b78\u985e",
+    )
+    return _contains_any(lowered, interface_words)
+
+
 def route_chat_intent(text: str) -> dict[str, Any]:
     lowered = (text or "").lower()
+    web_lookup_words = (
+        "\u77e5\u9053", "\u4e86\u89e3", "\u662f\u4ec0\u4e48", "\u662f\u4ec0\u9ebc",
+        "\u662f\u8c01", "\u662f\u8ab0", "\u6709\u6ca1\u6709", "\u6709\u6c92\u6709",
+        "\u67e5\u4e00\u4e0b", "\u67e5\u67e5", "\u641c\u4e00\u4e0b", "\u641c\u7d22\u4e00\u4e0b",
+        "\u8054\u7f51", "web", "latest", "news", "recent",
+    )
+    has_mcp_interface = is_mcp_interface_query(text)
+    has_web_lookup = _contains_any(lowered, web_lookup_words) and not has_mcp_interface
     has_tiktok_url = "tiktok.com" in lowered or "douyin.com" in lowered
     has_video_url = has_tiktok_url and ("/video/" in lowered or "/v/" in lowered or "vm.tiktok.com" in lowered)
     has_amazon = _contains_any(lowered, ("amazon", "asin", "亚马逊", "卖家精灵", "sellersprite"))
@@ -3820,6 +3847,8 @@ def route_chat_intent(text: str) -> dict[str, Any]:
     has_user = _contains_any(lowered, ("profile", "user", "creator", "followers", "达人", "用户", "账号", "作者", "粉丝", "主页"))
     has_trend = _contains_any(lowered, ("trend", "trending", "hot", "viral", "hashtag", "keyword", "热门", "趋势", "热搜", "话题", "标签", "搜索", "关键词", "榜单", "排行"))
 
+    if has_mcp_interface:
+        return {"intent": "mcp_interface", "tools": None, "max_rounds": 5}
     if is_music_link_query(text):
         return {"intent": "music_link", "tools": MUSIC_QUERY_TOOLS, "max_rounds": 2}
     if is_media_availability_query(text):
@@ -3838,6 +3867,8 @@ def route_chat_intent(text: str) -> dict[str, Any]:
         return {"intent": "tiktok_user", "tools": TIKTOK_USER_TOOLS | {"tiktok_search_users"}, "max_rounds": 4}
     if has_tiktok_url or has_trend:
         return {"intent": "tiktok_content", "tools": TIKTOK_CONTENT_TOOLS | MUSIC_QUERY_TOOLS, "max_rounds": 4}
+    if has_web_lookup:
+        return {"intent": "web_search", "tools": WEB_SEARCH_TOOLS, "max_rounds": 3}
     return {"intent": "general", "tools": None, "max_rounds": 5}
 
 
@@ -4233,6 +4264,8 @@ def normalize_prefixed_tool_result(tool_id: str, result: dict[str, Any]) -> dict
 
 def chat_request_needs_tools(user_text: str, route: dict[str, Any]) -> bool:
     intent = str(route.get("intent") or "general")
+    if intent == "mcp_interface":
+        return False
     if intent != "general":
         return True
     lowered = str(user_text or "").lower()
@@ -4242,6 +4275,9 @@ def chat_request_needs_tools(user_text: str, route: dict[str, Any]) -> bool:
         "analysis", "analyze", "market", "competitor", "opportunity", "recommend", "strategy",
         "\u67e5\u8be2", "\u641c\u7d22", "\u6392\u884c", "\u699c\u5355", "\u70ed\u9500", "\u5546\u54c1",
         "\u7c7b\u76ee", "\u5173\u952e\u8bcd", "\u4eca\u5929", "\u5f53\u524d", "\u73b0\u5728", "\u65e5\u671f", "\u65f6\u95f4", "\u6700\u65b0", "\u65b0\u95fb", "\u8054\u7f51",
+        "\u77e5\u9053", "\u4e86\u89e3", "\u662f\u4ec0\u4e48", "\u662f\u4ec0\u9ebc",
+        "\u662f\u8c01", "\u662f\u8ab0", "\u6709\u6ca1\u6709", "\u6709\u6c92\u6709",
+        "\u67e5\u4e00\u4e0b", "\u67e5\u67e5", "\u641c\u4e00\u4e0b", "\u641c\u7d22\u4e00\u4e0b",
         "\u5206\u6790", "\u65b9\u5411", "\u5efa\u8bae", "\u673a\u4f1a", "\u5e02\u573a", "\u7ade\u54c1", "\u9009\u54c1", "\u7b56\u7565",
     )
     return any(word in lowered for word in direct_tool_words)
@@ -4254,6 +4290,8 @@ def chat_max_tool_rounds(provider: str, route: dict[str, Any], tool_count: int) 
         base = max(base, 8)
     if intent in {"product_research", "tiktok_content", "tiktok_user"}:
         base = max(base, 6)
+    if intent == "web_search":
+        base = max(base, 3)
     if tool_count >= 20 and intent != "general":
         base = max(base, 7)
     return min(base, 10)
@@ -4533,6 +4571,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             f"Intent route: {route.get('intent')}. Need tools: {needs_tools}. Exposed tool count: {len(tools)}. "
             "Use only the exposed prefixed tools. Do not invent unprefixed tool names. "
             "For market, product, category, competitor, trend, ranking, sales, GMV, keyword, ASIN, or time-sensitive questions, use the exposed tools before answering whenever at least one relevant tool is available. "
+            "For unknown proper nouns, brand/person/product names, or broad public-knowledge questions, call system__web_search before answering whenever it is exposed. Do not use web_search for MCP/API/tool/schema/interface questions; answer from the local tool catalog and project context instead. "
             "For locked Amazon/FastMoss providers, the selected MCP domain is mandatory: call the relevant sellersprite__ or fastmoss__ tools before the final answer unless the user is only greeting or asking UI/help. "
             "Do not call tools for pure greetings, UI/help questions, or when no exposed tool matches the task. "
             "For product/category research, use the currently selected domain tools only; do not cross from FastMoss to SellerSprite unless both domains are selected. "
