@@ -35,6 +35,9 @@ SEARCH_PROXY_URL = (
     or os.getenv("HTTPS_PROXY")
     or os.getenv("HTTP_PROXY")
     or os.getenv("ALL_PROXY")
+    or os.getenv("TIKTOK_PROXY_URL")
+    or os.getenv("AMAZON_PROXY")
+    or os.getenv("AMAZON_PROXIES", "").split(",")[0]
     or ""
 ).strip()
 
