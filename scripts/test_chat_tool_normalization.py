@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from web_app import normalize_tool_result  # noqa: E402
+from web_app import normalize_tool_result, route_chat_intent  # noqa: E402
 from tools import execute_tool, get_tools_for_model, list_tools, parse_duckduckgo_html  # noqa: E402
 
 
@@ -116,6 +116,13 @@ def test_current_time_tool_is_available() -> None:
 
 
 
+def test_web_search_route_exposes_web_search_tool() -> None:
+    route = route_chat_intent("\u98de\u98de\u5154\u4f60\u77e5\u9053\u5417")
+    assert route["intent"] == "web_search"
+    assert route["tools"] == {"web_search"}
+
+
+
 def test_web_search_tool_is_registered_and_normalized() -> None:
     html = """
     <div class="result">
@@ -158,5 +165,6 @@ if __name__ == "__main__":
     test_tiktok_search_keeps_analysis_fields()
     test_amazon_keeps_product_fields()
     test_current_time_tool_is_available()
+    test_web_search_route_exposes_web_search_tool()
     test_web_search_tool_is_registered_and_normalized()
     print("chat tool normalization tests passed")

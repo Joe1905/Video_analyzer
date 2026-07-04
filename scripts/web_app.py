@@ -3770,6 +3770,7 @@ def is_media_availability_query(text: str) -> bool:
 
 
 MUSIC_QUERY_TOOLS = {"tiktok_search_music", "tiktok_music_info", "tiktok_music_videos", "tiktok_music_popular"}
+WEB_SEARCH_TOOLS = {"web_search"}
 
 AMAZON_TOOLS = {"amazon_scrape_url", "amazon_scrape_asin", "amazon_search_keyword"}
 TIKTOK_SHOP_TOOLS = {"tiktok_shop_product", "tiktok_shop_details", "tiktok_shop_reviews", "tiktok_shop_search"}
