@@ -6412,7 +6412,10 @@ def main() -> int:
     mark_interrupted_chat_messages()
     normalize_stored_chat_tool_results()
     video_queue.start(execute_queue_job)
-    start_report_scheduler()
+    report_scheduler_enabled = os.getenv("HOT_VIDEO_REPORT_SCHEDULER_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+    start_report_scheduler(enable_timer=report_scheduler_enabled)
+    if not report_scheduler_enabled:
+        print("Hot report daily scheduler disabled; manual report jobs remain available", flush=True)
     port = int(os.getenv("WEB_PORT", "4000"))
     sellersprite_redirect_port = int(os.getenv("SELLERSPRITE_REDIRECT_PORT", "0") or "0")
     if sellersprite_redirect_port and sellersprite_redirect_port != port:

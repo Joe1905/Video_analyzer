@@ -2814,7 +2814,7 @@ def _scheduler_loop() -> None:
         time.sleep(60)
 
 
-def start_report_scheduler() -> None:
+def start_report_scheduler(enable_timer: bool = True) -> None:
     global _scheduler_started
     with _scheduler_lock:
         if _scheduler_started:
@@ -2822,4 +2822,5 @@ def start_report_scheduler() -> None:
         _scheduler_started = True
         recover_interrupted_reports()
         threading.Thread(target=_scheduler_worker, daemon=True).start()
-        threading.Thread(target=_scheduler_loop, daemon=True).start()
+        if enable_timer:
+            threading.Thread(target=_scheduler_loop, daemon=True).start()
