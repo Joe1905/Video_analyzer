@@ -4092,13 +4092,11 @@ LOCKED_PROVIDER_SYSTEM_TOOL_ALLOWLIST = {prefixed_tool_id("system", "current_tim
 
 
 def filter_locked_provider_tool_ids(provider: str, tool_ids: set[str] | None) -> set[str]:
-    provider = normalize_chat_provider(provider)
-    default_domains = CHAT_PROVIDER_DEFAULT_DOMAINS.get(provider, set())
-    mcp_domains = {domain for domain in default_domains if domain in {"sellersprite", "fastmoss"}}
+    allowed_domains = {"function", "sellersprite", "fastmoss"}
     filtered: set[str] = set()
     for tool_id in tool_ids or set():
         domain, _ = split_prefixed_tool_id(str(tool_id))
-        if domain in mcp_domains or tool_id in LOCKED_PROVIDER_SYSTEM_TOOL_ALLOWLIST:
+        if domain in allowed_domains or tool_id in LOCKED_PROVIDER_SYSTEM_TOOL_ALLOWLIST:
             filtered.add(tool_id)
     return filtered
 
@@ -4606,8 +4604,8 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
         "fastmoss": "For FastMoss analysis, produce a TikTok Shop style answer: category trend, product examples, sales/GMV signals, content/creator angle, opportunity, risk, and next validation steps.",
     }.get(provider, "")
     forced_mcp_style = {
-        "amazon": "This Amazon entry is locked to SellerSprite MCP. For Amazon, ASIN, keyword, category, product, market, competitor, ranking, sales, BSR, traffic, review, brand, or opportunity requests, you must call one or more sellersprite__ tools before the final answer whenever any sellersprite tool is exposed. Final answers must be detailed Chinese Markdown business reports, not brief summaries.",
-        "fastmoss": "This FastMoss entry is locked to FastMoss MCP. For TikTok Shop, product, shop, creator, GMV, sales, category, trend, content, ad, pricing, competitor, or opportunity requests, you must call one or more fastmoss__ tools before the final answer whenever any fastmoss tool is exposed. Final answers must be detailed Chinese Markdown business reports, not brief summaries.",
+        "amazon": "This Amazon entry enables SellerSprite by default, and may also expose user-selected function__ or fastmoss__ tools. For Amazon, ASIN, keyword, category, product, market, competitor, ranking, sales, BSR, traffic, review, brand, or opportunity requests, call one or more relevant exposed tools before the final answer. Prefer sellersprite__ for Amazon marketplace evidence; use fastmoss__ only when it is exposed and relevant to TikTok Shop or cross-channel context. Final answers must be detailed Chinese Markdown business reports, not brief summaries.",
+        "fastmoss": "This FastMoss entry enables FastMoss by default, and may also expose user-selected function__ or sellersprite__ tools. For TikTok Shop, product, shop, creator, GMV, sales, category, trend, content, ad, pricing, competitor, or opportunity requests, call one or more relevant exposed tools before the final answer. Prefer fastmoss__ for TikTok Shop evidence; use sellersprite__ only when it is exposed and relevant to Amazon or cross-channel context. Final answers must be detailed Chinese Markdown business reports, not brief summaries.",
     }.get(provider, "")
     messages = [{"role": "system", "content": (
         "You are a short-video and commerce analysis assistant. Reply in Simplified Chinese. "
