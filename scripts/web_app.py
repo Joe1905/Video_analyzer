@@ -343,6 +343,7 @@ CHAT_PROVIDER_DEFAULT_DOMAINS = {
     "amazon": {"system", "sellersprite"},
     "fastmoss": {"system", "fastmoss"},
 }
+FORCED_MCP_CHAT_PROVIDERS = {"amazon", "fastmoss"}
 MCP_TOOL_CACHE: dict[str, dict[str, Any]] = {}
 NAV_ITEMS = [
     {"key": "home", "href": "/", "label": "\u9996\u9875", "title": "AI \u804a\u5929", "icon": '<path d="M3 10.5 12 3l9 7.5"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/>'},
@@ -3958,6 +3959,10 @@ def system_chat_tool_ids() -> set[str]:
     return {prefixed_tool_id("system", name) for name in LOCAL_SYSTEM_TOOLS}
 
 
+def provider_forces_mcp_tools(provider: str) -> bool:
+    return normalize_chat_provider(provider) in FORCED_MCP_CHAT_PROVIDERS
+
+
 def provider_default_enabled_tool_ids(provider: str) -> set[str]:
     provider = normalize_chat_provider(provider)
     default_domains = CHAT_PROVIDER_DEFAULT_DOMAINS.get(provider, CHAT_PROVIDER_DEFAULT_DOMAINS["home"])
@@ -4123,6 +4128,8 @@ def build_tool_catalog(provider: str) -> dict[str, Any]:
         "toolRegistries": tool_registries,
         "maskEncoding": "hex-lsb",
         "maskLayers": ["domain"],
+        "locked": provider_forces_mcp_tools(provider),
+        "lockedDomains": sorted(CHAT_PROVIDER_DEFAULT_DOMAINS.get(provider, set())) if provider_forces_mcp_tools(provider) else [],
     }
 
 
@@ -4430,6 +4437,8 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     api_key = os.getenv("DEEPSEEK_API_KEY", "")
     api_url = os.getenv("DEEPSEEK_API_URL", "https://api.deepseek.com/v1")
     model = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+    if provider_forces_mcp_tools(provider):
+        model = os.getenv("DEEPSEEK_V4_PRO_MODEL", "deepseek-v4-pro")
 
     if not api_key:
         store.update_message(session, assistant_msg, "Missing DEEPSEEK_API_KEY", status="error")
@@ -4445,12 +4454,16 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
         "amazon": "For Amazon analysis, produce a market-research style answer: query interpretation, keyword/category evidence, demand, competition, price/positioning, opportunity angles, risks, and next validation steps.",
         "fastmoss": "For FastMoss analysis, produce a TikTok Shop style answer: category trend, product examples, sales/GMV signals, content/creator angle, opportunity, risk, and next validation steps.",
     }.get(provider, "")
+    forced_mcp_style = {
+        "amazon": "This Amazon entry is locked to SellerSprite MCP. For Amazon, ASIN, keyword, category, product, market, competitor, ranking, sales, BSR, traffic, review, brand, or opportunity requests, you must call one or more sellersprite__ tools before the final answer whenever any sellersprite tool is exposed. Final answers must be detailed Chinese Markdown business reports, not brief summaries.",
+        "fastmoss": "This FastMoss entry is locked to FastMoss MCP. For TikTok Shop, product, shop, creator, GMV, sales, category, trend, content, ad, pricing, competitor, or opportunity requests, you must call one or more fastmoss__ tools before the final answer whenever any fastmoss tool is exposed. Final answers must be detailed Chinese Markdown business reports, not brief summaries.",
+    }.get(provider, "")
     messages = [{"role": "system", "content": (
         "You are a short-video and commerce analysis assistant. Reply in Simplified Chinese. "
         "Only call tools that are exposed in this request. Tool names are provider-prefixed, for example "
         "system__current_time, function__tiktok_shop_search, sellersprite__asin_detail, "
         "fastmoss__product_rank_top_selling. The prefix is a hard execution boundary. "
-        f"Current chat provider is {provider}; {domain_hint} {provider_style} "
+        f"Current chat provider is {provider}; {domain_hint} {provider_style} {forced_mcp_style} "
         "Anti-hallucination rules: do not invent numbers, rankings, prices, ASINs, sales, GMV, brands, dates, or tool outputs. Label unsupported reasoning as inference, and state data gaps explicitly. "
         "If exposed tools are relevant to the user's analysis request, prefer calling one or more focused tools before the final answer; if no tool is exposed or the selected tools do not fit, say so and answer from clearly marked general knowledge. "
         "When tool results contain enough_data=true or suggested_next_action=answer_from_results, answer from the current results instead of repeatedly calling similar tools. "
@@ -4481,8 +4494,9 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             messages.append({"role": "tool", "tool_call_id": tid, "content": tr_content})
 
     route = route_chat_intent(user_text)
-    needs_tools = chat_request_needs_tools(user_text, route)
-    effective_enabled_tool_ids = enabled_tool_ids
+    force_mcp_tools = provider_forces_mcp_tools(provider)
+    needs_tools = True if force_mcp_tools else chat_request_needs_tools(user_text, route)
+    effective_enabled_tool_ids = provider_default_enabled_tool_ids(provider) if force_mcp_tools else enabled_tool_ids
     if needs_tools and effective_enabled_tool_ids is None:
         effective_enabled_tool_ids = provider_default_enabled_tool_ids(provider)
     tools = build_prefixed_model_tools(effective_enabled_tool_ids) if needs_tools else []
@@ -4493,10 +4507,11 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             f"Intent route: {route.get('intent')}. Need tools: {needs_tools}. Exposed tool count: {len(tools)}. "
             "Use only the exposed prefixed tools. Do not invent unprefixed tool names. "
             "For market, product, category, competitor, trend, ranking, sales, GMV, keyword, ASIN, or time-sensitive questions, use the exposed tools before answering whenever at least one relevant tool is available. "
+            "For locked Amazon/FastMoss providers, the selected MCP domain is mandatory: call the relevant sellersprite__ or fastmoss__ tools before the final answer unless the user is only greeting or asking UI/help. "
             "Do not call tools for pure greetings, UI/help questions, or when no exposed tool matches the task. "
             "For product/category research, use the currently selected domain tools only; do not cross from FastMoss to SellerSprite unless both domains are selected. "
             "For ambiguous product phrases, do not collapse to one niche just because a related keyword has data; present competing interpretations and say what extra input would disambiguate. "
-            "When the current tool results are enough to answer, stop calling tools and write a detailed Chinese answer with evidence, assumptions, opportunities, risks, action recommendations, and next validation steps. "
+            "When the current tool results are enough to answer, stop calling tools and write a detailed Chinese report with evidence, assumptions, opportunities, risks, action recommendations, and next validation steps. For Amazon/FastMoss, do not give only a short conclusion. "
             "For current date/time questions, call system__current_time first if it is exposed."
         ),
     })
