@@ -342,17 +342,23 @@ def _web_search(query: str, max_results: int | None = None) -> dict[str, Any]:
     if not normalized_query:
         return {"ok": False, "query": normalized_query, "retrieved_at": retrieved_at, "attempts": attempts, "errors": errors, "results": [], "reply": "Search query is empty."}
     discarded_results = 0
-    raw_results = _safe_search_stage("instant_answer", lambda: _search_instant_answer(normalized_query, limit), attempts, errors)
-    results = _filter_relevant_search_results(normalized_query, raw_results)
-    discarded_results += max(0, len(raw_results) - len(results))
-    if not results:
-        raw_results = _safe_search_stage("html_search", lambda: _search_duckduckgo_html(normalized_query, limit), attempts, errors)
-        results = _filter_relevant_search_results(normalized_query, raw_results)
-        discarded_results += max(0, len(raw_results) - len(results))
-    if not results:
+    results: list[dict[str, str]] = []
+    if _short_cjk_exact_query(normalized_query):
         raw_results = _safe_search_stage("bing_html_search", lambda: _search_bing_html(normalized_query, limit), attempts, errors)
         results = _filter_relevant_search_results(normalized_query, raw_results)
         discarded_results += max(0, len(raw_results) - len(results))
+    else:
+        raw_results = _safe_search_stage("instant_answer", lambda: _search_instant_answer(normalized_query, limit), attempts, errors)
+        results = _filter_relevant_search_results(normalized_query, raw_results)
+        discarded_results += max(0, len(raw_results) - len(results))
+        if not results:
+            raw_results = _safe_search_stage("html_search", lambda: _search_duckduckgo_html(normalized_query, limit), attempts, errors)
+            results = _filter_relevant_search_results(normalized_query, raw_results)
+            discarded_results += max(0, len(raw_results) - len(results))
+        if not results:
+            raw_results = _safe_search_stage("bing_html_search", lambda: _search_bing_html(normalized_query, limit), attempts, errors)
+            results = _filter_relevant_search_results(normalized_query, raw_results)
+            discarded_results += max(0, len(raw_results) - len(results))
     ok = bool(results)
     reply_lines = [f"Web search results for: {normalized_query}"] if ok else ["No reliable web search results were found."]
     for index, result in enumerate(results[:3], 1):
