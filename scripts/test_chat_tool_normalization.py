@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from web_app import normalize_tool_result, route_chat_intent  # noqa: E402
-from tools import execute_tool, get_tools_for_model, list_tools, parse_duckduckgo_html  # noqa: E402
+from tools import execute_tool, get_tools_for_model, list_tools, parse_bing_html, parse_duckduckgo_html  # noqa: E402
 
 
 def test_tiktok_search_keeps_analysis_fields() -> None:
@@ -134,6 +134,12 @@ def test_web_search_tool_is_registered_and_normalized() -> None:
     """
     parsed = parse_duckduckgo_html(html, 3)
     assert parsed == [{"title": "Example & News", "snippet": "A concise snippet .", "url": "https://example.com/news"}]
+
+    bing_html = """
+    <li class="b_algo"><h2><a href="https://example.com/story">Example Story</a></h2>
+    <div class="b_caption"><p>Useful search snippet.</p></div></li>
+    """
+    assert parse_bing_html(bing_html, 3) == [{"title": "Example Story", "snippet": "Useful search snippet.", "url": "https://example.com/story"}]
 
     raw = {
         "ok": True,

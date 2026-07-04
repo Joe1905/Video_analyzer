@@ -142,6 +142,27 @@ def parse_duckduckgo_html(html: str, max_results: int = 5) -> list[dict[str, str
     return _dedupe_search_results(results)[:max_results]
 
 
+def parse_bing_html(html: str, max_results: int = 5) -> list[dict[str, str]]:
+    results: list[dict[str, str]] = []
+    source = html or ""
+    block_pattern = re.compile(r'<li[^>]+class="[^"]*b_algo[^"]*"[\s\S]*?</li>', re.I)
+    link_pattern = re.compile(r'<h2[^>]*>[\s\S]*?<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)</a>[\s\S]*?</h2>', re.I)
+    snippet_pattern = re.compile(r'<p[^>]*>([\s\S]*?)</p>', re.I)
+    for block in block_pattern.findall(source):
+        if len(results) >= max_results:
+            break
+        link_match = link_pattern.search(block)
+        if not link_match:
+            continue
+        url = _decode_html_entities(link_match.group(1))
+        title = _decode_html_entities(_strip_html_tags(link_match.group(2)))
+        snippet_match = snippet_pattern.search(block)
+        snippet = _decode_html_entities(_strip_html_tags(snippet_match.group(1) if snippet_match else ""))
+        if title and url.startswith(("http://", "https://")):
+            results.append({"title": title, "snippet": snippet, "url": url})
+    return _dedupe_search_results(results)[:max_results]
+
+
 def _dedupe_search_results(results: list[dict[str, str]]) -> list[dict[str, str]]:
     seen: set[str] = set()
     deduped: list[dict[str, str]] = []
@@ -229,6 +250,14 @@ def _search_duckduckgo_html(query: str, max_results: int) -> tuple[list[dict[str
     return parse_duckduckgo_html(body, max_results), path
 
 
+def _search_bing_html(query: str, max_results: int) -> tuple[list[dict[str, str]], str]:
+    url = "https://www.bing.com/search?" + urlencode({"q": query})
+    status, body, path = _fetch_search_url(url, {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"})
+    if status < 200 or status >= 300:
+        raise RuntimeError(f"Bing HTML search HTTP {status}")
+    return parse_bing_html(body, max_results), path
+
+
 def _safe_search_stage(stage: str, searcher, attempts: list[dict[str, Any]], errors: list[dict[str, str]]) -> list[dict[str, str]]:
     started = time.monotonic()
     try:
@@ -251,7 +280,8 @@ def _web_search(query: str, max_results: int | None = None) -> dict[str, Any]:
     if not normalized_query:
         return {"ok": False, "query": normalized_query, "retrieved_at": retrieved_at, "attempts": attempts, "errors": errors, "results": [], "reply": "Search query is empty."}
     instant_results = _safe_search_stage("instant_answer", lambda: _search_instant_answer(normalized_query, limit), attempts, errors)
-    results = instant_results or _safe_search_stage("html_search", lambda: _search_duckduckgo_html(normalized_query, limit), attempts, errors)
+    html_results = instant_results or _safe_search_stage("html_search", lambda: _search_duckduckgo_html(normalized_query, limit), attempts, errors)
+    results = html_results or _safe_search_stage("bing_html_search", lambda: _search_bing_html(normalized_query, limit), attempts, errors)
     ok = bool(results)
     reply_lines = [f"Web search results for: {normalized_query}"] if ok else ["No reliable web search results were found."]
     for index, result in enumerate(results[:3], 1):
