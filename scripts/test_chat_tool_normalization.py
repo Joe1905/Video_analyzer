@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from web_app import build_prefixed_model_tools, chat_request_needs_tools, filter_locked_provider_tool_ids, normalize_tool_result, provider_default_enabled_tool_ids, provider_forces_mcp_tools, route_chat_intent  # noqa: E402
-from tools import execute_tool, get_tools_for_model, list_tools, parse_bing_html, parse_duckduckgo_html  # noqa: E402
+from tools import _filter_relevant_search_results, execute_tool, get_tools_for_model, list_tools, parse_bing_html, parse_duckduckgo_html  # noqa: E402
 
 
 def test_tiktok_search_keeps_analysis_fields() -> None:
@@ -141,6 +141,14 @@ def test_locked_amazon_product_route_keeps_sellersprite_tools() -> None:
     assert "system__web_search" not in names
     assert any(name.startswith("sellersprite__") for name in names)
 
+def test_short_cjk_web_search_filters_irrelevant_results() -> None:
+    results = [
+        {"title": "知乎 - 有问题，就会有答案", "snippet": "中文问答社区", "url": "https://www.zhihu.com/"},
+        {"title": "又一新款AI产品：AI飞飞兔惊喜来袭", "snippet": "开启智能陪伴新时代", "url": "https://www.sunfuntoys.com/"},
+    ]
+    filtered = _filter_relevant_search_results("飞飞兔", results)
+    assert filtered == [results[1]]
+
 def test_web_search_tool_is_registered_and_normalized() -> None:
     html = """
     <div class="result">
@@ -194,6 +202,7 @@ if __name__ == "__main__":
     test_web_search_route_exposes_web_search_tool()
     test_locked_amazon_provider_filters_system_web_search()
     test_locked_amazon_product_route_keeps_sellersprite_tools()
+    test_short_cjk_web_search_filters_irrelevant_results()
     test_web_search_tool_is_registered_and_normalized()
     print("chat tool normalization tests passed")
 

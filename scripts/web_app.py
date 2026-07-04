@@ -3598,6 +3598,7 @@ def normalize_tool_result(tool_name: str, result: dict[str, Any]) -> dict[str, A
             "retrieved_at": payload.get("retrieved_at"),
             "results_total": len(results),
             "results": results,
+            "discarded_results": payload.get("discarded_results") or 0,
             "attempts": payload.get("attempts") or [],
             "errors": payload.get("errors") or [],
             "enough_data": bool(results),

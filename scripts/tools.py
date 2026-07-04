@@ -146,6 +146,28 @@ def _is_safe_search_result(title: str, snippet: str, url: str) -> bool:
     return not any(term in combined for term in blocked_terms)
 
 
+def _short_cjk_exact_query(query: str) -> str:
+    compact = re.sub(r"\s+", "", str(query or ""))
+    if not compact or len(compact) > 12:
+        return ""
+    cjk_chars = re.findall(r"[\u3400-\u9fff]", compact)
+    if len(cjk_chars) < 2:
+        return ""
+    return compact
+
+
+def _filter_relevant_search_results(query: str, results: list[dict[str, str]]) -> list[dict[str, str]]:
+    exact = _short_cjk_exact_query(query)
+    if not exact:
+        return results
+    relevant: list[dict[str, str]] = []
+    for result in results:
+        combined = f"{result.get('title', '')} {result.get('snippet', '')} {result.get('url', '')}".lower()
+        if exact.lower() in combined:
+            relevant.append(result)
+    return relevant
+
+
 def parse_duckduckgo_html(html: str, max_results: int = 5) -> list[dict[str, str]]:
     results: list[dict[str, str]] = []
     source = html or ""
@@ -278,8 +300,19 @@ def _search_duckduckgo_html(query: str, max_results: int) -> tuple[list[dict[str
 
 
 def _search_bing_html(query: str, max_results: int) -> tuple[list[dict[str, str]], str]:
-    url = "https://www.bing.com/search?" + urlencode({"q": query, "adlt": "strict", "safeSearch": "strict", "setlang": "zh-Hans"})
-    status, body, path = _fetch_search_url(url, {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"})
+    url = "https://www.bing.com/search?" + urlencode({
+        "q": query,
+        "adlt": "strict",
+        "safeSearch": "strict",
+        "setlang": "zh-Hans",
+        "mkt": "zh-CN",
+        "cc": "CN",
+        "pqlt": "438",
+    })
+    status, body, path = _fetch_search_url(url, {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.7",
+    })
     if status < 200 or status >= 300:
         raise RuntimeError(f"Bing HTML search HTTP {status}")
     return parse_bing_html(body, max_results), path
@@ -306,9 +339,18 @@ def _web_search(query: str, max_results: int | None = None) -> dict[str, Any]:
     errors: list[dict[str, str]] = []
     if not normalized_query:
         return {"ok": False, "query": normalized_query, "retrieved_at": retrieved_at, "attempts": attempts, "errors": errors, "results": [], "reply": "Search query is empty."}
-    instant_results = _safe_search_stage("instant_answer", lambda: _search_instant_answer(normalized_query, limit), attempts, errors)
-    html_results = instant_results or _safe_search_stage("html_search", lambda: _search_duckduckgo_html(normalized_query, limit), attempts, errors)
-    results = html_results or _safe_search_stage("bing_html_search", lambda: _search_bing_html(normalized_query, limit), attempts, errors)
+    discarded_results = 0
+    raw_results = _safe_search_stage("instant_answer", lambda: _search_instant_answer(normalized_query, limit), attempts, errors)
+    results = _filter_relevant_search_results(normalized_query, raw_results)
+    discarded_results += max(0, len(raw_results) - len(results))
+    if not results:
+        raw_results = _safe_search_stage("html_search", lambda: _search_duckduckgo_html(normalized_query, limit), attempts, errors)
+        results = _filter_relevant_search_results(normalized_query, raw_results)
+        discarded_results += max(0, len(raw_results) - len(results))
+    if not results:
+        raw_results = _safe_search_stage("bing_html_search", lambda: _search_bing_html(normalized_query, limit), attempts, errors)
+        results = _filter_relevant_search_results(normalized_query, raw_results)
+        discarded_results += max(0, len(raw_results) - len(results))
     ok = bool(results)
     reply_lines = [f"Web search results for: {normalized_query}"] if ok else ["No reliable web search results were found."]
     for index, result in enumerate(results[:3], 1):
@@ -323,6 +365,7 @@ def _web_search(query: str, max_results: int | None = None) -> dict[str, Any]:
         "attempts": attempts,
         "errors": errors,
         "results": results,
+        "discarded_results": discarded_results,
         "reply": "\n".join(reply_lines),
     }
 
