@@ -23,6 +23,7 @@ from urllib.parse import parse_qs, quote_plus, urlparse
 from urllib.parse import unquote
 import cgi
 from html import escape as html_escape
+from html import unescape as html_unescape
 from io import BytesIO
 
 # SociaVault TikTok endpoints (mirrored from sociavault_tiktok.py)
@@ -3908,6 +3909,67 @@ def split_prefixed_tool_id(tool_id: str) -> tuple[str, str]:
     return domain, name
 
 
+def normalize_dsml_tool_id(name: str, allowed_tool_ids: set[str]) -> str | None:
+    raw = str(name or "").strip()
+    if not raw:
+        return None
+    candidates = [raw]
+    if "__" not in raw:
+        for domain in CHAT_TOOL_DOMAINS:
+            prefix = f"{domain}_"
+            if raw.startswith(prefix):
+                candidates.append(prefixed_tool_id(domain, raw[len(prefix):]))
+    for candidate in candidates:
+        if candidate in allowed_tool_ids:
+            return candidate
+    return None
+
+
+def parse_deepseek_dsml_tool_calls(content: str, allowed_tool_ids: set[str]) -> list[dict[str, Any]]:
+    text = str(content or "").replace("｜", "|")
+    text = re.sub(r"(<\s*/?)\s*\|\s*\|\s*DSML\s*\|\s*\|?\s*", r"\1", text)
+    if "invoke" not in text:
+        return []
+    calls: list[dict[str, Any]] = []
+    invoke_re = re.compile(
+        r"<invoke\s+name=\"([^\"]+)\"\s*>(.*?)</invoke\s*>",
+        re.DOTALL,
+    )
+    param_re = re.compile(
+        r"<parameter\s+name=\"([^\"]+)\"[^>]*>(.*?)</parameter\s*>",
+        re.DOTALL,
+    )
+    for match in invoke_re.finditer(text):
+        tool_id = normalize_dsml_tool_id(match.group(1), allowed_tool_ids)
+        if not tool_id:
+            continue
+        args: dict[str, Any] = {}
+        for param in param_re.finditer(match.group(2)):
+            param_name = str(param.group(1) or "").strip()
+            if not param_name:
+                continue
+            raw_value = html_unescape(param.group(2).strip())
+            try:
+                args[param_name] = json.loads(raw_value) if raw_value else None
+            except json.JSONDecodeError:
+                args[param_name] = raw_value
+        calls.append({
+            "id": f"call_dsml_{uuid.uuid4().hex}",
+            "type": "function",
+            "function": {
+                "name": tool_id,
+                "arguments": json.dumps(args, ensure_ascii=False),
+            },
+        })
+    return calls
+
+
+def forced_provider_missing_tool_retry(provider: str, needs_tools: bool, tools: list[dict[str, Any]], assistant_msg: Message) -> bool:
+    if not provider_forces_mcp_tools(provider) or not needs_tools or not tools:
+        return False
+    return not (assistant_msg.tool_calls or assistant_msg.tool_results)
+
+
 def mcp_bridge_request(chat_type: str, method: str, params: dict[str, Any] | None = None) -> Any:
     ok, error = ensure_mcp_chat_server(chat_type)
     if not ok:
@@ -4626,11 +4688,15 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 elapsed_ms=int((time.monotonic() - request_started) * 1000),
             )
             msg = body["choices"][0]["message"]
-            if msg.get("tool_calls"):
-                tool_calls = msg["tool_calls"]
+            allowed_tool_ids = {str(tool.get("function", {}).get("name") or "") for tool in tools}
+            standard_tool_calls = msg.get("tool_calls") or []
+            dsml_tool_calls = [] if standard_tool_calls else parse_deepseek_dsml_tool_calls(msg.get("content", ""), allowed_tool_ids)
+            tool_calls = standard_tool_calls or dsml_tool_calls
+            if tool_calls:
                 assistant_msg.tool_calls = list(assistant_msg.tool_calls or []) + tool_calls
                 assistant_msg.tool_results = list(assistant_msg.tool_results or [])
-                messages.append({"role": "assistant", "content": msg.get("content") or "", "tool_calls": tool_calls})
+                assistant_content = (msg.get("content") or "") if standard_tool_calls else ""
+                messages.append({"role": "assistant", "content": assistant_content, "tool_calls": tool_calls})
                 store.broadcast(session.id, "update", {"messageId": assistant_msg.id, "tool_calls": assistant_msg.tool_calls, "tool_results": assistant_msg.tool_results})
 
                 for tc in tool_calls:
@@ -4647,6 +4713,18 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 continue
 
             content = msg.get("content", "")
+            if forced_provider_missing_tool_retry(provider, needs_tools, tools, assistant_msg):
+                print(f"[CHAT] provider={provider} returned no executable tool call; retrying with stricter tool instruction", flush=True)
+                messages.append({"role": "assistant", "content": content})
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        "Your previous response did not execute any exposed MCP tool. This provider requires real tool data. "
+                        "Do not answer with methodology, plans, DSML text, function_calls text, or prose-only tool requests. "
+                        "Return a valid tool call using one of the exposed function tool names now."
+                    ),
+                })
+                continue
             store.update_message(session, assistant_msg, content, status="done")
             store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": content})
             return
@@ -4661,6 +4739,14 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             store.update_message(session, assistant_msg, f"Request failed: {exc}", status="error")
             return
 
+    if forced_provider_missing_tool_retry(provider, needs_tools, tools, assistant_msg):
+        fallback = (
+            "需要实际调用数据工具才能回答，但模型连续没有返回可执行的工具调用。"
+            "我没有采纳方法论式回答，也不会编造市场数据；请稍后重试，或指定更明确的关键词、ASIN、类目节点。"
+        )
+        store.update_message(session, assistant_msg, fallback, status="error")
+        store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": fallback})
+        return
     try:
         messages.append({
             "role": "system",
