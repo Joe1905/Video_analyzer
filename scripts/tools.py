@@ -301,7 +301,7 @@ def _search_duckduckgo_html(query: str, max_results: int) -> tuple[list[dict[str
 
 
 def _search_bing_html(query: str, max_results: int) -> tuple[list[dict[str, str]], str]:
-    url = "https://www.bing.com/search?" + urlencode({
+    url = "https://cn.bing.com/search?" + urlencode({
         "q": query,
         "adlt": "strict",
         "safeSearch": "strict",
@@ -309,6 +309,7 @@ def _search_bing_html(query: str, max_results: int) -> tuple[list[dict[str, str]
         "mkt": "zh-CN",
         "cc": "CN",
         "pqlt": "438",
+        "ensearch": "1",
     })
     status, body, path = _fetch_search_url(url, {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
