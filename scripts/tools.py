@@ -242,7 +242,6 @@ def _collect_duckduckgo_topics(topics: Any, results: list[dict[str, str]], max_r
 
 
 def _fetch_search_url(url: str, headers: dict[str, str]) -> tuple[int, str, str]:
-    request = Request(url, headers=headers)
     proxy_url = SEARCH_PROXY_URL
     paths: list[tuple[str, Any]] = []
     if proxy_url:
@@ -253,6 +252,7 @@ def _fetch_search_url(url: str, headers: dict[str, str]) -> tuple[int, str, str]
     proxy_error = ""
     for label, opener in paths:
         try:
+            request = Request(url, headers=headers)
             with opener.open(request, timeout=15) as response:
                 body = response.read().decode("utf-8", errors="replace")
                 path = label
@@ -268,6 +268,7 @@ def _fetch_search_url(url: str, headers: dict[str, str]) -> tuple[int, str, str]
                 break
     if last_error:
         raise last_error
+    request = Request(url, headers=headers)
     with urlopen(request, timeout=15, context=ssl.create_default_context()) as response:
         body = response.read().decode("utf-8", errors="replace")
         return int(getattr(response, "status", 200)), body, "default"
