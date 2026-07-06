@@ -1677,6 +1677,24 @@ def _start_report(conn: sqlite3.Connection, report_date: str, region: str, sourc
     return report_id
 
 
+def notify_daily_report_completed(report_date: str, status: str) -> dict[str, Any]:
+    url = os.getenv("VIDEO_DAILY_REPORT_COMPLETED_URL", "").strip()
+    if not url:
+        return {"sent": False, "reason": "url_not_configured"}
+    payload = json.dumps({"date": report_date, "status": status}, ensure_ascii=False).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    token = os.getenv("VIDEO_DAILY_REPORT_TOKEN", "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    timeout = float(os.getenv("VIDEO_DAILY_REPORT_CALLBACK_TIMEOUT", "10"))
+    req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return {"sent": True, "status_code": getattr(resp, "status", None)}
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        return {"sent": False, "error": str(exc)}
+
+
 def _finish_report(
     conn: sqlite3.Connection,
     report_id: str,
@@ -1725,6 +1743,12 @@ def _finish_report(
         ),
     )
     conn.commit()
+    if status == "complete":
+        callback = notify_daily_report_completed(report_date, status)
+        if callback.get("sent"):
+            print(f"Video daily report completed callback sent for {report_date}", flush=True)
+        elif callback.get("error"):
+            print(f"Video daily report completed callback failed for {report_date}: {callback.get('error')}", flush=True)
 
 
 def _upsert_video(conn: sqlite3.Connection, report_id: str, report_date: str, item: dict[str, Any], report_rank: int) -> None:
