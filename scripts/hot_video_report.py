@@ -2787,6 +2787,26 @@ def enqueue_report(report_date: str | None = None) -> dict[str, Any]:
     return {"queued": True, "report_date": date, "active_date": status.get("active_date"), "queued_dates": status.get("queued", [])}
 
 
+def enqueue_missed_today_report() -> dict[str, Any]:
+    settings = get_settings()
+    tz = ZoneInfo(settings["timezone"])
+    now = datetime.now(tz)
+    schedule_hour, schedule_minute = [int(part) for part in str(settings["schedule_time"]).split(":", 1)]
+    scheduled_at = now.replace(hour=schedule_hour, minute=schedule_minute, second=0, microsecond=0)
+    date = now.strftime("%Y-%m-%d")
+    if now < scheduled_at:
+        return {"queued": False, "report_date": date, "reason": "schedule_not_reached"}
+    status = get_report_runtime_status()
+    if status.get("active_date") == date or date in set(status.get("queued", [])):
+        return {"queued": False, "report_date": date, "reason": "already_running_or_queued"}
+    report = get_report(date, include_raw=False, detail=False)
+    if report.get("exists"):
+        return {"queued": False, "report_date": date, "reason": f"report_{report.get('status') or 'exists'}"}
+    payload = enqueue_report(date)
+    payload["reason"] = "missed_schedule"
+    return payload
+
+
 def _scheduler_worker() -> None:
     while True:
         date = _job_queue.get()
@@ -2823,4 +2843,10 @@ def start_report_scheduler(enable_timer: bool = True) -> None:
         recover_interrupted_reports()
         threading.Thread(target=_scheduler_worker, daemon=True).start()
         if enable_timer:
+            try:
+                missed = enqueue_missed_today_report()
+                if missed.get("queued"):
+                    print(f"Queued missed hot report for {missed.get('report_date')}", flush=True)
+            except Exception as exc:
+                print(f"Hot report missed-schedule recovery failed: {exc}", flush=True)
             threading.Thread(target=_scheduler_loop, daemon=True).start()
