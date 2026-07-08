@@ -2501,12 +2501,58 @@ def _summary_prompt_v2(report_date: str, video_items: list[dict[str, Any]], part
     )
 
 
-def _chunk_summary_prompt_v2(report_date: str, chunk_index: int, video_items: list[dict[str, Any]]) -> str:
-    payload = {"report_date": report_date, "chunk_index": chunk_index, "video_insights": video_items}
+def _compact_summary_video_for_retry(video: dict[str, Any]) -> dict[str, Any]:
+    insight = video.get("insight") or {}
+    compact_insight: dict[str, Any] = {}
+    if isinstance(insight, dict):
+        field_limits = {
+            "one_sentence": 160,
+            "core_boom_reason": 240,
+            "hook": 180,
+            "content_structure": 220,
+            "audience_trigger": 180,
+            "engagement_driver": 180,
+            "replicable_formula": 200,
+            "weakness_or_risk": 140,
+        }
+        for key, limit in field_limits.items():
+            value = insight.get(key)
+            if value not in (None, ""):
+                compact_insight[key] = _trim_text(value, limit)
+        if not compact_insight and insight.get("raw_result"):
+            compact_insight["raw_result"] = _trim_text(insight.get("raw_result"), 700)
+    elif insight:
+        compact_insight["raw"] = _trim_text(insight, 700)
+    return {
+        "rank": video.get("rank"),
+        "title": _trim_text(video.get("title"), 140),
+        "metrics": video.get("metrics"),
+        "hot_score": video.get("hot_score"),
+        "source_label": video.get("source_label"),
+        "insight": compact_insight,
+    }
+
+
+def _chunk_summary_prompt_v2(report_date: str, chunk_index: int, video_items: list[dict[str, Any]], compact: bool = False) -> str:
+    payload_items = [_compact_summary_video_for_retry(video) for video in video_items] if compact else video_items
+    payload = {"report_date": report_date, "chunk_index": chunk_index, "video_insights": payload_items}
+    if compact:
+        length_instruction = (
+            "\u964d\u7ea7\u538b\u7f29\u6a21\u5f0f\uff1akey_observations \u4e0d\u8d85\u8fc7 3 \u6761\uff0c"
+            "video_deep_dives \u6bcf\u6761\u4e0d\u8d85\u8fc7 100 \u4e2a\u4e2d\u6587\u5b57\uff0c"
+            "patterns/reusable_points/risks \u5404\u4e0d\u8d85\u8fc7 3 \u6761\u3002"
+        )
+    else:
+        length_instruction = (
+            "\u8f93\u51fa\u957f\u5ea6\u5fc5\u987b\u53d7\u63a7\uff1akey_observations \u4e0d\u8d85\u8fc7 4 \u6761\uff0c"
+            "video_deep_dives \u6bcf\u6761\u4e0d\u8d85\u8fc7 160 \u4e2a\u4e2d\u6587\u5b57\uff0c"
+            "patterns/reusable_points/risks \u5404\u4e0d\u8d85\u8fc7 4 \u6761\u3002"
+        )
     return (
         "\u4f60\u662f\u77ed\u89c6\u9891\u7814\u7a76\u52a9\u7406\u3002"
         "\u8bf7\u628a\u8fd9\u4e00\u7ec4\u5355\u89c6\u9891\u7206\u6b3e\u62c6\u89e3\u538b\u7f29\u6210\u53ef\u4f9b\u6700\u7ec8\u65e5\u62a5\u4f7f\u7528\u7684\u4e2d\u6587\u7ed3\u6784\u5316\u6458\u8981\u3002"
         "\u5fc5\u987b\u4fdd\u7559\u6bcf\u6761\u89c6\u9891\u7684\u6838\u5fc3\u7206\u70b9\u3001\u5f00\u5934\u94a9\u5b50\u3001\u7ed3\u6784\u3001\u4e92\u52a8\u673a\u5236\u3001\u53ef\u590d\u7528\u516c\u5f0f\u548c\u98ce\u9669\u3002"
+        f"{length_instruction}"
         "\u53ea\u8fd4\u56de\u4e25\u683c JSON\uff0c\u4e0d\u8981 Markdown\u3002JSON keys: key_observations, video_deep_dives, patterns, reusable_points, risks\u3002\n\n"
         f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
     )
@@ -2526,17 +2572,32 @@ def _generate_daily_summary(report_date: str, success_videos: list[dict[str, Any
     prompt_limit = _to_int(os.getenv("REPORT_SUMMARY_PROMPT_CHAR_LIMIT", "28000"))
     if len(prompt) > prompt_limit and len(video_items) > 1:
         chunk_size = max(2, _to_int(os.getenv("REPORT_SUMMARY_CHUNK_SIZE", "4")))
+        chunk_max_tokens = _to_int(os.getenv("REPORT_DEEPSEEK_CHUNK_MAX_TOKENS", "2048"))
         partials: list[dict[str, Any]] = []
         for index in range(0, len(video_items), chunk_size):
-            chunk_prompt = _chunk_summary_prompt_v2(report_date, index // chunk_size + 1, video_items[index : index + chunk_size])
+            chunk_items = video_items[index : index + chunk_size]
+            chunk_prompt = _chunk_summary_prompt_v2(report_date, index // chunk_size + 1, chunk_items)
             chunk_response = call_deepseek(
                 api_key=api_key,
                 prompt=chunk_prompt,
                 api_url=os.getenv("DEEPSEEK_API_URL", DEFAULT_API_URL),
                 model=os.getenv("DEEPSEEK_MODEL", DEFAULT_MODEL),
-                max_tokens=_to_int(os.getenv("REPORT_DEEPSEEK_CHUNK_MAX_TOKENS", "1800")),
+                max_tokens=chunk_max_tokens,
             )
-            chunk_content = extract_content(chunk_response)
+            try:
+                chunk_content = extract_content(chunk_response)
+            except ValueError as exc:
+                if "truncated" not in str(exc):
+                    raise
+                retry_prompt = _chunk_summary_prompt_v2(report_date, index // chunk_size + 1, chunk_items, compact=True)
+                retry_response = call_deepseek(
+                    api_key=api_key,
+                    prompt=retry_prompt,
+                    api_url=os.getenv("DEEPSEEK_API_URL", DEFAULT_API_URL),
+                    model=os.getenv("DEEPSEEK_MODEL", DEFAULT_MODEL),
+                    max_tokens=chunk_max_tokens,
+                )
+                chunk_content = extract_content(retry_response)
             try:
                 partials.append(parse_json_content(chunk_content))
             except Exception:
