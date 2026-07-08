@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from web_app import build_prefixed_model_tools, chat_request_needs_tools, filter_locked_provider_tool_ids, normalize_tool_result, provider_default_enabled_tool_ids, provider_forces_mcp_tools, route_chat_intent  # noqa: E402
+from web_app import build_prefixed_model_tools, chat_markdown_to_html, chat_request_needs_tools, filter_locked_provider_tool_ids, normalize_tool_result, provider_default_enabled_tool_ids, provider_forces_mcp_tools, route_chat_intent  # noqa: E402
 from tools import _filter_relevant_search_results, execute_tool, get_tools_for_model, list_tools, parse_bing_html, parse_duckduckgo_html  # noqa: E402
 
 
@@ -158,6 +158,15 @@ def test_short_cjk_web_search_filters_irrelevant_results() -> None:
     filtered = _filter_relevant_search_results("飞飞兔", results)
     assert filtered == [results[1]]
 
+def test_pdf_markdown_export_matches_frontend_quote_heading() -> None:
+    rendered = chat_markdown_to_html(
+        ">#### Target summary\n>\n>Case **bold**.\n\n| Item | Detail |\n|---|---|\n| A | B |"
+    )
+    assert "<h4>Target summary</h4>" in rendered
+    assert "&gt;####" not in rendered
+    assert "<strong>bold</strong>" in rendered
+    assert '<table class="md-table">' in rendered
+
 def test_web_search_tool_is_registered_and_normalized() -> None:
     html = """
     <div class="result">
@@ -213,6 +222,7 @@ if __name__ == "__main__":
     test_locked_amazon_product_route_keeps_sellersprite_tools()
     test_amazon_url_query_api_fragment_does_not_disable_tools()
     test_short_cjk_web_search_filters_irrelevant_results()
+    test_pdf_markdown_export_matches_frontend_quote_heading()
     test_web_search_tool_is_registered_and_normalized()
     print("chat tool normalization tests passed")
 

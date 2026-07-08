@@ -1939,8 +1939,20 @@ def chat_render_table(lines: list[str], start: int) -> tuple[str, int]:
     return html, index
 
 
-def chat_markdown_to_html(markdown: str) -> str:
+def chat_normalize_pdf_markdown(markdown: str) -> list[str]:
     lines = str(markdown or "").replace("\r\n", "\n").split("\n")
+    normalized: list[str] = []
+    in_code = False
+    for line in lines:
+        current = line if in_code else re.sub(r"^\s*>\s?", "", line)
+        normalized.append(current)
+        if re.match(r"^```[\w+-]*\s*$", current.strip()):
+            in_code = not in_code
+    return normalized
+
+
+def chat_markdown_to_html(markdown: str) -> str:
+    lines = chat_normalize_pdf_markdown(markdown)
     out: list[str] = []
     index = 0
     in_code = False
@@ -2039,7 +2051,7 @@ body{{margin:0;background:#f6f8fb;color:#111827;font-family:"Noto Sans CJK SC","
 .page{{padding:34px}}.doc-head{{margin-bottom:18px;padding-bottom:14px;border-bottom:2px solid #2563eb}}
 .doc-head h1{{margin:0;font-size:26px}}.doc-head p{{margin:8px 0 0;color:#64748b;font-size:12px}}
 .reply{{border:1px solid #d6deea;border-radius:12px;background:#fff;padding:20px 22px;line-height:1.75;font-size:14px}}
-.reply h1,.reply h2,.reply h3{{margin:4px 0 12px;line-height:1.35}}.reply h1{{font-size:24px}}.reply h2{{font-size:20px}}.reply h3{{font-size:17px}}
+.reply h1,.reply h2,.reply h3,.reply h4,.reply h5,.reply h6{{margin:4px 0 12px;line-height:1.35}}.reply h1{{font-size:24px}}.reply h2{{font-size:20px}}.reply h3{{font-size:17px}}.reply h4{{font-size:15px}}.reply h5,.reply h6{{font-size:14px}}
 .reply p{{margin:10px 0}}.reply ul,.reply ol{{margin:10px 0;padding-left:24px}}.reply li{{margin:4px 0}}
 .reply a{{color:#2563eb;text-decoration:none;font-weight:600;word-break:break-all}}
 .reply code{{background:#f1f5f9;border:1px solid #e2e8f0;border-radius:5px;padding:1px 5px;font-size:12px}}
