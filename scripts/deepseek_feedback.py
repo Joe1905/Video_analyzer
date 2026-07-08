@@ -11,7 +11,7 @@ from api_cache import record_api_call
 
 
 DEFAULT_API_URL = "https://api.deepseek.com/v1/chat/completions"
-DEFAULT_MODEL = "deepseek-chat"
+DEFAULT_MODEL = "deepseek-v4-flash"
 DEFAULT_FEEDBACK_PROMPT = (
     "基于视频提取内容和分析结果，给出可执行的视频改进反馈。"
     "只返回严格可解析 JSON，不要 Markdown。"

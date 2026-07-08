@@ -4585,9 +4585,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     provider = normalize_chat_provider(provider)
     api_key = os.getenv("DEEPSEEK_API_KEY", "")
     api_url = os.getenv("DEEPSEEK_API_URL", "https://api.deepseek.com/v1")
-    model = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
-    if provider_forces_mcp_tools(provider):
-        model = os.getenv("DEEPSEEK_V4_PRO_MODEL", "deepseek-v4-pro")
+    model = os.getenv("DEEPSEEK_CHAT_MODEL", os.getenv("DEEPSEEK_V4_PRO_MODEL", "deepseek-v4-pro"))
 
     if not api_key:
         store.update_message(session, assistant_msg, "Missing DEEPSEEK_API_KEY", status="error")
@@ -4913,7 +4911,7 @@ def execute_queue_job(filename: str, job_type: str, progress: dict) -> None:
                             break
                 if _text and len(_text) > 20:
                     _text = _text[:500]
-                    _title_payload = {"model": "deepseek-chat", "messages": [
+                    _title_payload = {"model": "deepseek-v4-flash", "messages": [
                         {"role": "system", "content": "你是一个标题生成器。根据视频内容描述，生成6字以内的中文短标题。格式：地点+人物/动作。只输出标题本身，不要引号不要解释不要标点。"},
                         {"role": "user", "content": f"视频内容：{_text}\n\n6字以内短标题："}
                     ], "temperature": 0.3, "max_tokens": 15}
@@ -4930,7 +4928,7 @@ def execute_queue_job(filename: str, job_type: str, progress: dict) -> None:
                         "video_title",
                         {
                             "api_url": "https://api.deepseek.com/v1/chat/completions",
-                            "model": "deepseek-chat",
+                            "model": "deepseek-v4-flash",
                             "payload_sha256": __import__("hashlib").sha256(json.dumps(_title_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest(),
                         },
                         _title_body,

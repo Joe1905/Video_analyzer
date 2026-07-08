@@ -13,7 +13,7 @@ from api_cache import record_api_call
 
 
 DEFAULT_API_URL = "https://api.deepseek.com/v1/chat/completions"
-DEFAULT_MODEL = "deepseek-chat"
+DEFAULT_MODEL = "deepseek-v4-flash"
 DEFAULT_BATCH_CHARS = 8000
 DEFAULT_TEXT_CHUNK_CHARS = 3000
 DEFAULT_MAX_TOKENS = 8192

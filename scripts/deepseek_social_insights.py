@@ -13,7 +13,7 @@ from api_cache import record_api_call
 
 
 DEFAULT_API_URL = "https://api.deepseek.com/v1/chat/completions"
-DEFAULT_MODEL = "deepseek-chat"
+DEFAULT_MODEL = "deepseek-v4-flash"
 
 
 def read_json(path: Path) -> dict[str, Any]:
