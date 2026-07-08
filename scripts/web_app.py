@@ -1871,7 +1871,7 @@ def chat_split_table_row(line: str) -> list[str]:
 
 def chat_is_table_separator(line: str) -> bool:
     cells = chat_split_table_row(line)
-    return len(cells) > 1 and all(re.fullmatch(r":?-{3,}:?", cell or "") for cell in cells)
+    return len(cells) > 1 and all(re.fullmatch(r":?-{1,}:?", cell or "") for cell in cells)
 
 
 def chat_inline_markdown(text: str) -> str:
@@ -1975,7 +1975,7 @@ def chat_markdown_to_html(markdown: str) -> str:
             table_html, index = chat_render_table(lines, index)
             out.append(table_html)
             continue
-        heading = re.match(r"^(#{1,3})\s+(.+)$", stripped)
+        heading = re.match(r"^(#{1,6})\s+(.+)$", stripped)
         if heading:
             level = len(heading.group(1))
             out.append(f"<h{level}>{chat_inline_markdown(heading.group(2))}</h{level}>")
@@ -2009,7 +2009,7 @@ def chat_markdown_to_html(markdown: str) -> str:
             next_trim = next_line.strip()
             if (
                 not next_trim
-                or re.match(r"^(#{1,3})\s+", next_trim)
+                or re.match(r"^(#{1,6})\s+", next_trim)
                 or re.match(r"^[-*]\s+", next_trim)
                 or re.match(r"^\d+[.)]\s+", next_trim)
                 or re.match(r"^```", next_trim)
