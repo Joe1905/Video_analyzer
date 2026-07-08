@@ -3822,7 +3822,7 @@ def is_explicit_live_web_query(text: str) -> bool:
 
 
 def is_mcp_interface_query(text: str) -> bool:
-    lowered = (text or "").lower()
+    lowered = re.sub(r"https?://\S+", " ", text or "", flags=re.IGNORECASE).lower()
     mcp_words = ("mcp", "tool", "tools", "function", "function calling", "schema", "api", "endpoint")
     zh_mcp_words = (
         "\u63a5\u53e3", "\u5de5\u5177", "\u51fd\u6570", "\u8c03\u7528", "\u53c2\u6570",

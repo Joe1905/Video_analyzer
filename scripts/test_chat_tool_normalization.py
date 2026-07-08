@@ -141,6 +141,15 @@ def test_locked_amazon_product_route_keeps_sellersprite_tools() -> None:
     assert "system__web_search" not in names
     assert any(name.startswith("sellersprite__") for name in names)
 
+
+def test_amazon_url_query_api_fragment_does_not_disable_tools() -> None:
+    text = "https://www.amazon.com/example/dp/B0FKLZF4BM/ref=sr_1_3?dib=api-token 分析一下美区亚马逊这个产品的市场情况"
+    route = route_chat_intent(text)
+    assert route["intent"] != "mcp_interface"
+    force_mcp_tools = provider_forces_mcp_tools("amazon") and str(route.get("intent") or "general") not in {"web_search", "mcp_interface"}
+    assert force_mcp_tools is True
+
+
 def test_short_cjk_web_search_filters_irrelevant_results() -> None:
     results = [
         {"title": "知乎 - 有问题，就会有答案", "snippet": "中文问答社区", "url": "https://www.zhihu.com/"},
@@ -202,6 +211,7 @@ if __name__ == "__main__":
     test_web_search_route_exposes_web_search_tool()
     test_locked_amazon_provider_filters_system_web_search()
     test_locked_amazon_product_route_keeps_sellersprite_tools()
+    test_amazon_url_query_api_fragment_does_not_disable_tools()
     test_short_cjk_web_search_filters_irrelevant_results()
     test_web_search_tool_is_registered_and_normalized()
     print("chat tool normalization tests passed")
