@@ -2174,6 +2174,139 @@ def _markdown_from_report(report: dict[str, Any]) -> str:
     return "\n\n".join(parts)
 
 
+REQUIRED_DAILY_REPORT_KEYS = {
+    "summary",
+    "common_patterns",
+    "hook_analysis",
+    "visual_patterns",
+    "topic_angles",
+    "execution_tactics",
+    "reusable_ideas",
+    "risks",
+    "next_actions",
+}
+
+
+def _extract_json_object_text(content: str) -> str:
+    stripped = str(content or "").strip()
+    if stripped.startswith("```"):
+        stripped = stripped.strip("`")
+        if stripped.startswith("json"):
+            stripped = stripped[4:]
+        stripped = stripped.strip()
+    start = stripped.find("{")
+    end = stripped.rfind("}")
+    if start >= 0 and end > start:
+        return stripped[start : end + 1]
+    return stripped
+
+
+def _escape_likely_inner_json_quotes(content: str) -> str:
+    out: list[str] = []
+    in_string = False
+    escaped = False
+    for index, char in enumerate(content):
+        if escaped:
+            out.append(char)
+            escaped = False
+            continue
+        if char == "\\" and in_string:
+            out.append(char)
+            escaped = True
+            continue
+        if in_string and char in {"\n", "\r", "\t"}:
+            out.append({"\n": "\\n", "\r": "\\r", "\t": "\\t"}[char])
+            continue
+        if char == '"':
+            if not in_string:
+                in_string = True
+                out.append(char)
+                continue
+            next_index = index + 1
+            while next_index < len(content) and content[next_index].isspace():
+                next_index += 1
+            next_char = content[next_index] if next_index < len(content) else ""
+            if next_char in {":", ",", "}", "]", ""}:
+                in_string = False
+                out.append(char)
+            else:
+                out.append('\\"')
+            continue
+        out.append(char)
+    return "".join(out)
+
+
+def _validate_daily_report_shape(report: Any) -> dict[str, Any]:
+    if not isinstance(report, dict):
+        raise ValueError("Daily report JSON must be an object")
+    missing = sorted(key for key in REQUIRED_DAILY_REPORT_KEYS if key not in report)
+    if missing:
+        raise ValueError(f"Daily report JSON is missing required keys: {', '.join(missing)}")
+    if "video_deep_dives" in report and not isinstance(report.get("video_deep_dives"), list):
+        raise ValueError("Daily report video_deep_dives must be an array when present")
+    return report
+
+
+def _repair_report_json_content(content: str) -> dict[str, Any]:
+    candidate = _extract_json_object_text(content)
+    try:
+        return _validate_daily_report_shape(json.loads(candidate))
+    except json.JSONDecodeError:
+        repaired = _escape_likely_inner_json_quotes(candidate)
+        return _validate_daily_report_shape(json.loads(repaired))
+
+
+def _llm_repair_report_json_content(
+    content: str,
+    parse_error: Exception,
+    api_key: str,
+    api_url: str,
+    model: str,
+) -> dict[str, Any]:
+    prompt = (
+        "Repair the following malformed JSON so it becomes strict parseable JSON. "
+        "Do not rewrite, summarize, translate, add facts, or remove substantive content. "
+        "Only fix JSON syntax issues such as unescaped quotes, trailing commas, or code fences. "
+        "Return JSON only with the original daily report keys.\n\n"
+        f"Parse error: {parse_error}\n\n"
+        "Malformed JSON:\n"
+        f"{content}"
+    )
+    response = call_deepseek(
+        api_key=api_key,
+        prompt=prompt,
+        api_url=api_url,
+        model=model,
+        max_tokens=_to_int(os.getenv("REPORT_JSON_REPAIR_MAX_TOKENS", "8192")),
+    )
+    repaired_content = extract_content(response)
+    return _validate_daily_report_shape(parse_json_content(repaired_content))
+
+
+def _parse_daily_report_content(
+    content: str,
+    api_key: str,
+    api_url: str,
+    model: str,
+) -> dict[str, Any]:
+    try:
+        return _validate_daily_report_shape(parse_json_content(content))
+    except Exception as parse_error:
+        try:
+            return _repair_report_json_content(content)
+        except Exception as repair_error:
+            try:
+                return _llm_repair_report_json_content(content, parse_error, api_key, api_url, model)
+            except Exception as llm_error:
+                return {
+                    "summary": "日报 JSON 解析失败，已保留原始模型输出供排查。",
+                    "raw_result": content,
+                    "parse_error": str(parse_error),
+                    "repair_error": str(repair_error),
+                    "llm_repair_error": str(llm_error),
+                }
+
+
 def _trim_text(value: Any, limit: int = 1200) -> str:
     text = str(value or "").strip()
     if len(text) <= limit:
@@ -2625,10 +2758,12 @@ def _generate_daily_summary(report_date: str, success_videos: list[dict[str, Any
             max_tokens=retry_max_tokens,
         )
         content = extract_content(response)
-    try:
-        report = parse_json_content(content)
-    except Exception:
-        report = {"summary": content, "raw_result": content}
+    report = _parse_daily_report_content(
+        content=content,
+        api_key=api_key,
+        api_url=os.getenv("DEEPSEEK_API_URL", DEFAULT_API_URL),
+        model=os.getenv("DEEPSEEK_MODEL", DEFAULT_MODEL),
+    )
     if isinstance(report, dict):
         markdown = _markdown_from_report(report)
         report = _normalize_report_for_display(report)
