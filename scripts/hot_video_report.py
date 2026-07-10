@@ -2792,13 +2792,13 @@ def _cached_deep_dive_for_video(video: dict[str, Any]) -> dict[str, Any]:
     return {
         "rank": _to_int(video.get("report_rank")) or 0,
         "title": title,
-        "boom_reason": f"基于已绑定的视频记录和互动指标重建：{metric_text}；热度 {video.get('hot_score') or 0}。未引用旧画面解析，避免沿用错配内容。",
-        "hook": f"标题/封面入口：{_trim_text(title, 180)}",
-        "structure": "缓存重建模式仅确认视频身份、标题、来源和互动数据；具体画面结构需重新进行视频解析后才能恢复。",
+        "boom_reason": f"元数据已按 video_id 绑定：{metric_text}；热度 {video.get('hot_score') or 0}。",
+        "hook": f"标题/入口：{_trim_text(title, 180)}",
+        "structure": "当前展示元数据视图：视频身份、标题、来源、互动指标和原视频链接已对齐。",
         "audience_trigger": f"来源：{source_label or '未知来源'}；互动强弱以播放、点赞、评论、分享等已入库指标为准。",
         "engagement_driver": f"分享 {share_count}、评论 {comment_count}、点赞 {like_count}。",
-        "replicable_formula": "先以正确 video_id 和标题完成选题归类，再基于重新校验后的画面解析补充脚本结构。",
-        "risk": "旧单条 insight/analysis 可能包含错配画面，本次缓存重建已避免直接引用这些画面描述。",
+        "replicable_formula": "先按正确 video_id 和标题完成选题归类，再在需要时补充重新解析后的画面结构。",
+        "risk": "脏的单条 analysis/insight 已从展示重建中剔除，不再引用旧画面描述。",
     }
 
 
@@ -2806,21 +2806,87 @@ def _cached_report_from_videos(current_report: dict[str, Any], videos: list[dict
     rebuilt = dict(current_report) if isinstance(current_report, dict) else {}
     count = len(videos)
     rebuilt["summary"] = (
-        f"本日报已按缓存中的 video_id、标题、来源和互动指标重新绑定 {count} 条视频；"
-        "未重新调用 LLM，也未沿用旧的逐条画面解析文本。"
+        f"本日报已按 video_id、标题、来源和互动指标重新绑定 {count} 条视频；"
+        "当前为元数据视图，未重新调用 LLM，也未引用旧的脏画面解析。"
     )
     rebuilt["common_patterns"] = [
-        "逐条拆解已按 hot_report_videos.report_rank 与 video_id 重新生成，避免按数组顺序误挂链接。",
-        "本次重建只使用确定绑定字段：video_id、title、source_url、metrics、hot_score。",
-        "旧日报中的跨视频总结可能来自历史 LLM 输出，本次已替换为缓存重建说明，防止继续传播错配画面描述。",
+        "逐条展示已按 hot_report_videos.report_rank 与 video_id 重新生成，避免按数组顺序误挂链接。",
+        "本次重建使用确定绑定字段：video_id、title、source_url、metrics、hot_score。",
+        "旧的画面解析和单条 insight 不参与当前展示，防止继续传播错配画面描述。",
     ]
-    rebuilt["hook_analysis"] = ["缓存重建模式下不复用旧画面钩子；钩子仅保留为标题入口。"]
-    rebuilt["visual_patterns"] = ["旧画面解析未被引用；如需恢复视觉节奏判断，需要对对应视频重新解析。"]
-    rebuilt["topic_angles"] = ["按当前视频标题、标签和来源重新对齐，避免把其他视频的题材挂到当前视频。"]
+    rebuilt["hook_analysis"] = ["当前按标题、标签和原视频入口展示，不复用旧画面钩子。"]
+    rebuilt["visual_patterns"] = ["旧画面解析未被引用；当前只展示元数据，不展示疑似错配的时间轴画面描述。"]
+    rebuilt["topic_angles"] = ["按当前视频标题、标签和来源重新对齐，避免把其他视频题材挂到当前视频。"]
     rebuilt["execution_tactics"] = ["后续日报生成将保留原始 report_rank，不再把成功视频列表重新从 1 编号。"]
-    rebuilt["reusable_ideas"] = ["先确保 video_id、标题、指标、分析内容四者一致，再沉淀可复用脚本公式。"]
-    rebuilt["risks"] = ["缓存中的旧 insight/analysis 仍可能包含历史错配内容；本次日报正文已不直接引用它们。"]
-    rebuilt["next_actions"] = ["如需要准确的画面级时间轴，请对受影响视频重新执行视频解析并刷新翻译缓存。"]
+    rebuilt["reusable_ideas"] = ["先确保 video_id、标题、指标三者一致，再沉淀可复用脚本公式。"]
+    rebuilt["risks"] = ["旧 insight/analysis 已视为脏数据处理；当前展示以刷新后的元数据为准。"]
+    rebuilt["next_actions"] = ["如后续需要画面级时间轴，再对对应视频重新执行视频解析并刷新翻译缓存。"]
+    return rebuilt
+
+
+def refresh_report_metadata(report_date: str | None = None) -> dict[str, Any]:
+    """Refresh report video metadata and clear dirty analysis/insight caches without video LLM work."""
+    date = report_date or today_key()
+    api_key = os.getenv("SOCIAVAULT_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("Missing required environment variable: SOCIAVAULT_API_KEY")
+    api_base = os.getenv("SOCIAVAULT_API_BASE", DEFAULT_API_BASE).rstrip("/")
+    api_timeout = float(os.getenv("SOCIAVAULT_TIMEOUT", "180"))
+    with _connect() as conn:
+        row = conn.execute("SELECT id FROM daily_reports WHERE report_date = ?", (date,)).fetchone()
+        if not row:
+            raise ValueError(f"report not found for {date}")
+        report_id = row[0]
+        rows = conn.execute(
+            """
+            SELECT rv.platform, rv.video_id, rv.report_rank, rv.source_endpoint, rv.source_label,
+                   rv.source_rank, COALESCE(m.source_url, rv.raw_json), rv.raw_json
+            FROM hot_report_videos rv
+            JOIN hot_video_master m ON m.platform = rv.platform AND m.video_id = rv.video_id
+            WHERE rv.report_date = ?
+            ORDER BY rv.report_rank ASC
+            """,
+            (date,),
+        ).fetchall()
+        refreshed = 0
+        failed: list[dict[str, str]] = []
+        for platform, video_id, report_rank, source_endpoint, source_label, source_rank, source_url, raw_json in rows:
+            if platform != "tiktok" or not video_id:
+                continue
+            url = str(source_url or "").strip()
+            if not url.startswith("http"):
+                raw = _json_loads(raw_json, {})
+                url = _source_url(raw) if isinstance(raw, dict) else ""
+            if not url:
+                url = f"https://www.tiktok.com/@unknown/video/{video_id}"
+            try:
+                payload = call_api(api_key, api_base, "video-info", {"url": url}, api_timeout, cache_policy="record_only")
+                node = _extract_video_info_node(payload)
+                if not node:
+                    raise RuntimeError("video-info returned no video node")
+                item = _normalize_video(node, source_endpoint or "video-info", source_label or "metadata-refresh", _to_int(source_rank) or _to_int(report_rank) or 1)
+                if item.get("video_id") and item["video_id"] != video_id:
+                    raise RuntimeError(f"video-info id mismatch: {item['video_id']} != {video_id}")
+                item["video_id"] = video_id
+                _upsert_video(conn, report_id, date, item, _to_int(report_rank) or refreshed + 1)
+                refreshed += 1
+            except Exception as exc:
+                failed.append({"video_id": str(video_id), "error": str(exc)})
+        now = time.time()
+        conn.execute(
+            """
+            UPDATE hot_report_videos
+            SET analysis_json = NULL, analysis_zh_json = NULL, audit_json = NULL,
+                social_context_json = NULL, insight_json = NULL, insight_generated_at = NULL,
+                updated_at = ?
+            WHERE report_date = ?
+            """,
+            (now, date),
+        )
+        conn.commit()
+    rebuilt = rebuild_report_from_cached(date)
+    rebuilt["metadata_refreshed_count"] = refreshed
+    rebuilt["metadata_failed"] = failed
     return rebuilt
 
 
