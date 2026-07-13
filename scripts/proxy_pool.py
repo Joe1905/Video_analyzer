@@ -505,11 +505,29 @@ def _active_sessions(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return active
 
 
+def _cleanup_terminated_unbound_profiles(conn: sqlite3.Connection) -> int:
+    rows = conn.execute(
+        "SELECT * FROM browser_sessions "
+        "WHERE account_id IS NULL AND status IN ('stopped','failed') AND user_data_dir <> ''"
+    ).fetchall()
+    cleaned = 0
+    for row in rows:
+        user_data_value = str(row["user_data_dir"] or "")
+        profile_root = Path(user_data_value).resolve().parent
+        _remove_unbound_session_profile(row)
+        if not profile_root.exists():
+            conn.execute("UPDATE browser_sessions SET user_data_dir = '' WHERE id = ?", (row["id"],))
+            cleaned += 1
+    conn.commit()
+    return cleaned
+
+
 def cleanup_expired_sessions() -> int:
     with connect() as conn:
         before = conn.execute("SELECT COUNT(*) AS count FROM browser_sessions WHERE status IN ('starting','running','observing')").fetchone()["count"]
         active = _active_sessions(conn)
-        return max(0, int(before) - len(active))
+        cleaned_profiles = _cleanup_terminated_unbound_profiles(conn)
+        return max(0, int(before) - len(active)) + cleaned_profiles
 
 
 def _allocate_session_slot(conn: sqlite3.Connection) -> int:
