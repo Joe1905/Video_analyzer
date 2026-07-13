@@ -2733,6 +2733,49 @@ def _compact_summary_video_for_retry(video: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _extraction_fallback_deep_dive(video: dict[str, Any]) -> dict[str, Any]:
+    extraction = _compact_extraction(video.get("analysis"))
+    summary = _trim_text(extraction.get("summary"), 360) or "当前视频解析摘要不足。"
+    timeline = extraction.get("timeline") if isinstance(extraction.get("timeline"), list) else []
+    first_event = timeline[0] if timeline else {}
+    hook = _trim_text(first_event.get("visual") if isinstance(first_event, dict) else first_event, 220)
+    metrics = video.get("metrics") if isinstance(video.get("metrics"), dict) else {}
+    return {
+        "rank": _to_int(video.get("report_rank")) or 0,
+        "title": str(video.get("title") or "").strip(),
+        "boom_reason": f"单条深度拆解生成失败；当前仅依据该视频解析摘要：{summary}",
+        "hook": hook or f"标题/入口：{_trim_text(video.get('title'), 180)}",
+        "structure": summary,
+        "audience_trigger": "单条洞察证据不足，需结合当前视频标题、画面解析和评论样本进一步判断。",
+        "engagement_driver": (
+            f"分享 {_to_int(metrics.get('share_count'))}、评论 {_to_int(metrics.get('comment_count'))}、"
+            f"点赞 {_to_int(metrics.get('like_count'))}。"
+        ),
+        "replicable_formula": "证据不足，不从失败的单条洞察中推导复用公式。",
+        "risk": "本条使用当前视频解析的确定性回退，未采用汇总模型生成的画面描述。",
+    }
+
+
+def _replace_invalid_insight_deep_dives(report: dict[str, Any], videos: list[dict[str, Any]]) -> None:
+    fallback_by_rank = {
+        _to_int(video.get("report_rank")): _extraction_fallback_deep_dive(video)
+        for video in videos
+        if not _is_valid_video_insight(video.get("insight"))
+    }
+    if not fallback_by_rank:
+        return
+    deep_dives = report.get("video_deep_dives")
+    if not isinstance(deep_dives, list):
+        deep_dives = []
+    by_rank = {
+        _to_int(item.get("rank")): item
+        for item in deep_dives
+        if isinstance(item, dict) and _to_int(item.get("rank"))
+    }
+    by_rank.update(fallback_by_rank)
+    report["video_deep_dives"] = [by_rank[rank] for rank in sorted(by_rank)]
+
+
 def _chunk_summary_prompt_v2(report_date: str, chunk_index: int, video_items: list[dict[str, Any]], compact: bool = False) -> str:
     payload_items = [_compact_summary_video_for_retry(video) for video in video_items] if compact else video_items
     payload = {"report_date": report_date, "chunk_index": chunk_index, "video_insights": payload_items}
@@ -2832,6 +2875,7 @@ def _generate_daily_summary(report_date: str, success_videos: list[dict[str, Any
         model=os.getenv("DEEPSEEK_MODEL", DEFAULT_MODEL),
     )
     if isinstance(report, dict):
+        _replace_invalid_insight_deep_dives(report, normalized_videos)
         markdown = _markdown_from_report(report)
         report = _normalize_report_for_display(report)
         return report, markdown
