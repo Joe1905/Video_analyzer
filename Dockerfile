@@ -9,7 +9,8 @@ ARG all_proxy=
 ARG NO_PROXY=
 ARG no_proxy=
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
@@ -35,7 +36,19 @@ RUN python -c "import video_analyzer, os; p=os.path.join(os.path.dirname(video_a
 
 RUN pip install yt-dlp playwright httpx "scrapling[ai]" \
     && python -m playwright install --with-deps chromium \
+    && python -m playwright install chrome \
     && scrapling install
+
+RUN apt-get -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=20 update \
+    && apt-get -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=20 install -y --no-install-recommends \
+        novnc \
+        websockify \
+        x11vnc \
+        xvfb \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd --system --gid 10001 tikbrowser \
+    && useradd --system --uid 10001 --gid tikbrowser --create-home --home-dir /home/tikbrowser tikbrowser
 
 RUN pip install -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn "curl_cffi>=0.15,<0.16"
 
