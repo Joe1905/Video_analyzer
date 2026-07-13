@@ -5848,6 +5848,7 @@ class Handler(BaseHTTPRequestHandler):
                 str(payload.get("date") or payload.get("report_date") or ""),
                 str(payload.get("platform") or ""),
                 str(payload.get("video_id") or ""),
+                bool(payload.get("force", False)),
             )
             return json_response(self, HTTPStatus.OK, result)
         except (json.JSONDecodeError, ValueError) as exc:

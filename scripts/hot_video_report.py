@@ -1,6 +1,7 @@
 """Daily hot-video report storage, collection, analysis, and summary."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import queue
@@ -115,7 +116,9 @@ def _connect() -> sqlite3.Connection:
             local_filename TEXT,
             extraction_dir TEXT,
             analysis_json TEXT,
+            analysis_sha256 TEXT,
             analysis_zh_json TEXT,
+            analysis_zh_source_sha256 TEXT,
             audit_json TEXT,
             social_context_json TEXT,
             insight_json TEXT,
@@ -167,6 +170,8 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
         "hot_report_videos",
         {
             "analysis_zh_json": "TEXT",
+            "analysis_sha256": "TEXT",
+            "analysis_zh_source_sha256": "TEXT",
             "social_context_json": "TEXT",
             "insight_json": "TEXT",
             "insight_generated_at": "REAL",
@@ -1385,7 +1390,12 @@ def _translate_analysis_payload(analysis: Any) -> Any:
     )
 
 
-def translate_report_video_analysis(report_date: str, platform: str, video_id: str) -> dict[str, Any]:
+def _analysis_sha256(analysis: Any) -> str:
+    payload = json.dumps(analysis, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def translate_report_video_analysis(report_date: str, platform: str, video_id: str, force: bool = False) -> dict[str, Any]:
     date = str(report_date or today_key()).strip()
     platform = str(platform or "").strip()
     video_id = str(video_id or "").strip()
@@ -1394,7 +1404,7 @@ def translate_report_video_analysis(report_date: str, platform: str, video_id: s
     with _connect() as conn:
         row = conn.execute(
             """
-            SELECT analysis_json, analysis_zh_json
+            SELECT analysis_json, analysis_zh_json, analysis_sha256, analysis_zh_source_sha256
             FROM hot_report_videos
             WHERE report_date = ? AND platform = ? AND video_id = ?
             """,
@@ -1404,20 +1414,51 @@ def translate_report_video_analysis(report_date: str, platform: str, video_id: s
             raise ValueError("report video not found")
         analysis = _json_loads(row[0], None)
         cached = _json_loads(row[1], None)
+        if not analysis:
+            raise ValueError("analysis not found for report video")
+        source_sha256 = _analysis_sha256(analysis)
+        stored_source_sha256 = str(row[2] or "")
+        translated_source_sha256 = str(row[3] or "")
+        cache_matches_source = bool(cached and translated_source_sha256 == source_sha256)
+        if force or not cache_matches_source:
+            conn.execute(
+                """
+                UPDATE hot_report_videos
+                SET analysis_sha256 = ?, analysis_zh_json = NULL,
+                    analysis_zh_source_sha256 = NULL, updated_at = ?
+                WHERE report_date = ? AND platform = ? AND video_id = ?
+                """,
+                (source_sha256, time.time(), date, platform, video_id),
+            )
+            conn.commit()
+            cached = None
+        elif stored_source_sha256 != source_sha256:
+            conn.execute(
+                "UPDATE hot_report_videos SET analysis_sha256 = ?, updated_at = ? WHERE report_date = ? AND platform = ? AND video_id = ?",
+                (source_sha256, time.time(), date, platform, video_id),
+            )
+            conn.commit()
         if cached:
             from translate_analysis import has_suspicious_translation
 
             if not has_suspicious_translation(analysis, cached):
                 return {"status": "cached", "report_date": date, "platform": platform, "video_id": video_id, "analysis_zh": cached}
+            conn.execute(
+                "UPDATE hot_report_videos SET analysis_zh_json = NULL, analysis_zh_source_sha256 = NULL, updated_at = ? WHERE report_date = ? AND platform = ? AND video_id = ?",
+                (time.time(), date, platform, video_id),
+            )
+            conn.commit()
         translated = _translate_analysis_payload(analysis)
-        conn.execute(
+        cursor = conn.execute(
             """
             UPDATE hot_report_videos
-            SET analysis_zh_json = ?, updated_at = ?
-            WHERE report_date = ? AND platform = ? AND video_id = ?
+            SET analysis_zh_json = ?, analysis_zh_source_sha256 = ?, updated_at = ?
+            WHERE report_date = ? AND platform = ? AND video_id = ? AND analysis_sha256 = ?
             """,
-            (json.dumps(translated, ensure_ascii=False, sort_keys=True), time.time(), date, platform, video_id),
+            (json.dumps(translated, ensure_ascii=False, sort_keys=True), source_sha256, time.time(), date, platform, video_id, source_sha256),
         )
+        if cursor.rowcount != 1:
+            raise RuntimeError("analysis changed while translation was running; stale translation was discarded")
         conn.commit()
     return {"status": "translated", "report_date": date, "platform": platform, "video_id": video_id, "analysis_zh": translated}
 
@@ -1853,6 +1894,19 @@ def _process_video(conn: sqlite3.Connection, report_date: str, item: dict[str, A
     extraction_dir = str(record.get("extraction_dir") or "")
     source_url = item.get("source_url") or record.get("source_url") or ""
     was_visible_manual_video = bool(filename and not int(record.get("hidden_from_analyzer") or 0))
+    conn.execute(
+        """
+        UPDATE hot_report_videos
+        SET process_status = 'processing', process_error = NULL,
+            analysis_json = NULL, analysis_sha256 = NULL,
+            analysis_zh_json = NULL, analysis_zh_source_sha256 = NULL,
+            audit_json = NULL, social_context_json = NULL,
+            insight_json = NULL, insight_generated_at = NULL, updated_at = ?
+        WHERE report_date = ? AND platform = ? AND video_id = ?
+        """,
+        (now, report_date, platform, video_id),
+    )
+    conn.commit()
     try:
         if not filename:
             if not source_url:
@@ -1885,6 +1939,7 @@ def _process_video(conn: sqlite3.Connection, report_date: str, item: dict[str, A
                 raise RuntimeError(str(result.get("error") or "video extraction failed"))
         output_dir = _output_dir_for_filename(filename)
         analysis = _json_loads((output_dir / "analysis.json").read_text(encoding="utf-8") if (output_dir / "analysis.json").is_file() else "", {})
+        analysis_sha256 = _analysis_sha256(analysis)
         registry = get_video(platform, video_id) or get_video_by_filename(filename) or {}
         extraction_dir = str(registry.get("extraction_dir") or output_dir.name)
         cover_asset = _download_cover_asset(str(item.get("cover_url") or ""), platform, video_id)
@@ -1920,7 +1975,8 @@ def _process_video(conn: sqlite3.Connection, report_date: str, item: dict[str, A
             UPDATE hot_report_videos
             SET process_status = 'complete', process_error = NULL, local_filename = ?, extraction_dir = ?,
                 cover_url = COALESCE(NULLIF(?, ''), cover_url),
-                analysis_json = ?,
+                analysis_json = ?, analysis_sha256 = ?,
+                analysis_zh_json = NULL, analysis_zh_source_sha256 = NULL,
                 audit_json = ?, social_context_json = ?, insight_json = ?,
                 insight_generated_at = ?, updated_at = ?
             WHERE report_date = ? AND platform = ? AND video_id = ?
@@ -1930,6 +1986,7 @@ def _process_video(conn: sqlite3.Connection, report_date: str, item: dict[str, A
                 extraction_dir,
                 cover_asset,
                 json.dumps(analysis, ensure_ascii=False, sort_keys=True),
+                analysis_sha256,
                 None,
                 json.dumps(social_context, ensure_ascii=False, sort_keys=True, default=str),
                 json.dumps(insight, ensure_ascii=False, sort_keys=True, default=str),
@@ -2877,6 +2934,7 @@ def refresh_report_metadata(report_date: str | None = None) -> dict[str, Any]:
             """
             UPDATE hot_report_videos
             SET analysis_json = NULL, analysis_zh_json = NULL, audit_json = NULL,
+                analysis_sha256 = NULL, analysis_zh_source_sha256 = NULL,
                 social_context_json = NULL, insight_json = NULL, insight_generated_at = NULL,
                 updated_at = ?
             WHERE report_date = ?

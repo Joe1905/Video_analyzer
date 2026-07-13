@@ -54,6 +54,10 @@ if [ ! -f "$video_path" ]; then
 fi
 
 mkdir -p "$output_dir"
+# A rerun must not let artifacts from the previous analysis participate in
+# frame discovery or standardization for the current video.
+rm -f "${output_dir}/analysis.json" "${output_dir}/analysis_raw.json" "${output_dir}/audio.wav"
+rm -rf "${output_dir}/frames"
 log "video_name=${video_name}"
 log "video_path=${video_path}"
 log "output_dir=${output_dir}"
