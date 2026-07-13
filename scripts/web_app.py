@@ -348,6 +348,7 @@ CHAT_PROVIDER_DEFAULT_DOMAINS = {
 }
 FORCED_MCP_CHAT_PROVIDERS = {"amazon", "fastmoss"}
 MCP_TOOL_CACHE: dict[str, dict[str, Any]] = {}
+PROXY_POOL_ENABLED = os.getenv("PROXY_POOL_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
 NAV_ITEMS = [
     {"key": "home", "href": "/", "label": "\u9996\u9875", "title": "AI \u804a\u5929", "icon": '<path d="M3 10.5 12 3l9 7.5"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/>'},
     {"key": "report", "href": "/report", "label": "\u65e5\u62a5", "title": "\u6bcf\u65e5\u62a5\u544a", "icon": '<path d="M7 3h7l4 4v14H7z"/><path d="M14 3v5h5"/><path d="M10 12h6"/><path d="M10 16h4"/>'},
@@ -358,6 +359,8 @@ NAV_ITEMS = [
     {"key": "metrics", "href": "/metrics", "label": "\u6570\u636e", "title": "\u6570\u636e", "icon": '<path d="M4 19V5"/><path d="M20 19H4"/><path d="M8 16v-5"/><path d="M12 16V8"/><path d="M16 16v-7"/>'},
     {"key": "extract", "href": "/extract", "label": "\u5206\u6790", "title": "\u89c6\u9891\u5206\u6790", "icon": '<path d="M4 5h16v14H4z"/><path d="m10 9 5 3-5 3z"/><path d="M8 21h8"/><path d="M12 19v2"/>'},
 ]
+if not PROXY_POOL_ENABLED:
+    NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
 APP_NAV_CSS = """
 <style id="unified-app-nav-style">
 .app-nav{height:48px;display:flex;align-items:center;gap:4px;font-family:Inter,"PingFang SC","Microsoft YaHei",system-ui,-apple-system,sans-serif;padding:4px;border:1px solid #e5e7eb;border-radius:14px;background:rgba(255,255,255,.94);box-shadow:0 1px 2px rgba(15,23,42,.04),0 8px 24px rgba(15,23,42,.03);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);overflow-x:auto;scrollbar-width:none}.app-nav::-webkit-scrollbar{display:none}.app-nav__item{height:38px;display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:0 14px;border:1px solid transparent;border-radius:10px;color:#64748b;text-decoration:none;font-size:13px;font-weight:650;line-height:1;white-space:nowrap;transition:background-color .16s ease,color .16s ease,border-color .16s ease,box-shadow .16s ease}.app-nav__item svg{width:18px;height:18px;stroke:#94a3b8;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round;fill:none;flex:0 0 18px;transition:stroke .16s ease}.app-nav__item:hover{background:#f8fafc;color:#334155;border-color:#eef2f7}.app-nav__item:hover svg{stroke:#64748b}.app-nav__item:focus-visible{outline:none;box-shadow:0 0 0 3px rgba(37,99,235,.14)}.app-nav__item.active{background:#eff6ff;color:#2563eb;border-color:#bfdbfe;box-shadow:inset 0 0 0 1px rgba(37,99,235,.05)}.app-nav__item.active svg{stroke:#2563eb}.app-nav__label{line-height:1}@media(max-width:760px){.app-nav{height:46px;max-width:100%;gap:3px}.app-nav__item{height:36px;padding:0 11px}.app-nav__label{display:none}}
@@ -5186,8 +5189,12 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/metrics":
             return text_response(self, HTTPStatus.OK, inject_unified_nav(METRICS_HTML, parsed.path), "text/html; charset=utf-8")
         if parsed.path == "/proxy":
+            if not PROXY_POOL_ENABLED:
+                return text_response(self, HTTPStatus.NOT_FOUND, "Not found")
             return text_response(self, HTTPStatus.OK, inject_unified_nav(PROXY_HTML, parsed.path), "text/html; charset=utf-8")
         if parsed.path.startswith("/api/proxy/"):
+            if not PROXY_POOL_ENABLED:
+                return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
             return self.handle_proxy_api_get(parsed.path)
         if parsed.path.startswith("/assets/"):
             return self.serve_static_asset(parsed.path.removeprefix("/assets/"))
@@ -5763,6 +5770,8 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path.startswith("/fastmoss/"):
             return proxy_mcp_chat(self, "fastmoss")
         if parsed.path.startswith("/api/proxy/"):
+            if not PROXY_POOL_ENABLED:
+                return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
             return self.handle_proxy_api_post(parsed.path)
         if parsed.path == "/api/upload":
             return self.handle_upload()
@@ -6684,7 +6693,8 @@ def main() -> int:
     for store in chat_provider_stores.values():
         load_sessions_from_disk(store)
     mark_interrupted_chat_messages()
-    threading.Thread(target=proxy_session_janitor, daemon=True).start()
+    if PROXY_POOL_ENABLED:
+        threading.Thread(target=proxy_session_janitor, daemon=True).start()
     normalize_stored_chat_tool_results()
     video_queue.start(execute_queue_job)
     report_scheduler_enabled = os.getenv("HOT_VIDEO_REPORT_SCHEDULER_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
