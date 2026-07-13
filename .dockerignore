@@ -3,6 +3,7 @@
 .env.*
 backups/
 data/
+data-dev/
 videos/
 output/
 __pycache__/

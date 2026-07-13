@@ -14,6 +14,12 @@ services:
     image: short-video-analyzer:latest
     environment:
       TZ: ${TZ:-America/Los_Angeles}
+      TIKTOK_BROWSER_MAX_SLOTS: ${TIKTOK_BROWSER_MAX_SLOTS:-2}
+      TIKTOK_PENDING_LOGIN_TTL_SECONDS: ${TIKTOK_PENDING_LOGIN_TTL_SECONDS:-900}
+      TIKTOK_BROWSER_LOCALE: ${TIKTOK_BROWSER_LOCALE:-en-US}
+      TIKTOK_BROWSER_ACCEPT_LANGUAGE: ${TIKTOK_BROWSER_ACCEPT_LANGUAGE:-en-US,en}
+      NOVNC_PORT: ${NOVNC_PORT:-6080}
+      NOVNC_MANUAL_PORTS: ${NOVNC_MANUAL_PORTS:-1}
       VISION_API_KEY: ${VISION_API_KEY:-}
       VISION_API_URL: ${VISION_API_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
       VISION_MODEL: ${VISION_MODEL:-qwen3-vl-flash}
@@ -88,8 +94,10 @@ services:
     volumes:
       - ./videos:/workspace/videos
       - ./output:/workspace/output
-      - ./data:/workspace/data
+      - ${DATA_DIR:-./data}:/workspace/data
       - ./scripts:/workspace/scripts:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     networks:
       - analyzer
 
@@ -106,9 +114,19 @@ services:
         NO_PROXY: ${NO_PROXY:-}
         no_proxy: ${no_proxy:-}
     image: short-video-analyzer:latest
+    init: true
+    shm_size: 1gb
+    cap_add:
+      - SYS_ADMIN
     command: python scripts/web_app.py
     environment:
       TZ: ${TZ:-America/Los_Angeles}
+      TIKTOK_BROWSER_MAX_SLOTS: ${TIKTOK_BROWSER_MAX_SLOTS:-2}
+      TIKTOK_PENDING_LOGIN_TTL_SECONDS: ${TIKTOK_PENDING_LOGIN_TTL_SECONDS:-900}
+      TIKTOK_BROWSER_LOCALE: ${TIKTOK_BROWSER_LOCALE:-en-US}
+      TIKTOK_BROWSER_ACCEPT_LANGUAGE: ${TIKTOK_BROWSER_ACCEPT_LANGUAGE:-en-US,en}
+      NOVNC_PORT: ${NOVNC_PORT:-6080}
+      NOVNC_MANUAL_PORTS: ${NOVNC_MANUAL_PORTS:-1}
       VISION_API_KEY: ${VISION_API_KEY:-}
       VISION_API_URL: ${VISION_API_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
       VISION_MODEL: ${VISION_MODEL:-qwen3-vl-flash}
@@ -195,8 +213,10 @@ services:
     volumes:
       - ./videos:/workspace/videos
       - ./output:/workspace/output
-      - ./data:/workspace/data
+      - ${DATA_DIR:-./data}:/workspace/data
       - ./scripts:/workspace/scripts:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
       - ${OCR_SHARED_DIR:-/home/openclaw/ocr-shared}:${OCR_SERVER_SHARED_DIR:-/home/openclaw/ocr-shared}
       - /var/run/docker.sock:/var/run/docker.sock
     network_mode: host

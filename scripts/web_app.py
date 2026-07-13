@@ -8,6 +8,7 @@ import mimetypes
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import threading
@@ -138,6 +139,7 @@ from video_registry import (
     set_hidden_from_analyzer,
 )
 from proxy_state import ensure_us_proxy
+import proxy_pool
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 SAFE_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
 AUDIO_ONLY_SUFFIXES = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav"}
@@ -362,6 +364,7 @@ NAV_ITEMS = [
     {"key": "amazon", "href": "/amazon", "label": "Amazon", "title": "Amazon", "icon": '<path d="M4 7.5 12 3l8 4.5v9L12 21l-8-4.5z"/><path d="M4 7.5 12 12l8-4.5"/><path d="M12 12v9"/>'},
     {"key": "fastmoss", "href": "/fastmoss", "label": "FastMoss", "title": "FastMoss", "icon": '<path d="M4 7.5 12 3l8 4.5v9L12 21l-8-4.5z"/><path d="M4 7.5 12 12l8-4.5"/><path d="M12 12v9"/>'},
     {"key": "shop", "href": "/shop", "label": "Shop", "title": "Shop", "icon": '<path d="M6 8h12l1 13H5z"/><path d="M9 8V6a3 3 0 0 1 6 0v2"/><path d="M5 11h14"/>'},
+    {"key": "proxy", "href": "/proxy", "label": "Proxy", "title": "账号 IP 池", "icon": '<path d="M4 12a8 8 0 0 1 16 0"/><path d="M8 12a4 4 0 0 1 8 0"/><path d="M12 12v8"/><path d="M9 20h6"/>'},
     {"key": "metrics", "href": "/metrics", "label": "\u6570\u636e", "title": "\u6570\u636e", "icon": '<path d="M4 19V5"/><path d="M20 19H4"/><path d="M8 16v-5"/><path d="M12 16V8"/><path d="M16 16v-7"/>'},
     {"key": "extract", "href": "/extract", "label": "\u5206\u6790", "title": "\u89c6\u9891\u5206\u6790", "icon": '<path d="M4 5h16v14H4z"/><path d="m10 9 5 3-5 3z"/><path d="M8 21h8"/><path d="M12 19v2"/>'},
 ]
@@ -8607,6 +8610,10 @@ class Handler(BaseHTTPRequestHandler):
             return text_response(self, HTTPStatus.OK, inject_unified_nav(SHOP_HTML, parsed.path), "text/html; charset=utf-8")
         if parsed.path == "/metrics":
             return text_response(self, HTTPStatus.OK, inject_unified_nav(METRICS_HTML, parsed.path), "text/html; charset=utf-8")
+        if parsed.path == "/proxy":
+            return text_response(self, HTTPStatus.OK, inject_unified_nav(PROXY_HTML, parsed.path), "text/html; charset=utf-8")
+        if parsed.path.startswith("/api/proxy/"):
+            return self.handle_proxy_api_get(parsed.path)
         if parsed.path.startswith("/assets/"):
             return self.serve_static_asset(parsed.path.removeprefix("/assets/"))
         if handle_feishu_capability_get(self, parsed):
@@ -9188,6 +9195,8 @@ class Handler(BaseHTTPRequestHandler):
             return proxy_mcp_chat(self, "sellersprite")
         if parsed.path.startswith("/fastmoss/"):
             return proxy_mcp_chat(self, "fastmoss")
+        if parsed.path.startswith("/api/proxy/"):
+            return self.handle_proxy_api_post(parsed.path)
         if parsed.path == "/api/upload":
             return self.handle_upload()
         if parsed.path == "/api/download":
@@ -9230,6 +9239,59 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/delete":
             return self.handle_delete()
         return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
+
+    def read_json_body(self) -> dict[str, Any]:
+        content_length = int(self.headers.get("Content-Length", "0") or "0")
+        raw = self.rfile.read(content_length) if content_length else b"{}"
+        if not raw:
+            return {}
+        data = json.loads(raw.decode("utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("JSON body must be an object")
+        return data
+
+    def handle_proxy_api_get(self, path: str) -> None:
+        try:
+            if path == "/api/proxy/pools":
+                return json_response(self, HTTPStatus.OK, proxy_pool.list_state())
+            if path == "/api/proxy/mihomo-export":
+                return json_response(self, HTTPStatus.OK, proxy_pool.mihomo_export())
+            if path == "/api/proxy/runtime":
+                return json_response(self, HTTPStatus.OK, proxy_pool.runtime_status())
+            return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
+        except Exception as exc:
+            return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+
+    def handle_proxy_api_post(self, path: str) -> None:
+        try:
+            payload = self.read_json_body()
+            if path == "/api/proxy/pools":
+                return json_response(self, HTTPStatus.OK, proxy_pool.upsert_pool(payload))
+            if path == "/api/proxy/pools/delete":
+                return json_response(self, HTTPStatus.OK, proxy_pool.delete_pool(int(payload.get("id") or payload.get("proxy_profile_id") or 0)))
+            if path == "/api/proxy/accounts":
+                return json_response(self, HTTPStatus.OK, proxy_pool.upsert_account(payload))
+            if path == "/api/proxy/accounts/delete":
+                return json_response(self, HTTPStatus.OK, proxy_pool.delete_account(int(payload.get("id") or payload.get("account_id") or 0)))
+            if path == "/api/proxy/check":
+                return json_response(self, HTTPStatus.OK, proxy_pool.check_binding(payload, require_account=False))
+            if path == "/api/proxy/accounts/preflight":
+                return json_response(self, HTTPStatus.OK, proxy_pool.check_binding(payload, require_account=True))
+            if path == "/api/proxy/accounts/status":
+                return json_response(self, HTTPStatus.OK, proxy_pool.update_account_status(payload))
+            if path == "/api/proxy/login-session/start":
+                return json_response(self, HTTPStatus.OK, proxy_pool.start_login_session(payload))
+            if path == "/api/proxy/login-session/stop":
+                return json_response(self, HTTPStatus.OK, proxy_pool.stop_login_session(payload))
+            if path == "/api/proxy/login-session/status":
+                return json_response(self, HTTPStatus.OK, proxy_pool.inspect_login_session(payload))
+            return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
+        except ValueError as exc:
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+        except sqlite3.IntegrityError as exc:
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+        except Exception as exc:
+            return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
 
     def do_DELETE(self) -> None:
         parsed = urlparse(self.path)
@@ -10040,6 +10102,19 @@ AMAZON_HTML = AMAZON_HTML_PATH.read_text(encoding="utf-8") if AMAZON_HTML_PATH.i
 
 SHOP_HTML_PATH = SCRIPTS_DIR / "static" / "shop.html"
 SHOP_HTML = SHOP_HTML_PATH.read_text(encoding="utf-8") if SHOP_HTML_PATH.is_file() else ""
+PROXY_HTML_PATH = SCRIPTS_DIR / "static" / "proxy.html"
+PROXY_HTML = PROXY_HTML_PATH.read_text(encoding="utf-8") if PROXY_HTML_PATH.is_file() else ""
+
+
+def proxy_session_janitor() -> None:
+    while True:
+        try:
+            released = proxy_pool.cleanup_expired_sessions()
+            if released:
+                print(f"Released {released} expired proxy login session(s)", flush=True)
+        except Exception as exc:
+            print(f"Proxy session cleanup failed: {exc}", flush=True)
+        time.sleep(15)
 
 
 def main() -> int:
@@ -10050,6 +10125,7 @@ def main() -> int:
     for store in chat_provider_stores.values():
         load_sessions_from_disk(store)
     mark_interrupted_chat_messages()
+    threading.Thread(target=proxy_session_janitor, daemon=True).start()
     normalize_stored_chat_tool_results()
     video_queue.start(execute_queue_job)
     report_scheduler_enabled = os.getenv("HOT_VIDEO_REPORT_SCHEDULER_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
