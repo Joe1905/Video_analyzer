@@ -219,7 +219,7 @@ def compact_for_translation(value: Any) -> Any:
         return {
             key: compact_for_translation(item)
             for key, item in value.items()
-            if key != "raw_model_output"
+            if key not in {"raw_model_output", "raw_model_text"}
         }
     if isinstance(value, list):
         return [compact_for_translation(item) for item in value]

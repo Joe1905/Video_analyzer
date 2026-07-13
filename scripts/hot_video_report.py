@@ -1375,7 +1375,7 @@ def _translate_analysis_payload(analysis: Any) -> Any:
     if not analysis:
         raise ValueError("analysis not found for report video")
 
-    from translate_analysis import DEFAULT_BATCH_CHARS, DEFAULT_MAX_TOKENS, translate_in_batches
+    from translate_analysis import DEFAULT_BATCH_CHARS, DEFAULT_MAX_TOKENS, compact_for_translation, translate_in_batches
 
     api_key = os.getenv("DEEPSEEK_API_KEY")
     if not api_key:
@@ -1384,7 +1384,7 @@ def _translate_analysis_payload(analysis: Any) -> Any:
         api_key=api_key,
         api_url=os.getenv("DEEPSEEK_API_URL", DEFAULT_API_URL),
         model=os.getenv("DEEPSEEK_MODEL", DEFAULT_MODEL),
-        payload=analysis,
+        payload=compact_for_translation(analysis),
         max_chars=int(os.getenv("TRANSLATION_BATCH_CHARS", str(DEFAULT_BATCH_CHARS))),
         max_tokens=int(os.getenv("TRANSLATION_MAX_TOKENS", str(DEFAULT_MAX_TOKENS))),
     )
@@ -1439,9 +1439,9 @@ def translate_report_video_analysis(report_date: str, platform: str, video_id: s
             )
             conn.commit()
         if cached:
-            from translate_analysis import has_suspicious_translation
+            from translate_analysis import compact_for_translation, has_suspicious_translation
 
-            if not has_suspicious_translation(analysis, cached):
+            if not has_suspicious_translation(compact_for_translation(analysis), cached):
                 return {"status": "cached", "report_date": date, "platform": platform, "video_id": video_id, "analysis_zh": cached}
             conn.execute(
                 "UPDATE hot_report_videos SET analysis_zh_json = NULL, analysis_zh_source_sha256 = NULL, updated_at = ? WHERE report_date = ? AND platform = ? AND video_id = ?",
