@@ -1439,15 +1439,7 @@ def translate_report_video_analysis(report_date: str, platform: str, video_id: s
             )
             conn.commit()
         if cached:
-            from translate_analysis import compact_for_translation, has_suspicious_translation
-
-            if not has_suspicious_translation(compact_for_translation(analysis), cached):
-                return {"status": "cached", "report_date": date, "platform": platform, "video_id": video_id, "analysis_zh": cached}
-            conn.execute(
-                "UPDATE hot_report_videos SET analysis_zh_json = NULL, analysis_zh_source_sha256 = NULL, updated_at = ? WHERE report_date = ? AND platform = ? AND video_id = ?",
-                (time.time(), date, platform, video_id),
-            )
-            conn.commit()
+            return {"status": "cached", "report_date": date, "platform": platform, "video_id": video_id, "analysis_zh": cached}
         translated = _translate_analysis_payload(analysis)
         cursor = conn.execute(
             """
