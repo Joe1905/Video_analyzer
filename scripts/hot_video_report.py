@@ -2502,6 +2502,8 @@ def _compact_extraction(analysis: Any) -> dict[str, Any]:
 
 
 def _compact_summary_video(video: dict[str, Any]) -> dict[str, Any]:
+    insight = video.get("insight")
+    valid_insight = insight if _is_valid_video_insight(insight) else {}
     return {
         "rank": video.get("report_rank"),
         "title": video.get("title"),
@@ -2509,8 +2511,8 @@ def _compact_summary_video(video: dict[str, Any]) -> dict[str, Any]:
         "metrics": video.get("metrics"),
         "hot_score": video.get("hot_score"),
         "source_label": video.get("source_label"),
-        "insight": video.get("insight") or {},
-        "extraction_fallback": _compact_extraction(video.get("analysis")) if not video.get("insight") else {},
+        "insight": valid_insight,
+        "extraction_fallback": _compact_extraction(video.get("analysis")) if not valid_insight else {},
     }
 
 
@@ -2551,14 +2553,28 @@ def _generate_video_insight(video: dict[str, Any], social_context: dict[str, Any
     api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("Missing required environment variable: DEEPSEEK_API_KEY")
+    max_tokens = _to_int(os.getenv("REPORT_VIDEO_INSIGHT_MAX_TOKENS", "2200"))
     response = call_deepseek(
         api_key=api_key,
         prompt=_video_insight_prompt(video, social_context),
         api_url=os.getenv("DEEPSEEK_API_URL", DEFAULT_API_URL),
         model=os.getenv("DEEPSEEK_MODEL", DEFAULT_MODEL),
-        max_tokens=_to_int(os.getenv("REPORT_VIDEO_INSIGHT_MAX_TOKENS", "2200")),
+        max_tokens=max_tokens,
     )
-    content = extract_content(response)
+    try:
+        content = extract_content(response)
+    except ValueError as exc:
+        retry_max_tokens = _to_int(os.getenv("REPORT_VIDEO_INSIGHT_RETRY_MAX_TOKENS", "4000"))
+        if "truncated" not in str(exc) or retry_max_tokens <= max_tokens:
+            raise
+        response = call_deepseek(
+            api_key=api_key,
+            prompt=_video_insight_prompt(video, social_context),
+            api_url=os.getenv("DEEPSEEK_API_URL", DEFAULT_API_URL),
+            model=os.getenv("DEEPSEEK_MODEL", DEFAULT_MODEL),
+            max_tokens=retry_max_tokens,
+        )
+        content = extract_content(response)
     try:
         return parse_json_content(content)
     except Exception:
@@ -2705,6 +2721,7 @@ def _compact_summary_video_for_retry(video: dict[str, Any]) -> dict[str, Any]:
             compact_insight["raw_result"] = _trim_text(insight.get("raw_result"), 700)
     elif insight:
         compact_insight["raw"] = _trim_text(insight, 700)
+    fallback = video.get("extraction_fallback") if not compact_insight else {}
     return {
         "rank": video.get("rank"),
         "title": _trim_text(video.get("title"), 140),
@@ -2712,6 +2729,7 @@ def _compact_summary_video_for_retry(video: dict[str, Any]) -> dict[str, Any]:
         "hot_score": video.get("hot_score"),
         "source_label": video.get("source_label"),
         "insight": compact_insight,
+        "extraction_fallback": _trim_json_payload(fallback, 1600) if fallback else {},
     }
 
 
