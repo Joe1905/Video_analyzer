@@ -133,6 +133,7 @@ from video_registry import (
 )
 from proxy_state import ensure_us_proxy
 import proxy_pool
+import tiktok_studio_publish
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 SAFE_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
 AUDIO_ONLY_SUFFIXES = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav"}
@@ -5195,7 +5196,7 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path.startswith("/api/proxy/"):
             if not PROXY_POOL_ENABLED:
                 return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
-            return self.handle_proxy_api_get(parsed.path)
+            return self.handle_proxy_api_get(parsed.path, parsed.query)
         if parsed.path.startswith("/assets/"):
             return self.serve_static_asset(parsed.path.removeprefix("/assets/"))
         if parsed.path == "/api/prompt":
@@ -5826,7 +5827,7 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("JSON body must be an object")
         return data
 
-    def handle_proxy_api_get(self, path: str) -> None:
+    def handle_proxy_api_get(self, path: str, query: str = "") -> None:
         try:
             if path == "/api/proxy/pools":
                 return json_response(self, HTTPStatus.OK, proxy_pool.list_state())
@@ -5834,12 +5835,34 @@ class Handler(BaseHTTPRequestHandler):
                 return json_response(self, HTTPStatus.OK, proxy_pool.mihomo_export())
             if path == "/api/proxy/runtime":
                 return json_response(self, HTTPStatus.OK, proxy_pool.runtime_status())
+            if path == "/api/proxy/publish/jobs":
+                account_id = int(parse_qs(query).get("account_id", ["0"])[0] or 0)
+                return json_response(self, HTTPStatus.OK, tiktok_studio_publish.list_jobs(account_id))
+            if path == "/api/proxy/publish/runtime":
+                return json_response(self, HTTPStatus.OK, tiktok_studio_publish.runtime_status())
+            if path.startswith("/api/proxy/publish/videos/"):
+                asset_id = unquote(path.removeprefix("/api/proxy/publish/videos/"))
+                return self.serve_video(tiktok_studio_publish.video_path(asset_id))
             return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
         except Exception as exc:
             return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
 
     def handle_proxy_api_post(self, path: str) -> None:
         try:
+            if path == "/api/proxy/publish/jobs":
+                content_length = int(self.headers.get("Content-Length", "0") or "0")
+                if content_length <= 0 or content_length > tiktok_studio_publish.MAX_UPLOAD_BYTES + 2 * 1024 * 1024:
+                    raise ValueError("上传内容为空或超过 2GB 限制")
+                form = cgi.FieldStorage(
+                    fp=self.rfile,
+                    headers=self.headers,
+                    environ={
+                        "REQUEST_METHOD": "POST",
+                        "CONTENT_TYPE": self.headers.get("Content-Type", ""),
+                        "CONTENT_LENGTH": str(content_length),
+                    },
+                )
+                return json_response(self, HTTPStatus.ACCEPTED, tiktok_studio_publish.create_job(form))
             payload = self.read_json_body()
             if path == "/api/proxy/pools":
                 return json_response(self, HTTPStatus.OK, proxy_pool.upsert_pool(payload))
@@ -5861,6 +5884,10 @@ class Handler(BaseHTTPRequestHandler):
                 return json_response(self, HTTPStatus.OK, proxy_pool.stop_login_session(payload))
             if path == "/api/proxy/login-session/status":
                 return json_response(self, HTTPStatus.OK, proxy_pool.inspect_login_session(payload))
+            if path == "/api/proxy/publish/jobs/update":
+                return json_response(self, HTTPStatus.OK, tiktok_studio_publish.update_job(payload))
+            if path == "/api/proxy/publish/jobs/cancel":
+                return json_response(self, HTTPStatus.OK, tiktok_studio_publish.cancel_job(payload))
             return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
         except ValueError as exc:
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
@@ -6695,6 +6722,7 @@ def main() -> int:
     mark_interrupted_chat_messages()
     if PROXY_POOL_ENABLED:
         threading.Thread(target=proxy_session_janitor, daemon=True).start()
+        tiktok_studio_publish.start_worker()
     normalize_stored_chat_tool_results()
     video_queue.start(execute_queue_job)
     report_scheduler_enabled = os.getenv("HOT_VIDEO_REPORT_SCHEDULER_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}

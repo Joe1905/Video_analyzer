@@ -31,6 +31,7 @@ PROXY_PORT_END = int(os.getenv("PROXY_POOL_PORT_END", "18999") or "18999")
 NOVNC_PORT = int(os.getenv("NOVNC_PORT", "6080") or "6080")
 NOVNC_MANUAL_PORTS = int(os.getenv("NOVNC_MANUAL_PORTS", "1") or "1")
 VNC_PORT = int(os.getenv("VNC_PORT", "5900") or "5900")
+CDP_PORT = int(os.getenv("TIKTOK_CDP_PORT_START", "19220") or "19220")
 XVFB_DISPLAY_BASE = int(os.getenv("TIKTOK_XVFB_DISPLAY_BASE", "90") or "90")
 TIKTOK_BROWSER_UID = int(os.getenv("TIKTOK_BROWSER_UID", "10001") or "10001")
 TIKTOK_BROWSER_GID = int(os.getenv("TIKTOK_BROWSER_GID", "10001") or "10001")
@@ -180,6 +181,39 @@ def init_db(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_browser_sessions_status ON browser_sessions(status);
         CREATE INDEX IF NOT EXISTS idx_browser_sessions_proxy ON browser_sessions(proxy_profile_id);
+        CREATE TABLE IF NOT EXISTS publish_assets (
+            id TEXT PRIMARY KEY,
+            account_id INTEGER NOT NULL REFERENCES tiktok_accounts(id) ON DELETE RESTRICT,
+            original_name TEXT NOT NULL,
+            stored_path TEXT NOT NULL,
+            content_type TEXT NOT NULL DEFAULT 'video/mp4',
+            size_bytes INTEGER NOT NULL DEFAULT 0,
+            sha256 TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS publish_jobs (
+            id TEXT PRIMARY KEY,
+            account_id INTEGER NOT NULL REFERENCES tiktok_accounts(id) ON DELETE RESTRICT,
+            proxy_profile_id INTEGER NOT NULL REFERENCES proxy_profiles(id) ON DELETE RESTRICT,
+            asset_id TEXT NOT NULL REFERENCES publish_assets(id) ON DELETE RESTRICT,
+            description TEXT NOT NULL DEFAULT '',
+            ai_generated INTEGER NOT NULL DEFAULT 0,
+            schedule_mode TEXT NOT NULL DEFAULT 'server',
+            scheduled_at TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'draft',
+            stage TEXT NOT NULL DEFAULT '',
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            next_attempt_at TEXT NOT NULL DEFAULT '',
+            session_id INTEGER REFERENCES browser_sessions(id) ON DELETE SET NULL,
+            final_click_at TEXT NOT NULL DEFAULT '',
+            actual_publish_at TEXT NOT NULL DEFAULT '',
+            result_url TEXT NOT NULL DEFAULT '',
+            last_error TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_publish_jobs_account ON publish_jobs(account_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_publish_jobs_due ON publish_jobs(status, scheduled_at);
         """
     )
     for name, definition in {
@@ -194,6 +228,11 @@ def init_db(conn: sqlite3.Connection) -> None:
         existing = {row[1] for row in conn.execute("PRAGMA table_info(proxy_profiles)")}
         if name not in existing:
             conn.execute(f"ALTER TABLE proxy_profiles ADD COLUMN {name} {definition}")
+    existing_account_cols = {row[1] for row in conn.execute("PRAGMA table_info(tiktok_accounts)")}
+    if "deleted_at" not in existing_account_cols:
+        conn.execute("ALTER TABLE tiktok_accounts ADD COLUMN deleted_at TEXT NOT NULL DEFAULT ''")
+    if "last_publish_at" not in existing_account_cols:
+        conn.execute("ALTER TABLE tiktok_accounts ADD COLUMN last_publish_at TEXT NOT NULL DEFAULT ''")
     existing_session_cols = {row[1] for row in conn.execute("PRAGMA table_info(browser_sessions)")}
     for name, definition in {
         "xvfb_pid": "INTEGER NOT NULL DEFAULT 0",
@@ -202,9 +241,15 @@ def init_db(conn: sqlite3.Connection) -> None:
         "display": "TEXT NOT NULL DEFAULT ''",
         "vnc_port": "INTEGER NOT NULL DEFAULT 0",
         "novnc_port": "INTEGER NOT NULL DEFAULT 0",
+        "debug_port": "INTEGER NOT NULL DEFAULT 0",
+        "owner": "TEXT NOT NULL DEFAULT 'manual'",
+        "current_job_id": "TEXT NOT NULL DEFAULT ''",
     }.items():
         if name not in existing_session_cols:
             conn.execute(f"ALTER TABLE browser_sessions ADD COLUMN {name} {definition}")
+    existing_publish_cols = {row[1] for row in conn.execute("PRAGMA table_info(publish_jobs)")}
+    if "next_attempt_at" not in existing_publish_cols:
+        conn.execute("ALTER TABLE publish_jobs ADD COLUMN next_attempt_at TEXT NOT NULL DEFAULT ''")
     conn.commit()
 
 
@@ -373,6 +418,7 @@ def _row_to_account(row: sqlite3.Row) -> dict[str, Any]:
         "last_check_at": row["last_check_at"],
         "last_login_at": row["last_login_at"],
         "last_collect_at": row["last_collect_at"],
+        "last_publish_at": row["last_publish_at"],
         "last_error": row["last_error"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
@@ -395,6 +441,9 @@ def _row_to_session(row: sqlite3.Row) -> dict[str, Any]:
         "display": row["display"],
         "vnc_port": row["vnc_port"],
         "novnc_port": row["novnc_port"],
+        "debug_port": row["debug_port"],
+        "owner": row["owner"],
+        "current_job_id": row["current_job_id"],
         "profile_key": row["profile_key"],
         "user_data_dir": row["user_data_dir"],
         "last_error": row["last_error"],
@@ -539,6 +588,12 @@ def _allocate_session_slot(conn: sqlite3.Connection) -> int:
     raise ValueError(f"浏览器观测槽位已满，当前最多同时运行 {max_slots} 个")
 
 
+def _allocate_manual_slot(conn: sqlite3.Connection) -> int:
+    if any(int(row["slot"] or 0) == 0 for row in _active_sessions(conn)):
+        raise ValueError("手动登录观测通道正在使用，请先完成或关闭当前登录")
+    return 0
+
+
 def _browser_binary() -> str:
     configured = os.getenv("TIKTOK_BROWSER_BIN", "").strip()
     candidates = [configured] if configured else []
@@ -586,6 +641,7 @@ def _slot_ports(slot: int) -> dict[str, Any]:
         "display": f":{XVFB_DISPLAY_BASE + slot}",
         "vnc_port": VNC_PORT + manual_ports + slot - 1,
         "novnc_port": NOVNC_PORT + manual_ports + slot - 1,
+        "debug_port": CDP_PORT + slot,
     }
 
 
@@ -821,7 +877,7 @@ def _tiktok_identity(body: Any) -> dict[str, str]:
     return {}
 
 
-def _launch_browser_for_session(profile: dict[str, Any], pool: sqlite3.Row, session_id: int, display: str) -> tuple[int, str]:
+def _launch_browser_for_session(profile: dict[str, Any], pool: sqlite3.Row, session_id: int, display: str, debug_port: int, start_url: str) -> tuple[int, str]:
     isolation = profile.get("isolation") if isinstance(profile.get("isolation"), dict) else {}
     user_data_dir = _abs_workspace_path(str(isolation.get("user_data_dir") or f"data/tiktok_browser_profiles/session-{session_id}/user-data"))
     _configure_browser_preferences(user_data_dir)
@@ -836,6 +892,8 @@ def _launch_browser_for_session(profile: dict[str, Any], pool: sqlite3.Row, sess
         f"--user-data-dir={user_data_dir}",
         f"--proxy-server=http://127.0.0.1:{proxy_port}",
         f"--lang={TIKTOK_BROWSER_LOCALE}",
+        "--remote-debugging-address=127.0.0.1",
+        f"--remote-debugging-port={debug_port}",
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-sync",
@@ -846,7 +904,7 @@ def _launch_browser_for_session(profile: dict[str, Any], pool: sqlite3.Row, sess
         "--disable-session-crashed-bubble",
         "--window-size=1280,900",
         "--new-window",
-        "https://www.tiktok.com/login",
+        start_url,
     ]
     env = os.environ.copy()
     env["DISPLAY"] = display
@@ -957,13 +1015,13 @@ def list_state() -> dict[str, Any]:
         _active_sessions(conn)
         counts = {
             int(row["proxy_profile_id"]): int(row["count"])
-            for row in conn.execute("SELECT proxy_profile_id, COUNT(*) AS count FROM tiktok_accounts GROUP BY proxy_profile_id")
+            for row in conn.execute("SELECT proxy_profile_id, COUNT(*) AS count FROM tiktok_accounts WHERE deleted_at = '' GROUP BY proxy_profile_id")
         }
         names: dict[int, list[str]] = {}
-        for row in conn.execute("SELECT proxy_profile_id, username FROM tiktok_accounts ORDER BY username"):
+        for row in conn.execute("SELECT proxy_profile_id, username FROM tiktok_accounts WHERE deleted_at = '' ORDER BY username"):
             names.setdefault(int(row["proxy_profile_id"]), []).append(str(row["username"]))
         pools = [_row_to_pool(row, counts.get(int(row["id"]), 0), names.get(int(row["id"]), [])) for row in conn.execute("SELECT * FROM proxy_profiles ORDER BY updated_at DESC, id DESC")]
-        accounts = [_row_to_account(row) for row in conn.execute("SELECT * FROM tiktok_accounts ORDER BY updated_at DESC, id DESC")]
+        accounts = [_row_to_account(row) for row in conn.execute("SELECT * FROM tiktok_accounts WHERE deleted_at = '' ORDER BY updated_at DESC, id DESC")]
         sessions = [_row_to_session(row) for row in conn.execute("SELECT * FROM browser_sessions ORDER BY updated_at DESC, id DESC LIMIT 20")]
     return {
         "pools": pools,
@@ -1178,7 +1236,22 @@ def get_account(account_id: int) -> dict[str, Any]:
 
 def delete_account(account_id: int) -> dict[str, Any]:
     with connect() as conn:
-        conn.execute("DELETE FROM tiktok_accounts WHERE id = ?", (account_id,))
+        if any(int(row["account_id"] or 0) == account_id for row in _active_sessions(conn)):
+            raise ValueError("账号仍处于唤醒或运行状态，请先休眠账号")
+        active_job = conn.execute(
+            "SELECT id FROM publish_jobs WHERE account_id = ? AND status NOT IN ('published','failed','cancelled','scheduled_on_tiktok','dry_run') LIMIT 1",
+            (account_id,),
+        ).fetchone()
+        if active_job:
+            raise ValueError("账号仍有草稿、待发布或运行中的发布任务，请先处理任务")
+        account = conn.execute("SELECT username FROM tiktok_accounts WHERE id = ? AND deleted_at = ''", (account_id,)).fetchone()
+        if not account:
+            raise ValueError("account not found")
+        now = now_iso()
+        conn.execute(
+            "UPDATE tiktok_accounts SET username = ?, status = ?, deleted_at = ?, updated_at = ? WHERE id = ?",
+            (f"{account['username']}__deleted_{account_id}", ACCOUNT_STATUS_PAUSED, now, now, account_id),
+        )
         conn.commit()
     return list_state()
 
@@ -1379,14 +1452,16 @@ def start_login_session(payload: dict[str, Any]) -> dict[str, Any]:
     if account_id:
         with connect() as conn:
             account_row = conn.execute("SELECT * FROM tiktok_accounts WHERE id = ?", (account_id,)).fetchone()
-            if not account_row:
-                raise ValueError("account not found")
-            bound_proxy_id = int(account_row["proxy_profile_id"] or 0)
-            if proxy_profile_id and proxy_profile_id != bound_proxy_id:
-                raise ValueError("账号与请求代理不一致")
-            proxy_profile_id = bound_proxy_id
-            username = str(account_row["username"] or "")
-            saved_profile = _json_loads(account_row["profile_json"], {})
+        if not account_row:
+            raise ValueError("account not found")
+        if "deleted_at" in account_row.keys() and account_row["deleted_at"]:
+            raise ValueError("account has been deleted")
+        bound_proxy_id = int(account_row["proxy_profile_id"] or 0)
+        if proxy_profile_id and proxy_profile_id != bound_proxy_id:
+            raise ValueError("账号与请求代理不一致")
+        proxy_profile_id = bound_proxy_id
+        username = str(account_row["username"] or "")
+        saved_profile = _json_loads(account_row["profile_json"], {})
     else:
         username = _clean_text(payload.get("username"), 120).lstrip("@")
     if not proxy_profile_id:
@@ -1416,7 +1491,9 @@ def start_login_session(payload: dict[str, Any]) -> dict[str, Any]:
             for active_row in _active_sessions(conn):
                 if int(active_row["account_id"] or 0) == account_id:
                     raise ValueError("账号已经处于唤醒状态")
-        slot = _allocate_session_slot(conn)
+        owner = "automation" if payload.get("_automation") else "manual"
+        current_job_id = _clean_text(payload.get("_current_job_id"), 80) if owner == "automation" else ""
+        slot = _allocate_session_slot(conn) if account_id else _allocate_manual_slot(conn)
         pending_name = f"pending-{proxy_profile_id}-{slot}-{int(time.time())}" if not username else username
         profile = _deep_merge(_isolation_profile(pending_name, proxy_profile_id, pool), saved_profile) if account_id else _isolation_profile(pending_name, proxy_profile_id, pool)
         profile_key = str((profile.get("isolation") or {}).get("browser_profile_key") or "")
@@ -1427,8 +1504,8 @@ def start_login_session(payload: dict[str, Any]) -> dict[str, Any]:
             INSERT INTO browser_sessions (
                 slot, proxy_profile_id, account_id, username, status, channel_url,
                 pid, xvfb_pid, x11vnc_pid, websockify_pid, display, vnc_port, novnc_port,
-                profile_key, user_data_dir, last_error, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?, ?, ?, ?, ?, '', ?, ?)
+                debug_port, owner, current_job_id, profile_key, user_data_dir, last_error, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)
             """,
             (
                 slot,
@@ -1440,6 +1517,9 @@ def start_login_session(payload: dict[str, Any]) -> dict[str, Any]:
                 str(slot_ports["display"]),
                 int(slot_ports["vnc_port"]),
                 int(slot_ports["novnc_port"]),
+                int(slot_ports["debug_port"]),
+                owner,
+                current_job_id,
                 profile_key,
                 str((profile.get("isolation") or {}).get("user_data_dir") or ""),
                 now,
@@ -1451,10 +1531,19 @@ def start_login_session(payload: dict[str, Any]) -> dict[str, Any]:
         try:
             log_dir = _abs_workspace_path(f"data/tiktok_browser_sessions/{session_id}")
             channel = _launch_observation_channel(slot, session_id, log_dir)
-            pid, user_data_dir = _launch_browser_for_session(profile, pool, session_id, str(channel["display"]))
+            start_url = "https://www.tiktok.com/" if account_id else "https://www.tiktok.com/login"
+            pid, user_data_dir = _launch_browser_for_session(
+                profile,
+                pool,
+                session_id,
+                str(channel["display"]),
+                int(slot_ports["debug_port"]),
+                start_url,
+            )
             time.sleep(2.0)
             if not _pid_alive(pid):
                 raise ValueError("Chrome 启动后立即退出，请检查 browser.err.log")
+            _wait_for_port(int(slot_ports["debug_port"]), "Chrome CDP", timeout=10.0)
             conn.execute(
                 """
                 UPDATE browser_sessions
@@ -1467,6 +1556,7 @@ def start_login_session(payload: dict[str, Any]) -> dict[str, Any]:
                     display = ?,
                     vnc_port = ?,
                     novnc_port = ?,
+                    debug_port = ?,
                     user_data_dir = ?,
                     updated_at = ?
                 WHERE id = ?
@@ -1480,6 +1570,7 @@ def start_login_session(payload: dict[str, Any]) -> dict[str, Any]:
                     str(channel["display"]),
                     int(channel["vnc_port"]),
                     int(channel["novnc_port"]),
+                    int(slot_ports["debug_port"]),
                     user_data_dir,
                     now_iso(),
                     session_id,
@@ -1510,6 +1601,8 @@ def stop_login_session(payload: dict[str, Any]) -> dict[str, Any]:
     now = now_iso()
     with connect() as conn:
         row = _session_by_id(conn, session_id)
+        if row["current_job_id"] and not payload.get("force"):
+            raise ValueError("账号正在发布，确认终止任务后才能休眠")
         _terminate_session_processes(row)
         _remove_unbound_session_profile(row)
         status = "failed" if mark_failed else "stopped"
@@ -1519,6 +1612,26 @@ def stop_login_session(payload: dict[str, Any]) -> dict[str, Any]:
             conn.execute("UPDATE tiktok_accounts SET status = ?, last_error = ?, updated_at = ? WHERE id = ?", (ACCOUNT_STATUS_ERROR, reason, now, account_id))
         conn.commit()
     return list_state()
+
+
+def start_automation_session(account_id: int, job_id: str) -> dict[str, Any]:
+    return start_login_session({"account_id": account_id, "_automation": True, "_current_job_id": job_id})
+
+
+def finish_automation_session(session_id: int, reason: str = "自动发布任务结束") -> dict[str, Any]:
+    return stop_login_session({"session_id": session_id, "force": True, "reason": reason})
+
+
+def handoff_automation_session(session_id: int, reason: str) -> dict[str, Any]:
+    now = now_iso()
+    with connect() as conn:
+        row = _session_by_id(conn, session_id)
+        conn.execute(
+            "UPDATE browser_sessions SET owner = 'manual_review', current_job_id = '', last_error = ?, updated_at = ? WHERE id = ?",
+            (_clean_text(reason, 1000), now, session_id),
+        )
+        conn.commit()
+        return _row_to_session(_session_by_id(conn, session_id))
 
 
 def inspect_login_session(payload: dict[str, Any]) -> dict[str, Any]:
