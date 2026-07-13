@@ -11,6 +11,7 @@ services:
   web:
     environment:
       WEB_PORT: ${WEB_PORT:-4003}
+      PROXY_POOL_ENABLED: "1"
       LAN_HOST: ${LAN_HOST:-192.168.1.254}
       REPORT_LAN_HOST: ${REPORT_LAN_HOST:-192.168.1.254}
       REPORT_LAN_PORT: ${REPORT_LAN_PORT:-4003}

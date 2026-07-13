@@ -5,7 +5,9 @@ backups/
 data/
 data-dev/
 videos/
+videos-dev/
 output/
+output-dev/
 __pycache__/
 *.py[cod]
 .pytest_cache/
