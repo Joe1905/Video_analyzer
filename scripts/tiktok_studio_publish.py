@@ -869,10 +869,27 @@ def _select_custom_time(page: Any, time_field: Any, target: datetime) -> None:
     expected = target.strftime("%H:%M")
     if time_field.input_value() == expected:
         return
-    time_field.locator("xpath=..").click(timeout=5000)
-    picker = _first_visible([
-        page.locator(".tiktok-timepicker-time-picker-container"),
-    ])
+    picker_locator = page.locator(".tiktok-timepicker-time-picker-container")
+
+    def open_picker() -> Any | None:
+        for index in range(picker_locator.count()):
+            candidate = picker_locator.nth(index)
+            try:
+                classes = str(candidate.get_attribute("class") or "")
+                box = candidate.bounding_box()
+                if "tiktok-timepicker-invisible" not in classes and box and box["height"] > 20:
+                    return candidate
+            except Exception:
+                continue
+        return None
+
+    picker = open_picker()
+    if not picker:
+        time_field.locator("xpath=..").click(timeout=5000)
+        deadline = time.time() + 3
+        while time.time() < deadline and not picker:
+            page.wait_for_timeout(100)
+            picker = open_picker()
     if not picker:
         raise RuntimeError("TikTok 时间选择器未打开")
     option_lists = picker.locator(".tiktok-timepicker-option-list")
