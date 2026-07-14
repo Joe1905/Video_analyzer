@@ -1056,7 +1056,20 @@ def _add_product_link(page: Any, product_id: str, log_dir: Path) -> None:
             _cancel_product_link(page)
             raise ProductLinkUnavailable(f"当前账号没有商品 ID {product['product_id']}，且页面没有搜索框，已取消 Add link")
         search.fill(product["product_id"])
-        page.wait_for_timeout(700)
+        search_button = _first_visible([
+            search.locator("xpath=..").locator(".product-search-icon"),
+            search.locator("xpath=..").locator(".TUXTextInputCore-trailingIconWrapper"),
+            search.locator("xpath=following-sibling::button[1]"),
+            search.locator("xpath=following-sibling::*[1]"),
+            search.locator("xpath=../following-sibling::button[1]"),
+            search.locator("xpath=../following-sibling::*[1]"),
+            search.locator("xpath=..").locator("[role='button']"),
+        ])
+        if search_button:
+            search_button.click(timeout=5000)
+        else:
+            search.press("Enter")
+        page.wait_for_timeout(1200)
         row = _find_product_row(page, product["product_id"])
     if not row:
         _cancel_product_link(page)
