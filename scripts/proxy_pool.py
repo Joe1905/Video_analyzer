@@ -219,6 +219,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             ai_generated INTEGER NOT NULL DEFAULT 0,
             product_link TEXT NOT NULL DEFAULT '',
             keep_observing INTEGER NOT NULL DEFAULT 0,
+            manual_publish INTEGER NOT NULL DEFAULT 0,
             schedule_mode TEXT NOT NULL DEFAULT 'server',
             scheduled_at TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'draft',
@@ -283,6 +284,8 @@ def init_db(conn: sqlite3.Connection) -> None:
         except sqlite3.OperationalError as exc:
             if "duplicate column name" not in str(exc).lower():
                 raise
+    if "manual_publish" not in existing_publish_cols:
+        conn.execute("ALTER TABLE publish_jobs ADD COLUMN manual_publish INTEGER NOT NULL DEFAULT 0")
     conn.commit()
 
 
