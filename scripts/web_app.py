@@ -9264,6 +9264,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/proxy/publish/jobs":
                 account_id = int(parse_qs(query).get("account_id", ["0"])[0] or 0)
                 return json_response(self, HTTPStatus.OK, tiktok_studio_publish.list_jobs(account_id))
+            if path == "/api/proxy/products":
+                return json_response(self, HTTPStatus.OK, proxy_pool.list_products())
             if path == "/api/proxy/publish/runtime":
                 return json_response(self, HTTPStatus.OK, tiktok_studio_publish.runtime_status())
             if path.startswith("/api/proxy/publish/videos/"):

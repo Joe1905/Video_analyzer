@@ -187,6 +187,19 @@ def init_db(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_browser_sessions_status ON browser_sessions(status);
         CREATE INDEX IF NOT EXISTS idx_browser_sessions_proxy ON browser_sessions(proxy_profile_id);
+        CREATE TABLE IF NOT EXISTS tiktok_products (
+            product_id TEXT PRIMARY KEY,
+            product_name TEXT NOT NULL DEFAULT '',
+            image_url TEXT NOT NULL DEFAULT '',
+            price TEXT NOT NULL DEFAULT '',
+            stock TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT '',
+            source TEXT NOT NULL DEFAULT 'my_shop',
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_tiktok_products_source ON tiktok_products(source, sort_order);
         CREATE TABLE IF NOT EXISTS publish_assets (
             id TEXT PRIMARY KEY,
             account_id INTEGER NOT NULL REFERENCES tiktok_accounts(id) ON DELETE RESTRICT,
@@ -1210,6 +1223,76 @@ def list_state() -> dict[str, Any]:
             "blocked_accounts": sum(1 for item in accounts if item["last_check_status"] in {"阻断", "blocked"}),
         },
     }
+
+
+def _row_to_product(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "product_id": row["product_id"],
+        "product_name": row["product_name"],
+        "image_url": row["image_url"],
+        "price": row["price"],
+        "stock": row["stock"],
+        "status": row["status"],
+        "source": row["source"],
+        "sort_order": int(row["sort_order"]),
+        "updated_at": row["updated_at"],
+    }
+
+
+def list_products() -> dict[str, Any]:
+    conn = connect()
+    try:
+        rows = conn.execute("SELECT * FROM tiktok_products ORDER BY source, sort_order, product_name").fetchall()
+    finally:
+        conn.close()
+    return {"products": [_row_to_product(row) for row in rows]}
+
+
+def upsert_products(products: list[dict[str, Any]]) -> dict[str, Any]:
+    if not isinstance(products, list):
+        raise ValueError("products must be a list")
+    now = now_iso()
+    conn = connect()
+    try:
+        for position, raw in enumerate(products):
+            if not isinstance(raw, dict):
+                continue
+            product_id = _clean_text(raw.get("product_id"), 120)
+            product_name = _clean_text(raw.get("product_name"), 2000)
+            if not product_id or not product_name:
+                raise ValueError("商品必须包含 product_id 和 product_name")
+            conn.execute(
+                """
+                INSERT INTO tiktok_products (
+                    product_id, product_name, image_url, price, stock, status, source, sort_order, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(product_id) DO UPDATE SET
+                    product_name = excluded.product_name,
+                    image_url = excluded.image_url,
+                    price = excluded.price,
+                    stock = excluded.stock,
+                    status = excluded.status,
+                    source = excluded.source,
+                    sort_order = excluded.sort_order,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    product_id,
+                    product_name,
+                    _clean_text(raw.get("image_url"), 4000),
+                    _clean_text(raw.get("price"), 80),
+                    _clean_text(raw.get("stock"), 80),
+                    _clean_text(raw.get("status"), 80),
+                    _clean_text(raw.get("source"), 80) or "my_shop",
+                    int(raw.get("sort_order") or position),
+                    now,
+                    now,
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return list_products()
 
 
 def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:

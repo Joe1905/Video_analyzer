@@ -39,6 +39,7 @@ STATUS_LABELS = {
     "failed": "发布失败",
     "result_uncertain": "结果待确认",
     "product_link_review": "商品绑定待确认",
+    "product_link_failed": "商品未绑定成功",
     "cancelled": "已取消",
     "scheduled_on_tiktok": "TikTok已排程",
     "dry_run": "演练完成",
@@ -54,6 +55,10 @@ class ManualReviewRequired(RuntimeError):
 
 
 class ProductLinkReviewRequired(RuntimeError):
+    pass
+
+
+class ProductLinkUnavailable(RuntimeError):
     pass
 
 
@@ -557,7 +562,43 @@ def _set_video_file(page: Any, video: Path) -> None:
     raise RuntimeError("未找到 TikTok Studio 视频选择控件")
 
 
-def _open_product_link_review(page: Any, product_reference: str, log_dir: Path) -> None:
+def _selected_product(product_id: str) -> dict[str, Any]:
+    conn = proxy_pool.connect()
+    try:
+        row = conn.execute(
+            "SELECT product_id, product_name FROM tiktok_products WHERE product_id = ?",
+            (_clean_text(product_id, 120),),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        raise ProductLinkUnavailable(f"公共商品库中未找到商品 ID：{product_id}")
+    return {"product_id": str(row["product_id"]), "product_name": str(row["product_name"])}
+
+
+def _cancel_product_link(page: Any) -> None:
+    cancel = _first_visible([
+        page.get_by_role("button", name=re.compile(r"^cancel$|^取消$", re.I)),
+    ])
+    if cancel:
+        cancel.click(timeout=5000)
+        page.wait_for_timeout(400)
+
+
+def _find_product_row(page: Any, product_id: str) -> Any | None:
+    rows = page.locator("tr")
+    for index in range(min(rows.count(), 80)):
+        row = rows.nth(index)
+        try:
+            if row.is_visible() and product_id in row.inner_text():
+                return row
+        except Exception:
+            continue
+    return None
+
+
+def _open_product_link_review(page: Any, product_id: str, log_dir: Path) -> None:
+    product = _selected_product(product_id)
     add_link = _first_visible([
         page.locator("button[data-e2e*='add-link' i]"),
         page.get_by_role("button", name=re.compile(r"^add$|^add link$|^添加$", re.I)),
@@ -575,8 +616,51 @@ def _open_product_link_review(page: Any, product_reference: str, log_dir: Path) 
     if not dialog:
         raise ManualReviewRequired("已点击 Add link，但未检测到商品绑定弹窗")
     page.screenshot(path=str(log_dir / "product-link-dialog.png"), full_page=True)
+    product_list_title = _first_visible([
+        page.get_by_text(re.compile(r"^add product links$|^添加商品链接$", re.I), exact=True),
+    ])
+    if not product_list_title:
+        next_button = _first_visible([
+            page.get_by_role("button", name=re.compile(r"^next$|^下一步$", re.I)),
+        ])
+        if not next_button or not next_button.is_enabled():
+            _cancel_product_link(page)
+            raise ProductLinkUnavailable("Add link 的 Products 步骤未就绪，已取消商品绑定")
+        next_button.click(timeout=5000)
+        page.wait_for_timeout(900)
+
+    row = _find_product_row(page, product["product_id"])
+    if not row:
+        search = _first_visible([
+            page.get_by_placeholder(re.compile(r"search products|搜索商品", re.I)),
+            page.locator("input[placeholder*='search products' i]"),
+        ])
+        if not search:
+            _cancel_product_link(page)
+            raise ProductLinkUnavailable(f"当前账号没有商品 ID {product['product_id']}，且页面没有搜索框，已取消 Add link")
+        search.fill(product["product_id"])
+        page.wait_for_timeout(700)
+        row = _find_product_row(page, product["product_id"])
+    if not row:
+        _cancel_product_link(page)
+        raise ProductLinkUnavailable(f"当前账号未找到商品 ID {product['product_id']}，已取消 Add link")
+
+    row.scroll_into_view_if_needed(timeout=3000)
+    selector = _first_visible([row.locator("input[type='radio']")])
+    if selector:
+        selector.check(timeout=5000)
+    else:
+        row.click(timeout=5000)
+    page.wait_for_timeout(500)
+    next_button = _first_visible([
+        page.get_by_role("button", name=re.compile(r"^next$|^下一步$", re.I)),
+    ])
+    if not next_button or not next_button.is_enabled():
+        _cancel_product_link(page)
+        raise ProductLinkUnavailable(f"商品 ID {product['product_id']} 未能选中，已取消 Add link")
+    page.screenshot(path=str(log_dir / "product-selected.png"), full_page=True)
     raise ProductLinkReviewRequired(
-        f"已打开 Add link 商品绑定弹窗（待绑定：{_clean_text(product_reference, 120)}），等待人工确认商品；系统未点击最终发布"
+        f"已勾选商品：{product['product_name']}（ID {product['product_id']}），等待人工确认后点击 Next；系统未点击最终发布"
     )
 
 
@@ -660,7 +744,7 @@ def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[str,
                 if not success:
                     raise ResultUncertain("已点击发布，但未收到明确成功信号，请人工确认，系统不会自动重试")
             return ("scheduled_on_tiktok" if job["schedule_mode"] == "tiktok" else "published"), page.url
-        except (ManualReviewRequired, ProductLinkReviewRequired, ResultUncertain):
+        except (ManualReviewRequired, ProductLinkReviewRequired, ProductLinkUnavailable, ResultUncertain):
             raise
         except Exception as exc:
             if final_clicked:
@@ -710,6 +794,12 @@ def _run_job(job_id: str) -> None:
     except ProductLinkReviewRequired as exc:
         keep_for_review = True
         _set_job(job_id, "product_link_review", "product_link_review", str(exc), session_id=session_id or None)
+        if session_id:
+            proxy_pool.handoff_automation_session(session_id, str(exc))
+    except ProductLinkUnavailable as exc:
+        keep_for_review = True
+        _set_job(job_id, "product_link_failed", "product_link_failed", str(exc), session_id=session_id or None)
+        _update_account(int(job["account_id"]), error=str(exc))
         if session_id:
             proxy_pool.handoff_automation_session(session_id, str(exc))
     except ManualReviewRequired as exc:
