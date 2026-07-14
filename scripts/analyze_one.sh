@@ -63,7 +63,25 @@ log "video_path=${video_path}"
 log "output_dir=${output_dir}"
 log "VISION_API_URL=${VISION_API_URL}"
 log "VISION_MODEL=${VISION_MODEL}"
-log "MAX_FRAMES=${MAX_FRAMES:-20}"
+duration_seconds="$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$video_path" 2>/dev/null || true)"
+effective_max_frames="$(python - "$duration_seconds" "${MAX_FRAMES:-20}" "${LONG_VIDEO_FRAME_INTERVAL_SECONDS:-10}" "${LONG_VIDEO_MAX_FRAMES:-60}" <<'PY'
+import math
+import sys
+
+try:
+    duration = max(0.0, float(sys.argv[1]))
+except (TypeError, ValueError):
+    duration = 0.0
+base = max(1, int(sys.argv[2]))
+interval = max(1.0, float(sys.argv[3]))
+ceiling = max(base, int(sys.argv[4]))
+adaptive = math.ceil(duration / interval) + 1 if duration else base
+print(min(ceiling, max(base, adaptive)))
+PY
+)"
+log "duration_seconds=${duration_seconds:-unknown}"
+log "MAX_FRAMES_BASE=${MAX_FRAMES:-20}"
+log "MAX_FRAMES_EFFECTIVE=${effective_max_frames}"
 log "WHISPER_MODEL=${WHISPER_MODEL:-small}"
 log "LANGUAGE=${LANGUAGE:-zh}"
 if command -v ffprobe >/dev/null 2>&1; then
@@ -97,7 +115,7 @@ video-analyzer "$video_path" \
   --api-url "$VISION_API_URL" \
   --model "$VISION_MODEL" \
   --output "$output_dir" \
-  --max-frames "${MAX_FRAMES:-20}" \
+  --max-frames "${effective_max_frames}" \
   --keep-frames \
   --whisper-model "${WHISPER_MODEL:-small}" \
   --language "${LANGUAGE:-zh}" \
@@ -126,7 +144,7 @@ fi
 
 elapsed_seconds="$(( $(date +%s) - start_epoch ))"
 log "standardizing analysis elapsed_seconds=${elapsed_seconds}"
-python scripts/standardize_analysis.py "$output_dir" --mode analyzer --elapsed-seconds "$elapsed_seconds"
+python scripts/standardize_analysis.py "$output_dir" --mode analyzer --elapsed-seconds "$elapsed_seconds" --video-path "$video_path"
 log "standardization finished"
 
 if [ "${ANALYZER_DIRECT_FALLBACK:-1}" != "0" ]; then

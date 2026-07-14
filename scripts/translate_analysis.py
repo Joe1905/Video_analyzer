@@ -380,6 +380,117 @@ def translate_in_batches(
     return translated
 
 
+STRUCTURAL_TIMELINE_KEYS = {
+    "index",
+    "frame_number",
+    "timestamp_seconds",
+    "start_seconds",
+    "end_seconds",
+    "time_range",
+    "timestamp",
+    "time",
+}
+
+
+def _translate_display_text(
+    api_key: str,
+    api_url: str,
+    model: str,
+    source: str,
+    max_chars: int,
+    max_tokens: int,
+) -> str:
+    if not should_translate((), source):
+        return source
+    chunk_chars = min(max_chars, int(os.getenv("TRANSLATION_TEXT_CHUNK_CHARS", str(DEFAULT_TEXT_CHUNK_CHARS))))
+    translated = translate_text_chunked(api_key, api_url, model, source, chunk_chars, max_tokens)
+    if looks_truncated_translation(source, translated):
+        retry_chars = max(500, min(chunk_chars, 1500))
+        translated = translate_text_chunked(api_key, api_url, model, source, retry_chars, max_tokens)
+    if looks_truncated_translation(source, translated):
+        raise ValueError("DeepSeek translation remained suspiciously truncated after retry")
+    return translated
+
+
+def validate_analysis_translation(source: Any, translated: Any) -> None:
+    if not isinstance(source, dict) or not isinstance(translated, dict):
+        raise ValueError("analysis translation must preserve the source object shape")
+    source_timeline = source.get("timeline") if isinstance(source.get("timeline"), list) else []
+    translated_timeline = translated.get("timeline") if isinstance(translated.get("timeline"), list) else []
+    if len(source_timeline) != len(translated_timeline):
+        raise ValueError("translated timeline item count does not match source")
+    for position, (source_item, translated_item) in enumerate(zip(source_timeline, translated_timeline)):
+        if not isinstance(source_item, dict) or not isinstance(translated_item, dict):
+            raise ValueError(f"timeline item {position} changed type during translation")
+        for key in STRUCTURAL_TIMELINE_KEYS:
+            if source_item.get(key) != translated_item.get(key):
+                raise ValueError(f"timeline item {position} changed structural field {key}")
+        for key, value in source_item.items():
+            if key in STRUCTURAL_TIMELINE_KEYS or not isinstance(value, str) or not value.strip():
+                continue
+            translated_value = translated_item.get(key)
+            if not isinstance(translated_value, str) or not translated_value.strip():
+                raise ValueError(f"timeline item {position} lost display field {key}")
+            if should_translate((key,), value) and looks_truncated_translation(value, translated_value):
+                raise ValueError(f"timeline item {position} has truncated display field {key}")
+
+
+def translate_analysis_payload(
+    api_key: str,
+    api_url: str,
+    model: str,
+    payload: Any,
+    max_chars: int = DEFAULT_BATCH_CHARS,
+    max_tokens: int = DEFAULT_MAX_TOKENS,
+) -> Any:
+    """Translate only user-visible analysis text while preserving structural fields."""
+    source = compact_for_translation(payload)
+    translated = deepcopy(source)
+    max_tokens = max(1024, int(max_tokens))
+
+    for key in ("summary", "video_description"):
+        value = source.get(key) if isinstance(source, dict) else None
+        if isinstance(value, str) and value.strip():
+            translated[key] = _translate_display_text(api_key, api_url, model, value, max_chars, max_tokens)
+
+    source_transcript = source.get("transcript") if isinstance(source, dict) else None
+    translated_transcript = translated.get("transcript") if isinstance(translated, dict) else None
+    if isinstance(source_transcript, dict) and isinstance(translated_transcript, dict):
+        text = source_transcript.get("text")
+        if isinstance(text, str) and text.strip():
+            translated_transcript["text"] = _translate_display_text(api_key, api_url, model, text, max_chars, max_tokens)
+
+    translated_timeline_by_index: dict[Any, dict[str, Any]] = {}
+    source_timeline = source.get("timeline") if isinstance(source, dict) and isinstance(source.get("timeline"), list) else []
+    translated_timeline = translated.get("timeline") if isinstance(translated, dict) and isinstance(translated.get("timeline"), list) else []
+    for source_item, translated_item in zip(source_timeline, translated_timeline):
+        if not isinstance(source_item, dict) or not isinstance(translated_item, dict):
+            continue
+        for key, value in source_item.items():
+            if key in STRUCTURAL_TIMELINE_KEYS or not isinstance(value, str) or not value.strip():
+                continue
+            translated_item[key] = _translate_display_text(api_key, api_url, model, value, max_chars, max_tokens)
+        translated_timeline_by_index[source_item.get("index")] = translated_item
+
+    source_evidence = source.get("visual_evidence") if isinstance(source, dict) and isinstance(source.get("visual_evidence"), list) else []
+    translated_evidence = translated.get("visual_evidence") if isinstance(translated, dict) and isinstance(translated.get("visual_evidence"), list) else []
+    for source_item, translated_item in zip(source_evidence, translated_evidence):
+        if not isinstance(source_item, dict) or not isinstance(translated_item, dict):
+            continue
+        timeline_item = translated_timeline_by_index.get(source_item.get("index"))
+        if isinstance(timeline_item, dict) and isinstance(timeline_item.get("visual"), str):
+            translated_item["description"] = timeline_item["visual"]
+        else:
+            description = source_item.get("description")
+            if isinstance(description, str) and description.strip():
+                translated_item["description"] = _translate_display_text(
+                    api_key, api_url, model, description, max_chars, max_tokens
+                )
+
+    validate_analysis_translation(source, translated)
+    return translated
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Translate analysis.json to Simplified Chinese.")
     parser.add_argument(
@@ -427,8 +538,8 @@ def main() -> int:
         analysis_path = analysis_path / "analysis.json"
 
     try:
-        analysis = compact_for_translation(load_json(analysis_path))
-        translated = translate_in_batches(
+        analysis = load_json(analysis_path)
+        translated = translate_analysis_payload(
             api_key=api_key,
             api_url=args.api_url,
             model=args.model,

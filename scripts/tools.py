@@ -1034,24 +1034,52 @@ def _run_video_download(url: str) -> dict:
     )
 
 
-def _run_video_analyze(filename: str) -> dict:
+def _run_video_analyze(filename: str, force: bool = False) -> dict:
     out_dir = _video_output_dir(filename)
     analysis = out_dir / "analysis.json"
-    if analysis.is_file():
+    if analysis.is_file() and not force:
         data = json.loads(analysis.read_text(encoding="utf-8"))
         if isinstance(data, dict):
             data["_cache"] = {"hit": True, "provider": "video_registry", "endpoint": "analysis"}
         return data
+    staging_dir = out_dir.parent / f".{out_dir.name}.rebuild-{uuid.uuid4().hex}"
     cmd = ["bash", str(SCRIPTS_DIR / "analyze_one.sh"), filename]
     env = os.environ.copy()
-    env["ANALYSIS_OUTPUT_DIR"] = str(out_dir)
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600, cwd=ROOT, env=env)
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr or result.stdout or f"Exit code {result.returncode}")
-    mark_extracted(filename, out_dir.name)
-    if analysis.is_file():
-        return json.loads(analysis.read_text(encoding="utf-8"))
-    return {"output": result.stdout}
+    env["ANALYSIS_OUTPUT_DIR"] = str(staging_dir if force else out_dir)
+    timeout = max(600, int(os.getenv("VIDEO_ANALYZE_TIMEOUT", "1800")))
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=ROOT, env=env)
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr or result.stdout or f"Exit code {result.returncode}")
+        generated_dir = staging_dir if force else out_dir
+        generated_analysis = generated_dir / "analysis.json"
+        if not generated_analysis.is_file():
+            raise RuntimeError("video analysis completed without analysis.json")
+        data = json.loads(generated_analysis.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or not isinstance(data.get("timeline"), list):
+            raise RuntimeError("generated analysis.json does not match the standardized schema")
+        if force:
+            backup_dir = out_dir.parent / f".{out_dir.name}.backup-{uuid.uuid4().hex}"
+            promoted = False
+            try:
+                if out_dir.exists():
+                    os.replace(out_dir, backup_dir)
+                os.replace(staging_dir, out_dir)
+                promoted = True
+            except Exception:
+                if out_dir.exists():
+                    shutil.rmtree(out_dir, ignore_errors=True)
+                if backup_dir.exists():
+                    os.replace(backup_dir, out_dir)
+                raise
+            finally:
+                if promoted and backup_dir.exists():
+                    shutil.rmtree(backup_dir, ignore_errors=True)
+        mark_extracted(filename, out_dir.name)
+        return data
+    finally:
+        if staging_dir.exists():
+            shutil.rmtree(staging_dir, ignore_errors=True)
 
 
 def _run_video_direct_analyze(filename: str) -> dict:

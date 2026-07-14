@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 
 from deepseek_postprocess import DEFAULT_API_URL, DEFAULT_MODEL, call_deepseek, extract_content, parse_json_content
 from sociavault_tiktok import call_api
-from tools import _iter_media_url_candidates, execute_tool
+from tools import _iter_media_url_candidates, _run_video_analyze, execute_tool
 from video_registry import get_video, get_video_by_filename, register_video, set_hidden_from_analyzer
 
 ROOT = Path.cwd()
@@ -1375,16 +1375,16 @@ def _translate_analysis_payload(analysis: Any) -> Any:
     if not analysis:
         raise ValueError("analysis not found for report video")
 
-    from translate_analysis import DEFAULT_BATCH_CHARS, DEFAULT_MAX_TOKENS, compact_for_translation, translate_in_batches
+    from translate_analysis import DEFAULT_BATCH_CHARS, DEFAULT_MAX_TOKENS, translate_analysis_payload
 
     api_key = os.getenv("DEEPSEEK_API_KEY")
     if not api_key:
         raise ValueError("DEEPSEEK_API_KEY is required for translation")
-    return translate_in_batches(
+    return translate_analysis_payload(
         api_key=api_key,
         api_url=os.getenv("DEEPSEEK_API_URL", DEFAULT_API_URL),
         model=os.getenv("DEEPSEEK_MODEL", DEFAULT_MODEL),
-        payload=compact_for_translation(analysis),
+        payload=analysis,
         max_chars=int(os.getenv("TRANSLATION_BATCH_CHARS", str(DEFAULT_BATCH_CHARS))),
         max_tokens=int(os.getenv("TRANSLATION_MAX_TOKENS", str(DEFAULT_MAX_TOKENS))),
     )
@@ -1420,27 +1420,22 @@ def translate_report_video_analysis(report_date: str, platform: str, video_id: s
         stored_source_sha256 = str(row[2] or "")
         translated_source_sha256 = str(row[3] or "")
         cache_matches_source = bool(cached and translated_source_sha256 == source_sha256)
-        if force or not cache_matches_source:
-            conn.execute(
-                """
-                UPDATE hot_report_videos
-                SET analysis_sha256 = ?, analysis_zh_json = NULL,
-                    analysis_zh_source_sha256 = NULL, updated_at = ?
-                WHERE report_date = ? AND platform = ? AND video_id = ?
-                """,
-                (source_sha256, time.time(), date, platform, video_id),
-            )
-            conn.commit()
-            cached = None
-        elif stored_source_sha256 != source_sha256:
+        if cache_matches_source and not force:
+            if stored_source_sha256 != source_sha256:
+                conn.execute(
+                    "UPDATE hot_report_videos SET analysis_sha256 = ?, updated_at = ? WHERE report_date = ? AND platform = ? AND video_id = ?",
+                    (source_sha256, time.time(), date, platform, video_id),
+                )
+                conn.commit()
+            return {"status": "cached", "report_date": date, "platform": platform, "video_id": video_id, "analysis_zh": cached}
+        if stored_source_sha256 != source_sha256:
             conn.execute(
                 "UPDATE hot_report_videos SET analysis_sha256 = ?, updated_at = ? WHERE report_date = ? AND platform = ? AND video_id = ?",
                 (source_sha256, time.time(), date, platform, video_id),
             )
             conn.commit()
-        if cached:
-            return {"status": "cached", "report_date": date, "platform": platform, "video_id": video_id, "analysis_zh": cached}
-        translated = _translate_analysis_payload(analysis)
+    translated = _translate_analysis_payload(analysis)
+    with _connect() as conn:
         cursor = conn.execute(
             """
             UPDATE hot_report_videos
@@ -1889,11 +1884,7 @@ def _process_video(conn: sqlite3.Connection, report_date: str, item: dict[str, A
     conn.execute(
         """
         UPDATE hot_report_videos
-        SET process_status = 'processing', process_error = NULL,
-            analysis_json = NULL, analysis_sha256 = NULL,
-            analysis_zh_json = NULL, analysis_zh_source_sha256 = NULL,
-            audit_json = NULL, social_context_json = NULL,
-            insight_json = NULL, insight_generated_at = NULL, updated_at = ?
+        SET process_status = 'processing', process_error = NULL, updated_at = ?
         WHERE report_date = ? AND platform = ? AND video_id = ?
         """,
         (now, report_date, platform, video_id),
@@ -2490,20 +2481,39 @@ def _compact_extraction(analysis: Any) -> dict[str, Any]:
         return {"raw": _trim_text(analysis, 1600)}
     transcript = analysis.get("transcript") if isinstance(analysis.get("transcript"), dict) else {}
     timeline = analysis.get("timeline") if isinstance(analysis.get("timeline"), list) else []
-    evidence = analysis.get("visual_evidence") if isinstance(analysis.get("visual_evidence"), list) else []
-    frames = analysis.get("frame_analyses") if isinstance(analysis.get("frame_analyses"), list) else []
+    metadata = analysis.get("metadata") if isinstance(analysis.get("metadata"), dict) else {}
+    compact_timeline = []
+    timeline_char_limit = max(4000, _to_int(os.getenv("REPORT_COMPACT_TIMELINE_CHAR_LIMIT", "14000")))
+    used_chars = 0
+    for item in timeline:
+        if not isinstance(item, dict):
+            continue
+        visual = _trim_text(item.get("visual") or item.get("description"), 900)
+        remaining = timeline_char_limit - used_chars
+        if remaining <= 0:
+            break
+        visual = _trim_text(visual, remaining)
+        compact_timeline.append(
+            {
+                "index": item.get("index"),
+                "timestamp_seconds": item.get("timestamp_seconds"),
+                "visual": visual,
+            }
+        )
+        used_chars += len(visual)
     return {
+        "duration_seconds": metadata.get("duration_seconds"),
         "summary": _trim_text(analysis.get("summary") or analysis.get("video_description"), 900),
         "transcript": _trim_text(transcript.get("text") if isinstance(transcript, dict) else "", 1600),
-        "timeline": timeline[:8],
-        "visual_evidence": evidence[:8],
-        "frame_analyses": [_trim_text(item, 700) for item in frames[:6]],
+        "timeline": compact_timeline,
     }
 
 
 def _compact_summary_video(video: dict[str, Any]) -> dict[str, Any]:
     insight = video.get("insight")
     valid_insight = insight if _is_valid_video_insight(insight) else {}
+    analysis = video.get("analysis") if isinstance(video.get("analysis"), dict) else {}
+    metadata = analysis.get("metadata") if isinstance(analysis.get("metadata"), dict) else {}
     return {
         "rank": video.get("report_rank"),
         "title": video.get("title"),
@@ -2511,6 +2521,7 @@ def _compact_summary_video(video: dict[str, Any]) -> dict[str, Any]:
         "metrics": video.get("metrics"),
         "hot_score": video.get("hot_score"),
         "source_label": video.get("source_label"),
+        "duration_seconds": metadata.get("duration_seconds"),
         "insight": valid_insight,
         "extraction_fallback": _compact_extraction(video.get("analysis")) if not valid_insight else {},
     }
@@ -2531,7 +2542,7 @@ def _video_insight_prompt(video: dict[str, Any], social_context: dict[str, Any])
             "hot_score": video.get("hot_score"),
             "raw_video_metadata": _trim_json_payload(video.get("raw") or {}, 6000),
         },
-        "full_video_extraction": _trim_json_payload(video.get("analysis") or {}, analysis_limit),
+        "full_video_extraction": _trim_json_payload(_compact_extraction(video.get("analysis")), analysis_limit),
         "social_context": social_context,
     }
     return (
@@ -3047,6 +3058,144 @@ def rebuild_report_from_cached(report_date: str | None = None) -> dict[str, Any]
     payload["rebuilt_video_count"] = len(videos)
     payload["rebuilt_report"] = normalized
     return payload
+
+
+def _validate_rebuilt_analysis(analysis: Any, filename: str) -> None:
+    if not isinstance(analysis, dict) or analysis.get("schema_version") != "1.1":
+        raise ValueError(f"{filename}: analysis schema 1.1 was not generated")
+    timeline = analysis.get("timeline") if isinstance(analysis.get("timeline"), list) else []
+    if not timeline:
+        raise ValueError(f"{filename}: generated timeline is empty")
+    timestamps = [item.get("timestamp_seconds") for item in timeline if isinstance(item, dict)]
+    if len(timestamps) != len(timeline) or not all(isinstance(value, (int, float)) for value in timestamps):
+        raise ValueError(f"{filename}: one or more timeline timestamps are missing")
+    numeric = [float(value) for value in timestamps]
+    if numeric != sorted(numeric) or len(set(numeric)) != len(numeric):
+        raise ValueError(f"{filename}: timeline timestamps are not strictly increasing")
+    metadata = analysis.get("metadata") if isinstance(analysis.get("metadata"), dict) else {}
+    duration = float(metadata.get("duration_seconds") or 0)
+    if duration <= 0 or numeric[-1] > duration + 0.5:
+        raise ValueError(f"{filename}: timeline timestamps do not match video duration")
+    raw = analysis.get("raw_model_output") if isinstance(analysis.get("raw_model_output"), dict) else {}
+    frame_analyses = raw.get("frame_analyses") if isinstance(raw.get("frame_analyses"), list) else []
+    for position, frame in enumerate(frame_analyses):
+        if isinstance(frame, dict) and frame.get("finish_reason") in {"length", "max_tokens"}:
+            raise ValueError(f"{filename}: frame {position} remained truncated")
+
+
+def rebuild_report_from_downloads(
+    report_date: str,
+    reuse_downloads: bool = True,
+    force_analysis: bool = True,
+) -> dict[str, Any]:
+    """Rebuild an existing report from local videos and publish only after full success."""
+    date = str(report_date or "").strip()
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+        raise ValueError("report_date must be YYYY-MM-DD")
+    if not reuse_downloads:
+        raise ValueError("this rebuild path requires reuse_downloads and never downloads media")
+    current = get_report(date, include_raw=True)
+    if not current.get("exists"):
+        raise ValueError(f"report not found for {date}")
+    videos = sorted(
+        current.get("videos") or [],
+        key=lambda item: _to_int(item.get("report_rank")) or 999999,
+    )
+    target_count = int(current.get("target_video_count") or len(videos))
+    if len(videos) != target_count:
+        raise ValueError(f"report has {len(videos)}/{target_count} complete videos; refusing partial rebuild")
+    missing = [str(video.get("local_filename") or "") for video in videos if not (VIDEOS_DIR / str(video.get("local_filename") or "")).is_file()]
+    if missing:
+        raise FileNotFoundError(f"local report videos are missing: {', '.join(missing)}")
+
+    rebuilt_videos: list[dict[str, Any]] = []
+    for position, video in enumerate(videos, start=1):
+        filename = str(video.get("local_filename") or "")
+        print(f"[report-rebuild] analyzing {position}/{len(videos)}: {filename}", flush=True)
+        analysis = _run_video_analyze(filename, force=force_analysis)
+        _validate_rebuilt_analysis(analysis, filename)
+        print(f"[report-rebuild] translating {position}/{len(videos)}: {filename}", flush=True)
+        analysis_zh = _translate_analysis_payload(analysis)
+        social_context = video.get("social_context") if isinstance(video.get("social_context"), dict) else {}
+        if not social_context:
+            social_context = _fetch_video_social_context(video)
+        insight_video = dict(video)
+        insight_video["analysis"] = analysis
+        print(f"[report-rebuild] summarizing {position}/{len(videos)}: {filename}", flush=True)
+        insight = _generate_video_insight(insight_video, social_context)
+        if not _is_valid_video_insight(insight):
+            raise RuntimeError(f"{filename}: generated video insight failed validation")
+        rebuilt = dict(video)
+        rebuilt.update(
+            {
+                "analysis": analysis,
+                "analysis_zh": analysis_zh,
+                "social_context": social_context,
+                "insight": insight,
+            }
+        )
+        rebuilt_videos.append(rebuilt)
+
+    print(f"[report-rebuild] generating daily summary for {len(rebuilt_videos)} videos", flush=True)
+    report_json, report_markdown = _generate_daily_summary(date, rebuilt_videos)
+    now = time.time()
+    with _connect() as conn:
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            for video in rebuilt_videos:
+                analysis = video["analysis"]
+                source_hash = _analysis_sha256(analysis)
+                cursor = conn.execute(
+                    """
+                    UPDATE hot_report_videos
+                    SET process_status = 'complete', process_error = NULL,
+                        analysis_json = ?, analysis_sha256 = ?, analysis_zh_json = ?,
+                        analysis_zh_source_sha256 = ?, audit_json = NULL,
+                        social_context_json = ?, insight_json = ?, insight_generated_at = ?, updated_at = ?
+                    WHERE report_date = ? AND platform = ? AND video_id = ?
+                    """,
+                    (
+                        json.dumps(analysis, ensure_ascii=False, sort_keys=True, default=str),
+                        source_hash,
+                        json.dumps(video["analysis_zh"], ensure_ascii=False, sort_keys=True, default=str),
+                        source_hash,
+                        json.dumps(video["social_context"], ensure_ascii=False, sort_keys=True, default=str),
+                        json.dumps(video["insight"], ensure_ascii=False, sort_keys=True, default=str),
+                        now,
+                        now,
+                        date,
+                        video.get("platform"),
+                        video.get("video_id"),
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise RuntimeError(f"report row changed during rebuild: {video.get('video_id')}")
+            conn.execute(
+                """
+                UPDATE daily_reports
+                SET status = 'complete', video_count = ?, error = '', report_json = ?,
+                    report_markdown = ?, analysis_success_count = ?, analysis_failed_count = 0,
+                    llm_generated_at = ?, updated_at = ?
+                WHERE report_date = ?
+                """,
+                (
+                    len(rebuilt_videos),
+                    json.dumps(report_json, ensure_ascii=False, sort_keys=True, default=str),
+                    report_markdown,
+                    len(rebuilt_videos),
+                    now,
+                    now,
+                    date,
+                ),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    result = get_report(date, include_raw=True)
+    result["rebuild_source"] = "existing_downloads"
+    result["rebuilt_video_count"] = len(rebuilt_videos)
+    return result
 
 
 def _load_success_videos(conn: sqlite3.Connection, report_date: str) -> list[dict[str, Any]]:
