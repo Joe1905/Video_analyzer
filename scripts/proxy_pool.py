@@ -120,6 +120,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             name TEXT NOT NULL,
             source_type TEXT NOT NULL DEFAULT 'vless',
             source_uri TEXT NOT NULL DEFAULT '',
+            dialer_proxy TEXT NOT NULL DEFAULT '',
             expected_exit_ip TEXT NOT NULL DEFAULT '',
             region TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL DEFAULT 'active',
@@ -218,6 +219,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         """
     )
     for name, definition in {
+        "dialer_proxy": "TEXT NOT NULL DEFAULT ''",
         "local_port": "INTEGER NOT NULL DEFAULT 0",
         "detected_exit_ip": "TEXT NOT NULL DEFAULT ''",
         "detected_country": "TEXT NOT NULL DEFAULT ''",
@@ -384,6 +386,7 @@ def _row_to_pool(row: sqlite3.Row, account_count: int = 0, account_names: list[s
         "name": row["name"],
         "source_type": row["source_type"],
         "source_uri": row["source_uri"],
+        "dialer_proxy": row["dialer_proxy"],
         "expected_exit_ip": row["expected_exit_ip"],
         "region": row["region"],
         "local_port": row["local_port"],
@@ -1105,6 +1108,7 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
     name = _clean_text(payload.get("name"), 160)
     source_uri = _clean_text(payload.get("source_uri"), 10000)
     expected_exit_ip = _clean_text(payload.get("expected_exit_ip"), 80)
+    dialer_proxy = _clean_text(payload.get("dialer_proxy"), 160)
     source_type = _clean_text(payload.get("source_type"), 40)
     if not source_type:
         source_type = "static" if source_uri.lower().startswith(("socks://", "socks5://", "socks5h://", "http://", "https://")) else "vless"
@@ -1130,12 +1134,15 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
         name = mihomo_name or expected_exit_ip
     if mihomo_proxy and not mihomo_proxy.get("name"):
         mihomo_proxy["name"] = name
+    if source_type == "static" and dialer_proxy and mihomo_proxy:
+        mihomo_proxy["dialer-proxy"] = dialer_proxy
 
     now = now_iso()
     values = {
         "name": name,
         "source_type": source_type,
         "source_uri": source_uri,
+        "dialer_proxy": dialer_proxy if source_type == "static" else "",
         "expected_exit_ip": expected_exit_ip,
         "region": _clean_text(payload.get("region"), 80),
         "status": _clean_status(payload.get("status")),
@@ -1156,7 +1163,7 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
             conn.execute(
                 """
                 UPDATE proxy_profiles
-                SET name=:name, source_type=:source_type, source_uri=:source_uri,
+                SET name=:name, source_type=:source_type, source_uri=:source_uri, dialer_proxy=:dialer_proxy,
                     expected_exit_ip=:expected_exit_ip, region=:region, status=:status, local_port=:local_port,
                     notes=:notes, parse_status=:parse_status, parse_error=:parse_error,
                     mihomo_name=:mihomo_name, parsed_json=:parsed_json,
@@ -1170,11 +1177,11 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
             cur = conn.execute(
                 """
                 INSERT INTO proxy_profiles (
-                    name, source_type, source_uri, expected_exit_ip, region, status, notes, local_port,
+                    name, source_type, source_uri, dialer_proxy, expected_exit_ip, region, status, notes, local_port,
                     parse_status, parse_error, mihomo_name, parsed_json, mihomo_proxy_json,
                     created_at, updated_at
                 ) VALUES (
-                    :name, :source_type, :source_uri, :expected_exit_ip, :region, :status, :notes, :local_port,
+                    :name, :source_type, :source_uri, :dialer_proxy, :expected_exit_ip, :region, :status, :notes, :local_port,
                     :parse_status, :parse_error, :mihomo_name, :parsed_json, :mihomo_proxy_json,
                     :created_at, :updated_at
                 )
