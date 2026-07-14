@@ -573,6 +573,9 @@ def _run_job(job_id: str) -> None:
             _set_job(job_id, "failed", "failed", message, session_id=session_id or None)
             if 'job' in locals():
                 _update_account(int(job["account_id"]), error=message)
+            if DRY_RUN and session_id:
+                keep_for_review = True
+                proxy_pool.handoff_automation_session(session_id, f"演练失败，保留观测通道：{message}")
     finally:
         if session_id and not keep_for_review:
             try:
