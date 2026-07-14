@@ -21,7 +21,6 @@ PUBLISH_ROOT = ROOT / "videos" / "tiktok_publish"
 LOG_ROOT = ROOT / "data" / "tiktok_publish_jobs"
 MAX_UPLOAD_BYTES = int(os.getenv("TIKTOK_PUBLISH_MAX_BYTES", str(2 * 1024 * 1024 * 1024)))
 TIMEZONE_NAME = os.getenv("TZ", "America/Los_Angeles") or "America/Los_Angeles"
-NATIVE_LEAD_SECONDS = max(300, int(os.getenv("TIKTOK_NATIVE_SCHEDULE_LEAD_SECONDS", "1800") or "1800"))
 NATIVE_MIN_MINUTES = max(15, int(os.getenv("TIKTOK_NATIVE_SCHEDULE_MIN_MINUTES", "20") or "20"))
 DRY_RUN = os.getenv("TIKTOK_PUBLISH_DRY_RUN", "1").strip().lower() in {"1", "true", "yes", "on"}
 UPLOAD_TIMEOUT_SECONDS = max(60, int(os.getenv("TIKTOK_PUBLISH_UPLOAD_TIMEOUT_SECONDS", "1800") or "1800"))
@@ -146,7 +145,7 @@ def list_jobs(account_id: int) -> dict[str, Any]:
 
 def _validate_schedule(mode: str, scheduled_at: datetime, queued: bool) -> None:
     if mode not in {"server", "tiktok"}:
-        raise ValueError("定时方式必须为 server 或 tiktok")
+        raise ValueError("发布模式配置无效")
     if queued and mode == "tiktok" and scheduled_at < _utc_now() + timedelta(minutes=NATIVE_MIN_MINUTES):
         raise ValueError(f"TikTok 定时发布至少需要提前 {NATIVE_MIN_MINUTES} 分钟")
 
@@ -159,7 +158,7 @@ def create_job(form: Any) -> dict[str, Any]:
     queued = action != "draft"
     keep_observing = action == "immediate"
     requested_session_id = int(form.getfirst("observation_session_id") or 0)
-    schedule_mode = _clean_text(form.getfirst("schedule_mode"), 20) or "server"
+    schedule_mode = "server" if action == "immediate" else "tiktok"
     scheduled_at = _parse_schedule(form.getfirst("scheduled_at"))
     _validate_schedule(schedule_mode, scheduled_at, queued)
     try:
@@ -250,7 +249,6 @@ def update_job(payload: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("publish job not found")
         if row["status"] not in EDITABLE_STATUSES:
             raise ValueError("当前任务状态不能编辑")
-        mode = _clean_text(payload.get("schedule_mode"), 20) or row["schedule_mode"]
         scheduled = _parse_schedule(payload.get("scheduled_at") or row["scheduled_at"])
         product_link = _clean_product_link(payload["product_link"]) if "product_link" in payload else str(row["product_link"] or "")
         keep_observing = bool(payload["keep_observing"]) if "keep_observing" in payload else bool(row["keep_observing"])
@@ -260,6 +258,7 @@ def update_job(payload: dict[str, Any]) -> dict[str, Any]:
             else row["session_id"]
         )
         queue = bool(payload.get("queue"))
+        mode = "server" if bool(payload.get("keep_observing")) else "tiktok"
         _validate_schedule(mode, scheduled, queue)
         status = "queued" if queue else "draft"
         conn.execute(
@@ -343,7 +342,8 @@ def runtime_status() -> dict[str, Any]:
         "max_automatic_slots": proxy_pool.browser_max_slots(),
         "active_jobs": active,
         "counts": counts,
-        "native_schedule_lead_seconds": NATIVE_LEAD_SECONDS,
+        "native_schedule_lead_seconds": 0,
+        "native_schedule_starts_immediately": True,
     }
 
 
@@ -842,7 +842,6 @@ def _run_job(job_id: str) -> None:
 
 def _claim_due_jobs() -> list[str]:
     now = _utc_now()
-    native_due = now + timedelta(seconds=NATIVE_LEAD_SECONDS)
     with _worker_lock:
         capacity = max(0, proxy_pool.browser_max_slots() - len(_active_jobs))
     if capacity <= 0:
@@ -855,11 +854,11 @@ def _claim_due_jobs() -> list[str]:
             SELECT id FROM publish_jobs
             WHERE status IN ('queued','delayed')
               AND (next_attempt_at = '' OR next_attempt_at <= ?)
-              AND ((schedule_mode = 'server' AND scheduled_at <= ?)
-                OR (schedule_mode = 'tiktok' AND scheduled_at <= ?))
+              AND (schedule_mode = 'tiktok'
+                OR (schedule_mode = 'server' AND scheduled_at <= ?))
             ORDER BY scheduled_at ASC LIMIT ?
             """,
-            (_iso(now), _iso(now), _iso(native_due), capacity),
+            (_iso(now), _iso(now), capacity),
         ).fetchall()
         for row in rows:
             job_id = str(row["id"])
