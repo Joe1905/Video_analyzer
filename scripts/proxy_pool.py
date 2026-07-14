@@ -265,7 +265,11 @@ def init_db(conn: sqlite3.Connection) -> None:
     if "product_link" not in existing_publish_cols:
         conn.execute("ALTER TABLE publish_jobs ADD COLUMN product_link TEXT NOT NULL DEFAULT ''")
     if "keep_observing" not in existing_publish_cols:
-        conn.execute("ALTER TABLE publish_jobs ADD COLUMN keep_observing INTEGER NOT NULL DEFAULT 0")
+        try:
+            conn.execute("ALTER TABLE publish_jobs ADD COLUMN keep_observing INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc).lower():
+                raise
     conn.commit()
 
 
