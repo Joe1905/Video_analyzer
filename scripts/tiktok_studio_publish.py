@@ -360,6 +360,28 @@ def _skip_onboarding(page: Any) -> None:
         page.wait_for_timeout(500)
 
 
+def _dismiss_upload_prompts(page: Any) -> None:
+    for _ in range(6):
+        got_it = _first_visible([
+            page.get_by_role("button", name=re.compile(r"^got it$|^知道了$", re.I)),
+        ])
+        if not got_it:
+            break
+        got_it.click(timeout=3000, force=True)
+        page.wait_for_timeout(500)
+
+    automatic_checks = _first_visible([
+        page.get_by_text(re.compile(r"turn on automatic content checks|开启自动内容检查", re.I)),
+    ])
+    if automatic_checks:
+        cancel = _first_visible([
+            page.get_by_role("button", name=re.compile(r"^cancel$|^取消$", re.I)),
+        ])
+        if cancel:
+            cancel.click(timeout=3000)
+            page.wait_for_timeout(500)
+
+
 def _assert_account_ready(page: Any) -> None:
     url = page.url.lower()
     if "/login" in url:
@@ -377,6 +399,8 @@ def _set_description(page: Any, description: str) -> None:
         return
     target = _first_visible([
         page.locator("[data-e2e*='caption'] [contenteditable='true']"),
+        page.locator(".public-DraftEditor-content[contenteditable='true']"),
+        page.locator("[contenteditable='true'][role='combobox']"),
         page.locator("[contenteditable='true'][role='textbox']"),
         page.get_by_label(re.compile(r"description|caption|说明|描述", re.I)),
         page.locator("textarea[placeholder*='caption' i], textarea[placeholder*='description' i]"),
@@ -402,10 +426,38 @@ def _set_ai_generated(page: Any, enabled: bool) -> None:
         show_more.click()
         page.wait_for_timeout(500)
     label_pattern = re.compile(r"AI.generated content|AI 生成|人工智能生成", re.I)
-    checkbox = _first_visible([page.get_by_role("checkbox", name=label_pattern), page.get_by_label(label_pattern)])
+    checkbox = _first_visible([
+        page.locator("[data-e2e='aigc_container'] input[role='switch']"),
+        page.get_by_role("checkbox", name=label_pattern),
+        page.get_by_label(label_pattern),
+    ])
     if checkbox:
-        if not checkbox.is_checked():
-            checkbox.check()
+        confirmation = _first_visible([
+            page.get_by_text(re.compile(r"labeling AI.generated content|标记 AI 生成内容", re.I)),
+        ])
+        if not checkbox.is_checked() and not confirmation:
+            switch = _first_visible([
+                page.locator("[data-e2e='aigc_container'] .Switch__content"),
+                page.locator("[data-e2e='aigc_container'] [data-layout='switch-root']"),
+            ])
+            if switch:
+                switch.click(timeout=3000)
+            else:
+                checkbox.click(timeout=3000, force=True)
+            page.wait_for_timeout(300)
+            confirmation = _first_visible([
+                page.get_by_text(re.compile(r"labeling AI.generated content|标记 AI 生成内容", re.I)),
+            ])
+        if confirmation:
+            turn_on = _first_visible([
+                page.get_by_role("button", name=re.compile(r"^turn on$|^开启$", re.I)),
+            ])
+            if not turn_on:
+                raise RuntimeError("未找到 AI-generated content 确认按钮")
+            turn_on.click(timeout=3000)
+            page.wait_for_timeout(300)
+        if not checkbox.is_checked() and checkbox.get_attribute("aria-checked") != "true":
+            raise RuntimeError("无法启用 AI-generated content 设置")
         return
     label = _first_visible([page.get_by_text(label_pattern)])
     if not label:
@@ -415,6 +467,11 @@ def _set_ai_generated(page: Any, enabled: bool) -> None:
 
 def _set_schedule(page: Any, mode: str, scheduled_at: str) -> None:
     if mode == "server":
+        now_input = page.locator("input[name='postSchedule'][value='post_now']")
+        if now_input.count():
+            if not now_input.first.is_checked():
+                now_input.first.check(force=True)
+            return
         now_option = _first_visible([
             page.get_by_role("radio", name=re.compile(r"^now$|立即|现在", re.I)),
             page.get_by_text(re.compile(r"^now$|^立即发布$|^现在$", re.I), exact=True),
@@ -423,13 +480,19 @@ def _set_schedule(page: Any, mode: str, scheduled_at: str) -> None:
             now_option.click()
         return
 
+    schedule_input = page.locator("input[name='postSchedule'][value='schedule']")
     schedule_option = _first_visible([
+        schedule_input,
         page.get_by_role("radio", name=re.compile(r"schedule|定时发布", re.I)),
         page.get_by_text(re.compile(r"^schedule$|^定时发布$", re.I), exact=True),
     ])
     if not schedule_option:
         raise RuntimeError("当前 TikTok Studio 页面不支持定时发布")
-    schedule_option.click()
+    if schedule_input.count():
+        if not schedule_input.first.is_checked():
+            schedule_input.first.check(force=True)
+    else:
+        schedule_option.click()
     local = _parse_schedule(scheduled_at).astimezone(ZoneInfo(TIMEZONE_NAME))
     date_value = local.strftime("%Y-%m-%d")
     time_value = local.strftime("%H:%M")
@@ -503,6 +566,7 @@ def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[str,
             _set_job(job["id"], "uploading", "uploading", session_id=session["id"])
             _set_video_file(page, video)
             page.wait_for_timeout(3000)
+            _dismiss_upload_prompts(page)
             _set_description(page, job["description"])
             _set_ai_generated(page, bool(job["ai_generated"]))
             _set_schedule(page, job["schedule_mode"], job["scheduled_at"])
