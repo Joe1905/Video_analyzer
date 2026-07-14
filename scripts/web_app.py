@@ -9316,6 +9316,8 @@ class Handler(BaseHTTPRequestHandler):
                 return json_response(self, HTTPStatus.OK, tiktok_studio_publish.update_job(payload))
             if path == "/api/proxy/publish/jobs/cancel":
                 return json_response(self, HTTPStatus.OK, tiktok_studio_publish.cancel_job(payload))
+            if path == "/api/proxy/publish/jobs/retry":
+                return json_response(self, HTTPStatus.OK, tiktok_studio_publish.retry_job(payload))
             if path == "/api/proxy/publish/jobs/delete":
                 return json_response(self, HTTPStatus.OK, tiktok_studio_publish.delete_job(payload))
             return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})

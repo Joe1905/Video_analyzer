@@ -26,6 +26,7 @@ DRY_RUN = os.getenv("TIKTOK_PUBLISH_DRY_RUN", "1").strip().lower() in {"1", "tru
 UPLOAD_TIMEOUT_SECONDS = max(60, int(os.getenv("TIKTOK_PUBLISH_UPLOAD_TIMEOUT_SECONDS", "1800") or "1800"))
 ALLOWED_SUFFIXES = {".mp4", ".mov", ".m4v", ".webm"}
 EDITABLE_STATUSES = {"draft", "queued", "delayed", "failed", "cancelled", "dry_run"}
+RETRYABLE_STATUSES = {"failed", "product_link_failed"}
 DELETE_BLOCKED_STATUSES = {"preparing", "uploading", "publishing", "scheduled_on_tiktok"}
 STATUS_LABELS = {
     "draft": "草稿箱",
@@ -303,6 +304,44 @@ def cancel_job(payload: dict[str, Any]) -> dict[str, Any]:
     return list_jobs(account_id)
 
 
+def retry_job(payload: dict[str, Any]) -> dict[str, Any]:
+    job_id = _clean_text(payload.get("id") or payload.get("job_id"), 80)
+    if not job_id:
+        raise ValueError("job_id is required")
+    with proxy_pool.connect() as conn:
+        row = conn.execute("SELECT * FROM publish_jobs WHERE id = ? AND deleted_at = ''", (job_id,)).fetchone()
+        if not row:
+            raise ValueError("publish job not found")
+        if row["status"] not in RETRYABLE_STATUSES:
+            raise ValueError("只有发布失败的任务可以重试")
+        account_id = int(row["account_id"])
+        scheduled = _parse_schedule(row["scheduled_at"])
+        now = _utc_now()
+        mode = "tiktok"
+        if scheduled <= now:
+            mode = "server"
+            scheduled = now
+        else:
+            _validate_schedule(mode, scheduled, True)
+        requested_session_id = int(payload.get("observation_session_id") or 0) or None
+        conn.execute(
+            """
+            UPDATE publish_jobs
+            SET keep_observing = ?, schedule_mode = ?, scheduled_at = ?, status = 'queued',
+                stage = 'retry_queued', next_attempt_at = '', session_id = ?, final_click_at = '',
+                actual_publish_at = '', result_url = '', last_error = '', updated_at = ?
+            WHERE id = ?
+            """,
+            (1 if requested_session_id else 0, mode, _iso(scheduled), requested_session_id, _iso(now), job_id),
+        )
+        conn.execute(
+            "UPDATE tiktok_accounts SET last_error = '', updated_at = ? WHERE id = ?",
+            (_iso(now), account_id),
+        )
+        conn.commit()
+    return {"job": _job_query("j.id = ?", (job_id,))[0], **list_jobs(account_id)}
+
+
 def delete_job(payload: dict[str, Any]) -> dict[str, Any]:
     job_id = _clean_text(payload.get("id") or payload.get("job_id"), 80)
     if not job_id:
@@ -506,41 +545,87 @@ def _set_ai_generated(page: Any, enabled: bool) -> None:
     label.click()
 
 
+def _radio_selected(locator: Any) -> bool:
+    try:
+        if not locator.count():
+            return False
+        item = locator.first
+        try:
+            if item.is_checked():
+                return True
+        except Exception:
+            pass
+        if str(item.get_attribute("aria-checked") or "").lower() == "true":
+            return True
+        classes = str(item.get_attribute("class") or "")
+        return bool(re.search(r"(?:^|[-_\s])(checked|selected|active)(?:$|[-_\s])", classes, re.I))
+    except Exception:
+        return False
+
+
+def _select_schedule_radio(page: Any, value: str, label_pattern: re.Pattern[str]) -> None:
+    selector = f"input[name='postSchedule'][value='{value}']"
+    input_locator = page.locator(selector)
+    role_locator = page.get_by_role("radio", name=label_pattern)
+    label_locator = page.locator(f"label:has({selector})")
+    state_locators = [input_locator, role_locator, label_locator]
+    if any(_radio_selected(locator) for locator in state_locators):
+        return
+    candidates = [label_locator, role_locator, page.get_by_text(label_pattern, exact=True)]
+    if input_locator.count():
+        item = input_locator.first
+        candidates.extend([
+            item.locator("xpath=ancestor::label[1]"),
+            item.locator("xpath=.."),
+            item.locator("xpath=../.."),
+            input_locator,
+        ])
+    for locator in candidates:
+        option = _first_visible([locator])
+        if not option:
+            continue
+        try:
+            option.click(timeout=3000)
+        except Exception:
+            continue
+        for _ in range(10):
+            if any(_radio_selected(state) for state in state_locators):
+                return
+            page.wait_for_timeout(150)
+    label = "定时发布" if value == "schedule" else "立即发布"
+    raise RuntimeError(f"无法选择 TikTok Studio 的{label}选项")
+
+
 def _set_schedule(page: Any, mode: str, scheduled_at: str) -> None:
     if mode == "server":
-        now_input = page.locator("input[name='postSchedule'][value='post_now']")
-        if now_input.count():
-            if not now_input.first.is_checked():
-                now_input.first.check(force=True)
-            return
-        now_option = _first_visible([
-            page.get_by_role("radio", name=re.compile(r"^now$|立即|现在", re.I)),
-            page.get_by_text(re.compile(r"^now$|^立即发布$|^现在$", re.I), exact=True),
-        ])
-        if now_option:
-            now_option.click()
+        _select_schedule_radio(page, "post_now", re.compile(r"^now$|立即|现在", re.I))
         return
 
-    schedule_input = page.locator("input[name='postSchedule'][value='schedule']")
-    schedule_option = _first_visible([
-        schedule_input,
-        page.get_by_role("radio", name=re.compile(r"schedule|定时发布", re.I)),
-        page.get_by_text(re.compile(r"^schedule$|^定时发布$", re.I), exact=True),
-    ])
-    if not schedule_option:
-        raise RuntimeError("当前 TikTok Studio 页面不支持定时发布")
-    if schedule_input.count():
-        if not schedule_input.first.is_checked():
-            schedule_input.first.check(force=True)
-    else:
-        schedule_option.click()
+    _select_schedule_radio(page, "schedule", re.compile(r"^schedule$|定时发布", re.I))
     local = _parse_schedule(scheduled_at).astimezone(ZoneInfo(TIMEZONE_NAME))
     date_value = local.strftime("%Y-%m-%d")
     time_value = local.strftime("%H:%M")
-    date_input = _first_visible([page.locator("input[type='date']"), page.get_by_label(re.compile(r"date|日期", re.I))])
-    time_input = _first_visible([page.locator("input[type='time']"), page.get_by_label(re.compile(r"time|时间", re.I))])
+    date_input = None
+    time_input = None
+    deadline = time.time() + 5
+    while time.time() < deadline and (not date_input or not time_input):
+        date_input = date_input or _first_visible([
+            page.locator("input[type='date']"),
+            page.locator("input[placeholder*='MM/DD'], input[placeholder*='YYYY']"),
+            page.get_by_label(re.compile(r"date|日期", re.I)),
+        ])
+        time_input = time_input or _first_visible([
+            page.locator("input[type='time']"),
+            page.locator("input[placeholder*='HH'], input[placeholder*='hh']"),
+            page.get_by_label(re.compile(r"time|时间", re.I)),
+        ])
+        if not date_input or not time_input:
+            page.wait_for_timeout(200)
     if not date_input or not time_input:
         raise RuntimeError("未找到 TikTok 定时发布的日期或时间输入框")
+    placeholder = str(date_input.get_attribute("placeholder") or "")
+    if date_input.get_attribute("type") != "date" and "/" in placeholder:
+        date_value = local.strftime("%m/%d/%Y")
     date_input.fill(date_value)
     time_input.fill(time_value)
 
