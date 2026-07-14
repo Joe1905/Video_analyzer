@@ -38,6 +38,7 @@ STATUS_LABELS = {
     "published": "已发布",
     "failed": "发布失败",
     "result_uncertain": "结果待确认",
+    "product_link_review": "商品绑定待确认",
     "cancelled": "已取消",
     "scheduled_on_tiktok": "TikTok已排程",
     "dry_run": "演练完成",
@@ -49,6 +50,10 @@ _active_jobs: set[str] = set()
 
 
 class ManualReviewRequired(RuntimeError):
+    pass
+
+
+class ProductLinkReviewRequired(RuntimeError):
     pass
 
 
@@ -552,6 +557,29 @@ def _set_video_file(page: Any, video: Path) -> None:
     raise RuntimeError("未找到 TikTok Studio 视频选择控件")
 
 
+def _open_product_link_review(page: Any, product_reference: str, log_dir: Path) -> None:
+    add_link = _first_visible([
+        page.locator("button[data-e2e*='add-link' i]"),
+        page.get_by_role("button", name=re.compile(r"^add$|^add link$|^添加$", re.I)),
+        page.locator("button:has-text('Add')"),
+    ])
+    if not add_link:
+        raise ManualReviewRequired("已填写商品信息，但未找到 TikTok Studio 的 Add link 控件")
+    add_link.scroll_into_view_if_needed(timeout=3000)
+    add_link.click(timeout=5000)
+    page.wait_for_timeout(800)
+    dialog = _first_visible([
+        page.get_by_role("dialog"),
+        page.get_by_text(re.compile(r"^add link$|^添加链接$", re.I), exact=True),
+    ])
+    if not dialog:
+        raise ManualReviewRequired("已点击 Add link，但未检测到商品绑定弹窗")
+    page.screenshot(path=str(log_dir / "product-link-dialog.png"), full_page=True)
+    raise ProductLinkReviewRequired(
+        f"已打开 Add link 商品绑定弹窗（待绑定：{_clean_text(product_reference, 120)}），等待人工确认商品；系统未点击最终发布"
+    )
+
+
 def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[str, str]:
     from playwright.sync_api import sync_playwright
 
@@ -616,6 +644,8 @@ def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[str,
             else:
                 raise RuntimeError(f"等待视频处理完成超过 {UPLOAD_TIMEOUT_SECONDS} 秒")
             page.screenshot(path=str(log_dir / "ready-to-publish.png"), full_page=True)
+            if job["product_link"]:
+                _open_product_link_review(page, str(job["product_link"]), log_dir)
             if DRY_RUN:
                 return "dry_run", page.url
             _set_job(job["id"], "publishing", "final_click", session_id=session["id"], final_click_at=_iso())
@@ -630,7 +660,7 @@ def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[str,
                 if not success:
                     raise ResultUncertain("已点击发布，但未收到明确成功信号，请人工确认，系统不会自动重试")
             return ("scheduled_on_tiktok" if job["schedule_mode"] == "tiktok" else "published"), page.url
-        except (ManualReviewRequired, ResultUncertain):
+        except (ManualReviewRequired, ProductLinkReviewRequired, ResultUncertain):
             raise
         except Exception as exc:
             if final_clicked:
@@ -667,15 +697,21 @@ def _run_job(job_id: str) -> None:
         session_id = int(session["id"])
         _set_job(job_id, "preparing", "browser_ready", session_id=session_id)
         status, result_url = _execute_browser(job, session)
-        actual = "" if status == "dry_run" else (job["scheduled_at"] if status == "scheduled_on_tiktok" else _iso())
+        actual = job["scheduled_at"] if status == "scheduled_on_tiktok" else (_iso() if status == "published" else "")
         _set_job(job_id, status, "complete", result_url=result_url, actual_publish_at=actual)
-        _update_account(int(job["account_id"]), published_at=actual if status != "dry_run" else "")
+        if status in {"published", "scheduled_on_tiktok"}:
+            _update_account(int(job["account_id"]), published_at=actual)
         if status == "dry_run" and session_id:
             keep_for_review = True
             proxy_pool.handoff_automation_session(session_id, "演练已到达最终发布前，保留观测通道")
         elif keep_observing and session_id:
             keep_for_review = True
             proxy_pool.handoff_automation_session(session_id, "立即发布完成，保留观测通道")
+    except ProductLinkReviewRequired as exc:
+        keep_for_review = True
+        _set_job(job_id, "product_link_review", "product_link_review", str(exc), session_id=session_id or None)
+        if session_id:
+            proxy_pool.handoff_automation_session(session_id, str(exc))
     except ManualReviewRequired as exc:
         keep_for_review = True
         _set_job(job_id, "failed", "manual_review", str(exc), session_id=session_id or None)
