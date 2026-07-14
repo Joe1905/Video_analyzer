@@ -153,8 +153,11 @@ Recent-window filtering for hot-videos is controlled by `HOT_VIDEO_RECENT_DAYS` 
 Expired videos that are older than this window are cleaned from report records on report queries/sync runs, so old cards disappear end-to-end.
 
 Report pipeline safeguards:
-- `REPORT_JOB_TIMEOUT` (seconds, default `1800`) limits total time spent on a single `/api/report/run` task.
+- `REPORT_VIDEO_TIMEOUT` (seconds, default `480`) limits each video worker; the report itself has no total hard timeout.
+- `REPORT_VIDEO_MAX_WORKERS` (default `5`) controls how many candidate videos are processed concurrently.
 - `REPORT_DEEPSEEK_TIMEOUT` (seconds, default `180`) limits each per-video deep-dive audit call.
+
+Interrupted reports are re-queued when the web service starts. Completed videos are retained, while resumed candidates are checked again against `HOT_VIDEO_RECENT_DAYS` before processing continues.
 
 ## Amazon Scraper
 

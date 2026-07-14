@@ -6,8 +6,10 @@ import json
 import os
 import queue
 import re
+import signal
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -31,7 +33,9 @@ DB_PATH = ROOT / "data" / "hot_video_report.sqlite"
 REPORT_COVER_DIR = ROOT / "data" / "report_covers"
 DEFAULT_API_BASE = "https://api.sociavault.com"
 DEFAULT_TZ = "Asia/Shanghai"
-DEFAULT_REPORT_JOB_TIMEOUT_SECONDS = 60 * 60
+DEFAULT_REPORT_VIDEO_TIMEOUT_SECONDS = 8 * 60
+DEFAULT_REPORT_VIDEO_MAX_WORKERS = 5
+REPORT_TASK_DIR = DB_PATH.parent / "hot_report_tasks"
 
 _scheduler_started = False
 _scheduler_lock = threading.Lock()
@@ -1667,6 +1671,36 @@ def _rank_with_topic_guarantees(
 
 def _start_report(conn: sqlite3.Connection, report_date: str, region: str, sources: list[dict[str, Any]], scheduled: bool = False) -> str:
     now = time.time()
+    existing = conn.execute(
+        "SELECT id, status FROM daily_reports WHERE report_date = ?",
+        (report_date,),
+    ).fetchone()
+    if existing and str(existing[1]) in {"running", "partial_failed", "failed"}:
+        report_id = str(existing[0])
+        conn.execute(
+            """
+            UPDATE hot_report_videos
+            SET process_status = 'failed', process_error = 'video worker interrupted', updated_at = ?
+            WHERE report_date = ? AND process_status = 'processing'
+            """,
+            (now, report_date),
+        )
+        conn.execute(
+            "DELETE FROM hot_report_videos WHERE report_date = ? AND process_status != 'complete'",
+            (report_date,),
+        )
+        conn.execute(
+            """
+            UPDATE daily_reports
+            SET status = 'running', region = ?, sources_json = ?, error = NULL,
+                scheduled_at = COALESCE(?, scheduled_at), updated_at = ?
+            WHERE id = ?
+            """,
+            (region, json.dumps(sources, ensure_ascii=False), now if scheduled else None, now, report_id),
+        )
+        conn.commit()
+        return report_id
+
     report_id = uuid.uuid4().hex
     conn.execute("DELETE FROM hot_report_videos WHERE report_date = ?", (report_date,))
     conn.execute(
@@ -1864,7 +1898,12 @@ def _output_dir_for_filename(filename: str) -> Path:
     return OUTPUT_DIR / filename
 
 
-def _process_video(conn: sqlite3.Connection, report_date: str, item: dict[str, Any]) -> None:
+def _process_video(
+    conn: sqlite3.Connection,
+    report_date: str,
+    item: dict[str, Any],
+    enqueue_translation: bool = True,
+) -> None:
     now = time.time()
     platform = item["platform"]
     video_id = item["video_id"]
@@ -1984,7 +2023,7 @@ def _process_video(conn: sqlite3.Connection, report_date: str, item: dict[str, A
             (str(exc), now, report_date, platform, video_id),
         )
     conn.commit()
-    if completed:
+    if completed and enqueue_translation:
         _enqueue_report_video_translation(report_date, platform, video_id)
 
 
@@ -3223,6 +3262,251 @@ def _load_success_videos(conn: sqlite3.Connection, report_date: str) -> list[dic
     return [_row_to_video(row, include_raw=False) for row in rows]
 
 
+def _prune_stale_resumable_videos(
+    conn: sqlite3.Connection,
+    report_date: str,
+    recency_days: int,
+) -> int:
+    cutoff_ts = time.time() - max(1, recency_days) * 86400
+    rows = conn.execute(
+        "SELECT platform, video_id, metrics_json, raw_json FROM hot_report_videos WHERE report_date = ?",
+        (report_date,),
+    ).fetchall()
+    stale_keys = [
+        (str(platform), str(video_id))
+        for platform, video_id, metrics_json, raw_json in rows
+        if (published_at := _published_at_from_row(metrics_json, raw_json, report_date)) is None
+        or published_at < cutoff_ts
+    ]
+    if stale_keys:
+        conn.executemany(
+            "DELETE FROM hot_report_videos WHERE report_date = ? AND platform = ? AND video_id = ?",
+            [(report_date, platform, video_id) for platform, video_id in stale_keys],
+        )
+        conn.commit()
+    return len(stale_keys)
+
+
+def _compact_report_ranks(conn: sqlite3.Connection, report_date: str) -> None:
+    rows = conn.execute(
+        """
+        SELECT platform, video_id
+        FROM hot_report_videos
+        WHERE report_date = ?
+        ORDER BY CASE WHEN process_status = 'complete' THEN 0 ELSE 1 END, report_rank, hot_score DESC
+        """,
+        (report_date,),
+    ).fetchall()
+    for report_rank, (platform, video_id) in enumerate(rows, start=1):
+        conn.execute(
+            "UPDATE hot_report_videos SET report_rank = ? WHERE report_date = ? AND platform = ? AND video_id = ?",
+            (report_rank, report_date, platform, video_id),
+        )
+    conn.commit()
+
+
+def _report_video_timeout_seconds() -> float:
+    value = _to_float(
+        os.getenv("REPORT_VIDEO_TIMEOUT", str(DEFAULT_REPORT_VIDEO_TIMEOUT_SECONDS)),
+        DEFAULT_REPORT_VIDEO_TIMEOUT_SECONDS,
+    )
+    return max(60.0, value)
+
+
+def _report_video_max_workers() -> int:
+    value = _to_int(os.getenv("REPORT_VIDEO_MAX_WORKERS", str(DEFAULT_REPORT_VIDEO_MAX_WORKERS)))
+    return max(1, min(value or DEFAULT_REPORT_VIDEO_MAX_WORKERS, 8))
+
+
+def _mark_report_video_failed(
+    conn: sqlite3.Connection,
+    report_date: str,
+    item: dict[str, Any],
+    error: str,
+) -> None:
+    conn.execute(
+        """
+        UPDATE hot_report_videos
+        SET process_status = 'failed', process_error = ?, updated_at = ?
+        WHERE report_date = ? AND platform = ? AND video_id = ?
+        """,
+        (error, time.time(), report_date, item["platform"], item["video_id"]),
+    )
+    conn.commit()
+
+
+def _launch_report_video_worker(report_date: str, item: dict[str, Any]) -> dict[str, Any]:
+    task_dir = REPORT_TASK_DIR / report_date
+    task_dir.mkdir(parents=True, exist_ok=True)
+    safe_video_id = re.sub(r"[^A-Za-z0-9_-]+", "_", str(item["video_id"])).strip("_") or uuid.uuid4().hex
+    task_name = f"{int(item['report_rank']):03d}_{safe_video_id}_{uuid.uuid4().hex[:8]}"
+    task_path = task_dir / f"{task_name}.json"
+    log_path = task_dir / f"{task_name}.log"
+    task_path.write_text(json.dumps(item, ensure_ascii=False, default=str), encoding="utf-8")
+    log_handle = log_path.open("w", encoding="utf-8")
+    try:
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                str(ROOT / "scripts" / "hot_report_video_worker.py"),
+                "--report-date",
+                report_date,
+                "--task-file",
+                str(task_path),
+            ],
+            cwd=ROOT,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            start_new_session=os.name != "nt",
+        )
+    except Exception:
+        log_handle.close()
+        task_path.unlink(missing_ok=True)
+        raise
+    return {
+        "item": item,
+        "process": process,
+        "started_at": time.monotonic(),
+        "task_path": task_path,
+        "log_path": log_path,
+        "log_handle": log_handle,
+    }
+
+
+def _terminate_report_video_worker(worker: dict[str, Any]) -> None:
+    process: subprocess.Popen[Any] = worker["process"]
+    if process.poll() is not None:
+        return
+    if os.name != "nt":
+        try:
+            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+        except (OSError, ProcessLookupError):
+            process.terminate()
+    else:
+        process.terminate()
+    try:
+        process.wait(timeout=5)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    if os.name != "nt":
+        try:
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            process.kill()
+    else:
+        process.kill()
+    process.wait(timeout=5)
+
+
+def _close_report_video_worker(worker: dict[str, Any], success: bool) -> None:
+    worker["log_handle"].close()
+    worker["task_path"].unlink(missing_ok=True)
+    if success:
+        worker["log_path"].unlink(missing_ok=True)
+
+
+def _process_ranked_videos(
+    conn: sqlite3.Connection,
+    report_id: str,
+    report_date: str,
+    ranked: list[dict[str, Any]],
+    analysis_limit: int,
+    counts: dict[str, int],
+) -> None:
+    timeout_seconds = _report_video_timeout_seconds()
+    max_workers = _report_video_max_workers()
+    total_candidates = max(1, len(ranked))
+    next_index = 0
+    rank_row = conn.execute(
+        "SELECT COALESCE(MAX(report_rank), 0) FROM hot_report_videos WHERE report_date = ?",
+        (report_date,),
+    ).fetchone()
+    next_report_rank = int(rank_row[0] if rank_row else 0) + 1
+    running: list[dict[str, Any]] = []
+
+    try:
+        while (next_index < len(ranked) or running) and counts["analyzed_success"] < analysis_limit:
+            remaining_slots = analysis_limit - counts["analyzed_success"]
+            while next_index < len(ranked) and len(running) < min(max_workers, remaining_slots):
+                item = dict(ranked[next_index])
+                report_rank = next_report_rank
+                next_index += 1
+                next_report_rank += 1
+                item["report_rank"] = report_rank
+                _upsert_video(conn, report_id, report_date, item, report_rank)
+                conn.commit()
+                try:
+                    running.append(_launch_report_video_worker(report_date, item))
+                except Exception as exc:
+                    _mark_report_video_failed(conn, report_date, item, f"worker start failed: {exc}")
+                    counts["analyzed_failed"] += 1
+
+            completed_before = counts["analyzed_success"] + counts["analyzed_failed"]
+            progress = 30 + int(min(1.0, next_index / total_candidates) * 50)
+            _progress_payload(
+                report_date,
+                "running",
+                "extracting",
+                progress,
+                f"并行处理视频：成功 {counts['analyzed_success']}/{analysis_limit}，运行中 {len(running)}，已完成 {completed_before}",
+                counts,
+            )
+            if not running:
+                continue
+
+            handled_worker = False
+            now = time.monotonic()
+            for worker in list(running):
+                process: subprocess.Popen[Any] = worker["process"]
+                exit_code = process.poll()
+                timed_out = exit_code is None and now - float(worker["started_at"]) >= timeout_seconds
+                if exit_code is None and not timed_out:
+                    continue
+
+                item = worker["item"]
+                success = False
+                if timed_out:
+                    _terminate_report_video_worker(worker)
+                    _mark_report_video_failed(
+                        conn,
+                        report_date,
+                        item,
+                        f"Video processing timeout ({int(timeout_seconds)}s)",
+                    )
+                else:
+                    row = conn.execute(
+                        "SELECT process_status FROM hot_report_videos "
+                        "WHERE report_date = ? AND platform = ? AND video_id = ?",
+                        (report_date, item["platform"], item["video_id"]),
+                    ).fetchone()
+                    success = bool(row and row[0] == "complete")
+                    if not success and (not row or row[0] == "processing"):
+                        _mark_report_video_failed(
+                            conn,
+                            report_date,
+                            item,
+                            f"video worker exited with code {exit_code}",
+                        )
+
+                running.remove(worker)
+                _close_report_video_worker(worker, success)
+                if success:
+                    counts["analyzed_success"] += 1
+                    _enqueue_report_video_translation(report_date, item["platform"], item["video_id"])
+                else:
+                    counts["analyzed_failed"] += 1
+                handled_worker = True
+
+            if not handled_worker:
+                time.sleep(0.5)
+    finally:
+        for worker in running:
+            _terminate_report_video_worker(worker)
+            _mark_report_video_failed(conn, report_date, worker["item"], "video worker interrupted")
+            _close_report_video_worker(worker, False)
+
+
 def _cleanup_old_reports(conn: sqlite3.Connection) -> None:
     settings = get_settings()
     tz = ZoneInfo(settings["timezone"])
@@ -3247,33 +3531,24 @@ def delete_report(report_date: str) -> dict[str, Any]:
 
 def recover_interrupted_reports() -> dict[str, Any]:
     recovered: list[str] = []
-    with _connect() as conn:
+    conn = _connect()
+    try:
         rows = conn.execute(
             "SELECT id, report_date FROM daily_reports WHERE status = 'running'"
         ).fetchall()
-        for report_id, report_date in rows:
-            counts = conn.execute(
+        for _report_id, report_date in rows:
+            conn.execute(
                 """
-                SELECT
-                  SUM(CASE WHEN process_status = 'complete' THEN 1 ELSE 0 END),
-                  SUM(CASE WHEN process_status = 'failed' THEN 1 ELSE 0 END)
-                FROM hot_report_videos WHERE report_date = ?
+                UPDATE hot_report_videos
+                SET process_status = 'failed', process_error = 'video worker interrupted', updated_at = ?
+                WHERE report_date = ? AND process_status = 'processing'
                 """,
-                (report_date,),
-            ).fetchone()
-            success_count = int(counts[0] if counts and counts[0] is not None else 0)
-            failed_count = int(counts[1] if counts and counts[1] is not None else 0)
-            if success_count:
-                status = "partial_failed"
-                error = "Report task was interrupted before the daily summary was generated. Click generate to retry."
-            elif failed_count:
-                status = "failed"
-                error = "Report task was interrupted after video processing failures. Click generate to retry."
-            else:
-                status = "failed"
-                error = "Report task was interrupted before video processing started. Click generate to retry."
-            _finish_report(conn, str(report_id), str(report_date), status, error)
+                (time.time(), report_date),
+            )
             recovered.append(str(report_date))
+        conn.commit()
+    finally:
+        conn.close()
     return {"recovered": recovered}
 
 
@@ -3319,11 +3594,28 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
             _cleanup_old_reports(conn)
             _cleanup_expired_video_records(conn, recency_days)
             report_id = _start_report(conn, date, region, sources, scheduled=scheduled)
+            pruned_count = _prune_stale_resumable_videos(conn, date, recency_days)
+            _compact_report_ranks(conn, date)
+            resumed_videos = _load_success_videos(conn, date)
+            counts["analyzed_success"] = len(resumed_videos)
+            counts["resumed_success"] = len(resumed_videos)
+            counts["resumed_pruned"] = pruned_count
+            for video in resumed_videos:
+                _enqueue_report_video_translation(date, video["platform"], video["video_id"])
+            resumed_keys = {(video["platform"], video["video_id"]) for video in resumed_videos}
             excluded_keys = _existing_report_video_keys(conn, date)
+            excluded_keys.update(resumed_keys)
+            if len(resumed_videos) >= analysis_limit:
+                _progress_payload(date, "running", "summarizing", 88, "已有分析满足目标，开始生成爆款日报", counts)
+                report_json, markdown = _generate_daily_summary(date, resumed_videos[:analysis_limit])
+                _finish_report(conn, report_id, date, "complete", report_json=report_json, report_markdown=markdown)
+                _progress_payload(date, "complete", "finished", 100, "日报恢复完成", counts)
+                return get_report(date, include_raw=True)
             if not api_key:
                 error = "Missing required environment variable: SOCIAVAULT_API_KEY"
-                _finish_report(conn, report_id, date, "failed", error)
-                _progress_payload(date, "failed", "finished", 100, error, counts)
+                status = "partial_failed" if resumed_videos else "failed"
+                _finish_report(conn, report_id, date, status, error)
+                _progress_payload(date, status, "finished", 100, error, counts)
                 return get_report(date, include_raw=True)
             try:
                 api_timeout = float(os.getenv("SOCIAVAULT_TIMEOUT", "180"))
@@ -3339,7 +3631,12 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
                     counts,
                     excluded_keys,
                 )
-                ranked = _rank_with_topic_guarantees(list(candidates.values()), topic_keywords, target_count)
+                ranked = _rank_with_topic_guarantees(
+                    list(candidates.values()),
+                    topic_keywords,
+                    target_count,
+                )[:candidate_target_count]
+                ranked = [item for item in ranked if (item["platform"], item["video_id"]) not in resumed_keys]
                 counts["topic_guaranteed_count"] = sum(1 for item in ranked[:target_count] if item.get("selection_bucket") == "topic")
                 if not ranked:
                     suffix = f"; source errors: {' | '.join(source_errors[:3])}" if source_errors else ""
@@ -3349,61 +3646,17 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
                         else ""
                     )
                     error = f"No new unique hot videos published in the last {recency_days} days{duplicate_note}{suffix}"
-                    _finish_report(conn, report_id, date, "failed", error)
-                    _progress_payload(date, "failed", "finished", 100, error, counts)
+                    status = "partial_failed" if resumed_videos else "failed"
+                    _finish_report(conn, report_id, date, status, error)
+                    _progress_payload(date, status, "finished", 100, error, counts)
                     return get_report(date, include_raw=True)
                 _progress_payload(date, "running", "filtering", 24, f"筛选出最近 {recency_days} 天候选视频 {len(ranked)} 条", counts)
                 _progress_payload(date, "running", "downloading", 30, f"开始处理候选视频，目标成功 {analysis_limit} 条", counts)
 
-                job_timeout = _to_float(os.getenv("REPORT_JOB_TIMEOUT", str(DEFAULT_REPORT_JOB_TIMEOUT_SECONDS)), DEFAULT_REPORT_JOB_TIMEOUT_SECONDS)
-                deadline = time.time() + max(60.0, job_timeout)
-                timed_out = False
-                total_to_process = max(1, len(ranked))
-                for index, item in enumerate(ranked, start=1):
-                    if counts["analyzed_success"] >= analysis_limit:
-                        break
-                    if time.time() >= deadline:
-                        timed_out = True
-                        break
-                    item["report_rank"] = index
-                    _upsert_video(conn, report_id, date, item, index)
-                    conn.commit()
-                    record = get_video(item["platform"], item["video_id"]) or {}
-                    filename = str(record.get("filename") or "")
-                    extraction_dir = str(record.get("extraction_dir") or "")
-                    output_dir = _output_dir_for_filename(filename) if filename else None
-                    has_analysis = bool(output_dir and (output_dir / "analysis.json").is_file())
-                    if not filename:
-                        stage = "downloading"
-                        message = f"下载视频 {index}/{total_to_process}"
-                    elif not extraction_dir or not has_analysis:
-                        stage = "extracting"
-                        message = f"解析视频 {index}/{total_to_process}"
-                    else:
-                        stage = "extracting"
-                        message = f"分析视频 {index}/{total_to_process}"
-                    _progress_payload(date, "running", stage, 30 + int(index / total_to_process * 50), message, counts)
-                    _process_video(conn, date, item)
-                    row = conn.execute(
-                        "SELECT process_status FROM hot_report_videos WHERE report_date = ? AND platform = ? AND video_id = ?",
-                        (date, item["platform"], item["video_id"]),
-                    ).fetchone()
-                    if row and row[0] == "complete":
-                        counts["analyzed_success"] += 1
-                    else:
-                        counts["analyzed_failed"] += 1
+                _process_ranked_videos(conn, report_id, date, ranked, analysis_limit, counts)
 
+                _compact_report_ranks(conn, date)
                 success_videos = _load_success_videos(conn, date)
-                if timed_out:
-                    _finish_report(
-                        conn,
-                        report_id,
-                        date,
-                        "partial_failed" if success_videos else "failed",
-                        f"Report job reached timeout ({int(job_timeout)}s) before target videos were processed: {len(success_videos)}/{analysis_limit}",
-                    )
-                    _progress_payload(date, "partial_failed" if success_videos else "failed", "finished", 100, f"任务超时，成功视频 {len(success_videos)}/{analysis_limit}", counts)
-                    return get_report(date, include_raw=True)
                 if len(success_videos) >= analysis_limit:
                     _progress_payload(date, "running", "summarizing", 88, "开始生成爆款日报", counts)
                     report_json, markdown = _generate_daily_summary(date, success_videos[:analysis_limit])
@@ -3493,8 +3746,11 @@ def start_report_scheduler(enable_timer: bool = True) -> None:
         if _scheduler_started:
             return
         _scheduler_started = True
-        recover_interrupted_reports()
+        recovery = recover_interrupted_reports()
         threading.Thread(target=_scheduler_worker, daemon=True).start()
+        for report_date in recovery.get("recovered", []):
+            enqueue_report(str(report_date))
+            print(f"Queued interrupted hot report for recovery: {report_date}", flush=True)
         if enable_timer:
             try:
                 missed = enqueue_missed_today_report()
