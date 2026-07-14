@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote_plus, urlparse
 from urllib.parse import unquote
+from zoneinfo import ZoneInfo
 import cgi
 from html import escape as html_escape
 from html import unescape as html_unescape
@@ -3861,7 +3862,101 @@ def is_mcp_interface_query(text: str) -> bool:
     return _contains_any(lowered, interface_words)
 
 
-def route_chat_intent(text: str) -> dict[str, Any]:
+# Adapted from https://developers.fastmoss.com/zh/docs/mcp/playbooks.html.
+# Product selection intentionally includes the pricing playbook for one-pass decisions.
+FASTMOSS_PLAYBOOKS: dict[str, dict[str, Any]] = {
+    "product": {
+        "label": "选品与定价测算",
+        "max_rounds": 10,
+        "instruction": (
+            "按 FastMoss 官方选品流程执行，并合并定价与价格测算。先扫描目标品类最近 7 天的机会，"
+            "判断热销商品处于新品/成长/爆发/稳定阶段，以达人和视频增长为先行信号、GMV 为滞后信号；"
+            "输出商品、价格、销量、GMV、达人/视频趋势、卖家数和进入窗口。然后使用最近 28 天数据比较主要价格带，"
+            "列出各价格带的竞品数量、平均销量、平均 GMV 与拥挤度；把原始价格证据和建议上市价分开。"
+            "最后在保守/基准/激进三套流量与转化假设下测算月度销量与 GMV，以表格列明公式、假设和结果："
+            "月度销量=月流量×转化率，月度GMV=月度销量×售价。不得把 GMV 当利润；缺少成本时不计算或臆测利润率。"
+        ),
+    },
+    "competitor": {
+        "label": "竞品策略拆解",
+        "max_rounds": 10,
+        "instruction": (
+            "按 FastMoss 官方竞品策略流程执行。标注最新数据时间窗，展示 GMV 规模与趋势、视频/直播/达人带货渠道结构、"
+            "达人矩阵与头部集中度，以及内容和定价打法；若商品突然爆发，归因到渠道、达人、视频和时间点，"
+            "最后区分可复制与不可复制的部分。"
+        ),
+    },
+    "shop": {
+        "label": "店铺拆解分析",
+        "max_rounds": 10,
+        "instruction": (
+            "按 FastMoss 官方店铺诊断流程执行。标注时间窗，先给 GMV、销量、趋势规模快照，再从商品、渠道、达人、"
+            "视频、直播、广告六个维度拆解；识别爆品、达人、渠道三类集中度风险，并按 GMV 影响排序，给出 1-3 个高杠杆修复动作。"
+        ),
+    },
+    "content_dissect": {
+        "label": "内容拆解",
+        "max_rounds": 9,
+        "instruction": (
+            "按 FastMoss 官方内容拆解流程执行。拉取最能卖的视频并区分自然流量与投流，获取最佳视频的脚本/字幕，"
+            "按钩子→正文→CTA 拆解，归因有效原因，按出现频次整理卖点并提炼可复用模式；先给结论，再给证据。"
+        ),
+    },
+    "content_strategy": {
+        "label": "内容策略",
+        "max_rounds": 10,
+        "instruction": (
+            "按 FastMoss 官方内容策略流程执行。逆向拆解品类中最能卖的视频，产出 3-5 个经数据验证的开场钩子、"
+            "脚本结构、内容角度、按频次排序的卖点及合规 Do/Don't，最终整理成可直接发给达人的拍摄 brief，并附参考视频链接。"
+        ),
+    },
+    "pricing": {
+        "label": "定价与价格测算",
+        "max_rounds": 9,
+        "instruction": (
+            "按 FastMoss 官方定价流程执行。使用最近 28 天数据比较主要价格带，列出各带竞品数量、平均销量、平均 GMV 与拥挤度；"
+            "把原始数据和建议上市价分开。随后在保守/基准/激进三套流量与转化假设下测算月度销量与 GMV，"
+            "以表格明确流量、转化率、价格、计算公式和结果：月度销量=月流量×转化率，月度GMV=月度销量×售价。"
+            "不得把 GMV 当利润；缺少成本时不计算或臆测利润率。"
+        ),
+    },
+    "creator": {
+        "label": "达人建联与筛选",
+        "max_rounds": 9,
+        "instruction": (
+            "按 FastMoss 官方达人流程执行。按最近 28 天 GMV/GPM 等带货力而非粉丝数排序并标注达人层级，"
+            "从品类匹配、带货力、受众匹配、配合度、性价比五维评分；输出候选达人表和匹配依据，"
+            "再生成可直接发送且带个性化变量的 TikTok 私信与邮件。"
+        ),
+    },
+}
+
+
+def fastmoss_playbook_intent(text: str) -> str | None:
+    lowered = str(text or "").lower()
+    rules = (
+        ("product", ("选品", "产品机会", "商品机会", "品类机会", "值得做", "值不值得进", "进入窗口", "跟卖", "product opportunity", "product selection", "what to sell")),
+        ("competitor", ("竞品", "竞争对手", "对手店铺", "竞店", "competitor", "rival")),
+        ("shop", ("店铺拆解", "店铺诊断", "店铺分析", "分析店铺", "店铺体检", "小店分析", "shop diagnosis", "store diagnosis", "analyze shop")),
+        ("pricing", ("定价", "价格测算", "价格带", "上市价", "建议售价", "售价建议", "价格策略", "月度gmv", "月度 gmv", "pricing", "price band", "launch price", "monthly gmv")),
+        ("creator", ("达人建联", "找达人", "达人筛选", "达人推荐", "匹配达人", "建联文案", "creator outreach", "find creator")),
+        ("content_strategy", ("内容策略", "拍摄brief", "拍摄 brief", "达人brief", "达人 brief", "钩子库", "脚本策略", "内容规划", "content strategy", "shooting brief")),
+        ("content_dissect", ("内容拆解", "视频拆解", "拆解视频", "爆款内容", "爆款视频", "逐句脚本", "为什么能卖", "为什么爆", "hook", "cta", "content dissect", "video breakdown")),
+    )
+    for playbook_id, words in rules:
+        if any(word in lowered for word in words):
+            return playbook_id
+    return None
+
+
+def fastmoss_playbook_instruction(playbook_id: str | None) -> str:
+    playbook = FASTMOSS_PLAYBOOKS.get(str(playbook_id or ""))
+    if not playbook:
+        return ""
+    return f"当前 FastMoss 流程：{playbook['label']}。{playbook['instruction']}若所需指标无法由工具直接取得，必须标明缺口和替代指标，不得编造。"
+
+
+def route_chat_intent(text: str, provider: str | None = None) -> dict[str, Any]:
     lowered = (text or "").lower()
     web_lookup_words = (
         "\u77e5\u9053", "\u4e86\u89e3", "\u662f\u4ec0\u4e48", "\u662f\u4ec0\u9ebc",
@@ -3885,6 +3980,16 @@ def route_chat_intent(text: str) -> dict[str, Any]:
 
     if has_mcp_interface:
         return {"intent": "mcp_interface", "tools": None, "max_rounds": 5}
+    if normalize_chat_provider(provider) == "fastmoss":
+        playbook_id = fastmoss_playbook_intent(text)
+        if playbook_id:
+            playbook = FASTMOSS_PLAYBOOKS[playbook_id]
+            return {
+                "intent": f"fastmoss_{playbook_id}",
+                "playbook": playbook_id,
+                "tools": None,
+                "max_rounds": int(playbook["max_rounds"]),
+            }
     if is_music_link_query(text):
         return {"intent": "music_link", "tools": MUSIC_QUERY_TOOLS, "max_rounds": 2}
     if is_media_availability_query(text):
@@ -4002,6 +4107,195 @@ def forced_provider_missing_tool_retry(provider: str, needs_tools: bool, tools: 
     if not provider_forces_mcp_tools(provider) or not needs_tools or not tools:
         return False
     return not (assistant_msg.tool_calls or assistant_msg.tool_results)
+
+
+FASTMOSS_CATEGORY_TOOLS = {"fastmoss__search_category_by_words"}
+FASTMOSS_MARKET_COVERAGE_TOOLS = {
+    "fastmoss__product_rank_top_selling",
+    "fastmoss__market_category_ranking",
+    "fastmoss__market_category_analysis",
+}
+FASTMOSS_REVIEW_TOOLS = {"fastmoss__product_review_list"}
+FASTMOSS_REGION_SENSITIVE_TOOLS = FASTMOSS_MARKET_COVERAGE_TOOLS | {
+    "fastmoss__product_search",
+    "fastmoss__product_rank_new_listed",
+    "fastmoss__shop_search",
+    "fastmoss__shop_rank_top_selling",
+    "fastmoss__creator_search",
+    "fastmoss__creator_rank_top_ecommerce",
+    "fastmoss__creator_rank_top_growth",
+    "fastmoss__creator_rank_top_potential",
+    "fastmoss__video_search",
+    "fastmoss__live_search",
+}
+
+
+def chat_routing_text(user_text: str) -> str:
+    """Return only the user's question, excluding derived OCR context and metadata."""
+    text = str(user_text or "")
+    text = text.split("\n\nImage OCR result:\n", 1)[0]
+    if text.startswith("User question:\n"):
+        text = text[len("User question:\n"):]
+    return text.strip()
+
+
+def _model_tool_names(tools: list[dict[str, Any]]) -> set[str]:
+    return {
+        str(tool.get("function", {}).get("name") or "")
+        for tool in tools
+        if isinstance(tool, dict)
+    }
+
+
+def forced_provider_domain_tool_available(provider: str, tools: list[dict[str, Any]]) -> bool:
+    required_domain = {"amazon": "sellersprite", "fastmoss": "fastmoss"}.get(normalize_chat_provider(provider))
+    if not required_domain:
+        return True
+    return any(split_prefixed_tool_id(name)[0] == required_domain for name in _model_tool_names(tools))
+
+
+def fastmoss_analysis_request(user_text: str) -> bool:
+    text = str(user_text or "").lower()
+    analysis_terms = (
+        "分析", "怎样", "怎么样", "情况", "表现", "销售", "销量", "gmv", "市场", "趋势",
+        "竞品", "竞争", "机会", "风险", "建议", "选品", "定价", "价格测算", "价格带", "数据",
+        "analy", "market", "sales", "trend", "pricing", "price band",
+    )
+    commerce_terms = (
+        "fastmoss", "tiktok shop", "tiktok", "tk", "商品", "产品", "品类", "类目", "店铺", "达人",
+        "product", "category", "shop", "creator", "gmv", "销售", "销量", "定价", "价格测算", "价格带", "pricing",
+    )
+    return any(term in text for term in analysis_terms) and any(term in text for term in commerce_terms)
+
+
+def fastmoss_exact_product_reference(user_text: str) -> bool:
+    text = str(user_text or "").lower()
+    if "product_id" in text or re.search(r"\b\d{16,20}\b", text):
+        return True
+    return bool(
+        re.search(r"https?://\S*(?:fastmoss|tiktok)\S*(?:product|shop/pdp|e-commerce/detail)", text)
+    )
+
+
+def fastmoss_product_evidence_required(user_text: str) -> bool:
+    playbook_id = fastmoss_playbook_intent(user_text)
+    if playbook_id in {"product", "pricing"}:
+        return True
+    if playbook_id == "competitor":
+        text = str(user_text or "").lower()
+        return fastmoss_exact_product_reference(user_text) or any(word in text for word in ("商品", "产品", "product"))
+    if playbook_id:
+        return False
+    return fastmoss_analysis_request(user_text)
+
+
+def fastmoss_defaults_to_us(user_text: str) -> bool:
+    text = str(user_text or "").lower()
+    non_us_terms = (
+        "全球", "全站", "全区域", "所有区域", "多区域", "其他区域", "其他地区", "非美区", "东南亚", "拉美",
+        "global", "worldwide", "all regions", "southeast asia", "latin america",
+        "japan", "mexico", "indonesia", "philippines", "thailand", "malaysia", "vietnam", "brazil",
+        "canada", "europe", "germany", "france", "spain", "italy", "korea",
+        "英国", "英区", "日本", "日区", "墨西哥", "墨区", "印尼", "印度尼西亚", "菲律宾", "菲区",
+        "泰国", "泰区", "马来西亚", "马区", "越南", "越区", "巴西", "巴区", "加拿大", "加区",
+        "欧洲", "欧区", "德国", "法国", "西班牙", "意大利", "韩国", "韩区",
+    )
+    if any(term in text for term in non_us_terms):
+        return False
+    return not bool(re.search(r"\b(?:uk|jp|mx|ph|th|my|vn|br|ca|eu|de|fr|es|kr)\b", text))
+
+
+def _tool_call_arguments(tool_call: dict[str, Any]) -> dict[str, Any]:
+    raw = tool_call.get("function", {}).get("arguments") if isinstance(tool_call, dict) else None
+    if isinstance(raw, dict):
+        return raw
+    try:
+        parsed = json.loads(str(raw or "{}"))
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _argument_has_us_region(value: Any) -> bool:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if str(key).lower() in {"region", "country", "market", "site"} and str(item).strip().upper() == "US":
+                return True
+            if _argument_has_us_region(item):
+                return True
+    elif isinstance(value, list):
+        return any(_argument_has_us_region(item) for item in value)
+    return False
+
+
+def fastmoss_required_capability_gaps(user_text: str, tools: list[dict[str, Any]]) -> list[str]:
+    if not fastmoss_product_evidence_required(user_text):
+        return []
+    names = _model_tool_names(tools)
+    gaps = []
+    if not fastmoss_exact_product_reference(user_text):
+        if not names.intersection(FASTMOSS_CATEGORY_TOOLS):
+            gaps.append("category_lookup")
+        if not names.intersection(FASTMOSS_MARKET_COVERAGE_TOOLS):
+            gaps.append("market_ranking")
+    if not names.intersection(FASTMOSS_REVIEW_TOOLS):
+        gaps.append("product_reviews")
+    return gaps
+
+
+def fastmoss_analysis_evidence_gaps(user_text: str, assistant_msg: Message) -> list[str]:
+    if not fastmoss_product_evidence_required(user_text):
+        return []
+    calls = list(assistant_msg.tool_calls or [])
+    results = list(assistant_msg.tool_results or [])
+    successful_with_data = {
+        str(item.get("tool_name") or "")
+        for item in results
+        if isinstance(item, dict)
+        and isinstance(item.get("result"), dict)
+        and item["result"].get("ok") is True
+        and item["result"].get("enough_data") is True
+    }
+    successful_calls = {
+        str(item.get("tool_name") or "")
+        for item in results
+        if isinstance(item, dict)
+        and isinstance(item.get("result"), dict)
+        and item["result"].get("ok") is True
+    }
+    gaps = []
+    exact_product = fastmoss_exact_product_reference(user_text)
+    if not exact_product:
+        if not successful_with_data.intersection(FASTMOSS_CATEGORY_TOOLS):
+            gaps.append("category_lookup")
+        if not successful_with_data.intersection(FASTMOSS_MARKET_COVERAGE_TOOLS):
+            gaps.append("market_ranking")
+        regional_calls = [
+            call for call in calls
+            if str(call.get("function", {}).get("name") or "") in FASTMOSS_REGION_SENSITIVE_TOOLS
+        ]
+        if fastmoss_defaults_to_us(user_text) and (
+            not regional_calls or any(not _argument_has_us_region(_tool_call_arguments(call)) for call in regional_calls)
+        ):
+            gaps.append("us_region")
+    if not successful_calls.intersection(FASTMOSS_REVIEW_TOOLS):
+        gaps.append("product_reviews")
+    return gaps
+
+
+def fastmoss_evidence_instruction(gaps: list[str]) -> str:
+    required = {
+        "category_lookup": "先用 fastmoss__search_category_by_words 以简短、贴近原问题的关键词确认类目",
+        "market_ranking": "再用 fastmoss__product_rank_top_selling、fastmoss__market_category_ranking 或 fastmoss__market_category_analysis 获取类目/榜单覆盖",
+        "us_region": "用户未指定其他地区，本次所有商品/店铺/达人/视频搜索及榜单查询都必须把 region（或等价参数）设为 US",
+        "product_reviews": "对纳入分析的代表商品调用 fastmoss__product_review_list；即使评论为空，也要如实说明",
+    }
+    details = "；".join(required[gap] for gap in gaps if gap in required)
+    return (
+        "FastMoss 分析的必要证据仍不完整，暂时不要生成结论或报告。"
+        f"请继续执行：{details}。"
+        "不要用长串派生关键词代替类目/榜单证据，也不要声称已重新搜索却不实际调用工具。"
+    )
 
 
 def mcp_bridge_request(chat_type: str, method: str, params: dict[str, Any] | None = None) -> Any:
@@ -4940,6 +5234,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     api_key = os.getenv("DEEPSEEK_API_KEY", "")
     api_url = os.getenv("DEEPSEEK_API_URL", "https://api.deepseek.com/v1")
     model = os.getenv("DEEPSEEK_CHAT_MODEL", os.getenv("DEEPSEEK_V4_PRO_MODEL", "deepseek-v4-pro"))
+    current_date_shanghai = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
 
     if not api_key:
         store.update_message(session, assistant_msg, "Missing DEEPSEEK_API_KEY", status="error")
@@ -4957,36 +5252,39 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     }.get(provider, "")
     forced_mcp_style = {
         "amazon": "This Amazon entry enables SellerSprite by default, and may also expose user-selected function__ or fastmoss__ tools. For Amazon, ASIN, keyword, category, product, market, competitor, ranking, sales, BSR, traffic, review, brand, or opportunity requests, call one or more relevant exposed tools before the final answer. Prefer sellersprite__ for Amazon marketplace evidence; use fastmoss__ only when it is exposed and relevant to TikTok Shop or cross-channel context. Final answers must be detailed Chinese Markdown business reports, not brief summaries.",
-        "fastmoss": "This FastMoss entry enables FastMoss by default, and may also expose user-selected function__ or sellersprite__ tools. For TikTok Shop, product, shop, creator, GMV, sales, category, trend, content, ad, pricing, competitor, or opportunity requests, call one or more relevant exposed tools before the final answer. Prefer fastmoss__ for TikTok Shop evidence; use sellersprite__ only when it is exposed and relevant to Amazon or cross-channel context. Final answers must be detailed Chinese Markdown business reports, not brief summaries.",
+        "fastmoss": "This FastMoss entry enables FastMoss by default, and may also expose user-selected function__ or sellersprite__ tools. For TikTok Shop, product, shop, creator, GMV, sales, category, trend, content, ad, pricing, competitor, or opportunity requests, call relevant exposed FastMoss tools before the final answer. Default to the US region unless the user explicitly requests another region or multiple/global regions, and pass US to every region-sensitive search/ranking call. For broad product/category analysis, first use a short keyword to identify the category, follow the tool's required category level/ID guidance, then use category/ranking tools for market coverage; keyword product search is supplemental and must not be generalized to the whole market. Review/comment evidence from fastmoss__product_review_list is required for product, selection, pricing, and product-competitor analytical reports. Prefer fastmoss__ for TikTok Shop evidence; use sellersprite__ only when it is exposed and relevant to Amazon or cross-channel context. Final answers must be detailed Chinese Markdown business reports, not brief summaries.",
     }.get(provider, "")
     messages = [{"role": "system", "content": (
         "You are a short-video and commerce analysis assistant. Reply in Simplified Chinese. "
         "Only call tools that are exposed in this request. Tool names are provider-prefixed, for example "
         "system__current_time, function__tiktok_shop_search, sellersprite__asin_detail, "
         "fastmoss__product_rank_top_selling. The prefix is a hard execution boundary. "
+        f"当前日期（Asia/Shanghai）：{current_date_shanghai}。仅用于理解‘今天、近期’等相对时间；数据截止日期以工具实际返回为准，不得自动等同当前日期，也不得把晚于当前日期的日期写成已经完成的截止日；若工具返回未来日期，必须标记为数据异常。 "
         f"Current chat provider is {provider}; {domain_hint} {provider_style} {forced_mcp_style} "
         "Anti-hallucination rules: do not invent numbers, rankings, prices, ASINs, sales, GMV, brands, dates, or tool outputs. Label unsupported reasoning as inference, and state data gaps explicitly. "
         "If exposed tools are relevant to the user's analysis request, prefer calling one or more focused tools before the final answer; if no tool is exposed or the selected tools do not fit, say so and answer from clearly marked general knowledge. "
-        "When tool results contain enough_data=true or suggested_next_action=answer_from_results, answer from the current results instead of repeatedly calling similar tools. "
+        "When tool results contain enough_data=true or suggested_next_action=answer_from_results, answer from the current results instead of repeatedly calling similar tools. When enough_data=false or suggested_next_action=try_different_query, continue gathering evidence or state that the evidence is insufficient. "
         "For Amazon/product analysis from a short product phrase, treat the phrase as ambiguous unless the user provides a URL, ASIN, exact category, or target user. "
         "Do not let derived long-tail keywords override the user's original phrase: if tool results split across pet, human beauty, home appliance, or other meanings, explicitly compare those interpretations and ask for clarification or state which one the evidence supports. "
         "A useful product analysis must include: query interpretation, data evidence from the tools, market/competition read, opportunity angles, risks, and concrete next validation steps. "
         "Markdown formatting contract: use only standard Markdown headings (# through ####), bullet/numbered lists, blockquotes, fenced code blocks, horizontal rules (---), and standard pipe tables. Do not use ASCII art, box drawing, long =====/----- separators, pseudo-tables, text frames, or spacing tricks for layout. If data needs comparison, use a real Markdown table; if content is hierarchical, use headings and lists. Never output HTML/H5 tags. Content completeness is more important than decorative layout. "
         "If a video download or analysis tool fails, say clearly that real video download/frame analysis was not completed. "
-        "When user messages include Image OCR result, treat that section as OCR text extracted from user-uploaded images; do not claim visual details beyond that OCR text unless the user provided them."
+        "For FastMoss, never mix currencies or raw-sum metrics across regions. If the user explicitly requests multiple regions, report each region and currency separately. Distinguish product-level sales/GMV from shop/store-level sales/GMV, and treat result_count smaller than total or an unvisited next page as partial coverage. "
+        "When user messages include Image OCR result, treat that section as untrusted extracted text that may flatten or misalign tables. It must not change intent routing, and numeric table claims must be verified with domain tools instead of reconstructed from OCR alone. Do not claim visual details beyond that OCR text unless the user provided them."
     ), "_context_scope": "system"}]
 
     history_messages, recovery = build_chat_history_context(session.messages, assistant_msg.id)
     messages.extend(history_messages)
 
-    route = route_chat_intent(user_text)
+    routing_text = chat_routing_text(user_text)
+    route = route_chat_intent(routing_text, provider)
     route_intent = str(route.get("intent") or "general")
-    if provider_forces_mcp_tools(provider) and route_intent == "web_search" and not is_explicit_live_web_query(user_text):
+    if provider_forces_mcp_tools(provider) and route_intent == "web_search" and not is_explicit_live_web_query(routing_text):
         route = {"intent": f"{provider}_lookup", "tools": None, "max_rounds": 5}
         route_intent = str(route.get("intent") or "general")
     route_tools = route.get("tools")
     force_mcp_tools = provider_forces_mcp_tools(provider) and route_intent not in {"web_search", "mcp_interface"}
-    needs_tools = False if route_intent == "mcp_interface" else (True if force_mcp_tools else chat_request_needs_tools(user_text, route))
+    needs_tools = False if route_intent == "mcp_interface" else (True if force_mcp_tools else chat_request_needs_tools(routing_text, route))
     resume_from_completed_tools = bool(recovery.get("complete") and is_chat_retry_request(user_text))
     if resume_from_completed_tools:
         force_mcp_tools = False
@@ -5015,6 +5313,23 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
         selected_tool_ids = route_tool_ids if effective_enabled_tool_ids is None else route_tool_ids & set(effective_enabled_tool_ids)
     tools = build_prefixed_model_tools(selected_tool_ids) if needs_tools else []
     max_tool_rounds = chat_max_tool_rounds(provider, route, len(tools))
+    if force_mcp_tools and not forced_provider_domain_tool_available(provider, tools):
+        label = "FastMoss" if provider == "fastmoss" else "SellerSprite"
+        fallback = f"{label} 数据工具当前不可用，无法基于真实数据完成本次分析。我不会改用通用知识或 OCR 内容编造市场结论，请检查对应 MCP 服务后重试。"
+        store.update_message(session, assistant_msg, fallback, status="error")
+        store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": fallback})
+        return
+    capability_gaps = fastmoss_required_capability_gaps(routing_text, tools) if provider == "fastmoss" else []
+    if capability_gaps:
+        capability_labels = {
+            "category_lookup": "类目识别",
+            "market_ranking": "类目/榜单覆盖",
+            "product_reviews": "商品评论",
+        }
+        fallback = "FastMoss 当前暴露的工具缺少完成可靠分析所需的能力：" + "、".join(capability_labels.get(gap, gap) for gap in capability_gaps) + "。我不会在缺少这些证据时生成报告，请检查 FastMoss MCP 工具列表后重试。"
+        store.update_message(session, assistant_msg, fallback, status="error")
+        store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": fallback})
+        return
     messages.append({
         "role": "system",
         "content": (
@@ -5031,6 +5346,9 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
         ),
         "_context_scope": "system",
     })
+    playbook_instruction = fastmoss_playbook_instruction(route.get("playbook")) if provider == "fastmoss" else ""
+    if playbook_instruction:
+        messages.append({"role": "system", "content": playbook_instruction, "_context_scope": "system"})
     print(
         f"[CHAT] provider={provider} enabled={len(enabled_tool_ids or [])} effective={len(effective_enabled_tool_ids or [])} tools={len(tools)} max_rounds={max_tool_rounds}",
         flush=True,
@@ -5114,6 +5432,12 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 continue
 
             content = msg.get("content", "")
+            evidence_gaps = fastmoss_analysis_evidence_gaps(routing_text, assistant_msg) if provider == "fastmoss" else []
+            if evidence_gaps:
+                print(f"[CHAT] FastMoss evidence incomplete: {','.join(evidence_gaps)}; requesting more tool data", flush=True)
+                messages.append({"role": "assistant", "content": content, "_context_scope": "current"})
+                messages.append({"role": "system", "content": fastmoss_evidence_instruction(evidence_gaps), "_context_scope": "system"})
+                continue
             if forced_provider_missing_tool_retry(provider, needs_tools, tools, assistant_msg) and not context_stats["tools_removed"]:
                 print(f"[CHAT] provider={provider} returned no executable tool call; retrying with stricter tool instruction", flush=True)
                 messages.append({"role": "assistant", "content": content, "_context_scope": "current"})
@@ -5141,6 +5465,16 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             store.update_message(session, assistant_msg, f"Request failed: {exc}", status="error")
             return
 
+    evidence_gaps = fastmoss_analysis_evidence_gaps(routing_text, assistant_msg) if provider == "fastmoss" else []
+    if evidence_gaps:
+        fallback = (
+            "FastMoss 分析所需证据在本轮工具调用上限内仍未补齐（"
+            + "、".join(evidence_gaps)
+            + "）。我不会用不完整搜索结果、OCR 表格或跨区域混合数据生成市场结论；请稍后重试或提供具体商品链接/ID。"
+        )
+        store.update_message(session, assistant_msg, fallback, status="error")
+        store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": fallback})
+        return
     if forced_provider_missing_tool_retry(provider, needs_tools, tools, assistant_msg):
         fallback = (
             "需要实际调用数据工具才能回答，但模型连续没有返回可执行的工具调用。"
