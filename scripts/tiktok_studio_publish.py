@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import base64
 import hashlib
+import json
 import mimetypes
 import os
 import re
@@ -11,6 +13,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 import proxy_pool
@@ -25,7 +28,7 @@ NATIVE_MIN_MINUTES = max(15, int(os.getenv("TIKTOK_NATIVE_SCHEDULE_MIN_MINUTES",
 DRY_RUN = os.getenv("TIKTOK_PUBLISH_DRY_RUN", "1").strip().lower() in {"1", "true", "yes", "on"}
 UPLOAD_TIMEOUT_SECONDS = max(60, int(os.getenv("TIKTOK_PUBLISH_UPLOAD_TIMEOUT_SECONDS", "1800") or "1800"))
 ALLOWED_SUFFIXES = {".mp4", ".mov", ".m4v", ".webm"}
-EDITABLE_STATUSES = {"draft", "queued", "delayed", "failed", "cancelled", "dry_run"}
+EDITABLE_STATUSES = {"draft", "queued", "delayed", "failed", "cancelled", "dry_run", "manual_ready"}
 RETRYABLE_STATUSES = {"failed", "product_link_failed"}
 DELETE_BLOCKED_STATUSES = {"preparing", "uploading", "publishing", "scheduled_on_tiktok"}
 STATUS_LABELS = {
@@ -43,6 +46,18 @@ STATUS_LABELS = {
     "cancelled": "已取消",
     "scheduled_on_tiktok": "TikTok已排程",
     "dry_run": "演练完成",
+    "manual_ready": "等待手动发布",
+}
+
+SAFE_POPUP_BUTTONS = {
+    "allow": "allow",
+    "cancel": "cancel",
+    "close": "close",
+    "got it": "got it",
+    "later": "later",
+    "maybe later": "maybe later",
+    "not now": "not now",
+    "skip": "skip",
 }
 
 _worker_started = False
@@ -59,6 +74,10 @@ class ProductLinkReviewRequired(RuntimeError):
 
 
 class ProductLinkUnavailable(RuntimeError):
+    pass
+
+
+class ManualPublishReady(RuntimeError):
     pass
 
 
@@ -109,6 +128,7 @@ def _row_to_job(row: Any) -> dict[str, Any]:
         "product_link": row["product_link"],
         "product_link_status": "待绑定" if row["product_link"] else "不添加",
         "keep_observing": bool(row["keep_observing"]),
+        "manual_publish": bool(row["manual_publish"]),
         "schedule_mode": row["schedule_mode"],
         "scheduled_at": row["scheduled_at"],
         "status": row["status"],
@@ -162,13 +182,17 @@ def create_job(form: Any) -> dict[str, Any]:
     if not account_id:
         raise ValueError("account_id is required")
     action = _clean_text(form.getfirst("action"), 20) or "queue"
+    if action not in {"draft", "queue", "immediate", "manual"}:
+        raise ValueError("发布操作无效")
     queued = action != "draft"
-    keep_observing = action == "immediate"
+    manual_publish = action == "manual"
+    keep_observing = action in {"immediate", "manual"}
     requested_session_id = int(form.getfirst("observation_session_id") or 0)
     schedule_mode = "server" if action == "immediate" else "tiktok"
     scheduled_at = _parse_schedule(form.getfirst("scheduled_at"))
     schedule_mode = _resolve_schedule_mode(schedule_mode, scheduled_at, queued)
-    _validate_schedule(schedule_mode, scheduled_at, queued)
+    if not manual_publish:
+        _validate_schedule(schedule_mode, scheduled_at, queued)
     try:
         file_item = form["video"]
     except KeyError as exc:
@@ -218,10 +242,10 @@ def create_job(form: Any) -> dict[str, Any]:
                 """
                 INSERT INTO publish_jobs (
                     id, account_id, proxy_profile_id, asset_id, description, ai_generated,
-                    product_link, keep_observing, schedule_mode, scheduled_at, status, stage, attempt_count, next_attempt_at,
+                    product_link, keep_observing, manual_publish, schedule_mode, scheduled_at, status, stage, attempt_count, next_attempt_at,
                     session_id,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 0, '', ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 0, '', ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -232,6 +256,7 @@ def create_job(form: Any) -> dict[str, Any]:
                     1 if str(form.getfirst("ai_generated") or "").lower() in {"1", "true", "yes", "on"} else 0,
                     _clean_product_link(form.getfirst("product_link")),
                     1 if keep_observing else 0,
+                    1 if manual_publish else 0,
                     schedule_mode,
                     _iso(scheduled_at),
                     "queued" if queued else "draft",
@@ -259,6 +284,7 @@ def update_job(payload: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("当前任务状态不能编辑")
         scheduled = _parse_schedule(payload.get("scheduled_at") or row["scheduled_at"])
         product_link = _clean_product_link(payload["product_link"]) if "product_link" in payload else str(row["product_link"] or "")
+        manual_publish = bool(payload.get("manual_publish"))
         keep_observing = bool(payload["keep_observing"]) if "keep_observing" in payload else bool(row["keep_observing"])
         requested_session_id = (
             int(payload.get("observation_session_id") or 0) or None
@@ -268,15 +294,20 @@ def update_job(payload: dict[str, Any]) -> dict[str, Any]:
         queue = bool(payload.get("queue"))
         mode = "server" if keep_observing else "tiktok"
         mode = _resolve_schedule_mode(mode, scheduled, queue)
-        _validate_schedule(mode, scheduled, queue)
+        if manual_publish:
+            keep_observing = True
+            mode = "tiktok"
+        else:
+            _validate_schedule(mode, scheduled, queue)
         status = "queued" if queue else "draft"
         conn.execute(
-            "UPDATE publish_jobs SET description = ?, ai_generated = ?, product_link = ?, keep_observing = ?, schedule_mode = ?, scheduled_at = ?, status = ?, stage = '', attempt_count = 0, next_attempt_at = '', session_id = ?, final_click_at = '', actual_publish_at = '', result_url = '', last_error = '', updated_at = ? WHERE id = ?",
+            "UPDATE publish_jobs SET description = ?, ai_generated = ?, product_link = ?, keep_observing = ?, manual_publish = ?, schedule_mode = ?, scheduled_at = ?, status = ?, stage = '', attempt_count = 0, next_attempt_at = '', session_id = ?, final_click_at = '', actual_publish_at = '', result_url = '', last_error = '', updated_at = ? WHERE id = ?",
             (
                 _clean_text(payload.get("description"), 2200),
                 1 if payload.get("ai_generated") else 0,
                 product_link,
                 1 if keep_observing else 0,
+                1 if manual_publish else 0,
                 mode,
                 _iso(scheduled),
                 status,
@@ -327,7 +358,7 @@ def retry_job(payload: dict[str, Any]) -> dict[str, Any]:
         conn.execute(
             """
             UPDATE publish_jobs
-            SET keep_observing = ?, schedule_mode = ?, scheduled_at = ?, status = 'queued',
+            SET keep_observing = ?, manual_publish = 0, schedule_mode = ?, scheduled_at = ?, status = 'queued',
                 stage = 'retry_queued', next_attempt_at = '', session_id = ?, final_click_at = '',
                 actual_publish_at = '', result_url = '', last_error = '', updated_at = ?
             WHERE id = ?
@@ -563,7 +594,171 @@ def _radio_selected(locator: Any) -> bool:
         return False
 
 
-def _select_schedule_radio(page: Any, value: str, label_pattern: re.Pattern[str]) -> None:
+def _popup_snapshot(page: Any, log_dir: Path, step: str) -> Path:
+    target = log_dir / f"parameter-{step}-{int(time.time())}.png"
+    page.screenshot(path=str(target), full_page=False)
+    return target
+
+
+def _visible_dialog(page: Any) -> Any | None:
+    return _first_visible([
+        page.get_by_role("dialog"),
+        page.locator("[role='dialog']"),
+        page.locator("[aria-modal='true']"),
+    ])
+
+
+def _dialog_details(dialog: Any) -> tuple[str, list[str]]:
+    try:
+        text = _clean_text(dialog.inner_text(), 2000)
+    except Exception:
+        text = ""
+    buttons: list[str] = []
+    try:
+        locator = dialog.get_by_role("button")
+        for index in range(min(locator.count(), 12)):
+            label = _clean_text(locator.nth(index).inner_text(), 80)
+            if label:
+                buttons.append(label)
+    except Exception:
+        pass
+    return text, buttons
+
+
+def _vision_popup_decision(snapshot: Path, step: str, dialog_text: str, buttons: list[str]) -> dict[str, Any]:
+    api_key = os.getenv("VISION_API_KEY", "").strip()
+    api_url = os.getenv("VISION_API_URL", "").strip().rstrip("/")
+    model = os.getenv("VISION_MODEL", "qwen3-vl-flash").strip() or "qwen3-vl-flash"
+    if not api_key or not api_url:
+        return {"action": "manual_review", "reason": "视觉模型未配置"}
+    if not api_url.endswith("/chat/completions"):
+        api_url += "/chat/completions"
+    encoded = base64.b64encode(snapshot.read_bytes()).decode("ascii")
+    prompt = (
+        "分析 TikTok Studio 参数页的弹窗。只能返回 JSON："
+        '{"action":"click|manual_review","button_text":"","x":0,"y":0,"reason":""}。'
+        "仅当弹窗是说明、提示或可安全处理的参数授权时才选择 click；"
+        "button_text 必须原样来自候选按钮，x/y 是截图中的按钮中心坐标。"
+        "只有弹窗明确询问 scheduled posting storage 时才可选择 Allow。"
+        "禁止选择 Post、Publish、Next、Confirm、Delete。"
+        f"\n当前步骤：{step}\n弹窗文字：{dialog_text}\n候选按钮：{buttons}"
+    )
+    payload = {
+            "model": model,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{encoded}"}},
+                ],
+            }],
+            "temperature": 0,
+            "max_tokens": 240,
+        }
+    request = Request(
+        api_url,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    with urlopen(request, timeout=45) as response:
+        response_body = json.loads(response.read().decode("utf-8"))
+    content = str(response_body["choices"][0]["message"]["content"])
+    match = re.search(r"\{.*\}", content, re.S)
+    if not match:
+        return {"action": "manual_review", "reason": "视觉模型未返回 JSON"}
+    parsed = json.loads(match.group(0))
+    return {
+        "action": _clean_text(parsed.get("action"), 40),
+        "button_text": _clean_text(parsed.get("button_text"), 80),
+        "x": parsed.get("x"),
+        "y": parsed.get("y"),
+        "reason": _clean_text(parsed.get("reason"), 300),
+    }
+
+
+def _click_popup_coordinate(page: Any, dialog: Any, button_text: str, x: Any, y: Any) -> bool:
+    button = _first_visible([
+        dialog.get_by_role("button", name=re.compile(rf"^{re.escape(button_text)}$", re.I)),
+    ])
+    if not button:
+        return False
+    box = button.bounding_box()
+    dialog_box = dialog.bounding_box()
+    if not box or not dialog_box:
+        return False
+    try:
+        click_x = float(x)
+        click_y = float(y)
+    except (TypeError, ValueError):
+        click_x = box["x"] + box["width"] / 2
+        click_y = box["y"] + box["height"] / 2
+    inside_button = box["x"] <= click_x <= box["x"] + box["width"] and box["y"] <= click_y <= box["y"] + box["height"]
+    inside_dialog = dialog_box["x"] <= click_x <= dialog_box["x"] + dialog_box["width"] and dialog_box["y"] <= click_y <= dialog_box["y"] + dialog_box["height"]
+    if not inside_button or not inside_dialog:
+        click_x = box["x"] + box["width"] / 2
+        click_y = box["y"] + box["height"] / 2
+    page.mouse.click(click_x, click_y)
+    page.wait_for_timeout(500)
+    return True
+
+
+def _handle_parameter_popup(page: Any, log_dir: Path, step: str) -> bool:
+    dialog = _visible_dialog(page)
+    if not dialog:
+        return False
+    dialog_text, buttons = _dialog_details(dialog)
+    snapshot = _popup_snapshot(page, log_dir, step)
+    normalized = dialog_text.lower()
+    try:
+        decision = _vision_popup_decision(snapshot, step, dialog_text, buttons)
+    except Exception as exc:
+        decision = {"action": "manual_review", "reason": f"视觉模型调用失败：{exc}"}
+    known_schedule_permission = "allow your video to be saved for scheduled posting" in normalized
+    if known_schedule_permission and not (
+        decision.get("action") == "click" and str(decision.get("button_text") or "").strip().lower() == "allow"
+    ):
+        decision = {
+            "source": "known_popup_fallback",
+            "action": "click",
+            "button_text": "Allow",
+            "x": None,
+            "y": None,
+            "reason": "已确认的 TikTok 定时发布存储授权弹窗",
+        }
+    (log_dir / f"parameter-{step}-decision.json").write_text(
+        json.dumps(decision, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    button_text = str(decision.get("button_text") or "").strip()
+    safe_name = SAFE_POPUP_BUTTONS.get(button_text.lower())
+    allow_allowed = button_text.lower() != "allow" or known_schedule_permission
+    if decision.get("action") == "click" and safe_name and allow_allowed and button_text in buttons:
+        if _click_popup_coordinate(page, dialog, button_text, decision.get("x"), decision.get("y")):
+            return True
+    reason = str(decision.get("reason") or "弹窗不属于可自动处理的安全类型")
+    raise ManualReviewRequired(f"参数页出现未识别弹窗，已保留观测通道：{reason}")
+
+
+def _run_parameter_step(page: Any, log_dir: Path, step: str, action: Any) -> None:
+    try:
+        action()
+        return
+    except ManualReviewRequired:
+        raise
+    except Exception as first_error:
+        _popup_snapshot(page, log_dir, f"{step}-error")
+        if _handle_parameter_popup(page, log_dir, step):
+            try:
+                action()
+                return
+            except Exception as retry_error:
+                raise ManualReviewRequired(
+                    f"{step} 参数设置失败，已保留观测通道：{retry_error}"
+                ) from retry_error
+        raise ManualReviewRequired(f"{step} 参数设置失败，已保留观测通道：{first_error}") from first_error
+
+
+def _select_schedule_radio(page: Any, value: str, label_pattern: re.Pattern[str], log_dir: Path) -> None:
     selector = f"input[name='postSchedule'][value='{value}']"
     input_locator = page.locator(selector)
     role_locator = page.get_by_role("radio", name=label_pattern)
@@ -588,6 +783,7 @@ def _select_schedule_radio(page: Any, value: str, label_pattern: re.Pattern[str]
             option.click(timeout=3000)
         except Exception:
             continue
+        _handle_parameter_popup(page, log_dir, "schedule")
         for _ in range(10):
             if any(_radio_selected(state) for state in state_locators):
                 return
@@ -596,12 +792,12 @@ def _select_schedule_radio(page: Any, value: str, label_pattern: re.Pattern[str]
     raise RuntimeError(f"无法选择 TikTok Studio 的{label}选项")
 
 
-def _set_schedule(page: Any, mode: str, scheduled_at: str) -> None:
+def _set_schedule(page: Any, mode: str, scheduled_at: str, log_dir: Path) -> None:
     if mode == "server":
-        _select_schedule_radio(page, "post_now", re.compile(r"^now$|立即|现在", re.I))
+        _select_schedule_radio(page, "post_now", re.compile(r"^now$|立即|现在", re.I), log_dir)
         return
 
-    _select_schedule_radio(page, "schedule", re.compile(r"^schedule$|定时发布", re.I))
+    _select_schedule_radio(page, "schedule", re.compile(r"^schedule$|定时发布", re.I), log_dir)
     local = _parse_schedule(scheduled_at).astimezone(ZoneInfo(TIMEZONE_NAME))
     date_value = local.strftime("%Y-%m-%d")
     time_value = local.strftime("%H:%M")
@@ -795,9 +991,17 @@ def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[str,
             _set_video_file(page, video)
             page.wait_for_timeout(3000)
             _dismiss_upload_prompts(page)
-            _set_description(page, job["description"])
-            _set_ai_generated(page, bool(job["ai_generated"]))
-            _set_schedule(page, job["schedule_mode"], job["scheduled_at"])
+            if job["manual_publish"]:
+                page.screenshot(path=str(log_dir / "manual-ready.png"), full_page=True)
+                raise ManualPublishReady("视频已上传，等待在 noVNC 中手动填写参数并发布")
+            _run_parameter_step(page, log_dir, "description", lambda: _set_description(page, job["description"]))
+            _run_parameter_step(page, log_dir, "ai-generated", lambda: _set_ai_generated(page, bool(job["ai_generated"])))
+            _run_parameter_step(
+                page,
+                log_dir,
+                "schedule",
+                lambda: _set_schedule(page, job["schedule_mode"], job["scheduled_at"], log_dir),
+            )
             post_button = _first_visible([
                 page.get_by_role("button", name=re.compile(r"^post$|^publish$|^发布$", re.I)),
                 page.locator("button[data-e2e*='post']"),
@@ -837,7 +1041,7 @@ def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[str,
                 if not success:
                     raise ResultUncertain("已点击发布，但未收到明确成功信号，请人工确认，系统不会自动重试")
             return ("scheduled_on_tiktok" if job["schedule_mode"] == "tiktok" else "published"), page.url
-        except (ManualReviewRequired, ProductLinkReviewRequired, ProductLinkUnavailable, ResultUncertain):
+        except (ManualReviewRequired, ManualPublishReady, ProductLinkReviewRequired, ProductLinkUnavailable, ResultUncertain):
             raise
         except Exception as exc:
             if final_clicked:
@@ -887,6 +1091,11 @@ def _run_job(job_id: str) -> None:
     except ProductLinkReviewRequired as exc:
         keep_for_review = True
         _set_job(job_id, "product_link_review", "product_link_review", str(exc), session_id=session_id or None)
+        if session_id:
+            proxy_pool.handoff_automation_session(session_id, str(exc))
+    except ManualPublishReady as exc:
+        keep_for_review = True
+        _set_job(job_id, "manual_ready", "manual_ready", str(exc), session_id=session_id or None)
         if session_id:
             proxy_pool.handoff_automation_session(session_id, str(exc))
     except ProductLinkUnavailable as exc:
@@ -947,7 +1156,8 @@ def _claim_due_jobs() -> list[str]:
             SELECT id FROM publish_jobs
             WHERE status IN ('queued','delayed')
               AND (next_attempt_at = '' OR next_attempt_at <= ?)
-              AND (schedule_mode = 'tiktok'
+              AND (manual_publish = 1
+                OR schedule_mode = 'tiktok'
                 OR (schedule_mode = 'server' AND scheduled_at <= ?))
             ORDER BY scheduled_at ASC LIMIT ?
             """,
