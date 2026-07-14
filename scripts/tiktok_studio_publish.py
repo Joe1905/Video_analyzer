@@ -106,6 +106,14 @@ def _parse_schedule(value: Any) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
+def _normalize_native_schedule(value: datetime) -> datetime:
+    normalized = value.astimezone(timezone.utc).replace(second=0, microsecond=0)
+    remainder = normalized.minute % 5
+    if remainder:
+        normalized += timedelta(minutes=5 - remainder)
+    return normalized
+
+
 def _clean_text(value: Any, limit: int) -> str:
     return str(value or "").strip()[:limit]
 
@@ -192,6 +200,8 @@ def create_job(form: Any) -> dict[str, Any]:
     scheduled_at = _parse_schedule(form.getfirst("scheduled_at"))
     schedule_mode = _resolve_schedule_mode(schedule_mode, scheduled_at, queued)
     if not manual_publish:
+        if queued and schedule_mode == "tiktok":
+            scheduled_at = _normalize_native_schedule(scheduled_at)
         _validate_schedule(schedule_mode, scheduled_at, queued)
     try:
         file_item = form["video"]
@@ -298,6 +308,8 @@ def update_job(payload: dict[str, Any]) -> dict[str, Any]:
             keep_observing = True
             mode = "tiktok"
         else:
+            if queue and mode == "tiktok":
+                scheduled = _normalize_native_schedule(scheduled)
             _validate_schedule(mode, scheduled, queue)
         status = "queued" if queue else "draft"
         conn.execute(
@@ -353,6 +365,7 @@ def retry_job(payload: dict[str, Any]) -> dict[str, Any]:
             mode = "server"
             scheduled = now
         else:
+            scheduled = _normalize_native_schedule(scheduled)
             _validate_schedule(mode, scheduled, True)
         requested_session_id = int(payload.get("observation_session_id") or 0) or None
         conn.execute(
@@ -792,15 +805,111 @@ def _select_schedule_radio(page: Any, value: str, label_pattern: re.Pattern[str]
     raise RuntimeError(f"无法选择 TikTok Studio 的{label}选项")
 
 
+def _custom_schedule_fields(page: Any) -> tuple[Any | None, Any | None]:
+    container = page.locator("[data-e2e='schedule_container']")
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        time_field = None
+        date_field = None
+        fields = container.locator("input.TUXTextInputCore-input[readonly]")
+        for index in range(fields.count()):
+            field = fields.nth(index)
+            try:
+                if not field.is_visible():
+                    continue
+                value = field.input_value()
+            except Exception:
+                continue
+            if re.fullmatch(r"\d{2}:\d{2}", value):
+                time_field = field
+            elif re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+                date_field = field
+        if time_field and date_field:
+            return time_field, date_field
+        page.wait_for_timeout(200)
+    return None, None
+
+
+def _select_custom_date(page: Any, date_field: Any, target: datetime) -> None:
+    expected = target.strftime("%Y-%m-%d")
+    if date_field.input_value() == expected:
+        return
+    date_field.click(timeout=5000)
+    calendar = _first_visible([page.locator(".calendar-wrapper")])
+    if not calendar:
+        raise RuntimeError("TikTok 日期选择器未打开")
+    target_month = (target.year, target.month)
+    for _ in range(24):
+        month_text = calendar.locator(".month-title").inner_text().strip()
+        year_text = calendar.locator(".year-title").inner_text().strip()
+        try:
+            current = datetime.strptime(f"{month_text} {year_text}", "%B %Y")
+        except ValueError as exc:
+            raise RuntimeError(f"无法识别 TikTok 日历月份：{month_text} {year_text}") from exc
+        current_month = (current.year, current.month)
+        if current_month == target_month:
+            break
+        arrows = calendar.locator(".month-header-wrapper .arrow")
+        if arrows.count() < 2:
+            raise RuntimeError("TikTok 日期选择器缺少月份切换按钮")
+        arrows.first.click() if current_month > target_month else arrows.last.click()
+        page.wait_for_timeout(200)
+    else:
+        raise RuntimeError("目标日期超出 TikTok 日期选择范围")
+    day = calendar.locator("span.day.valid").filter(has_text=re.compile(rf"^{target.day}$"))
+    if not day.count():
+        raise RuntimeError(f"TikTok 日期选择器中没有可选日期 {expected}")
+    day.first.click(timeout=5000)
+    page.wait_for_timeout(200)
+    if date_field.input_value() != expected:
+        raise RuntimeError(f"TikTok 日期设置未生效：期望 {expected}，当前 {date_field.input_value()}")
+
+
+def _select_custom_time(page: Any, time_field: Any, target: datetime) -> None:
+    expected = target.strftime("%H:%M")
+    if time_field.input_value() == expected:
+        return
+    time_field.click(timeout=5000)
+    picker = _first_visible([
+        page.locator(".tiktok-timepicker-time-picker-container:not(.tiktok-timepicker-invisible)"),
+    ])
+    if not picker:
+        raise RuntimeError("TikTok 时间选择器未打开")
+    option_lists = picker.locator(".tiktok-timepicker-option-list")
+    if option_lists.count() < 2:
+        raise RuntimeError("TikTok 时间选择器结构异常")
+    values = (target.strftime("%H"), target.strftime("%M"))
+    for index, value in enumerate(values):
+        option = option_lists.nth(index).locator(".tiktok-timepicker-option-text").filter(
+            has_text=re.compile(rf"^{re.escape(value)}$")
+        )
+        if not option.count():
+            raise RuntimeError(f"TikTok 时间选择器中没有可选值 {value}")
+        option.first.scroll_into_view_if_needed()
+        option.first.click(timeout=5000)
+        page.wait_for_timeout(150)
+    try:
+        page.keyboard.press("Escape")
+    except Exception:
+        pass
+    if time_field.input_value() != expected:
+        raise RuntimeError(f"TikTok 时间设置未生效：期望 {expected}，当前 {time_field.input_value()}")
+
+
 def _set_schedule(page: Any, mode: str, scheduled_at: str, log_dir: Path) -> None:
     if mode == "server":
         _select_schedule_radio(page, "post_now", re.compile(r"^now$|立即|现在", re.I), log_dir)
         return
 
     _select_schedule_radio(page, "schedule", re.compile(r"^schedule$|定时发布", re.I), log_dir)
-    local = _parse_schedule(scheduled_at).astimezone(ZoneInfo(TIMEZONE_NAME))
+    local = _normalize_native_schedule(_parse_schedule(scheduled_at)).astimezone(ZoneInfo(TIMEZONE_NAME))
     date_value = local.strftime("%Y-%m-%d")
     time_value = local.strftime("%H:%M")
+    custom_time, custom_date = _custom_schedule_fields(page)
+    if custom_time and custom_date:
+        _select_custom_date(page, custom_date, local)
+        _select_custom_time(page, custom_time, local)
+        return
     date_input = None
     time_input = None
     deadline = time.time() + 5
