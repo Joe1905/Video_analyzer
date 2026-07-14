@@ -31,6 +31,9 @@ if [ -f ".env" ]; then
   set +a
 fi
 
+workspace_root="$(pwd)"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 VISION_API_URL="${VISION_API_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}"
 VISION_MODEL="${VISION_MODEL:-qwen3-vl-flash}"
 HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
@@ -45,8 +48,11 @@ for name in "${required_vars[@]}"; do
 done
 
 video_name="$1"
-video_path="videos/${video_name}"
-output_dir="${ANALYSIS_OUTPUT_DIR:-output/${video_name}}"
+video_path="${workspace_root}/videos/${video_name}"
+output_dir="${ANALYSIS_OUTPUT_DIR:-${workspace_root}/output/${video_name}}"
+analysis_work_dir="${ANALYSIS_WORK_DIR:-${workspace_root}}"
+mkdir -p "$analysis_work_dir"
+cd "$analysis_work_dir"
 
 if [ ! -f "$video_path" ]; then
   echo "Video file not found: $video_path"
@@ -144,7 +150,7 @@ fi
 
 elapsed_seconds="$(( $(date +%s) - start_epoch ))"
 log "standardizing analysis elapsed_seconds=${elapsed_seconds}"
-python scripts/standardize_analysis.py "$output_dir" --mode analyzer --elapsed-seconds "$elapsed_seconds" --video-path "$video_path"
+python "${script_dir}/standardize_analysis.py" "$output_dir" --mode analyzer --elapsed-seconds "$elapsed_seconds" --video-path "$video_path"
 log "standardization finished"
 
 if [ "${ANALYZER_DIRECT_FALLBACK:-1}" != "0" ]; then
@@ -179,7 +185,7 @@ PY
     if [ "${ANALYSIS_PROMPT_FILE:-}" != "" ] && [ -f "$ANALYSIS_PROMPT_FILE" ]; then
       direct_args+=(--prompt-file "$ANALYSIS_PROMPT_FILE")
     fi
-    python scripts/direct_video_analyze.py "${direct_args[@]}"
+    python "${script_dir}/direct_video_analyze.py" "${direct_args[@]}"
     log "direct video fallback finished"
   fi
 else

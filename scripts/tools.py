@@ -1043,9 +1043,12 @@ def _run_video_analyze(filename: str, force: bool = False) -> dict:
             data["_cache"] = {"hit": True, "provider": "video_registry", "endpoint": "analysis"}
         return data
     staging_dir = out_dir.parent / f".{out_dir.name}.rebuild-{uuid.uuid4().hex}"
+    analysis_work_dir = ROOT / "data" / "analyzer_runs" / uuid.uuid4().hex
+    analysis_work_dir.mkdir(parents=True, exist_ok=True)
     cmd = ["bash", str(SCRIPTS_DIR / "analyze_one.sh"), filename]
     env = os.environ.copy()
     env["ANALYSIS_OUTPUT_DIR"] = str(staging_dir if force else out_dir)
+    env["ANALYSIS_WORK_DIR"] = str(analysis_work_dir)
     timeout = max(600, int(os.getenv("VIDEO_ANALYZE_TIMEOUT", "1800")))
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=ROOT, env=env)
@@ -1080,6 +1083,7 @@ def _run_video_analyze(filename: str, force: bool = False) -> dict:
     finally:
         if staging_dir.exists():
             shutil.rmtree(staging_dir, ignore_errors=True)
+        shutil.rmtree(analysis_work_dir, ignore_errors=True)
 
 
 def _run_video_direct_analyze(filename: str) -> dict:

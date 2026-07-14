@@ -71,6 +71,14 @@ def insert_report_video(conn, report_id: str, report_date: str, video_id: str, s
 
 
 class HotReportSelectionTests(unittest.TestCase):
+    def test_analyzer_script_isolates_legacy_frame_workdir(self) -> None:
+        script = (Path(__file__).parent / "analyze_one.sh").read_text(encoding="utf-8")
+
+        self.assertIn('analysis_work_dir="${ANALYSIS_WORK_DIR:-${workspace_root}}"', script)
+        self.assertIn('cd "$analysis_work_dir"', script)
+        self.assertIn('video_path="${workspace_root}/videos/${video_name}"', script)
+        self.assertIn('python "${script_dir}/standardize_analysis.py"', script)
+
     def test_default_parallel_processing_budget_stays_under_one_hour(self) -> None:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("REPORT_VIDEO_TIMEOUT", None)
