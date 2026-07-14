@@ -142,11 +142,12 @@ data/hot_video_report.sqlite
 ```
 
 It uses the existing SociaVault settings, especially `SOCIAVAULT_API_KEY`, `SOCIAVAULT_API_BASE`, and `SOCIAVAULT_REGION`.
-The primary hot-video source is SociaVault `videos-popular`, using `days`, `page`, `count`, and `sort_by`.
-`HOT_VIDEO_POPULAR_SORTS` controls the sort list (default: `views,likes`), and `HOT_VIDEO_POPULAR_MAX_PAGES` caps dynamic pagination (default: `5`).
+The report samples topic search, `videos-popular`, and trending sources before ranking candidates globally. Each configured topic can reserve at most one slot; all remaining slots compete by hot score.
+`HOT_VIDEO_TOPIC_SORT_BY` defaults to `views`. `HOT_VIDEO_TOPIC_MIN_PLAY_COUNT` and `HOT_VIDEO_STREAM_MIN_PLAY_COUNT` default to `50000` so low-view search results do not fill the report.
+`HOT_VIDEO_POPULAR_SORTS` controls the popular sort list (default: `views,likes`), and `HOT_VIDEO_POPULAR_MAX_PAGES` caps dynamic pagination (default: `15`).
 The report target count is the report analysis count setting (default: `10`), so displayed and analyzed videos stay aligned.
-Each collection round fetches `ceil(remaining_target * 2)` total videos across configured sorts, then advances the API page until the target is filled or max pages is reached.
-If `videos-popular` is unavailable, the report falls back to the older `trending` and `search-top` sources so the daily job can still attempt to run.
+The first page of each source family is always sampled. Additional popular and trending pages are fetched only while the candidate pool remains below its target.
+If a source is unavailable, the remaining topic, popular, trending, and legacy fallback sources can still supply candidates.
 
 Recent-window filtering for hot-videos is controlled by `HOT_VIDEO_RECENT_DAYS` (default: `7`), so only videos published in the last N days are considered by default.
 Expired videos that are older than this window are cleaned from report records on report queries/sync runs, so old cards disappear end-to-end.

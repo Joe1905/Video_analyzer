@@ -939,8 +939,8 @@ def _collect_hot_video_candidates(
     cutoff_ts = time.time() - recency_days * 86400
     max_pages = max(1, _to_int(os.getenv("HOT_VIDEO_POPULAR_MAX_PAGES", "15")))
     source_errors: list[str] = []
-    topic_min_views = max(0, _to_int(os.getenv("HOT_VIDEO_TOPIC_MIN_PLAY_COUNT", "5000")))
-    stream_min_views = max(0, _to_int(os.getenv("HOT_VIDEO_STREAM_MIN_PLAY_COUNT", "10000")))
+    topic_min_views = max(0, _to_int(os.getenv("HOT_VIDEO_TOPIC_MIN_PLAY_COUNT", "50000")))
+    stream_min_views = max(0, _to_int(os.getenv("HOT_VIDEO_STREAM_MIN_PLAY_COUNT", "50000")))
 
     def collect_from(endpoint: str, params: dict[str, Any], label: str, min_play_count: int, bucket: str) -> int:
         _progress_payload(report_date, "running", "collecting", 6, f"Collecting source: {label}", counts)
@@ -1011,7 +1011,7 @@ def _collect_hot_video_candidates(
                 source_errors.append(f"{label}: {exc}")
 
     page = 1
-    while len(candidates) < target_count and page <= max_pages:
+    while page <= max_pages and (page == 1 or len(candidates) < target_count):
         remaining = target_count - len(candidates)
         total_fetch = max(20, remaining * 3)
         popular_source_count = max(1, len(_split_csv_env("HOT_VIDEO_POPULAR_SORTS", "views,likes")))
@@ -1028,7 +1028,7 @@ def _collect_hot_video_candidates(
         page += 1
 
     page = 1
-    while len(candidates) < target_count and page <= max_pages:
+    while page <= max_pages and (page == 1 or len(candidates) < target_count):
         remaining = target_count - len(candidates)
         fetch_count = max(20, remaining * 3)
         page_success = False
@@ -1569,13 +1569,13 @@ def _topic_source_requests(
     common = {"query": topic, "region": region, "count": count, "days": recency_days}
     if not fallback:
         params = dict(common)
-        params["sort_by"] = os.getenv("HOT_VIDEO_TOPIC_SORT_BY", "create_time").strip() or "create_time"
+        params["sort_by"] = os.getenv("HOT_VIDEO_TOPIC_SORT_BY", "views").strip() or "views"
         return [("search-top", params, f"topic-search-top:{topic}")]
     requests: list[tuple[str, dict[str, Any], str]] = [
         ("search-keyword", dict(common), f"topic-search-keyword:{topic}"),
         (
             "search-top",
-            {**common, "page": 2, "sort_by": os.getenv("HOT_VIDEO_TOPIC_SORT_BY", "create_time").strip() or "create_time"},
+            {**common, "page": 2, "sort_by": os.getenv("HOT_VIDEO_TOPIC_SORT_BY", "views").strip() or "views"},
             f"topic-search-top:{topic}:p2",
         ),
     ]
@@ -1622,7 +1622,7 @@ def _rank_with_topic_guarantees(
     topic_keywords: list[str],
     target_count: int,
 ) -> list[dict[str, Any]]:
-    selected: list[dict[str, Any]] = []
+    primary: list[dict[str, Any]] = []
     selected_keys: set[tuple[str, str]] = set()
     sorted_candidates = sorted(candidates, key=lambda item: item["hot_score"], reverse=True)
     if topic_keywords and target_count >= len(topic_keywords):
@@ -1646,30 +1646,23 @@ def _rank_with_topic_guarantees(
             item = topic_items[0]
             key = (item["platform"], item["video_id"])
             if key not in selected_keys:
-                selected.append(item)
+                primary.append(item)
                 selected_keys.add(key)
-    for bucket in ("topic", "stream"):
-        for item in sorted_candidates:
-            if len(selected) >= target_count:
-                break
-            if item.get("selection_bucket") != bucket:
-                continue
-            key = (item["platform"], item["video_id"])
-            if key in selected_keys:
-                continue
-            selected.append(item)
-            selected_keys.add(key)
-        if len(selected) >= target_count:
-            break
     for item in sorted_candidates:
-        if len(selected) >= target_count:
+        if len(primary) >= target_count:
             break
         key = (item["platform"], item["video_id"])
         if key in selected_keys:
             continue
-        selected.append(item)
+        primary.append(item)
         selected_keys.add(key)
-    return selected[:target_count]
+    primary.sort(key=lambda item: item["hot_score"], reverse=True)
+    fallback = [
+        item
+        for item in sorted_candidates
+        if (item["platform"], item["video_id"]) not in selected_keys
+    ]
+    return primary + fallback
 
 
 def _start_report(conn: sqlite3.Connection, report_date: str, region: str, sources: list[dict[str, Any]], scheduled: bool = False) -> str:
@@ -3346,7 +3339,7 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
                     counts,
                     excluded_keys,
                 )
-                ranked = _rank_with_topic_guarantees(list(candidates.values()), topic_keywords, candidate_target_count)
+                ranked = _rank_with_topic_guarantees(list(candidates.values()), topic_keywords, target_count)
                 counts["topic_guaranteed_count"] = sum(1 for item in ranked[:target_count] if item.get("selection_bucket") == "topic")
                 if not ranked:
                     suffix = f"; source errors: {' | '.join(source_errors[:3])}" if source_errors else ""
