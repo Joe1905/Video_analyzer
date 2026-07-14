@@ -150,6 +150,12 @@ def _validate_schedule(mode: str, scheduled_at: datetime, queued: bool) -> None:
         raise ValueError(f"TikTok 定时发布至少需要提前 {NATIVE_MIN_MINUTES} 分钟")
 
 
+def _resolve_schedule_mode(mode: str, scheduled_at: datetime, queued: bool) -> str:
+    if queued and mode == "tiktok" and scheduled_at <= _utc_now():
+        return "server"
+    return mode
+
+
 def create_job(form: Any) -> dict[str, Any]:
     account_id = int(form.getfirst("account_id") or 0)
     if not account_id:
@@ -160,6 +166,7 @@ def create_job(form: Any) -> dict[str, Any]:
     requested_session_id = int(form.getfirst("observation_session_id") or 0)
     schedule_mode = "server" if action == "immediate" else "tiktok"
     scheduled_at = _parse_schedule(form.getfirst("scheduled_at"))
+    schedule_mode = _resolve_schedule_mode(schedule_mode, scheduled_at, queued)
     _validate_schedule(schedule_mode, scheduled_at, queued)
     try:
         file_item = form["video"]
@@ -258,7 +265,8 @@ def update_job(payload: dict[str, Any]) -> dict[str, Any]:
             else row["session_id"]
         )
         queue = bool(payload.get("queue"))
-        mode = "server" if bool(payload.get("keep_observing")) else "tiktok"
+        mode = "server" if keep_observing else "tiktok"
+        mode = _resolve_schedule_mode(mode, scheduled, queue)
         _validate_schedule(mode, scheduled, queue)
         status = "queued" if queue else "draft"
         conn.execute(
