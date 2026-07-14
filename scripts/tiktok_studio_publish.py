@@ -29,7 +29,7 @@ DRY_RUN = os.getenv("TIKTOK_PUBLISH_DRY_RUN", "1").strip().lower() in {"1", "tru
 UPLOAD_TIMEOUT_SECONDS = max(60, int(os.getenv("TIKTOK_PUBLISH_UPLOAD_TIMEOUT_SECONDS", "1800") or "1800"))
 ALLOWED_SUFFIXES = {".mp4", ".mov", ".m4v", ".webm"}
 EDITABLE_STATUSES = {"draft", "queued", "delayed", "failed", "cancelled", "dry_run", "manual_ready"}
-RETRYABLE_STATUSES = {"failed", "product_link_failed"}
+RETRYABLE_STATUSES = {"failed", "product_link_failed", "product_link_review"}
 DELETE_BLOCKED_STATUSES = {"preparing", "uploading", "publishing", "scheduled_on_tiktok"}
 STATUS_LABELS = {
     "draft": "草稿箱",
@@ -1014,7 +1014,7 @@ def _find_product_row(page: Any, product_id: str) -> Any | None:
     return None
 
 
-def _open_product_link_review(page: Any, product_id: str, log_dir: Path) -> None:
+def _add_product_link(page: Any, product_id: str, log_dir: Path) -> None:
     product = _selected_product(product_id)
     add_link = _first_visible([
         page.locator("button[data-e2e*='add-link' i]"),
@@ -1076,9 +1076,50 @@ def _open_product_link_review(page: Any, product_id: str, log_dir: Path) -> None
         _cancel_product_link(page)
         raise ProductLinkUnavailable(f"商品 ID {product['product_id']} 未能选中，已取消 Add link")
     page.screenshot(path=str(log_dir / "product-selected.png"), full_page=True)
-    raise ProductLinkReviewRequired(
-        f"已勾选商品：{product['product_name']}（ID {product['product_id']}），等待人工确认后点击 Next；系统未点击最终发布"
+    next_button.click(timeout=5000)
+    product_name_hint = page.get_by_text(
+        re.compile(r"product name will appear on your video|商品名称.*视频", re.I)
     )
+    try:
+        product_name_hint.wait_for(state="visible", timeout=15000)
+    except Exception as exc:
+        page.screenshot(path=str(log_dir / "product-next-failed.png"), full_page=True)
+        if _handle_parameter_popup(page, log_dir, "product-next"):
+            try:
+                product_name_hint.wait_for(state="visible", timeout=10000)
+            except Exception as retry_exc:
+                raise ManualReviewRequired("LLM 已处理 Next 后的提示，但仍未进入商品名称确认页") from retry_exc
+        else:
+            raise ManualReviewRequired("商品已选中，但点击 Next 后未进入商品名称确认页") from exc
+
+    detail_dialog = _visible_dialog(page)
+    if not detail_dialog:
+        raise ManualReviewRequired("商品名称确认页已出现，但未检测到 Add product links 弹窗")
+    product_name_input = _first_visible([
+        detail_dialog.get_by_role("textbox"),
+        detail_dialog.locator("input:not([type='hidden'])"),
+    ])
+    if not product_name_input or not str(product_name_input.input_value() or "").strip():
+        raise ManualReviewRequired("商品名称确认页没有可用的默认商品名称")
+    add_button = _first_visible([
+        detail_dialog.get_by_role("button", name=re.compile(r"^add$|^添加$", re.I)),
+    ])
+    if not add_button or not add_button.is_enabled():
+        raise ManualReviewRequired("商品名称确认页的 Add 按钮不可用")
+    page.screenshot(path=str(log_dir / "product-name-ready.png"), full_page=True)
+    add_button.click(timeout=5000)
+    try:
+        detail_dialog.wait_for(state="hidden", timeout=15000)
+    except Exception as exc:
+        page.screenshot(path=str(log_dir / "product-add-failed.png"), full_page=True)
+        raise ManualReviewRequired("点击 Add 后商品绑定弹窗未关闭") from exc
+    product_name = _first_visible([
+        page.get_by_text(re.compile(re.escape(product["product_name"][:24]), re.I)),
+    ])
+    if not product_name:
+        page.screenshot(path=str(log_dir / "product-link-unconfirmed.png"), full_page=True)
+        raise ManualReviewRequired("商品弹窗已关闭，但页面未显示所选商品，无法确认绑定成功")
+    page.screenshot(path=str(log_dir / "product-linked.png"), full_page=True)
 
 
 def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[str, str]:
@@ -1154,7 +1195,7 @@ def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[str,
                 raise RuntimeError(f"等待视频处理完成超过 {UPLOAD_TIMEOUT_SECONDS} 秒")
             page.screenshot(path=str(log_dir / "ready-to-publish.png"), full_page=True)
             if job["product_link"]:
-                _open_product_link_review(page, str(job["product_link"]), log_dir)
+                _add_product_link(page, str(job["product_link"]), log_dir)
             if DRY_RUN:
                 return "dry_run", page.url
             _set_job(job["id"], "publishing", "final_click", session_id=session["id"], final_click_at=_iso())
