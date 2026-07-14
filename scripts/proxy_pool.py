@@ -205,6 +205,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             description TEXT NOT NULL DEFAULT '',
             ai_generated INTEGER NOT NULL DEFAULT 0,
             product_link TEXT NOT NULL DEFAULT '',
+            keep_observing INTEGER NOT NULL DEFAULT 0,
             schedule_mode TEXT NOT NULL DEFAULT 'server',
             scheduled_at TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'draft',
@@ -263,6 +264,8 @@ def init_db(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE publish_jobs ADD COLUMN deleted_at TEXT NOT NULL DEFAULT ''")
     if "product_link" not in existing_publish_cols:
         conn.execute("ALTER TABLE publish_jobs ADD COLUMN product_link TEXT NOT NULL DEFAULT ''")
+    if "keep_observing" not in existing_publish_cols:
+        conn.execute("ALTER TABLE publish_jobs ADD COLUMN keep_observing INTEGER NOT NULL DEFAULT 0")
     conn.commit()
 
 
@@ -1847,6 +1850,48 @@ def stop_login_session(payload: dict[str, Any]) -> dict[str, Any]:
 
 def start_automation_session(account_id: int, job_id: str) -> dict[str, Any]:
     return start_login_session({"account_id": account_id, "_automation": True, "_current_job_id": job_id})
+
+
+def claim_observation_session_for_job(account_id: int, session_id: int, job_id: str) -> dict[str, Any] | None:
+    if not session_id:
+        return None
+    conn = connect()
+    try:
+        _active_sessions(conn)
+        row = _session_by_id(conn, session_id)
+        if int(row["account_id"] or 0) != int(account_id):
+            raise ValueError("观测通道不属于当前账号")
+        if row["status"] not in {"starting", "running", "observing"}:
+            return None
+        current_job_id = str(row["current_job_id"] or "")
+        if current_job_id and current_job_id != job_id:
+            raise ValueError("观测通道正在执行其他任务")
+        conn.execute(
+            "UPDATE browser_sessions SET current_job_id = ?, updated_at = ? WHERE id = ?",
+            (_clean_text(job_id, 80), now_iso(), session_id),
+        )
+        conn.commit()
+        return _row_to_session(_session_by_id(conn, session_id))
+    finally:
+        conn.close()
+
+
+def release_observation_session_job(session_id: int, job_id: str) -> dict[str, Any] | None:
+    if not session_id:
+        return None
+    conn = connect()
+    try:
+        row = _session_by_id(conn, session_id)
+        if str(row["current_job_id"] or "") not in {"", str(job_id)}:
+            raise ValueError("观测通道正在执行其他任务")
+        conn.execute(
+            "UPDATE browser_sessions SET current_job_id = '', updated_at = ? WHERE id = ?",
+            (now_iso(), session_id),
+        )
+        conn.commit()
+        return _row_to_session(_session_by_id(conn, session_id))
+    finally:
+        conn.close()
 
 
 def finish_automation_session(session_id: int, reason: str = "自动发布任务结束") -> dict[str, Any]:

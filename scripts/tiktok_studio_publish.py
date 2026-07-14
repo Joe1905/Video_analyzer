@@ -11,7 +11,6 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 import proxy_pool
@@ -83,13 +82,7 @@ def _clean_text(value: Any, limit: int) -> str:
 
 
 def _clean_product_link(value: Any) -> str:
-    link = _clean_text(value, 2000)
-    if not link:
-        return ""
-    parsed = urlparse(link)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ValueError("绑定商品链接必须是完整的 http:// 或 https:// URL")
-    return link
+    return _clean_text(value, 2000)
 
 
 def _row_to_job(row: Any) -> dict[str, Any]:
@@ -105,6 +98,7 @@ def _row_to_job(row: Any) -> dict[str, Any]:
         "ai_generated": bool(row["ai_generated"]),
         "product_link": row["product_link"],
         "product_link_status": "待绑定" if row["product_link"] else "不添加",
+        "keep_observing": bool(row["keep_observing"]),
         "schedule_mode": row["schedule_mode"],
         "scheduled_at": row["scheduled_at"],
         "status": row["status"],
@@ -153,6 +147,8 @@ def create_job(form: Any) -> dict[str, Any]:
         raise ValueError("account_id is required")
     action = _clean_text(form.getfirst("action"), 20) or "queue"
     queued = action != "draft"
+    keep_observing = action == "immediate"
+    requested_session_id = int(form.getfirst("observation_session_id") or 0)
     schedule_mode = _clean_text(form.getfirst("schedule_mode"), 20) or "server"
     scheduled_at = _parse_schedule(form.getfirst("scheduled_at"))
     _validate_schedule(schedule_mode, scheduled_at, queued)
@@ -205,9 +201,10 @@ def create_job(form: Any) -> dict[str, Any]:
                 """
                 INSERT INTO publish_jobs (
                     id, account_id, proxy_profile_id, asset_id, description, ai_generated,
-                    product_link, schedule_mode, scheduled_at, status, stage, attempt_count, next_attempt_at,
+                    product_link, keep_observing, schedule_mode, scheduled_at, status, stage, attempt_count, next_attempt_at,
+                    session_id,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 0, '', ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 0, '', ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -217,9 +214,11 @@ def create_job(form: Any) -> dict[str, Any]:
                     _clean_text(form.getfirst("description"), 2200),
                     1 if str(form.getfirst("ai_generated") or "").lower() in {"1", "true", "yes", "on"} else 0,
                     _clean_product_link(form.getfirst("product_link")),
+                    1 if keep_observing else 0,
                     schedule_mode,
                     _iso(scheduled_at),
                     "queued" if queued else "draft",
+                    requested_session_id or None,
                     now,
                     now,
                 ),
@@ -244,18 +243,26 @@ def update_job(payload: dict[str, Any]) -> dict[str, Any]:
         mode = _clean_text(payload.get("schedule_mode"), 20) or row["schedule_mode"]
         scheduled = _parse_schedule(payload.get("scheduled_at") or row["scheduled_at"])
         product_link = _clean_product_link(payload["product_link"]) if "product_link" in payload else str(row["product_link"] or "")
+        keep_observing = bool(payload["keep_observing"]) if "keep_observing" in payload else bool(row["keep_observing"])
+        requested_session_id = (
+            int(payload.get("observation_session_id") or 0) or None
+            if "observation_session_id" in payload
+            else row["session_id"]
+        )
         queue = bool(payload.get("queue"))
         _validate_schedule(mode, scheduled, queue)
         status = "queued" if queue else "draft"
         conn.execute(
-            "UPDATE publish_jobs SET description = ?, ai_generated = ?, product_link = ?, schedule_mode = ?, scheduled_at = ?, status = ?, stage = '', attempt_count = 0, next_attempt_at = '', session_id = NULL, final_click_at = '', actual_publish_at = '', result_url = '', last_error = '', updated_at = ? WHERE id = ?",
+            "UPDATE publish_jobs SET description = ?, ai_generated = ?, product_link = ?, keep_observing = ?, schedule_mode = ?, scheduled_at = ?, status = ?, stage = '', attempt_count = 0, next_attempt_at = '', session_id = ?, final_click_at = '', actual_publish_at = '', result_url = '', last_error = '', updated_at = ? WHERE id = ?",
             (
                 _clean_text(payload.get("description"), 2200),
                 1 if payload.get("ai_generated") else 0,
                 product_link,
+                1 if keep_observing else 0,
                 mode,
                 _iso(scheduled),
                 status,
+                requested_session_id,
                 _iso(),
                 job_id,
             ),
@@ -643,13 +650,20 @@ def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[str,
 def _run_job(job_id: str) -> None:
     session_id = 0
     keep_for_review = False
+    reused_observation = False
+    keep_observing = False
     try:
         jobs = _job_query("j.id = ?", (job_id,))
         if not jobs:
             return
         job = jobs[0]
-        session_result = proxy_pool.start_automation_session(int(job["account_id"]), job_id)
-        session = session_result["session"]
+        keep_observing = bool(job.get("keep_observing"))
+        requested_session_id = int(job.get("session_id") or 0)
+        session = proxy_pool.claim_observation_session_for_job(int(job["account_id"]), requested_session_id, job_id)
+        if session is not None:
+            reused_observation = True
+        else:
+            session = proxy_pool.start_automation_session(int(job["account_id"]), job_id)["session"]
         session_id = int(session["id"])
         _set_job(job_id, "preparing", "browser_ready", session_id=session_id)
         status, result_url = _execute_browser(job, session)
@@ -659,6 +673,9 @@ def _run_job(job_id: str) -> None:
         if status == "dry_run" and session_id:
             keep_for_review = True
             proxy_pool.handoff_automation_session(session_id, "演练已到达最终发布前，保留观测通道")
+        elif keep_observing and session_id:
+            keep_for_review = True
+            proxy_pool.handoff_automation_session(session_id, "立即发布完成，保留观测通道")
     except ManualReviewRequired as exc:
         keep_for_review = True
         _set_job(job_id, "failed", "manual_review", str(exc), session_id=session_id or None)
@@ -679,11 +696,16 @@ def _run_job(job_id: str) -> None:
             _set_job(job_id, "failed", "failed", message, session_id=session_id or None)
             if 'job' in locals():
                 _update_account(int(job["account_id"]), error=message)
-            if DRY_RUN and session_id:
+            if session_id and (DRY_RUN or reused_observation or keep_observing):
                 keep_for_review = True
-                proxy_pool.handoff_automation_session(session_id, f"演练失败，保留观测通道：{message}")
+                proxy_pool.handoff_automation_session(session_id, f"发布失败，保留观测通道：{message}")
     finally:
-        if session_id and not keep_for_review:
+        if session_id and reused_observation and not keep_for_review:
+            try:
+                proxy_pool.release_observation_session_job(session_id, job_id)
+            except Exception as exc:
+                print(f"Publish observation session release failed for {job_id}: {exc}", flush=True)
+        elif session_id and not keep_for_review:
             try:
                 proxy_pool.finish_automation_session(session_id)
             except Exception as exc:
