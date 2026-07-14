@@ -88,14 +88,18 @@ def novnc_port_plan() -> dict[str, Any]:
     max_slots = browser_max_slots()
     manual_ports = max(1, NOVNC_MANUAL_PORTS)
     total_ports = max_slots + manual_ports
-    end_port = NOVNC_PORT + total_ports - 1
+    # NOVNC_PORT is reserved for the existing server-level desktop. Account
+    # sessions use the following ports so they cannot attach to another app.
+    session_base = NOVNC_PORT + 1
+    end_port = session_base + total_ports - 1
     return {
-        "base_port": NOVNC_PORT,
+        "base_port": session_base,
+        "reserved_port": NOVNC_PORT,
         "manual_ports": manual_ports,
         "max_slots": max_slots,
         "total_ports": total_ports,
-        "allowed_ports": list(range(NOVNC_PORT, end_port + 1)),
-        "allowed_range": f"{NOVNC_PORT}-{end_port}" if end_port != NOVNC_PORT else str(NOVNC_PORT),
+        "allowed_ports": list(range(session_base, end_port + 1)),
+        "allowed_range": f"{session_base}-{end_port}" if end_port != session_base else str(session_base),
     }
 
 
@@ -589,14 +593,17 @@ def _allocate_session_slot(conn: sqlite3.Connection) -> int:
     max_slots = browser_max_slots()
     used = {int(row["slot"] or 0) for row in _active_sessions(conn)}
     for slot in range(1, max_slots + 1):
-        if slot not in used:
+        if slot not in used and _slot_ports_available(slot):
             return slot
-    raise ValueError(f"浏览器观测槽位已满，当前最多同时运行 {max_slots} 个")
+    raise ValueError(f"浏览器观测槽位已满或端口被占用，当前最多同时运行 {max_slots} 个")
 
 
 def _allocate_manual_slot(conn: sqlite3.Connection) -> int:
     if any(int(row["slot"] or 0) == 0 for row in _active_sessions(conn)):
         raise ValueError("手动登录观测通道正在使用，请先完成或关闭当前登录")
+    if not _slot_ports_available(0):
+        ports = _slot_ports(0)
+        raise ValueError(f"手动登录观测通道端口被占用：VNC {ports['vnc_port']} / noVNC {ports['novnc_port']} / CDP {ports['debug_port']}")
     return 0
 
 
@@ -642,13 +649,27 @@ def _novnc_web_dir() -> str:
 
 
 def _slot_ports(slot: int) -> dict[str, Any]:
-    manual_ports = max(1, NOVNC_MANUAL_PORTS)
+    # Auto slots occupy the first ports after the reserved server desktop;
+    # the single manual login slot is placed after all auto slots.
+    max_slots = browser_max_slots()
+    offset = slot if slot > 0 else max_slots + max(1, NOVNC_MANUAL_PORTS)
     return {
         "display": f":{XVFB_DISPLAY_BASE + slot}",
-        "vnc_port": VNC_PORT + manual_ports + slot - 1,
-        "novnc_port": NOVNC_PORT + manual_ports + slot - 1,
+        "vnc_port": VNC_PORT + offset,
+        "novnc_port": NOVNC_PORT + offset,
         "debug_port": CDP_PORT + slot,
     }
+
+
+def _slot_ports_available(slot: int) -> bool:
+    ports = _slot_ports(slot)
+    display_number = str(ports["display"]).lstrip(":")
+    if Path(f"/tmp/.X11-unix/X{display_number}").exists():
+        return False
+    return not any(
+        _port_open("127.0.0.1", int(ports[key]), timeout=0.15)
+        for key in ("vnc_port", "novnc_port", "debug_port")
+    )
 
 
 def _public_novnc_url(port: int) -> str:
@@ -700,6 +721,9 @@ def _launch_observation_channel(slot: int, session_id: int, log_dir: Path) -> di
     websockify = _required_binary("websockify")
     novnc_web = _novnc_web_dir()
 
+    if not _slot_ports_available(slot):
+        raise ValueError(f"观测槽位 {slot} 的显示或端口已被其他服务占用")
+
     xvfb_proc = _open_process(log_dir, "xvfb", [xvfb, display, "-screen", "0", "1280x900x24", "-nolisten", "tcp"])
     time.sleep(0.8)
     if not _pid_alive(int(xvfb_proc.pid)):
@@ -710,15 +734,24 @@ def _launch_observation_channel(slot: int, session_id: int, log_dir: Path) -> di
         "x11vnc",
         [x11vnc, "-display", display, "-rfbport", str(vnc_port), "-localhost", "-forever", "-shared", "-nopw", "-quiet"],
     )
+    websockify_proc = None
     try:
         _wait_for_port(vnc_port, "VNC")
+        time.sleep(0.2)
+        if not _pid_alive(int(x11vnc_proc.pid)):
+            raise ValueError(f"独立 VNC 进程未能监听端口 {vnc_port}")
         websockify_proc = _open_process(
             log_dir,
             "websockify",
             [websockify, "--web", novnc_web, str(novnc_port), f"127.0.0.1:{vnc_port}"],
         )
         _wait_for_port(novnc_port, "noVNC")
+        time.sleep(0.2)
+        if not _pid_alive(int(websockify_proc.pid)):
+            raise ValueError(f"独立 noVNC 进程未能监听端口 {novnc_port}")
     except Exception:
+        if websockify_proc is not None:
+            _terminate_pid(int(websockify_proc.pid))
         _terminate_pid(int(x11vnc_proc.pid))
         _terminate_pid(int(xvfb_proc.pid))
         raise
@@ -930,6 +963,38 @@ def _launch_browser_for_session(profile: dict[str, Any], pool: sqlite3.Row, sess
         group=TIKTOK_BROWSER_GID,
     )
     return int(proc.pid), str(user_data_dir)
+
+
+def _detect_browser_exit_ip(debug_port: int) -> str:
+    target = os.getenv("PROXY_IP_CHECK_URL", "http://ip-api.com/json/?fields=status,country,regionName,city,query")
+    page = None
+    try:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{debug_port}")
+            if not browser.contexts:
+                raise ValueError("Chrome 没有可用的浏览器上下文")
+            page = browser.contexts[0].new_page()
+            response = page.goto(target, wait_until="domcontentloaded", timeout=15000)
+            if response is not None and not response.ok:
+                raise ValueError(f"IP 查询接口返回 HTTP {response.status}")
+            raw = page.locator("body").inner_text(timeout=5000).strip()
+            body = json.loads(raw)
+            observed_ip = str(body.get("query") or body.get("ip") or "").strip() if isinstance(body, dict) else ""
+            if not observed_ip:
+                raise ValueError("IP 查询接口没有返回出口 IP")
+            page.close()
+            page = None
+            return observed_ip
+    except Exception as exc:
+        raise ValueError(f"浏览器出口 IP 校验失败：{exc}") from exc
+    finally:
+        if page is not None:
+            try:
+                page.close()
+            except Exception:
+                pass
 
 
 def parse_vless_uri(uri: str, fallback_name: str = "") -> dict[str, Any]:
@@ -1608,7 +1673,38 @@ def start_login_session(payload: dict[str, Any]) -> dict[str, Any]:
         try:
             log_dir = _abs_workspace_path(f"data/tiktok_browser_sessions/{session_id}")
             channel = _launch_observation_channel(slot, session_id, log_dir)
-            start_url = "https://www.tiktok.com/" if account_id else "https://www.tiktok.com/login"
+            # Persist the channel as soon as it exists. If browser launch or
+            # the browser-side IP check fails, the failure handler can then
+            # terminate the exact processes that were created for this session.
+            conn.execute(
+                """
+                UPDATE browser_sessions
+                SET channel_url = ?,
+                    xvfb_pid = ?,
+                    x11vnc_pid = ?,
+                    websockify_pid = ?,
+                    display = ?,
+                    vnc_port = ?,
+                    novnc_port = ?,
+                    debug_port = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    str(channel["channel_url"]),
+                    int(channel["xvfb_pid"]),
+                    int(channel["x11vnc_pid"]),
+                    int(channel["websockify_pid"]),
+                    str(channel["display"]),
+                    int(channel["vnc_port"]),
+                    int(channel["novnc_port"]),
+                    int(slot_ports["debug_port"]),
+                    now_iso(),
+                    session_id,
+                ),
+            )
+            conn.commit()
+            start_url = "https://www.tiktok.com/?lang=en" if account_id else "https://www.tiktok.com/login?lang=en"
             pid, user_data_dir = _launch_browser_for_session(
                 profile,
                 pool,
@@ -1617,10 +1713,31 @@ def start_login_session(payload: dict[str, Any]) -> dict[str, Any]:
                 int(slot_ports["debug_port"]),
                 start_url,
             )
+            conn.execute(
+                "UPDATE browser_sessions SET pid = ?, user_data_dir = ?, updated_at = ? WHERE id = ?",
+                (pid, user_data_dir, now_iso(), session_id),
+            )
+            conn.commit()
             time.sleep(2.0)
             if not _pid_alive(pid):
                 raise ValueError("Chrome 启动后立即退出，请检查 browser.err.log")
             _wait_for_port(int(slot_ports["debug_port"]), "Chrome CDP", timeout=10.0)
+            browser_observed_ip = _detect_browser_exit_ip(int(slot_ports["debug_port"]))
+            expected_exit_ip = str(pool["expected_exit_ip"] or "").strip()
+            if browser_observed_ip != expected_exit_ip:
+                reason = f"浏览器出口 IP {browser_observed_ip} 与绑定 IP {expected_exit_ip} 不一致"
+                conn.execute(
+                    "UPDATE proxy_profiles SET status = ?, parse_error = ?, detected_exit_ip = ?, detected_at = ?, updated_at = ? WHERE id = ?",
+                    (STATUS_ERROR, reason, browser_observed_ip, now_iso(), now_iso(), proxy_profile_id),
+                )
+                if account_id:
+                    conn.execute(
+                        "UPDATE tiktok_accounts SET last_checked_ip = ?, last_check_status = '阻断', last_error = ?, updated_at = ? WHERE id = ?",
+                        (browser_observed_ip, reason, now_iso(), account_id),
+                    )
+                conn.commit()
+                raise ValueError(reason)
+            preflight["browser_observed_ip"] = browser_observed_ip
             conn.execute(
                 """
                 UPDATE browser_sessions
