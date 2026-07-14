@@ -441,6 +441,31 @@ def _set_schedule(page: Any, mode: str, scheduled_at: str) -> None:
     time_input.fill(time_value)
 
 
+def _set_video_file(page: Any, video: Path) -> None:
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        file_inputs = page.locator("input[type='file'][accept*='video']")
+        if not file_inputs.count():
+            file_inputs = page.locator("input[type='file']")
+        if file_inputs.count():
+            file_inputs.first.set_input_files(str(video))
+            return
+        select_button = _first_visible([
+            page.locator("button[data-e2e='select_video_button']"),
+            page.get_by_role("button", name=re.compile(r"^select video$|^选择视频$", re.I)),
+        ])
+        if select_button:
+            try:
+                with page.expect_file_chooser(timeout=5000) as chooser_info:
+                    select_button.click()
+                chooser_info.value.set_files(str(video))
+                return
+            except Exception:
+                pass
+        page.wait_for_timeout(500)
+    raise RuntimeError("未找到 TikTok Studio 视频选择控件")
+
+
 def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[str, str]:
     from playwright.sync_api import sync_playwright
 
@@ -475,13 +500,8 @@ def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[str,
                 page.goto("https://www.tiktok.com/tiktokstudio/upload?from=creator_center&tab=video", wait_until="domcontentloaded", timeout=60000)
             _skip_onboarding(page)
             _assert_account_ready(page)
-            file_inputs = page.locator("input[type='file'][accept*='video']")
-            if not file_inputs.count():
-                file_inputs = page.locator("input[type='file']")
-            if not file_inputs.count():
-                raise RuntimeError("未找到 TikTok Studio 视频选择控件")
             _set_job(job["id"], "uploading", "uploading", session_id=session["id"])
-            file_inputs.first.set_input_files(str(video))
+            _set_video_file(page, video)
             page.wait_for_timeout(3000)
             _set_description(page, job["description"])
             _set_ai_generated(page, bool(job["ai_generated"]))
@@ -556,6 +576,9 @@ def _run_job(job_id: str) -> None:
         actual = "" if status == "dry_run" else (job["scheduled_at"] if status == "scheduled_on_tiktok" else _iso())
         _set_job(job_id, status, "complete", result_url=result_url, actual_publish_at=actual)
         _update_account(int(job["account_id"]), published_at=actual if status != "dry_run" else "")
+        if status == "dry_run" and session_id:
+            keep_for_review = True
+            proxy_pool.handoff_automation_session(session_id, "演练已到达最终发布前，保留观测通道")
     except ManualReviewRequired as exc:
         keep_for_review = True
         _set_job(job_id, "failed", "manual_review", str(exc), session_id=session_id or None)
