@@ -197,7 +197,7 @@ class HotReportSelectionTests(unittest.TestCase):
             patch("hot_video_report._launch_report_video_worker", side_effect=fake_launch),
             patch("hot_video_report._close_report_video_worker", side_effect=fake_close),
             patch("hot_video_report._enqueue_report_video_translation"),
-            patch("hot_video_report._progress_payload"),
+            patch("hot_video_report._progress_payload") as progress_mock,
         ):
             hot_video_report._process_ranked_videos(
                 FakeConnection(),
@@ -211,6 +211,56 @@ class HotReportSelectionTests(unittest.TestCase):
         self.assertEqual(launched, 10)
         self.assertEqual(max_active, 5)
         self.assertEqual(counts, {"analyzed_success": 10, "analyzed_failed": 0})
+        self.assertEqual(progress_mock.call_count, 2)
+
+    def test_video_scheduler_does_not_repeat_unchanged_progress(self) -> None:
+        class DelayedProcess:
+            def __init__(self):
+                self.poll_count = 0
+
+            def poll(self):
+                self.poll_count += 1
+                return 0 if self.poll_count >= 3 else None
+
+        class FakeCursor:
+            def __init__(self, row):
+                self.row = row
+
+            def fetchone(self):
+                return self.row
+
+        class FakeConnection:
+            def execute(self, sql, _params=()):
+                return FakeCursor((0,) if "MAX(report_rank)" in sql else ("complete",))
+
+            def commit(self):
+                return None
+
+        worker = {
+            "item": candidate("1", 100, "stream", "trending"),
+            "process": DelayedProcess(),
+            "started_at": time.monotonic(),
+        }
+        counts = {"analyzed_success": 0, "analyzed_failed": 0}
+        with (
+            patch("hot_video_report._upsert_video"),
+            patch("hot_video_report._launch_report_video_worker", return_value=worker),
+            patch("hot_video_report._close_report_video_worker"),
+            patch("hot_video_report._enqueue_report_video_translation"),
+            patch("hot_video_report._progress_payload") as progress_mock,
+            patch("hot_video_report.time.sleep"),
+        ):
+            hot_video_report._process_ranked_videos(
+                FakeConnection(),
+                "report-id",
+                "2026-07-14",
+                [candidate("1", 100, "stream", "trending")],
+                1,
+                counts,
+            )
+
+        self.assertEqual(counts["analyzed_success"], 1)
+        self.assertEqual(progress_mock.call_count, 1)
 
     def test_topic_guarantees_do_not_occupy_all_remaining_slots(self) -> None:
         candidates = [

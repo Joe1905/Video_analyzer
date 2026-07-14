@@ -3424,6 +3424,7 @@ def _process_ranked_videos(
     ).fetchone()
     next_report_rank = int(rank_row[0] if rank_row else 0) + 1
     running: list[dict[str, Any]] = []
+    last_progress_state: tuple[int, int, int, int] | None = None
 
     try:
         while (next_index < len(ranked) or running) and counts["analyzed_success"] < analysis_limit:
@@ -3443,15 +3444,23 @@ def _process_ranked_videos(
                     counts["analyzed_failed"] += 1
 
             completed_before = counts["analyzed_success"] + counts["analyzed_failed"]
-            progress = 30 + int(min(1.0, next_index / total_candidates) * 50)
-            _progress_payload(
-                report_date,
-                "running",
-                "extracting",
-                progress,
-                f"并行处理视频：成功 {counts['analyzed_success']}/{analysis_limit}，运行中 {len(running)}，已完成 {completed_before}",
-                counts,
+            progress_state = (
+                counts["analyzed_success"],
+                counts["analyzed_failed"],
+                len(running),
+                next_index,
             )
+            if progress_state != last_progress_state:
+                progress = 30 + int(min(1.0, next_index / total_candidates) * 50)
+                _progress_payload(
+                    report_date,
+                    "running",
+                    "extracting",
+                    progress,
+                    f"并行处理视频：成功 {counts['analyzed_success']}/{analysis_limit}，运行中 {len(running)}，已完成 {completed_before}",
+                    counts,
+                )
+                last_progress_state = progress_state
             if not running:
                 continue
 
