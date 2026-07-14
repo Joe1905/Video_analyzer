@@ -867,8 +867,6 @@ def _select_custom_date(page: Any, date_field: Any, target: datetime) -> None:
 
 def _select_custom_time(page: Any, time_field: Any, target: datetime) -> None:
     expected = target.strftime("%H:%M")
-    if time_field.input_value() == expected:
-        return
     picker_locator = page.locator(".tiktok-timepicker-time-picker-container")
 
     def open_picker() -> Any | None:
@@ -884,6 +882,11 @@ def _select_custom_time(page: Any, time_field: Any, target: datetime) -> None:
         return None
 
     picker = open_picker()
+    if time_field.input_value() == expected:
+        if picker:
+            time_field.locator("xpath=..").click(timeout=5000)
+            page.wait_for_timeout(150)
+        return
     if not picker:
         time_field.locator("xpath=..").click(timeout=5000)
         deadline = time.time() + 3
@@ -905,10 +908,9 @@ def _select_custom_time(page: Any, time_field: Any, target: datetime) -> None:
         option.first.scroll_into_view_if_needed()
         option.first.click(timeout=5000)
         page.wait_for_timeout(150)
-    try:
-        page.keyboard.press("Escape")
-    except Exception:
-        pass
+    if open_picker():
+        time_field.locator("xpath=..").click(timeout=5000)
+        page.wait_for_timeout(150)
     if time_field.input_value() != expected:
         raise RuntimeError(f"TikTok 时间设置未生效：期望 {expected}，当前 {time_field.input_value()}")
 
