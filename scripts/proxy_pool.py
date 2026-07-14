@@ -6,6 +6,7 @@ import binascii
 import calendar
 import http.client
 import hashlib
+import ipaddress
 import json
 import os
 import signal
@@ -965,9 +966,40 @@ def _launch_browser_for_session(profile: dict[str, Any], pool: sqlite3.Row, sess
     return int(proc.pid), str(user_data_dir)
 
 
+def _browser_ip_check_urls() -> list[str]:
+    configured = os.getenv("PROXY_BROWSER_IP_CHECK_URLS", "").strip()
+    if configured:
+        return [item.strip() for item in configured.split(",") if item.strip()]
+    server_target = os.getenv("PROXY_IP_CHECK_URL", "http://ip-api.com/json/?fields=status,country,regionName,city,query").strip()
+    return [
+        "https://api.ipify.org?format=json",
+        "https://api64.ipify.org?format=json",
+        server_target,
+    ]
+
+
+def _browser_ip_from_response(raw: str) -> str:
+    value = raw.strip()
+    try:
+        body = json.loads(value)
+    except json.JSONDecodeError:
+        body = value
+    candidates: list[str] = []
+    if isinstance(body, dict):
+        candidates.extend(str(body.get(key) or "") for key in ("query", "ip", "origin"))
+    elif isinstance(body, str):
+        candidates.append(body)
+    for candidate in candidates:
+        for item in candidate.replace(",", " ").split():
+            try:
+                return str(ipaddress.ip_address(item.strip()))
+            except ValueError:
+                continue
+    return ""
+
+
 def _detect_browser_exit_ip(debug_port: int) -> str:
-    target = os.getenv("PROXY_IP_CHECK_URL", "http://ip-api.com/json/?fields=status,country,regionName,city,query")
-    page = None
+    failures: list[str] = []
     try:
         from playwright.sync_api import sync_playwright
 
@@ -975,26 +1007,28 @@ def _detect_browser_exit_ip(debug_port: int) -> str:
             browser = playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{debug_port}")
             if not browser.contexts:
                 raise ValueError("Chrome 没有可用的浏览器上下文")
-            page = browser.contexts[0].new_page()
-            response = page.goto(target, wait_until="domcontentloaded", timeout=15000)
-            if response is not None and not response.ok:
-                raise ValueError(f"IP 查询接口返回 HTTP {response.status}")
-            raw = page.locator("body").inner_text(timeout=5000).strip()
-            body = json.loads(raw)
-            observed_ip = str(body.get("query") or body.get("ip") or "").strip() if isinstance(body, dict) else ""
-            if not observed_ip:
-                raise ValueError("IP 查询接口没有返回出口 IP")
-            page.close()
-            page = None
-            return observed_ip
+            for target in _browser_ip_check_urls():
+                page = None
+                try:
+                    page = browser.contexts[0].new_page()
+                    response = page.goto(target, wait_until="domcontentloaded", timeout=15000)
+                    if response is not None and not response.ok:
+                        raise ValueError(f"HTTP {response.status}")
+                    observed_ip = _browser_ip_from_response(page.locator("body").inner_text(timeout=5000))
+                    if not observed_ip:
+                        raise ValueError("没有返回合法出口 IP")
+                    return observed_ip
+                except Exception as exc:
+                    failures.append(f"{urlparse(target).netloc or target}: {exc}")
+                finally:
+                    if page is not None:
+                        try:
+                            page.close()
+                        except Exception:
+                            pass
+        raise ValueError("；".join(failures) or "没有可用的 IP 查询接口")
     except Exception as exc:
         raise ValueError(f"浏览器出口 IP 校验失败：{exc}") from exc
-    finally:
-        if page is not None:
-            try:
-                page.close()
-            except Exception:
-                pass
 
 
 def parse_vless_uri(uri: str, fallback_name: str = "") -> dict[str, Any]:
