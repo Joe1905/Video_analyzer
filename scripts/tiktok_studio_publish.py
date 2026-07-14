@@ -650,8 +650,11 @@ def _run_job(job_id: str) -> None:
         if session_id:
             proxy_pool.handoff_automation_session(session_id, str(exc))
     except ResultUncertain as exc:
+        keep_for_review = True
         _set_job(job_id, "result_uncertain", "confirm_required", str(exc), session_id=session_id or None)
         _update_account(int(job["account_id"]), error=str(exc))
+        if session_id:
+            proxy_pool.handoff_automation_session(session_id, str(exc))
     except Exception as exc:
         message = str(exc)
         if "槽位已满" in message or "已经处于唤醒状态" in message:
