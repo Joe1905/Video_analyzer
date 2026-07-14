@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from web_app import build_prefixed_model_tools, chat_markdown_to_html, chat_request_needs_tools, filter_locked_provider_tool_ids, normalize_tool_result, provider_default_enabled_tool_ids, provider_forces_mcp_tools, route_chat_intent  # noqa: E402
+from web_app import build_prefixed_model_tools, chat_markdown_to_html, chat_request_needs_tools, chat_routing_text, fastmoss_analysis_evidence_gaps, fastmoss_defaults_to_us, fastmoss_playbook_instruction, fastmoss_playbook_intent, fastmoss_product_evidence_required, fastmoss_required_capability_gaps, filter_locked_provider_tool_ids, forced_provider_domain_tool_available, normalize_tool_result, provider_default_enabled_tool_ids, provider_forces_mcp_tools, route_chat_intent  # noqa: E402
 from tools import _filter_relevant_search_results, execute_tool, get_tools_for_model, list_tools, parse_bing_html, parse_duckduckgo_html  # noqa: E402
 
 
@@ -150,6 +151,134 @@ def test_amazon_url_query_api_fragment_does_not_disable_tools() -> None:
     assert force_mcp_tools is True
 
 
+def test_ocr_metadata_does_not_change_chat_route() -> None:
+    enriched = (
+        "User question:\n这些产品的销量你分析了吗"
+        "\n\nImage OCR result:\nllmStatus: skipped_api_key_missing\nAPI fallback"
+    )
+    routing_text = chat_routing_text(enriched)
+    assert routing_text == "这些产品的销量你分析了吗"
+    assert route_chat_intent(routing_text)["intent"] != "mcp_interface"
+
+
+def test_fastmoss_defaults_to_us_unless_another_region_is_named() -> None:
+    assert fastmoss_defaults_to_us("分析 Hidden Camera Detector 在 TK 的销售数据") is True
+    assert fastmoss_defaults_to_us("分析美区 Hidden Camera Detector") is True
+    assert fastmoss_defaults_to_us("分析 product id 1732424427368190285") is True
+    assert fastmoss_defaults_to_us("分析日本和墨西哥的 Hidden Camera Detector") is False
+    assert fastmoss_defaults_to_us("Compare US and JP markets") is False
+
+
+def test_fastmoss_playbook_intent_routes_official_workflows() -> None:
+    cases = {
+        "帮我做防偷拍探测器选品，并给出定价建议": "product",
+        "拆解这个竞品店铺的打法": "competitor",
+        "给这个店铺做一次店铺诊断": "shop",
+        "拆解这条爆款视频为什么能卖": "content_dissect",
+        "为我的产品制定内容策略和拍摄 brief": "content_strategy",
+        "用 28 天数据做价格带和月度 GMV 测算": "pricing",
+        "按带货力帮我找达人并写建联文案": "creator",
+    }
+    for text, expected in cases.items():
+        assert fastmoss_playbook_intent(text) == expected
+        route = route_chat_intent(text, "fastmoss")
+        assert route["intent"] == f"fastmoss_{expected}"
+        assert route["playbook"] == expected
+
+    assert "playbook" not in route_chat_intent("给这个商品定价", "home")
+
+
+def test_fastmoss_selection_playbook_includes_pricing_model() -> None:
+    instruction = fastmoss_playbook_instruction("product")
+    assert "最近 7 天" in instruction
+    assert "最近 28 天" in instruction
+    assert "建议上市价" in instruction
+    assert "保守/基准/激进" in instruction
+    assert "月度销量与 GMV" in instruction
+    assert "不得把 GMV 当利润" in instruction
+
+
+def test_fastmoss_product_evidence_is_scoped_by_playbook() -> None:
+    assert fastmoss_product_evidence_required("帮我做防偷拍探测器选品") is True
+    assert fastmoss_product_evidence_required("给这个品类做价格测算") is True
+    assert fastmoss_product_evidence_required("拆解这个竞品商品") is True
+    assert fastmoss_product_evidence_required("拆解这个竞品店铺") is False
+    assert fastmoss_product_evidence_required("给这个店铺做店铺诊断") is False
+    assert fastmoss_product_evidence_required("为我的产品制定内容策略") is False
+    empty_message = SimpleNamespace(tool_calls=[], tool_results=[])
+    assert fastmoss_analysis_evidence_gaps("给这个店铺做店铺诊断", empty_message) == []
+    assert fastmoss_analysis_evidence_gaps("给这个品类做价格测算", empty_message) == [
+        "category_lookup", "market_ranking", "us_region", "product_reviews"
+    ]
+
+
+def _model_tool(name: str) -> dict:
+    return {"type": "function", "function": {"name": name, "parameters": {"type": "object"}}}
+
+
+def test_fastmoss_analysis_requires_domain_and_evidence_capabilities() -> None:
+    query = "酒店防偷拍探测器在 TK 的销售怎样？"
+    complete_tools = [
+        _model_tool("system__current_time"),
+        _model_tool("fastmoss__search_category_by_words"),
+        _model_tool("fastmoss__product_rank_top_selling"),
+        _model_tool("fastmoss__product_review_list"),
+    ]
+    assert forced_provider_domain_tool_available("fastmoss", complete_tools) is True
+    assert forced_provider_domain_tool_available("fastmoss", [_model_tool("system__current_time")]) is False
+    assert fastmoss_required_capability_gaps(query, complete_tools) == []
+    assert fastmoss_required_capability_gaps(query, complete_tools[:-1]) == ["product_reviews"]
+
+
+def test_fastmoss_analysis_requires_us_ranking_and_reviews() -> None:
+    query = "分析 Hidden Camera Detector 在 TK 的销售数据"
+    empty_message = SimpleNamespace(tool_calls=[], tool_results=[])
+    assert fastmoss_analysis_evidence_gaps(query, empty_message) == [
+        "category_lookup", "market_ranking", "us_region", "product_reviews"
+    ]
+
+    message = SimpleNamespace(
+        tool_calls=[
+            {"function": {"name": "fastmoss__search_category_by_words", "arguments": '{"keywords":"camera detector"}'}},
+            {"function": {"name": "fastmoss__product_rank_top_selling", "arguments": '{"region":"US","category_id":"911752"}'}},
+            {"function": {"name": "fastmoss__product_review_list", "arguments": '{"product_id":"1732424427368190285","region":"US"}'}},
+        ],
+        tool_results=[
+            {"tool_name": "fastmoss__search_category_by_words", "result": {"ok": True, "enough_data": True}},
+            {"tool_name": "fastmoss__product_rank_top_selling", "result": {"ok": True, "enough_data": True}},
+            {"tool_name": "fastmoss__product_review_list", "result": {"ok": True, "enough_data": False}},
+        ],
+    )
+    assert fastmoss_analysis_evidence_gaps(query, message) == []
+
+    message.tool_calls.insert(
+        2,
+        {"function": {"name": "fastmoss__product_search", "arguments": '{"keywords":"camera detector"}'}},
+    )
+    message.tool_results.insert(
+        2,
+        {"tool_name": "fastmoss__product_search", "result": {"ok": True, "enough_data": True}},
+    )
+    assert fastmoss_analysis_evidence_gaps(query, message) == ["us_region"]
+
+
+def test_fastmoss_explicit_other_region_does_not_require_us() -> None:
+    query = "分析日本 Hidden Camera Detector 在 TK 的销售数据"
+    message = SimpleNamespace(
+        tool_calls=[
+            {"function": {"name": "fastmoss__search_category_by_words", "arguments": '{"keywords":"camera detector"}'}},
+            {"function": {"name": "fastmoss__market_category_ranking", "arguments": '{"region":"JP","category_id":"911752"}'}},
+            {"function": {"name": "fastmoss__product_review_list", "arguments": '{"product_id":"1732424427368190285","region":"JP"}'}},
+        ],
+        tool_results=[
+            {"tool_name": "fastmoss__search_category_by_words", "result": {"ok": True, "enough_data": True}},
+            {"tool_name": "fastmoss__market_category_ranking", "result": {"ok": True, "enough_data": True}},
+            {"tool_name": "fastmoss__product_review_list", "result": {"ok": True, "enough_data": True}},
+        ],
+    )
+    assert fastmoss_analysis_evidence_gaps(query, message) == []
+
+
 def test_short_cjk_web_search_filters_irrelevant_results() -> None:
     results = [
         {"title": "知乎 - 有问题，就会有答案", "snippet": "中文问答社区", "url": "https://www.zhihu.com/"},
@@ -221,6 +350,14 @@ if __name__ == "__main__":
     test_locked_amazon_provider_filters_system_web_search()
     test_locked_amazon_product_route_keeps_sellersprite_tools()
     test_amazon_url_query_api_fragment_does_not_disable_tools()
+    test_ocr_metadata_does_not_change_chat_route()
+    test_fastmoss_defaults_to_us_unless_another_region_is_named()
+    test_fastmoss_playbook_intent_routes_official_workflows()
+    test_fastmoss_selection_playbook_includes_pricing_model()
+    test_fastmoss_product_evidence_is_scoped_by_playbook()
+    test_fastmoss_analysis_requires_domain_and_evidence_capabilities()
+    test_fastmoss_analysis_requires_us_ranking_and_reviews()
+    test_fastmoss_explicit_other_region_does_not_require_us()
     test_short_cjk_web_search_filters_irrelevant_results()
     test_pdf_markdown_export_matches_frontend_quote_heading()
     test_web_search_tool_is_registered_and_normalized()
