@@ -22,7 +22,13 @@ def replace_once(path: Path, old: str, new: str) -> None:
 def replace_method(path: Path, name: str, next_name: str, body: str) -> None:
     source = path.read_text(encoding="utf-8")
     pattern = rf"    def {name}\(.*?(?=    def {next_name}\()"
-    updated, count = re.subn(pattern, body.rstrip() + "\n\n", source, count=1, flags=re.DOTALL)
+    updated, count = re.subn(
+        pattern,
+        lambda _match: body.rstrip() + "\n\n",
+        source,
+        count=1,
+        flags=re.DOTALL,
+    )
     if count != 1:
         raise RuntimeError(f"method patch target not found: {path}:{name}")
     path.write_text(updated, encoding="utf-8")
@@ -45,7 +51,7 @@ def patch_analyzer() -> None:
         path,
         "_format_previous_analyses",
         "analyze_frame",
-        '''    def _format_previous_analyses(self) -> str:
+        r'''    def _format_previous_analyses(self) -> str:
         """Format a bounded window of previous frame analyses."""
         if not self.previous_analyses:
             return ""
@@ -65,7 +71,7 @@ def patch_analyzer() -> None:
         path,
         "analyze_frame",
         "reconstruct_video",
-        '''    def analyze_frame(self, frame: Frame) -> Dict[str, Any]:
+        r'''    def analyze_frame(self, frame: Frame) -> Dict[str, Any]:
         """Analyze one frame and preserve its authoritative timestamp."""
         prompt = self.frame_prompt.replace("{PREVIOUS_FRAMES}", self._format_previous_analyses())
         prompt = prompt.replace("{prompt}", self._format_user_prompt())
@@ -228,6 +234,8 @@ def main() -> None:
     patch_client()
     patch_analyzer()
     patch_frame_processor()
+    for path in PACKAGE_DIR.rglob("*.py"):
+        compile(path.read_text(encoding="utf-8"), str(path), "exec")
     print(f"patched pinned video_analyzer package at {PACKAGE_DIR}")
 
 
