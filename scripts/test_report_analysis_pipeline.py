@@ -13,6 +13,7 @@ sys.modules.setdefault("api_cache", types.SimpleNamespace(record_api_call=lambda
 from standardize_analysis import numeric_timestamp, timeline_rows
 from translate_analysis import (
     looks_truncated_translation,
+    post_translation_request,
     translate_analysis_payload,
     validate_analysis_translation,
 )
@@ -91,6 +92,29 @@ class TranslationContractTests(unittest.TestCase):
     def test_extremely_short_translation_is_rejected(self) -> None:
         source = "A complete source sentence with substantial detail. " * 8
         self.assertTrue(looks_truncated_translation(source, "过短译文"))
+
+    def test_transient_translation_error_is_retried(self) -> None:
+        class RequestError(Exception):
+            pass
+
+        class Response:
+            def __init__(self, status_code: int) -> None:
+                self.status_code = status_code
+                self.headers = {}
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise RequestError(str(self.status_code))
+
+        responses = iter([Response(503), Response(200)])
+        fake_requests = types.SimpleNamespace(
+            post=lambda *args, **kwargs: next(responses),
+            exceptions=types.SimpleNamespace(RequestException=RequestError),
+        )
+        with patch("translate_analysis.requests", fake_requests), patch("translate_analysis.time.sleep") as sleep:
+            response = post_translation_request("url", {}, {})
+        self.assertEqual(response.status_code, 200)
+        sleep.assert_called_once_with(1.0)
 
 
 if __name__ == "__main__":

@@ -43,6 +43,33 @@ def load_json(path: Path) -> Any:
         return json.load(file)
 
 
+def post_translation_request(api_url: str, headers: dict[str, str], payload: dict[str, Any]) -> Any:
+    retries = max(0, int(os.getenv("TRANSLATION_API_RETRIES", "3")))
+    for attempt in range(retries + 1):
+        response = None
+        try:
+            response = requests.post(api_url, headers=headers, json=payload, timeout=180)
+            response.raise_for_status()
+            return response
+        except requests.exceptions.RequestException as exc:
+            status = getattr(response, "status_code", None)
+            transient = status is None or status in {408, 429} or status >= 500
+            if not transient or attempt >= retries:
+                raise
+            delay = min(30.0, 2.0**attempt)
+            retry_after = getattr(response, "headers", {}).get("Retry-After") if response is not None else None
+            try:
+                delay = max(delay, float(retry_after)) if retry_after else delay
+            except (TypeError, ValueError):
+                pass
+            print(
+                f"Translation API transient failure status={status}; retry {attempt + 1}/{retries} in {delay:g}s",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
+    raise RuntimeError("translation request retry loop exited unexpectedly")
+
+
 def call_deepseek(api_key: str, api_url: str, model: str, items: list[dict[str, str]], max_tokens: int) -> dict:
     api_url = normalize_chat_completions_url(api_url)
     prompt = (
@@ -52,13 +79,13 @@ def call_deepseek(api_key: str, api_url: str, model: str, items: list[dict[str, 
         f"{json.dumps({'items': items}, ensure_ascii=False, indent=2)}"
     )
     started = time.monotonic()
-    response = requests.post(
+    response = post_translation_request(
         api_url,
-        headers={
+        {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         },
-        json={
+        {
             "model": model,
             "messages": [
                 {
@@ -74,9 +101,7 @@ def call_deepseek(api_key: str, api_url: str, model: str, items: list[dict[str, 
             "max_tokens": max_tokens,
             "response_format": {"type": "json_object"},
         },
-        timeout=180,
     )
-    response.raise_for_status()
     data = response.json()
     record_api_call(
         "deepseek",
@@ -91,13 +116,13 @@ def call_deepseek(api_key: str, api_url: str, model: str, items: list[dict[str, 
 def call_deepseek_text(api_key: str, api_url: str, model: str, text: str, max_tokens: int) -> str:
     started = time.monotonic()
     api_url = normalize_chat_completions_url(api_url)
-    response = requests.post(
+    response = post_translation_request(
         api_url,
-        headers={
+        {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         },
-        json={
+        {
             "model": model,
             "messages": [
                 {
@@ -112,9 +137,7 @@ def call_deepseek_text(api_key: str, api_url: str, model: str, text: str, max_to
             "temperature": 0,
             "max_tokens": max_tokens,
         },
-        timeout=180,
     )
-    response.raise_for_status()
     data = response.json()
     record_api_call(
         "deepseek",
@@ -469,7 +492,12 @@ def translate_analysis_payload(
         for key, value in source_item.items():
             if key in STRUCTURAL_TIMELINE_KEYS or not isinstance(value, str) or not value.strip():
                 continue
-            translated_item[key] = _translate_display_text(api_key, api_url, model, value, max_chars, max_tokens)
+            try:
+                translated_item[key] = _translate_display_text(api_key, api_url, model, value, max_chars, max_tokens)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"timeline item {source_item.get('index')} field {key} translation failed: {exc}"
+                ) from exc
         translated_timeline_by_index[source_item.get("index")] = translated_item
 
     source_evidence = source.get("visual_evidence") if isinstance(source, dict) and isinstance(source.get("visual_evidence"), list) else []
