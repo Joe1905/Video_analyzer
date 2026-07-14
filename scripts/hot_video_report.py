@@ -3087,6 +3087,7 @@ def rebuild_report_from_downloads(
     report_date: str,
     reuse_downloads: bool = True,
     force_analysis: bool = True,
+    resume_analysis: bool = False,
 ) -> dict[str, Any]:
     """Rebuild an existing report from local videos and publish only after full success."""
     date = str(report_date or "").strip()
@@ -3111,8 +3112,20 @@ def rebuild_report_from_downloads(
     rebuilt_videos: list[dict[str, Any]] = []
     for position, video in enumerate(videos, start=1):
         filename = str(video.get("local_filename") or "")
-        print(f"[report-rebuild] analyzing {position}/{len(videos)}: {filename}", flush=True)
-        analysis = _run_video_analyze(filename, force=force_analysis)
+        analysis = None
+        if resume_analysis:
+            analysis_path = _output_dir_for_filename(filename) / "analysis.json"
+            if analysis_path.is_file():
+                try:
+                    candidate = json.loads(analysis_path.read_text(encoding="utf-8"))
+                    _validate_rebuilt_analysis(candidate, filename)
+                    analysis = candidate
+                    print(f"[report-rebuild] reusing validated analysis {position}/{len(videos)}: {filename}", flush=True)
+                except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                    analysis = None
+        if analysis is None:
+            print(f"[report-rebuild] analyzing {position}/{len(videos)}: {filename}", flush=True)
+            analysis = _run_video_analyze(filename, force=force_analysis)
         _validate_rebuilt_analysis(analysis, filename)
         print(f"[report-rebuild] translating {position}/{len(videos)}: {filename}", flush=True)
         analysis_zh = _translate_analysis_payload(analysis)

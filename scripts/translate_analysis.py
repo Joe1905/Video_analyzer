@@ -280,8 +280,8 @@ def looks_truncated_translation(original: str, translated: str) -> bool:
         return True
     terminal_chars = ".!?\u3002\uff01\uff1f)]\uff09\"'\u201d\u2019"
     dangling_chars = "\u7684\u4e86\u5728\u5411\u4e0e\u548c\u53ca\u5e76\u800c\u4f46\u4e3a\u5bf9\u4ece\u5230\u4e2d\u4e0a\uff0c\u4e0b\u3001\uff1b\uff1a"
-    if len(source) >= 220 and text[-1] not in terminal_chars:
-        return text[-1] in dangling_chars or len(text) < int(len(source) * 0.35)
+    if len(source) >= 220 and source[-1] in terminal_chars and text[-1] not in terminal_chars:
+        return text[-1] in dangling_chars and len(text) < int(len(source) * 0.35)
     return False
 
 

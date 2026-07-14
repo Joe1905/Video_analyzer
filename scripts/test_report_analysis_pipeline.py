@@ -11,7 +11,11 @@ sys.modules.setdefault("requests", types.SimpleNamespace(post=None))
 sys.modules.setdefault("api_cache", types.SimpleNamespace(record_api_call=lambda *args, **kwargs: None))
 
 from standardize_analysis import numeric_timestamp, timeline_rows
-from translate_analysis import translate_analysis_payload, validate_analysis_translation
+from translate_analysis import (
+    looks_truncated_translation,
+    translate_analysis_payload,
+    validate_analysis_translation,
+)
 
 
 class TimelineStandardizationTests(unittest.TestCase):
@@ -76,6 +80,17 @@ class TranslationContractTests(unittest.TestCase):
         translated["timeline"][0]["timestamp_seconds"] = 9.0
         with self.assertRaisesRegex(ValueError, "structural field"):
             validate_analysis_translation(self.source, translated)
+
+    def test_compact_translation_of_nonterminal_source_is_not_truncated(self) -> None:
+        source = ("Detailed visual continuity and composition notes for the following moment " * 8).strip()
+        translated = ("这是完整的画面连续性与构图说明，描述接下来的时刻。" * 7).rstrip("。")
+        self.assertGreater(len(translated), len(source) * 0.18)
+        self.assertLess(len(translated), len(source) * 0.35)
+        self.assertFalse(looks_truncated_translation(source, translated))
+
+    def test_extremely_short_translation_is_rejected(self) -> None:
+        source = "A complete source sentence with substantial detail. " * 8
+        self.assertTrue(looks_truncated_translation(source, "过短译文"))
 
 
 if __name__ == "__main__":
