@@ -204,6 +204,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             asset_id TEXT NOT NULL REFERENCES publish_assets(id) ON DELETE RESTRICT,
             description TEXT NOT NULL DEFAULT '',
             ai_generated INTEGER NOT NULL DEFAULT 0,
+            product_link TEXT NOT NULL DEFAULT '',
             schedule_mode TEXT NOT NULL DEFAULT 'server',
             scheduled_at TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'draft',
@@ -260,6 +261,8 @@ def init_db(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE publish_jobs ADD COLUMN next_attempt_at TEXT NOT NULL DEFAULT ''")
     if "deleted_at" not in existing_publish_cols:
         conn.execute("ALTER TABLE publish_jobs ADD COLUMN deleted_at TEXT NOT NULL DEFAULT ''")
+    if "product_link" not in existing_publish_cols:
+        conn.execute("ALTER TABLE publish_jobs ADD COLUMN product_link TEXT NOT NULL DEFAULT ''")
     conn.commit()
 
 

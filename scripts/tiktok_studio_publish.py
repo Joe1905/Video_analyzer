@@ -11,6 +11,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 import proxy_pool
@@ -81,6 +82,16 @@ def _clean_text(value: Any, limit: int) -> str:
     return str(value or "").strip()[:limit]
 
 
+def _clean_product_link(value: Any) -> str:
+    link = _clean_text(value, 2000)
+    if not link:
+        return ""
+    parsed = urlparse(link)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("绑定商品链接必须是完整的 http:// 或 https:// URL")
+    return link
+
+
 def _row_to_job(row: Any) -> dict[str, Any]:
     return {
         "id": row["id"],
@@ -92,6 +103,8 @@ def _row_to_job(row: Any) -> dict[str, Any]:
         "content_type": row["content_type"],
         "description": row["description"],
         "ai_generated": bool(row["ai_generated"]),
+        "product_link": row["product_link"],
+        "product_link_status": "待绑定" if row["product_link"] else "不添加",
         "schedule_mode": row["schedule_mode"],
         "scheduled_at": row["scheduled_at"],
         "status": row["status"],
@@ -192,9 +205,9 @@ def create_job(form: Any) -> dict[str, Any]:
                 """
                 INSERT INTO publish_jobs (
                     id, account_id, proxy_profile_id, asset_id, description, ai_generated,
-                    schedule_mode, scheduled_at, status, stage, attempt_count, next_attempt_at,
+                    product_link, schedule_mode, scheduled_at, status, stage, attempt_count, next_attempt_at,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', 0, '', ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 0, '', ?, ?)
                 """,
                 (
                     job_id,
@@ -203,6 +216,7 @@ def create_job(form: Any) -> dict[str, Any]:
                     asset_id,
                     _clean_text(form.getfirst("description"), 2200),
                     1 if str(form.getfirst("ai_generated") or "").lower() in {"1", "true", "yes", "on"} else 0,
+                    _clean_product_link(form.getfirst("product_link")),
                     schedule_mode,
                     _iso(scheduled_at),
                     "queued" if queued else "draft",
@@ -229,14 +243,16 @@ def update_job(payload: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("当前任务状态不能编辑")
         mode = _clean_text(payload.get("schedule_mode"), 20) or row["schedule_mode"]
         scheduled = _parse_schedule(payload.get("scheduled_at") or row["scheduled_at"])
+        product_link = _clean_product_link(payload["product_link"]) if "product_link" in payload else str(row["product_link"] or "")
         queue = bool(payload.get("queue"))
         _validate_schedule(mode, scheduled, queue)
         status = "queued" if queue else "draft"
         conn.execute(
-            "UPDATE publish_jobs SET description = ?, ai_generated = ?, schedule_mode = ?, scheduled_at = ?, status = ?, stage = '', attempt_count = 0, next_attempt_at = '', session_id = NULL, final_click_at = '', actual_publish_at = '', result_url = '', last_error = '', updated_at = ? WHERE id = ?",
+            "UPDATE publish_jobs SET description = ?, ai_generated = ?, product_link = ?, schedule_mode = ?, scheduled_at = ?, status = ?, stage = '', attempt_count = 0, next_attempt_at = '', session_id = NULL, final_click_at = '', actual_publish_at = '', result_url = '', last_error = '', updated_at = ? WHERE id = ?",
             (
                 _clean_text(payload.get("description"), 2200),
                 1 if payload.get("ai_generated") else 0,
+                product_link,
                 mode,
                 _iso(scheduled),
                 status,
