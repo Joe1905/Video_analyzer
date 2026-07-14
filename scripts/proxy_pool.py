@@ -209,6 +209,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             actual_publish_at TEXT NOT NULL DEFAULT '',
             result_url TEXT NOT NULL DEFAULT '',
             last_error TEXT NOT NULL DEFAULT '',
+            deleted_at TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -250,6 +251,8 @@ def init_db(conn: sqlite3.Connection) -> None:
     existing_publish_cols = {row[1] for row in conn.execute("PRAGMA table_info(publish_jobs)")}
     if "next_attempt_at" not in existing_publish_cols:
         conn.execute("ALTER TABLE publish_jobs ADD COLUMN next_attempt_at TEXT NOT NULL DEFAULT ''")
+    if "deleted_at" not in existing_publish_cols:
+        conn.execute("ALTER TABLE publish_jobs ADD COLUMN deleted_at TEXT NOT NULL DEFAULT ''")
     conn.commit()
 
 

@@ -26,7 +26,8 @@ NATIVE_MIN_MINUTES = max(15, int(os.getenv("TIKTOK_NATIVE_SCHEDULE_MIN_MINUTES",
 DRY_RUN = os.getenv("TIKTOK_PUBLISH_DRY_RUN", "1").strip().lower() in {"1", "true", "yes", "on"}
 UPLOAD_TIMEOUT_SECONDS = max(60, int(os.getenv("TIKTOK_PUBLISH_UPLOAD_TIMEOUT_SECONDS", "1800") or "1800"))
 ALLOWED_SUFFIXES = {".mp4", ".mov", ".m4v", ".webm"}
-EDITABLE_STATUSES = {"draft", "queued", "delayed"}
+EDITABLE_STATUSES = {"draft", "queued", "delayed", "failed", "cancelled", "dry_run"}
+DELETE_BLOCKED_STATUSES = {"preparing", "uploading", "publishing", "scheduled_on_tiktok"}
 STATUS_LABELS = {
     "draft": "草稿箱",
     "queued": "待发布",
@@ -111,9 +112,10 @@ def _job_query(where: str = "", params: tuple[Any, ...] = ()) -> list[dict[str, 
     sql = (
         "SELECT j.*, a.original_name, a.size_bytes, a.content_type, a.stored_path "
         "FROM publish_jobs j JOIN publish_assets a ON a.id = j.asset_id "
+        "WHERE j.deleted_at = '' "
     )
     if where:
-        sql += "WHERE " + where + " "
+        sql += "AND (" + where + ") "
     sql += "ORDER BY j.created_at DESC"
     with proxy_pool.connect() as conn:
         return [_row_to_job(row) for row in conn.execute(sql, params).fetchall()]
@@ -220,18 +222,18 @@ def update_job(payload: dict[str, Any]) -> dict[str, Any]:
     if not job_id:
         raise ValueError("job_id is required")
     with proxy_pool.connect() as conn:
-        row = conn.execute("SELECT * FROM publish_jobs WHERE id = ?", (job_id,)).fetchone()
+        row = conn.execute("SELECT * FROM publish_jobs WHERE id = ? AND deleted_at = ''", (job_id,)).fetchone()
         if not row:
             raise ValueError("publish job not found")
         if row["status"] not in EDITABLE_STATUSES:
-            raise ValueError("只有草稿、待发布或延迟任务可以编辑")
+            raise ValueError("当前任务状态不能编辑")
         mode = _clean_text(payload.get("schedule_mode"), 20) or row["schedule_mode"]
         scheduled = _parse_schedule(payload.get("scheduled_at") or row["scheduled_at"])
-        queue = bool(payload.get("queue")) or row["status"] != "draft"
+        queue = bool(payload.get("queue"))
         _validate_schedule(mode, scheduled, queue)
-        status = "queued" if payload.get("queue") else row["status"]
+        status = "queued" if queue else "draft"
         conn.execute(
-            "UPDATE publish_jobs SET description = ?, ai_generated = ?, schedule_mode = ?, scheduled_at = ?, status = ?, next_attempt_at = '', last_error = '', updated_at = ? WHERE id = ?",
+            "UPDATE publish_jobs SET description = ?, ai_generated = ?, schedule_mode = ?, scheduled_at = ?, status = ?, stage = '', attempt_count = 0, next_attempt_at = '', session_id = NULL, final_click_at = '', actual_publish_at = '', result_url = '', last_error = '', updated_at = ? WHERE id = ?",
             (
                 _clean_text(payload.get("description"), 2200),
                 1 if payload.get("ai_generated") else 0,
@@ -250,12 +252,33 @@ def update_job(payload: dict[str, Any]) -> dict[str, Any]:
 def cancel_job(payload: dict[str, Any]) -> dict[str, Any]:
     job_id = _clean_text(payload.get("id") or payload.get("job_id"), 80)
     with proxy_pool.connect() as conn:
-        row = conn.execute("SELECT * FROM publish_jobs WHERE id = ?", (job_id,)).fetchone()
+        row = conn.execute("SELECT * FROM publish_jobs WHERE id = ? AND deleted_at = ''", (job_id,)).fetchone()
         if not row:
             raise ValueError("publish job not found")
         if row["status"] not in EDITABLE_STATUSES:
             raise ValueError("只能取消尚未开始的发布任务")
         conn.execute("UPDATE publish_jobs SET status = 'cancelled', stage = '', updated_at = ? WHERE id = ?", (_iso(), job_id))
+        conn.commit()
+        account_id = int(row["account_id"])
+    return list_jobs(account_id)
+
+
+def delete_job(payload: dict[str, Any]) -> dict[str, Any]:
+    job_id = _clean_text(payload.get("id") or payload.get("job_id"), 80)
+    if not job_id:
+        raise ValueError("job_id is required")
+    with proxy_pool.connect() as conn:
+        row = conn.execute("SELECT * FROM publish_jobs WHERE id = ? AND deleted_at = ''", (job_id,)).fetchone()
+        if not row:
+            raise ValueError("publish job not found")
+        if row["status"] in DELETE_BLOCKED_STATUSES:
+            raise ValueError("运行中或 TikTok 已排程的任务不能删除")
+        now = _iso()
+        status = "cancelled" if row["status"] in {"draft", "queued", "delayed"} else row["status"]
+        conn.execute(
+            "UPDATE publish_jobs SET status = ?, stage = '', deleted_at = ?, updated_at = ? WHERE id = ?",
+            (status, now, now, job_id),
+        )
         conn.commit()
         account_id = int(row["account_id"])
     return list_jobs(account_id)
@@ -277,7 +300,7 @@ def video_path(asset_id: str) -> Path:
 
 def runtime_status() -> dict[str, Any]:
     with proxy_pool.connect() as conn:
-        counts = {row["status"]: int(row["count"]) for row in conn.execute("SELECT status, COUNT(*) AS count FROM publish_jobs GROUP BY status")}
+        counts = {row["status"]: int(row["count"]) for row in conn.execute("SELECT status, COUNT(*) AS count FROM publish_jobs WHERE deleted_at = '' GROUP BY status")}
     with _worker_lock:
         active = sorted(_active_jobs)
     return {
