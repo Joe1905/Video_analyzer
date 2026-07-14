@@ -1013,6 +1013,68 @@ def parse_vless_uri(uri: str, fallback_name: str = "") -> dict[str, Any]:
     }
 
 
+def parse_static_proxy_uri(uri: str, fallback_name: str = "") -> dict[str, Any]:
+    uri = _clean_text(uri, 10000)
+    if not uri:
+        return {"parse_status": "manual", "parsed": {}, "mihomo_proxy": {}, "mihomo_name": fallback_name}
+
+    parsed = urlparse(uri)
+    scheme = parsed.scheme.lower()
+    if scheme not in {"http", "https", "socks", "socks5", "socks5h"}:
+        raise ValueError("静态代理仅支持 socks://、socks5://、http:// 或 https://")
+
+    if scheme == "socks" and not parsed.username and "@" not in parsed.netloc and ":" not in parsed.netloc:
+        encoded = (parsed.netloc + parsed.path).strip("/")
+        try:
+            padded = encoded + "=" * (-len(encoded) % 4)
+            authority = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+            parsed = urlparse(f"socks5://{authority}")
+            scheme = "socks5"
+        except (binascii.Error, UnicodeError, ValueError) as exc:
+            raise ValueError("socks:// 订阅内容不是有效的 Base64 代理地址") from exc
+
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("静态代理端口无效") from exc
+    server = parsed.hostname or ""
+    username = unquote(parsed.username or "")
+    password = unquote(parsed.password or "")
+    if not server or not port:
+        raise ValueError("静态代理必须包含服务器和端口")
+
+    name = unquote(parsed.fragment or "") or fallback_name or server or "static-proxy"
+    mihomo_type = "socks5" if scheme in {"socks", "socks5", "socks5h"} else "http"
+    mihomo: dict[str, Any] = {
+        "name": name,
+        "type": mihomo_type,
+        "server": server,
+        "port": int(port),
+    }
+    if username:
+        mihomo["username"] = username
+    if password:
+        mihomo["password"] = password
+    if mihomo_type == "socks5":
+        mihomo["udp"] = True
+    if scheme == "https":
+        mihomo["tls"] = True
+
+    return {
+        "parse_status": "ok",
+        "mihomo_name": name,
+        "parsed": {
+            "scheme": scheme,
+            "server": server,
+            "port": int(port),
+            "username": username,
+            "has_password": bool(password),
+            "name": name,
+        },
+        "mihomo_proxy": mihomo,
+    }
+
+
 def list_state() -> dict[str, Any]:
     with connect() as conn:
         _active_sessions(conn)
@@ -1043,6 +1105,11 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
     name = _clean_text(payload.get("name"), 160)
     source_uri = _clean_text(payload.get("source_uri"), 10000)
     expected_exit_ip = _clean_text(payload.get("expected_exit_ip"), 80)
+    source_type = _clean_text(payload.get("source_type"), 40)
+    if not source_type:
+        source_type = "static" if source_uri.lower().startswith(("socks://", "socks5://", "socks5h://", "http://", "https://")) else "vless"
+    if source_type not in {"vless", "static"}:
+        raise ValueError("代理类型必须为 vless 或 static")
 
     parse_status = "manual"
     parse_error = ""
@@ -1051,7 +1118,7 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
     mihomo_name = name
     if source_uri:
         try:
-            parsed_result = parse_vless_uri(source_uri, fallback_name=name)
+            parsed_result = parse_vless_uri(source_uri, fallback_name=name) if source_type == "vless" else parse_static_proxy_uri(source_uri, fallback_name=name)
             parse_status = str(parsed_result["parse_status"])
             parsed = parsed_result["parsed"]
             mihomo_proxy = parsed_result["mihomo_proxy"]
@@ -1067,7 +1134,7 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
     now = now_iso()
     values = {
         "name": name,
-        "source_type": _clean_text(payload.get("source_type"), 40) or "vless",
+        "source_type": source_type,
         "source_uri": source_uri,
         "expected_exit_ip": expected_exit_ip,
         "region": _clean_text(payload.get("region"), 80),
