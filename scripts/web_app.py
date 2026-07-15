@@ -4441,6 +4441,21 @@ def fastmoss_availability_search_arguments(route: dict[str, Any], user_text: str
     return {"keywords": query, "region": region, "pagesize": 10}
 
 
+def fastmoss_empty_availability_answer(search_arguments: dict[str, Any], search_ok: bool = True) -> str:
+    query = str(search_arguments.get("keywords") or "该商品").strip()
+    region = str(search_arguments.get("region") or "US").strip().upper()
+    market = "美区" if region == "US" else f"{region} 区域"
+    if not search_ok:
+        return (
+            f"本次 FastMoss 的 TikTok Shop {market}商品查询未成功完成，因此暂时无法判断「{query}」是否在售。"
+            "请稍后重试，或提供商品链接/ID继续核验。"
+        )
+    return (
+        f"本次在 FastMoss 的 TikTok Shop {market}商品搜索中，未检索到与「{query}」匹配的商品。"
+        "这个结果只代表本轮检索，不表示平台上绝对没有销售；如需继续核验，请提供商品链接/ID或更具体的英文名称。"
+    )
+
+
 def _tool_call_arguments(tool_call: dict[str, Any]) -> dict[str, Any]:
     raw = tool_call.get("function", {}).get("arguments") if isinstance(tool_call, dict) else None
     if isinstance(raw, dict):
@@ -5536,6 +5551,12 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     routing_text = chat_routing_text(user_text)
     route = resolve_chat_intent(session.messages, user_text, provider, api_key, api_url, model, req)
     route_intent = str(route.get("intent") or "general")
+    if provider == "fastmoss" and route_intent == "product_availability":
+        latest_user_message = next((message for message in reversed(messages) if message.get("role") == "user"), None)
+        messages = [message for message in messages if message.get("_context_scope") == "system"]
+        if latest_user_message:
+            messages.append(latest_user_message)
+        recovery = {}
     if provider_forces_mcp_tools(provider) and route_intent == "web_search" and not is_explicit_live_web_query(routing_text):
         route = {"intent": f"{provider}_lookup", "task_depth": "lookup", "route_source": route.get("route_source", "rules"), "tools": None, "max_rounds": 5}
         route_intent = str(route.get("intent") or "general")
@@ -5677,6 +5698,12 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 f"region={search_arguments['region']} enough_data={str(enough_data).lower()}",
                 flush=True,
             )
+            if not normalized_result.get("ok") or not enough_data:
+                content = fastmoss_empty_availability_answer(search_arguments, bool(normalized_result.get("ok")))
+                status = "done" if normalized_result.get("ok") else "error"
+                store.update_message(session, assistant_msg, content, status=status)
+                store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": content})
+                return
             if enough_data:
                 tools = []
 
