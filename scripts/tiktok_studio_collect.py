@@ -162,6 +162,7 @@ def _validate_feishu_target(value: Any) -> dict[str, Any]:
         raise ValueError("选择的多维表格不在当前写入白名单中")
     return {
         "appToken": _clean_text(matched.get("appToken"), 200),
+        "appName": _clean_text(matched.get("appName"), 200),
         "wikiToken": _clean_text(matched.get("wikiToken"), 200),
         "tableId": _clean_text(matched.get("tableId"), 200),
         "tableName": _clean_text(matched.get("tableName"), 200),
