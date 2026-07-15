@@ -1,18 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-lan_domain="${LAN_DOMAIN:-video-analyzer.local}"
+lan_domain="${LAN_DOMAIN:-xn--rss932g.local}"
+legacy_domain="${LAN_LEGACY_DOMAIN:-video-analyzer.local}"
 lan_ip="${LAN_IP:-192.168.1.254}"
 lan_cidr="${LAN_CIDR:-192.168.0.0/23}"
 http_port="${LAN_HTTP_PORT:-80}"
 upstream_port="${LAN_UPSTREAM_PORT:-4003}"
 
 if [ "${EUID}" -ne 0 ]; then
-  exec sudo --preserve-env=LAN_DOMAIN,LAN_IP,LAN_CIDR,LAN_HTTP_PORT,LAN_UPSTREAM_PORT "$0" "$@"
+  exec sudo --preserve-env=LAN_DOMAIN,LAN_LEGACY_DOMAIN,LAN_IP,LAN_CIDR,LAN_HTTP_PORT,LAN_UPSTREAM_PORT "$0" "$@"
 fi
 
 if [[ ! "${lan_domain}" =~ ^[a-z0-9][a-z0-9.-]*\.local$ ]]; then
   echo "LAN_DOMAIN must be a lowercase .local name: ${lan_domain}" >&2
+  exit 2
+fi
+if [[ -n "${legacy_domain}" && ! "${legacy_domain}" =~ ^[a-z0-9][a-z0-9.-]*\.local$ ]]; then
+  echo "LAN_LEGACY_DOMAIN must be empty or a lowercase .local name: ${legacy_domain}" >&2
   exit 2
 fi
 if [[ ! "${lan_ip}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -46,6 +51,28 @@ RestartSec=2
 [Install]
 WantedBy=multi-user.target
 EOF
+
+if [[ -n "${legacy_domain}" && "${legacy_domain}" != "${lan_domain}" ]]; then
+  cat >/etc/systemd/system/video-analyzer-mdns-legacy.service <<EOF
+[Unit]
+Description=Publish legacy ${legacy_domain} alias on the local network
+After=network-online.target avahi-daemon.service
+Wants=network-online.target
+Requires=avahi-daemon.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/avahi-publish-address -a -R ${legacy_domain} ${lan_ip}
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+EOF
+else
+  systemctl disable --now video-analyzer-mdns-legacy.service 2>/dev/null || true
+  rm -f /etc/systemd/system/video-analyzer-mdns-legacy.service
+fi
 
 cat >/etc/systemd/system/video-analyzer-lan-proxy.socket <<EOF
 [Unit]
@@ -82,12 +109,19 @@ systemctl daemon-reload
 systemctl enable --now avahi-daemon.service
 systemctl enable video-analyzer-mdns.service
 systemctl restart video-analyzer-mdns.service
+if [[ -n "${legacy_domain}" && "${legacy_domain}" != "${lan_domain}" ]]; then
+  systemctl enable video-analyzer-mdns-legacy.service
+  systemctl restart video-analyzer-mdns-legacy.service
+fi
 systemctl enable video-analyzer-lan-proxy.socket
 systemctl stop video-analyzer-lan-proxy.service 2>/dev/null || true
 systemctl restart video-analyzer-lan-proxy.socket
 
 systemctl is-active --quiet avahi-daemon.service
 systemctl is-active --quiet video-analyzer-mdns.service
+if [[ -n "${legacy_domain}" && "${legacy_domain}" != "${lan_domain}" ]]; then
+  systemctl is-active --quiet video-analyzer-mdns-legacy.service
+fi
 systemctl is-active --quiet video-analyzer-lan-proxy.socket
 curl --fail --silent --show-error --output /dev/null "http://${lan_ip}:${http_port}/lan-chat"
 
