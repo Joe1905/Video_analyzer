@@ -440,25 +440,45 @@ def _skip_onboarding(page: Any) -> None:
 
 
 def _video_id(url: str) -> str:
-    match = re.search(r"/analytics/(\d+)", url)
+    match = re.search(r"/(?:analytics|video)/(\d+)", url)
     return match.group(1) if match else ""
 
 
 def _discover_links_on_page(page: Any) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
-    links = page.locator("a[href*='/tiktokstudio/analytics/']")
+    links = page.locator("a[href*='/tiktokstudio/analytics/'], a[href*='/video/']")
     for index in range(min(links.count(), 200)):
         link = links.nth(index)
         try:
             href = str(link.get_attribute("href") or "")
             if not href:
                 continue
-            href = urljoin(page.url, href)
-            video_id = _video_id(href)
+            absolute_href = urljoin(page.url, href)
+            video_id = _video_id(absolute_href)
             if not video_id:
                 continue
             text = _clean_text(link.inner_text(), 2000)
-            rows.append({"id": video_id, "url": href, "title_hint": text})
+            if "/video/" in absolute_href:
+                for levels in ("..", "../..", "../../..", "../../../..", "../../../../..", "../../../../../.."):
+                    try:
+                        candidate = _clean_text(link.locator(f"xpath={levels}").inner_text(), 2000)
+                        if len(candidate) <= 1000 and re.search(r"(?m)^\d{1,2}:\d{2}$", candidate):
+                            text = candidate
+                            break
+                    except Exception:
+                        continue
+            elif not text:
+                for levels in ("..", "../..", "../../.."):
+                    try:
+                        text = _clean_text(link.locator(f"xpath={levels}").inner_text(), 2000)
+                        if text:
+                            break
+                    except Exception:
+                        continue
+            analytics_url = absolute_href if "/tiktokstudio/analytics/" in absolute_href else urljoin(
+                page.url, f"/tiktokstudio/analytics/{video_id}"
+            )
+            rows.append({"id": video_id, "url": analytics_url, "title_hint": text})
         except Exception:
             continue
     return rows
@@ -484,6 +504,7 @@ def _discover_video_links(page: Any, max_videos: int) -> list[dict[str, str]]:
             page.locator("a[href*='/tiktokstudio/content']"),
             page.locator("a[href*='/tiktokstudio/manage']"),
             page.get_by_role("link", name=re.compile(r"content|posts|manage|内容|作品", re.I)),
+            page.get_by_role("button", name=re.compile(r"^recent posts$|^posts$|最近作品|近期作品", re.I)),
         ])
         if content_link:
             href = str(content_link.get_attribute("href") or "")
@@ -576,7 +597,21 @@ def _overview(lines: list[str]) -> dict[str, str]:
     }
 
 
-def _engagement(page: Any, overview: dict[str, str]) -> dict[str, str]:
+def _engagement(page: Any, lines: list[str], overview: dict[str, str]) -> dict[str, str]:
+    values: list[str] = []
+    for index, line in enumerate(lines):
+        if not re.match(r"^(?:Posted on|发布于)", line, re.I):
+            continue
+        for candidate in lines[index + 1:index + 12]:
+            if re.match(r"^(?:Video views|播放量)$", candidate, re.I):
+                break
+            if re.fullmatch(r"\d[\d,.]*[KMB]?", candidate, re.I):
+                values.append(candidate)
+            if len(values) >= 5:
+                break
+        break
+    if len(values) >= 5:
+        return dict(zip(("play", "likes", "comments", "shares", "favorites"), values[:5]))
     return {
         "play": overview.get("play_count", ""),
         "likes": _locator_metric(page, ["Likes", "Like", "点赞"]),
@@ -588,7 +623,7 @@ def _engagement(page: Any, overview: dict[str, str]) -> dict[str, str]:
 
 def _duration_seconds(text: str) -> int:
     values: list[int] = []
-    for minutes, seconds in re.findall(r"\b(\d+):(\d{2})\b", text):
+    for minutes, seconds in re.findall(r"\b(\d+):(\d{2})\b(?!\s*(?:AM|PM)\b)", text, re.I):
         values.append(int(minutes) * 60 + int(seconds))
     return max(values) if values else 0
 
@@ -631,10 +666,11 @@ def _retention_chart(page: Any) -> tuple[Any | None, int, str]:
     return fallback
 
 
-def _sample_retention(page: Any) -> tuple[dict[str, str], bool, list[str], str]:
+def _sample_retention(page: Any, duration_hint: int = 0) -> tuple[dict[str, str], bool, list[str], str]:
     chart, duration, reason = _retention_chart(page)
     if not chart:
         return {}, False, [], reason
+    duration = max(duration, duration_hint)
     if duration <= 0:
         return {}, False, [], "留存率图表没有可识别的视频时长"
     if duration > RETENTION_MAX_SECONDS:
@@ -680,6 +716,20 @@ def _sample_retention(page: Any) -> tuple[dict[str, str], bool, list[str], str]:
                 rows[second] = parsed[1]
                 break
 
+    unresolved = {second for second in targets if second not in rows}
+    if unresolved:
+        scan_left = int(box["x"])
+        scan_right = int(box["x"] + box["width"])
+        for x in range(scan_left, scan_right + 1, 3):
+            page.mouse.move(x, y)
+            page.wait_for_timeout(55)
+            parsed = read()
+            if parsed and parsed[0] in unresolved:
+                rows[parsed[0]] = parsed[1]
+                unresolved.discard(parsed[0])
+                if not unresolved:
+                    break
+
     missing_labels = [f"{second // 60}:{second % 60:02d}" for second in targets if second not in rows]
     output = {f"{second // 60}:{second % 60:02d}": rows[second] for second in sorted(rows)}
     return output, not missing_labels, missing_labels, "" if not missing_labels else "部分秒点未命中 ECharts tooltip"
@@ -687,8 +737,15 @@ def _sample_retention(page: Any) -> tuple[dict[str, str], bool, list[str], str]:
 
 def _title_and_date(lines: list[str], hint: str) -> tuple[str, str]:
     cleaned_hint = _lines(hint)
-    title = cleaned_hint[0] if cleaned_hint else ""
-    date_pattern = re.compile(r"(?:[A-Z][a-z]{2}\s+\d{1,2},\s+\d{4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})")
+    title = ""
+    date_pattern = re.compile(r"(?:[A-Z][a-z]{2}\s+\d{1,2},\s+\d{4}|\d{4}[/-]\d{1,2}[/-]\d{1,2}|\d{1,2}/\d{1,2}/\d{4})")
+    for candidate in cleaned_hint:
+        if re.fullmatch(r"\d{1,2}:\d{2}", candidate) or date_pattern.search(candidate):
+            continue
+        if candidate.lower() in {"everyone", "friends", "only you"} or re.fullmatch(r"[\d,.]+", candidate):
+            continue
+        title = candidate
+        break
     published = ""
     for line in cleaned_hint + lines[:80]:
         match = date_pattern.search(line)
@@ -705,7 +762,14 @@ def _title_and_date(lines: list[str], hint: str) -> tuple[str, str]:
 
 def _collect_video(page: Any, job: dict[str, Any], source: dict[str, str], log_dir: Path) -> dict[str, Any]:
     page.goto(source["url"], wait_until="domcontentloaded", timeout=60000)
-    page.wait_for_timeout(2200)
+    _assert_account_ready(page)
+    try:
+        page.get_by_text(re.compile(r"^(?:Video views|播放量)$", re.I)).first.wait_for(
+            state="visible", timeout=15000
+        )
+        page.wait_for_timeout(1200)
+    except Exception:
+        page.wait_for_timeout(2200)
     _assert_account_ready(page)
     body = page.locator("body").inner_text(timeout=15000)
     lines = _lines(body)
@@ -714,7 +778,9 @@ def _collect_video(page: Any, job: dict[str, Any], source: dict[str, str], log_d
         page.screenshot(path=str(log_dir / f"{source['id']}-missing-overview.png"), full_page=True)
         raise RuntimeError("视频分析页没有识别到概览指标")
     title, published_at = _title_and_date(lines, source.get("title_hint", ""))
-    retention, retention_complete, missing, retention_reason = _sample_retention(page)
+    retention, retention_complete, missing, retention_reason = _sample_retention(
+        page, _duration_seconds(source.get("title_hint", ""))
+    )
     payload = {
         "account": {
             "id": job["account_id"],
@@ -727,7 +793,7 @@ def _collect_video(page: Any, job: dict[str, Any], source: dict[str, str], log_d
         "video": {"id": source["id"], "title": title, "published_at": published_at, "url": page.url},
         "time_filter": {"requested": None, "applied": None, "scope": "video_lifetime", "applied_successfully": False},
         "overview": overview,
-        "engagement": _engagement(page, overview),
+        "engagement": _engagement(page, lines, overview),
         "retention": retention,
         "retention_complete": retention_complete,
         "missing_retention_seconds": missing,
