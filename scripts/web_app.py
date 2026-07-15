@@ -97,6 +97,7 @@ MCP_CHAT_CONFIGS = {
 import sys
 sys.path.insert(0, str(SCRIPTS_DIR))
 from chat_session import ChatStore, Message, Session, load_sessions_from_disk
+from lan_chat import LanChatError, LanChatStore
 from sociavault_usage import read_sociavault_usage
 from sociavault_tiktok import call_api as call_sociavault_tiktok_api
 from tools import TOOLS, execute_tool, get_tools_for_model, list_tools
@@ -332,6 +333,7 @@ social_jobs_running: set[str] = set()
 
 # Chat system
 chat_store = ChatStore(DATA_DIR / "sessions.json")
+lan_chat_store = LanChatStore(DATA_DIR / "lan_chat.sqlite")
 chat_provider_stores = {
     "home": chat_store,
     "amazon": ChatStore(SELLERSPRITE_CHAT_DATA_DIR / "chat_sessions.json"),
@@ -349,6 +351,7 @@ FORCED_MCP_CHAT_PROVIDERS = {"amazon", "fastmoss"}
 MCP_TOOL_CACHE: dict[str, dict[str, Any]] = {}
 NAV_ITEMS = [
     {"key": "home", "href": "/", "label": "\u9996\u9875", "title": "AI \u804a\u5929", "icon": '<path d="M3 10.5 12 3l9 7.5"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/>'},
+    {"key": "lan-chat", "href": "/lan-chat", "label": "\u90bb\u804a", "title": "\u5c40\u57df\u7f51\u804a\u5929", "icon": '<path d="M21 15a4 4 0 0 1-4 4H8l-5 2 1.6-4.1A7 7 0 0 1 3 12c0-4 4-7 9-7s9 3 9 7z"/><path d="M8 12h.01M12 12h.01M16 12h.01"/>'},
     {"key": "report", "href": "/report", "label": "\u65e5\u62a5", "title": "\u6bcf\u65e5\u62a5\u544a", "icon": '<path d="M7 3h7l4 4v14H7z"/><path d="M14 3v5h5"/><path d="M10 12h6"/><path d="M10 16h4"/>'},
     {"key": "amazon", "href": "/amazon", "label": "Amazon", "title": "Amazon", "icon": '<path d="M4 7.5 12 3l8 4.5v9L12 21l-8-4.5z"/><path d="M4 7.5 12 12l8-4.5"/><path d="M12 12v9"/>'},
     {"key": "fastmoss", "href": "/fastmoss", "label": "FastMoss", "title": "FastMoss", "icon": '<path d="M4 7.5 12 3l8 4.5v9L12 21l-8-4.5z"/><path d="M4 7.5 12 12l8-4.5"/><path d="M12 12v9"/>'},
@@ -5481,6 +5484,109 @@ def proxy_mcp_chat(handler: BaseHTTPRequestHandler, chat_type: str) -> None:
 def proxy_sellersprite_chat(handler: BaseHTTPRequestHandler) -> None:
     return proxy_mcp_chat(handler, "sellersprite")
 
+
+def _lan_chat_token(handler: BaseHTTPRequestHandler) -> str:
+    return handler.headers.get("X-Lan-Chat-Token", "").strip()
+
+
+def _lan_chat_request_json(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+    try:
+        length = int(handler.headers.get("Content-Length", "0") or "0")
+    except ValueError as exc:
+        raise LanChatError("请求长度无效") from exc
+    if length < 0 or length > 65536:
+        raise LanChatError("请求内容过大", 413)
+    try:
+        payload = json.loads(handler.rfile.read(length).decode("utf-8")) if length else {}
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise LanChatError("请求 JSON 无效") from exc
+    if not isinstance(payload, dict):
+        raise LanChatError("请求内容必须是对象")
+    return payload
+
+
+def handle_lan_chat_get(handler: BaseHTTPRequestHandler, parsed) -> bool:
+    path = parsed.path
+    try:
+        if path == "/api/lan-chat/bootstrap":
+            json_response(handler, HTTPStatus.OK, lan_chat_store.bootstrap(_lan_chat_token(handler)))
+            return True
+        avatar_match = re.fullmatch(r"/api/lan-chat/avatars/([0-9a-f]{16})", path)
+        if avatar_match:
+            body, content_type = lan_chat_store.avatar_bytes(avatar_match.group(1))
+            binary_response(handler, HTTPStatus.OK, body, content_type)
+            return True
+        message_match = re.fullmatch(r"/api/lan-chat/rooms/([^/]+)/messages", path)
+        if message_match:
+            query = parse_qs(parsed.query)
+            try:
+                after_id = int(query.get("after", ["0"])[0])
+                limit = int(query.get("limit", ["100"])[0])
+            except ValueError as exc:
+                raise LanChatError("分页参数无效") from exc
+            payload = lan_chat_store.list_messages(
+                _lan_chat_token(handler), unquote(message_match.group(1)), after_id, limit
+            )
+            json_response(handler, HTTPStatus.OK, payload)
+            return True
+    except LanChatError as exc:
+        json_response(handler, exc.status, {"error": str(exc)})
+        return True
+    return False
+
+
+def handle_lan_chat_post(handler: BaseHTTPRequestHandler, parsed) -> bool:
+    path = parsed.path
+    if not path.startswith("/api/lan-chat/"):
+        return False
+    try:
+        payload = _lan_chat_request_json(handler)
+        if path == "/api/lan-chat/register":
+            user, created = lan_chat_store.register(
+                str(payload.get("deviceToken") or ""), str(payload.get("nickname") or "")
+            )
+            json_response(handler, HTTPStatus.CREATED if created else HTTPStatus.OK, {
+                "user": user,
+                "created": created,
+            })
+            return True
+        if path == "/api/lan-chat/profile":
+            user = lan_chat_store.update_profile(
+                _lan_chat_token(handler), str(payload.get("nickname") or "")
+            )
+            json_response(handler, HTTPStatus.OK, {"user": user})
+            return True
+        if path == "/api/lan-chat/direct":
+            room = lan_chat_store.open_direct(
+                _lan_chat_token(handler), str(payload.get("targetUserId") or "")
+            )
+            json_response(handler, HTTPStatus.OK, {"room": room})
+            return True
+        if path == "/api/lan-chat/rooms":
+            member_ids = payload.get("memberIds")
+            if member_ids is not None and not isinstance(member_ids, list):
+                raise LanChatError("memberIds 必须是数组")
+            room = lan_chat_store.create_group(
+                _lan_chat_token(handler), str(payload.get("name") or ""), member_ids
+            )
+            json_response(handler, HTTPStatus.CREATED, {"room": room})
+            return True
+        message_match = re.fullmatch(r"/api/lan-chat/rooms/([^/]+)/messages", path)
+        if message_match:
+            message = lan_chat_store.send_message(
+                _lan_chat_token(handler),
+                unquote(message_match.group(1)),
+                str(payload.get("content") or ""),
+            )
+            json_response(handler, HTTPStatus.CREATED, {"message": message})
+            return True
+        json_response(handler, HTTPStatus.NOT_FOUND, {"error": "LAN chat API not found"})
+        return True
+    except LanChatError as exc:
+        json_response(handler, exc.status, {"error": str(exc)})
+        return True
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "ShortVideoAnalyzer/1.0"
 
@@ -5499,6 +5605,9 @@ class Handler(BaseHTTPRequestHandler):
             return proxy_mcp_chat(self, "fastmoss")
         if parsed.path == "/" or parsed.path == "/chat":
             return serve_chat_template(self, "home", parsed.path)
+        if parsed.path == "/lan-chat":
+            lan_chat_html = (SCRIPTS_DIR / "static" / "lan_chat.html").read_text(encoding="utf-8")
+            return text_response(self, HTTPStatus.OK, inject_unified_nav(lan_chat_html, parsed.path), "text/html; charset=utf-8")
         if parsed.path == "/report":
             report_html = (SCRIPTS_DIR / "static" / "report.html").read_text(encoding="utf-8")
             return text_response(self, HTTPStatus.OK, inject_unified_nav(report_html, parsed.path), "text/html; charset=utf-8")
@@ -5518,6 +5627,8 @@ class Handler(BaseHTTPRequestHandler):
             return text_response(self, HTTPStatus.OK, inject_unified_nav(METRICS_HTML, parsed.path), "text/html; charset=utf-8")
         if parsed.path.startswith("/assets/"):
             return self.serve_static_asset(parsed.path.removeprefix("/assets/"))
+        if parsed.path.startswith("/api/lan-chat/") and handle_lan_chat_get(self, parsed):
+            return
         if parsed.path == "/api/prompt":
             return json_response(self, HTTPStatus.OK, {"prompt": load_prompt(), "feedback_prompt": load_feedback_prompt()})
         if parsed.path == "/api/chat/sessions":
@@ -6081,6 +6192,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/lan-chat/") and handle_lan_chat_post(self, parsed):
+            return
         if parsed.path == "/amazon/api/chat/export-pdf":
             return self.handle_mcp_chat_export_pdf("sellersprite")
         if parsed.path == "/fastmoss/api/chat/export-pdf":
@@ -6940,6 +7053,7 @@ def main() -> int:
     load_env_file()
     VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    lan_chat_store.initialize()
     for store in chat_provider_stores.values():
         load_sessions_from_disk(store)
     mark_interrupted_chat_messages()
