@@ -35,6 +35,10 @@ body{max-width:100vw}
 .image-viewer[hidden]{display:none}
 .image-viewer img{display:block;max-width:100%;max-height:100%;object-fit:contain;border-radius:12px;box-shadow:0 18px 50px rgba(0,0,0,.34)}
 .viewer-close{position:absolute;z-index:1;top:max(14px,env(safe-area-inset-top));right:14px;width:42px;height:42px;border-radius:14px;background:rgba(255,255,255,.16);color:#fff;font-size:28px;display:grid;place-items:center}
+.login-backdrop{z-index:100;background:rgba(15,28,43,.58)}
+.login-modal{width:min(520px,100%)}
+.login-brand{display:flex;align-items:center;gap:12px}.login-brand .brand-mark{flex:0 0 auto}.login-brand h2{margin:0;font-size:20px}.login-brand p{margin:4px 0 0;color:var(--muted);font-size:12px}
+.login-step[hidden]{display:none}.login-list{display:grid;gap:9px}.login-card{width:100%;display:flex;align-items:center;gap:12px;text-align:left;border:1px solid var(--line);border-radius:15px;padding:12px;background:#fff}.login-card:hover{border-color:rgba(231,111,81,.48);background:var(--accent-soft)}.login-card-copy{min-width:0;flex:1}.login-card-copy strong{display:block;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.login-card-copy span{display:block;margin-top:3px;color:var(--muted);font-size:11px}.login-chevron{color:var(--accent);font-size:20px}.owner-avatar{width:42px;height:42px;border-radius:14px;display:grid;place-items:center;background:#e9f2f4;color:#39707a;font-weight:900;flex:0 0 auto}.login-toolbar{display:flex;align-items:center;gap:9px;margin-bottom:14px}.login-back{width:34px;height:34px;border-radius:11px;background:var(--soft);color:var(--muted);font-size:19px}.login-owner{min-width:0}.login-owner strong{display:block;font-size:14px}.login-owner span{display:block;color:var(--subtle);font-size:11px;margin-top:2px}.login-divider{display:flex;align-items:center;gap:10px;margin:18px 0;color:var(--subtle);font-size:11px}.login-divider::before,.login-divider::after{content:"";height:1px;background:var(--line);flex:1}.login-empty{border:1px dashed var(--line);border-radius:14px;padding:18px;text-align:center;color:var(--muted);font-size:12px;line-height:1.6}.login-error{color:#b84f37;font-size:12px;line-height:1.5;padding:10px 0}.login-create{margin:0}.login-create .field{margin-bottom:11px}.login-create .button{width:100%}
 @media(max-width:780px){
   input,textarea{font-size:16px!important}
   .shell,.chat,.app-header{width:100%;max-width:100vw}
@@ -42,6 +46,7 @@ body{max-width:100vw}
   .message-image img{max-height:55dvh}
   .composer textarea{font-size:16px}
   .image-viewer{padding-left:10px;padding-right:10px}
+  .login-backdrop{align-items:center;padding:14px}.login-modal{border-radius:22px;max-height:calc(100dvh - 28px)}
 }
 </style>
 </head>
@@ -56,7 +61,7 @@ body{max-width:100vw}
   <aside class="rail left-rail" id="leftRail">
     <div class="profile-card">
       <img class="avatar" id="profileAvatar" alt="我的头像">
-      <div class="profile-meta"><strong id="profileName">正在注册…</strong><span><i class="online-dot"></i>本设备在线</span></div>
+      <div class="profile-meta"><strong id="profileName">请选择账户</strong><span><i class="online-dot"></i>当前浏览器在线</span></div>
       <button class="icon-button" id="editProfile" aria-label="编辑资料" title="编辑资料">⋯</button>
     </div>
     <div class="rail-scroll">
@@ -79,9 +84,28 @@ body{max-width:100vw}
 </div>
 <div class="drawer-backdrop" id="drawerBackdrop"></div>
 
+<div class="modal-backdrop login-backdrop show" id="loginModal" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
+  <div class="modal login-modal">
+    <div class="modal-head"><div class="login-brand"><div class="brand-mark">邻</div><div><h2 id="loginTitle">进入邻聊</h2><p id="loginSubtitle">先选择飞书用户，再选择这台物理机使用的账户。</p></div></div></div>
+    <div class="modal-body">
+      <section class="login-step" id="feishuStep">
+        <div class="field-note" style="margin-bottom:12px">第一步 · 选择飞书用户</div>
+        <div class="login-list" id="feishuUserList"><div class="login-empty">正在读取账户…</div></div>
+        <div class="login-error" id="loginError" hidden></div>
+      </section>
+      <section class="login-step" id="accountStep" hidden>
+        <div class="login-toolbar"><button class="login-back" id="loginBack" type="button" aria-label="返回选择飞书用户">‹</button><div class="login-owner"><strong id="selectedFeishuName"></strong><span>第二步 · 选择或新建设备账户</span></div></div>
+        <div class="login-list" id="accountList"></div>
+        <div class="login-divider">新设备或新浏览器</div>
+        <form class="login-create" id="createAccountForm"><div class="field"><label for="createAccountNickname">新账户昵称</label><input id="createAccountNickname" maxlength="24" required placeholder="例如：Joe 的手机" autocomplete="nickname"></div><button class="button primary" id="createAccountButton" type="submit">新建设备账户并进入</button></form>
+      </section>
+    </div>
+  </div>
+</div>
+
 <div class="modal-backdrop" id="profileModal" role="dialog" aria-modal="true" aria-labelledby="profileTitle">
   <form class="modal" id="profileForm">
-    <div class="modal-head"><div><h2 id="profileTitle">设置你的昵称</h2><p id="profileSubtitle">这台设备已经自动注册，昵称随时可以修改。</p></div><button class="icon-button" type="button" data-close-modal aria-label="关闭">×</button></div>
+    <div class="modal-head"><div><h2 id="profileTitle">设置你的昵称</h2><p id="profileSubtitle">账户昵称随时可以修改。</p></div><button class="icon-button" type="button" data-close-modal aria-label="关闭">×</button></div>
     <div class="modal-body">
       <div class="profile-preview"><img class="avatar" id="profileModalAvatar" alt="默认头像"><div><strong id="profileModalName">新成员</strong><div class="field-note" id="avatarStatusText">默认头像会自动准备</div></div></div>
       <div class="field"><label for="nicknameInput">昵称</label><input id="nicknameInput" name="nickname" maxlength="24" autocomplete="nickname" required placeholder="输入 1-24 个字符"></div>
@@ -102,18 +126,18 @@ body{max-width:100vw}
 <div class="toast" id="toast" role="status"></div>
 
 <script>
-const TOKEN_KEY="videoAnalyzer.lanChat.deviceToken.v1";
+const SESSION_KEY="videoAnalyzer.lanChat.sessionToken.v2";
 const ROOM_KEY="videoAnalyzer.lanChat.activeRoom.v1";
 const READ_KEY="videoAnalyzer.lanChat.readRooms.v1";
 const CANONICAL_HOST="xn--rss932g.local";
 const CANONICAL_URL_HOST="聊天.local";
 const $=id=>document.getElementById(id);
-const state={token:"",currentUser:null,users:[],rooms:[],activeRoomId:"public",messages:[],lastMessageId:0,readRooms:{},messageTimer:null,bootstrapTimer:null,loadingMessages:false,draftImage:null,preparingImage:false};
-function token(){let value=localStorage.getItem(TOKEN_KEY);if(!value){const part=()=>crypto.randomUUID?crypto.randomUUID():`${Date.now()}-${Math.random().toString(36).slice(2)}`;value=`${part()}-${part()}`;localStorage.setItem(TOKEN_KEY,value)}return value}
-function importTransferredToken(){if(location.hostname.toLowerCase()!==CANONICAL_HOST)return;const params=new URLSearchParams(location.hash.replace(/^#/,"")),value=params.get("deviceToken")||"";if(value.length>=20&&value.length<=200)localStorage.setItem(TOKEN_KEY,value);if(location.hash)history.replaceState(null,"",location.pathname+location.search)}
-function redirectToCanonical(){if(location.hostname.toLowerCase()===CANONICAL_HOST)return false;location.replace(`http://${CANONICAL_URL_HOST}/lan-chat#deviceToken=${encodeURIComponent(token())}`);return true}
+const state={token:"",currentUser:null,users:[],rooms:[],activeRoomId:"public",messages:[],lastMessageId:0,readRooms:{},messageTimer:null,bootstrapTimer:null,loadingMessages:false,draftImage:null,preparingImage:false,selectedFeishuUser:null,loginLoading:false};
+function redirectToCanonical(){if(location.hostname.toLowerCase()===CANONICAL_HOST)return false;location.replace(`http://${CANONICAL_URL_HOST}/lan-chat`);return true}
 function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]))}
-async function request(path,options={}){const headers={...(options.headers||{}),"X-Lan-Chat-Token":state.token};if(options.body&&!headers["Content-Type"])headers["Content-Type"]="application/json";const response=await fetch(path,{...options,headers});let payload={};try{payload=await response.json()}catch(e){}if(!response.ok)throw new Error(payload.error||`请求失败 (${response.status})`);return payload}
+function responseError(payload,status){const error=new Error(payload.error||`请求失败 (${status})`);error.status=status;return error}
+async function publicRequest(path,options={}){const headers={...(options.headers||{})};if(options.body&&!headers["Content-Type"])headers["Content-Type"]="application/json";const response=await fetch(path,{...options,headers});let payload={};try{payload=await response.json()}catch(e){}if(!response.ok)throw responseError(payload,response.status);return payload}
+async function request(path,options={}){const headers={...(options.headers||{}),"X-Lan-Chat-Token":state.token};if(options.body&&!headers["Content-Type"])headers["Content-Type"]="application/json";const response=await fetch(path,{...options,headers});let payload={};try{payload=await response.json()}catch(e){}if(!response.ok){if(response.status===401)expireSession();throw responseError(payload,response.status)}return payload}
 function toast(message){const el=$("toast");el.textContent=message;el.classList.add("show");clearTimeout(el._timer);el._timer=setTimeout(()=>el.classList.remove("show"),2400)}
 function formatTime(seconds){if(!seconds)return"";const date=new Date(seconds*1000),today=new Date();const same=date.toDateString()===today.toDateString();return date.toLocaleString("zh-CN",same?{hour:"2-digit",minute:"2-digit",hour12:false}:{month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit",hour12:false})}
 function relativeSeen(seconds){const delta=Math.max(0,Date.now()/1000-seconds);if(delta<90)return"在线";if(delta<3600)return`${Math.floor(delta/60)} 分钟前`;if(delta<86400)return`${Math.floor(delta/3600)} 小时前`;return`${Math.floor(delta/86400)} 天前`}
@@ -121,8 +145,19 @@ function roomGlyph(room){return room.kind==="public"?"公":room.kind==="group"?"
 function roomPreview(room){const latest=room.latestMessage;if(!latest)return room.kind==="public"?"所有人可见":"还没有消息";return`${latest.nickname}：${latest.hasImage?"[图片] ":""}${latest.content||""}`}
 function saveRead(){localStorage.setItem(READ_KEY,JSON.stringify(state.readRooms))}
 function readStored(){try{state.readRooms=JSON.parse(localStorage.getItem(READ_KEY)||"{}")||{}}catch(e){state.readRooms={}}state.activeRoomId=localStorage.getItem(ROOM_KEY)||"public"}
+function stopPolling(){if(state.messageTimer)clearInterval(state.messageTimer);if(state.bootstrapTimer)clearInterval(state.bootstrapTimer);state.messageTimer=null;state.bootstrapTimer=null}
+function startPolling(){stopPolling();state.messageTimer=setInterval(()=>loadMessages(false),2000);state.bootstrapTimer=setInterval(()=>bootstrap(false).catch(()=>{}),10000)}
+function showFeishuStep(){state.selectedFeishuUser=null;$("feishuStep").hidden=false;$("accountStep").hidden=true;$("loginTitle").textContent="进入邻聊";$("loginSubtitle").textContent="先选择飞书用户，再选择这台物理机使用的账户。"}
+function ownerGlyph(owner){return esc((owner.name||"飞").trim().slice(0,1)||"飞")}
+function renderFeishuUsers(owners){$("feishuUserList").innerHTML=owners.map(owner=>`<button class="login-card" type="button" data-feishu-id="${esc(owner.id)}"><span class="owner-avatar">${ownerGlyph(owner)}</span><span class="login-card-copy"><strong>${esc(owner.name)}</strong><span>${owner.accounts.length} 个设备账户${owner.source==="local"?" · 等待接入飞书":""}</span></span><span class="login-chevron">›</span></button>`).join("")||'<div class="login-empty">还没有可用的飞书用户，请先完成飞书账户同步。</div>';$("feishuUserList").querySelectorAll("[data-feishu-id]").forEach(button=>button.onclick=()=>chooseFeishuUser(owners.find(owner=>owner.id===button.dataset.feishuId)))}
+async function loadLoginOptions(){if(state.loginLoading)return;state.loginLoading=true;$("loginModal").classList.add("show");showFeishuStep();$("loginError").hidden=true;$("feishuUserList").innerHTML='<div class="login-empty">正在读取账户…</div>';try{const payload=await publicRequest("/api/lan-chat/login-options");renderFeishuUsers(payload.feishuUsers||[])}catch(error){$("loginError").textContent=error.message;$("loginError").hidden=false;$("feishuUserList").innerHTML='<div class="login-empty">账户列表暂时不可用，请刷新页面重试。</div>'}finally{state.loginLoading=false}}
+function chooseFeishuUser(owner){if(!owner)return;state.selectedFeishuUser=owner;$("feishuStep").hidden=true;$("accountStep").hidden=false;$("loginTitle").textContent="选择设备账户";$("loginSubtitle").textContent="同一账户可在域名和 IP 入口继续使用。";$("selectedFeishuName").textContent=owner.name;$("accountList").innerHTML=owner.accounts.map(account=>`<button class="login-card" type="button" data-account-id="${esc(account.id)}">${avatar(account,"small")}<span class="login-card-copy"><strong>${esc(account.nickname)}</strong><span>${account.online?"当前在线":`上次在线：${esc(relativeSeen(account.lastSeen))}`}</span></span><span class="login-chevron">›</span></button>`).join("")||'<div class="login-empty">这个飞书用户还没有设备账户，请在下方新建。</div>';$("accountList").querySelectorAll("[data-account-id]").forEach(button=>button.onclick=()=>selectLoginAccount(button.dataset.accountId));$("createAccountNickname").value=""}
+async function completeLogin(payload){state.token=payload.sessionToken;state.currentUser=payload.user;localStorage.setItem(SESSION_KEY,state.token);state.messages=[];state.lastMessageId=0;await bootstrap(true);await loadMessages(true);startPolling();$("loginModal").classList.remove("show")}
+async function selectLoginAccount(accountId){if(!state.selectedFeishuUser)return;try{const payload=await publicRequest("/api/lan-chat/select-account",{method:"POST",body:JSON.stringify({feishuUserId:state.selectedFeishuUser.id,accountId})});await completeLogin(payload)}catch(error){toast(error.message)}}
+async function createLoginAccount(event){event.preventDefault();if(!state.selectedFeishuUser)return;const button=$("createAccountButton");button.disabled=true;try{const payload=await publicRequest("/api/lan-chat/accounts",{method:"POST",body:JSON.stringify({feishuUserId:state.selectedFeishuUser.id,nickname:$("createAccountNickname").value})});await completeLogin(payload);toast("设备账户已创建")}catch(error){toast(error.message)}finally{button.disabled=false}}
+function expireSession(){if(!state.token)return;localStorage.removeItem(SESSION_KEY);state.token="";state.currentUser=null;stopPolling();loadLoginOptions()}
+async function resumeOrChooseAccount(){state.token=localStorage.getItem(SESSION_KEY)||"";if(!state.token){await loadLoginOptions();return}try{await bootstrap(true);await loadMessages(true);startPolling();$("loginModal").classList.remove("show")}catch(error){if(error.status!==401){toast(error.message);$("messages").innerHTML=`<div class="welcome"><div class="welcome-mark">!</div><h2>暂时无法进入邻聊</h2><p>${esc(error.message)}</p></div>`}}}
 function avatar(user,extra=""){return `<img class="avatar ${extra}" src="${esc(user.avatarUrl)}" alt="${esc(user.nickname)}的头像" loading="lazy">`}
-async function register(){state.token=token();const response=await fetch("/api/lan-chat/register",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({deviceToken:state.token})});const payload=await response.json();if(!response.ok)throw new Error(payload.error||"设备注册失败");state.currentUser=payload.user;if(payload.created)openProfile(true)}
 async function bootstrap(render=true){const payload=await request("/api/lan-chat/bootstrap");state.currentUser=payload.currentUser;state.users=payload.users||[];state.rooms=payload.rooms||[];if(!state.rooms.some(room=>room.id===state.activeRoomId))state.activeRoomId=payload.publicRoomId||"public";if(render)renderAll();else{renderProfile();renderRooms();renderMembers();renderHeader()}return payload}
 function activeRoom(){return state.rooms.find(room=>room.id===state.activeRoomId)||state.rooms[0]}
 function renderProfile(){const user=state.currentUser;if(!user)return;$("profileAvatar").src=user.avatarUrl;$("profileModalAvatar").src=user.avatarUrl;$("profileName").textContent=user.nickname;$("profileModalName").textContent=user.nickname;if(!$("profileModal").classList.contains("show"))$("nicknameInput").value=user.nickname;$("avatarStatusText").textContent=user.avatarStatus==="ready"?"AI 默认头像已生成":user.avatarStatus==="pending"?"AI 默认头像正在后台生成":"本地默认头像已启用"}
@@ -136,9 +171,9 @@ async function selectRoom(roomId){if(roomId===state.activeRoomId){closeDrawers()
 async function loadMessages(reset=false){if(state.loadingMessages||!state.activeRoomId)return;state.loadingMessages=true;const roomId=state.activeRoomId;try{const after=reset?0:state.lastMessageId;const payload=await request(`/api/lan-chat/rooms/${encodeURIComponent(roomId)}/messages?after=${after}&limit=200`);if(roomId!==state.activeRoomId)return;if(reset)state.messages=[];const known=new Set(state.messages.map(message=>message.id));(payload.messages||[]).forEach(message=>{if(!known.has(message.id))state.messages.push(message)});state.lastMessageId=payload.lastId||state.lastMessageId;if((payload.messages||[]).length||reset){renderMessages();state.readRooms[roomId]=Date.now()/1000;saveRead()}}catch(error){if(reset)toast(error.message)}finally{state.loadingMessages=false}}
 async function sendMessage(event){event.preventDefault();const input=$("messageInput"),content=input.value.trim(),draft=state.draftImage;if((!content&&!draft)||state.preparingImage)return;$("sendButton").disabled=true;$("attachImage").disabled=true;try{const payload=await request(`/api/lan-chat/rooms/${encodeURIComponent(state.activeRoomId)}/messages`,{method:"POST",body:JSON.stringify({content,imageData:draft?.dataUrl||""})});if(!state.messages.some(message=>message.id===payload.message.id))state.messages.push(payload.message);state.lastMessageId=Math.max(state.lastMessageId,payload.message.id);input.value="";setDraftImage(null);resizeInput();renderMessages();state.readRooms[state.activeRoomId]=Date.now()/1000;saveRead();await bootstrap(false)}catch(error){toast(error.message)}finally{$("sendButton").disabled=false;$("attachImage").disabled=false;input.focus()}}
 async function startDirect(userId){try{const payload=await request("/api/lan-chat/direct",{method:"POST",body:JSON.stringify({targetUserId:userId})});await bootstrap(false);await selectRoom(payload.room.id)}catch(error){toast(error.message)}}
-function openProfile(firstTime=false){renderProfile();$("profileTitle").textContent=firstTime?"欢迎来到邻聊":"编辑资料";$("profileSubtitle").textContent=firstTime?"这台设备已经自动注册，先取一个好记的昵称吧。":"昵称会同步显示给局域网内其他成员。";$("profileModal").classList.add("show");setTimeout(()=>$("nicknameInput").select(),80)}
+function openProfile(){renderProfile();$("profileTitle").textContent="编辑资料";$("profileSubtitle").textContent="昵称属于当前设备账户，会同步显示给局域网内其他成员。";$("profileModal").classList.add("show");setTimeout(()=>$("nicknameInput").select(),80)}
 function openGroup(){const users=state.users.filter(user=>!user.isCurrent);$("groupMemberPicker").innerHTML=users.map(user=>`<label class="pick-row"><input type="checkbox" value="${esc(user.id)}">${avatar(user,"tiny")}<span>${esc(user.nickname)}</span></label>`).join("")||'<div class="field-note" style="padding:14px">还没有其他注册成员，仍可先创建群组。</div>';$("groupNameInput").value="";$("groupModal").classList.add("show");setTimeout(()=>$("groupNameInput").focus(),80)}
-function closeModals(){document.querySelectorAll(".modal-backdrop.show").forEach(modal=>modal.classList.remove("show"))}
+function closeModals(){document.querySelectorAll(".modal-backdrop.show:not(#loginModal)").forEach(modal=>modal.classList.remove("show"))}
 async function saveProfile(event){event.preventDefault();try{const payload=await request("/api/lan-chat/profile",{method:"POST",body:JSON.stringify({nickname:$("nicknameInput").value})});state.currentUser=payload.user;closeModals();await bootstrap(true);toast("昵称已保存")}catch(error){toast(error.message)}}
 async function createGroup(event){event.preventDefault();const memberIds=[...$("groupMemberPicker").querySelectorAll("input:checked")].map(input=>input.value);try{const payload=await request("/api/lan-chat/rooms",{method:"POST",body:JSON.stringify({name:$("groupNameInput").value,memberIds})});closeModals();await bootstrap(false);await selectRoom(payload.room.id);toast("群组已创建")}catch(error){toast(error.message)}}
 function openDrawer(side){closeDrawers();$(side==="left"?"leftRail":"rightRail").classList.add("open");$("drawerBackdrop").classList.add("show")}
@@ -150,8 +185,8 @@ function setDraftImage(image){if(state.draftImage?.previewUrl)URL.revokeObjectUR
 async function chooseImage(event){const file=event.target.files?.[0];event.target.value="";if(!file)return;state.preparingImage=true;$("attachImage").disabled=true;$("sendButton").disabled=true;try{setDraftImage(await prepareImage(file))}catch(error){toast(error.message)}finally{state.preparingImage=false;$("attachImage").disabled=false;$("sendButton").disabled=false}}
 function openImageViewer(url,alt){$("viewerImage").src=url;$("viewerImage").alt=alt||"聊天图片大图";$("imageViewer").hidden=false;$("closeImageViewer").focus()}
 function closeImageViewer(){$("imageViewer").hidden=true;$("viewerImage").removeAttribute("src")}
-function bind(){ $("composer").onsubmit=sendMessage;$("messageInput").addEventListener("input",resizeInput);$("messageInput").addEventListener("keydown",event=>{if(event.key==="Enter"&&!event.shiftKey&&!event.isComposing){event.preventDefault();$("composer").requestSubmit()}});$("attachImage").onclick=()=>$("imageInput").click();$("imageInput").onchange=chooseImage;$("removeImage").onclick=()=>setDraftImage(null);$("closeImageViewer").onclick=closeImageViewer;$("imageViewer").onclick=event=>{if(event.target===$("imageViewer"))closeImageViewer()};$("editProfile").onclick=()=>openProfile(false);$("mobileProfile").onclick=()=>openProfile(false);$("newGroup").onclick=openGroup;$("memberSearch").oninput=renderMembers;$("profileForm").onsubmit=saveProfile;$("groupForm").onsubmit=createGroup;document.querySelectorAll("[data-close-modal]").forEach(button=>button.onclick=closeModals);document.querySelectorAll(".modal-backdrop").forEach(backdrop=>backdrop.onclick=event=>{if(event.target===backdrop)closeModals()});$("mobileChannels").onclick=()=>openDrawer("left");$("mobileMembers").onclick=()=>openDrawer("right");$("mobileChat").onclick=closeDrawers;$("drawerBackdrop").onclick=closeDrawers;document.addEventListener("keydown",event=>{if(event.key==="Escape"){closeImageViewer();closeModals();closeDrawers()}})}
-async function init(){importTransferredToken();readStored();bind();if(redirectToCanonical())return;try{await register();await bootstrap(true);await loadMessages(true);state.messageTimer=setInterval(()=>loadMessages(false),2000);state.bootstrapTimer=setInterval(()=>bootstrap(false).catch(()=>{}),10000)}catch(error){toast(error.message);$("messages").innerHTML=`<div class="welcome"><div class="welcome-mark">!</div><h2>暂时无法进入邻聊</h2><p>${esc(error.message)}</p></div>`}}
+function bind(){ $("composer").onsubmit=sendMessage;$("messageInput").addEventListener("input",resizeInput);$("messageInput").addEventListener("keydown",event=>{if(event.key==="Enter"&&!event.shiftKey&&!event.isComposing){event.preventDefault();$("composer").requestSubmit()}});$("attachImage").onclick=()=>$("imageInput").click();$("imageInput").onchange=chooseImage;$("removeImage").onclick=()=>setDraftImage(null);$("closeImageViewer").onclick=closeImageViewer;$("imageViewer").onclick=event=>{if(event.target===$("imageViewer"))closeImageViewer()};$("editProfile").onclick=openProfile;$("mobileProfile").onclick=openProfile;$("newGroup").onclick=openGroup;$("memberSearch").oninput=renderMembers;$("profileForm").onsubmit=saveProfile;$("groupForm").onsubmit=createGroup;$("createAccountForm").onsubmit=createLoginAccount;$("loginBack").onclick=showFeishuStep;document.querySelectorAll("[data-close-modal]").forEach(button=>button.onclick=closeModals);document.querySelectorAll(".modal-backdrop").forEach(backdrop=>backdrop.onclick=event=>{if(backdrop.id!=="loginModal"&&event.target===backdrop)closeModals()});$("mobileChannels").onclick=()=>openDrawer("left");$("mobileMembers").onclick=()=>openDrawer("right");$("mobileChat").onclick=closeDrawers;$("drawerBackdrop").onclick=closeDrawers;document.addEventListener("keydown",event=>{if(event.key==="Escape"){closeImageViewer();closeModals();closeDrawers()}})}
+async function init(){readStored();bind();if(redirectToCanonical())return;await resumeOrChooseAccount()}
 init();
 </script>
 </body>

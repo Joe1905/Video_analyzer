@@ -8255,6 +8255,9 @@ def _lan_chat_request_json(
 def handle_lan_chat_get(handler: BaseHTTPRequestHandler, parsed) -> bool:
     path = parsed.path
     try:
+        if path == "/api/lan-chat/login-options":
+            json_response(handler, HTTPStatus.OK, lan_chat_store.login_options())
+            return True
         if path == "/api/lan-chat/bootstrap":
             json_response(handler, HTTPStatus.OK, lan_chat_store.bootstrap(_lan_chat_token(handler)))
             return True
@@ -8300,6 +8303,20 @@ def handle_lan_chat_post(handler: BaseHTTPRequestHandler, parsed) -> bool:
         payload = _lan_chat_request_json(
             handler, max_bytes=8 * 1024 * 1024 if is_message_request else 65536
         )
+        if path == "/api/lan-chat/select-account":
+            result = lan_chat_store.select_account(
+                str(payload.get("feishuUserId") or ""),
+                str(payload.get("accountId") or ""),
+            )
+            json_response(handler, HTTPStatus.OK, result)
+            return True
+        if path == "/api/lan-chat/accounts":
+            result = lan_chat_store.create_account(
+                str(payload.get("feishuUserId") or ""),
+                str(payload.get("nickname") or ""),
+            )
+            json_response(handler, HTTPStatus.CREATED, result)
+            return True
         if path == "/api/lan-chat/register":
             user, created = lan_chat_store.register(
                 str(payload.get("deviceToken") or ""), str(payload.get("nickname") or "")
