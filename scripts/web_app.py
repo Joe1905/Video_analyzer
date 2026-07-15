@@ -4308,6 +4308,22 @@ def parse_deepseek_dsml_tool_calls(content: str, allowed_tool_ids: set[str]) -> 
     return calls
 
 
+def build_deepseek_tool_assistant_message(
+    response_message: dict[str, Any],
+    tool_calls: list[dict[str, Any]],
+    standard_tool_calls: bool,
+) -> dict[str, Any]:
+    message = {
+        "role": "assistant",
+        "content": (response_message.get("content") or "") if standard_tool_calls else "",
+        "tool_calls": tool_calls,
+        "_context_scope": "current",
+    }
+    if "reasoning_content" in response_message:
+        message["reasoning_content"] = response_message.get("reasoning_content")
+    return message
+
+
 def forced_provider_missing_tool_retry(provider: str, needs_tools: bool, tools: list[dict[str, Any]], assistant_msg: Message) -> bool:
     if not provider_forces_mcp_tools(provider) or not needs_tools or not tools:
         return False
@@ -5658,13 +5674,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             if tool_calls:
                 assistant_msg.tool_calls = list(assistant_msg.tool_calls or []) + tool_calls
                 assistant_msg.tool_results = list(assistant_msg.tool_results or [])
-                assistant_content = (msg.get("content") or "") if standard_tool_calls else ""
-                messages.append({
-                    "role": "assistant",
-                    "content": assistant_content,
-                    "tool_calls": tool_calls,
-                    "_context_scope": "current",
-                })
+                messages.append(build_deepseek_tool_assistant_message(msg, tool_calls, bool(standard_tool_calls)))
                 store.broadcast(session.id, "update", {"messageId": assistant_msg.id, "tool_calls": assistant_msg.tool_calls, "tool_results": assistant_msg.tool_results})
 
                 for tc in tool_calls:

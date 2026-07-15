@@ -11,7 +11,7 @@ from types import SimpleNamespace
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from web_app import build_chat_history_context, build_prefixed_model_tools, chat_markdown_to_html, chat_request_needs_tools, chat_routing_text, compact_chat_tool_evidence, estimate_chat_context_tokens, fastmoss_analysis_evidence_gaps, fastmoss_defaults_to_us, fastmoss_playbook_instruction, fastmoss_playbook_intent, fastmoss_product_evidence_required, fastmoss_required_capability_gaps, filter_locked_provider_tool_ids, forced_provider_domain_tool_available, is_chat_retry_request, manage_chat_context, normalize_prefixed_tool_result, normalize_tool_result, parse_chat_intent_decision, provider_default_enabled_tool_ids, provider_forces_mcp_tools, resolve_chat_intent, route_chat_intent  # noqa: E402
+from web_app import build_chat_history_context, build_deepseek_tool_assistant_message, build_prefixed_model_tools, chat_markdown_to_html, chat_request_needs_tools, chat_routing_text, compact_chat_tool_evidence, estimate_chat_context_tokens, fastmoss_analysis_evidence_gaps, fastmoss_defaults_to_us, fastmoss_playbook_instruction, fastmoss_playbook_intent, fastmoss_product_evidence_required, fastmoss_required_capability_gaps, filter_locked_provider_tool_ids, forced_provider_domain_tool_available, is_chat_retry_request, manage_chat_context, normalize_prefixed_tool_result, normalize_tool_result, parse_chat_intent_decision, provider_default_enabled_tool_ids, provider_forces_mcp_tools, resolve_chat_intent, route_chat_intent  # noqa: E402
 from tools import _filter_relevant_search_results, execute_tool, get_tools_for_model, list_tools, parse_bing_html, parse_duckduckgo_html  # noqa: E402
 
 
@@ -562,6 +562,18 @@ def test_empty_mcp_collections_are_not_enough_data() -> None:
     assert populated["suggested_next_action"] == "answer_from_results"
 
 
+def test_deepseek_tool_turn_preserves_reasoning_content() -> None:
+    tool_calls = [{"id": "call_1", "function": {"name": "fastmoss__product_search", "arguments": "{}"}}]
+    turn = build_deepseek_tool_assistant_message(
+        {"content": "", "reasoning_content": "internal reasoning", "tool_calls": tool_calls},
+        tool_calls,
+        True,
+    )
+    assert turn["role"] == "assistant"
+    assert turn["tool_calls"] == tool_calls
+    assert turn["reasoning_content"] == "internal reasoning"
+
+
 def test_dynamic_chat_context_compresses_to_budget() -> None:
     messages = [{"role": "system", "content": "system rules", "_context_scope": "system"}]
     messages.extend(
@@ -631,6 +643,7 @@ if __name__ == "__main__":
     test_intent_decision_validation_and_fallback()
     test_intent_router_uses_recent_context_and_falls_back_on_failure()
     test_empty_mcp_collections_are_not_enough_data()
+    test_deepseek_tool_turn_preserves_reasoning_content()
     test_dynamic_chat_context_compresses_to_budget()
     print("chat tool normalization tests passed")
 
