@@ -6429,6 +6429,31 @@ def _feishu_users() -> dict[str, Any]:
     return payload
 
 
+def _proxy_feishu_binding(payload: dict[str, Any], *, required: bool) -> dict[str, Any]:
+    requested_id = str(payload.get("feishu_user_id") or "").strip()
+    if not requested_id and not required:
+        return payload
+    if not requested_id:
+        raise ValueError("请选择飞书用户")
+    _feishu_users()
+    options = lan_chat_store.login_options().get("feishuUsers", [])
+    user = next(
+        (
+            item
+            for item in options
+            if requested_id in {str(item.get("feishuId") or ""), str(item.get("id") or "")}
+        ),
+        None,
+    )
+    if not user:
+        raise ValueError("飞书用户不在当前白名单中")
+    result = dict(payload)
+    result["feishu_user_id"] = str(user.get("feishuId") or user.get("id") or "")
+    result["feishu_user_name"] = str(user.get("name") or "")
+    result["feishu_avatar_url"] = str(user.get("avatarUrl") or "")
+    return result
+
+
 def handle_feishu_capability_get(handler: BaseHTTPRequestHandler, parsed) -> bool:
     if parsed.path not in {"/api/feishu/users", "/api/feishu/bitable/write-allowlist"}:
         return False
@@ -7312,6 +7337,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/proxy/pools/delete":
                 return json_response(self, HTTPStatus.OK, proxy_pool.delete_pool(int(payload.get("id") or payload.get("proxy_profile_id") or 0)))
             if path == "/api/proxy/accounts":
+                payload = _proxy_feishu_binding(payload, required=not int(payload.get("id") or 0))
                 return json_response(self, HTTPStatus.OK, proxy_pool.upsert_account(payload))
             if path == "/api/proxy/accounts/delete":
                 return json_response(self, HTTPStatus.OK, proxy_pool.delete_account(int(payload.get("id") or payload.get("account_id") or 0)))
@@ -7322,6 +7348,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/proxy/accounts/status":
                 return json_response(self, HTTPStatus.OK, proxy_pool.update_account_status(payload))
             if path == "/api/proxy/login-session/start":
+                payload = _proxy_feishu_binding(payload, required=not int(payload.get("account_id") or 0))
                 return json_response(self, HTTPStatus.OK, proxy_pool.start_login_session(payload))
             if path == "/api/proxy/login-session/stop":
                 return json_response(self, HTTPStatus.OK, proxy_pool.stop_login_session(payload))
