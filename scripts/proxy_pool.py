@@ -153,6 +153,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             feishu_user_id TEXT NOT NULL DEFAULT '',
             feishu_user_name TEXT NOT NULL DEFAULT '',
             feishu_avatar_url TEXT NOT NULL DEFAULT '',
+            feishu_user_active INTEGER NOT NULL DEFAULT 0,
+            feishu_user_synced_at TEXT NOT NULL DEFAULT '',
             proxy_profile_id INTEGER NOT NULL REFERENCES proxy_profiles(id) ON DELETE RESTRICT,
             status TEXT NOT NULL DEFAULT 'active',
             profile_json TEXT NOT NULL DEFAULT '{}',
@@ -346,6 +348,17 @@ def init_db(conn: sqlite3.Connection) -> None:
             except sqlite3.OperationalError as exc:
                 if "duplicate column name" not in str(exc).lower():
                     raise
+    for name, definition in {
+        "feishu_user_active": "INTEGER NOT NULL DEFAULT 0",
+        "feishu_user_synced_at": "TEXT NOT NULL DEFAULT ''",
+    }.items():
+        if name not in existing_account_cols:
+            conn.execute(f"ALTER TABLE tiktok_accounts ADD COLUMN {name} {definition}")
+    conn.execute(
+        """UPDATE tiktok_accounts
+           SET feishu_user_active = 1
+           WHERE feishu_user_id <> '' AND feishu_user_synced_at = ''"""
+    )
     conn.execute(
         """CREATE UNIQUE INDEX IF NOT EXISTS idx_tiktok_accounts_feishu_user
            ON tiktok_accounts(feishu_user_id)
@@ -576,6 +589,8 @@ def _row_to_account(row: sqlite3.Row) -> dict[str, Any]:
         "feishu_user_id": row["feishu_user_id"],
         "feishu_user_name": row["feishu_user_name"],
         "feishu_avatar_url": row["feishu_avatar_url"],
+        "feishu_user_active": bool(row["feishu_user_active"]),
+        "feishu_user_synced_at": row["feishu_user_synced_at"],
         "proxy_profile_id": row["proxy_profile_id"],
         "status": _clean_account_status(row["status"]),
         "profile": _json_loads(row["profile_json"], {}),
@@ -1627,6 +1642,7 @@ def upsert_account(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("profile must be a JSON object")
 
     session_id = int(payload.get("session_id") or 0)
+    feishu_binding_provided = "feishu_user_id" in payload
     now = now_iso()
     values = {
         "username": username,
@@ -1635,6 +1651,8 @@ def upsert_account(payload: dict[str, Any]) -> dict[str, Any]:
         "feishu_user_id": _clean_text(payload.get("feishu_user_id"), 256),
         "feishu_user_name": _clean_text(payload.get("feishu_user_name"), 160),
         "feishu_avatar_url": _clean_text(payload.get("feishu_avatar_url"), 2000),
+        "feishu_user_active": 1 if payload.get("feishu_user_id") else 0,
+        "feishu_user_synced_at": now if payload.get("feishu_user_id") else "",
         "proxy_profile_id": proxy_profile_id,
         "status": _clean_account_status(payload.get("status")),
         "profile_json": "{}",
@@ -1655,6 +1673,9 @@ def upsert_account(payload: dict[str, Any]) -> dict[str, Any]:
             ):
                 if name not in payload:
                     values[name] = str(existing_account[name] or "")
+            if not feishu_binding_provided:
+                values["feishu_user_active"] = int(existing_account["feishu_user_active"] or 0)
+                values["feishu_user_synced_at"] = str(existing_account["feishu_user_synced_at"] or "")
         pool_row = conn.execute("SELECT * FROM proxy_profiles WHERE id = ?", (proxy_profile_id,)).fetchone()
         if not pool_row:
             raise ValueError("proxy profile not found")
@@ -1672,6 +1693,8 @@ def upsert_account(payload: dict[str, Any]) -> dict[str, Any]:
                 values["feishu_user_id"] = str(session_row["feishu_user_id"])
                 values["feishu_user_name"] = str(session_row["feishu_user_name"] or "")
                 values["feishu_avatar_url"] = str(session_row["feishu_avatar_url"] or "")
+                values["feishu_user_active"] = 1
+                values["feishu_user_synced_at"] = now
             session_user_data = Path(session_user_data_value)
             session_root = session_user_data.parent
             profile["isolation"] = {
@@ -1710,6 +1733,8 @@ def upsert_account(payload: dict[str, Any]) -> dict[str, Any]:
                     feishu_user_id=:feishu_user_id,
                     feishu_user_name=:feishu_user_name,
                     feishu_avatar_url=:feishu_avatar_url,
+                    feishu_user_active=:feishu_user_active,
+                    feishu_user_synced_at=:feishu_user_synced_at,
                     proxy_profile_id=:proxy_profile_id,
                     status=:status, profile_json=:profile_json, notes=:notes, updated_at=:updated_at
                 WHERE id=:id
@@ -1722,11 +1747,13 @@ def upsert_account(payload: dict[str, Any]) -> dict[str, Any]:
                 INSERT INTO tiktok_accounts (
                     username, display_name, tiktok_avatar_url,
                     feishu_user_id, feishu_user_name, feishu_avatar_url,
+                    feishu_user_active, feishu_user_synced_at,
                     proxy_profile_id, status, profile_json, notes,
                     created_at, updated_at
                 ) VALUES (
                     :username, :display_name, :tiktok_avatar_url,
                     :feishu_user_id, :feishu_user_name, :feishu_avatar_url,
+                    :feishu_user_active, :feishu_user_synced_at,
                     :proxy_profile_id, :status, :profile_json, :notes,
                     :created_at, :updated_at
                 )
@@ -1746,6 +1773,58 @@ def get_account(account_id: int) -> dict[str, Any]:
         if not row:
             raise ValueError("account not found")
         return _row_to_account(row)
+
+
+def sync_feishu_directory(users: list[dict[str, Any]]) -> dict[str, int]:
+    normalized: dict[str, tuple[str, str]] = {}
+    for item in users:
+        if not isinstance(item, dict):
+            continue
+        user_id = _clean_text(item.get("feishuId") or item.get("id"), 256)
+        if not user_id:
+            continue
+        normalized[user_id] = (
+            _clean_text(item.get("name"), 160),
+            _clean_text(item.get("avatarUrl"), 2000),
+        )
+
+    now = now_iso()
+    updated_accounts = 0
+    inactive_accounts = 0
+    with connect() as conn:
+        rows = conn.execute(
+            """SELECT id, feishu_user_id, feishu_user_name, feishu_avatar_url,
+                      feishu_user_active
+               FROM tiktok_accounts
+               WHERE feishu_user_id <> '' AND deleted_at = ''"""
+        ).fetchall()
+        for row in rows:
+            user_id = str(row["feishu_user_id"] or "")
+            user = normalized.get(user_id)
+            is_active = 1 if user else 0
+            name = user[0] if user else str(row["feishu_user_name"] or "")
+            avatar_url = user[1] if user else str(row["feishu_avatar_url"] or "")
+            if not is_active:
+                inactive_accounts += 1
+            if (
+                name != str(row["feishu_user_name"] or "")
+                or avatar_url != str(row["feishu_avatar_url"] or "")
+                or is_active != int(row["feishu_user_active"] or 0)
+            ):
+                updated_accounts += 1
+            conn.execute(
+                """UPDATE tiktok_accounts
+                   SET feishu_user_name = ?, feishu_avatar_url = ?,
+                       feishu_user_active = ?, feishu_user_synced_at = ?
+                   WHERE id = ?""",
+                (name, avatar_url, is_active, now, int(row["id"])),
+            )
+        conn.commit()
+    return {
+        "active_users": len(normalized),
+        "updated_accounts": updated_accounts,
+        "inactive_accounts": inactive_accounts,
+    }
 
 
 def delete_account(account_id: int) -> dict[str, Any]:
@@ -2009,6 +2088,8 @@ def start_login_session(payload: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("account not found")
         if "deleted_at" in account_row.keys() and account_row["deleted_at"]:
             raise ValueError("account has been deleted")
+        if str(account_row["feishu_user_id"] or "") and not bool(account_row["feishu_user_active"]):
+            raise ValueError("账号绑定的飞书用户已从白名单移除，请先重新绑定")
         bound_proxy_id = int(account_row["proxy_profile_id"] or 0)
         if proxy_profile_id and proxy_profile_id != bound_proxy_id:
             raise ValueError("账号与请求代理不一致")

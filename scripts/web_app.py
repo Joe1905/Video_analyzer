@@ -8295,6 +8295,9 @@ def _lan_chat_request_json(
 def _feishu_users() -> dict[str, Any]:
     payload = feishu_capability_client.list_users()
     lan_chat_store.sync_feishu_users(payload["users"])
+    proxy_pool.sync_feishu_directory(
+        lan_chat_store.login_options().get("feishuUsers", [])
+    )
     return payload
 
 
@@ -8320,6 +8323,7 @@ def _proxy_feishu_binding(payload: dict[str, Any], *, required: bool) -> dict[st
     result["feishu_user_id"] = str(user.get("feishuId") or user.get("id") or "")
     result["feishu_user_name"] = str(user.get("name") or "")
     result["feishu_avatar_url"] = str(user.get("avatarUrl") or "")
+    result["feishu_user_active"] = True
     return result
 
 
