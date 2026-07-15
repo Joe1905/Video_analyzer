@@ -135,6 +135,7 @@ from video_registry import (
 from proxy_state import ensure_us_proxy
 import proxy_pool
 import tiktok_studio_publish
+import tiktok_studio_collect
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 SAFE_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
 AUDIO_ONLY_SUFFIXES = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav"}
@@ -5955,6 +5956,11 @@ class Handler(BaseHTTPRequestHandler):
                 return json_response(self, HTTPStatus.OK, proxy_pool.list_products())
             if path == "/api/proxy/publish/runtime":
                 return json_response(self, HTTPStatus.OK, tiktok_studio_publish.runtime_status())
+            if path == "/api/proxy/collect/dashboard":
+                account_id = int(parse_qs(query).get("account_id", ["0"])[0] or 0)
+                return json_response(self, HTTPStatus.OK, tiktok_studio_collect.dashboard(account_id))
+            if path == "/api/proxy/collect/runtime":
+                return json_response(self, HTTPStatus.OK, tiktok_studio_collect.runtime_status())
             if path.startswith("/api/proxy/publish/videos/"):
                 asset_id = unquote(path.removeprefix("/api/proxy/publish/videos/"))
                 return self.serve_video(tiktok_studio_publish.video_path(asset_id))
@@ -6007,6 +6013,14 @@ class Handler(BaseHTTPRequestHandler):
                 return json_response(self, HTTPStatus.OK, tiktok_studio_publish.retry_job(payload))
             if path == "/api/proxy/publish/jobs/delete":
                 return json_response(self, HTTPStatus.OK, tiktok_studio_publish.delete_job(payload))
+            if path == "/api/proxy/collect/settings":
+                return json_response(self, HTTPStatus.OK, tiktok_studio_collect.save_settings(payload))
+            if path == "/api/proxy/collect/jobs":
+                return json_response(self, HTTPStatus.ACCEPTED, tiktok_studio_collect.create_job(payload))
+            if path == "/api/proxy/collect/jobs/retry":
+                return json_response(self, HTTPStatus.OK, tiktok_studio_collect.retry_job(payload))
+            if path == "/api/proxy/collect/jobs/cancel":
+                return json_response(self, HTTPStatus.OK, tiktok_studio_collect.cancel_job(payload))
             return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
         except ValueError as exc:
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
@@ -6843,6 +6857,7 @@ def main() -> int:
     if PROXY_POOL_ENABLED:
         threading.Thread(target=proxy_session_janitor, daemon=True).start()
         tiktok_studio_publish.start_worker()
+        tiktok_studio_collect.start_worker()
     normalize_stored_chat_tool_results()
     video_queue.start(execute_queue_job)
     report_scheduler_enabled = os.getenv("HOT_VIDEO_REPORT_SCHEDULER_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
