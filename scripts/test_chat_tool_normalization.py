@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,7 +11,7 @@ from types import SimpleNamespace
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from web_app import build_chat_history_context, build_prefixed_model_tools, chat_markdown_to_html, chat_request_needs_tools, chat_routing_text, compact_chat_tool_evidence, estimate_chat_context_tokens, fastmoss_analysis_evidence_gaps, fastmoss_defaults_to_us, fastmoss_playbook_instruction, fastmoss_playbook_intent, fastmoss_product_evidence_required, fastmoss_required_capability_gaps, filter_locked_provider_tool_ids, forced_provider_domain_tool_available, is_chat_retry_request, manage_chat_context, normalize_tool_result, provider_default_enabled_tool_ids, provider_forces_mcp_tools, route_chat_intent  # noqa: E402
+from web_app import build_chat_history_context, build_prefixed_model_tools, chat_markdown_to_html, chat_request_needs_tools, chat_routing_text, compact_chat_tool_evidence, estimate_chat_context_tokens, fastmoss_analysis_evidence_gaps, fastmoss_defaults_to_us, fastmoss_playbook_instruction, fastmoss_playbook_intent, fastmoss_product_evidence_required, fastmoss_required_capability_gaps, filter_locked_provider_tool_ids, forced_provider_domain_tool_available, is_chat_retry_request, manage_chat_context, normalize_prefixed_tool_result, normalize_tool_result, parse_chat_intent_decision, provider_default_enabled_tool_ids, provider_forces_mcp_tools, resolve_chat_intent, route_chat_intent  # noqa: E402
 from tools import _filter_relevant_search_results, execute_tool, get_tools_for_model, list_tools, parse_bing_html, parse_duckduckgo_html  # noqa: E402
 
 
@@ -432,6 +433,135 @@ def test_tool_evidence_is_compact_but_keeps_business_fields() -> None:
     assert "RAW_SHOULD_BE_DROPPED" not in evidence
 
 
+def test_product_availability_is_a_shallow_lookup() -> None:
+    cases = (
+        "贪吃蛇小车这款玩具在TK上有销售吗",
+        "这款产品TK是否有销售？",
+        "Hidden Camera Detector 在 TikTok Shop 有没有卖？",
+        "这个同款是否上架？",
+    )
+    empty_message = SimpleNamespace(tool_calls=[], tool_results=[])
+    for text in cases:
+        route = route_chat_intent(text, "fastmoss")
+        assert route["intent"] == "product_availability"
+        assert route["task_depth"] == "lookup"
+        assert route["max_rounds"] == 2
+        assert fastmoss_product_evidence_required(text, route) is False
+        assert fastmoss_analysis_evidence_gaps(text, empty_message, route) == []
+
+    analysis_text = "分析这款产品在TK的销量、市场和竞争机会"
+    analysis_route = route_chat_intent(analysis_text, "fastmoss")
+    assert analysis_route["intent"] == "product_research"
+    assert fastmoss_product_evidence_required(analysis_text, analysis_route) is True
+
+
+def test_intent_decision_validation_and_fallback() -> None:
+    fallback = route_chat_intent("帮我看看这个产品", "fastmoss")
+    valid = parse_chat_intent_decision(
+        {
+            "intent": "product_availability",
+            "task_depth": "lookup",
+            "entity": "磁力贪吃蛇小车",
+            "region": "",
+            "confidence": 0.94,
+        },
+        fallback,
+        "fastmoss",
+        "这款产品TK是否有销售？",
+    )
+    assert valid["intent"] == "product_availability"
+    assert valid["route_source"] == "llm"
+    assert valid["entity"] == "磁力贪吃蛇小车"
+    assert valid["region"] == "US"
+
+    low_confidence = parse_chat_intent_decision(
+        {"intent": "product_availability", "task_depth": "lookup", "confidence": 0.4},
+        fallback,
+        "fastmoss",
+        "帮我看看这个产品",
+    )
+    assert low_confidence["intent"] == "product_research"
+    assert low_confidence["route_source"] == "rules"
+    assert parse_chat_intent_decision({"intent": "unknown", "task_depth": "lookup", "confidence": 1}, fallback, "fastmoss", "x")["intent"] == "product_research"
+    assert parse_chat_intent_decision(None, fallback, "fastmoss", "x")["intent"] == "product_research"
+
+
+def test_intent_router_uses_recent_context_and_falls_back_on_failure() -> None:
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {
+                "choices": [{"message": {"content": json.dumps({
+                    "intent": "product_availability",
+                    "task_depth": "lookup",
+                    "entity": "磁力贪吃蛇小车",
+                    "region": "US",
+                    "confidence": 0.96,
+                }, ensure_ascii=False)}}],
+            }
+
+    class FakeRequests:
+        def __init__(self, fail: bool = False) -> None:
+            self.fail = fail
+            self.payload = None
+
+        def post(self, _url: str, **kwargs):
+            self.payload = kwargs.get("json")
+            if self.fail:
+                raise TimeoutError("router timeout")
+            return FakeResponse()
+
+    previous_enabled = os.environ.get("CHAT_INTENT_ROUTER_ENABLED")
+    os.environ["CHAT_INTENT_ROUTER_ENABLED"] = "1"
+    try:
+        messages = [
+            SimpleNamespace(role="user", content="贪吃蛇小车这款玩具在TK上有销售吗"),
+            SimpleNamespace(role="assistant", content="旧回答失败"),
+            SimpleNamespace(role="user", content="这款产品TK是否有销售？"),
+        ]
+        fake = FakeRequests()
+        route = resolve_chat_intent(messages, "这款产品TK是否有销售？", "fastmoss", "key", "https://example.test/v1", "model", fake)
+        assert route["intent"] == "product_availability"
+        encoded_payload = json.dumps(fake.payload, ensure_ascii=False)
+        assert "贪吃蛇小车" in encoded_payload
+        assert "这款产品TK是否有销售" in encoded_payload
+
+        fallback = resolve_chat_intent(messages, "帮我看看这个产品", "fastmoss", "key", "https://example.test/v1", "model", FakeRequests(fail=True))
+        assert fallback["intent"] == "product_research"
+        assert fallback["route_source"] == "rules_fallback"
+    finally:
+        if previous_enabled is None:
+            os.environ.pop("CHAT_INTENT_ROUTER_ENABLED", None)
+        else:
+            os.environ["CHAT_INTENT_ROUTER_ENABLED"] = previous_enabled
+
+
+def test_empty_mcp_collections_are_not_enough_data() -> None:
+    def result(payload: dict) -> dict:
+        return {
+            "ok": True,
+            "data": {
+                "content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}],
+            },
+        }
+
+    empty = normalize_prefixed_tool_result(
+        "fastmoss__product_search",
+        result({"code": 0, "message": "success", "data": {"list": [], "total": 0}}),
+    )
+    assert empty["enough_data"] is False
+    assert empty["suggested_next_action"] == "try_different_query"
+
+    populated = normalize_prefixed_tool_result(
+        "fastmoss__product_search",
+        result({"code": 0, "data": {"list": [{"product_id": "123", "title": "Magnetic snake toy"}], "total": 1}}),
+    )
+    assert populated["enough_data"] is True
+    assert populated["suggested_next_action"] == "answer_from_results"
+
+
 def test_dynamic_chat_context_compresses_to_budget() -> None:
     messages = [{"role": "system", "content": "system rules", "_context_scope": "system"}]
     messages.extend(
@@ -497,6 +627,10 @@ if __name__ == "__main__":
     test_web_search_tool_is_registered_and_normalized()
     test_chat_history_archives_done_tools_and_recovers_failed_results()
     test_tool_evidence_is_compact_but_keeps_business_fields()
+    test_product_availability_is_a_shallow_lookup()
+    test_intent_decision_validation_and_fallback()
+    test_intent_router_uses_recent_context_and_falls_back_on_failure()
+    test_empty_mcp_collections_are_not_enough_data()
     test_dynamic_chat_context_compresses_to_budget()
     print("chat tool normalization tests passed")
 

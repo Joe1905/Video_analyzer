@@ -3945,6 +3945,66 @@ def fastmoss_playbook_instruction(playbook_id: str | None) -> str:
     return f"当前 FastMoss 流程：{playbook['label']}。{playbook['instruction']}若所需指标无法由工具直接取得，必须标明缺口和替代指标，不得编造。"
 
 
+CHAT_INTENT_ROUTER_INTENTS = {
+    "product_availability",
+    "product_lookup",
+    "product_research",
+    "tiktok_user",
+    "tiktok_content",
+    "web_search",
+    "general",
+    "help",
+}
+CHAT_INTENT_TASK_DEPTHS = {"direct", "lookup", "analysis", "workflow"}
+CHAT_INTENT_DEPTH_BY_INTENT = {
+    "product_availability": "lookup",
+    "product_lookup": "lookup",
+    "product_research": "analysis",
+    "tiktok_user": "lookup",
+    "tiktok_content": "lookup",
+    "web_search": "lookup",
+    "general": "direct",
+    "help": "direct",
+}
+
+
+def is_product_availability_query(text: str) -> bool:
+    lowered = str(text or "").lower()
+    availability_terms = (
+        "有没有卖", "有没有销售", "是否有卖", "是否有销售", "有销售吗", "有卖吗", "在售吗",
+        "是否在售", "上架了吗", "是否上架", "能买到吗", "能否买到", "有同款吗", "是否有同款",
+        "is it sold", "is this sold", "available on", "for sale on", "listed on",
+    )
+    commerce_terms = (
+        "fastmoss", "tiktok shop", "tiktok", "tk", "商品", "产品", "玩具", "同款",
+        "product", "shop", "销售", "在售", "上架",
+    )
+    analysis_terms = (
+        "分析", "销量", "gmv", "市场", "趋势", "竞品", "竞争", "机会", "风险", "建议", "选品",
+        "定价", "价格带", "报告", "数据表现", "为什么", "analy", "market", "trend", "competitor",
+        "opportunity", "pricing", "report",
+    )
+    return (
+        any(term in lowered for term in availability_terms)
+        and any(term in lowered for term in commerce_terms)
+        and not any(term in lowered for term in analysis_terms)
+    )
+
+
+def is_chat_help_query(text: str) -> bool:
+    lowered = str(text or "").lower()
+    help_terms = ("怎么用", "如何使用", "帮助", "界面", "页面", "what can you do", "how to use")
+    return len(lowered) <= 80 and any(term in lowered for term in help_terms)
+
+
+def _route_with_metadata(route: dict[str, Any], source: str, task_depth: str | None = None) -> dict[str, Any]:
+    result = dict(route)
+    intent = str(result.get("intent") or "general")
+    result["task_depth"] = task_depth or CHAT_INTENT_DEPTH_BY_INTENT.get(intent, "workflow" if intent.startswith("fastmoss_") else "lookup")
+    result["route_source"] = source
+    return result
+
+
 def route_chat_intent(text: str, provider: str | None = None) -> dict[str, Any]:
     lowered = (text or "").lower()
     web_lookup_words = (
@@ -3979,6 +4039,8 @@ def route_chat_intent(text: str, provider: str | None = None) -> dict[str, Any]:
                 "tools": None,
                 "max_rounds": int(playbook["max_rounds"]),
             }
+    if is_chat_help_query(text):
+        return {"intent": "help", "task_depth": "direct", "tools": None, "max_rounds": 1}
     if is_music_link_query(text):
         return {"intent": "music_link", "tools": MUSIC_QUERY_TOOLS, "max_rounds": 2}
     if is_media_availability_query(text):
@@ -3987,6 +4049,8 @@ def route_chat_intent(text: str, provider: str | None = None) -> dict[str, Any]:
         return {"intent": "video_analysis", "tools": VIDEO_ANALYSIS_TOOLS, "max_rounds": 3}
     if has_video_url:
         return {"intent": "tiktok_video", "tools": TIKTOK_VIDEO_TOOLS | MUSIC_QUERY_TOOLS, "max_rounds": 3}
+    if is_product_availability_query(text):
+        return {"intent": "product_availability", "task_depth": "lookup", "tools": PRODUCT_RESEARCH_TOOLS, "max_rounds": 2}
     if has_shop and not has_amazon and not has_product:
         return {"intent": "tiktok_shop", "tools": TIKTOK_SHOP_TOOLS, "max_rounds": 3}
     if has_amazon and not has_shop and not has_product:
@@ -4000,6 +4064,158 @@ def route_chat_intent(text: str, provider: str | None = None) -> dict[str, Any]:
     if has_web_lookup:
         return {"intent": "web_search", "tools": WEB_SEARCH_TOOLS, "max_rounds": 3}
     return {"intent": "general", "tools": None, "max_rounds": 5}
+
+
+def chat_intent_router_enabled() -> bool:
+    return str(os.getenv("CHAT_INTENT_ROUTER_ENABLED", "1")).strip().lower() not in {"0", "false", "no", "off"}
+
+
+def chat_intent_router_should_call(text: str, fallback_route: dict[str, Any]) -> bool:
+    if not chat_intent_router_enabled():
+        return False
+    intent = str(fallback_route.get("intent") or "general")
+    if intent in {"mcp_interface", "music_link", "media_availability", "video_analysis", "tiktok_video"}:
+        return False
+    if intent.startswith("fastmoss_"):
+        return False
+    lowered = str(text or "").lower()
+    if re.search(r"https?://\S+", lowered) or re.search(r"\b(?:b0[a-z0-9]{8}|\d{16,20})\b", lowered):
+        return False
+    if is_chat_help_query(lowered):
+        return False
+    return True
+
+
+def parse_chat_intent_decision(value: Any, fallback_route: dict[str, Any], provider: str, user_text: str) -> dict[str, Any]:
+    fallback = _route_with_metadata(fallback_route, "rules")
+    if not isinstance(value, dict):
+        return fallback
+    intent = str(value.get("intent") or "").strip()
+    task_depth = str(value.get("task_depth") or "").strip()
+    try:
+        confidence = float(value.get("confidence"))
+    except (TypeError, ValueError):
+        return fallback
+    try:
+        threshold = float(os.getenv("CHAT_INTENT_ROUTER_CONFIDENCE", "0.65"))
+    except ValueError:
+        threshold = 0.65
+    if intent not in CHAT_INTENT_ROUTER_INTENTS or task_depth not in CHAT_INTENT_TASK_DEPTHS or confidence < threshold:
+        return fallback
+    canonical_depth = CHAT_INTENT_DEPTH_BY_INTENT[intent]
+    if task_depth != canonical_depth:
+        return fallback
+    policies = {
+        "product_availability": {"tools": PRODUCT_RESEARCH_TOOLS, "max_rounds": 2},
+        "product_lookup": {"tools": PRODUCT_RESEARCH_TOOLS, "max_rounds": 3},
+        "product_research": {"tools": PRODUCT_RESEARCH_TOOLS, "max_rounds": 4},
+        "tiktok_user": {"tools": TIKTOK_USER_TOOLS | {"tiktok_search_users"}, "max_rounds": 4},
+        "tiktok_content": {"tools": TIKTOK_CONTENT_TOOLS | MUSIC_QUERY_TOOLS, "max_rounds": 4},
+        "web_search": {"tools": WEB_SEARCH_TOOLS, "max_rounds": 3},
+        "general": {"tools": None, "max_rounds": 5},
+        "help": {"tools": None, "max_rounds": 1},
+    }
+    route = {"intent": intent, "task_depth": canonical_depth, "route_source": "llm", **policies[intent]}
+    entity = re.sub(r"\s+", " ", str(value.get("entity") or "")).strip()[:200]
+    if entity:
+        route["entity"] = entity
+    region = str(value.get("region") or "").strip().upper()
+    if normalize_chat_provider(provider) == "fastmoss" and fastmoss_defaults_to_us(user_text):
+        region = "US"
+    if re.fullmatch(r"[A-Z]{2}|GLOBAL", region):
+        route["region"] = region
+    route["confidence"] = round(max(0.0, min(confidence, 1.0)), 4)
+    return route
+
+
+def _chat_intent_json_content(content: Any) -> Any:
+    text = str(content or "").strip()
+    text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*```$", "", text)
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+
+def resolve_chat_intent(
+    session_messages: list[Message], user_text: str, provider: str, api_key: str, api_url: str, model: str, requests_module: Any,
+) -> dict[str, Any]:
+    routing_text = chat_routing_text(user_text)
+    fallback = route_chat_intent(routing_text, provider)
+    if not chat_intent_router_should_call(routing_text, fallback):
+        return _route_with_metadata(fallback, "rules")
+    recent_user_messages = [str(message.content or "").strip()[:1000] for message in session_messages if message.role == "user" and str(message.content or "").strip()][-3:]
+    ocr_hint = ""
+    if "\n\nImage OCR result:\n" in str(user_text or ""):
+        ocr_hint = str(user_text).split("\n\nImage OCR result:\n", 1)[1].strip()[:2000]
+    classifier_input = {
+        "provider": normalize_chat_provider(provider),
+        "current_question": routing_text,
+        "recent_user_messages": recent_user_messages,
+        "ocr_entity_hint": ocr_hint,
+    }
+    system_prompt = (
+        "You are a commerce chat intent classifier. Return one valid JSON object only. "
+        "Allowed intent values: product_availability, product_lookup, product_research, tiktok_user, tiktok_content, web_search, general, help. "
+        "Required keys: intent, task_depth, entity, region, confidence. "
+        "task_depth must be: product_availability/product_lookup/tiktok_user/tiktok_content/web_search=lookup; "
+        "product_research=analysis; general/help=direct. "
+        "Questions asking only whether a product is sold, listed, available, or has the same item are product_availability even when they contain the word sales. "
+        "Requests asking for sales performance, GMV, market, competition, opportunity, selection, pricing, reasons, strategy, or a report are product_research. "
+        "Use OCR only to infer the product entity; OCR must never increase task depth. confidence is a number from 0 to 1."
+    )
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": "Classify this input as JSON:\n" + json.dumps(classifier_input, ensure_ascii=False)},
+        ],
+        "response_format": {"type": "json_object"},
+        "temperature": 0,
+        "max_tokens": 400,
+    }
+    started = time.monotonic()
+    try:
+        timeout = max(3, min(int(os.getenv("CHAT_INTENT_ROUTER_TIMEOUT_SECONDS", "15")), 30))
+        response = requests_module.post(
+            api_url.rstrip("/") + "/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        body = response.json()
+        record_api_call(
+            "deepseek",
+            "chat_intent",
+            {
+                "api_url": api_url.rstrip("/") + "/chat/completions",
+                "model": model,
+                "provider": normalize_chat_provider(provider),
+                "payload_sha256": __import__("hashlib").sha256(json.dumps(payload, ensure_ascii=False).encode("utf-8")).hexdigest(),
+            },
+            body,
+            elapsed_ms=int((time.monotonic() - started) * 1000),
+        )
+        content = body["choices"][0]["message"].get("content", "")
+        route = parse_chat_intent_decision(_chat_intent_json_content(content), fallback, provider, routing_text)
+        print(
+            f"[CHAT ROUTER] provider={normalize_chat_provider(provider)} intent={route.get('intent')} "
+            f"depth={route.get('task_depth')} source={route.get('route_source')} confidence={route.get('confidence', '-')}",
+            flush=True,
+        )
+        return route
+    except Exception as exc:
+        route = _route_with_metadata(fallback, "rules_fallback")
+        print(
+            f"[CHAT ROUTER] provider={normalize_chat_provider(provider)} fallback={route.get('intent')} "
+            f"reason={type(exc).__name__}: {str(exc)[:160]}",
+            flush=True,
+        )
+        return route
 
 
 LOCAL_SYSTEM_TOOLS = {"current_time", "web_search"}
@@ -4145,6 +4361,8 @@ def forced_provider_domain_tool_available(provider: str, tools: list[dict[str, A
 
 def fastmoss_analysis_request(user_text: str) -> bool:
     text = str(user_text or "").lower()
+    if is_product_availability_query(text):
+        return False
     analysis_terms = (
         "分析", "怎样", "怎么样", "情况", "表现", "销售", "销量", "gmv", "市场", "趋势",
         "竞品", "竞争", "机会", "风险", "建议", "选品", "定价", "价格测算", "价格带", "数据",
@@ -4166,7 +4384,9 @@ def fastmoss_exact_product_reference(user_text: str) -> bool:
     )
 
 
-def fastmoss_product_evidence_required(user_text: str) -> bool:
+def fastmoss_product_evidence_required(user_text: str, route: dict[str, Any] | None = None) -> bool:
+    if route and str(route.get("task_depth") or "") in {"direct", "lookup"}:
+        return False
     playbook_id = fastmoss_playbook_intent(user_text)
     if playbook_id in {"product", "pricing"}:
         return True
@@ -4217,8 +4437,8 @@ def _argument_has_us_region(value: Any) -> bool:
     return False
 
 
-def fastmoss_required_capability_gaps(user_text: str, tools: list[dict[str, Any]]) -> list[str]:
-    if not fastmoss_product_evidence_required(user_text):
+def fastmoss_required_capability_gaps(user_text: str, tools: list[dict[str, Any]], route: dict[str, Any] | None = None) -> list[str]:
+    if not fastmoss_product_evidence_required(user_text, route):
         return []
     names = _model_tool_names(tools)
     gaps = []
@@ -4232,8 +4452,8 @@ def fastmoss_required_capability_gaps(user_text: str, tools: list[dict[str, Any]
     return gaps
 
 
-def fastmoss_analysis_evidence_gaps(user_text: str, assistant_msg: Message) -> list[str]:
-    if not fastmoss_product_evidence_required(user_text):
+def fastmoss_analysis_evidence_gaps(user_text: str, assistant_msg: Message, route: dict[str, Any] | None = None) -> list[str]:
+    if not fastmoss_product_evidence_required(user_text, route):
         return []
     calls = list(assistant_msg.tool_calls or [])
     results = list(assistant_msg.tool_results or [])
@@ -4635,6 +4855,26 @@ def compact_mcp_content(value: Any, max_chars: int = 12000) -> Any:
     return text[:max_chars] + "..."
 
 
+def mcp_collection_content_state(value: Any) -> tuple[bool, bool]:
+    collection_keys = {"list", "items", "results", "products"}
+    found = False
+    has_items = False
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if str(key).lower() in collection_keys and isinstance(item, (list, dict)):
+                found = True
+                has_items = has_items or payload_has_content(item)
+            child_found, child_has_items = mcp_collection_content_state(item)
+            found = found or child_found
+            has_items = has_items or child_has_items
+    elif isinstance(value, list):
+        for item in value:
+            child_found, child_has_items = mcp_collection_content_state(item)
+            found = found or child_found
+            has_items = has_items or child_has_items
+    return found, has_items
+
+
 def normalize_prefixed_tool_result(tool_id: str, result: dict[str, Any]) -> dict[str, Any]:
     domain, name = split_prefixed_tool_id(tool_id)
     normalized = normalize_tool_result(name, result)
@@ -4645,7 +4885,8 @@ def normalize_prefixed_tool_result(tool_id: str, result: dict[str, Any]) -> dict
             text = mcp_text_content(result)
             parsed = parse_mcp_text_content(text)
             content_value = parsed if parsed is not None else text
-            has_content = payload_has_content(content_value)
+            collection_found, collection_has_items = mcp_collection_content_state(content_value)
+            has_content = collection_has_items if collection_found else payload_has_content(content_value)
             if text:
                 normalized["mcp_text_preview"] = text[:4000]
             if parsed is not None:
@@ -5240,8 +5481,8 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
         "fastmoss": "For FastMoss analysis, produce a TikTok Shop style answer: category trend, product examples, sales/GMV signals, content/creator angle, opportunity, risk, and next validation steps.",
     }.get(provider, "")
     forced_mcp_style = {
-        "amazon": "This Amazon entry enables SellerSprite by default, and may also expose user-selected function__ or fastmoss__ tools. For Amazon, ASIN, keyword, category, product, market, competitor, ranking, sales, BSR, traffic, review, brand, or opportunity requests, call one or more relevant exposed tools before the final answer. Prefer sellersprite__ for Amazon marketplace evidence; use fastmoss__ only when it is exposed and relevant to TikTok Shop or cross-channel context. Final answers must be detailed Chinese Markdown business reports, not brief summaries.",
-        "fastmoss": "This FastMoss entry enables FastMoss by default, and may also expose user-selected function__ or sellersprite__ tools. For TikTok Shop, product, shop, creator, GMV, sales, category, trend, content, ad, pricing, competitor, or opportunity requests, call relevant exposed FastMoss tools before the final answer. Default to the US region unless the user explicitly requests another region or multiple/global regions, and pass US to every region-sensitive search/ranking call. For broad product/category analysis, first use a short keyword to identify the category, follow the tool's required category level/ID guidance, then use category/ranking tools for market coverage; keyword product search is supplemental and must not be generalized to the whole market. Review/comment evidence from fastmoss__product_review_list is required for product, selection, pricing, and product-competitor analytical reports. Prefer fastmoss__ for TikTok Shop evidence; use sellersprite__ only when it is exposed and relevant to Amazon or cross-channel context. Final answers must be detailed Chinese Markdown business reports, not brief summaries.",
+        "amazon": "This Amazon entry enables SellerSprite by default, and may also expose user-selected function__ or fastmoss__ tools. For Amazon, ASIN, keyword, category, product, market, competitor, ranking, sales, BSR, traffic, review, brand, or opportunity requests, call one or more relevant exposed tools before the final answer. Prefer sellersprite__ for Amazon marketplace evidence; use fastmoss__ only when it is exposed and relevant to TikTok Shop or cross-channel context. Analytical requests need detailed Chinese Markdown reports; simple lookup requests need concise evidence-based answers.",
+        "fastmoss": "This FastMoss entry enables FastMoss by default, and may also expose user-selected function__ or sellersprite__ tools. For TikTok Shop, product, shop, creator, GMV, sales, category, trend, content, ad, pricing, competitor, or opportunity requests, call relevant exposed FastMoss tools before the final answer. Default to the US region unless the user explicitly requests another region or multiple/global regions, and pass US to every region-sensitive search/ranking call. For broad product/category analysis, first use a short keyword to identify the category, follow the tool's required category level/ID guidance, then use category/ranking tools for market coverage; keyword product search is supplemental and must not be generalized to the whole market. Review/comment evidence from fastmoss__product_review_list is required only for product, selection, pricing, and product-competitor analytical reports. Prefer fastmoss__ for TikTok Shop evidence; use sellersprite__ only when it is exposed and relevant to Amazon or cross-channel context. Analytical requests need detailed Chinese Markdown reports; simple lookup requests need concise evidence-based answers.",
     }.get(provider, "")
     messages = [{"role": "system", "content": (
         "You are a short-video and commerce analysis assistant. Reply in Simplified Chinese. "
@@ -5266,13 +5507,17 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     messages.extend(history_messages)
 
     routing_text = chat_routing_text(user_text)
-    route = route_chat_intent(routing_text, provider)
+    route = resolve_chat_intent(session.messages, user_text, provider, api_key, api_url, model, req)
     route_intent = str(route.get("intent") or "general")
     if provider_forces_mcp_tools(provider) and route_intent == "web_search" and not is_explicit_live_web_query(routing_text):
-        route = {"intent": f"{provider}_lookup", "tools": None, "max_rounds": 5}
+        route = {"intent": f"{provider}_lookup", "task_depth": "lookup", "route_source": route.get("route_source", "rules"), "tools": None, "max_rounds": 5}
         route_intent = str(route.get("intent") or "general")
     route_tools = route.get("tools")
-    force_mcp_tools = provider_forces_mcp_tools(provider) and route_intent not in {"web_search", "mcp_interface"}
+    force_mcp_tools = (
+        provider_forces_mcp_tools(provider)
+        and route_intent not in {"web_search", "mcp_interface", "help"}
+        and str(route.get("task_depth") or "") != "direct"
+    )
     needs_tools = False if route_intent == "mcp_interface" else (True if force_mcp_tools else chat_request_needs_tools(routing_text, route))
     resume_from_completed_tools = bool(recovery.get("complete") and is_chat_retry_request(routing_text))
     if resume_from_completed_tools:
@@ -5300,6 +5545,8 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             for tool_id in route_tools
         }
         selected_tool_ids = route_tool_ids if effective_enabled_tool_ids is None else route_tool_ids & set(effective_enabled_tool_ids)
+    if provider == "fastmoss" and route_intent == "product_availability":
+        selected_tool_ids = {"fastmoss__product_search"} & set(effective_enabled_tool_ids or set())
     tools = build_prefixed_model_tools(selected_tool_ids) if needs_tools else []
     max_tool_rounds = chat_max_tool_rounds(provider, route, len(tools))
     if force_mcp_tools and not forced_provider_domain_tool_available(provider, tools):
@@ -5308,7 +5555,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
         store.update_message(session, assistant_msg, fallback, status="error")
         store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": fallback})
         return
-    capability_gaps = fastmoss_required_capability_gaps(routing_text, tools) if provider == "fastmoss" and not resume_from_completed_tools else []
+    capability_gaps = fastmoss_required_capability_gaps(routing_text, tools, route) if provider == "fastmoss" and not resume_from_completed_tools else []
     if capability_gaps:
         capability_labels = {
             "category_lookup": "类目识别",
@@ -5319,6 +5566,13 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
         store.update_message(session, assistant_msg, fallback, status="error")
         store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": fallback})
         return
+    route_answer_instruction = (
+        "This is a product availability lookup. Use at most two focused product searches and then answer concisely. "
+        "Do not call category, ranking, market-analysis, or review tools. Say whether an exact match was found, only similar products were found, or no match was found in this search. "
+        "A failed or empty search does not prove the product is absent from the whole marketplace."
+        if route_intent == "product_availability"
+        else "For analytical requests, provide the detailed evidence, assumptions, risks, recommendations, and next validation steps appropriate to the request."
+    )
     messages.append({
         "role": "system",
         "content": (
@@ -5330,7 +5584,8 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             "Do not call tools for pure greetings, UI/help questions, or when no exposed tool matches the task. "
             "For product/category research, use the currently selected domain tools only; do not cross from FastMoss to SellerSprite unless both domains are selected. "
             "For ambiguous product phrases, do not collapse to one niche just because a related keyword has data; present competing interpretations and say what extra input would disambiguate. "
-            "When the current tool results are enough to answer, stop calling tools and write a detailed Chinese report with evidence, assumptions, opportunities, risks, action recommendations, and next validation steps. For Amazon/FastMoss, do not give only a short conclusion. "
+            "When the current tool results are enough to answer, stop calling tools. "
+            f"{route_answer_instruction} "
             "For current date/time questions, call system__current_time first if it is exposed."
         ),
         "_context_scope": "system",
@@ -5390,6 +5645,16 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             standard_tool_calls = msg.get("tool_calls") or []
             dsml_tool_calls = [] if standard_tool_calls else parse_deepseek_dsml_tool_calls(msg.get("content", ""), allowed_tool_ids)
             tool_calls = standard_tool_calls or dsml_tool_calls
+            if route_intent == "product_availability" and provider == "fastmoss":
+                completed_searches = sum(
+                    1 for call in (assistant_msg.tool_calls or [])
+                    if str(call.get("function", {}).get("name") or "") == "fastmoss__product_search"
+                )
+                remaining_searches = max(0, 2 - completed_searches)
+                tool_calls = [
+                    call for call in tool_calls
+                    if str(call.get("function", {}).get("name") or "") == "fastmoss__product_search"
+                ][:remaining_searches]
             if tool_calls:
                 assistant_msg.tool_calls = list(assistant_msg.tool_calls or []) + tool_calls
                 assistant_msg.tool_results = list(assistant_msg.tool_results or [])
@@ -5418,10 +5683,20 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     })
                     assistant_msg.tool_results.append({"tool_name": fn_name, "result": normalized_result})
                     store.broadcast(session.id, "update", {"messageId": assistant_msg.id, "tool_calls": assistant_msg.tool_calls, "tool_results": assistant_msg.tool_results})
+                if route_intent == "product_availability" and sum(
+                    1 for call in (assistant_msg.tool_calls or [])
+                    if str(call.get("function", {}).get("name") or "") == "fastmoss__product_search"
+                ) >= 2:
+                    tools = []
+                    messages.append({
+                        "role": "system",
+                        "content": "The two-search availability limit has been reached. Do not call more tools; answer concisely from the current search evidence.",
+                        "_context_scope": "system",
+                    })
                 continue
 
             content = msg.get("content", "")
-            evidence_gaps = fastmoss_analysis_evidence_gaps(routing_text, assistant_msg) if provider == "fastmoss" else []
+            evidence_gaps = fastmoss_analysis_evidence_gaps(routing_text, assistant_msg, route) if provider == "fastmoss" else []
             if evidence_gaps:
                 print(f"[CHAT] FastMoss evidence incomplete: {','.join(evidence_gaps)}; requesting more tool data", flush=True)
                 messages.append({"role": "assistant", "content": content, "_context_scope": "current"})
@@ -5458,7 +5733,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             store.update_message(session, assistant_msg, f"Request failed: {exc}", status="error")
             return
 
-    evidence_gaps = fastmoss_analysis_evidence_gaps(routing_text, assistant_msg) if provider == "fastmoss" else []
+    evidence_gaps = fastmoss_analysis_evidence_gaps(routing_text, assistant_msg, route) if provider == "fastmoss" else []
     if evidence_gaps:
         fallback = (
             "FastMoss 分析所需证据在本轮工具调用上限内仍未补齐（"
