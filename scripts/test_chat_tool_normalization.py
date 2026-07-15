@@ -880,7 +880,7 @@ def test_fastmoss_deep_dive_ids_must_come_from_current_task() -> None:
             "result": {"ok": True, "mcp_data": {"products": [{"product_id": "1732183167826498507"}]}},
         }, {
             "tool_name": "fastmoss__search_category_by_words",
-            "result": {"ok": True, "mcp_data": {"items": [{"category_id": 935176}]}},
+            "result": {"ok": True, "mcp_data": {"items": [{"category_id": 935176, "category_id_level2": 844168}]}},
         }],
     )
     assert web_app.fastmoss_deep_dive_call_error(
@@ -891,6 +891,9 @@ def test_fastmoss_deep_dive_ids_must_come_from_current_task() -> None:
     )
     assert web_app.fastmoss_deep_dive_call_error(
         "fastmoss__market_category_analysis", {"filter": {"category_id": 935176}}, "electric chopper", message
+    ) is None
+    assert web_app.fastmoss_deep_dive_call_error(
+        "fastmoss__market_category_analysis", {"filter": {"category_id": 844168}}, "electric chopper", message
     ) is None
     assert "类目 ID" in web_app.fastmoss_deep_dive_call_error(
         "fastmoss__market_category_analysis", {"filter": {"category_id": 855944}}, "electric chopper", message
