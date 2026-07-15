@@ -11,7 +11,7 @@ services:
         all_proxy: ${all_proxy:-}
         NO_PROXY: ${NO_PROXY:-}
         no_proxy: ${no_proxy:-}
-    image: short-video-analyzer:latest
+    image: ${ANALYZER_IMAGE:-short-video-analyzer:latest}
     environment:
       TZ: ${TZ:-America/Los_Angeles}
       TIKTOK_BROWSER_MAX_SLOTS: ${TIKTOK_BROWSER_MAX_SLOTS:-2}
@@ -106,7 +106,7 @@ services:
         all_proxy: ${all_proxy:-}
         NO_PROXY: ${NO_PROXY:-}
         no_proxy: ${no_proxy:-}
-    image: short-video-analyzer:latest
+    image: ${ANALYZER_IMAGE:-short-video-analyzer:latest}
     init: true
     shm_size: 1gb
     cap_add:
