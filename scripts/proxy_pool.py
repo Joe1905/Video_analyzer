@@ -15,6 +15,7 @@ import socket
 import sqlite3
 import subprocess
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
@@ -38,6 +39,7 @@ TIKTOK_BROWSER_UID = int(os.getenv("TIKTOK_BROWSER_UID", "10001") or "10001")
 TIKTOK_BROWSER_GID = int(os.getenv("TIKTOK_BROWSER_GID", "10001") or "10001")
 TIKTOK_BROWSER_LOCALE = os.getenv("TIKTOK_BROWSER_LOCALE", "en-US").strip() or "en-US"
 TIKTOK_BROWSER_ACCEPT_LANGUAGE = os.getenv("TIKTOK_BROWSER_ACCEPT_LANGUAGE", "en-US,en").strip() or "en-US,en"
+RUNTIME_ID = f"{os.getpid()}-{uuid.uuid4().hex}"
 STATUS_ACTIVE = "启用"
 STATUS_PAUSED = "禁用"
 STATUS_ERROR = "不可用"
@@ -178,6 +180,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             username TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL DEFAULT 'starting',
             channel_url TEXT NOT NULL DEFAULT '',
+            runtime_id TEXT NOT NULL DEFAULT '',
             pid INTEGER NOT NULL DEFAULT 0,
             xvfb_pid INTEGER NOT NULL DEFAULT 0,
             x11vnc_pid INTEGER NOT NULL DEFAULT 0,
@@ -378,6 +381,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         "feishu_user_id": "TEXT NOT NULL DEFAULT ''",
         "feishu_user_name": "TEXT NOT NULL DEFAULT ''",
         "feishu_avatar_url": "TEXT NOT NULL DEFAULT ''",
+        "runtime_id": "TEXT NOT NULL DEFAULT ''",
     }.items():
         if name not in existing_session_cols:
             conn.execute(f"ALTER TABLE browser_sessions ADD COLUMN {name} {definition}")
@@ -725,7 +729,10 @@ def _active_sessions(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     for row in rows:
         pid = int(row["pid"] or 0)
         pending_expired = not row["account_id"] and _iso_epoch(str(row["created_at"] or "")) + pending_login_ttl_seconds() <= time.time()
-        if pending_expired:
+        if str(row["runtime_id"] or "") != RUNTIME_ID:
+            _remove_unbound_session_profile(row)
+            conn.execute("UPDATE browser_sessions SET status = 'stopped', last_error = ?, updated_at = ? WHERE id = ?", ("服务已重启，浏览器和观测通道已释放", now, row["id"]))
+        elif pending_expired:
             _terminate_session_processes(row)
             _remove_unbound_session_profile(row)
             conn.execute("UPDATE browser_sessions SET status = 'stopped', last_error = ?, updated_at = ? WHERE id = ?", ("未完成账号登记，临时登录通道超时自动释放", now, row["id"]))
@@ -2147,11 +2154,11 @@ def start_login_session(payload: dict[str, Any]) -> dict[str, Any]:
         cur = conn.execute(
             """
             INSERT INTO browser_sessions (
-                slot, proxy_profile_id, account_id, username, status, channel_url,
+                slot, proxy_profile_id, account_id, username, status, channel_url, runtime_id,
                 pid, xvfb_pid, x11vnc_pid, websockify_pid, display, vnc_port, novnc_port,
                 debug_port, owner, current_job_id, feishu_user_id, feishu_user_name,
                 feishu_avatar_url, profile_key, user_data_dir, last_error, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)
             """,
             (
                 slot,
@@ -2160,6 +2167,7 @@ def start_login_session(payload: dict[str, Any]) -> dict[str, Any]:
                 username,
                 "starting",
                 channel_url,
+                RUNTIME_ID,
                 str(slot_ports["display"]),
                 int(slot_ports["vnc_port"]),
                 int(slot_ports["novnc_port"]),
