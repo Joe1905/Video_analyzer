@@ -5498,11 +5498,39 @@ def manage_chat_context(
     }
 
 
+def provider_scope_short_circuit(
+    provider: str,
+    user_text: str,
+    enabled_tool_ids: set[str] | None = None,
+) -> str | None:
+    if normalize_chat_provider(provider) != "fastmoss":
+        return None
+    text = chat_routing_text(user_text).lower()
+    asks_amazon = (
+        any(term in text for term in ("亚马逊", "卖家精灵"))
+        or bool(re.search(r"\b(?:amazon|asin|sellersprite)\b", text))
+    )
+    has_sellersprite = any(str(tool_id).startswith("sellersprite__") for tool_id in (enabled_tool_ids or set()))
+    if not asks_amazon or has_sellersprite:
+        return None
+    return (
+        "当前 FastMoss 对话未启用 Amazon 数据能力，无法查询亚马逊市场、蓝海选品或热门新品。"
+        "请切换到顶部「Amazon」页面后重试。"
+    )
+
+
 def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, provider: str = "home", enabled_tool_ids: set[str] | None = None) -> None:
     """Background thread: call DeepSeek with provider-scoped tools and stream results via SSE."""
     import requests as req
 
     provider = normalize_chat_provider(provider)
+    routing_text = chat_routing_text(user_text)
+    scope_message = provider_scope_short_circuit(provider, routing_text, enabled_tool_ids)
+    if scope_message:
+        print("[CHAT ROUTER] provider=fastmoss blocked=amazon_without_sellersprite action=direct_answer", flush=True)
+        store.update_message(session, assistant_msg, scope_message, status="done")
+        store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": scope_message})
+        return
     api_key = os.getenv("DEEPSEEK_API_KEY", "")
     api_url = os.getenv("DEEPSEEK_API_URL", "https://api.deepseek.com/v1")
     model = os.getenv("DEEPSEEK_CHAT_MODEL", os.getenv("DEEPSEEK_V4_PRO_MODEL", "deepseek-v4-flash"))
@@ -5548,7 +5576,6 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     history_messages, recovery = build_chat_history_context(session.messages, assistant_msg.id)
     messages.extend(history_messages)
 
-    routing_text = chat_routing_text(user_text)
     route = resolve_chat_intent(session.messages, user_text, provider, api_key, api_url, model, req)
     route_intent = str(route.get("intent") or "general")
     if provider == "fastmoss" and route_intent == "product_availability":
