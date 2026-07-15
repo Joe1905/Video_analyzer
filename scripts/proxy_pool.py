@@ -352,22 +352,27 @@ def init_db(conn: sqlite3.Connection) -> None:
                 raise
     if "manual_publish" not in existing_publish_cols:
         conn.execute("ALTER TABLE publish_jobs ADD COLUMN manual_publish INTEGER NOT NULL DEFAULT 0")
-    existing_collect_setting_cols = {row[1] for row in conn.execute("PRAGMA table_info(collect_settings)")}
-    if "feishu_target_json" not in existing_collect_setting_cols:
-        conn.execute("ALTER TABLE collect_settings ADD COLUMN feishu_target_json TEXT NOT NULL DEFAULT '{}'")
-    existing_collect_job_cols = {row[1] for row in conn.execute("PRAGMA table_info(collect_jobs)")}
-    if "feishu_target_json" not in existing_collect_job_cols:
-        conn.execute("ALTER TABLE collect_jobs ADD COLUMN feishu_target_json TEXT NOT NULL DEFAULT '{}'")
-    existing_collect_result_cols = {row[1] for row in conn.execute("PRAGMA table_info(collect_results)")}
-    for name, definition in {
-        "feishu_target_json": "TEXT NOT NULL DEFAULT '{}'",
-        "feishu_record_id": "TEXT NOT NULL DEFAULT ''",
-        "feishu_sync_status": "TEXT NOT NULL DEFAULT ''",
-        "feishu_sync_error": "TEXT NOT NULL DEFAULT ''",
-        "feishu_synced_at": "TEXT NOT NULL DEFAULT ''",
-    }.items():
-        if name not in existing_collect_result_cols:
-            conn.execute(f"ALTER TABLE collect_results ADD COLUMN {name} {definition}")
+    collect_columns = {
+        "collect_settings": {"feishu_target_json": "TEXT NOT NULL DEFAULT '{}'"},
+        "collect_jobs": {"feishu_target_json": "TEXT NOT NULL DEFAULT '{}'"},
+        "collect_results": {
+            "feishu_target_json": "TEXT NOT NULL DEFAULT '{}'",
+            "feishu_record_id": "TEXT NOT NULL DEFAULT ''",
+            "feishu_sync_status": "TEXT NOT NULL DEFAULT ''",
+            "feishu_sync_error": "TEXT NOT NULL DEFAULT ''",
+            "feishu_synced_at": "TEXT NOT NULL DEFAULT ''",
+        },
+    }
+    for table, columns in collect_columns.items():
+        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        for name, definition in columns.items():
+            if name in existing:
+                continue
+            try:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc).lower():
+                    raise
     conn.commit()
 
 
