@@ -1895,6 +1895,26 @@ def detect_exit_ip_for_pool(pool: sqlite3.Row) -> dict[str, Any]:
     address = " / ".join(item for item in (country, region, city) if item)
     return {"ip": ip, "geo": {"country": country, "region": region, "city": city, "address": address}, "mihomo": switch, "raw": body}
 
+
+def _stored_account_identity(account: sqlite3.Row, pool: sqlite3.Row) -> dict[str, str]:
+    profile = _json_loads(account["profile_json"], {})
+    isolation = profile.get("isolation") if isinstance(profile.get("isolation"), dict) else {}
+    user_data_dir = str(isolation.get("user_data_dir") or "").strip()
+    if not user_data_dir:
+        return {}
+    cookies = _tiktok_profile_cookies(str(_abs_workspace_path(user_data_dir)))
+    if not cookies:
+        return {}
+    account_info_url = os.getenv(
+        "TIKTOK_ACCOUNT_INFO_URL",
+        "https://www.tiktok.com/passport/web/account/info/?aid=1459&app_language=en&device_platform=web_pc",
+    )
+    ok, body, _ = _proxy_json_with_cookies(
+        account_info_url, int(pool["local_port"] or 0), cookies
+    )
+    return _tiktok_identity(body) if ok else {}
+
+
 def check_binding(payload: dict[str, Any], require_account: bool = False) -> dict[str, Any]:
     observed_ip = _clean_text(payload.get("observed_ip") or payload.get("current_ip"), 80)
     detected: dict[str, Any] = {}
@@ -1933,14 +1953,27 @@ def check_binding(payload: dict[str, Any], require_account: bool = False) -> dic
                 WHERE id = ?
                 """, (expected_ip, observed_ip, geo.get("country", ""), geo.get("region", ""), geo.get("city", ""), geo.get("address", ""), now, next_pool_status, geo.get("region", ""), now, pool["id"]))
         if account is not None:
+            identity = _stored_account_identity(account, pool) if allowed else {}
             conn.execute(
                 """
                 UPDATE tiktok_accounts
                 SET last_checked_ip = ?, last_check_status = ?, last_check_at = ?,
-                    last_error = ?, updated_at = ?
+                    last_error = ?,
+                    display_name = COALESCE(NULLIF(?, ''), display_name),
+                    tiktok_avatar_url = COALESCE(NULLIF(?, ''), tiktok_avatar_url),
+                    updated_at = ?
                 WHERE id = ?
                 """,
-                (observed_ip, "通过" if allowed else "阻断", now, "" if allowed else reason, now, account["id"]),
+                (
+                    observed_ip,
+                    "通过" if allowed else "阻断",
+                    now,
+                    "" if allowed else reason,
+                    identity.get("display_name", ""),
+                    identity.get("avatar_url", ""),
+                    now,
+                    account["id"],
+                ),
             )
         conn.commit()
         pool = conn.execute("SELECT * FROM proxy_profiles WHERE id = ?", (pool["id"],)).fetchone()
