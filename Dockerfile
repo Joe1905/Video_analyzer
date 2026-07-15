@@ -47,7 +47,8 @@ RUN apt-get -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=20 update \
         xvfb \
     && rm -rf /var/lib/apt/lists/*
 
-RUN groupadd --system --gid 10001 tikbrowser \
+RUN chmod 0711 /root \
+    && groupadd --system --gid 10001 tikbrowser \
     && useradd --system --uid 10001 --gid tikbrowser --create-home --home-dir /home/tikbrowser tikbrowser
 
 RUN pip install -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn "curl_cffi>=0.15,<0.16"
