@@ -6266,10 +6266,13 @@ def _feishu_users() -> dict[str, Any]:
 
 
 def handle_feishu_capability_get(handler: BaseHTTPRequestHandler, parsed) -> bool:
-    if parsed.path != "/api/feishu/users":
+    if parsed.path not in {"/api/feishu/users", "/api/feishu/bitable/write-allowlist"}:
         return False
     try:
-        json_response(handler, HTTPStatus.OK, _feishu_users())
+        if parsed.path == "/api/feishu/users":
+            json_response(handler, HTTPStatus.OK, _feishu_users())
+        else:
+            json_response(handler, HTTPStatus.OK, feishu_capability_client.list_bitable_targets())
     except FeishuCapabilityError as exc:
         json_response(handler, exc.status, {"error": str(exc)})
     return True
