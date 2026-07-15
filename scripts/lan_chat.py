@@ -41,6 +41,13 @@ MESSAGE_IMAGE_TYPES = {
     "gif": "image/gif",
     "webp": "image/webp",
 }
+FEISHU_AVATAR_MAX_BYTES = 5 * 1024 * 1024
+FEISHU_AVATAR_TYPES = {
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/gif": "gif",
+    "image/webp": "webp",
+}
 
 
 class LanChatError(Exception):
@@ -60,6 +67,7 @@ class LanChatStore:
         self.avatar_dir = Path(avatar_dir or self.db_path.parent / "lan_chat_avatars")
         self.media_dir = Path(media_dir or self.db_path.parent / "lan_chat_media")
         self._avatar_lock = threading.Lock()
+        self._feishu_avatar_lock = threading.Lock()
         self._avatar_jobs: set[str] = set()
 
     def initialize(self) -> None:
@@ -243,7 +251,7 @@ class LanChatStore:
                     {
                         "id": owner["id"],
                         "name": owner["name"],
-                        "avatarUrl": owner["avatar_url"] or "",
+                        "avatarUrl": f"/api/lan-chat/feishu-avatars/{owner['id']}",
                         "source": owner["source"],
                         "accounts": [self._public_user(row) for row in accounts],
                     }
@@ -585,6 +593,50 @@ class LanChatStore:
             if path.parent == self.avatar_dir.resolve() and path.is_file():
                 return path.read_bytes(), "image/png"
         return self._fallback_avatar(row["nickname"], row["avatar_color"]), "image/svg+xml; charset=utf-8"
+
+    def feishu_avatar_bytes(self, owner_id: str) -> tuple[bytes, str]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT name, avatar_url FROM feishu_users WHERE id = ? AND active = 1",
+                (owner_id,),
+            ).fetchone()
+        if row is None:
+            raise LanChatError("飞书头像不存在", 404)
+
+        color = AVATAR_COLORS[
+            int(hashlib.sha256(owner_id.encode("utf-8")).hexdigest()[:8], 16)
+            % len(AVATAR_COLORS)
+        ]
+        fallback = self._fallback_avatar(row["name"], color)
+        avatar_url = str(row["avatar_url"] or "").strip()
+        if not avatar_url.startswith(("https://", "http://")):
+            return fallback, "image/svg+xml; charset=utf-8"
+
+        digest = hashlib.sha256(avatar_url.encode("utf-8")).hexdigest()[:24]
+        with self._feishu_avatar_lock:
+            for content_type, extension in FEISHU_AVATAR_TYPES.items():
+                path = self.avatar_dir / f"feishu-{digest}.{extension}"
+                if path.is_file():
+                    return path.read_bytes(), content_type
+            try:
+                request = Request(
+                    avatar_url,
+                    headers={"Accept": "image/*", "User-Agent": "Short-Video-Analyzer/1.0"},
+                )
+                with urlopen(request, timeout=15) as response:
+                    content_type = str(response.headers.get_content_type()).lower()
+                    image = response.read(FEISHU_AVATAR_MAX_BYTES + 1)
+                extension = FEISHU_AVATAR_TYPES.get(content_type)
+                if not extension or not image or len(image) > FEISHU_AVATAR_MAX_BYTES:
+                    raise ValueError("invalid Feishu avatar response")
+                path = self.avatar_dir / f"feishu-{digest}.{extension}"
+                tmp_path = self.avatar_dir / f".{path.name}.tmp"
+                tmp_path.write_bytes(image)
+                tmp_path.replace(path)
+                return image, content_type
+            except Exception as exc:
+                print(f"Feishu avatar fetch failed for {owner_id}: {exc}", flush=True)
+                return fallback, "image/svg+xml; charset=utf-8"
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
