@@ -8266,7 +8266,7 @@ def handle_feishu_capability_get(handler: BaseHTTPRequestHandler, parsed) -> boo
     try:
         json_response(handler, HTTPStatus.OK, _feishu_users())
     except FeishuCapabilityError as exc:
-        json_response(handler, HTTPStatus.BAD_GATEWAY, {"error": str(exc)})
+        json_response(handler, exc.status, {"error": str(exc)})
     return True
 
 
@@ -8280,7 +8280,7 @@ def handle_feishu_capability_post(handler: BaseHTTPRequestHandler, parsed) -> bo
     except LanChatError as exc:
         json_response(handler, exc.status, {"error": str(exc)})
     except FeishuCapabilityError as exc:
-        json_response(handler, HTTPStatus.BAD_GATEWAY, {"error": str(exc)})
+        json_response(handler, exc.status, {"error": str(exc)})
     return True
 
 

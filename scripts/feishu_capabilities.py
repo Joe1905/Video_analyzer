@@ -15,7 +15,9 @@ MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 
 
 class FeishuCapabilityError(Exception):
-    pass
+    def __init__(self, message: str, status: int = 502):
+        super().__init__(message)
+        self.status = status
 
 
 class FeishuCapabilityClient:
@@ -77,7 +79,8 @@ class FeishuCapabilityClient:
         except HTTPError as exc:
             raw = exc.read(MAX_RESPONSE_BYTES)
             message = self._error_message(raw) or f"上游返回 HTTP {exc.code}"
-            raise FeishuCapabilityError(message) from exc
+            status = exc.code if 400 <= exc.code < 500 else 502
+            raise FeishuCapabilityError(message, status) from exc
         except (URLError, TimeoutError, OSError) as exc:
             raise FeishuCapabilityError(f"无法连接同机飞书能力服务：{exc}") from exc
         if len(raw) > MAX_RESPONSE_BYTES:
