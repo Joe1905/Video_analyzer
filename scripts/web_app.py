@@ -4204,7 +4204,8 @@ def resolve_chat_intent(
         route = parse_chat_intent_decision(_chat_intent_json_content(content), fallback, provider, routing_text)
         print(
             f"[CHAT ROUTER] provider={normalize_chat_provider(provider)} intent={route.get('intent')} "
-            f"depth={route.get('task_depth')} source={route.get('route_source')} confidence={route.get('confidence', '-')}",
+            f"depth={route.get('task_depth')} region={route.get('region', '-')} "
+            f"source={route.get('route_source')} confidence={route.get('confidence', '-')}",
             flush=True,
         )
         return route
@@ -4428,6 +4429,16 @@ def fastmoss_defaults_to_us(user_text: str) -> bool:
     if any(term in text for term in non_us_terms):
         return False
     return not bool(re.search(r"\b(?:uk|jp|mx|ph|th|my|vn|br|ca|eu|de|fr|es|kr)\b", text))
+
+
+def fastmoss_availability_search_arguments(route: dict[str, Any], user_text: str) -> dict[str, Any] | None:
+    query = re.sub(r"\s+", " ", str(route.get("entity") or "")).strip()[:200]
+    if not query:
+        return None
+    region = str(route.get("region") or "").strip().upper()
+    if fastmoss_defaults_to_us(user_text) or not re.fullmatch(r"[A-Z]{2}|GLOBAL", region):
+        region = "US"
+    return {"keywords": query, "region": region, "pagesize": 10}
 
 
 def _tool_call_arguments(tool_call: dict[str, Any]) -> dict[str, Any]:
@@ -5613,6 +5624,61 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
         f"[CHAT] provider={provider} enabled={len(enabled_tool_ids or [])} effective={len(effective_enabled_tool_ids or [])} tools={len(tools)} max_rounds={max_tool_rounds}",
         flush=True,
     )
+
+    if provider == "fastmoss" and route_intent == "product_availability" and not resume_from_completed_tools:
+        search_arguments = fastmoss_availability_search_arguments(route, routing_text)
+        search_available = any(
+            str(tool.get("function", {}).get("name") or "") == "fastmoss__product_search"
+            for tool in tools
+        )
+        if search_arguments and search_available:
+            tool_call = {
+                "id": f"call_{uuid.uuid4().hex}",
+                "type": "function",
+                "function": {
+                    "name": "fastmoss__product_search",
+                    "arguments": json.dumps(search_arguments, ensure_ascii=False),
+                },
+            }
+            try:
+                raw_result = execute_prefixed_tool("fastmoss__product_search", search_arguments)
+                normalized_result = normalize_prefixed_tool_result("fastmoss__product_search", raw_result)
+            except Exception as exc:
+                normalized_result = {
+                    "ok": False,
+                    "error": f"{type(exc).__name__}: {str(exc)[:300]}",
+                    "enough_data": False,
+                    "suggested_next_action": "try_different_query",
+                }
+            assistant_msg.tool_calls = list(assistant_msg.tool_calls or []) + [tool_call]
+            assistant_msg.tool_results = list(assistant_msg.tool_results or []) + [{
+                "tool_name": "fastmoss__product_search",
+                "result": normalized_result,
+            }]
+            evidence = compact_chat_tool_evidence("fastmoss__product_search", normalized_result)
+            messages.append({
+                "role": "system",
+                "content": (
+                    "A deterministic FastMoss product availability search has already been executed with "
+                    f"arguments {json.dumps(search_arguments, ensure_ascii=False)}. Evidence: {evidence} "
+                    "Use this evidence for the concise exact-match/similar/no-match answer. "
+                    "Only call fastmoss__product_search once more if this evidence is empty or genuinely ambiguous."
+                ),
+                "_context_scope": "current",
+            })
+            store.broadcast(session.id, "update", {
+                "messageId": assistant_msg.id,
+                "tool_calls": assistant_msg.tool_calls,
+                "tool_results": assistant_msg.tool_results,
+            })
+            enough_data = bool(normalized_result.get("enough_data"))
+            print(
+                f"[CHAT] FastMoss availability presearch query={search_arguments['keywords']!r} "
+                f"region={search_arguments['region']} enough_data={str(enough_data).lower()}",
+                flush=True,
+            )
+            if enough_data:
+                tools = []
 
     for _ in range(max_tool_rounds):
         try:

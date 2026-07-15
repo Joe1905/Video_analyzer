@@ -11,7 +11,7 @@ from types import SimpleNamespace
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from web_app import build_chat_history_context, build_deepseek_tool_assistant_message, build_prefixed_model_tools, chat_markdown_to_html, chat_request_needs_tools, chat_routing_text, compact_chat_tool_evidence, estimate_chat_context_tokens, fastmoss_analysis_evidence_gaps, fastmoss_defaults_to_us, fastmoss_playbook_instruction, fastmoss_playbook_intent, fastmoss_product_evidence_required, fastmoss_required_capability_gaps, filter_locked_provider_tool_ids, forced_provider_domain_tool_available, is_chat_retry_request, manage_chat_context, normalize_prefixed_tool_result, normalize_tool_result, parse_chat_intent_decision, provider_default_enabled_tool_ids, provider_forces_mcp_tools, resolve_chat_intent, route_chat_intent  # noqa: E402
+from web_app import build_chat_history_context, build_deepseek_tool_assistant_message, build_prefixed_model_tools, chat_markdown_to_html, chat_request_needs_tools, chat_routing_text, compact_chat_tool_evidence, estimate_chat_context_tokens, fastmoss_analysis_evidence_gaps, fastmoss_availability_search_arguments, fastmoss_defaults_to_us, fastmoss_playbook_instruction, fastmoss_playbook_intent, fastmoss_product_evidence_required, fastmoss_required_capability_gaps, filter_locked_provider_tool_ids, forced_provider_domain_tool_available, is_chat_retry_request, manage_chat_context, normalize_prefixed_tool_result, normalize_tool_result, parse_chat_intent_decision, provider_default_enabled_tool_ids, provider_forces_mcp_tools, resolve_chat_intent, route_chat_intent  # noqa: E402
 from tools import _filter_relevant_search_results, execute_tool, get_tools_for_model, list_tools, parse_bing_html, parse_duckduckgo_html  # noqa: E402
 
 
@@ -462,7 +462,7 @@ def test_intent_decision_validation_and_fallback() -> None:
             "intent": "product_availability",
             "task_depth": "lookup",
             "entity": "磁力贪吃蛇小车",
-            "region": "",
+            "region": "CN",
             "confidence": 0.94,
         },
         fallback,
@@ -473,6 +473,11 @@ def test_intent_decision_validation_and_fallback() -> None:
     assert valid["route_source"] == "llm"
     assert valid["entity"] == "磁力贪吃蛇小车"
     assert valid["region"] == "US"
+    assert fastmoss_availability_search_arguments(valid, "这款产品TK是否有销售？") == {
+        "keywords": "磁力贪吃蛇小车",
+        "region": "US",
+        "pagesize": 10,
+    }
 
     low_confidence = parse_chat_intent_decision(
         {"intent": "product_availability", "task_depth": "lookup", "confidence": 0.4},
