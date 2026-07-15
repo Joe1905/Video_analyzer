@@ -97,6 +97,7 @@ MCP_CHAT_CONFIGS = {
 import sys
 sys.path.insert(0, str(SCRIPTS_DIR))
 from chat_session import ChatStore, Message, Session, load_sessions_from_disk
+from feishu_capabilities import FeishuCapabilityClient, FeishuCapabilityError
 from lan_chat import LanChatError, LanChatStore
 from sociavault_usage import read_sociavault_usage
 from sociavault_tiktok import call_api as call_sociavault_tiktok_api
@@ -333,6 +334,7 @@ social_jobs_running: set[str] = set()
 # Chat system
 chat_store = ChatStore(DATA_DIR / "sessions.json")
 lan_chat_store = LanChatStore(DATA_DIR / "lan_chat.sqlite")
+feishu_capability_client = FeishuCapabilityClient()
 chat_provider_stores = {
     "home": chat_store,
     "amazon": ChatStore(SELLERSPRITE_CHAT_DATA_DIR / "chat_sessions.json"),
@@ -8252,10 +8254,44 @@ def _lan_chat_request_json(
     return payload
 
 
+def _feishu_users() -> dict[str, Any]:
+    payload = feishu_capability_client.list_users()
+    lan_chat_store.sync_feishu_users(payload["users"])
+    return payload
+
+
+def handle_feishu_capability_get(handler: BaseHTTPRequestHandler, parsed) -> bool:
+    if parsed.path != "/api/feishu/users":
+        return False
+    try:
+        json_response(handler, HTTPStatus.OK, _feishu_users())
+    except FeishuCapabilityError as exc:
+        json_response(handler, HTTPStatus.BAD_GATEWAY, {"error": str(exc)})
+    return True
+
+
+def handle_feishu_capability_post(handler: BaseHTTPRequestHandler, parsed) -> bool:
+    if parsed.path != "/api/feishu/bitable/records/update":
+        return False
+    try:
+        payload = _lan_chat_request_json(handler)
+        result = feishu_capability_client.update_bitable_record(payload)
+        json_response(handler, HTTPStatus.OK, result)
+    except LanChatError as exc:
+        json_response(handler, exc.status, {"error": str(exc)})
+    except FeishuCapabilityError as exc:
+        json_response(handler, HTTPStatus.BAD_GATEWAY, {"error": str(exc)})
+    return True
+
+
 def handle_lan_chat_get(handler: BaseHTTPRequestHandler, parsed) -> bool:
     path = parsed.path
     try:
         if path == "/api/lan-chat/login-options":
+            try:
+                _feishu_users()
+            except FeishuCapabilityError as exc:
+                raise LanChatError(f"无法读取飞书用户列表：{exc}", 502) from exc
             json_response(handler, HTTPStatus.OK, lan_chat_store.login_options())
             return True
         if path == "/api/lan-chat/bootstrap":
@@ -8406,6 +8442,8 @@ class Handler(BaseHTTPRequestHandler):
             return text_response(self, HTTPStatus.OK, inject_unified_nav(METRICS_HTML, parsed.path), "text/html; charset=utf-8")
         if parsed.path.startswith("/assets/"):
             return self.serve_static_asset(parsed.path.removeprefix("/assets/"))
+        if handle_feishu_capability_get(self, parsed):
+            return
         if parsed.path.startswith("/api/lan-chat/") and handle_lan_chat_get(self, parsed):
             return
         if parsed.path == "/api/prompt":
@@ -8971,6 +9009,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if handle_feishu_capability_post(self, parsed):
+            return
         if parsed.path.startswith("/api/lan-chat/") and handle_lan_chat_post(self, parsed):
             return
         if parsed.path == "/amazon/api/chat/export-pdf":

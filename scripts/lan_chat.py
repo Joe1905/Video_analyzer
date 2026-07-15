@@ -76,6 +76,7 @@ class LanChatStore:
                     name TEXT NOT NULL,
                     avatar_url TEXT,
                     source TEXT NOT NULL DEFAULT 'local',
+                    active INTEGER NOT NULL DEFAULT 1,
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL
                 );
@@ -136,6 +137,14 @@ class LanChatStore:
                 """
             )
             now = time.time()
+            feishu_columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(feishu_users)").fetchall()
+            }
+            if "active" not in feishu_columns:
+                conn.execute(
+                    "ALTER TABLE feishu_users ADD COLUMN active INTEGER NOT NULL DEFAULT 1"
+                )
             conn.execute(
                 """INSERT OR IGNORE INTO feishu_users
                    (id, open_id, name, avatar_url, source, created_at, updated_at)
@@ -209,7 +218,8 @@ class LanChatStore:
     def login_options(self) -> dict[str, Any]:
         with self._connect() as conn:
             owners = conn.execute(
-                "SELECT * FROM feishu_users ORDER BY created_at ASC, name COLLATE NOCASE"
+                """SELECT * FROM feishu_users WHERE active = 1
+                   ORDER BY created_at ASC, name COLLATE NOCASE"""
             ).fetchall()
             result = []
             for owner in owners:
@@ -228,6 +238,48 @@ class LanChatStore:
                     }
                 )
         return {"feishuUsers": result}
+
+    def sync_feishu_users(self, external_users: list[dict[str, Any]]) -> int:
+        now = time.time()
+        synced = 0
+        with self._connect() as conn:
+            conn.execute("UPDATE feishu_users SET active = 0")
+            for item in external_users:
+                if not isinstance(item, dict):
+                    continue
+                open_id = str(
+                    item.get("openId") or item.get("userId") or item.get("unionId") or ""
+                ).strip()
+                if not open_id:
+                    continue
+                existing = conn.execute(
+                    "SELECT id FROM feishu_users WHERE open_id = ?", (open_id,)
+                ).fetchone()
+                owner_id = (
+                    str(existing["id"])
+                    if existing is not None
+                    else f"feishu-{hashlib.sha256(open_id.encode('utf-8')).hexdigest()[:20]}"
+                )
+                fallback_id = str(item.get("userId") or open_id).strip()
+                name = str(item.get("name") or item.get("enName") or "").strip()
+                if not name:
+                    name = f"飞书用户-{fallback_id[:8]}"
+                avatar_url = str(item.get("avatarUrl") or "").strip() or None
+                conn.execute(
+                    """INSERT INTO feishu_users
+                       (id, open_id, name, avatar_url, source, active, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, 'feishu', 1, ?, ?)
+                       ON CONFLICT(id) DO UPDATE SET
+                           open_id = excluded.open_id,
+                           name = excluded.name,
+                           avatar_url = excluded.avatar_url,
+                           source = 'feishu',
+                           active = 1,
+                           updated_at = excluded.updated_at""",
+                    (owner_id, open_id, name, avatar_url, now, now),
+                )
+                synced += 1
+        return synced
 
     def select_account(self, feishu_user_id: str, account_id: str) -> dict[str, Any]:
         owner_id = str(feishu_user_id or "").strip()
@@ -254,7 +306,7 @@ class LanChatStore:
         avatar_status = "pending" if self._avatar_configured() else "fallback"
         with self._connect() as conn:
             owner = conn.execute(
-                "SELECT id FROM feishu_users WHERE id = ?", (owner_id,)
+                "SELECT id FROM feishu_users WHERE id = ? AND active = 1", (owner_id,)
             ).fetchone()
             if owner is None:
                 raise LanChatError("飞书用户不存在", 404)
