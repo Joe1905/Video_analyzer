@@ -242,6 +242,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             enabled INTEGER NOT NULL DEFAULT 0,
             daily_time TEXT NOT NULL DEFAULT '03:00',
             max_videos INTEGER NOT NULL DEFAULT 20,
+            publish_date_start TEXT NOT NULL DEFAULT '',
+            publish_date_end TEXT NOT NULL DEFAULT '',
             feishu_target_json TEXT NOT NULL DEFAULT '{}',
             last_scheduled_date TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
@@ -254,6 +256,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             trigger_type TEXT NOT NULL DEFAULT 'manual',
             schedule_date TEXT NOT NULL DEFAULT '',
             max_videos INTEGER NOT NULL DEFAULT 20,
+            publish_date_start TEXT NOT NULL DEFAULT '',
+            publish_date_end TEXT NOT NULL DEFAULT '',
             feishu_target_json TEXT NOT NULL DEFAULT '{}',
             status TEXT NOT NULL DEFAULT 'queued',
             stage TEXT NOT NULL DEFAULT '',
@@ -353,8 +357,16 @@ def init_db(conn: sqlite3.Connection) -> None:
     if "manual_publish" not in existing_publish_cols:
         conn.execute("ALTER TABLE publish_jobs ADD COLUMN manual_publish INTEGER NOT NULL DEFAULT 0")
     collect_columns = {
-        "collect_settings": {"feishu_target_json": "TEXT NOT NULL DEFAULT '{}'"},
-        "collect_jobs": {"feishu_target_json": "TEXT NOT NULL DEFAULT '{}'"},
+        "collect_settings": {
+            "feishu_target_json": "TEXT NOT NULL DEFAULT '{}'",
+            "publish_date_start": "TEXT NOT NULL DEFAULT ''",
+            "publish_date_end": "TEXT NOT NULL DEFAULT ''",
+        },
+        "collect_jobs": {
+            "feishu_target_json": "TEXT NOT NULL DEFAULT '{}'",
+            "publish_date_start": "TEXT NOT NULL DEFAULT ''",
+            "publish_date_end": "TEXT NOT NULL DEFAULT ''",
+        },
         "collect_results": {
             "feishu_target_json": "TEXT NOT NULL DEFAULT '{}'",
             "feishu_record_id": "TEXT NOT NULL DEFAULT ''",

@@ -81,12 +81,35 @@ def _max_videos(value: Any) -> int:
     return max(1, min(50, parsed))
 
 
+def _local_today() -> str:
+    return _utc_now().astimezone(ZoneInfo(TIMEZONE_NAME)).date().isoformat()
+
+
+def _validate_publish_range(start_value: Any, end_value: Any) -> tuple[str, str]:
+    start = _clean_text(start_value, 10) or _local_today()
+    end = _clean_text(end_value, 10) or start
+    for label, value in (("开始", start), ("结束", end)):
+        try:
+            datetime.strptime(value, "%Y-%m-%d")
+        except ValueError as exc:
+            raise ValueError(f"发布{label}日期必须为 YYYY-MM-DD") from exc
+    if end < start:
+        raise ValueError("发布结束日期不能早于开始日期")
+    return start, end
+
+
 def _setting_row(row: Any | None, account_id: int) -> dict[str, Any]:
+    publish_date_start, publish_date_end = _validate_publish_range(
+        row["publish_date_start"] if row else "",
+        row["publish_date_end"] if row else "",
+    )
     return {
         "account_id": account_id,
         "enabled": bool(row["enabled"]) if row else False,
         "daily_time": str(row["daily_time"]) if row else DEFAULT_DAILY_TIME,
         "max_videos": int(row["max_videos"]) if row else DEFAULT_MAX_VIDEOS,
+        "publish_date_start": publish_date_start,
+        "publish_date_end": publish_date_end,
         "feishu_target": _json_loads(row["feishu_target_json"], {}) if row else {},
         "last_scheduled_date": str(row["last_scheduled_date"]) if row else "",
         "timezone": TIMEZONE_NAME,
@@ -102,6 +125,8 @@ def _job_row(row: Any) -> dict[str, Any]:
         "trigger_type": str(row["trigger_type"]),
         "schedule_date": str(row["schedule_date"]),
         "max_videos": int(row["max_videos"]),
+        "publish_date_start": str(row["publish_date_start"]),
+        "publish_date_end": str(row["publish_date_end"]),
         "feishu_target": _json_loads(row["feishu_target_json"], {}),
         "status": str(row["status"]),
         "status_label": STATUS_LABELS.get(str(row["status"]), str(row["status"])),
@@ -235,6 +260,9 @@ def save_settings(payload: dict[str, Any]) -> dict[str, Any]:
     enabled = 1 if payload.get("enabled") else 0
     daily_time = _validate_daily_time(payload.get("daily_time") or DEFAULT_DAILY_TIME)
     max_videos = _max_videos(payload.get("max_videos"))
+    publish_date_start, publish_date_end = _validate_publish_range(
+        payload.get("publish_date_start"), payload.get("publish_date_end")
+    )
     feishu_target = _validate_feishu_target(payload.get("feishu_target"))
     feishu_target_json = json.dumps(feishu_target, ensure_ascii=False, separators=(",", ":"))
     now = _iso()
@@ -242,16 +270,23 @@ def save_settings(payload: dict[str, Any]) -> dict[str, Any]:
         _account(conn, account_id)
         conn.execute(
             """
-            INSERT INTO collect_settings (account_id, enabled, daily_time, max_videos, feishu_target_json, last_scheduled_date, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, '', ?, ?)
+            INSERT INTO collect_settings (
+                account_id, enabled, daily_time, max_videos, publish_date_start, publish_date_end,
+                feishu_target_json, last_scheduled_date, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?)
             ON CONFLICT(account_id) DO UPDATE SET
                 enabled = excluded.enabled,
                 daily_time = excluded.daily_time,
                 max_videos = excluded.max_videos,
+                publish_date_start = excluded.publish_date_start,
+                publish_date_end = excluded.publish_date_end,
                 feishu_target_json = excluded.feishu_target_json,
                 updated_at = excluded.updated_at
             """,
-            (account_id, enabled, daily_time, max_videos, feishu_target_json, now, now),
+            (
+                account_id, enabled, daily_time, max_videos, publish_date_start,
+                publish_date_end, feishu_target_json, now, now,
+            ),
         )
         conn.commit()
     return dashboard(account_id)
@@ -262,6 +297,8 @@ def _insert_job(
     account: Any,
     trigger_type: str,
     max_videos: int,
+    publish_date_start: str,
+    publish_date_end: str,
     feishu_target_json: str,
     schedule_date: str = "",
     session_id: int = 0,
@@ -288,11 +325,12 @@ def _insert_job(
     conn.execute(
         """
         INSERT INTO collect_jobs (
-            id, account_id, proxy_profile_id, trigger_type, schedule_date, max_videos, feishu_target_json,
+            id, account_id, proxy_profile_id, trigger_type, schedule_date, max_videos,
+            publish_date_start, publish_date_end, feishu_target_json,
             status, stage, attempt_count, next_attempt_at, session_id,
             total_videos, completed_videos, failed_videos, current_video_id,
             started_at, completed_at, last_error, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', '', 0, '', ?, 0, 0, 0, '', '', '', '', ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', '', 0, '', ?, 0, 0, 0, '', '', '', '', ?, ?)
         """,
         (
             job_id,
@@ -301,6 +339,8 @@ def _insert_job(
             trigger_type,
             schedule_date,
             max_videos,
+            publish_date_start,
+            publish_date_end,
             feishu_target_json,
             session_id or None,
             now,
@@ -320,11 +360,16 @@ def create_job(payload: dict[str, Any]) -> dict[str, Any]:
         if not setting or not _target_key(_json_loads(setting["feishu_target_json"], {})):
             raise ValueError("请先保存采集设置并选择写入的飞书多维表格")
         max_videos = _max_videos(payload.get("max_videos") or (setting["max_videos"] if setting else DEFAULT_MAX_VIDEOS))
+        publish_date_start, publish_date_end = _validate_publish_range(
+            setting["publish_date_start"], setting["publish_date_end"]
+        )
         job_id = _insert_job(
             conn,
             account,
             "manual",
             max_videos,
+            publish_date_start,
+            publish_date_end,
             str(setting["feishu_target_json"]),
             session_id=int(payload.get("observation_session_id") or 0),
         )
@@ -643,6 +688,58 @@ def _video_id(url: str) -> str:
     return match.group(1) if match else ""
 
 
+_MONTH_NUMBERS = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+
+
+def _source_published_date(hint: str, range_start: str, range_end: str) -> str:
+    text = " ".join(_lines(hint))
+    start = datetime.strptime(range_start, "%Y-%m-%d").date()
+    end = datetime.strptime(range_end, "%Y-%m-%d").date()
+
+    match = re.search(r"\b(20\d{2})[/-](\d{1,2})[/-](\d{1,2})\b", text)
+    if match:
+        try:
+            return datetime(int(match.group(1)), int(match.group(2)), int(match.group(3))).date().isoformat()
+        except ValueError:
+            return ""
+
+    numeric = re.search(r"\b(\d{1,2})/(\d{1,2})(?:/(20\d{2}))?\b", text)
+    month_name = re.search(
+        r"\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
+        r"Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|"
+        r"Dec(?:ember)?)\s+(\d{1,2})(?:,\s*(20\d{2}))?\b",
+        text,
+        re.I,
+    )
+    if numeric:
+        month, day = int(numeric.group(1)), int(numeric.group(2))
+        explicit_year = int(numeric.group(3)) if numeric.group(3) else 0
+    elif month_name:
+        month = _MONTH_NUMBERS[month_name.group(1)[:3].lower()]
+        day = int(month_name.group(2))
+        explicit_year = int(month_name.group(3)) if month_name.group(3) else 0
+    else:
+        return ""
+
+    years = [explicit_year] if explicit_year else sorted({start.year, end.year})
+    candidates = []
+    for year in years:
+        try:
+            candidates.append(datetime(year, month, day).date())
+        except ValueError:
+            continue
+    if not candidates:
+        return ""
+    chosen = min(
+        candidates,
+        key=lambda value: 0 if start <= value <= end else min(abs((value - start).days), abs((value - end).days)),
+    )
+    return chosen.isoformat()
+
+
 def _discover_links_on_page(page: Any) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     links = page.locator("a[href*='/tiktokstudio/analytics/'], a[href*='/video/']")
@@ -683,22 +780,35 @@ def _discover_links_on_page(page: Any) -> list[dict[str, str]]:
     return rows
 
 
-def _discover_video_links(page: Any, max_videos: int) -> list[dict[str, str]]:
+def _discover_video_links(
+    page: Any, max_videos: int, publish_date_start: str, publish_date_end: str
+) -> list[dict[str, str]]:
     found: dict[str, dict[str, str]] = {}
 
     def collect() -> None:
         for row in _discover_links_on_page(page):
-            found.setdefault(row["id"], row)
+            row["published_date"] = _source_published_date(
+                row.get("title_hint", ""), publish_date_start, publish_date_end
+            )
+            existing = found.get(row["id"])
+            if not existing or (not existing.get("published_date") and row["published_date"]):
+                found[row["id"]] = row
+
+    def matching() -> list[dict[str, str]]:
+        return [
+            row for row in found.values()
+            if publish_date_start <= row.get("published_date", "") <= publish_date_end
+        ]
 
     collect()
     for _ in range(5):
-        if len(found) >= max_videos:
+        if len(matching()) >= max_videos:
             break
         page.mouse.wheel(0, 900)
         page.wait_for_timeout(700)
         collect()
 
-    if len(found) < max_videos:
+    if len(matching()) < max_videos:
         content_link = _first_visible([
             page.locator("a[href*='/tiktokstudio/content']"),
             page.locator("a[href*='/tiktokstudio/manage']"),
@@ -713,14 +823,14 @@ def _discover_video_links(page: Any, max_videos: int) -> list[dict[str, str]]:
                 content_link.click(timeout=5000)
             page.wait_for_timeout(1800)
             _assert_account_ready(page)
-            for _ in range(8):
+            for _ in range(24):
                 collect()
-                if len(found) >= max_videos:
+                if len(matching()) >= max_videos:
                     break
                 page.mouse.wheel(0, 1000)
                 page.wait_for_timeout(700)
 
-    return list(found.values())[:max_videos]
+    return matching()[:max_videos]
 
 
 def _lines(text: str) -> list[str]:
@@ -977,6 +1087,7 @@ def _collect_video(page: Any, job: dict[str, Any], source: dict[str, str], log_d
         page.screenshot(path=str(log_dir / f"{source['id']}-missing-overview.png"), full_page=True)
         raise RuntimeError("视频分析页没有识别到概览指标")
     title, published_at = _title_and_date(lines, source.get("title_hint", ""))
+    published_at = published_at or source.get("published_date", "")
     retention, retention_complete, missing, retention_reason = _sample_retention(
         page, _duration_seconds(source.get("title_hint", ""))
     )
@@ -990,7 +1101,16 @@ def _collect_video(page: Any, job: dict[str, Any], source: dict[str, str], log_d
         },
         "collection_job": {"job_id": job["id"], "trigger_type": job["trigger_type"]},
         "video": {"id": source["id"], "title": title, "published_at": published_at, "url": page.url},
-        "time_filter": {"requested": None, "applied": None, "scope": "video_lifetime", "applied_successfully": False},
+        "time_filter": {
+            "requested": {
+                "publish_date_start": job["publish_date_start"],
+                "publish_date_end": job["publish_date_end"],
+                "timezone": TIMEZONE_NAME,
+            },
+            "applied": source.get("published_date", ""),
+            "scope": "video_publish_date",
+            "applied_successfully": True,
+        },
         "overview": overview,
         "engagement": _engagement(page, lines, overview),
         "retention": retention,
@@ -1048,10 +1168,18 @@ def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[int,
         page.wait_for_timeout(2200)
         _assert_account_ready(page)
         _skip_onboarding(page)
-        links = _discover_video_links(page, int(job["max_videos"]))
+        links = _discover_video_links(
+            page,
+            int(job["max_videos"]),
+            job["publish_date_start"],
+            job["publish_date_end"],
+        )
         if not links:
             page.screenshot(path=str(log_dir / "no-video-links.png"), full_page=True)
-            raise RuntimeError("TikTok Studio 没有发现可采集的视频分析入口")
+            raise RuntimeError(
+                "TikTok Studio 没有发现发布日期位于 "
+                f"{job['publish_date_start']} 至 {job['publish_date_end']} 的视频"
+            )
         _set_job(
             job["id"],
             "collecting",
@@ -1195,11 +1323,16 @@ def _schedule_daily_jobs() -> None:
                 target_json = str(setting["feishu_target_json"] or "{}")
                 if not _target_key(_json_loads(target_json, {})):
                     continue
+                publish_date_start, publish_date_end = _validate_publish_range(
+                    setting["publish_date_start"], setting["publish_date_end"]
+                )
                 _insert_job(
                     conn,
                     account,
                     "daily",
                     int(setting["max_videos"]),
+                    publish_date_start,
+                    publish_date_end,
                     target_json,
                     schedule_date=local_date,
                 )
