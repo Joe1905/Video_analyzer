@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from web_app import build_prefixed_model_tools, chat_markdown_to_html, chat_request_needs_tools, filter_locked_provider_tool_ids, normalize_tool_result, provider_default_enabled_tool_ids, provider_forces_mcp_tools, route_chat_intent  # noqa: E402
+from web_app import build_chat_history_context, build_prefixed_model_tools, chat_markdown_to_html, chat_request_needs_tools, compact_chat_tool_evidence, estimate_chat_context_tokens, filter_locked_provider_tool_ids, is_chat_retry_request, manage_chat_context, normalize_tool_result, provider_default_enabled_tool_ids, provider_forces_mcp_tools, route_chat_intent  # noqa: E402
 from tools import _filter_relevant_search_results, execute_tool, get_tools_for_model, list_tools, parse_bing_html, parse_duckduckgo_html  # noqa: E402
 
 
@@ -213,6 +214,140 @@ def test_web_search_tool_is_registered_and_normalized() -> None:
     categories = {item["category"]: item["tools"] for item in list_tools()}
     assert any(tool["name"] == "web_search" for tools in categories.values() for tool in tools)
 
+
+def _chat_message(
+    message_id: str,
+    role: str,
+    content: str,
+    *,
+    status: str = "done",
+    tool_calls: list[dict] | None = None,
+    tool_results: list[dict] | None = None,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=message_id,
+        role=role,
+        content=content,
+        status=status,
+        tool_calls=tool_calls or [],
+        tool_results=tool_results or [],
+        attachments=[],
+    )
+
+
+def test_chat_history_archives_done_tools_and_recovers_failed_results() -> None:
+    done_call = {
+        "id": "call_done",
+        "function": {"name": "sellersprite__keyword_research", "arguments": '{"keyword":"camera"}'},
+    }
+    error_calls = [
+        {"id": "call_1", "function": {"name": "sellersprite__keyword_research", "arguments": '{"keyword":"detector"}'}},
+        {"id": "call_2", "function": {"name": "sellersprite__product_search", "arguments": '{"keyword":"detector"}'}},
+    ]
+    messages = [
+        _chat_message("u1", "user", "分析 camera"),
+        _chat_message(
+            "a1",
+            "assistant",
+            "历史报告",
+            tool_calls=[done_call],
+            tool_results=[{
+                "tool_name": "sellersprite__keyword_research",
+                "result": {"ok": True, "mcp_text_preview": "ARCHIVED_RAW_PAYLOAD" * 1000},
+            }],
+        ),
+        _chat_message("u2", "user", "继续分析 detector"),
+        _chat_message(
+            "a2",
+            "assistant",
+            "Request failed: 402 Payment Required",
+            status="error",
+            tool_calls=error_calls,
+            tool_results=[
+                {"tool_name": "sellersprite__keyword_research", "result": {"ok": True, "mcp_data": {"search_volume": 12000}}},
+                {"tool_name": "sellersprite__product_search", "result": {"ok": True, "mcp_data": {"products_total": 4321}}},
+            ],
+        ),
+        _chat_message("u3", "user", "继续"),
+        _chat_message("a3", "assistant", "", status="pending"),
+    ]
+
+    history, recovery = build_chat_history_context(messages, "a3")
+    encoded = json.dumps(history, ensure_ascii=False)
+    assert "Historical tool evidence archived" in encoded
+    assert "ARCHIVED_RAW_PAYLOAD" not in encoded
+    assert "previous_tool_collection" in encoded
+    assert "402 Payment Required" in encoded
+    assert "sellersprite__product_search" in encoded
+    assert recovery == {"complete": True, "tool_count": 2, "message_id": "a2"}
+    assert is_chat_retry_request("继续") is True
+    assert is_chat_retry_request("请重新分析这个新产品并给出完整报告") is False
+
+
+def test_tool_evidence_is_compact_but_keeps_business_fields() -> None:
+    evidence = compact_chat_tool_evidence(
+        "sellersprite__keyword_research",
+        {
+            "ok": True,
+            "mcp_text_preview": "RAW_SHOULD_BE_DROPPED" * 1000,
+            "mcp_data": {
+                "keyword": "camera detector",
+                "search_volume": 12000,
+                "items": [{"title": f"Product {index}", "description": "x" * 2000} for index in range(30)],
+            },
+        },
+        max_chars=1200,
+    )
+    assert len(evidence) <= 1200
+    assert "camera detector" in evidence
+    assert "12000" in evidence
+    assert "RAW_SHOULD_BE_DROPPED" not in evidence
+
+
+def test_dynamic_chat_context_compresses_to_budget() -> None:
+    messages = [{"role": "system", "content": "system rules", "_context_scope": "system"}]
+    messages.extend(
+        {
+            "role": "user" if index % 2 == 0 else "assistant",
+            "content": f"history-{index}-" + ("x" * 12000),
+            "_context_scope": "history",
+            "_context_priority": "normal",
+        }
+        for index in range(8)
+    )
+    messages.append({
+        "role": "user",
+        "content": "请根据已有数据生成报告",
+        "_context_scope": "history",
+        "_context_priority": "keep",
+    })
+    messages.append({
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [{"id": "call_1", "function": {"name": "tool__one", "arguments": "{}"}}],
+        "_context_scope": "current",
+    })
+    messages.append({
+        "role": "tool",
+        "tool_call_id": "call_1",
+        "content": "evidence-" + ("y" * 20000),
+        "_context_scope": "current",
+    })
+    tools = [{
+        "type": "function",
+        "function": {"name": "tool__one", "description": "z" * 8000, "parameters": {"type": "object"}},
+    }]
+
+    request_messages, request_tools, stats = manage_chat_context(messages, tools, max_tokens=3000)
+    assert stats["initial_tokens"] > stats["max_tokens"]
+    assert stats["final_tokens"] <= stats["max_tokens"]
+    assert stats["compressed"] is True
+    assert stats["dropped_history"] > 0
+    assert estimate_chat_context_tokens(request_messages, request_tools) <= 3000
+    assert any(message.get("role") == "tool" for message in request_messages)
+    assert all(not any(key.startswith("_context_") for key in message) for message in request_messages)
+
+
 if __name__ == "__main__":
     test_tiktok_search_keeps_analysis_fields()
     test_amazon_keeps_product_fields()
@@ -224,5 +359,8 @@ if __name__ == "__main__":
     test_short_cjk_web_search_filters_irrelevant_results()
     test_pdf_markdown_export_matches_frontend_quote_heading()
     test_web_search_tool_is_registered_and_normalized()
+    test_chat_history_archives_done_tools_and_recovers_failed_results()
+    test_tool_evidence_is_compact_but_keeps_business_fields()
+    test_dynamic_chat_context_compresses_to_budget()
     print("chat tool normalization tests passed")
 

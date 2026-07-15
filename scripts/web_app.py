@@ -4601,6 +4601,337 @@ def chat_message_content_for_model(message: Message) -> str:
     return f"User question:\n{user_part}\n\nImage OCR result:\n{ocr_context}"
 
 
+def _chat_int_setting(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(value, maximum))
+
+
+def _truncate_chat_context_text(value: Any, max_chars: int) -> str:
+    text = str(value or "")
+    if len(text) <= max_chars:
+        return text
+    marker = "\n...[context compressed]...\n"
+    if max_chars <= len(marker) + 80:
+        return text[:max_chars]
+    head = int((max_chars - len(marker)) * 0.75)
+    tail = max_chars - len(marker) - head
+    return text[:head] + marker + text[-tail:]
+
+
+def _compact_chat_evidence_value(value: Any, depth: int = 0) -> Any:
+    if depth >= 5:
+        if isinstance(value, (dict, list)):
+            return "[nested data omitted]"
+        return _truncate_chat_context_text(value, 300)
+    if isinstance(value, str):
+        return _truncate_chat_context_text(value, 800)
+    if isinstance(value, list):
+        items = [_compact_chat_evidence_value(item, depth + 1) for item in value[:12]]
+        if len(value) > 12:
+            items.append({"omitted_items": len(value) - 12})
+        return items
+    if isinstance(value, dict):
+        skipped = {
+            "raw", "raw_response", "response_blob", "html", "mcp_text_preview",
+            "image", "images", "avatar", "avatar_thumb", "url_list",
+        }
+        preferred = (
+            "keyword", "keywords", "query", "marketplace", "region", "category",
+            "title", "asin", "product_id", "name", "status", "kind", "metrics",
+            "monthly_searches", "search_volume", "growth_rate", "purchase_rate",
+            "product_count", "products_total", "products", "items", "results",
+            "data", "summary", "enough_data", "suggested_next_action", "cache", "_cache",
+        )
+        keys = [key for key in preferred if key in value]
+        keys.extend(key for key in value if key not in keys and key not in skipped)
+        compacted: dict[str, Any] = {}
+        for key in keys[:30]:
+            compacted[str(key)] = _compact_chat_evidence_value(value[key], depth + 1)
+        if len(keys) > 30:
+            compacted["omitted_fields"] = len(keys) - 30
+        return compacted
+    return value
+
+
+def compact_chat_tool_evidence(tool_name: str, result: Any, max_chars: int | None = None) -> str:
+    limit = max_chars or _chat_int_setting("CHAT_TOOL_EVIDENCE_MAX_CHARS", 6000, 800, 20000)
+    payload = result if isinstance(result, dict) else {"value": result}
+    evidence: dict[str, Any] = {
+        "tool": tool_name,
+        "ok": payload.get("ok"),
+        "kind": payload.get("kind"),
+        "enough_data": payload.get("enough_data"),
+        "suggested_next_action": payload.get("suggested_next_action"),
+    }
+    for key in ("cache", "error", "query", "keyword", "category", "products", "items", "results"):
+        if payload.get(key) is not None:
+            evidence[key] = payload.get(key)
+    if payload.get("mcp_data") is not None:
+        evidence["data"] = payload.get("mcp_data")
+    elif payload.get("summary") is not None:
+        evidence["data"] = payload.get("summary")
+    elif not any(key in evidence for key in ("products", "items", "results", "error")):
+        evidence["data"] = payload
+    encoded = json.dumps(_compact_chat_evidence_value(evidence), ensure_ascii=False, separators=(",", ":"))
+    return _truncate_chat_context_text(encoded, limit)
+
+
+def _chat_tool_counts(tool_calls: list[dict] | None) -> str:
+    counts: dict[str, int] = {}
+    for tool_call in tool_calls or []:
+        name = str((tool_call.get("function") or {}).get("name") or "tool")
+        counts[name] = counts.get(name, 0) + 1
+    return ", ".join(f"{name}×{count}" for name, count in counts.items())
+
+
+def _chat_tool_arguments(tool_call: dict[str, Any] | None) -> Any:
+    raw = str(((tool_call or {}).get("function") or {}).get("arguments") or "{}").strip()
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return _truncate_chat_context_text(raw, 800)
+
+
+def _chat_error_recovery_content(message: Message, max_chars: int) -> tuple[str, bool]:
+    tool_calls = list(message.tool_calls or [])
+    tool_results = list(message.tool_results or [])
+    complete = bool(tool_results) and (not tool_calls or len(tool_results) >= len(tool_calls))
+    per_result = max(800, min(2400, max_chars // max(1, len(tool_results))))
+    evidence: list[dict[str, Any]] = []
+    for index, tool_result in enumerate(tool_results):
+        tool_call = tool_calls[index] if index < len(tool_calls) else None
+        tool_name = str(tool_result.get("tool_name") or ((tool_call or {}).get("function") or {}).get("name") or "tool")
+        evidence.append({
+            "tool": tool_name,
+            "arguments": _chat_tool_arguments(tool_call),
+            "result": compact_chat_tool_evidence(tool_name, tool_result.get("result", {}), per_result),
+        })
+    payload = {
+        "type": "previous_tool_collection",
+        "status": "complete" if complete else "partial",
+        "final_answer_error": _truncate_chat_context_text(message.content, 1000),
+        "tool_call_count": len(tool_calls),
+        "tool_result_count": len(tool_results),
+        "instruction": (
+            "Reuse these completed results and generate the final answer without calling tools again."
+            if complete
+            else "Reuse completed results and call only the missing tools."
+        ),
+        "evidence": evidence,
+    }
+    return _truncate_chat_context_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), max_chars), complete
+
+
+def build_chat_history_context(
+    session_messages: list[Message], current_assistant_id: str
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    limit = _chat_int_setting("CHAT_HISTORY_MESSAGE_LIMIT", 20, 4, 100)
+    text_limit = _chat_int_setting("CHAT_HISTORY_TEXT_MAX_CHARS", 8000, 1000, 30000)
+    recovery_limit = _chat_int_setting("CHAT_RECOVERY_EVIDENCE_MAX_CHARS", 32000, 4000, 100000)
+    selected = list(session_messages[-limit:])
+    history: list[dict[str, Any]] = []
+    recovery = {"complete": False, "tool_count": 0, "message_id": ""}
+    latest_assistant = next(
+        (item for item in reversed(selected) if item.id != current_assistant_id and item.role == "assistant"),
+        None,
+    )
+    for message in selected:
+        if message.id == current_assistant_id:
+            continue
+        content = chat_message_content_for_model(message)
+        tool_calls = list(message.tool_calls or [])
+        tool_results = list(message.tool_results or [])
+        if message.status == "error":
+            if tool_results:
+                content, complete = _chat_error_recovery_content(message, recovery_limit)
+                priority = "recovery"
+                if message is latest_assistant:
+                    recovery = {
+                        "complete": complete,
+                        "tool_count": len(tool_results),
+                        "message_id": message.id,
+                    }
+            else:
+                content = json.dumps({
+                    "type": "previous_request_error",
+                    "error": _truncate_chat_context_text(content, 1000),
+                }, ensure_ascii=False)
+                priority = "normal"
+        else:
+            priority = "normal"
+            content = _truncate_chat_context_text(content, text_limit)
+            if tool_calls:
+                summary = _chat_tool_counts(tool_calls)
+                content = (content + "\n\n" if content else "") + (
+                    f"[Historical tool evidence archived: {summary}; raw tool protocol omitted from context.]"
+                )
+        history.append({
+            "role": message.role,
+            "content": content,
+            "_context_scope": "history",
+            "_context_priority": priority,
+        })
+    for item in reversed(history):
+        if item.get("role") == "user":
+            item["_context_priority"] = "keep"
+            break
+    return history, recovery
+
+
+def is_chat_retry_request(text: str) -> bool:
+    normalized = re.sub(r"\s+", "", str(text or "").strip().lower())
+    if not normalized or len(normalized) > 80:
+        return False
+    return any(token in normalized for token in ("继续", "接着", "恢复", "重试", "再试", "continue", "retry", "resume"))
+
+
+def _chat_request_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {key: value for key, value in message.items() if not key.startswith("_context_")}
+        for message in messages
+    ]
+
+
+def estimate_chat_context_tokens(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None) -> int:
+    payload = {"messages": _chat_request_messages(messages), "tools": tools or None}
+    byte_count = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    return (byte_count + 2) // 3
+
+
+def manage_chat_context(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+    max_tokens: int | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    token_limit = max_tokens or _chat_int_setting("CHAT_CONTEXT_MAX_TOKENS", 120000, 8000, 1000000)
+    working = [dict(message) for message in messages]
+    request_tools = list(tools or [])
+    initial_tokens = estimate_chat_context_tokens(working, request_tools)
+    dropped_history = 0
+    tool_content_limit = 0
+
+    if initial_tokens > token_limit:
+        compact_limit = _chat_int_setting("CHAT_HISTORY_COMPACT_CHARS", 3000, 500, 12000)
+        for message in working:
+            if message.get("_context_scope") != "history":
+                continue
+            priority = message.get("_context_priority")
+            limit = 12000 if priority == "recovery" else compact_limit
+            message["content"] = _truncate_chat_context_text(message.get("content"), limit)
+
+    while estimate_chat_context_tokens(working, request_tools) > token_limit:
+        removable = next(
+            (
+                index for index, message in enumerate(working)
+                if message.get("_context_scope") == "history"
+                and message.get("_context_priority") not in {"keep", "recovery"}
+            ),
+            None,
+        )
+        if removable is None:
+            break
+        working.pop(removable)
+        dropped_history += 1
+
+    for limit in (3000, 1500, 800):
+        if estimate_chat_context_tokens(working, request_tools) <= token_limit:
+            break
+        changed = False
+        for message in working:
+            if message.get("role") == "tool" and len(str(message.get("content") or "")) > limit:
+                message["content"] = _truncate_chat_context_text(message.get("content"), limit)
+                changed = True
+        if changed:
+            tool_content_limit = limit
+
+    if estimate_chat_context_tokens(working, request_tools) > token_limit:
+        for message in working:
+            if message.get("_context_priority") == "recovery":
+                message["content"] = _truncate_chat_context_text(message.get("content"), 8000)
+
+    tools_removed = False
+    protocol_collapsed = False
+    has_current_tool_evidence = any(
+        message.get("_context_scope") == "current" and message.get("role") == "tool"
+        for message in working
+    )
+    if estimate_chat_context_tokens(working, request_tools) > token_limit and has_current_tool_evidence:
+        request_tools = []
+        tools_removed = True
+        working.append({
+            "role": "system",
+            "content": (
+                "Context capacity was reached after tool collection. Do not call more tools; "
+                "produce the final answer from the evidence already present."
+            ),
+            "_context_scope": "system",
+        })
+
+    if estimate_chat_context_tokens(working, request_tools) > token_limit and has_current_tool_evidence:
+        evidence = [
+            {
+                "tool_call_id": message.get("tool_call_id"),
+                "evidence": _truncate_chat_context_text(message.get("content"), 1200),
+            }
+            for message in working
+            if message.get("_context_scope") == "current" and message.get("role") == "tool"
+        ]
+        working = [
+            message for message in working
+            if not (
+                message.get("_context_scope") == "current"
+                and (message.get("role") == "tool" or bool(message.get("tool_calls")))
+            )
+        ]
+        working.append({
+            "role": "system",
+            "content": _truncate_chat_context_text(
+                json.dumps({
+                    "type": "current_tool_collection",
+                    "instruction": "Produce the final answer from this compact evidence; do not call more tools.",
+                    "evidence": evidence,
+                }, ensure_ascii=False, separators=(",", ":")),
+                16000,
+            ),
+            "_context_scope": "system",
+        })
+        protocol_collapsed = True
+
+    if estimate_chat_context_tokens(working, request_tools) > token_limit:
+        for message in working:
+            priority = message.get("_context_priority")
+            if priority in {"keep", "recovery"}:
+                message["content"] = _truncate_chat_context_text(message.get("content"), 3000)
+
+    if estimate_chat_context_tokens(working, request_tools) > token_limit and request_tools:
+        request_tools = []
+        tools_removed = True
+        working.append({
+            "role": "system",
+            "content": (
+                "Tool schemas were removed because the context budget was exhausted. "
+                "Answer from the retained context, clearly state any missing evidence, and do not invent data."
+            ),
+            "_context_scope": "system",
+        })
+
+    final_tokens = estimate_chat_context_tokens(working, request_tools)
+    return _chat_request_messages(working), request_tools, {
+        "max_tokens": token_limit,
+        "initial_tokens": initial_tokens,
+        "final_tokens": final_tokens,
+        "compressed": initial_tokens != final_tokens,
+        "dropped_history": dropped_history,
+        "tool_content_limit": tool_content_limit,
+        "tools_removed": tools_removed,
+        "protocol_collapsed": protocol_collapsed,
+        "over_budget": final_tokens > token_limit,
+    }
+
+
 def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, provider: str = "home", enabled_tool_ids: set[str] | None = None) -> None:
     """Background thread: call DeepSeek with provider-scoped tools and stream results via SSE."""
     import requests as req
@@ -4643,26 +4974,10 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
         "Markdown formatting contract: use only standard Markdown headings (# through ####), bullet/numbered lists, blockquotes, fenced code blocks, horizontal rules (---), and standard pipe tables. Do not use ASCII art, box drawing, long =====/----- separators, pseudo-tables, text frames, or spacing tricks for layout. If data needs comparison, use a real Markdown table; if content is hierarchical, use headings and lists. Never output HTML/H5 tags. Content completeness is more important than decorative layout. "
         "If a video download or analysis tool fails, say clearly that real video download/frame analysis was not completed. "
         "When user messages include Image OCR result, treat that section as OCR text extracted from user-uploaded images; do not claim visual details beyond that OCR text unless the user provided them."
-    )}]
+    ), "_context_scope": "system"}]
 
-    for m in session.messages[-20:]:
-        if m.id == assistant_msg.id:
-            continue
-        tool_calls = m.tool_calls or []
-        tool_results = m.tool_results or []
-        if tool_calls and len(tool_results) < len(tool_calls):
-            messages.append({"role": m.role, "content": chat_message_content_for_model(m) or "Previous tool call was interrupted; incomplete tool context is ignored."})
-            continue
-        md = {"role": m.role, "content": chat_message_content_for_model(m)}
-        if tool_calls:
-            md["tool_calls"] = tool_calls
-        messages.append(md)
-        for i, tr in enumerate(tool_results):
-            tc = tool_calls[i] if i < len(tool_calls) else None
-            tid = tc["id"] if tc else f"call_{i}"
-            tool_name = str(tr.get("tool_name") or "")
-            tr_content = json.dumps(normalize_prefixed_tool_result(tool_name, tr.get("result", {})), ensure_ascii=False)
-            messages.append({"role": "tool", "tool_call_id": tid, "content": tr_content})
+    history_messages, recovery = build_chat_history_context(session.messages, assistant_msg.id)
+    messages.extend(history_messages)
 
     route = route_chat_intent(user_text)
     route_intent = str(route.get("intent") or "general")
@@ -4672,6 +4987,19 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     route_tools = route.get("tools")
     force_mcp_tools = provider_forces_mcp_tools(provider) and route_intent not in {"web_search", "mcp_interface"}
     needs_tools = False if route_intent == "mcp_interface" else (True if force_mcp_tools else chat_request_needs_tools(user_text, route))
+    resume_from_completed_tools = bool(recovery.get("complete") and is_chat_retry_request(user_text))
+    if resume_from_completed_tools:
+        force_mcp_tools = False
+        needs_tools = False
+        messages.append({
+            "role": "system",
+            "content": (
+                f"The previous request completed {recovery.get('tool_count', 0)} tool calls but final answer generation failed. "
+                "This user message asks to continue/retry. Reuse the previous_tool_collection evidence in context, "
+                "do not call those tools again, and produce the final answer now."
+            ),
+            "_context_scope": "system",
+        })
     effective_enabled_tool_ids = enabled_tool_ids
     if force_mcp_tools:
         effective_enabled_tool_ids = set(enabled_tool_ids or set()) | provider_default_enabled_tool_ids(provider)
@@ -4701,6 +5029,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             "When the current tool results are enough to answer, stop calling tools and write a detailed Chinese report with evidence, assumptions, opportunities, risks, action recommendations, and next validation steps. For Amazon/FastMoss, do not give only a short conclusion. "
             "For current date/time questions, call system__current_time first if it is exposed."
         ),
+        "_context_scope": "system",
     })
     print(
         f"[CHAT] provider={provider} enabled={len(enabled_tool_ids or [])} effective={len(effective_enabled_tool_ids or [])} tools={len(tools)} max_rounds={max_tool_rounds}",
@@ -4709,9 +5038,20 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
 
     for _ in range(max_tool_rounds):
         try:
-            payload = {"model": model, "messages": messages, "tools": tools or None, "temperature": 0.2}
+            request_messages, request_tools, context_stats = manage_chat_context(messages, tools)
+            if context_stats["over_budget"]:
+                raise RuntimeError(
+                    f"Chat context remains over budget after compression: "
+                    f"{context_stats['final_tokens']}/{context_stats['max_tokens']} estimated tokens"
+                )
+            payload = {"model": model, "messages": request_messages, "tools": request_tools or None, "temperature": 0.2}
             payload_str = json.dumps(payload, ensure_ascii=False)
-            print(f"[CHAT] DeepSeek request: {len(messages)} msgs, {len(payload_str)} bytes, tools={len(tools)}", flush=True)
+            print(
+                f"[CHAT] DeepSeek request: {len(request_messages)} msgs, {len(payload_str)} bytes, "
+                f"tools={len(request_tools)}, estimated_tokens={context_stats['final_tokens']}/{context_stats['max_tokens']}, "
+                f"compressed={context_stats['compressed']}, dropped_history={context_stats['dropped_history']}",
+                flush=True,
+            )
             request_started = time.monotonic()
             resp = req.post(
                 api_url.rstrip("/") + "/chat/completions",
@@ -4730,15 +5070,16 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     "api_url": api_url.rstrip("/") + "/chat/completions",
                     "model": model,
                     "payload_sha256": __import__("hashlib").sha256(payload_str.encode("utf-8")).hexdigest(),
-                    "message_count": len(messages),
-                    "tool_count": len(tools),
+                    "message_count": len(request_messages),
+                    "tool_count": len(request_tools),
                     "provider": provider,
+                    "context": context_stats,
                 },
                 body,
                 elapsed_ms=int((time.monotonic() - request_started) * 1000),
             )
             msg = body["choices"][0]["message"]
-            allowed_tool_ids = {str(tool.get("function", {}).get("name") or "") for tool in tools}
+            allowed_tool_ids = {str(tool.get("function", {}).get("name") or "") for tool in request_tools}
             standard_tool_calls = msg.get("tool_calls") or []
             dsml_tool_calls = [] if standard_tool_calls else parse_deepseek_dsml_tool_calls(msg.get("content", ""), allowed_tool_ids)
             tool_calls = standard_tool_calls or dsml_tool_calls
@@ -4746,7 +5087,12 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 assistant_msg.tool_calls = list(assistant_msg.tool_calls or []) + tool_calls
                 assistant_msg.tool_results = list(assistant_msg.tool_results or [])
                 assistant_content = (msg.get("content") or "") if standard_tool_calls else ""
-                messages.append({"role": "assistant", "content": assistant_content, "tool_calls": tool_calls})
+                messages.append({
+                    "role": "assistant",
+                    "content": assistant_content,
+                    "tool_calls": tool_calls,
+                    "_context_scope": "current",
+                })
                 store.broadcast(session.id, "update", {"messageId": assistant_msg.id, "tool_calls": assistant_msg.tool_calls, "tool_results": assistant_msg.tool_results})
 
                 for tc in tool_calls:
@@ -4757,15 +5103,20 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                         fn_args = {}
                     result = execute_prefixed_tool(fn_name, fn_args)
                     normalized_result = normalize_prefixed_tool_result(fn_name, result)
-                    messages.append({"role": "tool", "tool_call_id": tc["id"], "content": json.dumps(normalized_result, ensure_ascii=False)})
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": compact_chat_tool_evidence(fn_name, normalized_result),
+                        "_context_scope": "current",
+                    })
                     assistant_msg.tool_results.append({"tool_name": fn_name, "result": normalized_result})
                     store.broadcast(session.id, "update", {"messageId": assistant_msg.id, "tool_calls": assistant_msg.tool_calls, "tool_results": assistant_msg.tool_results})
                 continue
 
             content = msg.get("content", "")
-            if forced_provider_missing_tool_retry(provider, needs_tools, tools, assistant_msg):
+            if forced_provider_missing_tool_retry(provider, needs_tools, tools, assistant_msg) and not context_stats["tools_removed"]:
                 print(f"[CHAT] provider={provider} returned no executable tool call; retrying with stricter tool instruction", flush=True)
-                messages.append({"role": "assistant", "content": content})
+                messages.append({"role": "assistant", "content": content, "_context_scope": "current"})
                 messages.append({
                     "role": "system",
                     "content": (
@@ -4773,6 +5124,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                         "Do not answer with methodology, plans, DSML text, function_calls text, or prose-only tool requests. "
                         "Return a valid tool call using one of the exposed function tool names now."
                     ),
+                    "_context_scope": "system",
                 })
                 continue
             store.update_message(session, assistant_msg, content, status="done")
@@ -4805,10 +5157,21 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 "Use the tool results already present in the conversation and produce the best possible Simplified Chinese answer now. "
                 "If some data is missing, state the limitation briefly instead of failing."
             ),
+            "_context_scope": "system",
         })
-        payload = {"model": model, "messages": messages, "tools": None, "temperature": 0.2}
+        request_messages, _, context_stats = manage_chat_context(messages, [])
+        if context_stats["over_budget"]:
+            raise RuntimeError(
+                f"Chat context remains over budget after compression: "
+                f"{context_stats['final_tokens']}/{context_stats['max_tokens']} estimated tokens"
+            )
+        payload = {"model": model, "messages": request_messages, "tools": None, "temperature": 0.2}
         payload_str = json.dumps(payload, ensure_ascii=False)
-        print(f"[CHAT] DeepSeek final-after-tool-limit request: {len(messages)} msgs, {len(payload_str)} bytes", flush=True)
+        print(
+            f"[CHAT] DeepSeek final-after-tool-limit request: {len(request_messages)} msgs, {len(payload_str)} bytes, "
+            f"estimated_tokens={context_stats['final_tokens']}/{context_stats['max_tokens']}",
+            flush=True,
+        )
         request_started = time.monotonic()
         resp = req.post(
             api_url.rstrip("/") + "/chat/completions",
@@ -4827,9 +5190,10 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 "api_url": api_url.rstrip("/") + "/chat/completions",
                 "model": model,
                 "payload_sha256": __import__("hashlib").sha256(payload_str.encode("utf-8")).hexdigest(),
-                "message_count": len(messages),
+                "message_count": len(request_messages),
                 "tool_count": 0,
                 "provider": provider,
+                "context": context_stats,
             },
             body,
             elapsed_ms=int((time.monotonic() - request_started) * 1000),
@@ -4841,7 +5205,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     except Exception as exc:
         print(f"[CHAT] DeepSeek final-after-tool-limit error: {exc}", flush=True)
         fallback = "\u5de5\u5177\u8c03\u7528\u5df2\u8fbe\u5230\u672c\u8f6e\u4e0a\u9650\u3002\u6211\u5df2\u7ecf\u62ff\u5230\u90e8\u5206\u5de5\u5177\u7ed3\u679c\uff0c\u4f46\u6700\u7ec8\u603b\u7ed3\u751f\u6210\u5931\u8d25\uff1b\u8bf7\u7f29\u5c0f\u95ee\u9898\u8303\u56f4\u6216\u6307\u5b9a\u8981\u7ee7\u7eed\u5206\u6790\u7684\u5546\u54c1/\u7c7b\u76ee\u3002"
-        store.update_message(session, assistant_msg, fallback, status="done")
+        store.update_message(session, assistant_msg, fallback, status="error")
         store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": fallback})
 
 
