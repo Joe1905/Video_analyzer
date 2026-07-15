@@ -74,7 +74,7 @@ Requires=avahi-daemon.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/avahi-publish-address -a ${beta_domain} ${lan_ip}
+ExecStart=/usr/bin/avahi-publish-address -a -R ${beta_domain} ${lan_ip}
 Restart=always
 RestartSec=2
 
