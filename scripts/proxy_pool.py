@@ -2038,6 +2038,7 @@ def check_binding(payload: dict[str, Any], require_account: bool = False) -> dic
                 UPDATE tiktok_accounts
                 SET last_checked_ip = ?, last_check_status = ?, last_check_at = ?,
                     last_error = ?,
+                    status = CASE WHEN ? THEN ? ELSE status END,
                     display_name = COALESCE(NULLIF(?, ''), display_name),
                     tiktok_avatar_url = COALESCE(NULLIF(?, ''), tiktok_avatar_url),
                     updated_at = ?
@@ -2048,6 +2049,8 @@ def check_binding(payload: dict[str, Any], require_account: bool = False) -> dic
                     "通过" if allowed else "阻断",
                     now,
                     "" if allowed else reason,
+                    1 if allowed else 0,
+                    ACCOUNT_STATUS_ACTIVE,
                     identity.get("display_name", ""),
                     identity.get("avatar_url", ""),
                     now,
