@@ -363,13 +363,17 @@ function withCacheMeta(value, meta) {
   return { value, _cache: meta };
 }
 
+function mcpToolResponseIsError(value) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value) && (value.isError === true || value.error));
+}
+
 async function callSellerSpriteToolCached(name, args) {
   const cache = await loadToolCache();
   const key = sellerSpriteCacheKey(name, args);
   const now = Date.now();
   const ttlMs = Math.max(1, MCP_CACHE_TTL_SECONDS) * 1000;
   const entry = cache[key];
-  if (entry && now - Number(entry.createdAt || 0) <= ttlMs) {
+  if (entry && now - Number(entry.createdAt || 0) <= ttlMs && !mcpToolResponseIsError(entry.response)) {
     entry.hitCount = Number(entry.hitCount || 0) + 1;
     entry.lastHitAt = now;
     saveToolCache().catch((error) => console.warn(`Could not save ${MCP_CHAT_LABEL} tool cache: ${error.message}`));
@@ -383,17 +387,24 @@ async function callSellerSpriteToolCached(name, args) {
     });
   }
 
+  if (entry && mcpToolResponseIsError(entry.response)) {
+    delete cache[key];
+    await saveToolCache();
+  }
+
   const response = await mcpClient.callTool(name, args);
-  cache[key] = {
-    provider: providerCacheKey(),
-    endpoint: name,
-    request: normalizeCacheValue(args || {}),
-    response,
-    createdAt: now,
-    lastHitAt: null,
-    hitCount: 0,
-  };
-  await saveToolCache();
+  if (!mcpToolResponseIsError(response)) {
+    cache[key] = {
+      provider: providerCacheKey(),
+      endpoint: name,
+      request: normalizeCacheValue(args || {}),
+      response,
+      createdAt: now,
+      lastHitAt: null,
+      hitCount: 0,
+    };
+    await saveToolCache();
+  }
   return withCacheMeta(response, {
     hit: false,
     label: "实时调用",
@@ -1089,11 +1100,15 @@ const server = http.createServer((req, res) => {
   res.end("Method not allowed");
 });
 
-loadSessionsFromDisk().then(() => {
-  installShutdownSave();
-  server.listen(PORT, HOST, () => {
-    console.log(`${MCP_CHAT_LABEL} MCP + DeepSeek chat running at http://localhost:${PORT}`);
-    for (const url of lanUrls()) console.log(`LAN: ${url}`);
-    console.log(`Session data: ${SESSIONS_FILE}`);
+if (require.main === module) {
+  loadSessionsFromDisk().then(() => {
+    installShutdownSave();
+    server.listen(PORT, HOST, () => {
+      console.log(`${MCP_CHAT_LABEL} MCP + DeepSeek chat running at http://localhost:${PORT}`);
+      for (const url of lanUrls()) console.log(`LAN: ${url}`);
+      console.log(`Session data: ${SESSIONS_FILE}`);
+    });
   });
-});
+}
+
+module.exports = { mcpToolResponseIsError };

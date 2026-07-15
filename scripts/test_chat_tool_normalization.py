@@ -11,7 +11,8 @@ from types import SimpleNamespace
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from web_app import build_chat_history_context, build_deepseek_tool_assistant_message, build_prefixed_model_tools, chat_markdown_to_html, chat_request_needs_tools, chat_routing_text, compact_chat_tool_evidence, estimate_chat_context_tokens, fastmoss_analysis_evidence_gaps, fastmoss_availability_search_arguments, fastmoss_defaults_to_us, fastmoss_empty_availability_answer, fastmoss_playbook_instruction, fastmoss_playbook_intent, fastmoss_product_evidence_required, fastmoss_required_capability_gaps, filter_locked_provider_tool_ids, forced_provider_domain_tool_available, is_chat_retry_request, manage_chat_context, normalize_prefixed_tool_result, normalize_tool_result, parse_chat_intent_decision, provider_default_enabled_tool_ids, provider_forces_mcp_tools, resolve_chat_intent, route_chat_intent  # noqa: E402
+import web_app  # noqa: E402
+from web_app import build_chat_history_context, build_deepseek_tool_assistant_message, build_prefixed_model_tools, build_tool_limit_final_context, chat_markdown_to_html, chat_request_needs_tools, chat_routing_text, compact_chat_tool_evidence, deepseek_tool_protocol_present, estimate_chat_context_tokens, fastmoss_analysis_evidence_gaps, fastmoss_availability_search_arguments, fastmoss_defaults_to_us, fastmoss_empty_availability_answer, fastmoss_playbook_instruction, fastmoss_playbook_intent, fastmoss_product_evidence_required, fastmoss_required_capability_gaps, filter_locked_provider_tool_ids, forced_provider_domain_tool_available, is_chat_retry_request, manage_chat_context, normalize_mcp_tool_arguments, normalize_prefixed_tool_result, normalize_tool_result, parse_chat_intent_decision, provider_default_enabled_tool_ids, provider_forces_mcp_tools, resolve_chat_intent, route_chat_intent  # noqa: E402
 from tools import _filter_relevant_search_results, execute_tool, get_tools_for_model, list_tools, parse_bing_html, parse_duckduckgo_html  # noqa: E402
 
 
@@ -627,6 +628,91 @@ def test_dynamic_chat_context_compresses_to_budget() -> None:
     assert all(not any(key.startswith("_context_") for key in message) for message in request_messages)
 
 
+def test_tool_limit_final_context_removes_protocol_and_detects_dsml() -> None:
+    dsml = (
+        '<｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke name="sellersprite__google_trend">'
+        '<｜｜DSML｜｜parameter name="request">{}</｜｜DSML｜｜parameter>'
+        '</｜｜DSML｜｜invoke></｜｜DSML｜｜tool_calls>'
+    )
+    assert deepseek_tool_protocol_present({"content": dsml}) is True
+    assert deepseek_tool_protocol_present({"content": "这是最终的中文分析报告。"}) is False
+    assert deepseek_tool_protocol_present({"tool_calls": [{"id": "call_1"}]}) is True
+
+    messages = [
+        {"role": "user", "content": "分析产品", "_context_scope": "history"},
+        {
+            "role": "assistant",
+            "content": dsml,
+            "tool_calls": [{"id": "call_1", "function": {"name": "sellersprite__google_trend"}}],
+            "_context_scope": "current",
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": '{"trend":"up"}', "_context_scope": "current"},
+    ]
+    final_context = build_tool_limit_final_context(messages)
+    assert all(message.get("role") != "tool" for message in final_context)
+    assert all(not message.get("tool_calls") for message in final_context)
+    assert all("DSML" not in str(message.get("content") or "") for message in final_context)
+    assert any("completed_tool_collection" in str(message.get("content") or "") for message in final_context)
+
+
+def test_sellersprite_schema_argument_normalization() -> None:
+    schemas = [
+        {
+            "name": "keyword_research_trends",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "marketplace": {"type": "string"},
+                    "keyword": {"type": "string"},
+                    "month": {"type": "string"},
+                },
+                "required": ["marketplace", "keyword"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "product_research",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "request": {
+                        "type": "object",
+                        "properties": {"marketplace": {"type": "string"}, "keyword": {"type": "string"}},
+                        "required": ["marketplace"],
+                    },
+                },
+                "required": ["request"],
+                "additionalProperties": False,
+            },
+        },
+    ]
+    original = web_app.list_mcp_bridge_tools
+    web_app.list_mcp_bridge_tools = lambda chat_type: schemas
+    try:
+        unwrapped, action = normalize_mcp_tool_arguments(
+            "sellersprite",
+            "keyword_research_trends",
+            {"request": {"marketplace": "US", "keyword": "electric food chopper", "month": "202606"}},
+        )
+        assert unwrapped == {"marketplace": "US", "keyword": "electric food chopper", "month": "202606"}
+        assert action and action.startswith("unwrapped")
+
+        wrapped, action = normalize_mcp_tool_arguments(
+            "sellersprite", "product_research", {"marketplace": "US", "keyword": "mini chopper"}
+        )
+        assert wrapped == {"request": {"marketplace": "US", "keyword": "mini chopper"}}
+        assert action and action.startswith("wrapped")
+
+        try:
+            normalize_mcp_tool_arguments("sellersprite", "keyword_research_trends", {"month": "202606"})
+        except ValueError as exc:
+            assert "marketplace" in str(exc) and "keyword" in str(exc)
+        else:
+            raise AssertionError("missing required fields should fail before the MCP call")
+    finally:
+        web_app.list_mcp_bridge_tools = original
+
+
 if __name__ == "__main__":
     test_tiktok_search_keeps_analysis_fields()
     test_amazon_keeps_product_fields()
@@ -654,5 +740,7 @@ if __name__ == "__main__":
     test_empty_mcp_collections_are_not_enough_data()
     test_deepseek_tool_turn_preserves_reasoning_content()
     test_dynamic_chat_context_compresses_to_budget()
+    test_tool_limit_final_context_removes_protocol_and_detects_dsml()
+    test_sellersprite_schema_argument_normalization()
     print("chat tool normalization tests passed")
 
