@@ -5846,6 +5846,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             if enough_data:
                 tools = []
 
+    unexecutable_protocol_retries = 0
     for _ in range(max_tool_rounds):
         try:
             request_messages, request_tools, context_stats = manage_chat_context(messages, tools)
@@ -5938,6 +5939,33 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 continue
 
             content = msg.get("content", "")
+            if deepseek_tool_protocol_present(msg):
+                if unexecutable_protocol_retries < 1:
+                    unexecutable_protocol_retries += 1
+                    print("[CHAT] rejected unexecutable tool protocol; retrying once", flush=True)
+                    messages.append({
+                        "role": "assistant",
+                        "content": "[The previous response contained an unexecutable tool protocol and was rejected.]",
+                        "_context_scope": "current",
+                    })
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            "Return a valid native tool call using one of the currently exposed function names. Do not emit DSML or textual tool syntax."
+                            if request_tools
+                            else
+                            "No tools are available. Return only the final user-facing answer from the retained evidence; do not emit DSML or any tool syntax."
+                        ),
+                        "_context_scope": "system",
+                    })
+                    continue
+                fallback = (
+                    "模型连续返回了无法执行的工具协议，系统已拦截异常内容。"
+                    "请发送“继续”重试；已完成的工具结果会被保留。"
+                )
+                store.update_message(session, assistant_msg, fallback, status="error")
+                store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": fallback})
+                return
             evidence_gaps = fastmoss_analysis_evidence_gaps(routing_text, assistant_msg, route) if provider == "fastmoss" else []
             if evidence_gaps:
                 print(f"[CHAT] FastMoss evidence incomplete: {','.join(evidence_gaps)}; requesting more tool data", flush=True)
