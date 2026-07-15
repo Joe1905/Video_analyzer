@@ -261,7 +261,16 @@ def test_fastmoss_analysis_requires_us_ranking_and_reviews() -> None:
         2,
         {"tool_name": "fastmoss__product_search", "result": {"ok": True, "enough_data": True}},
     )
-    assert fastmoss_analysis_evidence_gaps(query, message) == ["us_region"]
+    message.tool_calls.append(
+        {"function": {"name": "fastmoss__shop_search", "arguments": '{"seller_id":"7495582349874924375"}'}},
+    )
+    message.tool_results.append(
+        {"tool_name": "fastmoss__shop_search", "result": {"ok": True, "enough_data": True}},
+    )
+    assert fastmoss_analysis_evidence_gaps(query, message) == []
+
+    message.tool_results[1]["result"]["enough_data"] = False
+    assert fastmoss_analysis_evidence_gaps(query, message) == ["market_ranking", "us_region"]
 
 
 def test_fastmoss_explicit_other_region_does_not_require_us() -> None:
@@ -571,6 +580,27 @@ def test_empty_mcp_collections_are_not_enough_data() -> None:
     assert populated["enough_data"] is True
     assert populated["suggested_next_action"] == "answer_from_results"
 
+    for payload in (
+        {"reviews": [], "total_review_count": 0},
+        {"ranked_categories": [], "total": 0},
+        {"category": {"category_id": 0, "name": "", "region": ""}, "top_products_summary": []},
+    ):
+        normalized = normalize_prefixed_tool_result("fastmoss__market_category_analysis", result(payload))
+        assert normalized["enough_data"] is False
+
+
+def test_mcp_sql_error_text_is_not_evidence() -> None:
+    raw = {
+        "ok": True,
+        "data": {
+            "content": [{"type": "text", "text": "SQLSTATE[42S22]: Unknown column 'format_price' in 'field list'"}],
+        },
+    }
+    normalized = normalize_prefixed_tool_result("fastmoss__product_detail_info", raw)
+    assert normalized["ok"] is False
+    assert normalized["enough_data"] is False
+    assert normalized["suggested_next_action"] == "try_different_query"
+
 
 def test_deepseek_tool_turn_preserves_reasoning_content() -> None:
     tool_calls = [{"id": "call_1", "function": {"name": "fastmoss__product_search", "arguments": "{}"}}]
@@ -769,6 +799,7 @@ if __name__ == "__main__":
     test_intent_decision_validation_and_fallback()
     test_intent_router_uses_recent_context_and_falls_back_on_failure()
     test_empty_mcp_collections_are_not_enough_data()
+    test_mcp_sql_error_text_is_not_evidence()
     test_deepseek_tool_turn_preserves_reasoning_content()
     test_fastmoss_amazon_request_short_circuits_without_model_or_tools()
     test_dynamic_chat_context_compresses_to_budget()

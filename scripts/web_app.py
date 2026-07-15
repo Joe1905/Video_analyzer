@@ -4350,7 +4350,6 @@ FASTMOSS_REVIEW_TOOLS = {"fastmoss__product_review_list"}
 FASTMOSS_REGION_SENSITIVE_TOOLS = FASTMOSS_MARKET_COVERAGE_TOOLS | {
     "fastmoss__product_search",
     "fastmoss__product_rank_new_listed",
-    "fastmoss__shop_search",
     "fastmoss__shop_rank_top_selling",
     "fastmoss__creator_search",
     "fastmoss__creator_rank_top_ecommerce",
@@ -4526,16 +4525,26 @@ def fastmoss_analysis_evidence_gaps(user_text: str, assistant_msg: Message, rout
     gaps = []
     exact_product = fastmoss_exact_product_reference(user_text)
     if not exact_product:
-        if not successful_with_data.intersection(FASTMOSS_CATEGORY_TOOLS):
+        category_evidence_tools = FASTMOSS_CATEGORY_TOOLS | FASTMOSS_MARKET_COVERAGE_TOOLS
+        if not successful_with_data.intersection(category_evidence_tools):
             gaps.append("category_lookup")
         if not successful_with_data.intersection(FASTMOSS_MARKET_COVERAGE_TOOLS):
             gaps.append("market_ranking")
-        regional_calls = [
-            call for call in calls
-            if str(call.get("function", {}).get("name") or "") in FASTMOSS_REGION_SENSITIVE_TOOLS
-        ]
-        if fastmoss_defaults_to_us(user_text) and (
-            not regional_calls or any(not _argument_has_us_region(_tool_call_arguments(call)) for call in regional_calls)
+        valid_regional_calls = []
+        for call, tool_result in zip(calls, results):
+            call_name = str(call.get("function", {}).get("name") or "")
+            result_name = str(tool_result.get("tool_name") or "") if isinstance(tool_result, dict) else ""
+            result_payload = tool_result.get("result") if isinstance(tool_result, dict) else None
+            if (
+                call_name in FASTMOSS_REGION_SENSITIVE_TOOLS
+                and result_name == call_name
+                and isinstance(result_payload, dict)
+                and result_payload.get("ok") is True
+                and result_payload.get("enough_data") is True
+            ):
+                valid_regional_calls.append(call)
+        if fastmoss_defaults_to_us(user_text) and not any(
+            _argument_has_us_region(_tool_call_arguments(call)) for call in valid_regional_calls
         ):
             gaps.append("us_region")
     if not successful_calls.intersection(FASTMOSS_REVIEW_TOOLS):
@@ -4975,7 +4984,10 @@ def compact_mcp_content(value: Any, max_chars: int = 12000) -> Any:
 
 
 def mcp_collection_content_state(value: Any) -> tuple[bool, bool]:
-    collection_keys = {"list", "items", "results", "products"}
+    collection_keys = {
+        "list", "items", "results", "products", "reviews",
+        "ranked_categories", "top_products_summary",
+    }
     found = False
     has_items = False
     if isinstance(value, dict):
@@ -4994,6 +5006,22 @@ def mcp_collection_content_state(value: Any) -> tuple[bool, bool]:
     return found, has_items
 
 
+def mcp_content_error(result: dict[str, Any], text: str, parsed: Any) -> str:
+    payload = result.get("data") if isinstance(result, dict) else None
+    if isinstance(payload, dict) and payload.get("isError") is True:
+        return str(payload.get("error") or text or "MCP tool returned an error")[:1000]
+    if isinstance(parsed, dict):
+        if parsed.get("success") is False:
+            return str(parsed.get("error") or parsed.get("message") or "MCP tool returned an error")[:1000]
+        code = parsed.get("code")
+        if code not in (None, 0, "0", 200, "200"):
+            return str(parsed.get("error") or parsed.get("message") or f"MCP error code: {code}")[:1000]
+    cleaned = str(text or "").strip()
+    if re.search(r"(?:SQLSTATE\[|Traceback \(most recent call last\)|Unknown column)", cleaned, re.IGNORECASE):
+        return cleaned[:1000]
+    return ""
+
+
 def normalize_prefixed_tool_result(tool_id: str, result: dict[str, Any]) -> dict[str, Any]:
     domain, name = split_prefixed_tool_id(tool_id)
     normalized = normalize_tool_result(name, result)
@@ -5003,6 +5031,15 @@ def normalize_prefixed_tool_result(tool_id: str, result: dict[str, Any]) -> dict
         if domain in {"sellersprite", "fastmoss"}:
             text = mcp_text_content(result)
             parsed = parse_mcp_text_content(text)
+            content_error = mcp_content_error(result, text, parsed) if domain == "fastmoss" else ""
+            if content_error:
+                normalized.update({
+                    "ok": False,
+                    "error": content_error,
+                    "enough_data": False,
+                    "suggested_next_action": "try_different_query",
+                })
+                return normalized
             content_value = parsed if parsed is not None else text
             collection_found, collection_has_items = mcp_collection_content_state(content_value)
             has_content = collection_has_items if collection_found else payload_has_content(content_value)
