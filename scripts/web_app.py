@@ -8297,6 +8297,13 @@ def handle_lan_chat_get(handler: BaseHTTPRequestHandler, parsed) -> bool:
         if path == "/api/lan-chat/bootstrap":
             json_response(handler, HTTPStatus.OK, lan_chat_store.bootstrap(_lan_chat_token(handler)))
             return True
+        feishu_avatar_match = re.fullmatch(
+            r"/api/lan-chat/feishu-avatars/([a-z0-9-]{1,64})", path
+        )
+        if feishu_avatar_match:
+            body, content_type = lan_chat_store.feishu_avatar_bytes(feishu_avatar_match.group(1))
+            binary_response(handler, HTTPStatus.OK, body, content_type)
+            return True
         avatar_match = re.fullmatch(r"/api/lan-chat/avatars/([0-9a-f]{16})", path)
         if avatar_match:
             body, content_type = lan_chat_store.avatar_bytes(avatar_match.group(1))
