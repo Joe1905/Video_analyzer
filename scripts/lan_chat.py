@@ -374,6 +374,7 @@ class LanChatStore:
                 result.append(
                     {
                         "id": owner["id"],
+                        "feishuId": owner["open_id"] or owner["id"],
                         "name": owner["name"],
                         "avatarUrl": f"/api/lan-chat/feishu-avatars/{owner['id']}",
                         "source": owner["source"],

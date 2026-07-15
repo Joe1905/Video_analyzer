@@ -149,6 +149,10 @@ def init_db(conn: sqlite3.Connection) -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT NOT NULL UNIQUE,
             display_name TEXT NOT NULL DEFAULT '',
+            tiktok_avatar_url TEXT NOT NULL DEFAULT '',
+            feishu_user_id TEXT NOT NULL DEFAULT '',
+            feishu_user_name TEXT NOT NULL DEFAULT '',
+            feishu_avatar_url TEXT NOT NULL DEFAULT '',
             proxy_profile_id INTEGER NOT NULL REFERENCES proxy_profiles(id) ON DELETE RESTRICT,
             status TEXT NOT NULL DEFAULT 'active',
             profile_json TEXT NOT NULL DEFAULT '{}',
@@ -179,6 +183,9 @@ def init_db(conn: sqlite3.Connection) -> None:
             display TEXT NOT NULL DEFAULT '',
             vnc_port INTEGER NOT NULL DEFAULT 0,
             novnc_port INTEGER NOT NULL DEFAULT 0,
+            feishu_user_id TEXT NOT NULL DEFAULT '',
+            feishu_user_name TEXT NOT NULL DEFAULT '',
+            feishu_avatar_url TEXT NOT NULL DEFAULT '',
             profile_key TEXT NOT NULL DEFAULT '',
             user_data_dir TEXT NOT NULL DEFAULT '',
             last_error TEXT NOT NULL DEFAULT '',
@@ -327,6 +334,23 @@ def init_db(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE tiktok_accounts ADD COLUMN deleted_at TEXT NOT NULL DEFAULT ''")
     if "last_publish_at" not in existing_account_cols:
         conn.execute("ALTER TABLE tiktok_accounts ADD COLUMN last_publish_at TEXT NOT NULL DEFAULT ''")
+    for name in (
+        "tiktok_avatar_url",
+        "feishu_user_id",
+        "feishu_user_name",
+        "feishu_avatar_url",
+    ):
+        if name not in existing_account_cols:
+            try:
+                conn.execute(f"ALTER TABLE tiktok_accounts ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc).lower():
+                    raise
+    conn.execute(
+        """CREATE UNIQUE INDEX IF NOT EXISTS idx_tiktok_accounts_feishu_user
+           ON tiktok_accounts(feishu_user_id)
+           WHERE feishu_user_id <> '' AND deleted_at = ''"""
+    )
     existing_session_cols = {row[1] for row in conn.execute("PRAGMA table_info(browser_sessions)")}
     for name, definition in {
         "xvfb_pid": "INTEGER NOT NULL DEFAULT 0",
@@ -338,6 +362,9 @@ def init_db(conn: sqlite3.Connection) -> None:
         "debug_port": "INTEGER NOT NULL DEFAULT 0",
         "owner": "TEXT NOT NULL DEFAULT 'manual'",
         "current_job_id": "TEXT NOT NULL DEFAULT ''",
+        "feishu_user_id": "TEXT NOT NULL DEFAULT ''",
+        "feishu_user_name": "TEXT NOT NULL DEFAULT ''",
+        "feishu_avatar_url": "TEXT NOT NULL DEFAULT ''",
     }.items():
         if name not in existing_session_cols:
             conn.execute(f"ALTER TABLE browser_sessions ADD COLUMN {name} {definition}")
@@ -545,6 +572,10 @@ def _row_to_account(row: sqlite3.Row) -> dict[str, Any]:
         "id": row["id"],
         "username": row["username"],
         "display_name": row["display_name"],
+        "tiktok_avatar_url": row["tiktok_avatar_url"],
+        "feishu_user_id": row["feishu_user_id"],
+        "feishu_user_name": row["feishu_user_name"],
+        "feishu_avatar_url": row["feishu_avatar_url"],
         "proxy_profile_id": row["proxy_profile_id"],
         "status": _clean_account_status(row["status"]),
         "profile": _json_loads(row["profile_json"], {}),
@@ -580,6 +611,9 @@ def _row_to_session(row: sqlite3.Row) -> dict[str, Any]:
         "debug_port": row["debug_port"],
         "owner": row["owner"],
         "current_job_id": row["current_job_id"],
+        "feishu_user_id": row["feishu_user_id"],
+        "feishu_user_name": row["feishu_user_name"],
+        "feishu_avatar_url": row["feishu_avatar_url"],
         "profile_key": row["profile_key"],
         "user_data_dir": row["user_data_dir"],
         "last_error": row["last_error"],
@@ -1020,6 +1054,31 @@ def _proxy_json_with_cookies(url: str, proxy_port: int, cookies: dict[str, str],
         return False, None, str(exc)
 
 
+def _tiktok_avatar_url(item: dict[str, Any]) -> str:
+    for key in (
+        "avatar_url",
+        "avatarUrl",
+        "avatar_thumb",
+        "avatarThumb",
+        "avatar_larger",
+        "avatarLarger",
+        "avatar_medium",
+    ):
+        value = item.get(key)
+        candidates: list[Any]
+        if isinstance(value, dict):
+            candidates = [value.get("url"), *(value.get("url_list") or [])]
+        elif isinstance(value, list):
+            candidates = value
+        else:
+            candidates = [value]
+        for candidate in candidates:
+            url = str(candidate or "").strip()
+            if url.startswith(("https://", "http://")):
+                return url
+    return ""
+
+
 def _tiktok_identity(body: Any) -> dict[str, str]:
     if not isinstance(body, dict):
         return {}
@@ -1038,6 +1097,7 @@ def _tiktok_identity(body: Any) -> dict[str, str]:
                 "username": username or f"uid_{user_id}",
                 "display_name": display_name,
                 "user_id": user_id,
+                "avatar_url": _tiktok_avatar_url(item),
             }
     return {}
 
@@ -1571,6 +1631,10 @@ def upsert_account(payload: dict[str, Any]) -> dict[str, Any]:
     values = {
         "username": username,
         "display_name": _clean_text(payload.get("display_name"), 160),
+        "tiktok_avatar_url": _clean_text(payload.get("tiktok_avatar_url"), 2000),
+        "feishu_user_id": _clean_text(payload.get("feishu_user_id"), 256),
+        "feishu_user_name": _clean_text(payload.get("feishu_user_name"), 160),
+        "feishu_avatar_url": _clean_text(payload.get("feishu_avatar_url"), 2000),
         "proxy_profile_id": proxy_profile_id,
         "status": _clean_account_status(payload.get("status")),
         "profile_json": "{}",
@@ -1578,6 +1642,19 @@ def upsert_account(payload: dict[str, Any]) -> dict[str, Any]:
         "updated_at": now,
     }
     with connect() as conn:
+        existing_account = None
+        if account_id:
+            existing_account = conn.execute("SELECT * FROM tiktok_accounts WHERE id = ?", (account_id,)).fetchone()
+            if not existing_account:
+                raise ValueError("account not found")
+            for name in (
+                "tiktok_avatar_url",
+                "feishu_user_id",
+                "feishu_user_name",
+                "feishu_avatar_url",
+            ):
+                if name not in payload:
+                    values[name] = str(existing_account[name] or "")
         pool_row = conn.execute("SELECT * FROM proxy_profiles WHERE id = ?", (proxy_profile_id,)).fetchone()
         if not pool_row:
             raise ValueError("proxy profile not found")
@@ -1591,6 +1668,10 @@ def upsert_account(payload: dict[str, Any]) -> dict[str, Any]:
             session_user_data_value = str(session_row["user_data_dir"] or "")
             if not session_user_data_value:
                 raise ValueError("登录会话没有浏览器 profile 路径")
+            if str(session_row["feishu_user_id"] or ""):
+                values["feishu_user_id"] = str(session_row["feishu_user_id"])
+                values["feishu_user_name"] = str(session_row["feishu_user_name"] or "")
+                values["feishu_avatar_url"] = str(session_row["feishu_avatar_url"] or "")
             session_user_data = Path(session_user_data_value)
             session_root = session_user_data.parent
             profile["isolation"] = {
@@ -1603,11 +1684,18 @@ def upsert_account(payload: dict[str, Any]) -> dict[str, Any]:
                 "download_dir": str(session_root / "downloads"),
             }
             profile["observation_session"] = {"session_id": session_id, "bound_at": now, "persisted": True}
+        if not account_id and not values["feishu_user_id"]:
+            raise ValueError("新增账号必须选择飞书用户")
+        if values["feishu_user_id"]:
+            conflict = conn.execute(
+                """SELECT username FROM tiktok_accounts
+                   WHERE feishu_user_id = ? AND deleted_at = '' AND id <> ?""",
+                (values["feishu_user_id"], account_id),
+            ).fetchone()
+            if conflict:
+                raise ValueError(f"该飞书用户已绑定 @{conflict['username']}")
         values["profile_json"] = json.dumps(profile, ensure_ascii=False, separators=(",", ":"))
         if account_id:
-            existing_account = conn.execute("SELECT profile_json FROM tiktok_accounts WHERE id = ?", (account_id,)).fetchone()
-            if not existing_account:
-                raise ValueError("account not found")
             existing_profile = _json_loads(existing_account["profile_json"], {})
             if not profile_provided:
                 values["profile_json"] = json.dumps(_deep_merge(_isolation_profile(username, proxy_profile_id, pool_row), existing_profile), ensure_ascii=False, separators=(",", ":"))
@@ -1617,7 +1705,12 @@ def upsert_account(payload: dict[str, Any]) -> dict[str, Any]:
             conn.execute(
                 """
                 UPDATE tiktok_accounts
-                SET username=:username, display_name=:display_name, proxy_profile_id=:proxy_profile_id,
+                SET username=:username, display_name=:display_name,
+                    tiktok_avatar_url=:tiktok_avatar_url,
+                    feishu_user_id=:feishu_user_id,
+                    feishu_user_name=:feishu_user_name,
+                    feishu_avatar_url=:feishu_avatar_url,
+                    proxy_profile_id=:proxy_profile_id,
                     status=:status, profile_json=:profile_json, notes=:notes, updated_at=:updated_at
                 WHERE id=:id
                 """,
@@ -1627,10 +1720,14 @@ def upsert_account(payload: dict[str, Any]) -> dict[str, Any]:
             cur = conn.execute(
                 """
                 INSERT INTO tiktok_accounts (
-                    username, display_name, proxy_profile_id, status, profile_json, notes,
+                    username, display_name, tiktok_avatar_url,
+                    feishu_user_id, feishu_user_name, feishu_avatar_url,
+                    proxy_profile_id, status, profile_json, notes,
                     created_at, updated_at
                 ) VALUES (
-                    :username, :display_name, :proxy_profile_id, :status, :profile_json, :notes,
+                    :username, :display_name, :tiktok_avatar_url,
+                    :feishu_user_id, :feishu_user_name, :feishu_avatar_url,
+                    :proxy_profile_id, :status, :profile_json, :notes,
                     :created_at, :updated_at
                 )
                 """,
@@ -1885,8 +1982,16 @@ def start_login_session(payload: dict[str, Any]) -> dict[str, Any]:
         proxy_profile_id = bound_proxy_id
         username = str(account_row["username"] or "")
         saved_profile = _json_loads(account_row["profile_json"], {})
+        feishu_user_id = str(account_row["feishu_user_id"] or "")
+        feishu_user_name = str(account_row["feishu_user_name"] or "")
+        feishu_avatar_url = str(account_row["feishu_avatar_url"] or "")
     else:
         username = _clean_text(payload.get("username"), 120).lstrip("@")
+        feishu_user_id = _clean_text(payload.get("feishu_user_id"), 256)
+        feishu_user_name = _clean_text(payload.get("feishu_user_name"), 160)
+        feishu_avatar_url = _clean_text(payload.get("feishu_avatar_url"), 2000)
+        if not feishu_user_id:
+            raise ValueError("新增账号必须选择飞书用户")
     if not proxy_profile_id:
         raise ValueError("proxy_profile_id is required")
     try:
@@ -1927,8 +2032,9 @@ def start_login_session(payload: dict[str, Any]) -> dict[str, Any]:
             INSERT INTO browser_sessions (
                 slot, proxy_profile_id, account_id, username, status, channel_url,
                 pid, xvfb_pid, x11vnc_pid, websockify_pid, display, vnc_port, novnc_port,
-                debug_port, owner, current_job_id, profile_key, user_data_dir, last_error, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)
+                debug_port, owner, current_job_id, feishu_user_id, feishu_user_name,
+                feishu_avatar_url, profile_key, user_data_dir, last_error, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)
             """,
             (
                 slot,
@@ -1943,6 +2049,9 @@ def start_login_session(payload: dict[str, Any]) -> dict[str, Any]:
                 int(slot_ports["debug_port"]),
                 owner,
                 current_job_id,
+                feishu_user_id,
+                feishu_user_name,
+                feishu_avatar_url,
                 profile_key,
                 str((profile.get("isolation") or {}).get("user_data_dir") or ""),
                 now,
@@ -2018,6 +2127,30 @@ def start_login_session(payload: dict[str, Any]) -> dict[str, Any]:
                     )
                 conn.commit()
                 raise ValueError(reason)
+            if account_id:
+                cookies = _tiktok_profile_cookies(user_data_dir)
+                account_info_url = os.getenv(
+                    "TIKTOK_ACCOUNT_INFO_URL",
+                    "https://www.tiktok.com/passport/web/account/info/?aid=1459&app_language=en&device_platform=web_pc",
+                )
+                identity_ok, identity_body, _ = _proxy_json_with_cookies(
+                    account_info_url, int(pool["local_port"] or 0), cookies
+                )
+                identity = _tiktok_identity(identity_body) if identity_ok else {}
+                if identity:
+                    conn.execute(
+                        """UPDATE tiktok_accounts
+                           SET display_name = COALESCE(NULLIF(?, ''), display_name),
+                               tiktok_avatar_url = COALESCE(NULLIF(?, ''), tiktok_avatar_url),
+                               updated_at = ?
+                           WHERE id = ?""",
+                        (
+                            identity.get("display_name", ""),
+                            identity.get("avatar_url", ""),
+                            now_iso(),
+                            account_id,
+                        ),
+                    )
             preflight["browser_observed_ip"] = browser_observed_ip
             conn.execute(
                 """
@@ -2200,6 +2333,10 @@ def inspect_login_session(payload: dict[str, Any]) -> dict[str, Any]:
         {
             "username": username,
             "display_name": identity.get("display_name", ""),
+            "tiktok_avatar_url": identity.get("avatar_url", ""),
+            "feishu_user_id": str(row["feishu_user_id"] or ""),
+            "feishu_user_name": str(row["feishu_user_name"] or ""),
+            "feishu_avatar_url": str(row["feishu_avatar_url"] or ""),
             "proxy_profile_id": int(pool["id"]),
             "status": ACCOUNT_STATUS_ACTIVE,
             "session_id": session_id,
