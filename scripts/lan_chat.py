@@ -1,4 +1,4 @@
-"""Persistent device-based chat for trusted local-area networks."""
+"""Persistent account-based chat for trusted local-area networks."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import hashlib
 import html
 import json
 import os
+import secrets
 import sqlite3
 import threading
 import time
@@ -20,6 +21,8 @@ from urllib.request import Request, urlopen
 
 
 PUBLIC_ROOM_ID = "public"
+DEFAULT_FEISHU_USER_ID = "local-default"
+DEFAULT_FEISHU_USER_NAME = "本地用户（待接入飞书）"
 ONLINE_WINDOW_SECONDS = 90
 AVATAR_COLORS = (
     "#E76F51",
@@ -67,15 +70,33 @@ class LanChatStore:
             conn.execute("PRAGMA journal_mode = WAL")
             conn.executescript(
                 """
+                CREATE TABLE IF NOT EXISTS feishu_users (
+                    id TEXT PRIMARY KEY,
+                    open_id TEXT UNIQUE,
+                    name TEXT NOT NULL,
+                    avatar_url TEXT,
+                    source TEXT NOT NULL DEFAULT 'local',
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS users (
                     id TEXT PRIMARY KEY,
                     device_token_hash TEXT NOT NULL UNIQUE,
+                    feishu_user_id TEXT NOT NULL,
                     nickname TEXT NOT NULL,
                     avatar_color TEXT NOT NULL,
                     avatar_status TEXT NOT NULL DEFAULT 'fallback',
                     avatar_filename TEXT,
                     created_at REAL NOT NULL,
-                    last_seen REAL NOT NULL
+                    last_seen REAL NOT NULL,
+                    FOREIGN KEY (feishu_user_id) REFERENCES feishu_users(id)
+                );
+                CREATE TABLE IF NOT EXISTS account_sessions (
+                    token_hash TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    last_seen REAL NOT NULL,
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
                 );
                 CREATE TABLE IF NOT EXISTS rooms (
                     id TEXT PRIMARY KEY,
@@ -110,7 +131,29 @@ class LanChatStore:
                     ON messages(room_id, id);
                 CREATE INDEX IF NOT EXISTS room_members_user_id_idx
                     ON room_members(user_id, room_id);
+                CREATE INDEX IF NOT EXISTS account_sessions_user_id_idx
+                    ON account_sessions(user_id);
                 """
+            )
+            now = time.time()
+            conn.execute(
+                """INSERT OR IGNORE INTO feishu_users
+                   (id, open_id, name, avatar_url, source, created_at, updated_at)
+                   VALUES (?, NULL, ?, NULL, 'local', ?, ?)""",
+                (DEFAULT_FEISHU_USER_ID, DEFAULT_FEISHU_USER_NAME, now, now),
+            )
+            user_columns = {
+                str(row["name"]) for row in conn.execute("PRAGMA table_info(users)").fetchall()
+            }
+            if "feishu_user_id" not in user_columns:
+                conn.execute("ALTER TABLE users ADD COLUMN feishu_user_id TEXT")
+            conn.execute(
+                """UPDATE users SET feishu_user_id = ?
+                   WHERE feishu_user_id IS NULL OR feishu_user_id = ''""",
+                (DEFAULT_FEISHU_USER_ID,),
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS users_feishu_user_id_idx ON users(feishu_user_id)"
             )
             message_columns = {
                 str(row["name"]) for row in conn.execute("PRAGMA table_info(messages)").fetchall()
@@ -119,7 +162,6 @@ class LanChatStore:
                 conn.execute("ALTER TABLE messages ADD COLUMN image_filename TEXT")
             if "image_mime_type" not in message_columns:
                 conn.execute("ALTER TABLE messages ADD COLUMN image_mime_type TEXT")
-            now = time.time()
             conn.execute(
                 """INSERT OR IGNORE INTO rooms
                    (id, kind, name, created_by, direct_key, created_at, updated_at)
@@ -141,12 +183,13 @@ class LanChatStore:
                 avatar_status = "pending" if self._avatar_configured() else "fallback"
                 conn.execute(
                     """INSERT INTO users
-                       (id, device_token_hash, nickname, avatar_color, avatar_status,
+                       (id, device_token_hash, feishu_user_id, nickname, avatar_color, avatar_status,
                         avatar_filename, created_at, last_seen)
-                       VALUES (?, ?, ?, ?, ?, NULL, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)""",
                     (
                         user_id,
                         token_hash,
+                        DEFAULT_FEISHU_USER_ID,
                         clean_name,
                         AVATAR_COLORS[int(token_hash[:8], 16) % len(AVATAR_COLORS)],
                         avatar_status,
@@ -163,15 +206,102 @@ class LanChatStore:
             self._start_avatar_generation(user["id"], user["nickname"])
         return user, created
 
+    def login_options(self) -> dict[str, Any]:
+        with self._connect() as conn:
+            owners = conn.execute(
+                "SELECT * FROM feishu_users ORDER BY created_at ASC, name COLLATE NOCASE"
+            ).fetchall()
+            result = []
+            for owner in owners:
+                accounts = conn.execute(
+                    """SELECT * FROM users WHERE feishu_user_id = ?
+                       ORDER BY last_seen DESC, created_at ASC""",
+                    (owner["id"],),
+                ).fetchall()
+                result.append(
+                    {
+                        "id": owner["id"],
+                        "name": owner["name"],
+                        "avatarUrl": owner["avatar_url"] or "",
+                        "source": owner["source"],
+                        "accounts": [self._public_user(row) for row in accounts],
+                    }
+                )
+        return {"feishuUsers": result}
+
+    def select_account(self, feishu_user_id: str, account_id: str) -> dict[str, Any]:
+        owner_id = str(feishu_user_id or "").strip()
+        user_id = str(account_id or "").strip()
+        now = time.time()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM users WHERE id = ? AND feishu_user_id = ?",
+                (user_id, owner_id),
+            ).fetchone()
+            if row is None:
+                raise LanChatError("设备账户不存在或不属于该飞书用户", 404)
+            session_token = self._create_session(conn, user_id, now)
+            conn.execute("UPDATE users SET last_seen = ? WHERE id = ?", (now, user_id))
+            row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        return {"sessionToken": session_token, "user": self._public_user(row)}
+
+    def create_account(self, feishu_user_id: str, nickname: str) -> dict[str, Any]:
+        owner_id = str(feishu_user_id or "").strip()
+        clean_name = self._nickname(nickname)
+        now = time.time()
+        user_id = uuid.uuid4().hex[:16]
+        legacy_token_hash = hashlib.sha256(secrets.token_bytes(32)).hexdigest()
+        avatar_status = "pending" if self._avatar_configured() else "fallback"
+        with self._connect() as conn:
+            owner = conn.execute(
+                "SELECT id FROM feishu_users WHERE id = ?", (owner_id,)
+            ).fetchone()
+            if owner is None:
+                raise LanChatError("飞书用户不存在", 404)
+            conn.execute(
+                """INSERT INTO users
+                   (id, device_token_hash, feishu_user_id, nickname, avatar_color, avatar_status,
+                    avatar_filename, created_at, last_seen)
+                   VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)""",
+                (
+                    user_id,
+                    legacy_token_hash,
+                    owner_id,
+                    clean_name,
+                    AVATAR_COLORS[int(legacy_token_hash[:8], 16) % len(AVATAR_COLORS)],
+                    avatar_status,
+                    now,
+                    now,
+                ),
+            )
+            session_token = self._create_session(conn, user_id, now)
+            row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        user = self._public_user(row)
+        if user["avatarStatus"] == "pending":
+            self._start_avatar_generation(user["id"], user["nickname"])
+        return {"sessionToken": session_token, "user": user}
+
     def authenticate(self, device_token: str) -> dict[str, Any]:
         token_hash = self._token_hash(device_token)
         now = time.time()
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT * FROM users WHERE device_token_hash = ?", (token_hash,)
+                """SELECT u.* FROM account_sessions s
+                   JOIN users u ON u.id = s.user_id
+                   WHERE s.token_hash = ?""",
+                (token_hash,),
             ).fetchone()
             if row is None:
-                raise LanChatError("设备尚未注册", 401)
+                row = conn.execute(
+                    "SELECT * FROM users WHERE device_token_hash = ?", (token_hash,)
+                ).fetchone()
+            else:
+                conn.execute(
+                    "UPDATE account_sessions SET last_seen = ? WHERE token_hash = ?",
+                    (now, token_hash),
+                )
+            if row is None:
+                raise LanChatError("登录状态已失效，请重新选择账户", 401)
             conn.execute("UPDATE users SET last_seen = ? WHERE id = ?", (now, row["id"]))
             row = conn.execute("SELECT * FROM users WHERE id = ?", (row["id"],)).fetchone()
         return self._public_user(row)
@@ -395,8 +525,25 @@ class LanChatStore:
     def _token_hash(device_token: str) -> str:
         token = str(device_token or "").strip()
         if len(token) < 20 or len(token) > 200:
-            raise LanChatError("设备令牌无效", 401)
+            raise LanChatError("登录状态无效，请重新选择账户", 401)
         return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    def _create_session(
+        self, conn: sqlite3.Connection, user_id: str, now: float
+    ) -> str:
+        for _ in range(3):
+            session_token = secrets.token_urlsafe(32)
+            try:
+                conn.execute(
+                    """INSERT INTO account_sessions
+                       (token_hash, user_id, created_at, last_seen)
+                       VALUES (?, ?, ?, ?)""",
+                    (self._token_hash(session_token), user_id, now, now),
+                )
+                return session_token
+            except sqlite3.IntegrityError:
+                continue
+        raise LanChatError("无法创建登录会话，请重试", 500)
 
     @staticmethod
     def _nickname(value: str, default: str = "") -> str:
@@ -410,6 +557,7 @@ class LanChatStore:
         last_seen = float(row["last_seen"])
         return {
             "id": row["id"],
+            "feishuUserId": row["feishu_user_id"],
             "nickname": row["nickname"],
             "avatarUrl": f"/api/lan-chat/avatars/{row['id']}?v={row['avatar_status']}",
             "avatarColor": row["avatar_color"],
