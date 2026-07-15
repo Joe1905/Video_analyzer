@@ -201,6 +201,7 @@ class LanChatStore:
         token_hash = self._token_hash(device_token)
         now = time.time()
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
                 "SELECT * FROM users WHERE device_token_hash = ?", (token_hash,)
             ).fetchone()
@@ -208,6 +209,7 @@ class LanChatStore:
             if row is None:
                 user_id = uuid.uuid4().hex[:16]
                 clean_name = self._nickname(nickname, default=f"访客-{token_hash[:4].upper()}")
+                self._require_nickname_available(conn, clean_name)
                 avatar_status = "pending" if self._avatar_configured() else "fallback"
                 conn.execute(
                     """INSERT INTO users
@@ -324,11 +326,13 @@ class LanChatStore:
         legacy_token_hash = hashlib.sha256(secrets.token_bytes(32)).hexdigest()
         avatar_status = "pending" if self._avatar_configured() else "fallback"
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             owner = conn.execute(
                 "SELECT id FROM feishu_users WHERE id = ? AND active = 1", (owner_id,)
             ).fetchone()
             if owner is None:
                 raise LanChatError("飞书用户不存在", 404)
+            self._require_nickname_available(conn, clean_name)
             conn.execute(
                 """INSERT INTO users
                    (id, device_token_hash, feishu_user_id, nickname, avatar_color, avatar_status,
@@ -391,6 +395,8 @@ class LanChatStore:
         current = self.authenticate(device_token)
         clean_name = self._nickname(nickname)
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._require_nickname_available(conn, clean_name, current["id"])
             conn.execute("UPDATE users SET nickname = ? WHERE id = ?", (clean_name, current["id"]))
             row = conn.execute("SELECT * FROM users WHERE id = ?", (current["id"],)).fetchone()
         return self._public_user(row)
@@ -680,6 +686,22 @@ class LanChatStore:
         if not nickname or len(nickname) > 24:
             raise LanChatError("昵称需要 1-24 个字符")
         return nickname
+
+    @staticmethod
+    def _nickname_key(value: str) -> str:
+        return " ".join(str(value or "").split()).casefold()
+
+    def _require_nickname_available(
+        self, conn: sqlite3.Connection, nickname: str, exclude_user_id: str = ""
+    ) -> None:
+        nickname_key = self._nickname_key(nickname)
+        rows = conn.execute("SELECT id, nickname FROM users").fetchall()
+        if any(
+            str(row["id"]) != exclude_user_id
+            and self._nickname_key(row["nickname"]) == nickname_key
+            for row in rows
+        ):
+            raise LanChatError("昵称已被使用，请换一个", 409)
 
     @staticmethod
     def _public_user(row: sqlite3.Row) -> dict[str, Any]:
