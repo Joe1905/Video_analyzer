@@ -1,6 +1,5 @@
 services:
   analyzer:
-    image: short-video-analyzer-dev:latest
     volumes:
       - ./videos-dev:/workspace/videos
       - ./output-dev:/workspace/output
@@ -10,7 +9,6 @@ services:
       HOT_VIDEO_REPORT_SCHEDULER_ENABLED: "0"
 
   web:
-    image: short-video-analyzer-dev:latest
     environment:
       WEB_PORT: ${WEB_PORT:-4003}
       LAN_HOST: ${LAN_HOST:-192.168.1.254}
