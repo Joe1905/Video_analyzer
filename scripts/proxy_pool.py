@@ -242,6 +242,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             enabled INTEGER NOT NULL DEFAULT 0,
             daily_time TEXT NOT NULL DEFAULT '03:00',
             max_videos INTEGER NOT NULL DEFAULT 20,
+            feishu_target_json TEXT NOT NULL DEFAULT '{}',
             last_scheduled_date TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
@@ -253,6 +254,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             trigger_type TEXT NOT NULL DEFAULT 'manual',
             schedule_date TEXT NOT NULL DEFAULT '',
             max_videos INTEGER NOT NULL DEFAULT 20,
+            feishu_target_json TEXT NOT NULL DEFAULT '{}',
             status TEXT NOT NULL DEFAULT 'queued',
             stage TEXT NOT NULL DEFAULT '',
             attempt_count INTEGER NOT NULL DEFAULT 0,
@@ -281,6 +283,11 @@ def init_db(conn: sqlite3.Connection) -> None:
             collected_at TEXT NOT NULL,
             retention_complete INTEGER NOT NULL DEFAULT 0,
             payload_json TEXT NOT NULL DEFAULT '{}',
+            feishu_target_json TEXT NOT NULL DEFAULT '{}',
+            feishu_record_id TEXT NOT NULL DEFAULT '',
+            feishu_sync_status TEXT NOT NULL DEFAULT '',
+            feishu_sync_error TEXT NOT NULL DEFAULT '',
+            feishu_synced_at TEXT NOT NULL DEFAULT '',
             UNIQUE(job_id, video_id)
         );
         CREATE INDEX IF NOT EXISTS idx_collect_results_account ON collect_results(account_id, collected_at DESC);
@@ -345,6 +352,22 @@ def init_db(conn: sqlite3.Connection) -> None:
                 raise
     if "manual_publish" not in existing_publish_cols:
         conn.execute("ALTER TABLE publish_jobs ADD COLUMN manual_publish INTEGER NOT NULL DEFAULT 0")
+    existing_collect_setting_cols = {row[1] for row in conn.execute("PRAGMA table_info(collect_settings)")}
+    if "feishu_target_json" not in existing_collect_setting_cols:
+        conn.execute("ALTER TABLE collect_settings ADD COLUMN feishu_target_json TEXT NOT NULL DEFAULT '{}'")
+    existing_collect_job_cols = {row[1] for row in conn.execute("PRAGMA table_info(collect_jobs)")}
+    if "feishu_target_json" not in existing_collect_job_cols:
+        conn.execute("ALTER TABLE collect_jobs ADD COLUMN feishu_target_json TEXT NOT NULL DEFAULT '{}'")
+    existing_collect_result_cols = {row[1] for row in conn.execute("PRAGMA table_info(collect_results)")}
+    for name, definition in {
+        "feishu_target_json": "TEXT NOT NULL DEFAULT '{}'",
+        "feishu_record_id": "TEXT NOT NULL DEFAULT ''",
+        "feishu_sync_status": "TEXT NOT NULL DEFAULT ''",
+        "feishu_sync_error": "TEXT NOT NULL DEFAULT ''",
+        "feishu_synced_at": "TEXT NOT NULL DEFAULT ''",
+    }.items():
+        if name not in existing_collect_result_cols:
+            conn.execute(f"ALTER TABLE collect_results ADD COLUMN {name} {definition}")
     conn.commit()
 
 

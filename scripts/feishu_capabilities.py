@@ -64,6 +64,15 @@ class FeishuCapabilityClient:
     def update_bitable_record(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", "/v1/feishu/bitable/records/update", payload)
 
+    def list_bitable_targets(self) -> dict[str, Any]:
+        payload = self._request("GET", "/v1/feishu/bitable/write-allowlist")
+        if not isinstance(payload.get("targets"), list):
+            raise FeishuCapabilityError("飞书多维表格白名单返回格式无效")
+        return payload
+
+    def create_bitable_record(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._request("POST", "/v1/feishu/bitable/records/create", payload)
+
     def _request(
         self, method: str, path: str, payload: dict[str, Any] | None = None
     ) -> dict[str, Any]:

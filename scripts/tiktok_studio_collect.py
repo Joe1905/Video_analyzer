@@ -14,6 +14,7 @@ from urllib.parse import urljoin
 from zoneinfo import ZoneInfo
 
 import proxy_pool
+from feishu_capabilities import FeishuCapabilityClient, FeishuCapabilityError
 
 
 ROOT = Path.cwd()
@@ -39,6 +40,7 @@ STATUS_LABELS = {
 _worker_started = False
 _worker_lock = threading.Lock()
 _active_jobs: set[str] = set()
+_feishu_client = FeishuCapabilityClient(timeout=30)
 
 
 class AccountReviewRequired(RuntimeError):
@@ -85,6 +87,7 @@ def _setting_row(row: Any | None, account_id: int) -> dict[str, Any]:
         "enabled": bool(row["enabled"]) if row else False,
         "daily_time": str(row["daily_time"]) if row else DEFAULT_DAILY_TIME,
         "max_videos": int(row["max_videos"]) if row else DEFAULT_MAX_VIDEOS,
+        "feishu_target": _json_loads(row["feishu_target_json"], {}) if row else {},
         "last_scheduled_date": str(row["last_scheduled_date"]) if row else "",
         "timezone": TIMEZONE_NAME,
         "updated_at": str(row["updated_at"]) if row else "",
@@ -99,6 +102,7 @@ def _job_row(row: Any) -> dict[str, Any]:
         "trigger_type": str(row["trigger_type"]),
         "schedule_date": str(row["schedule_date"]),
         "max_videos": int(row["max_videos"]),
+        "feishu_target": _json_loads(row["feishu_target_json"], {}),
         "status": str(row["status"]),
         "status_label": STATUS_LABELS.get(str(row["status"]), str(row["status"])),
         "stage": str(row["stage"]),
@@ -128,7 +132,51 @@ def _result_row(row: Any) -> dict[str, Any]:
         "published_at": str(row["published_at"]),
         "collected_at": str(row["collected_at"]),
         "retention_complete": bool(row["retention_complete"]),
+        "feishu_target": _json_loads(row["feishu_target_json"], {}),
+        "feishu_record_id": str(row["feishu_record_id"]),
+        "feishu_sync_status": str(row["feishu_sync_status"]),
+        "feishu_sync_error": str(row["feishu_sync_error"]),
+        "feishu_synced_at": str(row["feishu_synced_at"]),
         "payload": payload,
+    }
+
+
+def list_feishu_targets() -> dict[str, Any]:
+    return _feishu_client.list_bitable_targets()
+
+
+def _target_key(target: dict[str, Any]) -> str:
+    app = _clean_text(target.get("appToken") or target.get("wikiToken"), 200)
+    table = _clean_text(target.get("tableId"), 200)
+    return f"{app}:{table}" if app and table else ""
+
+
+def _validate_feishu_target(value: Any) -> dict[str, Any]:
+    requested = value if isinstance(value, dict) else _json_loads(value, {})
+    key = _target_key(requested)
+    if not key:
+        raise ValueError("请选择采集结果要写入的飞书多维表格")
+    targets = list_feishu_targets().get("targets") or []
+    matched = next((item for item in targets if isinstance(item, dict) and _target_key(item) == key), None)
+    if not matched:
+        raise ValueError("选择的多维表格不在当前写入白名单中")
+    return {
+        "appToken": _clean_text(matched.get("appToken"), 200),
+        "wikiToken": _clean_text(matched.get("wikiToken"), 200),
+        "tableId": _clean_text(matched.get("tableId"), 200),
+        "tableName": _clean_text(matched.get("tableName"), 200),
+        "url": _clean_text(matched.get("url"), 1000),
+        "fields": [
+            {
+                "id": _clean_text(field.get("id"), 200),
+                "name": _clean_text(field.get("name"), 200),
+                "type": int(field.get("type") or 0),
+                "uiType": _clean_text(field.get("uiType"), 100),
+                "isPrimary": bool(field.get("isPrimary")),
+            }
+            for field in matched.get("fields") or []
+            if isinstance(field, dict) and _clean_text(field.get("name"), 200)
+        ],
     }
 
 
@@ -186,20 +234,23 @@ def save_settings(payload: dict[str, Any]) -> dict[str, Any]:
     enabled = 1 if payload.get("enabled") else 0
     daily_time = _validate_daily_time(payload.get("daily_time") or DEFAULT_DAILY_TIME)
     max_videos = _max_videos(payload.get("max_videos"))
+    feishu_target = _validate_feishu_target(payload.get("feishu_target"))
+    feishu_target_json = json.dumps(feishu_target, ensure_ascii=False, separators=(",", ":"))
     now = _iso()
     with proxy_pool.connect() as conn:
         _account(conn, account_id)
         conn.execute(
             """
-            INSERT INTO collect_settings (account_id, enabled, daily_time, max_videos, last_scheduled_date, created_at, updated_at)
-            VALUES (?, ?, ?, ?, '', ?, ?)
+            INSERT INTO collect_settings (account_id, enabled, daily_time, max_videos, feishu_target_json, last_scheduled_date, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, '', ?, ?)
             ON CONFLICT(account_id) DO UPDATE SET
                 enabled = excluded.enabled,
                 daily_time = excluded.daily_time,
                 max_videos = excluded.max_videos,
+                feishu_target_json = excluded.feishu_target_json,
                 updated_at = excluded.updated_at
             """,
-            (account_id, enabled, daily_time, max_videos, now, now),
+            (account_id, enabled, daily_time, max_videos, feishu_target_json, now, now),
         )
         conn.commit()
     return dashboard(account_id)
@@ -210,6 +261,7 @@ def _insert_job(
     account: Any,
     trigger_type: str,
     max_videos: int,
+    feishu_target_json: str,
     schedule_date: str = "",
     session_id: int = 0,
 ) -> str:
@@ -235,11 +287,11 @@ def _insert_job(
     conn.execute(
         """
         INSERT INTO collect_jobs (
-            id, account_id, proxy_profile_id, trigger_type, schedule_date, max_videos,
+            id, account_id, proxy_profile_id, trigger_type, schedule_date, max_videos, feishu_target_json,
             status, stage, attempt_count, next_attempt_at, session_id,
             total_videos, completed_videos, failed_videos, current_video_id,
             started_at, completed_at, last_error, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, 'queued', '', 0, '', ?, 0, 0, 0, '', '', '', '', ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', '', 0, '', ?, 0, 0, 0, '', '', '', '', ?, ?)
         """,
         (
             job_id,
@@ -248,6 +300,7 @@ def _insert_job(
             trigger_type,
             schedule_date,
             max_videos,
+            feishu_target_json,
             session_id or None,
             now,
             now,
@@ -263,12 +316,15 @@ def create_job(payload: dict[str, Any]) -> dict[str, Any]:
     with proxy_pool.connect() as conn:
         account = _account(conn, account_id)
         setting = conn.execute("SELECT * FROM collect_settings WHERE account_id = ?", (account_id,)).fetchone()
+        if not setting or not _target_key(_json_loads(setting["feishu_target_json"], {})):
+            raise ValueError("请先保存采集设置并选择写入的飞书多维表格")
         max_videos = _max_videos(payload.get("max_videos") or (setting["max_videos"] if setting else DEFAULT_MAX_VIDEOS))
         job_id = _insert_job(
             conn,
             account,
             "manual",
             max_videos,
+            str(setting["feishu_target_json"]),
             session_id=int(payload.get("observation_session_id") or 0),
         )
         conn.commit()
@@ -374,22 +430,157 @@ def _record_error(job: dict[str, Any], video_id: str, video_url: str, stage: str
         conn.commit()
 
 
+def _metric_number(value: Any) -> int | float | None:
+    raw = _clean_text(value, 80).replace(",", "")
+    match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)([KMB]?)", raw, re.I)
+    if not match:
+        return None
+    number = float(match.group(1))
+    number *= {"": 1, "K": 1_000, "M": 1_000_000, "B": 1_000_000_000}[match.group(2).upper()]
+    return int(number) if number.is_integer() else number
+
+
+def _datetime_millis(value: Any) -> int | None:
+    raw = _clean_text(value, 120)
+    if not raw:
+        return None
+    if raw.isdigit() and len(raw) >= 10:
+        number = int(raw)
+        return number if len(raw) >= 13 else number * 1000
+    parsed: datetime | None = None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        for pattern in ("%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d"):
+            try:
+                parsed = datetime.strptime(raw, pattern)
+                break
+            except ValueError:
+                continue
+    if not parsed:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=ZoneInfo(TIMEZONE_NAME))
+    return int(parsed.timestamp() * 1000)
+
+
+def _feishu_fields(target: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    account = payload.get("account") or {}
+    video = payload.get("video") or {}
+    overview = payload.get("overview") or {}
+    engagement = payload.get("engagement") or {}
+    retention = payload.get("retention") or {}
+    available = {str(field.get("name") or ""): field for field in target.get("fields") or []}
+    values = {
+        "账号名称": account.get("username") or "",
+        "发布时间": video.get("published_at") or "",
+        "24小时播放量": _metric_number(overview.get("play_count")),
+        "视频完播率": overview.get("completion_rate") or "",
+        "头3秒播放率": retention.get("0:03") or "",
+        "头6秒播放率": retention.get("0:06") or "",
+        "点赞": _metric_number(engagement.get("likes")),
+        "评论": _metric_number(engagement.get("comments")),
+        "收藏": _metric_number(engagement.get("favorites")),
+        "解析状态": "已解析" if payload.get("retention_complete") else "需人工确认",
+    }
+    mapped: dict[str, Any] = {}
+    for name, value in values.items():
+        definition = available.get(name)
+        if not definition or value is None or value == "":
+            continue
+        field_type = int(definition.get("type") or 0)
+        if field_type == 5:
+            value = _datetime_millis(value)
+        elif field_type == 1:
+            value = str(value)
+        if value is not None and value != "":
+            mapped[name] = value
+    if not mapped:
+        raise ValueError("目标多维表格没有可映射的视频统计字段")
+    return mapped
+
+
+def _set_result_sync(result_id: int, status: str, record_id: str = "", error: str = "") -> None:
+    with proxy_pool.connect() as conn:
+        conn.execute(
+            """
+            UPDATE collect_results
+            SET feishu_sync_status = ?, feishu_record_id = COALESCE(NULLIF(?, ''), feishu_record_id),
+                feishu_sync_error = ?, feishu_synced_at = ?
+            WHERE id = ?
+            """,
+            (status, record_id, _clean_text(error), _iso() if status == "synced" else "", result_id),
+        )
+        conn.commit()
+
+
+def _sync_result_to_feishu(result_id: int, job: dict[str, Any], payload: dict[str, Any]) -> None:
+    target = _json_loads(job.get("feishu_target_json"), {})
+    try:
+        fields = _feishu_fields(target, payload)
+        request = {
+            "appToken": target.get("appToken"),
+            "wikiToken": target.get("wikiToken"),
+            "tableId": target.get("tableId"),
+            "fields": fields,
+        }
+        with proxy_pool.connect() as conn:
+            current = conn.execute(
+                "SELECT feishu_record_id FROM collect_results WHERE id = ?",
+                (result_id,),
+            ).fetchone()
+            previous = conn.execute(
+                """
+                SELECT feishu_record_id, feishu_target_json
+                FROM collect_results
+                WHERE account_id = ? AND video_id = ? AND id <> ? AND feishu_record_id <> ''
+                ORDER BY collected_at DESC, id DESC
+                """,
+                (int(job["account_id"]), _clean_text((payload.get("video") or {}).get("id"), 120), result_id),
+            ).fetchall()
+        record_id = _clean_text(current["feishu_record_id"], 200) if current else ""
+        record_id = record_id or next(
+            (
+                str(row["feishu_record_id"])
+                for row in previous
+                if _target_key(_json_loads(row["feishu_target_json"], {})) == _target_key(target)
+            ),
+            "",
+        )
+        _set_result_sync(result_id, "syncing", record_id)
+        if record_id:
+            request["recordId"] = record_id
+            result = _feishu_client.update_bitable_record(request)
+        else:
+            result = _feishu_client.create_bitable_record(request)
+            record_id = _clean_text(result.get("recordId"), 200)
+        _set_result_sync(result_id, "synced", record_id)
+    except (FeishuCapabilityError, ValueError, TypeError) as exc:
+        _set_result_sync(result_id, "failed", error=str(exc))
+
+
 def _save_result(job: dict[str, Any], payload: dict[str, Any]) -> None:
     video = payload.get("video") or {}
+    target_json = str(job.get("feishu_target_json") or "{}")
     with proxy_pool.connect() as conn:
         conn.execute(
             """
             INSERT INTO collect_results (
                 job_id, account_id, video_id, video_url, title, published_at,
-                collected_at, retention_complete, payload_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                collected_at, retention_complete, payload_json, feishu_target_json,
+                feishu_sync_status, feishu_sync_error, feishu_synced_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', '', '')
             ON CONFLICT(job_id, video_id) DO UPDATE SET
                 video_url = excluded.video_url,
                 title = excluded.title,
                 published_at = excluded.published_at,
                 collected_at = excluded.collected_at,
                 retention_complete = excluded.retention_complete,
-                payload_json = excluded.payload_json
+                payload_json = excluded.payload_json,
+                feishu_target_json = excluded.feishu_target_json,
+                feishu_sync_status = 'pending',
+                feishu_sync_error = '',
+                feishu_synced_at = ''
             """,
             (
                 job["id"],
@@ -401,9 +592,16 @@ def _save_result(job: dict[str, Any], payload: dict[str, Any]) -> None:
                 payload["collected_at"],
                 1 if payload.get("retention_complete") else 0,
                 json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                target_json,
             ),
         )
+        result = conn.execute(
+            "SELECT id FROM collect_results WHERE job_id = ? AND video_id = ?",
+            (job["id"], _clean_text(video.get("id"), 120)),
+        ).fetchone()
         conn.commit()
+    if result:
+        _sync_result_to_feishu(int(result["id"]), job, payload)
 
 
 def _first_visible(locators: list[Any]) -> Any | None:
@@ -993,7 +1191,17 @@ def _schedule_daily_jobs() -> None:
                 continue
             account = _account(conn, int(setting["account_id"]))
             try:
-                _insert_job(conn, account, "daily", int(setting["max_videos"]), schedule_date=local_date)
+                target_json = str(setting["feishu_target_json"] or "{}")
+                if not _target_key(_json_loads(target_json, {})):
+                    continue
+                _insert_job(
+                    conn,
+                    account,
+                    "daily",
+                    int(setting["max_videos"]),
+                    target_json,
+                    schedule_date=local_date,
+                )
             except ValueError:
                 # Keep trying after the account becomes idle; recording the date
                 # here would silently drop today's scheduled collection.
