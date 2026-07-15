@@ -270,7 +270,8 @@ def test_fastmoss_analysis_requires_us_ranking_and_reviews() -> None:
     assert fastmoss_analysis_evidence_gaps(query, message) == []
 
     message.tool_results[1]["result"]["enough_data"] = False
-    assert fastmoss_analysis_evidence_gaps(query, message) == ["market_ranking", "us_region"]
+    message.tool_results[1]["result"].update({"data_state": "empty", "evidence_observed": True})
+    assert fastmoss_analysis_evidence_gaps(query, message) == []
 
 
 def test_fastmoss_explicit_other_region_does_not_require_us() -> None:
@@ -571,13 +572,17 @@ def test_empty_mcp_collections_are_not_enough_data() -> None:
         result({"code": 0, "message": "success", "data": {"list": [], "total": 0}}),
     )
     assert empty["enough_data"] is False
-    assert empty["suggested_next_action"] == "try_different_query"
+    assert empty["data_state"] == "empty"
+    assert empty["evidence_observed"] is True
+    assert empty["suggested_next_action"] == "answer_with_limitation"
 
     populated = normalize_prefixed_tool_result(
         "fastmoss__product_search",
         result({"code": 0, "data": {"list": [{"product_id": "123", "title": "Magnetic snake toy"}], "total": 1}}),
     )
     assert populated["enough_data"] is True
+    assert populated["data_state"] == "data"
+    assert populated["evidence_observed"] is True
     assert populated["suggested_next_action"] == "answer_from_results"
 
     for payload in (
@@ -587,6 +592,23 @@ def test_empty_mcp_collections_are_not_enough_data() -> None:
     ):
         normalized = normalize_prefixed_tool_result("fastmoss__market_category_analysis", result(payload))
         assert normalized["enough_data"] is False
+        assert normalized["data_state"] == "empty"
+
+    for key in ("videos", "shops", "creators", "skus", "rows"):
+        normalized = normalize_prefixed_tool_result("fastmoss__product_search", result({key: [], "total": 0}))
+        assert normalized["data_state"] == "empty"
+        assert normalized["evidence_observed"] is True
+
+    partial = normalize_prefixed_tool_result(
+        "fastmoss__market_category_analysis",
+        result({"category": {"category_id": 935176, "name": "Food Processors"}, "gmv": 12345, "top_products_summary": []}),
+    )
+    assert partial["data_state"] == "data"
+    assert partial["enough_data"] is True
+
+    evidence = compact_chat_tool_evidence("fastmoss__product_review_list", empty)
+    assert "接口调用成功但本轮返回空结果" in evidence
+    assert "不得推断为平台绝对不存在" in evidence
 
 
 def test_mcp_sql_error_text_is_not_evidence() -> None:
@@ -599,7 +621,9 @@ def test_mcp_sql_error_text_is_not_evidence() -> None:
     normalized = normalize_prefixed_tool_result("fastmoss__product_detail_info", raw)
     assert normalized["ok"] is False
     assert normalized["enough_data"] is False
-    assert normalized["suggested_next_action"] == "try_different_query"
+    assert normalized["data_state"] == "error"
+    assert normalized["evidence_observed"] is False
+    assert normalized["suggested_next_action"] == "answer_with_limitation"
 
 
 def test_deepseek_tool_turn_preserves_reasoning_content() -> None:
@@ -774,6 +798,143 @@ def test_sellersprite_schema_argument_normalization() -> None:
         web_app.list_mcp_bridge_tools = original
 
 
+def test_llm_router_can_select_fastmoss_playbook() -> None:
+    fallback = route_chat_intent("给我一份厨房切碎机的完整调研报告", "fastmoss")
+    route = parse_chat_intent_decision(
+        {
+            "intent": "product_research",
+            "task_depth": "analysis",
+            "playbook": "product",
+            "entity": "electric food shredder",
+            "region": "US",
+            "confidence": 0.96,
+        },
+        fallback,
+        "fastmoss",
+        "给我一份厨房切碎机的完整调研报告",
+    )
+    assert route["intent"] == "fastmoss_product"
+    assert route["task_depth"] == "workflow"
+    assert route["playbook"] == "product"
+    assert route["max_rounds"] == web_app.FASTMOSS_PLAYBOOKS["product"]["max_rounds"]
+
+
+def test_fastmoss_workflow_phases_accept_empty_and_error_attempts() -> None:
+    available = {tool_id for phases in web_app.FASTMOSS_WORKFLOW_PHASES.values() for _, tools in phases for tool_id in tools}
+    for playbook_id, phases in web_app.FASTMOSS_WORKFLOW_PHASES.items():
+        message = SimpleNamespace(tool_calls=[], tool_results=[])
+        phase = web_app.fastmoss_workflow_phase(playbook_id, message, available)
+        assert phase is not None
+        assert phase[0] == phases[0][0]
+        assert phase[1] == set(phases[0][1])
+
+    message = SimpleNamespace(tool_calls=[], tool_results=[])
+    first = web_app.fastmoss_workflow_phase("product", message, available)
+    assert first and first[1] == {"fastmoss__search_category_by_words"}
+    message.tool_results.append({
+        "tool_name": "fastmoss__search_category_by_words",
+        "result": {"ok": True, "enough_data": False, "data_state": "empty", "evidence_observed": True},
+    })
+    second = web_app.fastmoss_workflow_phase("product", message, available)
+    assert second and second[0] == "获取类目规模与趋势"
+    message.tool_results.append({
+        "tool_name": "fastmoss__market_category_analysis",
+        "result": {"ok": False, "data_state": "error", "evidence_observed": False},
+    })
+    alternative = web_app.fastmoss_workflow_phase("product", message, available)
+    assert alternative and alternative[0].endswith("（替代接口）")
+    assert alternative[1] == {"fastmoss__market_category_ranking"}
+    message.tool_results.append({
+        "tool_name": "fastmoss__market_category_ranking",
+        "result": {"ok": False, "data_state": "error", "evidence_observed": False},
+    })
+    third = web_app.fastmoss_workflow_phase("product", message, available)
+    assert third and third[0] == "获取热销与新品样本"
+
+
+def test_provider_profiles_use_aggregated_sellersprite_and_staged_fastmoss_tools() -> None:
+    selected = {
+        "system__current_time",
+        "sellersprite__keyword_research",
+        "sellersprite__market_research",
+        "sellersprite__product_research",
+        "sellersprite__asin_detail",
+        "sellersprite__asin_sales_trend",
+        "sellersprite__review",
+    }
+    message = SimpleNamespace(tool_calls=[], tool_results=[])
+    research = web_app.provider_profile_tool_ids("amazon", {"intent": "product_research"}, "electric chopper", selected, message)
+    assert "sellersprite__keyword_research" in research
+    assert "sellersprite__market_research" in research
+    assert "sellersprite__asin_detail" not in research
+    asin = web_app.provider_profile_tool_ids("amazon", {"intent": "product_research"}, "分析 B0ABCDEFGH", selected, message)
+    assert "sellersprite__asin_detail" in asin
+    assert "sellersprite__keyword_research" not in asin
+
+    fastmoss_selected = {"system__current_time", "fastmoss__search_category_by_words", "fastmoss__market_category_analysis", "fastmoss__product_detail_info"}
+    staged = web_app.provider_profile_tool_ids("fastmoss", {"playbook": "product"}, "electric chopper", fastmoss_selected, message)
+    assert staged == {"system__current_time", "fastmoss__search_category_by_words"}
+
+
+def test_region_default_only_applies_when_schema_supports_it() -> None:
+    schemas = [
+        {
+            "name": "market_category_analysis",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"filter": {"type": "object", "properties": {"category_id": {"type": "integer"}, "region": {"type": "string"}}}},
+            },
+        },
+        {
+            "name": "product_detail_info",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"filter": {"type": "object", "properties": {"product_id": {"type": "string"}}}},
+            },
+        },
+    ]
+    original = web_app.list_mcp_bridge_tools
+    web_app.list_mcp_bridge_tools = lambda _chat_type: schemas
+    try:
+        regional = web_app.apply_mcp_region_default("fastmoss", "market_category_analysis", {"filter": {"category_id": 935176}}, "US")
+        assert regional == {"filter": {"category_id": 935176, "region": "US"}}
+        no_region = web_app.apply_mcp_region_default("fastmoss", "product_detail_info", {"filter": {"product_id": "1732183167826498507"}}, "US")
+        assert no_region == {"filter": {"product_id": "1732183167826498507"}}
+    finally:
+        web_app.list_mcp_bridge_tools = original
+
+
+def test_fastmoss_deep_dive_ids_must_come_from_current_task() -> None:
+    message = SimpleNamespace(
+        tool_calls=[],
+        tool_results=[{
+            "tool_name": "fastmoss__product_search",
+            "result": {"ok": True, "mcp_data": {"products": [{"product_id": "1732183167826498507"}]}},
+        }, {
+            "tool_name": "fastmoss__search_category_by_words",
+            "result": {"ok": True, "mcp_data": {"items": [{"category_id": 935176}]}},
+        }],
+    )
+    assert web_app.fastmoss_deep_dive_call_error(
+        "fastmoss__product_detail_info", {"filter": {"product_id": "1732183167826498507"}}, "electric chopper", message
+    ) is None
+    assert "未经当前任务" in web_app.fastmoss_deep_dive_call_error(
+        "fastmoss__product_detail_info", {"filter": {"product_id": "1730819059386716431"}}, "electric chopper", message
+    )
+    assert web_app.fastmoss_deep_dive_call_error(
+        "fastmoss__market_category_analysis", {"filter": {"category_id": 935176}}, "electric chopper", message
+    ) is None
+    assert "类目 ID" in web_app.fastmoss_deep_dive_call_error(
+        "fastmoss__market_category_analysis", {"filter": {"category_id": 855944}}, "electric chopper", message
+    )
+
+
+def test_tool_call_signature_deduplicates_argument_order() -> None:
+    left = web_app.tool_call_signature("fastmoss__product_search", {"keywords": "chopper", "page": 1})
+    right = web_app.tool_call_signature("fastmoss__product_search", {"page": 1, "keywords": "chopper"})
+    assert left == right
+
+
 if __name__ == "__main__":
     test_tiktok_search_keeps_analysis_fields()
     test_amazon_keeps_product_fields()
@@ -805,5 +966,11 @@ if __name__ == "__main__":
     test_dynamic_chat_context_compresses_to_budget()
     test_tool_limit_final_context_removes_protocol_and_detects_dsml()
     test_sellersprite_schema_argument_normalization()
+    test_llm_router_can_select_fastmoss_playbook()
+    test_fastmoss_workflow_phases_accept_empty_and_error_attempts()
+    test_provider_profiles_use_aggregated_sellersprite_and_staged_fastmoss_tools()
+    test_region_default_only_applies_when_schema_supports_it()
+    test_fastmoss_deep_dive_ids_must_come_from_current_task()
+    test_tool_call_signature_deduplicates_argument_order()
     print("chat tool normalization tests passed")
 
