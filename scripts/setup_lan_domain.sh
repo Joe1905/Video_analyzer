@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-lan_domain="${LAN_DOMAIN:-聊天.local}"
+lan_domain="${LAN_DOMAIN:-tymy.local}"
 lan_ip="${LAN_IP:-192.168.1.254}"
 lan_cidr="${LAN_CIDR:-192.168.0.0/23}"
 http_port="${LAN_HTTP_PORT:-80}"

@@ -130,8 +130,8 @@ body{max-width:100vw}
 const SESSION_KEY="videoAnalyzer.lanChat.sessionToken.v2";
 const ROOM_KEY="videoAnalyzer.lanChat.activeRoom.v1";
 const READ_KEY="videoAnalyzer.lanChat.readRooms.v1";
-const CANONICAL_HOST="xn--rss932g.local";
-const CANONICAL_URL_HOST="聊天.local";
+const CANONICAL_HOST="tymy.local";
+const CANONICAL_URL_HOST="tymy.local";
 const $=id=>document.getElementById(id);
 const state={token:"",currentUser:null,users:[],rooms:[],activeRoomId:"public",messages:[],lastMessageId:0,readRooms:{},messageTimer:null,bootstrapTimer:null,loadingMessages:false,draftImage:null,preparingImage:false,selectedFeishuUser:null,loginLoading:false};
 function redirectToCanonical(){if(location.hostname.toLowerCase()===CANONICAL_HOST)return false;location.replace(`http://${CANONICAL_URL_HOST}/lan-chat`);return true}
