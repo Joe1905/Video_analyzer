@@ -6103,7 +6103,8 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     routing_text = chat_routing_text(user_text)
     route = resolve_chat_intent(session.messages, user_text, provider, api_key, api_url, model, req)
     route_intent = str(route.get("intent") or "general")
-    if route.get("entity") and not chat_query_uses_previous_entity(routing_text) and not is_chat_retry_request(routing_text):
+    if route.get("entity") and not is_chat_retry_request(routing_text):
+        inherited_entity = chat_query_uses_previous_entity(routing_text)
         latest_user_message = next((message for message in reversed(messages) if message.get("role") == "user"), None)
         messages = [message for message in messages if message.get("_context_scope") == "system"]
         if latest_user_message:
@@ -6111,8 +6112,9 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
         messages.append({
             "role": "system",
             "content": (
-                f"Current-task entity lock: {route.get('entity')}. This is a new explicit entity. "
-                "Do not reuse product, category, shop, creator, or video IDs from earlier tasks."
+                f"Current-task entity lock: {route.get('entity')}. "
+                + ("The classifier resolved this reference from recent user context. " if inherited_entity else "This is a new explicit entity. ")
+                + "Do not reuse product, category, shop, creator, or video IDs from earlier tasks."
             ),
             "_context_scope": "system",
         })
