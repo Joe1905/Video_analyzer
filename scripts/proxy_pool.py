@@ -1452,16 +1452,62 @@ def get_pool(pool_id: int) -> dict[str, Any]:
         row = conn.execute("SELECT * FROM proxy_profiles WHERE id = ?", (pool_id,)).fetchone()
         if not row:
             raise ValueError("proxy profile not found")
-        count = conn.execute("SELECT COUNT(*) AS count FROM tiktok_accounts WHERE proxy_profile_id = ?", (pool_id,)).fetchone()["count"]
-        names = [str(item["username"]) for item in conn.execute("SELECT username FROM tiktok_accounts WHERE proxy_profile_id = ? ORDER BY username", (pool_id,))]
+        count = conn.execute(
+            "SELECT COUNT(*) AS count FROM tiktok_accounts WHERE proxy_profile_id = ? AND deleted_at = ''",
+            (pool_id,),
+        ).fetchone()["count"]
+        names = [
+            str(item["username"])
+            for item in conn.execute(
+                "SELECT username FROM tiktok_accounts WHERE proxy_profile_id = ? AND deleted_at = '' ORDER BY username",
+                (pool_id,),
+            )
+        ]
         return _row_to_pool(row, int(count), names)
 
 
 def delete_pool(pool_id: int) -> dict[str, Any]:
     with connect() as conn:
-        count = conn.execute("SELECT COUNT(*) AS count FROM tiktok_accounts WHERE proxy_profile_id = ?", (pool_id,)).fetchone()["count"]
+        pool = conn.execute("SELECT id FROM proxy_profiles WHERE id = ?", (pool_id,)).fetchone()
+        if not pool:
+            raise ValueError("proxy profile not found")
+
+        _active_sessions(conn)
+        active_session = conn.execute(
+            "SELECT id FROM browser_sessions WHERE proxy_profile_id = ? AND status IN ('starting','running','observing') LIMIT 1",
+            (pool_id,),
+        ).fetchone()
+        if active_session:
+            raise ValueError("代理仍有运行中的浏览器或观测通道，请先释放")
+
+        count = conn.execute(
+            "SELECT COUNT(*) AS count FROM tiktok_accounts WHERE proxy_profile_id = ? AND deleted_at = ''",
+            (pool_id,),
+        ).fetchone()["count"]
         if int(count):
-            raise ValueError("Cannot delete a proxy profile with bound accounts")
+            raise ValueError("代理仍绑定账号，请先删除或迁移账号")
+
+        archived_account = conn.execute(
+            """
+            SELECT a.id
+            FROM tiktok_accounts AS a
+            WHERE a.proxy_profile_id = ? AND a.deleted_at <> ''
+              AND (
+                EXISTS (SELECT 1 FROM publish_assets WHERE account_id = a.id)
+                OR EXISTS (SELECT 1 FROM publish_jobs WHERE account_id = a.id)
+                OR EXISTS (SELECT 1 FROM collect_jobs WHERE account_id = a.id)
+                OR EXISTS (SELECT 1 FROM collect_results WHERE account_id = a.id)
+                OR EXISTS (SELECT 1 FROM collect_errors WHERE account_id = a.id)
+              )
+            LIMIT 1
+            """,
+            (pool_id,),
+        ).fetchone()
+        if archived_account:
+            raise ValueError("代理关联的已删除账号仍有发布或采集记录，不能删除")
+
+        conn.execute("DELETE FROM browser_sessions WHERE proxy_profile_id = ?", (pool_id,))
+        conn.execute("DELETE FROM tiktok_accounts WHERE proxy_profile_id = ? AND deleted_at <> ''", (pool_id,))
         conn.execute("DELETE FROM proxy_profiles WHERE id = ?", (pool_id,))
         conn.commit()
     return list_state()
