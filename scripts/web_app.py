@@ -6095,8 +6095,18 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
 
     route = resolve_chat_intent(session.messages, user_text, provider, api_key, api_url, model, req)
     route_intent = str(route.get("intent") or "general")
-    if route.get("entity") and not is_chat_retry_request(routing_text):
+    scoped_provider_task = (
+        provider in {"amazon", "fastmoss"}
+        and str(route.get("task_depth") or "") in {"analysis", "workflow"}
+        and not is_chat_retry_request(routing_text)
+    )
+    if scoped_provider_task:
         inherited_entity = chat_query_uses_previous_entity(routing_text)
+        recent_user_questions = [
+            chat_routing_text(str(message.content or ""))[:600]
+            for message in session.messages
+            if message.role == "user" and chat_routing_text(str(message.content or ""))
+        ][-4:-1]
         latest_user_message = next((message for message in reversed(messages) if message.get("role") == "user"), None)
         messages = [message for message in messages if message.get("_context_scope") == "system"]
         if latest_user_message:
@@ -6104,9 +6114,14 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
         messages.append({
             "role": "system",
             "content": (
-                f"Current-task entity lock: {route.get('entity')}. "
-                + ("The classifier resolved this reference from recent user context. " if inherited_entity else "This is a new explicit entity. ")
-                + "Do not reuse product, category, shop, creator, or video IDs from earlier tasks."
+                f"Current-task entity: {route.get('entity') or 'not explicitly resolved'}. "
+                + (
+                    "Use these recent user questions only to resolve the referenced entity, never as numeric or tool evidence: "
+                    + json.dumps(recent_user_questions, ensure_ascii=False)
+                    if inherited_entity and recent_user_questions else
+                    "Treat the current question as a new explicit task."
+                )
+                + " Do not reuse assistant claims, product/category/shop/creator/video IDs, or tool results from earlier tasks."
             ),
             "_context_scope": "system",
         })
