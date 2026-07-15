@@ -4322,6 +4322,15 @@ def parse_deepseek_dsml_tool_calls(content: str, allowed_tool_ids: set[str]) -> 
     return calls
 
 
+def deepseek_tool_protocol_present(message: dict[str, Any] | None) -> bool:
+    payload = message or {}
+    if payload.get("tool_calls"):
+        return True
+    text = str(payload.get("content") or "").replace("｜", "|")
+    text = re.sub(r"(<\s*/?)\s*\|\s*\|\s*DSML\s*\|\s*\|?\s*", r"\1", text)
+    return bool(re.search(r"<\s*/?\s*(?:tool_calls|function_calls|invoke|parameter)\b", text, re.IGNORECASE))
+
+
 def build_deepseek_tool_assistant_message(
     response_message: dict[str, Any],
     tool_calls: list[dict[str, Any]],
@@ -4856,6 +4865,69 @@ def build_tool_catalog(provider: str) -> dict[str, Any]:
     }
 
 
+def _mcp_tool_input_schema(chat_type: str, name: str) -> dict[str, Any] | None:
+    for tool in list_mcp_bridge_tools(chat_type):
+        if str(tool.get("name") or "") != name:
+            continue
+        schema = tool.get("inputSchema") or tool.get("parameters")
+        return schema if isinstance(schema, dict) else None
+    return None
+
+
+def _missing_schema_required_fields(schema: dict[str, Any], value: Any, prefix: str = "") -> list[str]:
+    if not isinstance(value, dict):
+        return [prefix.rstrip(".") or "arguments"]
+    missing: list[str] = []
+    properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+    for field in schema.get("required") or []:
+        if field not in value or value.get(field) is None:
+            missing.append(f"{prefix}{field}")
+    for field, child_schema in properties.items():
+        if field not in value or not isinstance(child_schema, dict) or child_schema.get("type") != "object":
+            continue
+        missing.extend(_missing_schema_required_fields(child_schema, value.get(field), f"{prefix}{field}."))
+    return missing
+
+
+def normalize_mcp_tool_arguments(
+    chat_type: str,
+    name: str,
+    args: dict[str, Any],
+) -> tuple[dict[str, Any], str | None]:
+    schema = _mcp_tool_input_schema(chat_type, name)
+    if not schema:
+        return dict(args or {}), None
+    normalized = dict(args or {})
+    properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+    action: str | None = None
+
+    nested_request = normalized.get("request")
+    if (
+        "request" not in properties
+        and set(normalized) == {"request"}
+        and isinstance(nested_request, dict)
+        and (not properties or set(nested_request).issubset(properties))
+    ):
+        normalized = dict(nested_request)
+        action = "unwrapped request object to match flat schema"
+    elif (
+        "request" in properties
+        and "request" in (schema.get("required") or [])
+        and "request" not in normalized
+        and normalized
+    ):
+        request_schema = properties.get("request") if isinstance(properties.get("request"), dict) else {}
+        request_properties = request_schema.get("properties") if isinstance(request_schema.get("properties"), dict) else {}
+        if request_properties and set(normalized).issubset(request_properties):
+            normalized = {"request": normalized}
+            action = "wrapped flat arguments in request object"
+
+    missing = _missing_schema_required_fields(schema, normalized)
+    if missing:
+        raise ValueError(f"Invalid arguments for {name}: missing required field(s): {', '.join(missing)}")
+    return normalized, action
+
+
 def execute_prefixed_tool(tool_id: str, args: dict[str, Any]) -> dict[str, Any]:
     domain, name = split_prefixed_tool_id(tool_id)
     started = time.monotonic()
@@ -4864,7 +4936,12 @@ def execute_prefixed_tool(tool_id: str, args: dict[str, Any]) -> dict[str, Any]:
             return execute_tool(name, args)
         if domain in {"sellersprite", "fastmoss"}:
             chat_type = "sellersprite" if domain == "sellersprite" else "fastmoss"
-            result = mcp_bridge_request(chat_type, "tools/call", {"name": name, "arguments": args or {}})
+            normalized_args = args or {}
+            if domain == "sellersprite":
+                normalized_args, normalization = normalize_mcp_tool_arguments(chat_type, name, normalized_args)
+                if normalization:
+                    print(f"[CHAT] normalized {tool_id} arguments: {normalization}", flush=True)
+            result = mcp_bridge_request(chat_type, "tools/call", {"name": name, "arguments": normalized_args})
             return {"ok": True, "elapsed": round(time.monotonic() - started, 3), "data": result}
         return {"ok": False, "elapsed": round(time.monotonic() - started, 3), "error": f"Unknown tool domain: {domain}"}
     except Exception as exc:
@@ -5256,6 +5333,41 @@ def compact_chat_tool_evidence(tool_name: str, result: Any, max_chars: int | Non
         evidence["data"] = payload
     encoded = json.dumps(_compact_chat_evidence_value(evidence), ensure_ascii=False, separators=(",", ":"))
     return _truncate_chat_context_text(encoded, limit)
+
+
+def build_tool_limit_final_context(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    evidence = [
+        {
+            "tool_call_id": message.get("tool_call_id"),
+            "evidence": _truncate_chat_context_text(message.get("content"), 1200),
+        }
+        for message in messages
+        if message.get("_context_scope") == "current" and message.get("role") == "tool"
+    ]
+    working = [
+        dict(message) for message in messages
+        if not (
+            message.get("_context_scope") == "current"
+            and (message.get("role") == "tool" or bool(message.get("tool_calls")))
+        )
+    ]
+    if evidence:
+        working.append({
+            "role": "system",
+            "content": _truncate_chat_context_text(
+                json.dumps({
+                    "type": "completed_tool_collection",
+                    "instruction": (
+                        "The tool-call limit has been reached. Use this evidence to produce the final Simplified Chinese answer. "
+                        "Do not request or describe any additional tool calls."
+                    ),
+                    "evidence": evidence,
+                }, ensure_ascii=False, separators=(",", ":")),
+                48000,
+            ),
+            "_context_scope": "system",
+        })
+    return working
 
 
 def _chat_tool_counts(tool_calls: list[dict] | None) -> str:
@@ -5720,6 +5832,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             if enough_data:
                 tools = []
 
+    unexecutable_protocol_retries = 0
     for _ in range(max_tool_rounds):
         try:
             request_messages, request_tools, context_stats = manage_chat_context(messages, tools)
@@ -5812,6 +5925,33 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 continue
 
             content = msg.get("content", "")
+            if deepseek_tool_protocol_present(msg):
+                if unexecutable_protocol_retries < 1:
+                    unexecutable_protocol_retries += 1
+                    print("[CHAT] rejected unexecutable tool protocol; retrying once", flush=True)
+                    messages.append({
+                        "role": "assistant",
+                        "content": "[The previous response contained an unexecutable tool protocol and was rejected.]",
+                        "_context_scope": "current",
+                    })
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            "Return a valid native tool call using one of the currently exposed function names. Do not emit DSML or textual tool syntax."
+                            if request_tools
+                            else
+                            "No tools are available. Return only the final user-facing answer from the retained evidence; do not emit DSML or any tool syntax."
+                        ),
+                        "_context_scope": "system",
+                    })
+                    continue
+                fallback = (
+                    "模型连续返回了无法执行的工具协议，系统已拦截异常内容。"
+                    "请发送“继续”重试；已完成的工具结果会被保留。"
+                )
+                store.update_message(session, assistant_msg, fallback, status="error")
+                store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": fallback})
+                return
             evidence_gaps = fastmoss_analysis_evidence_gaps(routing_text, assistant_msg, route) if provider == "fastmoss" else []
             if evidence_gaps:
                 print(f"[CHAT] FastMoss evidence incomplete: {','.join(evidence_gaps)}; requesting more tool data", flush=True)
@@ -5864,57 +6004,81 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
         store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": fallback})
         return
     try:
-        messages.append({
-            "role": "system",
-            "content": (
-                "The tool-call round limit has been reached. Do not call any more tools. "
-                "Use the tool results already present in the conversation and produce the best possible Simplified Chinese answer now. "
-                "If some data is missing, state the limitation briefly instead of failing."
-            ),
-            "_context_scope": "system",
-        })
-        request_messages, _, context_stats = manage_chat_context(messages, [])
-        if context_stats["over_budget"]:
-            raise RuntimeError(
-                f"Chat context remains over budget after compression: "
-                f"{context_stats['final_tokens']}/{context_stats['max_tokens']} estimated tokens"
-            )
-        payload = {"model": model, "messages": request_messages, "tools": None, "temperature": 0.2}
-        payload_str = json.dumps(payload, ensure_ascii=False)
-        print(
-            f"[CHAT] DeepSeek final-after-tool-limit request: {len(request_messages)} msgs, {len(payload_str)} bytes, "
-            f"estimated_tokens={context_stats['final_tokens']}/{context_stats['max_tokens']}",
-            flush=True,
-        )
-        request_started = time.monotonic()
-        resp = req.post(
-            api_url.rstrip("/") + "/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            data=payload_str.encode("utf-8"),
-            timeout=120,
-        )
-        if resp.status_code >= 400:
-            print(f"[CHAT] DeepSeek final {resp.status_code}: {resp.text[:500]}", flush=True)
-        resp.raise_for_status()
-        body = resp.json()
-        record_api_call(
-            "deepseek",
-            "chat_final_after_tool_limit",
-            {
-                "api_url": api_url.rstrip("/") + "/chat/completions",
+        final_context = build_tool_limit_final_context(messages)
+        for attempt in range(2):
+            attempt_messages = [dict(message) for message in final_context]
+            attempt_messages.append({
+                "role": "system",
+                "content": (
+                    "The tool-call round limit has been reached. Produce the final Simplified Chinese answer from the completed evidence now. "
+                    "Do not call tools and do not output DSML, XML, tool_calls, function_calls, invoke, parameter, JSON tool requests, or a plan to call tools. "
+                    "If evidence is incomplete, state the limitation briefly. Return only the user-facing answer."
+                    if attempt == 0
+                    else
+                    "Your previous final response was rejected because it contained a tool protocol or was empty. "
+                    "Return only a plain Simplified Chinese report based on the supplied evidence. Never emit tool syntax or request more data."
+                ),
+                "_context_scope": "system",
+            })
+            request_messages, _, context_stats = manage_chat_context(attempt_messages, [])
+            if context_stats["over_budget"]:
+                raise RuntimeError(
+                    f"Chat context remains over budget after compression: "
+                    f"{context_stats['final_tokens']}/{context_stats['max_tokens']} estimated tokens"
+                )
+            endpoint = "chat_final_after_tool_limit" if attempt == 0 else "chat_final_protocol_retry"
+            payload = {
                 "model": model,
-                "payload_sha256": __import__("hashlib").sha256(payload_str.encode("utf-8")).hexdigest(),
-                "message_count": len(request_messages),
-                "tool_count": 0,
-                "provider": provider,
-                "context": context_stats,
-            },
-            body,
-            elapsed_ms=int((time.monotonic() - request_started) * 1000),
+                "messages": request_messages,
+                "tools": None,
+                "temperature": 0.2 if attempt == 0 else 0,
+            }
+            payload_str = json.dumps(payload, ensure_ascii=False)
+            print(
+                f"[CHAT] DeepSeek {endpoint} request: {len(request_messages)} msgs, {len(payload_str)} bytes, "
+                f"estimated_tokens={context_stats['final_tokens']}/{context_stats['max_tokens']}",
+                flush=True,
+            )
+            request_started = time.monotonic()
+            resp = req.post(
+                api_url.rstrip("/") + "/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                data=payload_str.encode("utf-8"),
+                timeout=120,
+            )
+            if resp.status_code >= 400:
+                print(f"[CHAT] DeepSeek final {resp.status_code}: {resp.text[:500]}", flush=True)
+            resp.raise_for_status()
+            body = resp.json()
+            record_api_call(
+                "deepseek",
+                endpoint,
+                {
+                    "api_url": api_url.rstrip("/") + "/chat/completions",
+                    "model": model,
+                    "payload_sha256": __import__("hashlib").sha256(payload_str.encode("utf-8")).hexdigest(),
+                    "message_count": len(request_messages),
+                    "tool_count": 0,
+                    "provider": provider,
+                    "context": context_stats,
+                },
+                body,
+                elapsed_ms=int((time.monotonic() - request_started) * 1000),
+            )
+            response_message = body["choices"][0]["message"]
+            content = str(response_message.get("content") or "")
+            if content.strip() and not deepseek_tool_protocol_present(response_message):
+                store.update_message(session, assistant_msg, content, status="done")
+                store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": content})
+                return
+            print(f"[CHAT] rejected {endpoint} response: tool protocol or empty content", flush=True)
+
+        fallback = (
+            "工具数据已经收集完成，但模型连续返回了非用户答案格式，系统已拦截工具协议内容。"
+            "本轮结果没有原样展示；请发送“继续”，系统会复用现有工具结果重新生成总结。"
         )
-        content = body["choices"][0]["message"].get("content", "")
-        store.update_message(session, assistant_msg, content, status="done")
-        store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": content})
+        store.update_message(session, assistant_msg, fallback, status="error")
+        store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": fallback})
         return
     except Exception as exc:
         print(f"[CHAT] DeepSeek final-after-tool-limit error: {exc}", flush=True)
