@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import html
 import json
@@ -30,6 +31,13 @@ AVATAR_COLORS = (
     "#D9825B",
     "#5A7D9A",
 )
+MESSAGE_IMAGE_MAX_BYTES = 5 * 1024 * 1024
+MESSAGE_IMAGE_TYPES = {
+    "jpg": "image/jpeg",
+    "png": "image/png",
+    "gif": "image/gif",
+    "webp": "image/webp",
+}
 
 
 class LanChatError(Exception):
@@ -39,15 +47,22 @@ class LanChatError(Exception):
 
 
 class LanChatStore:
-    def __init__(self, db_path: Path, avatar_dir: Path | None = None):
+    def __init__(
+        self,
+        db_path: Path,
+        avatar_dir: Path | None = None,
+        media_dir: Path | None = None,
+    ):
         self.db_path = Path(db_path)
         self.avatar_dir = Path(avatar_dir or self.db_path.parent / "lan_chat_avatars")
+        self.media_dir = Path(media_dir or self.db_path.parent / "lan_chat_media")
         self._avatar_lock = threading.Lock()
         self._avatar_jobs: set[str] = set()
 
     def initialize(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.avatar_dir.mkdir(parents=True, exist_ok=True)
+        self.media_dir.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.execute("PRAGMA journal_mode = WAL")
             conn.executescript(
@@ -85,6 +100,8 @@ class LanChatStore:
                     room_id TEXT NOT NULL,
                     sender_id TEXT NOT NULL,
                     content TEXT NOT NULL,
+                    image_filename TEXT,
+                    image_mime_type TEXT,
                     created_at REAL NOT NULL,
                     FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE CASCADE,
                     FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE CASCADE
@@ -95,6 +112,13 @@ class LanChatStore:
                     ON room_members(user_id, room_id);
                 """
             )
+            message_columns = {
+                str(row["name"]) for row in conn.execute("PRAGMA table_info(messages)").fetchall()
+            }
+            if "image_filename" not in message_columns:
+                conn.execute("ALTER TABLE messages ADD COLUMN image_filename TEXT")
+            if "image_mime_type" not in message_columns:
+                conn.execute("ALTER TABLE messages ADD COLUMN image_mime_type TEXT")
             now = time.time()
             conn.execute(
                 """INSERT OR IGNORE INTO rooms
@@ -278,28 +302,70 @@ class LanChatStore:
         messages = [self._message_payload(row, current["id"]) for row in rows]
         return {"messages": messages, "lastId": messages[-1]["id"] if messages else after_id}
 
-    def send_message(self, device_token: str, room_id: str, content: str) -> dict[str, Any]:
+    def send_message(
+        self,
+        device_token: str,
+        room_id: str,
+        content: str,
+        image_data: str = "",
+    ) -> dict[str, Any]:
         current = self.authenticate(device_token)
         clean_content = str(content or "").strip()
-        if not clean_content:
-            raise LanChatError("消息不能为空")
         if len(clean_content) > 4000:
             raise LanChatError("消息不能超过 4000 个字符")
+        image = self._decode_message_image(image_data)
+        if not clean_content and image is None:
+            raise LanChatError("消息或图片不能为空")
         now = time.time()
-        with self._connect() as conn:
-            self._require_room_access(conn, room_id, current["id"])
-            cursor = conn.execute(
-                "INSERT INTO messages(room_id, sender_id, content, created_at) VALUES (?, ?, ?, ?)",
-                (room_id, current["id"], clean_content, now),
-            )
-            conn.execute("UPDATE rooms SET updated_at = ? WHERE id = ?", (now, room_id))
-            row = conn.execute(
-                """SELECT m.*, u.nickname, u.avatar_color, u.avatar_status
-                   FROM messages m JOIN users u ON u.id = m.sender_id
-                   WHERE m.id = ?""",
-                (cursor.lastrowid,),
-            ).fetchone()
+        image_filename = ""
+        image_mime_type = ""
+        if image is not None:
+            image_bytes, image_mime_type, extension = image
+            image_filename = f"{uuid.uuid4().hex}.{extension}"
+            (self.media_dir / image_filename).write_bytes(image_bytes)
+        try:
+            with self._connect() as conn:
+                self._require_room_access(conn, room_id, current["id"])
+                cursor = conn.execute(
+                    """INSERT INTO messages
+                       (room_id, sender_id, content, image_filename, image_mime_type, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (
+                        room_id,
+                        current["id"],
+                        clean_content,
+                        image_filename or None,
+                        image_mime_type or None,
+                        now,
+                    ),
+                )
+                conn.execute("UPDATE rooms SET updated_at = ? WHERE id = ?", (now, room_id))
+                row = conn.execute(
+                    """SELECT m.*, u.nickname, u.avatar_color, u.avatar_status
+                       FROM messages m JOIN users u ON u.id = m.sender_id
+                       WHERE m.id = ?""",
+                    (cursor.lastrowid,),
+                ).fetchone()
+        except Exception:
+            if image_filename:
+                (self.media_dir / image_filename).unlink(missing_ok=True)
+            raise
         return self._message_payload(row, current["id"])
+
+    def message_image_bytes(self, filename: str) -> tuple[bytes, str]:
+        clean_name = str(filename or "").strip().lower()
+        stem, separator, extension = clean_name.rpartition(".")
+        if (
+            not separator
+            or len(stem) != 32
+            or extension not in MESSAGE_IMAGE_TYPES
+            or any(char not in "0123456789abcdef" for char in stem)
+        ):
+            raise LanChatError("图片不存在", 404)
+        path = (self.media_dir / clean_name).resolve()
+        if path.parent != self.media_dir.resolve() or not path.is_file():
+            raise LanChatError("图片不存在", 404)
+        return path.read_bytes(), MESSAGE_IMAGE_TYPES[extension]
 
     def avatar_bytes(self, user_id: str) -> tuple[bytes, str]:
         with self._connect() as conn:
@@ -367,7 +433,7 @@ class LanChatStore:
             other = next((item for item in members if item["id"] != current_user_id), None)
             name = other["nickname"] if other is not None else "私信"
         latest = conn.execute(
-            """SELECT m.content, m.created_at, u.nickname
+            """SELECT m.content, m.image_filename, m.created_at, u.nickname
                FROM messages m JOIN users u ON u.id = m.sender_id
                WHERE m.room_id = ? ORDER BY m.id DESC LIMIT 1""",
             (room["id"],),
@@ -383,6 +449,7 @@ class LanChatStore:
             "latestMessage": (
                 {
                     "content": latest["content"],
+                    "hasImage": bool(latest["image_filename"]),
                     "nickname": latest["nickname"],
                     "createdAt": float(latest["created_at"]),
                 }
@@ -398,6 +465,7 @@ class LanChatStore:
 
     @staticmethod
     def _message_payload(row: sqlite3.Row, current_user_id: str) -> dict[str, Any]:
+        image_filename = str(row["image_filename"] or "")
         return {
             "id": int(row["id"]),
             "roomId": row["room_id"],
@@ -405,9 +473,39 @@ class LanChatStore:
             "senderName": row["nickname"],
             "senderAvatarUrl": f"/api/lan-chat/avatars/{row['sender_id']}",
             "content": row["content"],
+            "imageUrl": f"/api/lan-chat/media/{image_filename}" if image_filename else "",
             "createdAt": float(row["created_at"]),
             "isMine": row["sender_id"] == current_user_id,
         }
+
+    @staticmethod
+    def _decode_message_image(image_data: str) -> tuple[bytes, str, str] | None:
+        value = str(image_data or "").strip()
+        if not value:
+            return None
+        if "," in value:
+            header, value = value.split(",", 1)
+            if not header.lower().startswith("data:image/"):
+                raise LanChatError("图片数据无效")
+        if len(value) > (MESSAGE_IMAGE_MAX_BYTES * 4 // 3) + 8:
+            raise LanChatError("图片不能超过 5MB", 413)
+        try:
+            payload = base64.b64decode(value, validate=True)
+        except (binascii.Error, ValueError, TypeError) as exc:
+            raise LanChatError("图片数据无效") from exc
+        if not payload or len(payload) > MESSAGE_IMAGE_MAX_BYTES:
+            raise LanChatError("图片不能超过 5MB", 413)
+        if payload.startswith(b"\xff\xd8\xff"):
+            extension = "jpg"
+        elif payload.startswith(b"\x89PNG\r\n\x1a\n"):
+            extension = "png"
+        elif payload.startswith((b"GIF87a", b"GIF89a")):
+            extension = "gif"
+        elif len(payload) >= 12 and payload[:4] == b"RIFF" and payload[8:12] == b"WEBP":
+            extension = "webp"
+        else:
+            raise LanChatError("仅支持 JPG、PNG、GIF 或 WebP 图片")
+        return payload, MESSAGE_IMAGE_TYPES[extension], extension
 
     @staticmethod
     def _require_room_access(

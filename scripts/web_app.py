@@ -8234,12 +8234,14 @@ def _lan_chat_token(handler: BaseHTTPRequestHandler) -> str:
     return handler.headers.get("X-Lan-Chat-Token", "").strip()
 
 
-def _lan_chat_request_json(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+def _lan_chat_request_json(
+    handler: BaseHTTPRequestHandler, max_bytes: int = 65536
+) -> dict[str, Any]:
     try:
         length = int(handler.headers.get("Content-Length", "0") or "0")
     except ValueError as exc:
         raise LanChatError("请求长度无效") from exc
-    if length < 0 or length > 65536:
+    if length < 0 or length > max_bytes:
         raise LanChatError("请求内容过大", 413)
     try:
         payload = json.loads(handler.rfile.read(length).decode("utf-8")) if length else {}
@@ -8259,6 +8261,13 @@ def handle_lan_chat_get(handler: BaseHTTPRequestHandler, parsed) -> bool:
         avatar_match = re.fullmatch(r"/api/lan-chat/avatars/([0-9a-f]{16})", path)
         if avatar_match:
             body, content_type = lan_chat_store.avatar_bytes(avatar_match.group(1))
+            binary_response(handler, HTTPStatus.OK, body, content_type)
+            return True
+        media_match = re.fullmatch(
+            r"/api/lan-chat/media/([0-9a-f]{32}\.(?:jpg|png|gif|webp))", path
+        )
+        if media_match:
+            body, content_type = lan_chat_store.message_image_bytes(media_match.group(1))
             binary_response(handler, HTTPStatus.OK, body, content_type)
             return True
         message_match = re.fullmatch(r"/api/lan-chat/rooms/([^/]+)/messages", path)
@@ -8285,7 +8294,12 @@ def handle_lan_chat_post(handler: BaseHTTPRequestHandler, parsed) -> bool:
     if not path.startswith("/api/lan-chat/"):
         return False
     try:
-        payload = _lan_chat_request_json(handler)
+        is_message_request = bool(
+            re.fullmatch(r"/api/lan-chat/rooms/([^/]+)/messages", path)
+        )
+        payload = _lan_chat_request_json(
+            handler, max_bytes=8 * 1024 * 1024 if is_message_request else 65536
+        )
         if path == "/api/lan-chat/register":
             user, created = lan_chat_store.register(
                 str(payload.get("deviceToken") or ""), str(payload.get("nickname") or "")
@@ -8322,6 +8336,7 @@ def handle_lan_chat_post(handler: BaseHTTPRequestHandler, parsed) -> bool:
                 _lan_chat_token(handler),
                 unquote(message_match.group(1)),
                 str(payload.get("content") or ""),
+                str(payload.get("imageData") or ""),
             )
             json_response(handler, HTTPStatus.CREATED, {"message": message})
             return True
