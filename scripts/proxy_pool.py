@@ -237,6 +237,65 @@ def init_db(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_publish_jobs_account ON publish_jobs(account_id, created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_publish_jobs_due ON publish_jobs(status, scheduled_at);
+        CREATE TABLE IF NOT EXISTS collect_settings (
+            account_id INTEGER PRIMARY KEY REFERENCES tiktok_accounts(id) ON DELETE CASCADE,
+            enabled INTEGER NOT NULL DEFAULT 0,
+            daily_time TEXT NOT NULL DEFAULT '03:00',
+            max_videos INTEGER NOT NULL DEFAULT 20,
+            last_scheduled_date TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS collect_jobs (
+            id TEXT PRIMARY KEY,
+            account_id INTEGER NOT NULL REFERENCES tiktok_accounts(id) ON DELETE RESTRICT,
+            proxy_profile_id INTEGER NOT NULL REFERENCES proxy_profiles(id) ON DELETE RESTRICT,
+            trigger_type TEXT NOT NULL DEFAULT 'manual',
+            schedule_date TEXT NOT NULL DEFAULT '',
+            max_videos INTEGER NOT NULL DEFAULT 20,
+            status TEXT NOT NULL DEFAULT 'queued',
+            stage TEXT NOT NULL DEFAULT '',
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            next_attempt_at TEXT NOT NULL DEFAULT '',
+            session_id INTEGER REFERENCES browser_sessions(id) ON DELETE SET NULL,
+            total_videos INTEGER NOT NULL DEFAULT 0,
+            completed_videos INTEGER NOT NULL DEFAULT 0,
+            failed_videos INTEGER NOT NULL DEFAULT 0,
+            current_video_id TEXT NOT NULL DEFAULT '',
+            started_at TEXT NOT NULL DEFAULT '',
+            completed_at TEXT NOT NULL DEFAULT '',
+            last_error TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_collect_jobs_account ON collect_jobs(account_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_collect_jobs_due ON collect_jobs(status, next_attempt_at, created_at);
+        CREATE TABLE IF NOT EXISTS collect_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id TEXT NOT NULL REFERENCES collect_jobs(id) ON DELETE RESTRICT,
+            account_id INTEGER NOT NULL REFERENCES tiktok_accounts(id) ON DELETE RESTRICT,
+            video_id TEXT NOT NULL,
+            video_url TEXT NOT NULL,
+            title TEXT NOT NULL DEFAULT '',
+            published_at TEXT NOT NULL DEFAULT '',
+            collected_at TEXT NOT NULL,
+            retention_complete INTEGER NOT NULL DEFAULT 0,
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            UNIQUE(job_id, video_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_collect_results_account ON collect_results(account_id, collected_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_collect_results_video ON collect_results(account_id, video_id, collected_at DESC);
+        CREATE TABLE IF NOT EXISTS collect_errors (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id TEXT NOT NULL REFERENCES collect_jobs(id) ON DELETE RESTRICT,
+            account_id INTEGER NOT NULL REFERENCES tiktok_accounts(id) ON DELETE RESTRICT,
+            video_id TEXT NOT NULL DEFAULT '',
+            video_url TEXT NOT NULL DEFAULT '',
+            stage TEXT NOT NULL DEFAULT '',
+            message TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_collect_errors_job ON collect_errors(job_id, created_at DESC);
         """
     )
     for name, definition in {
@@ -1516,6 +1575,12 @@ def delete_account(account_id: int) -> dict[str, Any]:
         ).fetchone()
         if active_job:
             raise ValueError("账号仍有草稿、待发布或运行中的发布任务，请先处理任务")
+        active_collect = conn.execute(
+            "SELECT id FROM collect_jobs WHERE account_id = ? AND status IN ('queued','delayed','preparing','collecting') LIMIT 1",
+            (account_id,),
+        ).fetchone()
+        if active_collect:
+            raise ValueError("账号仍有待执行或运行中的统计采集任务，请先处理任务")
         account = conn.execute("SELECT username FROM tiktok_accounts WHERE id = ? AND deleted_at = ''", (account_id,)).fetchone()
         if not account:
             raise ValueError("account not found")

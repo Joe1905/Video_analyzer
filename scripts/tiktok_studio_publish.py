@@ -185,6 +185,19 @@ def _resolve_schedule_mode(mode: str, scheduled_at: datetime, queued: bool) -> s
     return mode
 
 
+def _ensure_no_active_collection(conn: Any, account_id: int) -> None:
+    active = conn.execute(
+        """
+        SELECT id FROM collect_jobs
+        WHERE account_id = ? AND status IN ('queued','delayed','preparing','collecting')
+        LIMIT 1
+        """,
+        (account_id,),
+    ).fetchone()
+    if active:
+        raise ValueError("该账号已有待执行或运行中的统计采集任务")
+
+
 def create_job(form: Any) -> dict[str, Any]:
     account_id = int(form.getfirst("account_id") or 0)
     if not account_id:
@@ -218,6 +231,8 @@ def create_job(form: Any) -> dict[str, Any]:
         account = conn.execute("SELECT * FROM tiktok_accounts WHERE id = ? AND deleted_at = ''", (account_id,)).fetchone()
         if not account:
             raise ValueError("account not found")
+        if queued:
+            _ensure_no_active_collection(conn, account_id)
         proxy_profile_id = int(account["proxy_profile_id"])
 
     asset_id = uuid.uuid4().hex
@@ -302,6 +317,8 @@ def update_job(payload: dict[str, Any]) -> dict[str, Any]:
             else row["session_id"]
         )
         queue = bool(payload.get("queue"))
+        if queue:
+            _ensure_no_active_collection(conn, int(row["account_id"]))
         mode = "server" if keep_observing else "tiktok"
         mode = _resolve_schedule_mode(mode, scheduled, queue)
         if manual_publish:
@@ -358,6 +375,7 @@ def retry_job(payload: dict[str, Any]) -> dict[str, Any]:
         if row["status"] not in RETRYABLE_STATUSES:
             raise ValueError("只有发布失败的任务可以重试")
         account_id = int(row["account_id"])
+        _ensure_no_active_collection(conn, account_id)
         scheduled = _parse_schedule(row["scheduled_at"])
         now = _utc_now()
         mode = "tiktok"
