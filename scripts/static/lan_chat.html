@@ -106,11 +106,12 @@ const TOKEN_KEY="videoAnalyzer.lanChat.deviceToken.v1";
 const ROOM_KEY="videoAnalyzer.lanChat.activeRoom.v1";
 const READ_KEY="videoAnalyzer.lanChat.readRooms.v1";
 const CANONICAL_HOST="xn--rss932g.local";
+const CANONICAL_URL_HOST="聊天.local";
 const $=id=>document.getElementById(id);
 const state={token:"",currentUser:null,users:[],rooms:[],activeRoomId:"public",messages:[],lastMessageId:0,readRooms:{},messageTimer:null,bootstrapTimer:null,loadingMessages:false,draftImage:null,preparingImage:false};
 function token(){let value=localStorage.getItem(TOKEN_KEY);if(!value){const part=()=>crypto.randomUUID?crypto.randomUUID():`${Date.now()}-${Math.random().toString(36).slice(2)}`;value=`${part()}-${part()}`;localStorage.setItem(TOKEN_KEY,value)}return value}
 function importTransferredToken(){if(location.hostname.toLowerCase()!==CANONICAL_HOST)return;const params=new URLSearchParams(location.hash.replace(/^#/,"")),value=params.get("deviceToken")||"";if(value.length>=20&&value.length<=200)localStorage.setItem(TOKEN_KEY,value);if(location.hash)history.replaceState(null,"",location.pathname+location.search)}
-function redirectToCanonical(){if(location.hostname.toLowerCase()===CANONICAL_HOST)return false;location.replace(`http://${CANONICAL_HOST}/lan-chat#deviceToken=${encodeURIComponent(token())}`);return true}
+function redirectToCanonical(){if(location.hostname.toLowerCase()===CANONICAL_HOST)return false;location.replace(`http://${CANONICAL_URL_HOST}/lan-chat#deviceToken=${encodeURIComponent(token())}`);return true}
 function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]))}
 async function request(path,options={}){const headers={...(options.headers||{}),"X-Lan-Chat-Token":state.token};if(options.body&&!headers["Content-Type"])headers["Content-Type"]="application/json";const response=await fetch(path,{...options,headers});let payload={};try{payload=await response.json()}catch(e){}if(!response.ok)throw new Error(payload.error||`请求失败 (${response.status})`);return payload}
 function toast(message){const el=$("toast");el.textContent=message;el.classList.add("show");clearTimeout(el._timer);el._timer=setTimeout(()=>el.classList.remove("show"),2400)}
