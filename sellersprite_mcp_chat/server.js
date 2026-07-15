@@ -7,7 +7,7 @@ const { createHash, randomUUID } = require("node:crypto");
 const PORT = Number(process.env.PORT || 3001);
 const HOST = process.env.HOST || "0.0.0.0";
 const DEEPSEEK_API_URL = process.env.DEEPSEEK_API_URL || "https://api.deepseek.com/v1";
-const DEEPSEEK_MODEL = process.env.MCP_CHAT_MODEL || process.env.DEEPSEEK_CHAT_MODEL || process.env.DEEPSEEK_V4_PRO_MODEL || "deepseek-v4-pro";
+const DEEPSEEK_MODEL = process.env.MCP_CHAT_MODEL || process.env.DEEPSEEK_CHAT_MODEL || process.env.DEEPSEEK_V4_PRO_MODEL || "deepseek-v4-flash";
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || "";
 const MCP_CHAT_TYPE = (process.env.MCP_CHAT_TYPE || "sellersprite").toLowerCase();
 const MCP_CHAT_LABEL = process.env.MCP_CHAT_LABEL || (MCP_CHAT_TYPE === "fastmoss" ? "FastMoss" : "SellerSprite");
@@ -172,7 +172,7 @@ class RemoteMcpClient {
     await this.request("initialize", {
       protocolVersion: "2024-11-05",
       capabilities: {},
-      clientInfo: { name: `${MCP_CHAT_TYPE}-deepseek-v4-pro`, version: "0.3.0" },
+      clientInfo: { name: `${MCP_CHAT_TYPE}-deepseek-v4-flash`, version: "0.3.0" },
     });
     this.initialized = true;
   }

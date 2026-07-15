@@ -4894,7 +4894,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     provider = normalize_chat_provider(provider)
     api_key = os.getenv("DEEPSEEK_API_KEY", "")
     api_url = os.getenv("DEEPSEEK_API_URL", "https://api.deepseek.com/v1")
-    model = os.getenv("DEEPSEEK_CHAT_MODEL", os.getenv("DEEPSEEK_V4_PRO_MODEL", "deepseek-v4-pro"))
+    model = os.getenv("DEEPSEEK_CHAT_MODEL", os.getenv("DEEPSEEK_V4_PRO_MODEL", "deepseek-v4-flash"))
     current_date_shanghai = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
 
     if not api_key:
