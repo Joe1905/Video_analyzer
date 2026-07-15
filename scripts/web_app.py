@@ -5979,14 +5979,14 @@ def _collect_category_ids(value: Any) -> set[str]:
     if isinstance(value, dict):
         for key, item in value.items():
             normalized_key = re.sub(r"[^a-z0-9]", "", str(key).lower())
-            if normalized_key == "categoryid" and re.fullmatch(r"\d{4,12}", str(item or "")):
+            if re.fullmatch(r"categoryid(?:level[123])?", normalized_key) and re.fullmatch(r"\d{4,12}", str(item or "")):
                 found.add(str(item))
             found.update(_collect_category_ids(item))
     elif isinstance(value, list):
         for item in value:
             found.update(_collect_category_ids(item))
     elif isinstance(value, str):
-        found.update(re.findall(r'["\']category_?id["\']\s*:\s*["\']?(\d{4,12})', value, re.IGNORECASE))
+        found.update(re.findall(r'["\']category_?id(?:_?level[123])?["\']\s*:\s*["\']?(\d{4,12})', value, re.IGNORECASE))
     return found
 
 
