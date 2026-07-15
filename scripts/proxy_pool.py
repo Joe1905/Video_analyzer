@@ -843,11 +843,32 @@ def _slot_ports(slot: int) -> dict[str, Any]:
     }
 
 
+def _display_socket_active(path: Path) -> bool:
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.settimeout(0.15)
+    try:
+        client.connect(str(path))
+        return True
+    except (ConnectionRefusedError, FileNotFoundError):
+        return False
+    except OSError:
+        return True
+    finally:
+        client.close()
+
+
 def _slot_ports_available(slot: int) -> bool:
     ports = _slot_ports(slot)
     display_number = str(ports["display"]).lstrip(":")
-    if Path(f"/tmp/.X11-unix/X{display_number}").exists():
-        return False
+    display_socket = Path(f"/tmp/.X11-unix/X{display_number}")
+    if display_socket.exists():
+        if _display_socket_active(display_socket):
+            return False
+        try:
+            display_socket.unlink()
+            Path(f"/tmp/.X{display_number}-lock").unlink(missing_ok=True)
+        except OSError:
+            return False
     return not any(
         _port_open("127.0.0.1", int(ports[key]), timeout=0.15)
         for key in ("vnc_port", "novnc_port", "debug_port")
