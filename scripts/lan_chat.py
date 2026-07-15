@@ -128,12 +128,23 @@ class LanChatStore:
                     FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE CASCADE,
                     FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE CASCADE
                 );
+                CREATE TABLE IF NOT EXISTS room_reads (
+                    room_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    last_read_message_id INTEGER NOT NULL DEFAULT 0,
+                    updated_at REAL NOT NULL,
+                    PRIMARY KEY (room_id, user_id),
+                    FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE CASCADE,
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                );
                 CREATE INDEX IF NOT EXISTS messages_room_id_idx
                     ON messages(room_id, id);
                 CREATE INDEX IF NOT EXISTS room_members_user_id_idx
                     ON room_members(user_id, room_id);
                 CREATE INDEX IF NOT EXISTS account_sessions_user_id_idx
                     ON account_sessions(user_id);
+                CREATE INDEX IF NOT EXISTS room_reads_user_id_idx
+                    ON room_reads(user_id, room_id);
                 """
             )
             now = time.time()
@@ -481,6 +492,20 @@ class LanChatStore:
                    ORDER BY m.id ASC LIMIT ?""",
                 (room_id, after_id, limit),
             ).fetchall()
+            last_id = int(rows[-1]["id"]) if rows else after_id
+            if last_id > 0:
+                conn.execute(
+                    """INSERT INTO room_reads
+                       (room_id, user_id, last_read_message_id, updated_at)
+                       VALUES (?, ?, ?, ?)
+                       ON CONFLICT(room_id, user_id) DO UPDATE SET
+                           last_read_message_id = MAX(
+                               room_reads.last_read_message_id,
+                               excluded.last_read_message_id
+                           ),
+                           updated_at = excluded.updated_at""",
+                    (room_id, current["id"], last_id, time.time()),
+                )
         messages = [self._message_payload(row, current["id"]) for row in rows]
         return {"messages": messages, "lastId": messages[-1]["id"] if messages else after_id}
 
@@ -638,6 +663,18 @@ class LanChatStore:
                WHERE m.room_id = ? ORDER BY m.id DESC LIMIT 1""",
             (room["id"],),
         ).fetchone()
+        unread_count = int(
+            conn.execute(
+                """SELECT COUNT(*) FROM messages m
+                   WHERE m.room_id = ? AND m.sender_id != ?
+                     AND m.id > COALESCE(
+                         (SELECT rr.last_read_message_id FROM room_reads rr
+                          WHERE rr.room_id = ? AND rr.user_id = ?),
+                         0
+                     )""",
+                (room["id"], current_user_id, room["id"], current_user_id),
+            ).fetchone()[0]
+        )
         return {
             "id": room["id"],
             "kind": room["kind"],
@@ -646,6 +683,7 @@ class LanChatStore:
             "members": [self._public_user(item) for item in members],
             "createdBy": room["created_by"],
             "updatedAt": float(room["updated_at"]),
+            "unreadCount": unread_count,
             "latestMessage": (
                 {
                     "content": latest["content"],
