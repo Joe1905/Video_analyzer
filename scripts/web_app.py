@@ -3969,6 +3969,7 @@ CHAT_INTENT_ROUTER_INTENTS = {
     "help",
 }
 CHAT_INTENT_TASK_DEPTHS = {"direct", "lookup", "analysis", "workflow"}
+FASTMOSS_PLAYBOOK_IDS = set(FASTMOSS_PLAYBOOKS)
 CHAT_INTENT_DEPTH_BY_INTENT = {
     "product_availability": "lookup",
     "product_lookup": "lookup",
@@ -4129,6 +4130,20 @@ def parse_chat_intent_decision(value: Any, fallback_route: dict[str, Any], provi
         "help": {"tools": None, "max_rounds": 1},
     }
     route = {"intent": intent, "task_depth": canonical_depth, "route_source": "llm", **policies[intent]}
+    playbook_id = str(value.get("playbook") or "").strip()
+    if (
+        normalize_chat_provider(provider) == "fastmoss"
+        and intent in {"product_research", "product_lookup", "tiktok_user", "tiktok_content"}
+        and playbook_id in FASTMOSS_PLAYBOOK_IDS
+    ):
+        playbook = FASTMOSS_PLAYBOOKS[playbook_id]
+        route.update({
+            "intent": f"fastmoss_{playbook_id}",
+            "task_depth": "workflow",
+            "playbook": playbook_id,
+            "tools": None,
+            "max_rounds": int(playbook["max_rounds"]),
+        })
     entity = re.sub(r"\s+", " ", str(value.get("entity") or "")).strip()[:200]
     if entity:
         route["entity"] = entity
@@ -4173,11 +4188,14 @@ def resolve_chat_intent(
     system_prompt = (
         "You are a commerce chat intent classifier. Return one valid JSON object only. "
         "Allowed intent values: product_availability, product_lookup, product_research, tiktok_user, tiktok_content, web_search, general, help. "
-        "Required keys: intent, task_depth, entity, region, confidence. "
+        "Required keys: intent, task_depth, entity, region, confidence. Also return playbook as one of "
+        "product, pricing, competitor, shop, content_dissect, content_strategy, creator, or an empty string. "
         "task_depth must be: product_availability/product_lookup/tiktok_user/tiktok_content/web_search=lookup; "
         "product_research=analysis; general/help=direct. "
         "Questions asking only whether a product is sold, listed, available, or has the same item are product_availability even when they contain the word sales. "
         "Requests asking for sales performance, GMV, market, competition, opportunity, selection, pricing, reasons, strategy, or a report are product_research. "
+        "For FastMoss product_research choose the closest playbook: product for selection/opportunity/general category research, pricing for price bands or pricing, "
+        "competitor for product/shop competitors, shop for store diagnosis, content_dissect for explaining a video, content_strategy for briefs/scripts, and creator for creator outreach. "
         "Use OCR only to infer the product entity; OCR must never increase task depth. confidence is a number from 0 to 1."
     )
     payload = {
@@ -4373,6 +4391,158 @@ FASTMOSS_REGION_SENSITIVE_TOOLS = FASTMOSS_MARKET_COVERAGE_TOOLS | {
     "fastmoss__live_search",
 }
 
+FASTMOSS_WORKFLOW_PHASES: dict[str, tuple[tuple[str, frozenset[str]], ...]] = {
+    "product": (
+        ("确认目标类目", frozenset({"fastmoss__search_category_by_words"})),
+        ("获取类目规模与趋势", frozenset({"fastmoss__market_category_analysis", "fastmoss__market_category_ranking"})),
+        ("获取热销与新品样本", frozenset({"fastmoss__product_rank_top_selling", "fastmoss__product_rank_new_listed", "fastmoss__product_search"})),
+        ("核验代表商品", frozenset({"fastmoss__product_detail_info", "fastmoss__product_overview", "fastmoss__product_sales_trend", "fastmoss__product_investment"})),
+        ("补充评论、达人和内容", frozenset({"fastmoss__product_review_list", "fastmoss__product_creator_analysis", "fastmoss__product_video_list"})),
+    ),
+    "pricing": (
+        ("确认目标类目", frozenset({"fastmoss__search_category_by_words"})),
+        ("获取价格分布", frozenset({"fastmoss__market_category_analysis"})),
+        ("获取价格带商品样本", frozenset({"fastmoss__product_rank_top_selling", "fastmoss__product_search"})),
+        ("核验代表商品和评论", frozenset({"fastmoss__product_detail_info", "fastmoss__product_review_list"})),
+    ),
+    "competitor": (
+        ("锁定竞品实体", frozenset({"fastmoss__product_search", "fastmoss__shop_search"})),
+        ("核验竞品基础与趋势", frozenset({"fastmoss__product_detail_info", "fastmoss__product_overview", "fastmoss__product_sales_trend", "fastmoss__shop_base_info", "fastmoss__shop_data_trends"})),
+        ("拆解竞品渠道", frozenset({"fastmoss__product_creator_analysis", "fastmoss__product_video_list", "fastmoss__product_review_list", "fastmoss__shop_creator_analysis", "fastmoss__shop_video_analysis"})),
+        ("补充市场对照", frozenset({"fastmoss__search_category_by_words", "fastmoss__market_category_analysis", "fastmoss__product_rank_top_selling"})),
+    ),
+    "shop": (
+        ("锁定目标店铺", frozenset({"fastmoss__shop_search", "fastmoss__shop_base_info"})),
+        ("获取店铺规模与趋势", frozenset({"fastmoss__shop_data_trends", "fastmoss__shop_sale_analysis", "fastmoss__shop_investment_analysis"})),
+        ("拆解店铺商品", frozenset({"fastmoss__shop_product_analysis"})),
+        ("拆解达人、视频、直播和广告", frozenset({"fastmoss__shop_creator_analysis", "fastmoss__shop_video_analysis", "fastmoss__shop_live_analysis", "fastmoss__ad_data_overview"})),
+    ),
+    "content_dissect": (
+        ("锁定商品或视频", frozenset({"fastmoss__product_search", "fastmoss__video_search", "fastmoss__product_video_list"})),
+        ("获取视频表现", frozenset({"fastmoss__video_detail_analysis", "fastmoss__video_data_trends"})),
+        ("获取脚本并拆解", frozenset({"fastmoss__video_script_info"})),
+    ),
+    "content_strategy": (
+        ("确认类目或商品", frozenset({"fastmoss__search_category_by_words", "fastmoss__product_search"})),
+        ("获取热销商品和视频", frozenset({"fastmoss__product_rank_top_selling", "fastmoss__product_video_list", "fastmoss__video_search"})),
+        ("提取内容证据", frozenset({"fastmoss__video_detail_analysis", "fastmoss__video_data_trends", "fastmoss__video_script_info"})),
+        ("补充达人模式", frozenset({"fastmoss__product_creator_analysis", "fastmoss__creator_search"})),
+    ),
+    "creator": (
+        ("确认类目或商品", frozenset({"fastmoss__search_category_by_words", "fastmoss__product_search"})),
+        ("搜索并排序达人", frozenset({"fastmoss__creator_search", "fastmoss__creator_rank_top_ecommerce", "fastmoss__creator_rank_top_growth", "fastmoss__creator_rank_top_potential"})),
+        ("核验达人带货能力", frozenset({"fastmoss__creator_profile_overview", "fastmoss__creator_cargo_summary", "fastmoss__creator_data_trends", "fastmoss__creator_product_list"})),
+    ),
+}
+
+SELLERSPRITE_ASIN_TOOLS = {
+    "asin_detail", "asin_detail_with_coupon_trend", "asin_sales_trend", "keepa_info", "review",
+    "traffic_source", "traffic_keyword", "traffic_listing", "asin_coupon_trend", "asin_prediction",
+}
+SELLERSPRITE_RESEARCH_TOOLS = {
+    "keyword_research", "keyword_research_trends", "product_research", "market_research",
+    "market_research_statistics", "market_product_demand_trend", "market_product_concentration",
+    "market_brand_concentration", "market_price_distribution", "market_rating_distribution",
+    "market_ratings_count_distribution", "market_listing_date_distribution", "market_listing_trend_distribution",
+    "market_seller_country_distribution", "market_seller_type_concentration", "market_seller_concentration",
+    "aba_research_weekly", "aba_research_monthly", "aba_research_trend", "google_trend",
+}
+
+
+def mcp_result_data_state(result: Any) -> str:
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        return "error"
+    state = str(result.get("data_state") or "").strip().lower()
+    if state in {"data", "empty", "error"}:
+        return state
+    return "data" if result.get("enough_data") is True else "empty"
+
+
+def mcp_result_observed(result: Any) -> bool:
+    if not isinstance(result, dict):
+        return False
+    if "evidence_observed" in result:
+        return result.get("evidence_observed") is True
+    return result.get("ok") is True
+
+
+def attempted_tool_names(assistant_msg: Message) -> set[str]:
+    return {
+        str(item.get("tool_name") or "")
+        for item in (assistant_msg.tool_results or [])
+        if isinstance(item, dict) and item.get("tool_name")
+    }
+
+
+def fastmoss_workflow_phase(
+    playbook_id: str | None,
+    assistant_msg: Message,
+    available_tool_ids: set[str] | None = None,
+) -> tuple[str, set[str]] | None:
+    attempted = attempted_tool_names(assistant_msg)
+    observed = {
+        str(item.get("tool_name") or "")
+        for item in (assistant_msg.tool_results or [])
+        if isinstance(item, dict) and mcp_result_observed(item.get("result"))
+    }
+    available = set(available_tool_ids or set())
+    restrict_to_available = available_tool_ids is not None
+    for label, phase_tools in FASTMOSS_WORKFLOW_PHASES.get(str(playbook_id or ""), ()):
+        candidates = set(phase_tools)
+        if restrict_to_available:
+            candidates &= available
+        if not candidates:
+            continue
+        attempted_in_phase = attempted.intersection(candidates)
+        if not attempted_in_phase:
+            return label, candidates
+        if observed.intersection(candidates):
+            continue
+        untried = candidates - attempted_in_phase
+        if len(attempted_in_phase) == 1 and untried:
+            return label + "（替代接口）", untried
+    return None
+
+
+def fastmoss_workflow_instruction(phase: tuple[str, set[str]] | None) -> str:
+    if not phase:
+        return "FastMoss 分阶段采集已完成。请根据已有数据、空结果和失败结果直接回答，不再调用工具。"
+    label, tool_ids = phase
+    return (
+        f"当前 FastMoss 阶段：{label}。本轮只从以下工具中选择一个最相关的调用：{', '.join(sorted(tool_ids))}。"
+        "成功但为空也表示该接口已完成，不要重复调用；在最终答案中说明该维度本轮无数据即可。"
+        "不要提前调用后续阶段工具，也不要复用历史任务中的商品、店铺、达人或视频 ID。"
+    )
+
+
+def provider_profile_tool_ids(
+    provider: str,
+    route: dict[str, Any],
+    user_text: str,
+    enabled_tool_ids: set[str] | None,
+    assistant_msg: Message,
+) -> set[str] | None:
+    if enabled_tool_ids is None:
+        return None
+    selected = set(enabled_tool_ids)
+    provider = normalize_chat_provider(provider)
+    if provider == "amazon":
+        asin = bool(re.search(r"\bB0[A-Z0-9]{8}\b", str(user_text or ""), re.IGNORECASE))
+        preferred = SELLERSPRITE_ASIN_TOOLS if asin else SELLERSPRITE_RESEARCH_TOOLS
+        return {
+            tool_id for tool_id in selected
+            if split_prefixed_tool_id(tool_id)[0] != "sellersprite"
+            or split_prefixed_tool_id(tool_id)[1] in preferred
+        }
+    if provider == "fastmoss" and route.get("playbook"):
+        phase = fastmoss_workflow_phase(str(route.get("playbook")), assistant_msg, selected)
+        phase_tools = phase[1] if phase else set()
+        return {
+            tool_id for tool_id in selected
+            if split_prefixed_tool_id(tool_id)[0] != "fastmoss" or tool_id in phase_tools
+        }
+    return selected
+
 
 def chat_routing_text(user_text: str) -> str:
     """Return only the user's question, excluding derived OCR context and metadata."""
@@ -4521,13 +4691,12 @@ def fastmoss_analysis_evidence_gaps(user_text: str, assistant_msg: Message, rout
         return []
     calls = list(assistant_msg.tool_calls or [])
     results = list(assistant_msg.tool_results or [])
-    successful_with_data = {
+    observed_calls = {
         str(item.get("tool_name") or "")
         for item in results
         if isinstance(item, dict)
         and isinstance(item.get("result"), dict)
-        and item["result"].get("ok") is True
-        and item["result"].get("enough_data") is True
+        and mcp_result_observed(item["result"])
     }
     successful_calls = {
         str(item.get("tool_name") or "")
@@ -4539,16 +4708,25 @@ def fastmoss_analysis_evidence_gaps(user_text: str, assistant_msg: Message, rout
     gaps = []
     exact_product = fastmoss_exact_product_reference(user_text)
     if not exact_product:
-        if not successful_with_data.intersection(FASTMOSS_CATEGORY_TOOLS):
+        category_evidence_tools = FASTMOSS_CATEGORY_TOOLS | FASTMOSS_MARKET_COVERAGE_TOOLS
+        if not observed_calls.intersection(category_evidence_tools):
             gaps.append("category_lookup")
-        if not successful_with_data.intersection(FASTMOSS_MARKET_COVERAGE_TOOLS):
+        if not observed_calls.intersection(FASTMOSS_MARKET_COVERAGE_TOOLS):
             gaps.append("market_ranking")
-        regional_calls = [
-            call for call in calls
-            if str(call.get("function", {}).get("name") or "") in FASTMOSS_REGION_SENSITIVE_TOOLS
-        ]
-        if fastmoss_defaults_to_us(user_text) and (
-            not regional_calls or any(not _argument_has_us_region(_tool_call_arguments(call)) for call in regional_calls)
+        valid_regional_calls = []
+        for call, tool_result in zip(calls, results):
+            call_name = str(call.get("function", {}).get("name") or "")
+            result_name = str(tool_result.get("tool_name") or "") if isinstance(tool_result, dict) else ""
+            result_payload = tool_result.get("result") if isinstance(tool_result, dict) else None
+            if (
+                call_name in FASTMOSS_REGION_SENSITIVE_TOOLS
+                and result_name == call_name
+                and isinstance(result_payload, dict)
+                and mcp_result_observed(result_payload)
+            ):
+                valid_regional_calls.append(call)
+        if fastmoss_defaults_to_us(user_text) and not any(
+            _argument_has_us_region(_tool_call_arguments(call)) for call in valid_regional_calls
         ):
             gaps.append("us_region")
     if not successful_calls.intersection(FASTMOSS_REVIEW_TOOLS):
@@ -4928,7 +5106,43 @@ def normalize_mcp_tool_arguments(
     return normalized, action
 
 
-def execute_prefixed_tool(tool_id: str, args: dict[str, Any]) -> dict[str, Any]:
+def apply_mcp_region_default(chat_type: str, name: str, args: dict[str, Any], region: str | None) -> dict[str, Any]:
+    normalized = dict(args or {})
+    region = str(region or "").strip().upper()
+    if not re.fullmatch(r"[A-Z]{2}|GLOBAL", region):
+        return normalized
+    schema = _mcp_tool_input_schema(chat_type, name)
+    properties = schema.get("properties") if isinstance(schema, dict) and isinstance(schema.get("properties"), dict) else {}
+
+    def set_supported_region(target: dict[str, Any], target_properties: dict[str, Any]) -> bool:
+        for field in ("region", "marketplace"):
+            if field in target_properties:
+                target.setdefault(field, region)
+                return True
+        return False
+
+    if set_supported_region(normalized, properties):
+        return normalized
+    for container_name in ("filter", "request"):
+        container_schema = properties.get(container_name)
+        if not isinstance(container_schema, dict):
+            continue
+        container_properties = container_schema.get("properties")
+        if not isinstance(container_properties, dict) or not any(field in container_properties for field in ("region", "marketplace")):
+            continue
+        if container_name == "request" and container_name not in normalized and normalized and set(normalized).issubset(container_properties):
+            set_supported_region(normalized, container_properties)
+            break
+        container = normalized.get(container_name)
+        if not isinstance(container, dict):
+            container = {}
+            normalized[container_name] = container
+        set_supported_region(container, container_properties)
+        break
+    return normalized
+
+
+def execute_prefixed_tool(tool_id: str, args: dict[str, Any], region: str | None = None) -> dict[str, Any]:
     domain, name = split_prefixed_tool_id(tool_id)
     started = time.monotonic()
     try:
@@ -4936,11 +5150,12 @@ def execute_prefixed_tool(tool_id: str, args: dict[str, Any]) -> dict[str, Any]:
             return execute_tool(name, args)
         if domain in {"sellersprite", "fastmoss"}:
             chat_type = "sellersprite" if domain == "sellersprite" else "fastmoss"
-            normalized_args = args or {}
+            normalized_args = apply_mcp_region_default(chat_type, name, args or {}, region)
             if domain == "sellersprite":
                 normalized_args, normalization = normalize_mcp_tool_arguments(chat_type, name, normalized_args)
                 if normalization:
                     print(f"[CHAT] normalized {tool_id} arguments: {normalization}", flush=True)
+            normalized_args = apply_mcp_region_default(chat_type, name, normalized_args, region)
             result = mcp_bridge_request(chat_type, "tools/call", {"name": name, "arguments": normalized_args})
             return {"ok": True, "elapsed": round(time.monotonic() - started, 3), "data": result}
         return {"ok": False, "elapsed": round(time.monotonic() - started, 3), "error": f"Unknown tool domain: {domain}"}
@@ -4988,7 +5203,11 @@ def compact_mcp_content(value: Any, max_chars: int = 12000) -> Any:
 
 
 def mcp_collection_content_state(value: Any) -> tuple[bool, bool]:
-    collection_keys = {"list", "items", "results", "products"}
+    collection_keys = {
+        "list", "items", "results", "products", "reviews", "videos", "shops", "stores",
+        "creators", "authors", "skus", "variants", "lives", "ads", "records", "rows",
+        "rankings", "ranked_categories", "top_products", "top_products_summary",
+    }
     found = False
     has_items = False
     if isinstance(value, dict):
@@ -5007,6 +5226,49 @@ def mcp_collection_content_state(value: Any) -> tuple[bool, bool]:
     return found, has_items
 
 
+def mcp_non_collection_evidence_present(value: Any, key: str = "") -> bool:
+    ignored_keys = {
+        "code", "message", "msg", "success", "status", "total", "count", "total_count",
+        "page", "pagesize", "page_size", "has_more", "has_next", "request_id",
+    }
+    collection_keys = {
+        "list", "items", "results", "products", "reviews", "videos", "shops", "stores",
+        "creators", "authors", "skus", "variants", "lives", "ads", "records", "rows",
+        "rankings", "ranked_categories", "top_products", "top_products_summary",
+    }
+    normalized_key = str(key or "").lower()
+    if normalized_key in ignored_keys or normalized_key in collection_keys:
+        return False
+    if isinstance(value, dict):
+        return any(mcp_non_collection_evidence_present(item, str(item_key)) for item_key, item in value.items())
+    if isinstance(value, list):
+        return any(mcp_non_collection_evidence_present(item, key) for item in value)
+    if isinstance(value, str):
+        text = value.strip().lower()
+        return bool(text and text not in {"success", "ok", "null", "none", "{}", "[]"})
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return False
+
+
+def mcp_content_error(result: dict[str, Any], text: str, parsed: Any) -> str:
+    payload = result.get("data") if isinstance(result, dict) else None
+    if isinstance(payload, dict) and payload.get("isError") is True:
+        return str(payload.get("error") or text or "MCP tool returned an error")[:1000]
+    if isinstance(parsed, dict):
+        if parsed.get("success") is False:
+            return str(parsed.get("error") or parsed.get("message") or "MCP tool returned an error")[:1000]
+        code = parsed.get("code")
+        if code not in (None, 0, "0", 200, "200"):
+            return str(parsed.get("error") or parsed.get("message") or f"MCP error code: {code}")[:1000]
+    cleaned = str(text or "").strip()
+    if re.search(r"(?:SQLSTATE\[|Traceback \(most recent call last\)|Unknown column)", cleaned, re.IGNORECASE):
+        return cleaned[:1000]
+    return ""
+
+
 def normalize_prefixed_tool_result(tool_id: str, result: dict[str, Any]) -> dict[str, Any]:
     domain, name = split_prefixed_tool_id(tool_id)
     normalized = normalize_tool_result(name, result)
@@ -5014,17 +5276,40 @@ def normalize_prefixed_tool_result(tool_id: str, result: dict[str, Any]) -> dict
         normalized.setdefault("tool_domain", domain)
         normalized.setdefault("tool_name", name)
         if domain in {"sellersprite", "fastmoss"}:
+            if normalized.get("ok") is not True:
+                normalized.update({
+                    "data_state": "error",
+                    "evidence_observed": False,
+                    "suggested_next_action": "answer_with_limitation",
+                })
+                return normalized
             text = mcp_text_content(result)
             parsed = parse_mcp_text_content(text)
+            content_error = mcp_content_error(result, text, parsed)
+            if content_error:
+                normalized.update({
+                    "ok": False,
+                    "error": content_error,
+                    "enough_data": False,
+                    "data_state": "error",
+                    "evidence_observed": False,
+                    "suggested_next_action": "answer_with_limitation",
+                })
+                return normalized
             content_value = parsed if parsed is not None else text
             collection_found, collection_has_items = mcp_collection_content_state(content_value)
-            has_content = collection_has_items if collection_found else payload_has_content(content_value)
+            has_content = (
+                collection_has_items or mcp_non_collection_evidence_present(content_value)
+                if collection_found else payload_has_content(content_value)
+            )
             if text:
                 normalized["mcp_text_preview"] = text[:4000]
             if parsed is not None:
                 normalized["mcp_data"] = compact_mcp_content(parsed)
             normalized["enough_data"] = bool(has_content)
-            normalized["suggested_next_action"] = "answer_from_results" if has_content else "try_different_query"
+            normalized["data_state"] = "data" if has_content else "empty"
+            normalized["evidence_observed"] = True
+            normalized["suggested_next_action"] = "answer_from_results" if has_content else "answer_with_limitation"
     return normalized
 
 
@@ -5320,8 +5605,17 @@ def compact_chat_tool_evidence(tool_name: str, result: Any, max_chars: int | Non
         "ok": payload.get("ok"),
         "kind": payload.get("kind"),
         "enough_data": payload.get("enough_data"),
+        "data_state": payload.get("data_state"),
+        "evidence_observed": payload.get("evidence_observed"),
         "suggested_next_action": payload.get("suggested_next_action"),
     }
+    if payload.get("data_state") == "empty":
+        evidence["answer_guidance"] = (
+            "接口调用成功但本轮返回空结果；该维度已完成，不要重复调用，不得推断为平台绝对不存在。"
+            "继续使用其他证据并在最终答案中说明此数据缺口。"
+        )
+    elif payload.get("data_state") == "error":
+        evidence["answer_guidance"] = "接口调用失败；不得编造该维度数据，使用其他证据继续回答并说明失败。"
     for key in ("cache", "error", "query", "keyword", "category", "products", "items", "results"):
         if payload.get(key) is not None:
             evidence[key] = payload.get(key)
@@ -5333,6 +5627,17 @@ def compact_chat_tool_evidence(tool_name: str, result: Any, max_chars: int | Non
         evidence["data"] = payload
     encoded = json.dumps(_compact_chat_evidence_value(evidence), ensure_ascii=False, separators=(",", ":"))
     return _truncate_chat_context_text(encoded, limit)
+
+
+def mcp_evidence_quality_summary(assistant_msg: Message) -> dict[str, list[str]]:
+    summary = {"data": [], "empty": [], "error": []}
+    for item in assistant_msg.tool_results or []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("tool_name") or "tool")
+        state = mcp_result_data_state(item.get("result"))
+        summary.setdefault(state, []).append(name)
+    return summary
 
 
 def build_tool_limit_final_context(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -5623,6 +5928,126 @@ def manage_chat_context(
     }
 
 
+def provider_scope_short_circuit(
+    provider: str,
+    user_text: str,
+    enabled_tool_ids: set[str] | None = None,
+) -> str | None:
+    if normalize_chat_provider(provider) != "fastmoss":
+        return None
+    text = chat_routing_text(user_text).lower()
+    asks_amazon = (
+        any(term in text for term in ("亚马逊", "卖家精灵"))
+        or bool(re.search(r"\b(?:amazon|asin|sellersprite)\b", text))
+    )
+    has_sellersprite = any(str(tool_id).startswith("sellersprite__") for tool_id in (enabled_tool_ids or set()))
+    if not asks_amazon or has_sellersprite:
+        return None
+    return (
+        "当前 FastMoss 对话未启用 Amazon 数据能力，无法查询亚马逊市场、蓝海选品或热门新品。"
+        "请切换到顶部「Amazon」页面后重试。"
+    )
+
+
+def chat_query_uses_previous_entity(text: str) -> bool:
+    normalized = re.sub(r"\s+", "", str(text or "").lower())
+    return any(token in normalized for token in (
+        "这款", "这个产品", "该产品", "这个商品", "该商品", "这个店铺", "该店铺", "这条视频",
+        "同类产品", "继续", "接着", "再分析", "it", "thisproduct", "thisitem", "thisshop",
+    ))
+
+
+def tool_call_signature(tool_name: str, arguments: dict[str, Any]) -> str:
+    return f"{tool_name}:{json.dumps(arguments or {}, ensure_ascii=False, sort_keys=True, separators=(',', ':'))}"
+
+
+FASTMOSS_PRODUCT_ID_TOOLS = {
+    "fastmoss__product_detail_info", "fastmoss__product_overview", "fastmoss__product_sales_trend",
+    "fastmoss__product_investment", "fastmoss__product_creator_analysis", "fastmoss__product_video_list",
+    "fastmoss__product_review_list", "fastmoss__product_sku",
+}
+FASTMOSS_CATEGORY_ID_TOOLS = FASTMOSS_MARKET_COVERAGE_TOOLS | {
+    "fastmoss__product_rank_new_listed",
+}
+
+
+def _collect_named_ids(value: Any, normalized_keys: set[str]) -> set[str]:
+    found: set[str] = set()
+    if isinstance(value, dict):
+        for key, item in value.items():
+            normalized_key = re.sub(r"[^a-z0-9]", "", str(key).lower())
+            if normalized_key in normalized_keys and re.fullmatch(r"\d{16,20}", str(item or "")):
+                found.add(str(item))
+            found.update(_collect_named_ids(item, normalized_keys))
+    elif isinstance(value, list):
+        for item in value:
+            found.update(_collect_named_ids(item, normalized_keys))
+    elif isinstance(value, str):
+        key_pattern = "|".join(sorted(normalized_keys))
+        found.update(re.findall(rf'["\'](?:{key_pattern})["\']\s*:\s*["\']?(\d{{16,20}})', value, re.IGNORECASE))
+    return found
+
+
+def _collect_category_ids(value: Any) -> set[str]:
+    found: set[str] = set()
+    if isinstance(value, dict):
+        for key, item in value.items():
+            normalized_key = re.sub(r"[^a-z0-9]", "", str(key).lower())
+            if normalized_key == "categoryid" and re.fullmatch(r"\d{4,12}", str(item or "")):
+                found.add(str(item))
+            found.update(_collect_category_ids(item))
+    elif isinstance(value, list):
+        for item in value:
+            found.update(_collect_category_ids(item))
+    elif isinstance(value, str):
+        found.update(re.findall(r'["\']category_?id["\']\s*:\s*["\']?(\d{4,12})', value, re.IGNORECASE))
+    return found
+
+
+def fastmoss_known_product_ids(user_text: str, assistant_msg: Message) -> set[str]:
+    known = set(re.findall(r"\b\d{16,20}\b", str(user_text or "")))
+    for item in assistant_msg.tool_results or []:
+        if not isinstance(item, dict) or not isinstance(item.get("result"), dict):
+            continue
+        result = item["result"]
+        known.update(_collect_named_ids(result.get("mcp_data"), {"productid", "goodsid", "itemid"}))
+        known.update(_collect_named_ids(result.get("mcp_text_preview"), {"productid", "goodsid", "itemid"}))
+    return known
+
+
+def fastmoss_known_category_ids(user_text: str, assistant_msg: Message) -> set[str]:
+    known = set(re.findall(r"(?:category[_ ]?id|类目\s*id)\D{0,6}(\d{4,12})", str(user_text or ""), re.IGNORECASE))
+    for item in assistant_msg.tool_results or []:
+        if not isinstance(item, dict) or not isinstance(item.get("result"), dict):
+            continue
+        result = item["result"]
+        known.update(_collect_category_ids(result.get("mcp_data")))
+        known.update(_collect_category_ids(result.get("mcp_text_preview")))
+    return known
+
+
+def fastmoss_deep_dive_call_error(
+    tool_name: str,
+    arguments: dict[str, Any],
+    user_text: str,
+    assistant_msg: Message,
+) -> str | None:
+    if tool_name in FASTMOSS_CATEGORY_ID_TOOLS:
+        requested_categories = _collect_category_ids(arguments)
+        unknown_categories = requested_categories - fastmoss_known_category_ids(user_text, assistant_msg)
+        if unknown_categories:
+            return "拒绝使用未经当前任务类目查询验证的类目 ID：" + "、".join(sorted(unknown_categories))
+    if tool_name not in FASTMOSS_PRODUCT_ID_TOOLS:
+        return None
+    requested = _collect_named_ids(arguments, {"productid", "goodsid", "itemid"})
+    if not requested:
+        return None
+    unknown = requested - fastmoss_known_product_ids(user_text, assistant_msg)
+    if not unknown:
+        return None
+    return "拒绝使用未经当前任务搜索、榜单或用户链接验证的商品 ID：" + "、".join(sorted(unknown))
+
+
 def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, provider: str = "home", enabled_tool_ids: set[str] | None = None) -> None:
     """Background thread: call DeepSeek with provider-scoped tools and stream results via SSE."""
     import requests as req
@@ -5660,7 +6085,9 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
         f"Current chat provider is {provider}; {domain_hint} {provider_style} {forced_mcp_style} "
         "Anti-hallucination rules: do not invent numbers, rankings, prices, ASINs, sales, GMV, brands, dates, or tool outputs. Label unsupported reasoning as inference, and state data gaps explicitly. "
         "If exposed tools are relevant to the user's analysis request, prefer calling one or more focused tools before the final answer; if no tool is exposed or the selected tools do not fit, say so and answer from clearly marked general knowledge. "
-        "When tool results contain enough_data=true or suggested_next_action=answer_from_results, answer from the current results instead of repeatedly calling similar tools. When enough_data=false or suggested_next_action=try_different_query, continue gathering evidence or state that the evidence is insufficient. "
+        "Interpret MCP data_state strictly: data means usable records, empty means the interface succeeded but returned no records, and error means the interface failed. "
+        "An empty result is completed evidence: do not repeat the same call, do not treat it as proof that the marketplace has no such item, and do not withhold the final answer. "
+        "Use other evidence and explicitly state how empty/error dimensions limit the conclusion. "
         "For Amazon/product analysis from a short product phrase, treat the phrase as ambiguous unless the user provides a URL, ASIN, exact category, or target user. "
         "Do not let derived long-tail keywords override the user's original phrase: if tool results split across pet, human beauty, home appliance, or other meanings, explicitly compare those interpretations and ask for clarification or state which one the evidence supports. "
         "A useful product analysis must include: query interpretation, data evidence from the tools, market/competition read, opportunity angles, risks, and concrete next validation steps. "
@@ -5676,6 +6103,20 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     routing_text = chat_routing_text(user_text)
     route = resolve_chat_intent(session.messages, user_text, provider, api_key, api_url, model, req)
     route_intent = str(route.get("intent") or "general")
+    if route.get("entity") and not chat_query_uses_previous_entity(routing_text) and not is_chat_retry_request(routing_text):
+        latest_user_message = next((message for message in reversed(messages) if message.get("role") == "user"), None)
+        messages = [message for message in messages if message.get("_context_scope") == "system"]
+        if latest_user_message:
+            messages.append(latest_user_message)
+        messages.append({
+            "role": "system",
+            "content": (
+                f"Current-task entity lock: {route.get('entity')}. This is a new explicit entity. "
+                "Do not reuse product, category, shop, creator, or video IDs from earlier tasks."
+            ),
+            "_context_scope": "system",
+        })
+        recovery = {}
     if provider == "fastmoss" and route_intent == "product_availability":
         latest_user_message = next((message for message in reversed(messages) if message.get("role") == "user"), None)
         messages = [message for message in messages if message.get("_context_scope") == "system"]
@@ -5720,25 +6161,33 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
         selected_tool_ids = route_tool_ids if effective_enabled_tool_ids is None else route_tool_ids & set(effective_enabled_tool_ids)
     if provider == "fastmoss" and route_intent == "product_availability":
         selected_tool_ids = {"fastmoss__product_search"} & set(effective_enabled_tool_ids or set())
+    elif needs_tools:
+        selected_tool_ids = provider_profile_tool_ids(provider, route, routing_text, selected_tool_ids, assistant_msg)
     tools = build_prefixed_model_tools(selected_tool_ids) if needs_tools else []
     max_tool_rounds = chat_max_tool_rounds(provider, route, len(tools))
     if force_mcp_tools and not forced_provider_domain_tool_available(provider, tools):
         label = "FastMoss" if provider == "fastmoss" else "SellerSprite"
-        fallback = f"{label} 数据工具当前不可用，无法基于真实数据完成本次分析。我不会改用通用知识或 OCR 内容编造市场结论，请检查对应 MCP 服务后重试。"
-        store.update_message(session, assistant_msg, fallback, status="error")
+        fallback = f"{label} 数据工具当前不可用，因此本次无法取得真实市场数据。我不会用通用知识或 OCR 内容补造数据；请检查对应 MCP 服务后重试。"
+        store.update_message(session, assistant_msg, fallback, status="done")
         store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": fallback})
         return
-    capability_gaps = fastmoss_required_capability_gaps(routing_text, tools, route) if provider == "fastmoss" and not resume_from_completed_tools else []
+    all_provider_tools = build_prefixed_model_tools(effective_enabled_tool_ids) if needs_tools else []
+    capability_gaps = fastmoss_required_capability_gaps(routing_text, all_provider_tools, route) if provider == "fastmoss" and not resume_from_completed_tools else []
     if capability_gaps:
         capability_labels = {
             "category_lookup": "类目识别",
             "market_ranking": "类目/榜单覆盖",
             "product_reviews": "商品评论",
         }
-        fallback = "FastMoss 当前暴露的工具缺少完成可靠分析所需的能力：" + "、".join(capability_labels.get(gap, gap) for gap in capability_gaps) + "。我不会在缺少这些证据时生成报告，请检查 FastMoss MCP 工具列表后重试。"
-        store.update_message(session, assistant_msg, fallback, status="error")
-        store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": fallback})
-        return
+        messages.append({
+            "role": "system",
+            "content": (
+                "FastMoss 当前未暴露以下分析能力："
+                + "、".join(capability_labels.get(gap, gap) for gap in capability_gaps)
+                + "。继续使用已有工具完成回答，并在最终答案中明确这些能力缺口，不得编造。"
+            ),
+            "_context_scope": "system",
+        })
     route_answer_instruction = (
         "This is a product availability lookup. Use at most two focused product searches and then answer concisely. "
         "Do not call category, ranking, market-analysis, or review tools. Say whether an exact match was found, only similar products were found, or no match was found in this search. "
@@ -5766,6 +6215,8 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     playbook_instruction = fastmoss_playbook_instruction(route.get("playbook")) if provider == "fastmoss" else ""
     if playbook_instruction:
         messages.append({"role": "system", "content": playbook_instruction, "_context_scope": "system"})
+        phase = fastmoss_workflow_phase(str(route.get("playbook")), assistant_msg, set(effective_enabled_tool_ids or set()))
+        messages.append({"role": "system", "content": fastmoss_workflow_instruction(phase), "_context_scope": "system"})
     print(
         f"[CHAT] provider={provider} enabled={len(enabled_tool_ids or [])} effective={len(effective_enabled_tool_ids or [])} tools={len(tools)} max_rounds={max_tool_rounds}",
         flush=True,
@@ -5833,6 +6284,15 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 tools = []
 
     unexecutable_protocol_retries = 0
+    no_tool_retries = 0
+    final_answer_forced = False
+    seen_tool_calls: set[str] = set()
+    for existing_call in assistant_msg.tool_calls or []:
+        existing_name = str(existing_call.get("function", {}).get("name") or "")
+        seen_tool_calls.add(tool_call_signature(existing_name, _tool_call_arguments(existing_call)))
+    default_region = str(route.get("region") or "").strip().upper()
+    if not default_region and provider in {"amazon", "fastmoss"} and fastmoss_defaults_to_us(routing_text):
+        default_region = "US"
     for _ in range(max_tool_rounds):
         try:
             request_messages, request_tools, context_stats = manage_chat_context(messages, tools)
@@ -5890,6 +6350,26 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     call for call in tool_calls
                     if str(call.get("function", {}).get("name") or "") == "fastmoss__product_search"
                 ][:remaining_searches]
+            requested_tool_calls = bool(tool_calls)
+            deduplicated_tool_calls = []
+            for tool_call in tool_calls:
+                fn_name = str(tool_call.get("function", {}).get("name") or "")
+                if fn_name not in allowed_tool_ids:
+                    continue
+                fn_args = _tool_call_arguments(tool_call)
+                domain, unprefixed_name = split_prefixed_tool_id(fn_name)
+                if domain in {"sellersprite", "fastmoss"}:
+                    fn_args = apply_mcp_region_default(domain, unprefixed_name, fn_args, default_region)
+                signature = tool_call_signature(fn_name, fn_args)
+                if signature in seen_tool_calls:
+                    print(f"[CHAT] skipped duplicate tool call: {fn_name} {fn_args}", flush=True)
+                    continue
+                seen_tool_calls.add(signature)
+                normalized_call = dict(tool_call)
+                normalized_call["function"] = dict(tool_call.get("function") or {})
+                normalized_call["function"]["arguments"] = json.dumps(fn_args, ensure_ascii=False)
+                deduplicated_tool_calls.append(normalized_call)
+            tool_calls = deduplicated_tool_calls
             if tool_calls:
                 assistant_msg.tool_calls = list(assistant_msg.tool_calls or []) + tool_calls
                 assistant_msg.tool_results = list(assistant_msg.tool_results or [])
@@ -5902,8 +6382,21 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                         fn_args = json.loads(tc["function"].get("arguments") or "{}")
                     except json.JSONDecodeError:
                         fn_args = {}
-                    result = execute_prefixed_tool(fn_name, fn_args)
-                    normalized_result = normalize_prefixed_tool_result(fn_name, result)
+                    guard_error = fastmoss_deep_dive_call_error(fn_name, fn_args, routing_text, assistant_msg) if provider == "fastmoss" else None
+                    if guard_error:
+                        normalized_result = {
+                            "ok": False,
+                            "error": guard_error,
+                            "enough_data": False,
+                            "data_state": "error",
+                            "evidence_observed": False,
+                            "suggested_next_action": "answer_with_limitation",
+                            "tool_domain": "fastmoss",
+                            "tool_name": split_prefixed_tool_id(fn_name)[1],
+                        }
+                    else:
+                        result = execute_prefixed_tool(fn_name, fn_args, default_region)
+                        normalized_result = normalize_prefixed_tool_result(fn_name, result)
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc["id"],
@@ -5922,6 +6415,31 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                         "content": "The two-search availability limit has been reached. Do not call more tools; answer concisely from the current search evidence.",
                         "_context_scope": "system",
                     })
+                elif provider == "fastmoss" and route.get("playbook"):
+                    phase = fastmoss_workflow_phase(str(route.get("playbook")), assistant_msg, set(effective_enabled_tool_ids or set()))
+                    selected_tool_ids = provider_profile_tool_ids(provider, route, routing_text, set(effective_enabled_tool_ids or set()), assistant_msg)
+                    tools = build_prefixed_model_tools(selected_tool_ids) if phase else []
+                    final_answer_forced = phase is None
+                    messages.append({"role": "system", "content": fastmoss_workflow_instruction(phase), "_context_scope": "system"})
+                no_tool_retries = 0
+                continue
+
+            if requested_tool_calls:
+                if no_tool_retries < 1 and tools:
+                    no_tool_retries += 1
+                    messages.append({
+                        "role": "system",
+                        "content": "刚才的工具调用与本轮已执行的同工具同参数调用重复，已跳过。请选择当前阶段另一个调用；不要重复相同参数。",
+                        "_context_scope": "system",
+                    })
+                    continue
+                tools = []
+                final_answer_forced = True
+                messages.append({
+                    "role": "system",
+                    "content": "重复工具调用已被拦截。停止调用工具，根据已有数据、空结果和失败结果直接回答。",
+                    "_context_scope": "system",
+                })
                 continue
 
             content = msg.get("content", "")
@@ -5947,29 +6465,77 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     continue
                 fallback = (
                     "模型连续返回了无法执行的工具协议，系统已拦截异常内容。"
-                    "请发送“继续”重试；已完成的工具结果会被保留。"
+                    "本轮已完成的 MCP 结果仍然保留；其中空结果只表示对应接口本轮没有记录，不代表市场绝对不存在。"
+                    "由于当前无法安全生成数据总结，我不会补造销量、GMV 或市场结论。"
                 )
-                store.update_message(session, assistant_msg, fallback, status="error")
+                store.update_message(session, assistant_msg, fallback, status="done")
                 store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": fallback})
                 return
-            evidence_gaps = fastmoss_analysis_evidence_gaps(routing_text, assistant_msg, route) if provider == "fastmoss" else []
-            if evidence_gaps:
-                print(f"[CHAT] FastMoss evidence incomplete: {','.join(evidence_gaps)}; requesting more tool data", flush=True)
-                messages.append({"role": "assistant", "content": content, "_context_scope": "current"})
-                messages.append({"role": "system", "content": fastmoss_evidence_instruction(evidence_gaps), "_context_scope": "system"})
-                continue
-            if forced_provider_missing_tool_retry(provider, needs_tools, tools, assistant_msg) and not context_stats["tools_removed"]:
-                print(f"[CHAT] provider={provider} returned no executable tool call; retrying with stricter tool instruction", flush=True)
+            if final_answer_forced and str(content or "").strip():
+                store.update_message(session, assistant_msg, content, status="done")
+                store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": content})
+                return
+            workflow_phase = fastmoss_workflow_phase(
+                str(route.get("playbook")), assistant_msg, set(effective_enabled_tool_ids or set())
+            ) if provider == "fastmoss" and route.get("playbook") else None
+            if workflow_phase and tools and not context_stats["tools_removed"]:
+                if no_tool_retries < 1:
+                    no_tool_retries += 1
+                    print(f"[CHAT] FastMoss phase returned no tool call: {workflow_phase[0]}; retrying once", flush=True)
+                    messages.append({"role": "assistant", "content": content, "_context_scope": "current"})
+                    messages.append({"role": "system", "content": fastmoss_workflow_instruction(workflow_phase), "_context_scope": "system"})
+                    continue
+                tools = []
+                final_answer_forced = True
                 messages.append({"role": "assistant", "content": content, "_context_scope": "current"})
                 messages.append({
                     "role": "system",
                     "content": (
-                        "Your previous response did not execute any exposed MCP tool. This provider requires real tool data. "
-                        "Do not answer with methodology, plans, DSML text, function_calls text, or prose-only tool requests. "
-                        "Return a valid tool call using one of the exposed function tool names now."
+                        f"阶段“{workflow_phase[0]}”连续未产生可执行调用。停止调用工具，"
+                        "立即基于已有数据、空结果和失败结果回答；明确局限，但不得拒绝回答。"
                     ),
                     "_context_scope": "system",
                 })
+                continue
+            evidence_gaps = fastmoss_analysis_evidence_gaps(routing_text, assistant_msg, route) if provider == "fastmoss" else []
+            if evidence_gaps:
+                if no_tool_retries < 1 and tools and not context_stats["tools_removed"]:
+                    no_tool_retries += 1
+                    print(f"[CHAT] FastMoss evidence incomplete: {','.join(evidence_gaps)}; requesting once", flush=True)
+                    messages.append({"role": "assistant", "content": content, "_context_scope": "current"})
+                    messages.append({"role": "system", "content": fastmoss_evidence_instruction(evidence_gaps), "_context_scope": "system"})
+                    continue
+                messages.append({"role": "assistant", "content": content, "_context_scope": "current"})
+                messages.append({
+                    "role": "system",
+                    "content": "以下维度未取得可用证据：" + "、".join(evidence_gaps) + "。仍需完成回答，并明确这些局限。",
+                    "_context_scope": "system",
+                })
+                tools = []
+                final_answer_forced = True
+                continue
+            if forced_provider_missing_tool_retry(provider, needs_tools, tools, assistant_msg) and not context_stats["tools_removed"]:
+                if no_tool_retries < 1:
+                    no_tool_retries += 1
+                    print(f"[CHAT] provider={provider} returned no executable tool call; retrying once", flush=True)
+                    messages.append({"role": "assistant", "content": content, "_context_scope": "current"})
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            "Your previous response did not execute any exposed MCP tool. Return one valid native tool call now. "
+                            "Do not output methodology, DSML, or textual function syntax."
+                        ),
+                        "_context_scope": "system",
+                    })
+                    continue
+                messages.append({"role": "assistant", "content": content, "_context_scope": "current"})
+                messages.append({
+                    "role": "system",
+                    "content": "没有取得 MCP 工具结果。直接说明当前未能获取真实数据，不得编造，但仍要给用户一个明确答案。",
+                    "_context_scope": "system",
+                })
+                tools = []
+                final_answer_forced = True
                 continue
             store.update_message(session, assistant_msg, content, status="done")
             store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": content})
@@ -5986,23 +6552,18 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             return
 
     evidence_gaps = fastmoss_analysis_evidence_gaps(routing_text, assistant_msg, route) if provider == "fastmoss" else []
-    if evidence_gaps:
-        fallback = (
-            "FastMoss 分析所需证据在本轮工具调用上限内仍未补齐（"
-            + "、".join(evidence_gaps)
-            + "）。我不会用不完整搜索结果、OCR 表格或跨区域混合数据生成市场结论；请稍后重试或提供具体商品链接/ID。"
-        )
-        store.update_message(session, assistant_msg, fallback, status="error")
-        store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": fallback})
-        return
-    if forced_provider_missing_tool_retry(provider, needs_tools, tools, assistant_msg):
-        fallback = (
-            "需要实际调用数据工具才能回答，但模型连续没有返回可执行的工具调用。"
-            "我没有采纳方法论式回答，也不会编造市场数据；请稍后重试，或指定更明确的关键词、ASIN、类目节点。"
-        )
-        store.update_message(session, assistant_msg, fallback, status="error")
-        store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": fallback})
-        return
+    quality_summary = mcp_evidence_quality_summary(assistant_msg)
+    messages.append({
+        "role": "system",
+        "content": (
+            "Tool collection has stopped. Always provide the final user-facing answer. "
+            f"Evidence quality: {json.dumps(quality_summary, ensure_ascii=False)}. "
+            + (f"Unattempted or unavailable dimensions: {', '.join(evidence_gaps)}. " if evidence_gaps else "")
+            + "Use data results normally; describe empty results as successful interfaces with no records in this query; "
+            "describe errors as failed interfaces. Do not infer absolute absence and do not invent missing metrics."
+        ),
+        "_context_scope": "system",
+    })
     try:
         final_context = build_tool_limit_final_context(messages)
         for attempt in range(2):
@@ -6074,16 +6635,23 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             print(f"[CHAT] rejected {endpoint} response: tool protocol or empty content", flush=True)
 
         fallback = (
-            "工具数据已经收集完成，但模型连续返回了非用户答案格式，系统已拦截工具协议内容。"
-            "本轮结果没有原样展示；请发送“继续”，系统会复用现有工具结果重新生成总结。"
+            "本轮工具查询已经结束，但总结模型连续返回了不可展示的工具协议，因此无法安全生成详细报告。"
+            f"已取得数据的接口 {len(quality_summary.get('data', []))} 个，成功但为空的接口 {len(quality_summary.get('empty', []))} 个，"
+            f"失败接口 {len(quality_summary.get('error', []))} 个。空结果只表示本轮没有记录，不代表市场绝对不存在；"
+            "在总结模型恢复前，我不能据此编造销量、GMV 或市场结论。"
         )
-        store.update_message(session, assistant_msg, fallback, status="error")
+        store.update_message(session, assistant_msg, fallback, status="done")
         store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": fallback})
         return
     except Exception as exc:
         print(f"[CHAT] DeepSeek final-after-tool-limit error: {exc}", flush=True)
-        fallback = "\u5de5\u5177\u8c03\u7528\u5df2\u8fbe\u5230\u672c\u8f6e\u4e0a\u9650\u3002\u6211\u5df2\u7ecf\u62ff\u5230\u90e8\u5206\u5de5\u5177\u7ed3\u679c\uff0c\u4f46\u6700\u7ec8\u603b\u7ed3\u751f\u6210\u5931\u8d25\uff1b\u8bf7\u7f29\u5c0f\u95ee\u9898\u8303\u56f4\u6216\u6307\u5b9a\u8981\u7ee7\u7eed\u5206\u6790\u7684\u5546\u54c1/\u7c7b\u76ee\u3002"
-        store.update_message(session, assistant_msg, fallback, status="error")
+        fallback = (
+            "本轮工具查询已经结束，但最终总结请求失败。"
+            f"已取得数据的接口 {len(quality_summary.get('data', []))} 个，成功但为空的接口 {len(quality_summary.get('empty', []))} 个，"
+            f"失败接口 {len(quality_summary.get('error', []))} 个。空结果不代表市场绝对不存在；"
+            "由于无法生成可靠总结，本次不提供未经数据支持的销量、GMV 或机会判断。"
+        )
+        store.update_message(session, assistant_msg, fallback, status="done")
         store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": fallback})
 
 
