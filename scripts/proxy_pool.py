@@ -340,7 +340,11 @@ def init_db(conn: sqlite3.Connection) -> None:
     }.items():
         existing = {row[1] for row in conn.execute("PRAGMA table_info(proxy_profiles)")}
         if name not in existing:
-            conn.execute(f"ALTER TABLE proxy_profiles ADD COLUMN {name} {definition}")
+            try:
+                conn.execute(f"ALTER TABLE proxy_profiles ADD COLUMN {name} {definition}")
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc).lower():
+                    raise
     existing_account_cols = {row[1] for row in conn.execute("PRAGMA table_info(tiktok_accounts)")}
     if "deleted_at" not in existing_account_cols:
         conn.execute("ALTER TABLE tiktok_accounts ADD COLUMN deleted_at TEXT NOT NULL DEFAULT ''")
