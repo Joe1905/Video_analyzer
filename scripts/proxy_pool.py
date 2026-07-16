@@ -31,6 +31,7 @@ DEFAULT_MIHOMO_API = os.getenv("MIHOMO_API_URL", "http://127.0.0.1:9090")
 PROXY_PORT_START = int(os.getenv("PROXY_POOL_PORT_START", "18900") or "18900")
 PROXY_PORT_END = int(os.getenv("PROXY_POOL_PORT_END", "18999") or "18999")
 PROXY_RECHECK_DELAYS_SECONDS = (5 * 60, 10 * 60, 30 * 60)
+PROXY_QUEUE_RECHECK_SECONDS = 5 * 60
 NOVNC_PORT = int(os.getenv("NOVNC_PORT", "6080") or "6080")
 NOVNC_MANUAL_PORTS = int(os.getenv("NOVNC_MANUAL_PORTS", "1") or "1")
 VNC_PORT = int(os.getenv("VNC_PORT", "5900") or "5900")
@@ -565,7 +566,29 @@ def _isolation_profile(username: str, proxy_profile_id: int, pool: sqlite3.Row |
     }
 
 
-def _row_to_pool(row: sqlite3.Row, account_count: int = 0, account_names: list[str] | None = None) -> dict[str, Any]:
+def _proxy_pending_job_count(conn: sqlite3.Connection, pool_id: int) -> int:
+    row = conn.execute(
+        """
+        SELECT
+          (SELECT COUNT(*) FROM publish_jobs
+           WHERE proxy_profile_id = ? AND deleted_at = ''
+             AND status IN ('queued','delayed','preparing','uploading','publishing'))
+          +
+          (SELECT COUNT(*) FROM collect_jobs
+           WHERE proxy_profile_id = ?
+             AND status IN ('queued','delayed','preparing','collecting')) AS count
+        """,
+        (pool_id, pool_id),
+    ).fetchone()
+    return int(row["count"] or 0) if row else 0
+
+
+def _row_to_pool(
+    row: sqlite3.Row,
+    account_count: int = 0,
+    account_names: list[str] | None = None,
+    pending_job_count: int = 0,
+) -> dict[str, Any]:
     return {
         "id": row["id"],
         "name": row["name"],
@@ -593,6 +616,7 @@ def _row_to_pool(row: sqlite3.Row, account_count: int = 0, account_names: list[s
         "mihomo_proxy": _json_loads(row["mihomo_proxy_json"], {}),
         "account_count": account_count,
         "account_names": account_names or [],
+        "pending_job_count": pending_job_count,
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
@@ -1536,7 +1560,36 @@ def list_state() -> dict[str, Any]:
         names: dict[int, list[str]] = {}
         for row in conn.execute("SELECT proxy_profile_id, username FROM tiktok_accounts WHERE deleted_at = '' ORDER BY username"):
             names.setdefault(int(row["proxy_profile_id"]), []).append(str(row["username"]))
-        pools = [_row_to_pool(row, counts.get(int(row["id"]), 0), names.get(int(row["id"]), [])) for row in conn.execute("SELECT * FROM proxy_profiles ORDER BY updated_at DESC, id DESC")]
+        pending_jobs = {
+            int(row["proxy_profile_id"]): int(row["count"] or 0)
+            for row in conn.execute(
+                """
+                SELECT proxy_profile_id, SUM(job_count) AS count
+                FROM (
+                    SELECT proxy_profile_id, COUNT(*) AS job_count
+                    FROM publish_jobs
+                    WHERE deleted_at = ''
+                      AND status IN ('queued','delayed','preparing','uploading','publishing')
+                    GROUP BY proxy_profile_id
+                    UNION ALL
+                    SELECT proxy_profile_id, COUNT(*) AS job_count
+                    FROM collect_jobs
+                    WHERE status IN ('queued','delayed','preparing','collecting')
+                    GROUP BY proxy_profile_id
+                )
+                GROUP BY proxy_profile_id
+                """
+            )
+        }
+        pools = [
+            _row_to_pool(
+                row,
+                counts.get(int(row["id"]), 0),
+                names.get(int(row["id"]), []),
+                pending_jobs.get(int(row["id"]), 0),
+            )
+            for row in conn.execute("SELECT * FROM proxy_profiles ORDER BY updated_at DESC, id DESC")
+        ]
         accounts = [_row_to_account(row) for row in conn.execute("SELECT * FROM tiktok_accounts WHERE deleted_at = '' ORDER BY updated_at DESC, id DESC")]
         sessions = [_row_to_session(row) for row in conn.execute("SELECT * FROM browser_sessions ORDER BY updated_at DESC, id DESC LIMIT 20")]
     return {
@@ -1727,7 +1780,7 @@ def get_pool(pool_id: int) -> dict[str, Any]:
                 (pool_id,),
             )
         ]
-        return _row_to_pool(row, int(count), names)
+        return _row_to_pool(row, int(count), names, _proxy_pending_job_count(conn, pool_id))
 
 
 def delete_pool(pool_id: int) -> dict[str, Any]:
@@ -2164,7 +2217,11 @@ def _schedule_proxy_recheck(
     ):
         return ""
     failures = int(row["auto_check_failures"] or 0) + 1 if row else 1
-    delay = PROXY_RECHECK_DELAYS_SECONDS[min(failures - 1, len(PROXY_RECHECK_DELAYS_SECONDS) - 1)]
+    delay = (
+        PROXY_QUEUE_RECHECK_SECONDS
+        if _proxy_pending_job_count(conn, pool_id)
+        else PROXY_RECHECK_DELAYS_SECONDS[min(failures - 1, len(PROXY_RECHECK_DELAYS_SECONDS) - 1)]
+    )
     checked_at = now_iso()
     next_check_at = _proxy_recheck_at(delay)
     query = """UPDATE proxy_profiles
@@ -2338,6 +2395,28 @@ def check_binding(payload: dict[str, Any], require_account: bool = False) -> dic
 def recheck_unavailable_proxies() -> dict[str, Any]:
     now = now_iso()
     with connect() as conn:
+        queue_retry_at = _proxy_recheck_at(PROXY_QUEUE_RECHECK_SECONDS)
+        conn.execute(
+            """
+            UPDATE proxy_profiles
+            SET next_auto_check_at = ?, updated_at = ?
+            WHERE status = ?
+              AND (next_auto_check_at = '' OR next_auto_check_at > ?)
+              AND (
+                EXISTS (
+                    SELECT 1 FROM publish_jobs
+                    WHERE proxy_profile_id = proxy_profiles.id AND deleted_at = ''
+                      AND status IN ('queued','delayed','preparing','uploading','publishing')
+                )
+                OR EXISTS (
+                    SELECT 1 FROM collect_jobs
+                    WHERE proxy_profile_id = proxy_profiles.id
+                      AND status IN ('queued','delayed','preparing','collecting')
+                )
+              )
+            """,
+            (queue_retry_at, now, STATUS_ERROR, queue_retry_at),
+        )
         unscheduled = conn.execute(
             "SELECT id, parse_error FROM proxy_profiles WHERE status = ? AND next_auto_check_at = ''",
             (STATUS_ERROR,),
