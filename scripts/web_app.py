@@ -6188,6 +6188,50 @@ def fastmoss_current_category_path(assistant_msg: Message) -> dict[str, int] | N
     return None
 
 
+def _fastmoss_category_candidates(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, dict):
+        categories = value.get("categories")
+        if isinstance(categories, list):
+            return [item for item in categories if isinstance(item, dict)]
+        for item in value.values():
+            found = _fastmoss_category_candidates(item)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for item in value:
+            found = _fastmoss_category_candidates(item)
+            if found:
+                return found
+    return []
+
+
+def fastmoss_category_ambiguity_question(user_text: str, result: dict[str, Any]) -> str | None:
+    """Stop before market calls when the category matcher is effectively tied across L2 categories."""
+    if fastmoss_exact_product_reference(user_text) or re.search(
+        r"(?:category[_ ]?id|类目\s*id)\D{0,6}\d{1,12}", str(user_text or ""), re.IGNORECASE
+    ):
+        return None
+    candidates = _fastmoss_category_candidates(result.get("mcp_data"))
+    if len(candidates) < 2:
+        return None
+    first, second = candidates[0], candidates[1]
+    try:
+        score_gap = abs(float(first.get("score")) - float(second.get("score")))
+    except (TypeError, ValueError):
+        return None
+    first_l2 = str(first.get("category_id_level2") or "")
+    second_l2 = str(second.get("category_id_level2") or "")
+    if not first_l2 or not second_l2 or first_l2 == second_l2 or score_gap > 0.03:
+        return None
+    first_name = str(first.get("cn_full_name") or first.get("cn_name") or first_l2).strip()
+    second_name = str(second.get("cn_full_name") or second.get("cn_name") or second_l2).strip()
+    return (
+        f"FastMoss 对这个关键词的类目匹配很接近：① {first_name}；② {second_name}。"
+        "为了避免查错类目，请确认你要研究哪一个；如果是迷你电动绞肉/切碎机，可以直接回复“第二个，料理机”。"
+        "确认前我不会继续消耗后续榜单和商品查询额度。"
+    )
+
+
 def fastmoss_completed_week(today: Any | None = None) -> str:
     local_today = today or datetime.now(ZoneInfo("Asia/Shanghai")).date()
     previous_sunday = local_today - timedelta(days=local_today.isoweekday())
@@ -6698,6 +6742,13 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     })
                     assistant_msg.tool_results.append({"tool_name": fn_name, "result": normalized_result})
                     store.broadcast(session.id, "update", {"messageId": assistant_msg.id, "tool_calls": assistant_msg.tool_calls, "tool_results": assistant_msg.tool_results})
+                    if fn_name == "fastmoss__search_category_by_words":
+                        ambiguity = fastmoss_category_ambiguity_question(routing_text, normalized_result)
+                        if ambiguity:
+                            print("[CHAT] FastMoss category match ambiguous; asking for confirmation", flush=True)
+                            store.update_message(session, assistant_msg, ambiguity, status="done")
+                            store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": ambiguity})
+                            return
                 if route_intent == "product_availability" and sum(
                     1 for call in (assistant_msg.tool_calls or [])
                     if str(call.get("function", {}).get("name") or "") == "fastmoss__product_search"
@@ -6733,7 +6784,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     "content": "重复工具调用已被拦截。停止调用工具，根据已有数据、空结果和失败结果直接回答。",
                     "_context_scope": "system",
                 })
-                continue
+                break
 
             content = msg.get("content", "")
             if deepseek_tool_protocol_present(msg):
@@ -6789,7 +6840,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     ),
                     "_context_scope": "system",
                 })
-                continue
+                break
             evidence_gaps = fastmoss_analysis_evidence_gaps(routing_text, assistant_msg, route) if provider == "fastmoss" else []
             if evidence_gaps:
                 if no_tool_retries < 1 and tools and not context_stats["tools_removed"]:
