@@ -14,7 +14,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -3856,7 +3856,7 @@ def is_mcp_interface_query(text: str) -> bool:
 FASTMOSS_PLAYBOOKS: dict[str, dict[str, Any]] = {
     "product": {
         "label": "选品与定价测算",
-        "max_rounds": 10,
+        "max_rounds": 14,
         "instruction": (
             "按 FastMoss 官方选品流程执行，并合并定价与价格测算。先扫描目标品类最近 7 天的机会，"
             "判断热销商品处于新品/成长/爆发/稳定阶段，以达人和视频增长为先行信号、GMV 为滞后信号；"
@@ -4421,6 +4421,30 @@ FASTMOSS_WORKFLOW_PHASES: dict[str, tuple[tuple[str, frozenset[str]], ...]] = {
     ),
 }
 
+# FastMoss product research needs several complementary calls in each phase.  Each
+# inner set is one required capability; tools inside a set are alternatives.  Keep
+# this provider-specific so SellerSprite's aggregate-tool workflow is unaffected.
+FASTMOSS_PRODUCT_REQUIRED_GROUPS: tuple[tuple[str, tuple[frozenset[str], ...]], ...] = (
+    ("确认目标类目", (frozenset({"fastmoss__search_category_by_words"}),)),
+    ("获取类目规模与趋势", (
+        frozenset({"fastmoss__market_category_analysis"}),
+        frozenset({"fastmoss__market_category_ranking"}),
+    )),
+    ("获取热销与新品样本", (
+        frozenset({"fastmoss__product_rank_top_selling"}),
+        frozenset({"fastmoss__product_rank_new_listed"}),
+        frozenset({"fastmoss__product_search"}),
+    )),
+    ("核验代表商品", (
+        frozenset({"fastmoss__product_detail_info", "fastmoss__product_overview"}),
+        frozenset({"fastmoss__product_sales_trend"}),
+    )),
+    ("补充评论、达人和内容", (
+        frozenset({"fastmoss__product_review_list"}),
+        frozenset({"fastmoss__product_creator_analysis", "fastmoss__product_video_list"}),
+    )),
+)
+
 SELLERSPRITE_ASIN_TOOLS = {
     "asin_detail", "asin_detail_with_coupon_trend", "asin_sales_trend", "keepa_info", "review",
     "traffic_source", "traffic_keyword", "traffic_listing", "asin_coupon_trend", "asin_prediction",
@@ -4473,6 +4497,20 @@ def fastmoss_workflow_phase(
     }
     available = set(available_tool_ids or set())
     restrict_to_available = available_tool_ids is not None
+    if str(playbook_id or "") == "product":
+        for label, required_groups in FASTMOSS_PRODUCT_REQUIRED_GROUPS:
+            for group in required_groups:
+                candidates = set(group)
+                if restrict_to_available:
+                    candidates &= available
+                if not candidates or observed.intersection(candidates):
+                    continue
+                untried = candidates - attempted
+                if untried:
+                    return label, untried
+                # Every available alternative failed. The capability is exhausted;
+                # continue and make the limitation visible in the final answer.
+        return None
     for label, phase_tools in FASTMOSS_WORKFLOW_PHASES.get(str(playbook_id or ""), ()):
         candidates = set(phase_tools)
         if restrict_to_available:
@@ -4495,9 +4533,11 @@ def fastmoss_workflow_instruction(phase: tuple[str, set[str]] | None) -> str:
         return "FastMoss 分阶段采集已完成。请根据已有数据、空结果和失败结果直接回答，不再调用工具。"
     label, tool_ids = phase
     return (
-        f"当前 FastMoss 阶段：{label}。本轮只从以下工具中选择一个最相关的调用：{', '.join(sorted(tool_ids))}。"
+        f"当前 FastMoss 阶段：{label}。本轮从以下尚未完成的能力中调用一个工具：{', '.join(sorted(tool_ids))}。"
         "成功但为空也表示该接口已完成，不要重复调用；在最终答案中说明该维度本轮无数据即可。"
         "不要提前调用后续阶段工具，也不要复用历史任务中的商品、店铺、达人或视频 ID。"
+        "商品搜索的 total 只代表本次查询的匹配数，不是整个类目的商品数；空结果或少量样本不能推出‘无人做’、‘蓝海’或‘几乎没有竞争’。"
+        "没有 SellerSprite 证据时不得陈述 Amazon 的销量、需求或竞争结论。"
     )
 
 
@@ -5239,6 +5279,68 @@ def mcp_non_collection_evidence_present(value: Any, key: str = "") -> bool:
     return False
 
 
+def fastmoss_mcp_collection_content_state(value: Any) -> tuple[bool, bool]:
+    """Recognize FastMoss analytical series as collections without changing SellerSprite."""
+    collection_keys = {
+        "list", "items", "results", "products", "reviews", "videos", "shops", "stores",
+        "creators", "authors", "skus", "variants", "lives", "ads", "records", "rows",
+        "rankings", "ranked_categories", "top_products", "top_products_summary",
+        "trend_series", "daily_trend", "weekly_trend", "monthly_trend", "data_trends",
+        "product_count_price_distribution", "price_distribution", "gmv_distribution",
+        "units_sold_distribution", "sub_category_sales_changes", "breakdown", "distribution",
+    }
+    found = False
+    has_items = False
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if str(key).lower() in collection_keys and isinstance(item, (list, dict)):
+                found = True
+                has_items = has_items or payload_has_content(item)
+            child_found, child_has_items = fastmoss_mcp_collection_content_state(item)
+            found = found or child_found
+            has_items = has_items or child_has_items
+    elif isinstance(value, list):
+        for item in value:
+            child_found, child_has_items = fastmoss_mcp_collection_content_state(item)
+            found = found or child_found
+            has_items = has_items or child_has_items
+    return found, has_items
+
+
+def fastmoss_non_collection_evidence_present(value: Any, key: str = "") -> bool:
+    """Ignore FastMoss response metadata so zero-filled analysis is classified empty."""
+    ignored_keys = {
+        "code", "message", "msg", "success", "status", "total", "count", "total_count",
+        "page", "pagesize", "page_size", "has_more", "has_next", "request_id", "tool_id",
+        "analysis_type", "category", "category_id", "category_level", "category_name",
+        "region", "marketplace", "stat_date", "date_type", "date_value", "currency",
+        "currency_code", "currency_symbol", "lang", "params", "filters", "filter",
+    }
+    collection_keys = {
+        "list", "items", "results", "products", "reviews", "videos", "shops", "stores",
+        "creators", "authors", "skus", "variants", "lives", "ads", "records", "rows",
+        "rankings", "ranked_categories", "top_products", "top_products_summary",
+        "trend_series", "daily_trend", "weekly_trend", "monthly_trend", "data_trends",
+        "product_count_price_distribution", "price_distribution", "gmv_distribution",
+        "units_sold_distribution", "sub_category_sales_changes", "breakdown", "distribution",
+    }
+    normalized_key = str(key or "").lower()
+    if normalized_key in ignored_keys or normalized_key in collection_keys:
+        return False
+    if isinstance(value, dict):
+        return any(fastmoss_non_collection_evidence_present(item, str(item_key)) for item_key, item in value.items())
+    if isinstance(value, list):
+        return any(fastmoss_non_collection_evidence_present(item, key) for item in value)
+    if isinstance(value, str):
+        text = value.strip().lower()
+        return bool(text and text not in {"success", "ok", "null", "none", "{}", "[]"})
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return False
+
+
 def fastmoss_mcp_content_error(result: dict[str, Any], text: str, parsed: Any) -> str:
     payload = result.get("data") if isinstance(result, dict) else None
     if isinstance(payload, dict) and payload.get("isError") is True:
@@ -5283,11 +5385,17 @@ def normalize_prefixed_tool_result(tool_id: str, result: dict[str, Any]) -> dict
                 })
                 return normalized
             content_value = parsed if parsed is not None else text
-            collection_found, collection_has_items = mcp_collection_content_state(content_value)
-            has_content = (
-                collection_has_items or mcp_non_collection_evidence_present(content_value)
-                if collection_found else payload_has_content(content_value)
-            )
+            if domain == "fastmoss":
+                collection_found, collection_has_items = fastmoss_mcp_collection_content_state(content_value)
+                non_collection_content = fastmoss_non_collection_evidence_present(content_value)
+                has_content = collection_has_items or non_collection_content
+            else:
+                collection_found, collection_has_items = mcp_collection_content_state(content_value)
+                non_collection_content = mcp_non_collection_evidence_present(content_value)
+                has_content = (
+                    collection_has_items or non_collection_content
+                    if collection_found else payload_has_content(content_value)
+                )
             if text:
                 normalized["mcp_text_preview"] = text[:4000]
             if parsed is not None:
@@ -6012,6 +6120,164 @@ def fastmoss_known_category_ids(user_text: str, assistant_msg: Message) -> set[s
     return known
 
 
+def _fastmoss_category_path_from_value(value: Any) -> dict[str, int] | None:
+    if isinstance(value, dict):
+        levels: dict[str, int] = {}
+        for key, item in value.items():
+            normalized_key = re.sub(r"[^a-z0-9]", "", str(key).lower())
+            match = re.fullmatch(r"categoryidlevel([123])", normalized_key)
+            if match and re.fullmatch(r"\d{1,12}", str(item or "")):
+                levels[f"level{match.group(1)}"] = int(item)
+        if len(levels) == 3:
+            return levels
+        for item in value.values():
+            path = _fastmoss_category_path_from_value(item)
+            if path:
+                return path
+    elif isinstance(value, list):
+        for item in value:
+            path = _fastmoss_category_path_from_value(item)
+            if path:
+                return path
+    elif isinstance(value, str):
+        parsed = parse_mcp_text_content(value)
+        if parsed is not None and parsed is not value:
+            path = _fastmoss_category_path_from_value(parsed)
+            if path:
+                return path
+        levels = {}
+        for level, category_id in re.findall(
+            r'["\']category_?id_?level([123])["\']\s*:\s*["\']?(\d{1,12})',
+            value,
+            re.IGNORECASE,
+        ):
+            levels[f"level{level}"] = int(category_id)
+        if len(levels) == 3:
+            return levels
+    return None
+
+
+def fastmoss_current_category_path(assistant_msg: Message) -> dict[str, int] | None:
+    """Return the first score-ordered full category path from this task's category lookup."""
+    for item in assistant_msg.tool_results or []:
+        if not isinstance(item, dict) or item.get("tool_name") != "fastmoss__search_category_by_words":
+            continue
+        result = item.get("result")
+        if not isinstance(result, dict):
+            continue
+        for value in (result.get("mcp_data"), result.get("mcp_text_preview")):
+            path = _fastmoss_category_path_from_value(value)
+            if path:
+                return path
+    return None
+
+
+def fastmoss_completed_week(today: Any | None = None) -> str:
+    local_today = today or datetime.now(ZoneInfo("Asia/Shanghai")).date()
+    previous_sunday = local_today - timedelta(days=local_today.isoweekday())
+    iso_year, iso_week, _ = previous_sunday.isocalendar()
+    return f"{iso_year}-W{iso_week:02d}"
+
+
+def apply_fastmoss_business_defaults(
+    name: str,
+    args: dict[str, Any],
+    assistant_msg: Message,
+    today: Any | None = None,
+) -> dict[str, Any]:
+    """Fill FastMoss-only business defaults using the current task's verified category path."""
+    normalized = dict(args or {})
+    path = fastmoss_current_category_path(assistant_msg)
+    completed_week = fastmoss_completed_week(today)
+
+    def copied_filter() -> dict[str, Any]:
+        return dict(normalized.get("filter")) if isinstance(normalized.get("filter"), dict) else {}
+
+    if name == "market_category_analysis":
+        filters = copied_filter()
+        if path:
+            filters["category_id"] = path["level2"]
+        filters.setdefault("date_type", "week")
+        filters.setdefault("date_value", completed_week)
+        normalized["filter"] = filters
+        normalized.setdefault("analysis_type", "basic_metrics")
+        normalized.setdefault("lang", "ZH_CN")
+    elif name == "market_category_ranking":
+        filters = copied_filter()
+        if path:
+            filters["category_id"] = path["level1"]
+        filters.setdefault("date_type", "week")
+        filters.setdefault("date_value", completed_week)
+        normalized["filter"] = filters
+        normalized.setdefault("orderby", [{"field": "category_units_sold", "order": "desc"}])
+        normalized.setdefault("page", 1)
+        normalized.setdefault("pagesize", 10)
+        normalized.setdefault("lang", "ZH_CN")
+    elif name == "product_rank_top_selling":
+        filters = copied_filter()
+        if path:
+            # FastMoss category lookup explicitly instructs sales rankings to use
+            # category_id_level2; level-3 here commonly produces misleading empties.
+            filters["category_id"] = path["level2"]
+        filters.setdefault("date_type", "week")
+        filters.setdefault("date_value", completed_week)
+        normalized["filter"] = filters
+        normalized.setdefault("orderby", [{"field": "period_units_sold", "order": "desc"}])
+        normalized.setdefault("page", 1)
+        normalized.setdefault("pagesize", 10)
+    elif name == "product_rank_new_listed":
+        filters = copied_filter()
+        if path:
+            filters["category_id"] = path["level3"]
+            filters["category_l1_id"] = path["level1"]
+            filters["category_l2_id"] = path["level2"]
+            filters["category_l3_id"] = path["level3"]
+        local_today = today or datetime.now(ZoneInfo("Asia/Shanghai")).date()
+        listing_end = local_today - timedelta(days=4)
+        filters.setdefault("listing_start_date", (listing_end - timedelta(days=29)).isoformat())
+        filters.setdefault("listing_end_date", listing_end.isoformat())
+        normalized["filter"] = filters
+        normalized.setdefault("orderby", [{"field": "day3_units_sold", "order": "desc"}])
+        normalized.setdefault("page", 1)
+        normalized.setdefault("pagesize", 10)
+    elif name == "product_search":
+        filters = copied_filter()
+        if path:
+            filters["category_path"] = [path["level1"], path["level2"], path["level3"]]
+        normalized["filter"] = filters
+        normalized.setdefault("orderby", [{"field": "day28_units_sold", "order": "desc"}])
+        normalized.setdefault("page", 1)
+        normalized.setdefault("pagesize", 10)
+    return normalized
+
+
+def fastmoss_clarifying_question(provider: str, route: dict[str, Any], user_text: str) -> str | None:
+    """Ask only when a FastMoss analytical task has no identifiable research object."""
+    if normalize_chat_provider(provider) != "fastmoss":
+        return None
+    if str(route.get("task_depth") or "") not in {"analysis", "workflow"} and not route.get("playbook"):
+        return None
+    text = chat_routing_text(user_text)
+    if chat_query_uses_previous_entity(text) or fastmoss_exact_product_reference(text):
+        return None
+    entity = str(route.get("entity") or "").strip()
+    generic_entities = {"", "产品", "商品", "品类", "类目", "product", "category", "未知", "未指定"}
+    if entity.lower() not in generic_entities:
+        return None
+    remainder = re.sub(
+        r"(?i)fastmoss|tiktok\s*shop|tiktok|\btk\b|\bus\b|美国|美区|帮我|给我|请|做|一份|完整|详细|"
+        r"选品|定价|价格测算|市场|产品|商品|品类|类目|调研|研究|分析|报告|看看|一下|的|和|与|、|，|。|\s+",
+        "",
+        text,
+    )
+    if len(re.sub(r"[^A-Za-z0-9\u4e00-\u9fff]", "", remainder)) >= 2:
+        return None
+    return (
+        "请先告诉我想研究的具体商品或品类关键词，也可以直接发 TikTok Shop 商品链接/ID。"
+        "拿到研究对象后，我会默认按 TikTok Shop 美国区、最近已完成周期，并结合销量和 GMV 继续分析。"
+    )
+
+
 def fastmoss_deep_dive_call_error(
     tool_name: str,
     arguments: dict[str, Any],
@@ -6135,6 +6401,12 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     if provider_forces_mcp_tools(provider) and route_intent == "web_search" and not is_explicit_live_web_query(routing_text):
         route = {"intent": f"{provider}_lookup", "task_depth": "lookup", "route_source": route.get("route_source", "rules"), "tools": None, "max_rounds": 5}
         route_intent = str(route.get("intent") or "general")
+    clarification = fastmoss_clarifying_question(provider, route, routing_text)
+    if clarification:
+        print("[CHAT ROUTER] provider=fastmoss action=clarify_missing_entity", flush=True)
+        store.update_message(session, assistant_msg, clarification, status="done")
+        store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": clarification})
+        return
     route_tools = route.get("tools")
     force_mcp_tools = (
         provider_forces_mcp_tools(provider)
@@ -6369,6 +6641,8 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 domain, unprefixed_name = split_prefixed_tool_id(fn_name)
                 if domain in {"sellersprite", "fastmoss"}:
                     fn_args = apply_mcp_region_default(domain, unprefixed_name, fn_args, default_region)
+                if domain == "fastmoss" and route.get("playbook"):
+                    fn_args = apply_fastmoss_business_defaults(unprefixed_name, fn_args, assistant_msg)
                 signature = tool_call_signature(fn_name, fn_args)
                 if signature in seen_tool_calls:
                     print(f"[CHAT] skipped duplicate tool call: {fn_name} {fn_args}", flush=True)
