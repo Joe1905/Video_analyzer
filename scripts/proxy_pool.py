@@ -1226,6 +1226,100 @@ def _browser_ip_from_response(raw: str) -> str:
     return ""
 
 
+def _avatar_content_type(body: bytes) -> str:
+    if body.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if body.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if body.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if len(body) >= 12 and body.startswith(b"RIFF") and body[8:12] == b"WEBP":
+        return "image/webp"
+    raise ValueError("TikTok 头像不是支持的图片格式")
+
+
+def _account_avatar_path(account_id: int) -> Path:
+    if account_id <= 0:
+        raise ValueError("account_id is required")
+    return DATA_DIR / "tiktok_account_avatars" / f"{account_id}.img"
+
+
+def account_avatar_bytes(account_id: int) -> tuple[bytes, str]:
+    path = _account_avatar_path(account_id)
+    body = path.read_bytes()
+    return body, _avatar_content_type(body)
+
+
+def _write_account_avatar(account_id: int, body: bytes) -> str:
+    if not 256 <= len(body) <= 2 * 1024 * 1024:
+        raise ValueError("TikTok 头像文件大小异常")
+    _avatar_content_type(body)
+    path = _account_avatar_path(account_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_bytes(body)
+    temporary.replace(path)
+    return f"/api/proxy/accounts/avatar/{account_id}?v={path.stat().st_mtime_ns}"
+
+
+def _browser_account_avatar(debug_port: int) -> bytes:
+    try:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{debug_port}")
+            if not browser.contexts or not browser.contexts[0].pages:
+                raise ValueError("Chrome 没有可用的 TikTok 页面")
+            page = browser.contexts[0].pages[0]
+            page.wait_for_timeout(800)
+            result = page.evaluate(
+                """async () => {
+                    const rows = [...document.images].map((image) => {
+                        const rect = image.getBoundingClientRect();
+                        return {
+                            src: image.currentSrc || image.src || "",
+                            alt: image.alt || "",
+                            width: rect.width,
+                            height: rect.height,
+                        };
+                    });
+                    const candidates = rows.filter((row) =>
+                        row.src.startsWith("https://") &&
+                        row.src.includes("-avt-") &&
+                        !row.alt &&
+                        row.width >= 24 && row.width <= 44 &&
+                        row.height >= 24 && row.height <= 44
+                    );
+                    const counts = new Map();
+                    for (const candidate of candidates) {
+                        counts.set(candidate.src, (counts.get(candidate.src) || 0) + 1);
+                    }
+                    candidates.sort((left, right) =>
+                        (counts.get(right.src) - counts.get(left.src)) ||
+                        (Math.abs(left.width - 32) - Math.abs(right.width - 32))
+                    );
+                    if (!candidates.length) return {error: "当前 TikTok 页面未找到账号头像"};
+                    try {
+                        const response = await fetch(candidates[0].src, {cache: "force-cache"});
+                        if (!response.ok) return {error: `头像请求返回 HTTP ${response.status}`};
+                        const bytes = new Uint8Array(await response.arrayBuffer());
+                        let binary = "";
+                        for (let offset = 0; offset < bytes.length; offset += 8192) {
+                            binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
+                        }
+                        return {data: btoa(binary)};
+                    } catch (error) {
+                        return {error: String(error)};
+                    }
+                }"""
+            )
+        if not isinstance(result, dict) or not result.get("data"):
+            raise ValueError(str((result or {}).get("error") or "TikTok 头像读取失败"))
+        return base64.b64decode(str(result["data"]), validate=True)
+    except Exception as exc:
+        raise ValueError(f"TikTok 头像读取失败：{exc}") from exc
+
+
 def _detect_browser_exit_ip(debug_port: int) -> str:
     failures: list[str] = []
     try:
@@ -2297,6 +2391,24 @@ def start_login_session(payload: dict[str, Any]) -> dict[str, Any]:
                             account_id,
                         ),
                     )
+                stored_avatar = str(account_row["tiktok_avatar_url"] or "")
+                if not stored_avatar.startswith("/api/proxy/accounts/avatar/"):
+                    try:
+                        avatar_path = _account_avatar_path(account_id)
+                        avatar_url = (
+                            f"/api/proxy/accounts/avatar/{account_id}?v={avatar_path.stat().st_mtime_ns}"
+                            if avatar_path.is_file()
+                            else _write_account_avatar(
+                                account_id,
+                                _browser_account_avatar(int(slot_ports["debug_port"])),
+                            )
+                        )
+                        conn.execute(
+                            "UPDATE tiktok_accounts SET tiktok_avatar_url = ?, updated_at = ? WHERE id = ?",
+                            (avatar_url, now_iso(), account_id),
+                        )
+                    except Exception:
+                        pass
             preflight["browser_observed_ip"] = browser_observed_ip
             conn.execute(
                 """
