@@ -30,6 +30,7 @@ DEFAULT_NOVNC_PUBLIC_URL = os.getenv("NOVNC_PUBLIC_URL", "http://192.168.1.254:6
 DEFAULT_MIHOMO_API = os.getenv("MIHOMO_API_URL", "http://127.0.0.1:9090")
 PROXY_PORT_START = int(os.getenv("PROXY_POOL_PORT_START", "18900") or "18900")
 PROXY_PORT_END = int(os.getenv("PROXY_POOL_PORT_END", "18999") or "18999")
+PROXY_RECHECK_DELAYS_SECONDS = (5 * 60, 10 * 60, 30 * 60)
 NOVNC_PORT = int(os.getenv("NOVNC_PORT", "6080") or "6080")
 NOVNC_MANUAL_PORTS = int(os.getenv("NOVNC_MANUAL_PORTS", "1") or "1")
 VNC_PORT = int(os.getenv("VNC_PORT", "5900") or "5900")
@@ -145,7 +146,10 @@ def init_db(conn: sqlite3.Connection) -> None:
             detected_region TEXT NOT NULL DEFAULT '',
             detected_city TEXT NOT NULL DEFAULT '',
             detected_address TEXT NOT NULL DEFAULT '',
-            detected_at TEXT NOT NULL DEFAULT ''
+            detected_at TEXT NOT NULL DEFAULT '',
+            auto_check_failures INTEGER NOT NULL DEFAULT 0,
+            next_auto_check_at TEXT NOT NULL DEFAULT '',
+            last_auto_check_at TEXT NOT NULL DEFAULT ''
         );
         CREATE TABLE IF NOT EXISTS tiktok_accounts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -330,6 +334,9 @@ def init_db(conn: sqlite3.Connection) -> None:
         "detected_city": "TEXT NOT NULL DEFAULT ''",
         "detected_address": "TEXT NOT NULL DEFAULT ''",
         "detected_at": "TEXT NOT NULL DEFAULT ''",
+        "auto_check_failures": "INTEGER NOT NULL DEFAULT 0",
+        "next_auto_check_at": "TEXT NOT NULL DEFAULT ''",
+        "last_auto_check_at": "TEXT NOT NULL DEFAULT ''",
     }.items():
         existing = {row[1] for row in conn.execute("PRAGMA table_info(proxy_profiles)")}
         if name not in existing:
@@ -570,6 +577,9 @@ def _row_to_pool(row: sqlite3.Row, account_count: int = 0, account_names: list[s
         "detected_city": row["detected_city"],
         "detected_address": row["detected_address"],
         "detected_at": row["detected_at"],
+        "auto_check_failures": int(row["auto_check_failures"] or 0),
+        "next_auto_check_at": row["next_auto_check_at"],
+        "last_auto_check_at": row["last_auto_check_at"],
         "status": _clean_status(row["status"]),
         "notes": row["notes"],
         "parse_status": row["parse_status"],
@@ -2129,6 +2139,48 @@ def _stored_account_identity(account: sqlite3.Row, pool: sqlite3.Row) -> dict[st
     return _tiktok_identity(body) if ok else {}
 
 
+def _proxy_recheck_at(delay_seconds: int) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + delay_seconds))
+
+
+def _schedule_proxy_recheck(conn: sqlite3.Connection, pool_id: int, error: str) -> str:
+    row = conn.execute(
+        "SELECT auto_check_failures FROM proxy_profiles WHERE id = ?",
+        (pool_id,),
+    ).fetchone()
+    failures = int(row["auto_check_failures"] or 0) + 1 if row else 1
+    delay = PROXY_RECHECK_DELAYS_SECONDS[min(failures - 1, len(PROXY_RECHECK_DELAYS_SECONDS) - 1)]
+    checked_at = now_iso()
+    next_check_at = _proxy_recheck_at(delay)
+    conn.execute(
+        """UPDATE proxy_profiles
+           SET status = ?, parse_error = ?, auto_check_failures = ?,
+               last_auto_check_at = ?, next_auto_check_at = ?, updated_at = ?
+           WHERE id = ?""",
+        (STATUS_ERROR, _clean_text(error, 1000), failures, checked_at, next_check_at, checked_at, pool_id),
+    )
+    return next_check_at
+
+
+def _clear_proxy_recheck(conn: sqlite3.Connection, pool_id: int, observed_ip: str, checked_at: str) -> None:
+    conn.execute(
+        """UPDATE proxy_profiles
+           SET status = ?, parse_error = '', auto_check_failures = 0,
+               last_auto_check_at = ?, next_auto_check_at = '', updated_at = ?
+           WHERE id = ?""",
+        (STATUS_ACTIVE, checked_at, checked_at, pool_id),
+    )
+    conn.execute(
+        """UPDATE tiktok_accounts
+           SET last_checked_ip = ?, last_check_status = '通过', last_check_at = ?,
+               last_error = '',
+               status = CASE WHEN last_check_status IN ('阻断', 'blocked') THEN ? ELSE status END,
+               updated_at = ?
+           WHERE proxy_profile_id = ? AND deleted_at = ''""",
+        (observed_ip, checked_at, ACCOUNT_STATUS_ACTIVE, checked_at, pool_id),
+    )
+
+
 def check_binding(payload: dict[str, Any], require_account: bool = False) -> dict[str, Any]:
     observed_ip = _clean_text(payload.get("observed_ip") or payload.get("current_ip"), 80)
     detected: dict[str, Any] = {}
@@ -2138,7 +2190,13 @@ def check_binding(payload: dict[str, Any], require_account: bool = False) -> dic
         if require_account and account is None:
             raise ValueError("account_id or username is required")
         if not observed_ip:
-            detected = detect_exit_ip_for_pool(pool)
+            try:
+                detected = detect_exit_ip_for_pool(pool)
+            except Exception as exc:
+                if _clean_status(pool["status"]) != STATUS_PAUSED:
+                    _schedule_proxy_recheck(conn, int(pool["id"]), str(exc))
+                    conn.commit()
+                raise
             observed_ip = str(detected.get("ip") or "")
         if not observed_ip:
             raise ValueError("服务器未能自动查询到出口 IP")
@@ -2158,6 +2216,8 @@ def check_binding(payload: dict[str, Any], require_account: bool = False) -> dic
             reason = f"代理状态为 {next_pool_status}"
         else:
             reason = "通过"
+        if should_bind and not allowed and next_pool_status != STATUS_PAUSED:
+            next_pool_status = STATUS_ERROR
         geo = detected.get("geo") or lookup_ip_geo(observed_ip)
         conn.execute("""
                 UPDATE proxy_profiles
@@ -2166,6 +2226,10 @@ def check_binding(payload: dict[str, Any], require_account: bool = False) -> dic
                     status = ?, region = COALESCE(NULLIF(?, ''), region), updated_at = ?
                 WHERE id = ?
                 """, (expected_ip, observed_ip, geo.get("country", ""), geo.get("region", ""), geo.get("city", ""), geo.get("address", ""), now, next_pool_status, geo.get("region", ""), now, pool["id"]))
+        if allowed:
+            _clear_proxy_recheck(conn, int(pool["id"]), observed_ip, now)
+        elif next_pool_status == STATUS_ERROR:
+            _schedule_proxy_recheck(conn, int(pool["id"]), reason)
         if account is not None:
             identity = _stored_account_identity(account, pool) if allowed else {}
             conn.execute(
@@ -2206,6 +2270,39 @@ def check_binding(payload: dict[str, Any], require_account: bool = False) -> dic
             "account": _row_to_account(account) if account is not None else None,
             "detected": detected,
         }
+
+
+def recheck_unavailable_proxies() -> dict[str, Any]:
+    now = now_iso()
+    with connect() as conn:
+        unscheduled = conn.execute(
+            "SELECT id, parse_error FROM proxy_profiles WHERE status = ? AND next_auto_check_at = ''",
+            (STATUS_ERROR,),
+        ).fetchall()
+        for row in unscheduled:
+            _schedule_proxy_recheck(conn, int(row["id"]), str(row["parse_error"] or "代理当前不可用"))
+        conn.commit()
+        due_ids = [
+            int(row["id"])
+            for row in conn.execute(
+                """SELECT id FROM proxy_profiles
+                   WHERE status = ? AND next_auto_check_at <> '' AND next_auto_check_at <= ?
+                   ORDER BY next_auto_check_at, id""",
+                (STATUS_ERROR, now),
+            ).fetchall()
+        ]
+    recovered: list[int] = []
+    failed: list[dict[str, Any]] = []
+    for pool_id in due_ids:
+        try:
+            result = check_binding({"proxy_profile_id": pool_id, "bind": True})
+            if result.get("allowed"):
+                recovered.append(pool_id)
+            else:
+                failed.append({"id": pool_id, "error": str(result.get("reason") or "校验未通过")})
+        except Exception as exc:
+            failed.append({"id": pool_id, "error": str(exc)})
+    return {"checked_at": now, "attempted": len(due_ids), "recovered": recovered, "failed": failed}
 
 
 def _session_by_id(conn: sqlite3.Connection, session_id: int) -> sqlite3.Row:
