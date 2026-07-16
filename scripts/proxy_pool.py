@@ -2147,22 +2147,45 @@ def _proxy_recheck_at(delay_seconds: int) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + delay_seconds))
 
 
-def _schedule_proxy_recheck(conn: sqlite3.Connection, pool_id: int, error: str) -> str:
+def _schedule_proxy_recheck(
+    conn: sqlite3.Connection,
+    pool_id: int,
+    error: str,
+    expected_token: str = "",
+) -> str:
     row = conn.execute(
-        "SELECT auto_check_failures FROM proxy_profiles WHERE id = ?",
+        "SELECT status, auto_check_failures, next_auto_check_at FROM proxy_profiles WHERE id = ?",
         (pool_id,),
     ).fetchone()
+    if expected_token and (
+        not row
+        or _clean_status(row["status"]) != STATUS_ERROR
+        or str(row["next_auto_check_at"] or "") != expected_token
+    ):
+        return ""
     failures = int(row["auto_check_failures"] or 0) + 1 if row else 1
     delay = PROXY_RECHECK_DELAYS_SECONDS[min(failures - 1, len(PROXY_RECHECK_DELAYS_SECONDS) - 1)]
     checked_at = now_iso()
     next_check_at = _proxy_recheck_at(delay)
-    conn.execute(
-        """UPDATE proxy_profiles
-           SET status = ?, parse_error = ?, auto_check_failures = ?,
-               last_auto_check_at = ?, next_auto_check_at = ?, updated_at = ?
-           WHERE id = ?""",
-        (STATUS_ERROR, _clean_text(error, 1000), failures, checked_at, next_check_at, checked_at, pool_id),
-    )
+    query = """UPDATE proxy_profiles
+               SET status = ?, parse_error = ?, auto_check_failures = ?,
+                   last_auto_check_at = ?, next_auto_check_at = ?, updated_at = ?
+               WHERE id = ?"""
+    params: list[Any] = [
+        STATUS_ERROR,
+        _clean_text(error, 1000),
+        failures,
+        checked_at,
+        next_check_at,
+        checked_at,
+        pool_id,
+    ]
+    if expected_token:
+        query += " AND status = ? AND next_auto_check_at = ?"
+        params.extend((STATUS_ERROR, expected_token))
+    updated = conn.execute(query, params)
+    if expected_token and updated.rowcount == 0:
+        return ""
     return next_check_at
 
 
@@ -2197,6 +2220,7 @@ def _clear_proxy_recheck(conn: sqlite3.Connection, pool_id: int, observed_ip: st
 
 def check_binding(payload: dict[str, Any], require_account: bool = False) -> dict[str, Any]:
     observed_ip = _clean_text(payload.get("observed_ip") or payload.get("current_ip"), 80)
+    recheck_token = _clean_text(payload.get("_recheck_token"), 80)
     detected: dict[str, Any] = {}
     now = now_iso()
     with connect() as conn:
@@ -2208,12 +2232,29 @@ def check_binding(payload: dict[str, Any], require_account: bool = False) -> dic
                 detected = detect_exit_ip_for_pool(pool)
             except Exception as exc:
                 if _clean_status(pool["status"]) != STATUS_PAUSED:
-                    _schedule_proxy_recheck(conn, int(pool["id"]), str(exc))
+                    _schedule_proxy_recheck(conn, int(pool["id"]), str(exc), recheck_token)
                     conn.commit()
                 raise
             observed_ip = str(detected.get("ip") or "")
         if not observed_ip:
             raise ValueError("服务器未能自动查询到出口 IP")
+        if recheck_token:
+            current = conn.execute(
+                "SELECT status, next_auto_check_at FROM proxy_profiles WHERE id = ?",
+                (int(pool["id"]),),
+            ).fetchone()
+            if (
+                not current
+                or _clean_status(current["status"]) != STATUS_ERROR
+                or str(current["next_auto_check_at"] or "") != recheck_token
+            ):
+                return {
+                    "allowed": False,
+                    "reason": "自动校验结果已过期",
+                    "stale": True,
+                    "observed_ip": observed_ip,
+                    "expected_exit_ip": str(pool["expected_exit_ip"] or "").strip(),
+                }
         expected_ip = str(pool["expected_exit_ip"] or "").strip()
         should_bind = str(payload.get("bind") or "").lower() in {"1", "true", "yes", "on"}
         if not expected_ip and should_bind:
@@ -2233,17 +2274,25 @@ def check_binding(payload: dict[str, Any], require_account: bool = False) -> dic
         if should_bind and not allowed and next_pool_status != STATUS_PAUSED:
             next_pool_status = STATUS_ERROR
         geo = detected.get("geo") or lookup_ip_geo(observed_ip)
-        conn.execute("""
+        updated = conn.execute("""
                 UPDATE proxy_profiles
                 SET expected_exit_ip = ?, detected_exit_ip = ?, detected_country = ?,
                     detected_region = ?, detected_city = ?, detected_address = ?, detected_at = ?,
                     status = ?, region = COALESCE(NULLIF(?, ''), region), updated_at = ?
-                WHERE id = ?
-                """, (expected_ip, observed_ip, geo.get("country", ""), geo.get("region", ""), geo.get("city", ""), geo.get("address", ""), now, next_pool_status, geo.get("region", ""), now, pool["id"]))
+                WHERE id = ? AND (? = '' OR (status = ? AND next_auto_check_at = ?))
+                """, (expected_ip, observed_ip, geo.get("country", ""), geo.get("region", ""), geo.get("city", ""), geo.get("address", ""), now, next_pool_status, geo.get("region", ""), now, pool["id"], recheck_token, STATUS_ERROR, recheck_token))
+        if recheck_token and updated.rowcount == 0:
+            return {
+                "allowed": False,
+                "reason": "自动校验结果已过期",
+                "stale": True,
+                "observed_ip": observed_ip,
+                "expected_exit_ip": expected_ip,
+            }
         if allowed:
             _clear_proxy_recheck(conn, int(pool["id"]), observed_ip, now)
         elif next_pool_status == STATUS_ERROR:
-            _schedule_proxy_recheck(conn, int(pool["id"]), reason)
+            _schedule_proxy_recheck(conn, int(pool["id"]), reason, recheck_token)
         if account is not None:
             identity = _stored_account_identity(account, pool) if allowed else {}
             conn.execute(
@@ -2296,10 +2345,10 @@ def recheck_unavailable_proxies() -> dict[str, Any]:
         for row in unscheduled:
             _schedule_proxy_recheck(conn, int(row["id"]), str(row["parse_error"] or "代理当前不可用"))
         conn.commit()
-        due_ids = [
-            int(row["id"])
+        due_pools = [
+            (int(row["id"]), str(row["next_auto_check_at"] or ""))
             for row in conn.execute(
-                """SELECT id FROM proxy_profiles
+                """SELECT id, next_auto_check_at FROM proxy_profiles
                    WHERE status = ? AND next_auto_check_at <> '' AND next_auto_check_at <= ?
                    ORDER BY next_auto_check_at, id""",
                 (STATUS_ERROR, now),
@@ -2307,16 +2356,20 @@ def recheck_unavailable_proxies() -> dict[str, Any]:
         ]
     recovered: list[int] = []
     failed: list[dict[str, Any]] = []
-    for pool_id in due_ids:
+    for pool_id, recheck_token in due_pools:
         try:
-            result = check_binding({"proxy_profile_id": pool_id, "bind": True})
+            result = check_binding(
+                {"proxy_profile_id": pool_id, "bind": True, "_recheck_token": recheck_token}
+            )
             if result.get("allowed"):
                 recovered.append(pool_id)
+            elif result.get("stale"):
+                continue
             else:
                 failed.append({"id": pool_id, "error": str(result.get("reason") or "校验未通过")})
         except Exception as exc:
             failed.append({"id": pool_id, "error": str(exc)})
-    return {"checked_at": now, "attempted": len(due_ids), "recovered": recovered, "failed": failed}
+    return {"checked_at": now, "attempted": len(due_pools), "recovered": recovered, "failed": failed}
 
 
 def _session_by_id(conn: sqlite3.Connection, session_id: int) -> sqlite3.Row:
