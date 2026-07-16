@@ -9375,6 +9375,8 @@ class Handler(BaseHTTPRequestHandler):
                 return json_response(self, HTTPStatus.OK, tiktok_studio_collect.retry_job(payload))
             if path == "/api/proxy/collect/jobs/cancel":
                 return json_response(self, HTTPStatus.OK, tiktok_studio_collect.cancel_job(payload))
+            if path == "/api/proxy/collect/results/resync":
+                return json_response(self, HTTPStatus.OK, tiktok_studio_collect.retry_failed_feishu_sync(payload))
             return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
         except ValueError as exc:
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})

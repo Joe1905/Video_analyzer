@@ -176,6 +176,16 @@ def _target_key(target: dict[str, Any]) -> str:
     return f"{app}:{table}" if app and table else ""
 
 
+def _job_feishu_target(job: dict[str, Any]) -> dict[str, Any]:
+    target = job.get("feishu_target")
+    if isinstance(target, str):
+        target = _json_loads(target, {})
+    if isinstance(target, dict) and _target_key(target):
+        return target
+    target = _json_loads(job.get("feishu_target_json"), {})
+    return target if isinstance(target, dict) else {}
+
+
 def _validate_feishu_target(value: Any) -> dict[str, Any]:
     requested = value if isinstance(value, dict) else _json_loads(value, {})
     key = _target_key(requested)
@@ -535,7 +545,7 @@ def _set_result_sync(result_id: int, status: str, record_id: str = "", error: st
 
 
 def _sync_result_to_feishu(result_id: int, job: dict[str, Any], payload: dict[str, Any]) -> None:
-    target = _json_loads(job.get("feishu_target_json"), {})
+    target = _job_feishu_target(job)
     try:
         fields = _feishu_fields(target, payload)
         request = {
@@ -581,7 +591,9 @@ def _sync_result_to_feishu(result_id: int, job: dict[str, Any], payload: dict[st
 
 def _save_result(job: dict[str, Any], payload: dict[str, Any]) -> None:
     video = payload.get("video") or {}
-    target_json = str(job.get("feishu_target_json") or "{}")
+    target_json = json.dumps(
+        _job_feishu_target(job), ensure_ascii=False, separators=(",", ":")
+    )
     with proxy_pool.connect() as conn:
         conn.execute(
             """
@@ -622,6 +634,74 @@ def _save_result(job: dict[str, Any], payload: dict[str, Any]) -> None:
         conn.commit()
     if result:
         _sync_result_to_feishu(int(result["id"]), job, payload)
+
+
+def retry_failed_feishu_sync(payload: dict[str, Any]) -> dict[str, Any]:
+    job_id = _clean_text(payload.get("job_id"), 80)
+    account_id = int(payload.get("account_id") or 0)
+    if not job_id and not account_id:
+        raise ValueError("job_id or account_id is required")
+    clauses = ["r.feishu_sync_status = 'failed'"]
+    params: list[Any] = []
+    if job_id:
+        clauses.append("r.job_id = ?")
+        params.append(job_id)
+    if account_id:
+        clauses.append("r.account_id = ?")
+        params.append(account_id)
+    with proxy_pool.connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT r.id, r.account_id, r.payload_json, r.feishu_target_json,
+                   j.feishu_target_json AS job_target_json
+            FROM collect_results r
+            JOIN collect_jobs j ON j.id = r.job_id
+            WHERE {' AND '.join(clauses)}
+            ORDER BY r.id
+            LIMIT 200
+            """,
+            params,
+        ).fetchall()
+    outcomes: list[dict[str, Any]] = []
+    for row in rows:
+        target = _json_loads(row["job_target_json"], {})
+        if not isinstance(target, dict) or not _target_key(target):
+            target = _json_loads(row["feishu_target_json"], {})
+        if not isinstance(target, dict):
+            target = {}
+        result_id = int(row["id"])
+        with proxy_pool.connect() as conn:
+            conn.execute(
+                """
+                UPDATE collect_results
+                SET feishu_target_json = ?, feishu_sync_status = 'pending',
+                    feishu_sync_error = '', feishu_synced_at = ''
+                WHERE id = ?
+                """,
+                (json.dumps(target, ensure_ascii=False, separators=(",", ":")), result_id),
+            )
+            conn.commit()
+        _sync_result_to_feishu(
+            result_id,
+            {"account_id": int(row["account_id"]), "feishu_target": target},
+            _json_loads(row["payload_json"], {}),
+        )
+        with proxy_pool.connect() as conn:
+            updated = conn.execute(
+                """
+                SELECT id, feishu_sync_status, feishu_record_id,
+                       feishu_sync_error, feishu_synced_at
+                FROM collect_results WHERE id = ?
+                """,
+                (result_id,),
+            ).fetchone()
+        outcomes.append(dict(updated))
+    return {
+        "attempted": len(outcomes),
+        "synced": sum(1 for item in outcomes if item["feishu_sync_status"] == "synced"),
+        "failed": sum(1 for item in outcomes if item["feishu_sync_status"] == "failed"),
+        "results": outcomes,
+    }
 
 
 def _first_visible(locators: list[Any]) -> Any | None:
