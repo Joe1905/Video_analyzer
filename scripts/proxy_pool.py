@@ -1272,7 +1272,19 @@ def _browser_account_avatar(debug_port: int) -> bytes:
             if not browser.contexts or not browser.contexts[0].pages:
                 raise ValueError("Chrome 没有可用的 TikTok 页面")
             page = browser.contexts[0].pages[0]
-            page.wait_for_timeout(800)
+            try:
+                page.wait_for_function(
+                    """() => [...document.images].some((image) => {
+                        const rect = image.getBoundingClientRect();
+                        const src = image.currentSrc || image.src || "";
+                        return src.startsWith("https://") && src.includes("-avt-") &&
+                            !image.alt && rect.width >= 24 && rect.width <= 44 &&
+                            rect.height >= 24 && rect.height <= 44;
+                    })""",
+                    timeout=5000,
+                )
+            except Exception:
+                pass
             result = page.evaluate(
                 """async () => {
                     const rows = [...document.images].map((image) => {
@@ -2588,6 +2600,11 @@ def inspect_login_session(payload: dict[str, Any]) -> dict[str, Any]:
                 "status": "duplicate_account",
                 "reason": f"@{username} 已在账号池中，请关闭此次通道并从账号列表唤醒",
             }
+    avatar_body = b""
+    try:
+        avatar_body = _browser_account_avatar(int(row["debug_port"] or 0))
+    except Exception:
+        pass
     result = upsert_account(
         {
             "username": username,
@@ -2602,13 +2619,32 @@ def inspect_login_session(payload: dict[str, Any]) -> dict[str, Any]:
             "notes": "TikTok 登录成功后自动绑定",
         }
     )
+    account_id = int(result["account"]["id"])
+    avatar_url = ""
+    if avatar_body:
+        try:
+            avatar_url = _write_account_avatar(account_id, avatar_body)
+        except Exception:
+            pass
+    updated_at = now_iso()
     with connect() as conn:
         conn.execute(
-            "UPDATE tiktok_accounts SET last_login_at = ?, last_error = '', updated_at = ? WHERE id = ?",
-            (now_iso(), now_iso(), result["account"]["id"]),
+            """UPDATE tiktok_accounts
+               SET last_login_at = ?,
+                   last_error = '',
+                   tiktok_avatar_url = COALESCE(NULLIF(?, ''), tiktok_avatar_url),
+                   updated_at = ?
+               WHERE id = ?""",
+            (updated_at, avatar_url, updated_at, account_id),
         )
         conn.commit()
-    return {"active": True, "bound": True, "status": "bound", **result}
+    return {
+        "active": True,
+        "bound": True,
+        "status": "bound",
+        "account": get_account(account_id),
+        **list_state(),
+    }
 
 
 def update_account_status(payload: dict[str, Any]) -> dict[str, Any]:
