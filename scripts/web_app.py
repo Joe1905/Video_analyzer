@@ -5586,11 +5586,17 @@ def chat_max_tool_rounds(provider: str, route: dict[str, Any], tool_count: int) 
         base = max(base, 3)
     if tool_count >= 20 and intent != "general":
         base = max(base, 7)
-    if provider == "fastmoss" and route.get("playbook") == "product" and route.get("full_ranking"):
-        base = max(base, 17)
-        limit = 17
+    if provider == "fastmoss" and route.get("playbook") == "product":
+        if route.get("full_ranking"):
+            base = max(base, 17)
+            limit = 17
+        else:
+            # Product research completes category/market discovery before the
+            # deterministic three-page category head and two segment searches.
+            base = max(base, 14)
+            limit = 14
     else:
-        limit = 14 if provider == "fastmoss" and route.get("playbook") == "product" else 10
+        limit = 10
     return min(base, limit)
 
 

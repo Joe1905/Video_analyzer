@@ -1080,6 +1080,7 @@ def test_fastmoss_business_defaults_use_verified_category_levels() -> None:
 
 
 def test_fastmoss_product_workflow_keeps_its_round_budget_isolated() -> None:
+    assert web_app.chat_max_tool_rounds("fastmoss", {"playbook": "product"}, 2) == 14
     assert web_app.chat_max_tool_rounds("fastmoss", {"playbook": "product", "max_rounds": 14}, 2) == 14
     assert web_app.chat_max_tool_rounds(
         "fastmoss", {"playbook": "product", "max_rounds": 14, "full_ranking": True}, 2
