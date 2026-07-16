@@ -4520,7 +4520,8 @@ def fastmoss_segment_keywords(user_text: str, route: dict[str, Any] | None = Non
         source = chat_routing_text(user_text)
         source = re.sub(
             r"(?i)fastmoss|tiktok\s*shop|tiktok|\btk\b|美国|美区|调研报告|调研|研究|分析|报告|"
-            r"选品|定价|价格测算|市场机会|产品机会|商品机会|给我|帮我|请|做一份|看看|一下",
+            r"选品|定价|价格测算|市场机会|产品机会|商品机会|给我一份|帮我做一份|做一份|"
+            r"给我|帮我|请|一份|这类产品的|这类产品|这类商品的|这类商品|看看|一下",
             " ",
             source,
         )

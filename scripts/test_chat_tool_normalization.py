@@ -1103,6 +1103,9 @@ def test_fastmoss_product_workflow_keeps_its_round_budget_isolated() -> None:
 def test_fastmoss_research_report_uses_product_playbook_on_rule_fallback() -> None:
     text = "给我一份 Electric Food Shredder, Mini Meat Grinder 这类产品的调研报告"
     assert web_app.fastmoss_playbook_intent(text) == "product"
+    assert web_app.fastmoss_segment_keywords(text, {"playbook": "product"}) == [
+        "Electric Food Shredder", "Mini Meat Grinder",
+    ]
     route = web_app.route_chat_intent(text, "fastmoss")
     assert route["intent"] == "fastmoss_product"
     assert route["playbook"] == "product"
