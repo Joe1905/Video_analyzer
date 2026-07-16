@@ -4529,14 +4529,19 @@ def fastmoss_segment_keywords(user_text: str, route: dict[str, Any] | None = Non
     source = re.sub(r"\s+", " ", str(route.get("entity") or "")).strip()
     if not source:
         source = chat_routing_text(user_text)
-        source = re.sub(
-            r"(?i)fastmoss|tiktok\s*shop|tiktok|\btk\b|美国|美区|调研报告|调研|研究|分析|报告|"
-            r"选品|定价|价格测算|市场机会|产品机会|商品机会|给我一份|帮我做一份|做一份|"
-            r"给我|帮我|请|一份|这类产品的|这类产品|这类商品的|这类商品|看看|一下",
-            " ",
-            source,
-        )
-    parts = re.split(r"\s*(?:/|、|,|，|;|；|\||\band\b|\bor\b|以及|或者|或)\s*", source, flags=re.IGNORECASE)
+    source = re.sub(
+        r"目标类目\s*(?:已)?(?:明确)?\s*(?:选择|选|为|是)?\s*[^。！？!?，,;；]{1,40}[。！？!?，,;；]?",
+        " ",
+        source,
+    )
+    source = re.sub(
+        r"(?i)fastmoss|tiktok\s*shop|tiktok|\btk\b|美国|美区|完整调研报告|调研报告|调研|研究|分析|报告|完整|"
+        r"选品|定价|价格测算|市场机会|产品机会|商品机会|给我一份|帮我做一份|做一份|"
+        r"给我|帮我|请|一份|这类产品的|这类产品|这类商品的|这类商品|看看|一下",
+        " ",
+        source,
+    )
+    parts = re.split(r"\s*(?:/|、|,|，|;|；|\||\band\b|\bor\b|以及|或者|和|或)\s*", source, flags=re.IGNORECASE)
     keywords: list[str] = []
     for part in parts:
         cleaned = re.sub(r"^[\s\-:：]+|[\s\-:：。？?！!]+$", "", part)
