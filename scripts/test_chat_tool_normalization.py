@@ -973,6 +973,11 @@ def test_fastmoss_business_defaults_use_verified_category_levels() -> None:
     assert search["filter"]["category_path"] == [13, 844168, 935176]
 
 
+def test_fastmoss_product_workflow_keeps_its_round_budget_isolated() -> None:
+    assert web_app.chat_max_tool_rounds("fastmoss", {"playbook": "product", "max_rounds": 14}, 2) == 14
+    assert web_app.chat_max_tool_rounds("amazon", {"max_rounds": 14}, 20) == 10
+
+
 def test_fastmoss_clarification_is_targeted_and_provider_isolated() -> None:
     route = {"intent": "fastmoss_product", "task_depth": "workflow", "playbook": "product", "entity": ""}
     question = web_app.fastmoss_clarifying_question("fastmoss", route, "帮我做一份选品报告")
@@ -1106,6 +1111,7 @@ if __name__ == "__main__":
     test_fastmoss_workflow_phases_accept_empty_and_error_attempts()
     test_fastmoss_product_phase_requires_complete_sample_coverage()
     test_fastmoss_business_defaults_use_verified_category_levels()
+    test_fastmoss_product_workflow_keeps_its_round_budget_isolated()
     test_fastmoss_clarification_is_targeted_and_provider_isolated()
     test_provider_profiles_use_aggregated_sellersprite_and_staged_fastmoss_tools()
     test_region_default_only_applies_when_schema_supports_it()

@@ -5439,7 +5439,8 @@ def chat_max_tool_rounds(provider: str, route: dict[str, Any], tool_count: int) 
         base = max(base, 3)
     if tool_count >= 20 and intent != "general":
         base = max(base, 7)
-    return min(base, 10)
+    limit = 14 if provider == "fastmoss" and route.get("playbook") == "product" else 10
+    return min(base, limit)
 
 
 def tools_for_chat_intent(user_text: str, enabled: set[str] | None) -> tuple[list[dict], dict[str, Any]]:
