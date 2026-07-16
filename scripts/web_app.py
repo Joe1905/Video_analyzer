@@ -3937,7 +3937,11 @@ FASTMOSS_PLAYBOOKS: dict[str, dict[str, Any]] = {
 def fastmoss_playbook_intent(text: str) -> str | None:
     lowered = str(text or "").lower()
     rules = (
-        ("product", ("选品", "产品机会", "商品机会", "品类机会", "值得做", "值不值得进", "进入窗口", "跟卖", "product opportunity", "product selection", "what to sell")),
+        ("product", (
+            "选品", "产品机会", "商品机会", "品类机会", "调研报告", "品类调研", "市场调研",
+            "值得做", "值不值得进", "进入窗口", "跟卖", "product opportunity", "product selection",
+            "research report", "category research", "what to sell",
+        )),
         ("competitor", ("竞品", "竞争对手", "对手店铺", "竞店", "competitor", "rival")),
         ("shop", ("店铺拆解", "店铺诊断", "店铺分析", "分析店铺", "店铺体检", "小店分析", "shop diagnosis", "store diagnosis", "analyze shop")),
         ("pricing", ("定价", "价格测算", "价格带", "上市价", "建议售价", "售价建议", "价格策略", "月度gmv", "月度 gmv", "pricing", "price band", "launch price", "monthly gmv")),

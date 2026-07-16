@@ -1100,6 +1100,14 @@ def test_fastmoss_product_workflow_keeps_its_round_budget_isolated() -> None:
     assert web_app.chat_max_tool_rounds("amazon", {"max_rounds": 14}, 20) == 10
 
 
+def test_fastmoss_research_report_uses_product_playbook_on_rule_fallback() -> None:
+    text = "给我一份 Electric Food Shredder, Mini Meat Grinder 这类产品的调研报告"
+    assert web_app.fastmoss_playbook_intent(text) == "product"
+    route = web_app.route_chat_intent(text, "fastmoss")
+    assert route["intent"] == "fastmoss_product"
+    assert route["playbook"] == "product"
+
+
 def test_fastmoss_clarification_is_targeted_and_provider_isolated() -> None:
     route = {"intent": "fastmoss_product", "task_depth": "workflow", "playbook": "product", "entity": ""}
     question = web_app.fastmoss_clarifying_question("fastmoss", route, "帮我做一份选品报告")
