@@ -13,6 +13,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
@@ -26,6 +27,7 @@ MAX_UPLOAD_BYTES = int(os.getenv("TIKTOK_PUBLISH_MAX_BYTES", str(2 * 1024 * 1024
 TIMEZONE_NAME = os.getenv("TZ", "America/Los_Angeles") or "America/Los_Angeles"
 NATIVE_MIN_MINUTES = max(15, int(os.getenv("TIKTOK_NATIVE_SCHEDULE_MIN_MINUTES", "20") or "20"))
 DRY_RUN = os.getenv("TIKTOK_PUBLISH_DRY_RUN", "1").strip().lower() in {"1", "true", "yes", "on"}
+FINAL_CLICK_ENABLED = os.getenv("TIKTOK_PUBLISH_FINAL_CLICK_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
 UPLOAD_TIMEOUT_SECONDS = max(60, int(os.getenv("TIKTOK_PUBLISH_UPLOAD_TIMEOUT_SECONDS", "1800") or "1800"))
 ALLOWED_SUFFIXES = {".mp4", ".mov", ".m4v", ".webm"}
 EDITABLE_STATUSES = {"draft", "queued", "delayed", "failed", "cancelled", "dry_run", "manual_ready"}
@@ -58,6 +60,14 @@ SAFE_POPUP_BUTTONS = {
     "maybe later": "maybe later",
     "not now": "not now",
     "skip": "skip",
+}
+
+SAFE_PAGE_RECOVERY_BUTTONS = {
+    **SAFE_POPUP_BUTTONS,
+    "continue": "continue",
+    "discard": "discard",
+    "reload": "reload",
+    "retry": "retry",
 }
 
 _worker_started = False
@@ -430,6 +440,7 @@ def runtime_status() -> dict[str, Any]:
     return {
         "worker_started": _worker_started,
         "dry_run": DRY_RUN,
+        "final_click_enabled": FINAL_CLICK_ENABLED,
         "timezone": TIMEZONE_NAME,
         "max_automatic_slots": proxy_pool.browser_max_slots(),
         "active_jobs": active,
@@ -761,6 +772,237 @@ def _handle_parameter_popup(page: Any, log_dir: Path, step: str) -> bool:
     raise ManualReviewRequired(f"参数页出现未识别弹窗，已保留观测通道：{reason}")
 
 
+def _page_details(page: Any) -> tuple[str, list[str]]:
+    try:
+        text = _clean_text(page.locator("body").inner_text(timeout=3000), 3000)
+    except Exception:
+        text = ""
+    buttons: list[str] = []
+    try:
+        locator = page.get_by_role("button")
+        for index in range(min(locator.count(), 30)):
+            item = locator.nth(index)
+            try:
+                label = _clean_text(item.inner_text(), 80) if item.is_visible() else ""
+            except Exception:
+                label = ""
+            if label and label not in buttons:
+                buttons.append(label)
+    except Exception:
+        pass
+    return text, buttons
+
+
+def _page_is_blank(page: Any) -> bool:
+    text, _buttons = _page_details(page)
+    if len(text) >= 40:
+        return False
+    try:
+        controls = page.locator("input, textarea, button, [role='button'], [role='dialog']")
+        for index in range(min(controls.count(), 30)):
+            if controls.nth(index).is_visible():
+                return False
+    except Exception:
+        pass
+    return True
+
+
+def _vision_page_recovery_decision(
+    snapshot: Path,
+    step: str,
+    page_url: str,
+    page_text: str,
+    buttons: list[str],
+    error: str,
+) -> dict[str, Any]:
+    api_key = os.getenv("VISION_API_KEY", "").strip()
+    api_url = os.getenv("VISION_API_URL", "").strip().rstrip("/")
+    model = os.getenv("VISION_MODEL", "qwen3-vl-flash").strip() or "qwen3-vl-flash"
+    if not api_key or not api_url:
+        return {"action": "manual_review", "reason": "视觉模型未配置"}
+    if not api_url.endswith("/chat/completions"):
+        api_url += "/chat/completions"
+    encoded = base64.b64encode(snapshot.read_bytes()).decode("ascii")
+    prompt = (
+        "分析 TikTok Studio 自动发布过程中遇到的异常页面，只返回 JSON："
+        '{"action":"reload|click|manual_review","button_text":"","x":0,"y":0,"reason":""}。'
+        "页面空白、主体未加载或网络加载明显失败时可以选择 reload；"
+        "click 只能选择候选按钮中的 Continue、Discard、Reload、Retry、Cancel、Close、Got it、Later、Not now、Skip；"
+        "禁止选择 Post、Publish、Next、Add、Confirm、Delete、Schedule、Now，也禁止提交或发布内容。"
+        "不能确定时必须选择 manual_review。"
+        f"\n步骤：{step}\nURL：{page_url}\n错误：{error}\n页面文字：{page_text}\n候选按钮：{buttons}"
+    )
+    payload = {
+        "model": model,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{encoded}"}},
+            ],
+        }],
+        "temperature": 0,
+        "max_tokens": 260,
+    }
+    request = Request(
+        api_url,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    with urlopen(request, timeout=45) as response:
+        response_body = json.loads(response.read().decode("utf-8"))
+    content = str(response_body["choices"][0]["message"]["content"])
+    match = re.search(r"\{.*\}", content, re.S)
+    if not match:
+        return {"action": "manual_review", "reason": "视觉模型未返回 JSON"}
+    parsed = json.loads(match.group(0))
+    return {
+        "action": _clean_text(parsed.get("action"), 40),
+        "button_text": _clean_text(parsed.get("button_text"), 80),
+        "x": parsed.get("x"),
+        "y": parsed.get("y"),
+        "reason": _clean_text(parsed.get("reason"), 300),
+    }
+
+
+def _click_safe_page_button(page: Any, button_text: str, x: Any, y: Any) -> bool:
+    button = _first_visible([
+        page.get_by_role("button", name=re.compile(rf"^{re.escape(button_text)}$", re.I)),
+    ])
+    if not button:
+        return False
+    box = button.bounding_box()
+    if not box:
+        return False
+    try:
+        click_x = float(x)
+        click_y = float(y)
+    except (TypeError, ValueError):
+        click_x = box["x"] + box["width"] / 2
+        click_y = box["y"] + box["height"] / 2
+    if not (box["x"] <= click_x <= box["x"] + box["width"] and box["y"] <= click_y <= box["y"] + box["height"]):
+        click_x = box["x"] + box["width"] / 2
+        click_y = box["y"] + box["height"] / 2
+    page.mouse.click(click_x, click_y)
+    page.wait_for_timeout(1200)
+    return True
+
+
+def _recover_unexpected_page(page: Any, log_dir: Path, step: str, error: Exception | str) -> bool:
+    snapshot = _popup_snapshot(page, log_dir, f"page-{step}")
+    page_text, buttons = _page_details(page)
+    blank = _page_is_blank(page)
+    try:
+        decision = _vision_page_recovery_decision(
+            snapshot,
+            step,
+            page.url,
+            page_text,
+            buttons,
+            _clean_text(error, 500),
+        )
+    except Exception as exc:
+        decision = {"action": "manual_review", "reason": f"视觉模型调用失败：{exc}"}
+    if blank and decision.get("action") == "manual_review":
+        decision = {
+            "source": "blank_page_safe_fallback",
+            "action": "reload",
+            "button_text": "",
+            "reason": "截图和 DOM 均显示 TikTok Studio 主体为空，执行一次安全刷新",
+        }
+    (log_dir / f"page-{step}-decision.json").write_text(
+        json.dumps(decision, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    action = str(decision.get("action") or "").strip().lower()
+    host = (urlparse(page.url).hostname or "").lower()
+    if action == "reload" and (host == "tiktok.com" or host.endswith(".tiktok.com")):
+        page.reload(wait_until="domcontentloaded", timeout=60000)
+        page.wait_for_timeout(2500)
+        return True
+    button_text = str(decision.get("button_text") or "").strip()
+    if (
+        action == "click"
+        and button_text.lower() in SAFE_PAGE_RECOVERY_BUTTONS
+        and button_text in buttons
+        and _click_safe_page_button(page, button_text, decision.get("x"), decision.get("y"))
+    ):
+        return True
+    reason = str(decision.get("reason") or "页面不属于可自动恢复的安全类型")
+    raise ManualReviewRequired(f"页面异常，已保留观测通道：{reason}")
+
+
+def _discard_stale_edit(page: Any, log_dir: Path) -> bool:
+    notice = _first_visible([
+        page.get_by_text(re.compile(r"video you were editing.*(?:wasn't|was not) saved|continue editing", re.I)),
+    ])
+    if not notice:
+        return False
+    discard = _first_visible([
+        page.get_by_role("button", name=re.compile(r"^discard$|^放弃$|^丢弃$", re.I)),
+    ])
+    if not discard:
+        raise ManualReviewRequired("检测到未保存的旧视频提示，但没有找到 Discard 按钮")
+    page.screenshot(path=str(log_dir / "stale-edit-before-discard.png"), full_page=False)
+    discard.click(timeout=5000)
+    page.wait_for_timeout(1500)
+    page.screenshot(path=str(log_dir / "stale-edit-discarded.png"), full_page=False)
+    return True
+
+
+def _ensure_studio_page(page: Any, log_dir: Path) -> None:
+    parsed = urlparse(page.url)
+    already_in_studio = (parsed.hostname or "").endswith("tiktok.com") and parsed.path.startswith("/tiktokstudio")
+    if already_in_studio and not _page_is_blank(page):
+        return
+    if already_in_studio and _recover_unexpected_page(page, log_dir, "studio-blank", "TikTok Studio 页面主体为空"):
+        if not _page_is_blank(page):
+            return
+    target = "https://www.tiktok.com/tiktokstudio?lang=en"
+    for attempt in range(2):
+        try:
+            page.goto(target, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(2500)
+            if not _page_is_blank(page):
+                return
+            raise RuntimeError("TikTok Studio 页面主体为空")
+        except Exception as exc:
+            if attempt == 0 and _recover_unexpected_page(page, log_dir, "studio-navigation", exc):
+                if not _page_is_blank(page):
+                    return
+                continue
+            raise ManualReviewRequired(f"TikTok Studio 无法加载，已保留观测通道：{exc}") from exc
+
+
+def _ensure_upload_page(page: Any, log_dir: Path) -> None:
+    if "/tiktokstudio/upload" in page.url and not _page_is_blank(page):
+        return
+    upload_link = _first_visible([
+        page.locator("a[href*='/tiktokstudio/upload']"),
+        page.get_by_role("link", name=re.compile(r"upload|create|上传|发布", re.I)),
+        page.get_by_role("button", name=re.compile(r"upload|create|上传|发布", re.I)),
+    ])
+    if upload_link:
+        upload_link.click(timeout=5000)
+        page.wait_for_timeout(1800)
+        if "/tiktokstudio/upload" in page.url and not _page_is_blank(page):
+            return
+    target = "https://www.tiktok.com/tiktokstudio/upload?from=creator_center&tab=video"
+    for attempt in range(2):
+        try:
+            page.goto(target, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(2500)
+            if not _page_is_blank(page):
+                return
+            raise RuntimeError("TikTok Studio 上传页主体为空")
+        except Exception as exc:
+            if attempt == 0 and _recover_unexpected_page(page, log_dir, "upload-navigation", exc):
+                if not _page_is_blank(page):
+                    return
+                continue
+            raise ManualReviewRequired(f"TikTok Studio 上传页无法加载，已保留观测通道：{exc}") from exc
+
+
 def _run_parameter_step(page: Any, log_dir: Path, step: str, action: Any) -> None:
     try:
         action()
@@ -776,6 +1018,14 @@ def _run_parameter_step(page: Any, log_dir: Path, step: str, action: Any) -> Non
             except Exception as retry_error:
                 raise ManualReviewRequired(
                     f"{step} 参数设置失败，已保留观测通道：{retry_error}"
+                ) from retry_error
+        if _recover_unexpected_page(page, log_dir, step, first_error):
+            try:
+                action()
+                return
+            except Exception as retry_error:
+                raise ManualReviewRequired(
+                    f"{step} 页面恢复后参数设置仍失败，已保留观测通道：{retry_error}"
                 ) from retry_error
         raise ManualReviewRequired(f"{step} 参数设置失败，已保留观测通道：{first_error}") from first_error
 
@@ -1012,14 +1262,87 @@ def _cancel_product_link(page: Any) -> None:
 
 
 def _find_product_row(page: Any, product_id: str) -> Any | None:
-    rows = page.locator("tr")
-    for index in range(min(rows.count(), 80)):
-        row = rows.nth(index)
+    dialog = _visible_dialog(page)
+    root = dialog if dialog else page
+    for selector in ("tr", "[role='row']"):
+        rows = root.locator(selector)
+        for index in range(min(rows.count(), 80)):
+            row = rows.nth(index)
+            try:
+                if row.is_visible() and product_id in row.inner_text():
+                    return row
+            except Exception:
+                continue
+    return None
+
+
+def _wait_for_product_row(page: Any, product_id: str, timeout_ms: int = 8000) -> Any | None:
+    deadline = time.time() + timeout_ms / 1000
+    while time.time() < deadline:
+        row = _find_product_row(page, product_id)
+        if row:
+            return row
+        page.wait_for_timeout(300)
+    return None
+
+
+def _trigger_product_search(page: Any, search: Any) -> None:
+    wrapper = search.locator("xpath=..")
+    search_button = _first_visible([
+        wrapper.get_by_role("button", name=re.compile(r"search|搜索", re.I)),
+        wrapper.locator("button"),
+        wrapper.locator("[role='button']"),
+        search.locator("xpath=following-sibling::button[1]"),
+        search.locator("xpath=following-sibling::*[@role='button'][1]"),
+    ])
+    if search_button:
+        search_button.click(timeout=5000)
+    else:
+        search.press("Enter")
+
+
+def _search_product(page: Any, search: Any, query: str, product_id: str, log_dir: Path, label: str) -> Any | None:
+    search.fill(query)
+    _trigger_product_search(page, search)
+    page.wait_for_timeout(1200)
+    page.screenshot(path=str(log_dir / f"product-search-{label}.png"), full_page=True)
+    return _wait_for_product_row(page, product_id)
+
+
+def _scan_product_pages(page: Any, product_id: str, log_dir: Path) -> Any | None:
+    row = _find_product_row(page, product_id)
+    if row:
+        return row
+    dialog = _visible_dialog(page)
+    root = dialog if dialog else page
+    page_buttons = root.get_by_role("button", name=re.compile(r"^\d+$"))
+    page_numbers: list[int] = []
+    for index in range(min(page_buttons.count(), 30)):
+        button = page_buttons.nth(index)
         try:
-            if row.is_visible() and product_id in row.inner_text():
-                return row
+            label = button.inner_text().strip()
+            number = int(label)
+            if button.is_visible() and 1 <= number <= 30 and number not in page_numbers:
+                page_numbers.append(number)
         except Exception:
             continue
+    for number in sorted(page_numbers):
+        button = _first_visible([
+            root.get_by_role("button", name=re.compile(rf"^{number}$")),
+        ])
+        if not button:
+            continue
+        try:
+            if button.get_attribute("aria-current") == "page":
+                continue
+        except Exception:
+            pass
+        button.click(timeout=5000)
+        page.wait_for_timeout(1200)
+        page.screenshot(path=str(log_dir / f"product-page-{number}.png"), full_page=True)
+        row = _wait_for_product_row(page, product_id, 3000)
+        if row:
+            return row
     return None
 
 
@@ -1055,6 +1378,7 @@ def _add_product_link(page: Any, product_id: str, log_dir: Path) -> None:
         next_button.click(timeout=5000)
         page.wait_for_timeout(900)
 
+    page.screenshot(path=str(log_dir / "product-list-initial.png"), full_page=True)
     row = _find_product_row(page, product["product_id"])
     if not row:
         search = _first_visible([
@@ -1062,27 +1386,33 @@ def _add_product_link(page: Any, product_id: str, log_dir: Path) -> None:
             page.locator("input[placeholder*='search products' i]"),
         ])
         if not search:
-            _cancel_product_link(page)
-            raise ProductLinkUnavailable(f"当前账号没有商品 ID {product['product_id']}，且页面没有搜索框，已取消 Add link")
-        search.fill(product["product_id"])
-        search_button = _first_visible([
-            search.locator("xpath=..").locator(".product-search-icon"),
-            search.locator("xpath=..").locator(".TUXTextInputCore-trailingIconWrapper"),
-            search.locator("xpath=following-sibling::button[1]"),
-            search.locator("xpath=following-sibling::*[1]"),
-            search.locator("xpath=../following-sibling::button[1]"),
-            search.locator("xpath=../following-sibling::*[1]"),
-            search.locator("xpath=..").locator("[role='button']"),
-        ])
-        if search_button:
-            search_button.click(timeout=5000)
+            row = _scan_product_pages(page, product["product_id"], log_dir)
+            if not row:
+                _cancel_product_link(page)
+                raise ProductLinkUnavailable(
+                    f"当前账号没有商品 ID {product['product_id']}，且页面没有搜索框，已遍历分页并取消 Add link"
+                )
         else:
-            search.press("Enter")
-        page.wait_for_timeout(1200)
-        row = _find_product_row(page, product["product_id"])
+            row = _search_product(
+                page, search, product["product_id"], product["product_id"], log_dir, "id"
+            )
+            if not row:
+                row = _scan_product_pages(page, product["product_id"], log_dir)
+            if not row and product["product_name"]:
+                row = _search_product(
+                    page, search, product["product_name"], product["product_id"], log_dir, "name"
+                )
+            if not row:
+                search.fill("")
+                _trigger_product_search(page, search)
+                page.wait_for_timeout(1200)
+                row = _scan_product_pages(page, product["product_id"], log_dir)
     if not row:
+        page.screenshot(path=str(log_dir / "product-not-found.png"), full_page=True)
         _cancel_product_link(page)
-        raise ProductLinkUnavailable(f"当前账号未找到商品 ID {product['product_id']}，已取消 Add link")
+        raise ProductLinkUnavailable(
+            f"当前账号搜索及分页均未找到商品 ID {product['product_id']}，已取消 Add link"
+        )
 
     row.scroll_into_view_if_needed(timeout=3000)
     selector = _first_visible([row.locator("input[type='radio']")])
@@ -1161,23 +1491,13 @@ def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[str,
             except Exception:
                 pass
             page.wait_for_timeout(2000)
-            _assert_account_ready(page)
-            page.goto("https://www.tiktok.com/tiktokstudio?lang=en", wait_until="domcontentloaded", timeout=60000)
-            page.wait_for_timeout(2500)
+            _ensure_studio_page(page, log_dir)
             _assert_account_ready(page)
             _skip_onboarding(page)
-            upload_link = _first_visible([
-                page.locator("a[href*='/tiktokstudio/upload']"),
-                page.get_by_role("link", name=re.compile(r"upload|create|上传|发布", re.I)),
-                page.get_by_role("button", name=re.compile(r"upload|create|上传|发布", re.I)),
-            ])
-            if upload_link:
-                upload_link.click()
-                page.wait_for_timeout(1500)
-            if "/tiktokstudio/upload" not in page.url:
-                page.goto("https://www.tiktok.com/tiktokstudio/upload?from=creator_center&tab=video", wait_until="domcontentloaded", timeout=60000)
+            _ensure_upload_page(page, log_dir)
             _skip_onboarding(page)
             _assert_account_ready(page)
+            _discard_stale_edit(page, log_dir)
             _set_job(job["id"], "uploading", "uploading", session_id=session["id"])
             _set_video_file(page, video)
             page.wait_for_timeout(3000)
@@ -1218,7 +1538,7 @@ def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[str,
             page.screenshot(path=str(log_dir / "ready-to-publish.png"), full_page=True)
             if job["product_link"]:
                 _add_product_link(page, str(job["product_link"]), log_dir)
-            if DRY_RUN:
+            if DRY_RUN or not FINAL_CLICK_ENABLED:
                 return "dry_run", page.url
             _set_job(job["id"], "publishing", "final_click", session_id=session["id"], final_click_at=_iso())
             post_button.click()
