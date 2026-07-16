@@ -2084,7 +2084,7 @@ def detect_exit_ip_for_pool(pool: sqlite3.Row) -> dict[str, Any]:
     else:
         switch = _switch_mihomo_node(node_name)
         proxy_port = int(os.getenv("MIHOMO_PROXY_PORT", "7890") or "7890")
-    target = os.getenv("PROXY_IP_CHECK_URL", "http://ip-api.com/json/?fields=status,country,regionName,city,query")
+    target = os.getenv("PROXY_IP_CHECK_URL", "https://ifconfig.co/json")
     ok, body, error = _proxy_get_json(target, proxy_port)
     if not ok or not isinstance(body, dict):
         raise ValueError(f"通过服务器 mihomo 查询出口 IP 失败：{error}")
