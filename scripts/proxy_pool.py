@@ -275,7 +275,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             account_id INTEGER PRIMARY KEY REFERENCES tiktok_accounts(id) ON DELETE CASCADE,
             enabled INTEGER NOT NULL DEFAULT 0,
             daily_time TEXT NOT NULL DEFAULT '03:00',
-            max_videos INTEGER NOT NULL DEFAULT 20,
+            max_videos INTEGER NOT NULL DEFAULT 0,
+            date_rule TEXT NOT NULL DEFAULT 'previous_day',
             publish_date_start TEXT NOT NULL DEFAULT '',
             publish_date_end TEXT NOT NULL DEFAULT '',
             feishu_target_json TEXT NOT NULL DEFAULT '{}',
@@ -289,7 +290,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             proxy_profile_id INTEGER NOT NULL REFERENCES proxy_profiles(id) ON DELETE RESTRICT,
             trigger_type TEXT NOT NULL DEFAULT 'manual',
             schedule_date TEXT NOT NULL DEFAULT '',
-            max_videos INTEGER NOT NULL DEFAULT 20,
+            max_videos INTEGER NOT NULL DEFAULT 0,
             publish_date_start TEXT NOT NULL DEFAULT '',
             publish_date_end TEXT NOT NULL DEFAULT '',
             feishu_target_json TEXT NOT NULL DEFAULT '{}',
@@ -432,6 +433,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     collect_columns = {
         "collect_settings": {
             "feishu_target_json": "TEXT NOT NULL DEFAULT '{}'",
+            "date_rule": "TEXT NOT NULL DEFAULT 'previous_day'",
             "publish_date_start": "TEXT NOT NULL DEFAULT ''",
             "publish_date_end": "TEXT NOT NULL DEFAULT ''",
         },
