@@ -785,6 +785,7 @@ def test_tool_limit_final_context_removes_protocol_and_detects_dsml() -> None:
 
     messages = [
         {"role": "user", "content": "分析产品", "_context_scope": "history"},
+        {"role": "assistant", "content": "感谢认可，继续做1688比价", "_context_scope": "current"},
         {
             "role": "assistant",
             "content": dsml,
@@ -793,11 +794,13 @@ def test_tool_limit_final_context_removes_protocol_and_detects_dsml() -> None:
         },
         {"role": "tool", "tool_call_id": "call_1", "content": '{"trend":"up"}', "_context_scope": "current"},
     ]
-    final_context = build_tool_limit_final_context(messages)
+    final_context = build_tool_limit_final_context(messages, "分析产品")
     assert all(message.get("role") != "tool" for message in final_context)
     assert all(not message.get("tool_calls") for message in final_context)
     assert all("DSML" not in str(message.get("content") or "") for message in final_context)
+    assert all("感谢认可" not in str(message.get("content") or "") for message in final_context)
     assert any("completed_tool_collection" in str(message.get("content") or "") for message in final_context)
+    assert any("original_user_request" in str(message.get("content") or "") for message in final_context)
 
 
 def test_sellersprite_schema_argument_normalization() -> None:
