@@ -2177,8 +2177,18 @@ def _clear_proxy_recheck(conn: sqlite3.Connection, pool_id: int, observed_ip: st
     conn.execute(
         """UPDATE tiktok_accounts
            SET last_checked_ip = ?, last_check_status = '通过', last_check_at = ?,
-               last_error = '',
-               status = CASE WHEN last_check_status IN ('阻断', 'blocked') THEN ? ELSE status END,
+               last_error = CASE
+                   WHEN last_check_status IN ('阻断', 'blocked')
+                        OR last_error LIKE '%出口 IP%'
+                        OR last_error LIKE '%代理 IP%'
+                        OR last_error LIKE '%mihomo%'
+                   THEN '' ELSE last_error END,
+               status = CASE
+                   WHEN last_check_status IN ('阻断', 'blocked')
+                        OR last_error LIKE '%出口 IP%'
+                        OR last_error LIKE '%代理 IP%'
+                        OR last_error LIKE '%mihomo%'
+                   THEN ? ELSE status END,
                updated_at = ?
            WHERE proxy_profile_id = ? AND deleted_at = ''""",
         (observed_ip, checked_at, ACCOUNT_STATUS_ACTIVE, checked_at, pool_id),
