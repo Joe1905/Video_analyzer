@@ -4691,6 +4691,17 @@ def fastmoss_full_ranking_requested(user_text: str) -> bool:
 def fastmoss_segment_keywords(user_text: str, route: dict[str, Any] | None = None) -> list[str]:
     """Derive at most two short, independent segment phrases from the current task."""
     route = route or {}
+    override = route.get("segment_keywords")
+    if isinstance(override, list):
+        inherited: list[str] = []
+        for item in override:
+            keyword = re.sub(r"\s+", " ", str(item or "")).strip()[:80]
+            if keyword and keyword.casefold() not in {value.casefold() for value in inherited}:
+                inherited.append(keyword)
+            if len(inherited) >= 2:
+                break
+        if inherited:
+            return inherited
     source = re.sub(r"\s+", " ", str(route.get("entity") or "")).strip()
     if not source:
         source = chat_routing_text(user_text)
@@ -4721,6 +4732,27 @@ def fastmoss_segment_keywords(user_text: str, route: dict[str, Any] | None = Non
         if len(keywords) >= 2:
             break
     return keywords
+
+
+def fastmoss_inherited_segment_keywords(session_messages: list[Message], current_text: str) -> list[str]:
+    """Keep the original product phrases when a follow-up only confirms category or continuation."""
+    if not chat_query_uses_previous_entity(current_text):
+        return []
+    prior_questions = [
+        chat_routing_text(str(message.content or ""))
+        for message in session_messages
+        if message.role == "user" and chat_routing_text(str(message.content or ""))
+    ]
+    if prior_questions:
+        prior_questions = prior_questions[:-1]
+    best: list[str] = []
+    for question in reversed(prior_questions[-4:]):
+        candidate = fastmoss_segment_keywords(question)
+        if len(candidate) > len(best):
+            best = candidate
+        if len(best) >= 2:
+            break
+    return best
 
 
 def _fastmoss_product_search_call_arguments(assistant_msg: Message) -> list[dict[str, Any]]:
@@ -6544,6 +6576,13 @@ def fastmoss_deterministic_quality_fallback(manifest: dict[str, Any]) -> str:
     fetched = int(category.get("fetched_unique") or 0)
     target_pages = int(category.get("target_pages") or 3)
     completed_pages = category.get("completed_pages") or []
+    overlap_count = len(manifest.get("overlap_product_ids") or [])
+    unit_values = [
+        value for product in products
+        for value in [_fastmoss_number(product.get("day28_units_sold"))]
+        if value is not None and value >= 0
+    ]
+    top3_share = (sum(unit_values[:3]) / sum(unit_values) * 100) if sum(unit_values) > 0 else None
     price_values = [
         value for product in products
         for value in (_fastmoss_number(product.get("price_min")), _fastmoss_number(product.get("price_max")))
@@ -6553,14 +6592,14 @@ def fastmoss_deterministic_quality_fallback(manifest: dict[str, Any]) -> str:
         "## 先说结论",
         "",
         (
-            f"这轮已经取得 {fetched} 件类目头部样本，可以先用来观察头部商品格局；"
-            "现有证据可以支持样本层面的判断，但还不足以替你下“蓝海”“低竞争”或“值得进入”的强结论。"
+            f"这轮已经取得 {fetched} 件类目头部样本和 {len(segment_products)} 件细分匹配样本。"
+            "它们足够用来判断头部格局与目标细分是否对得上，但还不足以替你下“蓝海”“低竞争”或“值得进入”的强结论。"
         ),
         "",
         "## 我怎么看",
         "",
-        "- 现有样本更适合判断头部商品和销量排序，不适合代表整个类目的完整规模。",
-        "- 真正值得先确认的是头部商品是否与目标细分一致，以及价格、销量和 GMV 能否相互校验。",
+        "- 我更看重类目头部榜与细分匹配榜的交集，而不是关键词搜索返回了多少条；交集越少，越需要警惕类目口径过宽或产品定位跑偏。",
+        "- 现有样本适合判断头部商品和销量排序，不适合代表整个类目的完整规模。价格、销量和 GMV 也要先互相校验，再进入定价判断。",
         "",
         "## 关键依据",
     ]
@@ -6570,8 +6609,15 @@ def fastmoss_deterministic_quality_fallback(manifest: dict[str, Any]) -> str:
     )
     if category.get("reported_total") is not None:
         lines.append(f"- 接口报告匹配总数为 {category['reported_total']}；该数字与本次实际获取数量不是同一概念。")
-    if manifest.get("target_category_path"):
-        lines.append(f"- 本轮确认的目标类目路径：{manifest['target_category_path']}。")
+    target_path = manifest.get("target_category_path")
+    if isinstance(target_path, dict):
+        ordered_path = [f"L{level} {target_path.get(f'level{level}')}" for level in (1, 2, 3) if target_path.get(f"level{level}")]
+        if ordered_path:
+            lines.append(f"- 本轮确认的目标类目路径：{' > '.join(ordered_path)}。")
+    elif target_path:
+        lines.append(f"- 本轮确认的目标类目路径：{target_path}。")
+    if top3_share is not None:
+        lines.append(f"- 在本轮已获取样本中，销量前三商品合计占样本销量约 {top3_share:.1f}%；这只是样本集中度，不是全市场份额。")
     if products:
         lines.extend([
             "", "## 类目头部样本", "",
@@ -6585,7 +6631,7 @@ def fastmoss_deterministic_quality_fallback(manifest: dict[str, Any]) -> str:
             if price_max not in (None, "", price_min):
                 price += f"–{price_max}"
             lines.append(
-                f"| {str(product.get('title') or '未返回标题').replace('|', '/')} | {product.get('product_id')} | "
+                f"| {str(product.get('title') or '未返回标题').replace('|', '/')[:120]} | {product.get('product_id')} | "
                 f"{price} | {product.get('day28_units_sold', '未返回')} | {product.get('day28_gmv', '未返回')} |"
             )
     if segment_products:
@@ -6597,11 +6643,15 @@ def fastmoss_deterministic_quality_fallback(manifest: dict[str, Any]) -> str:
         for product in segment_products[:8]:
             lines.append(
                 f"| {str(product.get('query') or '未记录').replace('|', '/')} | "
-                f"{str(product.get('title') or '未返回标题').replace('|', '/')} | {product.get('product_id')} | "
+                f"{str(product.get('title') or '未返回标题').replace('|', '/')[:120]} | {product.get('product_id')} | "
                 f"{product.get('day28_units_sold', '未返回')} |"
             )
-        overlap_count = len(manifest.get("overlap_product_ids") or [])
         lines.extend(["", f"- 类目头部榜与细分匹配榜共有 {overlap_count} 件重合商品。"])
+    else:
+        lines.extend([
+            "", "## 细分匹配样本", "",
+            "- 本轮细分关键词接口没有形成可用商品样本，因此不能据此判断目标细分没有需求，也不能把宽类目头部直接当成目标产品的头部。",
+        ])
     lines.extend(["", "## 价格与定位", ""])
     if price_values:
         lines.append(
@@ -7555,6 +7605,10 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     messages.extend(history_messages)
 
     route = resolve_chat_intent(session.messages, user_text, provider, api_key, api_url, model, req)
+    if provider == "fastmoss":
+        inherited_segment_keywords = fastmoss_inherited_segment_keywords(session.messages, routing_text)
+        if inherited_segment_keywords:
+            route["segment_keywords"] = inherited_segment_keywords
     if provider == "fastmoss" and route.get("playbook") == "product" and fastmoss_full_ranking_requested(routing_text):
         route["full_ranking"] = True
     route_intent = str(route.get("intent") or "general")

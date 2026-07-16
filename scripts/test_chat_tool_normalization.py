@@ -1200,6 +1200,15 @@ def test_fastmoss_research_report_uses_product_playbook_on_rule_fallback() -> No
     route = web_app.route_chat_intent(text, "fastmoss")
     assert route["intent"] == "fastmoss_product"
     assert route["playbook"] == "product"
+    messages = [
+        SimpleNamespace(role="user", content=text),
+        SimpleNamespace(role="assistant", content="请选择第二个类目"),
+        SimpleNamespace(role="user", content="第二个，料理机。请继续生成完整调研报告。"),
+    ]
+    inherited = web_app.fastmoss_inherited_segment_keywords(messages, messages[-1].content)
+    assert inherited == ["Electric Food Shredder", "Mini Meat Grinder"]
+    assert web_app.fastmoss_segment_keywords(messages[-1].content, {"segment_keywords": inherited}) == inherited
+    assert web_app.fastmoss_inherited_segment_keywords(messages, "重新调研 air fryer") == []
 
 
 def test_fastmoss_clarification_is_targeted_and_provider_isolated() -> None:
