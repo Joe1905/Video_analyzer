@@ -6366,6 +6366,22 @@ def fastmoss_deterministic_quality_fallback(manifest: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def downgrade_fastmoss_absolute_market_claims(answer: str) -> str:
+    """Mechanically soften market-existence/opportunity claims that samples cannot prove."""
+    text = str(answer or "")
+    text = re.sub(
+        r"(?:不构成|不存在)(?:一个)?独立市场",
+        "在本次已获取样本中尚未显示出足以确认独立市场的强信号",
+        text,
+    )
+    text = re.sub(
+        r"(?:是|属于)(?:一个)?真实(?:的)?细分机会",
+        "在本次样本中显示出一定需求信号，但是否构成可进入机会仍需验证",
+        text,
+    )
+    return text
+
+
 def verify_fastmoss_final_answer(
     draft: str,
     assistant_msg: Message,
@@ -6389,7 +6405,9 @@ def verify_fastmoss_final_answer(
                 "approved (boolean), risk_level (low|medium|high|critical), issues (array of strings), rewritten_answer (string). "
                 "Check every numeric/market claim against the evidence manifest. Reject category-level overreach, treating fetched count as total, "
                 "ignoring partial pagination or sort anomalies, undisclosed metric conflicts, and unsupported claims of low competition, structural opportunity, "
-                "lifecycle stage, or content causality. If risk is high/critical, provide one complete corrected Simplified Chinese answer. "
+                "lifecycle stage, or content causality. A keyword sample, empty result, or partial ranking can never prove that a market does not exist, "
+                "does not constitute an independent market, or is a real opportunity; such wording must be downgraded to a sample-limited signal and validation need. "
+                "If risk is high/critical, provide one complete corrected Simplified Chinese answer. "
                 "If risk is low/medium, rewritten_answer may be empty. Do not add facts absent from the manifest."
             ),
         }, {
@@ -6434,8 +6452,8 @@ def verify_fastmoss_final_answer(
             rewritten = str(decision.get("rewritten_answer") or "").strip()
             if not rewritten:
                 return fastmoss_deterministic_quality_fallback(manifest)
-            return rewritten
-        return draft
+            return downgrade_fastmoss_absolute_market_claims(rewritten)
+        return downgrade_fastmoss_absolute_market_claims(draft)
     except Exception as exc:
         print(f"[CHAT] FastMoss answer verifier failed: {type(exc).__name__}: {str(exc)[:300]}", flush=True)
         return fastmoss_deterministic_quality_fallback(manifest)

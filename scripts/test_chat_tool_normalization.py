@@ -1451,7 +1451,7 @@ def test_fastmoss_answer_verifier_rewrites_high_risk_and_falls_back_on_failure()
                 "approved": False,
                 "risk_level": "high",
                 "issues": ["把样本当总量"],
-                "rewritten_answer": "已修正：本次只取得部分样本。",
+                "rewritten_answer": "已修正：Electric Food Shredder不存在独立市场，Mini Meat Grinder是真实细分机会。",
             })}}]}
 
     class FakeRequests:
@@ -1465,7 +1465,8 @@ def test_fastmoss_answer_verifier_rewrites_high_risk_and_falls_back_on_failure()
         rewritten = web_app.verify_fastmoss_final_answer(
             "市场只有10件商品", message, "调研", route, FakeRequests, "key", "https://example.test/v1", "model"
         )
-        assert rewritten == "已修正：本次只取得部分样本。"
+        assert "尚未显示出足以确认独立市场的强信号" in rewritten
+        assert "是否构成可进入机会仍需验证" in rewritten
 
         class ApprovedResponse(FakeResponse):
             def json(self):
@@ -1479,9 +1480,9 @@ def test_fastmoss_answer_verifier_rewrites_high_risk_and_falls_back_on_failure()
                 return ApprovedResponse()
 
         approved = web_app.verify_fastmoss_final_answer(
-            "可靠草稿", message, "调研", route, ApprovedRequests, "key", "https://example.test/v1", "model"
+            "可靠草稿，但该品类不构成独立市场。", message, "调研", route, ApprovedRequests, "key", "https://example.test/v1", "model"
         )
-        assert approved == "可靠草稿"
+        assert "尚未显示出足以确认独立市场的强信号" in approved
 
         class BrokenRequests:
             @staticmethod
