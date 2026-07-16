@@ -1197,6 +1197,10 @@ def test_fastmoss_research_report_uses_product_playbook_on_rule_fallback() -> No
     assert web_app.fastmoss_segment_keywords(text, {"playbook": "product"}) == [
         "Electric Food Shredder", "Mini Meat Grinder",
     ]
+    explicit = "目标类目明确选择料理机。请给我一份 Electric Food Shredder 和 Mini Meat Grinder 这类产品的完整调研报告。"
+    assert web_app.fastmoss_segment_keywords(explicit, {"entity": explicit}) == [
+        "Electric Food Shredder", "Mini Meat Grinder",
+    ]
     route = web_app.route_chat_intent(text, "fastmoss")
     assert route["intent"] == "fastmoss_product"
     assert route["playbook"] == "product"
