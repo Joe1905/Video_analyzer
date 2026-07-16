@@ -6523,6 +6523,8 @@ def fastmoss_report_style_instruction(route: dict[str, Any]) -> str:
         "随后用“我怎么看”把数据翻译成业务含义，允许使用“我更倾向”“真正值得关注的是”“如果准备上新，我会先”等克制的顾问式表达，"
         "但每个判断都必须紧跟证据。再展示关键数据与必要表格。把覆盖不足、空结果和指标冲突集中到一个“需要留意”章节，"
         "不要在每个段落重复警告。最后用“如果要继续做”给出两到四项有优先级的下一步。"
+        "温度只能来自解释、取舍和优先级，不能来自更大胆的数字建议：除非证据或已展示的计算明确支持，"
+        "不得新增首批库存、预算、达人数量、粉丝门槛、测试周期、ROI、转化率、毛利率或精确上市价。"
         "不要使用“修正版”“数据核验结果”“严重缺口”等审计式标题，也不要用表情、夸张语气或无依据的鼓励。"
     )
 
@@ -6603,6 +6605,30 @@ def polish_fastmoss_report_tone(answer: str) -> str:
     text = downgrade_fastmoss_absolute_market_claims(answer)
     text = re.sub(r"[（(]\s*修正版\s*[）)]", "", text, count=1)
     text = text.replace("数据缺口（严重）", "需要留意的数据边界")
+    text = re.sub(
+        r"首批\s*[\d,.]+\s*(?:[-~至到]\s*[\d,.]+\s*)?件",
+        "先以小批量",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"配合\s*[\d,.]+\s*(?:[-~至到]\s*[\d,.]+\s*)?个达人",
+        "配合少量匹配达人",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"观察\s*[\d,.]+\s*(?:天|周|个月|月)",
+        "观察一个完整测试周期",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"筛选\s*[\d,.]+\s*(?:[kKwW万])?\s*[-~至到]\s*[\d,.]+\s*(?:[kKwW万])?\s*粉(?:丝)?的?",
+        "筛选受众匹配的",
+        text,
+        flags=re.IGNORECASE,
+    )
     return text
 
 
@@ -6633,6 +6659,8 @@ def verify_fastmoss_final_answer(
                 "does not constitute an independent market, or is a real opportunity; such wording must be downgraded to a sample-limited signal and validation need. "
                 "Also verify the user-facing style: the answer must start with a concise '先说结论', translate evidence into a measured '我怎么看', "
                 "consolidate caveats instead of repeating warnings, and end with prioritized next steps. Preserve a calm, human consultant voice while keeping every judgment evidence-backed. "
+                "Reject any recommendation that invents operational numbers absent from the manifest or an explicit calculation, including launch inventory, budget, creator count, follower threshold, "
+                "test duration, ROI, conversion rate, margin, or exact launch price. An observed price band may be quoted, but a recommended test price must be labeled as an assumption and tied to evidence. "
                 "Mark approved=false and provide a complete rewritten_answer when the draft is audit-like, uses headings such as '修正版' or '数据核验结果', or lacks the required conclusion and next steps. "
                 "When rewriting, preserve useful facts and tables; do not turn the report into a refusal or a compliance checklist. "
                 "If risk is high/critical, provide one complete corrected Simplified Chinese answer. "
