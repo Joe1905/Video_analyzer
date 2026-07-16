@@ -1443,6 +1443,7 @@ def test_fastmoss_answer_verifier_rewrites_high_risk_and_falls_back_on_failure()
     route = {"playbook": "product", "task_depth": "workflow", "entity": "mini grinder"}
     style = web_app.fastmoss_report_style_instruction(route)
     assert "先说结论" in style and "我怎么看" in style and "如果要继续做" in style
+    assert "精确上市价" in style
     assert web_app.fastmoss_report_style_instruction({"task_depth": "lookup"}) == ""
 
     class FakeResponse:
@@ -1471,6 +1472,14 @@ def test_fastmoss_answer_verifier_rewrites_high_risk_and_falls_back_on_failure()
         assert "尚未显示出足以确认独立市场的强信号" in rewritten
         assert "是否构成可进入机会仍需验证" in rewritten
         assert "修正版" not in rewritten
+
+        softened = web_app.polish_fastmoss_report_tone(
+            "首批500-1000件，配合3-5个达人，筛选10k-50k粉的创作者，观察2周。"
+        )
+        assert "500" not in softened and "3-5" not in softened
+        assert "10k" not in softened and "2周" not in softened
+        assert "小批量" in softened and "少量匹配达人" in softened
+        assert "受众匹配" in softened and "完整测试周期" in softened
 
         class ApprovedResponse(FakeResponse):
             def json(self):
