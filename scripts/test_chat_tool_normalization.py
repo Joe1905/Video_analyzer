@@ -1107,13 +1107,42 @@ def test_fastmoss_business_defaults_use_verified_category_levels() -> None:
     assert new["filter"]["listing_start_date"] == "2026-06-13"
     assert new["filter"]["listing_end_date"] == "2026-07-12"
     assert "lang" not in new
+    assert top["orderby"] == [{"field": "period_units_sold", "order": "desc"}]
+    assert new["orderby"] == [{"field": "day3_units_sold", "order": "desc"}]
     search = web_app.apply_fastmoss_business_defaults("product_search", {"keywords": "mini chopper"}, message, fixed_today)
     assert search["filter"]["category_path"] == [13, 844168, 935176]
+    planned = web_app.fastmoss_planned_product_search_arguments(
+        message,
+        "Electric Food Shredder, Mini Meat Grinder 调研报告",
+        {"playbook": "product", "entity": "Electric Food Shredder, Mini Meat Grinder"},
+        "US",
+    )
+    assert planned == {
+        "filter": {"category_path": [13, 844168, 935176], "region": "US"},
+        "page": 1,
+        "pagesize": 10,
+        "orderby": [{"field": "day28_units_sold", "order": "desc"}],
+    }
 
 
 def test_fastmoss_product_workflow_keeps_its_round_budget_isolated() -> None:
+    assert web_app.chat_max_tool_rounds("fastmoss", {"playbook": "product"}, 2) == 14
     assert web_app.chat_max_tool_rounds("fastmoss", {"playbook": "product", "max_rounds": 14}, 2) == 14
+    assert web_app.chat_max_tool_rounds(
+        "fastmoss", {"playbook": "product", "max_rounds": 14, "full_ranking": True}, 2
+    ) == 17
     assert web_app.chat_max_tool_rounds("amazon", {"max_rounds": 14}, 20) == 10
+
+
+def test_fastmoss_research_report_uses_product_playbook_on_rule_fallback() -> None:
+    text = "给我一份 Electric Food Shredder, Mini Meat Grinder 这类产品的调研报告"
+    assert web_app.fastmoss_playbook_intent(text) == "product"
+    assert web_app.fastmoss_segment_keywords(text, {"playbook": "product"}) == [
+        "Electric Food Shredder", "Mini Meat Grinder",
+    ]
+    route = web_app.route_chat_intent(text, "fastmoss")
+    assert route["intent"] == "fastmoss_product"
+    assert route["playbook"] == "product"
 
 
 def test_fastmoss_clarification_is_targeted_and_provider_isolated() -> None:
@@ -1230,6 +1259,276 @@ def test_tool_call_signature_deduplicates_argument_order() -> None:
     assert left == right
 
 
+def _fastmoss_search_message(calls: list[dict], results: list[dict] | None = None) -> SimpleNamespace:
+    return SimpleNamespace(
+        tool_calls=[{
+            "id": f"call_{index}",
+            "function": {"name": "fastmoss__product_search", "arguments": json.dumps(args)},
+        } for index, args in enumerate(calls)],
+        tool_results=results or [],
+    )
+
+
+def test_fastmoss_dual_ranking_plan_uses_three_sorted_category_pages_then_segments() -> None:
+    route = {"playbook": "product", "entity": "Electric Food Shredder / Mini Meat Grinder"}
+    message = _fastmoss_search_message([])
+    plan = web_app.fastmoss_product_search_plan(message, "给我一份调研报告", route)
+    assert plan["category_pages"] == 3
+    assert plan["segment_keywords"] == ["Electric Food Shredder", "Mini Meat Grinder"]
+    assert plan["next_call"] == {"scope": "category_head", "page": 1, "pagesize": 10}
+
+    message = _fastmoss_search_message([
+        {"page": 1, "pagesize": 10},
+        {"page": 2, "pagesize": 10},
+        {"page": 3, "pagesize": 10},
+    ])
+    plan = web_app.fastmoss_product_search_plan(message, "给我一份调研报告", route)
+    assert plan["next_call"]["scope"] == "segment_head"
+    assert plan["next_call"]["keywords"] == "Electric Food Shredder"
+
+    message.tool_calls.extend([
+        {"id": "segment_1", "function": {"name": "fastmoss__product_search", "arguments": json.dumps({"keywords": "Electric Food Shredder", "page": 1})}},
+        {"id": "segment_2", "function": {"name": "fastmoss__product_search", "arguments": json.dumps({"keywords": "Mini Meat Grinder", "page": 1})}},
+    ])
+    assert web_app.fastmoss_product_search_plan(message, "给我一份调研报告", route)["complete"] is True
+    assert web_app.fastmoss_product_search_plan(message, "给我完整类目榜单", route)["category_pages"] == 6
+
+
+def test_fastmoss_product_phase_waits_for_all_category_and_segment_searches() -> None:
+    available = {tool_id for phases in web_app.FASTMOSS_WORKFLOW_PHASES.values() for _, tools in phases for tool_id in tools}
+    completed_before_search = (
+        "fastmoss__search_category_by_words",
+        "fastmoss__market_category_analysis",
+        "fastmoss__market_category_ranking",
+        "fastmoss__product_rank_top_selling",
+        "fastmoss__product_rank_new_listed",
+    )
+    message = _fastmoss_search_message([{"page": 1}, {"page": 2}], [
+        *[{
+            "tool_name": tool_name,
+            "result": {"ok": True, "data_state": "data", "evidence_observed": True},
+        } for tool_name in completed_before_search],
+        {"tool_name": "fastmoss__product_search", "result": {"ok": True, "data_state": "data", "evidence_observed": True}},
+        {"tool_name": "fastmoss__product_search", "result": {"ok": True, "data_state": "empty", "evidence_observed": True}},
+    ])
+    route = {"playbook": "product", "entity": "Electric Food Shredder / Mini Meat Grinder"}
+    phase = web_app.fastmoss_workflow_phase("product", message, available, "调研", route)
+    assert phase and phase[0] == "获取类目销量头部（第 3/3 页）"
+    message.tool_calls.append({
+        "function": {"name": "fastmoss__product_search", "arguments": json.dumps({"page": 3})},
+    })
+    phase = web_app.fastmoss_workflow_phase("product", message, available, "调研", route)
+    assert phase and phase[0] == "补充细分匹配样本"
+    assert phase[1] == {"fastmoss__product_search"}
+
+
+def test_fastmoss_product_search_defaults_force_category_pages_and_short_segment_queries() -> None:
+    category_result = {
+        "tool_name": "fastmoss__search_category_by_words",
+        "result": {"ok": True, "mcp_data": {"items": [{
+            "category_id_level1": 13, "category_id_level2": 844168, "category_id_level3": 935176,
+        }]}},
+    }
+    route = {"playbook": "product", "entity": "Electric Food Shredder / Mini Meat Grinder"}
+    message = SimpleNamespace(tool_calls=[], tool_results=[category_result])
+    first = web_app.apply_fastmoss_business_defaults(
+        "product_search", {
+            "keywords": "wrong long keyword", "page": 99,
+            "filter": {"day28_units_sold_range": {"min": 0}, "region": "US"},
+        }, message,
+        user_text="调研", route=route,
+    )
+    assert "keywords" not in first
+    assert first["page"] == 1 and first["pagesize"] == 10
+    assert first["orderby"] == [{"field": "day28_units_sold", "order": "desc"}]
+    assert first["filter"]["category_path"] == [13, 844168, 935176]
+    assert first["filter"] == {"category_path": [13, 844168, 935176], "region": "US"}
+
+    message.tool_calls = [
+        {"function": {"name": "fastmoss__product_search", "arguments": json.dumps({"page": page})}}
+        for page in (1, 2, 3)
+    ]
+    segment = web_app.apply_fastmoss_business_defaults(
+        "product_search", {"keywords": "ignored"}, message,
+        user_text="调研", route=route,
+    )
+    assert segment["keywords"] == "Electric Food Shredder"
+    assert segment["page"] == 1
+
+
+def test_fastmoss_evidence_manifest_separates_total_fetched_overlap_and_conflicts() -> None:
+    def result(scope: str, page: int, query: str, total: int, records: list[dict]) -> dict:
+        return {
+            "tool_name": "fastmoss__product_search",
+            "result": {
+                "ok": True,
+                "data_state": "data",
+                "evidence_observed": True,
+                "evidence_metadata": {
+                    "scope": scope, "page": page, "query": query or None,
+                    "reported_total": total, "fetched_records": len(records), "sort_verified": True,
+                    "category_level": "L3",
+                },
+                "evidence_product_records": records,
+            },
+        }
+    category_records = [
+        {"product_id": "1732183167826498507", "title": "Head", "day7_units_sold": 120, "day28_units_sold": 100, "day28_gmv": 1000, "price_min": 9, "price_max": 11},
+        {"product_id": "1732183167826498508", "title": "Second", "day28_units_sold": 80},
+    ]
+    segment_records = [{"product_id": "1732183167826498507", "title": "Head", "day28_units_sold": 100}]
+    tool_results = [
+        result("category_head", 1, "", 60, category_records),
+        result("category_head", 2, "", 60, []),
+        result("category_head", 3, "", 60, []),
+        result("segment_head", 1, "mini grinder", 12, segment_records),
+    ]
+    calls = [{"page": 1}, {"page": 2}, {"page": 3}, {"page": 1, "keywords": "mini grinder"}]
+    message = _fastmoss_search_message(calls, tool_results)
+    manifest = web_app.fastmoss_evidence_manifest(message, "普通调研", {"playbook": "product", "entity": "mini grinder"})
+    assert manifest["category_head"]["reported_total"] == 60
+    assert manifest["category_head"]["fetched_unique"] == 2
+    assert manifest["category_head"]["completed_pages"] == [1, 2, 3]
+    assert manifest["overlap_product_ids"] == ["1732183167826498507"]
+    assert any("近7天销量高于近28天销量" in item["issue"] for item in manifest["conflicts"])
+    assert any("接口报告匹配总数 60" in item for item in manifest["limitations"])
+
+
+def test_fastmoss_l2_market_metrics_are_only_upstream_category_reference() -> None:
+    message = SimpleNamespace(tool_calls=[], tool_results=[{
+        "tool_name": "fastmoss__search_category_by_words",
+        "result": {"ok": True, "data_state": "data", "evidence_observed": True, "mcp_data": {"items": [{
+            "category_id_level1": 13, "category_id_level2": 844168, "category_id_level3": 935176,
+        }]}},
+    }, {
+        "tool_name": "fastmoss__market_category_analysis",
+        "result": {
+            "ok": True, "data_state": "data", "evidence_observed": True,
+            "evidence_metadata": {"source_tool": "fastmoss__market_category_analysis", "category_level": "L2", "scope": "supporting"},
+        },
+    }])
+    manifest = web_app.fastmoss_evidence_manifest(message, "调研", {"playbook": "product"})
+    assert manifest["target_category_path"] == {"level1": 13, "level2": 844168, "level3": 935176}
+    assert manifest["market_category_levels"] == ["L2"]
+    assert any("不能直接作为目标 L3 类目规模" in item for item in manifest["limitations"])
+
+
+def test_fastmoss_failed_category_page_is_not_counted_as_coverage() -> None:
+    message = _fastmoss_search_message([{"page": 1}, {"page": 2}, {"page": 3}], [{
+        "tool_name": "fastmoss__product_search",
+        "result": {
+            "ok": False, "data_state": "error", "evidence_observed": False,
+            "evidence_metadata": {"scope": "category_head", "page": 1, "data_state": "error"},
+        },
+    }, *[{
+        "tool_name": "fastmoss__product_search",
+        "result": {
+            "ok": True, "data_state": "data", "evidence_observed": True,
+            "evidence_metadata": {"scope": "category_head", "page": page, "data_state": "data"},
+        },
+    } for page in (2, 3)]])
+    manifest = web_app.fastmoss_evidence_manifest(message, "调研", {"playbook": "product"})
+    assert manifest["category_head"]["attempted_pages"] == [1, 2, 3]
+    assert manifest["category_head"]["completed_pages"] == [2, 3]
+    assert manifest["category_head"]["coverage_complete"] is False
+    assert any("页码 [1] 调用失败" in item for item in manifest["limitations"])
+
+
+def test_fastmoss_metadata_detects_unsorted_page_and_string_product_ids() -> None:
+    payload = {"total": 60, "list": [
+        {"product": {"product_id": "1732183167826498507", "title": "Low", "floor_price": 9, "ceiling_price": 12}, "sales_summary": {"last_28d_units_sold": 10, "last_28d_gmv": 100}},
+        {"product": {"product_id": "1732183167826498508", "title": "High", "floor_price": 10, "ceiling_price": 15}, "sales_summary": {"last_28d_units_sold": 20, "last_28d_gmv": 250}},
+    ]}
+    raw = {"data": {"content": [{"text": json.dumps(payload)}]}}
+    normalized = {"ok": True, "data_state": "data", "evidence_observed": True}
+    annotated = web_app.annotate_fastmoss_tool_result(
+        "fastmoss__product_search",
+        {"page": 1, "pagesize": 10, "orderby": [{"field": "day28_units_sold", "order": "desc"}]},
+        normalized,
+        raw,
+    )
+    assert annotated["evidence_metadata"]["reported_total"] == 60
+    assert annotated["evidence_metadata"]["sort_verified"] is False
+    assert annotated["evidence_product_records"][0]["day28_units_sold"] == 10
+    assert annotated["evidence_product_records"][0]["price_max"] == 12
+    assert web_app._collect_named_ids(json.dumps(payload), {"productid", "goodsid", "itemid"}) == {
+        "1732183167826498507", "1732183167826498508",
+    }
+
+    dated_payload = {"trend_series": [{"date": "2026-01-16", "period_units_sold": 10}]}
+    dated_raw = {"data": {"content": [{"text": json.dumps(dated_payload)}]}}
+    dated = web_app.annotate_fastmoss_tool_result(
+        "fastmoss__market_category_analysis",
+        {"filter": {"date_type": "week", "date_value": "2026-W28"}},
+        {"ok": True, "data_state": "data", "evidence_observed": True},
+        dated_raw,
+    )
+    dated_message = SimpleNamespace(tool_calls=[], tool_results=[{
+        "tool_name": "fastmoss__market_category_analysis", "result": dated,
+    }])
+    dated_manifest = web_app.fastmoss_evidence_manifest(dated_message, "调研", {"playbook": "product"})
+    assert any("两者不重叠" in item["issue"] for item in dated_manifest["conflicts"])
+
+
+def test_fastmoss_answer_verifier_rewrites_high_risk_and_falls_back_on_failure() -> None:
+    message = SimpleNamespace(tool_calls=[], tool_results=[])
+    route = {"playbook": "product", "task_depth": "workflow", "entity": "mini grinder"}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": [{"message": {"content": json.dumps({
+                "approved": False,
+                "risk_level": "high",
+                "issues": ["把样本当总量"],
+                "rewritten_answer": "已修正：Electric Food Shredder不存在独立市场，Mini Meat Grinder是真实细分机会。",
+            })}}]}
+
+    class FakeRequests:
+        @staticmethod
+        def post(*_args, **_kwargs):
+            return FakeResponse()
+
+    original_record = web_app.record_api_call
+    web_app.record_api_call = lambda *_args, **_kwargs: None
+    try:
+        rewritten = web_app.verify_fastmoss_final_answer(
+            "市场只有10件商品", message, "调研", route, FakeRequests, "key", "https://example.test/v1", "model"
+        )
+        assert "尚未显示出足以确认独立市场的强信号" in rewritten
+        assert "是否构成可进入机会仍需验证" in rewritten
+
+        class ApprovedResponse(FakeResponse):
+            def json(self):
+                return {"choices": [{"message": {"content": json.dumps({
+                    "approved": True, "risk_level": "low", "issues": [], "rewritten_answer": "",
+                })}}]}
+
+        class ApprovedRequests:
+            @staticmethod
+            def post(*_args, **_kwargs):
+                return ApprovedResponse()
+
+        approved = web_app.verify_fastmoss_final_answer(
+            "可靠草稿，但该品类不构成独立市场。", message, "调研", route, ApprovedRequests, "key", "https://example.test/v1", "model"
+        )
+        assert "尚未显示出足以确认独立市场的强信号" in approved
+
+        class BrokenRequests:
+            @staticmethod
+            def post(*_args, **_kwargs):
+                raise RuntimeError("offline")
+
+        fallback = web_app.verify_fastmoss_final_answer(
+            "市场只有10件商品", message, "调研", route, BrokenRequests, "key", "https://example.test/v1", "model"
+        )
+        assert "已验证事实" in fallback and "无法安全生成完整分析结论" in fallback
+    finally:
+        web_app.record_api_call = original_record
+
+
 if __name__ == "__main__":
     test_tiktok_search_keeps_analysis_fields()
     test_amazon_keeps_product_fields()
@@ -1276,5 +1575,13 @@ if __name__ == "__main__":
     test_region_default_only_applies_when_schema_supports_it()
     test_fastmoss_deep_dive_ids_must_come_from_current_task()
     test_tool_call_signature_deduplicates_argument_order()
+    test_fastmoss_dual_ranking_plan_uses_three_sorted_category_pages_then_segments()
+    test_fastmoss_product_phase_waits_for_all_category_and_segment_searches()
+    test_fastmoss_product_search_defaults_force_category_pages_and_short_segment_queries()
+    test_fastmoss_evidence_manifest_separates_total_fetched_overlap_and_conflicts()
+    test_fastmoss_l2_market_metrics_are_only_upstream_category_reference()
+    test_fastmoss_failed_category_page_is_not_counted_as_coverage()
+    test_fastmoss_metadata_detects_unsorted_page_and_string_product_ids()
+    test_fastmoss_answer_verifier_rewrites_high_risk_and_falls_back_on_failure()
     print("chat tool normalization tests passed")
 
