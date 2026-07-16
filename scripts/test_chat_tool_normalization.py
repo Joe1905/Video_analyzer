@@ -444,6 +444,67 @@ def test_tool_evidence_is_compact_but_keeps_business_fields() -> None:
     assert "RAW_SHOULD_BE_DROPPED" not in evidence
 
 
+def test_current_tool_evidence_is_lossless_until_budget_pressure() -> None:
+    marker = "CURRENT_EVIDENCE_AFTER_12000_CHARS"
+    payload = {
+        "code": "OK",
+        "message": "成功",
+        "data": {
+            "total": 30,
+            "items": [
+                {
+                    "keyword": f"keyword-{index}",
+                    "searches": index * 100,
+                    "description": ("x" * 700) + (marker if index == 20 else ""),
+                }
+                for index in range(30)
+            ],
+        },
+    }
+    raw_result = {
+        "ok": True,
+        "data": {"content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}]},
+    }
+    normalized = normalize_prefixed_tool_result(
+        "sellersprite__keyword_research_trends",
+        raw_result,
+    )
+    assert isinstance(normalized["mcp_data"], str)
+    assert marker not in normalized["mcp_data"]
+
+    evidence = web_app.current_chat_tool_evidence(
+        "sellersprite__keyword_research_trends",
+        normalized,
+        {"marketplace": "US", "keyword": "air pump"},
+        raw_result,
+    )
+    assert marker in evidence
+    assert '"marketplace":"US"' in evidence
+    assert "mcp_text_preview" not in evidence
+
+    messages = [
+        {
+            "role": "assistant",
+            "content": "old-" + ("h" * 30000),
+            "_context_scope": "history",
+            "_context_priority": "normal",
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_current",
+            "content": evidence,
+            "_context_scope": "current",
+        },
+    ]
+    request_messages, _, stats = manage_chat_context(messages, [], max_tokens=12000)
+    retained = next(message["content"] for message in request_messages if message.get("role") == "tool")
+    assert retained == evidence
+    assert stats["current_evidence_compressed"] == 0
+    assert stats["compressed"] is True
+    history_content = next(message["content"] for message in request_messages if message.get("role") == "assistant")
+    assert len(history_content) <= 3000
+
+
 def test_product_availability_is_a_shallow_lookup() -> None:
     cases = (
         "贪吃蛇小车这款玩具在TK上有销售吗",
@@ -610,6 +671,25 @@ def test_empty_mcp_collections_are_not_enough_data() -> None:
     assert "接口调用成功但本轮返回空结果" in evidence
     assert "不得推断为平台绝对不存在" in evidence
 
+    sellersprite_empty = normalize_prefixed_tool_result(
+        "sellersprite__market_research",
+        result({
+            "code": "OK",
+            "message": "成功",
+            "data": {
+                "pages": 1,
+                "page": 1,
+                "size": 5,
+                "total": 0,
+                "order": {"field": "", "desc": True},
+                "items": [],
+                "guestVisited": False,
+            },
+        }),
+    )
+    assert sellersprite_empty["data_state"] == "empty"
+    assert sellersprite_empty["enough_data"] is False
+
 
 def test_mcp_content_error_rules_are_provider_specific() -> None:
     def result(payload: dict) -> dict:
@@ -736,6 +816,8 @@ def test_dynamic_chat_context_compresses_to_budget() -> None:
     assert stats["final_tokens"] <= stats["max_tokens"]
     assert stats["compressed"] is True
     assert stats["dropped_history"] > 0
+    assert stats["current_evidence_compressed"] == 1
+    assert stats["current_evidence_chars_after"] < stats["current_evidence_chars_before"]
     assert estimate_chat_context_tokens(request_messages, request_tools) <= 3000
     assert any(message.get("role") == "tool" for message in request_messages)
     assert all(not any(key.startswith("_context_") for key in message) for message in request_messages)
@@ -760,7 +842,15 @@ def test_tool_limit_final_context_removes_protocol_and_detects_dsml() -> None:
             "tool_calls": [{"id": "call_1", "function": {"name": "sellersprite__google_trend"}}],
             "_context_scope": "current",
         },
-        {"role": "tool", "tool_call_id": "call_1", "content": '{"trend":"up"}', "_context_scope": "current"},
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": json.dumps({
+                "trend": "up",
+                "series": ["x" * 3000, "DEEP_EVIDENCE_MARKER"],
+            }),
+            "_context_scope": "current",
+        },
     ]
     final_context = build_tool_limit_final_context(messages, "分析产品")
     assert all(message.get("role") != "tool" for message in final_context)
@@ -768,7 +858,49 @@ def test_tool_limit_final_context_removes_protocol_and_detects_dsml() -> None:
     assert all("DSML" not in str(message.get("content") or "") for message in final_context)
     assert all("感谢认可" not in str(message.get("content") or "") for message in final_context)
     assert any("completed_tool_collection" in str(message.get("content") or "") for message in final_context)
+    assert any("completed_tool_evidence" in str(message.get("content") or "") for message in final_context)
     assert any("original_user_request" in str(message.get("content") or "") for message in final_context)
+    assert any("DEEP_EVIDENCE_MARKER" in str(message.get("content") or "") for message in final_context)
+    request_messages, _, stats = manage_chat_context(final_context, [], max_tokens=100000)
+    assert stats["current_evidence_compressed"] == 0
+    assert any("DEEP_EVIDENCE_MARKER" in str(message.get("content") or "") for message in request_messages)
+
+
+def test_tool_limit_keeps_large_current_collection_when_capacity_allows() -> None:
+    messages = [{"role": "user", "content": "分析 Air Pump", "_context_scope": "history"}]
+    markers = []
+    for index in range(21):
+        marker = f"CURRENT_TOOL_MARKER_{index:02d}"
+        markers.append(marker)
+        messages.append({
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": f"call_{index}",
+                "function": {"name": "sellersprite__keyword_research_trends", "arguments": "{}"},
+            }],
+            "_context_scope": "current",
+        })
+        messages.append({
+            "role": "tool",
+            "tool_call_id": f"call_{index}",
+            "content": web_app.current_chat_tool_evidence(
+                "sellersprite__keyword_research_trends",
+                {"ok": True, "mcp_data": {"series": ["x" * 8200, marker]}},
+                {"marketplace": "US", "keyword": f"air pump {index}"},
+            ),
+            "_context_scope": "current",
+        })
+
+    final_context = build_tool_limit_final_context(messages, "分析 Air Pump")
+    request_messages, request_tools, stats = manage_chat_context(final_context, [], max_tokens=120000)
+    encoded = json.dumps(request_messages, ensure_ascii=False)
+    assert request_tools == []
+    assert stats["over_budget"] is False
+    assert stats["current_evidence_compressed"] == 0
+    assert stats["current_evidence_chars_before"] > 170000
+    assert stats["current_evidence_chars_after"] == stats["current_evidence_chars_before"]
+    assert all(marker in encoded for marker in markers)
 
 
 def test_sellersprite_schema_argument_normalization() -> None:
@@ -1087,6 +1219,7 @@ if __name__ == "__main__":
     test_web_search_tool_is_registered_and_normalized()
     test_chat_history_archives_done_tools_and_recovers_failed_results()
     test_tool_evidence_is_compact_but_keeps_business_fields()
+    test_current_tool_evidence_is_lossless_until_budget_pressure()
     test_product_availability_is_a_shallow_lookup()
     test_intent_decision_validation_and_fallback()
     test_intent_router_uses_recent_context_and_falls_back_on_failure()
@@ -1097,6 +1230,7 @@ if __name__ == "__main__":
     test_deepseek_tool_turn_preserves_reasoning_content()
     test_dynamic_chat_context_compresses_to_budget()
     test_tool_limit_final_context_removes_protocol_and_detects_dsml()
+    test_tool_limit_keeps_large_current_collection_when_capacity_allows()
     test_sellersprite_schema_argument_normalization()
     test_llm_router_can_select_fastmoss_playbook()
     test_fastmoss_workflow_phases_accept_empty_and_error_attempts()

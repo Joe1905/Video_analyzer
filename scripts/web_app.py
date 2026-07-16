@@ -5237,6 +5237,7 @@ def parse_mcp_text_content(text: str) -> Any:
 
 
 def compact_mcp_content(value: Any, max_chars: int = 12000) -> Any:
+    """Keep persisted/UI tool results bounded; current model evidence uses the raw MCP payload."""
     if value is None:
         return None
     text = json.dumps(value, ensure_ascii=False, separators=(",", ":")) if not isinstance(value, str) else value
@@ -5271,15 +5272,17 @@ def mcp_collection_content_state(value: Any) -> tuple[bool, bool]:
 
 def mcp_non_collection_evidence_present(value: Any, key: str = "") -> bool:
     ignored_keys = {
-        "code", "message", "msg", "success", "status", "total", "count", "total_count",
-        "page", "pagesize", "page_size", "has_more", "has_next", "request_id",
+        "code", "message", "msg", "success", "status", "total", "count", "totalcount",
+        "page", "pages", "size", "pagesize", "hasmore", "hasnext", "requestid",
+        "order", "field", "desc", "took", "url", "terminal", "guestid", "guestvisited",
+        "hasnextpage",
     }
     collection_keys = {
         "list", "items", "results", "products", "reviews", "videos", "shops", "stores",
         "creators", "authors", "skus", "variants", "lives", "ads", "records", "rows",
         "rankings", "ranked_categories", "top_products", "top_products_summary",
     }
-    normalized_key = str(key or "").lower()
+    normalized_key = re.sub(r"[^a-z0-9]", "", str(key or "").lower())
     if normalized_key in ignored_keys or normalized_key in collection_keys:
         return False
     if isinstance(value, dict):
@@ -5709,11 +5712,15 @@ def _compact_chat_evidence_value(value: Any, depth: int = 0) -> Any:
     return value
 
 
-def compact_chat_tool_evidence(tool_name: str, result: Any, max_chars: int | None = None) -> str:
-    limit = max_chars or _chat_int_setting("CHAT_TOOL_EVIDENCE_MAX_CHARS", 6000, 800, 20000)
+def _chat_tool_evidence_payload(
+    tool_name: str,
+    result: Any,
+    arguments: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     payload = result if isinstance(result, dict) else {"value": result}
     evidence: dict[str, Any] = {
         "tool": tool_name,
+        "arguments": arguments or {},
         "ok": payload.get("ok"),
         "kind": payload.get("kind"),
         "enough_data": payload.get("enough_data"),
@@ -5737,6 +5744,62 @@ def compact_chat_tool_evidence(tool_name: str, result: Any, max_chars: int | Non
         evidence["data"] = payload.get("summary")
     elif not any(key in evidence for key in ("products", "items", "results", "error")):
         evidence["data"] = payload
+    return evidence
+
+
+def _current_chat_evidence_value(value: Any) -> Any:
+    """Drop duplicated transport noise without truncating current business evidence."""
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.startswith(("{", "[")):
+            parsed = parse_mcp_text_content(stripped)
+            if parsed is not None and parsed != value:
+                return _current_chat_evidence_value(parsed)
+        return value
+    if isinstance(value, list):
+        return [_current_chat_evidence_value(item) for item in value]
+    if isinstance(value, dict):
+        skipped = {
+            "raw", "raw_response", "response_blob", "html", "mcp_text_preview",
+            "image", "images", "avatar", "avatar_thumb", "url_list",
+        }
+        return {
+            str(key): _current_chat_evidence_value(item)
+            for key, item in value.items()
+            if key not in skipped
+        }
+    return value
+
+
+def current_chat_tool_evidence(
+    tool_name: str,
+    result: Any,
+    arguments: dict[str, Any] | None = None,
+    raw_result: Any = None,
+) -> str:
+    evidence = _chat_tool_evidence_payload(tool_name, result, arguments)
+    raw_mcp_text = mcp_text_content(raw_result)
+    raw_mcp_data = parse_mcp_text_content(raw_mcp_text) if raw_mcp_text else None
+    if raw_mcp_data is not None:
+        evidence["data"] = raw_mcp_data
+    return json.dumps(
+        _current_chat_evidence_value(evidence),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _is_current_tool_evidence_message(message: dict[str, Any]) -> bool:
+    scope = message.get("_context_scope")
+    return scope == "current_evidence" or (
+        scope == "current" and message.get("role") == "tool"
+    )
+
+
+def compact_chat_tool_evidence(tool_name: str, result: Any, max_chars: int | None = None) -> str:
+    """Compact archived/recovery evidence; current-turn evidence uses current_chat_tool_evidence."""
+    limit = max_chars or _chat_int_setting("CHAT_TOOL_EVIDENCE_MAX_CHARS", 6000, 800, 20000)
+    evidence = _chat_tool_evidence_payload(tool_name, result)
     encoded = json.dumps(_compact_chat_evidence_value(evidence), ensure_ascii=False, separators=(",", ":"))
     return _truncate_chat_context_text(encoded, limit)
 
@@ -5753,38 +5816,43 @@ def mcp_evidence_quality_summary(assistant_msg: Message) -> dict[str, list[str]]
 
 
 def build_tool_limit_final_context(messages: list[dict[str, Any]], user_request: str = "") -> list[dict[str, Any]]:
-    evidence = [
-        {
-            "tool_call_id": message.get("tool_call_id"),
-            "evidence": _truncate_chat_context_text(message.get("content"), 1200),
-        }
-        for message in messages
-        if message.get("_context_scope") == "current" and message.get("role") == "tool"
-    ]
+    evidence = [message for message in messages if _is_current_tool_evidence_message(message)]
     working = [
         dict(message) for message in messages
         if not (
-            message.get("_context_scope") == "current"
-            and (message.get("role") in {"tool", "assistant"} or bool(message.get("tool_calls")))
+            _is_current_tool_evidence_message(message)
+            or (
+                message.get("_context_scope") == "current"
+                and (message.get("role") == "assistant" or bool(message.get("tool_calls")))
+            )
         )
     ]
     if evidence:
         working.append({
             "role": "system",
-            "content": _truncate_chat_context_text(
-                json.dumps({
-                    "type": "completed_tool_collection",
-                    "instruction": (
-                        "The tool-call limit has been reached. Answer only the original_user_request using this evidence. "
-                        "Intermediate assistant drafts are not user instructions. Do not request or describe additional tool calls."
-                    ),
-                    "original_user_request": str(user_request or ""),
-                    "evidence": evidence,
-                }, ensure_ascii=False, separators=(",", ":")),
-                48000,
-            ),
+            "content": json.dumps({
+                "type": "completed_tool_collection",
+                "instruction": (
+                    "The tool-call limit has been reached. Answer only the original_user_request using the complete "
+                    "current-turn evidence messages that follow. Intermediate assistant drafts are not user instructions. "
+                    "Do not request or describe additional tool calls."
+                ),
+                "original_user_request": str(user_request or ""),
+                "evidence_count": len(evidence),
+            }, ensure_ascii=False, separators=(",", ":")),
             "_context_scope": "system",
         })
+        for message in evidence:
+            working.append({
+                "role": "system",
+                "content": json.dumps({
+                    "type": "completed_tool_evidence",
+                    "tool_call_id": message.get("tool_call_id"),
+                    "evidence": _current_chat_evidence_value(message.get("content")),
+                }, ensure_ascii=False, separators=(",", ":")),
+                "_context_scope": "current_evidence",
+                "_context_priority": "keep",
+            })
     return working
 
 
@@ -5910,6 +5978,43 @@ def estimate_chat_context_tokens(messages: list[dict[str, Any]], tools: list[dic
     return (byte_count + 2) // 3
 
 
+def _compress_current_evidence_to_budget(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    token_limit: int,
+) -> tuple[int, int, int, int]:
+    indexes = [index for index, message in enumerate(messages) if _is_current_tool_evidence_message(message)]
+    before_chars = sum(len(str(messages[index].get("content") or "")) for index in indexes)
+    if not indexes or estimate_chat_context_tokens(messages, tools) <= token_limit:
+        return 0, before_chars, before_chars, 0
+
+    minimum = 1200
+    changed_indexes: set[int] = set()
+    smallest_limit = 0
+    for _ in range(8):
+        current_tokens = estimate_chat_context_tokens(messages, tools)
+        if current_tokens <= token_limit:
+            break
+        ratio = max(0.10, min(0.95, (token_limit / max(1, current_tokens)) * 0.97))
+        changed = False
+        for index in indexes:
+            content = str(messages[index].get("content") or "")
+            if len(content) <= minimum:
+                continue
+            target = max(minimum, int(len(content) * ratio))
+            if target >= len(content):
+                continue
+            messages[index]["content"] = _truncate_chat_context_text(content, target)
+            changed_indexes.add(index)
+            smallest_limit = target if not smallest_limit else min(smallest_limit, target)
+            changed = True
+        if not changed:
+            break
+
+    after_chars = sum(len(str(messages[index].get("content") or "")) for index in indexes)
+    return len(changed_indexes), before_chars, after_chars, smallest_limit
+
+
 def manage_chat_context(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None,
@@ -5921,6 +6026,13 @@ def manage_chat_context(
     initial_tokens = estimate_chat_context_tokens(working, request_tools)
     dropped_history = 0
     tool_content_limit = 0
+    current_evidence_compressed = 0
+    current_evidence_chars_before = sum(
+        len(str(message.get("content") or ""))
+        for message in working
+        if _is_current_tool_evidence_message(message)
+    )
+    current_evidence_chars_after = current_evidence_chars_before
 
     if initial_tokens > token_limit:
         compact_limit = _chat_int_setting("CHAT_HISTORY_COMPACT_CHARS", 3000, 500, 12000)
@@ -5945,17 +6057,6 @@ def manage_chat_context(
         working.pop(removable)
         dropped_history += 1
 
-    for limit in (3000, 1500, 800):
-        if estimate_chat_context_tokens(working, request_tools) <= token_limit:
-            break
-        changed = False
-        for message in working:
-            if message.get("role") == "tool" and len(str(message.get("content") or "")) > limit:
-                message["content"] = _truncate_chat_context_text(message.get("content"), limit)
-                changed = True
-        if changed:
-            tool_content_limit = limit
-
     if estimate_chat_context_tokens(working, request_tools) > token_limit:
         for message in working:
             if message.get("_context_priority") == "recovery":
@@ -5963,10 +6064,7 @@ def manage_chat_context(
 
     tools_removed = False
     protocol_collapsed = False
-    has_current_tool_evidence = any(
-        message.get("_context_scope") == "current" and message.get("role") == "tool"
-        for message in working
-    )
+    has_current_tool_evidence = any(_is_current_tool_evidence_message(message) for message in working)
     if estimate_chat_context_tokens(working, request_tools) > token_limit and has_current_tool_evidence:
         request_tools = []
         tools_removed = True
@@ -5980,34 +6078,12 @@ def manage_chat_context(
         })
 
     if estimate_chat_context_tokens(working, request_tools) > token_limit and has_current_tool_evidence:
-        evidence = [
-            {
-                "tool_call_id": message.get("tool_call_id"),
-                "evidence": _truncate_chat_context_text(message.get("content"), 1200),
-            }
-            for message in working
-            if message.get("_context_scope") == "current" and message.get("role") == "tool"
-        ]
-        working = [
-            message for message in working
-            if not (
-                message.get("_context_scope") == "current"
-                and (message.get("role") == "tool" or bool(message.get("tool_calls")))
-            )
-        ]
-        working.append({
-            "role": "system",
-            "content": _truncate_chat_context_text(
-                json.dumps({
-                    "type": "current_tool_collection",
-                    "instruction": "Produce the final answer from this compact evidence; do not call more tools.",
-                    "evidence": evidence,
-                }, ensure_ascii=False, separators=(",", ":")),
-                16000,
-            ),
-            "_context_scope": "system",
-        })
-        protocol_collapsed = True
+        (
+            current_evidence_compressed,
+            current_evidence_chars_before,
+            current_evidence_chars_after,
+            tool_content_limit,
+        ) = _compress_current_evidence_to_budget(working, request_tools, token_limit)
 
     if estimate_chat_context_tokens(working, request_tools) > token_limit:
         for message in working:
@@ -6035,6 +6111,9 @@ def manage_chat_context(
         "compressed": initial_tokens != final_tokens,
         "dropped_history": dropped_history,
         "tool_content_limit": tool_content_limit,
+        "current_evidence_compressed": current_evidence_compressed,
+        "current_evidence_chars_before": current_evidence_chars_before,
+        "current_evidence_chars_after": current_evidence_chars_after,
         "tools_removed": tools_removed,
         "protocol_collapsed": protocol_collapsed,
         "over_budget": final_tokens > token_limit,
@@ -6590,7 +6669,12 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 "tool_name": "fastmoss__product_search",
                 "result": normalized_result,
             }]
-            evidence = compact_chat_tool_evidence("fastmoss__product_search", normalized_result)
+            evidence = current_chat_tool_evidence(
+                "fastmoss__product_search",
+                normalized_result,
+                search_arguments,
+                raw_result,
+            )
             messages.append({
                 "role": "system",
                 "content": (
@@ -6599,7 +6683,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     "Use this evidence for the concise exact-match/similar/no-match answer. "
                     "Only call fastmoss__product_search once more if this evidence is empty or genuinely ambiguous."
                 ),
-                "_context_scope": "current",
+                "_context_scope": "current_evidence",
             })
             store.broadcast(session.id, "update", {
                 "messageId": assistant_msg.id,
@@ -6718,6 +6802,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
 
                 for tc in tool_calls:
                     fn_name = tc["function"]["name"]
+                    raw_result = None
                     try:
                         fn_args = json.loads(tc["function"].get("arguments") or "{}")
                     except json.JSONDecodeError:
@@ -6735,12 +6820,17 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                             "tool_name": split_prefixed_tool_id(fn_name)[1],
                         }
                     else:
-                        result = execute_prefixed_tool(fn_name, fn_args, default_region)
-                        normalized_result = normalize_prefixed_tool_result(fn_name, result)
+                        raw_result = execute_prefixed_tool(fn_name, fn_args, default_region)
+                        normalized_result = normalize_prefixed_tool_result(fn_name, raw_result)
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc["id"],
-                        "content": compact_chat_tool_evidence(fn_name, normalized_result),
+                        "content": current_chat_tool_evidence(
+                            fn_name,
+                            normalized_result,
+                            fn_args,
+                            raw_result,
+                        ),
                         "_context_scope": "current",
                     })
                     assistant_msg.tool_results.append({"tool_name": fn_name, "result": normalized_result})
