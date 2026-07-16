@@ -4498,10 +4498,112 @@ def attempted_tool_names(assistant_msg: Message) -> set[str]:
     }
 
 
+def fastmoss_full_ranking_requested(user_text: str) -> bool:
+    """Only expand beyond three pages when the user explicitly asks for a full ranking."""
+    text = str(user_text or "").lower()
+    return bool(re.search(
+        r"(?:完整|全部|全量|完整的)\s*(?:类目)?(?:榜单|排行)|(?:前|top\s*)\s*60|(?:六|6)\s*页",
+        text,
+        re.IGNORECASE,
+    ))
+
+
+def fastmoss_segment_keywords(user_text: str, route: dict[str, Any] | None = None) -> list[str]:
+    """Derive at most two short, independent segment phrases from the current task."""
+    route = route or {}
+    source = re.sub(r"\s+", " ", str(route.get("entity") or "")).strip()
+    if not source:
+        source = chat_routing_text(user_text)
+        source = re.sub(
+            r"(?i)fastmoss|tiktok\s*shop|tiktok|\btk\b|美国|美区|调研报告|调研|研究|分析|报告|"
+            r"选品|定价|价格测算|市场机会|产品机会|商品机会|给我|帮我|请|做一份|看看|一下",
+            " ",
+            source,
+        )
+    parts = re.split(r"\s*(?:/|、|,|，|;|；|\||\band\b|\bor\b|以及|或者|或)\s*", source, flags=re.IGNORECASE)
+    keywords: list[str] = []
+    for part in parts:
+        cleaned = re.sub(r"^[\s\-:：]+|[\s\-:：。？?！!]+$", "", part)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        if not cleaned:
+            continue
+        words = cleaned.split()
+        if len(words) > 5:
+            cleaned = " ".join(words[:5])
+        if len(cleaned) > 80:
+            cleaned = cleaned[:80].rstrip()
+        key = cleaned.casefold()
+        if len(re.sub(r"[^A-Za-z0-9\u4e00-\u9fff]", "", cleaned)) < 2:
+            continue
+        if key not in {item.casefold() for item in keywords}:
+            keywords.append(cleaned)
+        if len(keywords) >= 2:
+            break
+    return keywords
+
+
+def _fastmoss_product_search_call_arguments(assistant_msg: Message) -> list[dict[str, Any]]:
+    calls: list[dict[str, Any]] = []
+    for call in assistant_msg.tool_calls or []:
+        if str(call.get("function", {}).get("name") or "") != "fastmoss__product_search":
+            continue
+        calls.append(_tool_call_arguments(call))
+    if not calls:
+        # Historical/test messages may have stored results without the original call arguments.
+        observed = sum(
+            1 for item in (assistant_msg.tool_results or [])
+            if isinstance(item, dict) and item.get("tool_name") == "fastmoss__product_search"
+        )
+        if observed:
+            calls.append({"page": 1, "pagesize": 10})
+    return calls
+
+
+def fastmoss_product_search_plan(
+    assistant_msg: Message,
+    user_text: str = "",
+    route: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return deterministic category-head and segment-search progress for product research."""
+    category_pages = 6 if fastmoss_full_ranking_requested(user_text) else 3
+    segment_keywords = fastmoss_segment_keywords(user_text, route)
+    calls = _fastmoss_product_search_call_arguments(assistant_msg)
+    completed_category_pages = {
+        max(1, int(args.get("page") or 1))
+        for args in calls
+        if not str(args.get("keywords") or "").strip()
+    }
+    completed_segment_keywords = {
+        re.sub(r"\s+", " ", str(args.get("keywords") or "")).strip().casefold()
+        for args in calls
+        if str(args.get("keywords") or "").strip()
+    }
+    next_call: dict[str, Any] | None = None
+    for page in range(1, category_pages + 1):
+        if page not in completed_category_pages:
+            next_call = {"scope": "category_head", "page": page, "pagesize": 10}
+            break
+    if next_call is None:
+        for keyword in segment_keywords:
+            if keyword.casefold() not in completed_segment_keywords:
+                next_call = {"scope": "segment_head", "keywords": keyword, "page": 1, "pagesize": 10}
+                break
+    return {
+        "category_pages": category_pages,
+        "segment_keywords": segment_keywords,
+        "completed_category_pages": sorted(completed_category_pages),
+        "completed_segment_keywords": sorted(completed_segment_keywords),
+        "next_call": next_call,
+        "complete": next_call is None,
+    }
+
+
 def fastmoss_workflow_phase(
     playbook_id: str | None,
     assistant_msg: Message,
     available_tool_ids: set[str] | None = None,
+    user_text: str = "",
+    route: dict[str, Any] | None = None,
 ) -> tuple[str, set[str]] | None:
     attempted = attempted_tool_names(assistant_msg)
     observed = {
@@ -4517,6 +4619,19 @@ def fastmoss_workflow_phase(
                 candidates = set(group)
                 if restrict_to_available:
                     candidates &= available
+                if "fastmoss__product_search" in candidates:
+                    if not candidates:
+                        continue
+                    plan = fastmoss_product_search_plan(assistant_msg, user_text, route)
+                    next_call = plan.get("next_call")
+                    if not next_call:
+                        continue
+                    if next_call.get("scope") == "category_head":
+                        return (
+                            f"获取类目销量头部（第 {next_call['page']}/{plan['category_pages']} 页）",
+                            {"fastmoss__product_search"},
+                        )
+                    return "补充细分匹配样本", {"fastmoss__product_search"}
                 if not candidates or observed.intersection(candidates):
                     continue
                 untried = candidates - attempted
@@ -4546,8 +4661,20 @@ def fastmoss_workflow_instruction(phase: tuple[str, set[str]] | None) -> str:
     if not phase:
         return "FastMoss 分阶段采集已完成。请根据已有数据、空结果和失败结果直接回答，不再调用工具。"
     label, tool_ids = phase
+    search_instruction = ""
+    if "获取类目销量头部" in label:
+        search_instruction = (
+            "本轮 product_search 必须使用已验证 category_path，不得传 keywords；按 day28_units_sold 降序，"
+            "pagesize=10，并严格使用阶段指定页码。"
+        )
+    elif label == "补充细分匹配样本":
+        search_instruction = (
+            "本轮 product_search 只使用系统指定的一个短细分关键词，page=1、pagesize=10，"
+            "按 day28_units_sold 降序；不得拼成长串关键词。"
+        )
     return (
         f"当前 FastMoss 阶段：{label}。本轮从以下尚未完成的能力中调用一个工具：{', '.join(sorted(tool_ids))}。"
+        f"{search_instruction}"
         "成功但为空也表示该接口已完成，不要重复调用；在最终答案中说明该维度本轮无数据即可。"
         "不要提前调用后续阶段工具，也不要复用历史任务中的商品、店铺、达人或视频 ID。"
         "商品搜索的 total 只代表本次查询的匹配数，不是整个类目的商品数；空结果或少量样本不能推出‘无人做’、‘蓝海’或‘几乎没有竞争’。"
@@ -4578,7 +4705,7 @@ def provider_profile_tool_ids(
             or split_prefixed_tool_id(tool_id)[1] in preferred
         }
     if provider == "fastmoss" and route.get("playbook"):
-        phase = fastmoss_workflow_phase(str(route.get("playbook")), assistant_msg, selected)
+        phase = fastmoss_workflow_phase(str(route.get("playbook")), assistant_msg, selected, user_text, route)
         phase_tools = phase[1] if phase else set()
         return {
             tool_id for tool_id in selected
@@ -5459,7 +5586,11 @@ def chat_max_tool_rounds(provider: str, route: dict[str, Any], tool_count: int) 
         base = max(base, 3)
     if tool_count >= 20 and intent != "general":
         base = max(base, 7)
-    limit = 14 if provider == "fastmoss" and route.get("playbook") == "product" else 10
+    if provider == "fastmoss" and route.get("playbook") == "product" and route.get("full_ranking"):
+        base = max(base, 17)
+        limit = 17
+    else:
+        limit = 14 if provider == "fastmoss" and route.get("playbook") == "product" else 10
     return min(base, limit)
 
 
@@ -5735,7 +5866,10 @@ def _chat_tool_evidence_payload(
         )
     elif payload.get("data_state") == "error":
         evidence["answer_guidance"] = "接口调用失败；不得编造该维度数据，使用其他证据继续回答并说明失败。"
-    for key in ("cache", "error", "query", "keyword", "category", "products", "items", "results"):
+    for key in (
+        "cache", "error", "query", "keyword", "category", "products", "items", "results",
+        "evidence_metadata", "evidence_product_records",
+    ):
         if payload.get(key) is not None:
             evidence[key] = payload.get(key)
     if payload.get("mcp_data") is not None:
@@ -5789,6 +5923,201 @@ def current_chat_tool_evidence(
     )
 
 
+def _fastmoss_find_first(value: Any, normalized_keys: set[str]) -> Any:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if re.sub(r"[^a-z0-9]", "", str(key).lower()) in normalized_keys and item not in (None, ""):
+                return item
+        for item in value.values():
+            found = _fastmoss_find_first(item, normalized_keys)
+            if found not in (None, ""):
+                return found
+    elif isinstance(value, list):
+        for item in value:
+            found = _fastmoss_find_first(item, normalized_keys)
+            if found not in (None, ""):
+                return found
+    return None
+
+
+def _fastmoss_number(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip().replace(",", "").replace("$", "").replace("US$", "")
+    multiplier = 1.0
+    if text.endswith(("万", "w", "W")):
+        multiplier, text = 10000.0, text[:-1]
+    elif text.endswith(("千", "k", "K")):
+        multiplier, text = 1000.0, text[:-1]
+    try:
+        return float(text) * multiplier
+    except ValueError:
+        return None
+
+
+def _fastmoss_date_range(value: Any, skip_request_echo: bool = False) -> list[str]:
+    dates: list[str] = []
+    period_keys = {
+        "date", "statdate", "recorddate", "startdate", "enddate", "datevalue",
+        "periodstart", "periodend", "starttime", "endtime",
+    }
+
+    def visit(node: Any, key: str = "") -> None:
+        normalized_key = re.sub(r"[^a-z0-9]", "", str(key).lower())
+        if normalized_key in period_keys and isinstance(node, str):
+            week = re.fullmatch(r"(\d{4})-W(\d{2})", node.strip(), re.IGNORECASE)
+            if week:
+                start = datetime.fromisocalendar(int(week.group(1)), int(week.group(2)), 1).date()
+                dates.extend([start.isoformat(), (start + timedelta(days=6)).isoformat()])
+            else:
+                match = re.match(r"(\d{4}-\d{2}-\d{2})", node.strip())
+                if match:
+                    dates.append(match.group(1))
+        if isinstance(node, dict):
+            for child_key, child in node.items():
+                if skip_request_echo and re.sub(r"[^a-z0-9]", "", str(child_key).lower()) in {
+                    "filter", "filters", "params", "request", "query", "arguments",
+                }:
+                    continue
+                visit(child, str(child_key))
+        elif isinstance(node, list):
+            for child in node:
+                visit(child, key)
+
+    visit(value)
+    return [min(dates), max(dates)] if dates else []
+
+
+def _fastmoss_record_value(record: dict[str, Any], keys: set[str]) -> Any:
+    for key, value in record.items():
+        if re.sub(r"[^a-z0-9]", "", str(key).lower()) in keys and value not in (None, ""):
+            return value
+    return None
+
+
+def fastmoss_extract_product_records(value: Any) -> list[dict[str, Any]]:
+    """Extract compact product facts from heterogeneous FastMoss response shapes."""
+    records: list[dict[str, Any]] = []
+    seen_nodes: set[int] = set()
+
+    def visit(node: Any) -> None:
+        if isinstance(node, dict):
+            marker = id(node)
+            if marker in seen_nodes:
+                return
+            seen_nodes.add(marker)
+            direct_product_id = _fastmoss_record_value(node, {"productid", "goodsid", "itemid"})
+            nested_product = node.get("product") if isinstance(node.get("product"), dict) else None
+            nested_product_id = _fastmoss_record_value(nested_product or {}, {"productid", "goodsid", "itemid"})
+            product_id = direct_product_id or nested_product_id
+            if re.fullmatch(r"\d{16,20}", str(product_id or "")):
+                price_value = _fastmoss_find_first(node, {"price", "saleprice", "currentprice", "minprice", "floorprice"})
+                max_price_value = _fastmoss_find_first(node, {"maxprice", "pricemax", "ceilingprice"})
+                compact = {
+                    "product_id": str(product_id),
+                    "title": str(_fastmoss_find_first(node, {"title", "productname", "producttitle"}) or "")[:240],
+                    "day7_units_sold": _fastmoss_number(_fastmoss_find_first(node, {"day7unitssold", "last7dunitssold", "units7d", "sales7d"})),
+                    "day28_units_sold": _fastmoss_number(_fastmoss_find_first(node, {"day28unitssold", "last28dunitssold", "units28d", "sales28d"})),
+                    "day28_gmv": _fastmoss_number(_fastmoss_find_first(node, {"day28gmv", "last28dgmv", "gmv28d"})),
+                    "period_units_sold": _fastmoss_number(_fastmoss_find_first(node, {"periodunitssold", "periodsales"})),
+                    "period_gmv": _fastmoss_number(_fastmoss_find_first(node, {"periodgmv"})),
+                    "price_min": _fastmoss_number(price_value),
+                    "price_max": _fastmoss_number(max_price_value if max_price_value is not None else price_value),
+                }
+                records.append({key: item for key, item in compact.items() if item not in (None, "")})
+            for item in node.values():
+                visit(item)
+        elif isinstance(node, list):
+            for item in node:
+                visit(item)
+
+    visit(value)
+    unique: dict[str, dict[str, Any]] = {}
+    for record in records:
+        key = record["product_id"]
+        existing = unique.get(key)
+        if existing is None or len(record) > len(existing):
+            unique[key] = record
+    return list(unique.values())
+
+
+def _fastmoss_response_value(raw_result: Any, normalized_result: dict[str, Any]) -> Any:
+    text = mcp_text_content(raw_result)
+    parsed = parse_mcp_text_content(text) if text else None
+    if parsed is not None:
+        return parsed
+    return normalized_result.get("mcp_data") if isinstance(normalized_result, dict) else None
+
+
+def fastmoss_tool_evidence_metadata(
+    tool_name: str,
+    arguments: dict[str, Any],
+    normalized_result: dict[str, Any],
+    raw_result: Any = None,
+) -> dict[str, Any]:
+    """Build additive provider-specific provenance without changing external APIs."""
+    unprefixed = split_prefixed_tool_id(tool_name)[1]
+    filters = arguments.get("filter") if isinstance(arguments.get("filter"), dict) else {}
+    value = _fastmoss_response_value(raw_result, normalized_result)
+    records = fastmoss_extract_product_records(value)
+    total = _fastmoss_number(_fastmoss_find_first(value, {"total", "totalcount", "recordcount"}))
+    region = _fastmoss_find_first(arguments, {"region", "marketplace", "market", "country", "site"})
+    category_level = {
+        "market_category_ranking": "L1",
+        "market_category_analysis": "L2",
+        "product_rank_top_selling": "L2",
+        "product_rank_new_listed": "L3",
+        "product_search": "L3",
+    }.get(unprefixed)
+    units = [record.get("day28_units_sold") for record in records if record.get("day28_units_sold") is not None]
+    sort_verified = None
+    if unprefixed == "product_search" and len(units) >= 2:
+        sort_verified = all(left >= right for left, right in zip(units, units[1:]))
+    query = str(arguments.get("keywords") or "").strip()
+    scope = "segment_head" if query else ("category_head" if unprefixed == "product_search" else "supporting")
+    fetched = len({record.get("product_id") for record in records if record.get("product_id")})
+    metadata = {
+        "source_tool": tool_name,
+        "data_state": mcp_result_data_state(normalized_result),
+        "scope": scope,
+        "category_level": category_level,
+        "category_path": filters.get("category_path"),
+        "category_id": filters.get("category_id"),
+        "region": str(region or "").upper() or None,
+        "requested_period": {key: filters.get(key) for key in ("date_type", "date_value") if filters.get(key) is not None},
+        "requested_date_range": _fastmoss_date_range(arguments),
+        "returned_date_range": _fastmoss_date_range(value, skip_request_echo=True),
+        "query": query or None,
+        "orderby": arguments.get("orderby"),
+        "page": int(arguments.get("page") or 1) if unprefixed == "product_search" else arguments.get("page"),
+        "pagesize": arguments.get("pagesize"),
+        "reported_total": int(total) if total is not None and total.is_integer() else total,
+        "fetched_records": fetched,
+        "sort_verified": sort_verified,
+    }
+    return {key: item for key, item in metadata.items() if item not in (None, {}, [])}
+
+
+def annotate_fastmoss_tool_result(
+    tool_name: str,
+    arguments: dict[str, Any],
+    normalized_result: dict[str, Any],
+    raw_result: Any = None,
+) -> dict[str, Any]:
+    if split_prefixed_tool_id(tool_name)[0] != "fastmoss" or not isinstance(normalized_result, dict):
+        return normalized_result
+    value = _fastmoss_response_value(raw_result, normalized_result)
+    normalized_result["evidence_metadata"] = fastmoss_tool_evidence_metadata(
+        tool_name, arguments, normalized_result, raw_result
+    )
+    product_records = fastmoss_extract_product_records(value)
+    if product_records:
+        normalized_result["evidence_product_records"] = product_records[:10]
+    return normalized_result
+
+
 def _is_current_tool_evidence_message(message: dict[str, Any]) -> bool:
     scope = message.get("_context_scope")
     return scope == "current_evidence" or (
@@ -5813,6 +6142,284 @@ def mcp_evidence_quality_summary(assistant_msg: Message) -> dict[str, list[str]]
         state = mcp_result_data_state(item.get("result"))
         summary.setdefault(state, []).append(name)
     return summary
+
+
+def fastmoss_evidence_manifest(
+    assistant_msg: Message,
+    user_text: str = "",
+    route: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Summarize coverage, provenance, sorting, and deterministic consistency checks."""
+    quality = mcp_evidence_quality_summary(assistant_msg)
+    category_records: dict[str, dict[str, Any]] = {}
+    segment_records: dict[str, dict[str, Any]] = {}
+    category_pages: set[int] = set()
+    category_totals: list[float] = []
+    segment_queries: dict[str, dict[str, Any]] = {}
+    metadata_rows: list[dict[str, Any]] = []
+    all_records: dict[str, list[dict[str, Any]]] = {}
+    conflicts: list[dict[str, str]] = []
+    sort_anomalies: list[str] = []
+    evidence_excerpts: list[dict[str, Any]] = []
+
+    for item in assistant_msg.tool_results or []:
+        if not isinstance(item, dict) or not isinstance(item.get("result"), dict):
+            continue
+        tool_name = str(item.get("tool_name") or "tool")
+        result = item["result"]
+        metadata = result.get("evidence_metadata") if isinstance(result.get("evidence_metadata"), dict) else {}
+        records = result.get("evidence_product_records") if isinstance(result.get("evidence_product_records"), list) else []
+        metadata_rows.append({"tool": tool_name, **metadata})
+        excerpt = result.get("mcp_data")
+        if excerpt is not None:
+            encoded = json.dumps(excerpt, ensure_ascii=False, separators=(",", ":"))
+            evidence_excerpts.append({"tool": tool_name, "data": encoded[:1800]})
+        scope = str(metadata.get("scope") or "")
+        if scope == "category_head":
+            category_pages.add(int(metadata.get("page") or 1))
+            total = _fastmoss_number(metadata.get("reported_total"))
+            if total is not None:
+                category_totals.append(total)
+            if metadata.get("sort_verified") is False:
+                sort_anomalies.append(f"{tool_name} 第 {metadata.get('page', 1)} 页返回顺序不是 day28_units_sold 降序")
+        elif scope == "segment_head":
+            query = str(metadata.get("query") or "").strip()
+            segment_queries.setdefault(query, {"reported_total": metadata.get("reported_total"), "fetched": 0})
+            segment_queries[query]["fetched"] += int(metadata.get("fetched_records") or 0)
+
+        for record in records:
+            if not isinstance(record, dict) or not record.get("product_id"):
+                continue
+            product_id = str(record["product_id"])
+            enriched = {**record, "source_tool": tool_name, "scope": scope, "query": metadata.get("query")}
+            all_records.setdefault(product_id, []).append(enriched)
+            if scope == "category_head":
+                existing = category_records.get(product_id)
+                if not existing or float(record.get("day28_units_sold") or -1) > float(existing.get("day28_units_sold") or -1):
+                    category_records[product_id] = enriched
+            elif scope == "segment_head":
+                existing = segment_records.get(product_id)
+                if not existing or float(record.get("day28_units_sold") or -1) > float(existing.get("day28_units_sold") or -1):
+                    segment_records[product_id] = enriched
+
+    for product_id, records in all_records.items():
+        for record in records:
+            day7 = _fastmoss_number(record.get("day7_units_sold"))
+            day28 = _fastmoss_number(record.get("day28_units_sold"))
+            period_units = _fastmoss_number(record.get("period_units_sold"))
+            period_gmv = _fastmoss_number(record.get("period_gmv"))
+            gmv28 = _fastmoss_number(record.get("day28_gmv"))
+            price_min = _fastmoss_number(record.get("price_min"))
+            price_max = _fastmoss_number(record.get("price_max"))
+            if day7 is not None and day28 is not None and day7 > day28:
+                conflicts.append({"severity": "high", "product_id": product_id, "issue": "近7天销量高于近28天销量"})
+            if period_units is not None and day28 is not None and period_units > day28:
+                conflicts.append({"severity": "high", "product_id": product_id, "issue": "较短统计周期销量高于近28天销量，周期或口径需核实"})
+            units = day28 if day28 not in (None, 0) and gmv28 is not None else period_units
+            gmv = gmv28 if day28 not in (None, 0) and gmv28 is not None else period_gmv
+            if units not in (None, 0) and gmv is not None and price_min is not None:
+                unit_revenue = gmv / units
+                upper = price_max if price_max is not None else price_min
+                if unit_revenue < price_min * 0.8 or unit_revenue > upper * 1.2:
+                    conflicts.append({
+                        "severity": "high",
+                        "product_id": product_id,
+                        "issue": f"GMV/销量推导单价 {unit_revenue:.2f} 与返回价格区间不一致",
+                    })
+        comparable = [
+            _fastmoss_number(record.get("day28_units_sold")) for record in records
+            if _fastmoss_number(record.get("day28_units_sold")) is not None
+        ]
+        if len(comparable) >= 2 and min(comparable) > 0 and max(comparable) / min(comparable) > 1.5:
+            conflicts.append({"severity": "high", "product_id": product_id, "issue": "不同接口的近28天销量相差超过50%"})
+
+    for row in metadata_rows:
+        requested_range = row.get("requested_date_range") or []
+        returned_range = row.get("returned_date_range") or []
+        if len(requested_range) == 2 and len(returned_range) == 2 and (
+            returned_range[1] < requested_range[0] or returned_range[0] > requested_range[1]
+        ):
+            conflicts.append({
+                "severity": "high",
+                "product_id": "",
+                "issue": (
+                    f"{row.get('source_tool')} 请求周期 {requested_range[0]} 至 {requested_range[1]}，"
+                    f"返回周期 {returned_range[0]} 至 {returned_range[1]}，两者不重叠"
+                ),
+            })
+
+    sort_key = lambda record: float(record.get("day28_units_sold") or -1)
+    category_top = sorted(category_records.values(), key=sort_key, reverse=True)
+    segment_top = sorted(segment_records.values(), key=sort_key, reverse=True)
+    overlap = sorted(set(category_records).intersection(segment_records))
+    plan = fastmoss_product_search_plan(assistant_msg, user_text, route)
+    reported_total = max(category_totals) if category_totals else None
+    target_pages = int(plan.get("category_pages") or 3)
+    coverage_complete = set(range(1, target_pages + 1)).issubset(category_pages)
+    target_category = fastmoss_current_category_path(assistant_msg)
+    market_levels = sorted({
+        str(row.get("category_level")) for row in metadata_rows
+        if row.get("category_level") and row.get("source_tool") in {
+            "fastmoss__market_category_analysis", "fastmoss__market_category_ranking"
+        }
+    })
+    limitations: list[str] = []
+    if not coverage_complete:
+        limitations.append(f"类目销量榜计划获取 {target_pages} 页，实际完成页码 {sorted(category_pages)}")
+    if reported_total is not None and len(category_records) < reported_total:
+        limitations.append(f"接口报告匹配总数 {int(reported_total)}，本轮去重后仅获取 {len(category_records)} 件")
+    if target_category and market_levels and "L3" not in market_levels:
+        limitations.append("市场规模工具仅返回 L1/L2 上级类目数据，不能直接作为目标 L3 类目规模")
+    if sort_anomalies:
+        limitations.append("接口返回顺序存在异常，本地已重排，但不得称为严格官方 Top 排名")
+    if quality.get("empty"):
+        limitations.append("部分接口成功但返回为空，只代表本轮没有记录")
+    if quality.get("error"):
+        limitations.append("部分接口调用失败，对应维度不可验证")
+    return {
+        "provider": "fastmoss",
+        "target_category_path": target_category,
+        "category_head": {
+            "sort": "day28_units_sold desc",
+            "target_pages": target_pages,
+            "completed_pages": sorted(category_pages),
+            "reported_total": int(reported_total) if reported_total is not None else None,
+            "fetched_unique": len(category_records),
+            "coverage_complete": coverage_complete,
+            "products": category_top[:60],
+        },
+        "segment_head": {
+            "queries": segment_queries,
+            "fetched_unique": len(segment_records),
+            "products": segment_top[:20],
+        },
+        "overlap_product_ids": overlap,
+        "market_category_levels": market_levels,
+        "quality_states": quality,
+        "sort_anomalies": sort_anomalies,
+        "conflicts": conflicts,
+        "limitations": limitations,
+        "evidence_excerpts": evidence_excerpts[:14],
+    }
+
+
+def fastmoss_report_quality_instruction(
+    assistant_msg: Message,
+    user_text: str,
+    route: dict[str, Any],
+) -> str:
+    manifest = fastmoss_evidence_manifest(assistant_msg, user_text, route)
+    return (
+        "FastMoss 最终报告必须遵守以下证据清单。类目头部与细分匹配商品分表展示；"
+        "reported_total 是接口匹配总数，fetched_unique 是本次实际取得数，不得混写。"
+        "L2 数据只能称为上级类目参考。所有 conflicts 必须显式披露，强机会/低竞争/生命周期/因果结论没有直接证据时降级为待验证假设。"
+        "证据清单：" + json.dumps(manifest, ensure_ascii=False, separators=(",", ":"))
+    )
+
+
+def fastmoss_deterministic_quality_fallback(manifest: dict[str, Any]) -> str:
+    category = manifest.get("category_head") or {}
+    products = category.get("products") or []
+    lines = ["# FastMoss 数据核验结果", "", "## 已验证事实"]
+    lines.append(
+        f"- 类目销量榜按近28天销量降序计划获取 {category.get('target_pages', 3)} 页；"
+        f"实际完成页码为 {category.get('completed_pages') or []}，去重后取得 {category.get('fetched_unique', 0)} 件商品。"
+    )
+    if category.get("reported_total") is not None:
+        lines.append(f"- 接口报告匹配总数为 {category['reported_total']}；该数字与本次实际获取数量不是同一概念。")
+    if products:
+        lines.extend(["", "## 本次类目样本（本地按近28天销量复核排序）", "", "| 商品 | 商品ID | 近28天销量 |", "|---|---:|---:|"])
+        for product in products[:5]:
+            lines.append(
+                f"| {str(product.get('title') or '未返回标题').replace('|', '/')} | {product.get('product_id')} | "
+                f"{product.get('day28_units_sold', '未返回')} |"
+            )
+    lines.extend(["", "## 数据缺口与结论边界"])
+    limitations = list(manifest.get("limitations") or [])
+    conflicts = list(manifest.get("conflicts") or [])
+    if not limitations and not conflicts:
+        lines.append("- 独立回答校验未完成，因此仅保留上述可机械核验的事实，不输出机会、竞争或生命周期判断。")
+    for item in limitations:
+        lines.append(f"- {item}")
+    for item in conflicts[:10]:
+        lines.append(f"- 商品 {item.get('product_id') or '未知'}：{item.get('issue')}")
+    lines.append("- 当前无法安全生成完整分析结论；空结果不代表平台绝对不存在，冲突指标需回到 FastMoss 源数据核实。")
+    return "\n".join(lines)
+
+
+def verify_fastmoss_final_answer(
+    draft: str,
+    assistant_msg: Message,
+    user_text: str,
+    route: dict[str, Any],
+    requests_module: Any,
+    api_key: str,
+    api_url: str,
+    model: str,
+) -> str:
+    """Run one independent JSON verifier pass; rewrite only high-risk answers."""
+    if str(route.get("task_depth") or "") not in {"analysis", "workflow"} and not route.get("playbook"):
+        return draft
+    manifest = fastmoss_evidence_manifest(assistant_msg, user_text, route)
+    payload = {
+        "model": model,
+        "messages": [{
+            "role": "system",
+            "content": (
+                "You are an independent FastMoss report verifier. Return one JSON object only with keys "
+                "approved (boolean), risk_level (low|medium|high|critical), issues (array of strings), rewritten_answer (string). "
+                "Check every numeric/market claim against the evidence manifest. Reject category-level overreach, treating fetched count as total, "
+                "ignoring partial pagination or sort anomalies, undisclosed metric conflicts, and unsupported claims of low competition, structural opportunity, "
+                "lifecycle stage, or content causality. If risk is high/critical, provide one complete corrected Simplified Chinese answer. "
+                "If risk is low/medium, rewritten_answer may be empty. Do not add facts absent from the manifest."
+            ),
+        }, {
+            "role": "user",
+            "content": json.dumps({"original_request": user_text, "manifest": manifest, "draft": draft}, ensure_ascii=False),
+        }],
+        "response_format": {"type": "json_object"},
+        "temperature": 0,
+        "max_tokens": 5000,
+    }
+    payload_str = json.dumps(payload, ensure_ascii=False)
+    started = time.monotonic()
+    try:
+        response = requests_module.post(
+            api_url.rstrip("/") + "/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            data=payload_str.encode("utf-8"),
+            timeout=60,
+        )
+        response.raise_for_status()
+        body = response.json()
+        record_api_call(
+            "deepseek",
+            "fastmoss_answer_verifier",
+            {
+                "api_url": api_url.rstrip("/") + "/chat/completions",
+                "model": model,
+                "provider": "fastmoss",
+                "payload_sha256": __import__("hashlib").sha256(payload_str.encode("utf-8")).hexdigest(),
+            },
+            body,
+            elapsed_ms=int((time.monotonic() - started) * 1000),
+        )
+        content = body["choices"][0]["message"].get("content")
+        decision = _chat_intent_json_content(content)
+        if not isinstance(decision, dict) or not isinstance(decision.get("approved"), bool):
+            raise ValueError("invalid verifier JSON")
+        risk = str(decision.get("risk_level") or "").lower()
+        if risk not in {"low", "medium", "high", "critical"}:
+            raise ValueError("invalid verifier risk level")
+        if risk in {"high", "critical"} or decision.get("approved") is False:
+            rewritten = str(decision.get("rewritten_answer") or "").strip()
+            if not rewritten:
+                return fastmoss_deterministic_quality_fallback(manifest)
+            return rewritten
+        return draft
+    except Exception as exc:
+        print(f"[CHAT] FastMoss answer verifier failed: {type(exc).__name__}: {str(exc)[:300]}", flush=True)
+        return fastmoss_deterministic_quality_fallback(manifest)
 
 
 def build_tool_limit_final_context(messages: list[dict[str, Any]], user_request: str = "") -> list[dict[str, Any]]:
@@ -6175,7 +6782,10 @@ def _collect_named_ids(value: Any, normalized_keys: set[str]) -> set[str]:
         for item in value:
             found.update(_collect_named_ids(item, normalized_keys))
     elif isinstance(value, str):
-        key_pattern = "|".join(sorted(normalized_keys))
+        key_pattern = "|".join(
+            rf"{re.escape(key[:-2])}[^a-z0-9]*id" if key.endswith("id") else re.escape(key)
+            for key in sorted(normalized_keys)
+        )
         found.update(re.findall(rf'["\'](?:{key_pattern})["\']\s*:\s*["\']?(\d{{16,20}})', value, re.IGNORECASE))
     return found
 
@@ -6326,6 +6936,8 @@ def apply_fastmoss_business_defaults(
     args: dict[str, Any],
     assistant_msg: Message,
     today: Any | None = None,
+    user_text: str = "",
+    route: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Fill FastMoss-only business defaults using the current task's verified category path."""
     normalized = dict(args or {})
@@ -6387,9 +6999,20 @@ def apply_fastmoss_business_defaults(
         if path:
             filters["category_path"] = [path["level1"], path["level2"], path["level3"]]
         normalized["filter"] = filters
-        normalized.setdefault("orderby", [{"field": "day28_units_sold", "order": "desc"}])
-        normalized.setdefault("page", 1)
-        normalized.setdefault("pagesize", 10)
+        if str((route or {}).get("playbook") or "") == "product":
+            plan = fastmoss_product_search_plan(assistant_msg, user_text, route)
+            next_call = plan.get("next_call") or {}
+            if next_call.get("scope") == "category_head":
+                normalized.pop("keywords", None)
+            elif next_call.get("scope") == "segment_head":
+                normalized["keywords"] = str(next_call.get("keywords") or "").strip()
+            normalized["page"] = int(next_call.get("page") or 1)
+            normalized["pagesize"] = 10
+            normalized["orderby"] = [{"field": "day28_units_sold", "order": "desc"}]
+        else:
+            normalized.setdefault("orderby", [{"field": "day28_units_sold", "order": "desc"}])
+            normalized.setdefault("page", 1)
+            normalized.setdefault("pagesize", 10)
     return normalized
 
 
@@ -6496,6 +7119,8 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
 
     routing_text = chat_routing_text(user_text)
     route = resolve_chat_intent(session.messages, user_text, provider, api_key, api_url, model, req)
+    if provider == "fastmoss" and route.get("playbook") == "product" and fastmoss_full_ranking_requested(routing_text):
+        route["full_ranking"] = True
     route_intent = str(route.get("intent") or "general")
     scoped_provider_task = (
         provider in {"amazon", "fastmoss"}
@@ -6632,7 +7257,9 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     playbook_instruction = fastmoss_playbook_instruction(route.get("playbook")) if provider == "fastmoss" else ""
     if playbook_instruction:
         messages.append({"role": "system", "content": playbook_instruction, "_context_scope": "system"})
-        phase = fastmoss_workflow_phase(str(route.get("playbook")), assistant_msg, set(effective_enabled_tool_ids or set()))
+        phase = fastmoss_workflow_phase(
+            str(route.get("playbook")), assistant_msg, set(effective_enabled_tool_ids or set()), routing_text, route
+        )
         messages.append({"role": "system", "content": fastmoss_workflow_instruction(phase), "_context_scope": "system"})
     print(
         f"[CHAT] provider={provider} enabled={len(enabled_tool_ids or [])} effective={len(effective_enabled_tool_ids or [])} tools={len(tools)} max_rounds={max_tool_rounds}",
@@ -6654,9 +7281,13 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     "arguments": json.dumps(search_arguments, ensure_ascii=False),
                 },
             }
+            raw_result = None
             try:
                 raw_result = execute_prefixed_tool("fastmoss__product_search", search_arguments)
                 normalized_result = normalize_prefixed_tool_result("fastmoss__product_search", raw_result)
+                normalized_result = annotate_fastmoss_tool_result(
+                    "fastmoss__product_search", search_arguments, normalized_result, raw_result
+                )
             except Exception as exc:
                 normalized_result = {
                     "ok": False,
@@ -6783,7 +7414,9 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 if domain in {"sellersprite", "fastmoss"}:
                     fn_args = apply_mcp_region_default(domain, unprefixed_name, fn_args, default_region)
                 if domain == "fastmoss" and route.get("playbook"):
-                    fn_args = apply_fastmoss_business_defaults(unprefixed_name, fn_args, assistant_msg)
+                    fn_args = apply_fastmoss_business_defaults(
+                        unprefixed_name, fn_args, assistant_msg, user_text=routing_text, route=route
+                    )
                 signature = tool_call_signature(fn_name, fn_args)
                 if signature in seen_tool_calls:
                     print(f"[CHAT] skipped duplicate tool call: {fn_name} {fn_args}", flush=True)
@@ -6822,6 +7455,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     else:
                         raw_result = execute_prefixed_tool(fn_name, fn_args, default_region)
                         normalized_result = normalize_prefixed_tool_result(fn_name, raw_result)
+                        normalized_result = annotate_fastmoss_tool_result(fn_name, fn_args, normalized_result, raw_result)
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc["id"],
@@ -6853,11 +7487,19 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                         "_context_scope": "system",
                     })
                 elif provider == "fastmoss" and route.get("playbook"):
-                    phase = fastmoss_workflow_phase(str(route.get("playbook")), assistant_msg, set(effective_enabled_tool_ids or set()))
+                    phase = fastmoss_workflow_phase(
+                        str(route.get("playbook")), assistant_msg, set(effective_enabled_tool_ids or set()), routing_text, route
+                    )
                     selected_tool_ids = provider_profile_tool_ids(provider, route, routing_text, set(effective_enabled_tool_ids or set()), assistant_msg)
                     tools = build_prefixed_model_tools(selected_tool_ids) if phase else []
                     final_answer_forced = phase is None
                     messages.append({"role": "system", "content": fastmoss_workflow_instruction(phase), "_context_scope": "system"})
+                    if phase is None:
+                        messages.append({
+                            "role": "system",
+                            "content": fastmoss_report_quality_instruction(assistant_msg, routing_text, route),
+                            "_context_scope": "system",
+                        })
                 no_tool_retries = 0
                 continue
 
@@ -6909,11 +7551,16 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": fallback})
                 return
             if final_answer_forced and str(content or "").strip():
-                store.update_message(session, assistant_msg, content, status="done")
-                store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": content})
+                final_content = (
+                    verify_fastmoss_final_answer(
+                        str(content), assistant_msg, routing_text, route, req, api_key, api_url, model
+                    ) if provider == "fastmoss" else str(content)
+                )
+                store.update_message(session, assistant_msg, final_content, status="done")
+                store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": final_content})
                 return
             workflow_phase = fastmoss_workflow_phase(
-                str(route.get("playbook")), assistant_msg, set(effective_enabled_tool_ids or set())
+                str(route.get("playbook")), assistant_msg, set(effective_enabled_tool_ids or set()), routing_text, route
             ) if provider == "fastmoss" and route.get("playbook") else None
             if workflow_phase and tools and not context_stats["tools_removed"]:
                 if no_tool_retries < 1:
@@ -6974,8 +7621,13 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 tools = []
                 final_answer_forced = True
                 continue
-            store.update_message(session, assistant_msg, content, status="done")
-            store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": content})
+            final_content = (
+                verify_fastmoss_final_answer(
+                    str(content), assistant_msg, routing_text, route, req, api_key, api_url, model
+                ) if provider == "fastmoss" else str(content)
+            )
+            store.update_message(session, assistant_msg, final_content, status="done")
+            store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": final_content})
             return
         except Exception as exc:
             err_text = str(exc)
@@ -6990,6 +7642,12 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
 
     evidence_gaps = fastmoss_analysis_evidence_gaps(routing_text, assistant_msg, route) if provider == "fastmoss" else []
     quality_summary = mcp_evidence_quality_summary(assistant_msg)
+    if provider == "fastmoss" and route.get("playbook"):
+        messages.append({
+            "role": "system",
+            "content": fastmoss_report_quality_instruction(assistant_msg, routing_text, route),
+            "_context_scope": "system",
+        })
     messages.append({
         "role": "system",
         "content": (
@@ -7072,8 +7730,13 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             response_message = body["choices"][0]["message"]
             content = str(response_message.get("content") or "")
             if content.strip() and not deepseek_tool_protocol_present(response_message):
-                store.update_message(session, assistant_msg, content, status="done")
-                store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": content})
+                final_content = (
+                    verify_fastmoss_final_answer(
+                        content, assistant_msg, routing_text, route, req, api_key, api_url, model
+                    ) if provider == "fastmoss" else content
+                )
+                store.update_message(session, assistant_msg, final_content, status="done")
+                store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": final_content})
                 return
             print(f"[CHAT] rejected {endpoint} response: tool protocol or empty content", flush=True)
 
