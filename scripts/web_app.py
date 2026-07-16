@@ -4537,6 +4537,9 @@ def fastmoss_workflow_instruction(phase: tuple[str, set[str]] | None) -> str:
         "成功但为空也表示该接口已完成，不要重复调用；在最终答案中说明该维度本轮无数据即可。"
         "不要提前调用后续阶段工具，也不要复用历史任务中的商品、店铺、达人或视频 ID。"
         "商品搜索的 total 只代表本次查询的匹配数，不是整个类目的商品数；空结果或少量样本不能推出‘无人做’、‘蓝海’或‘几乎没有竞争’。"
+        "榜单返回条数和下架标记不能直接推出市场总量、新品成功率、存活率或进入门槛；只能描述本次返回样本。"
+        "数据时间必须按各工具实际统计周期分别标注，不得把当前日期写成所有数据的统一截止日。"
+        "没有工具证据的价格、流量和转化率只能明确写成演示假设，不能称为市场主流或数据结论。"
         "没有 SellerSprite 证据时不得陈述 Amazon 的销量、需求或竞争结论。"
     )
 
@@ -6912,6 +6915,8 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     "If evidence is incomplete, state the limitation briefly. Return only the user-facing answer. "
                     + (
                         "For FastMoss, do not invent supplier costs, MOQ, profit margins, 1688 or Amazon facts, seasonality, or other facts absent from the tool evidence. "
+                        "Ranking row counts and off-shelf flags do not prove market totals, success rates, survival rates, or entry barriers. "
+                        "Use each tool's actual period instead of the current date as a universal data cutoff. Treat unsupported price, traffic, and conversion numbers only as illustrative assumptions, never market facts. "
                         if provider == "fastmoss" else ""
                     )
                     if attempt == 0
