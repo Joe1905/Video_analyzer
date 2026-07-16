@@ -1443,7 +1443,7 @@ def test_fastmoss_answer_verifier_rewrites_high_risk_and_falls_back_on_failure()
     route = {"playbook": "product", "task_depth": "workflow", "entity": "mini grinder"}
     style = web_app.fastmoss_report_style_instruction(route)
     assert "先说结论" in style and "我怎么看" in style and "如果要继续做" in style
-    assert "精确上市价" in style
+    assert "完整调研报告" in style and "精确上市价" in style
     assert web_app.fastmoss_report_style_instruction({"task_depth": "lookup"}) == ""
 
     class FakeResponse:
@@ -1469,17 +1469,39 @@ def test_fastmoss_answer_verifier_rewrites_high_risk_and_falls_back_on_failure()
         rewritten = web_app.verify_fastmoss_final_answer(
             "市场只有10件商品", message, "调研", route, FakeRequests, "key", "https://example.test/v1", "model"
         )
-        assert "尚未显示出足以确认独立市场的强信号" in rewritten
-        assert "是否构成可进入机会仍需验证" in rewritten
+        assert "先说结论" in rewritten and "关键依据" in rewritten
+        assert "需要留意" in rewritten and "如果要继续做" in rewritten
         assert "修正版" not in rewritten
 
+        downgraded = web_app.polish_fastmoss_report_tone(
+            "该细分不存在独立市场，但它是真实细分机会。"
+        )
+        assert "尚未显示出足以确认独立市场的强信号" in downgraded
+        assert "是否构成可进入机会仍需验证" in downgraded
+
         softened = web_app.polish_fastmoss_report_tone(
-            "首批500-1000件，配合3-5个达人，筛选10k-50k粉的创作者，观察2周。"
+            "首批500-1000件，配合3-5个达人，筛选10k-50k粉的创作者，观察2周，建议定价$29.99-$39.99。"
         )
         assert "500" not in softened and "3-5" not in softened
         assert "10k" not in softened and "2周" not in softened
+        assert "$29.99" not in softened and "$39.99" not in softened
         assert "小批量" in softened and "少量匹配达人" in softened
         assert "受众匹配" in softened and "完整测试周期" in softened
+
+        products = [{"product_id": str(index), "title": f"代表商品 {index}"} for index in range(1, 11)]
+        rich_manifest = {
+            "category_head": {"products": products},
+            "segment_head": {"products": [{"product_id": "s1", "title": "细分商品"}]},
+        }
+        thin_report = "## 先说结论\n短摘要\n## 我怎么看\n略\n## 需要留意\n略\n## 如果要继续做\n略"
+        assert not web_app.fastmoss_rewrite_preserves_report_detail("原始报告" * 1000, thin_report, rich_manifest, route)
+        detailed_report = (
+            "## 先说结论\n结论。\n## 我怎么看\n判断。\n## 类目头部与细分样本\n"
+            + "、".join(str(index) for index in range(1, 6))
+            + "\n## 需要留意\n边界。\n## 如果要继续做\n下一步。\n"
+            + "证据说明。" * 500
+        )
+        assert web_app.fastmoss_rewrite_preserves_report_detail("原始报告" * 1000, detailed_report, rich_manifest, route)
 
         class ApprovedResponse(FakeResponse):
             def json(self):
@@ -1495,7 +1517,8 @@ def test_fastmoss_answer_verifier_rewrites_high_risk_and_falls_back_on_failure()
         approved = web_app.verify_fastmoss_final_answer(
             "可靠草稿，但该品类不构成独立市场。", message, "调研", route, ApprovedRequests, "key", "https://example.test/v1", "model"
         )
-        assert "尚未显示出足以确认独立市场的强信号" in approved
+        assert "先说结论" in approved and "关键依据" in approved
+        assert "如果要继续做" in approved
 
         class BrokenRequests:
             @staticmethod
