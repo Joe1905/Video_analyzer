@@ -639,8 +639,17 @@ def _save_result(job: dict[str, Any], payload: dict[str, Any]) -> None:
 def retry_failed_feishu_sync(payload: dict[str, Any]) -> dict[str, Any]:
     job_id = _clean_text(payload.get("job_id"), 80)
     account_id = int(payload.get("account_id") or 0)
-    if not job_id and not account_id:
-        raise ValueError("job_id or account_id is required")
+    raw_result_ids = payload.get("result_ids") or []
+    if not isinstance(raw_result_ids, list):
+        raw_result_ids = [raw_result_ids]
+    if payload.get("result_id"):
+        raw_result_ids = [payload.get("result_id"), *raw_result_ids]
+    try:
+        result_ids = sorted({int(value) for value in raw_result_ids if int(value) > 0})
+    except (TypeError, ValueError) as exc:
+        raise ValueError("result_id must be a positive integer") from exc
+    if not job_id and not account_id and not result_ids:
+        raise ValueError("job_id, account_id or result_id is required")
     clauses = ["r.feishu_sync_status = 'failed'"]
     params: list[Any] = []
     if job_id:
@@ -649,6 +658,9 @@ def retry_failed_feishu_sync(payload: dict[str, Any]) -> dict[str, Any]:
     if account_id:
         clauses.append("r.account_id = ?")
         params.append(account_id)
+    if result_ids:
+        clauses.append(f"r.id IN ({','.join('?' for _ in result_ids)})")
+        params.extend(result_ids)
     with proxy_pool.connect() as conn:
         rows = conn.execute(
             f"""

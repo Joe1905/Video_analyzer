@@ -110,4 +110,16 @@ class FeishuCapabilityClient:
             return ""
         if not isinstance(payload, dict):
             return ""
-        return str(payload.get("error") or payload.get("message") or "").strip()
+        message = str(payload.get("message") or payload.get("error") or "").strip()
+        details = payload.get("details")
+        if isinstance(details, dict) and details:
+            detail_code = details.get("code")
+            detail_message = details.get("msg") or details.get("message")
+            detail = ", ".join(
+                str(item).strip()
+                for item in (detail_code, detail_message)
+                if item is not None and str(item).strip()
+            )
+            if detail:
+                return f"{message}: {detail}" if message else detail
+        return message
