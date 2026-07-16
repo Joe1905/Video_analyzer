@@ -1200,6 +1200,7 @@ def _browser_ip_check_urls() -> list[str]:
         return [item.strip() for item in configured.split(",") if item.strip()]
     server_target = os.getenv("PROXY_IP_CHECK_URL", "http://ip-api.com/json/?fields=status,country,regionName,city,query").strip()
     return [
+        "https://ifconfig.co/json",
         "https://api.ipify.org?format=json",
         "https://api64.ipify.org?format=json",
         server_target,
