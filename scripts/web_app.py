@@ -7885,6 +7885,13 @@ class Handler(BaseHTTPRequestHandler):
                 return json_response(self, HTTPStatus.OK, proxy_pool.mihomo_export())
             if path == "/api/proxy/runtime":
                 return json_response(self, HTTPStatus.OK, proxy_pool.runtime_status())
+            avatar_match = re.fullmatch(r"/api/proxy/accounts/avatar/(\d+)", path)
+            if avatar_match:
+                try:
+                    body, content_type = proxy_pool.account_avatar_bytes(int(avatar_match.group(1)))
+                except FileNotFoundError:
+                    return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Account avatar not found"})
+                return binary_response(self, HTTPStatus.OK, body, content_type)
             if path == "/api/proxy/publish/jobs":
                 account_id = int(parse_qs(query).get("account_id", ["0"])[0] or 0)
                 return json_response(self, HTTPStatus.OK, tiktok_studio_publish.list_jobs(account_id))
