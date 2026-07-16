@@ -357,6 +357,7 @@ def retry_job(payload: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("publish job not found")
         if row["status"] not in RETRYABLE_STATUSES:
             raise ValueError("只有发布失败的任务可以重试")
+        video_path(str(row["asset_id"]))
         account_id = int(row["account_id"])
         scheduled = _parse_schedule(row["scheduled_at"])
         now = _utc_now()
@@ -417,7 +418,7 @@ def video_path(asset_id: str) -> Path:
     if root != path.parent and root not in path.parents:
         raise ValueError("invalid publish video path")
     if not path.is_file():
-        raise ValueError("publish video file is missing")
+        raise ValueError("发布视频文件不存在，请重新上传后再重试")
     return path
 
 
