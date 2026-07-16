@@ -1075,6 +1075,8 @@ def test_fastmoss_business_defaults_use_verified_category_levels() -> None:
     assert new["filter"]["listing_start_date"] == "2026-06-13"
     assert new["filter"]["listing_end_date"] == "2026-07-12"
     assert "lang" not in new
+    assert top["orderby"] == [{"field": "period_units_sold", "order": "desc"}]
+    assert new["orderby"] == [{"field": "day3_units_sold", "order": "desc"}]
     search = web_app.apply_fastmoss_business_defaults("product_search", {"keywords": "mini chopper"}, message, fixed_today)
     assert search["filter"]["category_path"] == [13, 844168, 935176]
     planned = web_app.fastmoss_planned_product_search_arguments(

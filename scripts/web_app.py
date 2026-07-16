@@ -7399,11 +7399,31 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             if provider == "fastmoss" and route.get("playbook") == "product"
             else None
         )
-        if deterministic_phase and deterministic_phase[1] == {"fastmoss__product_search"}:
-            fn_name = "fastmoss__product_search"
-            fn_args = fastmoss_planned_product_search_arguments(
-                assistant_msg, routing_text, route, default_region
-            )
+        deterministic_sample_tools = (
+            deterministic_phase[1]
+            & {
+                "fastmoss__product_rank_top_selling",
+                "fastmoss__product_rank_new_listed",
+                "fastmoss__product_search",
+            }
+            if deterministic_phase
+            else set()
+        )
+        if len(deterministic_sample_tools) == 1:
+            fn_name = next(iter(deterministic_sample_tools))
+            if fn_name == "fastmoss__product_search":
+                fn_args = fastmoss_planned_product_search_arguments(
+                    assistant_msg, routing_text, route, default_region
+                )
+            else:
+                unprefixed_name = split_prefixed_tool_id(fn_name)[1]
+                fn_args = apply_mcp_region_default(
+                    "fastmoss", unprefixed_name, {}, default_region
+                )
+                fn_args = apply_fastmoss_business_defaults(
+                    unprefixed_name, fn_args, assistant_msg,
+                    user_text=routing_text, route=route,
+                )
             if fn_args:
                 signature = tool_call_signature(fn_name, fn_args)
                 if signature not in seen_tool_calls:
@@ -7465,7 +7485,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                         })
                     no_tool_retries = 0
                     print(
-                        f"[CHAT] deterministic FastMoss product search page={fn_args.get('page')} "
+                        f"[CHAT] deterministic FastMoss sample tool={fn_name} page={fn_args.get('page')} "
                         f"keywords={fn_args.get('keywords', '')!r}",
                         flush=True,
                     )
