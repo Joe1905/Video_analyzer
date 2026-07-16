@@ -297,23 +297,6 @@ def _insert_job(
     schedule_date: str = "",
     session_id: int = 0,
 ) -> str:
-    active = conn.execute(
-        "SELECT id FROM collect_jobs WHERE account_id = ? AND status IN ('queued','delayed','preparing','collecting') LIMIT 1",
-        (int(account["id"]),),
-    ).fetchone()
-    if active:
-        raise ValueError("该账号已有待执行或运行中的采集任务")
-    active_publish = conn.execute(
-        """
-        SELECT id FROM publish_jobs
-        WHERE account_id = ? AND deleted_at = ''
-          AND status IN ('queued','delayed','preparing','uploading','publishing')
-        LIMIT 1
-        """,
-        (int(account["id"]),),
-    ).fetchone()
-    if active_publish:
-        raise ValueError("该账号已有待执行或运行中的发布任务")
     job_id = f"collect_{uuid.uuid4().hex}"
     now = _iso()
     conn.execute(
@@ -1363,14 +1346,28 @@ def _claim_due_jobs() -> list[str]:
         conn.execute("BEGIN IMMEDIATE")
         rows = conn.execute(
             """
-            SELECT id FROM collect_jobs
-            WHERE status IN ('queued','delayed')
-              AND (next_attempt_at = '' OR next_attempt_at <= ?)
-            ORDER BY created_at ASC LIMIT ?
+            SELECT c.id, c.account_id FROM collect_jobs c
+            WHERE c.status IN ('queued','delayed')
+              AND (c.next_attempt_at = '' OR c.next_attempt_at <= ?)
+              AND NOT EXISTS (
+                  SELECT 1 FROM collect_jobs running
+                  WHERE running.account_id = c.account_id
+                    AND running.status IN ('preparing','collecting')
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM publish_jobs p
+                  WHERE p.account_id = c.account_id AND p.deleted_at = ''
+                    AND p.status IN ('preparing','uploading','publishing')
+              )
+            ORDER BY c.created_at ASC LIMIT ?
             """,
-            (_iso(), capacity),
+            (_iso(), capacity * 4),
         ).fetchall()
+        claimed_accounts: set[int] = set()
         for row in rows:
+            account_id = int(row["account_id"])
+            if account_id in claimed_accounts or len(claimed) >= capacity:
+                continue
             job_id = str(row["id"])
             changed = conn.execute(
                 """
@@ -1383,6 +1380,7 @@ def _claim_due_jobs() -> list[str]:
             ).rowcount
             if changed:
                 claimed.append(job_id)
+                claimed_accounts.add(account_id)
         conn.commit()
     return claimed
 

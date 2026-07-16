@@ -185,19 +185,6 @@ def _resolve_schedule_mode(mode: str, scheduled_at: datetime, queued: bool) -> s
     return mode
 
 
-def _ensure_no_active_collection(conn: Any, account_id: int) -> None:
-    active = conn.execute(
-        """
-        SELECT id FROM collect_jobs
-        WHERE account_id = ? AND status IN ('queued','delayed','preparing','collecting')
-        LIMIT 1
-        """,
-        (account_id,),
-    ).fetchone()
-    if active:
-        raise ValueError("该账号已有待执行或运行中的统计采集任务")
-
-
 def create_job(form: Any) -> dict[str, Any]:
     account_id = int(form.getfirst("account_id") or 0)
     if not account_id:
@@ -231,8 +218,6 @@ def create_job(form: Any) -> dict[str, Any]:
         account = conn.execute("SELECT * FROM tiktok_accounts WHERE id = ? AND deleted_at = ''", (account_id,)).fetchone()
         if not account:
             raise ValueError("account not found")
-        if queued:
-            _ensure_no_active_collection(conn, account_id)
         proxy_profile_id = int(account["proxy_profile_id"])
 
     asset_id = uuid.uuid4().hex
@@ -317,8 +302,6 @@ def update_job(payload: dict[str, Any]) -> dict[str, Any]:
             else row["session_id"]
         )
         queue = bool(payload.get("queue"))
-        if queue:
-            _ensure_no_active_collection(conn, int(row["account_id"]))
         mode = "server" if keep_observing else "tiktok"
         mode = _resolve_schedule_mode(mode, scheduled, queue)
         if manual_publish:
@@ -375,7 +358,6 @@ def retry_job(payload: dict[str, Any]) -> dict[str, Any]:
         if row["status"] not in RETRYABLE_STATUSES:
             raise ValueError("只有发布失败的任务可以重试")
         account_id = int(row["account_id"])
-        _ensure_no_active_collection(conn, account_id)
         scheduled = _parse_schedule(row["scheduled_at"])
         now = _utc_now()
         mode = "tiktok"
@@ -1363,23 +1345,39 @@ def _claim_due_jobs() -> list[str]:
         conn.execute("BEGIN IMMEDIATE")
         rows = conn.execute(
             """
-            SELECT id FROM publish_jobs
-            WHERE status IN ('queued','delayed')
-              AND (next_attempt_at = '' OR next_attempt_at <= ?)
-              AND (manual_publish = 1
-                OR schedule_mode = 'tiktok'
-                OR (schedule_mode = 'server' AND scheduled_at <= ?))
-            ORDER BY scheduled_at ASC LIMIT ?
+            SELECT p.id, p.account_id FROM publish_jobs p
+            WHERE p.status IN ('queued','delayed')
+              AND (p.next_attempt_at = '' OR p.next_attempt_at <= ?)
+              AND (p.manual_publish = 1
+                OR p.schedule_mode = 'tiktok'
+                OR (p.schedule_mode = 'server' AND p.scheduled_at <= ?))
+              AND NOT EXISTS (
+                  SELECT 1 FROM collect_jobs c
+                  WHERE c.account_id = p.account_id
+                    AND c.status IN ('preparing','collecting')
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM publish_jobs running
+                  WHERE running.account_id = p.account_id AND running.deleted_at = ''
+                    AND running.status IN ('preparing','uploading','publishing')
+              )
+            ORDER BY p.scheduled_at ASC LIMIT ?
             """,
-            (_iso(now), _iso(now), capacity),
+            (_iso(now), _iso(now), capacity * 4),
         ).fetchall()
+        claimed_accounts: set[int] = set()
         for row in rows:
+            account_id = int(row["account_id"])
+            if account_id in claimed_accounts or len(claimed) >= capacity:
+                continue
             job_id = str(row["id"])
-            conn.execute(
+            changed = conn.execute(
                 "UPDATE publish_jobs SET status = 'preparing', stage = 'claimed', attempt_count = attempt_count + 1, next_attempt_at = '', updated_at = ? WHERE id = ? AND status IN ('queued','delayed')",
                 (_iso(), job_id),
-            )
-            claimed.append(job_id)
+            ).rowcount
+            if changed:
+                claimed.append(job_id)
+                claimed_accounts.add(account_id)
         conn.commit()
     return claimed
 
