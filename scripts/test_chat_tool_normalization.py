@@ -1077,6 +1077,18 @@ def test_fastmoss_business_defaults_use_verified_category_levels() -> None:
     assert "lang" not in new
     search = web_app.apply_fastmoss_business_defaults("product_search", {"keywords": "mini chopper"}, message, fixed_today)
     assert search["filter"]["category_path"] == [13, 844168, 935176]
+    planned = web_app.fastmoss_planned_product_search_arguments(
+        message,
+        "Electric Food Shredder, Mini Meat Grinder 调研报告",
+        {"playbook": "product", "entity": "Electric Food Shredder, Mini Meat Grinder"},
+        "US",
+    )
+    assert planned == {
+        "filter": {"category_path": [13, 844168, 935176], "region": "US"},
+        "page": 1,
+        "pagesize": 10,
+        "orderby": [{"field": "day28_units_sold", "order": "desc"}],
+    }
 
 
 def test_fastmoss_product_workflow_keeps_its_round_budget_isolated() -> None:

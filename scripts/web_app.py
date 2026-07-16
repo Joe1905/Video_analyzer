@@ -7037,6 +7037,24 @@ def apply_fastmoss_business_defaults(
     return normalized
 
 
+def fastmoss_planned_product_search_arguments(
+    assistant_msg: Message,
+    user_text: str,
+    route: dict[str, Any],
+    default_region: str = "",
+) -> dict[str, Any] | None:
+    """Build the next deterministic category-head or segment product search."""
+    if str(route.get("playbook") or "") != "product":
+        return None
+    plan = fastmoss_product_search_plan(assistant_msg, user_text, route)
+    if not plan.get("next_call"):
+        return None
+    arguments = apply_mcp_region_default("fastmoss", "product_search", {}, default_region)
+    return apply_fastmoss_business_defaults(
+        "product_search", arguments, assistant_msg, user_text=user_text, route=route
+    )
+
+
 def fastmoss_clarifying_question(provider: str, route: dict[str, Any], user_text: str) -> str | None:
     """Ask only when a FastMoss analytical task has no identifiable research object."""
     if normalize_chat_provider(provider) != "fastmoss":
@@ -7368,6 +7386,88 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     if not default_region and provider in {"amazon", "fastmoss"} and fastmoss_defaults_to_us(routing_text):
         default_region = "US"
     for _ in range(max_tool_rounds):
+        deterministic_phase = (
+            fastmoss_workflow_phase(
+                str(route.get("playbook")), assistant_msg,
+                set(effective_enabled_tool_ids or set()), routing_text, route,
+            )
+            if provider == "fastmoss" and route.get("playbook") == "product"
+            else None
+        )
+        if deterministic_phase and deterministic_phase[1] == {"fastmoss__product_search"}:
+            fn_name = "fastmoss__product_search"
+            fn_args = fastmoss_planned_product_search_arguments(
+                assistant_msg, routing_text, route, default_region
+            )
+            if fn_args:
+                signature = tool_call_signature(fn_name, fn_args)
+                if signature not in seen_tool_calls:
+                    seen_tool_calls.add(signature)
+                    tool_call = {
+                        "id": f"call_{uuid.uuid4().hex}",
+                        "type": "function",
+                        "function": {
+                            "name": fn_name,
+                            "arguments": json.dumps(fn_args, ensure_ascii=False),
+                        },
+                    }
+                    raw_result = execute_prefixed_tool(fn_name, fn_args, default_region)
+                    normalized_result = normalize_prefixed_tool_result(fn_name, raw_result)
+                    normalized_result = annotate_fastmoss_tool_result(
+                        fn_name, fn_args, normalized_result, raw_result
+                    )
+                    assistant_msg.tool_calls = list(assistant_msg.tool_calls or []) + [tool_call]
+                    assistant_msg.tool_results = list(assistant_msg.tool_results or []) + [{
+                        "tool_name": fn_name,
+                        "result": normalized_result,
+                    }]
+                    messages.append({
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [tool_call],
+                        "_context_scope": "current",
+                    })
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call["id"],
+                        "content": current_chat_tool_evidence(
+                            fn_name, normalized_result, fn_args, raw_result
+                        ),
+                        "_context_scope": "current",
+                    })
+                    store.broadcast(session.id, "update", {
+                        "messageId": assistant_msg.id,
+                        "tool_calls": assistant_msg.tool_calls,
+                        "tool_results": assistant_msg.tool_results,
+                    })
+                    next_phase = fastmoss_workflow_phase(
+                        str(route.get("playbook")), assistant_msg,
+                        set(effective_enabled_tool_ids or set()), routing_text, route,
+                    )
+                    selected_tool_ids = provider_profile_tool_ids(
+                        provider, route, routing_text,
+                        set(effective_enabled_tool_ids or set()), assistant_msg,
+                    )
+                    tools = build_prefixed_model_tools(selected_tool_ids) if next_phase else []
+                    final_answer_forced = next_phase is None
+                    messages.append({
+                        "role": "system",
+                        "content": fastmoss_workflow_instruction(next_phase),
+                        "_context_scope": "system",
+                    })
+                    if next_phase is None:
+                        messages.append({
+                            "role": "system",
+                            "content": fastmoss_report_quality_instruction(assistant_msg, routing_text, route),
+                            "_context_scope": "system",
+                        })
+                    no_tool_retries = 0
+                    print(
+                        f"[CHAT] deterministic FastMoss product search page={fn_args.get('page')} "
+                        f"keywords={fn_args.get('keywords', '')!r}",
+                        flush=True,
+                    )
+                    continue
         try:
             request_messages, request_tools, context_stats = manage_chat_context(messages, tools)
             if context_stats["over_budget"]:
