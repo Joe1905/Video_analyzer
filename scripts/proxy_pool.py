@@ -1255,13 +1255,36 @@ def _browser_ip_check_urls() -> list[str]:
     configured = os.getenv("PROXY_BROWSER_IP_CHECK_URLS", "").strip()
     if configured:
         return [item.strip() for item in configured.split(",") if item.strip()]
-    server_target = os.getenv("PROXY_IP_CHECK_URL", "http://ip-api.com/json/?fields=status,country,regionName,city,query").strip()
-    return [
+    return _unique_urls([
         "https://ifconfig.co/json",
+        "https://ipinfo.io/json",
+        "https://httpbin.org/ip",
         "https://api.ipify.org?format=json",
-        "https://api64.ipify.org?format=json",
-        server_target,
-    ]
+        "https://icanhazip.com",
+        *_proxy_ip_check_urls(),
+    ])
+
+
+def _unique_urls(urls: list[str]) -> list[str]:
+    unique: list[str] = []
+    for url in urls:
+        value = str(url or "").strip()
+        if value and value not in unique:
+            unique.append(value)
+    return unique
+
+
+def _proxy_ip_check_urls() -> list[str]:
+    configured = os.getenv("PROXY_IP_CHECK_URLS", "").strip()
+    if configured:
+        return _unique_urls([item.strip() for item in configured.split(",")])
+    primary = os.getenv("PROXY_IP_CHECK_URL", "https://ifconfig.co/json").strip()
+    return _unique_urls([
+        primary,
+        "https://ipinfo.io/json",
+        "http://ip-api.com/json/?fields=status,country,regionName,city,query",
+        "https://api.ipify.org?format=json",
+    ])
 
 
 def _browser_ip_from_response(raw: str) -> str:
@@ -2182,18 +2205,29 @@ def detect_exit_ip_for_pool(pool: sqlite3.Row) -> dict[str, Any]:
     else:
         switch = _switch_mihomo_node(node_name)
         proxy_port = int(os.getenv("MIHOMO_PROXY_PORT", "7890") or "7890")
-    target = os.getenv("PROXY_IP_CHECK_URL", "https://ifconfig.co/json")
-    ok, body, error = _proxy_get_json(target, proxy_port)
-    if not ok or not isinstance(body, dict):
-        raise ValueError(f"通过服务器 mihomo 查询出口 IP 失败：{error}")
-    ip = str(body.get("query") or body.get("ip") or "").strip()
-    if not ip:
-        raise ValueError(f"IP 查询接口没有返回出口 IP：{body}")
-    country = str(body.get("country") or "")
-    region = str(body.get("regionName") or body.get("region") or "")
-    city = str(body.get("city") or "")
-    address = " / ".join(item for item in (country, region, city) if item)
-    return {"ip": ip, "geo": {"country": country, "region": region, "city": city, "address": address}, "mihomo": switch, "raw": body}
+    failures: list[str] = []
+    for target in _proxy_ip_check_urls():
+        ok, body, error = _proxy_get_json(target, proxy_port)
+        if not ok or not isinstance(body, dict):
+            failures.append(f"{urlparse(target).netloc or target}: {error or '返回格式异常'}")
+            continue
+        ip = _browser_ip_from_response(json.dumps(body, ensure_ascii=False))
+        if not ip:
+            failures.append(f"{urlparse(target).netloc or target}: 没有返回合法出口 IP")
+            continue
+        country = str(body.get("country") or "")
+        region = str(body.get("regionName") or body.get("region") or "")
+        city = str(body.get("city") or "")
+        address = " / ".join(item for item in (country, region, city) if item)
+        return {
+            "ip": ip,
+            "geo": {"country": country, "region": region, "city": city, "address": address},
+            "mihomo": switch,
+            "raw": body,
+            "check_url": target,
+            "fallback_failures": failures,
+        }
+    raise ValueError(f"通过服务器 mihomo 查询出口 IP 失败：{'；'.join(failures) or '没有可用的 IP 查询接口'}")
 
 
 def _stored_account_identity(account: sqlite3.Row, pool: sqlite3.Row) -> dict[str, str]:
@@ -2346,7 +2380,8 @@ def check_binding(payload: dict[str, Any], require_account: bool = False) -> dic
         if not expected_ip and should_bind:
             expected_ip = observed_ip
         pool_status = _clean_status(pool["status"])
-        next_pool_status = STATUS_ACTIVE if should_bind and expected_ip and pool_status != STATUS_PAUSED else pool_status
+        ip_matches = bool(expected_ip and observed_ip == expected_ip)
+        next_pool_status = STATUS_ACTIVE if ip_matches and pool_status != STATUS_PAUSED else pool_status
         allowed = bool(expected_ip and observed_ip == expected_ip and next_pool_status == STATUS_ACTIVE)
         reason = ""
         if not expected_ip:
