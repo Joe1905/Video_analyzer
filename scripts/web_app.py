@@ -6484,7 +6484,7 @@ def fastmoss_evidence_manifest(
     reported_total = max(category_totals) if category_totals else None
     target_pages = int(plan.get("category_pages") or 3)
     coverage_complete = set(range(1, target_pages + 1)).issubset(category_pages)
-    target_category = fastmoss_current_category_path(assistant_msg)
+    target_category = fastmoss_current_category_path(assistant_msg, user_text)
     market_levels = sorted({
         str(row.get("category_level")) for row in metadata_rows
         if row.get("category_level") and row.get("source_tool") in {
@@ -7325,8 +7325,10 @@ def _fastmoss_category_path_from_value(value: Any) -> dict[str, int] | None:
     return None
 
 
-def fastmoss_current_category_path(assistant_msg: Message) -> dict[str, int] | None:
-    """Return the first score-ordered full category path from this task's category lookup."""
+def fastmoss_current_category_path(assistant_msg: Message, user_text: str = "") -> dict[str, int] | None:
+    """Prefer an explicitly named returned category; otherwise keep MCP score order."""
+    explicit_text = re.sub(r"\s+", "", chat_routing_text(user_text)).casefold()
+    fallback_path: dict[str, int] | None = None
     for item in assistant_msg.tool_results or []:
         if not isinstance(item, dict) or item.get("tool_name") != "fastmoss__search_category_by_words":
             continue
@@ -7334,10 +7336,18 @@ def fastmoss_current_category_path(assistant_msg: Message) -> dict[str, int] | N
         if not isinstance(result, dict):
             continue
         for value in (result.get("mcp_data"), result.get("mcp_text_preview")):
+            candidates = _fastmoss_category_candidates(value)
+            for candidate in candidates:
+                path = _fastmoss_category_path_from_value(candidate)
+                if path and fallback_path is None:
+                    fallback_path = path
+                category_name = re.sub(r"\s+", "", str(candidate.get("cn_name") or "")).casefold()
+                if explicit_text and category_name and category_name in explicit_text:
+                    return path
             path = _fastmoss_category_path_from_value(value)
-            if path:
-                return path
-    return None
+            if path and fallback_path is None:
+                fallback_path = path
+    return fallback_path
 
 
 def _fastmoss_category_candidates(value: Any) -> list[dict[str, Any]]:
@@ -7401,13 +7411,19 @@ def apply_fastmoss_business_defaults(
 ) -> dict[str, Any]:
     """Fill FastMoss-only business defaults using the current task's verified category path."""
     normalized = dict(args or {})
-    path = fastmoss_current_category_path(assistant_msg)
+    path = fastmoss_current_category_path(assistant_msg, user_text)
     completed_week = fastmoss_completed_week(today)
 
     def copied_filter() -> dict[str, Any]:
         return dict(normalized.get("filter")) if isinstance(normalized.get("filter"), dict) else {}
 
-    if name == "market_category_analysis":
+    if name == "search_category_by_words":
+        normalized.pop("desc", None)
+        normalized = {
+            key: value for key, value in normalized.items()
+            if key in {"query", "top_k", "max_total_results"}
+        }
+    elif name == "market_category_analysis":
         filters = copied_filter()
         if path:
             filters["category_id"] = path["level2"]
