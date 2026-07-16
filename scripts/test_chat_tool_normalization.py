@@ -611,6 +611,39 @@ def test_empty_mcp_collections_are_not_enough_data() -> None:
     assert "不得推断为平台绝对不存在" in evidence
 
 
+def test_mcp_content_error_rules_are_provider_specific() -> None:
+    def result(payload: dict) -> dict:
+        return {
+            "ok": True,
+            "data": {
+                "content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}],
+                "isError": False,
+            },
+        }
+
+    sellersprite = normalize_prefixed_tool_result(
+        "sellersprite__asin_detail",
+        result({
+            "code": "OK",
+            "message": "成功",
+            "data": {"asin": "B0FBVL7SG7", "price": 26.99, "rating": 4.3, "ratings": 344},
+        }),
+    )
+    assert sellersprite["ok"] is True
+    assert sellersprite["enough_data"] is True
+    assert sellersprite["data_state"] == "data"
+    assert sellersprite["mcp_data"]["data"]["asin"] == "B0FBVL7SG7"
+    assert "error" not in sellersprite
+
+    fastmoss = normalize_prefixed_tool_result(
+        "fastmoss__product_search",
+        result({"code": "ERROR_QUERY", "message": "query failed", "data": None}),
+    )
+    assert fastmoss["ok"] is False
+    assert fastmoss["error"] == "query failed"
+    assert fastmoss["data_state"] == "error"
+
+
 def test_mcp_sql_error_text_is_not_evidence() -> None:
     raw = {
         "ok": True,
@@ -963,6 +996,7 @@ if __name__ == "__main__":
     test_intent_decision_validation_and_fallback()
     test_intent_router_uses_recent_context_and_falls_back_on_failure()
     test_empty_mcp_collections_are_not_enough_data()
+    test_mcp_content_error_rules_are_provider_specific()
     test_mcp_sql_error_text_is_not_evidence()
     test_deepseek_tool_turn_preserves_reasoning_content()
     test_fastmoss_amazon_request_short_circuits_without_model_or_tools()

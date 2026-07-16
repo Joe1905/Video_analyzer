@@ -5239,7 +5239,7 @@ def mcp_non_collection_evidence_present(value: Any, key: str = "") -> bool:
     return False
 
 
-def mcp_content_error(result: dict[str, Any], text: str, parsed: Any) -> str:
+def fastmoss_mcp_content_error(result: dict[str, Any], text: str, parsed: Any) -> str:
     payload = result.get("data") if isinstance(result, dict) else None
     if isinstance(payload, dict) and payload.get("isError") is True:
         return str(payload.get("error") or text or "MCP tool returned an error")[:1000]
@@ -5271,7 +5271,7 @@ def normalize_prefixed_tool_result(tool_id: str, result: dict[str, Any]) -> dict
                 return normalized
             text = mcp_text_content(result)
             parsed = parse_mcp_text_content(text)
-            content_error = mcp_content_error(result, text, parsed)
+            content_error = fastmoss_mcp_content_error(result, text, parsed) if domain == "fastmoss" else ""
             if content_error:
                 normalized.update({
                     "ok": False,
