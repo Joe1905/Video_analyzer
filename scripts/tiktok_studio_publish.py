@@ -479,6 +479,14 @@ def _update_account(account_id: int, error: str = "", published_at: str = "") ->
         conn.commit()
 
 
+def _delay_for_proxy(job_id: str, job: dict[str, Any], error: Exception | str) -> None:
+    message = str(error)
+    next_attempt_at = _iso(_utc_now() + timedelta(seconds=proxy_pool.PROXY_QUEUE_RECHECK_SECONDS))
+    _set_job(job_id, "delayed", "waiting_proxy", message, session_id=None, next_attempt_at=next_attempt_at)
+    _update_account(int(job["account_id"]), error=message)
+    proxy_pool.schedule_proxy_recheck_for_pending_job(int(job["proxy_profile_id"]), message)
+
+
 def _first_visible(locators: list[Any]) -> Any | None:
     for locator in locators:
         try:
@@ -1320,6 +1328,8 @@ def _run_job(job_id: str) -> None:
         message = str(exc)
         if "槽位已满" in message or "已经处于唤醒状态" in message:
             _set_job(job_id, "delayed", "waiting_slot", message, next_attempt_at=_iso(_utc_now() + timedelta(seconds=30)))
+        elif 'job' in locals() and proxy_pool.is_retryable_proxy_error(message):
+            _delay_for_proxy(job_id, job, message)
         else:
             _set_job(job_id, "failed", "failed", message, session_id=session_id or None)
             if 'job' in locals():
@@ -1376,12 +1386,28 @@ def _claim_due_jobs() -> list[str]:
 
 def _recover_interrupted() -> None:
     now = _iso()
+    proxy_failures: list[tuple[int, str]] = []
     with proxy_pool.connect() as conn:
         conn.execute(
             "UPDATE publish_jobs SET status = CASE WHEN final_click_at <> '' THEN 'result_uncertain' ELSE 'queued' END, stage = 'recovered', last_error = '服务器重启后恢复任务', session_id = NULL, next_attempt_at = '', updated_at = ? WHERE status IN ('preparing','uploading','publishing')",
             (now,),
         )
+        retry_at = _iso(_utc_now() + timedelta(seconds=proxy_pool.PROXY_QUEUE_RECHECK_SECONDS))
+        rows = conn.execute(
+            "SELECT id, proxy_profile_id, last_error FROM publish_jobs WHERE status = 'failed' AND final_click_at = '' AND deleted_at = ''"
+        ).fetchall()
+        for row in rows:
+            message = str(row["last_error"] or "")
+            if not proxy_pool.is_retryable_proxy_error(message):
+                continue
+            conn.execute(
+                "UPDATE publish_jobs SET status = 'delayed', stage = 'waiting_proxy', session_id = NULL, next_attempt_at = ?, updated_at = ? WHERE id = ?",
+                (retry_at, now, row["id"]),
+            )
+            proxy_failures.append((int(row["proxy_profile_id"]), message))
         conn.commit()
+    for pool_id, message in proxy_failures:
+        proxy_pool.schedule_proxy_recheck_for_pending_job(pool_id, message)
 
 
 def _worker_loop() -> None:

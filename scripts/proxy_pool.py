@@ -32,6 +32,18 @@ PROXY_PORT_START = int(os.getenv("PROXY_POOL_PORT_START", "18900") or "18900")
 PROXY_PORT_END = int(os.getenv("PROXY_POOL_PORT_END", "18999") or "18999")
 PROXY_RECHECK_DELAYS_SECONDS = (5 * 60, 10 * 60, 30 * 60)
 PROXY_QUEUE_RECHECK_SECONDS = 5 * 60
+PROXY_RETRYABLE_ERROR_MARKERS = (
+    "通过服务器 mihomo 查询出口 ip 失败",
+    "无法读取服务器 mihomo 节点",
+    "ip 查询接口没有返回出口 ip",
+    "服务器未能自动查询到出口 ip",
+    "浏览器出口 ip 校验失败",
+    "浏览器出口 ip",
+    "当前出口 ip",
+    "代理 ip 校验未通过",
+    "代理状态为 不可用",
+    "代理状态为 异常",
+)
 NOVNC_PORT = int(os.getenv("NOVNC_PORT", "6080") or "6080")
 NOVNC_MANUAL_PORTS = int(os.getenv("NOVNC_MANUAL_PORTS", "1") or "1")
 VNC_PORT = int(os.getenv("VNC_PORT", "5900") or "5900")
@@ -110,6 +122,11 @@ def novnc_port_plan() -> dict[str, Any]:
 
 def now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def is_retryable_proxy_error(error: Exception | str) -> bool:
+    message = str(error or "").strip().lower()
+    return bool(message and any(marker in message for marker in PROXY_RETRYABLE_ERROR_MARKERS))
 
 
 def connect() -> sqlite3.Connection:
@@ -2244,6 +2261,16 @@ def _schedule_proxy_recheck(
     if expected_token and updated.rowcount == 0:
         return ""
     return next_check_at
+
+
+def schedule_proxy_recheck_for_pending_job(pool_id: int, error: Exception | str) -> str:
+    with connect() as conn:
+        row = conn.execute("SELECT status FROM proxy_profiles WHERE id = ?", (pool_id,)).fetchone()
+        if not row or _clean_status(row["status"]) == STATUS_PAUSED:
+            return ""
+        next_check_at = _schedule_proxy_recheck(conn, pool_id, str(error))
+        conn.commit()
+        return next_check_at
 
 
 def _clear_proxy_recheck(conn: sqlite3.Connection, pool_id: int, observed_ip: str, checked_at: str) -> None:
