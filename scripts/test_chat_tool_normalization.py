@@ -991,6 +991,24 @@ def test_fastmoss_clarification_is_targeted_and_provider_isolated() -> None:
     assert web_app.fastmoss_clarifying_question("amazon", route, "帮我做一份选品报告") is None
 
 
+def test_fastmoss_close_cross_category_matches_request_confirmation() -> None:
+    result = {"mcp_data": {"result": {"categories": [
+        {
+            "category_id_level1": 11, "category_id_level2": 858632, "category_id_level3": 861576,
+            "cn_full_name": "厨房用品-刀具-厨房剪刀", "score": 0.52,
+        },
+        {
+            "category_id_level1": 13, "category_id_level2": 844168, "category_id_level3": 935176,
+            "cn_full_name": "家电-厨房家电-料理机", "score": 0.502,
+        },
+    ]}}}
+    question = web_app.fastmoss_category_ambiguity_question("Electric Food Shredder, Mini Meat Grinder 调研", result)
+    assert question and "厨房剪刀" in question and "料理机" in question
+    assert "不会继续消耗" in question
+    result["mcp_data"]["result"]["categories"][0]["category_id_level2"] = 844168
+    assert web_app.fastmoss_category_ambiguity_question("Electric Food Shredder 调研", result) is None
+
+
 def test_provider_profiles_use_aggregated_sellersprite_and_staged_fastmoss_tools() -> None:
     selected = {
         "system__current_time",
@@ -1116,6 +1134,7 @@ if __name__ == "__main__":
     test_fastmoss_business_defaults_use_verified_category_levels()
     test_fastmoss_product_workflow_keeps_its_round_budget_isolated()
     test_fastmoss_clarification_is_targeted_and_provider_isolated()
+    test_fastmoss_close_cross_category_matches_request_confirmation()
     test_provider_profiles_use_aggregated_sellersprite_and_staged_fastmoss_tools()
     test_region_default_only_applies_when_schema_supports_it()
     test_fastmoss_deep_dive_ids_must_come_from_current_task()
