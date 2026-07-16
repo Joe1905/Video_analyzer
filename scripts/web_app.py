@@ -9068,6 +9068,15 @@ def proxy_session_janitor() -> None:
                 print(f"Released {released} expired proxy login session(s)", flush=True)
         except Exception as exc:
             print(f"Proxy session cleanup failed: {exc}", flush=True)
+        try:
+            recheck = proxy_pool.recheck_unavailable_proxies()
+            if recheck["attempted"]:
+                print(
+                    f"Proxy auto recheck attempted={recheck['attempted']} recovered={len(recheck['recovered'])} failed={len(recheck['failed'])}",
+                    flush=True,
+                )
+        except Exception as exc:
+            print(f"Proxy auto recheck failed: {exc}", flush=True)
         time.sleep(15)
 
 
