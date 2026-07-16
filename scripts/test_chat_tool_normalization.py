@@ -1530,6 +1530,9 @@ def test_fastmoss_metadata_detects_unsorted_page_and_string_product_ids() -> Non
 def test_fastmoss_answer_verifier_rewrites_high_risk_and_falls_back_on_failure() -> None:
     message = SimpleNamespace(tool_calls=[], tool_results=[])
     route = {"playbook": "product", "task_depth": "workflow", "entity": "mini grinder"}
+    style = web_app.fastmoss_report_style_instruction(route)
+    assert "先说结论" in style and "我怎么看" in style and "如果要继续做" in style
+    assert web_app.fastmoss_report_style_instruction({"task_depth": "lookup"}) == ""
 
     class FakeResponse:
         def raise_for_status(self):
@@ -1540,7 +1543,7 @@ def test_fastmoss_answer_verifier_rewrites_high_risk_and_falls_back_on_failure()
                 "approved": False,
                 "risk_level": "high",
                 "issues": ["把样本当总量"],
-                "rewritten_answer": "已修正：Electric Food Shredder不存在独立市场，Mini Meat Grinder是真实细分机会。",
+                "rewritten_answer": "## 调研报告（修正版）\n\nElectric Food Shredder不存在独立市场，Mini Meat Grinder是真实细分机会。",
             })}}]}
 
     class FakeRequests:
@@ -1556,6 +1559,7 @@ def test_fastmoss_answer_verifier_rewrites_high_risk_and_falls_back_on_failure()
         )
         assert "尚未显示出足以确认独立市场的强信号" in rewritten
         assert "是否构成可进入机会仍需验证" in rewritten
+        assert "修正版" not in rewritten
 
         class ApprovedResponse(FakeResponse):
             def json(self):
@@ -1581,7 +1585,9 @@ def test_fastmoss_answer_verifier_rewrites_high_risk_and_falls_back_on_failure()
         fallback = web_app.verify_fastmoss_final_answer(
             "市场只有10件商品", message, "调研", route, BrokenRequests, "key", "https://example.test/v1", "model"
         )
-        assert "已验证事实" in fallback and "无法安全生成完整分析结论" in fallback
+        assert "先说结论" in fallback and "我怎么看" in fallback
+        assert "需要留意" in fallback and "如果要继续做" in fallback
+        assert "数据核验结果" not in fallback
     finally:
         web_app.record_api_call = original_record
 

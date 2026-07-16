@@ -6505,6 +6505,8 @@ def fastmoss_report_quality_instruction(
 ) -> str:
     manifest = fastmoss_evidence_manifest(assistant_msg, user_text, route)
     return (
+        fastmoss_report_style_instruction(route)
+        + " "
         "FastMoss 最终报告必须遵守以下证据清单。类目头部与细分匹配商品分表展示；"
         "reported_total 是接口匹配总数，fetched_unique 是本次实际取得数，不得混写。"
         "L2 数据只能称为上级类目参考。所有 conflicts 必须显式披露，强机会/低竞争/生命周期/因果结论没有直接证据时降级为待验证假设。"
@@ -6512,33 +6514,71 @@ def fastmoss_report_quality_instruction(
     )
 
 
+def fastmoss_report_style_instruction(route: dict[str, Any]) -> str:
+    """Keep evidence-heavy FastMoss reports readable without relaxing factual boundaries."""
+    if str(route.get("task_depth") or "") not in {"analysis", "workflow"} and not route.get("playbook"):
+        return ""
+    return (
+        "表达要求：先用“先说结论：”开场，在两三句话内直接回应用户，并说明最值得关注的信号；"
+        "随后用“我怎么看”把数据翻译成业务含义，允许使用“我更倾向”“真正值得关注的是”“如果准备上新，我会先”等克制的顾问式表达，"
+        "但每个判断都必须紧跟证据。再展示关键数据与必要表格。把覆盖不足、空结果和指标冲突集中到一个“需要留意”章节，"
+        "不要在每个段落重复警告。最后用“如果要继续做”给出两到四项有优先级的下一步。"
+        "不要使用“修正版”“数据核验结果”“严重缺口”等审计式标题，也不要用表情、夸张语气或无依据的鼓励。"
+    )
+
+
 def fastmoss_deterministic_quality_fallback(manifest: dict[str, Any]) -> str:
     category = manifest.get("category_head") or {}
     products = category.get("products") or []
-    lines = ["# FastMoss 数据核验结果", "", "## 已验证事实"]
+    fetched = int(category.get("fetched_unique") or 0)
+    target_pages = int(category.get("target_pages") or 3)
+    completed_pages = category.get("completed_pages") or []
+    lines = [
+        "## 先说结论",
+        "",
+        (
+            f"这轮已经取得 {fetched} 件类目头部样本，可以先用来观察头部商品格局；"
+            "但独立回答校验没有完成，所以我不会替你下“蓝海”“低竞争”或“值得进入”的强结论。"
+        ),
+        "",
+        "## 我怎么看",
+        "",
+        "- 现有样本更适合判断头部商品和销量排序，不适合代表整个类目的完整规模。",
+        "- 真正值得先确认的是头部商品是否与目标细分一致，以及价格、销量和 GMV 能否相互校验。",
+        "",
+        "## 关键依据",
+    ]
     lines.append(
-        f"- 类目销量榜按近28天销量降序计划获取 {category.get('target_pages', 3)} 页；"
-        f"实际完成页码为 {category.get('completed_pages') or []}，去重后取得 {category.get('fetched_unique', 0)} 件商品。"
+        f"- 类目销量榜按近28天销量降序计划获取 {target_pages} 页；"
+        f"实际完成页码为 {completed_pages}，去重后取得 {fetched} 件商品。"
     )
     if category.get("reported_total") is not None:
         lines.append(f"- 接口报告匹配总数为 {category['reported_total']}；该数字与本次实际获取数量不是同一概念。")
     if products:
-        lines.extend(["", "## 本次类目样本（本地按近28天销量复核排序）", "", "| 商品 | 商品ID | 近28天销量 |", "|---|---:|---:|"])
+        lines.extend(["", "### 本次头部样本", "", "| 商品 | 商品ID | 近28天销量 |", "|---|---:|---:|"])
         for product in products[:5]:
             lines.append(
                 f"| {str(product.get('title') or '未返回标题').replace('|', '/')} | {product.get('product_id')} | "
                 f"{product.get('day28_units_sold', '未返回')} |"
             )
-    lines.extend(["", "## 数据缺口与结论边界"])
+    lines.extend(["", "## 需要留意"])
     limitations = list(manifest.get("limitations") or [])
     conflicts = list(manifest.get("conflicts") or [])
     if not limitations and not conflicts:
-        lines.append("- 独立回答校验未完成，因此仅保留上述可机械核验的事实，不输出机会、竞争或生命周期判断。")
+        lines.append("- 独立回答校验未完成，因此本次只保留能够直接核对的事实。")
     for item in limitations:
         lines.append(f"- {item}")
     for item in conflicts[:10]:
         lines.append(f"- 商品 {item.get('product_id') or '未知'}：{item.get('issue')}")
-    lines.append("- 当前无法安全生成完整分析结论；空结果不代表平台绝对不存在，冲突指标需回到 FastMoss 源数据核实。")
+    lines.extend([
+        "- 空结果只代表对应接口本轮没有返回记录，不代表平台绝对不存在。",
+        "",
+        "## 如果要继续做",
+        "",
+        "1. 先核实价格、销量与 GMV 不一致的代表商品，避免用冲突指标做定价判断。",
+        "2. 再补目标 L3 类目的规模与价格带数据，确认头部样本能否代表你真正想做的细分。",
+        "3. 最后再结合评论、达人和视频内容决定产品差异化与测试顺序。",
+    ])
     return "\n".join(lines)
 
 
@@ -6555,6 +6595,14 @@ def downgrade_fastmoss_absolute_market_claims(answer: str) -> str:
         "在本次样本中显示出一定需求信号，但是否构成可进入机会仍需验证",
         text,
     )
+    return text
+
+
+def polish_fastmoss_report_tone(answer: str) -> str:
+    """Apply narrow deterministic cleanup after the factual verifier."""
+    text = downgrade_fastmoss_absolute_market_claims(answer)
+    text = re.sub(r"[（(]\s*修正版\s*[）)]", "", text, count=1)
+    text = text.replace("数据缺口（严重）", "需要留意的数据边界")
     return text
 
 
@@ -6583,6 +6631,10 @@ def verify_fastmoss_final_answer(
                 "ignoring partial pagination or sort anomalies, undisclosed metric conflicts, and unsupported claims of low competition, structural opportunity, "
                 "lifecycle stage, or content causality. A keyword sample, empty result, or partial ranking can never prove that a market does not exist, "
                 "does not constitute an independent market, or is a real opportunity; such wording must be downgraded to a sample-limited signal and validation need. "
+                "Also verify the user-facing style: the answer must start with a concise '先说结论', translate evidence into a measured '我怎么看', "
+                "consolidate caveats instead of repeating warnings, and end with prioritized next steps. Preserve a calm, human consultant voice while keeping every judgment evidence-backed. "
+                "Mark approved=false and provide a complete rewritten_answer when the draft is audit-like, uses headings such as '修正版' or '数据核验结果', or lacks the required conclusion and next steps. "
+                "When rewriting, preserve useful facts and tables; do not turn the report into a refusal or a compliance checklist. "
                 "If risk is high/critical, provide one complete corrected Simplified Chinese answer. "
                 "If risk is low/medium, rewritten_answer may be empty. Do not add facts absent from the manifest."
             ),
@@ -6628,8 +6680,8 @@ def verify_fastmoss_final_answer(
             rewritten = str(decision.get("rewritten_answer") or "").strip()
             if not rewritten:
                 return fastmoss_deterministic_quality_fallback(manifest)
-            return downgrade_fastmoss_absolute_market_claims(rewritten)
-        return downgrade_fastmoss_absolute_market_claims(draft)
+            return polish_fastmoss_report_tone(rewritten)
+        return polish_fastmoss_report_tone(draft)
     except Exception as exc:
         print(f"[CHAT] FastMoss answer verifier failed: {type(exc).__name__}: {str(exc)[:300]}", flush=True)
         return fastmoss_deterministic_quality_fallback(manifest)
