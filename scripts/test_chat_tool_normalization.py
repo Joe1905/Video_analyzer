@@ -1274,13 +1274,17 @@ def test_fastmoss_product_search_defaults_force_category_pages_and_short_segment
     route = {"playbook": "product", "entity": "Electric Food Shredder / Mini Meat Grinder"}
     message = SimpleNamespace(tool_calls=[], tool_results=[category_result])
     first = web_app.apply_fastmoss_business_defaults(
-        "product_search", {"keywords": "wrong long keyword", "page": 99}, message,
+        "product_search", {
+            "keywords": "wrong long keyword", "page": 99,
+            "filter": {"day28_units_sold_range": {"min": 0}, "region": "US"},
+        }, message,
         user_text="调研", route=route,
     )
     assert "keywords" not in first
     assert first["page"] == 1 and first["pagesize"] == 10
     assert first["orderby"] == [{"field": "day28_units_sold", "order": "desc"}]
     assert first["filter"]["category_path"] == [13, 844168, 935176]
+    assert first["filter"] == {"category_path": [13, 844168, 935176], "region": "US"}
 
     message.tool_calls = [
         {"function": {"name": "fastmoss__product_search", "arguments": json.dumps({"page": page})}}
@@ -1349,6 +1353,27 @@ def test_fastmoss_l2_market_metrics_are_only_upstream_category_reference() -> No
     assert manifest["target_category_path"] == {"level1": 13, "level2": 844168, "level3": 935176}
     assert manifest["market_category_levels"] == ["L2"]
     assert any("不能直接作为目标 L3 类目规模" in item for item in manifest["limitations"])
+
+
+def test_fastmoss_failed_category_page_is_not_counted_as_coverage() -> None:
+    message = _fastmoss_search_message([{"page": 1}, {"page": 2}, {"page": 3}], [{
+        "tool_name": "fastmoss__product_search",
+        "result": {
+            "ok": False, "data_state": "error", "evidence_observed": False,
+            "evidence_metadata": {"scope": "category_head", "page": 1, "data_state": "error"},
+        },
+    }, *[{
+        "tool_name": "fastmoss__product_search",
+        "result": {
+            "ok": True, "data_state": "data", "evidence_observed": True,
+            "evidence_metadata": {"scope": "category_head", "page": page, "data_state": "data"},
+        },
+    } for page in (2, 3)]])
+    manifest = web_app.fastmoss_evidence_manifest(message, "调研", {"playbook": "product"})
+    assert manifest["category_head"]["attempted_pages"] == [1, 2, 3]
+    assert manifest["category_head"]["completed_pages"] == [2, 3]
+    assert manifest["category_head"]["coverage_complete"] is False
+    assert any("页码 [1] 调用失败" in item for item in manifest["limitations"])
 
 
 def test_fastmoss_metadata_detects_unsorted_page_and_string_product_ids() -> None:
@@ -1495,6 +1520,7 @@ if __name__ == "__main__":
     test_fastmoss_product_search_defaults_force_category_pages_and_short_segment_queries()
     test_fastmoss_evidence_manifest_separates_total_fetched_overlap_and_conflicts()
     test_fastmoss_l2_market_metrics_are_only_upstream_category_reference()
+    test_fastmoss_failed_category_page_is_not_counted_as_coverage()
     test_fastmoss_metadata_detects_unsorted_page_and_string_product_ids()
     test_fastmoss_answer_verifier_rewrites_high_risk_and_falls_back_on_failure()
     print("chat tool normalization tests passed")

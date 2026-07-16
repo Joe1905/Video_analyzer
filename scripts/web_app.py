@@ -6154,6 +6154,7 @@ def fastmoss_evidence_manifest(
     category_records: dict[str, dict[str, Any]] = {}
     segment_records: dict[str, dict[str, Any]] = {}
     category_pages: set[int] = set()
+    attempted_category_pages: set[int] = set()
     category_totals: list[float] = []
     segment_queries: dict[str, dict[str, Any]] = {}
     metadata_rows: list[dict[str, Any]] = []
@@ -6176,7 +6177,10 @@ def fastmoss_evidence_manifest(
             evidence_excerpts.append({"tool": tool_name, "data": encoded[:1800]})
         scope = str(metadata.get("scope") or "")
         if scope == "category_head":
-            category_pages.add(int(metadata.get("page") or 1))
+            page_number = int(metadata.get("page") or 1)
+            attempted_category_pages.add(page_number)
+            if str(metadata.get("data_state") or "") != "error":
+                category_pages.add(page_number)
             total = _fastmoss_number(metadata.get("reported_total"))
             if total is not None:
                 category_totals.append(total)
@@ -6266,6 +6270,9 @@ def fastmoss_evidence_manifest(
     limitations: list[str] = []
     if not coverage_complete:
         limitations.append(f"类目销量榜计划获取 {target_pages} 页，实际完成页码 {sorted(category_pages)}")
+    failed_pages = sorted(attempted_category_pages - category_pages)
+    if failed_pages:
+        limitations.append(f"类目销量榜页码 {failed_pages} 调用失败，不能计入有效覆盖")
     if reported_total is not None and len(category_records) < reported_total:
         limitations.append(f"接口报告匹配总数 {int(reported_total)}，本轮去重后仅获取 {len(category_records)} 件")
     if target_category and market_levels and "L3" not in market_levels:
@@ -6282,6 +6289,7 @@ def fastmoss_evidence_manifest(
         "category_head": {
             "sort": "day28_units_sold desc",
             "target_pages": target_pages,
+            "attempted_pages": sorted(attempted_category_pages),
             "completed_pages": sorted(category_pages),
             "reported_total": int(reported_total) if reported_total is not None else None,
             "fetched_unique": len(category_records),
@@ -6998,8 +7006,14 @@ def apply_fastmoss_business_defaults(
         filters = copied_filter()
         if path:
             filters["category_path"] = [path["level1"], path["level2"], path["level3"]]
-        normalized["filter"] = filters
         if str((route or {}).get("playbook") or "") == "product":
+            # Category/segment head queries must not inherit speculative LLM ranges;
+            # unsupported shapes such as {"min": 0} make FastMoss reject the page.
+            safe_filters = {
+                key: value for key, value in filters.items()
+                if key in {"category_path", "region", "marketplace", "market", "country", "site"}
+            }
+            normalized["filter"] = safe_filters
             plan = fastmoss_product_search_plan(assistant_msg, user_text, route)
             next_call = plan.get("next_call") or {}
             if next_call.get("scope") == "category_head":
@@ -7010,6 +7024,7 @@ def apply_fastmoss_business_defaults(
             normalized["pagesize"] = 10
             normalized["orderby"] = [{"field": "day28_units_sold", "order": "desc"}]
         else:
+            normalized["filter"] = filters
             normalized.setdefault("orderby", [{"field": "day28_units_sold", "order": "desc"}])
             normalized.setdefault("page", 1)
             normalized.setdefault("pagesize", 10)
