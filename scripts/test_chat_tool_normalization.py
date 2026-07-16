@@ -611,6 +611,66 @@ def test_empty_mcp_collections_are_not_enough_data() -> None:
     assert "不得推断为平台绝对不存在" in evidence
 
 
+def test_mcp_content_error_rules_are_provider_specific() -> None:
+    def result(payload: dict) -> dict:
+        return {
+            "ok": True,
+            "data": {
+                "content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}],
+                "isError": False,
+            },
+        }
+
+    sellersprite = normalize_prefixed_tool_result(
+        "sellersprite__asin_detail",
+        result({
+            "code": "OK",
+            "message": "成功",
+            "data": {"asin": "B0FBVL7SG7", "price": 26.99, "rating": 4.3, "ratings": 344},
+        }),
+    )
+    assert sellersprite["ok"] is True
+    assert sellersprite["enough_data"] is True
+    assert sellersprite["data_state"] == "data"
+    assert sellersprite["mcp_data"]["data"]["asin"] == "B0FBVL7SG7"
+    assert "error" not in sellersprite
+
+    fastmoss = normalize_prefixed_tool_result(
+        "fastmoss__product_search",
+        result({"code": "ERROR_QUERY", "message": "query failed", "data": None}),
+    )
+    assert fastmoss["ok"] is False
+    assert fastmoss["error"] == "query failed"
+    assert fastmoss["data_state"] == "error"
+
+
+def test_fastmoss_zero_analysis_metadata_is_empty_without_affecting_sellersprite() -> None:
+    payload = {
+        "code": 0,
+        "message": "success",
+        "data": {
+            "analysis_type": "basic_metrics",
+            "category_id": 935176,
+            "category_name": "Food Processors",
+            "region": "US",
+            "stat_date": "2026-W28",
+            "currency": {"code": "USD", "symbol": "$"},
+            "product_count": 0,
+            "gmv": 0,
+            "units_sold": 0,
+            "creator_count": 0,
+            "video_count": 0,
+            "trend_series": [],
+        },
+    }
+    raw = {"ok": True, "data": {"content": [{"type": "text", "text": json.dumps(payload)}]}}
+    fastmoss = normalize_prefixed_tool_result("fastmoss__market_category_analysis", raw)
+    sellersprite = normalize_prefixed_tool_result("sellersprite__market_research", raw)
+    assert fastmoss["data_state"] == "empty"
+    assert fastmoss["evidence_observed"] is True
+    assert sellersprite["data_state"] == "data"
+
+
 def test_mcp_sql_error_text_is_not_evidence() -> None:
     raw = {
         "ok": True,
@@ -810,7 +870,7 @@ def test_fastmoss_workflow_phases_accept_empty_and_error_attempts() -> None:
         "result": {"ok": False, "data_state": "error", "evidence_observed": False},
     })
     alternative = web_app.fastmoss_workflow_phase("product", message, available)
-    assert alternative and alternative[0].endswith("（替代接口）")
+    assert alternative and alternative[0] == "获取类目规模与趋势"
     assert alternative[1] == {"fastmoss__market_category_ranking"}
     message.tool_results.append({
         "tool_name": "fastmoss__market_category_ranking",
@@ -818,6 +878,77 @@ def test_fastmoss_workflow_phases_accept_empty_and_error_attempts() -> None:
     })
     third = web_app.fastmoss_workflow_phase("product", message, available)
     assert third and third[0] == "获取热销与新品样本"
+    assert third[1] == {"fastmoss__product_rank_top_selling"}
+
+
+def test_fastmoss_product_phase_requires_complete_sample_coverage() -> None:
+    available = {tool_id for phases in web_app.FASTMOSS_WORKFLOW_PHASES.values() for _, tools in phases for tool_id in tools}
+    observed_tools = (
+        "fastmoss__search_category_by_words",
+        "fastmoss__market_category_analysis",
+        "fastmoss__market_category_ranking",
+        "fastmoss__product_search",
+    )
+    message = SimpleNamespace(
+        tool_calls=[],
+        tool_results=[{
+            "tool_name": tool_name,
+            "result": {"ok": True, "data_state": "data", "evidence_observed": True},
+        } for tool_name in observed_tools],
+    )
+    phase = web_app.fastmoss_workflow_phase("product", message, available)
+    assert phase and phase[1] == {"fastmoss__product_rank_top_selling"}
+    message.tool_results.append({
+        "tool_name": "fastmoss__product_rank_top_selling",
+        "result": {"ok": True, "data_state": "empty", "evidence_observed": True},
+    })
+    phase = web_app.fastmoss_workflow_phase("product", message, available)
+    assert phase and phase[1] == {"fastmoss__product_rank_new_listed"}
+
+
+def test_fastmoss_business_defaults_use_verified_category_levels() -> None:
+    message = SimpleNamespace(tool_calls=[], tool_results=[{
+        "tool_name": "fastmoss__search_category_by_words",
+        "result": {
+            "ok": True,
+            "mcp_data": {"data": {"list": [{
+                "category_id_level1": 13,
+                "category_id_level2": 844168,
+                "category_id_level3": 935176,
+            }]}},
+        },
+    }])
+    fixed_today = __import__("datetime").date(2026, 7, 16)
+    assert web_app.fastmoss_current_category_path(message) == {
+        "level1": 13, "level2": 844168, "level3": 935176,
+    }
+    market = web_app.apply_fastmoss_business_defaults(
+        "market_category_analysis", {"analysis_type": "sales_trends", "filter": {"category_id": 935176}}, message, fixed_today
+    )
+    assert market["filter"]["category_id"] == 844168
+    assert market["filter"]["date_value"] == "2026-W28"
+    ranking = web_app.apply_fastmoss_business_defaults("market_category_ranking", {}, message, fixed_today)
+    assert ranking["filter"]["category_id"] == 13
+    top = web_app.apply_fastmoss_business_defaults("product_rank_top_selling", {}, message, fixed_today)
+    assert top["filter"]["category_id"] == 844168
+    new = web_app.apply_fastmoss_business_defaults("product_rank_new_listed", {}, message, fixed_today)
+    assert new["filter"]["category_l1_id"] == 13
+    assert new["filter"]["category_l3_id"] == 935176
+    assert new["filter"]["listing_start_date"] == "2026-06-13"
+    assert new["filter"]["listing_end_date"] == "2026-07-12"
+    assert "lang" not in new
+    search = web_app.apply_fastmoss_business_defaults("product_search", {"keywords": "mini chopper"}, message, fixed_today)
+    assert search["filter"]["category_path"] == [13, 844168, 935176]
+
+
+def test_fastmoss_clarification_is_targeted_and_provider_isolated() -> None:
+    route = {"intent": "fastmoss_product", "task_depth": "workflow", "playbook": "product", "entity": ""}
+    question = web_app.fastmoss_clarifying_question("fastmoss", route, "帮我做一份选品报告")
+    assert question and "具体商品或品类关键词" in question
+    assert "美国区" in question and "最近已完成周期" in question
+    assert web_app.fastmoss_clarifying_question("fastmoss", route, "给我一份 electric food shredder 调研报告") is None
+    assert web_app.fastmoss_clarifying_question("fastmoss", route, "继续分析这款产品") is None
+    assert web_app.fastmoss_clarifying_question("amazon", route, "帮我做一份选品报告") is None
 
 
 def test_provider_profiles_use_aggregated_sellersprite_and_staged_fastmoss_tools() -> None:
@@ -931,12 +1062,18 @@ if __name__ == "__main__":
     test_intent_decision_validation_and_fallback()
     test_intent_router_uses_recent_context_and_falls_back_on_failure()
     test_empty_mcp_collections_are_not_enough_data()
+    test_mcp_content_error_rules_are_provider_specific()
+    test_fastmoss_zero_analysis_metadata_is_empty_without_affecting_sellersprite()
+    test_mcp_sql_error_text_is_not_evidence()
     test_deepseek_tool_turn_preserves_reasoning_content()
     test_dynamic_chat_context_compresses_to_budget()
     test_tool_limit_final_context_removes_protocol_and_detects_dsml()
     test_sellersprite_schema_argument_normalization()
     test_llm_router_can_select_fastmoss_playbook()
     test_fastmoss_workflow_phases_accept_empty_and_error_attempts()
+    test_fastmoss_product_phase_requires_complete_sample_coverage()
+    test_fastmoss_business_defaults_use_verified_category_levels()
+    test_fastmoss_clarification_is_targeted_and_provider_isolated()
     test_provider_profiles_use_aggregated_sellersprite_and_staged_fastmoss_tools()
     test_region_default_only_applies_when_schema_supports_it()
     test_fastmoss_deep_dive_ids_must_come_from_current_task()
