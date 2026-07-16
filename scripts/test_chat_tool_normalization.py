@@ -1092,6 +1092,36 @@ def test_fastmoss_business_defaults_use_verified_category_levels() -> None:
         "orderby": [{"field": "day28_units_sold", "order": "desc"}],
     }
 
+    named_category_message = SimpleNamespace(tool_calls=[], tool_results=[{
+        "tool_name": "fastmoss__search_category_by_words",
+        "result": {"ok": True, "mcp_data": {"result": {"categories": [
+            {
+                "category_id_level1": 13, "category_id_level2": 844168, "category_id_level3": 934792,
+                "cn_name": "搅拌机", "score": 0.6977,
+            },
+            {
+                "category_id_level1": 13, "category_id_level2": 844168, "category_id_level3": 935176,
+                "cn_name": "料理机", "score": 0.5023,
+            },
+        ]}}},
+    }])
+    assert web_app.fastmoss_current_category_path(named_category_message) == {
+        "level1": 13, "level2": 844168, "level3": 934792,
+    }
+    assert web_app.fastmoss_current_category_path(named_category_message, "第二个，料理机") == {
+        "level1": 13, "level2": 844168, "level3": 935176,
+    }
+    named_search = web_app.apply_fastmoss_business_defaults(
+        "product_search", {}, named_category_message, fixed_today,
+        user_text="目标类目明确选择料理机", route={"playbook": "product", "entity": "料理机"},
+    )
+    assert named_search["filter"]["category_path"] == [13, 844168, 935176]
+    category_args = web_app.apply_fastmoss_business_defaults(
+        "search_category_by_words", {"query": ["food processor"], "desc": "瑜伽裤", "unexpected": 1},
+        named_category_message, fixed_today, user_text="料理机",
+    )
+    assert category_args == {"query": ["food processor"]}
+
 
 def test_fastmoss_product_workflow_keeps_its_round_budget_isolated() -> None:
     assert web_app.chat_max_tool_rounds("fastmoss", {"playbook": "product"}, 2) == 14
