@@ -907,6 +907,9 @@ def test_fastmoss_product_phase_requires_complete_sample_coverage() -> None:
     })
     phase = web_app.fastmoss_workflow_phase("product", message, available)
     assert phase and phase[1] == {"fastmoss__product_rank_new_listed"}
+    instruction = web_app.fastmoss_workflow_instruction(phase)
+    assert "新品成功率" in instruction
+    assert "统一截止日" in instruction
 
 
 def test_fastmoss_business_defaults_use_verified_category_levels() -> None:
