@@ -6518,10 +6518,17 @@ def fastmoss_report_style_instruction(route: dict[str, Any]) -> str:
     """Keep evidence-heavy FastMoss reports readable without relaxing factual boundaries."""
     if str(route.get("task_depth") or "") not in {"analysis", "workflow"} and not route.get("playbook"):
         return ""
+    full_report = str(route.get("task_depth") or "") == "workflow" or route.get("playbook") in {"product", "pricing", "competitor", "shop"}
+    detail_requirement = (
+        "这是一份完整调研报告，不是执行摘要。结论之后必须保留调研范围与样本覆盖、类目头部榜、细分匹配榜、"
+        "价格与定位、内容/达人信号、数据边界和下一步；有足够商品数据时使用表格展示代表样本，不得为了简洁删掉证据。"
+        if full_report else
+        "结论之后仍需保留支撑判断的关键数据、数据边界和下一步，不能只给摘要。"
+    )
     return (
         "表达要求：先用“先说结论：”开场，在两三句话内直接回应用户，并说明最值得关注的信号；"
         "随后用“我怎么看”把数据翻译成业务含义，允许使用“我更倾向”“真正值得关注的是”“如果准备上新，我会先”等克制的顾问式表达，"
-        "但每个判断都必须紧跟证据。再展示关键数据与必要表格。把覆盖不足、空结果和指标冲突集中到一个“需要留意”章节，"
+        "但每个判断都必须紧跟证据。" + detail_requirement + "把覆盖不足、空结果和指标冲突集中到一个“需要留意”章节，"
         "不要在每个段落重复警告。最后用“如果要继续做”给出两到四项有优先级的下一步。"
         "温度只能来自解释、取舍和优先级，不能来自更大胆的数字建议：除非证据或已展示的计算明确支持，"
         "不得新增首批库存、预算、达人数量、粉丝门槛、测试周期、ROI、转化率、毛利率或精确上市价。"
@@ -6532,15 +6539,22 @@ def fastmoss_report_style_instruction(route: dict[str, Any]) -> str:
 def fastmoss_deterministic_quality_fallback(manifest: dict[str, Any]) -> str:
     category = manifest.get("category_head") or {}
     products = category.get("products") or []
+    segment = manifest.get("segment_head") or {}
+    segment_products = segment.get("products") or []
     fetched = int(category.get("fetched_unique") or 0)
     target_pages = int(category.get("target_pages") or 3)
     completed_pages = category.get("completed_pages") or []
+    price_values = [
+        value for product in products
+        for value in (_fastmoss_number(product.get("price_min")), _fastmoss_number(product.get("price_max")))
+        if value is not None
+    ]
     lines = [
         "## 先说结论",
         "",
         (
             f"这轮已经取得 {fetched} 件类目头部样本，可以先用来观察头部商品格局；"
-            "但独立回答校验没有完成，所以我不会替你下“蓝海”“低竞争”或“值得进入”的强结论。"
+            "现有证据可以支持样本层面的判断，但还不足以替你下“蓝海”“低竞争”或“值得进入”的强结论。"
         ),
         "",
         "## 我怎么看",
@@ -6556,18 +6570,57 @@ def fastmoss_deterministic_quality_fallback(manifest: dict[str, Any]) -> str:
     )
     if category.get("reported_total") is not None:
         lines.append(f"- 接口报告匹配总数为 {category['reported_total']}；该数字与本次实际获取数量不是同一概念。")
+    if manifest.get("target_category_path"):
+        lines.append(f"- 本轮确认的目标类目路径：{manifest['target_category_path']}。")
     if products:
-        lines.extend(["", "### 本次头部样本", "", "| 商品 | 商品ID | 近28天销量 |", "|---|---:|---:|"])
-        for product in products[:5]:
+        lines.extend([
+            "", "## 类目头部样本", "",
+            "以下是本轮按近28天销量字段取得并在本地复核排序的代表商品；它描述的是已获取样本，不是完整市场。", "",
+            "| 商品 | 商品ID | 价格 | 近28天销量 | 近28天GMV |", "|---|---:|---:|---:|---:|",
+        ])
+        for product in products[:10]:
+            price_min = product.get("price_min")
+            price_max = product.get("price_max")
+            price = "未返回" if price_min in (None, "") else str(price_min)
+            if price_max not in (None, "", price_min):
+                price += f"–{price_max}"
             lines.append(
                 f"| {str(product.get('title') or '未返回标题').replace('|', '/')} | {product.get('product_id')} | "
+                f"{price} | {product.get('day28_units_sold', '未返回')} | {product.get('day28_gmv', '未返回')} |"
+            )
+    if segment_products:
+        lines.extend([
+            "", "## 细分匹配样本", "",
+            "这些商品来自短关键词补充检索，用来判断用户所说的细分方向；不能替代无关键词的类目头部榜。", "",
+            "| 查询词 | 商品 | 商品ID | 近28天销量 |", "|---|---|---:|---:|",
+        ])
+        for product in segment_products[:8]:
+            lines.append(
+                f"| {str(product.get('query') or '未记录').replace('|', '/')} | "
+                f"{str(product.get('title') or '未返回标题').replace('|', '/')} | {product.get('product_id')} | "
                 f"{product.get('day28_units_sold', '未返回')} |"
             )
+        overlap_count = len(manifest.get("overlap_product_ids") or [])
+        lines.extend(["", f"- 类目头部榜与细分匹配榜共有 {overlap_count} 件重合商品。"])
+    lines.extend(["", "## 价格与定位", ""])
+    if price_values:
+        lines.append(
+            f"- 已获取商品样本的返回价格落在 {min(price_values):g}–{max(price_values):g} 之间；"
+            "这是样本观察区间，不等于建议上市价。"
+        )
+    else:
+        lines.append("- 本轮没有形成可核对的价格区间，暂不提供精确上市价建议。")
+    lines.extend([
+        "- 定价前应优先剔除价格、销量与 GMV 无法互相校验的商品，再结合成本和目标毛利做候选价测试。",
+        "", "## 内容与达人信号", "",
+        "- 本轮只有在视频、评论或达人接口返回了可核对数据时，才可据此判断内容打法；不能从商品销量反推内容因果。",
+        "- 若相关接口为空，含义只是本次未返回记录，不代表该类目没有达人或内容供给。",
+    ])
     lines.extend(["", "## 需要留意"])
     limitations = list(manifest.get("limitations") or [])
     conflicts = list(manifest.get("conflicts") or [])
     if not limitations and not conflicts:
-        lines.append("- 独立回答校验未完成，因此本次只保留能够直接核对的事实。")
+        lines.append("- 本轮证据没有形成完整闭环，因此只保留能够直接核对的事实。")
     for item in limitations:
         lines.append(f"- {item}")
     for item in conflicts[:10]:
@@ -6629,7 +6682,57 @@ def polish_fastmoss_report_tone(answer: str) -> str:
         text,
         flags=re.IGNORECASE,
     )
+    text = re.sub(
+        r"建议定价\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+\s*(?:[-~至到]\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+)?",
+        "建议先依据已观测价格带设定候选价，再结合成本与转化验证",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"用\s*(?:US\$|USD\s*|\$|¥|￥)\s*[\d,.]+\s*上架",
+        "选择一个有证据支撑的候选价上架测试",
+        text,
+        flags=re.IGNORECASE,
+    )
     return text
+
+
+def fastmoss_rewrite_preserves_report_detail(
+    draft: str,
+    rewritten: str,
+    manifest: dict[str, Any],
+    route: dict[str, Any],
+) -> bool:
+    """Reject verifier rewrites that turn evidence-rich workflow reports into summaries."""
+    text = str(rewritten or "").strip()
+    if not text:
+        return False
+    required_sections = ("先说结论", "我怎么看", "需要留意", "如果要继续做")
+    if any(section not in text for section in required_sections):
+        return False
+    category_products = (manifest.get("category_head") or {}).get("products") or []
+    segment_products = (manifest.get("segment_head") or {}).get("products") or []
+    evidence_rich = len(category_products) >= 10 or len(segment_products) >= 5
+    full_report = str(route.get("task_depth") or "") == "workflow" or route.get("playbook") in {
+        "product", "pricing", "competitor", "shop",
+    }
+    if evidence_rich and full_report:
+        minimum_length = max(1400, min(2600, int(len(str(draft or "")) * 0.45)))
+        if len(text) < minimum_length:
+            return False
+        references = 0
+        for product in category_products[:10]:
+            product_id = str(product.get("product_id") or "")
+            title = str(product.get("title") or "").strip()
+            if (product_id and product_id in text) or (len(title) >= 6 and title[:18] in text):
+                references += 1
+        if references < min(5, len(category_products)):
+            return False
+        if segment_products and "细分" not in text:
+            return False
+    elif len(text) < 650:
+        return False
+    return True
 
 
 def verify_fastmoss_final_answer(
@@ -6659,10 +6762,12 @@ def verify_fastmoss_final_answer(
                 "does not constitute an independent market, or is a real opportunity; such wording must be downgraded to a sample-limited signal and validation need. "
                 "Also verify the user-facing style: the answer must start with a concise '先说结论', translate evidence into a measured '我怎么看', "
                 "consolidate caveats instead of repeating warnings, and end with prioritized next steps. Preserve a calm, human consultant voice while keeping every judgment evidence-backed. "
+                "For workflow or playbook research, concise means conclusion-first, not short: preserve the full evidence-rich report with research scope and coverage, category-head table, "
+                "segment-match table, pricing/positioning evidence, content or creator evidence when observed, limitations, and prioritized next steps. Do not collapse it into an executive summary. "
                 "Reject any recommendation that invents operational numbers absent from the manifest or an explicit calculation, including launch inventory, budget, creator count, follower threshold, "
                 "test duration, ROI, conversion rate, margin, or exact launch price. An observed price band may be quoted, but a recommended test price must be labeled as an assumption and tied to evidence. "
                 "Mark approved=false and provide a complete rewritten_answer when the draft is audit-like, uses headings such as '修正版' or '数据核验结果', or lacks the required conclusion and next steps. "
-                "When rewriting, preserve useful facts and tables; do not turn the report into a refusal or a compliance checklist. "
+                "When rewriting, preserve useful facts, representative products, tables, and roughly the original level of detail; do not turn the report into a refusal, summary, or compliance checklist. "
                 "If risk is high/critical, provide one complete corrected Simplified Chinese answer. "
                 "If risk is low/medium, rewritten_answer may be empty. Do not add facts absent from the manifest."
             ),
@@ -6708,8 +6813,15 @@ def verify_fastmoss_final_answer(
             rewritten = str(decision.get("rewritten_answer") or "").strip()
             if not rewritten:
                 return fastmoss_deterministic_quality_fallback(manifest)
+            if not fastmoss_rewrite_preserves_report_detail(draft, rewritten, manifest, route):
+                print("[CHAT] FastMoss verifier rewrite rejected: report detail was not preserved", flush=True)
+                return fastmoss_deterministic_quality_fallback(manifest)
             return polish_fastmoss_report_tone(rewritten)
-        return polish_fastmoss_report_tone(draft)
+        polished = polish_fastmoss_report_tone(draft)
+        if not fastmoss_rewrite_preserves_report_detail(draft, polished, manifest, route):
+            print("[CHAT] FastMoss approved draft rejected: report detail was insufficient", flush=True)
+            return fastmoss_deterministic_quality_fallback(manifest)
+        return polished
     except Exception as exc:
         print(f"[CHAT] FastMoss answer verifier failed: {type(exc).__name__}: {str(exc)[:300]}", flush=True)
         return fastmoss_deterministic_quality_fallback(manifest)
