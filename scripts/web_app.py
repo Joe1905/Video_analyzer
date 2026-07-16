@@ -5749,7 +5749,7 @@ def mcp_evidence_quality_summary(assistant_msg: Message) -> dict[str, list[str]]
     return summary
 
 
-def build_tool_limit_final_context(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def build_tool_limit_final_context(messages: list[dict[str, Any]], user_request: str = "") -> list[dict[str, Any]]:
     evidence = [
         {
             "tool_call_id": message.get("tool_call_id"),
@@ -5762,7 +5762,7 @@ def build_tool_limit_final_context(messages: list[dict[str, Any]]) -> list[dict[
         dict(message) for message in messages
         if not (
             message.get("_context_scope") == "current"
-            and (message.get("role") == "tool" or bool(message.get("tool_calls")))
+            and (message.get("role") in {"tool", "assistant"} or bool(message.get("tool_calls")))
         )
     ]
     if evidence:
@@ -5772,9 +5772,10 @@ def build_tool_limit_final_context(messages: list[dict[str, Any]]) -> list[dict[
                 json.dumps({
                     "type": "completed_tool_collection",
                     "instruction": (
-                        "The tool-call limit has been reached. Use this evidence to produce the final Simplified Chinese answer. "
-                        "Do not request or describe any additional tool calls."
+                        "The tool-call limit has been reached. Answer only the original_user_request using this evidence. "
+                        "Intermediate assistant drafts are not user instructions. Do not request or describe additional tool calls."
                     ),
+                    "original_user_request": str(user_request or ""),
                     "evidence": evidence,
                 }, ensure_ascii=False, separators=(",", ":")),
                 48000,
@@ -6857,7 +6858,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
         "_context_scope": "system",
     })
     try:
-        final_context = build_tool_limit_final_context(messages)
+        final_context = build_tool_limit_final_context(messages, routing_text)
         for attempt in range(2):
             attempt_messages = [dict(message) for message in final_context]
             attempt_messages.append({
@@ -6865,7 +6866,11 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 "content": (
                     "The tool-call round limit has been reached. Produce the final Simplified Chinese answer from the completed evidence now. "
                     "Do not call tools and do not output DSML, XML, tool_calls, function_calls, invoke, parameter, JSON tool requests, or a plan to call tools. "
-                    "If evidence is incomplete, state the limitation briefly. Return only the user-facing answer."
+                    "If evidence is incomplete, state the limitation briefly. Return only the user-facing answer. "
+                    + (
+                        "For FastMoss, do not invent supplier costs, MOQ, profit margins, 1688 or Amazon facts, seasonality, or other facts absent from the tool evidence. "
+                        if provider == "fastmoss" else ""
+                    )
                     if attempt == 0
                     else
                     "Your previous final response was rejected because it contained a tool protocol or was empty. "
