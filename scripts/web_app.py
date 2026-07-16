@@ -7422,18 +7422,15 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                         "result": normalized_result,
                     }]
                     messages.append({
-                        "role": "assistant",
-                        "content": "",
-                        "tool_calls": [tool_call],
-                        "_context_scope": "current",
-                    })
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call["id"],
-                        "content": current_chat_tool_evidence(
-                            fn_name, normalized_result, fn_args, raw_result
+                        "role": "system",
+                        "content": (
+                            "A deterministic FastMoss product-search step was executed by the workflow "
+                            f"with arguments {json.dumps(fn_args, ensure_ascii=False)}. Evidence: "
+                            + current_chat_tool_evidence(
+                                fn_name, normalized_result, fn_args, raw_result
+                            )
                         ),
-                        "_context_scope": "current",
+                        "_context_scope": "current_evidence",
                     })
                     store.broadcast(session.id, "update", {
                         "messageId": assistant_msg.id,
