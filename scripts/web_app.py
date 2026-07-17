@@ -7887,6 +7887,24 @@ def downgrade_fastmoss_absolute_market_claims(answer: str) -> str:
         text,
         flags=re.IGNORECASE,
     )
+    text = re.sub(
+        r"(?:该|这个|目标|Electric Food Shredder|Mini Meat Grinder)?\s*(?:细分|市场)\s*(?:极窄|非常窄|几乎不存在)",
+        "该细分在本轮样本中的销量信号较弱，整体市场范围仍需更多覆盖验证",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"(?:内容|视频)(?:转化)?效率(?:几乎)?为?\s*零",
+        "本轮代表商品视频未观测到可归因销量，内容效率仍需扩大样本验证",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"(?:广告|投放)(?:回报|效果)(?:极低|很低|很差)",
+        "已观测转化信号较弱，投放效率仍需广告成本与利润数据验证",
+        text,
+        flags=re.IGNORECASE,
+    )
     return text
 
 
@@ -8091,6 +8109,22 @@ def sanitize_fastmoss_unsupported_recommendations(answer: str) -> tuple[str, int
         r"[^\n。；]{0,24}?(?:转化率|调价|调高|调低|复盘)",
         "完成充分测试后再依据实际转化复盘调整",
     )
+    replace(
+        r"(?:建议|计划|准备|先)?(?:与|联系|合作|建联)\s*[\d,.]+\s*"
+        r"(?:[-~–—至到]\s*[\d,.]+\s*)?(?:个|位)\s*"
+        r"(?:[\d,.]+\s*(?:[kKwW万])?\s*[-~–—至到]\s*[\d,.]+\s*(?:[kKwW万])?\s*粉丝?的?)?"
+        r"[^\n。；]{0,24}?(?:达人|创作者)(?:合作)?",
+        "先与少量受众匹配的达人验证",
+    )
+    replace(
+        r"(?:测试|试投|试卖)\s*(?:US\$|USD\s*|\$|¥|￥)\s*[\d,.]+\s*"
+        r"(?:[-~–—至到]\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+)?\s*价位",
+        "从已观测价格带中选择候选价进行验证",
+    )
+    replace(
+        r"(?:头部商品)?毛利率?潜力\s*(?:\|\s*)?(?:较高|很高|高|较低|很低|低)(?:[^|\n]*)",
+        "毛利判断 | 暂无法判断（缺少成本证据）",
+    )
     return text, cleanup_count
 
 
@@ -8122,6 +8156,27 @@ def sanitize_fastmoss_state_contradictions(
             pattern = rf"({re.escape(entity_id)}[^\n。；]{{0,80}}?)(?:为|等于)\s*0(?:\.0+)?"
             text, count = re.subn(pattern, rf"\1本轮未返回可核对记录", text)
             cleanup_count += count
+    signals = manifest.get("derived_signals") if isinstance(manifest.get("derived_signals"), dict) else {}
+    for item in signals.get("segment_queries") or []:
+        if not isinstance(item, dict):
+            continue
+        query = str(item.get("query") or "").strip()
+        fetched = int(item.get("fetched_unique") or 0)
+        active = int(item.get("products_with_units") or 0)
+        if not query or fetched <= 0:
+            continue
+        pattern = rf"({re.escape(query)}[^\n。；]{{0,50}}?)(?:几乎无|没有)(?:活跃)?(?:商品|产品)"
+        replacement = rf"\1本轮返回 {fetched} 款样本，其中 {active} 款有可核对销量"
+        text, count = re.subn(pattern, replacement, text, flags=re.IGNORECASE)
+        cleanup_count += count
+    top3_share = _fastmoss_number(signals.get("category_top3_share"))
+    if top3_share is not None and top3_share < 0.6:
+        text, count = re.subn(
+            r"头部集中度(?:很|较)?高",
+            f"本轮样本前三款销量占比约 {top3_share * 100:.1f}%，已形成头部但并非高度集中",
+            text,
+        )
+        cleanup_count += count
     return text, cleanup_count
 
 
