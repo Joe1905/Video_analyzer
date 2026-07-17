@@ -4049,12 +4049,11 @@ FASTMOSS_PLAYBOOKS: dict[str, dict[str, Any]] = {
         "label": "选品与定价测算",
         "max_rounds": 14,
         "instruction": (
-            "按 FastMoss 官方选品流程执行，并合并定价与价格测算。先扫描目标品类最近 7 天的机会，"
-            "判断热销商品处于新品/成长/爆发/稳定阶段，以达人和视频增长为先行信号、GMV 为滞后信号；"
-            "输出商品、价格、销量、GMV、达人/视频趋势、卖家数和进入窗口。然后使用最近 28 天数据比较主要价格带，"
-            "列出各价格带的竞品数量、平均销量、平均 GMV 与拥挤度；把原始价格证据和建议上市价分开。"
-            "最后在保守/基准/激进三套流量与转化假设下测算月度销量与 GMV，以表格列明公式、假设和结果："
-            "月度销量=月流量×转化率，月度GMV=月度销量×售价。不得把 GMV 当利润；缺少成本时不计算或臆测利润率。"
+            "按 FastMoss 官方选品流程执行，并合并价格证据。比较目标类目、细分样本、代表商品、趋势、达人、"
+            "视频和渠道结构；生命周期、进入窗口和拥挤度只有取得直接同口径证据时才能判断。"
+            "价格样本与建议上市价必须分开。只有工具证据或用户输入同时提供流量、转化率和售价时，才按"
+            "月度销量=月流量×转化率、月度GMV=月度销量×售价进行测算；缺少输入时只列公式和待补参数。"
+            "不得把 GMV 当利润，也不得自行设定库存、预算、达人数量、周期或经营目标。"
         ),
     },
     "competitor": {
@@ -4095,9 +4094,9 @@ FASTMOSS_PLAYBOOKS: dict[str, dict[str, Any]] = {
         "max_rounds": 9,
         "instruction": (
             "按 FastMoss 官方定价流程执行。使用最近 28 天数据比较主要价格带，列出各带竞品数量、平均销量、平均 GMV 与拥挤度；"
-            "把原始数据和建议上市价分开。随后在保守/基准/激进三套流量与转化假设下测算月度销量与 GMV，"
-            "以表格明确流量、转化率、价格、计算公式和结果：月度销量=月流量×转化率，月度GMV=月度销量×售价。"
-            "不得把 GMV 当利润；缺少成本时不计算或臆测利润率。"
+            "把原始数据和建议上市价分开。只有工具证据或用户输入提供流量、转化率和售价时，才按"
+            "月度销量=月流量×转化率、月度GMV=月度销量×售价计算；缺少输入时只展示公式、待补输入和验证条件，"
+            "不得自行创建保守/基准/激进参数。不得把 GMV 当利润；缺少成本时不计算或臆测利润率。"
         ),
     },
     "creator": {
@@ -7229,6 +7228,42 @@ def fastmoss_evidence_manifest(
         reverse=True,
     )
 
+    conflicted_product_ids = {
+        str(item.get("product_id") or "") for item in conflicts
+        if str(item.get("severity") or "") == "high"
+    }
+    segment_price_bands: list[dict[str, Any]] = []
+    for query in sorted({str(record.get("query") or "").strip() for record in segment_top} - {""}):
+        midpoints: list[float] = []
+        input_ids: list[str] = []
+        for record in segment_top:
+            if str(record.get("query") or "").strip() != query:
+                continue
+            product_id = str(record.get("product_id") or "")
+            if not product_id or product_id in conflicted_product_ids:
+                continue
+            low = _fastmoss_number(record.get("price_min"))
+            high = _fastmoss_number(record.get("price_max"))
+            if low is None and high is None:
+                continue
+            low = high if low is None else low
+            high = low if high is None else high
+            if low is None or high is None or min(low, high) < 0:
+                continue
+            midpoints.append((min(low, high) + max(low, high)) / 2)
+            input_ids.append(product_id)
+        segment_price_bands.append({
+            "query": query,
+            "eligible_product_count": len(midpoints),
+            "minimum_required": 5,
+            "status": "usable" if len(midpoints) >= 5 else "insufficient_sample",
+            "q1": _fastmoss_percentile(midpoints, 0.25) if len(midpoints) >= 5 else None,
+            "median": _fastmoss_percentile(midpoints, 0.5) if len(midpoints) >= 5 else None,
+            "q3": _fastmoss_percentile(midpoints, 0.75) if len(midpoints) >= 5 else None,
+            "input_product_ids": input_ids,
+            "scope": "same_query_nonconflicting_sample_not_recommended_price",
+        })
+
     derived_signals = {
         "category_sample_units_total": category_units_total if category_units else None,
         "category_top1_share": sample_share(1),
@@ -7244,7 +7279,56 @@ def fastmoss_evidence_manifest(
         "price_midpoint_q3": _fastmoss_percentile(price_midpoints, 0.75),
         "price_midpoint_max": max(price_midpoints) if price_midpoints else None,
         "segment_queries": query_signals,
+        "segment_price_bands": segment_price_bands,
     }
+    product_fact_ids = [
+        str(fact.get("fact_id")) for fact in evidence_facts
+        if str(fact.get("dimension") or "") in {"product_sample", "top_products", "new_products"}
+        and fact.get("fact_id")
+    ]
+    derived_facts: list[dict[str, Any]] = []
+    for label, count, ratio in (
+        ("category_sample_top1_share", 1, derived_signals.get("category_top1_share")),
+        ("category_sample_top3_share", 3, derived_signals.get("category_top3_share")),
+        ("category_sample_top10_share", 10, derived_signals.get("category_top10_share")),
+    ):
+        if ratio is not None:
+            derived_facts.append({
+                "fact_id": f"derived:{label}",
+                "metric": label,
+                "value": ratio,
+                "unit": "ratio",
+                "scope": "fetched_category_sample_only",
+                "denominator_product_count": len(category_units),
+                "denominator_units": category_units_total,
+                "numerator_top_n": min(count, len(category_units)),
+                "input_fact_ids": product_fact_ids,
+                "claim_boundary": "must_not_imply_share_of_unfetched_products_or_total_market",
+            })
+    for item in query_signals:
+        derived_facts.append({
+            "fact_id": f"derived:segment:{item.get('query')}:units",
+            "metric": "segment_sample_units",
+            "query": item.get("query"),
+            "value": item.get("sample_units_total"),
+            "unit": "units",
+            "scope": "fetched_same_query_sample_only",
+            "denominator_product_count": item.get("products_with_units"),
+            "input_fact_ids": product_fact_ids,
+        })
+    for item in segment_price_bands:
+        if item.get("status") == "usable":
+            derived_facts.append({
+                "fact_id": f"derived:segment:{item.get('query')}:price_band",
+                "metric": "segment_sample_price_midpoint_quartiles",
+                "query": item.get("query"),
+                "value": {"q1": item.get("q1"), "median": item.get("median"), "q3": item.get("q3")},
+                "unit": "provider_currency",
+                "scope": item.get("scope"),
+                "denominator_product_count": item.get("eligible_product_count"),
+                "input_product_ids": item.get("input_product_ids"),
+                "claim_boundary": "observed_sample_band_not_recommended_launch_price",
+            })
     plan = fastmoss_product_search_plan(assistant_msg, user_text, route)
     reported_total = max(category_totals) if category_totals else None
     target_pages = int(plan.get("category_pages") or 3)
@@ -7272,6 +7356,10 @@ def fastmoss_evidence_manifest(
         limitations.append("部分接口成功但返回为空，只代表本轮没有记录")
     if quality.get("error"):
         limitations.append("部分接口调用失败，对应维度不可验证")
+    entity_bundles = fastmoss_build_entity_bundles(evidence_envelopes, evidence_facts, conflicts)
+    analysis_targets = fastmoss_analysis_targets(
+        route, user_text, category_top, segment_top, entity_bundles, conflicts
+    )
     return {
         "provider": "fastmoss",
         "target_category_path": target_category,
@@ -7297,6 +7385,16 @@ def fastmoss_evidence_manifest(
         "conflicts": conflicts,
         "limitations": limitations,
         "derived_signals": derived_signals,
+        "derived_facts": derived_facts,
+        "entity_bundles": entity_bundles,
+        "entity_bundle_count": len(entity_bundles),
+        "analysis_targets": analysis_targets,
+        "evidence_envelopes": evidence_envelopes,
+        "evidence_envelope_count": len(evidence_envelopes),
+        "unsupported_parser_count": sum(
+            1 for envelope in evidence_envelopes
+            if envelope.get("parser_status") == "unsupported_parser"
+        ),
         "evidence_facts": evidence_facts,
         "evidence_fact_count": len(evidence_facts),
     }
@@ -7308,38 +7406,142 @@ def fastmoss_report_quality_instruction(
     route: dict[str, Any],
 ) -> str:
     manifest = fastmoss_evidence_manifest(assistant_msg, user_text, route)
-    dimensions = {
-        str(fact.get("dimension") or "")
-        for fact in (manifest.get("evidence_facts") or [])
-        if isinstance(fact, dict)
-    }
-    sections = ["结论", "研究范围、目标类目与样本覆盖"]
-    if dimensions.intersection({"category_trend", "category_analysis", "category_channel_ranking"}):
-        sections.append("上级类目背景（必须明确 L1/L2 口径）")
-    if (manifest.get("segment_head") or {}).get("fetched_unique"):
-        sections.append("目标细分的同口径对比")
-    if dimensions.intersection({"top_products", "new_products"}):
-        sections.append("头部商品与新品表现")
-    if dimensions.intersection({"product_sample", "product_detail", "product_overview", "product_90d_trend"}):
-        sections.append("代表商品与趋势深挖")
-    if dimensions.intersection({"category_channel_ranking", "product_sample", "product_overview"}):
-        sections.append("视频、达人、广告、联盟与成交渠道")
-    if (manifest.get("derived_signals") or {}).get("price_midpoint_count"):
-        sections.append("价格与定位")
-    sections.extend(["机会与风险", "按优先级排列的验证顺序"])
+    packet = fastmoss_report_packet(manifest, route)
     return (
         fastmoss_report_style_instruction(route)
         + " "
-        "FastMoss 最终报告必须遵守以下证据清单。根据实际取到的证据组织报告，不要套用 Amazon 的关键词、PPC、BSR、ASIN 或 FBA 结构。"
-        "建议覆盖的语义模块为：" + "；".join(sections) + "。模块标题和顺序可按叙事需要调整，不要求使用固定标题。"
-        "类目头部与细分匹配商品应避免混写；"
-        "reported_total 是接口匹配总数，fetched_unique 是本次实际取得数，不得混写。"
-        "只分析证据清单中实际存在的维度：取得上级类目趋势或渠道结构时解释其背景意义；取得新品、代表商品概览、广告/联盟拆分或 90 天趋势时，"
-        "必须把这些事实转成可核查的比较和判断。若 derived_signals 已提供，则解释其中可用的样本集中度、类目/细分重合率、"
-        "同口径细分差异和四分位价格主体带，并给出证据边界内的方向优先级；不能只复述商品表和免责声明。"
-        "L2 数据只能称为上级类目参考。所有 conflicts 必须显式披露，强机会/低竞争/生命周期/因果结论没有直接证据时降级为待验证假设。"
-        "证据清单：" + json.dumps(manifest, ensure_ascii=False, separators=(",", ":"))
+        "FastMoss 最终报告必须以 report_packet 为事实口径权威来源，原始工具结果只用于查证细节。"
+        "根据实际证据组织报告，不要套用 Amazon 的关键词、PPC、BSR、ASIN 或 FBA 结构。"
+        "模块标题和顺序可按叙事需要调整；不存在的证据模块不要硬写。reported_total 与本次样本数不得混写。"
+        "所有判断必须遵守 claim_boundaries；生命周期、因果、低竞争和强机会没有直接证据时降级为待验证假设。"
+        "report_packet：" + json.dumps(packet, ensure_ascii=False, separators=(",", ":"))
     )
+
+
+def fastmoss_report_packet(manifest: dict[str, Any], route: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Build one compact, workflow-native source of truth for report synthesis."""
+    playbook = str((route or {}).get("playbook") or "product")
+    modules = {
+        "product": ["结论与样本范围", "类目和细分", "头部与新品", "代表商品与趋势", "达人视频和渠道", "细分价格证据", "风险与验证顺序"],
+        "pricing": ["结论与口径", "同形态价格样本", "销量与GMV对照", "可计算输入", "风险与验证顺序"],
+        "competitor": ["结论与目标实体", "规模与趋势", "商品和价格", "达人视频直播广告", "可复制与不可复制", "风险"],
+        "shop": ["结论与时间窗", "规模趋势", "商品结构", "达人视频直播广告", "集中度风险", "优先动作"],
+        "content_dissect": ["内容结论", "视频样本范围", "自然与广告属性", "脚本和卖点", "可复用模式", "证据限制"],
+        "content_strategy": ["策略结论", "视频证据", "钩子和脚本结构", "内容角度与卖点", "拍摄brief", "证据限制"],
+        "creator": ["筛选结论", "候选范围", "品类和商品贡献", "带货与受众证据", "候选依据", "建联变量"],
+    }.get(playbook, ["结论", "证据", "限制", "下一步"])
+    claim_boundaries = [
+        "sample_share_never_implies_unfetched_or_total_market_share",
+        "reported_total_is_not_fetched_sample_count",
+        "empty_means_no_records_returned_not_observed_zero_or_platform_absence",
+        "channel_or_ad_share_does_not_prove_roi_profit_or_efficiency",
+        "creator_tier_counts_are_counts_not_gmv_contribution",
+        "top_n_product_videos_do_not_prove_category_content_preference",
+        "facts_from_different_entity_ids_must_not_be_merged",
+        "l2_category_metrics_are_upstream_context_not_l3_market_size",
+        "observed_price_band_is_not_recommended_launch_price",
+        "operational_numbers_require_tool_evidence_user_input_or_shown_calculation",
+    ]
+    product_keys = (
+        "product_id", "title", "price_min", "price_max", "launch_date", "day7_units_sold",
+        "day28_units_sold", "day28_gmv", "first_3d_units_sold", "first_3d_gmv",
+        "linked_creator_count", "linked_video_count",
+    )
+
+    def compact_fact(fact: dict[str, Any]) -> dict[str, Any]:
+        compact = dict(fact)
+        if isinstance(compact.get("products"), list):
+            product_limit = 10
+            if str(compact.get("scope") or "") == "category_head" and int(compact.get("page") or 1) > 1:
+                product_limit = 0
+            elif str(compact.get("dimension") or "") in {"top_products", "new_products"}:
+                product_limit = 5
+            compact["products"] = [
+                {
+                    key: (str(product.get(key) or "")[:120] if key == "title" else product.get(key))
+                    for key in product_keys if product.get(key) not in (None, "", {}, [])
+                }
+                for product in compact["products"][:product_limit] if isinstance(product, dict)
+            ]
+        if isinstance(compact.get("top_creators"), list):
+            compact["top_creators"] = [
+                {
+                    key: creator.get(key) for key in (
+                        "creator_uid", "creator_name", "creator_handle", "follower_count",
+                        "creator_category", "product_contribution",
+                    ) if creator.get(key) not in (None, "", {}, [])
+                }
+                for creator in compact["top_creators"][:3] if isinstance(creator, dict)
+            ]
+        if isinstance(compact.get("top_videos"), list):
+            videos = []
+            for video in compact["top_videos"][:3]:
+                if not isinstance(video, dict):
+                    continue
+                item = {
+                    key: video.get(key) for key in (
+                        "video_id", "creator", "engagement_metrics", "product_contribution", "traffic_flags", "video_meta",
+                    ) if video.get(key) not in (None, "", {}, [])
+                }
+                if isinstance(item.get("video_meta"), dict) and item["video_meta"].get("caption_text"):
+                    item["video_meta"] = dict(item["video_meta"])
+                    item["video_meta"]["caption_text"] = str(item["video_meta"]["caption_text"])[:240]
+                videos.append(item)
+            compact["top_videos"] = videos
+        return compact
+
+    target_keys = {
+        (str(item.get("entity_type") or ""), str(item.get("entity_id") or ""))
+        for item in (manifest.get("analysis_targets") or []) if isinstance(item, dict)
+    }
+    packet_bundles = [
+        bundle for bundle in (manifest.get("entity_bundles") or [])
+        if isinstance(bundle, dict) and (
+            (str(bundle.get("entity_type") or ""), str(bundle.get("entity_id") or "")) in target_keys
+            or len(bundle.get("source_calls") or []) > 1
+        )
+    ][:15]
+    source_catalog = [
+        {
+            key: envelope.get(key) for key in (
+                "source_call_index", "source_tool", "tool_family", "parser_status", "data_state",
+                "region", "scope", "metric_grain", "returned_count", "reported_total",
+            ) if envelope.get(key) not in (None, "", {}, [])
+        }
+        for envelope in (manifest.get("evidence_envelopes") or []) if isinstance(envelope, dict)
+    ]
+    return {
+        "provider": "fastmoss",
+        "workflow": playbook,
+        "suggested_modules": modules,
+        "target_category_path": manifest.get("target_category_path"),
+        "analysis_targets": manifest.get("analysis_targets") or [],
+        "coverage": {
+            "quality_states": manifest.get("quality_states") or {},
+            "envelope_count": manifest.get("evidence_envelope_count") or 0,
+            "fact_count": manifest.get("evidence_fact_count") or 0,
+            "unsupported_parser_count": manifest.get("unsupported_parser_count") or 0,
+            "category_head": {
+                key: (manifest.get("category_head") or {}).get(key)
+                for key in ("target_pages", "completed_pages", "reported_total", "fetched_unique", "coverage_complete")
+            },
+            "segment_head": {
+                key: (manifest.get("segment_head") or {}).get(key)
+                for key in ("queries", "fetched_unique")
+            },
+        },
+        "source_catalog": source_catalog,
+        "entity_bundles": packet_bundles,
+        "evidence_facts": [
+            compact_fact(fact) for fact in (manifest.get("evidence_facts") or [])
+            if isinstance(fact, dict)
+        ],
+        "derived_facts": manifest.get("derived_facts") or [],
+        "conflicts": manifest.get("conflicts") or [],
+        "limitations": manifest.get("limitations") or [],
+        "claim_boundaries": claim_boundaries,
+        "numeric_policy": "only_tool_evidence_user_input_or_explicit_calculation",
+    }
 
 
 def fastmoss_report_style_instruction(route: dict[str, Any]) -> str:
@@ -8289,6 +8491,71 @@ def fastmoss_known_product_ids(user_text: str, assistant_msg: Message) -> set[st
     return known
 
 
+def fastmoss_locked_representative_product_ids(assistant_msg: Message) -> set[str]:
+    """Lock deep dives to one observed leader per segment, or two category leaders."""
+    segments: dict[str, list[dict[str, Any]]] = {}
+    category: list[dict[str, Any]] = []
+    for item in assistant_msg.tool_results or []:
+        if not isinstance(item, dict) or not isinstance(item.get("result"), dict):
+            continue
+        result = item["result"]
+        metadata = result.get("evidence_metadata") if isinstance(result.get("evidence_metadata"), dict) else {}
+        records = result.get("evidence_product_records") if isinstance(result.get("evidence_product_records"), list) else []
+        scope = str(metadata.get("scope") or "")
+        if scope == "segment_head":
+            query = str(metadata.get("query") or "").strip().casefold()
+            segments.setdefault(query, []).extend(record for record in records if isinstance(record, dict))
+        elif scope == "category_head":
+            category.extend(record for record in records if isinstance(record, dict))
+
+    def ranked(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        unique: dict[str, dict[str, Any]] = {}
+        for record in records:
+            product_id = str(record.get("product_id") or "")
+            if not product_id:
+                continue
+            day7 = _fastmoss_number(record.get("day7_units_sold"))
+            day28 = _fastmoss_number(record.get("day28_units_sold"))
+            period_units = _fastmoss_number(record.get("period_units_sold"))
+            units = day28 if day28 not in (None, 0) else period_units
+            gmv = _fastmoss_number(record.get("day28_gmv"))
+            if gmv is None:
+                gmv = _fastmoss_number(record.get("period_gmv"))
+            low = _fastmoss_number(record.get("price_min"))
+            high = _fastmoss_number(record.get("price_max"))
+            if day7 is not None and day28 is not None and day7 > day28:
+                continue
+            if period_units is not None and day28 is not None and period_units > day28:
+                continue
+            if units not in (None, 0) and gmv is not None and low is not None:
+                upper = high if high is not None else low
+                unit_revenue = gmv / units
+                if unit_revenue < low * 0.8 or unit_revenue > upper * 1.2:
+                    continue
+            current = unique.get(product_id)
+            if current is None or float(record.get("day28_units_sold") or -1) > float(current.get("day28_units_sold") or -1):
+                unique[product_id] = record
+        return sorted(unique.values(), key=lambda item: float(item.get("day28_units_sold") or -1), reverse=True)
+
+    locked: list[str] = []
+    for query in sorted(segments):
+        rows = ranked(segments[query])
+        if rows:
+            product_id = str(rows[0].get("product_id") or "")
+            if product_id and product_id not in locked:
+                locked.append(product_id)
+        if len(locked) >= 2:
+            break
+    if not locked:
+        for record in ranked(category):
+            product_id = str(record.get("product_id") or "")
+            if product_id and product_id not in locked:
+                locked.append(product_id)
+            if len(locked) >= 2:
+                break
+    return set(locked)
+
+
 def fastmoss_known_category_ids(user_text: str, assistant_msg: Message) -> set[str]:
     known = set(re.findall(r"(?:category[_ ]?id|类目\s*id)\D{0,6}(\d{4,12})", str(user_text or ""), re.IGNORECASE))
     for item in assistant_msg.tool_results or []:
@@ -8572,6 +8839,15 @@ def fastmoss_deep_dive_call_error(
     requested = _collect_named_ids(arguments, {"productid", "goodsid", "itemid"})
     if not requested:
         return None
+    explicit = set(re.findall(r"(?<!\d)\d{16,20}(?!\d)", str(user_text or "")))
+    locked = fastmoss_locked_representative_product_ids(assistant_msg)
+    outside_targets = requested - explicit - locked
+    if locked and outside_targets:
+        return (
+            "拒绝把深挖调用切换到未锁定的代表商品 ID："
+            + "、".join(sorted(outside_targets))
+            + "；当前代表商品为：" + "、".join(sorted(locked))
+        )
     unknown = requested - fastmoss_known_product_ids(user_text, assistant_msg)
     if not unknown:
         return None
