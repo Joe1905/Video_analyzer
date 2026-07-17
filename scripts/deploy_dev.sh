@@ -26,8 +26,10 @@ fi
 
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
   compose=(docker compose)
+  legacy_compose=0
 elif command -v docker-compose >/dev/null 2>&1; then
   compose=(docker-compose)
+  legacy_compose=1
 else
   echo "Docker Compose is required." >&2
   exit 127
@@ -57,6 +59,10 @@ else
 fi
 
 echo "Replacing only the beta web container..."
+if (( legacy_compose )); then
+  echo "Legacy Docker Compose detected; removing the old web container to avoid the Docker 29 recreate bug."
+  "${compose[@]}" "${compose_args[@]}" rm -s -f web
+fi
 "${compose[@]}" "${compose_args[@]}" up -d --no-deps --no-build web
 
 health_url="${HEALTHCHECK_URL:-http://127.0.0.1:${web_port}/healthz}"
