@@ -2108,13 +2108,42 @@ def test_fastmoss_claim_ids_and_extended_mechanical_cleanup() -> None:
         "## 建议\n"
         "建议月度广告预算 $3K–$5K，首批联系20位达人，每周发布5–7条视频，"
         "CPO控制在$15–$18，测试周期2周，建议功率300–500W，售价定在$39.99。\n"
+        "计划与 1–2 位 5k–50k 粉丝的西语美食达人合作，测试 $12–$15 价位，头部商品毛利率潜力较高。\n"
         "其余1970个商品合计不足25%，所以广告ROI稳定。"
     )
     cleaned, count = web_app.sanitize_fastmoss_unsupported_recommendations(draft)
     cleaned = web_app.downgrade_fastmoss_absolute_market_claims(cleaned)
     assert count >= 6
-    for unsupported in ("$3K", "$5K", "20位", "5–7", "$15", "$18", "2周", "300–500W", "$39.99", "1970", "25%", "ROI稳定"):
+    for unsupported in (
+        "$3K", "$5K", "20位", "5–7", "$15", "$18", "2周", "300–500W", "$39.99",
+        "1–2 位", "5k–50k", "毛利率潜力", "1970", "25%", "ROI稳定",
+    ):
         assert unsupported not in cleaned
+
+    downgraded = web_app.downgrade_fastmoss_absolute_market_claims(
+        "Electric Food Shredder 市场极窄，内容效率为零，广告回报极低。"
+    )
+    assert "市场极窄" not in downgraded
+    assert "效率为零" not in downgraded
+    assert "回报极低" not in downgraded
+
+    corrected, corrected_count = web_app.sanitize_fastmoss_state_contradictions(
+        "Electric Food Shredder 细分几乎无活跃商品，说明头部集中度高。",
+        {
+            "evidence_envelopes": [],
+            "derived_signals": {
+                "category_top3_share": 0.43,
+                "segment_queries": [{
+                    "query": "Electric Food Shredder",
+                    "fetched_unique": 10,
+                    "products_with_units": 6,
+                }],
+            },
+        },
+    )
+    assert corrected_count == 2
+    assert "10 款样本" in corrected and "6 款有可核对销量" in corrected
+    assert "并非高度集中" in corrected
 
     claims = web_app.fastmoss_high_risk_claims("结论\n这个市场已经是低竞争蓝海。")
     assert claims and claims[0]["claim_id"] == "line-2"
