@@ -98,7 +98,12 @@ import sys
 sys.path.insert(0, str(SCRIPTS_DIR))
 from chat_session import ChatStore, Message, Session, load_sessions_from_disk
 from feishu_capabilities import FeishuCapabilityClient, FeishuCapabilityError
-from lan_chat import FILE_TRANSFER_MAX_BYTES, LanChatError, LanChatStore
+from lan_chat import (
+    FILE_TRANSFER_MAX_BYTES,
+    MESSAGE_MEDIA_MAX_BYTES,
+    LanChatError,
+    LanChatStore,
+)
 from sociavault_usage import read_sociavault_usage
 from sociavault_tiktok import call_api as call_sociavault_tiktok_api
 from tools import TOOLS, execute_tool, get_tools_for_model, list_tools
@@ -8434,7 +8439,10 @@ def handle_lan_chat_post(handler: BaseHTTPRequestHandler, parsed) -> bool:
             re.fullmatch(r"/api/lan-chat/rooms/([^/]+)/messages", path)
         )
         payload = _lan_chat_request_json(
-            handler, max_bytes=8 * 1024 * 1024 if is_message_request else 65536
+            handler,
+            max_bytes=(MESSAGE_MEDIA_MAX_BYTES * 4 // 3) + 2 * 1024 * 1024
+            if is_message_request
+            else 65536,
         )
         if path == "/api/lan-chat/select-account":
             result = lan_chat_store.select_account(

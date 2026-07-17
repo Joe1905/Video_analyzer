@@ -171,7 +171,7 @@ const SESSION_KEY="videoAnalyzer.lanChat.sessionToken.v2";
 const ROOM_KEY="videoAnalyzer.lanChat.activeRoom.v1";
 const READ_KEY="videoAnalyzer.lanChat.readRooms.v1";
 const $=id=>document.getElementById(id);
-const state={token:"",currentUser:null,users:[],rooms:[],activeRoomId:"public",messages:[],lastMessageId:0,readRooms:{},messageTimer:null,bootstrapTimer:null,loadingMessages:false,draftAttachment:null,preparingAttachment:false,inlineMediaMaxBytes:5*1024*1024,fileMaxBytes:10*1024*1024*1024,fileRetentionSeconds:7*86400,selectedFeishuUser:null,loginLoading:false,loginCancelable:false};
+const state={token:"",currentUser:null,users:[],rooms:[],activeRoomId:"public",messages:[],lastMessageId:0,readRooms:{},messageTimer:null,bootstrapTimer:null,loadingMessages:false,draftAttachment:null,preparingAttachment:false,inlineMediaMaxBytes:100*1024*1024,fileMaxBytes:10*1024*1024*1024,fileRetentionSeconds:7*86400,selectedFeishuUser:null,loginLoading:false,loginCancelable:false};
 const viewerState={scale:1,fitScale:1,drag:null};
 function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]))}
 function responseError(payload,status){const error=new Error(payload.error||`请求失败 (${status})`);error.status=status;return error}

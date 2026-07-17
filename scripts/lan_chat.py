@@ -34,7 +34,7 @@ AVATAR_COLORS = (
     "#D9825B",
     "#5A7D9A",
 )
-MESSAGE_MEDIA_MAX_BYTES = 5 * 1024 * 1024
+MESSAGE_MEDIA_MAX_BYTES = 100 * 1024 * 1024
 MESSAGE_MEDIA_TYPES = {
     "jpg": "image/jpeg",
     "png": "image/png",
@@ -1348,13 +1348,13 @@ class LanChatStore:
             if not header.lower().startswith(("data:image/", "data:video/")):
                 raise LanChatError("媒体数据无效")
         if len(value) > (MESSAGE_MEDIA_MAX_BYTES * 4 // 3) + 8:
-            raise LanChatError("图片或视频不能超过 5MB，请改用文件发送", 413)
+            raise LanChatError("图片或视频不能超过 100MB，请改用文件发送", 413)
         try:
             payload = base64.b64decode(value, validate=True)
         except (binascii.Error, ValueError, TypeError) as exc:
             raise LanChatError("媒体数据无效") from exc
         if not payload or len(payload) > MESSAGE_MEDIA_MAX_BYTES:
-            raise LanChatError("图片或视频不能超过 5MB，请改用文件发送", 413)
+            raise LanChatError("图片或视频不能超过 100MB，请改用文件发送", 413)
         if payload.startswith(b"\xff\xd8\xff"):
             extension = "jpg"
         elif payload.startswith(b"\x89PNG\r\n\x1a\n"):

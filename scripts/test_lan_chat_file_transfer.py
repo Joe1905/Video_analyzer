@@ -13,6 +13,7 @@ from lan_chat import (
     DEFAULT_FEISHU_USER_ID,
     FILE_TRANSFER_MAX_BYTES,
     FILE_TRANSFER_RETENTION_SECONDS,
+    MESSAGE_MEDIA_MAX_BYTES,
     LanChatError,
     LanChatStore,
 )
@@ -112,6 +113,8 @@ class LanChatFileTransferTest(unittest.TestCase):
 
     def test_small_mp4_remains_inline_media(self) -> None:
         bootstrap = self.store.bootstrap(self.sender["sessionToken"])
+        self.assertEqual(bootstrap["inlineMediaMaxBytes"], 100 * 1024 * 1024)
+        self.assertEqual(MESSAGE_MEDIA_MAX_BYTES, bootstrap["inlineMediaMaxBytes"])
         self.assertEqual(bootstrap["fileMaxBytes"], 10 * 1024 * 1024 * 1024)
         self.assertEqual(FILE_TRANSFER_MAX_BYTES, bootstrap["fileMaxBytes"])
         payload = b"\x00\x00\x00\x18ftypisom" + b"small-video"
