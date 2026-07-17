@@ -8342,6 +8342,25 @@ def handle_lan_chat_get(handler: BaseHTTPRequestHandler, parsed) -> bool:
             body, content_type = lan_chat_store.avatar_bytes(avatar_match.group(1))
             binary_response(handler, HTTPStatus.OK, body, content_type)
             return True
+        media_poster_match = re.fullmatch(
+            r"/api/lan-chat/media/([0-9a-f]{32}\.(?:mp4|webm))/poster", path
+        )
+        if media_poster_match:
+            body, content_type = lan_chat_store.message_video_poster_bytes(
+                media_poster_match.group(1)
+            )
+            binary_response(handler, HTTPStatus.OK, body, content_type)
+            return True
+        media_download_match = re.fullmatch(
+            r"/api/lan-chat/media/([0-9a-f]{32}\.(?:jpg|png|gif|webp|mp4|webm))/download",
+            path,
+        )
+        if media_download_match:
+            file_path, filename, content_type, size = lan_chat_store.message_media_info(
+                media_download_match.group(1)
+            )
+            file_response(handler, file_path, content_type, filename, size)
+            return True
         media_match = re.fullmatch(
             r"/api/lan-chat/media/([0-9a-f]{32}\.(?:jpg|png|gif|webp|mp4|webm))", path
         )

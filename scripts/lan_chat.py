@@ -10,6 +10,7 @@ import json
 import os
 import secrets
 import sqlite3
+import subprocess
 import threading
 import time
 import uuid
@@ -77,6 +78,7 @@ class LanChatStore:
         self._avatar_lock = threading.Lock()
         self._feishu_avatar_lock = threading.Lock()
         self._avatar_jobs: set[str] = set()
+        self._media_poster_lock = threading.Lock()
         self._file_janitor_lock = threading.Lock()
         self._file_janitor_started = False
 
@@ -725,6 +727,7 @@ class LanChatStore:
         for filename in media_names:
             try:
                 (self.media_dir / filename).unlink(missing_ok=True)
+                (self.media_dir / f"{Path(filename).stem}.poster.jpg").unlink(missing_ok=True)
             except OSError as exc:
                 print(f"LAN chat media cleanup failed for {filename}: {exc}", flush=True)
         for filename in stored_names:
@@ -1025,7 +1028,7 @@ class LanChatStore:
 
         threading.Thread(target=run, name="lan-chat-file-janitor", daemon=True).start()
 
-    def message_media_bytes(self, filename: str) -> tuple[bytes, str]:
+    def message_media_info(self, filename: str) -> tuple[Path, str, str, int]:
         clean_name = str(filename or "").strip().lower()
         stem, separator, extension = clean_name.rpartition(".")
         if (
@@ -1038,7 +1041,41 @@ class LanChatStore:
         path = (self.media_dir / clean_name).resolve()
         if path.parent != self.media_dir.resolve() or not path.is_file():
             raise LanChatError("媒体不存在", 404)
-        return path.read_bytes(), MESSAGE_MEDIA_TYPES[extension]
+        return path, clean_name, MESSAGE_MEDIA_TYPES[extension], path.stat().st_size
+
+    def message_media_bytes(self, filename: str) -> tuple[bytes, str]:
+        path, _, content_type, _ = self.message_media_info(filename)
+        return path.read_bytes(), content_type
+
+    def message_video_poster_bytes(self, filename: str) -> tuple[bytes, str]:
+        video_path, clean_name, content_type, _ = self.message_media_info(filename)
+        if not content_type.startswith("video/"):
+            raise LanChatError("视频封面不存在", 404)
+        poster_path = self.media_dir / f"{Path(clean_name).stem}.poster.jpg"
+        with self._media_poster_lock:
+            if not poster_path.is_file():
+                temp_path = self.media_dir / f".{Path(clean_name).stem}.{uuid.uuid4().hex}.poster.jpg"
+                try:
+                    result = subprocess.run(
+                        [
+                            "ffmpeg", "-hide_banner", "-loglevel", "error", "-ss", "0.1",
+                            "-i", str(video_path), "-frames:v", "1", "-an", "-vf",
+                            "scale=960:-2:force_original_aspect_ratio=decrease",
+                            "-q:v", "4", "-y", str(temp_path),
+                        ],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.PIPE,
+                        timeout=30,
+                        check=False,
+                    )
+                    if result.returncode != 0 or not temp_path.is_file() or temp_path.stat().st_size <= 0:
+                        raise LanChatError("视频封面生成失败", 404)
+                    temp_path.replace(poster_path)
+                except (OSError, subprocess.SubprocessError):
+                    raise LanChatError("视频封面生成失败", 404)
+                finally:
+                    temp_path.unlink(missing_ok=True)
+        return poster_path.read_bytes(), "image/jpeg"
 
     def message_image_bytes(self, filename: str) -> tuple[bytes, str]:
         """Backward-compatible alias for callers predating inline video support."""
@@ -1328,6 +1365,14 @@ class LanChatStore:
                 else ""
             ),
             "mediaUrl": f"/api/lan-chat/media/{media_filename}" if media_filename else "",
+            "mediaPosterUrl": (
+                f"/api/lan-chat/media/{media_filename}/poster"
+                if media_filename and media_mime_type.startswith("video/")
+                else ""
+            ),
+            "mediaDownloadUrl": (
+                f"/api/lan-chat/media/{media_filename}/download" if media_filename else ""
+            ),
             "mediaMimeType": media_mime_type,
             "mediaKind": (
                 "video" if media_mime_type.startswith("video/")
