@@ -19,7 +19,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, quote_plus, urlparse
+from urllib.parse import parse_qs, quote, quote_plus, urlparse
 from urllib.parse import unquote
 from zoneinfo import ZoneInfo
 import cgi
@@ -98,7 +98,7 @@ import sys
 sys.path.insert(0, str(SCRIPTS_DIR))
 from chat_session import ChatStore, Message, Session, load_sessions_from_disk
 from feishu_capabilities import FeishuCapabilityClient, FeishuCapabilityError
-from lan_chat import LanChatError, LanChatStore
+from lan_chat import FILE_TRANSFER_MAX_BYTES, LanChatError, LanChatStore
 from sociavault_usage import read_sociavault_usage
 from sociavault_tiktok import call_api as call_sociavault_tiktok_api
 from tools import TOOLS, execute_tool, get_tools_for_model, list_tools
@@ -1443,6 +1443,34 @@ def binary_response(
         handler.send_header("Content-Disposition", f'attachment; filename="{quoted}"')
     handler.end_headers()
     handler.wfile.write(body)
+
+
+def file_response(
+    handler: BaseHTTPRequestHandler,
+    path: Path,
+    content_type: str,
+    filename: str,
+    size: int,
+) -> None:
+    encoded_name = quote(filename, safe="")
+    handler.send_response(HTTPStatus.OK)
+    handler.send_header("Content-Type", content_type or "application/octet-stream")
+    handler.send_header("Content-Length", str(size))
+    handler.send_header(
+        "Content-Disposition",
+        f"attachment; filename=download; filename*=UTF-8''{encoded_name}",
+    )
+    handler.send_header("Cache-Control", "no-store")
+    handler.end_headers()
+    try:
+        with path.open("rb") as source:
+            while True:
+                chunk = source.read(1024 * 1024)
+                if not chunk:
+                    break
+                handler.wfile.write(chunk)
+    except (BrokenPipeError, ConnectionResetError):
+        pass
 
 
 def write_sse_event(handler: BaseHTTPRequestHandler, payload: Any) -> None:
@@ -8310,11 +8338,18 @@ def handle_lan_chat_get(handler: BaseHTTPRequestHandler, parsed) -> bool:
             binary_response(handler, HTTPStatus.OK, body, content_type)
             return True
         media_match = re.fullmatch(
-            r"/api/lan-chat/media/([0-9a-f]{32}\.(?:jpg|png|gif|webp))", path
+            r"/api/lan-chat/media/([0-9a-f]{32}\.(?:jpg|png|gif|webp|mp4|webm))", path
         )
         if media_match:
-            body, content_type = lan_chat_store.message_image_bytes(media_match.group(1))
+            body, content_type = lan_chat_store.message_media_bytes(media_match.group(1))
             binary_response(handler, HTTPStatus.OK, body, content_type)
+            return True
+        file_match = re.fullmatch(r"/api/lan-chat/files/([0-9a-f]{32})", path)
+        if file_match:
+            file_path, filename, content_type, size = lan_chat_store.file_download_info(
+                _lan_chat_token(handler), file_match.group(1)
+            )
+            file_response(handler, file_path, content_type, filename, size)
             return True
         message_match = re.fullmatch(r"/api/lan-chat/rooms/([^/]+)/messages", path)
         if message_match:
@@ -8340,6 +8375,61 @@ def handle_lan_chat_post(handler: BaseHTTPRequestHandler, parsed) -> bool:
     if not path.startswith("/api/lan-chat/"):
         return False
     try:
+        download_match = re.fullmatch(r"/api/lan-chat/files/([0-9a-f]{32})/download", path)
+        if download_match:
+            try:
+                content_length = int(handler.headers.get("Content-Length", "0") or "0")
+            except ValueError as exc:
+                raise LanChatError("请求长度无效") from exc
+            if content_length <= 0 or content_length > 1024:
+                raise LanChatError("下载请求无效")
+            try:
+                form_body = handler.rfile.read(content_length).decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise LanChatError("下载请求无效") from exc
+            form_data = parse_qs(form_body)
+            download_token = str(form_data.get("token", [""])[0] or "")
+            file_path, filename, content_type, size = lan_chat_store.file_download_info(
+                download_token, download_match.group(1)
+            )
+            file_response(handler, file_path, content_type, filename, size)
+            return True
+
+        upload_match = re.fullmatch(r"/api/lan-chat/rooms/([^/]+)/files", path)
+        if upload_match:
+            try:
+                content_length = int(handler.headers.get("Content-Length", "0") or "0")
+            except ValueError as exc:
+                raise LanChatError("请求长度无效") from exc
+            if content_length <= 0 or content_length > FILE_TRANSFER_MAX_BYTES + 2 * 1024 * 1024:
+                raise LanChatError("上传内容为空或超过 10GB 限制", 413)
+            if not handler.headers.get("Content-Type", "").lower().startswith("multipart/form-data"):
+                raise LanChatError("文件上传必须使用 multipart/form-data")
+            form = cgi.FieldStorage(
+                fp=handler.rfile,
+                headers=handler.headers,
+                environ={
+                    "REQUEST_METHOD": "POST",
+                    "CONTENT_TYPE": handler.headers.get("Content-Type", ""),
+                    "CONTENT_LENGTH": str(content_length),
+                },
+            )
+            if "file" not in form:
+                raise LanChatError("请选择要发送的文件")
+            file_item = form["file"]
+            if isinstance(file_item, list) or not getattr(file_item, "file", None):
+                raise LanChatError("每次只能发送一个文件")
+            message = lan_chat_store.send_file(
+                _lan_chat_token(handler),
+                unquote(upload_match.group(1)),
+                str(getattr(file_item, "filename", "") or ""),
+                str(getattr(file_item, "type", "") or "application/octet-stream"),
+                file_item.file,
+                str(form.getfirst("content", "") or ""),
+            )
+            json_response(handler, HTTPStatus.CREATED, {"message": message})
+            return True
+
         is_message_request = bool(
             re.fullmatch(r"/api/lan-chat/rooms/([^/]+)/messages", path)
         )
@@ -8390,13 +8480,20 @@ def handle_lan_chat_post(handler: BaseHTTPRequestHandler, parsed) -> bool:
             )
             json_response(handler, HTTPStatus.CREATED, {"room": room})
             return True
+        accept_match = re.fullmatch(r"/api/lan-chat/files/([0-9a-f]{32})/accept", path)
+        if accept_match:
+            message = lan_chat_store.accept_file(
+                _lan_chat_token(handler), accept_match.group(1)
+            )
+            json_response(handler, HTTPStatus.OK, {"message": message})
+            return True
         message_match = re.fullmatch(r"/api/lan-chat/rooms/([^/]+)/messages", path)
         if message_match:
             message = lan_chat_store.send_message(
                 _lan_chat_token(handler),
                 unquote(message_match.group(1)),
                 str(payload.get("content") or ""),
-                str(payload.get("imageData") or ""),
+                str(payload.get("mediaData") or payload.get("imageData") or ""),
             )
             json_response(handler, HTTPStatus.CREATED, {"message": message})
             return True
