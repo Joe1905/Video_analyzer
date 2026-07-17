@@ -7324,6 +7324,8 @@ def verify_fastmoss_final_answer(
                 "approved (boolean), risk_level (low|medium|high|critical), edits (array). Each edit must contain exact keys "
                 "original (an exact, contiguous quote from draft), replacement (corrected text or empty string), reason (string), "
                 "and evidence_refs (array of source_tool/product/metric references from the manifest). Never rewrite the whole report. "
+                "Do not narrate or enumerate claims that are already supported. Keep internal analysis brief, prioritize only the highest-risk unsupported claims, "
+                "and return at most 12 minimal edits. If several risky numbers occur in one sentence or bullet, replace that exact sentence or bullet once. "
                 "Check every numeric/market claim against the evidence manifest. Reject category-level overreach, treating fetched count as total, "
                 "ignoring partial pagination or sort anomalies, undisclosed metric conflicts, and unsupported claims of low competition, structural opportunity, "
                 "lifecycle stage, or content causality. A keyword sample, empty result, or partial ranking can never prove that a market does not exist, "
