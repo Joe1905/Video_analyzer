@@ -29,8 +29,13 @@ DATA_DIR = ROOT / "data"
 DB_PATH = DATA_DIR / "proxy_pool.sqlite"
 DEFAULT_NOVNC_PUBLIC_URL = os.getenv("NOVNC_PUBLIC_URL", "http://192.168.1.254:6080/vnc.html?autoconnect=1&resize=scale")
 DEFAULT_MIHOMO_API = os.getenv("MIHOMO_API_URL", "http://127.0.0.1:9090")
+SING_BOX_CONFIG_PATH = Path(os.getenv("SING_BOX_CONFIG_PATH", str(DATA_DIR / "sing-box" / "config.json")))
+SING_BOX_COMPOSE_PROJECT = os.getenv("SING_BOX_COMPOSE_PROJECT", "short-video-analyzer").strip() or "short-video-analyzer"
+SING_BOX_COMPOSE_SERVICE = os.getenv("SING_BOX_COMPOSE_SERVICE", "sing-box").strip() or "sing-box"
 PROXY_PORT_START = int(os.getenv("PROXY_POOL_PORT_START", "18900") or "18900")
 PROXY_PORT_END = int(os.getenv("PROXY_POOL_PORT_END", "18999") or "18999")
+PROXY_REQUEST_ATTEMPTS = max(1, int(os.getenv("PROXY_REQUEST_ATTEMPTS", "3") or "3"))
+PROXY_REACHABILITY_ATTEMPTS = max(1, int(os.getenv("PROXY_REACHABILITY_ATTEMPTS", "10") or "10"))
 PROXY_RECHECK_DELAYS_SECONDS = (5 * 60, 10 * 60, 30 * 60)
 PROXY_QUEUE_RECHECK_SECONDS = 5 * 60
 PROXY_RETRYABLE_ERROR_MARKERS = (
@@ -1805,7 +1810,8 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
             )
             pool_id = int(cur.lastrowid)
         conn.commit()
-    return {"pool": get_pool(pool_id), **list_state()}
+    core = ensure_proxy_cores(restart=True, required=True) if _sing_box_reality_enabled() else {}
+    return {"pool": get_pool(pool_id), **list_state(), **core}
 
 
 def get_pool(pool_id: int) -> dict[str, Any]:
@@ -1827,9 +1833,165 @@ def get_pool(pool_id: int) -> dict[str, Any]:
         return _row_to_pool(row, int(count), names, _proxy_pending_job_count(conn, pool_id))
 
 
+def _sing_box_reality_enabled() -> bool:
+    return os.getenv("PROXY_REALITY_CORE", "mihomo").strip().lower() == "sing-box"
+
+
+def _sing_box_reality_pool(row: sqlite3.Row | dict[str, Any]) -> bool:
+    if not _sing_box_reality_enabled() or str(row["source_type"] or "") != "vless":
+        return False
+    parsed = _json_loads(str(row["parsed_json"] or ""), {})
+    query = parsed.get("query") if isinstance(parsed.get("query"), dict) else {}
+    return (
+        str(parsed.get("network") or "tcp") == "tcp"
+        and bool(query.get("pbk"))
+        and bool(parsed.get("uuid"))
+        and bool(parsed.get("server"))
+        and int(parsed.get("port") or 0) > 0
+        and int(row["local_port"] or 0) > 0
+    )
+
+
+def sing_box_export() -> dict[str, Any]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM proxy_profiles WHERE status <> ? ORDER BY id",
+            (STATUS_PAUSED,),
+        ).fetchall()
+    inbounds: list[dict[str, Any]] = []
+    outbounds: list[dict[str, Any]] = []
+    rules: list[dict[str, Any]] = []
+    pools: list[dict[str, Any]] = []
+    default_fingerprint = os.getenv("PROXY_REALITY_DEFAULT_FINGERPRINT", "safari").strip() or "safari"
+    for row in rows:
+        if not _sing_box_reality_pool(row):
+            continue
+        parsed = _json_loads(str(row["parsed_json"] or ""), {})
+        query = parsed.get("query") if isinstance(parsed.get("query"), dict) else {}
+        inbound_tag = f"reality-in-{int(row['id'])}"
+        outbound_tag = f"reality-out-{int(row['id'])}"
+        tls = {
+            "enabled": True,
+            "server_name": str(query.get("sni") or query.get("peer") or parsed.get("server") or ""),
+            "utls": {
+                "enabled": True,
+                "fingerprint": str(query.get("fp") or default_fingerprint),
+            },
+            "reality": {
+                "enabled": True,
+                "public_key": str(query.get("pbk") or ""),
+                "short_id": str(query.get("sid") or ""),
+            },
+        }
+        outbound: dict[str, Any] = {
+            "type": "vless",
+            "tag": outbound_tag,
+            "server": str(parsed.get("server") or ""),
+            "server_port": int(parsed.get("port") or 0),
+            "uuid": str(parsed.get("uuid") or ""),
+            "network": "tcp",
+            "tls": tls,
+        }
+        if query.get("flow"):
+            outbound["flow"] = str(query["flow"])
+        inbounds.append(
+            {
+                "type": "mixed",
+                "tag": inbound_tag,
+                "listen": "127.0.0.1",
+                "listen_port": int(row["local_port"] or 0),
+            }
+        )
+        outbounds.append(outbound)
+        rules.append({"inbound": [inbound_tag], "action": "route", "outbound": outbound_tag})
+        pools.append(
+            {
+                "id": int(row["id"]),
+                "name": str(row["name"] or ""),
+                "local_port": int(row["local_port"] or 0),
+                "fingerprint": tls["utls"]["fingerprint"],
+            }
+        )
+    outbounds.append({"type": "direct", "tag": "direct"})
+    return {
+        "config": {
+            "log": {"level": "info", "timestamp": True},
+            "inbounds": inbounds,
+            "outbounds": outbounds,
+            "route": {"rules": rules, "final": "direct"},
+        },
+        "pools": pools,
+        "generated_at": now_iso(),
+    }
+
+
+def _write_sing_box_config() -> dict[str, Any]:
+    exported = sing_box_export()
+    SING_BOX_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(SING_BOX_CONFIG_PATH.parent, 0o700)
+    temporary = SING_BOX_CONFIG_PATH.with_suffix(SING_BOX_CONFIG_PATH.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(exported["config"], ensure_ascii=False, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, SING_BOX_CONFIG_PATH)
+    return exported
+
+
+def _restart_sing_box_container(required: bool = False) -> dict[str, Any]:
+    lookup = subprocess.run(
+        [
+            "docker",
+            "ps",
+            "-aq",
+            "--filter",
+            f"label=com.docker.compose.project={SING_BOX_COMPOSE_PROJECT}",
+            "--filter",
+            f"label=com.docker.compose.service={SING_BOX_COMPOSE_SERVICE}",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    if lookup.returncode != 0:
+        raise ValueError(f"查询 sing-box 容器失败：{lookup.stderr.strip() or lookup.stdout.strip()}")
+    container_ids = [item.strip() for item in lookup.stdout.splitlines() if item.strip()]
+    if not container_ids:
+        if required:
+            raise ValueError("sing-box 代理核心容器未启动")
+        return {"restarted": False, "containers": []}
+    restarted = subprocess.run(
+        ["docker", "restart", *container_ids],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if restarted.returncode != 0:
+        raise ValueError(f"重启 sing-box 代理核心失败：{restarted.stderr.strip() or restarted.stdout.strip()}")
+    return {"restarted": True, "containers": container_ids}
+
+
+def ensure_proxy_cores(restart: bool = False, required: bool = False) -> dict[str, Any]:
+    if not _sing_box_reality_enabled():
+        return {"sing_box": {"enabled": False}}
+    exported = _write_sing_box_config()
+    runtime = _restart_sing_box_container(required=required) if restart else {"restarted": False, "containers": []}
+    return {
+        "sing_box": {
+            "enabled": True,
+            "config_path": str(SING_BOX_CONFIG_PATH),
+            "pools": exported["pools"],
+            **runtime,
+        }
+    }
+
+
 def delete_pool(pool_id: int) -> dict[str, Any]:
     with connect() as conn:
-        pool = conn.execute("SELECT id, local_port FROM proxy_profiles WHERE id = ?", (pool_id,)).fetchone()
+        pool = conn.execute("SELECT * FROM proxy_profiles WHERE id = ?", (pool_id,)).fetchone()
         if not pool:
             raise ValueError("proxy profile not found")
 
@@ -1867,7 +2029,10 @@ def delete_pool(pool_id: int) -> dict[str, Any]:
         if archived_account:
             raise ValueError("代理关联的已删除账号仍有发布或采集记录，不能删除")
 
-        cleanup, backup = _remove_mihomo_listener_config(int(pool["local_port"] or 0))
+        sing_box_managed = _sing_box_reality_pool(pool)
+        cleanup, backup = ({"removed": False, "port": int(pool["local_port"] or 0)}, None)
+        if not sing_box_managed:
+            cleanup, backup = _remove_mihomo_listener_config(int(pool["local_port"] or 0))
         try:
             conn.execute("DELETE FROM browser_sessions WHERE proxy_profile_id = ?", (pool_id,))
             conn.execute("DELETE FROM tiktok_accounts WHERE proxy_profile_id = ? AND deleted_at <> ''", (pool_id,))
@@ -1880,7 +2045,8 @@ def delete_pool(pool_id: int) -> dict[str, Any]:
                 except Exception:
                     pass
             raise
-    return {**list_state(), "mihomo_cleanup": cleanup}
+    core = ensure_proxy_cores(restart=True, required=True) if sing_box_managed else {}
+    return {**list_state(), "mihomo_cleanup": cleanup, **core}
 
 
 def upsert_account(payload: dict[str, Any]) -> dict[str, Any]:
@@ -2275,20 +2441,21 @@ def quote_path(value: str) -> str:
 
 
 def _proxy_get_json(url: str, proxy_port: int, timeout: float = 10.0) -> tuple[bool, Any, str]:
-    parsed = urlparse(url)
-    conn = http.client.HTTPConnection("127.0.0.1", proxy_port, timeout=timeout)
-    headers = {"Host": parsed.netloc, "User-Agent": "ShortVideoAnalyzer/1.0"}
-    try:
-        conn.request("GET", url, headers=headers)
-        response = conn.getresponse()
-        text = response.read(1024 * 1024).decode("utf-8", errors="replace")
-        if not (200 <= response.status < 300):
-            return False, None, f"HTTP {response.status}: {text[:300]}"
-        return True, json.loads(text), ""
-    except Exception as exc:
-        return False, None, str(exc)
-    finally:
-        conn.close()
+    proxy_url = f"http://127.0.0.1:{proxy_port}"
+    opener = build_opener(ProxyHandler({"http": proxy_url, "https": proxy_url}))
+    request = Request(url, headers={"User-Agent": "ShortVideoAnalyzer/1.0"})
+    last_error = ""
+    for _attempt in range(PROXY_REQUEST_ATTEMPTS):
+        try:
+            with opener.open(request, timeout=timeout) as response:
+                text = response.read(1024 * 1024).decode("utf-8", errors="replace")
+            return True, json.loads(text), ""
+        except HTTPError as exc:
+            text = exc.read(300).decode("utf-8", errors="replace")
+            last_error = f"HTTP {exc.code}: {text}"
+        except (URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+            last_error = str(exc)
+    return False, None, last_error
 
 
 def _proxy_url_reachable(url: str, proxy_port: int, timeout: float = 10.0) -> tuple[bool, str]:
@@ -2302,16 +2469,21 @@ def _proxy_url_reachable(url: str, proxy_port: int, timeout: float = 10.0) -> tu
             "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/150.0.0.0 Safari/537.36",
         },
     )
-    try:
-        with opener.open(request, timeout=timeout) as response:
-            response.read(1)
-            return True, f"HTTP {response.status}"
-    except HTTPError as exc:
-        if 400 <= exc.code < 500:
-            return True, f"HTTP {exc.code}"
-        return False, f"HTTP {exc.code}"
-    except (URLError, TimeoutError, OSError) as exc:
-        return False, str(exc)
+    last_error = ""
+    for attempt in range(PROXY_REACHABILITY_ATTEMPTS):
+        try:
+            with opener.open(request, timeout=timeout) as response:
+                response.read(1)
+                return True, f"HTTP {response.status}"
+        except HTTPError as exc:
+            if 400 <= exc.code < 500:
+                return True, f"HTTP {exc.code}"
+            last_error = f"HTTP {exc.code}"
+        except (URLError, TimeoutError, OSError) as exc:
+            last_error = str(exc)
+        if attempt + 1 < PROXY_REACHABILITY_ATTEMPTS:
+            time.sleep(min(2.0, 0.5 * (attempt + 1)))
+    return False, last_error
 
 
 def detect_exit_ip_for_pool(pool: sqlite3.Row) -> dict[str, Any]:
@@ -3192,7 +3364,7 @@ def mihomo_export() -> dict[str, Any]:
     listeners = [
         {"name": f"tiktok-{row['name']}", "type": "mixed", "port": int(row["local_port"] or 0), "proxy": row["mihomo_name"] or row["name"]}
         for row in rows
-        if int(row["local_port"] or 0)
+        if int(row["local_port"] or 0) and not _sing_box_reality_pool(row)
     ]
     if listeners:
         yaml += "listeners:\n"

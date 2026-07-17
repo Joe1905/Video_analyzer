@@ -10227,6 +10227,7 @@ def main() -> int:
         load_sessions_from_disk(store)
     mark_interrupted_chat_messages()
     if PROXY_POOL_ENABLED:
+        proxy_pool.ensure_proxy_cores(restart=True)
         proxy_pool.list_state()
         threading.Thread(target=proxy_session_janitor, daemon=True).start()
         tiktok_studio_publish.start_worker()
