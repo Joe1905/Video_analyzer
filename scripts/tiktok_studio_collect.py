@@ -263,9 +263,16 @@ def dashboard(account_id: int) -> dict[str, Any]:
                 (account_id,),
             ).fetchall()
         ]
+    setting_data = _setting_row(setting, account_id)
+    if not _target_key(setting_data.get("feishu_target") or {}):
+        last_target = next(
+            (job.get("feishu_target") for job in jobs if _target_key(job.get("feishu_target") or {})),
+            {},
+        )
+        setting_data["feishu_target"] = last_target
     return {
         "account": {"id": int(account["id"]), "username": str(account["username"])},
-        "setting": _setting_row(setting, account_id),
+        "setting": setting_data,
         "jobs": jobs,
         "results": results,
         "errors": errors,
@@ -366,6 +373,17 @@ def create_job(payload: dict[str, Any]) -> dict[str, Any]:
             publish_date_end,
             feishu_target_json,
             session_id=int(payload.get("observation_session_id") or 0),
+        )
+        now = _iso()
+        conn.execute(
+            """
+            INSERT INTO collect_settings (account_id, feishu_target_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(account_id) DO UPDATE SET
+                feishu_target_json = excluded.feishu_target_json,
+                updated_at = excluded.updated_at
+            """,
+            (account_id, feishu_target_json, now, now),
         )
         conn.commit()
     data = dashboard(account_id)
