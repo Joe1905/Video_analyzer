@@ -40,17 +40,21 @@ compose_args=(
   -f docker-compose.dev.yml
 )
 
-echo "Building beta web image while the current container stays online..."
-docker build --network host \
-  --build-arg HTTP_PROXY \
-  --build-arg HTTPS_PROXY \
-  --build-arg http_proxy \
-  --build-arg https_proxy \
-  --build-arg ALL_PROXY \
-  --build-arg all_proxy \
-  --build-arg NO_PROXY \
-  --build-arg no_proxy \
-  -t short-video-analyzer-dev:latest .
+if [[ "${SKIP_BUILD:-0}" == "1" ]]; then
+  echo "Skipping the beta image build; using the existing image with mounted scripts."
+else
+  echo "Building beta web image while the current container stays online..."
+  docker build --network host \
+    --build-arg HTTP_PROXY \
+    --build-arg HTTPS_PROXY \
+    --build-arg http_proxy \
+    --build-arg https_proxy \
+    --build-arg ALL_PROXY \
+    --build-arg all_proxy \
+    --build-arg NO_PROXY \
+    --build-arg no_proxy \
+    -t short-video-analyzer-dev:latest .
+fi
 
 echo "Replacing only the beta web container..."
 "${compose[@]}" "${compose_args[@]}" up -d --no-deps --no-build web
