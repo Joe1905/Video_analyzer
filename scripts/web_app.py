@@ -3903,7 +3903,7 @@ def is_mcp_interface_query(text: str) -> bool:
 FASTMOSS_PLAYBOOKS: dict[str, dict[str, Any]] = {
     "product": {
         "label": "选品与定价测算",
-        "max_rounds": 14,
+        "max_rounds": 24,
         "instruction": (
             "按 FastMoss 官方选品流程执行，并合并价格证据。比较目标类目、细分样本、代表商品、趋势、达人、"
             "视频和渠道结构；生命周期、进入窗口和拥挤度只有取得直接同口径证据时才能判断。"
@@ -4528,6 +4528,15 @@ FASTMOSS_PRODUCT_REQUIRED_GROUPS: tuple[tuple[str, tuple[frozenset[str], ...]], 
     )),
 )
 
+FASTMOSS_PRODUCT_MARKET_ANALYSIS_TYPES = ("basic_metrics", "sales_trends", "price_distribution")
+FASTMOSS_PRODUCT_DEEP_DIVE_TOOLS: tuple[tuple[str, str], ...] = (
+    ("核验代表商品渠道结构", "fastmoss__product_overview"),
+    ("核验代表商品 90 天趋势", "fastmoss__product_sales_trend"),
+    ("补充代表商品评论状态", "fastmoss__product_review_list"),
+    ("补充代表商品达人结构", "fastmoss__product_creator_analysis"),
+    ("补充代表商品视频样本", "fastmoss__product_video_list"),
+)
+
 SELLERSPRITE_ASIN_TOOLS = {
     "asin_detail", "asin_detail_with_coupon_trend", "asin_sales_trend", "keepa_info", "review",
     "traffic_source", "traffic_keyword", "traffic_listing", "asin_coupon_trend", "asin_prediction",
@@ -4705,6 +4714,52 @@ def fastmoss_product_search_plan(
     }
 
 
+def _fastmoss_tool_call_arguments(assistant_msg: Message, tool_name: str) -> list[dict[str, Any]]:
+    return [
+        _tool_call_arguments(call)
+        for call in (assistant_msg.tool_calls or [])
+        if str(call.get("function", {}).get("name") or "") == tool_name
+    ]
+
+
+def fastmoss_next_product_market_analysis_type(assistant_msg: Message) -> str | None:
+    completed = {
+        str(arguments.get("analysis_type") or "basic_metrics")
+        for arguments in _fastmoss_tool_call_arguments(assistant_msg, "fastmoss__market_category_analysis")
+    }
+    if not completed and "fastmoss__market_category_analysis" in attempted_tool_names(assistant_msg):
+        # Old persisted sessions may have results but no original call arguments.
+        completed.add("basic_metrics")
+    return next(
+        (analysis_type for analysis_type in FASTMOSS_PRODUCT_MARKET_ANALYSIS_TYPES if analysis_type not in completed),
+        None,
+    )
+
+
+def fastmoss_product_deep_dive_plan(
+    assistant_msg: Message,
+    available_tool_ids: set[str] | None = None,
+) -> dict[str, str] | None:
+    """Return the next exact product/tool pair required by the product workflow."""
+    available = set(available_tool_ids or set())
+    restrict_to_available = available_tool_ids is not None
+    target_ids = sorted(fastmoss_locked_representative_product_ids(assistant_msg))
+    if not target_ids:
+        return None
+    for label, tool_name in FASTMOSS_PRODUCT_DEEP_DIVE_TOOLS:
+        if restrict_to_available and tool_name not in available:
+            continue
+        completed_ids = {
+            str((arguments.get("filter") or {}).get("product_id") or "")
+            for arguments in _fastmoss_tool_call_arguments(assistant_msg, tool_name)
+            if isinstance(arguments.get("filter"), dict)
+        }
+        for product_id in target_ids:
+            if product_id not in completed_ids:
+                return {"label": label, "tool_name": tool_name, "product_id": product_id}
+    return None
+
+
 def fastmoss_workflow_phase(
     playbook_id: str | None,
     assistant_msg: Message,
@@ -4721,31 +4776,36 @@ def fastmoss_workflow_phase(
     available = set(available_tool_ids or set())
     restrict_to_available = available_tool_ids is not None
     if str(playbook_id or "") == "product":
-        for label, required_groups in FASTMOSS_PRODUCT_REQUIRED_GROUPS:
-            for group in required_groups:
-                candidates = set(group)
-                if restrict_to_available:
-                    candidates &= available
-                if "fastmoss__product_search" in candidates:
-                    if not candidates:
-                        continue
-                    plan = fastmoss_product_search_plan(assistant_msg, user_text, route)
-                    next_call = plan.get("next_call")
-                    if not next_call:
-                        continue
-                    if next_call.get("scope") == "category_head":
-                        return (
-                            f"获取类目销量头部（第 {next_call['page']}/{plan['category_pages']} 页）",
-                            {"fastmoss__product_search"},
-                        )
-                    return "补充细分匹配样本", {"fastmoss__product_search"}
-                if not candidates or observed.intersection(candidates):
-                    continue
-                untried = candidates - attempted
-                if untried:
-                    return label, untried
-                # Every available alternative failed. The capability is exhausted;
-                # continue and make the limitation visible in the final answer.
+        category_tool = "fastmoss__search_category_by_words"
+        if (not restrict_to_available or category_tool in available) and category_tool not in attempted:
+            return "确认目标类目", {category_tool}
+        analysis_tool = "fastmoss__market_category_analysis"
+        next_analysis_type = fastmoss_next_product_market_analysis_type(assistant_msg)
+        if next_analysis_type and (not restrict_to_available or analysis_tool in available):
+            return f"获取类目规模与趋势（{next_analysis_type}）", {analysis_tool}
+        ranking_tool = "fastmoss__market_category_ranking"
+        if (not restrict_to_available or ranking_tool in available) and ranking_tool not in attempted:
+            return "获取上级类目排名背景", {ranking_tool}
+        for label, tool_name in (
+            ("获取热销样本", "fastmoss__product_rank_top_selling"),
+            ("获取新品样本", "fastmoss__product_rank_new_listed"),
+        ):
+            if (not restrict_to_available or tool_name in available) and tool_name not in attempted:
+                return label, {tool_name}
+        product_search_tool = "fastmoss__product_search"
+        if not restrict_to_available or product_search_tool in available:
+            plan = fastmoss_product_search_plan(assistant_msg, user_text, route)
+            next_call = plan.get("next_call")
+            if next_call:
+                if next_call.get("scope") == "category_head":
+                    return (
+                        f"获取类目销量头部（第 {next_call['page']}/{plan['category_pages']} 页）",
+                        {product_search_tool},
+                    )
+                return "补充细分匹配样本", {product_search_tool}
+        deep_dive = fastmoss_product_deep_dive_plan(assistant_msg, available_tool_ids)
+        if deep_dive:
+            return f"{deep_dive['label']}（{deep_dive['product_id']}）", {deep_dive["tool_name"]}
         return None
     for label, phase_tools in FASTMOSS_WORKFLOW_PHASES.get(str(playbook_id or ""), ()):
         candidates = set(phase_tools)
@@ -5695,13 +5755,14 @@ def chat_max_tool_rounds(provider: str, route: dict[str, Any], tool_count: int) 
         base = max(base, 7)
     if provider == "fastmoss" and route.get("playbook") == "product":
         if route.get("full_ranking"):
-            base = max(base, 17)
-            limit = 17
+            base = max(base, 27)
+            limit = 27
         else:
-            # Product research completes category/market discovery before the
-            # deterministic three-page category head and two segment searches.
-            base = max(base, 14)
-            limit = 14
+            # Product research completes category/market discovery, five
+            # category/segment samples, then five exact-ID checks for each of
+            # at most two representative products.
+            base = max(base, 24)
+            limit = 24
     else:
         limit = 10
     return min(base, limit)
@@ -8950,6 +9011,55 @@ def fastmoss_planned_product_search_arguments(
     )
 
 
+def fastmoss_planned_product_workflow_call(
+    assistant_msg: Message,
+    user_text: str,
+    route: dict[str, Any],
+    available_tool_ids: set[str] | None,
+    default_region: str = "",
+) -> tuple[str, dict[str, Any]] | None:
+    """Plan the next product-workflow call after category discovery."""
+    if str(route.get("playbook") or "") != "product":
+        return None
+    phase = fastmoss_workflow_phase(
+        "product", assistant_msg, available_tool_ids, user_text, route
+    )
+    if not phase or len(phase[1]) != 1:
+        return None
+    tool_name = next(iter(phase[1]))
+    if tool_name == "fastmoss__search_category_by_words":
+        return None
+    unprefixed_name = split_prefixed_tool_id(tool_name)[1]
+    if tool_name == "fastmoss__product_search":
+        arguments = fastmoss_planned_product_search_arguments(
+            assistant_msg, user_text, route, default_region
+        )
+        return (tool_name, arguments) if arguments else None
+    deep_dive = fastmoss_product_deep_dive_plan(assistant_msg, available_tool_ids)
+    if deep_dive and deep_dive.get("tool_name") == tool_name:
+        product_id = deep_dive["product_id"]
+        filters: dict[str, Any] = {"product_id": product_id}
+        arguments: dict[str, Any] = {"filter": filters}
+        if unprefixed_name == "product_overview":
+            filters["time_range_days"] = 28
+        elif unprefixed_name in {"product_sales_trend", "product_review_list", "product_video_list"}:
+            filters["time_range_days"] = 90
+        if unprefixed_name == "product_review_list":
+            arguments.update({"page": 1, "pagesize": 10, "orderby": [{"field": "create_time", "order": "desc"}]})
+        elif unprefixed_name == "product_creator_analysis":
+            arguments.update({"page": 1, "pagesize": 10, "orderby": [{"field": "product_gmv", "order": "desc"}]})
+        elif unprefixed_name == "product_video_list":
+            arguments.update({"page": 1, "pagesize": 10, "orderby": [{"field": "gmv", "order": "desc"}]})
+        return tool_name, arguments
+    arguments = apply_mcp_region_default("fastmoss", unprefixed_name, {}, default_region)
+    arguments = apply_fastmoss_business_defaults(
+        unprefixed_name, arguments, assistant_msg, user_text=user_text, route=route
+    )
+    if unprefixed_name == "market_category_analysis":
+        arguments["analysis_type"] = fastmoss_next_product_market_analysis_type(assistant_msg) or "basic_metrics"
+    return tool_name, arguments
+
+
 def fastmoss_clarifying_question(provider: str, route: dict[str, Any], user_text: str) -> str | None:
     """Ask only when a FastMoss analytical task has no identifiable research object."""
     if normalize_chat_provider(provider) != "fastmoss":
@@ -9302,31 +9412,16 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             if provider == "fastmoss" and route.get("playbook") == "product"
             else None
         )
-        deterministic_sample_tools = (
-            deterministic_phase[1]
-            & {
-                "fastmoss__product_rank_top_selling",
-                "fastmoss__product_rank_new_listed",
-                "fastmoss__product_search",
-            }
+        deterministic_call = (
+            fastmoss_planned_product_workflow_call(
+                assistant_msg, routing_text, route,
+                set(effective_enabled_tool_ids or set()), default_region,
+            )
             if deterministic_phase
-            else set()
+            else None
         )
-        if len(deterministic_sample_tools) == 1:
-            fn_name = next(iter(deterministic_sample_tools))
-            if fn_name == "fastmoss__product_search":
-                fn_args = fastmoss_planned_product_search_arguments(
-                    assistant_msg, routing_text, route, default_region
-                )
-            else:
-                unprefixed_name = split_prefixed_tool_id(fn_name)[1]
-                fn_args = apply_mcp_region_default(
-                    "fastmoss", unprefixed_name, {}, default_region
-                )
-                fn_args = apply_fastmoss_business_defaults(
-                    unprefixed_name, fn_args, assistant_msg,
-                    user_text=routing_text, route=route,
-                )
+        if deterministic_call:
+            fn_name, fn_args = deterministic_call
             if fn_args:
                 signature = tool_call_signature(fn_name, fn_args)
                 if signature not in seen_tool_calls:
@@ -9352,7 +9447,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     messages.append({
                         "role": "system",
                         "content": (
-                            "A deterministic FastMoss product-search step was executed by the workflow "
+                            "A deterministic FastMoss product-workflow step was executed "
                             f"with arguments {json.dumps(fn_args, ensure_ascii=False)}. Evidence: "
                             + current_chat_tool_evidence(
                                 fn_name, normalized_result, fn_args, raw_result
@@ -9388,7 +9483,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                         })
                     no_tool_retries = 0
                     print(
-                        f"[CHAT] deterministic FastMoss sample tool={fn_name} page={fn_args.get('page')} "
+                        f"[CHAT] deterministic FastMoss workflow tool={fn_name} page={fn_args.get('page')} "
                         f"keywords={fn_args.get('keywords', '')!r}",
                         flush=True,
                     )
