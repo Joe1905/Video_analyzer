@@ -4,6 +4,7 @@ import base64
 import binascii
 import hmac
 import http.client
+import math
 import mimetypes
 import os
 import re
@@ -6005,6 +6006,22 @@ def _fastmoss_number(value: Any) -> float | None:
         return None
 
 
+def _fastmoss_percentile(values: list[float], percentile: float) -> float | None:
+    """Return a linearly interpolated percentile for deterministic report signals."""
+    ordered = sorted(value for value in values if math.isfinite(value))
+    if not ordered:
+        return None
+    if len(ordered) == 1:
+        return ordered[0]
+    position = max(0.0, min(1.0, percentile)) * (len(ordered) - 1)
+    lower = int(math.floor(position))
+    upper = int(math.ceil(position))
+    if lower == upper:
+        return ordered[lower]
+    weight = position - lower
+    return ordered[lower] * (1 - weight) + ordered[upper] * weight
+
+
 def _fastmoss_date_range(value: Any, skip_request_echo: bool = False) -> list[str]:
     dates: list[str] = []
     period_keys = {
@@ -6304,6 +6321,79 @@ def fastmoss_evidence_manifest(
     category_top = sorted(category_records.values(), key=sort_key, reverse=True)
     segment_top = sorted(segment_records.values(), key=sort_key, reverse=True)
     overlap = sorted(set(category_records).intersection(segment_records))
+    unique_conflicts: dict[tuple[str, str], dict[str, str]] = {}
+    for conflict in conflicts:
+        key = (str(conflict.get("product_id") or ""), str(conflict.get("issue") or ""))
+        unique_conflicts.setdefault(key, conflict)
+    conflicts = list(unique_conflicts.values())
+
+    category_units = [
+        value for record in category_top
+        for value in [_fastmoss_number(record.get("day28_units_sold"))]
+        if value is not None and value >= 0
+    ]
+    category_units_total = sum(category_units)
+
+    def sample_share(count: int) -> float | None:
+        if category_units_total <= 0:
+            return None
+        return sum(category_units[:count]) / category_units_total
+
+    price_midpoints: list[float] = []
+    for record in category_top:
+        low = _fastmoss_number(record.get("price_min"))
+        high = _fastmoss_number(record.get("price_max"))
+        if low is None and high is None:
+            continue
+        if low is None:
+            low = high
+        if high is None:
+            high = low
+        if low is None or high is None:
+            continue
+        low, high = min(low, high), max(low, high)
+        if low >= 0:
+            price_midpoints.append((low + high) / 2)
+
+    query_signals: list[dict[str, Any]] = []
+    for query in sorted({str(record.get("query") or "").strip() for record in segment_top} - {""}):
+        query_products = [record for record in segment_top if str(record.get("query") or "").strip() == query]
+        query_units = [
+            value for record in query_products
+            for value in [_fastmoss_number(record.get("day28_units_sold"))]
+            if value is not None and value >= 0
+        ]
+        query_total = sum(query_units)
+        query_signals.append({
+            "query": query,
+            "fetched_unique": len(query_products),
+            "products_with_units": len(query_units),
+            "sample_units_total": query_total,
+            "top_product_units": max(query_units) if query_units else None,
+            "top_product_share": (max(query_units) / query_total) if query_total > 0 else None,
+            "median_product_units": _fastmoss_percentile(query_units, 0.5),
+        })
+    query_signals.sort(
+        key=lambda item: (float(item.get("sample_units_total") or 0), int(item.get("fetched_unique") or 0)),
+        reverse=True,
+    )
+
+    derived_signals = {
+        "category_sample_units_total": category_units_total if category_units else None,
+        "category_top1_share": sample_share(1),
+        "category_top3_share": sample_share(3),
+        "category_top10_share": sample_share(10),
+        "overlap_count": len(overlap),
+        "overlap_rate_of_category_sample": len(overlap) / len(category_records) if category_records else None,
+        "overlap_rate_of_segment_sample": len(overlap) / len(segment_records) if segment_records else None,
+        "price_midpoint_count": len(price_midpoints),
+        "price_midpoint_min": min(price_midpoints) if price_midpoints else None,
+        "price_midpoint_q1": _fastmoss_percentile(price_midpoints, 0.25),
+        "price_midpoint_median": _fastmoss_percentile(price_midpoints, 0.5),
+        "price_midpoint_q3": _fastmoss_percentile(price_midpoints, 0.75),
+        "price_midpoint_max": max(price_midpoints) if price_midpoints else None,
+        "segment_queries": query_signals,
+    }
     plan = fastmoss_product_search_plan(assistant_msg, user_text, route)
     reported_total = max(category_totals) if category_totals else None
     target_pages = int(plan.get("category_pages") or 3)
@@ -6355,6 +6445,7 @@ def fastmoss_evidence_manifest(
         "sort_anomalies": sort_anomalies,
         "conflicts": conflicts,
         "limitations": limitations,
+        "derived_signals": derived_signals,
         "evidence_excerpts": evidence_excerpts[:14],
     }
 
@@ -6370,6 +6461,8 @@ def fastmoss_report_quality_instruction(
         + " "
         "FastMoss 最终报告必须遵守以下证据清单。类目头部与细分匹配商品分表展示；"
         "reported_total 是接口匹配总数，fetched_unique 是本次实际取得数，不得混写。"
+        "若 derived_signals 已提供，必须解释样本头部集中度、类目/细分重合率、各细分词同口径样本差异和四分位价格主体带，"
+        "并据此明确给出方向优先级；不能只复述商品表和数据边界。"
         "L2 数据只能称为上级类目参考。所有 conflicts 必须显式披露，强机会/低竞争/生命周期/因果结论没有直接证据时降级为待验证假设。"
         "证据清单：" + json.dumps(manifest, ensure_ascii=False, separators=(",", ":"))
     )
@@ -6406,6 +6499,7 @@ def fastmoss_deterministic_quality_fallback(manifest: dict[str, Any]) -> str:
     target_pages = int(category.get("target_pages") or 3)
     completed_pages = category.get("completed_pages") or []
     overlap_count = len(manifest.get("overlap_product_ids") or [])
+    signals = manifest.get("derived_signals") if isinstance(manifest.get("derived_signals"), dict) else {}
     unit_values = [
         value for product in products
         for value in [_fastmoss_number(product.get("day28_units_sold"))]
@@ -6417,21 +6511,96 @@ def fastmoss_deterministic_quality_fallback(manifest: dict[str, Any]) -> str:
         for value in (_fastmoss_number(product.get("price_min")), _fastmoss_number(product.get("price_max")))
         if value is not None
     ]
+    top3_ratio = _fastmoss_number(signals.get("category_top3_share"))
+    if top3_ratio is None and top3_share is not None:
+        top3_ratio = top3_share / 100
+    overlap_segment_rate = _fastmoss_number(signals.get("overlap_rate_of_segment_sample"))
+    query_signals = [
+        item for item in (signals.get("segment_queries") or [])
+        if isinstance(item, dict) and str(item.get("query") or "").strip()
+    ]
+    leader = query_signals[0] if query_signals else None
+    runner_up = query_signals[1] if len(query_signals) > 1 else None
+    leader_name = str((leader or {}).get("query") or "").strip()
+    runner_name = str((runner_up or {}).get("query") or "").strip()
+    leader_units = _fastmoss_number((leader or {}).get("sample_units_total"))
+    runner_units = _fastmoss_number((runner_up or {}).get("sample_units_total"))
+    leader_top_share = _fastmoss_number((leader or {}).get("top_product_share"))
+    leader_count = int((leader or {}).get("fetched_unique") or 0)
+    runner_count = int((runner_up or {}).get("fetched_unique") or 0)
+
+    if top3_ratio is None:
+        concentration_view = "现有销量字段不足，暂时不能判断样本内的头部集中度。"
+    elif top3_ratio >= 0.6:
+        concentration_view = f"样本销量明显向少数商品集中：前三款贡献约 {top3_ratio * 100:.1f}%，新品不能只靠同质化跟随。"
+    elif top3_ratio >= 0.35:
+        concentration_view = f"样本已经形成清晰头部，但不是单品垄断：前三款贡献约 {top3_ratio * 100:.1f}%，仍有多种商品形态获得销量。"
+    else:
+        concentration_view = f"样本销量相对分散：前三款贡献约 {top3_ratio * 100:.1f}%，当前更应比较细分定位，而不是只模仿榜首。"
+
+    if overlap_segment_rate is None:
+        fit_view = "类目榜与细分榜缺少可比商品 ID，暂时不能判断目标词与宽类目的贴合度。"
+    elif overlap_segment_rate < 0.15:
+        fit_view = (
+            f"目标细分与宽类目头部的直接重合偏低：细分样本中只有 {overlap_count} 件同时进入类目头部样本"
+            f"（约 {overlap_segment_rate * 100:.1f}%）。因此当前宽类目数据不能直接替代目标细分的判断。"
+        )
+    elif overlap_segment_rate < 0.4:
+        fit_view = (
+            f"目标细分与宽类目头部有一定重合，但并不充分：细分样本中 {overlap_count} 件进入类目头部样本"
+            f"（约 {overlap_segment_rate * 100:.1f}%）。细分定位仍需单独验证。"
+        )
+    else:
+        fit_view = (
+            f"目标细分与宽类目头部重合较高：细分样本中 {overlap_count} 件进入类目头部样本"
+            f"（约 {overlap_segment_rate * 100:.1f}%），两组数据可以相互参考，但仍不能视作完整市场份额。"
+        )
+
+    direction_view = ""
+    comparable_query_samples = (
+        leader_count > 0 and runner_count > 0
+        and min(leader_count, runner_count) / max(leader_count, runner_count) >= 0.8
+    )
+    if leader_name and runner_name and leader_units is not None and runner_units is not None and not comparable_query_samples:
+        direction_view = (
+            f"{leader_name} 与 {runner_name} 本轮分别取得 {leader_count} 件和 {runner_count} 件样本，"
+            "样本量不一致，不能直接用销量合计排优先级；应先补成同等覆盖后再比较。"
+        )
+    elif leader_name and runner_name and leader_units is not None and runner_units is not None:
+        if leader_units > runner_units:
+            direction_view = (
+                f"在本轮同口径细分样本里，{leader_name} 的样本销量合计为 {leader_units:g}，"
+                f"高于 {runner_name} 的 {runner_units:g}。这不是全市场规模，但足以把 {leader_name} 放到更高的验证优先级。"
+            )
+            if leader_top_share is not None and leader_top_share >= 0.5:
+                direction_view += (
+                    f"不过该方向最高单品占细分样本销量约 {leader_top_share * 100:.1f}%，"
+                    "现阶段应先验证它的成功是否可复制，而不是直接把单品表现外推为整个细分机会。"
+                )
+        else:
+            direction_view = (
+                f"{leader_name} 与 {runner_name} 的本轮样本销量没有拉开可解释差距，当前不宜仅凭关键词榜决定方向。"
+            )
+    elif leader_name and leader_units is not None:
+        direction_view = f"本轮只有 {leader_name} 形成可比较的细分销量样本，应先围绕它继续验证，其他方向暂不做强判断。"
+
+    conclusion_parts = [concentration_view, fit_view]
+    if direction_view:
+        conclusion_parts.append(direction_view)
     lines = [
         "## 先说结论",
         "",
-        (
-            f"这轮已经取得 {fetched} 件类目头部样本和 {len(segment_products)} 件细分匹配样本。"
-            "它们足够用来判断头部格局与目标细分是否对得上，但还不足以替你下“蓝海”“低竞争”或“值得进入”的强结论。"
-        ),
+        " ".join(conclusion_parts),
         "",
         "## 我怎么看",
         "",
-        "- 我更看重类目头部榜与细分匹配榜的交集，而不是关键词搜索返回了多少条；交集越少，越需要警惕类目口径过宽或产品定位跑偏。",
-        "- 现有样本适合判断头部商品和销量排序，不适合代表整个类目的完整规模。价格、销量和 GMV 也要先互相校验，再进入定价判断。",
+        f"- **头部格局：** {concentration_view}",
+        f"- **类目匹配：** {fit_view}",
         "",
         "## 关键依据",
     ]
+    if direction_view:
+        lines.insert(lines.index("", lines.index("## 我怎么看") + 2), f"- **方向取舍：** {direction_view}")
     lines.append(
         f"- 类目销量榜按近28天销量降序计划获取 {target_pages} 页；"
         f"实际完成页码为 {completed_pages}，去重后取得 {fetched} 件商品。"
@@ -6476,13 +6645,37 @@ def fastmoss_deterministic_quality_fallback(manifest: dict[str, Any]) -> str:
                 f"{product.get('day28_units_sold', '未返回')} |"
             )
         lines.extend(["", f"- 类目头部榜与细分匹配榜共有 {overlap_count} 件重合商品。"])
+        if query_signals:
+            lines.extend(["", "### 细分方向对比", ""])
+            for item in query_signals:
+                query = str(item.get("query") or "未记录")
+                count = int(item.get("fetched_unique") or 0)
+                sample_units = _fastmoss_number(item.get("sample_units_total"))
+                top_units = _fastmoss_number(item.get("top_product_units"))
+                top_share = _fastmoss_number(item.get("top_product_share"))
+                median_units = _fastmoss_number(item.get("median_product_units"))
+                units_text = f"样本销量合计 {sample_units:g}" if sample_units is not None else "销量字段不足"
+                top_text = f"，最高单品 {top_units:g}" if top_units is not None else ""
+                share_text = f"、占该词样本 {top_share * 100:.1f}%" if top_share is not None else ""
+                median_text = f"，单品销量中位数 {median_units:g}" if median_units is not None else ""
+                lines.append(f"- **{query}：** {count} 件去重样本，{units_text}{top_text}{share_text}{median_text}。")
+            if direction_view:
+                lines.append(f"- **判断：** {direction_view}")
     else:
         lines.extend([
             "", "## 细分匹配样本", "",
             "- 本轮细分关键词接口没有形成可用商品样本，因此不能据此判断目标细分没有需求，也不能把宽类目头部直接当成目标产品的头部。",
         ])
     lines.extend(["", "## 价格与定位", ""])
-    if price_values:
+    price_q1 = _fastmoss_number(signals.get("price_midpoint_q1"))
+    price_median = _fastmoss_number(signals.get("price_midpoint_median"))
+    price_q3 = _fastmoss_number(signals.get("price_midpoint_q3"))
+    if price_q1 is not None and price_median is not None and price_q3 is not None:
+        lines.append(
+            f"- 与其用极端最低价和最高价定义市场，我更看中间 50% 的商品价格中点：本轮为 {price_q1:.2f}–{price_q3:.2f}，"
+            f"中位数约 {price_median:.2f}。这是更稳健的样本主体带，不是建议售价。"
+        )
+    elif price_values:
         lines.append(
             f"- 已获取商品样本的返回价格落在 {min(price_values):g}–{max(price_values):g} 之间；"
             "这是样本观察区间，不等于建议上市价。"
@@ -6490,7 +6683,8 @@ def fastmoss_deterministic_quality_fallback(manifest: dict[str, Any]) -> str:
     else:
         lines.append("- 本轮没有形成可核对的价格区间，暂不提供精确上市价建议。")
     lines.extend([
-        "- 定价前应优先剔除价格、销量与 GMV 无法互相校验的商品，再结合成本和目标毛利做候选价测试。",
+        "- 定位上应先选定要对标的商品形态，再在同形态样本内比较价格；不能把配件、不同规格和不同使用场景的商品混成一个价格带。",
+        "- 定价前应剔除价格、销量与 GMV 无法互相校验的商品，再结合成本和目标毛利形成候选价。",
         "", "## 内容与达人信号", "",
         "- 本轮只有在视频、评论或达人接口返回了可核对数据时，才可据此判断内容打法；不能从商品销量反推内容因果。",
         "- 若相关接口为空，含义只是本次未返回记录，不代表该类目没有达人或内容供给。",
@@ -6509,9 +6703,18 @@ def fastmoss_deterministic_quality_fallback(manifest: dict[str, Any]) -> str:
         "",
         "## 如果要继续做",
         "",
-        "1. 先核实价格、销量与 GMV 不一致的代表商品，避免用冲突指标做定价判断。",
-        "2. 再补目标 L3 类目的规模与价格带数据，确认头部样本能否代表你真正想做的细分。",
-        "3. 最后再结合评论、达人和视频内容决定产品差异化与测试顺序。",
+        (
+            f"1. **先定方向：** 优先围绕 {leader_name} 的同形态商品继续验证，暂时不要把 {runner_name or '另一个目标词'} 与它合并成一个需求池。"
+            if leader_name else
+            "1. **先定方向：** 把目标词拆成可比较的商品形态，先补齐同口径销量样本，再决定主方向。"
+        ),
+        (
+            f"2. **再做商品深挖：** 优先核查同时出现在类目榜和细分榜的 {overlap_count} 件商品，"
+            "看其规格、卖点和价格是否能解释销量；这比继续扩大宽类目样本更直接。"
+            if overlap_count else
+            "2. **再做商品深挖：** 从细分榜中选择销量靠前且指标无冲突的商品，核查规格、卖点和价格。"
+        ),
+        "3. **最后补内容证据：** 只有评论、达人或视频接口取得有效记录后，再决定内容角度和合作对象；当前商品销量不能替代内容分析。",
     ])
     return "\n".join(lines)
 
@@ -6643,6 +6846,8 @@ def verify_fastmoss_final_answer(
                 "consolidate caveats instead of repeating warnings, and end with prioritized next steps. Preserve a calm, human consultant voice while keeping every judgment evidence-backed. "
                 "For workflow or playbook research, concise means conclusion-first, not short: preserve the full evidence-rich report with research scope and coverage, category-head table, "
                 "segment-match table, pricing/positioning evidence, content or creator evidence when observed, limitations, and prioritized next steps. Do not collapse it into an executive summary. "
+                "When derived_signals are present, the report must interpret concentration, category-to-segment overlap, like-for-like segment query differences, and the interquartile price band, "
+                "then make an explicit evidence-bounded prioritization. A report that merely repeats tables and caveats is incomplete. "
                 "Reject any recommendation that invents operational numbers absent from the manifest or an explicit calculation, including launch inventory, budget, creator count, follower threshold, "
                 "test duration, ROI, conversion rate, margin, or exact launch price. An observed price band may be quoted, but a recommended test price must be labeled as an assumption and tied to evidence. "
                 "Mark approved=false and provide a complete rewritten_answer when the draft is audit-like, uses headings such as '修正版' or '数据核验结果', or lacks the required conclusion and next steps. "
