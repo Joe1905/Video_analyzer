@@ -5,15 +5,72 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import web_app  # noqa: E402
+import tools  # noqa: E402
 from web_app import build_chat_history_context, build_deepseek_tool_assistant_message, build_prefixed_model_tools, build_tool_limit_final_context, chat_markdown_to_html, chat_request_needs_tools, chat_routing_text, compact_chat_tool_evidence, deepseek_tool_protocol_present, estimate_chat_context_tokens, fastmoss_analysis_evidence_gaps, fastmoss_availability_search_arguments, fastmoss_defaults_to_us, fastmoss_empty_availability_answer, fastmoss_playbook_instruction, fastmoss_playbook_intent, fastmoss_product_evidence_required, fastmoss_required_capability_gaps, filter_locked_provider_tool_ids, forced_provider_domain_tool_available, is_chat_retry_request, manage_chat_context, normalize_mcp_tool_arguments, normalize_prefixed_tool_result, normalize_tool_result, parse_chat_intent_decision, provider_default_enabled_tool_ids, provider_forces_mcp_tools, provider_scope_short_circuit, resolve_chat_intent, route_chat_intent, run_chat_deepseek  # noqa: E402
 from tools import _filter_relevant_search_results, execute_tool, get_tools_for_model, list_tools, parse_bing_html, parse_duckduckgo_html  # noqa: E402
+
+
+def test_tiktok_media_download_falls_through_to_next_upstream_url() -> None:
+    payload = {
+        "candidates": [
+            {"path": "data.video.download_addr.url_list.0", "url": "https://media.example/slow.mp4"},
+            {"path": "data.video.download_addr.url_list.1", "url": "https://media.example/good.mp4"},
+        ]
+    }
+    attempted: list[str] = []
+
+    def fake_download(media_url, _source_url, _payload):
+        attempted.append(media_url)
+        if media_url.endswith("slow.mp4"):
+            raise TimeoutError("media URL total timeout (60s)")
+        return {"filename": "video.mp4", "path": "/workspace/videos/video.mp4"}
+
+    with (
+        tempfile.TemporaryDirectory() as temp_dir,
+        patch.object(tools, "_download_direct_media", side_effect=fake_download),
+        patch.object(tools, "_store_download_result", side_effect=lambda _url, data: data),
+        patch.object(tools, "_write_download_result", side_effect=lambda _path, data: {"data": data}),
+    ):
+        result = tools._try_media_cache_payload_download(
+            "https://www.tiktok.com/@tester/video/1",
+            payload,
+            Path(temp_dir) / "result.json",
+            "api",
+        )
+
+    assert attempted == ["https://media.example/slow.mp4", "https://media.example/good.mp4"]
+    assert result is not None
+    assert result["data"]["filename"] == "video.mp4"
+
+
+def test_forced_report_download_and_analysis_bypass_cached_results() -> None:
+    live_download = {"data": {"filename": "fresh.mp4"}}
+    with (
+        patch.object(tools, "_cached_download_result") as cached_download,
+        patch.object(tools, "_cached_video_info_download") as cached_media,
+        patch.object(tools, "_api_video_info_download", return_value=live_download) as live_media,
+    ):
+        result = tools._run_video_download("https://www.tiktok.com/@tester/video/2", force=True)
+
+    cached_download.assert_not_called()
+    cached_media.assert_not_called()
+    live_media.assert_called_once()
+    assert result == live_download
+
+    with patch.object(tools, "_run_video_analyze", return_value={"timeline": []}) as analyze:
+        tool_result = execute_tool("video_analyze", {"filename": "fresh.mp4", "force": True})
+
+    analyze.assert_called_once_with("fresh.mp4", force=True)
+    assert tool_result["ok"] is True
 
 
 def test_tiktok_search_keeps_analysis_fields() -> None:
@@ -1530,6 +1587,8 @@ def test_fastmoss_answer_verifier_rewrites_high_risk_and_falls_back_on_failure()
 
 
 if __name__ == "__main__":
+    test_tiktok_media_download_falls_through_to_next_upstream_url()
+    test_forced_report_download_and_analysis_bypass_cached_results()
     test_tiktok_search_keeps_analysis_fields()
     test_amazon_keeps_product_fields()
     test_current_time_tool_is_available()
@@ -1584,4 +1643,3 @@ if __name__ == "__main__":
     test_fastmoss_metadata_detects_unsorted_page_and_string_product_ids()
     test_fastmoss_answer_verifier_rewrites_high_risk_and_falls_back_on_failure()
     print("chat tool normalization tests passed")
-

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import math
 import os
 import sys
 import tempfile
@@ -79,16 +78,24 @@ class HotReportSelectionTests(unittest.TestCase):
         self.assertIn('video_path="${workspace_root}/videos/${video_name}"', script)
         self.assertIn('python "${script_dir}/standardize_analysis.py"', script)
 
-    def test_default_parallel_processing_budget_stays_under_one_hour(self) -> None:
+    def test_default_pipeline_uses_separate_download_and_analysis_budgets(self) -> None:
         with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("REPORT_VIDEO_TIMEOUT", None)
-            os.environ.pop("REPORT_VIDEO_MAX_WORKERS", None)
-            timeout = hot_video_report._report_video_timeout_seconds()
-            workers = hot_video_report._report_video_max_workers()
+            for name in (
+                "REPORT_DOWNLOAD_TIMEOUT",
+                "REPORT_DOWNLOAD_MAX_WORKERS",
+                "REPORT_ANALYSIS_TIMEOUT",
+                "REPORT_ANALYSIS_MAX_WORKERS",
+            ):
+                os.environ.pop(name, None)
+            download_timeout = hot_video_report._report_download_timeout_seconds()
+            download_workers = hot_video_report._report_download_max_workers()
+            analysis_timeout = hot_video_report._report_analysis_timeout_seconds()
+            analysis_workers = hot_video_report._report_analysis_max_workers()
 
-        self.assertEqual(timeout, 480)
-        self.assertEqual(workers, 5)
-        self.assertLessEqual(math.ceil(30 / workers) * timeout, 60 * 60)
+        self.assertEqual(download_timeout, 180)
+        self.assertEqual(download_workers, 3)
+        self.assertEqual(analysis_timeout, 2400)
+        self.assertEqual(analysis_workers, 2)
 
     def test_partial_report_resume_preserves_only_completed_videos(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir, patch.object(
@@ -100,19 +107,83 @@ class HotReportSelectionTests(unittest.TestCase):
             try:
                 report_id = hot_video_report._start_report(conn, "2026-07-14", "US", [])
                 insert_report_video(conn, report_id, "2026-07-14", "complete", "complete", time.time())
+                insert_report_video(conn, report_id, "2026-07-14", "downloaded", "downloaded", time.time())
                 insert_report_video(conn, report_id, "2026-07-14", "failed", "failed", time.time())
                 conn.execute("UPDATE daily_reports SET status = 'partial_failed' WHERE id = ?", (report_id,))
                 conn.commit()
 
                 resumed_id = hot_video_report._start_report(conn, "2026-07-14", "US", [])
                 rows = conn.execute(
-                    "SELECT video_id, process_status FROM hot_report_videos WHERE report_date = '2026-07-14'"
+                    "SELECT video_id, process_status FROM hot_report_videos "
+                    "WHERE report_date = '2026-07-14' ORDER BY video_id"
                 ).fetchall()
             finally:
                 conn.close()
 
         self.assertEqual(resumed_id, report_id)
-        self.assertEqual(rows, [("complete", "complete")])
+        self.assertEqual(rows, [("complete", "complete"), ("downloaded", "downloaded")])
+
+    def test_frontend_force_restart_discards_all_current_report_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(
+            hot_video_report,
+            "DB_PATH",
+            Path(temp_dir) / "report.sqlite",
+        ):
+            conn = hot_video_report._connect()
+            try:
+                report_id = hot_video_report._start_report(conn, "2026-07-14", "US", [])
+                insert_report_video(conn, report_id, "2026-07-14", "complete", "complete", time.time())
+                insert_report_video(conn, report_id, "2026-07-14", "downloaded", "downloaded", time.time())
+                conn.execute(
+                    "UPDATE daily_reports SET status = 'complete', video_count = 1, "
+                    "analysis_success_count = 1, report_json = '{}' WHERE id = ?",
+                    (report_id,),
+                )
+                conn.commit()
+
+                restarted_id = hot_video_report._start_report(
+                    conn,
+                    "2026-07-14",
+                    "US",
+                    [],
+                    force_restart=True,
+                )
+                video_count = conn.execute(
+                    "SELECT COUNT(*) FROM hot_report_videos WHERE report_date = '2026-07-14'"
+                ).fetchone()[0]
+                report_row = conn.execute(
+                    "SELECT status, video_count, analysis_success_count, report_json "
+                    "FROM daily_reports WHERE report_date = '2026-07-14'"
+                ).fetchone()
+            finally:
+                conn.close()
+
+        self.assertEqual(restarted_id, report_id)
+        self.assertEqual(video_count, 0)
+        self.assertEqual(report_row, ("running", 0, 0, None))
+
+    def test_resume_analyzes_saved_downloads_without_downloading_them_again(self) -> None:
+        saved = [candidate(str(index), 100 - index, "stream", "trending") for index in range(4)]
+        counts = {"analyzed_success": 6, "analyzed_failed": 0}
+        with (
+            patch("hot_video_report._download_ranked_videos", return_value=[]) as download_mock,
+            patch("hot_video_report._analyze_downloaded_videos") as analyze_mock,
+            patch("hot_video_report._progress_payload"),
+        ):
+            hot_video_report._process_ranked_videos(
+                object(),
+                "report-id",
+                "2026-07-14",
+                [],
+                10,
+                counts,
+                resumed_downloaded=saved,
+            )
+
+        self.assertEqual(download_mock.call_args.args[4], 0)
+        self.assertEqual(analyze_mock.call_args.args[2], saved)
+        self.assertEqual(counts["download_target"], 4)
+        self.assertEqual(counts["resumed_downloaded"], 4)
 
     def test_resume_rechecks_saved_videos_against_current_recency_window(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir, patch.object(
@@ -168,7 +239,7 @@ class HotReportSelectionTests(unittest.TestCase):
         self.assertEqual(report_status, "running")
         self.assertEqual(video_status, "failed")
 
-    def test_video_scheduler_runs_five_workers_at_a_time(self) -> None:
+    def test_download_scheduler_replaces_failures_until_target_is_met(self) -> None:
         class FakeCursor:
             def __init__(self, row):
                 self.row = row
@@ -177,20 +248,24 @@ class HotReportSelectionTests(unittest.TestCase):
                 return self.row
 
         class FakeConnection:
-            def execute(self, sql, _params=()):
-                return FakeCursor((0,) if "MAX(report_rank)" in sql else ("complete",))
+            def execute(self, sql, params=()):
+                if "MAX(report_rank)" in sql:
+                    return FakeCursor((0,))
+                return FakeCursor((statuses[str(params[-1])],))
 
             def commit(self):
                 return None
 
         active = 0
         max_active = 0
-        launched = 0
+        launched: list[str] = []
+        statuses = {"0": "failed", "1": "downloaded", "2": "downloaded", "3": "downloaded"}
 
-        def fake_launch(_report_date, item):
-            nonlocal active, max_active, launched
+        def fake_launch(_report_date, item, phase):
+            nonlocal active, max_active
+            self.assertEqual(phase, "download")
             active += 1
-            launched += 1
+            launched.append(item["video_id"])
             max_active = max(max_active, active)
             return {"item": item, "process": types.SimpleNamespace(poll=lambda: 0)}
 
@@ -198,28 +273,77 @@ class HotReportSelectionTests(unittest.TestCase):
             nonlocal active
             active -= 1
 
-        ranked = [candidate(str(index), 100 - index, "stream", "trending") for index in range(10)]
+        ranked = [candidate(str(index), 100 - index, "stream", "trending") for index in range(5)]
         counts = {"analyzed_success": 0, "analyzed_failed": 0}
         with (
             patch("hot_video_report._upsert_video"),
             patch("hot_video_report._launch_report_video_worker", side_effect=fake_launch),
             patch("hot_video_report._close_report_video_worker", side_effect=fake_close),
-            patch("hot_video_report._enqueue_report_video_translation"),
             patch("hot_video_report._progress_payload") as progress_mock,
         ):
-            hot_video_report._process_ranked_videos(
+            downloaded = hot_video_report._download_ranked_videos(
                 FakeConnection(),
                 "report-id",
                 "2026-07-14",
                 ranked,
-                10,
+                3,
                 counts,
             )
 
-        self.assertEqual(launched, 10)
-        self.assertEqual(max_active, 5)
-        self.assertEqual(counts, {"analyzed_success": 10, "analyzed_failed": 0})
-        self.assertEqual(progress_mock.call_count, 2)
+        self.assertEqual(launched, ["0", "1", "2", "3"])
+        self.assertEqual([item["video_id"] for item in downloaded], ["1", "2", "3"])
+        self.assertEqual(max_active, 3)
+        self.assertEqual(counts["downloaded_success"], 3)
+        self.assertEqual(counts["download_failed"], 1)
+        self.assertEqual(counts["analyzed_failed"], 1)
+        self.assertGreaterEqual(progress_mock.call_count, 1)
+
+    def test_analysis_scheduler_runs_two_downloaded_videos_at_a_time(self) -> None:
+        class FakeCursor:
+            def fetchone(self):
+                return ("complete",)
+
+        class FakeConnection:
+            def execute(self, _sql, _params=()):
+                return FakeCursor()
+
+            def commit(self):
+                return None
+
+        active = 0
+        max_active = 0
+        phases: list[str] = []
+
+        def fake_launch(_report_date, item, phase):
+            nonlocal active, max_active
+            active += 1
+            max_active = max(max_active, active)
+            phases.append(phase)
+            return {"item": item, "process": types.SimpleNamespace(poll=lambda: 0)}
+
+        def fake_close(_worker, _success):
+            nonlocal active
+            active -= 1
+
+        downloaded = [candidate(str(index), 100 - index, "stream", "trending") for index in range(4)]
+        counts = {"analyzed_success": 0, "analyzed_failed": 0, "download_failed": 0}
+        with (
+            patch("hot_video_report._launch_report_video_worker", side_effect=fake_launch),
+            patch("hot_video_report._close_report_video_worker", side_effect=fake_close),
+            patch("hot_video_report._enqueue_report_video_translation"),
+            patch("hot_video_report._progress_payload"),
+        ):
+            hot_video_report._analyze_downloaded_videos(
+                FakeConnection(),
+                "2026-07-14",
+                downloaded,
+                counts,
+            )
+
+        self.assertEqual(phases, ["analyze"] * 4)
+        self.assertEqual(max_active, 2)
+        self.assertEqual(counts["analyzed_success"], 4)
+        self.assertEqual(counts["analyzed_failed"], 0)
 
     def test_video_scheduler_does_not_repeat_unchanged_progress(self) -> None:
         class DelayedProcess:
@@ -239,7 +363,7 @@ class HotReportSelectionTests(unittest.TestCase):
 
         class FakeConnection:
             def execute(self, sql, _params=()):
-                return FakeCursor((0,) if "MAX(report_rank)" in sql else ("complete",))
+                return FakeCursor((0,) if "MAX(report_rank)" in sql else ("downloaded",))
 
             def commit(self):
                 return None
@@ -254,11 +378,10 @@ class HotReportSelectionTests(unittest.TestCase):
             patch("hot_video_report._upsert_video"),
             patch("hot_video_report._launch_report_video_worker", return_value=worker),
             patch("hot_video_report._close_report_video_worker"),
-            patch("hot_video_report._enqueue_report_video_translation"),
             patch("hot_video_report._progress_payload") as progress_mock,
             patch("hot_video_report.time.sleep"),
         ):
-            hot_video_report._process_ranked_videos(
+            downloaded = hot_video_report._download_ranked_videos(
                 FakeConnection(),
                 "report-id",
                 "2026-07-14",
@@ -267,7 +390,7 @@ class HotReportSelectionTests(unittest.TestCase):
                 counts,
             )
 
-        self.assertEqual(counts["analyzed_success"], 1)
+        self.assertEqual([item["video_id"] for item in downloaded], ["1"])
         self.assertEqual(progress_mock.call_count, 1)
 
     def test_topic_guarantees_do_not_occupy_all_remaining_slots(self) -> None:

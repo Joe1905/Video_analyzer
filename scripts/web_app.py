@@ -113,7 +113,6 @@ from hot_video_report import (
     get_report_runtime_status,
     get_settings as get_report_settings,
     list_reports,
-    recover_interrupted_reports,
     run_report,
     save_settings as save_report_settings,
     start_report_scheduler,
@@ -8888,10 +8887,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def handle_report_run(self) -> None:
         try:
-            recover_interrupted_reports()
-            payload = enqueue_report()
+            content_length = int(self.headers.get("Content-Length", "0"))
+            body = self.rfile.read(content_length) if content_length else b""
+            request = json.loads(body.decode("utf-8") or "{}")
+            mode = str(request.get("mode") or "restart").strip().lower()
+            if mode not in {"restart", "resume"}:
+                return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "mode must be restart or resume"})
+            payload = enqueue_report(force_restart=mode == "restart", scheduled=False)
             payload["report"] = get_report(include_raw=False, detail=False)
             return json_response(self, HTTPStatus.ACCEPTED, payload)
+        except json.JSONDecodeError as exc:
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
         except Exception as exc:
             return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
 

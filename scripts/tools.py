@@ -674,6 +674,8 @@ def _download_direct_media(media_url: str, source_url: str, payload: Any) -> dic
         raise ValueError("SociaVault media URL is not http/https")
     VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
     max_bytes = int(os.getenv("TIKTOK_MAX_BYTES", str(2 * 1024 * 1024 * 1024)))
+    media_url_timeout = max(10.0, float(os.getenv("TIKTOK_MEDIA_URL_TIMEOUT", "60")))
+    media_url_started_at = time.monotonic()
     video_id = _video_id_from_payload(payload, source_url)
     suffix = Path(parsed.path).suffix.lower()
     if suffix not in {".mp4", ".mov", ".m4v", ".webm"}:
@@ -694,8 +696,19 @@ def _download_direct_media(media_url: str, source_url: str, payload: Any) -> dic
         for attempt_label, proxies in attempts:
             temp_target.unlink(missing_ok=True)
             try:
+                remaining = media_url_timeout - (time.monotonic() - media_url_started_at)
+                if remaining <= 0:
+                    raise TimeoutError(f"media URL total timeout ({int(media_url_timeout)}s)")
                 print(f"[VIDEO_DOWNLOAD] direct media attempt={attempt_label}", flush=True)
-                with requests.get(media_url, headers=headers, proxies=proxies, stream=True, timeout=(8, 60)) as response:
+                connect_timeout = max(1.0, min(8.0, remaining))
+                read_timeout = max(1.0, min(10.0, remaining))
+                with requests.get(
+                    media_url,
+                    headers=headers,
+                    proxies=proxies,
+                    stream=True,
+                    timeout=(connect_timeout, read_timeout),
+                ) as response:
                     response.raise_for_status()
                     content_length = int(response.headers.get("Content-Length") or 0)
                     if content_length > max_bytes:
@@ -705,6 +718,8 @@ def _download_direct_media(media_url: str, source_url: str, payload: Any) -> dic
                         for chunk in response.iter_content(chunk_size=1024 * 1024):
                             if not chunk:
                                 continue
+                            if time.monotonic() - media_url_started_at >= media_url_timeout:
+                                raise TimeoutError(f"media URL total timeout ({int(media_url_timeout)}s)")
                             downloaded += len(chunk)
                             if downloaded > max_bytes:
                                 raise RuntimeError(f"SociaVault media exceeded max size: {downloaded} bytes")
@@ -956,15 +971,16 @@ def _run_shop(source_type: str, url: str, **kwargs) -> dict:
 
 # ── Video Tools ───────────────────────────────────────────────────
 
-def _run_video_download(url: str) -> dict:
+def _run_video_download(url: str, force: bool = False) -> dict:
     result_path = OUTPUT_DIR / f"video_download_{uuid.uuid4().hex[:8]}.json"
-    downloaded_result = _cached_download_result(url, result_path)
-    if downloaded_result:
-        return downloaded_result
+    if not force:
+        downloaded_result = _cached_download_result(url, result_path)
+        if downloaded_result:
+            return downloaded_result
 
-    cached_result = _cached_video_info_download(url, result_path)
-    if cached_result:
-        return cached_result
+        cached_result = _cached_video_info_download(url, result_path)
+        if cached_result:
+            return cached_result
 
     api_result = _api_video_info_download(url, result_path)
     if api_result:
@@ -1280,9 +1296,9 @@ def execute_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
                     params[p] = val
             data = _run_tiktok_api(endpoint, **params)
         elif name == "video_download":
-            data = _run_video_download(str(args["url"]))
+            data = _run_video_download(str(args["url"]), force=bool(args.get("force")))
         elif name == "video_analyze":
-            data = _run_video_analyze(str(args["filename"]))
+            data = _run_video_analyze(str(args["filename"]), force=bool(args.get("force")))
         elif name == "video_direct_analyze":
             data = _run_video_direct_analyze(str(args["filename"]))
         else:

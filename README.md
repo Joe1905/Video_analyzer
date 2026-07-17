@@ -153,11 +153,14 @@ Recent-window filtering for hot-videos is controlled by `HOT_VIDEO_RECENT_DAYS` 
 Expired videos that are older than this window are cleaned from report records on report queries/sync runs, so old cards disappear end-to-end.
 
 Report pipeline safeguards:
-- `REPORT_VIDEO_TIMEOUT` (seconds, default `480`) limits each video worker; the report itself has no total hard timeout.
-- `REPORT_VIDEO_MAX_WORKERS` (default `5`) controls how many candidate videos are processed concurrently.
+- The report first downloads enough analyzable videos to meet the target, replacing failed candidates before starting CPU-heavy analysis.
+- `REPORT_DOWNLOAD_TIMEOUT` (seconds, default `180`) limits one candidate's download stage, and `REPORT_DOWNLOAD_MAX_WORKERS` (default `3`) controls download concurrency.
+- `TIKTOK_MEDIA_URL_TIMEOUT` (seconds, default `60`) limits each upstream media URL so a stalled link can fall through to the next URL returned by video-info.
+- `REPORT_ANALYSIS_TIMEOUT` (seconds, default `2400`) limits the later analysis stage, and `REPORT_ANALYSIS_MAX_WORKERS` (default `2`) controls CPU-heavy analysis concurrency.
 - `REPORT_DEEPSEEK_TIMEOUT` (seconds, default `180`) limits each per-video deep-dive audit call.
 
 Interrupted reports are re-queued when the web service starts. Completed videos are retained, while resumed candidates are checked again against `HOT_VIDEO_RECENT_DAYS` before processing continues.
+Downloaded-but-not-analyzed videos are also retained on interrupted-job recovery. A resumed job only downloads and analyzes the remaining target count; the report page's manual generate action uses restart mode and refreshes all target downloads and analyses. API callers can post `{\"mode\": \"resume\"}` to `/api/report/run` when they explicitly want continuation semantics.
 
 ## Amazon Scraper
 
