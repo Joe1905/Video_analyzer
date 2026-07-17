@@ -1834,7 +1834,7 @@ def test_fastmoss_answer_verifier_applies_local_edits_and_keeps_draft_on_failure
             "500-1000", "$2000", "3-5", "3–5", "2周", "2.5", "MOQ建议不超过500",
             "$29.99", "$39.99", "$13–$16", "$14.99", "1–2个月", "月销1,000", "$5–$8",
         ):
-            assert unsupported not in edited
+            assert unsupported not in edited, (unsupported, edited)
 
         downgraded = web_app.polish_fastmoss_report_tone(
             "该细分不存在独立市场，但它是真实细分机会。"
@@ -1986,6 +1986,84 @@ def test_fastmoss_all_workflow_tools_emit_supported_envelopes() -> None:
     )
     assert unknown["evidence_envelope"]["parser_status"] == "unsupported_parser"
     assert "evidence_facts" not in unknown
+
+
+def test_fastmoss_verifier_batches_claims_and_isolates_failures() -> None:
+    message = SimpleNamespace(tool_calls=[], tool_results=[{
+        "tool_name": "fastmoss__market_category_ranking",
+        "result": {
+            "ok": True, "data_state": "data", "evidence_observed": True,
+            "evidence_envelope": {
+                "source_tool": "fastmoss__market_category_ranking", "metric_grain": "market_category_ranking",
+                "tool_family": "category", "parser_status": "supported", "data_state": "data",
+                "entity_refs": [{"type": "category", "id": "844168"}],
+            },
+            "evidence_facts": [{
+                "source_tool": "fastmoss__market_category_ranking", "data_state": "data",
+                "dimension": "category_channel_ranking", "categories": [{
+                    "category_id": 844168, "category_name": "厨房家电", "rank": 2,
+                    "category_units_sold": 82995,
+                }],
+            }],
+        },
+    }])
+    draft = "# 判断\n" + "\n".join(
+        f"判断{index}：该市场已经进入成长期，是低竞争蓝海。" for index in range(1, 10)
+    )
+
+    class Response:
+        def __init__(self, body: dict):
+            self.body = body
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return self.body
+
+    class Requests:
+        def __init__(self) -> None:
+            self.payloads: list[dict] = []
+
+        def post(self, _url: str, **kwargs):
+            payload = json.loads(kwargs["data"].decode("utf-8"))
+            self.payloads.append(payload)
+            batch = json.loads(payload["messages"][1]["content"])["candidate_claims"]
+            if len(self.payloads) == 1:
+                decision = {
+                    "approved": False, "risk_level": "high", "edits": [{
+                        "claim_id": batch[0]["claim_id"], "replacement": "判断1：竞争强度仍需验证。",
+                        "reason": "样本不能证明低竞争", "evidence_refs": ["fm-c1-f1"],
+                    }],
+                }
+                return Response({"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(decision)}}]})
+            if len(self.payloads) == 2:
+                return Response({"choices": [{"finish_reason": "length", "message": {"content": ""}}]})
+            return Response({"choices": [{"finish_reason": "stop", "message": {"content": "{invalid"}}]})
+
+    requests = Requests()
+    original_record = web_app.record_api_call
+    web_app.record_api_call = lambda *_args, **_kwargs: None
+    try:
+        result = web_app.verify_fastmoss_final_answer(
+            draft, message, "调研厨房家电", {"playbook": "product", "task_depth": "workflow"},
+            requests, "key", "https://example.test/v1", "model",
+        )
+    finally:
+        web_app.record_api_call = original_record
+    assert len(requests.payloads) == 3
+    assert all(len(json.loads(item["messages"][1]["content"])["candidate_claims"]) <= 4 for item in requests.payloads)
+    assert all(item["max_tokens"] == 4800 for item in requests.payloads)
+    assert all(len(json.dumps(item, ensure_ascii=False)) < 20000 for item in requests.payloads)
+    assert "判断1：竞争强度仍需验证" in result
+    for index in range(2, 10):
+        assert f"判断{index}：" in result
+
+    unchanged, count = web_app.sanitize_fastmoss_state_contradictions(
+        "直播数据为0，但这是观测值。",
+        {"evidence_envelopes": [{"data_state": "empty", "entity_refs": [{"type": "live", "id": "0"}]}]},
+    )
+    assert unchanged == "直播数据为0，但这是观测值。" and count == 0
 
 
 def test_fastmoss_creator_video_facts_and_historical_rebuild() -> None:
@@ -2430,6 +2508,30 @@ def test_fastmoss_claim_ids_and_extended_mechanical_cleanup() -> None:
     )
     assert applied == 1 and "竞争强度仍需验证" in edited
 
+    semantic_claims = web_app.fastmoss_high_risk_claims(
+        "关键词返回量证明该细分市场容量很小，商业化程度低，不具备规模投入条件。\n"
+        "该商品依靠广告投放实现爆发，说明产品生命周期已自然衰退。"
+    )
+    semantic_reasons = {reason for claim in semantic_claims for reason in claim["reasons"]}
+    assert {"market_scale", "channel_causality", "lifecycle"}.issubset(semantic_reasons)
+
+    causal_cleaned = web_app.downgrade_fastmoss_absolute_market_claims(
+        "周均仍有250件新品入场，表明供给侧仍在积极测试，竞争加剧。\n"
+        "视频份额下降，说明消费者对内容的耐受度在降低，决策路径转向搜索。\n"
+        "样本10件销量28件，说明消费者认知尚未打开，多数购买者通过别的关键词进入。\n"
+        "该商品0条视频，说明主要依靠商品卡自然流量或付费广告，而非内容驱动。"
+    )
+    for unsupported in ("竞争加剧", "耐受度在降低", "消费者认知尚未打开", "主要依靠商品卡"):
+        assert unsupported not in causal_cleaned
+    assert "新品供给仍活跃" in causal_cleaned
+    assert "消费者认知和搜索路径仍需验证" in causal_cleaned
+    assert "渠道归因数据验证" in causal_cleaned
+
+    creator_cleaned, creator_count = web_app.sanitize_fastmoss_unsupported_recommendations(
+        "建议找1–2位达人先做验证。"
+    )
+    assert creator_count == 1 and "1–2" not in creator_cleaned
+
 
 if __name__ == "__main__":
     test_tiktok_search_keeps_analysis_fields()
@@ -2488,6 +2590,7 @@ if __name__ == "__main__":
     test_fastmoss_evidence_ledger_keeps_native_dimensions_and_late_trends()
     test_fastmoss_answer_verifier_applies_local_edits_and_keeps_draft_on_failure()
     test_fastmoss_all_workflow_tools_emit_supported_envelopes()
+    test_fastmoss_verifier_batches_claims_and_isolates_failures()
     test_fastmoss_creator_video_facts_and_historical_rebuild()
     test_fastmoss_report_packets_are_workflow_native_and_numeric_policy_is_strict()
     test_fastmoss_list_truncation_is_explicit_and_invalid_entities_are_filtered()
