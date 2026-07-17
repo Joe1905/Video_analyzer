@@ -1476,7 +1476,7 @@ def test_fastmoss_evidence_manifest_separates_total_fetched_overlap_and_conflict
         {"product_id": "1732183167826498507", "title": "Head", "day7_units_sold": 120, "day28_units_sold": 100, "day28_gmv": 1000, "price_min": 9, "price_max": 11},
         {"product_id": "1732183167826498508", "title": "Second", "day28_units_sold": 80},
     ]
-    segment_records = [{"product_id": "1732183167826498507", "title": "Head", "day28_units_sold": 100}]
+    segment_records = [dict(category_records[0])]
     tool_results = [
         result("category_head", 1, "", 60, category_records),
         result("category_head", 2, "", 60, []),
@@ -1491,7 +1491,57 @@ def test_fastmoss_evidence_manifest_separates_total_fetched_overlap_and_conflict
     assert manifest["category_head"]["completed_pages"] == [1, 2, 3]
     assert manifest["overlap_product_ids"] == ["1732183167826498507"]
     assert any("近7天销量高于近28天销量" in item["issue"] for item in manifest["conflicts"])
+    assert sum("近7天销量高于近28天销量" in item["issue"] for item in manifest["conflicts"]) == 1
     assert any("接口报告匹配总数 60" in item for item in manifest["limitations"])
+    signals = manifest["derived_signals"]
+    assert signals["category_sample_units_total"] == 180
+    assert signals["category_top1_share"] == 100 / 180
+    assert signals["overlap_rate_of_segment_sample"] == 1
+    assert signals["price_midpoint_median"] == 10
+    assert signals["segment_queries"][0]["sample_units_total"] == 100
+
+
+def test_fastmoss_deterministic_fallback_contains_analysis_and_prioritized_advice() -> None:
+    category_products = [
+        {"product_id": "1", "title": "Leader", "day28_units_sold": 400, "price_min": 30, "price_max": 40},
+        {"product_id": "2", "title": "Second", "day28_units_sold": 300, "price_min": 35, "price_max": 45},
+        {"product_id": "3", "title": "Third", "day28_units_sold": 200, "price_min": 40, "price_max": 50},
+        {"product_id": "4", "title": "Tail", "day28_units_sold": 100, "price_min": 45, "price_max": 55},
+    ]
+    segment_products = [
+        {"product_id": "1", "title": "Mini grinder leader", "query": "Mini Meat Grinder", "day28_units_sold": 300},
+        {"product_id": "5", "title": "Mini grinder tail", "query": "Mini Meat Grinder", "day28_units_sold": 100},
+        {"product_id": "6", "title": "Shredder", "query": "Electric Food Shredder", "day28_units_sold": 20},
+    ]
+    manifest = {
+        "category_head": {
+            "products": category_products, "fetched_unique": 4, "target_pages": 3,
+            "completed_pages": [1, 2, 3], "reported_total": 20,
+        },
+        "segment_head": {"products": segment_products, "fetched_unique": 3},
+        "overlap_product_ids": ["1"],
+        "target_category_path": {"level1": 13, "level2": 844168, "level3": 935176},
+        "derived_signals": {
+            "category_top3_share": 0.9,
+            "overlap_rate_of_segment_sample": 1 / 3,
+            "price_midpoint_q1": 38.75,
+            "price_midpoint_median": 42.5,
+            "price_midpoint_q3": 46.25,
+            "segment_queries": [
+                {"query": "Mini Meat Grinder", "fetched_unique": 2, "sample_units_total": 400, "top_product_units": 300},
+                {"query": "Electric Food Shredder", "fetched_unique": 2, "sample_units_total": 20, "top_product_units": 20},
+            ],
+        },
+        "limitations": [],
+        "conflicts": [],
+    }
+    report = web_app.fastmoss_deterministic_quality_fallback(manifest)
+    assert "样本销量明显向少数商品集中" in report
+    assert "Mini Meat Grinder 的样本销量合计为 400" in report
+    assert "把 Mini Meat Grinder 放到更高的验证优先级" in report
+    assert "中间 50%" in report and "38.75–46.25" in report and "中位数约 42.5" in report
+    assert "**先定方向：** 优先围绕 Mini Meat Grinder" in report
+    assert "不能把配件、不同规格和不同使用场景的商品混成一个价格带" in report
 
 
 def test_fastmoss_l2_market_metrics_are_only_upstream_category_reference() -> None:
@@ -1719,6 +1769,7 @@ if __name__ == "__main__":
     test_fastmoss_product_phase_waits_for_all_category_and_segment_searches()
     test_fastmoss_product_search_defaults_force_category_pages_and_short_segment_queries()
     test_fastmoss_evidence_manifest_separates_total_fetched_overlap_and_conflicts()
+    test_fastmoss_deterministic_fallback_contains_analysis_and_prioritized_advice()
     test_fastmoss_l2_market_metrics_are_only_upstream_category_reference()
     test_fastmoss_failed_category_page_is_not_counted_as_coverage()
     test_fastmoss_metadata_detects_unsorted_page_and_string_product_ids()
