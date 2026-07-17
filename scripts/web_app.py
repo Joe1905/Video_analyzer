@@ -4468,6 +4468,38 @@ FASTMOSS_WORKFLOW_PHASES: dict[str, tuple[tuple[str, frozenset[str]], ...]] = {
     ),
 }
 
+# Evidence extraction is deliberately broader than any one playbook.  Every
+# current FastMoss workflow tool belongs to one family so a successful call can
+# never silently disappear from the report ledger.  Unknown future tools still
+# receive a provenance envelope and are marked as needing a parser.
+FASTMOSS_EVIDENCE_TOOL_FAMILIES: dict[str, frozenset[str]] = {
+    "category": frozenset({
+        "search_category_by_words", "market_category_analysis", "market_category_ranking",
+    }),
+    "product": frozenset({
+        "product_search", "product_rank_top_selling", "product_rank_new_listed",
+        "product_detail_info", "product_overview", "product_sales_trend",
+        "product_investment", "product_review_list", "product_creator_analysis",
+        "product_video_list", "product_category_info", "product_sku",
+    }),
+    "shop": frozenset({
+        "shop_search", "shop_rank_top_selling", "shop_base_info", "shop_data_trends",
+        "shop_sale_analysis", "shop_investment_analysis", "shop_product_analysis",
+        "shop_creator_analysis", "shop_video_analysis", "shop_live_analysis",
+    }),
+    "creator": frozenset({
+        "creator_search", "creator_rank_top_ecommerce", "creator_rank_top_growth",
+        "creator_rank_top_potential", "creator_profile_overview", "creator_cargo_summary",
+        "creator_data_trends", "creator_product_list",
+    }),
+    "video": frozenset({
+        "video_search", "video_detail_analysis", "video_data_trends", "video_script_info",
+    }),
+    "live": frozenset({"live_search"}),
+    "ad": frozenset({"ad_data_overview", "ad_search"}),
+}
+FASTMOSS_SUPPORTED_EVIDENCE_TOOLS = frozenset().union(*FASTMOSS_EVIDENCE_TOOL_FAMILIES.values())
+
 # FastMoss product research needs several complementary calls in each phase.  Each
 # inner set is one required capability; tools inside a set are alternatives.  Keep
 # this provider-specific so SellerSprite's aggregate-tool workflow is unaffected.
@@ -6170,6 +6202,137 @@ def _fastmoss_fact_mapping(value: Any, max_items: int = 20) -> Any:
     return str(value)
 
 
+def _fastmoss_bounded_family_payload(value: Any, max_chars: int = 12000) -> Any:
+    compact = _fastmoss_fact_mapping(value, 8)
+    if len(json.dumps(compact, ensure_ascii=False, separators=(",", ":"))) <= max_chars:
+        return compact
+    if not isinstance(value, dict):
+        return {"sample": _fastmoss_fact_mapping(value, 2), "truncated_for_ledger": True}
+    summary: dict[str, Any] = {}
+    collections: dict[str, Any] = {}
+    for key, item in value.items():
+        if isinstance(item, (str, int, float, bool)) or item is None:
+            summary[str(key)] = item
+        elif isinstance(item, list):
+            collections[str(key)] = {
+                "returned_count": len(item),
+                "sample": _fastmoss_fact_mapping(item[:2], 2),
+            }
+        elif isinstance(item, dict):
+            nested_lists = {
+                str(child_key): {
+                    "returned_count": len(child_value),
+                    "sample": _fastmoss_fact_mapping(child_value[:2], 2),
+                }
+                for child_key, child_value in item.items() if isinstance(child_value, list)
+            }
+            scalar_values = {
+                str(child_key): child_value for child_key, child_value in item.items()
+                if isinstance(child_value, (str, int, float, bool)) or child_value is None
+            }
+            collections[str(key)] = {"summary": scalar_values, "collections": nested_lists}
+    return {
+        "summary": summary,
+        "collections": collections,
+        "top_level_keys": [str(key) for key in value.keys()],
+        "truncated_for_ledger": True,
+    }
+
+
+def _fastmoss_tool_family(unprefixed_tool_name: str) -> str:
+    for family, names in FASTMOSS_EVIDENCE_TOOL_FAMILIES.items():
+        if unprefixed_tool_name in names:
+            return family
+    return "unknown"
+
+
+def _fastmoss_entity_refs(arguments: Any, value: Any) -> list[dict[str, str]]:
+    """Collect stable entity identifiers without guessing from titles or brands."""
+    key_types = {
+        "categoryid": "category", "categoryidlevel1": "category", "categoryidlevel2": "category",
+        "categoryidlevel3": "category", "productid": "product", "goodsid": "product",
+        "itemid": "product", "shopid": "shop", "sellerid": "shop", "creatorid": "creator",
+        "creatoruid": "creator", "authorid": "creator", "videoid": "video",
+        "liveid": "live", "adid": "ad",
+    }
+    refs: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def visit(node: Any) -> None:
+        if len(refs) >= 40:
+            return
+        if isinstance(node, dict):
+            for key, item in node.items():
+                normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
+                entity_type = key_types.get(normalized)
+                if entity_type and isinstance(item, (str, int)) and str(item).strip():
+                    entity_id = str(item).strip()
+                    marker = (entity_type, entity_id)
+                    if marker not in seen:
+                        seen.add(marker)
+                        refs.append({"type": entity_type, "id": entity_id})
+                if isinstance(item, (dict, list)):
+                    visit(item)
+        elif isinstance(node, list):
+            for item in node:
+                visit(item)
+
+    visit(arguments)
+    visit(value)
+    return refs
+
+
+def _fastmoss_returned_count(value: Any) -> int | None:
+    if isinstance(value, list):
+        return len(value)
+    if not isinstance(value, dict):
+        return None
+    preferred = (
+        "list", "items", "products", "shops", "creators", "videos", "lives", "ads",
+        "reviews", "ranked_categories", "trend_series", "daily_trend",
+    )
+    for key in preferred:
+        item = value.get(key)
+        if isinstance(item, list):
+            return len(item)
+        if isinstance(item, dict) and isinstance(item.get("list"), list):
+            return len(item["list"])
+    return None
+
+
+def fastmoss_tool_evidence_envelope(
+    tool_name: str,
+    arguments: dict[str, Any],
+    normalized_result: dict[str, Any],
+    value: Any,
+) -> dict[str, Any]:
+    """Create a provenance envelope for every FastMoss call, including empty/error calls."""
+    unprefixed = split_prefixed_tool_id(tool_name)[1]
+    metadata = normalized_result.get("evidence_metadata") if isinstance(normalized_result.get("evidence_metadata"), dict) else {}
+    family = _fastmoss_tool_family(unprefixed)
+    returned_count = _fastmoss_returned_count(value)
+    reported_total = metadata.get("reported_total")
+    if reported_total is None:
+        total = _fastmoss_number(_fastmoss_find_first(value, {"total", "totalcount", "recordcount"}))
+        reported_total = int(total) if total is not None and total.is_integer() else total
+    envelope = {
+        "source_tool": tool_name,
+        "tool_family": family,
+        "parser_status": "supported" if unprefixed in FASTMOSS_SUPPORTED_EVIDENCE_TOOLS else "unsupported_parser",
+        "data_state": mcp_result_data_state(normalized_result),
+        "entity_refs": _fastmoss_entity_refs(arguments, value),
+        "region": metadata.get("region"),
+        "period": metadata.get("returned_date_range") or metadata.get("requested_period") or metadata.get("requested_date_range"),
+        "scope": metadata.get("scope"),
+        "metric_grain": unprefixed,
+        "arguments": _fastmoss_fact_mapping(arguments, 12),
+        "returned_count": returned_count,
+        "reported_total": reported_total,
+        "raw_result_available": value is not None,
+    }
+    return {key: item for key, item in envelope.items() if item not in (None, "", {}, [])}
+
+
 def _fastmoss_product_fact(record: dict[str, Any]) -> dict[str, Any]:
     product = record.get("product") if isinstance(record.get("product"), dict) else record
     sales = record.get("sales_summary") if isinstance(record.get("sales_summary"), dict) else record
@@ -6241,9 +6404,27 @@ def fastmoss_tool_evidence_facts(
         "page": metadata.get("page"),
     }
     base = {key: item for key, item in base.items() if item not in (None, "", {}, [])}
+    argument_refs = _fastmoss_entity_refs(arguments, None)
+    if argument_refs:
+        base["entity_type"] = argument_refs[0]["type"]
+        base["entity_id"] = argument_refs[0]["id"]
     facts: list[dict[str, Any]] = []
 
-    if unprefixed == "market_category_analysis" and isinstance(value, dict):
+    # Empty is an observed state, not a collection of observed zero-valued
+    # metrics.  Its provenance remains available in evidence_envelope.
+    if base.get("data_state") != "data":
+        return facts
+
+    if unprefixed == "search_category_by_words" and isinstance(value, dict):
+        candidates = value.get("categories")
+        if not isinstance(candidates, list) and isinstance(value.get("result"), dict):
+            candidates = value["result"].get("categories")
+        facts.append({
+            **base,
+            "dimension": "category_candidates",
+            "categories": _fastmoss_fact_mapping(candidates or [], 20),
+        })
+    elif unprefixed == "market_category_analysis" and isinstance(value, dict):
         analysis_type = str(value.get("analysis_type") or "category_analysis")
         fact = {
             **base,
@@ -6313,6 +6494,76 @@ def fastmoss_tool_evidence_facts(
             "returned_reviews": len(reviews),
             "state": "empty" if not reviews else "data",
         })
+    elif unprefixed == "product_creator_analysis" and isinstance(value, dict):
+        linked = value.get("linked_creators") if isinstance(value.get("linked_creators"), dict) else {}
+        creator_rows = linked.get("list") if isinstance(linked.get("list"), list) else []
+        top_creators: list[dict[str, Any]] = []
+        for row in creator_rows[:10]:
+            if not isinstance(row, dict):
+                continue
+            creator = row.get("creator") if isinstance(row.get("creator"), dict) else {}
+            contribution = row.get("product_contribution") if isinstance(row.get("product_contribution"), dict) else {}
+            performance = row.get("creator_cumulative_performance") if isinstance(row.get("creator_cumulative_performance"), dict) else {}
+            top_creators.append({
+                "creator_uid": creator.get("creator_uid"),
+                "creator_name": creator.get("creator_name"),
+                "creator_handle": creator.get("creator_handle"),
+                "follower_count": creator.get("follower_count"),
+                "creator_category": _fastmoss_fact_mapping(creator.get("creator_category") or {}, 4),
+                "product_contribution": _fastmoss_fact_mapping(contribution, 12),
+                "creator_cumulative_performance": _fastmoss_fact_mapping(performance, 12),
+            })
+        facts.append({
+            **base,
+            "dimension": "product_creator_analysis",
+            "product_id": _fastmoss_find_first(arguments, {"productid", "goodsid", "itemid"}),
+            "reported_creator_total": linked.get("total"),
+            "returned_creators": len(creator_rows),
+            "creator_summary": _fastmoss_fact_mapping(value.get("creator_summary") or {}, 20),
+            "top_creators": _fastmoss_fact_mapping(top_creators, 10),
+            "metric_semantics": {
+                "follower_tier_distribution": "creator_count_by_follower_tier_not_gmv_contribution",
+                "top_creators": "returned_top_n_for_this_product_only",
+            },
+        })
+    elif unprefixed == "product_video_list" and isinstance(value, dict):
+        video_rows = value.get("videos") if isinstance(value.get("videos"), list) else []
+        top_videos: list[dict[str, Any]] = []
+        for row in video_rows[:10]:
+            if not isinstance(row, dict):
+                continue
+            meta = row.get("video_meta") if isinstance(row.get("video_meta"), dict) else {}
+            top_videos.append({
+                "video_id": row.get("video_id"),
+                "creator": _fastmoss_fact_mapping(row.get("creator") or {}, 6),
+                "engagement_metrics": _fastmoss_fact_mapping(row.get("engagement_metrics") or {}, 10),
+                "product_contribution": _fastmoss_fact_mapping(row.get("product_contribution") or {}, 10),
+                "traffic_flags": _fastmoss_fact_mapping(row.get("traffic_flags") or {}, 6),
+                "video_meta": {
+                    key: meta.get(key) for key in ("caption_text", "duration_seconds", "published_at", "region")
+                    if meta.get(key) not in (None, "")
+                },
+            })
+        facts.append({
+            **base,
+            "dimension": "product_videos",
+            "product_id": value.get("product_id") or _fastmoss_find_first(arguments, {"productid", "goodsid", "itemid"}),
+            "time_range_days": value.get("time_range_days") or _fastmoss_find_first(arguments, {"timerangedays"}),
+            "reported_video_total": value.get("total"),
+            "returned_videos": len(video_rows),
+            "top_videos": top_videos,
+            "metric_semantics": "returned_top_n_for_this_product_not_category_content_preference",
+        })
+
+    if not facts and unprefixed in FASTMOSS_SUPPORTED_EVIDENCE_TOOLS and isinstance(value, (dict, list)):
+        family = _fastmoss_tool_family(unprefixed)
+        facts.append({
+            **base,
+            "dimension": unprefixed,
+            "tool_family": family,
+            "payload": _fastmoss_bounded_family_payload(value),
+            "metric_semantics": f"provider_payload_for_{family}_entity_only",
+        })
     return facts
 
 
@@ -6377,9 +6628,14 @@ def annotate_fastmoss_tool_result(
     normalized_result["evidence_metadata"] = fastmoss_tool_evidence_metadata(
         tool_name, arguments, normalized_result, raw_result
     )
+    normalized_result["evidence_envelope"] = fastmoss_tool_evidence_envelope(
+        tool_name, arguments, normalized_result, value
+    )
     evidence_facts = fastmoss_tool_evidence_facts(tool_name, arguments, normalized_result, value)
     if evidence_facts:
         normalized_result["evidence_facts"] = evidence_facts
+    else:
+        normalized_result.pop("evidence_facts", None)
     product_records = fastmoss_extract_product_records(value)
     if product_records:
         normalized_result["evidence_product_records"] = product_records[:10]
@@ -6412,6 +6668,208 @@ def mcp_evidence_quality_summary(assistant_msg: Message) -> dict[str, list[str]]
     return summary
 
 
+def _fastmoss_call_arguments_for_result(
+    assistant_msg: Message,
+    result_index: int,
+    tool_name: str,
+) -> dict[str, Any]:
+    calls = list(assistant_msg.tool_calls or [])
+    if result_index < len(calls):
+        call = calls[result_index]
+        if str(call.get("function", {}).get("name") or "") == tool_name:
+            return _tool_call_arguments(call)
+    matching = [
+        call for call in calls
+        if str(call.get("function", {}).get("name") or "") == tool_name
+    ]
+    occurrence = sum(
+        1 for item in list(assistant_msg.tool_results or [])[:result_index]
+        if isinstance(item, dict) and str(item.get("tool_name") or "") == tool_name
+    )
+    return _tool_call_arguments(matching[occurrence]) if occurrence < len(matching) else {}
+
+
+def _fastmoss_fact_entity_ref(fact: dict[str, Any]) -> dict[str, str] | None:
+    if fact.get("entity_type") and fact.get("entity_id") not in (None, ""):
+        return {"type": str(fact["entity_type"]), "id": str(fact["entity_id"])}
+    candidates = (
+        ("product_id", "product"), ("shop_id", "shop"), ("seller_id", "shop"),
+        ("creator_uid", "creator"), ("creator_id", "creator"),
+        ("video_id", "video"), ("live_id", "live"), ("category_id", "category"),
+    )
+    for key, entity_type in candidates:
+        if fact.get(key) not in (None, ""):
+            return {"type": entity_type, "id": str(fact[key])}
+    return None
+
+
+def fastmoss_build_entity_bundles(
+    envelopes: list[dict[str, Any]],
+    facts: list[dict[str, Any]],
+    conflicts: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Group provenance strictly by stable IDs; never by title or brand similarity."""
+    bundles: dict[tuple[str, str], dict[str, Any]] = {}
+
+    def ensure(ref: dict[str, Any]) -> dict[str, Any] | None:
+        entity_type = str(ref.get("type") or "").strip()
+        entity_id = str(ref.get("id") or "").strip()
+        if not entity_type or not entity_id:
+            return None
+        key = (entity_type, entity_id)
+        return bundles.setdefault(key, {
+            "entity_type": entity_type,
+            "entity_id": entity_id,
+            "source_calls": set(),
+            "dimensions": set(),
+            "periods": [],
+            "data_states": set(),
+            "fact_ids": [],
+            "conflicts": [],
+        })
+
+    envelopes_by_call: dict[int, dict[str, Any]] = {}
+    for envelope in envelopes:
+        call_index = int(envelope.get("source_call_index") or 0)
+        if call_index:
+            envelopes_by_call[call_index] = envelope
+        for ref in envelope.get("entity_refs") or []:
+            if not isinstance(ref, dict):
+                continue
+            bundle = ensure(ref)
+            if bundle is None:
+                continue
+            if call_index:
+                bundle["source_calls"].add(call_index)
+            bundle["dimensions"].add(str(envelope.get("metric_grain") or envelope.get("source_tool") or "tool"))
+            bundle["data_states"].add(str(envelope.get("data_state") or "unknown"))
+            period = envelope.get("period")
+            if period not in (None, "", {}, []) and period not in bundle["periods"]:
+                bundle["periods"].append(period)
+
+    for fact in facts:
+        call_index = int(fact.get("source_call_index") or 0)
+        refs: list[dict[str, Any]] = []
+        primary = _fastmoss_fact_entity_ref(fact)
+        if primary:
+            refs.append(primary)
+        if not refs and call_index in envelopes_by_call:
+            refs.extend(envelopes_by_call[call_index].get("entity_refs") or [])
+        for ref in refs:
+            if not isinstance(ref, dict):
+                continue
+            bundle = ensure(ref)
+            if bundle is None:
+                continue
+            if call_index:
+                bundle["source_calls"].add(call_index)
+            bundle["dimensions"].add(str(fact.get("dimension") or "fact"))
+            fact_id = str(fact.get("fact_id") or "")
+            if fact_id and fact_id not in bundle["fact_ids"]:
+                bundle["fact_ids"].append(fact_id)
+
+    for conflict in conflicts:
+        product_id = str(conflict.get("product_id") or "").strip()
+        if not product_id:
+            continue
+        bundle = ensure({"type": "product", "id": product_id})
+        if bundle is not None:
+            bundle["conflicts"].append(conflict)
+
+    output: list[dict[str, Any]] = []
+    for key in sorted(bundles):
+        bundle = bundles[key]
+        output.append({
+            **bundle,
+            "source_calls": sorted(bundle["source_calls"]),
+            "dimensions": sorted(bundle["dimensions"]),
+            "data_states": sorted(bundle["data_states"]),
+        })
+    return output
+
+
+def fastmoss_analysis_targets(
+    route: dict[str, Any] | None,
+    user_text: str,
+    category_products: list[dict[str, Any]],
+    segment_products: list[dict[str, Any]],
+    entity_bundles: list[dict[str, Any]],
+    conflicts: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    """Choose stable report targets without merging similarly named entities."""
+    playbook = str((route or {}).get("playbook") or "product")
+    conflicted = {
+        str(item.get("product_id") or "") for item in conflicts
+        if str(item.get("severity") or "") == "high"
+    }
+    targets: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(entity_type: str, entity_id: Any, role: str) -> None:
+        marker = (entity_type, str(entity_id or "").strip())
+        if not marker[1] or marker in seen:
+            return
+        seen.add(marker)
+        targets.append({"entity_type": marker[0], "entity_id": marker[1], "role": role})
+
+    explicit_ids = re.findall(r"(?<!\d)\d{16,20}(?!\d)", str(user_text or ""))
+    bundle_types = {(item.get("entity_type"), item.get("entity_id")) for item in entity_bundles}
+    for entity_id in explicit_ids:
+        for entity_type in ("product", "shop", "creator", "video", "live"):
+            if (entity_type, entity_id) in bundle_types:
+                add(entity_type, entity_id, "user_specified")
+
+    if playbook in {"product", "pricing"}:
+        queries = []
+        for record in segment_products:
+            query = str(record.get("query") or "").strip()
+            if query and query not in queries:
+                queries.append(query)
+        for query in queries:
+            candidates = [
+                record for record in segment_products
+                if str(record.get("query") or "").strip() == query
+                and str(record.get("product_id") or "") not in conflicted
+            ]
+            if candidates:
+                add("product", candidates[0].get("product_id"), f"segment_representative:{query}")
+            if len([item for item in targets if item["entity_type"] == "product"]) >= 2:
+                break
+        if not any(item["entity_type"] == "product" for item in targets):
+            for record in category_products:
+                if str(record.get("product_id") or "") not in conflicted:
+                    add("product", record.get("product_id"), "category_representative")
+                if len([item for item in targets if item["entity_type"] == "product"]) >= 2:
+                    break
+    elif playbook == "shop":
+        for bundle in entity_bundles:
+            if bundle.get("entity_type") == "shop":
+                add("shop", bundle.get("entity_id"), "shop_target")
+                break
+    elif playbook in {"content_dissect", "content_strategy"}:
+        for entity_type, role, limit in (("product", "content_product", 1), ("video", "content_video", 3)):
+            count = 0
+            for bundle in entity_bundles:
+                if bundle.get("entity_type") == entity_type:
+                    add(entity_type, bundle.get("entity_id"), role)
+                    count += 1
+                    if count >= limit:
+                        break
+    elif playbook == "creator":
+        for bundle in entity_bundles:
+            if bundle.get("entity_type") == "creator":
+                add("creator", bundle.get("entity_id"), "creator_candidate")
+                if len([item for item in targets if item["entity_type"] == "creator"]) >= 5:
+                    break
+    elif playbook == "competitor" and not targets:
+        for preferred in ("product", "shop"):
+            match = next((item for item in entity_bundles if item.get("entity_type") == preferred), None)
+            if match:
+                add(preferred, match.get("entity_id"), "competitor_target")
+                break
+    return targets
+
+
 def fastmoss_evidence_manifest(
     assistant_msg: Message,
     user_text: str = "",
@@ -6434,19 +6892,51 @@ def fastmoss_evidence_manifest(
     conflicts: list[dict[str, str]] = []
     sort_anomalies: list[str] = []
     evidence_facts: list[dict[str, Any]] = []
+    evidence_envelopes: list[dict[str, Any]] = []
 
-    for item in assistant_msg.tool_results or []:
+    for result_index, item in enumerate(assistant_msg.tool_results or []):
         if not isinstance(item, dict) or not isinstance(item.get("result"), dict):
             continue
         tool_name = str(item.get("tool_name") or "tool")
-        result = item["result"]
+        if split_prefixed_tool_id(tool_name)[0] != "fastmoss":
+            continue
+        result = dict(item["result"])
+        arguments = _fastmoss_call_arguments_for_result(assistant_msg, result_index, tool_name)
+        if not isinstance(result.get("evidence_envelope"), dict):
+            value = _fastmoss_response_value(None, result)
+            if not isinstance(result.get("evidence_metadata"), dict):
+                result["evidence_metadata"] = fastmoss_tool_evidence_metadata(
+                    tool_name, arguments, result, None
+                )
+            result["evidence_envelope"] = fastmoss_tool_evidence_envelope(
+                tool_name, arguments, result, value
+            )
+            if not isinstance(result.get("evidence_facts"), list) and value is not None:
+                rebuilt_facts = fastmoss_tool_evidence_facts(tool_name, arguments, result, value)
+                if rebuilt_facts:
+                    result["evidence_facts"] = rebuilt_facts
+            if not isinstance(result.get("evidence_product_records"), list) and value is not None:
+                rebuilt_records = fastmoss_extract_product_records(value)
+                if rebuilt_records:
+                    result["evidence_product_records"] = rebuilt_records[:10]
+        envelope = result.get("evidence_envelope") if isinstance(result.get("evidence_envelope"), dict) else {
+            "source_tool": tool_name,
+            "data_state": mcp_result_data_state(result),
+            "parser_status": "unsupported_parser",
+        }
+        envelope = {**envelope, "source_call_index": result_index + 1}
+        evidence_envelopes.append(envelope)
         metadata = result.get("evidence_metadata") if isinstance(result.get("evidence_metadata"), dict) else {}
         records = result.get("evidence_product_records") if isinstance(result.get("evidence_product_records"), list) else []
-        metadata_rows.append({"tool": tool_name, **metadata})
+        metadata_rows.append({"tool": tool_name, "source_call_index": result_index + 1, **metadata})
         result_facts = result.get("evidence_facts") if isinstance(result.get("evidence_facts"), list) else []
-        for fact in result_facts:
-            if isinstance(fact, dict):
-                evidence_facts.append(fact)
+        for fact_index, fact in enumerate(result_facts):
+            if isinstance(fact, dict) and str(fact.get("data_state") or "data") == "data":
+                evidence_facts.append({
+                    **fact,
+                    "fact_id": str(fact.get("fact_id") or f"fm-c{result_index + 1}-f{fact_index + 1}"),
+                    "source_call_index": result_index + 1,
+                })
         scope = str(metadata.get("scope") or "")
         if scope == "category_head":
             page_number = int(metadata.get("page") or 1)
@@ -6467,7 +6957,13 @@ def fastmoss_evidence_manifest(
             if not isinstance(record, dict) or not record.get("product_id"):
                 continue
             product_id = str(record["product_id"])
-            enriched = {**record, "source_tool": tool_name, "scope": scope, "query": metadata.get("query")}
+            enriched = {
+                **record,
+                "source_tool": tool_name,
+                "source_call_index": result_index + 1,
+                "scope": scope,
+                "query": metadata.get("query"),
+            }
             all_records.setdefault(product_id, []).append(enriched)
             if scope == "category_head":
                 existing = category_records.get(product_id)
@@ -8427,7 +8923,9 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     else:
                         raw_result = execute_prefixed_tool(fn_name, fn_args, default_region)
                         normalized_result = normalize_prefixed_tool_result(fn_name, raw_result)
-                        normalized_result = annotate_fastmoss_tool_result(fn_name, fn_args, normalized_result, raw_result)
+                    normalized_result = annotate_fastmoss_tool_result(
+                        fn_name, fn_args, normalized_result, raw_result
+                    )
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc["id"],
