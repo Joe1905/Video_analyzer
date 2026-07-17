@@ -7108,6 +7108,311 @@ def fastmoss_analysis_targets(
     return targets
 
 
+def _fastmoss_compact_argument_summary(arguments: Any) -> dict[str, Any]:
+    """Keep only parameters that determine an evidence call's object and grain."""
+    if not isinstance(arguments, dict):
+        return {}
+    allowed = {
+        "categoryid", "categoryidlevel1", "categoryidlevel2", "categoryidlevel3",
+        "productid", "goodsid", "itemid", "shopid", "sellerid", "creatorid",
+        "creatoruid", "authorid", "videoid", "liveid", "adid", "keyword",
+        "keywords", "query", "searchword", "page", "pagesize", "analysistype",
+        "period", "daterange", "startdate", "enddate", "datetype", "datevalue",
+    }
+    summary: dict[str, Any] = {}
+    for key, value in arguments.items():
+        normalized_key = re.sub(r"[^a-z0-9]", "", str(key).lower())
+        if normalized_key == "filter" and isinstance(value, dict):
+            filtered = {
+                str(child_key): child_value for child_key, child_value in value.items()
+                if re.sub(r"[^a-z0-9]", "", str(child_key).lower()) in allowed
+                and child_value not in (None, "", {}, [])
+            }
+            if filtered:
+                summary[str(key)] = filtered
+        elif normalized_key in allowed and value not in (None, "", {}, []):
+            summary[str(key)] = value
+    return summary
+
+
+def fastmoss_coverage_summary(
+    envelopes: list[dict[str, Any]],
+    facts: list[dict[str, Any]],
+    category_head: dict[str, Any],
+    segment_head: dict[str, Any],
+) -> dict[str, Any]:
+    """Build deterministic call/list coverage without treating omitted rows as empty."""
+    states = {"data": 0, "empty": 0, "error": 0}
+    empty_results: list[dict[str, Any]] = []
+    page_coverage: list[dict[str, Any]] = []
+    envelope_by_call: dict[int, dict[str, Any]] = {}
+    for envelope in envelopes:
+        call_index = int(envelope.get("source_call_index") or 0)
+        if call_index:
+            envelope_by_call[call_index] = envelope
+        state = str(envelope.get("data_state") or "error")
+        states[state if state in states else "error"] += 1
+        arguments = _fastmoss_compact_argument_summary(envelope.get("arguments"))
+        if state == "empty":
+            empty_results.append({
+                "source_call_index": call_index,
+                "source_tool": envelope.get("source_tool"),
+                "metric_grain": envelope.get("metric_grain"),
+                "entity_refs": [
+                    ref for ref in (envelope.get("entity_refs") or [])
+                    if isinstance(ref, dict) and _fastmoss_valid_entity_id(ref.get("id"))
+                ],
+                "arguments": arguments,
+                "meaning": "provider_returned_no_records_for_this_exact_request",
+            })
+        if str(envelope.get("metric_grain") or "") == "product_search":
+            page = arguments.get("page")
+            if page is None and isinstance(arguments.get("filter"), dict):
+                page = arguments["filter"].get("page")
+            page_coverage.append({
+                "source_call_index": call_index,
+                "scope": envelope.get("scope"),
+                "query": arguments.get("keywords") or arguments.get("query") or arguments.get("searchword"),
+                "page": page,
+                "data_state": state,
+                "returned_count": envelope.get("returned_count"),
+                "reported_total": envelope.get("reported_total"),
+            })
+
+    list_dimensions = {"product_sample", "top_products", "new_products", "product_detail"}
+    product_search_rows = 0
+    product_search_ids: set[str] = set()
+    product_list_rows = 0
+    product_list_ids: set[str] = set()
+    for fact in facts:
+        dimension = str(fact.get("dimension") or "")
+        if dimension not in list_dimensions:
+            continue
+        products = [item for item in (fact.get("products") or []) if isinstance(item, dict)]
+        call_index = int(fact.get("source_call_index") or 0)
+        envelope = envelope_by_call.get(call_index, {})
+        returned_count = int(fact.get("returned_count") or envelope.get("returned_count") or len(products))
+        ids = {
+            str(item.get("product_id")) for item in products
+            if _fastmoss_valid_entity_id(item.get("product_id"))
+        }
+        product_list_rows += returned_count
+        product_list_ids.update(ids)
+        if dimension == "product_sample":
+            product_search_rows += returned_count
+            product_search_ids.update(ids)
+
+    return {
+        "call_count": len(envelopes),
+        "data_call_count": states["data"],
+        "empty_call_count": states["empty"],
+        "error_call_count": states["error"],
+        "category_search": {
+            "target_pages": category_head.get("target_pages"),
+            "completed_pages": category_head.get("completed_pages") or [],
+            "returned_rows": sum(
+                int(item.get("returned_count") or 0) for item in page_coverage
+                if item.get("scope") == "category_head" and item.get("data_state") == "data"
+            ),
+            "unique_products": category_head.get("fetched_unique") or 0,
+            "reported_total": category_head.get("reported_total"),
+        },
+        "segment_search": {
+            "queries": segment_head.get("queries") or {},
+            "unique_products": segment_head.get("fetched_unique") or 0,
+        },
+        "all_product_search_calls": {
+            "returned_rows": product_search_rows,
+            "unique_products": len(product_search_ids),
+        },
+        "all_product_list_calls": {
+            "returned_rows": product_list_rows,
+            "unique_products": len(product_list_ids),
+        },
+        "product_search_pages": page_coverage,
+        "exact_empty_results": empty_results,
+    }
+
+
+def _fastmoss_metric_unit(metric: str) -> str:
+    normalized = str(metric or "").lower()
+    if normalized.endswith("percent") or "_share_percent" in normalized or "_yoy_percent" in normalized:
+        return "percent"
+    if "gmv" in normalized or "revenue" in normalized or "price" in normalized:
+        return "provider_currency"
+    if "units_sold" in normalized:
+        return "units"
+    if normalized.endswith("count") or "_count_" in normalized:
+        return "count"
+    if normalized == "rank" or normalized.endswith("_rank"):
+        return "rank"
+    if "score" in normalized:
+        return "score"
+    if "day" in normalized:
+        return "days"
+    return "number"
+
+
+def fastmoss_metric_registry(facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Normalize observed numeric values with entity, period, unit and provenance."""
+    registry: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str, str]] = set()
+
+    def add(
+        fact: dict[str, Any], entity_type: str, entity_id: Any, metric: str, value: Any,
+        *, period: Any = None, scope: Any = None, context: dict[str, Any] | None = None,
+    ) -> None:
+        number = _fastmoss_number(value)
+        if number is None or not _fastmoss_valid_entity_id(entity_id):
+            return
+        entity_text = str(entity_id).strip()
+        metric_text = str(metric).strip()
+        period_value = fact.get("period") if period is None else period
+        period_key = json.dumps(period_value, ensure_ascii=False, sort_keys=True, default=str)
+        marker = (str(entity_type), entity_text, metric_text, str(number), period_key)
+        if marker in seen:
+            return
+        seen.add(marker)
+        item = {
+            "metric_id": f"fm-m{len(registry) + 1}",
+            "entity_type": str(entity_type),
+            "entity_id": entity_text,
+            "metric": metric_text,
+            "value": number,
+            "unit": _fastmoss_metric_unit(metric_text),
+            "period": period_value,
+            "scope": fact.get("scope") if scope is None else scope,
+            "source_call_index": fact.get("source_call_index"),
+            "source_tool": fact.get("source_tool"),
+            "source_fact_id": fact.get("fact_id"),
+        }
+        if context:
+            item["context"] = context
+        registry.append({key: item_value for key, item_value in item.items() if item_value not in (None, "", {}, [])})
+
+    for fact in facts:
+        dimension = str(fact.get("dimension") or "")
+        if dimension == "category_candidates":
+            for candidate in fact.get("categories") or []:
+                if not isinstance(candidate, dict):
+                    continue
+                category_id = _fastmoss_find_first(candidate, {"categoryid", "categoryidlevel3", "categoryidlevel2", "categoryidlevel1"})
+                for key, value in candidate.items():
+                    if isinstance(value, (int, float)) and not isinstance(value, bool):
+                        add(fact, "category", category_id, str(key), value, context={"category_name": candidate.get("cn_name") or candidate.get("category_name")})
+        elif dimension in {"category_trend", "category_analysis"}:
+            category_id = fact.get("category_id") or _fastmoss_find_first(fact.get("category") or {}, {"categoryid"})
+            for group in ("summary_metrics", "scale_metrics", "growth_metrics", "concentration_metrics"):
+                values = fact.get(group)
+                if not isinstance(values, dict):
+                    continue
+                for key, value in values.items():
+                    add(fact, "category", category_id, str(key), value, context={"analysis_type": fact.get("analysis_type")})
+        elif dimension == "category_channel_ranking":
+            for category in fact.get("categories") or []:
+                if not isinstance(category, dict):
+                    continue
+                category_id = _fastmoss_find_first(category, {"categoryid"})
+                context = {"category_name": category.get("category_name"), "category_level": category.get("category_level")}
+                for key, value in category.items():
+                    if isinstance(value, (int, float)) and not isinstance(value, bool):
+                        add(fact, "category", category_id, str(key), value, context=context)
+                for group_name in ("channel_gmv_share", "channel_units_sold_share"):
+                    group = category.get(group_name)
+                    if isinstance(group, dict):
+                        for key, value in group.items():
+                            add(fact, "category", category_id, f"{group_name}.{key}", value, context=context)
+        elif dimension in {"product_sample", "top_products", "new_products", "product_detail"}:
+            for product in fact.get("products") or []:
+                if not isinstance(product, dict):
+                    continue
+                product_id = product.get("product_id")
+                context = {"title": str(product.get("title") or "")[:120], "query": fact.get("query")}
+                for key, value in product.items():
+                    if isinstance(value, (int, float)) and not isinstance(value, bool):
+                        add(fact, "product", product_id, str(key), value, context=context)
+        elif dimension == "product_overview":
+            product_id = fact.get("product_id") or fact.get("entity_id")
+            for group_name in ("ads_distribution", "channel_distribution", "content_distribution"):
+                group = fact.get(group_name)
+                if not isinstance(group, dict):
+                    continue
+                for key in ("total_gmv", "total_units_sold"):
+                    add(fact, "product", product_id, f"{group_name}.{key}", group.get(key))
+                for row in group.get("breakdown") or []:
+                    if not isinstance(row, dict):
+                        continue
+                    label = row.get("traffic_source") or row.get("sales_channel") or row.get("content_type") or "unknown"
+                    for key, value in row.items():
+                        if isinstance(value, (int, float)) and not isinstance(value, bool):
+                            add(fact, "product", product_id, f"{group_name}.{label}.{key}", value)
+        elif dimension == "product_90d_trend":
+            product_id = fact.get("product_id") or fact.get("entity_id")
+            for key, value in (fact.get("trend_summary") or {}).items():
+                add(fact, "product", product_id, f"trend_summary.{key}", value)
+        elif dimension == "product_creator_analysis":
+            product_id = fact.get("product_id") or fact.get("entity_id")
+            add(fact, "product", product_id, "reported_creator_total", fact.get("reported_creator_total"))
+            add(fact, "product", product_id, "returned_creator_count", fact.get("returned_creators"), scope="returned_top_n")
+            summary = fact.get("creator_summary") if isinstance(fact.get("creator_summary"), dict) else {}
+            for row in summary.get("follower_tier_distribution") or []:
+                if isinstance(row, dict):
+                    add(fact, "product", product_id, "creator_follower_tier.creator_count", row.get("creator_count"), context={"follower_tier": row.get("follower_tier"), "semantic": "creator_count_not_gmv_share"})
+            for creator in fact.get("top_creators") or []:
+                if not isinstance(creator, dict):
+                    continue
+                creator_id = creator.get("creator_uid")
+                add(fact, "creator", creator_id, "follower_count", creator.get("follower_count"), context={"subject_product_id": str(product_id)})
+                contribution = creator.get("product_contribution") if isinstance(creator.get("product_contribution"), dict) else {}
+                for key, value in contribution.items():
+                    add(fact, "creator", creator_id, f"product_contribution.{key}", value, context={"subject_product_id": str(product_id), "semantic": "linked_content_not_necessarily_ad_content"})
+        elif dimension == "product_videos":
+            product_id = fact.get("product_id") or fact.get("entity_id")
+            period = {"time_range_days": fact.get("time_range_days")} if fact.get("time_range_days") is not None else fact.get("period")
+            add(fact, "product", product_id, "reported_video_total", fact.get("reported_video_total"), period=period)
+            add(fact, "product", product_id, "returned_video_count", fact.get("returned_videos"), period=period, scope="returned_top_n")
+            for video in fact.get("top_videos") or []:
+                if not isinstance(video, dict):
+                    continue
+                video_id = video.get("video_id")
+                for group_name in ("engagement_metrics", "product_contribution"):
+                    group = video.get(group_name)
+                    if isinstance(group, dict):
+                        for key, value in group.items():
+                            add(fact, "video", video_id, f"{group_name}.{key}", value, period=period, context={"subject_product_id": str(product_id), "scope": "returned_product_video_sample"})
+    return registry
+
+
+def fastmoss_semantic_conflicts(facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Record provider summaries that disagree with their returned detail rows."""
+    conflicts: list[dict[str, Any]] = []
+    for fact in facts:
+        if str(fact.get("dimension") or "") != "product_creator_analysis":
+            continue
+        summary = fact.get("creator_summary") if isinstance(fact.get("creator_summary"), dict) else {}
+        distribution = [row for row in (summary.get("creator_category_distribution") or []) if isinstance(row, dict)]
+        certain = [row for row in distribution if _fastmoss_number(row.get("creator_share_percent")) == 100]
+        if len(certain) != 1:
+            continue
+        summary_category = str(certain[0].get("creator_category") or "").strip().lower()
+        detail_categories = {
+            str((creator.get("creator_category") or {}).get("name") or "").strip().lower()
+            for creator in (fact.get("top_creators") or []) if isinstance(creator, dict)
+        } - {""}
+        if detail_categories and any(category != summary_category for category in detail_categories):
+            conflicts.append({
+                "severity": "high",
+                "entity_type": "product",
+                "entity_id": str(fact.get("product_id") or fact.get("entity_id") or ""),
+                "metric": "creator_category_distribution",
+                "period": fact.get("period"),
+                "conflict_type": "summary_vs_returned_top_rows",
+                "issue": "达人类目汇总与本次返回的 Top-N 达人明细不一致，不得自行择一作为完整分布",
+                "source_fact_ids": [fact.get("fact_id")],
+            })
+    return conflicts
+
+
 def fastmoss_evidence_manifest(
     assistant_msg: Message,
     user_text: str = "",
@@ -7447,28 +7752,54 @@ def fastmoss_evidence_manifest(
         limitations.append("部分接口成功但返回为空，只代表本轮没有记录")
     if quality.get("error"):
         limitations.append("部分接口调用失败，对应维度不可验证")
+    semantic_conflicts = fastmoss_semantic_conflicts(evidence_facts)
+    existing_conflict_keys = {
+        (
+            str(item.get("entity_id") or item.get("product_id") or ""),
+            str(item.get("metric") or ""),
+            json.dumps(item.get("period"), ensure_ascii=False, sort_keys=True, default=str),
+            str(item.get("conflict_type") or item.get("issue") or ""),
+        )
+        for item in conflicts
+    }
+    for conflict in semantic_conflicts:
+        key = (
+            str(conflict.get("entity_id") or conflict.get("product_id") or ""),
+            str(conflict.get("metric") or ""),
+            json.dumps(conflict.get("period"), ensure_ascii=False, sort_keys=True, default=str),
+            str(conflict.get("conflict_type") or conflict.get("issue") or ""),
+        )
+        if key not in existing_conflict_keys:
+            existing_conflict_keys.add(key)
+            conflicts.append(conflict)
     entity_bundles = fastmoss_build_entity_bundles(evidence_envelopes, evidence_facts, conflicts)
     analysis_targets = fastmoss_analysis_targets(
         route, user_text, category_top, segment_top, entity_bundles, conflicts
     )
+    category_head = {
+        "sort": "day28_units_sold desc",
+        "target_pages": target_pages,
+        "attempted_pages": sorted(attempted_category_pages),
+        "completed_pages": sorted(category_pages),
+        "reported_total": int(reported_total) if reported_total is not None else None,
+        "fetched_unique": len(category_records),
+        "coverage_complete": coverage_complete,
+        "products": category_top[:60],
+    }
+    segment_head = {
+        "queries": segment_queries,
+        "fetched_unique": len(segment_records),
+        "products": segment_top[:20],
+    }
+    coverage_summary = fastmoss_coverage_summary(
+        evidence_envelopes, evidence_facts, category_head, segment_head
+    )
+    metric_registry = fastmoss_metric_registry(evidence_facts)
     return {
         "provider": "fastmoss",
         "target_category_path": target_category,
-        "category_head": {
-            "sort": "day28_units_sold desc",
-            "target_pages": target_pages,
-            "attempted_pages": sorted(attempted_category_pages),
-            "completed_pages": sorted(category_pages),
-            "reported_total": int(reported_total) if reported_total is not None else None,
-            "fetched_unique": len(category_records),
-            "coverage_complete": coverage_complete,
-            "products": category_top[:60],
-        },
-        "segment_head": {
-            "queries": segment_queries,
-            "fetched_unique": len(segment_records),
-            "products": segment_top[:20],
-        },
+        "category_head": category_head,
+        "segment_head": segment_head,
         "overlap_product_ids": overlap,
         "market_category_levels": market_levels,
         "quality_states": quality,
@@ -7480,6 +7811,9 @@ def fastmoss_evidence_manifest(
         "entity_bundles": entity_bundles,
         "entity_bundle_count": len(entity_bundles),
         "analysis_targets": analysis_targets,
+        "coverage_summary": coverage_summary,
+        "metric_registry": metric_registry,
+        "metric_registry_count": len(metric_registry),
         "evidence_envelopes": evidence_envelopes,
         "evidence_envelope_count": len(evidence_envelopes),
         "unsupported_parser_count": sum(
@@ -7543,7 +7877,7 @@ def fastmoss_report_packet(manifest: dict[str, Any], route: dict[str, Any] | Non
         compact = dict(fact)
         if isinstance(compact.get("products"), list):
             all_products = [product for product in compact["products"] if isinstance(product, dict)]
-            product_limit = 10
+            product_limit = 5
             if str(compact.get("scope") or "") == "category_head" and int(compact.get("page") or 1) > 1:
                 # Later category pages retain boundary samples.  An empty list
                 # always means the provider returned no rows, never "omitted to
@@ -7609,38 +7943,104 @@ def fastmoss_report_packet(manifest: dict[str, Any], route: dict[str, Any] | Non
             or len(bundle.get("source_calls") or []) > 1
         )
     ][:15]
-    def compact_arguments(envelope: dict[str, Any]) -> dict[str, Any]:
-        arguments = envelope.get("arguments") if isinstance(envelope.get("arguments"), dict) else {}
-        allowed = {
-            "categoryid", "categoryidlevel1", "categoryidlevel2", "categoryidlevel3",
-            "productid", "goodsid", "itemid", "shopid", "sellerid", "creatorid",
-            "creatoruid", "authorid", "videoid", "liveid", "adid", "keyword",
-            "keywords", "query", "searchword", "page", "pagesize", "analysis_type",
-            "analysistype", "period", "daterange", "startdate", "enddate",
-        }
-        summary: dict[str, Any] = {}
-        for key, value in arguments.items():
-            normalized_key = re.sub(r"[^a-z0-9]", "", str(key).lower())
-            if normalized_key == "filter" and isinstance(value, dict):
-                filtered = {
-                    str(child_key): child_value for child_key, child_value in value.items()
-                    if re.sub(r"[^a-z0-9]", "", str(child_key).lower()) in allowed
-                    and child_value not in (None, "", {}, [])
-                }
-                if filtered:
-                    summary[str(key)] = filtered
-            elif normalized_key in allowed and value not in (None, "", {}, []):
-                summary[str(key)] = value
-        return summary
-
     source_catalog = [
         {
             key: envelope.get(key) for key in (
                 "source_call_index", "source_tool", "tool_family", "parser_status", "data_state",
-                "region", "scope", "metric_grain", "returned_count", "reported_total", "entity_refs",
+                "region", "scope", "metric_grain", "returned_count", "reported_total",
             ) if envelope.get(key) not in (None, "", {}, [])
-        } | ({"arguments": compact_arguments(envelope)} if compact_arguments(envelope) else {})
+        }
+        | ({"entity_refs": refs} if (refs := _fastmoss_entity_refs(envelope.get("arguments"), None)) else {})
+        | ({"arguments": _fastmoss_compact_argument_summary(envelope.get("arguments"))} if _fastmoss_compact_argument_summary(envelope.get("arguments")) else {})
         for envelope in (manifest.get("evidence_envelopes") or []) if isinstance(envelope, dict)
+    ]
+    representative_evidence = [
+        compact_fact(fact) for fact in (manifest.get("evidence_facts") or [])
+        if isinstance(fact, dict) and str(fact.get("dimension") or "") in {
+            "category_candidates", "product_sample", "top_products", "new_products",
+            "product_detail", "product_creator_analysis", "product_videos", "review_status",
+        }
+    ]
+    packet_product_ids = {
+        str(product.get("product_id"))
+        for fact in representative_evidence if isinstance(fact, dict)
+        for product in (fact.get("products") or []) if isinstance(product, dict)
+        if _fastmoss_valid_entity_id(product.get("product_id"))
+    }
+    packet_product_ids.update(
+        str(item.get("entity_id")) for item in (manifest.get("analysis_targets") or [])
+        if isinstance(item, dict) and item.get("entity_type") == "product"
+        and _fastmoss_valid_entity_id(item.get("entity_id"))
+    )
+    packet_creator_ids = {
+        str(creator.get("creator_uid"))
+        for fact in representative_evidence if isinstance(fact, dict)
+        for creator in (fact.get("top_creators") or []) if isinstance(creator, dict)
+        if _fastmoss_valid_entity_id(creator.get("creator_uid"))
+    }
+    packet_video_ids = {
+        str(video.get("video_id"))
+        for fact in representative_evidence if isinstance(fact, dict)
+        for video in (fact.get("top_videos") or []) if isinstance(video, dict)
+        if _fastmoss_valid_entity_id(video.get("video_id"))
+    }
+    fact_dimensions = {
+        str(fact.get("fact_id") or ""): str(fact.get("dimension") or "")
+        for fact in (manifest.get("evidence_facts") or []) if isinstance(fact, dict)
+    }
+    registry_groups: dict[tuple[str, str, str, str, int], dict[str, Any]] = {}
+    for metric in (manifest.get("metric_registry") or []):
+        if not isinstance(metric, dict):
+            continue
+        entity_type = str(metric.get("entity_type") or "")
+        entity_id = str(metric.get("entity_id") or "")
+        source_dimension = fact_dimensions.get(str(metric.get("source_fact_id") or ""), "")
+        if entity_type == "product" and source_dimension in {
+            "product_sample", "top_products", "new_products", "product_detail",
+        }:
+            # The same values are already present in the explicitly bounded
+            # representative rows; do not duplicate every list cell here.
+            continue
+        if entity_type == "product" and entity_id not in packet_product_ids:
+            continue
+        if entity_type == "creator" and entity_id not in packet_creator_ids:
+            continue
+        if entity_type == "video" and entity_id not in packet_video_ids:
+            continue
+        period = metric.get("period")
+        scope = str(metric.get("scope") or "")
+        call_index = int(metric.get("source_call_index") or 0)
+        key = (
+            entity_type, entity_id,
+            json.dumps(period, ensure_ascii=False, sort_keys=True, default=str),
+            scope, call_index,
+        )
+        group = registry_groups.setdefault(key, {
+            "entity_type": entity_type,
+            "entity_id": entity_id,
+            "period": period,
+            "scope": scope,
+            "source_call_index": call_index,
+            "source_fact_ids": [],
+            "context": {},
+            "metrics": {},
+        })
+        fact_id = metric.get("source_fact_id")
+        if fact_id and fact_id not in group["source_fact_ids"]:
+            group["source_fact_ids"].append(fact_id)
+        context = metric.get("context") if isinstance(metric.get("context"), dict) else {}
+        for context_key, context_value in context.items():
+            if context_value not in (None, "", {}, []):
+                group["context"][context_key] = (
+                    str(context_value)[:120] if isinstance(context_value, str) else context_value
+                )
+        group["metrics"][str(metric.get("metric") or "metric")] = {
+            "value": metric.get("value"),
+            "unit": metric.get("unit"),
+        }
+    packet_metric_registry = [
+        {key: value for key, value in group.items() if value not in (None, "", {}, [], 0)}
+        for group in registry_groups.values()
     ]
     return {
         "provider": "fastmoss",
@@ -7648,26 +8048,21 @@ def fastmoss_report_packet(manifest: dict[str, Any], route: dict[str, Any] | Non
         "suggested_modules": modules,
         "target_category_path": manifest.get("target_category_path"),
         "analysis_targets": manifest.get("analysis_targets") or [],
-        "coverage": {
-            "quality_states": manifest.get("quality_states") or {},
-            "envelope_count": manifest.get("evidence_envelope_count") or 0,
-            "fact_count": manifest.get("evidence_fact_count") or 0,
-            "unsupported_parser_count": manifest.get("unsupported_parser_count") or 0,
-            "category_head": {
+        "coverage_summary": manifest.get("coverage_summary") or {
+            "call_count": manifest.get("evidence_envelope_count") or 0,
+            "category_search": {
                 key: (manifest.get("category_head") or {}).get(key)
                 for key in ("target_pages", "completed_pages", "reported_total", "fetched_unique", "coverage_complete")
             },
-            "segment_head": {
+            "segment_search": {
                 key: (manifest.get("segment_head") or {}).get(key)
                 for key in ("queries", "fetched_unique")
             },
         },
         "source_catalog": source_catalog,
         "entity_bundles": packet_bundles,
-        "evidence_facts": [
-            compact_fact(fact) for fact in (manifest.get("evidence_facts") or [])
-            if isinstance(fact, dict)
-        ],
+        "metric_registry": packet_metric_registry,
+        "representative_evidence": representative_evidence,
         "derived_facts": manifest.get("derived_facts") or [],
         "conflicts": manifest.get("conflicts") or [],
         "limitations": manifest.get("limitations") or [],
@@ -8326,6 +8721,151 @@ def fastmoss_high_risk_claims(draft: str) -> list[dict[str, Any]]:
     return claims
 
 
+def validate_fastmoss_numeric_claims(
+    draft: str,
+    manifest: dict[str, Any],
+) -> tuple[str, int, int, int]:
+    """Correct deterministic metric mismatches before semantic LLM review.
+
+    Returns the edited report, edit count, registry-bound numeric token count,
+    and unbound token count.  It deliberately does not rewrite prose or draw
+    business conclusions.
+    """
+    registry = [item for item in (manifest.get("metric_registry") or []) if isinstance(item, dict)]
+    registry_values = {
+        str(item.get("value")) for item in registry if item.get("value") is not None
+    }
+    derived_values = {
+        str(value)
+        for fact in (manifest.get("derived_facts") or []) if isinstance(fact, dict)
+        for value in ([fact.get("value")] if isinstance(fact.get("value"), (int, float)) else [])
+    }
+    coverage_values: set[str] = set()
+
+    def collect_numbers(node: Any) -> None:
+        if isinstance(node, dict):
+            for value in node.values():
+                collect_numbers(value)
+        elif isinstance(node, list):
+            for value in node:
+                collect_numbers(value)
+        elif isinstance(node, (int, float)) and not isinstance(node, bool):
+            coverage_values.add(str(node))
+
+    collect_numbers(manifest.get("coverage_summary") or {})
+    authorized_values = registry_values | derived_values | coverage_values
+
+    def metric_values(metric_suffix: str, entity_id: str | None = None) -> list[float]:
+        values: list[float] = []
+        for item in registry:
+            if not str(item.get("metric") or "").endswith(metric_suffix):
+                continue
+            if entity_id and str(item.get("entity_id") or "") != entity_id:
+                continue
+            number = _fastmoss_number(item.get("value"))
+            if number is not None and number not in values:
+                values.append(number)
+        return values
+
+    def line_entity_id(line: str) -> str | None:
+        explicit = re.findall(r"(?<!\d)\d{16,20}(?!\d)", line)
+        if explicit:
+            return explicit[0]
+        lowered = line.lower()
+        matches: set[str] = set()
+        for item in registry:
+            context = item.get("context") if isinstance(item.get("context"), dict) else {}
+            title = str(context.get("title") or "").strip().lower()
+            category_name = str(context.get("category_name") or "").strip().lower()
+            query = str(context.get("query") or "").strip().lower()
+            if (
+                (title and (title in lowered or lowered in title))
+                or (category_name and category_name in lowered)
+                or (query and query in lowered)
+            ):
+                matches.add(str(item.get("entity_id") or ""))
+        return next(iter(matches)) if len(matches) == 1 else None
+
+    edits = 0
+    output_lines: list[str] = []
+    for original_line in str(draft or "").splitlines():
+        line = original_line
+        entity_id = line_entity_id(line)
+
+        # Percent metrics that share similar values are bound by semantic name,
+        # not merely by the appearance of the same number elsewhere.
+        metric_rules = (
+            (r"GMV\s*(?:成交)?\s*同比", "category_gmv_yoy_percent"),
+            (r"销量\s*同比", "category_units_sold_yoy_percent"),
+            (r"商品卡\s*(?:成交)?\s*GMV\s*占比", "channel_distribution.product_card.gmv_share_percent"),
+            (r"商品卡\s*(?:成交)?\s*销量\s*占比", "channel_distribution.product_card.units_sold_share_percent"),
+        )
+        for marker, metric_suffix in metric_rules:
+            values = metric_values(metric_suffix, entity_id)
+            if len(values) != 1:
+                continue
+            target = values[0]
+
+            def metric_replacement(match: re.Match[str]) -> str:
+                nonlocal edits
+                observed = _fastmoss_number(match.group("value"))
+                if observed is None or abs(observed - target) <= 1e-9:
+                    return match.group(0)
+                edits += 1
+                return f"{match.group('prefix')}{target:g}{match.group('suffix')}"
+
+            line = re.sub(
+                rf"(?P<prefix>{marker}[^\d%+\-]{{0,12}})(?P<value>[+\-]?\d+(?:\.\d+)?)(?P<suffix>\s*%)",
+                metric_replacement,
+                line,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+
+        # A provider's linked-video count is not an ad-video count.
+        if re.search(r"(?:670|14)\s*(?:条|个)?\s*广告视频", line):
+            linked_values = metric_values("product_contribution.product_linked_video_count", entity_id)
+            linked_set = {float(value) for value in linked_values}
+
+            linked_edit_count = 0
+
+            def linked_video_replacement(match: re.Match[str]) -> str:
+                nonlocal linked_edit_count
+                value = _fastmoss_number(match.group("value"))
+                if value is None or value not in linked_set:
+                    return match.group(0)
+                linked_edit_count += 1
+                return match.group(0).replace("广告视频", "关联视频")
+
+            line = re.sub(
+                r"(?P<value>\d+(?:\.\d+)?)\s*(?:条|个)?\s*广告视频",
+                linked_video_replacement,
+                line,
+            )
+            edits += linked_edit_count
+
+        # Counts from different grains must never be divided into an invented
+        # per-video sales metric.
+        if re.search(r"\d[\d,.]*\s*件[^\n。；]{0,30}(?:÷|/)[^\n。；]{0,20}\d[\d,.]*\s*(?:条|个)?视频", line):
+            line = re.sub(
+                r"[^。；\n]*\d[\d,.]*\s*件[^。；\n]{0,30}(?:÷|/)[^。；\n]{0,30}\d[\d,.]*\s*(?:条|个)?视频[^。；\n]*",
+                "销量与视频数的统计口径不同，不能直接相除推导单条视频平均销量",
+                line,
+                count=1,
+            )
+            edits += 1
+        output_lines.append(line)
+
+    updated = "\n".join(output_lines)
+    numeric_tokens = re.findall(r"(?<![\w.])-?\d+(?:\.\d+)?", updated)
+    bound = 0
+    for token in numeric_tokens:
+        normalized = str(_fastmoss_number(token))
+        if normalized in authorized_values or token in authorized_values:
+            bound += 1
+    return updated, edits, bound, max(0, len(numeric_tokens) - bound)
+
+
 def fastmoss_candidate_evidence(
     manifest: dict[str, Any],
     claims: list[dict[str, Any]],
@@ -8549,7 +9089,9 @@ def verify_fastmoss_final_answer(
     if fallback_reason:
         _log_fastmoss_report_pipeline(draft, manifest, "skipped", fallback_reason=fallback_reason)
         return fastmoss_deterministic_quality_fallback(manifest)
-    precleaned, initial_cleanup_count = sanitize_fastmoss_unsupported_recommendations(draft)
+    precleaned, numeric_cleanup_count, _, _ = validate_fastmoss_numeric_claims(draft, manifest)
+    precleaned, initial_cleanup_count = sanitize_fastmoss_unsupported_recommendations(precleaned)
+    initial_cleanup_count += numeric_cleanup_count
     precleaned = downgrade_fastmoss_absolute_market_claims(precleaned)
     precleaned, state_cleanup_count = sanitize_fastmoss_state_contradictions(precleaned, manifest)
     initial_cleanup_count += state_cleanup_count

@@ -2180,7 +2180,7 @@ def test_fastmoss_list_truncation_is_explicit_and_invalid_entities_are_filtered(
         "derived_facts": [], "conflicts": [], "limitations": [],
     }
     packet = web_app.fastmoss_report_packet(manifest, {"playbook": "product"})
-    compact = packet["evidence_facts"][0]
+    compact = packet["representative_evidence"][0]
     assert compact["returned_count"] == 10
     assert compact["included_count"] == 2
     assert compact["omitted_count"] == 8 and compact["truncated"] is True
@@ -2198,6 +2198,229 @@ def test_fastmoss_list_truncation_is_explicit_and_invalid_entities_are_filtered(
         tuple(sorted({"type": "category", "id": "844168"}.items())),
         tuple(sorted({"type": "product", "id": "1730898744848192092"}.items())),
     }
+
+
+def test_fastmoss_22_call_semantic_registry_fixture() -> None:
+    """Compact regression fixture derived from the 22-call product workflow."""
+    calls: list[dict] = []
+    results: list[dict] = []
+
+    def add(name: str, arguments: dict, result: dict) -> None:
+        calls.append({"function": {"name": f"fastmoss__{name}", "arguments": json.dumps(arguments)}})
+        results.append({"tool_name": f"fastmoss__{name}", "result": result})
+
+    def envelope(name: str, state: str, arguments: dict, returned: int | None = None, total: int | None = None) -> dict:
+        item = {
+            "source_tool": f"fastmoss__{name}", "metric_grain": name,
+            "tool_family": web_app._fastmoss_tool_family(name), "parser_status": "supported",
+            "data_state": state, "arguments": arguments,
+            "entity_refs": web_app._fastmoss_entity_refs(arguments, None),
+        }
+        if returned is not None:
+            item["returned_count"] = returned
+        if total is not None:
+            item["reported_total"] = total
+        return item
+
+    def product(product_id: str, units: int, title: str = "Sample") -> dict:
+        return {
+            "product_id": product_id, "title": title,
+            "day28_units_sold": units, "day28_gmv": units * 20,
+            "price_min": 18, "price_max": 22,
+        }
+
+    category_ids = [str(1730000000000000000 + index) for index in range(30)]
+    segment_ids = category_ids[:2] + [str(1740000000000000000 + index) for index in range(18)]
+    top_ids = category_ids[:1] + [str(1750000000000000000 + index) for index in range(9)]
+    new_ids = [str(1760000000000000000 + index) for index in range(10)]
+
+    arguments = {"keywords": "料理机"}
+    add("search_category_by_words", arguments, {
+        "ok": True, "data_state": "data", "evidence_observed": True,
+        "evidence_envelope": envelope("search_category_by_words", "data", arguments, 2),
+        "evidence_facts": [{
+            "source_tool": "fastmoss__search_category_by_words", "data_state": "data",
+            "dimension": "category_candidates", "categories": [
+                {"category_id_level3": 935176, "cn_name": "料理机", "score": 0.5023},
+                {"category_id_level3": 934920, "cn_name": "垃圾处理器", "score": 0.4891},
+            ],
+        }],
+    })
+    for analysis_type in ("basic_metrics", "sales_trends", "price_distribution"):
+        arguments = {"filter": {"category_id": 844168}, "analysis_type": analysis_type}
+        if analysis_type != "sales_trends":
+            add("market_category_analysis", arguments, {
+                "ok": True, "data_state": "empty", "evidence_observed": False,
+                "evidence_metadata": {"scope": "supporting", "category_level": "L2", "category_id": 844168},
+                "evidence_envelope": {
+                    **envelope("market_category_analysis", "empty", arguments, 0),
+                    "entity_refs": [{"type": "category", "id": "844168"}],
+                },
+            })
+        else:
+            add("market_category_analysis", arguments, {
+                "ok": True, "data_state": "data", "evidence_observed": True,
+                "evidence_envelope": envelope("market_category_analysis", "data", arguments, 16),
+                "evidence_facts": [{
+                    "source_tool": "fastmoss__market_category_analysis", "data_state": "data",
+                    "dimension": "category_trend", "category_id": 844168, "entity_type": "category", "entity_id": "844168",
+                    "summary_metrics": {"category_units_sold_total": 437785, "selling_video_count_total": 63822},
+                }],
+            })
+    arguments = {"filter": {"category_id": 13}, "page": 1}
+    add("market_category_ranking", arguments, {
+        "ok": True, "data_state": "data", "evidence_observed": True,
+        "evidence_envelope": envelope("market_category_ranking", "data", arguments, 4),
+        "evidence_facts": [{
+            "source_tool": "fastmoss__market_category_ranking", "data_state": "data",
+            "dimension": "category_channel_ranking", "categories": [{
+                "category_id": 844168, "category_name": "厨房家电", "rank": 2,
+                "category_units_sold": 82995, "category_units_sold_yoy_percent": -15.57,
+                "category_gmv_yoy_percent": -25.66,
+                "channel_gmv_share": {"video_gmv_share_percent": 51.46},
+            }],
+        }],
+    })
+
+    for name, ids in (("product_rank_top_selling", top_ids), ("product_rank_new_listed", new_ids)):
+        arguments = {"filter": {"category_id": 935176}, "page": 1, "pagesize": 10}
+        dimension = "top_products" if name.endswith("top_selling") else "new_products"
+        products = [product(product_id, 100 - index) for index, product_id in enumerate(ids)]
+        add(name, arguments, {
+            "ok": True, "data_state": "data", "evidence_observed": True,
+            "evidence_envelope": envelope(name, "data", arguments, 10),
+            "evidence_facts": [{"source_tool": f"fastmoss__{name}", "data_state": "data", "dimension": dimension, "products": products, "returned_count": 10}],
+            "evidence_product_records": products,
+        })
+
+    search_groups = [category_ids[:10], category_ids[10:20], category_ids[20:30], segment_ids[:10], segment_ids[10:20]]
+    search_queries = ["", "", "", "Electric Food Shredder", "Mini Meat Grinder"]
+    for page_index, (ids, query) in enumerate(zip(search_groups, search_queries), start=1):
+        page = page_index if not query else 1
+        arguments = {"filter": {"category_path": [13, 844168, 935176]}, "page": page, "pagesize": 10}
+        if query:
+            arguments["keywords"] = query
+        products = [product(product_id, 30 - index, query or "Category product") for index, product_id in enumerate(ids)]
+        scope = "segment_head" if query else "category_head"
+        add("product_search", arguments, {
+            "ok": True, "data_state": "data", "evidence_observed": True,
+            "evidence_metadata": {"scope": scope, "page": page, "query": query or None, "reported_total": 2000 if not query else 20, "fetched_records": 10, "data_state": "data"},
+            "evidence_envelope": {**envelope("product_search", "data", arguments, 10, 2000 if not query else 20), "scope": scope},
+            "evidence_facts": [{"source_tool": "fastmoss__product_search", "data_state": "data", "dimension": "product_sample", "scope": scope, "page": page, "query": query or None, "products": products, "returned_count": 10}],
+            "evidence_product_records": products,
+        })
+
+    representatives = [(segment_ids[2], "Mini Meat Grinder"), (segment_ids[3], "Electric Food Shredder")]
+    for index, (product_id, title) in enumerate(representatives):
+        arguments = {"filter": {"product_id": product_id}}
+        card_gmv, card_units = ((34, 33) if index == 0 else (91, 92))
+        add("product_overview", arguments, {
+            "ok": True, "data_state": "data", "evidence_observed": True,
+            "evidence_envelope": envelope("product_overview", "data", arguments, 28),
+            "evidence_facts": [{
+                "source_tool": "fastmoss__product_overview", "data_state": "data", "dimension": "product_overview",
+                "product_id": product_id, "entity_type": "product", "entity_id": product_id,
+                "channel_distribution": {"breakdown": [{
+                    "sales_channel": "product_card", "gmv_share_percent": card_gmv,
+                    "units_sold_share_percent": card_units,
+                }]},
+            }],
+        })
+    for product_id, _title in representatives:
+        arguments = {"filter": {"product_id": product_id, "time_range_days": 90}}
+        add("product_sales_trend", arguments, {
+            "ok": True, "data_state": "data", "evidence_observed": True,
+            "evidence_envelope": envelope("product_sales_trend", "data", arguments, 90),
+            "evidence_facts": [{
+                "source_tool": "fastmoss__product_sales_trend", "data_state": "data", "dimension": "product_90d_trend",
+                "product_id": product_id, "entity_type": "product", "entity_id": product_id,
+                "trend_summary": {"days_returned": 90, "total_units_sold": 1716 if product_id == representatives[0][0] else 31},
+            }],
+        })
+    for product_id, _title in representatives:
+        arguments = {"filter": {"product_id": product_id}}
+        add("product_review_list", arguments, {
+            "ok": True, "data_state": "empty", "evidence_observed": False,
+            "evidence_envelope": envelope("product_review_list", "empty", arguments, 0),
+        })
+    for index, (product_id, _title) in enumerate(representatives):
+        arguments = {"filter": {"product_id": product_id}, "page": 1}
+        creators = [{
+            "creator_uid": str(1770000000000000000 + index * 10), "creator_name": "Apex",
+            "creator_category": {"name": "Shopping & Retail"},
+            "product_contribution": {"product_linked_video_count": 670},
+        }, {
+            "creator_uid": str(1770000000000000001 + index * 10), "creator_name": "T ao",
+            "creator_category": {"name": "Other"},
+            "product_contribution": {"product_linked_video_count": 14},
+        }]
+        add("product_creator_analysis", arguments, {
+            "ok": True, "data_state": "data", "evidence_observed": True,
+            "evidence_envelope": envelope("product_creator_analysis", "data", arguments, 2, 3),
+            "evidence_facts": [{
+                "source_tool": "fastmoss__product_creator_analysis", "data_state": "data", "dimension": "product_creator_analysis",
+                "product_id": product_id, "entity_type": "product", "entity_id": product_id,
+                "reported_creator_total": 3, "returned_creators": 2,
+                "creator_summary": {"creator_category_distribution": [{"creator_category": "Shopping & Retail", "creator_share_percent": 100}]},
+                "top_creators": creators,
+            }],
+        })
+    for product_id, _title in representatives:
+        arguments = {"filter": {"product_id": product_id, "time_range_days": 90}, "page": 1}
+        add("product_video_list", arguments, {
+            "ok": True, "data_state": "data", "evidence_observed": True,
+            "evidence_envelope": envelope("product_video_list", "data", arguments, 10, 146),
+            "evidence_facts": [{
+                "source_tool": "fastmoss__product_video_list", "data_state": "data", "dimension": "product_videos",
+                "product_id": product_id, "entity_type": "product", "entity_id": product_id,
+                "reported_video_total": 146, "returned_videos": 10, "time_range_days": 90,
+                "top_videos": [],
+            }],
+        })
+
+    assert len(calls) == len(results) == 22
+    manifest = web_app.fastmoss_evidence_manifest(
+        SimpleNamespace(tool_calls=calls, tool_results=results),
+        "Electric Food Shredder 和 Mini Meat Grinder 调研",
+        {"playbook": "product", "entity": "Electric Food Shredder / Mini Meat Grinder"},
+    )
+    coverage = manifest["coverage_summary"]
+    registry = manifest["metric_registry"]
+    assert manifest["evidence_envelope_count"] == 22
+    assert manifest["evidence_fact_count"] == 18
+    assert manifest["unsupported_parser_count"] == 0
+    assert coverage["category_search"]["returned_rows"] == 30
+    assert coverage["category_search"]["unique_products"] == 30
+    assert coverage["all_product_search_calls"] == {"returned_rows": 50, "unique_products": 48}
+    assert coverage["all_product_list_calls"] == {"returned_rows": 70, "unique_products": 67}
+    assert all(item["entity_refs"] == [{"type": "category", "id": "844168"}] for item in coverage["exact_empty_results"][:2])
+
+    def metric(metric_name: str, entity_id: str) -> float:
+        return next(item["value"] for item in registry if item["metric"] == metric_name and item["entity_id"] == entity_id)
+
+    assert metric("category_units_sold_yoy_percent", "844168") == -15.57
+    assert metric("category_gmv_yoy_percent", "844168") == -25.66
+    assert metric("channel_distribution.product_card.gmv_share_percent", representatives[1][0]) == 91
+    assert metric("channel_distribution.product_card.units_sold_share_percent", representatives[1][0]) == 92
+    assert metric("score", "935176") == 0.5023
+    assert metric("score", "934920") == 0.4891
+    assert metric("product_contribution.product_linked_video_count", "1770000000000000000") == 670
+    assert metric("product_contribution.product_linked_video_count", "1770000000000000001") == 14
+    assert any(item.get("conflict_type") == "summary_vs_returned_top_rows" for item in manifest["conflicts"])
+    assert not any("11.7" in json.dumps(item, ensure_ascii=False) for item in manifest["derived_facts"])
+
+    draft = (
+        "厨房家电销量同比 -15.57%，GMV同比 -15.57%。\n"
+        f"{representatives[1][0]} 商品卡GMV占比94%，商品卡销量占比94%。\n"
+        "Apex有670条广告视频，T ao有14条广告视频。\n"
+        "1716件 ÷ 146条视频 = 平均11.7件。"
+    )
+    corrected, edits, _bound, _unbound = web_app.validate_fastmoss_numeric_claims(draft, manifest)
+    assert edits == 6, (edits, corrected)
+    assert "GMV同比 -25.66%" in corrected
+    assert "商品卡GMV占比91%" in corrected and "商品卡销量占比92%" in corrected
+    assert "670条关联视频" in corrected and "14条关联视频" in corrected
+    assert "11.7" not in corrected and "不能直接相除" in corrected
 
 
 def test_fastmoss_packet_synthesis_isolated_from_tool_protocol_history() -> None:
@@ -2360,6 +2583,7 @@ if __name__ == "__main__":
     test_fastmoss_creator_video_facts_and_historical_rebuild()
     test_fastmoss_report_packets_are_workflow_native_and_numeric_policy_is_strict()
     test_fastmoss_list_truncation_is_explicit_and_invalid_entities_are_filtered()
+    test_fastmoss_22_call_semantic_registry_fixture()
     test_fastmoss_packet_synthesis_isolated_from_tool_protocol_history()
     test_fastmoss_claim_ids_and_extended_mechanical_cleanup()
     print("chat tool normalization tests passed")
