@@ -6419,6 +6419,10 @@ def fastmoss_evidence_manifest(
 ) -> dict[str, Any]:
     """Summarize coverage, provenance, sorting, and deterministic consistency checks."""
     quality = mcp_evidence_quality_summary(assistant_msg)
+    quality = {
+        state: [name for name in names if split_prefixed_tool_id(name)[0] == "fastmoss"]
+        for state, names in quality.items()
+    }
     category_records: dict[str, dict[str, Any]] = {}
     segment_records: dict[str, dict[str, Any]] = {}
     category_pages: set[int] = set()

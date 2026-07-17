@@ -1781,6 +1781,24 @@ def test_fastmoss_answer_verifier_applies_local_edits_and_keeps_draft_on_failure
             assert "500-1000" not in kept and "$2000" not in kept and "$29.99" not in kept
             assert "$13–$16" not in kept and "$14.99" not in kept and "3–5" not in kept
             assert "1–2个月" not in kept and "$5–$8" not in kept
+
+        system_only = SimpleNamespace(tool_calls=[], tool_results=[{
+            "tool_name": "system__current_time",
+            "result": {"ok": True, "data_state": "data", "evidence_observed": True, "summary": "2026-07-17"},
+        }])
+
+        class MustNotCallRequests:
+            @staticmethod
+            def post(*_args, **_kwargs):
+                raise AssertionError("verifier must not run without FastMoss evidence")
+
+        no_evidence = web_app.verify_fastmoss_final_answer(
+            native_report, system_only, "调研", route, MustNotCallRequests, "key", "https://example.test/v1", "model"
+        )
+        assert "## 先说结论" in no_evidence
+        system_manifest = web_app.fastmoss_evidence_manifest(system_only, "调研", route)
+        assert system_manifest["quality_states"]["data"] == []
+        assert system_manifest["evidence_fact_count"] == 0
     finally:
         web_app.record_api_call = original_record
 
