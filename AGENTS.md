@@ -236,13 +236,15 @@ Inside Compose:
 
 Do not write generated files into `scripts/` at runtime. Do not commit files from `videos/`, `output/`, `data/`, or `.env`.
 
-## Remote Server and Deployment
+## Server-Direct Development and Deployment
 
-Production runs on:
+Codex tasks for this repository run directly in the production server checkout:
 
 ```text
-openclaw@192.168.1.254:~/Video_analyzer/
+/home/openclaw/Video_analyzer
 ```
+
+Treat the current working tree as both the development workspace and the production checkout. Do not SSH or SCP back into `192.168.1.254`, and do not use development-machine SSH keys for this repository.
 
 GitHub repo:
 
@@ -250,42 +252,37 @@ GitHub repo:
 https://github.com/Joe1905/Video_analyzer.git
 ```
 
-GitHub access rule:
+GitHub access rules:
 
-- Codex tasks for this repository run directly on the server. Do not use development-machine SSH key paths to connect back to the same server.
 - GitHub `fetch`, `pull`, `push`, and `clone` operations must use the server proxy at `http://127.0.0.1:7890`. Prefer explicit `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` / lowercase environment variables, or scoped `git -c http.proxy=... -c https.proxy=...`. Do not commit proxy credentials.
 - If GitHub HTTPS fails during the initial handshake, record the concrete error and proxy state, then switch to the proxy path or another approved authenticated GitHub path. Do not blindly retry direct HTTPS.
 
-Production deploy workflow:
+Server-direct workflow:
 
-1. Make the change locally and verify it.
-2. Commit the change locally.
-3. Push the commit to GitHub through the proxy.
-4. Update the production checkout from GitHub.
-5. Rebuild/restart the affected server service and verify the endpoint.
+1. Check the current server checkout with `git status --short --branch` and preserve unrelated changes.
+2. Make the change directly in `/home/openclaw/Video_analyzer`.
+3. Verify the change in Docker Compose using the project name `-p short-video-analyzer`.
+4. Commit the verified change in the current checkout.
+5. Push the commit to GitHub through the server proxy.
+6. Rebuild or restart the affected service directly on the current server, then verify the endpoint or workflow.
 
-Server changes must be synchronized through GitHub. Do not leave manual-only code changes on the production checkout. If GitHub push is blocked by proxy or authentication, stop and report the blocker instead of treating a server-only deploy as complete. If a server-side hotfix is explicitly authorized, copy the exact change back into this repository, commit it, push it to GitHub as soon as access is restored, and update the server from GitHub.
+All production changes must still be committed and synchronized through GitHub. Do not leave manual-only or uncommitted code changes in the server checkout. If GitHub push is blocked by proxy or authentication, stop and report the blocker instead of treating the deployment as complete.
 
-Before deploying or changing server files, check both local and server status:
+Before changing or deploying files, check the current checkout:
 
 ```bash
 git status --short --branch
-ssh openclaw@192.168.1.254 "cd ~/Video_analyzer && git status --short --branch"
 ```
 
-Example file deploy:
+Example rebuild/restart on the current server:
 
 ```bash
-scp -i ~/.ssh/openclaw_codex_rsa scripts/web_app.py openclaw@192.168.1.254:~/Video_analyzer/scripts/
+cd /home/openclaw/Video_analyzer
+docker compose -p short-video-analyzer build
+docker compose -p short-video-analyzer up -d web
 ```
 
-Then rebuild/restart on the server:
-
-```bash
-ssh openclaw@192.168.1.254 "cd ~/Video_analyzer && docker compose -p short-video-analyzer build && docker compose -p short-video-analyzer up -d web"
-```
-
-Prefer a GitHub-based deploy path over ad-hoc `scp` unless the user explicitly asks for a hotfix.
+Do not use `ssh`, `scp`, or a second checkout as part of the normal development or deployment flow.
 
 ## Agent Safety Rules
 
