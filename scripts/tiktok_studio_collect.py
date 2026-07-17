@@ -10,10 +10,17 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from zoneinfo import ZoneInfo
 
 import proxy_pool
+from browser_page_state import (
+    BrowserPageBlocked,
+    BrowserPageLoadError,
+    BrowserPageTimeout,
+    navigate_with_retries,
+    wait_for_page_state,
+)
 from feishu_capabilities import FeishuCapabilityClient, FeishuCapabilityError
 
 
@@ -132,6 +139,7 @@ def _job_row(row: Any) -> dict[str, Any]:
         "status": str(row["status"]),
         "status_label": STATUS_LABELS.get(str(row["status"]), str(row["status"])),
         "stage": str(row["stage"]),
+        "status_detail": str(row["status_detail"]),
         "attempt_count": int(row["attempt_count"]),
         "session_id": int(row["session_id"] or 0),
         "total_videos": int(row["total_videos"]),
@@ -406,7 +414,7 @@ def retry_job(payload: dict[str, Any]) -> dict[str, Any]:
             """
             UPDATE collect_jobs
             SET status = 'queued', stage = 'retry_queued', attempt_count = 0,
-                next_attempt_at = '', session_id = ?, current_video_id = '',
+                status_detail = '', next_attempt_at = '', session_id = ?, current_video_id = '',
                 completed_at = '', last_error = '', updated_at = ?
             WHERE id = ?
             """,
@@ -428,7 +436,7 @@ def cancel_job(payload: dict[str, Any]) -> dict[str, Any]:
         if str(row["status"]) not in {"queued", "delayed"}:
             raise ValueError("只能取消尚未开始的采集任务")
         conn.execute(
-            "UPDATE collect_jobs SET status = 'cancelled', stage = '', completed_at = ?, updated_at = ? WHERE id = ?",
+            "UPDATE collect_jobs SET status = 'cancelled', stage = '', status_detail = '', completed_at = ?, updated_at = ? WHERE id = ?",
             (_iso(), _iso(), job_id),
         )
         conn.commit()
@@ -455,8 +463,9 @@ def runtime_status() -> dict[str, Any]:
 
 
 def _set_job(job_id: str, status: str, stage: str = "", error: str = "", **values: Any) -> None:
-    fields = ["status = ?", "stage = ?", "last_error = ?", "updated_at = ?"]
-    params: list[Any] = [status, stage, _clean_text(error), _iso()]
+    status_detail = _clean_text(values.pop("status_detail", ""), 500)
+    fields = ["status = ?", "stage = ?", "status_detail = ?", "last_error = ?", "updated_at = ?"]
+    params: list[Any] = [status, stage, status_detail, _clean_text(error), _iso()]
     allowed = {
         "session_id", "total_videos", "completed_videos", "failed_videos",
         "current_video_id", "started_at", "completed_at", "next_attempt_at",
@@ -894,20 +903,22 @@ def _discover_video_links(
             if publish_date_start <= row.get("published_date", "") <= publish_date_end
         ]
 
-    content_link = _first_visible([
-        page.locator("a[href*='/tiktokstudio/content']"),
-        page.locator("a[href*='/tiktokstudio/manage']"),
-        page.get_by_role("link", name=re.compile(r"content|posts|manage|内容|作品", re.I)),
-        page.get_by_role("button", name=re.compile(r"^recent posts$|^posts$|最近作品|近期作品", re.I)),
-    ])
-    if content_link:
-        href = str(content_link.get_attribute("href") or "")
-        if href:
-            page.goto(urljoin(page.url, href), wait_until="domcontentloaded", timeout=60000)
-        else:
-            content_link.click(timeout=5000)
-        page.wait_for_timeout(1800)
-        _assert_account_ready(page)
+    current_path = urlparse(page.url).path
+    if not (current_path.startswith("/tiktokstudio/content") or current_path.startswith("/tiktokstudio/manage")):
+        content_link = _first_visible([
+            page.locator("a[href*='/tiktokstudio/content']"),
+            page.locator("a[href*='/tiktokstudio/manage']"),
+            page.get_by_role("link", name=re.compile(r"content|posts|manage|内容|作品", re.I)),
+            page.get_by_role("button", name=re.compile(r"^recent posts$|^posts$|最近作品|近期作品", re.I)),
+        ])
+        if content_link:
+            href = str(content_link.get_attribute("href") or "")
+            if href:
+                page.goto(urljoin(page.url, href), wait_until="domcontentloaded", timeout=60000)
+            else:
+                content_link.click(timeout=5000)
+            page.wait_for_timeout(1800)
+            _assert_account_ready(page)
 
     unchanged_rounds = 0
     for _ in range(100):
@@ -1256,10 +1267,41 @@ def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[int,
         browser = playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{session['debug_port']}")
         context = browser.contexts[0]
         page = context.pages[0] if context.pages else context.new_page()
-        page.goto("https://www.tiktok.com/tiktokstudio?lang=en", wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_timeout(2200)
-        _assert_account_ready(page)
+        def page_status(event: dict[str, Any]) -> None:
+            _set_job(
+                job["id"],
+                "preparing",
+                "loading_video_list",
+                session_id=session["id"],
+                status_detail=event.get("message", ""),
+            )
+
+        target = "https://www.tiktok.com/tiktokstudio/content?lang=en"
+        navigate_with_retries(page, target, label="TikTok 视频列表", on_status=page_status)
         _skip_onboarding(page)
+        try:
+            list_state = wait_for_page_state(
+                page,
+                label="TikTok 视频列表",
+                ready=lambda: bool(_discover_links_on_page(page)),
+                empty=lambda: bool(_first_visible([
+                    page.get_by_text(re.compile(r"no posts|no videos|haven't posted|暂无(?:作品|视频)|没有(?:作品|视频)", re.I)),
+                ])),
+                allow_ocr_empty=True,
+                on_status=page_status,
+                timeout_seconds=75,
+                reload_attempts=1,
+                retry_action=lambda: navigate_with_retries(
+                    page, target, label="TikTok 视频列表", on_status=page_status
+                ),
+                diagnostic_dir=log_dir,
+                diagnostic_step="video-list",
+            )
+        except BrowserPageBlocked as exc:
+            raise AccountReviewRequired(str(exc)) from exc
+        _assert_account_ready(page)
+        if list_state.state == "empty":
+            raise RuntimeError("TikTok Studio 视频列表已加载，但账号当前没有视频")
         links = _discover_video_links(
             page,
             job["publish_date_start"],
@@ -1351,6 +1393,21 @@ def _delay_for_proxy(job_id: str, job: dict[str, Any], error: Exception | str) -
     proxy_pool.schedule_proxy_recheck_for_pending_job(int(job["proxy_profile_id"]), message)
 
 
+def _delay_for_page(job_id: str, job: dict[str, Any], error: Exception | str) -> None:
+    message = str(error)
+    _set_job(
+        job_id,
+        "delayed",
+        "waiting_page",
+        message,
+        session_id=None,
+        completed_at="",
+        next_attempt_at=_iso(_utc_now() + timedelta(seconds=60)),
+        status_detail="页面加载超时，60 秒后自动重试",
+    )
+    _update_account(int(job["account_id"]), error=message)
+
+
 def _run_job(job_id: str) -> None:
     session_id = 0
     reused_observation = False
@@ -1388,6 +1445,8 @@ def _run_job(job_id: str) -> None:
             _set_job(job_id, "delayed", "waiting_slot", message, next_attempt_at=_iso(_utc_now() + timedelta(seconds=30)))
         elif 'job' in locals() and proxy_pool.is_retryable_proxy_error(message):
             _delay_for_proxy(job_id, job, message)
+        elif 'job' in locals() and isinstance(exc, (BrowserPageTimeout, BrowserPageLoadError)) and int(job.get("attempt_count") or 0) < 3:
+            _delay_for_page(job_id, job, message)
         else:
             _set_job(job_id, "failed", "failed", message, session_id=session_id or None, completed_at=_iso())
             job = _load_job(job_id)
@@ -1493,7 +1552,7 @@ def _claim_due_jobs() -> list[str]:
                 """
                 UPDATE collect_jobs
                 SET status = 'preparing', stage = 'claimed', attempt_count = attempt_count + 1,
-                    next_attempt_at = '', updated_at = ?
+                    status_detail = '', next_attempt_at = '', updated_at = ?
                 WHERE id = ? AND status IN ('queued','delayed')
                 """,
                 (_iso(), job_id),
@@ -1512,7 +1571,8 @@ def _recover_interrupted() -> None:
             """
             UPDATE collect_jobs
             SET status = 'queued', stage = 'recovered', session_id = NULL,
-                next_attempt_at = '', last_error = '服务器重启后恢复采集任务', updated_at = ?
+                status_detail = '服务器重启，采集任务已重新排队', next_attempt_at = '',
+                last_error = '服务器重启后恢复采集任务', updated_at = ?
             WHERE status IN ('preparing','collecting')
             """,
             (_iso(),),
@@ -1527,7 +1587,7 @@ def _recover_interrupted() -> None:
             if not proxy_pool.is_retryable_proxy_error(message):
                 continue
             conn.execute(
-                "UPDATE collect_jobs SET status = 'delayed', stage = 'waiting_proxy', session_id = NULL, completed_at = '', next_attempt_at = ?, updated_at = ? WHERE id = ?",
+                "UPDATE collect_jobs SET status = 'delayed', stage = 'waiting_proxy', status_detail = '', session_id = NULL, completed_at = '', next_attempt_at = ?, updated_at = ? WHERE id = ?",
                 (retry_at, now, row["id"]),
             )
             proxy_failures.append((int(row["proxy_profile_id"]), message))
