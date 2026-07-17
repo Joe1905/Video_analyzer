@@ -8314,6 +8314,84 @@ def _log_fastmoss_report_pipeline(
     )
 
 
+def synthesize_fastmoss_report_from_packet(
+    assistant_msg: Message,
+    user_text: str,
+    route: dict[str, Any],
+    requests_module: Any,
+    api_key: str,
+    api_url: str,
+    model: str,
+) -> str:
+    """Write the report from the compact packet, outside the tool protocol conversation."""
+    manifest = fastmoss_evidence_manifest(assistant_msg, user_text, route)
+    packet = fastmoss_report_packet(manifest, route)
+    packet_json = json.dumps(packet, ensure_ascii=False, separators=(",", ":"))
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "你是 FastMoss 调研报告撰写器。当前请求没有任何可调用工具，只能根据 report_packet 写最终中文 Markdown 报告。"
+                "report_packet 是事实口径的唯一权威来源；不得输出工具调用、DSML、函数协议或待调用计划。"
+                "必须把事实转成比较、解释、结论、风险和验证顺序，不能只罗列表格或数据缺口。"
+                + fastmoss_report_style_instruction(route)
+                + " report_packet: "
+                + packet_json
+            ),
+        },
+        {"role": "user", "content": chat_routing_text(user_text)},
+    ]
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": 0.2,
+        "max_tokens": 8000,
+    }
+    payload_str = json.dumps(payload, ensure_ascii=False)
+    started = time.monotonic()
+    try:
+        response = requests_module.post(
+            api_url.rstrip("/") + "/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            data=payload_str.encode("utf-8"),
+            timeout=180,
+        )
+        response.raise_for_status()
+        body = response.json()
+        record_api_call(
+            "deepseek",
+            "fastmoss_report_synthesis",
+            {
+                "model": model,
+                "packet_chars": len(packet_json),
+                "evidence_envelopes": manifest.get("evidence_envelope_count") or 0,
+                "evidence_facts": manifest.get("evidence_fact_count") or 0,
+            },
+            body,
+            elapsed_ms=int((time.monotonic() - started) * 1000),
+        )
+        choice = body["choices"][0]
+        if str(choice.get("finish_reason") or "") == "length":
+            raise ValueError("report synthesis finish_reason=length")
+        draft = str((choice.get("message") or {}).get("content") or "").strip()
+        if not draft or deepseek_tool_protocol_present({"content": draft}):
+            raise ValueError("report synthesis returned empty or tool protocol")
+        print(
+            f"[CHAT] FastMoss packet synthesis packet_chars={len(packet_json)} draft_chars={len(draft)}",
+            flush=True,
+        )
+        return verify_fastmoss_final_answer(
+            draft, assistant_msg, user_text, route,
+            requests_module, api_key, api_url, model,
+        )
+    except Exception as exc:
+        print(f"[CHAT] FastMoss packet synthesis failed: {type(exc).__name__}: {str(exc)[:240]}", flush=True)
+        _log_fastmoss_report_pipeline(
+            "", manifest, f"synthesis_failed:{type(exc).__name__}", fallback_reason="report_synthesis_failure"
+        )
+        return fastmoss_deterministic_quality_fallback(manifest)
+
+
 def verify_fastmoss_final_answer(
     draft: str,
     assistant_msg: Message,
@@ -9625,11 +9703,16 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                         "_context_scope": "system",
                     })
                     if next_phase is None:
-                        messages.append({
-                            "role": "system",
-                            "content": fastmoss_report_quality_instruction(assistant_msg, routing_text, route),
-                            "_context_scope": "system",
+                        final_content = synthesize_fastmoss_report_from_packet(
+                            assistant_msg, routing_text, route,
+                            req, api_key, api_url, model,
+                        )
+                        store.update_message(session, assistant_msg, final_content, status="done")
+                        store.broadcast(session.id, "done", {
+                            "messageId": assistant_msg.id,
+                            "content": final_content,
                         })
+                        return
                     no_tool_retries = 0
                     print(
                         f"[CHAT] deterministic FastMoss workflow tool={fn_name} page={fn_args.get('page')} "
@@ -9834,11 +9917,17 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                         "_context_scope": "system",
                     })
                     continue
-                fallback = (
-                    "模型连续返回了无法执行的工具协议，系统已拦截异常内容。"
-                    "本轮已完成的 MCP 结果仍然保留；其中空结果只表示对应接口本轮没有记录，不代表市场绝对不存在。"
-                    "由于当前无法安全生成数据总结，我不会补造销量、GMV 或市场结论。"
-                )
+                if provider == "fastmoss" and (assistant_msg.tool_results or []):
+                    fallback = verify_fastmoss_final_answer(
+                        "", assistant_msg, routing_text, route,
+                        req, api_key, api_url, model,
+                    )
+                else:
+                    fallback = (
+                        "模型连续返回了无法执行的工具协议，系统已拦截异常内容。"
+                        "本轮已完成的 MCP 结果仍然保留；其中空结果只表示对应接口本轮没有记录，不代表市场绝对不存在。"
+                        "由于当前无法安全生成数据总结，我不会补造销量、GMV 或市场结论。"
+                    )
                 store.update_message(session, assistant_msg, fallback, status="done")
                 store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": fallback})
                 return

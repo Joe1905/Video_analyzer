@@ -2147,6 +2147,51 @@ def test_fastmoss_report_packets_are_workflow_native_and_numeric_policy_is_stric
     assert all(packet["numeric_policy"] == "only_tool_evidence_user_input_or_explicit_calculation" for packet in packets.values())
 
 
+def test_fastmoss_packet_synthesis_isolated_from_tool_protocol_history() -> None:
+    class Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {
+                "choices": [{
+                    "finish_reason": "stop",
+                    "message": {"content": "# 结论\n\n证据包已独立合成。"},
+                }],
+            }
+
+    class Requests:
+        def __init__(self) -> None:
+            self.payloads: list[dict] = []
+
+        def post(self, _url: str, **kwargs):
+            self.payloads.append(json.loads(kwargs["data"].decode("utf-8")))
+            return Response()
+
+    requests = Requests()
+    original_verify = web_app.verify_fastmoss_final_answer
+    web_app.verify_fastmoss_final_answer = lambda draft, *_args, **_kwargs: draft
+    try:
+        result = web_app.synthesize_fastmoss_report_from_packet(
+            SimpleNamespace(tool_calls=[], tool_results=[]),
+            "做一份完整产品调研",
+            {"playbook": "product", "task_depth": "workflow"},
+            requests,
+            "test-key",
+            "https://example.invalid/v1",
+            "test-model",
+        )
+    finally:
+        web_app.verify_fastmoss_final_answer = original_verify
+    assert result.startswith("# 结论")
+    assert len(requests.payloads) == 1
+    payload = requests.payloads[0]
+    assert "tools" not in payload
+    assert len(payload["messages"]) == 2
+    assert "report_packet" in payload["messages"][0]["content"]
+    assert "无法执行的工具协议" not in payload["messages"][0]["content"]
+
+
 def test_fastmoss_claim_ids_and_extended_mechanical_cleanup() -> None:
     draft = (
         "## 建议\n"
@@ -2232,5 +2277,6 @@ if __name__ == "__main__":
     test_fastmoss_all_workflow_tools_emit_supported_envelopes()
     test_fastmoss_creator_video_facts_and_historical_rebuild()
     test_fastmoss_report_packets_are_workflow_native_and_numeric_policy_is_strict()
+    test_fastmoss_packet_synthesis_isolated_from_tool_protocol_history()
     test_fastmoss_claim_ids_and_extended_mechanical_cleanup()
     print("chat tool normalization tests passed")
