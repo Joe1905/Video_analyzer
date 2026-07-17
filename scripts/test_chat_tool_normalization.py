@@ -1687,6 +1687,8 @@ def test_fastmoss_answer_verifier_applies_local_edits_and_keeps_draft_on_failure
             "## 渠道证据\n该商品广告GMV占比为59%，关联达人406名。\n\n"
             "## 执行建议\n首批500-1000件，测试预算$2000，配合3-5个达人，观察2周，"
             "目标ROI达到2.5，MOQ建议不超过500，建议定价$29.99-$39.99。"
+            "建议售价 **$13–$16**；以$14.99在TikTok Shop上架；邀请3–5个达人；"
+            "预计1–2个月做到月销1,000件；如果按$5–$8广告成本计算ROI。"
         )
         edited = web_app.verify_fastmoss_final_answer(
             draft, message, "调研", route, FakeRequests, "key", "https://example.test/v1", "model"
@@ -1695,7 +1697,10 @@ def test_fastmoss_answer_verifier_applies_local_edits_and_keeps_draft_on_failure
         assert "## 核心判断" in edited and "## 代表商品" in edited and "## 渠道证据" in edited
         assert "| Mini Grinder | 424 | $36.05–$53 |" in edited
         assert "广告GMV占比为59%" in edited and "关联达人406名" in edited
-        for unsupported in ("500-1000", "$2000", "3-5", "2周", "2.5", "MOQ建议不超过500", "$29.99", "$39.99"):
+        for unsupported in (
+            "500-1000", "$2000", "3-5", "3–5", "2周", "2.5", "MOQ建议不超过500",
+            "$29.99", "$39.99", "$13–$16", "$14.99", "1–2个月", "月销1,000", "$5–$8",
+        ):
             assert unsupported not in edited
 
         downgraded = web_app.polish_fastmoss_report_tone(
@@ -1774,6 +1779,8 @@ def test_fastmoss_answer_verifier_applies_local_edits_and_keeps_draft_on_failure
             assert "这个细分已经被证明是低竞争市场" in kept
             assert "## 先说结论" not in kept
             assert "500-1000" not in kept and "$2000" not in kept and "$29.99" not in kept
+            assert "$13–$16" not in kept and "$14.99" not in kept and "3–5" not in kept
+            assert "1–2个月" not in kept and "$5–$8" not in kept
     finally:
         web_app.record_api_call = original_record
 
