@@ -141,6 +141,10 @@ services:
       TIKTOK_PUBLISH_FINAL_CLICK_ENABLED: ${TIKTOK_PUBLISH_FINAL_CLICK_ENABLED:-1}
       TIKTOK_PUBLISH_UPLOAD_TIMEOUT_SECONDS: ${TIKTOK_PUBLISH_UPLOAD_TIMEOUT_SECONDS:-1800}
       PROXY_POOL_ENABLED: ${PROXY_POOL_ENABLED:-1}
+      PROXY_REALITY_CORE: ${PROXY_REALITY_CORE:-sing-box}
+      PROXY_REALITY_DEFAULT_FINGERPRINT: ${PROXY_REALITY_DEFAULT_FINGERPRINT:-safari}
+      SING_BOX_CONFIG_PATH: ${SING_BOX_CONFIG_PATH:-/workspace/data/sing-box/config.json}
+      SING_BOX_COMPOSE_PROJECT: short-video-analyzer
       MIHOMO_CONFIG_PATH: ${MIHOMO_CONFIG_PATH:-/host/etc/mihomo/config.yaml}
       MIHOMO_RELOAD_PATH: ${MIHOMO_RELOAD_PATH:-/etc/mihomo/config.yaml}
       NOVNC_PORT: ${NOVNC_PORT:-6080}
@@ -250,6 +254,21 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
+
+  sing-box:
+    image: short-video-analyzer-sing-box:1.13.14
+    build:
+      context: .
+      dockerfile: Dockerfile.sing-box
+      network: host
+      args:
+        HTTP_PROXY: ${SING_BOX_DOWNLOAD_PROXY:-http://127.0.0.1:7890}
+        HTTPS_PROXY: ${SING_BOX_DOWNLOAD_PROXY:-http://127.0.0.1:7890}
+    command: -D /var/lib/sing-box -C /etc/sing-box run
+    volumes:
+      - ${DATA_DIR:-./data}/sing-box:/etc/sing-box
+    network_mode: host
+    restart: unless-stopped
 
   sellersprite-redirect:
     build:
