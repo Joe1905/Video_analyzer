@@ -1531,6 +1531,99 @@ def test_fastmoss_metadata_detects_unsorted_page_and_string_product_ids() -> Non
     assert any("两者不重叠" in item["issue"] for item in dated_manifest["conflicts"])
 
 
+def test_fastmoss_evidence_ledger_keeps_native_dimensions_and_late_trends() -> None:
+    def annotate(name: str, arguments: dict, payload: dict) -> dict:
+        return web_app.annotate_fastmoss_tool_result(
+            f"fastmoss__{name}",
+            arguments,
+            {"ok": True, "data_state": "data", "evidence_observed": True},
+            {"data": {"content": [{"text": json.dumps(payload)}]}},
+        )
+
+    category_trend = annotate("market_category_analysis", {
+        "filter": {"category_id": 844168, "region": "US", "date_type": "week", "date_value": "2026-W28"},
+    }, {
+        "analysis_type": "sales_trends",
+        "category": {"category_id": 844168, "category_name": "厨房家电", "region": "US"},
+        "summary_metrics": {"category_units_sold_total": 473150, "selling_video_count_total": 70612},
+        "trend_series": [{"period_label": "2026-06-01 ~ 2026-06-07", "category_units_sold": 71374}],
+    })
+    ranking = annotate("market_category_ranking", {"filter": {"category_id": 13, "region": "US"}}, {
+        "ranking_scope": {"parent_category_id": 13, "ranked_category_level": 2, "region": "US"},
+        "ranked_categories": [{
+            "category_id": 844168, "category_name": "厨房家电", "category_units_sold": 425507,
+            "channel_gmv_share": {"video_gmv_share_percent": 57.15, "live_gmv_share_percent": 11.87},
+        }],
+    })
+    new_products = annotate("product_rank_new_listed", {"filter": {"category_id": 935176, "region": "US"}}, {
+        "list": [{
+            "product_id": "1732461324214113003", "title": "Mini Chopper", "current_price": 13.57,
+            "commission_rate_percent": 14.5, "first_3d_units_sold": 18, "first_3d_gmv": 210.42,
+        }],
+    })
+    product_sample = annotate("product_search", {"keywords": "Mini Meat Grinder", "page": 1}, {
+        "list": [{
+            "distribution_summary": {"linked_creator_count": 406, "linked_video_count": 119},
+            "product": {"product_id": "1730898744848192092", "title": "Mini Meat Grinder", "floor_price": 36.05, "ceiling_price": 53},
+            "sales_summary": {"last_28d_units_sold": 424, "last_28d_gmv": 29727},
+        }],
+    })
+    overview = annotate("product_overview", {"filter": {"product_id": "1730898744848192092"}}, {
+        "ads_distribution": {"breakdown": [{"traffic_source": "ad_traffic", "gmv_share_percent": 59}]},
+        "channel_distribution": {"breakdown": [{"sales_channel": "affiliate", "units_sold_share_percent": 67}]},
+        "content_distribution": {"breakdown": [{"content_type": "video", "gmv_share_percent": 66}]},
+        "daily_trend": [{"date": "2026-06-18", "daily_units_sold": 4, "daily_gmv": 304}],
+    })
+    trend_17 = annotate("product_sales_trend", {"filter": {"product_id": "1730898744848192092"}}, {
+        "daily_trend": [
+            {"date": f"2026-04-{day:02d}", "daily_units_sold": day, "daily_gmv": day * 10}
+            for day in range(1, 31)
+        ] + [{"date": "2026-05-01", "daily_units_sold": 1, "daily_gmv": 10}],
+    })
+    trend_18 = annotate("product_sales_trend", {"filter": {"product_id": "1731973841209955212"}}, {
+        "daily_trend": [
+            {"date": f"2026-05-{day:02d}", "daily_units_sold": 1 if day <= 10 else 0, "daily_gmv": 10 if day <= 10 else 0}
+            for day in range(1, 31)
+        ],
+    })
+    reviews = annotate("product_review_list", {"filter": {"product_id": "1730898744848192092"}}, {
+        "reviews": [], "total_review_count": 0,
+    })
+
+    tool_results = [{"tool_name": name, "result": result} for name, result in (
+        ("fastmoss__market_category_analysis", category_trend),
+        ("fastmoss__market_category_ranking", ranking),
+        ("fastmoss__product_rank_new_listed", new_products),
+        ("fastmoss__product_search", product_sample),
+        ("fastmoss__product_overview", overview),
+        ("fastmoss__product_sales_trend", trend_17),
+        ("fastmoss__product_sales_trend", trend_18),
+        ("fastmoss__product_review_list", reviews),
+    )]
+    manifest = web_app.fastmoss_evidence_manifest(
+        SimpleNamespace(tool_calls=[], tool_results=tool_results),
+        "调研",
+        {"playbook": "product", "entity": "Mini Meat Grinder"},
+    )
+    facts = manifest["evidence_facts"]
+    assert manifest["evidence_fact_count"] == 8
+    assert "evidence_excerpts" not in manifest
+    assert {fact["dimension"] for fact in facts} == {
+        "category_trend", "category_channel_ranking", "new_products", "product_sample",
+        "product_overview", "product_90d_trend", "review_status",
+    }
+    assert next(fact for fact in facts if fact["dimension"] == "category_trend")["summary_metrics"]["category_units_sold_total"] == 473150
+    assert next(fact for fact in facts if fact["dimension"] == "category_channel_ranking")["categories"][0]["channel_gmv_share"]["video_gmv_share_percent"] == 57.15
+    assert next(fact for fact in facts if fact["dimension"] == "new_products")["products"][0]["first_3d_units_sold"] == 18
+    assert next(fact for fact in facts if fact["dimension"] == "product_sample")["products"][0]["linked_creator_count"] == 406
+    assert next(fact for fact in facts if fact["dimension"] == "product_overview")["ads_distribution"]["breakdown"][0]["gmv_share_percent"] == 59
+    late_trends = [fact for fact in facts if fact["dimension"] == "product_90d_trend"]
+    assert [fact["product_id"] for fact in late_trends] == ["1730898744848192092", "1731973841209955212"]
+    assert late_trends[0]["trend_summary"]["first_30d_units_sold"] == 465
+    assert late_trends[0]["trend_summary"]["last_30d_units_sold"] == 465
+    assert next(fact for fact in facts if fact["dimension"] == "review_status")["state"] == "empty"
+
+
 def test_fastmoss_answer_verifier_rewrites_high_risk_and_falls_back_on_failure() -> None:
     message = SimpleNamespace(tool_calls=[], tool_results=[])
     route = {"playbook": "product", "task_depth": "workflow", "entity": "mini grinder"}
@@ -1681,5 +1774,6 @@ if __name__ == "__main__":
     test_fastmoss_l2_market_metrics_are_only_upstream_category_reference()
     test_fastmoss_failed_category_page_is_not_counted_as_coverage()
     test_fastmoss_metadata_detects_unsorted_page_and_string_product_ids()
+    test_fastmoss_evidence_ledger_keeps_native_dimensions_and_late_trends()
     test_fastmoss_answer_verifier_rewrites_high_risk_and_falls_back_on_failure()
     print("chat tool normalization tests passed")

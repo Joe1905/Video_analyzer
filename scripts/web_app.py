@@ -6116,6 +6116,178 @@ def _fastmoss_response_value(raw_result: Any, normalized_result: dict[str, Any])
     return normalized_result.get("mcp_data") if isinstance(normalized_result, dict) else None
 
 
+def _fastmoss_fact_mapping(value: Any, max_items: int = 20) -> Any:
+    """Keep compact provider fields for the evidence ledger without transport noise."""
+    if isinstance(value, dict):
+        compact: dict[str, Any] = {}
+        for key, item in value.items():
+            if key in {"cover_url", "avatar_url", "fastmoss_detail_url", "tiktok_product_url", "tool_id"}:
+                continue
+            if isinstance(item, (str, int, float, bool)) or item is None:
+                compact[str(key)] = item
+            elif isinstance(item, dict):
+                nested = _fastmoss_fact_mapping(item, max_items)
+                if nested:
+                    compact[str(key)] = nested
+            elif isinstance(item, list) and item:
+                nested = [_fastmoss_fact_mapping(child, max_items) for child in item[:max_items]]
+                nested = [child for child in nested if child not in (None, {}, [])]
+                if nested:
+                    compact[str(key)] = nested
+        return compact
+    if isinstance(value, list):
+        return [_fastmoss_fact_mapping(item, max_items) for item in value[:max_items]]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def _fastmoss_product_fact(record: dict[str, Any]) -> dict[str, Any]:
+    product = record.get("product") if isinstance(record.get("product"), dict) else record
+    sales = record.get("sales_summary") if isinstance(record.get("sales_summary"), dict) else record
+    distribution = record.get("distribution_summary") if isinstance(record.get("distribution_summary"), dict) else {}
+    category = product.get("category") if isinstance(product.get("category"), dict) else {}
+    fact = {
+        "product_id": _fastmoss_find_first(product, {"productid", "goodsid", "itemid"}),
+        "title": str(_fastmoss_find_first(product, {"title", "productname", "producttitle"}) or "")[:240],
+        "category": _fastmoss_fact_mapping(category, 5),
+        "price_min": _fastmoss_number(_fastmoss_find_first(product, {"floorprice", "minprice", "currentprice", "price"})),
+        "price_max": _fastmoss_number(_fastmoss_find_first(product, {"ceilingprice", "maxprice", "currentprice", "price"})),
+        "commission_rate_percent": _fastmoss_number(_fastmoss_find_first(product, {"commissionratepercent", "commissionrate"})),
+        "launch_date": _fastmoss_find_first(product, {"launchdate", "listeddate"}),
+        "day7_units_sold": _fastmoss_number(_fastmoss_find_first(sales, {"last7dunitssold", "day7unitssold"})),
+        "day28_units_sold": _fastmoss_number(_fastmoss_find_first(sales, {"last28dunitssold", "day28unitssold"})),
+        "day28_gmv": _fastmoss_number(_fastmoss_find_first(sales, {"last28dgmv", "day28gmv"})),
+        "day90_units_sold": _fastmoss_number(_fastmoss_find_first(sales, {"last90dunitssold", "day90unitssold"})),
+        "day90_gmv": _fastmoss_number(_fastmoss_find_first(sales, {"last90dgmv", "day90gmv"})),
+        "total_units_sold": _fastmoss_number(_fastmoss_find_first(sales, {"totalunitssold", "lifetimeunitssold"})),
+        "total_gmv": _fastmoss_number(_fastmoss_find_first(sales, {"totalgmv", "lifetimegmv"})),
+        "first_3d_units_sold": _fastmoss_number(_fastmoss_find_first(record, {"first3dunitssold"})),
+        "first_3d_gmv": _fastmoss_number(_fastmoss_find_first(record, {"first3dgmv"})),
+        "linked_creator_count": _fastmoss_number(_fastmoss_find_first(distribution, {"linkedcreatorcount"})),
+        "linked_video_count": _fastmoss_number(_fastmoss_find_first(distribution, {"linkedvideocount"})),
+    }
+    return {key: item for key, item in fact.items() if item not in (None, "", {}, [])}
+
+
+def _fastmoss_daily_trend_fact(value: Any) -> dict[str, Any]:
+    series = value.get("daily_trend") if isinstance(value, dict) and isinstance(value.get("daily_trend"), list) else []
+    rows = [row for row in series if isinstance(row, dict)]
+    units = [_fastmoss_number(row.get("daily_units_sold")) or 0 for row in rows]
+    gmv = [_fastmoss_number(row.get("daily_gmv")) or 0 for row in rows]
+    dates = [str(row.get("date")) for row in rows if row.get("date")]
+    window = min(30, len(rows))
+    fact = {
+        "start_date": dates[0] if dates else None,
+        "end_date": dates[-1] if dates else None,
+        "days_returned": len(rows),
+        "active_days": sum(1 for value in units if value > 0),
+        "total_units_sold": sum(units) if rows else None,
+        "total_gmv": round(sum(gmv), 2) if rows else None,
+        "first_30d_units_sold": sum(units[:window]) if rows else None,
+        "last_30d_units_sold": sum(units[-window:]) if rows else None,
+        "peak_daily_units_sold": max(units) if rows else None,
+    }
+    return {key: item for key, item in fact.items() if item is not None}
+
+
+def fastmoss_tool_evidence_facts(
+    tool_name: str,
+    arguments: dict[str, Any],
+    normalized_result: dict[str, Any],
+    value: Any,
+) -> list[dict[str, Any]]:
+    """Create compact FastMoss-native facts while the full provider response is available."""
+    unprefixed = split_prefixed_tool_id(tool_name)[1]
+    metadata = normalized_result.get("evidence_metadata") if isinstance(normalized_result.get("evidence_metadata"), dict) else {}
+    base = {
+        "source_tool": tool_name,
+        "data_state": mcp_result_data_state(normalized_result),
+        "scope": metadata.get("scope"),
+        "category_level": metadata.get("category_level"),
+        "category_id": metadata.get("category_id"),
+        "category_path": metadata.get("category_path"),
+        "region": metadata.get("region"),
+        "period": metadata.get("returned_date_range") or metadata.get("requested_period") or metadata.get("requested_date_range"),
+        "query": metadata.get("query"),
+        "page": metadata.get("page"),
+    }
+    base = {key: item for key, item in base.items() if item not in (None, "", {}, [])}
+    facts: list[dict[str, Any]] = []
+
+    if unprefixed == "market_category_analysis" and isinstance(value, dict):
+        analysis_type = str(value.get("analysis_type") or "category_analysis")
+        fact = {
+            **base,
+            "dimension": "category_trend" if analysis_type == "sales_trends" else "category_analysis",
+            "analysis_type": analysis_type,
+            "category": _fastmoss_fact_mapping(value.get("category") or {}, 8),
+        }
+        for key in (
+            "summary_metrics", "scale_metrics", "growth_metrics", "concentration_metrics",
+            "sales_price_distribution", "product_count_price_distribution", "sub_category_summary",
+        ):
+            if value.get(key) not in (None, {}, []):
+                fact[key] = _fastmoss_fact_mapping(value[key], 20)
+        if isinstance(value.get("trend_series"), list):
+            fact["trend_series"] = _fastmoss_fact_mapping(value["trend_series"], 16)
+        facts.append(fact)
+    elif unprefixed == "market_category_ranking" and isinstance(value, dict):
+        facts.append({
+            **base,
+            "dimension": "category_channel_ranking",
+            "ranking_scope": _fastmoss_fact_mapping(value.get("ranking_scope") or {}, 8),
+            "categories": _fastmoss_fact_mapping(value.get("ranked_categories") or [], 20),
+        })
+
+    product_rows: list[dict[str, Any]] = []
+    if isinstance(value, dict) and isinstance(value.get("list"), list):
+        product_rows = [row for row in value["list"] if isinstance(row, dict)]
+    elif isinstance(value, dict) and unprefixed == "product_detail_info":
+        product_rows = [value]
+    if product_rows and unprefixed in {
+        "product_search", "product_rank_top_selling", "product_rank_new_listed", "product_detail_info",
+    }:
+        dimension = {
+            "product_search": "product_sample",
+            "product_rank_top_selling": "top_products",
+            "product_rank_new_listed": "new_products",
+            "product_detail_info": "product_detail",
+        }[unprefixed]
+        products = [_fastmoss_product_fact(row) for row in product_rows[:10]]
+        facts.append({**base, "dimension": dimension, "products": [item for item in products if item]})
+
+    if unprefixed == "product_overview" and isinstance(value, dict):
+        fact = {
+            **base,
+            "dimension": "product_overview",
+            "product_id": _fastmoss_find_first(arguments, {"productid", "goodsid", "itemid"}),
+            "ads_distribution": _fastmoss_fact_mapping(value.get("ads_distribution") or {}, 10),
+            "channel_distribution": _fastmoss_fact_mapping(value.get("channel_distribution") or {}, 10),
+            "content_distribution": _fastmoss_fact_mapping(value.get("content_distribution") or {}, 10),
+            "trend_summary": _fastmoss_daily_trend_fact(value),
+        }
+        facts.append({key: item for key, item in fact.items() if item not in (None, "", {}, [])})
+    elif unprefixed == "product_sales_trend" and isinstance(value, dict):
+        facts.append({
+            **base,
+            "dimension": "product_90d_trend",
+            "product_id": _fastmoss_find_first(arguments, {"productid", "goodsid", "itemid"}),
+            "trend_summary": _fastmoss_daily_trend_fact(value),
+        })
+    elif unprefixed == "product_review_list" and isinstance(value, dict):
+        reviews = value.get("reviews") if isinstance(value.get("reviews"), list) else []
+        facts.append({
+            **base,
+            "dimension": "review_status",
+            "product_id": _fastmoss_find_first(arguments, {"productid", "goodsid", "itemid"}),
+            "reported_total": _fastmoss_number(value.get("total_review_count")),
+            "returned_reviews": len(reviews),
+            "state": "empty" if not reviews else "data",
+        })
+    return facts
+
+
 def fastmoss_tool_evidence_metadata(
     tool_name: str,
     arguments: dict[str, Any],
@@ -6177,6 +6349,9 @@ def annotate_fastmoss_tool_result(
     normalized_result["evidence_metadata"] = fastmoss_tool_evidence_metadata(
         tool_name, arguments, normalized_result, raw_result
     )
+    evidence_facts = fastmoss_tool_evidence_facts(tool_name, arguments, normalized_result, value)
+    if evidence_facts:
+        normalized_result["evidence_facts"] = evidence_facts
     product_records = fastmoss_extract_product_records(value)
     if product_records:
         normalized_result["evidence_product_records"] = product_records[:10]
@@ -6226,7 +6401,7 @@ def fastmoss_evidence_manifest(
     all_records: dict[str, list[dict[str, Any]]] = {}
     conflicts: list[dict[str, str]] = []
     sort_anomalies: list[str] = []
-    evidence_excerpts: list[dict[str, Any]] = []
+    evidence_facts: list[dict[str, Any]] = []
 
     for item in assistant_msg.tool_results or []:
         if not isinstance(item, dict) or not isinstance(item.get("result"), dict):
@@ -6236,10 +6411,10 @@ def fastmoss_evidence_manifest(
         metadata = result.get("evidence_metadata") if isinstance(result.get("evidence_metadata"), dict) else {}
         records = result.get("evidence_product_records") if isinstance(result.get("evidence_product_records"), list) else []
         metadata_rows.append({"tool": tool_name, **metadata})
-        excerpt = result.get("mcp_data")
-        if excerpt is not None:
-            encoded = json.dumps(excerpt, ensure_ascii=False, separators=(",", ":"))
-            evidence_excerpts.append({"tool": tool_name, "data": encoded[:1800]})
+        result_facts = result.get("evidence_facts") if isinstance(result.get("evidence_facts"), list) else []
+        for fact in result_facts:
+            if isinstance(fact, dict):
+                evidence_facts.append(fact)
         scope = str(metadata.get("scope") or "")
         if scope == "category_head":
             page_number = int(metadata.get("page") or 1)
@@ -6446,7 +6621,8 @@ def fastmoss_evidence_manifest(
         "conflicts": conflicts,
         "limitations": limitations,
         "derived_signals": derived_signals,
-        "evidence_excerpts": evidence_excerpts[:14],
+        "evidence_facts": evidence_facts,
+        "evidence_fact_count": len(evidence_facts),
     }
 
 
