@@ -177,7 +177,7 @@ async function request(path,options={}){const headers={...(options.headers||{}),
 function toast(message){const el=$("toast");el.textContent=message;el.classList.add("show");clearTimeout(el._timer);el._timer=setTimeout(()=>el.classList.remove("show"),2400)}
 function formatTime(seconds){if(!seconds)return"";const date=new Date(seconds*1000),today=new Date();const same=date.toDateString()===today.toDateString();return date.toLocaleString("zh-CN",same?{hour:"2-digit",minute:"2-digit",hour12:false}:{month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit",hour12:false})}
 function relativeSeen(seconds){const delta=Math.max(0,Date.now()/1000-seconds);if(delta<90)return"在线";if(delta<3600)return`${Math.floor(delta/60)} 分钟前`;if(delta<86400)return`${Math.floor(delta/3600)} 小时前`;return`${Math.floor(delta/86400)} 天前`}
-function roomGlyph(room){return room.kind==="public"?"公":room.systemKind==="feishu"?"飞":room.kind==="group"?"群":"信"}
+function roomGlyph(room){return room.kind==="public"?"公":room.kind==="group"?"群":"信"}
 function roomIcon(room){if(room.kind==="direct"){const other=(room.members||[]).find(member=>member.id!==state.currentUser?.id);if(other)return avatar(other,"room-avatar")}return `<span class="room-glyph">${roomGlyph(room)}</span>`}
 function roomPreview(room){const latest=room.latestMessage;if(!latest)return room.kind==="public"?"所有人可见":"还没有消息";const attachment=latest.hasFile?"[文件] ":latest.mediaKind==="video"?"[视频] ":latest.hasImage?"[图片] ":"";return`${latest.nickname}：${attachment}${latest.content||""}`}
 function saveRead(){localStorage.setItem(READ_KEY,JSON.stringify(state.readRooms))}
