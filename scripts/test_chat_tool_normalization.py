@@ -192,11 +192,11 @@ def test_fastmoss_playbook_intent_routes_official_workflows() -> None:
 
 def test_fastmoss_selection_playbook_includes_pricing_model() -> None:
     instruction = fastmoss_playbook_instruction("product")
-    assert "最近 7 天" in instruction
-    assert "最近 28 天" in instruction
     assert "建议上市价" in instruction
-    assert "保守/基准/激进" in instruction
-    assert "月度销量与 GMV" in instruction
+    assert "月度销量=月流量×转化率" in instruction
+    assert "缺少输入时只列公式和待补参数" in instruction
+    assert "不得自行设定库存、预算、达人数量、周期或经营目标" in instruction
+    assert "保守/基准/激进三套" not in instruction
     assert "不得把 GMV 当利润" in instruction
 
 
@@ -1803,6 +1803,151 @@ def test_fastmoss_answer_verifier_applies_local_edits_and_keeps_draft_on_failure
         web_app.record_api_call = original_record
 
 
+def test_fastmoss_all_workflow_tools_emit_supported_envelopes() -> None:
+    generic_payload = {
+        "summary_metrics": {"gmv": 100, "units_sold": 5},
+        "list": [{"entity_id": "sample", "gmv": 100}],
+        "total": 1,
+    }
+    for tool_name in sorted(web_app.FASTMOSS_SUPPORTED_EVIDENCE_TOOLS):
+        arguments = {
+            "filter": {
+                "category_id": 935176,
+                "product_id": "1730898744848192092",
+                "shop_id": "7496115528088652380",
+                "creator_uid": "7025465585010885637",
+                "video_id": "7661483798802009357",
+            }
+        }
+        payload = generic_payload
+        if tool_name == "search_category_by_words":
+            payload = {"categories": [{"category_id_level3": 935176, "cn_name": "料理机"}]}
+        elif tool_name == "product_creator_analysis":
+            payload = {
+                "creator_summary": {"follower_tier_distribution": [{"follower_tier": "10k-50k", "creator_count": 7}]},
+                "linked_creators": {"list": [], "total": 7},
+            }
+        elif tool_name == "product_video_list":
+            payload = {"product_id": "1730898744848192092", "time_range_days": 28, "videos": [], "total": 16}
+        normalized = {
+            "ok": True, "enough_data": True, "data_state": "data", "mcp_data": payload,
+        }
+        annotated = web_app.annotate_fastmoss_tool_result(
+            f"fastmoss__{tool_name}", arguments, normalized
+        )
+        envelope = annotated["evidence_envelope"]
+        assert envelope["parser_status"] == "supported", tool_name
+        assert envelope["tool_family"] in web_app.FASTMOSS_EVIDENCE_TOOL_FAMILIES, tool_name
+        assert annotated.get("evidence_facts"), tool_name
+
+    empty = web_app.annotate_fastmoss_tool_result(
+        "fastmoss__product_search", {"keywords": "empty"},
+        {"ok": True, "enough_data": False, "data_state": "empty", "mcp_data": {"list": [], "total": 0}},
+    )
+    assert empty["evidence_envelope"]["data_state"] == "empty"
+    assert "evidence_facts" not in empty
+
+    unknown = web_app.annotate_fastmoss_tool_result(
+        "fastmoss__future_metric", {},
+        {"ok": True, "enough_data": True, "data_state": "data", "mcp_data": {"value": 1}},
+    )
+    assert unknown["evidence_envelope"]["parser_status"] == "unsupported_parser"
+    assert "evidence_facts" not in unknown
+
+
+def test_fastmoss_creator_video_facts_and_historical_rebuild() -> None:
+    creator_payload = {
+        "creator_summary": {
+            "follower_tier_distribution": [
+                {"follower_tier": "1k-5k", "creator_count": 3},
+                {"follower_tier": "10k-50k", "creator_count": 7},
+            ],
+        },
+        "linked_creators": {
+            "total": 10,
+            "list": [{
+                "creator": {"creator_uid": "7025465585010885637", "creator_name": "A", "follower_count": 12000},
+                "product_contribution": {"product_gmv": 500, "product_units_sold": 10},
+            }],
+        },
+    }
+    video_payload = {
+        "product_id": "1730898744848192092", "time_range_days": 28, "total": 16,
+        "videos": [{
+            "video_id": "7661483798802009357",
+            "creator": {"creator_uid": "7025465585010885637"},
+            "engagement_metrics": {"play_count": 1124},
+            "product_contribution": {"window_gmv": 304, "window_units_sold": 4},
+            "traffic_flags": {"is_ad": True},
+        }],
+    }
+    calls = [
+        {"function": {"name": "fastmoss__product_creator_analysis", "arguments": json.dumps({"filter": {"product_id": "1730898744848192092"}})}},
+        {"function": {"name": "fastmoss__product_video_list", "arguments": json.dumps({"filter": {"product_id": "1730898744848192092", "time_range_days": 28}})}},
+    ]
+    results = [
+        {"tool_name": "fastmoss__product_creator_analysis", "result": {"ok": True, "enough_data": True, "data_state": "data", "mcp_data": creator_payload}},
+        {"tool_name": "fastmoss__product_video_list", "result": {"ok": True, "enough_data": True, "data_state": "data", "mcp_data": video_payload}},
+    ]
+    manifest = web_app.fastmoss_evidence_manifest(
+        SimpleNamespace(tool_calls=calls, tool_results=results), "调研", {"playbook": "product"}
+    )
+    assert manifest["evidence_envelope_count"] == 2
+    assert manifest["unsupported_parser_count"] == 0
+    by_dimension = {fact["dimension"]: fact for fact in manifest["evidence_facts"]}
+    assert by_dimension["product_creator_analysis"]["reported_creator_total"] == 10
+    assert "not_gmv_contribution" in by_dimension["product_creator_analysis"]["metric_semantics"]["follower_tier_distribution"]
+    assert by_dimension["product_videos"]["reported_video_total"] == 16
+    assert "not_category_content_preference" in by_dimension["product_videos"]["metric_semantics"]
+    product_bundle = next(
+        item for item in manifest["entity_bundles"]
+        if item["entity_type"] == "product" and item["entity_id"] == "1730898744848192092"
+    )
+    assert {"product_creator_analysis", "product_videos"}.issubset(set(product_bundle["dimensions"]))
+
+
+def test_fastmoss_report_packets_are_workflow_native_and_numeric_policy_is_strict() -> None:
+    manifest = {
+        "quality_states": {"data": ["fastmoss__product_search"], "empty": [], "error": []},
+        "evidence_envelope_count": 1,
+        "evidence_fact_count": 1,
+        "unsupported_parser_count": 0,
+        "category_head": {"target_pages": 3, "completed_pages": [1], "reported_total": 20, "fetched_unique": 10, "coverage_complete": False},
+        "segment_head": {"queries": {}, "fetched_unique": 0},
+        "entity_bundles": [], "evidence_facts": [], "derived_facts": [], "conflicts": [], "limitations": [],
+    }
+    packets = {
+        playbook: web_app.fastmoss_report_packet(manifest, {"playbook": playbook})
+        for playbook in ("product", "pricing", "competitor", "shop", "creator", "content_dissect", "content_strategy")
+    }
+    assert packets["shop"]["suggested_modules"] != packets["product"]["suggested_modules"]
+    assert packets["creator"]["suggested_modules"] != packets["content_dissect"]["suggested_modules"]
+    assert all(packet["numeric_policy"] == "only_tool_evidence_user_input_or_explicit_calculation" for packet in packets.values())
+
+
+def test_fastmoss_claim_ids_and_extended_mechanical_cleanup() -> None:
+    draft = (
+        "## 建议\n"
+        "建议月度广告预算 $3K–$5K，首批联系20位达人，每周发布5–7条视频，"
+        "CPO控制在$15–$18，测试周期2周，建议功率300–500W，售价定在$39.99。\n"
+        "其余1970个商品合计不足25%，所以广告ROI稳定。"
+    )
+    cleaned, count = web_app.sanitize_fastmoss_unsupported_recommendations(draft)
+    cleaned = web_app.downgrade_fastmoss_absolute_market_claims(cleaned)
+    assert count >= 6
+    for unsupported in ("$3K", "$5K", "20位", "5–7", "$15", "$18", "2周", "300–500W", "$39.99", "1970", "25%", "ROI稳定"):
+        assert unsupported not in cleaned
+
+    claims = web_app.fastmoss_high_risk_claims("结论\n这个市场已经是低竞争蓝海。")
+    assert claims and claims[0]["claim_id"] == "line-2"
+    edited, applied = web_app.apply_fastmoss_verifier_edits(
+        "结论\n这个市场已经是低竞争蓝海。",
+        [{"claim_id": "line-2", "replacement": "竞争强度仍需验证。", "reason": "样本不足", "evidence_refs": []}],
+        claims,
+    )
+    assert applied == 1 and "竞争强度仍需验证" in edited
+
+
 if __name__ == "__main__":
     test_tiktok_search_keeps_analysis_fields()
     test_amazon_keeps_product_fields()
@@ -1858,4 +2003,8 @@ if __name__ == "__main__":
     test_fastmoss_metadata_detects_unsorted_page_and_string_product_ids()
     test_fastmoss_evidence_ledger_keeps_native_dimensions_and_late_trends()
     test_fastmoss_answer_verifier_applies_local_edits_and_keeps_draft_on_failure()
+    test_fastmoss_all_workflow_tools_emit_supported_envelopes()
+    test_fastmoss_creator_video_facts_and_historical_rebuild()
+    test_fastmoss_report_packets_are_workflow_native_and_numeric_policy_is_strict()
+    test_fastmoss_claim_ids_and_extended_mechanical_cleanup()
     print("chat tool normalization tests passed")
