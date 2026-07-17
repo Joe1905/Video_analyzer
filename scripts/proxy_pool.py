@@ -9,6 +9,7 @@ import hashlib
 import ipaddress
 import json
 import os
+import re
 import signal
 import shutil
 import socket
@@ -41,6 +42,7 @@ PROXY_RETRYABLE_ERROR_MARKERS = (
     "浏览器出口 ip",
     "当前出口 ip",
     "代理 ip 校验未通过",
+    "tiktok 连通性校验失败",
     "代理状态为 不可用",
     "代理状态为 异常",
 )
@@ -1827,7 +1829,7 @@ def get_pool(pool_id: int) -> dict[str, Any]:
 
 def delete_pool(pool_id: int) -> dict[str, Any]:
     with connect() as conn:
-        pool = conn.execute("SELECT id FROM proxy_profiles WHERE id = ?", (pool_id,)).fetchone()
+        pool = conn.execute("SELECT id, local_port FROM proxy_profiles WHERE id = ?", (pool_id,)).fetchone()
         if not pool:
             raise ValueError("proxy profile not found")
 
@@ -1865,11 +1867,20 @@ def delete_pool(pool_id: int) -> dict[str, Any]:
         if archived_account:
             raise ValueError("代理关联的已删除账号仍有发布或采集记录，不能删除")
 
-        conn.execute("DELETE FROM browser_sessions WHERE proxy_profile_id = ?", (pool_id,))
-        conn.execute("DELETE FROM tiktok_accounts WHERE proxy_profile_id = ? AND deleted_at <> ''", (pool_id,))
-        conn.execute("DELETE FROM proxy_profiles WHERE id = ?", (pool_id,))
-        conn.commit()
-    return list_state()
+        cleanup, backup = _remove_mihomo_listener_config(int(pool["local_port"] or 0))
+        try:
+            conn.execute("DELETE FROM browser_sessions WHERE proxy_profile_id = ?", (pool_id,))
+            conn.execute("DELETE FROM tiktok_accounts WHERE proxy_profile_id = ? AND deleted_at <> ''", (pool_id,))
+            conn.execute("DELETE FROM proxy_profiles WHERE id = ?", (pool_id,))
+            conn.commit()
+        except Exception:
+            if backup is not None:
+                try:
+                    _restore_mihomo_listener_config(*backup)
+                except Exception:
+                    pass
+            raise
+    return {**list_state(), "mihomo_cleanup": cleanup}
 
 
 def upsert_account(payload: dict[str, Any]) -> dict[str, Any]:
@@ -2148,6 +2159,92 @@ def _mihomo_request(method: str, path: str, body: dict[str, Any] | None = None, 
         conn.close()
 
 
+def _atomic_write(path: Path, body: bytes, mode: int) -> None:
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_bytes(body)
+        os.chmod(temporary, mode)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _reload_mihomo_config() -> None:
+    reload_path = os.getenv("MIHOMO_RELOAD_PATH", "/etc/mihomo/config.yaml").strip() or "/etc/mihomo/config.yaml"
+    ok, _body, error = _mihomo_request("PUT", "/configs?force=true", {"path": reload_path}, timeout=15)
+    if not ok:
+        raise ValueError(f"mihomo 配置重载失败：{error}")
+
+
+def _restore_mihomo_listener_config(path: Path, original: bytes, mode: int) -> None:
+    _atomic_write(path, original, mode)
+    _reload_mihomo_config()
+
+
+def _listener_port(block: list[str]) -> int:
+    for line in block:
+        match = re.match(r"^\s+port:\s*['\"]?(\d+)", line)
+        if match:
+            return int(match.group(1))
+    return 0
+
+
+def _remove_mihomo_listener_config(
+    required_port: int,
+) -> tuple[dict[str, Any], tuple[Path, bytes, int] | None]:
+    managed_ports = set(range(PROXY_PORT_START, PROXY_PORT_END + 1))
+    if required_port not in managed_ports:
+        return {"configured": False, "removed_ports": []}, None
+    config_value = os.getenv("MIHOMO_CONFIG_PATH", "").strip()
+    if not config_value:
+        if _port_open("127.0.0.1", required_port, timeout=0.5):
+            raise ValueError("mihomo 配置未挂载，无法同步删除正在监听的代理端口")
+        return {"configured": False, "removed_ports": []}, None
+    path = Path(config_value)
+    if not path.is_file():
+        raise ValueError(f"mihomo 配置文件不存在：{path}")
+
+    original = path.read_bytes()
+    mode = path.stat().st_mode & 0o777
+    lines = original.decode("utf-8").splitlines(keepends=True)
+    start = next((index for index, line in enumerate(lines) if line.startswith("listeners:")), -1)
+    if start < 0:
+        if _port_open("127.0.0.1", required_port, timeout=0.5):
+            raise ValueError(f"mihomo 仍监听 {required_port}，但配置中找不到 listeners 段")
+        return {"configured": True, "removed_ports": []}, None
+    end = next(
+        (index for index in range(start + 1, len(lines)) if re.match(r"^[A-Za-z0-9_-]+:", lines[index])),
+        len(lines),
+    )
+    item_starts = [index for index in range(start + 1, end) if lines[index].startswith("-")]
+    remove_ranges: list[tuple[int, int]] = []
+    removed_ports: list[int] = []
+    for position, item_start in enumerate(item_starts):
+        item_end = item_starts[position + 1] if position + 1 < len(item_starts) else end
+        port = _listener_port(lines[item_start:item_end])
+        if port == required_port:
+            remove_ranges.append((item_start, item_end))
+            removed_ports.append(port)
+    if not remove_ranges:
+        if _port_open("127.0.0.1", required_port, timeout=0.5):
+            raise ValueError(f"mihomo 仍监听 {required_port}，但没有找到可安全删除的配置块")
+        return {"configured": True, "removed_ports": []}, None
+
+    remove_indexes = {index for left, right in remove_ranges for index in range(left, right)}
+    updated = "".join(line for index, line in enumerate(lines) if index not in remove_indexes).encode("utf-8")
+    _atomic_write(path, updated, mode)
+    try:
+        _reload_mihomo_config()
+    except Exception:
+        _atomic_write(path, original, mode)
+        try:
+            _reload_mihomo_config()
+        except Exception:
+            pass
+        raise
+    return {"configured": True, "removed_ports": sorted(removed_ports)}, (path, original, mode)
+
+
 def _switch_mihomo_node(node_name: str) -> dict[str, Any]:
     ok, body, error = _mihomo_request("GET", "/proxies")
     if not ok or not isinstance(body, dict):
@@ -2194,6 +2291,29 @@ def _proxy_get_json(url: str, proxy_port: int, timeout: float = 10.0) -> tuple[b
         conn.close()
 
 
+def _proxy_url_reachable(url: str, proxy_port: int, timeout: float = 10.0) -> tuple[bool, str]:
+    proxy_url = f"http://127.0.0.1:{proxy_port}"
+    opener = build_opener(ProxyHandler({"http": proxy_url, "https": proxy_url}))
+    request = Request(
+        url,
+        headers={
+            "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
+            "Accept-Language": TIKTOK_BROWSER_ACCEPT_LANGUAGE,
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/150.0.0.0 Safari/537.36",
+        },
+    )
+    try:
+        with opener.open(request, timeout=timeout) as response:
+            response.read(1)
+            return True, f"HTTP {response.status}"
+    except HTTPError as exc:
+        if 400 <= exc.code < 500:
+            return True, f"HTTP {exc.code}"
+        return False, f"HTTP {exc.code}"
+    except (URLError, TimeoutError, OSError) as exc:
+        return False, str(exc)
+
+
 def detect_exit_ip_for_pool(pool: sqlite3.Row) -> dict[str, Any]:
     node_name = str(pool["mihomo_name"] or pool["name"] or "").strip()
     if not node_name:
@@ -2206,6 +2326,7 @@ def detect_exit_ip_for_pool(pool: sqlite3.Row) -> dict[str, Any]:
         switch = _switch_mihomo_node(node_name)
         proxy_port = int(os.getenv("MIHOMO_PROXY_PORT", "7890") or "7890")
     failures: list[str] = []
+    detected: dict[str, Any] | None = None
     for target in _proxy_ip_check_urls():
         ok, body, error = _proxy_get_json(target, proxy_port)
         if not ok or not isinstance(body, dict):
@@ -2219,7 +2340,7 @@ def detect_exit_ip_for_pool(pool: sqlite3.Row) -> dict[str, Any]:
         region = str(body.get("regionName") or body.get("region") or "")
         city = str(body.get("city") or "")
         address = " / ".join(item for item in (country, region, city) if item)
-        return {
+        detected = {
             "ip": ip,
             "geo": {"country": country, "region": region, "city": city, "address": address},
             "mihomo": switch,
@@ -2227,7 +2348,19 @@ def detect_exit_ip_for_pool(pool: sqlite3.Row) -> dict[str, Any]:
             "check_url": target,
             "fallback_failures": failures,
         }
-    raise ValueError(f"通过服务器 mihomo 查询出口 IP 失败：{'；'.join(failures) or '没有可用的 IP 查询接口'}")
+        break
+    if detected is None:
+        raise ValueError(f"通过服务器 mihomo 查询出口 IP 失败：{'；'.join(failures) or '没有可用的 IP 查询接口'}")
+    tiktok_url = os.getenv("PROXY_TIKTOK_CHECK_URL", "https://www.tiktok.com/").strip()
+    if tiktok_url:
+        reachable, reachability = _proxy_url_reachable(tiktok_url, proxy_port)
+        if not reachable:
+            raise ValueError(
+                f"TikTok 连通性校验失败（出口 IP {detected['ip']}）："
+                f"{urlparse(tiktok_url).netloc or tiktok_url}: {reachability}"
+            )
+        detected["tiktok_check"] = {"url": tiktok_url, "result": reachability}
+    return detected
 
 
 def _stored_account_identity(account: sqlite3.Row, pool: sqlite3.Row) -> dict[str, str]:
