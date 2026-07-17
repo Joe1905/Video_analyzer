@@ -127,6 +127,8 @@ services:
       TIKTOK_PUBLISH_FINAL_CLICK_ENABLED: ${TIKTOK_PUBLISH_FINAL_CLICK_ENABLED:-1}
       TIKTOK_PUBLISH_UPLOAD_TIMEOUT_SECONDS: ${TIKTOK_PUBLISH_UPLOAD_TIMEOUT_SECONDS:-1800}
       PROXY_POOL_ENABLED: ${PROXY_POOL_ENABLED:-0}
+      MIHOMO_CONFIG_PATH: ${MIHOMO_CONFIG_PATH:-/host/etc/mihomo/config.yaml}
+      MIHOMO_RELOAD_PATH: ${MIHOMO_RELOAD_PATH:-/etc/mihomo/config.yaml}
       NOVNC_PORT: ${NOVNC_PORT:-6080}
       NOVNC_MANUAL_PORTS: ${NOVNC_MANUAL_PORTS:-1}
       VISION_API_KEY: ${VISION_API_KEY:-}
@@ -206,6 +208,7 @@ services:
       - ${DATA_DIR:-./data}:/workspace/data
       - ./scripts:/workspace/scripts:ro
       - ${OCR_SHARED_DIR:-/home/openclaw/ocr-shared}:${OCR_SERVER_SHARED_DIR:-/home/openclaw/ocr-shared}
+      - ${MIHOMO_CONFIG_DIR:-/etc/mihomo}:/host/etc/mihomo
       - /var/run/docker.sock:/var/run/docker.sock
     network_mode: host
     restart: unless-stopped
