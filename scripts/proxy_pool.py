@@ -265,6 +265,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             scheduled_at TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'draft',
             stage TEXT NOT NULL DEFAULT '',
+            status_detail TEXT NOT NULL DEFAULT '',
             attempt_count INTEGER NOT NULL DEFAULT 0,
             next_attempt_at TEXT NOT NULL DEFAULT '',
             session_id INTEGER REFERENCES browser_sessions(id) ON DELETE SET NULL,
@@ -303,6 +304,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             feishu_target_json TEXT NOT NULL DEFAULT '{}',
             status TEXT NOT NULL DEFAULT 'queued',
             stage TEXT NOT NULL DEFAULT '',
+            status_detail TEXT NOT NULL DEFAULT '',
             attempt_count INTEGER NOT NULL DEFAULT 0,
             next_attempt_at TEXT NOT NULL DEFAULT '',
             session_id INTEGER REFERENCES browser_sessions(id) ON DELETE SET NULL,
@@ -437,6 +439,8 @@ def init_db(conn: sqlite3.Connection) -> None:
                 raise
     if "manual_publish" not in existing_publish_cols:
         conn.execute("ALTER TABLE publish_jobs ADD COLUMN manual_publish INTEGER NOT NULL DEFAULT 0")
+    if "status_detail" not in existing_publish_cols:
+        conn.execute("ALTER TABLE publish_jobs ADD COLUMN status_detail TEXT NOT NULL DEFAULT ''")
     collect_columns = {
         "collect_settings": {
             "feishu_target_json": "TEXT NOT NULL DEFAULT '{}'",
@@ -448,6 +452,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             "feishu_target_json": "TEXT NOT NULL DEFAULT '{}'",
             "publish_date_start": "TEXT NOT NULL DEFAULT ''",
             "publish_date_end": "TEXT NOT NULL DEFAULT ''",
+            "status_detail": "TEXT NOT NULL DEFAULT ''",
         },
         "collect_results": {
             "feishu_target_json": "TEXT NOT NULL DEFAULT '{}'",

@@ -18,6 +18,11 @@ from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 import proxy_pool
+from browser_page_state import (
+    BrowserPageBlocked,
+    BrowserPageTimeout,
+    wait_for_page_state,
+)
 
 
 ROOT = Path.cwd()
@@ -152,6 +157,7 @@ def _row_to_job(row: Any) -> dict[str, Any]:
         "status": row["status"],
         "status_label": STATUS_LABELS.get(row["status"], row["status"]),
         "stage": row["stage"],
+        "status_detail": row["status_detail"],
         "attempt_count": row["attempt_count"],
         "session_id": row["session_id"],
         "actual_publish_at": row["actual_publish_at"],
@@ -323,7 +329,7 @@ def update_job(payload: dict[str, Any]) -> dict[str, Any]:
             _validate_schedule(mode, scheduled, queue)
         status = "queued" if queue else "draft"
         conn.execute(
-            "UPDATE publish_jobs SET description = ?, ai_generated = ?, product_link = ?, keep_observing = ?, manual_publish = ?, schedule_mode = ?, scheduled_at = ?, status = ?, stage = '', attempt_count = 0, next_attempt_at = '', session_id = ?, final_click_at = '', actual_publish_at = '', result_url = '', last_error = '', updated_at = ? WHERE id = ?",
+            "UPDATE publish_jobs SET description = ?, ai_generated = ?, product_link = ?, keep_observing = ?, manual_publish = ?, schedule_mode = ?, scheduled_at = ?, status = ?, stage = '', status_detail = '', attempt_count = 0, next_attempt_at = '', session_id = ?, final_click_at = '', actual_publish_at = '', result_url = '', last_error = '', updated_at = ? WHERE id = ?",
             (
                 _clean_text(payload.get("description"), 2200),
                 1 if payload.get("ai_generated") else 0,
@@ -351,7 +357,7 @@ def cancel_job(payload: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("publish job not found")
         if row["status"] not in EDITABLE_STATUSES:
             raise ValueError("只能取消尚未开始的发布任务")
-        conn.execute("UPDATE publish_jobs SET status = 'cancelled', stage = '', updated_at = ? WHERE id = ?", (_iso(), job_id))
+        conn.execute("UPDATE publish_jobs SET status = 'cancelled', stage = '', status_detail = '', updated_at = ? WHERE id = ?", (_iso(), job_id))
         conn.commit()
         account_id = int(row["account_id"])
     return list_jobs(account_id)
@@ -383,7 +389,7 @@ def retry_job(payload: dict[str, Any]) -> dict[str, Any]:
             """
             UPDATE publish_jobs
             SET keep_observing = ?, manual_publish = 0, schedule_mode = ?, scheduled_at = ?, status = 'queued',
-                stage = 'retry_queued', next_attempt_at = '', session_id = ?, final_click_at = '',
+                stage = 'retry_queued', status_detail = '', next_attempt_at = '', session_id = ?, final_click_at = '',
                 actual_publish_at = '', result_url = '', last_error = '', updated_at = ?
             WHERE id = ?
             """,
@@ -410,7 +416,7 @@ def delete_job(payload: dict[str, Any]) -> dict[str, Any]:
         now = _iso()
         status = "cancelled" if row["status"] in {"draft", "queued", "delayed"} else row["status"]
         conn.execute(
-            "UPDATE publish_jobs SET status = ?, stage = '', deleted_at = ?, updated_at = ? WHERE id = ?",
+            "UPDATE publish_jobs SET status = ?, stage = '', status_detail = '', deleted_at = ?, updated_at = ? WHERE id = ?",
             (status, now, now, job_id),
         )
         conn.commit()
@@ -451,8 +457,9 @@ def runtime_status() -> dict[str, Any]:
 
 
 def _set_job(job_id: str, status: str, stage: str = "", error: str = "", **values: Any) -> None:
-    fields = ["status = ?", "stage = ?", "last_error = ?", "updated_at = ?"]
-    params: list[Any] = [status, stage, _clean_text(error, 2000), _iso()]
+    status_detail = _clean_text(values.pop("status_detail", ""), 500)
+    fields = ["status = ?", "stage = ?", "status_detail = ?", "last_error = ?", "updated_at = ?"]
+    params: list[Any] = [status, stage, status_detail, _clean_text(error, 2000), _iso()]
     allowed = {"session_id", "final_click_at", "actual_publish_at", "result_url", "next_attempt_at"}
     for key, value in values.items():
         if key in allowed:
@@ -479,6 +486,20 @@ def _delay_for_proxy(job_id: str, job: dict[str, Any], error: Exception | str) -
     _set_job(job_id, "delayed", "waiting_proxy", message, session_id=None, next_attempt_at=next_attempt_at)
     _update_account(int(job["account_id"]), error=message)
     proxy_pool.schedule_proxy_recheck_for_pending_job(int(job["proxy_profile_id"]), message)
+
+
+def _delay_for_page(job_id: str, job: dict[str, Any], error: Exception | str) -> None:
+    message = str(error)
+    _set_job(
+        job_id,
+        "delayed",
+        "waiting_page",
+        message,
+        session_id=None,
+        next_attempt_at=_iso(_utc_now() + timedelta(seconds=60)),
+        status_detail="页面加载超时，60 秒后自动重试",
+    )
+    _update_account(int(job["account_id"]), error=message)
 
 
 def _first_visible(locators: list[Any]) -> Any | None:
@@ -971,7 +992,7 @@ def _goto_with_proxy_retries(page: Any, target: str) -> Any:
     raise RuntimeError(f"TikTok 页面无法加载：{target}")
 
 
-def _ensure_studio_page(page: Any, log_dir: Path) -> None:
+def _ensure_studio_page(page: Any, log_dir: Path, on_status: Any = None) -> None:
     parsed = urlparse(page.url)
     already_in_studio = (parsed.hostname or "").endswith("tiktok.com") and parsed.path.startswith("/tiktokstudio")
     if already_in_studio and not _page_is_blank(page):
@@ -983,11 +1004,24 @@ def _ensure_studio_page(page: Any, log_dir: Path) -> None:
     for attempt in range(2):
         try:
             _goto_with_proxy_retries(page, target)
-            page.wait_for_timeout(2500)
-            if not _page_is_blank(page):
+            try:
+                wait_for_page_state(
+                    page,
+                    label="TikTok Studio",
+                    ready=lambda: not _page_is_blank(page),
+                    on_status=on_status,
+                    timeout_seconds=60,
+                    reload_attempts=1,
+                    retry_action=lambda: _goto_with_proxy_retries(page, target),
+                    diagnostic_dir=log_dir,
+                    diagnostic_step="studio",
+                )
                 return
-            raise RuntimeError("TikTok Studio 页面主体为空")
+            except BrowserPageBlocked as exc:
+                raise ManualReviewRequired(str(exc)) from exc
         except Exception as exc:
+            if isinstance(exc, BrowserPageTimeout):
+                raise
             if attempt == 0 and _recover_unexpected_page(page, log_dir, "studio-navigation", exc):
                 if not _page_is_blank(page):
                     return
@@ -995,8 +1029,18 @@ def _ensure_studio_page(page: Any, log_dir: Path) -> None:
             raise ManualReviewRequired(f"TikTok Studio 无法加载，已保留观测通道：{exc}") from exc
 
 
-def _ensure_upload_page(page: Any, log_dir: Path) -> None:
-    if "/tiktokstudio/upload" in page.url and not _page_is_blank(page):
+def _upload_page_ready(page: Any) -> bool:
+    return bool(_first_visible([
+        page.locator("input[type='file'][accept*='video']"),
+        page.locator("input[type='file']"),
+        page.locator("button[data-e2e='select_video_button']"),
+        page.get_by_role("button", name=re.compile(r"^select video$|^选择视频$|^上传视频$", re.I)),
+        page.get_by_text(re.compile(r"drag and drop|select video to upload|选择视频上传|拖放", re.I)),
+    ]))
+
+
+def _ensure_upload_page(page: Any, log_dir: Path, on_status: Any = None) -> None:
+    if "/tiktokstudio/upload" in page.url and _upload_page_ready(page):
         return
     upload_link = _first_visible([
         page.locator("a[href*='/tiktokstudio/upload']"),
@@ -1005,18 +1049,29 @@ def _ensure_upload_page(page: Any, log_dir: Path) -> None:
     ])
     if upload_link:
         upload_link.click(timeout=5000)
-        page.wait_for_timeout(1800)
-        if "/tiktokstudio/upload" in page.url and not _page_is_blank(page):
-            return
+        page.wait_for_timeout(500)
     target = "https://www.tiktok.com/tiktokstudio/upload?from=creator_center&tab=video"
     for attempt in range(2):
         try:
             _goto_with_proxy_retries(page, target)
-            page.wait_for_timeout(2500)
-            if not _page_is_blank(page):
+            try:
+                wait_for_page_state(
+                    page,
+                    label="TikTok 上传页",
+                    ready=lambda: "/tiktokstudio/upload" in page.url and _upload_page_ready(page),
+                    on_status=on_status,
+                    timeout_seconds=75,
+                    reload_attempts=1,
+                    retry_action=lambda: _goto_with_proxy_retries(page, target),
+                    diagnostic_dir=log_dir,
+                    diagnostic_step="upload-page",
+                )
                 return
-            raise RuntimeError("TikTok Studio 上传页主体为空")
+            except BrowserPageBlocked as exc:
+                raise ManualReviewRequired(str(exc)) from exc
         except Exception as exc:
+            if isinstance(exc, BrowserPageTimeout):
+                raise
             if attempt == 0 and _recover_unexpected_page(page, log_dir, "upload-navigation", exc):
                 if not _page_is_blank(page):
                     return
@@ -1512,10 +1567,21 @@ def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[str,
             except Exception:
                 pass
             page.wait_for_timeout(2000)
-            _ensure_studio_page(page, log_dir)
+            def page_status(status: str, stage: str) -> Any:
+                def update(event: dict[str, Any]) -> None:
+                    _set_job(
+                        job["id"],
+                        status,
+                        stage,
+                        session_id=session["id"],
+                        status_detail=event.get("message", ""),
+                    )
+                return update
+
+            _ensure_studio_page(page, log_dir, page_status("preparing", "loading_studio"))
             _assert_account_ready(page)
             _skip_onboarding(page)
-            _ensure_upload_page(page, log_dir)
+            _ensure_upload_page(page, log_dir, page_status("preparing", "loading_upload_page"))
             _skip_onboarding(page)
             _assert_account_ready(page)
             _discard_stale_edit(page, log_dir)
@@ -1540,22 +1606,26 @@ def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[str,
             ])
             if not post_button:
                 raise RuntimeError("未找到 TikTok Studio 最终发布按钮")
-            deadline = time.time() + UPLOAD_TIMEOUT_SECONDS
-            while time.time() < deadline:
-                _assert_account_ready(page)
+            def upload_failure() -> str:
                 upload_error = _first_visible([
                     page.get_by_text(re.compile(r"upload failed|couldn't upload|上传失败|处理失败", re.I)),
                 ])
-                if upload_error:
-                    raise RuntimeError("TikTok Studio 报告视频上传或处理失败")
-                try:
-                    if post_button.is_enabled():
-                        break
-                except Exception:
-                    pass
-                page.wait_for_timeout(1000)
-            else:
-                raise RuntimeError(f"等待视频处理完成超过 {UPLOAD_TIMEOUT_SECONDS} 秒")
+                return "TikTok Studio 报告视频上传或处理失败" if upload_error else ""
+
+            try:
+                wait_for_page_state(
+                    page,
+                    label="视频上传处理",
+                    ready=lambda: bool(post_button.is_enabled()),
+                    failure=upload_failure,
+                    on_status=page_status("uploading", "processing_video"),
+                    timeout_seconds=UPLOAD_TIMEOUT_SECONDS,
+                    reload_attempts=0,
+                    diagnostic_dir=log_dir,
+                    diagnostic_step="video-processing",
+                )
+            except BrowserPageBlocked as exc:
+                raise ManualReviewRequired(str(exc)) from exc
             page.screenshot(path=str(log_dir / "ready-to-publish.png"), full_page=True)
             if job["product_link"]:
                 _add_product_link(page, str(job["product_link"]), log_dir)
@@ -1654,6 +1724,8 @@ def _run_job(job_id: str) -> None:
             _set_job(job_id, "delayed", "waiting_slot", message, next_attempt_at=_iso(_utc_now() + timedelta(seconds=30)))
         elif 'job' in locals() and proxy_pool.is_retryable_proxy_error(message):
             _delay_for_proxy(job_id, job, message)
+        elif 'job' in locals() and isinstance(exc, BrowserPageTimeout) and int(job.get("attempt_count") or 0) < 3:
+            _delay_for_page(job_id, job, message)
         else:
             _set_job(job_id, "failed", "failed", message, session_id=session_id or None)
             if 'job' in locals():
@@ -1714,7 +1786,7 @@ def _claim_due_jobs() -> list[str]:
                 continue
             job_id = str(row["id"])
             changed = conn.execute(
-                "UPDATE publish_jobs SET status = 'preparing', stage = 'claimed', attempt_count = attempt_count + 1, next_attempt_at = '', updated_at = ? WHERE id = ? AND status IN ('queued','delayed')",
+                "UPDATE publish_jobs SET status = 'preparing', stage = 'claimed', status_detail = '', attempt_count = attempt_count + 1, next_attempt_at = '', updated_at = ? WHERE id = ? AND status IN ('queued','delayed')",
                 (_iso(), job_id),
             ).rowcount
             if changed:
@@ -1729,7 +1801,7 @@ def _recover_interrupted() -> None:
     proxy_failures: list[tuple[int, str]] = []
     with proxy_pool.connect() as conn:
         conn.execute(
-            "UPDATE publish_jobs SET status = CASE WHEN final_click_at <> '' THEN 'result_uncertain' ELSE 'queued' END, stage = 'recovered', last_error = '服务器重启后恢复任务', session_id = NULL, next_attempt_at = '', updated_at = ? WHERE status IN ('preparing','uploading','publishing')",
+            "UPDATE publish_jobs SET status = CASE WHEN final_click_at <> '' THEN 'result_uncertain' ELSE 'queued' END, stage = 'recovered', status_detail = '服务器重启，任务状态已恢复', last_error = '服务器重启后恢复任务', session_id = NULL, next_attempt_at = '', updated_at = ? WHERE status IN ('preparing','uploading','publishing')",
             (now,),
         )
         retry_at = _iso(_utc_now() + timedelta(seconds=proxy_pool.PROXY_QUEUE_RECHECK_SECONDS))
@@ -1741,7 +1813,7 @@ def _recover_interrupted() -> None:
             if not proxy_pool.is_retryable_proxy_error(message):
                 continue
             conn.execute(
-                "UPDATE publish_jobs SET status = 'delayed', stage = 'waiting_proxy', session_id = NULL, next_attempt_at = ?, updated_at = ? WHERE id = ?",
+                "UPDATE publish_jobs SET status = 'delayed', stage = 'waiting_proxy', status_detail = '', session_id = NULL, next_attempt_at = ?, updated_at = ? WHERE id = ?",
                 (retry_at, now, row["id"]),
             )
             proxy_failures.append((int(row["proxy_profile_id"]), message))
