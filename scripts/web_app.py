@@ -8234,6 +8234,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/healthz":
+            return json_response(self, HTTPStatus.OK, {"status": "ok"})
         if parsed.path == "/amazon":
             return serve_chat_template(self, "amazon", parsed.path)
         if parsed.path == "/fastmoss":

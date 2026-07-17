@@ -21,6 +21,7 @@ Videos are read from `videos/`. Results are written to `output/<video-file-name>
 - `scripts/deepseek_shop_analyze.py`: turns TikTok Shop extraction JSON into a Chinese DeepSeek analysis report.
 - `scripts/web_app.py`: serves the upload/analyze/result web UI.
 - `scripts/run_web.sh`: starts the web UI on port `4000`, or the next available port.
+- `scripts/deploy_dev.sh`: builds and replaces only the beta web container, then waits for `/healthz`.
 - `scripts/setup_amazon_scraper.sh`: checks or installs the ClawHub `amazon-scraper` Docker image on the remote server.
 - `.env.example`: template for runtime settings.
 
@@ -105,6 +106,18 @@ bash scripts/run_web.sh
 ```
 
 The script starts at port `4000` and automatically advances to the next available port if needed. Open the printed URL in your browser.
+
+Deploy the beta stack without taking the current container down during the image build:
+
+```bash
+bash scripts/deploy_dev.sh
+```
+
+The beta deployment uses `docker-compose.dev.yml`, `.env.dev`, the
+`short-video-analyzer-dev` project, and the separate
+`short-video-analyzer-dev:latest` image by default. Do not run
+`docker-compose down` before this command; the script builds first, replaces
+only `web`, and waits up to 90 seconds for `/healthz` to respond.
 
 The page supports:
 
