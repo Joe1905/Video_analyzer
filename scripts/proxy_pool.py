@@ -2309,7 +2309,7 @@ def schedule_proxy_recheck_for_pending_job(pool_id: int, error: Exception | str)
         return next_check_at
 
 
-def _clear_proxy_recheck(conn: sqlite3.Connection, pool_id: int, observed_ip: str, checked_at: str) -> None:
+def _clear_proxy_recheck(conn: sqlite3.Connection, pool_id: int, observed_ip: str, checked_at: str) -> dict[str, int]:
     conn.execute(
         """UPDATE proxy_profiles
            SET status = ?, parse_error = '', auto_check_failures = 0,
@@ -2336,6 +2336,23 @@ def _clear_proxy_recheck(conn: sqlite3.Connection, pool_id: int, observed_ip: st
            WHERE proxy_profile_id = ? AND deleted_at = ''""",
         (observed_ip, checked_at, ACCOUNT_STATUS_ACTIVE, checked_at, pool_id),
     )
+    publish_jobs = conn.execute(
+        """UPDATE publish_jobs
+           SET status = 'queued', stage = 'proxy_recovered', next_attempt_at = '',
+               last_error = '', updated_at = ?
+           WHERE proxy_profile_id = ? AND status = 'delayed'
+             AND stage = 'waiting_proxy' AND deleted_at = ''""",
+        (checked_at, pool_id),
+    ).rowcount
+    collect_jobs = conn.execute(
+        """UPDATE collect_jobs
+           SET status = 'queued', stage = 'proxy_recovered', next_attempt_at = '',
+               last_error = '', updated_at = ?
+           WHERE proxy_profile_id = ? AND status = 'delayed'
+             AND stage = 'waiting_proxy'""",
+        (checked_at, pool_id),
+    ).rowcount
+    return {"publish_jobs": publish_jobs, "collect_jobs": collect_jobs}
 
 
 def check_binding(payload: dict[str, Any], require_account: bool = False) -> dict[str, Any]:
@@ -2410,8 +2427,9 @@ def check_binding(payload: dict[str, Any], require_account: bool = False) -> dic
                 "observed_ip": observed_ip,
                 "expected_exit_ip": expected_ip,
             }
+        resumed = {"publish_jobs": 0, "collect_jobs": 0}
         if allowed:
-            _clear_proxy_recheck(conn, int(pool["id"]), observed_ip, now)
+            resumed = _clear_proxy_recheck(conn, int(pool["id"]), observed_ip, now)
         elif next_pool_status == STATUS_ERROR:
             _schedule_proxy_recheck(conn, int(pool["id"]), reason, recheck_token)
         if account is not None:
@@ -2453,6 +2471,7 @@ def check_binding(payload: dict[str, Any], require_account: bool = False) -> dic
             "pool": _row_to_pool(pool),
             "account": _row_to_account(account) if account is not None else None,
             "detected": detected,
+            "resumed": resumed,
         }
 
 
