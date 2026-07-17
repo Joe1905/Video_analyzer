@@ -1713,15 +1713,39 @@ def test_fastmoss_evidence_ledger_keeps_native_dimensions_and_late_trends() -> N
     assert next(fact for fact in facts if fact["dimension"] == "review_status")["state"] == "empty"
 
 
-def test_fastmoss_answer_verifier_rewrites_high_risk_and_falls_back_on_failure() -> None:
-    message = SimpleNamespace(tool_calls=[], tool_results=[])
+def test_fastmoss_answer_verifier_applies_local_edits_and_keeps_draft_on_failure() -> None:
+    message = SimpleNamespace(tool_calls=[], tool_results=[{
+        "tool_name": "fastmoss__product_overview",
+        "result": {
+            "ok": True, "data_state": "data", "evidence_observed": True,
+            "evidence_metadata": {"source_tool": "fastmoss__product_overview", "scope": "supporting"},
+            "evidence_facts": [{
+                "source_tool": "fastmoss__product_overview", "dimension": "product_overview",
+                "product_id": "1730898744848192092",
+                "ads_distribution": {"breakdown": [{"traffic_source": "ad_traffic", "gmv_share_percent": 59}]},
+            }],
+        },
+    }])
     route = {"playbook": "product", "task_depth": "workflow", "entity": "mini grinder"}
     style = web_app.fastmoss_report_style_instruction(route)
-    assert "先说结论" in style and "我怎么看" in style and "如果要继续做" in style
+    assert "不要求出现固定短语" in style
     assert "完整调研报告" in style and "精确上市价" in style
     assert web_app.fastmoss_report_style_instruction({"task_depth": "lookup"}) == ""
 
+    native_report = (
+        "## 核心判断\n类目渠道结构显示视频成交更重要。\n"
+        "## 研究口径\n这里说明上级类目与样本边界。\n"
+        "## 平台成交结构\n广告和联盟数据用于核对代表商品。\n"
+        "## 验证建议\n优先验证同形态商品。"
+    )
+    native_manifest = {
+        "evidence_facts": [{"dimension": "category_channel_ranking"}, {"dimension": "product_overview"}],
+    }
+    assert web_app.fastmoss_rewrite_preserves_report_detail("", native_report, native_manifest, route)
+
     class FakeResponse:
+        finish_reason = "stop"
+
         def raise_for_status(self):
             return None
 
@@ -1729,9 +1753,13 @@ def test_fastmoss_answer_verifier_rewrites_high_risk_and_falls_back_on_failure()
             return {"choices": [{"message": {"content": json.dumps({
                 "approved": False,
                 "risk_level": "high",
-                "issues": ["把样本当总量"],
-                "rewritten_answer": "## 调研报告（修正版）\n\nElectric Food Shredder不存在独立市场，Mini Meat Grinder是真实细分机会。",
-            })}}]}
+                "edits": [{
+                    "original": "这个细分已经被证明是低竞争市场。",
+                    "replacement": "本轮样本显示该细分仍需补充竞争强度证据。",
+                    "reason": "当前样本不能证明低竞争",
+                    "evidence_refs": ["fastmoss__product_overview"],
+                }],
+            })}, "finish_reason": self.finish_reason}]}
 
     class FakeRequests:
         @staticmethod
@@ -1741,12 +1769,23 @@ def test_fastmoss_answer_verifier_rewrites_high_risk_and_falls_back_on_failure()
     original_record = web_app.record_api_call
     web_app.record_api_call = lambda *_args, **_kwargs: None
     try:
-        rewritten = web_app.verify_fastmoss_final_answer(
-            "市场只有10件商品", message, "调研", route, FakeRequests, "key", "https://example.test/v1", "model"
+        draft = (
+            "## 核心判断\n这个细分已经被证明是低竞争市场。\n\n"
+            "## 代表商品\n| 商品 | 近28天销量 | 观测价格 |\n|---|---:|---:|\n"
+            "| Mini Grinder | 424 | $36.05–$53 |\n\n"
+            "## 渠道证据\n该商品广告GMV占比为59%，关联达人406名。\n\n"
+            "## 执行建议\n首批500-1000件，测试预算$2000，配合3-5个达人，观察2周，"
+            "目标ROI达到2.5，MOQ建议不超过500，建议定价$29.99-$39.99。"
         )
-        assert "先说结论" in rewritten and "关键依据" in rewritten
-        assert "需要留意" in rewritten and "如果要继续做" in rewritten
-        assert "修正版" not in rewritten
+        edited = web_app.verify_fastmoss_final_answer(
+            draft, message, "调研", route, FakeRequests, "key", "https://example.test/v1", "model"
+        )
+        assert "本轮样本显示该细分仍需补充竞争强度证据" in edited
+        assert "## 核心判断" in edited and "## 代表商品" in edited and "## 渠道证据" in edited
+        assert "| Mini Grinder | 424 | $36.05–$53 |" in edited
+        assert "广告GMV占比为59%" in edited and "关联达人406名" in edited
+        for unsupported in ("500-1000", "$2000", "3-5", "2周", "2.5", "MOQ建议不超过500", "$29.99", "$39.99"):
+            assert unsupported not in edited
 
         downgraded = web_app.polish_fastmoss_report_tone(
             "该细分不存在独立市场，但它是真实细分机会。"
@@ -1763,26 +1802,11 @@ def test_fastmoss_answer_verifier_rewrites_high_risk_and_falls_back_on_failure()
         assert "小批量" in softened and "少量匹配达人" in softened
         assert "受众匹配" in softened and "完整测试周期" in softened
 
-        products = [{"product_id": str(index), "title": f"代表商品 {index}"} for index in range(1, 11)]
-        rich_manifest = {
-            "category_head": {"products": products},
-            "segment_head": {"products": [{"product_id": "s1", "title": "细分商品"}]},
-        }
-        thin_report = "## 先说结论\n短摘要\n## 我怎么看\n略\n## 需要留意\n略\n## 如果要继续做\n略"
-        assert not web_app.fastmoss_rewrite_preserves_report_detail("原始报告" * 1000, thin_report, rich_manifest, route)
-        detailed_report = (
-            "## 先说结论\n结论。\n## 我怎么看\n判断。\n## 类目头部与细分样本\n"
-            + "、".join(str(index) for index in range(1, 6))
-            + "\n## 需要留意\n边界。\n## 如果要继续做\n下一步。\n"
-            + "证据说明。" * 500
-        )
-        assert web_app.fastmoss_rewrite_preserves_report_detail("原始报告" * 1000, detailed_report, rich_manifest, route)
-
         class ApprovedResponse(FakeResponse):
             def json(self):
                 return {"choices": [{"message": {"content": json.dumps({
-                    "approved": True, "risk_level": "low", "issues": [], "rewritten_answer": "",
-                })}}]}
+                    "approved": True, "risk_level": "low", "edits": [],
+                })}, "finish_reason": "stop"}]}
 
         class ApprovedRequests:
             @staticmethod
@@ -1790,22 +1814,55 @@ def test_fastmoss_answer_verifier_rewrites_high_risk_and_falls_back_on_failure()
                 return ApprovedResponse()
 
         approved = web_app.verify_fastmoss_final_answer(
-            "可靠草稿，但该品类不构成独立市场。", message, "调研", route, ApprovedRequests, "key", "https://example.test/v1", "model"
+            native_report, message, "调研", route, ApprovedRequests, "key", "https://example.test/v1", "model"
         )
-        assert "先说结论" in approved and "关键依据" in approved
-        assert "如果要继续做" in approved
+        assert approved == native_report
 
-        class BrokenRequests:
+        class InvalidJsonResponse(FakeResponse):
+            def json(self):
+                return {"choices": [{"message": {"content": "{invalid"}, "finish_reason": "stop"}]}
+
+        class InvalidJsonRequests:
             @staticmethod
             def post(*_args, **_kwargs):
-                raise RuntimeError("offline")
+                return InvalidJsonResponse()
 
-        fallback = web_app.verify_fastmoss_final_answer(
-            "市场只有10件商品", message, "调研", route, BrokenRequests, "key", "https://example.test/v1", "model"
-        )
-        assert "先说结论" in fallback and "我怎么看" in fallback
-        assert "需要留意" in fallback and "如果要继续做" in fallback
-        assert "数据核验结果" not in fallback
+        class LengthResponse(FakeResponse):
+            finish_reason = "length"
+
+        class LengthRequests:
+            @staticmethod
+            def post(*_args, **_kwargs):
+                return LengthResponse()
+
+        class MissingTargetResponse(FakeResponse):
+            def json(self):
+                return {"choices": [{"message": {"content": json.dumps({
+                    "approved": False, "risk_level": "high", "edits": [{
+                        "original": "草稿里不存在的句子", "replacement": "", "reason": "风险",
+                        "evidence_refs": ["fastmoss__product_overview"],
+                    }],
+                })}, "finish_reason": "stop"}]}
+
+        class MissingTargetRequests:
+            @staticmethod
+            def post(*_args, **_kwargs):
+                return MissingTargetResponse()
+
+        class TimeoutRequests:
+            @staticmethod
+            def post(*_args, **_kwargs):
+                raise TimeoutError("verifier timeout")
+
+        for failing_requests in (InvalidJsonRequests, LengthRequests, MissingTargetRequests, TimeoutRequests):
+            kept = web_app.verify_fastmoss_final_answer(
+                draft, message, "调研", route, failing_requests, "key", "https://example.test/v1", "model"
+            )
+            assert "## 核心判断" in kept and "## 代表商品" in kept and "## 渠道证据" in kept
+            assert "| Mini Grinder | 424 | $36.05–$53 |" in kept
+            assert "这个细分已经被证明是低竞争市场" in kept
+            assert "## 先说结论" not in kept
+            assert "500-1000" not in kept and "$2000" not in kept and "$29.99" not in kept
     finally:
         web_app.record_api_call = original_record
 
@@ -1867,5 +1924,5 @@ if __name__ == "__main__":
     test_fastmoss_failed_category_page_is_not_counted_as_coverage()
     test_fastmoss_metadata_detects_unsorted_page_and_string_product_ids()
     test_fastmoss_evidence_ledger_keeps_native_dimensions_and_late_trends()
-    test_fastmoss_answer_verifier_rewrites_high_risk_and_falls_back_on_failure()
+    test_fastmoss_answer_verifier_applies_local_edits_and_keeps_draft_on_failure()
     print("chat tool normalization tests passed")

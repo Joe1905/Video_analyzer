@@ -6808,13 +6808,35 @@ def fastmoss_report_quality_instruction(
     route: dict[str, Any],
 ) -> str:
     manifest = fastmoss_evidence_manifest(assistant_msg, user_text, route)
+    dimensions = {
+        str(fact.get("dimension") or "")
+        for fact in (manifest.get("evidence_facts") or [])
+        if isinstance(fact, dict)
+    }
+    sections = ["结论", "研究范围、目标类目与样本覆盖"]
+    if dimensions.intersection({"category_trend", "category_analysis", "category_channel_ranking"}):
+        sections.append("上级类目背景（必须明确 L1/L2 口径）")
+    if (manifest.get("segment_head") or {}).get("fetched_unique"):
+        sections.append("目标细分的同口径对比")
+    if dimensions.intersection({"top_products", "new_products"}):
+        sections.append("头部商品与新品表现")
+    if dimensions.intersection({"product_sample", "product_detail", "product_overview", "product_90d_trend"}):
+        sections.append("代表商品与趋势深挖")
+    if dimensions.intersection({"category_channel_ranking", "product_sample", "product_overview"}):
+        sections.append("视频、达人、广告、联盟与成交渠道")
+    if (manifest.get("derived_signals") or {}).get("price_midpoint_count"):
+        sections.append("价格与定位")
+    sections.extend(["机会与风险", "按优先级排列的验证顺序"])
     return (
         fastmoss_report_style_instruction(route)
         + " "
-        "FastMoss 最终报告必须遵守以下证据清单。类目头部与细分匹配商品分表展示；"
+        "FastMoss 最终报告必须遵守以下证据清单。根据实际取到的证据组织报告，不要套用 Amazon 的关键词、PPC、BSR、ASIN 或 FBA 结构。"
+        "建议覆盖的语义模块为：" + "；".join(sections) + "。模块标题和顺序可按叙事需要调整，不要求使用固定标题。"
+        "类目头部与细分匹配商品应避免混写；"
         "reported_total 是接口匹配总数，fetched_unique 是本次实际取得数，不得混写。"
-        "若 derived_signals 已提供，必须解释样本头部集中度、类目/细分重合率、各细分词同口径样本差异和四分位价格主体带，"
-        "并据此明确给出方向优先级；不能只复述商品表和数据边界。"
+        "只分析证据清单中实际存在的维度：取得上级类目趋势或渠道结构时解释其背景意义；取得新品、代表商品概览、广告/联盟拆分或 90 天趋势时，"
+        "必须把这些事实转成可核查的比较和判断。若 derived_signals 已提供，则解释其中可用的样本集中度、类目/细分重合率、"
+        "同口径细分差异和四分位价格主体带，并给出证据边界内的方向优先级；不能只复述商品表和免责声明。"
         "L2 数据只能称为上级类目参考。所有 conflicts 必须显式披露，强机会/低竞争/生命周期/因果结论没有直接证据时降级为待验证假设。"
         "证据清单：" + json.dumps(manifest, ensure_ascii=False, separators=(",", ":"))
     )
@@ -6826,19 +6848,20 @@ def fastmoss_report_style_instruction(route: dict[str, Any]) -> str:
         return ""
     full_report = str(route.get("task_depth") or "") == "workflow" or route.get("playbook") in {"product", "pricing", "competitor", "shop"}
     detail_requirement = (
-        "这是一份完整调研报告，不是执行摘要。结论之后必须保留调研范围与样本覆盖、类目头部榜、细分匹配榜、"
-        "价格与定位、内容/达人信号、数据边界和下一步；有足够商品数据时使用表格展示代表样本，不得为了简洁删掉证据。"
+        "这是一份完整调研报告，不是执行摘要。先直接回答用户，再保留本轮实际取得的研究范围、类目和细分比较、"
+        "头部或新品、代表商品、渠道与内容信号、价格、风险和验证顺序；只有取到对应证据时才展开该模块。"
+        "有足够同口径商品数据时可以用表格展示代表样本，不得为了简洁删掉重要证据。"
         if full_report else
         "结论之后仍需保留支撑判断的关键数据、数据边界和下一步，不能只给摘要。"
     )
     return (
-        "表达要求：先用“先说结论：”开场，在两三句话内直接回应用户，并说明最值得关注的信号；"
-        "随后用“我怎么看”把数据翻译成业务含义，允许使用“我更倾向”“真正值得关注的是”“如果准备上新，我会先”等克制的顾问式表达，"
-        "但每个判断都必须紧跟证据。" + detail_requirement + "把覆盖不足、空结果和指标冲突集中到一个“需要留意”章节，"
-        "不要在每个段落重复警告。最后用“如果要继续做”给出两到四项有优先级的下一步。"
+        "表达要求：结论优先，在开头两三句话内直接回应用户并说明最值得关注的信号；"
+        "把数据翻译成业务含义，可以使用克制、自然的顾问式表达，但每个判断都必须紧跟证据。" + detail_requirement +
+        "标题应服务于内容，可以使用任何清楚自然的 FastMoss 报告标题，不要求出现固定短语、固定引用数量或固定篇幅比例。"
+        "把覆盖不足、空结果和指标冲突集中说明，避免在每段重复警告；结尾给出有先后顺序的验证动作。"
         "温度只能来自解释、取舍和优先级，不能来自更大胆的数字建议：除非证据或已展示的计算明确支持，"
         "不得新增首批库存、预算、达人数量、粉丝门槛、测试周期、ROI、转化率、毛利率或精确上市价。"
-        "不要使用“修正版”“数据核验结果”“严重缺口”等审计式标题，也不要用表情、夸张语气或无依据的鼓励。"
+        "不要用表情、夸张语气或无依据的鼓励。"
     )
 
 
@@ -7087,47 +7110,75 @@ def downgrade_fastmoss_absolute_market_claims(answer: str) -> str:
     return text
 
 
-def polish_fastmoss_report_tone(answer: str) -> str:
-    """Apply narrow deterministic cleanup after the factual verifier."""
-    text = downgrade_fastmoss_absolute_market_claims(answer)
-    text = re.sub(r"[（(]\s*修正版\s*[）)]", "", text, count=1)
-    text = text.replace("数据缺口（严重）", "需要留意的数据边界")
-    text = re.sub(
-        r"首批\s*[\d,.]+\s*(?:[-~至到]\s*[\d,.]+\s*)?件",
-        "先以小批量",
-        text,
-        flags=re.IGNORECASE,
+def sanitize_fastmoss_unsupported_recommendations(answer: str) -> tuple[str, int]:
+    """Remove only operational numbers stated as recommendations, not observed metrics."""
+    text = str(answer or "")
+    cleanup_count = 0
+
+    def replace(pattern: str, replacement: str) -> None:
+        nonlocal text, cleanup_count
+        text, count = re.subn(pattern, replacement, text, flags=re.IGNORECASE)
+        cleanup_count += count
+
+    replace(
+        r"(?:建议\s*)?(?:首批|先备货?|备货)\s*[\d,.]+\s*(?:[-~至到]\s*[\d,.]+\s*)?件",
+        "建议先以小批量验证",
     )
-    text = re.sub(
+    replace(
+        r"(?:建议|计划|准备|首轮|测试|先用|控制)\s*(?:投放|广告)?预算\s*(?:为|在|到|约|：|:)?\s*"
+        r"(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+\s*(?:[-~至到]\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+)?",
+        "预算应在取得成本与转化证据后再确定",
+    )
+    replace(
         r"配合\s*[\d,.]+\s*(?:[-~至到]\s*[\d,.]+\s*)?个达人",
         "配合少量匹配达人",
-        text,
-        flags=re.IGNORECASE,
     )
-    text = re.sub(
-        r"观察\s*[\d,.]+\s*(?:天|周|个月|月)",
-        "观察一个完整测试周期",
-        text,
-        flags=re.IGNORECASE,
+    replace(
+        r"(?:建议|计划|先)?(?:测试|观察|验证)\s*[\d,.]+\s*(?:[-~至到]\s*[\d,.]+\s*)?(?:天|周|个月|月)",
+        "安排完整测试周期",
     )
-    text = re.sub(
+    replace(
         r"筛选\s*[\d,.]+\s*(?:[kKwW万])?\s*[-~至到]\s*[\d,.]+\s*(?:[kKwW万])?\s*粉(?:丝)?的?",
         "筛选受众匹配的",
-        text,
-        flags=re.IGNORECASE,
     )
-    text = re.sub(
-        r"建议定价\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+\s*(?:[-~至到]\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+)?",
+    replace(
+        r"(?:建议|目标|要求|控制|至少|不低于)[^\n。；]{0,30}?(?:ROI|转化率|毛利率)\s*"
+        r"(?:达到|为|在|不低于|至少|约|：|:)?\s*[\d,.]+\s*%?",
+        "相关经营指标应在测试数据形成后再设目标",
+    )
+    replace(
+        r"(?:ROI|转化率|毛利率)\s*(?:目标|建议|要求|达到|至少|不低于|控制在)\s*[\d,.]+\s*%?",
+        "相关经营指标应在测试数据形成后再设目标",
+    )
+    replace(
+        r"(?:建议|目标|要求|控制|不超过)[^\n。；]{0,24}?(?:供应链成本|采购成本|MOQ|起订量)\s*"
+        r"(?:为|在|低于|不超过|约|：|:)?\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+",
+        "供应链条件应以实际询价和打样结果为准",
+    )
+    replace(
+        r"(?:供应链成本|采购成本|MOQ|起订量)\s*(?:建议|目标|要求|控制在|不超过|低于)\s*"
+        r"(?:为|在|低于|不超过|控制在)?\s*"
+        r"(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+",
+        "供应链条件应以实际询价和打样结果为准",
+    )
+    replace(
+        r"建议定价\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+\s*"
+        r"(?:[-~至到]\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+)?",
         "建议先依据已观测价格带设定候选价，再结合成本与转化验证",
-        text,
-        flags=re.IGNORECASE,
     )
-    text = re.sub(
+    replace(
         r"用\s*(?:US\$|USD\s*|\$|¥|￥)\s*[\d,.]+\s*上架",
         "选择一个有证据支撑的候选价上架测试",
-        text,
-        flags=re.IGNORECASE,
     )
+    return text, cleanup_count
+
+
+def polish_fastmoss_report_tone(answer: str) -> str:
+    """Apply narrow deterministic cleanup without changing report structure."""
+    text, _ = sanitize_fastmoss_unsupported_recommendations(answer)
+    text = downgrade_fastmoss_absolute_market_claims(text)
+    text = re.sub(r"[（(]\s*修正版\s*[）)]", "", text, count=1)
+    text = text.replace("数据缺口（严重）", "需要留意的数据边界")
     return text
 
 
@@ -7137,36 +7188,69 @@ def fastmoss_rewrite_preserves_report_detail(
     manifest: dict[str, Any],
     route: dict[str, Any],
 ) -> bool:
-    """Reject verifier rewrites that turn evidence-rich workflow reports into summaries."""
+    """Check semantic usability without enforcing headings, references, or length ratios."""
     text = str(rewritten or "").strip()
-    if not text:
+    if not text or deepseek_tool_protocol_present({"content": text}):
         return False
-    required_sections = ("先说结论", "我怎么看", "需要留意", "如果要继续做")
-    if any(section not in text for section in required_sections):
+    if not any(marker in text for marker in ("结论", "判断", "整体来看", "核心观点", "方向")):
         return False
-    category_products = (manifest.get("category_head") or {}).get("products") or []
-    segment_products = (manifest.get("segment_head") or {}).get("products") or []
-    evidence_rich = len(category_products) >= 10 or len(segment_products) >= 5
-    full_report = str(route.get("task_depth") or "") == "workflow" or route.get("playbook") in {
-        "product", "pricing", "competitor", "shop",
+    if not any(marker in text for marker in ("建议", "下一步", "优先", "验证", "行动")):
+        return False
+    dimensions = {
+        str(fact.get("dimension") or "")
+        for fact in (manifest.get("evidence_facts") or [])
+        if isinstance(fact, dict)
     }
-    if evidence_rich and full_report:
-        minimum_length = max(1400, min(2600, int(len(str(draft or "")) * 0.45)))
-        if len(text) < minimum_length:
-            return False
-        references = 0
-        for product in category_products[:10]:
-            product_id = str(product.get("product_id") or "")
-            title = str(product.get("title") or "").strip()
-            if (product_id and product_id in text) or (len(title) >= 6 and title[:18] in text):
-                references += 1
-        if references < min(5, len(category_products)):
-            return False
-        if segment_products and "细分" not in text:
-            return False
-    elif len(text) < 650:
+    semantic_groups: list[tuple[set[str], tuple[str, ...]]] = [
+        ({"category_analysis", "category_trend", "category_channel_ranking"}, ("类目", "渠道", "趋势")),
+        ({"new_products", "top_products"}, ("新品", "头部", "商品")),
+        ({"product_overview", "product_90d_trend"}, ("广告", "联盟", "趋势", "代表商品")),
+        ({"review_status"}, ("评论", "评价")),
+    ]
+    applicable = [terms for group, terms in semantic_groups if dimensions.intersection(group)]
+    if applicable and not any(any(term in text for term in terms) for terms in applicable):
         return False
     return True
+
+
+def apply_fastmoss_verifier_edits(draft: str, edits: Any) -> tuple[str, int]:
+    """Apply exact local edits atomically; any invalid target aborts the full edit set."""
+    if not isinstance(edits, list) or len(edits) > 20:
+        raise ValueError("invalid verifier edits")
+    updated = str(draft or "")
+    for edit in edits:
+        if not isinstance(edit, dict):
+            raise ValueError("invalid verifier edit item")
+        original = edit.get("original")
+        replacement = edit.get("replacement")
+        reason = edit.get("reason")
+        evidence_refs = edit.get("evidence_refs")
+        if not isinstance(original, str) or not original or not isinstance(replacement, str):
+            raise ValueError("invalid verifier edit text")
+        if not isinstance(reason, str) or not reason.strip() or not isinstance(evidence_refs, list):
+            raise ValueError("invalid verifier edit explanation")
+        if original not in updated:
+            raise ValueError("verifier edit target not found")
+        updated = updated.replace(original, replacement, 1)
+    return updated, len(edits)
+
+
+def _log_fastmoss_report_pipeline(
+    draft: str,
+    manifest: dict[str, Any],
+    verifier_result: str,
+    edits_applied: int = 0,
+    mechanical_cleanups: int = 0,
+    fallback_reason: str = "",
+) -> None:
+    print(
+        "[CHAT] FastMoss report pipeline "
+        f"draft_chars={len(str(draft or ''))} "
+        f"evidence_facts={int(manifest.get('evidence_fact_count') or 0)} "
+        f"verifier={verifier_result} edits_applied={edits_applied} "
+        f"mechanical_cleanups={mechanical_cleanups} fallback_reason={fallback_reason or 'none'}",
+        flush=True,
+    )
 
 
 def verify_fastmoss_final_answer(
@@ -7179,33 +7263,44 @@ def verify_fastmoss_final_answer(
     api_url: str,
     model: str,
 ) -> str:
-    """Run one independent JSON verifier pass; rewrite only high-risk answers."""
+    """Run a short factual verifier pass and apply only exact local edits."""
     if str(route.get("task_depth") or "") not in {"analysis", "workflow"} and not route.get("playbook"):
         return draft
     manifest = fastmoss_evidence_manifest(assistant_msg, user_text, route)
+    draft = str(draft or "")
+    has_evidence = bool(
+        manifest.get("evidence_fact_count")
+        or (manifest.get("category_head") or {}).get("products")
+        or (manifest.get("segment_head") or {}).get("products")
+        or (manifest.get("quality_states") or {}).get("data")
+    )
+    fallback_reason = ""
+    if not draft.strip():
+        fallback_reason = "empty_draft"
+    elif deepseek_tool_protocol_present({"content": draft}):
+        fallback_reason = "unrenderable_tool_protocol"
+    elif not has_evidence:
+        fallback_reason = "no_valid_evidence"
+    if fallback_reason:
+        _log_fastmoss_report_pipeline(draft, manifest, "skipped", fallback_reason=fallback_reason)
+        return fastmoss_deterministic_quality_fallback(manifest)
     payload = {
         "model": model,
         "messages": [{
             "role": "system",
             "content": (
-                "You are an independent FastMoss report verifier. Return one JSON object only with keys "
-                "approved (boolean), risk_level (low|medium|high|critical), issues (array of strings), rewritten_answer (string). "
+                "You are an independent FastMoss factual-boundary verifier. Return one compact JSON object only with keys "
+                "approved (boolean), risk_level (low|medium|high|critical), edits (array). Each edit must contain exact keys "
+                "original (an exact, contiguous quote from draft), replacement (corrected text or empty string), reason (string), "
+                "and evidence_refs (array of source_tool/product/metric references from the manifest). Never rewrite the whole report. "
                 "Check every numeric/market claim against the evidence manifest. Reject category-level overreach, treating fetched count as total, "
                 "ignoring partial pagination or sort anomalies, undisclosed metric conflicts, and unsupported claims of low competition, structural opportunity, "
                 "lifecycle stage, or content causality. A keyword sample, empty result, or partial ranking can never prove that a market does not exist, "
-                "does not constitute an independent market, or is a real opportunity; such wording must be downgraded to a sample-limited signal and validation need. "
-                "Also verify the user-facing style: the answer must start with a concise '先说结论', translate evidence into a measured '我怎么看', "
-                "consolidate caveats instead of repeating warnings, and end with prioritized next steps. Preserve a calm, human consultant voice while keeping every judgment evidence-backed. "
-                "For workflow or playbook research, concise means conclusion-first, not short: preserve the full evidence-rich report with research scope and coverage, category-head table, "
-                "segment-match table, pricing/positioning evidence, content or creator evidence when observed, limitations, and prioritized next steps. Do not collapse it into an executive summary. "
-                "When derived_signals are present, the report must interpret concentration, category-to-segment overlap, like-for-like segment query differences, and the interquartile price band, "
-                "then make an explicit evidence-bounded prioritization. A report that merely repeats tables and caveats is incomplete. "
-                "Reject any recommendation that invents operational numbers absent from the manifest or an explicit calculation, including launch inventory, budget, creator count, follower threshold, "
-                "test duration, ROI, conversion rate, margin, or exact launch price. An observed price band may be quoted, but a recommended test price must be labeled as an assumption and tied to evidence. "
-                "Mark approved=false and provide a complete rewritten_answer when the draft is audit-like, uses headings such as '修正版' or '数据核验结果', or lacks the required conclusion and next steps. "
-                "When rewriting, preserve useful facts, representative products, tables, and roughly the original level of detail; do not turn the report into a refusal, summary, or compliance checklist. "
-                "If risk is high/critical, provide one complete corrected Simplified Chinese answer. "
-                "If risk is low/medium, rewritten_answer may be empty. Do not add facts absent from the manifest."
+                "does not constitute an independent market, or is a real opportunity; replace only the offending sentence with a sample-limited statement. "
+                "Flag recommendation-context operational numbers absent from evidence or an explicit calculation, including inventory, budget, creator count, follower threshold, "
+                "test duration, ROI, conversion rate, margin, supply-chain cost, MOQ, or exact recommended launch price. Observed metrics and observed price bands must not be removed. "
+                "Do not critique style, headings, length, tables, or report organization. Do not add facts. If no factual edit is needed, return approved=true and edits=[]. "
+                "If any edit is needed, return approved=false and include only the smallest exact replacements needed."
             ),
         }, {
             "role": "user",
@@ -7213,7 +7308,7 @@ def verify_fastmoss_final_answer(
         }],
         "response_format": {"type": "json_object"},
         "temperature": 0,
-        "max_tokens": 5000,
+        "max_tokens": 1800,
     }
     payload_str = json.dumps(payload, ensure_ascii=False)
     started = time.monotonic()
@@ -7238,29 +7333,36 @@ def verify_fastmoss_final_answer(
             body,
             elapsed_ms=int((time.monotonic() - started) * 1000),
         )
-        content = body["choices"][0]["message"].get("content")
+        choice = body["choices"][0]
+        if str(choice.get("finish_reason") or "").lower() == "length":
+            raise ValueError("verifier finish_reason=length")
+        content = choice["message"].get("content")
         decision = _chat_intent_json_content(content)
         if not isinstance(decision, dict) or not isinstance(decision.get("approved"), bool):
             raise ValueError("invalid verifier JSON")
         risk = str(decision.get("risk_level") or "").lower()
         if risk not in {"low", "medium", "high", "critical"}:
             raise ValueError("invalid verifier risk level")
-        if risk in {"high", "critical"} or decision.get("approved") is False:
-            rewritten = str(decision.get("rewritten_answer") or "").strip()
-            if not rewritten:
-                return fastmoss_deterministic_quality_fallback(manifest)
-            if not fastmoss_rewrite_preserves_report_detail(draft, rewritten, manifest, route):
-                print("[CHAT] FastMoss verifier rewrite rejected: report detail was not preserved", flush=True)
-                return fastmoss_deterministic_quality_fallback(manifest)
-            return polish_fastmoss_report_tone(rewritten)
-        polished = polish_fastmoss_report_tone(draft)
-        if not fastmoss_rewrite_preserves_report_detail(draft, polished, manifest, route):
-            print("[CHAT] FastMoss approved draft rejected: report detail was insufficient", flush=True)
-            return fastmoss_deterministic_quality_fallback(manifest)
-        return polished
+        edits = decision.get("edits")
+        if not isinstance(edits, list):
+            raise ValueError("invalid verifier edits JSON")
+        if decision.get("approved") is False and not edits:
+            raise ValueError("rejected verifier response has no edits")
+        edited, applied = apply_fastmoss_verifier_edits(draft, edits)
+        cleaned, cleanup_count = sanitize_fastmoss_unsupported_recommendations(edited)
+        cleaned = downgrade_fastmoss_absolute_market_claims(cleaned)
+        _log_fastmoss_report_pipeline(
+            draft, manifest, f"{risk}:{'approved' if decision.get('approved') else 'edited'}",
+            edits_applied=applied, mechanical_cleanups=cleanup_count,
+        )
+        return cleaned
     except Exception as exc:
+        cleaned, cleanup_count = sanitize_fastmoss_unsupported_recommendations(draft)
+        _log_fastmoss_report_pipeline(
+            draft, manifest, f"failed:{type(exc).__name__}", mechanical_cleanups=cleanup_count,
+        )
         print(f"[CHAT] FastMoss answer verifier failed: {type(exc).__name__}: {str(exc)[:300]}", flush=True)
-        return fastmoss_deterministic_quality_fallback(manifest)
+        return cleaned
 
 
 def build_tool_limit_final_context(messages: list[dict[str, Any]], user_request: str = "") -> list[dict[str, Any]]:
