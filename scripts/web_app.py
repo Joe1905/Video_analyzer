@@ -9299,6 +9299,42 @@ def handle_lan_chat_post(handler: BaseHTTPRequestHandler, parsed) -> bool:
             )
             json_response(handler, HTTPStatus.CREATED, {"room": room})
             return True
+        rename_group_match = re.fullmatch(r"/api/lan-chat/rooms/([^/]+)/rename", path)
+        if rename_group_match:
+            room = lan_chat_store.rename_group(
+                _lan_chat_token(handler),
+                unquote(rename_group_match.group(1)),
+                str(payload.get("name") or ""),
+            )
+            json_response(handler, HTTPStatus.OK, {"room": room})
+            return True
+        remove_member_match = re.fullmatch(
+            r"/api/lan-chat/rooms/([^/]+)/members/remove", path
+        )
+        if remove_member_match:
+            room = lan_chat_store.remove_group_member(
+                _lan_chat_token(handler),
+                unquote(remove_member_match.group(1)),
+                str(payload.get("targetUserId") or ""),
+            )
+            json_response(handler, HTTPStatus.OK, {"room": room})
+            return True
+        leave_group_match = re.fullmatch(r"/api/lan-chat/rooms/([^/]+)/leave", path)
+        if leave_group_match:
+            result = lan_chat_store.leave_group(
+                _lan_chat_token(handler), unquote(leave_group_match.group(1))
+            )
+            json_response(handler, HTTPStatus.OK, result)
+            return True
+        dissolve_group_match = re.fullmatch(
+            r"/api/lan-chat/rooms/([^/]+)/dissolve", path
+        )
+        if dissolve_group_match:
+            result = lan_chat_store.dissolve_group(
+                _lan_chat_token(handler), unquote(dissolve_group_match.group(1))
+            )
+            json_response(handler, HTTPStatus.OK, result)
+            return True
         accept_match = re.fullmatch(r"/api/lan-chat/files/([0-9a-f]{32})/accept", path)
         if accept_match:
             message = lan_chat_store.accept_file(

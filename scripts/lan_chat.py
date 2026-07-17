@@ -123,10 +123,15 @@ class LanChatStore:
                     kind TEXT NOT NULL CHECK (kind IN ('public', 'direct', 'group')),
                     name TEXT NOT NULL DEFAULT '',
                     created_by TEXT,
+                    system_kind TEXT NOT NULL DEFAULT 'custom',
+                    feishu_user_id TEXT,
+                    admin_user_id TEXT,
                     direct_key TEXT UNIQUE,
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL,
-                    FOREIGN KEY (created_by) REFERENCES users(id)
+                    FOREIGN KEY (created_by) REFERENCES users(id),
+                    FOREIGN KEY (feishu_user_id) REFERENCES feishu_users(id),
+                    FOREIGN KEY (admin_user_id) REFERENCES users(id)
                 );
                 CREATE TABLE IF NOT EXISTS room_members (
                     room_id TEXT NOT NULL,
@@ -223,6 +228,33 @@ class LanChatStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS users_feishu_user_id_idx ON users(feishu_user_id)"
             )
+            room_columns = {
+                str(row["name"]) for row in conn.execute("PRAGMA table_info(rooms)").fetchall()
+            }
+            if "system_kind" not in room_columns:
+                conn.execute(
+                    "ALTER TABLE rooms ADD COLUMN system_kind TEXT NOT NULL DEFAULT 'custom'"
+                )
+            if "feishu_user_id" not in room_columns:
+                conn.execute("ALTER TABLE rooms ADD COLUMN feishu_user_id TEXT")
+            if "admin_user_id" not in room_columns:
+                conn.execute("ALTER TABLE rooms ADD COLUMN admin_user_id TEXT")
+            conn.execute(
+                "UPDATE rooms SET system_kind = 'public' WHERE kind = 'public'"
+            )
+            conn.execute(
+                "UPDATE rooms SET system_kind = 'direct' WHERE kind = 'direct'"
+            )
+            conn.execute(
+                """UPDATE rooms SET system_kind = 'custom',
+                                      admin_user_id = COALESCE(NULLIF(admin_user_id, ''), created_by)
+                   WHERE kind = 'group'
+                     AND (system_kind IS NULL OR system_kind = '' OR system_kind = 'custom')"""
+            )
+            conn.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS rooms_feishu_default_idx
+                   ON rooms(feishu_user_id) WHERE system_kind = 'feishu'"""
+            )
             message_columns = {
                 str(row["name"]) for row in conn.execute("PRAGMA table_info(messages)").fetchall()
             }
@@ -237,12 +269,50 @@ class LanChatStore:
             )
             conn.execute(
                 """INSERT OR IGNORE INTO rooms
-                   (id, kind, name, created_by, direct_key, created_at, updated_at)
-                   VALUES (?, 'public', ?, NULL, NULL, ?, ?)""",
+                   (id, kind, name, created_by, system_kind, feishu_user_id,
+                    admin_user_id, direct_key, created_at, updated_at)
+                   VALUES (?, 'public', ?, NULL, 'public', NULL, NULL, NULL, ?, ?)""",
                 (PUBLIC_ROOM_ID, "公共频道", now, now),
             )
+            conn.execute(
+                """UPDATE rooms SET system_kind = 'public', feishu_user_id = NULL,
+                                      admin_user_id = NULL
+                   WHERE id = ?""",
+                (PUBLIC_ROOM_ID,),
+            )
+            owners = conn.execute("SELECT id, name FROM feishu_users").fetchall()
+            for owner in owners:
+                self._ensure_feishu_default_group(
+                    conn, str(owner["id"]), str(owner["name"]), now
+                )
         self.cleanup_expired_files()
         self._start_file_janitor()
+
+    @staticmethod
+    def _ensure_feishu_default_group(
+        conn: sqlite3.Connection, owner_id: str, owner_name: str, now: float
+    ) -> str:
+        room_id = "feishu_" + hashlib.sha256(owner_id.encode("utf-8")).hexdigest()[:20]
+        room_name = f"{owner_name}的群组"
+        conn.execute(
+            """INSERT OR IGNORE INTO rooms
+               (id, kind, name, created_by, system_kind, feishu_user_id,
+                admin_user_id, direct_key, created_at, updated_at)
+               VALUES (?, 'group', ?, NULL, 'feishu', ?, NULL, NULL, ?, ?)""",
+            (room_id, room_name, owner_id, now, now),
+        )
+        conn.execute(
+            """UPDATE rooms SET name = ?, system_kind = 'feishu',
+                                feishu_user_id = ?, admin_user_id = NULL
+               WHERE id = ?""",
+            (room_name, owner_id, room_id),
+        )
+        conn.execute(
+            """INSERT OR IGNORE INTO room_members(room_id, user_id, joined_at)
+               SELECT ?, id, created_at FROM users WHERE feishu_user_id = ?""",
+            (room_id, owner_id),
+        )
+        return room_id
 
     def register(self, device_token: str, nickname: str = "") -> tuple[dict[str, Any], bool]:
         token_hash = self._token_hash(device_token)
@@ -278,6 +348,9 @@ class LanChatStore:
             else:
                 conn.execute("UPDATE users SET last_seen = ? WHERE id = ?", (now, row["id"]))
                 row = conn.execute("SELECT * FROM users WHERE id = ?", (row["id"],)).fetchone()
+            self._ensure_feishu_default_group(
+                conn, DEFAULT_FEISHU_USER_ID, DEFAULT_FEISHU_USER_NAME, now
+            )
         user = self._public_user(row)
         if user["avatarStatus"] == "pending":
             self._start_avatar_generation(user["id"], user["nickname"])
@@ -347,6 +420,7 @@ class LanChatStore:
                            updated_at = excluded.updated_at""",
                     (owner_id, open_id, name, avatar_url, now, now),
                 )
+                self._ensure_feishu_default_group(conn, owner_id, name, now)
                 synced += 1
         return synced
 
@@ -361,6 +435,13 @@ class LanChatStore:
             ).fetchone()
             if row is None:
                 raise LanChatError("设备账户不存在或不属于该飞书用户", 404)
+            owner = conn.execute(
+                "SELECT name FROM feishu_users WHERE id = ?", (owner_id,)
+            ).fetchone()
+            if owner is not None:
+                self._ensure_feishu_default_group(
+                    conn, owner_id, str(owner["name"]), now
+                )
             session_token = self._create_session(conn, user_id, now)
             conn.execute("UPDATE users SET last_seen = ? WHERE id = ?", (now, user_id))
             row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
@@ -376,7 +457,7 @@ class LanChatStore:
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             owner = conn.execute(
-                "SELECT id FROM feishu_users WHERE id = ? AND active = 1", (owner_id,)
+                "SELECT id, name FROM feishu_users WHERE id = ? AND active = 1", (owner_id,)
             ).fetchone()
             if owner is None:
                 raise LanChatError("飞书用户不存在", 404)
@@ -397,6 +478,7 @@ class LanChatStore:
                     now,
                 ),
             )
+            self._ensure_feishu_default_group(conn, owner_id, str(owner["name"]), now)
             session_token = self._create_session(conn, user_id, now)
             row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
         user = self._public_user(row)
@@ -469,7 +551,11 @@ class LanChatStore:
                    FROM rooms r
                    LEFT JOIN room_members rm ON rm.room_id = r.id
                    WHERE r.kind = 'public' OR rm.user_id = ?
-                   ORDER BY CASE WHEN r.kind = 'public' THEN 0 ELSE 1 END,
+                   ORDER BY CASE r.system_kind
+                                WHEN 'public' THEN 0
+                                WHEN 'feishu' THEN 1
+                                ELSE 2
+                            END,
                             r.updated_at DESC""",
                 (user_id,),
             ).fetchall()
@@ -492,8 +578,9 @@ class LanChatStore:
                 room_id = "dm_" + hashlib.sha256(direct_key.encode()).hexdigest()[:20]
                 conn.execute(
                     """INSERT INTO rooms
-                       (id, kind, name, created_by, direct_key, created_at, updated_at)
-                       VALUES (?, 'direct', '', ?, ?, ?, ?)""",
+                       (id, kind, name, created_by, system_kind, feishu_user_id,
+                        admin_user_id, direct_key, created_at, updated_at)
+                       VALUES (?, 'direct', '', ?, 'direct', NULL, NULL, ?, ?, ?)""",
                     (room_id, current["id"], direct_key, now, now),
                 )
                 conn.executemany(
@@ -530,9 +617,10 @@ class LanChatStore:
             members = [current["id"], *sorted(requested)]
             conn.execute(
                 """INSERT INTO rooms
-                   (id, kind, name, created_by, direct_key, created_at, updated_at)
-                   VALUES (?, 'group', ?, ?, NULL, ?, ?)""",
-                (room_id, clean_name, current["id"], now, now),
+                   (id, kind, name, created_by, system_kind, feishu_user_id,
+                    admin_user_id, direct_key, created_at, updated_at)
+                   VALUES (?, 'group', ?, ?, 'custom', NULL, ?, NULL, ?, ?)""",
+                (room_id, clean_name, current["id"], current["id"], now, now),
             )
             conn.executemany(
                 "INSERT INTO room_members(room_id, user_id, joined_at) VALUES (?, ?, ?)",
@@ -540,6 +628,112 @@ class LanChatStore:
             )
             row = conn.execute("SELECT * FROM rooms WHERE id = ?", (room_id,)).fetchone()
             return self._room_payload(conn, row, current["id"])
+
+    def rename_group(self, device_token: str, room_id: str, name: str) -> dict[str, Any]:
+        current = self.authenticate(device_token)
+        clean_name = " ".join(str(name or "").split())
+        if not clean_name or len(clean_name) > 32:
+            raise LanChatError("群组名称需要 1-32 个字符")
+        with self._connect() as conn:
+            room = self._require_custom_group(conn, room_id, current["id"], admin=True)
+            conn.execute(
+                "UPDATE rooms SET name = ?, updated_at = ? WHERE id = ?",
+                (clean_name, time.time(), room["id"]),
+            )
+            room = conn.execute("SELECT * FROM rooms WHERE id = ?", (room["id"],)).fetchone()
+            return self._room_payload(conn, room, current["id"])
+
+    def remove_group_member(
+        self, device_token: str, room_id: str, target_user_id: str
+    ) -> dict[str, Any]:
+        current = self.authenticate(device_token)
+        target_id = str(target_user_id or "").strip()
+        if not target_id:
+            raise LanChatError("请选择要移出的成员")
+        with self._connect() as conn:
+            room = self._require_custom_group(conn, room_id, current["id"], admin=True)
+            if target_id == current["id"]:
+                raise LanChatError("管理员请使用退出群组，管理员身份会自动移交")
+            member = conn.execute(
+                "SELECT 1 FROM room_members WHERE room_id = ? AND user_id = ?",
+                (room["id"], target_id),
+            ).fetchone()
+            if member is None:
+                raise LanChatError("该用户不是群组成员", 404)
+            conn.execute(
+                "DELETE FROM room_members WHERE room_id = ? AND user_id = ?",
+                (room["id"], target_id),
+            )
+            conn.execute(
+                "DELETE FROM room_reads WHERE room_id = ? AND user_id = ?",
+                (room["id"], target_id),
+            )
+            conn.execute(
+                "UPDATE rooms SET updated_at = ? WHERE id = ?", (time.time(), room["id"])
+            )
+            room = conn.execute("SELECT * FROM rooms WHERE id = ?", (room["id"],)).fetchone()
+            return self._room_payload(conn, room, current["id"])
+
+    def leave_group(self, device_token: str, room_id: str) -> dict[str, Any]:
+        current = self.authenticate(device_token)
+        with self._connect() as conn:
+            room = self._require_custom_group(conn, room_id, current["id"])
+            new_admin_id = None
+            if room["admin_user_id"] == current["id"]:
+                successor = conn.execute(
+                    """SELECT user_id FROM room_members
+                       WHERE room_id = ? AND user_id != ?
+                       ORDER BY joined_at ASC, user_id ASC LIMIT 1""",
+                    (room["id"], current["id"]),
+                ).fetchone()
+                if successor is None:
+                    raise LanChatError("最后一位成员请直接解散群组")
+                new_admin_id = str(successor["user_id"])
+                conn.execute(
+                    "UPDATE rooms SET admin_user_id = ?, updated_at = ? WHERE id = ?",
+                    (new_admin_id, time.time(), room["id"]),
+                )
+            conn.execute(
+                "DELETE FROM room_members WHERE room_id = ? AND user_id = ?",
+                (room["id"], current["id"]),
+            )
+            conn.execute(
+                "DELETE FROM room_reads WHERE room_id = ? AND user_id = ?",
+                (room["id"], current["id"]),
+            )
+        return {"roomId": room_id, "newAdminUserId": new_admin_id}
+
+    def dissolve_group(self, device_token: str, room_id: str) -> dict[str, Any]:
+        current = self.authenticate(device_token)
+        with self._connect() as conn:
+            room = self._require_custom_group(conn, room_id, current["id"], admin=True)
+            media_names = [
+                str(row["image_filename"])
+                for row in conn.execute(
+                    """SELECT image_filename FROM messages
+                       WHERE room_id = ? AND image_filename IS NOT NULL""",
+                    (room["id"],),
+                ).fetchall()
+            ]
+            stored_names = [
+                str(row["stored_filename"])
+                for row in conn.execute(
+                    "SELECT stored_filename FROM file_attachments WHERE room_id = ?",
+                    (room["id"],),
+                ).fetchall()
+            ]
+            conn.execute("DELETE FROM rooms WHERE id = ?", (room["id"],))
+        for filename in media_names:
+            try:
+                (self.media_dir / filename).unlink(missing_ok=True)
+            except OSError as exc:
+                print(f"LAN chat media cleanup failed for {filename}: {exc}", flush=True)
+        for filename in stored_names:
+            try:
+                self._stored_file_path(filename).unlink(missing_ok=True)
+            except (LanChatError, OSError) as exc:
+                print(f"LAN chat file cleanup failed for {filename}: {exc}", flush=True)
+        return {"roomId": room_id, "dissolved": True}
 
     def list_messages(
         self, device_token: str, room_id: str, after_id: int = 0, limit: int = 100
@@ -985,11 +1179,15 @@ class LanChatStore:
         self, conn: sqlite3.Connection, room: sqlite3.Row, current_user_id: str
     ) -> dict[str, Any]:
         members = conn.execute(
-            """SELECT u.* FROM users u
+            """SELECT u.*, rm.joined_at FROM users u
                JOIN room_members rm ON rm.user_id = u.id
-               WHERE rm.room_id = ? ORDER BY u.nickname COLLATE NOCASE""",
+               WHERE rm.room_id = ? ORDER BY rm.joined_at ASC, u.id ASC""",
             (room["id"],),
         ).fetchall()
+        system_kind = str(room["system_kind"] or "custom")
+        admin_user_id = str(room["admin_user_id"] or "") or None
+        is_custom_group = room["kind"] == "group" and system_kind == "custom"
+        current_user_is_admin = is_custom_group and admin_user_id == current_user_id
         name = room["name"]
         if room["kind"] == "direct":
             other = next((item for item in members if item["id"] != current_user_id), None)
@@ -1018,8 +1216,20 @@ class LanChatStore:
             "kind": room["kind"],
             "name": name,
             "memberCount": len(members) if room["kind"] != "public" else self._user_count(conn),
-            "members": [self._public_user(item) for item in members],
+            "members": [
+                {
+                    **self._public_user(item),
+                    "joinedAt": float(item["joined_at"]),
+                    "isAdmin": item["id"] == admin_user_id,
+                    "isCurrent": item["id"] == current_user_id,
+                }
+                for item in members
+            ],
             "createdBy": room["created_by"],
+            "systemKind": system_kind,
+            "isDefault": system_kind in {"public", "feishu"},
+            "adminUserId": admin_user_id,
+            "currentUserIsAdmin": current_user_is_admin,
             "updatedAt": float(room["updated_at"]),
             "unreadCount": unread_count,
             "latestMessage": (
@@ -1038,7 +1248,10 @@ class LanChatStore:
                 if latest is not None
                 else None
             ),
-            "canLeave": False if room["kind"] == "public" else True,
+            "canRename": current_user_is_admin,
+            "canRemoveMembers": current_user_is_admin,
+            "canLeave": is_custom_group,
+            "canDissolve": current_user_is_admin,
         }
 
     @staticmethod
@@ -1182,6 +1395,27 @@ class LanChatStore:
         if path.parent != self.file_dir.resolve():
             raise LanChatError("文件不存在", 404)
         return path
+
+    @staticmethod
+    def _require_custom_group(
+        conn: sqlite3.Connection, room_id: str, user_id: str, admin: bool = False
+    ) -> sqlite3.Row:
+        room = conn.execute("SELECT * FROM rooms WHERE id = ?", (room_id,)).fetchone()
+        if room is None:
+            raise LanChatError("群组不存在", 404)
+        if room["kind"] != "group":
+            raise LanChatError("该频道不是群组")
+        if room["system_kind"] != "custom":
+            raise LanChatError("默认群组由系统维护，不能修改、退出或解散", 403)
+        member = conn.execute(
+            "SELECT 1 FROM room_members WHERE room_id = ? AND user_id = ?",
+            (room_id, user_id),
+        ).fetchone()
+        if member is None:
+            raise LanChatError("无权访问此群组", 403)
+        if admin and room["admin_user_id"] != user_id:
+            raise LanChatError("只有群组管理员可以执行此操作", 403)
+        return room
 
     @staticmethod
     def _require_room_access(
