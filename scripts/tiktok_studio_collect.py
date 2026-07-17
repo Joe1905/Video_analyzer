@@ -118,6 +118,7 @@ def _setting_row(row: Any | None, account_id: int) -> dict[str, Any]:
 
 
 def _job_row(row: Any) -> dict[str, Any]:
+    columns = set(row.keys()) if hasattr(row, "keys") else set()
     return {
         "id": str(row["id"]),
         "account_id": int(row["account_id"]),
@@ -140,6 +141,7 @@ def _job_row(row: Any) -> dict[str, Any]:
         "started_at": str(row["started_at"]),
         "completed_at": str(row["completed_at"]),
         "last_error": str(row["last_error"]),
+        "feishu_failed_results": int(row["feishu_failed_results"] or 0) if "feishu_failed_results" in columns else 0,
         "created_at": str(row["created_at"]),
         "updated_at": str(row["updated_at"]),
     }
@@ -235,7 +237,15 @@ def dashboard(account_id: int) -> dict[str, Any]:
         jobs = [
             _job_row(row)
             for row in conn.execute(
-                "SELECT * FROM collect_jobs WHERE account_id = ? ORDER BY created_at DESC LIMIT 40",
+                """
+                SELECT j.*,
+                       (SELECT COUNT(*) FROM collect_results r
+                        WHERE r.job_id = j.id AND r.feishu_sync_status = 'failed') AS feishu_failed_results
+                FROM collect_jobs j
+                WHERE j.account_id = ?
+                ORDER BY j.created_at DESC
+                LIMIT 40
+                """,
                 (account_id,),
             ).fetchall()
         ]
