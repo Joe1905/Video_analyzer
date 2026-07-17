@@ -950,6 +950,27 @@ def _discard_stale_edit(page: Any, log_dir: Path) -> bool:
     return True
 
 
+def _goto_with_proxy_retries(page: Any, target: str) -> Any:
+    retryable_markers = (
+        "err_connection_closed",
+        "err_tunnel_connection_failed",
+        "err_proxy_connection_failed",
+        "unexpected eof",
+        "connection reset",
+        "remote end closed",
+    )
+    attempts = max(1, int(os.getenv("TIKTOK_PROXY_NAVIGATION_ATTEMPTS", "10") or "10"))
+    for attempt in range(attempts):
+        try:
+            return page.goto(target, wait_until="domcontentloaded", timeout=60000)
+        except Exception as exc:
+            retryable = any(marker in str(exc).lower() for marker in retryable_markers)
+            if not retryable or attempt + 1 >= attempts:
+                raise
+            page.wait_for_timeout(min(2000, 500 * (attempt + 1)))
+    raise RuntimeError(f"TikTok 页面无法加载：{target}")
+
+
 def _ensure_studio_page(page: Any, log_dir: Path) -> None:
     parsed = urlparse(page.url)
     already_in_studio = (parsed.hostname or "").endswith("tiktok.com") and parsed.path.startswith("/tiktokstudio")
@@ -961,7 +982,7 @@ def _ensure_studio_page(page: Any, log_dir: Path) -> None:
     target = "https://www.tiktok.com/tiktokstudio?lang=en"
     for attempt in range(2):
         try:
-            page.goto(target, wait_until="domcontentloaded", timeout=60000)
+            _goto_with_proxy_retries(page, target)
             page.wait_for_timeout(2500)
             if not _page_is_blank(page):
                 return
@@ -990,7 +1011,7 @@ def _ensure_upload_page(page: Any, log_dir: Path) -> None:
     target = "https://www.tiktok.com/tiktokstudio/upload?from=creator_center&tab=video"
     for attempt in range(2):
         try:
-            page.goto(target, wait_until="domcontentloaded", timeout=60000)
+            _goto_with_proxy_retries(page, target)
             page.wait_for_timeout(2500)
             if not _page_is_blank(page):
                 return

@@ -20,6 +20,10 @@ services:
       REPORT_LAN_PORT: ${REPORT_LAN_PORT:-4003}
       HOT_VIDEO_REPORT_SCHEDULER_ENABLED: "0"
       SELLERSPRITE_REDIRECT_PORT: "0"
+      PROXY_REALITY_CORE: sing-box
+      PROXY_REALITY_DEFAULT_FINGERPRINT: safari
+      SING_BOX_CONFIG_PATH: /workspace/data/sing-box/config.json
+      SING_BOX_COMPOSE_PROJECT: short-video-analyzer-dev
     volumes:
       - ./videos-dev:/workspace/videos
       - ./output-dev:/workspace/output
@@ -28,6 +32,21 @@ services:
       - ./sellersprite_mcp_chat:/workspace/sellersprite_mcp_chat:ro
       - ${OCR_SHARED_DIR:-/home/openclaw/ocr-shared}:${OCR_SERVER_SHARED_DIR:-/home/openclaw/ocr-shared}
       - /var/run/docker.sock:/var/run/docker.sock
+
+  sing-box:
+    image: short-video-analyzer-sing-box:1.13.14
+    build:
+      context: .
+      dockerfile: Dockerfile.sing-box
+      network: host
+      args:
+        HTTP_PROXY: ${SING_BOX_DOWNLOAD_PROXY:-http://127.0.0.1:7890}
+        HTTPS_PROXY: ${SING_BOX_DOWNLOAD_PROXY:-http://127.0.0.1:7890}
+    command: -D /var/lib/sing-box -C /etc/sing-box run
+    volumes:
+      - ./data-dev/sing-box:/etc/sing-box
+    network_mode: host
+    restart: unless-stopped
 
   sellersprite-redirect:
     profiles:

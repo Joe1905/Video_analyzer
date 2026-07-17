@@ -1,0 +1,14 @@
+FROM python:3.11-slim AS downloader
+
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG SING_BOX_VERSION=1.13.14
+ARG SING_BOX_SHA256=aae9172317c61760aae3dafcde889b2e51b7ea590c40d2b3c7ccdeae14b361b6
+
+COPY docker/sing-box/install.py /tmp/install-sing-box.py
+RUN python /tmp/install-sing-box.py "${SING_BOX_VERSION}" "${SING_BOX_SHA256}" /out/sing-box
+
+FROM python:3.11-slim
+
+COPY --from=downloader /out/sing-box /usr/local/bin/sing-box
+ENTRYPOINT ["/usr/local/bin/sing-box"]
