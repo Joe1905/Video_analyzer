@@ -7468,6 +7468,10 @@ def fastmoss_evidence_manifest(
             "parser_status": "unsupported_parser",
         }
         envelope = {**envelope, "source_call_index": result_index + 1}
+        envelope["entity_refs"] = [
+            ref for ref in (envelope.get("entity_refs") or [])
+            if isinstance(ref, dict) and _fastmoss_valid_entity_id(ref.get("id"))
+        ]
         evidence_envelopes.append(envelope)
         metadata = result.get("evidence_metadata") if isinstance(result.get("evidence_metadata"), dict) else {}
         records = result.get("evidence_product_records") if isinstance(result.get("evidence_product_records"), list) else []
@@ -8371,18 +8375,42 @@ def downgrade_fastmoss_absolute_market_claims(answer: str) -> str:
         text,
         flags=re.IGNORECASE,
     )
+    text = re.sub(
+        r"(?:表明|说明)供给侧[^\n。；]{0,60}?竞争加剧",
+        "说明新品供给仍活跃，但不能据此判断竞争强度",
+        text,
+    )
+    text = re.sub(
+        r"(?:表明|说明)消费者[^\n。；]{0,100}?(?:内容的?耐受度|内容偏好|决策路径)[^\n。；]*",
+        "该渠道变化不能直接证明消费者内容偏好或决策路径改变",
+        text,
+    )
+    text = re.sub(
+        r"(?:表明|说明)[^\n。；]{0,80}?消费者认知[^\n。；]*(?:多数[^\n。；]{0,60})?",
+        "该样本只表明关键词下销量信号较弱，消费者认知和搜索路径仍需验证",
+        text,
+    )
+    text = re.sub(
+        r"(?:说明)?主要依靠商品卡自然流量或付费广告[^\n。；]*",
+        "零关联视频不能直接确定流量来源，需用该商品渠道归因数据验证",
+        text,
+    )
+    text = re.sub(
+        r"(?:依赖|依靠)[^\n。；]{0,60}?达人视频[^\n。；]{0,40}?(?:驱动|转化)[^\n。；]*",
+        "关联达人和视频规模较大，但其对销量的因果贡献仍需验证",
+        text,
+    )
+    text = text.replace("达人驱动特征", "达人与内容关联特征")
     return text
 
 
 def sanitize_fastmoss_unsupported_recommendations(answer: str) -> tuple[str, int]:
     """Remove only operational numbers stated as recommendations, not observed metrics."""
     text = str(answer or "")
-    cleanup_count = 0
+    rules: list[tuple[str, str]] = []
 
     def replace(pattern: str, replacement: str) -> None:
-        nonlocal text, cleanup_count
-        text, count = re.subn(pattern, replacement, text, flags=re.IGNORECASE)
-        cleanup_count += count
+        rules.append((pattern, replacement))
 
     replace(
         r"(?:建议\s*)?(?:首批|先备货?|备货)\s*[\d,.]+\s*(?:[-~–—至到]\s*[\d,.]+\s*)?件",
@@ -8471,6 +8499,10 @@ def sanitize_fastmoss_unsupported_recommendations(answer: str) -> tuple[str, int
         r"(?:建议|计划|首批|先|招募|联系|合作|建联)[^\n。；]{0,20}?[\d,.]+\s*"
         r"(?:[-~–—至到]\s*[\d,.]+\s*)?(?:个|位)\s*(?:达人|创作者)",
         "先与少量匹配达人验证",
+    )
+    replace(
+        r"(?:找|寻找|物色)\s*[\d,.]+\s*(?:[-~–—至到]\s*[\d,.]+\s*)?(?:个|位)?\s*(?:达人|创作者)",
+        "寻找少量受众匹配的达人",
     )
     replace(
         r"每\s*(?:周|星期|月)\s*(?:产出|发布|制作|投放)?\s*[\d,.]+\s*"
@@ -8591,7 +8623,24 @@ def sanitize_fastmoss_unsupported_recommendations(answer: str) -> tuple[str, int
         r"(?:头部商品)?毛利率?潜力\s*(?:\|\s*)?(?:较高|很高|高|较低|很低|低)(?:[^|\n]*)",
         "毛利判断 | 暂无法判断（缺少成本证据）",
     )
-    return text, cleanup_count
+    # A comma-separated clause, Markdown table cell, or sentence is one claim.
+    # Apply at most one deterministic rewrite to each claim so overlapping
+    # regular expressions cannot repeatedly mutate the same text.
+    cleanup_count = 0
+    segments = re.split(r"((?<!\d),(?!\d)|[，；;。\n])", text)
+    for index in range(0, len(segments), 2):
+        segment = segments[index]
+        if not segment:
+            continue
+        for pattern, replacement in rules:
+            updated, count = re.subn(
+                pattern, replacement, segment, count=1, flags=re.IGNORECASE
+            )
+            if count:
+                segments[index] = updated
+                cleanup_count += 1
+                break
+    return "".join(segments), cleanup_count
 
 
 def sanitize_fastmoss_state_contradictions(
@@ -8600,7 +8649,7 @@ def sanitize_fastmoss_state_contradictions(
 ) -> tuple[str, int]:
     """Correct only explicit data/empty contradictions that can be tied to a query or ID."""
     text = str(answer or "")
-    cleanup_count = 0
+    rules: list[tuple[str, str]] = []
     for envelope in manifest.get("evidence_envelopes") or []:
         if not isinstance(envelope, dict):
             continue
@@ -8609,19 +8658,17 @@ def sanitize_fastmoss_state_contradictions(
         query = str(arguments.get("keywords") or "").strip()
         if query and state == "data":
             pattern = rf"({re.escape(query)}[^\n。；]{{0,80}}?)(?:返回为空|没有返回|未返回|无数据|没有数据)"
-            text, count = re.subn(pattern, rf"\1本轮返回了可用样本", text, flags=re.IGNORECASE)
-            cleanup_count += count
+            rules.append((pattern, rf"\1本轮返回了可用样本"))
         if state != "empty":
             continue
         for ref in envelope.get("entity_refs") or []:
             if not isinstance(ref, dict):
                 continue
             entity_id = str(ref.get("id") or "").strip()
-            if not entity_id:
+            if not _fastmoss_valid_entity_id(entity_id):
                 continue
             pattern = rf"({re.escape(entity_id)}[^\n。；]{{0,80}}?)(?:为|等于)\s*0(?:\.0+)?"
-            text, count = re.subn(pattern, rf"\1本轮未返回可核对记录", text)
-            cleanup_count += count
+            rules.append((pattern, rf"\1本轮未返回可核对记录"))
     signals = manifest.get("derived_signals") if isinstance(manifest.get("derived_signals"), dict) else {}
     for item in signals.get("segment_queries") or []:
         if not isinstance(item, dict):
@@ -8633,17 +8680,28 @@ def sanitize_fastmoss_state_contradictions(
             continue
         pattern = rf"({re.escape(query)}[^\n。；]{{0,50}}?)(?:几乎无|没有)(?:活跃)?(?:商品|产品)"
         replacement = rf"\1本轮返回 {fetched} 款样本，其中 {active} 款有可核对销量"
-        text, count = re.subn(pattern, replacement, text, flags=re.IGNORECASE)
-        cleanup_count += count
+        rules.append((pattern, replacement))
     top3_share = _fastmoss_number(signals.get("category_top3_share"))
     if top3_share is not None and top3_share < 0.6:
-        text, count = re.subn(
+        rules.append((
             r"头部集中度(?:很|较)?高",
             f"本轮样本前三款销量占比约 {top3_share * 100:.1f}%，已形成头部但并非高度集中",
-            text,
-        )
-        cleanup_count += count
-    return text, cleanup_count
+        ))
+    cleanup_count = 0
+    segments = re.split(r"((?<!\d),(?!\d)|[，；;。\n])", text)
+    for index in range(0, len(segments), 2):
+        segment = segments[index]
+        if not segment:
+            continue
+        for pattern, replacement in rules:
+            updated, count = re.subn(
+                pattern, replacement, segment, count=1, flags=re.IGNORECASE
+            )
+            if count:
+                segments[index] = updated
+                cleanup_count += 1
+                break
+    return "".join(segments), cleanup_count
 
 
 def polish_fastmoss_report_tone(answer: str) -> str:
@@ -8694,11 +8752,21 @@ def fastmoss_high_risk_claims(draft: str) -> list[dict[str, Any]]:
             r"ROI|CPO|CPA|转化率|毛利率|成本|MOQ|佣金|广告费|功率|\bW\b)[^\n]{0,120}\d"
         )),
         ("sample_extrapolation", re.compile(r"(?:其余|剩余|未抓取|全市场|市场份额|长尾)[^\n]{0,120}(?:%|商品|产品|件)")),
-        ("channel_causality", re.compile(r"(?i)(?:广告|联盟|视频|直播)[^\n]{0,100}(?:ROI|利润|有效|可行|驱动|导致|证明|稳定)")),
+        ("market_scale", re.compile(
+            r"(?:市场(?:容量|体量|规模)|实质性细分市场|商业化程度|规模投入|结构性机会|"
+            r"(?:抢占|占据|扩大|获得)[^\n。；]{0,30}市场份额)"
+        )),
+        ("channel_causality", re.compile(
+            r"(?i)(?:(?:依靠|通过)[^\n。；]{0,40}(?:广告|联盟|视频|直播)|(?:广告|联盟|视频|直播))"
+            r"[^\n。；]{0,100}(?:ROI|利润|有效|可行|驱动|导致|证明|稳定|实现|带来|造就|爆发)"
+        )),
         ("content_causality", re.compile(r"(?:内容偏好|最有效|转化最高|表现最好|因为[^\n]{0,60}所以)")),
         ("state_claim", re.compile(r"(?:返回为空|没有返回|未返回|无数据|没有数据|为零|等于0)")),
         ("market_absolute", re.compile(r"(?:低竞争|蓝海|真实机会|确定机会|不存在市场|不构成独立市场|已经饱和)")),
-        ("lifecycle", re.compile(r"(?:爆发期|成长期|稳定期|衰退期|已经过峰值|仍在上升|生命周期)")),
+        ("lifecycle", re.compile(
+            r"(?:爆发期|成长期|稳定期|衰退期|已经过峰值|仍在上升|生命周期|"
+            r"增长动能[^\n。；]{0,24}放缓|竞争加剧|用户疲劳)"
+        )),
     )
     claims: list[dict[str, Any]] = []
     for line_index, line in enumerate(str(draft or "").splitlines(), start=1):
@@ -8871,6 +8939,7 @@ def fastmoss_candidate_evidence(
     claims: list[dict[str, Any]],
     route: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Return only registry rows and samples relevant to one small claim batch."""
     packet = fastmoss_report_packet(manifest, route)
     ids = {
         entity_id for claim in claims
@@ -8882,6 +8951,7 @@ def fastmoss_candidate_evidence(
     }
     reason_dimensions = {
         "sample_extrapolation": {"product_sample", "top_products", "category_analysis", "category_channel_ranking"},
+        "market_scale": {"product_sample", "top_products", "category_analysis", "category_channel_ranking"},
         "channel_causality": {"product_overview", "category_channel_ranking", "shop_sale_analysis", "ad_data_overview"},
         "content_causality": {"product_videos", "product_creator_analysis", "video_detail_analysis", "video_data_trends"},
         "state_claim": set(),
@@ -8890,7 +8960,7 @@ def fastmoss_candidate_evidence(
         "operational_number": {"product_sample", "product_detail", "product_overview", "product_creator_analysis"},
     }
     wanted_dimensions = set().union(*(reason_dimensions.get(reason, set()) for reason in reasons))
-    all_facts = [fact for fact in (packet.get("evidence_facts") or []) if isinstance(fact, dict)]
+    all_facts = [fact for fact in (packet.get("representative_evidence") or []) if isinstance(fact, dict)]
     facts = [
         fact for fact in all_facts
         if (
@@ -8908,18 +8978,55 @@ def fastmoss_candidate_evidence(
             fact for fact in all_facts
             if int(fact.get("source_call_index") or 0) in relevant_calls
         ]
+    metric_keywords = {
+        "sample_extrapolation": ("units_sold", "reported_total", "rank", "score"),
+        "market_scale": ("units_sold", "reported_total", "rank", "score"),
+        "channel_causality": ("share_percent", "ads_distribution", "channel_distribution", "content_distribution"),
+        "content_causality": ("video", "creator", "play_count", "engagement"),
+        "state_claim": ("returned_", "reported_"),
+        "market_absolute": ("units_sold", "gmv", "rank", "score"),
+        "lifecycle": ("trend", "active_days", "first_30d", "last_30d"),
+        "operational_number": ("price", "creator", "gmv", "units_sold", "share_percent"),
+    }
+    wanted_metric_terms = {
+        term for reason in reasons for term in metric_keywords.get(reason, ())
+    }
+    metrics: list[dict[str, Any]] = []
+    for metric in manifest.get("metric_registry") or []:
+        if not isinstance(metric, dict):
+            continue
+        entity_id = str(metric.get("entity_id") or "")
+        context = metric.get("context") if isinstance(metric.get("context"), dict) else {}
+        subject_product_id = str(context.get("subject_product_id") or "")
+        metric_name = str(metric.get("metric") or "")
+        if ids and entity_id not in ids and subject_product_id not in ids:
+            continue
+        if not ids and wanted_metric_terms and not any(term in metric_name for term in wanted_metric_terms):
+            continue
+        metrics.append(metric)
+        if len(metrics) >= 50:
+            break
+    relevant_calls = {
+        int(item.get("source_call_index") or 0) for item in metrics + facts
+        if int(item.get("source_call_index") or 0) > 0
+    }
+    source_catalog = [
+        item for item in (packet.get("source_catalog") or [])
+        if not relevant_calls or int(item.get("source_call_index") or 0) in relevant_calls
+    ][:16]
     return {
         "workflow": packet.get("workflow"),
         "analysis_targets": packet.get("analysis_targets"),
         "claim_boundaries": packet.get("claim_boundaries"),
-        "quality_states": (packet.get("coverage") or {}).get("quality_states"),
-        "source_catalog": packet.get("source_catalog"),
+        "coverage_summary": packet.get("coverage_summary"),
+        "source_catalog": source_catalog,
         "entity_bundles": [
             bundle for bundle in (manifest.get("entity_bundles") or [])
             if not ids or str(bundle.get("entity_id") or "") in ids
         ][:20],
+        "metric_registry": metrics,
         "facts": facts[:40],
-        "derived_facts": (manifest.get("derived_facts") or [])[:30],
+        "derived_facts": (manifest.get("derived_facts") or [])[:12],
         "conflicts": (manifest.get("conflicts") or [])[:20],
         "limitations": manifest.get("limitations") or [],
     }
@@ -8930,30 +9037,32 @@ def apply_fastmoss_verifier_edits(
     edits: Any,
     claims: list[dict[str, Any]] | None = None,
 ) -> tuple[str, int]:
-    """Apply exact local edits atomically; any invalid target aborts the full edit set."""
-    if not isinstance(edits, list) or len(edits) > 20:
-        raise ValueError("invalid verifier edits")
+    """Apply valid claim edits independently and ignore malformed individual items."""
+    if not isinstance(edits, list):
+        return str(draft or ""), 0
     updated = str(draft or "")
     claim_text = {
         str(item.get("claim_id") or ""): str(item.get("text") or "")
         for item in (claims or []) if isinstance(item, dict)
     }
-    for edit in edits:
+    applied = 0
+    for edit in edits[:20]:
         if not isinstance(edit, dict):
-            raise ValueError("invalid verifier edit item")
+            continue
         claim_id = edit.get("claim_id")
         original = claim_text.get(str(claim_id or "")) if claim_id else edit.get("original")
         replacement = edit.get("replacement")
         reason = edit.get("reason")
         evidence_refs = edit.get("evidence_refs")
         if not isinstance(original, str) or not original or not isinstance(replacement, str):
-            raise ValueError("invalid verifier edit text")
+            continue
         if not isinstance(reason, str) or not reason.strip() or not isinstance(evidence_refs, list):
-            raise ValueError("invalid verifier edit explanation")
+            continue
         if original not in updated:
-            raise ValueError("verifier edit target not found")
+            continue
         updated = updated.replace(original, replacement, 1)
-    return updated, len(edits)
+        applied += 1
+    return updated, applied
 
 
 def _log_fastmoss_report_pipeline(
@@ -8963,6 +9072,10 @@ def _log_fastmoss_report_pipeline(
     edits_applied: int = 0,
     mechanical_cleanups: int = 0,
     claim_candidates: int = 0,
+    claim_numeric_bound: int = 0,
+    claim_numeric_unbound: int = 0,
+    verifier_batches: int = 0,
+    verifier_batch_failures: int = 0,
     fallback_reason: str = "",
 ) -> None:
     print(
@@ -8972,8 +9085,11 @@ def _log_fastmoss_report_pipeline(
         f"evidence_envelopes={int(manifest.get('evidence_envelope_count') or 0)} "
         f"entity_bundles={int(manifest.get('entity_bundle_count') or 0)} "
         f"unsupported_parsers={int(manifest.get('unsupported_parser_count') or 0)} "
+        f"metric_registry={int(manifest.get('metric_registry_count') or 0)} "
         f"derived_facts={len(manifest.get('derived_facts') or [])} conflicts={len(manifest.get('conflicts') or [])} "
-        f"claim_candidates={claim_candidates} "
+        f"claim_candidates={claim_candidates} claim_numeric_bound={claim_numeric_bound} "
+        f"claim_numeric_unbound={claim_numeric_unbound} verifier_batches={verifier_batches} "
+        f"verifier_batch_failures={verifier_batch_failures} "
         f"verifier={verifier_result} edits_applied={edits_applied} "
         f"mechanical_cleanups={mechanical_cleanups} fallback_reason={fallback_reason or 'none'}",
         flush=True,
@@ -9089,7 +9205,7 @@ def verify_fastmoss_final_answer(
     if fallback_reason:
         _log_fastmoss_report_pipeline(draft, manifest, "skipped", fallback_reason=fallback_reason)
         return fastmoss_deterministic_quality_fallback(manifest)
-    precleaned, numeric_cleanup_count, _, _ = validate_fastmoss_numeric_claims(draft, manifest)
+    precleaned, numeric_cleanup_count, numeric_bound, numeric_unbound = validate_fastmoss_numeric_claims(draft, manifest)
     precleaned, initial_cleanup_count = sanitize_fastmoss_unsupported_recommendations(precleaned)
     initial_cleanup_count += numeric_cleanup_count
     precleaned = downgrade_fastmoss_absolute_market_claims(precleaned)
@@ -9103,101 +9219,108 @@ def verify_fastmoss_final_answer(
             "deterministic:approved",
             mechanical_cleanups=initial_cleanup_count,
             claim_candidates=0,
+            claim_numeric_bound=numeric_bound,
+            claim_numeric_unbound=numeric_unbound,
         )
         return precleaned
-    candidate_evidence = fastmoss_candidate_evidence(manifest, claims, route)
-    payload = {
-        "model": model,
-        "messages": [{
-            "role": "system",
-            "content": (
-                "You are an independent FastMoss factual-boundary verifier. Return one compact JSON object only with keys "
-                "approved (boolean), risk_level (low|medium|high|critical), edits (array). Each edit must contain exact keys "
-                "claim_id (copied exactly from candidate_claims), replacement (corrected text or empty string), reason (string), "
-                "and evidence_refs (array of source_tool/entity/fact references). Review only candidate_claims; never rewrite the whole report. "
-                "Do not narrate supported claims. Keep internal analysis brief and prioritize only high-risk unsupported claims. "
-                "and return at most 12 minimal edits. If several risky numbers occur in one sentence or bullet, replace that exact sentence or bullet once. "
-                "Check candidates against candidate_evidence. Reject category-level overreach, treating fetched count as total, "
-                "ignoring partial pagination or sort anomalies, undisclosed metric conflicts, and unsupported claims of low competition, structural opportunity, "
-                "lifecycle stage, or content causality. A keyword sample, empty result, or partial ranking can never prove that a market does not exist, "
-                "does not constitute an independent market, or is a real opportunity; replace only the offending sentence with a sample-limited statement. "
-                "Flag recommendation-context operational numbers absent from evidence or an explicit calculation, including inventory, budget, creator count, follower threshold, "
-                "test duration, ROI, conversion rate, margin, supply-chain cost, MOQ, or exact recommended launch price. Observed metrics and observed price bands must not be removed. "
-                "Do not critique style, headings, length, tables, or report organization. Do not add facts. If no factual edit is needed, return approved=true and edits=[]. "
-                "If any edit is needed, return approved=false and include only the smallest exact replacements needed."
-            ),
-        }, {
-            "role": "user",
-            "content": json.dumps({
-                "original_request": user_text,
-                "candidate_claims": claims,
-                "candidate_evidence": candidate_evidence,
-            }, ensure_ascii=False),
-        }],
-        "response_format": {"type": "json_object"},
-        "temperature": 0,
-        "max_tokens": 1800,
-    }
-    payload_str = json.dumps(payload, ensure_ascii=False)
-    started = time.monotonic()
-    try:
-        response = requests_module.post(
-            api_url.rstrip("/") + "/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            data=payload_str.encode("utf-8"),
-            timeout=60,
-        )
-        response.raise_for_status()
-        body = response.json()
-        record_api_call(
-            "deepseek",
-            "fastmoss_answer_verifier",
-            {
-                "api_url": api_url.rstrip("/") + "/chat/completions",
-                "model": model,
-                "provider": "fastmoss",
-                "payload_sha256": __import__("hashlib").sha256(payload_str.encode("utf-8")).hexdigest(),
-            },
-            body,
-            elapsed_ms=int((time.monotonic() - started) * 1000),
-        )
-        choice = body["choices"][0]
-        if str(choice.get("finish_reason") or "").lower() == "length":
-            raise ValueError("verifier finish_reason=length")
-        content = choice["message"].get("content")
-        decision = _chat_intent_json_content(content)
-        if not isinstance(decision, dict) or not isinstance(decision.get("approved"), bool):
-            raise ValueError("invalid verifier JSON")
-        risk = str(decision.get("risk_level") or "").lower()
-        if risk not in {"low", "medium", "high", "critical"}:
-            raise ValueError("invalid verifier risk level")
-        edits = decision.get("edits")
-        if not isinstance(edits, list):
-            raise ValueError("invalid verifier edits JSON")
-        if decision.get("approved") is False and not edits:
-            raise ValueError("rejected verifier response has no edits")
-        edited, applied = apply_fastmoss_verifier_edits(precleaned, edits, claims)
-        cleaned, cleanup_count = sanitize_fastmoss_unsupported_recommendations(edited)
-        cleaned = downgrade_fastmoss_absolute_market_claims(cleaned)
-        cleaned, state_cleanup_count = sanitize_fastmoss_state_contradictions(cleaned, manifest)
-        cleanup_count += state_cleanup_count
-        _log_fastmoss_report_pipeline(
-            draft, manifest, f"{risk}:{'approved' if decision.get('approved') else 'edited'}",
-            edits_applied=applied,
-            mechanical_cleanups=initial_cleanup_count + cleanup_count,
-            claim_candidates=len(claims),
-        )
-        return cleaned
-    except Exception as exc:
-        _log_fastmoss_report_pipeline(
-            draft,
-            manifest,
-            f"failed:{type(exc).__name__}",
-            mechanical_cleanups=initial_cleanup_count,
-            claim_candidates=len(claims),
-        )
-        print(f"[CHAT] FastMoss answer verifier failed: {type(exc).__name__}: {str(exc)[:300]}", flush=True)
-        return precleaned
+    verifier_system = (
+        "You are an independent FastMoss factual-boundary verifier. Return one compact JSON object only with keys "
+        "approved (boolean), risk_level (low|medium|high|critical), edits (array). Each edit must contain exact keys "
+        "claim_id (copied exactly from candidate_claims), replacement (corrected text or empty string), reason (string), "
+        "and evidence_refs (array). Review only the supplied 3-5 claims and their evidence slice; never rewrite the report. "
+        "Check only causality, lifecycle, opportunity language, sample extrapolation, and recommendation boundaries. "
+        "The program has already checked numeric identity, state, unit, period and calculations. Do not remove supported observations. "
+        "A keyword result total is query coverage, not market capacity, commercialization level, or proof that scale investment is/is not justified. "
+        "A declining product trend does not by itself prove competition, audience fatigue, or lifecycle stage. Channel shares and linked-content counts do not prove the cause of sales. "
+        "Do not critique style, headings, length, tables, or organization. Do not add facts. Return the smallest claim-level edits."
+    )
+    updated = precleaned
+    total_applied = 0
+    batch_failures = 0
+    statuses: list[str] = []
+    batches = [claims[index:index + 4] for index in range(0, len(claims), 4)]
+    for batch_index, batch_claims in enumerate(batches, start=1):
+        candidate_evidence = fastmoss_candidate_evidence(manifest, batch_claims, route)
+        payload = {
+            "model": model,
+            "messages": [{"role": "system", "content": verifier_system}, {
+                "role": "user",
+                "content": json.dumps({
+                    "original_request": user_text,
+                    "candidate_claims": batch_claims,
+                    "candidate_evidence": candidate_evidence,
+                }, ensure_ascii=False),
+            }],
+            "response_format": {"type": "json_object"},
+            "temperature": 0,
+            "max_tokens": 4800,
+        }
+        payload_str = json.dumps(payload, ensure_ascii=False)
+        started = time.monotonic()
+        try:
+            response = requests_module.post(
+                api_url.rstrip("/") + "/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                data=payload_str.encode("utf-8"),
+                timeout=60,
+            )
+            response.raise_for_status()
+            body = response.json()
+            record_api_call(
+                "deepseek",
+                "fastmoss_answer_verifier",
+                {
+                    "api_url": api_url.rstrip("/") + "/chat/completions",
+                    "model": model,
+                    "provider": "fastmoss",
+                    "batch_index": batch_index,
+                    "batch_count": len(batches),
+                    "claim_ids": [item.get("claim_id") for item in batch_claims],
+                    "prompt_chars": len(payload_str),
+                    "payload_sha256": __import__("hashlib").sha256(payload_str.encode("utf-8")).hexdigest(),
+                },
+                body,
+                elapsed_ms=int((time.monotonic() - started) * 1000),
+            )
+            choice = body["choices"][0]
+            finish_reason = str(choice.get("finish_reason") or "").lower()
+            if finish_reason == "length":
+                raise ValueError("verifier finish_reason=length")
+            decision = _chat_intent_json_content((choice.get("message") or {}).get("content"))
+            if not isinstance(decision, dict) or not isinstance(decision.get("approved"), bool):
+                raise ValueError("invalid verifier JSON")
+            risk = str(decision.get("risk_level") or "").lower()
+            if risk not in {"low", "medium", "high", "critical"}:
+                raise ValueError("invalid verifier risk level")
+            edits = decision.get("edits")
+            if not isinstance(edits, list):
+                raise ValueError("invalid verifier edits JSON")
+            if decision.get("approved") is False and not edits:
+                raise ValueError("rejected verifier response has no edits")
+            updated, applied = apply_fastmoss_verifier_edits(updated, edits, batch_claims)
+            total_applied += applied
+            statuses.append(f"{risk}:{'approved' if decision.get('approved') else f'edited{applied}'}")
+        except Exception as exc:
+            batch_failures += 1
+            statuses.append(f"failed:{type(exc).__name__}")
+            print(
+                f"[CHAT] FastMoss verifier batch {batch_index}/{len(batches)} failed: "
+                f"{type(exc).__name__}: {str(exc)[:300]}",
+                flush=True,
+            )
+    _log_fastmoss_report_pipeline(
+        draft,
+        manifest,
+        ",".join(statuses),
+        edits_applied=total_applied,
+        mechanical_cleanups=initial_cleanup_count,
+        claim_candidates=len(claims),
+        claim_numeric_bound=numeric_bound,
+        claim_numeric_unbound=numeric_unbound,
+        verifier_batches=len(batches),
+        verifier_batch_failures=batch_failures,
+    )
+    return updated
 
 
 def build_tool_limit_final_context(messages: list[dict[str, Any]], user_request: str = "") -> list[dict[str, Any]]:
