@@ -41,10 +41,19 @@ compose_args=(
 )
 
 echo "Building beta web image while the current container stays online..."
-"${compose[@]}" "${compose_args[@]}" build web
+docker build --network host \
+  --build-arg HTTP_PROXY \
+  --build-arg HTTPS_PROXY \
+  --build-arg http_proxy \
+  --build-arg https_proxy \
+  --build-arg ALL_PROXY \
+  --build-arg all_proxy \
+  --build-arg NO_PROXY \
+  --build-arg no_proxy \
+  -t short-video-analyzer-dev:latest .
 
 echo "Replacing only the beta web container..."
-"${compose[@]}" "${compose_args[@]}" up -d --no-deps web
+"${compose[@]}" "${compose_args[@]}" up -d --no-deps --no-build web
 
 health_url="${HEALTHCHECK_URL:-http://127.0.0.1:${web_port}/healthz}"
 echo "Waiting for ${health_url}..."
