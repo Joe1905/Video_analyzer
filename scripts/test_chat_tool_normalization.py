@@ -2147,6 +2147,59 @@ def test_fastmoss_report_packets_are_workflow_native_and_numeric_policy_is_stric
     assert all(packet["numeric_policy"] == "only_tool_evidence_user_input_or_explicit_calculation" for packet in packets.values())
 
 
+def test_fastmoss_list_truncation_is_explicit_and_invalid_entities_are_filtered() -> None:
+    products = [{
+        "product": {"product_id": str(1000 + index), "title": f"Product {index}"},
+        "sales_summary": {"last_28d_units_sold": index},
+    } for index in range(1, 11)]
+    normalized = web_app.annotate_fastmoss_tool_result(
+        "fastmoss__product_search",
+        {
+            "filter": {"category_id_level2": 844168, "category_id_level3": 935176},
+            "page": 2, "pagesize": 10,
+        },
+        {"ok": True, "data_state": "data", "evidence_observed": True},
+        {"data": {"content": [{"text": json.dumps({"total": 2000, "list": products})}]}},
+    )
+    fact = normalized["evidence_facts"][0]
+    assert fact["returned_count"] == 10
+    assert fact["included_count"] == 10
+    assert fact["omitted_count"] == 0 and fact["truncated"] is False
+    assert fact["returned_day28_units_sold_sum"] == 55
+
+    envelope = dict(normalized["evidence_envelope"])
+    envelope["source_call_index"] = 2
+    envelope["scope"] = "category_head"
+    manifest = {
+        "quality_states": {"data": ["fastmoss__product_search"], "empty": [], "error": []},
+        "evidence_envelope_count": 1, "evidence_fact_count": 1, "unsupported_parser_count": 0,
+        "category_head": {"target_pages": 3, "completed_pages": [2], "reported_total": 2000, "fetched_unique": 10},
+        "segment_head": {"queries": {}, "fetched_unique": 0},
+        "entity_bundles": [], "analysis_targets": [], "evidence_envelopes": [envelope],
+        "evidence_facts": [{**fact, "scope": "category_head", "page": 2}],
+        "derived_facts": [], "conflicts": [], "limitations": [],
+    }
+    packet = web_app.fastmoss_report_packet(manifest, {"playbook": "product"})
+    compact = packet["evidence_facts"][0]
+    assert compact["returned_count"] == 10
+    assert compact["included_count"] == 2
+    assert compact["omitted_count"] == 8 and compact["truncated"] is True
+    assert [item["product_id"] for item in compact["products"]] == ["1001", "1010"]
+    assert packet["source_catalog"][0]["arguments"]["page"] == 2
+    assert packet["source_catalog"][0]["arguments"]["filter"] == {
+        "category_id_level2": 844168, "category_id_level3": 935176,
+    }
+
+    refs = web_app._fastmoss_entity_refs(
+        {"filter": {"category_id_level2": 844168, "category_id_level3": 0, "product_id": "0"}},
+        {"category_id": "0", "product_id": "1730898744848192092"},
+    )
+    assert {tuple(sorted(item.items())) for item in refs} == {
+        tuple(sorted({"type": "category", "id": "844168"}.items())),
+        tuple(sorted({"type": "product", "id": "1730898744848192092"}.items())),
+    }
+
+
 def test_fastmoss_packet_synthesis_isolated_from_tool_protocol_history() -> None:
     class Response:
         def raise_for_status(self) -> None:
@@ -2306,6 +2359,7 @@ if __name__ == "__main__":
     test_fastmoss_all_workflow_tools_emit_supported_envelopes()
     test_fastmoss_creator_video_facts_and_historical_rebuild()
     test_fastmoss_report_packets_are_workflow_native_and_numeric_policy_is_strict()
+    test_fastmoss_list_truncation_is_explicit_and_invalid_entities_are_filtered()
     test_fastmoss_packet_synthesis_isolated_from_tool_protocol_history()
     test_fastmoss_claim_ids_and_extended_mechanical_cleanup()
     print("chat tool normalization tests passed")

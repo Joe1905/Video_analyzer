@@ -6454,6 +6454,21 @@ def _fastmoss_tool_family(unprefixed_tool_name: str) -> str:
     return "unknown"
 
 
+def _fastmoss_valid_entity_id(value: Any) -> bool:
+    """Reject provider placeholders before they enter entity-bound evidence."""
+    if not isinstance(value, (str, int)) or isinstance(value, bool):
+        return False
+    text = str(value).strip()
+    if not text or text.lower() in {"0", "0.0", "none", "null", "undefined", "nan"}:
+        return False
+    if re.fullmatch(r"[+-]?\d+(?:\.0+)?", text):
+        try:
+            return float(text) > 0
+        except ValueError:
+            return False
+    return bool(re.search(r"[a-z0-9]", text, re.IGNORECASE))
+
+
 def _fastmoss_entity_refs(arguments: Any, value: Any) -> list[dict[str, str]]:
     """Collect stable entity identifiers without guessing from titles or brands."""
     key_types = {
@@ -6473,7 +6488,7 @@ def _fastmoss_entity_refs(arguments: Any, value: Any) -> list[dict[str, str]]:
             for key, item in node.items():
                 normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
                 entity_type = key_types.get(normalized)
-                if entity_type and isinstance(item, (str, int)) and str(item).strip():
+                if entity_type and _fastmoss_valid_entity_id(item):
                     entity_id = str(item).strip()
                     marker = (entity_type, entity_id)
                     if marker not in seen:
@@ -6671,8 +6686,23 @@ def fastmoss_tool_evidence_facts(
             "product_rank_new_listed": "new_products",
             "product_detail_info": "product_detail",
         }[unprefixed]
-        products = [_fastmoss_product_fact(row) for row in product_rows[:10]]
-        facts.append({**base, "dimension": dimension, "products": [item for item in products if item]})
+        products = [_fastmoss_product_fact(row) for row in product_rows]
+        included_products = [item for item in products if item]
+        returned_count = len(product_rows)
+        page_units = [
+            item.get("day28_units_sold") for item in included_products
+            if isinstance(item.get("day28_units_sold"), (int, float))
+        ]
+        facts.append({
+            **base,
+            "dimension": dimension,
+            "returned_count": returned_count,
+            "included_count": len(included_products),
+            "omitted_count": max(0, returned_count - len(included_products)),
+            "truncated": returned_count > len(included_products),
+            "returned_day28_units_sold_sum": sum(page_units) if page_units else None,
+            "products": included_products,
+        })
 
     if unprefixed == "product_overview" and isinstance(value, dict):
         fact = {
@@ -7512,18 +7542,35 @@ def fastmoss_report_packet(manifest: dict[str, Any], route: dict[str, Any] | Non
     def compact_fact(fact: dict[str, Any]) -> dict[str, Any]:
         compact = dict(fact)
         if isinstance(compact.get("products"), list):
+            all_products = [product for product in compact["products"] if isinstance(product, dict)]
             product_limit = 10
             if str(compact.get("scope") or "") == "category_head" and int(compact.get("page") or 1) > 1:
-                product_limit = 0
+                # Later category pages retain boundary samples.  An empty list
+                # always means the provider returned no rows, never "omitted to
+                # save tokens".
+                product_limit = 2
             elif str(compact.get("dimension") or "") in {"top_products", "new_products"}:
                 product_limit = 5
+            selected_products = all_products[:product_limit]
+            if (
+                str(compact.get("scope") or "") == "category_head"
+                and int(compact.get("page") or 1) > 1
+                and len(all_products) > 1
+            ):
+                selected_products = [all_products[0], all_products[-1]]
             compact["products"] = [
                 {
                     key: (str(product.get(key) or "")[:120] if key == "title" else product.get(key))
                     for key in product_keys if product.get(key) not in (None, "", {}, [])
                 }
-                for product in compact["products"][:product_limit] if isinstance(product, dict)
+                for product in selected_products
             ]
+            returned_count = int(compact.get("returned_count") or len(all_products))
+            included_count = len(compact["products"])
+            compact["returned_count"] = returned_count
+            compact["included_count"] = included_count
+            compact["omitted_count"] = max(0, returned_count - included_count)
+            compact["truncated"] = returned_count > included_count
         if isinstance(compact.get("top_creators"), list):
             compact["top_creators"] = [
                 {
@@ -7562,13 +7609,37 @@ def fastmoss_report_packet(manifest: dict[str, Any], route: dict[str, Any] | Non
             or len(bundle.get("source_calls") or []) > 1
         )
     ][:15]
+    def compact_arguments(envelope: dict[str, Any]) -> dict[str, Any]:
+        arguments = envelope.get("arguments") if isinstance(envelope.get("arguments"), dict) else {}
+        allowed = {
+            "categoryid", "categoryidlevel1", "categoryidlevel2", "categoryidlevel3",
+            "productid", "goodsid", "itemid", "shopid", "sellerid", "creatorid",
+            "creatoruid", "authorid", "videoid", "liveid", "adid", "keyword",
+            "keywords", "query", "searchword", "page", "pagesize", "analysis_type",
+            "analysistype", "period", "daterange", "startdate", "enddate",
+        }
+        summary: dict[str, Any] = {}
+        for key, value in arguments.items():
+            normalized_key = re.sub(r"[^a-z0-9]", "", str(key).lower())
+            if normalized_key == "filter" and isinstance(value, dict):
+                filtered = {
+                    str(child_key): child_value for child_key, child_value in value.items()
+                    if re.sub(r"[^a-z0-9]", "", str(child_key).lower()) in allowed
+                    and child_value not in (None, "", {}, [])
+                }
+                if filtered:
+                    summary[str(key)] = filtered
+            elif normalized_key in allowed and value not in (None, "", {}, []):
+                summary[str(key)] = value
+        return summary
+
     source_catalog = [
         {
             key: envelope.get(key) for key in (
                 "source_call_index", "source_tool", "tool_family", "parser_status", "data_state",
-                "region", "scope", "metric_grain", "returned_count", "reported_total",
+                "region", "scope", "metric_grain", "returned_count", "reported_total", "entity_refs",
             ) if envelope.get(key) not in (None, "", {}, [])
-        }
+        } | ({"arguments": compact_arguments(envelope)} if compact_arguments(envelope) else {})
         for envelope in (manifest.get("evidence_envelopes") or []) if isinstance(envelope, dict)
     ]
     return {
