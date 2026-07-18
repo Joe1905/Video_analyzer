@@ -108,6 +108,7 @@ from lan_chat import (
 )
 from sociavault_usage import read_sociavault_usage
 from sociavault_tiktok import call_api as call_sociavault_tiktok_api
+import sociavault_tiktok_shop
 from tools import TOOLS, execute_tool, get_tools_for_model, list_tools
 from video_queue import video_queue, STATUS_META
 from api_cache import get_cached_or_call, record_api_call
@@ -2552,6 +2553,152 @@ def append_shop_log(job: ShopJob, line: str) -> None:
     with shop_jobs_lock:
         job.log.append(line.rstrip())
         job.updated_at = time.time()
+
+
+def _shop_product_nodes(payload: Any, limit: int = 40) -> list[dict[str, Any]]:
+    found: list[dict[str, Any]] = []
+
+    def walk(node: Any) -> None:
+        if len(found) >= limit:
+            return
+        if isinstance(node, dict):
+            product_id = _first_present(node.get("product_id"), node.get("productId"), node.get("productID"))
+            title = _first_present(node.get("title"), node.get("product_name"), node.get("productName"))
+            product_base = node.get("product_base") if isinstance(node.get("product_base"), dict) else {}
+            if product_id not in (None, "") and product_base.get("title"):
+                merged = {**product_base, "product_id": product_id, "status": node.get("status")}
+                skus = node.get("skus")
+                sku_rows = list(skus.values()) if isinstance(skus, dict) else skus if isinstance(skus, list) else []
+                stock_values = [sku.get("stock") for sku in sku_rows if isinstance(sku, dict) and isinstance(sku.get("stock"), (int, float))]
+                if stock_values:
+                    merged["stock"] = sum(stock_values)
+                found.append(merged)
+            if product_id not in (None, "") and title not in (None, ""):
+                found.append(node)
+            for child in node.values():
+                walk(child)
+        elif isinstance(node, list):
+            for child in node:
+                walk(child)
+
+    walk(payload)
+    return found
+
+
+def _shop_image_url(product: dict[str, Any]) -> str:
+    def first_http(node: Any) -> str:
+        if isinstance(node, str):
+            return node if node.startswith(("http://", "https://")) else ""
+        if isinstance(node, dict):
+            for key in ("url", "url_list", "urlList", "urls", "uri_list", "uriList"):
+                if key in node:
+                    candidate = first_http(node[key])
+                    if candidate:
+                        return candidate
+            for child in node.values():
+                candidate = first_http(child)
+                if candidate:
+                    return candidate
+        if isinstance(node, list):
+            for child in node:
+                candidate = first_http(child)
+                if candidate:
+                    return candidate
+        return ""
+
+    for key in ("image", "images", "cover", "cover_image", "main_image", "product_image"):
+        candidate = first_http(product.get(key))
+        if candidate:
+            return candidate
+    return ""
+
+
+def _shop_scalar(value: Any, names: tuple[str, ...]) -> str:
+    if value in (None, ""):
+        return ""
+    if not isinstance(value, (dict, list)):
+        return str(value)
+    if isinstance(value, dict):
+        for name in names:
+            candidate = value.get(name)
+            if candidate not in (None, "") and not isinstance(candidate, (dict, list)):
+                return str(candidate)
+        for child in value.values():
+            candidate = _shop_scalar(child, names)
+            if candidate:
+                return candidate
+    else:
+        for child in value:
+            candidate = _shop_scalar(child, names)
+            if candidate:
+                return candidate
+    return ""
+
+
+def _normalize_shop_catalog_products(payload: Any, *, source_url: str = "") -> list[dict[str, Any]]:
+    products: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in _shop_product_nodes(payload):
+        product_id = str(_first_present(raw.get("product_id"), raw.get("productId"), raw.get("productID")) or "").strip()
+        product_name = str(_first_present(raw.get("title"), raw.get("product_name"), raw.get("productName")) or "").strip()
+        if not product_id or not product_name or product_id in seen:
+            continue
+        seen.add(product_id)
+        price_info = _first_present(raw.get("product_price_info"), raw.get("price_info"), raw.get("price_v2"), raw.get("price"))
+        stock_info = _first_present(raw.get("stock_info"), raw.get("stock"), raw.get("available_stock"))
+        seo = raw.get("seo_url") if isinstance(raw.get("seo_url"), dict) else {}
+        product_url = str(_first_present(seo.get("canonical_url"), raw.get("product_url"), raw.get("share_url"), source_url) or "")
+        raw_status = _first_present(raw.get("status"), raw.get("product_status"), "Active")
+        status = "Active" if str(raw_status).lower() in {"1", "active", "enabled"} else "Inactive" if str(raw_status).lower() in {"0", "inactive", "disabled"} else str(raw_status or "Active")
+        products.append({
+            "product_id": product_id,
+            "product_name": product_name,
+            "product_url": product_url,
+            "image_url": _shop_image_url(raw),
+            "price": _shop_scalar(price_info, ("sale_price_format", "single_product_price_format", "price_format", "formatted_price", "price")),
+            "stock": _shop_scalar(stock_info, ("available_stock", "stock", "stock_num", "quantity")),
+            "status": status,
+            "source": "shop_api",
+        })
+    return products
+
+
+def search_shop_catalog_products(payload: dict[str, Any]) -> dict[str, Any]:
+    target = str(payload.get("query") or payload.get("target") or "").strip()
+    if not target:
+        raise ValueError("请输入商品关键词或 TikTok Shop 商品链接")
+    if re.fullmatch(r"\d+", target):
+        raise ValueError("暂不支持纯数字商品 ID，请输入关键词或 TikTok Shop 商品链接")
+    if len(target) > 2048:
+        raise ValueError("搜索内容过长")
+    lowered = target.lower()
+    if "tiktok.com/" in lowered and not lowered.startswith(("http://", "https://")):
+        raise ValueError("商品链接必须以 http:// 或 https:// 开头")
+    api_key = os.getenv("SOCIAVAULT_API_KEY", "").strip()
+    if not api_key:
+        raise ValueError("服务器未配置 SOCIAVAULT_API_KEY")
+    client = sociavault_tiktok_shop.SociaVaultClient(
+        api_key,
+        os.getenv("SOCIAVAULT_API_BASE", sociavault_tiktok_shop.DEFAULT_API_BASE),
+        float(os.getenv("SOCIAVAULT_TIMEOUT", "60") or "60"),
+    )
+    if lowered.startswith(("http://", "https://")):
+        validated = sociavault_tiktok_shop.validate_tiktok_shop_url(target)
+        result = sociavault_tiktok_shop.collect_product_details(client, validated, "US", False)
+        mode = "link"
+        products = _normalize_shop_catalog_products(result.get("details"), source_url=validated)
+    else:
+        if len(target) > 500:
+            raise ValueError("商品关键词过长")
+        result = sociavault_tiktok_shop.collect_shop_search(client, target, 1)
+        mode = "keyword"
+        products = _normalize_shop_catalog_products(result.get("products"))
+    if not products:
+        raise ValueError("Shop 接口未返回可识别的商品")
+    existing = {str(product.get("product_id")) for product in proxy_pool.list_products().get("products", [])}
+    for product in products:
+        product["already_added"] = product["product_id"] in existing
+    return {"mode": mode, "query": target, "products": products}
 
 
 def run_shop_command(job: ShopJob, command: list[str]) -> None:
@@ -12761,6 +12908,17 @@ class Handler(BaseHTTPRequestHandler):
                 return json_response(self, HTTPStatus.OK, proxy_pool.check_binding(payload, require_account=True))
             if path == "/api/proxy/accounts/status":
                 return json_response(self, HTTPStatus.OK, proxy_pool.update_account_status(payload))
+            if path == "/api/proxy/products/search":
+                return json_response(self, HTTPStatus.OK, search_shop_catalog_products(payload))
+            if path == "/api/proxy/products":
+                action = str(payload.get("action") or "create").strip().lower()
+                if action == "create":
+                    return json_response(self, HTTPStatus.CREATED, proxy_pool.create_product(payload))
+                if action == "update":
+                    return json_response(self, HTTPStatus.OK, proxy_pool.update_product(payload))
+                raise ValueError("商品操作必须是 create 或 update")
+            if path == "/api/proxy/products/delete":
+                return json_response(self, HTTPStatus.OK, proxy_pool.delete_product(str(payload.get("product_id") or "")))
             if path == "/api/proxy/login-session/start":
                 payload = _proxy_feishu_binding(payload, required=not int(payload.get("account_id") or 0))
                 return json_response(self, HTTPStatus.OK, proxy_pool.start_login_session(payload))

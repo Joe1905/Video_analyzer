@@ -232,6 +232,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS tiktok_products (
             product_id TEXT PRIMARY KEY,
             product_name TEXT NOT NULL DEFAULT '',
+            product_url TEXT NOT NULL DEFAULT '',
             image_url TEXT NOT NULL DEFAULT '',
             price TEXT NOT NULL DEFAULT '',
             stock TEXT NOT NULL DEFAULT '',
@@ -434,6 +435,9 @@ def init_db(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE publish_jobs ADD COLUMN deleted_at TEXT NOT NULL DEFAULT ''")
     if "product_link" not in existing_publish_cols:
         conn.execute("ALTER TABLE publish_jobs ADD COLUMN product_link TEXT NOT NULL DEFAULT ''")
+    existing_product_cols = {row[1] for row in conn.execute("PRAGMA table_info(tiktok_products)")}
+    if "product_url" not in existing_product_cols:
+        conn.execute("ALTER TABLE tiktok_products ADD COLUMN product_url TEXT NOT NULL DEFAULT ''")
     if "keep_observing" not in existing_publish_cols:
         try:
             conn.execute("ALTER TABLE publish_jobs ADD COLUMN keep_observing INTEGER NOT NULL DEFAULT 0")
@@ -1666,6 +1670,7 @@ def _row_to_product(row: sqlite3.Row) -> dict[str, Any]:
     return {
         "product_id": row["product_id"],
         "product_name": row["product_name"],
+        "product_url": row["product_url"],
         "image_url": row["image_url"],
         "price": row["price"],
         "stock": row["stock"],
@@ -1685,6 +1690,111 @@ def list_products() -> dict[str, Any]:
     return {"products": [_row_to_product(row) for row in rows]}
 
 
+def _product_payload(raw: dict[str, Any], *, source: str = "universal") -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ValueError("商品数据格式不正确")
+    product_id = _clean_text(raw.get("product_id"), 120)
+    product_name = _clean_text(raw.get("product_name") or raw.get("title"), 2000)
+    if not product_id or not product_name:
+        raise ValueError("商品必须包含 product_id 和 product_name")
+    if not product_id.isdigit():
+        raise ValueError("TikTok Shop 商品 ID 必须是纯数字")
+    product_url = _clean_text(raw.get("product_url") or raw.get("url"), 4000)
+    if product_url:
+        parsed = urlparse(product_url)
+        host = (parsed.hostname or "").lower().rstrip(".")
+        if parsed.scheme not in {"http", "https"} or not (host == "tiktok.com" or host.endswith(".tiktok.com")):
+            raise ValueError("商品链接必须是 TikTok Shop 的 http/https 链接")
+    return {
+        "product_id": product_id,
+        "product_name": product_name,
+        "product_url": product_url,
+        "image_url": _clean_text(raw.get("image_url"), 4000),
+        "price": _clean_text(raw.get("price"), 80),
+        "stock": _clean_text(raw.get("stock"), 80),
+        "status": _clean_text(raw.get("status"), 80) or "Active",
+        "source": _clean_text(source, 80) or "universal",
+        "sort_order": int(raw.get("sort_order") or 0),
+    }
+
+
+def create_product(raw: dict[str, Any]) -> dict[str, Any]:
+    product = _product_payload(raw)
+    now = now_iso()
+    with connect() as conn:
+        duplicate = conn.execute(
+            "SELECT product_id FROM tiktok_products WHERE product_id = ?",
+            (product["product_id"],),
+        ).fetchone()
+        if duplicate:
+            raise ValueError(f"商品 ID {product['product_id']} 已存在于通用商品库")
+        conn.execute(
+            """
+            INSERT INTO tiktok_products (
+                product_id, product_name, product_url, image_url, price, stock,
+                status, source, sort_order, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                product["product_id"], product["product_name"], product["product_url"],
+                product["image_url"], product["price"], product["stock"], product["status"],
+                product["source"], product["sort_order"], now, now,
+            ),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM tiktok_products WHERE product_id = ?", (product["product_id"],)).fetchone()
+    return {"product": _row_to_product(row), **list_products()}
+
+
+def update_product(raw: dict[str, Any]) -> dict[str, Any]:
+    product = _product_payload(raw)
+    now = now_iso()
+    with connect() as conn:
+        existing = conn.execute("SELECT * FROM tiktok_products WHERE product_id = ?", (product["product_id"],)).fetchone()
+        if not existing:
+            raise ValueError("通用商品不存在或已被删除")
+        conn.execute(
+            """
+            UPDATE tiktok_products
+            SET product_name = ?, product_url = ?, image_url = ?, price = ?, stock = ?,
+                status = ?, sort_order = ?, updated_at = ?
+            WHERE product_id = ?
+            """,
+            (
+                product["product_name"], product["product_url"], product["image_url"],
+                product["price"], product["stock"], product["status"], product["sort_order"],
+                now, product["product_id"],
+            ),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM tiktok_products WHERE product_id = ?", (product["product_id"],)).fetchone()
+    return {"product": _row_to_product(row), **list_products()}
+
+
+def delete_product(product_id: str) -> dict[str, Any]:
+    cleaned_id = _clean_text(product_id, 120)
+    if not cleaned_id:
+        raise ValueError("product_id is required")
+    with connect() as conn:
+        existing = conn.execute("SELECT product_id FROM tiktok_products WHERE product_id = ?", (cleaned_id,)).fetchone()
+        if not existing:
+            raise ValueError("通用商品不存在或已被删除")
+        pending = conn.execute(
+            """
+            SELECT id FROM publish_jobs
+            WHERE product_link = ? AND deleted_at = ''
+              AND status NOT IN ('published','scheduled_on_tiktok','cancelled','dry_run')
+            LIMIT 1
+            """,
+            (cleaned_id,),
+        ).fetchone()
+        if pending:
+            raise ValueError("商品仍被待处理或可重试的发布任务使用，请先移除任务中的商品")
+        conn.execute("DELETE FROM tiktok_products WHERE product_id = ?", (cleaned_id,))
+        conn.commit()
+    return {"deleted_product_id": cleaned_id, **list_products()}
+
+
 def upsert_products(products: list[dict[str, Any]]) -> dict[str, Any]:
     if not isinstance(products, list):
         raise ValueError("products must be a list")
@@ -1694,17 +1804,15 @@ def upsert_products(products: list[dict[str, Any]]) -> dict[str, Any]:
         for position, raw in enumerate(products):
             if not isinstance(raw, dict):
                 continue
-            product_id = _clean_text(raw.get("product_id"), 120)
-            product_name = _clean_text(raw.get("product_name"), 2000)
-            if not product_id or not product_name:
-                raise ValueError("商品必须包含 product_id 和 product_name")
+            product = _product_payload(raw, source=_clean_text(raw.get("source"), 80) or "my_shop")
             conn.execute(
                 """
                 INSERT INTO tiktok_products (
-                    product_id, product_name, image_url, price, stock, status, source, sort_order, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    product_id, product_name, product_url, image_url, price, stock, status, source, sort_order, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(product_id) DO UPDATE SET
                     product_name = excluded.product_name,
+                    product_url = excluded.product_url,
                     image_url = excluded.image_url,
                     price = excluded.price,
                     stock = excluded.stock,
@@ -1714,13 +1822,14 @@ def upsert_products(products: list[dict[str, Any]]) -> dict[str, Any]:
                     updated_at = excluded.updated_at
                 """,
                 (
-                    product_id,
-                    product_name,
-                    _clean_text(raw.get("image_url"), 4000),
-                    _clean_text(raw.get("price"), 80),
-                    _clean_text(raw.get("stock"), 80),
-                    _clean_text(raw.get("status"), 80),
-                    _clean_text(raw.get("source"), 80) or "my_shop",
+                    product["product_id"],
+                    product["product_name"],
+                    product["product_url"],
+                    product["image_url"],
+                    product["price"],
+                    product["stock"],
+                    product["status"],
+                    product["source"],
                     int(raw.get("sort_order") or position),
                     now,
                     now,
