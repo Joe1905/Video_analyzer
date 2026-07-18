@@ -1395,6 +1395,15 @@ def _prepare_browser_profile_dir(user_data_dir: Path) -> dict[str, Path]:
     }
     for path in paths.values():
         path.mkdir(parents=True, exist_ok=True)
+    # start_login_session rejects a second active session for the same account,
+    # so Chromium singleton markers left behind by a terminated prior session
+    # are stale here. Keeping them makes Chrome print "Opening in existing
+    # browser session" and exit before CDP starts.
+    for name in ("SingletonCookie", "SingletonLock", "SingletonSocket"):
+        marker = user_data_dir / name
+        if marker.is_symlink() or marker.is_file():
+            marker.unlink(missing_ok=True)
+
     def chown_path(path: Path | str) -> None:
         try:
             os.chown(path, TIKTOK_BROWSER_UID, TIKTOK_BROWSER_GID, follow_symlinks=False)

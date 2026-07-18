@@ -34,6 +34,7 @@ NATIVE_MIN_MINUTES = max(15, int(os.getenv("TIKTOK_NATIVE_SCHEDULE_MIN_MINUTES",
 DRY_RUN = os.getenv("TIKTOK_PUBLISH_DRY_RUN", "1").strip().lower() in {"1", "true", "yes", "on"}
 FINAL_CLICK_ENABLED = os.getenv("TIKTOK_PUBLISH_FINAL_CLICK_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
 UPLOAD_TIMEOUT_SECONDS = max(60, int(os.getenv("TIKTOK_PUBLISH_UPLOAD_TIMEOUT_SECONDS", "1800") or "1800"))
+EDITOR_TIMEOUT_SECONDS = max(30, int(os.getenv("TIKTOK_PUBLISH_EDITOR_TIMEOUT_SECONDS", "180") or "180"))
 ALLOWED_SUFFIXES = {".mp4", ".mov", ".m4v", ".webm"}
 EDITABLE_STATUSES = {"draft", "queued", "delayed", "failed", "cancelled", "dry_run", "manual_ready"}
 RETRYABLE_STATUSES = {"failed", "product_link_failed", "product_link_review"}
@@ -516,8 +517,12 @@ def _first_visible(locators: list[Any]) -> Any | None:
 
 
 def _skip_onboarding(page: Any) -> None:
-    pattern = re.compile(r"^(skip|skip for now|not now|got it|later|跳过|暂不|稍后|知道了)$", re.I)
-    for _ in range(4):
+    pattern = re.compile(
+        r"^(skip|skip for now|not now|got it|later|maybe later|no thanks|dismiss|close|"
+        r"跳过|暂不|稍后|知道了|不用了|关闭)$",
+        re.I,
+    )
+    for _ in range(6):
         button = _first_visible([page.get_by_role("button", name=pattern), page.get_by_text(pattern, exact=True)])
         if not button:
             return
@@ -559,10 +564,8 @@ def _assert_account_ready(page: Any) -> None:
         raise ManualReviewRequired("TikTok 要求验证码或安全验证，请从观测通道人工处理")
 
 
-def _set_description(page: Any, description: str) -> None:
-    if not description:
-        return
-    target = _first_visible([
+def _description_input(page: Any) -> Any | None:
+    return _first_visible([
         page.locator("[data-e2e*='caption'] [contenteditable='true']"),
         page.locator(".public-DraftEditor-content[contenteditable='true']"),
         page.locator("[contenteditable='true'][role='combobox']"),
@@ -570,6 +573,12 @@ def _set_description(page: Any, description: str) -> None:
         page.get_by_label(re.compile(r"description|caption|说明|描述", re.I)),
         page.locator("textarea[placeholder*='caption' i], textarea[placeholder*='description' i]"),
     ])
+
+
+def _set_description(page: Any, description: str) -> None:
+    if not description:
+        return
+    target = _description_input(page)
     if not target:
         raise RuntimeError("未找到 TikTok Studio 的 Description 输入框")
     target.click()
@@ -1314,6 +1323,34 @@ def _set_video_file(page: Any, video: Path) -> None:
     raise RuntimeError("未找到 TikTok Studio 视频选择控件")
 
 
+def _wait_for_upload_editor(page: Any, log_dir: Path, on_status: Any = None) -> None:
+    def editor_ready() -> bool:
+        _skip_onboarding(page)
+        _dismiss_upload_prompts(page)
+        return bool(_description_input(page))
+
+    def upload_failure() -> str:
+        upload_error = _first_visible([
+            page.get_by_text(re.compile(r"upload failed|couldn't upload|上传失败|处理失败", re.I)),
+        ])
+        return "TikTok Studio 报告视频上传或处理失败" if upload_error else ""
+
+    try:
+        wait_for_page_state(
+            page,
+            label="TikTok 上传编辑器",
+            ready=editor_ready,
+            failure=upload_failure,
+            on_status=on_status,
+            timeout_seconds=EDITOR_TIMEOUT_SECONDS,
+            reload_attempts=0,
+            diagnostic_dir=log_dir,
+            diagnostic_step="upload-editor",
+        )
+    except BrowserPageBlocked as exc:
+        raise ManualReviewRequired(str(exc)) from exc
+
+
 def _selected_product(product_id: str) -> dict[str, Any]:
     conn = proxy_pool.connect()
     try:
@@ -1587,7 +1624,7 @@ def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[str,
             _discard_stale_edit(page, log_dir)
             _set_job(job["id"], "uploading", "uploading", session_id=session["id"])
             _set_video_file(page, video)
-            page.wait_for_timeout(3000)
+            _wait_for_upload_editor(page, log_dir, page_status("uploading", "loading_editor"))
             _dismiss_upload_prompts(page)
             if job["manual_publish"]:
                 page.screenshot(path=str(log_dir / "manual-ready.png"), full_page=True)
