@@ -7867,6 +7867,8 @@ def fastmoss_report_quality_instruction(
         "根据实际证据组织报告，不要套用 Amazon 的关键词、PPC、BSR、ASIN 或 FBA 结构。"
         "标题、章节和顺序由你按叙事需要决定；不存在的证据不要硬写。reported_total 与本次样本数不得混写。"
         "available_dimensions 中每个取得实质证据的维度都应在报告中得到使用，但不要求固定标题。"
+        "target_evidence 按 analysis_targets 的精确实体ID组织，是描述目标实体时的唯一事实来源；"
+        "supporting_evidence 只能描述其自身类目、样本或实体，不能把其中其他实体的数据移植到目标实体。"
         "report_packet：" + json.dumps(packet, ensure_ascii=False, separators=(",", ":"))
     )
 
@@ -7960,7 +7962,7 @@ def fastmoss_report_packet(manifest: dict[str, Any], route: dict[str, Any] | Non
         )
     ][:15]
     source_catalog = [
-        {
+        ({"source_ref": f"call:{int(envelope.get('source_call_index') or 0)}"} if envelope.get("source_call_index") else {}) | {
             key: envelope.get(key) for key in (
                 "source_call_index", "source_tool", "tool_family", "parser_status", "data_state",
                 "region", "scope", "metric_grain", "returned_count", "reported_total",
@@ -7972,11 +7974,7 @@ def fastmoss_report_packet(manifest: dict[str, Any], route: dict[str, Any] | Non
     ]
     representative_evidence = [
         compact_fact(fact) for fact in (manifest.get("evidence_facts") or [])
-        if isinstance(fact, dict) and str(fact.get("dimension") or "") in {
-            "category_candidates", "category_analysis", "category_trend", "category_channel_ranking",
-            "product_sample", "top_products", "new_products", "product_detail", "product_overview",
-            "product_90d_trend", "product_creator_analysis", "product_videos", "review_status",
-        }
+        if isinstance(fact, dict) and str(fact.get("data_state") or "data") == "data"
     ]
     packet_product_ids = {
         str(product.get("product_id"))
@@ -8059,6 +8057,119 @@ def fastmoss_report_packet(manifest: dict[str, Any], route: dict[str, Any] | Non
         {key: value for key, value in group.items() if value not in (None, "", {}, [], 0)}
         for group in registry_groups.values()
     ]
+    target_rows = [
+        {
+            "entity_type": str(item.get("entity_type") or ""),
+            "entity_id": str(item.get("entity_id") or ""),
+            "role": str(item.get("role") or ""),
+        }
+        for item in (manifest.get("analysis_targets") or []) if isinstance(item, dict)
+        and _fastmoss_valid_entity_id(item.get("entity_id"))
+    ]
+    target_ids_by_type: dict[str, set[str]] = {}
+    for item in target_rows:
+        target_ids_by_type.setdefault(item["entity_type"], set()).add(item["entity_id"])
+
+    def fact_primary_key(fact: dict[str, Any]) -> tuple[str, str]:
+        entity_type = str(fact.get("entity_type") or "")
+        entity_id = str(
+            fact.get("entity_id") or fact.get("product_id")
+            or fact.get("shop_id") or fact.get("creator_id") or fact.get("video_id") or ""
+        )
+        return entity_type, entity_id
+
+    def target_fact(fact: dict[str, Any], entity_type: str, entity_id: str) -> dict[str, Any] | None:
+        primary_type, primary_id = fact_primary_key(fact)
+        if primary_type == entity_type and primary_id == entity_id:
+            compact = dict(fact)
+            compact["entity_fact_ref"] = (
+                f"{str(fact.get('fact_id') or 'fact')}:entity:{entity_type}:{entity_id}"
+            )
+            return compact
+        list_key = {"product": "products", "creator": "top_creators", "video": "top_videos"}.get(entity_type)
+        id_key = {"product": "product_id", "creator": "creator_uid", "video": "video_id"}.get(entity_type)
+        if not list_key or not id_key:
+            return None
+        rows = [
+            row for row in (fact.get(list_key) or []) if isinstance(row, dict)
+            and str(row.get(id_key) or "") == entity_id
+        ]
+        if not rows:
+            return None
+        compact = dict(fact)
+        compact["entity_fact_ref"] = (
+            f"{str(fact.get('fact_id') or 'fact')}:entity:{entity_type}:{entity_id}"
+        )
+        compact[list_key] = rows
+        compact["included_count"] = len(rows)
+        returned_count = int(compact.get("returned_count") or len(fact.get(list_key) or []))
+        compact["omitted_count"] = max(0, returned_count - len(rows))
+        compact["truncated"] = returned_count > len(rows)
+        return compact
+
+    def supporting_fact(fact: dict[str, Any]) -> dict[str, Any] | None:
+        primary_type, primary_id = fact_primary_key(fact)
+        if primary_id and primary_id in target_ids_by_type.get(primary_type, set()):
+            return None
+        compact = dict(fact)
+        moved = 0
+        for entity_type, list_key, id_key in (
+            ("product", "products", "product_id"),
+            ("creator", "top_creators", "creator_uid"),
+            ("video", "top_videos", "video_id"),
+        ):
+            rows = [row for row in (compact.get(list_key) or []) if isinstance(row, dict)]
+            if not rows:
+                continue
+            kept = [
+                row for row in rows
+                if str(row.get(id_key) or "") not in target_ids_by_type.get(entity_type, set())
+            ]
+            moved += len(rows) - len(kept)
+            compact[list_key] = kept
+            if list_key == "products":
+                returned_count = int(compact.get("returned_count") or len(rows))
+                compact["included_count"] = len(kept)
+                compact["omitted_count"] = max(0, returned_count - len(kept))
+                compact["truncated"] = returned_count > len(kept)
+        if moved:
+            compact["partitioned_target_count"] = moved
+        if moved and any(key in compact for key in ("products", "top_creators", "top_videos")) and not any(
+            compact.get(key) for key in ("products", "top_creators", "top_videos")
+        ):
+            return None
+        return compact
+
+    target_evidence: list[dict[str, Any]] = []
+    for target in target_rows:
+        facts = [
+            matched for fact in representative_evidence
+            if (matched := target_fact(fact, target["entity_type"], target["entity_id"])) is not None
+        ]
+        metrics = [
+            metric for metric in packet_metric_registry
+            if (
+                str(metric.get("entity_type") or "") == target["entity_type"]
+                and str(metric.get("entity_id") or "") == target["entity_id"]
+            ) or str((metric.get("context") or {}).get("subject_product_id") or "") == target["entity_id"]
+        ]
+        target_evidence.append({
+            **target,
+            "facts": facts,
+            "metric_registry": metrics,
+        })
+    supporting_evidence = [
+        compact for fact in representative_evidence
+        if (compact := supporting_fact(fact)) is not None
+    ]
+    target_metric_keys = {
+        json.dumps(metric, ensure_ascii=False, sort_keys=True, default=str)
+        for target in target_evidence for metric in (target.get("metric_registry") or [])
+    }
+    supporting_metric_registry = [
+        metric for metric in packet_metric_registry
+        if json.dumps(metric, ensure_ascii=False, sort_keys=True, default=str) not in target_metric_keys
+    ]
     available_dimensions = sorted({
         str(fact.get("dimension") or "")
         for fact in representative_evidence
@@ -8083,8 +8194,9 @@ def fastmoss_report_packet(manifest: dict[str, Any], route: dict[str, Any] | Non
         },
         "source_catalog": source_catalog,
         "entity_bundles": packet_bundles,
-        "metric_registry": packet_metric_registry,
-        "representative_evidence": representative_evidence,
+        "target_evidence": target_evidence,
+        "supporting_evidence": supporting_evidence,
+        "supporting_metric_registry": supporting_metric_registry,
         "derived_facts": manifest.get("derived_facts") or [],
         "conflicts": manifest.get("conflicts") or [],
         "limitations": manifest.get("limitations") or [],
@@ -9099,23 +9211,18 @@ def fastmoss_candidate_evidence(
     claims: list[dict[str, Any]],
     route: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Return only registry rows and samples relevant to one small claim batch."""
+    """Build an independent evidence slice for every claim in a verifier batch."""
     packet = fastmoss_report_packet(manifest, route)
-    ids = {
-        entity_id for claim in claims
-        for entity_id in (claim.get("entity_ids") or [])
-    }
-    reasons = {
-        reason for claim in claims
-        for reason in (claim.get("reasons") or [])
-    }
     reason_dimensions = {
         "sample_extrapolation": {"product_sample", "top_products", "category_analysis", "category_channel_ranking"},
         "market_scale": {"product_sample", "top_products", "category_analysis", "category_channel_ranking"},
         "channel_causality": {"product_overview", "category_channel_ranking", "shop_sale_analysis", "ad_data_overview"},
         "content_causality": {"product_videos", "product_creator_analysis", "video_detail_analysis", "video_data_trends"},
-        "metric_period": {"product_sample", "product_overview", "product_90d_trend", "category_trend"},
-        "cross_period_ratio": {"product_overview", "product_90d_trend", "product_creator_analysis", "product_videos"},
+        "metric_period": {"product_sample", "product_overview", "product_90d_trend", "category_trend", "category_channel_ranking"},
+        "cross_period_ratio": {
+            "category_channel_ranking", "product_overview", "product_90d_trend",
+            "product_creator_analysis", "product_videos",
+        },
         "cross_entity_attribute": {"product_sample", "product_detail", "product_overview"},
         "state_claim": set(),
         "market_absolute": {"product_sample", "category_analysis", "category_channel_ranking"},
@@ -9125,59 +9232,6 @@ def fastmoss_candidate_evidence(
             "product_overview", "product_90d_trend", "product_creator_analysis", "product_videos",
         },
     }
-    wanted_dimensions = set().union(*(reason_dimensions.get(reason, set()) for reason in reasons))
-    all_facts = [fact for fact in (packet.get("representative_evidence") or []) if isinstance(fact, dict)]
-
-    def compact_validator_fact(fact: dict[str, Any], matching_ids: set[str]) -> dict[str, Any]:
-        compact = dict(fact)
-        products = [item for item in (compact.get("products") or []) if isinstance(item, dict)]
-        if products:
-            matched_products = [
-                item for item in products if str(item.get("product_id") or "") in matching_ids
-            ]
-            compact["products"] = matched_products or products[:3]
-            compact["included_count"] = len(compact["products"])
-            compact["omitted_count"] = max(0, int(compact.get("returned_count") or len(products)) - len(compact["products"]))
-            compact["truncated"] = bool(compact["omitted_count"])
-        if isinstance(compact.get("trend_series"), list) and len(compact["trend_series"]) > 4:
-            compact["trend_series"] = compact["trend_series"][:2] + compact["trend_series"][-2:]
-            compact["trend_series_truncated"] = True
-        return compact
-
-    facts: list[dict[str, Any]] = []
-    for fact in all_facts:
-        primary_id = str(
-            fact.get("entity_id") or fact.get("product_id")
-            or fact.get("shop_id") or fact.get("video_id") or ""
-        )
-        product_ids = {
-            str(item.get("product_id") or "")
-            for item in (fact.get("products") or []) if isinstance(item, dict)
-        }
-        if ids:
-            if primary_id not in ids and not product_ids.intersection(ids):
-                continue
-        elif wanted_dimensions and str(fact.get("dimension") or "") not in wanted_dimensions:
-            continue
-        elif (
-            not ids
-            and reasons.issubset({"operational_number", "state_claim"})
-            and str(fact.get("dimension") or "") == "product_sample"
-            and str(fact.get("scope") or "") == "category_head"
-            and (_fastmoss_number(fact.get("page")) or 1) > 1
-        ):
-            continue
-        facts.append(compact_validator_fact(fact, ids))
-    if not facts and ids:
-        relevant_calls = {
-            call_index for bundle in (manifest.get("entity_bundles") or [])
-            if not ids or str(bundle.get("entity_id") or "") in ids
-            for call_index in (bundle.get("source_calls") or [])
-        }
-        facts = [
-            compact_validator_fact(fact, ids) for fact in all_facts
-            if int(fact.get("source_call_index") or 0) in relevant_calls
-        ]
     metric_keywords = {
         "sample_extrapolation": ("units_sold", "reported_total", "rank", "score"),
         "market_scale": ("units_sold", "reported_total", "rank", "score"),
@@ -9194,61 +9248,187 @@ def fastmoss_candidate_evidence(
             "gmv", "units_sold", "share_percent",
         ),
     }
-    wanted_metric_terms = {
-        term for reason in reasons for term in metric_keywords.get(reason, ())
+    all_facts = [
+        fact for fact in (packet.get("supporting_evidence") or []) if isinstance(fact, dict)
+    ] + [
+        fact for target in (packet.get("target_evidence") or []) if isinstance(target, dict)
+        for fact in (target.get("facts") or []) if isinstance(fact, dict)
+    ]
+    # The report packet groups metrics for compact writing.  The verifier keeps
+    # the original one-metric-per-row registry so entity, period and metric_id
+    # remain independently addressable.
+    all_metrics = [
+        metric for metric in (manifest.get("metric_registry") or []) if isinstance(metric, dict)
+    ]
+    fact_dimensions = {
+        str(fact.get("fact_id") or ""): str(fact.get("dimension") or "")
+        for fact in (manifest.get("evidence_facts") or []) if isinstance(fact, dict)
     }
-    primary_metrics: list[dict[str, Any]] = []
-    secondary_metrics: list[dict[str, Any]] = []
-    for metric in manifest.get("metric_registry") or []:
-        if not isinstance(metric, dict):
-            continue
-        entity_id = str(metric.get("entity_id") or "")
-        context = metric.get("context") if isinstance(metric.get("context"), dict) else {}
-        subject_product_id = str(context.get("subject_product_id") or "")
-        metric_name = str(metric.get("metric") or "")
-        id_match = not ids or entity_id in ids or subject_product_id in ids
-        if not id_match:
-            continue
-        term_match = not wanted_metric_terms or any(term in metric_name for term in wanted_metric_terms)
-        if term_match:
-            primary_metrics.append(metric)
-        elif ids:
-            secondary_metrics.append(metric)
-    # Relevance wins over registry order.  The previous first-50 truncation
-    # could omit a later 90-day trend while retaining unrelated early metrics
-    # for the same product.
-    metrics = (primary_metrics + secondary_metrics)[:24] if ids else []
-    relevant_calls = {
-        int(item.get("source_call_index") or 0) for item in metrics + facts
-        if int(item.get("source_call_index") or 0) > 0
-    }
-    source_catalog = [
-        item for item in (packet.get("source_catalog") or [])
-        if not relevant_calls or int(item.get("source_call_index") or 0) in relevant_calls
-    ][:8]
-    return {
+
+    def compact_validator_fact(fact: dict[str, Any], matching_ids: set[str]) -> dict[str, Any]:
+        compact = dict(fact)
+        for list_key, id_key in (("products", "product_id"), ("top_creators", "creator_uid"), ("top_videos", "video_id")):
+            rows = [item for item in (compact.get(list_key) or []) if isinstance(item, dict)]
+            if not rows:
+                continue
+            matched = [item for item in rows if str(item.get(id_key) or "") in matching_ids]
+            compact[list_key] = matched or rows[:3]
+            if list_key == "products":
+                compact["included_count"] = len(compact[list_key])
+                compact["omitted_count"] = max(
+                    0, int(compact.get("returned_count") or len(rows)) - len(compact[list_key])
+                )
+                compact["truncated"] = bool(compact["omitted_count"])
+        if isinstance(compact.get("trend_series"), list) and len(compact["trend_series"]) > 4:
+            compact["trend_series"] = compact["trend_series"][:2] + compact["trend_series"][-2:]
+            compact["trend_series_truncated"] = True
+        return compact
+
+    def fact_ids(fact: dict[str, Any]) -> set[str]:
+        ids = {
+            str(fact.get(key) or "")
+            for key in ("entity_id", "product_id", "shop_id", "creator_id", "video_id")
+            if fact.get(key) not in (None, "")
+        }
+        for list_key, id_key in (("products", "product_id"), ("top_creators", "creator_uid"), ("top_videos", "video_id")):
+            ids.update(
+                str(item.get(id_key) or "") for item in (fact.get(list_key) or [])
+                if isinstance(item, dict) and item.get(id_key) not in (None, "")
+            )
+        return ids - {""}
+
+    def compact_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
+        return {
+            key: bundle.get(key) for key in (
+                "entity_type", "entity_id", "source_calls", "dimensions",
+                "periods", "data_states", "fact_ids",
+            ) if bundle.get(key) not in (None, "", {}, [])
+        } | ({"conflict_count": len(bundle.get("conflicts") or [])} if bundle.get("conflicts") else {})
+
+    def one_claim(claim: dict[str, Any]) -> dict[str, Any]:
+        ids = {str(item) for item in (claim.get("entity_ids") or []) if str(item).strip()}
+        reasons = {str(item) for item in (claim.get("reasons") or []) if str(item).strip()}
+        claim_text = str(claim.get("text") or "")
+        category_level_claim = not ids and bool(re.search(r"(?:类目|大盘|行业|上级分类)", claim_text))
+        wanted_dimensions = set().union(*(reason_dimensions.get(reason, set()) for reason in reasons))
+        facts: list[dict[str, Any]] = []
+        for fact in all_facts:
+            if ids and not fact_ids(fact).intersection(ids):
+                continue
+            if not ids and wanted_dimensions and str(fact.get("dimension") or "") not in wanted_dimensions:
+                continue
+            if category_level_claim and str(fact.get("dimension") or "") not in {
+                "category_candidates", "category_analysis", "category_trend",
+                "category_channel_ranking", "product_sample", "top_products", "new_products",
+            }:
+                continue
+            if (
+                category_level_claim
+                and str(fact.get("dimension") or "") in {"product_sample", "top_products", "new_products"}
+                and str(fact.get("scope") or "") != "category_head"
+            ):
+                continue
+            if (
+                not ids and reasons.issubset({"operational_number", "state_claim"})
+                and str(fact.get("dimension") or "") == "product_sample"
+                and str(fact.get("scope") or "") == "category_head"
+                and (_fastmoss_number(fact.get("page")) or 1) > 1
+            ):
+                continue
+            facts.append(compact_validator_fact(fact, ids))
+
+        wanted_metric_terms = {
+            term for reason in reasons for term in metric_keywords.get(reason, ())
+        }
+        primary_metrics: list[dict[str, Any]] = []
+        secondary_metrics: list[dict[str, Any]] = []
+        for metric in all_metrics:
+            entity_id = str(metric.get("entity_id") or "")
+            entity_type = str(metric.get("entity_type") or "")
+            context = metric.get("context") if isinstance(metric.get("context"), dict) else {}
+            subject_product_id = str(context.get("subject_product_id") or "")
+            if ids and entity_id not in ids and subject_product_id not in ids:
+                continue
+            if category_level_claim and entity_type != "category":
+                continue
+            source_fact_ids = metric.get("source_fact_ids") or [metric.get("source_fact_id")]
+            source_dimension = next((
+                fact_dimensions.get(str(fact_id), "") for fact_id in source_fact_ids
+                if fact_dimensions.get(str(fact_id), "")
+            ), "")
+            if not ids and wanted_dimensions and source_dimension and source_dimension not in wanted_dimensions:
+                continue
+            metric_name = str(metric.get("metric") or "")
+            term_match = not wanted_metric_terms or any(term in metric_name for term in wanted_metric_terms)
+            (primary_metrics if term_match else secondary_metrics).append(metric)
+        metrics = (primary_metrics + secondary_metrics)[:24]
+        relevant_calls = {
+            int(item.get("source_call_index") or 0) for item in metrics + facts
+            if int(item.get("source_call_index") or 0) > 0
+        }
+        source_catalog = [
+            item for item in (packet.get("source_catalog") or [])
+            if int(item.get("source_call_index") or 0) in relevant_calls
+        ][:8]
+        exact_empty_results = []
+        if "state_claim" in reasons:
+            exact_empty_results = [
+                item for item in ((packet.get("coverage_summary") or {}).get("exact_empty_results") or [])
+                if not ids or {
+                    str(ref.get("id") or "") for ref in (item.get("entity_refs") or []) if isinstance(ref, dict)
+                }.intersection(ids)
+            ][:8]
+        relevant_conflicts = [
+            item for item in (manifest.get("conflicts") or []) if isinstance(item, dict)
+            and (not ids or str(item.get("entity_id") or item.get("product_id") or "") in ids)
+        ][:12]
+        relevant_bundles = [
+            compact_bundle(bundle) for bundle in (manifest.get("entity_bundles") or [])
+            if isinstance(bundle, dict) and (
+                (ids and str(bundle.get("entity_id") or "") in ids)
+                or (not ids and relevant_calls.intersection({
+                    int(call_index or 0) for call_index in (bundle.get("source_calls") or [])
+                }))
+            )
+        ][:8]
+        relevant_fact_ids = {
+            str(fact.get("fact_id") or "") for fact in facts if fact.get("fact_id")
+        }
+        derived_facts = [
+            item for item in (manifest.get("derived_facts") or []) if isinstance(item, dict)
+            and (
+                not ids
+                or str(item.get("entity_id") or item.get("product_id") or "") in ids
+                or bool(relevant_fact_ids.intersection({
+                    str(fact_id) for fact_id in (
+                        item.get("input_fact_ids") or item.get("source_fact_ids") or []
+                    )
+                }))
+            )
+        ][:8]
+        return {
+            "source_catalog": source_catalog,
+            "entity_bundles": relevant_bundles,
+            "metric_registry": metrics,
+            "facts": facts[:20],
+            "derived_facts": derived_facts,
+            "conflicts": relevant_conflicts,
+            "exact_empty_results": exact_empty_results,
+            "limitations": manifest.get("limitations") or [],
+        }
+
+    common = {
         "workflow": packet.get("workflow"),
         "analysis_targets": packet.get("analysis_targets"),
         "available_dimensions": packet.get("available_dimensions"),
-        "coverage_summary": packet.get("coverage_summary"),
-        "source_catalog": source_catalog,
-        "entity_bundles": [
-            {
-                key: bundle.get(key) for key in (
-                    "entity_type", "entity_id", "source_calls", "dimensions",
-                    "periods", "data_states", "fact_ids",
-                ) if bundle.get(key) not in (None, "", {}, [])
-            }
-            | ({"conflict_count": len(bundle.get("conflicts") or [])} if bundle.get("conflicts") else {})
-            for bundle in (manifest.get("entity_bundles") or [])
-            if not ids or str(bundle.get("entity_id") or "") in ids
-        ][:8],
-        "metric_registry": metrics,
-        "facts": facts[:20],
-        "derived_facts": (manifest.get("derived_facts") or [])[:8],
-        "conflicts": (manifest.get("conflicts") or [])[:20],
-        "limitations": manifest.get("limitations") or [],
     }
+    claim_slices = [
+        {"claim_id": str(claim.get("claim_id") or ""), **one_claim(claim)}
+        for claim in claims if isinstance(claim, dict)
+    ]
+    if len(claim_slices) == 1:
+        return {**common, **claim_slices[0]}
+    return {**common, "claim_evidence": claim_slices}
 
 
 def apply_fastmoss_verifier_edits(
@@ -9269,12 +9449,11 @@ def apply_fastmoss_verifier_edits(
         token.replace(",", "")
         for token in re.findall(r"(?<![A-Za-z0-9_.])-?\d+(?:,\d{3})*(?:\.\d+)?", value)
     }
-    evidence_records = [
-        item
-        for group_name in ("facts", "metric_registry", "derived_facts")
-        for item in ((evidence_slice or {}).get(group_name) or [])
-        if isinstance(item, dict)
-    ]
+    per_claim_evidence = {
+        str(item.get("claim_id") or ""): item
+        for item in ((evidence_slice or {}).get("claim_evidence") or [])
+        if isinstance(item, dict) and item.get("claim_id")
+    }
     applied = 0
     for edit in edits[:20]:
         if not isinstance(edit, dict):
@@ -9298,22 +9477,54 @@ def apply_fastmoss_verifier_edits(
         if replacement and replacement_ids != original_ids:
             continue
         original_numbers = normalize_numbers(original)
+        replacement_numbers = normalize_numbers(replacement)
         new_numbers = normalize_numbers(replacement) - original_numbers
+        removed_numbers = original_numbers - replacement_numbers
+        claim_slice = per_claim_evidence.get(str(claim_id or ""), evidence_slice or {})
+        evidence_records = [
+            item
+            for group_name in ("facts", "metric_registry", "derived_facts", "source_catalog")
+            for item in (claim_slice.get(group_name) or [])
+            if isinstance(item, dict)
+        ]
         evidence_refs = {
             str(ref) for ref in (edit.get("evidence_refs") or []) if str(ref).strip()
         }
+        call_refs = {
+            int(match.group(1)) for ref in evidence_refs
+            if (match := re.fullmatch(r"call:(\d+)", ref))
+        }
+
+        def record_refs(item: dict[str, Any]) -> set[str]:
+            refs = {
+                str(item.get(key) or "")
+                for key in (
+                    "fact_id", "entity_fact_ref", "metric_id", "derived_fact_id",
+                    "source_fact_id", "source_ref",
+                )
+                if item.get(key) not in (None, "")
+            }
+            refs.update(
+                str(ref) for key in ("source_fact_ids", "input_fact_ids")
+                for ref in (item.get(key) or []) if str(ref).strip()
+            )
+            return refs
+
         referenced_records = [
             item for item in evidence_records
-            if evidence_refs.intersection({
-                str(item.get(key) or "")
-                for key in ("fact_id", "metric_id", "derived_fact_id", "source_fact_id")
-                if item.get(key) not in (None, "")
-            })
+            if evidence_refs.intersection(record_refs(item))
+            or int(item.get("source_call_index") or 0) in call_refs
         ]
         referenced_numbers = normalize_numbers(
             json.dumps(referenced_records, ensure_ascii=False, default=str)
         )
         if new_numbers and (not referenced_records or not new_numbers.issubset(referenced_numbers)):
+            continue
+        if removed_numbers and not referenced_records:
+            continue
+        # If the cited evidence contains the original observed number, replacing
+        # it with "not returned" (or otherwise removing it) is a verifier error.
+        if not new_numbers and removed_numbers.intersection(referenced_numbers):
             continue
         if replacement:
             updated = updated.replace(original, replacement, 1)
@@ -9344,6 +9555,22 @@ FASTMOSS_REPORT_DIMENSION_TERMS: dict[str, tuple[str, ...]] = {
 }
 
 
+def fastmoss_report_dimension_terms(dimension: str) -> tuple[str, ...]:
+    """Map native and generic tool dimensions to read-only coverage signals."""
+    if dimension in FASTMOSS_REPORT_DIMENSION_TERMS:
+        return FASTMOSS_REPORT_DIMENSION_TERMS[dimension]
+    family_terms = (
+        ("shop_", ("店铺", "店播")),
+        ("creator_", ("达人", "创作者")),
+        ("video_", ("视频", "内容", "脚本")),
+        ("live_", ("直播", "直播间")),
+        ("ad_", ("广告", "投放")),
+        ("product_", ("商品", "产品")),
+        ("market_", ("类目", "市场")),
+    )
+    return next((terms for prefix, terms in family_terms if dimension.startswith(prefix)), ())
+
+
 def fastmoss_report_integrity_stats(answer: str, manifest: dict[str, Any]) -> dict[str, Any]:
     """Observe evidence use and Markdown structure without changing the report."""
     text = str(answer or "")
@@ -9355,7 +9582,7 @@ def fastmoss_report_integrity_stats(answer: str, manifest: dict[str, Any]) -> di
     })
     used_dimensions = sorted({
         dimension for dimension in evidence_dimensions
-        if any(term.casefold() in text.casefold() for term in FASTMOSS_REPORT_DIMENSION_TERMS.get(dimension, ()))
+        if any(term.casefold() in text.casefold() for term in fastmoss_report_dimension_terms(dimension))
     })
     return {
         "chars": len(text),
@@ -9536,6 +9763,8 @@ def verify_fastmoss_final_answer(
         "A declining product trend does not by itself prove competition, audience fatigue, or lifecycle stage. Channel shares and linked-content counts do not prove the cause of sales. "
         "For an empty result, preserve its exact category path, keyword, entity and period rather than generalizing to the platform. "
         "Do not critique style, headings, length, tables, or organization. Never edit Markdown headings. "
+        "candidate_evidence.claim_evidence contains one isolated evidence slice per claim_id; never use evidence from another claim_id. "
+        "evidence_refs must copy exact fact_id, entity_fact_ref, metric_id, source_fact_id, derived fact id, or source_ref values from that claim's slice. "
         "A replacement may use a number only when it appears in the supplied evidence for the same entity and period. Return the smallest claim-level edits."
     )
     updated = prepared
