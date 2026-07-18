@@ -184,6 +184,15 @@ class LanChatStore:
                     FOREIGN KEY (file_id) REFERENCES file_attachments(id) ON DELETE CASCADE,
                     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
                 );
+                CREATE TABLE IF NOT EXISTS download_history (
+                    user_id TEXT NOT NULL,
+                    asset_kind TEXT NOT NULL
+                        CHECK (asset_kind IN ('file', 'media')),
+                    asset_id TEXT NOT NULL,
+                    downloaded_at REAL NOT NULL,
+                    PRIMARY KEY (user_id, asset_kind, asset_id),
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                );
                 CREATE TABLE IF NOT EXISTS room_reads (
                     room_id TEXT NOT NULL,
                     user_id TEXT NOT NULL,
@@ -1069,6 +1078,14 @@ class LanChatStore:
             path = self._stored_file_path(attachment["stored_filename"])
             if not path.is_file():
                 raise LanChatError("文件已从服务器清理", 410)
+            conn.execute(
+                """INSERT INTO download_history
+                   (user_id, asset_kind, asset_id, downloaded_at)
+                   VALUES (?, 'file', ?, ?)
+                   ON CONFLICT(user_id, asset_kind, asset_id)
+                   DO UPDATE SET downloaded_at = excluded.downloaded_at""",
+                (current["id"], clean_id, time.time()),
+            )
             return (
                 path,
                 str(attachment["original_name"]),
@@ -1175,6 +1192,30 @@ class LanChatStore:
         if path.parent != self.media_dir.resolve() or not path.is_file():
             raise LanChatError("媒体不存在", 404)
         return path, clean_name, MESSAGE_MEDIA_TYPES[extension], path.stat().st_size
+
+    def message_media_download_info(
+        self, device_token: str, filename: str
+    ) -> tuple[Path, str, str, int]:
+        current = self.authenticate(device_token)
+        info = self.message_media_info(filename)
+        clean_name = info[1]
+        with self._connect() as conn:
+            message = conn.execute(
+                "SELECT room_id FROM messages WHERE image_filename = ? LIMIT 1",
+                (clean_name,),
+            ).fetchone()
+            if message is None:
+                raise LanChatError("媒体不存在", 404)
+            self._require_room_access(conn, message["room_id"], current["id"])
+            conn.execute(
+                """INSERT INTO download_history
+                   (user_id, asset_kind, asset_id, downloaded_at)
+                   VALUES (?, 'media', ?, ?)
+                   ON CONFLICT(user_id, asset_kind, asset_id)
+                   DO UPDATE SET downloaded_at = excluded.downloaded_at""",
+                (current["id"], clean_name, time.time()),
+            )
+        return info
 
     def message_media_bytes(self, filename: str) -> tuple[bytes, str]:
         path, _, content_type, _ = self.message_media_info(filename)
@@ -1461,6 +1502,13 @@ class LanChatStore:
             )
         )
         available_media_filename = media_filename if not media_expired else ""
+        media_download = None
+        if available_media_filename:
+            media_download = conn.execute(
+                """SELECT downloaded_at FROM download_history
+                   WHERE user_id = ? AND asset_kind = 'media' AND asset_id = ?""",
+                (current_user_id, available_media_filename),
+            ).fetchone()
         file_payload = None
         file_id = str(row["file_id"] or "")
         if file_id:
@@ -1502,6 +1550,11 @@ class LanChatStore:
                         or receipt_status == "accepted"
                     )
                 )
+                file_download = conn.execute(
+                    """SELECT downloaded_at FROM download_history
+                       WHERE user_id = ? AND asset_kind = 'file' AND asset_id = ?""",
+                    (current_user_id, file_id),
+                ).fetchone()
                 file_payload = {
                     "id": file_id,
                     "name": attachment["original_name"],
@@ -1513,6 +1566,12 @@ class LanChatStore:
                     "receiptStatus": receipt_status,
                     "downloadAllowed": download_allowed,
                     "downloadUrl": f"/api/lan-chat/files/{file_id}" if download_allowed else "",
+                    "downloaded": file_download is not None,
+                    "downloadedAt": (
+                        float(file_download["downloaded_at"])
+                        if file_download is not None
+                        else None
+                    ),
                 }
         return {
             "id": int(row["id"]),
@@ -1541,6 +1600,13 @@ class LanChatStore:
                 f"/api/lan-chat/media/{available_media_filename}/download"
                 if available_media_filename
                 else ""
+            ),
+            "mediaDownloadId": available_media_filename,
+            "mediaDownloaded": media_download is not None,
+            "mediaDownloadedAt": (
+                float(media_download["downloaded_at"])
+                if media_download is not None
+                else None
             ),
             "mediaMimeType": media_mime_type,
             "mediaKind": (

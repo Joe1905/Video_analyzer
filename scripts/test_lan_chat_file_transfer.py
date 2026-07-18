@@ -98,6 +98,7 @@ class LanChatFileTransferTest(unittest.TestCase):
         )["messages"][0]["file"]
         self.assertFalse(received["requiresAcceptance"])
         self.assertTrue(received["downloadAllowed"])
+        self.assertFalse(received["downloaded"])
 
         path, name, content_type, size = self.store.file_download_info(
             self.receiver["sessionToken"], attachment["id"]
@@ -106,6 +107,15 @@ class LanChatFileTransferTest(unittest.TestCase):
         self.assertEqual(name, "报表 2026.xlsx")
         self.assertEqual(size, len(b"group-file"))
         self.assertTrue(content_type.startswith("application/"))
+        downloaded = self.store.list_messages(
+            self.receiver["sessionToken"], room["id"]
+        )["messages"][0]["file"]
+        self.assertTrue(downloaded["downloaded"])
+        self.assertIsNotNone(downloaded["downloadedAt"])
+        sender_copy = self.store.list_messages(
+            self.sender["sessionToken"], room["id"]
+        )["messages"][0]["file"]
+        self.assertFalse(sender_copy["downloaded"])
 
         cleaned = self.store.cleanup_expired_files(
             message["createdAt"] + FILE_TRANSFER_RETENTION_SECONDS + 1
@@ -176,6 +186,7 @@ class LanChatFileTransferTest(unittest.TestCase):
         self.assertTrue(created)
         self.assertEqual(message["mediaKind"], "video")
         self.assertFalse(message["mediaExpired"])
+        self.assertFalse(message["mediaDownloaded"])
         self.assertEqual(
             message["mediaExpiresAt"],
             message["createdAt"] + MESSAGE_MEDIA_RETENTION_SECONDS,
@@ -189,6 +200,19 @@ class LanChatFileTransferTest(unittest.TestCase):
         self.assertEqual(stored_type, "video/mp4")
         self.assertEqual(stored_size, len(payload))
         self.assertEqual(path.read_bytes(), payload)
+        downloaded_path, _, _, _ = self.store.message_media_download_info(
+            self.sender["sessionToken"], filename
+        )
+        self.assertEqual(downloaded_path, path)
+        downloaded_message = self.store.list_messages(
+            self.sender["sessionToken"], "public"
+        )["messages"][0]
+        self.assertTrue(downloaded_message["mediaDownloaded"])
+        self.assertIsNotNone(downloaded_message["mediaDownloadedAt"])
+        receiver_message = self.store.list_messages(
+            self.receiver["sessionToken"], "public"
+        )["messages"][0]
+        self.assertFalse(receiver_message["mediaDownloaded"])
         body, content_type = self.store.message_media_bytes(filename)
         self.assertEqual(body, payload)
         self.assertEqual(content_type, "video/mp4")

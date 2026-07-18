@@ -8422,6 +8422,20 @@ def _lan_chat_token(handler: BaseHTTPRequestHandler) -> str:
     return handler.headers.get("X-Lan-Chat-Token", "").strip()
 
 
+def _lan_chat_download_form_token(handler: BaseHTTPRequestHandler) -> str:
+    try:
+        content_length = int(handler.headers.get("Content-Length", "0") or "0")
+    except ValueError as exc:
+        raise LanChatError("请求长度无效") from exc
+    if content_length <= 0 or content_length > 1024:
+        raise LanChatError("下载请求无效")
+    try:
+        form_body = handler.rfile.read(content_length).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise LanChatError("下载请求无效") from exc
+    return str(parse_qs(form_body).get("token", [""])[0] or "")
+
+
 def _lan_chat_request_json(
     handler: BaseHTTPRequestHandler, max_bytes: int = 65536
 ) -> dict[str, Any]:
@@ -8584,22 +8598,24 @@ def handle_lan_chat_post(handler: BaseHTTPRequestHandler, parsed) -> bool:
     if not path.startswith("/api/lan-chat/"):
         return False
     try:
+        media_download_match = re.fullmatch(
+            r"/api/lan-chat/media/([0-9a-f]{32}\.(?:jpg|png|gif|webp|mp4|webm))/download",
+            path,
+        )
+        if media_download_match:
+            file_path, filename, content_type, size = (
+                lan_chat_store.message_media_download_info(
+                    _lan_chat_download_form_token(handler),
+                    media_download_match.group(1),
+                )
+            )
+            file_response(handler, file_path, content_type, filename, size)
+            return True
+
         download_match = re.fullmatch(r"/api/lan-chat/files/([0-9a-f]{32})/download", path)
         if download_match:
-            try:
-                content_length = int(handler.headers.get("Content-Length", "0") or "0")
-            except ValueError as exc:
-                raise LanChatError("请求长度无效") from exc
-            if content_length <= 0 or content_length > 1024:
-                raise LanChatError("下载请求无效")
-            try:
-                form_body = handler.rfile.read(content_length).decode("utf-8")
-            except UnicodeDecodeError as exc:
-                raise LanChatError("下载请求无效") from exc
-            form_data = parse_qs(form_body)
-            download_token = str(form_data.get("token", [""])[0] or "")
             file_path, filename, content_type, size = lan_chat_store.file_download_info(
-                download_token, download_match.group(1)
+                _lan_chat_download_form_token(handler), download_match.group(1)
             )
             file_response(handler, file_path, content_type, filename, size)
             return True
