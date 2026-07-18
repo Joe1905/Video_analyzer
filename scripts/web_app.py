@@ -9357,6 +9357,8 @@ class Handler(BaseHTTPRequestHandler):
                 return json_response(self, HTTPStatus.OK, proxy_pool.upsert_account(payload))
             if path == "/api/proxy/accounts/delete":
                 return json_response(self, HTTPStatus.OK, proxy_pool.delete_account(int(payload.get("id") or payload.get("account_id") or 0)))
+            if path == "/api/proxy/accounts/proxy-binding":
+                return json_response(self, HTTPStatus.OK, proxy_pool.update_account_proxy_binding(payload))
             if path == "/api/proxy/check":
                 return json_response(self, HTTPStatus.OK, proxy_pool.check_binding(payload, require_account=False))
             if path == "/api/proxy/accounts/preflight":

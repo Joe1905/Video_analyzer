@@ -235,6 +235,7 @@ def create_job(form: Any) -> dict[str, Any]:
         account = conn.execute("SELECT * FROM tiktok_accounts WHERE id = ? AND deleted_at = ''", (account_id,)).fetchone()
         if not account:
             raise ValueError("account not found")
+        proxy_pool.require_account_proxy_bound(account)
         proxy_profile_id = int(account["proxy_profile_id"])
 
     asset_id = uuid.uuid4().hex
@@ -307,6 +308,13 @@ def update_job(payload: dict[str, Any]) -> dict[str, Any]:
         row = conn.execute("SELECT * FROM publish_jobs WHERE id = ? AND deleted_at = ''", (job_id,)).fetchone()
         if not row:
             raise ValueError("publish job not found")
+        account = conn.execute(
+            "SELECT * FROM tiktok_accounts WHERE id = ? AND deleted_at = ''",
+            (int(row["account_id"]),),
+        ).fetchone()
+        if not account:
+            raise ValueError("account not found")
+        proxy_pool.require_account_proxy_bound(account)
         if row["status"] not in EDITABLE_STATUSES:
             raise ValueError("当前任务状态不能编辑")
         scheduled = _parse_schedule(payload.get("scheduled_at") or row["scheduled_at"])
@@ -372,6 +380,13 @@ def retry_job(payload: dict[str, Any]) -> dict[str, Any]:
         row = conn.execute("SELECT * FROM publish_jobs WHERE id = ? AND deleted_at = ''", (job_id,)).fetchone()
         if not row:
             raise ValueError("publish job not found")
+        account = conn.execute(
+            "SELECT * FROM tiktok_accounts WHERE id = ? AND deleted_at = ''",
+            (int(row["account_id"]),),
+        ).fetchone()
+        if not account:
+            raise ValueError("account not found")
+        proxy_pool.require_account_proxy_bound(account)
         if row["status"] not in RETRYABLE_STATUSES:
             raise ValueError("只有发布失败的任务可以重试")
         video_path(str(row["asset_id"]))
@@ -1798,6 +1813,10 @@ def _claim_due_jobs() -> list[str]:
             """
             SELECT p.id, p.account_id FROM publish_jobs p
             WHERE p.status IN ('queued','delayed')
+              AND EXISTS (
+                  SELECT 1 FROM tiktok_accounts a
+                  WHERE a.id = p.account_id AND a.deleted_at = '' AND a.proxy_bound = 1
+              )
               AND (p.next_attempt_at = '' OR p.next_attempt_at <= ?)
               AND (p.manual_publish = 1
                 OR p.schedule_mode = 'tiktok'

@@ -299,7 +299,8 @@ def save_settings(payload: dict[str, Any]) -> dict[str, Any]:
     feishu_target_json = json.dumps(feishu_target, ensure_ascii=False, separators=(",", ":"))
     now = _iso()
     with proxy_pool.connect() as conn:
-        _account(conn, account_id)
+        account = _account(conn, account_id)
+        proxy_pool.require_account_proxy_bound(account)
         conn.execute(
             """
             INSERT INTO collect_settings (
@@ -368,6 +369,7 @@ def create_job(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("account_id is required")
     with proxy_pool.connect() as conn:
         account = _account(conn, account_id)
+        proxy_pool.require_account_proxy_bound(account)
         publish_date_start, publish_date_end = _validate_publish_range(
             payload.get("publish_date_start"), payload.get("publish_date_end")
         )
@@ -407,6 +409,8 @@ def retry_job(payload: dict[str, Any]) -> dict[str, Any]:
         row = conn.execute("SELECT * FROM collect_jobs WHERE id = ?", (job_id,)).fetchone()
         if not row:
             raise ValueError("collect job not found")
+        account = _account(conn, int(row["account_id"]))
+        proxy_pool.require_account_proxy_bound(account)
         if str(row["status"]) not in JOB_RETRYABLE_STATUSES:
             raise ValueError("只有失败、部分失败或已取消的采集任务可以重试")
         now = _iso()
@@ -1479,7 +1483,7 @@ def _schedule_daily_jobs() -> None:
             """
             SELECT s.*, a.proxy_profile_id, a.deleted_at
             FROM collect_settings s JOIN tiktok_accounts a ON a.id = s.account_id
-            WHERE s.enabled = 1
+            WHERE s.enabled = 1 AND a.proxy_bound = 1
             """
         ).fetchall()
         for setting in settings:
@@ -1527,6 +1531,10 @@ def _claim_due_jobs() -> list[str]:
             """
             SELECT c.id, c.account_id FROM collect_jobs c
             WHERE c.status IN ('queued','delayed')
+              AND EXISTS (
+                  SELECT 1 FROM tiktok_accounts a
+                  WHERE a.id = c.account_id AND a.deleted_at = '' AND a.proxy_bound = 1
+              )
               AND (c.next_attempt_at = '' OR c.next_attempt_at <= ?)
               AND NOT EXISTS (
                   SELECT 1 FROM collect_jobs running
