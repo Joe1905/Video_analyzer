@@ -11644,15 +11644,20 @@ def handle_lan_chat_post(handler: BaseHTTPRequestHandler, parsed) -> bool:
             file_item = form["file"]
             if isinstance(file_item, list) or not getattr(file_item, "file", None):
                 raise LanChatError("每次只能发送一个文件")
-            message = lan_chat_store.send_file(
+            message, created = lan_chat_store.send_file(
                 _lan_chat_token(handler),
                 unquote(upload_match.group(1)),
                 str(getattr(file_item, "filename", "") or ""),
                 str(getattr(file_item, "type", "") or "application/octet-stream"),
                 file_item.file,
                 str(form.getfirst("content", "") or ""),
+                str(form.getfirst("clientUploadId", "") or ""),
             )
-            json_response(handler, HTTPStatus.CREATED, {"message": message})
+            json_response(
+                handler,
+                HTTPStatus.CREATED if created else HTTPStatus.OK,
+                {"message": message, "created": created},
+            )
             return True
 
         is_message_request = bool(
@@ -11753,13 +11758,18 @@ def handle_lan_chat_post(handler: BaseHTTPRequestHandler, parsed) -> bool:
             return True
         message_match = re.fullmatch(r"/api/lan-chat/rooms/([^/]+)/messages", path)
         if message_match:
-            message = lan_chat_store.send_message(
+            message, created = lan_chat_store.send_message(
                 _lan_chat_token(handler),
                 unquote(message_match.group(1)),
                 str(payload.get("content") or ""),
                 str(payload.get("mediaData") or payload.get("imageData") or ""),
+                str(payload.get("clientUploadId") or ""),
             )
-            json_response(handler, HTTPStatus.CREATED, {"message": message})
+            json_response(
+                handler,
+                HTTPStatus.CREATED if created else HTTPStatus.OK,
+                {"message": message, "created": created},
+            )
             return True
         json_response(handler, HTTPStatus.NOT_FOUND, {"error": "LAN chat API not found"})
         return True
