@@ -20,6 +20,7 @@ services:
       SELLERSPRITE_REDIRECT_PORT: "0"
       PROXY_REALITY_CORE: sing-box
       PROXY_REALITY_DEFAULT_FINGERPRINT: safari
+      PROXY_SESSION_PREFLIGHT_MODE: connectivity
       SING_BOX_CONFIG_PATH: /workspace/data/sing-box/config.json
       SING_BOX_COMPOSE_PROJECT: short-video-analyzer-dev
     volumes:

@@ -37,6 +37,7 @@ PROXY_PORT_START = int(os.getenv("PROXY_POOL_PORT_START", "18900") or "18900")
 PROXY_PORT_END = int(os.getenv("PROXY_POOL_PORT_END", "18999") or "18999")
 PROXY_REQUEST_ATTEMPTS = max(1, int(os.getenv("PROXY_REQUEST_ATTEMPTS", "3") or "3"))
 PROXY_REACHABILITY_ATTEMPTS = max(1, int(os.getenv("PROXY_REACHABILITY_ATTEMPTS", "10") or "10"))
+PROXY_SESSION_PREFLIGHT_MODE = os.getenv("PROXY_SESSION_PREFLIGHT_MODE", "strict_ip").strip().lower()
 PROXY_RECHECK_DELAYS_SECONDS = (5 * 60, 10 * 60, 30 * 60)
 PROXY_QUEUE_RECHECK_SECONDS = 5 * 60
 PROXY_RETRYABLE_ERROR_MARKERS = (
@@ -109,6 +110,10 @@ def browser_max_slots() -> int:
 
 def pending_login_ttl_seconds() -> int:
     return max(60, int(os.getenv("TIKTOK_PENDING_LOGIN_TTL_SECONDS", "900") or "900"))
+
+
+def proxy_session_preflight_mode() -> str:
+    return "connectivity" if PROXY_SESSION_PREFLIGHT_MODE == "connectivity" else "strict_ip"
 
 
 def storage_retention_policy() -> dict[str, int]:
@@ -3353,6 +3358,93 @@ def detect_exit_ip_for_pool(pool: sqlite3.Row) -> dict[str, Any]:
     return detected
 
 
+def check_account_connectivity(account_id: int) -> dict[str, Any]:
+    now = now_iso()
+    with connect() as conn:
+        account = conn.execute(
+            "SELECT * FROM tiktok_accounts WHERE id = ? AND deleted_at = ''",
+            (account_id,),
+        ).fetchone()
+        if not account:
+            raise ValueError("account not found")
+        require_account_proxy_bound(account)
+        pool = conn.execute(
+            "SELECT * FROM proxy_profiles WHERE id = ?",
+            (int(account["proxy_profile_id"] or 0),),
+        ).fetchone()
+        if not pool:
+            raise ValueError("proxy profile not found")
+        if _clean_status(pool["status"]) == STATUS_PAUSED:
+            raise ValueError("代理状态为 禁用")
+        expected_ip = str(pool["expected_exit_ip"] or "").strip()
+        if not expected_ip:
+            raise ValueError("代理还没有绑定出口 IP")
+        detected_ip = str(pool["detected_exit_ip"] or "").strip()
+        account_ip = str(account["last_checked_ip"] or "").strip()
+        for observed_ip in (detected_ip, account_ip):
+            if observed_ip and observed_ip != expected_ip:
+                raise ValueError(f"当前出口 IP {observed_ip} 与绑定 IP {expected_ip} 不一致")
+        proxy_port = int(pool["local_port"] or 0)
+        if not proxy_port or not _port_open("127.0.0.1", proxy_port, timeout=1.0):
+            raise ValueError(f"TikTok 连通性校验失败：专线本地端口 {proxy_port or '未分配'} 未监听")
+        pool_id = int(pool["id"])
+
+    tiktok_url = os.getenv("PROXY_TIKTOK_CHECK_URL", "https://www.tiktok.com/").strip()
+    reachable, reachability = _proxy_url_reachable(tiktok_url, proxy_port)
+    if not reachable:
+        message = (
+            "TikTok 连通性校验失败："
+            f"{urlparse(tiktok_url).netloc or tiktok_url}: {reachability}"
+        )
+        with connect() as conn:
+            _schedule_proxy_recheck(conn, pool_id, message)
+            conn.execute(
+                """UPDATE tiktok_accounts
+                   SET status = ?, last_check_status = '阻断', last_error = ?,
+                       last_check_at = ?, updated_at = ?
+                   WHERE id = ?""",
+                (ACCOUNT_STATUS_ERROR, message, now, now, account_id),
+            )
+            conn.commit()
+        raise ValueError(message)
+
+    with connect() as conn:
+        resumed = _clear_proxy_recheck(conn, pool_id, expected_ip, now)
+        conn.execute(
+            """UPDATE tiktok_accounts
+               SET status = CASE
+                       WHEN status = ? AND (
+                           last_error LIKE '%出口 IP%'
+                           OR last_error LIKE '%代理 IP%'
+                           OR last_error LIKE '%TikTok 连通性%'
+                           OR last_error LIKE '%专线%'
+                       ) THEN ? ELSE status END,
+                   last_error = CASE
+                       WHEN last_error LIKE '%出口 IP%'
+                           OR last_error LIKE '%代理 IP%'
+                           OR last_error LIKE '%TikTok 连通性%'
+                           OR last_error LIKE '%专线%'
+                       THEN '' ELSE last_error END,
+                   last_checked_ip = ?, last_check_status = '通过',
+                   last_check_at = ?, updated_at = ?
+               WHERE id = ?""",
+            (ACCOUNT_STATUS_ERROR, ACCOUNT_STATUS_ACTIVE, expected_ip, now, now, account_id),
+        )
+        conn.commit()
+    return {
+        "allowed": True,
+        "reason": "专线联网正常",
+        "mode": "connectivity",
+        "observed_ip": expected_ip,
+        "expected_exit_ip": expected_ip,
+        "checked_at": now,
+        "detected": {
+            "tiktok_check": {"url": tiktok_url, "result": reachability},
+        },
+        "resumed": resumed,
+    }
+
+
 def _stored_account_identity(account: sqlite3.Row, pool: sqlite3.Row) -> dict[str, str]:
     profile = _json_loads(account["profile_json"], {})
     isolation = profile.get("isolation") if isinstance(profile.get("isolation"), dict) else {}
@@ -3696,9 +3788,13 @@ def start_login_session(payload: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("新增账号必须选择飞书用户")
     if not proxy_profile_id:
         raise ValueError("proxy_profile_id is required")
+    session_preflight_mode = proxy_session_preflight_mode()
     try:
-        preflight_payload = {"account_id": account_id} if account_id else {"proxy_profile_id": proxy_profile_id, "bind": True}
-        preflight = check_binding(preflight_payload, require_account=bool(account_id))
+        if account_id and session_preflight_mode == "connectivity":
+            preflight = check_account_connectivity(account_id)
+        else:
+            preflight_payload = {"account_id": account_id} if account_id else {"proxy_profile_id": proxy_profile_id, "bind": True}
+            preflight = check_binding(preflight_payload, require_account=bool(account_id))
     except Exception as exc:
         with connect() as conn:
             conn.execute("UPDATE proxy_profiles SET status = ?, parse_error = COALESCE(NULLIF(parse_error, ''), ?), updated_at = ? WHERE id = ?", (STATUS_ERROR, str(exc), now_iso(), proxy_profile_id))
@@ -3815,8 +3911,12 @@ def start_login_session(payload: dict[str, Any]) -> dict[str, Any]:
             if not _pid_alive(pid):
                 raise ValueError("Chrome 启动后立即退出，请检查 browser.err.log")
             _wait_for_port(int(slot_ports["debug_port"]), "Chrome CDP", timeout=10.0)
-            browser_observed_ip = _detect_browser_exit_ip(int(slot_ports["debug_port"]))
             expected_exit_ip = str(pool["expected_exit_ip"] or "").strip()
+            if account_id and session_preflight_mode == "connectivity":
+                browser_observed_ip = expected_exit_ip
+                preflight["browser_ip_check"] = "skipped_in_connectivity_mode"
+            else:
+                browser_observed_ip = _detect_browser_exit_ip(int(slot_ports["debug_port"]))
             if browser_observed_ip != expected_exit_ip:
                 reason = f"浏览器出口 IP {browser_observed_ip} 与绑定 IP {expected_exit_ip} 不一致"
                 conn.execute(
@@ -4264,5 +4364,6 @@ def runtime_status() -> dict[str, Any]:
         "pending_login_ttl_seconds": pending_login_ttl_seconds(),
         "storage_retention": storage_retention_status(),
         "browser_locale": TIKTOK_BROWSER_LOCALE,
+        "session_preflight_mode": proxy_session_preflight_mode(),
         "browser_notice": f"noVNC 放行端口按账号并发 {novnc_ports['max_slots']} + 手动 {novnc_ports['manual_ports']} 计算：{novnc_ports['allowed_range']}；服务器本机检测为准。",
     }
