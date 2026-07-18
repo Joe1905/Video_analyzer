@@ -3040,6 +3040,77 @@ def test_fastmoss_claim_ids_and_extended_mechanical_cleanup() -> None:
     assert creator_count == 1 and "1–2" not in creator_cleaned
 
 
+def test_analytical_routes_use_report_model_and_fastmoss_preserves_pro_draft() -> None:
+    assert web_app.chat_route_uses_report_model(
+        "home", {"intent": "product_research", "task_depth": "analysis"}
+    )
+    assert web_app.chat_route_uses_report_model(
+        "amazon", {"intent": "product_research", "task_depth": "analysis"}
+    )
+    assert web_app.chat_route_uses_report_model(
+        "fastmoss", {"intent": "fastmoss_product", "task_depth": "workflow", "playbook": "product"}
+    )
+    assert web_app.chat_route_uses_report_model(
+        "home", {"intent": "video_analysis", "task_depth": "lookup"}
+    )
+    assert not web_app.chat_route_uses_report_model(
+        "fastmoss", {"intent": "product_availability", "task_depth": "lookup"}
+    )
+    assert not web_app.chat_route_uses_report_model(
+        "home", {"intent": "help", "task_depth": "direct"}
+    )
+
+    old_report_model = os.environ.get("DEEPSEEK_REPORT_MODEL")
+    old_verifier = os.environ.get("FASTMOSS_LLM_VERIFIER_ENABLED")
+    original_manifest = web_app.fastmoss_evidence_manifest
+    calls = []
+
+    class Requests:
+        def post(self, *_args, **_kwargs):
+            calls.append(True)
+            raise AssertionError("disabled verifier must not make another LLM request")
+
+    web_app.fastmoss_evidence_manifest = lambda *_args, **_kwargs: {
+        "quality_states": {"data": ["fastmoss__product_search"], "empty": [], "error": []},
+        "evidence_fact_count": 1,
+        "category_head": {},
+        "segment_head": {},
+        "entity_bundles": [],
+        "evidence_envelopes": [],
+        "evidence_facts": [{"fact_id": "fm-c1-f1", "data_state": "data"}],
+        "derived_facts": [],
+        "conflicts": [],
+        "limitations": [],
+    }
+    os.environ["DEEPSEEK_REPORT_MODEL"] = "deepseek-v4-pro-test"
+    os.environ["FASTMOSS_LLM_VERIFIER_ENABLED"] = "0"
+    draft = "# 完整调研报告\n\n## 市场判断\n\n保留原始结构、表格和分析。"
+    try:
+        assert web_app.chat_report_model() == "deepseek-v4-pro-test"
+        result = web_app.finalize_fastmoss_answer(
+            draft,
+            SimpleNamespace(tool_calls=[], tool_results=[]),
+            "调研这个类目",
+            {"task_depth": "workflow", "playbook": "product"},
+            Requests(),
+            "key",
+            "https://example.test/v1",
+            "deepseek-v4-pro-test",
+        )
+    finally:
+        web_app.fastmoss_evidence_manifest = original_manifest
+        if old_report_model is None:
+            os.environ.pop("DEEPSEEK_REPORT_MODEL", None)
+        else:
+            os.environ["DEEPSEEK_REPORT_MODEL"] = old_report_model
+        if old_verifier is None:
+            os.environ.pop("FASTMOSS_LLM_VERIFIER_ENABLED", None)
+        else:
+            os.environ["FASTMOSS_LLM_VERIFIER_ENABLED"] = old_verifier
+    assert result == draft
+    assert calls == []
+
+
 if __name__ == "__main__":
     test_tiktok_media_download_falls_through_to_next_upstream_url()
     test_forced_report_download_and_analysis_bypass_cached_results()
@@ -3107,4 +3178,5 @@ if __name__ == "__main__":
     test_fastmoss_22_call_semantic_registry_fixture()
     test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence()
     test_fastmoss_claim_ids_and_extended_mechanical_cleanup()
+    test_analytical_routes_use_report_model_and_fastmoss_preserves_pro_draft()
     print("chat tool normalization tests passed")
