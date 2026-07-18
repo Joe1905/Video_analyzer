@@ -577,18 +577,41 @@ def _feishu_fields(target: dict[str, Any], payload: dict[str, Any]) -> dict[str,
     return mapped
 
 
-def _set_result_sync(result_id: int, status: str, record_id: str = "", error: str = "") -> None:
+def _set_result_sync(
+    result_id: int,
+    status: str,
+    record_id: str = "",
+    error: str = "",
+    *,
+    clear_record_id: bool = False,
+) -> None:
     with proxy_pool.connect() as conn:
         conn.execute(
             """
             UPDATE collect_results
-            SET feishu_sync_status = ?, feishu_record_id = COALESCE(NULLIF(?, ''), feishu_record_id),
+            SET feishu_sync_status = ?,
+                feishu_record_id = CASE
+                    WHEN ? THEN ''
+                    ELSE COALESCE(NULLIF(?, ''), feishu_record_id)
+                END,
                 feishu_sync_error = ?, feishu_synced_at = ?
             WHERE id = ?
             """,
-            (status, record_id, _clean_text(error), _iso() if status == "synced" else "", result_id),
+            (
+                status,
+                1 if clear_record_id else 0,
+                record_id,
+                _clean_text(error),
+                _iso() if status == "synced" else "",
+                result_id,
+            ),
         )
         conn.commit()
+
+
+def _feishu_record_missing(error: Exception) -> bool:
+    message = str(error).lower()
+    return "recordidnotfound" in message or "1254043" in message
 
 
 def _sync_result_to_feishu(result_id: int, job: dict[str, Any], payload: dict[str, Any]) -> None:
@@ -627,7 +650,15 @@ def _sync_result_to_feishu(result_id: int, job: dict[str, Any], payload: dict[st
         _set_result_sync(result_id, "syncing", record_id)
         if record_id:
             request["recordId"] = record_id
-            result = _feishu_client.update_bitable_record(request)
+            try:
+                result = _feishu_client.update_bitable_record(request)
+            except FeishuCapabilityError as exc:
+                if not _feishu_record_missing(exc):
+                    raise
+                request.pop("recordId", None)
+                _set_result_sync(result_id, "syncing", clear_record_id=True)
+                result = _feishu_client.create_bitable_record(request)
+                record_id = _clean_text(result.get("recordId"), 200)
         else:
             result = _feishu_client.create_bitable_record(request)
             record_id = _clean_text(result.get("recordId"), 200)
@@ -683,6 +714,21 @@ def _save_result(job: dict[str, Any], payload: dict[str, Any]) -> None:
         _sync_result_to_feishu(int(result["id"]), job, payload)
 
 
+def _apply_authoritative_publish_date(payload: dict[str, Any]) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    video = payload.get("video")
+    time_filter = payload.get("time_filter")
+    applied_date = _clean_text(
+        time_filter.get("applied") if isinstance(time_filter, dict) else "",
+        20,
+    )
+    if isinstance(video, dict) and re.fullmatch(r"20\d{2}-\d{2}-\d{2}", applied_date):
+        video["published_at"] = applied_date
+        return applied_date
+    return ""
+
+
 def retry_failed_feishu_sync(payload: dict[str, Any]) -> dict[str, Any]:
     job_id = _clean_text(payload.get("job_id"), 80)
     account_id = int(payload.get("account_id") or 0)
@@ -697,7 +743,8 @@ def retry_failed_feishu_sync(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("result_id must be a positive integer") from exc
     if not job_id and not account_id and not result_ids:
         raise ValueError("job_id, account_id or result_id is required")
-    clauses = ["r.feishu_sync_status = 'failed'"]
+    force = payload.get("force") is True
+    clauses = [] if force else ["r.feishu_sync_status = 'failed'"]
     params: list[Any] = []
     if job_id:
         clauses.append("r.job_id = ?")
@@ -715,7 +762,7 @@ def retry_failed_feishu_sync(payload: dict[str, Any]) -> dict[str, Any]:
                    j.feishu_target_json AS job_target_json
             FROM collect_results r
             JOIN collect_jobs j ON j.id = r.job_id
-            WHERE {' AND '.join(clauses)}
+            WHERE {' AND '.join(clauses) if clauses else '1 = 1'}
             ORDER BY r.id
             LIMIT 200
             """,
@@ -729,21 +776,29 @@ def retry_failed_feishu_sync(payload: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(target, dict):
             target = {}
         result_id = int(row["id"])
+        result_payload = _json_loads(row["payload_json"], {})
+        applied_date = _apply_authoritative_publish_date(result_payload)
         with proxy_pool.connect() as conn:
             conn.execute(
                 """
                 UPDATE collect_results
                 SET feishu_target_json = ?, feishu_sync_status = 'pending',
-                    feishu_sync_error = '', feishu_synced_at = ''
+                    feishu_sync_error = '', feishu_synced_at = '',
+                    published_at = COALESCE(NULLIF(?, ''), published_at), payload_json = ?
                 WHERE id = ?
                 """,
-                (json.dumps(target, ensure_ascii=False, separators=(",", ":")), result_id),
+                (
+                    json.dumps(target, ensure_ascii=False, separators=(",", ":")),
+                    applied_date,
+                    json.dumps(result_payload, ensure_ascii=False, separators=(",", ":")),
+                    result_id,
+                ),
             )
             conn.commit()
         _sync_result_to_feishu(
             result_id,
             {"account_id": int(row["account_id"]), "feishu_target": target},
-            _json_loads(row["payload_json"], {}),
+            result_payload,
         )
         with proxy_pool.connect() as conn:
             updated = conn.execute(
@@ -1313,8 +1368,8 @@ def _collect_video(page: Any, job: dict[str, Any], source: dict[str, str], log_d
     if not any(overview.values()):
         page.screenshot(path=str(log_dir / f"{source['id']}-missing-overview.png"), full_page=True)
         raise RuntimeError("视频分析页没有识别到概览指标")
-    title, published_at = _title_and_date(lines, source.get("title_hint", ""))
-    published_at = published_at or source.get("published_date", "")
+    title, detail_published_at = _title_and_date(lines, source.get("title_hint", ""))
+    published_at = source.get("published_date", "") or detail_published_at
     retention, retention_complete, missing, retention_reason = _sample_retention(
         page, _duration_seconds(source.get("title_hint", ""))
     )
