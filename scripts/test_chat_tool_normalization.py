@@ -1184,6 +1184,23 @@ def test_fastmoss_research_report_uses_product_playbook_on_rule_fallback() -> No
     inherited = web_app.fastmoss_inherited_segment_keywords(messages, messages[-1].content)
     assert inherited == ["Electric Food Shredder", "Mini Meat Grinder"]
     assert web_app.fastmoss_segment_keywords(messages[-1].content, {"segment_keywords": inherited}) == inherited
+    exact_confirmation = [
+        SimpleNamespace(role="user", content=text),
+        SimpleNamespace(
+            role="assistant",
+            content="FastMoss 对这个关键词的类目匹配很接近，请直接回复要研究的类目名称。",
+        ),
+        SimpleNamespace(role="user", content="料理机"),
+    ]
+    exact_inherited = web_app.fastmoss_inherited_segment_keywords(
+        exact_confirmation, exact_confirmation[-1].content
+    )
+    assert exact_inherited == ["Electric Food Shredder", "Mini Meat Grinder"]
+    later_research = exact_confirmation + [
+        SimpleNamespace(role="assistant", content="料理机调研报告已完成。"),
+        SimpleNamespace(role="user", content="重新调研 air fryer"),
+    ]
+    assert web_app.fastmoss_inherited_segment_keywords(later_research, later_research[-1].content) == []
     assert web_app.fastmoss_inherited_segment_keywords(messages, "重新调研 air fryer") == []
 
 
@@ -2072,7 +2089,7 @@ def test_fastmoss_verifier_batches_claims_and_isolates_failures() -> None:
         },
     }])
     draft = "# 判断\n" + "\n".join(
-        f"判断{index}：该市场已经进入成长期，是低竞争蓝海。" for index in range(1, 10)
+        f"判断{index}：该市场已经进入成长期，是低竞争蓝海。" for index in range(1, 12)
     )
 
     class Response:
@@ -2116,11 +2133,11 @@ def test_fastmoss_verifier_batches_claims_and_isolates_failures() -> None:
     finally:
         web_app.record_api_call = original_record
     assert len(requests.payloads) == 3
-    assert all(len(json.loads(item["messages"][1]["content"])["candidate_claims"]) <= 4 for item in requests.payloads)
+    assert all(len(json.loads(item["messages"][1]["content"])["candidate_claims"]) <= 5 for item in requests.payloads)
     assert all(item["max_tokens"] == 4800 for item in requests.payloads)
     assert all(len(json.dumps(item, ensure_ascii=False)) < 20000 for item in requests.payloads)
     assert "判断1：竞争强度仍需验证" in result
-    for index in range(2, 10):
+    for index in range(2, 12):
         assert f"判断{index}：" in result
 
     unchanged, count = web_app.sanitize_fastmoss_state_contradictions(
@@ -2704,7 +2721,8 @@ def test_fastmoss_claim_ids_and_extended_mechanical_cleanup() -> None:
     semantic_reasons = {reason for claim in semantic_claims for reason in claim["reasons"]}
     assert {"market_scale", "channel_causality", "lifecycle"}.issubset(semantic_reasons)
     metric_claims = web_app.fastmoss_high_risk_claims(
-        "## 4. 代表商品与趋势\n| 维度 | 商品A |\n| 30天销量 | 5710 |\nMae贡献了该商品90%+的GMV。"
+        "## 4. 代表商品与趋势\n| 维度 | 商品A |\n| 30天销量 | 5710 |\n"
+        "商品A近30天销量为5710件。\nMae贡献了该商品90%+的GMV。"
     )
     assert all(not claim["text"].startswith("##") for claim in metric_claims)
     metric_reasons = {reason for claim in metric_claims for reason in claim["reasons"]}

@@ -4650,7 +4650,20 @@ def fastmoss_original_segment_keywords(
 
 def fastmoss_inherited_segment_keywords(session_messages: list[Message], current_text: str) -> list[str]:
     """Keep the original product phrases when a follow-up only confirms category or continuation."""
-    if not chat_query_uses_previous_entity(current_text):
+    current_user_index = max(
+        (index for index, message in enumerate(session_messages) if message.role == "user"),
+        default=len(session_messages),
+    )
+    previous_assistant = next((
+        message for message in reversed(session_messages[:current_user_index])
+        if message.role == "assistant" and str(message.content or "").strip()
+    ), None)
+    previous_assistant_text = str(getattr(previous_assistant, "content", "") or "")
+    recent_category_prompt = (
+        "类目匹配很接近" in previous_assistant_text
+        or "请直接回复要研究的类目名称" in previous_assistant_text
+    )
+    if not chat_query_uses_previous_entity(current_text) and not recent_category_prompt:
         return []
     prior_questions = [
         chat_routing_text(str(message.content or ""))
@@ -8733,8 +8746,11 @@ def fastmoss_high_risk_claims(draft: str) -> list[dict[str, Any]]:
     """Select only claims that need semantic verification; keep the full draft out of the verifier."""
     patterns = (
         ("operational_number", re.compile(
-            r"(?i)(?:建议|预算|售价|定价|库存|备货|达人|创作者|每周|周期|测试|观察|"
-            r"ROI|CPO|CPA|转化率|毛利率|成本|MOQ|佣金|广告费|功率|\bW\b)[^\n]{0,120}\d"
+            r"(?i)(?=[^\n]{0,220}\d)(?=[^\n]{0,220}(?:建议|首批|预算|售价|定价|"
+            r"最佳[^\n]{0,20}价位|库存|备货|每周[^\n]{0,30}(?:发布|内容)|测试(?:周期)?|观察期|"
+            r"ROI|CPO|CPA|转化率|毛利率|成本|MOQ|佣金|广告费|功率|\bW\b|"
+            r"(?:找|联系|合作|招募|筛选)[^\n]{0,30}(?:达人|创作者)|"
+            r"(?:达人|创作者)[^\n]{0,30}(?:找|联系|合作|招募|筛选)))"
         )),
         ("sample_extrapolation", re.compile(r"(?:其余|剩余|未抓取|全市场|市场份额|长尾)[^\n]{0,120}(?:%|商品|产品|件)")),
         ("market_scale", re.compile(
@@ -8761,7 +8777,7 @@ def fastmoss_high_risk_claims(draft: str) -> list[dict[str, Any]]:
         ("market_absolute", re.compile(r"(?:低竞争|蓝海|真实机会|确定机会|不存在市场|不构成独立市场|已经饱和)")),
         ("lifecycle", re.compile(
             r"(?:爆发期|成长期|稳定期|衰退期|已经过峰值|仍在上升|生命周期|"
-            r"增长动能[^\n。；]{0,24}放缓|竞争加剧|用户疲劳)"
+            r"增长动能[^\n。；]{0,24}放缓|竞争加剧|用户疲劳|新旧交替|老牌产品)"
         )),
     )
     claims: list[dict[str, Any]] = []
@@ -8773,6 +8789,11 @@ def fastmoss_high_risk_claims(draft: str) -> list[dict[str, Any]]:
         ids = sorted(set(re.findall(r"(?<!\d)\d{16,20}(?!\d)", text)))
         if len(ids) >= 2:
             reasons.append("multiple_entity_ids")
+        if text.startswith("|") and not set(reasons).intersection({
+            "sample_extrapolation", "market_scale", "channel_causality", "content_causality",
+            "state_claim", "market_absolute", "lifecycle",
+        }):
+            continue
         if reasons:
             claims.append({
                 "claim_id": f"line-{line_index}",
@@ -9379,7 +9400,7 @@ def verify_fastmoss_final_answer(
     rejected_edits = 0
     batch_failures = 0
     statuses: list[str] = []
-    batches = [claims[index:index + 4] for index in range(0, len(claims), 4)]
+    batches = [claims[index:index + 5] for index in range(0, len(claims), 5)]
     for batch_index, batch_claims in enumerate(batches, start=1):
         candidate_evidence = fastmoss_candidate_evidence(manifest, batch_claims, route)
         payload = {
