@@ -36,6 +36,7 @@ AVATAR_COLORS = (
     "#5A7D9A",
 )
 MESSAGE_MEDIA_MAX_BYTES = 100 * 1024 * 1024
+MESSAGE_MEDIA_RETENTION_SECONDS = 7 * 24 * 60 * 60
 MESSAGE_MEDIA_TYPES = {
     "jpg": "image/jpeg",
     "png": "image/png",
@@ -150,6 +151,8 @@ class LanChatStore:
                     content TEXT NOT NULL,
                     image_filename TEXT,
                     image_mime_type TEXT,
+                    media_expires_at REAL,
+                    media_deleted_at REAL,
                     file_id TEXT,
                     created_at REAL NOT NULL,
                     FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE CASCADE,
@@ -264,10 +267,23 @@ class LanChatStore:
                 conn.execute("ALTER TABLE messages ADD COLUMN image_filename TEXT")
             if "image_mime_type" not in message_columns:
                 conn.execute("ALTER TABLE messages ADD COLUMN image_mime_type TEXT")
+            if "media_expires_at" not in message_columns:
+                conn.execute("ALTER TABLE messages ADD COLUMN media_expires_at REAL")
+            if "media_deleted_at" not in message_columns:
+                conn.execute("ALTER TABLE messages ADD COLUMN media_deleted_at REAL")
             if "file_id" not in message_columns:
                 conn.execute("ALTER TABLE messages ADD COLUMN file_id TEXT")
             conn.execute(
+                """UPDATE messages SET media_expires_at = created_at + ?
+                   WHERE image_filename IS NOT NULL AND media_expires_at IS NULL""",
+                (MESSAGE_MEDIA_RETENTION_SECONDS,),
+            )
+            conn.execute(
                 "CREATE INDEX IF NOT EXISTS messages_file_id_idx ON messages(file_id)"
+            )
+            conn.execute(
+                """CREATE INDEX IF NOT EXISTS messages_media_expiry_idx
+                   ON messages(media_deleted_at, media_expires_at)"""
             )
             conn.execute(
                 """INSERT OR IGNORE INTO rooms
@@ -288,6 +304,7 @@ class LanChatStore:
                     conn, str(owner["id"]), str(owner["name"]), now
                 )
         self.cleanup_expired_files()
+        self.cleanup_expired_media()
         self._start_file_janitor()
 
     @staticmethod
@@ -520,8 +537,11 @@ class LanChatStore:
             "users": self.list_users(current["id"]),
             "rooms": self.list_rooms(current["id"]),
             "publicRoomId": PUBLIC_ROOM_ID,
-            "pollIntervalMs": 2000,
+            "pollIntervalMs": 3000,
+            "messagePollIntervalMs": 3000,
+            "bootstrapPollIntervalMs": 10000,
             "inlineMediaMaxBytes": MESSAGE_MEDIA_MAX_BYTES,
+            "inlineMediaRetentionSeconds": MESSAGE_MEDIA_RETENTION_SECONDS,
             "fileMaxBytes": FILE_TRANSFER_MAX_BYTES,
             "fileRetentionSeconds": FILE_TRANSFER_RETENTION_SECONDS,
         }
@@ -797,14 +817,16 @@ class LanChatStore:
                 self._require_room_access(conn, room_id, current["id"])
                 cursor = conn.execute(
                     """INSERT INTO messages
-                       (room_id, sender_id, content, image_filename, image_mime_type, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
+                       (room_id, sender_id, content, image_filename, image_mime_type,
+                        media_expires_at, media_deleted_at, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, NULL, ?)""",
                     (
                         room_id,
                         current["id"],
                         clean_content,
                         media_filename or None,
                         media_mime_type or None,
+                        now + MESSAGE_MEDIA_RETENTION_SECONDS if media_filename else None,
                         now,
                     ),
                 )
@@ -1013,6 +1035,37 @@ class LanChatStore:
                 cleaned += 1
         return cleaned
 
+    def cleanup_expired_media(self, now: float | None = None) -> int:
+        cutoff = float(now if now is not None else time.time())
+        cleaned = 0
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT id, image_filename FROM messages
+                   WHERE image_filename IS NOT NULL
+                     AND media_deleted_at IS NULL
+                     AND media_expires_at <= ?""",
+                (cutoff,),
+            ).fetchall()
+            for row in rows:
+                filename = str(row["image_filename"] or "")
+                try:
+                    (self.media_dir / filename).unlink(missing_ok=True)
+                    (self.media_dir / f"{Path(filename).stem}.poster.jpg").unlink(
+                        missing_ok=True
+                    )
+                except OSError as exc:
+                    print(
+                        f"LAN chat media cleanup failed for {row['id']}: {exc}",
+                        flush=True,
+                    )
+                    continue
+                conn.execute(
+                    "UPDATE messages SET media_deleted_at = ? WHERE id = ?",
+                    (cutoff, row["id"]),
+                )
+                cleaned += 1
+        return cleaned
+
     def _start_file_janitor(self) -> None:
         with self._file_janitor_lock:
             if self._file_janitor_started:
@@ -1024,8 +1077,9 @@ class LanChatStore:
                 time.sleep(FILE_TRANSFER_CLEANUP_INTERVAL_SECONDS)
                 try:
                     self.cleanup_expired_files()
+                    self.cleanup_expired_media()
                 except Exception as exc:
-                    print(f"LAN chat file janitor failed: {exc}", flush=True)
+                    print(f"LAN chat storage janitor failed: {exc}", flush=True)
 
         threading.Thread(target=run, name="lan-chat-file-janitor", daemon=True).start()
 
@@ -1039,6 +1093,21 @@ class LanChatStore:
             or any(char not in "0123456789abcdef" for char in stem)
         ):
             raise LanChatError("媒体不存在", 404)
+        with self._connect() as conn:
+            media = conn.execute(
+                """SELECT media_expires_at, media_deleted_at FROM messages
+                   WHERE image_filename = ? LIMIT 1""",
+                (clean_name,),
+            ).fetchone()
+        if media is not None and (
+            media["media_deleted_at"] is not None
+            or (
+                media["media_expires_at"] is not None
+                and float(media["media_expires_at"]) <= time.time()
+            )
+        ):
+            self.cleanup_expired_media()
+            raise LanChatError("媒体已过期并从服务器清理", 410)
         path = (self.media_dir / clean_name).resolve()
         if path.parent != self.media_dir.resolve() or not path.is_file():
             raise LanChatError("媒体不存在", 404)
@@ -1230,7 +1299,8 @@ class LanChatStore:
             other = next((item for item in members if item["id"] != current_user_id), None)
             name = other["nickname"] if other is not None else "私信"
         latest = conn.execute(
-            """SELECT m.content, m.image_filename, m.image_mime_type, m.file_id,
+            """SELECT m.content, m.image_filename, m.image_mime_type,
+                      m.media_expires_at, m.media_deleted_at, m.file_id,
                       m.created_at, u.nickname
                FROM messages m JOIN users u ON u.id = m.sender_id
                WHERE m.room_id = ? ORDER BY m.id DESC LIMIT 1""",
@@ -1247,6 +1317,17 @@ class LanChatStore:
                      )""",
                 (room["id"], current_user_id, room["id"], current_user_id),
             ).fetchone()[0]
+        )
+        latest_media_expired = bool(
+            latest is not None
+            and latest["image_filename"]
+            and (
+                latest["media_deleted_at"] is not None
+                or (
+                    latest["media_expires_at"] is not None
+                    and float(latest["media_expires_at"]) <= time.time()
+                )
+            )
         )
         return {
             "id": room["id"],
@@ -1272,7 +1353,8 @@ class LanChatStore:
             "latestMessage": (
                 {
                     "content": latest["content"],
-                    "hasImage": bool(latest["image_filename"]),
+                    "hasImage": bool(latest["image_filename"]) and not latest_media_expired,
+                    "mediaExpired": latest_media_expired,
                     "mediaKind": (
                         "video"
                         if str(latest["image_mime_type"] or "").startswith("video/")
@@ -1300,6 +1382,22 @@ class LanChatStore:
     ) -> dict[str, Any]:
         media_filename = str(row["image_filename"] or "")
         media_mime_type = str(row["image_mime_type"] or "")
+        media_expires_at = (
+            float(row["media_expires_at"])
+            if row["media_expires_at"] is not None
+            else None
+        )
+        media_expired = bool(
+            media_filename
+            and (
+                row["media_deleted_at"] is not None
+                or (
+                    media_expires_at is not None
+                    and media_expires_at <= time.time()
+                )
+            )
+        )
+        available_media_filename = media_filename if not media_expired else ""
         file_payload = None
         file_id = str(row["file_id"] or "")
         if file_id:
@@ -1361,24 +1459,32 @@ class LanChatStore:
             "senderAvatarUrl": f"/api/lan-chat/avatars/{row['sender_id']}",
             "content": row["content"],
             "imageUrl": (
-                f"/api/lan-chat/media/{media_filename}"
-                if media_filename and media_mime_type.startswith("image/")
+                f"/api/lan-chat/media/{available_media_filename}"
+                if available_media_filename and media_mime_type.startswith("image/")
                 else ""
             ),
-            "mediaUrl": f"/api/lan-chat/media/{media_filename}" if media_filename else "",
+            "mediaUrl": (
+                f"/api/lan-chat/media/{available_media_filename}"
+                if available_media_filename
+                else ""
+            ),
             "mediaPosterUrl": (
-                f"/api/lan-chat/media/{media_filename}/poster"
-                if media_filename and media_mime_type.startswith("video/")
+                f"/api/lan-chat/media/{available_media_filename}/poster"
+                if available_media_filename and media_mime_type.startswith("video/")
                 else ""
             ),
             "mediaDownloadUrl": (
-                f"/api/lan-chat/media/{media_filename}/download" if media_filename else ""
+                f"/api/lan-chat/media/{available_media_filename}/download"
+                if available_media_filename
+                else ""
             ),
             "mediaMimeType": media_mime_type,
             "mediaKind": (
                 "video" if media_mime_type.startswith("video/")
                 else "image" if media_filename else ""
             ),
+            "mediaExpiresAt": media_expires_at,
+            "mediaExpired": media_expired,
             "file": file_payload,
             "createdAt": float(row["created_at"]),
             "isMine": row["sender_id"] == current_user_id,
