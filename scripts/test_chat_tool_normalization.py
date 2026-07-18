@@ -1909,13 +1909,18 @@ def test_fastmoss_answer_verifier_applies_local_edits_and_keeps_draft_on_failure
                 "source_tool": "fastmoss__product_overview", "dimension": "product_overview",
                 "product_id": "1730898744848192092",
                 "ads_distribution": {"breakdown": [{"traffic_source": "ad_traffic", "gmv_share_percent": 59}]},
+            }, {
+                "source_tool": "fastmoss__product_overview", "dimension": "product_sample",
+                "scope": "segment_head", "products": [{
+                    "product_id": "1730898744848192092", "day28_units_sold": 424,
+                }],
             }],
         },
     }])
     route = {"playbook": "product", "task_depth": "workflow", "entity": "mini grinder"}
     style = web_app.fastmoss_report_style_instruction(route)
     assert "标题、章节名称和顺序完全由你" in style
-    assert "完整调研报告" in style and "精确执行数字" in style
+    assert "完整调研报告" in style and "可以自由提出执行建议" in style
     assert web_app.fastmoss_report_style_instruction({"task_depth": "lookup"}) == ""
 
     native_report = (
@@ -1953,7 +1958,7 @@ def test_fastmoss_answer_verifier_applies_local_edits_and_keeps_draft_on_failure
                         "claim_id": claim["claim_id"],
                         "replacement": "本轮样本显示该细分仍需补充竞争强度证据。",
                         "reason": "当前样本不能证明低竞争",
-                        "evidence_refs": ["fastmoss__product_overview"],
+                        "evidence_refs": ["call:1"],
                     })
                 elif "首批500-1000件" in claim["text"]:
                     edits.append({
@@ -2730,7 +2735,7 @@ def test_fastmoss_22_call_semantic_registry_fixture() -> None:
     assert "11.7" not in corrected and "不能直接相除" in corrected
 
 
-def test_fastmoss_packet_synthesis_isolated_from_tool_protocol_history() -> None:
+def test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence() -> None:
     class Response:
         def raise_for_status(self) -> None:
             return None
@@ -2752,11 +2757,31 @@ def test_fastmoss_packet_synthesis_isolated_from_tool_protocol_history() -> None
             return Response()
 
     requests = Requests()
+    trend_rows = [
+        {"date": f"2026-06-{day:02d}", "units_sold": day}
+        for day in range(1, 31)
+    ] + [{"date": "2026-07-01", "units_sold": 31}]
+    products = [{
+        "product_id": str(1730000000000000000 + index),
+        "title": f"Product {index}",
+        "category": {"l3": {"id": 935176 if index < 9 else 934920, "name": "Food Processors" if index < 9 else "Other"}},
+        "current_price": 10 + index,
+    } for index in range(10)]
+    calls = [
+        {"id": "c1", "function": {"name": "fastmoss__product_sales_trend", "arguments": json.dumps({"filter": {"product_id": "1730000000000000001", "time_range_days": 90}})}},
+        {"id": "c2", "function": {"name": "fastmoss__product_rank_new_listed", "arguments": json.dumps({"filter": {"category_l1_id": 13, "category_l2_id": 844168, "category_l3_id": 935176}, "page": 1, "pagesize": 10})}},
+        {"id": "c3", "function": {"name": "fastmoss__product_review_list", "arguments": json.dumps({"filter": {"product_id": "1730000000000000001"}, "page": 1})}},
+    ]
+    results = [
+        {"tool_name": "fastmoss__product_sales_trend", "result": {"ok": True, "data_state": "data", "mcp_data": {"trend_series": trend_rows}}},
+        {"tool_name": "fastmoss__product_rank_new_listed", "result": {"ok": True, "data_state": "data", "mcp_data": {"list": products, "total": 10}}},
+        {"tool_name": "fastmoss__product_review_list", "result": {"ok": True, "data_state": "empty", "mcp_data": {"list": [], "total": 0}}},
+    ]
     original_verify = web_app.verify_fastmoss_final_answer
     web_app.verify_fastmoss_final_answer = lambda draft, *_args, **_kwargs: draft
     try:
         result = web_app.synthesize_fastmoss_report_from_packet(
-            SimpleNamespace(tool_calls=[], tool_results=[]),
+            SimpleNamespace(tool_calls=calls, tool_results=results),
             "做一份完整产品调研",
             {"playbook": "product", "task_depth": "workflow"},
             requests,
@@ -2771,8 +2796,23 @@ def test_fastmoss_packet_synthesis_isolated_from_tool_protocol_history() -> None
     payload = requests.payloads[0]
     assert "tools" not in payload
     assert len(payload["messages"]) == 2
-    assert "report_packet" in payload["messages"][0]["content"]
-    assert "无法执行的工具协议" not in payload["messages"][0]["content"]
+    system_content = payload["messages"][0]["content"]
+    assert "evidence_dossier" in system_content
+    assert "report_packet" not in system_content
+    assert system_content.count("fastmoss__product_sales_trend") == 1
+    assert "2026-06-01" in system_content and "2026-07-01" in system_content
+    assert all(product["product_id"] in system_content for product in products)
+    assert "returned_product_outside_requested_l3" in system_content
+    assert "关键词返回量不是市场容量" in system_content
+    assert "不得写成流量来源、因果、效率或生命周期结论" in system_content
+    assert '"data_state":"empty"' in system_content
+    assert '"product_id":"1730000000000000001"' in system_content
+    assert '"source_ref":"call:3"' in system_content
+    assert '"report_date":' in system_content
+    assert '"hard_fact_boundaries":' in system_content
+    assert system_content.rfind("hard_fact_boundaries") > system_content.rfind("tool_evidence")
+    assert system_content.endswith("不得把样本占比写成市场份额，也不得从渠道占比推导自然流量、广告花费、ROI、因果或生命周期。")
+    assert "omitted_items" not in system_content
 
 
 def test_fastmoss_claim_ids_and_extended_mechanical_cleanup() -> None:
@@ -2824,7 +2864,21 @@ def test_fastmoss_claim_ids_and_extended_mechanical_cleanup() -> None:
         [{"claim_id": "line-2", "replacement": "竞争强度仍需验证。", "reason": "样本不足", "evidence_refs": []}],
         claims,
     )
-    assert applied == 1 and "竞争强度仍需验证" in edited
+    assert applied == 0 and "低竞争蓝海" in edited
+    referenced_edit, referenced_count = web_app.apply_fastmoss_verifier_edits(
+        "结论\n这个市场已经是低竞争蓝海。",
+        [{"claim_id": "line-2", "replacement": "竞争强度仍需验证。", "reason": "样本不足", "evidence_refs": ["call:1"]}],
+        claims,
+        {"source_catalog": [{"source_ref": "call:1", "source_call_index": 1}]},
+    )
+    assert referenced_count == 1 and "竞争强度仍需验证" in referenced_edit
+    malformed_ref_edit, malformed_ref_count = web_app.apply_fastmoss_verifier_edits(
+        "结论\n这个市场已经是低竞争蓝海。",
+        [{"claim_id": "line-2", "replacement": "竞争强度仍需验证。", "reason": "样本不足", "evidence_refs": [{"source_ref": "call:1"}]}],
+        claims,
+        {"source_catalog": [{"source_ref": "call:1", "source_call_index": 1}]},
+    )
+    assert malformed_ref_count == 0 and "低竞争蓝海" in malformed_ref_edit
 
     entity_claims = [{
         "claim_id": "line-1",
@@ -2905,6 +2959,12 @@ def test_fastmoss_claim_ids_and_extended_mechanical_cleanup() -> None:
     )
     semantic_reasons = {reason for claim in semantic_claims for reason in claim["reasons"]}
     assert {"market_scale", "channel_causality", "lifecycle"}.issubset(semantic_reasons)
+    fenced_claims = web_app.fastmoss_high_risk_claims(
+        "TikTok Shop尚无直接对应品类，也没有找到精确匹配的活跃商品。\n"
+        "返回的987条视频几乎全是广告内容，且已有近百万美金广告投入。"
+    )
+    fenced_reasons = {reason for claim in fenced_claims for reason in claim["reasons"]}
+    assert {"state_claim", "sample_extrapolation", "channel_causality"}.issubset(fenced_reasons)
     metric_claims = web_app.fastmoss_high_risk_claims(
         "## 4. 代表商品与趋势\n| 维度 | 商品A |\n| 30天销量 | 5710 |\n"
         "商品A近30天销量为5710件。\nMae贡献了该商品90%+的GMV。"
@@ -3043,6 +3103,6 @@ if __name__ == "__main__":
     test_fastmoss_report_packets_are_workflow_native_and_numeric_policy_is_strict()
     test_fastmoss_list_truncation_is_explicit_and_invalid_entities_are_filtered()
     test_fastmoss_22_call_semantic_registry_fixture()
-    test_fastmoss_packet_synthesis_isolated_from_tool_protocol_history()
+    test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence()
     test_fastmoss_claim_ids_and_extended_mechanical_cleanup()
     print("chat tool normalization tests passed")
