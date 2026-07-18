@@ -7738,18 +7738,27 @@ def fastmoss_report_packet(manifest: dict[str, Any], route: dict[str, Any] | Non
         compact = dict(fact)
         if isinstance(compact.get("products"), list):
             all_products = [product for product in compact["products"] if isinstance(product, dict)]
-            product_limit = 5
-            if str(compact.get("scope") or "") == "category_head" and int(compact.get("page") or 1) > 1:
+            scope = str(compact.get("scope") or "")
+            dimension = str(compact.get("dimension") or "")
+            page = int(compact.get("page") or 1)
+            # Segment comparisons need the complete fetched Top-10 to preserve
+            # product-shape and price differences.  Category pages after page
+            # one keep only boundary rows because their aggregate coverage is
+            # already recorded separately.
+            product_limit = 10 if scope == "segment_head" else 5
+            if scope == "category_head" and page == 1:
+                product_limit = 10
+            elif scope == "category_head" and page > 1:
                 # Later category pages retain boundary samples.  An empty list
                 # always means the provider returned no rows, never "omitted to
                 # save tokens".
                 product_limit = 2
-            elif str(compact.get("dimension") or "") in {"top_products", "new_products"}:
+            elif dimension in {"top_products", "new_products"}:
                 product_limit = 5
             selected_products = all_products[:product_limit]
             if (
-                str(compact.get("scope") or "") == "category_head"
-                and int(compact.get("page") or 1) > 1
+                scope == "category_head"
+                and page > 1
                 and len(all_products) > 1
             ):
                 selected_products = [all_products[0], all_products[-1]]
@@ -7818,8 +7827,9 @@ def fastmoss_report_packet(manifest: dict[str, Any], route: dict[str, Any] | Non
     representative_evidence = [
         compact_fact(fact) for fact in (manifest.get("evidence_facts") or [])
         if isinstance(fact, dict) and str(fact.get("dimension") or "") in {
-            "category_candidates", "product_sample", "top_products", "new_products",
-            "product_detail", "product_creator_analysis", "product_videos", "review_status",
+            "category_candidates", "category_analysis", "category_trend", "category_channel_ranking",
+            "product_sample", "top_products", "new_products", "product_detail", "product_overview",
+            "product_90d_trend", "product_creator_analysis", "product_videos", "review_status",
         }
     ]
     packet_product_ids = {
@@ -8287,6 +8297,11 @@ def sanitize_fastmoss_unsupported_recommendations(answer: str) -> tuple[str, int
         "安排完整测试周期",
     )
     replace(
+        r"(?:如果|若)[^\n。；]{0,60}?接下来\s*[\d,.]+\s*(?:天|周|个月|月)(?:内)?"
+        r"[^\n。；]{0,40}?从\s*[\d,.]+\s*(?:个|位)?人?[^\n。；]{0,20}?至\s*[\d,.]+\s*(?:个|位)?人?(?:以上)?",
+        "如果后续完整观察周期内达人覆盖持续增长",
+    )
+    replace(
         r"筛选\s*[\d,.]+\s*(?:[kKwW万])?\s*[-~–—至到]\s*[\d,.]+\s*(?:[kKwW万])?\s*粉(?:丝)?的?",
         "筛选受众匹配的",
     )
@@ -8318,11 +8333,6 @@ def sanitize_fastmoss_unsupported_recommendations(answer: str) -> tuple[str, int
     replace(
         r"(?:以|用)\s*\*{0,2}(?:US\$|USD\s*|\$|¥|￥)\s*[\d,.]+\*{0,2}[^\n。；]{0,24}?上架",
         "选择一个有证据支撑的候选价上架",
-    )
-    replace(
-        r"定价\s*\*{0,2}(?:US\$|USD\s*|\$|¥|￥)\s*[\d,.]+\s*"
-        r"(?:[-~–—至到]\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+)?\*{0,2}",
-        "定价应基于已观测价格带、实际成本与转化验证",
     )
     replace(
         r"(?:设置|设定|建议)\s*\*{0,2}[\d,.]+\s*%\*{0,2}\s*佣金(?:率)?",
@@ -8476,6 +8486,12 @@ def sanitize_fastmoss_unsupported_recommendations(answer: str) -> tuple[str, int
         r"(?:[-~–—至到]\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+)?\s*价位",
         "从已观测价格带中选择候选价进行验证",
     )
+    replace(
+        r"(?:测试|试投|试卖)\s*(?:US\$|USD\s*|\$|¥|￥)\s*[\d,.]+\s*"
+        r"(?:[-~–—至到]\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+)?\s*的?(?=\s*(?:[A-Za-z]|款|产品|商品))",
+        "测试已观测价格带内的",
+    )
+    replace(r"建议关注区间", "样本主体区间")
     replace(
         r"(?:头部商品)?毛利率?潜力\s*(?:\|\s*)?(?:较高|很高|高|较低|很低|低)(?:[^|\n]*)",
         "毛利判断 | 暂无法判断（缺少成本证据）",
@@ -8814,17 +8830,53 @@ def fastmoss_candidate_evidence(
         "state_claim": set(),
         "market_absolute": {"product_sample", "category_analysis", "category_channel_ranking"},
         "lifecycle": {"product_90d_trend", "product_overview", "shop_data_trends", "creator_data_trends", "video_data_trends"},
-        "operational_number": {"product_sample", "product_detail", "product_overview", "product_creator_analysis"},
+        "operational_number": {
+            "product_sample", "product_detail", "product_overview", "product_90d_trend",
+            "product_creator_analysis", "product_videos",
+        },
     }
     wanted_dimensions = set().union(*(reason_dimensions.get(reason, set()) for reason in reasons))
     all_facts = [fact for fact in (packet.get("representative_evidence") or []) if isinstance(fact, dict)]
-    facts = [
-        fact for fact in all_facts
-        if (
-            str(fact.get("entity_id") or fact.get("product_id") or fact.get("shop_id") or fact.get("video_id") or "") in ids
-            or str(fact.get("dimension") or "") in wanted_dimensions
+
+    def compact_validator_fact(fact: dict[str, Any], matching_ids: set[str]) -> dict[str, Any]:
+        compact = dict(fact)
+        products = [item for item in (compact.get("products") or []) if isinstance(item, dict)]
+        if products:
+            matched_products = [
+                item for item in products if str(item.get("product_id") or "") in matching_ids
+            ]
+            compact["products"] = matched_products or products[:2]
+            compact["included_count"] = len(compact["products"])
+            compact["omitted_count"] = max(0, int(compact.get("returned_count") or len(products)) - len(compact["products"]))
+            compact["truncated"] = bool(compact["omitted_count"])
+        if isinstance(compact.get("trend_series"), list) and len(compact["trend_series"]) > 4:
+            compact["trend_series"] = compact["trend_series"][:2] + compact["trend_series"][-2:]
+            compact["trend_series_truncated"] = True
+        return compact
+
+    facts: list[dict[str, Any]] = []
+    for fact in all_facts:
+        primary_id = str(
+            fact.get("entity_id") or fact.get("product_id")
+            or fact.get("shop_id") or fact.get("video_id") or ""
         )
-    ]
+        product_ids = {
+            str(item.get("product_id") or "")
+            for item in (fact.get("products") or []) if isinstance(item, dict)
+        }
+        if ids:
+            if primary_id not in ids and not product_ids.intersection(ids):
+                continue
+        elif wanted_dimensions and str(fact.get("dimension") or "") not in wanted_dimensions:
+            continue
+        elif (
+            not ids
+            and reasons.issubset({"operational_number", "state_claim"})
+            and str(fact.get("dimension") or "") == "product_sample"
+            and str(fact.get("scope") or "") == "category_head"
+        ):
+            continue
+        facts.append(compact_validator_fact(fact, ids))
     if not facts and ids:
         relevant_calls = {
             call_index for bundle in (manifest.get("entity_bundles") or [])
@@ -8832,7 +8884,7 @@ def fastmoss_candidate_evidence(
             for call_index in (bundle.get("source_calls") or [])
         }
         facts = [
-            fact for fact in all_facts
+            compact_validator_fact(fact, ids) for fact in all_facts
             if int(fact.get("source_call_index") or 0) in relevant_calls
         ]
     metric_keywords = {
@@ -8843,12 +8895,16 @@ def fastmoss_candidate_evidence(
         "state_claim": ("returned_", "reported_"),
         "market_absolute": ("units_sold", "gmv", "rank", "score"),
         "lifecycle": ("trend", "active_days", "first_30d", "last_30d"),
-        "operational_number": ("price", "creator", "gmv", "units_sold", "share_percent"),
+        "operational_number": (
+            "price", "creator", "video", "play_count", "engagement", "trend",
+            "gmv", "units_sold", "share_percent",
+        ),
     }
     wanted_metric_terms = {
         term for reason in reasons for term in metric_keywords.get(reason, ())
     }
-    metrics: list[dict[str, Any]] = []
+    primary_metrics: list[dict[str, Any]] = []
+    secondary_metrics: list[dict[str, Any]] = []
     for metric in manifest.get("metric_registry") or []:
         if not isinstance(metric, dict):
             continue
@@ -8856,13 +8912,18 @@ def fastmoss_candidate_evidence(
         context = metric.get("context") if isinstance(metric.get("context"), dict) else {}
         subject_product_id = str(context.get("subject_product_id") or "")
         metric_name = str(metric.get("metric") or "")
-        if ids and entity_id not in ids and subject_product_id not in ids:
+        id_match = not ids or entity_id in ids or subject_product_id in ids
+        if not id_match:
             continue
-        if not ids and wanted_metric_terms and not any(term in metric_name for term in wanted_metric_terms):
-            continue
-        metrics.append(metric)
-        if len(metrics) >= 50:
-            break
+        term_match = not wanted_metric_terms or any(term in metric_name for term in wanted_metric_terms)
+        if term_match:
+            primary_metrics.append(metric)
+        elif ids:
+            secondary_metrics.append(metric)
+    # Relevance wins over registry order.  The previous first-50 truncation
+    # could omit a later 90-day trend while retaining unrelated early metrics
+    # for the same product.
+    metrics = (primary_metrics + secondary_metrics)[:24] if ids else []
     relevant_calls = {
         int(item.get("source_call_index") or 0) for item in metrics + facts
         if int(item.get("source_call_index") or 0) > 0
@@ -8870,7 +8931,7 @@ def fastmoss_candidate_evidence(
     source_catalog = [
         item for item in (packet.get("source_catalog") or [])
         if not relevant_calls or int(item.get("source_call_index") or 0) in relevant_calls
-    ][:16]
+    ][:8]
     return {
         "workflow": packet.get("workflow"),
         "analysis_targets": packet.get("analysis_targets"),
@@ -8878,12 +8939,19 @@ def fastmoss_candidate_evidence(
         "coverage_summary": packet.get("coverage_summary"),
         "source_catalog": source_catalog,
         "entity_bundles": [
-            bundle for bundle in (manifest.get("entity_bundles") or [])
+            {
+                key: bundle.get(key) for key in (
+                    "entity_type", "entity_id", "source_calls", "dimensions",
+                    "periods", "data_states", "fact_ids",
+                ) if bundle.get(key) not in (None, "", {}, [])
+            }
+            | ({"conflict_count": len(bundle.get("conflicts") or [])} if bundle.get("conflicts") else {})
+            for bundle in (manifest.get("entity_bundles") or [])
             if not ids or str(bundle.get("entity_id") or "") in ids
-        ][:20],
+        ][:8],
         "metric_registry": metrics,
-        "facts": facts[:40],
-        "derived_facts": (manifest.get("derived_facts") or [])[:12],
+        "facts": facts[:20],
+        "derived_facts": (manifest.get("derived_facts") or [])[:8],
         "conflicts": (manifest.get("conflicts") or [])[:20],
         "limitations": manifest.get("limitations") or [],
     }
@@ -8894,7 +8962,7 @@ def apply_fastmoss_verifier_edits(
     edits: Any,
     claims: list[dict[str, Any]] | None = None,
 ) -> tuple[str, int]:
-    """Apply valid claim edits independently and ignore malformed individual items."""
+    """Apply valid claim edits without allowing the verifier to retarget entities."""
     if not isinstance(edits, list):
         return str(draft or ""), 0
     updated = str(draft or "")
@@ -8916,6 +8984,15 @@ def apply_fastmoss_verifier_edits(
         if not isinstance(reason, str) or not reason.strip() or not isinstance(evidence_refs, list):
             continue
         if original not in updated:
+            continue
+        original_ids = set(re.findall(r"(?<!\d)\d{16,20}(?!\d)", original))
+        replacement_ids = set(re.findall(r"(?<!\d)\d{16,20}(?!\d)", replacement))
+        # Entity selection belongs to deterministic workflow orchestration.
+        # A verifier may soften unsupported wording, but it must not swap or
+        # remove a locked product/creator/video ID or inject a new entity.
+        if replacement and replacement_ids != original_ids:
+            continue
+        if not replacement and original_ids:
             continue
         updated = updated.replace(original, replacement, 1)
         applied += 1
