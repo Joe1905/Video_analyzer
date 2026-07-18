@@ -56,6 +56,8 @@ RUN apt-get update \
 COPY scripts/ /workspace/scripts/
 COPY sellersprite_mcp_chat/ /workspace/sellersprite_mcp_chat/
 
+RUN chmod 0711 /root
+
 EXPOSE 4000
 
 CMD ["bash"]
