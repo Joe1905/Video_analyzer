@@ -1139,7 +1139,19 @@ def test_fastmoss_business_defaults_use_verified_category_levels() -> None:
         "search_category_by_words", {"query": ["food processor"], "desc": "瑜伽裤", "unexpected": 1},
         named_category_message, fixed_today, user_text="料理机",
     )
-    assert category_args == {"query": ["food processor"]}
+    assert category_args == {"query": ["料理机"]}
+
+    original_query_args = web_app.apply_fastmoss_business_defaults(
+        "search_category_by_words",
+        {"query": ["Electric Food Shredder", "Mini Meat Grinder", "Food Processor"], "top_k": 8},
+        SimpleNamespace(tool_calls=[], tool_results=[]),
+        fixed_today,
+        user_text="给我一份 Electric Food Shredder, Mini Meat Grinder 这类产品的调研报告",
+        route={"playbook": "product", "entity": "Electric Food Shredder, Mini Meat Grinder, Food Processor"},
+    )
+    assert original_query_args == {
+        "query": ["Electric Food Shredder", "Mini Meat Grinder"], "top_k": 8,
+    }
 
 
 def test_fastmoss_product_workflow_keeps_its_round_budget_isolated() -> None:
@@ -1200,7 +1212,31 @@ def test_fastmoss_close_cross_category_matches_request_confirmation() -> None:
     assert question and "厨房剪刀" in question and "料理机" in question
     assert "不会继续消耗" in question
     result["mcp_data"]["result"]["categories"][0]["category_id_level2"] = 844168
-    assert web_app.fastmoss_category_ambiguity_question("Electric Food Shredder 调研", result) is None
+    assert web_app.fastmoss_category_ambiguity_question("Electric Food Shredder 调研", result)
+
+    latest_result = {"mcp_data": {"result": {"categories": [
+        {
+            "category_id_level1": 13, "category_id_level2": 844168, "category_id_level3": 934664,
+            "cn_name": "面包机", "cn_full_name": "家电-厨房家电-面包机", "score": 0.5152,
+            "matched_query": "Food Processor",
+        },
+        {
+            "category_id_level1": 13, "category_id_level2": 844168, "category_id_level3": 935176,
+            "cn_name": "料理机", "cn_full_name": "家电-厨房家电-料理机", "score": 0.5023,
+            "matched_query": "Electric Food Shredder",
+        },
+        {
+            "category_id_level1": 13, "category_id_level2": 844168, "category_id_level3": 983944,
+            "cn_name": "垃圾处理器", "cn_full_name": "家电-厨房家电-垃圾处理器", "score": 0.4891,
+            "matched_query": "Electric Food Shredder",
+        },
+    ]}}}
+    latest_question = web_app.fastmoss_category_ambiguity_question(
+        "Electric Food Shredder, Mini Meat Grinder 调研", latest_result
+    )
+    assert latest_question and "料理机" in latest_question and "垃圾处理器" in latest_question
+    assert "面包机" not in latest_question
+    assert web_app.fastmoss_category_ambiguity_question("目标类目明确选择料理机", latest_result) is None
 
 
 def test_provider_profiles_use_aggregated_sellersprite_and_staged_fastmoss_tools() -> None:

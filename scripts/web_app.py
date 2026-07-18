@@ -4637,6 +4637,17 @@ def fastmoss_segment_keywords(user_text: str, route: dict[str, Any] | None = Non
     return keywords
 
 
+def fastmoss_original_segment_keywords(
+    user_text: str,
+    route: dict[str, Any] | None = None,
+) -> list[str]:
+    """Keep user-authored product phrases authoritative over model expansions."""
+    inherited = (route or {}).get("segment_keywords")
+    if isinstance(inherited, list) and inherited:
+        return fastmoss_segment_keywords(user_text, {"segment_keywords": inherited})
+    return fastmoss_segment_keywords(user_text)
+
+
 def fastmoss_inherited_segment_keywords(session_messages: list[Message], current_text: str) -> list[str]:
     """Keep the original product phrases when a follow-up only confirms category or continuation."""
     if not chat_query_uses_previous_entity(current_text):
@@ -9950,28 +9961,53 @@ def _fastmoss_category_candidates(value: Any) -> list[dict[str, Any]]:
 
 
 def fastmoss_category_ambiguity_question(user_text: str, result: dict[str, Any]) -> str | None:
-    """Stop before market calls when the category matcher is effectively tied across L2 categories."""
+    """Stop before market calls when user-term L3 candidates are effectively tied."""
     if fastmoss_exact_product_reference(user_text) or re.search(
         r"(?:category[_ ]?id|类目\s*id)\D{0,6}\d{1,12}", str(user_text or ""), re.IGNORECASE
     ):
         return None
     candidates = _fastmoss_category_candidates(result.get("mcp_data"))
-    if len(candidates) < 2:
+    explicit_text = re.sub(r"\s+", "", chat_routing_text(user_text)).casefold()
+    for candidate in candidates:
+        category_name = re.sub(r"\s+", "", str(candidate.get("cn_name") or "")).casefold()
+        if category_name and category_name in explicit_text:
+            return None
+
+    original_queries = {
+        re.sub(r"\s+", " ", query).strip().casefold()
+        for query in fastmoss_original_segment_keywords(user_text)
+        if str(query or "").strip()
+    }
+    matched_candidates = [
+        candidate for candidate in candidates
+        if re.sub(r"\s+", " ", str(candidate.get("matched_query") or "")).strip().casefold()
+        in original_queries
+    ]
+    if matched_candidates:
+        candidates = matched_candidates
+
+    distinct_candidates: list[dict[str, Any]] = []
+    seen_l3: set[str] = set()
+    for candidate in candidates:
+        level3 = str(candidate.get("category_id_level3") or "")
+        if not level3 or level3 in seen_l3:
+            continue
+        seen_l3.add(level3)
+        distinct_candidates.append(candidate)
+    if len(distinct_candidates) < 2:
         return None
-    first, second = candidates[0], candidates[1]
+    first, second = distinct_candidates[0], distinct_candidates[1]
     try:
         score_gap = abs(float(first.get("score")) - float(second.get("score")))
     except (TypeError, ValueError):
         return None
-    first_l2 = str(first.get("category_id_level2") or "")
-    second_l2 = str(second.get("category_id_level2") or "")
-    if not first_l2 or not second_l2 or first_l2 == second_l2 or score_gap > 0.03:
+    if score_gap > 0.03:
         return None
-    first_name = str(first.get("cn_full_name") or first.get("cn_name") or first_l2).strip()
-    second_name = str(second.get("cn_full_name") or second.get("cn_name") or second_l2).strip()
+    first_name = str(first.get("cn_full_name") or first.get("cn_name") or first.get("category_id_level3")).strip()
+    second_name = str(second.get("cn_full_name") or second.get("cn_name") or second.get("category_id_level3")).strip()
     return (
         f"FastMoss 对这个关键词的类目匹配很接近：① {first_name}；② {second_name}。"
-        "为了避免查错类目，请确认你要研究哪一个；如果是迷你电动绞肉/切碎机，可以直接回复“第二个，料理机”。"
+        "为了避免查错类目，请直接回复要研究的类目名称。"
         "确认前我不会继续消耗后续榜单和商品查询额度。"
     )
 
@@ -10005,6 +10041,9 @@ def apply_fastmoss_business_defaults(
             key: value for key, value in normalized.items()
             if key in {"query", "top_k", "max_total_results"}
         }
+        original_queries = fastmoss_original_segment_keywords(user_text, route)
+        if original_queries:
+            normalized["query"] = original_queries
     elif name == "market_category_analysis":
         filters = copied_filter()
         if path:
