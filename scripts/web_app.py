@@ -7183,6 +7183,7 @@ def fastmoss_coverage_summary(
         arguments = _fastmoss_compact_argument_summary(envelope.get("arguments"))
         if state == "empty":
             empty_results.append({
+                "source_ref": f"call:{call_index}" if call_index else "",
                 "source_call_index": call_index,
                 "source_tool": envelope.get("source_tool"),
                 "metric_grain": envelope.get("metric_grain"),
@@ -7473,6 +7474,12 @@ def fastmoss_evidence_manifest(
             continue
         result = dict(item["result"])
         arguments = _fastmoss_call_arguments_for_result(assistant_msg, result_index, tool_name)
+        source_value = _fastmoss_response_value(None, result)
+        conflicts.extend(
+            _fastmoss_report_scope_conflicts(
+                f"call:{result_index + 1}", arguments, _fastmoss_report_data_value(source_value)
+            )
+        )
         if not isinstance(result.get("evidence_envelope"), dict):
             value = _fastmoss_response_value(None, result)
             if not isinstance(result.get("evidence_metadata"), dict):
@@ -7863,18 +7870,210 @@ def fastmoss_report_quality_instruction(
     route: dict[str, Any],
 ) -> str:
     manifest = fastmoss_evidence_manifest(assistant_msg, user_text, route)
-    packet = fastmoss_report_packet(manifest, route)
+    evidence_index = {
+        "coverage_summary": manifest.get("coverage_summary") or {},
+        "analysis_targets": manifest.get("analysis_targets") or [],
+        "derived_facts": manifest.get("derived_facts") or [],
+        "conflicts": manifest.get("conflicts") or [],
+        "limitations": manifest.get("limitations") or [],
+    }
     return (
         fastmoss_report_style_instruction(route)
         + " "
-        "FastMoss 最终报告必须以 report_packet 为事实口径权威来源，原始工具结果只用于查证细节。"
+        "当前会话中的完整工具结果是报告的事实素材；evidence_index 只负责标注覆盖、对象、计算边界和冲突，"
+        "不能替代、裁剪或隐藏工具结果。"
         "根据实际证据组织报告，不要套用 Amazon 的关键词、PPC、BSR、ASIN 或 FBA 结构。"
-        "标题、章节和顺序由你按叙事需要决定；不存在的证据不要硬写。reported_total 与本次样本数不得混写。"
-        "available_dimensions 中每个取得实质证据的维度都应在报告中得到使用，但不要求固定标题。"
-        "target_evidence 按 analysis_targets 的精确实体ID组织，是描述目标实体时的唯一事实来源；"
-        "supporting_evidence 只能描述其自身类目、样本或实体，不能把其中其他实体的数据移植到目标实体。"
-        "report_packet：" + json.dumps(packet, ensure_ascii=False, separators=(",", ":"))
+        "标题、章节、比较方式和结论顺序由你决定；不存在的证据不要硬写。"
+        "观察事实必须服从 evidence_index 的实体、周期、样本和冲突边界，推断与建议应明确区别于观察事实。"
+        "空结果只适用于该次调用的精确参数；关键词返回量不是市场容量；跨实体或跨周期数据不得直接相除或互相解释；"
+        "渠道占比、关联达人/视频数和趋势只描述观察结构，除非有直接证据，否则不得写成流量来源、因果、效率或生命周期结论。"
+        "evidence_index：" + json.dumps(evidence_index, ensure_ascii=False, separators=(",", ":"))
     )
+
+
+def _fastmoss_report_data_value(value: Any) -> Any:
+    """Remove transport/media noise while preserving every business row and field."""
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.startswith(("{", "[")):
+            parsed = parse_mcp_text_content(stripped)
+            if parsed is not None and parsed != value:
+                return _fastmoss_report_data_value(parsed)
+        return value
+    if isinstance(value, list):
+        return [_fastmoss_report_data_value(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    skipped = {
+        "raw", "rawresponse", "responseblob", "html", "mcptextpreview",
+        "image", "images", "avatar", "avatarthumb", "urllist", "toolid",
+    }
+    cleaned: dict[str, Any] = {}
+    for key, item in value.items():
+        normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
+        if normalized in skipped or normalized.endswith(("url", "uri")):
+            continue
+        cleaned[str(key)] = _fastmoss_report_data_value(item)
+    return cleaned
+
+
+def _fastmoss_requested_l3_id(arguments: dict[str, Any]) -> str:
+    filters = arguments.get("filter") if isinstance(arguments.get("filter"), dict) else {}
+    sources = [filters, arguments]
+    for source in sources:
+        for key, value in source.items():
+            normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
+            if normalized in {"categoryl3id", "categoryidlevel3"} and _fastmoss_valid_entity_id(value):
+                return str(value).strip()
+    for source in sources:
+        path = next((
+            value for key, value in source.items()
+            if re.sub(r"[^a-z0-9]", "", str(key).lower()) == "categorypath"
+            and isinstance(value, list)
+        ), None)
+        if path and len(path) >= 3 and _fastmoss_valid_entity_id(path[-1]):
+            return str(path[-1]).strip()
+    # Some list tools expose category_id plus explicit parent IDs rather than
+    # a category_l3_id field.  Only treat it as L3 when the parent IDs are also
+    # present; a lone category_id may legitimately refer to L1 or L2.
+    normalized_filters = {
+        re.sub(r"[^a-z0-9]", "", str(key).lower()): value
+        for key, value in filters.items()
+    }
+    if (
+        "categoryid" in normalized_filters
+        and any(key in normalized_filters for key in ("categoryl1id", "categoryidlevel1"))
+        and any(key in normalized_filters for key in ("categoryl2id", "categoryidlevel2"))
+        and _fastmoss_valid_entity_id(normalized_filters["categoryid"])
+    ):
+        return str(normalized_filters["categoryid"]).strip()
+    return ""
+
+
+def _fastmoss_report_scope_conflicts(
+    source_ref: str,
+    arguments: dict[str, Any],
+    data: Any,
+) -> list[dict[str, Any]]:
+    """Fence returned product rows whose exact L3 differs from the requested L3."""
+    requested_l3 = _fastmoss_requested_l3_id(arguments)
+    if not requested_l3:
+        return []
+    conflicts: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def visit(node: Any) -> None:
+        if isinstance(node, list):
+            for item in node:
+                visit(item)
+            return
+        if not isinstance(node, dict):
+            return
+        product_id = _fastmoss_record_value(node, {"productid", "goodsid", "itemid"})
+        category = node.get("category") if isinstance(node.get("category"), dict) else {}
+        l3 = category.get("l3") if isinstance(category.get("l3"), dict) else {}
+        actual_l3 = _fastmoss_record_value(l3, {"id", "categoryid"})
+        if actual_l3 in (None, ""):
+            actual_l3 = _fastmoss_record_value(node, {"categoryl3id", "categoryidlevel3"})
+        if (
+            _fastmoss_valid_entity_id(product_id)
+            and _fastmoss_valid_entity_id(actual_l3)
+            and str(actual_l3).strip() != requested_l3
+        ):
+            marker = (str(product_id).strip(), str(actual_l3).strip())
+            if marker not in seen:
+                seen.add(marker)
+                conflicts.append({
+                    "source_ref": source_ref,
+                    "conflict_type": "returned_product_outside_requested_l3",
+                    "product_id": marker[0],
+                    "requested_l3_id": requested_l3,
+                    "returned_l3_id": marker[1],
+                    "returned_l3_name": str(l3.get("name") or "").strip() or None,
+                    "claim_boundary": "该行可作为接口范围异常观察，但不得计入目标 L3 样本统计或共同特征",
+                })
+        for item in node.values():
+            if isinstance(item, (dict, list)):
+                visit(item)
+
+    visit(data)
+    return conflicts
+
+
+def fastmoss_report_evidence_dossier(
+    assistant_msg: Message,
+    manifest: dict[str, Any],
+    route: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Expose one complete normalized business payload per call, with index-only fences."""
+    tool_evidence: list[dict[str, Any]] = []
+    scope_conflicts: list[dict[str, Any]] = []
+    for result_index, item in enumerate(assistant_msg.tool_results or []):
+        if not isinstance(item, dict) or not isinstance(item.get("result"), dict):
+            continue
+        tool_name = str(item.get("tool_name") or "tool")
+        if split_prefixed_tool_id(tool_name)[0] != "fastmoss":
+            continue
+        result = item["result"]
+        arguments = _fastmoss_call_arguments_for_result(assistant_msg, result_index, tool_name)
+        data = result.get("mcp_data")
+        if data is None:
+            data = result.get("summary")
+        if data is None:
+            data = {
+                key: result.get(key) for key in ("products", "items", "results", "error")
+                if result.get(key) is not None
+            }
+        cleaned_data = _fastmoss_report_data_value(data)
+        source_ref = f"call:{result_index + 1}"
+        envelope = next((
+            row for row in (manifest.get("evidence_envelopes") or [])
+            if isinstance(row, dict) and int(row.get("source_call_index") or 0) == result_index + 1
+        ), {})
+        entry_conflicts = _fastmoss_report_scope_conflicts(source_ref, arguments, cleaned_data)
+        scope_conflicts.extend(entry_conflicts)
+        fence = {
+            key: envelope.get(key) for key in (
+                "parser_status", "data_state", "region", "scope", "metric_grain",
+                "returned_count", "reported_total", "period", "entity_refs",
+            ) if envelope.get(key) not in (None, "", {}, [])
+        }
+        if "data_state" not in fence:
+            fence["data_state"] = mcp_result_data_state(result)
+        tool_evidence.append({
+            "source_ref": source_ref,
+            "tool_name": tool_name,
+            "arguments": _fastmoss_report_data_value(arguments),
+            "evidence_fence": fence,
+            "business_data": cleaned_data,
+            **({"error": str(result.get("error"))} if result.get("error") else {}),
+            **({"scope_conflicts": entry_conflicts} if entry_conflicts else {}),
+        })
+    return {
+        "type": "fastmoss_evidence_dossier",
+        "provider": "fastmoss",
+        "workflow": str((route or {}).get("playbook") or "product"),
+        "target_category_path": manifest.get("target_category_path") or [],
+        "analysis_targets": manifest.get("analysis_targets") or [],
+        "coverage_summary": manifest.get("coverage_summary") or {},
+        "derived_facts": manifest.get("derived_facts") or [],
+        "report_date": datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat(),
+        "conflicts": list(manifest.get("conflicts") or []),
+        "limitations": manifest.get("limitations") or [],
+        "tool_evidence": tool_evidence,
+        # Keep the short, program-authoritative fence after the long evidence
+        # list so it remains salient without replacing any source rows.
+        "hard_fact_boundaries": {
+            "exact_empty_results": (manifest.get("coverage_summary") or {}).get("exact_empty_results") or [],
+            "returned_rows_outside_requested_l3": scope_conflicts,
+            "rules": [
+                "空结果只适用于对应 source_ref 的精确 arguments，不代表平台全局为零或不存在商品",
+                "关键词返回量不是市场容量，样本占比不是未抓取商品或全市场份额",
+                "跨实体或跨周期数据不得直接相除、合并或互相解释",
+                "渠道占比、关联达人/视频数和趋势只描述观察结构，不直接证明流量来源、因果、效率、广告花费或生命周期",
+            ],
+        },
+    }
 
 
 def fastmoss_report_packet(manifest: dict[str, Any], route: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -8214,18 +8413,16 @@ def fastmoss_report_style_instruction(route: dict[str, Any]) -> str:
         return ""
     full_report = str(route.get("task_depth") or "") == "workflow" or route.get("playbook") in {"product", "pricing", "competitor", "shop"}
     detail_requirement = (
-        "这是一份完整调研报告，不是执行摘要。先直接回答用户，再保留本轮实际取得的研究范围、类目和细分比较、"
-        "头部或新品、代表商品、渠道与内容信号、价格、风险和验证顺序；只有取到对应证据时才展开该模块。"
-        "有足够同口径商品数据时可以用表格展示代表样本，不得为了简洁删掉重要证据。"
+        "这是一份完整调研报告，不是执行摘要。完整使用本轮取得的实质证据，但由你根据用户问题决定叙事主线、"
+        "章节、比较维度和详略；有足够同口径数据时可以用表格，不得为了简洁删掉重要证据。"
         if full_report else
         "结论之后仍需保留支撑判断的关键数据、数据边界和下一步，不能只给摘要。"
     )
     return (
         "表达要求：结论优先，把数据转成有依据的比较、解释、取舍、风险和验证顺序。" + detail_requirement +
-        "这是完整调研报告，不是执行摘要；所有取得实质证据的维度都应被使用，有可比商品时保留详细表格。"
         "标题、章节名称和顺序完全由你按内容决定，不要求固定短语、固定引用数量、字符数或篇幅比例。"
-        "明确区分实体、周期、样本和空结果范围；除工具证据、用户输入或已展示计算外，不新增精确执行数字。"
-        "可以自然表达判断和建议，但证据不足时说明仍需验证。"
+        "明确区分实体、周期、样本和空结果范围。可以自由提出执行建议、测试方案和策略假设，"
+        "但要把它们明确写成建议或假设，不能伪装成工具已经观测到的事实。"
     )
 
 
@@ -9011,14 +9208,18 @@ def fastmoss_high_risk_claims(draft: str) -> list[dict[str, Any]]:
             r"(?:找|联系|合作|招募|筛选)[^\n]{0,30}(?:达人|创作者)|"
             r"(?:达人|创作者)[^\n]{0,30}(?:找|联系|合作|招募|筛选)))"
         )),
-        ("sample_extrapolation", re.compile(r"(?:其余|剩余|未抓取|全市场|市场份额|长尾)[^\n]{0,120}(?:%|商品|产品|件)")),
+        ("sample_extrapolation", re.compile(
+            r"(?:其余|剩余|未抓取|全市场|市场份额|长尾)[^\n]{0,120}(?:%|商品|产品|件)|"
+            r"(?:全部|均为|全是|几乎全是)[^\n。；]{0,100}(?:商品|产品|达人|视频|内容)"
+        )),
         ("market_scale", re.compile(
             r"(?:市场(?:容量|体量|规模)|实质性细分市场|商业化程度|规模投入|结构性机会|"
             r"(?:抢占|占据|扩大|获得)[^\n。；]{0,30}市场份额)"
         )),
         ("channel_causality", re.compile(
             r"(?i)(?:(?:依靠|通过)[^\n。；]{0,40}(?:广告|联盟|视频|直播)|(?:广告|联盟|视频|直播))"
-            r"[^\n。；]{0,100}(?:ROI|利润|有效|可行|驱动|导致|证明|稳定|实现|带来|造就|爆发)"
+            r"[^\n。；]{0,100}(?:ROI|利润|有效|可行|驱动|导致|证明|稳定|实现|带来|造就|爆发)|"
+            r"广告(?:投入|花费|预算)"
         )),
         ("content_causality", re.compile(
             r"(?:内容偏好|最有效|转化最高|表现最好|核心驱动力|持续动力|搜索截流|"
@@ -9032,7 +9233,11 @@ def fastmoss_high_risk_claims(draft: str) -> list[dict[str, Any]]:
             r"(?i)(?:占|贡献)[^\n。；]{0,50}(?:%|百分比)|(?:%|百分比)[^\n。；]{0,40}(?:占|贡献)"
         )),
         ("cross_entity_attribute", re.compile(r"(?:同一品牌|同一店铺|同一卖家|都来自同一)")),
-        ("state_claim", re.compile(r"(?:返回为空|没有返回|未返回|无数据|没有数据|为零|等于0)")),
+        ("state_claim", re.compile(
+            r"(?:返回为空|没有返回|未返回|无数据|没有数据|为零|等于0)|"
+            r"(?:未|没有|无法)找到[^\n。；]{0,50}(?:商品|品类|类目|记录|结果|匹配)|"
+            r"(?:尚无|没有|无)[^\n。；]{0,30}(?:对应品类|活跃商品|商品记录|搜索记录)"
+        )),
         ("market_absolute", re.compile(r"(?:低竞争|蓝海|真实机会|确定机会|不存在市场|不构成独立市场|已经饱和)")),
         ("lifecycle", re.compile(
             r"(?:爆发期|成长期|稳定期|衰退期|已经过峰值|仍在上升|生命周期|"
@@ -9487,12 +9692,19 @@ def apply_fastmoss_verifier_edits(
         claim_slice = per_claim_evidence.get(str(claim_id or ""), evidence_slice or {})
         evidence_records = [
             item
-            for group_name in ("facts", "metric_registry", "derived_facts", "source_catalog")
+            for group_name in (
+                "facts", "metric_registry", "derived_facts", "source_catalog",
+                "exact_empty_results", "conflicts",
+            )
             for item in (claim_slice.get(group_name) or [])
             if isinstance(item, dict)
         ]
+        # Evidence references are an edit authorization boundary, not free-form
+        # verifier prose.  Reject structured/malformed refs rather than turning
+        # their repr into a value that appears to be cited.
         evidence_refs = {
-            str(ref) for ref in (edit.get("evidence_refs") or []) if str(ref).strip()
+            ref.strip() for ref in (edit.get("evidence_refs") or [])
+            if isinstance(ref, str) and ref.strip()
         }
         call_refs = {
             int(match.group(1)) for ref in evidence_refs
@@ -9519,6 +9731,8 @@ def apply_fastmoss_verifier_edits(
             if evidence_refs.intersection(record_refs(item))
             or int(item.get("source_call_index") or 0) in call_refs
         ]
+        if not referenced_records:
+            continue
         referenced_numbers = normalize_numbers(
             json.dumps(referenced_records, ensure_ascii=False, default=str)
         )
@@ -9640,20 +9854,29 @@ def synthesize_fastmoss_report_from_packet(
     api_url: str,
     model: str,
 ) -> str:
-    """Write the report from the compact packet, outside the tool protocol conversation."""
+    """Write freely from complete normalized evidence, outside the tool protocol conversation."""
     manifest = fastmoss_evidence_manifest(assistant_msg, user_text, route)
-    packet = fastmoss_report_packet(manifest, route)
-    packet_json = json.dumps(packet, ensure_ascii=False, separators=(",", ":"))
+    dossier = fastmoss_report_evidence_dossier(assistant_msg, manifest, route)
+    dossier_json = json.dumps(dossier, ensure_ascii=False, separators=(",", ":"))
     messages = [
         {
             "role": "system",
             "content": (
-                "你是 FastMoss 调研报告撰写器。当前请求没有任何可调用工具，只能根据 report_packet 写最终中文 Markdown 报告。"
-                "report_packet 是事实口径的唯一权威来源；不得输出工具调用、DSML、函数协议或待调用计划。"
-                "必须把事实转成比较、解释、结论、风险和验证顺序，不能只罗列表格或数据缺口。"
+                "你是 FastMoss 调研报告撰写器。当前请求没有可调用工具，请根据 evidence_dossier 写最终中文 Markdown 报告。"
+                "tool_evidence 按调用顺序提供每次工具调用的完整、去除媒体与传输噪声后的业务结果；这是观察事实的主体，"
+                "不得只看 coverage_summary 或聚合索引就忽略明细。coverage、derived_facts、conflicts、limitations 和每次调用的 "
+                "evidence_fence 是事实围栏：帮助你校准实体、周期、样本、计算和冲突，但不替代业务结果，也不规定报告写法。"
+                "你可以自由选择结构、比较角度、解释和建议；必须区分观察事实、合理推断和待验证建议。"
+                "空结果只适用于该次调用的精确参数；关键词返回量不是市场容量；跨实体或跨周期数据不得直接相除或互相解释；"
+                "returned_product_outside_requested_l3 的行不得计入目标 L3 样本统计或共同特征；"
+                "渠道占比、关联达人/视频数和趋势只描述观察结构，除非有直接证据，否则不得写成流量来源、因果、效率或生命周期结论。"
+                "不要输出工具调用、DSML、函数协议或待调用计划。必须把事实转成比较、解释、结论、风险和验证顺序，"
+                "不能只罗列表格或数据缺口，也不要向用户提及 evidence_dossier、evidence_fence 等内部结构名称。"
                 + fastmoss_report_style_instruction(route)
-                + " report_packet: "
-                + packet_json
+                + " evidence_dossier: "
+                + dossier_json
+                + " 写作前最后核对 hard_fact_boundaries：尤其不得把限定类目/关键词的空结果写成平台全局为零，"
+                  "不得把样本占比写成市场份额，也不得从渠道占比推导自然流量、广告花费、ROI、因果或生命周期。"
             ),
         },
         {"role": "user", "content": chat_routing_text(user_text)},
@@ -9680,7 +9903,8 @@ def synthesize_fastmoss_report_from_packet(
             "fastmoss_report_synthesis",
             {
                 "model": model,
-                "packet_chars": len(packet_json),
+                "dossier_chars": len(dossier_json),
+                "dossier_calls": len(dossier.get("tool_evidence") or []),
                 "evidence_envelopes": manifest.get("evidence_envelope_count") or 0,
                 "evidence_facts": manifest.get("evidence_fact_count") or 0,
             },
@@ -9694,7 +9918,8 @@ def synthesize_fastmoss_report_from_packet(
         if not draft or deepseek_tool_protocol_present({"content": draft}):
             raise ValueError("report synthesis returned empty or tool protocol")
         print(
-            f"[CHAT] FastMoss packet synthesis packet_chars={len(packet_json)} draft_chars={len(draft)}",
+            f"[CHAT] FastMoss dossier synthesis dossier_chars={len(dossier_json)} "
+            f"calls={len(dossier.get('tool_evidence') or [])} draft_chars={len(draft)}",
             flush=True,
         )
         return verify_fastmoss_final_answer(
@@ -9702,7 +9927,7 @@ def synthesize_fastmoss_report_from_packet(
             requests_module, api_key, api_url, model,
         )
     except Exception as exc:
-        print(f"[CHAT] FastMoss packet synthesis failed: {type(exc).__name__}: {str(exc)[:240]}", flush=True)
+        print(f"[CHAT] FastMoss dossier synthesis failed: {type(exc).__name__}: {str(exc)[:240]}", flush=True)
         fallback = fastmoss_deterministic_quality_fallback(manifest)
         _log_fastmoss_report_pipeline(
             "", manifest, f"synthesis_failed:{type(exc).__name__}",
