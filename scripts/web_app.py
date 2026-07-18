@@ -4268,6 +4268,36 @@ def chat_intent_router_enabled() -> bool:
     return str(os.getenv("CHAT_INTENT_ROUTER_ENABLED", "1")).strip().lower() not in {"0", "false", "no", "off"}
 
 
+def chat_report_model() -> str:
+    """Use the stronger model only after an analytical request has finished collecting evidence."""
+    return str(
+        os.getenv(
+            "DEEPSEEK_REPORT_MODEL",
+            os.getenv("DEEPSEEK_V4_PRO_MODEL", "deepseek-v4-pro"),
+        )
+    ).strip() or "deepseek-v4-pro"
+
+
+def chat_route_uses_report_model(provider: str, route: dict[str, Any]) -> bool:
+    """Keep direct/lookup traffic on Flash while upgrading evidence-led final reports."""
+    intent = str(route.get("intent") or "").strip().lower()
+    if intent == "video_analysis":
+        return True
+    task_depth = str(route.get("task_depth") or "").strip().lower()
+    if task_depth in {"direct", "lookup"}:
+        return False
+    if task_depth in {"analysis", "workflow"} or route.get("playbook"):
+        return True
+    return intent in {
+        "product_research",
+        "amazon_product",
+    }
+
+
+def fastmoss_llm_verifier_enabled() -> bool:
+    return str(os.getenv("FASTMOSS_LLM_VERIFIER_ENABLED", "0")).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def chat_intent_router_should_call(text: str, fallback_route: dict[str, Any]) -> bool:
     if not chat_intent_router_enabled():
         return False
@@ -9912,7 +9942,7 @@ def synthesize_fastmoss_report_from_packet(
             f"calls={len(dossier.get('tool_evidence') or [])} draft_chars={len(draft)}",
             flush=True,
         )
-        return verify_fastmoss_final_answer(
+        return finalize_fastmoss_answer(
             draft, assistant_msg, user_text, route,
             requests_module, api_key, api_url, model,
         )
@@ -10077,6 +10107,48 @@ def verify_fastmoss_final_answer(
         rejected_edits=rejected_edits,
     )
     return updated
+
+
+def finalize_fastmoss_answer(
+    draft: str,
+    assistant_msg: Message,
+    user_text: str,
+    route: dict[str, Any],
+    requests_module: Any,
+    api_key: str,
+    api_url: str,
+    model: str,
+) -> str:
+    """Preserve the Pro draft by default; the legacy LLM editor is opt-in."""
+    if fastmoss_llm_verifier_enabled():
+        return verify_fastmoss_final_answer(
+            draft, assistant_msg, user_text, route,
+            requests_module, api_key, api_url, model,
+        )
+    manifest = fastmoss_evidence_manifest(assistant_msg, user_text, route)
+    text = str(draft or "")
+    has_evidence = bool(
+        manifest.get("evidence_fact_count")
+        or (manifest.get("category_head") or {}).get("products")
+        or (manifest.get("segment_head") or {}).get("products")
+        or (manifest.get("quality_states") or {}).get("data")
+    )
+    if not text.strip() or deepseek_tool_protocol_present({"content": text}) or not has_evidence:
+        # These paths do not invoke the verifier model; verify_fastmoss_final_answer
+        # returns the deterministic fallback before building verifier batches.
+        return verify_fastmoss_final_answer(
+            text, assistant_msg, user_text, route,
+            requests_module, api_key, api_url, model,
+        )
+    prepared, _entity_id_cleanup_count = normalize_fastmoss_entity_id_abbreviations(text, manifest)
+    _log_fastmoss_report_pipeline(
+        text,
+        manifest,
+        "disabled",
+        final_answer=prepared,
+        claim_candidates=len(fastmoss_high_risk_claims(prepared)),
+    )
+    return prepared
 
 
 def build_tool_limit_final_context(messages: list[dict[str, Any]], user_request: str = "") -> list[dict[str, Any]]:
@@ -10921,7 +10993,8 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     provider = normalize_chat_provider(provider)
     api_key = os.getenv("DEEPSEEK_API_KEY", "")
     api_url = os.getenv("DEEPSEEK_API_URL", "https://api.deepseek.com/v1")
-    model = os.getenv("DEEPSEEK_CHAT_MODEL", os.getenv("DEEPSEEK_V4_PRO_MODEL", "deepseek-v4-pro"))
+    model = os.getenv("DEEPSEEK_CHAT_MODEL", "deepseek-v4-flash")
+    report_model = chat_report_model()
     current_date_shanghai = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
 
     if not api_key:
@@ -11274,7 +11347,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     if next_phase is None:
                         final_content = synthesize_fastmoss_report_from_packet(
                             assistant_msg, routing_text, route,
-                            req, api_key, api_url, model,
+                            req, api_key, api_url, report_model,
                         )
                         store.update_message(session, assistant_msg, final_content, status="done")
                         store.broadcast(session.id, "done", {
@@ -11296,11 +11369,16 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     f"Chat context remains over budget after compression: "
                     f"{context_stats['final_tokens']}/{context_stats['max_tokens']} estimated tokens"
                 )
-            payload = {"model": model, "messages": request_messages, "tools": request_tools or None, "temperature": 0.2}
+            request_model = (
+                report_model
+                if not request_tools and chat_route_uses_report_model(provider, route)
+                else model
+            )
+            payload = {"model": request_model, "messages": request_messages, "tools": request_tools or None, "temperature": 0.2}
             payload_str = json.dumps(payload, ensure_ascii=False)
             print(
                 f"[CHAT] DeepSeek request: {len(request_messages)} msgs, {len(payload_str)} bytes, "
-                f"tools={len(request_tools)}, estimated_tokens={context_stats['final_tokens']}/{context_stats['max_tokens']}, "
+                f"model={request_model}, tools={len(request_tools)}, estimated_tokens={context_stats['final_tokens']}/{context_stats['max_tokens']}, "
                 f"compressed={context_stats['compressed']}, dropped_history={context_stats['dropped_history']}",
                 flush=True,
             )
@@ -11320,7 +11398,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 "chat",
                 {
                     "api_url": api_url.rstrip("/") + "/chat/completions",
-                    "model": model,
+                    "model": request_model,
                     "payload_sha256": __import__("hashlib").sha256(payload_str.encode("utf-8")).hexdigest(),
                     "message_count": len(request_messages),
                     "tool_count": len(request_tools),
@@ -11487,9 +11565,9 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     })
                     continue
                 if provider == "fastmoss" and (assistant_msg.tool_results or []):
-                    fallback = verify_fastmoss_final_answer(
+                    fallback = finalize_fastmoss_answer(
                         "", assistant_msg, routing_text, route,
-                        req, api_key, api_url, model,
+                        req, api_key, api_url, report_model,
                     )
                 else:
                     fallback = (
@@ -11502,8 +11580,8 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 return
             if final_answer_forced and str(content or "").strip():
                 final_content = (
-                    verify_fastmoss_final_answer(
-                        str(content), assistant_msg, routing_text, route, req, api_key, api_url, model
+                    finalize_fastmoss_answer(
+                        str(content), assistant_msg, routing_text, route, req, api_key, api_url, report_model
                     ) if provider == "fastmoss" else str(content)
                 )
                 store.update_message(session, assistant_msg, final_content, status="done")
@@ -11571,9 +11649,30 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 tools = []
                 final_answer_forced = True
                 continue
+            if (
+                request_tools
+                and chat_route_uses_report_model(provider, route)
+                and request_model != report_model
+            ):
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        "Evidence collection is complete. Produce the final user-facing analytical report now. "
+                        "Do not call tools. Use the retained tool evidence comprehensively, distinguish observations from inference, "
+                        "and include comparisons, conclusions, risks, and actionable validation steps where supported."
+                    ),
+                    "_context_scope": "system",
+                })
+                tools = []
+                final_answer_forced = True
+                print(
+                    f"[CHAT] promoting analytical final synthesis from {request_model} to {report_model} provider={provider}",
+                    flush=True,
+                )
+                continue
             final_content = (
-                verify_fastmoss_final_answer(
-                    str(content), assistant_msg, routing_text, route, req, api_key, api_url, model
+                finalize_fastmoss_answer(
+                    str(content), assistant_msg, routing_text, route, req, api_key, api_url, report_model
                 ) if provider == "fastmoss" else str(content)
             )
             store.update_message(session, assistant_msg, final_content, status="done")
@@ -11639,8 +11738,9 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     f"{context_stats['final_tokens']}/{context_stats['max_tokens']} estimated tokens"
                 )
             endpoint = "chat_final_after_tool_limit" if attempt == 0 else "chat_final_protocol_retry"
+            final_model = report_model if chat_route_uses_report_model(provider, route) else model
             payload = {
-                "model": model,
+                "model": final_model,
                 "messages": request_messages,
                 "tools": None,
                 "temperature": 0.2 if attempt == 0 else 0,
@@ -11667,7 +11767,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 endpoint,
                 {
                     "api_url": api_url.rstrip("/") + "/chat/completions",
-                    "model": model,
+                    "model": final_model,
                     "payload_sha256": __import__("hashlib").sha256(payload_str.encode("utf-8")).hexdigest(),
                     "message_count": len(request_messages),
                     "tool_count": 0,
@@ -11681,8 +11781,8 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             content = str(response_message.get("content") or "")
             if content.strip() and not deepseek_tool_protocol_present(response_message):
                 final_content = (
-                    verify_fastmoss_final_answer(
-                        content, assistant_msg, routing_text, route, req, api_key, api_url, model
+                    finalize_fastmoss_answer(
+                        content, assistant_msg, routing_text, route, req, api_key, api_url, report_model
                     ) if provider == "fastmoss" else content
                 )
                 store.update_message(session, assistant_msg, final_content, status="done")
