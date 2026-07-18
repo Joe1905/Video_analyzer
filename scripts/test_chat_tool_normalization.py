@@ -1897,11 +1897,13 @@ def test_fastmoss_answer_verifier_applies_local_edits_and_keeps_draft_on_failure
         assert "## 核心判断" in edited and "## 代表商品" in edited and "## 渠道证据" in edited
         assert "| Mini Grinder | 424 | $36.05–$53 |" in edited
         assert "广告GMV占比为59%" in edited and "关联达人406名" in edited
-        for unsupported in (
+        # Execution recommendations are writing judgments, not observed facts.
+        # A verifier edit without an exact evidence reference must not erase them.
+        for recommendation in (
             "500-1000", "$2000", "3-5", "3–5", "2周", "2.5", "MOQ建议不超过500",
             "$29.99", "$39.99", "$13–$16", "$14.99", "1–2个月", "月销1,000", "$5–$8",
         ):
-            assert unsupported not in edited, (unsupported, edited)
+            assert recommendation in edited, (recommendation, edited)
 
         downgraded = web_app.polish_fastmoss_report_tone(
             "该细分不存在独立市场，但它是真实细分机会。"
@@ -2202,7 +2204,7 @@ def test_fastmoss_report_packets_are_workflow_native_and_numeric_policy_is_stric
     manifest = {
         "quality_states": {"data": ["fastmoss__product_search"], "empty": [], "error": []},
         "evidence_envelope_count": 1,
-        "evidence_fact_count": 1,
+        "evidence_fact_count": 2,
         "unsupported_parser_count": 0,
         "category_head": {"target_pages": 3, "completed_pages": [1], "reported_total": 20, "fetched_unique": 10, "coverage_complete": False},
         "segment_head": {"queries": {}, "fetched_unique": 0},
@@ -2210,6 +2212,11 @@ def test_fastmoss_report_packets_are_workflow_native_and_numeric_policy_is_stric
         "evidence_facts": [{
             "dimension": "category_trend", "data_state": "data",
             "source_tool": "fastmoss__market_category_analysis",
+        }, {
+            "fact_id": "fm-c2-f1", "dimension": "shop_data_trends", "data_state": "data",
+            "source_call_index": 2, "source_tool": "fastmoss__shop_data_trends",
+            "entity_type": "shop", "entity_id": "7495123456789012345",
+            "payload": {"summary": {"period_gmv": 1200}},
         }],
         "derived_facts": [], "conflicts": [], "limitations": [],
     }
@@ -2217,9 +2224,18 @@ def test_fastmoss_report_packets_are_workflow_native_and_numeric_policy_is_stric
         playbook: web_app.fastmoss_report_packet(manifest, {"playbook": playbook})
         for playbook in ("product", "pricing", "competitor", "shop", "creator", "content_dissect", "content_strategy")
     }
-    assert all(packet["available_dimensions"] == ["category_trend"] for packet in packets.values())
+    assert all(
+        packet["available_dimensions"] == ["category_trend", "shop_data_trends"]
+        for packet in packets.values()
+    )
+    assert all(
+        any(item.get("dimension") == "shop_data_trends" for item in packet["supporting_evidence"])
+        for packet in packets.values()
+    )
     assert all("suggested_modules" not in packet and "claim_boundaries" not in packet for packet in packets.values())
     assert all(packet["numeric_policy"] == "only_tool_evidence_user_input_or_explicit_calculation" for packet in packets.values())
+    integrity = web_app.fastmoss_report_integrity_stats("店铺趋势和类目市场均已覆盖。", manifest)
+    assert integrity["used_dimensions"] == ["category_trend", "shop_data_trends"]
 
 
 def test_fastmoss_list_truncation_is_explicit_and_invalid_entities_are_filtered() -> None:
@@ -2255,7 +2271,7 @@ def test_fastmoss_list_truncation_is_explicit_and_invalid_entities_are_filtered(
         "derived_facts": [], "conflicts": [], "limitations": [],
     }
     packet = web_app.fastmoss_report_packet(manifest, {"playbook": "product"})
-    compact = packet["representative_evidence"][0]
+    compact = packet["supporting_evidence"][0]
     assert compact["returned_count"] == 10
     assert compact["included_count"] == 2
     assert compact["omitted_count"] == 8 and compact["truncated"] is True
@@ -2270,7 +2286,7 @@ def test_fastmoss_list_truncation_is_explicit_and_invalid_entities_are_filtered(
         **fact, "scope": "segment_head", "page": 1, "query": "Mini Meat Grinder",
     }]
     segment_packet = web_app.fastmoss_report_packet(segment_manifest, {"playbook": "product"})
-    segment_compact = segment_packet["representative_evidence"][0]
+    segment_compact = segment_packet["supporting_evidence"][0]
     assert segment_compact["included_count"] == 10
     assert segment_compact["omitted_count"] == 0 and segment_compact["truncated"] is False
 
@@ -2494,17 +2510,95 @@ def test_fastmoss_22_call_semantic_registry_fixture() -> None:
     assert not any("11.7" in json.dumps(item, ensure_ascii=False) for item in manifest["derived_facts"])
 
     packet = web_app.fastmoss_report_packet(manifest, {"playbook": "product"})
-    packet_dimensions = {
-        item.get("dimension") for item in packet["representative_evidence"] if isinstance(item, dict)
-    }
+    packet_facts = [
+        item for item in packet["supporting_evidence"] if isinstance(item, dict)
+    ] + [
+        item for target in packet["target_evidence"] if isinstance(target, dict)
+        for item in (target.get("facts") or []) if isinstance(item, dict)
+    ]
+    packet_dimensions = {item.get("dimension") for item in packet_facts}
     assert {
         "category_trend", "category_channel_ranking", "product_overview", "product_90d_trend",
     }.issubset(packet_dimensions)
+    segment_included_by_fact: dict[str, int] = {}
+    for item in packet_facts:
+        if item.get("dimension") != "product_sample" or item.get("scope") != "segment_head":
+            continue
+        fact_id = str(item.get("fact_id") or "")
+        segment_included_by_fact[fact_id] = (
+            segment_included_by_fact.get(fact_id, 0) + int(item.get("included_count") or 0)
+        )
+    assert segment_included_by_fact and all(
+        included == 10 for included in segment_included_by_fact.values()
+    ), segment_included_by_fact
+    target_ids = {
+        target["entity_id"] for target in packet["target_evidence"] if isinstance(target, dict)
+    }
+    assert target_ids
+    for target in packet["target_evidence"]:
+        target_id = target["entity_id"]
+        assert target["facts"], target
+        for fact in target["facts"]:
+            listed_ids = {
+                str(product.get("product_id") or "")
+                for product in (fact.get("products") or []) if isinstance(product, dict)
+            }
+            assert not listed_ids or listed_ids == {target_id}, (target_id, fact)
+            if fact.get("product_id"):
+                assert str(fact["product_id"]) == target_id, (target_id, fact)
+            assert target_id in str(fact.get("entity_fact_ref") or "")
     assert all(
-        item["included_count"] == 10
-        for item in packet["representative_evidence"]
-        if item.get("dimension") == "product_sample" and item.get("scope") == "segment_head"
+        not {
+            str(product.get("product_id") or "")
+            for product in (fact.get("products") or []) if isinstance(product, dict)
+        }.intersection(target_ids)
+        for fact in packet["supporting_evidence"] if isinstance(fact, dict)
     )
+
+    # A category claim and a product claim may share one verifier HTTP batch,
+    # but their evidence must remain isolated by claim_id.  The old batch-wide
+    # entity union removed call 5 from the category claim and caused valid L2
+    # metrics to be rewritten as "not returned".
+    category_claim = {
+        "claim_id": "line-category", "entity_ids": [],
+        "reasons": ["metric_period", "cross_period_ratio"],
+        "text": "上级类目厨房家电GMV同比下降25.66%，销量同比下降15.57%，视频GMV占比51.46%。",
+    }
+    product_claim = {
+        "claim_id": "line-product", "entity_ids": [representatives[0][0]],
+        "reasons": ["lifecycle"],
+        "text": f"{representatives[0][0]} 已进入生命周期衰退期。",
+    }
+    isolated = web_app.fastmoss_candidate_evidence(
+        manifest, [category_claim, product_claim], {"playbook": "product"}
+    )
+    slices = {item["claim_id"]: item for item in isolated["claim_evidence"]}
+    category_slice = slices["line-category"]
+    product_slice = slices["line-product"]
+    assert any(
+        item.get("dimension") == "category_channel_ranking"
+        and int(item.get("source_call_index") or 0) == 5
+        for item in category_slice["facts"]
+    )
+    assert not any(item.get("dimension") == "product_90d_trend" for item in category_slice["facts"])
+    assert any(
+        item.get("dimension") == "product_90d_trend"
+        and item.get("product_id") == representatives[0][0]
+        for item in product_slice["facts"]
+    )
+    original_category_text = category_claim["text"]
+    guarded, applied = web_app.apply_fastmoss_verifier_edits(
+        original_category_text,
+        [{
+            "claim_id": "line-category",
+            "replacement": "厨房家电相关指标在证据中未返回。",
+            "reason": "误判为缺少证据",
+            "evidence_refs": ["call:5"],
+        }],
+        [category_claim, product_claim],
+        isolated,
+    )
+    assert guarded == original_category_text and applied == 0
 
     lifecycle_claims = web_app.fastmoss_high_risk_claims(
         f"{representatives[1][0]} 已进入生命周期衰退期。"
@@ -2523,8 +2617,10 @@ def test_fastmoss_22_call_semantic_registry_fixture() -> None:
         for item in lifecycle_evidence["metric_registry"]
     )
     content_claims = web_app.fastmoss_high_risk_claims(
-        "达人视频播放248次、26次点赞且窗口成交为0。"
+        f"{representatives[0][0]} 的达人视频是销量的核心驱动力，"
+        "返回样本播放248次、26次点赞。"
     )
+    assert content_claims and "content_causality" in content_claims[0]["reasons"]
     content_evidence = web_app.fastmoss_candidate_evidence(
         manifest, content_claims, {"playbook": "product"}
     )
@@ -2677,7 +2773,7 @@ def test_fastmoss_claim_ids_and_extended_mechanical_cleanup() -> None:
         [{"claim_id": "line-1", "replacement": "", "reason": "证据不足", "evidence_refs": []}],
         table_claims,
     )
-    assert table_edits == 1 and removed_table == ""
+    assert table_edits == 0 and removed_table == table_claims[0]["text"]
     kept_numbers, number_edits = web_app.apply_fastmoss_verifier_edits(
         "本轮返回10件商品。",
         [{"original": "本轮返回10件商品。", "replacement": "本轮返回20件商品。", "reason": "修正", "evidence_refs": []}],
