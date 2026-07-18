@@ -32,6 +32,12 @@ DEFAULT_DATE_RULE = "previous_day"
 DATE_RULES = {"previous_day", "same_day"}
 RETENTION_MAX_SECONDS = max(10, int(os.getenv("TIKTOK_COLLECT_RETENTION_MAX_SECONDS", "300") or "300"))
 WORKER_INTERVAL_SECONDS = max(3, int(os.getenv("TIKTOK_COLLECT_WORKER_INTERVAL_SECONDS", "10") or "10"))
+VIDEO_LIST_MAX_SCROLL_ROUNDS = max(
+    10, int(os.getenv("TIKTOK_COLLECT_MAX_SCROLL_ROUNDS", "120") or "120")
+)
+VIDEO_LIST_END_CONFIRMATIONS = max(
+    2, int(os.getenv("TIKTOK_COLLECT_END_CONFIRMATIONS", "4") or "4")
+)
 JOB_ACTIVE_STATUSES = {"queued", "delayed", "preparing", "collecting"}
 JOB_RETRYABLE_STATUSES = {"failed", "partial", "cancelled"}
 STATUS_LABELS = {
@@ -887,8 +893,93 @@ def _discover_links_on_page(page: Any) -> list[dict[str, str]]:
     return rows
 
 
+def _declared_post_count(page: Any) -> int:
+    try:
+        text = _clean_text(page.locator("body").inner_text(), 12000)
+    except Exception:
+        return 0
+    match = re.search(r"(?:^|\n)\s*(?:Posts?|作品|帖子)\s*(\d+)\b", text, re.I)
+    return int(match.group(1)) if match else 0
+
+
+def _scroll_video_list_once(page: Any) -> dict[str, Any]:
+    result = page.evaluate(
+        """
+        () => {
+          const selector = "a[href*='/tiktokstudio/analytics/'], a[href*='/video/']";
+          const links = Array.from(document.querySelectorAll(selector));
+          const visibleLinks = links.filter((link) => {
+            const rect = link.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.top < window.innerHeight;
+          });
+          const anchor = visibleLinks[visibleLinks.length - 1] || links[links.length - 1] || null;
+          let target = null;
+          for (let node = anchor && anchor.parentElement; node; node = node.parentElement) {
+            const style = window.getComputedStyle(node);
+            if (
+              node.scrollHeight > node.clientHeight + 8 &&
+              /^(auto|scroll|overlay)$/.test(style.overflowY)
+            ) {
+              target = node;
+              break;
+            }
+          }
+          target = target || document.scrollingElement || document.documentElement;
+          const isDocument = target === document.scrollingElement || target === document.documentElement || target === document.body;
+          const before = isDocument ? window.scrollY : target.scrollTop;
+          const viewport = isDocument ? window.innerHeight : target.clientHeight;
+          const amount = Math.max(700, Math.floor(viewport * 0.85));
+          if (isDocument) {
+            window.scrollBy(0, amount);
+          } else {
+            target.scrollTop = before + amount;
+          }
+          const after = isDocument ? window.scrollY : target.scrollTop;
+          const maximum = Math.max(0, target.scrollHeight - viewport);
+          return {
+            before,
+            after,
+            maximum,
+            moved: after > before + 1,
+            at_end: after >= maximum - 4,
+            target: isDocument
+              ? "document"
+              : `${target.tagName.toLowerCase()}#${target.id || ""}.${String(target.className || "").slice(0, 160)}`,
+          };
+        }
+        """
+    )
+    return result if isinstance(result, dict) else {}
+
+
+def _reset_video_list_scroll(page: Any) -> None:
+    page.evaluate(
+        """
+        () => {
+          window.scrollTo(0, 0);
+          const selector = "a[href*='/tiktokstudio/analytics/'], a[href*='/video/']";
+          for (const link of document.querySelectorAll(selector)) {
+            for (let node = link.parentElement; node; node = node.parentElement) {
+              const style = window.getComputedStyle(node);
+              if (
+                node.scrollHeight > node.clientHeight + 8 &&
+                /^(auto|scroll|overlay)$/.test(style.overflowY)
+              ) {
+                node.scrollTop = 0;
+              }
+            }
+          }
+        }
+        """
+    )
+    page.wait_for_timeout(400)
+
+
 def _discover_video_links(
-    page: Any, publish_date_start: str, publish_date_end: str
+    page: Any,
+    publish_date_start: str,
+    publish_date_end: str,
+    on_progress: Any = None,
 ) -> list[dict[str, str]]:
     found: dict[str, dict[str, str]] = {}
 
@@ -924,18 +1015,47 @@ def _discover_video_links(
             page.wait_for_timeout(1800)
             _assert_account_ready(page)
 
-    unchanged_rounds = 0
-    for _ in range(100):
+    _reset_video_list_scroll(page)
+    declared_total = _declared_post_count(page)
+    bottom_confirmations = 0
+    last_reported_count = -1
+    stopped = False
+    for round_index in range(VIDEO_LIST_MAX_SCROLL_ROUNDS):
         before = len(found)
         collect()
         dated_rows = [row["published_date"] for row in found.values() if row.get("published_date")]
+        oldest_date = min(dated_rows) if dated_rows else ""
+        if on_progress and len(found) != last_reported_count:
+            on_progress({
+                "round": round_index + 1,
+                "discovered": len(found),
+                "declared_total": declared_total,
+                "oldest_date": oldest_date,
+            })
+            last_reported_count = len(found)
         if dated_rows and min(dated_rows) < publish_date_start:
+            stopped = True
             break
-        unchanged_rounds = unchanged_rounds + 1 if len(found) == before else 0
-        if unchanged_rounds >= 3:
+        scroll_state = _scroll_video_list_once(page)
+        unchanged = len(found) == before
+        if scroll_state.get("at_end") and (
+            unchanged or (declared_total and len(found) >= declared_total)
+        ):
+            bottom_confirmations += 1
+        else:
+            bottom_confirmations = 0
+        if bottom_confirmations >= VIDEO_LIST_END_CONFIRMATIONS:
+            stopped = True
             break
-        page.mouse.wheel(0, 1000)
-        page.wait_for_timeout(700)
+        page.wait_for_timeout(1200)
+
+    if not stopped:
+        dated_rows = [row["published_date"] for row in found.values() if row.get("published_date")]
+        oldest_date = min(dated_rows) if dated_rows else "未知"
+        raise RuntimeError(
+            "TikTok Studio 视频列表滚动达到安全上限，但尚未确认到达列表末尾，"
+            f"也未看到早于 {publish_date_start} 的视频；已发现 {len(found)} 条，最早日期 {oldest_date}"
+        )
 
     return matching()
 
@@ -1310,6 +1430,17 @@ def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[int,
             page,
             job["publish_date_start"],
             job["publish_date_end"],
+            on_progress=lambda event: _set_job(
+                job["id"],
+                "preparing",
+                "loading_video_list",
+                session_id=session["id"],
+                status_detail=(
+                    f"正在加载更早视频：已发现 {event['discovered']}"
+                    + (f"/{event['declared_total']} 条" if event["declared_total"] else " 条")
+                    + (f"，当前最早 {event['oldest_date']}" if event["oldest_date"] else "")
+                ),
+            ),
         )
         if not links:
             page.screenshot(path=str(log_dir / "no-video-links.png"), full_page=True)
