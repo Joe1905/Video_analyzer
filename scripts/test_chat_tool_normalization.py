@@ -1897,8 +1897,8 @@ def test_fastmoss_answer_verifier_applies_local_edits_and_keeps_draft_on_failure
     }])
     route = {"playbook": "product", "task_depth": "workflow", "entity": "mini grinder"}
     style = web_app.fastmoss_report_style_instruction(route)
-    assert "不要求出现固定短语" in style
-    assert "完整调研报告" in style and "精确上市价" in style
+    assert "标题、章节名称和顺序完全由你" in style
+    assert "完整调研报告" in style and "精确执行数字" in style
     assert web_app.fastmoss_report_style_instruction({"task_depth": "lookup"}) == ""
 
     native_report = (
@@ -1915,25 +1915,39 @@ def test_fastmoss_answer_verifier_applies_local_edits_and_keeps_draft_on_failure
     class FakeResponse:
         finish_reason = "stop"
 
+        def __init__(self, decision=None):
+            self.decision = decision or {"approved": True, "risk_level": "low", "edits": []}
+
         def raise_for_status(self):
             return None
 
         def json(self):
-            return {"choices": [{"message": {"content": json.dumps({
-                "approved": False,
-                "risk_level": "high",
-                "edits": [{
-                    "original": "这个细分已经被证明是低竞争市场。",
-                    "replacement": "本轮样本显示该细分仍需补充竞争强度证据。",
-                    "reason": "当前样本不能证明低竞争",
-                    "evidence_refs": ["fastmoss__product_overview"],
-                }],
-            })}, "finish_reason": self.finish_reason}]}
+            return {"choices": [{"message": {"content": json.dumps(self.decision)}, "finish_reason": self.finish_reason}]}
 
     class FakeRequests:
         @staticmethod
-        def post(*_args, **_kwargs):
-            return FakeResponse()
+        def post(*_args, **kwargs):
+            payload = json.loads(kwargs["data"].decode("utf-8"))
+            claims = json.loads(payload["messages"][1]["content"])["candidate_claims"]
+            edits = []
+            for claim in claims:
+                if "低竞争市场" in claim["text"]:
+                    edits.append({
+                        "claim_id": claim["claim_id"],
+                        "replacement": "本轮样本显示该细分仍需补充竞争强度证据。",
+                        "reason": "当前样本不能证明低竞争",
+                        "evidence_refs": ["fastmoss__product_overview"],
+                    })
+                elif "首批500-1000件" in claim["text"]:
+                    edits.append({
+                        "claim_id": claim["claim_id"],
+                        "replacement": "具体库存、预算、达人合作和经营目标需结合实际成本与测试数据确定。",
+                        "reason": "执行数字没有工具证据或用户输入",
+                        "evidence_refs": [],
+                    })
+            return FakeResponse({
+                "approved": not edits, "risk_level": "high" if edits else "low", "edits": edits,
+            })
 
     original_record = web_app.record_api_call
     web_app.record_api_call = lambda *_args, **_kwargs: None
@@ -1992,6 +2006,20 @@ def test_fastmoss_answer_verifier_applies_local_edits_and_keeps_draft_on_failure
         )
         assert approved == native_report
 
+        detailed_report = (
+            "# TikTok Shop 调研报告\n\n"
+            "**结论先行：** 当前证据支持继续比较。\n\n"
+            "## 4. 代表商品与趋势\n\n"
+            "### 商品A\n\n- **定价**：$80.23–$85.58\n\n"
+            "### 商品B\n\n- **定价**：$34.99\n\n"
+            "## 7. 风险与验证顺序\n\n保留样本边界。"
+        )
+        preserved = web_app.verify_fastmoss_final_answer(
+            detailed_report, message, "调研", route,
+            ApprovedRequests, "key", "https://example.test/v1", "model",
+        )
+        assert preserved == detailed_report
+
         class InvalidJsonResponse(FakeResponse):
             def json(self):
                 return {"choices": [{"message": {"content": "{invalid"}, "finish_reason": "stop"}]}
@@ -2036,9 +2064,9 @@ def test_fastmoss_answer_verifier_applies_local_edits_and_keeps_draft_on_failure
             assert "| Mini Grinder | 424 | $36.05–$53 |" in kept
             assert "这个细分已经被证明是低竞争市场" in kept
             assert "## 先说结论" not in kept
-            assert "500-1000" not in kept and "$2000" not in kept and "$29.99" not in kept
-            assert "$13–$16" not in kept and "$14.99" not in kept and "3–5" not in kept
-            assert "1–2个月" not in kept and "$5–$8" not in kept
+            assert "500-1000" in kept and "$2000" in kept and "$29.99" in kept
+            assert "$13–$16" in kept and "$14.99" in kept and "3–5" in kept
+            assert "1–2个月" in kept and "$5–$8" in kept
 
         system_only = SimpleNamespace(tool_calls=[], tool_results=[{
             "tool_name": "system__current_time",
@@ -2250,14 +2278,19 @@ def test_fastmoss_report_packets_are_workflow_native_and_numeric_policy_is_stric
         "unsupported_parser_count": 0,
         "category_head": {"target_pages": 3, "completed_pages": [1], "reported_total": 20, "fetched_unique": 10, "coverage_complete": False},
         "segment_head": {"queries": {}, "fetched_unique": 0},
-        "entity_bundles": [], "evidence_facts": [], "derived_facts": [], "conflicts": [], "limitations": [],
+        "entity_bundles": [],
+        "evidence_facts": [{
+            "dimension": "category_trend", "data_state": "data",
+            "source_tool": "fastmoss__market_category_analysis",
+        }],
+        "derived_facts": [], "conflicts": [], "limitations": [],
     }
     packets = {
         playbook: web_app.fastmoss_report_packet(manifest, {"playbook": playbook})
         for playbook in ("product", "pricing", "competitor", "shop", "creator", "content_dissect", "content_strategy")
     }
-    assert packets["shop"]["suggested_modules"] != packets["product"]["suggested_modules"]
-    assert packets["creator"]["suggested_modules"] != packets["content_dissect"]["suggested_modules"]
+    assert all(packet["available_dimensions"] == ["category_trend"] for packet in packets.values())
+    assert all("suggested_modules" not in packet and "claim_boundaries" not in packet for packet in packets.values())
     assert all(packet["numeric_policy"] == "only_tool_evidence_user_input_or_explicit_calculation" for packet in packets.values())
 
 
@@ -2711,17 +2744,29 @@ def test_fastmoss_claim_ids_and_extended_mechanical_cleanup() -> None:
         "claim_id": "line-1", "text": "| 达人链接数 | 382 | 766 | 853 |",
         "reasons": ["operational_number"], "entity_ids": [],
     }]
-    kept_table, table_edits = web_app.apply_fastmoss_verifier_edits(
+    removed_table, table_edits = web_app.apply_fastmoss_verifier_edits(
         table_claims[0]["text"],
         [{"claim_id": "line-1", "replacement": "", "reason": "证据不足", "evidence_refs": []}],
         table_claims,
     )
-    assert table_edits == 0 and "382" in kept_table
+    assert table_edits == 1 and removed_table == ""
     kept_numbers, number_edits = web_app.apply_fastmoss_verifier_edits(
         "本轮返回10件商品。",
         [{"original": "本轮返回10件商品。", "replacement": "本轮返回20件商品。", "reason": "修正", "evidence_refs": []}],
     )
     assert number_edits == 0 and "10件" in kept_numbers
+    corrected_numbers, corrected_number_edits = web_app.apply_fastmoss_verifier_edits(
+        "本轮返回10件商品。",
+        [{"original": "本轮返回10件商品。", "replacement": "本轮返回20件商品。", "reason": "修正", "evidence_refs": ["f1"]}],
+        evidence_slice={"facts": [{"fact_id": "f1", "returned_count": 20}]},
+    )
+    assert corrected_number_edits == 1 and "20件" in corrected_numbers
+    unbound_numbers, unbound_number_edits = web_app.apply_fastmoss_verifier_edits(
+        "本轮返回10件商品。",
+        [{"original": "本轮返回10件商品。", "replacement": "本轮返回20件商品。", "reason": "修正", "evidence_refs": []}],
+        evidence_slice={"facts": [{"fact_id": "f1", "returned_count": 20}]},
+    )
+    assert unbound_number_edits == 0 and "10件" in unbound_numbers
 
     cleaned_markdown = web_app.cleanup_fastmoss_markdown_structure(
         "| 指标 | A |\n|---|---|\n\n| 销量 | 10 |\n\n## 空章节\n\n## 下一节\n\n有内容。"
@@ -2747,6 +2792,12 @@ def test_fastmoss_claim_ids_and_extended_mechanical_cleanup() -> None:
     )
     semantic_reasons = {reason for claim in semantic_claims for reason in claim["reasons"]}
     assert {"market_scale", "channel_causality", "lifecycle"}.issubset(semantic_reasons)
+    metric_claims = web_app.fastmoss_high_risk_claims(
+        "## 4. 代表商品与趋势\n| 维度 | 商品A |\n| 30天销量 | 5710 |\nMae贡献了该商品90%+的GMV。"
+    )
+    assert all(not claim["text"].startswith("##") for claim in metric_claims)
+    metric_reasons = {reason for claim in metric_claims for reason in claim["reasons"]}
+    assert {"metric_period", "cross_period_ratio"}.issubset(metric_reasons)
 
     causal_cleaned = web_app.downgrade_fastmoss_absolute_market_claims(
         "周均仍有250件新品入场，表明供给侧仍在积极测试，竞争加剧。\n"
