@@ -2662,6 +2662,37 @@ def test_fastmoss_claim_ids_and_extended_mechanical_cleanup() -> None:
     )
     assert entity_edits == 0 and "1732363961421369948" in unchanged_entity
 
+    restored_id, restored_count = web_app.normalize_fastmoss_entity_id_abbreviations(
+        "代表商品ID 1732363961。",
+        {
+            "entity_bundles": [{"entity_type": "product", "entity_id": "1732363961421369948"}],
+            "analysis_targets": [],
+        },
+    )
+    assert restored_id == "代表商品ID 1732363961421369948。" and restored_count == 1
+
+    table_claims = [{
+        "claim_id": "line-1", "text": "| 达人链接数 | 382 | 766 | 853 |",
+        "reasons": ["operational_number"], "entity_ids": [],
+    }]
+    kept_table, table_edits = web_app.apply_fastmoss_verifier_edits(
+        table_claims[0]["text"],
+        [{"claim_id": "line-1", "replacement": "", "reason": "证据不足", "evidence_refs": []}],
+        table_claims,
+    )
+    assert table_edits == 0 and "382" in kept_table
+    kept_numbers, number_edits = web_app.apply_fastmoss_verifier_edits(
+        "本轮返回10件商品。",
+        [{"original": "本轮返回10件商品。", "replacement": "本轮返回20件商品。", "reason": "修正", "evidence_refs": []}],
+    )
+    assert number_edits == 0 and "10件" in kept_numbers
+
+    cleaned_markdown = web_app.cleanup_fastmoss_markdown_structure(
+        "| 指标 | A |\n|---|---|\n\n| 销量 | 10 |\n\n## 空章节\n\n## 下一节\n\n有内容。"
+    )
+    assert "|---|---|\n| 销量" in cleaned_markdown
+    assert "空章节" not in cleaned_markdown and "## 下一节" in cleaned_markdown
+
     observed_price = "当前观测定价 $24.30，GMV推导单价为$21.21。"
     kept_price, price_edits = web_app.sanitize_fastmoss_unsupported_recommendations(observed_price)
     assert kept_price == observed_price and price_edits == 0
@@ -2692,6 +2723,53 @@ def test_fastmoss_claim_ids_and_extended_mechanical_cleanup() -> None:
     assert "新品供给仍活跃" in causal_cleaned
     assert "消费者认知和搜索路径仍需验证" in causal_cleaned
     assert "渠道归因数据验证" in causal_cleaned
+
+    expanded_causal_cleaned = web_app.downgrade_fastmoss_absolute_market_claims(
+        "消费者搜了再买，商品卡自然搜索流量说明这个产品更成熟、更活跃、销售潜力更大。\n"
+        "另一个细分仍处于萌芽或需求低迷，前者由达人积极带动。\n"
+        "类目销量同比下降说明整体大盘萎缩、进入存量竞争阶段，但已经形成内容护城河和用户心智。\n"
+        "两款产品过度依赖“商品卡”自然搜索流量，这意味着它们缺乏可持续的达人内容驱动力；"
+        "一旦竞争品进入，销量将锐减。前者至少有达人愿意带，其增长有持续动力，后者依赖搜索截流。\n"
+        "视频份额变化表明单纯的视频种草转化难度在增加，Top5 功能进一步验证了它是类目的核心驱动力。"
+    )
+    for unsupported in (
+        "搜了再买", "自然搜索流量", "更成熟", "更活跃", "销售潜力更大",
+        "萌芽", "需求低迷", "达人积极带动", "大盘萎缩", "存量竞争", "内容护城河", "用户心智",
+        "缺乏可持续", "销量将锐减", "达人愿意带", "持续动力", "搜索截流", "转化难度在增加", "核心驱动力",
+    ):
+        assert unsupported not in expanded_causal_cleaned
+    assert "搜索与购买路径未被本轮数据观测" in expanded_causal_cleaned
+    assert "长期市场与竞争阶段仍待验证" in expanded_causal_cleaned
+
+    cross_entity_claims = web_app.fastmoss_high_risk_claims(
+        "两款商品都来自同一品牌 SPZTJK。"
+    )
+    assert cross_entity_claims and "cross_entity_attribute" in cross_entity_claims[0]["reasons"]
+
+    evidence_manifest = {
+        "quality_states": {"data": ["fastmoss__product_search"], "empty": [], "error": []},
+        "evidence_envelope_count": 1, "evidence_fact_count": 1, "unsupported_parser_count": 0,
+        "category_head": {"target_pages": 3, "completed_pages": [1], "reported_total": 30, "fetched_unique": 10},
+        "segment_head": {"queries": {}, "fetched_unique": 0},
+        "entity_bundles": [], "analysis_targets": [], "evidence_envelopes": [],
+        "evidence_facts": [{
+            "source_tool": "fastmoss__product_search", "source_call_index": 1,
+            "data_state": "data", "dimension": "product_sample", "scope": "category_head", "page": 1,
+            "returned_count": 10,
+            "products": [
+                {"product_id": str(1730000000000000000 + index), "title": f"Product {index}"}
+                for index in range(10)
+            ],
+        }],
+        "metric_registry": [], "derived_facts": [], "conflicts": [], "limitations": [],
+    }
+    operational_evidence = web_app.fastmoss_candidate_evidence(
+        evidence_manifest,
+        [{"claim_id": "line-1", "text": "达人链接数为382。", "reasons": ["operational_number"], "entity_ids": []}],
+        {"playbook": "product"},
+    )
+    category_fact = next(item for item in operational_evidence["facts"] if item.get("scope") == "category_head")
+    assert len(category_fact["products"]) == 3 and category_fact["page"] == 1
 
     creator_cleaned, creator_count = web_app.sanitize_fastmoss_unsupported_recommendations(
         "建议找1–2位达人先做验证。"
