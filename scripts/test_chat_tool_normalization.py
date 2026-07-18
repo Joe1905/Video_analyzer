@@ -2268,6 +2268,15 @@ def test_fastmoss_list_truncation_is_explicit_and_invalid_entities_are_filtered(
         "category_id_level2": 844168, "category_id_level3": 935176,
     }
 
+    segment_manifest = dict(manifest)
+    segment_manifest["evidence_facts"] = [{
+        **fact, "scope": "segment_head", "page": 1, "query": "Mini Meat Grinder",
+    }]
+    segment_packet = web_app.fastmoss_report_packet(segment_manifest, {"playbook": "product"})
+    segment_compact = segment_packet["representative_evidence"][0]
+    assert segment_compact["included_count"] == 10
+    assert segment_compact["omitted_count"] == 0 and segment_compact["truncated"] is False
+
     refs = web_app._fastmoss_entity_refs(
         {"filter": {"category_id_level2": 844168, "category_id_level3": 0, "product_id": "0"}},
         {"category_id": "0", "product_id": "1730898744848192092"},
@@ -2487,6 +2496,44 @@ def test_fastmoss_22_call_semantic_registry_fixture() -> None:
     assert any(item.get("conflict_type") == "summary_vs_returned_top_rows" for item in manifest["conflicts"])
     assert not any("11.7" in json.dumps(item, ensure_ascii=False) for item in manifest["derived_facts"])
 
+    packet = web_app.fastmoss_report_packet(manifest, {"playbook": "product"})
+    packet_dimensions = {
+        item.get("dimension") for item in packet["representative_evidence"] if isinstance(item, dict)
+    }
+    assert {
+        "category_trend", "category_channel_ranking", "product_overview", "product_90d_trend",
+    }.issubset(packet_dimensions)
+    assert all(
+        item["included_count"] == 10
+        for item in packet["representative_evidence"]
+        if item.get("dimension") == "product_sample" and item.get("scope") == "segment_head"
+    )
+
+    lifecycle_claims = web_app.fastmoss_high_risk_claims(
+        f"{representatives[1][0]} 已进入生命周期衰退期。"
+    )
+    lifecycle_evidence = web_app.fastmoss_candidate_evidence(
+        manifest, lifecycle_claims, {"playbook": "product"}
+    )
+    assert any(
+        item.get("dimension") == "product_90d_trend"
+        and item.get("product_id") == representatives[1][0]
+        for item in lifecycle_evidence["facts"]
+    )
+    assert any(
+        str(item.get("metric") or "").startswith("trend_summary.")
+        and item.get("entity_id") == representatives[1][0]
+        for item in lifecycle_evidence["metric_registry"]
+    )
+    content_claims = web_app.fastmoss_high_risk_claims(
+        "达人视频播放248次、26次点赞且窗口成交为0。"
+    )
+    content_evidence = web_app.fastmoss_candidate_evidence(
+        manifest, content_claims, {"playbook": "product"}
+    )
+    assert any(item.get("dimension") == "product_videos" for item in content_evidence["facts"])
+    assert len(json.dumps(content_evidence, ensure_ascii=False)) < 40000
+
     draft = (
         "厨房家电销量同比 -15.57%，GMV同比 -15.57%。\n"
         f"{representatives[1][0]} 商品卡GMV占比94%，商品卡销量占比94%。\n"
@@ -2596,6 +2643,36 @@ def test_fastmoss_claim_ids_and_extended_mechanical_cleanup() -> None:
         claims,
     )
     assert applied == 1 and "竞争强度仍需验证" in edited
+
+    entity_claims = [{
+        "claim_id": "line-1",
+        "text": "代表商品ID 1732363961421369948。",
+        "reasons": ["multiple_entity_ids"],
+        "entity_ids": ["1732363961421369948"],
+    }]
+    unchanged_entity, entity_edits = web_app.apply_fastmoss_verifier_edits(
+        "代表商品ID 1732363961421369948。",
+        [{
+            "claim_id": "line-1",
+            "replacement": "代表商品ID 1730898744848192092。",
+            "reason": "改用销量更高商品",
+            "evidence_refs": ["fm-c12-f1"],
+        }],
+        entity_claims,
+    )
+    assert entity_edits == 0 and "1732363961421369948" in unchanged_entity
+
+    observed_price = "当前观测定价 $24.30，GMV推导单价为$21.21。"
+    kept_price, price_edits = web_app.sanitize_fastmoss_unsupported_recommendations(observed_price)
+    assert kept_price == observed_price and price_edits == 0
+
+    future_threshold = (
+        "如果其达人链接数在接下来2周内从10人翻倍至20人以上且出现首单，则测试$10-$15的 USB-C 产品。"
+    )
+    cleaned_threshold, threshold_edits = web_app.sanitize_fastmoss_unsupported_recommendations(future_threshold)
+    assert threshold_edits == 2
+    assert "2周" not in cleaned_threshold and "10人" not in cleaned_threshold and "20人" not in cleaned_threshold
+    assert "$10" not in cleaned_threshold and "$15" not in cleaned_threshold
 
     semantic_claims = web_app.fastmoss_high_risk_claims(
         "关键词返回量证明该细分市场容量很小，商业化程度低，不具备规模投入条件。\n"
