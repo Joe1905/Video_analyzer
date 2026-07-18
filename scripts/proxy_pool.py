@@ -29,6 +29,7 @@ DATA_DIR = ROOT / "data"
 DB_PATH = DATA_DIR / "proxy_pool.sqlite"
 DEFAULT_NOVNC_PUBLIC_URL = os.getenv("NOVNC_PUBLIC_URL", "http://192.168.1.254:6080/vnc.html?autoconnect=1&resize=scale")
 DEFAULT_MIHOMO_API = os.getenv("MIHOMO_API_URL", "http://127.0.0.1:9090")
+DEFAULT_MIHOMO_STATIC_DIALER_PROXY = os.getenv("MIHOMO_STATIC_DIALER_PROXY", "CoffeeCloud").strip() or "CoffeeCloud"
 SING_BOX_CONFIG_PATH = Path(os.getenv("SING_BOX_CONFIG_PATH", str(DATA_DIR / "sing-box" / "config.json")))
 SING_BOX_COMPOSE_PROJECT = os.getenv("SING_BOX_COMPOSE_PROJECT", "short-video-analyzer").strip() or "short-video-analyzer"
 SING_BOX_COMPOSE_SERVICE = os.getenv("SING_BOX_COMPOSE_SERVICE", "sing-box").strip() or "sing-box"
@@ -2060,6 +2061,8 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
         source_type = "static" if source_uri.lower().startswith(("socks://", "socks5://", "socks5h://", "http://", "https://")) else "vless"
     if source_type not in {"vless", "static"}:
         raise ValueError("代理类型必须为 vless 或 static")
+    if source_type == "static":
+        dialer_proxy = DEFAULT_MIHOMO_STATIC_DIALER_PROXY
 
     parse_status = "manual"
     parse_error = ""
@@ -2106,6 +2109,11 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
             if not exists:
                 raise ValueError("proxy profile not found")
             values["local_port"] = _allocate_port(conn, pool_id)
+            if source_type == "static" and mihomo_proxy:
+                values["mihomo_name"] = _static_mihomo_name(int(values["local_port"]))
+                mihomo_proxy["name"] = values["mihomo_name"]
+                mihomo_proxy["dialer-proxy"] = dialer_proxy
+                values["mihomo_proxy_json"] = json.dumps(mihomo_proxy, ensure_ascii=False, separators=(",", ":"))
             conn.execute(
                 """
                 UPDATE proxy_profiles
@@ -2120,6 +2128,11 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
             )
         else:
             values["local_port"] = _allocate_port(conn, 0)
+            if source_type == "static" and mihomo_proxy:
+                values["mihomo_name"] = _static_mihomo_name(int(values["local_port"]))
+                mihomo_proxy["name"] = values["mihomo_name"]
+                mihomo_proxy["dialer-proxy"] = dialer_proxy
+                values["mihomo_proxy_json"] = json.dumps(mihomo_proxy, ensure_ascii=False, separators=(",", ":"))
             cur = conn.execute(
                 """
                 INSERT INTO proxy_profiles (
@@ -2136,7 +2149,7 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
             )
             pool_id = int(cur.lastrowid)
         conn.commit()
-    core = ensure_proxy_cores(restart=True, required=True) if _sing_box_reality_enabled() else {}
+    core = ensure_proxy_cores(restart=True, required=True)
     return {"pool": get_pool(pool_id), **list_state(), **core}
 
 
@@ -2301,8 +2314,9 @@ def _restart_sing_box_container(required: bool = False) -> dict[str, Any]:
 
 
 def ensure_proxy_cores(restart: bool = False, required: bool = False) -> dict[str, Any]:
+    mihomo_static = _sync_mihomo_static_config(reload=restart, required=required)
     if not _sing_box_reality_enabled():
-        return {"sing_box": {"enabled": False}}
+        return {"sing_box": {"enabled": False}, "mihomo_static": mihomo_static}
     exported = _write_sing_box_config()
     runtime = _restart_sing_box_container(required=required) if restart else {"restarted": False, "containers": []}
     return {
@@ -2311,7 +2325,8 @@ def ensure_proxy_cores(restart: bool = False, required: bool = False) -> dict[st
             "config_path": str(SING_BOX_CONFIG_PATH),
             "pools": exported["pools"],
             **runtime,
-        }
+        },
+        "mihomo_static": mihomo_static,
     }
 
 
@@ -2356,8 +2371,9 @@ def delete_pool(pool_id: int) -> dict[str, Any]:
             raise ValueError("代理关联的已删除账号仍有发布或采集记录，不能删除")
 
         sing_box_managed = _sing_box_reality_pool(pool)
+        static_managed = str(pool["source_type"] or "") == "static"
         cleanup, backup = ({"removed": False, "port": int(pool["local_port"] or 0)}, None)
-        if not sing_box_managed:
+        if not sing_box_managed and not static_managed:
             cleanup, backup = _remove_mihomo_listener_config(int(pool["local_port"] or 0))
         try:
             conn.execute("DELETE FROM browser_sessions WHERE proxy_profile_id = ?", (pool_id,))
@@ -2371,7 +2387,7 @@ def delete_pool(pool_id: int) -> dict[str, Any]:
                 except Exception:
                     pass
             raise
-    core = ensure_proxy_cores(restart=True, required=True) if sing_box_managed else {}
+    core = ensure_proxy_cores(restart=True, required=True) if sing_box_managed or static_managed else {}
     return {**list_state(), "mihomo_cleanup": cleanup, **core}
 
 
@@ -2666,6 +2682,215 @@ def _reload_mihomo_config() -> None:
     ok, _body, error = _mihomo_request("PUT", "/configs?force=true", {"path": reload_path}, timeout=15)
     if not ok:
         raise ValueError(f"mihomo 配置重载失败：{error}")
+
+
+MIHOMO_STATIC_PROXIES_BEGIN = "# BEGIN VIDEO_ANALYZER_STATIC_PROXIES"
+MIHOMO_STATIC_PROXIES_END = "# END VIDEO_ANALYZER_STATIC_PROXIES"
+MIHOMO_STATIC_LISTENERS_BEGIN = "# BEGIN VIDEO_ANALYZER_STATIC_LISTENERS"
+MIHOMO_STATIC_LISTENERS_END = "# END VIDEO_ANALYZER_STATIC_LISTENERS"
+
+
+def _static_mihomo_name(local_port: int) -> str:
+    return f"video-analyzer-static-{local_port}"
+
+
+def _static_mihomo_listener_name(local_port: int) -> str:
+    return f"video-analyzer-static-listener-{local_port}"
+
+
+def _managed_yaml_list_block(items: list[dict[str, Any]], begin: str, end: str) -> list[str]:
+    if not items:
+        return []
+    lines = [begin + "\n"]
+    for item in items:
+        rendered = _yaml_lines(item, 2)
+        if not rendered:
+            continue
+        lines.append(f"- {rendered[0].lstrip()}\n")
+        lines.extend(line + "\n" for line in rendered[1:])
+    lines.append(end + "\n")
+    return lines
+
+
+def _replace_managed_yaml_list(
+    source: str,
+    section: str,
+    begin: str,
+    end: str,
+    items: list[dict[str, Any]],
+) -> str:
+    lines = source.splitlines(keepends=True)
+    while True:
+        left = next((index for index, line in enumerate(lines) if line.strip() == begin), -1)
+        if left < 0:
+            break
+        right = next((index for index in range(left + 1, len(lines)) if lines[index].strip() == end), -1)
+        if right < 0:
+            raise ValueError(f"mihomo 配置中的 {begin} 缺少结束标记")
+        del lines[left : right + 1]
+
+    block = _managed_yaml_list_block(items, begin, end)
+    if not block:
+        return "".join(lines)
+
+    section_pattern = re.compile(rf"^{re.escape(section)}:\s*(?:\[\]|null|~)?\s*(?:#.*)?$")
+    section_index = next((index for index, line in enumerate(lines) if section_pattern.match(line.rstrip("\r\n"))), -1)
+    if section_index < 0:
+        if lines and not lines[-1].endswith(("\n", "\r")):
+            lines[-1] += "\n"
+        lines.extend([f"{section}:\n", *block])
+        return "".join(lines)
+
+    if lines[section_index].strip() != f"{section}:":
+        newline = "\r\n" if lines[section_index].endswith("\r\n") else "\n"
+        lines[section_index] = f"{section}:{newline}"
+    section_end = next(
+        (
+            index
+            for index in range(section_index + 1, len(lines))
+            if re.match(r"^[A-Za-z0-9_-]+:\s*", lines[index])
+        ),
+        len(lines),
+    )
+    lines[section_end:section_end] = block
+    return "".join(lines)
+
+
+def _static_mihomo_entries() -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM proxy_profiles WHERE source_type = 'static' AND status <> ? ORDER BY id",
+            (STATUS_PAUSED,),
+        ).fetchall()
+    proxies: list[dict[str, Any]] = []
+    listeners: list[dict[str, Any]] = []
+    normalized: list[dict[str, Any]] = []
+    for row in rows:
+        proxy = _json_loads(str(row["mihomo_proxy_json"] or ""), {})
+        local_port = int(row["local_port"] or 0)
+        if not proxy or not local_port or str(row["parse_status"] or "") != "ok":
+            continue
+        node_name = _static_mihomo_name(local_port)
+        proxy["name"] = node_name
+        proxy["dialer-proxy"] = DEFAULT_MIHOMO_STATIC_DIALER_PROXY
+        proxies.append(proxy)
+        listeners.append(
+            {
+                "name": _static_mihomo_listener_name(local_port),
+                "type": "mixed",
+                "listen": "127.0.0.1",
+                "port": local_port,
+                "proxy": node_name,
+            }
+        )
+        normalized.append(
+            {
+                "id": int(row["id"]),
+                "node_name": node_name,
+                "local_port": local_port,
+                "proxy_json": json.dumps(proxy, ensure_ascii=False, separators=(",", ":")),
+            }
+        )
+    return proxies, listeners, normalized
+
+
+def _sync_mihomo_static_config(reload: bool = False, required: bool = False) -> dict[str, Any]:
+    proxies, listeners, normalized = _static_mihomo_entries()
+    config_value = os.getenv("MIHOMO_CONFIG_PATH", "").strip()
+    if not config_value:
+        if proxies and required:
+            raise ValueError("mihomo 配置未挂载，无法自动加载静态代理")
+        return {"enabled": False, "configured": False, "pools": []}
+    path = Path(config_value)
+    if not path.is_file():
+        if proxies and required:
+            raise ValueError(f"mihomo 配置文件不存在：{path}")
+        return {"enabled": True, "configured": False, "pools": []}
+
+    if proxies:
+        ok, body, error = _mihomo_request("GET", "/proxies")
+        loaded = body.get("proxies") if ok and isinstance(body, dict) and isinstance(body.get("proxies"), dict) else {}
+        if not ok:
+            raise ValueError(f"无法读取服务器 mihomo 节点：{error}")
+        if DEFAULT_MIHOMO_STATIC_DIALER_PROXY not in loaded:
+            raise ValueError(f"mihomo 链式出站 {DEFAULT_MIHOMO_STATIC_DIALER_PROXY} 不存在")
+
+    original = path.read_bytes()
+    mode = path.stat().st_mode & 0o777
+    source = original.decode("utf-8")
+    updated = _replace_managed_yaml_list(
+        source,
+        "proxies",
+        MIHOMO_STATIC_PROXIES_BEGIN,
+        MIHOMO_STATIC_PROXIES_END,
+        proxies,
+    )
+    updated = _replace_managed_yaml_list(
+        updated,
+        "listeners",
+        MIHOMO_STATIC_LISTENERS_BEGIN,
+        MIHOMO_STATIC_LISTENERS_END,
+        listeners,
+    )
+    changed = updated.encode("utf-8") != original
+    if changed:
+        _atomic_write(path, updated.encode("utf-8"), mode)
+    try:
+        should_reload = bool(reload and (changed or proxies))
+        if should_reload:
+            _reload_mihomo_config()
+        if reload and proxies:
+            ok, body, error = _mihomo_request("GET", "/proxies")
+            loaded = body.get("proxies") if ok and isinstance(body, dict) and isinstance(body.get("proxies"), dict) else {}
+            missing = [item["name"] for item in proxies if item["name"] not in loaded]
+            if missing:
+                raise ValueError(f"mihomo 重载后仍未找到静态节点：{', '.join(missing)}{f'（{error}）' if error else ''}")
+            unopened: list[int] = []
+            for item in normalized:
+                port = int(item["local_port"])
+                for _attempt in range(10):
+                    if _port_open("127.0.0.1", port, timeout=0.3):
+                        break
+                    time.sleep(0.2)
+                else:
+                    unopened.append(port)
+            if unopened:
+                raise ValueError(f"mihomo 重载后静态代理端口未监听：{', '.join(map(str, unopened))}")
+    except Exception:
+        if changed:
+            _atomic_write(path, original, mode)
+            try:
+                _reload_mihomo_config()
+            except Exception:
+                pass
+        raise
+
+    if normalized:
+        with connect() as conn:
+            for item in normalized:
+                conn.execute(
+                    "UPDATE proxy_profiles SET dialer_proxy = ?, mihomo_name = ?, mihomo_proxy_json = ?, updated_at = ? WHERE id = ?",
+                    (
+                        DEFAULT_MIHOMO_STATIC_DIALER_PROXY,
+                        item["node_name"],
+                        item["proxy_json"],
+                        now_iso(),
+                        item["id"],
+                    ),
+                )
+            conn.commit()
+    return {
+        "enabled": True,
+        "configured": True,
+        "config_path": str(path),
+        "dialer_proxy": DEFAULT_MIHOMO_STATIC_DIALER_PROXY,
+        "changed": changed,
+        "reloaded": should_reload,
+        "pools": [
+            {"id": item["id"], "node": item["node_name"], "local_port": item["local_port"]}
+            for item in normalized
+        ],
+    }
 
 
 def _restore_mihomo_listener_config(path: Path, original: bytes, mode: int) -> None:
@@ -3756,6 +3981,7 @@ def runtime_status() -> dict[str, Any]:
         "novnc_ports": novnc_ports,
         "vnc_port": int(os.getenv("VNC_PORT", "5900")),
         "mihomo_proxy_port": int(os.getenv("MIHOMO_PROXY_PORT", "7890")),
+        "mihomo_static_dialer_proxy": DEFAULT_MIHOMO_STATIC_DIALER_PROXY,
         "mihomo_api_url": mihomo_api,
         "checks": {
             "novnc_local": novnc_checks.get(str(NOVNC_PORT), False),

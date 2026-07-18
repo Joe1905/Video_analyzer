@@ -161,6 +161,7 @@ services:
       SING_BOX_COMPOSE_PROJECT: short-video-analyzer
       MIHOMO_CONFIG_PATH: ${MIHOMO_CONFIG_PATH:-/host/etc/mihomo/config.yaml}
       MIHOMO_RELOAD_PATH: ${MIHOMO_RELOAD_PATH:-/etc/mihomo/config.yaml}
+      MIHOMO_STATIC_DIALER_PROXY: ${MIHOMO_STATIC_DIALER_PROXY:-CoffeeCloud}
       NOVNC_PORT: ${NOVNC_PORT:-6080}
       NOVNC_MANUAL_PORTS: ${NOVNC_MANUAL_PORTS:-1}
       VISION_API_KEY: ${VISION_API_KEY:-}
