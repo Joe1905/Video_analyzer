@@ -187,6 +187,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             feishu_user_active INTEGER NOT NULL DEFAULT 0,
             feishu_user_synced_at TEXT NOT NULL DEFAULT '',
             proxy_profile_id INTEGER NOT NULL REFERENCES proxy_profiles(id) ON DELETE RESTRICT,
+            proxy_bound INTEGER NOT NULL DEFAULT 1,
             status TEXT NOT NULL DEFAULT 'active',
             profile_json TEXT NOT NULL DEFAULT '{}',
             notes TEXT NOT NULL DEFAULT '',
@@ -378,6 +379,8 @@ def init_db(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE tiktok_accounts ADD COLUMN deleted_at TEXT NOT NULL DEFAULT ''")
     if "last_publish_at" not in existing_account_cols:
         conn.execute("ALTER TABLE tiktok_accounts ADD COLUMN last_publish_at TEXT NOT NULL DEFAULT ''")
+    if "proxy_bound" not in existing_account_cols:
+        conn.execute("ALTER TABLE tiktok_accounts ADD COLUMN proxy_bound INTEGER NOT NULL DEFAULT 1")
     for name in (
         "tiktok_avatar_url",
         "feishu_user_id",
@@ -665,6 +668,7 @@ def _row_to_account(row: sqlite3.Row) -> dict[str, Any]:
         "feishu_user_active": bool(row["feishu_user_active"]),
         "feishu_user_synced_at": row["feishu_user_synced_at"],
         "proxy_profile_id": row["proxy_profile_id"],
+        "proxy_bound": bool(row["proxy_bound"]),
         "status": _clean_account_status(row["status"]),
         "profile": _json_loads(row["profile_json"], {}),
         "notes": row["notes"],
@@ -1609,10 +1613,10 @@ def list_state() -> dict[str, Any]:
         _active_sessions(conn)
         counts = {
             int(row["proxy_profile_id"]): int(row["count"])
-            for row in conn.execute("SELECT proxy_profile_id, COUNT(*) AS count FROM tiktok_accounts WHERE deleted_at = '' GROUP BY proxy_profile_id")
+            for row in conn.execute("SELECT proxy_profile_id, COUNT(*) AS count FROM tiktok_accounts WHERE deleted_at = '' AND proxy_bound = 1 GROUP BY proxy_profile_id")
         }
         names: dict[int, list[str]] = {}
-        for row in conn.execute("SELECT proxy_profile_id, username FROM tiktok_accounts WHERE deleted_at = '' ORDER BY username"):
+        for row in conn.execute("SELECT proxy_profile_id, username FROM tiktok_accounts WHERE deleted_at = '' AND proxy_bound = 1 ORDER BY username"):
             names.setdefault(int(row["proxy_profile_id"]), []).append(str(row["username"]))
         pending_jobs = {
             int(row["proxy_profile_id"]): int(row["count"] or 0)
@@ -2281,17 +2285,146 @@ def delete_account(account_id: int) -> dict[str, Any]:
     return list_state()
 
 
+def account_proxy_bound(account: sqlite3.Row | dict[str, Any]) -> bool:
+    try:
+        return bool(account["proxy_bound"])
+    except (KeyError, IndexError):
+        return True
+
+
+def require_account_proxy_bound(account: sqlite3.Row | dict[str, Any]) -> None:
+    if not account_proxy_bound(account):
+        raise ValueError("账号未绑定代理，无法执行任务或观测")
+
+
+def _require_account_binding_idle(conn: sqlite3.Connection, account_id: int) -> None:
+    active_session = conn.execute(
+        """SELECT id FROM browser_sessions
+           WHERE account_id = ? AND status IN ('starting','running','observing')
+           LIMIT 1""",
+        (account_id,),
+    ).fetchone()
+    if active_session:
+        raise ValueError("账号仍处于唤醒或运行状态，请先休眠账号")
+    active_publish = conn.execute(
+        """SELECT id FROM publish_jobs
+           WHERE account_id = ? AND deleted_at = ''
+             AND status IN ('queued','delayed','preparing','uploading','publishing')
+           LIMIT 1""",
+        (account_id,),
+    ).fetchone()
+    if active_publish:
+        raise ValueError("账号仍有待发布或运行中的发布任务，请先取消或等待完成")
+    active_collect = conn.execute(
+        """SELECT id FROM collect_jobs
+           WHERE account_id = ?
+             AND status IN ('queued','delayed','preparing','collecting')
+           LIMIT 1""",
+        (account_id,),
+    ).fetchone()
+    if active_collect:
+        raise ValueError("账号仍有待执行或运行中的统计采集任务，请先取消或等待完成")
+
+
+def update_account_proxy_binding(payload: dict[str, Any]) -> dict[str, Any]:
+    action = _clean_text(payload.get("action"), 20).lower()
+    pool_id = int(payload.get("proxy_profile_id") or payload.get("pool_id") or 0)
+    if action not in {"bind", "unbind"}:
+        raise ValueError("action must be bind or unbind")
+    if not pool_id:
+        raise ValueError("proxy_profile_id is required")
+
+    account_id = 0
+    now = now_iso()
+    with connect() as conn:
+        _active_sessions(conn)
+        conn.execute("BEGIN IMMEDIATE")
+        pool = conn.execute("SELECT * FROM proxy_profiles WHERE id = ?", (pool_id,)).fetchone()
+        if not pool:
+            raise ValueError("proxy profile not found")
+        bound_account = conn.execute(
+            """SELECT * FROM tiktok_accounts
+               WHERE proxy_profile_id = ? AND proxy_bound = 1 AND deleted_at = ''
+               LIMIT 1""",
+            (pool_id,),
+        ).fetchone()
+
+        if action == "unbind":
+            if not bound_account:
+                raise ValueError("该代理当前未绑定账号")
+            account_id = int(bound_account["id"])
+            _require_account_binding_idle(conn, account_id)
+            conn.execute(
+                """UPDATE tiktok_accounts
+                   SET proxy_bound = 0, last_check_status = '未绑定',
+                       last_error = '账号未绑定代理，无法执行任务或观测', updated_at = ?
+                   WHERE id = ?""",
+                (now, account_id),
+            )
+            conn.execute(
+                "UPDATE collect_settings SET enabled = 0, updated_at = ? WHERE account_id = ?",
+                (now, account_id),
+            )
+        else:
+            account_id = int(payload.get("account_id") or 0)
+            if not account_id:
+                raise ValueError("请选择要绑定的账号")
+            if bound_account:
+                raise ValueError(f"该代理已绑定 @{bound_account['username']}")
+            account = conn.execute(
+                "SELECT * FROM tiktok_accounts WHERE id = ? AND deleted_at = ''",
+                (account_id,),
+            ).fetchone()
+            if not account:
+                raise ValueError("account not found")
+            if account_proxy_bound(account):
+                raise ValueError("该账号已绑定其他代理，请先解绑")
+            _require_account_binding_idle(conn, account_id)
+            profile = _json_loads(account["profile_json"], {})
+            if not isinstance(profile, dict):
+                profile = {}
+            profile["proxy_binding"] = {
+                "proxy_profile_id": pool_id,
+                "proxy_name": str(pool["name"] or ""),
+                "local_port": int(pool["local_port"] or 0),
+                "expected_exit_ip": str(pool["expected_exit_ip"] or ""),
+                "detected_address": str(pool["detected_address"] or pool["region"] or ""),
+            }
+            browser_settings = profile.get("browser_settings")
+            if not isinstance(browser_settings, dict):
+                browser_settings = {}
+            browser_settings["proxy_server"] = f"127.0.0.1:{int(pool['local_port'] or 0)}"
+            profile["browser_settings"] = browser_settings
+            conn.execute(
+                """UPDATE tiktok_accounts
+                   SET proxy_profile_id = ?, proxy_bound = 1, profile_json = ?,
+                       last_checked_ip = '', last_check_status = '待校验', last_check_at = '',
+                       last_error = '', updated_at = ?
+                   WHERE id = ?""",
+                (
+                    pool_id,
+                    json.dumps(profile, ensure_ascii=False, separators=(",", ":")),
+                    now,
+                    account_id,
+                ),
+            )
+        conn.commit()
+    return {"account": get_account(account_id), **list_state()}
+
+
 def _pool_for_check(conn: sqlite3.Connection, payload: dict[str, Any]) -> tuple[sqlite3.Row | None, sqlite3.Row | None]:
     account = None
     if payload.get("account_id"):
         account = conn.execute("SELECT * FROM tiktok_accounts WHERE id = ?", (int(payload["account_id"]),)).fetchone()
         if not account:
             raise ValueError("account not found")
+        require_account_proxy_bound(account)
         pool_id = int(account["proxy_profile_id"])
     elif payload.get("username"):
         account = conn.execute("SELECT * FROM tiktok_accounts WHERE username = ?", (_normal_username(payload["username"]),)).fetchone()
         if not account:
             raise ValueError("account not found")
+        require_account_proxy_bound(account)
         pool_id = int(account["proxy_profile_id"])
     else:
         pool_id = int(payload.get("proxy_profile_id") or payload.get("pool_id") or 0)
@@ -2862,6 +2995,7 @@ def start_login_session(payload: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("account not found")
         if "deleted_at" in account_row.keys() and account_row["deleted_at"]:
             raise ValueError("account has been deleted")
+        require_account_proxy_bound(account_row)
         if str(account_row["feishu_user_id"] or "") and not bool(account_row["feishu_user_active"]):
             raise ValueError("账号绑定的飞书用户已从白名单移除，请先重新绑定")
         bound_proxy_id = int(account_row["proxy_profile_id"] or 0)
