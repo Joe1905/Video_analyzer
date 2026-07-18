@@ -8267,6 +8267,80 @@ def downgrade_fastmoss_absolute_market_claims(answer: str) -> str:
         "关联达人和视频规模较大，但其对销量的因果贡献仍需验证",
         text,
     )
+    text = re.sub(
+        r"(?:消费者)?(?:先)?搜(?:索)?了?(?:再|后)(?:购买|买)",
+        "商品卡成交占比较高，但具体搜索与购买路径未被本轮数据观测",
+        text,
+    )
+    text = re.sub(
+        r"[“\"]?商品卡[”\"]?(?:的)?(?:自然搜索|搜索)(?:流量|成交)",
+        "商品卡成交",
+        text,
+    )
+    text = re.sub(
+        r"(?:更|较为)?成熟[、，和且 ]*(?:更|较为)?活跃(?:[、，和且 ]*销售潜力更大)?",
+        "在本次已获取样本中相关销量或内容指标更高",
+        text,
+    )
+    text = re.sub(
+        r"(?:仍处于)?(?:萌芽(?:期|阶段)?|需求低迷|需求尚未启动)",
+        "本次样本信号较弱，实际需求状态仍待验证",
+        text,
+    )
+    text = text.replace("达人积极带动", "达人关联规模较大")
+    text = re.sub(
+        r"(?:这|由此)?表明单纯的?视频种草转化难度(?:正在|在)?增加",
+        "这只说明已观测渠道占比发生变化，不能直接判断内容转化难度",
+        text,
+    )
+    text = re.sub(
+        r"(?:进一步)?验证了?[^\n。；]{0,40}?是类目的核心驱动力",
+        "说明相关功能在本次头部样本中较常见",
+        text,
+    )
+    text = re.sub(
+        r"(?:过度|几乎全)?依赖商品卡成交",
+        "商品卡成交占比较高",
+        text,
+    )
+    text = re.sub(
+        r"这意味着[^\n。；]{0,80}?缺乏可持续的达人内容驱动力",
+        "但该渠道结构不能直接证明达人内容是否可持续",
+        text,
+    )
+    text = re.sub(
+        r"一旦竞争品进入[^\n。；]{0,60}?销量将锐减",
+        "竞争变化对后续销量的影响仍需持续观测",
+        text,
+    )
+    text = text.replace("至少有达人愿意带", "至少观测到达人关联")
+    text = text.replace("其增长有持续动力", "其达人关联规模更高")
+    text = re.sub(
+        r"(?:几乎全)?依赖搜索截流",
+        "商品卡成交占比较高，具体流量路径未被本轮数据观测",
+        text,
+    )
+    text = re.sub(
+        r"(?:一个)?典型的?[“\"]?发大量视频去做搜索截流[”\"]?的?模式",
+        "视频关联规模较高，但具体流量路径仍需验证",
+        text,
+    )
+    text = re.sub(
+        r"通过发布\s*(\*\*)?[\d,.]+(?:条|个)?(?:\*\*)?\s*视频关联此商品实现了销售",
+        "观测到较多关联视频和商品成交，但二者的因果关系仍需验证",
+        text,
+    )
+    text = re.sub(
+        r"(?:整体|类目|市场)?大盘(?:正在|持续)?萎缩|存量竞争(?:阶段|市场)?",
+        "类目同比下降仅描述本次观测周期，长期市场与竞争阶段仍待验证",
+        text,
+    )
+    text = re.sub(
+        r"(?:形成|建立|具备|强化)?(?:内容护城河|用户心智|抗风险能力)",
+        "长期内容效果（仍需后续数据验证）",
+        text,
+    )
+    text = text.replace("销售潜力更大", "本次样本中的已观测销量信号更高")
     text = text.replace("达人驱动特征", "达人与内容关联特征")
     return text
 
@@ -8516,6 +8590,52 @@ def sanitize_fastmoss_unsupported_recommendations(answer: str) -> tuple[str, int
     return "".join(segments), cleanup_count
 
 
+def normalize_fastmoss_entity_id_abbreviations(
+    answer: str,
+    manifest: dict[str, Any],
+) -> tuple[str, int]:
+    """Expand unique product/shop/creator/video ID prefixes back to stable IDs."""
+    stable_ids = {
+        str(bundle.get("entity_id") or "")
+        for bundle in (manifest.get("entity_bundles") or []) if isinstance(bundle, dict)
+        and str(bundle.get("entity_type") or "") in {"product", "shop", "creator", "video"}
+        and re.fullmatch(r"\d{16,20}", str(bundle.get("entity_id") or ""))
+    }
+    stable_ids.update(
+        str(target.get("entity_id") or "")
+        for target in (manifest.get("analysis_targets") or []) if isinstance(target, dict)
+        and re.fullmatch(r"\d{16,20}", str(target.get("entity_id") or ""))
+    )
+    edits = 0
+
+    def expand(match: re.Match[str]) -> str:
+        nonlocal edits
+        prefix = match.group(0)
+        candidates = [entity_id for entity_id in stable_ids if entity_id.startswith(prefix)]
+        if len(candidates) != 1:
+            return prefix
+        edits += 1
+        return candidates[0]
+
+    return re.sub(r"(?<!\d)\d{10,15}(?!\d)", expand, str(answer or "")), edits
+
+
+def cleanup_fastmoss_markdown_structure(answer: str) -> str:
+    """Remove empty sections and table gaps left by valid claim deletions."""
+    text = str(answer or "")
+    text = re.sub(r"(?m)(^\|[^\n]+\|\n)\s*\n+(?=^\|)", r"\1", text)
+    structural = (
+        r"(?:#{1,6}\s+[^\n]+|\*\*[^*\n]+\*\*|-\s+\*\*[^\n]+\*\*[：:]?)"
+    )
+    next_structural = r"(?=(?:#{1,6}\s+|\*\*[^*\n]+\*\*|---\s*$))"
+    text = re.sub(
+        rf"(?m)^{structural}\s*\n(?:[ \t]*\n)+{next_structural}",
+        "",
+        text,
+    )
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
 def sanitize_fastmoss_state_contradictions(
     answer: str,
     manifest: dict[str, Any],
@@ -8633,7 +8753,11 @@ def fastmoss_high_risk_claims(draft: str) -> list[dict[str, Any]]:
             r"(?i)(?:(?:依靠|通过)[^\n。；]{0,40}(?:广告|联盟|视频|直播)|(?:广告|联盟|视频|直播))"
             r"[^\n。；]{0,100}(?:ROI|利润|有效|可行|驱动|导致|证明|稳定|实现|带来|造就|爆发)"
         )),
-        ("content_causality", re.compile(r"(?:内容偏好|最有效|转化最高|表现最好|因为[^\n]{0,60}所以)")),
+        ("content_causality", re.compile(
+            r"(?:内容偏好|最有效|转化最高|表现最好|核心驱动力|持续动力|搜索截流|"
+            r"销量将锐减|转化难度(?:正在|在)?增加|因为[^\n]{0,60}所以)"
+        )),
+        ("cross_entity_attribute", re.compile(r"(?:同一品牌|同一店铺|同一卖家|都来自同一)")),
         ("state_claim", re.compile(r"(?:返回为空|没有返回|未返回|无数据|没有数据|为零|等于0)")),
         ("market_absolute", re.compile(r"(?:低竞争|蓝海|真实机会|确定机会|不存在市场|不构成独立市场|已经饱和)")),
         ("lifecycle", re.compile(
@@ -8827,6 +8951,7 @@ def fastmoss_candidate_evidence(
         "market_scale": {"product_sample", "top_products", "category_analysis", "category_channel_ranking"},
         "channel_causality": {"product_overview", "category_channel_ranking", "shop_sale_analysis", "ad_data_overview"},
         "content_causality": {"product_videos", "product_creator_analysis", "video_detail_analysis", "video_data_trends"},
+        "cross_entity_attribute": {"product_sample", "product_detail", "product_overview"},
         "state_claim": set(),
         "market_absolute": {"product_sample", "category_analysis", "category_channel_ranking"},
         "lifecycle": {"product_90d_trend", "product_overview", "shop_data_trends", "creator_data_trends", "video_data_trends"},
@@ -8845,7 +8970,7 @@ def fastmoss_candidate_evidence(
             matched_products = [
                 item for item in products if str(item.get("product_id") or "") in matching_ids
             ]
-            compact["products"] = matched_products or products[:2]
+            compact["products"] = matched_products or products[:3]
             compact["included_count"] = len(compact["products"])
             compact["omitted_count"] = max(0, int(compact.get("returned_count") or len(products)) - len(compact["products"]))
             compact["truncated"] = bool(compact["omitted_count"])
@@ -8874,6 +8999,7 @@ def fastmoss_candidate_evidence(
             and reasons.issubset({"operational_number", "state_claim"})
             and str(fact.get("dimension") or "") == "product_sample"
             and str(fact.get("scope") or "") == "category_head"
+            and (_fastmoss_number(fact.get("page")) or 1) > 1
         ):
             continue
         facts.append(compact_validator_fact(fact, ids))
@@ -8892,6 +9018,7 @@ def fastmoss_candidate_evidence(
         "market_scale": ("units_sold", "reported_total", "rank", "score"),
         "channel_causality": ("share_percent", "ads_distribution", "channel_distribution", "content_distribution"),
         "content_causality": ("video", "creator", "play_count", "engagement"),
+        "cross_entity_attribute": ("title", "brand", "shop", "seller"),
         "state_claim": ("returned_", "reported_"),
         "market_absolute": ("units_sold", "gmv", "rank", "score"),
         "lifecycle": ("trend", "active_days", "first_30d", "last_30d"),
@@ -8993,6 +9120,14 @@ def apply_fastmoss_verifier_edits(
         if replacement and replacement_ids != original_ids:
             continue
         if not replacement and original_ids:
+            continue
+        if not replacement and original.lstrip().startswith("|"):
+            continue
+        normalize_numbers = lambda value: {
+            token.replace(",", "")
+            for token in re.findall(r"(?<![A-Za-z0-9_.])-?\d+(?:,\d{3})*(?:\.\d+)?", value)
+        }
+        if not normalize_numbers(replacement).issubset(normalize_numbers(original)):
             continue
         updated = updated.replace(original, replacement, 1)
         applied += 1
@@ -9139,9 +9274,10 @@ def verify_fastmoss_final_answer(
     if fallback_reason:
         _log_fastmoss_report_pipeline(draft, manifest, "skipped", fallback_reason=fallback_reason)
         return fastmoss_deterministic_quality_fallback(manifest)
-    precleaned, numeric_cleanup_count, numeric_bound, numeric_unbound = validate_fastmoss_numeric_claims(draft, manifest)
+    precleaned, entity_id_cleanup_count = normalize_fastmoss_entity_id_abbreviations(draft, manifest)
+    precleaned, numeric_cleanup_count, numeric_bound, numeric_unbound = validate_fastmoss_numeric_claims(precleaned, manifest)
     precleaned, initial_cleanup_count = sanitize_fastmoss_unsupported_recommendations(precleaned)
-    initial_cleanup_count += numeric_cleanup_count
+    initial_cleanup_count += numeric_cleanup_count + entity_id_cleanup_count
     precleaned = downgrade_fastmoss_absolute_market_claims(precleaned)
     precleaned, state_cleanup_count = sanitize_fastmoss_state_contradictions(precleaned, manifest)
     initial_cleanup_count += state_cleanup_count
@@ -9156,7 +9292,7 @@ def verify_fastmoss_final_answer(
             claim_numeric_bound=numeric_bound,
             claim_numeric_unbound=numeric_unbound,
         )
-        return precleaned
+        return cleanup_fastmoss_markdown_structure(precleaned)
     verifier_system = (
         "You are an independent FastMoss factual-boundary verifier. Return one compact JSON object only with keys "
         "approved (boolean), risk_level (low|medium|high|critical), edits (array). Each edit must contain exact keys "
@@ -9242,6 +9378,12 @@ def verify_fastmoss_final_answer(
                 f"{type(exc).__name__}: {str(exc)[:300]}",
                 flush=True,
             )
+    updated, post_numeric_count, _, _ = validate_fastmoss_numeric_claims(updated, manifest)
+    updated = downgrade_fastmoss_absolute_market_claims(updated)
+    updated, post_state_count = sanitize_fastmoss_state_contradictions(updated, manifest)
+    updated, post_entity_id_count = normalize_fastmoss_entity_id_abbreviations(updated, manifest)
+    updated = cleanup_fastmoss_markdown_structure(updated)
+    initial_cleanup_count += post_numeric_count + post_state_count + post_entity_id_count
     _log_fastmoss_report_pipeline(
         draft,
         manifest,
