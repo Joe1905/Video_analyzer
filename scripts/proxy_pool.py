@@ -61,6 +61,8 @@ TIKTOK_BROWSER_GID = int(os.getenv("TIKTOK_BROWSER_GID", "10001") or "10001")
 TIKTOK_BROWSER_LOCALE = os.getenv("TIKTOK_BROWSER_LOCALE", "en-US").strip() or "en-US"
 TIKTOK_BROWSER_ACCEPT_LANGUAGE = os.getenv("TIKTOK_BROWSER_ACCEPT_LANGUAGE", "en-US,en").strip() or "en-US,en"
 RUNTIME_ID = f"{os.getpid()}-{uuid.uuid4().hex}"
+_retention_last_run_epoch = 0.0
+_retention_last_result: dict[str, Any] = {}
 STATUS_ACTIVE = "启用"
 STATUS_PAUSED = "禁用"
 STATUS_ERROR = "不可用"
@@ -106,6 +108,18 @@ def browser_max_slots() -> int:
 
 def pending_login_ttl_seconds() -> int:
     return max(60, int(os.getenv("TIKTOK_PENDING_LOGIN_TTL_SECONDS", "900") or "900"))
+
+
+def storage_retention_policy() -> dict[str, int]:
+    return {
+        "interval_seconds": max(60, int(os.getenv("PROXY_STORAGE_RETENTION_INTERVAL_SECONDS", "3600") or "3600")),
+        "orphan_profile_ttl_seconds": max(60, int(os.getenv("PROXY_ORPHAN_PROFILE_TTL_SECONDS", "86400") or "86400")),
+        "bound_cache_ttl_seconds": max(60, int(os.getenv("PROXY_BOUND_CACHE_TTL_SECONDS", "604800") or "604800")),
+        "browser_session_ttl_seconds": max(60, int(os.getenv("PROXY_BROWSER_SESSION_TTL_SECONDS", "604800") or "604800")),
+        "browser_log_max_bytes": max(1024, int(os.getenv("PROXY_BROWSER_LOG_MAX_BYTES", "5242880") or "5242880")),
+        "job_log_ttl_seconds": max(60, int(os.getenv("PROXY_JOB_LOG_TTL_SECONDS", "1209600") or "1209600")),
+        "publish_asset_ttl_seconds": max(60, int(os.getenv("PROXY_PUBLISH_ASSET_TTL_SECONDS", "1209600") or "1209600")),
+    }
 
 
 def novnc_port_plan() -> dict[str, Any]:
@@ -838,6 +852,313 @@ def cleanup_expired_sessions() -> int:
         active = _active_sessions(conn)
         cleaned_profiles = _cleanup_terminated_unbound_profiles(conn)
         return max(0, int(before) - len(active)) + cleaned_profiles
+
+
+def _profile_root_from_user_data(value: str, profiles_root: Path) -> Path | None:
+    if not value:
+        return None
+    try:
+        profile_root = Path(value).resolve().parent
+    except (OSError, RuntimeError):
+        return None
+    if profile_root == profiles_root or profiles_root not in profile_root.parents:
+        return None
+    return profile_root
+
+
+def _tree_disk_bytes(path: Path) -> int:
+    total = 0
+    try:
+        paths = [path, *path.rglob("*")]
+    except OSError:
+        paths = [path]
+    for item in paths:
+        try:
+            total += int(item.lstat().st_blocks) * 512
+        except OSError:
+            continue
+    return total
+
+
+def _tree_latest_mtime(path: Path) -> float:
+    latest = 0.0
+    try:
+        paths = [path, *path.rglob("*")]
+    except OSError:
+        paths = [path]
+    for item in paths:
+        try:
+            latest = max(latest, item.lstat().st_mtime)
+        except OSError:
+            continue
+    return latest
+
+
+def _orphan_profile_created_at(path: Path) -> float:
+    match = re.search(r"-(\d{9,})$", path.name)
+    if match:
+        try:
+            created_at = float(match.group(1))
+            if 0 < created_at <= time.time() + 86400:
+                return created_at
+        except ValueError:
+            pass
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return _tree_latest_mtime(path)
+
+
+def _remove_tree(path: Path, result: dict[str, Any], counter: str) -> None:
+    reclaimed = _tree_disk_bytes(path)
+    shutil.rmtree(path)
+    result[counter] += 1
+    result["bytes_reclaimed"] += reclaimed
+
+
+def _purge_old_cache_files(path: Path, cutoff: float, result: dict[str, Any]) -> None:
+    if not path.exists() or path.is_symlink():
+        return
+    try:
+        items = sorted(path.rglob("*"), key=lambda item: len(item.parts), reverse=True)
+    except OSError as exc:
+        result["errors"].append(f"读取缓存目录失败 {path}: {exc}")
+        return
+    for item in items:
+        try:
+            if item.is_symlink():
+                if item.lstat().st_mtime <= cutoff:
+                    reclaimed = int(item.lstat().st_blocks) * 512
+                    item.unlink()
+                    result["bound_cache_files_removed"] += 1
+                    result["bytes_reclaimed"] += reclaimed
+            elif item.is_file() and item.stat().st_mtime <= cutoff:
+                reclaimed = int(item.stat().st_blocks) * 512
+                item.unlink()
+                result["bound_cache_files_removed"] += 1
+                result["bytes_reclaimed"] += reclaimed
+            elif item.is_dir():
+                try:
+                    item.rmdir()
+                except OSError:
+                    pass
+        except OSError as exc:
+            result["errors"].append(f"清理缓存失败 {item}: {exc}")
+    try:
+        path.rmdir()
+    except OSError:
+        pass
+
+
+def _bound_profile_cache_paths(profile_root: Path) -> list[Path]:
+    user_data = profile_root / "user-data"
+    paths = [
+        profile_root / "cache",
+        user_data / "component_crx_cache",
+        user_data / "optimization_guide_model_store",
+        user_data / "WasmTtsEngine",
+        user_data / "OnDeviceHeadSuggestModel",
+        user_data / "GraphiteDawnCache",
+        user_data / "GrShaderCache",
+        user_data / "ShaderCache",
+    ]
+    if user_data.is_dir():
+        for chrome_profile in user_data.iterdir():
+            if not chrome_profile.is_dir() or not (chrome_profile.name == "Default" or chrome_profile.name.startswith("Profile ")):
+                continue
+            paths.extend(
+                [
+                    chrome_profile / "Cache",
+                    chrome_profile / "Code Cache",
+                    chrome_profile / "GPUCache",
+                    chrome_profile / "DawnGraphiteCache",
+                    chrome_profile / "DawnWebGPUCache",
+                    chrome_profile / "Service Worker" / "CacheStorage",
+                ]
+            )
+    return paths
+
+
+def _truncate_log_tail(path: Path, max_bytes: int, result: dict[str, Any]) -> None:
+    try:
+        size = path.stat().st_size
+        if size <= max_bytes:
+            return
+        with path.open("rb") as source:
+            source.seek(-max_bytes, os.SEEK_END)
+            tail = source.read()
+        with path.open("wb") as target:
+            target.write(tail)
+        result["browser_logs_truncated"] += 1
+        result["bytes_reclaimed"] += size - len(tail)
+    except OSError as exc:
+        result["errors"].append(f"截断日志失败 {path}: {exc}")
+
+
+def _cleanup_job_log_root(
+    root: Path,
+    rows: dict[str, dict[str, Any]],
+    terminal_statuses: set[str],
+    cutoff: float,
+    result: dict[str, Any],
+    counter: str,
+) -> None:
+    if not root.is_dir():
+        return
+    for path in root.iterdir():
+        if not path.is_dir() or path.is_symlink():
+            continue
+        row = rows.get(path.name)
+        if row:
+            terminal = bool(str(row.get("deleted_at") or "")) or str(row.get("status") or "") in terminal_statuses
+            changed_at = _iso_epoch(str(row.get("completed_at") or row.get("updated_at") or row.get("created_at") or ""))
+            if not terminal or not changed_at or changed_at > cutoff:
+                continue
+        elif _tree_latest_mtime(path) > cutoff:
+            continue
+        try:
+            _remove_tree(path, result, counter)
+        except OSError as exc:
+            result["errors"].append(f"清理任务日志失败 {path}: {exc}")
+
+
+def cleanup_storage_retention(force: bool = False, now_epoch: float | None = None) -> dict[str, Any]:
+    global _retention_last_run_epoch, _retention_last_result
+    current = float(now_epoch if now_epoch is not None else time.time())
+    policy = storage_retention_policy()
+    if not force and _retention_last_run_epoch and current - _retention_last_run_epoch < policy["interval_seconds"]:
+        return {**_retention_last_result, "skipped": True}
+
+    result: dict[str, Any] = {
+        "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(current)),
+        "skipped": False,
+        "orphan_profiles_removed": 0,
+        "bound_cache_files_removed": 0,
+        "browser_session_dirs_removed": 0,
+        "browser_logs_truncated": 0,
+        "publish_log_dirs_removed": 0,
+        "collect_log_dirs_removed": 0,
+        "publish_assets_removed": 0,
+        "bytes_reclaimed": 0,
+        "errors": [],
+    }
+    profiles_root = (DATA_DIR / "tiktok_browser_profiles").resolve()
+    active_profile_roots: set[Path] = set()
+    bound_profile_roots: set[Path] = set()
+    active_session_ids: set[int] = set()
+    with connect() as conn:
+        for row in conn.execute("SELECT profile_json FROM tiktok_accounts WHERE deleted_at = ''"):
+            profile = _json_loads(str(row["profile_json"] or ""), {})
+            isolation = profile.get("isolation") if isinstance(profile.get("isolation"), dict) else {}
+            root = _profile_root_from_user_data(str(isolation.get("user_data_dir") or ""), profiles_root)
+            if root:
+                bound_profile_roots.add(root)
+        session_rows = [dict(row) for row in conn.execute("SELECT * FROM browser_sessions")]
+        for row in session_rows:
+            if str(row.get("status") or "") not in {"starting", "running", "observing"}:
+                continue
+            active_session_ids.add(int(row.get("id") or 0))
+            root = _profile_root_from_user_data(str(row.get("user_data_dir") or ""), profiles_root)
+            if root:
+                active_profile_roots.add(root)
+        publish_rows = {str(row["id"]): dict(row) for row in conn.execute("SELECT * FROM publish_jobs")}
+        collect_rows = {str(row["id"]): dict(row) for row in conn.execute("SELECT * FROM collect_jobs")}
+        assets = [dict(row) for row in conn.execute("SELECT * FROM publish_assets")]
+
+    if profiles_root.is_dir():
+        orphan_cutoff = current - policy["orphan_profile_ttl_seconds"]
+        for profile_root in profiles_root.iterdir():
+            if not profile_root.is_dir() or profile_root.is_symlink():
+                continue
+            if profile_root not in bound_profile_roots and profile_root not in active_profile_roots:
+                if _orphan_profile_created_at(profile_root) <= orphan_cutoff:
+                    try:
+                        _remove_tree(profile_root, result, "orphan_profiles_removed")
+                    except OSError as exc:
+                        result["errors"].append(f"清理孤立 Profile 失败 {profile_root}: {exc}")
+                continue
+            if profile_root in bound_profile_roots and profile_root not in active_profile_roots:
+                cache_cutoff = current - policy["bound_cache_ttl_seconds"]
+                for cache_path in _bound_profile_cache_paths(profile_root):
+                    _purge_old_cache_files(cache_path, cache_cutoff, result)
+
+    browser_logs_root = DATA_DIR / "tiktok_browser_sessions"
+    sessions_by_id = {int(row.get("id") or 0): row for row in session_rows}
+    session_cutoff = current - policy["browser_session_ttl_seconds"]
+    if browser_logs_root.is_dir():
+        for path in browser_logs_root.iterdir():
+            if not path.is_dir() or path.is_symlink():
+                continue
+            try:
+                session_id = int(path.name)
+            except ValueError:
+                session_id = 0
+            if session_id in active_session_ids:
+                continue
+            row = sessions_by_id.get(session_id)
+            changed_at = _iso_epoch(str((row or {}).get("updated_at") or "")) or _tree_latest_mtime(path)
+            if changed_at <= session_cutoff:
+                try:
+                    _remove_tree(path, result, "browser_session_dirs_removed")
+                except OSError as exc:
+                    result["errors"].append(f"清理浏览器会话目录失败 {path}: {exc}")
+                continue
+            for log_path in path.rglob("*.log"):
+                if log_path.is_file() and not log_path.is_symlink():
+                    _truncate_log_tail(log_path, policy["browser_log_max_bytes"], result)
+
+    job_cutoff = current - policy["job_log_ttl_seconds"]
+    _cleanup_job_log_root(
+        DATA_DIR / "tiktok_publish_jobs",
+        publish_rows,
+        {"published", "scheduled_on_tiktok", "cancelled", "dry_run", "failed"},
+        job_cutoff,
+        result,
+        "publish_log_dirs_removed",
+    )
+    _cleanup_job_log_root(
+        DATA_DIR / "tiktok_collect_jobs",
+        collect_rows,
+        {"complete", "failed", "cancelled"},
+        job_cutoff,
+        result,
+        "collect_log_dirs_removed",
+    )
+
+    jobs_by_asset: dict[str, list[dict[str, Any]]] = {}
+    for row in publish_rows.values():
+        jobs_by_asset.setdefault(str(row.get("asset_id") or ""), []).append(row)
+    asset_cutoff = current - policy["publish_asset_ttl_seconds"]
+    publish_root = (ROOT / "videos" / "tiktok_publish").resolve()
+    for asset in assets:
+        jobs = jobs_by_asset.get(str(asset.get("id") or ""), [])
+        eligible = not jobs or all(
+            bool(str(job.get("deleted_at") or "")) or str(job.get("status") or "") in {"published", "scheduled_on_tiktok"}
+            for job in jobs
+        )
+        changed_at = max(
+            [_iso_epoch(str(asset.get("created_at") or "")), *[_iso_epoch(str(job.get("updated_at") or "")) for job in jobs]]
+        )
+        if not eligible or not changed_at or changed_at > asset_cutoff:
+            continue
+        try:
+            target = (ROOT / str(asset.get("stored_path") or "")).resolve()
+            if publish_root not in target.parents or not target.is_file() or target.is_symlink():
+                continue
+            reclaimed = int(target.stat().st_blocks) * 512
+            target.unlink()
+            result["publish_assets_removed"] += 1
+            result["bytes_reclaimed"] += reclaimed
+        except OSError as exc:
+            result["errors"].append(f"清理发布视频失败 {asset.get('id')}: {exc}")
+
+    _retention_last_run_epoch = current
+    _retention_last_result = result
+    return result
+
+
+def storage_retention_status() -> dict[str, Any]:
+    return {"policy": storage_retention_policy(), "last_cleanup": dict(_retention_last_result)}
 
 
 def _allocate_session_slot(conn: sqlite3.Connection) -> int:
@@ -3447,6 +3768,7 @@ def runtime_status() -> dict[str, Any]:
         "mihomo_error": mihomo_error,
         "port_range": f"{PROXY_PORT_START}-{PROXY_PORT_END}",
         "pending_login_ttl_seconds": pending_login_ttl_seconds(),
+        "storage_retention": storage_retention_status(),
         "browser_locale": TIKTOK_BROWSER_LOCALE,
         "browser_notice": f"noVNC 放行端口按账号并发 {novnc_ports['max_slots']} + 手动 {novnc_ports['manual_ports']} 计算：{novnc_ports['allowed_range']}；服务器本机检测为准。",
     }

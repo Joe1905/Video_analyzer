@@ -10208,6 +10208,16 @@ def proxy_session_janitor() -> None:
         except Exception as exc:
             print(f"Proxy session cleanup failed: {exc}", flush=True)
         try:
+            retention = proxy_pool.cleanup_storage_retention()
+            if not retention.get("skipped") and retention.get("bytes_reclaimed"):
+                print(
+                    f"Proxy storage retention reclaimed={retention['bytes_reclaimed']} bytes "
+                    f"profiles={retention['orphan_profiles_removed']} assets={retention['publish_assets_removed']}",
+                    flush=True,
+                )
+        except Exception as exc:
+            print(f"Proxy storage retention failed: {exc}", flush=True)
+        try:
             recheck = proxy_pool.recheck_unavailable_proxies()
             if recheck["attempted"]:
                 print(
@@ -10230,6 +10240,13 @@ def main() -> int:
     if PROXY_POOL_ENABLED:
         proxy_pool.ensure_proxy_cores(restart=True)
         proxy_pool.list_state()
+        retention = proxy_pool.cleanup_storage_retention(force=True)
+        if retention.get("bytes_reclaimed") or retention.get("errors"):
+            print(
+                f"Proxy storage retention reclaimed={retention['bytes_reclaimed']} bytes "
+                f"errors={len(retention['errors'])}",
+                flush=True,
+            )
         threading.Thread(target=proxy_session_janitor, daemon=True).start()
         tiktok_studio_publish.start_worker()
         tiktok_studio_collect.start_worker()
