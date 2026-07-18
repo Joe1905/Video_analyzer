@@ -70,6 +70,7 @@ class LanChatFileTransferTest(unittest.TestCase):
                 ).fetchone()
             self.assertIn("media_expires_at", columns)
             self.assertIn("media_deleted_at", columns)
+            self.assertIn("client_upload_id", columns)
             self.assertEqual(expires_at, created_at + MESSAGE_MEDIA_RETENTION_SECONDS)
             self.assertIsNone(deleted_at)
 
@@ -79,7 +80,7 @@ class LanChatFileTransferTest(unittest.TestCase):
             "文件群",
             [self.receiver["user"]["id"]],
         )
-        message = self.store.send_file(
+        message, created = self.store.send_file(
             self.sender["sessionToken"],
             room["id"],
             "报表 2026.xlsx",
@@ -87,6 +88,7 @@ class LanChatFileTransferTest(unittest.TestCase):
             BytesIO(b"group-file"),
             "请查收",
         )
+        self.assertTrue(created)
 
         attachment = message["file"]
         self.assertEqual(attachment["receiptStatus"], "available")
@@ -125,13 +127,14 @@ class LanChatFileTransferTest(unittest.TestCase):
         room = self.store.open_direct(
             self.sender["sessionToken"], self.receiver["user"]["id"]
         )
-        message = self.store.send_file(
+        message, created = self.store.send_file(
             self.sender["sessionToken"],
             room["id"],
             "方案.pdf",
             "application/pdf",
             BytesIO(b"direct-file"),
         )
+        self.assertTrue(created)
         file_id = message["file"]["id"]
         self.assertEqual(message["file"]["receiptStatus"], "pending")
         self.assertTrue(message["file"]["downloadAllowed"])
@@ -167,9 +170,10 @@ class LanChatFileTransferTest(unittest.TestCase):
         self.assertEqual(FILE_TRANSFER_MAX_BYTES, bootstrap["fileMaxBytes"])
         payload = b"\x00\x00\x00\x18ftypisom" + b"small-video"
         media_data = "data:video/mp4;base64," + base64.b64encode(payload).decode("ascii")
-        message = self.store.send_message(
+        message, created = self.store.send_message(
             self.sender["sessionToken"], "public", "", media_data
         )
+        self.assertTrue(created)
         self.assertEqual(message["mediaKind"], "video")
         self.assertFalse(message["mediaExpired"])
         self.assertEqual(
@@ -208,6 +212,96 @@ class LanChatFileTransferTest(unittest.TestCase):
         with self.assertRaises(LanChatError) as context:
             self.store.message_media_info(filename)
         self.assertEqual(context.exception.status, 410)
+
+    def test_inline_media_client_upload_id_is_idempotent(self) -> None:
+        upload_id = "inline_upload_1234567890"
+        media_data = "data:image/png;base64," + base64.b64encode(
+            b"\x89PNG\r\n\x1a\ninline"
+        ).decode("ascii")
+        first, first_created = self.store.send_message(
+            self.sender["sessionToken"],
+            "public",
+            "图片",
+            media_data,
+            upload_id,
+        )
+        second, second_created = self.store.send_message(
+            self.sender["sessionToken"],
+            "public",
+            "不会覆盖",
+            media_data,
+            upload_id,
+        )
+
+        self.assertTrue(first_created)
+        self.assertFalse(second_created)
+        self.assertEqual(first["id"], second["id"])
+        self.assertEqual(first["clientUploadId"], upload_id)
+        self.assertEqual(len(list(self.store.media_dir.iterdir())), 1)
+        with sqlite3.connect(self.store.db_path) as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0], 1)
+
+    def test_direct_file_client_upload_id_does_not_duplicate_receipt(self) -> None:
+        room = self.store.open_direct(
+            self.sender["sessionToken"], self.receiver["user"]["id"]
+        )
+        upload_id = "direct_file_1234567890"
+        first, first_created = self.store.send_file(
+            self.sender["sessionToken"],
+            room["id"],
+            "原始.pdf",
+            "application/pdf",
+            BytesIO(b"first-file"),
+            "正文",
+            upload_id,
+        )
+        second, second_created = self.store.send_file(
+            self.sender["sessionToken"],
+            room["id"],
+            "重复.pdf",
+            "application/pdf",
+            BytesIO(b"second-file"),
+            "不同正文",
+            upload_id,
+        )
+
+        self.assertTrue(first_created)
+        self.assertFalse(second_created)
+        self.assertEqual(first["id"], second["id"])
+        self.assertEqual(first["file"]["id"], second["file"]["id"])
+        with sqlite3.connect(self.store.db_path) as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0], 1)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM file_attachments").fetchone()[0], 1)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM file_receipts").fetchone()[0], 1)
+
+    def test_client_upload_id_rejects_cross_room_reuse(self) -> None:
+        room = self.store.create_group(
+            self.sender["sessionToken"],
+            "另一个房间",
+            [self.receiver["user"]["id"]],
+        )
+        upload_id = "cross_room_1234567890"
+        self.store.send_message(
+            self.sender["sessionToken"], "public", "第一条", "", upload_id
+        )
+        with self.assertRaises(LanChatError) as context:
+            self.store.send_message(
+                self.sender["sessionToken"], room["id"], "第二条", "", upload_id
+            )
+        self.assertEqual(context.exception.status, 409)
+
+    def test_legacy_messages_without_client_upload_id_are_not_deduplicated(self) -> None:
+        first, first_created = self.store.send_message(
+            self.sender["sessionToken"], "public", "旧客户端"
+        )
+        second, second_created = self.store.send_message(
+            self.sender["sessionToken"], "public", "旧客户端"
+        )
+        self.assertTrue(first_created)
+        self.assertTrue(second_created)
+        self.assertNotEqual(first["id"], second["id"])
+        self.assertEqual(first["clientUploadId"], "")
+        self.assertEqual(second["clientUploadId"], "")
 
 
 if __name__ == "__main__":

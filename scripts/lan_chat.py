@@ -8,6 +8,7 @@ import hashlib
 import html
 import json
 import os
+import re
 import secrets
 import sqlite3
 import subprocess
@@ -154,6 +155,7 @@ class LanChatStore:
                     media_expires_at REAL,
                     media_deleted_at REAL,
                     file_id TEXT,
+                    client_upload_id TEXT,
                     created_at REAL NOT NULL,
                     FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE CASCADE,
                     FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE CASCADE
@@ -273,6 +275,8 @@ class LanChatStore:
                 conn.execute("ALTER TABLE messages ADD COLUMN media_deleted_at REAL")
             if "file_id" not in message_columns:
                 conn.execute("ALTER TABLE messages ADD COLUMN file_id TEXT")
+            if "client_upload_id" not in message_columns:
+                conn.execute("ALTER TABLE messages ADD COLUMN client_upload_id TEXT")
             conn.execute(
                 """UPDATE messages SET media_expires_at = created_at + ?
                    WHERE image_filename IS NOT NULL AND media_expires_at IS NULL""",
@@ -280,6 +284,11 @@ class LanChatStore:
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS messages_file_id_idx ON messages(file_id)"
+            )
+            conn.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS messages_sender_client_upload_idx
+                   ON messages(sender_id, client_upload_id)
+                   WHERE client_upload_id IS NOT NULL AND client_upload_id != ''"""
             )
             conn.execute(
                 """CREATE INDEX IF NOT EXISTS messages_media_expiry_idx
@@ -797,11 +806,20 @@ class LanChatStore:
         room_id: str,
         content: str,
         image_data: str = "",
-    ) -> dict[str, Any]:
+        client_upload_id: str = "",
+    ) -> tuple[dict[str, Any], bool]:
         current = self.authenticate(device_token)
+        clean_upload_id = self._clean_client_upload_id(client_upload_id)
         clean_content = str(content or "").strip()
         if len(clean_content) > 4000:
             raise LanChatError("消息不能超过 4000 个字符")
+        with self._connect() as conn:
+            self._require_room_access(conn, room_id, current["id"])
+            existing = self._client_upload_message(
+                conn, current["id"], room_id, clean_upload_id
+            )
+            if existing is not None:
+                return existing, False
         media = self._decode_message_media(image_data)
         if not clean_content and media is None:
             raise LanChatError("消息或媒体不能为空")
@@ -818,8 +836,8 @@ class LanChatStore:
                 cursor = conn.execute(
                     """INSERT INTO messages
                        (room_id, sender_id, content, image_filename, image_mime_type,
-                        media_expires_at, media_deleted_at, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, NULL, ?)""",
+                        media_expires_at, media_deleted_at, client_upload_id, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)""",
                     (
                         room_id,
                         current["id"],
@@ -827,6 +845,7 @@ class LanChatStore:
                         media_filename or None,
                         media_mime_type or None,
                         now + MESSAGE_MEDIA_RETENTION_SECONDS if media_filename else None,
+                        clean_upload_id or None,
                         now,
                     ),
                 )
@@ -838,11 +857,23 @@ class LanChatStore:
                     (cursor.lastrowid,),
                 ).fetchone()
                 payload = self._message_payload(conn, row, current["id"])
+        except sqlite3.IntegrityError:
+            if media_filename:
+                (self.media_dir / media_filename).unlink(missing_ok=True)
+            if clean_upload_id:
+                with self._connect() as conn:
+                    self._require_room_access(conn, room_id, current["id"])
+                    existing = self._client_upload_message(
+                        conn, current["id"], room_id, clean_upload_id
+                    )
+                    if existing is not None:
+                        return existing, False
+            raise
         except Exception:
             if media_filename:
                 (self.media_dir / media_filename).unlink(missing_ok=True)
             raise
-        return payload
+        return payload, True
 
     def send_file(
         self,
@@ -852,8 +883,10 @@ class LanChatStore:
         mime_type: str,
         file_stream: BinaryIO,
         content: str = "",
-    ) -> dict[str, Any]:
+        client_upload_id: str = "",
+    ) -> tuple[dict[str, Any], bool]:
         current = self.authenticate(device_token)
+        clean_upload_id = self._clean_client_upload_id(client_upload_id)
         clean_content = str(content or "").strip()
         if len(clean_content) > 4000:
             raise LanChatError("消息不能超过 4000 个字符")
@@ -864,6 +897,11 @@ class LanChatStore:
 
         with self._connect() as conn:
             room = self._require_room_access(conn, room_id, current["id"])
+            existing = self._client_upload_message(
+                conn, current["id"], room_id, clean_upload_id
+            )
+            if existing is not None:
+                return existing, False
             receiver_ids = []
             if room["kind"] == "direct":
                 receiver_ids = [
@@ -900,6 +938,12 @@ class LanChatStore:
             expires_at = now + FILE_TRANSFER_RETENTION_SECONDS
             with self._connect() as conn:
                 room = self._require_room_access(conn, room_id, current["id"])
+                existing = self._client_upload_message(
+                    conn, current["id"], room_id, clean_upload_id
+                )
+                if existing is not None:
+                    final_path.unlink(missing_ok=True)
+                    return existing, False
                 conn.execute(
                     """INSERT INTO file_attachments
                        (id, room_id, sender_id, stored_filename, original_name, mime_type,
@@ -920,9 +964,16 @@ class LanChatStore:
                 cursor = conn.execute(
                     """INSERT INTO messages
                        (room_id, sender_id, content, image_filename, image_mime_type,
-                        file_id, created_at)
-                       VALUES (?, ?, ?, NULL, NULL, ?, ?)""",
-                    (room_id, current["id"], clean_content, attachment_id, now),
+                        file_id, client_upload_id, created_at)
+                       VALUES (?, ?, ?, NULL, NULL, ?, ?, ?)""",
+                    (
+                        room_id,
+                        current["id"],
+                        clean_content,
+                        attachment_id,
+                        clean_upload_id or None,
+                        now,
+                    ),
                 )
                 if room["kind"] == "direct":
                     conn.execute(
@@ -939,11 +990,23 @@ class LanChatStore:
                     (cursor.lastrowid,),
                 ).fetchone()
                 payload = self._message_payload(conn, row, current["id"])
+        except sqlite3.IntegrityError:
+            temp_path.unlink(missing_ok=True)
+            final_path.unlink(missing_ok=True)
+            if clean_upload_id:
+                with self._connect() as conn:
+                    self._require_room_access(conn, room_id, current["id"])
+                    existing = self._client_upload_message(
+                        conn, current["id"], room_id, clean_upload_id
+                    )
+                    if existing is not None:
+                        return existing, False
+            raise
         except Exception:
             temp_path.unlink(missing_ok=True)
             final_path.unlink(missing_ok=True)
             raise
-        return payload
+        return payload, True
 
     def accept_file(self, device_token: str, file_id: str) -> dict[str, Any]:
         current = self.authenticate(device_token)
@@ -1454,6 +1517,7 @@ class LanChatStore:
         return {
             "id": int(row["id"]),
             "roomId": row["room_id"],
+            "clientUploadId": str(row["client_upload_id"] or ""),
             "senderId": row["sender_id"],
             "senderName": row["nickname"],
             "senderAvatarUrl": f"/api/lan-chat/avatars/{row['sender_id']}",
@@ -1489,6 +1553,36 @@ class LanChatStore:
             "createdAt": float(row["created_at"]),
             "isMine": row["sender_id"] == current_user_id,
         }
+
+    def _client_upload_message(
+        self,
+        conn: sqlite3.Connection,
+        sender_id: str,
+        room_id: str,
+        client_upload_id: str,
+    ) -> dict[str, Any] | None:
+        if not client_upload_id:
+            return None
+        row = conn.execute(
+            """SELECT m.*, u.nickname, u.avatar_color, u.avatar_status
+               FROM messages m JOIN users u ON u.id = m.sender_id
+               WHERE m.sender_id = ? AND m.client_upload_id = ?""",
+            (sender_id, client_upload_id),
+        ).fetchone()
+        if row is None:
+            return None
+        if str(row["room_id"]) != room_id:
+            raise LanChatError("clientUploadId 已用于其他房间", 409)
+        return self._message_payload(conn, row, sender_id)
+
+    @staticmethod
+    def _clean_client_upload_id(value: str) -> str:
+        clean_value = str(value or "").strip()
+        if not clean_value:
+            return ""
+        if not re.fullmatch(r"[A-Za-z0-9_-]{16,80}", clean_value):
+            raise LanChatError("clientUploadId 格式无效")
+        return clean_value
 
     @staticmethod
     def _decode_message_media(media_data: str) -> tuple[bytes, str, str] | None:
