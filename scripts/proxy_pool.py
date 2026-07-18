@@ -1501,12 +1501,15 @@ def _proxy_json_with_cookies(url: str, proxy_port: int, cookies: dict[str, str],
 def _tiktok_avatar_url(item: dict[str, Any]) -> str:
     for key in (
         "avatar_url",
+        "avatar_url_100x100",
+        "avatar_url_168x168",
         "avatarUrl",
         "avatar_thumb",
         "avatarThumb",
         "avatar_larger",
         "avatarLarger",
         "avatar_medium",
+        "avatarMedium",
     ):
         value = item.get(key)
         candidates: list[Any]
@@ -1695,62 +1698,73 @@ def _browser_account_avatar(debug_port: int) -> bytes:
             browser = playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{debug_port}")
             if not browser.contexts or not browser.contexts[0].pages:
                 raise ValueError("Chrome 没有可用的 TikTok 页面")
-            page = browser.contexts[0].pages[0]
+            pages = browser.contexts[0].pages
+            page = next((item for item in reversed(pages) if "tiktok.com" in item.url.lower()), pages[-1])
             try:
                 page.wait_for_function(
                     """() => [...document.images].some((image) => {
                         const rect = image.getBoundingClientRect();
-                        const src = image.currentSrc || image.src || "";
-                        return src.startsWith("https://") && src.includes("-avt-") &&
-                            !image.alt && rect.width >= 24 && rect.width <= 44 &&
-                            rect.height >= 24 && rect.height <= 44;
+                        const src = (image.currentSrc || image.src || "").toLowerCase();
+                        return rect.width >= 20 && rect.width <= 96 &&
+                            rect.height >= 20 && rect.height <= 96 &&
+                            Math.abs(rect.width - rect.height) <= 8 &&
+                            (/avatar|-avt-|cropcenter|tiktokcdn/.test(src) ||
+                                image.closest('header, nav, [class*="avatar" i], [data-e2e*="profile" i]'));
                     })""",
-                    timeout=5000,
+                    timeout=12000,
                 )
             except Exception:
                 pass
             result = page.evaluate(
                 """async () => {
-                    const rows = [...document.images].map((image) => {
+                    const rows = [...document.images].map((image, index) => {
                         const rect = image.getBoundingClientRect();
                         return {
+                            index,
                             src: image.currentSrc || image.src || "",
                             alt: image.alt || "",
                             width: rect.width,
                             height: rect.height,
+                            inIdentityUi: Boolean(image.closest('header, nav, [class*="avatar" i], [data-e2e*="profile" i]')),
+                            inPost: Boolean(image.closest('article, [data-e2e*="post" i], [data-e2e*="video" i]')),
                         };
                     });
-                    const candidates = rows.filter((row) =>
-                        row.src.startsWith("https://") &&
-                        row.src.includes("-avt-") &&
-                        !row.alt &&
-                        row.width >= 24 && row.width <= 44 &&
-                        row.height >= 24 && row.height <= 44
-                    );
-                    const counts = new Map();
-                    for (const candidate of candidates) {
-                        counts.set(candidate.src, (counts.get(candidate.src) || 0) + 1);
-                    }
-                    candidates.sort((left, right) =>
-                        (counts.get(right.src) - counts.get(left.src)) ||
-                        (Math.abs(left.width - 32) - Math.abs(right.width - 32))
-                    );
+                    const candidates = rows.filter((row) => {
+                        const src = row.src.toLowerCase();
+                        return row.src.startsWith("http") && row.width >= 20 && row.width <= 120 &&
+                            row.height >= 20 && row.height <= 120 &&
+                            Math.abs(row.width - row.height) <= 8 &&
+                            (/avatar|-avt-|cropcenter|tiktokcdn/.test(src) || row.inIdentityUi);
+                    });
+                    const score = (row) => {
+                        const src = row.src.toLowerCase();
+                        return (row.inIdentityUi ? 120 : 0) + (/-avt-|avatar/.test(src) ? 80 : 0) +
+                            (/cropcenter/.test(src) ? 40 : 0) + (row.width <= 64 ? 30 : 0) +
+                            (!row.alt ? 5 : 0) - (row.inPost ? 150 : 0) - Math.abs(row.width - 32);
+                    };
+                    candidates.sort((left, right) => score(right) - score(left));
                     if (!candidates.length) return {error: "当前 TikTok 页面未找到账号头像"};
                     try {
                         const response = await fetch(candidates[0].src, {cache: "force-cache"});
-                        if (!response.ok) return {error: `头像请求返回 HTTP ${response.status}`};
+                        if (!response.ok) return {index: candidates[0].index, error: `头像请求返回 HTTP ${response.status}`};
                         const bytes = new Uint8Array(await response.arrayBuffer());
                         let binary = "";
                         for (let offset = 0; offset < bytes.length; offset += 8192) {
                             binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
                         }
-                        return {data: btoa(binary)};
+                        return {index: candidates[0].index, data: btoa(binary)};
                     } catch (error) {
-                        return {error: String(error)};
+                        return {index: candidates[0].index, error: String(error)};
                     }
                 }"""
             )
-        if not isinstance(result, dict) or not result.get("data"):
+            if isinstance(result, dict) and result.get("data"):
+                return base64.b64decode(str(result["data"]), validate=True)
+            if isinstance(result, dict) and isinstance(result.get("index"), int):
+                return page.locator("img").nth(int(result["index"])).screenshot(animations="disabled")
+        if not isinstance(result, dict):
+            raise ValueError("TikTok 头像读取失败")
+        if not result.get("data"):
             raise ValueError(str((result or {}).get("error") or "TikTok 头像读取失败"))
         return base64.b64decode(str(result["data"]), validate=True)
     except Exception as exc:
@@ -3604,8 +3618,8 @@ def start_login_session(payload: dict[str, Any]) -> dict[str, Any]:
                             "UPDATE tiktok_accounts SET tiktok_avatar_url = ?, updated_at = ? WHERE id = ?",
                             (avatar_url, now_iso(), account_id),
                         )
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        print(f"TikTok account {account_id} avatar backfill skipped: {exc}", flush=True)
             preflight["browser_observed_ip"] = browser_observed_ip
             conn.execute(
                 """
@@ -3787,8 +3801,8 @@ def inspect_login_session(payload: dict[str, Any]) -> dict[str, Any]:
     avatar_body = b""
     try:
         avatar_body = _browser_account_avatar(int(row["debug_port"] or 0))
-    except Exception:
-        pass
+    except Exception as exc:
+        print(f"TikTok login session {session_id} avatar capture skipped: {exc}", flush=True)
     result = upsert_account(
         {
             "username": username,
@@ -3808,8 +3822,8 @@ def inspect_login_session(payload: dict[str, Any]) -> dict[str, Any]:
     if avatar_body:
         try:
             avatar_url = _write_account_avatar(account_id, avatar_body)
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"TikTok account {account_id} avatar save skipped: {exc}", flush=True)
     updated_at = now_iso()
     with connect() as conn:
         conn.execute(
