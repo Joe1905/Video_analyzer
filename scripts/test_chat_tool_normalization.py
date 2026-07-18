@@ -469,8 +469,10 @@ def test_current_tool_evidence_is_lossless_until_budget_pressure() -> None:
         "sellersprite__keyword_research_trends",
         raw_result,
     )
-    assert isinstance(normalized["mcp_data"], str)
-    assert marker not in normalized["mcp_data"]
+    assert isinstance(normalized["mcp_data"], dict)
+    assert marker in json.dumps(normalized["mcp_data"], ensure_ascii=False)
+    assert len(normalized["mcp_text_preview"]) == 4000
+    assert marker not in normalized["mcp_text_preview"]
 
     evidence = web_app.current_chat_tool_evidence(
         "sellersprite__keyword_research_trends",

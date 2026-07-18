@@ -5701,16 +5701,6 @@ def parse_mcp_text_content(text: str) -> Any:
         return None
 
 
-def compact_mcp_content(value: Any, max_chars: int = 12000) -> Any:
-    """Keep persisted/UI tool results bounded; current model evidence uses the raw MCP payload."""
-    if value is None:
-        return None
-    text = json.dumps(value, ensure_ascii=False, separators=(",", ":")) if not isinstance(value, str) else value
-    if len(text) <= max_chars:
-        return value
-    return text[:max_chars] + "..."
-
-
 def mcp_collection_content_state(value: Any) -> tuple[bool, bool]:
     collection_keys = {
         "list", "items", "results", "products", "reviews", "videos", "shops", "stores",
@@ -5884,7 +5874,7 @@ def normalize_prefixed_tool_result(tool_id: str, result: dict[str, Any]) -> dict
             if text:
                 normalized["mcp_text_preview"] = text[:4000]
             if parsed is not None:
-                normalized["mcp_data"] = compact_mcp_content(parsed)
+                normalized["mcp_data"] = parsed
             normalized["enough_data"] = bool(has_content)
             normalized["data_state"] = "data" if has_content else "empty"
             normalized["evidence_observed"] = True
