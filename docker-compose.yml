@@ -167,6 +167,7 @@ services:
       FASTMOSS_MCP_URL: ${FASTMOSS_MCP_URL:-https://mcp.fastmoss.com/mcp}
       FASTMOSS_CHAT_PORT: ${FASTMOSS_CHAT_PORT:-4102}
       FASTMOSS_CACHE_TTL_SECONDS: ${FASTMOSS_CACHE_TTL_SECONDS:-86400}
+      MCP_TOOL_CACHE_DIR: /workspace/shared-mcp-tool-cache
       FASTMOSS_LLM_VERIFIER_ENABLED: ${FASTMOSS_LLM_VERIFIER_ENABLED:-0}
       SELLERSPRITE_REDIRECT_PORT: "0"
       API_CACHE_ENABLED: ${API_CACHE_ENABLED:-1}
@@ -210,6 +211,7 @@ services:
       - ./videos:/workspace/videos
       - ./output:/workspace/output
       - ${DATA_DIR:-./data}:/workspace/data
+      - ${MCP_SHARED_TOOL_CACHE_DIR:-./data/mcp_tool_cache_shared}:/workspace/shared-mcp-tool-cache
       - ./scripts:/workspace/scripts:ro
       - ${OCR_SHARED_DIR:-/home/openclaw/ocr-shared}:${OCR_SERVER_SHARED_DIR:-/home/openclaw/ocr-shared}
       - ${MIHOMO_CONFIG_DIR:-/etc/mihomo}:/host/etc/mihomo
