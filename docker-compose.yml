@@ -259,6 +259,7 @@ services:
       - ${DATA_DIR:-./data}:/workspace/data
       - ${MCP_SHARED_TOOL_CACHE_DIR:-./data/mcp_tool_cache_shared}:/workspace/shared-mcp-tool-cache
       - ./scripts:/workspace/scripts:ro
+      - ./sellersprite_mcp_chat:/workspace/sellersprite_mcp_chat:ro
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
       - ${OCR_SHARED_DIR:-/home/openclaw/ocr-shared}:${OCR_SERVER_SHARED_DIR:-/home/openclaw/ocr-shared}
