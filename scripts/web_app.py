@@ -113,6 +113,11 @@ from tools import TOOLS, execute_tool, get_tools_for_model, list_tools
 from video_queue import video_queue, STATUS_META
 from api_cache import get_cached_or_call, record_api_call
 from api_cache import get_cached, store_response
+from fastmoss_evidence_renderer import (
+    FASTMOSS_CURRENT_TOOL_NAMES,
+    render_fastmoss_compact_json,
+    render_fastmoss_evidence_document,
+)
 from json_to_markdown import json_to_markdown
 from hot_video_report import (
     REPORT_COVER_DIR,
@@ -4653,6 +4658,7 @@ FASTMOSS_WORKFLOW_PHASES: dict[str, tuple[tuple[str, frozenset[str]], ...]] = {
 FASTMOSS_EVIDENCE_TOOL_FAMILIES: dict[str, frozenset[str]] = {
     "category": frozenset({
         "search_category_by_words", "market_category_analysis", "market_category_ranking",
+        "market_category_author_sales_matrix",
     }),
     "product": frozenset({
         "product_search", "product_rank_top_selling", "product_rank_new_listed",
@@ -4668,15 +4674,23 @@ FASTMOSS_EVIDENCE_TOOL_FAMILIES: dict[str, frozenset[str]] = {
     "creator": frozenset({
         "creator_search", "creator_rank_top_ecommerce", "creator_rank_top_growth",
         "creator_rank_top_potential", "creator_profile_overview", "creator_cargo_summary",
-        "creator_data_trends", "creator_product_list",
+        "creator_data_trends", "creator_product_list", "creator_fans_distribution",
+        "creator_video_analysis",
     }),
     "video": frozenset({
         "video_search", "video_detail_analysis", "video_data_trends", "video_script_info",
     }),
-    "live": frozenset({"live_search"}),
+    "live": frozenset({"live_search", "live_detail_analysis", "live_products_list"}),
     "ad": frozenset({"ad_data_overview", "ad_search"}),
+    "agency": frozenset({
+        "agency_creator_analysis", "agency_product_analysis", "agency_product_list",
+        "agency_profile_overview", "agency_rank_top", "agency_search", "agency_shop_analysis",
+    }),
+    "reference": frozenset({"fastmoss_detail_url_examples", "search_fastmoss_documents"}),
 }
 FASTMOSS_SUPPORTED_EVIDENCE_TOOLS = frozenset().union(*FASTMOSS_EVIDENCE_TOOL_FAMILIES.values())
+if FASTMOSS_SUPPORTED_EVIDENCE_TOOLS != FASTMOSS_CURRENT_TOOL_NAMES:
+    raise RuntimeError("FastMoss evidence parser and semantic renderer catalogs are out of sync")
 
 # FastMoss product research needs several complementary calls in each phase.  Each
 # inner set is one required capability; tools inside a set are alternatives.  Keep
@@ -7923,7 +7937,7 @@ def _fastmoss_report_data_value(value: Any) -> Any:
         return value
     skipped = {
         "raw", "rawresponse", "responseblob", "html", "mcptextpreview",
-        "image", "images", "avatar", "avatarthumb", "urllist", "toolid",
+        "image", "images", "avatar", "avatarthumb", "urllist", "toolid", "params",
     }
     cleaned: dict[str, Any] = {}
     for key, item in value.items():
@@ -8114,8 +8128,8 @@ def _fastmoss_argument_summary(value: Any, prefix: str = "") -> list[str]:
     return [f"{prefix or 'value'}={rendered}"]
 
 
-def fastmoss_report_evidence_markdown(dossier: dict[str, Any]) -> str:
-    """Render the complete dossier for an LLM, narrating exact empty calls."""
+def _fastmoss_generic_report_evidence_markdown(dossier: dict[str, Any]) -> str:
+    """Legacy lossless renderer retained for comparison and safe rollback."""
     structured_dossier = dict(dossier)
     structured_dossier["type"] = "fastmoss_structured_evidence"
     narrative_overrides: dict[str, str] = {}
@@ -8148,6 +8162,43 @@ def fastmoss_report_evidence_markdown(dossier: dict[str, Any]) -> str:
         include_paths=False,
         narrative_overrides=narrative_overrides,
     )
+
+
+def fastmoss_render_report_evidence(dossier: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Render FastMoss report evidence in the selected internal comparison mode."""
+    requested_mode = str(os.getenv("FASTMOSS_REPORT_EVIDENCE_FORMAT", "semantic") or "semantic").strip().lower()
+    mode = requested_mode if requested_mode in {"semantic", "generic", "json"} else "semantic"
+    if mode == "generic":
+        markdown = _fastmoss_generic_report_evidence_markdown(dossier)
+        return markdown, {
+            "format": "generic",
+            "tool_count": len(dossier.get("tool_evidence") or []),
+            "markdown_chars": len(markdown),
+        }
+    if mode == "json":
+        markdown = render_fastmoss_compact_json(dossier)
+        return markdown, {
+            "format": "json",
+            "tool_count": len(dossier.get("tool_evidence") or []),
+            "markdown_chars": len(markdown),
+        }
+    try:
+        rendered = render_fastmoss_evidence_document(dossier)
+        return rendered.markdown, {"format": "semantic", **rendered.stats}
+    except Exception as exc:
+        markdown = _fastmoss_generic_report_evidence_markdown(dossier)
+        return markdown, {
+            "format": "generic",
+            "requested_format": requested_mode,
+            "whole_document_fallback": f"{type(exc).__name__}: {str(exc)[:200]}",
+            "tool_count": len(dossier.get("tool_evidence") or []),
+            "markdown_chars": len(markdown),
+        }
+
+
+def fastmoss_report_evidence_markdown(dossier: dict[str, Any]) -> str:
+    """Render the complete dossier for an LLM without changing source evidence."""
+    return fastmoss_render_report_evidence(dossier)[0]
 
 
 def fastmoss_report_packet(manifest: dict[str, Any], route: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -9932,21 +9983,21 @@ def synthesize_fastmoss_report_from_packet(
     manifest = fastmoss_evidence_manifest(assistant_msg, user_text, route)
     dossier = fastmoss_report_evidence_dossier(assistant_msg, manifest, route)
     dossier_json = json.dumps(dossier, ensure_ascii=False, separators=(",", ":"))
-    evidence_markdown = fastmoss_report_evidence_markdown(dossier)
+    evidence_markdown, evidence_render_stats = fastmoss_render_report_evidence(dossier)
     messages = [
         {
             "role": "system",
             "content": (
                 "你是 FastMoss 调研报告撰写器。当前请求没有可调用工具，请根据下方结构化 Markdown 证据写最终中文 Markdown 报告。"
-                "tool_evidence 章节按调用顺序提供每次工具调用的完整、去除媒体与传输噪声后的业务结果；这是观察事实的主体，"
+                "各调用证据章节按调用顺序提供每次工具调用的完整、去除媒体与传输噪声后的业务结果；这是观察事实的主体，"
                 "不得只看 coverage_summary 或聚合索引就忽略明细。coverage、derived_facts、conflicts、limitations 和每次调用的 "
-                "evidence_fence 是事实围栏：帮助你校准实体、周期、样本、计算和冲突，但不替代业务结果，也不规定报告写法。"
+                "调用范围与证据围栏帮助你校准实体、周期、样本、计算和冲突，但不替代业务结果，也不规定报告写法。"
                 "你可以自由选择结构、比较角度、解释和建议；必须区分观察事实、合理推断和待验证建议。"
                 "空结果只适用于该次调用的精确参数；关键词返回量不是市场容量；跨实体或跨周期数据不得直接相除或互相解释；"
                 "returned_product_outside_requested_l3 的行不得计入目标 L3 样本统计或共同特征；"
                 "渠道占比、关联达人/视频数和趋势只描述观察结构，除非有直接证据，否则不得写成流量来源、因果、效率或生命周期结论。"
                 "不要输出工具调用、DSML、函数协议或待调用计划。必须把事实转成比较、解释、结论、风险和验证顺序，"
-                "不能只罗列表格或数据缺口，也不要向用户提及 tool_evidence、evidence_fence 等内部结构名称。"
+                "不能只罗列表格或数据缺口，也不要向用户提及调用证据、证据围栏等内部结构名称。"
                 + fastmoss_report_style_instruction(route)
                 + "\n\n--- 结构化证据开始 ---\n"
                 + evidence_markdown
@@ -9981,7 +10032,8 @@ def synthesize_fastmoss_report_from_packet(
                 "model": model,
                 "dossier_chars": len(dossier_json),
                 "structured_evidence_chars": len(evidence_markdown),
-                "evidence_input_format": "markdown",
+                "evidence_input_format": evidence_render_stats.get("format") or "semantic",
+                "evidence_render_stats": evidence_render_stats,
                 "dossier_calls": len(dossier.get("tool_evidence") or []),
                 "evidence_envelopes": manifest.get("evidence_envelope_count") or 0,
                 "evidence_facts": manifest.get("evidence_fact_count") or 0,
@@ -9998,7 +10050,8 @@ def synthesize_fastmoss_report_from_packet(
         print(
             f"[CHAT] FastMoss dossier synthesis dossier_chars={len(dossier_json)} "
             f"structured_chars={len(evidence_markdown)} "
-            f"calls={len(dossier.get('tool_evidence') or [])} draft_chars={len(draft)}",
+            f"calls={len(dossier.get('tool_evidence') or [])} draft_chars={len(draft)} "
+            f"evidence_render={json.dumps(evidence_render_stats, ensure_ascii=False, separators=(',', ':'))}",
             flush=True,
         )
         return finalize_fastmoss_answer(

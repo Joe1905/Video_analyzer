@@ -2116,6 +2116,8 @@ def test_fastmoss_answer_verifier_applies_local_edits_and_keeps_draft_on_failure
 
 
 def test_fastmoss_all_workflow_tools_emit_supported_envelopes() -> None:
+    assert len(web_app.FASTMOSS_SUPPORTED_EVIDENCE_TOOLS) == 54
+    assert web_app.FASTMOSS_SUPPORTED_EVIDENCE_TOOLS == web_app.FASTMOSS_CURRENT_TOOL_NAMES
     generic_payload = {
         "summary_metrics": {"gmv": 100, "units_sold": 5},
         "list": [{"entity_id": "sample", "gmv": 100}],
@@ -2801,7 +2803,9 @@ def test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence() -> None:
     system_content = payload["messages"][0]["content"]
     assert "结构化 Markdown 证据" in system_content
     assert "# FastMoss 调研证据" in system_content
-    assert "## tool_evidence" in system_content
+    assert "## call:1 · `fastmoss__product_sales_trend`" in system_content
+    assert "## call:2 · `fastmoss__product_rank_new_listed`" in system_content
+    assert "## call:3 · `fastmoss__product_review_list`" in system_content
     assert "evidence_dossier" not in system_content
     assert "report_packet" not in system_content
     assert system_content.count("fastmoss__product_sales_trend") == 1
@@ -2810,14 +2814,54 @@ def test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence() -> None:
     assert "returned_product_outside_requested_l3" in system_content
     assert "关键词返回量不是市场容量" in system_content
     assert "不得写成流量来源、因果、效率或生命周期结论" in system_content
-    assert "call:3（fastmoss__product_review_list）调用成功" in system_content
-    assert "filter.product_id=1730000000000000001" in system_content
-    assert "本次查询没有返回业务记录" in system_content
-    assert "| report_date |" in system_content
-    assert "## hard_fact_boundaries" in system_content
-    assert system_content.rfind("hard_fact_boundaries") > system_content.rfind("tool_evidence")
+    assert "| 参数 filter.product_id | 1730000000000000001 |" in system_content
+    assert "本次调用成功，但针对上述精确对象、参数、地区和周期没有返回业务记录" in system_content
+    assert "| 报告日期 |" in system_content
+    assert "## 硬事实边界" in system_content
+    assert system_content.index("## 硬事实边界") > system_content.index("## call:3")
     assert system_content.endswith("不得把样本占比写成市场份额，也不得从渠道占比推导自然流量、广告花费、ROI、因果或生命周期。")
     assert "omitted_items" not in system_content
+
+
+def test_fastmoss_report_evidence_format_switches_are_reversible() -> None:
+    dossier = {
+        "workflow": "product",
+        "report_date": "2026-07-19",
+        "tool_evidence": [{
+            "source_ref": "call:1",
+            "tool_name": "fastmoss__product_search",
+            "arguments": {"keywords": "Mini Meat Grinder", "filter": {"region": "US"}},
+            "evidence_fence": {"data_state": "data", "returned_count": 1},
+            "business_data": {
+                "total": 1,
+                "list": [{"product_id": "1730000000000000001", "title": "Mini Grinder"}],
+            },
+        }],
+        "hard_fact_boundaries": {"rules": ["空结果只适用于精确参数"]},
+    }
+    old = os.environ.get("FASTMOSS_REPORT_EVIDENCE_FORMAT")
+    try:
+        os.environ["FASTMOSS_REPORT_EVIDENCE_FORMAT"] = "semantic"
+        semantic, semantic_stats = web_app.fastmoss_render_report_evidence(dossier)
+        assert "## call:1 · `fastmoss__product_search`" in semantic
+        assert semantic_stats["format"] == "semantic"
+        assert semantic_stats["registered_tool_count"] == 1
+
+        os.environ["FASTMOSS_REPORT_EVIDENCE_FORMAT"] = "generic"
+        generic, generic_stats = web_app.fastmoss_render_report_evidence(dossier)
+        assert "## tool_evidence" in generic
+        assert generic_stats["format"] == "generic"
+
+        os.environ["FASTMOSS_REPORT_EVIDENCE_FORMAT"] = "json"
+        compact_json, json_stats = web_app.fastmoss_render_report_evidence(dossier)
+        assert compact_json.startswith("# FastMoss 调研证据\n\n```json")
+        assert '"tool_evidence"' in compact_json
+        assert json_stats["format"] == "json"
+    finally:
+        if old is None:
+            os.environ.pop("FASTMOSS_REPORT_EVIDENCE_FORMAT", None)
+        else:
+            os.environ["FASTMOSS_REPORT_EVIDENCE_FORMAT"] = old
 
 
 def test_fastmoss_claim_ids_and_extended_mechanical_cleanup() -> None:
@@ -3180,6 +3224,7 @@ if __name__ == "__main__":
     test_fastmoss_list_truncation_is_explicit_and_invalid_entities_are_filtered()
     test_fastmoss_22_call_semantic_registry_fixture()
     test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence()
+    test_fastmoss_report_evidence_format_switches_are_reversible()
     test_fastmoss_claim_ids_and_extended_mechanical_cleanup()
     test_analytical_routes_use_report_model_and_fastmoss_preserves_pro_draft()
     print("chat tool normalization tests passed")
