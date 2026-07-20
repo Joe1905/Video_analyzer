@@ -13,6 +13,7 @@ from typing import Any, Iterable
 
 
 DISCOVERY_BREADTH = 3
+PROVIDER_CALL_BUDGET = 12
 
 RESEARCH_OBJECTIVES = {
     "lookup",
@@ -405,7 +406,11 @@ def eligible_provider_capabilities(provider: str, task: dict[str, Any], state: d
         if entity_type == "asin" or state.get("has_asin"):
             return {"asin_detail", "asin_traffic", "asin_review"}
         if scope == "cross_category" and objective in {"trend_discovery", "opportunity_discovery"}:
-            capabilities = {"keyword_discovery", "market_discovery"}
+            capabilities = set()
+            if "keyword_discovery" not in observed:
+                capabilities.add("keyword_discovery")
+            if "market_discovery" not in observed:
+                capabilities.add("market_discovery")
             if observed.intersection({"keyword_discovery", "market_discovery"}):
                 capabilities.update({"trend_validation", "product_discovery", "category_resolution"})
             if state.get("has_node"):
@@ -433,8 +438,12 @@ def eligible_provider_tool_names(provider: str, task: dict[str, Any], state: dic
     else:
         return set()
     counts = state.get("tool_counts") if isinstance(state.get("tool_counts"), dict) else {}
+    if sum(int(value or 0) for value in counts.values()) >= PROVIDER_CALL_BUDGET:
+        return set()
     limits = {
-        "market_category_ranking": 4,
+        # Two broad ranking views plus up to three evidence-backed candidate
+        # drill-downs fit the default cross-category discovery breadth.
+        "market_category_ranking": DISCOVERY_BREADTH + 2,
         "search_category_by_words": DISCOVERY_BREADTH,
         "product_rank_new_listed": DISCOVERY_BREADTH,
         "product_rank_top_selling": DISCOVERY_BREADTH,
@@ -448,6 +457,7 @@ def eligible_provider_tool_names(provider: str, task: dict[str, Any], state: dic
             name,
             DISCOVERY_BREADTH
             if task.get("scope") == "cross_category" and capability in {
+                "keyword_discovery", "market_discovery", "product_discovery", "category_resolution",
                 "category_context", "product_detail", "product_trend", "product_content",
                 "trend_validation", "market_validation", "asin_detail", "asin_traffic", "asin_review",
             }

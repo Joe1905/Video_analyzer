@@ -119,6 +119,7 @@ from fastmoss_evidence_renderer import (
     render_fastmoss_evidence_document,
 )
 from commerce_research_planner import (
+    PROVIDER_CALL_BUDGET,
     SELLERSPRITE_TOOL_REQUEST_SPECS,
     eligible_provider_capabilities,
     eligible_provider_tool_names,
@@ -5457,6 +5458,8 @@ def fastmoss_analysis_evidence_gaps(user_text: str, assistant_msg: Message, rout
         if task.get("scope") == "cross_category":
             if "fastmoss__market_category_ranking" not in observed_calls:
                 gaps.append("category_discovery")
+            elif not fastmoss_current_category_path(assistant_msg, user_text):
+                gaps.append("category_resolution")
             if not observed_calls.intersection({
                 "fastmoss__product_rank_new_listed",
                 "fastmoss__product_rank_top_selling",
@@ -5500,6 +5503,7 @@ def fastmoss_evidence_instruction(gaps: list[str]) -> str:
         "us_region": "用户未指定其他地区，本次所有商品/店铺/达人/视频搜索及榜单查询都必须把 region（或等价参数）设为 US",
         "product_reviews": "对纳入分析的代表商品调用 fastmoss__product_review_list；即使评论为空，也要如实说明",
         "category_discovery": "先用不带 category_id 的 fastmoss__market_category_ranking 获取跨类目趋势候选",
+        "category_resolution": "从类目榜中选择最多 3 个有来源的候选名称，用 fastmoss__search_category_by_words 取得可用于新品/商品查询的精确类目路径",
         "product_discovery": "再从榜单证据中选择候选类目，获取对应热销、新品或商品样本",
     }
     details = "；".join(required[gap] for gap in gaps if gap in required)
@@ -11792,6 +11796,14 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 ][:remaining_searches]
             requested_tool_calls = bool(tool_calls)
             deduplicated_tool_calls = []
+            dynamic_state = (
+                research_planner_state(provider, route, routing_text, assistant_msg)
+                if route.get("dynamic_planner") and provider in {"amazon", "fastmoss"}
+                else None
+            )
+            dynamic_counts = dict((dynamic_state or {}).get("tool_counts") or {})
+            dynamic_total = sum(int(value or 0) for value in dynamic_counts.values())
+            dynamic_budget = PROVIDER_CALL_BUDGET
             for tool_call in tool_calls:
                 fn_name = str(tool_call.get("function", {}).get("name") or "")
                 if fn_name not in allowed_tool_ids:
@@ -11804,6 +11816,19 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     fn_args = apply_fastmoss_business_defaults(
                         unprefixed_name, fn_args, assistant_msg, user_text=routing_text, route=route
                     )
+                if dynamic_state is not None and domain == ("sellersprite" if provider == "amazon" else "fastmoss"):
+                    state_with_batch_counts = dict(dynamic_state)
+                    state_with_batch_counts["tool_counts"] = dynamic_counts
+                    eligible_names = eligible_provider_tool_names(
+                        provider, route.get("research_task") or {}, state_with_batch_counts
+                    )
+                    if unprefixed_name not in eligible_names or dynamic_total >= dynamic_budget:
+                        print(
+                            f"[CHAT PLANNER] skipped over-budget tool call: {fn_name} "
+                            f"count={dynamic_counts.get(unprefixed_name, 0)} total={dynamic_total}/{dynamic_budget}",
+                            flush=True,
+                        )
+                        continue
                 signature = tool_call_signature(fn_name, fn_args)
                 if signature in seen_tool_calls:
                     print(f"[CHAT] skipped duplicate tool call: {fn_name} {fn_args}", flush=True)
@@ -11813,6 +11838,9 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 normalized_call["function"] = dict(tool_call.get("function") or {})
                 normalized_call["function"]["arguments"] = json.dumps(fn_args, ensure_ascii=False)
                 deduplicated_tool_calls.append(normalized_call)
+                if dynamic_state is not None and domain == ("sellersprite" if provider == "amazon" else "fastmoss"):
+                    dynamic_counts[unprefixed_name] = int(dynamic_counts.get(unprefixed_name) or 0) + 1
+                    dynamic_total += 1
             tool_calls = deduplicated_tool_calls
             if tool_calls:
                 assistant_msg.tool_calls = list(assistant_msg.tool_calls or []) + tool_calls

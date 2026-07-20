@@ -1424,6 +1424,7 @@ def test_dynamic_provider_capability_graph_uses_task_scope_and_evidence() -> Non
     selected = web_app.provider_profile_tool_ids("fastmoss", fast_route, fast_text, fast_enabled, message)
     assert "fastmoss__search_category_by_words" in selected
     assert "fastmoss__product_rank_new_listed" not in selected
+    assert "category_resolution" in web_app.fastmoss_analysis_evidence_gaps(fast_text, message, fast_route)
     allowed_query = {"query": ["家电"]}
     assert web_app.fastmoss_deep_dive_call_error(
         "fastmoss__search_category_by_words", allowed_query, fast_text, message, fast_route
@@ -1454,6 +1455,7 @@ def test_dynamic_provider_capability_graph_uses_task_scope_and_evidence() -> Non
     assert "fastmoss__market_category_analysis" in selected
     assert "fastmoss__product_rank_new_listed" in selected
     assert "fastmoss__product_detail_info" not in selected
+    assert "category_resolution" not in web_app.fastmoss_analysis_evidence_gaps(fast_text, message, fast_route)
 
     amazon_text = "美区帮我寻找需求大但卖家少的蓝海产品、潜力商品和热门新品"
     amazon_route = web_app.attach_research_task(
@@ -1477,11 +1479,37 @@ def test_dynamic_provider_capability_graph_uses_task_scope_and_evidence() -> Non
     assert "sellersprite__product_research" not in selected
     assert "sellersprite__asin_detail" not in selected
 
+    amazon_message.tool_calls.extend([
+        {"function": {"name": "sellersprite__aba_research_monthly", "arguments": "{}"}},
+        {"function": {"name": "sellersprite__aba_research_monthly", "arguments": "{}"}},
+        {"function": {"name": "sellersprite__aba_research_monthly", "arguments": "{}"}},
+    ])
+    amazon_message.tool_results.extend([
+        {
+            "tool_name": "sellersprite__aba_research_monthly",
+            "result": {"ok": True, "data_state": "data", "evidence_observed": True, "mcp_data": {}},
+        }
+        for _ in range(3)
+    ])
+    selected = web_app.provider_profile_tool_ids("amazon", amazon_route, amazon_text, amazon_enabled, amazon_message)
+    assert "sellersprite__aba_research_monthly" not in selected
+    assert "sellersprite__keyword_research" not in selected
+    assert "sellersprite__product_research" in selected
+    assert "sellersprite__keyword_research_trends" in selected
+    amazon_message.tool_calls.extend([
+        {"function": {"name": "sellersprite__product_research", "arguments": "{}"}}
+        for _ in range(9)
+    ])
+    assert web_app.provider_profile_tool_ids(
+        "amazon", amazon_route, amazon_text, amazon_enabled, amazon_message
+    ) == {"system__current_time"}
+
     asin_route = web_app.attach_research_task(
         {"intent": "product_research", "task_depth": "analysis", "entity": "B0H3ZH8BF8"},
         "amazon", "分析 B0H3ZH8BF8",
     )
-    selected = web_app.provider_profile_tool_ids("amazon", asin_route, "分析 B0H3ZH8BF8", amazon_enabled, amazon_message)
+    asin_message = SimpleNamespace(tool_calls=[], tool_results=[])
+    selected = web_app.provider_profile_tool_ids("amazon", asin_route, "分析 B0H3ZH8BF8", amazon_enabled, asin_message)
     assert "sellersprite__asin_detail" in selected
     assert "sellersprite__review" in selected
     assert "sellersprite__keyword_research" not in selected
