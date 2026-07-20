@@ -3154,7 +3154,14 @@ def test_analytical_routes_use_report_model_and_fastmoss_preserves_pro_draft() -
             os.environ.pop("FASTMOSS_LLM_VERIFIER_ENABLED", None)
         else:
             os.environ["FASTMOSS_LLM_VERIFIER_ENABLED"] = old_verifier
-    assert result == draft
+    assert result.startswith(draft + "\n\n---\n\n## 注意事项")
+    assert result.count(web_app.FASTMOSS_REPORT_NOTICE) == 1
+    assert web_app.append_fastmoss_report_notice(
+        result, {"task_depth": "workflow", "playbook": "product"}
+    ) == result
+    assert web_app.append_fastmoss_report_notice(
+        draft, {"task_depth": "lookup"}
+    ) == draft
     assert calls == []
 
 

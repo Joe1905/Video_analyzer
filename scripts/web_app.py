@@ -10060,7 +10060,9 @@ def synthesize_fastmoss_report_from_packet(
         )
     except Exception as exc:
         print(f"[CHAT] FastMoss dossier synthesis failed: {type(exc).__name__}: {str(exc)[:240]}", flush=True)
-        fallback = fastmoss_deterministic_quality_fallback(manifest)
+        fallback = append_fastmoss_report_notice(
+            fastmoss_deterministic_quality_fallback(manifest), route
+        )
         _log_fastmoss_report_pipeline(
             "", manifest, f"synthesis_failed:{type(exc).__name__}",
             final_answer=fallback, fallback_reason="report_synthesis_failure"
@@ -10221,6 +10223,26 @@ def verify_fastmoss_final_answer(
     return updated
 
 
+FASTMOSS_REPORT_NOTICE = (
+    "## 注意事项\n\n"
+    "本报告基于 FastMoss 接口在当前查询条件和时间范围内返回的数据，并由大模型整理分析。"
+    "数据可能存在延迟、缺失、估算或统计口径差异，分析也可能出现理解偏差；"
+    "请以 FastMoss 原始页面及实际业务验证为准，不建议将本报告作为唯一决策依据。"
+)
+
+
+def append_fastmoss_report_notice(answer: str, route: dict[str, Any]) -> str:
+    """Append one stable disclaimer to analytical FastMoss reports only."""
+    text = str(answer or "").rstrip()
+    is_report = (
+        str(route.get("task_depth") or "").strip().lower() in {"analysis", "workflow"}
+        or bool(route.get("playbook"))
+    )
+    if not text or not is_report or FASTMOSS_REPORT_NOTICE in text:
+        return text
+    return text + "\n\n---\n\n" + FASTMOSS_REPORT_NOTICE
+
+
 def finalize_fastmoss_answer(
     draft: str,
     assistant_msg: Message,
@@ -10233,9 +10255,12 @@ def finalize_fastmoss_answer(
 ) -> str:
     """Preserve the Pro draft by default; the legacy LLM editor is opt-in."""
     if fastmoss_llm_verifier_enabled():
-        return verify_fastmoss_final_answer(
-            draft, assistant_msg, user_text, route,
-            requests_module, api_key, api_url, model,
+        return append_fastmoss_report_notice(
+            verify_fastmoss_final_answer(
+                draft, assistant_msg, user_text, route,
+                requests_module, api_key, api_url, model,
+            ),
+            route,
         )
     manifest = fastmoss_evidence_manifest(assistant_msg, user_text, route)
     text = str(draft or "")
@@ -10248,19 +10273,23 @@ def finalize_fastmoss_answer(
     if not text.strip() or deepseek_tool_protocol_present({"content": text}) or not has_evidence:
         # These paths do not invoke the verifier model; verify_fastmoss_final_answer
         # returns the deterministic fallback before building verifier batches.
-        return verify_fastmoss_final_answer(
-            text, assistant_msg, user_text, route,
-            requests_module, api_key, api_url, model,
+        return append_fastmoss_report_notice(
+            verify_fastmoss_final_answer(
+                text, assistant_msg, user_text, route,
+                requests_module, api_key, api_url, model,
+            ),
+            route,
         )
     prepared, _entity_id_cleanup_count = normalize_fastmoss_entity_id_abbreviations(text, manifest)
+    final_answer = append_fastmoss_report_notice(prepared, route)
     _log_fastmoss_report_pipeline(
         text,
         manifest,
         "disabled",
-        final_answer=prepared,
+        final_answer=final_answer,
         claim_candidates=len(fastmoss_high_risk_claims(prepared)),
     )
-    return prepared
+    return final_answer
 
 
 def build_tool_limit_final_context(messages: list[dict[str, Any]], user_request: str = "") -> list[dict[str, Any]]:
