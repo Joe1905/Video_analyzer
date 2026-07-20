@@ -2710,7 +2710,10 @@ def test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence() -> None:
     assert "tools" not in payload
     assert len(payload["messages"]) == 2
     system_content = payload["messages"][0]["content"]
-    assert "evidence_dossier" in system_content
+    assert "结构化 Markdown 证据" in system_content
+    assert "# FastMoss 调研证据" in system_content
+    assert "## tool_evidence" in system_content
+    assert "evidence_dossier" not in system_content
     assert "report_packet" not in system_content
     assert system_content.count("fastmoss__product_sales_trend") == 1
     assert "2026-06-01" in system_content and "2026-07-01" in system_content
@@ -2718,11 +2721,11 @@ def test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence() -> None:
     assert "returned_product_outside_requested_l3" in system_content
     assert "关键词返回量不是市场容量" in system_content
     assert "不得写成流量来源、因果、效率或生命周期结论" in system_content
-    assert '"data_state":"empty"' in system_content
-    assert '"product_id":"1730000000000000001"' in system_content
-    assert '"source_ref":"call:3"' in system_content
-    assert '"report_date":' in system_content
-    assert '"hard_fact_boundaries":' in system_content
+    assert "call:3（fastmoss__product_review_list）调用成功" in system_content
+    assert "filter.product_id=1730000000000000001" in system_content
+    assert "本次查询没有返回业务记录" in system_content
+    assert "| report_date |" in system_content
+    assert "## hard_fact_boundaries" in system_content
     assert system_content.rfind("hard_fact_boundaries") > system_content.rfind("tool_evidence")
     assert system_content.endswith("不得把样本占比写成市场份额，也不得从渠道占比推导自然流量、广告花费、ROI、因果或生命周期。")
     assert "omitted_items" not in system_content

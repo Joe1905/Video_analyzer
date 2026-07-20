@@ -113,6 +113,7 @@ from tools import TOOLS, execute_tool, get_tools_for_model, list_tools
 from video_queue import video_queue, STATUS_META
 from api_cache import get_cached_or_call, record_api_call
 from api_cache import get_cached, store_response
+from json_to_markdown import json_to_markdown
 from hot_video_report import (
     REPORT_COVER_DIR,
     backfill_cover_urls,
@@ -8096,6 +8097,63 @@ def fastmoss_report_evidence_dossier(
     }
 
 
+def _fastmoss_argument_summary(value: Any, prefix: str = "") -> list[str]:
+    """Flatten exact call arguments into short, deterministic key=value phrases."""
+    if isinstance(value, dict):
+        parts: list[str] = []
+        for key, item in value.items():
+            child_prefix = f"{prefix}.{key}" if prefix else str(key)
+            parts.extend(_fastmoss_argument_summary(item, child_prefix))
+        return parts
+    if isinstance(value, list):
+        rendered = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    elif value is None:
+        rendered = "null"
+    elif value is True:
+        rendered = "true"
+    elif value is False:
+        rendered = "false"
+    else:
+        rendered = str(value)
+    return [f"{prefix or 'value'}={rendered}"]
+
+
+def fastmoss_report_evidence_markdown(dossier: dict[str, Any]) -> str:
+    """Render the complete dossier for an LLM, narrating exact empty calls."""
+    structured_dossier = dict(dossier)
+    structured_dossier["type"] = "fastmoss_structured_evidence"
+    narrative_overrides: dict[str, str] = {}
+    for index, entry in enumerate(dossier.get("tool_evidence") or []):
+        if not isinstance(entry, dict):
+            continue
+        fence = entry.get("evidence_fence") if isinstance(entry.get("evidence_fence"), dict) else {}
+        if str(fence.get("data_state") or "").strip().lower() != "empty":
+            continue
+        source_ref = str(entry.get("source_ref") or f"call:{index + 1}")
+        tool_name = str(entry.get("tool_name") or "FastMoss MCP")
+        arguments = entry.get("arguments") if isinstance(entry.get("arguments"), dict) else {}
+        argument_parts = _fastmoss_argument_summary(arguments)
+        argument_text = "、".join(argument_parts) if argument_parts else "未提供额外参数"
+        fence_context = {
+            key: value for key, value in fence.items()
+            if key != "data_state" and value not in (None, "", [], {})
+        }
+        fence_parts = _fastmoss_argument_summary(fence_context)
+        fence_text = "、".join(fence_parts) if fence_parts else "无额外围栏字段"
+        narrative_overrides[f"$.tool_evidence[{index}]"] = (
+            f"{source_ref}（{tool_name}）调用成功；针对精确参数“{argument_text}”，"
+            f"证据范围为“{fence_text}”。本次查询没有返回业务记录。"
+            "这个空结果只适用于本次调用的对象和参数，"
+            "不表示平台全局为零，也不表示对应商品、类目或内容不存在。"
+        )
+    return json_to_markdown(
+        structured_dossier,
+        title="FastMoss 调研证据",
+        include_paths=False,
+        narrative_overrides=narrative_overrides,
+    )
+
+
 def fastmoss_report_packet(manifest: dict[str, Any], route: dict[str, Any] | None = None) -> dict[str, Any]:
     """Build one compact, workflow-native source of truth for report synthesis."""
     playbook = str((route or {}).get("playbook") or "product")
@@ -9878,12 +9936,13 @@ def synthesize_fastmoss_report_from_packet(
     manifest = fastmoss_evidence_manifest(assistant_msg, user_text, route)
     dossier = fastmoss_report_evidence_dossier(assistant_msg, manifest, route)
     dossier_json = json.dumps(dossier, ensure_ascii=False, separators=(",", ":"))
+    evidence_markdown = fastmoss_report_evidence_markdown(dossier)
     messages = [
         {
             "role": "system",
             "content": (
-                "你是 FastMoss 调研报告撰写器。当前请求没有可调用工具，请根据 evidence_dossier 写最终中文 Markdown 报告。"
-                "tool_evidence 按调用顺序提供每次工具调用的完整、去除媒体与传输噪声后的业务结果；这是观察事实的主体，"
+                "你是 FastMoss 调研报告撰写器。当前请求没有可调用工具，请根据下方结构化 Markdown 证据写最终中文 Markdown 报告。"
+                "tool_evidence 章节按调用顺序提供每次工具调用的完整、去除媒体与传输噪声后的业务结果；这是观察事实的主体，"
                 "不得只看 coverage_summary 或聚合索引就忽略明细。coverage、derived_facts、conflicts、limitations 和每次调用的 "
                 "evidence_fence 是事实围栏：帮助你校准实体、周期、样本、计算和冲突，但不替代业务结果，也不规定报告写法。"
                 "你可以自由选择结构、比较角度、解释和建议；必须区分观察事实、合理推断和待验证建议。"
@@ -9891,10 +9950,11 @@ def synthesize_fastmoss_report_from_packet(
                 "returned_product_outside_requested_l3 的行不得计入目标 L3 样本统计或共同特征；"
                 "渠道占比、关联达人/视频数和趋势只描述观察结构，除非有直接证据，否则不得写成流量来源、因果、效率或生命周期结论。"
                 "不要输出工具调用、DSML、函数协议或待调用计划。必须把事实转成比较、解释、结论、风险和验证顺序，"
-                "不能只罗列表格或数据缺口，也不要向用户提及 evidence_dossier、evidence_fence 等内部结构名称。"
+                "不能只罗列表格或数据缺口，也不要向用户提及 tool_evidence、evidence_fence 等内部结构名称。"
                 + fastmoss_report_style_instruction(route)
-                + " evidence_dossier: "
-                + dossier_json
+                + "\n\n--- 结构化证据开始 ---\n"
+                + evidence_markdown
+                + "--- 结构化证据结束 ---\n"
                 + " 写作前最后核对 hard_fact_boundaries：尤其不得把限定类目/关键词的空结果写成平台全局为零，"
                   "不得把样本占比写成市场份额，也不得从渠道占比推导自然流量、广告花费、ROI、因果或生命周期。"
             ),
@@ -9924,6 +9984,8 @@ def synthesize_fastmoss_report_from_packet(
             {
                 "model": model,
                 "dossier_chars": len(dossier_json),
+                "structured_evidence_chars": len(evidence_markdown),
+                "evidence_input_format": "markdown",
                 "dossier_calls": len(dossier.get("tool_evidence") or []),
                 "evidence_envelopes": manifest.get("evidence_envelope_count") or 0,
                 "evidence_facts": manifest.get("evidence_fact_count") or 0,
@@ -9939,6 +10001,7 @@ def synthesize_fastmoss_report_from_packet(
             raise ValueError("report synthesis returned empty or tool protocol")
         print(
             f"[CHAT] FastMoss dossier synthesis dossier_chars={len(dossier_json)} "
+            f"structured_chars={len(evidence_markdown)} "
             f"calls={len(dossier.get('tool_evidence') or [])} draft_chars={len(draft)}",
             flush=True,
         )
