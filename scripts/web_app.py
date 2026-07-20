@@ -115,17 +115,15 @@ from api_cache import get_cached_or_call, record_api_call
 from api_cache import get_cached, store_response
 from fastmoss_evidence_renderer import (
     FASTMOSS_CURRENT_TOOL_NAMES,
-    render_fastmoss_compact_json,
     render_fastmoss_evidence_document,
 )
 from sellersprite_evidence_renderer import (
     render_sellersprite_current_evidence,
+    render_sellersprite_evidence_document,
     sellersprite_business_payload,
     sellersprite_semantic_registry_diagnostics,
 )
 from commerce_research_planner import (
-    DISCOVERY_BREADTH,
-    PROVIDER_CALL_BUDGET,
     eligible_provider_capabilities,
     eligible_provider_tool_names,
     provider_tool_capability,
@@ -4330,8 +4328,6 @@ def chat_report_model() -> str:
 
 def chat_route_uses_report_model(provider: str, route: dict[str, Any]) -> bool:
     """Keep direct/lookup traffic on Flash while upgrading evidence-led final reports."""
-    if normalize_chat_provider(provider) == "amazon":
-        return False
     intent = str(route.get("intent") or "").strip().lower()
     if intent == "video_analysis":
         return True
@@ -5224,7 +5220,7 @@ def research_planner_instruction(
         "任务描述：" + json.dumps(task, ensure_ascii=False, separators=(",", ":")) + "。",
         "当前可选能力：" + ("、".join(capabilities) if capabilities else "无") + "。",
         "空结果和失败结果只完成对应调用，不得重复同工具同参数，也不得扩大为平台全局结论。",
-        "跨类目发现默认最多深挖 3 个有来源的候选方向；由工具结果派生的新对象必须保留精确 ID 或来源记录。",
+        "跨类目发现可以从少量有来源的候选方向开始，并按证据需要继续扩展；由工具结果派生的新对象必须保留精确 ID 或来源记录。",
     ]
     if provider == "fastmoss" and task.get("scope") == "cross_category":
         instructions.append(
@@ -6200,8 +6196,10 @@ def chat_max_tool_rounds(provider: str, route: dict[str, Any], tool_count: int) 
     if tool_count >= 20 and intent != "general":
         base = max(base, 7)
     if route.get("dynamic_planner") and provider in {"amazon", "fastmoss"}:
-        base = max(base, 8)
-        limit = 12
+        # Research completeness decides normal termination. This high,
+        # configurable ceiling is only an operational circuit breaker.
+        limit = _chat_int_setting("CHAT_DYNAMIC_TOOL_ROUND_LIMIT", 50, 10, 100)
+        base = max(base, limit)
     elif provider == "fastmoss" and route.get("playbook") == "product":
         if route.get("full_ranking"):
             base = max(base, 27)
@@ -8361,93 +8359,178 @@ def fastmoss_report_evidence_dossier(
     }
 
 
-def _fastmoss_argument_summary(value: Any, prefix: str = "") -> list[str]:
-    """Flatten exact call arguments into short, deterministic key=value phrases."""
-    if isinstance(value, dict):
-        parts: list[str] = []
-        for key, item in value.items():
-            child_prefix = f"{prefix}.{key}" if prefix else str(key)
-            parts.extend(_fastmoss_argument_summary(item, child_prefix))
-        return parts
-    if isinstance(value, list):
-        rendered = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-    elif value is None:
-        rendered = "null"
-    elif value is True:
-        rendered = "true"
-    elif value is False:
-        rendered = "false"
-    else:
-        rendered = str(value)
-    return [f"{prefix or 'value'}={rendered}"]
-
-
-def _fastmoss_generic_report_evidence_markdown(dossier: dict[str, Any]) -> str:
-    """Legacy lossless renderer retained for comparison and safe rollback."""
-    structured_dossier = dict(dossier)
-    structured_dossier["type"] = "fastmoss_structured_evidence"
-    narrative_overrides: dict[str, str] = {}
-    for index, entry in enumerate(dossier.get("tool_evidence") or []):
-        if not isinstance(entry, dict):
+def sellersprite_report_evidence_dossier(
+    assistant_msg: Message,
+    route: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build a lossless, call-scoped SellerSprite report input."""
+    tool_evidence: list[dict[str, Any]] = []
+    for result_index, item in enumerate(assistant_msg.tool_results or []):
+        if not isinstance(item, dict) or not isinstance(item.get("result"), dict):
             continue
-        fence = entry.get("evidence_fence") if isinstance(entry.get("evidence_fence"), dict) else {}
-        if str(fence.get("data_state") or "").strip().lower() != "empty":
+        tool_name = str(item.get("tool_name") or "tool")
+        if split_prefixed_tool_id(tool_name)[0] != "sellersprite":
             continue
-        source_ref = str(entry.get("source_ref") or f"call:{index + 1}")
-        tool_name = str(entry.get("tool_name") or "FastMoss MCP")
-        arguments = entry.get("arguments") if isinstance(entry.get("arguments"), dict) else {}
-        argument_parts = _fastmoss_argument_summary(arguments)
-        argument_text = "、".join(argument_parts) if argument_parts else "未提供额外参数"
-        fence_context = {
-            key: value for key, value in fence.items()
-            if key != "data_state" and value not in (None, "", [], {})
-        }
-        fence_parts = _fastmoss_argument_summary(fence_context)
-        fence_text = "、".join(fence_parts) if fence_parts else "无额外围栏字段"
-        narrative_overrides[f"$.tool_evidence[{index}]"] = (
-            f"{source_ref}（{tool_name}）调用成功；针对精确参数“{argument_text}”，"
-            f"证据范围为“{fence_text}”。本次查询没有返回业务记录。"
-            "这个空结果只适用于本次调用的对象和参数，"
-            "不表示平台全局为零，也不表示对应商品、类目或内容不存在。"
+        result = item["result"]
+        arguments = _fastmoss_call_arguments_for_result(
+            assistant_msg, result_index, tool_name
         )
-    return json_to_markdown(
-        structured_dossier,
-        title="FastMoss 调研证据",
-        include_paths=False,
-        narrative_overrides=narrative_overrides,
-    )
+        data = result.get("mcp_data")
+        if data is None:
+            data = result.get("summary")
+        if data is None:
+            data = {
+                key: result.get(key)
+                for key in ("products", "items", "results", "error")
+                if result.get(key) is not None
+            }
+        cleaned_data = sellersprite_business_payload(
+            _current_chat_evidence_value(data)
+        )
+        tool_evidence.append({
+            "source_ref": f"call:{result_index + 1}",
+            "tool_name": tool_name,
+            "arguments": _current_chat_evidence_value(arguments),
+            "evidence_fence": {
+                "data_state": mcp_result_data_state(result),
+                "ok": result.get("ok"),
+                "enough_data": result.get("enough_data"),
+            },
+            "business_data": cleaned_data,
+            **({"error": str(result.get("error"))} if result.get("error") else {}),
+        })
+    return {
+        "type": "sellersprite_evidence_dossier",
+        "provider": "sellersprite",
+        "report_date": datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat(),
+        "research_task": dict((route or {}).get("research_task") or {}),
+        "quality_summary": mcp_evidence_quality_summary(assistant_msg),
+        "tool_evidence": tool_evidence,
+        "hard_fact_boundaries": {
+            "rules": [
+                "空结果只适用于对应 source_ref 的精确参数，不代表 Amazon 平台全局为零或不存在商品",
+                "关键词或商品列表的返回量不是市场容量，样本占比不是全市场份额",
+                "不同 marketplace、关键词、类目节点、ASIN 或周期的数据不得直接合并或互相解释",
+                "预测值、趋势值和观察期实际值必须区分，不得把相关关系写成因果关系",
+            ],
+        },
+    }
+
+
+def sellersprite_render_report_evidence(
+    dossier: dict[str, Any],
+) -> tuple[str, dict[str, Any]]:
+    """Render SellerSprite report evidence as semantic Markdown."""
+    rendered = render_sellersprite_evidence_document(dossier)
+    results = rendered.tool_results
+    return rendered.markdown, {
+        "format": "semantic",
+        "tool_count": len(results),
+        "fallback_tools": [result.tool_name for result in results if result.fallback],
+        "empty_result_count": sum(1 for result in results if result.empty),
+        "business_leaf_count": sum(len(result.business_leaf_paths) for result in results),
+        "unmapped_leaf_count": sum(len(result.unmapped_paths) for result in results),
+        "markdown_chars": len(rendered.markdown),
+    }
+
+
+def synthesize_sellersprite_report_from_packet(
+    assistant_msg: Message,
+    user_text: str,
+    route: dict[str, Any],
+    requests_module: Any,
+    api_key: str,
+    api_url: str,
+    model: str,
+    fallback_draft: str = "",
+) -> str:
+    """Generate the final SellerSprite report from complete normalized evidence."""
+    dossier = sellersprite_report_evidence_dossier(assistant_msg, route)
+    dossier_json = json.dumps(dossier, ensure_ascii=False, separators=(",", ":"))
+    evidence_markdown, evidence_render_stats = sellersprite_render_report_evidence(dossier)
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "你是 SellerSprite 亚马逊调研报告撰写器。当前请求没有可调用工具，请根据下方结构化证据写最终中文 Markdown 报告。"
+                "完整使用各次调用的业务结果，区分观察事实、合理推断和待验证建议。"
+                "空结果只适用于该次调用的精确参数；关键词或商品返回量不是市场容量；"
+                "不同 marketplace、关键词、类目节点、ASIN 或周期的数据不得直接合并。"
+                "预测、趋势和观察期实际值必须明确区分，不得编造销量、利润、转化率、市场份额或因果关系。"
+                "不要输出工具调用、DSML、函数协议或待调用计划，也不要向用户提及内部证据结构名称。"
+                "\n\n--- 结构化证据开始 ---\n"
+                + evidence_markdown
+                + "--- 结构化证据结束 ---\n"
+            ),
+        },
+        {"role": "user", "content": chat_routing_text(user_text)},
+    ]
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": 0.2,
+        "max_tokens": 8000,
+    }
+    payload_str = json.dumps(payload, ensure_ascii=False)
+    started = time.monotonic()
+    try:
+        response = requests_module.post(
+            api_url.rstrip("/") + "/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            data=payload_str.encode("utf-8"),
+            timeout=180,
+        )
+        response.raise_for_status()
+        body = response.json()
+        record_api_call(
+            "deepseek",
+            "sellersprite_report_synthesis",
+            {
+                "model": model,
+                "dossier_chars": len(dossier_json),
+                "structured_evidence_chars": len(evidence_markdown),
+                "evidence_input_format": evidence_render_stats.get("format") or "semantic",
+                "evidence_render_stats": evidence_render_stats,
+                "dossier_calls": len(dossier.get("tool_evidence") or []),
+            },
+            body,
+            elapsed_ms=int((time.monotonic() - started) * 1000),
+        )
+        choice = body["choices"][0]
+        if str(choice.get("finish_reason") or "") == "length":
+            raise ValueError("SellerSprite report synthesis finish_reason=length")
+        draft = str((choice.get("message") or {}).get("content") or "").strip()
+        if not draft or deepseek_tool_protocol_present({"content": draft}):
+            raise ValueError("SellerSprite report synthesis returned empty or tool protocol")
+        print(
+            f"[CHAT] SellerSprite dossier synthesis dossier_chars={len(dossier_json)} "
+            f"structured_chars={len(evidence_markdown)} "
+            f"calls={len(dossier.get('tool_evidence') or [])} draft_chars={len(draft)} "
+            f"evidence_render={json.dumps(evidence_render_stats, ensure_ascii=False, separators=(',', ':'))}",
+            flush=True,
+        )
+        return draft
+    except Exception as exc:
+        print(
+            f"[CHAT] SellerSprite dossier synthesis failed: {type(exc).__name__}: {str(exc)[:240]}",
+            flush=True,
+        )
+        if str(fallback_draft or "").strip() and not deepseek_tool_protocol_present(
+            {"content": fallback_draft}
+        ):
+            return str(fallback_draft).strip()
+        quality = dossier.get("quality_summary") or {}
+        return (
+            "SellerSprite 工具查询已结束，但报告模型暂时无法生成最终报告。"
+            f"已取得数据的接口 {len(quality.get('data', []))} 个，成功但为空的接口 {len(quality.get('empty', []))} 个，"
+            f"失败接口 {len(quality.get('error', []))} 个。空结果只代表对应参数本轮没有记录，不代表 Amazon 平台全局不存在。"
+        )
 
 
 def fastmoss_render_report_evidence(dossier: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-    """Render FastMoss report evidence in the selected internal comparison mode."""
-    requested_mode = str(os.getenv("FASTMOSS_REPORT_EVIDENCE_FORMAT", "semantic") or "semantic").strip().lower()
-    mode = requested_mode if requested_mode in {"semantic", "generic", "json"} else "semantic"
-    if mode == "generic":
-        markdown = _fastmoss_generic_report_evidence_markdown(dossier)
-        return markdown, {
-            "format": "generic",
-            "tool_count": len(dossier.get("tool_evidence") or []),
-            "markdown_chars": len(markdown),
-        }
-    if mode == "json":
-        markdown = render_fastmoss_compact_json(dossier)
-        return markdown, {
-            "format": "json",
-            "tool_count": len(dossier.get("tool_evidence") or []),
-            "markdown_chars": len(markdown),
-        }
-    try:
-        rendered = render_fastmoss_evidence_document(dossier)
-        return rendered.markdown, {"format": "semantic", **rendered.stats}
-    except Exception as exc:
-        markdown = _fastmoss_generic_report_evidence_markdown(dossier)
-        return markdown, {
-            "format": "generic",
-            "requested_format": requested_mode,
-            "whole_document_fallback": f"{type(exc).__name__}: {str(exc)[:200]}",
-            "tool_count": len(dossier.get("tool_evidence") or []),
-            "markdown_chars": len(markdown),
-        }
+    """Render FastMoss report evidence as semantic Markdown."""
+    rendered = render_fastmoss_evidence_document(dossier)
+    return rendered.markdown, {"format": "semantic", **rendered.stats}
 
 
 def fastmoss_report_evidence_markdown(dossier: dict[str, Any]) -> str:
@@ -11157,8 +11240,6 @@ def apply_fastmoss_business_defaults(
             key: value for key, value in normalized.items()
             if key in {"query", "top_k", "max_total_results"}
         }
-        if task.get("scope") == "cross_category" and isinstance(normalized.get("query"), list):
-            normalized["query"] = normalized["query"][:DISCOVERY_BREADTH]
         original_queries = fastmoss_original_segment_keywords(user_text, route)
         if original_queries and task.get("scope") != "cross_category":
             normalized["query"] = original_queries
@@ -11858,14 +11939,6 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 if route.get("dynamic_planner") and provider in {"amazon", "fastmoss"}
                 else None
             )
-            dynamic_counts = dict((dynamic_state or {}).get("tool_counts") or {})
-            dynamic_total = sum(int(value or 0) for value in dynamic_counts.values())
-            dynamic_budget = PROVIDER_CALL_BUDGET
-            dynamic_fastmoss_drilldowns = (
-                fastmoss_category_ranking_drilldown_count(assistant_msg)
-                if dynamic_state is not None and provider == "fastmoss"
-                else 0
-            )
             for tool_call in tool_calls:
                 fn_name = str(tool_call.get("function", {}).get("name") or "")
                 if fn_name not in allowed_tool_ids:
@@ -11879,27 +11952,12 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                         unprefixed_name, fn_args, assistant_msg, user_text=routing_text, route=route
                     )
                 if dynamic_state is not None and domain == ("sellersprite" if provider == "amazon" else "fastmoss"):
-                    state_with_batch_counts = dict(dynamic_state)
-                    state_with_batch_counts["tool_counts"] = dynamic_counts
                     eligible_names = eligible_provider_tool_names(
-                        provider, route.get("research_task") or {}, state_with_batch_counts
+                        provider, route.get("research_task") or {}, dynamic_state
                     )
-                    if unprefixed_name not in eligible_names or dynamic_total >= dynamic_budget:
+                    if unprefixed_name not in eligible_names:
                         print(
-                            f"[CHAT PLANNER] skipped over-budget tool call: {fn_name} "
-                            f"count={dynamic_counts.get(unprefixed_name, 0)} total={dynamic_total}/{dynamic_budget}",
-                            flush=True,
-                        )
-                        continue
-                    if (
-                        provider == "fastmoss"
-                        and unprefixed_name == "market_category_ranking"
-                        and fastmoss_category_ranking_is_drilldown(fn_args)
-                        and dynamic_fastmoss_drilldowns >= DISCOVERY_BREADTH
-                    ):
-                        print(
-                            f"[CHAT PLANNER] skipped extra FastMoss category drill-down: "
-                            f"{dynamic_fastmoss_drilldowns}/{DISCOVERY_BREADTH}",
+                            f"[CHAT PLANNER] skipped ineligible tool call: {fn_name}",
                             flush=True,
                         )
                         continue
@@ -11912,15 +11970,6 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 normalized_call["function"] = dict(tool_call.get("function") or {})
                 normalized_call["function"]["arguments"] = json.dumps(fn_args, ensure_ascii=False)
                 deduplicated_tool_calls.append(normalized_call)
-                if dynamic_state is not None and domain == ("sellersprite" if provider == "amazon" else "fastmoss"):
-                    dynamic_counts[unprefixed_name] = int(dynamic_counts.get(unprefixed_name) or 0) + 1
-                    dynamic_total += 1
-                    if (
-                        provider == "fastmoss"
-                        and unprefixed_name == "market_category_ranking"
-                        and fastmoss_category_ranking_is_drilldown(fn_args)
-                    ):
-                        dynamic_fastmoss_drilldowns += 1
             tool_calls = deduplicated_tool_calls
             if tool_calls:
                 assistant_msg.tool_calls = list(assistant_msg.tool_calls or []) + tool_calls
@@ -12068,7 +12117,16 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                         "_context_scope": "system",
                     })
                     continue
-                if provider == "fastmoss" and (assistant_msg.tool_results or []):
+                if (
+                    provider == "amazon"
+                    and (assistant_msg.tool_results or [])
+                    and chat_route_uses_report_model(provider, route)
+                ):
+                    fallback = synthesize_sellersprite_report_from_packet(
+                        assistant_msg, routing_text, route,
+                        req, api_key, api_url, report_model,
+                    )
+                elif provider == "fastmoss" and (assistant_msg.tool_results or []):
                     fallback = finalize_fastmoss_answer(
                         "", assistant_msg, routing_text, route,
                         req, api_key, api_url, report_model,
@@ -12083,11 +12141,22 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": fallback})
                 return
             if final_answer_forced and str(content or "").strip():
-                final_content = (
-                    finalize_fastmoss_answer(
+                if (
+                    provider == "amazon"
+                    and (assistant_msg.tool_results or [])
+                    and chat_route_uses_report_model(provider, route)
+                ):
+                    final_content = synthesize_sellersprite_report_from_packet(
+                        assistant_msg, routing_text, route,
+                        req, api_key, api_url, report_model,
+                        fallback_draft=str(content),
+                    )
+                elif provider == "fastmoss":
+                    final_content = finalize_fastmoss_answer(
                         str(content), assistant_msg, routing_text, route, req, api_key, api_url, report_model
-                    ) if provider == "fastmoss" else str(content)
-                )
+                    )
+                else:
+                    final_content = str(content)
                 store.update_message(session, assistant_msg, final_content, status="done")
                 store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": final_content})
                 return
@@ -12167,6 +12236,18 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 and chat_route_uses_report_model(provider, route)
                 and request_model != report_model
             ):
+                if provider == "amazon" and (assistant_msg.tool_results or []):
+                    final_content = synthesize_sellersprite_report_from_packet(
+                        assistant_msg, routing_text, route,
+                        req, api_key, api_url, report_model,
+                        fallback_draft=str(content),
+                    )
+                    store.update_message(session, assistant_msg, final_content, status="done")
+                    store.broadcast(session.id, "done", {
+                        "messageId": assistant_msg.id,
+                        "content": final_content,
+                    })
+                    return
                 messages.append({
                     "role": "system",
                     "content": (
@@ -12221,6 +12302,21 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
         ),
         "_context_scope": "system",
     })
+    if (
+        provider == "amazon"
+        and (assistant_msg.tool_results or [])
+        and chat_route_uses_report_model(provider, route)
+    ):
+        final_content = synthesize_sellersprite_report_from_packet(
+            assistant_msg, routing_text, route,
+            req, api_key, api_url, report_model,
+        )
+        store.update_message(session, assistant_msg, final_content, status="done")
+        store.broadcast(session.id, "done", {
+            "messageId": assistant_msg.id,
+            "content": final_content,
+        })
+        return
     try:
         final_context = build_tool_limit_final_context(messages, routing_text)
         for attempt in range(2):

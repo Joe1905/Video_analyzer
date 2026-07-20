@@ -12,9 +12,6 @@ from typing import Any, Iterable
 from sellersprite_evidence_renderer import SELLERSPRITE_TOOL_CAPABILITIES
 
 
-DISCOVERY_BREADTH = 3
-PROVIDER_CALL_BUDGET = 12
-
 RESEARCH_OBJECTIVES = {
     "lookup",
     "entity_analysis",
@@ -172,7 +169,6 @@ def research_task_from(
         "entity_source": entity_source,
         "region": region,
         "time_window": time_window,
-        "discovery_breadth": DISCOVERY_BREADTH,
     }
 
 
@@ -292,31 +288,8 @@ def eligible_provider_tool_names(provider: str, task: dict[str, Any], state: dic
         mapping = FASTMOSS_TOOL_CAPABILITIES
     else:
         return set()
-    counts = state.get("tool_counts") if isinstance(state.get("tool_counts"), dict) else {}
-    if sum(int(value or 0) for value in counts.values()) >= PROVIDER_CALL_BUDGET:
-        return set()
-    limits = {
-        # Two broad ranking views plus up to three evidence-backed candidate
-        # drill-downs fit the default cross-category discovery breadth.
-        "market_category_ranking": DISCOVERY_BREADTH + 2,
-        "search_category_by_words": DISCOVERY_BREADTH,
-        "product_rank_new_listed": DISCOVERY_BREADTH,
-        "product_rank_top_selling": DISCOVERY_BREADTH,
-        "product_search": DISCOVERY_BREADTH,
-        "keyword_research": DISCOVERY_BREADTH,
-        "product_research": DISCOVERY_BREADTH,
-    }
     return {
         name for name, capability in mapping.items()
-        if capability in capabilities and int(counts.get(name) or 0) < limits.get(
-            name,
-            DISCOVERY_BREADTH
-            if task.get("scope") == "cross_category" and capability in {
-                "keyword_discovery", "market_discovery", "product_discovery", "category_resolution",
-                "category_context", "product_detail", "product_trend", "product_content",
-                "trend_validation", "market_validation", "asin_detail", "asin_traffic", "asin_review",
-            }
-            else 1,
-        )
+        if capability in capabilities
         and not (provider == "fastmoss" and name == "product_category_info" and not state.get("has_product"))
     }

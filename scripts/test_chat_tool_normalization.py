@@ -1428,6 +1428,87 @@ def test_sellersprite_semantic_registry_is_complete_and_lossless() -> None:
     assert "没有返回业务记录" in wrapped_empty.markdown
 
 
+def test_sellersprite_semantic_report_and_pro_synthesis() -> None:
+    marker = "SELLERSPRITE-REPORT-MARKER"
+    message = SimpleNamespace(
+        tool_calls=[{
+            "id": "c1",
+            "function": {
+                "name": "sellersprite__keyword_research",
+                "arguments": json.dumps({
+                    "request": {"marketplace": "US", "keyword": "stroller fan"},
+                }),
+            },
+        }],
+        tool_results=[{
+            "tool_name": "sellersprite__keyword_research",
+            "result": {
+                "ok": True,
+                "data_state": "data",
+                "mcp_data": {
+                    "items": [{
+                        "keyword": "stroller fan",
+                        "searches": 12345,
+                        "futureBusinessField": marker,
+                    }],
+                },
+            },
+        }],
+    )
+    route = {
+        "intent": "product_research",
+        "task_depth": "analysis",
+        "research_task": {"objective": "opportunity_discovery", "region": "US"},
+    }
+    dossier = web_app.sellersprite_report_evidence_dossier(message, route)
+    assert len(dossier["tool_evidence"]) == 1
+    assert dossier["tool_evidence"][0]["source_ref"] == "call:1"
+    assert marker in json.dumps(dossier, ensure_ascii=False)
+
+    semantic, semantic_stats = web_app.sellersprite_render_report_evidence(dossier)
+    assert "## call:1 · `sellersprite__keyword_research`" in semantic
+    assert marker in semantic
+    assert semantic_stats["format"] == "semantic"
+
+    class Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {
+                "choices": [{
+                    "finish_reason": "stop",
+                    "message": {"content": "# SellerSprite 报告\n\n已由 V4 Pro 合成。"},
+                }],
+            }
+
+    class Requests:
+        def __init__(self) -> None:
+            self.payloads: list[dict] = []
+
+        def post(self, _url: str, **kwargs):
+            self.payloads.append(json.loads(kwargs["data"].decode("utf-8")))
+            return Response()
+
+    requests = Requests()
+    report = web_app.synthesize_sellersprite_report_from_packet(
+        message,
+        "分析 stroller fan 市场",
+        route,
+        requests,
+        "test-key",
+        "https://example.invalid/v1",
+        "deepseek-v4-pro-test",
+    )
+    assert report.startswith("# SellerSprite 报告")
+    assert len(requests.payloads) == 1
+    payload = requests.payloads[0]
+    assert payload["model"] == "deepseek-v4-pro-test"
+    assert "tools" not in payload
+    assert marker in payload["messages"][0]["content"]
+    assert "# SellerSprite 调研证据" in payload["messages"][0]["content"]
+
+
 def test_dynamic_provider_capability_graph_uses_task_scope_and_evidence() -> None:
     fast_text = "帮我查找一下最近1-2个月热门趋势新品"
     fast_route = web_app.attach_research_task(
@@ -1583,6 +1664,46 @@ def test_dynamic_provider_capability_graph_uses_task_scope_and_evidence() -> Non
         amazon_text,
         evidence_message,
     )
+
+
+def test_dynamic_provider_planner_does_not_cap_repeated_calls() -> None:
+    task = {"objective": "opportunity_discovery", "scope": "cross_category"}
+    state = {
+        "attempted_capabilities": [],
+        "observed_capabilities": [],
+        "tool_counts": {"keyword_research": 99, "market_research": 99},
+        "has_category": False,
+        "has_product": False,
+        "has_shop": False,
+        "has_creator": False,
+        "has_video": False,
+        "has_asin": False,
+        "has_node": False,
+    }
+    eligible = web_app.eligible_provider_tool_names("amazon", task, state)
+    assert "keyword_research" in eligible
+    assert "market_research" in eligible
+
+    old_round_limit = os.environ.pop("CHAT_DYNAMIC_TOOL_ROUND_LIMIT", None)
+    try:
+        assert web_app.chat_max_tool_rounds(
+            "amazon",
+            {"intent": "product_research", "dynamic_planner": True, "max_rounds": 12},
+            43,
+        ) == 50
+    finally:
+        if old_round_limit is not None:
+            os.environ["CHAT_DYNAMIC_TOOL_ROUND_LIMIT"] = old_round_limit
+
+    queries = ["Kitchen", "Beauty", "Pet", "Sports", "Tools"]
+    normalized = web_app.apply_fastmoss_business_defaults(
+        "search_category_by_words",
+        {"query": queries},
+        SimpleNamespace(tool_calls=[], tool_results=[]),
+        user_text="跨类目寻找机会",
+        route={"dynamic_planner": True, "research_task": {"scope": "cross_category"}},
+    )
+    assert normalized["query"] == queries
 
 
 def test_region_default_only_applies_when_schema_supports_it() -> None:
@@ -3037,7 +3158,7 @@ def test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence() -> None:
     assert "omitted_items" not in system_content
 
 
-def test_fastmoss_report_evidence_format_switches_are_reversible() -> None:
+def test_fastmoss_report_evidence_is_semantic() -> None:
     dossier = {
         "workflow": "product",
         "report_date": "2026-07-19",
@@ -3053,29 +3174,10 @@ def test_fastmoss_report_evidence_format_switches_are_reversible() -> None:
         }],
         "hard_fact_boundaries": {"rules": ["空结果只适用于精确参数"]},
     }
-    old = os.environ.get("FASTMOSS_REPORT_EVIDENCE_FORMAT")
-    try:
-        os.environ["FASTMOSS_REPORT_EVIDENCE_FORMAT"] = "semantic"
-        semantic, semantic_stats = web_app.fastmoss_render_report_evidence(dossier)
-        assert "## call:1 · `fastmoss__product_search`" in semantic
-        assert semantic_stats["format"] == "semantic"
-        assert semantic_stats["registered_tool_count"] == 1
-
-        os.environ["FASTMOSS_REPORT_EVIDENCE_FORMAT"] = "generic"
-        generic, generic_stats = web_app.fastmoss_render_report_evidence(dossier)
-        assert "## tool_evidence" in generic
-        assert generic_stats["format"] == "generic"
-
-        os.environ["FASTMOSS_REPORT_EVIDENCE_FORMAT"] = "json"
-        compact_json, json_stats = web_app.fastmoss_render_report_evidence(dossier)
-        assert compact_json.startswith("# FastMoss 调研证据\n\n```json")
-        assert '"tool_evidence"' in compact_json
-        assert json_stats["format"] == "json"
-    finally:
-        if old is None:
-            os.environ.pop("FASTMOSS_REPORT_EVIDENCE_FORMAT", None)
-        else:
-            os.environ["FASTMOSS_REPORT_EVIDENCE_FORMAT"] = old
+    semantic, semantic_stats = web_app.fastmoss_render_report_evidence(dossier)
+    assert "## call:1 · `fastmoss__product_search`" in semantic
+    assert semantic_stats["format"] == "semantic"
+    assert semantic_stats["registered_tool_count"] == 1
 
 
 def test_fastmoss_claim_ids_and_extended_mechanical_cleanup() -> None:
@@ -3305,8 +3407,11 @@ def test_analytical_routes_use_report_model_and_fastmoss_preserves_pro_draft() -
     assert web_app.chat_route_uses_report_model(
         "home", {"intent": "product_research", "task_depth": "analysis"}
     )
-    assert not web_app.chat_route_uses_report_model(
+    assert web_app.chat_route_uses_report_model(
         "amazon", {"intent": "product_research", "task_depth": "analysis"}
+    )
+    assert not web_app.chat_route_uses_report_model(
+        "amazon", {"intent": "product_availability", "task_depth": "lookup"}
     )
     assert web_app.chat_route_uses_report_model(
         "fastmoss", {"intent": "fastmoss_product", "task_depth": "workflow", "playbook": "product"}
@@ -3417,7 +3522,9 @@ if __name__ == "__main__":
     test_fastmoss_close_cross_category_matches_request_confirmation()
     test_provider_profiles_use_aggregated_sellersprite_and_staged_fastmoss_tools()
     test_sellersprite_semantic_registry_is_complete_and_lossless()
+    test_sellersprite_semantic_report_and_pro_synthesis()
     test_dynamic_provider_capability_graph_uses_task_scope_and_evidence()
+    test_dynamic_provider_planner_does_not_cap_repeated_calls()
     test_region_default_only_applies_when_schema_supports_it()
     test_fastmoss_deep_dive_ids_must_come_from_current_task()
     test_tool_call_signature_deduplicates_argument_order()
@@ -3439,7 +3546,7 @@ if __name__ == "__main__":
     test_fastmoss_list_truncation_is_explicit_and_invalid_entities_are_filtered()
     test_fastmoss_22_call_semantic_registry_fixture()
     test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence()
-    test_fastmoss_report_evidence_format_switches_are_reversible()
+    test_fastmoss_report_evidence_is_semantic()
     test_fastmoss_claim_ids_and_extended_mechanical_cleanup()
     test_analytical_routes_use_report_model_and_fastmoss_preserves_pro_draft()
     print("chat tool normalization tests passed")

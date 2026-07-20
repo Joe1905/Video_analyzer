@@ -801,11 +801,6 @@ def render_fastmoss_evidence_document(dossier: Mapping[str, Any]) -> RenderedEvi
     return RenderedEvidenceDocument(markdown=markdown, tool_results=results)
 
 
-def render_fastmoss_compact_json(dossier: Mapping[str, Any]) -> str:
-    payload = json.dumps(dossier, ensure_ascii=False, separators=(",", ":"))
-    return f"# FastMoss 调研证据\n\n```json\n{payload}\n```\n"
-
-
 __all__ = [
     "EvidenceNode",
     "FASTMOSS_CURRENT_TOOL_NAMES",
@@ -815,7 +810,6 @@ __all__ = [
     "RenderedToolEvidence",
     "ToolRenderSpec",
     "business_leaf_paths",
-    "render_fastmoss_compact_json",
     "render_fastmoss_evidence_document",
     "render_fastmoss_tool_evidence",
 ]

@@ -19,6 +19,7 @@ from fastmoss_evidence_renderer import (
     PROFILE_REFERENCE,
     PROFILE_RELATIONSHIP,
     PROFILE_TREND,
+    RenderedEvidenceDocument,
     RenderedToolEvidence,
     SemanticToolRenderer,
     ToolRenderSpec,
@@ -153,6 +154,12 @@ def render_sellersprite_current_evidence(evidence: Mapping[str, Any]) -> Rendere
         },
         "error": evidence.get("error"),
     }
+    return render_sellersprite_tool_evidence(entry)
+
+
+def render_sellersprite_tool_evidence(entry: Mapping[str, Any]) -> RenderedToolEvidence:
+    """Render one normalized SellerSprite report-evidence entry."""
+    full_tool_name = str(entry.get("tool_name") or "sellersprite__unknown")
     renderer = SemanticToolRenderer(entry, render_specs=SELLERSPRITE_RENDER_SPECS)
     try:
         result = renderer.render()
@@ -178,6 +185,36 @@ def render_sellersprite_current_evidence(evidence: Mapping[str, Any]) -> Rendere
     return result
 
 
+def render_sellersprite_evidence_document(
+    dossier: Mapping[str, Any],
+) -> RenderedEvidenceDocument:
+    """Render a complete SellerSprite dossier while isolating per-call failures."""
+    lines = ["# SellerSprite 调研证据"]
+    context = {
+        "report_date": dossier.get("report_date"),
+        "research_task": dossier.get("research_task") or {},
+        "quality_summary": dossier.get("quality_summary") or {},
+    }
+    lines.extend(["", json_to_markdown(context, title="调研上下文", include_paths=False).rstrip()])
+    results: list[RenderedToolEvidence] = []
+    for entry in dossier.get("tool_evidence") or []:
+        if not isinstance(entry, Mapping):
+            continue
+        result = render_sellersprite_tool_evidence(entry)
+        results.append(result)
+        lines.extend(["", result.markdown])
+    boundaries = dossier.get("hard_fact_boundaries")
+    if boundaries:
+        lines.extend([
+            "",
+            json_to_markdown(boundaries, title="硬事实边界", include_paths=False).rstrip(),
+        ])
+    return RenderedEvidenceDocument(
+        markdown="\n".join(lines).rstrip() + "\n",
+        tool_results=results,
+    )
+
+
 __all__ = [
     "SELLERSPRITE_CURRENT_TOOL_NAMES",
     "SELLERSPRITE_RENDER_SPECS",
@@ -185,6 +222,8 @@ __all__ = [
     "SELLERSPRITE_TOOL_SEMANTICS",
     "SellerSpriteToolSemantic",
     "render_sellersprite_current_evidence",
+    "render_sellersprite_tool_evidence",
+    "render_sellersprite_evidence_document",
     "sellersprite_business_payload",
     "sellersprite_semantic_registry_diagnostics",
 ]
