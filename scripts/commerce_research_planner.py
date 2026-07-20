@@ -91,6 +91,10 @@ def research_task_from(
     hint = decision.get("research_task") if isinstance(decision.get("research_task"), dict) else decision
     text = str(user_text or "")
     lowered = text.lower()
+    explicit_cross_category = _contains_any(
+        lowered,
+        ("跨品类", "跨类目", "全品类", "不限品类", "不限类目", "cross-category", "cross category"),
+    )
     playbook = str(route.get("playbook") or "")
 
     objective_hint = str(hint.get("objective") or "").strip().lower()
@@ -122,6 +126,8 @@ def research_task_from(
     entity = normalize_research_entity(candidate_entity)
     if not entity:
         entity = normalize_research_entity(text)
+    if explicit_cross_category:
+        entity = ""
 
     entity_type_hint = str(hint.get("entity_type") or "").strip().lower()
     if _ASIN_RE.fullmatch(entity):
@@ -144,7 +150,7 @@ def research_task_from(
         scope = "category"
     elif entity_type == "keyword":
         scope = "keyword"
-    elif objective in {"trend_discovery", "opportunity_discovery"}:
+    elif explicit_cross_category or objective in {"trend_discovery", "opportunity_discovery"}:
         scope = "cross_category"
     elif scope_hint in RESEARCH_SCOPES:
         scope = scope_hint
@@ -463,4 +469,5 @@ def eligible_provider_tool_names(provider: str, task: dict[str, Any], state: dic
             }
             else 1,
         )
+        and not (provider == "fastmoss" and name == "product_category_info" and not state.get("has_product"))
     }

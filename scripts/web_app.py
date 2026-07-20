@@ -119,6 +119,7 @@ from fastmoss_evidence_renderer import (
     render_fastmoss_evidence_document,
 )
 from commerce_research_planner import (
+    DISCOVERY_BREADTH,
     PROVIDER_CALL_BUDGET,
     SELLERSPRITE_TOOL_REQUEST_SPECS,
     eligible_provider_capabilities,
@@ -5139,6 +5140,20 @@ def _planner_result_payloads(assistant_msg: Message) -> list[Any]:
         result = item["result"]
         payloads.extend((result.get("mcp_data"), result.get("mcp_text_preview")))
     return payloads
+
+
+def fastmoss_category_ranking_is_drilldown(arguments: dict[str, Any]) -> bool:
+    filters = arguments.get("filter") if isinstance(arguments.get("filter"), dict) else {}
+    return bool(str(filters.get("category_id") or "").strip())
+
+
+def fastmoss_category_ranking_drilldown_count(assistant_msg: Message) -> int:
+    return sum(
+        1
+        for call in assistant_msg.tool_calls or []
+        if str(call.get("function", {}).get("name") or "") == "fastmoss__market_category_ranking"
+        and fastmoss_category_ranking_is_drilldown(_tool_call_arguments(call))
+    )
 
 
 def research_planner_state(
@@ -11746,6 +11761,22 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 else model
             )
             payload = {"model": request_model, "messages": request_messages, "tools": request_tools or None, "temperature": 0.2}
+            if (
+                provider == "fastmoss"
+                and route.get("dynamic_planner")
+                and request_tools
+                and fastmoss_analysis_evidence_gaps(routing_text, assistant_msg, route)
+            ):
+                provider_tool_names = [
+                    str(tool.get("function", {}).get("name") or "")
+                    for tool in request_tools
+                    if split_prefixed_tool_id(str(tool.get("function", {}).get("name") or ""))[0] == "fastmoss"
+                ]
+                payload["tool_choice"] = (
+                    {"type": "function", "function": {"name": provider_tool_names[0]}}
+                    if len(provider_tool_names) == 1
+                    else "required"
+                )
             payload_str = json.dumps(payload, ensure_ascii=False)
             print(
                 f"[CHAT] DeepSeek request: {len(request_messages)} msgs, {len(payload_str)} bytes, "
@@ -11804,6 +11835,11 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             dynamic_counts = dict((dynamic_state or {}).get("tool_counts") or {})
             dynamic_total = sum(int(value or 0) for value in dynamic_counts.values())
             dynamic_budget = PROVIDER_CALL_BUDGET
+            dynamic_fastmoss_drilldowns = (
+                fastmoss_category_ranking_drilldown_count(assistant_msg)
+                if dynamic_state is not None and provider == "fastmoss"
+                else 0
+            )
             for tool_call in tool_calls:
                 fn_name = str(tool_call.get("function", {}).get("name") or "")
                 if fn_name not in allowed_tool_ids:
@@ -11829,6 +11865,18 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                             flush=True,
                         )
                         continue
+                    if (
+                        provider == "fastmoss"
+                        and unprefixed_name == "market_category_ranking"
+                        and fastmoss_category_ranking_is_drilldown(fn_args)
+                        and dynamic_fastmoss_drilldowns >= DISCOVERY_BREADTH
+                    ):
+                        print(
+                            f"[CHAT PLANNER] skipped extra FastMoss category drill-down: "
+                            f"{dynamic_fastmoss_drilldowns}/{DISCOVERY_BREADTH}",
+                            flush=True,
+                        )
+                        continue
                 signature = tool_call_signature(fn_name, fn_args)
                 if signature in seen_tool_calls:
                     print(f"[CHAT] skipped duplicate tool call: {fn_name} {fn_args}", flush=True)
@@ -11841,6 +11889,12 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 if dynamic_state is not None and domain == ("sellersprite" if provider == "amazon" else "fastmoss"):
                     dynamic_counts[unprefixed_name] = int(dynamic_counts.get(unprefixed_name) or 0) + 1
                     dynamic_total += 1
+                    if (
+                        provider == "fastmoss"
+                        and unprefixed_name == "market_category_ranking"
+                        and fastmoss_category_ranking_is_drilldown(fn_args)
+                    ):
+                        dynamic_fastmoss_drilldowns += 1
             tool_calls = deduplicated_tool_calls
             if tool_calls:
                 assistant_msg.tool_calls = list(assistant_msg.tool_calls or []) + tool_calls

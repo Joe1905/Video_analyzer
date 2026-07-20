@@ -1028,6 +1028,16 @@ def test_three_layer_research_task_rejects_goal_text_as_entity() -> None:
     assert amazon["research_task"]["scope"] == "cross_category"
     assert amazon["research_task"]["entity_type"] == "none"
     assert amazon["dynamic_planner"] is True
+    explicit_cross = web_app.research_task_from(
+        "帮我找美区亚马逊需求增长、竞争相对可验证的热门新品方向，先做跨品类发现",
+        "amazon",
+        {"intent": "product_research", "task_depth": "workflow"},
+        {"research_task": {"entity": "需求增长与竞争可验证", "entity_type": "keyword"}},
+    )
+    assert explicit_cross["objective"] == "trend_discovery"
+    assert explicit_cross["scope"] == "cross_category"
+    assert explicit_cross["entity_type"] == "none"
+    assert explicit_cross["entity"] == ""
 
 
 def test_three_layer_research_task_keeps_real_product_entity() -> None:
@@ -1411,6 +1421,11 @@ def test_dynamic_provider_capability_graph_uses_task_scope_and_evidence() -> Non
     selected = web_app.provider_profile_tool_ids("fastmoss", fast_route, fast_text, fast_enabled, message)
     assert selected == {"system__current_time", "fastmoss__market_category_ranking"}
     assert web_app.fastmoss_clarifying_question("fastmoss", fast_route, fast_text) is None
+    drilldown_message = SimpleNamespace(tool_calls=[
+        {"function": {"name": "fastmoss__market_category_ranking", "arguments": '{"filter":{"region":"US"}}'}},
+        {"function": {"name": "fastmoss__market_category_ranking", "arguments": '{"filter":{"region":"US","category_id":3}}'}},
+    ])
+    assert web_app.fastmoss_category_ranking_drilldown_count(drilldown_message) == 1
 
     message.tool_calls.append({
         "function": {"name": "fastmoss__market_category_ranking", "arguments": '{"filter":{"region":"US"}}'},
