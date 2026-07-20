@@ -11144,6 +11144,8 @@ def apply_fastmoss_business_defaults(
             key: value for key, value in normalized.items()
             if key in {"query", "top_k", "max_total_results"}
         }
+        if task.get("scope") == "cross_category" and isinstance(normalized.get("query"), list):
+            normalized["query"] = normalized["query"][:DISCOVERY_BREADTH]
         original_queries = fastmoss_original_segment_keywords(user_text, route)
         if original_queries and task.get("scope") != "cross_category":
             normalized["query"] = original_queries
