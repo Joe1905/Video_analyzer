@@ -12,6 +12,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import web_app  # noqa: E402
+from sellersprite_evidence_renderer import (  # noqa: E402
+    SELLERSPRITE_TOOL_SEMANTICS,
+    render_sellersprite_current_evidence,
+    sellersprite_semantic_registry_diagnostics,
+)
 from web_app import build_chat_history_context, build_deepseek_tool_assistant_message, build_prefixed_model_tools, build_tool_limit_final_context, chat_markdown_to_html, chat_request_needs_tools, chat_routing_text, compact_chat_tool_evidence, deepseek_tool_protocol_present, estimate_chat_context_tokens, fastmoss_analysis_evidence_gaps, fastmoss_availability_search_arguments, fastmoss_defaults_to_us, fastmoss_empty_availability_answer, fastmoss_playbook_instruction, fastmoss_playbook_intent, fastmoss_product_evidence_required, fastmoss_required_capability_gaps, filter_locked_provider_tool_ids, forced_provider_domain_tool_available, is_chat_retry_request, manage_chat_context, normalize_mcp_tool_arguments, normalize_prefixed_tool_result, normalize_tool_result, parse_chat_intent_decision, provider_default_enabled_tool_ids, provider_forces_mcp_tools, resolve_chat_intent, route_chat_intent  # noqa: E402
 from tools import _filter_relevant_search_results, execute_tool, get_tools_for_model, list_tools, parse_bing_html, parse_duckduckgo_html  # noqa: E402
 
@@ -481,7 +486,8 @@ def test_current_tool_evidence_is_lossless_until_budget_pressure() -> None:
         raw_result,
     )
     assert marker in evidence
-    assert '"marketplace":"US"' in evidence
+    assert "marketplace" in evidence and "US" in evidence
+    assert "本次实际返回 30 条记录" in evidence
     assert "mcp_text_preview" not in evidence
 
     messages = [
@@ -1358,49 +1364,50 @@ def test_provider_profiles_use_aggregated_sellersprite_and_staged_fastmoss_tools
     assert staged == {"system__current_time", "fastmoss__search_category_by_words"}
 
 
-def test_sellersprite_request_registry_matches_current_mcp_shapes() -> None:
-    specs = web_app.SELLERSPRITE_TOOL_REQUEST_SPECS
-    assert len(specs) == 43
-    runtime_tools = []
-    for name, spec in specs.items():
-        if spec.request_format == "nested":
-            schema = {
-                "type": "object",
-                "properties": {"request": {
-                    "type": "object",
-                    "properties": {field: {"type": "string"} for field in spec.required_fields},
-                    "required": list(spec.required_fields),
-                }},
-                "required": ["request"],
-            }
-        elif spec.request_format == "flat":
-            schema = {
-                "type": "object",
-                "properties": {field: {"type": "string"} for field in spec.required_fields},
-                "required": list(spec.required_fields),
-            }
-        else:
-            schema = {"type": "object", "properties": {}}
-        runtime_tools.append({"name": name, "inputSchema": schema})
-    diagnostics = web_app.sellersprite_registry_diagnostics(runtime_tools)
+def test_sellersprite_semantic_registry_is_complete_and_lossless() -> None:
+    assert len(SELLERSPRITE_TOOL_SEMANTICS) == 43
+    diagnostics = sellersprite_semantic_registry_diagnostics(
+        [{"name": name} for name in SELLERSPRITE_TOOL_SEMANTICS]
+    )
     assert diagnostics == {
         "registered": 43,
         "runtime": 43,
-        "missing_registered": [],
+        "missing_semantics": [],
         "missing_runtime": [],
-        "format_mismatches": [],
-        "required_mismatches": [],
     }
-    nested, action = web_app.normalize_sellersprite_registered_arguments(
-        "keyword_research", {"marketplace": "US", "keywords": "baby nail trimmer"}
-    )
-    assert nested == {"request": {"marketplace": "US", "keywords": "baby nail trimmer"}}
-    assert action and "request object" in action
-    flat, action = web_app.normalize_sellersprite_registered_arguments(
-        "asin_detail", {"request": {"marketplace": "US", "asin": "B0H3ZH8BF8"}}
-    )
-    assert flat == {"marketplace": "US", "asin": "B0H3ZH8BF8"}
-    assert action and "flat request" in action
+    for name, semantic in SELLERSPRITE_TOOL_SEMANTICS.items():
+        result = render_sellersprite_current_evidence({
+            "tool": f"sellersprite__{name}",
+            "arguments": {"marketplace": "US"},
+            "ok": True,
+            "data_state": "data",
+            "data": {
+                "items": [{
+                    "asin": "B0ABCDEF12",
+                    "keyword": "stroller fan",
+                    "searches": 12345,
+                    "futureBusinessField": f"kept-{name}",
+                }],
+            },
+        })
+        assert result.profile == semantic.profile
+        assert result.fallback is False
+        assert result.business_leaf_paths == (
+            result.consumed_paths | result.unmapped_paths | result.excluded_paths
+        )
+        assert not (result.consumed_paths & result.unmapped_paths)
+        assert f"kept-{name}" in result.markdown
+
+    empty = render_sellersprite_current_evidence({
+        "tool": "sellersprite__review",
+        "arguments": {"marketplace": "US", "asin": "B0ABCDEF12"},
+        "ok": True,
+        "data_state": "empty",
+        "data": {"items": [], "total": 0},
+    })
+    assert empty.empty is True
+    assert "本次调用成功" in empty.markdown
+    assert "没有返回业务记录" in empty.markdown
 
 
 def test_dynamic_provider_capability_graph_uses_task_scope_and_evidence() -> None:
@@ -3391,7 +3398,7 @@ if __name__ == "__main__":
     test_fastmoss_clarification_is_targeted_and_provider_isolated()
     test_fastmoss_close_cross_category_matches_request_confirmation()
     test_provider_profiles_use_aggregated_sellersprite_and_staged_fastmoss_tools()
-    test_sellersprite_request_registry_matches_current_mcp_shapes()
+    test_sellersprite_semantic_registry_is_complete_and_lossless()
     test_dynamic_provider_capability_graph_uses_task_scope_and_evidence()
     test_region_default_only_applies_when_schema_supports_it()
     test_fastmoss_deep_dive_ids_must_come_from_current_task()

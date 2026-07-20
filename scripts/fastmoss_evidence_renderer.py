@@ -191,6 +191,7 @@ _DISTRIBUTION_HINTS = (
 )
 _ENTITY_CONTAINER_KEYS = {
     "product", "shop", "creator", "video", "live", "agency", "category",
+    "asin", "listing", "item", "keyword",
     "shop_info", "creator_info", "product_info", "live_info", "video_info",
 }
 _NARRATIVE_KEYS = {
@@ -198,6 +199,8 @@ _NARRATIVE_KEYS = {
     "video_desc", "subtitle", "subtitles", "script", "document", "documents",
 }
 _FIELD_LABELS = {
+    "asin": "ASIN",
+    "parent_asin": "父ASIN",
     "product_id": "商品ID",
     "seller_id": "店铺ID",
     "shop_id": "店铺ID",
@@ -249,6 +252,31 @@ _FIELD_LABELS = {
     "page": "页码",
     "pagesize": "每页数量",
     "top_k": "候选数量",
+    "keyword": "关键词",
+    "search_rank": "搜索排名",
+    "searches": "搜索量",
+    "purchases": "购买量",
+    "purchase_rate": "购买率",
+    "conversion_rate": "转化率",
+    "products": "商品数",
+    "ad_products": "广告商品数",
+    "supply_demand_ratio": "供需比",
+    "monopoly_click_rate": "点击集中度",
+    "title_density": "标题密度",
+    "avg_price": "平均价格",
+    "min_bid": "最低竞价",
+    "max_bid": "最高竞价",
+    "monthly_sales": "月销量",
+    "monthly_revenue": "月销售额",
+    "bsr": "BSR",
+    "rating": "评分",
+    "reviews": "评论数",
+    "brand": "品牌",
+    "seller_name": "卖家",
+    "marketplace": "站点",
+    "node_id_path": "类目节点路径",
+    "node_name": "类目名称",
+    "goods_count": "商品数量",
 }
 _SEMANTIC_FIELD_RE = re.compile(
     r"(?:^|_)(?:id|uid|name|title|nickname|region|country|currency|category|keyword|rank|score|"
@@ -333,13 +361,18 @@ def business_leaf_paths(value: Any, path: str = "$.business_data") -> set[str]:
 
 
 def _known_field(key: str) -> bool:
-    lowered = re.sub(r"[^a-z0-9]+", "_", str(key).lower()).strip("_")
+    lowered = _normalized_field_key(key)
     return lowered in _FIELD_LABELS or bool(_SEMANTIC_FIELD_RE.search(lowered))
 
 
 def _field_label(key: str) -> str:
-    label = _FIELD_LABELS.get(key)
+    label = _FIELD_LABELS.get(key) or _FIELD_LABELS.get(_normalized_field_key(key))
     return f"{label}（{key}）" if label else key
+
+
+def _normalized_field_key(key: str) -> str:
+    text = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(key))
+    return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
 
 
 def _dotted_field_label(key: str) -> str:
@@ -354,9 +387,7 @@ def _node_kind_for_list(path: str, rows: list[Any], profile: str) -> str:
     if profile == PROFILE_NARRATIVE or any(hint in lowered_path for hint in _NARRATIVE_KEYS):
         return "NarrativeBlock"
     dict_rows = [row for row in rows if isinstance(row, dict)]
-    row_keys = {
-        str(key).lower() for row in dict_rows for key in row.keys()
-    }
+    row_keys = {_normalized_field_key(str(key)) for row in dict_rows for key in row.keys()}
     if dict_rows and row_keys.intersection(_TIME_KEYS):
         return "TimeSeries"
     if profile == PROFILE_DISTRIBUTION or any(hint in lowered_path for hint in _DISTRIBUTION_HINTS):
@@ -368,7 +399,7 @@ def _node_kind_for_list(path: str, rows: list[Any], profile: str) -> str:
 
 def _entity_identity(value: Mapping[str, Any]) -> str:
     for key in (
-        "product_id", "seller_id", "shop_id", "creator_uid", "uid", "video_id",
+        "asin", "parent_asin", "product_id", "seller_id", "shop_id", "creator_uid", "uid", "video_id",
         "room_id", "agency_id", "category_id", "id",
     ):
         item = value.get(key)
@@ -381,11 +412,16 @@ def _entity_identity(value: Mapping[str, Any]) -> str:
 
 
 class SemanticToolRenderer:
-    def __init__(self, entry: Mapping[str, Any]) -> None:
+    def __init__(
+        self,
+        entry: Mapping[str, Any],
+        render_specs: Mapping[str, ToolRenderSpec] | None = None,
+    ) -> None:
         self.entry = dict(entry)
         self.full_tool_name = str(entry.get("tool_name") or "fastmoss__unknown")
         self.tool_name = unprefixed_tool_name(self.full_tool_name)
-        self.spec = FASTMOSS_RENDER_SPECS.get(
+        specs = render_specs or FASTMOSS_RENDER_SPECS
+        self.spec = specs.get(
             self.tool_name,
             ToolRenderSpec(self.tool_name, PROFILE_GENERIC, _entity_type_for_tool(self.tool_name)),
         )

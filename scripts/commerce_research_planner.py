@@ -1,15 +1,15 @@
 """Provider-aware research task routing and capability planning helpers.
 
-This module deliberately stops at task semantics, capability eligibility and
-request-shape validation.  Tool evidence and report writing remain owned by the
-existing chat pipeline.
+This module deliberately stops at task semantics and capability eligibility.
+Runtime MCP schemas own request validation; provider renderers own evidence.
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
 from typing import Any, Iterable
+
+from sellersprite_evidence_renderer import SELLERSPRITE_TOOL_CAPABILITIES
 
 
 DISCOVERY_BREADTH = 3
@@ -176,156 +176,6 @@ def research_task_from(
     }
 
 
-@dataclass(frozen=True)
-class SellerSpriteRequestSpec:
-    capability: str
-    request_format: str
-    required_fields: tuple[str, ...] = ()
-
-
-def _seller_specs(
-    capability: str,
-    request_format: str,
-    required_fields: tuple[str, ...],
-    names: Iterable[str],
-) -> dict[str, SellerSpriteRequestSpec]:
-    return {
-        name: SellerSpriteRequestSpec(capability, request_format, required_fields)
-        for name in names
-    }
-
-
-SELLERSPRITE_TOOL_REQUEST_SPECS: dict[str, SellerSpriteRequestSpec] = {}
-SELLERSPRITE_TOOL_REQUEST_SPECS.update(_seller_specs(
-    "market_validation", "nested", ("marketplace", "nodeIdPath"), (
-        "market_ebc_distribution", "market_price_distribution", "market_ratings_count_distribution",
-        "market_listing_date_distribution", "market_product_demand_trend", "market_product_concentration",
-        "market_brand_concentration", "market_listing_trend_distribution", "market_research_statistics",
-        "market_rating_distribution", "market_seller_country_distribution",
-        "market_seller_type_concentration", "market_seller_concentration",
-    ),
-))
-SELLERSPRITE_TOOL_REQUEST_SPECS.update(_seller_specs(
-    "asin_traffic", "flat", ("marketplace", "asin"),
-    ("traffic_keyword_stat", "traffic_listing_stat"),
-))
-SELLERSPRITE_TOOL_REQUEST_SPECS.update(_seller_specs(
-    "asin_traffic", "nested", ("asinList", "marketplace", "queryType"), ("traffic_extend",),
-))
-SELLERSPRITE_TOOL_REQUEST_SPECS.update(_seller_specs(
-    "asin_review", "flat", ("marketplace", "asin"), ("review",),
-))
-SELLERSPRITE_TOOL_REQUEST_SPECS.update(_seller_specs(
-    "trademark", "nested", ("text",), ("trademark_list",),
-))
-SELLERSPRITE_TOOL_REQUEST_SPECS.update(_seller_specs(
-    "trend_validation", "nested", ("marketplace",), ("google_trend",),
-))
-SELLERSPRITE_TOOL_REQUEST_SPECS.update(_seller_specs(
-    "asin_detail", "flat", ("marketplace", "asin"), (
-        "asin_prediction", "asin_coupon_trend", "keepa_info", "asin_detail",
-        "asin_sales_trend", "asin_detail_with_coupon_trend",
-    ),
-))
-SELLERSPRITE_TOOL_REQUEST_SPECS.update(_seller_specs(
-    "keyword_discovery", "nested", ("marketplace",),
-    ("aba_research_weekly", "aba_research_monthly", "keyword_research", "keyword_miner"),
-))
-SELLERSPRITE_TOOL_REQUEST_SPECS.update(_seller_specs(
-    "asin_traffic", "nested", ("asins", "date", "marketplace", "reverseType"), ("keyword_order",),
-))
-SELLERSPRITE_TOOL_REQUEST_SPECS.update(_seller_specs(
-    "trademark", "nested", ("office", "text"), ("trademark_stats",),
-))
-SELLERSPRITE_TOOL_REQUEST_SPECS.update(_seller_specs(
-    "trademark", "flat", ("office", "brandId"), ("trademark_detail",),
-))
-SELLERSPRITE_TOOL_REQUEST_SPECS.update(_seller_specs(
-    "trend_validation", "flat", ("marketplace", "keyword"),
-    ("keyword_research_trends", "aba_research_trend"),
-))
-SELLERSPRITE_TOOL_REQUEST_SPECS.update(_seller_specs(
-    "category_resolution", "nested", ("marketplace",), ("product_node",),
-))
-SELLERSPRITE_TOOL_REQUEST_SPECS.update(_seller_specs(
-    "product_discovery", "nested", ("marketplace",), ("product_research", "competitor_lookup"),
-))
-SELLERSPRITE_TOOL_REQUEST_SPECS.update(_seller_specs(
-    "asin_traffic", "nested", ("marketplace", "q"), ("traffic_source",),
-))
-SELLERSPRITE_TOOL_REQUEST_SPECS.update(_seller_specs(
-    "asin_traffic", "nested", ("asin", "marketplace"), ("traffic_keyword",),
-))
-SELLERSPRITE_TOOL_REQUEST_SPECS.update(_seller_specs(
-    "market_discovery", "nested", ("marketplace",), ("market_research",),
-))
-SELLERSPRITE_TOOL_REQUEST_SPECS.update(_seller_specs(
-    "asin_traffic", "nested", ("asinList", "marketplace", "relations"), ("traffic_listing",),
-))
-SELLERSPRITE_TOOL_REQUEST_SPECS.update(_seller_specs(
-    "asin_detail", "flat", ("marketplace", "bsr", "categoryId"), ("bsr_prediction",),
-))
-SELLERSPRITE_TOOL_REQUEST_SPECS["trademark_country_list"] = SellerSpriteRequestSpec("trademark", "none")
-
-
-def normalize_sellersprite_registered_arguments(name: str, args: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
-    """Normalize the documented SellerSprite request envelope before runtime-schema validation."""
-    spec = SELLERSPRITE_TOOL_REQUEST_SPECS.get(str(name or ""))
-    if spec is None:
-        return dict(args or {}), "unregistered SellerSprite tool; deferred to runtime schema"
-    normalized = dict(args or {})
-    action: str | None = None
-    if spec.request_format == "nested":
-        if not isinstance(normalized.get("request"), dict):
-            normalized = {"request": normalized}
-            action = "wrapped SellerSprite arguments in registered request object"
-        request = normalized.get("request") if isinstance(normalized.get("request"), dict) else {}
-    elif spec.request_format == "flat":
-        if set(normalized) == {"request"} and isinstance(normalized.get("request"), dict):
-            normalized = dict(normalized["request"])
-            action = "unwrapped SellerSprite arguments for registered flat request"
-        request = normalized
-    else:
-        request = normalized
-    missing = [field for field in spec.required_fields if request.get(field) is None]
-    if missing:
-        raise ValueError(f"Invalid registered arguments for {name}: missing required field(s): {', '.join(missing)}")
-    return normalized, action
-
-
-def sellersprite_registry_diagnostics(runtime_tools: Iterable[dict[str, Any]]) -> dict[str, Any]:
-    runtime = {
-        str(tool.get("name") or ""): tool
-        for tool in runtime_tools
-        if isinstance(tool, dict) and tool.get("name")
-    }
-    registered = set(SELLERSPRITE_TOOL_REQUEST_SPECS)
-    format_mismatches: list[str] = []
-    required_mismatches: list[str] = []
-    for name in sorted(registered & set(runtime)):
-        schema = runtime[name].get("inputSchema") or runtime[name].get("parameters") or {}
-        properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
-        runtime_format = "nested" if set(properties) == {"request"} else ("none" if not properties else "flat")
-        spec = SELLERSPRITE_TOOL_REQUEST_SPECS[name]
-        if runtime_format != spec.request_format:
-            format_mismatches.append(name)
-            continue
-        required = set(schema.get("required") or [])
-        if runtime_format == "nested":
-            request_schema = properties.get("request") if isinstance(properties.get("request"), dict) else {}
-            required = set(request_schema.get("required") or [])
-        if set(spec.required_fields) != required:
-            required_mismatches.append(name)
-    return {
-        "registered": len(registered),
-        "runtime": len(runtime),
-        "missing_registered": sorted(set(runtime) - registered),
-        "missing_runtime": sorted(registered - set(runtime)),
-        "format_mismatches": format_mismatches,
-        "required_mismatches": required_mismatches,
-    }
-
-
 FASTMOSS_TOOL_CAPABILITIES: dict[str, str] = {}
 
 
@@ -358,8 +208,7 @@ _register_fastmoss("reference", ("fastmoss_detail_url_examples", "search_fastmos
 def provider_tool_capability(provider: str, tool_name: str) -> str:
     name = str(tool_name or "").split("__", 1)[-1]
     if provider == "amazon":
-        spec = SELLERSPRITE_TOOL_REQUEST_SPECS.get(name)
-        return spec.capability if spec else "unknown"
+        return SELLERSPRITE_TOOL_CAPABILITIES.get(name, "unknown")
     if provider == "fastmoss":
         return FASTMOSS_TOOL_CAPABILITIES.get(name, "unknown")
     return "unknown"
@@ -438,7 +287,7 @@ def eligible_provider_capabilities(provider: str, task: dict[str, Any], state: d
 def eligible_provider_tool_names(provider: str, task: dict[str, Any], state: dict[str, Any]) -> set[str]:
     capabilities = eligible_provider_capabilities(provider, task, state)
     if provider == "amazon":
-        mapping = {name: spec.capability for name, spec in SELLERSPRITE_TOOL_REQUEST_SPECS.items()}
+        mapping = SELLERSPRITE_TOOL_CAPABILITIES
     elif provider == "fastmoss":
         mapping = FASTMOSS_TOOL_CAPABILITIES
     else:

@@ -118,16 +118,17 @@ from fastmoss_evidence_renderer import (
     render_fastmoss_compact_json,
     render_fastmoss_evidence_document,
 )
+from sellersprite_evidence_renderer import (
+    render_sellersprite_current_evidence,
+    sellersprite_semantic_registry_diagnostics,
+)
 from commerce_research_planner import (
     DISCOVERY_BREADTH,
     PROVIDER_CALL_BUDGET,
-    SELLERSPRITE_TOOL_REQUEST_SPECS,
     eligible_provider_capabilities,
     eligible_provider_tool_names,
-    normalize_sellersprite_registered_arguments,
     provider_tool_capability,
     research_task_from,
-    sellersprite_registry_diagnostics,
 )
 from json_to_markdown import json_to_markdown
 from hot_video_report import (
@@ -4791,7 +4792,7 @@ SELLERSPRITE_RESEARCH_TOOLS = {
     "market_seller_country_distribution", "market_seller_type_concentration", "market_seller_concentration",
     "aba_research_weekly", "aba_research_monthly", "aba_research_trend", "google_trend",
 }
-SELLERSPRITE_REGISTRY_DIAGNOSTICS_LOGGED = False
+SELLERSPRITE_SEMANTIC_DIAGNOSTICS_LOGGED = False
 
 
 def mcp_result_data_state(result: Any) -> str:
@@ -5245,18 +5246,24 @@ def research_planner_instruction(
     return "".join(instructions)
 
 
-def log_sellersprite_registry_diagnostics_once() -> None:
-    global SELLERSPRITE_REGISTRY_DIAGNOSTICS_LOGGED
-    if SELLERSPRITE_REGISTRY_DIAGNOSTICS_LOGGED:
+def log_sellersprite_semantic_diagnostics_once() -> None:
+    global SELLERSPRITE_SEMANTIC_DIAGNOSTICS_LOGGED
+    if SELLERSPRITE_SEMANTIC_DIAGNOSTICS_LOGGED:
         return
-    SELLERSPRITE_REGISTRY_DIAGNOSTICS_LOGGED = True
+    SELLERSPRITE_SEMANTIC_DIAGNOSTICS_LOGGED = True
     try:
-        diagnostics = sellersprite_registry_diagnostics(list_mcp_bridge_tools("sellersprite"))
+        diagnostics = sellersprite_semantic_registry_diagnostics(
+            list_mcp_bridge_tools("sellersprite")
+        )
     except Exception as exc:
-        print(f"[CHAT PLANNER] SellerSprite registry diagnostics failed: {type(exc).__name__}: {str(exc)[:160]}", flush=True)
+        print(
+            f"[CHAT] SellerSprite Semantic diagnostics failed: "
+            f"{type(exc).__name__}: {str(exc)[:160]}",
+            flush=True,
+        )
         return
     print(
-        "[CHAT PLANNER] SellerSprite request registry "
+        "[CHAT] SellerSprite Semantic registry "
         + json.dumps(diagnostics, ensure_ascii=False, separators=(",", ":")),
         flush=True,
     )
@@ -5275,7 +5282,7 @@ def provider_profile_tool_ids(
     provider = normalize_chat_provider(provider)
     if route.get("dynamic_planner") and provider in {"amazon", "fastmoss"}:
         if provider == "amazon":
-            log_sellersprite_registry_diagnostics_once()
+            log_sellersprite_semantic_diagnostics_once()
         state = research_planner_state(provider, route, user_text, assistant_msg)
         eligible = eligible_provider_tool_names(provider, route.get("research_task") or {}, state)
         domain = "sellersprite" if provider == "amazon" else "fastmoss"
@@ -5936,12 +5943,9 @@ def execute_prefixed_tool(tool_id: str, args: dict[str, Any], region: str | None
         if domain in {"sellersprite", "fastmoss"}:
             chat_type = "sellersprite" if domain == "sellersprite" else "fastmoss"
             normalized_args = apply_mcp_region_default(chat_type, name, args or {}, region)
-            if domain == "sellersprite":
-                normalized_args, registered_normalization = normalize_sellersprite_registered_arguments(name, normalized_args)
-                normalized_args, runtime_normalization = normalize_mcp_tool_arguments(chat_type, name, normalized_args)
-                normalizations = [item for item in (registered_normalization, runtime_normalization) if item]
-                if normalizations:
-                    print(f"[CHAT] normalized {tool_id} arguments: {'; '.join(normalizations)}", flush=True)
+            normalized_args, runtime_normalization = normalize_mcp_tool_arguments(chat_type, name, normalized_args)
+            if runtime_normalization:
+                print(f"[CHAT] normalized {tool_id} arguments: {runtime_normalization}", flush=True)
             normalized_args = apply_mcp_region_default(chat_type, name, normalized_args, region)
             result = mcp_bridge_request(chat_type, "tools/call", {"name": name, "arguments": normalized_args})
             return {"ok": True, "elapsed": round(time.monotonic() - started, 3), "data": result}
@@ -6533,11 +6537,18 @@ def current_chat_tool_evidence(
     raw_mcp_data = parse_mcp_text_content(raw_mcp_text) if raw_mcp_text else None
     if raw_mcp_data is not None:
         evidence["data"] = raw_mcp_data
-    return json.dumps(
-        _current_chat_evidence_value(evidence),
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
+    evidence = _current_chat_evidence_value(evidence)
+    if str(tool_name or "").startswith("sellersprite__"):
+        rendered = render_sellersprite_current_evidence(evidence)
+        print(
+            f"[CHAT] SellerSprite Semantic tool={rendered.tool_name} profile={rendered.profile} "
+            f"nodes={','.join(rendered.node_types) or '-'} leaves={len(rendered.business_leaf_paths)} "
+            f"unmapped={len(rendered.unmapped_paths)} fallback={str(rendered.fallback).lower()} "
+            f"chars={len(rendered.markdown)}",
+            flush=True,
+        )
+        return rendered.markdown
+    return json.dumps(evidence, ensure_ascii=False, separators=(",", ":"))
 
 
 def _fastmoss_find_first(value: Any, normalized_keys: set[str]) -> Any:
