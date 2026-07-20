@@ -5233,6 +5233,11 @@ def research_planner_instruction(
             instructions.append(
                 "FastMoss 新品榜的新品口径为近 30 天；用户要求的更长时间范围只能用可用趋势证据补充，并在结论中明确覆盖差异。"
             )
+        gaps = fastmoss_analysis_evidence_gaps(user_text, assistant_msg, route)
+        if gaps:
+            instructions.append(
+                "当前仍缺少必要证据节点：" + "、".join(gaps) + "。在完成这些节点或工具明确失败前，不得停止并生成最终报告。"
+            )
     if provider == "amazon":
         instructions.append(
             "SellerSprite 每个工具必须严格使用当前 tools/list 暴露的请求 schema；部分工具使用 request 对象，部分工具使用顶层参数，不能互换。"
@@ -11365,6 +11370,28 @@ def fastmoss_deep_dive_call_error(
     return "拒绝使用未经当前任务搜索、榜单或用户链接验证的商品 ID：" + "、".join(sorted(unknown))
 
 
+def sellersprite_deep_dive_call_error(
+    tool_name: str,
+    arguments: dict[str, Any],
+    user_text: str,
+    assistant_msg: Message,
+) -> str | None:
+    """Reject ASIN deep dives whose object was not supplied or discovered."""
+    _, name = split_prefixed_tool_id(tool_name)
+    if provider_tool_capability("amazon", name) not in {"asin_detail", "asin_traffic", "asin_review"}:
+        return None
+    requested = _collect_asins(arguments)
+    if not requested:
+        return None
+    known = _collect_asins(str(user_text or ""))
+    for payload in _planner_result_payloads(assistant_msg):
+        known.update(_collect_asins(payload))
+    unknown = requested - known
+    if not unknown:
+        return None
+    return "拒绝使用未经用户输入或当前 SellerSprite 证据返回的 ASIN：" + "、".join(sorted(unknown))
+
+
 def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, provider: str = "home", enabled_tool_ids: set[str] | None = None) -> None:
     """Background thread: call DeepSeek with provider-scoped tools and stream results via SSE."""
     import requests as req
@@ -11761,22 +11788,6 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 else model
             )
             payload = {"model": request_model, "messages": request_messages, "tools": request_tools or None, "temperature": 0.2}
-            if (
-                provider == "fastmoss"
-                and route.get("dynamic_planner")
-                and request_tools
-                and fastmoss_analysis_evidence_gaps(routing_text, assistant_msg, route)
-            ):
-                provider_tool_names = [
-                    str(tool.get("function", {}).get("name") or "")
-                    for tool in request_tools
-                    if split_prefixed_tool_id(str(tool.get("function", {}).get("name") or ""))[0] == "fastmoss"
-                ]
-                payload["tool_choice"] = (
-                    {"type": "function", "function": {"name": provider_tool_names[0]}}
-                    if len(provider_tool_names) == 1
-                    else "required"
-                )
             payload_str = json.dumps(payload, ensure_ascii=False)
             print(
                 f"[CHAT] DeepSeek request: {len(request_messages)} msgs, {len(payload_str)} bytes, "
@@ -11909,7 +11920,13 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                         fn_args = json.loads(tc["function"].get("arguments") or "{}")
                     except json.JSONDecodeError:
                         fn_args = {}
-                    guard_error = fastmoss_deep_dive_call_error(fn_name, fn_args, routing_text, assistant_msg, route) if provider == "fastmoss" else None
+                    guard_error = (
+                        fastmoss_deep_dive_call_error(fn_name, fn_args, routing_text, assistant_msg, route)
+                        if provider == "fastmoss"
+                        else sellersprite_deep_dive_call_error(fn_name, fn_args, routing_text, assistant_msg)
+                        if provider == "amazon"
+                        else None
+                    )
                     if guard_error:
                         normalized_result = {
                             "ok": False,
@@ -11918,7 +11935,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                             "data_state": "error",
                             "evidence_observed": False,
                             "suggested_next_action": "answer_with_limitation",
-                            "tool_domain": "fastmoss",
+                            "tool_domain": "fastmoss" if provider == "fastmoss" else "sellersprite",
                             "tool_name": split_prefixed_tool_id(fn_name)[1],
                         }
                     else:
@@ -12083,10 +12100,19 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 break
             evidence_gaps = fastmoss_analysis_evidence_gaps(routing_text, assistant_msg, route) if provider == "fastmoss" else []
             if evidence_gaps:
-                if no_tool_retries < 1 and tools and not context_stats["tools_removed"]:
+                evidence_retry_limit = 3 if route.get("dynamic_planner") else 1
+                if no_tool_retries < evidence_retry_limit and tools and not context_stats["tools_removed"]:
                     no_tool_retries += 1
-                    print(f"[CHAT] FastMoss evidence incomplete: {','.join(evidence_gaps)}; requesting once", flush=True)
-                    messages.append({"role": "assistant", "content": content, "_context_scope": "current"})
+                    print(
+                        f"[CHAT] FastMoss evidence incomplete: {','.join(evidence_gaps)}; "
+                        f"requesting attempt {no_tool_retries}/{evidence_retry_limit}",
+                        flush=True,
+                    )
+                    messages.append({
+                        "role": "assistant",
+                        "content": "[上一版结论因必要证据节点未完成而被拒绝。]",
+                        "_context_scope": "current",
+                    })
                     messages.append({"role": "system", "content": fastmoss_evidence_instruction(evidence_gaps), "_context_scope": "system"})
                     continue
                 messages.append({"role": "assistant", "content": content, "_context_scope": "current"})

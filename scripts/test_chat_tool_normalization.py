@@ -1528,6 +1528,28 @@ def test_dynamic_provider_capability_graph_uses_task_scope_and_evidence() -> Non
     assert "sellersprite__asin_detail" in selected
     assert "sellersprite__review" in selected
     assert "sellersprite__keyword_research" not in selected
+    assert web_app.sellersprite_deep_dive_call_error(
+        "sellersprite__asin_detail",
+        {"marketplace": "US", "asin": "B0H3ZH8BF8"},
+        "分析 B0H3ZH8BF8",
+        asin_message,
+    ) is None
+    evidence_message = SimpleNamespace(tool_calls=[], tool_results=[{
+        "tool_name": "sellersprite__product_research",
+        "result": {"ok": True, "mcp_data": {"products": [{"asin": "B0ABCDEF12"}]}},
+    }])
+    assert web_app.sellersprite_deep_dive_call_error(
+        "sellersprite__traffic_extend",
+        {"request": {"marketplace": "US", "asinList": ["B0ABCDEF12"], "queryType": 2}},
+        amazon_text,
+        evidence_message,
+    ) is None
+    assert "未经用户输入" in web_app.sellersprite_deep_dive_call_error(
+        "sellersprite__traffic_extend",
+        {"request": {"marketplace": "US", "asinList": ["B0EXAMPLE1"], "queryType": 2}},
+        amazon_text,
+        evidence_message,
+    )
 
 
 def test_region_default_only_applies_when_schema_supports_it() -> None:
