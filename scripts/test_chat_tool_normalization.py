@@ -3002,7 +3002,7 @@ def test_analytical_routes_use_report_model_and_fastmoss_preserves_pro_draft() -
     assert web_app.chat_route_uses_report_model(
         "home", {"intent": "product_research", "task_depth": "analysis"}
     )
-    assert web_app.chat_route_uses_report_model(
+    assert not web_app.chat_route_uses_report_model(
         "amazon", {"intent": "product_research", "task_depth": "analysis"}
     )
     assert web_app.chat_route_uses_report_model(
