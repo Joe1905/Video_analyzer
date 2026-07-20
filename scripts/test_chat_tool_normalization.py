@@ -1628,9 +1628,11 @@ def test_dynamic_provider_capability_graph_uses_task_scope_and_evidence() -> Non
         {"function": {"name": "sellersprite__product_research", "arguments": "{}"}}
         for _ in range(9)
     ])
-    assert web_app.provider_profile_tool_ids(
+    repeated_selected = web_app.provider_profile_tool_ids(
         "amazon", amazon_route, amazon_text, amazon_enabled, amazon_message
-    ) == {"system__current_time"}
+    )
+    assert "sellersprite__product_research" in repeated_selected
+    assert "sellersprite__keyword_research_trends" in repeated_selected
 
     asin_route = web_app.attach_research_task(
         {"intent": "product_research", "task_depth": "analysis", "entity": "B0H3ZH8BF8"},
