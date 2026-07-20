@@ -118,6 +118,15 @@ from fastmoss_evidence_renderer import (
     render_fastmoss_compact_json,
     render_fastmoss_evidence_document,
 )
+from commerce_research_planner import (
+    SELLERSPRITE_TOOL_REQUEST_SPECS,
+    eligible_provider_capabilities,
+    eligible_provider_tool_names,
+    normalize_sellersprite_registered_arguments,
+    provider_tool_capability,
+    research_task_from,
+    sellersprite_registry_diagnostics,
+)
 from json_to_markdown import json_to_markdown
 from hot_video_report import (
     REPORT_COVER_DIR,
@@ -4209,6 +4218,37 @@ def _route_with_metadata(route: dict[str, Any], source: str, task_depth: str | N
     return result
 
 
+def attach_research_task(
+    route: dict[str, Any],
+    provider: str,
+    user_text: str,
+    decision: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Attach the internal three-layer task profile without changing public APIs."""
+    result = dict(route or {})
+    normalized_provider = normalize_chat_provider(provider)
+    if normalized_provider not in {"amazon", "fastmoss"}:
+        return result
+    if str(result.get("intent") or "") in {"help", "mcp_interface", "product_availability"}:
+        return result
+    task = research_task_from(user_text, normalized_provider, result, decision)
+    result["research_task"] = task
+    result["dynamic_planner"] = True
+    if task.get("entity"):
+        result["entity"] = task["entity"]
+    else:
+        result.pop("entity", None)
+    if task.get("region"):
+        result["region"] = task["region"]
+    if task.get("objective") in {"trend_discovery", "opportunity_discovery"}:
+        result.update({"task_depth": "workflow", "tools": None, "max_rounds": 12})
+        if normalized_provider == "fastmoss":
+            result.update({"intent": "fastmoss_product", "playbook": "product"})
+        else:
+            result["intent"] = "product_research"
+    return result
+
+
 def route_chat_intent(text: str, provider: str | None = None) -> dict[str, Any]:
     lowered = (text or "").lower()
     web_lookup_words = (
@@ -4323,7 +4363,8 @@ def chat_intent_router_should_call(text: str, fallback_route: dict[str, Any]) ->
 
 
 def parse_chat_intent_decision(value: Any, fallback_route: dict[str, Any], provider: str, user_text: str) -> dict[str, Any]:
-    fallback = _route_with_metadata(fallback_route, "rules")
+    decision = value if isinstance(value, dict) else None
+    fallback = attach_research_task(_route_with_metadata(fallback_route, "rules"), provider, user_text, decision)
     if not isinstance(value, dict):
         return fallback
     intent = str(value.get("intent") or "").strip()
@@ -4375,7 +4416,7 @@ def parse_chat_intent_decision(value: Any, fallback_route: dict[str, Any], provi
     if re.fullmatch(r"[A-Z]{2}|GLOBAL", region):
         route["region"] = region
     route["confidence"] = round(max(0.0, min(confidence, 1.0)), 4)
-    return route
+    return attach_research_task(route, provider, user_text, value)
 
 
 def _chat_intent_json_content(content: Any) -> Any:
@@ -4396,7 +4437,7 @@ def resolve_chat_intent(
     routing_text = chat_routing_text(user_text)
     fallback = route_chat_intent(routing_text, provider)
     if not chat_intent_router_should_call(routing_text, fallback):
-        return _route_with_metadata(fallback, "rules")
+        return attach_research_task(_route_with_metadata(fallback, "rules"), provider, routing_text)
     recent_user_messages = [str(message.content or "").strip()[:1000] for message in session_messages if message.role == "user" and str(message.content or "").strip()][-3:]
     ocr_hint = ""
     if "\n\nImage OCR result:\n" in str(user_text or ""):
@@ -4418,6 +4459,11 @@ def resolve_chat_intent(
         "Requests asking for sales performance, GMV, market, competition, opportunity, selection, pricing, reasons, strategy, or a report are product_research. "
         "For FastMoss product_research choose the closest playbook: product for selection/opportunity/general category research, pricing for price bands or pricing, "
         "competitor for product/shop competitors, shop for store diagnosis, content_dissect for explaining a video, content_strategy for briefs/scripts, and creator for creator outreach. "
+        "Also return research_task as an object with objective, scope, entity_type, entity, entity_source, region, and time_window. "
+        "objective must be lookup, entity_analysis, compare, opportunity_discovery, trend_discovery, pricing, content, creator, or shop. "
+        "scope must be cross_category, category, keyword, or entity. entity_type must be none, category, keyword, product, product_id, shop, creator, video, or asin. "
+        "A request such as recent hot/trending new products with no named product or category is cross_category trend_discovery with entity_type none; "
+        "never copy research goals, time phrases, or words such as hot products, trends, new products, opportunities, or blue ocean into entity. "
         "Use OCR only to infer the product entity; OCR must never increase task depth. confidence is a number from 0 to 1."
     )
     payload = {
@@ -4428,7 +4474,7 @@ def resolve_chat_intent(
         ],
         "response_format": {"type": "json_object"},
         "temperature": 0,
-        "max_tokens": 400,
+        "max_tokens": 650,
     }
     started = time.monotonic()
     try:
@@ -4463,7 +4509,7 @@ def resolve_chat_intent(
         )
         return route
     except Exception as exc:
-        route = _route_with_metadata(fallback, "rules_fallback")
+        route = attach_research_task(_route_with_metadata(fallback, "rules_fallback"), provider, routing_text)
         print(
             f"[CHAT ROUTER] provider={normalize_chat_provider(provider)} fallback={route.get('intent')} "
             f"reason={type(exc).__name__}: {str(exc)[:160]}",

@@ -981,6 +981,72 @@ def test_llm_router_can_select_fastmoss_playbook() -> None:
     assert route["intent"] == "fastmoss_product"
     assert route["task_depth"] == "workflow"
     assert route["playbook"] == "product"
+
+
+def test_three_layer_research_task_rejects_goal_text_as_entity() -> None:
+    text = "帮我查找一下最近1-2个月热门趋势新品"
+    decision = {
+        "intent": "product_research",
+        "task_depth": "analysis",
+        "entity": text,
+        "region": "US",
+        "confidence": 0.96,
+        "playbook": "product",
+        "research_task": {
+            "objective": "trend_discovery",
+            "scope": "cross_category",
+            "entity_type": "none",
+            "entity": text,
+            "entity_source": "explicit",
+            "region": "US",
+            "time_window": "最近1-2个月",
+        },
+    }
+    route = web_app.parse_chat_intent_decision(
+        decision, web_app.route_chat_intent(text, "fastmoss"), "fastmoss", text
+    )
+    assert route["intent"] == "fastmoss_product"
+    assert route["task_depth"] == "workflow"
+    assert route["dynamic_planner"] is True
+    assert "entity" not in route
+    assert route["research_task"] == {
+        "objective": "trend_discovery",
+        "scope": "cross_category",
+        "entity_type": "none",
+        "entity": "",
+        "entity_source": "none",
+        "region": "US",
+        "time_window": "最近1-2个月",
+        "discovery_breadth": 3,
+    }
+    amazon = web_app.attach_research_task(
+        {"intent": "product_research", "task_depth": "analysis"},
+        "amazon",
+        "美区帮我寻找需求大但卖家少的蓝海产品、潜力商品和热门新品",
+    )
+    assert amazon["research_task"]["scope"] == "cross_category"
+    assert amazon["research_task"]["entity_type"] == "none"
+    assert amazon["dynamic_planner"] is True
+
+
+def test_three_layer_research_task_keeps_real_product_entity() -> None:
+    route = web_app.attach_research_task(
+        {"intent": "product_research", "task_depth": "analysis", "entity": "Electric Baby Nail Trimmer"},
+        "amazon",
+        "Electric Baby Nail Trimmer 分析一下亚马逊这个产品情况",
+    )
+    task = route["research_task"]
+    assert task["objective"] == "entity_analysis"
+    assert task["scope"] == "keyword"
+    assert task["entity_type"] == "keyword"
+    assert task["entity"] == "Electric Baby Nail Trimmer"
+    asin_route = web_app.attach_research_task(
+        {"intent": "product_research", "task_depth": "analysis", "entity": "B0H3ZH8BF8"},
+        "amazon",
+        "B0H3ZH8BF8 分析一下",
+    )
+    assert asin_route["research_task"]["entity_type"] == "asin"
+    assert asin_route["research_task"]["scope"] == "entity"
     assert route["max_rounds"] == web_app.FASTMOSS_PLAYBOOKS["product"]["max_rounds"]
 
 
@@ -3104,6 +3170,8 @@ if __name__ == "__main__":
     test_tool_limit_keeps_large_current_collection_when_capacity_allows()
     test_sellersprite_schema_argument_normalization()
     test_llm_router_can_select_fastmoss_playbook()
+    test_three_layer_research_task_rejects_goal_text_as_entity()
+    test_three_layer_research_task_keeps_real_product_entity()
     test_fastmoss_workflow_phases_accept_empty_and_error_attempts()
     test_fastmoss_product_phase_requires_complete_sample_coverage()
     test_fastmoss_business_defaults_use_verified_category_levels()
