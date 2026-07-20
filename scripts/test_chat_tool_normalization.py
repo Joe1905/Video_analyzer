@@ -1556,14 +1556,14 @@ def test_dynamic_provider_capability_graph_uses_task_scope_and_evidence() -> Non
         "search_category_by_words", allowed_query, message, user_text=fast_text, route=fast_route
     )
     assert category_args == allowed_query
-    capped_category_args = web_app.apply_fastmoss_business_defaults(
+    expanded_category_args = web_app.apply_fastmoss_business_defaults(
         "search_category_by_words",
         {"query": ["家电", "女装", "运动户外", "手机数码"]},
         message,
         user_text=fast_text,
         route=fast_route,
     )
-    assert capped_category_args["query"] == ["家电", "女装", "运动户外"]
+    assert expanded_category_args["query"] == ["家电", "女装", "运动户外", "手机数码"]
 
     message.tool_calls.append({
         "function": {"name": "fastmoss__search_category_by_words", "arguments": '{"query":["家电"]}'},
