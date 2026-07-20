@@ -16,7 +16,7 @@ import math
 import re
 import sys
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 
 JSONScalar = str | int | float | bool | None
@@ -109,6 +109,7 @@ class JSONMarkdownRenderer:
         include_paths: bool = True,
         max_table_rows: int | None = None,
         table_max_columns: int = 12,
+        narrative_overrides: Mapping[str, str] | None = None,
     ) -> None:
         if max_table_rows is not None and max_table_rows < 1:
             raise ValueError("max_table_rows must be at least 1 or None")
@@ -117,6 +118,11 @@ class JSONMarkdownRenderer:
         self.include_paths = include_paths
         self.max_table_rows = max_table_rows
         self.table_max_columns = table_max_columns
+        self.narrative_overrides = {
+            str(path): str(text).strip()
+            for path, text in (narrative_overrides or {}).items()
+            if str(path).strip() and str(text).strip()
+        }
 
     def render(self, value: JSONValue, *, title: str | None = None) -> str:
         _validate_json_value(value)
@@ -167,6 +173,8 @@ class JSONMarkdownRenderer:
         return text
 
     def _render_value(self, value: JSONValue, path: str, level: int) -> list[str]:
+        if path in self.narrative_overrides:
+            return [self.narrative_overrides[path]]
         if _is_scalar(value):
             row = ["值", _scalar_text(value)]
             headers = ["类型", "内容"]
@@ -176,10 +184,12 @@ class JSONMarkdownRenderer:
             return _table(headers, [row])
         if isinstance(value, dict):
             if not value:
-                return [f"空对象{{}}" + (f"（`{path}`）" if self.include_paths else "")]
+                location = f"（JSON 路径：`{path}`）" if self.include_paths else ""
+                return [f"本对象没有返回任何字段{location}。"]
             return self._render_dict(value, path, level)
         if not value:
-            return [f"空数组[]" + (f"（`{path}`）" if self.include_paths else "")]
+            location = f"（JSON 路径：`{path}`）" if self.include_paths else ""
+            return [f"本数组没有返回任何记录{location}。"]
         return self._render_list(value, path, level)
 
     def _render_dict(self, value: dict[str, JSONValue], path: str, level: int) -> list[str]:
@@ -306,6 +316,7 @@ def json_to_markdown(
     include_paths: bool = True,
     max_table_rows: int | None = None,
     table_max_columns: int = 12,
+    narrative_overrides: Mapping[str, str] | None = None,
 ) -> str:
     """Render an already-decoded JSON-compatible value as Markdown."""
 
@@ -313,6 +324,7 @@ def json_to_markdown(
         include_paths=include_paths,
         max_table_rows=max_table_rows,
         table_max_columns=table_max_columns,
+        narrative_overrides=narrative_overrides,
     ).render(value, title=title)
 
 

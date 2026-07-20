@@ -76,8 +76,8 @@ def test_nested_values_and_empty_states_are_explicit() -> None:
     }
     markdown = json_to_markdown(source)
     assert "7494049503488000000" in markdown
-    assert "空数组[]（`$.data.videos`）" in markdown
-    assert "空对象{}（`$.data.facets`）" in markdown
+    assert "本数组没有返回任何记录（JSON 路径：`$.data.videos`）。" in markdown
+    assert "本对象没有返回任何字段（JSON 路径：`$.data.facets`）。" in markdown
     assert "### 项目 1 (`$.data.groups[0]`)" in markdown
     assert "| enabled | false | $.data.shop.metrics.enabled |" in markdown
     assert "| note | null | $.data.shop.metrics.note |" in markdown
@@ -97,6 +97,29 @@ def test_optional_row_limit_is_never_silent() -> None:
     assert "共 5 项，本次展示 2 项，省略 3 项" in markdown
     assert "数组，共 5 项；本次展示前 2 项。" in markdown
     assert "\n| 2 | 2 |" not in markdown
+
+
+def test_path_narrative_override_replaces_empty_transport_shape() -> None:
+    source = {
+        "tool_evidence": [
+            {
+                "tool_name": "fastmoss__product_review_list",
+                "arguments": {"filter": {"product_id": "1732249989673554739"}},
+                "business_data": {"list": [], "total": 0},
+            }
+        ]
+    }
+    sentence = (
+        "call:1（fastmoss__product_review_list）调用成功，但针对商品 "
+        "1732249989673554739 没有返回评论记录。"
+    )
+    markdown = json_to_markdown(
+        source,
+        narrative_overrides={"$.tool_evidence[0]": sentence},
+    )
+    assert sentence in markdown
+    assert "business_data" not in markdown
+    assert "| total | 0 |" not in markdown
 
 
 def test_default_rendering_is_complete_and_deterministic() -> None:
@@ -150,6 +173,7 @@ if __name__ == "__main__":
     test_nested_values_and_empty_states_are_explicit()
     test_missing_field_is_distinct_from_null()
     test_optional_row_limit_is_never_silent()
+    test_path_narrative_override_replaces_empty_transport_shape()
     test_default_rendering_is_complete_and_deterministic()
     test_json_text_and_invalid_input()
     test_rejects_non_json_python_values()
