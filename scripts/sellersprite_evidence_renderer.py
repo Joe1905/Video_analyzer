@@ -105,6 +105,15 @@ SELLERSPRITE_RENDER_SPECS = {
 SELLERSPRITE_CURRENT_TOOL_NAMES = frozenset(SELLERSPRITE_TOOL_SEMANTICS)
 
 
+def sellersprite_business_payload(value: Any) -> Any:
+    """Remove only the documented response envelope, preserving its business payload."""
+    if isinstance(value, Mapping) and "data" in value and any(
+        key in value for key in ("code", "message", "msg", "success", "status")
+    ):
+        return value.get("data")
+    return value
+
+
 def sellersprite_semantic_registry_diagnostics(
     runtime_tools: Iterable[Mapping[str, Any]],
 ) -> dict[str, Any]:
@@ -122,7 +131,7 @@ def sellersprite_semantic_registry_diagnostics(
 
 def _business_data(evidence: Mapping[str, Any]) -> Any:
     if "data" in evidence:
-        return evidence.get("data")
+        return sellersprite_business_payload(evidence.get("data"))
     for key in ("products", "items", "results"):
         if key in evidence:
             return {key: evidence.get(key)}
@@ -176,5 +185,6 @@ __all__ = [
     "SELLERSPRITE_TOOL_SEMANTICS",
     "SellerSpriteToolSemantic",
     "render_sellersprite_current_evidence",
+    "sellersprite_business_payload",
     "sellersprite_semantic_registry_diagnostics",
 ]

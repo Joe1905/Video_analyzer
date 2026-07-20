@@ -120,6 +120,7 @@ from fastmoss_evidence_renderer import (
 )
 from sellersprite_evidence_renderer import (
     render_sellersprite_current_evidence,
+    sellersprite_business_payload,
     sellersprite_semantic_registry_diagnostics,
 )
 from commerce_research_planner import (
@@ -6148,11 +6149,12 @@ def normalize_prefixed_tool_result(tool_id: str, result: dict[str, Any]) -> dict
                 non_collection_content = fastmoss_non_collection_evidence_present(content_value)
                 has_content = collection_has_items or non_collection_content
             else:
-                collection_found, collection_has_items = mcp_collection_content_state(content_value)
-                non_collection_content = mcp_non_collection_evidence_present(content_value)
+                business_value = sellersprite_business_payload(content_value)
+                collection_found, collection_has_items = mcp_collection_content_state(business_value)
+                non_collection_content = mcp_non_collection_evidence_present(business_value)
                 has_content = (
                     collection_has_items or non_collection_content
-                    if collection_found else payload_has_content(content_value)
+                    if collection_found else payload_has_content(business_value)
                 )
             if text:
                 normalized["mcp_text_preview"] = text[:4000]

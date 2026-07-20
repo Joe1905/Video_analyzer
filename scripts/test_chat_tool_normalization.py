@@ -698,6 +698,13 @@ def test_empty_mcp_collections_are_not_enough_data() -> None:
     assert sellersprite_empty["data_state"] == "empty"
     assert sellersprite_empty["enough_data"] is False
 
+    sellersprite_direct_empty = normalize_prefixed_tool_result(
+        "sellersprite__product_node",
+        result({"code": "OK", "message": "成功", "data": []}),
+    )
+    assert sellersprite_direct_empty["data_state"] == "empty"
+    assert sellersprite_direct_empty["enough_data"] is False
+
 
 def test_mcp_content_error_rules_are_provider_specific() -> None:
     def result(payload: dict) -> dict:
@@ -1408,6 +1415,17 @@ def test_sellersprite_semantic_registry_is_complete_and_lossless() -> None:
     assert empty.empty is True
     assert "本次调用成功" in empty.markdown
     assert "没有返回业务记录" in empty.markdown
+
+    wrapped_empty = render_sellersprite_current_evidence({
+        "tool": "sellersprite__product_node",
+        "arguments": {"request": {"marketplace": "US", "keyword": "wifi extender"}},
+        "ok": True,
+        "data_state": "empty",
+        "data": {"code": "OK", "message": "成功", "data": []},
+    })
+    assert wrapped_empty.empty is True
+    assert wrapped_empty.business_leaf_paths == set()
+    assert "没有返回业务记录" in wrapped_empty.markdown
 
 
 def test_dynamic_provider_capability_graph_uses_task_scope_and_evidence() -> None:
