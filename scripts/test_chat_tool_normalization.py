@@ -981,6 +981,7 @@ def test_llm_router_can_select_fastmoss_playbook() -> None:
     assert route["intent"] == "fastmoss_product"
     assert route["task_depth"] == "workflow"
     assert route["playbook"] == "product"
+    assert route["max_rounds"] == web_app.FASTMOSS_PLAYBOOKS["product"]["max_rounds"]
 
 
 def test_three_layer_research_task_rejects_goal_text_as_entity() -> None:
@@ -1047,7 +1048,6 @@ def test_three_layer_research_task_keeps_real_product_entity() -> None:
     )
     assert asin_route["research_task"]["entity_type"] == "asin"
     assert asin_route["research_task"]["scope"] == "entity"
-    assert route["max_rounds"] == web_app.FASTMOSS_PLAYBOOKS["product"]["max_rounds"]
 
 
 def test_fastmoss_workflow_phases_accept_empty_and_error_attempts() -> None:
@@ -1346,6 +1346,145 @@ def test_provider_profiles_use_aggregated_sellersprite_and_staged_fastmoss_tools
     fastmoss_selected = {"system__current_time", "fastmoss__search_category_by_words", "fastmoss__market_category_analysis", "fastmoss__product_detail_info"}
     staged = web_app.provider_profile_tool_ids("fastmoss", {"playbook": "product"}, "electric chopper", fastmoss_selected, message)
     assert staged == {"system__current_time", "fastmoss__search_category_by_words"}
+
+
+def test_sellersprite_request_registry_matches_current_mcp_shapes() -> None:
+    specs = web_app.SELLERSPRITE_TOOL_REQUEST_SPECS
+    assert len(specs) == 43
+    runtime_tools = []
+    for name, spec in specs.items():
+        if spec.request_format == "nested":
+            schema = {
+                "type": "object",
+                "properties": {"request": {
+                    "type": "object",
+                    "properties": {field: {"type": "string"} for field in spec.required_fields},
+                    "required": list(spec.required_fields),
+                }},
+                "required": ["request"],
+            }
+        elif spec.request_format == "flat":
+            schema = {
+                "type": "object",
+                "properties": {field: {"type": "string"} for field in spec.required_fields},
+                "required": list(spec.required_fields),
+            }
+        else:
+            schema = {"type": "object", "properties": {}}
+        runtime_tools.append({"name": name, "inputSchema": schema})
+    diagnostics = web_app.sellersprite_registry_diagnostics(runtime_tools)
+    assert diagnostics == {
+        "registered": 43,
+        "runtime": 43,
+        "missing_registered": [],
+        "missing_runtime": [],
+        "format_mismatches": [],
+        "required_mismatches": [],
+    }
+    nested, action = web_app.normalize_sellersprite_registered_arguments(
+        "keyword_research", {"marketplace": "US", "keywords": "baby nail trimmer"}
+    )
+    assert nested == {"request": {"marketplace": "US", "keywords": "baby nail trimmer"}}
+    assert action and "request object" in action
+    flat, action = web_app.normalize_sellersprite_registered_arguments(
+        "asin_detail", {"request": {"marketplace": "US", "asin": "B0H3ZH8BF8"}}
+    )
+    assert flat == {"marketplace": "US", "asin": "B0H3ZH8BF8"}
+    assert action and "flat request" in action
+
+
+def test_dynamic_provider_capability_graph_uses_task_scope_and_evidence() -> None:
+    fast_text = "帮我查找一下最近1-2个月热门趋势新品"
+    fast_route = web_app.attach_research_task(
+        {"intent": "product_research", "task_depth": "analysis"}, "fastmoss", fast_text
+    )
+    fast_enabled = {
+        "system__current_time",
+        "fastmoss__market_category_ranking",
+        "fastmoss__search_category_by_words",
+        "fastmoss__market_category_analysis",
+        "fastmoss__product_rank_new_listed",
+        "fastmoss__product_rank_top_selling",
+        "fastmoss__product_detail_info",
+    }
+    message = SimpleNamespace(tool_calls=[], tool_results=[])
+    selected = web_app.provider_profile_tool_ids("fastmoss", fast_route, fast_text, fast_enabled, message)
+    assert selected == {"system__current_time", "fastmoss__market_category_ranking"}
+    assert web_app.fastmoss_clarifying_question("fastmoss", fast_route, fast_text) is None
+
+    message.tool_calls.append({
+        "function": {"name": "fastmoss__market_category_ranking", "arguments": '{"filter":{"region":"US"}}'},
+    })
+    message.tool_results.append({
+        "tool_name": "fastmoss__market_category_ranking",
+        "result": {"ok": True, "data_state": "data", "evidence_observed": True, "mcp_data": {
+            "ranked_categories": [{"category_id_level1": 13, "cn_name": "家电"}],
+        }},
+    })
+    selected = web_app.provider_profile_tool_ids("fastmoss", fast_route, fast_text, fast_enabled, message)
+    assert "fastmoss__search_category_by_words" in selected
+    assert "fastmoss__product_rank_new_listed" not in selected
+    allowed_query = {"query": ["家电"]}
+    assert web_app.fastmoss_deep_dive_call_error(
+        "fastmoss__search_category_by_words", allowed_query, fast_text, message, fast_route
+    ) is None
+    assert "未经当前类目榜" in web_app.fastmoss_deep_dive_call_error(
+        "fastmoss__search_category_by_words", {"query": ["瑜伽裤"]}, fast_text, message, fast_route
+    )
+    category_args = web_app.apply_fastmoss_business_defaults(
+        "search_category_by_words", allowed_query, message, user_text=fast_text, route=fast_route
+    )
+    assert category_args == allowed_query
+
+    message.tool_calls.append({
+        "function": {"name": "fastmoss__search_category_by_words", "arguments": '{"query":["家电"]}'},
+    })
+    message.tool_results.append({
+        "tool_name": "fastmoss__search_category_by_words",
+        "result": {"ok": True, "data_state": "data", "evidence_observed": True, "mcp_data": {
+            "categories": [{
+                "category_id_level1": 13,
+                "category_id_level2": 844168,
+                "category_id_level3": 935176,
+                "cn_name": "料理机",
+            }],
+        }},
+    })
+    selected = web_app.provider_profile_tool_ids("fastmoss", fast_route, fast_text, fast_enabled, message)
+    assert "fastmoss__market_category_analysis" in selected
+    assert "fastmoss__product_rank_new_listed" in selected
+    assert "fastmoss__product_detail_info" not in selected
+
+    amazon_text = "美区帮我寻找需求大但卖家少的蓝海产品、潜力商品和热门新品"
+    amazon_route = web_app.attach_research_task(
+        {"intent": "product_research", "task_depth": "analysis"}, "amazon", amazon_text
+    )
+    amazon_enabled = {
+        "system__current_time",
+        "sellersprite__keyword_research",
+        "sellersprite__aba_research_monthly",
+        "sellersprite__market_research",
+        "sellersprite__keyword_research_trends",
+        "sellersprite__product_research",
+        "sellersprite__asin_detail",
+        "sellersprite__review",
+    }
+    amazon_message = SimpleNamespace(tool_calls=[], tool_results=[])
+    selected = web_app.provider_profile_tool_ids("amazon", amazon_route, amazon_text, amazon_enabled, amazon_message)
+    assert "sellersprite__keyword_research" in selected
+    assert "sellersprite__aba_research_monthly" in selected
+    assert "sellersprite__market_research" in selected
+    assert "sellersprite__product_research" not in selected
+    assert "sellersprite__asin_detail" not in selected
+
+    asin_route = web_app.attach_research_task(
+        {"intent": "product_research", "task_depth": "analysis", "entity": "B0H3ZH8BF8"},
+        "amazon", "分析 B0H3ZH8BF8",
+    )
+    selected = web_app.provider_profile_tool_ids("amazon", asin_route, "分析 B0H3ZH8BF8", amazon_enabled, amazon_message)
+    assert "sellersprite__asin_detail" in selected
+    assert "sellersprite__review" in selected
+    assert "sellersprite__keyword_research" not in selected
 
 
 def test_region_default_only_applies_when_schema_supports_it() -> None:
@@ -3179,6 +3318,8 @@ if __name__ == "__main__":
     test_fastmoss_clarification_is_targeted_and_provider_isolated()
     test_fastmoss_close_cross_category_matches_request_confirmation()
     test_provider_profiles_use_aggregated_sellersprite_and_staged_fastmoss_tools()
+    test_sellersprite_request_registry_matches_current_mcp_shapes()
+    test_dynamic_provider_capability_graph_uses_task_scope_and_evidence()
     test_region_default_only_applies_when_schema_supports_it()
     test_fastmoss_deep_dive_ids_must_come_from_current_task()
     test_tool_call_signature_deduplicates_argument_order()

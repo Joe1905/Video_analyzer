@@ -4789,6 +4789,7 @@ SELLERSPRITE_RESEARCH_TOOLS = {
     "market_seller_country_distribution", "market_seller_type_concentration", "market_seller_concentration",
     "aba_research_weekly", "aba_research_monthly", "aba_research_trend", "google_trend",
 }
+SELLERSPRITE_REGISTRY_DIAGNOSTICS_LOGGED = False
 
 
 def mcp_result_data_state(result: Any) -> str:
@@ -5116,6 +5117,130 @@ def fastmoss_workflow_instruction(phase: tuple[str, set[str]] | None) -> str:
     )
 
 
+def _collect_asins(value: Any) -> set[str]:
+    found: set[str] = set()
+    if isinstance(value, dict):
+        for item in value.values():
+            found.update(_collect_asins(item))
+    elif isinstance(value, list):
+        for item in value:
+            found.update(_collect_asins(item))
+    elif isinstance(value, str):
+        found.update(match.upper() for match in re.findall(r"\b(?:B0[A-Z0-9]{8}|[0-9]{9}[0-9X])\b", value, re.IGNORECASE))
+    return found
+
+
+def _planner_result_payloads(assistant_msg: Message) -> list[Any]:
+    payloads: list[Any] = []
+    for item in assistant_msg.tool_results or []:
+        if not isinstance(item, dict) or not isinstance(item.get("result"), dict):
+            continue
+        result = item["result"]
+        payloads.extend((result.get("mcp_data"), result.get("mcp_text_preview")))
+    return payloads
+
+
+def research_planner_state(
+    provider: str,
+    route: dict[str, Any],
+    user_text: str,
+    assistant_msg: Message,
+) -> dict[str, Any]:
+    attempted_capabilities: set[str] = set()
+    observed_capabilities: set[str] = set()
+    tool_counts: dict[str, int] = {}
+    for call in assistant_msg.tool_calls or []:
+        full_name = str(call.get("function", {}).get("name") or "")
+        domain, name = split_prefixed_tool_id(full_name)
+        expected_domain = "sellersprite" if provider == "amazon" else "fastmoss"
+        if domain != expected_domain:
+            continue
+        tool_counts[name] = tool_counts.get(name, 0) + 1
+        capability = provider_tool_capability(provider, name)
+        if capability != "unknown":
+            attempted_capabilities.add(capability)
+    for item in assistant_msg.tool_results or []:
+        if not isinstance(item, dict) or not isinstance(item.get("result"), dict):
+            continue
+        full_name = str(item.get("tool_name") or "")
+        domain, name = split_prefixed_tool_id(full_name)
+        expected_domain = "sellersprite" if provider == "amazon" else "fastmoss"
+        if domain != expected_domain or not mcp_result_observed(item["result"]):
+            continue
+        capability = provider_tool_capability(provider, name)
+        if capability != "unknown":
+            observed_capabilities.add(capability)
+    payloads = _planner_result_payloads(assistant_msg)
+    asins = set(re.findall(r"\b(?:B0[A-Z0-9]{8}|[0-9]{9}[0-9X])\b", str(user_text or ""), re.IGNORECASE))
+    for payload in payloads:
+        asins.update(_collect_asins(payload))
+    has_node = any(
+        re.search(r"node_?id_?path|nodeIdPath", str(payload or ""), re.IGNORECASE)
+        for payload in payloads
+    ) or "category_resolution" in observed_capabilities
+    return {
+        "attempted_capabilities": sorted(attempted_capabilities),
+        "observed_capabilities": sorted(observed_capabilities),
+        "tool_counts": tool_counts,
+        "has_category": bool(fastmoss_current_category_path(assistant_msg, user_text)) if provider == "fastmoss" else has_node,
+        "has_product": bool(fastmoss_known_product_ids(user_text, assistant_msg)) if provider == "fastmoss" else bool(asins),
+        "has_shop": any(_collect_named_ids(payload, {"shopid", "sellerid"}) for payload in payloads),
+        "has_creator": any(_collect_named_ids(payload, {"creatorid", "creatoruid", "uid"}) for payload in payloads),
+        "has_video": any(_collect_named_ids(payload, {"videoid"}) for payload in payloads),
+        "has_asin": bool(asins),
+        "has_node": has_node,
+    }
+
+
+def research_planner_instruction(
+    provider: str,
+    route: dict[str, Any],
+    user_text: str,
+    assistant_msg: Message,
+) -> str:
+    task = route.get("research_task") if isinstance(route.get("research_task"), dict) else {}
+    state = research_planner_state(provider, route, user_text, assistant_msg)
+    capabilities = sorted(eligible_provider_capabilities(provider, task, state))
+    instructions = [
+        "当前使用动态研究能力图。程序只限定合法能力与对象依赖；请根据用户目标和已取得证据自行选择下一项工具，也可以在证据足够时直接回答。",
+        "任务描述：" + json.dumps(task, ensure_ascii=False, separators=(",", ":")) + "。",
+        "当前可选能力：" + ("、".join(capabilities) if capabilities else "无") + "。",
+        "空结果和失败结果只完成对应调用，不得重复同工具同参数，也不得扩大为平台全局结论。",
+        "跨类目发现默认最多深挖 3 个有来源的候选方向；由工具结果派生的新对象必须保留精确 ID 或来源记录。",
+    ]
+    if provider == "fastmoss" and task.get("scope") == "cross_category":
+        instructions.append(
+            "跨类目趋势发现的首个业务调用必须是 fastmoss__market_category_ranking，且不得传 category_id；"
+            "不要把用户的研究目标、时间范围或‘热门趋势新品’当成类目关键词。取得类目榜证据后，才可用榜单中的类目名称解析候选类目。"
+        )
+        if task.get("time_window"):
+            instructions.append(
+                "FastMoss 新品榜的新品口径为近 30 天；用户要求的更长时间范围只能用可用趋势证据补充，并在结论中明确覆盖差异。"
+            )
+    if provider == "amazon":
+        instructions.append(
+            "SellerSprite 每个工具必须严格使用当前 tools/list 暴露的请求 schema；部分工具使用 request 对象，部分工具使用顶层参数，不能互换。"
+        )
+    return "".join(instructions)
+
+
+def log_sellersprite_registry_diagnostics_once() -> None:
+    global SELLERSPRITE_REGISTRY_DIAGNOSTICS_LOGGED
+    if SELLERSPRITE_REGISTRY_DIAGNOSTICS_LOGGED:
+        return
+    SELLERSPRITE_REGISTRY_DIAGNOSTICS_LOGGED = True
+    try:
+        diagnostics = sellersprite_registry_diagnostics(list_mcp_bridge_tools("sellersprite"))
+    except Exception as exc:
+        print(f"[CHAT PLANNER] SellerSprite registry diagnostics failed: {type(exc).__name__}: {str(exc)[:160]}", flush=True)
+        return
+    print(
+        "[CHAT PLANNER] SellerSprite request registry "
+        + json.dumps(diagnostics, ensure_ascii=False, separators=(",", ":")),
+        flush=True,
+    )
+
+
 def provider_profile_tool_ids(
     provider: str,
     route: dict[str, Any],
@@ -5127,6 +5252,24 @@ def provider_profile_tool_ids(
         return None
     selected = set(enabled_tool_ids)
     provider = normalize_chat_provider(provider)
+    if route.get("dynamic_planner") and provider in {"amazon", "fastmoss"}:
+        if provider == "amazon":
+            log_sellersprite_registry_diagnostics_once()
+        state = research_planner_state(provider, route, user_text, assistant_msg)
+        eligible = eligible_provider_tool_names(provider, route.get("research_task") or {}, state)
+        domain = "sellersprite" if provider == "amazon" else "fastmoss"
+        task = route.get("research_task") if isinstance(route.get("research_task"), dict) else {}
+        print(
+            f"[CHAT PLANNER] provider={provider} objective={task.get('objective')} scope={task.get('scope')} "
+            f"entity_type={task.get('entity_type')} attempted={','.join(state.get('attempted_capabilities') or []) or '-'} "
+            f"observed={','.join(state.get('observed_capabilities') or []) or '-'} eligible_tools={len(eligible)}",
+            flush=True,
+        )
+        return {
+            tool_id for tool_id in selected
+            if split_prefixed_tool_id(tool_id)[0] != domain
+            or split_prefixed_tool_id(tool_id)[1] in eligible
+        }
     if provider == "amazon":
         asin = bool(re.search(r"\bB0[A-Z0-9]{8}\b", str(user_text or ""), re.IGNORECASE))
         preferred = SELLERSPRITE_ASIN_TOOLS if asin else SELLERSPRITE_RESEARCH_TOOLS
@@ -5273,6 +5416,8 @@ def _argument_has_us_region(value: Any) -> bool:
 
 
 def fastmoss_required_capability_gaps(user_text: str, tools: list[dict[str, Any]], route: dict[str, Any] | None = None) -> list[str]:
+    if (route or {}).get("dynamic_planner"):
+        return []
     if not fastmoss_product_evidence_required(user_text, route):
         return []
     names = _model_tool_names(tools)
@@ -5288,7 +5433,7 @@ def fastmoss_required_capability_gaps(user_text: str, tools: list[dict[str, Any]
 
 
 def fastmoss_analysis_evidence_gaps(user_text: str, assistant_msg: Message, route: dict[str, Any] | None = None) -> list[str]:
-    if not fastmoss_product_evidence_required(user_text, route):
+    if not (route or {}).get("dynamic_planner") and not fastmoss_product_evidence_required(user_text, route):
         return []
     calls = list(assistant_msg.tool_calls or [])
     results = list(assistant_msg.tool_results or [])
@@ -5306,6 +5451,19 @@ def fastmoss_analysis_evidence_gaps(user_text: str, assistant_msg: Message, rout
         and isinstance(item.get("result"), dict)
         and item["result"].get("ok") is True
     }
+    task = (route or {}).get("research_task") if isinstance((route or {}).get("research_task"), dict) else {}
+    if (route or {}).get("dynamic_planner"):
+        gaps: list[str] = []
+        if task.get("scope") == "cross_category":
+            if "fastmoss__market_category_ranking" not in observed_calls:
+                gaps.append("category_discovery")
+            if not observed_calls.intersection({
+                "fastmoss__product_rank_new_listed",
+                "fastmoss__product_rank_top_selling",
+                "fastmoss__product_search",
+            }):
+                gaps.append("product_discovery")
+        return gaps
     gaps = []
     exact_product = fastmoss_exact_product_reference(user_text)
     if not exact_product:
@@ -5341,6 +5499,8 @@ def fastmoss_evidence_instruction(gaps: list[str]) -> str:
         "market_ranking": "再用 fastmoss__product_rank_top_selling、fastmoss__market_category_ranking 或 fastmoss__market_category_analysis 获取类目/榜单覆盖",
         "us_region": "用户未指定其他地区，本次所有商品/店铺/达人/视频搜索及榜单查询都必须把 region（或等价参数）设为 US",
         "product_reviews": "对纳入分析的代表商品调用 fastmoss__product_review_list；即使评论为空，也要如实说明",
+        "category_discovery": "先用不带 category_id 的 fastmoss__market_category_ranking 获取跨类目趋势候选",
+        "product_discovery": "再从榜单证据中选择候选类目，获取对应热销、新品或商品样本",
     }
     details = "；".join(required[gap] for gap in gaps if gap in required)
     return (
@@ -5753,9 +5913,11 @@ def execute_prefixed_tool(tool_id: str, args: dict[str, Any], region: str | None
             chat_type = "sellersprite" if domain == "sellersprite" else "fastmoss"
             normalized_args = apply_mcp_region_default(chat_type, name, args or {}, region)
             if domain == "sellersprite":
-                normalized_args, normalization = normalize_mcp_tool_arguments(chat_type, name, normalized_args)
-                if normalization:
-                    print(f"[CHAT] normalized {tool_id} arguments: {normalization}", flush=True)
+                normalized_args, registered_normalization = normalize_sellersprite_registered_arguments(name, normalized_args)
+                normalized_args, runtime_normalization = normalize_mcp_tool_arguments(chat_type, name, normalized_args)
+                normalizations = [item for item in (registered_normalization, runtime_normalization) if item]
+                if normalizations:
+                    print(f"[CHAT] normalized {tool_id} arguments: {'; '.join(normalizations)}", flush=True)
             normalized_args = apply_mcp_region_default(chat_type, name, normalized_args, region)
             result = mcp_bridge_request(chat_type, "tools/call", {"name": name, "arguments": normalized_args})
             return {"ok": True, "elapsed": round(time.monotonic() - started, 3), "data": result}
@@ -6007,7 +6169,10 @@ def chat_max_tool_rounds(provider: str, route: dict[str, Any], tool_count: int) 
         base = max(base, 3)
     if tool_count >= 20 and intent != "general":
         base = max(base, 7)
-    if provider == "fastmoss" and route.get("playbook") == "product":
+    if route.get("dynamic_planner") and provider in {"amazon", "fastmoss"}:
+        base = max(base, 8)
+        limit = 12
+    elif provider == "fastmoss" and route.get("playbook") == "product":
         if route.get("full_ranking"):
             base = max(base, 27)
             limit = 27
@@ -10865,8 +11030,15 @@ def _fastmoss_category_candidates(value: Any) -> list[dict[str, Any]]:
     return []
 
 
-def fastmoss_category_ambiguity_question(user_text: str, result: dict[str, Any]) -> str | None:
+def fastmoss_category_ambiguity_question(
+    user_text: str,
+    result: dict[str, Any],
+    route: dict[str, Any] | None = None,
+) -> str | None:
     """Stop before market calls when user-term L3 candidates are effectively tied."""
+    task = (route or {}).get("research_task") if isinstance((route or {}).get("research_task"), dict) else {}
+    if task.get("scope") == "cross_category" or task.get("entity_source") == "evidence":
+        return None
     if fastmoss_exact_product_reference(user_text) or re.search(
         r"(?:category[_ ]?id|类目\s*id)\D{0,6}\d{1,12}", str(user_text or ""), re.IGNORECASE
     ):
@@ -10935,6 +11107,8 @@ def apply_fastmoss_business_defaults(
     """Fill FastMoss-only business defaults using the current task's verified category path."""
     normalized = dict(args or {})
     path = fastmoss_current_category_path(assistant_msg, user_text)
+    task = (route or {}).get("research_task") if isinstance((route or {}).get("research_task"), dict) else {}
+    preserve_explicit_category = bool((route or {}).get("dynamic_planner") and task.get("scope") == "cross_category")
     completed_week = fastmoss_completed_week(today)
 
     def copied_filter() -> dict[str, Any]:
@@ -10947,11 +11121,11 @@ def apply_fastmoss_business_defaults(
             if key in {"query", "top_k", "max_total_results"}
         }
         original_queries = fastmoss_original_segment_keywords(user_text, route)
-        if original_queries:
+        if original_queries and task.get("scope") != "cross_category":
             normalized["query"] = original_queries
     elif name == "market_category_analysis":
         filters = copied_filter()
-        if path:
+        if path and (not preserve_explicit_category or "category_id" not in filters):
             filters["category_id"] = path["level2"]
         filters.setdefault("date_type", "week")
         filters.setdefault("date_value", completed_week)
@@ -10960,7 +11134,7 @@ def apply_fastmoss_business_defaults(
         normalized.setdefault("lang", "ZH_CN")
     elif name == "market_category_ranking":
         filters = copied_filter()
-        if path:
+        if path and (not preserve_explicit_category or "category_id" not in filters):
             filters["category_id"] = path["level1"]
         filters.setdefault("date_type", "week")
         filters.setdefault("date_value", completed_week)
@@ -10971,7 +11145,7 @@ def apply_fastmoss_business_defaults(
         normalized.setdefault("lang", "ZH_CN")
     elif name == "product_rank_top_selling":
         filters = copied_filter()
-        if path:
+        if path and (not preserve_explicit_category or "category_id" not in filters):
             # FastMoss category lookup explicitly instructs sales rankings to use
             # category_id_level2; level-3 here commonly produces misleading empties.
             filters["category_id"] = path["level2"]
@@ -10983,7 +11157,10 @@ def apply_fastmoss_business_defaults(
         normalized.setdefault("pagesize", 10)
     elif name == "product_rank_new_listed":
         filters = copied_filter()
-        if path:
+        if path and (
+            not preserve_explicit_category
+            or not any(key in filters for key in ("category_id", "category_l3_id"))
+        ):
             filters["category_id"] = path["level3"]
             filters["category_l1_id"] = path["level1"]
             filters["category_l2_id"] = path["level2"]
@@ -10998,9 +11175,9 @@ def apply_fastmoss_business_defaults(
         normalized.setdefault("pagesize", 10)
     elif name == "product_search":
         filters = copied_filter()
-        if path:
+        if path and (not preserve_explicit_category or "category_path" not in filters):
             filters["category_path"] = [path["level1"], path["level2"], path["level3"]]
-        if str((route or {}).get("playbook") or "") == "product":
+        if str((route or {}).get("playbook") or "") == "product" and not (route or {}).get("dynamic_planner"):
             # Category/segment head queries must not inherit speculative LLM ranges;
             # unsupported shapes such as {"min": 0} make FastMoss reject the page.
             safe_filters = {
@@ -11098,6 +11275,9 @@ def fastmoss_clarifying_question(provider: str, route: dict[str, Any], user_text
         return None
     if str(route.get("task_depth") or "") not in {"analysis", "workflow"} and not route.get("playbook"):
         return None
+    task = route.get("research_task") if isinstance(route.get("research_task"), dict) else {}
+    if task.get("scope") == "cross_category" and task.get("objective") in {"trend_discovery", "opportunity_discovery"}:
+        return None
     text = chat_routing_text(user_text)
     if chat_query_uses_previous_entity(text) or fastmoss_exact_product_reference(text):
         return None
@@ -11124,7 +11304,23 @@ def fastmoss_deep_dive_call_error(
     arguments: dict[str, Any],
     user_text: str,
     assistant_msg: Message,
+    route: dict[str, Any] | None = None,
 ) -> str | None:
+    task = (route or {}).get("research_task") if isinstance((route or {}).get("research_task"), dict) else {}
+    if tool_name == "fastmoss__search_category_by_words" and task.get("scope") == "cross_category":
+        queries = arguments.get("query")
+        if isinstance(queries, str):
+            queries = [queries]
+        if not isinstance(queries, list) or not queries:
+            return "跨类目发现中的类目解析必须使用上一轮类目榜返回的候选名称。"
+        ranking_text = " ".join(
+            json.dumps(item.get("result", {}).get("mcp_data"), ensure_ascii=False)
+            for item in (assistant_msg.tool_results or [])
+            if isinstance(item, dict) and item.get("tool_name") == "fastmoss__market_category_ranking"
+        ).casefold()
+        unsupported = [str(query) for query in queries if str(query).strip().casefold() not in ranking_text]
+        if unsupported:
+            return "拒绝解析未经当前类目榜证据返回的候选名称：" + "、".join(unsupported)
     if tool_name in FASTMOSS_CATEGORY_ID_TOOLS:
         requested_categories = _collect_category_ids(arguments)
         unknown_categories = requested_categories - fastmoss_known_category_ids(user_text, assistant_msg)
@@ -11177,7 +11373,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     }.get(provider, "")
     forced_mcp_style = {
         "amazon": "This Amazon entry enables SellerSprite by default, and may also expose user-selected function__ or fastmoss__ tools. For Amazon, ASIN, keyword, category, product, market, competitor, ranking, sales, BSR, traffic, review, brand, or opportunity requests, call one or more relevant exposed tools before the final answer. Prefer sellersprite__ for Amazon marketplace evidence; use fastmoss__ only when it is exposed and relevant to TikTok Shop or cross-channel context. Analytical requests need detailed Chinese Markdown reports; simple lookup requests need concise evidence-based answers.",
-        "fastmoss": "This FastMoss entry enables FastMoss by default, and may also expose user-selected function__ or sellersprite__ tools. For TikTok Shop, product, shop, creator, GMV, sales, category, trend, content, ad, pricing, competitor, or opportunity requests, call relevant exposed FastMoss tools before the final answer. Default to the US region unless the user explicitly requests another region or multiple/global regions, and pass US to every region-sensitive search/ranking call. For broad product/category analysis, first use a short keyword to identify the category, follow the tool's required category level/ID guidance, then use category/ranking tools for market coverage; keyword product search is supplemental and must not be generalized to the whole market. Review/comment evidence from fastmoss__product_review_list is required only for product, selection, pricing, and product-competitor analytical reports. Prefer fastmoss__ for TikTok Shop evidence; use sellersprite__ only when it is exposed and relevant to Amazon or cross-channel context. Analytical requests need detailed Chinese Markdown reports; simple lookup requests need concise evidence-based answers.",
+        "fastmoss": "This FastMoss entry enables FastMoss by default, and may also expose user-selected function__ or sellersprite__ tools. For TikTok Shop, product, shop, creator, GMV, sales, category, trend, content, ad, pricing, competitor, or opportunity requests, call relevant exposed FastMoss tools before the final answer. Default to the US region unless the user explicitly requests another region or multiple/global regions, and pass US to every region-sensitive search/ranking call. Follow the research task scope: cross-category discovery starts from platform/category ranking, while an explicitly named product or category may start from exact category resolution. Never turn a research goal or time phrase into a category keyword. Keyword product search is supplemental and must not be generalized to the whole market. Prefer fastmoss__ for TikTok Shop evidence; use sellersprite__ only when it is exposed and relevant to Amazon or cross-channel context. Analytical requests need detailed Chinese Markdown reports; simple lookup requests need concise evidence-based answers.",
     }.get(provider, "")
     messages = [{"role": "system", "content": (
         "You are a short-video and commerce analysis assistant. Reply in Simplified Chinese. "
@@ -11347,6 +11543,13 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     playbook_instruction = fastmoss_playbook_instruction(route.get("playbook")) if provider == "fastmoss" else ""
     if playbook_instruction:
         messages.append({"role": "system", "content": playbook_instruction, "_context_scope": "system"})
+    if route.get("dynamic_planner"):
+        messages.append({
+            "role": "system",
+            "content": research_planner_instruction(provider, route, routing_text, assistant_msg),
+            "_context_scope": "system",
+        })
+    elif playbook_instruction:
         phase = fastmoss_workflow_phase(
             str(route.get("playbook")), assistant_msg, set(effective_enabled_tool_ids or set()), routing_text, route
         )
@@ -11442,7 +11645,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 str(route.get("playbook")), assistant_msg,
                 set(effective_enabled_tool_ids or set()), routing_text, route,
             )
-            if provider == "fastmoss" and route.get("playbook") == "product"
+            if provider == "fastmoss" and route.get("playbook") == "product" and not route.get("dynamic_planner")
             else None
         )
         deterministic_call = (
@@ -11624,7 +11827,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                         fn_args = json.loads(tc["function"].get("arguments") or "{}")
                     except json.JSONDecodeError:
                         fn_args = {}
-                    guard_error = fastmoss_deep_dive_call_error(fn_name, fn_args, routing_text, assistant_msg) if provider == "fastmoss" else None
+                    guard_error = fastmoss_deep_dive_call_error(fn_name, fn_args, routing_text, assistant_msg, route) if provider == "fastmoss" else None
                     if guard_error:
                         normalized_result = {
                             "ok": False,
@@ -11656,7 +11859,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     assistant_msg.tool_results.append({"tool_name": fn_name, "result": normalized_result})
                     store.broadcast(session.id, "update", {"messageId": assistant_msg.id, "tool_calls": assistant_msg.tool_calls, "tool_results": assistant_msg.tool_results})
                     if fn_name == "fastmoss__search_category_by_words":
-                        ambiguity = fastmoss_category_ambiguity_question(routing_text, normalized_result)
+                        ambiguity = fastmoss_category_ambiguity_question(routing_text, normalized_result, route)
                         if ambiguity:
                             print("[CHAT] FastMoss category match ambiguous; asking for confirmation", flush=True)
                             store.update_message(session, assistant_msg, ambiguity, status="done")
@@ -11672,6 +11875,29 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                         "content": "The two-search availability limit has been reached. Do not call more tools; answer concisely from the current search evidence.",
                         "_context_scope": "system",
                     })
+                elif route.get("dynamic_planner") and provider in {"amazon", "fastmoss"}:
+                    selected_tool_ids = provider_profile_tool_ids(
+                        provider, route, routing_text,
+                        set(effective_enabled_tool_ids or set()), assistant_msg,
+                    )
+                    expected_domain = "sellersprite" if provider == "amazon" else "fastmoss"
+                    has_provider_tools = any(
+                        split_prefixed_tool_id(tool_id)[0] == expected_domain
+                        for tool_id in (selected_tool_ids or set())
+                    )
+                    tools = build_prefixed_model_tools(selected_tool_ids) if has_provider_tools else []
+                    final_answer_forced = not has_provider_tools
+                    messages.append({
+                        "role": "system",
+                        "content": research_planner_instruction(provider, route, routing_text, assistant_msg),
+                        "_context_scope": "system",
+                    })
+                    if final_answer_forced and provider == "fastmoss":
+                        messages.append({
+                            "role": "system",
+                            "content": fastmoss_report_quality_instruction(assistant_msg, routing_text, route),
+                            "_context_scope": "system",
+                        })
                 elif provider == "fastmoss" and route.get("playbook"):
                     phase = fastmoss_workflow_phase(
                         str(route.get("playbook")), assistant_msg, set(effective_enabled_tool_ids or set()), routing_text, route
@@ -11753,7 +11979,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 return
             workflow_phase = fastmoss_workflow_phase(
                 str(route.get("playbook")), assistant_msg, set(effective_enabled_tool_ids or set()), routing_text, route
-            ) if provider == "fastmoss" and route.get("playbook") else None
+            ) if provider == "fastmoss" and route.get("playbook") and not route.get("dynamic_planner") else None
             if workflow_phase and tools and not context_stats["tools_removed"]:
                 if no_tool_retries < 1:
                     no_tool_retries += 1

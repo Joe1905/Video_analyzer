@@ -389,13 +389,13 @@ def eligible_provider_capabilities(provider: str, task: dict[str, Any], state: d
             if "category_discovery" not in attempted:
                 return {"category_discovery"}
             capabilities = {"category_discovery", "category_resolution"}
-            if has_category or "category_resolution" in observed:
+            if has_category:
                 capabilities.update({"category_context", "product_discovery"})
             if has_product:
                 capabilities.update({"product_detail", "product_trend", "product_content"})
             return capabilities
         capabilities = {"category_resolution"}
-        if has_category or "category_resolution" in observed:
+        if has_category:
             capabilities.update({"category_discovery", "category_context", "product_discovery"})
         if has_product:
             capabilities.update({"product_detail", "product_trend", "product_content"})
@@ -444,5 +444,13 @@ def eligible_provider_tool_names(provider: str, task: dict[str, Any], state: dic
     }
     return {
         name for name, capability in mapping.items()
-        if capability in capabilities and int(counts.get(name) or 0) < limits.get(name, 1)
+        if capability in capabilities and int(counts.get(name) or 0) < limits.get(
+            name,
+            DISCOVERY_BREADTH
+            if task.get("scope") == "cross_category" and capability in {
+                "category_context", "product_detail", "product_trend", "product_content",
+                "trend_validation", "market_validation", "asin_detail", "asin_traffic", "asin_review",
+            }
+            else 1,
+        )
     }
