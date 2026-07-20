@@ -4281,8 +4281,6 @@ def chat_report_model() -> str:
 
 def chat_route_uses_report_model(provider: str, route: dict[str, Any]) -> bool:
     """Keep direct/lookup traffic on Flash while upgrading evidence-led final reports."""
-    if normalize_chat_provider(provider) == "amazon":
-        return False
     intent = str(route.get("intent") or "").strip().lower()
     if intent == "video_analysis":
         return True
@@ -9133,6 +9131,65 @@ def fastmoss_deep_dive_call_error(
     return "拒绝使用未经当前任务搜索、榜单或用户链接验证的商品 ID：" + "、".join(sorted(unknown))
 
 
+_SELLERSPRITE_ASIN_PATTERN = re.compile(r"(?<![A-Z0-9])B[A-Z0-9]{9}(?![A-Z0-9])", re.IGNORECASE)
+
+
+def _collect_sellersprite_asins(value: Any, key: str = "") -> set[str]:
+    """Collect stable Amazon ASINs without treating arbitrary ten-character text as an entity."""
+    found: set[str] = set()
+    normalized_key = re.sub(r"[^a-z0-9]", "", str(key).lower())
+    if isinstance(value, dict):
+        for child_key, child in value.items():
+            found.update(_collect_sellersprite_asins(child, str(child_key)))
+        return found
+    if isinstance(value, list):
+        for child in value:
+            found.update(_collect_sellersprite_asins(child, key))
+        return found
+    if not isinstance(value, str):
+        return found
+    text = value.strip().upper()
+    found.update(match.group(0).upper() for match in _SELLERSPRITE_ASIN_PATTERN.finditer(text))
+    if "asin" in normalized_key:
+        found.update(
+            token for token in re.findall(r"(?<![A-Z0-9])[A-Z0-9]{10}(?![A-Z0-9])", text)
+            if any(char.isdigit() for char in token)
+        )
+    return found
+
+
+def sellersprite_known_asins(user_text: str, assistant_msg: Message) -> set[str]:
+    """Return ASINs explicitly supplied by the user or observed in current SellerSprite results."""
+    known = _collect_sellersprite_asins(str(user_text or ""), "user_text")
+    for item in assistant_msg.tool_results or []:
+        if not isinstance(item, dict):
+            continue
+        tool_name = str(item.get("tool_name") or "")
+        if split_prefixed_tool_id(tool_name)[0] != "sellersprite":
+            continue
+        known.update(_collect_sellersprite_asins(item.get("result"), "result"))
+    return known
+
+
+def sellersprite_deep_dive_call_error(
+    tool_name: str,
+    arguments: dict[str, Any],
+    user_text: str,
+    assistant_msg: Message,
+) -> str | None:
+    """Fence ASIN deep dives to entities established in this task while leaving discovery open."""
+    domain, unprefixed = split_prefixed_tool_id(tool_name)
+    if domain != "sellersprite" or unprefixed not in SELLERSPRITE_ASIN_TOOLS:
+        return None
+    requested = _collect_sellersprite_asins(arguments, "arguments")
+    if not requested:
+        return None
+    unknown = requested - sellersprite_known_asins(user_text, assistant_msg)
+    if not unknown:
+        return None
+    return "拒绝使用未经当前任务搜索结果或用户输入验证的 ASIN：" + "、".join(sorted(unknown))
+
+
 def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, provider: str = "home", enabled_tool_ids: set[str] | None = None) -> None:
     """Background thread: call DeepSeek with provider-scoped tools and stream results via SSE."""
     import requests as req
@@ -9624,7 +9681,17 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                         fn_args = json.loads(tc["function"].get("arguments") or "{}")
                     except json.JSONDecodeError:
                         fn_args = {}
-                    guard_error = fastmoss_deep_dive_call_error(fn_name, fn_args, routing_text, assistant_msg) if provider == "fastmoss" else None
+                    tool_domain = split_prefixed_tool_id(fn_name)[0]
+                    if tool_domain == "fastmoss":
+                        guard_error = fastmoss_deep_dive_call_error(
+                            fn_name, fn_args, routing_text, assistant_msg
+                        )
+                    elif tool_domain == "sellersprite":
+                        guard_error = sellersprite_deep_dive_call_error(
+                            fn_name, fn_args, routing_text, assistant_msg
+                        )
+                    else:
+                        guard_error = None
                     if guard_error:
                         normalized_result = {
                             "ok": False,
@@ -9633,7 +9700,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                             "data_state": "error",
                             "evidence_observed": False,
                             "suggested_next_action": "answer_with_limitation",
-                            "tool_domain": "fastmoss",
+                            "tool_domain": tool_domain,
                             "tool_name": split_prefixed_tool_id(fn_name)[1],
                         }
                     else:

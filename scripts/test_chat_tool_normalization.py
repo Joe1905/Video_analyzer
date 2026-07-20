@@ -1427,6 +1427,31 @@ def test_fastmoss_deep_dive_ids_must_come_from_current_task() -> None:
     )
 
 
+def test_sellersprite_deep_dive_asins_must_come_from_current_task() -> None:
+    message = SimpleNamespace(
+        tool_calls=[],
+        tool_results=[{
+            "tool_name": "sellersprite__product_research",
+            "result": {
+                "ok": True,
+                "mcp_data": {"products": [{"asin": "B0KNOWN123"}]},
+            },
+        }],
+    )
+    assert web_app.sellersprite_deep_dive_call_error(
+        "sellersprite__asin_detail", {"asin": "B0KNOWN123"}, "wifi extender", message
+    ) is None
+    assert web_app.sellersprite_deep_dive_call_error(
+        "sellersprite__review", {"asin": "B0EXPLICIT"}, "分析 B0EXPLICIT", message
+    ) is None
+    assert "未经当前任务" in web_app.sellersprite_deep_dive_call_error(
+        "sellersprite__asin_sales_trend", {"asin": "B0UNKNOWN9"}, "wifi extender", message
+    )
+    assert web_app.sellersprite_deep_dive_call_error(
+        "sellersprite__keyword_research", {"keyword": "wifi extender"}, "wifi extender", message
+    ) is None
+
+
 def test_tool_call_signature_deduplicates_argument_order() -> None:
     left = web_app.tool_call_signature("fastmoss__product_search", {"keywords": "chopper", "page": 1})
     right = web_app.tool_call_signature("fastmoss__product_search", {"page": 1, "keywords": "chopper"})
@@ -2375,7 +2400,7 @@ def test_analytical_routes_use_report_model_and_fastmoss_uses_semantic_synthesis
     assert web_app.chat_route_uses_report_model(
         "home", {"intent": "product_research", "task_depth": "analysis"}
     )
-    assert not web_app.chat_route_uses_report_model(
+    assert web_app.chat_route_uses_report_model(
         "amazon", {"intent": "product_research", "task_depth": "analysis"}
     )
     assert web_app.chat_route_uses_report_model(
@@ -2453,6 +2478,7 @@ if __name__ == "__main__":
     test_provider_profiles_use_aggregated_sellersprite_and_staged_fastmoss_tools()
     test_region_default_only_applies_when_schema_supports_it()
     test_fastmoss_deep_dive_ids_must_come_from_current_task()
+    test_sellersprite_deep_dive_asins_must_come_from_current_task()
     test_tool_call_signature_deduplicates_argument_order()
     test_fastmoss_dual_ranking_plan_uses_three_sorted_category_pages_then_segments()
     test_fastmoss_product_phase_waits_for_all_category_and_segment_searches()
