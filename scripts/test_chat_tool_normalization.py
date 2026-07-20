@@ -1031,7 +1031,6 @@ def test_three_layer_research_task_rejects_goal_text_as_entity() -> None:
         "entity_source": "none",
         "region": "US",
         "time_window": "最近1-2个月",
-        "discovery_breadth": 3,
     }
     amazon = web_app.attach_research_task(
         {"intent": "product_research", "task_depth": "analysis"},
