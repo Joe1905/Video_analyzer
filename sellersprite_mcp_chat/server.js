@@ -3,6 +3,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const os = require("node:os");
 const { createHash, randomUUID } = require("node:crypto");
+const { ToolCacheStore } = require("./tool_cache.js");
 
 const PORT = Number(process.env.PORT || 3001);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -23,11 +24,12 @@ const MCP_CACHE_TTL_SECONDS = Number(process.env.MCP_CACHE_TTL_SECONDS || (MCP_C
 const PUBLIC_DIR = path.join(__dirname, "public");
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const SESSIONS_FILE = path.join(DATA_DIR, "sessions.json");
-const TOOL_CACHE_FILE = path.join(DATA_DIR, "tool_cache.json");
+const LEGACY_TOOL_CACHE_FILE = path.join(DATA_DIR, "tool_cache.json");
+const SHARED_TOOL_CACHE_ROOT = process.env.MCP_TOOL_CACHE_DIR || path.join(DATA_DIR, "tool_cache_entries");
 
 const sessions = new Map();
-let toolCache = null;
 let saveTimer = null;
+let toolCacheStore = null;
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -38,6 +40,13 @@ const MIME_TYPES = {
 
 function providerCacheKey() {
   return MCP_CHAT_TYPE === "fastmoss" ? "fastmoss_mcp" : "sellersprite_mcp";
+}
+
+function providerCacheScope() {
+  const credential = MCP_CHAT_TYPE === "fastmoss" ? FASTMOSS_MCP_API_KEY : SELLERSPRITE_SECRET_KEY;
+  return createHash("sha256")
+    .update(JSON.stringify({ provider: providerCacheKey(), remote: MCP_REMOTE_URL, credential }))
+    .digest("hex");
 }
 
 function providerKeywordsPattern() {
@@ -316,46 +325,6 @@ function safeJsonParse(value, fallback = {}) {
   }
 }
 
-function normalizeCacheValue(value) {
-  if (Array.isArray(value)) return value.map(normalizeCacheValue);
-  if (!value || typeof value !== "object") return value;
-  return Object.keys(value)
-    .sort()
-    .reduce((acc, key) => {
-      acc[key] = normalizeCacheValue(value[key]);
-      return acc;
-    }, {});
-}
-
-function canonicalJson(value) {
-  return JSON.stringify(normalizeCacheValue(value));
-}
-
-function sellerSpriteCacheKey(toolName, args) {
-  return createHash("sha256")
-    .update(canonicalJson({ provider: providerCacheKey(), endpoint: toolName, request: args || {} }))
-    .digest("hex");
-}
-
-async function loadToolCache() {
-  if (toolCache) return toolCache;
-  try {
-    const raw = await fs.readFile(TOOL_CACHE_FILE, "utf8");
-    const parsed = safeJsonParse(raw, {});
-    toolCache = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
-  } catch (error) {
-    if (error.code !== "ENOENT") console.warn(`Could not load ${MCP_CHAT_LABEL} tool cache: ${error.message}`);
-    toolCache = {};
-  }
-  return toolCache;
-}
-
-async function saveToolCache() {
-  if (!toolCache) return;
-  await fs.mkdir(DATA_DIR, { recursive: true });
-  await fs.writeFile(TOOL_CACHE_FILE, JSON.stringify(toolCache, null, 2), "utf8");
-}
-
 function withCacheMeta(value, meta) {
   if (value && typeof value === "object" && !Array.isArray(value)) {
     return { ...value, _cache: meta };
@@ -367,52 +336,28 @@ function mcpToolResponseIsError(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value) && (value.isError === true || value.error));
 }
 
-async function callSellerSpriteToolCached(name, args) {
-  const cache = await loadToolCache();
-  const key = sellerSpriteCacheKey(name, args);
-  const now = Date.now();
-  const ttlMs = Math.max(1, MCP_CACHE_TTL_SECONDS) * 1000;
-  const entry = cache[key];
-  if (entry && now - Number(entry.createdAt || 0) <= ttlMs && !mcpToolResponseIsError(entry.response)) {
-    entry.hitCount = Number(entry.hitCount || 0) + 1;
-    entry.lastHitAt = now;
-    saveToolCache().catch((error) => console.warn(`Could not save ${MCP_CHAT_LABEL} tool cache: ${error.message}`));
-    return withCacheMeta(entry.response, {
-      hit: true,
-      label: "缓存命中",
+function getToolCacheStore() {
+  if (!toolCacheStore) {
+    toolCacheStore = new ToolCacheStore({
+      rootDir: SHARED_TOOL_CACHE_ROOT,
       provider: providerCacheKey(),
-      endpoint: name,
-      ttl_seconds: MCP_CACHE_TTL_SECONDS,
-      age_seconds: Math.round((now - Number(entry.createdAt || now)) / 1000),
+      scope: providerCacheScope(),
+      legacyFile: LEGACY_TOOL_CACHE_FILE,
+      ttlSeconds: MCP_CACHE_TTL_SECONDS,
+      isError: mcpToolResponseIsError,
+      logger: console,
     });
   }
+  return toolCacheStore;
+}
 
-  if (entry && mcpToolResponseIsError(entry.response)) {
-    delete cache[key];
-    await saveToolCache();
-  }
-
-  const response = await mcpClient.callTool(name, args);
-  if (!mcpToolResponseIsError(response)) {
-    cache[key] = {
-      provider: providerCacheKey(),
-      endpoint: name,
-      request: normalizeCacheValue(args || {}),
-      response,
-      createdAt: now,
-      lastHitAt: null,
-      hitCount: 0,
-    };
-    await saveToolCache();
-  }
-  return withCacheMeta(response, {
-    hit: false,
-    label: "实时调用",
-    provider: providerCacheKey(),
-    endpoint: name,
-    ttl_seconds: MCP_CACHE_TTL_SECONDS,
-    age_seconds: 0,
-  });
+async function callSellerSpriteToolCached(name, args) {
+  const cached = await getToolCacheStore().getOrCall(
+    name,
+    args,
+    () => mcpClient.callTool(name, args),
+  );
+  return withCacheMeta(cached.value, cached.meta);
 }
 
 function readBody(req) {
