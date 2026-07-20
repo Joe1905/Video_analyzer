@@ -115,10 +115,8 @@ from api_cache import get_cached_or_call, record_api_call
 from api_cache import get_cached, store_response
 from fastmoss_evidence_renderer import (
     FASTMOSS_CURRENT_TOOL_NAMES,
-    render_fastmoss_compact_json,
     render_fastmoss_evidence_document,
 )
-from json_to_markdown import json_to_markdown
 from hot_video_report import (
     REPORT_COVER_DIR,
     backfill_cover_urls,
@@ -4299,10 +4297,6 @@ def chat_route_uses_report_model(provider: str, route: dict[str, Any]) -> bool:
     }
 
 
-def fastmoss_llm_verifier_enabled() -> bool:
-    return str(os.getenv("FASTMOSS_LLM_VERIFIER_ENABLED", "0")).strip().lower() in {"1", "true", "yes", "on"}
-
-
 def chat_intent_router_should_call(text: str, fallback_route: dict[str, Any]) -> bool:
     if not chat_intent_router_enabled():
         return False
@@ -8109,429 +8103,10 @@ def fastmoss_report_evidence_dossier(
     }
 
 
-def _fastmoss_argument_summary(value: Any, prefix: str = "") -> list[str]:
-    """Flatten exact call arguments into short, deterministic key=value phrases."""
-    if isinstance(value, dict):
-        parts: list[str] = []
-        for key, item in value.items():
-            child_prefix = f"{prefix}.{key}" if prefix else str(key)
-            parts.extend(_fastmoss_argument_summary(item, child_prefix))
-        return parts
-    if isinstance(value, list):
-        rendered = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-    elif value is None:
-        rendered = "null"
-    elif value is True:
-        rendered = "true"
-    elif value is False:
-        rendered = "false"
-    else:
-        rendered = str(value)
-    return [f"{prefix or 'value'}={rendered}"]
-
-
-def _fastmoss_generic_report_evidence_markdown(dossier: dict[str, Any]) -> str:
-    """Legacy lossless renderer retained for comparison and safe rollback."""
-    structured_dossier = dict(dossier)
-    structured_dossier["type"] = "fastmoss_structured_evidence"
-    narrative_overrides: dict[str, str] = {}
-    for index, entry in enumerate(dossier.get("tool_evidence") or []):
-        if not isinstance(entry, dict):
-            continue
-        fence = entry.get("evidence_fence") if isinstance(entry.get("evidence_fence"), dict) else {}
-        if str(fence.get("data_state") or "").strip().lower() != "empty":
-            continue
-        source_ref = str(entry.get("source_ref") or f"call:{index + 1}")
-        tool_name = str(entry.get("tool_name") or "FastMoss MCP")
-        arguments = entry.get("arguments") if isinstance(entry.get("arguments"), dict) else {}
-        argument_parts = _fastmoss_argument_summary(arguments)
-        argument_text = "、".join(argument_parts) if argument_parts else "未提供额外参数"
-        fence_context = {
-            key: value for key, value in fence.items()
-            if key != "data_state" and value not in (None, "", [], {})
-        }
-        fence_parts = _fastmoss_argument_summary(fence_context)
-        fence_text = "、".join(fence_parts) if fence_parts else "无额外围栏字段"
-        narrative_overrides[f"$.tool_evidence[{index}]"] = (
-            f"{source_ref}（{tool_name}）调用成功；针对精确参数“{argument_text}”，"
-            f"证据范围为“{fence_text}”。本次查询没有返回业务记录。"
-            "这个空结果只适用于本次调用的对象和参数，"
-            "不表示平台全局为零，也不表示对应商品、类目或内容不存在。"
-        )
-    return json_to_markdown(
-        structured_dossier,
-        title="FastMoss 调研证据",
-        include_paths=False,
-        narrative_overrides=narrative_overrides,
-    )
-
-
 def fastmoss_render_report_evidence(dossier: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-    """Render FastMoss report evidence in the selected internal comparison mode."""
-    requested_mode = str(os.getenv("FASTMOSS_REPORT_EVIDENCE_FORMAT", "semantic") or "semantic").strip().lower()
-    mode = requested_mode if requested_mode in {"semantic", "generic", "json"} else "semantic"
-    if mode == "generic":
-        markdown = _fastmoss_generic_report_evidence_markdown(dossier)
-        return markdown, {
-            "format": "generic",
-            "tool_count": len(dossier.get("tool_evidence") or []),
-            "markdown_chars": len(markdown),
-        }
-    if mode == "json":
-        markdown = render_fastmoss_compact_json(dossier)
-        return markdown, {
-            "format": "json",
-            "tool_count": len(dossier.get("tool_evidence") or []),
-            "markdown_chars": len(markdown),
-        }
-    try:
-        rendered = render_fastmoss_evidence_document(dossier)
-        return rendered.markdown, {"format": "semantic", **rendered.stats}
-    except Exception as exc:
-        markdown = _fastmoss_generic_report_evidence_markdown(dossier)
-        return markdown, {
-            "format": "generic",
-            "requested_format": requested_mode,
-            "whole_document_fallback": f"{type(exc).__name__}: {str(exc)[:200]}",
-            "tool_count": len(dossier.get("tool_evidence") or []),
-            "markdown_chars": len(markdown),
-        }
-
-
-def fastmoss_report_evidence_markdown(dossier: dict[str, Any]) -> str:
-    """Render the complete dossier for an LLM without changing source evidence."""
-    return fastmoss_render_report_evidence(dossier)[0]
-
-
-def fastmoss_report_packet(manifest: dict[str, Any], route: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Build one compact, workflow-native source of truth for report synthesis."""
-    playbook = str((route or {}).get("playbook") or "product")
-    product_keys = (
-        "product_id", "title", "price_min", "price_max", "launch_date", "day7_units_sold",
-        "day28_units_sold", "day28_gmv", "first_3d_units_sold", "first_3d_gmv",
-        "linked_creator_count", "linked_video_count",
-    )
-
-    def compact_fact(fact: dict[str, Any]) -> dict[str, Any]:
-        compact = dict(fact)
-        if isinstance(compact.get("products"), list):
-            all_products = [product for product in compact["products"] if isinstance(product, dict)]
-            scope = str(compact.get("scope") or "")
-            dimension = str(compact.get("dimension") or "")
-            page = int(compact.get("page") or 1)
-            # Segment comparisons need the complete fetched Top-10 to preserve
-            # product-shape and price differences.  Category pages after page
-            # one keep only boundary rows because their aggregate coverage is
-            # already recorded separately.
-            product_limit = 10 if scope == "segment_head" else 5
-            if scope == "category_head" and page == 1:
-                product_limit = 10
-            elif scope == "category_head" and page > 1:
-                # Later category pages retain boundary samples.  An empty list
-                # always means the provider returned no rows, never "omitted to
-                # save tokens".
-                product_limit = 2
-            elif dimension in {"top_products", "new_products"}:
-                product_limit = 5
-            selected_products = all_products[:product_limit]
-            if (
-                scope == "category_head"
-                and page > 1
-                and len(all_products) > 1
-            ):
-                selected_products = [all_products[0], all_products[-1]]
-            compact["products"] = [
-                {
-                    key: (str(product.get(key) or "")[:120] if key == "title" else product.get(key))
-                    for key in product_keys if product.get(key) not in (None, "", {}, [])
-                }
-                for product in selected_products
-            ]
-            returned_count = int(compact.get("returned_count") or len(all_products))
-            included_count = len(compact["products"])
-            compact["returned_count"] = returned_count
-            compact["included_count"] = included_count
-            compact["omitted_count"] = max(0, returned_count - included_count)
-            compact["truncated"] = returned_count > included_count
-        if isinstance(compact.get("top_creators"), list):
-            compact["top_creators"] = [
-                {
-                    key: creator.get(key) for key in (
-                        "creator_uid", "creator_name", "creator_handle", "follower_count",
-                        "creator_category", "product_contribution",
-                    ) if creator.get(key) not in (None, "", {}, [])
-                }
-                for creator in compact["top_creators"][:3] if isinstance(creator, dict)
-            ]
-        if isinstance(compact.get("top_videos"), list):
-            videos = []
-            for video in compact["top_videos"][:3]:
-                if not isinstance(video, dict):
-                    continue
-                item = {
-                    key: video.get(key) for key in (
-                        "video_id", "creator", "engagement_metrics", "product_contribution", "traffic_flags", "video_meta",
-                    ) if video.get(key) not in (None, "", {}, [])
-                }
-                if isinstance(item.get("video_meta"), dict) and item["video_meta"].get("caption_text"):
-                    item["video_meta"] = dict(item["video_meta"])
-                    item["video_meta"]["caption_text"] = str(item["video_meta"]["caption_text"])[:240]
-                videos.append(item)
-            compact["top_videos"] = videos
-        return compact
-
-    target_keys = {
-        (str(item.get("entity_type") or ""), str(item.get("entity_id") or ""))
-        for item in (manifest.get("analysis_targets") or []) if isinstance(item, dict)
-    }
-    packet_bundles = [
-        bundle for bundle in (manifest.get("entity_bundles") or [])
-        if isinstance(bundle, dict) and (
-            (str(bundle.get("entity_type") or ""), str(bundle.get("entity_id") or "")) in target_keys
-            or len(bundle.get("source_calls") or []) > 1
-        )
-    ][:15]
-    source_catalog = [
-        ({"source_ref": f"call:{int(envelope.get('source_call_index') or 0)}"} if envelope.get("source_call_index") else {}) | {
-            key: envelope.get(key) for key in (
-                "source_call_index", "source_tool", "tool_family", "parser_status", "data_state",
-                "region", "scope", "metric_grain", "returned_count", "reported_total",
-            ) if envelope.get(key) not in (None, "", {}, [])
-        }
-        | ({"entity_refs": refs} if (refs := _fastmoss_entity_refs(envelope.get("arguments"), None)) else {})
-        | ({"arguments": _fastmoss_compact_argument_summary(envelope.get("arguments"))} if _fastmoss_compact_argument_summary(envelope.get("arguments")) else {})
-        for envelope in (manifest.get("evidence_envelopes") or []) if isinstance(envelope, dict)
-    ]
-    representative_evidence = [
-        compact_fact(fact) for fact in (manifest.get("evidence_facts") or [])
-        if isinstance(fact, dict) and str(fact.get("data_state") or "data") == "data"
-    ]
-    packet_product_ids = {
-        str(product.get("product_id"))
-        for fact in representative_evidence if isinstance(fact, dict)
-        for product in (fact.get("products") or []) if isinstance(product, dict)
-        if _fastmoss_valid_entity_id(product.get("product_id"))
-    }
-    packet_product_ids.update(
-        str(item.get("entity_id")) for item in (manifest.get("analysis_targets") or [])
-        if isinstance(item, dict) and item.get("entity_type") == "product"
-        and _fastmoss_valid_entity_id(item.get("entity_id"))
-    )
-    packet_creator_ids = {
-        str(creator.get("creator_uid"))
-        for fact in representative_evidence if isinstance(fact, dict)
-        for creator in (fact.get("top_creators") or []) if isinstance(creator, dict)
-        if _fastmoss_valid_entity_id(creator.get("creator_uid"))
-    }
-    packet_video_ids = {
-        str(video.get("video_id"))
-        for fact in representative_evidence if isinstance(fact, dict)
-        for video in (fact.get("top_videos") or []) if isinstance(video, dict)
-        if _fastmoss_valid_entity_id(video.get("video_id"))
-    }
-    fact_dimensions = {
-        str(fact.get("fact_id") or ""): str(fact.get("dimension") or "")
-        for fact in (manifest.get("evidence_facts") or []) if isinstance(fact, dict)
-    }
-    registry_groups: dict[tuple[str, str, str, str, int], dict[str, Any]] = {}
-    for metric in (manifest.get("metric_registry") or []):
-        if not isinstance(metric, dict):
-            continue
-        entity_type = str(metric.get("entity_type") or "")
-        entity_id = str(metric.get("entity_id") or "")
-        source_dimension = fact_dimensions.get(str(metric.get("source_fact_id") or ""), "")
-        if entity_type == "product" and source_dimension in {
-            "product_sample", "top_products", "new_products", "product_detail",
-        }:
-            # The same values are already present in the explicitly bounded
-            # representative rows; do not duplicate every list cell here.
-            continue
-        if entity_type == "product" and entity_id not in packet_product_ids:
-            continue
-        if entity_type == "creator" and entity_id not in packet_creator_ids:
-            continue
-        if entity_type == "video" and entity_id not in packet_video_ids:
-            continue
-        period = metric.get("period")
-        scope = str(metric.get("scope") or "")
-        call_index = int(metric.get("source_call_index") or 0)
-        key = (
-            entity_type, entity_id,
-            json.dumps(period, ensure_ascii=False, sort_keys=True, default=str),
-            scope, call_index,
-        )
-        group = registry_groups.setdefault(key, {
-            "entity_type": entity_type,
-            "entity_id": entity_id,
-            "period": period,
-            "scope": scope,
-            "source_call_index": call_index,
-            "source_fact_ids": [],
-            "context": {},
-            "metrics": {},
-        })
-        fact_id = metric.get("source_fact_id")
-        if fact_id and fact_id not in group["source_fact_ids"]:
-            group["source_fact_ids"].append(fact_id)
-        context = metric.get("context") if isinstance(metric.get("context"), dict) else {}
-        for context_key, context_value in context.items():
-            if context_value not in (None, "", {}, []):
-                group["context"][context_key] = (
-                    str(context_value)[:120] if isinstance(context_value, str) else context_value
-                )
-        group["metrics"][str(metric.get("metric") or "metric")] = {
-            "value": metric.get("value"),
-            "unit": metric.get("unit"),
-        }
-    packet_metric_registry = [
-        {key: value for key, value in group.items() if value not in (None, "", {}, [], 0)}
-        for group in registry_groups.values()
-    ]
-    target_rows = [
-        {
-            "entity_type": str(item.get("entity_type") or ""),
-            "entity_id": str(item.get("entity_id") or ""),
-            "role": str(item.get("role") or ""),
-        }
-        for item in (manifest.get("analysis_targets") or []) if isinstance(item, dict)
-        and _fastmoss_valid_entity_id(item.get("entity_id"))
-    ]
-    target_ids_by_type: dict[str, set[str]] = {}
-    for item in target_rows:
-        target_ids_by_type.setdefault(item["entity_type"], set()).add(item["entity_id"])
-
-    def fact_primary_key(fact: dict[str, Any]) -> tuple[str, str]:
-        entity_type = str(fact.get("entity_type") or "")
-        entity_id = str(
-            fact.get("entity_id") or fact.get("product_id")
-            or fact.get("shop_id") or fact.get("creator_id") or fact.get("video_id") or ""
-        )
-        return entity_type, entity_id
-
-    def target_fact(fact: dict[str, Any], entity_type: str, entity_id: str) -> dict[str, Any] | None:
-        primary_type, primary_id = fact_primary_key(fact)
-        if primary_type == entity_type and primary_id == entity_id:
-            compact = dict(fact)
-            compact["entity_fact_ref"] = (
-                f"{str(fact.get('fact_id') or 'fact')}:entity:{entity_type}:{entity_id}"
-            )
-            return compact
-        list_key = {"product": "products", "creator": "top_creators", "video": "top_videos"}.get(entity_type)
-        id_key = {"product": "product_id", "creator": "creator_uid", "video": "video_id"}.get(entity_type)
-        if not list_key or not id_key:
-            return None
-        rows = [
-            row for row in (fact.get(list_key) or []) if isinstance(row, dict)
-            and str(row.get(id_key) or "") == entity_id
-        ]
-        if not rows:
-            return None
-        compact = dict(fact)
-        compact["entity_fact_ref"] = (
-            f"{str(fact.get('fact_id') or 'fact')}:entity:{entity_type}:{entity_id}"
-        )
-        compact[list_key] = rows
-        compact["included_count"] = len(rows)
-        returned_count = int(compact.get("returned_count") or len(fact.get(list_key) or []))
-        compact["omitted_count"] = max(0, returned_count - len(rows))
-        compact["truncated"] = returned_count > len(rows)
-        return compact
-
-    def supporting_fact(fact: dict[str, Any]) -> dict[str, Any] | None:
-        primary_type, primary_id = fact_primary_key(fact)
-        if primary_id and primary_id in target_ids_by_type.get(primary_type, set()):
-            return None
-        compact = dict(fact)
-        moved = 0
-        for entity_type, list_key, id_key in (
-            ("product", "products", "product_id"),
-            ("creator", "top_creators", "creator_uid"),
-            ("video", "top_videos", "video_id"),
-        ):
-            rows = [row for row in (compact.get(list_key) or []) if isinstance(row, dict)]
-            if not rows:
-                continue
-            kept = [
-                row for row in rows
-                if str(row.get(id_key) or "") not in target_ids_by_type.get(entity_type, set())
-            ]
-            moved += len(rows) - len(kept)
-            compact[list_key] = kept
-            if list_key == "products":
-                returned_count = int(compact.get("returned_count") or len(rows))
-                compact["included_count"] = len(kept)
-                compact["omitted_count"] = max(0, returned_count - len(kept))
-                compact["truncated"] = returned_count > len(kept)
-        if moved:
-            compact["partitioned_target_count"] = moved
-        if moved and any(key in compact for key in ("products", "top_creators", "top_videos")) and not any(
-            compact.get(key) for key in ("products", "top_creators", "top_videos")
-        ):
-            return None
-        return compact
-
-    target_evidence: list[dict[str, Any]] = []
-    for target in target_rows:
-        facts = [
-            matched for fact in representative_evidence
-            if (matched := target_fact(fact, target["entity_type"], target["entity_id"])) is not None
-        ]
-        metrics = [
-            metric for metric in packet_metric_registry
-            if (
-                str(metric.get("entity_type") or "") == target["entity_type"]
-                and str(metric.get("entity_id") or "") == target["entity_id"]
-            ) or str((metric.get("context") or {}).get("subject_product_id") or "") == target["entity_id"]
-        ]
-        target_evidence.append({
-            **target,
-            "facts": facts,
-            "metric_registry": metrics,
-        })
-    supporting_evidence = [
-        compact for fact in representative_evidence
-        if (compact := supporting_fact(fact)) is not None
-    ]
-    target_metric_keys = {
-        json.dumps(metric, ensure_ascii=False, sort_keys=True, default=str)
-        for target in target_evidence for metric in (target.get("metric_registry") or [])
-    }
-    supporting_metric_registry = [
-        metric for metric in packet_metric_registry
-        if json.dumps(metric, ensure_ascii=False, sort_keys=True, default=str) not in target_metric_keys
-    ]
-    available_dimensions = sorted({
-        str(fact.get("dimension") or "")
-        for fact in representative_evidence
-        if str(fact.get("dimension") or "") and str(fact.get("data_state") or "data") == "data"
-    })
-    return {
-        "provider": "fastmoss",
-        "workflow": playbook,
-        "available_dimensions": available_dimensions,
-        "target_category_path": manifest.get("target_category_path"),
-        "analysis_targets": manifest.get("analysis_targets") or [],
-        "coverage_summary": manifest.get("coverage_summary") or {
-            "call_count": manifest.get("evidence_envelope_count") or 0,
-            "category_search": {
-                key: (manifest.get("category_head") or {}).get(key)
-                for key in ("target_pages", "completed_pages", "reported_total", "fetched_unique", "coverage_complete")
-            },
-            "segment_search": {
-                key: (manifest.get("segment_head") or {}).get(key)
-                for key in ("queries", "fetched_unique")
-            },
-        },
-        "source_catalog": source_catalog,
-        "entity_bundles": packet_bundles,
-        "target_evidence": target_evidence,
-        "supporting_evidence": supporting_evidence,
-        "supporting_metric_registry": supporting_metric_registry,
-        "derived_facts": manifest.get("derived_facts") or [],
-        "conflicts": manifest.get("conflicts") or [],
-        "limitations": manifest.get("limitations") or [],
-        "numeric_policy": "only_tool_evidence_user_input_or_explicit_calculation",
-    }
+    """Render the complete FastMoss dossier through the semantic evidence path."""
+    rendered = render_fastmoss_evidence_document(dossier)
+    return rendered.markdown, {"format": "semantic", **rendered.stats}
 
 
 def fastmoss_report_style_instruction(route: dict[str, Any]) -> str:
@@ -8553,1371 +8128,8 @@ def fastmoss_report_style_instruction(route: dict[str, Any]) -> str:
     )
 
 
-def fastmoss_deterministic_quality_fallback(manifest: dict[str, Any]) -> str:
-    category = manifest.get("category_head") or {}
-    products = category.get("products") or []
-    segment = manifest.get("segment_head") or {}
-    segment_products = segment.get("products") or []
-    fetched = int(category.get("fetched_unique") or 0)
-    target_pages = int(category.get("target_pages") or 3)
-    completed_pages = category.get("completed_pages") or []
-    overlap_count = len(manifest.get("overlap_product_ids") or [])
-    signals = manifest.get("derived_signals") if isinstance(manifest.get("derived_signals"), dict) else {}
-    unit_values = [
-        value for product in products
-        for value in [_fastmoss_number(product.get("day28_units_sold"))]
-        if value is not None and value >= 0
-    ]
-    top3_share = (sum(unit_values[:3]) / sum(unit_values) * 100) if sum(unit_values) > 0 else None
-    price_values = [
-        value for product in products
-        for value in (_fastmoss_number(product.get("price_min")), _fastmoss_number(product.get("price_max")))
-        if value is not None
-    ]
-    top3_ratio = _fastmoss_number(signals.get("category_top3_share"))
-    if top3_ratio is None and top3_share is not None:
-        top3_ratio = top3_share / 100
-    overlap_segment_rate = _fastmoss_number(signals.get("overlap_rate_of_segment_sample"))
-    query_signals = [
-        item for item in (signals.get("segment_queries") or [])
-        if isinstance(item, dict) and str(item.get("query") or "").strip()
-    ]
-    leader = query_signals[0] if query_signals else None
-    runner_up = query_signals[1] if len(query_signals) > 1 else None
-    leader_name = str((leader or {}).get("query") or "").strip()
-    runner_name = str((runner_up or {}).get("query") or "").strip()
-    leader_units = _fastmoss_number((leader or {}).get("sample_units_total"))
-    runner_units = _fastmoss_number((runner_up or {}).get("sample_units_total"))
-    leader_top_share = _fastmoss_number((leader or {}).get("top_product_share"))
-    leader_count = int((leader or {}).get("fetched_unique") or 0)
-    runner_count = int((runner_up or {}).get("fetched_unique") or 0)
-
-    if top3_ratio is None:
-        concentration_view = "现有销量字段不足，暂时不能判断样本内的头部集中度。"
-    elif top3_ratio >= 0.6:
-        concentration_view = f"样本销量明显向少数商品集中：前三款贡献约 {top3_ratio * 100:.1f}%，新品不能只靠同质化跟随。"
-    elif top3_ratio >= 0.35:
-        concentration_view = f"样本已经形成清晰头部，但不是单品垄断：前三款贡献约 {top3_ratio * 100:.1f}%，仍有多种商品形态获得销量。"
-    else:
-        concentration_view = f"样本销量相对分散：前三款贡献约 {top3_ratio * 100:.1f}%，当前更应比较细分定位，而不是只模仿榜首。"
-
-    if overlap_segment_rate is None:
-        fit_view = "类目榜与细分榜缺少可比商品 ID，暂时不能判断目标词与宽类目的贴合度。"
-    elif overlap_segment_rate < 0.15:
-        fit_view = (
-            f"目标细分与宽类目头部的直接重合偏低：细分样本中只有 {overlap_count} 件同时进入类目头部样本"
-            f"（约 {overlap_segment_rate * 100:.1f}%）。因此当前宽类目数据不能直接替代目标细分的判断。"
-        )
-    elif overlap_segment_rate < 0.4:
-        fit_view = (
-            f"目标细分与宽类目头部有一定重合，但并不充分：细分样本中 {overlap_count} 件进入类目头部样本"
-            f"（约 {overlap_segment_rate * 100:.1f}%）。细分定位仍需单独验证。"
-        )
-    else:
-        fit_view = (
-            f"目标细分与宽类目头部重合较高：细分样本中 {overlap_count} 件进入类目头部样本"
-            f"（约 {overlap_segment_rate * 100:.1f}%），两组数据可以相互参考，但仍不能视作完整市场份额。"
-        )
-
-    direction_view = ""
-    comparable_query_samples = (
-        leader_count > 0 and runner_count > 0
-        and min(leader_count, runner_count) / max(leader_count, runner_count) >= 0.8
-    )
-    if leader_name and runner_name and leader_units is not None and runner_units is not None and not comparable_query_samples:
-        direction_view = (
-            f"{leader_name} 与 {runner_name} 本轮分别取得 {leader_count} 件和 {runner_count} 件样本，"
-            "样本量不一致，不能直接用销量合计排优先级；应先补成同等覆盖后再比较。"
-        )
-    elif leader_name and runner_name and leader_units is not None and runner_units is not None:
-        if leader_units > runner_units:
-            direction_view = (
-                f"在本轮同口径细分样本里，{leader_name} 的样本销量合计为 {leader_units:g}，"
-                f"高于 {runner_name} 的 {runner_units:g}。这不是全市场规模，但足以把 {leader_name} 放到更高的验证优先级。"
-            )
-            if leader_top_share is not None and leader_top_share >= 0.5:
-                direction_view += (
-                    f"不过该方向最高单品占细分样本销量约 {leader_top_share * 100:.1f}%，"
-                    "现阶段应先验证它的成功是否可复制，而不是直接把单品表现外推为整个细分机会。"
-                )
-        else:
-            direction_view = (
-                f"{leader_name} 与 {runner_name} 的本轮样本销量没有拉开可解释差距，当前不宜仅凭关键词榜决定方向。"
-            )
-    elif leader_name and leader_units is not None:
-        direction_view = f"本轮只有 {leader_name} 形成可比较的细分销量样本，应先围绕它继续验证，其他方向暂不做强判断。"
-
-    conclusion_parts = [concentration_view, fit_view]
-    if direction_view:
-        conclusion_parts.append(direction_view)
-    lines = [
-        "## 先说结论",
-        "",
-        " ".join(conclusion_parts),
-        "",
-        "## 我怎么看",
-        "",
-        f"- **头部格局：** {concentration_view}",
-        f"- **类目匹配：** {fit_view}",
-        "",
-        "## 关键依据",
-    ]
-    if direction_view:
-        lines.insert(lines.index("", lines.index("## 我怎么看") + 2), f"- **方向取舍：** {direction_view}")
-    lines.append(
-        f"- 类目销量榜按近28天销量降序计划获取 {target_pages} 页；"
-        f"实际完成页码为 {completed_pages}，去重后取得 {fetched} 件商品。"
-    )
-    if category.get("reported_total") is not None:
-        lines.append(f"- 接口报告匹配总数为 {category['reported_total']}；该数字与本次实际获取数量不是同一概念。")
-    target_path = manifest.get("target_category_path")
-    if isinstance(target_path, dict):
-        ordered_path = [f"L{level} {target_path.get(f'level{level}')}" for level in (1, 2, 3) if target_path.get(f"level{level}")]
-        if ordered_path:
-            lines.append(f"- 本轮确认的目标类目路径：{' > '.join(ordered_path)}。")
-    elif target_path:
-        lines.append(f"- 本轮确认的目标类目路径：{target_path}。")
-    if top3_share is not None:
-        lines.append(f"- 在本轮已获取样本中，销量前三商品合计占样本销量约 {top3_share:.1f}%；这只是样本集中度，不是全市场份额。")
-    if products:
-        lines.extend([
-            "", "## 类目头部样本", "",
-            "以下是本轮按近28天销量字段取得并在本地复核排序的代表商品；它描述的是已获取样本，不是完整市场。", "",
-            "| 商品 | 商品ID | 价格 | 近28天销量 | 近28天GMV |", "|---|---:|---:|---:|---:|",
-        ])
-        for product in products[:10]:
-            price_min = product.get("price_min")
-            price_max = product.get("price_max")
-            price = "未返回" if price_min in (None, "") else str(price_min)
-            if price_max not in (None, "", price_min):
-                price += f"–{price_max}"
-            lines.append(
-                f"| {str(product.get('title') or '未返回标题').replace('|', '/')[:120]} | {product.get('product_id')} | "
-                f"{price} | {product.get('day28_units_sold', '未返回')} | {product.get('day28_gmv', '未返回')} |"
-            )
-    if segment_products:
-        lines.extend([
-            "", "## 细分匹配样本", "",
-            "这些商品来自短关键词补充检索，用来判断用户所说的细分方向；不能替代无关键词的类目头部榜。", "",
-            "| 查询词 | 商品 | 商品ID | 近28天销量 |", "|---|---|---:|---:|",
-        ])
-        for product in segment_products[:8]:
-            lines.append(
-                f"| {str(product.get('query') or '未记录').replace('|', '/')} | "
-                f"{str(product.get('title') or '未返回标题').replace('|', '/')[:120]} | {product.get('product_id')} | "
-                f"{product.get('day28_units_sold', '未返回')} |"
-            )
-        lines.extend(["", f"- 类目头部榜与细分匹配榜共有 {overlap_count} 件重合商品。"])
-        if query_signals:
-            lines.extend(["", "### 细分方向对比", ""])
-            for item in query_signals:
-                query = str(item.get("query") or "未记录")
-                count = int(item.get("fetched_unique") or 0)
-                sample_units = _fastmoss_number(item.get("sample_units_total"))
-                top_units = _fastmoss_number(item.get("top_product_units"))
-                top_share = _fastmoss_number(item.get("top_product_share"))
-                median_units = _fastmoss_number(item.get("median_product_units"))
-                units_text = f"样本销量合计 {sample_units:g}" if sample_units is not None else "销量字段不足"
-                top_text = f"，最高单品 {top_units:g}" if top_units is not None else ""
-                share_text = f"、占该词样本 {top_share * 100:.1f}%" if top_share is not None else ""
-                median_text = f"，单品销量中位数 {median_units:g}" if median_units is not None else ""
-                lines.append(f"- **{query}：** {count} 件去重样本，{units_text}{top_text}{share_text}{median_text}。")
-            if direction_view:
-                lines.append(f"- **判断：** {direction_view}")
-    else:
-        lines.extend([
-            "", "## 细分匹配样本", "",
-            "- 本轮细分关键词接口没有形成可用商品样本，因此不能据此判断目标细分没有需求，也不能把宽类目头部直接当成目标产品的头部。",
-        ])
-    lines.extend(["", "## 价格与定位", ""])
-    price_q1 = _fastmoss_number(signals.get("price_midpoint_q1"))
-    price_median = _fastmoss_number(signals.get("price_midpoint_median"))
-    price_q3 = _fastmoss_number(signals.get("price_midpoint_q3"))
-    if price_q1 is not None and price_median is not None and price_q3 is not None:
-        lines.append(
-            f"- 与其用极端最低价和最高价定义市场，我更看中间 50% 的商品价格中点：本轮为 {price_q1:.2f}–{price_q3:.2f}，"
-            f"中位数约 {price_median:.2f}。这是更稳健的样本主体带，不是建议售价。"
-        )
-    elif price_values:
-        lines.append(
-            f"- 已获取商品样本的返回价格落在 {min(price_values):g}–{max(price_values):g} 之间；"
-            "这是样本观察区间，不等于建议上市价。"
-        )
-    else:
-        lines.append("- 本轮没有形成可核对的价格区间，暂不提供精确上市价建议。")
-    lines.extend([
-        "- 定位上应先选定要对标的商品形态，再在同形态样本内比较价格；不能把配件、不同规格和不同使用场景的商品混成一个价格带。",
-        "- 定价前应剔除价格、销量与 GMV 无法互相校验的商品，再结合成本和目标毛利形成候选价。",
-        "", "## 内容与达人信号", "",
-        "- 本轮只有在视频、评论或达人接口返回了可核对数据时，才可据此判断内容打法；不能从商品销量反推内容因果。",
-        "- 若相关接口为空，含义只是本次未返回记录，不代表该类目没有达人或内容供给。",
-    ])
-    lines.extend(["", "## 需要留意"])
-    limitations = list(manifest.get("limitations") or [])
-    conflicts = list(manifest.get("conflicts") or [])
-    if not limitations and not conflicts:
-        lines.append("- 本轮证据没有形成完整闭环，因此只保留能够直接核对的事实。")
-    for item in limitations:
-        lines.append(f"- {item}")
-    for item in conflicts[:10]:
-        lines.append(f"- 商品 {item.get('product_id') or '未知'}：{item.get('issue')}")
-    lines.extend([
-        "- 空结果只代表对应接口本轮没有返回记录，不代表平台绝对不存在。",
-        "",
-        "## 如果要继续做",
-        "",
-        (
-            f"1. **先定方向：** 优先围绕 {leader_name} 的同形态商品继续验证，暂时不要把 {runner_name or '另一个目标词'} 与它合并成一个需求池。"
-            if leader_name else
-            "1. **先定方向：** 把目标词拆成可比较的商品形态，先补齐同口径销量样本，再决定主方向。"
-        ),
-        (
-            f"2. **再做商品深挖：** 优先核查同时出现在类目榜和细分榜的 {overlap_count} 件商品，"
-            "看其规格、卖点和价格是否能解释销量；这比继续扩大宽类目样本更直接。"
-            if overlap_count else
-            "2. **再做商品深挖：** 从细分榜中选择销量靠前且指标无冲突的商品，核查规格、卖点和价格。"
-        ),
-        "3. **最后补内容证据：** 只有评论、达人或视频接口取得有效记录后，再决定内容角度和合作对象；当前商品销量不能替代内容分析。",
-    ])
-    return "\n".join(lines)
-
-
-def downgrade_fastmoss_absolute_market_claims(answer: str) -> str:
-    """Mechanically soften market-existence/opportunity claims that samples cannot prove."""
-    text = str(answer or "")
-    text = re.sub(
-        r"(?:不构成|不存在)(?:一个)?独立市场",
-        "在本次已获取样本中尚未显示出足以确认独立市场的强信号",
-        text,
-    )
-    text = re.sub(
-        r"(?:是|属于)(?:一个)?真实(?:的)?细分机会",
-        "在本次样本中显示出一定需求信号，但是否构成可进入机会仍需验证",
-        text,
-    )
-    text = re.sub(
-        r"(?:其余|剩余)\s*[\d,.]+\+?\s*(?:个|件|款)?\s*(?:商品|产品)[^\n。；]{0,80}?(?:不足|少于|低于|不到)\s*[\d,.]+\s*%",
-        "未抓取商品的销量占比无法由本次样本推导",
-        text,
-    )
-    text = re.sub(
-        r"(?:广告|投放)(?:的)?\s*ROI\s*(?:稳定|可行|健康|较高|不错)",
-        "广告投入效率仍需成本、转化和利润数据验证",
-        text,
-        flags=re.IGNORECASE,
-    )
-    text = re.sub(
-        r"(?:广告|联盟|视频|直播)(?:GMV|销量)?占比[^\n。；]{0,60}?(?:证明|说明)[^\n。；]{0,30}?(?:ROI|利润|投放模式可行)",
-        "该占比只能描述已观测渠道结构，不能证明 ROI、利润或投放效率",
-        text,
-        flags=re.IGNORECASE,
-    )
-    text = re.sub(
-        r"(?:该|这个|目标|Electric Food Shredder|Mini Meat Grinder)?\s*(?:细分|市场)\s*(?:极窄|非常窄|几乎不存在)",
-        "该细分在本轮样本中的销量信号较弱，整体市场范围仍需更多覆盖验证",
-        text,
-        flags=re.IGNORECASE,
-    )
-    text = re.sub(
-        r"(?:内容|视频)(?:转化)?效率(?:几乎)?为?\s*零",
-        "本轮代表商品视频未观测到可归因销量，内容效率仍需扩大样本验证",
-        text,
-        flags=re.IGNORECASE,
-    )
-    text = re.sub(
-        r"(?:广告|投放)(?:回报|效果)(?:极低|很低|很差)",
-        "已观测转化信号较弱，投放效率仍需广告成本与利润数据验证",
-        text,
-        flags=re.IGNORECASE,
-    )
-    text = re.sub(
-        r"(?:表明|说明)供给侧[^\n。；]{0,60}?竞争加剧",
-        "说明新品供给仍活跃，但不能据此判断竞争强度",
-        text,
-    )
-    text = re.sub(
-        r"(?:表明|说明)消费者[^\n。；]{0,100}?(?:内容的?耐受度|内容偏好|决策路径)[^\n。；]*",
-        "该渠道变化不能直接证明消费者内容偏好或决策路径改变",
-        text,
-    )
-    text = re.sub(
-        r"(?:表明|说明)[^\n。；]{0,80}?消费者认知[^\n。；]*(?:多数[^\n。；]{0,60})?",
-        "该样本只表明关键词下销量信号较弱，消费者认知和搜索路径仍需验证",
-        text,
-    )
-    text = re.sub(
-        r"(?:说明)?主要依靠商品卡自然流量或付费广告[^\n。；]*",
-        "零关联视频不能直接确定流量来源，需用该商品渠道归因数据验证",
-        text,
-    )
-    text = re.sub(
-        r"(?:依赖|依靠)[^\n。；]{0,60}?达人视频[^\n。；]{0,40}?(?:驱动|转化)[^\n。；]*",
-        "关联达人和视频规模较大，但其对销量的因果贡献仍需验证",
-        text,
-    )
-    text = re.sub(
-        r"(?:消费者)?(?:先)?搜(?:索)?了?(?:再|后)(?:购买|买)",
-        "商品卡成交占比较高，但具体搜索与购买路径未被本轮数据观测",
-        text,
-    )
-    text = re.sub(
-        r"[“\"]?商品卡[”\"]?(?:的)?(?:自然搜索|搜索)(?:流量|成交)",
-        "商品卡成交",
-        text,
-    )
-    text = re.sub(
-        r"(?:更|较为)?成熟[、，和且 ]*(?:更|较为)?活跃(?:[、，和且 ]*销售潜力更大)?",
-        "在本次已获取样本中相关销量或内容指标更高",
-        text,
-    )
-    text = re.sub(
-        r"(?:仍处于)?(?:萌芽(?:期|阶段)?|需求低迷|需求尚未启动)",
-        "本次样本信号较弱，实际需求状态仍待验证",
-        text,
-    )
-    text = text.replace("达人积极带动", "达人关联规模较大")
-    text = re.sub(
-        r"(?:这|由此)?表明单纯的?视频种草转化难度(?:正在|在)?增加",
-        "这只说明已观测渠道占比发生变化，不能直接判断内容转化难度",
-        text,
-    )
-    text = re.sub(
-        r"(?:进一步)?验证了?[^\n。；]{0,40}?是类目的核心驱动力",
-        "说明相关功能在本次头部样本中较常见",
-        text,
-    )
-    text = re.sub(
-        r"(?:过度|几乎全)?依赖商品卡成交",
-        "商品卡成交占比较高",
-        text,
-    )
-    text = re.sub(
-        r"这意味着[^\n。；]{0,80}?缺乏可持续的达人内容驱动力",
-        "但该渠道结构不能直接证明达人内容是否可持续",
-        text,
-    )
-    text = re.sub(
-        r"一旦竞争品进入[^\n。；]{0,60}?销量将锐减",
-        "竞争变化对后续销量的影响仍需持续观测",
-        text,
-    )
-    text = text.replace("至少有达人愿意带", "至少观测到达人关联")
-    text = text.replace("其增长有持续动力", "其达人关联规模更高")
-    text = re.sub(
-        r"(?:几乎全)?依赖搜索截流",
-        "商品卡成交占比较高，具体流量路径未被本轮数据观测",
-        text,
-    )
-    text = re.sub(
-        r"(?:一个)?典型的?[“\"]?发大量视频去做搜索截流[”\"]?的?模式",
-        "视频关联规模较高，但具体流量路径仍需验证",
-        text,
-    )
-    text = re.sub(
-        r"通过发布\s*(\*\*)?[\d,.]+(?:条|个)?(?:\*\*)?\s*视频关联此商品实现了销售",
-        "观测到较多关联视频和商品成交，但二者的因果关系仍需验证",
-        text,
-    )
-    text = re.sub(
-        r"(?:整体|类目|市场)?大盘(?:正在|持续)?萎缩|存量竞争(?:阶段|市场)?",
-        "类目同比下降仅描述本次观测周期，长期市场与竞争阶段仍待验证",
-        text,
-    )
-    text = re.sub(
-        r"(?:形成|建立|具备|强化)?(?:内容护城河|用户心智|抗风险能力)",
-        "长期内容效果（仍需后续数据验证）",
-        text,
-    )
-    text = text.replace("销售潜力更大", "本次样本中的已观测销量信号更高")
-    text = text.replace("达人驱动特征", "达人与内容关联特征")
-    return text
-
-
-def sanitize_fastmoss_unsupported_recommendations(answer: str) -> tuple[str, int]:
-    """Remove only operational numbers stated as recommendations, not observed metrics."""
-    text = str(answer or "")
-    rules: list[tuple[str, str]] = []
-
-    def replace(pattern: str, replacement: str) -> None:
-        rules.append((pattern, replacement))
-
-    replace(
-        r"(?:建议\s*)?(?:首批|先备货?|备货)\s*[\d,.]+\s*(?:[-~–—至到]\s*[\d,.]+\s*)?件",
-        "建议先以小批量验证",
-    )
-    replace(
-        r"(?:建议|计划|准备|首轮|测试|先用|控制)\s*(?:投放|广告)?预算\s*(?:为|在|到|约|：|:)?\s*"
-        r"(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+\s*(?:[-~–—至到]\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+)?",
-        "预算应在取得成本与转化证据后再确定",
-    )
-    replace(
-        r"(?:配合|邀请|联系|合作|寄样给)\s*[\d,.]+\s*(?:[-~–—至到]\s*[\d,.]+\s*)?个?达人",
-        "配合少量匹配达人",
-    )
-    replace(
-        r"(?:建议|计划|先)?(?:测试|观察|验证)\s*[\d,.]+\s*(?:[-~–—至到]\s*[\d,.]+\s*)?(?:天|周|个月|月)",
-        "安排完整测试周期",
-    )
-    replace(
-        r"(?:如果|若)[^\n。；]{0,60}?接下来\s*[\d,.]+\s*(?:天|周|个月|月)(?:内)?"
-        r"[^\n。；]{0,40}?从\s*[\d,.]+\s*(?:个|位)?人?[^\n。；]{0,20}?至\s*[\d,.]+\s*(?:个|位)?人?(?:以上)?",
-        "如果后续完整观察周期内达人覆盖持续增长",
-    )
-    replace(
-        r"筛选\s*[\d,.]+\s*(?:[kKwW万])?\s*[-~–—至到]\s*[\d,.]+\s*(?:[kKwW万])?\s*粉(?:丝)?的?",
-        "筛选受众匹配的",
-    )
-    replace(
-        r"(?:建议|目标|要求|控制|至少|不低于)[^\n。；]{0,30}?(?:ROI|转化率|毛利率)\s*"
-        r"(?:达到|为|在|不低于|至少|约|：|:)?\s*[\d,.]+\s*%?",
-        "相关经营指标应在测试数据形成后再设目标",
-    )
-    replace(
-        r"(?:ROI|转化率|毛利率)\s*(?:目标|建议|要求|达到|至少|不低于|控制在)\s*[\d,.]+\s*%?",
-        "相关经营指标应在测试数据形成后再设目标",
-    )
-    replace(
-        r"(?:建议|目标|要求|控制|不超过)[^\n。；]{0,24}?(?:供应链成本|采购成本|MOQ|起订量)\s*"
-        r"(?:为|在|低于|不超过|约|：|:)?\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+",
-        "供应链条件应以实际询价和打样结果为准",
-    )
-    replace(
-        r"(?:供应链成本|采购成本|MOQ|起订量)\s*(?:建议|目标|要求|控制在|不超过|低于)\s*"
-        r"(?:为|在|低于|不超过|控制在)?\s*"
-        r"(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+",
-        "供应链条件应以实际询价和打样结果为准",
-    )
-    replace(
-        r"(?:建议|推荐)(?:上市)?(?:售价|定价)\s*\*{0,2}(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+\s*"
-        r"(?:[-~–—至到]\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+)?\*{0,2}",
-        "建议先依据已观测价格带设定候选价，再结合成本与转化验证",
-    )
-    replace(
-        r"(?:以|用)\s*\*{0,2}(?:US\$|USD\s*|\$|¥|￥)\s*[\d,.]+\*{0,2}[^\n。；]{0,24}?上架",
-        "选择一个有证据支撑的候选价上架",
-    )
-    replace(
-        r"(?:设置|设定|建议)\s*\*{0,2}[\d,.]+\s*%\*{0,2}\s*佣金(?:率)?",
-        "佣金率应通过实际联盟测试确定",
-    )
-    replace(
-        r"(?:有潜力|预计|目标|争取)[^\n。；]{0,40}?[\d,.]+\s*(?:[-~–—至到]\s*[\d,.]+\s*)?个?月"
-        r"[^\n。；]{0,60}?(?:月销|销量)[^\n。；]{0,20}?[\d,.]+\+?\s*件",
-        "增长幅度和达成时间需通过实际测试验证",
-    )
-    replace(
-        r"(?:如果|若)按[^\n。；]{0,160}?(?:广告[^\n。；]{0,16}?成本|CPA|毛利|利润|ROI)[^\n。；]*",
-        "具体经营结果需用实际广告成本、转化与毛利数据验证",
-    )
-    replace(
-        r"建议定价\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+\s*"
-        r"(?:[-~–—至到]\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+)?",
-        "建议先依据已观测价格带设定候选价，再结合成本与转化验证",
-    )
-    replace(
-        r"用\s*(?:US\$|USD\s*|\$|¥|￥)\s*[\d,.]+\s*上架",
-        "选择一个有证据支撑的候选价上架测试",
-    )
-    replace(
-        r"(?:建议|计划|准备|首轮|首月|月度?|投放|广告)[^\n。；]{0,30}?预算\s*"
-        r"(?:为|在|到|约|控制在|：|:)?\s*(?:US\$|USD\s*|\$|¥|￥)?\s*"
-        r"[\d,.]+\s*(?:[kKwW万千])?\s*(?:[-~–—至到]\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+\s*(?:[kKwW万千])?)?",
-        "预算应在取得成本与转化证据后再确定",
-    )
-    replace(
-        r"(?:建议|计划|首批|先|招募|联系|合作|建联)[^\n。；]{0,20}?[\d,.]+\s*"
-        r"(?:[-~–—至到]\s*[\d,.]+\s*)?(?:个|位)\s*(?:达人|创作者)",
-        "先与少量匹配达人验证",
-    )
-    replace(
-        r"(?:找|寻找|物色)\s*[\d,.]+\s*(?:[-~–—至到]\s*[\d,.]+\s*)?(?:个|位)?\s*(?:达人|创作者)",
-        "寻找少量受众匹配的达人",
-    )
-    replace(
-        r"每\s*(?:周|星期|月)\s*(?:产出|发布|制作|投放)?\s*[\d,.]+\s*"
-        r"(?:[-~–—至到]\s*[\d,.]+\s*)?(?:条|个|支)\s*(?:视频|内容|素材)",
-        "按稳定节奏持续测试内容",
-    )
-    replace(
-        r"(?:可接受|目标|建议|控制|要求)[^\n。；]{0,20}?(?:CPO|CPA|获客成本|单次转化成本)\s*"
-        r"(?:为|在|到|约|不超过|控制在|：|:)?\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+\s*"
-        r"(?:[-~–—至到]\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+)?",
-        "获客成本目标应在实际投放数据形成后确定",
-    )
-    replace(
-        r"(?:CPO|CPA|获客成本|单次转化成本)\s*(?:目标|建议|要求|控制在|可接受)?\s*"
-        r"(?:为|在|到|约|不超过|：|:)?\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+\s*"
-        r"(?:[-~–—至到]\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+)?",
-        "获客成本目标应在实际投放数据形成后确定",
-    )
-    replace(
-        r"(?:每条|单条|每个)[^\n。；]{0,12}?(?:素材|视频|内容)[^\n。；]{0,12}?"
-        r"(?:预算|成本)\s*(?:为|约|：|:)?\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+",
-        "单条内容投入应通过实际测试确定",
-    )
-    replace(
-        r"(?:建议|目标|控制|要求)[^\n。；]{0,24}?(?:广告费率|广告费用|广告费|投放费用|佣金)"
-        r"[^\n。；]{0,12}?[\d,.]+\s*%",
-        "相关费率应通过实际经营数据确定",
-    )
-    replace(
-        r"(?:建议|计划|目标|先)?(?:测试|观察|验证)?周期\s*(?:为|约|：|:)?\s*[\d,.]+\s*"
-        r"(?:[-~–—至到]\s*[\d,.]+\s*)?(?:天|周|个月|月)",
-        "安排完整测试周期",
-    )
-    replace(
-        r"(?:建议|目标|计划|售价|定价)[^\n。；]{0,16}?(?:定在|设为|设置为|为|：|:)\s*"
-        r"\*{0,2}(?:US\$|USD\s*|\$|¥|￥)\s*[\d,.]+\s*"
-        r"(?:[-~–—至到]\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+)?\*{0,2}",
-        "候选售价应依据同形态样本、成本与转化验证后确定",
-    )
-    replace(
-        r"(?:建议|目标|优先|选择|控制)[^\n。；]{0,30}?[\d,.]+\s*"
-        r"(?:[-~–—至到]\s*[\d,.]+\s*)?[wW瓦](?:功率)?",
-        "产品功率规格应依据已核实的商品与供应链信息确定",
-    )
-    replace(
-        r"(?:前期|首月|每月|月度)?[^\n。；]{0,16}?(?:广告|投放)?预算\s*[（(]?[^\n。；]{0,16}?"
-        r"(?:US\$|USD\s*|\$|¥|￥)\s*[\d,.]+\s*(?:[kKwW万千])?\s*"
-        r"(?:[-~–—至到]\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+\s*(?:[kKwW万千])?)?[）)]?",
-        "预算应在取得成本与转化证据后再确定",
-    )
-    replace(
-        r"(?:筛选|邀约|建联|联系|合作)\s*[\d,.]+\s*(?:[-~–—至到]\s*[\d,.]+\s*)?"
-        r"(?:个|位)\s*(?:[\d,.]+\s*(?:[kKwW万])?\s*[-~–—至到]\s*[\d,.]+\s*(?:[kKwW万])?\s*粉丝?)?"
-        r"[^\n。；]{0,20}?(?:达人|创作者)",
-        "筛选少量受众匹配的达人",
-    )
-    replace(
-        r"(?:跑|测试|制作|准备)\s*[\d,.]+\s*(?:组|条|支|个)\s*(?:素材|视频|内容)",
-        "测试少量差异化内容素材",
-    )
-    replace(
-        r"(?:CPO|CPA|获客成本|单次转化成本)[^\n。；]{0,80}?"
-        r"(?:低于|不高于|控制在|目标为|可接受)[^\n。；]{0,12}?"
-        r"(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+\s*"
-        r"(?:[-~–—至到]\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+)?[^\n。；]{0,12}?(?:可接受)?",
-        "获客成本目标应在实际投放数据形成后确定",
-    )
-    replace(
-        r"(?:建议|目标|采用|使用|通过|免费寄样\s*\+?)[^\n。；]{0,30}?"
-        r"(?:高佣金|佣金(?:率)?)\s*[（(]?\s*[\d,.]+\s*%\s*"
-        r"(?:[-~–—至到]\s*[\d,.]+\s*%)?[）)]?",
-        "佣金率应通过实际联盟测试确定",
-    )
-    replace(
-        r"(?:广告费|投放费用|佣金)\s*[\d,.]+\s*%",
-        "相关费率应通过实际经营数据确定",
-    )
-    replace(
-        r"(?:同规格|目标|建议|选择)[^\n。；]{0,12}?[\d,.]+\s*"
-        r"(?:[-~–—至到]\s*[\d,.]+\s*)?[wW瓦](?:功率)?",
-        "目标功率规格需以已核实商品和供应链信息为准",
-    )
-    replace(
-        r"(?:每天|每日)平均(?:约)?\s*[\d,.]+\s*(?:[-~–—至到]\s*[\d,.]+\s*)?件"
-        r"[^\n。；]{0,24}?来自(?:付费|广告)流量",
-        "付费流量贡献需要逐日归因数据验证",
-    )
-    replace(
-        r"(?:先)?以\s*(?:US\$|USD\s*|\$|¥|￥)\s*[\d,.]+\s*(?:进行)?试价",
-        "先从已观测价格带中选择候选价测试",
-    )
-    replace(
-        r"(?:调高|上调|调低|下调)至\s*(?:US\$|USD\s*|\$|¥|￥)\s*[\d,.]+",
-        "再根据实际转化调整价格",
-    )
-    replace(
-        r"(?:可|建议|计划)?上架\s*(?:US\$|USD\s*|\$|¥|￥)\s*[\d,.]+",
-        "可在验证后测试候选价格",
-    )
-    replace(
-        r"[\d,.]+\s*(?:[-~–—至到]\s*[\d,.]+\s*)?(?:天|周|个月|月)后"
-        r"[^\n。；]{0,24}?(?:转化率|调价|调高|调低|复盘)",
-        "完成充分测试后再依据实际转化复盘调整",
-    )
-    replace(
-        r"(?:建议|计划|准备|先)?(?:与|联系|合作|建联)\s*[\d,.]+\s*"
-        r"(?:[-~–—至到]\s*[\d,.]+\s*)?(?:个|位)\s*"
-        r"(?:[\d,.]+\s*(?:[kKwW万])?\s*[-~–—至到]\s*[\d,.]+\s*(?:[kKwW万])?\s*粉丝?的?)?"
-        r"[^\n。；]{0,24}?(?:达人|创作者)(?:合作)?",
-        "先与少量受众匹配的达人验证",
-    )
-    replace(
-        r"(?:测试|试投|试卖)\s*(?:US\$|USD\s*|\$|¥|￥)\s*[\d,.]+\s*"
-        r"(?:[-~–—至到]\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+)?\s*价位",
-        "从已观测价格带中选择候选价进行验证",
-    )
-    replace(
-        r"(?:测试|试投|试卖)\s*(?:US\$|USD\s*|\$|¥|￥)\s*[\d,.]+\s*"
-        r"(?:[-~–—至到]\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+)?\s*的?(?=\s*(?:[A-Za-z]|款|产品|商品))",
-        "测试已观测价格带内的",
-    )
-    replace(r"建议关注区间", "样本主体区间")
-    replace(
-        r"(?:头部商品)?毛利率?潜力\s*(?:\|\s*)?(?:较高|很高|高|较低|很低|低)(?:[^|\n]*)",
-        "毛利判断 | 暂无法判断（缺少成本证据）",
-    )
-    # A comma-separated clause, Markdown table cell, or sentence is one claim.
-    # Apply at most one deterministic rewrite to each claim so overlapping
-    # regular expressions cannot repeatedly mutate the same text.
-    cleanup_count = 0
-    segments = re.split(r"((?<!\d),(?!\d)|[，；;。\n])", text)
-    for index in range(0, len(segments), 2):
-        segment = segments[index]
-        if not segment:
-            continue
-        for pattern, replacement in rules:
-            updated, count = re.subn(
-                pattern, replacement, segment, count=1, flags=re.IGNORECASE
-            )
-            if count:
-                segments[index] = updated
-                cleanup_count += 1
-                break
-    return "".join(segments), cleanup_count
-
-
-def normalize_fastmoss_entity_id_abbreviations(
-    answer: str,
-    manifest: dict[str, Any],
-) -> tuple[str, int]:
-    """Expand unique product/shop/creator/video ID prefixes back to stable IDs."""
-    stable_ids = {
-        str(bundle.get("entity_id") or "")
-        for bundle in (manifest.get("entity_bundles") or []) if isinstance(bundle, dict)
-        and str(bundle.get("entity_type") or "") in {"product", "shop", "creator", "video"}
-        and re.fullmatch(r"\d{16,20}", str(bundle.get("entity_id") or ""))
-    }
-    stable_ids.update(
-        str(target.get("entity_id") or "")
-        for target in (manifest.get("analysis_targets") or []) if isinstance(target, dict)
-        and re.fullmatch(r"\d{16,20}", str(target.get("entity_id") or ""))
-    )
-    edits = 0
-
-    def expand(match: re.Match[str]) -> str:
-        nonlocal edits
-        prefix = match.group(0)
-        candidates = [entity_id for entity_id in stable_ids if entity_id.startswith(prefix)]
-        if len(candidates) != 1:
-            return prefix
-        edits += 1
-        return candidates[0]
-
-    return re.sub(r"(?<!\d)\d{10,15}(?!\d)", expand, str(answer or "")), edits
-
-
-def cleanup_fastmoss_markdown_structure(answer: str) -> str:
-    """Remove empty sections and table gaps left by valid claim deletions."""
-    text = str(answer or "")
-    text = re.sub(r"(?m)(^\|[^\n]+\|\n)\s*\n+(?=^\|)", r"\1", text)
-    structural = (
-        r"(?:#{1,6}\s+[^\n]+|\*\*[^*\n]+\*\*|-\s+\*\*[^\n]+\*\*[：:]?)"
-    )
-    next_structural = r"(?=(?:#{1,6}\s+|\*\*[^*\n]+\*\*|---\s*$))"
-    text = re.sub(
-        rf"(?m)^{structural}\s*\n(?:[ \t]*\n)+{next_structural}",
-        "",
-        text,
-    )
-    return re.sub(r"\n{3,}", "\n\n", text).strip()
-
-
-def sanitize_fastmoss_state_contradictions(
-    answer: str,
-    manifest: dict[str, Any],
-) -> tuple[str, int]:
-    """Correct only explicit data/empty contradictions that can be tied to a query or ID."""
-    text = str(answer or "")
-    rules: list[tuple[str, str]] = []
-    for envelope in manifest.get("evidence_envelopes") or []:
-        if not isinstance(envelope, dict):
-            continue
-        state = str(envelope.get("data_state") or "")
-        arguments = envelope.get("arguments") if isinstance(envelope.get("arguments"), dict) else {}
-        query = str(arguments.get("keywords") or "").strip()
-        if query and state == "data":
-            pattern = rf"({re.escape(query)}[^\n。；]{{0,80}}?)(?:返回为空|没有返回|未返回|无数据|没有数据)"
-            rules.append((pattern, rf"\1本轮返回了可用样本"))
-        if state != "empty":
-            continue
-        for ref in envelope.get("entity_refs") or []:
-            if not isinstance(ref, dict):
-                continue
-            entity_id = str(ref.get("id") or "").strip()
-            if not _fastmoss_valid_entity_id(entity_id):
-                continue
-            pattern = rf"({re.escape(entity_id)}[^\n。；]{{0,80}}?)(?:为|等于)\s*0(?:\.0+)?"
-            rules.append((pattern, rf"\1本轮未返回可核对记录"))
-    signals = manifest.get("derived_signals") if isinstance(manifest.get("derived_signals"), dict) else {}
-    for item in signals.get("segment_queries") or []:
-        if not isinstance(item, dict):
-            continue
-        query = str(item.get("query") or "").strip()
-        fetched = int(item.get("fetched_unique") or 0)
-        active = int(item.get("products_with_units") or 0)
-        if not query or fetched <= 0:
-            continue
-        pattern = rf"({re.escape(query)}[^\n。；]{{0,50}}?)(?:几乎无|没有)(?:活跃)?(?:商品|产品)"
-        replacement = rf"\1本轮返回 {fetched} 款样本，其中 {active} 款有可核对销量"
-        rules.append((pattern, replacement))
-    top3_share = _fastmoss_number(signals.get("category_top3_share"))
-    if top3_share is not None and top3_share < 0.6:
-        rules.append((
-            r"头部集中度(?:很|较)?高",
-            f"本轮样本前三款销量占比约 {top3_share * 100:.1f}%，已形成头部但并非高度集中",
-        ))
-    cleanup_count = 0
-    segments = re.split(r"((?<!\d),(?!\d)|[，；;。\n])", text)
-    for index in range(0, len(segments), 2):
-        segment = segments[index]
-        if not segment:
-            continue
-        for pattern, replacement in rules:
-            updated, count = re.subn(
-                pattern, replacement, segment, count=1, flags=re.IGNORECASE
-            )
-            if count:
-                segments[index] = updated
-                cleanup_count += 1
-                break
-    return "".join(segments), cleanup_count
-
-
-def polish_fastmoss_report_tone(answer: str) -> str:
-    """Apply narrow deterministic cleanup without changing report structure."""
-    text, _ = sanitize_fastmoss_unsupported_recommendations(answer)
-    text = downgrade_fastmoss_absolute_market_claims(text)
-    text = re.sub(r"[（(]\s*修正版\s*[）)]", "", text, count=1)
-    text = text.replace("数据缺口（严重）", "需要留意的数据边界")
-    return text
-
-
-def fastmoss_rewrite_preserves_report_detail(
-    draft: str,
-    rewritten: str,
-    manifest: dict[str, Any],
-    route: dict[str, Any],
-) -> bool:
-    """Check semantic usability without enforcing headings, references, or length ratios."""
-    text = str(rewritten or "").strip()
-    if not text or deepseek_tool_protocol_present({"content": text}):
-        return False
-    if not any(marker in text for marker in ("结论", "判断", "整体来看", "核心观点", "方向")):
-        return False
-    if not any(marker in text for marker in ("建议", "下一步", "优先", "验证", "行动")):
-        return False
-    dimensions = {
-        str(fact.get("dimension") or "")
-        for fact in (manifest.get("evidence_facts") or [])
-        if isinstance(fact, dict)
-    }
-    semantic_groups: list[tuple[set[str], tuple[str, ...]]] = [
-        ({"category_analysis", "category_trend", "category_channel_ranking"}, ("类目", "渠道", "趋势")),
-        ({"new_products", "top_products"}, ("新品", "头部", "商品")),
-        ({"product_overview", "product_90d_trend"}, ("广告", "联盟", "趋势", "代表商品")),
-        ({"review_status"}, ("评论", "评价")),
-    ]
-    applicable = [terms for group, terms in semantic_groups if dimensions.intersection(group)]
-    if applicable and not any(any(term in text for term in terms) for terms in applicable):
-        return False
-    return True
-
-
-def fastmoss_high_risk_claims(draft: str) -> list[dict[str, Any]]:
-    """Select only claims that need semantic verification; keep the full draft out of the verifier."""
-    patterns = (
-        ("operational_number", re.compile(
-            r"(?i)(?=[^\n]{0,220}\d)(?=[^\n]{0,220}(?:建议|首批|预算|售价|定价|"
-            r"最佳[^\n]{0,20}价位|库存|备货|每周[^\n]{0,30}(?:发布|内容)|测试(?:周期)?|观察期|"
-            r"ROI|CPO|CPA|转化率|毛利率|成本|MOQ|佣金|广告费|功率|\bW\b|"
-            r"(?:找|联系|合作|招募|筛选)[^\n]{0,30}(?:达人|创作者)|"
-            r"(?:达人|创作者)[^\n]{0,30}(?:找|联系|合作|招募|筛选)))"
-        )),
-        ("sample_extrapolation", re.compile(
-            r"(?:其余|剩余|未抓取|全市场|市场份额|长尾)[^\n]{0,120}(?:%|商品|产品|件)|"
-            r"(?:全部|均为|全是|几乎全是)[^\n。；]{0,100}(?:商品|产品|达人|视频|内容)"
-        )),
-        ("market_scale", re.compile(
-            r"(?:市场(?:容量|体量|规模)|实质性细分市场|商业化程度|规模投入|结构性机会|"
-            r"(?:抢占|占据|扩大|获得)[^\n。；]{0,30}市场份额)"
-        )),
-        ("channel_causality", re.compile(
-            r"(?i)(?:(?:依靠|通过)[^\n。；]{0,40}(?:广告|联盟|视频|直播)|(?:广告|联盟|视频|直播))"
-            r"[^\n。；]{0,100}(?:ROI|利润|有效|可行|驱动|导致|证明|稳定|实现|带来|造就|爆发)|"
-            r"广告(?:投入|花费|预算)"
-        )),
-        ("content_causality", re.compile(
-            r"(?:内容偏好|最有效|转化最高|表现最好|核心驱动力|持续动力|搜索截流|"
-            r"销量将锐减|转化难度(?:正在|在)?增加|因为[^\n]{0,60}所以)"
-        )),
-        ("metric_period", re.compile(
-            r"(?i)(?:(?:近|最后)?(?:28|30|90)\s*天[^\n]{0,80}(?:销量|GMV|趋势)|"
-            r"(?:销量|GMV|趋势)[^\n]{0,80}(?:28|30|90)\s*天)"
-        )),
-        ("cross_period_ratio", re.compile(
-            r"(?i)(?:占|贡献)[^\n。；]{0,50}(?:%|百分比)|(?:%|百分比)[^\n。；]{0,40}(?:占|贡献)"
-        )),
-        ("cross_entity_attribute", re.compile(r"(?:同一品牌|同一店铺|同一卖家|都来自同一)")),
-        ("state_claim", re.compile(
-            r"(?:返回为空|没有返回|未返回|无数据|没有数据|为零|等于0)|"
-            r"(?:未|没有|无法)找到[^\n。；]{0,50}(?:商品|品类|类目|记录|结果|匹配)|"
-            r"(?:尚无|没有|无)[^\n。；]{0,30}(?:对应品类|活跃商品|商品记录|搜索记录)"
-        )),
-        ("market_absolute", re.compile(r"(?:低竞争|蓝海|真实机会|确定机会|不存在市场|不构成独立市场|已经饱和)")),
-        ("lifecycle", re.compile(
-            r"(?:爆发期|成长期|稳定期|衰退期|已经过峰值|仍在上升|生命周期|"
-            r"增长动能[^\n。；]{0,24}放缓|竞争加剧|用户疲劳|新旧交替|老牌产品)"
-        )),
-    )
-    claims: list[dict[str, Any]] = []
-    for line_index, line in enumerate(str(draft or "").splitlines(), start=1):
-        text = line.strip()
-        if not text or re.fullmatch(r"[|:\-\s]+", text) or re.match(r"^#{1,6}\s", text):
-            continue
-        reasons = [name for name, pattern in patterns if pattern.search(text)]
-        ids = sorted(set(re.findall(r"(?<!\d)\d{16,20}(?!\d)", text)))
-        if len(ids) >= 2:
-            reasons.append("multiple_entity_ids")
-        if text.startswith("|") and not set(reasons).intersection({
-            "sample_extrapolation", "market_scale", "channel_causality", "content_causality",
-            "state_claim", "market_absolute", "lifecycle",
-        }):
-            continue
-        if reasons:
-            claims.append({
-                "claim_id": f"line-{line_index}",
-                "text": line,
-                "reasons": sorted(set(reasons)),
-                "entity_ids": ids,
-            })
-        if len(claims) >= 40:
-            break
-    return claims
-
-
-def validate_fastmoss_numeric_claims(
-    draft: str,
-    manifest: dict[str, Any],
-) -> tuple[str, int, int, int]:
-    """Correct deterministic metric mismatches before semantic LLM review.
-
-    Returns the edited report, edit count, registry-bound numeric token count,
-    and unbound token count.  It deliberately does not rewrite prose or draw
-    business conclusions.
-    """
-    registry = [item for item in (manifest.get("metric_registry") or []) if isinstance(item, dict)]
-    registry_values = {
-        str(item.get("value")) for item in registry if item.get("value") is not None
-    }
-    derived_values = {
-        str(value)
-        for fact in (manifest.get("derived_facts") or []) if isinstance(fact, dict)
-        for value in ([fact.get("value")] if isinstance(fact.get("value"), (int, float)) else [])
-    }
-    coverage_values: set[str] = set()
-
-    def collect_numbers(node: Any) -> None:
-        if isinstance(node, dict):
-            for value in node.values():
-                collect_numbers(value)
-        elif isinstance(node, list):
-            for value in node:
-                collect_numbers(value)
-        elif isinstance(node, (int, float)) and not isinstance(node, bool):
-            coverage_values.add(str(node))
-
-    collect_numbers(manifest.get("coverage_summary") or {})
-    authorized_values = registry_values | derived_values | coverage_values
-
-    def metric_values(metric_suffix: str, entity_id: str | None = None) -> list[float]:
-        values: list[float] = []
-        for item in registry:
-            if not str(item.get("metric") or "").endswith(metric_suffix):
-                continue
-            if entity_id and str(item.get("entity_id") or "") != entity_id:
-                continue
-            number = _fastmoss_number(item.get("value"))
-            if number is not None and number not in values:
-                values.append(number)
-        return values
-
-    def line_entity_id(line: str) -> str | None:
-        explicit = re.findall(r"(?<!\d)\d{16,20}(?!\d)", line)
-        if explicit:
-            return explicit[0]
-        lowered = line.lower()
-        matches: set[str] = set()
-        for item in registry:
-            context = item.get("context") if isinstance(item.get("context"), dict) else {}
-            title = str(context.get("title") or "").strip().lower()
-            category_name = str(context.get("category_name") or "").strip().lower()
-            query = str(context.get("query") or "").strip().lower()
-            if (
-                (title and (title in lowered or lowered in title))
-                or (category_name and category_name in lowered)
-                or (query and query in lowered)
-            ):
-                matches.add(str(item.get("entity_id") or ""))
-        return next(iter(matches)) if len(matches) == 1 else None
-
-    edits = 0
-    output_lines: list[str] = []
-    for original_line in str(draft or "").splitlines():
-        line = original_line
-        entity_id = line_entity_id(line)
-
-        # Percent metrics that share similar values are bound by semantic name,
-        # not merely by the appearance of the same number elsewhere.
-        metric_rules = (
-            (r"GMV\s*(?:成交)?\s*同比", "category_gmv_yoy_percent"),
-            (r"销量\s*同比", "category_units_sold_yoy_percent"),
-            (r"商品卡\s*(?:成交)?\s*GMV\s*占比", "channel_distribution.product_card.gmv_share_percent"),
-            (r"商品卡\s*(?:成交)?\s*销量\s*占比", "channel_distribution.product_card.units_sold_share_percent"),
-        )
-        for marker, metric_suffix in metric_rules:
-            values = metric_values(metric_suffix, entity_id)
-            if len(values) != 1:
-                continue
-            target = values[0]
-
-            def metric_replacement(match: re.Match[str]) -> str:
-                nonlocal edits
-                observed = _fastmoss_number(match.group("value"))
-                if observed is None or abs(observed - target) <= 1e-9:
-                    return match.group(0)
-                edits += 1
-                return f"{match.group('prefix')}{target:g}{match.group('suffix')}"
-
-            line = re.sub(
-                rf"(?P<prefix>{marker}[^\d%+\-]{{0,12}})(?P<value>[+\-]?\d+(?:\.\d+)?)(?P<suffix>\s*%)",
-                metric_replacement,
-                line,
-                count=1,
-                flags=re.IGNORECASE,
-            )
-
-        # A provider's linked-video count is not an ad-video count.
-        if re.search(r"(?:670|14)\s*(?:条|个)?\s*广告视频", line):
-            linked_values = metric_values("product_contribution.product_linked_video_count", entity_id)
-            linked_set = {float(value) for value in linked_values}
-
-            linked_edit_count = 0
-
-            def linked_video_replacement(match: re.Match[str]) -> str:
-                nonlocal linked_edit_count
-                value = _fastmoss_number(match.group("value"))
-                if value is None or value not in linked_set:
-                    return match.group(0)
-                linked_edit_count += 1
-                return match.group(0).replace("广告视频", "关联视频")
-
-            line = re.sub(
-                r"(?P<value>\d+(?:\.\d+)?)\s*(?:条|个)?\s*广告视频",
-                linked_video_replacement,
-                line,
-            )
-            edits += linked_edit_count
-
-        # Counts from different grains must never be divided into an invented
-        # per-video sales metric.
-        if re.search(r"\d[\d,.]*\s*件[^\n。；]{0,30}(?:÷|/)[^\n。；]{0,20}\d[\d,.]*\s*(?:条|个)?视频", line):
-            line = re.sub(
-                r"[^。；\n]*\d[\d,.]*\s*件[^。；\n]{0,30}(?:÷|/)[^。；\n]{0,30}\d[\d,.]*\s*(?:条|个)?视频[^。；\n]*",
-                "销量与视频数的统计口径不同，不能直接相除推导单条视频平均销量",
-                line,
-                count=1,
-            )
-            edits += 1
-        output_lines.append(line)
-
-    updated = "\n".join(output_lines)
-    numeric_tokens = re.findall(r"(?<![\w.])-?\d+(?:\.\d+)?", updated)
-    bound = 0
-    for token in numeric_tokens:
-        normalized = str(_fastmoss_number(token))
-        if normalized in authorized_values or token in authorized_values:
-            bound += 1
-    return updated, edits, bound, max(0, len(numeric_tokens) - bound)
-
-
-def fastmoss_candidate_evidence(
-    manifest: dict[str, Any],
-    claims: list[dict[str, Any]],
-    route: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Build an independent evidence slice for every claim in a verifier batch."""
-    packet = fastmoss_report_packet(manifest, route)
-    reason_dimensions = {
-        "sample_extrapolation": {"product_sample", "top_products", "category_analysis", "category_channel_ranking"},
-        "market_scale": {"product_sample", "top_products", "category_analysis", "category_channel_ranking"},
-        "channel_causality": {"product_overview", "category_channel_ranking", "shop_sale_analysis", "ad_data_overview"},
-        "content_causality": {"product_videos", "product_creator_analysis", "video_detail_analysis", "video_data_trends"},
-        "metric_period": {"product_sample", "product_overview", "product_90d_trend", "category_trend", "category_channel_ranking"},
-        "cross_period_ratio": {
-            "category_channel_ranking", "product_overview", "product_90d_trend",
-            "product_creator_analysis", "product_videos",
-        },
-        "cross_entity_attribute": {"product_sample", "product_detail", "product_overview"},
-        "state_claim": set(),
-        "market_absolute": {"product_sample", "category_analysis", "category_channel_ranking"},
-        "lifecycle": {"product_90d_trend", "product_overview", "shop_data_trends", "creator_data_trends", "video_data_trends"},
-        "operational_number": {
-            "category_trend", "category_channel_ranking", "product_sample", "product_detail",
-            "product_overview", "product_90d_trend", "product_creator_analysis", "product_videos",
-        },
-    }
-    metric_keywords = {
-        "sample_extrapolation": ("units_sold", "reported_total", "rank", "score"),
-        "market_scale": ("units_sold", "reported_total", "rank", "score"),
-        "channel_causality": ("share_percent", "ads_distribution", "channel_distribution", "content_distribution"),
-        "content_causality": ("video", "creator", "play_count", "engagement"),
-        "metric_period": ("trend", "day28", "first_30d", "last_30d", "period", "units_sold", "gmv"),
-        "cross_period_ratio": ("share_percent", "gmv", "units_sold", "trend", "product_contribution"),
-        "cross_entity_attribute": ("title", "brand", "shop", "seller"),
-        "state_claim": ("returned_", "reported_"),
-        "market_absolute": ("units_sold", "gmv", "rank", "score"),
-        "lifecycle": ("trend", "active_days", "first_30d", "last_30d"),
-        "operational_number": (
-            "price", "creator", "video", "play_count", "engagement", "trend",
-            "gmv", "units_sold", "share_percent",
-        ),
-    }
-    all_facts = [
-        fact for fact in (packet.get("supporting_evidence") or []) if isinstance(fact, dict)
-    ] + [
-        fact for target in (packet.get("target_evidence") or []) if isinstance(target, dict)
-        for fact in (target.get("facts") or []) if isinstance(fact, dict)
-    ]
-    # The report packet groups metrics for compact writing.  The verifier keeps
-    # the original one-metric-per-row registry so entity, period and metric_id
-    # remain independently addressable.
-    all_metrics = [
-        metric for metric in (manifest.get("metric_registry") or []) if isinstance(metric, dict)
-    ]
-    fact_dimensions = {
-        str(fact.get("fact_id") or ""): str(fact.get("dimension") or "")
-        for fact in (manifest.get("evidence_facts") or []) if isinstance(fact, dict)
-    }
-
-    def compact_validator_fact(fact: dict[str, Any], matching_ids: set[str]) -> dict[str, Any]:
-        compact = dict(fact)
-        for list_key, id_key in (("products", "product_id"), ("top_creators", "creator_uid"), ("top_videos", "video_id")):
-            rows = [item for item in (compact.get(list_key) or []) if isinstance(item, dict)]
-            if not rows:
-                continue
-            matched = [item for item in rows if str(item.get(id_key) or "") in matching_ids]
-            compact[list_key] = matched or rows[:3]
-            if list_key == "products":
-                compact["included_count"] = len(compact[list_key])
-                compact["omitted_count"] = max(
-                    0, int(compact.get("returned_count") or len(rows)) - len(compact[list_key])
-                )
-                compact["truncated"] = bool(compact["omitted_count"])
-        if isinstance(compact.get("trend_series"), list) and len(compact["trend_series"]) > 4:
-            compact["trend_series"] = compact["trend_series"][:2] + compact["trend_series"][-2:]
-            compact["trend_series_truncated"] = True
-        return compact
-
-    def fact_ids(fact: dict[str, Any]) -> set[str]:
-        ids = {
-            str(fact.get(key) or "")
-            for key in ("entity_id", "product_id", "shop_id", "creator_id", "video_id")
-            if fact.get(key) not in (None, "")
-        }
-        for list_key, id_key in (("products", "product_id"), ("top_creators", "creator_uid"), ("top_videos", "video_id")):
-            ids.update(
-                str(item.get(id_key) or "") for item in (fact.get(list_key) or [])
-                if isinstance(item, dict) and item.get(id_key) not in (None, "")
-            )
-        return ids - {""}
-
-    def compact_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
-        return {
-            key: bundle.get(key) for key in (
-                "entity_type", "entity_id", "source_calls", "dimensions",
-                "periods", "data_states", "fact_ids",
-            ) if bundle.get(key) not in (None, "", {}, [])
-        } | ({"conflict_count": len(bundle.get("conflicts") or [])} if bundle.get("conflicts") else {})
-
-    def one_claim(claim: dict[str, Any]) -> dict[str, Any]:
-        ids = {str(item) for item in (claim.get("entity_ids") or []) if str(item).strip()}
-        reasons = {str(item) for item in (claim.get("reasons") or []) if str(item).strip()}
-        claim_text = str(claim.get("text") or "")
-        category_level_claim = not ids and bool(re.search(r"(?:类目|大盘|行业|上级分类)", claim_text))
-        wanted_dimensions = set().union(*(reason_dimensions.get(reason, set()) for reason in reasons))
-        facts: list[dict[str, Any]] = []
-        for fact in all_facts:
-            if ids and not fact_ids(fact).intersection(ids):
-                continue
-            if not ids and wanted_dimensions and str(fact.get("dimension") or "") not in wanted_dimensions:
-                continue
-            if category_level_claim and str(fact.get("dimension") or "") not in {
-                "category_candidates", "category_analysis", "category_trend",
-                "category_channel_ranking", "product_sample", "top_products", "new_products",
-            }:
-                continue
-            if (
-                category_level_claim
-                and str(fact.get("dimension") or "") in {"product_sample", "top_products", "new_products"}
-                and str(fact.get("scope") or "") != "category_head"
-            ):
-                continue
-            if (
-                not ids and reasons.issubset({"operational_number", "state_claim"})
-                and str(fact.get("dimension") or "") == "product_sample"
-                and str(fact.get("scope") or "") == "category_head"
-                and (_fastmoss_number(fact.get("page")) or 1) > 1
-            ):
-                continue
-            facts.append(compact_validator_fact(fact, ids))
-
-        wanted_metric_terms = {
-            term for reason in reasons for term in metric_keywords.get(reason, ())
-        }
-        primary_metrics: list[dict[str, Any]] = []
-        secondary_metrics: list[dict[str, Any]] = []
-        for metric in all_metrics:
-            entity_id = str(metric.get("entity_id") or "")
-            entity_type = str(metric.get("entity_type") or "")
-            context = metric.get("context") if isinstance(metric.get("context"), dict) else {}
-            subject_product_id = str(context.get("subject_product_id") or "")
-            if ids and entity_id not in ids and subject_product_id not in ids:
-                continue
-            if category_level_claim and entity_type != "category":
-                continue
-            source_fact_ids = metric.get("source_fact_ids") or [metric.get("source_fact_id")]
-            source_dimension = next((
-                fact_dimensions.get(str(fact_id), "") for fact_id in source_fact_ids
-                if fact_dimensions.get(str(fact_id), "")
-            ), "")
-            if not ids and wanted_dimensions and source_dimension and source_dimension not in wanted_dimensions:
-                continue
-            metric_name = str(metric.get("metric") or "")
-            term_match = not wanted_metric_terms or any(term in metric_name for term in wanted_metric_terms)
-            (primary_metrics if term_match else secondary_metrics).append(metric)
-        metrics = (primary_metrics + secondary_metrics)[:24]
-        relevant_calls = {
-            int(item.get("source_call_index") or 0) for item in metrics + facts
-            if int(item.get("source_call_index") or 0) > 0
-        }
-        source_catalog = [
-            item for item in (packet.get("source_catalog") or [])
-            if int(item.get("source_call_index") or 0) in relevant_calls
-        ][:8]
-        exact_empty_results = []
-        if "state_claim" in reasons:
-            exact_empty_results = [
-                item for item in ((packet.get("coverage_summary") or {}).get("exact_empty_results") or [])
-                if not ids or {
-                    str(ref.get("id") or "") for ref in (item.get("entity_refs") or []) if isinstance(ref, dict)
-                }.intersection(ids)
-            ][:8]
-        relevant_conflicts = [
-            item for item in (manifest.get("conflicts") or []) if isinstance(item, dict)
-            and (not ids or str(item.get("entity_id") or item.get("product_id") or "") in ids)
-        ][:12]
-        relevant_bundles = [
-            compact_bundle(bundle) for bundle in (manifest.get("entity_bundles") or [])
-            if isinstance(bundle, dict) and (
-                (ids and str(bundle.get("entity_id") or "") in ids)
-                or (not ids and relevant_calls.intersection({
-                    int(call_index or 0) for call_index in (bundle.get("source_calls") or [])
-                }))
-            )
-        ][:8]
-        relevant_fact_ids = {
-            str(fact.get("fact_id") or "") for fact in facts if fact.get("fact_id")
-        }
-        derived_facts = [
-            item for item in (manifest.get("derived_facts") or []) if isinstance(item, dict)
-            and (
-                not ids
-                or str(item.get("entity_id") or item.get("product_id") or "") in ids
-                or bool(relevant_fact_ids.intersection({
-                    str(fact_id) for fact_id in (
-                        item.get("input_fact_ids") or item.get("source_fact_ids") or []
-                    )
-                }))
-            )
-        ][:8]
-        return {
-            "source_catalog": source_catalog,
-            "entity_bundles": relevant_bundles,
-            "metric_registry": metrics,
-            "facts": facts[:20],
-            "derived_facts": derived_facts,
-            "conflicts": relevant_conflicts,
-            "exact_empty_results": exact_empty_results,
-            "limitations": manifest.get("limitations") or [],
-        }
-
-    common = {
-        "workflow": packet.get("workflow"),
-        "analysis_targets": packet.get("analysis_targets"),
-        "available_dimensions": packet.get("available_dimensions"),
-    }
-    claim_slices = [
-        {"claim_id": str(claim.get("claim_id") or ""), **one_claim(claim)}
-        for claim in claims if isinstance(claim, dict)
-    ]
-    if len(claim_slices) == 1:
-        return {**common, **claim_slices[0]}
-    return {**common, "claim_evidence": claim_slices}
-
-
-def apply_fastmoss_verifier_edits(
-    draft: str,
-    edits: Any,
-    claims: list[dict[str, Any]] | None = None,
-    evidence_slice: dict[str, Any] | None = None,
-) -> tuple[str, int]:
-    """Apply claim-local edits while keeping entities and new numbers evidence-bound."""
-    if not isinstance(edits, list):
-        return str(draft or ""), 0
-    updated = str(draft or "")
-    claim_text = {
-        str(item.get("claim_id") or ""): str(item.get("text") or "")
-        for item in (claims or []) if isinstance(item, dict)
-    }
-    normalize_numbers = lambda value: {
-        token.replace(",", "")
-        for token in re.findall(r"(?<![A-Za-z0-9_.])-?\d+(?:,\d{3})*(?:\.\d+)?", value)
-    }
-    per_claim_evidence = {
-        str(item.get("claim_id") or ""): item
-        for item in ((evidence_slice or {}).get("claim_evidence") or [])
-        if isinstance(item, dict) and item.get("claim_id")
-    }
-    applied = 0
-    for edit in edits[:20]:
-        if not isinstance(edit, dict):
-            continue
-        claim_id = edit.get("claim_id")
-        original = claim_text.get(str(claim_id or "")) if claim_id else edit.get("original")
-        replacement = edit.get("replacement")
-        reason = edit.get("reason")
-        evidence_refs = edit.get("evidence_refs")
-        if not isinstance(original, str) or not original or not isinstance(replacement, str):
-            continue
-        if not isinstance(reason, str) or not reason.strip() or not isinstance(evidence_refs, list):
-            continue
-        if original not in updated:
-            continue
-        original_ids = set(re.findall(r"(?<!\d)\d{16,20}(?!\d)", original))
-        replacement_ids = set(re.findall(r"(?<!\d)\d{16,20}(?!\d)", replacement))
-        # Entity selection belongs to deterministic workflow orchestration.
-        # A verifier may soften unsupported wording, but it must not swap or
-        # remove a locked product/creator/video ID or inject a new entity.
-        if replacement and replacement_ids != original_ids:
-            continue
-        original_numbers = normalize_numbers(original)
-        replacement_numbers = normalize_numbers(replacement)
-        new_numbers = normalize_numbers(replacement) - original_numbers
-        removed_numbers = original_numbers - replacement_numbers
-        claim_slice = per_claim_evidence.get(str(claim_id or ""), evidence_slice or {})
-        evidence_records = [
-            item
-            for group_name in (
-                "facts", "metric_registry", "derived_facts", "source_catalog",
-                "exact_empty_results", "conflicts",
-            )
-            for item in (claim_slice.get(group_name) or [])
-            if isinstance(item, dict)
-        ]
-        # Evidence references are an edit authorization boundary, not free-form
-        # verifier prose.  Reject structured/malformed refs rather than turning
-        # their repr into a value that appears to be cited.
-        evidence_refs = {
-            ref.strip() for ref in (edit.get("evidence_refs") or [])
-            if isinstance(ref, str) and ref.strip()
-        }
-        call_refs = {
-            int(match.group(1)) for ref in evidence_refs
-            if (match := re.fullmatch(r"call:(\d+)", ref))
-        }
-
-        def record_refs(item: dict[str, Any]) -> set[str]:
-            refs = {
-                str(item.get(key) or "")
-                for key in (
-                    "fact_id", "entity_fact_ref", "metric_id", "derived_fact_id",
-                    "source_fact_id", "source_ref",
-                )
-                if item.get(key) not in (None, "")
-            }
-            refs.update(
-                str(ref) for key in ("source_fact_ids", "input_fact_ids")
-                for ref in (item.get(key) or []) if str(ref).strip()
-            )
-            return refs
-
-        referenced_records = [
-            item for item in evidence_records
-            if evidence_refs.intersection(record_refs(item))
-            or int(item.get("source_call_index") or 0) in call_refs
-        ]
-        if not referenced_records:
-            continue
-        referenced_numbers = normalize_numbers(
-            json.dumps(referenced_records, ensure_ascii=False, default=str)
-        )
-        if new_numbers and (not referenced_records or not new_numbers.issubset(referenced_numbers)):
-            continue
-        if removed_numbers and not referenced_records:
-            continue
-        # If the cited evidence contains the original observed number, replacing
-        # it with "not returned" (or otherwise removing it) is a verifier error.
-        if not new_numbers and removed_numbers.intersection(referenced_numbers):
-            continue
-        if replacement:
-            updated = updated.replace(original, replacement, 1)
-        else:
-            updated, removed = re.subn(
-                rf"(?m)^{re.escape(original)}(?:\n|$)", "", updated, count=1
-            )
-            if not removed:
-                continue
-        applied += 1
-    return updated, applied
-
-
-FASTMOSS_REPORT_DIMENSION_TERMS: dict[str, tuple[str, ...]] = {
-    "category_candidates": ("类目", "分类"),
-    "category_analysis": ("类目", "市场"),
-    "category_trend": ("趋势", "同比", "环比"),
-    "category_channel_ranking": ("渠道", "视频", "直播", "商品卡"),
-    "product_sample": ("样本", "商品"),
-    "top_products": ("头部", "热销", "TOP", "Top"),
-    "new_products": ("新品", "上新"),
-    "product_detail": ("商品", "产品"),
-    "product_overview": ("广告", "联盟", "渠道", "商品卡"),
-    "product_90d_trend": ("90天", "90 天", "趋势"),
-    "product_creator_analysis": ("达人", "创作者"),
-    "product_videos": ("视频", "内容"),
-    "review_status": ("评论", "评价", "review"),
-}
-
-
-def fastmoss_report_dimension_terms(dimension: str) -> tuple[str, ...]:
-    """Map native and generic tool dimensions to read-only coverage signals."""
-    if dimension in FASTMOSS_REPORT_DIMENSION_TERMS:
-        return FASTMOSS_REPORT_DIMENSION_TERMS[dimension]
-    family_terms = (
-        ("shop_", ("店铺", "店播")),
-        ("creator_", ("达人", "创作者")),
-        ("video_", ("视频", "内容", "脚本")),
-        ("live_", ("直播", "直播间")),
-        ("ad_", ("广告", "投放")),
-        ("product_", ("商品", "产品")),
-        ("market_", ("类目", "市场")),
-    )
-    return next((terms for prefix, terms in family_terms if dimension.startswith(prefix)), ())
-
-
 def fastmoss_report_integrity_stats(answer: str, manifest: dict[str, Any]) -> dict[str, Any]:
-    """Observe evidence use and Markdown structure without changing the report."""
+    """Observe report size and available evidence without changing the report."""
     text = str(answer or "")
     evidence_dimensions = sorted({
         str(fact.get("dimension") or "")
@@ -9925,49 +8137,32 @@ def fastmoss_report_integrity_stats(answer: str, manifest: dict[str, Any]) -> di
         and str(fact.get("dimension") or "")
         and str(fact.get("data_state") or "data") == "data"
     })
-    used_dimensions = sorted({
-        dimension for dimension in evidence_dimensions
-        if any(term.casefold() in text.casefold() for term in fastmoss_report_dimension_terms(dimension))
-    })
     return {
         "chars": len(text),
         "headings": sum(1 for line in text.splitlines() if re.match(r"^#{1,6}\s+", line)),
         "table_rows": sum(1 for line in text.splitlines() if line.lstrip().startswith("|")),
         "evidence_dimensions": evidence_dimensions,
-        "used_dimensions": used_dimensions,
     }
 
 
 def _log_fastmoss_report_pipeline(
-    draft: str,
+    report: str,
     manifest: dict[str, Any],
-    verifier_result: str,
-    final_answer: str | None = None,
-    edits_applied: int = 0,
-    claim_candidates: int = 0,
-    verifier_batches: int = 0,
-    verifier_batch_failures: int = 0,
-    rejected_edits: int = 0,
-    fallback_reason: str = "",
+    status: str,
+    error_reason: str = "",
 ) -> None:
-    integrity = fastmoss_report_integrity_stats(final_answer if final_answer is not None else draft, manifest)
-    unused_dimensions = sorted(set(integrity["evidence_dimensions"]) - set(integrity["used_dimensions"]))
+    integrity = fastmoss_report_integrity_stats(report, manifest)
     print(
         "[CHAT] FastMoss report pipeline "
-        f"draft_chars={len(str(draft or ''))} "
-        f"final_chars={integrity['chars']} headings={integrity['headings']} table_rows={integrity['table_rows']} "
+        f"report_chars={integrity['chars']} headings={integrity['headings']} table_rows={integrity['table_rows']} "
         f"evidence_facts={int(manifest.get('evidence_fact_count') or 0)} "
         f"evidence_envelopes={int(manifest.get('evidence_envelope_count') or 0)} "
         f"entity_bundles={int(manifest.get('entity_bundle_count') or 0)} "
         f"unsupported_parsers={int(manifest.get('unsupported_parser_count') or 0)} "
         f"metric_registry={int(manifest.get('metric_registry_count') or 0)} "
         f"derived_facts={len(manifest.get('derived_facts') or [])} conflicts={len(manifest.get('conflicts') or [])} "
-        f"evidence_dimensions={len(integrity['evidence_dimensions'])} used_dimensions={len(integrity['used_dimensions'])} "
-        f"unused_dimensions={','.join(unused_dimensions) or 'none'} claim_candidates={claim_candidates} "
-        f"verifier_batches={verifier_batches} "
-        f"verifier_batch_failures={verifier_batch_failures} "
-        f"verifier={verifier_result} edits_applied={edits_applied} "
-        f"rejected_edits={rejected_edits} fallback_reason={fallback_reason or 'none'}",
+        f"evidence_dimensions={len(integrity['evidence_dimensions'])} "
+        f"status={status} error_reason={error_reason or 'none'}",
         flush=True,
     )
 
@@ -9981,44 +8176,52 @@ def synthesize_fastmoss_report_from_packet(
     api_url: str,
     model: str,
 ) -> str:
-    """Write freely from complete normalized evidence, outside the tool protocol conversation."""
-    manifest = fastmoss_evidence_manifest(assistant_msg, user_text, route)
-    dossier = fastmoss_report_evidence_dossier(assistant_msg, manifest, route)
-    dossier_json = json.dumps(dossier, ensure_ascii=False, separators=(",", ":"))
-    evidence_markdown, evidence_render_stats = fastmoss_render_report_evidence(dossier)
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "你是 FastMoss 调研报告撰写器。当前请求没有可调用工具，请根据下方结构化 Markdown 证据写最终中文 Markdown 报告。"
-                "各调用证据章节按调用顺序提供每次工具调用的完整、去除媒体与传输噪声后的业务结果；这是观察事实的主体，"
-                "不得只看 coverage_summary 或聚合索引就忽略明细。coverage、derived_facts、conflicts、limitations 和每次调用的 "
-                "调用范围与证据围栏帮助你校准实体、周期、样本、计算和冲突，但不替代业务结果，也不规定报告写法。"
-                "你可以自由选择结构、比较角度、解释和建议；必须区分观察事实、合理推断和待验证建议。"
-                "空结果只适用于该次调用的精确参数；关键词返回量不是市场容量；跨实体或跨周期数据不得直接相除或互相解释；"
-                "returned_product_outside_requested_l3 的行不得计入目标 L3 样本统计或共同特征；"
-                "渠道占比、关联达人/视频数和趋势只描述观察结构，除非有直接证据，否则不得写成流量来源、因果、效率或生命周期结论。"
-                "不要输出工具调用、DSML、函数协议或待调用计划。必须把事实转成比较、解释、结论、风险和验证顺序，"
-                "不能只罗列表格或数据缺口，也不要向用户提及调用证据、证据围栏等内部结构名称。"
-                + fastmoss_report_style_instruction(route)
-                + "\n\n--- 结构化证据开始 ---\n"
-                + evidence_markdown
-                + "--- 结构化证据结束 ---\n"
-                + " 写作前最后核对 hard_fact_boundaries：尤其不得把限定类目/关键词的空结果写成平台全局为零，"
-                  "不得把样本占比写成市场份额，也不得从渠道占比推导自然流量、广告花费、ROI、因果或生命周期。"
-            ),
-        },
-        {"role": "user", "content": chat_routing_text(user_text)},
-    ]
-    payload = {
-        "model": model,
-        "messages": messages,
-        "temperature": 0.2,
-        "max_tokens": 8000,
-    }
-    payload_str = json.dumps(payload, ensure_ascii=False)
-    started = time.monotonic()
+    """Generate the report through the single Semantic evidence -> V4 Pro path."""
+    manifest: dict[str, Any] = {}
     try:
+        manifest = fastmoss_evidence_manifest(assistant_msg, user_text, route)
+        dossier = fastmoss_report_evidence_dossier(assistant_msg, manifest, route)
+        if not (dossier.get("tool_evidence") or []):
+            message = (
+                "本轮没有取得可用于生成报告的 FastMoss 工具证据，因此没有生成调研报告。"
+                "请补充具体商品、类目、店铺、达人或内容对象后重试。"
+            )
+            _log_fastmoss_report_pipeline(message, manifest, "no_evidence")
+            return message
+        dossier_json = json.dumps(dossier, ensure_ascii=False, separators=(",", ":"))
+        evidence_markdown, evidence_render_stats = fastmoss_render_report_evidence(dossier)
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是 FastMoss 调研报告撰写器。当前请求没有可调用工具，请根据下方结构化 Markdown 证据写最终中文 Markdown 报告。"
+                    "各调用证据章节按调用顺序提供每次工具调用的完整、去除媒体与传输噪声后的业务结果；这是观察事实的主体，"
+                    "不得只看 coverage_summary 或聚合索引就忽略明细。coverage、derived_facts、conflicts、limitations 和每次调用的 "
+                    "调用范围与证据围栏帮助你校准实体、周期、样本、计算和冲突，但不替代业务结果，也不规定报告写法。"
+                    "你可以自由选择结构、比较角度、解释和建议；必须区分观察事实、合理推断和待验证建议。"
+                    "空结果只适用于该次调用的精确参数；关键词返回量不是市场容量；跨实体或跨周期数据不得直接相除或互相解释；"
+                    "returned_product_outside_requested_l3 的行不得计入目标 L3 样本统计或共同特征；"
+                    "渠道占比、关联达人/视频数和趋势只描述观察结构，除非有直接证据，否则不得写成流量来源、因果、效率或生命周期结论。"
+                    "不要输出工具调用、DSML、函数协议或待调用计划。必须把事实转成比较、解释、结论、风险和验证顺序，"
+                    "不能只罗列表格或数据缺口，也不要向用户提及调用证据、证据围栏等内部结构名称。"
+                    + fastmoss_report_style_instruction(route)
+                    + "\n\n--- 结构化证据开始 ---\n"
+                    + evidence_markdown
+                    + "--- 结构化证据结束 ---\n"
+                    + " 写作前最后核对 hard_fact_boundaries：尤其不得把限定类目/关键词的空结果写成平台全局为零，"
+                      "不得把样本占比写成市场份额，也不得从渠道占比推导自然流量、广告花费、ROI、因果或生命周期。"
+                ),
+            },
+            {"role": "user", "content": chat_routing_text(user_text)},
+        ]
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": 0.2,
+            "max_tokens": 8000,
+        }
+        payload_str = json.dumps(payload, ensure_ascii=False)
+        started = time.monotonic()
         response = requests_module.post(
             api_url.rstrip("/") + "/chat/completions",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -10056,173 +8259,20 @@ def synthesize_fastmoss_report_from_packet(
             f"evidence_render={json.dumps(evidence_render_stats, ensure_ascii=False, separators=(',', ':'))}",
             flush=True,
         )
-        return finalize_fastmoss_answer(
-            draft, assistant_msg, user_text, route,
-            requests_module, api_key, api_url, model,
-        )
+        report = append_fastmoss_report_notice(draft, route)
+        _log_fastmoss_report_pipeline(report, manifest, "generated")
+        return report
     except Exception as exc:
         print(f"[CHAT] FastMoss dossier synthesis failed: {type(exc).__name__}: {str(exc)[:240]}", flush=True)
-        fallback = append_fastmoss_report_notice(
-            fastmoss_deterministic_quality_fallback(manifest), route
+        message = (
+            "本轮 FastMoss 工具结果仍已保留，但 V4 Pro 报告生成失败。"
+            "系统没有使用固定模板、机械改写或二次校验来替代原报告，请稍后重试。"
         )
         _log_fastmoss_report_pipeline(
-            "", manifest, f"synthesis_failed:{type(exc).__name__}",
-            final_answer=fallback, fallback_reason="report_synthesis_failure"
+            message, manifest, "synthesis_failed", error_reason=type(exc).__name__
         )
-        return fallback
+        return message
 
-
-def verify_fastmoss_final_answer(
-    draft: str,
-    assistant_msg: Message,
-    user_text: str,
-    route: dict[str, Any],
-    requests_module: Any,
-    api_key: str,
-    api_url: str,
-    model: str,
-) -> str:
-    """Run a short factual verifier pass and apply only exact local edits."""
-    if str(route.get("task_depth") or "") not in {"analysis", "workflow"} and not route.get("playbook"):
-        return draft
-    manifest = fastmoss_evidence_manifest(assistant_msg, user_text, route)
-    draft = str(draft or "")
-    has_evidence = bool(
-        manifest.get("evidence_fact_count")
-        or (manifest.get("category_head") or {}).get("products")
-        or (manifest.get("segment_head") or {}).get("products")
-        or (manifest.get("quality_states") or {}).get("data")
-    )
-    fallback_reason = ""
-    if not draft.strip():
-        fallback_reason = "empty_draft"
-    elif deepseek_tool_protocol_present({"content": draft}):
-        fallback_reason = "unrenderable_tool_protocol"
-    elif not has_evidence:
-        fallback_reason = "no_valid_evidence"
-    if fallback_reason:
-        fallback = fastmoss_deterministic_quality_fallback(manifest)
-        _log_fastmoss_report_pipeline(
-            draft, manifest, "skipped", final_answer=fallback, fallback_reason=fallback_reason
-        )
-        return fallback
-    prepared, _entity_id_cleanup_count = normalize_fastmoss_entity_id_abbreviations(draft, manifest)
-    claims = fastmoss_high_risk_claims(prepared)
-    if not claims:
-        _log_fastmoss_report_pipeline(
-            draft,
-            manifest,
-            "not_required",
-            final_answer=prepared,
-            claim_candidates=0,
-        )
-        return prepared
-    verifier_system = (
-        "You are an independent FastMoss factual-boundary verifier. Return one compact JSON object only with keys "
-        "approved (boolean), risk_level (low|medium|high|critical), edits (array). Each edit must contain exact keys "
-        "claim_id (copied exactly from candidate_claims), replacement (corrected text or empty string), reason (string), "
-        "and evidence_refs (array). Review only the supplied 3-5 claims and their evidence slice; never rewrite the report. "
-        "Check only numeric/entity/period consistency, empty-result scope, causality, lifecycle, opportunity language, sample extrapolation, and recommendation boundaries. "
-        "Use the supplied evidence slice as the factual authority and do not remove supported observations. "
-        "A keyword result total is query coverage, not market capacity, commercialization level, or proof that scale investment is/is not justified. "
-        "A declining product trend does not by itself prove competition, audience fatigue, or lifecycle stage. Channel shares and linked-content counts do not prove the cause of sales. "
-        "For an empty result, preserve its exact category path, keyword, entity and period rather than generalizing to the platform. "
-        "Do not critique style, headings, length, tables, or organization. Never edit Markdown headings. "
-        "candidate_evidence.claim_evidence contains one isolated evidence slice per claim_id; never use evidence from another claim_id. "
-        "evidence_refs must copy exact fact_id, entity_fact_ref, metric_id, source_fact_id, derived fact id, or source_ref values from that claim's slice. "
-        "A replacement may use a number only when it appears in the supplied evidence for the same entity and period. Return the smallest claim-level edits."
-    )
-    updated = prepared
-    total_applied = 0
-    rejected_edits = 0
-    batch_failures = 0
-    statuses: list[str] = []
-    batches = [claims[index:index + 5] for index in range(0, len(claims), 5)]
-    for batch_index, batch_claims in enumerate(batches, start=1):
-        candidate_evidence = fastmoss_candidate_evidence(manifest, batch_claims, route)
-        payload = {
-            "model": model,
-            "messages": [{"role": "system", "content": verifier_system}, {
-                "role": "user",
-                "content": json.dumps({
-                    "original_request": user_text,
-                    "candidate_claims": batch_claims,
-                    "candidate_evidence": candidate_evidence,
-                }, ensure_ascii=False),
-            }],
-            "response_format": {"type": "json_object"},
-            "temperature": 0,
-            "max_tokens": 4800,
-        }
-        payload_str = json.dumps(payload, ensure_ascii=False)
-        started = time.monotonic()
-        try:
-            response = requests_module.post(
-                api_url.rstrip("/") + "/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                data=payload_str.encode("utf-8"),
-                timeout=60,
-            )
-            response.raise_for_status()
-            body = response.json()
-            record_api_call(
-                "deepseek",
-                "fastmoss_answer_verifier",
-                {
-                    "api_url": api_url.rstrip("/") + "/chat/completions",
-                    "model": model,
-                    "provider": "fastmoss",
-                    "batch_index": batch_index,
-                    "batch_count": len(batches),
-                    "claim_ids": [item.get("claim_id") for item in batch_claims],
-                    "prompt_chars": len(payload_str),
-                    "payload_sha256": __import__("hashlib").sha256(payload_str.encode("utf-8")).hexdigest(),
-                },
-                body,
-                elapsed_ms=int((time.monotonic() - started) * 1000),
-            )
-            choice = body["choices"][0]
-            finish_reason = str(choice.get("finish_reason") or "").lower()
-            if finish_reason == "length":
-                raise ValueError("verifier finish_reason=length")
-            decision = _chat_intent_json_content((choice.get("message") or {}).get("content"))
-            if not isinstance(decision, dict) or not isinstance(decision.get("approved"), bool):
-                raise ValueError("invalid verifier JSON")
-            risk = str(decision.get("risk_level") or "").lower()
-            if risk not in {"low", "medium", "high", "critical"}:
-                raise ValueError("invalid verifier risk level")
-            edits = decision.get("edits")
-            if not isinstance(edits, list):
-                raise ValueError("invalid verifier edits JSON")
-            if decision.get("approved") is False and not edits:
-                raise ValueError("rejected verifier response has no edits")
-            updated, applied = apply_fastmoss_verifier_edits(
-                updated, edits, batch_claims, candidate_evidence
-            )
-            total_applied += applied
-            rejected_edits += max(0, len(edits) - applied)
-            statuses.append(f"{risk}:{'approved' if decision.get('approved') else f'edited{applied}'}")
-        except Exception as exc:
-            batch_failures += 1
-            statuses.append(f"failed:{type(exc).__name__}")
-            print(
-                f"[CHAT] FastMoss verifier batch {batch_index}/{len(batches)} failed: "
-                f"{type(exc).__name__}: {str(exc)[:300]}",
-                flush=True,
-            )
-    updated, _post_entity_id_count = normalize_fastmoss_entity_id_abbreviations(updated, manifest)
-    _log_fastmoss_report_pipeline(
-        draft,
-        manifest,
-        ",".join(statuses),
-        final_answer=updated,
-        edits_applied=total_applied,
-        claim_candidates=len(claims),
-        verifier_batches=len(batches),
-        verifier_batch_failures=batch_failures,
-        rejected_edits=rejected_edits,
-    )
-    return updated
 
 
 FASTMOSS_REPORT_NOTICE = (
@@ -10233,65 +8283,19 @@ FASTMOSS_REPORT_NOTICE = (
 )
 
 
-def append_fastmoss_report_notice(answer: str, route: dict[str, Any]) -> str:
-    """Append one stable disclaimer to analytical FastMoss reports only."""
-    text = str(answer or "").rstrip()
-    is_report = (
+def fastmoss_route_is_report(route: dict[str, Any]) -> bool:
+    return (
         str(route.get("task_depth") or "").strip().lower() in {"analysis", "workflow"}
         or bool(route.get("playbook"))
     )
-    if not text or not is_report or FASTMOSS_REPORT_NOTICE in text:
+
+
+def append_fastmoss_report_notice(answer: str, route: dict[str, Any]) -> str:
+    """Append one stable disclaimer to analytical FastMoss reports only."""
+    text = str(answer or "").rstrip()
+    if not text or not fastmoss_route_is_report(route) or FASTMOSS_REPORT_NOTICE in text:
         return text
     return text + "\n\n---\n\n" + FASTMOSS_REPORT_NOTICE
-
-
-def finalize_fastmoss_answer(
-    draft: str,
-    assistant_msg: Message,
-    user_text: str,
-    route: dict[str, Any],
-    requests_module: Any,
-    api_key: str,
-    api_url: str,
-    model: str,
-) -> str:
-    """Preserve the Pro draft by default; the legacy LLM editor is opt-in."""
-    if fastmoss_llm_verifier_enabled():
-        return append_fastmoss_report_notice(
-            verify_fastmoss_final_answer(
-                draft, assistant_msg, user_text, route,
-                requests_module, api_key, api_url, model,
-            ),
-            route,
-        )
-    manifest = fastmoss_evidence_manifest(assistant_msg, user_text, route)
-    text = str(draft or "")
-    has_evidence = bool(
-        manifest.get("evidence_fact_count")
-        or (manifest.get("category_head") or {}).get("products")
-        or (manifest.get("segment_head") or {}).get("products")
-        or (manifest.get("quality_states") or {}).get("data")
-    )
-    if not text.strip() or deepseek_tool_protocol_present({"content": text}) or not has_evidence:
-        # These paths do not invoke the verifier model; verify_fastmoss_final_answer
-        # returns the deterministic fallback before building verifier batches.
-        return append_fastmoss_report_notice(
-            verify_fastmoss_final_answer(
-                text, assistant_msg, user_text, route,
-                requests_module, api_key, api_url, model,
-            ),
-            route,
-        )
-    prepared, _entity_id_cleanup_count = normalize_fastmoss_entity_id_abbreviations(text, manifest)
-    final_answer = append_fastmoss_report_notice(prepared, route)
-    _log_fastmoss_report_pipeline(
-        text,
-        manifest,
-        "disabled",
-        final_answer=final_answer,
-        claim_candidates=len(fastmoss_high_risk_claims(prepared)),
-    )
-    return final_answer
 
 
 def build_tool_limit_final_context(messages: list[dict[str, Any]], user_request: str = "") -> list[dict[str, Any]]:
@@ -11422,6 +9426,17 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     if not default_region and provider in {"amazon", "fastmoss"} and fastmoss_defaults_to_us(routing_text):
         default_region = "US"
     for _ in range(max_tool_rounds):
+        if provider == "fastmoss" and final_answer_forced and fastmoss_route_is_report(route):
+            final_content = synthesize_fastmoss_report_from_packet(
+                assistant_msg, routing_text, route,
+                req, api_key, api_url, report_model,
+            )
+            store.update_message(session, assistant_msg, final_content, status="done")
+            store.broadcast(session.id, "done", {
+                "messageId": assistant_msg.id,
+                "content": final_content,
+            })
+            return
         deterministic_phase = (
             fastmoss_workflow_phase(
                 str(route.get("playbook")), assistant_msg,
@@ -11713,9 +9728,13 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                         "_context_scope": "system",
                     })
                     continue
-                if provider == "fastmoss" and (assistant_msg.tool_results or []):
-                    fallback = finalize_fastmoss_answer(
-                        "", assistant_msg, routing_text, route,
+                if (
+                    provider == "fastmoss"
+                    and fastmoss_route_is_report(route)
+                    and (assistant_msg.tool_results or [])
+                ):
+                    fallback = synthesize_fastmoss_report_from_packet(
+                        assistant_msg, routing_text, route,
                         req, api_key, api_url, report_model,
                     )
                 else:
@@ -11729,9 +9748,9 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 return
             if final_answer_forced and str(content or "").strip():
                 final_content = (
-                    finalize_fastmoss_answer(
-                        str(content), assistant_msg, routing_text, route, req, api_key, api_url, report_model
-                    ) if provider == "fastmoss" else str(content)
+                    synthesize_fastmoss_report_from_packet(
+                        assistant_msg, routing_text, route, req, api_key, api_url, report_model
+                    ) if provider == "fastmoss" and fastmoss_route_is_report(route) else str(content)
                 )
                 store.update_message(session, assistant_msg, final_content, status="done")
                 store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": final_content})
@@ -11820,9 +9839,9 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 )
                 continue
             final_content = (
-                finalize_fastmoss_answer(
-                    str(content), assistant_msg, routing_text, route, req, api_key, api_url, report_model
-                ) if provider == "fastmoss" else str(content)
+                synthesize_fastmoss_report_from_packet(
+                    assistant_msg, routing_text, route, req, api_key, api_url, report_model
+                ) if provider == "fastmoss" and fastmoss_route_is_report(route) else str(content)
             )
             store.update_message(session, assistant_msg, final_content, status="done")
             store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": final_content})
@@ -11837,6 +9856,18 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             print(f"[CHAT] DeepSeek error: {err_text}", flush=True)
             store.update_message(session, assistant_msg, f"Request failed: {exc}", status="error")
             return
+
+    if provider == "fastmoss" and fastmoss_route_is_report(route):
+        final_content = synthesize_fastmoss_report_from_packet(
+            assistant_msg, routing_text, route,
+            req, api_key, api_url, report_model,
+        )
+        store.update_message(session, assistant_msg, final_content, status="done")
+        store.broadcast(session.id, "done", {
+            "messageId": assistant_msg.id,
+            "content": final_content,
+        })
+        return
 
     evidence_gaps = fastmoss_analysis_evidence_gaps(routing_text, assistant_msg, route) if provider == "fastmoss" else []
     quality_summary = mcp_evidence_quality_summary(assistant_msg)
@@ -11930,9 +9961,9 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             content = str(response_message.get("content") or "")
             if content.strip() and not deepseek_tool_protocol_present(response_message):
                 final_content = (
-                    finalize_fastmoss_answer(
-                        content, assistant_msg, routing_text, route, req, api_key, api_url, report_model
-                    ) if provider == "fastmoss" else content
+                    synthesize_fastmoss_report_from_packet(
+                        assistant_msg, routing_text, route, req, api_key, api_url, report_model
+                    ) if provider == "fastmoss" and fastmoss_route_is_report(route) else content
                 )
                 store.update_message(session, assistant_msg, final_content, status="done")
                 store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": final_content})
