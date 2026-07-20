@@ -4283,6 +4283,8 @@ def chat_report_model() -> str:
 
 def chat_route_uses_report_model(provider: str, route: dict[str, Any]) -> bool:
     """Keep direct/lookup traffic on Flash while upgrading evidence-led final reports."""
+    if normalize_chat_provider(provider) == "amazon":
+        return False
     intent = str(route.get("intent") or "").strip().lower()
     if intent == "video_analysis":
         return True
