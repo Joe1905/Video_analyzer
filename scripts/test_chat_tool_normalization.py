@@ -2,6 +2,7 @@
 """Smoke tests for chat tool result normalization."""
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import sys
@@ -3181,6 +3182,47 @@ def test_fastmoss_report_evidence_is_semantic() -> None:
     assert semantic_stats["registered_tool_count"] == 1
 
 
+def test_fastmoss_analytical_answers_use_single_semantic_report_path() -> None:
+    message = SimpleNamespace(tool_calls=[], tool_results=[{
+        "tool_name": "fastmoss__market_category_ranking",
+        "result": {"ok": True, "data_state": "data", "mcp_data": {"list": [{"id": "sample"}]}},
+    }])
+    calls: list[str] = []
+    original_synthesize = web_app.synthesize_fastmoss_report_from_packet
+    original_finalize = web_app.finalize_fastmoss_answer
+    web_app.synthesize_fastmoss_report_from_packet = (
+        lambda *_args, **_kwargs: calls.append("semantic") or "semantic report"
+    )
+    web_app.finalize_fastmoss_answer = (
+        lambda draft, *_args, **_kwargs: calls.append("direct") or f"direct: {draft}"
+    )
+    try:
+        analytical = web_app.complete_fastmoss_answer(
+            "ignored draft", message, "调研最近热门新品",
+            {"intent": "product_research", "task_depth": "analysis", "playbook": "product"},
+            object(), "key", "https://example.invalid/v1", "deepseek-v4-pro-test",
+        )
+        assert analytical == "semantic report"
+        assert calls == ["semantic"]
+
+        calls.clear()
+        direct = web_app.complete_fastmoss_answer(
+            "direct answer", message, "这个商品是否存在",
+            {"intent": "product_availability", "task_depth": "lookup"},
+            object(), "key", "https://example.invalid/v1", "deepseek-v4-pro-test",
+        )
+        assert direct == "direct: direct answer"
+        assert calls == ["direct"]
+    finally:
+        web_app.synthesize_fastmoss_report_from_packet = original_synthesize
+        web_app.finalize_fastmoss_answer = original_finalize
+
+    chat_source = inspect.getsource(web_app.run_chat_deepseek)
+    assert "synthesize_fastmoss_report_from_packet(" not in chat_source
+    assert "finalize_fastmoss_answer(" not in chat_source
+    assert chat_source.count("complete_fastmoss_answer(") >= 5
+
+
 def test_fastmoss_claim_ids_and_extended_mechanical_cleanup() -> None:
     draft = (
         "## 建议\n"
@@ -3548,6 +3590,7 @@ if __name__ == "__main__":
     test_fastmoss_22_call_semantic_registry_fixture()
     test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence()
     test_fastmoss_report_evidence_is_semantic()
+    test_fastmoss_analytical_answers_use_single_semantic_report_path()
     test_fastmoss_claim_ids_and_extended_mechanical_cleanup()
     test_analytical_routes_use_report_model_and_fastmoss_preserves_pro_draft()
     print("chat tool normalization tests passed")

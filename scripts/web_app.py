@@ -10600,6 +10600,34 @@ def finalize_fastmoss_answer(
     return prepared
 
 
+def complete_fastmoss_answer(
+    draft: str,
+    assistant_msg: Message,
+    user_text: str,
+    route: dict[str, Any],
+    requests_module: Any,
+    api_key: str,
+    api_url: str,
+    model: str,
+) -> str:
+    """Route every evidence-led FastMoss report through the semantic dossier."""
+    has_fastmoss_evidence = any(
+        isinstance(item, dict)
+        and split_prefixed_tool_id(str(item.get("tool_name") or ""))[0] == "fastmoss"
+        for item in (assistant_msg.tool_results or [])
+    )
+    if has_fastmoss_evidence and chat_route_uses_report_model("fastmoss", route):
+        print("[CHAT] FastMoss final route=semantic_report", flush=True)
+        return synthesize_fastmoss_report_from_packet(
+            assistant_msg, user_text, route,
+            requests_module, api_key, api_url, model,
+        )
+    return finalize_fastmoss_answer(
+        draft, assistant_msg, user_text, route,
+        requests_module, api_key, api_url, model,
+    )
+
+
 def build_tool_limit_final_context(messages: list[dict[str, Any]], user_request: str = "") -> list[dict[str, Any]]:
     evidence = [message for message in messages if _is_current_tool_evidence_message(message)]
     working = [
@@ -11854,8 +11882,8 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                         "_context_scope": "system",
                     })
                     if next_phase is None:
-                        final_content = synthesize_fastmoss_report_from_packet(
-                            assistant_msg, routing_text, route,
+                        final_content = complete_fastmoss_answer(
+                            "", assistant_msg, routing_text, route,
                             req, api_key, api_url, report_model,
                         )
                         store.update_message(session, assistant_msg, final_content, status="done")
@@ -12127,7 +12155,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                         req, api_key, api_url, report_model,
                     )
                 elif provider == "fastmoss" and (assistant_msg.tool_results or []):
-                    fallback = finalize_fastmoss_answer(
+                    fallback = complete_fastmoss_answer(
                         "", assistant_msg, routing_text, route,
                         req, api_key, api_url, report_model,
                     )
@@ -12152,7 +12180,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                         fallback_draft=str(content),
                     )
                 elif provider == "fastmoss":
-                    final_content = finalize_fastmoss_answer(
+                    final_content = complete_fastmoss_answer(
                         str(content), assistant_msg, routing_text, route, req, api_key, api_url, report_model
                     )
                 else:
@@ -12248,6 +12276,17 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                         "content": final_content,
                     })
                     return
+                if provider == "fastmoss" and (assistant_msg.tool_results or []):
+                    final_content = complete_fastmoss_answer(
+                        "", assistant_msg, routing_text, route,
+                        req, api_key, api_url, report_model,
+                    )
+                    store.update_message(session, assistant_msg, final_content, status="done")
+                    store.broadcast(session.id, "done", {
+                        "messageId": assistant_msg.id,
+                        "content": final_content,
+                    })
+                    return
                 messages.append({
                     "role": "system",
                     "content": (
@@ -12265,7 +12304,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 )
                 continue
             final_content = (
-                finalize_fastmoss_answer(
+                complete_fastmoss_answer(
                     str(content), assistant_msg, routing_text, route, req, api_key, api_url, report_model
                 ) if provider == "fastmoss" else str(content)
             )
@@ -12309,6 +12348,21 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     ):
         final_content = synthesize_sellersprite_report_from_packet(
             assistant_msg, routing_text, route,
+            req, api_key, api_url, report_model,
+        )
+        store.update_message(session, assistant_msg, final_content, status="done")
+        store.broadcast(session.id, "done", {
+            "messageId": assistant_msg.id,
+            "content": final_content,
+        })
+        return
+    if (
+        provider == "fastmoss"
+        and (assistant_msg.tool_results or [])
+        and chat_route_uses_report_model(provider, route)
+    ):
+        final_content = complete_fastmoss_answer(
+            "", assistant_msg, routing_text, route,
             req, api_key, api_url, report_model,
         )
         store.update_message(session, assistant_msg, final_content, status="done")
@@ -12390,7 +12444,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             content = str(response_message.get("content") or "")
             if content.strip() and not deepseek_tool_protocol_present(response_message):
                 final_content = (
-                    finalize_fastmoss_answer(
+                    complete_fastmoss_answer(
                         content, assistant_msg, routing_text, route, req, api_key, api_url, report_model
                     ) if provider == "fastmoss" else content
                 )
