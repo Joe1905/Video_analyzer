@@ -1934,6 +1934,9 @@ def test_llm_orchestration_exposes_full_provider_tools_and_keeps_hard_guards() -
     assert "能力图仅供参考，不是工具门禁" in instruction
     assert "首个业务调用必须" not in instruction
     assert "不是固定工具顺序" in web_app.fastmoss_playbook_instruction("product", advisory=True)
+    system_instruction = web_app.chat_system_instruction("fastmoss", "2026-07-21")
+    assert "starts from platform/category ranking" not in system_instruction
+    assert "do not impose a fixed first tool or sequence" in system_instruction
 
     assert web_app.fastmoss_deep_dive_call_error(
         "fastmoss__search_category_by_words", {"query": ["瑜伽裤"]}, "本月爆卖产品", empty, route
@@ -1986,6 +1989,92 @@ def test_llm_orchestration_exposes_full_provider_tools_and_keeps_hard_guards() -
     assert "未经用户输入或当前 SellerSprite 证据" in web_app.sellersprite_deep_dive_call_error(
         "sellersprite__asin_detail", {"asin": "B0ABCDEF12"}, "寻找亚马逊新品机会", empty
     )
+
+    # Replay the two calls that were previously dropped after category ranking.
+    # Capability stages may describe a useful next step, but cannot admit or deny
+    # tools selected by an LLM-owned route.
+    planner_state = {
+        "attempted_capabilities": ["category_ranking"],
+        "observed_capabilities": ["category_ranking"],
+        "tool_counts": {"market_category_ranking": 1},
+        "has_category": False,
+        "has_product": False,
+        "has_shop": False,
+        "has_creator": False,
+        "has_video": False,
+        "has_asin": False,
+        "has_node": False,
+    }
+    assert web_app.provider_tool_stage_error(
+        "fastmoss", route, "fastmoss", "product_rank_top_selling", planner_state
+    ) is None
+    assert web_app.provider_tool_stage_error(
+        "fastmoss", route, "fastmoss", "product_rank_new_listed", planner_state
+    ) is None
+    assert web_app.provider_tool_stage_error(
+        "fastmoss", dict(route, route_source="rules"), "fastmoss", "not_in_capability_graph", planner_state
+    ) == "legacy_capability_stage"
+
+    tied_categories = {"mcp_data": {"result": {"categories": [
+        {"category_id_level1": 13, "category_id_level2": 844168, "category_id_level3": 934664,
+         "cn_name": "面包机", "score": 0.515},
+        {"category_id_level1": 13, "category_id_level2": 844168, "category_id_level3": 935176,
+         "cn_name": "料理机", "score": 0.502},
+    ]}}}
+    named_llm_route = dict(route, research_task={
+        **route["research_task"],
+        "scope": "keyword",
+        "entity_type": "keyword",
+        "entity": "food processor",
+        "entity_source": "explicit",
+    })
+    assert web_app.fastmoss_category_ambiguity_question(
+        "food processor 调研", tied_categories, named_llm_route
+    ) is None
+
+    category_evidence = SimpleNamespace(tool_calls=[], tool_results=[{
+        "tool_name": "fastmoss__search_category_by_words",
+        "result": {"ok": True, "mcp_data": {"categories": [{
+            "category_id_level1": 13,
+            "category_id_level2": 844168,
+            "category_id_level3": 935176,
+        }]}},
+    }])
+    explicit_query = web_app.apply_fastmoss_business_defaults(
+        "search_category_by_words",
+        {"query": ["瑜伽裤"], "top_k": 7},
+        category_evidence,
+        user_text="food processor 调研",
+        route=named_llm_route,
+    )
+    assert explicit_query == {"query": ["瑜伽裤"], "top_k": 7}
+    explicit_ranking = web_app.apply_fastmoss_business_defaults(
+        "market_category_ranking",
+        {
+            "filter": {"category_id": 935176, "date_type": "month", "date_value": "2026-06"},
+            "orderby": [{"field": "category_gmv", "order": "desc"}],
+            "page": 2,
+            "pagesize": 20,
+        },
+        category_evidence,
+        user_text="food processor 调研",
+        route=named_llm_route,
+    )
+    assert explicit_ranking["filter"] == {
+        "category_id": 935176, "date_type": "month", "date_value": "2026-06",
+    }
+    assert explicit_ranking["orderby"] == [{"field": "category_gmv", "order": "desc"}]
+    assert explicit_ranking["page"] == 2 and explicit_ranking["pagesize"] == 20
+    explicit_new_listed = web_app.apply_fastmoss_business_defaults(
+        "product_rank_new_listed",
+        {"filter": {"category_l1_id": 13, "listing_start_date": "2026-05-01"}},
+        category_evidence,
+        user_text="food processor 调研",
+        route=named_llm_route,
+    )
+    assert explicit_new_listed["filter"]["category_l1_id"] == 13
+    assert explicit_new_listed["filter"]["listing_start_date"] == "2026-05-01"
+    assert "category_l2_id" not in explicit_new_listed["filter"]
 
 
 def test_region_default_only_applies_when_schema_supports_it() -> None:
