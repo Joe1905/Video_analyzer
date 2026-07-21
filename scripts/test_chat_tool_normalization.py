@@ -3133,31 +3133,44 @@ def test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence() -> None:
     finally:
         web_app.verify_fastmoss_final_answer = original_verify
     assert result.startswith("# 结论")
+    assert result.count(web_app.FASTMOSS_REPORT_NOTICE) == 1
     assert len(requests.payloads) == 1
     payload = requests.payloads[0]
     assert "tools" not in payload
-    assert len(payload["messages"]) == 2
-    system_content = payload["messages"][0]["content"]
-    assert "结构化 Markdown 证据" in system_content
-    assert "# FastMoss 调研证据" in system_content
-    assert "## call:1 · `fastmoss__product_sales_trend`" in system_content
-    assert "## call:2 · `fastmoss__product_rank_new_listed`" in system_content
-    assert "## call:3 · `fastmoss__product_review_list`" in system_content
-    assert "evidence_dossier" not in system_content
-    assert "report_packet" not in system_content
-    assert system_content.count("fastmoss__product_sales_trend") == 1
-    assert "2026-06-01" in system_content and "2026-07-01" in system_content
-    assert all(product["product_id"] in system_content for product in products)
-    assert "returned_product_outside_requested_l3" in system_content
-    assert "关键词返回量不是市场容量" in system_content
-    assert "不得写成流量来源、因果、效率或生命周期结论" in system_content
-    assert "| 参数 filter.product_id | 1730000000000000001 |" in system_content
-    assert "本次调用成功，但针对上述精确对象、参数、地区和周期没有返回业务记录" in system_content
-    assert "| 报告日期 |" in system_content
-    assert "## 硬事实边界" in system_content
-    assert system_content.index("## 硬事实边界") > system_content.index("## call:3")
-    assert system_content.endswith("不得把样本占比写成市场份额，也不得从渠道占比推导自然流量、广告花费、ROI、因果或生命周期。")
-    assert "omitted_items" not in system_content
+    assert payload["max_tokens"] == 12000
+    assert [message["role"] for message in payload["messages"]] == ["system", "system", "user"]
+    base_system = payload["messages"][0]["content"]
+    report_system = payload["messages"][1]["content"]
+    semantic_content = payload["messages"][2]["content"]
+    assert base_system == web_app.chat_system_instruction(
+        "fastmoss", re.search(r"当前日期（Asia/Shanghai）：(\d{4}-\d{2}-\d{2})", base_system).group(1)
+    )
+    assert "A useful product analysis must include" in base_system
+    assert "Content completeness is more important than decorative layout" in base_system
+    assert report_system == web_app.fastmoss_report_prompt_instruction(
+        {"playbook": "product", "task_depth": "workflow"}
+    )
+    assert "完整工具结果是报告的事实素材" in report_system
+    assert "evidence_index：{" not in report_system
+    assert "# FastMoss 调研证据" in semantic_content
+    assert "## call:1 · `fastmoss__product_sales_trend`" in semantic_content
+    assert "## call:2 · `fastmoss__product_rank_new_listed`" in semantic_content
+    assert "## call:3 · `fastmoss__product_review_list`" in semantic_content
+    assert "evidence_dossier" not in semantic_content
+    assert "report_packet" not in semantic_content
+    assert semantic_content.count("fastmoss__product_sales_trend") == 1
+    assert "2026-06-01" in semantic_content and "2026-07-01" in semantic_content
+    assert all(product["product_id"] in semantic_content for product in products)
+    assert "returned_product_outside_requested_l3" in semantic_content
+    assert "关键词返回量不是市场容量" in semantic_content
+    assert "不得写成流量来源、因果、效率或生命周期结论" in semantic_content
+    assert "| 参数 filter.product_id | 1730000000000000001 |" in semantic_content
+    assert "本次调用成功，但针对上述精确对象、参数、地区和周期没有返回业务记录" in semantic_content
+    assert "| 报告日期 |" in semantic_content
+    assert "## 硬事实边界" in semantic_content
+    assert semantic_content.index("## 硬事实边界") > semantic_content.index("## call:3")
+    assert semantic_content.endswith("--- Semantic 证据结束 ---")
+    assert "omitted_items" not in semantic_content
 
 
 def test_fastmoss_report_evidence_is_semantic() -> None:
@@ -3516,7 +3529,14 @@ def test_analytical_routes_use_report_model_and_fastmoss_preserves_pro_draft() -
             os.environ.pop("FASTMOSS_LLM_VERIFIER_ENABLED", None)
         else:
             os.environ["FASTMOSS_LLM_VERIFIER_ENABLED"] = old_verifier
-    assert result == draft
+    assert result.startswith(draft + "\n\n---\n\n## 注意事项")
+    assert result.count(web_app.FASTMOSS_REPORT_NOTICE) == 1
+    assert web_app.append_fastmoss_report_notice(
+        result, {"task_depth": "workflow", "playbook": "product"}
+    ) == result
+    assert web_app.append_fastmoss_report_notice(
+        draft, {"task_depth": "lookup"}
+    ) == draft
     assert calls == []
 
 
