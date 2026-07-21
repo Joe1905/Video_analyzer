@@ -1502,12 +1502,38 @@ def test_sellersprite_semantic_report_and_pro_synthesis() -> None:
         "deepseek-v4-pro-test",
     )
     assert report.startswith("# SellerSprite 报告")
+    assert report.count(web_app.SELLERSPRITE_REPORT_NOTICE) == 1
     assert len(requests.payloads) == 1
     payload = requests.payloads[0]
     assert payload["model"] == "deepseek-v4-pro-test"
+    assert payload["max_tokens"] == 12000
     assert "tools" not in payload
-    assert marker in payload["messages"][0]["content"]
-    assert "# SellerSprite 调研证据" in payload["messages"][0]["content"]
+    assert [item["role"] for item in payload["messages"]] == ["system", "user"]
+    assert "A useful product analysis must include" in payload["messages"][0]["content"]
+    assert marker not in payload["messages"][0]["content"]
+    assert marker in payload["messages"][1]["content"]
+    assert "# SellerSprite 调研证据" in payload["messages"][1]["content"]
+    assert "--- Semantic 证据开始 ---" in payload["messages"][1]["content"]
+    assert web_app.append_sellersprite_report_notice(report, route) == report
+
+    class FailedRequests:
+        def post(self, _url: str, **_kwargs):
+            raise RuntimeError("report model unavailable")
+
+    failed = web_app.synthesize_sellersprite_report_from_packet(
+        message,
+        "分析 stroller fan 市场",
+        route,
+        FailedRequests(),
+        "test-key",
+        "https://example.invalid/v1",
+        "deepseek-v4-pro-test",
+    )
+    assert "没有使用 Flash 草稿替代 V4 Pro 报告" in failed
+
+    run_source = inspect.getsource(web_app.run_chat_deepseek)
+    assert "synthesize_sellersprite_report_from_packet(" not in run_source
+    assert run_source.count("complete_sellersprite_answer(") >= 5
 
 
 def test_dynamic_provider_capability_graph_uses_task_scope_and_evidence() -> None:
@@ -1608,6 +1634,34 @@ def test_dynamic_provider_capability_graph_uses_task_scope_and_evidence() -> Non
     assert "sellersprite__market_research" in selected
     assert "sellersprite__product_research" not in selected
     assert "sellersprite__asin_detail" not in selected
+    assert set(web_app.sellersprite_analysis_evidence_gaps(amazon_text, amazon_message, amazon_route)) == {
+        "keyword_discovery", "market_discovery", "product_discovery",
+    }
+
+    discovered_asin_message = SimpleNamespace(
+        tool_calls=[{
+            "function": {"name": "sellersprite__keyword_research", "arguments": "{}"},
+        }],
+        tool_results=[{
+            "tool_name": "sellersprite__keyword_research",
+            "result": {
+                "ok": True,
+                "data_state": "data",
+                "evidence_observed": True,
+                "mcp_data": {"items": [{"keyword": "stroller fan", "asin": "B0ABCDEF12"}]},
+            },
+        }],
+    )
+    selected = web_app.provider_profile_tool_ids(
+        "amazon", amazon_route, amazon_text, amazon_enabled, discovered_asin_message
+    )
+    assert "sellersprite__market_research" in selected
+    assert "sellersprite__product_research" in selected
+    assert "sellersprite__asin_detail" in selected
+    assert "sellersprite__review" in selected
+    assert set(web_app.sellersprite_analysis_evidence_gaps(
+        amazon_text, discovered_asin_message, amazon_route
+    )) == {"market_discovery", "product_discovery", "asin_detail", "asin_support"}
 
     amazon_message.tool_calls.extend([
         {"function": {"name": "sellersprite__aba_research_monthly", "arguments": "{}"}},
@@ -1645,6 +1699,19 @@ def test_dynamic_provider_capability_graph_uses_task_scope_and_evidence() -> Non
     assert "sellersprite__asin_detail" in selected
     assert "sellersprite__review" in selected
     assert "sellersprite__keyword_research" not in selected
+    assert web_app.sellersprite_analysis_evidence_gaps("分析 B0H3ZH8BF8", asin_message, asin_route) == [
+        "asin_detail", "asin_support",
+    ]
+    completed_asin_message = SimpleNamespace(
+        tool_calls=[
+            {"function": {"name": "sellersprite__asin_detail", "arguments": "{}"}},
+            {"function": {"name": "sellersprite__review", "arguments": "{}"}},
+        ],
+        tool_results=[],
+    )
+    assert web_app.sellersprite_analysis_evidence_gaps(
+        "分析 B0H3ZH8BF8", completed_asin_message, asin_route
+    ) == []
     assert web_app.sellersprite_deep_dive_call_error(
         "sellersprite__asin_detail",
         {"marketplace": "US", "asin": "B0H3ZH8BF8"},

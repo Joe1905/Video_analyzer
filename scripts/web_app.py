@@ -5240,6 +5240,12 @@ def research_planner_instruction(
         instructions.append(
             "SellerSprite 每个工具必须严格使用当前 tools/list 暴露的请求 schema；部分工具使用 request 对象，部分工具使用顶层参数，不能互换。"
         )
+        gaps = sellersprite_analysis_evidence_gaps(user_text, assistant_msg, route)
+        if gaps:
+            instructions.append(
+                "当前仍缺少必要证据维度：" + "、".join(gaps) + "。"
+                "在完成这些维度或对应工具明确失败前，不得停止并生成最终报告。"
+            )
     return "".join(instructions)
 
 
@@ -5535,6 +5541,64 @@ def fastmoss_evidence_instruction(gaps: list[str]) -> str:
         "FastMoss 分析的必要证据仍不完整，暂时不要生成结论或报告。"
         f"请继续执行：{details}。"
         "不要用长串派生关键词代替类目/榜单证据，也不要声称已重新搜索却不实际调用工具。"
+    )
+
+
+def sellersprite_analysis_evidence_gaps(
+    user_text: str,
+    assistant_msg: Message,
+    route: dict[str, Any] | None = None,
+) -> list[str]:
+    """Check analytical coverage without prescribing call counts or fixed tool sequences."""
+    if not (route or {}).get("dynamic_planner") or not chat_route_uses_report_model("amazon", route or {}):
+        return []
+    task = (route or {}).get("research_task") if isinstance((route or {}).get("research_task"), dict) else {}
+    state = research_planner_state("amazon", route or {}, user_text, assistant_msg)
+    completed = set(state.get("attempted_capabilities") or [])
+    gaps: list[str] = []
+
+    if str(task.get("entity_type") or "") == "asin":
+        if "asin_detail" not in completed:
+            gaps.append("asin_detail")
+        if not completed.intersection({"asin_traffic", "asin_review"}):
+            gaps.append("asin_support")
+        return gaps
+
+    if str(task.get("scope") or "") == "cross_category":
+        if "keyword_discovery" not in completed:
+            gaps.append("keyword_discovery")
+        if "market_discovery" not in completed:
+            gaps.append("market_discovery")
+    elif not completed.intersection({"keyword_discovery", "market_discovery"}):
+        gaps.append("demand_discovery")
+
+    if "product_discovery" not in completed:
+        gaps.append("product_discovery")
+    if state.get("has_node") and "market_validation" not in completed:
+        gaps.append("market_validation")
+    if state.get("has_asin"):
+        if "asin_detail" not in completed:
+            gaps.append("asin_detail")
+        if not completed.intersection({"asin_traffic", "asin_review"}):
+            gaps.append("asin_support")
+    return gaps
+
+
+def sellersprite_evidence_instruction(gaps: list[str]) -> str:
+    required = {
+        "keyword_discovery": "补充关键词需求或搜索行为证据",
+        "market_discovery": "补充市场或类目候选证据",
+        "demand_discovery": "先取得关键词需求或市场发现证据",
+        "product_discovery": "取得同口径商品样本或竞品列表，不能只逐个查询零散 ASIN",
+        "market_validation": "基于已发现的类目节点补充至少一个市场规模、趋势、价格或竞争分布维度",
+        "asin_detail": "对一个有来源的代表 ASIN 获取商品详情或销售趋势",
+        "asin_support": "对代表 ASIN 补充流量或评论证据，用于校准商品详情结论",
+    }
+    details = "；".join(required[gap] for gap in gaps if gap in required)
+    return (
+        "SellerSprite 分析的必要证据维度仍不完整，暂时不要生成最终报告。"
+        f"请继续执行：{details}。"
+        "工具选择和调用次数由你根据证据决定；不要重复同工具同参数，空结果或失败结果按对应维度的已完成尝试处理。"
     )
 
 
@@ -8442,6 +8506,51 @@ def sellersprite_render_report_evidence(
     }
 
 
+SELLERSPRITE_REPORT_NOTICE = (
+    "## 注意事项\n\n"
+    "本报告基于 SellerSprite 接口在当前 Amazon 站点、查询条件和数据周期内返回的数据，并由大模型整理分析。"
+    "数据可能存在延迟、缺失、估算或统计口径差异，分析也可能出现理解偏差；"
+    "请以 SellerSprite 原始页面、Amazon 实际页面及业务验证为准，不建议将本报告作为唯一决策依据。"
+)
+
+
+def append_sellersprite_report_notice(answer: str, route: dict[str, Any]) -> str:
+    """Append one stable disclaimer to analytical SellerSprite reports only."""
+    text = str(answer or "").rstrip()
+    if not text or not chat_route_uses_report_model("amazon", route) or SELLERSPRITE_REPORT_NOTICE in text:
+        return text
+    return text + "\n\n---\n\n" + SELLERSPRITE_REPORT_NOTICE
+
+
+def log_sellersprite_report_pipeline(
+    answer: str,
+    dossier: dict[str, Any],
+    evidence_render_stats: dict[str, Any],
+    status: str,
+) -> None:
+    text = str(answer or "")
+    heading_count = sum(
+        1 for line in text.splitlines()
+        if re.match(r"^#{1,6}\s+", line)
+    )
+    states = [
+        str((entry.get("evidence_fence") or {}).get("data_state") or "")
+        for entry in (dossier.get("tool_evidence") or [])
+        if isinstance(entry, dict)
+    ]
+    print(
+        "[CHAT] SellerSprite report pipeline "
+        f"status={status} final_chars={len(text)} "
+        f"headings={heading_count} "
+        f"table_rows={sum(1 for line in text.splitlines() if line.lstrip().startswith('|'))} "
+        f"calls={len(states)} data={states.count('data')} empty={states.count('empty')} error={states.count('error')} "
+        f"business_leaves={int(evidence_render_stats.get('business_leaf_count') or 0)} "
+        f"unmapped_leaves={int(evidence_render_stats.get('unmapped_leaf_count') or 0)} "
+        f"fallback_tools={','.join(evidence_render_stats.get('fallback_tools') or []) or 'none'}",
+        flush=True,
+    )
+
+
 def synthesize_sellersprite_report_from_packet(
     assistant_msg: Message,
     user_text: str,
@@ -8450,34 +8559,28 @@ def synthesize_sellersprite_report_from_packet(
     api_key: str,
     api_url: str,
     model: str,
-    fallback_draft: str = "",
 ) -> str:
     """Generate the final SellerSprite report from complete normalized evidence."""
     dossier = sellersprite_report_evidence_dossier(assistant_msg, route)
     dossier_json = json.dumps(dossier, ensure_ascii=False, separators=(",", ":"))
     evidence_markdown, evidence_render_stats = sellersprite_render_report_evidence(dossier)
+    current_date_shanghai = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
+    semantic_input = (
+        chat_routing_text(user_text)
+        + "\n\n当前为报告生成阶段，没有可调用工具；请直接根据以下 Semantic 结构证据完成最终报告。"
+        + "\n\n--- Semantic 证据开始 ---\n"
+        + evidence_markdown
+        + "--- Semantic 证据结束 ---"
+    )
     messages = [
-        {
-            "role": "system",
-            "content": (
-                "你是 SellerSprite 亚马逊调研报告撰写器。当前请求没有可调用工具，请根据下方结构化证据写最终中文 Markdown 报告。"
-                "完整使用各次调用的业务结果，区分观察事实、合理推断和待验证建议。"
-                "空结果只适用于该次调用的精确参数；关键词或商品返回量不是市场容量；"
-                "不同 marketplace、关键词、类目节点、ASIN 或周期的数据不得直接合并。"
-                "预测、趋势和观察期实际值必须明确区分，不得编造销量、利润、转化率、市场份额或因果关系。"
-                "不要输出工具调用、DSML、函数协议或待调用计划，也不要向用户提及内部证据结构名称。"
-                "\n\n--- 结构化证据开始 ---\n"
-                + evidence_markdown
-                + "--- 结构化证据结束 ---\n"
-            ),
-        },
-        {"role": "user", "content": chat_routing_text(user_text)},
+        {"role": "system", "content": chat_system_instruction("amazon", current_date_shanghai)},
+        {"role": "user", "content": semantic_input},
     ]
     payload = {
         "model": model,
         "messages": messages,
         "temperature": 0.2,
-        "max_tokens": 8000,
+        "max_tokens": 12000,
     }
     payload_str = json.dumps(payload, ensure_ascii=False)
     started = time.monotonic()
@@ -8517,22 +8620,47 @@ def synthesize_sellersprite_report_from_packet(
             f"evidence_render={json.dumps(evidence_render_stats, ensure_ascii=False, separators=(',', ':'))}",
             flush=True,
         )
-        return draft
+        report = append_sellersprite_report_notice(draft, route)
+        log_sellersprite_report_pipeline(report, dossier, evidence_render_stats, "generated")
+        return report
     except Exception as exc:
         print(
             f"[CHAT] SellerSprite dossier synthesis failed: {type(exc).__name__}: {str(exc)[:240]}",
             flush=True,
         )
-        if str(fallback_draft or "").strip() and not deepseek_tool_protocol_present(
-            {"content": fallback_draft}
-        ):
-            return str(fallback_draft).strip()
         quality = dossier.get("quality_summary") or {}
-        return (
+        message = (
             "SellerSprite 工具查询已结束，但报告模型暂时无法生成最终报告。"
             f"已取得数据的接口 {len(quality.get('data', []))} 个，成功但为空的接口 {len(quality.get('empty', []))} 个，"
-            f"失败接口 {len(quality.get('error', []))} 个。空结果只代表对应参数本轮没有记录，不代表 Amazon 平台全局不存在。"
+            f"失败接口 {len(quality.get('error', []))} 个。系统没有使用 Flash 草稿替代 V4 Pro 报告；请稍后重试。"
         )
+        log_sellersprite_report_pipeline(message, dossier, evidence_render_stats, "synthesis_failed")
+        return message
+
+
+def complete_sellersprite_answer(
+    draft: str,
+    assistant_msg: Message,
+    user_text: str,
+    route: dict[str, Any],
+    requests_module: Any,
+    api_key: str,
+    api_url: str,
+    model: str,
+) -> str:
+    """Route every evidence-led SellerSprite report through Semantic evidence and V4 Pro."""
+    has_sellersprite_evidence = any(
+        isinstance(item, dict)
+        and split_prefixed_tool_id(str(item.get("tool_name") or ""))[0] == "sellersprite"
+        for item in (assistant_msg.tool_results or [])
+    )
+    if has_sellersprite_evidence and chat_route_uses_report_model("amazon", route):
+        print("[CHAT] SellerSprite final route=semantic_report", flush=True)
+        return synthesize_sellersprite_report_from_packet(
+            assistant_msg, user_text, route,
+            requests_module, api_key, api_url, model,
+        )
+    return str(draft or "").strip()
 
 
 def fastmoss_render_report_evidence(dossier: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -12186,8 +12314,8 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     and (assistant_msg.tool_results or [])
                     and chat_route_uses_report_model(provider, route)
                 ):
-                    fallback = synthesize_sellersprite_report_from_packet(
-                        assistant_msg, routing_text, route,
+                    fallback = complete_sellersprite_answer(
+                        "", assistant_msg, routing_text, route,
                         req, api_key, api_url, report_model,
                     )
                 elif provider == "fastmoss" and (assistant_msg.tool_results or []):
@@ -12210,10 +12338,9 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     and (assistant_msg.tool_results or [])
                     and chat_route_uses_report_model(provider, route)
                 ):
-                    final_content = synthesize_sellersprite_report_from_packet(
-                        assistant_msg, routing_text, route,
+                    final_content = complete_sellersprite_answer(
+                        str(content), assistant_msg, routing_text, route,
                         req, api_key, api_url, report_model,
-                        fallback_draft=str(content),
                     )
                 elif provider == "fastmoss":
                     final_content = complete_fastmoss_answer(
@@ -12246,13 +12373,24 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     "_context_scope": "system",
                 })
                 break
-            evidence_gaps = fastmoss_analysis_evidence_gaps(routing_text, assistant_msg, route) if provider == "fastmoss" else []
+            if provider == "fastmoss":
+                evidence_gaps = fastmoss_analysis_evidence_gaps(routing_text, assistant_msg, route)
+                evidence_instruction = fastmoss_evidence_instruction
+                evidence_label = "FastMoss"
+            elif provider == "amazon":
+                evidence_gaps = sellersprite_analysis_evidence_gaps(routing_text, assistant_msg, route)
+                evidence_instruction = sellersprite_evidence_instruction
+                evidence_label = "SellerSprite"
+            else:
+                evidence_gaps = []
+                evidence_instruction = fastmoss_evidence_instruction
+                evidence_label = provider
             if evidence_gaps:
                 evidence_retry_limit = 3 if route.get("dynamic_planner") else 1
                 if no_tool_retries < evidence_retry_limit and tools and not context_stats["tools_removed"]:
                     no_tool_retries += 1
                     print(
-                        f"[CHAT] FastMoss evidence incomplete: {','.join(evidence_gaps)}; "
+                        f"[CHAT] {evidence_label} evidence incomplete: {','.join(evidence_gaps)}; "
                         f"requesting attempt {no_tool_retries}/{evidence_retry_limit}",
                         flush=True,
                     )
@@ -12261,7 +12399,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                         "content": "[上一版结论因必要证据节点未完成而被拒绝。]",
                         "_context_scope": "current",
                     })
-                    messages.append({"role": "system", "content": fastmoss_evidence_instruction(evidence_gaps), "_context_scope": "system"})
+                    messages.append({"role": "system", "content": evidence_instruction(evidence_gaps), "_context_scope": "system"})
                     continue
                 messages.append({"role": "assistant", "content": content, "_context_scope": "current"})
                 messages.append({
@@ -12301,10 +12439,9 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 and request_model != report_model
             ):
                 if provider == "amazon" and (assistant_msg.tool_results or []):
-                    final_content = synthesize_sellersprite_report_from_packet(
-                        assistant_msg, routing_text, route,
+                    final_content = complete_sellersprite_answer(
+                        str(content), assistant_msg, routing_text, route,
                         req, api_key, api_url, report_model,
-                        fallback_draft=str(content),
                     )
                     store.update_message(session, assistant_msg, final_content, status="done")
                     store.broadcast(session.id, "done", {
@@ -12339,11 +12476,16 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     flush=True,
                 )
                 continue
-            final_content = (
-                complete_fastmoss_answer(
+            if provider == "amazon":
+                final_content = complete_sellersprite_answer(
                     str(content), assistant_msg, routing_text, route, req, api_key, api_url, report_model
-                ) if provider == "fastmoss" else str(content)
-            )
+                )
+            elif provider == "fastmoss":
+                final_content = complete_fastmoss_answer(
+                    str(content), assistant_msg, routing_text, route, req, api_key, api_url, report_model
+                )
+            else:
+                final_content = str(content)
             store.update_message(session, assistant_msg, final_content, status="done")
             store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": final_content})
             return
@@ -12358,7 +12500,12 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             store.update_message(session, assistant_msg, f"Request failed: {exc}", status="error")
             return
 
-    evidence_gaps = fastmoss_analysis_evidence_gaps(routing_text, assistant_msg, route) if provider == "fastmoss" else []
+    if provider == "fastmoss":
+        evidence_gaps = fastmoss_analysis_evidence_gaps(routing_text, assistant_msg, route)
+    elif provider == "amazon":
+        evidence_gaps = sellersprite_analysis_evidence_gaps(routing_text, assistant_msg, route)
+    else:
+        evidence_gaps = []
     quality_summary = mcp_evidence_quality_summary(assistant_msg)
     if provider == "fastmoss" and route.get("playbook"):
         messages.append({
@@ -12382,8 +12529,8 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
         and (assistant_msg.tool_results or [])
         and chat_route_uses_report_model(provider, route)
     ):
-        final_content = synthesize_sellersprite_report_from_packet(
-            assistant_msg, routing_text, route,
+        final_content = complete_sellersprite_answer(
+            "", assistant_msg, routing_text, route,
             req, api_key, api_url, report_model,
         )
         store.update_message(session, assistant_msg, final_content, status="done")
@@ -12479,11 +12626,16 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             response_message = body["choices"][0]["message"]
             content = str(response_message.get("content") or "")
             if content.strip() and not deepseek_tool_protocol_present(response_message):
-                final_content = (
-                    complete_fastmoss_answer(
+                if provider == "amazon":
+                    final_content = complete_sellersprite_answer(
                         content, assistant_msg, routing_text, route, req, api_key, api_url, report_model
-                    ) if provider == "fastmoss" else content
-                )
+                    )
+                elif provider == "fastmoss":
+                    final_content = complete_fastmoss_answer(
+                        content, assistant_msg, routing_text, route, req, api_key, api_url, report_model
+                    )
+                else:
+                    final_content = content
                 store.update_message(session, assistant_msg, final_content, status="done")
                 store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": final_content})
                 return

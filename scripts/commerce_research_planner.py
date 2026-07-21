@@ -254,7 +254,7 @@ def eligible_provider_capabilities(provider: str, task: dict[str, Any], state: d
         return capabilities
 
     if provider == "amazon":
-        if entity_type == "asin" or state.get("has_asin"):
+        if entity_type == "asin":
             return {"asin_detail", "asin_traffic", "asin_review"}
         if scope == "cross_category" and objective in {"trend_discovery", "opportunity_discovery"}:
             capabilities = set()
