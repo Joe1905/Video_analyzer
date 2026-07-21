@@ -128,6 +128,7 @@ from commerce_research_planner import (
     eligible_provider_tool_names,
     provider_tool_capability,
     research_task_from,
+    validate_research_task_hint,
 )
 from json_to_markdown import json_to_markdown
 from hot_video_report import (
@@ -4152,11 +4153,16 @@ def fastmoss_playbook_intent(text: str) -> str | None:
     return None
 
 
-def fastmoss_playbook_instruction(playbook_id: str | None) -> str:
+def fastmoss_playbook_instruction(playbook_id: str | None, *, advisory: bool = False) -> str:
     playbook = FASTMOSS_PLAYBOOKS.get(str(playbook_id or ""))
     if not playbook:
         return ""
-    return f"当前 FastMoss 流程：{playbook['label']}。{playbook['instruction']}若所需指标无法由工具直接取得，必须标明缺口和替代指标，不得编造。"
+    prefix = "当前 FastMoss 研究侧重点" if advisory else "当前 FastMoss 流程"
+    suffix = "这不是固定工具顺序；请根据已取得证据自行决定下一项调用。" if advisory else ""
+    return (
+        f"{prefix}：{playbook['label']}。{playbook['instruction']}"
+        f"{suffix}若所需指标无法由工具直接取得，必须标明缺口和替代指标，不得编造。"
+    )
 
 
 CHAT_INTENT_ROUTER_INTENTS = {
@@ -4212,6 +4218,19 @@ def is_chat_help_query(text: str) -> bool:
     return len(lowered) <= 80 and any(term in lowered for term in help_terms)
 
 
+def is_explicit_current_time_query(text: str) -> bool:
+    normalized = re.sub(r"[\s，。！？,.!?：:]+", "", str(text or "").lower())
+    chinese = re.fullmatch(
+        r"(?:现在|当前|今天)?(?:是)?(?:几号|几月几号|星期几|周几|几点|几点了|什么时间|日期|时间)",
+        normalized,
+    )
+    english = normalized.replace("'", "") in {
+        "time", "date", "currenttime", "currentdate", "whattimeisit",
+        "whatsthetime", "whatsthedate", "whatisthecurrenttime", "whatisthecurrentdate",
+    }
+    return bool(chinese or english)
+
+
 def _route_with_metadata(route: dict[str, Any], source: str, task_depth: str | None = None) -> dict[str, Any]:
     result = dict(route)
     intent = str(result.get("intent") or "general")
@@ -4243,7 +4262,7 @@ def attach_research_task(
     if task.get("region"):
         result["region"] = task["region"]
     if task.get("objective") in {"trend_discovery", "opportunity_discovery"}:
-        result.update({"task_depth": "workflow", "tools": None, "max_rounds": 12})
+        result.update({"task_depth": "workflow", "tools": None})
         if normalized_provider == "fastmoss":
             result.update({"intent": "fastmoss_product", "playbook": "product"})
         else:
@@ -4316,6 +4335,15 @@ def chat_intent_router_enabled() -> bool:
     return str(os.getenv("CHAT_INTENT_ROUTER_ENABLED", "1")).strip().lower() not in {"0", "false", "no", "off"}
 
 
+def llm_orchestrated_route(route: dict[str, Any] | None) -> bool:
+    """Use broad LLM orchestration only for classifier-owned or classifier-fallback routes."""
+    route = route or {}
+    return bool(
+        route.get("dynamic_planner")
+        and str(route.get("route_source") or "") in {"llm", "rules_fallback"}
+    )
+
+
 def chat_report_model() -> str:
     """Use the stronger model only after an analytical request has finished collecting evidence."""
     return str(
@@ -4350,21 +4378,27 @@ def chat_intent_router_should_call(text: str, fallback_route: dict[str, Any]) ->
     if not chat_intent_router_enabled():
         return False
     intent = str(fallback_route.get("intent") or "general")
-    if intent in {"mcp_interface", "music_link", "media_availability", "video_analysis", "tiktok_video"}:
-        return False
-    if intent.startswith("fastmoss_"):
+    if intent in {
+        "mcp_interface", "music_link", "media_availability", "video_analysis", "tiktok_video",
+        "product_availability", "help",
+    }:
         return False
     lowered = str(text or "").lower()
     if re.search(r"https?://\S+", lowered) or re.search(r"\b(?:b0[a-z0-9]{8}|\d{16,20})\b", lowered):
         return False
-    if is_chat_help_query(lowered):
+    if is_chat_help_query(lowered) or is_explicit_current_time_query(lowered):
         return False
     return True
 
 
 def parse_chat_intent_decision(value: Any, fallback_route: dict[str, Any], provider: str, user_text: str) -> dict[str, Any]:
     decision = value if isinstance(value, dict) else None
-    fallback = attach_research_task(_route_with_metadata(fallback_route, "rules"), provider, user_text, decision)
+    fallback_base = _route_with_metadata(fallback_route, "rules_fallback")
+    if normalize_chat_provider(provider) in {"amazon", "fastmoss"} and fastmoss_defaults_to_us(user_text):
+        fallback_base["region"] = "US"
+    fallback = attach_research_task(
+        fallback_base, provider, user_text
+    )
     if not isinstance(value, dict):
         return fallback
     intent = str(value.get("intent") or "").strip()
@@ -4381,6 +4415,12 @@ def parse_chat_intent_decision(value: Any, fallback_route: dict[str, Any], provi
         return fallback
     canonical_depth = CHAT_INTENT_DEPTH_BY_INTENT[intent]
     if task_depth != canonical_depth:
+        return fallback
+    if (
+        normalize_chat_provider(provider) in {"amazon", "fastmoss"}
+        and intent in {"product_lookup", "product_research", "tiktok_user", "tiktok_content"}
+        and validate_research_task_hint(value) is None
+    ):
         return fallback
     policies = {
         "product_availability": {"tools": PRODUCT_RESEARCH_TOOLS, "max_rounds": 2},
@@ -4462,6 +4502,8 @@ def resolve_chat_intent(
         "Also return research_task as an object with objective, scope, entity_type, entity, entity_source, region, and time_window. "
         "objective must be lookup, entity_analysis, compare, opportunity_discovery, trend_discovery, pricing, content, creator, or shop. "
         "scope must be cross_category, category, keyword, or entity. entity_type must be none, category, keyword, product, product_id, shop, creator, video, or asin. "
+        "entity_source must be none, explicit, inherited, or evidence. For entity_type none, return scope cross_category, an empty entity, and entity_source none. "
+        "For every other entity_type, return a non-empty entity and the matching scope: category, keyword, or entity. The complete research_task is authoritative. "
         "A request such as recent hot/trending new products with no named product or category is cross_category trend_discovery with entity_type none; "
         "never copy research goals, time phrases, or words such as hot products, trends, new products, opportunities, or blue ocean into entity. "
         "Use OCR only to infer the product entity; OCR must never increase task depth. confidence is a number from 0 to 1."
@@ -5215,6 +5257,20 @@ def research_planner_instruction(
     task = route.get("research_task") if isinstance(route.get("research_task"), dict) else {}
     state = research_planner_state(provider, route, user_text, assistant_msg)
     capabilities = sorted(eligible_provider_capabilities(provider, task, state))
+    if llm_orchestrated_route(route):
+        instructions = [
+            "当前由你自主编排研究工具。程序不会规定首个工具、固定调用顺序、候选方向数量或业务调用次数。",
+            "任务描述：" + json.dumps(task, ensure_ascii=False, separators=(",", ":")) + "。",
+            "能力图仅供参考，不是工具门禁：" + ("、".join(capabilities) if capabilities else "暂无建议") + "。",
+            "请结合用户原问题和每轮真实结果决定下一项调用；证据足够时可以结束。",
+            "空结果和失败结果只完成对应调用，不得扩大为平台全局结论；不得重复同工具同参数。",
+            "任何类目 ID、商品 ID 或 ASIN 深挖对象必须来自用户输入或当前工具证据。",
+        ]
+        if provider == "amazon":
+            instructions.append(
+                "SellerSprite 每个工具必须严格使用当前 tools/list 暴露的请求 schema；部分工具使用 request 对象，部分工具使用顶层参数，不能互换。"
+            )
+        return "".join(instructions)
     instructions = [
         "当前使用动态研究能力图。程序只限定合法能力与对象依赖；请根据用户目标和已取得证据自行选择下一项工具，也可以在证据足够时直接回答。",
         "任务描述：" + json.dumps(task, ensure_ascii=False, separators=(",", ":")) + "。",
@@ -5293,9 +5349,12 @@ def provider_profile_tool_ids(
         print(
             f"[CHAT PLANNER] provider={provider} objective={task.get('objective')} scope={task.get('scope')} "
             f"entity_type={task.get('entity_type')} attempted={','.join(state.get('attempted_capabilities') or []) or '-'} "
-            f"observed={','.join(state.get('observed_capabilities') or []) or '-'} eligible_tools={len(eligible)}",
+            f"observed={','.join(state.get('observed_capabilities') or []) or '-'} "
+            f"advisory_tools={len(eligible)} mode={'llm_full' if llm_orchestrated_route(route) else 'legacy_staged'}",
             flush=True,
         )
+        if llm_orchestrated_route(route):
+            return selected
         return {
             tool_id for tool_id in selected
             if split_prefixed_tool_id(tool_id)[0] != domain
@@ -5599,6 +5658,32 @@ def sellersprite_evidence_instruction(gaps: list[str]) -> str:
         "SellerSprite 分析的必要证据维度仍不完整，暂时不要生成最终报告。"
         f"请继续执行：{details}。"
         "工具选择和调用次数由你根据证据决定；不要重复同工具同参数，空结果或失败结果按对应维度的已完成尝试处理。"
+    )
+
+
+def analysis_minimum_evidence_gaps(
+    provider: str,
+    assistant_msg: Message,
+    route: dict[str, Any] | None = None,
+) -> list[str]:
+    """Require one business-tool attempt, without prescribing research dimensions."""
+    if not llm_orchestrated_route(route) or not chat_route_uses_report_model(provider, route or {}):
+        return []
+    expected_domain = "sellersprite" if provider == "amazon" else "fastmoss" if provider == "fastmoss" else ""
+    if not expected_domain:
+        return []
+    attempted = any(
+        split_prefixed_tool_id(str(call.get("function", {}).get("name") or ""))[0] == expected_domain
+        for call in (assistant_msg.tool_calls or [])
+        if isinstance(call, dict)
+    )
+    return [] if attempted else ["provider_tool_attempt"]
+
+
+def analysis_minimum_evidence_instruction(_gaps: list[str]) -> str:
+    return (
+        "这是分析请求，但尚未尝试当前站点的任何业务工具。请自行选择一个与用户目标最相关的工具并执行；"
+        "程序不规定首个工具或后续顺序。若调用失败或返回空结果，下一轮可以直接基于该局限完成回答。"
     )
 
 
@@ -11609,7 +11694,11 @@ def fastmoss_deep_dive_call_error(
     route: dict[str, Any] | None = None,
 ) -> str | None:
     task = (route or {}).get("research_task") if isinstance((route or {}).get("research_task"), dict) else {}
-    if tool_name == "fastmoss__search_category_by_words" and task.get("scope") == "cross_category":
+    if (
+        tool_name == "fastmoss__search_category_by_words"
+        and task.get("scope") == "cross_category"
+        and not llm_orchestrated_route(route)
+    ):
         queries = arguments.get("query")
         if isinstance(queries, str):
             queries = [queries]
@@ -11874,7 +11963,13 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
         ),
         "_context_scope": "system",
     })
-    playbook_instruction = fastmoss_playbook_instruction(route.get("playbook")) if provider == "fastmoss" else ""
+    playbook_instruction = (
+        fastmoss_playbook_instruction(
+            route.get("playbook"), advisory=llm_orchestrated_route(route)
+        )
+        if provider == "fastmoss"
+        else ""
+    )
     if playbook_instruction:
         messages.append({"role": "system", "content": playbook_instruction, "_context_scope": "system"})
     if route.get("dynamic_planner"):
@@ -12373,7 +12468,11 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     "_context_scope": "system",
                 })
                 break
-            if provider == "fastmoss":
+            if provider in {"fastmoss", "amazon"} and llm_orchestrated_route(route):
+                evidence_gaps = analysis_minimum_evidence_gaps(provider, assistant_msg, route)
+                evidence_instruction = analysis_minimum_evidence_instruction
+                evidence_label = "FastMoss" if provider == "fastmoss" else "SellerSprite"
+            elif provider == "fastmoss":
                 evidence_gaps = fastmoss_analysis_evidence_gaps(routing_text, assistant_msg, route)
                 evidence_instruction = fastmoss_evidence_instruction
                 evidence_label = "FastMoss"
@@ -12386,7 +12485,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 evidence_instruction = fastmoss_evidence_instruction
                 evidence_label = provider
             if evidence_gaps:
-                evidence_retry_limit = 3 if route.get("dynamic_planner") else 1
+                evidence_retry_limit = 1 if llm_orchestrated_route(route) else 3 if route.get("dynamic_planner") else 1
                 if no_tool_retries < evidence_retry_limit and tools and not context_stats["tools_removed"]:
                     no_tool_retries += 1
                     print(
@@ -12500,7 +12599,9 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             store.update_message(session, assistant_msg, f"Request failed: {exc}", status="error")
             return
 
-    if provider == "fastmoss":
+    if provider in {"fastmoss", "amazon"} and llm_orchestrated_route(route):
+        evidence_gaps = analysis_minimum_evidence_gaps(provider, assistant_msg, route)
+    elif provider == "fastmoss":
         evidence_gaps = fastmoss_analysis_evidence_gaps(routing_text, assistant_msg, route)
     elif provider == "amazon":
         evidence_gaps = sellersprite_analysis_evidence_gaps(routing_text, assistant_msg, route)

@@ -55,6 +55,72 @@ def extract_time_window(text: str) -> str:
     return matches[0] if matches else ""
 
 
+def structured_research_entity(text: str) -> str:
+    """Extract only identifiers whose meaning does not depend on language heuristics."""
+    value = str(text or "")
+    asin = _ASIN_RE.search(value)
+    if asin:
+        return asin.group(0).upper()
+    product_id = _FASTMOSS_PRODUCT_ID_RE.search(value)
+    if product_id:
+        return product_id.group(0)
+    urls = re.findall(r"https?://\S+", value, re.IGNORECASE)
+    return urls[0] if urls else ""
+
+
+def validate_research_task_hint(decision: dict[str, Any] | None) -> dict[str, str] | None:
+    """Validate the classifier contract without reinterpreting its semantics."""
+    if not isinstance(decision, dict) or not isinstance(decision.get("research_task"), dict):
+        return None
+    hint = decision["research_task"]
+    required = {
+        "objective", "scope", "entity_type", "entity", "entity_source", "region", "time_window",
+    }
+    if not required.issubset(hint):
+        return None
+    objective = str(hint.get("objective") or "").strip().lower()
+    scope = str(hint.get("scope") or "").strip().lower()
+    entity_type = str(hint.get("entity_type") or "").strip().lower()
+    entity = re.sub(r"\s+", " ", str(hint.get("entity") or "")).strip()[:200]
+    entity_source = str(hint.get("entity_source") or "").strip().lower()
+    region = str(hint.get("region") or "").strip().upper()
+    time_window = str(hint.get("time_window") or "").strip()[:80]
+    if (
+        objective not in RESEARCH_OBJECTIVES
+        or scope not in RESEARCH_SCOPES
+        or entity_type not in RESEARCH_ENTITY_TYPES
+        or entity_source not in RESEARCH_ENTITY_SOURCES
+        or (region and not re.fullmatch(r"[A-Z]{2}|GLOBAL", region))
+    ):
+        return None
+    if entity_type == "none":
+        if entity or entity_source != "none" or scope != "cross_category":
+            return None
+    else:
+        if not entity or entity_source == "none":
+            return None
+        expected_scope = (
+            "category" if entity_type == "category"
+            else "keyword" if entity_type == "keyword"
+            else "entity"
+        )
+        if scope != expected_scope:
+            return None
+    if entity_type == "asin" and not _ASIN_RE.fullmatch(entity):
+        return None
+    if entity_type == "product_id" and not _FASTMOSS_PRODUCT_ID_RE.fullmatch(entity):
+        return None
+    return {
+        "objective": objective,
+        "scope": scope,
+        "entity_type": entity_type,
+        "entity": entity,
+        "entity_source": entity_source,
+        "region": region,
+        "time_window": time_window,
+    }
+
+
 def normalize_research_entity(text: str) -> str:
     """Return a real entity phrase, never a bare research objective."""
     value = re.sub(r"\s+", " ", str(text or "")).strip(" \t\r\n,，。;；:：")
@@ -82,9 +148,17 @@ def research_task_from(
     route: dict[str, Any] | None = None,
     decision: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build one stable internal task profile from rules plus classifier hints."""
+    """Build one task profile while preserving a validated classifier decision verbatim."""
     route = route or {}
     decision = decision or {}
+    route_source = str(route.get("route_source") or "")
+    authoritative_hint = validate_research_task_hint(decision) if route_source == "llm" else None
+    if authoritative_hint is not None:
+        result = dict(authoritative_hint)
+        result["region"] = result["region"] or str(route.get("region") or "").strip().upper()
+        result["time_window"] = result["time_window"] or extract_time_window(user_text)
+        return result
+
     hint = decision.get("research_task") if isinstance(decision.get("research_task"), dict) else decision
     text = str(user_text or "")
     lowered = text.lower()
@@ -120,9 +194,12 @@ def research_task_from(
         objective = "lookup"
 
     candidate_entity = str(hint.get("entity") or route.get("entity") or "")
-    entity = normalize_research_entity(candidate_entity)
-    if not entity:
-        entity = normalize_research_entity(text)
+    if route_source == "rules_fallback":
+        entity = structured_research_entity(candidate_entity) or structured_research_entity(text)
+    else:
+        entity = normalize_research_entity(candidate_entity)
+        if not entity:
+            entity = normalize_research_entity(text)
     if explicit_cross_category:
         entity = ""
 
@@ -148,6 +225,8 @@ def research_task_from(
     elif entity_type == "keyword":
         scope = "keyword"
     elif explicit_cross_category or objective in {"trend_discovery", "opportunity_discovery"}:
+        scope = "cross_category"
+    elif route_source == "rules_fallback":
         scope = "cross_category"
     elif scope_hint in RESEARCH_SCOPES:
         scope = scope_hint
@@ -211,7 +290,7 @@ def provider_tool_capability(provider: str, tool_name: str) -> str:
 
 
 def eligible_provider_capabilities(provider: str, task: dict[str, Any], state: dict[str, Any]) -> set[str]:
-    """Return legal capability nodes; the LLM still chooses the next tool."""
+    """Return advisory capability nodes; legacy rule routes may still use them for staging."""
     objective = str(task.get("objective") or "lookup")
     scope = str(task.get("scope") or "keyword")
     entity_type = str(task.get("entity_type") or "none")
