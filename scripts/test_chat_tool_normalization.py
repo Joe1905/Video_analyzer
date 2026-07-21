@@ -3153,6 +3153,7 @@ def test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence() -> None:
     )
     assert "完整工具结果是报告的事实素材" in report_system
     assert "evidence_index：{" not in report_system
+    assert "不得写成流量来源、因果、效率或生命周期结论" in report_system
     assert "# FastMoss 调研证据" in semantic_content
     assert "## call:1 · `fastmoss__product_sales_trend`" in semantic_content
     assert "## call:2 · `fastmoss__product_rank_new_listed`" in semantic_content
@@ -3164,7 +3165,6 @@ def test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence() -> None:
     assert all(product["product_id"] in semantic_content for product in products)
     assert "returned_product_outside_requested_l3" in semantic_content
     assert "关键词返回量不是市场容量" in semantic_content
-    assert "不得写成流量来源、因果、效率或生命周期结论" in semantic_content
     assert "| 参数 filter.product_id | 1730000000000000001 |" in semantic_content
     assert "本次调用成功，但针对上述精确对象、参数、地区和周期没有返回业务记录" in semantic_content
     assert "| 报告日期 |" in semantic_content
