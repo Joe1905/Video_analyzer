@@ -4344,6 +4344,27 @@ def llm_orchestrated_route(route: dict[str, Any] | None) -> bool:
     )
 
 
+def provider_tool_stage_error(
+    provider: str,
+    route: dict[str, Any] | None,
+    domain: str,
+    tool_name: str,
+    planner_state: dict[str, Any] | None,
+) -> str | None:
+    """Keep capability stages advisory for LLM-owned routes."""
+    expected_domain = "sellersprite" if normalize_chat_provider(provider) == "amazon" else "fastmoss"
+    if planner_state is None or domain != expected_domain or llm_orchestrated_route(route):
+        return None
+    eligible_names = eligible_provider_tool_names(
+        provider,
+        (route or {}).get("research_task") or {},
+        planner_state,
+    )
+    if tool_name not in eligible_names:
+        return "legacy_capability_stage"
+    return None
+
+
 def chat_report_model() -> str:
     """Use the stronger model only after an analytical request has finished collecting evidence."""
     return str(
@@ -11423,6 +11444,8 @@ def fastmoss_category_ambiguity_question(
     route: dict[str, Any] | None = None,
 ) -> str | None:
     """Stop before market calls when user-term L3 candidates are effectively tied."""
+    if llm_orchestrated_route(route):
+        return None
     task = (route or {}).get("research_task") if isinstance((route or {}).get("research_task"), dict) else {}
     if task.get("scope") == "cross_category" or task.get("entity_source") == "evidence":
         return None
@@ -11495,7 +11518,8 @@ def apply_fastmoss_business_defaults(
     normalized = dict(args or {})
     path = fastmoss_current_category_path(assistant_msg, user_text)
     task = (route or {}).get("research_task") if isinstance((route or {}).get("research_task"), dict) else {}
-    preserve_explicit_category = bool((route or {}).get("dynamic_planner") and task.get("scope") == "cross_category")
+    llm_owned = llm_orchestrated_route(route)
+    preserve_explicit_category = llm_owned
     completed_week = fastmoss_completed_week(today)
 
     def copied_filter() -> dict[str, Any]:
@@ -11508,7 +11532,7 @@ def apply_fastmoss_business_defaults(
             if key in {"query", "top_k", "max_total_results"}
         }
         original_queries = fastmoss_original_segment_keywords(user_text, route)
-        if original_queries and task.get("scope") != "cross_category":
+        if original_queries and task.get("scope") != "cross_category" and not llm_owned:
             normalized["query"] = original_queries
     elif name == "market_category_analysis":
         filters = copied_filter()
@@ -11546,7 +11570,10 @@ def apply_fastmoss_business_defaults(
         filters = copied_filter()
         if path and (
             not preserve_explicit_category
-            or not any(key in filters for key in ("category_id", "category_l3_id"))
+            or not any(
+                key in filters
+                for key in ("category_id", "category_l1_id", "category_l2_id", "category_l3_id")
+            )
         ):
             filters["category_id"] = path["level3"]
             filters["category_l1_id"] = path["level1"]
@@ -11774,7 +11801,7 @@ def chat_system_instruction(provider: str, current_date_shanghai: str) -> str:
     }.get(provider, "")
     forced_mcp_style = {
         "amazon": "This Amazon entry enables SellerSprite by default, and may also expose user-selected function__ or fastmoss__ tools. For Amazon, ASIN, keyword, category, product, market, competitor, ranking, sales, BSR, traffic, review, brand, or opportunity requests, call one or more relevant exposed tools before the final answer. Prefer sellersprite__ for Amazon marketplace evidence; use fastmoss__ only when it is exposed and relevant to TikTok Shop or cross-channel context. Analytical requests need detailed Chinese Markdown reports; simple lookup requests need concise evidence-based answers.",
-        "fastmoss": "This FastMoss entry enables FastMoss by default, and may also expose user-selected function__ or sellersprite__ tools. For TikTok Shop, product, shop, creator, GMV, sales, category, trend, content, ad, pricing, competitor, or opportunity requests, call relevant exposed FastMoss tools before the final answer. Default to the US region unless the user explicitly requests another region or multiple/global regions, and pass US to every region-sensitive search/ranking call. Follow the research task scope: cross-category discovery starts from platform/category ranking, while an explicitly named product or category may start from exact category resolution. Never turn a research goal or time phrase into a category keyword. Keyword product search is supplemental and must not be generalized to the whole market. Prefer fastmoss__ for TikTok Shop evidence; use sellersprite__ only when it is exposed and relevant to Amazon or cross-channel context. Analytical requests need detailed Chinese Markdown reports; simple lookup requests need concise evidence-based answers.",
+        "fastmoss": "This FastMoss entry enables FastMoss by default, and may also expose user-selected function__ or sellersprite__ tools. For TikTok Shop, product, shop, creator, GMV, sales, category, trend, content, ad, pricing, competitor, or opportunity requests, call relevant exposed FastMoss tools before the final answer. Default to the US region unless the user explicitly requests another region or multiple/global regions, and pass US to every region-sensitive search/ranking call. Follow the research task scope and choose the next exposed FastMoss tool from the user's question and current evidence; capability labels and playbooks are advisory and do not impose a fixed first tool or sequence. Never turn a research goal or time phrase into a category keyword. Keyword product search is supplemental and must not be generalized to the whole market. Prefer fastmoss__ for TikTok Shop evidence; use sellersprite__ only when it is exposed and relevant to Amazon or cross-channel context. Analytical requests need detailed Chinese Markdown reports; simple lookup requests need concise evidence-based answers.",
     }.get(provider, "")
     return (
         "You are a short-video and commerce analysis assistant. Reply in Simplified Chinese. "
@@ -12221,6 +12248,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 ][:remaining_searches]
             requested_tool_calls = bool(tool_calls)
             deduplicated_tool_calls = []
+            skipped_tool_call_reasons: list[str] = []
             dynamic_state = (
                 research_planner_state(provider, route, routing_text, assistant_msg)
                 if route.get("dynamic_planner") and provider in {"amazon", "fastmoss"}
@@ -12229,6 +12257,8 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             for tool_call in tool_calls:
                 fn_name = str(tool_call.get("function", {}).get("name") or "")
                 if fn_name not in allowed_tool_ids:
+                    skipped_tool_call_reasons.append("unexposed_tool")
+                    print(f"[CHAT] skipped unexposed tool call: {fn_name}", flush=True)
                     continue
                 fn_args = _tool_call_arguments(tool_call)
                 domain, unprefixed_name = split_prefixed_tool_id(fn_name)
@@ -12238,18 +12268,19 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     fn_args = apply_fastmoss_business_defaults(
                         unprefixed_name, fn_args, assistant_msg, user_text=routing_text, route=route
                     )
-                if dynamic_state is not None and domain == ("sellersprite" if provider == "amazon" else "fastmoss"):
-                    eligible_names = eligible_provider_tool_names(
-                        provider, route.get("research_task") or {}, dynamic_state
+                stage_error = provider_tool_stage_error(
+                    provider, route, domain, unprefixed_name, dynamic_state
+                )
+                if stage_error:
+                    skipped_tool_call_reasons.append(stage_error)
+                    print(
+                        f"[CHAT PLANNER] skipped legacy-stage tool call: {fn_name}",
+                        flush=True,
                     )
-                    if unprefixed_name not in eligible_names:
-                        print(
-                            f"[CHAT PLANNER] skipped ineligible tool call: {fn_name}",
-                            flush=True,
-                        )
-                        continue
+                    continue
                 signature = tool_call_signature(fn_name, fn_args)
                 if signature in seen_tool_calls:
+                    skipped_tool_call_reasons.append("duplicate")
                     print(f"[CHAT] skipped duplicate tool call: {fn_name} {fn_args}", flush=True)
                     continue
                 seen_tool_calls.add(signature)
@@ -12366,11 +12397,18 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 continue
 
             if requested_tool_calls:
+                only_duplicates = bool(skipped_tool_call_reasons) and set(skipped_tool_call_reasons) == {"duplicate"}
                 if no_tool_retries < 1 and tools:
                     no_tool_retries += 1
                     messages.append({
                         "role": "system",
-                        "content": "刚才的工具调用与本轮已执行的同工具同参数调用重复，已跳过。请选择当前阶段另一个调用；不要重复相同参数。",
+                        "content": (
+                            "刚才的工具调用与本轮已执行的同工具同参数调用重复，已跳过。"
+                            "请选择另一个调用；同一工具可以使用不同参数继续调用。"
+                            if only_duplicates else
+                            "刚才的工具调用未执行，因为工具未暴露或不符合当前执行约束。"
+                            "请改用当前已暴露的工具并生成合法参数；不要因此提前生成最终报告。"
+                        ),
                         "_context_scope": "system",
                     })
                     continue
@@ -12378,7 +12416,11 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 final_answer_forced = True
                 messages.append({
                     "role": "system",
-                    "content": "重复工具调用已被拦截。停止调用工具，根据已有数据、空结果和失败结果直接回答。",
+                    "content": (
+                        "重复工具调用已被拦截。停止调用工具，根据已有数据、空结果和失败结果直接回答。"
+                        if only_duplicates else
+                        "工具调用在重试后仍无法执行。根据已有数据、空结果和失败结果回答，并明确说明证据局限。"
+                    ),
                     "_context_scope": "system",
                 })
                 break
