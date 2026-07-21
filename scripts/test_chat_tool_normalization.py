@@ -3909,6 +3909,132 @@ def test_analytical_routes_use_report_model_and_fastmoss_preserves_pro_draft() -
     assert calls == []
 
 
+def test_planner_message_is_upserted_instead_of_accumulated() -> None:
+    route = {
+        "dynamic_planner": True,
+        "route_source": "llm",
+        "task_depth": "workflow",
+        "research_task": {
+            "objective": "trend_discovery",
+            "entity": "",
+            "entity_type": "none",
+            "scope": "cross_category",
+        },
+    }
+    assistant = web_app.Message("assistant-1", "assistant", "")
+    messages = [{"role": "user", "content": "最近有什么趋势新品"}]
+    web_app.upsert_research_planner_message(
+        messages, "fastmoss", route, "最近有什么趋势新品", assistant
+    )
+    first = next(message for message in messages if message.get("_context_key") == "research_planner")
+    first["content"] = "stale planner state"
+    web_app.upsert_research_planner_message(
+        messages, "fastmoss", route, "最近有什么趋势新品", assistant
+    )
+    planners = [
+        message for message in messages
+        if message.get("_context_key") == "research_planner"
+    ]
+    assert len(planners) == 1
+    assert planners[0]["content"] != "stale planner state"
+    request_messages = web_app._chat_request_messages(messages)
+    assert all("_context_key" not in message for message in request_messages)
+
+
+def test_model_tool_schema_compaction_preserves_call_contract() -> None:
+    raw_tool = {
+        "name": "sample_tool",
+        "description": "  Query   a sample tool.  " * 80,
+        "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "title": "Sample request",
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": ["top", "new"],
+                    "description": "Select result mode. " * 40,
+                    "examples": ["top"],
+                },
+                "request": {
+                    "type": "object",
+                    "properties": {"page": {"type": "integer", "minimum": 1}},
+                    "required": ["page"],
+                },
+            },
+            "required": ["mode", "request"],
+            "additionalProperties": False,
+        },
+    }
+    model_tool = web_app.to_model_tool(raw_tool, "sellersprite__sample_tool")
+    function = model_tool["function"]
+    schema = function["parameters"]
+    assert function["name"] == "sellersprite__sample_tool"
+    assert len(function["description"]) <= 361
+    assert schema["required"] == ["mode", "request"]
+    assert schema["properties"]["mode"]["enum"] == ["top", "new"]
+    assert schema["properties"]["request"]["required"] == ["page"]
+    assert schema["additionalProperties"] is False
+    assert "$schema" not in schema and "title" not in schema
+    assert "examples" not in schema["properties"]["mode"]
+    assert raw_tool["inputSchema"]["properties"]["mode"]["examples"] == ["top"]
+
+
+def test_semantic_report_bypasses_redundant_accumulated_context_draft() -> None:
+    route = {"task_depth": "analysis", "intent": "product_research"}
+    seller = web_app.Message(
+        "seller-1", "assistant", "", tool_results=[{
+            "tool_name": "sellersprite__keyword_research",
+            "result": {"ok": True, "mcp_data": {"items": [{"keyword": "wifi extender"}]}},
+        }],
+    )
+    assert web_app.semantic_report_ready_for_direct_synthesis(
+        "amazon", route, seller, []
+    ) is True
+    assert web_app.semantic_report_ready_for_direct_synthesis(
+        "amazon", route, seller, [{"type": "function", "function": {"name": "x"}}]
+    ) is False
+    assert web_app.semantic_report_ready_for_direct_synthesis(
+        "amazon", {"task_depth": "lookup"}, seller, []
+    ) is False
+
+
+def test_semantic_evidence_budget_uses_lossless_leaf_ledger() -> None:
+    repeated = {
+        "asin": "B012345678",
+        "title": "alpha" * 120,
+        "metrics": {"sales": 1234, "price": 19.99},
+    }
+    unique = {
+        "asin": "B087654321",
+        "title": "beta" * 120,
+        "metrics": {"sales": 987, "price": 29.99},
+    }
+    dossier = {
+        "type": "sellersprite_evidence_dossier",
+        "provider": "sellersprite",
+        "report_date": "2026-07-21",
+        "research_task": {"objective": "product_research"},
+        "tool_evidence": [{
+            "source_ref": "call:1",
+            "tool_name": "sellersprite__product_research",
+            "arguments": {"marketplace": "US"},
+            "evidence_fence": {"data_state": "data"},
+            "business_data": {"items": [repeated, repeated, unique]},
+        }],
+        "hard_fact_boundaries": {"rules": ["do not extrapolate"]},
+    }
+    markdown, stats = web_app.prepare_semantic_report_evidence(
+        dossier, web_app.sellersprite_render_report_evidence, max_tokens=220
+    )
+    assert stats["budget_mode"] == "leaf_ledger"
+    assert stats["duplicate_items_removed"] == 1
+    assert stats["format"] == "semantic"
+    assert "B012345678" in markdown and "B087654321" in markdown
+    assert "alpha" * 120 in markdown and "beta" * 120 in markdown
+    assert "truncated" not in markdown.lower()
+
+
 if __name__ == "__main__":
     test_tiktok_search_keeps_analysis_fields()
     test_amazon_keeps_product_fields()
@@ -3985,6 +4111,10 @@ if __name__ == "__main__":
     test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence()
     test_fastmoss_report_evidence_is_semantic()
     test_fastmoss_analytical_answers_use_single_semantic_report_path()
+    test_planner_message_is_upserted_instead_of_accumulated()
+    test_model_tool_schema_compaction_preserves_call_contract()
+    test_semantic_report_bypasses_redundant_accumulated_context_draft()
+    test_semantic_evidence_budget_uses_lossless_leaf_ledger()
     test_fastmoss_claim_ids_and_extended_mechanical_cleanup()
     test_analytical_routes_use_report_model_and_fastmoss_preserves_pro_draft()
     print("chat tool normalization tests passed")

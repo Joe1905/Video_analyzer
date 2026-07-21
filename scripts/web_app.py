@@ -5326,6 +5326,27 @@ def research_planner_instruction(
     return "".join(instructions)
 
 
+def upsert_research_planner_message(
+    messages: list[dict[str, Any]],
+    provider: str,
+    route: dict[str, Any],
+    user_text: str,
+    assistant_msg: Message,
+) -> None:
+    """Keep only the latest planner state in the model conversation."""
+    context_key = "research_planner"
+    messages[:] = [
+        message for message in messages
+        if message.get("_context_key") != context_key
+    ]
+    messages.append({
+        "role": "system",
+        "content": research_planner_instruction(provider, route, user_text, assistant_msg),
+        "_context_scope": "system",
+        "_context_key": context_key,
+    })
+
+
 def log_sellersprite_semantic_diagnostics_once() -> None:
     global SELLERSPRITE_SEMANTIC_DIAGNOSTICS_LOGGED
     if SELLERSPRITE_SEMANTIC_DIAGNOSTICS_LOGGED:
@@ -5800,13 +5821,43 @@ def tool_label(name: str) -> str:
     return " / ".join(translated) if translated else str(name or "")
 
 
+def _compact_model_tool_text(value: Any, limit: int) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip(" ,;，；") + "…"
+
+
+def compact_model_tool_schema(value: Any) -> Any:
+    """Reduce schema narration without changing callable fields or validation rules."""
+    if isinstance(value, list):
+        return [compact_model_tool_schema(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    compacted: dict[str, Any] = {}
+    for key, item in value.items():
+        if key in {"$schema", "example", "examples", "title"}:
+            continue
+        if key == "description":
+            compacted[key] = _compact_model_tool_text(item, 200)
+        else:
+            compacted[key] = compact_model_tool_schema(item)
+    return compacted
+
+
 def to_model_tool(tool: dict[str, Any], tool_id: str, description: str | None = None) -> dict[str, Any]:
+    parameters = tool.get("parameters") or tool.get("inputSchema") or {
+        "type": "object", "properties": {}, "additionalProperties": True,
+    }
     return {
         "type": "function",
         "function": {
             "name": tool_id,
-            "description": description or tool.get("description") or tool.get("name") or tool_id,
-            "parameters": tool.get("parameters") or tool.get("inputSchema") or {"type": "object", "properties": {}, "additionalProperties": True},
+            "description": _compact_model_tool_text(
+                description or tool.get("description") or tool.get("name") or tool_id,
+                360,
+            ),
+            "parameters": compact_model_tool_schema(parameters),
         },
     }
 
@@ -8595,6 +8646,156 @@ def sellersprite_report_evidence_dossier(
     }
 
 
+def _dedupe_semantic_evidence_value(value: Any, stats: dict[str, int]) -> Any:
+    """Remove only byte-identical values within the same source list."""
+    if isinstance(value, dict):
+        return {
+            key: _dedupe_semantic_evidence_value(item, stats)
+            for key, item in value.items()
+        }
+    if not isinstance(value, list):
+        return value
+    deduped: list[Any] = []
+    seen: set[str] = set()
+    for item in value:
+        normalized = _dedupe_semantic_evidence_value(item, stats)
+        fingerprint = json.dumps(
+            normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        if fingerprint in seen:
+            stats["duplicate_items_removed"] = stats.get("duplicate_items_removed", 0) + 1
+            continue
+        seen.add(fingerprint)
+        deduped.append(normalized)
+    return deduped
+
+
+def dedupe_semantic_evidence_dossier(
+    dossier: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, int]]:
+    """Deduplicate exact rows per call while retaining source provenance."""
+    compacted = dict(dossier)
+    compacted_entries: list[Any] = []
+    total_stats = {"duplicate_items_removed": 0}
+    for entry in dossier.get("tool_evidence") or []:
+        if not isinstance(entry, dict):
+            compacted_entries.append(entry)
+            continue
+        compacted_entry = dict(entry)
+        local_stats = {"duplicate_items_removed": 0}
+        compacted_entry["business_data"] = _dedupe_semantic_evidence_value(
+            entry.get("business_data"), local_stats
+        )
+        removed = local_stats["duplicate_items_removed"]
+        if removed:
+            fence = dict(compacted_entry.get("evidence_fence") or {})
+            fence["semantic_duplicate_items_removed"] = removed
+            compacted_entry["evidence_fence"] = fence
+            total_stats["duplicate_items_removed"] += removed
+        compacted_entries.append(compacted_entry)
+    compacted["tool_evidence"] = compacted_entries
+    return compacted, total_stats
+
+
+def _semantic_ledger_path(path: str, key: Any) -> str:
+    text = str(key)
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", text):
+        return f"{path}.{text}"
+    return f"{path}[{json.dumps(text, ensure_ascii=False)}]"
+
+
+def _semantic_ledger_lines(value: Any, path: str = "$") -> list[str]:
+    lines: list[str] = []
+    if isinstance(value, dict):
+        if not value:
+            return [f"- `{path}` = {{}}"]
+        for key, item in value.items():
+            lines.extend(_semantic_ledger_lines(item, _semantic_ledger_path(path, key)))
+        return lines
+    if isinstance(value, list):
+        if not value:
+            return [f"- `{path}` = []"]
+        for index, item in enumerate(value):
+            lines.extend(_semantic_ledger_lines(item, f"{path}[{index}]"))
+        return lines
+    encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return [f"- `{path}` = {encoded}"]
+
+
+def render_compact_semantic_evidence_ledger(dossier: dict[str, Any]) -> str:
+    """Render every unique leaf once in a compact, source-scoped Semantic ledger."""
+    provider = str(dossier.get("provider") or "commerce")
+    lines = [f"# {provider} 调研证据（紧凑 Semantic 台账）"]
+    context = {
+        key: value for key, value in dossier.items()
+        if key != "tool_evidence"
+    }
+    lines.extend(["", "## 调研上下文与硬边界", ""])
+    lines.extend(_semantic_ledger_lines(context))
+    for entry in dossier.get("tool_evidence") or []:
+        if not isinstance(entry, dict):
+            continue
+        source_ref = str(entry.get("source_ref") or "call:?")
+        tool_name = str(entry.get("tool_name") or "tool")
+        lines.extend(["", f"## {source_ref} · `{tool_name}`", ""])
+        scoped = {
+            key: value for key, value in entry.items()
+            if key != "business_data"
+        }
+        lines.extend(_semantic_ledger_lines(scoped, "$.scope"))
+        lines.extend(["", "### 业务字段", ""])
+        lines.extend(_semantic_ledger_lines(entry.get("business_data"), "$.business_data"))
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def prepare_semantic_report_evidence(
+    dossier: dict[str, Any],
+    renderer: Any,
+    max_tokens: int | None = None,
+) -> tuple[str, dict[str, Any]]:
+    """Fit report evidence without truncating any unique business field."""
+    token_limit = max_tokens or _chat_int_setting(
+        "CHAT_SEMANTIC_EVIDENCE_MAX_TOKENS", 90000, 12000, 500000
+    )
+    initial_markdown, initial_stats = renderer(dossier)
+    initial_tokens = estimate_chat_context_tokens(
+        [{"role": "user", "content": initial_markdown}], []
+    )
+    final_markdown = initial_markdown
+    final_stats = dict(initial_stats)
+    budget_mode = "full"
+    duplicate_items_removed = 0
+
+    if initial_tokens > token_limit:
+        compacted_dossier, dedupe_stats = dedupe_semantic_evidence_dossier(dossier)
+        duplicate_items_removed = dedupe_stats["duplicate_items_removed"]
+        final_markdown, final_stats = renderer(compacted_dossier)
+        budget_mode = "exact_dedup"
+        if estimate_chat_context_tokens(
+            [{"role": "user", "content": final_markdown}], []
+        ) > token_limit:
+            final_markdown = render_compact_semantic_evidence_ledger(compacted_dossier)
+            final_stats = {
+                **final_stats,
+                "format": "semantic",
+                "markdown_chars": len(final_markdown),
+            }
+            budget_mode = "leaf_ledger"
+
+    final_tokens = estimate_chat_context_tokens(
+        [{"role": "user", "content": final_markdown}], []
+    )
+    return final_markdown, {
+        **final_stats,
+        "budget_mode": budget_mode,
+        "budget_tokens": token_limit,
+        "initial_estimated_tokens": initial_tokens,
+        "final_estimated_tokens": final_tokens,
+        "duplicate_items_removed": duplicate_items_removed,
+        "over_budget": final_tokens > token_limit,
+    }
+
+
 def sellersprite_render_report_evidence(
     dossier: dict[str, Any],
 ) -> tuple[str, dict[str, Any]]:
@@ -8669,7 +8870,9 @@ def synthesize_sellersprite_report_from_packet(
     """Generate the final SellerSprite report from complete normalized evidence."""
     dossier = sellersprite_report_evidence_dossier(assistant_msg, route)
     dossier_json = json.dumps(dossier, ensure_ascii=False, separators=(",", ":"))
-    evidence_markdown, evidence_render_stats = sellersprite_render_report_evidence(dossier)
+    evidence_markdown, evidence_render_stats = prepare_semantic_report_evidence(
+        dossier, sellersprite_render_report_evidence
+    )
     current_date_shanghai = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
     semantic_input = (
         chat_routing_text(user_text)
@@ -8685,7 +8888,7 @@ def synthesize_sellersprite_report_from_packet(
     payload = {
         "model": model,
         "messages": messages,
-        "temperature": 0.2,
+        "temperature": 0,
         "max_tokens": 12000,
     }
     payload_str = json.dumps(payload, ensure_ascii=False)
@@ -10562,7 +10765,9 @@ def synthesize_fastmoss_report_from_packet(
     manifest = fastmoss_evidence_manifest(assistant_msg, user_text, route)
     dossier = fastmoss_report_evidence_dossier(assistant_msg, manifest, route)
     dossier_json = json.dumps(dossier, ensure_ascii=False, separators=(",", ":"))
-    evidence_markdown, evidence_render_stats = fastmoss_render_report_evidence(dossier)
+    evidence_markdown, evidence_render_stats = prepare_semantic_report_evidence(
+        dossier, fastmoss_render_report_evidence
+    )
     current_date_shanghai = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
     semantic_input = (
         chat_routing_text(user_text)
@@ -10579,7 +10784,7 @@ def synthesize_fastmoss_report_from_packet(
     payload = {
         "model": model,
         "messages": messages,
-        "temperature": 0.2,
+        "temperature": 0,
         "max_tokens": 12000,
     }
     payload_str = json.dumps(payload, ensure_ascii=False)
@@ -11191,6 +11396,26 @@ def manage_chat_context(
         "protocol_collapsed": protocol_collapsed,
         "over_budget": final_tokens > token_limit,
     }
+
+
+def semantic_report_ready_for_direct_synthesis(
+    provider: str,
+    route: dict[str, Any],
+    assistant_msg: Message,
+    request_tools: list[dict[str, Any]] | None,
+) -> bool:
+    """Skip an accumulated-context draft when Semantic evidence is already final."""
+    provider = normalize_chat_provider(provider)
+    if request_tools or provider not in {"amazon", "fastmoss"}:
+        return False
+    if not chat_route_uses_report_model(provider, route):
+        return False
+    expected_domain = "sellersprite" if provider == "amazon" else "fastmoss"
+    return any(
+        isinstance(item, dict)
+        and split_prefixed_tool_id(str(item.get("tool_name") or ""))[0] == expected_domain
+        for item in (assistant_msg.tool_results or [])
+    )
 
 
 def provider_scope_short_circuit(
@@ -12000,11 +12225,9 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     if playbook_instruction:
         messages.append({"role": "system", "content": playbook_instruction, "_context_scope": "system"})
     if route.get("dynamic_planner"):
-        messages.append({
-            "role": "system",
-            "content": research_planner_instruction(provider, route, routing_text, assistant_msg),
-            "_context_scope": "system",
-        })
+        upsert_research_planner_message(
+            messages, provider, route, routing_text, assistant_msg
+        )
     elif playbook_instruction:
         phase = fastmoss_workflow_phase(
             str(route.get("playbook")), assistant_msg, set(effective_enabled_tool_ids or set()), routing_text, route
@@ -12187,6 +12410,30 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     continue
         try:
             request_messages, request_tools, context_stats = manage_chat_context(messages, tools)
+            if semantic_report_ready_for_direct_synthesis(
+                provider, route, assistant_msg, request_tools
+            ):
+                print(
+                    f"[CHAT] provider={provider} final route=direct_semantic_report "
+                    f"tools_removed={str(context_stats['tools_removed']).lower()}",
+                    flush=True,
+                )
+                if provider == "amazon":
+                    final_content = complete_sellersprite_answer(
+                        "", assistant_msg, routing_text, route,
+                        req, api_key, api_url, report_model,
+                    )
+                else:
+                    final_content = complete_fastmoss_answer(
+                        "", assistant_msg, routing_text, route,
+                        req, api_key, api_url, report_model,
+                    )
+                store.update_message(session, assistant_msg, final_content, status="done")
+                store.broadcast(session.id, "done", {
+                    "messageId": assistant_msg.id,
+                    "content": final_content,
+                })
+                return
             if context_stats["over_budget"]:
                 raise RuntimeError(
                     f"Chat context remains over budget after compression: "
@@ -12368,11 +12615,9 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     )
                     tools = build_prefixed_model_tools(selected_tool_ids) if has_provider_tools else []
                     final_answer_forced = not has_provider_tools
-                    messages.append({
-                        "role": "system",
-                        "content": research_planner_instruction(provider, route, routing_text, assistant_msg),
-                        "_context_scope": "system",
-                    })
+                    upsert_research_planner_message(
+                        messages, provider, route, routing_text, assistant_msg
+                    )
                     if final_answer_forced and provider == "fastmoss":
                         messages.append({
                             "role": "system",
