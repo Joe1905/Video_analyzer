@@ -572,7 +572,7 @@ def test_intent_decision_validation_and_fallback() -> None:
         "帮我看看这个产品",
     )
     assert low_confidence["intent"] == "product_research"
-    assert low_confidence["route_source"] == "rules"
+    assert low_confidence["route_source"] == "rules_fallback"
     assert parse_chat_intent_decision({"intent": "unknown", "task_depth": "lookup", "confidence": 1}, fallback, "fastmoss", "x")["intent"] == "product_research"
     assert parse_chat_intent_decision(None, fallback, "fastmoss", "x")["intent"] == "product_research"
 
@@ -585,11 +585,21 @@ def test_intent_router_uses_recent_context_and_falls_back_on_failure() -> None:
         def json(self) -> dict:
             return {
                 "choices": [{"message": {"content": json.dumps({
-                    "intent": "product_availability",
-                    "task_depth": "lookup",
-                    "entity": "磁力贪吃蛇小车",
+                    "intent": "product_research",
+                    "task_depth": "analysis",
+                    "playbook": "product",
+                    "entity": "厨房切碎机",
                     "region": "US",
                     "confidence": 0.96,
+                    "research_task": {
+                        "objective": "entity_analysis",
+                        "scope": "keyword",
+                        "entity_type": "keyword",
+                        "entity": "厨房切碎机",
+                        "entity_source": "explicit",
+                        "region": "US",
+                        "time_window": "最近一个月",
+                    },
                 }, ensure_ascii=False)}}],
             }
 
@@ -608,16 +618,17 @@ def test_intent_router_uses_recent_context_and_falls_back_on_failure() -> None:
     os.environ["CHAT_INTENT_ROUTER_ENABLED"] = "1"
     try:
         messages = [
-            SimpleNamespace(role="user", content="贪吃蛇小车这款玩具在TK上有销售吗"),
+            SimpleNamespace(role="user", content="我在关注厨房切碎机这个方向"),
             SimpleNamespace(role="assistant", content="旧回答失败"),
-            SimpleNamespace(role="user", content="这款产品TK是否有销售？"),
+            SimpleNamespace(role="user", content="分析一下它最近一个月的销售增长原因"),
         ]
         fake = FakeRequests()
-        route = resolve_chat_intent(messages, "这款产品TK是否有销售？", "fastmoss", "key", "https://example.test/v1", "model", fake)
-        assert route["intent"] == "product_availability"
+        route = resolve_chat_intent(messages, "分析一下它最近一个月的销售增长原因", "fastmoss", "key", "https://example.test/v1", "model", fake)
+        assert route["intent"] == "fastmoss_product"
+        assert route["route_source"] == "llm"
         encoded_payload = json.dumps(fake.payload, ensure_ascii=False)
-        assert "贪吃蛇小车" in encoded_payload
-        assert "这款产品TK是否有销售" in encoded_payload
+        assert "厨房切碎机" in encoded_payload
+        assert "最近一个月的销售增长原因" in encoded_payload
 
         fallback = resolve_chat_intent(messages, "帮我看看这个产品", "fastmoss", "key", "https://example.test/v1", "model", FakeRequests(fail=True))
         assert fallback["intent"] == "product_research"
@@ -988,6 +999,15 @@ def test_llm_router_can_select_fastmoss_playbook() -> None:
             "entity": "electric food shredder",
             "region": "US",
             "confidence": 0.96,
+            "research_task": {
+                "objective": "entity_analysis",
+                "scope": "keyword",
+                "entity_type": "keyword",
+                "entity": "electric food shredder",
+                "entity_source": "explicit",
+                "region": "US",
+                "time_window": "",
+            },
         },
         fallback,
         "fastmoss",
@@ -997,6 +1017,113 @@ def test_llm_router_can_select_fastmoss_playbook() -> None:
     assert route["task_depth"] == "workflow"
     assert route["playbook"] == "product"
     assert route["max_rounds"] == web_app.FASTMOSS_PLAYBOOKS["product"]["max_rounds"]
+
+
+def test_only_structured_direct_requests_bypass_intent_llm() -> None:
+    research_text = "帮我做一份厨房类目的选品和定价报告"
+    assert web_app.chat_intent_router_should_call(
+        research_text, web_app.route_chat_intent(research_text, "fastmoss")
+    ) is True
+    assert web_app.chat_intent_router_should_call(
+        "分析 B0ABCDEF12", web_app.route_chat_intent("分析 B0ABCDEF12", "amazon")
+    ) is False
+    assert web_app.chat_intent_router_should_call(
+        "这个产品在 TK 有销售吗？", web_app.route_chat_intent("这个产品在 TK 有销售吗？", "fastmoss")
+    ) is False
+    assert web_app.chat_intent_router_should_call(
+        "现在几点？", web_app.route_chat_intent("现在几点？", "fastmoss")
+    ) is False
+
+
+def test_disabling_intent_router_restores_legacy_rule_route() -> None:
+    class NoCallRequests:
+        def post(self, *_args, **_kwargs):
+            raise AssertionError("intent LLM must not be called when the router is disabled")
+
+    previous = os.environ.get("CHAT_INTENT_ROUTER_ENABLED")
+    os.environ["CHAT_INTENT_ROUTER_ENABLED"] = "0"
+    try:
+        route = web_app.resolve_chat_intent(
+            [], "帮我做一份厨房类目的选品报告", "fastmoss",
+            "key", "https://example.test/v1", "model", NoCallRequests(),
+        )
+        assert route["route_source"] == "rules"
+        assert route["dynamic_planner"] is True
+        assert web_app.llm_orchestrated_route(route) is False
+    finally:
+        if previous is None:
+            os.environ.pop("CHAT_INTENT_ROUTER_ENABLED", None)
+        else:
+            os.environ["CHAT_INTENT_ROUTER_ENABLED"] = previous
+
+
+def test_llm_research_task_is_authoritative_for_ambiguous_trend_phrases() -> None:
+    cases = (
+        ("这个月有什么产品突然爆卖了？", "这个月"),
+        ("帮我查找一下最近1-2个月热门趋势新品", "最近1-2个月"),
+    )
+    for text, time_window in cases:
+        decision = {
+            "intent": "product_research",
+            "task_depth": "analysis",
+            "entity": "",
+            "region": "US",
+            "confidence": 0.97,
+            "playbook": "product",
+            "research_task": {
+                "objective": "trend_discovery",
+                "scope": "cross_category",
+                "entity_type": "none",
+                "entity": "",
+                "entity_source": "none",
+                "region": "US",
+                "time_window": time_window,
+            },
+        }
+        route = web_app.parse_chat_intent_decision(
+            decision, web_app.route_chat_intent(text, "fastmoss"), "fastmoss", text
+        )
+        assert route["route_source"] == "llm"
+        assert route["research_task"]["scope"] == "cross_category"
+        assert route["research_task"]["entity_type"] == "none"
+        assert route["research_task"]["entity"] == ""
+        assert "entity" not in route
+        assert route["max_rounds"] != 12
+
+
+def test_invalid_llm_research_task_uses_structured_only_fallback() -> None:
+    text = "这个月有什么产品突然爆卖了？"
+    invalid = {
+        "intent": "product_research",
+        "task_depth": "analysis",
+        "entity": text,
+        "region": "US",
+        "confidence": 0.97,
+        "playbook": "product",
+        "research_task": {
+            "objective": "trend_discovery",
+            "scope": "cross_category",
+            "entity_type": "none",
+            "entity": text,
+            "entity_source": "explicit",
+            "region": "US",
+            "time_window": "这个月",
+        },
+    }
+    route = web_app.parse_chat_intent_decision(
+        invalid, web_app.route_chat_intent(text, "fastmoss"), "fastmoss", text
+    )
+    assert route["route_source"] == "rules_fallback"
+    assert route["research_task"]["entity"] == ""
+    assert route["research_task"]["entity_type"] == "none"
+
+    exact = web_app.research_task_from(
+        "分析 B0ABCDEF12", "amazon",
+        {"route_source": "rules_fallback", "task_depth": "analysis"},
+    )
+    assert exact["entity"] == "B0ABCDEF12"
+    assert exact["entity_type"] == "asin"
+    assert exact["scope"] == "entity"
 
 
 def test_three_layer_research_task_rejects_goal_text_as_entity() -> None:
@@ -1774,6 +1901,91 @@ def test_dynamic_provider_planner_does_not_cap_repeated_calls() -> None:
         route={"dynamic_planner": True, "research_task": {"scope": "cross_category"}},
     )
     assert normalized["query"] == queries
+
+
+def test_llm_orchestration_exposes_full_provider_tools_and_keeps_hard_guards() -> None:
+    route = {
+        "intent": "fastmoss_product",
+        "task_depth": "workflow",
+        "route_source": "llm",
+        "dynamic_planner": True,
+        "playbook": "product",
+        "research_task": {
+            "objective": "trend_discovery",
+            "scope": "cross_category",
+            "entity_type": "none",
+            "entity": "",
+            "entity_source": "none",
+            "region": "US",
+            "time_window": "这个月",
+        },
+    }
+    enabled = {
+        "system__current_time",
+        "fastmoss__market_category_ranking",
+        "fastmoss__search_category_by_words",
+        "fastmoss__product_rank_new_listed",
+        "fastmoss__product_detail_info",
+    }
+    empty = SimpleNamespace(tool_calls=[], tool_results=[])
+    assert web_app.provider_profile_tool_ids("fastmoss", route, "本月爆卖产品", enabled, empty) == enabled
+    instruction = web_app.research_planner_instruction("fastmoss", route, "本月爆卖产品", empty)
+    assert "程序不会规定首个工具" in instruction
+    assert "能力图仅供参考，不是工具门禁" in instruction
+    assert "首个业务调用必须" not in instruction
+    assert "不是固定工具顺序" in web_app.fastmoss_playbook_instruction("product", advisory=True)
+
+    assert web_app.fastmoss_deep_dive_call_error(
+        "fastmoss__search_category_by_words", {"query": ["瑜伽裤"]}, "本月爆卖产品", empty, route
+    ) is None
+    assert web_app.fastmoss_deep_dive_call_error(
+        "fastmoss__market_category_analysis", {"filter": {"category_id": 855944}}, "本月爆卖产品", empty, route
+    ) is not None
+
+    assert web_app.analysis_minimum_evidence_gaps("fastmoss", empty, route) == ["provider_tool_attempt"]
+    failed_attempt = SimpleNamespace(
+        tool_calls=[{"function": {"name": "fastmoss__product_search", "arguments": "{}"}}],
+        tool_results=[{
+            "tool_name": "fastmoss__product_search",
+            "result": {"ok": False, "data_state": "error", "evidence_observed": False},
+        }],
+    )
+    assert web_app.analysis_minimum_evidence_gaps("fastmoss", failed_attempt, route) == []
+
+    fallback_route = dict(route, route_source="rules_fallback")
+    assert web_app.provider_profile_tool_ids(
+        "fastmoss", fallback_route, "本月爆卖产品", enabled, empty
+    ) == enabled
+
+    amazon_route = {
+        "intent": "product_research",
+        "task_depth": "workflow",
+        "route_source": "llm",
+        "dynamic_planner": True,
+        "research_task": {
+            "objective": "opportunity_discovery",
+            "scope": "cross_category",
+            "entity_type": "none",
+            "entity": "",
+            "entity_source": "none",
+            "region": "US",
+            "time_window": "最近两个月",
+        },
+    }
+    amazon_enabled = {
+        "system__current_time",
+        "sellersprite__keyword_research",
+        "sellersprite__market_research",
+        "sellersprite__product_research",
+        "sellersprite__asin_detail",
+    }
+    assert web_app.provider_profile_tool_ids(
+        "amazon", amazon_route, "寻找亚马逊新品机会", amazon_enabled, empty
+    ) == amazon_enabled
+    assert web_app.analysis_minimum_evidence_gaps("amazon", empty, amazon_route) == ["provider_tool_attempt"]
+    assert "未经用户输入或当前 SellerSprite 证据" in web_app.sellersprite_deep_dive_call_error(
+        "sellersprite__asin_detail", {"asin": "B0ABCDEF12"}, "寻找亚马逊新品机会", empty
+    )
 
 
 def test_region_default_only_applies_when_schema_supports_it() -> None:
@@ -3643,6 +3855,10 @@ if __name__ == "__main__":
     test_tool_limit_keeps_large_current_collection_when_capacity_allows()
     test_sellersprite_schema_argument_normalization()
     test_llm_router_can_select_fastmoss_playbook()
+    test_only_structured_direct_requests_bypass_intent_llm()
+    test_disabling_intent_router_restores_legacy_rule_route()
+    test_llm_research_task_is_authoritative_for_ambiguous_trend_phrases()
+    test_invalid_llm_research_task_uses_structured_only_fallback()
     test_three_layer_research_task_rejects_goal_text_as_entity()
     test_three_layer_research_task_keeps_real_product_entity()
     test_fastmoss_workflow_phases_accept_empty_and_error_attempts()
@@ -3656,6 +3872,7 @@ if __name__ == "__main__":
     test_sellersprite_semantic_report_and_pro_synthesis()
     test_dynamic_provider_capability_graph_uses_task_scope_and_evidence()
     test_dynamic_provider_planner_does_not_cap_repeated_calls()
+    test_llm_orchestration_exposes_full_provider_tools_and_keeps_hard_guards()
     test_region_default_only_applies_when_schema_supports_it()
     test_fastmoss_deep_dive_ids_must_come_from_current_task()
     test_tool_call_signature_deduplicates_argument_order()
