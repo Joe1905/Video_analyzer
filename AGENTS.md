@@ -254,7 +254,9 @@ https://github.com/Joe1905/Video_analyzer.git
 
 GitHub access rules:
 
-- GitHub `fetch`, `pull`, `push`, and `clone` operations must use the server proxy at `http://127.0.0.1:7892`. Prefer explicit `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` / lowercase environment variables, or scoped `git -c http.proxy=... -c https.proxy=...`. Do not commit proxy credentials.
+- From a Windows development checkout, GitHub `fetch`, `pull`, `push`, and `clone` operations must use the local proxy at `http://127.0.0.1:7892`.
+- From the production server checkout, GitHub operations must use the server proxy at `http://127.0.0.1:7890`.
+- Prefer explicit `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` / lowercase environment variables, or scoped `git -c http.proxy=... -c https.proxy=...`. Do not commit proxy credentials.
 - If GitHub HTTPS fails during the initial handshake, record the concrete error and proxy state, then switch to the proxy path or another approved authenticated GitHub path. Do not blindly retry direct HTTPS.
 
 Server-direct workflow:
