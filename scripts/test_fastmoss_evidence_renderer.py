@@ -246,6 +246,11 @@ def test_document_keeps_call_order_boundaries_and_stats() -> None:
         "report_date": "2026-07-19",
         "target_category_path": [13, 844168, 935176],
         "analysis_targets": [{"entity_type": "product", "entity_id": "1730000000000000001"}],
+        "coverage_summary": {
+            "call_count": 2,
+            "completed_pages": [1, 2],
+            "exact_empty_results": [],
+        },
         "tool_evidence": [
             _entry("product_search", _fixture(PROFILE_RECORDS)),
             _entry("product_sales_trend", _fixture(PROFILE_TREND)),
@@ -259,6 +264,10 @@ def test_document_keeps_call_order_boundaries_and_stats() -> None:
     assert "商品研究" in rendered.markdown
     assert "分析目标" in rendered.markdown
     assert "研究对象类型" in rendered.markdown
+    assert "调用总数" in rendered.markdown
+    assert "已完成页码" in rendered.markdown
+    assert "call count" not in rendered.markdown
+    assert "completed pages" not in rendered.markdown
     assert "entity_type" not in rendered.markdown
     assert rendered.stats["tool_count"] == 2
     assert rendered.stats["registered_tool_count"] == 2

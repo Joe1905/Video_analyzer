@@ -1801,7 +1801,13 @@ def test_sellersprite_semantic_report_and_pro_synthesis() -> None:
     route = {
         "intent": "product_research",
         "task_depth": "analysis",
-        "research_task": {"objective": "opportunity_discovery", "region": "US"},
+        "research_task": {
+            "objective": "opportunity_discovery",
+            "scope": "cross_category",
+            "entity_type": "none",
+            "region": "US",
+            "time_window": "current",
+        },
     }
     dossier = web_app.sellersprite_report_evidence_dossier(message, route)
     assert len(dossier["tool_evidence"]) == 1
@@ -1815,6 +1821,8 @@ def test_sellersprite_semantic_report_and_pro_synthesis() -> None:
     assert "研究任务" in semantic
     assert "机会发现" in semantic
     assert "证据质量汇总" in semantic
+    assert "研究范围" in semantic and "跨类目" in semantic
+    assert "当前请求范围" in semantic
     assert "research_task" not in semantic
     assert "quality_summary" not in semantic
     assert "opportunity_discovery" not in semantic

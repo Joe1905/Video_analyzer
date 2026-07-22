@@ -361,6 +361,22 @@ _FIELD_LABELS = {
     "analysis_targets": "分析目标",
     "quality_summary": "证据质量汇总",
     "coverage_summary": "证据覆盖汇总",
+    "call_count": "调用总数",
+    "data_call_count": "有数据的调用数",
+    "empty_call_count": "空结果调用数",
+    "error_call_count": "失败调用数",
+    "all_product_list_calls": "商品榜单调用是否全部完成",
+    "all_product_search_calls": "商品搜索调用是否全部完成",
+    "category_search": "类目搜索",
+    "segment_search": "细分方向搜索",
+    "completed_pages": "已完成页码",
+    "target_pages": "目标页码",
+    "product_search_pages": "商品搜索页码",
+    "queries": "查询词列表",
+    "returned_rows": "实际返回记录数",
+    "unique_products": "去重后商品数",
+    "exact_empty_results": "明确为空的调用",
+    "returned_rows_outside_requested_l3": "返回记录超出请求的三级类目范围",
     "derived_facts": "程序派生事实",
     "conflicts": "证据冲突",
     "limitations": "证据限制",
@@ -623,6 +639,13 @@ _ENUM_VALUE_LABELS = {
         "product": "商品研究", "category": "类目研究", "shop": "店铺研究",
         "creator": "达人研究", "video": "视频研究", "live": "直播研究",
     },
+    "time_window": {
+        "current": "当前请求范围",
+        "today": "今日",
+        "this_week": "本周",
+        "this_month": "本月",
+        "recent_1_2_months": "最近1至2个月",
+    },
     "type": {
         "category": "类目", "product": "商品", "shop": "店铺", "creator": "达人",
         "video": "视频", "live": "直播", "asin": "ASIN", "keyword": "关键词", "none": "无单一对象",
@@ -809,10 +832,17 @@ def _semantic_value(field_name: str, value: Any) -> str:
 def localize_semantic_value(value: Any, field_name: str = "") -> Any:
     """Translate semantic display keys and enums without mutating source evidence."""
     if isinstance(value, Mapping):
-        return {
-            _field_label(str(key)): localize_semantic_value(item, str(key))
-            for key, item in value.items()
-        }
+        parent = _normalized_field_key(field_name)
+        localized: dict[str, Any] = {}
+        for key, item in value.items():
+            normalized_key = _normalized_field_key(str(key))
+            label = (
+                "研究范围"
+                if parent == "research_task" and normalized_key == "scope"
+                else _field_label(str(key))
+            )
+            localized[label] = localize_semantic_value(item, str(key))
+        return localized
     if isinstance(value, list):
         return [localize_semantic_value(item, field_name) for item in value]
     return _semantic_value(field_name, value)
