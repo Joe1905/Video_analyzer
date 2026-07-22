@@ -312,6 +312,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             publish_date_start TEXT NOT NULL DEFAULT '',
             publish_date_end TEXT NOT NULL DEFAULT '',
             feishu_target_json TEXT NOT NULL DEFAULT '{}',
+            auto_sync INTEGER NOT NULL DEFAULT 1,
             status TEXT NOT NULL DEFAULT 'queued',
             stage TEXT NOT NULL DEFAULT '',
             status_detail TEXT NOT NULL DEFAULT '',
@@ -464,6 +465,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             "publish_date_start": "TEXT NOT NULL DEFAULT ''",
             "publish_date_end": "TEXT NOT NULL DEFAULT ''",
             "status_detail": "TEXT NOT NULL DEFAULT ''",
+            "auto_sync": "INTEGER NOT NULL DEFAULT 1",
         },
         "collect_results": {
             "feishu_target_json": "TEXT NOT NULL DEFAULT '{}'",
