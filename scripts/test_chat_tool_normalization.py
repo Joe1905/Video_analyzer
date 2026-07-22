@@ -3714,7 +3714,7 @@ def test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence() -> None:
     assert all(product["product_id"] in semantic_content for product in products)
     assert "returned_product_outside_requested_l3" in semantic_content
     assert "关键词返回量不是市场容量" in semantic_content
-    assert "| 参数 filter.product_id | 1730000000000000001 |" in semantic_content
+    assert "| 调用参数：筛选条件 · 商品ID | 1730000000000000001 |" in semantic_content
     assert "本次调用成功，但针对上述精确对象、参数、地区和周期没有返回业务记录" in semantic_content
     assert "| 报告日期 |" in semantic_content
     assert "## 硬事实边界" in semantic_content
