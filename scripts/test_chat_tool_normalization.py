@@ -488,7 +488,8 @@ def test_current_tool_evidence_is_lossless_until_budget_pressure() -> None:
         raw_result,
     )
     assert marker in evidence
-    assert "marketplace" in evidence and "US" in evidence
+    assert "站点" in evidence and "US" in evidence
+    assert "marketplace" not in evidence
     assert "本次实际返回 30 条记录" in evidence
     assert "mcp_text_preview" not in evidence
 
