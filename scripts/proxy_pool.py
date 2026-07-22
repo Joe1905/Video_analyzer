@@ -64,6 +64,12 @@ RUNTIME_ID = f"{os.getpid()}-{uuid.uuid4().hex}"
 STATUS_ACTIVE = "启用"
 STATUS_PAUSED = "禁用"
 STATUS_ERROR = "不可用"
+
+
+class ProxyConfigurationError(ValueError):
+    """Raised when the local proxy core is not configured to load a parsed pool."""
+
+
 STATUS_MAP = {
     "active": STATUS_ACTIVE,
     "enabled": STATUS_ACTIVE,
@@ -1998,6 +2004,9 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
         mihomo_proxy["dialer-proxy"] = dialer_proxy
 
     now = now_iso()
+    normalized_status = _clean_status(payload.get("status"))
+    if parse_status == "ok" and normalized_status == STATUS_ERROR:
+        normalized_status = STATUS_ACTIVE
     values = {
         "name": name,
         "source_type": source_type,
@@ -2005,7 +2014,7 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
         "dialer_proxy": dialer_proxy if source_type == "static" else "",
         "expected_exit_ip": expected_exit_ip,
         "region": _clean_text(payload.get("region"), 80),
-        "status": _clean_status(payload.get("status")),
+        "status": normalized_status,
         "notes": _clean_text(payload.get("notes"), 2000),
         "parse_status": parse_status,
         "parse_error": parse_error,
@@ -2050,7 +2059,17 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
             )
             pool_id = int(cur.lastrowid)
         conn.commit()
-    core = ensure_proxy_cores(restart=True, required=True) if _sing_box_reality_enabled() else {}
+    pool = get_pool(pool_id)
+    if _sing_box_reality_pool(pool):
+        core = ensure_proxy_cores(restart=True, required=True)
+    elif pool.get("parse_status") == "ok" and pool.get("mihomo_proxy"):
+        if _clean_status(pool.get("status")) == STATUS_PAUSED:
+            cleanup, _backup = _remove_mihomo_pool_config(pool)
+            core = {"mihomo_cleanup": cleanup}
+        else:
+            core = {"mihomo_sync": _sync_mihomo_pool_config(pool)}
+    else:
+        core = {}
     return {"pool": get_pool(pool_id), **list_state(), **core}
 
 
@@ -2272,7 +2291,7 @@ def delete_pool(pool_id: int) -> dict[str, Any]:
         sing_box_managed = _sing_box_reality_pool(pool)
         cleanup, backup = ({"removed": False, "port": int(pool["local_port"] or 0)}, None)
         if not sing_box_managed:
-            cleanup, backup = _remove_mihomo_listener_config(int(pool["local_port"] or 0))
+            cleanup, backup = _remove_mihomo_pool_config(pool)
         try:
             conn.execute("DELETE FROM browser_sessions WHERE proxy_profile_id = ?", (pool_id,))
             conn.execute("DELETE FROM tiktok_accounts WHERE proxy_profile_id = ? AND deleted_at <> ''", (pool_id,))
@@ -2711,6 +2730,188 @@ def _reload_mihomo_config() -> None:
         raise ValueError(f"mihomo 配置重载失败：{error}")
 
 
+def _pool_value(pool: sqlite3.Row | dict[str, Any], key: str, default: Any = "") -> Any:
+    try:
+        value = pool[key]
+    except (KeyError, IndexError, TypeError):
+        return default
+    return default if value is None else value
+
+
+def _mihomo_config_path() -> Path:
+    configured = os.getenv("MIHOMO_CONFIG_PATH", "").strip()
+    if not configured:
+        raise ProxyConfigurationError("mihomo 配置未挂载，无法自动同步代理节点")
+    path = Path(configured)
+    if not path.is_file():
+        raise ProxyConfigurationError(f"mihomo 配置文件不存在：{path}")
+    return path
+
+
+def _yaml_section_bounds(lines: list[str], section: str) -> tuple[int, int]:
+    start = next((index for index, line in enumerate(lines) if re.match(rf"^{re.escape(section)}:\s*(?:#.*)?$", line.rstrip("\r\n"))), -1)
+    if start < 0:
+        return -1, -1
+    end = next(
+        (index for index in range(start + 1, len(lines)) if re.match(r"^[A-Za-z0-9_-]+:\s*", lines[index])),
+        len(lines),
+    )
+    return start, end
+
+
+def _yaml_list_item_ranges(lines: list[str], start: int, end: int) -> list[tuple[int, int]]:
+    starts = [index for index in range(start + 1, end) if re.match(r"^\s{2}-\s*", lines[index])]
+    return [
+        (item_start, starts[position + 1] if position + 1 < len(starts) else end)
+        for position, item_start in enumerate(starts)
+    ]
+
+
+def _yaml_block_field_matches(block: list[str], key: str, value: Any) -> bool:
+    expected = f"{key}: {_yaml_scalar(value)}"
+    for line in block:
+        candidate = line.strip()
+        if candidate.startswith("- "):
+            candidate = candidate[2:].strip()
+        if candidate == expected:
+            return True
+    return False
+
+
+def _managed_yaml_item(value: dict[str, Any], pool_id: int) -> list[str]:
+    lines = _yaml_lines(value, 4)
+    if not lines:
+        return []
+    return [f"  - {lines[0].lstrip()}\n", *(f"{line}\n" for line in lines[1:]), f"    # proxy-pool-managed-id: {pool_id}\n"]
+
+
+def _replace_mihomo_yaml_item(
+    lines: list[str],
+    section: str,
+    pool_id: int,
+    value: dict[str, Any] | None,
+    *,
+    match_name: str = "",
+    match_port: int = 0,
+) -> list[str]:
+    start, end = _yaml_section_bounds(lines, section)
+    block = _managed_yaml_item(value, pool_id) if value is not None else []
+    if start < 0:
+        if not block:
+            return lines
+        preferred_anchor = "proxy-groups" if section == "proxies" else "rules"
+        insert_at = next(
+            (index for index, line in enumerate(lines) if re.match(rf"^{preferred_anchor}:\s*", line)),
+            len(lines),
+        )
+        return [*lines[:insert_at], f"{section}:\n", *block, *lines[insert_at:]]
+
+    marker = f"proxy-pool-managed-id: {pool_id}"
+    matched_ranges: list[tuple[int, int]] = []
+    for left, right in _yaml_list_item_ranges(lines, start, end):
+        item = lines[left:right]
+        if any(marker in line for line in item):
+            matched_ranges.append((left, right))
+            continue
+        if match_name and _yaml_block_field_matches(item, "name", match_name):
+            matched_ranges.append((left, right))
+            continue
+        if match_port and _listener_port(item) == match_port:
+            matched_ranges.append((left, right))
+
+    remove_indexes = {index for left, right in matched_ranges for index in range(left, right)}
+    insert_at = matched_ranges[0][0] if matched_ranges else end
+    updated: list[str] = []
+    for index in range(len(lines) + 1):
+        if index == insert_at and block:
+            updated.extend(block)
+        if index < len(lines) and index not in remove_indexes:
+            updated.append(lines[index])
+    return updated
+
+
+def _restore_mihomo_config(path: Path, original: bytes, mode: int) -> None:
+    _atomic_write(path, original, mode)
+    try:
+        _reload_mihomo_config()
+    except Exception:
+        pass
+
+
+def _sync_mihomo_pool_config(pool: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    proxy = _json_loads(_pool_value(pool, "mihomo_proxy_json", ""), {})
+    if not proxy and isinstance(_pool_value(pool, "mihomo_proxy", {}), dict):
+        proxy = dict(_pool_value(pool, "mihomo_proxy", {}))
+    node_name = str(_pool_value(pool, "mihomo_name") or _pool_value(pool, "name") or "").strip()
+    local_port = int(_pool_value(pool, "local_port", 0) or 0)
+    pool_id = int(_pool_value(pool, "id", 0) or 0)
+    if not proxy or not node_name or not local_port or not pool_id:
+        raise ProxyConfigurationError("代理缺少可同步的 mihomo 节点、端口或记录 ID")
+    proxy["name"] = node_name
+    listener = {"name": f"tiktok-{_pool_value(pool, 'name')}", "type": "mixed", "port": local_port, "proxy": node_name}
+
+    path = _mihomo_config_path()
+    original = path.read_bytes()
+    mode = path.stat().st_mode & 0o777
+    lines = original.decode("utf-8").splitlines(keepends=True)
+    lines = _replace_mihomo_yaml_item(lines, "proxies", pool_id, proxy, match_name=node_name)
+    lines = _replace_mihomo_yaml_item(lines, "listeners", pool_id, listener, match_port=local_port)
+    updated = "".join(lines).encode("utf-8")
+    backup_path = path.with_name(path.name + ".proxy-pool.bak")
+    _atomic_write(backup_path, original, mode)
+    _atomic_write(path, updated, mode)
+    try:
+        _reload_mihomo_config()
+        ok, body, error = _mihomo_request("GET", "/proxies", timeout=8)
+        proxies = body.get("proxies") if ok and isinstance(body, dict) and isinstance(body.get("proxies"), dict) else {}
+        if node_name not in proxies:
+            raise ProxyConfigurationError(f"mihomo 重载后仍未发现节点 {node_name}：{error}")
+        for _attempt in range(20):
+            if _port_open("127.0.0.1", local_port, timeout=0.2):
+                break
+            time.sleep(0.1)
+        else:
+            raise ProxyConfigurationError(f"mihomo 重载后端口 {local_port} 未监听")
+    except Exception as exc:
+        _restore_mihomo_config(path, original, mode)
+        if isinstance(exc, ProxyConfigurationError):
+            raise
+        raise ProxyConfigurationError(f"mihomo 自动同步失败：{exc}") from exc
+    return {"configured": True, "node": node_name, "port": local_port, "backup_path": str(backup_path)}
+
+
+def _remove_mihomo_pool_config(
+    pool: sqlite3.Row | dict[str, Any],
+) -> tuple[dict[str, Any], tuple[Path, bytes, int] | None]:
+    path = _mihomo_config_path()
+    original = path.read_bytes()
+    mode = path.stat().st_mode & 0o777
+    pool_id = int(_pool_value(pool, "id", 0) or 0)
+    node_name = str(_pool_value(pool, "mihomo_name") or _pool_value(pool, "name") or "").strip()
+    local_port = int(_pool_value(pool, "local_port", 0) or 0)
+    lines = original.decode("utf-8").splitlines(keepends=True)
+    lines = _replace_mihomo_yaml_item(lines, "proxies", pool_id, None, match_name=node_name)
+    lines = _replace_mihomo_yaml_item(lines, "listeners", pool_id, None, match_port=local_port)
+    updated = "".join(lines).encode("utf-8")
+    if updated == original:
+        return {"configured": True, "removed": False, "node": node_name, "port": local_port}, None
+    backup_path = path.with_name(path.name + ".proxy-pool.bak")
+    _atomic_write(backup_path, original, mode)
+    _atomic_write(path, updated, mode)
+    try:
+        _reload_mihomo_config()
+    except Exception as exc:
+        _restore_mihomo_config(path, original, mode)
+        raise ProxyConfigurationError(f"mihomo 自动清理失败：{exc}") from exc
+    return {
+        "configured": True,
+        "removed": True,
+        "node": node_name,
+        "port": local_port,
+        "backup_path": str(backup_path),
+    }, (path, original, mode)
+
+
 def _restore_mihomo_listener_config(path: Path, original: bytes, mode: int) -> None:
     _atomic_write(path, original, mode)
     _reload_mihomo_config()
@@ -2783,10 +2984,10 @@ def _remove_mihomo_listener_config(
 def _switch_mihomo_node(node_name: str) -> dict[str, Any]:
     ok, body, error = _mihomo_request("GET", "/proxies")
     if not ok or not isinstance(body, dict):
-        raise ValueError(f"无法读取服务器 mihomo 节点：{error}")
+        raise ProxyConfigurationError(f"无法读取服务器 mihomo 节点：{error}")
     proxies = body.get("proxies") if isinstance(body.get("proxies"), dict) else {}
     if node_name not in proxies:
-        raise ValueError(f"节点 {node_name} 没有加载到服务器 mihomo；请先把导出的配置导入 mihomo 并重载")
+        raise ProxyConfigurationError(f"节点 {node_name} 没有加载到服务器 mihomo")
     preferred = ["GLOBAL", "Proxy", "代理", "CoffeeCloud", "自动选择"]
     candidates = []
     for name, item in proxies.items():
@@ -2800,7 +3001,7 @@ def _switch_mihomo_node(node_name: str) -> dict[str, Any]:
         if ok:
             switched.append(group)
     if candidates and not switched:
-        raise ValueError(f"mihomo 找到节点 {node_name}，但切换策略组失败")
+        raise ProxyConfigurationError(f"mihomo 找到节点 {node_name}，但切换策略组失败")
     return {"node": node_name, "groups": switched, "loaded": True}
 
 
@@ -2860,6 +3061,12 @@ def detect_exit_ip_for_pool(pool: sqlite3.Row) -> dict[str, Any]:
     if not node_name:
         raise ValueError("代理没有 mihomo 节点名")
     local_port = int(pool["local_port"] or 0)
+    if (
+        local_port
+        and not _port_open("127.0.0.1", local_port, timeout=1.0)
+        and not _sing_box_reality_pool(pool)
+    ):
+        _sync_mihomo_pool_config(pool)
     if local_port and _port_open("127.0.0.1", local_port, timeout=1.0):
         proxy_port = local_port
         switch = {"node": node_name, "groups": [], "loaded": True, "listener_port": local_port}
@@ -3041,6 +3248,8 @@ def check_binding(payload: dict[str, Any], require_account: bool = False) -> dic
         if not observed_ip:
             try:
                 detected = detect_exit_ip_for_pool(pool)
+            except ProxyConfigurationError:
+                raise
             except Exception as exc:
                 if _clean_status(pool["status"]) != STATUS_PAUSED:
                     _schedule_proxy_recheck(conn, int(pool["id"]), str(exc), recheck_token)
@@ -3715,7 +3924,13 @@ def _yaml_lines(value: Any, indent: int = 0) -> list[str]:
 
 def mihomo_export() -> dict[str, Any]:
     with connect() as conn:
-        rows = conn.execute("SELECT * FROM proxy_profiles WHERE status IN (?, 'active', '可用', '已绑定', '未绑定') ORDER BY id", (STATUS_ACTIVE,)).fetchall()
+        rows = conn.execute(
+            """SELECT * FROM proxy_profiles
+               WHERE parse_status = 'ok'
+                  OR status IN (?, 'active', '可用', '已绑定', '未绑定')
+               ORDER BY id""",
+            (STATUS_ACTIVE,),
+        ).fetchall()
     proxies = []
     skipped = []
     for row in rows:
