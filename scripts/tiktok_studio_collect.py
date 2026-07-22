@@ -549,13 +549,14 @@ def _datetime_millis(value: Any) -> int | None:
 def _feishu_fields(target: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     account = payload.get("account") or {}
     video = payload.get("video") or {}
+    time_filter = payload.get("time_filter") or {}
     overview = payload.get("overview") or {}
     engagement = payload.get("engagement") or {}
     retention = payload.get("retention") or {}
     available = {str(field.get("name") or ""): field for field in target.get("fields") or []}
     values = {
         "账号名称": account.get("username") or "",
-        "发布时间": video.get("published_at") or "",
+        "发布时间": time_filter.get("applied") or video.get("published_at") or "",
         "24小时播放量": _metric_number(overview.get("play_count")),
         "视频完播率": overview.get("completion_rate") or "",
         "头3秒播放率": retention.get("0:03") or "",
@@ -596,6 +597,11 @@ def _set_result_sync(result_id: int, status: str, record_id: str = "", error: st
         conn.commit()
 
 
+def _is_feishu_record_not_found(exc: FeishuCapabilityError) -> bool:
+    message = str(exc).lower()
+    return "recordidnotfound" in message or "1254043" in message
+
+
 def _sync_result_to_feishu(result_id: int, job: dict[str, Any], payload: dict[str, Any]) -> None:
     target = _job_feishu_target(job)
     try:
@@ -632,7 +638,14 @@ def _sync_result_to_feishu(result_id: int, job: dict[str, Any], payload: dict[st
         _set_result_sync(result_id, "syncing", record_id)
         if record_id:
             request["recordId"] = record_id
-            result = _feishu_client.update_bitable_record(request)
+            try:
+                result = _feishu_client.update_bitable_record(request)
+            except FeishuCapabilityError as exc:
+                if not _is_feishu_record_not_found(exc):
+                    raise
+                request.pop("recordId", None)
+                result = _feishu_client.create_bitable_record(request)
+                record_id = _clean_text(result.get("recordId"), 200)
         else:
             result = _feishu_client.create_bitable_record(request)
             record_id = _clean_text(result.get("recordId"), 200)
@@ -1302,8 +1315,8 @@ def _collect_video(page: Any, job: dict[str, Any], source: dict[str, str], log_d
     if not any(overview.values()):
         page.screenshot(path=str(log_dir / f"{source['id']}-missing-overview.png"), full_page=True)
         raise RuntimeError("视频分析页没有识别到概览指标")
-    title, published_at = _title_and_date(lines, source.get("title_hint", ""))
-    published_at = published_at or source.get("published_date", "")
+    title, detail_published_at = _title_and_date(lines, source.get("title_hint", ""))
+    published_at = source.get("published_date", "") or detail_published_at
     retention, retention_complete, missing, retention_reason = _sample_retention(
         page, _duration_seconds(source.get("title_hint", ""))
     )
