@@ -189,6 +189,7 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=2)
     parser.add_argument("--output-dir", type=Path, default=ROOT / "output" / "chat_log_regression")
     parser.add_argument("--skip-judge", action="store_true")
+    parser.add_argument("--reuse-existing", action="store_true")
     args = parser.parse_args()
 
     api_key = os.getenv("DEEPSEEK_API_KEY", "")
@@ -205,7 +206,11 @@ def main() -> int:
     ):
         assistant = to_message(raw_assistant)
         route = replay_route(args.provider, user_text)
-        if args.provider == "fastmoss":
+        sample_id = str(session.get("id") or f"sample-{index}")
+        output_path = args.output_dir / f"{args.provider}-{index}-{sample_id[-12:]}.md"
+        if args.reuse_existing and output_path.is_file():
+            new_report = output_path.read_text(encoding="utf-8")
+        elif args.provider == "fastmoss":
             new_report = web_app.synthesize_fastmoss_report_from_packet(
                 assistant, user_text, route, requests,
                 api_key, api_url, report_model,
@@ -217,8 +222,6 @@ def main() -> int:
             )
         old_report = str(raw_assistant.get("content") or "")
         metrics = compare_reports(old_report, new_report, args.provider)
-        sample_id = str(session.get("id") or f"sample-{index}")
-        output_path = args.output_dir / f"{args.provider}-{index}-{sample_id[-12:]}.md"
         output_path.write_text(new_report, encoding="utf-8")
         judge = {"passed": True, "severity": "skipped", "reasons": []}
         if not args.skip_judge:
