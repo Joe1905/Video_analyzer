@@ -2759,8 +2759,22 @@ def _yaml_section_bounds(lines: list[str], section: str) -> tuple[int, int]:
     return start, end
 
 
+def _yaml_list_item_indent(lines: list[str], start: int, end: int) -> int:
+    indents = [
+        len(match.group(1))
+        for index in range(start + 1, end)
+        if (match := re.match(r"^(\s*)-\s*", lines[index]))
+    ]
+    return min(indents) if indents else 2
+
+
 def _yaml_list_item_ranges(lines: list[str], start: int, end: int) -> list[tuple[int, int]]:
-    starts = [index for index in range(start + 1, end) if re.match(r"^\s{2}-\s*", lines[index])]
+    item_indent = _yaml_list_item_indent(lines, start, end)
+    starts = [
+        index
+        for index in range(start + 1, end)
+        if (match := re.match(r"^(\s*)-\s*", lines[index])) and len(match.group(1)) == item_indent
+    ]
     return [
         (item_start, starts[position + 1] if position + 1 < len(starts) else end)
         for position, item_start in enumerate(starts)
@@ -2778,11 +2792,16 @@ def _yaml_block_field_matches(block: list[str], key: str, value: Any) -> bool:
     return False
 
 
-def _managed_yaml_item(value: dict[str, Any], pool_id: int) -> list[str]:
-    lines = _yaml_lines(value, 4)
+def _managed_yaml_item(value: dict[str, Any], pool_id: int, item_indent: int) -> list[str]:
+    value_indent = item_indent + 2
+    lines = _yaml_lines(value, value_indent)
     if not lines:
         return []
-    return [f"  - {lines[0].lstrip()}\n", *(f"{line}\n" for line in lines[1:]), f"    # proxy-pool-managed-id: {pool_id}\n"]
+    return [
+        f"{' ' * item_indent}- {lines[0].lstrip()}\n",
+        *(f"{line}\n" for line in lines[1:]),
+        f"{' ' * value_indent}# proxy-pool-managed-id: {pool_id}\n",
+    ]
 
 
 def _replace_mihomo_yaml_item(
@@ -2795,8 +2814,8 @@ def _replace_mihomo_yaml_item(
     match_port: int = 0,
 ) -> list[str]:
     start, end = _yaml_section_bounds(lines, section)
-    block = _managed_yaml_item(value, pool_id) if value is not None else []
     if start < 0:
+        block = _managed_yaml_item(value, pool_id, 2) if value is not None else []
         if not block:
             return lines
         preferred_anchor = "proxy-groups" if section == "proxies" else "rules"
@@ -2806,6 +2825,8 @@ def _replace_mihomo_yaml_item(
         )
         return [*lines[:insert_at], f"{section}:\n", *block, *lines[insert_at:]]
 
+    item_indent = _yaml_list_item_indent(lines, start, end)
+    block = _managed_yaml_item(value, pool_id, item_indent) if value is not None else []
     marker = f"proxy-pool-managed-id: {pool_id}"
     matched_ranges: list[tuple[int, int]] = []
     for left, right in _yaml_list_item_ranges(lines, start, end):
