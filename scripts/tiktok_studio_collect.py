@@ -997,11 +997,15 @@ def _percent_section(lines: list[str], headings: list[str], stop_headings: list[
     return values
 
 
-def _wait_for_detail_sections(page: Any) -> tuple[list[str], dict[str, str], dict[str, str]]:
+def _wait_for_detail_sections(
+    page: Any,
+) -> tuple[list[str], dict[str, str], dict[str, str], str, str]:
     """Wait for TikTok's lazy-loaded lower analytics sections."""
     deadline = time.monotonic() + DETAIL_SECTIONS_TIMEOUT_SECONDS
     latest_lines: list[str] = []
     latest_search: dict[str, str] = {}
+    traffic_reason = ""
+    search_reason = ""
     heading_pattern = re.compile(r"^(?:Traffic source|Traffic sources|流量来源)$", re.I)
     while time.monotonic() < deadline:
         body = page.locator("body").inner_text(timeout=15000)
@@ -1017,7 +1021,26 @@ def _wait_for_detail_sections(page: Any) -> tuple[list[str], dict[str, str], dic
             ["Viewer types", "Audience", "观众"],
         )
         if traffic:
-            return latest_lines, traffic, latest_search
+            if not latest_search and re.search(
+                r"search quer(?:y|ies).*(?:low traffic|enough traffic)|搜索(?:查询|词).*(?:流量不足|足够流量)",
+                body,
+                re.I | re.S,
+            ):
+                search_reason = "搜索词流量不足，TikTok 暂未提供查询明细"
+            return latest_lines, traffic, latest_search, "", search_reason
+        if re.search(
+            r"data will show when video views reach\s*100|(?:播放量|视频观看量).*(?:达到|满)\s*100.*(?:显示|提供)",
+            body,
+            re.I | re.S,
+        ):
+            traffic_reason = "播放量未达到 100，TikTok 暂未提供流量来源"
+            if re.search(
+                r"search quer(?:y|ies).*(?:low traffic|enough traffic)|搜索(?:查询|词).*(?:流量不足|足够流量)",
+                body,
+                re.I | re.S,
+            ):
+                search_reason = "搜索词流量不足，TikTok 暂未提供查询明细"
+            return latest_lines, {}, latest_search, traffic_reason, search_reason
         heading = _first_visible([page.get_by_text(heading_pattern)])
         if heading:
             try:
@@ -1027,7 +1050,7 @@ def _wait_for_detail_sections(page: Any) -> tuple[list[str], dict[str, str], dic
         else:
             page.mouse.wheel(0, 1200)
         page.wait_for_timeout(800)
-    return latest_lines, {}, latest_search
+    return latest_lines, {}, latest_search, traffic_reason, search_reason
 
 
 def _locator_metric(page: Any, names: list[str]) -> str:
@@ -1244,8 +1267,8 @@ def _collect_video(page: Any, job: dict[str, Any], source: dict[str, str], log_d
     retention, retention_complete, missing, retention_reason = _sample_retention(
         page, _duration_seconds(source.get("title_hint", ""))
     )
-    detail_lines, traffic_sources, search_queries = _wait_for_detail_sections(page)
-    if not traffic_sources:
+    detail_lines, traffic_sources, search_queries, traffic_reason, search_reason = _wait_for_detail_sections(page)
+    if not traffic_sources and not traffic_reason:
         page.screenshot(path=str(log_dir / f"{source['id']}-missing-traffic-sources.png"), full_page=True)
         raise RuntimeError("视频分析页已加载概览，但流量来源区域在等待后仍未完整渲染")
     payload = {
@@ -1275,8 +1298,12 @@ def _collect_video(page: Any, job: dict[str, Any], source: dict[str, str], log_d
         "missing_retention_seconds": missing,
         "retention_reason": retention_reason,
         "traffic_sources": traffic_sources,
+        "traffic_sources_available": bool(traffic_sources),
+        "traffic_sources_reason": traffic_reason,
         "search_queries": search_queries,
-        "data_complete": bool(retention_complete and traffic_sources),
+        "search_queries_available": bool(search_queries),
+        "search_queries_reason": search_reason,
+        "data_complete": bool(retention_complete and (traffic_sources or traffic_reason)),
         "updated_at": _value_after_label(detail_lines or lines, ["Updated", "Last updated", "更新时间"]),
         "collected_at": _iso(),
     }
