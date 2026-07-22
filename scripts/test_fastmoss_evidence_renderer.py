@@ -234,10 +234,27 @@ def test_week_request_adds_explicit_calendar_boundary_and_chinese_labels() -> No
     assert "统计周期类型 | 周" in result.markdown
     assert "ISO周日期范围 | 2026-07-13 至 2026-07-19" in result.markdown
     assert "按 ISO 8601 的周一至周日换算" in result.markdown
+    assert "成交结构" in result.markdown
+    assert "未取得时只能描述占比现象" in result.markdown
     assert "排序字段：类目销量；排序规则：降序" in result.markdown
     assert "类目GMV同比增长率" in result.markdown
     assert "category GMV yoy percent" not in result.markdown
     assert "date type" not in result.markdown
+
+
+def test_product_ranking_boundaries_prevent_period_and_causal_overreach() -> None:
+    new_listed = render_fastmoss_tool_evidence(_entry("product_rank_new_listed", {
+        "items": [{"product_id": "p1", "first_3d_gmv": 797940, "first_3d_units_sold": 8060}],
+    }))
+    assert "三日累计口径" in new_listed.markdown
+    assert "不是单日或一天内的指标" in new_listed.markdown
+    assert "需解释爆发原因时应先调用对应工具" in new_listed.markdown
+
+    top_selling = render_fastmoss_tool_evidence(_entry("product_rank_top_selling", {
+        "items": [{"product_id": "p2", "period_gmv": 500000, "period_units_sold": 12000}],
+    }))
+    assert "不能改写为实时趋势或单日表现" in top_selling.markdown
+    assert "不得宣称某商品由单一爆款视频" in top_selling.markdown
 
 
 def test_document_keeps_call_order_boundaries_and_stats() -> None:
@@ -284,5 +301,6 @@ if __name__ == "__main__":
     test_unknown_future_tool_uses_generic_shape_without_loss()
     test_official_fastmoss_video_fields_render_as_semantic_values()
     test_week_request_adds_explicit_calendar_boundary_and_chinese_labels()
+    test_product_ranking_boundaries_prevent_period_and_causal_overreach()
     test_document_keeps_call_order_boundaries_and_stats()
     print("FastMoss evidence renderer tests passed")
