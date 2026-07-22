@@ -155,18 +155,31 @@ def judge_material_deviation(
             "content": "旧报告：\n" + old + "\n\n新报告：\n" + new,
         }],
     }
-    response = requests.post(
-        api_url.rstrip("/") + "/chat/completions",
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        timeout=180,
-    )
-    response.raise_for_status()
-    content = response.json()["choices"][0]["message"]["content"]
-    match = re.search(r"\{.*\}", str(content or ""), re.DOTALL)
-    if not match:
-        raise ValueError("usability judge did not return a JSON object")
-    return json.loads(match.group(0), strict=False)
+    last_error = "usability judge did not run"
+    for attempt in range(2):
+        response = requests.post(
+            api_url.rstrip("/") + "/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            timeout=180,
+        )
+        response.raise_for_status()
+        content = response.json()["choices"][0]["message"]["content"]
+        match = re.search(r"\{.*\}", str(content or ""), re.DOTALL)
+        try:
+            if match:
+                result = json.loads(match.group(0), strict=False)
+                if isinstance(result, dict):
+                    return result
+            last_error = "response did not contain one JSON object"
+        except json.JSONDecodeError as exc:
+            last_error = f"invalid JSON: {exc}"
+        if attempt == 0:
+            payload["messages"].append({
+                "role": "user",
+                "content": f"上次输出无法解析（{last_error}）。只返回一个合法 JSON 对象，不要 Markdown。",
+            })
+    raise ValueError(f"usability judge failed after retry: {last_error}")
 
 
 def main() -> int:
@@ -204,15 +217,15 @@ def main() -> int:
             )
         old_report = str(raw_assistant.get("content") or "")
         metrics = compare_reports(old_report, new_report, args.provider)
+        sample_id = str(session.get("id") or f"sample-{index}")
+        output_path = args.output_dir / f"{args.provider}-{index}-{sample_id[-12:]}.md"
+        output_path.write_text(new_report, encoding="utf-8")
         judge = {"passed": True, "severity": "skipped", "reasons": []}
         if not args.skip_judge:
             judge = judge_material_deviation(
                 old_report, new_report, api_key, api_url, judge_model
             )
         passed = bool(metrics["passed"] and judge.get("passed") is not False and judge.get("severity") != "major")
-        sample_id = str(session.get("id") or f"sample-{index}")
-        output_path = args.output_dir / f"{args.provider}-{index}-{sample_id[-12:]}.md"
-        output_path.write_text(new_report, encoding="utf-8")
         results.append({
             "session_id": sample_id,
             "updated_at": session.get("updated_at"),
