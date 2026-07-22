@@ -808,6 +808,20 @@ def _video_id(url: str) -> str:
     return match.group(1) if match else ""
 
 
+def _video_id_published_date(video_id: str) -> str:
+    """Recover TikTok's publish date from the timestamp embedded in a video ID."""
+    try:
+        published = datetime.fromtimestamp(int(video_id) >> 32, timezone.utc).astimezone(
+            ZoneInfo(TIMEZONE_NAME)
+        )
+    except (OSError, OverflowError, ValueError):
+        return ""
+    latest_valid = _utc_now().astimezone(ZoneInfo(TIMEZONE_NAME)) + timedelta(days=1)
+    if published.year < 2016 or published > latest_valid:
+        return ""
+    return published.date().isoformat()
+
+
 _MONTH_NUMBERS = {
     "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
     "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
@@ -909,7 +923,7 @@ def _discover_video_links(
         for row in _discover_links_on_page(page):
             row["published_date"] = _source_published_date(
                 row.get("title_hint", ""), publish_date_start, publish_date_end
-            )
+            ) or _video_id_published_date(row["id"])
             existing = found.get(row["id"])
             if not existing or (not existing.get("published_date") and row["published_date"]):
                 found[row["id"]] = row
@@ -945,10 +959,36 @@ def _discover_video_links(
         if dated_rows and min(dated_rows) < publish_date_start:
             break
         unchanged_rounds = unchanged_rounds + 1 if len(found) == before else 0
-        if unchanged_rounds >= 3:
+        if unchanged_rounds >= 8:
             break
-        page.mouse.wheel(0, 1000)
-        page.wait_for_timeout(700)
+        links = page.locator("a[href*='/tiktokstudio/analytics/'], a[href*='/video/']")
+        if links.count():
+            try:
+                links.last.scroll_into_view_if_needed(timeout=3000)
+            except Exception:
+                pass
+        page.evaluate(
+            """() => {
+                const links = [...document.querySelectorAll(
+                    "a[href*='/tiktokstudio/analytics/'], a[href*='/video/']"
+                )];
+                const targets = [document.scrollingElement];
+                let node = links.length ? links[links.length - 1].parentElement : null;
+                while (node) {
+                    if (node.scrollHeight > node.clientHeight + 20) targets.push(node);
+                    node = node.parentElement;
+                }
+                for (const target of [...new Set(targets.filter(Boolean))]) {
+                    target.scrollTop = Math.min(
+                        target.scrollHeight,
+                        target.scrollTop + Math.max(700, target.clientHeight * 0.8)
+                    );
+                }
+                window.scrollBy(0, Math.max(700, window.innerHeight * 0.8));
+            }"""
+        )
+        page.mouse.wheel(0, 1200)
+        page.wait_for_timeout(900)
 
     return matching()
 
