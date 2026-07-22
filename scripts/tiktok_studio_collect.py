@@ -31,6 +31,9 @@ DEFAULT_DAILY_TIME = os.getenv("TIKTOK_COLLECT_DAILY_TIME", "03:00").strip() or 
 DEFAULT_DATE_RULE = "previous_day"
 DATE_RULES = {"previous_day", "same_day"}
 RETENTION_MAX_SECONDS = max(10, int(os.getenv("TIKTOK_COLLECT_RETENTION_MAX_SECONDS", "300") or "300"))
+DETAIL_SECTIONS_TIMEOUT_SECONDS = max(
+    5, int(os.getenv("TIKTOK_COLLECT_DETAIL_SECTIONS_TIMEOUT_SECONDS", "20") or "20")
+)
 WORKER_INTERVAL_SECONDS = max(3, int(os.getenv("TIKTOK_COLLECT_WORKER_INTERVAL_SECONDS", "10") or "10"))
 JOB_ACTIVE_STATUSES = {"queued", "delayed", "preparing", "collecting"}
 JOB_RETRYABLE_STATUSES = {"failed", "partial", "cancelled"}
@@ -136,6 +139,7 @@ def _job_row(row: Any) -> dict[str, Any]:
         "publish_date_start": str(row["publish_date_start"]),
         "publish_date_end": str(row["publish_date_end"]),
         "feishu_target": _json_loads(row["feishu_target_json"], {}),
+        "auto_sync": bool(row["auto_sync"]),
         "status": str(row["status"]),
         "status_label": STATUS_LABELS.get(str(row["status"]), str(row["status"])),
         "stage": str(row["stage"]),
@@ -150,6 +154,7 @@ def _job_row(row: Any) -> dict[str, Any]:
         "completed_at": str(row["completed_at"]),
         "last_error": str(row["last_error"]),
         "feishu_failed_results": int(row["feishu_failed_results"] or 0) if "feishu_failed_results" in columns else 0,
+        "feishu_unsynced_results": int(row["feishu_unsynced_results"] or 0) if "feishu_unsynced_results" in columns else 0,
         "created_at": str(row["created_at"]),
         "updated_at": str(row["updated_at"]),
     }
@@ -249,6 +254,8 @@ def dashboard(account_id: int) -> dict[str, Any]:
                 SELECT j.*,
                        (SELECT COUNT(*) FROM collect_results r
                         WHERE r.job_id = j.id AND r.feishu_sync_status = 'failed') AS feishu_failed_results
+                       ,(SELECT COUNT(*) FROM collect_results r
+                         WHERE r.job_id = j.id AND r.feishu_sync_status = 'not_synced') AS feishu_unsynced_results
                 FROM collect_jobs j
                 WHERE j.account_id = ?
                 ORDER BY j.created_at DESC
@@ -332,6 +339,7 @@ def _insert_job(
     feishu_target_json: str,
     schedule_date: str = "",
     session_id: int = 0,
+    auto_sync: bool = True,
 ) -> str:
     job_id = f"collect_{uuid.uuid4().hex}"
     now = _iso()
@@ -340,10 +348,11 @@ def _insert_job(
         INSERT INTO collect_jobs (
             id, account_id, proxy_profile_id, trigger_type, schedule_date, max_videos,
             publish_date_start, publish_date_end, feishu_target_json,
+            auto_sync,
             status, stage, attempt_count, next_attempt_at, session_id,
             total_videos, completed_videos, failed_videos, current_video_id,
             started_at, completed_at, last_error, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', '', 0, '', ?, 0, 0, 0, '', '', '', '', ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', '', 0, '', ?, 0, 0, 0, '', '', '', '', ?, ?)
         """,
         (
             job_id,
@@ -355,6 +364,7 @@ def _insert_job(
             publish_date_start,
             publish_date_end,
             feishu_target_json,
+            1 if auto_sync else 0,
             session_id or None,
             now,
             now,
@@ -383,6 +393,7 @@ def create_job(payload: dict[str, Any]) -> dict[str, Any]:
             publish_date_end,
             feishu_target_json,
             session_id=int(payload.get("observation_session_id") or 0),
+            auto_sync=payload.get("write_to_feishu") is not False,
         )
         now = _iso()
         conn.execute(
@@ -635,6 +646,7 @@ def _save_result(job: dict[str, Any], payload: dict[str, Any]) -> None:
     target_json = json.dumps(
         _job_feishu_target(job), ensure_ascii=False, separators=(",", ":")
     )
+    sync_status = "pending" if job.get("auto_sync", True) else "not_synced"
     with proxy_pool.connect() as conn:
         conn.execute(
             """
@@ -642,7 +654,7 @@ def _save_result(job: dict[str, Any], payload: dict[str, Any]) -> None:
                 job_id, account_id, video_id, video_url, title, published_at,
                 collected_at, retention_complete, payload_json, feishu_target_json,
                 feishu_sync_status, feishu_sync_error, feishu_synced_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', '', '')
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '')
             ON CONFLICT(job_id, video_id) DO UPDATE SET
                 video_url = excluded.video_url,
                 title = excluded.title,
@@ -651,7 +663,7 @@ def _save_result(job: dict[str, Any], payload: dict[str, Any]) -> None:
                 retention_complete = excluded.retention_complete,
                 payload_json = excluded.payload_json,
                 feishu_target_json = excluded.feishu_target_json,
-                feishu_sync_status = 'pending',
+                feishu_sync_status = excluded.feishu_sync_status,
                 feishu_sync_error = '',
                 feishu_synced_at = ''
             """,
@@ -666,6 +678,7 @@ def _save_result(job: dict[str, Any], payload: dict[str, Any]) -> None:
                 1 if payload.get("retention_complete") else 0,
                 json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
                 target_json,
+                sync_status,
             ),
         )
         result = conn.execute(
@@ -673,7 +686,7 @@ def _save_result(job: dict[str, Any], payload: dict[str, Any]) -> None:
             (job["id"], _clean_text(video.get("id"), 120)),
         ).fetchone()
         conn.commit()
-    if result:
+    if result and job.get("auto_sync", True):
         _sync_result_to_feishu(int(result["id"]), job, payload)
 
 
@@ -691,7 +704,7 @@ def retry_failed_feishu_sync(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("result_id must be a positive integer") from exc
     if not job_id and not account_id and not result_ids:
         raise ValueError("job_id, account_id or result_id is required")
-    clauses = ["r.feishu_sync_status = 'failed'"]
+    clauses = ["r.feishu_sync_status IN ('failed', 'not_synced')"]
     params: list[Any] = []
     if job_id:
         clauses.append("r.job_id = ?")
@@ -984,6 +997,39 @@ def _percent_section(lines: list[str], headings: list[str], stop_headings: list[
     return values
 
 
+def _wait_for_detail_sections(page: Any) -> tuple[list[str], dict[str, str], dict[str, str]]:
+    """Wait for TikTok's lazy-loaded lower analytics sections."""
+    deadline = time.monotonic() + DETAIL_SECTIONS_TIMEOUT_SECONDS
+    latest_lines: list[str] = []
+    latest_search: dict[str, str] = {}
+    heading_pattern = re.compile(r"^(?:Traffic source|Traffic sources|流量来源)$", re.I)
+    while time.monotonic() < deadline:
+        body = page.locator("body").inner_text(timeout=15000)
+        latest_lines = _lines(body)
+        traffic = _percent_section(
+            latest_lines,
+            ["Traffic source", "Traffic sources", "流量来源"],
+            ["Search queries", "搜索查询"],
+        )
+        latest_search = _percent_section(
+            latest_lines,
+            ["Search queries", "搜索查询"],
+            ["Viewer types", "Audience", "观众"],
+        )
+        if traffic:
+            return latest_lines, traffic, latest_search
+        heading = _first_visible([page.get_by_text(heading_pattern)])
+        if heading:
+            try:
+                heading.scroll_into_view_if_needed(timeout=3000)
+            except Exception:
+                page.mouse.wheel(0, 1200)
+        else:
+            page.mouse.wheel(0, 1200)
+        page.wait_for_timeout(800)
+    return latest_lines, {}, latest_search
+
+
 def _locator_metric(page: Any, names: list[str]) -> str:
     pattern = re.compile("|".join(re.escape(name) for name in names), re.I)
     target = _first_visible([
@@ -1198,6 +1244,10 @@ def _collect_video(page: Any, job: dict[str, Any], source: dict[str, str], log_d
     retention, retention_complete, missing, retention_reason = _sample_retention(
         page, _duration_seconds(source.get("title_hint", ""))
     )
+    detail_lines, traffic_sources, search_queries = _wait_for_detail_sections(page)
+    if not traffic_sources:
+        page.screenshot(path=str(log_dir / f"{source['id']}-missing-traffic-sources.png"), full_page=True)
+        raise RuntimeError("视频分析页已加载概览，但流量来源区域在等待后仍未完整渲染")
     payload = {
         "account": {
             "id": job["account_id"],
@@ -1219,14 +1269,15 @@ def _collect_video(page: Any, job: dict[str, Any], source: dict[str, str], log_d
             "applied_successfully": True,
         },
         "overview": overview,
-        "engagement": _engagement(page, lines, overview),
+        "engagement": _engagement(page, detail_lines or lines, overview),
         "retention": retention,
         "retention_complete": retention_complete,
         "missing_retention_seconds": missing,
         "retention_reason": retention_reason,
-        "traffic_sources": _percent_section(lines, ["Traffic source", "Traffic sources", "流量来源"], ["Search queries", "搜索查询"]),
-        "search_queries": _percent_section(lines, ["Search queries", "搜索查询"], ["Viewer types", "Audience", "观众"]),
-        "updated_at": _value_after_label(lines, ["Updated", "Last updated", "更新时间"]),
+        "traffic_sources": traffic_sources,
+        "search_queries": search_queries,
+        "data_complete": bool(retention_complete and traffic_sources),
+        "updated_at": _value_after_label(detail_lines or lines, ["Updated", "Last updated", "更新时间"]),
         "collected_at": _iso(),
     }
     page.screenshot(path=str(log_dir / f"{source['id']}-collected.png"), full_page=True)
