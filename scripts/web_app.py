@@ -11537,6 +11537,8 @@ def manage_chat_context(
     current_evidence_chars_after = current_evidence_chars_before
 
     history_limit = token_limit * 12 // 100
+    recent_history = [message for message in working if message.get("_context_scope") == "history"][-2:]
+    protected_history_ids = {id(message) for message in recent_history}
     def history_tokens() -> int:
         return estimate_chat_context_tokens(
             [message for message in working if message.get("_context_scope") == "history"], []
@@ -11547,6 +11549,7 @@ def manage_chat_context(
             (
                 index for index, message in enumerate(working)
                 if message.get("_context_scope") == "history"
+                and id(message) not in protected_history_ids
                 and message.get("_context_priority") not in {"keep", "recovery"}
             ),
             None,
@@ -11575,6 +11578,7 @@ def manage_chat_context(
             (
                 index for index, message in enumerate(working)
                 if message.get("_context_scope") == "history"
+                and id(message) not in protected_history_ids
                 and message.get("_context_priority") not in {"keep", "recovery"}
             ),
             None,
