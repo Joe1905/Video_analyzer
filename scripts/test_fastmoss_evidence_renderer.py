@@ -150,8 +150,12 @@ def test_all_tools_render_success_without_silent_field_loss() -> None:
             result.consumed_paths | result.unmapped_paths | result.excluded_paths
         ), tool_name
         assert not (result.consumed_paths & result.unmapped_paths), tool_name
-        assert "schema_extension" in result.markdown, tool_name
-        assert "未映射业务字段" in result.markdown, tool_name
+        assert not result.unmapped_paths, tool_name
+        assert "schema extension" in result.markdown, tool_name
+        assert "未映射业务字段" not in result.markdown, tool_name
+        assert "JSON路径" not in result.markdown, tool_name
+        assert "原字段" not in result.markdown, tool_name
+        assert "$.business_data" not in result.markdown, tool_name
         assert "call:1" in result.markdown and tool_name in result.markdown, tool_name
 
 
@@ -183,7 +187,34 @@ def test_unknown_future_tool_uses_generic_shape_without_loss() -> None:
     result = render_fastmoss_tool_evidence(_entry("future_tool", data))
     assert result.profile == "generic"
     assert result.business_leaf_paths == result.consumed_paths | result.unmapped_paths
-    assert "opaque_value" in result.markdown and "kept" in result.markdown
+    assert not result.unmapped_paths
+    assert "opaque value" in result.markdown and "kept" in result.markdown
+    assert "JSON路径" not in result.markdown
+
+
+def test_official_fastmoss_video_fields_render_as_semantic_values() -> None:
+    result = render_fastmoss_tool_evidence(_entry("product_video_list", {
+        "list": [{
+            "product_id": "1729421229342823356",
+            "video_id": "7468186866076880170",
+            "is_ad": 0,
+            "create_time": 1765024218000,
+            "units_sold": 28,
+            "gmv": 700.0,
+            "video": {
+                "video_desc": "demo video",
+                "duration": 12,
+                "fastmoss_url": "https://www.fastmoss.com/example",
+            },
+        }],
+        "total": 1,
+    }))
+    assert not result.fallback
+    assert not result.unmapped_paths
+    assert "否（非广告）" in result.markdown
+    assert "2025-12-06T20:30:18+08:00" in result.markdown
+    assert "视频时长（秒）" in result.markdown
+    assert "JSON路径" not in result.markdown
 
 
 def test_document_keeps_call_order_boundaries_and_stats() -> None:
@@ -215,5 +246,6 @@ if __name__ == "__main__":
     test_all_tools_render_success_without_silent_field_loss()
     test_all_tools_render_empty_and_error_as_scoped_narrative()
     test_unknown_future_tool_uses_generic_shape_without_loss()
+    test_official_fastmoss_video_fields_render_as_semantic_values()
     test_document_keeps_call_order_boundaries_and_stats()
     print("FastMoss evidence renderer tests passed")

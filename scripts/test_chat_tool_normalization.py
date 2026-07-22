@@ -1627,7 +1627,12 @@ def test_sellersprite_semantic_registry_is_complete_and_lossless() -> None:
             result.consumed_paths | result.unmapped_paths | result.excluded_paths
         )
         assert not (result.consumed_paths & result.unmapped_paths)
+        assert not result.unmapped_paths
         assert f"kept-{name}" in result.markdown
+        assert "未映射业务字段" not in result.markdown
+        assert "JSON路径" not in result.markdown
+        assert "原字段" not in result.markdown
+        assert "$.business_data" not in result.markdown
 
     empty = render_sellersprite_current_evidence({
         "tool": "sellersprite__review",
@@ -1650,6 +1655,53 @@ def test_sellersprite_semantic_registry_is_complete_and_lossless() -> None:
     assert wrapped_empty.empty is True
     assert wrapped_empty.business_leaf_paths == set()
     assert "没有返回业务记录" in wrapped_empty.markdown
+
+
+def test_sellersprite_official_aba_fields_render_as_semantic_values() -> None:
+    result = render_sellersprite_current_evidence({
+        "tool": "sellersprite__aba_research_monthly",
+        "arguments": {
+            "request": {
+                "marketplace": "US",
+                "includeKeywords": "screen protector",
+                "date": "202508",
+            },
+        },
+        "ok": True,
+        "data_state": "data",
+        "data": {
+            "items": [{
+                "marketplace": "US",
+                "date": "202508",
+                "keyword": "screen protector",
+                "searchRankCr": -0.1375,
+                "purchaseRate": 0.0073,
+                "titleDensityExact": 49,
+                "cprExact": 17,
+                "w1SearchRank": 8539,
+                "w1RankGrowthRate": -0.1375,
+                "clickShareRate": 0.1646,
+                "cvsShareRate": 0.1115,
+                "top3Brands": ["Ailun", "NEW'C", "MAGIC JOHN"],
+                "top3AsinDtoList": [{
+                    "asin": "B0CCYM3F1V",
+                    "clickRate": 0.0656,
+                    "conversionRate": 0.0496,
+                }],
+            }],
+        },
+    })
+    assert result.fallback is False
+    assert not result.unmapped_paths
+    assert "调用参数：请求" not in result.markdown
+    assert "前1个统计周期的搜索排名" in result.markdown
+    assert "首页标题精确包含该词的商品数" in result.markdown
+    assert "8天内使该词上首页所需销量" in result.markdown
+    assert "-13.75%" in result.markdown
+    assert "0.73%" in result.markdown
+    assert "16.46%" in result.markdown
+    assert "JSON路径" not in result.markdown
+    assert "原字段" not in result.markdown
 
 
 def test_sellersprite_semantic_report_and_pro_synthesis() -> None:
@@ -4266,6 +4318,7 @@ if __name__ == "__main__":
     test_fastmoss_close_cross_category_matches_request_confirmation()
     test_provider_profiles_use_aggregated_sellersprite_and_staged_fastmoss_tools()
     test_sellersprite_semantic_registry_is_complete_and_lossless()
+    test_sellersprite_official_aba_fields_render_as_semantic_values()
     test_sellersprite_semantic_report_and_pro_synthesis()
     test_dynamic_provider_capability_graph_uses_task_scope_and_evidence()
     test_dynamic_provider_planner_does_not_cap_repeated_calls()

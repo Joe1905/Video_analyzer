@@ -171,7 +171,7 @@ def render_sellersprite_tool_evidence(entry: Mapping[str, Any]) -> RenderedToolE
             markdown=json_to_markdown(
                 dict(entry),
                 title=f"current-call · {full_tool_name}",
-                include_paths=True,
+                include_paths=False,
             ).rstrip(),
             tool_name=tool_name,
             profile=SELLERSPRITE_RENDER_SPECS.get(

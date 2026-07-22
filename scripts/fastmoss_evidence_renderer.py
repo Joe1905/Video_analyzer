@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping, Sequence
 
 from json_to_markdown import json_to_markdown
@@ -199,6 +200,9 @@ _NARRATIVE_KEYS = {
     "video_desc", "subtitle", "subtitles", "script", "document", "documents",
 }
 _FIELD_LABELS = {
+    "id": "ID",
+    "code": "编码",
+    "label": "名称",
     "asin": "ASIN",
     "parent_asin": "父ASIN",
     "product_id": "商品ID",
@@ -249,23 +253,66 @@ _FIELD_LABELS = {
     "published_at": "发布时间",
     "matched_query": "命中查询词",
     "traffic_source": "流量类型",
+    "traffic_type": "流量归因类型",
+    "sales_channel": "成交渠道",
+    "content_type": "内容类型",
     "page": "页码",
     "pagesize": "每页数量",
+    "size": "返回条数",
+    "pages": "总页数",
     "top_k": "候选数量",
+    "query": "查询词",
+    "keywords": "查询关键词",
     "keyword": "关键词",
+    "keyword_cn": "关键词中文释义",
+    "keyword_jp": "关键词日文释义",
+    "departments": "关联类目",
     "search_rank": "搜索排名",
+    "search_rank_cv": "搜索排名变化值",
+    "search_rank_cr": "搜索排名变化率",
+    "search_rank_growth_value": "搜索排名增长值",
+    "search_rank_growth_rate": "搜索排名增长率",
+    "w1_search_rank": "前1个统计周期的搜索排名",
+    "w1_rank_growth_value": "相对前1个统计周期的排名变化值",
+    "w1_rank_growth_rate": "相对前1个统计周期的排名变化率",
+    "w4_search_rank": "前4个统计周期的搜索排名",
+    "w4_rank_growth_value": "相对前4个统计周期的排名变化值",
+    "w4_rank_growth_rate": "相对前4个统计周期的排名变化率",
+    "w12_search_rank": "前12个统计周期的搜索排名",
+    "w12_rank_growth_value": "相对前12个统计周期的排名变化值",
+    "w12_rank_growth_rate": "相对前12个统计周期的排名变化率",
     "searches": "搜索量",
     "purchases": "购买量",
     "purchase_rate": "购买率",
+    "clicks": "点击量",
+    "impressions": "曝光量",
+    "click_rate": "点击率",
+    "click_share_rate": "点击量前三 ASIN 的总占比",
+    "cvs_share_rate": "转化量前三 ASIN 的总占比",
     "conversion_rate": "转化率",
     "products": "商品数",
     "ad_products": "广告商品数",
     "supply_demand_ratio": "供需比",
     "monopoly_click_rate": "点击集中度",
     "title_density": "标题密度",
+    "title_density_exact": "首页标题精确包含该词的商品数",
+    "cpr_exact": "8天内使该词上首页所需销量（精确匹配）",
+    "spr": "使该词上首页所需销量（SPR）",
+    "relevancy": "相关度",
+    "word_count": "词数",
     "avg_price": "平均价格",
+    "avg_rating": "平均评分",
+    "avg_ratings": "平均评分数",
     "min_bid": "最低竞价",
     "max_bid": "最高竞价",
+    "bid": "建议竞价",
+    "bid_min": "最低竞价",
+    "bid_max": "最高竞价",
+    "top3_brands": "点击量前三品牌",
+    "top3_asin_dto_list": "点击量前三 ASIN",
+    "amazon_choice": "是否 Amazon Choice",
+    "supplement": "是否为补充关键词（无当前月搜索量）",
+    "trends": "趋势数据",
     "monthly_sales": "月销量",
     "monthly_revenue": "月销售额",
     "bsr": "BSR",
@@ -277,15 +324,204 @@ _FIELD_LABELS = {
     "node_id_path": "类目节点路径",
     "node_name": "类目名称",
     "goods_count": "商品数量",
+    "month": "统计月份",
+    "search_model": "搜索模式",
+    "request": "请求",
+    "filter": "筛选条件",
+    "order": "排序规则",
+    "orderby": "排序规则",
+    "field": "排序字段",
+    "desc": "是否降序",
+    "analysis_type": "分析类型",
+    "data_state": "数据状态",
+    "ok": "调用是否成功",
+    "enough_data": "证据是否充足",
+    "returned_count": "返回记录数",
+    "reported_total": "接口报告总量",
+    "period": "统计周期",
+    "guest_id": "访客ID",
+    "guest_visited": "访客访问次数",
+    "took": "接口耗时",
+    "terminal": "是否到达末页",
+    "has_next_page": "是否还有下一页",
+    "url": "链接",
+    "detail_url": "详情链接",
+    "image_url": "图片链接",
+    "avatar_url": "头像链接",
+    "cover_url": "封面链接",
+    "fastmoss_url": "FastMoss 链接",
+    "fastmoss_detail_url": "FastMoss 详情链接",
+    "tiktok_url": "TikTok 链接",
+    "has_sku_options": "是否有 SKU 选项",
+    "has_paid_promotion": "是否有付费推广",
+    "popularity_index": "热度指数",
+    "viral_index": "爆发指数",
+    "timestamp": "接口响应时间",
+    "request_id": "请求ID",
+    "message": "接口消息",
+    "total": "结果总数",
+    "items": "记录列表",
+    "product": "商品信息",
+    "shop": "店铺信息",
+    "video": "视频信息",
+    "overview": "汇总概览",
+    "avatar": "头像链接",
+    "cover": "封面链接",
+    "create_date": "创建日期",
+    "launch_time": "上架时间",
+    "launch_date": "上架日期",
+    "commission_rate": "佣金比例",
+    "commission_rate_percent": "佣金比例",
+    "product_rating": "商品评分",
+    "sku_count": "SKU 数量",
+    "is_ad": "是否广告视频",
+    "aweme_count": "关联视频数",
+    "favoriting_count": "收藏数",
+    "video_desc": "视频描述",
+    "duration": "视频时长（秒）",
+    "duration_seconds": "视频时长（秒）",
+    "day7_units_sold": "近7日销量",
+    "day7_gmv": "近7日销售额",
+    "day28_units_sold": "近28日销量",
+    "day28_gmv": "近28日销售额",
+    "day90_units_sold": "近90日销量",
+    "day90_gmv": "近90日销售额",
+    "yday_sold_count": "昨日销量",
+    "total_gmv": "总销售额（GMV）",
+    "total_units_sold": "总销量",
+    "avg_daily_gmv": "日均销售额（GMV）",
+    "avg_daily_units_sold": "日均销量",
+    "linked_creator_count": "关联达人数",
+    "linked_live_count": "关联直播数",
+    "linked_video_count": "关联视频数",
+    "daily_new_linked_creator_count": "当日新增关联达人数",
+    "daily_new_linked_live_count": "当日新增关联直播数",
+    "daily_new_linked_video_count": "当日新增关联视频数",
+    "cumulative_linked_creator_count": "累计关联达人数",
+    "cumulative_linked_live_count": "累计关联直播数",
+    "cumulative_linked_video_count": "累计关联视频数",
+    "live_gmv": "直播销售额（GMV）",
+    "live_units_sold": "直播销量",
+    "video_gmv": "视频销售额（GMV）",
+    "video_units_sold": "视频销量",
+    "period_total_gmv": "本周期总销售额（GMV）",
+    "period_total_units_sold": "本周期总销量",
+    "daily_gmv": "当日销售额（GMV）",
+    "daily_units_sold": "当日销量",
+    "cumulative_gmv": "累计销售额（GMV）",
+    "cumulative_units_sold": "累计销量",
+    "average_order_value": "客单价",
+    "ad_performance_summary": "广告表现汇总",
+    "daily_ad_performance_trend": "每日广告表现趋势",
+    "ad_gmv": "广告归因销售额（GMV）",
+    "ad_gmv_share_percent": "广告归因销售额占比",
+    "ad_units_sold": "广告归因销量",
+    "ad_video_count": "广告视频数",
+    "ad_play_count": "广告视频播放量",
+    "estimated_ad_spend": "预估广告花费",
+    "avg_daily_estimated_ad_spend": "日均预估广告花费",
+    "avg_daily_ad_gmv": "日均广告归因销售额（GMV）",
+    "avg_daily_ad_units_sold": "日均广告归因销量",
+    "avg_daily_ad_play_count": "日均广告视频播放量",
+    "product_total_gmv": "商品总销售额（GMV）",
+    "roas": "广告投入产出比（ROAS）",
+    "creator_share_percent": "达人贡献占比",
+    "creator_cumulative_gmv": "达人累计销售额（GMV）",
+    "creator_cumulative_units_sold": "达人累计销量",
+    "creator_total_play_count": "达人视频累计播放量",
+    "creator_total_like_count": "达人视频累计点赞数",
+    "creator_video_count_total": "达人视频总数",
+    "caption_text": "视频文案",
+    "engagement_metrics": "互动指标",
+    "period_summary": "周期汇总",
+    "daily_trend": "每日趋势",
+    "ads_distribution": "广告与非广告归因分布",
+    "channel_distribution": "成交渠道分布",
+    "content_distribution": "内容类型分布",
+    "breakdown": "明细",
+    "ranking_scope": "榜单范围",
+    "ranked_categories": "类目榜单",
+    "scale_metrics": "规模指标",
+    "growth_metrics": "增长指标",
+    "concentration_metrics": "集中度指标",
+    "creator_summary": "达人汇总",
+    "linked_creators": "关联达人",
+    "videos": "视频记录",
+    "list": "记录列表",
 }
-_SEMANTIC_FIELD_RE = re.compile(
-    r"(?:^|_)(?:id|uid|name|title|nickname|region|country|currency|category|keyword|rank|score|"
-    r"date|day|time|period|range|price|gmv|sale|sales|sold|unit|count|total|rate|ratio|share|"
-    r"growth|follower|creator|video|live|ad|play|view|like|digg|comment|engagement|commission|"
-    r"inventory|stock|status|type|brand|shop|product|quantity|amount|roas|spend|cpm|gpm|ipm|"
-    r"rating|duration|listed|launch|text|content|description|desc|summary|snippet|average|window|"
-    r"published|matched|source|shipping|managed|border|shelf|page|pagesize|query|top)(?:_|$)"
-)
+
+_ACRONYM_WORDS = {"asin", "bsr", "cpr", "gmv", "id", "ipm", "ppc", "roas", "sku", "spr", "uid", "url"}
+_FRACTION_PERCENT_FIELDS = {
+    "click_rate", "click_share_rate", "conversion_rate", "cvs_share_rate",
+    "monopoly_click_rate", "purchase_rate", "search_rank_cr", "search_rank_growth_rate",
+    "w1_rank_growth_rate", "w4_rank_growth_rate", "w12_rank_growth_rate",
+}
+_TIMESTAMP_FIELDS = {
+    "published_at", "created_at", "updated_at", "publish_time", "create_time",
+    "launch_time", "timestamp",
+}
+_ENUM_VALUE_LABELS = {
+    "data_state": {
+        "data": "已返回数据",
+        "empty": "调用成功但没有返回记录",
+        "error": "调用失败",
+    },
+    "traffic_type": {
+        "ad_traffic": "广告归因流量",
+        "non_ad_video_traffic": "非广告视频归因流量",
+    },
+    "traffic_source": {
+        "ad_traffic": "广告归因流量",
+        "non_ad_video_traffic": "非广告视频归因流量",
+    },
+    "sales_channel": {
+        "product_card": "商品卡成交",
+        "affiliate": "联盟成交",
+        "video": "视频成交",
+        "live": "直播成交",
+        "shop": "店铺成交",
+        "shop_account": "店铺账号成交",
+    },
+    "content_type": {
+        "product_card": "商品卡",
+        "video": "视频",
+        "live": "直播",
+    },
+    "is_ad": {"0": "否（非广告）", "1": "是（广告）"},
+    "account_type": {"1": "个人达人", "2": "店铺达人"},
+    "ecommerce_type": {"1": "视频带货", "2": "直播带货"},
+    "search_model": {
+        "1": "热门市场", "2": "异动市场", "3": "持续增长市场",
+        "4": "快速飙升市场", "5": "潜力市场", "6": "长尾市场",
+    },
+    "match_type": {"2": "广泛匹配", "3": "词组匹配"},
+    "supplement": {"N": "否", "Y": "是"},
+}
+
+_TOOL_EVIDENCE_BOUNDARIES = {
+    "aba_research_monthly": (
+        "头部3个品牌和头部3个 ASIN 仅代表该关键词返回的头部样本，不能单独证明整个类目的品牌集中度或卖家国别结构。",
+        "关联类目表示关键词可能出现的 Amazon 类目，不等同于该类目的市场规模或竞争强度。",
+    ),
+    "keyword_miner": (
+        "商品数是工具口径下的相关商品数量，不是独立卖家数量。供需比是 SellerSprite 返回的计算指标，不能改写成搜索量除以卖家数。",
+        "点击集中度描述点击向头部结果集中的程度，不等同于品牌集中度；标题密度也不等同于卖家数量。",
+    ),
+    "product_overview": (
+        "广告归因、成交渠道和内容类型是三组并列口径，不能互相替代，也不能据此拼接出“视频种草后由商品卡成交”的因果链。",
+        "广告归因占比为零只表示当前周期没有广告归因流量，不能证明广告花费为零；广告花费应以 product_investment 返回为准。",
+        "商品卡占比不能证明流量由达人视频、直播或推荐系统产生。",
+    ),
+    "product_sales_trend": (
+        "每日销量或 GMV 的同时变化只能描述时间趋势，不能单独证明由达人视频、直播、广告或其他事件导致。",
+    ),
+    "product_creator_analysis": (
+        "关联达人数量和达人贡献描述已返回的关联结构，不能单独证明全部流量来源或达人内容与销量之间的因果关系。",
+    ),
+    "market_category_analysis": (
+        "类目指标只适用于调用参数中的地区、类目和统计周期，不能直接外推为目标商品自身的表现。",
+    ),
+}
 
 
 def unprefixed_tool_name(tool_name: str) -> str:
@@ -304,13 +540,13 @@ def _scalar(value: Any) -> bool:
 
 def _scalar_text(value: Any) -> str:
     if value is None:
-        return "null"
+        return "未返回"
     if value is True:
-        return "true"
+        return "是"
     if value is False:
-        return "false"
+        return "否"
     if isinstance(value, str):
-        return value if value else '""'
+        return value if value else "空字符串"
     return str(value)
 
 
@@ -360,26 +596,67 @@ def business_leaf_paths(value: Any, path: str = "$.business_data") -> set[str]:
     raise TypeError(f"non-JSON business value at {path}: {type(value).__name__}")
 
 
-def _known_field(key: str) -> bool:
-    lowered = _normalized_field_key(key)
-    return lowered in _FIELD_LABELS or bool(_SEMANTIC_FIELD_RE.search(lowered))
-
-
-def _field_label(key: str) -> str:
-    label = _FIELD_LABELS.get(key) or _FIELD_LABELS.get(_normalized_field_key(key))
-    return f"{label}（{key}）" if label else key
-
-
 def _normalized_field_key(key: str) -> str:
     text = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(key))
     return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
 
 
+def _field_label(key: str) -> str:
+    normalized = _normalized_field_key(key)
+    label = _FIELD_LABELS.get(key) or _FIELD_LABELS.get(normalized)
+    if label:
+        return label
+    if not normalized:
+        return str(key)
+    return " ".join(
+        word.upper() if word in _ACRONYM_WORDS else word
+        for word in normalized.split("_")
+    )
+
+
 def _dotted_field_label(key: str) -> str:
-    parts = str(key).split(".")
-    if len(parts) == 1:
-        return _field_label(key)
-    return " · ".join([*parts[:-1], _field_label(parts[-1])])
+    parts = [part for part in str(key).split(".") if part and part != "request"]
+    return " · ".join(_field_label(part) for part in parts) or _field_label(key)
+
+
+def _number_text(value: int | float) -> str:
+    if isinstance(value, float):
+        return f"{value:.8f}".rstrip("0").rstrip(".")
+    return str(value)
+
+
+def _percent_text(value: int | float) -> str:
+    return f"{float(value):.4f}".rstrip("0").rstrip(".")
+
+
+def _semantic_value(field_name: str, value: Any) -> str:
+    normalized = _normalized_field_key(str(field_name).rsplit(".", 1)[-1])
+    if isinstance(value, Mapping):
+        return "；".join(
+            f"{_field_label(str(key))}：{_semantic_value(str(key), item)}"
+            for key, item in value.items()
+        ) or "空对象"
+    if isinstance(value, list):
+        return "；".join(_semantic_value(normalized, item) for item in value) or "空列表"
+    if value is None or isinstance(value, (str, bool)):
+        text = _scalar_text(value)
+        return _ENUM_VALUE_LABELS.get(normalized, {}).get(text, text)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if normalized in _TIMESTAMP_FIELDS and value >= 1_000_000_000:
+            seconds = float(value) / 1000 if value >= 10_000_000_000 else float(value)
+            timestamp = datetime.fromtimestamp(
+                seconds, tz=timezone(timedelta(hours=8))
+            ).isoformat(timespec="seconds")
+            return f"{timestamp}（原始时间戳 {value}）"
+        enum_value = _ENUM_VALUE_LABELS.get(normalized, {}).get(str(value))
+        if enum_value is not None:
+            return enum_value
+        if normalized in _FRACTION_PERCENT_FIELDS:
+            return f"{_percent_text(float(value) * 100)}%"
+        if normalized.endswith("_percent"):
+            return f"{_percent_text(value)}%"
+        return _number_text(value)
+    return _scalar_text(value)
 
 
 def _node_kind_for_list(path: str, rows: list[Any], profile: str) -> str:
@@ -404,10 +681,10 @@ def _entity_identity(value: Mapping[str, Any]) -> str:
     ):
         item = value.get(key)
         if item not in (None, "", 0, "0"):
-            return f"{key}={item}"
+            return f"{_field_label(key)} {item}"
     for key in ("title", "name", "nickname"):
         if value.get(key):
-            return f"{key}={value[key]}"
+            return f"{_field_label(key)} {value[key]}"
     return ""
 
 
@@ -439,6 +716,9 @@ class SemanticToolRenderer:
         error = str(self.entry.get("error") or "").strip()
         lines = [f"## {_heading_text(source_ref)} · `{self.full_tool_name}`"]
         lines.extend(["", *self._scope_lines()])
+        boundary_lines = self._tool_boundary_lines()
+        if boundary_lines:
+            lines.extend(["", *boundary_lines])
 
         if error or data_state == "error":
             self.nodes.append(EvidenceNode("ErrorResult", "调用失败", "$.business_data"))
@@ -466,11 +746,9 @@ class SemanticToolRenderer:
 
         self.unmapped.update(all_paths - self.consumed - self.excluded)
         if self.unmapped:
-            lines.extend(["", "### 未映射业务字段", ""])
-            rows = []
-            for path in sorted(self.unmapped):
-                rows.append((path, self._value_at_path(data, path)))
-            lines.extend(_table(["JSON路径", "原始值"], rows))
+            raise ValueError(
+                f"semantic renderer left {len(self.unmapped)} business fields unmapped for {self.tool_name}"
+            )
 
         conflicts = self.entry.get("scope_conflicts")
         if conflicts:
@@ -499,39 +777,52 @@ class SemanticToolRenderer:
         fence = self.entry.get("evidence_fence") if isinstance(self.entry.get("evidence_fence"), dict) else {}
         rows: list[tuple[str, Any]] = []
         if isinstance(arguments, dict):
-            rows.extend((f"参数 {key}", value) for key, value in self._flatten(arguments))
+            rows.extend(
+                (f"调用参数：{_dotted_field_label(key)}", _semantic_value(key, value))
+                for key, value in self._flatten(arguments)
+            )
         for key, value in fence.items():
             if value not in (None, "", [], {}):
-                rows.append((f"围栏 {key}", value))
+                rows.append((f"证据范围：{_field_label(str(key))}", _semantic_value(str(key), value)))
         if not rows:
             return ["> 本次调用没有额外参数或围栏字段。"]
         return _table(
             ["调用范围", "值"],
-            ((label, self._compact(value)) for label, value in rows),
+            rows,
         )
+
+    def _tool_boundary_lines(self) -> list[str]:
+        notes = _TOOL_EVIDENCE_BOUNDARIES.get(self.tool_name, ())
+        if not notes:
+            return []
+        return ["### 指标口径与限制", "", *(f"- {note}" for note in notes)]
 
     def _flatten(self, value: Mapping[str, Any], prefix: str = "") -> list[tuple[str, Any]]:
         rows: list[tuple[str, Any]] = []
         for key, item in value.items():
             name = f"{prefix}.{key}" if prefix else str(key)
             if isinstance(item, dict):
-                rows.extend(self._flatten(item, name))
+                child_prefix = prefix if not prefix and str(key) == "request" else name
+                rows.extend(self._flatten(item, child_prefix))
             else:
                 rows.append((name, item))
         return rows
 
     @staticmethod
     def _compact(value: Any) -> str:
-        if isinstance(value, (dict, list)):
-            return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-        return _scalar_text(value)
+        return _semantic_value("", value)
 
     def _render_value(self, value: Any, path: str, level: int, title: str) -> list[str]:
         if _scalar(value):
             kind = "NarrativeBlock" if isinstance(value, str) else "MetricGroup"
             self.nodes.append(EvidenceNode(kind, title, path))
             self.consumed.add(path)
-            return [f"{'#' * min(level, 6)} {_heading_text(title)}", "", _scalar_text(value)]
+            field_name = path.rsplit(".", 1)[-1]
+            return [
+                f"{'#' * min(level, 6)} {_heading_text(title)}",
+                "",
+                _semantic_value(field_name, value),
+            ]
         if isinstance(value, list):
             if not value:
                 return [f"{'#' * min(level, 6)} {_heading_text(title)}", "", "该字段返回空列表。"]
@@ -556,14 +847,13 @@ class SemanticToolRenderer:
             heading = f"{title} · {identity}"
         lines = [f"{'#' * min(level, 6)} {_heading_text(heading)}"]
 
-        scalar_rows: list[tuple[str, Any, str]] = []
+        scalar_rows: list[tuple[str, Any]] = []
         nested: list[tuple[str, Any, str]] = []
         for key, item in value.items():
             child_path = _path(path, str(key))
             if _scalar(item):
-                if _known_field(str(key)):
-                    scalar_rows.append((_field_label(str(key)), item, str(key)))
-                    self.consumed.add(child_path)
+                scalar_rows.append((_field_label(str(key)), _semantic_value(str(key), item)))
+                self.consumed.add(child_path)
             elif isinstance(item, dict) and str(key).lower() not in _ENTITY_CONTAINER_KEYS:
                 flattened, child_nested = self._flatten_dict_fields(
                     item, child_path, str(key)
@@ -573,10 +863,12 @@ class SemanticToolRenderer:
             else:
                 nested.append((str(key), item, child_path))
         if scalar_rows:
-            lines.extend(["", *_table(["指标", "值", "原字段"], scalar_rows)])
+            lines.extend(["", *_table(["指标", "值"], scalar_rows)])
 
         for key, item, child_path in nested:
-            child_lines = self._render_value(item, child_path, level + 1, key)
+            child_lines = self._render_value(
+                item, child_path, level + 1, _dotted_field_label(key)
+            )
             if child_lines:
                 lines.extend(["", *child_lines])
         return lines
@@ -591,13 +883,12 @@ class SemanticToolRenderer:
         ]
         if all(_scalar(item) for item in value):
             parent_key = path.rsplit(".", 1)[-1]
-            if _known_field(parent_key):
-                rows = []
-                for index, item in enumerate(value):
-                    item_path = f"{path}[{index}]"
-                    self.consumed.add(item_path)
-                    rows.append((index + 1, item))
-                lines.extend(["", *_table(["序号", _field_label(parent_key)], rows)])
+            rows = []
+            for index, item in enumerate(value):
+                item_path = f"{path}[{index}]"
+                self.consumed.add(item_path)
+                rows.append((index + 1, _semantic_value(parent_key, item)))
+            lines.extend(["", *_table(["序号", _field_label(parent_key)], rows)])
             return lines
 
         if all(isinstance(item, dict) for item in value):
@@ -638,14 +929,19 @@ class SemanticToolRenderer:
                             continue
                         value_item, child_path = flattened_record[key]
                         self.consumed.add(child_path)
-                        supplemental.append((index + 1, _dotted_field_label(key), value_item, key))
+                        supplemental.append((index + 1, _dotted_field_label(key), value_item))
                 if supplemental:
                     lines.extend(["", "补充指标：", "", *_table(
-                        ["记录", "指标", "值", "原字段"], supplemental
+                        ["记录", "指标", "值"], supplemental
                     )])
             for index, record_nested in enumerate(nested_by_record):
                 for key, item, child_path in record_nested:
-                    nested = self._render_value(item, child_path, level + 1, f"记录 {index + 1} · {key}")
+                    nested = self._render_value(
+                        item,
+                        child_path,
+                        level + 1,
+                        f"记录 {index + 1} · {_dotted_field_label(key)}",
+                    )
                     if nested:
                         lines.extend(["", *nested])
             return lines
@@ -661,17 +957,16 @@ class SemanticToolRenderer:
         value: dict[str, Any],
         path: str,
         prefix: str,
-    ) -> tuple[list[tuple[str, Any, str]], list[tuple[str, Any, str]]]:
-        rows: list[tuple[str, Any, str]] = []
+    ) -> tuple[list[tuple[str, Any]], list[tuple[str, Any, str]]]:
+        rows: list[tuple[str, Any]] = []
         nested: list[tuple[str, Any, str]] = []
         for key, item in value.items():
             key = str(key)
             child_path = _path(path, key)
             field_name = f"{prefix}.{key}" if prefix else key
             if _scalar(item):
-                if _known_field(key):
-                    rows.append((_dotted_field_label(field_name), item, field_name))
-                    self.consumed.add(child_path)
+                rows.append((_dotted_field_label(field_name), _semantic_value(key, item)))
+                self.consumed.add(child_path)
             elif isinstance(item, dict) and key.lower() not in _ENTITY_CONTAINER_KEYS:
                 child_rows, child_nested = self._flatten_dict_fields(
                     item, child_path, field_name
@@ -695,8 +990,7 @@ class SemanticToolRenderer:
             child_path = _path(path, key)
             field_name = f"{prefix}.{key}" if prefix else key
             if _scalar(item):
-                if _known_field(key):
-                    fields[field_name] = (item, child_path)
+                fields[field_name] = (_semantic_value(key, item), child_path)
             elif isinstance(item, dict):
                 child_fields, child_nested = self._flatten_record(
                     item, child_path, field_name
@@ -746,7 +1040,7 @@ def render_fastmoss_tool_evidence(entry: Mapping[str, Any]) -> RenderedToolEvide
         markdown = json_to_markdown(
             dict(entry),
             title=f"{entry.get('source_ref') or 'call:?'} · {entry.get('tool_name') or tool_name}",
-            include_paths=True,
+            include_paths=False,
         ).rstrip()
         return RenderedToolEvidence(
             markdown=markdown,
