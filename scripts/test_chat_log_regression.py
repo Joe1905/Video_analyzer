@@ -166,7 +166,7 @@ def judge_material_deviation(
     match = re.search(r"\{.*\}", str(content or ""), re.DOTALL)
     if not match:
         raise ValueError("usability judge did not return a JSON object")
-    return json.loads(match.group(0))
+    return json.loads(match.group(0), strict=False)
 
 
 def main() -> int:
