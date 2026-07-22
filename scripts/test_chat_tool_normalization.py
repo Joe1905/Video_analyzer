@@ -805,7 +805,7 @@ def test_deepseek_tool_turn_preserves_reasoning_content() -> None:
     assert turn["reasoning_content"] == "internal reasoning"
 
 
-def test_dynamic_chat_context_compresses_to_budget() -> None:
+def test_dynamic_chat_context_never_truncates_current_evidence() -> None:
     messages = [{"role": "system", "content": "system rules", "_context_scope": "system"}]
     messages.extend(
         {
@@ -841,14 +841,110 @@ def test_dynamic_chat_context_compresses_to_budget() -> None:
 
     request_messages, request_tools, stats = manage_chat_context(messages, tools, max_tokens=3000)
     assert stats["initial_tokens"] > stats["max_tokens"]
-    assert stats["final_tokens"] <= stats["max_tokens"]
+    assert stats["final_tokens"] > stats["max_tokens"]
     assert stats["compressed"] is True
     assert stats["dropped_history"] > 0
-    assert stats["current_evidence_compressed"] == 1
-    assert stats["current_evidence_chars_after"] < stats["current_evidence_chars_before"]
-    assert estimate_chat_context_tokens(request_messages, request_tools) <= 3000
+    assert stats["current_evidence_compressed"] == 0
+    assert stats["current_evidence_chars_after"] == stats["current_evidence_chars_before"]
+    assert stats["tools_removed"] is True
+    assert stats["over_budget"] is True
+    assert request_tools == []
+    assert "evidence-" + ("y" * 20000) in json.dumps(request_messages, ensure_ascii=False)
     assert any(message.get("role") == "tool" for message in request_messages)
     assert all(not any(key.startswith("_context_") for key in message) for message in request_messages)
+
+
+def test_flash_checkpoint_replaces_only_old_planner_evidence() -> None:
+    messages = [{"role": "system", "content": "rules", "_context_scope": "system"}]
+    for index in range(4):
+        messages.append({
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": f"call_{index}",
+                "type": "function",
+                "function": {"name": "sellersprite__keyword_research", "arguments": "{}"},
+            }],
+            "_context_scope": "current",
+        })
+        messages.append({
+            "role": "tool",
+            "tool_call_id": f"call_{index}",
+            "content": f"marker-{index}-" + ("x" * 6000),
+            "_context_scope": "current",
+        })
+    assistant = SimpleNamespace(
+        tool_calls=[{"id": f"call_{index}"} for index in range(4)],
+        tool_results=[{"tool_name": "sellersprite__keyword_research", "result": {"marker": index}} for index in range(4)],
+    )
+    raw_snapshot = json.dumps([assistant.tool_calls, assistant.tool_results], ensure_ascii=False, sort_keys=True)
+
+    class Response:
+        def __init__(self, body: dict) -> None:
+            self.body = body
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return self.body
+
+    class Requests:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def post(self, _url: str, **kwargs):
+            self.calls += 1
+            payload = json.loads(kwargs["data"].decode("utf-8"))
+            request = json.loads(payload["messages"][1]["content"])
+            source_ref = request["sources"][0]["source_ref"]
+            checkpoint = {
+                "covered_tool_call_ids": request["required_covered_tool_call_ids"],
+                "entities": [],
+                "facts": [{"claim": "保留旧证据", "source_refs": [source_ref]}],
+                "conflicts": [], "empty_or_failed": [], "limitations": [],
+                "unresolved_questions": [], "recommended_next_capabilities": [],
+            }
+            return Response({"choices": [{"message": {"content": json.dumps(checkpoint, ensure_ascii=False)}}]})
+
+    old_max = os.environ.get("CHAT_CONTEXT_MAX_TOKENS")
+    old_trigger = os.environ.get("CHAT_CONTEXT_COMPACT_TRIGGER_PERCENT")
+    original_record = web_app.record_api_call
+    requests = Requests()
+    try:
+        os.environ["CHAT_CONTEXT_MAX_TOKENS"] = "8000"
+        os.environ["CHAT_CONTEXT_COMPACT_TRIGGER_PERCENT"] = "50"
+        web_app.record_api_call = lambda *_args, **_kwargs: None
+        stats = web_app.maybe_checkpoint_chat_evidence(
+            messages, [], "分析机会", {"research_task": {"scope": "cross_category"}},
+            requests, "key", "https://example.invalid/v1", "deepseek-v4-flash",
+        )
+        assert stats["status"] == "created"
+        assert stats["covered_call_count"] == 2
+        assert requests.calls == 1
+        assert [message.get("tool_call_id") for message in messages if message.get("role") == "tool"] == ["call_2", "call_3"]
+        checkpoints = [message for message in messages if message.get("_context_key") == "evidence_checkpoint"]
+        assert len(checkpoints) == 1
+        assert "call_0" in checkpoints[0]["content"] and "call_1" in checkpoints[0]["content"]
+        assert "marker-2" in json.dumps(messages, ensure_ascii=False)
+        assert "marker-3" in json.dumps(messages, ensure_ascii=False)
+        second = web_app.maybe_checkpoint_chat_evidence(
+            messages, [], "分析机会", {"research_task": {"scope": "cross_category"}},
+            requests, "key", "https://example.invalid/v1", "deepseek-v4-flash",
+        )
+        assert second["status"] == "insufficient_old_evidence"
+        assert requests.calls == 1
+        assert json.dumps([assistant.tool_calls, assistant.tool_results], ensure_ascii=False, sort_keys=True) == raw_snapshot
+    finally:
+        web_app.record_api_call = original_record
+        if old_max is None:
+            os.environ.pop("CHAT_CONTEXT_MAX_TOKENS", None)
+        else:
+            os.environ["CHAT_CONTEXT_MAX_TOKENS"] = old_max
+        if old_trigger is None:
+            os.environ.pop("CHAT_CONTEXT_COMPACT_TRIGGER_PERCENT", None)
+        else:
+            os.environ["CHAT_CONTEXT_COMPACT_TRIGGER_PERCENT"] = old_trigger
 
 
 def test_tool_limit_final_context_removes_protocol_and_detects_dsml() -> None:
@@ -1903,11 +1999,12 @@ def test_dynamic_provider_planner_does_not_cap_repeated_calls() -> None:
     assert normalized["query"] == queries
 
 
-def test_llm_orchestration_exposes_full_provider_tools_and_keeps_hard_guards() -> None:
+def test_llm_orchestration_uses_rolling_tool_window_and_keeps_hard_guards() -> None:
     route = {
         "intent": "fastmoss_product",
         "task_depth": "workflow",
         "route_source": "llm",
+        "confidence": 0.92,
         "dynamic_planner": True,
         "playbook": "product",
         "research_task": {
@@ -1928,7 +2025,12 @@ def test_llm_orchestration_exposes_full_provider_tools_and_keeps_hard_guards() -
         "fastmoss__product_detail_info",
     }
     empty = SimpleNamespace(tool_calls=[], tool_results=[])
-    assert web_app.provider_profile_tool_ids("fastmoss", route, "本月爆卖产品", enabled, empty) == enabled
+    assert web_app.provider_profile_tool_ids("fastmoss", route, "本月爆卖产品", enabled, empty) == {
+        "system__current_time",
+        "fastmoss__market_category_ranking",
+        "fastmoss__search_category_by_words",
+        "fastmoss__product_rank_new_listed",
+    }
     instruction = web_app.research_planner_instruction("fastmoss", route, "本月爆卖产品", empty)
     assert "程序不会规定首个工具" in instruction
     assert "能力图仅供参考，不是工具门禁" in instruction
@@ -1964,6 +2066,7 @@ def test_llm_orchestration_exposes_full_provider_tools_and_keeps_hard_guards() -
         "intent": "product_research",
         "task_depth": "workflow",
         "route_source": "llm",
+        "confidence": 0.91,
         "dynamic_planner": True,
         "research_task": {
             "objective": "opportunity_discovery",
@@ -1984,7 +2087,23 @@ def test_llm_orchestration_exposes_full_provider_tools_and_keeps_hard_guards() -
     }
     assert web_app.provider_profile_tool_ids(
         "amazon", amazon_route, "寻找亚马逊新品机会", amazon_enabled, empty
+    ) == {
+        "system__current_time",
+        "sellersprite__keyword_research",
+        "sellersprite__market_research",
+        "sellersprite__product_research",
+    }
+    assert web_app.provider_profile_tool_ids(
+        "amazon", dict(amazon_route, confidence=0.72),
+        "寻找亚马逊新品机会", amazon_enabled, empty
     ) == amazon_enabled
+    asin_evidence = SimpleNamespace(tool_calls=[], tool_results=[{
+        "tool_name": "sellersprite__product_research",
+        "result": {"ok": True, "mcp_data": {"items": [{"asin": "B0ABCDEF12"}]}},
+    }])
+    assert "sellersprite__asin_detail" in web_app.provider_profile_tool_ids(
+        "amazon", amazon_route, "寻找亚马逊新品机会", amazon_enabled, asin_evidence
+    )
     assert web_app.analysis_minimum_evidence_gaps("amazon", empty, amazon_route) == ["provider_tool_attempt"]
     assert "未经用户输入或当前 SellerSprite 证据" in web_app.sellersprite_deep_dive_call_error(
         "sellersprite__asin_detail", {"asin": "B0ABCDEF12"}, "寻找亚马逊新品机会", empty
@@ -3913,6 +4032,7 @@ def test_planner_message_is_upserted_instead_of_accumulated() -> None:
     route = {
         "dynamic_planner": True,
         "route_source": "llm",
+        "confidence": 0.92,
         "task_depth": "workflow",
         "research_task": {
             "objective": "trend_discovery",
@@ -3999,6 +4119,54 @@ def test_semantic_report_bypasses_redundant_accumulated_context_draft() -> None:
     ) is False
 
 
+def test_semantic_report_watermarks_and_overflow_never_use_checkpoint() -> None:
+    route = {"task_depth": "analysis", "intent": "product_research"}
+    seller = web_app.Message(
+        "seller-capacity", "assistant", "", tool_results=[{
+            "tool_name": "sellersprite__keyword_research",
+            "result": {"ok": True, "mcp_data": {"items": [{"keyword": "fan"}]}},
+        }],
+    )
+    messages = [{
+        "role": "system", "content": "CHECKPOINT-MUST-NOT-ENTER-REPORT",
+        "_context_scope": "current_evidence", "_context_key": "evidence_checkpoint",
+    }]
+    original_stats = web_app.semantic_report_input_stats
+    try:
+        web_app.semantic_report_input_stats = lambda *_args, **_kwargs: {
+            "estimated_tokens": 750000, "tool_count": 5, "level": "soft",
+        }
+        soft = web_app.apply_semantic_report_watermark(messages, "amazon", seller, "研究 fan", route)
+        assert soft["level"] == "soft"
+        assert any("只补充尚未覆盖" in str(message.get("content")) for message in messages)
+
+        web_app.semantic_report_input_stats = lambda *_args, **_kwargs: {
+            "estimated_tokens": 850000, "tool_count": 6, "level": "hard",
+        }
+        hard = web_app.apply_semantic_report_watermark(messages, "amazon", seller, "研究 fan", route)
+        assert hard["level"] == "hard"
+        assert any("不得继续调用工具" in str(message.get("content")) for message in messages)
+    finally:
+        web_app.semantic_report_input_stats = original_stats
+
+    class NoRequests:
+        def post(self, _url: str, **_kwargs):
+            raise AssertionError("overflow report must not call V4 Pro")
+
+    original_estimator = web_app.estimate_chat_context_tokens
+    try:
+        web_app.estimate_chat_context_tokens = lambda *_args, **_kwargs: 950001
+        report = web_app.synthesize_sellersprite_report_from_packet(
+            seller, "研究 fan", route, NoRequests(), "key",
+            "https://example.invalid/v1", "deepseek-v4-pro-test",
+        )
+    finally:
+        web_app.estimate_chat_context_tokens = original_estimator
+    assert "报告容量错误" in report
+    assert "不会静默截断、分块或改用编排检查点" in report
+    assert "CHECKPOINT-MUST-NOT-ENTER-REPORT" not in report
+
+
 def test_semantic_evidence_budget_preserves_repeated_values() -> None:
     repeated = {
         "asin": "B012345678",
@@ -4069,7 +4237,8 @@ if __name__ == "__main__":
     test_fastmoss_zero_analysis_metadata_is_empty_without_affecting_sellersprite()
     test_mcp_sql_error_text_is_not_evidence()
     test_deepseek_tool_turn_preserves_reasoning_content()
-    test_dynamic_chat_context_compresses_to_budget()
+    test_dynamic_chat_context_never_truncates_current_evidence()
+    test_flash_checkpoint_replaces_only_old_planner_evidence()
     test_tool_limit_final_context_removes_protocol_and_detects_dsml()
     test_tool_limit_keeps_large_current_collection_when_capacity_allows()
     test_sellersprite_schema_argument_normalization()
@@ -4091,7 +4260,7 @@ if __name__ == "__main__":
     test_sellersprite_semantic_report_and_pro_synthesis()
     test_dynamic_provider_capability_graph_uses_task_scope_and_evidence()
     test_dynamic_provider_planner_does_not_cap_repeated_calls()
-    test_llm_orchestration_exposes_full_provider_tools_and_keeps_hard_guards()
+    test_llm_orchestration_uses_rolling_tool_window_and_keeps_hard_guards()
     test_region_default_only_applies_when_schema_supports_it()
     test_fastmoss_deep_dive_ids_must_come_from_current_task()
     test_tool_call_signature_deduplicates_argument_order()
@@ -4118,6 +4287,7 @@ if __name__ == "__main__":
     test_planner_message_is_upserted_instead_of_accumulated()
     test_model_tool_schema_compaction_preserves_call_contract()
     test_semantic_report_bypasses_redundant_accumulated_context_draft()
+    test_semantic_report_watermarks_and_overflow_never_use_checkpoint()
     test_semantic_evidence_budget_preserves_repeated_values()
     test_fastmoss_claim_ids_and_extended_mechanical_cleanup()
     test_analytical_routes_use_report_model_and_fastmoss_preserves_pro_draft()

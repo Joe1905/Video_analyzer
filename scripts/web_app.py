@@ -128,6 +128,8 @@ from commerce_research_planner import (
     eligible_provider_tool_names,
     provider_tool_capability,
     research_task_from,
+    rolling_provider_capabilities,
+    rolling_provider_tool_names,
     validate_research_task_hint,
 )
 from json_to_markdown import json_to_markdown
@@ -5385,18 +5387,34 @@ def provider_profile_tool_ids(
         if provider == "amazon":
             log_sellersprite_semantic_diagnostics_once()
         state = research_planner_state(provider, route, user_text, assistant_msg)
-        eligible = eligible_provider_tool_names(provider, route.get("research_task") or {}, state)
-        domain = "sellersprite" if provider == "amazon" else "fastmoss"
         task = route.get("research_task") if isinstance(route.get("research_task"), dict) else {}
+        eligible = eligible_provider_tool_names(provider, task, state)
+        confidence = float(route.get("confidence") or 0.0)
+        use_rolling_window = (
+            llm_orchestrated_route(route)
+            and str(route.get("route_source") or "") == "llm"
+            and confidence >= 0.8
+        )
+        rolling_capabilities = rolling_provider_capabilities(provider, task, state) if use_rolling_window else set()
+        rolling_tools = rolling_provider_tool_names(provider, task, state) if use_rolling_window else set()
+        domain = "sellersprite" if provider == "amazon" else "fastmoss"
+        mode = "llm_window" if rolling_tools else ("llm_full" if llm_orchestrated_route(route) else "legacy_staged")
         print(
             f"[CHAT PLANNER] provider={provider} objective={task.get('objective')} scope={task.get('scope')} "
             f"entity_type={task.get('entity_type')} attempted={','.join(state.get('attempted_capabilities') or []) or '-'} "
             f"observed={','.join(state.get('observed_capabilities') or []) or '-'} "
-            f"advisory_tools={len(eligible)} mode={'llm_full' if llm_orchestrated_route(route) else 'legacy_staged'}",
+            f"advisory_tools={len(eligible)} window_capabilities={','.join(sorted(rolling_capabilities)) or '-'} "
+            f"window_tools={len(rolling_tools)} confidence={confidence:.2f} mode={mode}",
             flush=True,
         )
         if llm_orchestrated_route(route):
-            return selected
+            if not rolling_tools:
+                return selected
+            return {
+                tool_id for tool_id in selected
+                if split_prefixed_tool_id(tool_id)[0] != domain
+                or split_prefixed_tool_id(tool_id)[1] in rolling_tools
+            }
         return {
             tool_id for tool_id in selected
             if split_prefixed_tool_id(tool_id)[0] != domain
@@ -5836,10 +5854,10 @@ def compact_model_tool_schema(value: Any) -> Any:
         return value
     compacted: dict[str, Any] = {}
     for key, item in value.items():
-        if key in {"$schema", "example", "examples", "title"}:
+        if key in {"$schema", "$comment", "example", "examples", "title", "deprecated", "readOnly", "writeOnly"}:
             continue
         if key == "description":
-            compacted[key] = _compact_model_tool_text(item, 200)
+            compacted[key] = _compact_model_tool_text(item, 160)
         else:
             compacted[key] = compact_model_tool_schema(item)
     return compacted
@@ -5849,13 +5867,29 @@ def to_model_tool(tool: dict[str, Any], tool_id: str, description: str | None = 
     parameters = tool.get("parameters") or tool.get("inputSchema") or {
         "type": "object", "properties": {}, "additionalProperties": True,
     }
+
+
+def log_model_tool_window(
+    provider: str,
+    full_tools: list[dict[str, Any]],
+    visible_tools: list[dict[str, Any]],
+) -> None:
+    full_tokens = estimate_chat_context_tokens([], full_tools)
+    visible_tokens = estimate_chat_context_tokens([], visible_tools)
+    schema_budget = _chat_int_setting("CHAT_CONTEXT_MAX_TOKENS", 500000, 8000, 1000000) * 16 // 100
+    print(
+        f"[CHAT SCHEMA] provider={provider} tools={len(full_tools)}->{len(visible_tools)} "
+        f"estimated_tokens={full_tokens}->{visible_tokens} budget={schema_budget} "
+        f"over_budget={str(visible_tokens > schema_budget).lower()}",
+        flush=True,
+    )
     return {
         "type": "function",
         "function": {
             "name": tool_id,
             "description": _compact_model_tool_text(
                 description or tool.get("description") or tool.get("name") or tool_id,
-                360,
+                240,
             ),
             "parameters": compact_model_tool_schema(parameters),
         },
@@ -8686,6 +8720,115 @@ def sellersprite_render_report_evidence(
     }
 
 
+def semantic_report_input_stats(
+    provider: str,
+    assistant_msg: Message,
+    user_text: str,
+    route: dict[str, Any],
+) -> dict[str, Any]:
+    """Estimate the independent final report call from complete raw evidence."""
+    provider = normalize_chat_provider(provider)
+    if provider == "amazon":
+        dossier = sellersprite_report_evidence_dossier(assistant_msg, route)
+        evidence_markdown, render_stats = prepare_semantic_report_evidence(
+            dossier, sellersprite_render_report_evidence
+        )
+        system_messages = [{
+            "role": "system",
+            "content": chat_system_instruction(
+                "amazon", datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
+            ),
+        }]
+    elif provider == "fastmoss":
+        manifest = fastmoss_evidence_manifest(assistant_msg, user_text, route)
+        dossier = fastmoss_report_evidence_dossier(assistant_msg, manifest, route)
+        evidence_markdown, render_stats = prepare_semantic_report_evidence(
+            dossier, fastmoss_render_report_evidence
+        )
+        current_date = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
+        system_messages = [
+            {"role": "system", "content": chat_system_instruction("fastmoss", current_date)},
+            {"role": "system", "content": fastmoss_report_prompt_instruction(route)},
+        ]
+    else:
+        return {"estimated_tokens": 0, "tool_count": 0, "level": "normal"}
+    semantic_input = (
+        chat_routing_text(user_text)
+        + "\n\n当前为报告生成阶段，没有可调用工具；请直接根据以下 Semantic 结构证据完成最终报告。"
+        + "\n\n--- Semantic 证据开始 ---\n"
+        + evidence_markdown
+        + "--- Semantic 证据结束 ---"
+    )
+    estimated_tokens = estimate_chat_context_tokens(
+        system_messages + [{"role": "user", "content": semantic_input}], []
+    )
+    level = (
+        "overflow" if estimated_tokens > 950000
+        else "hard" if estimated_tokens >= 850000
+        else "soft" if estimated_tokens >= 750000
+        else "normal"
+    )
+    return {
+        "estimated_tokens": estimated_tokens,
+        "tool_count": len(dossier.get("tool_evidence") or []),
+        "level": level,
+        "render_stats": render_stats,
+    }
+
+
+def apply_semantic_report_watermark(
+    messages: list[dict[str, Any]],
+    provider: str,
+    assistant_msg: Message,
+    user_text: str,
+    route: dict[str, Any],
+) -> dict[str, Any]:
+    context_key = "semantic_report_capacity"
+    messages[:] = [message for message in messages if message.get("_context_key") != context_key]
+    if (
+        provider not in {"amazon", "fastmoss"}
+        or not chat_route_uses_report_model(provider, route)
+        or not (assistant_msg.tool_results or [])
+    ):
+        return {"estimated_tokens": 0, "tool_count": 0, "level": "normal"}
+    stats = semantic_report_input_stats(provider, assistant_msg, user_text, route)
+    if stats["level"] == "soft":
+        messages.append({
+            "role": "system",
+            "content": (
+                "最终单次报告的原始 Semantic 证据已达到容量提醒水位。"
+                "只补充尚未覆盖且会实质改变结论的关键证据；停止宽泛扩展，证据足够时立即收口。"
+            ),
+            "_context_scope": "system",
+            "_context_key": context_key,
+        })
+    elif stats["level"] in {"hard", "overflow"}:
+        messages.append({
+            "role": "system",
+            "content": (
+                "最终单次报告的原始 Semantic 证据已达到工具停止水位。"
+                "不得继续调用工具，直接进入独立 V4 Pro 报告阶段。"
+            ),
+            "_context_scope": "system",
+            "_context_key": context_key,
+        })
+    print(
+        f"[CHAT REPORT CAPACITY] provider={provider} level={stats['level']} "
+        f"tokens={stats['estimated_tokens']} calls={stats['tool_count']}",
+        flush=True,
+    )
+    return stats
+
+
+def semantic_report_capacity_error(provider: str, estimated_tokens: int) -> str:
+    label = "SellerSprite" if normalize_chat_provider(provider) == "amazon" else "FastMoss"
+    return (
+        f"报告容量错误：{label} 原始 Semantic 证据预计为 {estimated_tokens:,} tokens，"
+        "已超过单次 V4 Pro 报告的 950,000 tokens 安全上限。"
+        "系统已完整保留本轮原始工具结果，但不会静默截断、分块或改用编排检查点生成一份证据不完整的报告。"
+    )
+
+
 SELLERSPRITE_REPORT_NOTICE = (
     "## 注意事项\n\n"
     "本报告基于 SellerSprite 接口在当前 Amazon 站点、查询条件和数据周期内返回的数据，并由大模型整理分析。"
@@ -8758,6 +8901,13 @@ def synthesize_sellersprite_report_from_packet(
         {"role": "system", "content": chat_system_instruction("amazon", current_date_shanghai)},
         {"role": "user", "content": semantic_input},
     ]
+    final_input_tokens = estimate_chat_context_tokens(messages, [])
+    if final_input_tokens > 950000:
+        report = append_sellersprite_report_notice(
+            semantic_report_capacity_error("amazon", final_input_tokens), route
+        )
+        log_sellersprite_report_pipeline(report, dossier, evidence_render_stats, "capacity_error")
+        return report
     payload = {
         "model": model,
         "messages": messages,
@@ -10654,6 +10804,11 @@ def synthesize_fastmoss_report_from_packet(
         {"role": "system", "content": fastmoss_report_prompt_instruction(route)},
         {"role": "user", "content": semantic_input},
     ]
+    final_input_tokens = estimate_chat_context_tokens(messages, [])
+    if final_input_tokens > 950000:
+        return append_fastmoss_report_notice(
+            semantic_report_capacity_error("fastmoss", final_input_tokens), route
+        )
     payload = {
         "model": model,
         "messages": messages,
@@ -11129,41 +11284,237 @@ def estimate_chat_context_tokens(messages: list[dict[str, Any]], tools: list[dic
     return (byte_count + 2) // 3
 
 
-def _compress_current_evidence_to_budget(
+def chat_context_component_stats(
+    messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None,
+) -> dict[str, int]:
+    def tokens_for(items: list[dict[str, Any]]) -> int:
+        return estimate_chat_context_tokens(items, []) if items else 0
+
+    checkpoint = [message for message in messages if message.get("_context_key") == "evidence_checkpoint"]
+    current_evidence = [
+        message for message in messages
+        if _is_current_tool_evidence_message(message)
+        and message.get("_context_key") != "evidence_checkpoint"
+    ]
+    return {
+        "total": estimate_chat_context_tokens(messages, tools),
+        "system": tokens_for([
+            message for message in messages
+            if message.get("_context_scope") == "system"
+            and message.get("_context_key") != "evidence_checkpoint"
+        ]),
+        "history": tokens_for([message for message in messages if message.get("_context_scope") == "history"]),
+        "schema": estimate_chat_context_tokens([], tools),
+        "checkpoint": tokens_for(checkpoint),
+        "uncompressed_evidence": tokens_for(current_evidence),
+    }
+
+
+def _checkpoint_covered_ids(message: dict[str, Any] | None) -> set[str]:
+    return {
+        str(value) for value in ((message or {}).get("_context_checkpoint_covered_ids") or [])
+        if str(value)
+    }
+
+
+def _validate_evidence_checkpoint(
+    checkpoint: Any,
+    expected_call_ids: set[str],
+    allowed_source_refs: set[str],
+    source_text: str,
+) -> str | None:
+    if not isinstance(checkpoint, dict):
+        return "checkpoint is not an object"
+    covered = {str(value) for value in (checkpoint.get("covered_tool_call_ids") or [])}
+    if covered != expected_call_ids:
+        return "covered_tool_call_ids mismatch"
+    facts = checkpoint.get("facts") or []
+    if not isinstance(facts, list):
+        return "facts is not an array"
+    source_folded = source_text.casefold()
+    for fact in facts:
+        if not isinstance(fact, dict):
+            return "fact is not an object"
+        refs = {str(value) for value in (fact.get("source_refs") or [])}
+        if not refs or not refs.issubset(allowed_source_refs):
+            return "fact source_refs are missing or invalid"
+        fact_text = json.dumps(
+            {key: value for key, value in fact.items() if key != "source_refs"},
+            ensure_ascii=False, separators=(",", ":"),
+        )
+        for identifier in re.findall(r"\b(?:B0[A-Z0-9]{8}|\d{9,20})\b", fact_text, re.IGNORECASE):
+            if identifier.casefold() not in source_folded:
+                return f"fact introduced identifier {identifier}"
+        for number in re.findall(r"(?<![A-Za-z0-9])[-+]?\d+(?:\.\d+)?%?", fact_text):
+            if number not in source_text:
+                return f"fact introduced number {number}"
+    return None
+
+
+def maybe_checkpoint_chat_evidence(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]],
-    token_limit: int,
-) -> tuple[int, int, int, int]:
-    indexes = [index for index, message in enumerate(messages) if _is_current_tool_evidence_message(message)]
-    before_chars = sum(len(str(messages[index].get("content") or "")) for index in indexes)
-    if not indexes or estimate_chat_context_tokens(messages, tools) <= token_limit:
-        return 0, before_chars, before_chars, 0
+    user_text: str,
+    route: dict[str, Any],
+    requests_module: Any,
+    api_key: str,
+    api_url: str,
+    model: str,
+) -> dict[str, Any]:
+    token_limit = _chat_int_setting("CHAT_CONTEXT_MAX_TOKENS", 500000, 8000, 1000000)
+    trigger_percent = _chat_int_setting("CHAT_CONTEXT_COMPACT_TRIGGER_PERCENT", 75, 50, 95)
+    trigger_tokens = token_limit * trigger_percent // 100
+    target_tokens = token_limit // 2
+    before_tokens = estimate_chat_context_tokens(messages, tools)
+    stats: dict[str, Any] = {
+        "status": "not_needed", "before_tokens": before_tokens,
+        "trigger_tokens": trigger_tokens, "target_tokens": target_tokens,
+    }
+    if before_tokens < trigger_tokens:
+        return stats
 
-    minimum = 1200
-    changed_indexes: set[int] = set()
-    smallest_limit = 0
-    for _ in range(8):
-        current_tokens = estimate_chat_context_tokens(messages, tools)
-        if current_tokens <= token_limit:
-            break
-        ratio = max(0.10, min(0.95, (token_limit / max(1, current_tokens)) * 0.97))
-        changed = False
-        for index in indexes:
-            content = str(messages[index].get("content") or "")
-            if len(content) <= minimum:
-                continue
-            target = max(minimum, int(len(content) * ratio))
-            if target >= len(content):
-                continue
-            messages[index]["content"] = _truncate_chat_context_text(content, target)
-            changed_indexes.add(index)
-            smallest_limit = target if not smallest_limit else min(smallest_limit, target)
-            changed = True
-        if not changed:
-            break
+    tool_messages = [
+        (index, message) for index, message in enumerate(messages)
+        if message.get("role") == "tool" and message.get("tool_call_id")
+        and message.get("_context_scope") == "current"
+    ]
+    if len(tool_messages) <= 2:
+        stats["status"] = "insufficient_old_evidence"
+        return stats
+    old_tool_messages = tool_messages[:-2]
+    old_call_ids = {str(message.get("tool_call_id")) for _, message in old_tool_messages}
+    previous_checkpoint = next(
+        (message for message in messages if message.get("_context_key") == "evidence_checkpoint"),
+        None,
+    )
+    expected_call_ids = old_call_ids | _checkpoint_covered_ids(previous_checkpoint)
+    sources = [
+        {
+            "source_ref": f"tool:{message.get('tool_call_id')}",
+            "tool_call_id": str(message.get("tool_call_id")),
+            "evidence": _current_chat_evidence_value(message.get("content")),
+        }
+        for _, message in old_tool_messages
+    ]
+    if previous_checkpoint:
+        sources.append({
+            "source_ref": "previous_checkpoint",
+            "covered_tool_call_ids": sorted(_checkpoint_covered_ids(previous_checkpoint)),
+            "evidence": previous_checkpoint.get("content"),
+        })
+    allowed_source_refs = (
+        {str(item["source_ref"]) for item in sources}
+        | {f"tool:{call_id}" for call_id in expected_call_ids}
+    )
+    source_text = json.dumps(sources, ensure_ascii=False, separators=(",", ":"))
+    system_prompt = (
+        "你是商业研究证据检查点生成器。只压缩输入证据，不做报告，不调用工具。"
+        "输出一个 JSON 对象，字段必须包含 covered_tool_call_ids、entities、facts、conflicts、"
+        "empty_or_failed、limitations、unresolved_questions、recommended_next_capabilities。"
+        "facts 中每项必须是对象并包含 source_refs；保留调用参数、实体、合法 ID、周期、精确指标和冲突。"
+        "不得添加输入中不存在的数字、ID 或结论。previous_checkpoint 存在时合并成唯一新检查点。"
+    )
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": json.dumps({
+                "original_user_request": chat_routing_text(user_text),
+                "research_task": route.get("research_task") or {},
+                "required_covered_tool_call_ids": sorted(expected_call_ids),
+                "sources": sources,
+            }, ensure_ascii=False, separators=(",", ":"))},
+        ],
+        "temperature": 0,
+        "response_format": {"type": "json_object"},
+        "max_tokens": 16000,
+    }
+    validation_error = "checkpoint request did not run"
+    checkpoint: dict[str, Any] | None = None
+    started = time.monotonic()
+    for attempt in range(2):
+        try:
+            response = requests_module.post(
+                api_url.rstrip("/") + "/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                timeout=180,
+            )
+            response.raise_for_status()
+            body = response.json()
+            raw = str(body["choices"][0]["message"].get("content") or "")
+            candidate = json.loads(raw)
+            validation_error = _validate_evidence_checkpoint(
+                candidate, expected_call_ids, allowed_source_refs, source_text
+            )
+            if validation_error is None:
+                checkpoint = candidate
+                record_api_call(
+                    "deepseek", "chat_evidence_checkpoint",
+                    {
+                        "model": model, "attempt": attempt + 1,
+                        "covered_call_count": len(expected_call_ids),
+                        "before_tokens": before_tokens, "trigger_tokens": trigger_tokens,
+                    }, body,
+                    elapsed_ms=int((time.monotonic() - started) * 1000),
+                )
+                break
+            payload["messages"].append({
+                "role": "user",
+                "content": f"上次 JSON 校验失败：{validation_error}。请严格依据原 sources 重新输出完整 JSON。",
+            })
+        except Exception as exc:
+            validation_error = f"{type(exc).__name__}: {str(exc)[:240]}"
+            payload["messages"].append({
+                "role": "user",
+                "content": f"检查点生成失败：{validation_error}。请重新输出合法 JSON。",
+            })
+    if checkpoint is None:
+        stats.update({"status": "failed", "error": validation_error})
+        print(f"[CHAT CONTEXT] checkpoint_failed error={validation_error}", flush=True)
+        return stats
 
-    after_chars = sum(len(str(messages[index].get("content") or "")) for index in indexes)
-    return len(changed_indexes), before_chars, after_chars, smallest_limit
+    retained: list[dict[str, Any]] = []
+    for message in messages:
+        if message is previous_checkpoint:
+            continue
+        if message.get("role") == "tool" and str(message.get("tool_call_id") or "") in old_call_ids:
+            continue
+        tool_calls = message.get("tool_calls") if isinstance(message.get("tool_calls"), list) else None
+        if tool_calls:
+            remaining_calls = [
+                call for call in tool_calls if str(call.get("id") or "") not in old_call_ids
+            ]
+            if not remaining_calls and message.get("_context_scope") == "current":
+                continue
+            message = dict(message)
+            message["tool_calls"] = remaining_calls
+        retained.append(message)
+    retained.append({
+        "role": "system",
+        "content": json.dumps({
+            "type": "evidence_checkpoint",
+            "instruction": "Use this only for continued tool planning. The final report will read original evidence separately.",
+            "checkpoint": checkpoint,
+        }, ensure_ascii=False, separators=(",", ":")),
+        "_context_scope": "current_evidence",
+        "_context_priority": "keep",
+        "_context_key": "evidence_checkpoint",
+        "_context_checkpoint_covered_ids": sorted(expected_call_ids),
+    })
+    messages[:] = retained
+    after_tokens = estimate_chat_context_tokens(messages, tools)
+    stats.update({
+        "status": "created", "after_tokens": after_tokens,
+        "covered_call_count": len(expected_call_ids),
+        "target_met": after_tokens <= target_tokens,
+    })
+    print(
+        f"[CHAT CONTEXT] checkpoint_created covered={len(expected_call_ids)} "
+        f"tokens={before_tokens}->{after_tokens} target={target_tokens} target_met={after_tokens <= target_tokens}",
+        flush=True,
+    )
+    return stats
 
 
 def manage_chat_context(
@@ -11171,7 +11522,7 @@ def manage_chat_context(
     tools: list[dict[str, Any]] | None,
     max_tokens: int | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
-    token_limit = max_tokens or _chat_int_setting("CHAT_CONTEXT_MAX_TOKENS", 120000, 8000, 1000000)
+    token_limit = max_tokens or _chat_int_setting("CHAT_CONTEXT_MAX_TOKENS", 500000, 8000, 1000000)
     working = [dict(message) for message in messages]
     request_tools = list(tools or [])
     initial_tokens = estimate_chat_context_tokens(working, request_tools)
@@ -11184,6 +11535,31 @@ def manage_chat_context(
         if _is_current_tool_evidence_message(message)
     )
     current_evidence_chars_after = current_evidence_chars_before
+
+    history_limit = token_limit * 12 // 100
+    def history_tokens() -> int:
+        return estimate_chat_context_tokens(
+            [message for message in working if message.get("_context_scope") == "history"], []
+        )
+
+    while history_tokens() > history_limit:
+        removable = next(
+            (
+                index for index, message in enumerate(working)
+                if message.get("_context_scope") == "history"
+                and message.get("_context_priority") not in {"keep", "recovery"}
+            ),
+            None,
+        )
+        if removable is None:
+            break
+        working.pop(removable)
+        dropped_history += 1
+    if history_tokens() > history_limit:
+        for message in working:
+            if message.get("_context_scope") == "history":
+                limit = 12000 if message.get("_context_priority") == "recovery" else 3000
+                message["content"] = _truncate_chat_context_text(message.get("content"), limit)
 
     if initial_tokens > token_limit:
         compact_limit = _chat_int_setting("CHAT_HISTORY_COMPACT_CHARS", 3000, 500, 12000)
@@ -11228,14 +11604,6 @@ def manage_chat_context(
             "_context_scope": "system",
         })
 
-    if estimate_chat_context_tokens(working, request_tools) > token_limit and has_current_tool_evidence:
-        (
-            current_evidence_compressed,
-            current_evidence_chars_before,
-            current_evidence_chars_after,
-            tool_content_limit,
-        ) = _compress_current_evidence_to_budget(working, request_tools, token_limit)
-
     if estimate_chat_context_tokens(working, request_tools) > token_limit:
         for message in working:
             priority = message.get("_context_priority")
@@ -11257,6 +11625,7 @@ def manage_chat_context(
     final_tokens = estimate_chat_context_tokens(working, request_tools)
     return _chat_request_messages(working), request_tools, {
         "max_tokens": token_limit,
+        "history_max_tokens": history_limit,
         "initial_tokens": initial_tokens,
         "final_tokens": final_tokens,
         "compressed": initial_tokens != final_tokens,
@@ -12048,6 +12417,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
         store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": fallback})
         return
     all_provider_tools = build_prefixed_model_tools(effective_enabled_tool_ids) if needs_tools else []
+    log_model_tool_window(provider, all_provider_tools, tools)
     capability_gaps = fastmoss_required_capability_gaps(routing_text, all_provider_tools, route) if provider == "fastmoss" and not resume_from_completed_tools else []
     if capability_gaps:
         capability_labels = {
@@ -12192,12 +12562,26 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     if not default_region and provider in {"amazon", "fastmoss"} and fastmoss_defaults_to_us(routing_text):
         default_region = "US"
     for _ in range(max_tool_rounds):
+        report_capacity = apply_semantic_report_watermark(
+            messages, provider, assistant_msg, routing_text, route
+        )
+        if report_capacity.get("level") in {"hard", "overflow"}:
+            tools = []
+            final_answer_forced = True
+        checkpoint_stats = (
+            maybe_checkpoint_chat_evidence(
+                messages, tools, routing_text, route,
+                req, api_key, api_url, model,
+            )
+            if tools else {"status": "tools_closed"}
+        )
         deterministic_phase = (
             fastmoss_workflow_phase(
                 str(route.get("playbook")), assistant_msg,
                 set(effective_enabled_tool_ids or set()), routing_text, route,
             )
-            if provider == "fastmoss" and route.get("playbook") == "product" and not route.get("dynamic_planner")
+            if report_capacity.get("level") not in {"hard", "overflow"}
+            and provider == "fastmoss" and route.get("playbook") == "product" and not route.get("dynamic_planner")
             else None
         )
         deterministic_call = (
@@ -12283,6 +12667,8 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     continue
         try:
             request_messages, request_tools, context_stats = manage_chat_context(messages, tools)
+            context_stats["components"] = chat_context_component_stats(messages, tools)
+            context_stats["checkpoint"] = checkpoint_stats
             if semantic_report_ready_for_direct_synthesis(
                 provider, route, assistant_msg, request_tools
             ):
@@ -12317,7 +12703,13 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 if not request_tools and chat_route_uses_report_model(provider, route)
                 else model
             )
-            payload = {"model": request_model, "messages": request_messages, "tools": request_tools or None, "temperature": 0.2}
+            payload = {
+                "model": request_model,
+                "messages": request_messages,
+                "tools": request_tools or None,
+                "temperature": 0.2,
+                "max_tokens": 12000 if request_model == report_model else 16000,
+            }
             payload_str = json.dumps(payload, ensure_ascii=False)
             print(
                 f"[CHAT] DeepSeek request: {len(request_messages)} msgs, {len(payload_str)} bytes, "
@@ -12487,6 +12879,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                         for tool_id in (selected_tool_ids or set())
                     )
                     tools = build_prefixed_model_tools(selected_tool_ids) if has_provider_tools else []
+                    log_model_tool_window(provider, all_provider_tools, tools)
                     final_answer_forced = not has_provider_tools
                     upsert_research_planner_message(
                         messages, provider, route, routing_text, assistant_msg
