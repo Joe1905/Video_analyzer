@@ -8646,57 +8646,6 @@ def sellersprite_report_evidence_dossier(
     }
 
 
-def _dedupe_semantic_evidence_value(value: Any, stats: dict[str, int]) -> Any:
-    """Remove only byte-identical values within the same source list."""
-    if isinstance(value, dict):
-        return {
-            key: _dedupe_semantic_evidence_value(item, stats)
-            for key, item in value.items()
-        }
-    if not isinstance(value, list):
-        return value
-    deduped: list[Any] = []
-    seen: set[str] = set()
-    for item in value:
-        normalized = _dedupe_semantic_evidence_value(item, stats)
-        fingerprint = json.dumps(
-            normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        )
-        if fingerprint in seen:
-            stats["duplicate_items_removed"] = stats.get("duplicate_items_removed", 0) + 1
-            continue
-        seen.add(fingerprint)
-        deduped.append(normalized)
-    return deduped
-
-
-def dedupe_semantic_evidence_dossier(
-    dossier: dict[str, Any],
-) -> tuple[dict[str, Any], dict[str, int]]:
-    """Deduplicate exact rows per call while retaining source provenance."""
-    compacted = dict(dossier)
-    compacted_entries: list[Any] = []
-    total_stats = {"duplicate_items_removed": 0}
-    for entry in dossier.get("tool_evidence") or []:
-        if not isinstance(entry, dict):
-            compacted_entries.append(entry)
-            continue
-        compacted_entry = dict(entry)
-        local_stats = {"duplicate_items_removed": 0}
-        compacted_entry["business_data"] = _dedupe_semantic_evidence_value(
-            entry.get("business_data"), local_stats
-        )
-        removed = local_stats["duplicate_items_removed"]
-        if removed:
-            fence = dict(compacted_entry.get("evidence_fence") or {})
-            fence["semantic_duplicate_items_removed"] = removed
-            compacted_entry["evidence_fence"] = fence
-            total_stats["duplicate_items_removed"] += removed
-        compacted_entries.append(compacted_entry)
-    compacted["tool_evidence"] = compacted_entries
-    return compacted, total_stats
-
-
 def prepare_semantic_report_evidence(
     dossier: dict[str, Any],
     renderer: Any,
@@ -8706,19 +8655,16 @@ def prepare_semantic_report_evidence(
     token_limit = max_tokens or _chat_int_setting(
         "CHAT_SEMANTIC_EVIDENCE_MAX_TOKENS", 90000, 12000, 500000
     )
-    compacted_dossier, dedupe_stats = dedupe_semantic_evidence_dossier(dossier)
-    duplicate_items_removed = dedupe_stats["duplicate_items_removed"]
-    final_markdown, final_stats = renderer(compacted_dossier)
+    final_markdown, final_stats = renderer(dossier)
     final_tokens = estimate_chat_context_tokens(
         [{"role": "user", "content": final_markdown}], []
     )
     return final_markdown, {
         **final_stats,
-        "budget_mode": "exact_dedup" if duplicate_items_removed else "full",
+        "budget_mode": "full",
         "budget_tokens": token_limit,
         "semantic_estimated_tokens": final_tokens,
         "final_estimated_tokens": final_tokens,
-        "duplicate_items_removed": duplicate_items_removed,
         "over_budget": final_tokens > token_limit,
     }
 
