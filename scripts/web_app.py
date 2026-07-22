@@ -8414,6 +8414,27 @@ def fastmoss_report_prompt_instruction(route: dict[str, Any]) -> str:
         "观察事实必须服从 evidence_index 的实体、周期、样本和冲突边界，推断与建议应明确区别于观察事实。"
         "空结果只适用于该次调用的精确参数；关键词返回量不是市场容量；跨实体或跨周期数据不得直接相除或互相解释；"
         "渠道占比、关联达人/视频数和趋势只描述观察结构，除非有直接证据，否则不得写成流量来源、因果、效率或生命周期结论。"
+        "撰写前请在内部完成证据覆盖检查（不要输出思维过程）：按工具调用、实体、周期和能力维度盘点实质证据，"
+        "凡是会改变核心判断、候选排序、风险或下一步验证的重要证据，都必须进入正文或在局限中说明未采用原因；"
+        "同口径、同结论的重复证据可以合并，但不能仅为了简洁省略有差异的类目、商品、趋势、达人、内容或店铺证据。"
+        "每个主要结论尽量形成‘观察数据—比较或解释—推断边界—行动建议’的完整链条，并保留支撑判断的代表性对象和指标。"
+        "完成报告前再次检查是否遗漏会实质改变结论的成功工具结果、冲突、空结果或失败；若遗漏则补入正文或局限。"
+    )
+
+
+def sellersprite_report_prompt_instruction(route: dict[str, Any]) -> str:
+    """Return the SellerSprite final-report coverage and evidence-boundary instruction."""
+    return (
+        "这是一份完整的 Amazon 市场调研报告，不是执行摘要。根据用户问题和实际证据决定叙事主线、标题、章节、"
+        "比较维度和详略，不设置固定字数，也不要机械复述全部原始行。完整使用本轮取得的实质证据，不得为了简洁"
+        "只保留少数机会方向、代表商品或指标。撰写前请在内部完成证据覆盖检查（不要输出思维过程）：按工具调用、"
+        "实体、站点、周期和能力维度盘点关键词发现、市场与类目、趋势、商品/ASIN、分布与集中度、流量和评论等"
+        "实际取得的证据；凡是会改变核心判断、候选排序、进入门槛、风险或下一步验证的重要证据，都必须进入正文，"
+        "或在局限中说明未采用原因。同口径、同结论的重复证据可以合并，但不同对象、周期、口径或相互冲突的结果"
+        "不得混合或静默省略。每个主要机会或建议尽量形成‘观察数据—横向/纵向比较—推断边界—风险—行动建议’"
+        "的完整链条，并保留支撑判断的代表性关键词、类目、ASIN和关键指标。数据、空结果、失败和未获取维度必须"
+        "严格区分；缺少容量、趋势或竞争证据时不得用常识补齐。完成报告前再次检查是否遗漏会实质改变结论的成功"
+        "工具结果、异常、冲突、空结果或失败；若遗漏则补入正文或局限。"
     )
 
 
@@ -8733,12 +8754,15 @@ def semantic_report_input_stats(
         evidence_markdown, render_stats = prepare_semantic_report_evidence(
             dossier, sellersprite_render_report_evidence
         )
-        system_messages = [{
-            "role": "system",
-            "content": chat_system_instruction(
-                "amazon", datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
-            ),
-        }]
+        system_messages = [
+            {
+                "role": "system",
+                "content": chat_system_instruction(
+                    "amazon", datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
+                ),
+            },
+            {"role": "system", "content": sellersprite_report_prompt_instruction(route)},
+        ]
     elif provider == "fastmoss":
         manifest = fastmoss_evidence_manifest(assistant_msg, user_text, route)
         dossier = fastmoss_report_evidence_dossier(assistant_msg, manifest, route)
@@ -8899,6 +8923,7 @@ def synthesize_sellersprite_report_from_packet(
     )
     messages = [
         {"role": "system", "content": chat_system_instruction("amazon", current_date_shanghai)},
+        {"role": "system", "content": sellersprite_report_prompt_instruction(route)},
         {"role": "user", "content": semantic_input},
     ]
     final_input_tokens = estimate_chat_context_tokens(messages, [])

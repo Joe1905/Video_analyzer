@@ -1731,12 +1731,16 @@ def test_sellersprite_semantic_report_and_pro_synthesis() -> None:
     assert payload["model"] == "deepseek-v4-pro-test"
     assert payload["max_tokens"] == 12000
     assert "tools" not in payload
-    assert [item["role"] for item in payload["messages"]] == ["system", "user"]
+    assert [item["role"] for item in payload["messages"]] == ["system", "system", "user"]
     assert "A useful product analysis must include" in payload["messages"][0]["content"]
+    assert "完整的 Amazon 市场调研报告，不是执行摘要" in payload["messages"][1]["content"]
+    assert "内部完成证据覆盖检查" in payload["messages"][1]["content"]
+    assert "不得为了简洁只保留少数机会方向" in payload["messages"][1]["content"]
     assert marker not in payload["messages"][0]["content"]
-    assert marker in payload["messages"][1]["content"]
-    assert "# SellerSprite 调研证据" in payload["messages"][1]["content"]
-    assert "--- Semantic 证据开始 ---" in payload["messages"][1]["content"]
+    assert marker not in payload["messages"][1]["content"]
+    assert marker in payload["messages"][2]["content"]
+    assert "# SellerSprite 调研证据" in payload["messages"][2]["content"]
+    assert "--- Semantic 证据开始 ---" in payload["messages"][2]["content"]
     assert web_app.append_sellersprite_report_notice(report, route) == report
 
     class FailedRequests:
@@ -3641,6 +3645,8 @@ def test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence() -> None:
     assert "完整工具结果是报告的事实素材" in report_system
     assert "evidence_index：{" not in report_system
     assert "不得写成流量来源、因果、效率或生命周期结论" in report_system
+    assert "内部完成证据覆盖检查" in report_system
+    assert "不能仅为了简洁省略有差异的类目、商品、趋势、达人、内容或店铺证据" in report_system
     assert "# FastMoss 调研证据" in semantic_content
     assert "## call:1 · `fastmoss__product_sales_trend`" in semantic_content
     assert "## call:2 · `fastmoss__product_rank_new_listed`" in semantic_content
