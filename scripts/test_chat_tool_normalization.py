@@ -1736,6 +1736,8 @@ def test_sellersprite_semantic_report_and_pro_synthesis() -> None:
     assert "完整的 Amazon 市场调研报告，不是执行摘要" in payload["messages"][1]["content"]
     assert "内部完成证据覆盖检查" in payload["messages"][1]["content"]
     assert "不得为了简洁只保留少数机会方向" in payload["messages"][1]["content"]
+    assert "筛选的榜单只能描述该筛选样本" in payload["messages"][1]["content"]
+    assert "直接从中文 Markdown 标题开始" in payload["messages"][1]["content"]
     assert marker not in payload["messages"][0]["content"]
     assert marker not in payload["messages"][1]["content"]
     assert marker in payload["messages"][2]["content"]
@@ -3647,6 +3649,7 @@ def test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence() -> None:
     assert "不得写成流量来源、因果、效率或生命周期结论" in report_system
     assert "内部完成证据覆盖检查" in report_system
     assert "不能仅为了简洁省略有差异的类目、商品、趋势、达人、内容或店铺证据" in report_system
+    assert "不得概括为‘纯视频驱动’" in report_system
     assert "# FastMoss 调研证据" in semantic_content
     assert "## call:1 · `fastmoss__product_sales_trend`" in semantic_content
     assert "## call:2 · `fastmoss__product_rank_new_listed`" in semantic_content
