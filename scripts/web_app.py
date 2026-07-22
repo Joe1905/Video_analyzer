@@ -5867,6 +5867,17 @@ def to_model_tool(tool: dict[str, Any], tool_id: str, description: str | None = 
     parameters = tool.get("parameters") or tool.get("inputSchema") or {
         "type": "object", "properties": {}, "additionalProperties": True,
     }
+    return {
+        "type": "function",
+        "function": {
+            "name": tool_id,
+            "description": _compact_model_tool_text(
+                description or tool.get("description") or tool.get("name") or tool_id,
+                240,
+            ),
+            "parameters": compact_model_tool_schema(parameters),
+        },
+    }
 
 
 def log_model_tool_window(
@@ -5883,17 +5894,6 @@ def log_model_tool_window(
         f"over_budget={str(visible_tokens > schema_budget).lower()}",
         flush=True,
     )
-    return {
-        "type": "function",
-        "function": {
-            "name": tool_id,
-            "description": _compact_model_tool_text(
-                description or tool.get("description") or tool.get("name") or tool_id,
-                240,
-            ),
-            "parameters": compact_model_tool_schema(parameters),
-        },
-    }
 
 
 def system_chat_tool_ids() -> set[str]:
