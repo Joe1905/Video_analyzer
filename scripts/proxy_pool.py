@@ -411,11 +411,7 @@ def init_db(conn: sqlite3.Connection) -> None:
            SET feishu_user_active = 1
            WHERE feishu_user_id <> '' AND feishu_user_synced_at = ''"""
     )
-    conn.execute(
-        """CREATE UNIQUE INDEX IF NOT EXISTS idx_tiktok_accounts_feishu_user
-           ON tiktok_accounts(feishu_user_id)
-           WHERE feishu_user_id <> '' AND deleted_at = ''"""
-    )
+    conn.execute("DROP INDEX IF EXISTS idx_tiktok_accounts_feishu_user")
     existing_session_cols = {row[1] for row in conn.execute("PRAGMA table_info(browser_sessions)")}
     for name, definition in {
         "xvfb_pid": "INTEGER NOT NULL DEFAULT 0",
@@ -2389,14 +2385,6 @@ def upsert_account(payload: dict[str, Any]) -> dict[str, Any]:
             profile["observation_session"] = {"session_id": session_id, "bound_at": now, "persisted": True}
         if not account_id and not values["feishu_user_id"]:
             raise ValueError("新增账号必须选择飞书用户")
-        if values["feishu_user_id"]:
-            conflict = conn.execute(
-                """SELECT username FROM tiktok_accounts
-                   WHERE feishu_user_id = ? AND deleted_at = '' AND id <> ?""",
-                (values["feishu_user_id"], account_id),
-            ).fetchone()
-            if conflict:
-                raise ValueError(f"该飞书用户已绑定 @{conflict['username']}")
         values["profile_json"] = json.dumps(profile, ensure_ascii=False, separators=(",", ":"))
         if account_id:
             existing_profile = _json_loads(existing_account["profile_json"], {})
