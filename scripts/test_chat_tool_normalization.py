@@ -1058,6 +1058,24 @@ def test_sellersprite_schema_argument_normalization() -> None:
                 "additionalProperties": False,
             },
         },
+        {
+            "name": "keyword_research",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "request": {
+                        "type": "object",
+                        "properties": {
+                            "marketplace": {"type": "string"},
+                            "returnFields": {"type": "string"},
+                        },
+                        "required": ["marketplace"],
+                    },
+                },
+                "required": ["request"],
+                "additionalProperties": False,
+            },
+        },
     ]
     original = web_app.list_mcp_bridge_tools
     web_app.list_mcp_bridge_tools = lambda chat_type: schemas
@@ -1075,6 +1093,21 @@ def test_sellersprite_schema_argument_normalization() -> None:
         )
         assert wrapped == {"request": {"marketplace": "US", "keyword": "mini chopper"}}
         assert action and action.startswith("wrapped")
+
+        official_fields, action = normalize_mcp_tool_arguments(
+            "sellersprite",
+            "keyword_research",
+            {
+                "request": {
+                    "marketplace": "US",
+                    "returnFields": "keyword,searches,searchMonthCr,minBid,avgBid,keyword",
+                },
+            },
+        )
+        assert official_fields["request"]["returnFields"] == (
+            "keywords,searches,searchMonthlyCr,bidMin,bid"
+        )
+        assert action and "keyword->keywords" in action and "avgBid->bid" in action
 
         try:
             normalize_mcp_tool_arguments("sellersprite", "keyword_research_trends", {"month": "202606"})
@@ -1705,6 +1738,39 @@ def test_sellersprite_official_aba_fields_render_as_semantic_values() -> None:
     assert "原字段" not in result.markdown
 
 
+def test_sellersprite_keyword_rows_keep_query_scope_and_anonymous_identity_boundary() -> None:
+    result = render_sellersprite_current_evidence({
+        "tool": "sellersprite__keyword_research",
+        "arguments": {
+            "request": {
+                "marketplace": "US",
+                "keywords": "tent fan",
+                "returnFields": "keyword,searches,searchNearlyCr,araClickRate,avgBid",
+            },
+        },
+        "ok": True,
+        "data_state": "data",
+        "data": {
+            "items": [{
+                "keyword": None,
+                "searches": 63236,
+                "searchNearlyCr": 36.7,
+                "araClickRate": 0.2554,
+                "avgBid": None,
+            }],
+        },
+    })
+    assert result.fallback is False
+    assert "查询关键词 | tent fan" in result.markdown
+    assert "返回字段 | 关键词、搜索量、近3个月搜索量增长率、点击垄断率、平均PPC竞价（旧字段）" in result.markdown
+    assert "近3个月搜索量增长率" in result.markdown and "36.7%" in result.markdown
+    assert "点击垄断率" in result.markdown and "25.54%" in result.markdown
+    assert "1 条没有关键词名称" in result.markdown
+    assert "不得绑定到任何具体关键词" in result.markdown
+    assert "search nearly cr" not in result.markdown
+    assert "ara click rate" not in result.markdown
+
+
 def test_sellersprite_semantic_report_and_pro_synthesis() -> None:
     marker = "SELLERSPRITE-REPORT-MARKER"
     message = SimpleNamespace(
@@ -1746,6 +1812,12 @@ def test_sellersprite_semantic_report_and_pro_synthesis() -> None:
     assert "## call:1 · `sellersprite__keyword_research`" in semantic
     assert marker in semantic
     assert semantic_stats["format"] == "semantic"
+    assert "研究任务" in semantic
+    assert "机会发现" in semantic
+    assert "证据质量汇总" in semantic
+    assert "research_task" not in semantic
+    assert "quality_summary" not in semantic
+    assert "opportunity_discovery" not in semantic
 
     class Response:
         def raise_for_status(self) -> None:
@@ -4320,6 +4392,7 @@ if __name__ == "__main__":
     test_provider_profiles_use_aggregated_sellersprite_and_staged_fastmoss_tools()
     test_sellersprite_semantic_registry_is_complete_and_lossless()
     test_sellersprite_official_aba_fields_render_as_semantic_values()
+    test_sellersprite_keyword_rows_keep_query_scope_and_anonymous_identity_boundary()
     test_sellersprite_semantic_report_and_pro_synthesis()
     test_dynamic_provider_capability_graph_uses_task_scope_and_evidence()
     test_dynamic_provider_planner_does_not_cap_repeated_calls()

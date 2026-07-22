@@ -217,6 +217,29 @@ def test_official_fastmoss_video_fields_render_as_semantic_values() -> None:
     assert "JSON路径" not in result.markdown
 
 
+def test_week_request_adds_explicit_calendar_boundary_and_chinese_labels() -> None:
+    entry = _entry("market_category_ranking", {
+        "ranked_categories": [{
+            "category_name": "美妆个护",
+            "category_units_sold": 3841949,
+            "category_gmv_yoy_percent": 3.76,
+        }],
+    })
+    entry["arguments"] = {
+        "filter": {"region": "US", "date_type": "week", "date_value": "2026-W29"},
+        "orderby": [{"field": "category_units_sold", "order": "desc"}],
+        "lang": "ZH_CN",
+    }
+    result = render_fastmoss_tool_evidence(entry)
+    assert "统计周期类型 | 周" in result.markdown
+    assert "ISO周日期范围 | 2026-07-13 至 2026-07-19" in result.markdown
+    assert "按 ISO 8601 的周一至周日换算" in result.markdown
+    assert "排序字段：类目销量；排序规则：降序" in result.markdown
+    assert "类目GMV同比增长率" in result.markdown
+    assert "category GMV yoy percent" not in result.markdown
+    assert "date type" not in result.markdown
+
+
 def test_document_keeps_call_order_boundaries_and_stats() -> None:
     dossier = {
         "workflow": "product",
@@ -233,6 +256,10 @@ def test_document_keeps_call_order_boundaries_and_stats() -> None:
     assert rendered.markdown.startswith("# FastMoss 调研证据")
     assert rendered.markdown.index("product_search") < rendered.markdown.index("product_sales_trend")
     assert "硬事实边界" in rendered.markdown
+    assert "商品研究" in rendered.markdown
+    assert "分析目标" in rendered.markdown
+    assert "研究对象类型" in rendered.markdown
+    assert "entity_type" not in rendered.markdown
     assert rendered.stats["tool_count"] == 2
     assert rendered.stats["registered_tool_count"] == 2
     assert rendered.stats["fallback_tools"] == []
@@ -247,5 +274,6 @@ if __name__ == "__main__":
     test_all_tools_render_empty_and_error_as_scoped_narrative()
     test_unknown_future_tool_uses_generic_shape_without_loss()
     test_official_fastmoss_video_fields_render_as_semantic_values()
+    test_week_request_adds_explicit_calendar_boundary_and_chinese_labels()
     test_document_keeps_call_order_boundaries_and_stats()
     print("FastMoss evidence renderer tests passed")

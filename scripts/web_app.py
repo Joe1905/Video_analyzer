@@ -6111,17 +6111,64 @@ def _missing_schema_required_fields(schema: dict[str, Any], value: Any, prefix: 
     return missing
 
 
+_SELLERSPRITE_RETURN_FIELD_ALIASES: dict[str, dict[str, str]] = {
+    "keyword_research": {
+        # SellerSprite's official keyword-research response uses these names.
+        # The singular/short aliases produce null columns in the MCP response.
+        "keyword": "keywords",
+        "searchMonthCr": "searchMonthlyCr",
+        "minBid": "bidMin",
+        "maxBid": "bidMax",
+        "avgBid": "bid",
+    },
+}
+
+
+def normalize_sellersprite_return_fields(
+    name: str,
+    args: dict[str, Any],
+) -> tuple[dict[str, Any], str | None]:
+    aliases = _SELLERSPRITE_RETURN_FIELD_ALIASES.get(str(name or ""))
+    if not aliases:
+        return dict(args or {}), None
+    normalized = dict(args or {})
+    target = normalized
+    if isinstance(normalized.get("request"), dict):
+        target = dict(normalized["request"])
+        normalized["request"] = target
+    raw_fields = target.get("returnFields")
+    if not isinstance(raw_fields, str):
+        return normalized, None
+    fields: list[str] = []
+    changed: list[str] = []
+    for raw_field in raw_fields.split(","):
+        field = raw_field.strip()
+        if not field:
+            continue
+        replacement = aliases.get(field, field)
+        if replacement != field:
+            changed.append(f"{field}->{replacement}")
+        if replacement not in fields:
+            fields.append(replacement)
+    if not changed:
+        return normalized, None
+    target["returnFields"] = ",".join(fields)
+    return normalized, "normalized official SellerSprite return fields: " + ", ".join(changed)
+
+
 def normalize_mcp_tool_arguments(
     chat_type: str,
     name: str,
     args: dict[str, Any],
 ) -> tuple[dict[str, Any], str | None]:
+    normalized = dict(args or {})
+    action: str | None = None
+    if chat_type == "sellersprite":
+        normalized, action = normalize_sellersprite_return_fields(name, normalized)
     schema = _mcp_tool_input_schema(chat_type, name)
     if not schema:
-        return dict(args or {}), None
-    normalized = dict(args or {})
+        return normalized, action
     properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
-    action: str | None = None
 
     nested_request = normalized.get("request")
     if (
@@ -6131,7 +6178,8 @@ def normalize_mcp_tool_arguments(
         and (not properties or set(nested_request).issubset(properties))
     ):
         normalized = dict(nested_request)
-        action = "unwrapped request object to match flat schema"
+        schema_action = "unwrapped request object to match flat schema"
+        action = f"{action}; {schema_action}" if action else schema_action
     elif (
         "request" in properties
         and "request" in (schema.get("required") or [])
@@ -6142,7 +6190,8 @@ def normalize_mcp_tool_arguments(
         request_properties = request_schema.get("properties") if isinstance(request_schema.get("properties"), dict) else {}
         if request_properties and set(normalized).issubset(request_properties):
             normalized = {"request": normalized}
-            action = "wrapped flat arguments in request object"
+            schema_action = "wrapped flat arguments in request object"
+            action = f"{action}; {schema_action}" if action else schema_action
 
     missing = _missing_schema_required_fields(schema, normalized)
     if missing:
@@ -12810,6 +12859,15 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 domain, unprefixed_name = split_prefixed_tool_id(fn_name)
                 if domain in {"sellersprite", "fastmoss"}:
                     fn_args = apply_mcp_region_default(domain, unprefixed_name, fn_args, default_region)
+                if domain == "sellersprite":
+                    fn_args, field_action = normalize_sellersprite_return_fields(
+                        unprefixed_name, fn_args
+                    )
+                    if field_action:
+                        print(
+                            f"[CHAT] normalized {fn_name} arguments: {field_action}",
+                            flush=True,
+                        )
                 if domain == "fastmoss" and route.get("playbook"):
                     fn_args = apply_fastmoss_business_defaults(
                         unprefixed_name, fn_args, assistant_msg, user_text=routing_text, route=route

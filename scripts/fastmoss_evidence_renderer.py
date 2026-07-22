@@ -239,7 +239,10 @@ _FIELD_LABELS = {
     "gmv_share_percent": "GMV占比",
     "units_sold_share_percent": "销量占比",
     "date": "日期",
+    "date_type": "统计周期类型",
     "date_value": "统计日期",
+    "listing_start_date": "上架日期范围起点",
+    "listing_end_date": "上架日期范围终点",
     "time_range_days": "统计天数",
     "rank": "排名",
     "score": "匹配分",
@@ -262,8 +265,9 @@ _FIELD_LABELS = {
     "pages": "总页数",
     "top_k": "候选数量",
     "query": "查询词",
-    "keywords": "查询关键词",
+    "keywords": "关键词",
     "keyword": "关键词",
+    "return_fields": "返回字段",
     "keyword_cn": "关键词中文释义",
     "keyword_jp": "关键词日文释义",
     "departments": "关联类目",
@@ -282,6 +286,10 @@ _FIELD_LABELS = {
     "w12_rank_growth_value": "相对前12个统计周期的排名变化值",
     "w12_rank_growth_rate": "相对前12个统计周期的排名变化率",
     "searches": "搜索量",
+    "searches_growth": "搜索量增长率",
+    "search_month_cr": "月搜索量同比增长率（旧字段）",
+    "search_monthly_cr": "月搜索量同比增长率",
+    "search_nearly_cr": "近3个月搜索量增长率",
     "purchases": "购买量",
     "purchase_rate": "购买率",
     "clicks": "点击量",
@@ -294,6 +302,10 @@ _FIELD_LABELS = {
     "ad_products": "广告商品数",
     "supply_demand_ratio": "供需比",
     "monopoly_click_rate": "点击集中度",
+    "ara_click_rate": "点击垄断率",
+    "ara_share_rate": "共享转化率",
+    "click_share": "前三名点击占比",
+    "conversion_share": "前三名转化占比",
     "title_density": "标题密度",
     "title_density_exact": "首页标题精确包含该词的商品数",
     "cpr_exact": "8天内使该词上首页所需销量（精确匹配）",
@@ -301,6 +313,7 @@ _FIELD_LABELS = {
     "relevancy": "相关度",
     "word_count": "词数",
     "avg_price": "平均价格",
+    "avg_bid": "平均PPC竞价（旧字段）",
     "avg_rating": "平均评分",
     "avg_ratings": "平均评分数",
     "min_bid": "最低竞价",
@@ -322,7 +335,10 @@ _FIELD_LABELS = {
     "seller_name": "卖家",
     "marketplace": "站点",
     "node_id_path": "类目节点路径",
+    "node_id": "类目节点ID",
+    "node_path": "类目节点路径",
     "node_name": "类目名称",
+    "count": "记录数量",
     "goods_count": "商品数量",
     "month": "统计月份",
     "search_model": "搜索模式",
@@ -333,12 +349,41 @@ _FIELD_LABELS = {
     "field": "排序字段",
     "desc": "是否降序",
     "analysis_type": "分析类型",
+    "workflow": "调研对象类型",
+    "report_date": "报告日期",
+    "research_task": "研究任务",
+    "objective": "研究目标",
+    "entity_type": "研究对象类型",
+    "entity": "研究对象",
+    "entity_source": "对象来源",
+    "time_window": "时间范围",
+    "target_category_path": "目标类目路径",
+    "analysis_targets": "分析目标",
+    "quality_summary": "证据质量汇总",
+    "coverage_summary": "证据覆盖汇总",
+    "derived_facts": "程序派生事实",
+    "conflicts": "证据冲突",
+    "limitations": "证据限制",
+    "hard_fact_boundaries": "硬事实边界",
+    "rules": "规则",
+    "empty": "成功但无记录的工具",
+    "error": "调用失败的工具",
+    "source_ref": "证据引用",
+    "tool_name": "工具名称",
+    "arguments": "调用参数",
+    "business_data": "业务返回数据",
+    "evidence_fence": "证据围栏",
     "data_state": "数据状态",
     "ok": "调用是否成功",
     "enough_data": "证据是否充足",
     "returned_count": "返回记录数",
     "reported_total": "接口报告总量",
     "period": "统计周期",
+    "parser_status": "解析状态",
+    "scope": "证据用途",
+    "metric_grain": "指标粒度",
+    "entity_refs": "证据实体",
+    "type": "实体类型",
     "guest_id": "访客ID",
     "guest_visited": "访客访问次数",
     "took": "接口耗时",
@@ -361,6 +406,8 @@ _FIELD_LABELS = {
     "message": "接口消息",
     "total": "结果总数",
     "items": "记录列表",
+    "data": "业务数据",
+    "category": "类目信息",
     "product": "商品信息",
     "shop": "店铺信息",
     "video": "视频信息",
@@ -370,6 +417,38 @@ _FIELD_LABELS = {
     "create_date": "创建日期",
     "launch_time": "上架时间",
     "launch_date": "上架日期",
+    "listing_date": "上架日期",
+    "shop_name": "店铺名称",
+    "floor_price": "最低价格",
+    "ceiling_price": "最高价格",
+    "price_display": "价格展示值",
+    "first_3d_gmv": "上架后前3日销售额（GMV）",
+    "first_3d_units_sold": "上架后前3日销量",
+    "lifetime_gmv": "上架以来累计销售额（GMV）",
+    "period_gmv": "本统计周期销售额（GMV）",
+    "period_units_sold": "本统计周期销量",
+    "units_sold_growth_rate_percent": "销量环比增长率",
+    "category_level": "类目层级",
+    "category_name": "类目名称",
+    "category_gmv_yoy_percent": "类目GMV同比增长率",
+    "category_units_sold": "类目销量",
+    "category_units_sold_yoy_percent": "类目销量同比增长率",
+    "parent_category_id": "父类目ID",
+    "parent_category_name": "父类目名称",
+    "ranked_category_level": "榜单类目层级",
+    "channel_gmv_share": "成交渠道GMV占比",
+    "live_gmv_share_percent": "直播成交GMV占比",
+    "live_gmv_share_change_percent": "直播成交GMV占比变化",
+    "video_gmv_share_percent": "视频成交GMV占比",
+    "video_gmv_share_change_percent": "视频成交GMV占比变化",
+    "other_gmv_share_percent": "其他渠道成交GMV占比",
+    "other_gmv_share_change_percent": "其他渠道成交GMV占比变化",
+    "top_10_shops_units_sold_share_percent": "销量前10店铺的销量占比",
+    "top_50_products_units_sold_share_percent": "销量前50商品的销量占比",
+    "l1": "一级类目",
+    "l2": "二级类目",
+    "l3": "三级类目",
+    "lang": "返回语言",
     "commission_rate": "佣金比例",
     "commission_rate_percent": "佣金比例",
     "product_rating": "商品评分",
@@ -452,9 +531,12 @@ _FIELD_LABELS = {
 
 _ACRONYM_WORDS = {"asin", "bsr", "cpr", "gmv", "id", "ipm", "ppc", "roas", "sku", "spr", "uid", "url"}
 _FRACTION_PERCENT_FIELDS = {
-    "click_rate", "click_share_rate", "conversion_rate", "cvs_share_rate",
+    "ara_click_rate", "ara_share_rate", "click_rate", "click_share_rate", "conversion_rate", "cvs_share_rate",
     "monopoly_click_rate", "purchase_rate", "search_rank_cr", "search_rank_growth_rate",
     "w1_rank_growth_rate", "w4_rank_growth_rate", "w12_rank_growth_rate",
+}
+_PERCENT_VALUE_FIELDS = {
+    "growth", "search_month_cr", "search_monthly_cr", "search_nearly_cr", "searches_growth",
 }
 _TIMESTAMP_FIELDS = {
     "published_at", "created_at", "updated_at", "publish_time", "create_time",
@@ -496,9 +578,67 @@ _ENUM_VALUE_LABELS = {
     },
     "match_type": {"2": "广泛匹配", "3": "词组匹配"},
     "supplement": {"N": "否", "Y": "是"},
+    "date_type": {"day": "日", "week": "周", "month": "月"},
+    "order": {"asc": "升序", "desc": "降序"},
+    "region": {
+        "US": "美国（US）", "GB": "英国（GB）", "UK": "英国（UK）",
+        "CA": "加拿大（CA）", "MX": "墨西哥（MX）", "BR": "巴西（BR）",
+        "JP": "日本（JP）", "DE": "德国（DE）", "FR": "法国（FR）",
+        "IT": "意大利（IT）", "ES": "西班牙（ES）", "AU": "澳大利亚（AU）",
+    },
+    "marketplace": {
+        "US": "美国站（US）", "GB": "英国站（GB）", "UK": "英国站（UK）",
+        "CA": "加拿大站（CA）", "MX": "墨西哥站（MX）", "BR": "巴西站（BR）",
+        "JP": "日本站（JP）", "DE": "德国站（DE）", "FR": "法国站（FR）",
+        "IT": "意大利站（IT）", "ES": "西班牙站（ES）", "AU": "澳大利亚站（AU）",
+    },
+    "lang": {"ZH_CN": "简体中文", "EN": "英文"},
+    "parser_status": {"supported": "已按已知接口结构解析", "unsupported_parser": "暂无专用解析规则"},
+    "scope": {
+        "supporting": "辅助证据", "primary": "主要证据",
+        "cross_category": "跨类目", "category": "单一类目",
+        "keyword": "单一关键词", "entity": "单一对象",
+    },
+    "objective": {
+        "opportunity_discovery": "机会发现",
+        "trend_analysis": "趋势分析",
+        "product_research": "商品研究",
+        "pricing_analysis": "定价分析",
+        "competitor_analysis": "竞品分析",
+        "category_analysis": "类目分析",
+        "store_analysis": "店铺分析",
+    },
+    "entity_source": {
+        "llm": "LLM 语义判断",
+        "user": "用户明确输入",
+        "rules": "结构化规则",
+        "rules_fallback": "分类失败后的保守回退",
+    },
+    "entity_type": {
+        "none": "无单一对象", "category": "类目", "keyword": "关键词",
+        "product_id": "FastMoss 商品ID", "asin": "ASIN", "url": "链接",
+        "shop_id": "店铺ID", "creator_id": "达人ID", "video_id": "视频ID",
+    },
+    "workflow": {
+        "product": "商品研究", "category": "类目研究", "shop": "店铺研究",
+        "creator": "达人研究", "video": "视频研究", "live": "直播研究",
+    },
+    "type": {
+        "category": "类目", "product": "商品", "shop": "店铺", "creator": "达人",
+        "video": "视频", "live": "直播", "asin": "ASIN", "keyword": "关键词", "none": "无单一对象",
+    },
+    "metric_grain": {
+        "market_category_ranking": "市场类目榜单",
+        "product_rank_new_listed": "新品榜单商品",
+        "product_rank_top_selling": "热销榜单商品",
+    },
 }
 
 _TOOL_EVIDENCE_BOUNDARIES = {
+    "keyword_research": (
+        "调用参数中的查询关键词只限定本次检索范围，不自动成为每一条返回记录的关键词名称；每条记录必须以其自身返回的关键词字段识别。",
+        "如果某条记录没有返回关键词名称，该行只能视为匿名候选记录，不得根据指标、排序位置或常识为其补写长尾词名称，也不得把该行指标归到查询主词。",
+    ),
     "aba_research_monthly": (
         "头部3个品牌和头部3个 ASIN 仅代表该关键词返回的头部样本，不能单独证明整个类目的品牌集中度或卖家国别结构。",
         "关联类目表示关键词可能出现的 Amazon 类目，不等同于该类目的市场规模或竞争强度。",
@@ -638,6 +778,11 @@ def _semantic_value(field_name: str, value: Any) -> str:
         ) or "空对象"
     if isinstance(value, list):
         return "；".join(_semantic_value(normalized, item) for item in value) or "空列表"
+    if isinstance(value, str) and normalized == "return_fields":
+        fields = [item.strip() for item in value.split(",") if item.strip()]
+        return "、".join(_field_label(item) for item in fields) or "未指定（返回接口默认字段）"
+    if isinstance(value, str) and normalized == "field":
+        return _field_label(value)
     if value is None or isinstance(value, (str, bool)):
         text = _scalar_text(value)
         return _ENUM_VALUE_LABELS.get(normalized, {}).get(text, text)
@@ -653,10 +798,34 @@ def _semantic_value(field_name: str, value: Any) -> str:
             return enum_value
         if normalized in _FRACTION_PERCENT_FIELDS:
             return f"{_percent_text(float(value) * 100)}%"
+        if normalized in _PERCENT_VALUE_FIELDS:
+            return f"{_percent_text(value)}%"
         if normalized.endswith("_percent"):
             return f"{_percent_text(value)}%"
         return _number_text(value)
     return _scalar_text(value)
+
+
+def localize_semantic_value(value: Any, field_name: str = "") -> Any:
+    """Translate semantic display keys and enums without mutating source evidence."""
+    if isinstance(value, Mapping):
+        return {
+            _field_label(str(key)): localize_semantic_value(item, str(key))
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [localize_semantic_value(item, field_name) for item in value]
+    return _semantic_value(field_name, value)
+
+
+def _argument_field_label(key: str) -> str:
+    parts = str(key).split(".")
+    if parts and _normalized_field_key(parts[-1]) == "keywords":
+        parts[-1] = "查询关键词"
+        return " / ".join(_field_label(part) for part in parts[:-1]) + (
+            " / " if len(parts) > 1 else ""
+        ) + parts[-1]
+    return _dotted_field_label(key)
 
 
 def _node_kind_for_list(path: str, rows: list[Any], profile: str) -> str:
@@ -778,9 +947,10 @@ class SemanticToolRenderer:
         rows: list[tuple[str, Any]] = []
         if isinstance(arguments, dict):
             rows.extend(
-                (f"调用参数：{_dotted_field_label(key)}", _semantic_value(key, value))
+                (f"调用参数：{_argument_field_label(key)}", _semantic_value(key, value))
                 for key, value in self._flatten(arguments)
             )
+            rows.extend(self._period_context_rows(arguments))
         for key, value in fence.items():
             if value not in (None, "", [], {}):
                 rows.append((f"证据范围：{_field_label(str(key))}", _semantic_value(str(key), value)))
@@ -791,8 +961,85 @@ class SemanticToolRenderer:
             rows,
         )
 
+    def _period_context_rows(self, arguments: Mapping[str, Any]) -> list[tuple[str, Any]]:
+        """Add explicit calendar boundaries that are implied by request parameters."""
+        periods: list[tuple[str, str]] = []
+
+        def collect(value: Any) -> None:
+            if isinstance(value, Mapping):
+                date_type = value.get("date_type")
+                date_value = value.get("date_value")
+                if date_type not in (None, "") and date_value not in (None, ""):
+                    periods.append((str(date_type), str(date_value)))
+                date_info = value.get("date_info")
+                if isinstance(date_info, Mapping):
+                    info_type = date_info.get("type")
+                    info_value = date_info.get("value")
+                    if info_type not in (None, "") and info_value not in (None, ""):
+                        periods.append((str(info_type), str(info_value)))
+                for child in value.values():
+                    collect(child)
+            elif isinstance(value, list):
+                for child in value:
+                    collect(child)
+
+        collect(arguments)
+        rows: list[tuple[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for date_type, date_value in periods:
+            key = (date_type.lower(), date_value)
+            if key in seen:
+                continue
+            seen.add(key)
+            if key[0] == "week":
+                match = re.fullmatch(r"(\d{4})-(?:W)?(\d{1,2})", date_value, re.IGNORECASE)
+                if not match:
+                    continue
+                try:
+                    start = datetime.fromisocalendar(int(match.group(1)), int(match.group(2)), 1).date()
+                except ValueError:
+                    continue
+                end = start + timedelta(days=6)
+                rows.extend([
+                    ("程序补充：ISO周日期范围", f"{start.isoformat()} 至 {end.isoformat()}"),
+                    (
+                        "程序补充：周范围口径",
+                        "按 ISO 8601 的周一至周日换算；接口返回体未提供平台统计时区或自定义周边界，若 FastMoss 平台另有定义应以平台口径为准。",
+                    ),
+                ])
+            elif key[0] == "month":
+                match = re.fullmatch(r"(\d{4})[-.]?(\d{2})", date_value)
+                if not match:
+                    continue
+                try:
+                    start_dt = datetime(int(match.group(1)), int(match.group(2)), 1)
+                except ValueError:
+                    continue
+                if start_dt.month == 12:
+                    next_month = datetime(start_dt.year + 1, 1, 1)
+                else:
+                    next_month = datetime(start_dt.year, start_dt.month + 1, 1)
+                rows.append((
+                    "程序补充：自然月日期范围",
+                    f"{start_dt.date().isoformat()} 至 {(next_month - timedelta(days=1)).date().isoformat()}",
+                ))
+        return rows
+
     def _tool_boundary_lines(self) -> list[str]:
-        notes = _TOOL_EVIDENCE_BOUNDARIES.get(self.tool_name, ())
+        notes = list(_TOOL_EVIDENCE_BOUNDARIES.get(self.tool_name, ()))
+        if self.tool_name == "keyword_research":
+            data = self.entry.get("business_data")
+            items = data.get("items") if isinstance(data, Mapping) else None
+            if isinstance(items, list) and any(isinstance(item, Mapping) for item in items):
+                identified = sum(
+                    1 for item in items
+                    if isinstance(item, Mapping)
+                    and (item.get("keywords") not in (None, "") or item.get("keyword") not in (None, ""))
+                )
+                if identified < len(items):
+                    notes.append(
+                        f"本次返回 {len(items)} 条记录，其中 {len(items) - identified} 条没有关键词名称；这些匿名行的数值不得绑定到任何具体关键词。"
+                    )
         if not notes:
             return []
         return ["### 指标口径与限制", "", *(f"- {note}" for note in notes)]
@@ -1038,7 +1285,7 @@ def render_fastmoss_tool_evidence(entry: Mapping[str, Any]) -> RenderedToolEvide
         data = entry.get("business_data")
         paths = business_leaf_paths(data)
         markdown = json_to_markdown(
-            dict(entry),
+            localize_semantic_value(dict(entry)),
             title=f"{entry.get('source_ref') or 'call:?'} · {entry.get('tool_name') or tool_name}",
             include_paths=False,
         ).rstrip()
@@ -1057,10 +1304,10 @@ def render_fastmoss_tool_evidence(entry: Mapping[str, Any]) -> RenderedToolEvide
 
 def _context_markdown(dossier: Mapping[str, Any]) -> list[str]:
     rows = [
-        ("工作流", dossier.get("workflow") or "product"),
+        ("工作流", _semantic_value("workflow", dossier.get("workflow") or "product")),
         ("报告日期", dossier.get("report_date") or ""),
-        ("目标类目路径", json.dumps(dossier.get("target_category_path") or [], ensure_ascii=False)),
-        ("分析目标", json.dumps(dossier.get("analysis_targets") or [], ensure_ascii=False)),
+        ("目标类目路径", json.dumps(localize_semantic_value(dossier.get("target_category_path") or []), ensure_ascii=False)),
+        ("分析目标", json.dumps(localize_semantic_value(dossier.get("analysis_targets") or []), ensure_ascii=False)),
     ]
     return ["## 调研上下文", "", *_table(["项目", "值"], rows)]
 
@@ -1088,7 +1335,9 @@ def render_fastmoss_evidence_document(dossier: Mapping[str, Any]) -> RenderedEvi
         if value in (None, "", [], {}):
             continue
         lines.extend(["", f"## {title}", ""])
-        generic = json_to_markdown(value, title=title, include_paths=False).splitlines()[1:]
+        generic = json_to_markdown(
+            localize_semantic_value(value), title=title, include_paths=False
+        ).splitlines()[1:]
         lines.extend(line for line in generic if line.strip())
 
     markdown = "\n".join(lines).rstrip() + "\n"
@@ -1104,6 +1353,7 @@ __all__ = [
     "RenderedToolEvidence",
     "ToolRenderSpec",
     "business_leaf_paths",
+    "localize_semantic_value",
     "render_fastmoss_evidence_document",
     "render_fastmoss_tool_evidence",
 ]

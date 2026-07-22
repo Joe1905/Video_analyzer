@@ -24,6 +24,7 @@ from fastmoss_evidence_renderer import (
     SemanticToolRenderer,
     ToolRenderSpec,
     business_leaf_paths,
+    localize_semantic_value,
 )
 from json_to_markdown import json_to_markdown
 
@@ -169,7 +170,7 @@ def render_sellersprite_tool_evidence(entry: Mapping[str, Any]) -> RenderedToolE
         paths = business_leaf_paths(data)
         return RenderedToolEvidence(
             markdown=json_to_markdown(
-                dict(entry),
+                localize_semantic_value(dict(entry)),
                 title=f"current-call · {full_tool_name}",
                 include_paths=False,
             ).rstrip(),
@@ -195,7 +196,12 @@ def render_sellersprite_evidence_document(
         "research_task": dossier.get("research_task") or {},
         "quality_summary": dossier.get("quality_summary") or {},
     }
-    lines.extend(["", json_to_markdown(context, title="调研上下文", include_paths=False).rstrip()])
+    lines.extend([
+        "",
+        json_to_markdown(
+            localize_semantic_value(context), title="调研上下文", include_paths=False
+        ).rstrip(),
+    ])
     results: list[RenderedToolEvidence] = []
     for entry in dossier.get("tool_evidence") or []:
         if not isinstance(entry, Mapping):
@@ -207,7 +213,9 @@ def render_sellersprite_evidence_document(
     if boundaries:
         lines.extend([
             "",
-            json_to_markdown(boundaries, title="硬事实边界", include_paths=False).rstrip(),
+            json_to_markdown(
+                localize_semantic_value(boundaries), title="硬事实边界", include_paths=False
+            ).rstrip(),
         ])
     return RenderedEvidenceDocument(
         markdown="\n".join(lines).rstrip() + "\n",
