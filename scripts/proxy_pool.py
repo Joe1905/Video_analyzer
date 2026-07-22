@@ -1550,6 +1550,117 @@ def parse_vless_uri(uri: str, fallback_name: str = "") -> dict[str, Any]:
     }
 
 
+def parse_vmess_uri(uri: str, fallback_name: str = "") -> dict[str, Any]:
+    uri = _clean_text(uri, 10000)
+    if not uri:
+        return {"parse_status": "manual", "parsed": {}, "mihomo_proxy": {}, "mihomo_name": fallback_name}
+    if not uri.startswith("vmess://"):
+        raise ValueError("Only vmess:// URI is supported")
+
+    parsed_uri = urlparse(uri)
+    query = {key: values[-1] for key, values in parse_qs(parsed_uri.query).items() if values}
+    encoded = unquote((parsed_uri.netloc + parsed_uri.path).strip("/"))
+    if not encoded:
+        raise ValueError("VMess URI must include a Base64 payload")
+    try:
+        padded = encoded + "=" * (-len(encoded) % 4)
+        decoded = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+    except (binascii.Error, UnicodeError, ValueError) as exc:
+        raise ValueError("VMess URI payload is not valid Base64") from exc
+
+    config: dict[str, Any]
+    try:
+        value = json.loads(decoded)
+        config = value if isinstance(value, dict) else {}
+    except json.JSONDecodeError:
+        config = {}
+
+    if config:
+        uuid = _clean_text(config.get("id"), 200)
+        server = _clean_text(config.get("add"), 500)
+        port_value = config.get("port")
+        name = _clean_text(config.get("ps"), 500) or fallback_name or server or "vmess-node"
+        cipher = _clean_text(config.get("scy"), 80) or "auto"
+        alter_id_value = config.get("aid", 0)
+        network = _clean_text(config.get("net"), 80) or "tcp"
+        security = _clean_text(config.get("tls"), 80)
+        host = _clean_text(config.get("host"), 1000)
+        path = _clean_text(config.get("path"), 2000)
+        servername = _clean_text(config.get("sni"), 500)
+        fingerprint = _clean_text(config.get("fp"), 80)
+    else:
+        authority = urlparse(f"vmess://{decoded.strip()}")
+        uuid = unquote(authority.password or authority.username or "")
+        server = authority.hostname or ""
+        port_value = authority.port
+        name = unquote(query.get("remarks") or query.get("remark") or "") or fallback_name or server or "vmess-node"
+        cipher = unquote(authority.username or "") if authority.password else "auto"
+        alter_id_value = query.get("alterId", query.get("aid", 0))
+        network = query.get("type") or query.get("network") or "tcp"
+        security = query.get("security") or query.get("tls") or ""
+        host = query.get("host") or ""
+        path = query.get("path") or ""
+        servername = query.get("sni") or query.get("peer") or ""
+        fingerprint = query.get("fp") or ""
+
+    try:
+        port = int(port_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("VMess URI port is invalid") from exc
+    try:
+        alter_id = int(alter_id_value or 0)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("VMess URI alterId is invalid") from exc
+    if not uuid or not server or not port:
+        raise ValueError("VMess URI must include uuid, server and port")
+
+    tls_enabled = str(security).lower() in {"1", "true", "tls"}
+    mihomo: dict[str, Any] = {
+        "name": name,
+        "type": "vmess",
+        "server": server,
+        "port": port,
+        "uuid": uuid,
+        "alterId": alter_id,
+        "cipher": cipher,
+        "network": network,
+        "udp": str(query.get("udp", "1")).lower() not in {"0", "false", "no", "off"},
+    }
+    if tls_enabled:
+        mihomo["tls"] = True
+    if servername:
+        mihomo["servername"] = servername
+    if fingerprint:
+        mihomo["client-fingerprint"] = fingerprint
+    if network == "ws":
+        ws_opts: dict[str, Any] = {}
+        if path:
+            ws_opts["path"] = path
+        if host:
+            ws_opts["headers"] = {"Host": host}
+        if ws_opts:
+            mihomo["ws-opts"] = ws_opts
+    if network == "grpc" and (config.get("path") if config else query.get("serviceName")):
+        mihomo["grpc-opts"] = {"grpc-service-name": config.get("path") if config else query["serviceName"]}
+
+    return {
+        "parse_status": "ok",
+        "mihomo_name": name,
+        "parsed": {
+            "uuid": uuid,
+            "server": server,
+            "port": port,
+            "alter_id": alter_id,
+            "cipher": cipher,
+            "network": network,
+            "security": security,
+            "query": query,
+            "name": name,
+        },
+        "mihomo_proxy": mihomo,
+    }
+
+
 def parse_static_proxy_uri(uri: str, fallback_name: str = "") -> dict[str, Any]:
     uri = _clean_text(uri, 10000)
     if not uri:
@@ -1848,10 +1959,17 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
     expected_exit_ip = _clean_text(payload.get("expected_exit_ip"), 80)
     dialer_proxy = _clean_text(payload.get("dialer_proxy"), 160)
     source_type = _clean_text(payload.get("source_type"), 40)
-    if not source_type:
-        source_type = "static" if source_uri.lower().startswith(("socks://", "socks5://", "socks5h://", "http://", "https://")) else "vless"
-    if source_type not in {"vless", "static"}:
-        raise ValueError("代理类型必须为 vless 或 static")
+    lowered_uri = source_uri.lower()
+    if lowered_uri.startswith("vless://"):
+        source_type = "vless"
+    elif lowered_uri.startswith("vmess://"):
+        source_type = "vmess"
+    elif lowered_uri.startswith(("socks://", "socks5://", "socks5h://", "http://", "https://")):
+        source_type = "static"
+    elif not source_type:
+        source_type = "vless"
+    if source_type not in {"vless", "vmess", "static"}:
+        raise ValueError("代理类型必须为 vless、vmess 或 static")
 
     parse_status = "manual"
     parse_error = ""
@@ -1860,14 +1978,18 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
     mihomo_name = name
     if source_uri:
         try:
-            parsed_result = parse_vless_uri(source_uri, fallback_name=name) if source_type == "vless" else parse_static_proxy_uri(source_uri, fallback_name=name)
+            if source_type == "vless":
+                parsed_result = parse_vless_uri(source_uri, fallback_name=name)
+            elif source_type == "vmess":
+                parsed_result = parse_vmess_uri(source_uri, fallback_name=name)
+            else:
+                parsed_result = parse_static_proxy_uri(source_uri, fallback_name=name)
             parse_status = str(parsed_result["parse_status"])
             parsed = parsed_result["parsed"]
             mihomo_proxy = parsed_result["mihomo_proxy"]
             mihomo_name = str(parsed_result.get("mihomo_name") or name)
         except Exception as exc:
-            parse_status = "error"
-            parse_error = str(exc)
+            raise ValueError(f"代理 URI 解析失败：{exc}") from exc
     if not name:
         name = mihomo_name or expected_exit_ip
     if mihomo_proxy and not mihomo_proxy.get("name"):
