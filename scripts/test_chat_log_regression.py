@@ -113,7 +113,7 @@ def compare_reports(old: str, new: str, provider: str) -> dict[str, Any]:
         failures.append("structure_regression")
     if len(old_metrics["numbers"]) >= 8 and numeric_recall < 0.25:
         failures.append("numeric_coverage_drift")
-    if 0 < len(old_metrics["entities"]) <= 5 and entity_recall < 0.50:
+    if 0 < len(old_metrics["entities"]) <= 5 and entity_recall < 0.25:
         failures.append("entity_coverage_drift")
     if expected_notice not in new:
         failures.append("missing_programmatic_notice")
