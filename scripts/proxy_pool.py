@@ -15,6 +15,7 @@ import shutil
 import socket
 import sqlite3
 import subprocess
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -64,6 +65,7 @@ RUNTIME_ID = f"{os.getpid()}-{uuid.uuid4().hex}"
 STATUS_ACTIVE = "启用"
 STATUS_PAUSED = "禁用"
 STATUS_ERROR = "不可用"
+_LOGIN_CAPTURE_LOCK = threading.Lock()
 
 
 class ProxyConfigurationError(ValueError):
@@ -3774,7 +3776,7 @@ def handoff_automation_session(session_id: int, reason: str) -> dict[str, Any]:
         return _row_to_session(_session_by_id(conn, session_id))
 
 
-def inspect_login_session(payload: dict[str, Any]) -> dict[str, Any]:
+def _inspect_login_session(payload: dict[str, Any]) -> dict[str, Any]:
     session_id = int(payload.get("session_id") or payload.get("id") or 0)
     if not session_id:
         raise ValueError("session_id is required")
@@ -3819,11 +3821,6 @@ def inspect_login_session(payload: dict[str, Any]) -> dict[str, Any]:
                 "status": "duplicate_account",
                 "reason": f"@{username} 已在账号池中，请关闭此次通道并从账号列表唤醒",
             }
-    avatar_body = b""
-    try:
-        avatar_body = _browser_account_avatar(int(row["debug_port"] or 0))
-    except Exception:
-        pass
     result = upsert_account(
         {
             "username": username,
@@ -3840,11 +3837,12 @@ def inspect_login_session(payload: dict[str, Any]) -> dict[str, Any]:
     )
     account_id = int(result["account"]["id"])
     avatar_url = ""
-    if avatar_body:
-        try:
+    try:
+        avatar_body = _browser_account_avatar(int(row["debug_port"] or 0))
+        if avatar_body:
             avatar_url = _write_account_avatar(account_id, avatar_body)
-        except Exception:
-            pass
+    except Exception:
+        pass
     updated_at = now_iso()
     with connect() as conn:
         conn.execute(
@@ -3864,6 +3862,34 @@ def inspect_login_session(payload: dict[str, Any]) -> dict[str, Any]:
         "account": get_account(account_id),
         **list_state(),
     }
+
+
+def inspect_login_session(payload: dict[str, Any]) -> dict[str, Any]:
+    with _LOGIN_CAPTURE_LOCK:
+        return _inspect_login_session(payload)
+
+
+def capture_pending_login_sessions() -> dict[str, Any]:
+    with connect() as conn:
+        session_ids = [
+            int(row["id"])
+            for row in conn.execute(
+                """SELECT id FROM browser_sessions
+                   WHERE account_id IS NULL AND status = 'observing' AND owner = 'manual'
+                   ORDER BY id"""
+            ).fetchall()
+        ]
+    bound: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    for session_id in session_ids:
+        try:
+            result = inspect_login_session({"session_id": session_id})
+            if result.get("bound"):
+                account = result.get("account") or {}
+                bound.append({"session_id": session_id, "account_id": account.get("id"), "username": account.get("username", "")})
+        except Exception as exc:
+            errors.append({"session_id": session_id, "error": str(exc)})
+    return {"attempted": len(session_ids), "bound": bound, "errors": errors}
 
 
 def update_account_status(payload: dict[str, Any]) -> dict[str, Any]:

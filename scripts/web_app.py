@@ -14780,6 +14780,8 @@ class Handler(BaseHTTPRequestHandler):
                 return json_response(self, HTTPStatus.OK, proxy_pool.stop_login_session(payload))
             if path == "/api/proxy/login-session/status":
                 return json_response(self, HTTPStatus.OK, proxy_pool.inspect_login_session(payload))
+            if path == "/api/proxy/login-session/capture":
+                return json_response(self, HTTPStatus.OK, proxy_pool.inspect_login_session(payload))
             if path == "/api/proxy/publish/jobs/update":
                 return json_response(self, HTTPStatus.OK, tiktok_studio_publish.update_job(payload))
             if path == "/api/proxy/publish/jobs/cancel":
@@ -15632,6 +15634,22 @@ def proxy_session_janitor() -> None:
         time.sleep(15)
 
 
+def proxy_login_capture_worker() -> None:
+    while True:
+        try:
+            result = proxy_pool.capture_pending_login_sessions()
+            for item in result["bound"]:
+                print(
+                    f"Proxy login captured session={item['session_id']} account={item['account_id']} username=@{item['username']}",
+                    flush=True,
+                )
+            for item in result["errors"]:
+                print(f"Proxy login capture failed session={item['session_id']}: {item['error']}", flush=True)
+        except Exception as exc:
+            print(f"Proxy login capture worker failed: {exc}", flush=True)
+        time.sleep(2)
+
+
 def main() -> int:
     load_env_file()
     VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
@@ -15644,6 +15662,7 @@ def main() -> int:
         proxy_pool.ensure_proxy_cores(restart=True)
         proxy_pool.list_state()
         threading.Thread(target=proxy_session_janitor, daemon=True).start()
+        threading.Thread(target=proxy_login_capture_worker, daemon=True).start()
         tiktok_studio_publish.start_worker()
         tiktok_studio_collect.start_worker()
     normalize_stored_chat_tool_results()
