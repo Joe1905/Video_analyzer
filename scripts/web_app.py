@@ -380,7 +380,7 @@ CHAT_PROVIDER_DEFAULT_DOMAINS = {
 }
 FORCED_MCP_CHAT_PROVIDERS = {"amazon", "fastmoss"}
 MCP_TOOL_CACHE: dict[str, dict[str, Any]] = {}
-PROXY_POOL_ENABLED = os.getenv("PROXY_POOL_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+PROXY_POOL_ENABLED = os.getenv("PROXY_POOL_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
 NAV_ITEMS = [
     {"key": "home", "href": "/", "label": "\u9996\u9875", "title": "AI \u804a\u5929", "icon": '<path d="M3 10.5 12 3l9 7.5"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/>'},
     {"key": "lan-chat", "href": "/lan-chat", "label": "\u90bb\u804a", "title": "\u5c40\u57df\u7f51\u804a\u5929", "icon": '<path d="M21 15a4 4 0 0 1-4 4H8l-5 2 1.6-4.1A7 7 0 0 1 3 12c0-4 4-7 9-7s9 3 9 7z"/><path d="M8 12h.01M12 12h.01M16 12h.01"/>'},
