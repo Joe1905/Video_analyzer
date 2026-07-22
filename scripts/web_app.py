@@ -8697,99 +8697,26 @@ def dedupe_semantic_evidence_dossier(
     return compacted, total_stats
 
 
-def _semantic_ledger_path(path: str, key: Any) -> str:
-    text = str(key)
-    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", text):
-        return f"{path}.{text}"
-    return f"{path}[{json.dumps(text, ensure_ascii=False)}]"
-
-
-def _semantic_ledger_lines(value: Any, path: str = "$") -> list[str]:
-    lines: list[str] = []
-    if isinstance(value, dict):
-        if not value:
-            return [f"- `{path}` = {{}}"]
-        for key, item in value.items():
-            lines.extend(_semantic_ledger_lines(item, _semantic_ledger_path(path, key)))
-        return lines
-    if isinstance(value, list):
-        if not value:
-            return [f"- `{path}` = []"]
-        for index, item in enumerate(value):
-            lines.extend(_semantic_ledger_lines(item, f"{path}[{index}]"))
-        return lines
-    encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-    return [f"- `{path}` = {encoded}"]
-
-
-def render_compact_semantic_evidence_ledger(dossier: dict[str, Any]) -> str:
-    """Render every unique leaf once in a compact, source-scoped Semantic ledger."""
-    provider = str(dossier.get("provider") or "commerce")
-    lines = [f"# {provider} 调研证据（紧凑 Semantic 台账）"]
-    context = {
-        key: value for key, value in dossier.items()
-        if key != "tool_evidence"
-    }
-    lines.extend(["", "## 调研上下文与硬边界", ""])
-    lines.extend(_semantic_ledger_lines(context))
-    for entry in dossier.get("tool_evidence") or []:
-        if not isinstance(entry, dict):
-            continue
-        source_ref = str(entry.get("source_ref") or "call:?")
-        tool_name = str(entry.get("tool_name") or "tool")
-        lines.extend(["", f"## {source_ref} · `{tool_name}`", ""])
-        scoped = {
-            key: value for key, value in entry.items()
-            if key != "business_data"
-        }
-        lines.extend(_semantic_ledger_lines(scoped, "$.scope"))
-        lines.extend(["", "### 业务字段", ""])
-        lines.extend(_semantic_ledger_lines(entry.get("business_data"), "$.business_data"))
-    return "\n".join(lines).rstrip() + "\n"
-
-
 def prepare_semantic_report_evidence(
     dossier: dict[str, Any],
     renderer: Any,
     max_tokens: int | None = None,
 ) -> tuple[str, dict[str, Any]]:
-    """Fit report evidence without truncating any unique business field."""
+    """Render one Semantic Markdown format without truncating unique evidence."""
     token_limit = max_tokens or _chat_int_setting(
         "CHAT_SEMANTIC_EVIDENCE_MAX_TOKENS", 90000, 12000, 500000
     )
-    initial_markdown, initial_stats = renderer(dossier)
-    initial_tokens = estimate_chat_context_tokens(
-        [{"role": "user", "content": initial_markdown}], []
-    )
-    final_markdown = initial_markdown
-    final_stats = dict(initial_stats)
-    budget_mode = "full"
-    duplicate_items_removed = 0
-
-    if initial_tokens > token_limit:
-        compacted_dossier, dedupe_stats = dedupe_semantic_evidence_dossier(dossier)
-        duplicate_items_removed = dedupe_stats["duplicate_items_removed"]
-        final_markdown, final_stats = renderer(compacted_dossier)
-        budget_mode = "exact_dedup"
-        if estimate_chat_context_tokens(
-            [{"role": "user", "content": final_markdown}], []
-        ) > token_limit:
-            final_markdown = render_compact_semantic_evidence_ledger(compacted_dossier)
-            final_stats = {
-                **final_stats,
-                "format": "semantic",
-                "markdown_chars": len(final_markdown),
-            }
-            budget_mode = "leaf_ledger"
-
+    compacted_dossier, dedupe_stats = dedupe_semantic_evidence_dossier(dossier)
+    duplicate_items_removed = dedupe_stats["duplicate_items_removed"]
+    final_markdown, final_stats = renderer(compacted_dossier)
     final_tokens = estimate_chat_context_tokens(
         [{"role": "user", "content": final_markdown}], []
     )
     return final_markdown, {
         **final_stats,
-        "budget_mode": budget_mode,
+        "budget_mode": "exact_dedup" if duplicate_items_removed else "full",
         "budget_tokens": token_limit,
-        "initial_estimated_tokens": initial_tokens,
+        "semantic_estimated_tokens": final_tokens,
         "final_estimated_tokens": final_tokens,
         "duplicate_items_removed": duplicate_items_removed,
         "over_budget": final_tokens > token_limit,

@@ -3999,7 +3999,7 @@ def test_semantic_report_bypasses_redundant_accumulated_context_draft() -> None:
     ) is False
 
 
-def test_semantic_evidence_budget_uses_lossless_leaf_ledger() -> None:
+def test_semantic_evidence_budget_keeps_one_markdown_format() -> None:
     repeated = {
         "asin": "B012345678",
         "title": "alpha" * 120,
@@ -4027,11 +4027,14 @@ def test_semantic_evidence_budget_uses_lossless_leaf_ledger() -> None:
     markdown, stats = web_app.prepare_semantic_report_evidence(
         dossier, web_app.sellersprite_render_report_evidence, max_tokens=220
     )
-    assert stats["budget_mode"] == "leaf_ledger"
+    assert stats["budget_mode"] == "exact_dedup"
     assert stats["duplicate_items_removed"] == 1
     assert stats["format"] == "semantic"
+    assert stats["over_budget"] is True
     assert "B012345678" in markdown and "B087654321" in markdown
     assert "alpha" * 120 in markdown and "beta" * 120 in markdown
+    assert "紧凑 Semantic 台账" not in markdown
+    assert not hasattr(web_app, "render_compact_semantic_evidence_ledger")
     assert "truncated" not in markdown.lower()
 
 
@@ -4114,7 +4117,7 @@ if __name__ == "__main__":
     test_planner_message_is_upserted_instead_of_accumulated()
     test_model_tool_schema_compaction_preserves_call_contract()
     test_semantic_report_bypasses_redundant_accumulated_context_draft()
-    test_semantic_evidence_budget_uses_lossless_leaf_ledger()
+    test_semantic_evidence_budget_keeps_one_markdown_format()
     test_fastmoss_claim_ids_and_extended_mechanical_cleanup()
     test_analytical_routes_use_report_model_and_fastmoss_preserves_pro_draft()
     print("chat tool normalization tests passed")
