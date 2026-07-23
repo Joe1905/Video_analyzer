@@ -453,7 +453,7 @@ def test_tool_evidence_is_compact_but_keeps_business_fields() -> None:
     assert "RAW_SHOULD_BE_DROPPED" not in evidence
 
 
-def test_current_tool_evidence_is_lossless_until_budget_pressure() -> None:
+def test_current_tool_evidence_preserves_known_fields_and_isolates_unknowns() -> None:
     marker = "CURRENT_EVIDENCE_AFTER_12000_CHARS"
     payload = {
         "code": "OK",
@@ -489,10 +489,13 @@ def test_current_tool_evidence_is_lossless_until_budget_pressure() -> None:
         {"marketplace": "US", "keyword": "air pump"},
         raw_result,
     )
-    assert marker in evidence
+    assert marker not in evidence
     assert "站点" in evidence and "US" in evidence
     assert "marketplace" not in evidence
     assert "本次实际返回 30 条记录" in evidence
+    assert "keyword-20" in evidence
+    assert "2000" in evidence
+    assert "description" not in evidence
     assert "mcp_text_preview" not in evidence
 
     messages = [
@@ -4473,7 +4476,7 @@ if __name__ == "__main__":
     test_web_search_tool_is_registered_and_normalized()
     test_chat_history_archives_done_tools_and_recovers_failed_results()
     test_tool_evidence_is_compact_but_keeps_business_fields()
-    test_current_tool_evidence_is_lossless_until_budget_pressure()
+    test_current_tool_evidence_preserves_known_fields_and_isolates_unknowns()
     test_product_availability_is_a_shallow_lookup()
     test_intent_decision_validation_and_fallback()
     test_intent_router_uses_recent_context_and_falls_back_on_failure()
