@@ -20,6 +20,7 @@ from fastmoss_evidence_renderer import (  # noqa: E402
     PROFILE_RELATIONSHIP,
     PROFILE_TREND,
     business_leaf_paths,
+    fastmoss_semantic_registry_diagnostics,
     render_fastmoss_evidence_document,
     render_fastmoss_tool_evidence,
 )
@@ -32,7 +33,7 @@ EXPECTED_FASTMOSS_TOOLS = frozenset({
     "creator_cargo_summary", "creator_data_trends", "creator_fans_distribution",
     "creator_product_list", "creator_profile_overview", "creator_rank_top_ecommerce",
     "creator_rank_top_growth", "creator_rank_top_potential", "creator_search",
-    "creator_video_analysis", "fastmoss_detail_url_examples", "live_detail_analysis",
+    "creator_video_analysis", "credit_usage_summary", "fastmoss_detail_url_examples", "live_detail_analysis",
     "live_products_list", "live_search", "market_category_analysis",
     "market_category_author_sales_matrix", "market_category_ranking",
     "product_category_info", "product_creator_analysis", "product_detail_info",
@@ -135,7 +136,13 @@ def _entry(tool_name: str, data: dict, state: str = "data") -> dict:
 def test_catalog_covers_all_current_fastmoss_tools() -> None:
     assert EXPECTED_FASTMOSS_TOOLS == FASTMOSS_CURRENT_TOOL_NAMES
     assert EXPECTED_FASTMOSS_TOOLS == frozenset(FASTMOSS_RENDER_SPECS)
-    assert len(FASTMOSS_RENDER_SPECS) == 54
+    assert len(FASTMOSS_RENDER_SPECS) == 55
+    diagnostics = fastmoss_semantic_registry_diagnostics(
+        f"fastmoss__{name}" for name in EXPECTED_FASTMOSS_TOOLS
+    )
+    assert diagnostics["ok"] is True
+    assert diagnostics["missing_contracts"] == []
+    assert diagnostics["missing_runtime"] == []
 
 
 def test_all_tools_render_success_without_silent_field_loss() -> None:
@@ -151,12 +158,14 @@ def test_all_tools_render_success_without_silent_field_loss() -> None:
         ), tool_name
         assert not (result.consumed_paths & result.unmapped_paths), tool_name
         assert not result.unmapped_paths, tool_name
-        assert "schema extension" in result.markdown, tool_name
+        assert result.excluded_paths == set(result.exclusion_reasons), tool_name
+        assert any("schema_extension" in path for path in result.excluded_paths), tool_name
+        assert "schema extension" not in result.markdown, tool_name
         assert "未映射业务字段" not in result.markdown, tool_name
         assert "JSON路径" not in result.markdown, tool_name
         assert "原字段" not in result.markdown, tool_name
         assert "$.business_data" not in result.markdown, tool_name
-        assert "call:1" in result.markdown and tool_name in result.markdown, tool_name
+        assert "call:1" not in result.markdown and f"fastmoss__{tool_name}" not in result.markdown, tool_name
 
 
 def test_all_tools_render_empty_and_error_as_scoped_narrative() -> None:
@@ -164,6 +173,10 @@ def test_all_tools_render_empty_and_error_as_scoped_narrative() -> None:
         empty = render_fastmoss_tool_evidence(
             _entry(tool_name, {"list": [], "total": 0}, state="empty")
         )
+        if tool_name == "credit_usage_summary":
+            assert "仅用于系统运行审计" in empty.markdown
+            assert empty.business_leaf_paths == empty.excluded_paths
+            continue
         assert empty.empty and not empty.fallback, tool_name
         assert "没有返回业务记录" in empty.markdown, tool_name
         assert "平台全局为零" in empty.markdown, tool_name
@@ -179,16 +192,18 @@ def test_all_tools_render_empty_and_error_as_scoped_narrative() -> None:
         assert "ErrorResult" in failed.node_types, tool_name
 
 
-def test_unknown_future_tool_uses_generic_shape_without_loss() -> None:
+def test_unknown_future_tool_is_isolated_without_raw_json_leak() -> None:
     data = {
         "items": [{"id": "x1", "name": "Future entity", "future_metric": 7}],
         "new_schema_object": {"opaque_value": "kept"},
     }
     result = render_fastmoss_tool_evidence(_entry("future_tool", data))
     assert result.profile == "generic"
-    assert result.business_leaf_paths == result.consumed_paths | result.unmapped_paths
+    assert result.business_leaf_paths == result.excluded_paths
     assert not result.unmapped_paths
-    assert "opaque value" in result.markdown and "kept" in result.markdown
+    assert result.fallback
+    assert result.exclusion_reasons
+    assert "opaque value" not in result.markdown and "kept" not in result.markdown
     assert "JSON路径" not in result.markdown
 
 
@@ -212,12 +227,13 @@ def test_official_fastmoss_video_fields_render_as_semantic_values() -> None:
     assert not result.fallback
     assert not result.unmapped_paths
     assert "否（非广告）" in result.markdown
-    assert "2025-12-06T20:30:18+08:00" in result.markdown
+    assert "2025-12-06 20:30:18（UTC+8）" in result.markdown
+    assert "1765024218000" not in result.markdown
     assert "视频时长（秒）" in result.markdown
     assert "JSON路径" not in result.markdown
 
 
-def test_week_request_adds_explicit_calendar_boundary_and_chinese_labels() -> None:
+def test_week_request_keeps_provider_week_without_invented_calendar_boundary() -> None:
     entry = _entry("market_category_ranking", {
         "ranked_categories": [{
             "category_name": "美妆个护",
@@ -232,8 +248,9 @@ def test_week_request_adds_explicit_calendar_boundary_and_chinese_labels() -> No
     }
     result = render_fastmoss_tool_evidence(entry)
     assert "统计周期类型 | 周" in result.markdown
-    assert "ISO周日期范围 | 2026-07-13 至 2026-07-19" in result.markdown
-    assert "按 ISO 8601 的周一至周日换算" in result.markdown
+    assert "统计日期 | 2026年第29周" in result.markdown
+    assert "2026-07-13" not in result.markdown
+    assert "ISO" not in result.markdown
     assert "成交结构" in result.markdown
     assert "未取得时只能描述占比现象" in result.markdown
     assert "排序字段：类目销量；排序规则：降序" in result.markdown
@@ -257,6 +274,47 @@ def test_product_ranking_boundaries_prevent_period_and_causal_overreach() -> Non
     assert "不得宣称某商品由单一爆款视频" in top_selling.markdown
 
 
+def test_new_product_sample_naturalizes_dates_units_and_audit_fields() -> None:
+    result = render_fastmoss_tool_evidence(_entry("product_rank_new_listed", {
+        "items": [{
+            "product_id": "1732452731783385673",
+            "title": "Portable Fan",
+            "launch_date": "2026-06-22",
+            "launch_time": 1782105878,
+            "commission_rate_percent": 12,
+            "current_price": 12.96,
+            "currency_code": "USD",
+            "first_3d_units_sold": 14300,
+            "first_3d_gmv": 1478565,
+            "is_cross_border": 1,
+            "is_fully_managed": 0,
+            "cover_url": "https://example.test/cover.jpg",
+        }],
+        "total": 1,
+    }))
+    assert not result.fallback
+    assert "2026-06-22" in result.markdown
+    assert "1782105878" not in result.markdown
+    assert "12%" in result.markdown and "1200%" not in result.markdown
+    assert "上架后前3日销量" in result.markdown
+    assert "是否跨境" in result.markdown and "是" in result.markdown
+    assert "https://example.test" not in result.markdown
+    assert any("cover_url" in path for path in result.exclusion_reasons)
+
+
+def test_credit_usage_is_registered_but_audit_only() -> None:
+    result = render_fastmoss_tool_evidence(_entry("credit_usage_summary", {
+        "credit_balance": 4200,
+        "used_credits": 800,
+        "subscription": "pro",
+    }))
+    assert not result.fallback
+    assert result.business_leaf_paths == result.excluded_paths
+    assert result.exclusion_reasons
+    assert "4200" not in result.markdown
+    assert "仅用于系统运行审计" in result.markdown
+
+
 def test_document_keeps_call_order_boundaries_and_stats() -> None:
     dossier = {
         "workflow": "product",
@@ -276,7 +334,9 @@ def test_document_keeps_call_order_boundaries_and_stats() -> None:
     }
     rendered = render_fastmoss_evidence_document(dossier)
     assert rendered.markdown.startswith("# FastMoss 调研证据")
-    assert rendered.markdown.index("product_search") < rendered.markdown.index("product_sales_trend")
+    assert rendered.markdown.index("商品搜索样本") < rendered.markdown.index("商品销售趋势")
+    assert "fastmoss__" not in rendered.markdown
+    assert "call:1" not in rendered.markdown
     assert "硬事实边界" in rendered.markdown
     assert "商品研究" in rendered.markdown
     assert "分析目标" in rendered.markdown
@@ -290,7 +350,9 @@ def test_document_keeps_call_order_boundaries_and_stats() -> None:
     assert rendered.stats["registered_tool_count"] == 2
     assert rendered.stats["fallback_tools"] == []
     assert rendered.stats["business_leaf_count"] == (
-        rendered.stats["consumed_leaf_count"] + rendered.stats["unmapped_leaf_count"]
+        rendered.stats["consumed_leaf_count"]
+        + rendered.stats["unmapped_leaf_count"]
+        + rendered.stats["excluded_leaf_count"]
     )
 
 
@@ -298,9 +360,11 @@ if __name__ == "__main__":
     test_catalog_covers_all_current_fastmoss_tools()
     test_all_tools_render_success_without_silent_field_loss()
     test_all_tools_render_empty_and_error_as_scoped_narrative()
-    test_unknown_future_tool_uses_generic_shape_without_loss()
+    test_unknown_future_tool_is_isolated_without_raw_json_leak()
     test_official_fastmoss_video_fields_render_as_semantic_values()
-    test_week_request_adds_explicit_calendar_boundary_and_chinese_labels()
+    test_week_request_keeps_provider_week_without_invented_calendar_boundary()
     test_product_ranking_boundaries_prevent_period_and_causal_overreach()
+    test_new_product_sample_naturalizes_dates_units_and_audit_fields()
+    test_credit_usage_is_registered_but_audit_only()
     test_document_keeps_call_order_boundaries_and_stats()
     print("FastMoss evidence renderer tests passed")

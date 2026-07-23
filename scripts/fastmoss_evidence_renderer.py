@@ -30,6 +30,7 @@ PROFILE_GENERIC = "generic"
 
 FASTMOSS_TOOL_PROFILE_GROUPS: dict[str, frozenset[str]] = {
     PROFILE_REFERENCE: frozenset({
+        "credit_usage_summary",
         "fastmoss_detail_url_examples",
         "product_category_info",
         "search_category_by_words",
@@ -105,6 +106,44 @@ class ToolRenderSpec:
     tool_name: str
     profile: str
     entity_type: str
+    evidence_title: str = "业务证据"
+    contract_source: str = "mcp_runtime"
+    report_included: bool = True
+
+
+FASTMOSS_TOOL_TITLES: dict[str, str] = {
+    "ad_data_overview": "广告投放概览", "ad_search": "广告素材样本",
+    "agency_creator_analysis": "机构合作达人分析", "agency_product_analysis": "机构商品结构分析",
+    "agency_product_list": "机构带货商品样本", "agency_profile_overview": "机构概览",
+    "agency_rank_top": "机构榜单", "agency_search": "机构搜索结果", "agency_shop_analysis": "机构合作店铺分析",
+    "creator_cargo_summary": "达人带货概览", "creator_data_trends": "达人数据趋势",
+    "creator_fans_distribution": "达人粉丝分布", "creator_product_list": "达人带货商品样本",
+    "creator_profile_overview": "达人概览", "creator_rank_top_ecommerce": "带货达人榜单",
+    "creator_rank_top_growth": "增长达人榜单", "creator_rank_top_potential": "潜力达人榜单",
+    "creator_search": "达人搜索结果", "creator_video_analysis": "达人视频分析",
+    "credit_usage_summary": "接口额度使用概览", "fastmoss_detail_url_examples": "详情链接格式说明",
+    "live_detail_analysis": "直播详情分析", "live_products_list": "直播带货商品样本", "live_search": "直播搜索结果",
+    "market_category_analysis": "市场类目分析", "market_category_author_sales_matrix": "类目达人销售矩阵",
+    "market_category_ranking": "市场类目排名", "product_category_info": "商品类目信息",
+    "product_creator_analysis": "商品关联达人分析", "product_detail_info": "商品详情",
+    "product_investment": "商品广告投放分析", "product_overview": "商品经营概览",
+    "product_rank_new_listed": "近期上架商品榜", "product_rank_top_selling": "热销商品榜",
+    "product_review_list": "商品评论样本", "product_sales_trend": "商品销售趋势",
+    "product_search": "商品搜索样本", "product_sku": "商品SKU分析", "product_video_list": "商品关联视频样本",
+    "search_category_by_words": "关键词匹配类目", "search_fastmoss_documents": "FastMoss知识文档",
+    "shop_base_info": "店铺概览", "shop_creator_analysis": "店铺合作达人分析",
+    "shop_data_trends": "店铺经营趋势", "shop_investment_analysis": "店铺广告投放分析",
+    "shop_live_analysis": "店铺直播分析", "shop_product_analysis": "店铺商品结构分析",
+    "shop_rank_top_selling": "热销店铺榜", "shop_sale_analysis": "店铺销售渠道分析",
+    "shop_search": "店铺搜索结果", "shop_video_analysis": "店铺视频分析",
+    "video_data_trends": "视频数据趋势", "video_detail_analysis": "视频详情分析",
+    "video_script_info": "视频文案与字幕", "video_search": "视频搜索结果",
+}
+
+FASTMOSS_PUBLIC_API_TOOLS = frozenset({
+    "product_search", "product_rank_new_listed", "product_rank_top_selling",
+})
+FASTMOSS_AUDIT_ONLY_TOOLS = frozenset({"credit_usage_summary"})
 
 
 def _entity_type_for_tool(tool_name: str) -> str:
@@ -126,7 +165,14 @@ def _entity_type_for_tool(tool_name: str) -> str:
 
 
 FASTMOSS_RENDER_SPECS: dict[str, ToolRenderSpec] = {
-    name: ToolRenderSpec(name, profile, _entity_type_for_tool(name))
+    name: ToolRenderSpec(
+        name,
+        profile,
+        _entity_type_for_tool(name),
+        FASTMOSS_TOOL_TITLES[name],
+        "official_api" if name in FASTMOSS_PUBLIC_API_TOOLS else "mcp_runtime",
+        name not in FASTMOSS_AUDIT_ONLY_TOOLS,
+    )
     for profile, names in FASTMOSS_TOOL_PROFILE_GROUPS.items()
     for name in names
 }
@@ -149,6 +195,8 @@ class RenderedToolEvidence:
     consumed_paths: set[str] = field(default_factory=set)
     unmapped_paths: set[str] = field(default_factory=set)
     excluded_paths: set[str] = field(default_factory=set)
+    exclusion_reasons: dict[str, str] = field(default_factory=dict)
+    diagnostics: list[str] = field(default_factory=list)
     fallback: bool = False
     empty: bool = False
 
@@ -175,6 +223,12 @@ class RenderedEvidenceDocument:
             "consumed_leaf_count": sum(len(result.consumed_paths) for result in self.tool_results),
             "unmapped_leaf_count": sum(len(result.unmapped_paths) for result in self.tool_results),
             "excluded_leaf_count": sum(len(result.excluded_paths) for result in self.tool_results),
+            "audit_only_leaf_count": sum(len(result.exclusion_reasons) for result in self.tool_results),
+            "diagnostics": [
+                diagnostic
+                for result in self.tool_results
+                for diagnostic in result.diagnostics
+            ],
             "node_counts": node_counts,
             "markdown_chars": len(self.markdown),
         }
@@ -431,6 +485,8 @@ _FIELD_LABELS = {
     "avatar": "头像链接",
     "cover": "封面链接",
     "create_date": "创建日期",
+    "create_time": "发布时间",
+    "publish_time": "发布时间",
     "launch_time": "上架时间",
     "launch_date": "上架日期",
     "listing_date": "上架日期",
@@ -543,6 +599,183 @@ _FIELD_LABELS = {
     "linked_creators": "关联达人",
     "videos": "视频记录",
     "list": "记录列表",
+    "balance": "剩余额度",
+    "credits": "额度",
+    "credit_balance": "剩余额度",
+    "used_credits": "已使用额度",
+    "remaining_credits": "剩余额度",
+    "subscription": "订阅方案",
+    "trial_package": "试用套餐",
+    "top_up_packages": "充值套餐",
+    "billing_period": "计费周期",
+    "category_path": "类目路径",
+    "category_l1_id": "一级类目ID",
+    "category_l2_id": "二级类目ID",
+    "category_l3_id": "三级类目ID",
+    "is_new_listed": "是否近期上架",
+    "product_source": "商品来源",
+    "off_shelves": "是否下架",
+    "shipping_type": "配送方式",
+    "shop_type": "店铺类型",
+    "sales_summary": "销售表现汇总",
+    "distribution_summary": "分布结构汇总",
+    "commerce_summary": "带货表现汇总",
+    "audience_summary": "受众概览",
+    "performance_summary": "表现汇总",
+    "ranking_metrics": "排名指标",
+    "potential_metrics": "潜力指标",
+    "follower_tier_distribution": "粉丝层级分布",
+    "creator_category_distribution": "达人类目分布",
+    "product_contribution": "商品贡献",
+    "creator_cumulative_performance": "达人累计表现",
+    "trend_series": "趋势序列",
+    "sales_price_distribution": "销售价格分布",
+    "sub_category_units_sold_total": "子类目总销量",
+    "shop_cumulative_units_sold": "店铺累计销量",
+    "sales_timeline": "销售时间线",
+    "interaction_rate": "互动率",
+    "linked_products": "关联商品",
+    "has_email": "是否提供邮箱",
+    "run_days": "投放天数",
+    "landing_page": "落地页类型",
+    "price_band": "价格区间",
+    "price_range": "价格范围",
+    "follower_tier": "粉丝层级",
+    "category_summary": "类目汇总",
+    "category_breakdown": "类目明细",
+    "account": "账号信息",
+    "creator": "达人信息",
+    "live": "直播信息",
+    "agency": "机构信息",
+    "reviews_list": "评论记录",
+    "review_id": "评论ID",
+    "review_content": "评论内容",
+    "review_rating": "评论评分",
+    "inventory": "库存",
+    "inventory_share_percent": "库存占比",
+    "sku": "SKU信息",
+    "sku_id": "SKU ID",
+    "units_sold_ratio_percent": "销量占比",
+    "status": "状态",
+    "reason": "原因",
+    "issue": "问题",
+    "metric": "指标",
+    "value": "数值",
+    "unit": "单位",
+    "conflict_type": "冲突类型",
+    "denominator_product_count": "分母商品数",
+    "denominator_units": "分母销量",
+    "numerator_top_n": "分子头部商品数",
+    "input_product_ids": "参与计算的商品ID",
+    "claim_boundary": "结论边界",
+    "coverage_complete": "是否完成计划覆盖",
+    "fetched_unique": "实际获取的去重记录数",
+    "attempted_pages": "已尝试页码",
+    "reported_total": "接口报告总量",
+    "products_with_units": "有销量的商品数",
+    "sample_units_total": "样本销量合计",
+    "eligible_product_count": "符合条件的商品数",
+    "q1": "第一四分位数",
+    "median": "中位数",
+    "q3": "第三四分位数",
+    "min": "最小值",
+    "max": "最大值",
+    "last_7d_gmv": "近7日销售额（GMV）",
+    "last_7d_units_sold": "近7日销量",
+    "last_28d_gmv": "近28日销售额（GMV）",
+    "last_28d_units_sold": "近28日销量",
+    "last_90d_gmv": "近90日销售额（GMV）",
+    "last_90d_units_sold": "近90日销量",
+    "yesterday_gmv": "昨日销售额（GMV）",
+    "yesterday_units_sold": "昨日销量",
+    "result": "查询结果",
+    "summary_metrics": "汇总指标",
+    "category_l1": "一级类目",
+    "category_l2": "二级类目",
+    "category_l3": "三级类目",
+    "category_sales_rank": "类目销量排名",
+    "country_sales_rank": "国家销量排名",
+    "ceiling_price_display": "最高价格展示值",
+    "floor_price_display": "最低价格展示值",
+    "currency_symbol": "币种符号",
+    "is_new_product": "是否新品",
+    "review_count": "评论数",
+    "shipping_fee": "运费",
+    "shipping_method_code": "配送方式编码",
+    "stock_count": "库存数量",
+    "stock_count_label": "库存状态说明",
+    "shop_category_l1": "店铺一级类目",
+    "shop_total_gmv": "店铺累计销售额（GMV）",
+    "shop_total_units_sold": "店铺累计销量",
+    "active_product_count": "在售商品数",
+    "new_product_count": "新品数量",
+    "period_label": "统计周期说明",
+    "selling_creator_count": "产生销售的达人数",
+    "selling_live_count": "产生销售的直播数",
+    "selling_video_count": "产生销售的视频数",
+    "creator_handle": "达人账号",
+    "window_gmv": "观察窗口销售额（GMV）",
+    "window_units_sold": "观察窗口销量",
+    "traffic_flags": "流量属性",
+    "video_meta": "视频元数据",
+    "creator_category": "达人类目",
+    "age_distribution": "年龄分布",
+    "gender_distribution": "性别分布",
+    "creator_name": "达人名称",
+    "product_gmv": "商品销售额（GMV）",
+    "product_units_sold": "商品销量",
+    "product_linked_live_count": "商品关联直播数",
+    "product_linked_video_count": "商品关联视频数",
+    "product_video_gmv": "商品视频归因销售额（GMV）",
+    "product_video_units_sold": "商品视频归因销量",
+    "categories": "类目记录",
+    "active_product_count_average": "平均在售商品数",
+    "active_product_count_total": "在售商品数合计",
+    "category_units_sold_average": "类目平均销量",
+    "category_units_sold_total": "类目销量合计",
+    "new_product_count_average": "平均新品数量",
+    "new_product_count_total": "新品数量合计",
+    "selling_creator_count_average": "平均产生销售的达人数",
+    "selling_creator_count_total": "产生销售的达人数合计",
+    "selling_live_count_average": "平均产生销售的直播数",
+    "selling_live_count_total": "产生销售的直播数合计",
+    "selling_video_count_average": "平均产生销售的视频数",
+    "selling_video_count_total": "产生销售的视频数合计",
+    "category_id_level1": "一级类目ID",
+    "category_id_level2": "二级类目ID",
+    "category_id_level3": "三级类目ID",
+    "cn_name": "中文类目名称",
+    "cn_full_name": "中文完整类目路径",
+    "max_total_results": "最多返回结果数",
+}
+
+_REPORT_VALUE_LABELS = {
+    "category_sample_top1_share": "已获取类目样本中销量最高商品的占比",
+    "category_sample_top3_share": "已获取类目样本中销量前三商品的占比",
+    "category_sample_top10_share": "已获取类目样本中销量前十商品的占比",
+    "segment_sample_units": "同一查询词样本销量合计",
+    "segment_sample_price_midpoint_quartiles": "同一查询词样本价格中点四分位数",
+    "fetched_category_sample_only": "仅限本轮已获取的类目样本",
+    "fetched_same_query_sample_only": "仅限本轮同一查询词样本",
+    "same_query_nonconflicting_sample_not_recommended_price": "仅限同一查询词且无价格冲突的样本，不代表建议售价",
+    "provider_currency": "接口返回币种",
+    "units": "件",
+    "ratio": "比例",
+    "must_not_imply_share_of_unfetched_products_or_total_market": "不得外推为未获取商品或全市场份额",
+    "observed_sample_band_not_recommended_launch_price": "仅为已观察样本价格带，不是建议上市价格",
+    "returned_product_outside_requested_l3": "返回记录超出请求的三级类目范围",
+    "gmv_units_price_conflict": "销售额、销量与价格口径冲突",
+    "period_mismatch": "统计周期不一致",
+    "entity_mismatch": "业务实体不一致",
+}
+_AUDIT_ONLY_FIELD_KEYS = {
+    "avatar", "avatar_thumb", "avatar_url", "cover", "cover_url", "detail_url",
+    "fastmoss_detail_url", "fastmoss_url", "image", "image_url", "images",
+    "request_id", "timestamp", "tiktok_url", "tool_id", "url_list",
+}
+_INTERNAL_REPORT_KEYS = {
+    "source_ref", "source_tool", "source_call_index", "tool_name", "fact_id",
+    "input_fact_ids", "evidence_refs", "parser_status", "metric_grain",
 }
 
 _ACRONYM_WORDS = {"asin", "bsr", "cpr", "gmv", "id", "ipm", "ppc", "roas", "sku", "spr", "uid", "url"}
@@ -586,6 +819,7 @@ _ENUM_VALUE_LABELS = {
         "live": "直播",
     },
     "is_ad": {"0": "否（非广告）", "1": "是（广告）"},
+    "off_shelves": {"0": "否（在售）", "1": "是（已下架）"},
     "account_type": {"1": "个人达人", "2": "店铺达人"},
     "ecommerce_type": {"1": "视频带货", "2": "直播带货"},
     "search_model": {
@@ -607,6 +841,16 @@ _ENUM_VALUE_LABELS = {
         "CA": "加拿大站（CA）", "MX": "墨西哥站（MX）", "BR": "巴西站（BR）",
         "JP": "日本站（JP）", "DE": "德国站（DE）", "FR": "法国站（FR）",
         "IT": "意大利站（IT）", "ES": "西班牙站（ES）", "AU": "澳大利亚站（AU）",
+    },
+    "currency": {
+        "USD": "美元（USD）", "GBP": "英镑（GBP）", "EUR": "欧元（EUR）",
+        "CAD": "加拿大元（CAD）", "MXN": "墨西哥比索（MXN）", "BRL": "巴西雷亚尔（BRL）",
+        "JPY": "日元（JPY）", "AUD": "澳大利亚元（AUD）",
+    },
+    "currency_code": {
+        "USD": "美元（USD）", "GBP": "英镑（GBP）", "EUR": "欧元（EUR）",
+        "CAD": "加拿大元（CAD）", "MXN": "墨西哥比索（MXN）", "BRL": "巴西雷亚尔（BRL）",
+        "JPY": "日元（JPY）", "AUD": "澳大利亚元（AUD）",
     },
     "lang": {"ZH_CN": "简体中文", "EN": "英文"},
     "parser_status": {"supported": "已按已知接口结构解析", "unsupported_parser": "暂无专用解析规则"},
@@ -789,6 +1033,11 @@ def _field_label(key: str) -> str:
     )
 
 
+def _known_field_label(key: str) -> str | None:
+    normalized = _normalized_field_key(key)
+    return _FIELD_LABELS.get(key) or _FIELD_LABELS.get(normalized)
+
+
 def _dotted_field_label(key: str) -> str:
     parts = [part for part in str(key).split(".") if part and part != "request"]
     return " · ".join(_field_label(part) for part in parts) or _field_label(key)
@@ -818,19 +1067,25 @@ def _semantic_value(field_name: str, value: Any) -> str:
         return "、".join(_field_label(item) for item in fields) or "未指定（返回接口默认字段）"
     if isinstance(value, str) and normalized == "field":
         return _field_label(value)
+    if isinstance(value, str) and normalized in {"date_value", "period"}:
+        week = re.fullmatch(r"(\d{4})-(?:W)?(\d{1,2})", value, re.IGNORECASE)
+        if week:
+            return f"{week.group(1)}年第{int(week.group(2))}周"
     if value is None or isinstance(value, (str, bool)):
         text = _scalar_text(value)
         return _ENUM_VALUE_LABELS.get(normalized, {}).get(text, text)
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         if normalized in _TIMESTAMP_FIELDS and value >= 1_000_000_000:
             seconds = float(value) / 1000 if value >= 10_000_000_000 else float(value)
-            timestamp = datetime.fromtimestamp(
-                seconds, tz=timezone(timedelta(hours=8))
-            ).isoformat(timespec="seconds")
-            return f"{timestamp}（原始时间戳 {value}）"
+            moment = datetime.fromtimestamp(seconds, tz=timezone(timedelta(hours=8)))
+            if normalized == "launch_time":
+                return moment.date().isoformat()
+            return moment.strftime("%Y-%m-%d %H:%M:%S（UTC+8）")
         enum_value = _ENUM_VALUE_LABELS.get(normalized, {}).get(str(value))
         if enum_value is not None:
             return enum_value
+        if normalized.startswith(("is_", "has_")) and value in {0, 1}:
+            return "是" if value == 1 else "否"
         if normalized in _FRACTION_PERCENT_FIELDS:
             return f"{_percent_text(float(value) * 100)}%"
         if normalized in _PERCENT_VALUE_FIELDS:
@@ -899,6 +1154,78 @@ def _entity_identity(value: Mapping[str, Any]) -> str:
     return ""
 
 
+def _argument_query_hint(value: Any) -> str:
+    if isinstance(value, Mapping):
+        for key in ("keywords", "keyword", "query", "name"):
+            item = value.get(key)
+            if isinstance(item, str) and item.strip():
+                return item.strip()
+            if isinstance(item, list):
+                words = [str(word).strip() for word in item if str(word).strip()]
+                if words:
+                    return "、".join(words[:3])
+        for item in value.values():
+            hint = _argument_query_hint(item)
+            if hint:
+                return hint
+    return ""
+
+
+def _clean_report_text(value: Any) -> str:
+    text = str(value or "")
+    text = re.sub(r"\bcall:\d+\b", "本次证据", text, flags=re.IGNORECASE)
+    for name, spec in FASTMOSS_RENDER_SPECS.items():
+        text = text.replace(f"fastmoss__{name}", spec.evidence_title)
+    for raw, label in {
+        "source_ref": "证据来源", "arguments": "调用参数", "marketplace": "站点",
+        "metric_grain": "指标口径", "entity_type": "研究对象类型",
+        "returned_product_outside_requested_l3": "返回记录超出请求的三级类目范围",
+    }.items():
+        text = re.sub(rf"\b{re.escape(raw)}\b", label, text)
+    return _REPORT_VALUE_LABELS.get(text, text)
+
+
+def _report_semantic_metadata(value: Any, field_name: str = "") -> Any:
+    if isinstance(value, Mapping):
+        localized: dict[str, Any] = {}
+        for key, item in value.items():
+            normalized = _normalized_field_key(str(key))
+            if normalized in _INTERNAL_REPORT_KEYS:
+                continue
+            label = _known_field_label(str(key))
+            if label is None:
+                continue
+            child = _report_semantic_metadata(item, str(key))
+            if child not in (None, "", [], {}):
+                localized[label] = child
+        return localized
+    if isinstance(value, list):
+        return [
+            item
+            for raw in value
+            if (item := _report_semantic_metadata(raw, field_name)) not in (None, "", [], {})
+        ]
+    if isinstance(value, str):
+        return _semantic_value(field_name, _clean_report_text(value))
+    return _semantic_value(field_name, value)
+
+
+def fastmoss_semantic_registry_diagnostics(runtime_tool_names: Iterable[str]) -> dict[str, Any]:
+    runtime = {
+        unprefixed_tool_name(name)
+        for name in runtime_tool_names
+        if str(name).startswith("fastmoss__") or "__" not in str(name)
+    }
+    registered = set(FASTMOSS_RENDER_SPECS)
+    return {
+        "runtime_count": len(runtime),
+        "registered_count": len(registered),
+        "missing_contracts": sorted(runtime - registered),
+        "missing_runtime": sorted(registered - runtime),
+        "ok": runtime == registered,
+    }
+
+
 class SemanticToolRenderer:
     def __init__(
         self,
@@ -913,10 +1240,14 @@ class SemanticToolRenderer:
             self.tool_name,
             ToolRenderSpec(self.tool_name, PROFILE_GENERIC, _entity_type_for_tool(self.tool_name)),
         )
+        self.strict_contract = self.full_tool_name.startswith("fastmoss__")
         self.nodes: list[EvidenceNode] = []
         self.consumed: set[str] = set()
         self.unmapped: set[str] = set()
         self.excluded: set[str] = set()
+        self.exclusion_reasons: dict[str, str] = {}
+        self.diagnostics: list[str] = []
+        self.generated_conflicts: list[str] = []
 
     def render(self) -> RenderedToolEvidence:
         data = self.entry.get("business_data")
@@ -925,19 +1256,34 @@ class SemanticToolRenderer:
         fence = self.entry.get("evidence_fence") if isinstance(self.entry.get("evidence_fence"), dict) else {}
         data_state = str(fence.get("data_state") or "").strip().lower()
         error = str(self.entry.get("error") or "").strip()
-        lines = [f"## {_heading_text(source_ref)} · `{self.full_tool_name}`"]
+        query_hint = _argument_query_hint(self.entry.get("arguments"))
+        evidence_title = self.spec.evidence_title
+        if query_hint and self.tool_name in {
+            "product_search", "shop_search", "creator_search", "video_search", "live_search",
+            "agency_search", "search_category_by_words", "ad_search",
+        }:
+            evidence_title = f"{query_hint} · {evidence_title}"
+        lines = (
+            [f"## {_heading_text(evidence_title)}"]
+            if self.strict_contract
+            else [f"## {_heading_text(source_ref)} · `{self.full_tool_name}`"]
+        )
         lines.extend(["", *self._scope_lines()])
         boundary_lines = self._tool_boundary_lines()
         if boundary_lines:
             lines.extend(["", *boundary_lines])
 
-        if error or data_state == "error":
+        if not self.spec.report_included:
+            self.nodes.append(EvidenceNode("AuditOnlyResult", evidence_title, "$.business_data"))
+            self._exclude_value(data, "$.business_data", "接口账号或额度信息仅用于运行审计，不参与商业报告推理")
+            lines.extend(["", "本段数据仅用于系统运行审计，不参与商业分析或报告推理。"])
+        elif error or data_state == "error":
             self.nodes.append(EvidenceNode("ErrorResult", "调用失败", "$.business_data"))
             lines.extend([
                 "", "### 调用结果", "",
                 f"本次调用失败，失败范围仅限上述对象和参数。错误信息：{error or '工具返回错误状态。'}",
             ])
-            self.excluded.update(all_paths)
+            self._exclude_value(data, "$.business_data", "调用失败，业务返回不参与报告推理")
         elif data_state == "empty":
             self.nodes.append(EvidenceNode("EmptyResult", "空结果", "$.business_data"))
             lines.extend([
@@ -949,7 +1295,7 @@ class SemanticToolRenderer:
             # describe the response state rather than an observed zero-valued
             # business metric, so the natural-language EmptyResult supersedes
             # those leaves.
-            self.excluded.update(all_paths)
+            self._exclude_value(data, "$.business_data", "空结果已由自然语言状态说明替代")
         else:
             rendered = self._render_value(data, "$.business_data", 3, "业务结果")
             if rendered:
@@ -957,11 +1303,14 @@ class SemanticToolRenderer:
 
         self.unmapped.update(all_paths - self.consumed - self.excluded)
         if self.unmapped:
-            raise ValueError(
-                f"semantic renderer left {len(self.unmapped)} business fields unmapped for {self.tool_name}"
-            )
+            if self.strict_contract:
+                raise ValueError(
+                    f"semantic renderer left {len(self.unmapped)} business fields unmapped for {self.tool_name}"
+                )
 
         conflicts = self.entry.get("scope_conflicts")
+        if self.generated_conflicts:
+            conflicts = [*(conflicts if isinstance(conflicts, list) else []), *self.generated_conflicts]
         if conflicts:
             lines.extend(["", "### 本次调用的证据边界", ""])
             lines.extend(self._render_complete_value(conflicts, "$.scope_conflicts", 4))
@@ -975,6 +1324,8 @@ class SemanticToolRenderer:
             consumed_paths=set(self.consumed),
             unmapped_paths=set(self.unmapped),
             excluded_paths=set(self.excluded),
+            exclusion_reasons=dict(self.exclusion_reasons),
+            diagnostics=list(self.diagnostics),
             empty=data_state == "empty",
         )
         if result.business_leaf_paths != result.consumed_paths | result.unmapped_paths | result.excluded_paths:
@@ -983,28 +1334,77 @@ class SemanticToolRenderer:
             raise ValueError(f"business field rendered twice for {self.tool_name}")
         return result
 
+    def _exclude_value(self, value: Any, path: str, reason: str) -> None:
+        for leaf_path in business_leaf_paths(value, path):
+            self.excluded.add(leaf_path)
+            self.exclusion_reasons[leaf_path] = reason
+
+    def _strict_label(self, key: str, value: Any, path: str) -> str | None:
+        normalized = _normalized_field_key(key)
+        if normalized in _AUDIT_ONLY_FIELD_KEYS:
+            self._exclude_value(value, path, f"{normalized} 为链接、图片或传输审计字段")
+            return None
+        label = _known_field_label(key)
+        if label is None and self.strict_contract:
+            self._exclude_value(value, path, f"{normalized or key} 尚无经核验的自然语言字段契约")
+            self.diagnostics.append(f"{self.tool_name}: 仅审计字段 {normalized or key}")
+            return None
+        return label or _field_label(key)
+
+    def _duplicate_date_keys(self, value: Mapping[str, Any], path: str) -> set[str]:
+        if not self.strict_contract:
+            return set()
+        if "launch_date" not in value or "launch_time" not in value:
+            return set()
+        launch_date = str(value.get("launch_date") or "").strip()[:10]
+        launch_time = value.get("launch_time")
+        timestamp_date = _semantic_value("launch_time", launch_time) if launch_time not in (None, "") else ""
+        launch_time_path = _path(path, "launch_time")
+        self._exclude_value(launch_time, launch_time_path, "与自然化后的上架日期重复，报告只展示一个日期")
+        if launch_date and timestamp_date and launch_date != timestamp_date:
+            self.generated_conflicts.append(
+                f"同一记录的上架日期为 {launch_date}，Unix上架时间换算日期为 {timestamp_date}，两者不一致；报告不得自行选择其一修正。"
+            )
+        return {"launch_time"}
+
     def _scope_lines(self) -> list[str]:
         arguments = self.entry.get("arguments")
         fence = self.entry.get("evidence_fence") if isinstance(self.entry.get("evidence_fence"), dict) else {}
         rows: list[tuple[str, Any]] = []
         if isinstance(arguments, dict):
-            rows.extend(
-                (f"调用参数：{_argument_field_label(key)}", _semantic_value(key, value))
-                for key, value in self._flatten(arguments)
-            )
+            if not self.strict_contract:
+                rows.extend(
+                    (f"调用参数：{_argument_field_label(key)}", _semantic_value(key, value))
+                    for key, value in self._flatten(arguments)
+                )
+            else:
+                for key, value in self._flatten(arguments):
+                    last_key = str(key).rsplit(".", 1)[-1]
+                    label = _known_field_label(last_key)
+                    if label is None:
+                        self.diagnostics.append(f"{self.tool_name}: 未展示调用参数 {key}")
+                        continue
+                    rows.append((label, _semantic_value(key, value)))
             rows.extend(self._period_context_rows(arguments))
-        for key, value in fence.items():
-            if value not in (None, "", [], {}):
-                rows.append((f"证据范围：{_field_label(str(key))}", _semantic_value(str(key), value)))
+        if not self.strict_contract:
+            for key, value in fence.items():
+                if value not in (None, "", [], {}):
+                    rows.append((f"证据范围：{_field_label(str(key))}", _semantic_value(str(key), value)))
         if not rows:
-            return ["> 本次调用没有额外参数或围栏字段。"]
+            return [
+                "> 本段证据没有额外的业务范围参数。"
+                if self.strict_contract
+                else "> 本次调用没有额外参数或围栏字段。"
+            ]
         return _table(
-            ["调用范围", "值"],
+            ["证据范围", "值"] if self.strict_contract else ["调用范围", "值"],
             rows,
         )
 
     def _period_context_rows(self, arguments: Mapping[str, Any]) -> list[tuple[str, Any]]:
-        """Add explicit calendar boundaries that are implied by request parameters."""
+        """The provider's period code is authoritative; never invent boundaries."""
+        if self.strict_contract:
+            return []
         periods: list[tuple[str, str]] = []
 
         def collect(value: Any) -> None:
@@ -1044,27 +1444,15 @@ class SemanticToolRenderer:
                 end = start + timedelta(days=6)
                 rows.extend([
                     ("程序补充：ISO周日期范围", f"{start.isoformat()} 至 {end.isoformat()}"),
-                    (
-                        "程序补充：周范围口径",
-                        "按 ISO 8601 的周一至周日换算；接口返回体未提供平台统计时区或自定义周边界，若 FastMoss 平台另有定义应以平台口径为准。",
-                    ),
+                    ("程序补充：周范围口径", "按 ISO 8601 的周一至周日换算；接口未提供平台自定义周边界。"),
                 ])
             elif key[0] == "month":
                 match = re.fullmatch(r"(\d{4})[-.]?(\d{2})", date_value)
                 if not match:
                     continue
-                try:
-                    start_dt = datetime(int(match.group(1)), int(match.group(2)), 1)
-                except ValueError:
-                    continue
-                if start_dt.month == 12:
-                    next_month = datetime(start_dt.year + 1, 1, 1)
-                else:
-                    next_month = datetime(start_dt.year, start_dt.month + 1, 1)
-                rows.append((
-                    "程序补充：自然月日期范围",
-                    f"{start_dt.date().isoformat()} 至 {(next_month - timedelta(days=1)).date().isoformat()}",
-                ))
+                start_dt = datetime(int(match.group(1)), int(match.group(2)), 1)
+                next_month = datetime(start_dt.year + (1 if start_dt.month == 12 else 0), 1 if start_dt.month == 12 else start_dt.month + 1, 1)
+                rows.append(("程序补充：自然月日期范围", f"{start_dt.date().isoformat()} 至 {(next_month - timedelta(days=1)).date().isoformat()}"))
         return rows
 
     def _tool_boundary_lines(self) -> list[str]:
@@ -1138,25 +1526,32 @@ class SemanticToolRenderer:
 
         scalar_rows: list[tuple[str, Any]] = []
         nested: list[tuple[str, Any, str]] = []
+        duplicate_date_keys = self._duplicate_date_keys(value, path)
         for key, item in value.items():
+            key = str(key)
             child_path = _path(path, str(key))
+            if key in duplicate_date_keys:
+                continue
+            label = self._strict_label(key, item, child_path) if self.strict_contract else _field_label(key)
+            if label is None:
+                continue
             if _scalar(item):
-                scalar_rows.append((_field_label(str(key)), _semantic_value(str(key), item)))
+                scalar_rows.append((label, _semantic_value(key, item)))
                 self.consumed.add(child_path)
-            elif isinstance(item, dict) and str(key).lower() not in _ENTITY_CONTAINER_KEYS:
+            elif isinstance(item, dict) and key.lower() not in _ENTITY_CONTAINER_KEYS:
                 flattened, child_nested = self._flatten_dict_fields(
-                    item, child_path, str(key)
+                    item, child_path, label if self.strict_contract else key
                 )
                 scalar_rows.extend(flattened)
                 nested.extend(child_nested)
             else:
-                nested.append((str(key), item, child_path))
+                nested.append((label if self.strict_contract else key, item, child_path))
         if scalar_rows:
             lines.extend(["", *_table(["指标", "值"], scalar_rows)])
 
         for key, item, child_path in nested:
             child_lines = self._render_value(
-                item, child_path, level + 1, _dotted_field_label(key)
+                item, child_path, level + 1, key if self.strict_contract else _dotted_field_label(key)
             )
             if child_lines:
                 lines.extend(["", *child_lines])
@@ -1208,7 +1603,8 @@ class SemanticToolRenderer:
                         else:
                             row.append("（字段缺失）")
                     rows.append(row)
-                lines.extend(["", *_table(["序号", *(_dotted_field_label(key) for key in primary)], rows)])
+                headers = primary if self.strict_contract else [_dotted_field_label(key) for key in primary]
+                lines.extend(["", *_table(["序号", *headers], rows)])
             if extra:
                 supplemental: list[tuple[Any, ...]] = []
                 for index, record in enumerate(records):
@@ -1218,7 +1614,7 @@ class SemanticToolRenderer:
                             continue
                         value_item, child_path = flattened_record[key]
                         self.consumed.add(child_path)
-                        supplemental.append((index + 1, _dotted_field_label(key), value_item))
+                        supplemental.append((index + 1, key if self.strict_contract else _dotted_field_label(key), value_item))
                 if supplemental:
                     lines.extend(["", "补充指标：", "", *_table(
                         ["记录", "指标", "值"], supplemental
@@ -1229,7 +1625,7 @@ class SemanticToolRenderer:
                         item,
                         child_path,
                         level + 1,
-                        f"记录 {index + 1} · {_dotted_field_label(key)}",
+                        f"记录 {index + 1} · {key if self.strict_contract else _dotted_field_label(key)}",
                     )
                     if nested:
                         lines.extend(["", *nested])
@@ -1252,9 +1648,14 @@ class SemanticToolRenderer:
         for key, item in value.items():
             key = str(key)
             child_path = _path(path, key)
-            field_name = f"{prefix}.{key}" if prefix else key
+            label = self._strict_label(key, item, child_path) if self.strict_contract else _field_label(key)
+            if label is None:
+                continue
+            field_name = (
+                f"{prefix} · {label}" if prefix else label
+            ) if self.strict_contract else (f"{prefix}.{key}" if prefix else key)
             if _scalar(item):
-                rows.append((_dotted_field_label(field_name), _semantic_value(key, item)))
+                rows.append((field_name if self.strict_contract else _dotted_field_label(field_name), _semantic_value(key, item)))
                 self.consumed.add(child_path)
             elif isinstance(item, dict) and key.lower() not in _ENTITY_CONTAINER_KEYS:
                 child_rows, child_nested = self._flatten_dict_fields(
@@ -1274,10 +1675,18 @@ class SemanticToolRenderer:
     ) -> tuple[dict[str, tuple[Any, str]], list[tuple[str, Any, str]]]:
         fields: dict[str, tuple[Any, str]] = {}
         nested: list[tuple[str, Any, str]] = []
+        duplicate_date_keys = self._duplicate_date_keys(value, path)
         for key, item in value.items():
             key = str(key)
             child_path = _path(path, key)
-            field_name = f"{prefix}.{key}" if prefix else key
+            if key in duplicate_date_keys:
+                continue
+            label = self._strict_label(key, item, child_path) if self.strict_contract else _field_label(key)
+            if label is None:
+                continue
+            field_name = (
+                f"{prefix} · {label}" if prefix else label
+            ) if self.strict_contract else (f"{prefix}.{key}" if prefix else key)
             if _scalar(item):
                 fields[field_name] = (_semantic_value(key, item), child_path)
             elif isinstance(item, dict):
@@ -1291,9 +1700,8 @@ class SemanticToolRenderer:
         return fields, nested
 
     def _render_complete_value(self, value: Any, path: str, level: int) -> list[str]:
-        # Conflict/boundary metadata is already program-authoritative.  Generic
-        # Markdown keeps it complete without adding it to business conservation.
-        rendered = json_to_markdown(value, title="边界详情", include_paths=False)
+        semantic = _report_semantic_metadata(value)
+        rendered = json_to_markdown(semantic, title="边界详情", include_paths=False)
         body = rendered.splitlines()[1:]
         return [line for line in body if line.strip()]
 
@@ -1317,39 +1725,64 @@ class SemanticToolRenderer:
 
 
 def render_fastmoss_tool_evidence(entry: Mapping[str, Any]) -> RenderedToolEvidence:
-    """Render one call; fall back locally without dropping its source payload."""
+    """Render one call; isolate contract failures without leaking raw JSON."""
 
+    tool_name = unprefixed_tool_name(str(entry.get("tool_name") or "unknown"))
+    if tool_name not in FASTMOSS_RENDER_SPECS:
+        data = entry.get("business_data")
+        paths = business_leaf_paths(data)
+        reason = "运行时工具没有登记 FastMoss Semantic 契约"
+        return RenderedToolEvidence(
+            markdown=(
+                "## 未登记的业务证据\n\n"
+                "该段返回仅保留在审计证据中，未交给报告模型推理；系统已记录缺失契约诊断。"
+            ),
+            tool_name=tool_name,
+            profile=PROFILE_GENERIC,
+            node_types=["ContractIsolation"],
+            business_leaf_paths=paths,
+            excluded_paths=paths,
+            exclusion_reasons={path: reason for path in paths},
+            diagnostics=[f"{tool_name}: {reason}"],
+            fallback=True,
+        )
     renderer = SemanticToolRenderer(entry)
     try:
         return renderer.render()
-    except Exception:
-        tool_name = unprefixed_tool_name(str(entry.get("tool_name") or "unknown"))
+    except Exception as exc:
         data = entry.get("business_data")
         paths = business_leaf_paths(data)
-        markdown = json_to_markdown(
-            localize_semantic_value(dict(entry)),
-            title=f"{entry.get('source_ref') or 'call:?'} · {entry.get('tool_name') or tool_name}",
-            include_paths=False,
-        ).rstrip()
+        spec = FASTMOSS_RENDER_SPECS.get(
+            tool_name, ToolRenderSpec(tool_name, PROFILE_GENERIC, "reference")
+        )
+        markdown = (
+            f"## {spec.evidence_title}\n\n"
+            "该段业务返回未通过已登记的 Semantic 字段契约，因此仅保留在审计证据中，"
+            "未交给报告模型推理。"
+        )
+        reason = f"Semantic 契约渲染失败：{type(exc).__name__}"
         return RenderedToolEvidence(
             markdown=markdown,
             tool_name=tool_name,
-            profile=FASTMOSS_RENDER_SPECS.get(
-                tool_name, ToolRenderSpec(tool_name, PROFILE_GENERIC, "reference")
-            ).profile,
-            node_types=["GenericFallback"],
+            profile=spec.profile,
+            node_types=["ContractIsolation"],
             business_leaf_paths=paths,
-            unmapped_paths=paths,
+            excluded_paths=paths,
+            exclusion_reasons={path: reason for path in paths},
+            diagnostics=[f"{tool_name}: {type(exc).__name__}: {exc}"],
             fallback=True,
         )
 
 
 def _context_markdown(dossier: Mapping[str, Any]) -> list[str]:
+    category_path = dossier.get("target_category_path") or []
+    category_text = " > ".join(str(item) for item in category_path) if isinstance(category_path, list) else str(category_path)
+    targets = _report_semantic_metadata(dossier.get("analysis_targets") or [])
     rows = [
         ("工作流", _semantic_value("workflow", dossier.get("workflow") or "product")),
         ("报告日期", dossier.get("report_date") or ""),
-        ("目标类目路径", json.dumps(localize_semantic_value(dossier.get("target_category_path") or []), ensure_ascii=False)),
-        ("分析目标", json.dumps(localize_semantic_value(dossier.get("analysis_targets") or []), ensure_ascii=False)),
+        ("目标类目路径", category_text or "未指定"),
+        ("分析目标", _semantic_value("analysis_targets", targets)),
     ]
     return ["## 调研上下文", "", *_table(["项目", "值"], rows)]
 
@@ -1376,9 +1809,12 @@ def render_fastmoss_evidence_document(dossier: Mapping[str, Any]) -> RenderedEvi
         value = dossier.get(key)
         if value in (None, "", [], {}):
             continue
+        semantic_value = _report_semantic_metadata(value, key)
+        if semantic_value in (None, "", [], {}):
+            continue
         lines.extend(["", f"## {title}", ""])
         generic = json_to_markdown(
-            localize_semantic_value(value), title=title, include_paths=False
+            semantic_value, title=title, include_paths=False
         ).splitlines()[1:]
         lines.extend(line for line in generic if line.strip())
 
@@ -1391,10 +1827,12 @@ __all__ = [
     "FASTMOSS_CURRENT_TOOL_NAMES",
     "FASTMOSS_RENDER_SPECS",
     "FASTMOSS_TOOL_PROFILE_GROUPS",
+    "FASTMOSS_TOOL_TITLES",
     "RenderedEvidenceDocument",
     "RenderedToolEvidence",
     "ToolRenderSpec",
     "business_leaf_paths",
+    "fastmoss_semantic_registry_diagnostics",
     "localize_semantic_value",
     "render_fastmoss_evidence_document",
     "render_fastmoss_tool_evidence",

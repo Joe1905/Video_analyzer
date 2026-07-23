@@ -3080,7 +3080,7 @@ def test_fastmoss_answer_verifier_applies_local_edits_and_keeps_draft_on_failure
 
 
 def test_fastmoss_all_workflow_tools_emit_supported_envelopes() -> None:
-    assert len(web_app.FASTMOSS_SUPPORTED_EVIDENCE_TOOLS) == 54
+    assert len(web_app.FASTMOSS_SUPPORTED_EVIDENCE_TOOLS) == 55
     assert web_app.FASTMOSS_SUPPORTED_EVIDENCE_TOOLS == web_app.FASTMOSS_CURRENT_TOOL_NAMES
     generic_payload = {
         "summary_metrics": {"gmv": 100, "units_sold": 5},
@@ -3784,21 +3784,26 @@ def test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence() -> None:
     assert "不能仅为了简洁省略有差异的类目、商品、趋势、达人、内容或店铺证据" in report_system
     assert "不得概括为‘纯视频驱动’" in report_system
     assert "# FastMoss 调研证据" in semantic_content
-    assert "## call:1 · `fastmoss__product_sales_trend`" in semantic_content
-    assert "## call:2 · `fastmoss__product_rank_new_listed`" in semantic_content
-    assert "## call:3 · `fastmoss__product_review_list`" in semantic_content
+    assert "## 商品销售趋势" in semantic_content
+    assert "## 近期上架商品榜" in semantic_content
+    assert "## 商品评论样本" in semantic_content
+    assert "call:" not in semantic_content
+    assert "fastmoss__" not in semantic_content
+    assert "source_ref" not in semantic_content
+    assert "arguments" not in semantic_content
     assert "evidence_dossier" not in semantic_content
     assert "report_packet" not in semantic_content
-    assert semantic_content.count("fastmoss__product_sales_trend") == 1
+    assert semantic_content.count("商品销售趋势") >= 1
     assert "2026-06-01" in semantic_content and "2026-07-01" in semantic_content
     assert all(product["product_id"] in semantic_content for product in products)
-    assert "returned_product_outside_requested_l3" in semantic_content
+    assert "returned_product_outside_requested_l3" not in semantic_content
+    assert "返回记录超出请求的三级类目范围" in semantic_content
     assert "关键词返回量不是市场容量" in semantic_content
-    assert "| 调用参数：筛选条件 · 商品ID | 1730000000000000001 |" in semantic_content
+    assert "| 商品ID | 1730000000000000001 |" in semantic_content
     assert "本次调用成功，但针对上述精确对象、参数、地区和周期没有返回业务记录" in semantic_content
     assert "| 报告日期 |" in semantic_content
     assert "## 硬事实边界" in semantic_content
-    assert semantic_content.index("## 硬事实边界") > semantic_content.index("## call:3")
+    assert semantic_content.index("## 硬事实边界") > semantic_content.index("## 商品评论样本")
     assert semantic_content.endswith("--- Semantic 证据结束 ---")
     assert "omitted_items" not in semantic_content
 
@@ -3820,7 +3825,9 @@ def test_fastmoss_report_evidence_is_semantic() -> None:
         "hard_fact_boundaries": {"rules": ["空结果只适用于精确参数"]},
     }
     semantic, semantic_stats = web_app.fastmoss_render_report_evidence(dossier)
-    assert "## call:1 · `fastmoss__product_search`" in semantic
+    assert "商品搜索样本" in semantic
+    assert "call:" not in semantic
+    assert "fastmoss__" not in semantic
     assert semantic_stats["format"] == "semantic"
     assert semantic_stats["registered_tool_count"] == 1
 

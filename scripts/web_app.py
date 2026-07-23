@@ -115,6 +115,7 @@ from api_cache import get_cached_or_call, record_api_call
 from api_cache import get_cached, store_response
 from fastmoss_evidence_renderer import (
     FASTMOSS_CURRENT_TOOL_NAMES,
+    fastmoss_semantic_registry_diagnostics,
     render_fastmoss_evidence_document,
 )
 from sellersprite_evidence_renderer import (
@@ -4803,7 +4804,9 @@ FASTMOSS_EVIDENCE_TOOL_FAMILIES: dict[str, frozenset[str]] = {
         "agency_creator_analysis", "agency_product_analysis", "agency_product_list",
         "agency_profile_overview", "agency_rank_top", "agency_search", "agency_shop_analysis",
     }),
-    "reference": frozenset({"fastmoss_detail_url_examples", "search_fastmoss_documents"}),
+    "reference": frozenset({
+        "credit_usage_summary", "fastmoss_detail_url_examples", "search_fastmoss_documents",
+    }),
 }
 FASTMOSS_SUPPORTED_EVIDENCE_TOOLS = frozenset().union(*FASTMOSS_EVIDENCE_TOOL_FAMILIES.values())
 if FASTMOSS_SUPPORTED_EVIDENCE_TOOLS != FASTMOSS_CURRENT_TOOL_NAMES:
@@ -5989,6 +5992,30 @@ def decode_tool_masks(masks: Any) -> set[str] | None:
     return selected
 
 
+_fastmoss_registry_diagnostic_signature: tuple[Any, ...] | None = None
+
+
+def log_fastmoss_semantic_registry(runtime_tools: list[dict[str, Any]]) -> dict[str, Any]:
+    global _fastmoss_registry_diagnostic_signature
+    diagnostics = fastmoss_semantic_registry_diagnostics(
+        str(tool.get("name") or "") for tool in runtime_tools
+    )
+    signature = (
+        diagnostics["runtime_count"], diagnostics["registered_count"],
+        tuple(diagnostics["missing_contracts"]), tuple(diagnostics["missing_runtime"]),
+    )
+    if signature != _fastmoss_registry_diagnostic_signature:
+        _fastmoss_registry_diagnostic_signature = signature
+        print(
+            "[CHAT] FastMoss Semantic registry "
+            f"runtime={diagnostics['runtime_count']} registered={diagnostics['registered_count']} "
+            f"missing_contracts={','.join(diagnostics['missing_contracts']) or 'none'} "
+            f"missing_runtime={','.join(diagnostics['missing_runtime']) or 'none'}",
+            flush=True,
+        )
+    return diagnostics
+
+
 def build_prefixed_model_tools(enabled_tool_ids: set[str] | None) -> list[dict[str, Any]]:
     selected = enabled_tool_ids
     model_tools: list[dict[str, Any]] = []
@@ -6005,6 +6032,8 @@ def build_prefixed_model_tools(enabled_tool_ids: set[str] | None) -> list[dict[s
         except Exception as exc:
             print(f"[CHAT] {chat_type} tools/list failed: {exc}", flush=True)
             tools = []
+        if domain == "fastmoss":
+            log_fastmoss_semantic_registry(tools)
         for tool in tools:
             name = str(tool.get("name") or "")
             if not name:
@@ -6064,6 +6093,8 @@ def build_tool_catalog(provider: str) -> dict[str, Any]:
                 "defaultSelected": False,
             })
             continue
+        if domain == "fastmoss":
+            log_fastmoss_semantic_registry(tools)
         for tool in tools:
             name = str(tool.get("name") or "")
             if not name:
