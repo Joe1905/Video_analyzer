@@ -151,6 +151,16 @@ from commerce_tool_call_gate import (
     validate_call_gate_response,
     validate_json_schema,
 )
+from commerce_evidence_sufficiency import (
+    capability_label,
+    capability_labels,
+    fallback_sufficiency,
+    public_sufficiency_contract,
+    report_contains_internal_protocol,
+    sufficiency_prompt_payload,
+    validate_report_rewrite_response,
+    validate_sufficiency_response,
+)
 from json_to_markdown import json_to_markdown
 from hot_video_report import (
     REPORT_COVER_DIR,
@@ -4890,6 +4900,18 @@ def chat_tool_call_gate_enabled() -> bool:
     }
 
 
+def chat_evidence_sufficiency_enabled() -> bool:
+    return str(os.getenv("CHAT_EVIDENCE_SUFFICIENCY_ENABLED", "1")).strip().lower() not in {
+        "0", "false", "no", "off",
+    }
+
+
+def chat_report_second_pass_enabled() -> bool:
+    return str(os.getenv("CHAT_REPORT_SECOND_PASS_ENABLED", "1")).strip().lower() not in {
+        "0", "false", "no", "off",
+    }
+
+
 def chat_tool_call_gate_applies(provider: str, route: dict[str, Any]) -> bool:
     return (
         chat_tool_call_gate_enabled()
@@ -5330,15 +5352,29 @@ def research_planner_instruction(
     task = route.get("research_task") if isinstance(route.get("research_task"), dict) else {}
     state = research_planner_state(provider, route, user_text, assistant_msg)
     capabilities = sorted(eligible_provider_capabilities(provider, task, state))
+    sufficiency = (
+        route.get("_evidence_sufficiency")
+        if isinstance(route.get("_evidence_sufficiency"), dict)
+        else {}
+    )
     if llm_orchestrated_route(route):
         instructions = [
             "当前由你自主编排研究工具。程序不会规定首个工具、固定调用顺序、候选方向数量或业务调用次数。",
             "任务描述：" + json.dumps(task, ensure_ascii=False, separators=(",", ":")) + "。",
             "能力图仅供参考，不是工具门禁：" + ("、".join(capabilities) if capabilities else "暂无建议") + "。",
-            "请结合用户原问题和每轮真实结果决定下一项调用；证据足够时可以结束。",
+            "请结合用户原问题、每轮真实结果和独立证据满足判断决定下一项调用。",
+            "你只负责研究与原生工具调用，不得生成最终报告；如果认为研究已经足够，只停止调用，由独立证据满足层决定是否成稿。",
             "空结果和失败结果只完成对应调用，不得扩大为平台全局结论；不得重复同工具同参数。",
             "任何类目 ID、商品 ID 或 ASIN 深挖对象必须来自用户输入或当前工具证据。",
         ]
+        if sufficiency.get("status") == "continue":
+            instructions.append(
+                "独立证据满足层要求继续研究。尚缺业务能力："
+                + "、".join(sufficiency.get("missing_capabilities") or ["未明确"])
+                + "；建议下一能力："
+                + "、".join(sufficiency.get("next_capabilities") or ["根据缺口自行判断"])
+                + "。请提出不同且可行的调用补齐这些业务问题，不得直接输出报告。"
+            )
         if provider == "amazon":
             instructions.append(
                 "SellerSprite 每个工具必须严格使用当前 tools/list 暴露的请求 schema；部分工具使用 request 对象，部分工具使用顶层参数，不能互换。"
@@ -5448,12 +5484,31 @@ def provider_profile_tool_ids(
         rolling_capabilities = rolling_provider_capabilities(provider, task, state) if use_rolling_window else set()
         rolling_tools = rolling_provider_tool_names(provider, task, state) if use_rolling_window else set()
         domain = "sellersprite" if provider == "amazon" else "fastmoss"
+        sufficiency = (
+            route.get("_evidence_sufficiency")
+            if isinstance(route.get("_evidence_sufficiency"), dict)
+            else {}
+        )
+        required_capabilities = {
+            str(code) for code in sufficiency.get("_next_capability_codes") or []
+            if str(code)
+        }
+        if required_capabilities:
+            rolling_capabilities.update(required_capabilities)
+            rolling_tools.update({
+                split_prefixed_tool_id(tool_id)[1]
+                for tool_id in selected
+                if split_prefixed_tool_id(tool_id)[0] == domain
+                and provider_tool_capability(provider, split_prefixed_tool_id(tool_id)[1])
+                in required_capabilities
+            })
         mode = "llm_window" if rolling_tools else ("llm_full" if llm_orchestrated_route(route) else "legacy_staged")
         print(
             f"[CHAT PLANNER] provider={provider} objective={task.get('objective')} scope={task.get('scope')} "
             f"entity_type={task.get('entity_type')} attempted={','.join(state.get('attempted_capabilities') or []) or '-'} "
             f"observed={','.join(state.get('observed_capabilities') or []) or '-'} "
             f"advisory_tools={len(eligible)} window_capabilities={','.join(sorted(rolling_capabilities)) or '-'} "
+            f"sufficiency_next={','.join(sorted(required_capabilities)) or '-'} "
             f"window_tools={len(rolling_tools)} confidence={confidence:.2f} mode={mode}",
             flush=True,
         )
@@ -6670,12 +6725,17 @@ def apply_chat_tool_call_gate(
         planner_state=planner_state,
         confirmed_identities=_chat_call_gate_confirmed_identities(provider, user_text, assistant_msg),
         candidates=candidates,
+        evidence_sufficiency=public_sufficiency_contract(
+            route.get("_evidence_sufficiency")
+        ),
     )
     system_prompt = (
         "你是商业研究工具的调用前可行性门禁，只能批准或驳回候选调用。"
         "你不能修改工具名或参数，不能指定替代工具，不能判断商业机会，也不能规定固定工具顺序或调用数量。"
         "联合比较本批候选：批准与用户问题和研究任务匹配、前置身份已满足、且能补充尚未覆盖证据的调用；"
         "驳回批内重复、前置条件缺失、对象明显歧义、用途不匹配或不能增加证据的调用。"
+        "若独立证据满足判断明确列出缺口，应批准能够补齐该缺口的合理调用；"
+        "明确标注为背景比较的上一周期数据可以作为补充证据，不能只因它不是当前周期就驳回。"
         "同一工具使用不同有效参数、候选较多或没有固定阶段都不是驳回理由。"
         "输出严格JSON，且只能包含 decisions；每个候选恰好一项："
         "{\"decisions\":[{\"call_key\":\"proposal-1\",\"decision\":\"approve|reject\","
@@ -6828,25 +6888,6 @@ def apply_chat_evidence_quality_gate(
     failed_parents: set[str] = set()
     failures: list[str] = []
     for batch_index, batch in enumerate(batches, 1):
-        judge_input = flash_judge_payload(batch)
-        payload = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {
-                    "role": "user",
-                    "content": (
-                        "用户问题：" + chat_routing_text(user_text)
-                        + "\n研究任务：" + json.dumps(route.get("research_task") or {}, ensure_ascii=False, separators=(",", ":"))
-                        + "\n待判定调用：" + judge_input
-                    ),
-                },
-            ],
-            "temperature": 0,
-            "max_tokens": 4000,
-            "response_format": {"type": "json_object"},
-        }
-        payload_str = json.dumps(payload, ensure_ascii=False)
         batch_parents = {
             str(item.get("parent_call_key") or item.get("call_key") or "")
             for item in batch
@@ -6856,54 +6897,96 @@ def apply_chat_evidence_quality_gate(
                 1 for item in batch
                 if str(item.get("parent_call_key") or item.get("call_key") or "") == parent
             )
-        try:
-            started = time.monotonic()
-            response = requests_module.post(
-                api_url.rstrip("/") + "/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                data=payload_str.encode("utf-8"),
-                timeout=60,
-            )
-            response.raise_for_status()
-            body = response.json()
-            record_api_call(
-                "deepseek",
-                "chat_evidence_quality",
-                {
-                    "api_url": api_url.rstrip("/") + "/chat/completions",
-                    "model": model,
-                    "provider_call_count": len(batch_parents),
-                    "batch_index": batch_index,
-                    "batch_count": len(batches),
-                    "chunk_count": len(batch),
-                    "payload_sha256": __import__("hashlib").sha256(payload_str.encode("utf-8")).hexdigest(),
-                },
-                body,
-                elapsed_ms=int((time.monotonic() - started) * 1000),
-            )
-            parsed = _parse_evidence_quality_judge_response(
-                body.get("choices", [{}])[0].get("message", {}).get("content")
-            )
-            verdicts = parsed.get("calls") if isinstance(parsed, dict) else None
-            expected_keys = {str(item.get("call_key") or "") for item in batch}
-            if not isinstance(verdicts, list) or len(verdicts) != len(batch):
-                raise ValueError("V4 Flash evidence-quality response does not cover the full chunk batch")
-            verdict_by_key = {
-                str(item.get("call_key") or ""): item
-                for item in verdicts if isinstance(item, dict)
+        remaining = list(batch)
+        for attempt in range(2):
+            if not remaining:
+                break
+            judge_input = flash_judge_payload(remaining)
+            payload = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {
+                        "role": "user",
+                        "content": (
+                            "用户问题：" + chat_routing_text(user_text)
+                            + "\n研究任务：" + json.dumps(route.get("research_task") or {}, ensure_ascii=False, separators=(",", ":"))
+                            + (
+                                "\n上次判定没有覆盖以下分块；本次只补齐这些分块，不要返回其他调用。"
+                                if attempt else ""
+                            )
+                            + "\n待判定调用：" + judge_input
+                        ),
+                    },
+                ],
+                "temperature": 0,
+                "max_tokens": 4000,
+                "response_format": {"type": "json_object"},
             }
-            if set(verdict_by_key) != expected_keys:
-                raise ValueError("V4 Flash evidence-quality response has missing or extra chunk decisions")
-            for pending_chunk in batch:
-                chunk_key = str(pending_chunk.get("call_key") or "")
-                parent_key = str(pending_chunk.get("parent_call_key") or chunk_key)
-                quality = validate_flash_verdict(pending_chunk, verdict_by_key[chunk_key])
-                if quality is None:
-                    raise ValueError(f"invalid evidence-quality verdict for {chunk_key}")
-                qualities_by_parent.setdefault(parent_key, []).append(quality)
-        except Exception as exc:
-            failed_parents.update(batch_parents)
-            failures.append(f"batch-{batch_index}:{type(exc).__name__}: {exc}")
+            payload_str = json.dumps(payload, ensure_ascii=False)
+            try:
+                started = time.monotonic()
+                response = requests_module.post(
+                    api_url.rstrip("/") + "/chat/completions",
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    data=payload_str.encode("utf-8"),
+                    timeout=60,
+                )
+                response.raise_for_status()
+                body = response.json()
+                record_api_call(
+                    "deepseek",
+                    "chat_evidence_quality",
+                    {
+                        "api_url": api_url.rstrip("/") + "/chat/completions",
+                        "model": model,
+                        "provider_call_count": len(batch_parents),
+                        "batch_index": batch_index,
+                        "batch_count": len(batches),
+                        "chunk_count": len(remaining),
+                        "retry": attempt,
+                        "payload_sha256": __import__("hashlib").sha256(payload_str.encode("utf-8")).hexdigest(),
+                    },
+                    body,
+                    elapsed_ms=int((time.monotonic() - started) * 1000),
+                )
+                parsed = _parse_evidence_quality_judge_response(
+                    body.get("choices", [{}])[0].get("message", {}).get("content")
+                )
+                verdicts = parsed.get("calls") if isinstance(parsed, dict) else None
+                if not isinstance(verdicts, list):
+                    raise ValueError("V4 Flash evidence-quality response is not a call list")
+                expected_keys = {str(item.get("call_key") or "") for item in remaining}
+                verdict_by_key = {
+                    str(item.get("call_key") or ""): item
+                    for item in verdicts if isinstance(item, dict)
+                }
+                if not verdict_by_key or not set(verdict_by_key).issubset(expected_keys):
+                    raise ValueError("V4 Flash evidence-quality response has missing or extra chunk decisions")
+                decided_keys: set[str] = set()
+                for pending_chunk in remaining:
+                    chunk_key = str(pending_chunk.get("call_key") or "")
+                    if chunk_key not in verdict_by_key:
+                        continue
+                    parent_key = str(pending_chunk.get("parent_call_key") or chunk_key)
+                    quality = validate_flash_verdict(pending_chunk, verdict_by_key[chunk_key])
+                    if quality is None:
+                        raise ValueError(f"invalid evidence-quality verdict for {chunk_key}")
+                    qualities_by_parent.setdefault(parent_key, []).append(quality)
+                    decided_keys.add(chunk_key)
+                remaining = [
+                    item for item in remaining
+                    if str(item.get("call_key") or "") not in decided_keys
+                ]
+            except Exception as exc:
+                failures.append(
+                    f"batch-{batch_index}-attempt-{attempt + 1}:{type(exc).__name__}: {exc}"
+                )
+        if remaining:
+            failed_parents.update(
+                str(item.get("parent_call_key") or item.get("call_key") or "")
+                for item in remaining
+            )
 
     for call_key, (entry, pending) in pending_by_key.items():
         qualities = qualities_by_parent.get(call_key) or []
@@ -6935,6 +7018,252 @@ def apply_chat_evidence_quality_gate(
         }, ensure_ascii=False, separators=(",", ":")),
         flush=True,
     )
+
+
+def _sufficiency_period_text(value: Any) -> str:
+    text = str(value or "").strip()
+    compact = re.sub(r"[\s./_-]+", "", text)
+    if re.fullmatch(r"\d{6}", compact):
+        return f"{compact[:4]}年{int(compact[4:6])}月"
+    if re.fullmatch(r"\d{8}", compact):
+        return f"{compact[:4]}年{int(compact[4:6])}月{int(compact[6:8])}日"
+    return text
+
+
+def evidence_sufficiency_inventory(
+    provider: str,
+    assistant_msg: Message,
+) -> list[dict[str, Any]]:
+    """Build a compact Chinese business directory without exposing tool names."""
+    provider = normalize_chat_provider(provider)
+    expected_domain = "sellersprite" if provider == "amazon" else "fastmoss"
+    inventory: list[dict[str, Any]] = []
+    for index, item in enumerate(assistant_msg.tool_results or [], 1):
+        if not isinstance(item, dict) or not isinstance(item.get("result"), dict):
+            continue
+        domain, name = split_prefixed_tool_id(str(item.get("tool_name") or ""))
+        if domain != expected_domain:
+            continue
+        result = item["result"]
+        quality = result.get("evidence_quality") if isinstance(result.get("evidence_quality"), dict) else {}
+        metadata = result.get("evidence_metadata") if isinstance(result.get("evidence_metadata"), dict) else {}
+        envelope = result.get("evidence_envelope") if isinstance(result.get("evidence_envelope"), dict) else {}
+        entity_refs: list[str] = []
+        for ref in envelope.get("entity_refs") or []:
+            if not isinstance(ref, dict):
+                continue
+            identity = str(ref.get("id") or "").strip()
+            label = str(ref.get("title") or ref.get("name") or ref.get("type") or "").strip()
+            display = "：".join(part for part in (label, identity) if part)
+            if display and display not in entity_refs:
+                entity_refs.append(display)
+        periods: list[str] = []
+        for value in (
+            metadata.get("requested_period"),
+            metadata.get("requested_date_range"),
+            metadata.get("returned_date_range"),
+            envelope.get("period"),
+        ):
+            values = value if isinstance(value, list) else [value]
+            for raw in values:
+                display = _sufficiency_period_text(raw)
+                if display and display not in periods:
+                    periods.append(display)
+        accepted_rows = quality.get("accepted_rows") if isinstance(quality.get("accepted_rows"), list) else []
+        rejected_rows = quality.get("rejected_rows") if isinstance(quality.get("rejected_rows"), list) else []
+        inventory.append({
+            "证据段": index,
+            "业务能力": capability_label(provider_tool_capability(provider, name)),
+            "准入状态": str(quality.get("status") or mcp_result_data_state(result)),
+            "有效记录数": len(accepted_rows),
+            "拒绝记录数": len(rejected_rows),
+            "支持内容": [
+                str(value) for value in quality.get("supported_dimensions") or []
+                if str(value).strip()
+            ],
+            "不能支持": [
+                str(value) for value in quality.get("unsupported_claims") or []
+                if str(value).strip()
+            ],
+            "对象": entity_refs[:12],
+            "地区": str(metadata.get("region") or envelope.get("region") or ""),
+            "周期": periods[:8],
+            "说明": str(quality.get("reason") or ""),
+        })
+    return inventory
+
+
+def _provider_enabled_capability_codes(
+    provider: str,
+    enabled_tool_ids: set[str] | None,
+) -> set[str]:
+    expected_domain = "sellersprite" if provider == "amazon" else "fastmoss"
+    result: set[str] = set()
+    for tool_id in enabled_tool_ids or set():
+        domain, name = split_prefixed_tool_id(tool_id)
+        if domain != expected_domain:
+            continue
+        capability = provider_tool_capability(provider, name)
+        if capability != "unknown":
+            result.add(capability)
+    return result
+
+
+def evaluate_chat_evidence_sufficiency(
+    provider: str,
+    user_text: str,
+    route: dict[str, Any],
+    assistant_msg: Message,
+    enabled_tool_ids: set[str] | None,
+    requests_module: Any,
+    api_key: str,
+    api_url: str,
+    model: str,
+) -> dict[str, Any]:
+    """Decide continue/ready/blocked without selecting a concrete tool."""
+    provider = normalize_chat_provider(provider)
+    allowed_codes = _provider_enabled_capability_codes(provider, enabled_tool_ids)
+    state = research_planner_state(provider, route, user_text, assistant_msg)
+    task = route.get("research_task") if isinstance(route.get("research_task"), dict) else {}
+    fallback_window = rolling_provider_capabilities(provider, task, state) or allowed_codes
+    fallback_codes = (
+        set(fallback_window).intersection(allowed_codes)
+        - set(state.get("attempted_capabilities") or [])
+    )
+    expected_domain = "sellersprite" if provider == "amazon" else "fastmoss"
+    has_business_attempt = any(
+        isinstance(call, dict)
+        and split_prefixed_tool_id(
+            str((call.get("function") or {}).get("name") or "")
+        )[0] == expected_domain
+        for call in assistant_msg.tool_calls or []
+    )
+    if (
+        not chat_evidence_sufficiency_enabled()
+        or provider not in {"amazon", "fastmoss"}
+        or not chat_route_uses_report_model(provider, route)
+    ):
+        verdict = fallback_sufficiency(
+            has_business_attempt=has_business_attempt,
+            allowed_capability_codes=allowed_codes,
+            reason="证据满足判断已关闭，按现有确定性底线处理。",
+        )
+        if has_business_attempt:
+            verdict["status"] = "ready"
+            verdict["coverage_items"][0]["state"] = "supported"
+        return verdict
+
+    judge_input = sufficiency_prompt_payload(
+        user_question=chat_routing_text(user_text),
+        research_task=route.get("research_task") if isinstance(route.get("research_task"), dict) else {},
+        evidence_inventory=evidence_sufficiency_inventory(provider, assistant_msg),
+        attempted_capability_codes=state.get("attempted_capabilities") or [],
+        observed_capability_codes=state.get("observed_capabilities") or [],
+        available_capability_codes=allowed_codes,
+    )
+    available_labels = capability_labels(allowed_codes)
+    system_prompt = (
+        "你是商业研究的独立证据满足判断层。你不选择具体工具、不写报告、不判断商业机会。"
+        "根据用户问题、研究任务和证据目录判断完整报告所需的业务问题是否已有证据。"
+        "有效或部分有效证据可以支持覆盖项；偏题、相关性未确认、身份缺失不得完成覆盖项；"
+        "空结果和失败只表示该精确范围已尝试但不可获得。"
+        "仍有核心缺口且存在可用业务能力时必须返回 continue；"
+        "核心内容均有证据，或缺口已经真实尝试并不可获得时返回 ready；"
+        "没有可用能力或无法继续时返回 blocked。"
+        "不得规定固定工具顺序、调用次数或候选数量。"
+        "missing_capabilities 和 next_capabilities 只能使用以下中文业务能力名称："
+        + ("、".join(available_labels) if available_labels else "无")
+        + "。输出严格JSON且只能包含：status、reason、coverage_items、missing_capabilities、"
+        "next_capabilities、unsupported_claims、report_contract。"
+        "coverage_items 每项必须包含 id（coverage-1起连续编号）、topic、priority（core或supporting）、"
+        "state（supported、missing或unavailable）、boundaries。"
+        "report_contract 必须包含 must_cover、must_compare、must_state_as_limit、forbidden_claims 四个字符串数组。"
+    )
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": judge_input},
+        ],
+        "temperature": 0,
+        "max_tokens": 6000,
+        "response_format": {"type": "json_object"},
+    }
+    payload_str = json.dumps(payload, ensure_ascii=False)
+    started = time.monotonic()
+    failure_reason = ""
+    verdict: dict[str, Any] | None = None
+    try:
+        response = requests_module.post(
+            api_url.rstrip("/") + "/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            data=payload_str.encode("utf-8"),
+            timeout=90,
+        )
+        response.raise_for_status()
+        body = response.json()
+        choice = body.get("choices", [{}])[0]
+        if str(choice.get("finish_reason") or "").strip().lower() == "length":
+            raise ValueError("evidence sufficiency finish_reason=length")
+        parsed = _parse_evidence_quality_judge_response(
+            (choice.get("message") or {}).get("content")
+        )
+        verdict = validate_sufficiency_response(
+            parsed,
+            allowed_capability_codes=allowed_codes,
+        )
+        if verdict is None:
+            raise ValueError("invalid evidence-sufficiency response")
+        record_api_call(
+            "deepseek",
+            "chat_evidence_sufficiency",
+            {
+                "provider": provider,
+                "model": model,
+                "tool_result_count": len(assistant_msg.tool_results or []),
+                "payload_sha256": __import__("hashlib").sha256(payload_str.encode("utf-8")).hexdigest(),
+            },
+            body,
+            elapsed_ms=int((time.monotonic() - started) * 1000),
+        )
+    except Exception as exc:
+        failure_reason = f"{type(exc).__name__}: {str(exc)[:240]}"
+        verdict = fallback_sufficiency(
+            has_business_attempt=not bool(fallback_codes),
+            allowed_capability_codes=fallback_codes,
+            reason="证据满足判断失败，按保守确定性底线处理：" + failure_reason,
+        )
+    print(
+        "[CHAT SUFFICIENCY] "
+        + json.dumps({
+            "provider": provider,
+            "status": verdict.get("status"),
+            "coverage": len(verdict.get("coverage_items") or []),
+            "missing": verdict.get("missing_capabilities") or [],
+            "next": verdict.get("next_capabilities") or [],
+            "source": verdict.get("source"),
+            "latency_ms": int((time.monotonic() - started) * 1000),
+            **({"error": failure_reason} if failure_reason else {}),
+        }, ensure_ascii=False, separators=(",", ":")),
+        flush=True,
+    )
+    return verdict
+
+
+def blocked_sufficiency(
+    route: dict[str, Any],
+    reason: str,
+) -> dict[str, Any]:
+    current = (
+        dict(route.get("_evidence_sufficiency"))
+        if isinstance(route.get("_evidence_sufficiency"), dict)
+        else {}
+    )
+    current["status"] = "blocked"
+    current["reason"] = reason
+    current["_next_capability_codes"] = []
+    current["next_capabilities"] = []
+    return current
 
 
 def chat_request_needs_tools(user_text: str, route: dict[str, Any]) -> bool:
@@ -8967,19 +9296,19 @@ def fastmoss_report_prompt_instruction(route: dict[str, Any]) -> str:
     return (
         fastmoss_report_style_instruction(route)
         + " "
-        "当前会话中的完整工具结果是报告的事实素材；evidence_index 只负责标注覆盖、对象、计算边界和冲突，"
-        "不能替代、裁剪或隐藏工具结果。"
+        "当前输入中的完整自然语言业务证据是报告的唯一事实素材；证据目录只负责标注覆盖、对象、计算边界和冲突，"
+        "不能替代、裁剪或隐藏业务证据。"
         "根据实际证据组织报告，不要套用 Amazon 的关键词、PPC、BSR、ASIN 或 FBA 结构。"
         "标题、章节、比较方式和结论顺序由你决定；不存在的证据不要硬写。"
-        "观察事实必须服从 evidence_index 的实体、周期、样本和冲突边界，推断与建议应明确区别于观察事实。"
-        "空结果只适用于该次调用的精确参数；关键词返回量不是市场容量；跨实体或跨周期数据不得直接相除或互相解释；"
+        "观察事实必须服从证据目录的实体、周期、样本和冲突边界，推断与建议应明确区别于观察事实。"
+        "空结果只适用于对应查询的精确对象与范围；关键词返回量不是市场容量；跨实体或跨周期数据不得直接相除或互相解释；"
         "渠道占比、关联达人/视频数和趋势只描述观察结构，除非有直接证据，否则不得写成流量来源、因果、效率或生命周期结论。"
-        "撰写前请在内部完成证据覆盖检查（不要输出思维过程）：按工具调用、实体、周期和能力维度盘点实质证据，"
+        "撰写前请在内部完成证据覆盖检查（不要输出思维过程）：按证据段、实体、周期和业务维度盘点实质证据，"
         "凡是会改变核心判断、候选排序、风险或下一步验证的重要证据，都必须进入正文或在局限中说明未采用原因；"
         "同口径、同结论的重复证据可以合并，但不能仅为了简洁省略有差异的类目、商品、趋势、达人、内容或店铺证据。"
         "每个主要结论尽量形成‘观察数据—比较或解释—推断边界—行动建议’的完整链条，并保留支撑判断的代表性对象和指标。"
-        "完成报告前再次检查是否遗漏会实质改变结论的成功工具结果、冲突、空结果或失败；若遗漏则补入正文或局限。"
-        "同一实体的同名或相关指标在不同调用中冲突时，必须并列写明各自周期和口径并标记为未解决冲突，不能择一使用，"
+        "完成报告前再次检查是否遗漏会实质改变结论的有效证据、冲突、空结果或失败；若遗漏则补入正文或局限。"
+        "同一实体的同名或相关指标在不同证据段中冲突时，必须并列写明各自周期和口径并标记为未解决冲突，不能择一使用，"
         "也不能据此构造因果叙事；例如直播数一个结果为0、另一个周期大于0时，不得概括为‘纯视频驱动’。"
     )
 
@@ -8989,18 +9318,349 @@ def sellersprite_report_prompt_instruction(route: dict[str, Any]) -> str:
     return (
         "这是一份完整的 Amazon 市场调研报告，不是执行摘要。根据用户问题和实际证据决定叙事主线、标题、章节、"
         "比较维度和详略，不设置固定字数，也不要机械复述全部原始行。完整使用本轮取得的实质证据，不得为了简洁"
-        "只保留少数机会方向、代表商品或指标。撰写前请在内部完成证据覆盖检查（不要输出思维过程）：按工具调用、"
+        "只保留少数机会方向、代表商品或指标。撰写前请在内部完成证据覆盖检查（不要输出思维过程）：按证据段、"
         "实体、站点、周期和能力维度盘点关键词发现、市场与类目、趋势、商品/ASIN、分布与集中度、流量和评论等"
         "实际取得的证据；凡是会改变核心判断、候选排序、进入门槛、风险或下一步验证的重要证据，都必须进入正文，"
         "或在局限中说明未采用原因。同口径、同结论的重复证据可以合并，但不同对象、周期、口径或相互冲突的结果"
         "不得混合或静默省略。每个主要机会或建议尽量形成‘观察数据—横向/纵向比较—推断边界—风险—行动建议’"
         "的完整链条，并保留支撑判断的代表性关键词、类目、ASIN和关键指标。数据、空结果、失败和未获取维度必须"
         "严格区分；缺少容量、趋势或竞争证据时不得用常识补齐。完成报告前再次检查是否遗漏会实质改变结论的成功"
-        "工具结果、异常、冲突、空结果或失败；若遗漏则补入正文或局限。直接从中文 Markdown 标题开始，"
+        "业务证据、异常、冲突、空结果或失败；若遗漏则补入正文或局限。直接从中文 Markdown 标题开始，"
         "不要先输出英文说明、提示词复述或报告生成过程。按中国卖家、价格或其他条件筛选的榜单只能描述该筛选样本，"
-        "不得据此声称整个类目由某类卖家主导、证明市场份额或品牌/卖家集中度。工具未返回复购、退货、广告成本等指标时，"
+        "不得据此声称整个类目由某类卖家主导、证明市场份额或品牌/卖家集中度。证据未包含复购、退货、广告成本等指标时，"
         "只能将相关判断标为待验证假设或未获取，不得写成观察事实。"
     )
+
+
+_REPORT_OBJECTIVE_LABELS = {
+    "lookup": "事实查询",
+    "entity_analysis": "对象分析",
+    "compare": "对比分析",
+    "opportunity_discovery": "机会发现",
+    "trend_discovery": "趋势发现",
+    "pricing": "定价分析",
+    "content": "内容分析",
+    "creator": "达人分析",
+    "shop": "店铺分析",
+}
+_REPORT_SCOPE_LABELS = {
+    "cross_category": "跨类目",
+    "category": "指定类目",
+    "keyword": "指定关键词",
+    "entity": "指定对象",
+}
+_REPORT_ENTITY_LABELS = {
+    "none": "未限定具体对象",
+    "category": "类目",
+    "keyword": "关键词",
+    "product": "商品",
+    "product_id": "商品编号",
+    "shop": "店铺",
+    "creator": "达人",
+    "video": "视频",
+    "asin": "亚马逊商品编号",
+}
+_REPORT_REGION_LABELS = {
+    "US": "美国站",
+    "GB": "英国站",
+    "UK": "英国站",
+    "CA": "加拿大站",
+    "MX": "墨西哥站",
+    "BR": "巴西站",
+    "DE": "德国站",
+    "FR": "法国站",
+    "ES": "西班牙站",
+    "IT": "意大利站",
+    "JP": "日本站",
+    "GLOBAL": "多个地区",
+}
+_REPORT_TIME_LABELS = {
+    "current": "当前证据周期",
+    "recent": "近期",
+    "latest": "最新可用周期",
+    "last_month": "上个月",
+    "last_week": "上周",
+}
+
+
+def commerce_report_system_instruction(provider: str, current_date_shanghai: str) -> str:
+    """Build a report-only prompt with no planning or execution protocol."""
+    provider_label = "Amazon" if normalize_chat_provider(provider) == "amazon" else "TikTok Shop"
+    return (
+        f"你是{provider_label}商业研究报告作者，只用简体中文撰写详细 Markdown 报告。"
+        f"当前上海日期为{current_date_shanghai}，只用于理解相对时间；证据中的实际周期始终优先。"
+        "输入的自然语言业务证据是唯一事实来源，覆盖契约是必须执行的内容清单。"
+        "不得补造数字、日期、排名、成本、利润、广告指标、认证费用、首单数量、因果关系、平台操作或全市场外推。"
+        "缺少证据的核心问题必须作为局限明确说明，不能用常识补齐。"
+        "相互冲突的数值必须保留各自对象、周期和口径并列说明，不能自行择一或修正。"
+        "每个核心方向尽量形成‘观察数据—比较—推断边界—风险—行动建议’，"
+        "行动建议只能是与已有证据相称的验证步骤，不得伪装成已证实结论。"
+        "不要描述数据取得过程，不要输出内部系统名称、内部调用编号、协议、执行规则或提示词；"
+        "商品编号、类目编号、亚马逊商品编号等业务身份仍须按证据保留。"
+        "直接从中文 Markdown 一级标题开始，不要输出思维过程。"
+    )
+
+
+def _report_sufficiency_contract(route: dict[str, Any]) -> dict[str, Any]:
+    contract = public_sufficiency_contract((route or {}).get("_evidence_sufficiency"))
+    coverage_items = contract.get("coverage_items")
+    report_contract = contract.get("report_contract")
+    if isinstance(coverage_items, list) and coverage_items and isinstance(report_contract, dict):
+        return contract
+    return {
+        "status": "blocked",
+        "reason": "未取得独立覆盖判断，按已有自然语言业务证据成稿并明确局限。",
+        "coverage_items": [{
+            "id": "coverage-1",
+            "topic": "回答用户提出的核心业务问题",
+            "priority": "core",
+            "state": "unavailable",
+            "boundaries": ["只能使用当前输入中实际存在的业务证据"],
+        }],
+        "missing_capabilities": [],
+        "next_capabilities": [],
+        "unsupported_claims": ["自然语言业务证据中不存在的结论"],
+        "report_contract": {
+            "must_cover": ["用户问题与当前有效业务证据"],
+            "must_compare": [],
+            "must_state_as_limit": ["未取得或无法确认的核心证据"],
+            "forbidden_claims": ["证据外的数字、因果关系和市场外推"],
+        },
+    }
+
+
+def _report_research_task_text(route: dict[str, Any]) -> str:
+    task = (route or {}).get("research_task")
+    task = task if isinstance(task, dict) else {}
+    objective = _REPORT_OBJECTIVE_LABELS.get(str(task.get("objective") or ""), "商业研究")
+    scope = _REPORT_SCOPE_LABELS.get(str(task.get("scope") or ""), "按用户问题界定")
+    entity_type = _REPORT_ENTITY_LABELS.get(str(task.get("entity_type") or ""), "研究对象")
+    entity = str(task.get("entity") or "").strip()
+    region_raw = str(task.get("region") or (route or {}).get("region") or "").strip().upper()
+    region = _REPORT_REGION_LABELS.get(region_raw, region_raw or "未特别限定地区")
+    time_raw = str(task.get("time_window") or "").strip()
+    time_window = _REPORT_TIME_LABELS.get(time_raw.casefold(), time_raw) if time_raw else "以业务证据实际周期为准"
+    object_text = f"{entity_type}「{entity}」" if entity else entity_type
+    return (
+        f"- 研究目标：{objective}\n"
+        f"- 研究范围：{scope}\n"
+        f"- 研究对象：{object_text}\n"
+        f"- 地区范围：{region}\n"
+        f"- 时间范围：{time_window}"
+    )
+
+
+def _report_coverage_contract_text(contract: dict[str, Any]) -> str:
+    priority_labels = {"core": "核心", "supporting": "补充"}
+    state_labels = {"supported": "已有证据", "missing": "尚缺证据", "unavailable": "暂时无法取得"}
+    status_labels = {"continue": "继续研究", "ready": "证据可成稿", "blocked": "研究受阻后成稿"}
+    lines = [
+        f"- 研究状态：{status_labels.get(str(contract.get('status') or ''), '按已有证据成稿')}",
+        f"- 判断原因：{str(contract.get('reason') or '按当前证据和边界完成报告')}",
+        "### 覆盖项",
+    ]
+    for index, item in enumerate(contract.get("coverage_items") or [], start=1):
+        if not isinstance(item, dict):
+            continue
+        boundaries = "；".join(str(value) for value in (item.get("boundaries") or []) if str(value).strip())
+        line = (
+            f"- 覆盖项{index}（{item.get('id') or f'coverage-{index}'}）："
+            f"{str(item.get('topic') or '').strip()}；"
+            f"{priority_labels.get(str(item.get('priority') or ''), '补充')}；"
+            f"{state_labels.get(str(item.get('state') or ''), '状态未确认')}"
+        )
+        if boundaries:
+            line += f"；边界：{boundaries}"
+        lines.append(line)
+    report_contract = contract.get("report_contract")
+    report_contract = report_contract if isinstance(report_contract, dict) else {}
+    sections = (
+        ("必须覆盖", report_contract.get("must_cover") or []),
+        ("必须比较", report_contract.get("must_compare") or []),
+        ("必须写成局限", report_contract.get("must_state_as_limit") or []),
+        ("禁止生成", report_contract.get("forbidden_claims") or []),
+        ("现有证据不能支持", contract.get("unsupported_claims") or []),
+    )
+    for title, values in sections:
+        lines.append(f"### {title}")
+        clean_values = [str(value).strip() for value in values if str(value).strip()]
+        lines.extend(f"- {value}" for value in clean_values)
+        if not clean_values:
+            lines.append("- 无额外要求")
+    return "\n".join(lines)
+
+
+def build_semantic_report_input(
+    user_text: str,
+    route: dict[str, Any],
+    evidence_markdown: str,
+) -> tuple[str, dict[str, Any]]:
+    contract = _report_sufficiency_contract(route)
+    content = (
+        "## 用户问题\n\n"
+        + chat_routing_text(user_text)
+        + "\n\n## 研究任务\n\n"
+        + _report_research_task_text(route)
+        + "\n\n## 报告覆盖契约\n\n"
+        + _report_coverage_contract_text(contract)
+        + "\n\n## 自然语言业务证据\n\n"
+        + evidence_markdown.rstrip()
+    )
+    return content, contract
+
+
+def _safe_report_draft(text: Any) -> str:
+    """Remove identifier-shaped leaks from a draft used as a safe fallback."""
+    cleaned = str(text or "").strip()
+    cleaned = re.sub(
+        r"(?:fastmoss|sellersprite|system|function)__[A-Za-z0-9_]+",
+        "相关业务证据",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"\bcall:\d+\b", "对应证据", cleaned, flags=re.IGNORECASE)
+    if not cleaned or deepseek_tool_protocol_present({"content": cleaned}) or report_contains_internal_protocol(cleaned):
+        return ""
+    return cleaned
+
+
+def rewrite_semantic_report(
+    provider: str,
+    user_text: str,
+    route: dict[str, Any],
+    evidence_markdown: str,
+    draft: str,
+    requests_module: Any,
+    api_key: str,
+    api_url: str,
+    model: str,
+) -> tuple[str, dict[str, Any]]:
+    """Validate coverage against the same full Semantic and return one rewritten report."""
+    safe_draft = _safe_report_draft(draft)
+    if not safe_draft:
+        raise ValueError("initial report contains internal protocol")
+    contract = _report_sufficiency_contract(route)
+    required_ids = [
+        str(item.get("id") or "")
+        for item in (contract.get("coverage_items") or [])
+        if isinstance(item, dict) and str(item.get("id") or "")
+    ]
+    if not chat_report_second_pass_enabled():
+        return safe_draft, {
+            "status": "disabled",
+            "coverage_count": len(required_ids),
+            "removed_unsupported_claims": [],
+        }
+    current_date = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
+    semantic_input, _ = build_semantic_report_input(user_text, route, evidence_markdown)
+    system_prompt = (
+        commerce_report_system_instruction(provider, current_date)
+        + "你现在负责终稿校验与完整重写。逐项核对覆盖契约：每项只能标为已覆盖或已作为局限说明。"
+        "补回初稿静默省略的重要对象、周期、冲突、空结果和失败；删除没有证据的成本、利润、因果、"
+        "平台操作与市场外推。输出严格JSON，只能包含 coverage、removed_unsupported_claims、report。"
+        "coverage每项必须包含id、status、reason；status只能是covered或limitation。"
+        "report必须是完整重写后的中文Markdown终稿，不得只输出修改建议。"
+    )
+    user_content = (
+        semantic_input
+        + "\n\n## 待校验初稿\n\n"
+        + safe_draft
+    )
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ],
+        "temperature": 0,
+        "max_tokens": 12000,
+        "response_format": {"type": "json_object"},
+    }
+    payload_str = json.dumps(payload, ensure_ascii=False)
+    started = time.monotonic()
+    failure_reason = ""
+    try:
+        response = requests_module.post(
+            api_url.rstrip("/") + "/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            data=payload_str.encode("utf-8"),
+            timeout=180,
+        )
+        response.raise_for_status()
+        body = response.json()
+        choice = body.get("choices", [{}])[0]
+        if str(choice.get("finish_reason") or "").strip().lower() == "length":
+            raise ValueError("report second pass finish_reason=length")
+        parsed = _parse_evidence_quality_judge_response(
+            (choice.get("message") or {}).get("content")
+        )
+        validated = validate_report_rewrite_response(
+            parsed,
+            required_coverage_ids=required_ids,
+        )
+        if validated is None:
+            raise ValueError("invalid report second-pass response")
+        raw_rewritten = str(validated.get("report") or "")
+        if (
+            deepseek_tool_protocol_present({"content": raw_rewritten})
+            or report_contains_internal_protocol(raw_rewritten)
+        ):
+            raise ValueError("rewritten report contains internal protocol")
+        rewritten = _safe_report_draft(raw_rewritten)
+        if not rewritten:
+            raise ValueError("rewritten report contains internal protocol")
+        record_api_call(
+            "deepseek",
+            "commerce_report_second_pass",
+            {
+                "model": model,
+                "provider": normalize_chat_provider(provider),
+                "semantic_chars": len(evidence_markdown),
+                "draft_chars": len(safe_draft),
+                "coverage_count": len(required_ids),
+            },
+            body,
+            elapsed_ms=int((time.monotonic() - started) * 1000),
+        )
+        meta = {
+            "status": "rewritten",
+            "coverage_count": len(validated.get("coverage") or []),
+            "removed_unsupported_claims": validated.get("removed_unsupported_claims") or [],
+            "latency_ms": int((time.monotonic() - started) * 1000),
+        }
+        print(
+            "[CHAT REPORT SECOND PASS] "
+            + json.dumps({
+                "provider": normalize_chat_provider(provider),
+                "status": meta["status"],
+                "draft_chars": len(safe_draft),
+                "final_chars": len(rewritten),
+                "coverage": meta["coverage_count"],
+                "removed": len(meta["removed_unsupported_claims"]),
+                "latency_ms": meta["latency_ms"],
+            }, ensure_ascii=False, separators=(",", ":")),
+            flush=True,
+        )
+        return rewritten, meta
+    except Exception as exc:
+        failure_reason = f"{type(exc).__name__}: {str(exc)[:240]}"
+        print(
+            "[CHAT REPORT SECOND PASS] "
+            + json.dumps({
+                "provider": normalize_chat_provider(provider),
+                "status": "fallback_to_draft",
+                "reason": failure_reason,
+                "draft_chars": len(safe_draft),
+                "coverage": len(required_ids),
+            }, ensure_ascii=False, separators=(",", ":")),
+            flush=True,
+        )
+        return safe_draft, {
+            "status": "fallback_to_draft",
+            "coverage_count": len(required_ids),
+            "removed_unsupported_claims": [],
+            "fallback_reason": failure_reason,
+        }
 
 
 def fastmoss_report_quality_instruction(
@@ -9352,35 +10012,22 @@ def semantic_report_input_stats(
         evidence_markdown, render_stats = prepare_semantic_report_evidence(
             dossier, sellersprite_render_report_evidence
         )
-        system_messages = [
-            {
-                "role": "system",
-                "content": chat_system_instruction(
-                    "amazon", datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
-                ),
-            },
-            {"role": "system", "content": sellersprite_report_prompt_instruction(route)},
-        ]
+        report_instruction = sellersprite_report_prompt_instruction(route)
     elif provider == "fastmoss":
         manifest = fastmoss_evidence_manifest(assistant_msg, user_text, route)
         dossier = fastmoss_report_evidence_dossier(assistant_msg, manifest, route)
         evidence_markdown, render_stats = prepare_semantic_report_evidence(
             dossier, fastmoss_render_report_evidence
         )
-        current_date = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
-        system_messages = [
-            {"role": "system", "content": chat_system_instruction("fastmoss", current_date)},
-            {"role": "system", "content": fastmoss_report_prompt_instruction(route)},
-        ]
+        report_instruction = fastmoss_report_prompt_instruction(route)
     else:
         return {"estimated_tokens": 0, "tool_count": 0, "level": "normal"}
-    semantic_input = (
-        chat_routing_text(user_text)
-        + "\n\n当前为报告生成阶段，没有可调用工具；请直接根据以下 Semantic 结构证据完成最终报告。"
-        + "\n\n--- 语义证据开始 ---\n"
-        + evidence_markdown
-        + "--- 语义证据结束 ---"
-    )
+    current_date = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
+    semantic_input, _ = build_semantic_report_input(user_text, route, evidence_markdown)
+    system_messages = [
+        {"role": "system", "content": commerce_report_system_instruction(provider, current_date)},
+        {"role": "system", "content": report_instruction},
+    ]
     estimated_tokens = estimate_chat_context_tokens(
         system_messages + [{"role": "user", "content": semantic_input}], []
     )
@@ -9512,15 +10159,11 @@ def synthesize_sellersprite_report_from_packet(
         dossier, sellersprite_render_report_evidence
     )
     current_date_shanghai = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
-    semantic_input = (
-        chat_routing_text(user_text)
-        + "\n\n当前为报告生成阶段，没有可调用工具；请直接根据以下 Semantic 结构证据完成最终报告。"
-        + "\n\n--- 语义证据开始 ---\n"
-        + evidence_markdown
-        + "--- 语义证据结束 ---"
+    semantic_input, report_contract = build_semantic_report_input(
+        user_text, route, evidence_markdown
     )
     messages = [
-        {"role": "system", "content": chat_system_instruction("amazon", current_date_shanghai)},
+        {"role": "system", "content": commerce_report_system_instruction("amazon", current_date_shanghai)},
         {"role": "system", "content": sellersprite_report_prompt_instruction(route)},
         {"role": "user", "content": semantic_input},
     ]
@@ -9558,6 +10201,7 @@ def synthesize_sellersprite_report_from_packet(
                 "evidence_input_format": evidence_render_stats.get("format") or "semantic",
                 "evidence_render_stats": evidence_render_stats,
                 "dossier_calls": len(dossier.get("tool_evidence") or []),
+                "coverage_items": len(report_contract.get("coverage_items") or []),
             },
             body,
             elapsed_ms=int((time.monotonic() - started) * 1000),
@@ -9575,8 +10219,15 @@ def synthesize_sellersprite_report_from_packet(
             f"evidence_render={json.dumps(evidence_render_stats, ensure_ascii=False, separators=(',', ':'))}",
             flush=True,
         )
-        report = append_sellersprite_report_notice(draft, route)
-        log_sellersprite_report_pipeline(report, dossier, evidence_render_stats, "generated")
+        rewritten, rewrite_meta = rewrite_semantic_report(
+            "amazon", user_text, route, evidence_markdown, draft,
+            requests_module, api_key, api_url, model,
+        )
+        report = append_sellersprite_report_notice(rewritten, route)
+        log_sellersprite_report_pipeline(
+            report, dossier, evidence_render_stats,
+            f"generated:{rewrite_meta.get('status') or 'unknown'}",
+        )
         return report
     except Exception as exc:
         print(
@@ -9974,8 +10625,8 @@ def fastmoss_report_style_instruction(route: dict[str, Any]) -> str:
     return (
         "表达要求：结论优先，把数据转成有依据的比较、解释、取舍、风险和验证顺序。" + detail_requirement +
         "标题、章节名称和顺序完全由你按内容决定，不要求固定短语、固定引用数量、字符数或篇幅比例。"
-        "明确区分实体、周期、样本和空结果范围。可以自由提出执行建议、测试方案和策略假设，"
-        "但要把它们明确写成建议或假设，不能伪装成工具已经观测到的事实。"
+        "明确区分实体、周期、样本和空结果范围。可以提出执行建议、测试方案和策略假设，"
+        "但要把它们明确写成建议或假设，不能伪装成业务证据已经观察到的事实。"
     )
 
 
@@ -11415,15 +12066,11 @@ def synthesize_fastmoss_report_from_packet(
         dossier, fastmoss_render_report_evidence
     )
     current_date_shanghai = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
-    semantic_input = (
-        chat_routing_text(user_text)
-        + "\n\n当前为报告生成阶段，没有可调用工具；请直接根据以下 Semantic 结构证据完成最终报告。"
-        + "\n\n--- 语义证据开始 ---\n"
-        + evidence_markdown
-        + "--- 语义证据结束 ---"
+    semantic_input, report_contract = build_semantic_report_input(
+        user_text, route, evidence_markdown
     )
     messages = [
-        {"role": "system", "content": chat_system_instruction("fastmoss", current_date_shanghai)},
+        {"role": "system", "content": commerce_report_system_instruction("fastmoss", current_date_shanghai)},
         {"role": "system", "content": fastmoss_report_prompt_instruction(route)},
         {"role": "user", "content": semantic_input},
     ]
@@ -11461,6 +12108,7 @@ def synthesize_fastmoss_report_from_packet(
                 "dossier_calls": len(dossier.get("tool_evidence") or []),
                 "evidence_envelopes": manifest.get("evidence_envelope_count") or 0,
                 "evidence_facts": manifest.get("evidence_fact_count") or 0,
+                "coverage_items": len(report_contract.get("coverage_items") or []),
             },
             body,
             elapsed_ms=int((time.monotonic() - started) * 1000),
@@ -11478,8 +12126,12 @@ def synthesize_fastmoss_report_from_packet(
             f"evidence_render={json.dumps(evidence_render_stats, ensure_ascii=False, separators=(',', ':'))}",
             flush=True,
         )
+        rewritten, _rewrite_meta = rewrite_semantic_report(
+            "fastmoss", user_text, route, evidence_markdown, draft,
+            requests_module, api_key, api_url, model,
+        )
         return finalize_fastmoss_answer(
-            draft, assistant_msg, user_text, route,
+            rewritten, assistant_msg, user_text, route,
             requests_module, api_key, api_url, model,
         )
     except Exception as exc:
@@ -13208,6 +13860,10 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             messages, provider, assistant_msg, routing_text, route
         )
         if report_capacity.get("level") in {"hard", "overflow"}:
+            route["_evidence_sufficiency"] = blocked_sufficiency(
+                route,
+                "完整自然语言业务证据已达到单次报告容量的工具停止水位。",
+            )
             tools = []
             final_answer_forced = True
         checkpoint_stats = (
@@ -13599,27 +14255,48 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                         "_context_scope": "system",
                     })
                 elif route.get("dynamic_planner") and provider in {"amazon", "fastmoss"}:
-                    selected_tool_ids = provider_profile_tool_ids(
-                        provider, route, routing_text,
-                        set(effective_enabled_tool_ids or set()), assistant_msg,
+                    sufficiency = evaluate_chat_evidence_sufficiency(
+                        provider,
+                        routing_text,
+                        route,
+                        assistant_msg,
+                        set(effective_enabled_tool_ids or set()),
+                        req,
+                        api_key,
+                        api_url,
+                        model,
                     )
-                    expected_domain = "sellersprite" if provider == "amazon" else "fastmoss"
-                    has_provider_tools = any(
-                        split_prefixed_tool_id(tool_id)[0] == expected_domain
-                        for tool_id in (selected_tool_ids or set())
-                    )
-                    tools = build_prefixed_model_tools(selected_tool_ids) if has_provider_tools else []
-                    log_model_tool_window(provider, all_provider_tools, tools)
-                    final_answer_forced = not has_provider_tools
-                    upsert_research_planner_message(
-                        messages, provider, route, routing_text, assistant_msg
-                    )
-                    if final_answer_forced and provider == "fastmoss":
-                        messages.append({
-                            "role": "system",
-                            "content": fastmoss_report_quality_instruction(assistant_msg, routing_text, route),
-                            "_context_scope": "system",
-                        })
+                    route["_evidence_sufficiency"] = sufficiency
+                    if sufficiency.get("status") == "continue":
+                        selected_tool_ids = provider_profile_tool_ids(
+                            provider, route, routing_text,
+                            set(effective_enabled_tool_ids or set()), assistant_msg,
+                        )
+                        expected_domain = "sellersprite" if provider == "amazon" else "fastmoss"
+                        has_provider_tools = any(
+                            split_prefixed_tool_id(tool_id)[0] == expected_domain
+                            for tool_id in (selected_tool_ids or set())
+                        )
+                        tools = build_prefixed_model_tools(selected_tool_ids) if has_provider_tools else []
+                        if not has_provider_tools:
+                            route["_evidence_sufficiency"] = blocked_sufficiency(
+                                route,
+                                "证据仍有缺口，但当前没有可用的站点业务能力。",
+                            )
+                            tools = []
+                            final_answer_forced = True
+                        else:
+                            final_answer_forced = False
+                        log_model_tool_window(provider, all_provider_tools, tools)
+                        upsert_research_planner_message(
+                            messages, provider, route, routing_text, assistant_msg
+                        )
+                    else:
+                        tools = []
+                        final_answer_forced = True
+                        upsert_research_planner_message(
+                            messages, provider, route, routing_text, assistant_msg
+                        )
                 elif provider == "fastmoss" and route.get("playbook"):
                     phase = fastmoss_workflow_phase(
                         str(route.get("playbook")), assistant_msg, set(effective_enabled_tool_ids or set()), routing_text, route
@@ -13653,15 +14330,47 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                             if deterministic_reasons else ""
                         )
                     )
-                    if call_gate_no_approved_rounds < 2 and tools:
+                    sufficiency = evaluate_chat_evidence_sufficiency(
+                        provider,
+                        routing_text,
+                        route,
+                        assistant_msg,
+                        set(effective_enabled_tool_ids or set()),
+                        req,
+                        api_key,
+                        api_url,
+                        model,
+                    )
+                    route["_evidence_sufficiency"] = sufficiency
+                    if (
+                        call_gate_no_approved_rounds < 2
+                        and sufficiency.get("status") == "continue"
+                        and tools
+                    ):
+                        selected_tool_ids = provider_profile_tool_ids(
+                            provider, route, routing_text,
+                            set(effective_enabled_tool_ids or set()), assistant_msg,
+                        )
+                        tools = build_prefixed_model_tools(selected_tool_ids)
+                        upsert_research_planner_message(
+                            messages, provider, route, routing_text, assistant_msg
+                        )
                         messages.append({
                             "role": "system",
-                            "content": feedback + "请重新理解问题并提出一组不同且可行的调用。",
+                            "content": (
+                                feedback
+                                + "独立证据满足层仍要求继续。请严格依据其缺口提出一组不同且可行的调用。"
+                            ),
                             "_context_scope": "system",
                         })
                         continue
                     tools = []
                     final_answer_forced = True
+                    if sufficiency.get("status") == "continue":
+                        route["_evidence_sufficiency"] = blocked_sufficiency(
+                            route,
+                            "连续两轮没有可执行的获准调用，研究控制发生技术性阻塞。",
+                        )
                     messages.append({
                         "role": "system",
                         "content": (
@@ -13744,6 +14453,51 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 store.update_message(session, assistant_msg, fallback, status="done")
                 store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": fallback})
                 return
+            if (
+                provider in {"amazon", "fastmoss"}
+                and route.get("dynamic_planner")
+                and request_tools
+                and not requested_tool_calls
+            ):
+                sufficiency = evaluate_chat_evidence_sufficiency(
+                    provider,
+                    routing_text,
+                    route,
+                    assistant_msg,
+                    set(effective_enabled_tool_ids or set()),
+                    req,
+                    api_key,
+                    api_url,
+                    model,
+                )
+                route["_evidence_sufficiency"] = sufficiency
+                if sufficiency.get("status") == "continue":
+                    selected_tool_ids = provider_profile_tool_ids(
+                        provider, route, routing_text,
+                        set(effective_enabled_tool_ids or set()), assistant_msg,
+                    )
+                    tools = build_prefixed_model_tools(selected_tool_ids)
+                    upsert_research_planner_message(
+                        messages, provider, route, routing_text, assistant_msg
+                    )
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            "独立证据满足层判定当前不能成稿。忽略上一版回答文字，"
+                            "根据最新证据缺口继续提出原生工具调用。"
+                        ),
+                        "_context_scope": "system",
+                    })
+                    no_tool_retries = 0
+                    continue
+                tools = []
+                final_answer_forced = True
+                messages.append({
+                    "role": "system",
+                    "content": "独立证据满足层已结束研究控制，进入隔离的Semantic报告阶段。",
+                    "_context_scope": "system",
+                })
+                continue
             if final_answer_forced and str(content or "").strip():
                 if (
                     provider == "amazon"
@@ -13925,6 +14679,15 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     else:
         evidence_gaps = []
     quality_summary = mcp_evidence_quality_summary(assistant_msg)
+    if (
+        provider in {"fastmoss", "amazon"}
+        and route.get("dynamic_planner")
+        and (assistant_msg.tool_results or [])
+    ):
+        route["_evidence_sufficiency"] = blocked_sufficiency(
+            route,
+            "研究控制已达到50轮技术熔断，使用当前有效证据并明确局限成稿。",
+        )
     if provider == "fastmoss" and route.get("playbook"):
         messages.append({
             "role": "system",

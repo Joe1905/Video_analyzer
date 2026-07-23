@@ -84,6 +84,25 @@ def test_explicit_scope_conflict_is_rejected() -> None:
     assert pending is None
 
 
+def test_equivalent_month_formats_do_not_conflict() -> None:
+    for returned_month in ("2026.06", "2026-06", "202606"):
+        result = _result({
+            "data": {
+                "list": [{
+                    "keywords": "portable fan",
+                    "month": returned_month,
+                    "searchVolume": 1000,
+                }]
+            }
+        })
+        quality, pending = deterministic_evidence_quality(
+            "sellersprite__keyword_research",
+            {"marketplace": "US", "month": "202606", "keyword": "portable fan"},
+            result,
+        )
+        assert quality["status"] != "off_topic", (returned_month, quality)
+
+
 def test_discovery_query_uses_validated_flash_rows() -> None:
     result = _result({
         "data": {
@@ -289,6 +308,7 @@ def main() -> None:
     test_mismatched_identity_is_off_topic_and_cannot_seed_entities()
     test_missing_identity_rows_are_partially_admitted()
     test_explicit_scope_conflict_is_rejected()
+    test_equivalent_month_formats_do_not_conflict()
     test_discovery_query_uses_validated_flash_rows()
     test_batched_flash_success_and_failure_fallbacks()
     test_off_topic_result_cannot_expand_planner_entities()

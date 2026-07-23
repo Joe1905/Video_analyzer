@@ -1961,6 +1961,9 @@ def test_sellersprite_semantic_report_and_standalone_synthesis() -> None:
     assert "futureBusinessField" not in semantic
 
     class Response:
+        def __init__(self, content: str) -> None:
+            self.content = content
+
         def raise_for_status(self) -> None:
             return None
 
@@ -1968,7 +1971,7 @@ def test_sellersprite_semantic_report_and_standalone_synthesis() -> None:
             return {
                 "choices": [{
                     "finish_reason": "stop",
-                    "message": {"content": "# SellerSprite 报告\n\n已由独立报告模型合成。"},
+                    "message": {"content": self.content},
                 }],
             }
 
@@ -1978,7 +1981,17 @@ def test_sellersprite_semantic_report_and_standalone_synthesis() -> None:
 
         def post(self, _url: str, **kwargs):
             self.payloads.append(json.loads(kwargs["data"].decode("utf-8")))
-            return Response()
+            if len(self.payloads) == 1:
+                return Response("# SellerSprite 报告\n\n已由独立报告模型合成。")
+            return Response(json.dumps({
+                "coverage": [{
+                    "id": "coverage-1",
+                    "status": "covered",
+                    "reason": "正文已回答用户问题。",
+                }],
+                "removed_unsupported_claims": [],
+                "report": "# SellerSprite 报告\n\n已由覆盖校验完整重写。",
+            }, ensure_ascii=False))
 
     requests = Requests()
     report = web_app.synthesize_sellersprite_report_from_packet(
@@ -1992,13 +2005,16 @@ def test_sellersprite_semantic_report_and_standalone_synthesis() -> None:
     )
     assert report.startswith("# SellerSprite 报告")
     assert report.count(web_app.SELLERSPRITE_REPORT_NOTICE) == 1
-    assert len(requests.payloads) == 1
+    assert len(requests.payloads) == 2
     payload = requests.payloads[0]
     assert payload["model"] == "deepseek-v4-pro-test"
     assert payload["max_tokens"] == 12000
     assert "tools" not in payload
     assert [item["role"] for item in payload["messages"]] == ["system", "system", "user"]
-    assert "A useful product analysis must include" in payload["messages"][0]["content"]
+    assert "唯一事实来源" in payload["messages"][0]["content"]
+    assert "sellersprite__" not in payload["messages"][0]["content"]
+    assert "fastmoss__" not in payload["messages"][0]["content"]
+    assert "工具Schema" not in payload["messages"][0]["content"]
     assert "完整的 Amazon 市场调研报告，不是执行摘要" in payload["messages"][1]["content"]
     assert "内部完成证据覆盖检查" in payload["messages"][1]["content"]
     assert "不得为了简洁只保留少数机会方向" in payload["messages"][1]["content"]
@@ -2009,8 +2025,40 @@ def test_sellersprite_semantic_report_and_standalone_synthesis() -> None:
     assert marker not in payload["messages"][2]["content"]
     assert "12345" in payload["messages"][2]["content"]
     assert "# 亚马逊调研证据" in payload["messages"][2]["content"]
-    assert "--- 语义证据开始 ---" in payload["messages"][2]["content"]
+    assert "## 自然语言业务证据" in payload["messages"][2]["content"]
+    second_payload = requests.payloads[1]
+    assert second_payload["response_format"] == {"type": "json_object"}
+    assert second_payload["max_tokens"] == 12000
+    assert "12345" in second_payload["messages"][1]["content"]
+    assert "sellersprite__" not in json.dumps(second_payload["messages"], ensure_ascii=False)
     assert web_app.append_sellersprite_report_notice(report, route) == report
+
+    class InvalidRewriteRequests(Requests):
+        def post(self, _url: str, **kwargs):
+            self.payloads.append(json.loads(kwargs["data"].decode("utf-8")))
+            if len(self.payloads) == 1:
+                return Response("# 安全初稿\n\n只使用现有业务证据。")
+            return Response(json.dumps({
+                "coverage": [{
+                    "id": "coverage-1",
+                    "status": "covered",
+                    "reason": "已覆盖。",
+                }],
+                "removed_unsupported_claims": [],
+                "report": "# 泄漏终稿\n\n建议调用 sellersprite__keyword_research。",
+            }, ensure_ascii=False))
+
+    fallback_report = web_app.synthesize_sellersprite_report_from_packet(
+        message,
+        "分析 stroller fan 市场",
+        route,
+        InvalidRewriteRequests(),
+        "test-key",
+        "https://example.invalid/v1",
+        "deepseek-v4-pro-test",
+    )
+    assert fallback_report.startswith("# 安全初稿")
+    assert "sellersprite__" not in fallback_report
 
     class FailedRequests:
         def post(self, _url: str, **_kwargs):
@@ -2030,6 +2078,136 @@ def test_sellersprite_semantic_report_and_standalone_synthesis() -> None:
     run_source = inspect.getsource(web_app.run_chat_deepseek)
     assert "synthesize_sellersprite_report_from_packet(" not in run_source
     assert run_source.count("complete_sellersprite_answer(") >= 5
+
+
+def test_evidence_sufficiency_ready_and_failure_fallback() -> None:
+    message = SimpleNamespace(
+        tool_calls=[{
+            "id": "c1",
+            "function": {
+                "name": "sellersprite__keyword_research",
+                "arguments": json.dumps({"marketplace": "US", "keyword": "portable fan"}),
+            },
+        }],
+        tool_results=[{
+            "tool_name": "sellersprite__keyword_research",
+            "result": {
+                "ok": True,
+                "data_state": "data",
+                "evidence_quality": {
+                    "status": "accepted",
+                    "accepted_rows": [1],
+                    "rejected_rows": [],
+                    "supported_dimensions": ["关键词需求"],
+                    "unsupported_claims": [],
+                    "reason": "关键词和周期匹配。",
+                },
+                "mcp_data": {"items": [{"keywords": "portable fan", "searchVolume": 1200}]},
+            },
+        }],
+    )
+    route = {
+        "intent": "product_research",
+        "task_depth": "analysis",
+        "dynamic_planner": True,
+        "research_task": {
+            "objective": "entity_analysis",
+            "scope": "keyword",
+            "entity_type": "keyword",
+            "entity": "portable fan",
+            "entity_source": "explicit",
+            "region": "US",
+            "time_window": "最近一个月",
+        },
+    }
+
+    class Response:
+        def __init__(self, content: str) -> None:
+            self.content = content
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {
+                "choices": [{
+                    "finish_reason": "stop",
+                    "message": {"content": self.content},
+                }],
+            }
+
+    class Requests:
+        def __init__(self, content: str) -> None:
+            self.content = content
+            self.payloads: list[dict] = []
+
+        def post(self, _url: str, **kwargs):
+            self.payloads.append(json.loads(kwargs["data"].decode("utf-8")))
+            return Response(self.content)
+
+    ready_response = json.dumps({
+        "status": "ready",
+        "reason": "核心关键词需求已经有证据。",
+        "coverage_items": [{
+            "id": "coverage-1",
+            "topic": "关键词需求",
+            "priority": "core",
+            "state": "supported",
+            "boundaries": ["仅适用于美国站和返回周期"],
+        }],
+        "missing_capabilities": [],
+        "next_capabilities": [],
+        "unsupported_claims": ["完整市场容量"],
+        "report_contract": {
+            "must_cover": ["关键词需求"],
+            "must_compare": [],
+            "must_state_as_limit": ["没有完整市场容量"],
+            "forbidden_claims": ["将样本外推为全市场"],
+        },
+    }, ensure_ascii=False)
+    original_record = web_app.record_api_call
+    web_app.record_api_call = lambda *args, **kwargs: None
+    try:
+        requests = Requests(ready_response)
+        ready = web_app.evaluate_chat_evidence_sufficiency(
+            "amazon",
+            "分析 portable fan",
+            route,
+            message,
+            {
+                "sellersprite__keyword_research",
+                "sellersprite__product_research",
+                "sellersprite__google_trend",
+            },
+            requests,
+            "test-key",
+            "https://example.invalid/v1",
+            "deepseek-v4-flash",
+        )
+        assert ready["status"] == "ready"
+        judge_input = requests.payloads[0]["messages"][1]["content"]
+        assert "sellersprite__" not in judge_input
+        assert "关键词需求" in judge_input
+
+        failed = web_app.evaluate_chat_evidence_sufficiency(
+            "amazon",
+            "分析 portable fan",
+            route,
+            message,
+            {
+                "sellersprite__keyword_research",
+                "sellersprite__product_research",
+                "sellersprite__google_trend",
+            },
+            Requests("not-json"),
+            "test-key",
+            "https://example.invalid/v1",
+            "deepseek-v4-flash",
+        )
+        assert failed["status"] == "continue"
+        assert failed["source"] == "fallback"
+    finally:
+        web_app.record_api_call = original_record
 
 
 def test_dynamic_provider_capability_graph_uses_task_scope_and_evidence() -> None:
@@ -3839,6 +4017,9 @@ def test_fastmoss_22_call_semantic_registry_fixture() -> None:
 
 def test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence() -> None:
     class Response:
+        def __init__(self, content: str) -> None:
+            self.content = content
+
         def raise_for_status(self) -> None:
             return None
 
@@ -3846,7 +4027,7 @@ def test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence() -> None:
             return {
                 "choices": [{
                     "finish_reason": "stop",
-                    "message": {"content": "# 结论\n\n证据包已独立合成。"},
+                    "message": {"content": self.content},
                 }],
             }
 
@@ -3856,7 +4037,17 @@ def test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence() -> None:
 
         def post(self, _url: str, **kwargs):
             self.payloads.append(json.loads(kwargs["data"].decode("utf-8")))
-            return Response()
+            if len(self.payloads) == 1:
+                return Response("# 结论\n\n证据包已独立合成。")
+            return Response(json.dumps({
+                "coverage": [{
+                    "id": "coverage-1",
+                    "status": "covered",
+                    "reason": "正文已覆盖核心研究问题。",
+                }],
+                "removed_unsupported_claims": [],
+                "report": "# 结论\n\n证据包已经过覆盖校验和完整重写。",
+            }, ensure_ascii=False))
 
     requests = Requests()
     trend_rows = [
@@ -3895,7 +4086,7 @@ def test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence() -> None:
         web_app.verify_fastmoss_final_answer = original_verify
     assert result.startswith("# 结论")
     assert result.count(web_app.FASTMOSS_REPORT_NOTICE) == 1
-    assert len(requests.payloads) == 1
+    assert len(requests.payloads) == 2
     payload = requests.payloads[0]
     assert "tools" not in payload
     assert payload["max_tokens"] == 12000
@@ -3903,15 +4094,14 @@ def test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence() -> None:
     base_system = payload["messages"][0]["content"]
     report_system = payload["messages"][1]["content"]
     semantic_content = payload["messages"][2]["content"]
-    assert base_system == web_app.chat_system_instruction(
-        "fastmoss", re.search(r"当前日期（Asia/Shanghai）：(\d{4}-\d{2}-\d{2})", base_system).group(1)
-    )
-    assert "A useful product analysis must include" in base_system
-    assert "Content completeness is more important than decorative layout" in base_system
+    assert "唯一事实来源" in base_system
+    assert "fastmoss__" not in base_system
+    assert "sellersprite__" not in base_system
+    assert "工具Schema" not in base_system
     assert report_system == web_app.fastmoss_report_prompt_instruction(
         {"playbook": "product", "task_depth": "workflow"}
     )
-    assert "完整工具结果是报告的事实素材" in report_system
+    assert "完整自然语言业务证据是报告的唯一事实素材" in report_system
     assert "evidence_index：{" not in report_system
     assert "不得写成流量来源、因果、效率或生命周期结论" in report_system
     assert "内部完成证据覆盖检查" in report_system
@@ -3933,12 +4123,17 @@ def test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence() -> None:
     assert "returned_product_outside_requested_l3" not in semantic_content
     assert "返回记录超出请求的三级类目范围" in semantic_content
     assert "关键词返回量不是市场容量" in semantic_content
+    second_payload = requests.payloads[1]
+    assert second_payload["response_format"] == {"type": "json_object"}
+    assert second_payload["max_tokens"] == 12000
+    assert "fastmoss__" not in json.dumps(second_payload["messages"], ensure_ascii=False)
     assert "| 商品编号 | 1730000000000000001 |" in semantic_content
     assert "本次调用成功，但针对上述精确对象、参数、地区和周期没有返回业务记录" in semantic_content
     assert "| 报告日期 |" in semantic_content
     assert "## 硬事实边界" in semantic_content
     assert semantic_content.index("## 硬事实边界") > semantic_content.index("## 商品评论样本")
-    assert semantic_content.endswith("--- 语义证据结束 ---")
+    assert "## 自然语言业务证据" in semantic_content
+    assert "--- 语义证据结束 ---" not in semantic_content
     assert "omitted_items" not in semantic_content
 
 
@@ -4562,6 +4757,7 @@ if __name__ == "__main__":
     test_sellersprite_keyword_rows_keep_query_scope_and_anonymous_identity_boundary()
     test_sellersprite_product_and_google_trend_fields_are_naturalized()
     test_sellersprite_semantic_report_and_standalone_synthesis()
+    test_evidence_sufficiency_ready_and_failure_fallback()
     test_dynamic_provider_capability_graph_uses_task_scope_and_evidence()
     test_dynamic_provider_planner_does_not_cap_repeated_calls()
     test_llm_orchestration_uses_rolling_tool_window_and_keeps_hard_guards()

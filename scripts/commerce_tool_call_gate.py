@@ -209,6 +209,7 @@ def call_gate_payload(
     planner_state: dict[str, Any],
     confirmed_identities: dict[str, Any],
     candidates: list[dict[str, Any]],
+    evidence_sufficiency: dict[str, Any] | None = None,
 ) -> str:
     return json.dumps({
         "用户问题": str(user_question or ""),
@@ -218,6 +219,7 @@ def call_gate_payload(
             "已有有效证据": planner_state.get("observed_capabilities") or [],
         },
         "已确认业务身份": confirmed_identities,
+        "证据满足判断": evidence_sufficiency or {},
         "候选调用": candidates,
     }, ensure_ascii=False, separators=(",", ":"))
 

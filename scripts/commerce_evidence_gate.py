@@ -74,6 +74,23 @@ def _norm_key(value: Any) -> str:
     return re.sub(r"[^a-z0-9]", "", str(value or "").casefold())
 
 
+def _normalize_scope_value(scope_family: str, value: Any) -> str:
+    text = str(value or "").strip().casefold()
+    if scope_family != "统计周期":
+        return text
+    compact = re.sub(r"[\s./_-]+", "", text)
+    month_match = re.fullmatch(r"(\d{4})(\d{2})", compact)
+    if month_match:
+        return f"{month_match.group(1)}-{month_match.group(2)}"
+    day_match = re.fullmatch(r"(\d{4})(\d{2})(\d{2})", compact)
+    if day_match:
+        return f"{day_match.group(1)}-{day_match.group(2)}-{day_match.group(3)}"
+    week_match = re.fullmatch(r"(\d{4})w(\d{1,2})", compact)
+    if week_match:
+        return f"{week_match.group(1)}-w{int(week_match.group(2)):02d}"
+    return text
+
+
 def _nonempty(value: Any) -> bool:
     if value is None:
         return False
@@ -334,10 +351,12 @@ def deterministic_evidence_quality(
         ("币种", frozenset({"currency", "currencycode"})),
     ):
         requested_scope = {
-            value.casefold() for value in _walk_named_values(arguments, scope_keys)
+            _normalize_scope_value(scope_family, value)
+            for value in _walk_named_values(arguments, scope_keys)
         }
         returned_scope = {
-            value.casefold() for value in _walk_named_values(payload, scope_keys)
+            _normalize_scope_value(scope_family, value)
+            for value in _walk_named_values(payload, scope_keys)
         }
         compatible = bool(requested_scope & returned_scope)
         if scope_family == "统计周期" and not compatible:
