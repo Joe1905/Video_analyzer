@@ -1894,7 +1894,7 @@ def test_sellersprite_product_and_google_trend_fields_are_naturalized() -> None:
     assert any("link" in path for path in trend.excluded_paths)
 
 
-def test_sellersprite_semantic_report_and_pro_synthesis() -> None:
+def test_sellersprite_semantic_report_and_standalone_synthesis() -> None:
     marker = "SELLERSPRITE-REPORT-MARKER"
     message = SimpleNamespace(
         tool_calls=[{
@@ -1968,7 +1968,7 @@ def test_sellersprite_semantic_report_and_pro_synthesis() -> None:
             return {
                 "choices": [{
                     "finish_reason": "stop",
-                    "message": {"content": "# SellerSprite 报告\n\n已由 V4 Pro 合成。"},
+                    "message": {"content": "# SellerSprite 报告\n\n已由独立报告模型合成。"},
                 }],
             }
 
@@ -2025,7 +2025,7 @@ def test_sellersprite_semantic_report_and_pro_synthesis() -> None:
         "https://example.invalid/v1",
         "deepseek-v4-pro-test",
     )
-    assert "没有使用 Flash 草稿替代 V4 Pro 报告" in failed
+    assert "没有使用编排草稿替代独立报告" in failed
 
     run_source = inspect.getsource(web_app.run_chat_deepseek)
     assert "synthesize_sellersprite_report_from_packet(" not in run_source
@@ -4230,7 +4230,7 @@ def test_fastmoss_claim_ids_and_extended_mechanical_cleanup() -> None:
     assert creator_count == 1 and "1–2" not in creator_cleaned
 
 
-def test_analytical_routes_use_report_model_and_fastmoss_preserves_pro_draft() -> None:
+def test_analytical_routes_use_report_model_and_fastmoss_preserves_report_draft() -> None:
     assert web_app.chat_route_uses_report_model(
         "home", {"intent": "product_research", "task_depth": "analysis"}
     )
@@ -4309,6 +4309,24 @@ def test_analytical_routes_use_report_model_and_fastmoss_preserves_pro_draft() -
         draft, {"task_depth": "lookup"}
     ) == draft
     assert calls == []
+
+
+def test_report_model_defaults_to_flash() -> None:
+    old_report_model = os.environ.pop("DEEPSEEK_REPORT_MODEL", None)
+    old_chat_model = os.environ.pop("DEEPSEEK_CHAT_MODEL", None)
+    try:
+        assert web_app.chat_report_model() == "deepseek-v4-flash"
+        os.environ["DEEPSEEK_CHAT_MODEL"] = "deepseek-v4-flash-test"
+        assert web_app.chat_report_model() == "deepseek-v4-flash-test"
+    finally:
+        if old_report_model is not None:
+            os.environ["DEEPSEEK_REPORT_MODEL"] = old_report_model
+        else:
+            os.environ.pop("DEEPSEEK_REPORT_MODEL", None)
+        if old_chat_model is not None:
+            os.environ["DEEPSEEK_CHAT_MODEL"] = old_chat_model
+        else:
+            os.environ.pop("DEEPSEEK_CHAT_MODEL", None)
 
 
 def test_planner_message_is_upserted_instead_of_accumulated() -> None:
@@ -4434,7 +4452,7 @@ def test_semantic_report_watermarks_and_overflow_never_use_checkpoint() -> None:
 
     class NoRequests:
         def post(self, _url: str, **_kwargs):
-            raise AssertionError("overflow report must not call V4 Pro")
+            raise AssertionError("overflow report must not call the standalone report model")
 
     original_estimator = web_app.estimate_chat_context_tokens
     try:
@@ -4543,7 +4561,7 @@ if __name__ == "__main__":
     test_sellersprite_official_aba_fields_render_as_semantic_values()
     test_sellersprite_keyword_rows_keep_query_scope_and_anonymous_identity_boundary()
     test_sellersprite_product_and_google_trend_fields_are_naturalized()
-    test_sellersprite_semantic_report_and_pro_synthesis()
+    test_sellersprite_semantic_report_and_standalone_synthesis()
     test_dynamic_provider_capability_graph_uses_task_scope_and_evidence()
     test_dynamic_provider_planner_does_not_cap_repeated_calls()
     test_llm_orchestration_uses_rolling_tool_window_and_keeps_hard_guards()
@@ -4576,5 +4594,6 @@ if __name__ == "__main__":
     test_semantic_report_watermarks_and_overflow_never_use_checkpoint()
     test_semantic_evidence_budget_preserves_repeated_values()
     test_fastmoss_claim_ids_and_extended_mechanical_cleanup()
-    test_analytical_routes_use_report_model_and_fastmoss_preserves_pro_draft()
+    test_analytical_routes_use_report_model_and_fastmoss_preserves_report_draft()
+    test_report_model_defaults_to_flash()
     print("chat tool normalization tests passed")

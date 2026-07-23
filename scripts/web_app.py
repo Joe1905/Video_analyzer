@@ -4379,13 +4379,13 @@ def provider_tool_stage_error(
 
 
 def chat_report_model() -> str:
-    """Use the stronger model only after an analytical request has finished collecting evidence."""
+    """Use the configured standalone model after analytical evidence collection."""
     return str(
         os.getenv(
             "DEEPSEEK_REPORT_MODEL",
-            os.getenv("DEEPSEEK_V4_PRO_MODEL", "deepseek-v4-pro"),
+            os.getenv("DEEPSEEK_CHAT_MODEL", "deepseek-v4-flash"),
         )
-    ).strip() or "deepseek-v4-pro"
+    ).strip() or "deepseek-v4-flash"
 
 
 def chat_route_uses_report_model(provider: str, route: dict[str, Any]) -> bool:
@@ -9164,7 +9164,7 @@ def apply_semantic_report_watermark(
             "role": "system",
             "content": (
                 "最终单次报告的原始语义证据已达到工具停止水位。"
-                "不得继续调用工具，直接进入独立 V4 Pro 报告阶段。"
+                "不得继续调用工具，直接进入独立报告模型阶段。"
             ),
             "_context_scope": "system",
             "_context_key": context_key,
@@ -9181,7 +9181,7 @@ def semantic_report_capacity_error(provider: str, estimated_tokens: int) -> str:
     label = "SellerSprite" if normalize_chat_provider(provider) == "amazon" else "FastMoss"
     return (
         f"报告容量错误：{label} 原始语义证据预计为 {estimated_tokens:,} 个词元，"
-        "已超过单次 V4 Pro 报告的 950,000 tokens 安全上限。"
+        "已超过单次独立报告模型的 950,000 tokens 安全上限。"
         "系统已完整保留本轮原始工具结果，但不会静默截断、分块或改用编排检查点生成一份证据不完整的报告。"
     )
 
@@ -9322,7 +9322,7 @@ def synthesize_sellersprite_report_from_packet(
         message = (
             "SellerSprite 工具查询已结束，但报告模型暂时无法生成最终报告。"
             f"已取得数据的接口 {len(quality.get('data', []))} 个，成功但为空的接口 {len(quality.get('empty', []))} 个，"
-            f"失败接口 {len(quality.get('error', []))} 个。系统没有使用 Flash 草稿替代 V4 Pro 报告；请稍后重试。"
+            f"失败接口 {len(quality.get('error', []))} 个。系统没有使用编排草稿替代独立报告；请稍后重试。"
         )
         log_sellersprite_report_pipeline(message, dossier, evidence_render_stats, "synthesis_failed")
         return message
@@ -9338,7 +9338,7 @@ def complete_sellersprite_answer(
     api_url: str,
     model: str,
 ) -> str:
-    """Route every evidence-led SellerSprite report through Semantic evidence and V4 Pro."""
+    """Route every evidence-led SellerSprite report through Semantic evidence and the standalone report model."""
     has_sellersprite_evidence = any(
         isinstance(item, dict)
         and split_prefixed_tool_id(str(item.get("tool_name") or ""))[0] == "sellersprite"
@@ -11412,7 +11412,7 @@ def finalize_fastmoss_answer(
     api_url: str,
     model: str,
 ) -> str:
-    """Preserve the Pro draft by default; the legacy LLM editor is opt-in."""
+    """Preserve the standalone report draft by default; the legacy LLM editor is opt-in."""
     if fastmoss_llm_verifier_enabled():
         return append_fastmoss_report_notice(
             verify_fastmoss_final_answer(
