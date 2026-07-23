@@ -244,7 +244,14 @@ Codex tasks for this repository run directly in the production server checkout:
 /home/openclaw/Video_analyzer
 ```
 
-Treat the current working tree as both the development workspace and the production checkout. Do not SSH or SCP back into `192.168.1.254`, and do not use development-machine SSH keys for this repository.
+When the current working tree is already the server checkout under `/home/openclaw/`, treat it as both the development workspace and the deployed checkout; do not SSH back into the same server or create a second checkout.
+
+When working from a Windows development checkout:
+
+- Source code synchronization must go through GitHub: push from Windows, then pull the same branch in the server checkout.
+- SSH to `192.168.1.254` is allowed for read-only inspection, `git status`/`git pull`, Docker tests, deployment commands, logs, process inspection, and health checks.
+- Do not use SSH command input, SCP, SFTP, rsync, archive piping, or copy/paste to transfer or rewrite source files on the server.
+- Use the dedicated deployment SSH key when one is configured; never expose or commit private keys.
 
 GitHub repo:
 
@@ -259,7 +266,7 @@ GitHub access rules:
 - Prefer explicit `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` / lowercase environment variables, or scoped `git -c http.proxy=... -c https.proxy=...`. Do not commit proxy credentials.
 - If GitHub HTTPS fails during the initial handshake, record the concrete error and proxy state, then switch to the proxy path or another approved authenticated GitHub path. Do not blindly retry direct HTTPS.
 
-Server-direct workflow:
+Server-direct workflow (when Codex is already running in the server checkout):
 
 1. Check the current server checkout with `git status --short --branch` and preserve unrelated changes.
 2. Make the change directly in `/home/openclaw/Video_analyzer`.
@@ -284,7 +291,7 @@ docker compose -p short-video-analyzer build
 docker compose -p short-video-analyzer up -d web
 ```
 
-Do not use `ssh`, `scp`, or a second checkout as part of the normal development or deployment flow.
+Do not use SCP, SFTP, rsync, archive piping, or a second checkout to synchronize code. From a Windows checkout, SSH may be used only for the operational commands listed above; all source changes must reach the server through GitHub.
 
 ## Agent Safety Rules
 
