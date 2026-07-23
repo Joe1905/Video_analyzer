@@ -1,0 +1,123 @@
+{
+  "provider": "fastmoss",
+  "tool": "market_category_author_sales_matrix",
+  "contract_source": {
+    "request": "2026-07-23运行时MCP Schema",
+    "response": "工具专属Semantic契约与脱敏业务样本"
+  },
+  "semantic": {
+    "title": "类目达人销售矩阵",
+    "profile": "distribution",
+    "entity_type": "category",
+    "report_included": true
+  },
+  "runtime_input_schema": {
+    "properties": {
+      "filter": {
+        "description": "Filter parameters.",
+        "properties": {
+          "category_id": {
+            "description": "Category ID; confirm category first if only a category name is known.",
+            "type": "integer"
+          },
+          "date_value": {
+            "description": "Completed period only: yesterday YYYY-MM-DD, last week YYYY-ww or YYYY-Www, last month YYYY-MM; do not use the current period.",
+            "type": "string"
+          },
+          "region": {
+            "description": "Country or region code, e.g. US, UK, ID.",
+            "type": "string"
+          },
+          "sold_type": {
+            "description": "Sold type parameter.",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "lang": {
+        "description": "Language. Default EN_US, optional ZH_CN.",
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
+  "request_variants": [
+    {
+      "name": "运行时结构",
+      "arguments": {
+        "filter": {
+          "category_id": 123456,
+          "date_value": "样例值",
+          "region": "US",
+          "sold_type": 1
+        },
+        "lang": "样例值"
+      }
+    }
+  ],
+  "response_variants": {
+    "success": {
+      "data": {
+        "category_id": "123456",
+        "category_name": "Home and Kitchen",
+        "region": "US",
+        "currency": "USD",
+        "breakdown": [
+          {
+            "category_name": "样本区间一",
+            "product_count": 24,
+            "share_percent": 40
+          },
+          {
+            "category_name": "样本区间二",
+            "product_count": 36,
+            "share_percent": 60
+          }
+        ]
+      }
+    },
+    "empty": {
+      "data": {
+        "total": 0,
+        "list": []
+      }
+    },
+    "error": {
+      "success": false,
+      "message": "样例调用失败"
+    },
+    "partial_identity": {
+      "data": {
+        "list": [
+          {
+            "category_id": "123456",
+            "category_name": "Home and Kitchen",
+            "period": "2026-06"
+          },
+          {
+            "price": 19.99
+          }
+        ]
+      }
+    }
+  },
+  "documented_response_fields": [
+    "category_id",
+    "category_name",
+    "currency",
+    "product_count",
+    "region",
+    "share_percent"
+  ],
+  "expected_semantic": [
+    "类目达人销售矩阵"
+  ],
+  "forbidden_semantic": [
+    "fastmoss__market_category_author_sales_matrix",
+    "call:",
+    "null",
+    "true",
+    "false"
+  ]
+}

@@ -1,0 +1,385 @@
+{
+  "provider": "sellersprite",
+  "tool": "traffic_extend",
+  "contract_source": {
+    "request": "2026-07-23运行时MCP Schema",
+    "response": "工具专属Semantic契约与脱敏业务样本"
+  },
+  "semantic": {
+    "title": "流量关键词扩展",
+    "profile": "records",
+    "entity_type": "keyword",
+    "report_included": true
+  },
+  "runtime_input_schema": {
+    "type": "object",
+    "properties": {
+      "request": {
+        "type": "object",
+        "properties": {
+          "amazonChoice": {
+            "type": "boolean",
+            "description": "亚马逊推荐词"
+          },
+          "asinList": {
+            "description": "asins, 最多只支持20个，如果超过20个, 需要拆分多次请求",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "description": "asins, 最多只支持20个，如果超过20个, 需要拆分多次请求"
+            }
+          },
+          "excludeKeywords": {
+            "description": "排除的词",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "description": "排除的词"
+            }
+          },
+          "historyDate": {
+            "type": "string",
+            "description": "查询月份, 格式: yyyyMM"
+          },
+          "includeKeywords": {
+            "description": "包含的词",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "description": "包含的词"
+            }
+          },
+          "marketplace": {
+            "type": "string",
+            "description": "Amazon 站点代码（枚举值）：US, JP, UK, DE, FR, IT, ES, CA, IN, MX, BR, AU, AE"
+          },
+          "maxAdProducts": {
+            "type": "integer",
+            "format": "int32",
+            "description": "最大广告竞品数"
+          },
+          "maxAvgPrice": {
+            "type": "number",
+            "format": "float",
+            "description": "最大均价"
+          },
+          "maxBid": {
+            "type": "number",
+            "format": "float",
+            "description": "最大ppc竞价"
+          },
+          "maxCompetitors": {
+            "type": "integer",
+            "format": "int32",
+            "description": "最大asin数"
+          },
+          "maxConversionRate": {
+            "type": "number",
+            "format": "float",
+            "description": "最大转化率"
+          },
+          "maxMonopolyClickRate": {
+            "type": "number",
+            "format": "float",
+            "description": "最大点击集中度"
+          },
+          "maxProducts": {
+            "type": "integer",
+            "format": "int32",
+            "description": "最大商品数"
+          },
+          "maxPurchaseRate": {
+            "type": "number",
+            "format": "float",
+            "description": "最大购买率"
+          },
+          "maxPurchases": {
+            "type": "integer",
+            "format": "int32",
+            "description": "最大购买量"
+          },
+          "maxSPR": {
+            "type": "integer",
+            "format": "int32",
+            "description": "最大SPR"
+          },
+          "maxSearchRank": {
+            "type": "integer",
+            "format": "int32",
+            "description": "最大搜索排名"
+          },
+          "maxSearches": {
+            "type": "integer",
+            "format": "int32",
+            "description": "最大月搜索量"
+          },
+          "maxSupplyDemandRatio": {
+            "type": "number",
+            "format": "float",
+            "description": "最大供需比"
+          },
+          "maxTitleDensity": {
+            "type": "integer",
+            "format": "int32",
+            "description": "最大标题密度"
+          },
+          "maxTrafficPercentage": {
+            "type": "number",
+            "format": "float",
+            "description": "最大流量占比"
+          },
+          "maxWordCount": {
+            "type": "integer",
+            "format": "int32",
+            "description": "最大单词个数"
+          },
+          "minAdProducts": {
+            "type": "integer",
+            "format": "int32",
+            "description": "最小广告竞品数"
+          },
+          "minAvgPrice": {
+            "type": "number",
+            "format": "float",
+            "description": "最小均价"
+          },
+          "minBid": {
+            "type": "number",
+            "format": "float",
+            "description": "最小ppc竞价"
+          },
+          "minCompetitors": {
+            "type": "integer",
+            "format": "int32",
+            "description": "最小asin数"
+          },
+          "minConversionRate": {
+            "type": "number",
+            "format": "float",
+            "description": "最小转化率"
+          },
+          "minMonopolyClickRate": {
+            "type": "number",
+            "format": "float",
+            "description": "最小点击集中度"
+          },
+          "minProducts": {
+            "type": "integer",
+            "format": "int32",
+            "description": "最小商品数"
+          },
+          "minPurchaseRate": {
+            "type": "number",
+            "format": "float",
+            "description": "最小购买率"
+          },
+          "minPurchases": {
+            "type": "integer",
+            "format": "int32",
+            "description": "最小购买量"
+          },
+          "minSPR": {
+            "type": "integer",
+            "format": "int32",
+            "description": "最小SPR"
+          },
+          "minSearchRank": {
+            "type": "integer",
+            "format": "int32",
+            "description": "最小搜索排名"
+          },
+          "minSearches": {
+            "type": "integer",
+            "format": "int32",
+            "description": "最小月搜索量"
+          },
+          "minSupplyDemandRatio": {
+            "type": "number",
+            "format": "float",
+            "description": "最小供需比"
+          },
+          "minTitleDensity": {
+            "type": "integer",
+            "format": "int32",
+            "description": "最小标题密度"
+          },
+          "minTrafficPercentage": {
+            "type": "number",
+            "format": "float",
+            "description": "最小流量占比"
+          },
+          "minWordCount": {
+            "type": "integer",
+            "format": "int32",
+            "description": "最小单词个数"
+          },
+          "order": {
+            "type": "object",
+            "properties": {
+              "desc": {
+                "type": "boolean",
+                "description": "排序类型"
+              },
+              "field": {
+                "type": "string",
+                "description": "排序字段。\n可选值(仅填写字段名):\n- trafficPercentage: 流量占比\n- relationAsin: 相关ASIN\n- searchesRank: ABA周排名\n- searches: 月搜索量\n- purchases: 月购买量\n- purchaseRate: 购买率\n- spr: spr\n- titleDensity: 标题密度\n- products: 商品数\n- supplyDemandRatio: 供需比\n- adProduct: 广告竞品数\n- monopolyClickRate: 点击集中度\n- bid: PPC竞价\n\n禁止使用未列出的值。\n"
+              }
+            },
+            "description": "排序"
+          },
+          "page": {
+            "type": "integer",
+            "format": "int32",
+            "description": "页码"
+          },
+          "queryType": {
+            "type": "integer",
+            "format": "int32",
+            "description": "查询方式, 默认: 2\n可选值(必须严格使用下列数字值之一):\n 0: 所有变体\n 1: 畅销变体\n 2: 当前变体\n\n 禁止使用未列出的值。\n"
+          },
+          "returnFields": {
+            "type": "string",
+            "description": "指定返回的字段，多个字段用逗号隔开。不指定则返回所有字段。例如：asin,title,price,totalUnits,totalAmount"
+          },
+          "size": {
+            "type": "integer",
+            "format": "int32",
+            "description": "每页条数"
+          }
+        },
+        "required": [
+          "asinList",
+          "marketplace",
+          "queryType"
+        ]
+      }
+    },
+    "required": [
+      "request"
+    ],
+    "additionalProperties": false
+  },
+  "request_variants": [
+    {
+      "name": "运行时结构",
+      "arguments": {
+        "request": {
+          "amazonChoice": true,
+          "asinList": [
+            "样例值"
+          ],
+          "excludeKeywords": [
+            "样例值"
+          ],
+          "historyDate": "样例值",
+          "includeKeywords": [
+            "样例值"
+          ],
+          "marketplace": "US",
+          "maxAdProducts": 1,
+          "maxAvgPrice": 1.0,
+          "maxBid": 1.0,
+          "maxCompetitors": 1,
+          "maxConversionRate": 1.0,
+          "maxMonopolyClickRate": 1.0,
+          "maxProducts": 1,
+          "maxPurchaseRate": 1.0,
+          "maxPurchases": 1,
+          "maxSPR": 1,
+          "maxSearchRank": 1,
+          "maxSearches": 1,
+          "maxSupplyDemandRatio": 1.0,
+          "maxTitleDensity": 1,
+          "maxTrafficPercentage": 1.0,
+          "maxWordCount": 1,
+          "minAdProducts": 1,
+          "minAvgPrice": 1.0,
+          "minBid": 1.0,
+          "minCompetitors": 1,
+          "minConversionRate": 1.0,
+          "minMonopolyClickRate": 1.0,
+          "minProducts": 1,
+          "minPurchaseRate": 1.0,
+          "minPurchases": 1,
+          "minSPR": 1,
+          "minSearchRank": 1,
+          "minSearches": 1,
+          "minSupplyDemandRatio": 1.0,
+          "minTitleDensity": 1,
+          "minTrafficPercentage": 1.0,
+          "minWordCount": 1,
+          "order": {
+            "desc": true,
+            "field": "样例值"
+          },
+          "page": 1,
+          "queryType": 1,
+          "returnFields": "asin",
+          "size": 1
+        }
+      }
+    }
+  ],
+  "response_variants": {
+    "success": {
+      "data": {
+        "total": 1,
+        "list": [
+          {
+            "keywords": "portable desk fan",
+            "rank": 1,
+            "price": 24.99,
+            "currency": "USD",
+            "period": "2026-06"
+          }
+        ]
+      }
+    },
+    "empty": {
+      "data": {
+        "total": 0,
+        "list": []
+      }
+    },
+    "error": {
+      "success": false,
+      "message": "样例调用失败"
+    },
+    "partial_identity": {
+      "data": {
+        "total": 1,
+        "list": [
+          {
+            "keywords": "portable desk fan",
+            "rank": 1,
+            "price": 24.99,
+            "currency": "USD",
+            "period": "2026-06"
+          },
+          {
+            "price": 19.99,
+            "currency": "USD"
+          }
+        ]
+      }
+    }
+  },
+  "documented_response_fields": [
+    "currency",
+    "keywords",
+    "period",
+    "price",
+    "rank",
+    "total"
+  ],
+  "expected_semantic": [
+    "流量关键词扩展"
+  ],
+  "forbidden_semantic": [
+    "sellersprite__traffic_extend",
+    "call:",
+    "null",
+    "true",
+    "false"
+  ]
+}

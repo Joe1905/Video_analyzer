@@ -1,0 +1,176 @@
+{
+  "provider": "fastmoss",
+  "tool": "agency_rank_top",
+  "contract_source": {
+    "request": "2026-07-23运行时MCP Schema",
+    "response": "工具专属Semantic契约与脱敏业务样本"
+  },
+  "semantic": {
+    "title": "机构榜单",
+    "profile": "records",
+    "entity_type": "agency",
+    "report_included": true
+  },
+  "runtime_input_schema": {
+    "properties": {
+      "filter": {
+        "description": "Filter parameters.",
+        "properties": {
+          "date_type": {
+            "default": "week",
+            "description": "Ranking period: day, week, or month; MCN agency rankings support only week/month.",
+            "enum": [
+              "week",
+              "month"
+            ],
+            "type": "string"
+          },
+          "date_value": {
+            "description": "Completed period only: yesterday YYYY-MM-DD, last week YYYY-ww or YYYY-Www, last month YYYY-MM; do not use the current period.",
+            "type": "string"
+          },
+          "region": {
+            "description": "Country or region code, e.g. US, UK, ID.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "orderby": {
+        "description": "Sort options.",
+        "items": {
+          "properties": {
+            "field": {
+              "description": "Field parameter.",
+              "enum": [
+                "gmv",
+                "collaborating_creator_count",
+                "collaborating_product_count",
+                "estimated_commission_amount"
+              ],
+              "type": "string"
+            },
+            "order": {
+              "default": "desc",
+              "description": "Order parameter.",
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "field"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "page": {
+        "default": 1,
+        "description": "Page number. Default 1, max 500.",
+        "maximum": 500,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "pagesize": {
+        "default": 10,
+        "description": "Page size. Default 10, max 10.",
+        "maximum": 10,
+        "minimum": 1,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "filter"
+    ],
+    "type": "object"
+  },
+  "request_variants": [
+    {
+      "name": "运行时结构",
+      "arguments": {
+        "filter": {
+          "date_type": "week",
+          "date_value": "样例值",
+          "region": "US"
+        },
+        "orderby": [
+          {
+            "field": "gmv",
+            "order": "asc"
+          }
+        ],
+        "page": 1,
+        "pagesize": 10
+      }
+    }
+  ],
+  "response_variants": {
+    "success": {
+      "data": {
+        "total": 1,
+        "list": [
+          {
+            "agency_id": "7234567890123456793",
+            "agency_name": "Sample Agency",
+            "rank": 1,
+            "price": 24.99,
+            "currency": "USD",
+            "period": "2026-06"
+          }
+        ]
+      }
+    },
+    "empty": {
+      "data": {
+        "total": 0,
+        "list": []
+      }
+    },
+    "error": {
+      "success": false,
+      "message": "样例调用失败"
+    },
+    "partial_identity": {
+      "data": {
+        "total": 1,
+        "list": [
+          {
+            "agency_id": "7234567890123456793",
+            "agency_name": "Sample Agency",
+            "rank": 1,
+            "price": 24.99,
+            "currency": "USD",
+            "period": "2026-06"
+          },
+          {
+            "price": 19.99,
+            "currency": "USD"
+          }
+        ]
+      }
+    }
+  },
+  "documented_response_fields": [
+    "agency_id",
+    "agency_name",
+    "currency",
+    "period",
+    "price",
+    "rank",
+    "total"
+  ],
+  "expected_semantic": [
+    "机构榜单"
+  ],
+  "forbidden_semantic": [
+    "fastmoss__agency_rank_top",
+    "call:",
+    "null",
+    "true",
+    "false"
+  ]
+}

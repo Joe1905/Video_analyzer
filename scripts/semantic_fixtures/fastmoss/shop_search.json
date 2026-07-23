@@ -1,0 +1,232 @@
+{
+  "provider": "fastmoss",
+  "tool": "shop_search",
+  "contract_source": {
+    "request": "2026-07-23运行时MCP Schema",
+    "response": "工具专属Semantic契约与脱敏业务样本"
+  },
+  "semantic": {
+    "title": "店铺搜索结果",
+    "profile": "records",
+    "entity_type": "shop",
+    "report_included": true
+  },
+  "runtime_input_schema": {
+    "properties": {
+      "filter": {
+        "description": "Filter parameters.",
+        "properties": {
+          "brand_name": {
+            "description": "Brand name parameter.",
+            "type": "string"
+          },
+          "category_id": {
+            "description": "Category ID; confirm category first if only a category name is known.",
+            "type": "integer"
+          },
+          "creator_range": {
+            "description": "Creator count range: {\"min\": number, \"max\": number}.",
+            "properties": {
+              "max": {
+                "description": "Maximum value.",
+                "type": "number"
+              },
+              "min": {
+                "description": "Minimum value.",
+                "type": "number"
+              }
+            },
+            "type": "object"
+          },
+          "creator_uid": {
+            "description": "Creator UID; use creator_search first if only a handle/nickname is known.",
+            "type": "string"
+          },
+          "creator_unique_id": {
+            "description": "Creator unique id.",
+            "type": "string"
+          },
+          "is_fully_managed": {
+            "description": "Whether it is fully managed.",
+            "type": "boolean"
+          },
+          "is_local": {
+            "description": "Is local parameter.",
+            "type": "boolean"
+          },
+          "rating_range": {
+            "description": "Rating range range in the form {\"min\": number, \"max\": number}.",
+            "properties": {
+              "max": {
+                "description": "Maximum value.",
+                "type": "number"
+              },
+              "min": {
+                "description": "Minimum value.",
+                "type": "number"
+              }
+            },
+            "type": "object"
+          },
+          "region": {
+            "description": "Country or region code, e.g. US, UK, ID.",
+            "type": "string"
+          },
+          "seller_id": {
+            "description": "Shop seller_id; use shop_search first if only a shop name is known.",
+            "type": "string"
+          },
+          "shop_name": {
+            "description": "Shop name parameter.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "keywords": {
+        "description": "Search keywords: product, shop, creator, video, live, or category terms.",
+        "type": "string"
+      },
+      "orderby": {
+        "description": "Sort options.",
+        "items": {
+          "properties": {
+            "field": {
+              "enum": [
+                "day7_units_sold",
+                "day7_gmv",
+                "total_units_sold",
+                "total_gmv"
+              ],
+              "type": "string"
+            },
+            "order": {
+              "default": "desc",
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "page": {
+        "default": 1,
+        "description": "Page number. Default 1, max 500.",
+        "maximum": 500,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "pagesize": {
+        "default": 10,
+        "description": "Page size. Default 10, max 10.",
+        "maximum": 10,
+        "type": "integer"
+      }
+    },
+    "type": "object"
+  },
+  "request_variants": [
+    {
+      "name": "运行时结构",
+      "arguments": {
+        "filter": {
+          "brand_name": "样例值",
+          "category_id": 123456,
+          "creator_range": {
+            "max": 1.0,
+            "min": 1.0
+          },
+          "creator_uid": "7234567890123456790",
+          "creator_unique_id": "样例值",
+          "is_fully_managed": true,
+          "is_local": true,
+          "rating_range": {
+            "max": 1.0,
+            "min": 1.0
+          },
+          "region": "US",
+          "seller_id": "样例值",
+          "shop_name": "样例值"
+        },
+        "keywords": "portable desk fan",
+        "orderby": [
+          {
+            "field": "day7_units_sold",
+            "order": "asc"
+          }
+        ],
+        "page": 1,
+        "pagesize": 10
+      }
+    }
+  ],
+  "response_variants": {
+    "success": {
+      "data": {
+        "total": 1,
+        "list": [
+          {
+            "shop_id": "7234567890123456789",
+            "shop_name": "Sample Store",
+            "rank": 1,
+            "price": 24.99,
+            "currency": "USD",
+            "period": "2026-06"
+          }
+        ]
+      }
+    },
+    "empty": {
+      "data": {
+        "total": 0,
+        "list": []
+      }
+    },
+    "error": {
+      "success": false,
+      "message": "样例调用失败"
+    },
+    "partial_identity": {
+      "data": {
+        "total": 1,
+        "list": [
+          {
+            "shop_id": "7234567890123456789",
+            "shop_name": "Sample Store",
+            "rank": 1,
+            "price": 24.99,
+            "currency": "USD",
+            "period": "2026-06"
+          },
+          {
+            "price": 19.99,
+            "currency": "USD"
+          }
+        ]
+      }
+    }
+  },
+  "documented_response_fields": [
+    "currency",
+    "period",
+    "price",
+    "rank",
+    "shop_id",
+    "shop_name",
+    "total"
+  ],
+  "expected_semantic": [
+    "店铺搜索结果"
+  ],
+  "forbidden_semantic": [
+    "fastmoss__shop_search",
+    "call:",
+    "null",
+    "true",
+    "false"
+  ]
+}

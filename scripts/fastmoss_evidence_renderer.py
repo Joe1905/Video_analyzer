@@ -263,10 +263,13 @@ _FIELD_LABELS = {
     "seller_id": "店铺编号",
     "shop_id": "店铺编号",
     "creator_uid": "达人编号",
+    "creator_id": "达人编号",
     "uid": "达人编号",
     "video_id": "视频编号",
     "room_id": "直播间编号",
+    "live_id": "直播编号",
     "agency_id": "机构编号",
+    "agency_name": "机构名称",
     "category_id": "类目编号",
     "title": "标题",
     "name": "名称",
@@ -292,6 +295,7 @@ _FIELD_LABELS = {
     "commission_rate_percent": "佣金率",
     "gmv_share_percent": "成交金额占比",
     "units_sold_share_percent": "销量占比",
+    "share_percent": "占比",
     "date": "日期",
     "date_type": "统计周期类型",
     "date_value": "统计日期",
@@ -321,6 +325,10 @@ _FIELD_LABELS = {
     "query": "查询词",
     "keywords": "关键词",
     "keyword": "关键词",
+    "search_volume": "搜索量",
+    "purchase_volume": "购买量",
+    "trademark_name": "商标名称",
+    "registration_number": "商标注册编号",
     "return_fields": "返回字段",
     "keyword_cn": "关键词中文释义",
     "keyword_jp": "关键词日文释义",
@@ -428,6 +436,9 @@ _FIELD_LABELS = {
     "field": "排序字段",
     "desc": "是否降序",
     "analysis_type": "分析类型",
+    "basic_metrics": "基础规模指标",
+    "sales_trends": "销售趋势",
+    "price_distribution": "价格分布",
     "workflow": "调研对象类型",
     "report_date": "报告日期",
     "research_task": "研究任务",
@@ -469,6 +480,12 @@ _FIELD_LABELS = {
     "business_data": "业务返回数据",
     "evidence_fence": "证据围栏",
     "data_state": "数据状态",
+    "evidence_quality_status": "证据准入状态",
+    "evidence_quality_reason": "证据准入说明",
+    "accepted_rows": "可用记录序号",
+    "rejected_rows": "不可用记录序号",
+    "supported_dimensions": "可以支持的证据维度",
+    "unsupported_claims": "不能支持的结论",
     "ok": "调用是否成功",
     "enough_data": "证据是否充足",
     "returned_count": "返回记录数",
@@ -597,6 +614,36 @@ _FIELD_LABELS = {
     "ad_video_count": "广告视频数",
     "ad_play_count": "广告视频播放量",
     "estimated_ad_spend": "预估广告花费",
+    "last_seen_ad_date": "最近观察到广告的日期",
+    "first_seen_ad_date": "首次观察到广告的日期",
+    "observed_active_days": "观察到广告活跃的天数",
+    "agency_collaboration_gmv": "机构合作商品成交金额",
+    "agency_collaboration_units_sold": "机构合作商品销量",
+    "collaborating_creator_count": "合作达人数",
+    "collaborating_product_count": "合作商品数",
+    "collect_count": "收藏数",
+    "creator_usd_gmv": "达人成交金额（美元）",
+    "day28_follower_count": "近28日粉丝数",
+    "estimated_commission_amount": "预估佣金金额",
+    "follower_change": "粉丝数变化",
+    "follower_inc_count": "新增粉丝数",
+    "interact_rate": "互动率",
+    "live_usd_gmv": "直播成交金额（美元）",
+    "potential_index": "潜力指数",
+    "product_count": "商品数",
+    "recent_7d_gmv": "近7日成交金额",
+    "sale_amount": "销售金额",
+    "showcase_gmv": "商品橱窗成交金额",
+    "showcase_units_sold": "商品橱窗销量",
+    "sold_count": "销量",
+    "start_time": "开始时间",
+    "total_user_count": "累计用户数",
+    "total_viewer_count": "累计观看人数",
+    "usd_gmv": "成交金额（美元）",
+    "video_avg_digg_count": "视频平均点赞数",
+    "video_avg_play_count": "视频平均播放量",
+    "video_create_time": "视频发布时间",
+    "video_usd_gmv": "视频成交金额（美元）",
     "avg_daily_estimated_ad_spend": "日均预估广告花费",
     "avg_daily_ad_gmv": "日均广告归因成交金额",
     "avg_daily_ad_units_sold": "日均广告归因销量",
@@ -825,6 +872,21 @@ _ENUM_VALUE_LABELS = {
         "empty": "调用成功但没有返回记录",
         "error": "调用失败",
     },
+    "evidence_quality_status": {
+        "accepted": "有效",
+        "partial": "部分有效",
+        "off_topic": "返回内容与查询对象不符",
+        "identity_missing": "记录身份缺失",
+        "scope_uncertain": "查询范围无法确认",
+        "empty": "精确查询范围内没有记录",
+        "error": "调用失败",
+        "uncertain": "相关性未确认",
+    },
+    "analysis_type": {
+        "basic_metrics": "基础规模指标",
+        "sales_trends": "销售趋势",
+        "price_distribution": "价格分布",
+    },
     "traffic_type": {
         "ad_traffic": "广告归因流量",
         "non_ad_video_traffic": "非广告视频归因流量",
@@ -971,7 +1033,7 @@ _TOOL_EVIDENCE_BOUNDARIES = {
     ),
     "product_overview": (
         "广告归因、成交渠道和内容类型是三组并列口径，不能互相替代，也不能据此拼接出“视频种草后由商品卡成交”的因果链。",
-        "广告归因占比为零只表示当前周期没有广告归因流量，不能证明广告花费为零；广告花费应以 product_investment 返回为准。",
+        "广告归因占比为零只表示当前周期没有广告归因流量，不能证明广告花费为零；广告花费应以商品广告投放分析证据为准。",
         "商品卡占比不能证明流量由达人视频、直播或推荐系统产生。",
     ),
     "product_sales_trend": (
@@ -1363,6 +1425,8 @@ class SemanticToolRenderer:
         source_ref = str(self.entry.get("source_ref") or "call:?")
         fence = self.entry.get("evidence_fence") if isinstance(self.entry.get("evidence_fence"), dict) else {}
         data_state = str(fence.get("data_state") or "").strip().lower()
+        quality_status = str(fence.get("evidence_quality_status") or "").strip().lower()
+        quality_reason = _clean_report_text(str(fence.get("evidence_quality_reason") or "").strip())
         error = str(self.entry.get("error") or "").strip()
         query_hint = _argument_query_hint(self.entry.get("arguments"))
         evidence_title = self.spec.evidence_title
@@ -1383,7 +1447,30 @@ class SemanticToolRenderer:
         if boundary_lines:
             lines.extend(["", *boundary_lines])
 
-        if not self.spec.report_included:
+        rejected_quality = quality_status in {
+            "off_topic", "identity_missing", "scope_uncertain", "uncertain",
+        }
+        if rejected_quality:
+            quality_label = _ENUM_VALUE_LABELS["evidence_quality_status"].get(
+                quality_status, "相关性未确认"
+            )
+            lines.extend([
+                "",
+                "### 证据准入结果",
+                "",
+                f"本次返回被标记为“{quality_label}”。"
+                + (f"{quality_reason}。" if quality_reason else "")
+                + "其中业务指标不能作为正面证据，也不能提供新的后续查询对象编号。",
+            ])
+            unsupported = fence.get("unsupported_claims")
+            if isinstance(unsupported, list) and unsupported:
+                lines.append(
+                    "本结果不能支持：" + "、".join(
+                        _clean_report_text(str(item)) for item in unsupported if str(item).strip()
+                    ) + "。"
+                )
+            self._exclude_value(data, "$.business_data", "证据准入门禁未接受该结果，业务返回不参与报告推理")
+        elif not self.spec.report_included:
             self.nodes.append(EvidenceNode("AuditOnlyResult", evidence_title, "$.business_data"))
             self._exclude_value(data, "$.business_data", "接口账号或额度信息仅用于运行审计，不参与商业报告推理")
             lines.extend(["", "本段数据仅用于系统运行审计，不参与商业分析或报告推理。"])
@@ -1407,6 +1494,21 @@ class SemanticToolRenderer:
             # those leaves.
             self._exclude_value(data, "$.business_data", "空结果已由自然语言状态说明替代")
         else:
+            if quality_status == "partial":
+                accepted_rows = [
+                    str(item) for item in (fence.get("accepted_rows") or [])
+                    if str(item).strip()
+                ]
+                lines.extend([
+                    "",
+                    "### 证据准入结果",
+                    "",
+                    "本次返回仅部分有效；下方只展示通过身份与范围检查的记录。"
+                    + (
+                        "可用记录序号为：" + "、".join(accepted_rows) + "。"
+                        if accepted_rows else ""
+                    ),
+                ])
             rendered = self._render_value(data, "$.business_data", 3, "业务结果")
             if rendered:
                 lines.extend(["", *rendered])

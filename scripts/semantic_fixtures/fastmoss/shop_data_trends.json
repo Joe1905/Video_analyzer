@@ -1,0 +1,130 @@
+{
+  "provider": "fastmoss",
+  "tool": "shop_data_trends",
+  "contract_source": {
+    "request": "2026-07-23运行时MCP Schema",
+    "response": "工具专属Semantic契约与脱敏业务样本"
+  },
+  "semantic": {
+    "title": "店铺经营趋势",
+    "profile": "trend",
+    "entity_type": "shop",
+    "report_included": true
+  },
+  "runtime_input_schema": {
+    "properties": {
+      "filter": {
+        "description": "Filter parameters.",
+        "properties": {
+          "end_date": {
+            "description": "End date, YYYY-MM-DD.",
+            "type": "string"
+          },
+          "seller_id": {
+            "description": "Shop seller_id; use shop_search first if only a shop name is known.",
+            "type": "string"
+          },
+          "start_date": {
+            "description": "Start date, YYYY-MM-DD.",
+            "type": "string"
+          },
+          "time_range_days": {
+            "description": "Days: 7/14/28/90; recent=28; -1=cumulative.",
+            "enum": [
+              7,
+              28,
+              90
+            ],
+            "type": "integer"
+          }
+        },
+        "required": [
+          "seller_id"
+        ],
+        "type": "object"
+      }
+    },
+    "required": [
+      "filter"
+    ],
+    "type": "object"
+  },
+  "request_variants": [
+    {
+      "name": "运行时结构",
+      "arguments": {
+        "filter": {
+          "end_date": "2026-06-30",
+          "seller_id": "样例值",
+          "start_date": "2026-06-01",
+          "time_range_days": 7
+        }
+      }
+    }
+  ],
+  "response_variants": {
+    "success": {
+      "data": {
+        "shop_id": "7234567890123456789",
+        "shop_name": "Sample Store",
+        "region": "US",
+        "currency": "USD",
+        "trend_series": [
+          {
+            "date": "2026-06-01",
+            "units_sold": 320,
+            "gmv": 7990
+          },
+          {
+            "date": "2026-07-01",
+            "units_sold": 420,
+            "gmv": 8090
+          }
+        ]
+      }
+    },
+    "empty": {
+      "data": {
+        "total": 0,
+        "list": []
+      }
+    },
+    "error": {
+      "success": false,
+      "message": "样例调用失败"
+    },
+    "partial_identity": {
+      "data": {
+        "list": [
+          {
+            "shop_id": "7234567890123456789",
+            "shop_name": "Sample Store",
+            "period": "2026-06"
+          },
+          {
+            "price": 19.99
+          }
+        ]
+      }
+    }
+  },
+  "documented_response_fields": [
+    "currency",
+    "date",
+    "gmv",
+    "region",
+    "shop_id",
+    "shop_name",
+    "units_sold"
+  ],
+  "expected_semantic": [
+    "店铺经营趋势"
+  ],
+  "forbidden_semantic": [
+    "fastmoss__shop_data_trends",
+    "call:",
+    "null",
+    "true",
+    "false"
+  ]
+}

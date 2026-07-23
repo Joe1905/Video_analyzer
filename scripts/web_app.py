@@ -133,6 +133,16 @@ from commerce_research_planner import (
     rolling_provider_tool_names,
     validate_research_task_hint,
 )
+from commerce_evidence_gate import (
+    admitted_business_payload,
+    deterministic_evidence_quality,
+    evidence_quality_allows_entities,
+    evidence_quality_observed,
+    evidence_quality_prompt,
+    flash_judge_payload,
+    uncertain_evidence_quality,
+    validate_flash_verdict,
+)
 from json_to_markdown import json_to_markdown
 from hot_video_report import (
     REPORT_COVER_DIR,
@@ -4860,6 +4870,12 @@ SELLERSPRITE_RESEARCH_TOOLS = {
 SELLERSPRITE_SEMANTIC_DIAGNOSTICS_LOGGED = False
 
 
+def chat_evidence_quality_gate_enabled() -> bool:
+    return str(os.getenv("CHAT_EVIDENCE_QUALITY_GATE_ENABLED", "1")).strip().lower() not in {
+        "0", "false", "no", "off",
+    }
+
+
 def mcp_result_data_state(result: Any) -> str:
     if not isinstance(result, dict) or result.get("ok") is not True:
         return "error"
@@ -4872,6 +4888,8 @@ def mcp_result_data_state(result: Any) -> str:
 def mcp_result_observed(result: Any) -> bool:
     if not isinstance(result, dict):
         return False
+    if chat_evidence_quality_gate_enabled() and isinstance(result.get("evidence_quality"), dict):
+        return evidence_quality_observed(result)
     if "evidence_observed" in result:
         return result.get("evidence_observed") is True
     return result.get("ok") is True
@@ -5204,6 +5222,10 @@ def _planner_result_payloads(assistant_msg: Message) -> list[Any]:
         if not isinstance(item, dict) or not isinstance(item.get("result"), dict):
             continue
         result = item["result"]
+        if chat_evidence_quality_gate_enabled() and isinstance(result.get("evidence_quality"), dict):
+            if evidence_quality_allows_entities(result):
+                payloads.append(admitted_business_payload(result))
+            continue
         payloads.extend((result.get("mcp_data"), result.get("mcp_text_preview")))
     return payloads
 
@@ -6498,6 +6520,158 @@ def normalize_prefixed_tool_result(tool_id: str, result: dict[str, Any]) -> dict
     return normalized
 
 
+def _parse_evidence_quality_judge_response(content: Any) -> dict[str, Any] | None:
+    text = str(content or "").strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text)
+    try:
+        parsed = json.loads(text)
+    except (TypeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def apply_chat_evidence_quality_gate(
+    entries: list[dict[str, Any]],
+    user_text: str,
+    route: dict[str, Any],
+    requests_module: Any,
+    api_key: str,
+    api_url: str,
+    model: str,
+) -> None:
+    """Annotate one assistant turn of provider results with one batched judgment.
+
+    Deterministic checks run for every result. Only ambiguous search/discovery
+    records are sent to V4 Flash, and the batch contains identities and scope but
+    no business metrics.
+    """
+    if not chat_evidence_quality_gate_enabled():
+        return
+    pending_by_key: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
+    for entry_index, entry in enumerate(entries, 1):
+        result = entry.get("normalized_result")
+        if not isinstance(result, dict):
+            continue
+        domain, _ = split_prefixed_tool_id(str(entry.get("tool_name") or ""))
+        if domain not in {"sellersprite", "fastmoss"}:
+            continue
+        quality, pending = deterministic_evidence_quality(
+            str(entry.get("tool_name") or ""),
+            entry.get("arguments") if isinstance(entry.get("arguments"), dict) else {},
+            result,
+        )
+        result["evidence_quality"] = quality
+        if pending is not None:
+            call_key = f"result-{entry_index}"
+            pending["call_key"] = call_key
+            pending_by_key[call_key] = (entry, pending)
+
+    if not pending_by_key:
+        return
+
+    judge_input = flash_judge_payload([pending for _, pending in pending_by_key.values()])
+    system_prompt = (
+        "你只负责判断工具返回记录是否属于当前查询对象与范围，不判断商业机会，不选择下一工具。"
+        "只根据查询词、调用范围和记录身份判定。不得使用销量、销售额、价格等指标判断相关性。"
+        "输出严格 JSON：{\"calls\":[{\"call_key\":\"...\",\"status\":\"accepted|partial|off_topic|"
+        "identity_missing|scope_uncertain\",\"accepted_rows\":[1],\"rejected_rows\":[2],"
+        "\"unsupported_claims\":[\"...\"],\"reason\":\"中文原因\"}]}。"
+        "accepted 表示全部记录匹配；partial 必须把每行恰好分入 accepted_rows 或 rejected_rows；"
+        "无法确认范围用 scope_uncertain。"
+    )
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": (
+                    "用户问题：" + chat_routing_text(user_text)
+                    + "\n研究任务：" + json.dumps(route.get("research_task") or {}, ensure_ascii=False, separators=(",", ":"))
+                    + "\n待判定调用：" + judge_input
+                ),
+            },
+        ],
+        "temperature": 0,
+        "max_tokens": 2000,
+        "response_format": {"type": "json_object"},
+    }
+    payload_str = json.dumps(payload, ensure_ascii=False)
+    failure_reason = ""
+    try:
+        started = time.monotonic()
+        response = requests_module.post(
+            api_url.rstrip("/") + "/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            data=payload_str.encode("utf-8"),
+            timeout=60,
+        )
+        response.raise_for_status()
+        body = response.json()
+        record_api_call(
+            "deepseek",
+            "chat_evidence_quality",
+            {
+                "api_url": api_url.rstrip("/") + "/chat/completions",
+                "model": model,
+                "provider_call_count": len(pending_by_key),
+                "payload_sha256": __import__("hashlib").sha256(payload_str.encode("utf-8")).hexdigest(),
+            },
+            body,
+            elapsed_ms=int((time.monotonic() - started) * 1000),
+        )
+        parsed = _parse_evidence_quality_judge_response(
+            body.get("choices", [{}])[0].get("message", {}).get("content")
+        )
+        verdicts = parsed.get("calls") if isinstance(parsed, dict) else None
+        if not isinstance(verdicts, list):
+            raise ValueError("V4 Flash evidence-quality response is not a calls array")
+        seen: set[str] = set()
+        for verdict in verdicts:
+            if not isinstance(verdict, dict):
+                continue
+            call_key = str(verdict.get("call_key") or "")
+            pair = pending_by_key.get(call_key)
+            if pair is None:
+                continue
+            entry, pending = pair
+            quality = validate_flash_verdict(pending, verdict)
+            if quality is None:
+                continue
+            entry["normalized_result"]["evidence_quality"] = quality
+            seen.add(call_key)
+        missing = set(pending_by_key) - seen
+        for call_key in missing:
+            entry, pending = pending_by_key[call_key]
+            entry["normalized_result"]["evidence_quality"] = uncertain_evidence_quality(
+                pending, "V4 Flash 返回缺少该调用的合法判定；结果保留给编排参考，但不提供深挖编号。"
+            )
+    except Exception as exc:
+        failure_reason = f"{type(exc).__name__}: {exc}"
+        for entry, pending in pending_by_key.values():
+            entry["normalized_result"]["evidence_quality"] = uncertain_evidence_quality(
+                pending, "V4 Flash 相关性判定失败；结果保留给编排参考，但不提供深挖编号。"
+            )
+    status_counts: dict[str, int] = {}
+    for entry in entries:
+        result = entry.get("normalized_result")
+        quality = result.get("evidence_quality") if isinstance(result, dict) else None
+        status = str(quality.get("status") or "disabled") if isinstance(quality, dict) else "disabled"
+        status_counts[status] = status_counts.get(status, 0) + 1
+    print(
+        "[CHAT EVIDENCE] "
+        + json.dumps({
+            "results": len(entries),
+            "flash_judged": len(pending_by_key),
+            "statuses": status_counts,
+            **({"judge_error": failure_reason[:300]} if failure_reason else {}),
+        }, ensure_ascii=False, separators=(",", ":")),
+        flush=True,
+    )
+
+
 def chat_request_needs_tools(user_text: str, route: dict[str, Any]) -> bool:
     intent = str(route.get("intent") or "general")
     if intent == "mcp_interface":
@@ -6872,6 +7046,14 @@ def current_chat_tool_evidence(
     raw_mcp_data = parse_mcp_text_content(raw_mcp_text) if raw_mcp_text else None
     if raw_mcp_data is not None:
         evidence["data"] = raw_mcp_data
+    quality = result.get("evidence_quality") if isinstance(result, dict) else None
+    if isinstance(quality, dict):
+        evidence["evidence_quality"] = quality
+        evidence["answer_guidance"] = evidence_quality_prompt(quality)
+        if quality.get("status") == "partial":
+            evidence["data"] = admitted_business_payload(result)
+        elif quality.get("status") not in {"accepted", "uncertain"}:
+            evidence["data"] = {}
     evidence = _current_chat_evidence_value(evidence)
     if str(tool_name or "").startswith("sellersprite__"):
         rendered = render_sellersprite_current_evidence(evidence)
@@ -7542,12 +7724,26 @@ def compact_chat_tool_evidence(tool_name: str, result: Any, max_chars: int | Non
 
 
 def mcp_evidence_quality_summary(assistant_msg: Message) -> dict[str, list[str]]:
-    summary = {"data": [], "empty": [], "error": []}
+    summary = {"data": [], "empty": [], "error": [], "rejected": [], "uncertain": []}
     for item in assistant_msg.tool_results or []:
         if not isinstance(item, dict):
             continue
         name = str(item.get("tool_name") or "tool")
-        state = mcp_result_data_state(item.get("result"))
+        result = item.get("result")
+        quality = result.get("evidence_quality") if isinstance(result, dict) else None
+        status = str(quality.get("status") or "") if isinstance(quality, dict) else ""
+        if status in {"accepted", "partial"}:
+            state = "data"
+        elif status == "empty":
+            state = "empty"
+        elif status == "error":
+            state = "error"
+        elif status == "uncertain":
+            state = "uncertain"
+        elif status:
+            state = "rejected"
+        else:
+            state = mcp_result_data_state(result)
         summary.setdefault(state, []).append(name)
     return summary
 
@@ -8092,7 +8288,12 @@ def fastmoss_evidence_manifest(
             continue
         result = dict(item["result"])
         arguments = _fastmoss_call_arguments_for_result(assistant_msg, result_index, tool_name)
-        source_value = _fastmoss_response_value(None, result)
+        quality = result.get("evidence_quality") if isinstance(result.get("evidence_quality"), dict) else None
+        source_value = (
+            admitted_business_payload(result)
+            if chat_evidence_quality_gate_enabled() and quality is not None
+            else _fastmoss_response_value(None, result)
+        )
         conflicts.extend(
             _fastmoss_report_scope_conflicts(
                 f"call:{result_index + 1}", arguments, _fastmoss_report_data_value(source_value)
@@ -8121,15 +8322,29 @@ def fastmoss_evidence_manifest(
             "parser_status": "unsupported_parser",
         }
         envelope = {**envelope, "source_call_index": result_index + 1}
-        envelope["entity_refs"] = [
-            ref for ref in (envelope.get("entity_refs") or [])
-            if isinstance(ref, dict) and _fastmoss_valid_entity_id(ref.get("id"))
-        ]
+        envelope["entity_refs"] = (
+            [
+                ref for ref in (envelope.get("entity_refs") or [])
+                if isinstance(ref, dict) and _fastmoss_valid_entity_id(ref.get("id"))
+            ]
+            if quality is None or evidence_quality_allows_entities(result)
+            else []
+        )
         evidence_envelopes.append(envelope)
         metadata = result.get("evidence_metadata") if isinstance(result.get("evidence_metadata"), dict) else {}
-        records = result.get("evidence_product_records") if isinstance(result.get("evidence_product_records"), list) else []
+        if quality is not None and quality.get("status") == "partial":
+            records = fastmoss_extract_product_records(source_value)
+        elif quality is not None and not evidence_quality_allows_entities(result):
+            records = []
+        else:
+            records = result.get("evidence_product_records") if isinstance(result.get("evidence_product_records"), list) else []
         metadata_rows.append({"tool": tool_name, "source_call_index": result_index + 1, **metadata})
-        result_facts = result.get("evidence_facts") if isinstance(result.get("evidence_facts"), list) else []
+        if quality is not None and quality.get("status") == "partial":
+            result_facts = fastmoss_tool_evidence_facts(tool_name, arguments, result, source_value)
+        elif quality is not None and not evidence_quality_observed(result):
+            result_facts = []
+        else:
+            result_facts = result.get("evidence_facts") if isinstance(result.get("evidence_facts"), list) else []
         for fact_index, fact in enumerate(result_facts):
             if isinstance(fact, dict) and str(fact.get("data_state") or "data") == "data":
                 evidence_facts.append({
@@ -8668,14 +8883,18 @@ def fastmoss_report_evidence_dossier(
             continue
         result = item["result"]
         arguments = _fastmoss_call_arguments_for_result(assistant_msg, result_index, tool_name)
-        data = result.get("mcp_data")
-        if data is None:
-            data = result.get("summary")
-        if data is None:
-            data = {
-                key: result.get(key) for key in ("products", "items", "results", "error")
-                if result.get(key) is not None
-            }
+        quality = result.get("evidence_quality") if isinstance(result.get("evidence_quality"), dict) else None
+        if chat_evidence_quality_gate_enabled() and quality is not None:
+            data = admitted_business_payload(result)
+        else:
+            data = result.get("mcp_data")
+            if data is None:
+                data = result.get("summary")
+            if data is None:
+                data = {
+                    key: result.get(key) for key in ("products", "items", "results", "error")
+                    if result.get(key) is not None
+                }
         cleaned_data = _fastmoss_report_data_value(data)
         source_ref = f"call:{result_index + 1}"
         envelope = next((
@@ -8692,6 +8911,15 @@ def fastmoss_report_evidence_dossier(
         }
         if "data_state" not in fence:
             fence["data_state"] = mcp_result_data_state(result)
+        if quality is not None:
+            fence.update({
+                "evidence_quality_status": quality.get("status"),
+                "evidence_quality_reason": quality.get("reason"),
+                "accepted_rows": quality.get("accepted_rows") or [],
+                "rejected_rows": quality.get("rejected_rows") or [],
+                "supported_dimensions": quality.get("supported_dimensions") or [],
+                "unsupported_claims": quality.get("unsupported_claims") or [],
+            })
         tool_evidence.append({
             "source_ref": source_ref,
             "tool_name": tool_name,
@@ -8744,15 +8972,19 @@ def sellersprite_report_evidence_dossier(
         arguments = _fastmoss_call_arguments_for_result(
             assistant_msg, result_index, tool_name
         )
-        data = result.get("mcp_data")
-        if data is None:
-            data = result.get("summary")
-        if data is None:
-            data = {
-                key: result.get(key)
-                for key in ("products", "items", "results", "error")
-                if result.get(key) is not None
-            }
+        quality = result.get("evidence_quality") if isinstance(result.get("evidence_quality"), dict) else None
+        if chat_evidence_quality_gate_enabled() and quality is not None:
+            data = admitted_business_payload(result)
+        else:
+            data = result.get("mcp_data")
+            if data is None:
+                data = result.get("summary")
+            if data is None:
+                data = {
+                    key: result.get(key)
+                    for key in ("products", "items", "results", "error")
+                    if result.get(key) is not None
+                }
         cleaned_data = sellersprite_business_payload(
             _current_chat_evidence_value(data)
         )
@@ -8764,6 +8996,14 @@ def sellersprite_report_evidence_dossier(
                 "data_state": mcp_result_data_state(result),
                 "ok": result.get("ok"),
                 "enough_data": result.get("enough_data"),
+                **({
+                    "evidence_quality_status": quality.get("status"),
+                    "evidence_quality_reason": quality.get("reason"),
+                    "accepted_rows": quality.get("accepted_rows") or [],
+                    "rejected_rows": quality.get("rejected_rows") or [],
+                    "supported_dimensions": quality.get("supported_dimensions") or [],
+                    "unsupported_claims": quality.get("unsupported_claims") or [],
+                } if quality is not None else {}),
             },
             "business_data": cleaned_data,
             **({"error": str(result.get("error"))} if result.get("error") else {}),
@@ -11861,14 +12101,20 @@ def _collect_category_ids(value: Any) -> set[str]:
     return found
 
 
+def _entity_payloads_for_result(result: dict[str, Any]) -> list[Any]:
+    if chat_evidence_quality_gate_enabled() and isinstance(result.get("evidence_quality"), dict):
+        return [admitted_business_payload(result)] if evidence_quality_allows_entities(result) else []
+    return [result.get("mcp_data"), result.get("mcp_text_preview")]
+
+
 def fastmoss_known_product_ids(user_text: str, assistant_msg: Message) -> set[str]:
     known = set(re.findall(r"\b\d{16,20}\b", str(user_text or "")))
     for item in assistant_msg.tool_results or []:
         if not isinstance(item, dict) or not isinstance(item.get("result"), dict):
             continue
         result = item["result"]
-        known.update(_collect_named_ids(result.get("mcp_data"), {"productid", "goodsid", "itemid"}))
-        known.update(_collect_named_ids(result.get("mcp_text_preview"), {"productid", "goodsid", "itemid"}))
+        for payload in _entity_payloads_for_result(result):
+            known.update(_collect_named_ids(payload, {"productid", "goodsid", "itemid"}))
     return known
 
 
@@ -11880,8 +12126,15 @@ def fastmoss_locked_representative_product_ids(assistant_msg: Message) -> set[st
         if not isinstance(item, dict) or not isinstance(item.get("result"), dict):
             continue
         result = item["result"]
+        if chat_evidence_quality_gate_enabled() and isinstance(result.get("evidence_quality"), dict):
+            if not evidence_quality_allows_entities(result):
+                continue
         metadata = result.get("evidence_metadata") if isinstance(result.get("evidence_metadata"), dict) else {}
-        records = result.get("evidence_product_records") if isinstance(result.get("evidence_product_records"), list) else []
+        quality = result.get("evidence_quality") if isinstance(result.get("evidence_quality"), dict) else {}
+        if quality.get("status") == "partial":
+            records = fastmoss_extract_product_records(admitted_business_payload(result))
+        else:
+            records = result.get("evidence_product_records") if isinstance(result.get("evidence_product_records"), list) else []
         scope = str(metadata.get("scope") or "")
         if scope == "segment_head":
             query = str(metadata.get("query") or "").strip().casefold()
@@ -11943,8 +12196,8 @@ def fastmoss_known_category_ids(user_text: str, assistant_msg: Message) -> set[s
         if not isinstance(item, dict) or not isinstance(item.get("result"), dict):
             continue
         result = item["result"]
-        known.update(_collect_category_ids(result.get("mcp_data")))
-        known.update(_collect_category_ids(result.get("mcp_text_preview")))
+        for payload in _entity_payloads_for_result(result):
+            known.update(_collect_category_ids(payload))
     return known
 
 
@@ -11995,7 +12248,7 @@ def fastmoss_current_category_path(assistant_msg: Message, user_text: str = "") 
         result = item.get("result")
         if not isinstance(result, dict):
             continue
-        for value in (result.get("mcp_data"), result.get("mcp_text_preview")):
+        for value in _entity_payloads_for_result(result):
             candidates = _fastmoss_category_candidates(value)
             for candidate in candidates:
                 path = _fastmoss_category_path_from_value(candidate)
@@ -12938,6 +13191,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 messages.append(build_deepseek_tool_assistant_message(msg, tool_calls, bool(standard_tool_calls)))
                 store.broadcast(session.id, "update", {"messageId": assistant_msg.id, "tool_calls": assistant_msg.tool_calls, "tool_results": assistant_msg.tool_results})
 
+                executed_entries: list[dict[str, Any]] = []
                 for tc in tool_calls:
                     fn_name = tc["function"]["name"]
                     raw_result = None
@@ -12969,6 +13223,29 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     normalized_result = annotate_fastmoss_tool_result(
                         fn_name, fn_args, normalized_result, raw_result
                     )
+                    executed_entries.append({
+                        "tool_call": tc,
+                        "tool_name": fn_name,
+                        "arguments": fn_args,
+                        "raw_result": raw_result,
+                        "normalized_result": normalized_result,
+                    })
+
+                apply_chat_evidence_quality_gate(
+                    executed_entries,
+                    routing_text,
+                    route,
+                    req,
+                    api_key,
+                    api_url,
+                    model,
+                )
+                for entry in executed_entries:
+                    tc = entry["tool_call"]
+                    fn_name = entry["tool_name"]
+                    fn_args = entry["arguments"]
+                    raw_result = entry["raw_result"]
+                    normalized_result = entry["normalized_result"]
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc["id"],
@@ -12982,7 +13259,13 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     })
                     assistant_msg.tool_results.append({"tool_name": fn_name, "result": normalized_result})
                     store.broadcast(session.id, "update", {"messageId": assistant_msg.id, "tool_calls": assistant_msg.tool_calls, "tool_results": assistant_msg.tool_results})
-                    if fn_name == "fastmoss__search_category_by_words":
+                    if (
+                        fn_name == "fastmoss__search_category_by_words"
+                        and (
+                            not chat_evidence_quality_gate_enabled()
+                            or evidence_quality_observed(normalized_result)
+                        )
+                    ):
                         ambiguity = fastmoss_category_ambiguity_question(routing_text, normalized_result, route)
                         if ambiguity:
                             print("[CHAT] FastMoss category match ambiguous; asking for confirmation", flush=True)

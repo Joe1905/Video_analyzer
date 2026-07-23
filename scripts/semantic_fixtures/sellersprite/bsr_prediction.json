@@ -1,0 +1,131 @@
+{
+  "provider": "sellersprite",
+  "tool": "bsr_prediction",
+  "contract_source": {
+    "request": "2026-07-23运行时MCP Schema",
+    "response": "工具专属Semantic契约与脱敏业务样本"
+  },
+  "semantic": {
+    "title": "亚马逊类目销量排名预测",
+    "profile": "trend",
+    "entity_type": "category",
+    "report_included": true
+  },
+  "runtime_input_schema": {
+    "type": "object",
+    "properties": {
+      "marketplace": {
+        "type": "string",
+        "enum": [
+          "US",
+          "JP",
+          "UK",
+          "DE",
+          "FR",
+          "IT",
+          "ES",
+          "CA",
+          "IN",
+          "MX",
+          "BR",
+          "AU",
+          "AE"
+        ],
+        "description": "Amazon 站点"
+      },
+      "bsr": {
+        "type": "integer"
+      },
+      "categoryId": {
+        "type": "string",
+        "description": "一级类目节点，查产品类目返回"
+      },
+      "returnFields": {
+        "type": "string",
+        "description": "指定返回的字段，多个字段用逗号隔开。不指定则返回所有字段。例如：asin"
+      }
+    },
+    "required": [
+      "marketplace",
+      "bsr",
+      "categoryId"
+    ],
+    "additionalProperties": false
+  },
+  "request_variants": [
+    {
+      "name": "运行时结构",
+      "arguments": {
+        "marketplace": "US",
+        "bsr": 1,
+        "categoryId": "123456",
+        "returnFields": "asin"
+      }
+    }
+  ],
+  "response_variants": {
+    "success": {
+      "data": {
+        "category_id": "123456",
+        "category_name": "Home and Kitchen",
+        "region": "US",
+        "currency": "USD",
+        "trend_series": [
+          {
+            "date": "2026-06-01",
+            "units_sold": 320,
+            "gmv": 7990
+          },
+          {
+            "date": "2026-07-01",
+            "units_sold": 420,
+            "gmv": 8090
+          }
+        ]
+      }
+    },
+    "empty": {
+      "data": {
+        "total": 0,
+        "list": []
+      }
+    },
+    "error": {
+      "success": false,
+      "message": "样例调用失败"
+    },
+    "partial_identity": {
+      "data": {
+        "list": [
+          {
+            "category_id": "123456",
+            "category_name": "Home and Kitchen",
+            "period": "2026-06"
+          },
+          {
+            "price": 19.99
+          }
+        ]
+      }
+    }
+  },
+  "documented_response_fields": [
+    "category_id",
+    "category_name",
+    "currency",
+    "date",
+    "gmv",
+    "region",
+    "units_sold"
+  ],
+  "expected_semantic": [
+    "亚马逊类目销量排名预测"
+  ],
+  "forbidden_semantic": [
+    "sellersprite__bsr_prediction",
+    "call:",
+    "null",
+    "true",
+    "false"
+  ]
+}

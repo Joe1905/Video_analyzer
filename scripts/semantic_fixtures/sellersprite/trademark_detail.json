@@ -1,0 +1,104 @@
+{
+  "provider": "sellersprite",
+  "tool": "trademark_detail",
+  "contract_source": {
+    "request": "2026-07-23运行时MCP Schema",
+    "response": "工具专属Semantic契约与脱敏业务样本"
+  },
+  "semantic": {
+    "title": "商标详情",
+    "profile": "entity",
+    "entity_type": "trademark",
+    "report_included": true
+  },
+  "runtime_input_schema": {
+    "type": "object",
+    "properties": {
+      "office": {
+        "type": "string",
+        "description": "查询商标国家编码"
+      },
+      "brandId": {
+        "type": "string",
+        "description": "商标编号"
+      },
+      "returnFields": {
+        "type": "string",
+        "description": "指定返回的字段，多个字段用逗号隔开。不指定则返回所有字段。例如：asin,title,price,totalUnits,totalAmount"
+      }
+    },
+    "required": [
+      "office",
+      "brandId"
+    ],
+    "additionalProperties": false
+  },
+  "request_variants": [
+    {
+      "name": "运行时结构",
+      "arguments": {
+        "office": "样例值",
+        "brandId": "样例值",
+        "returnFields": "asin"
+      }
+    }
+  ],
+  "response_variants": {
+    "success": {
+      "data": {
+        "trademark_name": "Sample Mark",
+        "registration_number": "TM-1001",
+        "region": "US",
+        "currency": "USD",
+        "price": 24.99,
+        "units_sold": 320,
+        "gmv": 7990,
+        "period": "2026-06"
+      }
+    },
+    "empty": {
+      "data": {
+        "total": 0,
+        "list": []
+      }
+    },
+    "error": {
+      "success": false,
+      "message": "样例调用失败"
+    },
+    "partial_identity": {
+      "data": {
+        "list": [
+          {
+            "trademark_name": "Sample Mark",
+            "registration_number": "TM-1001",
+            "period": "2026-06"
+          },
+          {
+            "price": 19.99
+          }
+        ]
+      }
+    }
+  },
+  "documented_response_fields": [
+    "currency",
+    "gmv",
+    "period",
+    "price",
+    "region",
+    "registration_number",
+    "trademark_name",
+    "units_sold"
+  ],
+  "expected_semantic": [
+    "商标详情"
+  ],
+  "forbidden_semantic": [
+    "sellersprite__trademark_detail",
+    "call:",
+    "null",
+    "true",
+    "false"
+  ]
+}

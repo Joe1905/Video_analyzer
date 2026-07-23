@@ -1,0 +1,215 @@
+{
+  "provider": "fastmoss",
+  "tool": "shop_creator_analysis",
+  "contract_source": {
+    "request": "2026-07-23运行时MCP Schema",
+    "response": "工具专属Semantic契约与脱敏业务样本"
+  },
+  "semantic": {
+    "title": "店铺合作达人分析",
+    "profile": "relationship",
+    "entity_type": "shop",
+    "report_included": true
+  },
+  "runtime_input_schema": {
+    "properties": {
+      "filter": {
+        "description": "Filter parameters.",
+        "properties": {
+          "author_product_type": {
+            "description": "Selling mode: 1 video, 2 live.",
+            "enum": [
+              1,
+              2
+            ],
+            "type": "integer"
+          },
+          "follower_count_range": {
+            "description": "Follower count range: {\"min\": number, \"max\": number}.",
+            "properties": {
+              "max": {
+                "description": "Maximum value.",
+                "type": "number"
+              },
+              "min": {
+                "description": "Minimum value.",
+                "type": "number"
+              }
+            },
+            "type": "object"
+          },
+          "seller_id": {
+            "description": "Shop seller_id; use shop_search first if only a shop name is known.",
+            "type": "string"
+          },
+          "sold_count_range": {
+            "description": "Units sold range: {\"min\": number, \"max\": number}.",
+            "properties": {
+              "max": {
+                "description": "Maximum value.",
+                "type": "number"
+              },
+              "min": {
+                "description": "Minimum value.",
+                "type": "number"
+              }
+            },
+            "type": "object"
+          },
+          "time_range_days": {
+            "description": "Days: 7/14/28/90; recent=28; -1=cumulative.",
+            "enum": [
+              7,
+              28,
+              90,
+              -1
+            ],
+            "type": "integer"
+          }
+        },
+        "required": [
+          "seller_id"
+        ],
+        "type": "object"
+      },
+      "orderby": {
+        "description": "Sort options.",
+        "items": {
+          "properties": {
+            "field": {
+              "enum": [
+                "follower_count",
+                "sold_count",
+                "sale_amount"
+              ],
+              "type": "string"
+            },
+            "order": {
+              "default": "desc",
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "page": {
+        "default": 1,
+        "description": "Page number. Default 1, max 500.",
+        "maximum": 500,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "pagesize": {
+        "default": 10,
+        "description": "Page size. Default 10, max 10.",
+        "maximum": 10,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "filter"
+    ],
+    "type": "object"
+  },
+  "request_variants": [
+    {
+      "name": "运行时结构",
+      "arguments": {
+        "filter": {
+          "author_product_type": 1,
+          "follower_count_range": {
+            "max": 1.0,
+            "min": 1.0
+          },
+          "seller_id": "样例值",
+          "sold_count_range": {
+            "max": 1.0,
+            "min": 1.0
+          },
+          "time_range_days": 7
+        },
+        "orderby": [
+          {
+            "field": "follower_count",
+            "order": "asc"
+          }
+        ],
+        "page": 1,
+        "pagesize": 10
+      }
+    }
+  ],
+  "response_variants": {
+    "success": {
+      "data": {
+        "total": 1,
+        "list": [
+          {
+            "shop_id": "7234567890123456789",
+            "shop_name": "Sample Store",
+            "rank": 1,
+            "price": 24.99,
+            "currency": "USD",
+            "period": "2026-06",
+            "linked_creator_count": 18
+          }
+        ]
+      }
+    },
+    "empty": {
+      "data": {
+        "total": 0,
+        "list": []
+      }
+    },
+    "error": {
+      "success": false,
+      "message": "样例调用失败"
+    },
+    "partial_identity": {
+      "data": {
+        "total": 1,
+        "list": [
+          {
+            "shop_id": "7234567890123456789",
+            "shop_name": "Sample Store",
+            "rank": 1,
+            "price": 24.99,
+            "currency": "USD",
+            "period": "2026-06",
+            "linked_creator_count": 18
+          },
+          {
+            "price": 19.99,
+            "currency": "USD"
+          }
+        ]
+      }
+    }
+  },
+  "documented_response_fields": [
+    "currency",
+    "linked_creator_count",
+    "period",
+    "price",
+    "rank",
+    "shop_id",
+    "shop_name",
+    "total"
+  ],
+  "expected_semantic": [
+    "店铺合作达人分析"
+  ],
+  "forbidden_semantic": [
+    "fastmoss__shop_creator_analysis",
+    "call:",
+    "null",
+    "true",
+    "false"
+  ]
+}

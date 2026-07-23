@@ -1,0 +1,103 @@
+{
+  "provider": "fastmoss",
+  "tool": "product_detail_info",
+  "contract_source": {
+    "request": "2026-07-23运行时MCP Schema",
+    "response": "工具专属Semantic契约与脱敏业务样本"
+  },
+  "semantic": {
+    "title": "商品详情",
+    "profile": "entity",
+    "entity_type": "product",
+    "report_included": true
+  },
+  "runtime_input_schema": {
+    "properties": {
+      "filter": {
+        "description": "Filter parameters.",
+        "properties": {
+          "product_id": {
+            "description": "Product ID; use product_search first if only a product name is known.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "product_id"
+        ],
+        "type": "object"
+      }
+    },
+    "required": [
+      "filter"
+    ],
+    "type": "object"
+  },
+  "request_variants": [
+    {
+      "name": "运行时结构",
+      "arguments": {
+        "filter": {
+          "product_id": "1734567890123456789"
+        }
+      }
+    }
+  ],
+  "response_variants": {
+    "success": {
+      "data": {
+        "product_id": "1734567890123456789",
+        "title": "Portable Desk Fan",
+        "region": "US",
+        "currency": "USD",
+        "price": 24.99,
+        "units_sold": 320,
+        "gmv": 7990,
+        "period": "2026-06"
+      }
+    },
+    "empty": {
+      "data": {
+        "total": 0,
+        "list": []
+      }
+    },
+    "error": {
+      "success": false,
+      "message": "样例调用失败"
+    },
+    "partial_identity": {
+      "data": {
+        "list": [
+          {
+            "product_id": "1734567890123456789",
+            "title": "Portable Desk Fan",
+            "period": "2026-06"
+          },
+          {
+            "price": 19.99
+          }
+        ]
+      }
+    }
+  },
+  "documented_response_fields": [
+    "currency",
+    "gmv",
+    "period",
+    "price",
+    "product_id",
+    "region",
+    "title",
+    "units_sold"
+  ],
+  "expected_semantic": [
+    "商品详情"
+  ],
+  "forbidden_semantic": [
+    "fastmoss__product_detail_info",
+    "call:",
+    "null",
+    "true",
+    "false"
+  ]
+}

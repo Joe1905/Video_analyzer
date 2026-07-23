@@ -1,0 +1,156 @@
+{
+  "provider": "sellersprite",
+  "tool": "traffic_source",
+  "contract_source": {
+    "request": "2026-07-23运行时MCP Schema",
+    "response": "工具专属Semantic契约与脱敏业务样本"
+  },
+  "semantic": {
+    "title": "亚马逊商品流量来源",
+    "profile": "relationship",
+    "entity_type": "asin",
+    "report_included": true
+  },
+  "runtime_input_schema": {
+    "type": "object",
+    "properties": {
+      "request": {
+        "type": "object",
+        "properties": {
+          "marketplace": {
+            "type": "string",
+            "description": "Amazon 站点代码（枚举值）：US, JP, UK, DE, FR, IT, ES, CA, IN, MX, BR, AU, AE"
+          },
+          "month": {
+            "type": "string",
+            "description": "查询月份, 格式: yyyyMM"
+          },
+          "order": {
+            "type": "object",
+            "properties": {
+              "desc": {
+                "type": "boolean",
+                "description": "排序类型"
+              },
+              "field": {
+                "type": "string",
+                "description": "排序字段。\n可选值(仅填写字段名):\n- searchfrequencyrank: 现排名\n- cprExact: spr\n- titleDensityExact: 标题密度\n- searches: 搜索量周排名\n\n禁止使用未列出的值。\n"
+              }
+            },
+            "description": "排序"
+          },
+          "page": {
+            "type": "integer",
+            "format": "int32",
+            "description": "页码"
+          },
+          "q": {
+            "type": "string",
+            "description": "asin 或者 关键词"
+          },
+          "returnFields": {
+            "type": "string",
+            "description": "指定返回的字段，多个字段用逗号隔开。不指定则返回所有字段。例如：asin,title,price,totalUnits,totalAmount"
+          },
+          "size": {
+            "type": "integer",
+            "format": "int32",
+            "description": "每页条数"
+          }
+        },
+        "required": [
+          "marketplace",
+          "q"
+        ]
+      }
+    },
+    "required": [
+      "request"
+    ],
+    "additionalProperties": false
+  },
+  "request_variants": [
+    {
+      "name": "运行时结构",
+      "arguments": {
+        "request": {
+          "marketplace": "US",
+          "month": "2026-06",
+          "order": {
+            "desc": true,
+            "field": "样例值"
+          },
+          "page": 1,
+          "q": "样例值",
+          "returnFields": "asin",
+          "size": 1
+        }
+      }
+    }
+  ],
+  "response_variants": {
+    "success": {
+      "data": {
+        "total": 1,
+        "list": [
+          {
+            "asin": "B0TEST1234",
+            "title": "Portable Desk Fan",
+            "rank": 1,
+            "price": 24.99,
+            "currency": "USD",
+            "period": "2026-06"
+          }
+        ]
+      }
+    },
+    "empty": {
+      "data": {
+        "total": 0,
+        "list": []
+      }
+    },
+    "error": {
+      "success": false,
+      "message": "样例调用失败"
+    },
+    "partial_identity": {
+      "data": {
+        "total": 1,
+        "list": [
+          {
+            "asin": "B0TEST1234",
+            "title": "Portable Desk Fan",
+            "rank": 1,
+            "price": 24.99,
+            "currency": "USD",
+            "period": "2026-06"
+          },
+          {
+            "price": 19.99,
+            "currency": "USD"
+          }
+        ]
+      }
+    }
+  },
+  "documented_response_fields": [
+    "asin",
+    "currency",
+    "period",
+    "price",
+    "rank",
+    "title",
+    "total"
+  ],
+  "expected_semantic": [
+    "亚马逊商品流量来源"
+  ],
+  "forbidden_semantic": [
+    "sellersprite__traffic_source",
+    "call:",
+    "null",
+    "true",
+    "false"
+  ]
+}

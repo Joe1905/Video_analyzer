@@ -1,0 +1,124 @@
+{
+  "provider": "sellersprite",
+  "tool": "google_trend",
+  "contract_source": {
+    "request": "2026-07-23运行时MCP Schema",
+    "response": "工具专属Semantic契约与脱敏业务样本"
+  },
+  "semantic": {
+    "title": "谷歌搜索趋势",
+    "profile": "trend",
+    "entity_type": "keyword",
+    "report_included": true
+  },
+  "runtime_input_schema": {
+    "type": "object",
+    "properties": {
+      "request": {
+        "type": "object",
+        "properties": {
+          "googleProp": {
+            "type": "string",
+            "description": "搜索来源类型（枚举值）: web, shoppingCart"
+          },
+          "keyword": {
+            "type": "string",
+            "description": "关键字"
+          },
+          "marketplace": {
+            "type": "string",
+            "description": "Amazon 站点代码（枚举值）：US, JP, UK, DE, FR, IT, ES, CA, IN, MX, BR, AU, AE"
+          },
+          "monthly": {
+            "type": "boolean",
+            "description": "按照月份"
+          },
+          "returnFields": {
+            "type": "string",
+            "description": "指定返回的字段，多个字段用逗号隔开。不指定则返回所有字段。例如：asin,title,price,totalUnits,totalAmount"
+          }
+        },
+        "required": [
+          "marketplace"
+        ]
+      }
+    },
+    "required": [
+      "request"
+    ],
+    "additionalProperties": false
+  },
+  "request_variants": [
+    {
+      "name": "运行时结构",
+      "arguments": {
+        "request": {
+          "googleProp": "样例值",
+          "keyword": "portable desk fan",
+          "marketplace": "US",
+          "monthly": true,
+          "returnFields": "asin"
+        }
+      }
+    }
+  ],
+  "response_variants": {
+    "success": {
+      "data": {
+        "keywords": "portable desk fan",
+        "region": "US",
+        "currency": "USD",
+        "trend_series": [
+          {
+            "date": "2026-06-01",
+            "search_volume": 12500
+          },
+          {
+            "date": "2026-07-01",
+            "search_volume": 12600
+          }
+        ]
+      }
+    },
+    "empty": {
+      "data": {
+        "total": 0,
+        "list": []
+      }
+    },
+    "error": {
+      "success": false,
+      "message": "样例调用失败"
+    },
+    "partial_identity": {
+      "data": {
+        "list": [
+          {
+            "keywords": "portable desk fan",
+            "period": "2026-06"
+          },
+          {
+            "price": 19.99
+          }
+        ]
+      }
+    }
+  },
+  "documented_response_fields": [
+    "currency",
+    "date",
+    "keywords",
+    "region",
+    "search_volume"
+  ],
+  "expected_semantic": [
+    "谷歌搜索趋势"
+  ],
+  "forbidden_semantic": [
+    "sellersprite__google_trend",
+    "call:",
+    "null",
+    "true",
+    "false"
+  ]
+}

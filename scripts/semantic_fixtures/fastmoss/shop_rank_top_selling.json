@@ -1,0 +1,183 @@
+{
+  "provider": "fastmoss",
+  "tool": "shop_rank_top_selling",
+  "contract_source": {
+    "request": "2026-07-23运行时MCP Schema",
+    "response": "工具专属Semantic契约与脱敏业务样本"
+  },
+  "semantic": {
+    "title": "热销店铺榜",
+    "profile": "records",
+    "entity_type": "shop",
+    "report_included": true
+  },
+  "runtime_input_schema": {
+    "properties": {
+      "filter": {
+        "description": "Filter parameters.",
+        "properties": {
+          "category_id": {
+            "description": "Category ID; confirm category first if only a category name is known.",
+            "type": "integer"
+          },
+          "date_type": {
+            "description": "Ranking period: day, week, or month; MCN agency rankings support only week/month.",
+            "enum": [
+              "day",
+              "week",
+              "month"
+            ],
+            "type": "string"
+          },
+          "date_value": {
+            "description": "Completed period only: yesterday YYYY-MM-DD, last week YYYY-ww or YYYY-Www, last month YYYY-MM; do not use the current period.",
+            "type": "string"
+          },
+          "is_cross_border": {
+            "description": "Whether it is cross-border.",
+            "type": "boolean"
+          },
+          "region": {
+            "description": "Country or region code, e.g. US, UK, ID.",
+            "type": "string"
+          },
+          "shop_type": {
+            "description": "Shop type: 1 brand shop, 2 retail shop.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "date_type",
+          "date_value"
+        ],
+        "type": "object"
+      },
+      "orderby": {
+        "description": "Sort options.",
+        "items": {
+          "properties": {
+            "field": {
+              "enum": [
+                "units_sold",
+                "usd_gmv"
+              ],
+              "type": "string"
+            },
+            "order": {
+              "default": "desc",
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "page": {
+        "default": 1,
+        "description": "Page number. Default 1, max 500.",
+        "maximum": 500,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "pagesize": {
+        "default": 10,
+        "description": "Page size. Default 10, max 10.",
+        "maximum": 10,
+        "type": "integer"
+      }
+    },
+    "type": "object"
+  },
+  "request_variants": [
+    {
+      "name": "运行时结构",
+      "arguments": {
+        "filter": {
+          "category_id": 123456,
+          "date_type": "day",
+          "date_value": "样例值",
+          "is_cross_border": true,
+          "region": "US",
+          "shop_type": 1
+        },
+        "orderby": [
+          {
+            "field": "units_sold",
+            "order": "asc"
+          }
+        ],
+        "page": 1,
+        "pagesize": 10
+      }
+    }
+  ],
+  "response_variants": {
+    "success": {
+      "data": {
+        "total": 1,
+        "list": [
+          {
+            "shop_id": "7234567890123456789",
+            "shop_name": "Sample Store",
+            "rank": 1,
+            "price": 24.99,
+            "currency": "USD",
+            "period": "2026-06"
+          }
+        ]
+      }
+    },
+    "empty": {
+      "data": {
+        "total": 0,
+        "list": []
+      }
+    },
+    "error": {
+      "success": false,
+      "message": "样例调用失败"
+    },
+    "partial_identity": {
+      "data": {
+        "total": 1,
+        "list": [
+          {
+            "shop_id": "7234567890123456789",
+            "shop_name": "Sample Store",
+            "rank": 1,
+            "price": 24.99,
+            "currency": "USD",
+            "period": "2026-06"
+          },
+          {
+            "price": 19.99,
+            "currency": "USD"
+          }
+        ]
+      }
+    }
+  },
+  "documented_response_fields": [
+    "currency",
+    "period",
+    "price",
+    "rank",
+    "shop_id",
+    "shop_name",
+    "total"
+  ],
+  "expected_semantic": [
+    "热销店铺榜"
+  ],
+  "forbidden_semantic": [
+    "fastmoss__shop_rank_top_selling",
+    "call:",
+    "null",
+    "true",
+    "false"
+  ]
+}

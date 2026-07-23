@@ -1,0 +1,113 @@
+{
+  "provider": "fastmoss",
+  "tool": "product_sales_trend",
+  "contract_source": {
+    "request": "2026-07-23运行时MCP Schema",
+    "response": "工具专属Semantic契约与脱敏业务样本"
+  },
+  "semantic": {
+    "title": "商品销售趋势",
+    "profile": "trend",
+    "entity_type": "product",
+    "report_included": true
+  },
+  "runtime_input_schema": {
+    "properties": {
+      "filter": {
+        "description": "Filter parameters.",
+        "properties": {
+          "product_id": {
+            "description": "Product ID; use product_search first if only a product name is known.",
+            "type": "string"
+          },
+          "time_range_days": {
+            "description": "Days: 7/14/28/90; recent=28; -1=cumulative.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "product_id",
+          "time_range_days"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "object"
+  },
+  "request_variants": [
+    {
+      "name": "运行时结构",
+      "arguments": {
+        "filter": {
+          "product_id": "1734567890123456789",
+          "time_range_days": 1
+        }
+      }
+    }
+  ],
+  "response_variants": {
+    "success": {
+      "data": {
+        "product_id": "1734567890123456789",
+        "title": "Portable Desk Fan",
+        "region": "US",
+        "currency": "USD",
+        "trend_series": [
+          {
+            "date": "2026-06-01",
+            "units_sold": 320,
+            "gmv": 7990
+          },
+          {
+            "date": "2026-07-01",
+            "units_sold": 420,
+            "gmv": 8090
+          }
+        ]
+      }
+    },
+    "empty": {
+      "data": {
+        "total": 0,
+        "list": []
+      }
+    },
+    "error": {
+      "success": false,
+      "message": "样例调用失败"
+    },
+    "partial_identity": {
+      "data": {
+        "list": [
+          {
+            "product_id": "1734567890123456789",
+            "title": "Portable Desk Fan",
+            "period": "2026-06"
+          },
+          {
+            "price": 19.99
+          }
+        ]
+      }
+    }
+  },
+  "documented_response_fields": [
+    "currency",
+    "date",
+    "gmv",
+    "product_id",
+    "region",
+    "title",
+    "units_sold"
+  ],
+  "expected_semantic": [
+    "商品销售趋势"
+  ],
+  "forbidden_semantic": [
+    "fastmoss__product_sales_trend",
+    "call:",
+    "null",
+    "true",
+    "false"
+  ]
+}

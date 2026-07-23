@@ -1,0 +1,127 @@
+{
+  "provider": "sellersprite",
+  "tool": "trademark_stats",
+  "contract_source": {
+    "request": "2026-07-23运行时MCP Schema",
+    "response": "工具专属Semantic契约与脱敏业务样本"
+  },
+  "semantic": {
+    "title": "商标统计分布",
+    "profile": "distribution",
+    "entity_type": "trademark",
+    "report_included": true
+  },
+  "runtime_input_schema": {
+    "type": "object",
+    "properties": {
+      "request": {
+        "type": "object",
+        "properties": {
+          "office": {
+            "description": "查询商标国家编码",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "description": "查询商标国家编码"
+            }
+          },
+          "returnFields": {
+            "type": "string",
+            "description": "指定返回的字段，多个字段用逗号隔开。不指定则返回所有字段。例如：asin,title,price,totalUnits,totalAmount"
+          },
+          "text": {
+            "type": "string",
+            "description": "查询商标的名称"
+          }
+        },
+        "required": [
+          "office",
+          "text"
+        ]
+      }
+    },
+    "required": [
+      "request"
+    ],
+    "additionalProperties": false
+  },
+  "request_variants": [
+    {
+      "name": "运行时结构",
+      "arguments": {
+        "request": {
+          "office": [
+            "样例值"
+          ],
+          "returnFields": "asin",
+          "text": "样例值"
+        }
+      }
+    }
+  ],
+  "response_variants": {
+    "success": {
+      "data": {
+        "trademark_name": "Sample Mark",
+        "registration_number": "TM-1001",
+        "region": "US",
+        "currency": "USD",
+        "breakdown": [
+          {
+            "category_name": "样本区间一",
+            "product_count": 24,
+            "share_percent": 40
+          },
+          {
+            "category_name": "样本区间二",
+            "product_count": 36,
+            "share_percent": 60
+          }
+        ]
+      }
+    },
+    "empty": {
+      "data": {
+        "total": 0,
+        "list": []
+      }
+    },
+    "error": {
+      "success": false,
+      "message": "样例调用失败"
+    },
+    "partial_identity": {
+      "data": {
+        "list": [
+          {
+            "trademark_name": "Sample Mark",
+            "registration_number": "TM-1001",
+            "period": "2026-06"
+          },
+          {
+            "price": 19.99
+          }
+        ]
+      }
+    }
+  },
+  "documented_response_fields": [
+    "category_name",
+    "currency",
+    "product_count",
+    "region",
+    "registration_number",
+    "share_percent",
+    "trademark_name"
+  ],
+  "expected_semantic": [
+    "商标统计分布"
+  ],
+  "forbidden_semantic": [
+    "sellersprite__trademark_stats",
+    "call:",
+    "null",
+    "true",
+    "false"
+  ]
+}
