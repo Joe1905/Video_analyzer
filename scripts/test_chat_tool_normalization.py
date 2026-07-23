@@ -15,7 +15,9 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import web_app  # noqa: E402
 from sellersprite_evidence_renderer import (  # noqa: E402
+    SELLERSPRITE_RENDER_SPECS,
     SELLERSPRITE_TOOL_SEMANTICS,
+    SELLERSPRITE_TOOL_TITLES,
     render_sellersprite_current_evidence,
     sellersprite_semantic_registry_diagnostics,
 )
@@ -1629,8 +1631,10 @@ def test_provider_profiles_use_aggregated_sellersprite_and_staged_fastmoss_tools
     assert staged == {"system__current_time", "fastmoss__search_category_by_words"}
 
 
-def test_sellersprite_semantic_registry_is_complete_and_lossless() -> None:
+def test_sellersprite_semantic_registry_is_complete_and_strict() -> None:
     assert len(SELLERSPRITE_TOOL_SEMANTICS) == 43
+    assert set(SELLERSPRITE_TOOL_TITLES) == set(SELLERSPRITE_TOOL_SEMANTICS)
+    assert set(SELLERSPRITE_RENDER_SPECS) == set(SELLERSPRITE_TOOL_SEMANTICS)
     diagnostics = sellersprite_semantic_registry_diagnostics(
         [{"name": name} for name in SELLERSPRITE_TOOL_SEMANTICS]
     )
@@ -1662,11 +1666,15 @@ def test_sellersprite_semantic_registry_is_complete_and_lossless() -> None:
         )
         assert not (result.consumed_paths & result.unmapped_paths)
         assert not result.unmapped_paths
-        assert f"kept-{name}" in result.markdown
+        assert f"kept-{name}" not in result.markdown
+        assert any("futureBusinessField" in path for path in result.excluded_paths)
+        assert any("自然语言字段契约" in reason for reason in result.exclusion_reasons.values())
         assert "未映射业务字段" not in result.markdown
         assert "JSON路径" not in result.markdown
         assert "原字段" not in result.markdown
         assert "$.business_data" not in result.markdown
+        assert f"sellersprite__{name}" not in result.markdown
+        assert "current-call" not in result.markdown
 
     empty = render_sellersprite_current_evidence({
         "tool": "sellersprite__review",
@@ -1689,6 +1697,19 @@ def test_sellersprite_semantic_registry_is_complete_and_lossless() -> None:
     assert wrapped_empty.empty is True
     assert wrapped_empty.business_leaf_paths == set()
     assert "没有返回业务记录" in wrapped_empty.markdown
+
+    unknown = render_sellersprite_current_evidence({
+        "tool": "sellersprite__future_tool",
+        "arguments": {"marketplace": "US"},
+        "ok": True,
+        "data_state": "data",
+        "data": {"items": [{"secretFutureField": "AUDIT-ONLY-MARKER"}]},
+    })
+    assert unknown.fallback is True
+    assert unknown.business_leaf_paths == unknown.excluded_paths
+    assert "AUDIT-ONLY-MARKER" not in unknown.markdown
+    assert "future_tool" not in unknown.markdown
+    assert "仅保留在审计证据" in unknown.markdown
 
 
 def test_sellersprite_official_aba_fields_render_as_semantic_values() -> None:
@@ -1761,7 +1782,7 @@ def test_sellersprite_keyword_rows_keep_query_scope_and_anonymous_identity_bound
         },
     })
     assert result.fallback is False
-    assert "查询关键词 | tent fan" in result.markdown
+    assert "关键词 | tent fan" in result.markdown
     assert "返回字段 | 关键词、搜索量、近3个月搜索量增长率、点击垄断率、平均PPC竞价（旧字段）" in result.markdown
     assert "近3个月搜索量增长率" in result.markdown and "36.7%" in result.markdown
     assert "点击垄断率" in result.markdown and "25.54%" in result.markdown
@@ -1769,6 +1790,70 @@ def test_sellersprite_keyword_rows_keep_query_scope_and_anonymous_identity_bound
     assert "不得绑定到任何具体关键词" in result.markdown
     assert "search nearly cr" not in result.markdown
     assert "ara click rate" not in result.markdown
+
+
+def test_sellersprite_product_and_google_trend_fields_are_naturalized() -> None:
+    product = render_sellersprite_current_evidence({
+        "tool": "sellersprite__product_research",
+        "arguments": {
+            "request": {
+                "marketplace": "US",
+                "keyword": "hard hat fan",
+                "page": 1,
+                "pageSize": 20,
+            },
+        },
+        "ok": True,
+        "data_state": "data",
+        "data": {
+            "items": [{
+                "asin": "B0ABCDEF12",
+                "title": "Hard Hat Fan",
+                "availableDate": 1773187200000,
+                "price": 26.6,
+                "currency": "USD",
+                "totalUnits": 7855,
+                "totalAmount": 796146,
+                "ratings": 431,
+                "fulfillment": "FBA",
+            }],
+        },
+    })
+    assert product.fallback is False
+    assert not product.unmapped_paths
+    assert "ASIN | 标题 | 上架日期 | 价格 | 币种 | 统计月销量 | 统计月销售额 | 评分数量 | 履约方式" in product.markdown
+    assert "2026-03-11" in product.markdown
+    assert "亚马逊物流（FBA）" in product.markdown
+    assert "availableDate" not in product.markdown
+    assert "1773187200000" not in product.markdown
+
+    trend = render_sellersprite_current_evidence({
+        "tool": "sellersprite__google_trend",
+        "arguments": {
+            "request": {
+                "marketplace": "US",
+                "keywords": "hard hat fan",
+                "date_value": "2026-W29",
+            },
+        },
+        "ok": True,
+        "data_state": "data",
+        "data": {
+            "items": [{
+                "keyword": "hard hat fan",
+                "time": 1783814400000,
+                "value": 53,
+                "link": "https://trends.google.com/example",
+            }],
+        },
+    })
+    assert trend.fallback is False
+    assert not trend.unmapped_paths
+    assert "2026年第29周" in trend.markdown
+    assert "2026-07-12" in trend.markdown
+    assert "1783814400000" not in trend.markdown
+    assert "https://trends.google.com" not in trend.markdown
+    assert any("link" in path for path in trend.excluded_paths)
 
 
 def test_sellersprite_semantic_report_and_pro_synthesis() -> None:
@@ -1815,9 +1900,15 @@ def test_sellersprite_semantic_report_and_pro_synthesis() -> None:
     assert marker in json.dumps(dossier, ensure_ascii=False)
 
     semantic, semantic_stats = web_app.sellersprite_render_report_evidence(dossier)
-    assert "## call:1 · `sellersprite__keyword_research`" in semantic
-    assert marker in semantic
+    assert "## stroller fan · 关键词研究结果" in semantic
+    assert marker not in semantic
+    assert "12345" in semantic
     assert semantic_stats["format"] == "semantic"
+    assert semantic_stats["business_leaf_count"] == (
+        semantic_stats["consumed_leaf_count"]
+        + semantic_stats["unmapped_leaf_count"]
+        + semantic_stats["excluded_leaf_count"]
+    )
     assert "研究任务" in semantic
     assert "机会发现" in semantic
     assert "证据质量汇总" in semantic
@@ -1826,6 +1917,10 @@ def test_sellersprite_semantic_report_and_pro_synthesis() -> None:
     assert "research_task" not in semantic
     assert "quality_summary" not in semantic
     assert "opportunity_discovery" not in semantic
+    assert "sellersprite__" not in semantic
+    assert "call:1" not in semantic
+    assert "source_ref" not in semantic
+    assert "futureBusinessField" not in semantic
 
     class Response:
         def raise_for_status(self) -> None:
@@ -1873,7 +1968,8 @@ def test_sellersprite_semantic_report_and_pro_synthesis() -> None:
     assert "直接从中文 Markdown 标题开始" in payload["messages"][1]["content"]
     assert marker not in payload["messages"][0]["content"]
     assert marker not in payload["messages"][1]["content"]
-    assert marker in payload["messages"][2]["content"]
+    assert marker not in payload["messages"][2]["content"]
+    assert "12345" in payload["messages"][2]["content"]
     assert "# SellerSprite 调研证据" in payload["messages"][2]["content"]
     assert "--- Semantic 证据开始 ---" in payload["messages"][2]["content"]
     assert web_app.append_sellersprite_report_notice(report, route) == report
@@ -4405,9 +4501,10 @@ if __name__ == "__main__":
     test_fastmoss_clarification_is_targeted_and_provider_isolated()
     test_fastmoss_close_cross_category_matches_request_confirmation()
     test_provider_profiles_use_aggregated_sellersprite_and_staged_fastmoss_tools()
-    test_sellersprite_semantic_registry_is_complete_and_lossless()
+    test_sellersprite_semantic_registry_is_complete_and_strict()
     test_sellersprite_official_aba_fields_render_as_semantic_values()
     test_sellersprite_keyword_rows_keep_query_scope_and_anonymous_identity_boundary()
+    test_sellersprite_product_and_google_trend_fields_are_naturalized()
     test_sellersprite_semantic_report_and_pro_synthesis()
     test_dynamic_provider_capability_graph_uses_task_scope_and_evidence()
     test_dynamic_provider_planner_does_not_cap_repeated_calls()

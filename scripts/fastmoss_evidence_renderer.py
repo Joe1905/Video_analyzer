@@ -382,11 +382,20 @@ _FIELD_LABELS = {
     "trends": "趋势数据",
     "monthly_sales": "月销量",
     "monthly_revenue": "月销售额",
+    "total_units": "统计月销量",
+    "total_amount": "统计月销售额",
     "bsr": "BSR",
     "rating": "评分",
+    "ratings": "评分数量",
     "reviews": "评论数",
     "brand": "品牌",
     "seller_name": "卖家",
+    "available_date": "上架日期",
+    "delivery_days": "配送天数",
+    "fulfillment": "履约方式",
+    "min_price": "最低价格",
+    "max_price": "最高价格",
+    "time": "趋势日期",
     "marketplace": "站点",
     "node_id_path": "类目节点路径",
     "node_id": "类目节点ID",
@@ -396,6 +405,22 @@ _FIELD_LABELS = {
     "goods_count": "商品数量",
     "month": "统计月份",
     "search_model": "搜索模式",
+    "page_size": "每页返回数量",
+    "badge_nr": "是否筛选近期上架商品",
+    "google_prop": "Google趋势搜索类型",
+    "match_type": "关键词匹配方式",
+    "max_products": "商品数上限",
+    "max_ratings": "评分数量上限",
+    "max_supply_demand_ratio": "供需比上限",
+    "min_purchases": "购买量下限",
+    "min_rating": "评分下限",
+    "min_revenue": "统计月销售额下限",
+    "min_search": "搜索量下限",
+    "min_search_nearly_cr": "近3个月搜索量增长率下限",
+    "min_units": "统计月销量下限",
+    "monthly": "是否按月汇总",
+    "seller_nation": "卖家国家或地区",
+    "variation": "是否包含变体",
     "request": "请求",
     "filter": "筛选条件",
     "order": "排序规则",
@@ -771,7 +796,7 @@ _REPORT_VALUE_LABELS = {
 _AUDIT_ONLY_FIELD_KEYS = {
     "avatar", "avatar_thumb", "avatar_url", "cover", "cover_url", "detail_url",
     "fastmoss_detail_url", "fastmoss_url", "image", "image_url", "images",
-    "request_id", "timestamp", "tiktok_url", "tool_id", "url_list",
+    "link", "request_id", "timestamp", "tiktok_url", "tool_id", "url_list",
 }
 _INTERNAL_REPORT_KEYS = {
     "source_ref", "source_tool", "source_call_index", "tool_name", "fact_id",
@@ -789,8 +814,9 @@ _PERCENT_VALUE_FIELDS = {
 }
 _TIMESTAMP_FIELDS = {
     "published_at", "created_at", "updated_at", "publish_time", "create_time",
-    "launch_time", "timestamp",
+    "available_date", "launch_time", "time", "timestamp",
 }
+_DATE_ONLY_TIMESTAMP_FIELDS = {"available_date", "launch_time", "time"}
 _ENUM_VALUE_LABELS = {
     "data_state": {
         "data": "已返回数据",
@@ -827,6 +853,20 @@ _ENUM_VALUE_LABELS = {
         "4": "快速飙升市场", "5": "潜力市场", "6": "长尾市场",
     },
     "match_type": {"2": "广泛匹配", "3": "词组匹配"},
+    "badge_nr": {"N": "否", "Y": "是"},
+    "variation": {"N": "否", "Y": "是"},
+    "google_prop": {
+        "web": "网页搜索",
+        "images": "图片搜索",
+        "news": "新闻搜索",
+        "shopping": "购物搜索",
+        "youtube": "YouTube搜索",
+    },
+    "fulfillment": {
+        "AMZ": "Amazon（AMZ）",
+        "FBA": "亚马逊物流（FBA）",
+        "FBM": "卖家自配送（FBM）",
+    },
     "supplement": {"N": "否", "Y": "是"},
     "date_type": {"day": "日", "week": "周", "month": "月"},
     "order": {"asc": "升序", "desc": "降序"},
@@ -1078,7 +1118,7 @@ def _semantic_value(field_name: str, value: Any) -> str:
         if normalized in _TIMESTAMP_FIELDS and value >= 1_000_000_000:
             seconds = float(value) / 1000 if value >= 10_000_000_000 else float(value)
             moment = datetime.fromtimestamp(seconds, tz=timezone(timedelta(hours=8)))
-            if normalized == "launch_time":
+            if normalized in _DATE_ONLY_TIMESTAMP_FIELDS:
                 return moment.date().isoformat()
             return moment.strftime("%Y-%m-%d %H:%M:%S（UTC+8）")
         enum_value = _ENUM_VALUE_LABELS.get(normalized, {}).get(str(value))
@@ -1231,6 +1271,8 @@ class SemanticToolRenderer:
         self,
         entry: Mapping[str, Any],
         render_specs: Mapping[str, ToolRenderSpec] | None = None,
+        *,
+        strict_contract: bool,
     ) -> None:
         self.entry = dict(entry)
         self.full_tool_name = str(entry.get("tool_name") or "fastmoss__unknown")
@@ -1240,7 +1282,7 @@ class SemanticToolRenderer:
             self.tool_name,
             ToolRenderSpec(self.tool_name, PROFILE_GENERIC, _entity_type_for_tool(self.tool_name)),
         )
-        self.strict_contract = self.full_tool_name.startswith("fastmoss__")
+        self.strict_contract = strict_contract
         self.nodes: list[EvidenceNode] = []
         self.consumed: set[str] = set()
         self.unmapped: set[str] = set()
@@ -1261,6 +1303,8 @@ class SemanticToolRenderer:
         if query_hint and self.tool_name in {
             "product_search", "shop_search", "creator_search", "video_search", "live_search",
             "agency_search", "search_category_by_words", "ad_search",
+            "keyword_research", "keyword_miner", "market_research", "product_research",
+            "competitor_lookup", "google_trend", "trademark_list",
         }:
             evidence_title = f"{query_hint} · {evidence_title}"
         lines = (
@@ -1746,7 +1790,7 @@ def render_fastmoss_tool_evidence(entry: Mapping[str, Any]) -> RenderedToolEvide
             diagnostics=[f"{tool_name}: {reason}"],
             fallback=True,
         )
-    renderer = SemanticToolRenderer(entry)
+    renderer = SemanticToolRenderer(entry, strict_contract=True)
     try:
         return renderer.render()
     except Exception as exc:

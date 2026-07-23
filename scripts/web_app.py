@@ -8821,7 +8821,15 @@ def sellersprite_render_report_evidence(
         "fallback_tools": [result.tool_name for result in results if result.fallback],
         "empty_result_count": sum(1 for result in results if result.empty),
         "business_leaf_count": sum(len(result.business_leaf_paths) for result in results),
+        "consumed_leaf_count": sum(len(result.consumed_paths) for result in results),
         "unmapped_leaf_count": sum(len(result.unmapped_paths) for result in results),
+        "excluded_leaf_count": sum(len(result.excluded_paths) for result in results),
+        "audit_only_leaf_count": sum(len(result.exclusion_reasons) for result in results),
+        "diagnostics": [
+            diagnostic
+            for result in results
+            for diagnostic in result.diagnostics
+        ],
         "markdown_chars": len(rendered.markdown),
     }
 
