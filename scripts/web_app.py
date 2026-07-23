@@ -135,13 +135,21 @@ from commerce_research_planner import (
 )
 from commerce_evidence_gate import (
     admitted_business_payload,
+    chunk_flash_judge_pending,
     deterministic_evidence_quality,
     evidence_quality_allows_entities,
     evidence_quality_observed,
     evidence_quality_prompt,
     flash_judge_payload,
+    merge_flash_chunk_qualities,
     uncertain_evidence_quality,
     validate_flash_verdict,
+)
+from commerce_tool_call_gate import (
+    build_call_gate_candidates,
+    call_gate_payload,
+    validate_call_gate_response,
+    validate_json_schema,
 )
 from json_to_markdown import json_to_markdown
 from hot_video_report import (
@@ -4876,6 +4884,23 @@ def chat_evidence_quality_gate_enabled() -> bool:
     }
 
 
+def chat_tool_call_gate_enabled() -> bool:
+    return str(os.getenv("CHAT_TOOL_CALL_GATE_ENABLED", "1")).strip().lower() not in {
+        "0", "false", "no", "off",
+    }
+
+
+def chat_tool_call_gate_applies(provider: str, route: dict[str, Any]) -> bool:
+    return (
+        chat_tool_call_gate_enabled()
+        and normalize_chat_provider(provider) in {"amazon", "fastmoss"}
+        and str(route.get("task_depth") or "").strip().lower() in {"analysis", "workflow"}
+        and str(route.get("intent") or "") not in {
+            "help", "mcp_interface", "current_time", "product_availability",
+        }
+    )
+
+
 def mcp_result_data_state(result: Any) -> str:
     if not isinstance(result, dict) or result.get("ok") is not True:
         return "error"
@@ -6249,6 +6274,11 @@ def normalize_mcp_tool_arguments(
     missing = _missing_schema_required_fields(schema, normalized)
     if missing:
         raise ValueError(f"Invalid arguments for {name}: missing required field(s): {', '.join(missing)}")
+    schema_errors = validate_json_schema(schema, normalized)
+    if schema_errors:
+        raise ValueError(
+            f"Invalid arguments for {name}: " + "; ".join(schema_errors[:8])
+        )
     return normalized, action
 
 
@@ -6532,6 +6562,217 @@ def _parse_evidence_quality_judge_response(content: Any) -> dict[str, Any] | Non
     return parsed if isinstance(parsed, dict) else None
 
 
+def _chat_call_gate_confirmed_identities(
+    provider: str,
+    user_text: str,
+    assistant_msg: Message,
+) -> dict[str, list[str]]:
+    payloads = _planner_result_payloads(assistant_msg)
+
+    def collect_values(value: Any, wanted_keys: set[str]) -> set[str]:
+        found: set[str] = set()
+        if isinstance(value, dict):
+            for key, item in value.items():
+                normalized = re.sub(r"[^a-z0-9]", "", str(key).casefold())
+                if normalized in wanted_keys and not isinstance(item, (dict, list)):
+                    text = str(item or "").strip()
+                    if text:
+                        found.add(text)
+                found.update(collect_values(item, wanted_keys))
+        elif isinstance(value, list):
+            for item in value:
+                found.update(collect_values(item, wanted_keys))
+        return found
+
+    if provider == "fastmoss":
+        identities: dict[str, list[str]] = {
+            "商品编号": sorted(fastmoss_known_product_ids(user_text, assistant_msg)),
+            "类目编号": sorted(fastmoss_known_category_ids(user_text, assistant_msg)),
+        }
+    else:
+        asins = set(_collect_asins(user_text))
+        for payload in payloads:
+            asins.update(_collect_asins(payload))
+        identities = {"ASIN": sorted(asins)}
+    for label, keys in (
+        ("类目节点", {"nodeid", "nodeidpath"}),
+        ("店铺编号", {"shopid", "sellerid"}),
+        ("达人编号", {"creatorid", "creatoruid", "uid"}),
+        ("视频编号", {"videoid"}),
+    ):
+        values: set[str] = set()
+        for payload in payloads:
+            values.update(collect_values(payload, keys))
+        if values:
+            identities[label] = sorted(values)
+    return {key: values for key, values in identities.items() if values}
+
+
+def apply_chat_tool_call_gate(
+    tool_calls: list[dict[str, Any]],
+    model_tools: list[dict[str, Any]],
+    provider: str,
+    user_text: str,
+    route: dict[str, Any],
+    assistant_msg: Message,
+    requests_module: Any,
+    api_key: str,
+    api_url: str,
+    model: str,
+    rejected_cache: dict[str, str],
+) -> dict[str, Any]:
+    """Approve/reject a whole candidate batch before any MCP execution or UI record."""
+    if not tool_calls or not chat_tool_call_gate_applies(provider, route):
+        return {
+            "approved": list(tool_calls),
+            "rejected": [],
+            "failed": False,
+            "latency_ms": 0,
+        }
+
+    fresh_calls: list[dict[str, Any]] = []
+    rejected: list[dict[str, str]] = []
+    for call in tool_calls:
+        function = call.get("function") if isinstance(call.get("function"), dict) else {}
+        name = str(function.get("name") or "")
+        arguments = _tool_call_arguments(call)
+        signature = tool_call_signature(name, arguments)
+        cached_reason = rejected_cache.get(signature)
+        if cached_reason:
+            rejected.append({
+                "tool_name": name,
+                "signature": signature,
+                "reason": cached_reason,
+                "source": "cache",
+            })
+        else:
+            fresh_calls.append(call)
+
+    if not fresh_calls:
+        print(
+            "[CHAT CALL GATE] "
+            + json.dumps({
+                "candidates": len(tool_calls),
+                "approved": 0,
+                "rejected": len(rejected),
+                "cached_rejections": len(rejected),
+                "latency_ms": 0,
+            }, ensure_ascii=False, separators=(",", ":")),
+            flush=True,
+        )
+        return {"approved": [], "rejected": rejected, "failed": False, "latency_ms": 0}
+
+    candidates = build_call_gate_candidates(fresh_calls, model_tools)
+    planner_state = research_planner_state(provider, route, user_text, assistant_msg)
+    judge_input = call_gate_payload(
+        user_question=chat_routing_text(user_text),
+        research_task=route.get("research_task") if isinstance(route.get("research_task"), dict) else {},
+        planner_state=planner_state,
+        confirmed_identities=_chat_call_gate_confirmed_identities(provider, user_text, assistant_msg),
+        candidates=candidates,
+    )
+    system_prompt = (
+        "你是商业研究工具的调用前可行性门禁，只能批准或驳回候选调用。"
+        "你不能修改工具名或参数，不能指定替代工具，不能判断商业机会，也不能规定固定工具顺序或调用数量。"
+        "联合比较本批候选：批准与用户问题和研究任务匹配、前置身份已满足、且能补充尚未覆盖证据的调用；"
+        "驳回批内重复、前置条件缺失、对象明显歧义、用途不匹配或不能增加证据的调用。"
+        "同一工具使用不同有效参数、候选较多或没有固定阶段都不是驳回理由。"
+        "输出严格JSON，且只能包含 decisions；每个候选恰好一项："
+        "{\"decisions\":[{\"call_key\":\"proposal-1\",\"decision\":\"approve|reject\","
+        "\"reason\":\"中文原因\",\"unmet_preconditions\":[]}]}。"
+    )
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": judge_input},
+        ],
+        "temperature": 0,
+        "max_tokens": 8000,
+        "response_format": {"type": "json_object"},
+    }
+    payload_str = json.dumps(payload, ensure_ascii=False)
+    started = time.monotonic()
+    approved: list[dict[str, Any]] = []
+    failure_reason = ""
+    try:
+        response = requests_module.post(
+            api_url.rstrip("/") + "/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            data=payload_str.encode("utf-8"),
+            timeout=60,
+        )
+        response.raise_for_status()
+        body = response.json()
+        record_api_call(
+            "deepseek",
+            "chat_tool_call_gate",
+            {
+                "api_url": api_url.rstrip("/") + "/chat/completions",
+                "model": model,
+                "provider": provider,
+                "candidate_count": len(candidates),
+                "payload_sha256": __import__("hashlib").sha256(payload_str.encode("utf-8")).hexdigest(),
+            },
+            body,
+            elapsed_ms=int((time.monotonic() - started) * 1000),
+        )
+        choice = body.get("choices", [{}])[0]
+        if str(choice.get("finish_reason") or "").strip().lower() == "length":
+            raise ValueError("call gate finish_reason=length")
+        parsed = _parse_evidence_quality_judge_response(
+            (choice.get("message") or {}).get("content")
+        )
+        decisions = validate_call_gate_response(candidates, parsed)
+        if decisions is None:
+            raise ValueError("V4 Flash call-gate response is incomplete or invalid")
+        calls_by_key = {
+            str(candidate.get("call_key") or ""): call
+            for candidate, call in zip(candidates, fresh_calls)
+        }
+        for decision in decisions:
+            call = calls_by_key[decision["call_key"]]
+            function = call.get("function") if isinstance(call.get("function"), dict) else {}
+            name = str(function.get("name") or "")
+            signature = tool_call_signature(name, _tool_call_arguments(call))
+            if decision["decision"] == "approve":
+                approved.append(call)
+                continue
+            reason = decision["reason"]
+            if decision["unmet_preconditions"]:
+                reason += "；未满足前置条件：" + "、".join(decision["unmet_preconditions"])
+            rejected_cache[signature] = reason
+            rejected.append({
+                "tool_name": name,
+                "signature": signature,
+                "reason": reason,
+                "source": "v4_flash",
+            })
+    except Exception as exc:
+        failure_reason = f"{type(exc).__name__}: {exc}"
+    latency_ms = int((time.monotonic() - started) * 1000)
+    print(
+        "[CHAT CALL GATE] "
+        + json.dumps({
+            "candidates": len(tool_calls),
+            "judged": len(candidates),
+            "approved": len(approved),
+            "rejected": len(rejected),
+            "cached_rejections": sum(item.get("source") == "cache" for item in rejected),
+            "latency_ms": latency_ms,
+            **({"error": failure_reason[:300]} if failure_reason else {}),
+        }, ensure_ascii=False, separators=(",", ":")),
+        flush=True,
+    )
+    return {
+        "approved": approved if not failure_reason else [],
+        "rejected": rejected,
+        "failed": bool(failure_reason),
+        "failure_reason": failure_reason,
+        "latency_ms": latency_ms,
+    }
+
+
 def apply_chat_evidence_quality_gate(
     entries: list[dict[str, Any]],
     user_text: str,
@@ -6571,7 +6812,6 @@ def apply_chat_evidence_quality_gate(
     if not pending_by_key:
         return
 
-    judge_input = flash_judge_payload([pending for _, pending in pending_by_key.values()])
     system_prompt = (
         "你只负责判断工具返回记录是否属于当前查询对象与范围，不判断商业机会，不选择下一工具。"
         "只根据查询词、调用范围和记录身份判定。不得使用销量、销售额、价格等指标判断相关性。"
@@ -6581,79 +6821,102 @@ def apply_chat_evidence_quality_gate(
         "accepted 表示全部记录匹配；partial 必须把每行恰好分入 accepted_rows 或 rejected_rows；"
         "无法确认范围用 scope_uncertain。"
     )
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {
-                "role": "user",
-                "content": (
-                    "用户问题：" + chat_routing_text(user_text)
-                    + "\n研究任务：" + json.dumps(route.get("research_task") or {}, ensure_ascii=False, separators=(",", ":"))
-                    + "\n待判定调用：" + judge_input
-                ),
-            },
-        ],
-        "temperature": 0,
-        "max_tokens": 2000,
-        "response_format": {"type": "json_object"},
-    }
-    payload_str = json.dumps(payload, ensure_ascii=False)
-    failure_reason = ""
-    try:
-        started = time.monotonic()
-        response = requests_module.post(
-            api_url.rstrip("/") + "/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            data=payload_str.encode("utf-8"),
-            timeout=60,
-        )
-        response.raise_for_status()
-        body = response.json()
-        record_api_call(
-            "deepseek",
-            "chat_evidence_quality",
-            {
-                "api_url": api_url.rstrip("/") + "/chat/completions",
-                "model": model,
-                "provider_call_count": len(pending_by_key),
-                "payload_sha256": __import__("hashlib").sha256(payload_str.encode("utf-8")).hexdigest(),
-            },
-            body,
-            elapsed_ms=int((time.monotonic() - started) * 1000),
-        )
-        parsed = _parse_evidence_quality_judge_response(
-            body.get("choices", [{}])[0].get("message", {}).get("content")
-        )
-        verdicts = parsed.get("calls") if isinstance(parsed, dict) else None
-        if not isinstance(verdicts, list):
-            raise ValueError("V4 Flash evidence-quality response is not a calls array")
-        seen: set[str] = set()
-        for verdict in verdicts:
-            if not isinstance(verdict, dict):
-                continue
-            call_key = str(verdict.get("call_key") or "")
-            pair = pending_by_key.get(call_key)
-            if pair is None:
-                continue
-            entry, pending = pair
-            quality = validate_flash_verdict(pending, verdict)
-            if quality is None:
-                continue
-            entry["normalized_result"]["evidence_quality"] = quality
-            seen.add(call_key)
-        missing = set(pending_by_key) - seen
-        for call_key in missing:
-            entry, pending = pending_by_key[call_key]
-            entry["normalized_result"]["evidence_quality"] = uncertain_evidence_quality(
-                pending, "V4 Flash 返回缺少该调用的合法判定；结果保留给编排参考，但不提供深挖编号。"
+    pending_items = [pending for _, pending in pending_by_key.values()]
+    batches = chunk_flash_judge_pending(pending_items, 8000)
+    chunk_counts: dict[str, int] = {}
+    qualities_by_parent: dict[str, list[dict[str, Any]]] = {}
+    failed_parents: set[str] = set()
+    failures: list[str] = []
+    for batch_index, batch in enumerate(batches, 1):
+        judge_input = flash_judge_payload(batch)
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": (
+                        "用户问题：" + chat_routing_text(user_text)
+                        + "\n研究任务：" + json.dumps(route.get("research_task") or {}, ensure_ascii=False, separators=(",", ":"))
+                        + "\n待判定调用：" + judge_input
+                    ),
+                },
+            ],
+            "temperature": 0,
+            "max_tokens": 4000,
+            "response_format": {"type": "json_object"},
+        }
+        payload_str = json.dumps(payload, ensure_ascii=False)
+        batch_parents = {
+            str(item.get("parent_call_key") or item.get("call_key") or "")
+            for item in batch
+        }
+        for parent in batch_parents:
+            chunk_counts[parent] = chunk_counts.get(parent, 0) + sum(
+                1 for item in batch
+                if str(item.get("parent_call_key") or item.get("call_key") or "") == parent
             )
-    except Exception as exc:
-        failure_reason = f"{type(exc).__name__}: {exc}"
-        for entry, pending in pending_by_key.values():
-            entry["normalized_result"]["evidence_quality"] = uncertain_evidence_quality(
-                pending, "V4 Flash 相关性判定失败；结果保留给编排参考，但不提供深挖编号。"
+        try:
+            started = time.monotonic()
+            response = requests_module.post(
+                api_url.rstrip("/") + "/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                data=payload_str.encode("utf-8"),
+                timeout=60,
             )
+            response.raise_for_status()
+            body = response.json()
+            record_api_call(
+                "deepseek",
+                "chat_evidence_quality",
+                {
+                    "api_url": api_url.rstrip("/") + "/chat/completions",
+                    "model": model,
+                    "provider_call_count": len(batch_parents),
+                    "batch_index": batch_index,
+                    "batch_count": len(batches),
+                    "chunk_count": len(batch),
+                    "payload_sha256": __import__("hashlib").sha256(payload_str.encode("utf-8")).hexdigest(),
+                },
+                body,
+                elapsed_ms=int((time.monotonic() - started) * 1000),
+            )
+            parsed = _parse_evidence_quality_judge_response(
+                body.get("choices", [{}])[0].get("message", {}).get("content")
+            )
+            verdicts = parsed.get("calls") if isinstance(parsed, dict) else None
+            expected_keys = {str(item.get("call_key") or "") for item in batch}
+            if not isinstance(verdicts, list) or len(verdicts) != len(batch):
+                raise ValueError("V4 Flash evidence-quality response does not cover the full chunk batch")
+            verdict_by_key = {
+                str(item.get("call_key") or ""): item
+                for item in verdicts if isinstance(item, dict)
+            }
+            if set(verdict_by_key) != expected_keys:
+                raise ValueError("V4 Flash evidence-quality response has missing or extra chunk decisions")
+            for pending_chunk in batch:
+                chunk_key = str(pending_chunk.get("call_key") or "")
+                parent_key = str(pending_chunk.get("parent_call_key") or chunk_key)
+                quality = validate_flash_verdict(pending_chunk, verdict_by_key[chunk_key])
+                if quality is None:
+                    raise ValueError(f"invalid evidence-quality verdict for {chunk_key}")
+                qualities_by_parent.setdefault(parent_key, []).append(quality)
+        except Exception as exc:
+            failed_parents.update(batch_parents)
+            failures.append(f"batch-{batch_index}:{type(exc).__name__}: {exc}")
+
+    for call_key, (entry, pending) in pending_by_key.items():
+        qualities = qualities_by_parent.get(call_key) or []
+        merged = (
+            merge_flash_chunk_qualities(pending, qualities)
+            if call_key not in failed_parents and len(qualities) == chunk_counts.get(call_key, 0)
+            else None
+        )
+        entry["normalized_result"]["evidence_quality"] = merged or uncertain_evidence_quality(
+            pending,
+            "V4 Flash 分块相关性判定未完整覆盖或失败；结果保留给编排参考，但不提供深挖编号。",
+        )
+    failure_reason = " | ".join(failures)
     status_counts: dict[str, int] = {}
     for entry in entries:
         result = entry.get("normalized_result")
@@ -6665,6 +6928,8 @@ def apply_chat_evidence_quality_gate(
         + json.dumps({
             "results": len(entries),
             "flash_judged": len(pending_by_key),
+            "flash_chunks": sum(chunk_counts.values()),
+            "flash_batches": len(batches),
             "statuses": status_counts,
             **({"judge_error": failure_reason[:300]} if failure_reason else {}),
         }, ensure_ascii=False, separators=(",", ":")),
@@ -12928,6 +13193,8 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
 
     unexecutable_protocol_retries = 0
     no_tool_retries = 0
+    call_gate_no_approved_rounds = 0
+    call_gate_rejected_cache: dict[str, str] = {}
     final_answer_forced = False
     seen_tool_calls: set[str] = set()
     for existing_call in assistant_msg.tool_calls or []:
@@ -13136,6 +13403,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             requested_tool_calls = bool(tool_calls)
             deduplicated_tool_calls = []
             skipped_tool_call_reasons: list[str] = []
+            batch_signatures: set[str] = set()
             dynamic_state = (
                 research_planner_state(provider, route, routing_text, assistant_msg)
                 if route.get("dynamic_planner") and provider in {"amazon", "fastmoss"}
@@ -13147,23 +13415,45 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     skipped_tool_call_reasons.append("unexposed_tool")
                     print(f"[CHAT] skipped unexposed tool call: {fn_name}", flush=True)
                     continue
-                fn_args = _tool_call_arguments(tool_call)
+                raw_arguments = (tool_call.get("function") or {}).get("arguments")
+                try:
+                    fn_args = raw_arguments if isinstance(raw_arguments, dict) else json.loads(str(raw_arguments or "{}"))
+                    if not isinstance(fn_args, dict):
+                        raise ValueError("arguments must be a JSON object")
+                except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                    reason = f"非法工具参数：{type(exc).__name__}"
+                    skipped_tool_call_reasons.append(reason)
+                    print(f"[CHAT] skipped invalid tool arguments: {fn_name}: {exc}", flush=True)
+                    continue
                 domain, unprefixed_name = split_prefixed_tool_id(fn_name)
                 if domain in {"sellersprite", "fastmoss"}:
                     fn_args = apply_mcp_region_default(domain, unprefixed_name, fn_args, default_region)
-                if domain == "sellersprite":
-                    fn_args, field_action = normalize_sellersprite_return_fields(
-                        unprefixed_name, fn_args
-                    )
-                    if field_action:
+                    try:
+                        fn_args, schema_action = normalize_mcp_tool_arguments(
+                            domain, unprefixed_name, fn_args
+                        )
+                    except ValueError as exc:
+                        skipped_tool_call_reasons.append(str(exc))
                         print(
-                            f"[CHAT] normalized {fn_name} arguments: {field_action}",
+                            f"[CHAT] skipped schema-invalid tool call: {fn_name}: {exc}",
                             flush=True,
                         )
+                        continue
+                    if schema_action:
+                        print(f"[CHAT] normalized {fn_name} arguments: {schema_action}", flush=True)
                 if domain == "fastmoss" and route.get("playbook"):
                     fn_args = apply_fastmoss_business_defaults(
                         unprefixed_name, fn_args, assistant_msg, user_text=routing_text, route=route
                     )
+                    try:
+                        fn_args, _ = normalize_mcp_tool_arguments(domain, unprefixed_name, fn_args)
+                    except ValueError as exc:
+                        skipped_tool_call_reasons.append(str(exc))
+                        print(
+                            f"[CHAT] skipped schema-invalid defaulted call: {fn_name}: {exc}",
+                            flush=True,
+                        )
+                        continue
                 stage_error = provider_tool_stage_error(
                     provider, route, domain, unprefixed_name, dynamic_state
                 )
@@ -13174,18 +13464,63 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                         flush=True,
                     )
                     continue
+                guard_error = (
+                    fastmoss_deep_dive_call_error(fn_name, fn_args, routing_text, assistant_msg, route)
+                    if provider == "fastmoss"
+                    else sellersprite_deep_dive_call_error(fn_name, fn_args, routing_text, assistant_msg)
+                    if provider == "amazon"
+                    else None
+                )
+                if guard_error:
+                    skipped_tool_call_reasons.append(guard_error)
+                    print(f"[CHAT] skipped guarded tool call: {fn_name}: {guard_error}", flush=True)
+                    continue
                 signature = tool_call_signature(fn_name, fn_args)
-                if signature in seen_tool_calls:
+                if signature in seen_tool_calls or signature in batch_signatures:
                     skipped_tool_call_reasons.append("duplicate")
                     print(f"[CHAT] skipped duplicate tool call: {fn_name} {fn_args}", flush=True)
                     continue
-                seen_tool_calls.add(signature)
+                batch_signatures.add(signature)
                 normalized_call = dict(tool_call)
                 normalized_call["function"] = dict(tool_call.get("function") or {})
                 normalized_call["function"]["arguments"] = json.dumps(fn_args, ensure_ascii=False)
                 deduplicated_tool_calls.append(normalized_call)
-            tool_calls = deduplicated_tool_calls
+            gate_outcome = apply_chat_tool_call_gate(
+                deduplicated_tool_calls,
+                request_tools,
+                provider,
+                routing_text,
+                route,
+                assistant_msg,
+                req,
+                api_key,
+                api_url,
+                model,
+                call_gate_rejected_cache,
+            )
+            tool_calls = list(gate_outcome.get("approved") or [])
+            gate_rejections = list(gate_outcome.get("rejected") or [])
+            if gate_rejections:
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        "调用前门禁已驳回以下候选，这些调用没有执行，也不计入已尝试能力："
+                        + "；".join(
+                            f"{item.get('tool_name')}：{item.get('reason')}"
+                            for item in gate_rejections
+                        )
+                        + "。请根据仍可用的工具重新编排；不得原样重复被驳回调用。"
+                    ),
+                    "_context_scope": "system",
+                })
             if tool_calls:
+                call_gate_no_approved_rounds = 0
+                for tool_call in tool_calls:
+                    function = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else {}
+                    seen_tool_calls.add(tool_call_signature(
+                        str(function.get("name") or ""),
+                        _tool_call_arguments(tool_call),
+                    ))
                 assistant_msg.tool_calls = list(assistant_msg.tool_calls or []) + tool_calls
                 assistant_msg.tool_results = list(assistant_msg.tool_results or [])
                 messages.append(build_deepseek_tool_assistant_message(msg, tool_calls, bool(standard_tool_calls)))
@@ -13199,27 +13534,8 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                         fn_args = json.loads(tc["function"].get("arguments") or "{}")
                     except json.JSONDecodeError:
                         fn_args = {}
-                    guard_error = (
-                        fastmoss_deep_dive_call_error(fn_name, fn_args, routing_text, assistant_msg, route)
-                        if provider == "fastmoss"
-                        else sellersprite_deep_dive_call_error(fn_name, fn_args, routing_text, assistant_msg)
-                        if provider == "amazon"
-                        else None
-                    )
-                    if guard_error:
-                        normalized_result = {
-                            "ok": False,
-                            "error": guard_error,
-                            "enough_data": False,
-                            "data_state": "error",
-                            "evidence_observed": False,
-                            "suggested_next_action": "answer_with_limitation",
-                            "tool_domain": "fastmoss" if provider == "fastmoss" else "sellersprite",
-                            "tool_name": split_prefixed_tool_id(fn_name)[1],
-                        }
-                    else:
-                        raw_result = execute_prefixed_tool(fn_name, fn_args, default_region)
-                        normalized_result = normalize_prefixed_tool_result(fn_name, raw_result)
+                    raw_result = execute_prefixed_tool(fn_name, fn_args, default_region)
+                    normalized_result = normalize_prefixed_tool_result(fn_name, raw_result)
                     normalized_result = annotate_fastmoss_tool_result(
                         fn_name, fn_args, normalized_result, raw_result
                     )
@@ -13322,6 +13638,40 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 continue
 
             if requested_tool_calls:
+                if chat_tool_call_gate_applies(provider, route):
+                    call_gate_no_approved_rounds += 1
+                    gate_failure = str(gate_outcome.get("failure_reason") or "")
+                    deterministic_reasons = [
+                        reason for reason in skipped_tool_call_reasons
+                        if reason != "duplicate"
+                    ]
+                    feedback = (
+                        "本轮候选调用没有任何一项通过调用前门禁，因此没有执行MCP。"
+                        + (f" 门禁判定失败：{gate_failure[:300]}。" if gate_failure else "")
+                        + (
+                            " 硬护栏原因：" + "；".join(deterministic_reasons[:6]) + "。"
+                            if deterministic_reasons else ""
+                        )
+                    )
+                    if call_gate_no_approved_rounds < 2 and tools:
+                        messages.append({
+                            "role": "system",
+                            "content": feedback + "请重新理解问题并提出一组不同且可行的调用。",
+                            "_context_scope": "system",
+                        })
+                        continue
+                    tools = []
+                    final_answer_forced = True
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            feedback
+                            + "连续两轮没有获准调用，现已关闭工具。请仅用已有有效证据生成报告；"
+                            "没有证据的部分明确说明局限，不得补造数据。"
+                        ),
+                        "_context_scope": "system",
+                    })
+                    continue
                 only_duplicates = bool(skipped_tool_call_reasons) and set(skipped_tool_call_reasons) == {"duplicate"}
                 if no_tool_retries < 1 and tools:
                     no_tool_retries += 1

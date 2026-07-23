@@ -7,8 +7,10 @@ from types import SimpleNamespace
 
 from commerce_evidence_gate import (
     admitted_business_payload,
+    chunk_flash_judge_pending,
     deterministic_evidence_quality,
     evidence_quality_allows_entities,
+    merge_flash_chunk_qualities,
     validate_flash_verdict,
 )
 import web_app
@@ -169,7 +171,7 @@ def _apply_with_fake(fake: _FakeRequests):
 
 def test_batched_flash_success_and_failure_fallbacks() -> None:
     success = _apply_with_fake(_FakeRequests(
-        '{"calls":[{"call_key":"result-1","status":"partial",'
+        '{"calls":[{"call_key":"result-1-part-1","status":"partial",'
         '"accepted_rows":[1],"rejected_rows":[2],'
         '"reason":"第一行匹配，第二行偏题。"}]}'
     ))
@@ -198,6 +200,90 @@ def test_off_topic_result_cannot_expand_planner_entities() -> None:
     assert web_app._planner_result_payloads(message) == []
 
 
+def test_sellersprite_keyword_alias_and_time_series_identity_inheritance() -> None:
+    keyword_result = _result({
+        "data": {"list": [{"keywrod": "portable fan", "searchVolume": 1000}]}
+    })
+    quality, pending = deterministic_evidence_quality(
+        "sellersprite__keyword_research",
+        {"keyword": "portable fan", "marketplace": "US"},
+        keyword_result,
+    )
+    assert quality["status"] == "uncertain"
+    assert pending is not None
+    assert pending["records"][0]["identity"]["keywrod"] == "portable fan"
+
+    for tool_name in (
+        "sellersprite__keyword_research_trends",
+        "sellersprite__google_trend",
+    ):
+        trend_result = _result({
+            "data": {
+                "keywords": "portable fan",
+                "trend_series": [
+                    {"date": "2026-06-01", "searchVolume": 100},
+                    {"date": "2026-07-01", "searchVolume": 120},
+                ],
+            }
+        })
+        quality, pending = deterministic_evidence_quality(
+            tool_name,
+            {"keyword": "portable fan", "marketplace": "US"},
+            trend_result,
+        )
+        assert quality["status"] == "accepted"
+        assert quality["accepted_rows"] == [1, 2]
+        assert pending is None
+
+
+def test_status_wrappers_and_empty_collections_are_empty() -> None:
+    for payload in (
+        {"code": 0, "message": "ok", "link": "trace"},
+        {"code": 0, "data": []},
+        {"success": True, "items": []},
+        {"data": {"total": 0, "list": []}},
+    ):
+        quality, pending = deterministic_evidence_quality(
+            "sellersprite__market_research",
+            {"marketplace": "US"},
+            _result(payload),
+        )
+        assert quality["status"] == "empty"
+        assert pending is None
+
+
+def test_large_pending_is_chunked_and_requires_full_merge() -> None:
+    pending = {
+        "call_key": "result-1",
+        "tool_name": "sellersprite__product_node",
+        "query_scope": {"terms": ["balsamic glaze"]},
+        "record_path": ["data", "list"],
+        "records": [
+            {"row": index, "identity": {"title": "Balsamic vinegar " + ("x" * 500)}}
+            for index in range(1, 31)
+        ],
+        "supported_dimensions": ["类目信息"],
+    }
+    batches = chunk_flash_judge_pending([pending], max_estimated_tokens=600)
+    chunks = [item for batch in batches for item in batch]
+    assert len(chunks) > 1
+    qualities = []
+    for chunk in chunks:
+        quality = validate_flash_verdict(chunk, {
+            "status": "accepted",
+            "accepted_rows": [],
+            "rejected_rows": [],
+            "reason": "相关。",
+        })
+        assert quality is not None
+        qualities.append(quality)
+    merged = merge_flash_chunk_qualities(pending, qualities)
+    assert merged is not None
+    assert merged["status"] == "accepted"
+    assert merged["accepted_rows"] == list(range(1, 31))
+    assert merge_flash_chunk_qualities(pending, qualities[:-1]) is None
+
+
 def main() -> None:
     test_exact_identity_is_accepted()
     test_mismatched_identity_is_off_topic_and_cannot_seed_entities()
@@ -206,6 +292,9 @@ def main() -> None:
     test_discovery_query_uses_validated_flash_rows()
     test_batched_flash_success_and_failure_fallbacks()
     test_off_topic_result_cannot_expand_planner_entities()
+    test_sellersprite_keyword_alias_and_time_series_identity_inheritance()
+    test_status_wrappers_and_empty_collections_are_empty()
+    test_large_pending_is_chunked_and_requires_full_merge()
     print("commerce evidence gate tests passed")
 
 

@@ -35,11 +35,20 @@ _IDENTITY_KEYS = frozenset({
     "asin", "asins", "productid", "productids", "goodsid", "goodsids", "itemid",
     "categoryid", "categoryids", "nodeid", "nodeidpath", "shopid", "sellerid",
     "creatorid", "creatoruid", "authorid", "uid", "videoid", "liveid",
-    "keyword", "keywords", "title", "name", "categoryname", "shopname", "sellername",
+    "keyword", "keywords", "keywrod", "keywrodcn", "keywrodjp",
+    "title", "name", "categoryname", "shopname", "sellername",
     "creatorname", "date", "day", "week", "month", "period", "statdate", "datetime",
     "timestamp", "ccode", "cname",
     "categoryidlevel1", "categoryidlevel2", "categoryidlevel3", "cnname",
     "cnfullname", "matchedquery",
+})
+_TIME_IDENTITY_KEYS = frozenset({
+    "date", "day", "week", "month", "period", "statdate", "datetime", "timestamp",
+    "datevalue",
+})
+_STATUS_ONLY_KEYS = frozenset({
+    "code", "message", "msg", "link", "success", "status", "requestid", "traceid",
+    "request_id", "trace_id", "elapsed", "timestamp",
 })
 _SCOPE_KEYS = frozenset({
     "region", "country", "marketplace", "market", "site", "currency", "currencycode",
@@ -117,6 +126,25 @@ def _business_payload(result: dict[str, Any]) -> Any:
     return {}
 
 
+def _payload_has_business_content(value: Any) -> bool:
+    """Ignore transport/status wrappers when deciding whether data is empty."""
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip() and value.strip().casefold() not in {"null", "none", "[]", "{}"})
+    if isinstance(value, list):
+        return any(_payload_has_business_content(item) for item in value)
+    if isinstance(value, dict):
+        business_items = [
+            item for key, item in value.items()
+            if _norm_key(key) not in {_norm_key(name) for name in _STATUS_ONLY_KEYS}
+        ]
+        return any(_payload_has_business_content(item) for item in business_items)
+    if isinstance(value, (int, float, bool)):
+        return bool(value)
+    return True
+
+
 def _find_record_collection(value: Any) -> tuple[list[Any] | None, tuple[Any, ...]]:
     """Return the first business-record list and its path.
 
@@ -163,7 +191,8 @@ def _row_identity(row: Any) -> dict[str, Any]:
 
 def _query_terms(arguments: dict[str, Any]) -> list[str]:
     keys = frozenset({
-        "keyword", "keywords", "query", "searchterm", "searchterms", "word", "words",
+        "keyword", "keywords", "keywrod", "keywrodcn", "keywrodjp",
+        "query", "searchterm", "searchterms", "word", "words",
         "title", "name", "categoryname",
     })
     return _unique(_walk_named_values(arguments, keys))
@@ -256,6 +285,13 @@ def deterministic_evidence_quality(
         ), None
 
     payload = _business_payload(result)
+    if not _payload_has_business_content(payload):
+        return _quality(
+            "empty",
+            reason="调用成功，但返回体只有状态信息或空的数据集合。",
+            source="deterministic",
+            unsupported_claims=dimensions,
+        ), None
     rows, row_path = _find_record_collection(payload)
     exact_ids = _exact_ids(arguments)
     tool_key = str(tool_name or "").casefold()
@@ -357,6 +393,25 @@ def deterministic_evidence_quality(
         ), None
 
     query_terms = _query_terms(arguments)
+    is_explicit_time_series = any(
+        marker in tool_key for marker in ("keyword_research_trends", "google_trend")
+    )
+    if is_explicit_time_series and rows is not None and query_terms:
+        dated_rows = [
+            index for index, row in enumerate(rows, 1)
+            if _walk_named_values(row, _TIME_IDENTITY_KEYS)
+        ]
+        if len(dated_rows) == len(rows):
+            return _quality(
+                "accepted",
+                accepted_rows=dated_rows,
+                reason=(
+                    "该接口是明确的关键词时间序列；请求关键词和站点作为父级身份，"
+                    "每个子项的日期或周期作为时间点身份。"
+                ),
+                source="deterministic",
+                supported_dimensions=dimensions,
+            ), None
     is_discovery = any(hint in tool_key for hint in _LIST_HINTS)
     is_detail = any(hint in tool_key for hint in _DETAIL_HINTS)
     if rows is None and (is_detail or not is_discovery):
@@ -546,6 +601,99 @@ def flash_judge_payload(pending_items: list[dict[str, Any]]) -> str:
     return json.dumps({"calls": pending_items}, ensure_ascii=False, separators=(",", ":"))
 
 
+def chunk_flash_judge_pending(
+    pending_items: list[dict[str, Any]],
+    max_estimated_tokens: int = 8000,
+) -> list[list[dict[str, Any]]]:
+    """Split large ambiguous calls without losing row coverage."""
+    max_chars = max(1000, int(max_estimated_tokens) * 2)
+    chunks: list[dict[str, Any]] = []
+    for pending in pending_items:
+        records = list(pending.get("records") or [])
+        base = {key: value for key, value in pending.items() if key != "records"}
+        parent_key = str(pending.get("call_key") or "")
+        if not records:
+            item = dict(base)
+            item["records"] = []
+            item["parent_call_key"] = parent_key
+            item["call_key"] = f"{parent_key}-part-1"
+            chunks.append(item)
+            continue
+        current: list[dict[str, Any]] = []
+        part = 1
+        for record in records:
+            candidate = [*current, record]
+            probe = dict(base)
+            probe["records"] = candidate
+            if current and len(flash_judge_payload([probe])) > max_chars:
+                item = dict(base)
+                item["records"] = current
+                item["parent_call_key"] = parent_key
+                item["call_key"] = f"{parent_key}-part-{part}"
+                chunks.append(item)
+                current = [record]
+                part += 1
+            else:
+                current = candidate
+        item = dict(base)
+        item["records"] = current
+        item["parent_call_key"] = parent_key
+        item["call_key"] = f"{parent_key}-part-{part}"
+        chunks.append(item)
+
+    batches: list[list[dict[str, Any]]] = []
+    current_batch: list[dict[str, Any]] = []
+    for item in chunks:
+        probe = [*current_batch, item]
+        if current_batch and len(flash_judge_payload(probe)) > max_chars:
+            batches.append(current_batch)
+            current_batch = [item]
+        else:
+            current_batch = probe
+    if current_batch:
+        batches.append(current_batch)
+    return batches
+
+
+def merge_flash_chunk_qualities(
+    pending: dict[str, Any],
+    qualities: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Merge fully validated chunks for one original call."""
+    expected = {
+        int(record["row"])
+        for record in pending.get("records") or []
+        if isinstance(record, dict) and str(record.get("row") or "").isdigit()
+    }
+    accepted: set[int] = set()
+    rejected: set[int] = set()
+    for quality in qualities:
+        if not isinstance(quality, dict):
+            return None
+        accepted.update(int(value) for value in quality.get("accepted_rows") or [])
+        rejected.update(int(value) for value in quality.get("rejected_rows") or [])
+    if accepted & rejected or accepted | rejected != expected:
+        return None
+    if accepted and rejected:
+        status = "partial"
+    elif accepted:
+        status = "accepted"
+    else:
+        statuses = {str(item.get("status") or "") for item in qualities}
+        status = "off_topic" if "off_topic" in statuses else (
+            "identity_missing" if "identity_missing" in statuses else "scope_uncertain"
+        )
+    return _quality(
+        status,
+        accepted_rows=accepted,
+        rejected_rows=rejected,
+        supported_dimensions=pending.get("supported_dimensions") if accepted else (),
+        unsupported_claims=[] if not rejected else pending.get("supported_dimensions") or [],
+        reason="；".join(_unique(str(item.get("reason") or "") for item in qualities)),
+        source="v4_flash",
+    )
+
+
 __all__ = [
     "EVIDENCE_QUALITY_STATUSES",
     "admitted_business_payload",
@@ -554,6 +702,8 @@ __all__ = [
     "evidence_quality_observed",
     "evidence_quality_prompt",
     "flash_judge_payload",
+    "chunk_flash_judge_pending",
+    "merge_flash_chunk_qualities",
     "uncertain_evidence_quality",
     "validate_flash_verdict",
 ]
