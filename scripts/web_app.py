@@ -8288,10 +8288,10 @@ def fastmoss_evidence_manifest(
             continue
         result = dict(item["result"])
         arguments = _fastmoss_call_arguments_for_result(assistant_msg, result_index, tool_name)
-        quality = result.get("evidence_quality") if isinstance(result.get("evidence_quality"), dict) else None
+        gate_quality = result.get("evidence_quality") if isinstance(result.get("evidence_quality"), dict) else None
         source_value = (
             admitted_business_payload(result)
-            if chat_evidence_quality_gate_enabled() and quality is not None
+            if chat_evidence_quality_gate_enabled() and gate_quality is not None
             else _fastmoss_response_value(None, result)
         )
         conflicts.extend(
@@ -8327,21 +8327,21 @@ def fastmoss_evidence_manifest(
                 ref for ref in (envelope.get("entity_refs") or [])
                 if isinstance(ref, dict) and _fastmoss_valid_entity_id(ref.get("id"))
             ]
-            if quality is None or evidence_quality_allows_entities(result)
+            if gate_quality is None or evidence_quality_allows_entities(result)
             else []
         )
         evidence_envelopes.append(envelope)
         metadata = result.get("evidence_metadata") if isinstance(result.get("evidence_metadata"), dict) else {}
-        if quality is not None and quality.get("status") == "partial":
+        if gate_quality is not None and gate_quality.get("status") == "partial":
             records = fastmoss_extract_product_records(source_value)
-        elif quality is not None and not evidence_quality_allows_entities(result):
+        elif gate_quality is not None and not evidence_quality_allows_entities(result):
             records = []
         else:
             records = result.get("evidence_product_records") if isinstance(result.get("evidence_product_records"), list) else []
         metadata_rows.append({"tool": tool_name, "source_call_index": result_index + 1, **metadata})
-        if quality is not None and quality.get("status") == "partial":
+        if gate_quality is not None and gate_quality.get("status") == "partial":
             result_facts = fastmoss_tool_evidence_facts(tool_name, arguments, result, source_value)
-        elif quality is not None and not evidence_quality_observed(result):
+        elif gate_quality is not None and not evidence_quality_observed(result):
             result_facts = []
         else:
             result_facts = result.get("evidence_facts") if isinstance(result.get("evidence_facts"), list) else []
