@@ -129,8 +129,8 @@ FASTMOSS_TOOL_TITLES: dict[str, str] = {
     "product_investment": "商品广告投放分析", "product_overview": "商品经营概览",
     "product_rank_new_listed": "近期上架商品榜", "product_rank_top_selling": "热销商品榜",
     "product_review_list": "商品评论样本", "product_sales_trend": "商品销售趋势",
-    "product_search": "商品搜索样本", "product_sku": "商品SKU分析", "product_video_list": "商品关联视频样本",
-    "search_category_by_words": "关键词匹配类目", "search_fastmoss_documents": "FastMoss知识文档",
+    "product_search": "商品搜索样本", "product_sku": "商品规格分析", "product_video_list": "商品关联视频样本",
+    "search_category_by_words": "关键词匹配类目", "search_fastmoss_documents": "短视频电商数据说明文档",
     "shop_base_info": "店铺概览", "shop_creator_analysis": "店铺合作达人分析",
     "shop_data_trends": "店铺经营趋势", "shop_investment_analysis": "店铺广告投放分析",
     "shop_live_analysis": "店铺直播分析", "shop_product_analysis": "店铺商品结构分析",
@@ -254,20 +254,20 @@ _NARRATIVE_KEYS = {
     "video_desc", "subtitle", "subtitles", "script", "document", "documents",
 }
 _FIELD_LABELS = {
-    "id": "ID",
+    "id": "编号",
     "code": "编码",
     "label": "名称",
-    "asin": "ASIN",
-    "parent_asin": "父ASIN",
-    "product_id": "商品ID",
-    "seller_id": "店铺ID",
-    "shop_id": "店铺ID",
-    "creator_uid": "达人UID",
-    "uid": "达人UID",
-    "video_id": "视频ID",
-    "room_id": "直播间ID",
-    "agency_id": "机构ID",
-    "category_id": "类目ID",
+    "asin": "亚马逊商品编号",
+    "parent_asin": "父商品编号",
+    "product_id": "商品编号",
+    "seller_id": "店铺编号",
+    "shop_id": "店铺编号",
+    "creator_uid": "达人编号",
+    "uid": "达人编号",
+    "video_id": "视频编号",
+    "room_id": "直播间编号",
+    "agency_id": "机构编号",
+    "category_id": "类目编号",
     "title": "标题",
     "name": "名称",
     "nickname": "达人昵称",
@@ -276,7 +276,7 @@ _FIELD_LABELS = {
     "currency_code": "币种",
     "price": "价格",
     "current_price": "当前价格",
-    "gmv": "GMV",
+    "gmv": "成交金额",
     "units_sold": "销量",
     "sales": "销量",
     "follower_count": "粉丝数",
@@ -290,7 +290,7 @@ _FIELD_LABELS = {
     "comment_count": "评论数",
     "share_count": "分享数",
     "commission_rate_percent": "佣金率",
-    "gmv_share_percent": "GMV占比",
+    "gmv_share_percent": "成交金额占比",
     "units_sold_share_percent": "销量占比",
     "date": "日期",
     "date_type": "统计周期类型",
@@ -349,8 +349,8 @@ _FIELD_LABELS = {
     "clicks": "点击量",
     "impressions": "曝光量",
     "click_rate": "点击率",
-    "click_share_rate": "点击量前三 ASIN 的总占比",
-    "cvs_share_rate": "转化量前三 ASIN 的总占比",
+    "click_share_rate": "点击量前三商品的总占比",
+    "cvs_share_rate": "转化量前三商品的总占比",
     "conversion_rate": "转化率",
     "products": "商品数",
     "ad_products": "广告商品数",
@@ -363,11 +363,11 @@ _FIELD_LABELS = {
     "title_density": "标题密度",
     "title_density_exact": "首页标题精确包含该词的商品数",
     "cpr_exact": "8天内使该词上首页所需销量（精确匹配）",
-    "spr": "使该词上首页所需销量（SPR）",
+    "spr": "使该词进入搜索首页所需销量",
     "relevancy": "相关度",
     "word_count": "词数",
     "avg_price": "平均价格",
-    "avg_bid": "平均PPC竞价（旧字段）",
+    "avg_bid": "平均点击付费广告竞价（旧字段）",
     "avg_rating": "平均评分",
     "avg_ratings": "平均评分数",
     "min_bid": "最低竞价",
@@ -376,15 +376,15 @@ _FIELD_LABELS = {
     "bid_min": "最低竞价",
     "bid_max": "最高竞价",
     "top3_brands": "点击量前三品牌",
-    "top3_asin_dto_list": "点击量前三 ASIN",
-    "amazon_choice": "是否 Amazon Choice",
+    "top3_asin_dto_list": "点击量前三商品",
+    "amazon_choice": "是否亚马逊推荐商品",
     "supplement": "是否为补充关键词（无当前月搜索量）",
     "trends": "趋势数据",
     "monthly_sales": "月销量",
     "monthly_revenue": "月销售额",
     "total_units": "统计月销量",
     "total_amount": "统计月销售额",
-    "bsr": "BSR",
+    "bsr": "亚马逊类目销量排名",
     "rating": "评分",
     "ratings": "评分数量",
     "reviews": "评论数",
@@ -398,7 +398,7 @@ _FIELD_LABELS = {
     "time": "趋势日期",
     "marketplace": "站点",
     "node_id_path": "类目节点路径",
-    "node_id": "类目节点ID",
+    "node_id": "类目节点编号",
     "node_path": "类目节点路径",
     "node_name": "类目名称",
     "count": "记录数量",
@@ -407,7 +407,7 @@ _FIELD_LABELS = {
     "search_model": "搜索模式",
     "page_size": "每页返回数量",
     "badge_nr": "是否筛选近期上架商品",
-    "google_prop": "Google趋势搜索类型",
+    "google_prop": "谷歌趋势搜索类型",
     "match_type": "关键词匹配方式",
     "max_products": "商品数上限",
     "max_ratings": "评分数量上限",
@@ -479,7 +479,7 @@ _FIELD_LABELS = {
     "metric_grain": "指标粒度",
     "entity_refs": "证据实体",
     "type": "实体类型",
-    "guest_id": "访客ID",
+    "guest_id": "访客编号",
     "guest_visited": "访客访问次数",
     "took": "接口耗时",
     "terminal": "是否到达末页",
@@ -489,15 +489,15 @@ _FIELD_LABELS = {
     "image_url": "图片链接",
     "avatar_url": "头像链接",
     "cover_url": "封面链接",
-    "fastmoss_url": "FastMoss 链接",
-    "fastmoss_detail_url": "FastMoss 详情链接",
-    "tiktok_url": "TikTok 链接",
-    "has_sku_options": "是否有 SKU 选项",
+    "fastmoss_url": "数据平台链接",
+    "fastmoss_detail_url": "数据平台详情链接",
+    "tiktok_url": "抖音海外版链接",
+    "has_sku_options": "是否有商品规格选项",
     "has_paid_promotion": "是否有付费推广",
     "popularity_index": "热度指数",
     "viral_index": "爆发指数",
     "timestamp": "接口响应时间",
-    "request_id": "请求ID",
+    "request_id": "请求编号",
     "message": "接口消息",
     "total": "结果总数",
     "items": "记录列表",
@@ -519,27 +519,29 @@ _FIELD_LABELS = {
     "floor_price": "最低价格",
     "ceiling_price": "最高价格",
     "price_display": "价格展示值",
-    "first_3d_gmv": "上架后前3日销售额（GMV）",
+    "first_3d_gmv": "上架后前3日成交金额",
     "first_3d_units_sold": "上架后前3日销量",
-    "lifetime_gmv": "上架以来累计销售额（GMV）",
-    "period_gmv": "本统计周期销售额（GMV）",
+    "day3_gmv": "上架后前3日成交金额",
+    "day3_units_sold": "上架后前3日销量",
+    "lifetime_gmv": "上架以来累计成交金额",
+    "period_gmv": "本统计周期成交金额",
     "period_units_sold": "本统计周期销量",
     "units_sold_growth_rate_percent": "销量环比增长率",
     "category_level": "类目层级",
     "category_name": "类目名称",
-    "category_gmv_yoy_percent": "类目GMV同比增长率",
+    "category_gmv_yoy_percent": "类目成交金额同比增长率",
     "category_units_sold": "类目销量",
     "category_units_sold_yoy_percent": "类目销量同比增长率",
-    "parent_category_id": "父类目ID",
+    "parent_category_id": "父类目编号",
     "parent_category_name": "父类目名称",
     "ranked_category_level": "榜单类目层级",
-    "channel_gmv_share": "成交渠道GMV占比",
-    "live_gmv_share_percent": "直播成交GMV占比",
-    "live_gmv_share_change_percent": "直播成交GMV占比变化",
-    "video_gmv_share_percent": "视频成交GMV占比",
-    "video_gmv_share_change_percent": "视频成交GMV占比变化",
-    "other_gmv_share_percent": "其他渠道成交GMV占比",
-    "other_gmv_share_change_percent": "其他渠道成交GMV占比变化",
+    "channel_gmv_share": "成交渠道金额占比",
+    "live_gmv_share_percent": "直播成交金额占比",
+    "live_gmv_share_change_percent": "直播成交金额占比变化",
+    "video_gmv_share_percent": "视频成交金额占比",
+    "video_gmv_share_change_percent": "视频成交金额占比变化",
+    "other_gmv_share_percent": "其他渠道成交金额占比",
+    "other_gmv_share_change_percent": "其他渠道成交金额占比变化",
     "top_10_shops_units_sold_share_percent": "销量前10店铺的销量占比",
     "top_50_products_units_sold_share_percent": "销量前50商品的销量占比",
     "l1": "一级类目",
@@ -549,7 +551,7 @@ _FIELD_LABELS = {
     "commission_rate": "佣金比例",
     "commission_rate_percent": "佣金比例",
     "product_rating": "商品评分",
-    "sku_count": "SKU 数量",
+    "sku_count": "商品规格数量",
     "is_ad": "是否广告视频",
     "aweme_count": "关联视频数",
     "favoriting_count": "收藏数",
@@ -563,9 +565,9 @@ _FIELD_LABELS = {
     "day90_units_sold": "近90日销量",
     "day90_gmv": "近90日销售额",
     "yday_sold_count": "昨日销量",
-    "total_gmv": "总销售额（GMV）",
+    "total_gmv": "总成交金额",
     "total_units_sold": "总销量",
-    "avg_daily_gmv": "日均销售额（GMV）",
+    "avg_daily_gmv": "日均成交金额",
     "avg_daily_units_sold": "日均销量",
     "linked_creator_count": "关联达人数",
     "linked_live_count": "关联直播数",
@@ -576,33 +578,33 @@ _FIELD_LABELS = {
     "cumulative_linked_creator_count": "累计关联达人数",
     "cumulative_linked_live_count": "累计关联直播数",
     "cumulative_linked_video_count": "累计关联视频数",
-    "live_gmv": "直播销售额（GMV）",
+    "live_gmv": "直播成交金额",
     "live_units_sold": "直播销量",
-    "video_gmv": "视频销售额（GMV）",
+    "video_gmv": "视频成交金额",
     "video_units_sold": "视频销量",
-    "period_total_gmv": "本周期总销售额（GMV）",
+    "period_total_gmv": "本周期总成交金额",
     "period_total_units_sold": "本周期总销量",
-    "daily_gmv": "当日销售额（GMV）",
+    "daily_gmv": "当日成交金额",
     "daily_units_sold": "当日销量",
-    "cumulative_gmv": "累计销售额（GMV）",
+    "cumulative_gmv": "累计成交金额",
     "cumulative_units_sold": "累计销量",
     "average_order_value": "客单价",
     "ad_performance_summary": "广告表现汇总",
     "daily_ad_performance_trend": "每日广告表现趋势",
-    "ad_gmv": "广告归因销售额（GMV）",
+    "ad_gmv": "广告归因成交金额",
     "ad_gmv_share_percent": "广告归因销售额占比",
     "ad_units_sold": "广告归因销量",
     "ad_video_count": "广告视频数",
     "ad_play_count": "广告视频播放量",
     "estimated_ad_spend": "预估广告花费",
     "avg_daily_estimated_ad_spend": "日均预估广告花费",
-    "avg_daily_ad_gmv": "日均广告归因销售额（GMV）",
+    "avg_daily_ad_gmv": "日均广告归因成交金额",
     "avg_daily_ad_units_sold": "日均广告归因销量",
     "avg_daily_ad_play_count": "日均广告视频播放量",
-    "product_total_gmv": "商品总销售额（GMV）",
-    "roas": "广告投入产出比（ROAS）",
+    "product_total_gmv": "商品总成交金额",
+    "roas": "广告投入产出比",
     "creator_share_percent": "达人贡献占比",
-    "creator_cumulative_gmv": "达人累计销售额（GMV）",
+    "creator_cumulative_gmv": "达人累计成交金额",
     "creator_cumulative_units_sold": "达人累计销量",
     "creator_total_play_count": "达人视频累计播放量",
     "creator_total_like_count": "达人视频累计点赞数",
@@ -634,9 +636,9 @@ _FIELD_LABELS = {
     "top_up_packages": "充值套餐",
     "billing_period": "计费周期",
     "category_path": "类目路径",
-    "category_l1_id": "一级类目ID",
-    "category_l2_id": "二级类目ID",
-    "category_l3_id": "三级类目ID",
+    "category_l1_id": "一级类目编号",
+    "category_l2_id": "二级类目编号",
+    "category_l3_id": "三级类目编号",
     "is_new_listed": "是否近期上架",
     "product_source": "商品来源",
     "off_shelves": "是否下架",
@@ -673,13 +675,13 @@ _FIELD_LABELS = {
     "live": "直播信息",
     "agency": "机构信息",
     "reviews_list": "评论记录",
-    "review_id": "评论ID",
+    "review_id": "评论编号",
     "review_content": "评论内容",
     "review_rating": "评论评分",
     "inventory": "库存",
     "inventory_share_percent": "库存占比",
-    "sku": "SKU信息",
-    "sku_id": "SKU ID",
+    "sku": "商品规格信息",
+    "sku_id": "商品规格编号",
     "units_sold_ratio_percent": "销量占比",
     "status": "状态",
     "reason": "原因",
@@ -691,7 +693,7 @@ _FIELD_LABELS = {
     "denominator_product_count": "分母商品数",
     "denominator_units": "分母销量",
     "numerator_top_n": "分子头部商品数",
-    "input_product_ids": "参与计算的商品ID",
+    "input_product_ids": "参与计算的商品编号",
     "claim_boundary": "结论边界",
     "coverage_complete": "是否完成计划覆盖",
     "fetched_unique": "实际获取的去重记录数",
@@ -705,13 +707,13 @@ _FIELD_LABELS = {
     "q3": "第三四分位数",
     "min": "最小值",
     "max": "最大值",
-    "last_7d_gmv": "近7日销售额（GMV）",
+    "last_7d_gmv": "近7日成交金额",
     "last_7d_units_sold": "近7日销量",
-    "last_28d_gmv": "近28日销售额（GMV）",
+    "last_28d_gmv": "近28日成交金额",
     "last_28d_units_sold": "近28日销量",
-    "last_90d_gmv": "近90日销售额（GMV）",
+    "last_90d_gmv": "近90日成交金额",
     "last_90d_units_sold": "近90日销量",
-    "yesterday_gmv": "昨日销售额（GMV）",
+    "yesterday_gmv": "昨日成交金额",
     "yesterday_units_sold": "昨日销量",
     "result": "查询结果",
     "summary_metrics": "汇总指标",
@@ -730,7 +732,7 @@ _FIELD_LABELS = {
     "stock_count": "库存数量",
     "stock_count_label": "库存状态说明",
     "shop_category_l1": "店铺一级类目",
-    "shop_total_gmv": "店铺累计销售额（GMV）",
+    "shop_total_gmv": "店铺累计成交金额",
     "shop_total_units_sold": "店铺累计销量",
     "active_product_count": "在售商品数",
     "new_product_count": "新品数量",
@@ -739,7 +741,7 @@ _FIELD_LABELS = {
     "selling_live_count": "产生销售的直播数",
     "selling_video_count": "产生销售的视频数",
     "creator_handle": "达人账号",
-    "window_gmv": "观察窗口销售额（GMV）",
+    "window_gmv": "观察窗口成交金额",
     "window_units_sold": "观察窗口销量",
     "traffic_flags": "流量属性",
     "video_meta": "视频元数据",
@@ -747,11 +749,11 @@ _FIELD_LABELS = {
     "age_distribution": "年龄分布",
     "gender_distribution": "性别分布",
     "creator_name": "达人名称",
-    "product_gmv": "商品销售额（GMV）",
+    "product_gmv": "商品成交金额",
     "product_units_sold": "商品销量",
     "product_linked_live_count": "商品关联直播数",
     "product_linked_video_count": "商品关联视频数",
-    "product_video_gmv": "商品视频归因销售额（GMV）",
+    "product_video_gmv": "商品视频归因成交金额",
     "product_video_units_sold": "商品视频归因销量",
     "categories": "类目记录",
     "active_product_count_average": "平均在售商品数",
@@ -766,9 +768,9 @@ _FIELD_LABELS = {
     "selling_live_count_total": "产生销售的直播数合计",
     "selling_video_count_average": "平均产生销售的视频数",
     "selling_video_count_total": "产生销售的视频数合计",
-    "category_id_level1": "一级类目ID",
-    "category_id_level2": "二级类目ID",
-    "category_id_level3": "三级类目ID",
+    "category_id_level1": "一级类目编号",
+    "category_id_level2": "二级类目编号",
+    "category_id_level3": "三级类目编号",
     "cn_name": "中文类目名称",
     "cn_full_name": "中文完整类目路径",
     "max_total_results": "最多返回结果数",
@@ -796,7 +798,7 @@ _REPORT_VALUE_LABELS = {
 _AUDIT_ONLY_FIELD_KEYS = {
     "avatar", "avatar_thumb", "avatar_url", "cover", "cover_url", "detail_url",
     "fastmoss_detail_url", "fastmoss_url", "image", "image_url", "images",
-    "link", "request_id", "timestamp", "tiktok_url", "tool_id", "url_list",
+    "keyword_jp", "link", "request_id", "timestamp", "tiktok_url", "tool_id", "url_list",
 }
 _INTERNAL_REPORT_KEYS = {
     "source_ref", "source_tool", "source_call_index", "tool_name", "fact_id",
@@ -860,37 +862,37 @@ _ENUM_VALUE_LABELS = {
         "images": "图片搜索",
         "news": "新闻搜索",
         "shopping": "购物搜索",
-        "youtube": "YouTube搜索",
+        "youtube": "视频平台搜索",
     },
     "fulfillment": {
-        "AMZ": "Amazon（AMZ）",
-        "FBA": "亚马逊物流（FBA）",
-        "FBM": "卖家自配送（FBM）",
+        "AMZ": "亚马逊配送",
+        "FBA": "亚马逊物流配送",
+        "FBM": "卖家自行配送",
     },
     "supplement": {"N": "否", "Y": "是"},
     "date_type": {"day": "日", "week": "周", "month": "月"},
     "order": {"asc": "升序", "desc": "降序"},
     "region": {
-        "US": "美国（US）", "GB": "英国（GB）", "UK": "英国（UK）",
-        "CA": "加拿大（CA）", "MX": "墨西哥（MX）", "BR": "巴西（BR）",
-        "JP": "日本（JP）", "DE": "德国（DE）", "FR": "法国（FR）",
-        "IT": "意大利（IT）", "ES": "西班牙（ES）", "AU": "澳大利亚（AU）",
+        "US": "美国", "GB": "英国", "UK": "英国",
+        "CA": "加拿大", "MX": "墨西哥", "BR": "巴西",
+        "JP": "日本", "DE": "德国", "FR": "法国",
+        "IT": "意大利", "ES": "西班牙", "AU": "澳大利亚",
     },
     "marketplace": {
-        "US": "美国站（US）", "GB": "英国站（GB）", "UK": "英国站（UK）",
-        "CA": "加拿大站（CA）", "MX": "墨西哥站（MX）", "BR": "巴西站（BR）",
-        "JP": "日本站（JP）", "DE": "德国站（DE）", "FR": "法国站（FR）",
-        "IT": "意大利站（IT）", "ES": "西班牙站（ES）", "AU": "澳大利亚站（AU）",
+        "US": "美国站", "GB": "英国站", "UK": "英国站",
+        "CA": "加拿大站", "MX": "墨西哥站", "BR": "巴西站",
+        "JP": "日本站", "DE": "德国站", "FR": "法国站",
+        "IT": "意大利站", "ES": "西班牙站", "AU": "澳大利亚站",
     },
     "currency": {
-        "USD": "美元（USD）", "GBP": "英镑（GBP）", "EUR": "欧元（EUR）",
-        "CAD": "加拿大元（CAD）", "MXN": "墨西哥比索（MXN）", "BRL": "巴西雷亚尔（BRL）",
-        "JPY": "日元（JPY）", "AUD": "澳大利亚元（AUD）",
+        "USD": "美元", "GBP": "英镑", "EUR": "欧元",
+        "CAD": "加拿大元", "MXN": "墨西哥比索", "BRL": "巴西雷亚尔",
+        "JPY": "日元", "AUD": "澳大利亚元",
     },
     "currency_code": {
-        "USD": "美元（USD）", "GBP": "英镑（GBP）", "EUR": "欧元（EUR）",
-        "CAD": "加拿大元（CAD）", "MXN": "墨西哥比索（MXN）", "BRL": "巴西雷亚尔（BRL）",
-        "JPY": "日元（JPY）", "AUD": "澳大利亚元（AUD）",
+        "USD": "美元", "GBP": "英镑", "EUR": "欧元",
+        "CAD": "加拿大元", "MXN": "墨西哥比索", "BRL": "巴西雷亚尔",
+        "JPY": "日元", "AUD": "澳大利亚元",
     },
     "lang": {"ZH_CN": "简体中文", "EN": "英文"},
     "parser_status": {"supported": "已按已知接口结构解析", "unsupported_parser": "暂无专用解析规则"},
@@ -909,15 +911,15 @@ _ENUM_VALUE_LABELS = {
         "store_analysis": "店铺分析",
     },
     "entity_source": {
-        "llm": "LLM 语义判断",
+        "llm": "语言模型语义判断",
         "user": "用户明确输入",
         "rules": "结构化规则",
         "rules_fallback": "分类失败后的保守回退",
     },
     "entity_type": {
         "none": "无单一对象", "category": "类目", "keyword": "关键词",
-        "product_id": "FastMoss 商品ID", "asin": "ASIN", "url": "链接",
-        "shop_id": "店铺ID", "creator_id": "达人ID", "video_id": "视频ID",
+        "product_id": "短视频电商商品编号", "asin": "亚马逊商品编号", "url": "链接",
+        "shop_id": "店铺编号", "creator_id": "达人编号", "video_id": "视频编号",
     },
     "workflow": {
         "product": "商品研究", "category": "类目研究", "shop": "店铺研究",
@@ -928,11 +930,12 @@ _ENUM_VALUE_LABELS = {
         "today": "今日",
         "this_week": "本周",
         "this_month": "本月",
+        "recent": "近期",
         "recent_1_2_months": "最近1至2个月",
     },
     "type": {
         "category": "类目", "product": "商品", "shop": "店铺", "creator": "达人",
-        "video": "视频", "live": "直播", "asin": "ASIN", "keyword": "关键词", "none": "无单一对象",
+        "video": "视频", "live": "直播", "asin": "亚马逊商品编号", "keyword": "关键词", "none": "无单一对象",
     },
     "metric_grain": {
         "market_category_ranking": "市场类目榜单",
@@ -943,11 +946,11 @@ _ENUM_VALUE_LABELS = {
 
 _TOOL_EVIDENCE_BOUNDARIES = {
     "market_category_ranking": (
-        "类目榜中的视频、直播和其他渠道 GMV 占比只描述本周期的成交结构，不能单独证明某渠道驱动了增长、某类商家具有优势或者存在特定流量因果。",
+        "类目榜中的视频、直播和其他渠道成交金额占比只描述本周期的成交结构，不能单独证明某渠道驱动了增长、某类商家具有优势或者存在特定流量因果。",
         "若报告需解释类目增长原因，应另行取得商品、视频、直播或达人粒度证据；未取得时只能描述占比现象。",
     ),
     "product_rank_new_listed": (
-        "上架后前3日销售额（GMV）和前3日销量是三日累计口径，不是单日或一天内的指标。",
+        "上架后前3日成交金额和前3日销量是三日累计口径，不是单日或一天内的指标。",
         "该榜单未返回具体视频、直播或达人证据；不得把新品爆发归因于某个视频、直播间或达人。需解释爆发原因时应先调用对应工具，否则只可标注为待验证假设。",
     ),
     "product_rank_top_selling": (
@@ -959,11 +962,11 @@ _TOOL_EVIDENCE_BOUNDARIES = {
         "如果某条记录没有返回关键词名称，该行只能视为匿名候选记录，不得根据指标、排序位置或常识为其补写长尾词名称，也不得把该行指标归到查询主词。",
     ),
     "aba_research_monthly": (
-        "头部3个品牌和头部3个 ASIN 仅代表该关键词返回的头部样本，不能单独证明整个类目的品牌集中度或卖家国别结构。",
-        "关联类目表示关键词可能出现的 Amazon 类目，不等同于该类目的市场规模或竞争强度。",
+        "头部3个品牌和头部3个亚马逊商品仅代表该关键词返回的头部样本，不能单独证明整个类目的品牌集中度或卖家国别结构。",
+        "关联类目表示关键词可能出现的亚马逊类目，不等同于该类目的市场规模或竞争强度。",
     ),
     "keyword_miner": (
-        "商品数是工具口径下的相关商品数量，不是独立卖家数量。供需比是 SellerSprite 返回的计算指标，不能改写成搜索量除以卖家数。",
+        "商品数是工具口径下的相关商品数量，不是独立卖家数量。供需比是数据平台返回的计算指标，不能改写成搜索量除以卖家数。",
         "点击集中度描述点击向头部结果集中的程度，不等同于品牌集中度；标题密度也不等同于卖家数量。",
     ),
     "product_overview": (
@@ -972,7 +975,7 @@ _TOOL_EVIDENCE_BOUNDARIES = {
         "商品卡占比不能证明流量由达人视频、直播或推荐系统产生。",
     ),
     "product_sales_trend": (
-        "每日销量或 GMV 的同时变化只能描述时间趋势，不能单独证明由达人视频、直播、广告或其他事件导致。",
+        "每日销量或成交金额的同时变化只能描述时间趋势，不能单独证明由达人视频、直播、广告或其他事件导致。",
     ),
     "product_creator_analysis": (
         "关联达人数量和达人贡献描述已返回的关联结构，不能单独证明全部流量来源或达人内容与销量之间的因果关系。",
@@ -1005,7 +1008,7 @@ def _scalar_text(value: Any) -> str:
     if value is False:
         return "否"
     if isinstance(value, str):
-        return value if value else "空字符串"
+        return value if value else "未填写"
     return str(value)
 
 
@@ -1093,24 +1096,74 @@ def _percent_text(value: int | float) -> str:
     return f"{float(value):.4f}".rstrip("0").rstrip(".")
 
 
+def _natural_calendar_text(field_name: str, value: str) -> str | None:
+    """Render provider date codes as ordinary Chinese without inventing boundaries."""
+    normalized = _normalized_field_key(field_name)
+    if not (
+        normalized in _TIME_KEYS
+        or normalized in _TIMESTAMP_FIELDS
+        or normalized in {
+            "available_date", "billing_period", "create_date", "launch_date",
+            "listing_date", "listing_end_date", "listing_start_date", "month",
+            "period", "period_label", "report_date", "snapshot_date",
+        }
+        or normalized.endswith(("_date", "_month", "_period", "_time"))
+    ):
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    week = re.fullmatch(r"(\d{4})-?W(\d{1,2})", text, re.IGNORECASE)
+    if week:
+        return f"{week.group(1)}年第{int(week.group(2))}周"
+    quarter = re.fullmatch(r"(\d{4})-?Q([1-4])", text, re.IGNORECASE)
+    if quarter:
+        return f"{quarter.group(1)}年第{int(quarter.group(2))}季度"
+    day = re.fullmatch(r"(\d{4})[-./](\d{1,2})[-./](\d{1,2})", text)
+    if day:
+        return f"{day.group(1)}年{int(day.group(2))}月{int(day.group(3))}日"
+    month = re.fullmatch(r"(\d{4})[-./](\d{1,2})", text)
+    if month:
+        return f"{month.group(1)}年{int(month.group(2))}月"
+    compact_month = re.fullmatch(r"(\d{4})(\d{2})", text)
+    if compact_month and 1 <= int(compact_month.group(2)) <= 12:
+        return f"{compact_month.group(1)}年{int(compact_month.group(2))}月"
+    day_count = re.fullmatch(r"(\d+)[dD]", text)
+    if day_count:
+        return f"连续{int(day_count.group(1))}天"
+    return None
+
+
 def _semantic_value(field_name: str, value: Any) -> str:
     normalized = _normalized_field_key(str(field_name).rsplit(".", 1)[-1])
     if isinstance(value, Mapping):
         return "；".join(
             f"{_field_label(str(key))}：{_semantic_value(str(key), item)}"
             for key, item in value.items()
-        ) or "空对象"
+        ) or "没有内容"
     if isinstance(value, list):
-        return "；".join(_semantic_value(normalized, item) for item in value) or "空列表"
+        return "；".join(_semantic_value(normalized, item) for item in value) or "没有记录"
     if isinstance(value, str) and normalized == "return_fields":
         fields = [item.strip() for item in value.split(",") if item.strip()]
         return "、".join(_field_label(item) for item in fields) or "未指定（返回接口默认字段）"
     if isinstance(value, str) and normalized == "field":
         return _field_label(value)
-    if isinstance(value, str) and normalized in {"date_value", "period"}:
-        week = re.fullmatch(r"(\d{4})-(?:W)?(\d{1,2})", value, re.IGNORECASE)
-        if week:
-            return f"{week.group(1)}年第{int(week.group(2))}周"
+    if isinstance(value, str):
+        timestamp_text = value.strip()
+        if normalized in _TIMESTAMP_FIELDS and timestamp_text.isdigit():
+            timestamp_value = int(timestamp_text)
+            if timestamp_value >= 1_000_000_000:
+                seconds = timestamp_value / 1000 if timestamp_value >= 10_000_000_000 else timestamp_value
+                moment = datetime.fromtimestamp(seconds, tz=timezone(timedelta(hours=8)))
+                if normalized in _DATE_ONLY_TIMESTAMP_FIELDS:
+                    return f"{moment.year}年{moment.month}月{moment.day}日"
+                return (
+                    f"{moment.year}年{moment.month}月{moment.day}日"
+                    f"{moment.hour:02d}时{moment.minute:02d}分{moment.second:02d}秒（北京时间）"
+                )
+        natural_date = _natural_calendar_text(normalized, value)
+        if natural_date is not None:
+            return natural_date
     if value is None or isinstance(value, (str, bool)):
         text = _scalar_text(value)
         return _ENUM_VALUE_LABELS.get(normalized, {}).get(text, text)
@@ -1119,8 +1172,11 @@ def _semantic_value(field_name: str, value: Any) -> str:
             seconds = float(value) / 1000 if value >= 10_000_000_000 else float(value)
             moment = datetime.fromtimestamp(seconds, tz=timezone(timedelta(hours=8)))
             if normalized in _DATE_ONLY_TIMESTAMP_FIELDS:
-                return moment.date().isoformat()
-            return moment.strftime("%Y-%m-%d %H:%M:%S（UTC+8）")
+                return f"{moment.year}年{moment.month}月{moment.day}日"
+            return (
+                f"{moment.year}年{moment.month}月{moment.day}日"
+                f"{moment.hour:02d}时{moment.minute:02d}分{moment.second:02d}秒（北京时间）"
+            )
         enum_value = _ENUM_VALUE_LABELS.get(normalized, {}).get(str(value))
         if enum_value is not None:
             return enum_value
@@ -1220,6 +1276,16 @@ def _clean_report_text(value: Any) -> str:
         "source_ref": "证据来源", "arguments": "调用参数", "marketplace": "站点",
         "metric_grain": "指标口径", "entity_type": "研究对象类型",
         "returned_product_outside_requested_l3": "返回记录超出请求的三级类目范围",
+    }.items():
+        text = re.sub(rf"\b{re.escape(raw)}\b", label, text)
+    for raw, label in {
+        "Amazon": "亚马逊",
+        "ASIN": "亚马逊商品编号",
+        "FastMoss": "数据平台",
+        "SellerSprite": "数据平台",
+        "L1": "一级类目",
+        "L2": "二级类目",
+        "L3": "三级类目",
     }.items():
         text = re.sub(rf"\b{re.escape(raw)}\b", label, text)
     return _REPORT_VALUE_LABELS.get(text, text)
@@ -1325,7 +1391,7 @@ class SemanticToolRenderer:
             self.nodes.append(EvidenceNode("ErrorResult", "调用失败", "$.business_data"))
             lines.extend([
                 "", "### 调用结果", "",
-                f"本次调用失败，失败范围仅限上述对象和参数。错误信息：{error or '工具返回错误状态。'}",
+                "本次查询失败，失败范围仅限上述对象和参数；本次没有取得可用于报告的业务数据。",
             ])
             self._exclude_value(data, "$.business_data", "调用失败，业务返回不参与报告推理")
         elif data_state == "empty":
@@ -1401,13 +1467,23 @@ class SemanticToolRenderer:
         if "launch_date" not in value or "launch_time" not in value:
             return set()
         launch_date = str(value.get("launch_date") or "").strip()[:10]
+        launch_date_display = _semantic_value("launch_date", launch_date)
         launch_time = value.get("launch_time")
-        timestamp_date = _semantic_value("launch_time", launch_time) if launch_time not in (None, "") else ""
+        timestamp_date = ""
+        timestamp_date_key = ""
+        timestamp_text = str(launch_time or "").strip()
+        if timestamp_text.isdigit() and int(timestamp_text) >= 1_000_000_000:
+            timestamp_value = int(timestamp_text)
+            seconds = timestamp_value / 1000 if timestamp_value >= 10_000_000_000 else timestamp_value
+            moment = datetime.fromtimestamp(seconds, tz=timezone(timedelta(hours=8)))
+            timestamp_date_key = moment.date().isoformat()
+            timestamp_date = f"{moment.year}年{moment.month}月{moment.day}日"
         launch_time_path = _path(path, "launch_time")
         self._exclude_value(launch_time, launch_time_path, "与自然化后的上架日期重复，报告只展示一个日期")
-        if launch_date and timestamp_date and launch_date != timestamp_date:
+        if launch_date and timestamp_date_key and launch_date != timestamp_date_key:
             self.generated_conflicts.append(
-                f"同一记录的上架日期为 {launch_date}，Unix上架时间换算日期为 {timestamp_date}，两者不一致；报告不得自行选择其一修正。"
+                f"同一记录的上架日期为 {launch_date_display}，时间数值换算日期为"
+                f" {timestamp_date}，两者不一致；报告不得自行选择其一修正。"
             )
         return {"launch_time"}
 
@@ -1487,8 +1563,12 @@ class SemanticToolRenderer:
                     continue
                 end = start + timedelta(days=6)
                 rows.extend([
-                    ("程序补充：ISO周日期范围", f"{start.isoformat()} 至 {end.isoformat()}"),
-                    ("程序补充：周范围口径", "按 ISO 8601 的周一至周日换算；接口未提供平台自定义周边界。"),
+                    (
+                        "程序补充：周日期范围",
+                        f"{start.year}年{start.month}月{start.day}日至"
+                        f"{end.year}年{end.month}月{end.day}日",
+                    ),
+                    ("程序补充：周范围口径", "按常用的周一至周日换算；接口未提供平台自定义周边界。"),
                 ])
             elif key[0] == "month":
                 match = re.fullmatch(r"(\d{4})[-.]?(\d{2})", date_value)
@@ -1496,7 +1576,12 @@ class SemanticToolRenderer:
                     continue
                 start_dt = datetime(int(match.group(1)), int(match.group(2)), 1)
                 next_month = datetime(start_dt.year + (1 if start_dt.month == 12 else 0), 1 if start_dt.month == 12 else start_dt.month + 1, 1)
-                rows.append(("程序补充：自然月日期范围", f"{start_dt.date().isoformat()} 至 {(next_month - timedelta(days=1)).date().isoformat()}"))
+                end_dt = next_month - timedelta(days=1)
+                rows.append((
+                    "程序补充：自然月日期范围",
+                    f"{start_dt.year}年{start_dt.month}月{start_dt.day}日至"
+                    f"{end_dt.year}年{end_dt.month}月{end_dt.day}日",
+                ))
         return rows
 
     def _tool_boundary_lines(self) -> list[str]:
@@ -1546,11 +1631,11 @@ class SemanticToolRenderer:
             ]
         if isinstance(value, list):
             if not value:
-                return [f"{'#' * min(level, 6)} {_heading_text(title)}", "", "该字段返回空列表。"]
+                return [f"{'#' * min(level, 6)} {_heading_text(title)}", "", "该项没有返回记录。"]
             return self._render_list(value, path, level, title)
         if isinstance(value, dict):
             if not value:
-                return [f"{'#' * min(level, 6)} {_heading_text(title)}", "", "该字段返回空对象。"]
+                return [f"{'#' * min(level, 6)} {_heading_text(title)}", "", "该项没有返回内容。"]
             return self._render_dict(value, path, level, title)
         raise TypeError(f"non-JSON business value at {path}: {type(value).__name__}")
 
@@ -1775,7 +1860,7 @@ def render_fastmoss_tool_evidence(entry: Mapping[str, Any]) -> RenderedToolEvide
     if tool_name not in FASTMOSS_RENDER_SPECS:
         data = entry.get("business_data")
         paths = business_leaf_paths(data)
-        reason = "运行时工具没有登记 FastMoss Semantic 契约"
+        reason = "运行时工具没有登记语义字段契约"
         return RenderedToolEvidence(
             markdown=(
                 "## 未登记的业务证据\n\n"
@@ -1801,10 +1886,10 @@ def render_fastmoss_tool_evidence(entry: Mapping[str, Any]) -> RenderedToolEvide
         )
         markdown = (
             f"## {spec.evidence_title}\n\n"
-            "该段业务返回未通过已登记的 Semantic 字段契约，因此仅保留在审计证据中，"
+            "该段业务返回未通过已登记的语义字段契约，因此仅保留在审计证据中，"
             "未交给报告模型推理。"
         )
-        reason = f"Semantic 契约渲染失败：{type(exc).__name__}"
+        reason = f"语义字段契约渲染失败：{type(exc).__name__}"
         return RenderedToolEvidence(
             markdown=markdown,
             tool_name=tool_name,
@@ -1824,7 +1909,7 @@ def _context_markdown(dossier: Mapping[str, Any]) -> list[str]:
     targets = _report_semantic_metadata(dossier.get("analysis_targets") or [])
     rows = [
         ("工作流", _semantic_value("workflow", dossier.get("workflow") or "product")),
-        ("报告日期", dossier.get("report_date") or ""),
+        ("报告日期", _semantic_value("report_date", dossier.get("report_date") or "")),
         ("目标类目路径", category_text or "未指定"),
         ("分析目标", _semantic_value("analysis_targets", targets)),
     ]
@@ -1834,7 +1919,7 @@ def _context_markdown(dossier: Mapping[str, Any]) -> list[str]:
 def render_fastmoss_evidence_document(dossier: Mapping[str, Any]) -> RenderedEvidenceDocument:
     """Render a complete dossier while isolating per-call renderer failures."""
 
-    lines = ["# FastMoss 调研证据", "", *_context_markdown(dossier)]
+    lines = ["# 短视频电商调研证据", "", *_context_markdown(dossier)]
     results: list[RenderedToolEvidence] = []
     for entry in dossier.get("tool_evidence") or []:
         if not isinstance(entry, dict):

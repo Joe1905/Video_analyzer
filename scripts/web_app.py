@@ -8872,9 +8872,9 @@ def semantic_report_input_stats(
     semantic_input = (
         chat_routing_text(user_text)
         + "\n\n当前为报告生成阶段，没有可调用工具；请直接根据以下 Semantic 结构证据完成最终报告。"
-        + "\n\n--- Semantic 证据开始 ---\n"
+        + "\n\n--- 语义证据开始 ---\n"
         + evidence_markdown
-        + "--- Semantic 证据结束 ---"
+        + "--- 语义证据结束 ---"
     )
     estimated_tokens = estimate_chat_context_tokens(
         system_messages + [{"role": "user", "content": semantic_input}], []
@@ -8913,7 +8913,7 @@ def apply_semantic_report_watermark(
         messages.append({
             "role": "system",
             "content": (
-                "最终单次报告的原始 Semantic 证据已达到容量提醒水位。"
+                "最终单次报告的原始语义证据已达到容量提醒水位。"
                 "只补充尚未覆盖且会实质改变结论的关键证据；停止宽泛扩展，证据足够时立即收口。"
             ),
             "_context_scope": "system",
@@ -8923,7 +8923,7 @@ def apply_semantic_report_watermark(
         messages.append({
             "role": "system",
             "content": (
-                "最终单次报告的原始 Semantic 证据已达到工具停止水位。"
+                "最终单次报告的原始语义证据已达到工具停止水位。"
                 "不得继续调用工具，直接进入独立 V4 Pro 报告阶段。"
             ),
             "_context_scope": "system",
@@ -8940,7 +8940,7 @@ def apply_semantic_report_watermark(
 def semantic_report_capacity_error(provider: str, estimated_tokens: int) -> str:
     label = "SellerSprite" if normalize_chat_provider(provider) == "amazon" else "FastMoss"
     return (
-        f"报告容量错误：{label} 原始 Semantic 证据预计为 {estimated_tokens:,} tokens，"
+        f"报告容量错误：{label} 原始语义证据预计为 {estimated_tokens:,} 个词元，"
         "已超过单次 V4 Pro 报告的 950,000 tokens 安全上限。"
         "系统已完整保留本轮原始工具结果，但不会静默截断、分块或改用编排检查点生成一份证据不完整的报告。"
     )
@@ -9010,9 +9010,9 @@ def synthesize_sellersprite_report_from_packet(
     semantic_input = (
         chat_routing_text(user_text)
         + "\n\n当前为报告生成阶段，没有可调用工具；请直接根据以下 Semantic 结构证据完成最终报告。"
-        + "\n\n--- Semantic 证据开始 ---\n"
+        + "\n\n--- 语义证据开始 ---\n"
         + evidence_markdown
-        + "--- Semantic 证据结束 ---"
+        + "--- 语义证据结束 ---"
     )
     messages = [
         {"role": "system", "content": chat_system_instruction("amazon", current_date_shanghai)},
@@ -10913,9 +10913,9 @@ def synthesize_fastmoss_report_from_packet(
     semantic_input = (
         chat_routing_text(user_text)
         + "\n\n当前为报告生成阶段，没有可调用工具；请直接根据以下 Semantic 结构证据完成最终报告。"
-        + "\n\n--- Semantic 证据开始 ---\n"
+        + "\n\n--- 语义证据开始 ---\n"
         + evidence_markdown
-        + "--- Semantic 证据结束 ---"
+        + "--- 语义证据结束 ---"
     )
     messages = [
         {"role": "system", "content": chat_system_instruction("fastmoss", current_date_shanghai)},

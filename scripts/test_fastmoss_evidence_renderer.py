@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -12,6 +13,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from fastmoss_evidence_renderer import (  # noqa: E402
     FASTMOSS_CURRENT_TOOL_NAMES,
     FASTMOSS_RENDER_SPECS,
+    FASTMOSS_TOOL_TITLES,
     PROFILE_DISTRIBUTION,
     PROFILE_ENTITY,
     PROFILE_NARRATIVE,
@@ -24,6 +26,7 @@ from fastmoss_evidence_renderer import (  # noqa: E402
     render_fastmoss_evidence_document,
     render_fastmoss_tool_evidence,
 )
+from fastmoss_evidence_renderer import _ENUM_VALUE_LABELS, _FIELD_LABELS  # noqa: E402
 
 
 EXPECTED_FASTMOSS_TOOLS = frozenset({
@@ -122,7 +125,15 @@ def _entry(tool_name: str, data: dict, state: str = "data") -> dict:
     return {
         "source_ref": "call:1",
         "tool_name": f"fastmoss__{tool_name}",
-        "arguments": {"filter": {"region": "US", "time_range_days": 28}},
+        "arguments": {
+            "filter": {
+                "region": "US",
+                "date_type": "month",
+                "date_value": "2026-06",
+                "time_range_days": 28,
+            },
+            "lang": "ZH_CN",
+        },
         "evidence_fence": {
             "data_state": state,
             "region": "US",
@@ -188,7 +199,7 @@ def test_all_tools_render_empty_and_error_as_scoped_narrative() -> None:
         error_entry["error"] = "upstream timeout"
         failed = render_fastmoss_tool_evidence(error_entry)
         assert "失败范围仅限上述对象和参数" in failed.markdown, tool_name
-        assert "upstream timeout" in failed.markdown, tool_name
+        assert "upstream timeout" not in failed.markdown, tool_name
         assert "ErrorResult" in failed.node_types, tool_name
 
 
@@ -227,7 +238,7 @@ def test_official_fastmoss_video_fields_render_as_semantic_values() -> None:
     assert not result.fallback
     assert not result.unmapped_paths
     assert "否（非广告）" in result.markdown
-    assert "2025-12-06 20:30:18（UTC+8）" in result.markdown
+    assert "2025年12月6日20时30分18秒（北京时间）" in result.markdown
     assert "1765024218000" not in result.markdown
     assert "视频时长（秒）" in result.markdown
     assert "JSON路径" not in result.markdown
@@ -254,7 +265,7 @@ def test_week_request_keeps_provider_week_without_invented_calendar_boundary() -
     assert "成交结构" in result.markdown
     assert "未取得时只能描述占比现象" in result.markdown
     assert "排序字段：类目销量；排序规则：降序" in result.markdown
-    assert "类目GMV同比增长率" in result.markdown
+    assert "类目成交金额同比增长率" in result.markdown
     assert "category GMV yoy percent" not in result.markdown
     assert "date type" not in result.markdown
 
@@ -293,7 +304,7 @@ def test_new_product_sample_naturalizes_dates_units_and_audit_fields() -> None:
         "total": 1,
     }))
     assert not result.fallback
-    assert "2026-06-22" in result.markdown
+    assert "2026年6月22日" in result.markdown
     assert "1782105878" not in result.markdown
     assert "12%" in result.markdown and "1200%" not in result.markdown
     assert "上架后前3日销量" in result.markdown
@@ -333,7 +344,7 @@ def test_document_keeps_call_order_boundaries_and_stats() -> None:
         "hard_fact_boundaries": {"rules": ["跨实体或跨周期数据不得直接相除"]},
     }
     rendered = render_fastmoss_evidence_document(dossier)
-    assert rendered.markdown.startswith("# FastMoss 调研证据")
+    assert rendered.markdown.startswith("# 短视频电商调研证据")
     assert rendered.markdown.index("商品搜索样本") < rendered.markdown.index("商品销售趋势")
     assert "fastmoss__" not in rendered.markdown
     assert "call:1" not in rendered.markdown
@@ -356,6 +367,40 @@ def test_document_keeps_call_order_boundaries_and_stats() -> None:
     )
 
 
+def test_registered_semantic_labels_and_enums_use_plain_chinese() -> None:
+    technical_letters = re.compile(r"[A-Za-z]")
+    for key, label in _FIELD_LABELS.items():
+        assert not technical_letters.search(label), (key, label)
+    for field_name, values in _ENUM_VALUE_LABELS.items():
+        for raw_value, label in values.items():
+            assert not technical_letters.search(label), (field_name, raw_value, label)
+    for tool_name, title in FASTMOSS_TOOL_TITLES.items():
+        assert not technical_letters.search(title), (tool_name, title)
+
+    sample = render_fastmoss_tool_evidence(_entry("product_rank_new_listed", {
+        "items": [{
+            "product_id": "1732452731783385673",
+            "launch_date": "2026-06-22",
+            "launch_time": "1782105878000",
+            "currency": "USD",
+            "fulfillment": "FBA",
+            "gmv": 100,
+            "sku_count": 2,
+        }],
+    }))
+    assert "统计日期 | 2026年6月" in sample.markdown
+    assert "2026年6月22日" in sample.markdown
+    assert "美元" in sample.markdown
+    assert "亚马逊物流配送" in sample.markdown
+    assert "成交金额" in sample.markdown
+    assert "商品规格数量" in sample.markdown
+    for token in (
+        "2026-06", "2026.06", "month", "USD", "FBA", "GMV", "SKU",
+        "Semantic", "JSON", "null", "true", "false",
+    ):
+        assert token not in sample.markdown, token
+
+
 if __name__ == "__main__":
     test_catalog_covers_all_current_fastmoss_tools()
     test_all_tools_render_success_without_silent_field_loss()
@@ -367,4 +412,5 @@ if __name__ == "__main__":
     test_new_product_sample_naturalizes_dates_units_and_audit_fields()
     test_credit_usage_is_registered_but_audit_only()
     test_document_keeps_call_order_boundaries_and_stats()
+    test_registered_semantic_labels_and_enums_use_plain_chinese()
     print("FastMoss evidence renderer tests passed")

@@ -102,18 +102,18 @@ SELLERSPRITE_TOOL_CAPABILITIES = {
     name: semantic.capability for name, semantic in SELLERSPRITE_TOOL_SEMANTICS.items()
 }
 SELLERSPRITE_TOOL_TITLES: dict[str, str] = {
-    "aba_research_weekly": "ABA周度关键词榜",
-    "aba_research_monthly": "ABA月度关键词榜",
+    "aba_research_weekly": "亚马逊品牌分析周度关键词榜",
+    "aba_research_monthly": "亚马逊品牌分析月度关键词榜",
     "keyword_research": "关键词研究结果",
     "keyword_miner": "关键词挖掘结果",
     "market_research": "市场研究结果",
     "product_node": "商品类目节点",
     "product_research": "商品研究样本",
-    "competitor_lookup": "ASIN竞品样本",
+    "competitor_lookup": "亚马逊商品竞品样本",
     "keyword_research_trends": "关键词趋势",
-    "aba_research_trend": "ABA关键词趋势",
-    "google_trend": "Google搜索趋势",
-    "market_ebc_distribution": "市场EBC分布",
+    "aba_research_trend": "亚马逊品牌分析关键词趋势",
+    "google_trend": "谷歌搜索趋势",
+    "market_ebc_distribution": "市场图文详情分布",
     "market_price_distribution": "市场价格分布",
     "market_ratings_count_distribution": "市场评分数量分布",
     "market_listing_date_distribution": "市场上架日期分布",
@@ -126,21 +126,21 @@ SELLERSPRITE_TOOL_TITLES: dict[str, str] = {
     "market_seller_country_distribution": "市场卖家国家分布",
     "market_seller_type_concentration": "市场卖家类型集中度",
     "market_seller_concentration": "市场卖家集中度",
-    "asin_detail": "ASIN商品详情",
-    "asin_detail_with_coupon_trend": "ASIN详情与优惠趋势",
-    "asin_sales_trend": "ASIN销量趋势",
-    "asin_prediction": "ASIN销量预测",
-    "asin_coupon_trend": "ASIN优惠趋势",
+    "asin_detail": "亚马逊商品详情",
+    "asin_detail_with_coupon_trend": "亚马逊商品详情与优惠趋势",
+    "asin_sales_trend": "亚马逊商品销量趋势",
+    "asin_prediction": "亚马逊商品销量预测",
+    "asin_coupon_trend": "亚马逊商品优惠趋势",
     "keepa_info": "商品历史趋势",
-    "bsr_prediction": "BSR销量预测",
+    "bsr_prediction": "亚马逊类目销量排名预测",
     "review": "商品评论样本",
-    "traffic_keyword_stat": "ASIN关键词流量统计",
-    "traffic_listing_stat": "ASIN关联商品流量统计",
+    "traffic_keyword_stat": "亚马逊商品关键词流量统计",
+    "traffic_listing_stat": "亚马逊商品关联流量统计",
     "traffic_extend": "流量关键词扩展",
     "keyword_order": "关键词自然排名",
-    "traffic_source": "ASIN流量来源",
-    "traffic_keyword": "ASIN流量关键词",
-    "traffic_listing": "ASIN关联流量商品",
+    "traffic_source": "亚马逊商品流量来源",
+    "traffic_keyword": "亚马逊商品流量关键词",
+    "traffic_listing": "亚马逊商品关联流量商品",
     "trademark_country_list": "商标国家参考",
     "trademark_list": "商标检索结果",
     "trademark_stats": "商标统计分布",
@@ -182,7 +182,15 @@ def _report_context_value(value: Any) -> Any:
 
     text = _INTERNAL_CALL_RE.sub("本次证据", value)
     text = _INTERNAL_TOOL_RE.sub(replace_tool, text)
-    return text.replace("source_ref", "对应证据段").replace("arguments", "查询范围")
+    text = text.replace("source_ref", "对应证据段").replace("arguments", "查询范围")
+    for raw, label in {
+        "Amazon": "亚马逊",
+        "ASIN": "亚马逊商品编号",
+        "FastMoss": "短视频电商数据平台",
+        "SellerSprite": "亚马逊数据平台",
+    }.items():
+        text = re.sub(rf"\b{re.escape(raw)}\b", label, text)
+    return text
 
 
 def sellersprite_business_payload(value: Any) -> Any:
@@ -243,7 +251,7 @@ def render_sellersprite_tool_evidence(entry: Mapping[str, Any]) -> RenderedToolE
     if tool_name not in SELLERSPRITE_RENDER_SPECS:
         data = entry.get("business_data")
         paths = business_leaf_paths(data)
-        reason = "运行时工具没有登记 SellerSprite Semantic 契约"
+        reason = "运行时工具没有登记语义字段契约"
         return RenderedToolEvidence(
             markdown=(
                 "## 未登记的业务证据\n\n"
@@ -269,11 +277,11 @@ def render_sellersprite_tool_evidence(entry: Mapping[str, Any]) -> RenderedToolE
         data = entry.get("business_data")
         paths = business_leaf_paths(data)
         spec = SELLERSPRITE_RENDER_SPECS[tool_name]
-        reason = f"Semantic 契约渲染失败：{type(exc).__name__}"
+        reason = f"语义字段契约渲染失败：{type(exc).__name__}"
         return RenderedToolEvidence(
             markdown=(
                 f"## {spec.evidence_title}\n\n"
-                "该段业务返回未通过已登记的 Semantic 字段契约，因此仅保留在审计证据中，"
+                "该段业务返回未通过已登记的语义字段契约，因此仅保留在审计证据中，"
                 "未交给报告模型推理。"
             ),
             tool_name=tool_name,
@@ -292,7 +300,7 @@ def render_sellersprite_evidence_document(
     dossier: Mapping[str, Any],
 ) -> RenderedEvidenceDocument:
     """Render a complete SellerSprite dossier while isolating per-call failures."""
-    lines = ["# SellerSprite 调研证据"]
+    lines = ["# 亚马逊调研证据"]
     context = {
         "report_date": dossier.get("report_date"),
         "research_task": dossier.get("research_task") or {},

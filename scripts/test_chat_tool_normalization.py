@@ -1663,15 +1663,28 @@ def test_sellersprite_semantic_registry_is_complete_and_strict() -> None:
         "missing_runtime": [],
     }
     for name, semantic in SELLERSPRITE_TOOL_SEMANTICS.items():
+        assert not re.search(r"[A-Za-z]", SELLERSPRITE_TOOL_TITLES[name]), (
+            name,
+            SELLERSPRITE_TOOL_TITLES[name],
+        )
         result = render_sellersprite_current_evidence({
             "tool": f"sellersprite__{name}",
-            "arguments": {"marketplace": "US"},
+            "arguments": {
+                "marketplace": "US",
+                "date_type": "month",
+                "date_value": "2026-06",
+            },
             "ok": True,
             "data_state": "data",
             "data": {
                 "items": [{
                     "asin": "B0ABCDEF12",
                     "keyword": "stroller fan",
+                    "keyword_jp": "ベビーカーファン",
+                    "date": "202606",
+                    "availableDate": 1773187200000,
+                    "currency": "USD",
+                    "fulfillment": "FBA",
                     "searches": 12345,
                     "futureBusinessField": f"kept-{name}",
                 }],
@@ -1693,6 +1706,13 @@ def test_sellersprite_semantic_registry_is_complete_and_strict() -> None:
         assert "$.business_data" not in result.markdown
         assert f"sellersprite__{name}" not in result.markdown
         assert "current-call" not in result.markdown
+        assert "ベビーカーファン" not in result.markdown
+        assert "2026年6月" in result.markdown
+        assert "2026年3月11日" in result.markdown
+        assert "美元" in result.markdown
+        assert "亚马逊物流配送" in result.markdown
+        for token in ("2026-06", "202606", "month", "USD", "FBA", "Semantic"):
+            assert token not in result.markdown, (name, token)
 
     empty = render_sellersprite_current_evidence({
         "tool": "sellersprite__review",
@@ -1801,7 +1821,7 @@ def test_sellersprite_keyword_rows_keep_query_scope_and_anonymous_identity_bound
     })
     assert result.fallback is False
     assert "关键词 | tent fan" in result.markdown
-    assert "返回字段 | 关键词、搜索量、近3个月搜索量增长率、点击垄断率、平均PPC竞价（旧字段）" in result.markdown
+    assert "返回字段 | 关键词、搜索量、近3个月搜索量增长率、点击垄断率、平均点击付费广告竞价（旧字段）" in result.markdown
     assert "近3个月搜索量增长率" in result.markdown and "36.7%" in result.markdown
     assert "点击垄断率" in result.markdown and "25.54%" in result.markdown
     assert "1 条没有关键词名称" in result.markdown
@@ -1839,9 +1859,9 @@ def test_sellersprite_product_and_google_trend_fields_are_naturalized() -> None:
     })
     assert product.fallback is False
     assert not product.unmapped_paths
-    assert "ASIN | 标题 | 上架日期 | 价格 | 币种 | 统计月销量 | 统计月销售额 | 评分数量 | 履约方式" in product.markdown
-    assert "2026-03-11" in product.markdown
-    assert "亚马逊物流（FBA）" in product.markdown
+    assert "亚马逊商品编号 | 标题 | 上架日期 | 价格 | 币种 | 统计月销量 | 统计月销售额 | 评分数量 | 履约方式" in product.markdown
+    assert "2026年3月11日" in product.markdown
+    assert "亚马逊物流配送" in product.markdown
     assert "availableDate" not in product.markdown
     assert "1773187200000" not in product.markdown
 
@@ -1868,7 +1888,7 @@ def test_sellersprite_product_and_google_trend_fields_are_naturalized() -> None:
     assert trend.fallback is False
     assert not trend.unmapped_paths
     assert "2026年第29周" in trend.markdown
-    assert "2026-07-12" in trend.markdown
+    assert "2026年7月12日" in trend.markdown
     assert "1783814400000" not in trend.markdown
     assert "https://trends.google.com" not in trend.markdown
     assert any("link" in path for path in trend.excluded_paths)
@@ -1988,8 +2008,8 @@ def test_sellersprite_semantic_report_and_pro_synthesis() -> None:
     assert marker not in payload["messages"][1]["content"]
     assert marker not in payload["messages"][2]["content"]
     assert "12345" in payload["messages"][2]["content"]
-    assert "# SellerSprite 调研证据" in payload["messages"][2]["content"]
-    assert "--- Semantic 证据开始 ---" in payload["messages"][2]["content"]
+    assert "# 亚马逊调研证据" in payload["messages"][2]["content"]
+    assert "--- 语义证据开始 ---" in payload["messages"][2]["content"]
     assert web_app.append_sellersprite_report_notice(report, route) == report
 
     class FailedRequests:
@@ -3897,7 +3917,7 @@ def test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence() -> None:
     assert "内部完成证据覆盖检查" in report_system
     assert "不能仅为了简洁省略有差异的类目、商品、趋势、达人、内容或店铺证据" in report_system
     assert "不得概括为‘纯视频驱动’" in report_system
-    assert "# FastMoss 调研证据" in semantic_content
+    assert "# 短视频电商调研证据" in semantic_content
     assert "## 商品销售趋势" in semantic_content
     assert "## 近期上架商品榜" in semantic_content
     assert "## 商品评论样本" in semantic_content
@@ -3908,7 +3928,7 @@ def test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence() -> None:
     assert "evidence_dossier" not in semantic_content
     assert "report_packet" not in semantic_content
     assert semantic_content.count("商品销售趋势") >= 1
-    assert "2026-06-01" in semantic_content and "2026-07-01" in semantic_content
+    assert "2026年6月1日" in semantic_content and "2026年7月1日" in semantic_content
     assert all(product["product_id"] in semantic_content for product in products)
     assert "returned_product_outside_requested_l3" not in semantic_content
     assert "返回记录超出请求的三级类目范围" in semantic_content
@@ -3918,7 +3938,7 @@ def test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence() -> None:
     assert "| 报告日期 |" in semantic_content
     assert "## 硬事实边界" in semantic_content
     assert semantic_content.index("## 硬事实边界") > semantic_content.index("## 商品评论样本")
-    assert semantic_content.endswith("--- Semantic 证据结束 ---")
+    assert semantic_content.endswith("--- 语义证据结束 ---")
     assert "omitted_items" not in semantic_content
 
 
