@@ -228,7 +228,42 @@ function renderCollectTargets(manualSelected,autoSelected){const manual=$("colle
 async function loadCollectTargets(){const manualSelected=selectedCollectTarget("collectFeishuTarget"),autoSelected=selectedCollectTarget("collectAutoFeishuTarget");try{const r=await api("/api/feishu/bitable/write-allowlist");state.collectTargets=r.targets||[];renderCollectTargets(manualSelected||null,autoSelected||null)}catch(e){state.collectTargets=[];renderCollectTargets(null,null);throw e}}
 function openCollectAllowlistModal(){if(state.collectBusy)return;const input=$("collectAllowlistInput"),hint=$("collectAllowlistHint");if(input)input.value="";if(hint){hint.className="collect-allowlist-hint status";hint.textContent="粘贴多维表格链接后，点击“添加”。"}$("collectAllowlistModal").classList.add("open");setTimeout(()=>input&&input.focus(),0)}
 function closeCollectAllowlistModal(){$("collectAllowlistModal").classList.remove("open")}
-function parseCollectAllowlistTarget(raw){const value=String(raw||"").trim();if(!value)throw new Error("请先粘贴多维表格链接。");if(!/^https?:\\/\\//i.test(value))throw new Error("请粘贴完整的 http/https 链接。");let parsed;try{parsed=new URL(value)}catch(_e){throw new Error("链接解析失败，请检查链接格式。")}const path=(parsed.pathname||"").toLowerCase();const paramsMap={};const sourceParams=new URLSearchParams(parsed.search||"");const fragments=new URLSearchParams((parsed.hash||"").includes("?")?(parsed.hash||"").split("?")[1]:"");for(const [k,v] of sourceParams.entries())paramsMap[k.toLowerCase()]=String(v||"").trim();for(const [k,v] of fragments.entries())if(v&&String(v).trim()&&!paramsMap.hasOwnProperty(k.toLowerCase()))paramsMap[k.toLowerCase()]=String(v).trim();const byKey=(key)=>paramsMap[key.toLowerCase()]||"";let type="";const normalizedPath=path.split("/").filter(Boolean);const baseIndex=normalizedPath.findIndex(item=>item==="base");const vemssIndex=normalizedPath.findIndex(item=>item==="vemss");if(baseIndex>=0&&normalizedPath[baseIndex+1]){type="base";}if(vemssIndex>=0&&normalizedPath[vemssIndex+1]){type=type||"vemss";}const wikiTokenRaw=byKey("wikitoken")||byKey("wiki")||byKey("wiki_token")||((vemssIndex>=0&&vemssIndex+1)?normalizedPath[vemssIndex+1]:"");const appTokenRaw=byKey("apptoken")||byKey("app")||byKey("app_token")||((baseIndex>=0&&baseIndex+1)?normalizedPath[baseIndex+1]:"");const tableFromPath=path.match(/(?:^|[\\/])(table|tableid|table_id)[:/=]([^\\/?#&]+)$/i);const tableId=byKey("tableid")||byKey("table_id")||byKey("table")||String(tableFromPath?tableFromPath[2]:"");const appToken=String(appTokenRaw||"").trim();const wikiToken=String(wikiTokenRaw||"").trim();if(!tableId)throw new Error("未识别到多维表格 tableId，请检查链接。");if(!appToken&&!wikiToken)throw new Error("未识别到应用/空间 token，请使用 base 或 vemss 链接。");const result={url:value,tableId,parsedType:type||"link"};if(appToken)result.appToken=appToken;if(wikiToken)result.wikiToken=wikiToken;return result}
+function parseCollectAllowlistTarget(raw){
+  const value=String(raw||"").trim();
+  if(!value)throw new Error("请先粘贴多维表格链接。");
+  if(!/^https?:\/\/+/i.test(value))throw new Error("请粘贴完整的 http/https 链接。");
+  let parsed;
+  try{
+    parsed=new URL(value)
+  }catch(_e){
+    throw new Error("链接解析失败，请检查链接格式。")
+  }
+  const path=(parsed.pathname||"").toLowerCase();
+  const paramsMap={};
+  const sourceParams=new URLSearchParams(parsed.search||"");
+  const fragments=new URLSearchParams((parsed.hash||"").includes("?")?(parsed.hash||"").split("?")[1]:"");
+  for(const [k,v] of sourceParams.entries())paramsMap[k.toLowerCase()]=String(v||"").trim();
+  for(const [k,v] of fragments.entries())if(v&&String(v).trim()&&!paramsMap.hasOwnProperty(k.toLowerCase()))paramsMap[k.toLowerCase()]=String(v).trim();
+  const byKey=(key)=>paramsMap[key.toLowerCase()]||"";
+  let type="";
+  const normalizedPath=path.split("/").filter(Boolean);
+  const baseIndex=normalizedPath.findIndex(item=>item==="base");
+  const vemssIndex=normalizedPath.findIndex(item=>item==="vemss");
+  if(baseIndex>=0&&normalizedPath[baseIndex+1]){type="base";}
+  if(vemssIndex>=0&&normalizedPath[vemssIndex+1]){type=type||"vemss";}
+  const wikiTokenRaw=byKey("wikitoken")||byKey("wiki")||byKey("wiki_token")||((vemssIndex>=0&&vemssIndex+1)?normalizedPath[vemssIndex+1]:"");
+  const appTokenRaw=byKey("apptoken")||byKey("app")||byKey("app_token")||((baseIndex>=0&&baseIndex+1)?normalizedPath[baseIndex+1]:"");
+  const tableFromPath=normalizedPath.findIndex(seg=>seg==="table"||seg==="tableid"||seg==="table_id");
+  const tableId = (()=>{const keyCandidates=[byKey("tableid"),byKey("table_id"),byKey("table")];for(const key of keyCandidates){if(key)return key;}const idx=tableFromPath;return String(idx>=0&&normalizedPath[idx+1]?normalizedPath[idx+1]:"");})();
+  const appToken=String(appTokenRaw||"").trim();
+  const wikiToken=String(wikiTokenRaw||"").trim();
+  if(!tableId)throw new Error("未识别到多维表格 tableId，请检查链接。");
+  if(!appToken&&!wikiToken)throw new Error("未识别到应用/空间 token，请使用 base 或 vemss 链接。");
+  const result={url:value,tableId,parsedType:type||"link"};
+  if(appToken)result.appToken=appToken;
+  if(wikiToken)result.wikiToken=wikiToken;
+  return result
+}
 async function syncCollectAllowlist(payload,okMessage){state.collectBusy=true;$("collectHint").className="status";$("collectHint").textContent="正在提交白名单变更并刷新列表...";const previousManual=collectTargetValue(selectedCollectTarget("collectFeishuTarget")),previousAuto=collectTargetValue(selectedCollectTarget("collectAutoFeishuTarget"));try{await api("/api/feishu/bitable/write-allowlist",payload);await loadCollectTargets();const selectedManual=state.collectTargets.find(item=>collectTargetValue(item)===previousManual),selectedAuto=state.collectTargets.find(item=>collectTargetValue(item)===previousAuto);renderCollectTargets(selectedManual||state.collectTargets[0]||null,selectedAuto||state.collectTargets[0]||null);const message=okMessage||"白名单已更新。";$("collectHint").className="status ok";$("collectHint").textContent=message;if(state.collectAccount)await loadCollectDashboard()}catch(e){$("collectHint").className="status bad";$("collectHint").textContent=apiError(e)}finally{state.collectBusy=false;renderCollectJobs();renderCollectResults();$("collectAutoSave").disabled=!state.collectTargets.length}}
 async function addCollectAllowlistTarget(){if(state.collectBusy)return;openCollectAllowlistModal()}
 async function confirmAddCollectAllowlistTarget(){if(state.collectBusy)return;const input=$("collectAllowlistInput"),hint=$("collectAllowlistHint");let target;try{target=parseCollectAllowlistTarget(input?input.value:"")}catch(e){if(hint){hint.className="collect-allowlist-hint status bad";hint.textContent=e.message||"链接解析失败。";}return}await syncCollectAllowlist({action:"add",target},"白名单已添加。");closeCollectAllowlistModal()}
