@@ -562,13 +562,11 @@ def sellersprite_semantic_registry_diagnostics(
         str(tool.get("name") or "") for tool in runtime_tools if tool.get("name")
     }
     registered = set(SELLERSPRITE_TOOL_SEMANTICS)
-    contract_diagnostics = sellersprite_contract_diagnostics()
     return {
         "registered": len(registered),
         "runtime": len(runtime_names),
         "missing_semantics": sorted(runtime_names - registered),
         "missing_runtime": sorted(registered - runtime_names),
-        **contract_diagnostics,
     }
 
 
