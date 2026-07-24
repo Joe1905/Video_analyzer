@@ -119,10 +119,30 @@ from fastmoss_evidence_renderer import (
     render_fastmoss_evidence_document,
 )
 from sellersprite_evidence_renderer import (
+    SELLERSPRITE_EVIDENCE_CONTRACTS,
+    apply_sellersprite_return_field_plan,
+    project_sellersprite_business_data,
     render_sellersprite_current_evidence,
     render_sellersprite_evidence_document,
     sellersprite_business_payload,
+    sellersprite_contract_diagnostics,
     sellersprite_semantic_registry_diagnostics,
+)
+from commerce_research_ledger import (
+    active_capabilities as ledger_active_capabilities,
+    active_required_facts as ledger_active_required_facts,
+    active_slot as ledger_active_slot,
+    apply_progress_delta as apply_ledger_progress_delta,
+    candidate_complete as ledger_candidate_complete,
+    core_slots_terminal as ledger_core_slots_terminal,
+    create_research_ledger,
+    fallback_slots as fallback_research_slots,
+    finish_no_progress_batch,
+    mark_ready as mark_ledger_ready,
+    planner_instruction as ledger_planner_instruction,
+    reject_candidate_completion,
+    select_active_slot as select_ledger_active_slot,
+    validate_generated_slots,
 )
 from commerce_research_planner import (
     eligible_provider_capabilities,
@@ -5291,6 +5311,251 @@ def fastmoss_category_ranking_drilldown_count(assistant_msg: Message) -> int:
     )
 
 
+def _sellersprite_ledger_summary(ledger: dict[str, Any] | None) -> dict[str, Any]:
+    ledger = ledger if isinstance(ledger, dict) else {}
+    slot = ledger_active_slot(ledger)
+    return {
+        "status": str(ledger.get("status") or ""),
+        "active_slot": ({
+            "id": slot.get("id"),
+            "topic": slot.get("topic"),
+            "entity_scope": slot.get("entity_scope") or {},
+            "required_facts": slot.get("required_facts") or [],
+            "observed_facts": slot.get("observed_facts") or [],
+            "missing_facts": slot.get("missing_facts") or [],
+            "acceptable_capabilities": sorted(ledger_active_capabilities(ledger)),
+        } if slot else None),
+        "core_slots": [{
+            "id": item.get("id"),
+            "topic": item.get("topic"),
+            "state": item.get("state"),
+        } for item in ledger.get("slots") or []
+            if isinstance(item, dict) and item.get("priority") == "core"],
+    }
+
+
+def initialize_sellersprite_research_ledger(
+    session: Session,
+    route: dict[str, Any],
+    user_text: str,
+    enabled_tool_ids: set[str] | None,
+    requests_module: Any,
+    api_key: str,
+    api_url: str,
+    model: str,
+) -> dict[str, Any]:
+    """Create one stable answer-slot ledger for the current SellerSprite task."""
+    allowed_codes = _provider_enabled_capability_codes("amazon", enabled_tool_ids)
+    task = route.get("research_task") if isinstance(route.get("research_task"), dict) else {}
+    allowed_labels = {
+        code: capability_label(code) for code in sorted(allowed_codes)
+    }
+    prompt = json.dumps({
+        "用户问题": chat_routing_text(user_text),
+        "研究任务": task,
+        "可用业务能力": {
+            code: {
+                "名称": label,
+                "可登记事实": list(
+                    SELLERSPRITE_EVIDENCE_CONTRACTS[
+                        next(
+                            name for name, contract in SELLERSPRITE_EVIDENCE_CONTRACTS.items()
+                            if contract.capability == code
+                        )
+                    ].facts
+                ) if any(
+                    contract.capability == code
+                    for contract in SELLERSPRITE_EVIDENCE_CONTRACTS.values()
+                ) else [],
+            }
+            for code, label in allowed_labels.items()
+        },
+        "要求": {
+            "槽位含义": "最终报告必须回答的稳定业务问题；初始化后不再逐轮重建",
+            "核心槽位": "只保留回答原问题不可缺少的内容",
+            "事实": "使用自然语言业务事实，不写接口字段名",
+        },
+    }, ensure_ascii=False, separators=(",", ":"))
+    system_prompt = (
+        "你负责为SellerSprite研究任务初始化稳定答案槽位，不调用工具、不写报告。"
+        "槽位应随用户问题而定，不能按固定工具顺序排列；每个槽位只能引用给定业务能力。"
+        "返回严格JSON且只能包含slots。每项包含id、topic、priority、entity_scope、"
+        "required_facts、acceptable_capabilities、boundaries。"
+        "id从slot-1连续编号；priority只能是core或supporting；"
+        "entity_scope只含entity、region、period；所有事实使用中文业务含义。"
+    )
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0,
+        "max_tokens": 6000,
+        "response_format": {"type": "json_object"},
+    }
+    started = time.monotonic()
+    slots: list[dict[str, Any]] | None = None
+    failure_reason = ""
+    try:
+        response = requests_module.post(
+            api_url.rstrip("/") + "/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            timeout=90,
+        )
+        response.raise_for_status()
+        body = response.json()
+        choice = body.get("choices", [{}])[0]
+        if str(choice.get("finish_reason") or "").strip().lower() == "length":
+            raise ValueError("slot generation finish_reason=length")
+        parsed = _parse_evidence_quality_judge_response(
+            (choice.get("message") or {}).get("content")
+        )
+        slots = validate_generated_slots(
+            parsed, allowed_capabilities=allowed_codes
+        )
+        if slots is None:
+            raise ValueError("invalid SellerSprite research slots")
+        record_api_call(
+            "deepseek",
+            "sellersprite_research_slots",
+            {
+                "model": model,
+                "capability_count": len(allowed_codes),
+                "slot_count": len(slots),
+            },
+            body,
+            elapsed_ms=int((time.monotonic() - started) * 1000),
+        )
+    except Exception as exc:
+        failure_reason = f"{type(exc).__name__}: {str(exc)[:240]}"
+        slots = fallback_research_slots(task, allowed_capabilities=allowed_codes)
+    previous_state = session.research_state if isinstance(session.research_state, dict) else None
+    ledger = create_research_ledger(
+        task,
+        slots,
+        previous_state=previous_state,
+        inherit_compatible=chat_query_uses_previous_entity(user_text),
+    )
+    route["_research_ledger"] = ledger
+    print(
+        "[CHAT LEDGER] "
+        + json.dumps({
+            "event": "initialized",
+            "task_id": ledger.get("task_id"),
+            "slots": len(ledger.get("slots") or []),
+            "inherited": len([
+                ref for ref in ledger.get("evidence_refs") or []
+                if isinstance(ref, dict) and ref.get("source_ref")
+            ]),
+            "source": "fallback" if failure_reason else "v4_flash",
+            **({"error": failure_reason} if failure_reason else {}),
+        }, ensure_ascii=False, separators=(",", ":")),
+        flush=True,
+    )
+    return ledger
+
+
+def sellersprite_ledger_tool_ids(
+    enabled_tool_ids: set[str],
+    ledger: dict[str, Any],
+) -> set[str]:
+    """Expose only tools that can advance the active slot or establish identity."""
+    capabilities = set(ledger_active_capabilities(ledger))
+    slot = ledger_active_slot(ledger) or {}
+    entity_scope = slot.get("entity_scope") if isinstance(slot.get("entity_scope"), dict) else {}
+    entity = str(entity_scope.get("entity") or "").strip()
+    if not entity:
+        if capabilities.intersection({"asin_detail", "asin_review", "asin_traffic"}):
+            capabilities.add("product_discovery")
+        if "market_validation" in capabilities:
+            capabilities.add("category_resolution")
+    return {
+        tool_id for tool_id in enabled_tool_ids
+        if split_prefixed_tool_id(tool_id)[0] != "sellersprite"
+        or provider_tool_capability(
+            "amazon", split_prefixed_tool_id(tool_id)[1]
+        ) in capabilities
+    }
+
+
+def review_sellersprite_candidate_completion(
+    ledger: dict[str, Any],
+    user_text: str,
+    requests_module: Any,
+    api_key: str,
+    api_url: str,
+    model: str,
+) -> dict[str, Any]:
+    """Run the bounded candidate review without allowing new slots or tools."""
+    if not ledger_core_slots_terminal(ledger):
+        return ledger
+    payload_input = {
+        "用户问题": chat_routing_text(user_text),
+        "研究任务": ledger.get("research_task") or {},
+        "槽位": [{
+            "id": slot.get("id"),
+            "topic": slot.get("topic"),
+            "priority": slot.get("priority"),
+            "state": slot.get("state"),
+            "required_facts": slot.get("required_facts") or [],
+            "observed_facts": slot.get("observed_facts") or [],
+            "missing_facts": slot.get("missing_facts") or [],
+            "boundaries": slot.get("boundaries") or [],
+        } for slot in ledger.get("slots") or [] if isinstance(slot, dict)],
+    }
+    system_prompt = (
+        "你是SellerSprite研究候选完成审核器。只能判断现有核心槽位是否已经真实终结，"
+        "不能创建新槽位、业务能力、工具或调用流程，不能要求理想化的额外信息。"
+        "supported表示事实齐备；unavailable、conflicted、blocked表示已带边界终结，也允许成稿。"
+        "若批准，输出{\"decision\":\"approve\",\"slot_id\":\"\",\"reason\":\"中文原因\"}。"
+        "若确有某个槽位状态与其事实矛盾，只能拒绝一个现有槽位，输出"
+        "{\"decision\":\"reject\",\"slot_id\":\"slot-N\",\"reason\":\"中文原因\"}。"
+    )
+    try:
+        response = requests_module.post(
+            api_url.rstrip("/") + "/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            data=json.dumps({
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": json.dumps(payload_input, ensure_ascii=False)},
+                ],
+                "temperature": 0,
+                "max_tokens": 2000,
+                "response_format": {"type": "json_object"},
+            }, ensure_ascii=False).encode("utf-8"),
+            timeout=60,
+        )
+        response.raise_for_status()
+        body = response.json()
+        parsed = _parse_evidence_quality_judge_response(
+            (body.get("choices", [{}])[0].get("message") or {}).get("content")
+        )
+        decision = str((parsed or {}).get("decision") or "")
+        slot_id = str((parsed or {}).get("slot_id") or "")
+        reason = str((parsed or {}).get("reason") or "").strip()
+        allowed_ids = {
+            str(slot.get("id")) for slot in ledger.get("slots") or []
+            if isinstance(slot, dict)
+        }
+        if decision == "reject" and slot_id in allowed_ids and reason:
+            if reject_candidate_completion(ledger, slot_id=slot_id, reason=reason):
+                return ledger
+        if decision != "approve":
+            raise ValueError("invalid candidate completion review")
+    except Exception as exc:
+        print(
+            f"[CHAT LEDGER] candidate review fallback=approve error={type(exc).__name__}: "
+            f"{str(exc)[:180]}",
+            flush=True,
+        )
+    mark_ledger_ready(ledger)
+    return ledger
+
+
 def research_planner_state(
     provider: str,
     route: dict[str, Any],
@@ -5350,6 +5615,9 @@ def research_planner_instruction(
     assistant_msg: Message,
 ) -> str:
     task = route.get("research_task") if isinstance(route.get("research_task"), dict) else {}
+    ledger = route.get("_research_ledger")
+    if provider == "amazon" and isinstance(ledger, dict):
+        return ledger_planner_instruction(ledger)
     state = research_planner_state(provider, route, user_text, assistant_msg)
     capabilities = sorted(eligible_provider_capabilities(provider, task, state))
     sufficiency = (
@@ -5472,6 +5740,23 @@ def provider_profile_tool_ids(
     if route.get("dynamic_planner") and provider in {"amazon", "fastmoss"}:
         if provider == "amazon":
             log_sellersprite_semantic_diagnostics_once()
+            ledger = route.get("_research_ledger")
+            if isinstance(ledger, dict):
+                selected = sellersprite_ledger_tool_ids(selected, ledger)
+                print(
+                    "[CHAT LEDGER] "
+                    + json.dumps({
+                        "event": "tool_window",
+                        "task_id": ledger.get("task_id"),
+                        "active_capabilities": sorted(ledger_active_capabilities(ledger)),
+                        "tools": len([
+                            tool_id for tool_id in selected
+                            if split_prefixed_tool_id(tool_id)[0] == "sellersprite"
+                        ]),
+                    }, ensure_ascii=False, separators=(",", ":")),
+                    flush=True,
+                )
+                return selected
         state = research_planner_state(provider, route, user_text, assistant_msg)
         task = route.get("research_task") if isinstance(route.get("research_task"), dict) else {}
         eligible = eligible_provider_tool_names(provider, task, state)
@@ -5558,6 +5843,51 @@ def _model_tool_names(tools: list[dict[str, Any]]) -> set[str]:
         for tool in tools
         if isinstance(tool, dict)
     }
+
+
+def sellersprite_ledger_model_tools(
+    tools: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Hide returnFields from the planner; the ledger compiles it internally."""
+    sanitized = json.loads(json.dumps(tools, ensure_ascii=False))
+
+    def strip(schema: Any) -> None:
+        if not isinstance(schema, dict):
+            return
+        properties = schema.get("properties")
+        if isinstance(properties, dict):
+            properties.pop("returnFields", None)
+            for child in properties.values():
+                strip(child)
+        required = schema.get("required")
+        if isinstance(required, list):
+            schema["required"] = [
+                item for item in required if str(item) != "returnFields"
+            ]
+        items = schema.get("items")
+        if isinstance(items, dict):
+            strip(items)
+
+    for tool in sanitized:
+        function = tool.get("function") if isinstance(tool, dict) else None
+        if not isinstance(function, dict):
+            continue
+        if not str(function.get("name") or "").startswith("sellersprite__"):
+            continue
+        strip(function.get("parameters"))
+    return sanitized
+
+
+def _without_return_fields(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): _without_return_fields(item)
+            for key, item in value.items()
+            if str(key) != "returnFields"
+        }
+    if isinstance(value, list):
+        return [_without_return_fields(item) for item in value]
+    return value
 
 
 def forced_provider_domain_tool_available(provider: str, tools: list[dict[str, Any]]) -> bool:
@@ -6717,24 +7047,42 @@ def apply_chat_tool_call_gate(
         )
         return {"approved": [], "rejected": rejected, "failed": False, "latency_ms": 0}
 
-    candidates = build_call_gate_candidates(fresh_calls, model_tools)
-    planner_state = research_planner_state(provider, route, user_text, assistant_msg)
+    ledger = route.get("_research_ledger")
+    judge_calls = fresh_calls
+    if provider == "amazon" and isinstance(ledger, dict):
+        judge_calls = []
+        for call in fresh_calls:
+            sanitized_call = dict(call)
+            function = dict(call.get("function") or {})
+            arguments = _without_return_fields(_tool_call_arguments(call))
+            function["arguments"] = json.dumps(arguments, ensure_ascii=False)
+            sanitized_call["function"] = function
+            judge_calls.append(sanitized_call)
+    candidates = build_call_gate_candidates(judge_calls, model_tools)
+    planner_state = (
+        _sellersprite_ledger_summary(ledger)
+        if provider == "amazon" and isinstance(ledger, dict)
+        else research_planner_state(provider, route, user_text, assistant_msg)
+    )
+    control_contract = (
+        {"active_slot": planner_state.get("active_slot")}
+        if provider == "amazon" and isinstance(ledger, dict)
+        else public_sufficiency_contract(route.get("_evidence_sufficiency"))
+    )
     judge_input = call_gate_payload(
         user_question=chat_routing_text(user_text),
         research_task=route.get("research_task") if isinstance(route.get("research_task"), dict) else {},
         planner_state=planner_state,
         confirmed_identities=_chat_call_gate_confirmed_identities(provider, user_text, assistant_msg),
         candidates=candidates,
-        evidence_sufficiency=public_sufficiency_contract(
-            route.get("_evidence_sufficiency")
-        ),
+        evidence_sufficiency=control_contract,
     )
     system_prompt = (
         "你是商业研究工具的调用前可行性门禁，只能批准或驳回候选调用。"
         "你不能修改工具名或参数，不能指定替代工具，不能判断商业机会，也不能规定固定工具顺序或调用数量。"
         "联合比较本批候选：批准与用户问题和研究任务匹配、前置身份已满足、且能补充尚未覆盖证据的调用；"
         "驳回批内重复、前置条件缺失、对象明显歧义、用途不匹配或不能增加证据的调用。"
-        "若独立证据满足判断明确列出缺口，应批准能够补齐该缺口的合理调用；"
+        "若控制状态给出当前活动槽位，只批准能够推进该槽位所缺事实或建立其前置身份的调用；"
         "明确标注为背景比较的上一周期数据可以作为补充证据，不能只因它不是当前周期就驳回。"
         "同一工具使用不同有效参数、候选较多或没有固定阶段都不是驳回理由。"
         "输出严格JSON，且只能包含 decisions；每个候选恰好一项："
@@ -7122,6 +7470,10 @@ def evaluate_chat_evidence_sufficiency(
 ) -> dict[str, Any]:
     """Decide continue/ready/blocked without selecting a concrete tool."""
     provider = normalize_chat_provider(provider)
+    if provider == "amazon" and isinstance(route.get("_research_ledger"), dict):
+        raise RuntimeError(
+            "SellerSprite ResearchLedger must not enter the legacy per-batch sufficiency path"
+        )
     allowed_codes = _provider_enabled_capability_codes(provider, enabled_tool_ids)
     state = research_planner_state(provider, route, user_text, assistant_msg)
     task = route.get("research_task") if isinstance(route.get("research_task"), dict) else {}
@@ -9402,6 +9754,46 @@ def commerce_report_system_instruction(provider: str, current_date_shanghai: str
 
 
 def _report_sufficiency_contract(route: dict[str, Any]) -> dict[str, Any]:
+    ledger = (route or {}).get("_research_ledger")
+    if isinstance(ledger, dict):
+        state_map = {
+            "supported": "supported",
+            "partial": "missing",
+            "pending": "missing",
+            "active": "missing",
+            "conflicted": "supported",
+            "unavailable": "unavailable",
+            "not_applicable": "unavailable",
+            "blocked": "unavailable",
+        }
+        status = "ready" if str(ledger.get("status")) == "ready" else "blocked"
+        return {
+            "status": status,
+            "reason": "SellerSprite研究总控台账已完成核心槽位收敛。",
+            "coverage_items": [{
+                "id": str(slot.get("id") or f"coverage-{index}"),
+                "topic": str(slot.get("topic") or "业务问题"),
+                "priority": str(slot.get("priority") or "supporting"),
+                "state": state_map.get(str(slot.get("state") or ""), "unavailable"),
+                "boundaries": [
+                    *[str(item) for item in slot.get("boundaries") or []],
+                    *(
+                        ["尚缺事实：" + "、".join(slot.get("missing_facts") or [])]
+                        if slot.get("missing_facts") else []
+                    ),
+                ],
+            } for index, slot in enumerate(ledger.get("slots") or [], 1)
+                if isinstance(slot, dict)],
+            "missing_capabilities": [],
+            "next_capabilities": [],
+            "unsupported_claims": ["未被终态槽位有效投影支持的结论"],
+            "report_contract": dict(ledger.get("report_contract") or {
+                "must_cover": [],
+                "must_compare": [],
+                "must_state_as_limit": [],
+                "forbidden_claims": ["证据外的数字、因果关系和市场外推"],
+            }),
+        }
     contract = public_sufficiency_contract((route or {}).get("_evidence_sufficiency"))
     coverage_items = contract.get("coverage_items")
     report_contract = contract.get("report_contract")
@@ -9881,11 +10273,305 @@ def fastmoss_report_evidence_dossier(
     }
 
 
+def apply_sellersprite_ledger_results(
+    ledger: dict[str, Any],
+    assistant_msg: Message,
+    entries: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Project an executed SellerSprite batch and atomically reduce the ledger."""
+    before_hash = str(ledger.get("progress_hash") or "")
+    attempted_capabilities: list[str] = []
+    start_index = len(assistant_msg.tool_results or [])
+    batch_slot = ledger_active_slot(ledger) or {}
+    batch_slot_id = str(batch_slot.get("id") or "")
+    batch_required_facts = ledger_active_required_facts(ledger)
+    for offset, entry in enumerate(entries, 1):
+        full_name = str(entry.get("tool_name") or "")
+        domain, tool_name = split_prefixed_tool_id(full_name)
+        if domain != "sellersprite":
+            continue
+        capability = provider_tool_capability("amazon", tool_name)
+        attempted_capabilities.append(capability)
+        result = entry.get("normalized_result")
+        if not isinstance(result, dict):
+            continue
+        quality = result.get("evidence_quality") if isinstance(result.get("evidence_quality"), dict) else {}
+        quality_status = str(quality.get("status") or "")
+        if not quality_status:
+            state = mcp_result_data_state(result)
+            quality_status = "accepted" if state == "data" else state
+        if quality_status in {"accepted", "partial"}:
+            raw_business = admitted_business_payload(result)
+        else:
+            raw_business = result.get("mcp_data")
+        business_data = sellersprite_business_payload(
+            _current_chat_evidence_value(raw_business)
+        )
+        projection = project_sellersprite_business_data(
+            tool_name, business_data, batch_required_facts
+        )
+        entity_scope = dict(
+            batch_slot.get("entity_scope")
+            if isinstance(batch_slot.get("entity_scope"), dict)
+            else {}
+        )
+        metadata = result.get("evidence_metadata")
+        if isinstance(metadata, dict):
+            entity_scope["region"] = (
+                metadata.get("region") or entity_scope.get("region") or ""
+            )
+            entity_scope["period"] = (
+                metadata.get("requested_period")
+                or metadata.get("returned_date_range")
+                or entity_scope.get("period")
+                or ""
+            )
+        source_ref = f"{assistant_msg.id}:{start_index + offset}"
+        boundaries = [
+            str(quality.get("reason") or "").strip(),
+            *[str(item) for item in quality.get("unsupported_claims") or []],
+        ]
+        apply_ledger_progress_delta(
+            ledger,
+            source_ref=source_ref,
+            tool_name=tool_name,
+            capability=capability,
+            arguments=entry.get("arguments") if isinstance(entry.get("arguments"), dict) else {},
+            quality_status=quality_status,
+            observed_facts=projection.get("observed_facts") or [],
+            projected_data=projection.get("projected_data"),
+            entity_scope=entity_scope,
+            boundaries=[item for item in boundaries if item],
+            slot_id=batch_slot_id,
+            projection_diagnostics={
+                "business_signature": sellersprite_business_call_signature(
+                    tool_name,
+                    entry.get("arguments") if isinstance(entry.get("arguments"), dict) else {},
+                ),
+                "field_plan": result.get("return_field_plan") or {},
+                **{
+                    key: projection.get(key)
+                    for key in (
+                        "selected_facts", "kept_paths", "audit_only_paths",
+                        "unmapped_fields", "raw_chars", "projected_chars",
+                        "compression_ratio",
+                    )
+                },
+            },
+        )
+        if quality_status in {"accepted", "partial"}:
+            entities = ledger.setdefault("entities", {})
+            asins = sorted(_collect_asins(projection.get("projected_data")))
+            if asins:
+                entities["asins"] = sorted(set(entities.get("asins") or []).union(asins))
+            envelope = result.get("evidence_envelope")
+            if isinstance(envelope, dict):
+                for ref in envelope.get("entity_refs") or []:
+                    if not isinstance(ref, dict):
+                        continue
+                    ref_type = str(ref.get("type") or "entity").strip().lower()
+                    ref_id = str(ref.get("id") or "").strip()
+                    if not ref_id:
+                        continue
+                    key = {
+                        "asin": "asins",
+                        "category": "category_ids",
+                        "node": "category_ids",
+                        "keyword": "keywords",
+                    }.get(ref_type, ref_type + "_ids")
+                    entities[key] = sorted(set(entities.get(key) or []).union({ref_id}))
+        result["evidence_projection"] = {
+            "source_ref": source_ref,
+            "slot_id": batch_slot_id,
+            "projected_data": projection.get("projected_data"),
+            **{
+                key: projection.get(key)
+                for key in (
+                    "selected_facts", "observed_facts", "kept_paths",
+                    "audit_only_paths", "unmapped_fields", "raw_chars",
+                    "projected_chars", "compression_ratio",
+                )
+            },
+        }
+    finish_no_progress_batch(
+        ledger,
+        attempted_capabilities=attempted_capabilities,
+        before_hash=before_hash,
+    )
+    ledger_candidate_complete(ledger)
+    print(
+        "[CHAT LEDGER] "
+        + json.dumps({
+            "event": "batch_committed",
+            "task_id": ledger.get("task_id"),
+            "attempted": attempted_capabilities,
+            "status": ledger.get("status"),
+            "active_slot": (ledger_active_slot(ledger) or {}).get("id"),
+            "no_progress_rounds": ledger.get("no_progress_rounds"),
+            "slots": {
+                str(slot.get("id")): str(slot.get("state"))
+                for slot in ledger.get("slots") or [] if isinstance(slot, dict)
+            },
+        }, ensure_ascii=False, separators=(",", ":")),
+        flush=True,
+    )
+    return ledger
+
+
+def reuse_sellersprite_ledger_evidence(
+    ledger: dict[str, Any],
+    assistant_msg: Message,
+) -> int:
+    """Re-project retained full responses for later slots without another MCP call."""
+    reused = 0
+    while True:
+        slot = ledger_active_slot(ledger)
+        if not slot:
+            break
+        missing = ledger_active_required_facts(ledger)
+        if not missing:
+            select_ledger_active_slot(ledger)
+            continue
+        capabilities = ledger_active_capabilities(ledger)
+        existing_refs = set(slot.get("evidence_refs") or [])
+        matched = False
+        for index, item in enumerate(assistant_msg.tool_results or [], 1):
+            if not isinstance(item, dict) or not isinstance(item.get("result"), dict):
+                continue
+            domain, tool_name = split_prefixed_tool_id(str(item.get("tool_name") or ""))
+            capability = provider_tool_capability("amazon", tool_name)
+            if domain != "sellersprite" or capability not in capabilities:
+                continue
+            source_ref = f"{assistant_msg.id}:{index}"
+            if source_ref in existing_refs:
+                continue
+            result = item["result"]
+            quality = result.get("evidence_quality") if isinstance(result.get("evidence_quality"), dict) else {}
+            quality_status = str(quality.get("status") or "")
+            if quality_status not in {"accepted", "partial"}:
+                continue
+            business_data = sellersprite_business_payload(
+                _current_chat_evidence_value(admitted_business_payload(result))
+            )
+            projection = project_sellersprite_business_data(
+                tool_name, business_data, missing
+            )
+            observed = set(projection.get("observed_facts") or []).intersection(missing)
+            if not observed:
+                continue
+            arguments = _fastmoss_call_arguments_for_result(
+                assistant_msg, index - 1, str(item.get("tool_name") or "")
+            )
+            apply_ledger_progress_delta(
+                ledger,
+                source_ref=source_ref,
+                tool_name=tool_name,
+                capability=capability,
+                arguments=arguments,
+                quality_status=quality_status,
+                observed_facts=sorted(observed),
+                projected_data=projection.get("projected_data"),
+                entity_scope=slot.get("entity_scope") or {},
+                boundaries=["复用同一任务中已保存的完整实际返回并重新投影，未重复调用接口。"],
+                slot_id=str(slot.get("id") or ""),
+                projection_diagnostics={
+                    "reused": True,
+                    "selected_facts": projection.get("selected_facts") or [],
+                    "raw_chars": projection.get("raw_chars"),
+                    "projected_chars": projection.get("projected_chars"),
+                    "compression_ratio": projection.get("compression_ratio"),
+                },
+            )
+            reused += 1
+            matched = True
+            select_ledger_active_slot(ledger)
+            break
+        if not matched:
+            break
+    if reused:
+        print(
+            f"[CHAT LEDGER] reused_projections={reused} task_id={ledger.get('task_id')}",
+            flush=True,
+        )
+    return reused
+
+
 def sellersprite_report_evidence_dossier(
     assistant_msg: Message,
     route: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build a lossless, call-scoped SellerSprite report input."""
+    """Build report input from ledger-approved projections, never all raw results."""
+    ledger = (route or {}).get("_research_ledger")
+    if isinstance(ledger, dict):
+        globally_blocked = str(ledger.get("status") or "") == "blocked"
+        terminal_slot_ids = {
+            str(slot.get("id"))
+            for slot in ledger.get("slots") or []
+            if isinstance(slot, dict)
+            and (globally_blocked or str(slot.get("state")) in {
+                "supported", "conflicted", "unavailable",
+                "not_applicable", "blocked",
+            })
+        }
+        tool_evidence = []
+        for ref in ledger.get("evidence_refs") or []:
+            if (
+                not isinstance(ref, dict)
+                or str(ref.get("slot_id") or "") not in terminal_slot_ids
+                or str(ref.get("quality_status") or "") not in {"accepted", "partial"}
+                or bool(ref.get("candidate_rejected"))
+            ):
+                continue
+            tool_evidence.append({
+                "source_ref": str(ref.get("source_ref") or "研究证据"),
+                "tool_name": "sellersprite__" + str(ref.get("tool_name") or "unknown"),
+                "arguments": _current_chat_evidence_value(ref.get("arguments") or {}),
+                "evidence_fence": {
+                    "data_state": "data",
+                    "ok": True,
+                    "enough_data": True,
+                    "evidence_quality_status": ref.get("quality_status"),
+                    "evidence_quality_reason": "",
+                    "accepted_rows": [],
+                    "rejected_rows": [],
+                    "supported_dimensions": ref.get("observed_facts") or [],
+                    "unsupported_claims": ref.get("boundaries") or [],
+                },
+                "business_data": _current_chat_evidence_value(ref.get("projected_data")),
+            })
+        return {
+            "type": "sellersprite_evidence_dossier",
+            "provider": "sellersprite",
+            "report_date": datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat(),
+            "research_task": dict(ledger.get("research_task") or {}),
+            "quality_summary": {
+                "slots": {
+                    str(slot.get("id")): str(slot.get("state"))
+                    for slot in ledger.get("slots") or [] if isinstance(slot, dict)
+                },
+                "evidence_count": len(tool_evidence),
+            },
+            "tool_evidence": tool_evidence,
+            "hard_fact_boundaries": {
+                "rules": [
+                    "报告只使用研究台账终态槽位引用的准入投影",
+                    "空结果只适用于对应精确对象、参数、地区和周期",
+                    "不同站点、对象、类目节点或周期的数据不得直接合并",
+                    "预测、趋势和观察期实际值必须区分，相关关系不得写成因果关系",
+                ],
+                "slot_limits": [
+                    {
+                        "topic": slot.get("topic"),
+                        "state": slot.get("state"),
+                        "missing_facts": slot.get("missing_facts") or [],
+                        "boundaries": slot.get("boundaries") or [],
+                    }
+                    for slot in ledger.get("slots") or []
+                    if isinstance(slot, dict)
+                    and str(slot.get("state")) in {"unavailable", "blocked", "conflicted"}
+                ],
+            },
+        }
     tool_evidence: list[dict[str, Any]] = []
     for result_index, item in enumerate(assistant_msg.tool_results or []):
         if not isinstance(item, dict) or not isinstance(item.get("result"), dict):
@@ -12972,6 +13658,14 @@ def tool_call_signature(tool_name: str, arguments: dict[str, Any]) -> str:
     return f"{tool_name}:{json.dumps(arguments or {}, ensure_ascii=False, sort_keys=True, separators=(',', ':'))}"
 
 
+def sellersprite_business_call_signature(
+    tool_name: str,
+    arguments: dict[str, Any],
+) -> str:
+    """Stable business query identity; field coverage is tracked separately."""
+    return tool_call_signature(tool_name, _without_return_fields(arguments or {}))
+
+
 FASTMOSS_PRODUCT_ID_TOOLS = {
     "fastmoss__product_detail_info", "fastmoss__product_overview", "fastmoss__product_sales_trend",
     "fastmoss__product_investment", "fastmoss__product_creator_analysis", "fastmoss__product_video_list",
@@ -13689,6 +14383,23 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
         effective_enabled_tool_ids = filter_locked_provider_tool_ids(provider, effective_enabled_tool_ids)
     if needs_tools and effective_enabled_tool_ids is None:
         effective_enabled_tool_ids = provider_default_enabled_tool_ids(provider)
+    if (
+        provider == "amazon"
+        and scoped_provider_task
+        and route.get("dynamic_planner")
+        and needs_tools
+    ):
+        ledger = initialize_sellersprite_research_ledger(
+            session,
+            route,
+            routing_text,
+            set(effective_enabled_tool_ids or set()),
+            req,
+            api_key,
+            api_url,
+            model,
+        )
+        store.update_research_state(session, ledger)
     selected_tool_ids = effective_enabled_tool_ids
     if needs_tools and route_tools is not None and not force_mcp_tools:
         route_tool_ids = {
@@ -13847,6 +14558,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     no_tool_retries = 0
     call_gate_no_approved_rounds = 0
     call_gate_rejected_cache: dict[str, str] = {}
+    ledger_field_plans: dict[str, dict[str, Any]] = {}
     final_answer_forced = False
     seen_tool_calls: set[str] = set()
     for existing_call in assistant_msg.tool_calls or []:
@@ -13856,14 +14568,20 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     if not default_region and provider in {"amazon", "fastmoss"} and fastmoss_defaults_to_us(routing_text):
         default_region = "US"
     for _ in range(max_tool_rounds):
+        if provider == "amazon" and isinstance(route.get("_research_ledger"), dict):
+            tools = sellersprite_ledger_model_tools(tools)
         report_capacity = apply_semantic_report_watermark(
             messages, provider, assistant_msg, routing_text, route
         )
         if report_capacity.get("level") in {"hard", "overflow"}:
-            route["_evidence_sufficiency"] = blocked_sufficiency(
-                route,
-                "完整自然语言业务证据已达到单次报告容量的工具停止水位。",
-            )
+            if provider == "amazon" and isinstance(route.get("_research_ledger"), dict):
+                route["_research_ledger"]["status"] = "blocked"
+                store.update_research_state(session, route["_research_ledger"])
+            else:
+                route["_evidence_sufficiency"] = blocked_sufficiency(
+                    route,
+                    "完整自然语言业务证据已达到单次报告容量的工具停止水位。",
+                )
             tools = []
             final_answer_forced = True
         checkpoint_stats = (
@@ -14062,11 +14780,19 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             batch_signatures: set[str] = set()
             dynamic_state = (
                 research_planner_state(provider, route, routing_text, assistant_msg)
-                if route.get("dynamic_planner") and provider in {"amazon", "fastmoss"}
+                if (
+                    route.get("dynamic_planner")
+                    and provider in {"amazon", "fastmoss"}
+                    and not (
+                        provider == "amazon"
+                        and isinstance(route.get("_research_ledger"), dict)
+                    )
+                )
                 else None
             )
             for tool_call in tool_calls:
                 fn_name = str(tool_call.get("function", {}).get("name") or "")
+                field_plan: dict[str, Any] | None = None
                 if fn_name not in allowed_tool_ids:
                     skipped_tool_call_reasons.append("unexposed_tool")
                     print(f"[CHAT] skipped unexposed tool call: {fn_name}", flush=True)
@@ -14097,6 +14823,35 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                         continue
                     if schema_action:
                         print(f"[CHAT] normalized {fn_name} arguments: {schema_action}", flush=True)
+                    ledger = route.get("_research_ledger")
+                    if domain == "sellersprite" and isinstance(ledger, dict):
+                        fn_args, field_plan = apply_sellersprite_return_field_plan(
+                            unprefixed_name,
+                            fn_args,
+                            ledger_active_required_facts(ledger),
+                        )
+                        try:
+                            fn_args, _ = normalize_mcp_tool_arguments(
+                                domain, unprefixed_name, fn_args
+                            )
+                        except ValueError as exc:
+                            skipped_tool_call_reasons.append(str(exc))
+                            print(
+                                f"[CHAT LEDGER] skipped field-plan schema error: {fn_name}: {exc}",
+                                flush=True,
+                            )
+                            continue
+                        print(
+                            "[CHAT LEDGER] "
+                            + json.dumps({
+                                "event": "field_plan",
+                                "tool": unprefixed_name,
+                                "mode": field_plan.get("mode"),
+                                "field_count": len(field_plan.get("fields") or []),
+                                "unverified_facts": field_plan.get("unverified_facts") or [],
+                            }, ensure_ascii=False, separators=(",", ":")),
+                            flush=True,
+                        )
                 if domain == "fastmoss" and route.get("playbook"):
                     fn_args = apply_fastmoss_business_defaults(
                         unprefixed_name, fn_args, assistant_msg, user_text=routing_text, route=route
@@ -14137,6 +14892,8 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     print(f"[CHAT] skipped duplicate tool call: {fn_name} {fn_args}", flush=True)
                     continue
                 batch_signatures.add(signature)
+                if field_plan is not None:
+                    ledger_field_plans[signature] = dict(field_plan)
                 normalized_call = dict(tool_call)
                 normalized_call["function"] = dict(tool_call.get("function") or {})
                 normalized_call["function"]["arguments"] = json.dumps(fn_args, ensure_ascii=False)
@@ -14195,6 +14952,11 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     normalized_result = annotate_fastmoss_tool_result(
                         fn_name, fn_args, normalized_result, raw_result
                     )
+                    result_field_plan = ledger_field_plans.get(
+                        tool_call_signature(fn_name, fn_args)
+                    )
+                    if result_field_plan is not None:
+                        normalized_result["return_field_plan"] = result_field_plan
                     executed_entries.append({
                         "tool_call": tc,
                         "tool_name": fn_name,
@@ -14212,6 +14974,12 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     api_url,
                     model,
                 )
+                ledger = route.get("_research_ledger")
+                if provider == "amazon" and isinstance(ledger, dict):
+                    apply_sellersprite_ledger_results(
+                        ledger, assistant_msg, executed_entries
+                    )
+                committed_results: list[dict[str, Any]] = []
                 for entry in executed_entries:
                     tc = entry["tool_call"]
                     fn_name = entry["tool_name"]
@@ -14223,14 +14991,33 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                         "tool_call_id": tc["id"],
                         "content": current_chat_tool_evidence(
                             fn_name,
-                            normalized_result,
+                            ({
+                                **normalized_result,
+                                "mcp_data": (
+                                    normalized_result.get("evidence_projection") or {}
+                                ).get("projected_data"),
+                                "mcp_text_preview": None,
+                            } if (
+                                provider == "amazon"
+                                and isinstance(route.get("_research_ledger"), dict)
+                            ) else normalized_result),
                             fn_args,
-                            raw_result,
+                            (
+                                None
+                                if provider == "amazon"
+                                and isinstance(route.get("_research_ledger"), dict)
+                                else raw_result
+                            ),
                         ),
                         "_context_scope": "current",
                     })
-                    assistant_msg.tool_results.append({"tool_name": fn_name, "result": normalized_result})
-                    store.broadcast(session.id, "update", {"messageId": assistant_msg.id, "tool_calls": assistant_msg.tool_calls, "tool_results": assistant_msg.tool_results})
+                    committed_results.append({"tool_name": fn_name, "result": normalized_result})
+                    if not (
+                        provider == "amazon"
+                        and isinstance(route.get("_research_ledger"), dict)
+                    ):
+                        assistant_msg.tool_results.append(committed_results[-1])
+                        store.broadcast(session.id, "update", {"messageId": assistant_msg.id, "tool_calls": assistant_msg.tool_calls, "tool_results": assistant_msg.tool_results})
                     if (
                         fn_name == "fastmoss__search_category_by_words"
                         and (
@@ -14244,6 +15031,22 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                             store.update_message(session, assistant_msg, ambiguity, status="done")
                             store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": ambiguity})
                             return
+                if provider == "amazon" and isinstance(route.get("_research_ledger"), dict):
+                    ledger = route["_research_ledger"]
+                    store.commit_research_batch(
+                        session, assistant_msg, committed_results, ledger
+                    )
+                    reuse_sellersprite_ledger_evidence(ledger, assistant_msg)
+                    if ledger_core_slots_terminal(ledger) and str(ledger.get("status")) != "ready":
+                        review_sellersprite_candidate_completion(
+                            ledger, routing_text, req, api_key, api_url, model
+                        )
+                    store.update_research_state(session, ledger)
+                    store.broadcast(session.id, "update", {
+                        "messageId": assistant_msg.id,
+                        "tool_calls": assistant_msg.tool_calls,
+                        "tool_results": assistant_msg.tool_results,
+                    })
                 if route_intent == "product_availability" and sum(
                     1 for call in (assistant_msg.tool_calls or [])
                     if str(call.get("function", {}).get("name") or "") == "fastmoss__product_search"
@@ -14254,7 +15057,29 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                         "content": "The two-search availability limit has been reached. Do not call more tools; answer concisely from the current search evidence.",
                         "_context_scope": "system",
                     })
-                elif route.get("dynamic_planner") and provider in {"amazon", "fastmoss"}:
+                elif (
+                    provider == "amazon"
+                    and isinstance(route.get("_research_ledger"), dict)
+                ):
+                    ledger = route["_research_ledger"]
+                    if str(ledger.get("status")) in {"ready", "blocked"}:
+                        tools = []
+                        final_answer_forced = True
+                    else:
+                        selected_tool_ids = provider_profile_tool_ids(
+                            provider, route, routing_text,
+                            set(effective_enabled_tool_ids or set()), assistant_msg,
+                        )
+                        tools = build_prefixed_model_tools(selected_tool_ids)
+                        final_answer_forced = not bool(tools)
+                        if final_answer_forced:
+                            ledger["status"] = "blocked"
+                            store.update_research_state(session, ledger)
+                        log_model_tool_window(provider, all_provider_tools, tools)
+                    upsert_research_planner_message(
+                        messages, provider, route, routing_text, assistant_msg
+                    )
+                elif route.get("dynamic_planner") and provider == "fastmoss":
                     sufficiency = evaluate_chat_evidence_sufficiency(
                         provider,
                         routing_text,
@@ -14330,6 +15155,43 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                             if deterministic_reasons else ""
                         )
                     )
+                    ledger = route.get("_research_ledger")
+                    if provider == "amazon" and isinstance(ledger, dict):
+                        ledger_status = str(ledger.get("status") or "")
+                        if (
+                            call_gate_no_approved_rounds < 2
+                            and ledger_status not in {"ready", "blocked"}
+                            and tools
+                        ):
+                            selected_tool_ids = provider_profile_tool_ids(
+                                provider, route, routing_text,
+                                set(effective_enabled_tool_ids or set()), assistant_msg,
+                            )
+                            tools = build_prefixed_model_tools(selected_tool_ids)
+                            upsert_research_planner_message(
+                                messages, provider, route, routing_text, assistant_msg
+                            )
+                            messages.append({
+                                "role": "system",
+                                "content": feedback + "请只围绕当前台账槽位提出不同且可行的调用。",
+                                "_context_scope": "system",
+                            })
+                            continue
+                        if ledger_status not in {"ready", "blocked"}:
+                            ledger["status"] = "blocked"
+                            store.update_research_state(session, ledger)
+                        tools = []
+                        final_answer_forced = True
+                        messages.append({
+                            "role": "system",
+                            "content": (
+                                feedback
+                                + "连续两轮没有获准调用，SellerSprite研究台账已技术性收口。"
+                                "请仅用台账引用的有效证据生成报告并说明局限。"
+                            ),
+                            "_context_scope": "system",
+                        })
+                        continue
                     sufficiency = evaluate_chat_evidence_sufficiency(
                         provider,
                         routing_text,
@@ -14453,8 +15315,44 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 store.update_message(session, assistant_msg, fallback, status="done")
                 store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": fallback})
                 return
+            ledger = route.get("_research_ledger")
             if (
-                provider in {"amazon", "fastmoss"}
+                provider == "amazon"
+                and isinstance(ledger, dict)
+                and request_tools
+                and not requested_tool_calls
+            ):
+                if str(ledger.get("status") or "") in {"ready", "blocked"}:
+                    tools = []
+                    final_answer_forced = True
+                    messages.append({
+                        "role": "system",
+                        "content": "SellerSprite研究台账已终结，进入隔离的Semantic报告阶段。",
+                        "_context_scope": "system",
+                    })
+                    continue
+                if no_tool_retries < 1:
+                    no_tool_retries += 1
+                    upsert_research_planner_message(
+                        messages, provider, route, routing_text, assistant_msg
+                    )
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            "你建议结束，但当前台账槽位仍有未完成事实。"
+                            "忽略上一版回答，只围绕当前槽位提出原生工具调用。"
+                        ),
+                        "_context_scope": "system",
+                    })
+                    continue
+                ledger["status"] = "blocked"
+                store.update_research_state(session, ledger)
+                no_tool_retries = 0
+                tools = []
+                final_answer_forced = True
+                continue
+            if (
+                provider == "fastmoss"
                 and route.get("dynamic_planner")
                 and request_tools
                 and not requested_tool_calls
@@ -14539,7 +15437,14 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     "_context_scope": "system",
                 })
                 break
-            if provider in {"fastmoss", "amazon"} and llm_orchestrated_route(route):
+            if provider == "amazon" and isinstance(route.get("_research_ledger"), dict):
+                evidence_gaps = ledger_active_required_facts(route["_research_ledger"])
+                evidence_instruction = lambda gaps: (
+                    ledger_planner_instruction(route["_research_ledger"])
+                    + "当前仍缺：" + "、".join(gaps) + "。"
+                )
+                evidence_label = "SellerSprite台账"
+            elif provider in {"fastmoss", "amazon"} and llm_orchestrated_route(route):
                 evidence_gaps = analysis_minimum_evidence_gaps(provider, assistant_msg, route)
                 evidence_instruction = analysis_minimum_evidence_instruction
                 evidence_label = "FastMoss" if provider == "fastmoss" else "SellerSprite"
@@ -14670,7 +15575,16 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             store.update_message(session, assistant_msg, f"Request failed: {exc}", status="error")
             return
 
-    if provider in {"fastmoss", "amazon"} and llm_orchestrated_route(route):
+    if provider == "amazon" and isinstance(route.get("_research_ledger"), dict):
+        evidence_gaps = [
+            str(slot.get("topic"))
+            for slot in route["_research_ledger"].get("slots") or []
+            if isinstance(slot, dict)
+            and str(slot.get("state")) not in {
+                "supported", "conflicted", "unavailable", "not_applicable", "blocked",
+            }
+        ]
+    elif provider in {"fastmoss", "amazon"} and llm_orchestrated_route(route):
         evidence_gaps = analysis_minimum_evidence_gaps(provider, assistant_msg, route)
     elif provider == "fastmoss":
         evidence_gaps = fastmoss_analysis_evidence_gaps(routing_text, assistant_msg, route)
@@ -14679,7 +15593,17 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     else:
         evidence_gaps = []
     quality_summary = mcp_evidence_quality_summary(assistant_msg)
-    if (
+    if provider == "amazon" and isinstance(route.get("_research_ledger"), dict):
+        route["_research_ledger"]["status"] = "blocked"
+        for slot in route["_research_ledger"].get("slots") or []:
+            if isinstance(slot, dict) and str(slot.get("state")) not in {
+                "supported", "conflicted", "unavailable", "not_applicable", "blocked",
+            }:
+                slot["state"] = "blocked"
+        ledger_candidate_complete(route["_research_ledger"])
+        route["_research_ledger"]["status"] = "blocked"
+        store.update_research_state(session, route["_research_ledger"])
+    elif (
         provider in {"fastmoss", "amazon"}
         and route.get("dynamic_planner")
         and (assistant_msg.tool_results or [])
