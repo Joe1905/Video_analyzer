@@ -80,6 +80,41 @@
 const state={pools:[],accounts:[],sessions:[],feishuUsers:[],feishuUsersLoadedAt:0,feishuSort:"",loginFeishuUser:"",selectedPool:0,selectedAccount:0,editing:"",portRange:"18900-18999",novncUrl:"http://192.168.1.254:6081",loginSession:null,loginPollTimer:0,browserMaxSlots:2,pendingLoginTtlMinutes:15,browserLocale:"en-US",publishAccount:0,publishJobs:[],publishProducts:[],publishSelectedProduct:"",publishProductTab:"library",productSearchResults:[],productSearchSelected:"",productSearchBusy:false,productEditingId:"",publishEditing:"",publishBusy:false,publishDryRun:false,collectAccount:0,collectJobs:[],collectResults:[],collectSelectedJob:"",collectDetailResultId:0,collectErrors:[],collectTargets:[],collectSetting:{},collectBusy:false,collectManualDirty:false,automationPending:new Set(),accountTogglePending:new Set(),retryRefreshBusy:false,retryRefreshKey:""};
 const $=id=>document.getElementById(id);
 function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
+function textOrEmpty(v){return v==null?"":String(v)}
+function lowerText(v){return textOrEmpty(v).toLowerCase()}
+function normalizeAccountRecord(account){
+  if(!account||typeof account!=="object")return{};
+  return {
+    ...account,
+    id:Number(account.id)||0,
+    username:textOrEmpty(account.username),
+    display_name:textOrEmpty(account.display_name),
+    tiktok_avatar_url:textOrEmpty(account.tiktok_avatar_url),
+    proxy_profile_id:Number(account.proxy_profile_id)||0,
+    proxy_bound:Boolean(account.proxy_bound),
+    feishu_user_id:textOrEmpty(account.feishu_user_id),
+    feishu_user_name:textOrEmpty(account.feishu_user_name),
+    feishu_avatar_url:textOrEmpty(account.feishu_avatar_url),
+    status:textOrEmpty(account.status)||"可用",
+    profile:account.profile||{},
+  };
+}
+const ACCOUNT_STATUS_FILTERS=new Set(["","未绑定","休眠中","唤醒中","发布中","采集中","IP不可用"]);
+function normalizeStatusFilter(raw){
+  const value=textOrEmpty(raw).trim();
+  return ACCOUNT_STATUS_FILTERS.has(value)?value:"";
+}
+function matchAccountFilters(a,{q="",statusFilter="",skipPoolFilter=false}={}){
+  const isBound=Boolean(a.proxy_bound);
+  const selected=state.pools.find(p=>p.id===Number(state.selectedPool));
+  const inSelectedPool=skipPoolFilter||!selected||(Number(selected.account_count||0)>0?(isBound&&Number(a.proxy_profile_id||0)===Number(selected.id)):!isBound);
+  if(!inSelectedPool)return false;
+  if(statusFilter&&accountRuntimeStatus(a)!==statusFilter)return false;
+  const username=textOrEmpty(a.username);
+  const displayName=textOrEmpty(a.display_name);
+  const feishuUser=textOrEmpty(a.feishu_user_name);
+  return !q||lowerText(username).includes(q)||lowerText(displayName).includes(q)||lowerText(feishuUser).includes(q);
+}
 function setStatus(msg,kind=""){const box=$("status");box.className="status "+kind;box.textContent=msg}
 function apiError(e){return e instanceof TypeError?"请求失败：当前页面没有连上服务器开发版，请确认 4003 开发版已重启并包含 /api/proxy 接口。":(e.message||"请求失败")}
 async function api(path,body){const opt=body?{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}:{};let r;try{r=await fetch(path,opt)}catch(e){throw new Error(apiError(e))}let p={};try{p=await r.json()}catch(_e){}if(!r.ok)throw new Error(p.error||`HTTP ${r.status}`);return p}
@@ -103,11 +138,70 @@ function updateProxyRetryIndicator(){const box=$("proxyRetryStatus");if(!box)ret
 function activeSessionForAccount(id){return state.sessions.find(s=>Number(s.account_id)===Number(id)&&["starting","running","observing"].includes(s.status))}
 function accountRuntimeStatus(a){if(!a.proxy_bound)return "未绑定";const p=state.pools.find(x=>x.id===Number(a.proxy_profile_id));if(!p||p.status==="禁用"||p.status==="不可用"||p.status==="异常")return "IP不可用";if(a.last_check_status==="阻断"||a.last_check_status==="blocked")return "IP不可用";if(p.expected_exit_ip&&a.last_checked_ip&&a.last_checked_ip!==p.expected_exit_ip)return "IP不可用";if(a.status==="异常")return "IP不可用";const s=activeSessionForAccount(a.id);if(s&&String(s.current_job_id||"").startsWith("collect_"))return "采集中";if(s&&s.current_job_id)return "发布中";if(s&&s.status==="running")return "采集中";if(s||state.automationPending.has(Number(a.id)))return "唤醒中";return "休眠中"}
 function nextPoolName(){return `代理${state.pools.length+1}`}
-async function loadAll(silent=false){await loadFeishuUsers(!silent).catch(()=>{});const p=await api("/api/proxy/pools");state.pools=p.pools||[];state.accounts=p.accounts||[];state.sessions=p.sessions||[];renderPools();renderAccounts();updateProxyRetryIndicator();if(!silent)setStatus("已刷新。","ok")}
+async function loadAll(silent=false){
+  await loadFeishuUsers(!silent).catch(()=>{});
+  const p=await api("/api/proxy/pools");
+  state.pools=p.pools||[];
+  if(state.selectedPool&& !state.pools.some(p0=>Number(p0.id)===Number(state.selectedPool))){
+    state.selectedPool=0;
+  }
+  state.accounts=Array.isArray(p.accounts)?p.accounts.map(normalizeAccountRecord):[];
+  state.sessions=p.sessions||[];
+  try{renderPools()}catch(e){console.error("renderPools failed",e);if(!silent)setStatus("代理列表渲染异常，暂未刷新。","bad")}
+  try{renderAccounts()}catch(e){console.error("renderAccounts failed",e);if(!silent)setStatus("账号列表渲染异常，请尝试清空筛选条件后刷新。","bad")}
+  updateProxyRetryIndicator();
+  if(!silent)setStatus("已刷新。","ok")
+}
 async function loadRuntime(){try{const r=await api("/api/proxy/runtime");state.portRange=r.port_range||state.portRange;state.novncUrl=r.novnc_url||state.novncUrl;state.browserMaxSlots=(r.novnc_ports||{}).max_slots||state.browserMaxSlots;state.pendingLoginTtlMinutes=Math.max(1,Math.round(Number(r.pending_login_ttl_seconds||900)/60));state.browserLocale=r.browser_locale||state.browserLocale}catch(_e){}}
 function renderPools(){const box=$("poolList");box.innerHTML=state.pools.map(p=>`<div class="pool ${p.id===state.selectedPool?"active":""}" onclick="selectPool(${p.id})" title="查看代理详情"><div class="pool-line"><b class="pool-main">${esc(p.name)} · ${esc(p.local_port||"待分配")}</b>${badge(poolDisplayStatus(p),statusKind(poolDisplayStatus(p)))}</div>${accountLine(p)}<div class="pool-line pool-sub"><span>${esc(p.expected_exit_ip||"未绑定 IP")} · ${esc(p.detected_address||p.region||"未检测地区")}</span><span>${esc(p.account_count||0)} 账号</span></div></div>`).join("")||'<div class="empty-state"><div><b>暂无代理</b><span>点击“新增代理”导入 VLESS、VMess 或静态代理订阅。</span></div></div>'}
 function toggleFeishuSort(event){event.stopPropagation();state.feishuSort=state.feishuSort==="asc"?"desc":"asc";renderAccounts()}
-function renderAccounts(){const q=$("search").value.trim().toLowerCase(),fs=$("filterStatus").value,selected=state.pools.find(p=>p.id===Number(state.selectedPool));let rows=state.accounts.filter(a=>(!selected||(Number(selected.account_count||0)>0?(a.proxy_bound&&a.proxy_profile_id===selected.id):!a.proxy_bound))&&(!fs||accountRuntimeStatus(a)===fs)&&(!q||a.username.toLowerCase().includes(q)||(a.display_name||"").toLowerCase().includes(q)||(a.feishu_user_name||"").toLowerCase().includes(q)));if(state.feishuSort){const collator=new Intl.Collator("zh-CN-u-co-pinyin",{sensitivity:"base",numeric:true}),direction=state.feishuSort==="desc"?-1:1;rows.sort((left,right)=>{const a=String(left.feishu_user_name||"").trim(),b=String(right.feishu_user_name||"").trim();if(!a&&!b)return collator.compare(left.username,right.username);if(!a)return 1;if(!b)return -1;return direction*(collator.compare(a,b)||collator.compare(left.username,right.username))})}const sortButton=$("feishuSortButton"),sortColumn=$("feishuSortColumn");sortButton.className=`sort-head ${state.feishuSort?"active":""} ${state.feishuSort==="desc"?"desc":""}`;sortButton.title=state.feishuSort==="asc"?"当前按飞书用户名 A-Z 排序，点击切换 Z-A":state.feishuSort==="desc"?"当前按飞书用户名 Z-A 排序，点击切换 A-Z":"按飞书用户名首字母排序";sortColumn.setAttribute("aria-sort",state.feishuSort==="asc"?"ascending":state.feishuSort==="desc"?"descending":"none");$("accountRows").innerHTML=rows.map(a=>{const rs=accountRuntimeStatus(a),s=activeSessionForAccount(a.id),unbound=!a.proxy_bound,ipBad=rs==="IP不可用",busy=rs==="发布中"||rs==="采集中",toggling=state.accountTogglePending.has(Number(a.id)),feishuNote=!a.feishu_user_id?"请在详情中选择":a.feishu_user_active?"":"已从飞书白名单移除",blocked=unbound?"账号未绑定代理，无法执行任务或观测":"";const observe=iconButton("eye","打开观测",`openAccountSession(${a.id})`,{kind:s?"primary":"",disabled:blocked||(!s?"账号处于休眠状态，请先唤醒":"")});const toggle=toggling?iconButton("retry",s?"正在休眠账号":"正在唤醒账号","",{disabled:true,loading:true}):s?iconButton("moon",busy?"终止当前任务并休眠":"休眠账号",`sleepAccount(${a.id})`,{kind:"danger"}):iconButton("power","唤醒账号",`wakeAccount(${a.id})`,{kind:"primary",disabled:blocked||(ipBad?"代理 IP 不可用，不能唤醒":"")});const publish=iconButton("upload","自动发布视频",`openPublishModal(${a.id})`,{disabled:blocked||(busy?"账号正在执行任务":"")});const stats=iconButton("chart","视频统计采集",`openStatsModal(${a.id})`,{disabled:blocked||(busy?"账号正在执行任务":"")});const remove=iconButton("trash","删除账号",`deleteAccount(${a.id})`,{kind:"danger",disabled:busy?"账号正在执行任务，不能删除":""});return `<tr class="account-row ${a.id===state.selectedAccount?"selected":""}" tabindex="0" role="button" aria-label="查看 @${esc(a.username)} 的账号详情" onclick="event.stopPropagation();editAccount(${a.id})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();event.stopPropagation();editAccount(${a.id})}"><td>${identityHtml(a.tiktok_avatar_url,`@${a.username}`,a.display_name||"")}</td><td>${esc(a.proxy_bound?poolName(a.proxy_profile_id):"未绑定")}</td><td>${badge(rs,statusKind(rs))}</td><td>${identityHtml(a.feishu_avatar_url,a.feishu_user_name||"未绑定飞书用户",feishuNote)}</td><td onclick="event.stopPropagation()" onkeydown="event.stopPropagation()"><div class="account-actions">${observe}${toggle}${publish}${stats}${remove}</div></td></tr>`}).join("")||'<tr><td colspan="5" class="muted">暂无账号。</td></tr>'}
+function renderAccounts(){
+  const q=lowerText($("search").value.trim());
+  const fs=normalizeStatusFilter($("filterStatus").value);
+  const selected=state.pools.find(p=>p.id===Number(state.selectedPool));
+  let rows=state.accounts.filter(a=>matchAccountFilters(a,{q,statusFilter:fs}));
+  if(!rows.length && state.accounts.length && (selected||q||fs)){
+    const fallbackRows=state.accounts.filter(a=>matchAccountFilters(a,{q,statusFilter:fs,skipPoolFilter:true}));
+    if(fallbackRows.length){
+      rows=fallbackRows;
+      state.selectedPool=0;
+      if(selected){
+        renderPools();
+      }
+    }
+  }
+  if(state.feishuSort){
+    const collator=new Intl.Collator("zh-CN-u-co-pinyin",{sensitivity:"base",numeric:true}),direction=state.feishuSort==="desc"?-1:1;
+    rows.sort((left,right)=>{
+      const a=lowerText(left.feishu_user_name).trim();
+      const b=lowerText(right.feishu_user_name).trim();
+      if(!a&&!b)return direction*(collator.compare(textOrEmpty(left.username),textOrEmpty(right.username))||0);
+      if(!a)return 1;
+      if(!b)return -1;
+      return direction*(collator.compare(a,b)||collator.compare(textOrEmpty(left.username),textOrEmpty(right.username)));
+    })
+  }
+  const sortButton=$("feishuSortButton"),sortColumn=$("feishuSortColumn");
+  sortButton.className=`sort-head ${state.feishuSort?"active":""} ${state.feishuSort==="desc"?"desc":""}`;
+  sortButton.title=state.feishuSort==="asc"?"当前按飞书用户名 A-Z 排序，点击切换 Z-A":state.feishuSort==="desc"?"当前按飞书用户名 Z-A 排序，点击切换 A-Z":"按飞书用户名首字母排序";
+  sortColumn.setAttribute("aria-sort",state.feishuSort==="asc"?"ascending":state.feishuSort==="desc"?"descending":"none");
+  $("accountRows").innerHTML=rows.map(a=>{
+    const rs=accountRuntimeStatus(a);
+    const s=activeSessionForAccount(a.id);
+    const unbound=!a.proxy_bound;
+    const ipBad=rs==="IP不可用";
+    const busy=rs==="发布中"||rs==="采集中";
+    const toggling=state.accountTogglePending.has(Number(a.id));
+    const feishuNote=!a.feishu_user_id?"请在详情中选择":a.feishu_user_active?"":"已从飞书白名单移除";
+    const blocked=unbound?"账号未绑定代理，无法执行任务或观测":"";
+    const observe=iconButton("eye","打开观测",`openAccountSession(${a.id})`,{kind:s?"primary":"",disabled:blocked||(!s?"账号处于休眠状态，请先唤醒":"")});
+    const toggle=toggling?iconButton("retry",s?"正在休眠账号":"正在唤醒账号","",{disabled:true,loading:true}):s?iconButton("moon",busy?"终止当前任务并休眠":"休眠账号",`sleepAccount(${a.id})`,{kind:"danger"}):iconButton("power","唤醒账号",`wakeAccount(${a.id})`,{kind:"primary",disabled:blocked||(ipBad?"代理 IP 不可用，不能唤醒":"")});
+    const publish=iconButton("upload","自动发布视频",`openPublishModal(${a.id})`,{disabled:blocked});
+    const stats=iconButton("chart","视频统计采集",`openStatsModal(${a.id})`,{disabled:blocked});
+    const remove=iconButton("trash","删除账号",`deleteAccount(${a.id})`,{kind:"danger",disabled:busy?"账号正在执行任务，不能删除":""});
+    return `<tr class="account-row ${a.id===state.selectedAccount?"selected":""}" tabindex="0" role="button" aria-label="查看 @${esc(textOrEmpty(a.username))} 的账号详情" onclick="event.stopPropagation();editAccount(${a.id})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();event.stopPropagation();editAccount(${a.id})}"><td>${identityHtml(a.tiktok_avatar_url,`@${textOrEmpty(a.username)}`,textOrEmpty(a.display_name))}</td><td>${esc(a.proxy_bound?poolName(a.proxy_profile_id):"未绑定")}</td><td>${badge(rs,statusKind(rs))}</td><td>${identityHtml(a.feishu_avatar_url,textOrEmpty(a.feishu_user_name)||"未绑定飞书用户",feishuNote)}</td><td onclick="event.stopPropagation()" onkeydown="event.stopPropagation()"><div class="account-actions">${observe}${toggle}${publish}${stats}${remove}</div></td></tr>`
+  }).join("")||'<tr><td colspan="5" class="muted">暂无账号。</td></tr>';
+}
 function selectPool(id){if(state.selectedPool===id){state.selectedPool=0;state.selectedAccount=0;renderPools();renderAccounts();clearEditor();return}state.selectedPool=id;state.selectedAccount=0;renderPools();renderAccounts();const p=state.pools.find(x=>x.id===id);if(p){state.editing="pool";$("editorTitle").textContent="代理详情";$("detail").textContent=JSON.stringify(p,null,2);renderPoolForm(p)}}
 function emptyEditor(){return '<div class="empty-state"><div><b>未选择代理</b><span>从左侧代理列表选择一项查看详情，或点击新增代理。</span></div></div>'}
 function clearEditor(){state.editing="";state.selectedAccount=0;$("editorTitle").textContent="代理详情";$("editor").innerHTML=emptyEditor();$("detail").textContent="{}";renderAccounts()}
@@ -286,7 +380,7 @@ async function syncCollectResults(payload,label){if(state.collectBusy)return;sta
 function syncCollectJob(id){selectCollectJob(id);return syncCollectResults({job_id:id},"写入该任务的未写入记录")}
 function syncCollectResult(id){return syncCollectResults({result_id:id},"写入当前记录")}
 function manualCollectPayload(){const start=$("collectPublishStart").value,end=$("collectPublishEnd").value,target=selectedCollectTarget();if(!start||!end)throw new Error("请选择美国洛杉矶发布时间范围");if(end<start)throw new Error("发布结束日期不能早于开始日期");if(!target)throw new Error("请选择采集结果要写入的飞书多维表格");return {account_id:state.collectAccount,publish_date_start:start,publish_date_end:end,feishu_target:target}}
-async function runCollectNow(){if(!state.collectAccount||state.collectBusy)return;const account=state.accounts.find(a=>a.id===Number(state.collectAccount)),waitingForProxy=account&&accountRuntimeStatus(account)==="IP不可用",active=activeSessionForAccount(state.collectAccount),waitingForCurrent=Boolean(active&&active.current_job_id);let payload;try{payload=manualCollectPayload()}catch(e){$("collectHint").className="status bad";$("collectHint").textContent=apiError(e);return}state.collectBusy=true;if(!waitingForProxy){state.automationPending.add(Number(state.collectAccount));renderAccounts()}$("collectHint").className="status";$("collectHint").textContent=waitingForProxy?"代理当前不可用，正在创建延迟采集任务...":"正在校验写入目标并加入采集队列...";try{payload.observation_session_id=active?Number(active.id):0;const r=await api("/api/proxy/collect/jobs",payload);state.collectJobs=r.jobs||[];state.collectResults=r.results||[];state.collectSelectedJob=String(r.job&&r.job.id||state.collectSelectedJob);renderCollectJobs();renderCollectResults();if(waitingForProxy){state.automationPending.delete(Number(state.collectAccount));renderAccounts()}else waitForAutomationWake(state.collectAccount);$("collectHint").className="status ok";$("collectHint").textContent=waitingForProxy?"代理当前不可用，采集任务已加入延迟队列；后台每 5 分钟校验，恢复后自动执行。":waitingForCurrent?"采集任务已加入队列，当前任务完成后自动执行。":active?"采集任务已启动，复用当前观测通道；结果将写入所选表格。":"采集任务已排队，正在唤醒隔离浏览器；结果将写入所选表格。"}catch(e){state.automationPending.delete(Number(state.collectAccount));renderAccounts();$("collectHint").className="status bad";$("collectHint").textContent=apiError(e)}finally{state.collectBusy=false}}
+async function runCollectNow(){if(!state.collectAccount||state.collectBusy)return;const account=state.accounts.find(a=>a.id===Number(state.collectAccount)),waitingForProxy=account&&accountRuntimeStatus(account)==="IP不可用",active=activeSessionForAccount(state.collectAccount),waitingForCurrent=Boolean(active&&active.current_job_id);let payload;try{payload=manualCollectPayload()}catch(e){$("collectHint").className="status bad";$("collectHint").textContent=apiError(e);return}state.collectBusy=true;if(!waitingForProxy){state.automationPending.add(Number(state.collectAccount));renderAccounts()}$("collectHint").className="status";$("collectHint").textContent=waitingForProxy?"代理当前不可用，正在创建延迟采集任务...":"正在校验写入目标并加入采集队列...";try{payload.observation_session_id=active&&!active.current_job_id?Number(active.id):0;const r=await api("/api/proxy/collect/jobs",payload);state.collectJobs=r.jobs||[];state.collectResults=r.results||[];state.collectSelectedJob=String(r.job&&r.job.id||state.collectSelectedJob);renderCollectJobs();renderCollectResults();if(waitingForProxy){state.automationPending.delete(Number(state.collectAccount));renderAccounts()}else waitForAutomationWake(state.collectAccount);$("collectHint").className="status ok";$("collectHint").textContent=waitingForProxy?"代理当前不可用，采集任务已加入延迟队列；后台每 5 分钟校验，恢复后自动执行。":waitingForCurrent?"采集任务已加入队列，当前任务完成后自动执行。":active?"采集任务已启动，复用当前观测通道；结果将写入所选表格。":"采集任务已排队，正在唤醒隔离浏览器；结果将写入所选表格。"}catch(e){state.automationPending.delete(Number(state.collectAccount));renderAccounts();$("collectHint").className="status bad";$("collectHint").textContent=apiError(e)}finally{state.collectBusy=false}}
 async function retryCollectJob(id){if(state.collectBusy)return;state.collectSelectedJob=String(id);const account=state.accounts.find(a=>a.id===Number(state.collectAccount)),waitingForProxy=account&&accountRuntimeStatus(account)==="IP不可用",active=activeSessionForAccount(state.collectAccount);if(active&&active.current_job_id){$("collectHint").className="status bad";$("collectHint").textContent="账号正在执行其他任务。";return}state.collectBusy=true;if(!waitingForProxy){state.automationPending.add(Number(state.collectAccount));renderAccounts()}try{const r=await api("/api/proxy/collect/jobs/retry",{job_id:id,observation_session_id:active?Number(active.id):0});state.collectJobs=r.jobs||[];state.collectResults=r.results||[];renderCollectJobs();renderCollectResults();if(waitingForProxy){state.automationPending.delete(Number(state.collectAccount));renderAccounts()}else waitForAutomationWake(state.collectAccount);$("collectHint").className="status ok";$("collectHint").textContent=waitingForProxy?"代理当前不可用，采集任务已恢复为延迟队列；后台每 5 分钟校验。":"已重新加入采集队列，已完成的视频会自动跳过。"}catch(e){state.automationPending.delete(Number(state.collectAccount));renderAccounts();$("collectHint").className="status bad";$("collectHint").textContent=apiError(e)}finally{state.collectBusy=false}}
 async function cancelCollectJob(id){if(!confirm("取消这个采集任务？"))return;try{const r=await api("/api/proxy/collect/jobs/cancel",{job_id:id});state.collectJobs=r.jobs||[];state.collectResults=r.results||[];renderCollectJobs();renderCollectResults();$("collectHint").className="status ok";$("collectHint").textContent="采集任务已取消。"}catch(e){$("collectHint").className="status bad";$("collectHint").textContent=apiError(e)}}
 async function exportMihomo(){try{const p=await api("/api/proxy/mihomo-export");$("editorTitle").textContent="mihomo 导出";$("editor").innerHTML='<div class="muted">包含 proxies 和 listeners。端口段专用于 TikTok 账号代理池。</div>';$("detail").textContent=p.yaml||"";setStatus("已生成 mihomo 配置片段。","ok")}catch(e){setStatus(apiError(e),"bad")}}

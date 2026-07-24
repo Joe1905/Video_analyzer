@@ -1734,10 +1734,24 @@ def list_state() -> dict[str, Any]:
         _active_sessions(conn)
         counts = {
             int(row["proxy_profile_id"]): int(row["count"])
-            for row in conn.execute("SELECT proxy_profile_id, COUNT(*) AS count FROM tiktok_accounts WHERE deleted_at = '' AND proxy_bound = 1 GROUP BY proxy_profile_id")
+            for row in conn.execute(
+                """
+                SELECT proxy_profile_id, COUNT(*) AS count
+                FROM tiktok_accounts
+                WHERE (deleted_at = '' OR deleted_at IS NULL) AND proxy_bound = 1
+                GROUP BY proxy_profile_id
+                """
+            )
         }
         names: dict[int, list[str]] = {}
-        for row in conn.execute("SELECT proxy_profile_id, username FROM tiktok_accounts WHERE deleted_at = '' AND proxy_bound = 1 ORDER BY username"):
+        for row in conn.execute(
+            """
+            SELECT proxy_profile_id, username
+            FROM tiktok_accounts
+            WHERE (deleted_at = '' OR deleted_at IS NULL) AND proxy_bound = 1
+            ORDER BY username
+            """
+        ):
             names.setdefault(int(row["proxy_profile_id"]), []).append(str(row["username"]))
         pending_jobs = {
             int(row["proxy_profile_id"]): int(row["count"] or 0)
@@ -1769,7 +1783,14 @@ def list_state() -> dict[str, Any]:
             )
             for row in conn.execute("SELECT * FROM proxy_profiles ORDER BY updated_at DESC, id DESC")
         ]
-        accounts = [_row_to_account(row) for row in conn.execute("SELECT * FROM tiktok_accounts WHERE deleted_at = '' ORDER BY updated_at DESC, id DESC")]
+        accounts = [_row_to_account(row) for row in conn.execute(
+            """
+            SELECT *
+            FROM tiktok_accounts
+            WHERE deleted_at = '' OR deleted_at IS NULL
+            ORDER BY updated_at DESC, id DESC
+            """
+        )]
         sessions = [_row_to_session(row) for row in conn.execute("SELECT * FROM browser_sessions ORDER BY updated_at DESC, id DESC LIMIT 20")]
     return {
         "pools": pools,
