@@ -73,7 +73,7 @@
   </div></div>
 </div>
 <div id="collectAllowlistModal" class="modal" role="dialog" aria-modal="true" aria-label="新增多维表格">
-  <div class="dialog collect-allowlist-dialog"><div class="dialog-head"><h2>新增多维表格</h2><button class="ghost" onclick="closeCollectAllowlistModal()">关闭</button></div><div class="dialog-body stack"><label>飞书多维表格链接<input id="collectAllowlistInput" placeholder="粘贴飞书地址栏或分享链接" onkeydown="if(event.key==='Enter'){event.preventDefault();confirmAddCollectAllowlistTarget()}"></label><span id="collectAllowlistHint" class="collect-allowlist-hint status">粘贴多维表格链接后，点击“添加”。</span><div class="collect-allowlist-note">自动识别 base / wiki / vemss 链接，并按实际类型写入。</div><div class="collect-allowlist-actions"><button class="ghost" onclick="closeCollectAllowlistModal()">取消</button><button class="primary" onclick="confirmAddCollectAllowlistTarget()">添加</button></div></div></div>
+  <div class="dialog collect-allowlist-dialog"><div class="dialog-head"><h2>新增多维表格</h2><button class="ghost" onclick="closeCollectAllowlistModal()">关闭</button></div><div class="dialog-body stack"><label>飞书多维表格链接<input id="collectAllowlistInput" placeholder="粘贴飞书地址栏或分享链接" onkeydown="if(event.key==='Enter'){event.preventDefault();confirmAddCollectAllowlistTarget()}"></label><span id="collectAllowlistHint" class="collect-allowlist-hint status">粘贴多维表格链接后，点击“添加”。</span><div class="collect-allowlist-note">自动识别 base / wiki / vemss 链接；wiki 分享链接无需携带 tableId。</div><div class="collect-allowlist-actions"><button class="ghost" onclick="closeCollectAllowlistModal()">取消</button><button class="primary" onclick="confirmAddCollectAllowlistTarget()">添加</button></div></div></div>
 </div>
 
 <script>
@@ -332,7 +332,7 @@ function parseCollectAllowlistTarget(raw){
   }catch(_e){
     throw new Error("链接解析失败，请检查链接格式。")
   }
-  const path=(parsed.pathname||"").toLowerCase();
+  const path=parsed.pathname||"";
   const paramsMap={};
   const sourceParams=new URLSearchParams(parsed.search||"");
   const fragments=new URLSearchParams((parsed.hash||"").includes("?")?(parsed.hash||"").split("?")[1]:"");
@@ -341,30 +341,31 @@ function parseCollectAllowlistTarget(raw){
   const byKey=(key)=>paramsMap[key.toLowerCase()]||"";
   let type="";
   const normalizedPath=path.split("/").filter(Boolean);
-  const baseIndex=normalizedPath.findIndex(item=>item==="base");
-  const wikiIndex=normalizedPath.findIndex(item=>item==="wiki");
-  const vemssIndex=normalizedPath.findIndex(item=>item==="vemss");
+  const normalizedPathTypes=normalizedPath.map(item=>item.toLowerCase());
+  const baseIndex=normalizedPathTypes.findIndex(item=>item==="base");
+  const wikiIndex=normalizedPathTypes.findIndex(item=>item==="wiki");
+  const vemssIndex=normalizedPathTypes.findIndex(item=>item==="vemss");
   if(baseIndex>=0&&normalizedPath[baseIndex+1]){type="base";}
   if(wikiIndex>=0&&normalizedPath[wikiIndex+1]){type=type||"wiki";}
   if(vemssIndex>=0&&normalizedPath[vemssIndex+1]){type=type||"vemss";}
   const wikiTokenRaw=byKey("wikitoken")||byKey("wiki")||byKey("wiki_token")||((wikiIndex>=0&&wikiIndex+1)?normalizedPath[wikiIndex+1]:"")||((vemssIndex>=0&&vemssIndex+1)?normalizedPath[vemssIndex+1]:"");
   const appTokenRaw=byKey("apptoken")||byKey("app")||byKey("app_token")||((baseIndex>=0&&baseIndex+1)?normalizedPath[baseIndex+1]:"");
-  const tableFromPath=normalizedPath.findIndex(seg=>seg==="table"||seg==="tableid"||seg==="table_id");
+  const tableFromPath=normalizedPathTypes.findIndex(seg=>seg==="table"||seg==="tableid"||seg==="table_id");
   const tableId = (()=>{const keyCandidates=[byKey("tableid"),byKey("table_id"),byKey("table")];for(const key of keyCandidates){if(key)return key;}const idx=tableFromPath;return String(idx>=0&&normalizedPath[idx+1]?normalizedPath[idx+1]:"");})();
   const appToken=String(appTokenRaw||"").trim();
   const wikiToken=String(wikiTokenRaw||"").trim();
-  if(!tableId)throw new Error("未识别到多维表格 tableId，请检查链接。");
   if(!appToken&&!wikiToken)throw new Error("未识别到应用/空间 token，请使用 base、wiki 或 vemss 链接。");
-  const result={url:value,tableId,parsedType:type||"link"};
+  const result={url:value,parsedType:type||"link"};
+  if(tableId)result.tableId=tableId;
   if(appToken)result.appToken=appToken;
   if(wikiToken)result.wikiToken=wikiToken;
   return result
 }
 async function syncCollectAllowlist(payload,okMessage){state.collectBusy=true;$("collectHint").className="status";$("collectHint").textContent="正在提交白名单变更并刷新列表...";const previousManual=collectTargetValue(selectedCollectTarget("collectFeishuTarget")),previousAuto=collectTargetValue(selectedCollectTarget("collectAutoFeishuTarget"));try{await api("/api/feishu/bitable/write-allowlist",payload);await loadCollectTargets();const selectedManual=state.collectTargets.find(item=>collectTargetValue(item)===previousManual),selectedAuto=state.collectTargets.find(item=>collectTargetValue(item)===previousAuto);renderCollectTargets(selectedManual||state.collectTargets[0]||null,selectedAuto||state.collectTargets[0]||null);const message=okMessage||"白名单已更新。";$("collectHint").className="status ok";$("collectHint").textContent=message;if(state.collectAccount)await loadCollectDashboard()}catch(e){$("collectHint").className="status bad";$("collectHint").textContent=apiError(e)}finally{state.collectBusy=false;renderCollectJobs();renderCollectResults();$("collectAutoSave").disabled=!state.collectTargets.length}}
 async function addCollectAllowlistTarget(){if(state.collectBusy)return;openCollectAllowlistModal()}
-async function confirmAddCollectAllowlistTarget(){if(state.collectBusy)return;const input=$("collectAllowlistInput"),hint=$("collectAllowlistHint");let target;try{target=parseCollectAllowlistTarget(input?input.value:"")}catch(e){if(hint){hint.className="collect-allowlist-hint status bad";hint.textContent=e.message||"链接解析失败。";}return}await syncCollectAllowlist({action:"add",target},"白名单已添加。");closeCollectAllowlistModal()}
+async function confirmAddCollectAllowlistTarget(){if(state.collectBusy)return;const input=$("collectAllowlistInput"),hint=$("collectAllowlistHint");let target;try{target=parseCollectAllowlistTarget(input?input.value:"")}catch(e){if(hint){hint.className="collect-allowlist-hint status bad";hint.textContent=e.message||"链接解析失败。";}return}await syncCollectAllowlist({action:"add",...target},"白名单已添加。");closeCollectAllowlistModal()}
 function selectedCollectTargetLabel(){const target=selectedCollectTarget();return target?`${target.appName||target.appToken||"白名单表格"} ${target.tableName||target.tableId?`(${target.tableName||target.tableId})`:""}`:"当前未选择白名单表格"}
-async function removeCollectAllowlistTarget(){if(!selectedCollectTarget()){$("collectHint").className="status bad";$("collectHint").textContent="请先选择要移除的白名单表格。";return}if(!confirm(`确认移除“${selectedCollectTargetLabel()}”？`))return;await syncCollectAllowlist({action:"remove",target:collectTargetValue(selectedCollectTarget())})}
+async function removeCollectAllowlistTarget(){const target=selectedCollectTarget();if(!target){$("collectHint").className="status bad";$("collectHint").textContent="请先选择要移除的白名单表格。";return}if(!confirm(`确认移除“${selectedCollectTargetLabel()}”？`))return;const payload={action:"remove"};if(target.url)payload.url=target.url;else if(target.wikiToken)payload.wikiToken=target.wikiToken;else if(target.appToken)payload.appToken=target.appToken;await syncCollectAllowlist(payload)}
 function renderAutoCollectStatus(){const s=state.collectSetting||{},box=$("collectAutoStatus"),rule=s.date_rule==="same_day"?"执行当天":"执行日的前一天";box.textContent=`自动采集：${s.enabled?"已启用":"未启用"}`;box.classList.toggle("on",Boolean(s.enabled));box.title=s.enabled?`${s.daily_time||"03:00"}（洛杉矶）· ${rule}`:"点击右侧按钮配置自动采集"}
 async function openStatsModal(id){const a=state.accounts.find(x=>x.id===Number(id));if(!a)return;if(!a.proxy_bound){setStatus("账号未绑定代理，无法创建采集任务。","bad");return}state.collectAccount=Number(id);state.collectJobs=[];state.collectResults=[];state.collectSelectedJob="";state.collectDetailResultId=0;state.collectErrors=[];state.collectSetting={};state.collectManualDirty=false;const today=collectLocalDateValue();$("collectPublishStart").value=today;$("collectPublishEnd").value=today;$("collectPublishEnd").min=today;$("collectAccountLabel").textContent=`@${a.username} · ${poolName(a.proxy_profile_id)}`;$("collectDetail").textContent="";$("statsModal").classList.add("open");$("collectHint").className="status";$("collectHint").textContent="正在读取飞书白名单和真实表字段...";try{await loadCollectTargets();await loadCollectDashboard()}catch(e){$("collectHint").className="status bad";$("collectHint").textContent=apiError(e)}}
 function closeStatsModal(){closeAutoCollectSettings();$("statsModal").classList.remove("open");state.collectAccount=0;state.collectJobs=[];state.collectResults=[];state.collectSelectedJob="";state.collectDetailResultId=0;state.collectErrors=[];state.collectTargets=[];state.collectSetting={};state.collectManualDirty=false}

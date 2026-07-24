@@ -74,7 +74,33 @@ class FeishuCapabilityClient:
         return self._request("POST", "/v1/feishu/bitable/records/create", payload)
 
     def sync_bitable_allowlist(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._request("POST", "/v1/feishu/bitable/write-allowlist", payload)
+        action = str(payload.get("action") or "add").strip().lower()
+        if action not in {"add", "remove"}:
+            raise FeishuCapabilityError("飞书多维表格白名单操作无效", 400)
+
+        nested_target = payload.get("target")
+        source = nested_target if isinstance(nested_target, dict) else payload
+        target = {
+            key: source[key]
+            for key in (
+                "value",
+                "url",
+                "bitableUrl",
+                "bitable_url",
+                "appToken",
+                "app_token",
+                "wikiToken",
+                "wiki_token",
+                "tableId",
+                "table_id",
+            )
+            if source.get(key) not in (None, "")
+        }
+        if not target and isinstance(nested_target, str) and nested_target.strip():
+            target["value"] = nested_target.strip()
+
+        method = "POST" if action == "add" else "DELETE"
+        return self._request(method, "/v1/feishu/bitable/write-allowlist", target)
 
     def _request(
         self, method: str, path: str, payload: dict[str, Any] | None = None
