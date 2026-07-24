@@ -564,6 +564,7 @@ def _feishu_fields(target: dict[str, Any], payload: dict[str, Any]) -> dict[str,
         "点赞": _metric_number(engagement.get("likes")),
         "评论": _metric_number(engagement.get("comments")),
         "收藏": _metric_number(engagement.get("favorites")),
+        "分享": _metric_number(engagement.get("shares")),
         "解析状态": "已解析" if payload.get("retention_complete") else "需人工确认",
     }
     mapped: dict[str, Any] = {}
