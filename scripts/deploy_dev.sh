@@ -124,7 +124,7 @@ fi
 
 if [[ -f "$proxy_db" ]]; then
   backup_name="proxy_pool.sqlite.bak-deploy-$(date +%Y%m%d%H%M%S)"
-  docker run --rm --network none \
+  docker run --rm --network none -i \
     -v "$dev_data_dir:/data" \
     --entrypoint python \
     short-video-analyzer-dev:latest - "$backup_name" <<'PY'
