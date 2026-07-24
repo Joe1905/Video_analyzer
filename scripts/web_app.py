@@ -13190,11 +13190,19 @@ def handle_feishu_capability_get(handler: BaseHTTPRequestHandler, parsed) -> boo
 
 
 def handle_feishu_capability_post(handler: BaseHTTPRequestHandler, parsed) -> bool:
-    if parsed.path != "/api/feishu/bitable/records/update":
+    if parsed.path not in {
+        "/api/feishu/bitable/records/update",
+        "/api/feishu/bitable/write-allowlist",
+    }:
         return False
     try:
         payload = _lan_chat_request_json(handler)
-        result = feishu_capability_client.update_bitable_record(payload)
+        if parsed.path == "/api/feishu/bitable/records/update":
+            result = feishu_capability_client.update_bitable_record(payload)
+            json_response(handler, HTTPStatus.OK, result)
+            return True
+        feishu_capability_client.sync_bitable_allowlist(payload)
+        result = feishu_capability_client.list_bitable_targets()
         json_response(handler, HTTPStatus.OK, result)
     except LanChatError as exc:
         json_response(handler, exc.status, {"error": str(exc)})
