@@ -73,6 +73,9 @@ class FeishuCapabilityClient:
     def create_bitable_record(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", "/v1/feishu/bitable/records/create", payload)
 
+    def sync_bitable_allowlist(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._request("POST", "/v1/feishu/bitable/write-allowlist", payload)
+
     def _request(
         self, method: str, path: str, payload: dict[str, Any] | None = None
     ) -> dict[str, Any]:
