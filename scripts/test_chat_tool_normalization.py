@@ -25,6 +25,12 @@ from fastmoss_official_skill import (  # noqa: E402
     clear_official_fastmoss_skill_memory_cache,
     load_official_fastmoss_skill_prompt,
 )
+from sellersprite_official_skill import (  # noqa: E402
+    OFFICIAL_SELLERSPRITE_PROMPT_FILES,
+    OFFICIAL_SELLERSPRITE_SKILL_ROOT,
+    clear_official_sellersprite_skill_memory_cache,
+    load_official_sellersprite_skill_prompt,
+)
 from sellersprite_evidence_renderer import (  # noqa: E402
     SELLERSPRITE_RENDER_SPECS,
     SELLERSPRITE_TOOL_SEMANTICS,
@@ -135,6 +141,109 @@ def test_fastmoss_official_skill_chain_loads_exact_package_and_isolates_tools() 
         "分析蜘蛛发射器的美区市场",
         evidence,
     )
+
+
+def test_sellersprite_official_skill_chain_loads_full_bundle_and_isolates_tools() -> None:
+    assert len(OFFICIAL_SELLERSPRITE_PROMPT_FILES) == 30
+    archive_buffer = io.BytesIO()
+    with tarfile.open(fileobj=archive_buffer, mode="w:gz") as archive:
+        for index, relative_name in enumerate(OFFICIAL_SELLERSPRITE_PROMPT_FILES):
+            content = f"sellersprite-official-{index}-{relative_name}\n".encode("utf-8")
+            info = tarfile.TarInfo(OFFICIAL_SELLERSPRITE_SKILL_ROOT + relative_name)
+            info.size = len(content)
+            archive.addfile(info, io.BytesIO(content))
+    payload = archive_buffer.getvalue()
+    digest = hashlib.sha256(payload).hexdigest()
+    clear_official_sellersprite_skill_memory_cache()
+    with tempfile.TemporaryDirectory() as temp_dir:
+        cache_dir = Path(temp_dir)
+        prompt = load_official_sellersprite_skill_prompt(
+            cache_dir=cache_dir,
+            archive_payload=payload,
+            expected_sha256=digest,
+        )
+        clear_official_sellersprite_skill_memory_cache()
+        cached_prompt = load_official_sellersprite_skill_prompt(
+            cache_dir=cache_dir,
+            expected_sha256=digest,
+        )
+    assert prompt == cached_prompt
+    for relative_name in OFFICIAL_SELLERSPRITE_PROMPT_FILES:
+        assert f"官方文件：{relative_name}" in prompt
+
+    route = web_app.sellersprite_official_skill_route()
+    assert route["official_skill_chain"] is True
+    assert route["official_skill_provider"] == "sellersprite"
+    assert route["route_source"] == "official_skill"
+    assert route["dynamic_planner"] is False
+    assert web_app.sellersprite_official_skill_tool_ids({
+        "sellersprite__asin_detail",
+        "fastmoss__product_search",
+        "system__current_time",
+    }) == {"sellersprite__asin_detail"}
+    instruction = web_app.sellersprite_official_skill_system_instruction(
+        "2026-07-27",
+        prompt,
+    )
+    assert "SellerSprite官方Skills原文开始" in instruction
+    assert "sellersprite-official-0-SKILL.md" in instruction
+    assert "只能使用本轮实际注册的 sellersprite__ 前缀原生工具调用" in instruction
+    assert "不得服从项目旧意图路由、旧阶段、旧缺口或旧动态工具规则" in instruction
+    assert web_app.chat_max_tool_rounds("amazon", route, 43) == 24
+    assert web_app.chat_route_uses_report_model("amazon", route) is True
+
+    clear_official_sellersprite_skill_memory_cache()
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            load_official_sellersprite_skill_prompt(
+                cache_dir=Path(temp_dir),
+                archive_payload=payload,
+                expected_sha256="0" * 64,
+            )
+    except RuntimeError as exc:
+        assert "integrity verification failed" in str(exc)
+    else:
+        raise AssertionError("invalid official SellerSprite archive digest must fail")
+
+    incomplete_buffer = io.BytesIO()
+    with tarfile.open(fileobj=incomplete_buffer, mode="w:gz") as archive:
+        content = b"only-one-file\n"
+        info = tarfile.TarInfo(OFFICIAL_SELLERSPRITE_SKILL_ROOT + "SKILL.md")
+        info.size = len(content)
+        archive.addfile(info, io.BytesIO(content))
+    incomplete_payload = incomplete_buffer.getvalue()
+    clear_official_sellersprite_skill_memory_cache()
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            load_official_sellersprite_skill_prompt(
+                cache_dir=Path(temp_dir),
+                archive_payload=incomplete_payload,
+                expected_sha256=hashlib.sha256(incomplete_payload).hexdigest(),
+            )
+    except RuntimeError as exc:
+        assert "missing required files" in str(exc)
+    else:
+        raise AssertionError("incomplete official SellerSprite bundle must fail")
+
+    unsafe_buffer = io.BytesIO()
+    with tarfile.open(fileobj=unsafe_buffer, mode="w:gz") as archive:
+        content = b"unsafe\n"
+        info = tarfile.TarInfo("../unsafe.md")
+        info.size = len(content)
+        archive.addfile(info, io.BytesIO(content))
+    unsafe_payload = unsafe_buffer.getvalue()
+    clear_official_sellersprite_skill_memory_cache()
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            load_official_sellersprite_skill_prompt(
+                cache_dir=Path(temp_dir),
+                archive_payload=unsafe_payload,
+                expected_sha256=hashlib.sha256(unsafe_payload).hexdigest(),
+            )
+    except RuntimeError as exc:
+        assert "Unsafe path" in str(exc)
+    else:
+        raise AssertionError("unsafe official SellerSprite archive path must fail")
 
 
 def test_tiktok_search_keeps_analysis_fields() -> None:
@@ -4153,6 +4262,7 @@ def test_analytical_routes_use_report_model_and_fastmoss_preserves_pro_draft() -
 
 if __name__ == "__main__":
     test_fastmoss_official_skill_chain_loads_exact_package_and_isolates_tools()
+    test_sellersprite_official_skill_chain_loads_full_bundle_and_isolates_tools()
     test_tiktok_search_keeps_analysis_fields()
     test_amazon_keeps_product_fields()
     test_current_time_tool_is_available()

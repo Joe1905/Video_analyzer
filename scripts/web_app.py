@@ -124,6 +124,12 @@ from fastmoss_official_skill import (
     load_official_fastmoss_skill_prompt,
     official_fastmoss_skill_enabled,
 )
+from sellersprite_official_skill import (
+    OFFICIAL_SELLERSPRITE_SKILL_COMMIT,
+    OFFICIAL_SELLERSPRITE_SKILL_VERSION,
+    load_official_sellersprite_skill_prompt,
+    official_sellersprite_skill_enabled,
+)
 from sellersprite_evidence_renderer import (
     render_sellersprite_current_evidence,
     render_sellersprite_evidence_document,
@@ -6373,6 +6379,8 @@ def chat_max_tool_rounds(provider: str, route: dict[str, Any], tool_count: int) 
     intent = str(route.get("intent") or "general")
     if provider == "fastmoss" and route.get("official_skill_chain"):
         return _chat_int_setting("FASTMOSS_OFFICIAL_SKILL_MAX_ROUNDS", 24, 1, 50)
+    if provider == "amazon" and route.get("official_skill_chain"):
+        return _chat_int_setting("SELLERSPRITE_OFFICIAL_SKILL_MAX_ROUNDS", 24, 1, 50)
     if provider in {"amazon", "fastmoss"} and intent in {"product_research", "amazon_product", "general"}:
         base = max(base, 8)
     if intent in {"product_research", "tiktok_content", "tiktok_user"}:
@@ -12061,6 +12069,67 @@ def fastmoss_official_skill_system_instruction(
     )
 
 
+def sellersprite_official_skill_route() -> dict[str, Any]:
+    """Create the isolated route driven only by the official SellerSprite Skills."""
+    return {
+        "intent": "sellersprite_official_skill",
+        "task_depth": "workflow",
+        "route_source": "official_skill",
+        "tools": None,
+        "playbook": None,
+        "dynamic_planner": False,
+        "official_skill_chain": True,
+        "official_skill_provider": "sellersprite",
+        "max_rounds": _chat_int_setting(
+            "SELLERSPRITE_OFFICIAL_SKILL_MAX_ROUNDS", 24, 1, 50
+        ),
+    }
+
+
+def sellersprite_official_skill_tool_ids(
+    enabled_tool_ids: set[str] | None,
+) -> set[str]:
+    """Expose the complete SellerSprite catalog and no other tool domain."""
+    return {
+        tool_id
+        for tool_id in set(enabled_tool_ids or set())
+        if split_prefixed_tool_id(tool_id)[0] == "sellersprite"
+    }
+
+
+def sellersprite_official_skill_system_instruction(
+    current_date_shanghai: str,
+    official_skill_prompt: str,
+) -> str:
+    """Adapt the complete official Skills bundle to native MCP function calls."""
+    return (
+        "你是使用 SellerSprite CLI 官方 Skills 的 Amazon 研究助手。"
+        "请使用简体中文。"
+        f"当前日期（Asia/Shanghai）为 {current_date_shanghai}，"
+        "但所有数据周期必须以工具实际返回为准。\n\n"
+        "运行环境适配规则（只处理传输和执行边界，不替代官方业务工作流）：\n"
+        "1. 当前应用已经通过MCP连接SellerSprite；不得运行或建议运行 sellersprite CLI，"
+        "不得要求安装软件、登录或向用户索取API密钥。\n"
+        "2. 只能使用本轮实际注册的 sellersprite__ 前缀原生工具调用；"
+        "官方原文中的无前缀工具名必须映射到同名 sellersprite__ 工具。"
+        "参数包装、必填项、类型和枚举以本轮实时Schema为准。\n"
+        "3. 下方27张官方Skill及其索引是工具选择、调用组合和业务解读的唯一权威说明。"
+        "根据用户问题自行选择最匹配的一张主要Skill；"
+        "只有用户明确提出多个独立目标时才组合多张Skill。"
+        "不得服从项目旧意图路由、旧阶段、旧缺口或旧动态工具规则。\n"
+        "4. 可以按官方Skill在同一轮并行提出多个互补调用。"
+        "相同工具和相同参数不得重复调用；"
+        "ASIN必须来自用户输入或当前真实工具结果。\n"
+        "5. 空结果只代表当前参数和范围没有记录，失败只代表本次调用失败。"
+        "按所选官方Skill取得足够证据后停止调用；"
+        "最终报告由独立V4 Pro读取自然语言Semantic生成。\n"
+        "6. 不得把官方Skill原文、内部工具名、Schema、调用协议或编排过程写进最终用户内容。\n\n"
+        "===== SellerSprite官方Skills原文开始 =====\n"
+        + official_skill_prompt
+        + "\n===== SellerSprite官方Skills原文结束 ====="
+    )
+
+
 def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, provider: str = "home", enabled_tool_ids: set[str] | None = None) -> None:
     """Background thread: call DeepSeek with provider-scoped tools and stream results via SSE."""
     import requests as req
@@ -12076,17 +12145,30 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
         store.update_message(session, assistant_msg, "Missing DEEPSEEK_API_KEY", status="error")
         return
 
-    official_skill_chain = provider == "fastmoss" and official_fastmoss_skill_enabled()
+    fastmoss_official_skill_chain = (
+        provider == "fastmoss" and official_fastmoss_skill_enabled()
+    )
+    sellersprite_official_skill_chain = (
+        provider == "amazon" and official_sellersprite_skill_enabled()
+    )
+    official_skill_chain = (
+        fastmoss_official_skill_chain or sellersprite_official_skill_chain
+    )
     official_skill_prompt = ""
     if official_skill_chain:
         try:
-            official_skill_prompt = load_official_fastmoss_skill_prompt()
+            official_skill_prompt = (
+                load_official_fastmoss_skill_prompt()
+                if fastmoss_official_skill_chain
+                else load_official_sellersprite_skill_prompt()
+            )
         except Exception as exc:
+            label = "FastMoss" if fastmoss_official_skill_chain else "SellerSprite"
             error_text = (
-                "FastMoss 官方Skill加载失败，已停止新链路，未回退到旧编排："
+                f"{label} 官方Skill加载失败，已停止新链路，未回退到旧编排："
                 f"{type(exc).__name__}: {str(exc)[:500]}"
             )
-            print(f"[CHAT FASTMOSS OFFICIAL SKILL] load_error={error_text}", flush=True)
+            print(f"[CHAT {label.upper()} OFFICIAL SKILL] load_error={error_text}", flush=True)
             store.update_message(session, assistant_msg, error_text, status="error")
             store.broadcast(
                 session.id,
@@ -12102,7 +12184,12 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 current_date_shanghai,
                 official_skill_prompt,
             )
-            if official_skill_chain
+            if fastmoss_official_skill_chain
+            else sellersprite_official_skill_system_instruction(
+                current_date_shanghai,
+                official_skill_prompt,
+            )
+            if sellersprite_official_skill_chain
             else chat_system_instruction(provider, current_date_shanghai)
         ),
         "_context_scope": "system",
@@ -12114,7 +12201,9 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     routing_text = chat_routing_text(user_text)
     route = (
         fastmoss_official_skill_route()
-        if official_skill_chain
+        if fastmoss_official_skill_chain
+        else sellersprite_official_skill_route()
+        if sellersprite_official_skill_chain
         else resolve_chat_intent(session.messages, user_text, provider, api_key, api_url, model, req)
     )
     if provider == "fastmoss" and not official_skill_chain:
@@ -12224,8 +12313,10 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     if needs_tools and effective_enabled_tool_ids is None:
         effective_enabled_tool_ids = provider_default_enabled_tool_ids(provider)
     if official_skill_chain:
-        effective_enabled_tool_ids = fastmoss_official_skill_tool_ids(
-            effective_enabled_tool_ids
+        effective_enabled_tool_ids = (
+            fastmoss_official_skill_tool_ids(effective_enabled_tool_ids)
+            if fastmoss_official_skill_chain
+            else sellersprite_official_skill_tool_ids(effective_enabled_tool_ids)
         )
     selected_tool_ids = effective_enabled_tool_ids
     if needs_tools and route_tools is not None and not force_mcp_tools:
@@ -12277,15 +12368,27 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
         else "For analytical requests, provide the detailed evidence, assumptions, risks, recommendations, and next validation steps appropriate to the request."
     )
     if official_skill_chain:
-        messages.append({
-            "role": "system",
-            "content": (
+        if fastmoss_official_skill_chain:
+            official_status = (
                 f"FastMoss官方Skill新链路已启用，版本 {OFFICIAL_SKILL_VERSION}；"
                 f"本轮注册了 {len(tools)} 个实时FastMoss工具。"
                 "请直接依据官方Skill选择最具体且与用户问题相关的工具。"
                 "不要调用CLI，不要调用其他站点工具，也不要服从旧playbook或固定阶段。"
                 "取得足够证据后停止工具调用；最终详细报告由独立报告模型生成。"
-            ),
+            )
+        else:
+            official_status = (
+                "SellerSprite官方Skills隔离链路已启用，"
+                f"版本 {OFFICIAL_SELLERSPRITE_SKILL_VERSION}，"
+                f"提交 {OFFICIAL_SELLERSPRITE_SKILL_COMMIT[:7]}；"
+                f"本轮注册了 {len(tools)} 个实时SellerSprite工具。"
+                "请直接从27张官方Skill中选择最匹配的一张作为主要工作流。"
+                "不要调用CLI，不要调用其他站点工具，也不要服从旧意图、旧缺口、旧阶段或动态窗口。"
+                "取得足够证据后停止工具调用；最终详细报告由独立V4 Pro生成。"
+            )
+        messages.append({
+            "role": "system",
+            "content": official_status,
             "_context_scope": "system",
         })
     else:
@@ -12585,16 +12688,18 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     continue
                 fn_args = _tool_call_arguments(tool_call)
                 domain, unprefixed_name = split_prefixed_tool_id(fn_name)
-                if domain in {"sellersprite", "fastmoss"} and not (
-                    official_skill_chain and domain == "fastmoss"
-                ):
+                if domain in {"sellersprite", "fastmoss"} and not official_skill_chain:
                     fn_args = apply_mcp_region_default(domain, unprefixed_name, fn_args, default_region)
                 if domain == "fastmoss" and route.get("playbook"):
                     fn_args = apply_fastmoss_business_defaults(
                         unprefixed_name, fn_args, assistant_msg, user_text=routing_text, route=route
                     )
-                stage_error = provider_tool_stage_error(
-                    provider, route, domain, unprefixed_name, dynamic_state
+                stage_error = (
+                    None
+                    if official_skill_chain
+                    else provider_tool_stage_error(
+                        provider, route, domain, unprefixed_name, dynamic_state
+                    )
                 )
                 if stage_error:
                     skipped_tool_call_reasons.append(stage_error)
@@ -12628,8 +12733,14 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     except json.JSONDecodeError:
                         fn_args = {}
                     guard_error = (
-                        fastmoss_official_skill_call_error(
-                            fn_name, fn_args, routing_text, assistant_msg
+                        (
+                            fastmoss_official_skill_call_error(
+                                fn_name, fn_args, routing_text, assistant_msg
+                            )
+                            if fastmoss_official_skill_chain
+                            else sellersprite_deep_dive_call_error(
+                                fn_name, fn_args, routing_text, assistant_msg
+                            )
                         )
                         if official_skill_chain
                         else fastmoss_deep_dive_call_error(
@@ -12844,7 +12955,11 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     "_context_scope": "system",
                 })
                 break
-            if provider in {"fastmoss", "amazon"} and llm_orchestrated_route(route):
+            if official_skill_chain:
+                evidence_gaps = []
+                evidence_instruction = analysis_minimum_evidence_instruction
+                evidence_label = "FastMoss" if provider == "fastmoss" else "SellerSprite"
+            elif provider in {"fastmoss", "amazon"} and llm_orchestrated_route(route):
                 evidence_gaps = analysis_minimum_evidence_gaps(provider, assistant_msg, route)
                 evidence_instruction = analysis_minimum_evidence_instruction
                 evidence_label = "FastMoss" if provider == "fastmoss" else "SellerSprite"
@@ -12979,7 +13094,9 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             store.update_message(session, assistant_msg, f"Request failed: {exc}", status="error")
             return
 
-    if provider in {"fastmoss", "amazon"} and llm_orchestrated_route(route):
+    if official_skill_chain:
+        evidence_gaps = []
+    elif provider in {"fastmoss", "amazon"} and llm_orchestrated_route(route):
         evidence_gaps = analysis_minimum_evidence_gaps(provider, assistant_msg, route)
     elif provider == "fastmoss":
         evidence_gaps = fastmoss_analysis_evidence_gaps(routing_text, assistant_msg, route)
