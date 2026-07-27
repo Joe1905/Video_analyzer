@@ -15,7 +15,9 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import web_app  # noqa: E402
 from sellersprite_evidence_renderer import (  # noqa: E402
+    SELLERSPRITE_RENDER_SPECS,
     SELLERSPRITE_TOOL_SEMANTICS,
+    SELLERSPRITE_TOOL_TITLES,
     render_sellersprite_current_evidence,
     sellersprite_semantic_registry_diagnostics,
 )
@@ -1513,6 +1515,8 @@ def test_provider_profiles_use_aggregated_sellersprite_and_staged_fastmoss_tools
 
 def test_sellersprite_semantic_registry_is_complete_and_lossless() -> None:
     assert len(SELLERSPRITE_TOOL_SEMANTICS) == 43
+    assert set(SELLERSPRITE_TOOL_TITLES) == set(SELLERSPRITE_TOOL_SEMANTICS)
+    assert set(SELLERSPRITE_RENDER_SPECS) == set(SELLERSPRITE_TOOL_SEMANTICS)
     diagnostics = sellersprite_semantic_registry_diagnostics(
         [{"name": name} for name in SELLERSPRITE_TOOL_SEMANTICS]
     )
@@ -1523,15 +1527,25 @@ def test_sellersprite_semantic_registry_is_complete_and_lossless() -> None:
         "missing_runtime": [],
     }
     for name, semantic in SELLERSPRITE_TOOL_SEMANTICS.items():
+        assert not re.search(r"[A-Za-z]", SELLERSPRITE_TOOL_TITLES[name])
         result = render_sellersprite_current_evidence({
             "tool": f"sellersprite__{name}",
-            "arguments": {"marketplace": "US"},
+            "arguments": {
+                "marketplace": "US",
+                "date_type": "month",
+                "date_value": "2026-06",
+            },
             "ok": True,
             "data_state": "data",
             "data": {
                 "items": [{
                     "asin": "B0ABCDEF12",
                     "keyword": "stroller fan",
+                    "keyword_jp": "ベビーカーファン",
+                    "date": "202606",
+                    "availableDate": 1773187200000,
+                    "currency": "USD",
+                    "fulfillment": "FBA",
                     "searches": 12345,
                     "futureBusinessField": f"kept-{name}",
                 }],
@@ -1543,7 +1557,23 @@ def test_sellersprite_semantic_registry_is_complete_and_lossless() -> None:
             result.consumed_paths | result.unmapped_paths | result.excluded_paths
         )
         assert not (result.consumed_paths & result.unmapped_paths)
-        assert f"kept-{name}" in result.markdown
+        assert not result.unmapped_paths
+        assert f"kept-{name}" not in result.markdown
+        assert any("futureBusinessField" in path for path in result.excluded_paths)
+        assert any("自然语言字段契约" in reason for reason in result.exclusion_reasons.values())
+        assert "未映射业务字段" not in result.markdown
+        assert "JSON路径" not in result.markdown
+        assert "原字段" not in result.markdown
+        assert "$.business_data" not in result.markdown
+        assert f"sellersprite__{name}" not in result.markdown
+        assert "current-call" not in result.markdown
+        assert "ベビーカーファン" not in result.markdown
+        assert "2026年6月" in result.markdown
+        assert "2026年3月11日" in result.markdown
+        assert "美元" in result.markdown
+        assert "亚马逊物流配送" in result.markdown
+        for token in ("2026-06", "202606", "month", "USD", "FBA", "Semantic"):
+            assert token not in result.markdown, (name, token)
 
     empty = render_sellersprite_current_evidence({
         "tool": "sellersprite__review",
@@ -1566,6 +1596,19 @@ def test_sellersprite_semantic_registry_is_complete_and_lossless() -> None:
     assert wrapped_empty.empty is True
     assert wrapped_empty.business_leaf_paths == set()
     assert "没有返回业务记录" in wrapped_empty.markdown
+
+    unknown = render_sellersprite_current_evidence({
+        "tool": "sellersprite__future_tool",
+        "arguments": {"marketplace": "US"},
+        "ok": True,
+        "data_state": "data",
+        "data": {"items": [{"secretFutureField": "AUDIT-ONLY-MARKER"}]},
+    })
+    assert unknown.fallback is True
+    assert unknown.business_leaf_paths == unknown.excluded_paths
+    assert "AUDIT-ONLY-MARKER" not in unknown.markdown
+    assert "future_tool" not in unknown.markdown
+    assert "仅保留在审计证据" in unknown.markdown
 
 
 def test_sellersprite_semantic_report_and_pro_synthesis() -> None:
