@@ -2895,6 +2895,27 @@ def _restore_mihomo_config(path: Path, original: bytes, mode: int) -> None:
         pass
 
 
+def _resolve_system_proxy_dialer(node_name: str) -> str:
+    current = SYSTEM_PROXY_DIALER
+    visited: set[str] = set()
+    for _attempt in range(8):
+        if current == node_name:
+            raise ProxyConfigurationError("系统代理当前指向该静态代理，无法建立代理链")
+        if current.upper() in {"DIRECT", "REJECT", "REJECT-DROP", "PASS"}:
+            raise ProxyConfigurationError(f"系统代理当前未选择可用节点：{current}")
+        if current in visited:
+            raise ProxyConfigurationError("系统代理策略组存在循环引用")
+        visited.add(current)
+        ok, body, error = _mihomo_request("GET", f"/proxies/{quote_path(current)}", timeout=8)
+        if not ok or not isinstance(body, dict):
+            raise ProxyConfigurationError(f"无法读取系统代理当前节点 {current}：{error}")
+        selected = str(body.get("now") or "").strip()
+        if not selected or selected == current:
+            return current
+        current = selected
+    raise ProxyConfigurationError("系统代理策略组嵌套过深")
+
+
 def _sync_mihomo_pool_config(pool: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     proxy = _json_loads(_pool_value(pool, "mihomo_proxy_json", ""), {})
     if not proxy and isinstance(_pool_value(pool, "mihomo_proxy", {}), dict):
@@ -2905,7 +2926,7 @@ def _sync_mihomo_pool_config(pool: sqlite3.Row | dict[str, Any]) -> dict[str, An
     if not proxy or not node_name or not local_port or not pool_id:
         raise ProxyConfigurationError("代理缺少可同步的 mihomo 节点、端口或记录 ID")
     if str(_pool_value(pool, "source_type") or "") == "static":
-        proxy["dialer-proxy"] = SYSTEM_PROXY_DIALER
+        proxy["dialer-proxy"] = _resolve_system_proxy_dialer(node_name)
     else:
         proxy.pop("dialer-proxy", None)
     proxy["name"] = node_name
@@ -2938,7 +2959,13 @@ def _sync_mihomo_pool_config(pool: sqlite3.Row | dict[str, Any]) -> dict[str, An
         if isinstance(exc, ProxyConfigurationError):
             raise
         raise ProxyConfigurationError(f"mihomo 自动同步失败：{exc}") from exc
-    return {"configured": True, "node": node_name, "port": local_port, "backup_path": str(backup_path)}
+    return {
+        "configured": True,
+        "node": node_name,
+        "port": local_port,
+        "dialer_proxy": str(proxy.get("dialer-proxy") or ""),
+        "backup_path": str(backup_path),
+    }
 
 
 def ensure_static_proxy_configs() -> dict[str, Any]:
