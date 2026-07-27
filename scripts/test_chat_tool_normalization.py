@@ -1649,8 +1649,13 @@ def test_sellersprite_semantic_report_and_pro_synthesis() -> None:
     assert marker in json.dumps(dossier, ensure_ascii=False)
 
     semantic, semantic_stats = web_app.sellersprite_render_report_evidence(dossier)
-    assert "## call:1 · `sellersprite__keyword_research`" in semantic
-    assert marker in semantic
+    assert "## stroller fan · 关键词研究结果" in semantic
+    assert marker not in semantic
+    assert "12345" in semantic
+    assert "sellersprite__" not in semantic
+    assert "call:1" not in semantic
+    assert "source_ref" not in semantic
+    assert "futureBusinessField" not in semantic
     assert semantic_stats["format"] == "semantic"
 
     class Response:
@@ -1700,8 +1705,8 @@ def test_sellersprite_semantic_report_and_pro_synthesis() -> None:
     assert "sellersprite__" not in report_system
     assert "fastmoss__" not in report_system
     assert marker not in report_system
-    assert marker in payload["messages"][1]["content"]
-    assert "# SellerSprite 调研证据" in payload["messages"][1]["content"]
+    assert marker not in payload["messages"][1]["content"]
+    assert "# 亚马逊调研证据" in payload["messages"][1]["content"]
     assert "--- Semantic 证据开始 ---" in payload["messages"][1]["content"]
     assert web_app.append_sellersprite_report_notice(report, route) == report
 
