@@ -1660,7 +1660,8 @@ def test_semantic_brace_residue_python_mapping_is_naturalized() -> None:
         )
     assert success_count == 1
     assert failure_count == 0
-    assert "{亚马逊商品编号：B0CZT19JQ1；创建时间：2024年5月7日}" in naturalized
+    assert "{亚马逊商品编号：B0CZT19JQ1；创建时间：2024年5月7日" in naturalized
+    assert "1715084401000" not in naturalized
 
 
 def test_sellersprite_semantic_report_and_pro_synthesis() -> None:
