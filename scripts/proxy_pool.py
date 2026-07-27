@@ -2909,6 +2909,12 @@ def _runtime_mihomo_name(pool: sqlite3.Row | dict[str, Any]) -> str:
     return f"{PROXY_MIHOMO_NAME_PREFIX}{node_name}" if node_name else ""
 
 
+def _runtime_mihomo_listener_name(pool: sqlite3.Row | dict[str, Any]) -> str:
+    pool_name = str(_pool_value(pool, "name") or "").strip()
+    namespace = "" if PROXY_CONFIG_NAMESPACE == "formal" else f"{PROXY_CONFIG_NAMESPACE}-"
+    return f"tiktok-{namespace}{pool_name}"
+
+
 def _resolve_system_proxy_dialer(node_name: str) -> str:
     current = SYSTEM_PROXY_DIALER
     visited: set[str] = set()
@@ -2945,7 +2951,7 @@ def _sync_mihomo_pool_config(pool: sqlite3.Row | dict[str, Any]) -> dict[str, An
         proxy.pop("dialer-proxy", None)
     proxy["name"] = node_name
     listener = {
-        "name": f"tiktok-{PROXY_CONFIG_NAMESPACE}-{_pool_value(pool, 'name')}",
+        "name": _runtime_mihomo_listener_name(pool),
         "type": "mixed",
         "port": local_port,
         "proxy": node_name,
@@ -4100,7 +4106,7 @@ def mihomo_export() -> dict[str, Any]:
             yaml += "\n".join(lines[1:]) + ("\n" if len(lines) > 1 else "")
     listeners = [
         {
-            "name": f"tiktok-{PROXY_CONFIG_NAMESPACE}-{row['name']}",
+            "name": _runtime_mihomo_listener_name(row),
             "type": "mixed",
             "port": int(row["local_port"] or 0),
             "proxy": _runtime_mihomo_name(row),
