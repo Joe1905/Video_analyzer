@@ -116,6 +116,7 @@ def test_fastmoss_official_skill_chain_loads_exact_package_and_isolates_tools() 
     assert "official-marker-0" in instruction
     assert "不得运行或建议运行 fastmoss CLI" in instruction
     assert "只能使用本轮实际注册的 fastmoss__ 前缀原生工具调用" in instruction
+    assert "默认使用美国站（US）" in instruction
     assert "普通市场分析不得为此调用辅助工具" in instruction
 
     evidence = SimpleNamespace(tool_calls=[], tool_results=[{
@@ -188,6 +189,7 @@ def test_sellersprite_official_skill_chain_loads_full_bundle_and_isolates_tools(
     assert "SellerSprite官方Skills原文开始" in instruction
     assert "sellersprite-official-0-SKILL.md" in instruction
     assert "只能使用本轮实际注册的 sellersprite__ 前缀原生工具调用" in instruction
+    assert "默认使用美国站（US）" in instruction
     assert "不得服从项目旧意图路由、旧阶段、旧缺口或旧动态工具规则" in instruction
     assert web_app.chat_max_tool_rounds("amazon", route, 43) == 24
     assert web_app.chat_route_uses_report_model("amazon", route) is True
@@ -2434,6 +2436,22 @@ def test_region_default_only_applies_when_schema_supports_it() -> None:
                 "properties": {"filter": {"type": "object", "properties": {"product_id": {"type": "string"}}}},
             },
         },
+        {
+            "name": "keyword_research",
+            "inputSchema": {
+                "type": "object",
+                "required": ["request"],
+                "properties": {
+                    "request": {
+                        "type": "object",
+                        "properties": {
+                            "marketplace": {"type": "string"},
+                            "keywords": {"type": "string"},
+                        },
+                    },
+                },
+            },
+        },
     ]
     original = web_app.list_mcp_bridge_tools
     web_app.list_mcp_bridge_tools = lambda _chat_type: schemas
@@ -2442,8 +2460,45 @@ def test_region_default_only_applies_when_schema_supports_it() -> None:
         assert regional == {"filter": {"category_id": 935176, "region": "US"}}
         no_region = web_app.apply_mcp_region_default("fastmoss", "product_detail_info", {"filter": {"product_id": "1732183167826498507"}}, "US")
         assert no_region == {"filter": {"product_id": "1732183167826498507"}}
+        seller_default = web_app.apply_mcp_region_default(
+            "sellersprite", "keyword_research", {"request": {"keywords": "flying toys"}}, "US"
+        )
+        assert seller_default == {
+            "request": {"keywords": "flying toys", "marketplace": "US"}
+        }
+        seller_explicit = web_app.apply_mcp_region_default(
+            "sellersprite",
+            "keyword_research",
+            {"request": {"marketplace": "DE", "keywords": "flying toys"}},
+            "US",
+        )
+        assert seller_explicit["request"]["marketplace"] == "DE"
     finally:
         web_app.list_mcp_bridge_tools = original
+
+
+def test_official_skill_chain_disables_frontend_tool_selection() -> None:
+    previous_fastmoss = os.environ.get("FASTMOSS_OFFICIAL_SKILL_ENABLED")
+    previous_sellersprite = os.environ.get("SELLERSPRITE_OFFICIAL_SKILL_ENABLED")
+    os.environ["FASTMOSS_OFFICIAL_SKILL_ENABLED"] = "1"
+    os.environ["SELLERSPRITE_OFFICIAL_SKILL_ENABLED"] = "1"
+    try:
+        assert web_app.chat_tool_selection_enabled("fastmoss") is False
+        assert web_app.chat_tool_selection_enabled("amazon") is False
+        assert web_app.chat_tool_selection_enabled("home") is True
+    finally:
+        if previous_fastmoss is None:
+            os.environ.pop("FASTMOSS_OFFICIAL_SKILL_ENABLED", None)
+        else:
+            os.environ["FASTMOSS_OFFICIAL_SKILL_ENABLED"] = previous_fastmoss
+        if previous_sellersprite is None:
+            os.environ.pop("SELLERSPRITE_OFFICIAL_SKILL_ENABLED", None)
+        else:
+            os.environ["SELLERSPRITE_OFFICIAL_SKILL_ENABLED"] = previous_sellersprite
+
+    chat_html = (ROOT / "scripts" / "static" / "chat.html").read_text(encoding="utf-8")
+    assert 'selectionEnabled===false?"none":""' in chat_html
+    assert "askPayload.enabledToolMasks" in chat_html
 
 
 def test_fastmoss_deep_dive_ids_must_come_from_current_task() -> None:
@@ -4318,6 +4373,7 @@ if __name__ == "__main__":
     test_dynamic_provider_planner_does_not_cap_repeated_calls()
     test_llm_orchestration_exposes_full_provider_tools_and_keeps_hard_guards()
     test_region_default_only_applies_when_schema_supports_it()
+    test_official_skill_chain_disables_frontend_tool_selection()
     test_fastmoss_deep_dive_ids_must_come_from_current_task()
     test_tool_call_signature_deduplicates_argument_order()
     test_fastmoss_dual_ranking_plan_uses_three_sorted_category_pages_then_segments()

@@ -5951,6 +5951,20 @@ def build_prefixed_model_tools(enabled_tool_ids: set[str] | None) -> list[dict[s
     return model_tools
 
 
+def official_skill_chain_enabled_for_provider(provider: str) -> bool:
+    provider = normalize_chat_provider(provider)
+    if provider == "amazon":
+        return official_sellersprite_skill_enabled()
+    if provider == "fastmoss":
+        return official_fastmoss_skill_enabled()
+    return False
+
+
+def chat_tool_selection_enabled(provider: str) -> bool:
+    """Official Skills require their complete provider tool catalog."""
+    return not official_skill_chain_enabled_for_provider(provider)
+
+
 def build_tool_catalog(provider: str) -> dict[str, Any]:
     provider = normalize_chat_provider(provider)
     default_domains = CHAT_PROVIDER_DEFAULT_DOMAINS.get(provider, CHAT_PROVIDER_DEFAULT_DOMAINS["home"])
@@ -6019,6 +6033,7 @@ def build_tool_catalog(provider: str) -> dict[str, Any]:
         "maskLayers": ["domain"],
         "locked": provider_forces_mcp_tools(provider),
         "lockedDomains": sorted(CHAT_PROVIDER_DEFAULT_DOMAINS.get(provider, set())) if provider_forces_mcp_tools(provider) else [],
+        "selectionEnabled": chat_tool_selection_enabled(provider),
     }
 
 
@@ -12053,6 +12068,8 @@ def fastmoss_official_skill_system_instruction(
         "不得要求登录，也不得向用户索取API Key。\n"
         "2. 只能使用本轮实际注册的 fastmoss__ 前缀原生工具调用；"
         "工具参数和必填项以本轮实时Schema为准。\n"
+        "用户未明确指定站点时，所有支持地区参数的调用默认使用美国站（US）；"
+        "用户明确指定其他站点或多站点时，按用户要求执行，不得改回美国站。\n"
         "3. 下方官方Skill是工具选择、适用场景和结果解读的权威说明。"
         "如果项目旧提示与官方Skill冲突，以官方Skill为准；"
         "如果静态文档与实时Schema冲突，以实时Schema为准。\n"
@@ -12113,6 +12130,8 @@ def sellersprite_official_skill_system_instruction(
         "2. 只能使用本轮实际注册的 sellersprite__ 前缀原生工具调用；"
         "官方原文中的无前缀工具名必须映射到同名 sellersprite__ 工具。"
         "参数包装、必填项、类型和枚举以本轮实时Schema为准。\n"
+        "用户未明确指定站点时，所有支持站点参数的调用默认使用美国站（US）；"
+        "用户明确指定其他站点或多站点时，按用户要求执行，不得改回美国站。\n"
         "3. 下方27张官方Skill及其索引是工具选择、调用组合和业务解读的唯一权威说明。"
         "根据用户问题自行选择最匹配的一张主要Skill；"
         "只有用户明确提出多个独立目标时才组合多张Skill。"
@@ -12523,7 +12542,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     for existing_call in assistant_msg.tool_calls or []:
         existing_name = str(existing_call.get("function", {}).get("name") or "")
         seen_tool_calls.add(tool_call_signature(existing_name, _tool_call_arguments(existing_call)))
-    default_region = "" if official_skill_chain else str(route.get("region") or "").strip().upper()
+    default_region = "US" if official_skill_chain else str(route.get("region") or "").strip().upper()
     if (
         not official_skill_chain
         and not default_region
@@ -12702,7 +12721,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     continue
                 fn_args = _tool_call_arguments(tool_call)
                 domain, unprefixed_name = split_prefixed_tool_id(fn_name)
-                if domain in {"sellersprite", "fastmoss"} and not official_skill_chain:
+                if domain in {"sellersprite", "fastmoss"}:
                     fn_args = apply_mcp_region_default(domain, unprefixed_name, fn_args, default_region)
                 if domain == "fastmoss" and route.get("playbook"):
                     fn_args = apply_fastmoss_business_defaults(
