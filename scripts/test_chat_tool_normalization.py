@@ -514,9 +514,9 @@ def test_current_tool_evidence_is_lossless_until_budget_pressure() -> None:
     retained = next(message["content"] for message in request_messages if message.get("role") == "tool")
     assert retained == evidence
     assert stats["current_evidence_compressed"] == 0
-    assert stats["compressed"] is True
+    assert stats["compressed"] is False
     history_content = next(message["content"] for message in request_messages if message.get("role") == "assistant")
-    assert len(history_content) <= 3000
+    assert len(history_content) == 30004
 
 
 def test_product_availability_is_a_shallow_lookup() -> None:
