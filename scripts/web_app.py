@@ -8628,6 +8628,24 @@ def append_sellersprite_report_notice(answer: str, route: dict[str, Any]) -> str
     return text + "\n\n---\n\n" + SELLERSPRITE_REPORT_NOTICE
 
 
+def sellersprite_report_system_instruction(current_date_shanghai: str) -> str:
+    """Build the Amazon-specific final-report instruction without tool-planning rules."""
+    return (
+        "你是负责撰写亚马逊市场调研报告的中文分析师。当前已经进入最终报告阶段，没有可调用工具。"
+        f"当前日期（Asia/Shanghai）：{current_date_shanghai}；它只用于解释相对时间，数据周期以 Semantic 证据为准。"
+        "用户问题和 Semantic 证据是唯一事实来源；不得使用编排历史、工具知识或常识补造数据。"
+        "Semantic 中每个有实质数据的业务证据段都必须在报告中得到使用，或明确说明它为什么不适用于当前问题。"
+        "这是一份完整调研报告，不是执行摘要。先给结论，再充分展开产品身份、统计范围、销售与排名趋势、"
+        "关键词与流量、竞争与价格、评论反馈、机会、风险和下一步验证；只写证据实际覆盖的主题，"
+        "但不得为了简洁省略重要对象、周期、对比、冲突、空结果或失败。"
+        "必须严格区分销量、销售额、BSR、类目排名、搜索量、购买量、购买率、评分和评论数；"
+        "除非证据直接提供，否则不得补造采购成本、利润、FBA费用、广告花费、ACoS、认证费用或市场份额。"
+        "每项核心判断都应写明观察数据、比较对象、适用范围和推断边界；空结果只代表该次查询条件。"
+        "报告不得出现内部工具名、调用编号、JSON路径、Schema、工具协议或建议用户调用某个内部工具。"
+        "使用简体中文和标准 Markdown；有足够同口径数据时使用表格，内容完整性优先于篇幅压缩和装饰。"
+    )
+
+
 def log_sellersprite_report_pipeline(
     answer: str,
     dossier: dict[str, Any],
@@ -8679,7 +8697,7 @@ def synthesize_sellersprite_report_from_packet(
         + "--- Semantic 证据结束 ---"
     )
     messages = [
-        {"role": "system", "content": chat_system_instruction("amazon", current_date_shanghai)},
+        {"role": "system", "content": sellersprite_report_system_instruction(current_date_shanghai)},
         {"role": "user", "content": semantic_input},
     ]
     payload = {
@@ -9127,6 +9145,26 @@ def fastmoss_report_style_instruction(route: dict[str, Any]) -> str:
         "标题、章节名称和顺序完全由你按内容决定，不要求固定短语、固定引用数量、字符数或篇幅比例。"
         "明确区分实体、周期、样本和空结果范围。可以自由提出执行建议、测试方案和策略假设，"
         "但要把它们明确写成建议或假设，不能伪装成工具已经观测到的事实。"
+    )
+
+
+def fastmoss_report_system_instruction(current_date_shanghai: str) -> str:
+    """Build the TikTok Shop-specific final-report instruction without tool-planning rules."""
+    return (
+        "你是负责撰写 TikTok Shop 市场调研报告的中文分析师。当前已经进入最终报告阶段，没有可调用工具。"
+        f"当前日期（Asia/Shanghai）：{current_date_shanghai}；它只用于解释相对时间，数据周期以 Semantic 证据为准。"
+        "用户问题和 Semantic 证据是唯一事实来源；不得使用编排历史、工具知识或常识补造数据。"
+        "Semantic 中每个有实质数据的业务证据段都必须在报告中得到使用，或明确说明它为什么不适用于当前问题。"
+        "这是一份完整调研报告，不是执行摘要。先给结论，再充分展开证据范围、类目背景、代表商品、"
+        "销量与销售额、增长与趋势、价格、店铺、达人、视频、直播和广告结构、机会、风险及下一步验证；"
+        "只写证据实际覆盖的主题，但不得为了简洁省略重要对象、周期、对比、冲突、空结果或失败。"
+        "每项核心判断都应写明观察数据、比较对象、适用范围和推断边界。"
+        "达人、视频、直播或广告关联数量只能描述观察到的结构；零关联或未返回不能推导私域、投流、刷单、"
+        "自然流量、转化效率、生命周期或任何强因果。"
+        "不得混合不同实体、周期、地区和币种；不得把上月数据写成本月实时数据，也不得自行补造日期。"
+        "空结果只代表该次查询条件，接口口径冲突必须如实说明，不能自行选边或修正。"
+        "报告不得出现内部工具名、调用编号、JSON路径、Schema、工具协议或建议用户调用某个内部工具。"
+        "使用简体中文和标准 Markdown；有足够同口径数据时使用表格，内容完整性优先于篇幅压缩和装饰。"
     )
 
 
@@ -10572,7 +10610,7 @@ def synthesize_fastmoss_report_from_packet(
         + "--- Semantic 证据结束 ---"
     )
     messages = [
-        {"role": "system", "content": chat_system_instruction("fastmoss", current_date_shanghai)},
+        {"role": "system", "content": fastmoss_report_system_instruction(current_date_shanghai)},
         {"role": "system", "content": fastmoss_report_prompt_instruction(route)},
         {"role": "user", "content": semantic_input},
     ]

@@ -1636,8 +1636,15 @@ def test_sellersprite_semantic_report_and_pro_synthesis() -> None:
     assert payload["max_tokens"] == 12000
     assert "tools" not in payload
     assert [item["role"] for item in payload["messages"]] == ["system", "user"]
-    assert "A useful product analysis must include" in payload["messages"][0]["content"]
-    assert marker not in payload["messages"][0]["content"]
+    report_system = payload["messages"][0]["content"]
+    report_date = re.search(r"当前日期（Asia/Shanghai）：(\d{4}-\d{2}-\d{2})", report_system).group(1)
+    assert report_system == web_app.sellersprite_report_system_instruction(report_date)
+    assert report_system != web_app.fastmoss_report_system_instruction(report_date)
+    assert "每个有实质数据的业务证据段都必须在报告中得到使用" in report_system
+    assert "不得补造采购成本、利润、FBA费用、广告花费、ACoS" in report_system
+    assert "sellersprite__" not in report_system
+    assert "fastmoss__" not in report_system
+    assert marker not in report_system
     assert marker in payload["messages"][1]["content"]
     assert "# SellerSprite 调研证据" in payload["messages"][1]["content"]
     assert "--- Semantic 证据开始 ---" in payload["messages"][1]["content"]
@@ -3511,11 +3518,13 @@ def test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence() -> None:
     base_system = payload["messages"][0]["content"]
     report_system = payload["messages"][1]["content"]
     semantic_content = payload["messages"][2]["content"]
-    assert base_system == web_app.chat_system_instruction(
-        "fastmoss", re.search(r"当前日期（Asia/Shanghai）：(\d{4}-\d{2}-\d{2})", base_system).group(1)
-    )
-    assert "A useful product analysis must include" in base_system
-    assert "Content completeness is more important than decorative layout" in base_system
+    report_date = re.search(r"当前日期（Asia/Shanghai）：(\d{4}-\d{2}-\d{2})", base_system).group(1)
+    assert base_system == web_app.fastmoss_report_system_instruction(report_date)
+    assert base_system != web_app.sellersprite_report_system_instruction(report_date)
+    assert "每个有实质数据的业务证据段都必须在报告中得到使用" in base_system
+    assert "零关联或未返回不能推导私域、投流、刷单" in base_system
+    assert "fastmoss__" not in base_system
+    assert "sellersprite__" not in base_system
     assert report_system == web_app.fastmoss_report_prompt_instruction(
         {"playbook": "product", "task_depth": "workflow"}
     )
