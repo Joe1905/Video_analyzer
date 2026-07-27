@@ -31,7 +31,6 @@ PROFILE_GENERIC = "generic"
 
 FASTMOSS_TOOL_PROFILE_GROUPS: dict[str, frozenset[str]] = {
     PROFILE_REFERENCE: frozenset({
-        "credit_usage_summary",
         "fastmoss_detail_url_examples",
         "product_category_info",
         "search_category_by_words",
@@ -122,7 +121,7 @@ FASTMOSS_TOOL_TITLES: dict[str, str] = {
     "creator_profile_overview": "达人概览", "creator_rank_top_ecommerce": "带货达人榜单",
     "creator_rank_top_growth": "增长达人榜单", "creator_rank_top_potential": "潜力达人榜单",
     "creator_search": "达人搜索结果", "creator_video_analysis": "达人视频分析",
-    "credit_usage_summary": "接口额度使用概览", "fastmoss_detail_url_examples": "详情链接格式说明",
+    "fastmoss_detail_url_examples": "详情链接格式说明",
     "live_detail_analysis": "直播详情分析", "live_products_list": "直播带货商品样本", "live_search": "直播搜索结果",
     "market_category_analysis": "市场类目分析", "market_category_author_sales_matrix": "类目达人销售矩阵",
     "market_category_ranking": "市场类目排名", "product_category_info": "商品类目信息",
@@ -144,7 +143,7 @@ FASTMOSS_TOOL_TITLES: dict[str, str] = {
 FASTMOSS_PUBLIC_API_TOOLS = frozenset({
     "product_search", "product_rank_new_listed", "product_rank_top_selling",
 })
-FASTMOSS_AUDIT_ONLY_TOOLS = frozenset({"credit_usage_summary"})
+FASTMOSS_AUDIT_ONLY_TOOLS: frozenset[str] = frozenset()
 
 
 def _entity_type_for_tool(tool_name: str) -> str:

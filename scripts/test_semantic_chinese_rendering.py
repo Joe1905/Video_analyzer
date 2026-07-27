@@ -51,7 +51,7 @@ def _assert_report_clean(markdown: str) -> None:
 
 
 def test_all_registered_tools_use_chinese_business_titles() -> None:
-    assert len(FASTMOSS_CURRENT_TOOL_NAMES) == 55
+    assert len(FASTMOSS_CURRENT_TOOL_NAMES) == 54
     assert len(SELLERSPRITE_CURRENT_TOOL_NAMES) == 43
     technical_letters = re.compile(r"[A-Za-z_]")
     for title in [*FASTMOSS_TOOL_TITLES.values(), *SELLERSPRITE_TOOL_TITLES.values()]:

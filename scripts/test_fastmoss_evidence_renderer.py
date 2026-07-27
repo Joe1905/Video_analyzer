@@ -37,7 +37,7 @@ EXPECTED_FASTMOSS_TOOLS = frozenset({
     "creator_cargo_summary", "creator_data_trends", "creator_fans_distribution",
     "creator_product_list", "creator_profile_overview", "creator_rank_top_ecommerce",
     "creator_rank_top_growth", "creator_rank_top_potential", "creator_search",
-    "creator_video_analysis", "credit_usage_summary", "fastmoss_detail_url_examples", "live_detail_analysis",
+    "creator_video_analysis", "fastmoss_detail_url_examples", "live_detail_analysis",
     "live_products_list", "live_search", "market_category_analysis",
     "market_category_author_sales_matrix", "market_category_ranking",
     "product_category_info", "product_creator_analysis", "product_detail_info",
@@ -148,7 +148,7 @@ def _entry(tool_name: str, data: dict, state: str = "data") -> dict:
 def test_catalog_covers_all_current_fastmoss_tools() -> None:
     assert EXPECTED_FASTMOSS_TOOLS == FASTMOSS_CURRENT_TOOL_NAMES
     assert EXPECTED_FASTMOSS_TOOLS == frozenset(FASTMOSS_RENDER_SPECS)
-    assert len(FASTMOSS_RENDER_SPECS) == 55
+    assert len(FASTMOSS_RENDER_SPECS) == 54
     diagnostics = fastmoss_semantic_registry_diagnostics(
         f"fastmoss__{name}" for name in EXPECTED_FASTMOSS_TOOLS
     )
@@ -186,10 +186,6 @@ def test_all_tools_render_empty_and_error_as_scoped_narrative() -> None:
         empty = render_fastmoss_tool_evidence(
             _entry(tool_name, {"list": [], "total": 0}, state="empty")
         )
-        if tool_name == "credit_usage_summary":
-            assert "仅用于系统运行审计" in empty.markdown
-            assert empty.business_leaf_paths == empty.excluded_paths
-            continue
         assert empty.empty and not empty.fallback, tool_name
         assert "没有返回业务记录" in empty.markdown, tool_name
         assert "平台全局为零" in empty.markdown, tool_name
@@ -315,19 +311,6 @@ def test_new_product_sample_naturalizes_dates_units_and_audit_fields() -> None:
     assert any("cover_url" in path for path in result.exclusion_reasons)
 
 
-def test_credit_usage_is_registered_but_audit_only() -> None:
-    result = render_fastmoss_tool_evidence(_entry("credit_usage_summary", {
-        "credit_balance": 4200,
-        "used_credits": 800,
-        "subscription": "pro",
-    }))
-    assert not result.fallback
-    assert result.business_leaf_paths == result.excluded_paths
-    assert result.exclusion_reasons
-    assert "4200" not in result.markdown
-    assert "仅用于系统运行审计" in result.markdown
-
-
 def test_document_keeps_call_order_boundaries_and_stats() -> None:
     dossier = {
         "workflow": "product",
@@ -413,7 +396,6 @@ if __name__ == "__main__":
     test_week_request_keeps_provider_week_without_invented_calendar_boundary()
     test_product_ranking_boundaries_prevent_period_and_causal_overreach()
     test_new_product_sample_naturalizes_dates_units_and_audit_fields()
-    test_credit_usage_is_registered_but_audit_only()
     test_document_keeps_call_order_boundaries_and_stats()
     test_registered_semantic_labels_and_enums_use_plain_chinese()
     print("FastMoss evidence renderer tests passed")
