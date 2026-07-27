@@ -12435,6 +12435,16 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
         f"max_rounds={max_tool_rounds} official_skill={str(official_skill_chain).lower()}",
         flush=True,
     )
+    official_skill_context_max_tokens = (
+        _chat_int_setting(
+            "SELLERSPRITE_OFFICIAL_SKILL_CONTEXT_MAX_TOKENS",
+            500000,
+            120000,
+            1000000,
+        )
+        if sellersprite_official_skill_chain
+        else None
+    )
 
     if provider == "fastmoss" and route_intent == "product_availability" and not resume_from_completed_tools:
         search_arguments = fastmoss_availability_search_arguments(route, routing_text)
@@ -12612,7 +12622,11 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     )
                     continue
         try:
-            request_messages, request_tools, context_stats = manage_chat_context(messages, tools)
+            request_messages, request_tools, context_stats = manage_chat_context(
+                messages,
+                tools,
+                max_tokens=official_skill_context_max_tokens,
+            )
             if context_stats["over_budget"]:
                 raise RuntimeError(
                     f"Chat context remains over budget after compression: "
