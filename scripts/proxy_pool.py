@@ -926,7 +926,7 @@ def _read_display_last_activity_epoch(display_name: str) -> float:
 
 
 def _manual_session_idle_expired(row: sqlite3.Row, now_epoch: float) -> bool:
-    if not row["account_id"] or str(row["owner"] or "") not in {"manual", "manual_review"}:
+    if str(row["owner"] or "") not in {"manual", "manual_review"}:
         return False
     if str(row["current_job_id"] or "").strip():
         return False
@@ -957,6 +957,7 @@ def _active_sessions(conn: sqlite3.Connection) -> list[sqlite3.Row]:
             conn.execute("UPDATE browser_sessions SET status = 'stopped', last_error = COALESCE(NULLIF(last_error, ''), 'browser process exited'), updated_at = ? WHERE id = ?", (now, row["id"]))
         elif _manual_session_idle_expired(row, now_epoch):
             _terminate_session_processes(row)
+            _remove_unbound_session_profile(row)
             idle_minutes = max(1, manual_observation_idle_seconds() // 60)
             conn.execute(
                 "UPDATE browser_sessions SET status = 'stopped', last_error = ?, updated_at = ? WHERE id = ?",
