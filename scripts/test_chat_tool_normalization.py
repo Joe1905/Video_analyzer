@@ -2,11 +2,16 @@
 """Smoke tests for chat tool result normalization."""
 from __future__ import annotations
 
+import base64
+import hashlib
+import io
 import inspect
 import json
 import os
 import re
 import sys
+import tarfile
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,6 +19,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import web_app  # noqa: E402
+from fastmoss_official_skill import (  # noqa: E402
+    OFFICIAL_PROMPT_FILES,
+    OFFICIAL_SKILL_ROOT,
+    clear_official_fastmoss_skill_memory_cache,
+    load_official_fastmoss_skill_prompt,
+)
 from sellersprite_evidence_renderer import (  # noqa: E402
     SELLERSPRITE_RENDER_SPECS,
     SELLERSPRITE_TOOL_SEMANTICS,
@@ -23,6 +34,51 @@ from sellersprite_evidence_renderer import (  # noqa: E402
 )
 from web_app import build_chat_history_context, build_deepseek_tool_assistant_message, build_prefixed_model_tools, build_tool_limit_final_context, chat_markdown_to_html, chat_request_needs_tools, chat_routing_text, compact_chat_tool_evidence, deepseek_tool_protocol_present, estimate_chat_context_tokens, fastmoss_analysis_evidence_gaps, fastmoss_availability_search_arguments, fastmoss_defaults_to_us, fastmoss_empty_availability_answer, fastmoss_playbook_instruction, fastmoss_playbook_intent, fastmoss_product_evidence_required, fastmoss_required_capability_gaps, filter_locked_provider_tool_ids, forced_provider_domain_tool_available, is_chat_retry_request, manage_chat_context, normalize_mcp_tool_arguments, normalize_prefixed_tool_result, normalize_tool_result, parse_chat_intent_decision, provider_default_enabled_tool_ids, provider_forces_mcp_tools, resolve_chat_intent, route_chat_intent  # noqa: E402
 from tools import _filter_relevant_search_results, execute_tool, get_tools_for_model, list_tools, parse_bing_html, parse_duckduckgo_html  # noqa: E402
+
+
+def test_fastmoss_official_skill_chain_loads_exact_package_and_isolates_tools() -> None:
+    archive_buffer = io.BytesIO()
+    with tarfile.open(fileobj=archive_buffer, mode="w:gz") as archive:
+        for index, relative_name in enumerate(OFFICIAL_PROMPT_FILES):
+            content = (
+                f"official-marker-{index}\n"
+                if relative_name == "SKILL.md"
+                else f"official-reference-{relative_name}\n"
+            ).encode("utf-8")
+            info = tarfile.TarInfo(OFFICIAL_SKILL_ROOT + relative_name)
+            info.size = len(content)
+            archive.addfile(info, io.BytesIO(content))
+    payload = archive_buffer.getvalue()
+    digest = base64.b64encode(hashlib.sha512(payload).digest()).decode("ascii")
+    clear_official_fastmoss_skill_memory_cache()
+    with tempfile.TemporaryDirectory() as temp_dir:
+        prompt = load_official_fastmoss_skill_prompt(
+            cache_dir=Path(temp_dir),
+            archive_payload=payload,
+            expected_sha512=digest,
+        )
+    assert "official-marker-0" in prompt
+    for relative_name in OFFICIAL_PROMPT_FILES:
+        assert f"官方文件：{relative_name}" in prompt
+
+    route = web_app.fastmoss_official_skill_route()
+    assert route["official_skill_chain"] is True
+    assert route["route_source"] == "official_skill"
+    assert route["dynamic_planner"] is False
+    assert web_app.fastmoss_official_skill_tool_ids({
+        "fastmoss__product_search",
+        "sellersprite__product_research",
+        "system__current_time",
+    }) == {"fastmoss__product_search"}
+
+    instruction = web_app.fastmoss_official_skill_system_instruction(
+        "2026-07-27",
+        prompt,
+    )
+    assert "FastMoss官方Skill原文开始" in instruction
+    assert "official-marker-0" in instruction
+    assert "不得运行或建议运行 fastmoss CLI" in instruction
+    assert "只能使用本轮实际注册的 fastmoss__ 前缀原生工具调用" in instruction
 
 
 def test_tiktok_search_keeps_analysis_fields() -> None:
@@ -4038,6 +4094,7 @@ def test_analytical_routes_use_report_model_and_fastmoss_preserves_pro_draft() -
 
 
 if __name__ == "__main__":
+    test_fastmoss_official_skill_chain_loads_exact_package_and_isolates_tools()
     test_tiktok_search_keeps_analysis_fields()
     test_amazon_keeps_product_fields()
     test_current_time_tool_is_available()

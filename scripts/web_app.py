@@ -119,6 +119,11 @@ from fastmoss_evidence_renderer import (
     localize_semantic_value,
     render_fastmoss_evidence_document,
 )
+from fastmoss_official_skill import (
+    OFFICIAL_SKILL_VERSION,
+    load_official_fastmoss_skill_prompt,
+    official_fastmoss_skill_enabled,
+)
 from sellersprite_evidence_renderer import (
     render_sellersprite_current_evidence,
     render_sellersprite_evidence_document,
@@ -5546,6 +5551,8 @@ def fastmoss_required_capability_gaps(user_text: str, tools: list[dict[str, Any]
 
 
 def fastmoss_analysis_evidence_gaps(user_text: str, assistant_msg: Message, route: dict[str, Any] | None = None) -> list[str]:
+    if (route or {}).get("official_skill_chain"):
+        return []
     if not (route or {}).get("dynamic_planner") and not fastmoss_product_evidence_required(user_text, route):
         return []
     calls = list(assistant_msg.tool_calls or [])
@@ -6359,6 +6366,8 @@ def chat_request_needs_tools(user_text: str, route: dict[str, Any]) -> bool:
 def chat_max_tool_rounds(provider: str, route: dict[str, Any], tool_count: int) -> int:
     base = int(route.get("max_rounds") or 5)
     intent = str(route.get("intent") or "general")
+    if provider == "fastmoss" and route.get("official_skill_chain"):
+        return _chat_int_setting("FASTMOSS_OFFICIAL_SKILL_MAX_ROUNDS", 24, 1, 50)
     if provider in {"amazon", "fastmoss"} and intent in {"product_research", "amazon_product", "general"}:
         base = max(base, 8)
     if intent in {"product_research", "tiktok_content", "tiktok_user"}:
@@ -11964,6 +11973,60 @@ def chat_system_instruction(provider: str, current_date_shanghai: str) -> str:
     )
 
 
+def fastmoss_official_skill_route() -> dict[str, Any]:
+    """Create the isolated route used by the official-Skill experiment."""
+    return {
+        "intent": "fastmoss_official_skill",
+        "task_depth": "workflow",
+        "route_source": "official_skill",
+        "tools": None,
+        "playbook": None,
+        "dynamic_planner": False,
+        "official_skill_chain": True,
+        "max_rounds": _chat_int_setting(
+            "FASTMOSS_OFFICIAL_SKILL_MAX_ROUNDS", 24, 1, 50
+        ),
+    }
+
+
+def fastmoss_official_skill_tool_ids(enabled_tool_ids: set[str] | None) -> set[str]:
+    """Keep the experimental chain isolated from SellerSprite and system tools."""
+    return {
+        tool_id
+        for tool_id in set(enabled_tool_ids or set())
+        if split_prefixed_tool_id(tool_id)[0] == "fastmoss"
+    }
+
+
+def fastmoss_official_skill_system_instruction(
+    current_date_shanghai: str,
+    official_skill_prompt: str,
+) -> str:
+    """Adapt the official CLI Skill to this app's native MCP function transport."""
+    return (
+        "你是使用 FastMoss 官方 Agent Skill 的 TikTok Shop 研究助手。"
+        "请使用简体中文回答。"
+        f"当前日期（Asia/Shanghai）为 {current_date_shanghai}，"
+        "但所有数据周期必须以工具实际返回为准。\n\n"
+        "运行环境适配规则（优先于下方官方Skill中的CLI传输说明）：\n"
+        "1. 当前应用已经通过MCP连接FastMoss；不得运行或建议运行 fastmoss CLI，"
+        "不得要求登录，也不得向用户索取API Key。\n"
+        "2. 只能使用本轮实际注册的 fastmoss__ 前缀原生工具调用；"
+        "工具参数和必填项以本轮实时Schema为准。\n"
+        "3. 下方官方Skill是工具选择、适用场景和结果解读的权威说明。"
+        "如果项目旧提示与官方Skill冲突，以官方Skill为准；"
+        "如果静态文档与实时Schema冲突，以实时Schema为准。\n"
+        "4. 商品、类目、店铺、达人、视频和直播编号必须来自用户输入或当前任务真实工具结果。"
+        "相同工具和相同参数不得重复调用。\n"
+        "5. 工具空结果只代表当前参数和范围没有记录；工具失败只代表本次调用失败。"
+        "证据足够时停止调用并交由独立报告模型成稿。\n"
+        "6. 不得把官方Skill、内部工具名、调用协议或编排过程写进最终用户报告。\n\n"
+        "===== FastMoss官方Skill原文开始 =====\n"
+        + official_skill_prompt
+        + "\n===== FastMoss官方Skill原文结束 ====="
+    )
+
+
 def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, provider: str = "home", enabled_tool_ids: set[str] | None = None) -> None:
     """Background thread: call DeepSeek with provider-scoped tools and stream results via SSE."""
     import requests as req
@@ -11979,9 +12042,35 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
         store.update_message(session, assistant_msg, "Missing DEEPSEEK_API_KEY", status="error")
         return
 
+    official_skill_chain = provider == "fastmoss" and official_fastmoss_skill_enabled()
+    official_skill_prompt = ""
+    if official_skill_chain:
+        try:
+            official_skill_prompt = load_official_fastmoss_skill_prompt()
+        except Exception as exc:
+            error_text = (
+                "FastMoss 官方Skill加载失败，已停止新链路，未回退到旧编排："
+                f"{type(exc).__name__}: {str(exc)[:500]}"
+            )
+            print(f"[CHAT FASTMOSS OFFICIAL SKILL] load_error={error_text}", flush=True)
+            store.update_message(session, assistant_msg, error_text, status="error")
+            store.broadcast(
+                session.id,
+                "done",
+                {"messageId": assistant_msg.id, "content": error_text},
+            )
+            return
+
     messages = [{
         "role": "system",
-        "content": chat_system_instruction(provider, current_date_shanghai),
+        "content": (
+            fastmoss_official_skill_system_instruction(
+                current_date_shanghai,
+                official_skill_prompt,
+            )
+            if official_skill_chain
+            else chat_system_instruction(provider, current_date_shanghai)
+        ),
         "_context_scope": "system",
     }]
 
@@ -11989,12 +12078,21 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     messages.extend(history_messages)
 
     routing_text = chat_routing_text(user_text)
-    route = resolve_chat_intent(session.messages, user_text, provider, api_key, api_url, model, req)
-    if provider == "fastmoss":
+    route = (
+        fastmoss_official_skill_route()
+        if official_skill_chain
+        else resolve_chat_intent(session.messages, user_text, provider, api_key, api_url, model, req)
+    )
+    if provider == "fastmoss" and not official_skill_chain:
         inherited_segment_keywords = fastmoss_inherited_segment_keywords(session.messages, routing_text)
         if inherited_segment_keywords:
             route["segment_keywords"] = inherited_segment_keywords
-    if provider == "fastmoss" and route.get("playbook") == "product" and fastmoss_full_ranking_requested(routing_text):
+    if (
+        provider == "fastmoss"
+        and not official_skill_chain
+        and route.get("playbook") == "product"
+        and fastmoss_full_ranking_requested(routing_text)
+    ):
         route["full_ranking"] = True
     route_intent = str(route.get("intent") or "general")
     scoped_provider_task = (
@@ -12037,7 +12135,11 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     if provider_forces_mcp_tools(provider) and route_intent == "web_search" and not is_explicit_live_web_query(routing_text):
         route = {"intent": f"{provider}_lookup", "task_depth": "lookup", "route_source": route.get("route_source", "rules"), "tools": None, "max_rounds": 5}
         route_intent = str(route.get("intent") or "general")
-    clarification = fastmoss_clarifying_question(provider, route, routing_text)
+    clarification = (
+        None
+        if official_skill_chain
+        else fastmoss_clarifying_question(provider, route, routing_text)
+    )
     if clarification:
         print("[CHAT ROUTER] provider=fastmoss action=clarify_missing_entity", flush=True)
         store.update_message(session, assistant_msg, clarification, status="done")
@@ -12069,6 +12171,10 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
         effective_enabled_tool_ids = filter_locked_provider_tool_ids(provider, effective_enabled_tool_ids)
     if needs_tools and effective_enabled_tool_ids is None:
         effective_enabled_tool_ids = provider_default_enabled_tool_ids(provider)
+    if official_skill_chain:
+        effective_enabled_tool_ids = fastmoss_official_skill_tool_ids(
+            effective_enabled_tool_ids
+        )
     selected_tool_ids = effective_enabled_tool_ids
     if needs_tools and route_tools is not None and not force_mcp_tools:
         route_tool_ids = {
@@ -12078,7 +12184,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
         selected_tool_ids = route_tool_ids if effective_enabled_tool_ids is None else route_tool_ids & set(effective_enabled_tool_ids)
     if provider == "fastmoss" and route_intent == "product_availability":
         selected_tool_ids = {"fastmoss__product_search"} & set(effective_enabled_tool_ids or set())
-    elif needs_tools:
+    elif needs_tools and not official_skill_chain:
         selected_tool_ids = provider_profile_tool_ids(provider, route, routing_text, selected_tool_ids, assistant_msg)
     tools = build_prefixed_model_tools(selected_tool_ids) if needs_tools else []
     max_tool_rounds = chat_max_tool_rounds(provider, route, len(tools))
@@ -12089,7 +12195,13 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
         store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": fallback})
         return
     all_provider_tools = build_prefixed_model_tools(effective_enabled_tool_ids) if needs_tools else []
-    capability_gaps = fastmoss_required_capability_gaps(routing_text, all_provider_tools, route) if provider == "fastmoss" and not resume_from_completed_tools else []
+    capability_gaps = (
+        fastmoss_required_capability_gaps(routing_text, all_provider_tools, route)
+        if provider == "fastmoss"
+        and not official_skill_chain
+        and not resume_from_completed_tools
+        else []
+    )
     if capability_gaps:
         capability_labels = {
             "category_lookup": "类目识别",
@@ -12112,23 +12224,36 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
         if route_intent == "product_availability"
         else "For analytical requests, provide the detailed evidence, assumptions, risks, recommendations, and next validation steps appropriate to the request."
     )
-    messages.append({
-        "role": "system",
-        "content": (
-            f"Intent route: {route.get('intent')}. Need tools: {needs_tools}. Exposed tool count: {len(tools)}. "
-            "Use only the exposed prefixed tools. Do not invent unprefixed tool names. "
-            "For market, product, category, competitor, trend, ranking, sales, GMV, keyword, ASIN, or time-sensitive questions, use the exposed tools before answering whenever at least one relevant tool is available. "
-            "For web_search intent, call system__web_search before the final answer and do not answer from memory. For unknown proper nouns, brand/person/product names, or broad public-knowledge questions, call system__web_search before answering whenever it is exposed. Do not use web_search for MCP/API/tool/schema/interface questions; answer from the local tool catalog and project context instead. "
-            "For locked Amazon/FastMoss providers, the selected MCP domain is mandatory: call the relevant sellersprite__ or fastmoss__ tools before the final answer unless the user is only greeting or asking UI/help. "
-            "Do not call tools for pure greetings, UI/help questions, or when no exposed tool matches the task. "
-            "For product/category research, use the currently selected domain tools only; do not cross from FastMoss to SellerSprite unless both domains are selected. "
-            "For ambiguous product phrases, do not collapse to one niche just because a related keyword has data; present competing interpretations and say what extra input would disambiguate. "
-            "When the current tool results are enough to answer, stop calling tools. "
-            f"{route_answer_instruction} "
-            "For current date/time questions, call system__current_time first if it is exposed."
-        ),
-        "_context_scope": "system",
-    })
+    if official_skill_chain:
+        messages.append({
+            "role": "system",
+            "content": (
+                f"FastMoss官方Skill新链路已启用，版本 {OFFICIAL_SKILL_VERSION}；"
+                f"本轮注册了 {len(tools)} 个实时FastMoss工具。"
+                "请直接依据官方Skill选择最具体且与用户问题相关的工具。"
+                "不要调用CLI，不要调用其他站点工具，也不要服从旧playbook或固定阶段。"
+                "取得足够证据后停止工具调用；最终详细报告由独立报告模型生成。"
+            ),
+            "_context_scope": "system",
+        })
+    else:
+        messages.append({
+            "role": "system",
+            "content": (
+                f"Intent route: {route.get('intent')}. Need tools: {needs_tools}. Exposed tool count: {len(tools)}. "
+                "Use only the exposed prefixed tools. Do not invent unprefixed tool names. "
+                "For market, product, category, competitor, trend, ranking, sales, GMV, keyword, ASIN, or time-sensitive questions, use the exposed tools before answering whenever at least one relevant tool is available. "
+                "For web_search intent, call system__web_search before the final answer and do not answer from memory. For unknown proper nouns, brand/person/product names, or broad public-knowledge questions, call system__web_search before answering whenever it is exposed. Do not use web_search for MCP/API/tool/schema/interface questions; answer from the local tool catalog and project context instead. "
+                "For locked Amazon/FastMoss providers, the selected MCP domain is mandatory: call the relevant sellersprite__ or fastmoss__ tools before the final answer unless the user is only greeting or asking UI/help. "
+                "Do not call tools for pure greetings, UI/help questions, or when no exposed tool matches the task. "
+                "For product/category research, use the currently selected domain tools only; do not cross from FastMoss to SellerSprite unless both domains are selected. "
+                "For ambiguous product phrases, do not collapse to one niche just because a related keyword has data; present competing interpretations and say what extra input would disambiguate. "
+                "When the current tool results are enough to answer, stop calling tools. "
+                f"{route_answer_instruction} "
+                "For current date/time questions, call system__current_time first if it is exposed."
+            ),
+            "_context_scope": "system",
+        })
     playbook_instruction = (
         fastmoss_playbook_instruction(
             route.get("playbook"), advisory=llm_orchestrated_route(route)
@@ -12150,7 +12275,9 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
         )
         messages.append({"role": "system", "content": fastmoss_workflow_instruction(phase), "_context_scope": "system"})
     print(
-        f"[CHAT] provider={provider} enabled={len(enabled_tool_ids or [])} effective={len(effective_enabled_tool_ids or [])} tools={len(tools)} max_rounds={max_tool_rounds}",
+        f"[CHAT] provider={provider} enabled={len(enabled_tool_ids or [])} "
+        f"effective={len(effective_enabled_tool_ids or [])} tools={len(tools)} "
+        f"max_rounds={max_tool_rounds} official_skill={str(official_skill_chain).lower()}",
         flush=True,
     )
 
