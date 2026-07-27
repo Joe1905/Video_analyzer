@@ -8,6 +8,7 @@ entity type and a lossless Markdown representation for the report model.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
@@ -24,6 +25,7 @@ from fastmoss_evidence_renderer import (
     SemanticToolRenderer,
     ToolRenderSpec,
     business_leaf_paths,
+    localize_semantic_value,
 )
 from json_to_markdown import json_to_markdown
 
@@ -99,11 +101,98 @@ SELLERSPRITE_TOOL_SEMANTICS: dict[str, SellerSpriteToolSemantic] = {
 SELLERSPRITE_TOOL_CAPABILITIES = {
     name: semantic.capability for name, semantic in SELLERSPRITE_TOOL_SEMANTICS.items()
 }
+SELLERSPRITE_TOOL_TITLES: dict[str, str] = {
+    "aba_research_weekly": "亚马逊品牌分析周度关键词榜",
+    "aba_research_monthly": "亚马逊品牌分析月度关键词榜",
+    "keyword_research": "关键词研究结果",
+    "keyword_miner": "关键词挖掘结果",
+    "market_research": "市场研究结果",
+    "product_node": "商品类目节点",
+    "product_research": "商品研究样本",
+    "competitor_lookup": "亚马逊商品竞品样本",
+    "keyword_research_trends": "关键词趋势",
+    "aba_research_trend": "亚马逊品牌分析关键词趋势",
+    "google_trend": "谷歌搜索趋势",
+    "market_ebc_distribution": "市场图文详情分布",
+    "market_price_distribution": "市场价格分布",
+    "market_ratings_count_distribution": "市场评分数量分布",
+    "market_listing_date_distribution": "市场上架日期分布",
+    "market_product_demand_trend": "市场商品需求趋势",
+    "market_product_concentration": "市场商品集中度",
+    "market_brand_concentration": "市场品牌集中度",
+    "market_listing_trend_distribution": "市场上架趋势分布",
+    "market_research_statistics": "市场研究统计",
+    "market_rating_distribution": "市场评分分布",
+    "market_seller_country_distribution": "市场卖家国家分布",
+    "market_seller_type_concentration": "市场卖家类型集中度",
+    "market_seller_concentration": "市场卖家集中度",
+    "asin_detail": "亚马逊商品详情",
+    "asin_detail_with_coupon_trend": "亚马逊商品详情与优惠趋势",
+    "asin_sales_trend": "亚马逊商品销量趋势",
+    "asin_prediction": "亚马逊商品销量预测",
+    "asin_coupon_trend": "亚马逊商品优惠趋势",
+    "keepa_info": "商品历史趋势",
+    "bsr_prediction": "亚马逊类目销量排名预测",
+    "review": "商品评论样本",
+    "traffic_keyword_stat": "亚马逊商品关键词流量统计",
+    "traffic_listing_stat": "亚马逊商品关联流量统计",
+    "traffic_extend": "流量关键词扩展",
+    "keyword_order": "关键词自然排名",
+    "traffic_source": "亚马逊商品流量来源",
+    "traffic_keyword": "亚马逊商品流量关键词",
+    "traffic_listing": "亚马逊商品关联流量商品",
+    "trademark_country_list": "商标国家参考",
+    "trademark_list": "商标检索结果",
+    "trademark_stats": "商标统计分布",
+    "trademark_detail": "商标详情",
+}
 SELLERSPRITE_RENDER_SPECS = {
-    name: ToolRenderSpec(name, semantic.profile, semantic.entity_type)
+    name: ToolRenderSpec(
+        name,
+        semantic.profile,
+        semantic.entity_type,
+        evidence_title=SELLERSPRITE_TOOL_TITLES[name],
+        contract_source="sellersprite_api",
+    )
     for name, semantic in SELLERSPRITE_TOOL_SEMANTICS.items()
 }
 SELLERSPRITE_CURRENT_TOOL_NAMES = frozenset(SELLERSPRITE_TOOL_SEMANTICS)
+
+_INTERNAL_CALL_RE = re.compile(r"\bcall:\d+\b")
+_INTERNAL_TOOL_RE = re.compile(r"\bsellersprite__([A-Za-z0-9_]+)\b")
+
+
+def _report_context_value(value: Any) -> Any:
+    """Remove audit provenance from shared dossier metadata before report input."""
+    if isinstance(value, Mapping):
+        return {
+            str(key): _report_context_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_report_context_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_report_context_value(item) for item in value]
+    if not isinstance(value, str):
+        return value
+
+    def replace_tool(match: re.Match[str]) -> str:
+        tool_name = match.group(1)
+        return SELLERSPRITE_TOOL_TITLES.get(tool_name, "内部数据源")
+
+    text = _INTERNAL_CALL_RE.sub("本次证据", value)
+    text = _INTERNAL_TOOL_RE.sub(replace_tool, text)
+    text = text.replace("source_ref", "对应证据段").replace("arguments", "查询范围")
+    for raw, label in {
+        "Amazon": "亚马逊",
+
+        "ASIN": "亚马逊商品编号",
+        "FastMoss": "短视频电商数据平台",
+        "SellerSprite": "亚马逊数据平台",
+    }.items():
+        text = re.sub(rf"\b{re.escape(raw)}\b", label, text)
+    text = re.sub(r"(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])", "", text)
+    return text
 
 
 def sellersprite_business_payload(value: Any) -> Any:
@@ -160,26 +249,50 @@ def render_sellersprite_current_evidence(evidence: Mapping[str, Any]) -> Rendere
 def render_sellersprite_tool_evidence(entry: Mapping[str, Any]) -> RenderedToolEvidence:
     """Render one normalized SellerSprite report-evidence entry."""
     full_tool_name = str(entry.get("tool_name") or "sellersprite__unknown")
-    renderer = SemanticToolRenderer(entry, render_specs=SELLERSPRITE_RENDER_SPECS)
+    tool_name = full_tool_name.split("__", 1)[-1]
+    if tool_name not in SELLERSPRITE_RENDER_SPECS:
+        data = entry.get("business_data")
+        paths = business_leaf_paths(data)
+        reason = "运行时工具没有登记语义字段契约"
+        return RenderedToolEvidence(
+            markdown=(
+                "## 未登记的业务证据\n\n"
+                "该段返回仅保留在审计证据中，未交给报告模型推理；系统已记录缺失契约诊断。"
+            ),
+            tool_name=tool_name,
+            profile=PROFILE_GENERIC,
+            node_types=["ContractIsolation"],
+            business_leaf_paths=paths,
+            excluded_paths=paths,
+            exclusion_reasons={path: reason for path in paths},
+            diagnostics=[f"{tool_name}: {reason}"],
+            fallback=True,
+        )
+    renderer = SemanticToolRenderer(
+        entry,
+        render_specs=SELLERSPRITE_RENDER_SPECS,
+        strict_contract=True,
+    )
     try:
         result = renderer.render()
-    except Exception:
-        tool_name = full_tool_name.split("__", 1)[-1]
-        data = entry["business_data"]
+    except Exception as exc:
+        data = entry.get("business_data")
         paths = business_leaf_paths(data)
+        spec = SELLERSPRITE_RENDER_SPECS[tool_name]
+        reason = f"语义字段契约渲染失败：{type(exc).__name__}"
         return RenderedToolEvidence(
-            markdown=json_to_markdown(
-                dict(entry),
-                title=f"current-call · {full_tool_name}",
-                include_paths=True,
-            ).rstrip(),
+            markdown=(
+                f"## {spec.evidence_title}\n\n"
+                "该段业务返回未通过已登记的语义字段契约，因此仅保留在审计证据中，"
+                "未交给报告模型推理。"
+            ),
             tool_name=tool_name,
-            profile=SELLERSPRITE_RENDER_SPECS.get(
-                tool_name, ToolRenderSpec(tool_name, PROFILE_GENERIC, "reference")
-            ).profile,
-            node_types=["GenericFallback"],
+            profile=spec.profile,
+            node_types=["ContractIsolation"],
             business_leaf_paths=paths,
-            unmapped_paths=paths,
+            excluded_paths=paths,
+            exclusion_reasons={path: reason for path in paths},
+            diagnostics=[f"{tool_name}: {type(exc).__name__}: {exc}"],
             fallback=True,
         )
     return result
@@ -189,13 +302,20 @@ def render_sellersprite_evidence_document(
     dossier: Mapping[str, Any],
 ) -> RenderedEvidenceDocument:
     """Render a complete SellerSprite dossier while isolating per-call failures."""
-    lines = ["# SellerSprite 调研证据"]
+    lines = ["# 亚马逊调研证据"]
     context = {
         "report_date": dossier.get("report_date"),
         "research_task": dossier.get("research_task") or {},
         "quality_summary": dossier.get("quality_summary") or {},
     }
-    lines.extend(["", json_to_markdown(context, title="调研上下文", include_paths=False).rstrip()])
+    lines.extend([
+        "",
+        json_to_markdown(
+            localize_semantic_value(_report_context_value(context)),
+            title="调研上下文",
+            include_paths=False,
+        ).rstrip(),
+    ])
     results: list[RenderedToolEvidence] = []
     for entry in dossier.get("tool_evidence") or []:
         if not isinstance(entry, Mapping):
@@ -207,7 +327,11 @@ def render_sellersprite_evidence_document(
     if boundaries:
         lines.extend([
             "",
-            json_to_markdown(boundaries, title="硬事实边界", include_paths=False).rstrip(),
+            json_to_markdown(
+                localize_semantic_value(_report_context_value(boundaries)),
+                title="硬事实边界",
+                include_paths=False,
+            ).rstrip(),
         ])
     return RenderedEvidenceDocument(
         markdown="\n".join(lines).rstrip() + "\n",
@@ -220,6 +344,7 @@ __all__ = [
     "SELLERSPRITE_RENDER_SPECS",
     "SELLERSPRITE_TOOL_CAPABILITIES",
     "SELLERSPRITE_TOOL_SEMANTICS",
+    "SELLERSPRITE_TOOL_TITLES",
     "SellerSpriteToolSemantic",
     "render_sellersprite_current_evidence",
     "render_sellersprite_tool_evidence",
