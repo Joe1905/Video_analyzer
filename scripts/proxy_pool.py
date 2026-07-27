@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import binascii
 import calendar
+import ctypes
 import http.client
 import hashlib
 import ipaddress
@@ -69,6 +70,7 @@ STATUS_ACTIVE = "启用"
 STATUS_PAUSED = "禁用"
 STATUS_ERROR = "不可用"
 _LOGIN_CAPTURE_LOCK = threading.Lock()
+_X_IDLE_LOCK = threading.Lock()
 
 
 class ProxyConfigurationError(ValueError):
@@ -117,6 +119,10 @@ def browser_max_slots() -> int:
 
 def pending_login_ttl_seconds() -> int:
     return max(60, int(os.getenv("TIKTOK_PENDING_LOGIN_TTL_SECONDS", "900") or "900"))
+
+
+def manual_observation_idle_seconds() -> int:
+    return max(60, int(os.getenv("TIKTOK_MANUAL_OBSERVATION_IDLE_SECONDS", "300") or "300"))
 
 
 def novnc_port_plan() -> dict[str, Any]:
@@ -234,6 +240,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             feishu_avatar_url TEXT NOT NULL DEFAULT '',
             profile_key TEXT NOT NULL DEFAULT '',
             user_data_dir TEXT NOT NULL DEFAULT '',
+            last_activity_at TEXT NOT NULL DEFAULT '',
             last_error TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
@@ -433,9 +440,15 @@ def init_db(conn: sqlite3.Connection) -> None:
         "feishu_user_name": "TEXT NOT NULL DEFAULT ''",
         "feishu_avatar_url": "TEXT NOT NULL DEFAULT ''",
         "runtime_id": "TEXT NOT NULL DEFAULT ''",
+        "last_activity_at": "TEXT NOT NULL DEFAULT ''",
     }.items():
         if name not in existing_session_cols:
             conn.execute(f"ALTER TABLE browser_sessions ADD COLUMN {name} {definition}")
+    conn.execute(
+        """UPDATE browser_sessions
+           SET last_activity_at = COALESCE(NULLIF(last_activity_at, ''), updated_at, created_at)
+           WHERE last_activity_at = ''"""
+    )
     existing_publish_cols = {row[1] for row in conn.execute("PRAGMA table_info(publish_jobs)")}
     if "next_attempt_at" not in existing_publish_cols:
         conn.execute("ALTER TABLE publish_jobs ADD COLUMN next_attempt_at TEXT NOT NULL DEFAULT ''")
@@ -760,6 +773,7 @@ def _row_to_session(row: sqlite3.Row) -> dict[str, Any]:
         "feishu_avatar_url": row["feishu_avatar_url"],
         "profile_key": row["profile_key"],
         "user_data_dir": row["user_data_dir"],
+        "last_activity_at": row["last_activity_at"],
         "last_error": row["last_error"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
@@ -847,10 +861,86 @@ def _iso_epoch(value: str) -> float:
         return 0.0
 
 
+class _XScreenSaverInfo(ctypes.Structure):
+    _fields_ = [
+        ("window", ctypes.c_ulong),
+        ("state", ctypes.c_int),
+        ("kind", ctypes.c_int),
+        ("since", ctypes.c_ulong),
+        ("idle", ctypes.c_ulong),
+        ("event_mask", ctypes.c_ulong),
+    ]
+
+
+def _display_last_activity_epoch(display_name: str) -> float:
+    display_name = str(display_name or "").strip()
+    if not display_name:
+        return 0.0
+    with _X_IDLE_LOCK:
+        return _read_display_last_activity_epoch(display_name)
+
+
+def _read_display_last_activity_epoch(display_name: str) -> float:
+    display = None
+    info = None
+    try:
+        x11 = ctypes.CDLL("libX11.so.6")
+        xss = ctypes.CDLL("libXss.so.1")
+        x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+        x11.XOpenDisplay.restype = ctypes.c_void_p
+        x11.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
+        x11.XDefaultRootWindow.restype = ctypes.c_ulong
+        x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+        x11.XFree.argtypes = [ctypes.c_void_p]
+        x11.XFree.restype = ctypes.c_int
+        xss.XScreenSaverAllocInfo.restype = ctypes.POINTER(_XScreenSaverInfo)
+        xss.XScreenSaverQueryInfo.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_ulong,
+            ctypes.POINTER(_XScreenSaverInfo),
+        ]
+        xss.XScreenSaverQueryInfo.restype = ctypes.c_int
+        display = x11.XOpenDisplay(display_name.encode("utf-8"))
+        if not display:
+            return 0.0
+        info = xss.XScreenSaverAllocInfo()
+        if not info:
+            return 0.0
+        root = x11.XDefaultRootWindow(display)
+        if not xss.XScreenSaverQueryInfo(display, root, info):
+            return 0.0
+        return time.time() - (float(info.contents.idle) / 1000.0)
+    except (AttributeError, OSError, TypeError, ValueError):
+        return 0.0
+    finally:
+        if info:
+            try:
+                x11.XFree(ctypes.cast(info, ctypes.c_void_p))
+            except (AttributeError, UnboundLocalError):
+                pass
+        if display:
+            try:
+                x11.XCloseDisplay(display)
+            except (AttributeError, UnboundLocalError):
+                pass
+
+
+def _manual_session_idle_expired(row: sqlite3.Row, now_epoch: float) -> bool:
+    if not row["account_id"] or str(row["owner"] or "") not in {"manual", "manual_review"}:
+        return False
+    if str(row["current_job_id"] or "").strip():
+        return False
+    persisted_activity = _iso_epoch(str(row["last_activity_at"] or row["updated_at"] or row["created_at"] or ""))
+    display_activity = _display_last_activity_epoch(str(row["display"] or ""))
+    last_activity = max(persisted_activity, display_activity)
+    return bool(last_activity and last_activity + manual_observation_idle_seconds() <= now_epoch)
+
+
 def _active_sessions(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     rows = conn.execute("SELECT * FROM browser_sessions WHERE status IN ('starting','running','observing') ORDER BY updated_at DESC").fetchall()
     active = []
     now = now_iso()
+    now_epoch = time.time()
     for row in rows:
         pid = int(row["pid"] or 0)
         pending_expired = not row["account_id"] and _iso_epoch(str(row["created_at"] or "")) + pending_login_ttl_seconds() <= time.time()
@@ -865,6 +955,13 @@ def _active_sessions(conn: sqlite3.Connection) -> list[sqlite3.Row]:
             _terminate_session_processes(row)
             _remove_unbound_session_profile(row)
             conn.execute("UPDATE browser_sessions SET status = 'stopped', last_error = COALESCE(NULLIF(last_error, ''), 'browser process exited'), updated_at = ? WHERE id = ?", (now, row["id"]))
+        elif _manual_session_idle_expired(row, now_epoch):
+            _terminate_session_processes(row)
+            idle_minutes = max(1, manual_observation_idle_seconds() // 60)
+            conn.execute(
+                "UPDATE browser_sessions SET status = 'stopped', last_error = ?, updated_at = ? WHERE id = ?",
+                (f"观测界面 {idle_minutes} 分钟无操作且无任务，已自动休眠", now, row["id"]),
+            )
         else:
             active.append(row)
     conn.commit()
@@ -3649,8 +3746,9 @@ def start_login_session(payload: dict[str, Any]) -> dict[str, Any]:
                 slot, proxy_profile_id, account_id, username, status, channel_url, runtime_id,
                 pid, xvfb_pid, x11vnc_pid, websockify_pid, display, vnc_port, novnc_port,
                 debug_port, owner, current_job_id, feishu_user_id, feishu_user_name,
-                feishu_avatar_url, profile_key, user_data_dir, last_error, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)
+                feishu_avatar_url, profile_key, user_data_dir, last_activity_at,
+                last_error, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)
             """,
             (
                 slot,
@@ -3671,6 +3769,7 @@ def start_login_session(payload: dict[str, Any]) -> dict[str, Any]:
                 feishu_avatar_url,
                 profile_key,
                 str((profile.get("isolation") or {}).get("user_data_dir") or ""),
+                now,
                 now,
                 now,
             ),
@@ -3876,8 +3975,8 @@ def claim_observation_session_for_job(account_id: int, session_id: int, job_id: 
         if current_job_id and current_job_id != job_id:
             raise ValueError("观测通道正在执行其他任务")
         conn.execute(
-            "UPDATE browser_sessions SET current_job_id = ?, updated_at = ? WHERE id = ?",
-            (_clean_text(job_id, 80), now_iso(), session_id),
+            "UPDATE browser_sessions SET current_job_id = ?, last_activity_at = ?, updated_at = ? WHERE id = ?",
+            (_clean_text(job_id, 80), now_iso(), now_iso(), session_id),
         )
         conn.commit()
         return _row_to_session(_session_by_id(conn, session_id))
@@ -3894,8 +3993,8 @@ def release_observation_session_job(session_id: int, job_id: str) -> dict[str, A
         if str(row["current_job_id"] or "") not in {"", str(job_id)}:
             raise ValueError("观测通道正在执行其他任务")
         conn.execute(
-            "UPDATE browser_sessions SET current_job_id = '', updated_at = ? WHERE id = ?",
-            (now_iso(), session_id),
+            "UPDATE browser_sessions SET current_job_id = '', last_activity_at = ?, updated_at = ? WHERE id = ?",
+            (now_iso(), now_iso(), session_id),
         )
         conn.commit()
         return _row_to_session(_session_by_id(conn, session_id))
@@ -3912,8 +4011,8 @@ def handoff_automation_session(session_id: int, reason: str) -> dict[str, Any]:
     with connect() as conn:
         row = _session_by_id(conn, session_id)
         conn.execute(
-            "UPDATE browser_sessions SET owner = 'manual_review', current_job_id = '', last_error = ?, updated_at = ? WHERE id = ?",
-            (_clean_text(reason, 1000), now, session_id),
+            "UPDATE browser_sessions SET owner = 'manual_review', current_job_id = '', last_activity_at = ?, last_error = ?, updated_at = ? WHERE id = ?",
+            (now, _clean_text(reason, 1000), now, session_id),
         )
         conn.commit()
         return _row_to_session(_session_by_id(conn, session_id))
@@ -4211,6 +4310,7 @@ def runtime_status() -> dict[str, Any]:
         "mihomo_error": mihomo_error,
         "port_range": f"{PROXY_PORT_START}-{PROXY_PORT_END}",
         "pending_login_ttl_seconds": pending_login_ttl_seconds(),
+        "manual_observation_idle_seconds": manual_observation_idle_seconds(),
         "browser_locale": TIKTOK_BROWSER_LOCALE,
         "browser_notice": f"noVNC 放行端口按账号并发 {novnc_ports['max_slots']} + 手动 {novnc_ports['manual_ports']} 计算：{novnc_ports['allowed_range']}；服务器本机检测为准。",
     }

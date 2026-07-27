@@ -15120,7 +15120,7 @@ def proxy_session_janitor() -> None:
         try:
             released = proxy_pool.cleanup_expired_sessions()
             if released:
-                print(f"Released {released} expired proxy login session(s)", flush=True)
+                print(f"Released {released} expired proxy browser session(s)", flush=True)
         except Exception as exc:
             print(f"Proxy session cleanup failed: {exc}", flush=True)
         try:
