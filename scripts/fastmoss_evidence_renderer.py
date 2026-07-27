@@ -864,6 +864,7 @@ _FIELD_LABELS = {
 # from FastMoss responses but share this strict report renderer.  Keep their
 # verified business meanings here so both providers use one display contract.
 _FIELD_LABELS.update({
+    "amount": "销售额",
     "asin_detail": "亚马逊商品详情",
     "asin_list": "亚马逊商品编号列表",
     "data_asin": "亚马逊商品编号",
@@ -876,6 +877,7 @@ _FIELD_LABELS.update({
     "coupon": "优惠券",
     "coupon_price": "优惠后价格",
     "coupon_trends": "优惠券趋势",
+    "calc_time": "数据计算时间",
     "created_time": "创建时间",
     "updated_time": "更新时间",
     "delivery_price": "配送费用",
@@ -985,7 +987,9 @@ _FIELD_LABELS.update({
     "storage_fee": "仓储费用",
     "storage_fee_tax": "仓储费用税额",
     "free_relations": "自然关联商品数",
+    "index": "序号",
     "paid_relations": "广告关联商品数",
+    "position": "排名位置",
     "relations": "关联商品数",
 })
 
@@ -1013,6 +1017,14 @@ _AUDIT_ONLY_FIELD_KEYS = {
     "fastmoss_detail_url", "fastmoss_url", "image", "image_url", "images",
     "image_urls", "keyword_jp", "link", "request_id", "sales_rank_url", "timestamp",
     "tiktok_url", "tool_id", "url_list", "zoom_image_url",
+}
+_TOOL_AUDIT_ONLY_FIELD_KEYS = {
+    "asin_detail_with_coupon_trend": {"overviews"},
+    "asin_sales_trend": {"overviews"},
+    "traffic_keyword": {"gk_datas"},
+    "traffic_keyword_stat": {"ac", "ad", "er", "fs", "hr", "ns", "sb", "sv"},
+    "traffic_listing": {"symbol"},
+    "traffic_listing_stat": {"relation"},
 }
 _INTERNAL_REPORT_KEYS = {
     "source_ref", "source_tool", "source_call_index", "tool_name", "fact_id",
@@ -1764,8 +1776,19 @@ class SemanticToolRenderer:
 
     def _strict_label(self, key: str, value: Any, path: str) -> str | None:
         normalized = _normalized_field_key(key)
-        if normalized in _AUDIT_ONLY_FIELD_KEYS:
-            self._exclude_value(value, path, f"{normalized} 为链接、图片或传输审计字段")
+        if self.tool_name == "traffic_listing_stat" and normalized == "items":
+            self._exclude_value(
+                value,
+                path,
+                "关联类型代码尚无经核验的中文业务含义，明细整组仅保留在审计证据中",
+            )
+            self.diagnostics.append(f"{self.tool_name}: 关联类型代码明细仅审计")
+            return None
+        if (
+            normalized in _AUDIT_ONLY_FIELD_KEYS
+            or normalized in _TOOL_AUDIT_ONLY_FIELD_KEYS.get(self.tool_name, set())
+        ):
+            self._exclude_value(value, path, f"{normalized} 仅供接口审计，不参与报告推理")
             return None
         label = _known_field_label(key)
         if label is None and self.strict_contract:

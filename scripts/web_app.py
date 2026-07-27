@@ -8607,6 +8607,8 @@ def sellersprite_render_report_evidence(
         "fallback_tools": [result.tool_name for result in results if result.fallback],
         "empty_result_count": sum(1 for result in results if result.empty),
         "business_leaf_count": sum(len(result.business_leaf_paths) for result in results),
+        "rendered_leaf_count": sum(len(result.consumed_paths) for result in results),
+        "audit_only_leaf_count": sum(len(result.excluded_paths) for result in results),
         "unmapped_leaf_count": sum(len(result.unmapped_paths) for result in results),
         "markdown_chars": len(rendered.markdown),
     }
@@ -8669,6 +8671,8 @@ def log_sellersprite_report_pipeline(
         f"table_rows={sum(1 for line in text.splitlines() if line.lstrip().startswith('|'))} "
         f"calls={len(states)} data={states.count('data')} empty={states.count('empty')} error={states.count('error')} "
         f"business_leaves={int(evidence_render_stats.get('business_leaf_count') or 0)} "
+        f"rendered_leaves={int(evidence_render_stats.get('rendered_leaf_count') or 0)} "
+        f"audit_only_leaves={int(evidence_render_stats.get('audit_only_leaf_count') or 0)} "
         f"unmapped_leaves={int(evidence_render_stats.get('unmapped_leaf_count') or 0)} "
         f"fallback_tools={','.join(evidence_render_stats.get('fallback_tools') or []) or 'none'}",
         flush=True,

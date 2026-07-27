@@ -116,6 +116,11 @@ def test_sellersprite_problem_fields_and_time_are_naturalized() -> None:
                 "trafficKeywordType": "preciseLongTail",
                 "naturalRatio": 0.7,
                 "top3ClickingRate": 0.3313,
+                "calcTime": 1785119494745,
+                "rankPosition": {
+                    "index": 4,
+                    "position": 4,
+                },
                 "badge": {
                     "bestSeller": "N",
                     "newRelease": "Y",
@@ -149,6 +154,9 @@ def test_sellersprite_problem_fields_and_time_are_naturalized() -> None:
         "70%",
         "点击量前三商品占比",
         "33.13%",
+        "数据计算时间",
+        "序号",
+        "排名位置",
         "是否热销商品",
         "是否新品",
         "是否有品牌图文详情",
@@ -158,6 +166,55 @@ def test_sellersprite_problem_fields_and_time_are_naturalized() -> None:
     assert result.excluded_paths
     assert entry == original
     _assert_report_clean(result.markdown)
+
+
+def test_sellersprite_prediction_and_unverified_codes_are_isolated() -> None:
+    prediction = render_sellersprite_tool_evidence({
+        "source_ref": "call:21",
+        "tool_name": "sellersprite__asin_prediction",
+        "arguments": {"marketplace": "US", "asin": "B0CZT19JQ1"},
+        "business_data": {
+            "asin": "B0CZT19JQ1",
+            "dailyItemList": [{
+                "date": "2025-06-01",
+                "sales": 24,
+                "amount": 240,
+                "price": 10,
+            }],
+            "overviews": "{}",
+        },
+        "evidence_fence": {"data_state": "data"},
+    })
+    relationships = render_sellersprite_tool_evidence({
+        "source_ref": "call:22",
+        "tool_name": "sellersprite__traffic_listing_stat",
+        "arguments": {"marketplace": "US", "asin": "B0CZT19JQ1"},
+        "business_data": {
+            "asin": "B0CZT19JQ1",
+            "relations": 94,
+            "freeRelations": 86,
+            "paidRelations": 8,
+            "items": [
+                {"relation": "fbt", "count": 19},
+                {"relation": "avp", "count": 35},
+            ],
+        },
+        "evidence_fence": {"data_state": "data"},
+    })
+
+    assert "销售额" in prediction.markdown
+    assert "240" in prediction.markdown
+    assert "overviews" not in prediction.markdown
+    assert "{}" not in prediction.markdown
+    for expected in ("关联商品数", "自然关联商品数", "广告关联商品数"):
+        assert expected in relationships.markdown
+    for forbidden in ("fbt", "avp", "关联类型代码明细"):
+        assert forbidden not in relationships.markdown
+    assert any("关联类型代码" in reason for reason in relationships.exclusion_reasons.values())
+    assert not prediction.unmapped_paths
+    assert not relationships.unmapped_paths
+    _assert_report_clean(prediction.markdown)
+    _assert_report_clean(relationships.markdown)
 
 
 def test_fastmoss_live_category_fields_are_naturalized() -> None:
@@ -253,6 +310,7 @@ def test_report_document_hides_audit_provenance() -> None:
 if __name__ == "__main__":
     test_all_registered_tools_use_chinese_business_titles()
     test_sellersprite_problem_fields_and_time_are_naturalized()
+    test_sellersprite_prediction_and_unverified_codes_are_isolated()
     test_fastmoss_live_category_fields_are_naturalized()
     test_report_document_hides_audit_provenance()
     print("双站点 Semantic 中文化测试通过")
