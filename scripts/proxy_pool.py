@@ -2948,10 +2948,10 @@ def _sync_mihomo_pool_config(pool: sqlite3.Row | dict[str, Any]) -> dict[str, An
         proxies = body.get("proxies") if ok and isinstance(body, dict) and isinstance(body.get("proxies"), dict) else {}
         if node_name not in proxies:
             raise ProxyConfigurationError(f"mihomo 重载后仍未发现节点 {node_name}：{error}")
-        for _attempt in range(20):
+        for _attempt in range(50):
             if _port_open("127.0.0.1", local_port, timeout=0.2):
                 break
-            time.sleep(0.1)
+            time.sleep(0.2)
         else:
             raise ProxyConfigurationError(f"mihomo 重载后端口 {local_port} 未监听")
     except Exception as exc:
@@ -3167,7 +3167,9 @@ def detect_exit_ip_for_pool(pool: sqlite3.Row) -> dict[str, Any]:
     if not node_name:
         raise ValueError("代理没有 mihomo 节点名")
     local_port = int(pool["local_port"] or 0)
-    if (
+    if str(pool["source_type"] or "") == "static":
+        _sync_mihomo_pool_config(pool)
+    elif (
         local_port
         and not _port_open("127.0.0.1", local_port, timeout=1.0)
         and not _sing_box_reality_pool(pool)
