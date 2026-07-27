@@ -30,6 +30,7 @@ DATA_DIR = ROOT / "data"
 DB_PATH = DATA_DIR / "proxy_pool.sqlite"
 DEFAULT_NOVNC_PUBLIC_URL = os.getenv("NOVNC_PUBLIC_URL", "http://192.168.1.254:6080/vnc.html?autoconnect=1&resize=scale")
 DEFAULT_MIHOMO_API = os.getenv("MIHOMO_API_URL", "http://127.0.0.1:9090")
+SYSTEM_PROXY_DIALER = "GLOBAL"
 SING_BOX_CONFIG_PATH = Path(os.getenv("SING_BOX_CONFIG_PATH", str(DATA_DIR / "sing-box" / "config.json")))
 SING_BOX_COMPOSE_PROJECT = os.getenv("SING_BOX_COMPOSE_PROJECT", "short-video-analyzer").strip() or "short-video-analyzer"
 SING_BOX_COMPOSE_SERVICE = os.getenv("SING_BOX_COMPOSE_SERVICE", "sing-box").strip() or "sing-box"
@@ -485,6 +486,28 @@ def init_db(conn: sqlite3.Connection) -> None:
             except sqlite3.OperationalError as exc:
                 if "duplicate column name" not in str(exc).lower():
                     raise
+    for row in conn.execute(
+        "SELECT id, source_type, dialer_proxy, mihomo_proxy_json FROM proxy_profiles"
+    ):
+        try:
+            mihomo_proxy = json.loads(row["mihomo_proxy_json"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            mihomo_proxy = {}
+        if not isinstance(mihomo_proxy, dict):
+            mihomo_proxy = {}
+        dialer_proxy = SYSTEM_PROXY_DIALER if row["source_type"] == "static" else ""
+        if dialer_proxy:
+            mihomo_proxy["dialer-proxy"] = dialer_proxy
+        else:
+            mihomo_proxy.pop("dialer-proxy", None)
+        serialized = json.dumps(mihomo_proxy, ensure_ascii=False, separators=(",", ":"))
+        if row["dialer_proxy"] != dialer_proxy or row["mihomo_proxy_json"] != serialized:
+            conn.execute(
+                """UPDATE proxy_profiles
+                   SET dialer_proxy = ?, mihomo_proxy_json = ?
+                   WHERE id = ?""",
+                (dialer_proxy, serialized, row["id"]),
+            )
     conn.commit()
 
 
@@ -1963,7 +1986,6 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
     name = _clean_text(payload.get("name"), 160)
     source_uri = _clean_text(payload.get("source_uri"), 10000)
     expected_exit_ip = _clean_text(payload.get("expected_exit_ip"), 80)
-    dialer_proxy = _clean_text(payload.get("dialer_proxy"), 160)
     source_type = _clean_text(payload.get("source_type"), 40)
     lowered_uri = source_uri.lower()
     if lowered_uri.startswith("vless://"):
@@ -1976,6 +1998,7 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
         source_type = "vless"
     if source_type not in {"vless", "vmess", "static"}:
         raise ValueError("代理类型必须为 vless、vmess 或 static")
+    dialer_proxy = SYSTEM_PROXY_DIALER if source_type == "static" else ""
 
     parse_status = "manual"
     parse_error = ""
@@ -2000,7 +2023,7 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
         name = mihomo_name or expected_exit_ip
     if mihomo_proxy and not mihomo_proxy.get("name"):
         mihomo_proxy["name"] = name
-    if source_type == "static" and dialer_proxy and mihomo_proxy:
+    if source_type == "static" and mihomo_proxy:
         mihomo_proxy["dialer-proxy"] = dialer_proxy
 
     now = now_iso()
@@ -2860,6 +2883,10 @@ def _sync_mihomo_pool_config(pool: sqlite3.Row | dict[str, Any]) -> dict[str, An
     pool_id = int(_pool_value(pool, "id", 0) or 0)
     if not proxy or not node_name or not local_port or not pool_id:
         raise ProxyConfigurationError("代理缺少可同步的 mihomo 节点、端口或记录 ID")
+    if str(_pool_value(pool, "source_type") or "") == "static":
+        proxy["dialer-proxy"] = SYSTEM_PROXY_DIALER
+    else:
+        proxy.pop("dialer-proxy", None)
     proxy["name"] = node_name
     listener = {"name": f"tiktok-{_pool_value(pool, 'name')}", "type": "mixed", "port": local_port, "proxy": node_name}
 
@@ -2891,6 +2918,24 @@ def _sync_mihomo_pool_config(pool: sqlite3.Row | dict[str, Any]) -> dict[str, An
             raise
         raise ProxyConfigurationError(f"mihomo 自动同步失败：{exc}") from exc
     return {"configured": True, "node": node_name, "port": local_port, "backup_path": str(backup_path)}
+
+
+def ensure_static_proxy_configs() -> dict[str, Any]:
+    with connect() as conn:
+        pools = conn.execute(
+            """SELECT * FROM proxy_profiles
+               WHERE source_type = 'static' AND parse_status = 'ok' AND status <> ?
+               ORDER BY id""",
+            (STATUS_PAUSED,),
+        ).fetchall()
+    synced: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    for pool in pools:
+        try:
+            synced.append(_sync_mihomo_pool_config(pool))
+        except Exception as exc:
+            errors.append({"id": int(pool["id"]), "name": str(pool["name"]), "error": str(exc)})
+    return {"synced": synced, "errors": errors}
 
 
 def _remove_mihomo_pool_config(
