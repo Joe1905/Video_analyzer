@@ -918,7 +918,15 @@ def test_tool_limit_keeps_large_current_collection_when_capacity_allows() -> Non
             "tool_call_id": f"call_{index}",
             "content": web_app.current_chat_tool_evidence(
                 "sellersprite__keyword_research_trends",
-                {"ok": True, "mcp_data": {"series": ["x" * 8200, marker]}},
+                {
+                    "ok": True,
+                    "mcp_data": {
+                        "trend_series": [{
+                            "date": f"2026-06-{index + 1:02d}",
+                            "value": ("x" * 8200) + marker,
+                        }]
+                    },
+                },
                 {"marketplace": "US", "keyword": f"air pump {index}"},
             ),
             "_context_scope": "current",
