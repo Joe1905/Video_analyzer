@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import ast
 import json
 import base64
 import binascii
@@ -115,6 +116,7 @@ from api_cache import get_cached_or_call, record_api_call
 from api_cache import get_cached, store_response
 from fastmoss_evidence_renderer import (
     FASTMOSS_CURRENT_TOOL_NAMES,
+    localize_semantic_value,
     render_fastmoss_evidence_document,
 )
 from sellersprite_evidence_renderer import (
@@ -8595,29 +8597,83 @@ def sellersprite_report_evidence_dossier(
     }
 
 
-def _log_semantic_brace_residue(provider: str, markdown: str) -> int:
-    """Log complete balanced brace payloads that survive Semantic rendering."""
-    payloads: list[str] = []
+def _semantic_inline_natural_text(value: Any) -> str:
+    if isinstance(value, dict):
+        return "；".join(
+            f"{key}：{_semantic_inline_natural_text(item)}"
+            for key, item in value.items()
+        ) or "没有内容"
+    if isinstance(value, list):
+        return "；".join(
+            f"第{index}项：{_semantic_inline_natural_text(item)}"
+            for index, item in enumerate(value, start=1)
+        ) or "没有记录"
+    return str(value)
+
+
+def _naturalize_and_log_semantic_braces(
+    provider: str,
+    markdown: str,
+) -> tuple[str, int, int]:
+    """Naturalize balanced mapping literals and log every success or failure."""
+    text = str(markdown or "")
+    output: list[str] = []
     depth = 0
-    payload_start = -1
-    for index, char in enumerate(str(markdown or "")):
+    brace_start = -1
+    cursor = 0
+    success_count = 0
+    failure_count = 0
+    match_count = 0
+    for index, char in enumerate(text):
         if char == "{":
             if depth == 0:
-                payload_start = index + 1
+                brace_start = index
             depth += 1
         elif char == "}" and depth:
             depth -= 1
-            if depth == 0 and payload_start >= 0:
-                payloads.append(markdown[payload_start:index])
-                payload_start = -1
-    for index, payload in enumerate(payloads, start=1):
-        print(
-            "[CHAT SEMANTIC BRACE RESIDUE] "
-            f"provider={provider} match={index}/{len(payloads)} chars={len(payload)} "
-            f"content={json.dumps(payload, ensure_ascii=False)}",
-            flush=True,
-        )
-    return len(payloads)
+            if depth != 0 or brace_start < 0:
+                continue
+            match_count += 1
+            payload = text[brace_start + 1:index]
+            raw_mapping = text[brace_start:index + 1]
+            parsed: Any = None
+            errors: list[str] = []
+            try:
+                parsed = json.loads(raw_mapping)
+            except (TypeError, ValueError) as exc:
+                errors.append(type(exc).__name__)
+                try:
+                    parsed = ast.literal_eval(raw_mapping)
+                except (SyntaxError, ValueError) as fallback_exc:
+                    errors.append(type(fallback_exc).__name__)
+            output.append(text[cursor:brace_start])
+            if isinstance(parsed, (dict, list)):
+                natural_payload = _semantic_inline_natural_text(
+                    localize_semantic_value(parsed)
+                )
+                output.append("{" + natural_payload + "}")
+                success_count += 1
+                print(
+                    "[CHAT SEMANTIC BRACE RESIDUE] "
+                    f"provider={provider} match={match_count} status=naturalized "
+                    f"before={json.dumps(payload, ensure_ascii=False)} "
+                    f"after={json.dumps(natural_payload, ensure_ascii=False)}",
+                    flush=True,
+                )
+            else:
+                output.append(raw_mapping)
+                failure_count += 1
+                print(
+                    "[CHAT SEMANTIC BRACE RESIDUE] "
+                    f"provider={provider} match={match_count} status=unchanged "
+                    f"errors={','.join(errors) or 'unsupported_type'} "
+                    f"content={json.dumps(payload, ensure_ascii=False)}",
+                    flush=True,
+                )
+            cursor = index + 1
+            brace_start = -1
+    output.append(text[cursor:])
+    return "".join(output), success_count, failure_count
 
 
 def sellersprite_render_report_evidence(
@@ -8626,8 +8682,10 @@ def sellersprite_render_report_evidence(
     """Render SellerSprite report evidence as semantic Markdown."""
     rendered = render_sellersprite_evidence_document(dossier)
     results = rendered.tool_results
-    brace_pair_count = _log_semantic_brace_residue("sellersprite", rendered.markdown)
-    return rendered.markdown, {
+    markdown, naturalized_braces, unchanged_braces = _naturalize_and_log_semantic_braces(
+        "sellersprite", rendered.markdown
+    )
+    return markdown, {
         "format": "semantic",
         "tool_count": len(results),
         "fallback_tools": [result.tool_name for result in results if result.fallback],
@@ -8636,8 +8694,10 @@ def sellersprite_render_report_evidence(
         "rendered_leaf_count": sum(len(result.consumed_paths) for result in results),
         "audit_only_leaf_count": sum(len(result.excluded_paths) for result in results),
         "unmapped_leaf_count": sum(len(result.unmapped_paths) for result in results),
-        "brace_pair_count": brace_pair_count,
-        "markdown_chars": len(rendered.markdown),
+        "brace_pair_count": naturalized_braces + unchanged_braces,
+        "naturalized_brace_count": naturalized_braces,
+        "unchanged_brace_count": unchanged_braces,
+        "markdown_chars": len(markdown),
     }
 
 
@@ -8821,11 +8881,16 @@ def complete_sellersprite_answer(
 def fastmoss_render_report_evidence(dossier: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     """Render FastMoss report evidence as semantic Markdown."""
     rendered = render_fastmoss_evidence_document(dossier)
-    brace_pair_count = _log_semantic_brace_residue("fastmoss", rendered.markdown)
-    return rendered.markdown, {
+    markdown, naturalized_braces, unchanged_braces = _naturalize_and_log_semantic_braces(
+        "fastmoss", rendered.markdown
+    )
+    return markdown, {
         "format": "semantic",
         **rendered.stats,
-        "brace_pair_count": brace_pair_count,
+        "brace_pair_count": naturalized_braces + unchanged_braces,
+        "naturalized_brace_count": naturalized_braces,
+        "unchanged_brace_count": unchanged_braces,
+        "markdown_chars": len(markdown),
     }
 
 
