@@ -860,6 +860,135 @@ _FIELD_LABELS = {
     "max_total_results": "最多返回结果数",
 }
 
+# SellerSprite returns several tool-specific business fields which are absent
+# from FastMoss responses but share this strict report renderer.  Keep their
+# verified business meanings here so both providers use one display contract.
+_FIELD_LABELS.update({
+    "asin_detail": "亚马逊商品详情",
+    "asin_list": "亚马逊商品编号列表",
+    "data_asin": "亚马逊商品编号",
+    "asin_price": "亚马逊商品价格",
+    "badge": "商品徽章",
+    "badges": "商品徽章",
+    "best_seller": "是否热销商品",
+    "new_release": "是否新品",
+    "ebc": "是否有品牌图文详情",
+    "coupon": "优惠券",
+    "coupon_price": "优惠后价格",
+    "coupon_trends": "优惠券趋势",
+    "created_time": "创建时间",
+    "updated_time": "更新时间",
+    "delivery_price": "配送费用",
+    "dimensions": "商品尺寸",
+    "dimension": "商品尺寸",
+    "dimensions_size": "商品尺寸数值",
+    "dimensions_type": "商品尺寸类型",
+    "features": "商品卖点",
+    "first_rating_date": "首次获得评分日期",
+    "lqs": "商品信息质量分",
+    "node": "类目名称",
+    "node_label_path": "类目路径",
+    "node_label_path_locale": "本地化类目路径",
+    "parent": "父商品编号",
+    "prime_price": "会员价格",
+    "questions": "问答数量",
+    "sellers": "卖家数量",
+    "sku_list": "商品规格列表",
+    "subcategories": "子类目",
+    "variant_ratings": "全部变体评分数量",
+    "variant_reviews": "全部变体评论数量",
+    "variation_list": "变体列表",
+    "variation_asins": "变体商品编号",
+    "variations": "变体数量",
+    "weight": "商品重量",
+    "daily_item_list": "每日预测数据",
+    "month_item_list": "月度预测数据",
+    "sales_trend_points": "销量趋势点",
+    "availability_amazon": "亚马逊自营在售状态",
+    "buy_box": "购物车价格历史",
+    "buy_box_seller_id_history": "购物车卖家历史",
+    "deal_price": "促销价格历史",
+    "fba_fees": "亚马逊物流费用",
+    "fba_items": "亚马逊物流费用明细",
+    "number_of_items": "包装内商品数量",
+    "number_of_pages": "页数",
+    "pkg_dimensions": "包装尺寸",
+    "pkg_dimensions_size": "包装尺寸数值",
+    "pkg_dimension_type": "包装尺寸类型",
+    "pkg_weight": "包装重量",
+    "pkg_weight_gram": "包装重量（克）",
+    "price_list": "价格历史",
+    "product_status": "商品状态",
+    "root_category": "根类目编号",
+    "root_category_label": "根类目名称",
+    "sales_rank_reference": "销量排名参考类目编号",
+    "sales_rank_reference_history": "销量排名参考类目历史",
+    "sub_sales_rank": "子类目销量排名",
+    "time_point": "统计时间点",
+    "weight_gram": "商品重量（克）",
+    "author": "评论者",
+    "author_labels": "评论者标签",
+    "content": "评论内容",
+    "experience": "是否体验评价",
+    "free": "是否免费获得",
+    "likes": "有用票数",
+    "skus": "评论对应商品规格",
+    "star": "评论星级",
+    "verified": "是否验证购买",
+    "vine": "是否亚马逊可信评论",
+    "ad_position": "广告排名位置",
+    "ad_ratio": "广告流量占比",
+    "ads": "广告关键词数",
+    "badge_count": "徽章数量",
+    "calculated_weekly_searches": "估算每周搜索量",
+    "conversion_keyword_type": "转化关键词状态",
+    "latest1days_ads": "近1日广告关键词数",
+    "latest7days_ads": "近7日广告关键词数",
+    "latest30days_ads": "近30日广告关键词数",
+    "natural_ratio": "自然流量占比",
+    "rank_position": "排名位置",
+    "ranks": "排名数量",
+    "searches_rank": "搜索量排名",
+    "searches_rank_time_from": "搜索量排名周期起点",
+    "searches_rank_time_to": "搜索量排名周期终点",
+    "searches_trend": "搜索趋势",
+    "stats": "统计明细",
+    "top3_clicking_rate": "点击量前三商品占比",
+    "top3_conversion_rate": "转化量前三商品占比",
+    "top_asins": "头部亚马逊商品",
+    "traffic_keyword_type": "流量关键词类型",
+    "traffic_percentage": "流量占比",
+    "amz_sales": "亚马逊商品销售额",
+    "amz_unit": "亚马逊商品销量",
+    "amz_unit_date": "亚马逊商品销量统计日期",
+    "average_price": "平均价格",
+    "bsr_cr": "类目销量排名变化率",
+    "bsr_cv": "类目销量排名变化值",
+    "bsr_id": "类目销量排名类目编号",
+    "bsr_label": "类目销量排名类目名称",
+    "bsr_rank": "类目销量排名",
+    "fba": "亚马逊物流费用",
+    "final_price": "最终价格",
+    "profit": "利润率",
+    "rating_delta": "评分变化",
+    "ratings_cv": "评分数量变化值",
+    "ratings_rate": "评分数量变化率",
+    "revenue": "销售额",
+    "units": "销量",
+    "units_gr": "销量增长率",
+    "child_sales_revenue": "子商品销售额",
+    "child_unit_sales": "子商品销量",
+    "parent_sales_revenue": "父商品销售额",
+    "parent_unit_sales": "父商品销量",
+    "pick_and_pack_fee": "拣货与包装费用",
+    "pick_and_pack_fee_tax": "拣货与包装费用税额",
+    "storage_fee": "仓储费用",
+    "storage_fee_tax": "仓储费用税额",
+    "free_relations": "自然关联商品数",
+    "paid_relations": "广告关联商品数",
+    "relations": "关联商品数",
+})
+
 _REPORT_VALUE_LABELS = {
     "category_sample_top1_share": "已获取类目样本中销量最高商品的占比",
     "category_sample_top3_share": "已获取类目样本中销量前三商品的占比",
@@ -880,9 +1009,10 @@ _REPORT_VALUE_LABELS = {
     "entity_mismatch": "业务实体不一致",
 }
 _AUDIT_ONLY_FIELD_KEYS = {
-    "avatar", "avatar_thumb", "avatar_url", "cover", "cover_url", "detail_url",
+    "asin_url", "avatar", "avatar_thumb", "avatar_url", "brand_url", "cover", "cover_url", "detail_url",
     "fastmoss_detail_url", "fastmoss_url", "image", "image_url", "images",
-    "keyword_jp", "link", "request_id", "timestamp", "tiktok_url", "tool_id", "url_list",
+    "image_urls", "keyword_jp", "link", "request_id", "sales_rank_url", "timestamp",
+    "tiktok_url", "tool_id", "url_list", "zoom_image_url",
 }
 _INTERNAL_REPORT_KEYS = {
     "source_ref", "source_tool", "source_call_index", "tool_name", "fact_id",
@@ -891,15 +1021,17 @@ _INTERNAL_REPORT_KEYS = {
 
 _ACRONYM_WORDS = {"asin", "bsr", "cpr", "gmv", "id", "ipm", "ppc", "roas", "sku", "spr", "uid", "url"}
 _FRACTION_PERCENT_FIELDS = {
-    "ara_click_rate", "ara_share_rate", "click_rate", "click_share_rate", "conversion_rate", "cvs_share_rate",
-    "monopoly_click_rate", "purchase_rate", "search_rank_cr", "search_rank_growth_rate",
+    "ad_ratio", "ara_click_rate", "ara_share_rate", "click_rate", "click_share_rate",
+    "conversion_rate", "cvs_share_rate", "monopoly_click_rate", "natural_ratio",
+    "purchase_rate", "search_rank_cr", "search_rank_growth_rate",
+    "top3_clicking_rate", "top3_conversion_rate", "traffic_percentage",
     "top_products_gmv_share", "top_shops_gmv_share",
     "w1_rank_growth_rate", "w4_rank_growth_rate", "w12_rank_growth_rate",
 }
 _PERCENT_VALUE_FIELDS = {
     "avg_profit_rate", "brand_crn", "fba_proportion", "goods_crn", "growth",
-    "rank_growth_rate", "search_month_cr", "search_monthly_cr", "search_nearly_cr",
-    "searches_growth",
+    "profit", "rank_growth_rate", "ratings_rate", "search_month_cr", "search_monthly_cr",
+    "search_nearly_cr", "searches_growth", "units_gr",
 }
 _TIMESTAMP_FIELDS = {
     "published_at", "created_at", "updated_at", "publish_time", "create_time",
@@ -959,6 +1091,9 @@ _ENUM_VALUE_LABELS = {
     },
     "match_type": {"2": "广泛匹配", "3": "词组匹配"},
     "badge_nr": {"N": "否", "Y": "是"},
+    "best_seller": {"N": "否", "Y": "是"},
+    "new_release": {"N": "否", "Y": "是"},
+    "ebc": {"N": "否", "Y": "是"},
     "variation": {"N": "否", "Y": "是"},
     "google_prop": {
         "web": "网页搜索",
@@ -1035,6 +1170,20 @@ _ENUM_VALUE_LABELS = {
         "this_month": "本月",
         "recent": "近期",
         "recent_1_2_months": "最近1至2个月",
+    },
+    "product_status": {
+        "STANDARD": "正常在售",
+        "UNAVAILABLE": "不可售",
+    },
+    "conversion_keyword_type": {
+        "lost": "流失关键词",
+        "gained": "新增关键词",
+        "stable": "稳定关键词",
+    },
+    "traffic_keyword_type": {
+        "preciseLongTail": "精准长尾词",
+        "precise": "精准关键词",
+        "broad": "宽泛关键词",
     },
     "type": {
         "category": "类目", "product": "商品", "shop": "店铺", "creator": "达人",
@@ -1238,6 +1387,23 @@ def _natural_calendar_text(field_name: str, value: str) -> str | None:
     return None
 
 
+def _is_timestamp_field(field_name: str) -> bool:
+    normalized = _normalized_field_key(field_name)
+    return (
+        normalized in _TIMESTAMP_FIELDS
+        or normalized.endswith(("_at", "_date", "_time", "_timestamp", "_time_from", "_time_to"))
+        or normalized in {"calc_time", "time_point"}
+    )
+
+
+def _timestamp_is_date_only(field_name: str) -> bool:
+    normalized = _normalized_field_key(field_name)
+    return (
+        normalized in _DATE_ONLY_TIMESTAMP_FIELDS
+        or normalized.endswith(("_date", "_time_from", "_time_to"))
+    )
+
+
 def _semantic_value(field_name: str, value: Any) -> str:
     normalized = _normalized_field_key(str(field_name).rsplit(".", 1)[-1])
     if isinstance(value, Mapping):
@@ -1254,12 +1420,12 @@ def _semantic_value(field_name: str, value: Any) -> str:
         return _field_label(value)
     if isinstance(value, str):
         timestamp_text = value.strip()
-        if normalized in _TIMESTAMP_FIELDS and timestamp_text.isdigit():
+        if _is_timestamp_field(normalized) and timestamp_text.isdigit():
             timestamp_value = int(timestamp_text)
             if timestamp_value >= 1_000_000_000:
                 seconds = timestamp_value / 1000 if timestamp_value >= 10_000_000_000 else timestamp_value
                 moment = datetime.fromtimestamp(seconds, tz=timezone(timedelta(hours=8)))
-                if normalized in _DATE_ONLY_TIMESTAMP_FIELDS:
+                if _timestamp_is_date_only(normalized):
                     return f"{moment.year}年{moment.month}月{moment.day}日"
                 return (
                     f"{moment.year}年{moment.month}月{moment.day}日"
@@ -1272,10 +1438,10 @@ def _semantic_value(field_name: str, value: Any) -> str:
         text = _scalar_text(value)
         return _ENUM_VALUE_LABELS.get(normalized, {}).get(text, text)
     if isinstance(value, (int, float)) and not isinstance(value, bool):
-        if normalized in _TIMESTAMP_FIELDS and value >= 1_000_000_000:
+        if _is_timestamp_field(normalized) and value >= 1_000_000_000:
             seconds = float(value) / 1000 if value >= 10_000_000_000 else float(value)
             moment = datetime.fromtimestamp(seconds, tz=timezone(timedelta(hours=8)))
-            if normalized in _DATE_ONLY_TIMESTAMP_FIELDS:
+            if _timestamp_is_date_only(normalized):
                 return f"{moment.year}年{moment.month}月{moment.day}日"
             return (
                 f"{moment.year}年{moment.month}月{moment.day}日"

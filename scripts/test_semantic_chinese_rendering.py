@@ -111,6 +111,16 @@ def test_sellersprite_problem_fields_and_time_are_naturalized() -> None:
                 "goodsCrn": 36.2,
                 "fbaProportion": 72.1,
                 "availableDate": 1715084401000,
+                "createdTime": 1715084401000,
+                "conversionKeywordType": "lost",
+                "trafficKeywordType": "preciseLongTail",
+                "naturalRatio": 0.7,
+                "top3ClickingRate": 0.3313,
+                "badge": {
+                    "bestSeller": "N",
+                    "newRelease": "Y",
+                    "ebc": "Y",
+                },
                 "optionalUnknown": None,
             }]
         },
@@ -133,6 +143,15 @@ def test_sellersprite_problem_fields_and_time_are_naturalized() -> None:
         "头部商品集中度",
         "亚马逊物流商品占比",
         "2024年5月7日",
+        "流失关键词",
+        "精准长尾词",
+        "自然流量占比",
+        "70%",
+        "点击量前三商品占比",
+        "33.13%",
+        "是否热销商品",
+        "是否新品",
+        "是否有品牌图文详情",
     ):
         assert expected in result.markdown, expected
     assert "optionalUnknown" not in result.markdown
