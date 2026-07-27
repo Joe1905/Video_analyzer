@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from fastmoss_evidence_renderer import (  # noqa: E402
     FASTMOSS_CURRENT_TOOL_NAMES,
     FASTMOSS_TOOL_TITLES,
+    localize_semantic_value,
     render_fastmoss_tool_evidence,
 )
 from sellersprite_evidence_renderer import (  # noqa: E402
@@ -84,6 +85,44 @@ def test_all_registered_tools_use_chinese_business_titles() -> None:
             }
             result = renderer(entry)
             _assert_report_clean(result.markdown)
+
+
+def test_all_registered_tools_naturalize_negative_sentinels() -> None:
+    for provider, names, renderer in (
+        ("fastmoss", FASTMOSS_CURRENT_TOOL_NAMES, render_fastmoss_tool_evidence),
+        ("sellersprite", SELLERSPRITE_CURRENT_TOOL_NAMES, render_sellersprite_tool_evidence),
+    ):
+        for tool_name in sorted(names):
+            entry = {
+                "source_ref": "call:negative-sentinel",
+                "tool_name": f"{provider}__{tool_name}",
+                "arguments": {"region": "US"},
+                "business_data": {
+                    "product_id": "123456789",
+                    "title": "负数哨兵值测试商品",
+                    "price": -1,
+                    "prime_price": "-1",
+                    "shipping_fee": -0.01,
+                    "growth": -12.5,
+                },
+                "evidence_fence": {"data_state": "data"},
+            }
+            markdown = renderer(entry).markdown
+            assert markdown.count("未知") >= 3, (tool_name, markdown)
+            assert not re.search(
+                r"(?:价格|会员价格|运费)\s*(?:\||：)\s*-(?:1|0\.01)(?:\s*\||\s|$)",
+                markdown,
+            ), (tool_name, markdown)
+    localized = localize_semantic_value({
+        "price": -1,
+        "shipping_fee": "-1",
+        "growth": -12.5,
+        "rank_growth_rate": -0.125,
+    })
+    assert localized["价格"] == "未知"
+    assert localized["运费"] == "未知"
+    assert localized["growth"] == "-12.5%"
+    assert localized["排名增长率"] == "-0.125%"
 
 
 def test_sellersprite_problem_fields_and_time_are_naturalized() -> None:
@@ -340,6 +379,7 @@ def test_nested_asin_identity_is_naturalized_without_mapping_repr() -> None:
 
 if __name__ == "__main__":
     test_all_registered_tools_use_chinese_business_titles()
+    test_all_registered_tools_naturalize_negative_sentinels()
     test_sellersprite_problem_fields_and_time_are_naturalized()
     test_sellersprite_prediction_and_unverified_codes_are_isolated()
     test_fastmoss_live_category_fields_are_naturalized()

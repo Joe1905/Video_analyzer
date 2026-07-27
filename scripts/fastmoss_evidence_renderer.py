@@ -1045,6 +1045,10 @@ _PERCENT_VALUE_FIELDS = {
     "profit", "rank_growth_rate", "ratings_rate", "search_month_cr", "search_monthly_cr",
     "search_nearly_cr", "searches_growth", "units_gr",
 }
+_SIGNED_NUMERIC_FIELD_MARKERS = {
+    "change", "delta", "growth", "margin", "mom", "profit", "variance", "yoy",
+}
+_SIGNED_NUMERIC_FIELD_SUFFIXES = ("_gr", "_increase", "_decrease")
 _TIMESTAMP_FIELDS = {
     "published_at", "created_at", "updated_at", "publish_time", "create_time",
     "available_date", "launch_time", "time", "timestamp",
@@ -1361,6 +1365,30 @@ def _percent_text(value: int | float) -> str:
     return f"{float(value):.4f}".rstrip("0").rstrip(".")
 
 
+def _allows_negative_numeric_value(field_name: str) -> bool:
+    """Keep negative values only when the field explicitly describes direction."""
+    normalized = _normalized_field_key(field_name)
+    parts = set(normalized.split("_"))
+    return bool(
+        parts & _SIGNED_NUMERIC_FIELD_MARKERS
+        or normalized.endswith(_SIGNED_NUMERIC_FIELD_SUFFIXES)
+    )
+
+
+def _negative_number_is_unknown(field_name: str, value: Any) -> bool:
+    """Treat provider negative sentinels as unknown without hiding real declines."""
+    if isinstance(value, bool) or _allows_negative_numeric_value(field_name):
+        return False
+    if isinstance(value, (int, float)):
+        return value < 0
+    if isinstance(value, str):
+        text = value.strip()
+        if not re.fullmatch(r"-\d+(?:\.\d+)?", text):
+            return False
+        return float(text) < 0
+    return False
+
+
 def _natural_calendar_text(field_name: str, value: str) -> str | None:
     """Render provider date codes as ordinary Chinese without inventing boundaries."""
     normalized = _normalized_field_key(field_name)
@@ -1430,6 +1458,8 @@ def _semantic_value(field_name: str, value: Any) -> str:
         return "、".join(_field_label(item) for item in fields) or "未指定（返回接口默认字段）"
     if isinstance(value, str) and normalized == "field":
         return _field_label(value)
+    if _negative_number_is_unknown(normalized, value):
+        return "未知"
     if isinstance(value, str):
         timestamp_text = value.strip()
         if _is_timestamp_field(normalized) and timestamp_text.isdigit():
