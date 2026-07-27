@@ -37,6 +37,16 @@ from tools import _filter_relevant_search_results, execute_tool, get_tools_for_m
 
 
 def test_fastmoss_official_skill_chain_loads_exact_package_and_isolates_tools() -> None:
+    previous_fastmoss_report_model = os.environ.get("FASTMOSS_REPORT_MODEL")
+    os.environ["FASTMOSS_REPORT_MODEL"] = "deepseek-v4-flash"
+    try:
+        assert web_app.fastmoss_report_model() == "deepseek-v4-flash"
+    finally:
+        if previous_fastmoss_report_model is None:
+            os.environ.pop("FASTMOSS_REPORT_MODEL", None)
+        else:
+            os.environ["FASTMOSS_REPORT_MODEL"] = previous_fastmoss_report_model
+
     archive_buffer = io.BytesIO()
     with tarfile.open(fileobj=archive_buffer, mode="w:gz") as archive:
         for index, relative_name in enumerate(OFFICIAL_PROMPT_FILES):

@@ -4382,6 +4382,11 @@ def chat_report_model() -> str:
     ).strip() or "deepseek-v4-pro"
 
 
+def fastmoss_report_model() -> str:
+    """Allow FastMoss report-model experiments without changing SellerSprite."""
+    return str(os.getenv("FASTMOSS_REPORT_MODEL", chat_report_model())).strip() or chat_report_model()
+
+
 def chat_route_uses_report_model(provider: str, route: dict[str, Any]) -> bool:
     """Keep direct/lookup traffic on Flash while upgrading evidence-led final reports."""
     intent = str(route.get("intent") or "").strip().lower()
@@ -12064,7 +12069,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     api_key = os.getenv("DEEPSEEK_API_KEY", "")
     api_url = os.getenv("DEEPSEEK_API_URL", "https://api.deepseek.com/v1")
     model = os.getenv("DEEPSEEK_CHAT_MODEL", "deepseek-v4-flash")
-    report_model = chat_report_model()
+    report_model = fastmoss_report_model() if provider == "fastmoss" else chat_report_model()
     current_date_shanghai = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
 
     if not api_key:
