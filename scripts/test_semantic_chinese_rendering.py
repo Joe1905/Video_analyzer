@@ -141,6 +141,61 @@ def test_sellersprite_problem_fields_and_time_are_naturalized() -> None:
     _assert_report_clean(result.markdown)
 
 
+def test_fastmoss_live_category_fields_are_naturalized() -> None:
+    category = render_fastmoss_tool_evidence({
+        "source_ref": "call:1",
+        "tool_name": "fastmoss__product_category_info",
+        "arguments": {"filter": {"region": "US"}},
+        "business_data": {
+            "c_code": "10",
+            "c_name": "家居用品",
+            "sub": [{"c_code": "1001", "c_name": "节庆用品"}],
+        },
+        "evidence_fence": {"data_state": "data"},
+    })
+    market = render_fastmoss_tool_evidence({
+        "source_ref": "call:2",
+        "tool_name": "fastmoss__market_category_analysis",
+        "arguments": {"filter": {"region": "US", "date_value": "2026-06"}},
+        "business_data": {
+            "category_gmv": 117935594.78,
+            "category_gmv_mom_percent": 0,
+            "category_units_sold_mom_percent": 0,
+            "active_product_count_change": -3829,
+            "product_count_change": 7212,
+            "selling_creator_count_change": 0,
+            "selling_live_count_change": 1829,
+            "selling_video_count_change": -45123,
+            "top_products_gmv_share": 0.25,
+            "top_shops_gmv_share": 0.4,
+            "top_products_summary": {
+                "average_affiliate_count": 3060,
+                "average_live_count": 944,
+                "average_video_count": 2750,
+            },
+            "stat_date": "2026-06",
+        },
+        "evidence_fence": {"data_state": "data"},
+    })
+    for result in (category, market):
+        assert not result.unmapped_paths
+        assert not result.excluded_paths
+        _assert_report_clean(result.markdown)
+    for expected in ("类目编码", "类目名称", "下级类目"):
+        assert expected in category.markdown
+    for expected in (
+        "类目成交金额",
+        "类目成交金额环比增长率",
+        "头部商品成交金额占比",
+        "25%",
+        "头部店铺成交金额占比",
+        "40%",
+        "平均关联达人数",
+        "2026年6月",
+    ):
+        assert expected in market.markdown, expected
+
+
 def test_report_document_hides_audit_provenance() -> None:
     dossier = {
         "report_date": "2026-07-27",
@@ -179,5 +234,6 @@ def test_report_document_hides_audit_provenance() -> None:
 if __name__ == "__main__":
     test_all_registered_tools_use_chinese_business_titles()
     test_sellersprite_problem_fields_and_time_are_naturalized()
+    test_fastmoss_live_category_fields_are_naturalized()
     test_report_document_hides_audit_provenance()
     print("双站点 Semantic 中文化测试通过")
