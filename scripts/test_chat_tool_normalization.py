@@ -487,9 +487,13 @@ def test_current_tool_evidence_is_lossless_until_budget_pressure() -> None:
         {"marketplace": "US", "keyword": "air pump"},
         raw_result,
     )
-    assert marker in evidence
-    assert "marketplace" in evidence and "US" in evidence
+    assert marker not in evidence
+    assert "站点" in evidence and "美国站" in evidence
+    assert "marketplace" not in evidence
     assert "本次实际返回 30 条记录" in evidence
+    assert "keyword-20" in evidence
+    assert "2000" in evidence
+    assert "description" not in evidence
     assert "mcp_text_preview" not in evidence
 
     messages = [
