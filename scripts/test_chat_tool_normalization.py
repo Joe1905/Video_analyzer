@@ -1559,8 +1559,21 @@ def test_sellersprite_semantic_registry_is_complete_and_lossless() -> None:
         assert not (result.consumed_paths & result.unmapped_paths)
         assert not result.unmapped_paths
         assert f"kept-{name}" not in result.markdown
-        assert any("futureBusinessField" in path for path in result.excluded_paths)
-        assert any("自然语言字段契约" in reason for reason in result.exclusion_reasons.values())
+        future_paths = [
+            path for path in result.excluded_paths
+            if "futureBusinessField" in path
+        ]
+        assert future_paths
+        if name == "traffic_listing_stat":
+            assert all(
+                "关联类型代码" in result.exclusion_reasons[path]
+                for path in future_paths
+            )
+        else:
+            assert all(
+                "自然语言字段契约" in result.exclusion_reasons[path]
+                for path in future_paths
+            )
         assert "未映射业务字段" not in result.markdown
         assert "JSON路径" not in result.markdown
         assert "原字段" not in result.markdown
