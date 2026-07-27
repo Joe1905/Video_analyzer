@@ -1528,6 +1528,18 @@ def test_sellersprite_semantic_registry_is_complete_and_lossless() -> None:
     }
     for name, semantic in SELLERSPRITE_TOOL_SEMANTICS.items():
         assert not re.search(r"[A-Za-z]", SELLERSPRITE_TOOL_TITLES[name])
+        sample = {
+            "asin": "B0ABCDEF12",
+            "keyword": "stroller fan",
+            "keyword_jp": "ベビーカーファン",
+            "date": "202606",
+            "availableDate": 1773187200000,
+            "currency": "USD",
+            "fulfillment": "FBA",
+            "searches": 12345,
+            "futureBusinessField": f"kept-{name}",
+        }
+        business_data = sample if name == "traffic_listing_stat" else {"items": [sample]}
         result = render_sellersprite_current_evidence({
             "tool": f"sellersprite__{name}",
             "arguments": {
@@ -1537,19 +1549,7 @@ def test_sellersprite_semantic_registry_is_complete_and_lossless() -> None:
             },
             "ok": True,
             "data_state": "data",
-            "data": {
-                "items": [{
-                    "asin": "B0ABCDEF12",
-                    "keyword": "stroller fan",
-                    "keyword_jp": "ベビーカーファン",
-                    "date": "202606",
-                    "availableDate": 1773187200000,
-                    "currency": "USD",
-                    "fulfillment": "FBA",
-                    "searches": 12345,
-                    "futureBusinessField": f"kept-{name}",
-                }],
-            },
+            "data": business_data,
         })
         assert result.profile == semantic.profile
         assert result.fallback is False
@@ -1564,16 +1564,10 @@ def test_sellersprite_semantic_registry_is_complete_and_lossless() -> None:
             if "futureBusinessField" in path
         ]
         assert future_paths
-        if name == "traffic_listing_stat":
-            assert all(
-                "关联类型代码" in result.exclusion_reasons[path]
-                for path in future_paths
-            )
-        else:
-            assert all(
-                "自然语言字段契约" in result.exclusion_reasons[path]
-                for path in future_paths
-            )
+        assert all(
+            "自然语言字段契约" in result.exclusion_reasons[path]
+            for path in future_paths
+        )
         assert "未映射业务字段" not in result.markdown
         assert "JSON路径" not in result.markdown
         assert "原字段" not in result.markdown
