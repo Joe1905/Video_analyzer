@@ -100,6 +100,7 @@ def test_fastmoss_official_skill_chain_loads_exact_package_and_isolates_tools() 
     assert "official-marker-0" in instruction
     assert "不得运行或建议运行 fastmoss CLI" in instruction
     assert "只能使用本轮实际注册的 fastmoss__ 前缀原生工具调用" in instruction
+    assert "普通市场分析不得为此调用辅助工具" in instruction
 
     evidence = SimpleNamespace(tool_calls=[], tool_results=[{
         "tool_name": "fastmoss__product_search",
@@ -3745,6 +3746,8 @@ def test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence() -> None:
     assert "完整工具结果是报告的事实素材" in report_system
     assert "evidence_index：{" not in report_system
     assert "不得写成流量来源、因果、效率或生命周期结论" in report_system
+    assert "事实边界优先于叙事完整性" in report_system
+    assert "不得仅凭这些数据写成核心驱动力、决定性因素或直接原因" in report_system
     assert "# 短视频电商调研证据" in semantic_content
     assert "## 商品销售趋势" in semantic_content
     assert "## 近期上架商品榜" in semantic_content
