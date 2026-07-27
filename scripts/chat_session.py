@@ -32,7 +32,6 @@ class Session:
     created_at: str = ""
     updated_at: str = ""
     messages: list[Message] = field(default_factory=list)
-    research_state: dict | None = None
 
     def __post_init__(self):
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -76,27 +75,6 @@ class ChatStore:
         with self._lock:
             msg.content = content
             msg.status = status
-            session.updated_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        self._schedule_save()
-
-    def update_research_state(self, session: Session, research_state: dict | None) -> None:
-        """Persist internal research control state without exposing it in chat APIs."""
-        with self._lock:
-            session.research_state = research_state
-            session.updated_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        self._schedule_save()
-
-    def commit_research_batch(
-        self,
-        session: Session,
-        message: Message,
-        tool_results: list[dict],
-        research_state: dict,
-    ) -> None:
-        """Commit tool results and their reduced research state under one lock."""
-        with self._lock:
-            message.tool_results = list(message.tool_results or []) + list(tool_results)
-            session.research_state = research_state
             session.updated_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         self._schedule_save()
 
@@ -173,7 +151,6 @@ def save_sessions_to_disk(store: ChatStore):
         serialized.append({
             "id": s.id, "title": ChatStore._auto_title(s),
             "created_at": s.created_at, "updated_at": s.updated_at,
-            "research_state": s.research_state,
             "messages": [{
                 "id": m.id, "role": m.role, "content": m.content,
                 "attachments": m.attachments,
@@ -200,12 +177,7 @@ def load_sessions_from_disk(store: ChatStore):
                 continue
             session = Session(id=sid, title=str(item.get("title", "")),
                               created_at=item.get("created_at", ""),
-                              updated_at=item.get("updated_at", ""),
-                              research_state=(
-                                  item.get("research_state")
-                                  if isinstance(item.get("research_state"), dict)
-                                  else None
-                              ))
+                              updated_at=item.get("updated_at", ""))
             for m in item.get("messages", []):
                 session.messages.append(Message(
                     id=m.get("id", ""), role=m.get("role", "user"),

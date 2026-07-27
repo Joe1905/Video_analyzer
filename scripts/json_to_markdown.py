@@ -189,7 +189,7 @@ class JSONMarkdownRenderer:
             return self._render_dict(value, path, level)
         if not value:
             location = f"（JSON 路径：`{path}`）" if self.include_paths else ""
-            return [f"没有返回任何记录{location}。"]
+            return [f"本数组没有返回任何记录{location}。"]
         return self._render_list(value, path, level)
 
     def _render_dict(self, value: dict[str, JSONValue], path: str, level: int) -> list[str]:
@@ -222,7 +222,7 @@ class JSONMarkdownRenderer:
         if all(_is_scalar(item) for item in included):
             rows = []
             for index, item in enumerate(included):
-                row = [str(index if self.include_paths else index + 1), _scalar_text(item)]
+                row = [str(index), _scalar_text(item)]
                 if self.include_paths:
                     row.append(f"{path}[{index}]")
                 rows.append(row)
@@ -238,7 +238,7 @@ class JSONMarkdownRenderer:
             rows = []
             for index, item in enumerate(included):
                 assert isinstance(item, dict)
-                row = [str(index if self.include_paths else index + 1)]
+                row = [str(index)]
                 for key in keys:
                     row.append(_scalar_text(item[key]) if key in item else "（字段缺失）")
                 if self.include_paths:
@@ -264,8 +264,8 @@ class JSONMarkdownRenderer:
     @staticmethod
     def _list_summary(total: int, included: int, omitted: int) -> str:
         if omitted:
-            return f"共有 {total} 项；本次展示前 {included} 项。"
-        return f"共有 {total} 项；以下完整展示全部 {included} 项。"
+            return f"数组，共 {total} 项；本次展示前 {included} 项。"
+        return f"数组，共 {total} 项；以下完整展示全部 {included} 项。"
 
     def _visible_rows(self, value: list[JSONValue]) -> tuple[list[JSONValue], int]:
         if self.max_table_rows is None or len(value) <= self.max_table_rows:

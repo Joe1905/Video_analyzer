@@ -115,71 +115,20 @@ from api_cache import get_cached_or_call, record_api_call
 from api_cache import get_cached, store_response
 from fastmoss_evidence_renderer import (
     FASTMOSS_CURRENT_TOOL_NAMES,
-    fastmoss_semantic_registry_diagnostics,
     render_fastmoss_evidence_document,
 )
 from sellersprite_evidence_renderer import (
-    SELLERSPRITE_EVIDENCE_CONTRACTS,
-    apply_sellersprite_return_field_plan,
-    project_sellersprite_business_data,
     render_sellersprite_current_evidence,
     render_sellersprite_evidence_document,
     sellersprite_business_payload,
-    sellersprite_contract_diagnostics,
     sellersprite_semantic_registry_diagnostics,
-)
-from commerce_research_ledger import (
-    active_capabilities as ledger_active_capabilities,
-    active_required_facts as ledger_active_required_facts,
-    active_slot as ledger_active_slot,
-    apply_progress_delta as apply_ledger_progress_delta,
-    candidate_complete as ledger_candidate_complete,
-    core_slots_terminal as ledger_core_slots_terminal,
-    create_research_ledger,
-    fallback_slots as fallback_research_slots,
-    finish_no_progress_batch,
-    mark_ready as mark_ledger_ready,
-    planner_instruction as ledger_planner_instruction,
-    reject_candidate_completion,
-    select_active_slot as select_ledger_active_slot,
-    validate_generated_slots,
 )
 from commerce_research_planner import (
     eligible_provider_capabilities,
     eligible_provider_tool_names,
     provider_tool_capability,
     research_task_from,
-    rolling_provider_capabilities,
-    rolling_provider_tool_names,
     validate_research_task_hint,
-)
-from commerce_evidence_gate import (
-    admitted_business_payload,
-    chunk_flash_judge_pending,
-    deterministic_evidence_quality,
-    evidence_quality_allows_entities,
-    evidence_quality_observed,
-    evidence_quality_prompt,
-    flash_judge_payload,
-    merge_flash_chunk_qualities,
-    uncertain_evidence_quality,
-    validate_flash_verdict,
-)
-from commerce_tool_call_gate import (
-    build_call_gate_candidates,
-    call_gate_payload,
-    validate_call_gate_response,
-    validate_json_schema,
-)
-from commerce_evidence_sufficiency import (
-    capability_label,
-    capability_labels,
-    fallback_sufficiency,
-    public_sufficiency_contract,
-    report_contains_internal_protocol,
-    sufficiency_prompt_payload,
-    validate_report_rewrite_response,
-    validate_sufficiency_response,
 )
 from json_to_markdown import json_to_markdown
 from hot_video_report import (
@@ -4417,13 +4366,13 @@ def provider_tool_stage_error(
 
 
 def chat_report_model() -> str:
-    """Use the configured standalone model after analytical evidence collection."""
+    """Use the stronger model only after an analytical request has finished collecting evidence."""
     return str(
         os.getenv(
             "DEEPSEEK_REPORT_MODEL",
-            os.getenv("DEEPSEEK_CHAT_MODEL", "deepseek-v4-flash"),
+            os.getenv("DEEPSEEK_V4_PRO_MODEL", "deepseek-v4-pro"),
         )
-    ).strip() or "deepseek-v4-flash"
+    ).strip() or "deepseek-v4-pro"
 
 
 def chat_route_uses_report_model(provider: str, route: dict[str, Any]) -> bool:
@@ -4852,9 +4801,7 @@ FASTMOSS_EVIDENCE_TOOL_FAMILIES: dict[str, frozenset[str]] = {
         "agency_creator_analysis", "agency_product_analysis", "agency_product_list",
         "agency_profile_overview", "agency_rank_top", "agency_search", "agency_shop_analysis",
     }),
-    "reference": frozenset({
-        "credit_usage_summary", "fastmoss_detail_url_examples", "search_fastmoss_documents",
-    }),
+    "reference": frozenset({"fastmoss_detail_url_examples", "search_fastmoss_documents"}),
 }
 FASTMOSS_SUPPORTED_EVIDENCE_TOOLS = frozenset().union(*FASTMOSS_EVIDENCE_TOOL_FAMILIES.values())
 if FASTMOSS_SUPPORTED_EVIDENCE_TOOLS != FASTMOSS_CURRENT_TOOL_NAMES:
@@ -4908,41 +4855,6 @@ SELLERSPRITE_RESEARCH_TOOLS = {
 SELLERSPRITE_SEMANTIC_DIAGNOSTICS_LOGGED = False
 
 
-def chat_evidence_quality_gate_enabled() -> bool:
-    return str(os.getenv("CHAT_EVIDENCE_QUALITY_GATE_ENABLED", "1")).strip().lower() not in {
-        "0", "false", "no", "off",
-    }
-
-
-def chat_tool_call_gate_enabled() -> bool:
-    return str(os.getenv("CHAT_TOOL_CALL_GATE_ENABLED", "1")).strip().lower() not in {
-        "0", "false", "no", "off",
-    }
-
-
-def chat_evidence_sufficiency_enabled() -> bool:
-    return str(os.getenv("CHAT_EVIDENCE_SUFFICIENCY_ENABLED", "1")).strip().lower() not in {
-        "0", "false", "no", "off",
-    }
-
-
-def chat_report_second_pass_enabled() -> bool:
-    return str(os.getenv("CHAT_REPORT_SECOND_PASS_ENABLED", "1")).strip().lower() not in {
-        "0", "false", "no", "off",
-    }
-
-
-def chat_tool_call_gate_applies(provider: str, route: dict[str, Any]) -> bool:
-    return (
-        chat_tool_call_gate_enabled()
-        and normalize_chat_provider(provider) in {"amazon", "fastmoss"}
-        and str(route.get("task_depth") or "").strip().lower() in {"analysis", "workflow"}
-        and str(route.get("intent") or "") not in {
-            "help", "mcp_interface", "current_time", "product_availability",
-        }
-    )
-
-
 def mcp_result_data_state(result: Any) -> str:
     if not isinstance(result, dict) or result.get("ok") is not True:
         return "error"
@@ -4955,8 +4867,6 @@ def mcp_result_data_state(result: Any) -> str:
 def mcp_result_observed(result: Any) -> bool:
     if not isinstance(result, dict):
         return False
-    if chat_evidence_quality_gate_enabled() and isinstance(result.get("evidence_quality"), dict):
-        return evidence_quality_observed(result)
     if "evidence_observed" in result:
         return result.get("evidence_observed") is True
     return result.get("ok") is True
@@ -5289,10 +5199,6 @@ def _planner_result_payloads(assistant_msg: Message) -> list[Any]:
         if not isinstance(item, dict) or not isinstance(item.get("result"), dict):
             continue
         result = item["result"]
-        if chat_evidence_quality_gate_enabled() and isinstance(result.get("evidence_quality"), dict):
-            if evidence_quality_allows_entities(result):
-                payloads.append(admitted_business_payload(result))
-            continue
         payloads.extend((result.get("mcp_data"), result.get("mcp_text_preview")))
     return payloads
 
@@ -5309,251 +5215,6 @@ def fastmoss_category_ranking_drilldown_count(assistant_msg: Message) -> int:
         if str(call.get("function", {}).get("name") or "") == "fastmoss__market_category_ranking"
         and fastmoss_category_ranking_is_drilldown(_tool_call_arguments(call))
     )
-
-
-def _sellersprite_ledger_summary(ledger: dict[str, Any] | None) -> dict[str, Any]:
-    ledger = ledger if isinstance(ledger, dict) else {}
-    slot = ledger_active_slot(ledger)
-    return {
-        "status": str(ledger.get("status") or ""),
-        "active_slot": ({
-            "id": slot.get("id"),
-            "topic": slot.get("topic"),
-            "entity_scope": slot.get("entity_scope") or {},
-            "required_facts": slot.get("required_facts") or [],
-            "observed_facts": slot.get("observed_facts") or [],
-            "missing_facts": slot.get("missing_facts") or [],
-            "acceptable_capabilities": sorted(ledger_active_capabilities(ledger)),
-        } if slot else None),
-        "core_slots": [{
-            "id": item.get("id"),
-            "topic": item.get("topic"),
-            "state": item.get("state"),
-        } for item in ledger.get("slots") or []
-            if isinstance(item, dict) and item.get("priority") == "core"],
-    }
-
-
-def initialize_sellersprite_research_ledger(
-    session: Session,
-    route: dict[str, Any],
-    user_text: str,
-    enabled_tool_ids: set[str] | None,
-    requests_module: Any,
-    api_key: str,
-    api_url: str,
-    model: str,
-) -> dict[str, Any]:
-    """Create one stable answer-slot ledger for the current SellerSprite task."""
-    allowed_codes = _provider_enabled_capability_codes("amazon", enabled_tool_ids)
-    task = route.get("research_task") if isinstance(route.get("research_task"), dict) else {}
-    allowed_labels = {
-        code: capability_label(code) for code in sorted(allowed_codes)
-    }
-    prompt = json.dumps({
-        "用户问题": chat_routing_text(user_text),
-        "研究任务": task,
-        "可用业务能力": {
-            code: {
-                "名称": label,
-                "可登记事实": list(
-                    SELLERSPRITE_EVIDENCE_CONTRACTS[
-                        next(
-                            name for name, contract in SELLERSPRITE_EVIDENCE_CONTRACTS.items()
-                            if contract.capability == code
-                        )
-                    ].facts
-                ) if any(
-                    contract.capability == code
-                    for contract in SELLERSPRITE_EVIDENCE_CONTRACTS.values()
-                ) else [],
-            }
-            for code, label in allowed_labels.items()
-        },
-        "要求": {
-            "槽位含义": "最终报告必须回答的稳定业务问题；初始化后不再逐轮重建",
-            "核心槽位": "只保留回答原问题不可缺少的内容",
-            "事实": "使用自然语言业务事实，不写接口字段名",
-        },
-    }, ensure_ascii=False, separators=(",", ":"))
-    system_prompt = (
-        "你负责为SellerSprite研究任务初始化稳定答案槽位，不调用工具、不写报告。"
-        "槽位应随用户问题而定，不能按固定工具顺序排列；每个槽位只能引用给定业务能力。"
-        "返回严格JSON且只能包含slots。每项包含id、topic、priority、entity_scope、"
-        "required_facts、acceptable_capabilities、boundaries。"
-        "id从slot-1连续编号；priority只能是core或supporting；"
-        "entity_scope只含entity、region、period；所有事实使用中文业务含义。"
-    )
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0,
-        "max_tokens": 6000,
-        "response_format": {"type": "json_object"},
-    }
-    started = time.monotonic()
-    slots: list[dict[str, Any]] | None = None
-    failure_reason = ""
-    try:
-        response = requests_module.post(
-            api_url.rstrip("/") + "/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            timeout=90,
-        )
-        response.raise_for_status()
-        body = response.json()
-        choice = body.get("choices", [{}])[0]
-        if str(choice.get("finish_reason") or "").strip().lower() == "length":
-            raise ValueError("slot generation finish_reason=length")
-        parsed = _parse_evidence_quality_judge_response(
-            (choice.get("message") or {}).get("content")
-        )
-        slots = validate_generated_slots(
-            parsed, allowed_capabilities=allowed_codes
-        )
-        if slots is None:
-            raise ValueError("invalid SellerSprite research slots")
-        record_api_call(
-            "deepseek",
-            "sellersprite_research_slots",
-            {
-                "model": model,
-                "capability_count": len(allowed_codes),
-                "slot_count": len(slots),
-            },
-            body,
-            elapsed_ms=int((time.monotonic() - started) * 1000),
-        )
-    except Exception as exc:
-        failure_reason = f"{type(exc).__name__}: {str(exc)[:240]}"
-        slots = fallback_research_slots(task, allowed_capabilities=allowed_codes)
-    previous_state = session.research_state if isinstance(session.research_state, dict) else None
-    ledger = create_research_ledger(
-        task,
-        slots,
-        previous_state=previous_state,
-        inherit_compatible=chat_query_uses_previous_entity(user_text),
-    )
-    route["_research_ledger"] = ledger
-    print(
-        "[CHAT LEDGER] "
-        + json.dumps({
-            "event": "initialized",
-            "task_id": ledger.get("task_id"),
-            "slots": len(ledger.get("slots") or []),
-            "inherited": len([
-                ref for ref in ledger.get("evidence_refs") or []
-                if isinstance(ref, dict) and ref.get("source_ref")
-            ]),
-            "source": "fallback" if failure_reason else "v4_flash",
-            **({"error": failure_reason} if failure_reason else {}),
-        }, ensure_ascii=False, separators=(",", ":")),
-        flush=True,
-    )
-    return ledger
-
-
-def sellersprite_ledger_tool_ids(
-    enabled_tool_ids: set[str],
-    ledger: dict[str, Any],
-) -> set[str]:
-    """Expose only tools that can advance the active slot or establish identity."""
-    capabilities = set(ledger_active_capabilities(ledger))
-    slot = ledger_active_slot(ledger) or {}
-    entity_scope = slot.get("entity_scope") if isinstance(slot.get("entity_scope"), dict) else {}
-    entity = str(entity_scope.get("entity") or "").strip()
-    if not entity:
-        if capabilities.intersection({"asin_detail", "asin_review", "asin_traffic"}):
-            capabilities.add("product_discovery")
-        if "market_validation" in capabilities:
-            capabilities.add("category_resolution")
-    return {
-        tool_id for tool_id in enabled_tool_ids
-        if split_prefixed_tool_id(tool_id)[0] != "sellersprite"
-        or provider_tool_capability(
-            "amazon", split_prefixed_tool_id(tool_id)[1]
-        ) in capabilities
-    }
-
-
-def review_sellersprite_candidate_completion(
-    ledger: dict[str, Any],
-    user_text: str,
-    requests_module: Any,
-    api_key: str,
-    api_url: str,
-    model: str,
-) -> dict[str, Any]:
-    """Run the bounded candidate review without allowing new slots or tools."""
-    if not ledger_core_slots_terminal(ledger):
-        return ledger
-    payload_input = {
-        "用户问题": chat_routing_text(user_text),
-        "研究任务": ledger.get("research_task") or {},
-        "槽位": [{
-            "id": slot.get("id"),
-            "topic": slot.get("topic"),
-            "priority": slot.get("priority"),
-            "state": slot.get("state"),
-            "required_facts": slot.get("required_facts") or [],
-            "observed_facts": slot.get("observed_facts") or [],
-            "missing_facts": slot.get("missing_facts") or [],
-            "boundaries": slot.get("boundaries") or [],
-        } for slot in ledger.get("slots") or [] if isinstance(slot, dict)],
-    }
-    system_prompt = (
-        "你是SellerSprite研究候选完成审核器。只能判断现有核心槽位是否已经真实终结，"
-        "不能创建新槽位、业务能力、工具或调用流程，不能要求理想化的额外信息。"
-        "supported表示事实齐备；unavailable、conflicted、blocked表示已带边界终结，也允许成稿。"
-        "若批准，输出{\"decision\":\"approve\",\"slot_id\":\"\",\"reason\":\"中文原因\"}。"
-        "若确有某个槽位状态与其事实矛盾，只能拒绝一个现有槽位，输出"
-        "{\"decision\":\"reject\",\"slot_id\":\"slot-N\",\"reason\":\"中文原因\"}。"
-    )
-    try:
-        response = requests_module.post(
-            api_url.rstrip("/") + "/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            data=json.dumps({
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": json.dumps(payload_input, ensure_ascii=False)},
-                ],
-                "temperature": 0,
-                "max_tokens": 2000,
-                "response_format": {"type": "json_object"},
-            }, ensure_ascii=False).encode("utf-8"),
-            timeout=60,
-        )
-        response.raise_for_status()
-        body = response.json()
-        parsed = _parse_evidence_quality_judge_response(
-            (body.get("choices", [{}])[0].get("message") or {}).get("content")
-        )
-        decision = str((parsed or {}).get("decision") or "")
-        slot_id = str((parsed or {}).get("slot_id") or "")
-        reason = str((parsed or {}).get("reason") or "").strip()
-        allowed_ids = {
-            str(slot.get("id")) for slot in ledger.get("slots") or []
-            if isinstance(slot, dict)
-        }
-        if decision == "reject" and slot_id in allowed_ids and reason:
-            if reject_candidate_completion(ledger, slot_id=slot_id, reason=reason):
-                return ledger
-        if decision != "approve":
-            raise ValueError("invalid candidate completion review")
-    except Exception as exc:
-        print(
-            f"[CHAT LEDGER] candidate review fallback=approve error={type(exc).__name__}: "
-            f"{str(exc)[:180]}",
-            flush=True,
-        )
-    mark_ledger_ready(ledger)
-    return ledger
 
 
 def research_planner_state(
@@ -5615,34 +5276,17 @@ def research_planner_instruction(
     assistant_msg: Message,
 ) -> str:
     task = route.get("research_task") if isinstance(route.get("research_task"), dict) else {}
-    ledger = route.get("_research_ledger")
-    if provider == "amazon" and isinstance(ledger, dict):
-        return ledger_planner_instruction(ledger)
     state = research_planner_state(provider, route, user_text, assistant_msg)
     capabilities = sorted(eligible_provider_capabilities(provider, task, state))
-    sufficiency = (
-        route.get("_evidence_sufficiency")
-        if isinstance(route.get("_evidence_sufficiency"), dict)
-        else {}
-    )
     if llm_orchestrated_route(route):
         instructions = [
             "当前由你自主编排研究工具。程序不会规定首个工具、固定调用顺序、候选方向数量或业务调用次数。",
             "任务描述：" + json.dumps(task, ensure_ascii=False, separators=(",", ":")) + "。",
             "能力图仅供参考，不是工具门禁：" + ("、".join(capabilities) if capabilities else "暂无建议") + "。",
-            "请结合用户原问题、每轮真实结果和独立证据满足判断决定下一项调用。",
-            "你只负责研究与原生工具调用，不得生成最终报告；如果认为研究已经足够，只停止调用，由独立证据满足层决定是否成稿。",
+            "请结合用户原问题和每轮真实结果决定下一项调用；证据足够时可以结束。",
             "空结果和失败结果只完成对应调用，不得扩大为平台全局结论；不得重复同工具同参数。",
             "任何类目 ID、商品 ID 或 ASIN 深挖对象必须来自用户输入或当前工具证据。",
         ]
-        if sufficiency.get("status") == "continue":
-            instructions.append(
-                "独立证据满足层要求继续研究。尚缺业务能力："
-                + "、".join(sufficiency.get("missing_capabilities") or ["未明确"])
-                + "；建议下一能力："
-                + "、".join(sufficiency.get("next_capabilities") or ["根据缺口自行判断"])
-                + "。请提出不同且可行的调用补齐这些业务问题，不得直接输出报告。"
-            )
         if provider == "amazon":
             instructions.append(
                 "SellerSprite 每个工具必须严格使用当前 tools/list 暴露的请求 schema；部分工具使用 request 对象，部分工具使用顶层参数，不能互换。"
@@ -5682,27 +5326,6 @@ def research_planner_instruction(
     return "".join(instructions)
 
 
-def upsert_research_planner_message(
-    messages: list[dict[str, Any]],
-    provider: str,
-    route: dict[str, Any],
-    user_text: str,
-    assistant_msg: Message,
-) -> None:
-    """Keep only the latest planner state in the model conversation."""
-    context_key = "research_planner"
-    messages[:] = [
-        message for message in messages
-        if message.get("_context_key") != context_key
-    ]
-    messages.append({
-        "role": "system",
-        "content": research_planner_instruction(provider, route, user_text, assistant_msg),
-        "_context_scope": "system",
-        "_context_key": context_key,
-    })
-
-
 def log_sellersprite_semantic_diagnostics_once() -> None:
     global SELLERSPRITE_SEMANTIC_DIAGNOSTICS_LOGGED
     if SELLERSPRITE_SEMANTIC_DIAGNOSTICS_LOGGED:
@@ -5740,71 +5363,19 @@ def provider_profile_tool_ids(
     if route.get("dynamic_planner") and provider in {"amazon", "fastmoss"}:
         if provider == "amazon":
             log_sellersprite_semantic_diagnostics_once()
-            ledger = route.get("_research_ledger")
-            if isinstance(ledger, dict):
-                selected = sellersprite_ledger_tool_ids(selected, ledger)
-                print(
-                    "[CHAT LEDGER] "
-                    + json.dumps({
-                        "event": "tool_window",
-                        "task_id": ledger.get("task_id"),
-                        "active_capabilities": sorted(ledger_active_capabilities(ledger)),
-                        "tools": len([
-                            tool_id for tool_id in selected
-                            if split_prefixed_tool_id(tool_id)[0] == "sellersprite"
-                        ]),
-                    }, ensure_ascii=False, separators=(",", ":")),
-                    flush=True,
-                )
-                return selected
         state = research_planner_state(provider, route, user_text, assistant_msg)
-        task = route.get("research_task") if isinstance(route.get("research_task"), dict) else {}
-        eligible = eligible_provider_tool_names(provider, task, state)
-        confidence = float(route.get("confidence") or 0.0)
-        use_rolling_window = (
-            llm_orchestrated_route(route)
-            and str(route.get("route_source") or "") == "llm"
-            and confidence >= 0.8
-        )
-        rolling_capabilities = rolling_provider_capabilities(provider, task, state) if use_rolling_window else set()
-        rolling_tools = rolling_provider_tool_names(provider, task, state) if use_rolling_window else set()
+        eligible = eligible_provider_tool_names(provider, route.get("research_task") or {}, state)
         domain = "sellersprite" if provider == "amazon" else "fastmoss"
-        sufficiency = (
-            route.get("_evidence_sufficiency")
-            if isinstance(route.get("_evidence_sufficiency"), dict)
-            else {}
-        )
-        required_capabilities = {
-            str(code) for code in sufficiency.get("_next_capability_codes") or []
-            if str(code)
-        }
-        if required_capabilities:
-            rolling_capabilities.update(required_capabilities)
-            rolling_tools.update({
-                split_prefixed_tool_id(tool_id)[1]
-                for tool_id in selected
-                if split_prefixed_tool_id(tool_id)[0] == domain
-                and provider_tool_capability(provider, split_prefixed_tool_id(tool_id)[1])
-                in required_capabilities
-            })
-        mode = "llm_window" if rolling_tools else ("llm_full" if llm_orchestrated_route(route) else "legacy_staged")
+        task = route.get("research_task") if isinstance(route.get("research_task"), dict) else {}
         print(
             f"[CHAT PLANNER] provider={provider} objective={task.get('objective')} scope={task.get('scope')} "
             f"entity_type={task.get('entity_type')} attempted={','.join(state.get('attempted_capabilities') or []) or '-'} "
             f"observed={','.join(state.get('observed_capabilities') or []) or '-'} "
-            f"advisory_tools={len(eligible)} window_capabilities={','.join(sorted(rolling_capabilities)) or '-'} "
-            f"sufficiency_next={','.join(sorted(required_capabilities)) or '-'} "
-            f"window_tools={len(rolling_tools)} confidence={confidence:.2f} mode={mode}",
+            f"advisory_tools={len(eligible)} mode={'llm_full' if llm_orchestrated_route(route) else 'legacy_staged'}",
             flush=True,
         )
         if llm_orchestrated_route(route):
-            if not rolling_tools:
-                return selected
-            return {
-                tool_id for tool_id in selected
-                if split_prefixed_tool_id(tool_id)[0] != domain
-                or split_prefixed_tool_id(tool_id)[1] in rolling_tools
-            }
+            return selected
         return {
             tool_id for tool_id in selected
             if split_prefixed_tool_id(tool_id)[0] != domain
@@ -5843,51 +5414,6 @@ def _model_tool_names(tools: list[dict[str, Any]]) -> set[str]:
         for tool in tools
         if isinstance(tool, dict)
     }
-
-
-def sellersprite_ledger_model_tools(
-    tools: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Hide returnFields from the planner; the ledger compiles it internally."""
-    sanitized = json.loads(json.dumps(tools, ensure_ascii=False))
-
-    def strip(schema: Any) -> None:
-        if not isinstance(schema, dict):
-            return
-        properties = schema.get("properties")
-        if isinstance(properties, dict):
-            properties.pop("returnFields", None)
-            for child in properties.values():
-                strip(child)
-        required = schema.get("required")
-        if isinstance(required, list):
-            schema["required"] = [
-                item for item in required if str(item) != "returnFields"
-            ]
-        items = schema.get("items")
-        if isinstance(items, dict):
-            strip(items)
-
-    for tool in sanitized:
-        function = tool.get("function") if isinstance(tool, dict) else None
-        if not isinstance(function, dict):
-            continue
-        if not str(function.get("name") or "").startswith("sellersprite__"):
-            continue
-        strip(function.get("parameters"))
-    return sanitized
-
-
-def _without_return_fields(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {
-            str(key): _without_return_fields(item)
-            for key, item in value.items()
-            if str(key) != "returnFields"
-        }
-    if isinstance(value, list):
-        return [_without_return_fields(item) for item in value]
-    return value
 
 
 def forced_provider_domain_tool_available(provider: str, tools: list[dict[str, Any]]) -> bool:
@@ -6274,61 +5800,15 @@ def tool_label(name: str) -> str:
     return " / ".join(translated) if translated else str(name or "")
 
 
-def _compact_model_tool_text(value: Any, limit: int) -> str:
-    text = re.sub(r"\s+", " ", str(value or "")).strip()
-    if len(text) <= limit:
-        return text
-    return text[:limit].rstrip(" ,;，；") + "…"
-
-
-def compact_model_tool_schema(value: Any) -> Any:
-    """Reduce schema narration without changing callable fields or validation rules."""
-    if isinstance(value, list):
-        return [compact_model_tool_schema(item) for item in value]
-    if not isinstance(value, dict):
-        return value
-    compacted: dict[str, Any] = {}
-    for key, item in value.items():
-        if key in {"$schema", "$comment", "example", "examples", "title", "deprecated", "readOnly", "writeOnly"}:
-            continue
-        if key == "description":
-            compacted[key] = _compact_model_tool_text(item, 160)
-        else:
-            compacted[key] = compact_model_tool_schema(item)
-    return compacted
-
-
 def to_model_tool(tool: dict[str, Any], tool_id: str, description: str | None = None) -> dict[str, Any]:
-    parameters = tool.get("parameters") or tool.get("inputSchema") or {
-        "type": "object", "properties": {}, "additionalProperties": True,
-    }
     return {
         "type": "function",
         "function": {
             "name": tool_id,
-            "description": _compact_model_tool_text(
-                description or tool.get("description") or tool.get("name") or tool_id,
-                240,
-            ),
-            "parameters": compact_model_tool_schema(parameters),
+            "description": description or tool.get("description") or tool.get("name") or tool_id,
+            "parameters": tool.get("parameters") or tool.get("inputSchema") or {"type": "object", "properties": {}, "additionalProperties": True},
         },
     }
-
-
-def log_model_tool_window(
-    provider: str,
-    full_tools: list[dict[str, Any]],
-    visible_tools: list[dict[str, Any]],
-) -> None:
-    full_tokens = estimate_chat_context_tokens([], full_tools)
-    visible_tokens = estimate_chat_context_tokens([], visible_tools)
-    schema_budget = _chat_int_setting("CHAT_CONTEXT_MAX_TOKENS", 500000, 8000, 1000000) * 16 // 100
-    print(
-        f"[CHAT SCHEMA] provider={provider} tools={len(full_tools)}->{len(visible_tools)} "
-        f"estimated_tokens={full_tokens}->{visible_tokens} budget={schema_budget} "
-        f"over_budget={str(visible_tokens > schema_budget).lower()}",
-        flush=True,
-    )
 
 
 def system_chat_tool_ids() -> set[str]:
@@ -6424,30 +5904,6 @@ def decode_tool_masks(masks: Any) -> set[str] | None:
     return selected
 
 
-_fastmoss_registry_diagnostic_signature: tuple[Any, ...] | None = None
-
-
-def log_fastmoss_semantic_registry(runtime_tools: list[dict[str, Any]]) -> dict[str, Any]:
-    global _fastmoss_registry_diagnostic_signature
-    diagnostics = fastmoss_semantic_registry_diagnostics(
-        str(tool.get("name") or "") for tool in runtime_tools
-    )
-    signature = (
-        diagnostics["runtime_count"], diagnostics["registered_count"],
-        tuple(diagnostics["missing_contracts"]), tuple(diagnostics["missing_runtime"]),
-    )
-    if signature != _fastmoss_registry_diagnostic_signature:
-        _fastmoss_registry_diagnostic_signature = signature
-        print(
-            "[CHAT] FastMoss Semantic registry "
-            f"runtime={diagnostics['runtime_count']} registered={diagnostics['registered_count']} "
-            f"missing_contracts={','.join(diagnostics['missing_contracts']) or 'none'} "
-            f"missing_runtime={','.join(diagnostics['missing_runtime']) or 'none'}",
-            flush=True,
-        )
-    return diagnostics
-
-
 def build_prefixed_model_tools(enabled_tool_ids: set[str] | None) -> list[dict[str, Any]]:
     selected = enabled_tool_ids
     model_tools: list[dict[str, Any]] = []
@@ -6464,8 +5920,6 @@ def build_prefixed_model_tools(enabled_tool_ids: set[str] | None) -> list[dict[s
         except Exception as exc:
             print(f"[CHAT] {chat_type} tools/list failed: {exc}", flush=True)
             tools = []
-        if domain == "fastmoss":
-            log_fastmoss_semantic_registry(tools)
         for tool in tools:
             name = str(tool.get("name") or "")
             if not name:
@@ -6525,8 +5979,6 @@ def build_tool_catalog(provider: str) -> dict[str, Any]:
                 "defaultSelected": False,
             })
             continue
-        if domain == "fastmoss":
-            log_fastmoss_semantic_registry(tools)
         for tool in tools:
             name = str(tool.get("name") or "")
             if not name:
@@ -6574,64 +6026,17 @@ def _missing_schema_required_fields(schema: dict[str, Any], value: Any, prefix: 
     return missing
 
 
-_SELLERSPRITE_RETURN_FIELD_ALIASES: dict[str, dict[str, str]] = {
-    "keyword_research": {
-        # SellerSprite's official keyword-research response uses these names.
-        # The singular/short aliases produce null columns in the MCP response.
-        "keyword": "keywords",
-        "searchMonthCr": "searchMonthlyCr",
-        "minBid": "bidMin",
-        "maxBid": "bidMax",
-        "avgBid": "bid",
-    },
-}
-
-
-def normalize_sellersprite_return_fields(
-    name: str,
-    args: dict[str, Any],
-) -> tuple[dict[str, Any], str | None]:
-    aliases = _SELLERSPRITE_RETURN_FIELD_ALIASES.get(str(name or ""))
-    if not aliases:
-        return dict(args or {}), None
-    normalized = dict(args or {})
-    target = normalized
-    if isinstance(normalized.get("request"), dict):
-        target = dict(normalized["request"])
-        normalized["request"] = target
-    raw_fields = target.get("returnFields")
-    if not isinstance(raw_fields, str):
-        return normalized, None
-    fields: list[str] = []
-    changed: list[str] = []
-    for raw_field in raw_fields.split(","):
-        field = raw_field.strip()
-        if not field:
-            continue
-        replacement = aliases.get(field, field)
-        if replacement != field:
-            changed.append(f"{field}->{replacement}")
-        if replacement not in fields:
-            fields.append(replacement)
-    if not changed:
-        return normalized, None
-    target["returnFields"] = ",".join(fields)
-    return normalized, "normalized official SellerSprite return fields: " + ", ".join(changed)
-
-
 def normalize_mcp_tool_arguments(
     chat_type: str,
     name: str,
     args: dict[str, Any],
 ) -> tuple[dict[str, Any], str | None]:
-    normalized = dict(args or {})
-    action: str | None = None
-    if chat_type == "sellersprite":
-        normalized, action = normalize_sellersprite_return_fields(name, normalized)
     schema = _mcp_tool_input_schema(chat_type, name)
     if not schema:
-        return normalized, action
+        return dict(args or {}), None
+    normalized = dict(args or {})
     properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+    action: str | None = None
 
     nested_request = normalized.get("request")
     if (
@@ -6641,8 +6046,7 @@ def normalize_mcp_tool_arguments(
         and (not properties or set(nested_request).issubset(properties))
     ):
         normalized = dict(nested_request)
-        schema_action = "unwrapped request object to match flat schema"
-        action = f"{action}; {schema_action}" if action else schema_action
+        action = "unwrapped request object to match flat schema"
     elif (
         "request" in properties
         and "request" in (schema.get("required") or [])
@@ -6653,17 +6057,11 @@ def normalize_mcp_tool_arguments(
         request_properties = request_schema.get("properties") if isinstance(request_schema.get("properties"), dict) else {}
         if request_properties and set(normalized).issubset(request_properties):
             normalized = {"request": normalized}
-            schema_action = "wrapped flat arguments in request object"
-            action = f"{action}; {schema_action}" if action else schema_action
+            action = "wrapped flat arguments in request object"
 
     missing = _missing_schema_required_fields(schema, normalized)
     if missing:
         raise ValueError(f"Invalid arguments for {name}: missing required field(s): {', '.join(missing)}")
-    schema_errors = validate_json_schema(schema, normalized)
-    if schema_errors:
-        raise ValueError(
-            f"Invalid arguments for {name}: " + "; ".join(schema_errors[:8])
-        )
     return normalized, action
 
 
@@ -6933,689 +6331,6 @@ def normalize_prefixed_tool_result(tool_id: str, result: dict[str, Any]) -> dict
             normalized["evidence_observed"] = True
             normalized["suggested_next_action"] = "answer_from_results" if has_content else "answer_with_limitation"
     return normalized
-
-
-def _parse_evidence_quality_judge_response(content: Any) -> dict[str, Any] | None:
-    text = str(content or "").strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
-        text = re.sub(r"\s*```$", "", text)
-    try:
-        parsed = json.loads(text)
-    except (TypeError, ValueError):
-        return None
-    return parsed if isinstance(parsed, dict) else None
-
-
-def _chat_call_gate_confirmed_identities(
-    provider: str,
-    user_text: str,
-    assistant_msg: Message,
-) -> dict[str, list[str]]:
-    payloads = _planner_result_payloads(assistant_msg)
-
-    def collect_values(value: Any, wanted_keys: set[str]) -> set[str]:
-        found: set[str] = set()
-        if isinstance(value, dict):
-            for key, item in value.items():
-                normalized = re.sub(r"[^a-z0-9]", "", str(key).casefold())
-                if normalized in wanted_keys and not isinstance(item, (dict, list)):
-                    text = str(item or "").strip()
-                    if text:
-                        found.add(text)
-                found.update(collect_values(item, wanted_keys))
-        elif isinstance(value, list):
-            for item in value:
-                found.update(collect_values(item, wanted_keys))
-        return found
-
-    if provider == "fastmoss":
-        identities: dict[str, list[str]] = {
-            "商品编号": sorted(fastmoss_known_product_ids(user_text, assistant_msg)),
-            "类目编号": sorted(fastmoss_known_category_ids(user_text, assistant_msg)),
-        }
-    else:
-        asins = set(_collect_asins(user_text))
-        for payload in payloads:
-            asins.update(_collect_asins(payload))
-        identities = {"ASIN": sorted(asins)}
-    for label, keys in (
-        ("类目节点", {"nodeid", "nodeidpath"}),
-        ("店铺编号", {"shopid", "sellerid"}),
-        ("达人编号", {"creatorid", "creatoruid", "uid"}),
-        ("视频编号", {"videoid"}),
-    ):
-        values: set[str] = set()
-        for payload in payloads:
-            values.update(collect_values(payload, keys))
-        if values:
-            identities[label] = sorted(values)
-    return {key: values for key, values in identities.items() if values}
-
-
-def apply_chat_tool_call_gate(
-    tool_calls: list[dict[str, Any]],
-    model_tools: list[dict[str, Any]],
-    provider: str,
-    user_text: str,
-    route: dict[str, Any],
-    assistant_msg: Message,
-    requests_module: Any,
-    api_key: str,
-    api_url: str,
-    model: str,
-    rejected_cache: dict[str, str],
-) -> dict[str, Any]:
-    """Approve/reject a whole candidate batch before any MCP execution or UI record."""
-    if not tool_calls or not chat_tool_call_gate_applies(provider, route):
-        return {
-            "approved": list(tool_calls),
-            "rejected": [],
-            "failed": False,
-            "latency_ms": 0,
-        }
-
-    fresh_calls: list[dict[str, Any]] = []
-    rejected: list[dict[str, str]] = []
-    for call in tool_calls:
-        function = call.get("function") if isinstance(call.get("function"), dict) else {}
-        name = str(function.get("name") or "")
-        arguments = _tool_call_arguments(call)
-        signature = tool_call_signature(name, arguments)
-        cached_reason = rejected_cache.get(signature)
-        if cached_reason:
-            rejected.append({
-                "tool_name": name,
-                "signature": signature,
-                "reason": cached_reason,
-                "source": "cache",
-            })
-        else:
-            fresh_calls.append(call)
-
-    if not fresh_calls:
-        print(
-            "[CHAT CALL GATE] "
-            + json.dumps({
-                "candidates": len(tool_calls),
-                "approved": 0,
-                "rejected": len(rejected),
-                "cached_rejections": len(rejected),
-                "latency_ms": 0,
-            }, ensure_ascii=False, separators=(",", ":")),
-            flush=True,
-        )
-        return {"approved": [], "rejected": rejected, "failed": False, "latency_ms": 0}
-
-    ledger = route.get("_research_ledger")
-    judge_calls = fresh_calls
-    if provider == "amazon" and isinstance(ledger, dict):
-        judge_calls = []
-        for call in fresh_calls:
-            sanitized_call = dict(call)
-            function = dict(call.get("function") or {})
-            arguments = _without_return_fields(_tool_call_arguments(call))
-            function["arguments"] = json.dumps(arguments, ensure_ascii=False)
-            sanitized_call["function"] = function
-            judge_calls.append(sanitized_call)
-    candidates = build_call_gate_candidates(judge_calls, model_tools)
-    planner_state = (
-        _sellersprite_ledger_summary(ledger)
-        if provider == "amazon" and isinstance(ledger, dict)
-        else research_planner_state(provider, route, user_text, assistant_msg)
-    )
-    control_contract = (
-        {"active_slot": planner_state.get("active_slot")}
-        if provider == "amazon" and isinstance(ledger, dict)
-        else public_sufficiency_contract(route.get("_evidence_sufficiency"))
-    )
-    judge_input = call_gate_payload(
-        user_question=chat_routing_text(user_text),
-        research_task=route.get("research_task") if isinstance(route.get("research_task"), dict) else {},
-        planner_state=planner_state,
-        confirmed_identities=_chat_call_gate_confirmed_identities(provider, user_text, assistant_msg),
-        candidates=candidates,
-        evidence_sufficiency=control_contract,
-    )
-    system_prompt = (
-        "你是商业研究工具的调用前可行性门禁，只能批准或驳回候选调用。"
-        "你不能修改工具名或参数，不能指定替代工具，不能判断商业机会，也不能规定固定工具顺序或调用数量。"
-        "联合比较本批候选：批准与用户问题和研究任务匹配、前置身份已满足、且能补充尚未覆盖证据的调用；"
-        "驳回批内重复、前置条件缺失、对象明显歧义、用途不匹配或不能增加证据的调用。"
-        "若控制状态给出当前活动槽位，只批准能够推进该槽位所缺事实或建立其前置身份的调用；"
-        "明确标注为背景比较的上一周期数据可以作为补充证据，不能只因它不是当前周期就驳回。"
-        "同一工具使用不同有效参数、候选较多或没有固定阶段都不是驳回理由。"
-        "输出严格JSON，且只能包含 decisions；每个候选恰好一项："
-        "{\"decisions\":[{\"call_key\":\"proposal-1\",\"decision\":\"approve|reject\","
-        "\"reason\":\"中文原因\",\"unmet_preconditions\":[]}]}。"
-    )
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": judge_input},
-        ],
-        "temperature": 0,
-        "max_tokens": 8000,
-        "response_format": {"type": "json_object"},
-    }
-    payload_str = json.dumps(payload, ensure_ascii=False)
-    started = time.monotonic()
-    approved: list[dict[str, Any]] = []
-    failure_reason = ""
-    try:
-        response = requests_module.post(
-            api_url.rstrip("/") + "/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            data=payload_str.encode("utf-8"),
-            timeout=60,
-        )
-        response.raise_for_status()
-        body = response.json()
-        record_api_call(
-            "deepseek",
-            "chat_tool_call_gate",
-            {
-                "api_url": api_url.rstrip("/") + "/chat/completions",
-                "model": model,
-                "provider": provider,
-                "candidate_count": len(candidates),
-                "payload_sha256": __import__("hashlib").sha256(payload_str.encode("utf-8")).hexdigest(),
-            },
-            body,
-            elapsed_ms=int((time.monotonic() - started) * 1000),
-        )
-        choice = body.get("choices", [{}])[0]
-        if str(choice.get("finish_reason") or "").strip().lower() == "length":
-            raise ValueError("call gate finish_reason=length")
-        parsed = _parse_evidence_quality_judge_response(
-            (choice.get("message") or {}).get("content")
-        )
-        decisions = validate_call_gate_response(candidates, parsed)
-        if decisions is None:
-            raise ValueError("V4 Flash call-gate response is incomplete or invalid")
-        calls_by_key = {
-            str(candidate.get("call_key") or ""): call
-            for candidate, call in zip(candidates, fresh_calls)
-        }
-        for decision in decisions:
-            call = calls_by_key[decision["call_key"]]
-            function = call.get("function") if isinstance(call.get("function"), dict) else {}
-            name = str(function.get("name") or "")
-            signature = tool_call_signature(name, _tool_call_arguments(call))
-            if decision["decision"] == "approve":
-                approved.append(call)
-                continue
-            reason = decision["reason"]
-            if decision["unmet_preconditions"]:
-                reason += "；未满足前置条件：" + "、".join(decision["unmet_preconditions"])
-            rejected_cache[signature] = reason
-            rejected.append({
-                "tool_name": name,
-                "signature": signature,
-                "reason": reason,
-                "source": "v4_flash",
-            })
-    except Exception as exc:
-        failure_reason = f"{type(exc).__name__}: {exc}"
-    latency_ms = int((time.monotonic() - started) * 1000)
-    print(
-        "[CHAT CALL GATE] "
-        + json.dumps({
-            "candidates": len(tool_calls),
-            "judged": len(candidates),
-            "approved": len(approved),
-            "rejected": len(rejected),
-            "cached_rejections": sum(item.get("source") == "cache" for item in rejected),
-            "latency_ms": latency_ms,
-            **({"error": failure_reason[:300]} if failure_reason else {}),
-        }, ensure_ascii=False, separators=(",", ":")),
-        flush=True,
-    )
-    return {
-        "approved": approved if not failure_reason else [],
-        "rejected": rejected,
-        "failed": bool(failure_reason),
-        "failure_reason": failure_reason,
-        "latency_ms": latency_ms,
-    }
-
-
-def apply_chat_evidence_quality_gate(
-    entries: list[dict[str, Any]],
-    user_text: str,
-    route: dict[str, Any],
-    requests_module: Any,
-    api_key: str,
-    api_url: str,
-    model: str,
-) -> None:
-    """Annotate one assistant turn of provider results with one batched judgment.
-
-    Deterministic checks run for every result. Only ambiguous search/discovery
-    records are sent to V4 Flash, and the batch contains identities and scope but
-    no business metrics.
-    """
-    if not chat_evidence_quality_gate_enabled():
-        return
-    pending_by_key: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
-    for entry_index, entry in enumerate(entries, 1):
-        result = entry.get("normalized_result")
-        if not isinstance(result, dict):
-            continue
-        domain, _ = split_prefixed_tool_id(str(entry.get("tool_name") or ""))
-        if domain not in {"sellersprite", "fastmoss"}:
-            continue
-        quality, pending = deterministic_evidence_quality(
-            str(entry.get("tool_name") or ""),
-            entry.get("arguments") if isinstance(entry.get("arguments"), dict) else {},
-            result,
-        )
-        result["evidence_quality"] = quality
-        if pending is not None:
-            call_key = f"result-{entry_index}"
-            pending["call_key"] = call_key
-            pending_by_key[call_key] = (entry, pending)
-
-    if not pending_by_key:
-        return
-
-    system_prompt = (
-        "你只负责判断工具返回记录是否属于当前查询对象与范围，不判断商业机会，不选择下一工具。"
-        "只根据查询词、调用范围和记录身份判定。不得使用销量、销售额、价格等指标判断相关性。"
-        "输出严格 JSON：{\"calls\":[{\"call_key\":\"...\",\"status\":\"accepted|partial|off_topic|"
-        "identity_missing|scope_uncertain\",\"accepted_rows\":[1],\"rejected_rows\":[2],"
-        "\"unsupported_claims\":[\"...\"],\"reason\":\"中文原因\"}]}。"
-        "accepted 表示全部记录匹配；partial 必须把每行恰好分入 accepted_rows 或 rejected_rows；"
-        "无法确认范围用 scope_uncertain。"
-    )
-    pending_items = [pending for _, pending in pending_by_key.values()]
-    batches = chunk_flash_judge_pending(pending_items, 8000)
-    chunk_counts: dict[str, int] = {}
-    qualities_by_parent: dict[str, list[dict[str, Any]]] = {}
-    failed_parents: set[str] = set()
-    failures: list[str] = []
-    for batch_index, batch in enumerate(batches, 1):
-        batch_parents = {
-            str(item.get("parent_call_key") or item.get("call_key") or "")
-            for item in batch
-        }
-        for parent in batch_parents:
-            chunk_counts[parent] = chunk_counts.get(parent, 0) + sum(
-                1 for item in batch
-                if str(item.get("parent_call_key") or item.get("call_key") or "") == parent
-            )
-        remaining = list(batch)
-        for attempt in range(2):
-            if not remaining:
-                break
-            judge_input = flash_judge_payload(remaining)
-            payload = {
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {
-                        "role": "user",
-                        "content": (
-                            "用户问题：" + chat_routing_text(user_text)
-                            + "\n研究任务：" + json.dumps(route.get("research_task") or {}, ensure_ascii=False, separators=(",", ":"))
-                            + (
-                                "\n上次判定没有覆盖以下分块；本次只补齐这些分块，不要返回其他调用。"
-                                if attempt else ""
-                            )
-                            + "\n待判定调用：" + judge_input
-                        ),
-                    },
-                ],
-                "temperature": 0,
-                "max_tokens": 4000,
-                "response_format": {"type": "json_object"},
-            }
-            payload_str = json.dumps(payload, ensure_ascii=False)
-            try:
-                started = time.monotonic()
-                response = requests_module.post(
-                    api_url.rstrip("/") + "/chat/completions",
-                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                    data=payload_str.encode("utf-8"),
-                    timeout=60,
-                )
-                response.raise_for_status()
-                body = response.json()
-                record_api_call(
-                    "deepseek",
-                    "chat_evidence_quality",
-                    {
-                        "api_url": api_url.rstrip("/") + "/chat/completions",
-                        "model": model,
-                        "provider_call_count": len(batch_parents),
-                        "batch_index": batch_index,
-                        "batch_count": len(batches),
-                        "chunk_count": len(remaining),
-                        "retry": attempt,
-                        "payload_sha256": __import__("hashlib").sha256(payload_str.encode("utf-8")).hexdigest(),
-                    },
-                    body,
-                    elapsed_ms=int((time.monotonic() - started) * 1000),
-                )
-                parsed = _parse_evidence_quality_judge_response(
-                    body.get("choices", [{}])[0].get("message", {}).get("content")
-                )
-                verdicts = parsed.get("calls") if isinstance(parsed, dict) else None
-                if not isinstance(verdicts, list):
-                    raise ValueError("V4 Flash evidence-quality response is not a call list")
-                expected_keys = {str(item.get("call_key") or "") for item in remaining}
-                verdict_by_key = {
-                    str(item.get("call_key") or ""): item
-                    for item in verdicts if isinstance(item, dict)
-                }
-                if not verdict_by_key or not set(verdict_by_key).issubset(expected_keys):
-                    raise ValueError("V4 Flash evidence-quality response has missing or extra chunk decisions")
-                decided_keys: set[str] = set()
-                for pending_chunk in remaining:
-                    chunk_key = str(pending_chunk.get("call_key") or "")
-                    if chunk_key not in verdict_by_key:
-                        continue
-                    parent_key = str(pending_chunk.get("parent_call_key") or chunk_key)
-                    quality = validate_flash_verdict(pending_chunk, verdict_by_key[chunk_key])
-                    if quality is None:
-                        raise ValueError(f"invalid evidence-quality verdict for {chunk_key}")
-                    qualities_by_parent.setdefault(parent_key, []).append(quality)
-                    decided_keys.add(chunk_key)
-                remaining = [
-                    item for item in remaining
-                    if str(item.get("call_key") or "") not in decided_keys
-                ]
-            except Exception as exc:
-                failures.append(
-                    f"batch-{batch_index}-attempt-{attempt + 1}:{type(exc).__name__}: {exc}"
-                )
-        if remaining:
-            failed_parents.update(
-                str(item.get("parent_call_key") or item.get("call_key") or "")
-                for item in remaining
-            )
-
-    for call_key, (entry, pending) in pending_by_key.items():
-        qualities = qualities_by_parent.get(call_key) or []
-        merged = (
-            merge_flash_chunk_qualities(pending, qualities)
-            if call_key not in failed_parents and len(qualities) == chunk_counts.get(call_key, 0)
-            else None
-        )
-        entry["normalized_result"]["evidence_quality"] = merged or uncertain_evidence_quality(
-            pending,
-            "V4 Flash 分块相关性判定未完整覆盖或失败；结果保留给编排参考，但不提供深挖编号。",
-        )
-    failure_reason = " | ".join(failures)
-    status_counts: dict[str, int] = {}
-    for entry in entries:
-        result = entry.get("normalized_result")
-        quality = result.get("evidence_quality") if isinstance(result, dict) else None
-        status = str(quality.get("status") or "disabled") if isinstance(quality, dict) else "disabled"
-        status_counts[status] = status_counts.get(status, 0) + 1
-    print(
-        "[CHAT EVIDENCE] "
-        + json.dumps({
-            "results": len(entries),
-            "flash_judged": len(pending_by_key),
-            "flash_chunks": sum(chunk_counts.values()),
-            "flash_batches": len(batches),
-            "statuses": status_counts,
-            **({"judge_error": failure_reason[:300]} if failure_reason else {}),
-        }, ensure_ascii=False, separators=(",", ":")),
-        flush=True,
-    )
-
-
-def _sufficiency_period_text(value: Any) -> str:
-    text = str(value or "").strip()
-    compact = re.sub(r"[\s./_-]+", "", text)
-    if re.fullmatch(r"\d{6}", compact):
-        return f"{compact[:4]}年{int(compact[4:6])}月"
-    if re.fullmatch(r"\d{8}", compact):
-        return f"{compact[:4]}年{int(compact[4:6])}月{int(compact[6:8])}日"
-    return text
-
-
-def evidence_sufficiency_inventory(
-    provider: str,
-    assistant_msg: Message,
-) -> list[dict[str, Any]]:
-    """Build a compact Chinese business directory without exposing tool names."""
-    provider = normalize_chat_provider(provider)
-    expected_domain = "sellersprite" if provider == "amazon" else "fastmoss"
-    inventory: list[dict[str, Any]] = []
-    for index, item in enumerate(assistant_msg.tool_results or [], 1):
-        if not isinstance(item, dict) or not isinstance(item.get("result"), dict):
-            continue
-        domain, name = split_prefixed_tool_id(str(item.get("tool_name") or ""))
-        if domain != expected_domain:
-            continue
-        result = item["result"]
-        quality = result.get("evidence_quality") if isinstance(result.get("evidence_quality"), dict) else {}
-        metadata = result.get("evidence_metadata") if isinstance(result.get("evidence_metadata"), dict) else {}
-        envelope = result.get("evidence_envelope") if isinstance(result.get("evidence_envelope"), dict) else {}
-        entity_refs: list[str] = []
-        for ref in envelope.get("entity_refs") or []:
-            if not isinstance(ref, dict):
-                continue
-            identity = str(ref.get("id") or "").strip()
-            label = str(ref.get("title") or ref.get("name") or ref.get("type") or "").strip()
-            display = "：".join(part for part in (label, identity) if part)
-            if display and display not in entity_refs:
-                entity_refs.append(display)
-        periods: list[str] = []
-        for value in (
-            metadata.get("requested_period"),
-            metadata.get("requested_date_range"),
-            metadata.get("returned_date_range"),
-            envelope.get("period"),
-        ):
-            values = value if isinstance(value, list) else [value]
-            for raw in values:
-                display = _sufficiency_period_text(raw)
-                if display and display not in periods:
-                    periods.append(display)
-        accepted_rows = quality.get("accepted_rows") if isinstance(quality.get("accepted_rows"), list) else []
-        rejected_rows = quality.get("rejected_rows") if isinstance(quality.get("rejected_rows"), list) else []
-        inventory.append({
-            "证据段": index,
-            "业务能力": capability_label(provider_tool_capability(provider, name)),
-            "准入状态": str(quality.get("status") or mcp_result_data_state(result)),
-            "有效记录数": len(accepted_rows),
-            "拒绝记录数": len(rejected_rows),
-            "支持内容": [
-                str(value) for value in quality.get("supported_dimensions") or []
-                if str(value).strip()
-            ],
-            "不能支持": [
-                str(value) for value in quality.get("unsupported_claims") or []
-                if str(value).strip()
-            ],
-            "对象": entity_refs[:12],
-            "地区": str(metadata.get("region") or envelope.get("region") or ""),
-            "周期": periods[:8],
-            "说明": str(quality.get("reason") or ""),
-        })
-    return inventory
-
-
-def _provider_enabled_capability_codes(
-    provider: str,
-    enabled_tool_ids: set[str] | None,
-) -> set[str]:
-    expected_domain = "sellersprite" if provider == "amazon" else "fastmoss"
-    result: set[str] = set()
-    for tool_id in enabled_tool_ids or set():
-        domain, name = split_prefixed_tool_id(tool_id)
-        if domain != expected_domain:
-            continue
-        capability = provider_tool_capability(provider, name)
-        if capability != "unknown":
-            result.add(capability)
-    return result
-
-
-def evaluate_chat_evidence_sufficiency(
-    provider: str,
-    user_text: str,
-    route: dict[str, Any],
-    assistant_msg: Message,
-    enabled_tool_ids: set[str] | None,
-    requests_module: Any,
-    api_key: str,
-    api_url: str,
-    model: str,
-) -> dict[str, Any]:
-    """Decide continue/ready/blocked without selecting a concrete tool."""
-    provider = normalize_chat_provider(provider)
-    if provider == "amazon" and isinstance(route.get("_research_ledger"), dict):
-        raise RuntimeError(
-            "SellerSprite ResearchLedger must not enter the legacy per-batch sufficiency path"
-        )
-    allowed_codes = _provider_enabled_capability_codes(provider, enabled_tool_ids)
-    state = research_planner_state(provider, route, user_text, assistant_msg)
-    task = route.get("research_task") if isinstance(route.get("research_task"), dict) else {}
-    fallback_window = rolling_provider_capabilities(provider, task, state) or allowed_codes
-    fallback_codes = (
-        set(fallback_window).intersection(allowed_codes)
-        - set(state.get("attempted_capabilities") or [])
-    )
-    expected_domain = "sellersprite" if provider == "amazon" else "fastmoss"
-    has_business_attempt = any(
-        isinstance(call, dict)
-        and split_prefixed_tool_id(
-            str((call.get("function") or {}).get("name") or "")
-        )[0] == expected_domain
-        for call in assistant_msg.tool_calls or []
-    )
-    if (
-        not chat_evidence_sufficiency_enabled()
-        or provider not in {"amazon", "fastmoss"}
-        or not chat_route_uses_report_model(provider, route)
-    ):
-        verdict = fallback_sufficiency(
-            has_business_attempt=has_business_attempt,
-            allowed_capability_codes=allowed_codes,
-            reason="证据满足判断已关闭，按现有确定性底线处理。",
-        )
-        if has_business_attempt:
-            verdict["status"] = "ready"
-            verdict["coverage_items"][0]["state"] = "supported"
-        return verdict
-
-    judge_input = sufficiency_prompt_payload(
-        user_question=chat_routing_text(user_text),
-        research_task=route.get("research_task") if isinstance(route.get("research_task"), dict) else {},
-        evidence_inventory=evidence_sufficiency_inventory(provider, assistant_msg),
-        attempted_capability_codes=state.get("attempted_capabilities") or [],
-        observed_capability_codes=state.get("observed_capabilities") or [],
-        available_capability_codes=allowed_codes,
-    )
-    available_labels = capability_labels(allowed_codes)
-    system_prompt = (
-        "你是商业研究的独立证据满足判断层。你不选择具体工具、不写报告、不判断商业机会。"
-        "根据用户问题、研究任务和证据目录判断完整报告所需的业务问题是否已有证据。"
-        "有效或部分有效证据可以支持覆盖项；偏题、相关性未确认、身份缺失不得完成覆盖项；"
-        "空结果和失败只表示该精确范围已尝试但不可获得。"
-        "仍有核心缺口且存在可用业务能力时必须返回 continue；"
-        "核心内容均有证据，或缺口已经真实尝试并不可获得时返回 ready；"
-        "没有可用能力或无法继续时返回 blocked。"
-        "不得规定固定工具顺序、调用次数或候选数量。"
-        "missing_capabilities 和 next_capabilities 只能使用以下中文业务能力名称："
-        + ("、".join(available_labels) if available_labels else "无")
-        + "。输出严格JSON且只能包含：status、reason、coverage_items、missing_capabilities、"
-        "next_capabilities、unsupported_claims、report_contract。"
-        "coverage_items 每项必须包含 id（coverage-1起连续编号）、topic、priority（core或supporting）、"
-        "state（supported、missing或unavailable）、boundaries。"
-        "report_contract 必须包含 must_cover、must_compare、must_state_as_limit、forbidden_claims 四个字符串数组。"
-    )
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": judge_input},
-        ],
-        "temperature": 0,
-        "max_tokens": 6000,
-        "response_format": {"type": "json_object"},
-    }
-    payload_str = json.dumps(payload, ensure_ascii=False)
-    started = time.monotonic()
-    failure_reason = ""
-    verdict: dict[str, Any] | None = None
-    try:
-        response = requests_module.post(
-            api_url.rstrip("/") + "/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            data=payload_str.encode("utf-8"),
-            timeout=90,
-        )
-        response.raise_for_status()
-        body = response.json()
-        choice = body.get("choices", [{}])[0]
-        if str(choice.get("finish_reason") or "").strip().lower() == "length":
-            raise ValueError("evidence sufficiency finish_reason=length")
-        parsed = _parse_evidence_quality_judge_response(
-            (choice.get("message") or {}).get("content")
-        )
-        verdict = validate_sufficiency_response(
-            parsed,
-            allowed_capability_codes=allowed_codes,
-        )
-        if verdict is None:
-            raise ValueError("invalid evidence-sufficiency response")
-        record_api_call(
-            "deepseek",
-            "chat_evidence_sufficiency",
-            {
-                "provider": provider,
-                "model": model,
-                "tool_result_count": len(assistant_msg.tool_results or []),
-                "payload_sha256": __import__("hashlib").sha256(payload_str.encode("utf-8")).hexdigest(),
-            },
-            body,
-            elapsed_ms=int((time.monotonic() - started) * 1000),
-        )
-    except Exception as exc:
-        failure_reason = f"{type(exc).__name__}: {str(exc)[:240]}"
-        verdict = fallback_sufficiency(
-            has_business_attempt=not bool(fallback_codes),
-            allowed_capability_codes=fallback_codes,
-            reason="证据满足判断失败，按保守确定性底线处理：" + failure_reason,
-        )
-    print(
-        "[CHAT SUFFICIENCY] "
-        + json.dumps({
-            "provider": provider,
-            "status": verdict.get("status"),
-            "coverage": len(verdict.get("coverage_items") or []),
-            "missing": verdict.get("missing_capabilities") or [],
-            "next": verdict.get("next_capabilities") or [],
-            "source": verdict.get("source"),
-            "latency_ms": int((time.monotonic() - started) * 1000),
-            **({"error": failure_reason} if failure_reason else {}),
-        }, ensure_ascii=False, separators=(",", ":")),
-        flush=True,
-    )
-    return verdict
-
-
-def blocked_sufficiency(
-    route: dict[str, Any],
-    reason: str,
-) -> dict[str, Any]:
-    current = (
-        dict(route.get("_evidence_sufficiency"))
-        if isinstance(route.get("_evidence_sufficiency"), dict)
-        else {}
-    )
-    current["status"] = "blocked"
-    current["reason"] = reason
-    current["_next_capability_codes"] = []
-    current["next_capabilities"] = []
-    return current
 
 
 def chat_request_needs_tools(user_text: str, route: dict[str, Any]) -> bool:
@@ -7992,14 +6707,6 @@ def current_chat_tool_evidence(
     raw_mcp_data = parse_mcp_text_content(raw_mcp_text) if raw_mcp_text else None
     if raw_mcp_data is not None:
         evidence["data"] = raw_mcp_data
-    quality = result.get("evidence_quality") if isinstance(result, dict) else None
-    if isinstance(quality, dict):
-        evidence["evidence_quality"] = quality
-        evidence["answer_guidance"] = evidence_quality_prompt(quality)
-        if quality.get("status") == "partial":
-            evidence["data"] = admitted_business_payload(result)
-        elif quality.get("status") not in {"accepted", "uncertain"}:
-            evidence["data"] = {}
     evidence = _current_chat_evidence_value(evidence)
     if str(tool_name or "").startswith("sellersprite__"):
         rendered = render_sellersprite_current_evidence(evidence)
@@ -8670,26 +7377,12 @@ def compact_chat_tool_evidence(tool_name: str, result: Any, max_chars: int | Non
 
 
 def mcp_evidence_quality_summary(assistant_msg: Message) -> dict[str, list[str]]:
-    summary = {"data": [], "empty": [], "error": [], "rejected": [], "uncertain": []}
+    summary = {"data": [], "empty": [], "error": []}
     for item in assistant_msg.tool_results or []:
         if not isinstance(item, dict):
             continue
         name = str(item.get("tool_name") or "tool")
-        result = item.get("result")
-        quality = result.get("evidence_quality") if isinstance(result, dict) else None
-        status = str(quality.get("status") or "") if isinstance(quality, dict) else ""
-        if status in {"accepted", "partial"}:
-            state = "data"
-        elif status == "empty":
-            state = "empty"
-        elif status == "error":
-            state = "error"
-        elif status == "uncertain":
-            state = "uncertain"
-        elif status:
-            state = "rejected"
-        else:
-            state = mcp_result_data_state(result)
+        state = mcp_result_data_state(item.get("result"))
         summary.setdefault(state, []).append(name)
     return summary
 
@@ -9234,12 +7927,7 @@ def fastmoss_evidence_manifest(
             continue
         result = dict(item["result"])
         arguments = _fastmoss_call_arguments_for_result(assistant_msg, result_index, tool_name)
-        gate_quality = result.get("evidence_quality") if isinstance(result.get("evidence_quality"), dict) else None
-        source_value = (
-            admitted_business_payload(result)
-            if chat_evidence_quality_gate_enabled() and gate_quality is not None
-            else _fastmoss_response_value(None, result)
-        )
+        source_value = _fastmoss_response_value(None, result)
         conflicts.extend(
             _fastmoss_report_scope_conflicts(
                 f"call:{result_index + 1}", arguments, _fastmoss_report_data_value(source_value)
@@ -9268,29 +7956,15 @@ def fastmoss_evidence_manifest(
             "parser_status": "unsupported_parser",
         }
         envelope = {**envelope, "source_call_index": result_index + 1}
-        envelope["entity_refs"] = (
-            [
-                ref for ref in (envelope.get("entity_refs") or [])
-                if isinstance(ref, dict) and _fastmoss_valid_entity_id(ref.get("id"))
-            ]
-            if gate_quality is None or evidence_quality_allows_entities(result)
-            else []
-        )
+        envelope["entity_refs"] = [
+            ref for ref in (envelope.get("entity_refs") or [])
+            if isinstance(ref, dict) and _fastmoss_valid_entity_id(ref.get("id"))
+        ]
         evidence_envelopes.append(envelope)
         metadata = result.get("evidence_metadata") if isinstance(result.get("evidence_metadata"), dict) else {}
-        if gate_quality is not None and gate_quality.get("status") == "partial":
-            records = fastmoss_extract_product_records(source_value)
-        elif gate_quality is not None and not evidence_quality_allows_entities(result):
-            records = []
-        else:
-            records = result.get("evidence_product_records") if isinstance(result.get("evidence_product_records"), list) else []
+        records = result.get("evidence_product_records") if isinstance(result.get("evidence_product_records"), list) else []
         metadata_rows.append({"tool": tool_name, "source_call_index": result_index + 1, **metadata})
-        if gate_quality is not None and gate_quality.get("status") == "partial":
-            result_facts = fastmoss_tool_evidence_facts(tool_name, arguments, result, source_value)
-        elif gate_quality is not None and not evidence_quality_observed(result):
-            result_facts = []
-        else:
-            result_facts = result.get("evidence_facts") if isinstance(result.get("evidence_facts"), list) else []
+        result_facts = result.get("evidence_facts") if isinstance(result.get("evidence_facts"), list) else []
         for fact_index, fact in enumerate(result_facts):
             if isinstance(fact, dict) and str(fact.get("data_state") or "data") == "data":
                 evidence_facts.append({
@@ -9648,411 +8322,14 @@ def fastmoss_report_prompt_instruction(route: dict[str, Any]) -> str:
     return (
         fastmoss_report_style_instruction(route)
         + " "
-        "当前输入中的完整自然语言业务证据是报告的唯一事实素材；证据目录只负责标注覆盖、对象、计算边界和冲突，"
-        "不能替代、裁剪或隐藏业务证据。"
+        "当前会话中的完整工具结果是报告的事实素材；evidence_index 只负责标注覆盖、对象、计算边界和冲突，"
+        "不能替代、裁剪或隐藏工具结果。"
         "根据实际证据组织报告，不要套用 Amazon 的关键词、PPC、BSR、ASIN 或 FBA 结构。"
         "标题、章节、比较方式和结论顺序由你决定；不存在的证据不要硬写。"
-        "观察事实必须服从证据目录的实体、周期、样本和冲突边界，推断与建议应明确区别于观察事实。"
-        "空结果只适用于对应查询的精确对象与范围；关键词返回量不是市场容量；跨实体或跨周期数据不得直接相除或互相解释；"
+        "观察事实必须服从 evidence_index 的实体、周期、样本和冲突边界，推断与建议应明确区别于观察事实。"
+        "空结果只适用于该次调用的精确参数；关键词返回量不是市场容量；跨实体或跨周期数据不得直接相除或互相解释；"
         "渠道占比、关联达人/视频数和趋势只描述观察结构，除非有直接证据，否则不得写成流量来源、因果、效率或生命周期结论。"
-        "撰写前请在内部完成证据覆盖检查（不要输出思维过程）：按证据段、实体、周期和业务维度盘点实质证据，"
-        "凡是会改变核心判断、候选排序、风险或下一步验证的重要证据，都必须进入正文或在局限中说明未采用原因；"
-        "同口径、同结论的重复证据可以合并，但不能仅为了简洁省略有差异的类目、商品、趋势、达人、内容或店铺证据。"
-        "每个主要结论尽量形成‘观察数据—比较或解释—推断边界—行动建议’的完整链条，并保留支撑判断的代表性对象和指标。"
-        "完成报告前再次检查是否遗漏会实质改变结论的有效证据、冲突、空结果或失败；若遗漏则补入正文或局限。"
-        "同一实体的同名或相关指标在不同证据段中冲突时，必须并列写明各自周期和口径并标记为未解决冲突，不能择一使用，"
-        "也不能据此构造因果叙事；例如直播数一个结果为0、另一个周期大于0时，不得概括为‘纯视频驱动’。"
     )
-
-
-def sellersprite_report_prompt_instruction(route: dict[str, Any]) -> str:
-    """Return the SellerSprite final-report coverage and evidence-boundary instruction."""
-    return (
-        "这是一份完整的 Amazon 市场调研报告，不是执行摘要。根据用户问题和实际证据决定叙事主线、标题、章节、"
-        "比较维度和详略，不设置固定字数，也不要机械复述全部原始行。完整使用本轮取得的实质证据，不得为了简洁"
-        "只保留少数机会方向、代表商品或指标。撰写前请在内部完成证据覆盖检查（不要输出思维过程）：按证据段、"
-        "实体、站点、周期和能力维度盘点关键词发现、市场与类目、趋势、商品/ASIN、分布与集中度、流量和评论等"
-        "实际取得的证据；凡是会改变核心判断、候选排序、进入门槛、风险或下一步验证的重要证据，都必须进入正文，"
-        "或在局限中说明未采用原因。同口径、同结论的重复证据可以合并，但不同对象、周期、口径或相互冲突的结果"
-        "不得混合或静默省略。每个主要机会或建议尽量形成‘观察数据—横向/纵向比较—推断边界—风险—行动建议’"
-        "的完整链条，并保留支撑判断的代表性关键词、类目、ASIN和关键指标。数据、空结果、失败和未获取维度必须"
-        "严格区分；缺少容量、趋势或竞争证据时不得用常识补齐。完成报告前再次检查是否遗漏会实质改变结论的成功"
-        "业务证据、异常、冲突、空结果或失败；若遗漏则补入正文或局限。直接从中文 Markdown 标题开始，"
-        "不要先输出英文说明、提示词复述或报告生成过程。按中国卖家、价格或其他条件筛选的榜单只能描述该筛选样本，"
-        "不得据此声称整个类目由某类卖家主导、证明市场份额或品牌/卖家集中度。证据未包含复购、退货、广告成本等指标时，"
-        "只能将相关判断标为待验证假设或未获取，不得写成观察事实。"
-    )
-
-
-_REPORT_OBJECTIVE_LABELS = {
-    "lookup": "事实查询",
-    "entity_analysis": "对象分析",
-    "compare": "对比分析",
-    "opportunity_discovery": "机会发现",
-    "trend_discovery": "趋势发现",
-    "pricing": "定价分析",
-    "content": "内容分析",
-    "creator": "达人分析",
-    "shop": "店铺分析",
-}
-_REPORT_SCOPE_LABELS = {
-    "cross_category": "跨类目",
-    "category": "指定类目",
-    "keyword": "指定关键词",
-    "entity": "指定对象",
-}
-_REPORT_ENTITY_LABELS = {
-    "none": "未限定具体对象",
-    "category": "类目",
-    "keyword": "关键词",
-    "product": "商品",
-    "product_id": "商品编号",
-    "shop": "店铺",
-    "creator": "达人",
-    "video": "视频",
-    "asin": "亚马逊商品编号",
-}
-_REPORT_REGION_LABELS = {
-    "US": "美国站",
-    "GB": "英国站",
-    "UK": "英国站",
-    "CA": "加拿大站",
-    "MX": "墨西哥站",
-    "BR": "巴西站",
-    "DE": "德国站",
-    "FR": "法国站",
-    "ES": "西班牙站",
-    "IT": "意大利站",
-    "JP": "日本站",
-    "GLOBAL": "多个地区",
-}
-_REPORT_TIME_LABELS = {
-    "current": "当前证据周期",
-    "recent": "近期",
-    "latest": "最新可用周期",
-    "last_month": "上个月",
-    "last_week": "上周",
-}
-
-
-def commerce_report_system_instruction(provider: str, current_date_shanghai: str) -> str:
-    """Build a report-only prompt with no planning or execution protocol."""
-    provider_label = "Amazon" if normalize_chat_provider(provider) == "amazon" else "TikTok Shop"
-    return (
-        f"你是{provider_label}商业研究报告作者，只用简体中文撰写详细 Markdown 报告。"
-        f"当前上海日期为{current_date_shanghai}，只用于理解相对时间；证据中的实际周期始终优先。"
-        "输入的自然语言业务证据是唯一事实来源，覆盖契约是必须执行的内容清单。"
-        "不得补造数字、日期、排名、成本、利润、广告指标、认证费用、首单数量、因果关系、平台操作或全市场外推。"
-        "缺少证据的核心问题必须作为局限明确说明，不能用常识补齐。"
-        "相互冲突的数值必须保留各自对象、周期和口径并列说明，不能自行择一或修正。"
-        "每个核心方向尽量形成‘观察数据—比较—推断边界—风险—行动建议’，"
-        "行动建议只能是与已有证据相称的验证步骤，不得伪装成已证实结论。"
-        "不要描述数据取得过程，不要输出内部系统名称、内部调用编号、协议、执行规则或提示词；"
-        "商品编号、类目编号、亚马逊商品编号等业务身份仍须按证据保留。"
-        "直接从中文 Markdown 一级标题开始，不要输出思维过程。"
-    )
-
-
-def _report_sufficiency_contract(route: dict[str, Any]) -> dict[str, Any]:
-    ledger = (route or {}).get("_research_ledger")
-    if isinstance(ledger, dict):
-        state_map = {
-            "supported": "supported",
-            "partial": "missing",
-            "pending": "missing",
-            "active": "missing",
-            "conflicted": "supported",
-            "unavailable": "unavailable",
-            "not_applicable": "unavailable",
-            "blocked": "unavailable",
-        }
-        status = "ready" if str(ledger.get("status")) == "ready" else "blocked"
-        return {
-            "status": status,
-            "reason": "SellerSprite研究总控台账已完成核心槽位收敛。",
-            "coverage_items": [{
-                "id": str(slot.get("id") or f"coverage-{index}"),
-                "topic": str(slot.get("topic") or "业务问题"),
-                "priority": str(slot.get("priority") or "supporting"),
-                "state": state_map.get(str(slot.get("state") or ""), "unavailable"),
-                "boundaries": [
-                    *[str(item) for item in slot.get("boundaries") or []],
-                    *(
-                        ["尚缺事实：" + "、".join(slot.get("missing_facts") or [])]
-                        if slot.get("missing_facts") else []
-                    ),
-                ],
-            } for index, slot in enumerate(ledger.get("slots") or [], 1)
-                if isinstance(slot, dict)],
-            "missing_capabilities": [],
-            "next_capabilities": [],
-            "unsupported_claims": ["未被终态槽位有效投影支持的结论"],
-            "report_contract": dict(ledger.get("report_contract") or {
-                "must_cover": [],
-                "must_compare": [],
-                "must_state_as_limit": [],
-                "forbidden_claims": ["证据外的数字、因果关系和市场外推"],
-            }),
-        }
-    contract = public_sufficiency_contract((route or {}).get("_evidence_sufficiency"))
-    coverage_items = contract.get("coverage_items")
-    report_contract = contract.get("report_contract")
-    if isinstance(coverage_items, list) and coverage_items and isinstance(report_contract, dict):
-        return contract
-    return {
-        "status": "blocked",
-        "reason": "未取得独立覆盖判断，按已有自然语言业务证据成稿并明确局限。",
-        "coverage_items": [{
-            "id": "coverage-1",
-            "topic": "回答用户提出的核心业务问题",
-            "priority": "core",
-            "state": "unavailable",
-            "boundaries": ["只能使用当前输入中实际存在的业务证据"],
-        }],
-        "missing_capabilities": [],
-        "next_capabilities": [],
-        "unsupported_claims": ["自然语言业务证据中不存在的结论"],
-        "report_contract": {
-            "must_cover": ["用户问题与当前有效业务证据"],
-            "must_compare": [],
-            "must_state_as_limit": ["未取得或无法确认的核心证据"],
-            "forbidden_claims": ["证据外的数字、因果关系和市场外推"],
-        },
-    }
-
-
-def _report_research_task_text(route: dict[str, Any]) -> str:
-    task = (route or {}).get("research_task")
-    task = task if isinstance(task, dict) else {}
-    objective = _REPORT_OBJECTIVE_LABELS.get(str(task.get("objective") or ""), "商业研究")
-    scope = _REPORT_SCOPE_LABELS.get(str(task.get("scope") or ""), "按用户问题界定")
-    entity_type = _REPORT_ENTITY_LABELS.get(str(task.get("entity_type") or ""), "研究对象")
-    entity = str(task.get("entity") or "").strip()
-    region_raw = str(task.get("region") or (route or {}).get("region") or "").strip().upper()
-    region = _REPORT_REGION_LABELS.get(region_raw, region_raw or "未特别限定地区")
-    time_raw = str(task.get("time_window") or "").strip()
-    time_window = _REPORT_TIME_LABELS.get(time_raw.casefold(), time_raw) if time_raw else "以业务证据实际周期为准"
-    object_text = f"{entity_type}「{entity}」" if entity else entity_type
-    return (
-        f"- 研究目标：{objective}\n"
-        f"- 研究范围：{scope}\n"
-        f"- 研究对象：{object_text}\n"
-        f"- 地区范围：{region}\n"
-        f"- 时间范围：{time_window}"
-    )
-
-
-def _report_coverage_contract_text(contract: dict[str, Any]) -> str:
-    priority_labels = {"core": "核心", "supporting": "补充"}
-    state_labels = {"supported": "已有证据", "missing": "尚缺证据", "unavailable": "暂时无法取得"}
-    status_labels = {"continue": "继续研究", "ready": "证据可成稿", "blocked": "研究受阻后成稿"}
-    lines = [
-        f"- 研究状态：{status_labels.get(str(contract.get('status') or ''), '按已有证据成稿')}",
-        f"- 判断原因：{str(contract.get('reason') or '按当前证据和边界完成报告')}",
-        "### 覆盖项",
-    ]
-    for index, item in enumerate(contract.get("coverage_items") or [], start=1):
-        if not isinstance(item, dict):
-            continue
-        boundaries = "；".join(str(value) for value in (item.get("boundaries") or []) if str(value).strip())
-        line = (
-            f"- 覆盖项{index}（{item.get('id') or f'coverage-{index}'}）："
-            f"{str(item.get('topic') or '').strip()}；"
-            f"{priority_labels.get(str(item.get('priority') or ''), '补充')}；"
-            f"{state_labels.get(str(item.get('state') or ''), '状态未确认')}"
-        )
-        if boundaries:
-            line += f"；边界：{boundaries}"
-        lines.append(line)
-    report_contract = contract.get("report_contract")
-    report_contract = report_contract if isinstance(report_contract, dict) else {}
-    sections = (
-        ("必须覆盖", report_contract.get("must_cover") or []),
-        ("必须比较", report_contract.get("must_compare") or []),
-        ("必须写成局限", report_contract.get("must_state_as_limit") or []),
-        ("禁止生成", report_contract.get("forbidden_claims") or []),
-        ("现有证据不能支持", contract.get("unsupported_claims") or []),
-    )
-    for title, values in sections:
-        lines.append(f"### {title}")
-        clean_values = [str(value).strip() for value in values if str(value).strip()]
-        lines.extend(f"- {value}" for value in clean_values)
-        if not clean_values:
-            lines.append("- 无额外要求")
-    return "\n".join(lines)
-
-
-def build_semantic_report_input(
-    user_text: str,
-    route: dict[str, Any],
-    evidence_markdown: str,
-) -> tuple[str, dict[str, Any]]:
-    contract = _report_sufficiency_contract(route)
-    content = (
-        "## 用户问题\n\n"
-        + chat_routing_text(user_text)
-        + "\n\n## 研究任务\n\n"
-        + _report_research_task_text(route)
-        + "\n\n## 报告覆盖契约\n\n"
-        + _report_coverage_contract_text(contract)
-        + "\n\n## 自然语言业务证据\n\n"
-        + evidence_markdown.rstrip()
-    )
-    return content, contract
-
-
-def _safe_report_draft(text: Any) -> str:
-    """Remove identifier-shaped leaks from a draft used as a safe fallback."""
-    cleaned = str(text or "").strip()
-    cleaned = re.sub(
-        r"(?:fastmoss|sellersprite|system|function)__[A-Za-z0-9_]+",
-        "相关业务证据",
-        cleaned,
-        flags=re.IGNORECASE,
-    )
-    cleaned = re.sub(r"\bcall:\d+\b", "对应证据", cleaned, flags=re.IGNORECASE)
-    if not cleaned or deepseek_tool_protocol_present({"content": cleaned}) or report_contains_internal_protocol(cleaned):
-        return ""
-    return cleaned
-
-
-def rewrite_semantic_report(
-    provider: str,
-    user_text: str,
-    route: dict[str, Any],
-    evidence_markdown: str,
-    draft: str,
-    requests_module: Any,
-    api_key: str,
-    api_url: str,
-    model: str,
-) -> tuple[str, dict[str, Any]]:
-    """Validate coverage against the same full Semantic and return one rewritten report."""
-    safe_draft = _safe_report_draft(draft)
-    if not safe_draft:
-        raise ValueError("initial report contains internal protocol")
-    contract = _report_sufficiency_contract(route)
-    required_ids = [
-        str(item.get("id") or "")
-        for item in (contract.get("coverage_items") or [])
-        if isinstance(item, dict) and str(item.get("id") or "")
-    ]
-    if not chat_report_second_pass_enabled():
-        return safe_draft, {
-            "status": "disabled",
-            "coverage_count": len(required_ids),
-            "removed_unsupported_claims": [],
-        }
-    current_date = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
-    semantic_input, _ = build_semantic_report_input(user_text, route, evidence_markdown)
-    system_prompt = (
-        commerce_report_system_instruction(provider, current_date)
-        + "你现在负责终稿校验与完整重写。逐项核对覆盖契约：每项只能标为已覆盖或已作为局限说明。"
-        "补回初稿静默省略的重要对象、周期、冲突、空结果和失败；删除没有证据的成本、利润、因果、"
-        "平台操作与市场外推。输出严格JSON，只能包含 coverage、removed_unsupported_claims、report。"
-        "coverage每项必须包含id、status、reason；status只能是covered或limitation。"
-        "report必须是完整重写后的中文Markdown终稿，不得只输出修改建议。"
-    )
-    user_content = (
-        semantic_input
-        + "\n\n## 待校验初稿\n\n"
-        + safe_draft
-    )
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_content},
-        ],
-        "temperature": 0,
-        "max_tokens": 12000,
-        "response_format": {"type": "json_object"},
-    }
-    payload_str = json.dumps(payload, ensure_ascii=False)
-    started = time.monotonic()
-    failure_reason = ""
-    try:
-        response = requests_module.post(
-            api_url.rstrip("/") + "/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            data=payload_str.encode("utf-8"),
-            timeout=180,
-        )
-        response.raise_for_status()
-        body = response.json()
-        choice = body.get("choices", [{}])[0]
-        if str(choice.get("finish_reason") or "").strip().lower() == "length":
-            raise ValueError("report second pass finish_reason=length")
-        parsed = _parse_evidence_quality_judge_response(
-            (choice.get("message") or {}).get("content")
-        )
-        validated = validate_report_rewrite_response(
-            parsed,
-            required_coverage_ids=required_ids,
-        )
-        if validated is None:
-            raise ValueError("invalid report second-pass response")
-        raw_rewritten = str(validated.get("report") or "")
-        if (
-            deepseek_tool_protocol_present({"content": raw_rewritten})
-            or report_contains_internal_protocol(raw_rewritten)
-        ):
-            raise ValueError("rewritten report contains internal protocol")
-        rewritten = _safe_report_draft(raw_rewritten)
-        if not rewritten:
-            raise ValueError("rewritten report contains internal protocol")
-        record_api_call(
-            "deepseek",
-            "commerce_report_second_pass",
-            {
-                "model": model,
-                "provider": normalize_chat_provider(provider),
-                "semantic_chars": len(evidence_markdown),
-                "draft_chars": len(safe_draft),
-                "coverage_count": len(required_ids),
-            },
-            body,
-            elapsed_ms=int((time.monotonic() - started) * 1000),
-        )
-        meta = {
-            "status": "rewritten",
-            "coverage_count": len(validated.get("coverage") or []),
-            "removed_unsupported_claims": validated.get("removed_unsupported_claims") or [],
-            "latency_ms": int((time.monotonic() - started) * 1000),
-        }
-        print(
-            "[CHAT REPORT SECOND PASS] "
-            + json.dumps({
-                "provider": normalize_chat_provider(provider),
-                "status": meta["status"],
-                "draft_chars": len(safe_draft),
-                "final_chars": len(rewritten),
-                "coverage": meta["coverage_count"],
-                "removed": len(meta["removed_unsupported_claims"]),
-                "latency_ms": meta["latency_ms"],
-            }, ensure_ascii=False, separators=(",", ":")),
-            flush=True,
-        )
-        return rewritten, meta
-    except Exception as exc:
-        failure_reason = f"{type(exc).__name__}: {str(exc)[:240]}"
-        print(
-            "[CHAT REPORT SECOND PASS] "
-            + json.dumps({
-                "provider": normalize_chat_provider(provider),
-                "status": "fallback_to_draft",
-                "reason": failure_reason,
-                "draft_chars": len(safe_draft),
-                "coverage": len(required_ids),
-            }, ensure_ascii=False, separators=(",", ":")),
-            flush=True,
-        )
-        return safe_draft, {
-            "status": "fallback_to_draft",
-            "coverage_count": len(required_ids),
-            "removed_unsupported_claims": [],
-            "fallback_reason": failure_reason,
-        }
 
 
 def fastmoss_report_quality_instruction(
@@ -10200,18 +8477,14 @@ def fastmoss_report_evidence_dossier(
             continue
         result = item["result"]
         arguments = _fastmoss_call_arguments_for_result(assistant_msg, result_index, tool_name)
-        quality = result.get("evidence_quality") if isinstance(result.get("evidence_quality"), dict) else None
-        if chat_evidence_quality_gate_enabled() and quality is not None:
-            data = admitted_business_payload(result)
-        else:
-            data = result.get("mcp_data")
-            if data is None:
-                data = result.get("summary")
-            if data is None:
-                data = {
-                    key: result.get(key) for key in ("products", "items", "results", "error")
-                    if result.get(key) is not None
-                }
+        data = result.get("mcp_data")
+        if data is None:
+            data = result.get("summary")
+        if data is None:
+            data = {
+                key: result.get(key) for key in ("products", "items", "results", "error")
+                if result.get(key) is not None
+            }
         cleaned_data = _fastmoss_report_data_value(data)
         source_ref = f"call:{result_index + 1}"
         envelope = next((
@@ -10228,15 +8501,6 @@ def fastmoss_report_evidence_dossier(
         }
         if "data_state" not in fence:
             fence["data_state"] = mcp_result_data_state(result)
-        if quality is not None:
-            fence.update({
-                "evidence_quality_status": quality.get("status"),
-                "evidence_quality_reason": quality.get("reason"),
-                "accepted_rows": quality.get("accepted_rows") or [],
-                "rejected_rows": quality.get("rejected_rows") or [],
-                "supported_dimensions": quality.get("supported_dimensions") or [],
-                "unsupported_claims": quality.get("unsupported_claims") or [],
-            })
         tool_evidence.append({
             "source_ref": source_ref,
             "tool_name": tool_name,
@@ -10273,305 +8537,11 @@ def fastmoss_report_evidence_dossier(
     }
 
 
-def apply_sellersprite_ledger_results(
-    ledger: dict[str, Any],
-    assistant_msg: Message,
-    entries: list[dict[str, Any]],
-) -> dict[str, Any]:
-    """Project an executed SellerSprite batch and atomically reduce the ledger."""
-    before_hash = str(ledger.get("progress_hash") or "")
-    attempted_capabilities: list[str] = []
-    start_index = len(assistant_msg.tool_results or [])
-    batch_slot = ledger_active_slot(ledger) or {}
-    batch_slot_id = str(batch_slot.get("id") or "")
-    batch_required_facts = ledger_active_required_facts(ledger)
-    for offset, entry in enumerate(entries, 1):
-        full_name = str(entry.get("tool_name") or "")
-        domain, tool_name = split_prefixed_tool_id(full_name)
-        if domain != "sellersprite":
-            continue
-        capability = provider_tool_capability("amazon", tool_name)
-        attempted_capabilities.append(capability)
-        result = entry.get("normalized_result")
-        if not isinstance(result, dict):
-            continue
-        quality = result.get("evidence_quality") if isinstance(result.get("evidence_quality"), dict) else {}
-        quality_status = str(quality.get("status") or "")
-        if not quality_status:
-            state = mcp_result_data_state(result)
-            quality_status = "accepted" if state == "data" else state
-        if quality_status in {"accepted", "partial"}:
-            raw_business = admitted_business_payload(result)
-        else:
-            raw_business = result.get("mcp_data")
-        business_data = sellersprite_business_payload(
-            _current_chat_evidence_value(raw_business)
-        )
-        projection = project_sellersprite_business_data(
-            tool_name, business_data, batch_required_facts
-        )
-        entity_scope = dict(
-            batch_slot.get("entity_scope")
-            if isinstance(batch_slot.get("entity_scope"), dict)
-            else {}
-        )
-        metadata = result.get("evidence_metadata")
-        if isinstance(metadata, dict):
-            entity_scope["region"] = (
-                metadata.get("region") or entity_scope.get("region") or ""
-            )
-            entity_scope["period"] = (
-                metadata.get("requested_period")
-                or metadata.get("returned_date_range")
-                or entity_scope.get("period")
-                or ""
-            )
-        source_ref = f"{assistant_msg.id}:{start_index + offset}"
-        boundaries = [
-            str(quality.get("reason") or "").strip(),
-            *[str(item) for item in quality.get("unsupported_claims") or []],
-        ]
-        apply_ledger_progress_delta(
-            ledger,
-            source_ref=source_ref,
-            tool_name=tool_name,
-            capability=capability,
-            arguments=entry.get("arguments") if isinstance(entry.get("arguments"), dict) else {},
-            quality_status=quality_status,
-            observed_facts=projection.get("observed_facts") or [],
-            projected_data=projection.get("projected_data"),
-            entity_scope=entity_scope,
-            boundaries=[item for item in boundaries if item],
-            slot_id=batch_slot_id,
-            projection_diagnostics={
-                "business_signature": sellersprite_business_call_signature(
-                    tool_name,
-                    entry.get("arguments") if isinstance(entry.get("arguments"), dict) else {},
-                ),
-                "field_plan": result.get("return_field_plan") or {},
-                **{
-                    key: projection.get(key)
-                    for key in (
-                        "selected_facts", "kept_paths", "audit_only_paths",
-                        "unmapped_fields", "raw_chars", "projected_chars",
-                        "compression_ratio",
-                    )
-                },
-            },
-        )
-        if quality_status in {"accepted", "partial"}:
-            entities = ledger.setdefault("entities", {})
-            asins = sorted(_collect_asins(projection.get("projected_data")))
-            if asins:
-                entities["asins"] = sorted(set(entities.get("asins") or []).union(asins))
-            envelope = result.get("evidence_envelope")
-            if isinstance(envelope, dict):
-                for ref in envelope.get("entity_refs") or []:
-                    if not isinstance(ref, dict):
-                        continue
-                    ref_type = str(ref.get("type") or "entity").strip().lower()
-                    ref_id = str(ref.get("id") or "").strip()
-                    if not ref_id:
-                        continue
-                    key = {
-                        "asin": "asins",
-                        "category": "category_ids",
-                        "node": "category_ids",
-                        "keyword": "keywords",
-                    }.get(ref_type, ref_type + "_ids")
-                    entities[key] = sorted(set(entities.get(key) or []).union({ref_id}))
-        result["evidence_projection"] = {
-            "source_ref": source_ref,
-            "slot_id": batch_slot_id,
-            "projected_data": projection.get("projected_data"),
-            **{
-                key: projection.get(key)
-                for key in (
-                    "selected_facts", "observed_facts", "kept_paths",
-                    "audit_only_paths", "unmapped_fields", "raw_chars",
-                    "projected_chars", "compression_ratio",
-                )
-            },
-        }
-    finish_no_progress_batch(
-        ledger,
-        attempted_capabilities=attempted_capabilities,
-        before_hash=before_hash,
-    )
-    ledger_candidate_complete(ledger)
-    print(
-        "[CHAT LEDGER] "
-        + json.dumps({
-            "event": "batch_committed",
-            "task_id": ledger.get("task_id"),
-            "attempted": attempted_capabilities,
-            "status": ledger.get("status"),
-            "active_slot": (ledger_active_slot(ledger) or {}).get("id"),
-            "no_progress_rounds": ledger.get("no_progress_rounds"),
-            "slots": {
-                str(slot.get("id")): str(slot.get("state"))
-                for slot in ledger.get("slots") or [] if isinstance(slot, dict)
-            },
-        }, ensure_ascii=False, separators=(",", ":")),
-        flush=True,
-    )
-    return ledger
-
-
-def reuse_sellersprite_ledger_evidence(
-    ledger: dict[str, Any],
-    assistant_msg: Message,
-) -> int:
-    """Re-project retained full responses for later slots without another MCP call."""
-    reused = 0
-    while True:
-        slot = ledger_active_slot(ledger)
-        if not slot:
-            break
-        missing = ledger_active_required_facts(ledger)
-        if not missing:
-            select_ledger_active_slot(ledger)
-            continue
-        capabilities = ledger_active_capabilities(ledger)
-        existing_refs = set(slot.get("evidence_refs") or [])
-        matched = False
-        for index, item in enumerate(assistant_msg.tool_results or [], 1):
-            if not isinstance(item, dict) or not isinstance(item.get("result"), dict):
-                continue
-            domain, tool_name = split_prefixed_tool_id(str(item.get("tool_name") or ""))
-            capability = provider_tool_capability("amazon", tool_name)
-            if domain != "sellersprite" or capability not in capabilities:
-                continue
-            source_ref = f"{assistant_msg.id}:{index}"
-            if source_ref in existing_refs:
-                continue
-            result = item["result"]
-            quality = result.get("evidence_quality") if isinstance(result.get("evidence_quality"), dict) else {}
-            quality_status = str(quality.get("status") or "")
-            if quality_status not in {"accepted", "partial"}:
-                continue
-            business_data = sellersprite_business_payload(
-                _current_chat_evidence_value(admitted_business_payload(result))
-            )
-            projection = project_sellersprite_business_data(
-                tool_name, business_data, missing
-            )
-            observed = set(projection.get("observed_facts") or []).intersection(missing)
-            if not observed:
-                continue
-            arguments = _fastmoss_call_arguments_for_result(
-                assistant_msg, index - 1, str(item.get("tool_name") or "")
-            )
-            apply_ledger_progress_delta(
-                ledger,
-                source_ref=source_ref,
-                tool_name=tool_name,
-                capability=capability,
-                arguments=arguments,
-                quality_status=quality_status,
-                observed_facts=sorted(observed),
-                projected_data=projection.get("projected_data"),
-                entity_scope=slot.get("entity_scope") or {},
-                boundaries=["复用同一任务中已保存的完整实际返回并重新投影，未重复调用接口。"],
-                slot_id=str(slot.get("id") or ""),
-                projection_diagnostics={
-                    "reused": True,
-                    "selected_facts": projection.get("selected_facts") or [],
-                    "raw_chars": projection.get("raw_chars"),
-                    "projected_chars": projection.get("projected_chars"),
-                    "compression_ratio": projection.get("compression_ratio"),
-                },
-            )
-            reused += 1
-            matched = True
-            select_ledger_active_slot(ledger)
-            break
-        if not matched:
-            break
-    if reused:
-        print(
-            f"[CHAT LEDGER] reused_projections={reused} task_id={ledger.get('task_id')}",
-            flush=True,
-        )
-    return reused
-
-
 def sellersprite_report_evidence_dossier(
     assistant_msg: Message,
     route: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build report input from ledger-approved projections, never all raw results."""
-    ledger = (route or {}).get("_research_ledger")
-    if isinstance(ledger, dict):
-        globally_blocked = str(ledger.get("status") or "") == "blocked"
-        terminal_slot_ids = {
-            str(slot.get("id"))
-            for slot in ledger.get("slots") or []
-            if isinstance(slot, dict)
-            and (globally_blocked or str(slot.get("state")) in {
-                "supported", "conflicted", "unavailable",
-                "not_applicable", "blocked",
-            })
-        }
-        tool_evidence = []
-        for ref in ledger.get("evidence_refs") or []:
-            if (
-                not isinstance(ref, dict)
-                or str(ref.get("slot_id") or "") not in terminal_slot_ids
-                or str(ref.get("quality_status") or "") not in {"accepted", "partial"}
-                or bool(ref.get("candidate_rejected"))
-            ):
-                continue
-            tool_evidence.append({
-                "source_ref": str(ref.get("source_ref") or "研究证据"),
-                "tool_name": "sellersprite__" + str(ref.get("tool_name") or "unknown"),
-                "arguments": _current_chat_evidence_value(ref.get("arguments") or {}),
-                "evidence_fence": {
-                    "data_state": "data",
-                    "ok": True,
-                    "enough_data": True,
-                    "evidence_quality_status": ref.get("quality_status"),
-                    "evidence_quality_reason": "",
-                    "accepted_rows": [],
-                    "rejected_rows": [],
-                    "supported_dimensions": ref.get("observed_facts") or [],
-                    "unsupported_claims": ref.get("boundaries") or [],
-                },
-                "business_data": _current_chat_evidence_value(ref.get("projected_data")),
-            })
-        return {
-            "type": "sellersprite_evidence_dossier",
-            "provider": "sellersprite",
-            "report_date": datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat(),
-            "research_task": dict(ledger.get("research_task") or {}),
-            "quality_summary": {
-                "slots": {
-                    str(slot.get("id")): str(slot.get("state"))
-                    for slot in ledger.get("slots") or [] if isinstance(slot, dict)
-                },
-                "evidence_count": len(tool_evidence),
-            },
-            "tool_evidence": tool_evidence,
-            "hard_fact_boundaries": {
-                "rules": [
-                    "报告只使用研究台账终态槽位引用的准入投影",
-                    "空结果只适用于对应精确对象、参数、地区和周期",
-                    "不同站点、对象、类目节点或周期的数据不得直接合并",
-                    "预测、趋势和观察期实际值必须区分，相关关系不得写成因果关系",
-                ],
-                "slot_limits": [
-                    {
-                        "topic": slot.get("topic"),
-                        "state": slot.get("state"),
-                        "missing_facts": slot.get("missing_facts") or [],
-                        "boundaries": slot.get("boundaries") or [],
-                    }
-                    for slot in ledger.get("slots") or []
-                    if isinstance(slot, dict)
-                    and str(slot.get("state")) in {"unavailable", "blocked", "conflicted"}
-                ],
-            },
-        }
+    """Build a lossless, call-scoped SellerSprite report input."""
     tool_evidence: list[dict[str, Any]] = []
     for result_index, item in enumerate(assistant_msg.tool_results or []):
         if not isinstance(item, dict) or not isinstance(item.get("result"), dict):
@@ -10583,19 +8553,15 @@ def sellersprite_report_evidence_dossier(
         arguments = _fastmoss_call_arguments_for_result(
             assistant_msg, result_index, tool_name
         )
-        quality = result.get("evidence_quality") if isinstance(result.get("evidence_quality"), dict) else None
-        if chat_evidence_quality_gate_enabled() and quality is not None:
-            data = admitted_business_payload(result)
-        else:
-            data = result.get("mcp_data")
-            if data is None:
-                data = result.get("summary")
-            if data is None:
-                data = {
-                    key: result.get(key)
-                    for key in ("products", "items", "results", "error")
-                    if result.get(key) is not None
-                }
+        data = result.get("mcp_data")
+        if data is None:
+            data = result.get("summary")
+        if data is None:
+            data = {
+                key: result.get(key)
+                for key in ("products", "items", "results", "error")
+                if result.get(key) is not None
+            }
         cleaned_data = sellersprite_business_payload(
             _current_chat_evidence_value(data)
         )
@@ -10607,14 +8573,6 @@ def sellersprite_report_evidence_dossier(
                 "data_state": mcp_result_data_state(result),
                 "ok": result.get("ok"),
                 "enough_data": result.get("enough_data"),
-                **({
-                    "evidence_quality_status": quality.get("status"),
-                    "evidence_quality_reason": quality.get("reason"),
-                    "accepted_rows": quality.get("accepted_rows") or [],
-                    "rejected_rows": quality.get("rejected_rows") or [],
-                    "supported_dimensions": quality.get("supported_dimensions") or [],
-                    "unsupported_claims": quality.get("unsupported_claims") or [],
-                } if quality is not None else {}),
             },
             "business_data": cleaned_data,
             **({"error": str(result.get("error"))} if result.get("error") else {}),
@@ -10637,29 +8595,6 @@ def sellersprite_report_evidence_dossier(
     }
 
 
-def prepare_semantic_report_evidence(
-    dossier: dict[str, Any],
-    renderer: Any,
-    max_tokens: int | None = None,
-) -> tuple[str, dict[str, Any]]:
-    """Render one Semantic Markdown format without truncating unique evidence."""
-    token_limit = max_tokens or _chat_int_setting(
-        "CHAT_SEMANTIC_EVIDENCE_MAX_TOKENS", 90000, 12000, 500000
-    )
-    final_markdown, final_stats = renderer(dossier)
-    final_tokens = estimate_chat_context_tokens(
-        [{"role": "user", "content": final_markdown}], []
-    )
-    return final_markdown, {
-        **final_stats,
-        "budget_mode": "full",
-        "budget_tokens": token_limit,
-        "semantic_estimated_tokens": final_tokens,
-        "final_estimated_tokens": final_tokens,
-        "over_budget": final_tokens > token_limit,
-    }
-
-
 def sellersprite_render_report_evidence(
     dossier: dict[str, Any],
 ) -> tuple[str, dict[str, Any]]:
@@ -10672,116 +8607,9 @@ def sellersprite_render_report_evidence(
         "fallback_tools": [result.tool_name for result in results if result.fallback],
         "empty_result_count": sum(1 for result in results if result.empty),
         "business_leaf_count": sum(len(result.business_leaf_paths) for result in results),
-        "consumed_leaf_count": sum(len(result.consumed_paths) for result in results),
         "unmapped_leaf_count": sum(len(result.unmapped_paths) for result in results),
-        "excluded_leaf_count": sum(len(result.excluded_paths) for result in results),
-        "audit_only_leaf_count": sum(len(result.exclusion_reasons) for result in results),
-        "diagnostics": [
-            diagnostic
-            for result in results
-            for diagnostic in result.diagnostics
-        ],
         "markdown_chars": len(rendered.markdown),
     }
-
-
-def semantic_report_input_stats(
-    provider: str,
-    assistant_msg: Message,
-    user_text: str,
-    route: dict[str, Any],
-) -> dict[str, Any]:
-    """Estimate the independent final report call from complete raw evidence."""
-    provider = normalize_chat_provider(provider)
-    if provider == "amazon":
-        dossier = sellersprite_report_evidence_dossier(assistant_msg, route)
-        evidence_markdown, render_stats = prepare_semantic_report_evidence(
-            dossier, sellersprite_render_report_evidence
-        )
-        report_instruction = sellersprite_report_prompt_instruction(route)
-    elif provider == "fastmoss":
-        manifest = fastmoss_evidence_manifest(assistant_msg, user_text, route)
-        dossier = fastmoss_report_evidence_dossier(assistant_msg, manifest, route)
-        evidence_markdown, render_stats = prepare_semantic_report_evidence(
-            dossier, fastmoss_render_report_evidence
-        )
-        report_instruction = fastmoss_report_prompt_instruction(route)
-    else:
-        return {"estimated_tokens": 0, "tool_count": 0, "level": "normal"}
-    current_date = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
-    semantic_input, _ = build_semantic_report_input(user_text, route, evidence_markdown)
-    system_messages = [
-        {"role": "system", "content": commerce_report_system_instruction(provider, current_date)},
-        {"role": "system", "content": report_instruction},
-    ]
-    estimated_tokens = estimate_chat_context_tokens(
-        system_messages + [{"role": "user", "content": semantic_input}], []
-    )
-    level = (
-        "overflow" if estimated_tokens > 950000
-        else "hard" if estimated_tokens >= 850000
-        else "soft" if estimated_tokens >= 750000
-        else "normal"
-    )
-    return {
-        "estimated_tokens": estimated_tokens,
-        "tool_count": len(dossier.get("tool_evidence") or []),
-        "level": level,
-        "render_stats": render_stats,
-    }
-
-
-def apply_semantic_report_watermark(
-    messages: list[dict[str, Any]],
-    provider: str,
-    assistant_msg: Message,
-    user_text: str,
-    route: dict[str, Any],
-) -> dict[str, Any]:
-    context_key = "semantic_report_capacity"
-    messages[:] = [message for message in messages if message.get("_context_key") != context_key]
-    if (
-        provider not in {"amazon", "fastmoss"}
-        or not chat_route_uses_report_model(provider, route)
-        or not (assistant_msg.tool_results or [])
-    ):
-        return {"estimated_tokens": 0, "tool_count": 0, "level": "normal"}
-    stats = semantic_report_input_stats(provider, assistant_msg, user_text, route)
-    if stats["level"] == "soft":
-        messages.append({
-            "role": "system",
-            "content": (
-                "最终单次报告的原始语义证据已达到容量提醒水位。"
-                "只补充尚未覆盖且会实质改变结论的关键证据；停止宽泛扩展，证据足够时立即收口。"
-            ),
-            "_context_scope": "system",
-            "_context_key": context_key,
-        })
-    elif stats["level"] in {"hard", "overflow"}:
-        messages.append({
-            "role": "system",
-            "content": (
-                "最终单次报告的原始语义证据已达到工具停止水位。"
-                "不得继续调用工具，直接进入独立报告模型阶段。"
-            ),
-            "_context_scope": "system",
-            "_context_key": context_key,
-        })
-    print(
-        f"[CHAT REPORT CAPACITY] provider={provider} level={stats['level']} "
-        f"tokens={stats['estimated_tokens']} calls={stats['tool_count']}",
-        flush=True,
-    )
-    return stats
-
-
-def semantic_report_capacity_error(provider: str, estimated_tokens: int) -> str:
-    label = "SellerSprite" if normalize_chat_provider(provider) == "amazon" else "FastMoss"
-    return (
-        f"报告容量错误：{label} 原始语义证据预计为 {estimated_tokens:,} 个词元，"
-        "已超过单次独立报告模型的 950,000 tokens 安全上限。"
-        "系统已完整保留本轮原始工具结果，但不会静默截断、分块或改用编排检查点生成一份证据不完整的报告。"
-    )
 
 
 SELLERSPRITE_REPORT_NOTICE = (
@@ -10841,29 +8669,23 @@ def synthesize_sellersprite_report_from_packet(
     """Generate the final SellerSprite report from complete normalized evidence."""
     dossier = sellersprite_report_evidence_dossier(assistant_msg, route)
     dossier_json = json.dumps(dossier, ensure_ascii=False, separators=(",", ":"))
-    evidence_markdown, evidence_render_stats = prepare_semantic_report_evidence(
-        dossier, sellersprite_render_report_evidence
-    )
+    evidence_markdown, evidence_render_stats = sellersprite_render_report_evidence(dossier)
     current_date_shanghai = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
-    semantic_input, report_contract = build_semantic_report_input(
-        user_text, route, evidence_markdown
+    semantic_input = (
+        chat_routing_text(user_text)
+        + "\n\n当前为报告生成阶段，没有可调用工具；请直接根据以下 Semantic 结构证据完成最终报告。"
+        + "\n\n--- Semantic 证据开始 ---\n"
+        + evidence_markdown
+        + "--- Semantic 证据结束 ---"
     )
     messages = [
-        {"role": "system", "content": commerce_report_system_instruction("amazon", current_date_shanghai)},
-        {"role": "system", "content": sellersprite_report_prompt_instruction(route)},
+        {"role": "system", "content": chat_system_instruction("amazon", current_date_shanghai)},
         {"role": "user", "content": semantic_input},
     ]
-    final_input_tokens = estimate_chat_context_tokens(messages, [])
-    if final_input_tokens > 950000:
-        report = append_sellersprite_report_notice(
-            semantic_report_capacity_error("amazon", final_input_tokens), route
-        )
-        log_sellersprite_report_pipeline(report, dossier, evidence_render_stats, "capacity_error")
-        return report
     payload = {
         "model": model,
         "messages": messages,
-        "temperature": 0,
+        "temperature": 0.2,
         "max_tokens": 12000,
     }
     payload_str = json.dumps(payload, ensure_ascii=False)
@@ -10887,7 +8709,6 @@ def synthesize_sellersprite_report_from_packet(
                 "evidence_input_format": evidence_render_stats.get("format") or "semantic",
                 "evidence_render_stats": evidence_render_stats,
                 "dossier_calls": len(dossier.get("tool_evidence") or []),
-                "coverage_items": len(report_contract.get("coverage_items") or []),
             },
             body,
             elapsed_ms=int((time.monotonic() - started) * 1000),
@@ -10905,15 +8726,8 @@ def synthesize_sellersprite_report_from_packet(
             f"evidence_render={json.dumps(evidence_render_stats, ensure_ascii=False, separators=(',', ':'))}",
             flush=True,
         )
-        rewritten, rewrite_meta = rewrite_semantic_report(
-            "amazon", user_text, route, evidence_markdown, draft,
-            requests_module, api_key, api_url, model,
-        )
-        report = append_sellersprite_report_notice(rewritten, route)
-        log_sellersprite_report_pipeline(
-            report, dossier, evidence_render_stats,
-            f"generated:{rewrite_meta.get('status') or 'unknown'}",
-        )
+        report = append_sellersprite_report_notice(draft, route)
+        log_sellersprite_report_pipeline(report, dossier, evidence_render_stats, "generated")
         return report
     except Exception as exc:
         print(
@@ -10924,7 +8738,7 @@ def synthesize_sellersprite_report_from_packet(
         message = (
             "SellerSprite 工具查询已结束，但报告模型暂时无法生成最终报告。"
             f"已取得数据的接口 {len(quality.get('data', []))} 个，成功但为空的接口 {len(quality.get('empty', []))} 个，"
-            f"失败接口 {len(quality.get('error', []))} 个。系统没有使用编排草稿替代独立报告；请稍后重试。"
+            f"失败接口 {len(quality.get('error', []))} 个。系统没有使用 Flash 草稿替代 V4 Pro 报告；请稍后重试。"
         )
         log_sellersprite_report_pipeline(message, dossier, evidence_render_stats, "synthesis_failed")
         return message
@@ -10940,7 +8754,7 @@ def complete_sellersprite_answer(
     api_url: str,
     model: str,
 ) -> str:
-    """Route every evidence-led SellerSprite report through Semantic evidence and the standalone report model."""
+    """Route every evidence-led SellerSprite report through Semantic evidence and V4 Pro."""
     has_sellersprite_evidence = any(
         isinstance(item, dict)
         and split_prefixed_tool_id(str(item.get("tool_name") or ""))[0] == "sellersprite"
@@ -11312,7 +9126,7 @@ def fastmoss_report_style_instruction(route: dict[str, Any]) -> str:
         "表达要求：结论优先，把数据转成有依据的比较、解释、取舍、风险和验证顺序。" + detail_requirement +
         "标题、章节名称和顺序完全由你按内容决定，不要求固定短语、固定引用数量、字符数或篇幅比例。"
         "明确区分实体、周期、样本和空结果范围。可以自由提出执行建议、测试方案和策略假设，"
-        "但要把它们明确写成建议或假设，不能伪装成业务证据已经观察到的事实。"
+        "但要把它们明确写成建议或假设，不能伪装成工具已经观测到的事实。"
     )
 
 
@@ -12748,27 +10562,24 @@ def synthesize_fastmoss_report_from_packet(
     manifest = fastmoss_evidence_manifest(assistant_msg, user_text, route)
     dossier = fastmoss_report_evidence_dossier(assistant_msg, manifest, route)
     dossier_json = json.dumps(dossier, ensure_ascii=False, separators=(",", ":"))
-    evidence_markdown, evidence_render_stats = prepare_semantic_report_evidence(
-        dossier, fastmoss_render_report_evidence
-    )
+    evidence_markdown, evidence_render_stats = fastmoss_render_report_evidence(dossier)
     current_date_shanghai = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
-    semantic_input, report_contract = build_semantic_report_input(
-        user_text, route, evidence_markdown
+    semantic_input = (
+        chat_routing_text(user_text)
+        + "\n\n当前为报告生成阶段，没有可调用工具；请直接根据以下 Semantic 结构证据完成最终报告。"
+        + "\n\n--- Semantic 证据开始 ---\n"
+        + evidence_markdown
+        + "--- Semantic 证据结束 ---"
     )
     messages = [
-        {"role": "system", "content": commerce_report_system_instruction("fastmoss", current_date_shanghai)},
+        {"role": "system", "content": chat_system_instruction("fastmoss", current_date_shanghai)},
         {"role": "system", "content": fastmoss_report_prompt_instruction(route)},
         {"role": "user", "content": semantic_input},
     ]
-    final_input_tokens = estimate_chat_context_tokens(messages, [])
-    if final_input_tokens > 950000:
-        return append_fastmoss_report_notice(
-            semantic_report_capacity_error("fastmoss", final_input_tokens), route
-        )
     payload = {
         "model": model,
         "messages": messages,
-        "temperature": 0,
+        "temperature": 0.2,
         "max_tokens": 12000,
     }
     payload_str = json.dumps(payload, ensure_ascii=False)
@@ -12794,7 +10605,6 @@ def synthesize_fastmoss_report_from_packet(
                 "dossier_calls": len(dossier.get("tool_evidence") or []),
                 "evidence_envelopes": manifest.get("evidence_envelope_count") or 0,
                 "evidence_facts": manifest.get("evidence_fact_count") or 0,
-                "coverage_items": len(report_contract.get("coverage_items") or []),
             },
             body,
             elapsed_ms=int((time.monotonic() - started) * 1000),
@@ -12812,12 +10622,8 @@ def synthesize_fastmoss_report_from_packet(
             f"evidence_render={json.dumps(evidence_render_stats, ensure_ascii=False, separators=(',', ':'))}",
             flush=True,
         )
-        rewritten, _rewrite_meta = rewrite_semantic_report(
-            "fastmoss", user_text, route, evidence_markdown, draft,
-            requests_module, api_key, api_url, model,
-        )
         return finalize_fastmoss_answer(
-            rewritten, assistant_msg, user_text, route,
+            draft, assistant_msg, user_text, route,
             requests_module, api_key, api_url, model,
         )
     except Exception as exc:
@@ -13015,7 +10821,7 @@ def finalize_fastmoss_answer(
     api_url: str,
     model: str,
 ) -> str:
-    """Preserve the standalone report draft by default; the legacy LLM editor is opt-in."""
+    """Preserve the Pro draft by default; the legacy LLM editor is opt-in."""
     if fastmoss_llm_verifier_enabled():
         return append_fastmoss_report_notice(
             verify_fastmoss_final_answer(
@@ -13245,237 +11051,41 @@ def estimate_chat_context_tokens(messages: list[dict[str, Any]], tools: list[dic
     return (byte_count + 2) // 3
 
 
-def chat_context_component_stats(
-    messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None,
-) -> dict[str, int]:
-    def tokens_for(items: list[dict[str, Any]]) -> int:
-        return estimate_chat_context_tokens(items, []) if items else 0
-
-    checkpoint = [message for message in messages if message.get("_context_key") == "evidence_checkpoint"]
-    current_evidence = [
-        message for message in messages
-        if _is_current_tool_evidence_message(message)
-        and message.get("_context_key") != "evidence_checkpoint"
-    ]
-    return {
-        "total": estimate_chat_context_tokens(messages, tools),
-        "system": tokens_for([
-            message for message in messages
-            if message.get("_context_scope") == "system"
-            and message.get("_context_key") != "evidence_checkpoint"
-        ]),
-        "history": tokens_for([message for message in messages if message.get("_context_scope") == "history"]),
-        "schema": estimate_chat_context_tokens([], tools),
-        "checkpoint": tokens_for(checkpoint),
-        "uncompressed_evidence": tokens_for(current_evidence),
-    }
-
-
-def _checkpoint_covered_ids(message: dict[str, Any] | None) -> set[str]:
-    return {
-        str(value) for value in ((message or {}).get("_context_checkpoint_covered_ids") or [])
-        if str(value)
-    }
-
-
-def _validate_evidence_checkpoint(
-    checkpoint: Any,
-    expected_call_ids: set[str],
-    allowed_source_refs: set[str],
-    source_text: str,
-) -> str | None:
-    if not isinstance(checkpoint, dict):
-        return "checkpoint is not an object"
-    covered = {str(value) for value in (checkpoint.get("covered_tool_call_ids") or [])}
-    if covered != expected_call_ids:
-        return "covered_tool_call_ids mismatch"
-    facts = checkpoint.get("facts") or []
-    if not isinstance(facts, list):
-        return "facts is not an array"
-    source_folded = source_text.casefold()
-    for fact in facts:
-        if not isinstance(fact, dict):
-            return "fact is not an object"
-        refs = {str(value) for value in (fact.get("source_refs") or [])}
-        if not refs or not refs.issubset(allowed_source_refs):
-            return "fact source_refs are missing or invalid"
-        fact_text = json.dumps(
-            {key: value for key, value in fact.items() if key != "source_refs"},
-            ensure_ascii=False, separators=(",", ":"),
-        )
-        for identifier in re.findall(r"\b(?:B0[A-Z0-9]{8}|\d{9,20})\b", fact_text, re.IGNORECASE):
-            if identifier.casefold() not in source_folded:
-                return f"fact introduced identifier {identifier}"
-        for number in re.findall(r"(?<![A-Za-z0-9])[-+]?\d+(?:\.\d+)?%?", fact_text):
-            if number not in source_text:
-                return f"fact introduced number {number}"
-    return None
-
-
-def maybe_checkpoint_chat_evidence(
+def _compress_current_evidence_to_budget(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]],
-    user_text: str,
-    route: dict[str, Any],
-    requests_module: Any,
-    api_key: str,
-    api_url: str,
-    model: str,
-) -> dict[str, Any]:
-    token_limit = _chat_int_setting("CHAT_CONTEXT_MAX_TOKENS", 500000, 8000, 1000000)
-    trigger_percent = _chat_int_setting("CHAT_CONTEXT_COMPACT_TRIGGER_PERCENT", 75, 50, 95)
-    trigger_tokens = token_limit * trigger_percent // 100
-    target_tokens = token_limit // 2
-    before_tokens = estimate_chat_context_tokens(messages, tools)
-    stats: dict[str, Any] = {
-        "status": "not_needed", "before_tokens": before_tokens,
-        "trigger_tokens": trigger_tokens, "target_tokens": target_tokens,
-    }
-    if before_tokens < trigger_tokens:
-        return stats
+    token_limit: int,
+) -> tuple[int, int, int, int]:
+    indexes = [index for index, message in enumerate(messages) if _is_current_tool_evidence_message(message)]
+    before_chars = sum(len(str(messages[index].get("content") or "")) for index in indexes)
+    if not indexes or estimate_chat_context_tokens(messages, tools) <= token_limit:
+        return 0, before_chars, before_chars, 0
 
-    tool_messages = [
-        (index, message) for index, message in enumerate(messages)
-        if message.get("role") == "tool" and message.get("tool_call_id")
-        and message.get("_context_scope") == "current"
-    ]
-    if len(tool_messages) <= 2:
-        stats["status"] = "insufficient_old_evidence"
-        return stats
-    old_tool_messages = tool_messages[:-2]
-    old_call_ids = {str(message.get("tool_call_id")) for _, message in old_tool_messages}
-    previous_checkpoint = next(
-        (message for message in messages if message.get("_context_key") == "evidence_checkpoint"),
-        None,
-    )
-    expected_call_ids = old_call_ids | _checkpoint_covered_ids(previous_checkpoint)
-    sources = [
-        {
-            "source_ref": f"tool:{message.get('tool_call_id')}",
-            "tool_call_id": str(message.get("tool_call_id")),
-            "evidence": _current_chat_evidence_value(message.get("content")),
-        }
-        for _, message in old_tool_messages
-    ]
-    if previous_checkpoint:
-        sources.append({
-            "source_ref": "previous_checkpoint",
-            "covered_tool_call_ids": sorted(_checkpoint_covered_ids(previous_checkpoint)),
-            "evidence": previous_checkpoint.get("content"),
-        })
-    allowed_source_refs = (
-        {str(item["source_ref"]) for item in sources}
-        | {f"tool:{call_id}" for call_id in expected_call_ids}
-    )
-    source_text = json.dumps(sources, ensure_ascii=False, separators=(",", ":"))
-    system_prompt = (
-        "你是商业研究证据检查点生成器。只压缩输入证据，不做报告，不调用工具。"
-        "输出一个 JSON 对象，字段必须包含 covered_tool_call_ids、entities、facts、conflicts、"
-        "empty_or_failed、limitations、unresolved_questions、recommended_next_capabilities。"
-        "facts 中每项必须是对象并包含 source_refs；保留调用参数、实体、合法 ID、周期、精确指标和冲突。"
-        "不得添加输入中不存在的数字、ID 或结论。previous_checkpoint 存在时合并成唯一新检查点。"
-    )
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": json.dumps({
-                "original_user_request": chat_routing_text(user_text),
-                "research_task": route.get("research_task") or {},
-                "required_covered_tool_call_ids": sorted(expected_call_ids),
-                "sources": sources,
-            }, ensure_ascii=False, separators=(",", ":"))},
-        ],
-        "temperature": 0,
-        "response_format": {"type": "json_object"},
-        "max_tokens": 16000,
-    }
-    validation_error = "checkpoint request did not run"
-    checkpoint: dict[str, Any] | None = None
-    started = time.monotonic()
-    for attempt in range(2):
-        try:
-            response = requests_module.post(
-                api_url.rstrip("/") + "/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-                timeout=180,
-            )
-            response.raise_for_status()
-            body = response.json()
-            raw = str(body["choices"][0]["message"].get("content") or "")
-            candidate = json.loads(raw)
-            validation_error = _validate_evidence_checkpoint(
-                candidate, expected_call_ids, allowed_source_refs, source_text
-            )
-            if validation_error is None:
-                checkpoint = candidate
-                record_api_call(
-                    "deepseek", "chat_evidence_checkpoint",
-                    {
-                        "model": model, "attempt": attempt + 1,
-                        "covered_call_count": len(expected_call_ids),
-                        "before_tokens": before_tokens, "trigger_tokens": trigger_tokens,
-                    }, body,
-                    elapsed_ms=int((time.monotonic() - started) * 1000),
-                )
-                break
-            payload["messages"].append({
-                "role": "user",
-                "content": f"上次 JSON 校验失败：{validation_error}。请严格依据原 sources 重新输出完整 JSON。",
-            })
-        except Exception as exc:
-            validation_error = f"{type(exc).__name__}: {str(exc)[:240]}"
-            payload["messages"].append({
-                "role": "user",
-                "content": f"检查点生成失败：{validation_error}。请重新输出合法 JSON。",
-            })
-    if checkpoint is None:
-        stats.update({"status": "failed", "error": validation_error})
-        print(f"[CHAT CONTEXT] checkpoint_failed error={validation_error}", flush=True)
-        return stats
-
-    retained: list[dict[str, Any]] = []
-    for message in messages:
-        if message is previous_checkpoint:
-            continue
-        if message.get("role") == "tool" and str(message.get("tool_call_id") or "") in old_call_ids:
-            continue
-        tool_calls = message.get("tool_calls") if isinstance(message.get("tool_calls"), list) else None
-        if tool_calls:
-            remaining_calls = [
-                call for call in tool_calls if str(call.get("id") or "") not in old_call_ids
-            ]
-            if not remaining_calls and message.get("_context_scope") == "current":
+    minimum = 1200
+    changed_indexes: set[int] = set()
+    smallest_limit = 0
+    for _ in range(8):
+        current_tokens = estimate_chat_context_tokens(messages, tools)
+        if current_tokens <= token_limit:
+            break
+        ratio = max(0.10, min(0.95, (token_limit / max(1, current_tokens)) * 0.97))
+        changed = False
+        for index in indexes:
+            content = str(messages[index].get("content") or "")
+            if len(content) <= minimum:
                 continue
-            message = dict(message)
-            message["tool_calls"] = remaining_calls
-        retained.append(message)
-    retained.append({
-        "role": "system",
-        "content": json.dumps({
-            "type": "evidence_checkpoint",
-            "instruction": "Use this only for continued tool planning. The final report will read original evidence separately.",
-            "checkpoint": checkpoint,
-        }, ensure_ascii=False, separators=(",", ":")),
-        "_context_scope": "current_evidence",
-        "_context_priority": "keep",
-        "_context_key": "evidence_checkpoint",
-        "_context_checkpoint_covered_ids": sorted(expected_call_ids),
-    })
-    messages[:] = retained
-    after_tokens = estimate_chat_context_tokens(messages, tools)
-    stats.update({
-        "status": "created", "after_tokens": after_tokens,
-        "covered_call_count": len(expected_call_ids),
-        "target_met": after_tokens <= target_tokens,
-    })
-    print(
-        f"[CHAT CONTEXT] checkpoint_created covered={len(expected_call_ids)} "
-        f"tokens={before_tokens}->{after_tokens} target={target_tokens} target_met={after_tokens <= target_tokens}",
-        flush=True,
-    )
-    return stats
+            target = max(minimum, int(len(content) * ratio))
+            if target >= len(content):
+                continue
+            messages[index]["content"] = _truncate_chat_context_text(content, target)
+            changed_indexes.add(index)
+            smallest_limit = target if not smallest_limit else min(smallest_limit, target)
+            changed = True
+        if not changed:
+            break
+
+    after_chars = sum(len(str(messages[index].get("content") or "")) for index in indexes)
+    return len(changed_indexes), before_chars, after_chars, smallest_limit
 
 
 def manage_chat_context(
@@ -13483,7 +11093,7 @@ def manage_chat_context(
     tools: list[dict[str, Any]] | None,
     max_tokens: int | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
-    token_limit = max_tokens or _chat_int_setting("CHAT_CONTEXT_MAX_TOKENS", 500000, 8000, 1000000)
+    token_limit = max_tokens or _chat_int_setting("CHAT_CONTEXT_MAX_TOKENS", 120000, 8000, 1000000)
     working = [dict(message) for message in messages]
     request_tools = list(tools or [])
     initial_tokens = estimate_chat_context_tokens(working, request_tools)
@@ -13496,34 +11106,6 @@ def manage_chat_context(
         if _is_current_tool_evidence_message(message)
     )
     current_evidence_chars_after = current_evidence_chars_before
-
-    history_limit = token_limit * 12 // 100
-    recent_history = [message for message in working if message.get("_context_scope") == "history"][-2:]
-    protected_history_ids = {id(message) for message in recent_history}
-    def history_tokens() -> int:
-        return estimate_chat_context_tokens(
-            [message for message in working if message.get("_context_scope") == "history"], []
-        )
-
-    while history_tokens() > history_limit:
-        removable = next(
-            (
-                index for index, message in enumerate(working)
-                if message.get("_context_scope") == "history"
-                and id(message) not in protected_history_ids
-                and message.get("_context_priority") not in {"keep", "recovery"}
-            ),
-            None,
-        )
-        if removable is None:
-            break
-        working.pop(removable)
-        dropped_history += 1
-    if history_tokens() > history_limit:
-        for message in working:
-            if message.get("_context_scope") == "history":
-                limit = 12000 if message.get("_context_priority") == "recovery" else 3000
-                message["content"] = _truncate_chat_context_text(message.get("content"), limit)
 
     if initial_tokens > token_limit:
         compact_limit = _chat_int_setting("CHAT_HISTORY_COMPACT_CHARS", 3000, 500, 12000)
@@ -13539,7 +11121,6 @@ def manage_chat_context(
             (
                 index for index, message in enumerate(working)
                 if message.get("_context_scope") == "history"
-                and id(message) not in protected_history_ids
                 and message.get("_context_priority") not in {"keep", "recovery"}
             ),
             None,
@@ -13569,6 +11150,14 @@ def manage_chat_context(
             "_context_scope": "system",
         })
 
+    if estimate_chat_context_tokens(working, request_tools) > token_limit and has_current_tool_evidence:
+        (
+            current_evidence_compressed,
+            current_evidence_chars_before,
+            current_evidence_chars_after,
+            tool_content_limit,
+        ) = _compress_current_evidence_to_budget(working, request_tools, token_limit)
+
     if estimate_chat_context_tokens(working, request_tools) > token_limit:
         for message in working:
             priority = message.get("_context_priority")
@@ -13590,7 +11179,6 @@ def manage_chat_context(
     final_tokens = estimate_chat_context_tokens(working, request_tools)
     return _chat_request_messages(working), request_tools, {
         "max_tokens": token_limit,
-        "history_max_tokens": history_limit,
         "initial_tokens": initial_tokens,
         "final_tokens": final_tokens,
         "compressed": initial_tokens != final_tokens,
@@ -13603,26 +11191,6 @@ def manage_chat_context(
         "protocol_collapsed": protocol_collapsed,
         "over_budget": final_tokens > token_limit,
     }
-
-
-def semantic_report_ready_for_direct_synthesis(
-    provider: str,
-    route: dict[str, Any],
-    assistant_msg: Message,
-    request_tools: list[dict[str, Any]] | None,
-) -> bool:
-    """Skip an accumulated-context draft when Semantic evidence is already final."""
-    provider = normalize_chat_provider(provider)
-    if request_tools or provider not in {"amazon", "fastmoss"}:
-        return False
-    if not chat_route_uses_report_model(provider, route):
-        return False
-    expected_domain = "sellersprite" if provider == "amazon" else "fastmoss"
-    return any(
-        isinstance(item, dict)
-        and split_prefixed_tool_id(str(item.get("tool_name") or ""))[0] == expected_domain
-        for item in (assistant_msg.tool_results or [])
-    )
 
 
 def provider_scope_short_circuit(
@@ -13656,14 +11224,6 @@ def chat_query_uses_previous_entity(text: str) -> bool:
 
 def tool_call_signature(tool_name: str, arguments: dict[str, Any]) -> str:
     return f"{tool_name}:{json.dumps(arguments or {}, ensure_ascii=False, sort_keys=True, separators=(',', ':'))}"
-
-
-def sellersprite_business_call_signature(
-    tool_name: str,
-    arguments: dict[str, Any],
-) -> str:
-    """Stable business query identity; field coverage is tracked separately."""
-    return tool_call_signature(tool_name, _without_return_fields(arguments or {}))
 
 
 FASTMOSS_PRODUCT_ID_TOOLS = {
@@ -13712,20 +11272,14 @@ def _collect_category_ids(value: Any) -> set[str]:
     return found
 
 
-def _entity_payloads_for_result(result: dict[str, Any]) -> list[Any]:
-    if chat_evidence_quality_gate_enabled() and isinstance(result.get("evidence_quality"), dict):
-        return [admitted_business_payload(result)] if evidence_quality_allows_entities(result) else []
-    return [result.get("mcp_data"), result.get("mcp_text_preview")]
-
-
 def fastmoss_known_product_ids(user_text: str, assistant_msg: Message) -> set[str]:
     known = set(re.findall(r"\b\d{16,20}\b", str(user_text or "")))
     for item in assistant_msg.tool_results or []:
         if not isinstance(item, dict) or not isinstance(item.get("result"), dict):
             continue
         result = item["result"]
-        for payload in _entity_payloads_for_result(result):
-            known.update(_collect_named_ids(payload, {"productid", "goodsid", "itemid"}))
+        known.update(_collect_named_ids(result.get("mcp_data"), {"productid", "goodsid", "itemid"}))
+        known.update(_collect_named_ids(result.get("mcp_text_preview"), {"productid", "goodsid", "itemid"}))
     return known
 
 
@@ -13737,15 +11291,8 @@ def fastmoss_locked_representative_product_ids(assistant_msg: Message) -> set[st
         if not isinstance(item, dict) or not isinstance(item.get("result"), dict):
             continue
         result = item["result"]
-        if chat_evidence_quality_gate_enabled() and isinstance(result.get("evidence_quality"), dict):
-            if not evidence_quality_allows_entities(result):
-                continue
         metadata = result.get("evidence_metadata") if isinstance(result.get("evidence_metadata"), dict) else {}
-        quality = result.get("evidence_quality") if isinstance(result.get("evidence_quality"), dict) else {}
-        if quality.get("status") == "partial":
-            records = fastmoss_extract_product_records(admitted_business_payload(result))
-        else:
-            records = result.get("evidence_product_records") if isinstance(result.get("evidence_product_records"), list) else []
+        records = result.get("evidence_product_records") if isinstance(result.get("evidence_product_records"), list) else []
         scope = str(metadata.get("scope") or "")
         if scope == "segment_head":
             query = str(metadata.get("query") or "").strip().casefold()
@@ -13807,8 +11354,8 @@ def fastmoss_known_category_ids(user_text: str, assistant_msg: Message) -> set[s
         if not isinstance(item, dict) or not isinstance(item.get("result"), dict):
             continue
         result = item["result"]
-        for payload in _entity_payloads_for_result(result):
-            known.update(_collect_category_ids(payload))
+        known.update(_collect_category_ids(result.get("mcp_data")))
+        known.update(_collect_category_ids(result.get("mcp_text_preview")))
     return known
 
 
@@ -13859,7 +11406,7 @@ def fastmoss_current_category_path(assistant_msg: Message, user_text: str = "") 
         result = item.get("result")
         if not isinstance(result, dict):
             continue
-        for value in _entity_payloads_for_result(result):
+        for value in (result.get("mcp_data"), result.get("mcp_text_preview")):
             candidates = _fastmoss_category_candidates(value)
             for candidate in candidates:
                 path = _fastmoss_category_path_from_value(candidate)
@@ -14383,23 +11930,6 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
         effective_enabled_tool_ids = filter_locked_provider_tool_ids(provider, effective_enabled_tool_ids)
     if needs_tools and effective_enabled_tool_ids is None:
         effective_enabled_tool_ids = provider_default_enabled_tool_ids(provider)
-    if (
-        provider == "amazon"
-        and scoped_provider_task
-        and route.get("dynamic_planner")
-        and needs_tools
-    ):
-        ledger = initialize_sellersprite_research_ledger(
-            session,
-            route,
-            routing_text,
-            set(effective_enabled_tool_ids or set()),
-            req,
-            api_key,
-            api_url,
-            model,
-        )
-        store.update_research_state(session, ledger)
     selected_tool_ids = effective_enabled_tool_ids
     if needs_tools and route_tools is not None and not force_mcp_tools:
         route_tool_ids = {
@@ -14420,7 +11950,6 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
         store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": fallback})
         return
     all_provider_tools = build_prefixed_model_tools(effective_enabled_tool_ids) if needs_tools else []
-    log_model_tool_window(provider, all_provider_tools, tools)
     capability_gaps = fastmoss_required_capability_gaps(routing_text, all_provider_tools, route) if provider == "fastmoss" and not resume_from_completed_tools else []
     if capability_gaps:
         capability_labels = {
@@ -14471,9 +12000,11 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     if playbook_instruction:
         messages.append({"role": "system", "content": playbook_instruction, "_context_scope": "system"})
     if route.get("dynamic_planner"):
-        upsert_research_planner_message(
-            messages, provider, route, routing_text, assistant_msg
-        )
+        messages.append({
+            "role": "system",
+            "content": research_planner_instruction(provider, route, routing_text, assistant_msg),
+            "_context_scope": "system",
+        })
     elif playbook_instruction:
         phase = fastmoss_workflow_phase(
             str(route.get("playbook")), assistant_msg, set(effective_enabled_tool_ids or set()), routing_text, route
@@ -14556,9 +12087,6 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
 
     unexecutable_protocol_retries = 0
     no_tool_retries = 0
-    call_gate_no_approved_rounds = 0
-    call_gate_rejected_cache: dict[str, str] = {}
-    ledger_field_plans: dict[str, dict[str, Any]] = {}
     final_answer_forced = False
     seen_tool_calls: set[str] = set()
     for existing_call in assistant_msg.tool_calls or []:
@@ -14568,36 +12096,12 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     if not default_region and provider in {"amazon", "fastmoss"} and fastmoss_defaults_to_us(routing_text):
         default_region = "US"
     for _ in range(max_tool_rounds):
-        if provider == "amazon" and isinstance(route.get("_research_ledger"), dict):
-            tools = sellersprite_ledger_model_tools(tools)
-        report_capacity = apply_semantic_report_watermark(
-            messages, provider, assistant_msg, routing_text, route
-        )
-        if report_capacity.get("level") in {"hard", "overflow"}:
-            if provider == "amazon" and isinstance(route.get("_research_ledger"), dict):
-                route["_research_ledger"]["status"] = "blocked"
-                store.update_research_state(session, route["_research_ledger"])
-            else:
-                route["_evidence_sufficiency"] = blocked_sufficiency(
-                    route,
-                    "完整自然语言业务证据已达到单次报告容量的工具停止水位。",
-                )
-            tools = []
-            final_answer_forced = True
-        checkpoint_stats = (
-            maybe_checkpoint_chat_evidence(
-                messages, tools, routing_text, route,
-                req, api_key, api_url, model,
-            )
-            if tools else {"status": "tools_closed"}
-        )
         deterministic_phase = (
             fastmoss_workflow_phase(
                 str(route.get("playbook")), assistant_msg,
                 set(effective_enabled_tool_ids or set()), routing_text, route,
             )
-            if report_capacity.get("level") not in {"hard", "overflow"}
-            and provider == "fastmoss" and route.get("playbook") == "product" and not route.get("dynamic_planner")
+            if provider == "fastmoss" and route.get("playbook") == "product" and not route.get("dynamic_planner")
             else None
         )
         deterministic_call = (
@@ -14683,32 +12187,6 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     continue
         try:
             request_messages, request_tools, context_stats = manage_chat_context(messages, tools)
-            context_stats["components"] = chat_context_component_stats(messages, tools)
-            context_stats["checkpoint"] = checkpoint_stats
-            if semantic_report_ready_for_direct_synthesis(
-                provider, route, assistant_msg, request_tools
-            ):
-                print(
-                    f"[CHAT] provider={provider} final route=direct_semantic_report "
-                    f"tools_removed={str(context_stats['tools_removed']).lower()}",
-                    flush=True,
-                )
-                if provider == "amazon":
-                    final_content = complete_sellersprite_answer(
-                        "", assistant_msg, routing_text, route,
-                        req, api_key, api_url, report_model,
-                    )
-                else:
-                    final_content = complete_fastmoss_answer(
-                        "", assistant_msg, routing_text, route,
-                        req, api_key, api_url, report_model,
-                    )
-                store.update_message(session, assistant_msg, final_content, status="done")
-                store.broadcast(session.id, "done", {
-                    "messageId": assistant_msg.id,
-                    "content": final_content,
-                })
-                return
             if context_stats["over_budget"]:
                 raise RuntimeError(
                     f"Chat context remains over budget after compression: "
@@ -14719,13 +12197,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 if not request_tools and chat_route_uses_report_model(provider, route)
                 else model
             )
-            payload = {
-                "model": request_model,
-                "messages": request_messages,
-                "tools": request_tools or None,
-                "temperature": 0.2,
-                "max_tokens": 12000 if request_model == report_model else 16000,
-            }
+            payload = {"model": request_model, "messages": request_messages, "tools": request_tools or None, "temperature": 0.2}
             payload_str = json.dumps(payload, ensure_ascii=False)
             print(
                 f"[CHAT] DeepSeek request: {len(request_messages)} msgs, {len(payload_str)} bytes, "
@@ -14777,94 +12249,25 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             requested_tool_calls = bool(tool_calls)
             deduplicated_tool_calls = []
             skipped_tool_call_reasons: list[str] = []
-            batch_signatures: set[str] = set()
             dynamic_state = (
                 research_planner_state(provider, route, routing_text, assistant_msg)
-                if (
-                    route.get("dynamic_planner")
-                    and provider in {"amazon", "fastmoss"}
-                    and not (
-                        provider == "amazon"
-                        and isinstance(route.get("_research_ledger"), dict)
-                    )
-                )
+                if route.get("dynamic_planner") and provider in {"amazon", "fastmoss"}
                 else None
             )
             for tool_call in tool_calls:
                 fn_name = str(tool_call.get("function", {}).get("name") or "")
-                field_plan: dict[str, Any] | None = None
                 if fn_name not in allowed_tool_ids:
                     skipped_tool_call_reasons.append("unexposed_tool")
                     print(f"[CHAT] skipped unexposed tool call: {fn_name}", flush=True)
                     continue
-                raw_arguments = (tool_call.get("function") or {}).get("arguments")
-                try:
-                    fn_args = raw_arguments if isinstance(raw_arguments, dict) else json.loads(str(raw_arguments or "{}"))
-                    if not isinstance(fn_args, dict):
-                        raise ValueError("arguments must be a JSON object")
-                except (TypeError, ValueError, json.JSONDecodeError) as exc:
-                    reason = f"非法工具参数：{type(exc).__name__}"
-                    skipped_tool_call_reasons.append(reason)
-                    print(f"[CHAT] skipped invalid tool arguments: {fn_name}: {exc}", flush=True)
-                    continue
+                fn_args = _tool_call_arguments(tool_call)
                 domain, unprefixed_name = split_prefixed_tool_id(fn_name)
                 if domain in {"sellersprite", "fastmoss"}:
                     fn_args = apply_mcp_region_default(domain, unprefixed_name, fn_args, default_region)
-                    try:
-                        fn_args, schema_action = normalize_mcp_tool_arguments(
-                            domain, unprefixed_name, fn_args
-                        )
-                    except ValueError as exc:
-                        skipped_tool_call_reasons.append(str(exc))
-                        print(
-                            f"[CHAT] skipped schema-invalid tool call: {fn_name}: {exc}",
-                            flush=True,
-                        )
-                        continue
-                    if schema_action:
-                        print(f"[CHAT] normalized {fn_name} arguments: {schema_action}", flush=True)
-                    ledger = route.get("_research_ledger")
-                    if domain == "sellersprite" and isinstance(ledger, dict):
-                        fn_args, field_plan = apply_sellersprite_return_field_plan(
-                            unprefixed_name,
-                            fn_args,
-                            ledger_active_required_facts(ledger),
-                        )
-                        try:
-                            fn_args, _ = normalize_mcp_tool_arguments(
-                                domain, unprefixed_name, fn_args
-                            )
-                        except ValueError as exc:
-                            skipped_tool_call_reasons.append(str(exc))
-                            print(
-                                f"[CHAT LEDGER] skipped field-plan schema error: {fn_name}: {exc}",
-                                flush=True,
-                            )
-                            continue
-                        print(
-                            "[CHAT LEDGER] "
-                            + json.dumps({
-                                "event": "field_plan",
-                                "tool": unprefixed_name,
-                                "mode": field_plan.get("mode"),
-                                "field_count": len(field_plan.get("fields") or []),
-                                "unverified_facts": field_plan.get("unverified_facts") or [],
-                            }, ensure_ascii=False, separators=(",", ":")),
-                            flush=True,
-                        )
                 if domain == "fastmoss" and route.get("playbook"):
                     fn_args = apply_fastmoss_business_defaults(
                         unprefixed_name, fn_args, assistant_msg, user_text=routing_text, route=route
                     )
-                    try:
-                        fn_args, _ = normalize_mcp_tool_arguments(domain, unprefixed_name, fn_args)
-                    except ValueError as exc:
-                        skipped_tool_call_reasons.append(str(exc))
-                        print(
-                            f"[CHAT] skipped schema-invalid defaulted call: {fn_name}: {exc}",
-                            flush=True,
-                        )
-                        continue
                 stage_error = provider_tool_stage_error(
                     provider, route, domain, unprefixed_name, dynamic_state
                 )
@@ -14875,71 +12278,23 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                         flush=True,
                     )
                     continue
-                guard_error = (
-                    fastmoss_deep_dive_call_error(fn_name, fn_args, routing_text, assistant_msg, route)
-                    if provider == "fastmoss"
-                    else sellersprite_deep_dive_call_error(fn_name, fn_args, routing_text, assistant_msg)
-                    if provider == "amazon"
-                    else None
-                )
-                if guard_error:
-                    skipped_tool_call_reasons.append(guard_error)
-                    print(f"[CHAT] skipped guarded tool call: {fn_name}: {guard_error}", flush=True)
-                    continue
                 signature = tool_call_signature(fn_name, fn_args)
-                if signature in seen_tool_calls or signature in batch_signatures:
+                if signature in seen_tool_calls:
                     skipped_tool_call_reasons.append("duplicate")
                     print(f"[CHAT] skipped duplicate tool call: {fn_name} {fn_args}", flush=True)
                     continue
-                batch_signatures.add(signature)
-                if field_plan is not None:
-                    ledger_field_plans[signature] = dict(field_plan)
+                seen_tool_calls.add(signature)
                 normalized_call = dict(tool_call)
                 normalized_call["function"] = dict(tool_call.get("function") or {})
                 normalized_call["function"]["arguments"] = json.dumps(fn_args, ensure_ascii=False)
                 deduplicated_tool_calls.append(normalized_call)
-            gate_outcome = apply_chat_tool_call_gate(
-                deduplicated_tool_calls,
-                request_tools,
-                provider,
-                routing_text,
-                route,
-                assistant_msg,
-                req,
-                api_key,
-                api_url,
-                model,
-                call_gate_rejected_cache,
-            )
-            tool_calls = list(gate_outcome.get("approved") or [])
-            gate_rejections = list(gate_outcome.get("rejected") or [])
-            if gate_rejections:
-                messages.append({
-                    "role": "system",
-                    "content": (
-                        "调用前门禁已驳回以下候选，这些调用没有执行，也不计入已尝试能力："
-                        + "；".join(
-                            f"{item.get('tool_name')}：{item.get('reason')}"
-                            for item in gate_rejections
-                        )
-                        + "。请根据仍可用的工具重新编排；不得原样重复被驳回调用。"
-                    ),
-                    "_context_scope": "system",
-                })
+            tool_calls = deduplicated_tool_calls
             if tool_calls:
-                call_gate_no_approved_rounds = 0
-                for tool_call in tool_calls:
-                    function = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else {}
-                    seen_tool_calls.add(tool_call_signature(
-                        str(function.get("name") or ""),
-                        _tool_call_arguments(tool_call),
-                    ))
                 assistant_msg.tool_calls = list(assistant_msg.tool_calls or []) + tool_calls
                 assistant_msg.tool_results = list(assistant_msg.tool_results or [])
                 messages.append(build_deepseek_tool_assistant_message(msg, tool_calls, bool(standard_tool_calls)))
                 store.broadcast(session.id, "update", {"messageId": assistant_msg.id, "tool_calls": assistant_msg.tool_calls, "tool_results": assistant_msg.tool_results})
 
-                executed_entries: list[dict[str, Any]] = []
                 for tc in tool_calls:
                     fn_name = tc["function"]["name"]
                     raw_result = None
@@ -14947,106 +12302,50 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                         fn_args = json.loads(tc["function"].get("arguments") or "{}")
                     except json.JSONDecodeError:
                         fn_args = {}
-                    raw_result = execute_prefixed_tool(fn_name, fn_args, default_region)
-                    normalized_result = normalize_prefixed_tool_result(fn_name, raw_result)
+                    guard_error = (
+                        fastmoss_deep_dive_call_error(fn_name, fn_args, routing_text, assistant_msg, route)
+                        if provider == "fastmoss"
+                        else sellersprite_deep_dive_call_error(fn_name, fn_args, routing_text, assistant_msg)
+                        if provider == "amazon"
+                        else None
+                    )
+                    if guard_error:
+                        normalized_result = {
+                            "ok": False,
+                            "error": guard_error,
+                            "enough_data": False,
+                            "data_state": "error",
+                            "evidence_observed": False,
+                            "suggested_next_action": "answer_with_limitation",
+                            "tool_domain": "fastmoss" if provider == "fastmoss" else "sellersprite",
+                            "tool_name": split_prefixed_tool_id(fn_name)[1],
+                        }
+                    else:
+                        raw_result = execute_prefixed_tool(fn_name, fn_args, default_region)
+                        normalized_result = normalize_prefixed_tool_result(fn_name, raw_result)
                     normalized_result = annotate_fastmoss_tool_result(
                         fn_name, fn_args, normalized_result, raw_result
                     )
-                    result_field_plan = ledger_field_plans.get(
-                        tool_call_signature(fn_name, fn_args)
-                    )
-                    if result_field_plan is not None:
-                        normalized_result["return_field_plan"] = result_field_plan
-                    executed_entries.append({
-                        "tool_call": tc,
-                        "tool_name": fn_name,
-                        "arguments": fn_args,
-                        "raw_result": raw_result,
-                        "normalized_result": normalized_result,
-                    })
-
-                apply_chat_evidence_quality_gate(
-                    executed_entries,
-                    routing_text,
-                    route,
-                    req,
-                    api_key,
-                    api_url,
-                    model,
-                )
-                ledger = route.get("_research_ledger")
-                if provider == "amazon" and isinstance(ledger, dict):
-                    apply_sellersprite_ledger_results(
-                        ledger, assistant_msg, executed_entries
-                    )
-                committed_results: list[dict[str, Any]] = []
-                for entry in executed_entries:
-                    tc = entry["tool_call"]
-                    fn_name = entry["tool_name"]
-                    fn_args = entry["arguments"]
-                    raw_result = entry["raw_result"]
-                    normalized_result = entry["normalized_result"]
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc["id"],
                         "content": current_chat_tool_evidence(
                             fn_name,
-                            ({
-                                **normalized_result,
-                                "mcp_data": (
-                                    normalized_result.get("evidence_projection") or {}
-                                ).get("projected_data"),
-                                "mcp_text_preview": None,
-                            } if (
-                                provider == "amazon"
-                                and isinstance(route.get("_research_ledger"), dict)
-                            ) else normalized_result),
+                            normalized_result,
                             fn_args,
-                            (
-                                None
-                                if provider == "amazon"
-                                and isinstance(route.get("_research_ledger"), dict)
-                                else raw_result
-                            ),
+                            raw_result,
                         ),
                         "_context_scope": "current",
                     })
-                    committed_results.append({"tool_name": fn_name, "result": normalized_result})
-                    if not (
-                        provider == "amazon"
-                        and isinstance(route.get("_research_ledger"), dict)
-                    ):
-                        assistant_msg.tool_results.append(committed_results[-1])
-                        store.broadcast(session.id, "update", {"messageId": assistant_msg.id, "tool_calls": assistant_msg.tool_calls, "tool_results": assistant_msg.tool_results})
-                    if (
-                        fn_name == "fastmoss__search_category_by_words"
-                        and (
-                            not chat_evidence_quality_gate_enabled()
-                            or evidence_quality_observed(normalized_result)
-                        )
-                    ):
+                    assistant_msg.tool_results.append({"tool_name": fn_name, "result": normalized_result})
+                    store.broadcast(session.id, "update", {"messageId": assistant_msg.id, "tool_calls": assistant_msg.tool_calls, "tool_results": assistant_msg.tool_results})
+                    if fn_name == "fastmoss__search_category_by_words":
                         ambiguity = fastmoss_category_ambiguity_question(routing_text, normalized_result, route)
                         if ambiguity:
                             print("[CHAT] FastMoss category match ambiguous; asking for confirmation", flush=True)
                             store.update_message(session, assistant_msg, ambiguity, status="done")
                             store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": ambiguity})
                             return
-                if provider == "amazon" and isinstance(route.get("_research_ledger"), dict):
-                    ledger = route["_research_ledger"]
-                    store.commit_research_batch(
-                        session, assistant_msg, committed_results, ledger
-                    )
-                    reuse_sellersprite_ledger_evidence(ledger, assistant_msg)
-                    if ledger_core_slots_terminal(ledger) and str(ledger.get("status")) != "ready":
-                        review_sellersprite_candidate_completion(
-                            ledger, routing_text, req, api_key, api_url, model
-                        )
-                    store.update_research_state(session, ledger)
-                    store.broadcast(session.id, "update", {
-                        "messageId": assistant_msg.id,
-                        "tool_calls": assistant_msg.tool_calls,
-                        "tool_results": assistant_msg.tool_results,
-                    })
                 if route_intent == "product_availability" and sum(
                     1 for call in (assistant_msg.tool_calls or [])
                     if str(call.get("function", {}).get("name") or "") == "fastmoss__product_search"
@@ -15057,71 +12356,29 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                         "content": "The two-search availability limit has been reached. Do not call more tools; answer concisely from the current search evidence.",
                         "_context_scope": "system",
                     })
-                elif (
-                    provider == "amazon"
-                    and isinstance(route.get("_research_ledger"), dict)
-                ):
-                    ledger = route["_research_ledger"]
-                    if str(ledger.get("status")) in {"ready", "blocked"}:
-                        tools = []
-                        final_answer_forced = True
-                    else:
-                        selected_tool_ids = provider_profile_tool_ids(
-                            provider, route, routing_text,
-                            set(effective_enabled_tool_ids or set()), assistant_msg,
-                        )
-                        tools = build_prefixed_model_tools(selected_tool_ids)
-                        final_answer_forced = not bool(tools)
-                        if final_answer_forced:
-                            ledger["status"] = "blocked"
-                            store.update_research_state(session, ledger)
-                        log_model_tool_window(provider, all_provider_tools, tools)
-                    upsert_research_planner_message(
-                        messages, provider, route, routing_text, assistant_msg
+                elif route.get("dynamic_planner") and provider in {"amazon", "fastmoss"}:
+                    selected_tool_ids = provider_profile_tool_ids(
+                        provider, route, routing_text,
+                        set(effective_enabled_tool_ids or set()), assistant_msg,
                     )
-                elif route.get("dynamic_planner") and provider == "fastmoss":
-                    sufficiency = evaluate_chat_evidence_sufficiency(
-                        provider,
-                        routing_text,
-                        route,
-                        assistant_msg,
-                        set(effective_enabled_tool_ids or set()),
-                        req,
-                        api_key,
-                        api_url,
-                        model,
+                    expected_domain = "sellersprite" if provider == "amazon" else "fastmoss"
+                    has_provider_tools = any(
+                        split_prefixed_tool_id(tool_id)[0] == expected_domain
+                        for tool_id in (selected_tool_ids or set())
                     )
-                    route["_evidence_sufficiency"] = sufficiency
-                    if sufficiency.get("status") == "continue":
-                        selected_tool_ids = provider_profile_tool_ids(
-                            provider, route, routing_text,
-                            set(effective_enabled_tool_ids or set()), assistant_msg,
-                        )
-                        expected_domain = "sellersprite" if provider == "amazon" else "fastmoss"
-                        has_provider_tools = any(
-                            split_prefixed_tool_id(tool_id)[0] == expected_domain
-                            for tool_id in (selected_tool_ids or set())
-                        )
-                        tools = build_prefixed_model_tools(selected_tool_ids) if has_provider_tools else []
-                        if not has_provider_tools:
-                            route["_evidence_sufficiency"] = blocked_sufficiency(
-                                route,
-                                "证据仍有缺口，但当前没有可用的站点业务能力。",
-                            )
-                            tools = []
-                            final_answer_forced = True
-                        else:
-                            final_answer_forced = False
-                        log_model_tool_window(provider, all_provider_tools, tools)
-                        upsert_research_planner_message(
-                            messages, provider, route, routing_text, assistant_msg
-                        )
-                    else:
-                        tools = []
-                        final_answer_forced = True
-                        upsert_research_planner_message(
-                            messages, provider, route, routing_text, assistant_msg
-                        )
+                    tools = build_prefixed_model_tools(selected_tool_ids) if has_provider_tools else []
+                    final_answer_forced = not has_provider_tools
+                    messages.append({
+                        "role": "system",
+                        "content": research_planner_instruction(provider, route, routing_text, assistant_msg),
+                        "_context_scope": "system",
+                    })
+                    if final_answer_forced and provider == "fastmoss":
+                        messages.append({
+                            "role": "system",
+                            "content": fastmoss_report_quality_instruction(assistant_msg, routing_text, route),
+                            "_context_scope": "system",
+                        })
                 elif provider == "fastmoss" and route.get("playbook"):
                     phase = fastmoss_workflow_phase(
                         str(route.get("playbook")), assistant_msg, set(effective_enabled_tool_ids or set()), routing_text, route
@@ -15140,109 +12397,6 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 continue
 
             if requested_tool_calls:
-                if chat_tool_call_gate_applies(provider, route):
-                    call_gate_no_approved_rounds += 1
-                    gate_failure = str(gate_outcome.get("failure_reason") or "")
-                    deterministic_reasons = [
-                        reason for reason in skipped_tool_call_reasons
-                        if reason != "duplicate"
-                    ]
-                    feedback = (
-                        "本轮候选调用没有任何一项通过调用前门禁，因此没有执行MCP。"
-                        + (f" 门禁判定失败：{gate_failure[:300]}。" if gate_failure else "")
-                        + (
-                            " 硬护栏原因：" + "；".join(deterministic_reasons[:6]) + "。"
-                            if deterministic_reasons else ""
-                        )
-                    )
-                    ledger = route.get("_research_ledger")
-                    if provider == "amazon" and isinstance(ledger, dict):
-                        ledger_status = str(ledger.get("status") or "")
-                        if (
-                            call_gate_no_approved_rounds < 2
-                            and ledger_status not in {"ready", "blocked"}
-                            and tools
-                        ):
-                            selected_tool_ids = provider_profile_tool_ids(
-                                provider, route, routing_text,
-                                set(effective_enabled_tool_ids or set()), assistant_msg,
-                            )
-                            tools = build_prefixed_model_tools(selected_tool_ids)
-                            upsert_research_planner_message(
-                                messages, provider, route, routing_text, assistant_msg
-                            )
-                            messages.append({
-                                "role": "system",
-                                "content": feedback + "请只围绕当前台账槽位提出不同且可行的调用。",
-                                "_context_scope": "system",
-                            })
-                            continue
-                        if ledger_status not in {"ready", "blocked"}:
-                            ledger["status"] = "blocked"
-                            store.update_research_state(session, ledger)
-                        tools = []
-                        final_answer_forced = True
-                        messages.append({
-                            "role": "system",
-                            "content": (
-                                feedback
-                                + "连续两轮没有获准调用，SellerSprite研究台账已技术性收口。"
-                                "请仅用台账引用的有效证据生成报告并说明局限。"
-                            ),
-                            "_context_scope": "system",
-                        })
-                        continue
-                    sufficiency = evaluate_chat_evidence_sufficiency(
-                        provider,
-                        routing_text,
-                        route,
-                        assistant_msg,
-                        set(effective_enabled_tool_ids or set()),
-                        req,
-                        api_key,
-                        api_url,
-                        model,
-                    )
-                    route["_evidence_sufficiency"] = sufficiency
-                    if (
-                        call_gate_no_approved_rounds < 2
-                        and sufficiency.get("status") == "continue"
-                        and tools
-                    ):
-                        selected_tool_ids = provider_profile_tool_ids(
-                            provider, route, routing_text,
-                            set(effective_enabled_tool_ids or set()), assistant_msg,
-                        )
-                        tools = build_prefixed_model_tools(selected_tool_ids)
-                        upsert_research_planner_message(
-                            messages, provider, route, routing_text, assistant_msg
-                        )
-                        messages.append({
-                            "role": "system",
-                            "content": (
-                                feedback
-                                + "独立证据满足层仍要求继续。请严格依据其缺口提出一组不同且可行的调用。"
-                            ),
-                            "_context_scope": "system",
-                        })
-                        continue
-                    tools = []
-                    final_answer_forced = True
-                    if sufficiency.get("status") == "continue":
-                        route["_evidence_sufficiency"] = blocked_sufficiency(
-                            route,
-                            "连续两轮没有可执行的获准调用，研究控制发生技术性阻塞。",
-                        )
-                    messages.append({
-                        "role": "system",
-                        "content": (
-                            feedback
-                            + "连续两轮没有获准调用，现已关闭工具。请仅用已有有效证据生成报告；"
-                            "没有证据的部分明确说明局限，不得补造数据。"
-                        ),
-                        "_context_scope": "system",
-                    })
-                    continue
                 only_duplicates = bool(skipped_tool_call_reasons) and set(skipped_tool_call_reasons) == {"duplicate"}
                 if no_tool_retries < 1 and tools:
                     no_tool_retries += 1
@@ -15315,87 +12469,6 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 store.update_message(session, assistant_msg, fallback, status="done")
                 store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": fallback})
                 return
-            ledger = route.get("_research_ledger")
-            if (
-                provider == "amazon"
-                and isinstance(ledger, dict)
-                and request_tools
-                and not requested_tool_calls
-            ):
-                if str(ledger.get("status") or "") in {"ready", "blocked"}:
-                    tools = []
-                    final_answer_forced = True
-                    messages.append({
-                        "role": "system",
-                        "content": "SellerSprite研究台账已终结，进入隔离的Semantic报告阶段。",
-                        "_context_scope": "system",
-                    })
-                    continue
-                if no_tool_retries < 1:
-                    no_tool_retries += 1
-                    upsert_research_planner_message(
-                        messages, provider, route, routing_text, assistant_msg
-                    )
-                    messages.append({
-                        "role": "system",
-                        "content": (
-                            "你建议结束，但当前台账槽位仍有未完成事实。"
-                            "忽略上一版回答，只围绕当前槽位提出原生工具调用。"
-                        ),
-                        "_context_scope": "system",
-                    })
-                    continue
-                ledger["status"] = "blocked"
-                store.update_research_state(session, ledger)
-                no_tool_retries = 0
-                tools = []
-                final_answer_forced = True
-                continue
-            if (
-                provider == "fastmoss"
-                and route.get("dynamic_planner")
-                and request_tools
-                and not requested_tool_calls
-            ):
-                sufficiency = evaluate_chat_evidence_sufficiency(
-                    provider,
-                    routing_text,
-                    route,
-                    assistant_msg,
-                    set(effective_enabled_tool_ids or set()),
-                    req,
-                    api_key,
-                    api_url,
-                    model,
-                )
-                route["_evidence_sufficiency"] = sufficiency
-                if sufficiency.get("status") == "continue":
-                    selected_tool_ids = provider_profile_tool_ids(
-                        provider, route, routing_text,
-                        set(effective_enabled_tool_ids or set()), assistant_msg,
-                    )
-                    tools = build_prefixed_model_tools(selected_tool_ids)
-                    upsert_research_planner_message(
-                        messages, provider, route, routing_text, assistant_msg
-                    )
-                    messages.append({
-                        "role": "system",
-                        "content": (
-                            "独立证据满足层判定当前不能成稿。忽略上一版回答文字，"
-                            "根据最新证据缺口继续提出原生工具调用。"
-                        ),
-                        "_context_scope": "system",
-                    })
-                    no_tool_retries = 0
-                    continue
-                tools = []
-                final_answer_forced = True
-                messages.append({
-                    "role": "system",
-                    "content": "独立证据满足层已结束研究控制，进入隔离的Semantic报告阶段。",
-                    "_context_scope": "system",
-                })
-                continue
             if final_answer_forced and str(content or "").strip():
                 if (
                     provider == "amazon"
@@ -15437,14 +12510,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     "_context_scope": "system",
                 })
                 break
-            if provider == "amazon" and isinstance(route.get("_research_ledger"), dict):
-                evidence_gaps = ledger_active_required_facts(route["_research_ledger"])
-                evidence_instruction = lambda gaps: (
-                    ledger_planner_instruction(route["_research_ledger"])
-                    + "当前仍缺：" + "、".join(gaps) + "。"
-                )
-                evidence_label = "SellerSprite台账"
-            elif provider in {"fastmoss", "amazon"} and llm_orchestrated_route(route):
+            if provider in {"fastmoss", "amazon"} and llm_orchestrated_route(route):
                 evidence_gaps = analysis_minimum_evidence_gaps(provider, assistant_msg, route)
                 evidence_instruction = analysis_minimum_evidence_instruction
                 evidence_label = "FastMoss" if provider == "fastmoss" else "SellerSprite"
@@ -15575,16 +12641,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             store.update_message(session, assistant_msg, f"Request failed: {exc}", status="error")
             return
 
-    if provider == "amazon" and isinstance(route.get("_research_ledger"), dict):
-        evidence_gaps = [
-            str(slot.get("topic"))
-            for slot in route["_research_ledger"].get("slots") or []
-            if isinstance(slot, dict)
-            and str(slot.get("state")) not in {
-                "supported", "conflicted", "unavailable", "not_applicable", "blocked",
-            }
-        ]
-    elif provider in {"fastmoss", "amazon"} and llm_orchestrated_route(route):
+    if provider in {"fastmoss", "amazon"} and llm_orchestrated_route(route):
         evidence_gaps = analysis_minimum_evidence_gaps(provider, assistant_msg, route)
     elif provider == "fastmoss":
         evidence_gaps = fastmoss_analysis_evidence_gaps(routing_text, assistant_msg, route)
@@ -15593,25 +12650,6 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     else:
         evidence_gaps = []
     quality_summary = mcp_evidence_quality_summary(assistant_msg)
-    if provider == "amazon" and isinstance(route.get("_research_ledger"), dict):
-        route["_research_ledger"]["status"] = "blocked"
-        for slot in route["_research_ledger"].get("slots") or []:
-            if isinstance(slot, dict) and str(slot.get("state")) not in {
-                "supported", "conflicted", "unavailable", "not_applicable", "blocked",
-            }:
-                slot["state"] = "blocked"
-        ledger_candidate_complete(route["_research_ledger"])
-        route["_research_ledger"]["status"] = "blocked"
-        store.update_research_state(session, route["_research_ledger"])
-    elif (
-        provider in {"fastmoss", "amazon"}
-        and route.get("dynamic_planner")
-        and (assistant_msg.tool_results or [])
-    ):
-        route["_evidence_sufficiency"] = blocked_sufficiency(
-            route,
-            "研究控制已达到50轮技术熔断，使用当前有效证据并明确局限成稿。",
-        )
     if provider == "fastmoss" and route.get("playbook"):
         messages.append({
             "role": "system",

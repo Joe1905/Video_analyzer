@@ -52,7 +52,7 @@ def test_fastmoss_envelope_and_flat_list_table() -> None:
     assert "| code | 0 | $.code |" in markdown
     assert "| message | \"\" | $.message |" in markdown
     assert "## data (`$.data`)" in markdown
-    assert "共有 2 项；以下完整展示全部 2 项。" in markdown
+    assert "数组，共 2 项；以下完整展示全部 2 项。" in markdown
     assert "1729739021314527787" in markdown
     assert "Food Processor \\| 400W" in markdown
     assert "Mini Meat<br>Grinder" in markdown
@@ -76,7 +76,7 @@ def test_nested_values_and_empty_states_are_explicit() -> None:
     }
     markdown = json_to_markdown(source)
     assert "7494049503488000000" in markdown
-    assert "没有返回任何记录（JSON 路径：`$.data.videos`）。" in markdown
+    assert "本数组没有返回任何记录（JSON 路径：`$.data.videos`）。" in markdown
     assert "本对象没有返回任何字段（JSON 路径：`$.data.facets`）。" in markdown
     assert "### 项目 1 (`$.data.groups[0]`)" in markdown
     assert "| enabled | false | $.data.shop.metrics.enabled |" in markdown
@@ -95,7 +95,7 @@ def test_optional_row_limit_is_never_silent() -> None:
         max_table_rows=2,
     )
     assert "共 5 项，本次展示 2 项，省略 3 项" in markdown
-    assert "共有 5 项；本次展示前 2 项。" in markdown
+    assert "数组，共 5 项；本次展示前 2 项。" in markdown
     assert "\n| 2 | 2 |" not in markdown
 
 

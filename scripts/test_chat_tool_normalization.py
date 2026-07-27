@@ -15,9 +15,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import web_app  # noqa: E402
 from sellersprite_evidence_renderer import (  # noqa: E402
-    SELLERSPRITE_RENDER_SPECS,
     SELLERSPRITE_TOOL_SEMANTICS,
-    SELLERSPRITE_TOOL_TITLES,
     render_sellersprite_current_evidence,
     sellersprite_semantic_registry_diagnostics,
 )
@@ -453,7 +451,7 @@ def test_tool_evidence_is_compact_but_keeps_business_fields() -> None:
     assert "RAW_SHOULD_BE_DROPPED" not in evidence
 
 
-def test_current_tool_evidence_preserves_known_fields_and_isolates_unknowns() -> None:
+def test_current_tool_evidence_is_lossless_until_budget_pressure() -> None:
     marker = "CURRENT_EVIDENCE_AFTER_12000_CHARS"
     payload = {
         "code": "OK",
@@ -489,13 +487,9 @@ def test_current_tool_evidence_preserves_known_fields_and_isolates_unknowns() ->
         {"marketplace": "US", "keyword": "air pump"},
         raw_result,
     )
-    assert marker not in evidence
-    assert "站点" in evidence and "美国站" in evidence
-    assert "marketplace" not in evidence
+    assert marker in evidence
+    assert "marketplace" in evidence and "US" in evidence
     assert "本次实际返回 30 条记录" in evidence
-    assert "keyword-20" in evidence
-    assert "2000" in evidence
-    assert "description" not in evidence
     assert "mcp_text_preview" not in evidence
 
     messages = [
@@ -811,7 +805,7 @@ def test_deepseek_tool_turn_preserves_reasoning_content() -> None:
     assert turn["reasoning_content"] == "internal reasoning"
 
 
-def test_dynamic_chat_context_never_truncates_current_evidence() -> None:
+def test_dynamic_chat_context_compresses_to_budget() -> None:
     messages = [{"role": "system", "content": "system rules", "_context_scope": "system"}]
     messages.extend(
         {
@@ -847,110 +841,14 @@ def test_dynamic_chat_context_never_truncates_current_evidence() -> None:
 
     request_messages, request_tools, stats = manage_chat_context(messages, tools, max_tokens=3000)
     assert stats["initial_tokens"] > stats["max_tokens"]
-    assert stats["final_tokens"] > stats["max_tokens"]
+    assert stats["final_tokens"] <= stats["max_tokens"]
     assert stats["compressed"] is True
     assert stats["dropped_history"] > 0
-    assert stats["current_evidence_compressed"] == 0
-    assert stats["current_evidence_chars_after"] == stats["current_evidence_chars_before"]
-    assert stats["tools_removed"] is True
-    assert stats["over_budget"] is True
-    assert request_tools == []
-    assert "evidence-" + ("y" * 20000) in json.dumps(request_messages, ensure_ascii=False)
+    assert stats["current_evidence_compressed"] == 1
+    assert stats["current_evidence_chars_after"] < stats["current_evidence_chars_before"]
+    assert estimate_chat_context_tokens(request_messages, request_tools) <= 3000
     assert any(message.get("role") == "tool" for message in request_messages)
     assert all(not any(key.startswith("_context_") for key in message) for message in request_messages)
-
-
-def test_flash_checkpoint_replaces_only_old_planner_evidence() -> None:
-    messages = [{"role": "system", "content": "rules", "_context_scope": "system"}]
-    for index in range(4):
-        messages.append({
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [{
-                "id": f"call_{index}",
-                "type": "function",
-                "function": {"name": "sellersprite__keyword_research", "arguments": "{}"},
-            }],
-            "_context_scope": "current",
-        })
-        messages.append({
-            "role": "tool",
-            "tool_call_id": f"call_{index}",
-            "content": f"marker-{index}-" + ("x" * 6000),
-            "_context_scope": "current",
-        })
-    assistant = SimpleNamespace(
-        tool_calls=[{"id": f"call_{index}"} for index in range(4)],
-        tool_results=[{"tool_name": "sellersprite__keyword_research", "result": {"marker": index}} for index in range(4)],
-    )
-    raw_snapshot = json.dumps([assistant.tool_calls, assistant.tool_results], ensure_ascii=False, sort_keys=True)
-
-    class Response:
-        def __init__(self, body: dict) -> None:
-            self.body = body
-
-        def raise_for_status(self) -> None:
-            return None
-
-        def json(self) -> dict:
-            return self.body
-
-    class Requests:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def post(self, _url: str, **kwargs):
-            self.calls += 1
-            payload = json.loads(kwargs["data"].decode("utf-8"))
-            request = json.loads(payload["messages"][1]["content"])
-            source_ref = request["sources"][0]["source_ref"]
-            checkpoint = {
-                "covered_tool_call_ids": request["required_covered_tool_call_ids"],
-                "entities": [],
-                "facts": [{"claim": "保留旧证据", "source_refs": [source_ref]}],
-                "conflicts": [], "empty_or_failed": [], "limitations": [],
-                "unresolved_questions": [], "recommended_next_capabilities": [],
-            }
-            return Response({"choices": [{"message": {"content": json.dumps(checkpoint, ensure_ascii=False)}}]})
-
-    old_max = os.environ.get("CHAT_CONTEXT_MAX_TOKENS")
-    old_trigger = os.environ.get("CHAT_CONTEXT_COMPACT_TRIGGER_PERCENT")
-    original_record = web_app.record_api_call
-    requests = Requests()
-    try:
-        os.environ["CHAT_CONTEXT_MAX_TOKENS"] = "8000"
-        os.environ["CHAT_CONTEXT_COMPACT_TRIGGER_PERCENT"] = "50"
-        web_app.record_api_call = lambda *_args, **_kwargs: None
-        stats = web_app.maybe_checkpoint_chat_evidence(
-            messages, [], "分析机会", {"research_task": {"scope": "cross_category"}},
-            requests, "key", "https://example.invalid/v1", "deepseek-v4-flash",
-        )
-        assert stats["status"] == "created"
-        assert stats["covered_call_count"] == 2
-        assert requests.calls == 1
-        assert [message.get("tool_call_id") for message in messages if message.get("role") == "tool"] == ["call_2", "call_3"]
-        checkpoints = [message for message in messages if message.get("_context_key") == "evidence_checkpoint"]
-        assert len(checkpoints) == 1
-        assert "call_0" in checkpoints[0]["content"] and "call_1" in checkpoints[0]["content"]
-        assert "marker-2" in json.dumps(messages, ensure_ascii=False)
-        assert "marker-3" in json.dumps(messages, ensure_ascii=False)
-        second = web_app.maybe_checkpoint_chat_evidence(
-            messages, [], "分析机会", {"research_task": {"scope": "cross_category"}},
-            requests, "key", "https://example.invalid/v1", "deepseek-v4-flash",
-        )
-        assert second["status"] == "insufficient_old_evidence"
-        assert requests.calls == 1
-        assert json.dumps([assistant.tool_calls, assistant.tool_results], ensure_ascii=False, sort_keys=True) == raw_snapshot
-    finally:
-        web_app.record_api_call = original_record
-        if old_max is None:
-            os.environ.pop("CHAT_CONTEXT_MAX_TOKENS", None)
-        else:
-            os.environ["CHAT_CONTEXT_MAX_TOKENS"] = old_max
-        if old_trigger is None:
-            os.environ.pop("CHAT_CONTEXT_COMPACT_TRIGGER_PERCENT", None)
-        else:
-            os.environ["CHAT_CONTEXT_COMPACT_TRIGGER_PERCENT"] = old_trigger
 
 
 def test_tool_limit_final_context_removes_protocol_and_detects_dsml() -> None:
@@ -1016,22 +914,7 @@ def test_tool_limit_keeps_large_current_collection_when_capacity_allows() -> Non
             "tool_call_id": f"call_{index}",
             "content": web_app.current_chat_tool_evidence(
                 "sellersprite__keyword_research_trends",
-                {
-                    "ok": True,
-                    "mcp_data": {
-                        "items": [
-                            {
-                                "keyword": (
-                                    f"air pump {index} trend sample {row:03d}"
-                                    + (f" {marker}" if row == 159 else "")
-                                ),
-                                "date": f"2026-{(row % 12) + 1:02d}",
-                                "value": row,
-                            }
-                            for row in range(160)
-                        ],
-                    },
-                },
+                {"ok": True, "mcp_data": {"series": ["x" * 8200, marker]}},
                 {"marketplace": "US", "keyword": f"air pump {index}"},
             ),
             "_context_scope": "current",
@@ -1078,24 +961,6 @@ def test_sellersprite_schema_argument_normalization() -> None:
                 "additionalProperties": False,
             },
         },
-        {
-            "name": "keyword_research",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "request": {
-                        "type": "object",
-                        "properties": {
-                            "marketplace": {"type": "string"},
-                            "returnFields": {"type": "string"},
-                        },
-                        "required": ["marketplace"],
-                    },
-                },
-                "required": ["request"],
-                "additionalProperties": False,
-            },
-        },
     ]
     original = web_app.list_mcp_bridge_tools
     web_app.list_mcp_bridge_tools = lambda chat_type: schemas
@@ -1113,21 +978,6 @@ def test_sellersprite_schema_argument_normalization() -> None:
         )
         assert wrapped == {"request": {"marketplace": "US", "keyword": "mini chopper"}}
         assert action and action.startswith("wrapped")
-
-        official_fields, action = normalize_mcp_tool_arguments(
-            "sellersprite",
-            "keyword_research",
-            {
-                "request": {
-                    "marketplace": "US",
-                    "returnFields": "keyword,searches,searchMonthCr,minBid,avgBid,keyword",
-                },
-            },
-        )
-        assert official_fields["request"]["returnFields"] == (
-            "keywords,searches,searchMonthlyCr,bidMin,bid"
-        )
-        assert action and "keyword->keywords" in action and "avgBid->bid" in action
 
         try:
             normalize_mcp_tool_arguments("sellersprite", "keyword_research_trends", {"month": "202606"})
@@ -1649,10 +1499,8 @@ def test_provider_profiles_use_aggregated_sellersprite_and_staged_fastmoss_tools
     assert staged == {"system__current_time", "fastmoss__search_category_by_words"}
 
 
-def test_sellersprite_semantic_registry_is_complete_and_strict() -> None:
+def test_sellersprite_semantic_registry_is_complete_and_lossless() -> None:
     assert len(SELLERSPRITE_TOOL_SEMANTICS) == 43
-    assert set(SELLERSPRITE_TOOL_TITLES) == set(SELLERSPRITE_TOOL_SEMANTICS)
-    assert set(SELLERSPRITE_RENDER_SPECS) == set(SELLERSPRITE_TOOL_SEMANTICS)
     diagnostics = sellersprite_semantic_registry_diagnostics(
         [{"name": name} for name in SELLERSPRITE_TOOL_SEMANTICS]
     )
@@ -1663,28 +1511,15 @@ def test_sellersprite_semantic_registry_is_complete_and_strict() -> None:
         "missing_runtime": [],
     }
     for name, semantic in SELLERSPRITE_TOOL_SEMANTICS.items():
-        assert not re.search(r"[A-Za-z]", SELLERSPRITE_TOOL_TITLES[name]), (
-            name,
-            SELLERSPRITE_TOOL_TITLES[name],
-        )
         result = render_sellersprite_current_evidence({
             "tool": f"sellersprite__{name}",
-            "arguments": {
-                "marketplace": "US",
-                "date_type": "month",
-                "date_value": "2026-06",
-            },
+            "arguments": {"marketplace": "US"},
             "ok": True,
             "data_state": "data",
             "data": {
                 "items": [{
                     "asin": "B0ABCDEF12",
                     "keyword": "stroller fan",
-                    "keyword_jp": "ベビーカーファン",
-                    "date": "202606",
-                    "availableDate": 1773187200000,
-                    "currency": "USD",
-                    "fulfillment": "FBA",
                     "searches": 12345,
                     "futureBusinessField": f"kept-{name}",
                 }],
@@ -1696,23 +1531,7 @@ def test_sellersprite_semantic_registry_is_complete_and_strict() -> None:
             result.consumed_paths | result.unmapped_paths | result.excluded_paths
         )
         assert not (result.consumed_paths & result.unmapped_paths)
-        assert not result.unmapped_paths
-        assert f"kept-{name}" not in result.markdown
-        assert any("futureBusinessField" in path for path in result.excluded_paths)
-        assert any("自然语言字段契约" in reason for reason in result.exclusion_reasons.values())
-        assert "未映射业务字段" not in result.markdown
-        assert "JSON路径" not in result.markdown
-        assert "原字段" not in result.markdown
-        assert "$.business_data" not in result.markdown
-        assert f"sellersprite__{name}" not in result.markdown
-        assert "current-call" not in result.markdown
-        assert "ベビーカーファン" not in result.markdown
-        assert "2026年6月" in result.markdown
-        assert "2026年3月11日" in result.markdown
-        assert "美元" in result.markdown
-        assert "亚马逊物流配送" in result.markdown
-        for token in ("2026-06", "202606", "month", "USD", "FBA", "Semantic"):
-            assert token not in result.markdown, (name, token)
+        assert f"kept-{name}" in result.markdown
 
     empty = render_sellersprite_current_evidence({
         "tool": "sellersprite__review",
@@ -1736,165 +1555,8 @@ def test_sellersprite_semantic_registry_is_complete_and_strict() -> None:
     assert wrapped_empty.business_leaf_paths == set()
     assert "没有返回业务记录" in wrapped_empty.markdown
 
-    unknown = render_sellersprite_current_evidence({
-        "tool": "sellersprite__future_tool",
-        "arguments": {"marketplace": "US"},
-        "ok": True,
-        "data_state": "data",
-        "data": {"items": [{"secretFutureField": "AUDIT-ONLY-MARKER"}]},
-    })
-    assert unknown.fallback is True
-    assert unknown.business_leaf_paths == unknown.excluded_paths
-    assert "AUDIT-ONLY-MARKER" not in unknown.markdown
-    assert "future_tool" not in unknown.markdown
-    assert "仅保留在审计证据" in unknown.markdown
 
-
-def test_sellersprite_official_aba_fields_render_as_semantic_values() -> None:
-    result = render_sellersprite_current_evidence({
-        "tool": "sellersprite__aba_research_monthly",
-        "arguments": {
-            "request": {
-                "marketplace": "US",
-                "includeKeywords": "screen protector",
-                "date": "202508",
-            },
-        },
-        "ok": True,
-        "data_state": "data",
-        "data": {
-            "items": [{
-                "marketplace": "US",
-                "date": "202508",
-                "keyword": "screen protector",
-                "searchRankCr": -0.1375,
-                "purchaseRate": 0.0073,
-                "titleDensityExact": 49,
-                "cprExact": 17,
-                "w1SearchRank": 8539,
-                "w1RankGrowthRate": -0.1375,
-                "clickShareRate": 0.1646,
-                "cvsShareRate": 0.1115,
-                "top3Brands": ["Ailun", "NEW'C", "MAGIC JOHN"],
-                "top3AsinDtoList": [{
-                    "asin": "B0CCYM3F1V",
-                    "clickRate": 0.0656,
-                    "conversionRate": 0.0496,
-                }],
-            }],
-        },
-    })
-    assert result.fallback is False
-    assert not result.unmapped_paths
-    assert "调用参数：请求" not in result.markdown
-    assert "前1个统计周期的搜索排名" in result.markdown
-    assert "首页标题精确包含该词的商品数" in result.markdown
-    assert "8天内使该词上首页所需销量" in result.markdown
-    assert "-13.75%" in result.markdown
-    assert "0.73%" in result.markdown
-    assert "16.46%" in result.markdown
-    assert "JSON路径" not in result.markdown
-    assert "原字段" not in result.markdown
-
-
-def test_sellersprite_keyword_rows_keep_query_scope_and_anonymous_identity_boundary() -> None:
-    result = render_sellersprite_current_evidence({
-        "tool": "sellersprite__keyword_research",
-        "arguments": {
-            "request": {
-                "marketplace": "US",
-                "keywords": "tent fan",
-                "returnFields": "keyword,searches,searchNearlyCr,araClickRate,avgBid",
-            },
-        },
-        "ok": True,
-        "data_state": "data",
-        "data": {
-            "items": [{
-                "keyword": None,
-                "searches": 63236,
-                "searchNearlyCr": 36.7,
-                "araClickRate": 0.2554,
-                "avgBid": None,
-            }],
-        },
-    })
-    assert result.fallback is False
-    assert "关键词 | tent fan" in result.markdown
-    assert "返回字段 | 关键词、搜索量、近3个月搜索量增长率、点击垄断率、平均点击付费广告竞价（旧字段）" in result.markdown
-    assert "近3个月搜索量增长率" in result.markdown and "36.7%" in result.markdown
-    assert "点击垄断率" in result.markdown and "25.54%" in result.markdown
-    assert "1 条没有关键词名称" in result.markdown
-    assert "不得绑定到任何具体关键词" in result.markdown
-    assert "search nearly cr" not in result.markdown
-    assert "ara click rate" not in result.markdown
-
-
-def test_sellersprite_product_and_google_trend_fields_are_naturalized() -> None:
-    product = render_sellersprite_current_evidence({
-        "tool": "sellersprite__product_research",
-        "arguments": {
-            "request": {
-                "marketplace": "US",
-                "keyword": "hard hat fan",
-                "page": 1,
-                "pageSize": 20,
-            },
-        },
-        "ok": True,
-        "data_state": "data",
-        "data": {
-            "items": [{
-                "asin": "B0ABCDEF12",
-                "title": "Hard Hat Fan",
-                "availableDate": 1773187200000,
-                "price": 26.6,
-                "currency": "USD",
-                "totalUnits": 7855,
-                "totalAmount": 796146,
-                "ratings": 431,
-                "fulfillment": "FBA",
-            }],
-        },
-    })
-    assert product.fallback is False
-    assert not product.unmapped_paths
-    assert "亚马逊商品编号 | 标题 | 上架日期 | 价格 | 币种 | 统计月销量 | 统计月销售额 | 评分数量 | 履约方式" in product.markdown
-    assert "2026年3月11日" in product.markdown
-    assert "亚马逊物流配送" in product.markdown
-    assert "availableDate" not in product.markdown
-    assert "1773187200000" not in product.markdown
-
-    trend = render_sellersprite_current_evidence({
-        "tool": "sellersprite__google_trend",
-        "arguments": {
-            "request": {
-                "marketplace": "US",
-                "keywords": "hard hat fan",
-                "date_value": "2026-W29",
-            },
-        },
-        "ok": True,
-        "data_state": "data",
-        "data": {
-            "items": [{
-                "keyword": "hard hat fan",
-                "time": 1783814400000,
-                "value": 53,
-                "link": "https://trends.google.com/example",
-            }],
-        },
-    })
-    assert trend.fallback is False
-    assert not trend.unmapped_paths
-    assert "2026年第29周" in trend.markdown
-    assert "2026年7月12日" in trend.markdown
-    assert "1783814400000" not in trend.markdown
-    assert "https://trends.google.com" not in trend.markdown
-    assert any("link" in path for path in trend.excluded_paths)
-
-
-def test_sellersprite_semantic_report_and_standalone_synthesis() -> None:
+def test_sellersprite_semantic_report_and_pro_synthesis() -> None:
     marker = "SELLERSPRITE-REPORT-MARKER"
     message = SimpleNamespace(
         tool_calls=[{
@@ -1924,13 +1586,7 @@ def test_sellersprite_semantic_report_and_standalone_synthesis() -> None:
     route = {
         "intent": "product_research",
         "task_depth": "analysis",
-        "research_task": {
-            "objective": "opportunity_discovery",
-            "scope": "cross_category",
-            "entity_type": "none",
-            "region": "US",
-            "time_window": "current",
-        },
+        "research_task": {"objective": "opportunity_discovery", "region": "US"},
     }
     dossier = web_app.sellersprite_report_evidence_dossier(message, route)
     assert len(dossier["tool_evidence"]) == 1
@@ -1938,32 +1594,11 @@ def test_sellersprite_semantic_report_and_standalone_synthesis() -> None:
     assert marker in json.dumps(dossier, ensure_ascii=False)
 
     semantic, semantic_stats = web_app.sellersprite_render_report_evidence(dossier)
-    assert "## stroller fan · 关键词研究结果" in semantic
-    assert marker not in semantic
-    assert "12345" in semantic
+    assert "## call:1 · `sellersprite__keyword_research`" in semantic
+    assert marker in semantic
     assert semantic_stats["format"] == "semantic"
-    assert semantic_stats["business_leaf_count"] == (
-        semantic_stats["consumed_leaf_count"]
-        + semantic_stats["unmapped_leaf_count"]
-        + semantic_stats["excluded_leaf_count"]
-    )
-    assert "研究任务" in semantic
-    assert "机会发现" in semantic
-    assert "证据质量汇总" in semantic
-    assert "研究范围" in semantic and "跨类目" in semantic
-    assert "当前请求范围" in semantic
-    assert "research_task" not in semantic
-    assert "quality_summary" not in semantic
-    assert "opportunity_discovery" not in semantic
-    assert "sellersprite__" not in semantic
-    assert "call:1" not in semantic
-    assert "source_ref" not in semantic
-    assert "futureBusinessField" not in semantic
 
     class Response:
-        def __init__(self, content: str) -> None:
-            self.content = content
-
         def raise_for_status(self) -> None:
             return None
 
@@ -1971,7 +1606,7 @@ def test_sellersprite_semantic_report_and_standalone_synthesis() -> None:
             return {
                 "choices": [{
                     "finish_reason": "stop",
-                    "message": {"content": self.content},
+                    "message": {"content": "# SellerSprite 报告\n\n已由 V4 Pro 合成。"},
                 }],
             }
 
@@ -1981,17 +1616,7 @@ def test_sellersprite_semantic_report_and_standalone_synthesis() -> None:
 
         def post(self, _url: str, **kwargs):
             self.payloads.append(json.loads(kwargs["data"].decode("utf-8")))
-            if len(self.payloads) == 1:
-                return Response("# SellerSprite 报告\n\n已由独立报告模型合成。")
-            return Response(json.dumps({
-                "coverage": [{
-                    "id": "coverage-1",
-                    "status": "covered",
-                    "reason": "正文已回答用户问题。",
-                }],
-                "removed_unsupported_claims": [],
-                "report": "# SellerSprite 报告\n\n已由覆盖校验完整重写。",
-            }, ensure_ascii=False))
+            return Response()
 
     requests = Requests()
     report = web_app.synthesize_sellersprite_report_from_packet(
@@ -2005,60 +1630,18 @@ def test_sellersprite_semantic_report_and_standalone_synthesis() -> None:
     )
     assert report.startswith("# SellerSprite 报告")
     assert report.count(web_app.SELLERSPRITE_REPORT_NOTICE) == 1
-    assert len(requests.payloads) == 2
+    assert len(requests.payloads) == 1
     payload = requests.payloads[0]
     assert payload["model"] == "deepseek-v4-pro-test"
     assert payload["max_tokens"] == 12000
     assert "tools" not in payload
-    assert [item["role"] for item in payload["messages"]] == ["system", "system", "user"]
-    assert "唯一事实来源" in payload["messages"][0]["content"]
-    assert "sellersprite__" not in payload["messages"][0]["content"]
-    assert "fastmoss__" not in payload["messages"][0]["content"]
-    assert "工具Schema" not in payload["messages"][0]["content"]
-    assert "完整的 Amazon 市场调研报告，不是执行摘要" in payload["messages"][1]["content"]
-    assert "内部完成证据覆盖检查" in payload["messages"][1]["content"]
-    assert "不得为了简洁只保留少数机会方向" in payload["messages"][1]["content"]
-    assert "筛选的榜单只能描述该筛选样本" in payload["messages"][1]["content"]
-    assert "直接从中文 Markdown 标题开始" in payload["messages"][1]["content"]
+    assert [item["role"] for item in payload["messages"]] == ["system", "user"]
+    assert "A useful product analysis must include" in payload["messages"][0]["content"]
     assert marker not in payload["messages"][0]["content"]
-    assert marker not in payload["messages"][1]["content"]
-    assert marker not in payload["messages"][2]["content"]
-    assert "12345" in payload["messages"][2]["content"]
-    assert "# 亚马逊调研证据" in payload["messages"][2]["content"]
-    assert "## 自然语言业务证据" in payload["messages"][2]["content"]
-    second_payload = requests.payloads[1]
-    assert second_payload["response_format"] == {"type": "json_object"}
-    assert second_payload["max_tokens"] == 12000
-    assert "12345" in second_payload["messages"][1]["content"]
-    assert "sellersprite__" not in json.dumps(second_payload["messages"], ensure_ascii=False)
+    assert marker in payload["messages"][1]["content"]
+    assert "# SellerSprite 调研证据" in payload["messages"][1]["content"]
+    assert "--- Semantic 证据开始 ---" in payload["messages"][1]["content"]
     assert web_app.append_sellersprite_report_notice(report, route) == report
-
-    class InvalidRewriteRequests(Requests):
-        def post(self, _url: str, **kwargs):
-            self.payloads.append(json.loads(kwargs["data"].decode("utf-8")))
-            if len(self.payloads) == 1:
-                return Response("# 安全初稿\n\n只使用现有业务证据。")
-            return Response(json.dumps({
-                "coverage": [{
-                    "id": "coverage-1",
-                    "status": "covered",
-                    "reason": "已覆盖。",
-                }],
-                "removed_unsupported_claims": [],
-                "report": "# 泄漏终稿\n\n建议调用 sellersprite__keyword_research。",
-            }, ensure_ascii=False))
-
-    fallback_report = web_app.synthesize_sellersprite_report_from_packet(
-        message,
-        "分析 stroller fan 市场",
-        route,
-        InvalidRewriteRequests(),
-        "test-key",
-        "https://example.invalid/v1",
-        "deepseek-v4-pro-test",
-    )
-    assert fallback_report.startswith("# 安全初稿")
-    assert "sellersprite__" not in fallback_report
 
     class FailedRequests:
         def post(self, _url: str, **_kwargs):
@@ -2073,141 +1656,11 @@ def test_sellersprite_semantic_report_and_standalone_synthesis() -> None:
         "https://example.invalid/v1",
         "deepseek-v4-pro-test",
     )
-    assert "没有使用编排草稿替代独立报告" in failed
+    assert "没有使用 Flash 草稿替代 V4 Pro 报告" in failed
 
     run_source = inspect.getsource(web_app.run_chat_deepseek)
     assert "synthesize_sellersprite_report_from_packet(" not in run_source
     assert run_source.count("complete_sellersprite_answer(") >= 5
-
-
-def test_evidence_sufficiency_ready_and_failure_fallback() -> None:
-    message = SimpleNamespace(
-        tool_calls=[{
-            "id": "c1",
-            "function": {
-                "name": "sellersprite__keyword_research",
-                "arguments": json.dumps({"marketplace": "US", "keyword": "portable fan"}),
-            },
-        }],
-        tool_results=[{
-            "tool_name": "sellersprite__keyword_research",
-            "result": {
-                "ok": True,
-                "data_state": "data",
-                "evidence_quality": {
-                    "status": "accepted",
-                    "accepted_rows": [1],
-                    "rejected_rows": [],
-                    "supported_dimensions": ["关键词需求"],
-                    "unsupported_claims": [],
-                    "reason": "关键词和周期匹配。",
-                },
-                "mcp_data": {"items": [{"keywords": "portable fan", "searchVolume": 1200}]},
-            },
-        }],
-    )
-    route = {
-        "intent": "product_research",
-        "task_depth": "analysis",
-        "dynamic_planner": True,
-        "research_task": {
-            "objective": "entity_analysis",
-            "scope": "keyword",
-            "entity_type": "keyword",
-            "entity": "portable fan",
-            "entity_source": "explicit",
-            "region": "US",
-            "time_window": "最近一个月",
-        },
-    }
-
-    class Response:
-        def __init__(self, content: str) -> None:
-            self.content = content
-
-        def raise_for_status(self) -> None:
-            return None
-
-        def json(self) -> dict:
-            return {
-                "choices": [{
-                    "finish_reason": "stop",
-                    "message": {"content": self.content},
-                }],
-            }
-
-    class Requests:
-        def __init__(self, content: str) -> None:
-            self.content = content
-            self.payloads: list[dict] = []
-
-        def post(self, _url: str, **kwargs):
-            self.payloads.append(json.loads(kwargs["data"].decode("utf-8")))
-            return Response(self.content)
-
-    ready_response = json.dumps({
-        "status": "ready",
-        "reason": "核心关键词需求已经有证据。",
-        "coverage_items": [{
-            "id": "coverage-1",
-            "topic": "关键词需求",
-            "priority": "core",
-            "state": "supported",
-            "boundaries": ["仅适用于美国站和返回周期"],
-        }],
-        "missing_capabilities": [],
-        "next_capabilities": [],
-        "unsupported_claims": ["完整市场容量"],
-        "report_contract": {
-            "must_cover": ["关键词需求"],
-            "must_compare": [],
-            "must_state_as_limit": ["没有完整市场容量"],
-            "forbidden_claims": ["将样本外推为全市场"],
-        },
-    }, ensure_ascii=False)
-    original_record = web_app.record_api_call
-    web_app.record_api_call = lambda *args, **kwargs: None
-    try:
-        requests = Requests(ready_response)
-        ready = web_app.evaluate_chat_evidence_sufficiency(
-            "amazon",
-            "分析 portable fan",
-            route,
-            message,
-            {
-                "sellersprite__keyword_research",
-                "sellersprite__product_research",
-                "sellersprite__google_trend",
-            },
-            requests,
-            "test-key",
-            "https://example.invalid/v1",
-            "deepseek-v4-flash",
-        )
-        assert ready["status"] == "ready"
-        judge_input = requests.payloads[0]["messages"][1]["content"]
-        assert "sellersprite__" not in judge_input
-        assert "关键词需求" in judge_input
-
-        failed = web_app.evaluate_chat_evidence_sufficiency(
-            "amazon",
-            "分析 portable fan",
-            route,
-            message,
-            {
-                "sellersprite__keyword_research",
-                "sellersprite__product_research",
-                "sellersprite__google_trend",
-            },
-            Requests("not-json"),
-            "test-key",
-            "https://example.invalid/v1",
-            "deepseek-v4-flash",
-        )
-        assert failed["status"] == "continue"
-        assert failed["source"] == "fallback"
-    finally:
-        web_app.record_api_call = original_record
 
 
 def test_dynamic_provider_capability_graph_uses_task_scope_and_evidence() -> None:
@@ -2450,12 +1903,11 @@ def test_dynamic_provider_planner_does_not_cap_repeated_calls() -> None:
     assert normalized["query"] == queries
 
 
-def test_llm_orchestration_uses_rolling_tool_window_and_keeps_hard_guards() -> None:
+def test_llm_orchestration_exposes_full_provider_tools_and_keeps_hard_guards() -> None:
     route = {
         "intent": "fastmoss_product",
         "task_depth": "workflow",
         "route_source": "llm",
-        "confidence": 0.92,
         "dynamic_planner": True,
         "playbook": "product",
         "research_task": {
@@ -2476,12 +1928,7 @@ def test_llm_orchestration_uses_rolling_tool_window_and_keeps_hard_guards() -> N
         "fastmoss__product_detail_info",
     }
     empty = SimpleNamespace(tool_calls=[], tool_results=[])
-    assert web_app.provider_profile_tool_ids("fastmoss", route, "本月爆卖产品", enabled, empty) == {
-        "system__current_time",
-        "fastmoss__market_category_ranking",
-        "fastmoss__search_category_by_words",
-        "fastmoss__product_rank_new_listed",
-    }
+    assert web_app.provider_profile_tool_ids("fastmoss", route, "本月爆卖产品", enabled, empty) == enabled
     instruction = web_app.research_planner_instruction("fastmoss", route, "本月爆卖产品", empty)
     assert "程序不会规定首个工具" in instruction
     assert "能力图仅供参考，不是工具门禁" in instruction
@@ -2517,7 +1964,6 @@ def test_llm_orchestration_uses_rolling_tool_window_and_keeps_hard_guards() -> N
         "intent": "product_research",
         "task_depth": "workflow",
         "route_source": "llm",
-        "confidence": 0.91,
         "dynamic_planner": True,
         "research_task": {
             "objective": "opportunity_discovery",
@@ -2538,23 +1984,7 @@ def test_llm_orchestration_uses_rolling_tool_window_and_keeps_hard_guards() -> N
     }
     assert web_app.provider_profile_tool_ids(
         "amazon", amazon_route, "寻找亚马逊新品机会", amazon_enabled, empty
-    ) == {
-        "system__current_time",
-        "sellersprite__keyword_research",
-        "sellersprite__market_research",
-        "sellersprite__product_research",
-    }
-    assert web_app.provider_profile_tool_ids(
-        "amazon", dict(amazon_route, confidence=0.72),
-        "寻找亚马逊新品机会", amazon_enabled, empty
     ) == amazon_enabled
-    asin_evidence = SimpleNamespace(tool_calls=[], tool_results=[{
-        "tool_name": "sellersprite__product_research",
-        "result": {"ok": True, "mcp_data": {"items": [{"asin": "B0ABCDEF12"}]}},
-    }])
-    assert "sellersprite__asin_detail" in web_app.provider_profile_tool_ids(
-        "amazon", amazon_route, "寻找亚马逊新品机会", amazon_enabled, asin_evidence
-    )
     assert web_app.analysis_minimum_evidence_gaps("amazon", empty, amazon_route) == ["provider_tool_attempt"]
     assert "未经用户输入或当前 SellerSprite 证据" in web_app.sellersprite_deep_dive_call_error(
         "sellersprite__asin_detail", {"asin": "B0ABCDEF12"}, "寻找亚马逊新品机会", empty
@@ -3392,7 +2822,7 @@ def test_fastmoss_answer_verifier_applies_local_edits_and_keeps_draft_on_failure
 
 
 def test_fastmoss_all_workflow_tools_emit_supported_envelopes() -> None:
-    assert len(web_app.FASTMOSS_SUPPORTED_EVIDENCE_TOOLS) == 55
+    assert len(web_app.FASTMOSS_SUPPORTED_EVIDENCE_TOOLS) == 54
     assert web_app.FASTMOSS_SUPPORTED_EVIDENCE_TOOLS == web_app.FASTMOSS_CURRENT_TOOL_NAMES
     generic_payload = {
         "summary_metrics": {"gmv": 100, "units_sold": 5},
@@ -4017,9 +3447,6 @@ def test_fastmoss_22_call_semantic_registry_fixture() -> None:
 
 def test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence() -> None:
     class Response:
-        def __init__(self, content: str) -> None:
-            self.content = content
-
         def raise_for_status(self) -> None:
             return None
 
@@ -4027,7 +3454,7 @@ def test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence() -> None:
             return {
                 "choices": [{
                     "finish_reason": "stop",
-                    "message": {"content": self.content},
+                    "message": {"content": "# 结论\n\n证据包已独立合成。"},
                 }],
             }
 
@@ -4037,17 +3464,7 @@ def test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence() -> None:
 
         def post(self, _url: str, **kwargs):
             self.payloads.append(json.loads(kwargs["data"].decode("utf-8")))
-            if len(self.payloads) == 1:
-                return Response("# 结论\n\n证据包已独立合成。")
-            return Response(json.dumps({
-                "coverage": [{
-                    "id": "coverage-1",
-                    "status": "covered",
-                    "reason": "正文已覆盖核心研究问题。",
-                }],
-                "removed_unsupported_claims": [],
-                "report": "# 结论\n\n证据包已经过覆盖校验和完整重写。",
-            }, ensure_ascii=False))
+            return Response()
 
     requests = Requests()
     trend_rows = [
@@ -4086,7 +3503,7 @@ def test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence() -> None:
         web_app.verify_fastmoss_final_answer = original_verify
     assert result.startswith("# 结论")
     assert result.count(web_app.FASTMOSS_REPORT_NOTICE) == 1
-    assert len(requests.payloads) == 2
+    assert len(requests.payloads) == 1
     payload = requests.payloads[0]
     assert "tools" not in payload
     assert payload["max_tokens"] == 12000
@@ -4094,46 +3511,34 @@ def test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence() -> None:
     base_system = payload["messages"][0]["content"]
     report_system = payload["messages"][1]["content"]
     semantic_content = payload["messages"][2]["content"]
-    assert "唯一事实来源" in base_system
-    assert "fastmoss__" not in base_system
-    assert "sellersprite__" not in base_system
-    assert "工具Schema" not in base_system
+    assert base_system == web_app.chat_system_instruction(
+        "fastmoss", re.search(r"当前日期（Asia/Shanghai）：(\d{4}-\d{2}-\d{2})", base_system).group(1)
+    )
+    assert "A useful product analysis must include" in base_system
+    assert "Content completeness is more important than decorative layout" in base_system
     assert report_system == web_app.fastmoss_report_prompt_instruction(
         {"playbook": "product", "task_depth": "workflow"}
     )
-    assert "完整自然语言业务证据是报告的唯一事实素材" in report_system
+    assert "完整工具结果是报告的事实素材" in report_system
     assert "evidence_index：{" not in report_system
     assert "不得写成流量来源、因果、效率或生命周期结论" in report_system
-    assert "内部完成证据覆盖检查" in report_system
-    assert "不能仅为了简洁省略有差异的类目、商品、趋势、达人、内容或店铺证据" in report_system
-    assert "不得概括为‘纯视频驱动’" in report_system
-    assert "# 短视频电商调研证据" in semantic_content
-    assert "## 商品销售趋势" in semantic_content
-    assert "## 近期上架商品榜" in semantic_content
-    assert "## 商品评论样本" in semantic_content
-    assert "call:" not in semantic_content
-    assert "fastmoss__" not in semantic_content
-    assert "source_ref" not in semantic_content
-    assert "arguments" not in semantic_content
+    assert "# FastMoss 调研证据" in semantic_content
+    assert "## call:1 · `fastmoss__product_sales_trend`" in semantic_content
+    assert "## call:2 · `fastmoss__product_rank_new_listed`" in semantic_content
+    assert "## call:3 · `fastmoss__product_review_list`" in semantic_content
     assert "evidence_dossier" not in semantic_content
     assert "report_packet" not in semantic_content
-    assert semantic_content.count("商品销售趋势") >= 1
-    assert "2026年6月1日" in semantic_content and "2026年7月1日" in semantic_content
+    assert semantic_content.count("fastmoss__product_sales_trend") == 1
+    assert "2026-06-01" in semantic_content and "2026-07-01" in semantic_content
     assert all(product["product_id"] in semantic_content for product in products)
-    assert "returned_product_outside_requested_l3" not in semantic_content
-    assert "返回记录超出请求的三级类目范围" in semantic_content
+    assert "returned_product_outside_requested_l3" in semantic_content
     assert "关键词返回量不是市场容量" in semantic_content
-    second_payload = requests.payloads[1]
-    assert second_payload["response_format"] == {"type": "json_object"}
-    assert second_payload["max_tokens"] == 12000
-    assert "fastmoss__" not in json.dumps(second_payload["messages"], ensure_ascii=False)
-    assert "| 商品编号 | 1730000000000000001 |" in semantic_content
+    assert "| 参数 filter.product_id | 1730000000000000001 |" in semantic_content
     assert "本次调用成功，但针对上述精确对象、参数、地区和周期没有返回业务记录" in semantic_content
     assert "| 报告日期 |" in semantic_content
     assert "## 硬事实边界" in semantic_content
-    assert semantic_content.index("## 硬事实边界") > semantic_content.index("## 商品评论样本")
-    assert "## 自然语言业务证据" in semantic_content
-    assert "--- 语义证据结束 ---" not in semantic_content
+    assert semantic_content.index("## 硬事实边界") > semantic_content.index("## call:3")
+    assert semantic_content.endswith("--- Semantic 证据结束 ---")
     assert "omitted_items" not in semantic_content
 
 
@@ -4154,9 +3559,7 @@ def test_fastmoss_report_evidence_is_semantic() -> None:
         "hard_fact_boundaries": {"rules": ["空结果只适用于精确参数"]},
     }
     semantic, semantic_stats = web_app.fastmoss_render_report_evidence(dossier)
-    assert "商品搜索样本" in semantic
-    assert "call:" not in semantic
-    assert "fastmoss__" not in semantic
+    assert "## call:1 · `fastmoss__product_search`" in semantic
     assert semantic_stats["format"] == "semantic"
     assert semantic_stats["registered_tool_count"] == 1
 
@@ -4425,7 +3828,7 @@ def test_fastmoss_claim_ids_and_extended_mechanical_cleanup() -> None:
     assert creator_count == 1 and "1–2" not in creator_cleaned
 
 
-def test_analytical_routes_use_report_model_and_fastmoss_preserves_report_draft() -> None:
+def test_analytical_routes_use_report_model_and_fastmoss_preserves_pro_draft() -> None:
     assert web_app.chat_route_uses_report_model(
         "home", {"intent": "product_research", "task_depth": "analysis"}
     )
@@ -4506,203 +3909,6 @@ def test_analytical_routes_use_report_model_and_fastmoss_preserves_report_draft(
     assert calls == []
 
 
-def test_report_model_defaults_to_flash() -> None:
-    old_report_model = os.environ.pop("DEEPSEEK_REPORT_MODEL", None)
-    old_chat_model = os.environ.pop("DEEPSEEK_CHAT_MODEL", None)
-    try:
-        assert web_app.chat_report_model() == "deepseek-v4-flash"
-        os.environ["DEEPSEEK_CHAT_MODEL"] = "deepseek-v4-flash-test"
-        assert web_app.chat_report_model() == "deepseek-v4-flash-test"
-    finally:
-        if old_report_model is not None:
-            os.environ["DEEPSEEK_REPORT_MODEL"] = old_report_model
-        else:
-            os.environ.pop("DEEPSEEK_REPORT_MODEL", None)
-        if old_chat_model is not None:
-            os.environ["DEEPSEEK_CHAT_MODEL"] = old_chat_model
-        else:
-            os.environ.pop("DEEPSEEK_CHAT_MODEL", None)
-
-
-def test_planner_message_is_upserted_instead_of_accumulated() -> None:
-    route = {
-        "dynamic_planner": True,
-        "route_source": "llm",
-        "confidence": 0.92,
-        "task_depth": "workflow",
-        "research_task": {
-            "objective": "trend_discovery",
-            "entity": "",
-            "entity_type": "none",
-            "scope": "cross_category",
-        },
-    }
-    assistant = web_app.Message("assistant-1", "assistant", "")
-    messages = [{"role": "user", "content": "最近有什么趋势新品"}]
-    web_app.upsert_research_planner_message(
-        messages, "fastmoss", route, "最近有什么趋势新品", assistant
-    )
-    first = next(message for message in messages if message.get("_context_key") == "research_planner")
-    first["content"] = "stale planner state"
-    web_app.upsert_research_planner_message(
-        messages, "fastmoss", route, "最近有什么趋势新品", assistant
-    )
-    planners = [
-        message for message in messages
-        if message.get("_context_key") == "research_planner"
-    ]
-    assert len(planners) == 1
-    assert planners[0]["content"] != "stale planner state"
-    request_messages = web_app._chat_request_messages(messages)
-    assert all("_context_key" not in message for message in request_messages)
-
-
-def test_model_tool_schema_compaction_preserves_call_contract() -> None:
-    raw_tool = {
-        "name": "sample_tool",
-        "description": "  Query   a sample tool.  " * 80,
-        "inputSchema": {
-            "$schema": "https://json-schema.org/draft/2020-12/schema",
-            "title": "Sample request",
-            "type": "object",
-            "properties": {
-                "mode": {
-                    "type": "string",
-                    "enum": ["top", "new"],
-                    "description": "Select result mode. " * 40,
-                    "examples": ["top"],
-                },
-                "request": {
-                    "type": "object",
-                    "properties": {"page": {"type": "integer", "minimum": 1}},
-                    "required": ["page"],
-                },
-            },
-            "required": ["mode", "request"],
-            "additionalProperties": False,
-        },
-    }
-    model_tool = web_app.to_model_tool(raw_tool, "sellersprite__sample_tool")
-    function = model_tool["function"]
-    schema = function["parameters"]
-    assert function["name"] == "sellersprite__sample_tool"
-    assert len(function["description"]) <= 361
-    assert schema["required"] == ["mode", "request"]
-    assert schema["properties"]["mode"]["enum"] == ["top", "new"]
-    assert schema["properties"]["request"]["required"] == ["page"]
-    assert schema["additionalProperties"] is False
-    assert "$schema" not in schema and "title" not in schema
-    assert "examples" not in schema["properties"]["mode"]
-    assert raw_tool["inputSchema"]["properties"]["mode"]["examples"] == ["top"]
-
-
-def test_semantic_report_bypasses_redundant_accumulated_context_draft() -> None:
-    route = {"task_depth": "analysis", "intent": "product_research"}
-    seller = web_app.Message(
-        "seller-1", "assistant", "", tool_results=[{
-            "tool_name": "sellersprite__keyword_research",
-            "result": {"ok": True, "mcp_data": {"items": [{"keyword": "wifi extender"}]}},
-        }],
-    )
-    assert web_app.semantic_report_ready_for_direct_synthesis(
-        "amazon", route, seller, []
-    ) is True
-    assert web_app.semantic_report_ready_for_direct_synthesis(
-        "amazon", route, seller, [{"type": "function", "function": {"name": "x"}}]
-    ) is False
-    assert web_app.semantic_report_ready_for_direct_synthesis(
-        "amazon", {"task_depth": "lookup"}, seller, []
-    ) is False
-
-
-def test_semantic_report_watermarks_and_overflow_never_use_checkpoint() -> None:
-    route = {"task_depth": "analysis", "intent": "product_research"}
-    seller = web_app.Message(
-        "seller-capacity", "assistant", "", tool_results=[{
-            "tool_name": "sellersprite__keyword_research",
-            "result": {"ok": True, "mcp_data": {"items": [{"keyword": "fan"}]}},
-        }],
-    )
-    messages = [{
-        "role": "system", "content": "CHECKPOINT-MUST-NOT-ENTER-REPORT",
-        "_context_scope": "current_evidence", "_context_key": "evidence_checkpoint",
-    }]
-    original_stats = web_app.semantic_report_input_stats
-    try:
-        web_app.semantic_report_input_stats = lambda *_args, **_kwargs: {
-            "estimated_tokens": 750000, "tool_count": 5, "level": "soft",
-        }
-        soft = web_app.apply_semantic_report_watermark(messages, "amazon", seller, "研究 fan", route)
-        assert soft["level"] == "soft"
-        assert any("只补充尚未覆盖" in str(message.get("content")) for message in messages)
-
-        web_app.semantic_report_input_stats = lambda *_args, **_kwargs: {
-            "estimated_tokens": 850000, "tool_count": 6, "level": "hard",
-        }
-        hard = web_app.apply_semantic_report_watermark(messages, "amazon", seller, "研究 fan", route)
-        assert hard["level"] == "hard"
-        assert any("不得继续调用工具" in str(message.get("content")) for message in messages)
-    finally:
-        web_app.semantic_report_input_stats = original_stats
-
-    class NoRequests:
-        def post(self, _url: str, **_kwargs):
-            raise AssertionError("overflow report must not call the standalone report model")
-
-    original_estimator = web_app.estimate_chat_context_tokens
-    try:
-        web_app.estimate_chat_context_tokens = lambda *_args, **_kwargs: 950001
-        report = web_app.synthesize_sellersprite_report_from_packet(
-            seller, "研究 fan", route, NoRequests(), "key",
-            "https://example.invalid/v1", "deepseek-v4-pro-test",
-        )
-    finally:
-        web_app.estimate_chat_context_tokens = original_estimator
-    assert "报告容量错误" in report
-    assert "不会静默截断、分块或改用编排检查点" in report
-    assert "CHECKPOINT-MUST-NOT-ENTER-REPORT" not in report
-
-
-def test_semantic_evidence_budget_preserves_repeated_values() -> None:
-    repeated = {
-        "asin": "B012345678",
-        "title": "alpha" * 120,
-        "metrics": {"sales": 1234, "price": 19.99},
-    }
-    unique = {
-        "asin": "B087654321",
-        "title": "beta" * 120,
-        "metrics": {"sales": 987, "price": 29.99},
-    }
-    dossier = {
-        "type": "sellersprite_evidence_dossier",
-        "provider": "sellersprite",
-        "report_date": "2026-07-21",
-        "research_task": {"objective": "product_research"},
-        "tool_evidence": [{
-            "source_ref": "call:1",
-            "tool_name": "sellersprite__product_research",
-            "arguments": {"marketplace": "US"},
-            "evidence_fence": {"data_state": "data"},
-            "business_data": {"items": [repeated, repeated, unique]},
-        }],
-        "hard_fact_boundaries": {"rules": ["do not extrapolate"]},
-    }
-    markdown, stats = web_app.prepare_semantic_report_evidence(
-        dossier, web_app.sellersprite_render_report_evidence, max_tokens=220
-    )
-    assert stats["budget_mode"] == "full"
-    assert stats["format"] == "semantic"
-    assert stats["over_budget"] is True
-    assert "B012345678" in markdown and "B087654321" in markdown
-    assert markdown.count("B012345678") >= 2
-    assert "alpha" * 120 in markdown and "beta" * 120 in markdown
-    assert "紧凑 Semantic 台账" not in markdown
-    assert not hasattr(web_app, "render_compact_semantic_evidence_ledger")
-    assert not hasattr(web_app, "dedupe_semantic_evidence_dossier")
-    assert "truncated" not in markdown.lower()
-
-
 if __name__ == "__main__":
     test_tiktok_search_keeps_analysis_fields()
     test_amazon_keeps_product_fields()
@@ -4724,7 +3930,7 @@ if __name__ == "__main__":
     test_web_search_tool_is_registered_and_normalized()
     test_chat_history_archives_done_tools_and_recovers_failed_results()
     test_tool_evidence_is_compact_but_keeps_business_fields()
-    test_current_tool_evidence_preserves_known_fields_and_isolates_unknowns()
+    test_current_tool_evidence_is_lossless_until_budget_pressure()
     test_product_availability_is_a_shallow_lookup()
     test_intent_decision_validation_and_fallback()
     test_intent_router_uses_recent_context_and_falls_back_on_failure()
@@ -4733,8 +3939,7 @@ if __name__ == "__main__":
     test_fastmoss_zero_analysis_metadata_is_empty_without_affecting_sellersprite()
     test_mcp_sql_error_text_is_not_evidence()
     test_deepseek_tool_turn_preserves_reasoning_content()
-    test_dynamic_chat_context_never_truncates_current_evidence()
-    test_flash_checkpoint_replaces_only_old_planner_evidence()
+    test_dynamic_chat_context_compresses_to_budget()
     test_tool_limit_final_context_removes_protocol_and_detects_dsml()
     test_tool_limit_keeps_large_current_collection_when_capacity_allows()
     test_sellersprite_schema_argument_normalization()
@@ -4752,15 +3957,11 @@ if __name__ == "__main__":
     test_fastmoss_clarification_is_targeted_and_provider_isolated()
     test_fastmoss_close_cross_category_matches_request_confirmation()
     test_provider_profiles_use_aggregated_sellersprite_and_staged_fastmoss_tools()
-    test_sellersprite_semantic_registry_is_complete_and_strict()
-    test_sellersprite_official_aba_fields_render_as_semantic_values()
-    test_sellersprite_keyword_rows_keep_query_scope_and_anonymous_identity_boundary()
-    test_sellersprite_product_and_google_trend_fields_are_naturalized()
-    test_sellersprite_semantic_report_and_standalone_synthesis()
-    test_evidence_sufficiency_ready_and_failure_fallback()
+    test_sellersprite_semantic_registry_is_complete_and_lossless()
+    test_sellersprite_semantic_report_and_pro_synthesis()
     test_dynamic_provider_capability_graph_uses_task_scope_and_evidence()
     test_dynamic_provider_planner_does_not_cap_repeated_calls()
-    test_llm_orchestration_uses_rolling_tool_window_and_keeps_hard_guards()
+    test_llm_orchestration_exposes_full_provider_tools_and_keeps_hard_guards()
     test_region_default_only_applies_when_schema_supports_it()
     test_fastmoss_deep_dive_ids_must_come_from_current_task()
     test_tool_call_signature_deduplicates_argument_order()
@@ -4784,12 +3985,6 @@ if __name__ == "__main__":
     test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence()
     test_fastmoss_report_evidence_is_semantic()
     test_fastmoss_analytical_answers_use_single_semantic_report_path()
-    test_planner_message_is_upserted_instead_of_accumulated()
-    test_model_tool_schema_compaction_preserves_call_contract()
-    test_semantic_report_bypasses_redundant_accumulated_context_draft()
-    test_semantic_report_watermarks_and_overflow_never_use_checkpoint()
-    test_semantic_evidence_budget_preserves_repeated_values()
     test_fastmoss_claim_ids_and_extended_mechanical_cleanup()
-    test_analytical_routes_use_report_model_and_fastmoss_preserves_report_draft()
-    test_report_model_defaults_to_flash()
+    test_analytical_routes_use_report_model_and_fastmoss_preserves_pro_draft()
     print("chat tool normalization tests passed")
