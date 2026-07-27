@@ -9,6 +9,10 @@ services:
       - ./sellersprite_mcp_chat:/workspace/sellersprite_mcp_chat:ro
     environment:
       HOT_VIDEO_REPORT_SCHEDULER_ENABLED: "0"
+      PROXY_POOL_PORT_START: ${DEV_PROXY_POOL_PORT_START:-19000}
+      PROXY_POOL_PORT_END: ${DEV_PROXY_POOL_PORT_END:-19099}
+      PROXY_POOL_CONFIG_NAMESPACE: dev
+      PROXY_POOL_MIHOMO_PREFIX: dev-
 
   web:
     image: short-video-analyzer-dev:latest
@@ -20,6 +24,10 @@ services:
       REPORT_LAN_PORT: ${REPORT_LAN_PORT:-4003}
       HOT_VIDEO_REPORT_SCHEDULER_ENABLED: "0"
       SELLERSPRITE_REDIRECT_PORT: "0"
+      PROXY_POOL_PORT_START: ${DEV_PROXY_POOL_PORT_START:-19000}
+      PROXY_POOL_PORT_END: ${DEV_PROXY_POOL_PORT_END:-19099}
+      PROXY_POOL_CONFIG_NAMESPACE: dev
+      PROXY_POOL_MIHOMO_PREFIX: dev-
       PROXY_REALITY_CORE: sing-box
       PROXY_REALITY_DEFAULT_FINGERPRINT: safari
       SING_BOX_CONFIG_PATH: /workspace/data/sing-box/config.json

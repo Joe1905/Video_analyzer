@@ -31,6 +31,8 @@ DB_PATH = DATA_DIR / "proxy_pool.sqlite"
 DEFAULT_NOVNC_PUBLIC_URL = os.getenv("NOVNC_PUBLIC_URL", "http://192.168.1.254:6080/vnc.html?autoconnect=1&resize=scale")
 DEFAULT_MIHOMO_API = os.getenv("MIHOMO_API_URL", "http://127.0.0.1:9090")
 SYSTEM_PROXY_DIALER = "GLOBAL"
+PROXY_CONFIG_NAMESPACE = os.getenv("PROXY_POOL_CONFIG_NAMESPACE", "formal").strip() or "formal"
+PROXY_MIHOMO_NAME_PREFIX = os.getenv("PROXY_POOL_MIHOMO_PREFIX", "").strip()
 SING_BOX_CONFIG_PATH = Path(os.getenv("SING_BOX_CONFIG_PATH", str(DATA_DIR / "sing-box" / "config.json")))
 SING_BOX_COMPOSE_PROJECT = os.getenv("SING_BOX_COMPOSE_PROJECT", "short-video-analyzer").strip() or "short-video-analyzer"
 SING_BOX_COMPOSE_SERVICE = os.getenv("SING_BOX_COMPOSE_SERVICE", "sing-box").strip() or "sing-box"
@@ -508,6 +510,23 @@ def init_db(conn: sqlite3.Connection) -> None:
                    WHERE id = ?""",
                 (dialer_proxy, serialized, row["id"]),
             )
+    used_ports: set[int] = set()
+    for row in conn.execute("SELECT id, local_port FROM proxy_profiles ORDER BY id"):
+        local_port = int(row["local_port"] or 0)
+        if PROXY_PORT_START <= local_port <= PROXY_PORT_END and local_port not in used_ports:
+            used_ports.add(local_port)
+            continue
+        replacement = next(
+            (port for port in range(PROXY_PORT_START, PROXY_PORT_END + 1) if port not in used_ports),
+            0,
+        )
+        if not replacement:
+            raise ValueError(f"proxy port range exhausted: {PROXY_PORT_START}-{PROXY_PORT_END}")
+        conn.execute(
+            "UPDATE proxy_profiles SET local_port = ?, updated_at = ? WHERE id = ?",
+            (replacement, now_iso(), row["id"]),
+        )
+        used_ports.add(replacement)
     conn.commit()
 
 
@@ -2807,6 +2826,13 @@ def _yaml_block_field_matches(block: list[str], key: str, value: Any) -> bool:
     return False
 
 
+def _managed_proxy_markers(pool_id: int) -> tuple[str, ...]:
+    marker = f"proxy-pool-managed-{PROXY_CONFIG_NAMESPACE}-id: {pool_id}"
+    if PROXY_CONFIG_NAMESPACE == "formal":
+        return marker, f"proxy-pool-managed-id: {pool_id}"
+    return (marker,)
+
+
 def _managed_yaml_item(value: dict[str, Any], pool_id: int, item_indent: int) -> list[str]:
     value_indent = item_indent + 2
     lines = _yaml_lines(value, value_indent)
@@ -2815,7 +2841,7 @@ def _managed_yaml_item(value: dict[str, Any], pool_id: int, item_indent: int) ->
     return [
         f"{' ' * item_indent}- {lines[0].lstrip()}\n",
         *(f"{line}\n" for line in lines[1:]),
-        f"{' ' * value_indent}# proxy-pool-managed-id: {pool_id}\n",
+        f"{' ' * value_indent}# {_managed_proxy_markers(pool_id)[0]}\n",
     ]
 
 
@@ -2842,17 +2868,21 @@ def _replace_mihomo_yaml_item(
 
     item_indent = _yaml_list_item_indent(lines, start, end)
     block = _managed_yaml_item(value, pool_id, item_indent) if value is not None else []
-    marker = f"proxy-pool-managed-id: {pool_id}"
+    markers = _managed_proxy_markers(pool_id)
     matched_ranges: list[tuple[int, int]] = []
     for left, right in _yaml_list_item_ranges(lines, start, end):
         item = lines[left:right]
-        if any(marker in line for line in item):
+        if any(marker in line for marker in markers for line in item):
             matched_ranges.append((left, right))
             continue
-        if match_name and _yaml_block_field_matches(item, "name", match_name):
+        if (
+            PROXY_CONFIG_NAMESPACE == "formal"
+            and match_name
+            and _yaml_block_field_matches(item, "name", match_name)
+        ):
             matched_ranges.append((left, right))
             continue
-        if match_port and _listener_port(item) == match_port:
+        if PROXY_CONFIG_NAMESPACE == "formal" and match_port and _listener_port(item) == match_port:
             matched_ranges.append((left, right))
 
     remove_indexes = {index for left, right in matched_ranges for index in range(left, right)}
@@ -2872,6 +2902,11 @@ def _restore_mihomo_config(path: Path, original: bytes, mode: int) -> None:
         _reload_mihomo_config()
     except Exception:
         pass
+
+
+def _runtime_mihomo_name(pool: sqlite3.Row | dict[str, Any]) -> str:
+    node_name = str(_pool_value(pool, "mihomo_name") or _pool_value(pool, "name") or "").strip()
+    return f"{PROXY_MIHOMO_NAME_PREFIX}{node_name}" if node_name else ""
 
 
 def _resolve_system_proxy_dialer(node_name: str) -> str:
@@ -2899,7 +2934,7 @@ def _sync_mihomo_pool_config(pool: sqlite3.Row | dict[str, Any]) -> dict[str, An
     proxy = _json_loads(_pool_value(pool, "mihomo_proxy_json", ""), {})
     if not proxy and isinstance(_pool_value(pool, "mihomo_proxy", {}), dict):
         proxy = dict(_pool_value(pool, "mihomo_proxy", {}))
-    node_name = str(_pool_value(pool, "mihomo_name") or _pool_value(pool, "name") or "").strip()
+    node_name = _runtime_mihomo_name(pool)
     local_port = int(_pool_value(pool, "local_port", 0) or 0)
     pool_id = int(_pool_value(pool, "id", 0) or 0)
     if not proxy or not node_name or not local_port or not pool_id:
@@ -2909,7 +2944,12 @@ def _sync_mihomo_pool_config(pool: sqlite3.Row | dict[str, Any]) -> dict[str, An
     else:
         proxy.pop("dialer-proxy", None)
     proxy["name"] = node_name
-    listener = {"name": f"tiktok-{_pool_value(pool, 'name')}", "type": "mixed", "port": local_port, "proxy": node_name}
+    listener = {
+        "name": f"tiktok-{PROXY_CONFIG_NAMESPACE}-{_pool_value(pool, 'name')}",
+        "type": "mixed",
+        "port": local_port,
+        "proxy": node_name,
+    }
 
     path = _mihomo_config_path()
     original = path.read_bytes()
@@ -2927,10 +2967,10 @@ def _sync_mihomo_pool_config(pool: sqlite3.Row | dict[str, Any]) -> dict[str, An
         proxies = body.get("proxies") if ok and isinstance(body, dict) and isinstance(body.get("proxies"), dict) else {}
         if node_name not in proxies:
             raise ProxyConfigurationError(f"mihomo 重载后仍未发现节点 {node_name}：{error}")
-        for _attempt in range(50):
+        for _attempt in range(20):
             if _port_open("127.0.0.1", local_port, timeout=0.2):
                 break
-            time.sleep(0.2)
+            time.sleep(0.1)
         else:
             raise ProxyConfigurationError(f"mihomo 重载后端口 {local_port} 未监听")
     except Exception as exc:
@@ -2972,7 +3012,7 @@ def _remove_mihomo_pool_config(
     original = path.read_bytes()
     mode = path.stat().st_mode & 0o777
     pool_id = int(_pool_value(pool, "id", 0) or 0)
-    node_name = str(_pool_value(pool, "mihomo_name") or _pool_value(pool, "name") or "").strip()
+    node_name = _runtime_mihomo_name(pool)
     local_port = int(_pool_value(pool, "local_port", 0) or 0)
     lines = original.decode("utf-8").splitlines(keepends=True)
     lines = _replace_mihomo_yaml_item(lines, "proxies", pool_id, None, match_name=node_name)
@@ -3142,7 +3182,7 @@ def _proxy_url_reachable(url: str, proxy_port: int, timeout: float = 10.0) -> tu
 
 
 def detect_exit_ip_for_pool(pool: sqlite3.Row) -> dict[str, Any]:
-    node_name = str(pool["mihomo_name"] or pool["name"] or "").strip()
+    node_name = _runtime_mihomo_name(pool)
     if not node_name:
         raise ValueError("代理没有 mihomo 节点名")
     local_port = int(pool["local_port"] or 0)
@@ -4047,6 +4087,7 @@ def mihomo_export() -> dict[str, Any]:
     for row in rows:
         proxy = _json_loads(row["mihomo_proxy_json"], {})
         if proxy:
+            proxy["name"] = _runtime_mihomo_name(row)
             proxies.append(proxy)
         else:
             skipped.append({"id": row["id"], "name": row["name"], "reason": row["parse_error"] or "no parsed mihomo proxy"})
@@ -4058,7 +4099,12 @@ def mihomo_export() -> dict[str, Any]:
             yaml += f"  - {first}\n"
             yaml += "\n".join(lines[1:]) + ("\n" if len(lines) > 1 else "")
     listeners = [
-        {"name": f"tiktok-{row['name']}", "type": "mixed", "port": int(row["local_port"] or 0), "proxy": row["mihomo_name"] or row["name"]}
+        {
+            "name": f"tiktok-{PROXY_CONFIG_NAMESPACE}-{row['name']}",
+            "type": "mixed",
+            "port": int(row["local_port"] or 0),
+            "proxy": _runtime_mihomo_name(row),
+        }
         for row in rows
         if int(row["local_port"] or 0) and not _sing_box_reality_pool(row)
     ]
