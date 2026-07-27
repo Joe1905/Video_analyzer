@@ -11592,6 +11592,8 @@ def fastmoss_category_ambiguity_question(
     route: dict[str, Any] | None = None,
 ) -> str | None:
     """Stop before market calls when user-term L3 candidates are effectively tied."""
+    if (route or {}).get("official_skill_chain"):
+        return None
     if llm_orchestrated_route(route):
         return None
     task = (route or {}).get("research_task") if isinstance((route or {}).get("research_task"), dict) else {}
@@ -11912,6 +11914,29 @@ def fastmoss_deep_dive_call_error(
     return "拒绝使用未经当前任务搜索、榜单或用户链接验证的商品 ID：" + "、".join(sorted(unknown))
 
 
+def fastmoss_official_skill_call_error(
+    tool_name: str,
+    arguments: dict[str, Any],
+    user_text: str,
+    assistant_msg: Message,
+) -> str | None:
+    """Keep only entity-source guards in the official-Skill chain."""
+    if tool_name in FASTMOSS_CATEGORY_ID_TOOLS:
+        requested_categories = _collect_category_ids(arguments)
+        unknown_categories = requested_categories - fastmoss_known_category_ids(user_text, assistant_msg)
+        if unknown_categories:
+            return "拒绝使用未经当前任务真实证据验证的类目 ID：" + "、".join(sorted(unknown_categories))
+    if tool_name not in FASTMOSS_PRODUCT_ID_TOOLS:
+        return None
+    requested_products = _collect_named_ids(arguments, {"productid", "goodsid", "itemid"})
+    if not requested_products:
+        return None
+    unknown_products = requested_products - fastmoss_known_product_ids(user_text, assistant_msg)
+    if unknown_products:
+        return "拒绝使用未经当前任务真实证据验证的商品 ID：" + "、".join(sorted(unknown_products))
+    return None
+
+
 def sellersprite_deep_dive_call_error(
     tool_name: str,
     arguments: dict[str, Any],
@@ -12097,6 +12122,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     route_intent = str(route.get("intent") or "general")
     scoped_provider_task = (
         provider in {"amazon", "fastmoss"}
+        and not official_skill_chain
         and str(route.get("task_depth") or "") in {"analysis", "workflow"}
         and not is_chat_retry_request(routing_text)
     )
@@ -12148,10 +12174,19 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     route_tools = route.get("tools")
     force_mcp_tools = (
         provider_forces_mcp_tools(provider)
+        and not official_skill_chain
         and route_intent not in {"web_search", "mcp_interface", "help"}
         and str(route.get("task_depth") or "") != "direct"
     )
-    needs_tools = False if route_intent == "mcp_interface" else (True if force_mcp_tools else chat_request_needs_tools(routing_text, route))
+    needs_tools = (
+        True
+        if official_skill_chain
+        else False
+        if route_intent == "mcp_interface"
+        else True
+        if force_mcp_tools
+        else chat_request_needs_tools(routing_text, route)
+    )
     resume_from_completed_tools = bool(recovery.get("complete") and is_chat_retry_request(user_text))
     if resume_from_completed_tools:
         force_mcp_tools = False
@@ -12166,7 +12201,15 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             "_context_scope": "system",
         })
     effective_enabled_tool_ids = enabled_tool_ids
-    if force_mcp_tools:
+    if official_skill_chain:
+        effective_enabled_tool_ids = (
+            set(enabled_tool_ids or set())
+            | provider_default_enabled_tool_ids(provider)
+        )
+        effective_enabled_tool_ids = filter_locked_provider_tool_ids(
+            provider, effective_enabled_tool_ids
+        )
+    elif force_mcp_tools:
         effective_enabled_tool_ids = set(enabled_tool_ids or set()) | provider_default_enabled_tool_ids(provider)
         effective_enabled_tool_ids = filter_locked_provider_tool_ids(provider, effective_enabled_tool_ids)
     if needs_tools and effective_enabled_tool_ids is None:
@@ -12358,8 +12401,13 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     for existing_call in assistant_msg.tool_calls or []:
         existing_name = str(existing_call.get("function", {}).get("name") or "")
         seen_tool_calls.add(tool_call_signature(existing_name, _tool_call_arguments(existing_call)))
-    default_region = str(route.get("region") or "").strip().upper()
-    if not default_region and provider in {"amazon", "fastmoss"} and fastmoss_defaults_to_us(routing_text):
+    default_region = "" if official_skill_chain else str(route.get("region") or "").strip().upper()
+    if (
+        not official_skill_chain
+        and not default_region
+        and provider in {"amazon", "fastmoss"}
+        and fastmoss_defaults_to_us(routing_text)
+    ):
         default_region = "US"
     for _ in range(max_tool_rounds):
         deterministic_phase = (
@@ -12528,7 +12576,9 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     continue
                 fn_args = _tool_call_arguments(tool_call)
                 domain, unprefixed_name = split_prefixed_tool_id(fn_name)
-                if domain in {"sellersprite", "fastmoss"}:
+                if domain in {"sellersprite", "fastmoss"} and not (
+                    official_skill_chain and domain == "fastmoss"
+                ):
                     fn_args = apply_mcp_region_default(domain, unprefixed_name, fn_args, default_region)
                 if domain == "fastmoss" and route.get("playbook"):
                     fn_args = apply_fastmoss_business_defaults(
@@ -12569,7 +12619,13 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     except json.JSONDecodeError:
                         fn_args = {}
                     guard_error = (
-                        fastmoss_deep_dive_call_error(fn_name, fn_args, routing_text, assistant_msg, route)
+                        fastmoss_official_skill_call_error(
+                            fn_name, fn_args, routing_text, assistant_msg
+                        )
+                        if official_skill_chain
+                        else fastmoss_deep_dive_call_error(
+                            fn_name, fn_args, routing_text, assistant_msg, route
+                        )
                         if provider == "fastmoss"
                         else sellersprite_deep_dive_call_error(fn_name, fn_args, routing_text, assistant_msg)
                         if provider == "amazon"
@@ -12605,7 +12661,10 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     })
                     assistant_msg.tool_results.append({"tool_name": fn_name, "result": normalized_result})
                     store.broadcast(session.id, "update", {"messageId": assistant_msg.id, "tool_calls": assistant_msg.tool_calls, "tool_results": assistant_msg.tool_results})
-                    if fn_name == "fastmoss__search_category_by_words":
+                    if (
+                        not official_skill_chain
+                        and fn_name == "fastmoss__search_category_by_words"
+                    ):
                         ambiguity = fastmoss_category_ambiguity_question(routing_text, normalized_result, route)
                         if ambiguity:
                             print("[CHAT] FastMoss category match ambiguous; asking for confirmation", flush=True)
@@ -12817,7 +12876,11 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 tools = []
                 final_answer_forced = True
                 continue
-            if forced_provider_missing_tool_retry(provider, needs_tools, tools, assistant_msg) and not context_stats["tools_removed"]:
+            if (
+                not official_skill_chain
+                and forced_provider_missing_tool_retry(provider, needs_tools, tools, assistant_msg)
+                and not context_stats["tools_removed"]
+            ):
                 if no_tool_retries < 1:
                     no_tool_retries += 1
                     print(f"[CHAT] provider={provider} returned no executable tool call; retrying once", flush=True)

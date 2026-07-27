@@ -70,6 +70,27 @@ def test_fastmoss_official_skill_chain_loads_exact_package_and_isolates_tools() 
         "sellersprite__product_research",
         "system__current_time",
     }) == {"fastmoss__product_search"}
+    tied_categories = {"mcp_data": {"categories": [
+        {
+            "category_id_level1": 9,
+            "category_id_level2": 835592,
+            "category_id_level3": 969224,
+            "cn_name": "气枪",
+            "score": 0.5109,
+        },
+        {
+            "category_id_level1": 16,
+            "category_id_level2": 846632,
+            "category_id_level3": 848240,
+            "cn_name": "喷枪及配件",
+            "score": 0.4988,
+        },
+    ]}}
+    assert web_app.fastmoss_category_ambiguity_question(
+        "分析蜘蛛发射器的美区市场",
+        tied_categories,
+        route,
+    ) is None
 
     instruction = web_app.fastmoss_official_skill_system_instruction(
         "2026-07-27",
@@ -79,6 +100,30 @@ def test_fastmoss_official_skill_chain_loads_exact_package_and_isolates_tools() 
     assert "official-marker-0" in instruction
     assert "不得运行或建议运行 fastmoss CLI" in instruction
     assert "只能使用本轮实际注册的 fastmoss__ 前缀原生工具调用" in instruction
+
+    evidence = SimpleNamespace(tool_calls=[], tool_results=[{
+        "tool_name": "fastmoss__product_search",
+        "result": {
+            "mcp_data": {
+                "items": [
+                    {"product_id": "1732262172485652893"},
+                    {"product_id": "1732262172485652999"},
+                ]
+            }
+        },
+    }])
+    assert web_app.fastmoss_official_skill_call_error(
+        "fastmoss__product_overview",
+        {"filter": {"product_id": "1732262172485652999"}},
+        "分析蜘蛛发射器的美区市场",
+        evidence,
+    ) is None
+    assert web_app.fastmoss_official_skill_call_error(
+        "fastmoss__product_overview",
+        {"filter": {"product_id": "1732262172485652000"}},
+        "分析蜘蛛发射器的美区市场",
+        evidence,
+    )
 
 
 def test_tiktok_search_keeps_analysis_fields() -> None:
