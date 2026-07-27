@@ -1618,6 +1618,24 @@ def test_sellersprite_semantic_registry_is_complete_and_lossless() -> None:
     assert "仅保留在审计证据" in unknown.markdown
 
 
+def test_semantic_brace_residue_is_logged_with_payload() -> None:
+    import contextlib
+    import io
+
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        count = web_app._log_semantic_brace_residue(
+            "sellersprite",
+            '正常文字 {"createdTime": 1715084401000, "nested": {"value": true}} 结尾',
+        )
+    logged = output.getvalue()
+    assert count == 1
+    assert "[CHAT SEMANTIC BRACE RESIDUE]" in logged
+    assert "provider=sellersprite" in logged
+    assert '\\"createdTime\\": 1715084401000' in logged
+    assert '\\"nested\\": {\\"value\\": true}' in logged
+
+
 def test_sellersprite_semantic_report_and_pro_synthesis() -> None:
     marker = "SELLERSPRITE-REPORT-MARKER"
     message = SimpleNamespace(
@@ -4040,6 +4058,7 @@ if __name__ == "__main__":
     test_fastmoss_close_cross_category_matches_request_confirmation()
     test_provider_profiles_use_aggregated_sellersprite_and_staged_fastmoss_tools()
     test_sellersprite_semantic_registry_is_complete_and_lossless()
+    test_semantic_brace_residue_is_logged_with_payload()
     test_sellersprite_semantic_report_and_pro_synthesis()
     test_dynamic_provider_capability_graph_uses_task_scope_and_evidence()
     test_dynamic_provider_planner_does_not_cap_repeated_calls()

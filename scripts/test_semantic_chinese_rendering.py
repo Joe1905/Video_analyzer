@@ -307,10 +307,42 @@ def test_report_document_hides_audit_provenance() -> None:
     _assert_report_clean(rendered.markdown)
 
 
+def test_nested_asin_identity_is_naturalized_without_mapping_repr() -> None:
+    dossier = {
+        "report_date": "2026-07-27",
+        "tool_evidence": [{
+            "source_ref": "call:1",
+            "tool_name": "sellersprite__asin_detail",
+            "arguments": {"marketplace": "US", "asin": "B0CZT19JQ1"},
+            "business_data": {
+                "asin": {
+                    "asin": "B0CZT19JQ1",
+                    "asinUrl": "https://www.amazon.com/dp/B0CZT19JQ1",
+                    "brand": "Xohny",
+                    "createdTime": 1715084401000,
+                    "title": "Spider Web Shooters with Gloves",
+                },
+            },
+            "evidence_fence": {"data_state": "data"},
+        }],
+    }
+    rendered = render_sellersprite_evidence_document(dossier)
+    assert "亚马逊商品编号 B0CZT19JQ1" in rendered.markdown
+    assert "创建时间" in rendered.markdown
+    assert "2024年5月7日" in rendered.markdown
+    assert "createdTime" not in rendered.markdown
+    assert "asinUrl" not in rendered.markdown
+    assert "1715084401000" not in rendered.markdown
+    assert "{" not in rendered.markdown
+    assert "}" not in rendered.markdown
+    _assert_report_clean(rendered.markdown)
+
+
 if __name__ == "__main__":
     test_all_registered_tools_use_chinese_business_titles()
     test_sellersprite_problem_fields_and_time_are_naturalized()
     test_sellersprite_prediction_and_unverified_codes_are_isolated()
     test_fastmoss_live_category_fields_are_naturalized()
     test_report_document_hides_audit_provenance()
+    test_nested_asin_identity_is_naturalized_without_mapping_repr()
     print("双站点 Semantic 中文化测试通过")

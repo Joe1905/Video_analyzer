@@ -1525,11 +1525,12 @@ def _entity_identity(value: Mapping[str, Any]) -> str:
         "room_id", "agency_id", "category_id", "id",
     ):
         item = value.get(key)
-        if item not in (None, "", 0, "0"):
+        if _scalar(item) and item not in (None, "", 0, "0"):
             return f"{_field_label(key)} {item}"
     for key in ("title", "name", "nickname"):
-        if value.get(key):
-            return f"{_field_label(key)} {value[key]}"
+        item = value.get(key)
+        if _scalar(item) and item not in (None, ""):
+            return f"{_field_label(key)} {item}"
     return ""
 
 

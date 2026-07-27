@@ -8595,12 +8595,38 @@ def sellersprite_report_evidence_dossier(
     }
 
 
+def _log_semantic_brace_residue(provider: str, markdown: str) -> int:
+    """Log complete balanced brace payloads that survive Semantic rendering."""
+    payloads: list[str] = []
+    depth = 0
+    payload_start = -1
+    for index, char in enumerate(str(markdown or "")):
+        if char == "{":
+            if depth == 0:
+                payload_start = index + 1
+            depth += 1
+        elif char == "}" and depth:
+            depth -= 1
+            if depth == 0 and payload_start >= 0:
+                payloads.append(markdown[payload_start:index])
+                payload_start = -1
+    for index, payload in enumerate(payloads, start=1):
+        print(
+            "[CHAT SEMANTIC BRACE RESIDUE] "
+            f"provider={provider} match={index}/{len(payloads)} chars={len(payload)} "
+            f"content={json.dumps(payload, ensure_ascii=False)}",
+            flush=True,
+        )
+    return len(payloads)
+
+
 def sellersprite_render_report_evidence(
     dossier: dict[str, Any],
 ) -> tuple[str, dict[str, Any]]:
     """Render SellerSprite report evidence as semantic Markdown."""
     rendered = render_sellersprite_evidence_document(dossier)
     results = rendered.tool_results
+    brace_pair_count = _log_semantic_brace_residue("sellersprite", rendered.markdown)
     return rendered.markdown, {
         "format": "semantic",
         "tool_count": len(results),
@@ -8610,6 +8636,7 @@ def sellersprite_render_report_evidence(
         "rendered_leaf_count": sum(len(result.consumed_paths) for result in results),
         "audit_only_leaf_count": sum(len(result.excluded_paths) for result in results),
         "unmapped_leaf_count": sum(len(result.unmapped_paths) for result in results),
+        "brace_pair_count": brace_pair_count,
         "markdown_chars": len(rendered.markdown),
     }
 
@@ -8794,7 +8821,12 @@ def complete_sellersprite_answer(
 def fastmoss_render_report_evidence(dossier: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     """Render FastMoss report evidence as semantic Markdown."""
     rendered = render_fastmoss_evidence_document(dossier)
-    return rendered.markdown, {"format": "semantic", **rendered.stats}
+    brace_pair_count = _log_semantic_brace_residue("fastmoss", rendered.markdown)
+    return rendered.markdown, {
+        "format": "semantic",
+        **rendered.stats,
+        "brace_pair_count": brace_pair_count,
+    }
 
 
 def fastmoss_report_evidence_markdown(dossier: dict[str, Any]) -> str:
