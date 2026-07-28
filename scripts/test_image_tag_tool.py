@@ -10,7 +10,13 @@ from pathlib import Path
 
 from PIL import Image
 
-from image_tag_tool import ImageTagToolError, build_subject_xmp, convert_png_to_jpeg, xmp_contains_subject
+from image_tag_tool import (
+    ImageTagToolError,
+    build_subject_xmp,
+    convert_png_to_jpeg,
+    prepare_image_for_delivery,
+    xmp_contains_subject,
+)
 
 
 class ImageTagToolTest(unittest.TestCase):
@@ -64,6 +70,25 @@ class ImageTagToolTest(unittest.TestCase):
         self.assertTrue(xmp_contains_subject(build_subject_xmp(tag), tag))
         with self.assertRaises(ImageTagToolError):
             build_subject_xmp(" \n ")
+
+    def test_jpeg_is_tagged_once_then_reused_without_reencoding(self) -> None:
+        source = io.BytesIO()
+        Image.new("RGB", (3, 2), "red").save(source, "JPEG")
+        source.seek(0)
+        with tempfile.TemporaryDirectory() as directory:
+            tagged = Path(directory) / "tagged.jpg"
+            reused = Path(directory) / "reused.jpg"
+            self.assertEqual(prepare_image_for_delivery(source, tagged, "tag"), "tagged")
+            with tagged.open("rb") as file:
+                self.assertEqual(prepare_image_for_delivery(file, reused, "tag"), "reused")
+            self.assertEqual(tagged.read_bytes(), reused.read_bytes())
+
+    def test_png_is_converted_for_delivery(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "converted.jpg"
+            self.assertEqual(prepare_image_for_delivery(self.make_png(), target, "tag"), "converted")
+            with Image.open(target) as image:
+                self.assertTrue(xmp_contains_subject(image.info.get("xmp"), "tag"))
 
 
 if __name__ == "__main__":

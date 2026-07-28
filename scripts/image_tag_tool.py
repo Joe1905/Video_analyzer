@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import warnings
 from pathlib import Path
 from typing import BinaryIO
@@ -59,6 +60,39 @@ def xmp_contains_subject(xmp: bytes | str | None, tag: str) -> bool:
     return any((item.text or "") == tag for item in root.findall(subject_path))
 
 
+def _save_tagged_jpeg(
+    image: object,
+    output_path: Path,
+    tag: str,
+    icc_profile: bytes | None = None,
+) -> None:
+    """Write a JPEG with the requested XMP tag and verify it after saving."""
+    from PIL import Image
+
+    converted = None
+    try:
+        converted = image.convert("RGB")
+        save_kwargs: dict[str, object] = {
+            "format": "JPEG",
+            "quality": 95,
+            "xmp": build_subject_xmp(tag),
+        }
+        profile = icc_profile if isinstance(icc_profile, bytes) else image.info.get("icc_profile")
+        if isinstance(profile, bytes):
+            save_kwargs["icc_profile"] = profile
+        converted.save(output_path, **save_kwargs)
+        with Image.open(output_path) as rendered:
+            if rendered.format != "JPEG" or not xmp_contains_subject(rendered.info.get("xmp"), tag):
+                raise ImageTagToolError("JPG 标签写入校验失败")
+    except ImageTagToolError:
+        raise
+    except (OSError, ValueError) as exc:
+        raise ImageTagToolError(f"无法生成 JPG：{exc}") from exc
+    finally:
+        if converted is not None:
+            converted.close()
+
+
 def convert_png_to_jpeg(source: BinaryIO, output_path: Path, tag: str) -> tuple[int, int]:
     """Convert one static PNG to JPEG, then verify the exact XMP subject tag."""
     from PIL import Image, UnidentifiedImageError
@@ -94,23 +128,47 @@ def convert_png_to_jpeg(source: BinaryIO, output_path: Path, tag: str) -> tuple[
     except (Image.DecompressionBombError, UnidentifiedImageError, OSError, ValueError, EOFError, SyntaxError) as exc:
         raise ImageTagToolError(f"无法读取 PNG：{exc}") from exc
 
-    save_kwargs: dict[str, object] = {
-        "format": "JPEG",
-        "quality": 95,
-        "xmp": build_subject_xmp(tag),
-    }
-    if isinstance(icc_profile, bytes):
-        save_kwargs["icc_profile"] = icc_profile
     try:
-        converted.save(output_path, **save_kwargs)
-        with Image.open(output_path) as rendered:
-            if rendered.format != "JPEG" or not xmp_contains_subject(rendered.info.get("xmp"), tag):
-                raise ImageTagToolError("JPG 标签写入校验失败")
-    except ImageTagToolError:
-        raise
-    except (OSError, ValueError) as exc:
-        raise ImageTagToolError(f"无法生成 JPG：{exc}") from exc
+        _save_tagged_jpeg(converted, output_path, tag, icc_profile)
     finally:
         if converted is not None:
             converted.close()
     return width, height
+
+
+def prepare_image_for_delivery(source: BinaryIO, output_path: Path, tag: str) -> str:
+    """Reuse compliant JPEGs, tag JPEGs, or convert PNGs for the delivery ZIP."""
+    from PIL import Image, UnidentifiedImageError
+
+    tag = normalize_tag(tag)
+    if source is None or not hasattr(source, "seek"):
+        raise ImageTagToolError("无法读取图片：文件内容为空")
+    try:
+        source.seek(0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(source) as image:
+                image_format = image.format
+                if image_format not in {"PNG", "JPEG"}:
+                    raise ImageTagToolError("仅支持 PNG 或 JPG 图片")
+                if getattr(image, "is_animated", False):
+                    raise ImageTagToolError("不支持 APNG 动图")
+                width, height = image.size
+                if width * height > MAX_IMAGE_PIXELS:
+                    raise ImageTagToolError("图片像素超过 5000 万限制")
+                image.load()
+                if image_format == "JPEG":
+                    if xmp_contains_subject(image.info.get("xmp"), tag):
+                        source.seek(0)
+                        with output_path.open("wb") as output:
+                            shutil.copyfileobj(source, output, length=64 * 1024)
+                        return "reused"
+                    _save_tagged_jpeg(image, output_path, tag)
+                    return "tagged"
+    except ImageTagToolError:
+        raise
+    except (Image.DecompressionBombError, UnidentifiedImageError, OSError, ValueError, EOFError, SyntaxError) as exc:
+        raise ImageTagToolError(f"无法读取图片：{exc}") from exc
+
+    convert_png_to_jpeg(source, output_path, tag)
+    return "converted"

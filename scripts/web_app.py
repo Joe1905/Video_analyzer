@@ -101,7 +101,7 @@ MCP_CHAT_CONFIGS = {
 import sys
 sys.path.insert(0, str(SCRIPTS_DIR))
 from chat_session import ChatStore, Message, Session, load_sessions_from_disk
-from image_tag_tool import ImageTagToolError, convert_png_to_jpeg, normalize_tag
+from image_tag_tool import ImageTagToolError, normalize_tag, prepare_image_for_delivery
 from feishu_capabilities import FeishuCapabilityClient, FeishuCapabilityError
 from lan_chat import (
     FILE_TRANSFER_MAX_BYTES,
@@ -14972,11 +14972,12 @@ class Handler(BaseHTTPRequestHandler):
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
         if not images:
-            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "请至少上传一张 PNG 图片"})
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "请至少上传一张 PNG 或 JPG 图片"})
         if len(images) > TOOL_MAX_FILES:
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": f"单次最多上传 {TOOL_MAX_FILES} 张图片"})
 
         successes: list[tuple[str, Path]] = []
+        action_counts = {"converted": 0, "tagged": 0, "reused": 0}
         failures: list[tuple[str, str]] = []
         used_names: set[str] = set()
         with tempfile.TemporaryDirectory(prefix="image-tag-tool-") as temporary_directory:
@@ -14986,14 +14987,15 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     output_name = image_tool_output_name(original_name, used_names)
                     output_path = directory / output_name
-                    convert_png_to_jpeg(item.file, output_path, tag)
+                    action = prepare_image_for_delivery(item.file, output_path, tag)
                     successes.append((output_name, output_path))
+                    action_counts[action] += 1
                 except (ImageTagToolError, OSError, ValueError) as exc:
                     failures.append((original_name, str(exc)))
 
             if not successes:
                 return json_response(self, HTTPStatus.UNPROCESSABLE_ENTITY, {
-                    "error": "没有可转换的 PNG 图片",
+                    "error": "没有可处理的 PNG 或 JPG 图片",
                     "failed": len(failures),
                     "failures": [{"filename": name, "reason": reason} for name, reason in failures],
                 })
@@ -15013,6 +15015,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(zip_path.stat().st_size))
             self.send_header("X-Tool-Succeeded", str(len(successes)))
             self.send_header("X-Tool-Failed", str(len(failures)))
+            self.send_header("X-Tool-Converted", str(action_counts["converted"]))
+            self.send_header("X-Tool-Tagged", str(action_counts["tagged"]))
+            self.send_header("X-Tool-Reused", str(action_counts["reused"]))
             self.end_headers()
             with zip_path.open("rb") as archive_file:
                 shutil.copyfileobj(archive_file, self.wfile, length=64 * 1024)
