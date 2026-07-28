@@ -213,6 +213,17 @@ class LanChatFileTransferTest(unittest.TestCase):
             self.store.message_media_info(filename)
         self.assertEqual(context.exception.status, 410)
 
+    def test_inline_media_request_uses_one_data_field(self) -> None:
+        template = (Path(__file__).parent / "static" / "lan_chat.html").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("JSON.stringify({content,mediaData,clientUploadId})", template)
+        self.assertIn(
+            "JSON.stringify({content,mediaData:prepared.dataUrl,clientUploadId})",
+            template,
+        )
+        self.assertNotIn("imageData:", template)
+
     def test_inline_media_client_upload_id_is_idempotent(self) -> None:
         upload_id = "inline_upload_1234567890"
         media_data = "data:image/png;base64," + base64.b64encode(
