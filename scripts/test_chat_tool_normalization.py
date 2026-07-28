@@ -1992,7 +1992,7 @@ def test_sellersprite_semantic_report_and_pro_synthesis() -> None:
         "美国站关键词 stroller fan 的月搜索量为 12345。",
         message,
         "查询 stroller fan 月搜索量",
-        route,
+        web_app.sellersprite_official_skill_route("查询 stroller fan 月搜索量"),
         requests,
         "test-key",
         "https://example.invalid/v1",
