@@ -16,6 +16,7 @@ import tempfile
 import threading
 import time
 import uuid
+import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from http import HTTPStatus
@@ -100,6 +101,7 @@ MCP_CHAT_CONFIGS = {
 import sys
 sys.path.insert(0, str(SCRIPTS_DIR))
 from chat_session import ChatStore, Message, Session, load_sessions_from_disk
+from image_tag_tool import ImageTagToolError, normalize_tag, prepare_image_for_delivery
 from feishu_capabilities import FeishuCapabilityClient, FeishuCapabilityError
 from lan_chat import (
     FILE_TRANSFER_MAX_BYTES,
@@ -174,6 +176,8 @@ import proxy_pool
 import tiktok_studio_publish
 import tiktok_studio_collect
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
+TOOL_MAX_UPLOAD_BYTES = 200 * 1024 * 1024
+TOOL_MAX_FILES = 100
 SAFE_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
 AUDIO_ONLY_SUFFIXES = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav"}
 ANALYZER_VIDEO_SUFFIXES = {".m4v", ".mov", ".mp4", ".webm"}
@@ -399,6 +403,7 @@ NAV_ITEMS = [
     {"key": "fastmoss", "href": "/fastmoss", "label": "FastMoss", "title": "FastMoss", "icon": '<path d="M4 7.5 12 3l8 4.5v9L12 21l-8-4.5z"/><path d="M4 7.5 12 12l8-4.5"/><path d="M12 12v9"/>'},
     {"key": "shop", "href": "/shop", "label": "Shop", "title": "Shop", "icon": '<path d="M6 8h12l1 13H5z"/><path d="M9 8V6a3 3 0 0 1 6 0v2"/><path d="M5 11h14"/>'},
     {"key": "proxy", "href": "/proxy", "label": "Proxy", "title": "账号 IP 池", "icon": '<path d="M4 12a8 8 0 0 1 16 0"/><path d="M8 12a4 4 0 0 1 8 0"/><path d="M12 12v8"/><path d="M9 20h6"/>'},
+    {"key": "tool", "href": "/tool", "label": "工具", "title": "图片标签工具", "icon": '<path d="M4 5h16v14H4z"/><path d="m8 15 3-3 2 2 3-4 3 5"/><circle cx="9" cy="9" r="1"/>'},
     {"key": "metrics", "href": "/metrics", "label": "\u6570\u636e", "title": "\u6570\u636e", "icon": '<path d="M4 19V5"/><path d="M20 19H4"/><path d="M8 16v-5"/><path d="M12 16V8"/><path d="M16 16v-7"/>'},
     {"key": "extract", "href": "/extract", "label": "\u5206\u6790", "title": "\u89c6\u9891\u5206\u6790", "icon": '<path d="M4 5h16v14H4z"/><path d="m10 9 5 3-5 3z"/><path d="M8 21h8"/><path d="M12 19v2"/>'},
 ]
@@ -691,6 +696,38 @@ def safe_filename(filename: str) -> str:
     if not cleaned or cleaned in {".", ".."}:
         raise ValueError("Invalid filename")
     return cleaned
+
+
+def image_tool_output_name(original_name: str, used_names: set[str]) -> str:
+    """Return a cross-platform-safe JPG filename, retaining Unicode where possible."""
+    basename = Path(str(original_name or "").replace("\\", "/")).name.strip()
+    stem = Path(basename).stem.strip()
+    stem = "".join(char for char in stem if ord(char) >= 32 and char not in '<>:"/\\|?*').strip(". ")
+    if not stem:
+        stem = "image"
+    number = 1
+    while True:
+        suffix = "" if number == 1 else f"_{number}"
+        candidate = f"{stem}{suffix}.jpg"
+        key = candidate.casefold()
+        if key not in used_names:
+            used_names.add(key)
+            return candidate
+        number += 1
+
+
+def image_tool_archive_name(value: str) -> str:
+    raw_name = str(value or "").strip()
+    if raw_name.lower().endswith(".zip"):
+        raw_name = raw_name[:-4].strip()
+    if not raw_name:
+        raw_name = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if len(raw_name) > 120:
+        raise ValueError("压缩包名称不能超过 120 个字符")
+    cleaned = "".join(char for char in raw_name if ord(char) >= 32 and char not in '<>:"/\\|?*').strip(". ")
+    if not cleaned:
+        raise ValueError("压缩包名称无效")
+    return f"{cleaned}.zip"
 
 
 def validate_short_video_url(url: str) -> str:
@@ -13980,6 +14017,9 @@ class Handler(BaseHTTPRequestHandler):
             return text_response(self, HTTPStatus.OK, inject_unified_nav(html, parsed.path), "text/html; charset=utf-8")
         if parsed.path == "/shop":
             return text_response(self, HTTPStatus.OK, inject_unified_nav(SHOP_HTML, parsed.path), "text/html; charset=utf-8")
+        if parsed.path == "/tool":
+            tool_html = (SCRIPTS_DIR / "static" / "tool.html").read_text(encoding="utf-8")
+            return text_response(self, HTTPStatus.OK, inject_unified_nav(tool_html, parsed.path), "text/html; charset=utf-8")
         if parsed.path == "/metrics":
             return text_response(self, HTTPStatus.OK, inject_unified_nav(METRICS_HTML, parsed.path), "text/html; charset=utf-8")
         if parsed.path == "/proxy":
@@ -14575,6 +14615,8 @@ class Handler(BaseHTTPRequestHandler):
             if not PROXY_POOL_ENABLED:
                 return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
             return self.handle_proxy_api_post(parsed.path)
+        if parsed.path == "/api/tool/convert":
+            return self.handle_tool_convert()
         if parsed.path == "/api/upload":
             return self.handle_upload()
         if parsed.path == "/api/download":
@@ -14919,6 +14961,84 @@ class Handler(BaseHTTPRequestHandler):
         thread = threading.Thread(target=run_amazon_job, args=(job.id,), daemon=True)
         thread.start()
         return json_response(self, HTTPStatus.ACCEPTED, public_amazon_job(job))
+
+    def handle_tool_convert(self) -> None:
+        try:
+            content_length = int(self.headers.get("Content-Length", "0") or "0")
+        except ValueError:
+            content_length = 0
+        if content_length <= 0 or content_length > TOOL_MAX_UPLOAD_BYTES:
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "上传内容为空或超过 200MB 限制"})
+        if not self.headers.get("Content-Type", "").lower().startswith("multipart/form-data"):
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "请求必须使用 multipart/form-data"})
+
+        try:
+            form = cgi.FieldStorage(
+                fp=self.rfile,
+                headers=self.headers,
+                environ={"REQUEST_METHOD": "POST", "CONTENT_TYPE": self.headers.get("Content-Type", "")},
+            )
+            tag = normalize_tag(form.getfirst("tag", ""))
+            archive_name = image_tool_archive_name(form.getfirst("archive_name", ""))
+            raw_images = form["images"] if "images" in form else []
+            image_fields = raw_images if isinstance(raw_images, list) else [raw_images]
+            images = [item for item in image_fields if getattr(item, "filename", "")]
+        except (ImageTagToolError, ValueError, TypeError) as exc:
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+
+        if not images:
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "请至少上传一张图片"})
+        if len(images) > TOOL_MAX_FILES:
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": f"单次最多上传 {TOOL_MAX_FILES} 张图片"})
+
+        successes: list[tuple[str, Path]] = []
+        action_counts = {"converted": 0, "tagged": 0, "reused": 0}
+        failures: list[tuple[str, str]] = []
+        used_names: set[str] = set()
+        with tempfile.TemporaryDirectory(prefix="image-tag-tool-") as temporary_directory:
+            directory = Path(temporary_directory)
+            for item in images:
+                original_name = str(item.filename or "未命名图片")
+                try:
+                    output_name = image_tool_output_name(original_name, used_names)
+                    output_path = directory / output_name
+                    action = prepare_image_for_delivery(item.file, output_path, tag)
+                    successes.append((output_name, output_path))
+                    action_counts[action] += 1
+                except (ImageTagToolError, OSError, ValueError) as exc:
+                    failures.append((original_name, str(exc)))
+
+            if not successes:
+                return json_response(self, HTTPStatus.UNPROCESSABLE_ENTITY, {
+                    "error": "没有可处理的图片",
+                    "failed": len(failures),
+                    "failures": [{"filename": name, "reason": reason} for name, reason in failures],
+                })
+
+            zip_path = directory / archive_name
+            with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                for output_name, output_path in successes:
+                    archive.write(output_path, output_name)
+                if failures:
+                    report_lines = ["以下文件未能转换：", ""]
+                    report_lines.extend(f"{name}\t{reason}" for name, reason in failures)
+                    archive.writestr("转换失败清单.txt", "\n".join(report_lines) + "\n")
+
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header(
+                "Content-Disposition",
+                f"attachment; filename=\"download.zip\"; filename*=UTF-8''{quote(archive_name)}",
+            )
+            self.send_header("Content-Length", str(zip_path.stat().st_size))
+            self.send_header("X-Tool-Succeeded", str(len(successes)))
+            self.send_header("X-Tool-Failed", str(len(failures)))
+            self.send_header("X-Tool-Converted", str(action_counts["converted"]))
+            self.send_header("X-Tool-Tagged", str(action_counts["tagged"]))
+            self.send_header("X-Tool-Reused", str(action_counts["reused"]))
+            self.end_headers()
+            with zip_path.open("rb") as archive_file:
+                shutil.copyfileobj(archive_file, self.wfile, length=64 * 1024)
 
     def handle_upload(self) -> None:
         content_length = int(self.headers.get("Content-Length", "0"))
