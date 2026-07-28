@@ -14972,7 +14972,7 @@ class Handler(BaseHTTPRequestHandler):
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
         if not images:
-            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "请至少上传一张 PNG 或 JPG 图片"})
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "请至少上传一张图片"})
         if len(images) > TOOL_MAX_FILES:
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": f"单次最多上传 {TOOL_MAX_FILES} 张图片"})
 
@@ -14995,7 +14995,7 @@ class Handler(BaseHTTPRequestHandler):
 
             if not successes:
                 return json_response(self, HTTPStatus.UNPROCESSABLE_ENTITY, {
-                    "error": "没有可处理的 PNG 或 JPG 图片",
+                    "error": "没有可处理的图片",
                     "failed": len(failures),
                     "failures": [{"filename": name, "reason": reason} for name, reason in failures],
                 })

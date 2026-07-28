@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Ad-hoc verification for the PNG XMP tagging helper."""
+"""Ad-hoc verification for the image XMP tagging helper."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from PIL import Image
 from image_tag_tool import (
     ImageTagToolError,
     build_subject_xmp,
-    convert_png_to_jpeg,
+    convert_image_to_jpeg,
     prepare_image_for_delivery,
     xmp_contains_subject,
 )
@@ -32,7 +32,7 @@ class ImageTagToolTest(unittest.TestCase):
         tag = "contains-synthetic-performer"
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "image.jpg"
-            self.assertEqual(convert_png_to_jpeg(self.make_png(), target, tag), (3, 2))
+            self.assertEqual(convert_image_to_jpeg(self.make_png(), target, tag), (3, 2))
             with Image.open(target) as image:
                 self.assertEqual(image.format, "JPEG")
                 self.assertTrue(xmp_contains_subject(image.info.get("xmp"), tag))
@@ -40,30 +40,26 @@ class ImageTagToolTest(unittest.TestCase):
     def test_transparent_png_uses_white_background(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "transparent.jpg"
-            convert_png_to_jpeg(self.make_png("RGBA"), target, "tag")
+            convert_image_to_jpeg(self.make_png("RGBA"), target, "tag")
             with Image.open(target) as image:
                 pixel = image.convert("RGB").getpixel((0, 0))
             self.assertGreater(pixel[0], 100)
             self.assertGreater(pixel[1], 100)
             self.assertGreater(pixel[2], 100)
 
-    def test_rejects_non_png_and_animated_png(self) -> None:
-        jpg = io.BytesIO()
-        Image.new("RGB", (1, 1), "red").save(jpg, "JPEG")
-        jpg.seek(0)
+    def test_uses_first_frame_for_animated_images_and_rejects_non_images(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "invalid.jpg"
-            with self.assertRaisesRegex(ImageTagToolError, "仅支持 PNG"):
-                convert_png_to_jpeg(jpg, target, "tag")
             animated = io.BytesIO()
             first = Image.new("RGB", (1, 1), "red")
             second = Image.new("RGB", (1, 1), "blue")
             first.save(animated, "PNG", save_all=True, append_images=[second])
             animated.seek(0)
-            with self.assertRaisesRegex(ImageTagToolError, "APNG"):
-                convert_png_to_jpeg(animated, target, "tag")
-            with self.assertRaisesRegex(ImageTagToolError, "无法读取 PNG"):
-                convert_png_to_jpeg(io.BytesIO(b"not a PNG"), target, "tag")
+            convert_image_to_jpeg(animated, target, "tag")
+            with Image.open(target) as image:
+                self.assertGreater(image.getpixel((0, 0))[0], image.getpixel((0, 0))[2])
+            with self.assertRaisesRegex(ImageTagToolError, "无法读取图片"):
+                convert_image_to_jpeg(io.BytesIO(b"not an image"), target, "tag")
 
     def test_escapes_and_validates_tags(self) -> None:
         tag = "AI & <person>"

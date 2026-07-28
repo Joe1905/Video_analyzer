@@ -1,4 +1,4 @@
-"""PNG to JPEG conversion with a verified XMP subject tag."""
+"""Image to JPEG conversion with a verified XMP subject tag."""
 
 from __future__ import annotations
 
@@ -93,23 +93,20 @@ def _save_tagged_jpeg(
             converted.close()
 
 
-def convert_png_to_jpeg(source: BinaryIO, output_path: Path, tag: str) -> tuple[int, int]:
-    """Convert one static PNG to JPEG, then verify the exact XMP subject tag."""
+def convert_image_to_jpeg(source: BinaryIO, output_path: Path, tag: str) -> tuple[int, int]:
+    """Convert the first frame of any Pillow-readable image to a tagged JPEG."""
     from PIL import Image, UnidentifiedImageError
 
     tag = normalize_tag(tag)
     if source is None or not hasattr(source, "seek"):
-        raise ImageTagToolError("无法读取 PNG：文件内容为空")
+        raise ImageTagToolError("无法读取图片：文件内容为空")
     converted = None
     try:
         source.seek(0)
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
             with Image.open(source) as image:
-                if image.format != "PNG":
-                    raise ImageTagToolError("仅支持 PNG 图片")
-                if getattr(image, "is_animated", False):
-                    raise ImageTagToolError("不支持 APNG 动图")
+                image.seek(0)
                 width, height = image.size
                 if width * height > MAX_IMAGE_PIXELS:
                     raise ImageTagToolError("图片像素超过 5000 万限制")
@@ -126,7 +123,7 @@ def convert_png_to_jpeg(source: BinaryIO, output_path: Path, tag: str) -> tuple[
     except ImageTagToolError:
         raise
     except (Image.DecompressionBombError, UnidentifiedImageError, OSError, ValueError, EOFError, SyntaxError) as exc:
-        raise ImageTagToolError(f"无法读取 PNG：{exc}") from exc
+        raise ImageTagToolError(f"无法读取图片：{exc}") from exc
 
     try:
         _save_tagged_jpeg(converted, output_path, tag, icc_profile)
@@ -137,7 +134,7 @@ def convert_png_to_jpeg(source: BinaryIO, output_path: Path, tag: str) -> tuple[
 
 
 def prepare_image_for_delivery(source: BinaryIO, output_path: Path, tag: str) -> str:
-    """Reuse compliant JPEGs, tag JPEGs, or convert PNGs for the delivery ZIP."""
+    """Reuse compliant JPEGs, tag JPEGs, or convert other readable images."""
     from PIL import Image, UnidentifiedImageError
 
     tag = normalize_tag(tag)
@@ -149,10 +146,7 @@ def prepare_image_for_delivery(source: BinaryIO, output_path: Path, tag: str) ->
             warnings.simplefilter("error", Image.DecompressionBombWarning)
             with Image.open(source) as image:
                 image_format = image.format
-                if image_format not in {"PNG", "JPEG"}:
-                    raise ImageTagToolError("仅支持 PNG 或 JPG 图片")
-                if getattr(image, "is_animated", False):
-                    raise ImageTagToolError("不支持 APNG 动图")
+                image.seek(0)
                 width, height = image.size
                 if width * height > MAX_IMAGE_PIXELS:
                     raise ImageTagToolError("图片像素超过 5000 万限制")
@@ -170,5 +164,5 @@ def prepare_image_for_delivery(source: BinaryIO, output_path: Path, tag: str) ->
     except (Image.DecompressionBombError, UnidentifiedImageError, OSError, ValueError, EOFError, SyntaxError) as exc:
         raise ImageTagToolError(f"无法读取图片：{exc}") from exc
 
-    convert_png_to_jpeg(source, output_path, tag)
+    convert_image_to_jpeg(source, output_path, tag)
     return "converted"

@@ -11,12 +11,12 @@
 <body>
 <header><h1>图片标签工具</h1><nav class="app-nav" aria-label="主导航"></nav></header>
 <main class="page">
-  <section class="intro"><div><div class="eyebrow">IMAGE DELIVERY</div><h2>批量处理，标签随文件交付</h2><p>PNG 转 JPG、JPG 补标签；已满足条件的 JPG 原样下载。</p></div><div class="flow"><span><b>1</b>选择图片</span><span>→</span><span><b>2</b>确认标签</span><span>→</span><span><b>3</b>下载 ZIP</span></div></section>
+  <section class="intro"><div><div class="eyebrow">IMAGE DELIVERY</div><h2>批量处理，标签随文件交付</h2><p>上传图片即可统一交付 JPG；已满足条件的 JPG 原样下载。</p></div><div class="flow"><span><b>1</b>选择图片</span><span>→</span><span><b>2</b>确认标签</span><span>→</span><span><b>3</b>下载 ZIP</span></div></section>
   <section class="card workspace">
     <div class="upload-pane">
-      <input id="files" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg" multiple hidden>
-      <div id="dropzone" class="dropzone" role="button" tabindex="0" aria-label="选择 PNG 图片">
-        <div><div class="drop-icon"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M5 20h14"/></svg></div><strong>拖入 PNG / JPG，或点击选择</strong><small>支持批量上传，单批最多 100 张</small></div>
+      <input id="files" type="file" accept="image/*" multiple hidden>
+      <div id="dropzone" class="dropzone" role="button" tabindex="0" aria-label="选择图片">
+        <div><div class="drop-icon"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M5 20h14"/></svg></div><strong>拖入图片，或点击选择</strong><small>可处理的图片会统一输出为 JPG；单批最多 100 张</small></div>
       </div>
       <div class="filebar"><b id="fileCount">待处理图片</b><button id="clear" class="secondary" type="button" hidden>清空</button></div>
       <div id="fileGrid" class="file-grid"><div class="empty">尚未选择图片</div></div>
@@ -26,7 +26,7 @@
       <label>写入标签<input id="tag" maxlength="200" value="contains-synthetic-performer" autocomplete="off"></label>
       <div class="hint">标签将写入最终 JPG 的 <code>XMP dc:subject</code> 字段。已满足当前标签的 JPG 会原样放入 ZIP。</div>
       <button id="convert" class="primary" type="button" disabled>转换并下载 ZIP</button>
-      <div id="status" class="status" role="status">选择 PNG 图片后即可开始。</div>
+      <div id="status" class="status" role="status">选择图片后即可开始。</div>
     </aside>
   </section>
   <p class="foot">无效图片会被跳过，下载包内会附上失败清单。</p>
@@ -39,7 +39,7 @@ function setStatus(text,kind=''){statusBox.className='status '+kind;statusBox.te
 function key(file){return `${file.name}:${file.size}:${file.lastModified}`}
 function bytes(size){return size<1024*1024?`${Math.ceil(size/1024)} KB`:`${(size/1024/1024).toFixed(1)} MB`}
 function refresh(){const total=selected.reduce((sum,file)=>sum+file.size,0);count.textContent=selected.length?`已选 ${selected.length} 张 · ${bytes(total)}`:'待处理图片';clearBtn.hidden=!selected.length;convertBtn.disabled=!selected.length||!tagInput.value.trim();grid.innerHTML='';if(!selected.length){grid.innerHTML='<div class="empty">尚未选择图片</div>';return}selected.forEach((file,index)=>{const item=document.createElement('article');item.className='file';const image=document.createElement('img');const url=URL.createObjectURL(file);image.src=url;image.alt=file.name;image.onload=image.onerror=()=>URL.revokeObjectURL(url);const remove=document.createElement('button');remove.type='button';remove.className='remove';remove.setAttribute('aria-label',`移除 ${file.name}`);remove.textContent='×';remove.onclick=()=>{selected.splice(index,1);refresh()};const name=document.createElement('span');name.className='file-name';name.title=`${file.name} · ${bytes(file.size)}`;name.textContent=file.name;item.append(image,remove,name);grid.append(item)})}
-function addFiles(files){const incoming=Array.from(files||[]),known=new Set(selected.map(key));let ignored=0;for(const file of incoming){if(!(file.type==='image/png'||file.type==='image/jpeg'||/\.(png|jpe?g)$/i.test(file.name))){ignored++;continue}if(selected.length>=100){ignored++;continue}if(!known.has(key(file))){selected.push(file);known.add(key(file))}}refresh();if(ignored)setStatus(`已加入 ${selected.length} 张图片；忽略 ${ignored} 个非 PNG/JPG、重复或超出上限的文件。`,'bad')}
+function addFiles(files){const incoming=Array.from(files||[]),known=new Set(selected.map(key));let ignored=0;for(const file of incoming){if(selected.length>=100){ignored++;continue}if(!known.has(key(file))){selected.push(file);known.add(key(file))}}refresh();if(ignored)setStatus(`已加入 ${selected.length} 个文件；忽略 ${ignored} 个重复或超出上限的文件。无法识别的文件会列入 ZIP 失败清单。`,'bad')}
 dropzone.onclick=()=>input.click();dropzone.onkeydown=event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();input.click()}};input.onchange=()=>{addFiles(input.files);input.value=''};['dragenter','dragover'].forEach(type=>dropzone.addEventListener(type,event=>{event.preventDefault();dropzone.classList.add('drag')}));['dragleave','drop'].forEach(type=>dropzone.addEventListener(type,event=>{event.preventDefault();dropzone.classList.remove('drag')}));dropzone.addEventListener('drop',event=>addFiles(event.dataTransfer.files));clearBtn.onclick=()=>{selected=[];refresh();setStatus('已清空待处理图片。')};tagInput.oninput=refresh;
 convertBtn.onclick=async()=>{const tag=tagInput.value.trim();if(!selected.length||!tag)return;convertBtn.disabled=true;setStatus(`正在处理 ${selected.length} 张图片…`);const form=new FormData();selected.forEach(file=>form.append('images',file));form.append('tag',tag);try{const response=await fetch('/api/tool/convert',{method:'POST',body:form});if(!response.ok){const payload=await response.json().catch(()=>({}));throw new Error(payload.error||'处理失败')}const blob=await response.blob(),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download='tagged_images.zip';document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);const converted=Number(response.headers.get('X-Tool-Converted')||0),tagged=Number(response.headers.get('X-Tool-Tagged')||0),reused=Number(response.headers.get('X-Tool-Reused')||0),failed=Number(response.headers.get('X-Tool-Failed')||0);const details=[converted?`转换 ${converted} 张`:'',tagged?`补标 ${tagged} 张`:'',reused?`已满足 ${reused} 张`:''].filter(Boolean).join('，');setStatus(`处理完成：${details||'成功'}${failed?`；跳过 ${failed} 张（详情见 ZIP 内失败清单）`:''}。`,'ok');selected=[];refresh()}catch(error){setStatus(error.message||'处理失败，请稍后重试。','bad')}finally{convertBtn.disabled=!selected.length||!tagInput.value.trim()}};
 refresh();
