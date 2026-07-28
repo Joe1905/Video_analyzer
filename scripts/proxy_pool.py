@@ -3092,7 +3092,8 @@ def _sync_mihomo_pool_config(pool: sqlite3.Row | dict[str, Any]) -> dict[str, An
         proxies = body.get("proxies") if ok and isinstance(body, dict) and isinstance(body.get("proxies"), dict) else {}
         if node_name not in proxies:
             raise ProxyConfigurationError(f"mihomo 重载后仍未发现节点 {node_name}：{error}")
-        for _attempt in range(20):
+        # mihomo may acknowledge a reload before its new listeners finish binding.
+        for _attempt in range(100):
             if _port_open("127.0.0.1", local_port, timeout=0.2):
                 break
             time.sleep(0.1)
