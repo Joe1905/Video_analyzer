@@ -219,7 +219,7 @@ class LanChatFileTransferTest(unittest.TestCase):
         )
         self.assertIn("JSON.stringify({content,mediaData,clientUploadId})", template)
         self.assertIn(
-            "JSON.stringify({content,mediaData:prepared.dataUrl,clientUploadId})",
+            "JSON.stringify({content,mediaData:prepared.dataUrl,clientUploadId:item.clientUploadId})",
             template,
         )
         self.assertNotIn("imageData:", template)
