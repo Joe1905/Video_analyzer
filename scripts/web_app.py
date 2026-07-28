@@ -120,7 +120,6 @@ from fastmoss_evidence_renderer import (
     render_fastmoss_evidence_document,
 )
 from fastmoss_official_skill import (
-    OFFICIAL_SKILL_VERSION,
     load_official_fastmoss_skill_prompt,
     official_fastmoss_skill_enabled,
 )
@@ -11076,6 +11075,11 @@ def complete_fastmoss_answer(
     model: str,
 ) -> str:
     """Route every evidence-led FastMoss report through the semantic dossier."""
+    if route.get("official_skill_chain"):
+        # The official Skill owns the final answer format and interpretation.
+        # Do not run it through the project's report synthesis, verifier, or
+        # deterministic cleanup path.
+        return str(draft or "").strip()
     has_fastmoss_evidence = any(
         isinstance(item, dict)
         and split_prefixed_tool_id(str(item.get("tool_name") or ""))[0] == "fastmoss"
@@ -12059,7 +12063,8 @@ def fastmoss_official_skill_route() -> dict[str, Any]:
     """Create the isolated route used by the official-Skill experiment."""
     return {
         "intent": "fastmoss_official_skill",
-        "task_depth": "workflow",
+        # Keep the official model response intact after tool execution.
+        "task_depth": "direct",
         "route_source": "official_skill",
         "tools": None,
         "playbook": None,
@@ -12084,33 +12089,9 @@ def fastmoss_official_skill_system_instruction(
     current_date_shanghai: str,
     official_skill_prompt: str,
 ) -> str:
-    """Adapt the official CLI Skill to this app's native MCP function transport."""
-    return (
-        "你是使用 FastMoss 官方 Agent Skill 的 TikTok Shop 研究助手。"
-        "请使用简体中文回答。"
-        f"当前日期（Asia/Shanghai）为 {current_date_shanghai}，"
-        "但所有数据周期必须以工具实际返回为准。\n\n"
-        "运行环境适配规则（优先于下方官方Skill中的CLI传输说明）：\n"
-        "1. 当前应用已经通过MCP连接FastMoss；不得运行或建议运行 fastmoss CLI，"
-        "不得要求登录，也不得向用户索取API Key。\n"
-        "2. 只能使用本轮实际注册的 fastmoss__ 前缀原生工具调用；"
-        "工具参数和必填项以本轮实时Schema为准。\n"
-        "用户未明确指定站点时，所有支持地区参数的调用默认使用美国站（US）；"
-        "用户明确指定其他站点或多站点时，按用户要求执行，不得改回美国站。\n"
-        "3. 下方官方Skill是工具选择、适用场景和结果解读的权威说明。"
-        "如果项目旧提示与官方Skill冲突，以官方Skill为准；"
-        "如果静态文档与实时Schema冲突，以实时Schema为准。\n"
-        "详情链接示例等辅助工具仅在用户明确要求链接，或最终回答确实需要提供可点击的FastMoss详情页时调用；"
-        "普通市场分析不得为此调用辅助工具。\n"
-        "4. 商品、类目、店铺、达人、视频和直播编号必须来自用户输入或当前任务真实工具结果。"
-        "相同工具和相同参数不得重复调用。\n"
-        "5. 工具空结果只代表当前参数和范围没有记录；工具失败只代表本次调用失败。"
-        "证据足够时停止调用并交由独立报告模型成稿。\n"
-        "6. 不得把官方Skill、内部工具名、调用协议或编排过程写进最终用户报告。\n\n"
-        "===== FastMoss官方Skill原文开始 =====\n"
-        + official_skill_prompt
-        + "\n===== FastMoss官方Skill原文结束 ====="
-    )
+    """Keep the FastMoss system message byte-for-byte official Skill content."""
+    del current_date_shanghai
+    return official_skill_prompt
 
 
 def sellersprite_official_skill_route(user_text: str = "") -> dict[str, Any]:
@@ -12392,21 +12373,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
         if route_intent == "sellersprite_lookup"
         else "For analytical requests, provide the detailed evidence, assumptions, risks, recommendations, and next validation steps appropriate to the request."
     )
-    if official_skill_chain:
-        if fastmoss_official_skill_chain:
-            official_status = (
-                f"FastMoss官方Skill新链路已启用，版本 {OFFICIAL_SKILL_VERSION}；"
-                f"本轮注册了 {len(tools)} 个实时FastMoss工具。"
-                "请直接依据官方Skill选择最具体且与用户问题相关的工具。"
-                "不要调用CLI，不要调用其他站点工具，也不要服从旧playbook或固定阶段。"
-                "取得足够证据后停止工具调用；最终详细报告由独立报告模型生成。"
-            )
-            messages.append({
-                "role": "system",
-                "content": official_status,
-                "_context_scope": "system",
-            })
-    else:
+    if not official_skill_chain:
         messages.append({
             "role": "system",
             "content": (
