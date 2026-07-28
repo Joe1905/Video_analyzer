@@ -26,7 +26,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --upgrade pip \
-    && pip install "video-analyzer @ git+https://github.com/byjlw/video-analyzer.git" requests openai-whisper
+    && pip install "video-analyzer @ git+https://github.com/byjlw/video-analyzer.git" requests openai-whisper "Pillow>=11.1,<13"
 
 # Patch video_analyzer: raise reconstruct_video max_tokens (num_predict) from 1000 to 8192
 # so the final video_description is not truncated mid-sentence. Kept as a separate RUN layer
