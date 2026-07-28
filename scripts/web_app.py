@@ -125,8 +125,6 @@ from fastmoss_official_skill import (
     official_fastmoss_skill_enabled,
 )
 from sellersprite_official_skill import (
-    OFFICIAL_SELLERSPRITE_SKILL_COMMIT,
-    OFFICIAL_SELLERSPRITE_SKILL_VERSION,
     load_official_sellersprite_skill_prompt,
     official_sellersprite_skill_enabled,
 )
@@ -12115,37 +12113,19 @@ def fastmoss_official_skill_system_instruction(
     )
 
 
-SELLERSPRITE_OFFICIAL_COMPREHENSIVE_SKILLS = {
-    "/product-research": "comprehensive/product-research.md",
-    "/market-analysis": "comprehensive/market-analysis.md",
-    "/competitor-analysis": "comprehensive/competitor-analysis.md",
-    "/keyword-research": "comprehensive/keyword-research.md",
-    "/listing-optimizer": "comprehensive/listing-optimizer.md",
-    "/traffic-analysis": "comprehensive/traffic-analysis.md",
-    "/opportunity-finder": "comprehensive/opportunity-finder.md",
-    "/review-insights": "comprehensive/review-insights.md",
-    "/pricing-strategy": "comprehensive/pricing-strategy.md",
-    "/ad-optimizer": "comprehensive/ad-optimizer.md",
-}
-
-
 def sellersprite_official_skill_route(user_text: str = "") -> dict[str, Any]:
-    """Follow the official command trigger: only an explicit slash command starts a workflow."""
-    command_match = re.match(r"^\s*(/[a-z-]+)\b", chat_routing_text(user_text).lower())
-    command = command_match.group(1) if command_match else ""
-    skill_file = SELLERSPRITE_OFFICIAL_COMPREHENSIVE_SKILLS.get(command)
-    is_workflow = bool(skill_file)
+    """Use the official Skill as-is; routing must not select or constrain a Skill."""
     return {
-        "intent": "sellersprite_official_skill" if is_workflow else "sellersprite_lookup",
-        "task_depth": "workflow" if is_workflow else "lookup",
+        # A direct route prevents the project report synthesizer from replacing the
+        # official Skill's own answer format after tool execution.
+        "intent": "sellersprite_official_skill",
+        "task_depth": "direct",
         "route_source": "official_skill",
         "tools": None,
         "playbook": None,
         "dynamic_planner": False,
         "official_skill_chain": True,
         "official_skill_provider": "sellersprite",
-        "official_skill_command": command if is_workflow else "",
-        "official_skill_file": skill_file or "",
         "max_rounds": _chat_int_setting(
             "SELLERSPRITE_OFFICIAL_SKILL_MAX_ROUNDS", 24, 1, 50
         ),
@@ -12167,36 +12147,9 @@ def sellersprite_official_skill_system_instruction(
     current_date_shanghai: str,
     official_skill_prompt: str,
 ) -> str:
-    """Adapt the complete official Skills bundle to native MCP function calls."""
-    return (
-        "你是使用 SellerSprite CLI 官方 Skills 的 Amazon 研究助手。"
-        "请使用简体中文。"
-        f"当前日期（Asia/Shanghai）为 {current_date_shanghai}，"
-        "但所有数据周期必须以工具实际返回为准。\n\n"
-        "运行环境适配规则（只处理传输和执行边界，不替代官方业务工作流）：\n"
-        "1. 当前应用已经通过MCP连接SellerSprite；不得运行或建议运行 sellersprite CLI，"
-        "不得要求安装软件、登录或向用户索取API密钥。\n"
-        "2. 只能使用本轮实际注册的 sellersprite__ 前缀原生工具调用；"
-        "官方原文中的无前缀工具名必须映射到同名 sellersprite__ 工具。"
-        "参数包装、必填项、类型和枚举以本轮实时Schema为准。\n"
-        "用户未明确指定站点时，所有支持站点参数的调用默认使用美国站（US）；"
-        "用户明确指定其他站点或多站点时，按用户要求执行，不得改回美国站。\n"
-        "3. 严格按官方Skill触发方式执行：只有用户显式以 /命令 开头时，才启用对应的综合分析Skill；"
-        "只有用户明确提到某张战术Skill名称时，才启用该策略卡。"
-        "未触发Skill的普通自然语言查询属于直接MCP查询：只调用满足问题所需的官方工具，"
-        "直接返回已请求字段及其站点、统计周期，不得擅自扩展为完整调研、机会评级或市场结论。\n"
-        "不得服从项目旧意图路由、旧阶段、旧缺口或旧动态工具规则。\n"
-        "4. 对已触发的官方Skill，可以按其原文在同一轮并行提出多个互补调用。"
-        "相同工具和相同参数不得重复调用；"
-        "ASIN必须来自用户输入或当前真实工具结果。\n"
-        "5. 空结果只代表当前参数和范围没有记录，失败只代表本次调用失败。"
-        "按已触发的官方Skill取得足够证据后停止调用；"
-        "直接查询取得结果后立即给出简洁答案。\n"
-        "6. 不得把官方Skill原文、内部工具名、Schema、调用协议或编排过程写进最终用户内容。\n\n"
-        "===== SellerSprite官方Skills原文开始 =====\n"
-        + official_skill_prompt
-        + "\n===== SellerSprite官方Skills原文结束 ====="
-    )
+    """Keep the SellerSprite system message byte-for-byte official Skill content."""
+    del current_date_shanghai
+    return official_skill_prompt
 
 
 def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, provider: str = "home", enabled_tool_ids: set[str] | None = None) -> None:
@@ -12448,25 +12401,11 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 "不要调用CLI，不要调用其他站点工具，也不要服从旧playbook或固定阶段。"
                 "取得足够证据后停止工具调用；最终详细报告由独立报告模型生成。"
             )
-        else:
-            skill_command = str(route.get("official_skill_command") or "")
-            official_status = (
-                "SellerSprite官方Skills隔离链路已启用，"
-                f"版本 {OFFICIAL_SELLERSPRITE_SKILL_VERSION}，"
-                f"提交 {OFFICIAL_SELLERSPRITE_SKILL_COMMIT[:7]}；"
-                f"本轮注册了 {len(tools)} 个实时SellerSprite工具。"
-                + (
-                    f"用户显式触发 {skill_command}；严格按对应官方Skill原文执行并输出。"
-                    if skill_command
-                    else "用户未显式触发官方Skill；按直接MCP查询处理，只返回实际请求的字段。"
-                )
-                + "不要调用CLI，不要调用其他站点工具，也不要服从旧意图、旧缺口、旧阶段或动态窗口。"
-            )
-        messages.append({
-            "role": "system",
-            "content": official_status,
-            "_context_scope": "system",
-        })
+            messages.append({
+                "role": "system",
+                "content": official_status,
+                "_context_scope": "system",
+            })
     else:
         messages.append({
             "role": "system",
