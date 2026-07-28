@@ -172,11 +172,19 @@ def test_sellersprite_official_skill_chain_loads_full_bundle_and_isolates_tools(
     for relative_name in OFFICIAL_SELLERSPRITE_PROMPT_FILES:
         assert f"官方文件：{relative_name}" in prompt
 
-    route = web_app.sellersprite_official_skill_route()
+    route = web_app.sellersprite_official_skill_route("/keyword-research flying toys")
     assert route["official_skill_chain"] is True
     assert route["official_skill_provider"] == "sellersprite"
     assert route["route_source"] == "official_skill"
     assert route["dynamic_planner"] is False
+    assert route["official_skill_command"] == "/keyword-research"
+    assert route["official_skill_file"] == "comprehensive/keyword-research.md"
+    assert web_app.chat_route_uses_report_model("amazon", route) is True
+    lookup_route = web_app.sellersprite_official_skill_route("查询 flying toys 关键词的月搜索量")
+    assert lookup_route["intent"] == "sellersprite_lookup"
+    assert lookup_route["task_depth"] == "lookup"
+    assert lookup_route["official_skill_command"] == ""
+    assert web_app.chat_route_uses_report_model("amazon", lookup_route) is False
     assert web_app.sellersprite_official_skill_tool_ids({
         "sellersprite__asin_detail",
         "fastmoss__product_search",
@@ -191,6 +199,7 @@ def test_sellersprite_official_skill_chain_loads_full_bundle_and_isolates_tools(
     assert "只能使用本轮实际注册的 sellersprite__ 前缀原生工具调用" in instruction
     assert "默认使用美国站（US）" in instruction
     assert "不得服从项目旧意图路由、旧阶段、旧缺口或旧动态工具规则" in instruction
+    assert "只有用户显式以 /命令 开头时" in instruction
     assert web_app.chat_max_tool_rounds("amazon", route, 43) == 24
     assert web_app.chat_route_uses_report_model("amazon", route) is True
 
@@ -1985,6 +1994,40 @@ def test_sellersprite_semantic_report_and_pro_synthesis() -> None:
     assert "# 亚马逊调研证据" in payload["messages"][1]["content"]
     assert "--- Semantic 证据开始 ---" in payload["messages"][1]["content"]
     assert web_app.append_sellersprite_report_notice(report, route) == report
+
+    official_route = {
+        **route,
+        "official_skill_chain": True,
+        "official_skill_file": "comprehensive/keyword-research.md",
+    }
+    official_prompt = (
+        "## 官方文件：SKILL.md\n\nmetadata"
+        "\n\n## 官方文件：comprehensive/keyword-research.md\n\n"
+        "# 官方关键词研究格式\n\n使用官方表格。"
+    )
+    web_app.synthesize_sellersprite_report_from_packet(
+        message,
+        "/keyword-research stroller fan",
+        official_route,
+        requests,
+        "test-key",
+        "https://example.invalid/v1",
+        "deepseek-v4-pro-test",
+        official_prompt,
+    )
+    assert "# 官方关键词研究格式" in requests.payloads[-1]["messages"][0]["content"]
+
+    direct = web_app.complete_sellersprite_answer(
+        "美国站关键词 stroller fan 的月搜索量为 12345。",
+        message,
+        "查询 stroller fan 月搜索量",
+        web_app.sellersprite_official_skill_route("查询 stroller fan 月搜索量"),
+        requests,
+        "test-key",
+        "https://example.invalid/v1",
+        "deepseek-v4-pro-test",
+    )
+    assert direct == "美国站关键词 stroller fan 的月搜索量为 12345。"
 
     class FailedRequests:
         def post(self, _url: str, **_kwargs):

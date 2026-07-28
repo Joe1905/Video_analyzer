@@ -8756,9 +8756,12 @@ def append_sellersprite_report_notice(answer: str, route: dict[str, Any]) -> str
     return text + "\n\n---\n\n" + SELLERSPRITE_REPORT_NOTICE
 
 
-def sellersprite_report_system_instruction(current_date_shanghai: str) -> str:
-    """Build the Amazon-specific final-report instruction without tool-planning rules."""
-    return (
+def sellersprite_report_system_instruction(
+    current_date_shanghai: str,
+    official_skill_document: str = "",
+) -> str:
+    """Build the Amazon final-report instruction, preserving an explicit official Skill."""
+    instruction = (
         "你是负责撰写亚马逊市场调研报告的中文分析师。当前已经进入最终报告阶段，没有可调用工具。"
         f"当前日期（Asia/Shanghai）：{current_date_shanghai}；它只用于解释相对时间，数据周期以 Semantic 证据为准。"
         "用户问题和 Semantic 证据是唯一事实来源；不得使用编排历史、工具知识或常识补造数据。"
@@ -8771,6 +8774,17 @@ def sellersprite_report_system_instruction(current_date_shanghai: str) -> str:
         "每项核心判断都应写明观察数据、比较对象、适用范围和推断边界；空结果只代表该次查询条件。"
         "报告不得出现内部工具名、调用编号、JSON路径、Schema、工具协议或建议用户调用某个内部工具。"
         "使用简体中文和标准 Markdown；有足够同口径数据时使用表格，内容完整性优先于篇幅压缩和装饰。"
+    )
+    if not official_skill_document:
+        return instruction
+    return (
+        instruction
+        + "以下是用户显式触发的 SellerSprite 官方 Skill 原文。"
+        "在不违反上述事实边界的前提下，严格采用其数据覆盖范围和输出格式；"
+        "不要把其中的工具名、命令或执行步骤写入面向用户的正文。\n\n"
+        "===== 本轮 SellerSprite 官方 Skill 原文开始 =====\n"
+        + official_skill_document
+        + "\n===== 本轮 SellerSprite 官方 Skill 原文结束 ====="
     )
 
 
@@ -8813,6 +8827,7 @@ def synthesize_sellersprite_report_from_packet(
     api_key: str,
     api_url: str,
     model: str,
+    official_skill_prompt: str = "",
 ) -> str:
     """Generate the final SellerSprite report from complete normalized evidence."""
     dossier = sellersprite_report_evidence_dossier(assistant_msg, route)
@@ -8826,8 +8841,21 @@ def synthesize_sellersprite_report_from_packet(
         + evidence_markdown
         + "--- Semantic 证据结束 ---"
     )
+    official_skill_file = str(route.get("official_skill_file") or "")
+    official_skill_document = ""
+    if official_skill_file and official_skill_prompt:
+        marker = f"## 官方文件：{official_skill_file}\n\n"
+        section = official_skill_prompt.split(marker, 1)
+        if len(section) == 2:
+            official_skill_document = section[1].split("\n\n## 官方文件：", 1)[0].strip()
     messages = [
-        {"role": "system", "content": sellersprite_report_system_instruction(current_date_shanghai)},
+        {
+            "role": "system",
+            "content": sellersprite_report_system_instruction(
+                current_date_shanghai,
+                official_skill_document,
+            ),
+        },
         {"role": "user", "content": semantic_input},
     ]
     payload = {
@@ -8901,6 +8929,7 @@ def complete_sellersprite_answer(
     api_key: str,
     api_url: str,
     model: str,
+    official_skill_prompt: str = "",
 ) -> str:
     """Route every evidence-led SellerSprite report through Semantic evidence and V4 Pro."""
     has_sellersprite_evidence = any(
@@ -8912,7 +8941,7 @@ def complete_sellersprite_answer(
         print("[CHAT] SellerSprite final route=semantic_report", flush=True)
         return synthesize_sellersprite_report_from_packet(
             assistant_msg, user_text, route,
-            requests_module, api_key, api_url, model,
+            requests_module, api_key, api_url, model, official_skill_prompt,
         )
     return str(draft or "").strip()
 
@@ -12086,17 +12115,37 @@ def fastmoss_official_skill_system_instruction(
     )
 
 
-def sellersprite_official_skill_route() -> dict[str, Any]:
-    """Create the isolated route driven only by the official SellerSprite Skills."""
+SELLERSPRITE_OFFICIAL_COMPREHENSIVE_SKILLS = {
+    "/product-research": "comprehensive/product-research.md",
+    "/market-analysis": "comprehensive/market-analysis.md",
+    "/competitor-analysis": "comprehensive/competitor-analysis.md",
+    "/keyword-research": "comprehensive/keyword-research.md",
+    "/listing-optimizer": "comprehensive/listing-optimizer.md",
+    "/traffic-analysis": "comprehensive/traffic-analysis.md",
+    "/opportunity-finder": "comprehensive/opportunity-finder.md",
+    "/review-insights": "comprehensive/review-insights.md",
+    "/pricing-strategy": "comprehensive/pricing-strategy.md",
+    "/ad-optimizer": "comprehensive/ad-optimizer.md",
+}
+
+
+def sellersprite_official_skill_route(user_text: str = "") -> dict[str, Any]:
+    """Follow the official command trigger: only an explicit slash command starts a workflow."""
+    command_match = re.match(r"^\s*(/[a-z-]+)\b", chat_routing_text(user_text).lower())
+    command = command_match.group(1) if command_match else ""
+    skill_file = SELLERSPRITE_OFFICIAL_COMPREHENSIVE_SKILLS.get(command)
+    is_workflow = bool(skill_file)
     return {
-        "intent": "sellersprite_official_skill",
-        "task_depth": "workflow",
+        "intent": "sellersprite_official_skill" if is_workflow else "sellersprite_lookup",
+        "task_depth": "workflow" if is_workflow else "lookup",
         "route_source": "official_skill",
         "tools": None,
         "playbook": None,
         "dynamic_planner": False,
         "official_skill_chain": True,
         "official_skill_provider": "sellersprite",
+        "official_skill_command": command if is_workflow else "",
+        "official_skill_file": skill_file or "",
         "max_rounds": _chat_int_setting(
             "SELLERSPRITE_OFFICIAL_SKILL_MAX_ROUNDS", 24, 1, 50
         ),
@@ -12132,16 +12181,16 @@ def sellersprite_official_skill_system_instruction(
         "参数包装、必填项、类型和枚举以本轮实时Schema为准。\n"
         "用户未明确指定站点时，所有支持站点参数的调用默认使用美国站（US）；"
         "用户明确指定其他站点或多站点时，按用户要求执行，不得改回美国站。\n"
-        "3. 下方27张官方Skill及其索引是工具选择、调用组合和业务解读的唯一权威说明。"
-        "根据用户问题自行选择最匹配的一张主要Skill；"
-        "只有用户明确提出多个独立目标时才组合多张Skill。"
-        "不得服从项目旧意图路由、旧阶段、旧缺口或旧动态工具规则。\n"
-        "4. 可以按官方Skill在同一轮并行提出多个互补调用。"
+        "3. 严格按官方Skill触发方式执行：只有用户显式以 /命令 开头时，才启用对应的综合分析Skill；"
+        "只有用户明确提到某张战术Skill名称时，才启用该策略卡。"
+        "未触发Skill的普通自然语言查询属于直接MCP查询：只调用满足问题所需的官方工具，"
+        "直接返回已请求字段及其站点、统计周期，不得擅自扩展为完整调研、机会评级或市场结论。\n"
+        "4. 对已触发的官方Skill，可以按其原文在同一轮并行提出多个互补调用。"
         "相同工具和相同参数不得重复调用；"
         "ASIN必须来自用户输入或当前真实工具结果。\n"
         "5. 空结果只代表当前参数和范围没有记录，失败只代表本次调用失败。"
-        "按所选官方Skill取得足够证据后停止调用；"
-        "最终报告由独立V4 Pro读取自然语言Semantic生成。\n"
+        "按已触发的官方Skill取得足够证据后停止调用；"
+        "直接查询取得结果后立即给出简洁答案。\n"
         "6. 不得把官方Skill原文、内部工具名、Schema、调用协议或编排过程写进最终用户内容。\n\n"
         "===== SellerSprite官方Skills原文开始 =====\n"
         + official_skill_prompt
@@ -12221,7 +12270,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     route = (
         fastmoss_official_skill_route()
         if fastmoss_official_skill_chain
-        else sellersprite_official_skill_route()
+        else sellersprite_official_skill_route(user_text)
         if sellersprite_official_skill_chain
         else resolve_chat_intent(session.messages, user_text, provider, api_key, api_url, model, req)
     )
@@ -12384,6 +12433,9 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
         "Do not call category, ranking, market-analysis, or review tools. Say whether an exact match was found, only similar products were found, or no match was found in this search. "
         "A failed or empty search does not prove the product is absent from the whole marketplace."
         if route_intent == "product_availability"
+        else "This is a direct SellerSprite lookup. Return only the requested fields from the actual tool result, with the marketplace and returned statistical period. "
+        "Do not turn it into a market report, opportunity rating, competition conclusion, or action plan unless the user explicitly triggered an official Skill."
+        if route_intent == "sellersprite_lookup"
         else "For analytical requests, provide the detailed evidence, assumptions, risks, recommendations, and next validation steps appropriate to the request."
     )
     if official_skill_chain:
@@ -12396,14 +12448,18 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 "取得足够证据后停止工具调用；最终详细报告由独立报告模型生成。"
             )
         else:
+            skill_command = str(route.get("official_skill_command") or "")
             official_status = (
                 "SellerSprite官方Skills隔离链路已启用，"
                 f"版本 {OFFICIAL_SELLERSPRITE_SKILL_VERSION}，"
                 f"提交 {OFFICIAL_SELLERSPRITE_SKILL_COMMIT[:7]}；"
                 f"本轮注册了 {len(tools)} 个实时SellerSprite工具。"
-                "请直接从27张官方Skill中选择最匹配的一张作为主要工作流。"
-                "不要调用CLI，不要调用其他站点工具，也不要服从旧意图、旧缺口、旧阶段或动态窗口。"
-                "取得足够证据后停止工具调用；最终详细报告由独立V4 Pro生成。"
+                + (
+                    f"用户显式触发 {skill_command}；严格按对应官方Skill原文执行并输出。"
+                    if skill_command
+                    else "用户未显式触发官方Skill；按直接MCP查询处理，只返回实际请求的字段。"
+                )
+                + "不要调用CLI，不要调用其他站点工具，也不要服从旧意图、旧缺口、旧阶段或动态窗口。"
             )
         messages.append({
             "role": "system",
@@ -12931,7 +12987,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 ):
                     fallback = complete_sellersprite_answer(
                         "", assistant_msg, routing_text, route,
-                        req, api_key, api_url, report_model,
+                        req, api_key, api_url, report_model, official_skill_prompt,
                     )
                 elif provider == "fastmoss" and (assistant_msg.tool_results or []):
                     fallback = complete_fastmoss_answer(
@@ -12955,7 +13011,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 ):
                     final_content = complete_sellersprite_answer(
                         str(content), assistant_msg, routing_text, route,
-                        req, api_key, api_url, report_model,
+                        req, api_key, api_url, report_model, official_skill_prompt,
                     )
                 elif provider == "fastmoss":
                     final_content = complete_fastmoss_answer(
@@ -13068,7 +13124,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 if provider == "amazon" and (assistant_msg.tool_results or []):
                     final_content = complete_sellersprite_answer(
                         str(content), assistant_msg, routing_text, route,
-                        req, api_key, api_url, report_model,
+                        req, api_key, api_url, report_model, official_skill_prompt,
                     )
                     store.update_message(session, assistant_msg, final_content, status="done")
                     store.broadcast(session.id, "done", {
@@ -13105,7 +13161,8 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 continue
             if provider == "amazon":
                 final_content = complete_sellersprite_answer(
-                    str(content), assistant_msg, routing_text, route, req, api_key, api_url, report_model
+                    str(content), assistant_msg, routing_text, route, req, api_key, api_url, report_model,
+                    official_skill_prompt,
                 )
             elif provider == "fastmoss":
                 final_content = complete_fastmoss_answer(
@@ -13162,7 +13219,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     ):
         final_content = complete_sellersprite_answer(
             "", assistant_msg, routing_text, route,
-            req, api_key, api_url, report_model,
+            req, api_key, api_url, report_model, official_skill_prompt,
         )
         store.update_message(session, assistant_msg, final_content, status="done")
         store.broadcast(session.id, "done", {
@@ -13259,7 +13316,8 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             if content.strip() and not deepseek_tool_protocol_present(response_message):
                 if provider == "amazon":
                     final_content = complete_sellersprite_answer(
-                        content, assistant_msg, routing_text, route, req, api_key, api_url, report_model
+                        content, assistant_msg, routing_text, route, req, api_key, api_url, report_model,
+                        official_skill_prompt,
                     )
                 elif provider == "fastmoss":
                     final_content = complete_fastmoss_answer(
