@@ -5957,6 +5957,16 @@ def official_skill_chain_enabled_for_provider(provider: str) -> bool:
     return False
 
 
+def official_skill_market_default_instruction(provider: str) -> str:
+    """Return the user-selected marketplace default without adding workflow rules."""
+    provider = normalize_chat_provider(provider)
+    if provider == "fastmoss":
+        return "应用执行默认值：用户未指定地区时，对支持 region 参数的 FastMoss 工具使用 US。"
+    if provider == "amazon":
+        return "应用执行默认值：用户未指定站点时，对支持 marketplace 参数的 SellerSprite 工具使用 US。"
+    return ""
+
+
 def chat_tool_selection_enabled(provider: str) -> bool:
     """Official Skills require their complete provider tool catalog."""
     return not official_skill_chain_enabled_for_provider(provider)
@@ -12373,7 +12383,15 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
         if route_intent == "sellersprite_lookup"
         else "For analytical requests, provide the detailed evidence, assumptions, risks, recommendations, and next validation steps appropriate to the request."
     )
-    if not official_skill_chain:
+    if official_skill_chain:
+        market_default = official_skill_market_default_instruction(provider)
+        if market_default:
+            messages.append({
+                "role": "system",
+                "content": market_default,
+                "_context_scope": "system",
+            })
+    else:
         messages.append({
             "role": "system",
             "content": (

@@ -83,6 +83,9 @@ def test_fastmoss_official_skill_chain_loads_exact_package_and_isolates_tools() 
     assert route["dynamic_planner"] is False
     assert route["task_depth"] == "direct"
     assert web_app.chat_route_uses_report_model("fastmoss", route) is False
+    assert web_app.official_skill_market_default_instruction("fastmoss") == (
+        "应用执行默认值：用户未指定地区时，对支持 region 参数的 FastMoss 工具使用 US。"
+    )
     assert web_app.fastmoss_official_skill_tool_ids({
         "fastmoss__product_search",
         "sellersprite__product_research",
@@ -180,6 +183,9 @@ def test_sellersprite_official_skill_chain_loads_full_bundle_and_isolates_tools(
     lookup_route = web_app.sellersprite_official_skill_route("查询 flying toys 关键词的月搜索量")
     assert lookup_route == route
     assert web_app.chat_route_uses_report_model("amazon", lookup_route) is False
+    assert web_app.official_skill_market_default_instruction("amazon") == (
+        "应用执行默认值：用户未指定站点时，对支持 marketplace 参数的 SellerSprite 工具使用 US。"
+    )
     assert web_app.sellersprite_official_skill_tool_ids({
         "sellersprite__asin_detail",
         "fastmoss__product_search",
