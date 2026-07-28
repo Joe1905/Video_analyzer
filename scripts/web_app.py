@@ -14965,7 +14965,9 @@ class Handler(BaseHTTPRequestHandler):
                 environ={"REQUEST_METHOD": "POST", "CONTENT_TYPE": self.headers.get("Content-Type", "")},
             )
             tag = normalize_tag(form.getfirst("tag", ""))
-            images = [item for item in form.getlist("images") if getattr(item, "filename", "")]
+            raw_images = form["images"] if "images" in form else []
+            image_fields = raw_images if isinstance(raw_images, list) else [raw_images]
+            images = [item for item in image_fields if getattr(item, "filename", "")]
         except (ImageTagToolError, ValueError, TypeError) as exc:
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
