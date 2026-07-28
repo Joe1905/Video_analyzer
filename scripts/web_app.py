@@ -716,6 +716,20 @@ def image_tool_output_name(original_name: str, used_names: set[str]) -> str:
         number += 1
 
 
+def image_tool_archive_name(value: str) -> str:
+    raw_name = str(value or "").strip()
+    if raw_name.lower().endswith(".zip"):
+        raw_name = raw_name[:-4].strip()
+    if not raw_name:
+        raw_name = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if len(raw_name) > 120:
+        raise ValueError("压缩包名称不能超过 120 个字符")
+    cleaned = "".join(char for char in raw_name if ord(char) >= 32 and char not in '<>:"/\\|?*').strip(". ")
+    if not cleaned:
+        raise ValueError("压缩包名称无效")
+    return f"{cleaned}.zip"
+
+
 def validate_short_video_url(url: str) -> str:
     cleaned = url.strip()
     parsed = urlparse(cleaned)
@@ -14965,6 +14979,7 @@ class Handler(BaseHTTPRequestHandler):
                 environ={"REQUEST_METHOD": "POST", "CONTENT_TYPE": self.headers.get("Content-Type", "")},
             )
             tag = normalize_tag(form.getfirst("tag", ""))
+            archive_name = image_tool_archive_name(form.getfirst("archive_name", ""))
             raw_images = form["images"] if "images" in form else []
             image_fields = raw_images if isinstance(raw_images, list) else [raw_images]
             images = [item for item in image_fields if getattr(item, "filename", "")]
@@ -15000,7 +15015,7 @@ class Handler(BaseHTTPRequestHandler):
                     "failures": [{"filename": name, "reason": reason} for name, reason in failures],
                 })
 
-            zip_path = directory / "tagged_images.zip"
+            zip_path = directory / archive_name
             with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
                 for output_name, output_path in successes:
                     archive.write(output_path, output_name)
@@ -15011,7 +15026,10 @@ class Handler(BaseHTTPRequestHandler):
 
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/zip")
-            self.send_header("Content-Disposition", 'attachment; filename="tagged_images.zip"')
+            self.send_header(
+                "Content-Disposition",
+                f"attachment; filename=\"download.zip\"; filename*=UTF-8''{quote(archive_name)}",
+            )
             self.send_header("Content-Length", str(zip_path.stat().st_size))
             self.send_header("X-Tool-Succeeded", str(len(successes)))
             self.send_header("X-Tool-Failed", str(len(failures)))
