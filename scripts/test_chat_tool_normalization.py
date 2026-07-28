@@ -81,6 +81,8 @@ def test_fastmoss_official_skill_chain_loads_exact_package_and_isolates_tools() 
     assert route["official_skill_chain"] is True
     assert route["route_source"] == "official_skill"
     assert route["dynamic_planner"] is False
+    assert route["task_depth"] == "direct"
+    assert web_app.chat_route_uses_report_model("fastmoss", route) is False
     assert web_app.fastmoss_official_skill_tool_ids({
         "fastmoss__product_search",
         "sellersprite__product_research",
@@ -112,12 +114,7 @@ def test_fastmoss_official_skill_chain_loads_exact_package_and_isolates_tools() 
         "2026-07-27",
         prompt,
     )
-    assert "FastMoss官方Skill原文开始" in instruction
-    assert "official-marker-0" in instruction
-    assert "不得运行或建议运行 fastmoss CLI" in instruction
-    assert "只能使用本轮实际注册的 fastmoss__ 前缀原生工具调用" in instruction
-    assert "默认使用美国站（US）" in instruction
-    assert "普通市场分析不得为此调用辅助工具" in instruction
+    assert instruction == prompt
 
     evidence = SimpleNamespace(tool_calls=[], tool_results=[{
         "tool_name": "fastmoss__product_search",
@@ -4015,6 +4012,15 @@ def test_fastmoss_analytical_answers_use_single_semantic_report_path() -> None:
         )
         assert direct == "direct: direct answer"
         assert calls == ["direct"]
+
+        calls.clear()
+        official = web_app.complete_fastmoss_answer(
+            "official answer", message, "分析美区美妆市场",
+            web_app.fastmoss_official_skill_route(),
+            object(), "key", "https://example.invalid/v1", "deepseek-v4-pro-test",
+        )
+        assert official == "official answer"
+        assert calls == []
     finally:
         web_app.synthesize_fastmoss_report_from_packet = original_synthesize
         web_app.finalize_fastmoss_answer = original_finalize
