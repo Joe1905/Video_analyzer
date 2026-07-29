@@ -1395,12 +1395,16 @@
   body.ui-route-proxy .work {
     height: 100%;
     min-width: 0;
-    grid-template-columns: minmax(190px, 200px) minmax(210px, 220px) minmax(0, 1fr);
+    grid-template-columns: 210px 210px minmax(0, 1fr);
     gap: 14px;
   }
 
   body.ui-route-proxy table {
     min-width: 0;
+  }
+
+  body.ui-route-proxy .work > .panel:last-child > .body {
+    padding-inline: 0;
   }
 
   body.ui-route-proxy .panel {
