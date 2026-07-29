@@ -198,3 +198,164 @@ body.ui-system .modal.show .dialog, body.ui-system .modal-backdrop.show .modal, 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: .01ms !important; }
 }
+
+/* --------------------------------------------------------------------------
+   V2 页面重构：从“统一覆层”升级为真实工作台结构。
+   下面均基于既有页面 class，不改变 DOM ID 与任何业务事件。
+   -------------------------------------------------------------------------- */
+body.ui-system { background: #f3f5f8 !important; }
+body.ui-system header { height: 72px !important; min-height: 72px !important; }
+body.ui-system header h1 { display: flex; align-items: baseline; gap: 8px; }
+body.ui-system .header-product { font-weight: 780; }
+body.ui-system .header-view { color: var(--ui-ink-subtle); font-size: 12px; font-weight: 650; letter-spacing: .02em; }
+
+/* 首页、Amazon、FastMoss：独立业务工作台而非旧式全宽聊天。 */
+body.ui-route-home header .header-brand,
+body.ui-route-amazon header .header-brand,
+body.ui-route-fastmoss header .header-brand { display: flex; align-items: center; gap: 12px; }
+body.ui-route-home header .header-brand::before,
+body.ui-route-amazon header .header-brand::before,
+body.ui-route-fastmoss header .header-brand::before {
+  content: ""; width: 30px; height: 30px; border-radius: 10px; flex: 0 0 30px;
+  background: linear-gradient(135deg, #304fca, #7d91ef);
+  box-shadow: 0 8px 18px rgba(47,82,209,.25);
+}
+body.ui-route-home header .header-brand::after,
+body.ui-route-amazon header .header-brand::after,
+body.ui-route-fastmoss header .header-brand::after {
+  content: ""; position: absolute; width: 10px; height: 10px; margin-left: 10px;
+  border: 2px solid #fff; border-radius: 4px; transform: rotate(45deg); pointer-events: none;
+}
+body.ui-route-amazon { --ui-brand: #1f7a65; --ui-brand-hover: #176451; --ui-brand-soft: #eaf7f2; }
+body.ui-route-fastmoss { --ui-brand: #6a4bc9; --ui-brand-hover: #563bae; --ui-brand-soft: #f1edff; }
+body.ui-route-amazon header .header-brand::before { background: linear-gradient(135deg, #187862, #71bda4); box-shadow: 0 8px 18px rgba(24,120,98,.22); }
+body.ui-route-fastmoss header .header-brand::before { background: linear-gradient(135deg, #6647c4, #a28ce7); box-shadow: 0 8px 18px rgba(102,71,196,.22); }
+body.ui-route-home .chat-shell,
+body.ui-route-amazon .chat-shell,
+body.ui-route-fastmoss .chat-shell {
+  height: calc(100dvh - 72px) !important; padding: 16px; gap: 16px;
+  grid-template-columns: 292px minmax(0,1fr) !important; background: transparent;
+}
+body.ui-route-home .sidebar,
+body.ui-route-amazon .sidebar,
+body.ui-route-fastmoss .sidebar {
+  border: 1px solid var(--ui-line) !important; border-radius: 20px !important;
+  box-shadow: var(--ui-shadow-sm); overflow: hidden;
+}
+body.ui-route-home .sidebar-head,
+body.ui-route-amazon .sidebar-head,
+body.ui-route-fastmoss .sidebar-head { padding: 14px !important; background: #fff; }
+body.ui-route-home #newSession,
+body.ui-route-amazon #newSession,
+body.ui-route-fastmoss #newSession { min-height: 44px; border-radius: 12px !important; font-weight: 760; }
+body.ui-route-home .session-list,
+body.ui-route-amazon .session-list,
+body.ui-route-fastmoss .session-list { padding: 8px; background: #fff; }
+body.ui-route-home .session-item,
+body.ui-route-amazon .session-item,
+body.ui-route-fastmoss .session-item { border: 0 !important; border-radius: 12px; margin-bottom: 3px; padding: 11px 12px !important; }
+body.ui-route-home .session-item.active,
+body.ui-route-amazon .session-item.active,
+body.ui-route-fastmoss .session-item.active { border-left: 0 !important; padding-left: 12px !important; }
+body.ui-route-home .chat-main,
+body.ui-route-amazon .chat-main,
+body.ui-route-fastmoss .chat-main { gap: 14px; }
+body.ui-route-home .messages,
+body.ui-route-amazon .messages,
+body.ui-route-fastmoss .messages {
+  padding: clamp(24px,4vw,56px) !important; background: rgba(255,255,255,.86) !important;
+  border: 1px solid var(--ui-line); border-radius: 22px; box-shadow: var(--ui-shadow-sm);
+}
+body.ui-route-home .empty-chat,
+body.ui-route-amazon .empty-chat,
+body.ui-route-fastmoss .empty-chat { gap: 14px; color: var(--ui-ink); }
+body.ui-route-home .empty-chat::before,
+body.ui-route-amazon .empty-chat::before,
+body.ui-route-fastmoss .empty-chat::before {
+  content: ""; width: 52px; height: 52px; border-radius: 18px;
+  background: linear-gradient(135deg, var(--ui-brand-soft), #fff); border: 1px solid color-mix(in srgb, var(--ui-brand) 18%, #fff);
+  box-shadow: 0 12px 28px color-mix(in srgb, var(--ui-brand) 12%, transparent); position: relative;
+}
+body.ui-route-home .empty-chat::after,
+body.ui-route-amazon .empty-chat::after,
+body.ui-route-fastmoss .empty-chat::after { content: ""; width: 14px; height: 14px; margin-top: -49px; border-radius: 5px; background: var(--ui-brand); transform: rotate(45deg); }
+body.ui-route-home .empty-chat b,
+body.ui-route-amazon .empty-chat b,
+body.ui-route-fastmoss .empty-chat b { margin-top: 22px; font-size: 20px; letter-spacing: -.025em; }
+body.ui-route-home .empty-chat span,
+body.ui-route-amazon .empty-chat span,
+body.ui-route-fastmoss .empty-chat span { display: none; }
+body.ui-route-home .input-bar,
+body.ui-route-amazon .input-bar,
+body.ui-route-fastmoss .input-bar {
+  padding: 10px 12px !important; border: 1px solid var(--ui-line) !important;
+  border-radius: 18px !important; background: #fff !important; box-shadow: 0 12px 28px rgba(16,24,40,.06);
+}
+body.ui-route-home .input-bar textarea,
+body.ui-route-amazon .input-bar textarea,
+body.ui-route-fastmoss .input-bar textarea { border: 0 !important; background: transparent !important; box-shadow: none !important; }
+body.ui-route-home .tool-button,
+body.ui-route-amazon .tool-button,
+body.ui-route-fastmoss .tool-button { border-radius: 11px !important; }
+
+/* 邻聊：三栏从边缘铺满改为留白工作台，频道、成员和输入各自成为清晰层级。 */
+body.ui-route-lan-chat .app-header { height: 72px !important; min-height: 72px !important; }
+body.ui-route-lan-chat .shell {
+  height: calc(100dvh - 104px) !important; margin: 16px; border: 1px solid var(--ui-line);
+  border-radius: 22px; overflow: hidden; background: #fff; box-shadow: var(--ui-shadow);
+}
+body.ui-route-lan-chat .rail { background: #fff !important; }
+body.ui-route-lan-chat .left-rail { border-right: 1px solid var(--ui-line) !important; }
+body.ui-route-lan-chat .right-rail { border-left: 1px solid var(--ui-line) !important; }
+body.ui-route-lan-chat .profile-card { margin: 10px; padding: 12px !important; border: 1px solid var(--ui-line); border-radius: 16px; background: #fafbfc; }
+body.ui-route-lan-chat .section { margin: 10px 10px 14px; }
+body.ui-route-lan-chat .section-head { padding: 0 2px 8px !important; }
+body.ui-route-lan-chat .room-item { border-radius: 12px !important; margin-bottom: 3px; }
+body.ui-route-lan-chat .chat { background: #f7f8fa !important; }
+body.ui-route-lan-chat .messages { padding: 36px clamp(24px,4vw,64px) !important; }
+body.ui-route-lan-chat .welcome { background: transparent !important; box-shadow: none !important; }
+body.ui-route-lan-chat .welcome-mark { box-shadow: 0 14px 30px rgba(231,111,81,.18); }
+body.ui-route-lan-chat .composer-wrap { padding: 14px 22px 18px !important; background: transparent !important; border: 0 !important; }
+body.ui-route-lan-chat .composer { border: 1px solid var(--ui-line); border-radius: 18px; background: #fff; box-shadow: 0 12px 26px rgba(16,24,40,.06); }
+body.ui-route-lan-chat .composer-row { padding: 1px !important; }
+body.ui-route-lan-chat .send-button { min-height: 42px; border-radius: 13px !important; }
+body.ui-route-lan-chat .right-title { padding: 20px 18px 14px !important; }
+body.ui-route-lan-chat .member-search { padding: 0 14px 12px !important; }
+
+/* 日报、播放器、数据页：明确内容层和操作层，减少“灰色大表单”的旧感。 */
+body.ui-route-report .layout { max-width: 1560px !important; padding: 20px !important; gap: 18px !important; }
+body.ui-route-report .panel { border-radius: 20px !important; box-shadow: var(--ui-shadow-sm) !important; }
+body.ui-route-report .hero { padding: 24px !important; background: linear-gradient(135deg, #fff 0%, #eef2ff 100%) !important; }
+body.ui-route-report .hero h2 { font-size: 26px !important; }
+body.ui-route-report .settings, body.ui-route-report .progress-panel { border-radius: 18px !important; }
+body.ui-route-report .history, body.ui-route-report .video-side { background: #fff; border-radius: 20px; }
+body.ui-route-report-player .layout { padding: 20px !important; gap: 18px !important; background: #f3f5f8; }
+body.ui-route-report-player .panel { border-radius: 20px !important; }
+body.ui-route-report-player .video-wrap { padding: 22px !important; background: #111827 !important; }
+body.ui-route-report-player .section-head { background: #fff !important; }
+body.ui-route-report-player .current-card { border-left-width: 3px !important; }
+
+/* Shop、数据、分析、图片工具、Proxy：真实表格/表单工作区，不再把页面当作一张裸表。 */
+body.ui-route-shop .app-shell, body.ui-route-metrics main, body.ui-route-extract .main-shell, body.ui-route-tool main,
+body.ui-route-proxy main { padding: 16px !important; gap: 16px !important; background: transparent !important; }
+body.ui-route-shop .side-panel, body.ui-route-metrics .side, body.ui-route-extract .left-panel,
+body.ui-route-proxy .panel { border: 1px solid var(--ui-line) !important; border-radius: 20px !important; box-shadow: var(--ui-shadow-sm) !important; }
+body.ui-route-shop .workspace, body.ui-route-metrics .workspace, body.ui-route-extract .right-panel,
+body.ui-route-tool .workspace { border-radius: 20px; overflow: hidden; }
+body.ui-route-shop .workspace-header, body.ui-route-metrics .workspace .head { background: #fff !important; border: 1px solid var(--ui-line) !important; border-bottom: 0 !important; }
+body.ui-route-proxy .work { gap: 16px !important; }
+body.ui-route-proxy .head { padding: 16px 18px !important; background: #fff !important; }
+body.ui-route-proxy .body { background: #fff !important; }
+body.ui-route-proxy table { min-width: 680px; }
+body.ui-route-proxy .account-icon-btn { border-radius: 10px !important; }
+
+@media (max-width: 800px) {
+  body.ui-system header { height: 60px !important; min-height: 60px !important; }
+  body.ui-route-home .chat-shell, body.ui-route-amazon .chat-shell, body.ui-route-fastmoss .chat-shell { height: calc(100dvh - 60px) !important; padding: 0; gap: 0; }
+  body.ui-route-home .chat-main, body.ui-route-amazon .chat-main, body.ui-route-fastmoss .chat-main { gap: 0; }
+  body.ui-route-home .messages, body.ui-route-amazon .messages, body.ui-route-fastmoss .messages { border: 0; border-radius: 0; box-shadow: none; }
+  body.ui-route-home .input-bar, body.ui-route-amazon .input-bar, body.ui-route-fastmoss .input-bar { margin: 0 8px 8px; border-radius: 16px !important; }
+  body.ui-route-lan-chat .shell { height: calc(100dvh - 60px) !important; margin: 0; border: 0; border-radius: 0; box-shadow: none; }
+  body.ui-route-lan-chat .composer-wrap { padding: 8px 10px max(10px, env(safe-area-inset-bottom)) !important; }
+  body.ui-route-report .layout, body.ui-route-report-player .layout { padding: 12px !important; }
+}
