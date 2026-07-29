@@ -21,19 +21,28 @@ if [[ ! -f "$env_file" ]]; then
   exit 2
 fi
 
-if ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>&1; then
-  echo "Docker Compose v2 is required." >&2
+if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+  compose=(docker compose)
+  legacy_compose=0
+elif command -v docker-compose >/dev/null 2>&1; then
+  compose=(docker-compose)
+  legacy_compose=1
+else
+  echo "Docker Compose is required." >&2
   exit 127
 fi
 
 mkdir -p data-dev videos-dev output-dev data-dev/sing-box data-dev/mcp_tool_cache_shared
 
-compose=(docker compose -p "$project_name" --env-file "$env_file" -f docker-compose.yml -f docker-compose.ui-4004.yml)
+compose_args=(-p "$project_name" --env-file "$env_file" -f docker-compose.yml -f docker-compose.ui-4004.yml)
 echo "Building $image_name for isolated 4004 preview..."
 docker build --network host -t "$image_name" .
 
 echo "Starting only the isolated 4004 web service..."
-"${compose[@]}" up -d --no-deps --no-build web
+if (( legacy_compose )); then
+  "${compose[@]}" "${compose_args[@]}" rm -s -f web >/dev/null 2>&1 || true
+fi
+"${compose[@]}" "${compose_args[@]}" up -d --no-deps --no-build web
 
 health_url="http://127.0.0.1:${web_port}/healthz"
 for attempt in $(seq 1 45); do
@@ -45,5 +54,5 @@ for attempt in $(seq 1 45); do
 done
 
 echo "UI 4004 did not become healthy." >&2
-"${compose[@]}" ps web >&2 || true
+"${compose[@]}" "${compose_args[@]}" ps web >&2 || true
 exit 1
