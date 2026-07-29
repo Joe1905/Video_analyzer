@@ -80,6 +80,7 @@ def audit(data_dir: Path, read_only: bool = False) -> dict[str, Any]:
     file_dir = data_dir / "lan_chat_files"
     now = time.time()
     with _connect(_db_path(data_dir), read_only=read_only) as conn:
+        conn.row_factory = sqlite3.Row
         integrity = [str(row[0]) for row in conn.execute("PRAGMA integrity_check")]
         foreign_keys = [list(row) for row in conn.execute("PRAGMA foreign_key_check")]
         expired_media = int(conn.execute(

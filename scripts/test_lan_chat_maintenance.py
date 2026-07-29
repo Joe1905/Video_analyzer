@@ -30,6 +30,14 @@ class LanChatMaintenanceTest(unittest.TestCase):
             BytesIO(payload),
             client_upload_id="maintenance_upload_abcdefghijkl",
         )
+        self.file_message, _ = self.store.send_file(
+            self.sender["sessionToken"],
+            "public",
+            "evidence.txt",
+            "text/plain",
+            BytesIO(b"maintenance-file"),
+            client_upload_id="maintenance_file_abcdefghijkl",
+        )
 
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
@@ -38,6 +46,7 @@ class LanChatMaintenanceTest(unittest.TestCase):
         target = self.root / "development-snapshot"
         report = snapshot(self.source, target, sanitize_auth=True)
         self.assertTrue(report["healthy"])
+        self.assertEqual(report["activeFileCount"], 1)
         copied = LanChatStore(target / "lan_chat.sqlite")
         with self.assertRaises(Exception):
             copied.authenticate(self.sender["sessionToken"])
