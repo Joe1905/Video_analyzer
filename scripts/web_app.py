@@ -736,7 +736,7 @@ def public_chat_session_summary(provider: str, summary: dict[str, Any]) -> dict[
         out = dict(summary)
         out["id"] = sid.removeprefix(prefix)
         return out
-    if provider == "home" and "__" not in sid:
+    if "__" not in sid:
         return dict(summary)
     return None
 
