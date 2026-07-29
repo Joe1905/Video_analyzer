@@ -151,7 +151,7 @@
     min-width: 0;
     height: var(--ui-header-height);
     min-height: var(--ui-header-height);
-    padding: 0 clamp(16px, 2vw, 28px);
+    padding: 0 14px;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -313,28 +313,27 @@
     transition: width var(--ui-nav-speed) var(--ui-ease), min-width var(--ui-nav-speed) var(--ui-ease);
   }
 
-  .ui-nav::before {
-    content: "";
+  .ui-nav__brand {
     width: 44px;
     height: 44px;
     flex: 0 0 44px;
-    margin: 0 0 12px;
+    margin-bottom: 12px;
+    display: grid;
+    place-items: center;
     border-radius: 14px;
     background: var(--ui-brand);
+    color: #fff;
     box-shadow: 0 10px 24px rgba(49, 92, 255, .26);
+    text-decoration: none;
   }
 
-  .ui-nav::after {
-    content: "";
-    position: absolute;
-    top: 31px;
-    left: 31px;
-    width: 0;
-    height: 0;
-    border-top: 7px solid transparent;
-    border-bottom: 7px solid transparent;
-    border-left: 11px solid #fff;
-    pointer-events: none;
+  .ui-nav__brand svg {
+    width: 24px;
+    height: 24px;
+    display: block;
+    fill: currentColor;
+    stroke: none;
+    transform: translateX(1px);
   }
 
   .ui-nav__toggle,
@@ -454,12 +453,6 @@
     color: var(--ui-brand);
   }
 
-  body.ui-route-home .ui-header,
-  body.ui-route-amazon .ui-header,
-  body.ui-route-fastmoss .ui-header {
-    padding-inline: 14px;
-  }
-
   .ui-page-heading__icon svg,
   .source-page-icon svg,
   .chat-page-icon svg {
@@ -470,15 +463,6 @@
     stroke-width: 1.75;
     stroke-linecap: round;
     stroke-linejoin: round;
-  }
-
-  .ui-page-heading__icon:empty::before {
-    width: 18px;
-    height: 14px;
-    content: "";
-    border: 1.8px solid currentColor;
-    border-radius: 5px;
-    box-shadow: 5px -5px 0 -2px var(--ui-brand-soft), 5px -5px 0 -0.2px currentColor;
   }
 
   .ui-page-heading__copy,
@@ -1245,7 +1229,7 @@
   }
 
   body.ui-route-lan-chat .app-header {
-    padding: 0 20px;
+    padding: 0 14px;
   }
 
   body.ui-route-lan-chat .brand {
@@ -1253,9 +1237,9 @@
   }
 
   body.ui-route-lan-chat .brand-mark {
-    width: 38px;
-    height: 38px;
-    border-radius: 13px;
+    width: 44px;
+    height: 44px;
+    border-radius: 14px;
     background: var(--ui-brand-soft);
     color: var(--ui-brand);
     box-shadow: none;
@@ -1587,6 +1571,12 @@
     body.ui-route-lan-chat .brand {
       min-width: 0;
       flex: 1;
+    }
+
+    body.ui-route-lan-chat .brand-mark {
+      width: 40px;
+      height: 40px;
+      flex-basis: 40px;
     }
 
     body.ui-route-lan-chat .brand-copy {

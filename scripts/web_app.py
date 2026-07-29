@@ -433,7 +433,7 @@ NAV_ITEMS = [
 ]
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
-UI_ASSET_VERSION = "20260729-3"
+UI_ASSET_VERSION = "20260729-4"
 APP_UI_ASSETS = f"""
 <link id="ui-system-css" rel="stylesheet" href="/assets/ui-system.css?v={UI_ASSET_VERSION}">
 <script id="ui-system-js" src="/assets/ui-system.js?v={UI_ASSET_VERSION}" defer></script>
@@ -615,7 +615,11 @@ def render_app_nav(current_path: str) -> str:
         '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h14"/></svg>'
         '</button>'
     )
-    return '<nav class="ui-nav" aria-label="\u4e3b\u5bfc\u822a">' + toggle + "".join(links) + "</nav>"
+    brand = (
+        '<a class="ui-nav__brand" href="/" aria-label="\u8fd4\u56de\u9996\u9875" title="\u8fd4\u56de\u9996\u9875">'
+        '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7 17 12 9 17Z"/></svg></a>'
+    )
+    return '<nav class="ui-nav" aria-label="\u4e3b\u5bfc\u822a">' + brand + toggle + "".join(links) + "</nav>"
 
 
 def inject_unified_nav(html: str, current_path: str) -> str:

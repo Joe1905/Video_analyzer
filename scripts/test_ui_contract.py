@@ -94,6 +94,7 @@ class UIContractTest(unittest.TestCase):
         for selector in (
             ".ui-app",
             ".ui-nav",
+            ".ui-nav__brand",
             ".ui-nav__icon",
             ".ui-frame",
             ".ui-header",
@@ -129,6 +130,18 @@ class UIContractTest(unittest.TestCase):
         self.assertIn('CHAT_PROVIDER_ICONS', app)
         self.assertIn('"amazon": "\\u5356\\u5bb6\\u7cbe\\u7075"', app)
         self.assertIn('class="ui-nav__icon"', app)
+        self.assertIn('class="ui-nav__brand"', app)
+
+    def test_page_headers_use_real_route_icons(self) -> None:
+        templates = (
+            SCRIPTS_DIR / "web_index.html",
+            STATIC_DIR / "metrics.html",
+            STATIC_DIR / "tool.html",
+            STATIC_DIR / "proxy.html",
+        )
+        empty_icon = '<span class="ui-page-heading__icon" aria-hidden="true"></span>'
+        for template in templates:
+            self.assertNotIn(empty_icon, template.read_text(encoding="utf-8"), template.name)
         self.assertNotIn("APP_NAV_CSS", app)
         self.assertNotIn("APP_NAV_BEHAVIOR", app)
         self.assertNotIn('re.sub(r"(<header', app)
