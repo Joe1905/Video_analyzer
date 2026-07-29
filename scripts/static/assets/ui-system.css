@@ -463,10 +463,11 @@ body.ui-route-proxy .account-icon-btn { border-radius: 10px !important; }
   body.ui-route-amazon > header .header-brand::before, body.ui-route-amazon > header .header-brand::after,
   body.ui-route-fastmoss > header .header-brand::before, body.ui-route-fastmoss > header .header-brand::after { display: none !important; }
   body.ui-route-home > header h1, body.ui-route-amazon > header h1, body.ui-route-fastmoss > header h1 { font-size: 0 !important; }
+  body.ui-route-home > header h1 > span, body.ui-route-amazon > header h1 > span, body.ui-route-fastmoss > header h1 > span { display: none !important; }
   body.ui-route-home > header h1::after { content: "首页  /  新对话"; font-size: 12px; color: var(--source-muted); }
   body.ui-route-amazon > header h1::after { content: "亚马逊  /  新对话"; font-size: 12px; color: var(--source-muted); }
   body.ui-route-fastmoss > header h1::after { content: "FastMoss  /  新对话"; font-size: 12px; color: var(--source-muted); }
-  body.ui-route-home > header .header-actions, body.ui-route-amazon > header .header-actions, body.ui-route-fastmoss > header .header-actions { display: none !important; }
+  body.ui-route-home > header .header-actions, body.ui-route-amazon > header .header-actions, body.ui-route-fastmoss > header .header-actions { display: contents !important; }
   body.ui-route-home > header::after, body.ui-route-amazon > header::after, body.ui-route-fastmoss > header::after {
     content: "···"; width: 34px; height: 34px; display: grid; place-items: center; letter-spacing: 2px;
     border: 1px solid var(--source-line); border-radius: 11px; background: #fff; color: var(--source-muted); font-size: 14px;
@@ -496,7 +497,15 @@ body.ui-route-proxy .account-icon-btn { border-radius: 10px !important; }
     background: transparent !important;
   }
   body.ui-route-home .empty-chat, body.ui-route-amazon .empty-chat, body.ui-route-fastmoss .empty-chat { transform: translateY(-30px); }
-  body.ui-route-home .empty-chat b, body.ui-route-amazon .empty-chat b, body.ui-route-fastmoss .empty-chat b { font-size: 29px !important; letter-spacing: -.7px !important; }
+  body.ui-route-home .empty-chat, body.ui-route-amazon .empty-chat, body.ui-route-fastmoss .empty-chat { width: min(700px, 100%); align-items: stretch !important; }
+  body.ui-route-home .empty-chat::after, body.ui-route-amazon .empty-chat::after, body.ui-route-fastmoss .empty-chat::after { display: none !important; }
+  body.ui-route-home .empty-copy, body.ui-route-amazon .empty-copy, body.ui-route-fastmoss .empty-copy { text-align: center; }
+  body.ui-route-home .empty-chat b, body.ui-route-amazon .empty-chat b, body.ui-route-fastmoss .empty-chat b { display: block; margin: 0 !important; font-size: 29px !important; letter-spacing: -.7px !important; }
+  body.ui-route-home .empty-copy p, body.ui-route-amazon .empty-copy p, body.ui-route-fastmoss .empty-copy p { margin: 10px 0 0; color: var(--source-subtle); font-size: 12px; }
+  body.ui-route-home .quick-actions, body.ui-route-amazon .quick-actions, body.ui-route-fastmoss .quick-actions { display: grid; grid-template-columns: repeat(4, 1fr); gap: 11px; margin-top: 30px; }
+  body.ui-route-home .quick-actions a, body.ui-route-amazon .quick-actions a, body.ui-route-fastmoss .quick-actions a { height: 72px; padding: 0 14px; display: flex; align-items: center; gap: 9px; border: 1px solid var(--source-line); border-radius: 16px; background: rgba(255,255,255,.7); color: var(--source-ink); text-decoration: none; font-size: 12px; font-weight: 650; }
+  body.ui-route-home .quick-actions a::before, body.ui-route-amazon .quick-actions a::before, body.ui-route-fastmoss .quick-actions a::before { content: ""; width: 32px; height: 32px; flex: 0 0 32px; border-radius: 10px; background: var(--source-blue-soft); }
+  body.ui-route-home .quick-actions a span, body.ui-route-amazon .quick-actions a span, body.ui-route-fastmoss .quick-actions a span { margin-left: auto; color: var(--source-subtle); font-size: 13px; }
   body.ui-route-home .input-bar, body.ui-route-amazon .input-bar, body.ui-route-fastmoss .input-bar {
     position: absolute !important; left: 50% !important; bottom: 24px !important; width: min(820px, calc(100% - 64px)) !important;
     transform: translateX(-50%); min-height: 68px !important; margin: 0 !important; padding: 10px !important;
