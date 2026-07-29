@@ -55,6 +55,7 @@ STATUS_LABELS = {
 _worker_started = False
 _worker_lock = threading.Lock()
 _active_jobs: set[str] = set()
+_active_rescans: set[str] = set()
 _feishu_client = FeishuCapabilityClient(timeout=30)
 
 
@@ -817,6 +818,114 @@ def restore_uncollected_videos(
         )
         conn.commit()
     return {"recovered": recovered, "skipped": skipped, "total": total, "completed": completed, "pending": pending}
+
+
+def _scan_job_video_list(job: dict[str, Any], session: dict[str, Any]) -> list[dict[str, str]]:
+    from playwright.sync_api import sync_playwright
+
+    log_dir = LOG_ROOT / job["id"]
+    log_dir.mkdir(parents=True, exist_ok=True)
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{session['debug_port']}")
+        context = browser.contexts[0]
+        page = context.pages[0] if context.pages else context.new_page()
+        target = "https://www.tiktok.com/tiktokstudio/content?lang=en"
+        navigate_with_retries(page, target, label="TikTok 视频列表重扫")
+        _skip_onboarding(page)
+        try:
+            list_state = wait_for_page_state(
+                page,
+                label="TikTok 视频列表重扫",
+                ready=lambda: bool(_discover_links_on_page(page)),
+                empty=lambda: bool(_first_visible([
+                    page.get_by_text(re.compile(r"no posts|no videos|haven't posted|暂无(?:作品|视频)|没有(?:作品|视频)", re.I)),
+                ])),
+                allow_ocr_empty=True,
+                timeout_seconds=75,
+                reload_attempts=1,
+                retry_action=lambda: navigate_with_retries(page, target, label="TikTok 视频列表重扫"),
+                diagnostic_dir=log_dir,
+                diagnostic_step="video-list-rescan",
+            )
+        except BrowserPageBlocked as exc:
+            raise AccountReviewRequired(str(exc)) from exc
+        _assert_account_ready(page)
+        if list_state.state == "empty":
+            raise RuntimeError("TikTok Studio 视频列表已加载，但账号当前没有视频")
+        return _discover_video_links(
+            page,
+            job["publish_date_start"],
+            job["publish_date_end"],
+            diagnostic_path=log_dir / "video-list-discovery.json",
+        )
+
+
+def _run_discovery_rescan(job_id: str) -> None:
+    session_id = 0
+    reused_observation = False
+    job: dict[str, Any] | None = None
+    try:
+        job = _load_job(job_id)
+        if not job:
+            return
+        original_status = str(job["status"])
+        _set_job(job_id, original_status, "rescan_discovery", "正在按新滚动逻辑重新扫描视频列表")
+        requested_session_id = int(job.get("session_id") or 0)
+        session = proxy_pool.claim_observation_session_for_job(job["account_id"], requested_session_id, job_id)
+        if session is not None:
+            reused_observation = True
+        else:
+            session = proxy_pool.start_automation_session(job["account_id"], f"rescan_{job_id}")["session"]
+        session_id = int(session["id"])
+        sources = _scan_job_video_list(job, session)
+        completed_ids = _completed_video_ids(job_id)
+        missing = [source for source in sources if source["id"] not in completed_ids]
+        restore_uncollected_videos(job_id, missing, "新列表扫描对账")
+    except Exception as exc:
+        if job:
+            _set_job(
+                job_id,
+                str(job["status"]),
+                "rescan_failed",
+                f"列表重扫失败：{_clean_text(exc, 400)}",
+                session_id=session_id or None,
+            )
+    finally:
+        if session_id and reused_observation:
+            try:
+                proxy_pool.release_observation_session_job(session_id, job_id)
+            except Exception:
+                pass
+        elif session_id:
+            try:
+                proxy_pool.finish_automation_session(session_id, "列表重扫结束")
+            except Exception:
+                pass
+        with _worker_lock:
+            _active_rescans.discard(job_id)
+
+
+def start_discovery_rescans(payload: dict[str, Any]) -> dict[str, Any]:
+    requested = payload.get("job_ids") or []
+    if isinstance(requested, str):
+        requested = [requested]
+    job_ids = [_clean_text(value, 80) for value in requested if _clean_text(value, 80)]
+    if not job_ids:
+        raise ValueError("job_ids is required")
+    queued: list[str] = []
+    with _worker_lock:
+        for job_id in dict.fromkeys(job_ids):
+            if job_id in _active_rescans:
+                continue
+            _active_rescans.add(job_id)
+            queued.append(job_id)
+
+    def run_batch() -> None:
+        for job_id in queued:
+            _run_discovery_rescan(job_id)
+
+    threading.Thread(target=run_batch, daemon=True, name="tiktok-collect-rescan").start()
+    return {"queued": len(queued), "job_ids": queued}
 
 
 def retry_failed_feishu_sync(payload: dict[str, Any]) -> dict[str, Any]:

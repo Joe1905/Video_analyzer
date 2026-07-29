@@ -14917,6 +14917,8 @@ class Handler(BaseHTTPRequestHandler):
                 return json_response(self, HTTPStatus.ACCEPTED, tiktok_studio_collect.create_job(payload))
             if path == "/api/proxy/collect/jobs/retry":
                 return json_response(self, HTTPStatus.OK, tiktok_studio_collect.retry_job(payload))
+            if path == "/api/proxy/collect/jobs/rescan-discovery":
+                return json_response(self, HTTPStatus.ACCEPTED, tiktok_studio_collect.start_discovery_rescans(payload))
             if path == "/api/proxy/collect/jobs/cancel":
                 return json_response(self, HTTPStatus.OK, tiktok_studio_collect.cancel_job(payload))
             if path == "/api/proxy/collect/results/resync":
