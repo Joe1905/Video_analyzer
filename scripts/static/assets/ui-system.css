@@ -334,6 +334,8 @@ body.ui-route-report-player .panel { border-radius: 20px !important; }
 body.ui-route-report-player .video-wrap { padding: 22px !important; background: #111827 !important; }
 body.ui-route-report-player .section-head { background: #fff !important; }
 body.ui-route-report-player .current-card { border-left-width: 3px !important; }
+body.ui-route-report-player .brand { grid-template-columns: auto minmax(0,1fr) auto auto !important; }
+body.ui-route-report-player .header-view { white-space: nowrap; }
 
 /* Shop、数据、分析、图片工具、Proxy：真实表格/表单工作区，不再把页面当作一张裸表。 */
 body.ui-route-shop .app-shell, body.ui-route-metrics main, body.ui-route-extract .main-shell, body.ui-route-tool main,
@@ -358,4 +360,6 @@ body.ui-route-proxy .account-icon-btn { border-radius: 10px !important; }
   body.ui-route-lan-chat .shell { height: calc(100dvh - 60px) !important; margin: 0; border: 0; border-radius: 0; box-shadow: none; }
   body.ui-route-lan-chat .composer-wrap { padding: 8px 10px max(10px, env(safe-area-inset-bottom)) !important; }
   body.ui-route-report .layout, body.ui-route-report-player .layout { padding: 12px !important; }
+  body.ui-route-report-player .brand { grid-template-columns: auto minmax(0,1fr) auto !important; }
+  body.ui-route-report-player .brand .header-view { display: none; }
 }
