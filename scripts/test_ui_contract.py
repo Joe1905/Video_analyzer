@@ -133,6 +133,9 @@ class UIContractTest(unittest.TestCase):
         self.assertIn('class="ui-nav__brand"', app)
         self.assertIn('id="ui-nav-state-boot"', app)
         self.assertIn("document.documentElement.dataset.nav", app)
+        self.assertNotIn("APP_NAV_CSS", app)
+        self.assertNotIn("APP_NAV_BEHAVIOR", app)
+        self.assertNotIn('re.sub(r"(<header', app)
 
     def test_page_headers_use_real_route_icons(self) -> None:
         templates = (
@@ -144,9 +147,6 @@ class UIContractTest(unittest.TestCase):
         empty_icon = '<span class="ui-page-heading__icon" aria-hidden="true"></span>'
         for template in templates:
             self.assertNotIn(empty_icon, template.read_text(encoding="utf-8"), template.name)
-        self.assertNotIn("APP_NAV_CSS", app)
-        self.assertNotIn("APP_NAV_BEHAVIOR", app)
-        self.assertNotIn('re.sub(r"(<header', app)
 
     def test_ui_test_mode_blocks_mutations_before_handlers(self) -> None:
         app = (SCRIPTS_DIR / "web_app.py").read_text(encoding="utf-8")
