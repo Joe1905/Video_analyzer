@@ -3073,6 +3073,13 @@ def _sync_mihomo_pool_config(pool: sqlite3.Row | dict[str, Any]) -> dict[str, An
         "proxy": node_name,
     }
 
+    # Mihomo does not reliably replace a listener when its name changes while
+    # retaining the same port. Release a stale managed listener first, then add
+    # the current one in a second reload.
+    listener_restore: tuple[Path, bytes, int] | None = None
+    if not _mihomo_listener_matches(pool):
+        _cleanup, listener_restore = _remove_mihomo_listener_config(local_port)
+
     path = _mihomo_config_path()
     original = path.read_bytes()
     mode = path.stat().st_mode & 0o777
@@ -3098,6 +3105,8 @@ def _sync_mihomo_pool_config(pool: sqlite3.Row | dict[str, Any]) -> dict[str, An
             raise ProxyConfigurationError(f"mihomo 重载后端口 {local_port} 未监听")
     except Exception as exc:
         _restore_mihomo_config(path, original, mode)
+        if listener_restore is not None:
+            _restore_mihomo_listener_config(*listener_restore)
         if isinstance(exc, ProxyConfigurationError):
             raise
         raise ProxyConfigurationError(f"mihomo 自动同步失败：{exc}") from exc
