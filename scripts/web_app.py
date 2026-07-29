@@ -410,6 +410,7 @@ NAV_ITEMS = [
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
 APP_NAV_CSS = """
+<link id="ui-system-css" rel="stylesheet" href="/assets/ui-system.css">
 <style id="unified-app-nav-style">
 .app-nav{height:48px;display:flex;align-items:center;gap:4px;font-family:Inter,"PingFang SC","Microsoft YaHei",system-ui,-apple-system,sans-serif;padding:4px;border:1px solid #e5e7eb;border-radius:14px;background:rgba(255,255,255,.94);box-shadow:0 1px 2px rgba(15,23,42,.04),0 8px 24px rgba(15,23,42,.03);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);overflow-x:auto;scrollbar-width:none}.app-nav::-webkit-scrollbar{display:none}.app-nav__item{height:38px;display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:0 14px;border:1px solid transparent;border-radius:10px;color:#64748b;text-decoration:none;font-size:13px;font-weight:650;line-height:1;white-space:nowrap;transition:background-color .16s ease,color .16s ease,border-color .16s ease,box-shadow .16s ease}.app-nav__item svg{width:18px;height:18px;stroke:#94a3b8;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round;fill:none;flex:0 0 18px;transition:stroke .16s ease}.app-nav__item:hover{background:#f8fafc;color:#334155;border-color:#eef2f7}.app-nav__item:hover svg{stroke:#64748b}.app-nav__item:focus-visible{outline:none;box-shadow:0 0 0 3px rgba(37,99,235,.14)}.app-nav__item.active{background:#eff6ff;color:#2563eb;border-color:#bfdbfe;box-shadow:inset 0 0 0 1px rgba(37,99,235,.05)}.app-nav__item.active svg{stroke:#2563eb}.app-nav__label{line-height:1}@media(max-width:760px){.app-nav{height:46px;max-width:100%;gap:3px}.app-nav__item{height:36px;padding:0 11px}.app-nav__label{display:none}}
 </style>
@@ -591,8 +592,30 @@ def render_app_nav(current_path: str) -> str:
 def inject_unified_nav(html: str, current_path: str) -> str:
     nav = render_app_nav(current_path)
     html = re.sub(r'<nav class="app-nav".*?</nav>', nav, html, count=1, flags=re.S)
-    if 'id="unified-app-nav-style"' not in html and "</head>" in html:
+    if 'id="ui-system-css"' not in html and "</head>" in html:
         html = html.replace("</head>", APP_NAV_CSS + "\n</head>", 1)
+    route_name = re.sub(r"[^a-z0-9]+", "-", (current_path or "home").strip("/").lower()) or "home"
+    body_class = f"ui-system ui-route-{route_name}"
+    def add_ui_body_class(match: re.Match[str]) -> str:
+        attrs = match.group(1)
+        class_match = re.search(r"\bclass=([\"'])([^\"']*)([\"'])", attrs)
+        if class_match:
+            attrs = (
+                attrs[:class_match.start(2)]
+                + class_match.group(2)
+                + " "
+                + body_class
+                + attrs[class_match.end(2):]
+            )
+        else:
+            attrs += f' class="{body_class}"'
+        return f"<body{attrs}>"
+    html = re.sub(
+        r"<body\b([^>]*)>",
+        add_ui_body_class,
+        html,
+        count=1,
+    )
     return html
 
 

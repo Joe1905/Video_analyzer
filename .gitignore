@@ -2,6 +2,7 @@
 .env.*
 !.env.example
 !.env.dev.example
+!.env.ui-4004.example
 backups/
 data/
 videos/

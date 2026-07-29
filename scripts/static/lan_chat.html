@@ -167,7 +167,7 @@ body{max-width:100vw}
     <div class="modal-foot"><button class="button danger" id="dissolveGroup" type="button">解散群组</button><button class="button secondary" id="leaveGroup" type="button">退出群组</button><button class="button secondary" type="button" data-close-modal>关闭</button></div>
   </div>
 </div>
-<div class="image-viewer" id="imageViewer" role="dialog" aria-modal="true" aria-label="查看图片" hidden><div class="viewer-toolbar"><button id="viewerZoomOut" type="button" aria-label="缩小图片">−</button><span class="viewer-zoom-label" id="viewerZoomLabel">适应</span><button id="viewerZoomIn" type="button" aria-label="放大图片">＋</button><button class="viewer-reset" id="viewerReset" type="button">适应</button><button class="viewer-close" id="closeImageViewer" type="button" aria-label="关闭大图">×</button></div><div class="viewer-viewport" id="viewerViewport"><div class="viewer-stage"><img id="viewerImage" alt="聊天图片大图" draggable="false"></div></div></div>
+<div class="image-viewer" id="imageViewer" role="dialog" aria-modal="true" aria-label="查看图片" hidden><div class="viewer-toolbar"><button id="viewerZoomOut" type="button" aria-label="缩小图片">−</button><span class="viewer-zoom-label" id="viewerZoomLabel" aria-live="polite"></span><button id="viewerZoomIn" type="button" aria-label="放大图片">＋</button><button class="viewer-reset" id="viewerReset" type="button" aria-label="适应画面" title="适应画面"></button><button class="viewer-close" id="closeImageViewer" type="button" aria-label="关闭大图">×</button></div><div class="viewer-viewport" id="viewerViewport"><div class="viewer-stage"><img id="viewerImage" alt="聊天图片大图" draggable="false"></div></div></div>
 <div class="toast" id="toast" role="status"></div>
 
 <script>

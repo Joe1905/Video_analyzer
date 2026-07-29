@@ -1,0 +1,60 @@
+services:
+  analyzer:
+    image: ${ANALYZER_IMAGE:-short-video-analyzer-ui-4004:latest}
+    volumes:
+      - ./videos-dev:/workspace/videos
+      - ./output-dev:/workspace/output
+      - ./data-dev:/workspace/data
+      - ./scripts:/workspace/scripts:ro
+      - ./sellersprite_mcp_chat:/workspace/sellersprite_mcp_chat:ro
+    environment:
+      HOT_VIDEO_REPORT_SCHEDULER_ENABLED: "0"
+      PROXY_POOL_PORT_START: ${UI4004_PROXY_POOL_PORT_START:-19100}
+      PROXY_POOL_PORT_END: ${UI4004_PROXY_POOL_PORT_END:-19199}
+      PROXY_POOL_CONFIG_NAMESPACE: ui4004
+      PROXY_POOL_MIHOMO_PREFIX: ui4004-
+
+  web:
+    image: ${ANALYZER_IMAGE:-short-video-analyzer-ui-4004:latest}
+    environment:
+      WEB_PORT: ${WEB_PORT:-4004}
+      LAN_HOST: ${LAN_HOST:-192.168.1.254}
+      REPORT_LAN_HOST: ${REPORT_LAN_HOST:-192.168.1.254}
+      REPORT_LAN_PORT: ${REPORT_LAN_PORT:-4004}
+      HOT_VIDEO_REPORT_SCHEDULER_ENABLED: "0"
+      SELLERSPRITE_REDIRECT_PORT: "0"
+      PROXY_POOL_PORT_START: ${UI4004_PROXY_POOL_PORT_START:-19100}
+      PROXY_POOL_PORT_END: ${UI4004_PROXY_POOL_PORT_END:-19199}
+      PROXY_POOL_CONFIG_NAMESPACE: ui4004
+      PROXY_POOL_MIHOMO_PREFIX: ui4004-
+      SING_BOX_CONFIG_PATH: /workspace/data/sing-box/config.json
+      SING_BOX_COMPOSE_PROJECT: short-video-analyzer-ui-4004
+    volumes:
+      - ./videos-dev:/workspace/videos
+      - ./output-dev:/workspace/output
+      - ./data-dev:/workspace/data
+      - ${MCP_SHARED_TOOL_CACHE_DIR:-./data-dev/mcp_tool_cache_shared}:/workspace/shared-mcp-tool-cache
+      - ./scripts:/workspace/scripts:ro
+      - ./sellersprite_mcp_chat:/workspace/sellersprite_mcp_chat:ro
+      - ${OCR_SHARED_DIR:-/home/openclaw/ocr-shared}:${OCR_SERVER_SHARED_DIR:-/home/openclaw/ocr-shared}
+      - ${MIHOMO_CONFIG_DIR:-/etc/mihomo}:/host/etc/mihomo
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  sing-box:
+    image: short-video-analyzer-ui-4004-sing-box:1.13.14
+    build:
+      context: .
+      dockerfile: Dockerfile.sing-box
+      network: host
+      args:
+        HTTP_PROXY: ${SING_BOX_DOWNLOAD_PROXY:-http://127.0.0.1:7890}
+        HTTPS_PROXY: ${SING_BOX_DOWNLOAD_PROXY:-http://127.0.0.1:7890}
+    command: -D /var/lib/sing-box -C /etc/sing-box run
+    volumes:
+      - ./data-dev/sing-box:/etc/sing-box
+    network_mode: host
+    restart: unless-stopped
+
+  sellersprite-redirect:
+    profiles:
+      - disabled-ui-4004-redirect
