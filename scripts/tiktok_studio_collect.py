@@ -1166,16 +1166,26 @@ def _list_scroll(page: Any, step_px: int, reset: bool = False) -> dict[str, Any]
         """({stepPx, reset}) => {
             const links = [...document.querySelectorAll(
                 "a[href*='/tiktokstudio/analytics/'], a[href*='/video/']"
-            )];
+            )].filter(link => /\/(?:tiktokstudio\/analytics|video)\/\d{10,}/.test(link.getAttribute("href") || ""));
             let root = document.scrollingElement;
-            let node = links.length ? links[links.length - 1].parentElement : null;
-            while (node) {
-                if (node.scrollHeight > node.clientHeight + 20) {
-                    root = node;
-                    break;
+            const candidates = new Map();
+            for (const link of links) {
+                const videoId = ((link.getAttribute("href") || "").match(/\/(?:tiktokstudio\/analytics|video)\/(\d{10,})/) || [])[1];
+                let node = link.parentElement;
+                while (node && node !== document.documentElement) {
+                    if (node.scrollHeight > node.clientHeight + 20) {
+                        const candidate = candidates.get(node) || { node, videoIds: new Set() };
+                        if (videoId) candidate.videoIds.add(videoId);
+                        candidates.set(node, candidate);
+                    }
+                    node = node.parentElement;
                 }
-                node = node.parentElement;
             }
+            const ranked = [...candidates.values()].sort((left, right) =>
+                right.videoIds.size - left.videoIds.size ||
+                (right.node.scrollHeight - right.node.clientHeight) - (left.node.scrollHeight - left.node.clientHeight)
+            );
+            if (ranked.length) root = ranked[0].node;
             const beforePx = Number(root?.scrollTop || 0);
             if (root) {
                 root.scrollTop = reset ? 0 : Math.min(
@@ -1195,6 +1205,8 @@ def _list_scroll(page: Any, step_px: int, reset: bool = False) -> dict[str, Any]
                 scroll_height_px: Number(root?.scrollHeight || 0),
                 client_height_px: Number(root?.clientHeight || 0),
                 at_end: Boolean(root && afterPx + root.clientHeight >= root.scrollHeight - 2),
+                stalled: Boolean(root && root.scrollHeight > root.clientHeight + 20 && afterPx === beforePx),
+                candidate_video_links: ranked.length ? ranked[0].videoIds.size : 0,
             };
         }""",
         {"stepPx": step_px, "reset": reset},
@@ -1264,6 +1276,9 @@ def _discover_video_links(
             scroll_events.append(scroll_event)
             if scroll_event["at_end"] and unchanged_rounds >= 6:
                 stop_reason = "list_end_reached"
+                break
+            if scroll_event["stalled"] and unchanged_rounds >= 6:
+                stop_reason = "scroll_stalled"
                 break
             page.wait_for_timeout(LIST_SCROLL_WAIT_MS)
         else:
