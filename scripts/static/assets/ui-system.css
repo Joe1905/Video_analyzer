@@ -148,8 +148,10 @@
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-search-panel {
+    width: 100%;
     max-width: none;
     max-height: 0;
+    flex: 0 0 auto;
     margin: 0;
     overflow: hidden;
     opacity: 0;
