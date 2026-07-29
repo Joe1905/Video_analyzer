@@ -114,7 +114,7 @@ ACCOUNT_STATUS_MAP = {
 
 
 def browser_max_slots() -> int:
-    return max(1, int(os.getenv("TIKTOK_BROWSER_MAX_SLOTS", "2") or "2"))
+    return max(1, int(os.getenv("TIKTOK_BROWSER_MAX_SLOTS", "3") or "3"))
 
 
 def pending_login_ttl_seconds() -> int:
@@ -3024,7 +3024,10 @@ def _runtime_mihomo_name(pool: sqlite3.Row | dict[str, Any]) -> str:
 
 def _runtime_mihomo_listener_name(pool: sqlite3.Row | dict[str, Any]) -> str:
     pool_name = str(_pool_value(pool, "name") or "").strip()
+    pool_id = int(_pool_value(pool, "id", 0) or 0)
     namespace = "" if PROXY_CONFIG_NAMESPACE == "formal" else f"{PROXY_CONFIG_NAMESPACE}-"
+    if pool_id:
+        return f"tiktok-{namespace}{pool_id}-{pool_name}"
     return f"tiktok-{namespace}{pool_name}"
 
 
