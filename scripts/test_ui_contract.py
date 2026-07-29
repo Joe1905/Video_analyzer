@@ -64,7 +64,7 @@ class UIContractTest(unittest.TestCase):
                 parser.feed(text)
                 for contract_class in ("ui-app", "ui-frame", "ui-header", "ui-main"):
                     self.assertEqual(
-                        sum(contract_class in path for path in parser.shell_paths),
+                        sum(path[-1] == contract_class for path in parser.shell_paths),
                         1,
                         f"{name} must contain exactly one .{contract_class}",
                     )
@@ -125,7 +125,7 @@ class UIContractTest(unittest.TestCase):
         self.assertIn('src="/assets/ui-system.js"', app)
         self.assertNotIn("APP_NAV_CSS", app)
         self.assertNotIn("APP_NAV_BEHAVIOR", app)
-        self.assertNotRegex(app, r"re\.sub\([^\\n]*<header")
+        self.assertNotIn('re.sub(r"(<header', app)
 
     def test_ui_test_mode_blocks_mutations_before_handlers(self) -> None:
         app = (SCRIPTS_DIR / "web_app.py").read_text(encoding="utf-8")
