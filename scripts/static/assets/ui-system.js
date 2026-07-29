@@ -14,7 +14,9 @@
 
   function syncNavigation(expanded = navExpanded()) {
     const desktopExpanded = DESKTOP_QUERY.matches && expanded;
-    document.body.dataset.nav = desktopExpanded ? "expanded" : "collapsed";
+    const state = desktopExpanded ? "expanded" : "collapsed";
+    document.documentElement.dataset.nav = state;
+    document.body.dataset.nav = state;
     document.querySelectorAll(".ui-nav").forEach((nav) => {
       nav.classList.toggle("is-expanded", desktopExpanded);
       const toggle = nav.querySelector(".ui-nav__toggle");

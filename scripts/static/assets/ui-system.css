@@ -40,6 +40,7 @@
     --ui-safe-bottom: max(12px, env(safe-area-inset-bottom));
   }
 
+  html[data-nav="expanded"],
   body[data-nav="expanded"] {
     --ui-nav-width: 224px;
   }

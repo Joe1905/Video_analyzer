@@ -433,8 +433,18 @@ NAV_ITEMS = [
 ]
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
-UI_ASSET_VERSION = "20260729-4"
+UI_ASSET_VERSION = "20260729-5"
 APP_UI_ASSETS = f"""
+<script id="ui-nav-state-boot">
+try {{
+  document.documentElement.dataset.nav =
+    window.matchMedia("(min-width: 861px)").matches && localStorage.getItem("ui-nav-expanded") === "1"
+      ? "expanded"
+      : "collapsed";
+}} catch (_) {{
+  document.documentElement.dataset.nav = "collapsed";
+}}
+</script>
 <link id="ui-system-css" rel="stylesheet" href="/assets/ui-system.css?v={UI_ASSET_VERSION}">
 <script id="ui-system-js" src="/assets/ui-system.js?v={UI_ASSET_VERSION}" defer></script>
 """.strip()

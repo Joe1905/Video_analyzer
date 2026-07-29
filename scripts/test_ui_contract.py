@@ -131,6 +131,8 @@ class UIContractTest(unittest.TestCase):
         self.assertIn('"amazon": "\\u5356\\u5bb6\\u7cbe\\u7075"', app)
         self.assertIn('class="ui-nav__icon"', app)
         self.assertIn('class="ui-nav__brand"', app)
+        self.assertIn('id="ui-nav-state-boot"', app)
+        self.assertIn("document.documentElement.dataset.nav", app)
 
     def test_page_headers_use_real_route_icons(self) -> None:
         templates = (
