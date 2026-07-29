@@ -393,6 +393,35 @@ chat_provider_stores = {
 CHAT_PROVIDERS = {"home", "amazon", "fastmoss"}
 CHAT_TOOL_DOMAINS = ("system", "function", "sellersprite", "fastmoss")
 CHAT_PROVIDER_LABELS = {"home": "\u9996\u9875", "amazon": "\u5356\u5bb6\u7cbe\u7075", "fastmoss": "FastMoss"}
+CHAT_PROVIDER_UI = {
+    "home": {
+        "workspace": "\u5206\u6790\u5de5\u4f5c\u53f0",
+        "new_label": "\u65b0\u5efa\u5206\u6790",
+        "crumb": "\u5de5\u4f5c\u53f0",
+        "model": "Qwen Vision \u00b7 Ready",
+        "eyebrow": "Video intelligence copilot",
+        "title": "\u628a\u4e00\u6761\u77ed\u89c6\u9891\uff0c\u62c6\u6210\u53ef\u6267\u884c\u7684\u589e\u957f\u52a8\u4f5c",
+        "intro": "\u4e0a\u4f20\u89c6\u9891\u6216\u7c98\u8d34\u94fe\u63a5\u3002\u6211\u4f1a\u4ece\u5185\u5bb9\u94a9\u5b50\u3001\u53d9\u4e8b\u8282\u594f\u4e0e\u5546\u4e1a\u8f6c\u5316\u4e09\u4e2a\u5c42\u9762\u7ed9\u51fa\u6e05\u6670\u5224\u65ad\u3002",
+    },
+    "amazon": {
+        "workspace": "\u5356\u5bb6\u7cbe\u7075\u5de5\u4f5c\u53f0",
+        "new_label": "\u65b0\u5efa\u6d1e\u5bdf",
+        "crumb": "\u5356\u5bb6\u7cbe\u7075",
+        "model": "\u5356\u5bb6\u7cbe\u7075 \u00b7 Ready",
+        "eyebrow": "Amazon seller intelligence",
+        "title": "\u628a\u5546\u54c1\u4e0e\u8bc4\u8bba\uff0c\u62c6\u6210\u53ef\u6267\u884c\u7684\u9009\u54c1\u6d1e\u5bdf",
+        "intro": "\u8f93\u5165\u5173\u952e\u8bcd\u3001ASIN \u6216\u7ade\u54c1\u94fe\u63a5\uff0c\u5feb\u901f\u5b9a\u4f4d\u5e02\u573a\u673a\u4f1a\u3001\u7528\u6237\u75db\u70b9\u4e0e\u4ea7\u54c1\u6539\u8fdb\u65b9\u5411\u3002",
+    },
+    "fastmoss": {
+        "workspace": "FastMoss \u5de5\u4f5c\u53f0",
+        "new_label": "\u65b0\u5efa\u6d1e\u5bdf",
+        "crumb": "FastMoss",
+        "model": "FastMoss \u00b7 Ready",
+        "eyebrow": "TikTok commerce intelligence",
+        "title": "\u628a\u8fbe\u4eba\u4e0e\u5546\u54c1\u6570\u636e\uff0c\u62c6\u6210\u53ef\u590d\u7528\u7684\u589e\u957f\u7b56\u7565",
+        "intro": "\u8f93\u5165\u8fbe\u4eba\u3001\u5546\u54c1\u6216\u89c6\u9891\u7ebf\u7d22\uff0c\u4ece\u5185\u5bb9\u8868\u73b0\u3001\u8f6c\u5316\u8bc1\u636e\u4e0e\u7ade\u54c1\u5dee\u5f02\u4e2d\u627e\u5230\u4e0b\u4e00\u6b65\u52a8\u4f5c\u3002",
+    },
+}
 CHAT_PROVIDER_ICONS = {
     "home": (
         '<path d="M3 10.5 12 3l9 7.5"/>'
@@ -433,7 +462,7 @@ NAV_ITEMS = [
 ]
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
-UI_ASSET_VERSION = "20260729-8"
+UI_ASSET_VERSION = "20260729-9"
 APP_UI_ASSETS = f"""
 <script id="ui-nav-state-boot">
 let uiNavExpanded = false;
@@ -722,19 +751,27 @@ def list_public_chat_sessions(provider: str, query: str = "") -> list[dict[str, 
 def serve_chat_template(handler: BaseHTTPRequestHandler, provider: str, path: str) -> None:
     chat_html = (SCRIPTS_DIR / "static" / "chat.html").read_text(encoding="utf-8")
     provider = normalize_chat_provider(provider)
+    provider_ui = CHAT_PROVIDER_UI[provider]
     chat_html = chat_html.replace("__CHAT_PROVIDER__", provider)
     chat_html = chat_html.replace("__CHAT_PROVIDER_LABEL__", CHAT_PROVIDER_LABELS[provider])
+    chat_html = chat_html.replace("__CHAT_WORKSPACE_LABEL__", provider_ui["workspace"])
+    chat_html = chat_html.replace("__CHAT_NEW_LABEL__", provider_ui["new_label"])
+    chat_html = chat_html.replace("__CHAT_HERO_EYEBROW__", provider_ui["eyebrow"])
+    chat_html = chat_html.replace("__CHAT_HERO_TITLE__", provider_ui["title"])
+    chat_html = chat_html.replace("__CHAT_HERO_INTRO__", provider_ui["intro"])
     page_heading = (
         '<button class="secondary mobile-session-toggle" id="mobileSessionToggle" type="button" '
         'aria-label="打开会话列表" aria-expanded="false">'
         '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h14"/></svg>'
         '</button>'
-        '<div class="chat-page-heading">'
-        '<span class="chat-page-icon" aria-hidden="true"><svg viewBox="0 0 24 24">'
-        f'{CHAT_PROVIDER_ICONS[provider]}'
-        '</svg></span>'
-        f'<span class="chat-page-copy"><strong>{html_escape(CHAT_PROVIDER_LABELS[provider])}</strong>'
-        '<small>AI 对话</small></span></div>'
+        '<div class="chat-breadcrumb">'
+        f'<span>{html_escape(provider_ui["crumb"])}</span><i>/</i>'
+        '<strong id="currentSessionTitle">\u65b0\u5efa\u5bf9\u8bdd</strong></div>'
+        '<div class="chat-header-actions">'
+        f'<span class="chat-model-status"><i></i>{html_escape(provider_ui["model"])}</span>'
+        '<button class="chat-header-more" type="button" aria-label="更多" title="更多">'
+        '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.4"/>'
+        '<circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/></svg></button></div>'
     )
     if "<!-- UI_CHAT_HEADER -->" not in chat_html:
         raise RuntimeError("Chat header placeholder missing")
