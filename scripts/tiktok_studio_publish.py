@@ -1341,7 +1341,7 @@ def _set_schedule(page: Any, mode: str, scheduled_at: str, log_dir: Path) -> Non
 
 def _file_input_selected(file_input: Any) -> bool:
     try:
-        return bool(file_input.evaluate("input => Boolean(input.files && input.files.length)"))
+        return bool(file_input.evaluate("input => Boolean(input.files && input.files.length)", timeout=1000))
     except Exception:
         return False
 
@@ -1481,7 +1481,20 @@ def _set_video_file(page: Any, video: Path, display: str = "", log_dir: Path | N
             cdp_state=_cdp_file_input_state(page),
         )
         try:
-            _set_video_file_via_native_chooser(page, video, display, file_input, trace_dir)
+            _append_file_input_trace(trace_dir, "native_chooser_reset_after_cdp_failure")
+            page.reload(wait_until="domcontentloaded", timeout=30000)
+            page.wait_for_timeout(1000)
+            refreshed_inputs = page.locator("input[type='file'][accept*='video']")
+            if not refreshed_inputs.count():
+                refreshed_inputs = page.locator("input[type='file']")
+            if not refreshed_inputs.count():
+                raise RuntimeError("刷新上传页后未找到视频选择控件")
+            _append_file_input_trace(
+                trace_dir,
+                "native_chooser_reset_complete",
+                cdp_state=_cdp_file_input_state(page),
+            )
+            _set_video_file_via_native_chooser(page, video, display, refreshed_inputs.first, trace_dir)
             return
         except Exception as native_error:
             raise RuntimeError(
