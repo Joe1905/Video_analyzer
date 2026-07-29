@@ -151,6 +151,22 @@ class UIContractTest(unittest.TestCase):
         for template in templates:
             self.assertNotIn(empty_icon, template.read_text(encoding="utf-8"), template.name)
 
+    def test_chat_history_controls_are_shared_across_providers(self) -> None:
+        chat = (STATIC_DIR / "chat.html").read_text(encoding="utf-8")
+        app = (SCRIPTS_DIR / "web_app.py").read_text(encoding="utf-8")
+        for contract in (
+            'id="sessionSearchToggle"',
+            'id="sessionSearchInput"',
+            'id="sessionSearchClear"',
+            "function sessionGroup",
+            "function sessionStamp",
+            "m.role==='user'",
+            "picked.rect.top-height-8",
+        ):
+            self.assertIn(contract, chat)
+        self.assertIn('query.get("query", [""])[0]', app)
+        self.assertIn("message.content", app)
+
     def test_ui_test_mode_blocks_mutations_before_handlers(self) -> None:
         app = (SCRIPTS_DIR / "web_app.py").read_text(encoding="utf-8")
         post = app.index("    def do_POST(self) -> None:", app.index("class Handler"))

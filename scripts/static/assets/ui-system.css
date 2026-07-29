@@ -1095,28 +1095,209 @@
   body.ui-route-amazon .sidebar-head,
   body.ui-route-fastmoss .sidebar-head {
     padding: 14px;
+    display: grid;
+    gap: 10px;
     background: #fff;
+  }
+
+  body.ui-route-home .session-search,
+  body.ui-route-amazon .session-search,
+  body.ui-route-fastmoss .session-search {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  body.ui-route-home .session-search-toggle,
+  body.ui-route-amazon .session-search-toggle,
+  body.ui-route-fastmoss .session-search-toggle {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+    padding: 0;
+    border: 1px solid var(--ui-line);
+    border-radius: 13px;
+    background: #fff;
+    color: var(--ui-ink-muted);
+    box-shadow: var(--ui-shadow-sm);
+  }
+
+  body.ui-route-home .session-search-toggle:hover,
+  body.ui-route-home .session-search-toggle[aria-expanded="true"],
+  body.ui-route-amazon .session-search-toggle:hover,
+  body.ui-route-amazon .session-search-toggle[aria-expanded="true"],
+  body.ui-route-fastmoss .session-search-toggle:hover,
+  body.ui-route-fastmoss .session-search-toggle[aria-expanded="true"] {
+    border-color: color-mix(in srgb, var(--ui-brand) 42%, var(--ui-line));
+    background: var(--ui-brand-soft);
+    color: var(--ui-brand);
+  }
+
+  body.ui-route-home .session-search-toggle svg,
+  body.ui-route-amazon .session-search-toggle svg,
+  body.ui-route-fastmoss .session-search-toggle svg {
+    width: 18px;
+    height: 18px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.9;
+    stroke-linecap: round;
+  }
+
+  body.ui-route-home .session-search-panel,
+  body.ui-route-amazon .session-search-panel,
+  body.ui-route-fastmoss .session-search-panel {
+    min-width: 0;
+    max-width: 0;
+    flex: 0 1 0;
+    overflow: hidden;
+    opacity: 0;
+    transform: translateX(-6px);
+    transition: max-width 200ms var(--ui-ease), flex-basis 200ms var(--ui-ease),
+      opacity 140ms ease, transform 200ms var(--ui-ease);
+  }
+
+  body.ui-route-home .session-search.is-open .session-search-panel,
+  body.ui-route-amazon .session-search.is-open .session-search-panel,
+  body.ui-route-fastmoss .session-search.is-open .session-search-panel {
+    max-width: 240px;
+    flex-basis: 100%;
+    opacity: 1;
+    transform: none;
+  }
+
+  body.ui-route-home .session-search-field,
+  body.ui-route-amazon .session-search-field,
+  body.ui-route-fastmoss .session-search-field {
+    position: relative;
+    min-width: 168px;
+  }
+
+  body.ui-route-home .session-search-field input,
+  body.ui-route-amazon .session-search-field input,
+  body.ui-route-fastmoss .session-search-field input {
+    height: 44px;
+    padding: 0 36px 0 13px;
+    border: 1px solid var(--ui-line);
+    border-radius: 13px;
+    background: #fff;
+    font-size: 13px;
+  }
+
+  body.ui-route-home .session-search-clear,
+  body.ui-route-amazon .session-search-clear,
+  body.ui-route-fastmoss .session-search-clear {
+    position: absolute;
+    top: 7px;
+    right: 7px;
+    width: 30px;
+    min-width: 30px;
+    height: 30px;
+    min-height: 30px;
+    padding: 0;
+    border: 0;
+    border-radius: 9px;
+    background: transparent;
+    color: var(--ui-ink-subtle);
+    font-size: 18px;
   }
 
   body.ui-route-home #newSession,
   body.ui-route-amazon #newSession,
   body.ui-route-fastmoss #newSession {
     width: 100%;
+    min-height: 48px;
   }
 
   body.ui-route-home .session-list,
   body.ui-route-amazon .session-list,
   body.ui-route-fastmoss .session-list {
-    padding: 8px;
+    padding: 2px 8px 12px;
+  }
+
+  body.ui-route-home .session-group-label,
+  body.ui-route-amazon .session-group-label,
+  body.ui-route-fastmoss .session-group-label {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    padding: 12px 8px 6px;
+    background: rgba(255, 255, 255, .94);
+    color: var(--ui-ink-subtle);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .08em;
   }
 
   body.ui-route-home .session-item,
   body.ui-route-amazon .session-item,
   body.ui-route-fastmoss .session-item {
+    position: relative;
+    min-height: 68px;
     margin-bottom: 3px;
     padding: 11px 12px;
     border: 0;
     border-radius: 12px;
+    align-items: stretch;
+  }
+
+  body.ui-route-home .session-item .info,
+  body.ui-route-amazon .session-item .info,
+  body.ui-route-fastmoss .session-item .info {
+    min-width: 0;
+    padding-right: 24px;
+    display: grid;
+    align-content: space-between;
+    gap: 8px;
+  }
+
+  body.ui-route-home .session-item .meta,
+  body.ui-route-amazon .session-item .meta,
+  body.ui-route-fastmoss .session-item .meta {
+    min-width: 0;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    color: var(--ui-ink-subtle);
+    font-size: 10px;
+  }
+
+  body.ui-route-home .session-item .meta time,
+  body.ui-route-amazon .session-item .meta time,
+  body.ui-route-fastmoss .session-item .meta time {
+    margin-left: auto;
+    white-space: nowrap;
+  }
+
+  body.ui-route-home .session-item .del-btn,
+  body.ui-route-amazon .session-item .del-btn,
+  body.ui-route-fastmoss .session-item .del-btn {
+    position: absolute;
+    top: 7px;
+    right: 7px;
+    width: 28px;
+    min-width: 28px;
+    height: 28px;
+    min-height: 28px;
+    padding: 0;
+    border-radius: 9px;
+    font-size: 17px;
+  }
+
+  body.ui-route-home .session-search-empty,
+  body.ui-route-amazon .session-search-empty,
+  body.ui-route-fastmoss .session-search-empty {
+    margin: 24px 8px;
+    padding: 20px 12px;
+    border: 1px dashed var(--ui-line);
+    border-radius: 14px;
+    color: var(--ui-ink-subtle);
+    font-size: 12px;
+    text-align: center;
   }
 
   body.ui-route-home .session-item.active,
@@ -1140,6 +1321,39 @@
   body.ui-route-fastmoss .messages {
     min-width: 0;
     padding: clamp(24px, 4vw, 58px);
+  }
+
+  body.ui-route-home .msg.user .msg-actions,
+  body.ui-route-amazon .msg.user .msg-actions,
+  body.ui-route-fastmoss .msg.user .msg-actions {
+    align-self: flex-end;
+    padding: 0 4px 0 0;
+  }
+
+  body.ui-route-home .msg.user .msg-action-status:empty,
+  body.ui-route-amazon .msg.user .msg-action-status:empty,
+  body.ui-route-fastmoss .msg.user .msg-action-status:empty {
+    display: none;
+  }
+
+  body.ui-route-home .quote-toolbar,
+  body.ui-route-amazon .quote-toolbar,
+  body.ui-route-fastmoss .quote-toolbar {
+    padding: 3px;
+    border-radius: 9px;
+    box-shadow: 0 8px 24px rgba(25, 28, 34, .13);
+  }
+
+  body.ui-route-home #quoteAskBtn,
+  body.ui-route-amazon #quoteAskBtn,
+  body.ui-route-fastmoss #quoteAskBtn {
+    min-height: 30px;
+    padding: 4px 9px;
+    border: 0;
+    border-radius: 7px;
+    font-size: 12px;
+    font-weight: 650;
+    box-shadow: none;
   }
 
   body.ui-route-home .messages:has(.empty-chat),

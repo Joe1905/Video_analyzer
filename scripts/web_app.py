@@ -433,7 +433,7 @@ NAV_ITEMS = [
 ]
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
-UI_ASSET_VERSION = "20260729-7"
+UI_ASSET_VERSION = "20260729-8"
 APP_UI_ASSETS = f"""
 <script id="ui-nav-state-boot">
 let uiNavExpanded = false;
@@ -694,7 +694,7 @@ def public_chat_session_summary(provider: str, summary: dict[str, Any]) -> dict[
     return None
 
 
-def list_public_chat_sessions(provider: str) -> list[dict[str, Any]]:
+def list_public_chat_sessions(provider: str, query: str = "") -> list[dict[str, Any]]:
     provider = normalize_chat_provider(provider)
     rows = []
     for summary in chat_store_for_provider(provider).list_sessions():
@@ -705,6 +705,17 @@ def list_public_chat_sessions(provider: str) -> list[dict[str, Any]]:
         existing_ids = {str(row.get("id") or "") for row in rows}
         rows.extend(row for row in legacy_mcp_session_summaries(provider) if str(row.get("id") or "") not in existing_ids)
         rows.sort(key=lambda row: str(row.get("updated_at") or row.get("created_at") or ""), reverse=True)
+    needle = str(query or "").strip().casefold()
+    if needle:
+        matches = []
+        for row in rows:
+            if needle in str(row.get("title") or "").casefold():
+                matches.append(row)
+                continue
+            session = provider_display_session(provider, str(row.get("id") or ""))
+            if session and any(needle in str(message.content or "").casefold() for message in session.messages):
+                matches.append(row)
+        rows = matches
     return rows
 
 
@@ -14302,8 +14313,9 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/prompt":
             return json_response(self, HTTPStatus.OK, {"prompt": load_prompt(), "feedback_prompt": load_feedback_prompt()})
         if parsed.path == "/api/chat/sessions":
-            provider = normalize_chat_provider(parse_qs(parsed.query).get("provider", ["home"])[0])
-            return json_response(self, HTTPStatus.OK, list_public_chat_sessions(provider))
+            query = parse_qs(parsed.query)
+            provider = normalize_chat_provider(query.get("provider", ["home"])[0])
+            return json_response(self, HTTPStatus.OK, list_public_chat_sessions(provider, query.get("query", [""])[0]))
         if parsed.path == "/api/chat/tool-catalog":
             provider = normalize_chat_provider(parse_qs(parsed.query).get("provider", ["home"])[0])
             return json_response(self, HTTPStatus.OK, build_tool_catalog(provider))
