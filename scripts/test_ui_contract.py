@@ -94,6 +94,7 @@ class UIContractTest(unittest.TestCase):
         for selector in (
             ".ui-app",
             ".ui-nav",
+            ".ui-nav__icon",
             ".ui-frame",
             ".ui-header",
             ".ui-main",
@@ -125,6 +126,9 @@ class UIContractTest(unittest.TestCase):
         self.assertIn('href="/assets/ui-system.css?v=', app)
         self.assertIn('src="/assets/ui-system.js?v=', app)
         self.assertIn('cache_control="no-cache, no-store, must-revalidate"', app)
+        self.assertIn('CHAT_PROVIDER_ICONS', app)
+        self.assertIn('"amazon": "\\u5356\\u5bb6\\u7cbe\\u7075"', app)
+        self.assertIn('class="ui-nav__icon"', app)
         self.assertNotIn("APP_NAV_CSS", app)
         self.assertNotIn("APP_NAV_BEHAVIOR", app)
         self.assertNotIn('re.sub(r"(<header', app)
