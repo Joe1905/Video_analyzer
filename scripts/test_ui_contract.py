@@ -122,8 +122,9 @@ class UIContractTest(unittest.TestCase):
     def test_runtime_uses_placeholders_and_external_assets(self) -> None:
         app = (SCRIPTS_DIR / "web_app.py").read_text(encoding="utf-8")
         self.assertIn('html.replace("<!-- UI_APP_NAV -->", nav, 1)', app)
-        self.assertIn('href="/assets/ui-system.css"', app)
-        self.assertIn('src="/assets/ui-system.js"', app)
+        self.assertIn('href="/assets/ui-system.css?v=', app)
+        self.assertIn('src="/assets/ui-system.js?v=', app)
+        self.assertIn('cache_control="no-cache, no-store, must-revalidate"', app)
         self.assertNotIn("APP_NAV_CSS", app)
         self.assertNotIn("APP_NAV_BEHAVIOR", app)
         self.assertNotIn('re.sub(r"(<header', app)

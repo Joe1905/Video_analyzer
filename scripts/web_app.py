@@ -416,9 +416,10 @@ NAV_ITEMS = [
 ]
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
-APP_UI_ASSETS = """
-<link id="ui-system-css" rel="stylesheet" href="/assets/ui-system.css">
-<script id="ui-system-js" src="/assets/ui-system.js" defer></script>
+UI_ASSET_VERSION = "20260729-2"
+APP_UI_ASSETS = f"""
+<link id="ui-system-css" rel="stylesheet" href="/assets/ui-system.css?v={UI_ASSET_VERSION}">
+<script id="ui-system-js" src="/assets/ui-system.js?v={UI_ASSET_VERSION}" defer></script>
 """.strip()
 
 
@@ -1567,6 +1568,7 @@ def binary_response(
     body: bytes,
     content_type: str,
     filename: str | None = None,
+    cache_control: str | None = None,
 ) -> None:
     handler.send_response(status)
     handler.send_header("Content-Type", content_type)
@@ -1574,6 +1576,8 @@ def binary_response(
     if filename:
         quoted = filename.replace('"', "")
         handler.send_header("Content-Disposition", f'attachment; filename="{quoted}"')
+    if cache_control:
+        handler.send_header("Cache-Control", cache_control)
     handler.end_headers()
     try:
         if handler.command != "HEAD":
@@ -14769,7 +14773,13 @@ class Handler(BaseHTTPRequestHandler):
         if not asset_path.is_file():
             return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Asset not found"})
         content_type = mimetypes.guess_type(asset_path.name)[0] or "application/octet-stream"
-        return binary_response(self, HTTPStatus.OK, asset_path.read_bytes(), content_type)
+        return binary_response(
+            self,
+            HTTPStatus.OK,
+            asset_path.read_bytes(),
+            content_type,
+            cache_control="no-cache, no-store, must-revalidate",
+        )
 
     def serve_chat_attachment(self, attachment_id: str) -> None:
         attachment_path = chat_attachment_path(attachment_id)

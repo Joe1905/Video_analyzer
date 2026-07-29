@@ -318,7 +318,7 @@
     width: 44px;
     height: 44px;
     flex: 0 0 44px;
-    margin: 0 auto 12px;
+    margin: 0 0 12px;
     border-radius: 14px;
     background: var(--ui-brand);
     box-shadow: 0 10px 24px rgba(49, 92, 255, .26);
@@ -424,6 +424,12 @@
   .mobile-session-toggle,
   body.ui-route-lan-chat .mobile-only {
     display: none;
+  }
+
+  @media (min-width: 861px) {
+    body.ui-system .ui-header > .mobile-session-toggle {
+      display: none;
+    }
   }
 
   .ui-page-heading__icon,
