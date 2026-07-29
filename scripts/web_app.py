@@ -395,9 +395,9 @@ CHAT_TOOL_DOMAINS = ("system", "function", "sellersprite", "fastmoss")
 CHAT_PROVIDER_LABELS = {"home": "\u9996\u9875", "amazon": "\u5356\u5bb6\u7cbe\u7075", "fastmoss": "FastMoss"}
 CHAT_PROVIDER_ICONS = {
     "home": (
-        '<path d="M20 14.5a4 4 0 0 1-4 4H8l-4.5 2 1.4-3.8A7 7 0 0 1 3.5 12'
-        'c0-3.9 3.8-7 8.5-7s8.5 3.1 8.5 7Z"/>'
-        '<path d="M8.5 12h.01M12 12h.01M15.5 12h.01"/>'
+        '<path d="M3 10.5 12 3l9 7.5"/>'
+        '<path d="M5 10v10h14V10"/>'
+        '<path d="M9 20v-6h6v6"/>'
     ),
     "amazon": (
         '<circle cx="10.5" cy="10.5" r="5.5"/>'
