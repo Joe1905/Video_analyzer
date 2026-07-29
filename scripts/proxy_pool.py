@@ -945,6 +945,7 @@ def _active_sessions(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         pid = int(row["pid"] or 0)
         pending_expired = not row["account_id"] and _iso_epoch(str(row["created_at"] or "")) + pending_login_ttl_seconds() <= time.time()
         if str(row["runtime_id"] or "") != RUNTIME_ID:
+            _terminate_session_processes(row)
             _remove_unbound_session_profile(row)
             conn.execute("UPDATE browser_sessions SET status = 'stopped', last_error = ?, updated_at = ? WHERE id = ?", ("服务已重启，浏览器和观测通道已释放", now, row["id"]))
         elif pending_expired:

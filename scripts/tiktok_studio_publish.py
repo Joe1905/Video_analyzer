@@ -1346,6 +1346,16 @@ def _file_input_selected(file_input: Any) -> bool:
         return False
 
 
+def _file_input_selection_state(input_handle: Any) -> dict[str, Any]:
+    try:
+        result = input_handle.evaluate(
+            "input => ({ connected: input.isConnected, files: input.files ? input.files.length : 0 })"
+        )
+        return result if isinstance(result, dict) else {}
+    except Exception:
+        return {}
+
+
 def _append_file_input_trace(log_dir: Path, event: str, **details: Any) -> None:
     log_dir.mkdir(parents=True, exist_ok=True)
     payload = {"at": datetime.now(timezone.utc).isoformat(), "event": event, **details}
@@ -1384,6 +1394,48 @@ def _cdp_file_input_state(page: Any) -> dict[str, Any]:
                 pass
 
 
+def _set_video_file_via_cdp(page: Any, video: Path, file_input: Any, log_dir: Path) -> None:
+    """Set the file through Chrome DevTools directly, bypassing Playwright's stalled wrapper."""
+    selector = "input[type='file'][accept*='video'], input[type='file']"
+    session = None
+    started_at = time.monotonic()
+    input_handle = file_input.element_handle(timeout=1000)
+    try:
+        session = page.context.new_cdp_session(page)
+        document = session.send("DOM.getDocument", {"depth": 1})
+        root_node_id = int(document["root"]["nodeId"])
+        node_id = int(session.send(
+            "DOM.querySelector", {"nodeId": root_node_id, "selector": selector}
+        ).get("nodeId") or 0)
+        if not node_id:
+            raise RuntimeError("CDP 未找到 TikTok Studio 视频选择控件")
+        described = session.send("DOM.describeNode", {"nodeId": node_id})
+        backend_node_id = int((described.get("node") or {}).get("backendNodeId") or 0)
+        if not backend_node_id:
+            raise RuntimeError("CDP 未获取到视频选择控件的 backendNodeId")
+        session.send(
+            "DOM.setFileInputFiles",
+            {"files": [str(video)], "backendNodeId": backend_node_id},
+        )
+        selection_state = _file_input_selection_state(input_handle)
+        if not (selection_state.get("files") or selection_state.get("connected") is False):
+            raise RuntimeError("CDP 已返回但视频未写入 TikTok 上传控件")
+        _append_file_input_trace(
+            log_dir,
+            "cdp_direct_injection_succeeded",
+            elapsed_seconds=round(time.monotonic() - started_at, 3),
+            backend_node_id=backend_node_id,
+            selection_state=selection_state,
+            cdp_state=_cdp_file_input_state(page),
+        )
+    finally:
+        if session:
+            try:
+                session.detach()
+            except Exception:
+                pass
+
+
 def _set_video_file_via_native_chooser(
     page: Any,
     video: Path,
@@ -1400,6 +1452,7 @@ def _set_video_file_via_native_chooser(
     if not select_button:
         raise RuntimeError("未找到 TikTok Studio 的选择视频按钮")
     _append_file_input_trace(log_dir, "native_chooser_opening", display=display, video=str(video))
+    input_handle = file_input.element_handle(timeout=1000)
     x11_env = {**os.environ, "DISPLAY": display}
 
     def xdotool(*args: str, allow_failure: bool = False) -> subprocess.CompletedProcess[str]:
@@ -1447,19 +1500,40 @@ def _set_video_file_via_native_chooser(
     _append_file_input_trace(log_dir, "native_chooser_focused", window_id=chooser_window)
 
     xdotool("key", "--clearmodifiers", "ctrl+l")
-    xdotool("type", "--clearmodifiers", "--delay", "1", str(video))
-    xdotool("key", "Return")
-    _append_file_input_trace(log_dir, "native_chooser_path_submitted", submit_count=1)
-    for _ in range(5):
-        if _file_input_selected(file_input):
-            _append_file_input_trace(log_dir, "native_chooser_selected", submit_count=1)
-            return
-        page.wait_for_timeout(200)
-    xdotool("key", "Return")
-    _append_file_input_trace(log_dir, "native_chooser_path_submitted", submit_count=2)
+    page.wait_for_timeout(300)
+    xdotool("type", "--clearmodifiers", "--delay", "10", str(video))
+    page.wait_for_timeout(500)
+    geometry = xdotool("getwindowgeometry", "--shell", chooser_window).stdout
+    dimensions = dict(
+        line.split("=", 1) for line in geometry.splitlines() if "=" in line
+    )
+    width = int(dimensions.get("WIDTH") or 0)
+    height = int(dimensions.get("HEIGHT") or 0)
+    if width < 400 or height < 300:
+        raise RuntimeError(f"系统文件选择器窗口尺寸异常：{geometry.strip()}")
+    open_x, open_y = width - 205, height - 100
+    xdotool("mousemove", "--window", chooser_window, str(open_x), str(open_y))
+    xdotool("click", "1")
+    _append_file_input_trace(
+        log_dir,
+        "native_chooser_open_clicked",
+        window_id=chooser_window,
+        window_width=width,
+        window_height=height,
+        click_x=open_x,
+        click_y=open_y,
+    )
     for _ in range(25):
         if _file_input_selected(file_input):
-            _append_file_input_trace(log_dir, "native_chooser_selected", submit_count=2)
+            _append_file_input_trace(log_dir, "native_chooser_selected", selection_state="files")
+            return
+        selection_state = _file_input_selection_state(input_handle)
+        if chooser_window not in visible_windows() and selection_state.get("connected") is False:
+            _append_file_input_trace(
+                log_dir,
+                "native_chooser_selected",
+                selection_state="input_replaced",
+            )
             return
         page.wait_for_timeout(200)
     raise RuntimeError("系统文件选择器未将视频选入 TikTok 上传控件")
@@ -1475,7 +1549,26 @@ def _set_video_file(page: Any, video: Path, display: str = "", log_dir: Path | N
     file_input = file_inputs.first
     _append_file_input_trace(
         trace_dir,
-        "native_chooser_primary_start",
+        "cdp_direct_injection_start",
+        video=str(video),
+        video_bytes=video.stat().st_size,
+        display=display,
+        cdp_state=_cdp_file_input_state(page),
+    )
+    try:
+        _set_video_file_via_cdp(page, video, file_input, trace_dir)
+        return
+    except Exception as cdp_error:
+        _append_file_input_trace(
+            trace_dir,
+            "cdp_direct_injection_failed",
+            error_type=type(cdp_error).__name__,
+            error=str(cdp_error),
+            cdp_state=_cdp_file_input_state(page),
+        )
+    _append_file_input_trace(
+        trace_dir,
+        "native_chooser_fallback_start",
         video=str(video),
         video_bytes=video.stat().st_size,
         display=display,
@@ -1492,66 +1585,9 @@ def _set_video_file(page: Any, video: Path, display: str = "", log_dir: Path | N
             error=str(native_error),
             cdp_state=_cdp_file_input_state(page),
         )
-        if os.getenv("TIKTOK_PUBLISH_CDP_FILE_INPUT_FALLBACK", "0").strip().lower() not in {"1", "true", "yes", "on"}:
-            raise RuntimeError(f"系统文件选择器选取视频失败：{native_error}") from native_error
-
-    _append_file_input_trace(trace_dir, "cdp_injection_fallback_start")
-    _append_file_input_trace(
-        trace_dir,
-        "cdp_injection_start",
-        video=str(video),
-        video_bytes=video.stat().st_size,
-        display=display,
-        cdp_state=_cdp_file_input_state(page),
-    )
-    started_at = time.monotonic()
-    try:
-        file_input.set_input_files(str(video), timeout=10000)
-        _append_file_input_trace(
-            trace_dir,
-            "cdp_injection_succeeded",
-            elapsed_seconds=round(time.monotonic() - started_at, 3),
-            cdp_state=_cdp_file_input_state(page),
-        )
-        return
-    except Exception as direct_error:
-        if _file_input_selected(file_input):
-            _append_file_input_trace(
-                trace_dir,
-                "cdp_injection_timeout_but_selected",
-                elapsed_seconds=round(time.monotonic() - started_at, 3),
-                error=str(direct_error),
-                cdp_state=_cdp_file_input_state(page),
-            )
-            return
-        _append_file_input_trace(
-            trace_dir,
-            "cdp_injection_failed",
-            elapsed_seconds=round(time.monotonic() - started_at, 3),
-            error_type=type(direct_error).__name__,
-            error=str(direct_error),
-            cdp_state=_cdp_file_input_state(page),
-        )
-        try:
-            _append_file_input_trace(trace_dir, "native_chooser_reset_after_cdp_failure")
-            page.reload(wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_timeout(1000)
-            refreshed_inputs = page.locator("input[type='file'][accept*='video']")
-            if not refreshed_inputs.count():
-                refreshed_inputs = page.locator("input[type='file']")
-            if not refreshed_inputs.count():
-                raise RuntimeError("刷新上传页后未找到视频选择控件")
-            _append_file_input_trace(
-                trace_dir,
-                "native_chooser_reset_complete",
-                cdp_state=_cdp_file_input_state(page),
-            )
-            _set_video_file_via_native_chooser(page, video, display, refreshed_inputs.first, trace_dir)
-            return
-        except Exception as native_error:
-            raise RuntimeError(
-                f"CDP 文件注入失败：{direct_error}; 系统文件选择器降级也失败：{native_error}"
-            ) from native_error
+        raise RuntimeError(
+            f"CDP 直接文件注入失败：{cdp_error}; 系统文件选择器降级也失败：{native_error}"
+        ) from native_error
 
 
 def _selected_product(product_id: str) -> dict[str, Any]:
