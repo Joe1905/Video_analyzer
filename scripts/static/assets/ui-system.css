@@ -427,6 +427,7 @@ body.ui-route-proxy .account-icon-btn { border-radius: 10px !important; }
     padding: 0 28px !important; background: rgba(255,255,255,.62) !important;
     border-bottom: 1px solid var(--source-line) !important; box-shadow: none !important;
     backdrop-filter: blur(14px) !important;
+    animation: none !important;
   }
   body.ui-system > header:not(.app-header) h1,
   body.ui-system .app-header h1 {
