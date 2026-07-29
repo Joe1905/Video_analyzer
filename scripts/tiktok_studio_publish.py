@@ -1400,11 +1400,9 @@ def _set_video_file_via_native_chooser(
     if not select_button:
         raise RuntimeError("未找到 TikTok Studio 的选择视频按钮")
     _append_file_input_trace(log_dir, "native_chooser_opening", display=display, video=str(video))
-    select_button.click(timeout=5000)
-    page.wait_for_timeout(500)
     x11_env = {**os.environ, "DISPLAY": display}
 
-    def xdotool(*args: str) -> None:
+    def xdotool(*args: str, allow_failure: bool = False) -> subprocess.CompletedProcess[str]:
         result = subprocess.run(
             ["xdotool", *args],
             env=x11_env,
@@ -1413,9 +1411,40 @@ def _set_video_file_via_native_chooser(
             timeout=10,
             check=False,
         )
-        if result.returncode:
+        if result.returncode and not allow_failure:
             detail = (result.stderr or result.stdout or "unknown xdotool error").strip()
             raise RuntimeError(f"系统文件选择器操作失败：{detail}")
+        return result
+
+    def visible_windows() -> list[str]:
+        result = xdotool("search", "--onlyvisible", "--name", ".", allow_failure=True)
+        if result.returncode:
+            return []
+        return [window_id for window_id in result.stdout.split() if window_id]
+
+    before_windows = visible_windows()
+    select_button.click(timeout=5000)
+    page.wait_for_timeout(1000)
+    after_windows = visible_windows()
+    chooser_windows = [window_id for window_id in after_windows if window_id not in before_windows]
+    _append_file_input_trace(
+        log_dir,
+        "native_chooser_windows",
+        before=before_windows,
+        after=after_windows,
+        chooser_candidates=chooser_windows,
+    )
+    if len(chooser_windows) != 1:
+        raise RuntimeError(
+            "无法唯一定位系统文件选择器窗口"
+            f"（打开前={before_windows}，打开后={after_windows}，候选={chooser_windows}）"
+        )
+    chooser_window = chooser_windows[0]
+    focus = xdotool("windowfocus", "--sync", chooser_window, allow_failure=True)
+    if focus.returncode:
+        detail = (focus.stderr or focus.stdout or "unknown xdotool error").strip()
+        raise RuntimeError(f"无法将输入焦点切换到系统文件选择器窗口 {chooser_window}：{detail}")
+    _append_file_input_trace(log_dir, "native_chooser_focused", window_id=chooser_window)
 
     xdotool("key", "--clearmodifiers", "ctrl+l")
     xdotool("type", "--clearmodifiers", "--delay", "1", str(video))
