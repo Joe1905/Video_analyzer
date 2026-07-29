@@ -131,11 +131,11 @@
     height: 36px;
     min-height: 36px;
     padding: 0;
-    border: 1px solid var(--ui-line-strong);
+    border: 1px solid var(--ui-line);
     border-radius: 11px;
     background: #fff;
     color: var(--ui-ink-muted);
-    box-shadow: 0 2px 8px rgba(22, 24, 29, .05);
+    box-shadow: none;
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-search-toggle svg {
@@ -159,13 +159,21 @@
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .sidebar-head:has(.session-search.is-open) .session-search-panel {
-    max-height: 48px;
+    max-height: 52px;
     margin: -8px 0 12px;
     opacity: 1;
     transform: none;
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-search-field {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-search-input-wrap {
     position: relative;
     min-width: 0;
   }
@@ -192,6 +200,26 @@
     background: transparent;
     color: var(--ui-ink-subtle);
     font-size: 18px;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-search-submit {
+    width: 58px;
+    min-width: 58px;
+    height: 40px;
+    min-height: 40px;
+    padding: 0 12px;
+    border: 0;
+    border-radius: 11px;
+    background: var(--ui-ink);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-search-submit:hover {
+    border: 0;
+    background: #292c33;
+    color: #fff;
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) #newSession {
