@@ -416,6 +416,28 @@ APP_NAV_CSS = """
 </style>
 """.strip()
 
+APP_NAV_BEHAVIOR = """
+<script id="unified-app-nav-behavior">
+(() => {
+  const sync = () => document.querySelectorAll('.app-nav').forEach((nav) => {
+    const expanded = localStorage.getItem('ui-nav-expanded') === '1';
+    nav.classList.toggle('expanded', expanded);
+    const button = nav.querySelector('.app-nav__toggle');
+    if (button) { button.setAttribute('aria-expanded', String(expanded)); button.title = expanded ? '收起导航' : '展开导航'; }
+  });
+  document.addEventListener('click', (event) => {
+    const button = event.target.closest('.app-nav__toggle');
+    if (!button) return;
+    const nav = button.closest('.app-nav');
+    const expanded = !nav.classList.contains('expanded');
+    localStorage.setItem('ui-nav-expanded', expanded ? '1' : '0');
+    sync();
+  });
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', sync, {once: true}); else sync();
+})();
+</script>
+""".strip()
+
 
 def normalize_chat_provider(provider: str | None) -> str:
     value = str(provider or "home").strip().lower()
@@ -586,14 +608,20 @@ def render_app_nav(current_path: str) -> str:
             f'<svg viewBox="0 0 24 24" aria-hidden="true">{item["icon"]}</svg>'
             f'<span class="app-nav__label">{html_escape(item["label"])}</span></a>'
         )
-    return '<nav class="app-nav" aria-label="\u4e3b\u5bfc\u822a">' + "".join(links) + "</nav>"
+    toggle = (
+        '<button class="app-nav__toggle" type="button" aria-label="展开导航" '
+        'aria-expanded="false" title="展开导航">'
+        '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h14"/></svg>'
+        '</button>'
+    )
+    return '<nav class="app-nav" aria-label="\u4e3b\u5bfc\u822a">' + toggle + "".join(links) + "</nav>"
 
 
 def inject_unified_nav(html: str, current_path: str) -> str:
     nav = render_app_nav(current_path)
     html = re.sub(r'<nav class="app-nav".*?</nav>', nav, html, count=1, flags=re.S)
     if 'id="ui-system-css"' not in html and "</head>" in html:
-        html = html.replace("</head>", APP_NAV_CSS + "\n</head>", 1)
+        html = html.replace("</head>", APP_NAV_CSS + "\n" + APP_NAV_BEHAVIOR + "\n</head>", 1)
     route_name = re.sub(r"[^a-z0-9]+", "-", (current_path or "home").strip("/").lower()) or "home"
     body_class = f"ui-system ui-route-{route_name}"
     def add_ui_body_class(match: re.Match[str]) -> str:

@@ -420,6 +420,18 @@ body.ui-route-proxy .account-icon-btn { border-radius: 10px !important; }
     border-radius: 0 4px 4px 0; background: var(--source-blue);
   }
   body.ui-system .app-nav__label { display: none !important; }
+  body.ui-system .app-nav__toggle {
+    width: 44px; height: 44px; min-height: 44px; padding: 0; display: grid; place-items: center;
+    border: 0; border-radius: 12px; background: transparent; color: #98a0ad; flex: 0 0 44px;
+  }
+  body.ui-system .app-nav__toggle svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
+  body.ui-system .app-nav__toggle:hover { background: rgba(255,255,255,.08); color: #fff; }
+  body.ui-system .app-nav.expanded { width: 224px !important; align-items: stretch !important; transition: width 180ms ease; }
+  body.ui-system .app-nav.expanded .app-nav__toggle { margin-bottom: 10px; }
+  body.ui-system .app-nav.expanded .app-nav__item { width: calc(100% - 16px) !important; justify-content: flex-start !important; padding: 0 14px !important; gap: 12px !important; }
+  body.ui-system .app-nav.expanded .app-nav__label { display: inline !important; overflow: hidden; text-overflow: ellipsis; }
+  body.ui-system .app-nav.expanded ~ *,
+  body.ui-system .app-nav.expanded { overflow-x: hidden !important; }
 
   body.ui-system > header:not(.app-header),
   body.ui-system .app-header {
@@ -650,10 +662,45 @@ body.ui-system .dialog-backdrop {
 body.ui-system .modal,
 body.ui-system .dialog,
 body.ui-system .prompt-modal {
+  background: #fff !important;
   border: 1px solid rgba(223,222,216,.92) !important;
   border-radius: 22px !important;
   box-shadow: 0 18px 54px rgba(31,29,26,.16) !important;
 }
+body.ui-system .login-modal { background: #fff !important; color: var(--source-ink) !important; }
+body.ui-system .login-modal .modal-head,
+body.ui-system .login-modal .modal-body,
+body.ui-system .login-modal .modal-foot { background: #fff !important; }
+body.ui-system .login-modal .login-card,
+body.ui-system .login-modal .profile-preview { background: #fff !important; border-color: var(--source-line) !important; }
+body.ui-system .login-modal .login-card:hover { background: #f4f6ff !important; border-color: #a6b5ff !important; }
+body.ui-system .login-modal .brand-mark { background: var(--source-blue-soft) !important; color: var(--source-blue) !important; box-shadow: none !important; }
+body.ui-system .login-modal .button.primary { background: var(--source-blue) !important; border-color: var(--source-blue) !important; }
+
+/* AI 对话交付稿没有独立的悬空装饰块，快捷入口直接承担入口语义。 */
+body.ui-route-home .empty-chat::before,
+body.ui-route-amazon .empty-chat::before,
+body.ui-route-fastmoss .empty-chat::before { display: none !important; }
+
+/* 工具选择：按 dialog_adaptation_design 的白色抽屉与层级展开反馈。 */
+body.ui-route-home #toolModal .modal-box,
+body.ui-route-amazon #toolModal .modal-box,
+body.ui-route-fastmoss #toolModal .modal-box {
+  width: min(640px, calc(100vw - 40px)) !important; border-radius: 22px !important;
+  border: 1px solid var(--source-line) !important; background: #fff !important;
+  box-shadow: 0 18px 54px rgba(31,29,26,.16) !important;
+}
+body.ui-system #toolModal .modal-head { min-height: 60px; padding: 0 20px !important; font-size: 16px !important; }
+body.ui-system #toolModal .modal-body { padding: 10px 18px 14px !important; }
+body.ui-system #toolModal .modal-foot { padding: 12px 20px !important; }
+body.ui-system #toolModal .tree-node { border-color: #eceae5 !important; overflow: hidden; }
+body.ui-system #toolModal .tree-row { min-height: 38px !important; transition: background-color 150ms ease, color 150ms ease; }
+body.ui-system #toolModal .tree-row:hover { background: #f7f7f4; }
+body.ui-system #toolModal .tree-toggle { color: var(--source-blue) !important; border-radius: 8px !important; }
+body.ui-system #toolModal .tree-children { display: grid; grid-template-rows: 1fr; opacity: 1; transition: grid-template-rows 180ms ease, opacity 150ms ease; }
+body.ui-system #toolModal .tree-children > * { min-height: 0; overflow: hidden; }
+body.ui-system #toolModal .collapsed > .tree-children { display: grid !important; grid-template-rows: 0fr; opacity: 0; }
+body.ui-system #toolModal .tool-row { padding: 8px 0 9px !important; }
 body.ui-system .modal-head,
 body.ui-system .dialog-head,
 body.ui-system .modal-foot {
