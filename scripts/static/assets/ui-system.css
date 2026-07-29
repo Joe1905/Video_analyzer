@@ -639,3 +639,54 @@ body.ui-route-proxy .account-icon-btn { border-radius: 10px !important; }
   body.ui-system .source-page-copy strong { color: var(--source-ink); font-size: 13px; }
   body.ui-system .source-page-copy small { color: var(--source-subtle); font-size: 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 }
+
+/* 对应 dialog_adaptation_design：真实弹窗、抽屉与状态反馈采用同一层级。 */
+body.ui-system .modal-backdrop,
+body.ui-system .modal-overlay,
+body.ui-system .dialog-backdrop {
+  background: rgba(22,25,31,.42) !important;
+  backdrop-filter: blur(2px) !important;
+}
+body.ui-system .modal,
+body.ui-system .dialog,
+body.ui-system .prompt-modal {
+  border: 1px solid rgba(223,222,216,.92) !important;
+  border-radius: 22px !important;
+  box-shadow: 0 18px 54px rgba(31,29,26,.16) !important;
+}
+body.ui-system .modal-head,
+body.ui-system .dialog-head,
+body.ui-system .modal-foot {
+  border-color: var(--source-line) !important;
+}
+body.ui-system .modal-head h2,
+body.ui-system .dialog-head h2 { color: var(--source-ink) !important; letter-spacing: -.25px; }
+body.ui-system .modal-head p,
+body.ui-system .dialog-head p { color: var(--source-muted) !important; }
+body.ui-system .toast {
+  border-radius: 12px !important; background: var(--source-nav) !important;
+  box-shadow: 0 12px 32px rgba(23,25,31,.22) !important;
+}
+body.ui-system [role="tooltip"],
+body.ui-system .tooltip {
+  border-radius: 8px !important; background: var(--source-nav) !important; color: #fff !important;
+  font-size: 11px !important; box-shadow: 0 8px 24px rgba(23,25,31,.18) !important;
+}
+body.ui-system button:focus-visible,
+body.ui-system a:focus-visible,
+body.ui-system input:focus-visible,
+body.ui-system textarea:focus-visible,
+body.ui-system select:focus-visible {
+  outline: 3px solid rgba(49,92,255,.22) !important; outline-offset: 2px !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  body.ui-system *, body.ui-system *::before, body.ui-system *::after {
+    animation-duration: .01ms !important; animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important; transition-duration: .01ms !important;
+  }
+}
+@media (max-width: 860px) {
+  body.ui-system .modal,
+  body.ui-system .dialog,
+  body.ui-system .prompt-modal { border-radius: 24px 24px 0 0 !important; }
+}
