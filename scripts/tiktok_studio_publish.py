@@ -981,7 +981,29 @@ def _discard_stale_edit(page: Any, log_dir: Path) -> bool:
         raise ManualReviewRequired("检测到未保存的旧视频提示，但没有找到 Discard 按钮")
     page.screenshot(path=str(log_dir / "stale-edit-before-discard.png"), full_page=False)
     discard.click(timeout=5000)
-    page.wait_for_timeout(1500)
+    page.wait_for_timeout(500)
+    discard_confirmation = _first_visible([
+        page.get_by_role("dialog").filter(
+            has_text=re.compile(r"discard this post\?|will be discarded permanently", re.I)
+        ),
+    ])
+    if discard_confirmation:
+        confirm_discard = _first_visible([
+            discard_confirmation.get_by_role(
+                "button", name=re.compile(r"^discard$|^放弃$|^丢弃$", re.I)
+            ),
+        ])
+        if not confirm_discard:
+            raise ManualReviewRequired("检测到丢弃旧视频的二次确认，但没有找到确认 Discard 按钮")
+        confirm_discard.click(timeout=5000)
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if not discard_confirmation.is_visible():
+                break
+            page.wait_for_timeout(200)
+        else:
+            raise ManualReviewRequired("丢弃旧视频的二次确认未关闭，已保留观测通道")
+    page.wait_for_timeout(1000)
     page.screenshot(path=str(log_dir / "stale-edit-discarded.png"), full_page=False)
     return True
 
