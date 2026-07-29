@@ -997,20 +997,14 @@ def cleanup_expired_sessions() -> int:
 
 def _allocate_session_slot(conn: sqlite3.Connection) -> int:
     max_slots = browser_max_slots()
-    used = {int(row["slot"] or 0) for row in _active_sessions(conn)}
+    active_sessions = _active_sessions(conn)
+    if len(active_sessions) >= max_slots:
+        raise ValueError(f"浏览器观测槽位已满，当前最多同时运行 {max_slots} 个")
+    used = {int(row["slot"] or 0) for row in active_sessions}
     for slot in range(1, max_slots + 1):
         if slot not in used and _slot_ports_available(slot):
             return slot
     raise ValueError(f"浏览器观测槽位已满或端口被占用，当前最多同时运行 {max_slots} 个")
-
-
-def _allocate_manual_slot(conn: sqlite3.Connection) -> int:
-    if any(int(row["slot"] or 0) == 0 for row in _active_sessions(conn)):
-        raise ValueError("手动登录观测通道正在使用，请先完成或关闭当前登录")
-    if not _slot_ports_available(0):
-        ports = _slot_ports(0)
-        raise ValueError(f"手动登录观测通道端口被占用：VNC {ports['vnc_port']} / noVNC {ports['novnc_port']} / CDP {ports['debug_port']}")
-    return 0
 
 
 def _browser_binary() -> str:
@@ -1055,10 +1049,9 @@ def _novnc_web_dir() -> str:
 
 
 def _slot_ports(slot: int) -> dict[str, Any]:
-    # Auto slots occupy the first ports after the reserved server desktop;
-    # the single manual login slot is placed after all auto slots.
-    max_slots = browser_max_slots()
-    offset = slot if slot > 0 else max_slots + max(1, NOVNC_MANUAL_PORTS)
+    # All new sessions share slots 1..browser_max_slots. Slot 0 is retained
+    # only so a pre-existing legacy session can still be cleaned up safely.
+    offset = slot if slot > 0 else browser_max_slots() + max(1, NOVNC_MANUAL_PORTS)
     return {
         "display": f":{XVFB_DISPLAY_BASE + slot}",
         "vnc_port": VNC_PORT + offset,
@@ -3737,7 +3730,7 @@ def start_login_session(payload: dict[str, Any]) -> dict[str, Any]:
                     raise ValueError("账号已经处于唤醒状态")
         owner = "automation" if payload.get("_automation") else "manual"
         current_job_id = _clean_text(payload.get("_current_job_id"), 80) if owner == "automation" else ""
-        slot = _allocate_session_slot(conn) if account_id else _allocate_manual_slot(conn)
+        slot = _allocate_session_slot(conn)
         pending_name = f"pending-{proxy_profile_id}-{slot}-{int(time.time())}" if not username else username
         profile = _deep_merge(_isolation_profile(pending_name, proxy_profile_id, pool), saved_profile) if account_id else _isolation_profile(pending_name, proxy_profile_id, pool)
         profile_key = str((profile.get("isolation") or {}).get("browser_profile_key") or "")
