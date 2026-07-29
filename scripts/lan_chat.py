@@ -83,6 +83,8 @@ class LanChatStore:
         self._media_poster_lock = threading.Lock()
         self._file_janitor_lock = threading.Lock()
         self._file_janitor_started = False
+        self._message_event_condition = threading.Condition()
+        self._message_event_sequence = 0
 
     def initialize(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -768,22 +770,48 @@ class LanChatStore:
         return {"roomId": room_id, "dissolved": True}
 
     def list_messages(
-        self, device_token: str, room_id: str, after_id: int = 0, limit: int = 100
+        self,
+        device_token: str,
+        room_id: str,
+        after_id: int = 0,
+        limit: int = 100,
+        before_id: int = 0,
     ) -> dict[str, Any]:
         current = self.authenticate(device_token)
         after_id = max(0, int(after_id or 0))
+        before_id = max(0, int(before_id or 0))
+        if after_id and before_id:
+            raise LanChatError("before 和 after 不能同时使用")
         limit = max(1, min(int(limit or 100), 200))
         with self._connect() as conn:
             self._require_room_access(conn, room_id, current["id"])
-            rows = conn.execute(
-                """SELECT m.*, u.nickname, u.avatar_color, u.avatar_status
-                   FROM messages m
-                   JOIN users u ON u.id = m.sender_id
-                   WHERE m.room_id = ? AND m.id > ?
-                   ORDER BY m.id ASC LIMIT ?""",
-                (room_id, after_id, limit),
-            ).fetchall()
+            if after_id:
+                rows = conn.execute(
+                    """SELECT m.*, u.nickname, u.avatar_color, u.avatar_status
+                       FROM messages m JOIN users u ON u.id = m.sender_id
+                       WHERE m.room_id = ? AND m.id > ?
+                       ORDER BY m.id ASC LIMIT ?""",
+                    (room_id, after_id, limit),
+                ).fetchall()
+            else:
+                upper_bound = before_id if before_id else 2**63 - 1
+                rows = conn.execute(
+                    """SELECT m.*, u.nickname, u.avatar_color, u.avatar_status
+                       FROM messages m JOIN users u ON u.id = m.sender_id
+                       WHERE m.room_id = ? AND m.id < ?
+                       ORDER BY m.id DESC LIMIT ?""",
+                    (room_id, upper_bound, limit),
+                ).fetchall()
+                rows.reverse()
             last_id = int(rows[-1]["id"]) if rows else after_id
+            oldest_id = int(rows[0]["id"]) if rows else before_id
+            has_more_before = bool(
+                oldest_id
+                and conn.execute(
+                    "SELECT 1 FROM messages WHERE room_id = ? AND id < ? LIMIT 1",
+                    (room_id, oldest_id),
+                ).fetchone()
+            )
             if last_id > 0:
                 conn.execute(
                     """INSERT INTO room_reads
@@ -798,7 +826,47 @@ class LanChatStore:
                     (room_id, current["id"], last_id, time.time()),
                 )
             messages = [self._message_payload(conn, row, current["id"]) for row in rows]
-        return {"messages": messages, "lastId": messages[-1]["id"] if messages else after_id}
+        return {
+            "messages": messages,
+            "lastId": messages[-1]["id"] if messages else after_id,
+            "oldestId": messages[0]["id"] if messages else before_id,
+            "hasMoreBefore": has_more_before,
+        }
+
+    def wait_for_message_events(
+        self, device_token: str, after_id: int, timeout_seconds: float = 20.0
+    ) -> list[dict[str, int | str]]:
+        """Wait for authorized message IDs; database catch-up makes reconnects lossless."""
+        current = self.authenticate(device_token)
+        after_id = max(0, int(after_id or 0))
+        with self._message_event_condition:
+            observed_sequence = self._message_event_sequence
+        events = self._message_events_for_user(current["id"], after_id)
+        if events:
+            return events
+        with self._message_event_condition:
+            if self._message_event_sequence == observed_sequence:
+                self._message_event_condition.wait(max(1.0, min(float(timeout_seconds), 20.0)))
+        return self._message_events_for_user(current["id"], after_id)
+
+    def _message_events_for_user(self, user_id: str, after_id: int) -> list[dict[str, int | str]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT m.id, m.room_id
+                   FROM messages m
+                   JOIN rooms r ON r.id = m.room_id
+                   LEFT JOIN room_members rm
+                     ON rm.room_id = m.room_id AND rm.user_id = ?
+                   WHERE m.id > ? AND (r.kind = 'public' OR rm.user_id IS NOT NULL)
+                   ORDER BY m.id ASC LIMIT 100""",
+                (user_id, after_id),
+            ).fetchall()
+        return [{"id": int(row["id"]), "roomId": str(row["room_id"])} for row in rows]
+
+    def _notify_message_event(self) -> None:
+        with self._message_event_condition:
+            self._message_event_sequence += 1
+            self._message_event_condition.notify_all()
 
     def send_message(
         self,
@@ -873,6 +941,96 @@ class LanChatStore:
             if media_filename:
                 (self.media_dir / media_filename).unlink(missing_ok=True)
             raise
+        self._notify_message_event()
+        return payload, True
+
+    def send_media_file(
+        self,
+        device_token: str,
+        room_id: str,
+        original_name: str,
+        file_stream: BinaryIO,
+        content: str = "",
+        client_upload_id: str = "",
+    ) -> tuple[dict[str, Any], bool]:
+        """Store inline image/video media without buffering a Base64 payload in memory."""
+        current = self.authenticate(device_token)
+        clean_upload_id = self._clean_client_upload_id(client_upload_id)
+        clean_content = str(content or "").strip()
+        if len(clean_content) > 4000:
+            raise LanChatError("消息不能超过 4000 个字符")
+        with self._connect() as conn:
+            self._require_room_access(conn, room_id, current["id"])
+            existing = self._client_upload_message(
+                conn, current["id"], room_id, clean_upload_id
+            )
+            if existing is not None:
+                return existing, False
+
+        upload_id = uuid.uuid4().hex
+        temp_path = self.media_dir / f".{upload_id}.upload"
+        size_bytes = 0
+        header = b""
+        final_path: Path | None = None
+        try:
+            with temp_path.open("wb") as output:
+                while True:
+                    chunk = file_stream.read(FILE_COPY_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    if not isinstance(chunk, bytes):
+                        raise LanChatError("上传媒体数据无效")
+                    size_bytes += len(chunk)
+                    if size_bytes > MESSAGE_MEDIA_MAX_BYTES:
+                        raise LanChatError("图片或视频不能超过 100MB，请改用文件发送", 413)
+                    if len(header) < 16:
+                        header += chunk[: 16 - len(header)]
+                    output.write(chunk)
+            if size_bytes <= 0:
+                raise LanChatError("上传媒体不能为空")
+            extension = self._message_media_extension(header)
+            media_filename = f"{upload_id}.{extension}"
+            final_path = self.media_dir / media_filename
+            temp_path.replace(final_path)
+            now = time.time()
+            with self._connect() as conn:
+                self._require_room_access(conn, room_id, current["id"])
+                existing = self._client_upload_message(
+                    conn, current["id"], room_id, clean_upload_id
+                )
+                if existing is not None:
+                    final_path.unlink(missing_ok=True)
+                    return existing, False
+                cursor = conn.execute(
+                    """INSERT INTO messages
+                       (room_id, sender_id, content, image_filename, image_mime_type,
+                        media_expires_at, media_deleted_at, client_upload_id, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)""",
+                    (
+                        room_id,
+                        current["id"],
+                        clean_content,
+                        media_filename,
+                        MESSAGE_MEDIA_TYPES[extension],
+                        now + MESSAGE_MEDIA_RETENTION_SECONDS,
+                        clean_upload_id or None,
+                        now,
+                    ),
+                )
+                conn.execute("UPDATE rooms SET updated_at = ? WHERE id = ?", (now, room_id))
+                row = conn.execute(
+                    """SELECT m.*, u.nickname, u.avatar_color, u.avatar_status
+                       FROM messages m JOIN users u ON u.id = m.sender_id
+                       WHERE m.id = ?""",
+                    (cursor.lastrowid,),
+                ).fetchone()
+                payload = self._message_payload(conn, row, current["id"])
+        except Exception:
+            temp_path.unlink(missing_ok=True)
+            if final_path is not None:
+                final_path.unlink(missing_ok=True)
+            raise
+        self._notify_message_event()
         return payload, True
 
     def send_file(
@@ -1006,6 +1164,7 @@ class LanChatStore:
             temp_path.unlink(missing_ok=True)
             final_path.unlink(missing_ok=True)
             raise
+        self._notify_message_event()
         return payload, True
 
     def accept_file(self, device_token: str, file_id: str) -> dict[str, Any]:
@@ -1601,21 +1760,24 @@ class LanChatStore:
             raise LanChatError("媒体数据无效") from exc
         if not payload or len(payload) > MESSAGE_MEDIA_MAX_BYTES:
             raise LanChatError("图片或视频不能超过 100MB，请改用文件发送", 413)
-        if payload.startswith(b"\xff\xd8\xff"):
-            extension = "jpg"
-        elif payload.startswith(b"\x89PNG\r\n\x1a\n"):
-            extension = "png"
-        elif payload.startswith((b"GIF87a", b"GIF89a")):
-            extension = "gif"
-        elif len(payload) >= 12 and payload[:4] == b"RIFF" and payload[8:12] == b"WEBP":
-            extension = "webp"
-        elif len(payload) >= 12 and payload[4:8] == b"ftyp":
-            extension = "mp4"
-        elif payload.startswith(b"\x1a\x45\xdf\xa3"):
-            extension = "webm"
-        else:
-            raise LanChatError("仅支持 JPG、PNG、GIF、WebP、MP4 或 WebM 媒体")
+        extension = LanChatStore._message_media_extension(payload[:16])
         return payload, MESSAGE_MEDIA_TYPES[extension], extension
+
+    @staticmethod
+    def _message_media_extension(header: bytes) -> str:
+        if header.startswith(b"\xff\xd8\xff"):
+            return "jpg"
+        if header.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "png"
+        if header.startswith((b"GIF87a", b"GIF89a")):
+            return "gif"
+        if len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WEBP":
+            return "webp"
+        if len(header) >= 12 and header[4:8] == b"ftyp":
+            return "mp4"
+        if header.startswith(b"\x1a\x45\xdf\xa3"):
+            return "webm"
+        raise LanChatError("仅支持 JPG、PNG、GIF、WebP、MP4 或 WebM 媒体")
 
     @staticmethod
     def _clean_file_name(value: str) -> str:

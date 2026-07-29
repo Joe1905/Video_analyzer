@@ -1523,7 +1523,11 @@ def binary_response(
         quoted = filename.replace('"', "")
         handler.send_header("Content-Disposition", f'attachment; filename="{quoted}"')
     handler.end_headers()
-    handler.wfile.write(body)
+    try:
+        if handler.command != "HEAD":
+            handler.wfile.write(body)
+    except (BrokenPipeError, ConnectionResetError):
+        pass
 
 
 def file_response(
@@ -1532,24 +1536,71 @@ def file_response(
     content_type: str,
     filename: str,
     size: int,
+    download: bool = True,
 ) -> None:
-    encoded_name = quote(filename, safe="")
-    handler.send_response(HTTPStatus.OK)
+    file_size = max(0, int(size))
+    start = 0
+    end = max(0, file_size - 1)
+    status = HTTPStatus.OK
+    range_header = handler.headers.get("Range", "").strip()
+    if range_header:
+        if not range_header.startswith("bytes=") or "," in range_header:
+            handler.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+            handler.send_header("Content-Range", f"bytes */{file_size}")
+            handler.end_headers()
+            return
+        try:
+            start_text, end_text = range_header[6:].split("-", 1)
+            if start_text:
+                start = int(start_text)
+                end = int(end_text) if end_text else end
+            else:
+                suffix = int(end_text)
+                if suffix <= 0:
+                    raise ValueError
+                start = max(0, file_size - suffix)
+            end = min(end, file_size - 1)
+        except ValueError:
+            handler.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+            handler.send_header("Content-Range", f"bytes */{file_size}")
+            handler.end_headers()
+            return
+        if file_size <= 0 or start < 0 or start >= file_size or start > end:
+            handler.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+            handler.send_header("Content-Range", f"bytes */{file_size}")
+            handler.end_headers()
+            return
+        status = HTTPStatus.PARTIAL_CONTENT
+
+    length = file_size if file_size else 0
+    if status == HTTPStatus.PARTIAL_CONTENT:
+        length = end - start + 1
+    handler.send_response(status)
     handler.send_header("Content-Type", content_type or "application/octet-stream")
-    handler.send_header("Content-Length", str(size))
-    handler.send_header(
-        "Content-Disposition",
-        f"attachment; filename=download; filename*=UTF-8''{encoded_name}",
-    )
-    handler.send_header("Cache-Control", "no-store")
+    handler.send_header("Accept-Ranges", "bytes")
+    handler.send_header("Content-Length", str(length))
+    if status == HTTPStatus.PARTIAL_CONTENT:
+        handler.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
+    if download:
+        encoded_name = quote(filename, safe="")
+        handler.send_header(
+            "Content-Disposition",
+            f"attachment; filename=download; filename*=UTF-8''{encoded_name}",
+        )
+        handler.send_header("Cache-Control", "no-store")
     handler.end_headers()
+    if handler.command == "HEAD" or not length:
+        return
     try:
         with path.open("rb") as source:
-            while True:
-                chunk = source.read(1024 * 1024)
+            source.seek(start)
+            remaining = length
+            while remaining > 0:
+                chunk = source.read(min(1024 * 1024, remaining))
                 if not chunk:
                     break
                 handler.wfile.write(chunk)
+                remaining -= len(chunk)
     except (BrokenPipeError, ConnectionResetError):
         pass
 
@@ -13649,6 +13700,39 @@ def _lan_chat_request_json(
     return payload
 
 
+def stream_lan_chat_events(handler: BaseHTTPRequestHandler, after_id: int) -> None:
+    """Long-poll-like SSE backed by the message database for lossless reconnects."""
+    token = _lan_chat_token(handler)
+    lan_chat_store.authenticate(token)
+    handler.send_response(HTTPStatus.OK)
+    handler.send_header("Content-Type", "text/event-stream; charset=utf-8")
+    handler.send_header("Cache-Control", "no-cache, no-store")
+    handler.send_header("Connection", "keep-alive")
+    handler.send_header("X-Accel-Buffering", "no")
+    handler.end_headers()
+    cursor = max(0, int(after_id or 0))
+    try:
+        while not handler.wfile.closed:
+            events = lan_chat_store.wait_for_message_events(token, cursor, 20.0)
+            if events:
+                for event in events:
+                    cursor = max(cursor, int(event["id"]))
+                    handler.wfile.write(b"event: message\n")
+                    handler.wfile.write(
+                        b"data: "
+                        + json.dumps(event, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                        + b"\n\n"
+                    )
+                handler.wfile.flush()
+            else:
+                handler.wfile.write(b"event: heartbeat\ndata: {}\n\n")
+                handler.wfile.flush()
+    except (BrokenPipeError, ConnectionResetError):
+        pass
+    finally:
+        handler.close_connection = True
+
+
 def _feishu_users() -> dict[str, Any]:
     payload = feishu_capability_client.list_users()
     lan_chat_store.sync_feishu_users(payload["users"])
@@ -13767,8 +13851,10 @@ def handle_lan_chat_get(handler: BaseHTTPRequestHandler, parsed) -> bool:
             r"/api/lan-chat/media/([0-9a-f]{32}\.(?:jpg|png|gif|webp|mp4|webm))", path
         )
         if media_match:
-            body, content_type = lan_chat_store.message_media_bytes(media_match.group(1))
-            binary_response(handler, HTTPStatus.OK, body, content_type)
+            file_path, filename, content_type, size = lan_chat_store.message_media_info(
+                media_match.group(1)
+            )
+            file_response(handler, file_path, content_type, filename, size, download=False)
             return True
         file_match = re.fullmatch(r"/api/lan-chat/files/([0-9a-f]{32})", path)
         if file_match:
@@ -13782,13 +13868,26 @@ def handle_lan_chat_get(handler: BaseHTTPRequestHandler, parsed) -> bool:
             query = parse_qs(parsed.query)
             try:
                 after_id = int(query.get("after", ["0"])[0])
+                before_id = int(query.get("before", ["0"])[0])
                 limit = int(query.get("limit", ["100"])[0])
             except ValueError as exc:
                 raise LanChatError("分页参数无效") from exc
             payload = lan_chat_store.list_messages(
-                _lan_chat_token(handler), unquote(message_match.group(1)), after_id, limit
+                _lan_chat_token(handler),
+                unquote(message_match.group(1)),
+                after_id=after_id,
+                before_id=before_id,
+                limit=limit,
             )
             json_response(handler, HTTPStatus.OK, payload)
+            return True
+        if path == "/api/lan-chat/events":
+            query = parse_qs(parsed.query)
+            try:
+                after_id = int(query.get("after", ["0"])[0])
+            except ValueError as exc:
+                raise LanChatError("事件游标无效") from exc
+            stream_lan_chat_events(handler, after_id)
             return True
     except LanChatError as exc:
         json_response(handler, exc.status, {"error": str(exc)})
@@ -13819,6 +13918,45 @@ def handle_lan_chat_post(handler: BaseHTTPRequestHandler, parsed) -> bool:
                 download_token, download_match.group(1)
             )
             file_response(handler, file_path, content_type, filename, size)
+            return True
+
+        media_upload_match = re.fullmatch(r"/api/lan-chat/rooms/([^/]+)/media", path)
+        if media_upload_match:
+            try:
+                content_length = int(handler.headers.get("Content-Length", "0") or "0")
+            except ValueError as exc:
+                raise LanChatError("请求长度无效") from exc
+            if content_length <= 0 or content_length > MESSAGE_MEDIA_MAX_BYTES + 2 * 1024 * 1024:
+                raise LanChatError("上传内容为空或超过 100MB 限制", 413)
+            if not handler.headers.get("Content-Type", "").lower().startswith("multipart/form-data"):
+                raise LanChatError("媒体上传必须使用 multipart/form-data")
+            form = cgi.FieldStorage(
+                fp=handler.rfile,
+                headers=handler.headers,
+                environ={
+                    "REQUEST_METHOD": "POST",
+                    "CONTENT_TYPE": handler.headers.get("Content-Type", ""),
+                    "CONTENT_LENGTH": str(content_length),
+                },
+            )
+            if "media" not in form:
+                raise LanChatError("请选择要发送的图片或视频")
+            media_item = form["media"]
+            if isinstance(media_item, list) or not getattr(media_item, "file", None):
+                raise LanChatError("每次只能发送一个媒体文件")
+            message, created = lan_chat_store.send_media_file(
+                _lan_chat_token(handler),
+                unquote(media_upload_match.group(1)),
+                str(getattr(media_item, "filename", "") or ""),
+                media_item.file,
+                str(form.getfirst("content", "") or ""),
+                str(form.getfirst("clientUploadId", "") or ""),
+            )
+            json_response(
+                handler,
+                HTTPStatus.CREATED if created else HTTPStatus.OK,
+                {"message": message, "created": created},
+            )
             return True
 
         upload_match = re.fullmatch(r"/api/lan-chat/rooms/([^/]+)/files", path)
@@ -14659,6 +14797,13 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/delete":
             return self.handle_delete()
         return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
+
+    def do_HEAD(self) -> None:
+        parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/lan-chat/media/") and handle_lan_chat_get(self, parsed):
+            return
+        self.send_response(HTTPStatus.NOT_FOUND)
+        self.end_headers()
 
     def read_json_body(self) -> dict[str, Any]:
         content_length = int(self.headers.get("Content-Length", "0") or "0")

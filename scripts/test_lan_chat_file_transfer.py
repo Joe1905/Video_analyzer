@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import gc
 import sqlite3
 import tempfile
 import time
@@ -32,6 +33,7 @@ class LanChatFileTransferTest(unittest.TestCase):
         self.receiver = self.store.create_account(DEFAULT_FEISHU_USER_ID, "接收者")
 
     def tearDown(self) -> None:
+        gc.collect()
         self.temp_dir.cleanup()
 
     def test_initialize_migrates_legacy_inline_media_expiry(self) -> None:
@@ -58,6 +60,7 @@ class LanChatFileTransferTest(unittest.TestCase):
                        VALUES ('public', 'legacy', '', ?, 'image/jpeg', NULL, ?)""",
                     ("0" * 32 + ".jpg", created_at),
                 )
+            conn.close()
 
             store = LanChatStore(db_path)
             store.initialize()
@@ -68,6 +71,7 @@ class LanChatFileTransferTest(unittest.TestCase):
                 expires_at, deleted_at = conn.execute(
                     "SELECT media_expires_at, media_deleted_at FROM messages"
                 ).fetchone()
+            conn.close()
             self.assertIn("media_expires_at", columns)
             self.assertIn("media_deleted_at", columns)
             self.assertIn("client_upload_id", columns)
@@ -213,16 +217,45 @@ class LanChatFileTransferTest(unittest.TestCase):
             self.store.message_media_info(filename)
         self.assertEqual(context.exception.status, 410)
 
-    def test_inline_media_request_uses_one_data_field(self) -> None:
+    def test_inline_media_request_uses_multipart_streaming(self) -> None:
         template = (Path(__file__).parent / "static" / "lan_chat.html").read_text(
             encoding="utf-8"
         )
-        self.assertIn("JSON.stringify({content,mediaData,clientUploadId})", template)
-        self.assertIn(
-            "JSON.stringify({content,mediaData:prepared.dataUrl,clientUploadId:item.clientUploadId})",
-            template,
+        self.assertIn('isFile?"files":"media"', template)
+        self.assertIn('form.append(isFile?"file":"media",prepared.file,prepared.name)', template)
+        self.assertNotIn("readAsDataUrl", template)
+        self.assertNotIn("mediaData:prepared.dataUrl", template)
+
+    def test_streamed_media_is_paginated_and_emits_events(self) -> None:
+        payload = b"\x00\x00\x00\x18ftypisom" + b"streamed-video"
+        sent = []
+        for index in range(3):
+            message, created = self.store.send_media_file(
+                self.sender["sessionToken"],
+                "public",
+                f"clip-{index}.mp4",
+                BytesIO(payload),
+                f"视频 {index}",
+                f"stream_upload_{index:02d}_abcdefghijkl",
+            )
+            self.assertTrue(created)
+            sent.append(message)
+        latest = self.store.list_messages(
+            self.sender["sessionToken"], "public", limit=2
         )
-        self.assertNotIn("imageData:", template)
+        self.assertEqual([item["id"] for item in latest["messages"]], [sent[1]["id"], sent[2]["id"]])
+        self.assertTrue(latest["hasMoreBefore"])
+        older = self.store.list_messages(
+            self.sender["sessionToken"], "public", before_id=latest["oldestId"], limit=2
+        )
+        self.assertEqual([item["id"] for item in older["messages"]], [sent[0]["id"]])
+        events = self.store.wait_for_message_events(self.receiver["sessionToken"], 0, 0.01)
+        self.assertEqual([event["id"] for event in events], [item["id"] for item in sent])
+        filename = sent[0]["mediaUrl"].rsplit("/", 1)[-1]
+        path, _, content_type, size = self.store.message_media_info(filename)
+        self.assertEqual(content_type, "video/mp4")
+        self.assertEqual(size, len(payload))
+        self.assertEqual(path.read_bytes(), payload)
 
     def test_inline_media_client_upload_id_is_idempotent(self) -> None:
         upload_id = "inline_upload_1234567890"
