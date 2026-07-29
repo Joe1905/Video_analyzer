@@ -401,6 +401,7 @@ CHAT_PROVIDER_DEFAULT_DOMAINS = {
 FORCED_MCP_CHAT_PROVIDERS = {"amazon", "fastmoss"}
 MCP_TOOL_CACHE: dict[str, dict[str, Any]] = {}
 PROXY_POOL_ENABLED = os.getenv("PROXY_POOL_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
+UI_TEST_MODE = os.getenv("UI_TEST_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}
 NAV_ITEMS = [
     {"key": "home", "href": "/", "label": "\u9996\u9875", "title": "AI \u804a\u5929", "icon": '<path d="M3 10.5 12 3l9 7.5"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/>'},
     {"key": "lan-chat", "href": "/lan-chat", "label": "\u90bb\u804a", "title": "\u5c40\u57df\u7f51\u804a\u5929", "icon": '<path d="M21 15a4 4 0 0 1-4 4H8l-5 2 1.6-4.1A7 7 0 0 1 3 12c0-4 4-7 9-7s9 3 9 7z"/><path d="M8 12h.01M12 12h.01M16 12h.01"/>'},
@@ -415,34 +416,9 @@ NAV_ITEMS = [
 ]
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
-APP_NAV_CSS = """
+APP_UI_ASSETS = """
 <link id="ui-system-css" rel="stylesheet" href="/assets/ui-system.css">
-<style id="unified-app-nav-style">
-.app-nav{height:48px;display:flex;align-items:center;gap:4px;font-family:Inter,"PingFang SC","Microsoft YaHei",system-ui,-apple-system,sans-serif;padding:4px;border:1px solid #e5e7eb;border-radius:14px;background:rgba(255,255,255,.94);box-shadow:0 1px 2px rgba(15,23,42,.04),0 8px 24px rgba(15,23,42,.03);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);overflow-x:auto;scrollbar-width:none}.app-nav::-webkit-scrollbar{display:none}.app-nav__item{height:38px;display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:0 14px;border:1px solid transparent;border-radius:10px;color:#64748b;text-decoration:none;font-size:13px;font-weight:650;line-height:1;white-space:nowrap;transition:background-color .16s ease,color .16s ease,border-color .16s ease,box-shadow .16s ease}.app-nav__item svg{width:18px;height:18px;stroke:#94a3b8;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round;fill:none;flex:0 0 18px;transition:stroke .16s ease}.app-nav__item:hover{background:#f8fafc;color:#334155;border-color:#eef2f7}.app-nav__item:hover svg{stroke:#64748b}.app-nav__item:focus-visible{outline:none;box-shadow:0 0 0 3px rgba(37,99,235,.14)}.app-nav__item.active{background:#eff6ff;color:#2563eb;border-color:#bfdbfe;box-shadow:inset 0 0 0 1px rgba(37,99,235,.05)}.app-nav__item.active svg{stroke:#2563eb}.app-nav__label{line-height:1}@media(max-width:760px){.app-nav{height:46px;max-width:100%;gap:3px}.app-nav__item{height:36px;padding:0 11px}.app-nav__label{display:none}}
-</style>
-""".strip()
-
-APP_NAV_BEHAVIOR = """
-<script id="unified-app-nav-behavior">
-(() => {
-  const sync = () => document.querySelectorAll('.app-nav').forEach((nav) => {
-    const expanded = localStorage.getItem('ui-nav-expanded') === '1';
-    document.body?.classList.toggle('ui-nav-expanded', expanded);
-    nav.classList.toggle('expanded', expanded);
-    const button = nav.querySelector('.app-nav__toggle');
-    if (button) { button.setAttribute('aria-expanded', String(expanded)); button.title = expanded ? '收起导航' : '展开导航'; }
-  });
-  document.addEventListener('click', (event) => {
-    const button = event.target.closest('.app-nav__toggle');
-    if (!button) return;
-    const nav = button.closest('.app-nav');
-    const expanded = !nav.classList.contains('expanded');
-    localStorage.setItem('ui-nav-expanded', expanded ? '1' : '0');
-    sync();
-  });
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', sync, {once: true}); else sync();
-})();
-</script>
+<script id="ui-system-js" src="/assets/ui-system.js" defer></script>
 """.strip()
 
 
@@ -609,26 +585,28 @@ def render_app_nav(current_path: str) -> str:
     active = nav_active_key(current_path)
     links = []
     for item in NAV_ITEMS:
-        cls = "app-nav__item active" if item["key"] == active else "app-nav__item"
+        cls = "ui-nav__item active" if item["key"] == active else "ui-nav__item"
         links.append(
             f'<a class="{cls}" href="{item["href"]}" title="{html_escape(item["title"])}">'
             f'<svg viewBox="0 0 24 24" aria-hidden="true">{item["icon"]}</svg>'
-            f'<span class="app-nav__label">{html_escape(item["label"])}</span></a>'
+            f'<span class="ui-nav__label">{html_escape(item["label"])}</span></a>'
         )
     toggle = (
-        '<button class="app-nav__toggle" type="button" aria-label="展开导航" '
+        '<button class="ui-nav__toggle" type="button" aria-label="展开导航" '
         'aria-expanded="false" title="展开导航">'
         '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h14"/></svg>'
         '</button>'
     )
-    return '<nav class="app-nav" aria-label="\u4e3b\u5bfc\u822a">' + toggle + "".join(links) + "</nav>"
+    return '<nav class="ui-nav" aria-label="\u4e3b\u5bfc\u822a">' + toggle + "".join(links) + "</nav>"
 
 
 def inject_unified_nav(html: str, current_path: str) -> str:
     nav = render_app_nav(current_path)
-    html = re.sub(r'<nav class="app-nav".*?</nav>', nav, html, count=1, flags=re.S)
+    if "<!-- UI_APP_NAV -->" not in html:
+        raise RuntimeError(f"UI shell placeholder missing for {current_path}")
+    html = html.replace("<!-- UI_APP_NAV -->", nav, 1)
     if 'id="ui-system-css"' not in html and "</head>" in html:
-        html = html.replace("</head>", APP_NAV_CSS + "\n" + APP_NAV_BEHAVIOR + "\n</head>", 1)
+        html = html.replace("</head>", APP_UI_ASSETS + "\n</head>", 1)
     route_name = re.sub(r"[^a-z0-9]+", "-", (current_path or "home").strip("/").lower()) or "home"
     body_class = f"ui-system ui-route-{route_name}"
     def add_ui_body_class(match: re.Match[str]) -> str:
@@ -651,24 +629,6 @@ def inject_unified_nav(html: str, current_path: str) -> str:
         html,
         count=1,
     )
-    page_meta = {
-        "/shop": ("商品提取", "TikTok Shop 商品、店铺与评论洞察", '<path d="M6 8h12l1 13H5z"/><path d="M9 8V6a3 3 0 0 1 6 0v2"/>'),
-        "/metrics": ("视频数据", "TikTok 公开数据与内容表现", '<path d="M4 19V5M20 19H4M8 16v-5M12 16V8M16 16v-7"/>'),
-        "/extract": ("视频分析", "上传、下载与内容提取", '<path d="M4 5h16v14H4z"/><path d="m10 9 5 3-5 3"/>'),
-        "/proxy": ("账号 IP 池", "代理配置、账号隔离与任务运行状态", '<path d="M4 12a8 8 0 0 1 16 0M8 12a4 4 0 0 1 8 0M12 12v8M9 20h6"/>'),
-        "/tool": ("图片标签工具", "批量转换、写入标签并打包交付", '<path d="M4 5h16v14H4zM8 15l3-3 2 2 3-4 3 5M9 9h.01"/>'),
-        "/report": ("日报", "趋势洞察与每日内容复盘", '<path d="M7 3h7l4 4v14H7z"/><path d="M14 3v5h5M10 12h6M10 16h4"/>'),
-    }
-    meta = page_meta.get(current_path)
-    if meta and 'class="source-page-heading"' not in html:
-        title, subtitle, icon = meta
-        heading = (
-            '<div class="source-page-heading">'
-            f'<span class="source-page-icon" aria-hidden="true"><svg viewBox="0 0 24 24">{icon}</svg></span>'
-            f'<span class="source-page-copy"><strong>{title}</strong><small>{subtitle}</small></span>'
-            '</div>'
-        )
-        html = re.sub(r"(<header\b[^>]*>)\s*<h1\b[^>]*>.*?</h1>", r"\1" + heading, html, count=1, flags=re.S)
     return html
 
 
@@ -719,6 +679,10 @@ def serve_chat_template(handler: BaseHTTPRequestHandler, provider: str, path: st
     chat_html = chat_html.replace("__CHAT_PROVIDER__", provider)
     chat_html = chat_html.replace("__CHAT_PROVIDER_LABEL__", CHAT_PROVIDER_LABELS[provider])
     page_heading = (
+        '<button class="secondary mobile-session-toggle" id="mobileSessionToggle" type="button" '
+        'aria-label="打开会话列表" aria-expanded="false">'
+        '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h14"/></svg>'
+        '</button>'
         '<div class="chat-page-heading">'
         '<span class="chat-page-icon" aria-hidden="true"><svg viewBox="0 0 24 24">'
         '<path d="M20 14.5a4 4 0 0 1-4 4H8l-4.5 2 1.4-3.8A7 7 0 0 1 3.5 12c0-3.9 3.8-7 8.5-7s8.5 3.1 8.5 7Z"/>'
@@ -727,13 +691,9 @@ def serve_chat_template(handler: BaseHTTPRequestHandler, provider: str, path: st
         f'<span class="chat-page-copy"><strong>{html_escape(CHAT_PROVIDER_LABELS[provider])}</strong>'
         '<small>AI 对话</small></span></div>'
     )
-    chat_html = re.sub(
-        r'<div class="header-brand">.*?</div><div class="header-actions">',
-        page_heading + '<div class="header-actions">',
-        chat_html,
-        count=1,
-        flags=re.S,
-    )
+    if "<!-- UI_CHAT_HEADER -->" not in chat_html:
+        raise RuntimeError("Chat header placeholder missing")
+    chat_html = chat_html.replace("<!-- UI_CHAT_HEADER -->", page_heading, 1)
     chat_html = inject_unified_nav(chat_html, path)
     return text_response(handler, HTTPStatus.OK, chat_html, "text/html; charset=utf-8")
 
@@ -14250,7 +14210,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         if parsed.path == "/healthz":
-            return json_response(self, HTTPStatus.OK, {"status": "ok"})
+            return json_response(
+                self,
+                HTTPStatus.OK,
+                {"status": "ok", "ui_test_mode": UI_TEST_MODE},
+            )
         if parsed.path == "/amazon":
             return serve_chat_template(self, "amazon", parsed.path)
         if parsed.path == "/fastmoss":
@@ -14861,6 +14825,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if UI_TEST_MODE:
+            return json_response(
+                self,
+                HTTPStatus.CONFLICT,
+                {
+                    "error": "UI 测试模式已拦截写操作，未触发真实业务。",
+                    "simulated": True,
+                    "status": "blocked",
+                    "path": parsed.path,
+                },
+            )
         if handle_feishu_capability_post(self, parsed):
             return
         if parsed.path.startswith("/api/lan-chat/") and handle_lan_chat_post(self, parsed):
@@ -15055,6 +15030,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self) -> None:
         parsed = urlparse(self.path)
+        if UI_TEST_MODE:
+            return json_response(
+                self,
+                HTTPStatus.CONFLICT,
+                {
+                    "error": "UI 测试模式已拦截删除操作，未修改任何数据。",
+                    "simulated": True,
+                    "status": "blocked",
+                    "path": parsed.path,
+                },
+            )
         if parsed.path.startswith("/amazon/"):
             return proxy_mcp_chat(self, "sellersprite")
         if parsed.path.startswith("/fastmoss/"):

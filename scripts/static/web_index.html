@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>短视频分析器</title>
 <style>
+@layer legacy {
 :root{
   --bg:#f6f8fb;--surface:#fff;--text:#0f172a;--text2:#475569;--text3:#94a3b8;
   --border:#e2e8f0;--border2:#f1f5f9;--brand:#2563eb;--brand2:#1d4ed8;
@@ -141,11 +142,18 @@ header .pill .dot{width:7px;height:7px;border-radius:50%;background:var(--green)
   .detail-shell{grid-template-columns:1fr}
   .outlet{min-height:60vh}
 }
+}
 </style>
 </head>
 <body>
+<div class="ui-app">
+<!-- UI_APP_NAV -->
+<div class="ui-frame">
+<header class="ui-header">
+  <div class="ui-page-heading"><span class="ui-page-heading__icon" aria-hidden="true"></span><span class="ui-page-heading__copy"><strong>视频分析</strong><small>上传、提取与生成结构化报告</small></span></div>
+</header>
+<div class="ui-main">
 <div id="drop" class="drop-overlay"><div class="drop-card"><b>松手以上传视频</b><p>支持一次拖入多个视频文件</p></div></div>
-<header><h1>短视频分析器</h1><nav class="app-nav" aria-label="主导航"><a class="app-nav__item" href="/" title="AI 聊天"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/></svg><span class="app-nav__label">首页</span></a><a class="app-nav__item" href="/report" title="每日报告"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h7l4 4v14H7z"/><path d="M14 3v5h5"/><path d="M10 12h6"/><path d="M10 16h4"/></svg><span class="app-nav__label">日报</span></a><a class="app-nav__item" href="/amazon" title="Amazon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7.5 12 3l8 4.5v9L12 21l-8-4.5z"/><path d="M4 7.5 12 12l8-4.5"/><path d="M12 12v9"/></svg><span class="app-nav__label">Amazon</span></a><a class="app-nav__item" href="/shop" title="Shop"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 8h12l1 13H5z"/><path d="M9 8V6a3 3 0 0 1 6 0v2"/><path d="M5 11h14"/></svg><span class="app-nav__label">Shop</span></a><a class="app-nav__item" href="/metrics" title="数据"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5"/><path d="M20 19H4"/><path d="M8 16v-5"/><path d="M12 16V8"/><path d="M16 16v-7"/></svg><span class="app-nav__label">数据</span></a><a class="app-nav__item active" href="/extract" title="视频分析"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4z"/><path d="m10 9 5 3-5 3z"/><path d="M8 21h8"/><path d="M12 19v2"/></svg><span class="app-nav__label">分析</span></a></nav></header>
 
 <main id="home" class="page active">
   <div class="main-shell">
@@ -170,8 +178,8 @@ header .pill .dot{width:7px;height:7px;border-radius:50%;background:var(--green)
     </aside>
     <section class="right-panel">
       <div class="home-file-list">
-        <div style="padding:14px 16px 8px"><p style="font-size:14px;font-weight:700">已上传视频 <span class="file-count-badge" id="fileCount">0</span></p><p style="color:var(--text2);font-size:12px;margin-top:2px">点击视频进入分析详情</p></div>
-        <div id="homeFiles" class="file-list" style="padding:0 16px 16px"></div>
+        <div class="ui-file-section-head"><p class="ui-file-section-title">已上传视频 <span class="file-count-badge" id="fileCount">0</span></p><p class="ui-file-section-copy">点击视频进入分析详情</p></div>
+        <div id="homeFiles" class="file-list ui-file-list-pad"></div>
       </div>
     </section>
   </div>
@@ -190,8 +198,8 @@ header .pill .dot{width:7px;height:7px;border-radius:50%;background:var(--green)
     </section>
     <section class="detail-main">
       <div class="tabs"><button class="tab-btn active" data-tab="content">提取内容（中文）</button><button class="tab-btn" data-tab="audit">分析结果（中文）</button></div>
-      <div class="detail-toolbar"><span class="ttl" id="outTitle">Qwen 输出内容，DeepSeek 翻译</span><div style="display:flex;gap:4px"><button id="source" class="secondary sm">显示原文</button><button id="pdf" class="secondary sm">导出 PDF</button><button id="json" class="secondary sm">下载 JSON</button></div></div>
-      <div id="out" class="outlet"><div class="empty-state"><div><b>选择视频查看报告</b><span style="display:block;color:var(--text3);font-size:13px;margin-top:2px">详情会显示提取内容、分析结果、Token 消耗和耗时。</span></div></div></div>
+      <div class="detail-toolbar"><span class="ttl" id="outTitle">Qwen 输出内容，DeepSeek 翻译</span><div class="ui-inline-actions"><button id="source" class="secondary sm">显示原文</button><button id="pdf" class="secondary sm">导出 PDF</button><button id="json" class="secondary sm">下载 JSON</button></div></div>
+      <div id="out" class="outlet"><div class="empty-state"><div><b>选择视频查看报告</b><span class="ui-empty-copy">详情会显示提取内容、分析结果、Token 消耗和耗时。</span></div></div></div>
       <div class="detail-log" id="detailLogPanel">
         <div class="log-head"><span class="log-title"><span class="log-dot"></span>运行日志</span><button id="clearLog" class="ghost sm">清空</button></div>
         <pre id="log" class="log-body">等待任务...</pre>
@@ -212,6 +220,9 @@ header .pill .dot{width:7px;height:7px;border-radius:50%;background:var(--green)
   </div>
 </div>
 
+</div>
+</div>
+</div>
 <script>
 window.DEFAULT_ANALYSIS_MODE="__DEFAULT_ANALYSIS_MODE__";
 const S={file:"",files:[],result:null,job:null,tab:"content",raw:false,has:false,logs:[]};
@@ -233,13 +244,13 @@ function extraction(value){const v=normalized(value);if(!v||typeof v!=="object")
 function audit(v){if(!v||typeof v!=="object")return esc(pretty(v));const keys=Object.keys(v).filter(k=>k!=='raw_result');let meta='';let body='';keys.forEach(k=>{const val=v[k];if(val===null||val===undefined||val==='')return;if(typeof val==='string'){body+=sec(k,val)}else if(Array.isArray(val)){body+=list(k,val)}else if(typeof val==='object'){body+=sec(k,pretty(val))}else{meta+=metric(k,val)}});return`<article class="report"><div class="hero"><div class="kicker">DeepSeek 分析</div><h2>分析结果报告</h2></div>${meta?`<div class="metrics-grid">${meta}</div>`:''}${body}</article>`}
 function renderOut(r){S.result=r;out.className=S.raw?"outlet raw":"outlet";let v;if(S.tab==="content"){v=S.raw?r?.analysis:(r?.analysis_zh||r?.analysis);$("json").style.display="inline-flex";$("outTitle").textContent=S.raw?"Qwen 输出内容，原文 JSON":"Qwen 输出内容，DeepSeek 翻译";S.raw?out.textContent=pretty(v):out.innerHTML=extraction(v)}else{v=S.raw?r?.audit_result:(r?.audit_result_zh||r?.audit_result);$("json").style.display="none";$("outTitle").textContent=S.raw?"DeepSeek 分析内容，原文":"DeepSeek 分析内容，中文";S.raw?out.textContent=pretty(v):out.innerHTML=audit(v)}$("pdf").style.display=S.raw?"none":"inline-flex";$("source").textContent=S.raw?"显示中文":"显示原文"}
 function buttons(){$("detailAnalyze").textContent=S.has?"内容解析":"开始分析";$("detailAnalyze").disabled=!S.file||!!S.job;$("detailReport").disabled=!S.file||!S.has||!!S.job}
-function renderFiles(){for(const[id]of[["homeFiles"],["detailFiles"]]){const box=$(id);if(!box)continue;box.innerHTML="";if(!S.files.length){box.innerHTML='<div class="empty-state" style="min-height:90px"><div><b>暂无视频</b><span style="display:block;color:var(--text3);font-size:12px;margin-top:2px">上传或下载后会出现在这里。</span></div></div>';continue}S.files.forEach(f=>{const isDetail=id==="detailFiles";const st=f.status||"idle";const sc=f.status_color||"#94a3b8";const sb=f.status_bg||"#f1f5f9";const sl=f.status_label||"未分析";const badge=`<span style="display:inline-flex;align-items:center;gap:3px;font-size:10px;font-weight:700;color:${sc};background:${sb};padding:2px 7px;border-radius:999px;white-space:nowrap;flex-shrink:0">${sl}</span>`;const acts=isDetail?`<div class="acts"><button class="icon-btn play" title="播放">▶</button><button class="icon-btn del" title="删除">✕</button></div>`:`<div class="acts"><button class="secondary sm">详情</button></div>`;const el=document.createElement("div");el.className="file-item"+(f.name===S.file?" active":"");const title=f.title&&f.title!==f.name?f.title:f.name;el.innerHTML=`<div class="info"><div class="name">${esc(title)}</div><div class="meta">${bytes(f.size)}</div></div>${badge}${acts}`;el.onclick=e=>{if(e.target.closest("button"))return;select(f.name,isDetail?false:true)};const btns=el.querySelectorAll("button");if(isDetail){btns[0].onclick=e=>{e.stopPropagation();open("/video/"+encodeURIComponent(f.name),"_blank","noopener")};btns[1].onclick=e=>{e.stopPropagation();delFile(f.name)}}else{btns[0].onclick=e=>{e.stopPropagation();toDetail(f.name)}}box.appendChild(el)})}updateFileCount();buttons()}
+function renderFiles(){for(const[id]of[["homeFiles"],["detailFiles"]]){const box=$(id);if(!box)continue;box.innerHTML="";if(!S.files.length){box.innerHTML='<div class="empty-state ui-empty-compact"><div><b>暂无视频</b><span class="ui-empty-copy ui-empty-copy--small">上传或下载后会出现在这里。</span></div></div>';continue}S.files.forEach(f=>{const isDetail=id==="detailFiles";const st=f.status||"idle";const sc=f.status_color||"#94a3b8";const sb=f.status_bg||"#f1f5f9";const sl=f.status_label||"未分析";const badge=`<span class="ui-file-badge" style="--ui-badge-ink:${sc};--ui-badge-bg:${sb}">${sl}</span>`;const acts=isDetail?`<div class="acts"><button class="icon-btn play" title="播放">▶</button><button class="icon-btn del" title="删除">✕</button></div>`:`<div class="acts"><button class="secondary sm">详情</button></div>`;const el=document.createElement("div");el.className="file-item"+(f.name===S.file?" active":"");const title=f.title&&f.title!==f.name?f.title:f.name;el.innerHTML=`<div class="info"><div class="name">${esc(title)}</div><div class="meta">${bytes(f.size)}</div></div>${badge}${acts}`;el.onclick=e=>{if(e.target.closest("button"))return;select(f.name,isDetail?false:true)};const btns=el.querySelectorAll("button");if(isDetail){btns[0].onclick=e=>{e.stopPropagation();open("/video/"+encodeURIComponent(f.name),"_blank","noopener")};btns[1].onclick=e=>{e.stopPropagation();delFile(f.name)}}else{btns[0].onclick=e=>{e.stopPropagation();toDetail(f.name)}}box.appendChild(el)})}updateFileCount();buttons()}
 function updateFileCount(){const el=$("fileCount");if(el)el.textContent=S.files.length}
 function view(v,f=""){home.classList.toggle("active",v==="home");detail.classList.toggle("active",v==="detail")}
 function toHome(){location.hash="";view("home")}function toDetail(f){if(!f){view("detail",S.file||"");renderFiles();return}location.hash="detail="+encodeURIComponent(f)}
 function route(){const h=location.hash.slice(1);if(h.startsWith("detail=")){select(decodeURIComponent(h.slice(7)),false);view("detail",S.file)}else{view("home");renderFiles()}}
 async function refresh(){const r=await fetch("/api/files");S.files=await r.json();if(!Array.isArray(S.files))S.files=[];renderFiles()}
-async function loadResult(name){const r=await fetch("/api/result?filename="+encodeURIComponent(name)),j=await r.json();if(r.ok&&has(j)){S.result=j;S.has=true;const p=j.analysis&&j.analysis.metadata&&j.analysis.metadata.analysis_prompt;if(p)$("promptTextarea").value=p;renderOut(j);setStatus(name+": 已加载已有输出","ok")}else{S.result=null;S.has=false;out.innerHTML='<div class="empty-state"><div><b>还没有分析结果</b><span style="display:block;color:var(--text3);font-size:13px;margin-top:2px">返回主页启动分析后，这里会显示报告。</span></div></div>';setStatus(name+": 等待分析")}buttons()}
+async function loadResult(name){const r=await fetch("/api/result?filename="+encodeURIComponent(name)),j=await r.json();if(r.ok&&has(j)){S.result=j;S.has=true;const p=j.analysis&&j.analysis.metadata&&j.analysis.metadata.analysis_prompt;if(p)$("promptTextarea").value=p;renderOut(j);setStatus(name+": 已加载已有输出","ok")}else{S.result=null;S.has=false;out.innerHTML='<div class="empty-state"><div><b>还没有分析结果</b><span class="ui-empty-copy">返回主页启动分析后，这里会显示报告。</span></div></div>';setStatus(name+": 等待分析")}buttons()}
 function select(name,openDetail=true){S.file=name;S.has=false;renderFiles();if(name)loadResult(name).catch(e=>setStatus(e.message,"bad"));if(openDetail&&name)toDetail(name)}
 async function upload(files=null){const input=$("videoFile"),arr=Array.from(files||input.files||[]);if(!arr.length)return setStatus("请选择至少一个视频文件。","bad");const bad=arr.filter(f=>!f.type.startsWith("video/"));if(bad.length){addLog("上传被拦截，存在非视频文件："+bad.map(f=>f.name).join(", "));return setStatus("请选择视频文件。","bad")}const form=new FormData();arr.forEach(f=>form.append("video",f));addLog(`开始上传 ${arr.length} 个视频。`);const r=await fetch("/api/upload",{method:"POST",body:form}),p=await r.json(),ok=Array.isArray(p.files)?p.files:[],err=Array.isArray(p.errors)?p.errors:[];ok.forEach(f=>addLog(`上传成功：${f.filename} (${bytes(f.size)})`));err.forEach(e=>addLog(`上传失败：${e.filename||"未知文件"} - ${e.error||"未知错误"}`));if(!r.ok&&!ok.length)return setStatus(p.error||"上传失败","bad");setStatus(`上传完成：成功 ${ok.length} 个，失败 ${err.length} 个`,err.length?"bad":"ok");input.value="";await refresh();if(ok.length)select(ok.at(-1).filename,false)}
 async function delFile(name){if(!confirm(`删除 ${name} 及其所有分析输出？`))return;const r=await fetch("/api/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({filename:name})});if(!r.ok)return setStatus("删除失败","bad");addLog("删除完成："+name);if(S.file===name){S.file="";S.result=null;S.has=false;toHome()}await refresh()}

@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>TikTok 数据提取</title>
 <style>
+@layer legacy {
 :root{
   --bg:#f6f8fb;--surface:#fff;--text:#0f172a;--text2:#475569;--text3:#94a3b8;
   --border:#e2e8f0;--border2:#f1f5f9;--brand:#2563eb;--brand2:#1d4ed8;
@@ -48,10 +49,17 @@ pre.log2{min-height:0;margin:0;padding:14px;overflow:auto;white-space:pre-wrap;w
 .report{padding:16px;overflow:auto;line-height:1.65}.tabs{display:flex;gap:6px}.tabs .tab-btn{background:var(--surface);color:var(--text2);border-color:var(--border);font-size:12px;min-height:30px;border-radius:6px}.tabs .tab-btn.active{background:var(--brand);color:#fff;border-color:var(--brand)}
 .muted{color:var(--text2);font-size:13px}
 @media(max-width:980px){main,.grid2{grid-template-columns:1fr;height:auto}.grid2 .card{min-height:360px}}
+}
 </style>
 </head>
 <body>
-<header><h1><span class="header-product">数据</span><span class="header-view">TikTok 提取</span></h1><nav class="app-nav" aria-label="主导航"><a class="app-nav__item" href="/" title="AI 聊天"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/></svg><span class="app-nav__label">首页</span></a><a class="app-nav__item" href="/report" title="每日报告"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h7l4 4v14H7z"/><path d="M14 3v5h5"/><path d="M10 12h6"/><path d="M10 16h4"/></svg><span class="app-nav__label">日报</span></a><a class="app-nav__item" href="/amazon" title="Amazon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7.5 12 3l8 4.5v9L12 21l-8-4.5z"/><path d="M4 7.5 12 12l8-4.5"/><path d="M12 12v9"/></svg><span class="app-nav__label">Amazon</span></a><a class="app-nav__item" href="/shop" title="Shop"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 8h12l1 13H5z"/><path d="M9 8V6a3 3 0 0 1 6 0v2"/><path d="M5 11h14"/></svg><span class="app-nav__label">Shop</span></a><a class="app-nav__item active" href="/metrics" title="数据"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5"/><path d="M20 19H4"/><path d="M8 16v-5"/><path d="M12 16V8"/><path d="M16 16v-7"/></svg><span class="app-nav__label">数据</span></a><a class="app-nav__item" href="/extract" title="视频分析"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4z"/><path d="m10 9 5 3-5 3z"/><path d="M8 21h8"/><path d="M12 19v2"/></svg><span class="app-nav__label">分析</span></a></nav></header>
+<div class="ui-app">
+<!-- UI_APP_NAV -->
+<div class="ui-frame">
+<header class="ui-header">
+  <div class="ui-page-heading"><span class="ui-page-heading__icon" aria-hidden="true"></span><span class="ui-page-heading__copy"><strong>视频数据</strong><small>TikTok 数据提取与结果分析</small></span></div>
+</header>
+<div class="ui-main">
 <main>
   <section class="side">
     <label>API 端点
@@ -107,10 +115,13 @@ pre.log2{min-height:0;margin:0;padding:14px;overflow:auto;white-space:pre-wrap;w
     </div>
     <div class="grid2">
       <article class="card"><h3>TikTok 数据</h3><div id="result" class="report">暂无结果。</div></article>
-      <article class="card"><div style="display:flex;justify-content:space-between;align-items:center;padding:12px 14px;border-bottom:1px solid var(--border);background:var(--border2)"><h3 style="margin:0;font-size:14px;border:none;padding:0;background:transparent">任务日志</h3><button id="clearLog2" class="ghost sm" onclick="document.querySelector('#log').textContent='等待任务...'">清空</button></div><pre id="log" class="log2">等待任务...</pre></article>
+      <article class="card"><div class="ui-log-header"><h3 class="ui-log-title">任务日志</h3><button id="clearLog2" class="ghost sm" onclick="document.querySelector('#log').textContent='等待任务...'">清空</button></div><pre id="log" class="log2">等待任务...</pre></article>
     </div>
   </section>
 </main>
+</div>
+</div>
+</div>
 <script>
 const runBtn=document.querySelector("#run"),statusBox=document.querySelector("#status"),logBox=document.querySelector("#log"),resultBox=document.querySelector("#result"),outputBox2=document.querySelector("#output");
 const state={job:null,events:null,tab:"report",lastLogLength:0};
@@ -121,7 +132,7 @@ function esc(v){return String(v||"").replace(/[&<>"']/g,function(c){return{"&":"
 function pretty(v){return JSON.stringify(v||{},null,2)}
 function setStatus(m,k){k=k||"";statusBox.className="status "+k;statusBox.textContent=m}
 function addLog(lines){var next=Array.isArray(lines)?lines:[lines];if(!next.length)return;var cur=logBox.textContent==="等待任务..."?"":logBox.textContent;logBox.textContent=cur+(cur?"\n":"")+next.join("\n");logBox.scrollTop=logBox.scrollHeight}
-function renderReport(data){if(!data)return"暂无结果。";var m=data._meta||{};var u=data.user||(data.data||{}).user||{},s=data.stats||(data.data||{}).stats||{};if(u.uniqueId||s.followerCount){return'<div style="display:grid;gap:12px"><div style="display:flex;align-items:center;gap:14px">'+(u.avatarLarger?'<img src="'+esc(u.avatarLarger)+'" style="width:64px;height:64px;border-radius:50%">':"")+'<div><b style="font-size:18px">'+esc(u.nickname||u.uniqueId||"")+'</b><div class="muted">@'+esc(u.uniqueId||"")+'</div></div></div><div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px"><div class="metric"><span>粉丝</span><b>'+esc(s.followerCount||"")+'</b></div><div class="metric"><span>关注</span><b>'+esc(s.followingCount||"")+'</b></div><div class="metric"><span>获赞</span><b>'+esc(s.heartCount||"")+'</b></div><div class="metric"><span>视频</span><b>'+esc(s.videoCount||"")+'</b></div></div></div>'}var aweme=data.aweme_list||(data.data||{}).aweme_list;if(aweme&&typeof aweme==="object"){var videos=Object.values(aweme);if(videos.length)return"<div>共 "+videos.length+" 个视频</div>"+videos.slice(0,50).map(function(v){return'<div style="margin:8px 0;padding:8px;border:1px solid var(--border);border-radius:8px"><b>'+esc(v.desc||"(无描述)")+'</b><div class="muted">播放:'+esc((v.statistics||{}).playCount||"")+' | ❤'+esc((v.statistics||{}).diggCount||"")+'</div></div>'}).join("")}var results=data.results||(data.data||{}).results;if(results&&Array.isArray(results)){return"<div>"+results.length+" 条结果</div><pre>"+esc(pretty(results).substring(0,5000))+"</pre>"}return"<pre>"+esc(pretty(data).substring(0,10000))+"</pre>"}
+function renderReport(data){if(!data)return"暂无结果。";var m=data._meta||{};var u=data.user||(data.data||{}).user||{},s=data.stats||(data.data||{}).stats||{};if(u.uniqueId||s.followerCount){return'<div class="ui-result-stack"><div class="ui-identity-row">'+(u.avatarLarger?'<img class="ui-avatar-lg" src="'+esc(u.avatarLarger)+'" alt="">':"")+'<div><b class="ui-result-title">'+esc(u.nickname||u.uniqueId||"")+'</b><div class="muted">@'+esc(u.uniqueId||"")+'</div></div></div><div class="ui-metrics"><div class="metric"><span>粉丝</span><b>'+esc(s.followerCount||"")+'</b></div><div class="metric"><span>关注</span><b>'+esc(s.followingCount||"")+'</b></div><div class="metric"><span>获赞</span><b>'+esc(s.heartCount||"")+'</b></div><div class="metric"><span>视频</span><b>'+esc(s.videoCount||"")+'</b></div></div></div>'}var aweme=data.aweme_list||(data.data||{}).aweme_list;if(aweme&&typeof aweme==="object"){var videos=Object.values(aweme);if(videos.length)return"<div>共 "+videos.length+" 个视频</div>"+videos.slice(0,50).map(function(v){return'<div class="ui-result-row"><b>'+esc(v.desc||"(无描述)")+'</b><div class="muted">播放:'+esc((v.statistics||{}).playCount||"")+' | ❤'+esc((v.statistics||{}).diggCount||"")+'</div></div>'}).join("")}var results=data.results||(data.data||{}).results;if(results&&Array.isArray(results)){return"<div>"+results.length+" 条结果</div><pre>"+esc(pretty(results).substring(0,5000))+"</pre>"}return"<pre>"+esc(pretty(data).substring(0,10000))+"</pre>"}
 function render(){var data=state.job&&state.job.result;if(state.tab==="json"){resultBox.innerHTML="<pre>"+esc(pretty(data))+"</pre>";return}resultBox.innerHTML=renderReport(data)}
 function closeEvents(){if(state.events){state.events.close();state.events=null}}
 function handleJob(job){state.job=job;if(job.output_dir)outputBox2.textContent="结果目录："+job.output_dir;if(Array.isArray(job.log)&&job.log.length>state.lastLogLength){addLog(job.log.slice(state.lastLogLength));state.lastLogLength=job.log.length}render();if(job.status==="queued"||job.status==="running"){setStatus("任务运行中："+job.status);return}closeEvents();runBtn.disabled=false;setStatus(job.status==="complete"?"提取完成。":(job.error||"提取失败。"),job.status==="complete"?"ok":"bad")}

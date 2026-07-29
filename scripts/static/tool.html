@@ -5,11 +5,19 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>图片标签工具</title>
 <style>
+@layer legacy {
 :root{--bg:#f6f8fb;--surface:#fff;--text:#0f172a;--text2:#475569;--text3:#94a3b8;--border:#e2e8f0;--border2:#f1f5f9;--brand:#2563eb;--brand2:#1d4ed8;--brand-soft:#eff6ff;--green:#059669;--green-soft:#ecfdf5;--red:#dc2626;--red-soft:#fef2f2;--shadow:0 1px 3px rgba(15,23,42,.08),0 1px 2px rgba(15,23,42,.04);--radius:14px;--radius-sm:9px}*{box-sizing:border-box;margin:0}body{min-height:100vh;background:var(--bg);color:var(--text);font:14px/1.5 "Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif}button,input{font:inherit}header{height:60px;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:0 24px;background:rgba(255,255,255,.84);border-bottom:1px solid var(--border);backdrop-filter:blur(16px)}header h1{font-size:18px;letter-spacing:-.3px}.page{max-width:1040px;margin:0 auto;padding:28px 24px 40px}.intro{display:flex;justify-content:space-between;gap:20px;align-items:end;margin-bottom:18px}.eyebrow{color:var(--brand);font-size:12px;font-weight:800;letter-spacing:.08em;text-transform:uppercase}.intro h2{margin-top:4px;font-size:27px;letter-spacing:-.7px}.intro p{margin-top:6px;color:var(--text2)}.flow{display:flex;gap:8px;color:var(--text3);font-size:12px;white-space:nowrap}.flow span{display:inline-flex;align-items:center;gap:6px}.flow b{width:20px;height:20px;display:grid;place-items:center;border-radius:50%;background:var(--brand-soft);color:var(--brand)}.card{border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);box-shadow:var(--shadow);overflow:hidden}.workspace{display:grid;grid-template-columns:minmax(0,1fr) 300px}.upload-pane{padding:18px;border-right:1px solid var(--border)}.settings{padding:18px;background:linear-gradient(180deg,#fbfdff,#f7faff);display:flex;flex-direction:column;gap:16px}.dropzone{display:grid;place-items:center;min-height:222px;border:1.5px dashed #93c5fd;border-radius:12px;background:linear-gradient(135deg,#f8fbff,#eff6ff);cursor:pointer;transition:.16s ease;text-align:center;padding:24px}.dropzone:hover,.dropzone.drag{border-color:var(--brand);background:#eaf3ff;transform:translateY(-1px)}.drop-icon{width:46px;height:46px;display:grid;place-items:center;border-radius:14px;background:#fff;color:var(--brand);box-shadow:0 4px 12px rgba(37,99,235,.12);margin-bottom:10px}.dropzone strong{font-size:15px}.dropzone small{display:block;margin-top:5px;color:var(--text2)}.filebar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:16px 2px 10px}.filebar b{font-size:13px}.muted{color:var(--text2);font-size:12px}.file-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));gap:10px;min-height:98px}.empty{display:grid;place-items:center;min-height:98px;border:1px dashed var(--border);border-radius:10px;color:var(--text3);font-size:12px}.file{position:relative;min-width:0;border:1px solid var(--border);border-radius:10px;overflow:hidden;background:#fff}.file img{display:block;width:100%;aspect-ratio:1.35;object-fit:cover;background:var(--border2)}.file-name{display:block;padding:7px 8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}.remove{position:absolute;top:5px;right:5px;width:24px;height:24px;padding:0;border:0;border-radius:50%;background:rgba(15,23,42,.72);color:#fff;cursor:pointer;opacity:0;transition:.15s}.file:hover .remove,.remove:focus-visible{opacity:1}.settings h3{font-size:14px}.settings label{display:grid;gap:6px;color:var(--text2);font-size:12px;font-weight:700}.settings input{width:100%;border:1px solid var(--border);border-radius:var(--radius-sm);background:#fff;padding:10px 11px;color:var(--text);outline:none}.settings input:focus{border-color:var(--brand);box-shadow:0 0 0 3px rgba(37,99,235,.11)}.hint{border-left:3px solid #93c5fd;padding:9px 10px;background:#f8fbff;color:var(--text2);font-size:12px}.primary,.secondary{min-height:40px;border-radius:var(--radius-sm);padding:9px 13px;font-weight:700;cursor:pointer;transition:.15s}.primary{border:1px solid var(--brand);background:var(--brand);color:#fff;box-shadow:0 5px 12px rgba(37,99,235,.2)}.primary:hover:not(:disabled){background:var(--brand2);transform:translateY(-1px)}.primary:disabled{opacity:.5;cursor:not-allowed;box-shadow:none}.secondary{border:1px solid var(--border);background:#fff;color:var(--text2)}.secondary:hover{border-color:#bfdbfe;background:var(--brand-soft);color:var(--brand)}.status{min-height:50px;border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 11px;background:#fff;color:var(--text2);font-size:12px}.status.ok{border-color:#a7f3d0;background:var(--green-soft);color:var(--green)}.status.bad{border-color:#fecaca;background:var(--red-soft);color:var(--red)}.foot{margin-top:14px;color:var(--text3);font-size:12px;text-align:center}@media(max-width:840px){header{padding:0 16px}.page{padding:22px 16px}.intro{align-items:start;flex-direction:column}.workspace{grid-template-columns:1fr}.upload-pane{border-right:0;border-bottom:1px solid var(--border)}.settings{background:#fff}.flow{white-space:normal;flex-wrap:wrap}}@media(max-width:540px){header h1{display:none}.page{padding:16px 12px}.intro h2{font-size:23px}.dropzone{min-height:180px}.file-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+}
 </style>
 </head>
 <body>
-<header><h1><span class="header-product">图片工具</span><span class="header-view">标签与预览</span></h1><nav class="app-nav" aria-label="主导航"></nav></header>
+<div class="ui-app">
+<!-- UI_APP_NAV -->
+<div class="ui-frame">
+<header class="ui-header">
+  <div class="ui-page-heading"><span class="ui-page-heading__icon" aria-hidden="true"></span><span class="ui-page-heading__copy"><strong>图片工具</strong><small>图片标签、预览与批量处理</small></span></div>
+</header>
+<div class="ui-main">
 <main class="page">
   <section class="intro"><div><div class="eyebrow">IMAGE DELIVERY</div><h2>批量处理，标签随文件交付</h2><p>上传图片即可统一交付 JPG；已满足条件的 JPG 原样下载。</p></div><div class="flow"><span><b>1</b>选择图片</span><span>→</span><span><b>2</b>确认标签</span><span>→</span><span><b>3</b>下载 ZIP</span></div></section>
   <section class="card workspace">
@@ -22,7 +30,7 @@
       <div id="fileGrid" class="file-grid"><div class="empty">尚未选择图片</div></div>
     </div>
     <aside class="settings">
-      <div><h3>转换设置</h3><p class="muted" style="margin-top:4px">JPG 质量固定为 95，透明区域使用白底。</p></div>
+      <div><h3>转换设置</h3><p class="muted ui-subtle-gap">JPG 质量固定为 95，透明区域使用白底。</p></div>
       <label>写入标签<input id="tag" maxlength="200" value="contains-synthetic-performer" autocomplete="off"></label>
       <label>压缩包名称<input id="archiveName" maxlength="120" autocomplete="off" aria-describedby="archiveNameHint"></label>
       <p id="archiveNameHint" class="muted">默认使用当前时间戳，自动补全 .zip。</p>
@@ -33,6 +41,9 @@
   </section>
   <p class="foot">无效图片会被跳过，下载包内会附上失败清单。</p>
 </main>
+</div>
+</div>
+</div>
 <script>
 // Multi-file FormData and Blob download flow adapted from Sanskargupta0/Remove-bg (MIT notice in upstream README, a46c06c).
 const input=document.querySelector('#files'),dropzone=document.querySelector('#dropzone'),grid=document.querySelector('#fileGrid'),count=document.querySelector('#fileCount'),clearBtn=document.querySelector('#clear'),convertBtn=document.querySelector('#convert'),tagInput=document.querySelector('#tag'),archiveInput=document.querySelector('#archiveName'),statusBox=document.querySelector('#status');
