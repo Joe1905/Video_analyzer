@@ -162,6 +162,7 @@ class UIContractTest(unittest.TestCase):
             "function sessionStamp",
             "m.role==='user'",
             "Math.min(innerHeight-height-8,picked.rect.top-height-8)",
+            "fixedRootRect.left",
         ):
             self.assertIn(contract, chat)
         self.assertIn('query.get("query", [""])[0]', app)
