@@ -14870,6 +14870,8 @@ class Handler(BaseHTTPRequestHandler):
                 return json_response(self, HTTPStatus.OK, proxy_pool.upsert_pool(payload))
             if path == "/api/proxy/pools/delete":
                 return json_response(self, HTTPStatus.OK, proxy_pool.delete_pool(int(payload.get("id") or payload.get("proxy_profile_id") or 0)))
+            if path == "/api/proxy/mihomo-reconcile":
+                return json_response(self, HTTPStatus.OK, proxy_pool.reconcile_mihomo_pool_configs())
             if path == "/api/proxy/accounts":
                 payload = _proxy_feishu_binding(payload, required=not int(payload.get("id") or 0))
                 return json_response(self, HTTPStatus.OK, proxy_pool.upsert_account(payload))

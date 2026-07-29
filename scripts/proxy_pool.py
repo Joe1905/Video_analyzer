@@ -3128,6 +3128,36 @@ def ensure_static_proxy_configs() -> dict[str, Any]:
     return {"synced": synced, "errors": errors}
 
 
+def reconcile_mihomo_pool_configs() -> dict[str, Any]:
+    """Rebuild every managed Mihomo listener from the persisted pool binding.
+
+    A listener can remain open while still pointing at a previous node.  In that
+    case a reachability check alone cannot tell Mihomo to replace the mapping.
+    """
+    with connect() as conn:
+        pools = conn.execute(
+            """
+            SELECT * FROM proxy_profiles
+            WHERE parse_status = 'ok' AND status <> ?
+            ORDER BY local_port, id
+            """,
+            (STATUS_PAUSED,),
+        ).fetchall()
+    synced: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    for pool in pools:
+        pool_id = int(pool["id"])
+        if _sing_box_reality_pool(pool):
+            skipped.append({"id": pool_id, "name": str(pool["name"]), "reason": "sing-box"})
+            continue
+        try:
+            synced.append(_sync_mihomo_pool_config(pool))
+        except Exception as exc:
+            errors.append({"id": pool_id, "name": str(pool["name"]), "error": str(exc)})
+    return {"synced": synced, "skipped": skipped, "errors": errors}
+
+
 def _remove_mihomo_pool_config(
     pool: sqlite3.Row | dict[str, Any],
 ) -> tuple[dict[str, Any], tuple[Path, bytes, int] | None]:
@@ -3171,6 +3201,35 @@ def _listener_port(block: list[str]) -> int:
         if match:
             return int(match.group(1))
     return 0
+
+
+def _mihomo_listener_matches(pool: sqlite3.Row | dict[str, Any]) -> bool:
+    """Whether the persisted pool is the current owner of its local port."""
+    local_port = int(_pool_value(pool, "local_port", 0) or 0)
+    node_name = _runtime_mihomo_name(pool)
+    listener_name = _runtime_mihomo_listener_name(pool)
+    config_value = os.getenv("MIHOMO_CONFIG_PATH", "").strip()
+    if not local_port or not node_name or not listener_name or not config_value:
+        return True
+    path = Path(config_value)
+    if not path.is_file():
+        return True
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+        start, end = _yaml_section_bounds(lines, "listeners")
+        if start < 0:
+            return False
+        for left, right in _yaml_list_item_ranges(lines, start, end):
+            block = lines[left:right]
+            if _listener_port(block) != local_port:
+                continue
+            return (
+                _yaml_block_field_matches(block, "name", listener_name)
+                and _yaml_block_field_matches(block, "proxy", node_name)
+            )
+    except OSError:
+        return True
+    return False
 
 
 def _remove_mihomo_listener_config(
@@ -3313,7 +3372,10 @@ def detect_exit_ip_for_pool(pool: sqlite3.Row) -> dict[str, Any]:
         _sync_mihomo_pool_config(pool)
     elif (
         local_port
-        and not _port_open("127.0.0.1", local_port, timeout=1.0)
+        and (
+            not _port_open("127.0.0.1", local_port, timeout=1.0)
+            or not _mihomo_listener_matches(pool)
+        )
         and not _sing_box_reality_pool(pool)
     ):
         _sync_mihomo_pool_config(pool)
