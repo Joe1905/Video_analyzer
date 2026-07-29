@@ -61,10 +61,12 @@
 @layer utilities {
   /* AI 对话设计回归：以 video_analyzer_redesign.html 为视觉基准。 */
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .ui-frame {
+    grid-template-columns: minmax(0, 1fr);
     grid-template-rows: var(--ui-header-height) minmax(0, 1fr);
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .ui-main {
+    grid-column: 1;
     grid-row: 1 / 3;
     height: 100dvh;
   }
@@ -347,6 +349,7 @@
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .ui-header {
+    grid-column: 1;
     grid-row: 1;
     width: calc(100% - 296px);
     margin-left: 296px;
@@ -492,7 +495,7 @@
     gap: 12px;
   }
 
-  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-actions a {
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-actions .quick-prompt {
     min-width: 0;
     min-height: 92px;
     padding: 14px 15px;
@@ -510,7 +513,7 @@
     transition: transform var(--ui-fast), border-color var(--ui-fast), box-shadow var(--ui-fast);
   }
 
-  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-actions a:hover {
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-actions .quick-prompt:hover {
     transform: translateY(-2px);
     border-color: color-mix(in srgb, var(--ui-brand) 35%, var(--ui-line));
     box-shadow: var(--ui-shadow-sm);
@@ -784,7 +787,7 @@
       gap: 8px;
     }
 
-    body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-actions a {
+    body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-actions .quick-prompt {
       min-height: 68px;
     }
 
