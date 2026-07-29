@@ -395,7 +395,7 @@ CHAT_TOOL_DOMAINS = ("system", "function", "sellersprite", "fastmoss")
 CHAT_PROVIDER_LABELS = {"home": "\u9996\u9875", "amazon": "\u5356\u5bb6\u7cbe\u7075", "fastmoss": "FastMoss"}
 CHAT_PROVIDER_UI = {
     "home": {
-        "workspace": "AI \u5de5\u4f5c\u53f0",
+        "workspace": "AI \u5bf9\u8bdd",
         "new_label": "\u65b0\u5efa\u5bf9\u8bdd",
         "crumb": "\u5de5\u4f5c\u53f0",
         "model": "AI \u5de5\u5177 \u00b7 \u5c31\u7eea",
@@ -480,7 +480,7 @@ NAV_ITEMS = [
 ]
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
-UI_ASSET_VERSION = "20260729-11"
+UI_ASSET_VERSION = "20260729-12"
 APP_UI_ASSETS = f"""
 <script id="ui-nav-state-boot">
 let uiNavExpanded = false;

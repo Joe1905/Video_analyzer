@@ -131,11 +131,11 @@
     height: 36px;
     min-height: 36px;
     padding: 0;
-    border: 1px solid var(--ui-line);
+    border: 1px solid var(--ui-line-strong);
     border-radius: 11px;
     background: #fff;
     color: var(--ui-ink-muted);
-    box-shadow: none;
+    box-shadow: 0 2px 8px rgba(22, 24, 29, .05);
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-search-toggle svg {
