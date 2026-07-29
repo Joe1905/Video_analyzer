@@ -405,11 +405,14 @@
     transition: opacity 100ms ease, transform var(--ui-nav-speed) var(--ui-ease);
   }
 
+  html[data-nav="expanded"] .ui-nav__toggle,
+  html[data-nav="expanded"] .ui-nav__item,
   body[data-nav="expanded"] .ui-nav__toggle,
   body[data-nav="expanded"] .ui-nav__item {
     width: 196px;
   }
 
+  html[data-nav="expanded"] .ui-nav__label,
   body[data-nav="expanded"] .ui-nav__label {
     opacity: 1;
     transform: none;

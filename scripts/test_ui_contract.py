@@ -105,6 +105,8 @@ class UIContractTest(unittest.TestCase):
         ):
             self.assertIn(selector, css)
         self.assertRegex(css, r"grid-template-columns:\s*var\(--ui-nav-width\)")
+        self.assertIn('html[data-nav="expanded"] .ui-nav__item', css)
+        self.assertIn('html[data-nav="expanded"] .ui-nav__label', css)
         self.assertIn("grid-template-rows: 0fr", css)
         self.assertIn("grid-template-rows: 1fr", css)
         self.assertIn("@media (prefers-reduced-motion: reduce)", css)
