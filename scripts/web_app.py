@@ -712,6 +712,22 @@ def serve_chat_template(handler: BaseHTTPRequestHandler, provider: str, path: st
     provider = normalize_chat_provider(provider)
     chat_html = chat_html.replace("__CHAT_PROVIDER__", provider)
     chat_html = chat_html.replace("__CHAT_PROVIDER_LABEL__", CHAT_PROVIDER_LABELS[provider])
+    page_heading = (
+        '<div class="chat-page-heading">'
+        '<span class="chat-page-icon" aria-hidden="true"><svg viewBox="0 0 24 24">'
+        '<path d="M20 14.5a4 4 0 0 1-4 4H8l-4.5 2 1.4-3.8A7 7 0 0 1 3.5 12c0-3.9 3.8-7 8.5-7s8.5 3.1 8.5 7Z"/>'
+        '<path d="M8.5 12h.01M12 12h.01M15.5 12h.01"/>'
+        '</svg></span>'
+        f'<span class="chat-page-copy"><strong>{html_escape(CHAT_PROVIDER_LABELS[provider])}</strong>'
+        '<small>AI 对话</small></span></div>'
+    )
+    chat_html = re.sub(
+        r'<div class="header-brand">.*?</div><div class="header-actions">',
+        page_heading + '<div class="header-actions">',
+        chat_html,
+        count=1,
+        flags=re.S,
+    )
     chat_html = inject_unified_nav(chat_html, path)
     return text_response(handler, HTTPStatus.OK, chat_html, "text/html; charset=utf-8")
 

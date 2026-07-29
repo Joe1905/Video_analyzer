@@ -728,6 +728,45 @@ body.ui-system #toolModal .tool-row { padding: 8px 0 9px !important; }
   body.ui-route-report > header .source-page-heading { margin-left: 0 !important; }
   body.ui-route-proxy .publish-section .actions { display: grid !important; grid-template-columns: repeat(3, max-content) !important; justify-content: start !important; gap: 8px !important; }
   body.ui-route-proxy .publish-section .actions .danger.solid { grid-column: 1 / -1 !important; justify-self: end !important; margin-left: 0 !important; }
+
+  /* AI 对话：顶栏覆盖会话栏和主内容，不再把标题留在主区内部。 */
+  body.ui-route-home > header,
+  body.ui-route-amazon > header,
+  body.ui-route-fastmoss > header {
+    left: 72px !important; right: 0 !important; width: auto !important; height: 70px !important;
+    display: flex !important; align-items: center !important; padding: 0 22px !important;
+    background: rgba(255,255,255,.94) !important; border-bottom: 1px solid var(--source-line) !important;
+  }
+  body.ui-route-home .chat-shell,
+  body.ui-route-amazon .chat-shell,
+  body.ui-route-fastmoss .chat-shell { height: 100dvh !important; padding-top: 70px !important; }
+  body.ui-route-home .sidebar,
+  body.ui-route-amazon .sidebar,
+  body.ui-route-fastmoss .sidebar { height: calc(100dvh - 70px) !important; }
+  body.ui-route-home .chat-main,
+  body.ui-route-amazon .chat-main,
+  body.ui-route-fastmoss .chat-main { min-height: calc(100dvh - 70px) !important; padding-top: 0 !important; }
+  body.ui-route-home .chat-page-heading,
+  body.ui-route-amazon .chat-page-heading,
+  body.ui-route-fastmoss .chat-page-heading { display: flex; align-items: center; gap: 11px; min-width: 220px; }
+  body.ui-route-home .chat-page-icon,
+  body.ui-route-amazon .chat-page-icon,
+  body.ui-route-fastmoss .chat-page-icon { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 13px; background: var(--source-blue-soft); color: var(--source-blue); }
+  body.ui-route-home .chat-page-icon svg,
+  body.ui-route-amazon .chat-page-icon svg,
+  body.ui-route-fastmoss .chat-page-icon svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+  body.ui-route-home .chat-page-copy,
+  body.ui-route-amazon .chat-page-copy,
+  body.ui-route-fastmoss .chat-page-copy { display: grid; gap: 2px; }
+  body.ui-route-home .chat-page-copy strong,
+  body.ui-route-amazon .chat-page-copy strong,
+  body.ui-route-fastmoss .chat-page-copy strong { font-size: 14px; color: var(--source-ink); }
+  body.ui-route-home .chat-page-copy small,
+  body.ui-route-amazon .chat-page-copy small,
+  body.ui-route-fastmoss .chat-page-copy small { font-size: 10px; color: var(--source-subtle); }
+  body.ui-nav-expanded.ui-route-home > header,
+  body.ui-nav-expanded.ui-route-amazon > header,
+  body.ui-nav-expanded.ui-route-fastmoss > header { left: 224px !important; }
 }
 body.ui-system .modal-head,
 body.ui-system .dialog-head,
