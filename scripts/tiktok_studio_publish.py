@@ -7,6 +7,7 @@ import json
 import mimetypes
 import os
 import re
+import subprocess
 import threading
 import time
 import uuid
@@ -1338,29 +1339,74 @@ def _set_schedule(page: Any, mode: str, scheduled_at: str, log_dir: Path) -> Non
     time_input.fill(time_value)
 
 
-def _set_video_file(page: Any, video: Path) -> None:
-    deadline = time.time() + 30
-    while time.time() < deadline:
-        file_inputs = page.locator("input[type='file'][accept*='video']")
-        if not file_inputs.count():
-            file_inputs = page.locator("input[type='file']")
-        if file_inputs.count():
-            file_inputs.first.set_input_files(str(video))
+def _file_input_selected(file_input: Any) -> bool:
+    try:
+        return bool(file_input.evaluate("input => Boolean(input.files && input.files.length)"))
+    except Exception:
+        return False
+
+
+def _set_video_file_via_native_chooser(page: Any, video: Path, display: str, file_input: Any) -> None:
+    if not display:
+        raise RuntimeError("浏览器会话未提供虚拟显示器，无法使用系统文件选择器降级")
+    select_button = _first_visible([
+        page.locator("button[data-e2e='select_video_button']"),
+        page.get_by_role("button", name=re.compile(r"^select video$|^选择视频$", re.I)),
+    ])
+    if not select_button:
+        raise RuntimeError("未找到 TikTok Studio 的选择视频按钮")
+    select_button.click(timeout=5000)
+    page.wait_for_timeout(500)
+    x11_env = {**os.environ, "DISPLAY": display}
+
+    def xdotool(*args: str) -> None:
+        result = subprocess.run(
+            ["xdotool", *args],
+            env=x11_env,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if result.returncode:
+            detail = (result.stderr or result.stdout or "unknown xdotool error").strip()
+            raise RuntimeError(f"系统文件选择器操作失败：{detail}")
+
+    xdotool("key", "--clearmodifiers", "ctrl+l")
+    xdotool("type", "--clearmodifiers", "--delay", "1", str(video))
+    xdotool("key", "Return")
+    for _ in range(5):
+        if _file_input_selected(file_input):
             return
-        select_button = _first_visible([
-            page.locator("button[data-e2e='select_video_button']"),
-            page.get_by_role("button", name=re.compile(r"^select video$|^选择视频$", re.I)),
-        ])
-        if select_button:
-            try:
-                with page.expect_file_chooser(timeout=5000) as chooser_info:
-                    select_button.click()
-                chooser_info.value.set_files(str(video))
-                return
-            except Exception:
-                pass
-        page.wait_for_timeout(500)
-    raise RuntimeError("未找到 TikTok Studio 视频选择控件")
+        page.wait_for_timeout(200)
+    xdotool("key", "Return")
+    for _ in range(25):
+        if _file_input_selected(file_input):
+            return
+        page.wait_for_timeout(200)
+    raise RuntimeError("系统文件选择器未将视频选入 TikTok 上传控件")
+
+
+def _set_video_file(page: Any, video: Path, display: str = "") -> None:
+    file_inputs = page.locator("input[type='file'][accept*='video']")
+    if not file_inputs.count():
+        file_inputs = page.locator("input[type='file']")
+    if not file_inputs.count():
+        raise RuntimeError("未找到 TikTok Studio 视频选择控件")
+    file_input = file_inputs.first
+    try:
+        file_input.set_input_files(str(video), timeout=10000)
+        return
+    except Exception as direct_error:
+        if _file_input_selected(file_input):
+            return
+        try:
+            _set_video_file_via_native_chooser(page, video, display, file_input)
+            return
+        except Exception as native_error:
+            raise RuntimeError(
+                f"CDP 文件注入失败：{direct_error}; 系统文件选择器降级也失败：{native_error}"
+            ) from native_error
 
 
 def _selected_product(product_id: str) -> dict[str, Any]:
@@ -1635,7 +1681,7 @@ def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[str,
             _assert_account_ready(page)
             _discard_stale_edit(page, log_dir)
             _set_job(job["id"], "uploading", "uploading", session_id=session["id"])
-            _set_video_file(page, video)
+            _set_video_file(page, video, str(session.get("display") or ""))
             page.wait_for_timeout(3000)
             _dismiss_upload_prompts(page)
             if job["manual_publish"]:

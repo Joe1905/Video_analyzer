@@ -43,6 +43,7 @@ RUN apt-get -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=20 update \
     && apt-get -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=20 install -y --no-install-recommends \
         novnc \
         websockify \
+        xdotool \
         x11vnc \
         xvfb \
     && rm -rf /var/lib/apt/lists/*
