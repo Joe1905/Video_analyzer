@@ -433,17 +433,20 @@ NAV_ITEMS = [
 ]
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
-UI_ASSET_VERSION = "20260729-6"
+UI_ASSET_VERSION = "20260729-7"
 APP_UI_ASSETS = f"""
 <script id="ui-nav-state-boot">
+let uiNavExpanded = false;
 try {{
-  document.documentElement.dataset.nav =
-    window.matchMedia("(min-width: 861px)").matches && localStorage.getItem("ui-nav-expanded") === "1"
-      ? "expanded"
-      : "collapsed";
+  const uiNavStored = localStorage.getItem("ui-nav-expanded");
+  uiNavExpanded = uiNavStored === null
+    ? document.cookie.split("; ").some((item) => item === "ui-nav-expanded=1")
+    : uiNavStored === "1";
 }} catch (_) {{
-  document.documentElement.dataset.nav = "collapsed";
+  uiNavExpanded = document.cookie.split("; ").some((item) => item === "ui-nav-expanded=1");
 }}
+document.documentElement.dataset.nav =
+  window.matchMedia("(min-width: 861px)").matches && uiNavExpanded ? "expanded" : "collapsed";
 </script>
 <link id="ui-system-css" rel="stylesheet" href="/assets/ui-system.css?v={UI_ASSET_VERSION}">
 <script id="ui-system-js" src="/assets/ui-system.js?v={UI_ASSET_VERSION}" defer></script>

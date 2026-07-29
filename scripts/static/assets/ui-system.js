@@ -4,11 +4,16 @@
   const NAV_KEY = "ui-nav-expanded";
   const DESKTOP_QUERY = window.matchMedia("(min-width: 861px)");
 
+  function navCookieExpanded() {
+    return document.cookie.split("; ").some((item) => item === `${NAV_KEY}=1`);
+  }
+
   function navExpanded() {
     try {
-      return localStorage.getItem(NAV_KEY) === "1";
+      const stored = localStorage.getItem(NAV_KEY);
+      return stored === null ? navCookieExpanded() : stored === "1";
     } catch (_) {
-      return false;
+      return navCookieExpanded();
     }
   }
 
@@ -129,6 +134,7 @@
         try {
           localStorage.setItem(NAV_KEY, expanded ? "1" : "0");
         } catch (_) {}
+        document.cookie = `${NAV_KEY}=${expanded ? "1" : "0"}; Path=/; Max-Age=31536000; SameSite=Lax`;
         syncNavigation(expanded);
         return;
       }

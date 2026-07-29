@@ -115,6 +115,7 @@ class UIContractTest(unittest.TestCase):
         script = UI_JS.read_text(encoding="utf-8")
         for behavior in (
             'body.dataset.nav',
+            'document.cookie',
             'aria-expanded',
             'aria-hidden',
             'MutationObserver',
