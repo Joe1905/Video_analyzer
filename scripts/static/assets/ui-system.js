@@ -35,7 +35,12 @@
     });
     root.querySelectorAll("#toolModal .tree-node").forEach((node) => {
       const toggle = node.querySelector(":scope > .tree-row .tree-toggle");
-      if (toggle) toggle.setAttribute("aria-expanded", String(!node.classList.contains("collapsed")));
+      if (!toggle) return;
+      const expanded = !node.classList.contains("collapsed");
+      const label = node.querySelector(":scope > .tree-row span:last-child")?.textContent.trim() || "工具分组";
+      toggle.setAttribute("aria-expanded", String(expanded));
+      toggle.setAttribute("aria-label", `${expanded ? "收起" : "展开"} ${label}`);
+      toggle.title = `${expanded ? "收起" : "展开"} ${label}`;
     });
   }
 
@@ -129,7 +134,7 @@
       const treeToggle = event.target.closest("#toolModal .tree-toggle");
       if (treeToggle) {
         requestAnimationFrame(() => {
-          enhanceToolTree(treeToggle.closest(".tree-node") || document);
+          enhanceToolTree();
         });
       }
     });
@@ -147,7 +152,10 @@
           toolChanged = true;
           messagesChanged = true;
         }
-        if (record.type === "attributes") dialogChanged = true;
+        if (record.type === "attributes") {
+          dialogChanged = true;
+          toolChanged = true;
+        }
       });
       if (toolChanged) enhanceToolTree();
       if (tableChanged) enhanceTables();

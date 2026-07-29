@@ -416,6 +416,16 @@
     gap: 11px;
   }
 
+  .chat-page-heading {
+    margin-left: 0;
+    margin-right: auto;
+  }
+
+  .mobile-session-toggle,
+  body.ui-route-lan-chat .mobile-only {
+    display: none;
+  }
+
   .ui-page-heading__icon,
   .source-page-icon,
   .chat-page-icon {
@@ -574,6 +584,17 @@
     min-height: 44px;
     padding: 0;
     border-radius: 12px;
+  }
+
+  body.ui-system .msg-icon-action,
+  body.ui-route-report-player #prevVideoBtn,
+  body.ui-route-report-player #nextVideoBtn,
+  body.ui-route-report-player #playBtn,
+  body.ui-route-report .history button,
+  body.ui-route-lan-chat #attachImage {
+    width: 44px;
+    min-width: 44px;
+    min-height: 44px;
   }
 
   body.ui-system input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
@@ -1289,6 +1310,11 @@
     background: linear-gradient(135deg, #fff, #eef2ff);
   }
 
+  body.ui-route-report .video-side .empty {
+    white-space: nowrap;
+    word-break: keep-all;
+  }
+
   body.ui-route-report-player .layout {
     height: 100%;
     padding: 18px;
@@ -1369,8 +1395,12 @@
   body.ui-route-proxy .work {
     height: 100%;
     min-width: 0;
-    grid-template-columns: minmax(240px, 280px) minmax(280px, 330px) minmax(0, 1fr);
+    grid-template-columns: minmax(210px, 240px) minmax(240px, 280px) minmax(0, 1fr);
     gap: 16px;
+  }
+
+  body.ui-route-proxy table {
+    min-width: 0;
   }
 
   body.ui-route-proxy .panel {
@@ -1419,6 +1449,29 @@
   }
 
   @media (max-width: 860px) {
+    .mobile-session-toggle {
+      width: 44px;
+      min-width: 44px;
+      height: 44px;
+      min-height: 44px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .mobile-session-toggle svg {
+      width: 20px;
+      height: 20px;
+    }
+
+    .chat-page-heading {
+      margin-right: auto;
+    }
+
+    body.ui-system .expand-input-btn {
+      display: none;
+    }
+
     body.ui-route-home .chat-shell,
     body.ui-route-amazon .chat-shell,
     body.ui-route-fastmoss .chat-shell {
@@ -1495,6 +1548,30 @@
     body.ui-route-lan-chat .ui-header {
       height: 72px;
       min-height: 72px;
+    }
+
+    body.ui-route-lan-chat,
+    body.ui-route-lan-chat .ui-app {
+      overflow-x: clip;
+    }
+
+    body.ui-route-lan-chat .brand {
+      min-width: 0;
+      flex: 1;
+    }
+
+    body.ui-route-lan-chat .brand-copy {
+      min-width: 0;
+      display: grid;
+    }
+
+    body.ui-route-lan-chat .brand-note {
+      display: none;
+    }
+
+    body.ui-route-lan-chat .header-room,
+    body.ui-route-lan-chat #mobileProfile {
+      display: none;
     }
 
     body.ui-route-lan-chat .shell {
