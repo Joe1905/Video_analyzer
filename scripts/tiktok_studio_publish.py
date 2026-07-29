@@ -1417,8 +1417,13 @@ def _set_video_file_via_cdp(page: Any, video: Path, file_input: Any, log_dir: Pa
             "DOM.setFileInputFiles",
             {"files": [str(video)], "backendNodeId": backend_node_id},
         )
-        selection_state = _file_input_selection_state(input_handle)
-        if not (selection_state.get("files") or selection_state.get("connected") is False):
+        selection_state: dict[str, Any] = {}
+        for _ in range(25):
+            selection_state = _file_input_selection_state(input_handle)
+            if selection_state.get("files") or selection_state.get("connected") is False:
+                break
+            page.wait_for_timeout(200)
+        else:
             raise RuntimeError("CDP 已返回但视频未写入 TikTok 上传控件")
         _append_file_input_trace(
             log_dir,
