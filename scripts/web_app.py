@@ -616,6 +616,23 @@ def inject_unified_nav(html: str, current_path: str) -> str:
         html,
         count=1,
     )
+    page_meta = {
+        "/shop": ("商品提取", "TikTok Shop 商品、店铺与评论洞察", '<path d="M6 8h12l1 13H5z"/><path d="M9 8V6a3 3 0 0 1 6 0v2"/>'),
+        "/metrics": ("视频数据", "TikTok 公开数据与内容表现", '<path d="M4 19V5M20 19H4M8 16v-5M12 16V8M16 16v-7"/>'),
+        "/extract": ("视频分析", "上传、下载与内容提取", '<path d="M4 5h16v14H4z"/><path d="m10 9 5 3-5 3"/>'),
+        "/proxy": ("账号 IP 池", "代理配置、账号隔离与任务运行状态", '<path d="M4 12a8 8 0 0 1 16 0M8 12a4 4 0 0 1 8 0M12 12v8M9 20h6"/>'),
+        "/tool": ("图片标签工具", "批量转换、写入标签并打包交付", '<path d="M4 5h16v14H4zM8 15l3-3 2 2 3-4 3 5M9 9h.01"/>'),
+    }
+    meta = page_meta.get(current_path)
+    if meta and 'class="source-page-heading"' not in html:
+        title, subtitle, icon = meta
+        heading = (
+            '<div class="source-page-heading">'
+            f'<span class="source-page-icon" aria-hidden="true"><svg viewBox="0 0 24 24">{icon}</svg></span>'
+            f'<span class="source-page-copy"><strong>{title}</strong><small>{subtitle}</small></span>'
+            '</div>'
+        )
+        html = re.sub(r"(<header\b[^>]*>)\s*<h1\b[^>]*>.*?</h1>", r"\1" + heading, html, count=1, flags=re.S)
     return html
 
 
