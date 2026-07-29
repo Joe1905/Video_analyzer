@@ -701,6 +701,34 @@ body.ui-system #toolModal .tree-children { display: grid; grid-template-rows: 1f
 body.ui-system #toolModal .tree-children > * { min-height: 0; overflow: hidden; }
 body.ui-system #toolModal .collapsed > .tree-children { display: grid !important; grid-template-rows: 0fr; opacity: 0; }
 body.ui-system #toolModal .tool-row { padding: 8px 0 9px !important; }
+
+/* 可折叠导航是布局状态：展开、收起时内容区同步移动，不以浮层遮挡。 */
+@media (min-width: 861px) {
+  body.ui-system .app-nav { transition: width 180ms ease, padding 180ms ease !important; }
+  body.ui-system .app-nav.expanded .app-nav__item:first-child .app-nav__label { display: inline !important; }
+  body.ui-system .chat-shell,
+  body.ui-system > header:not(.app-header),
+  body.ui-system .app-header { transition: margin-left 180ms ease, left 180ms ease, width 180ms ease !important; }
+  body.ui-nav-expanded.ui-route-home .chat-shell,
+  body.ui-nav-expanded.ui-route-amazon .chat-shell,
+  body.ui-nav-expanded.ui-route-fastmoss .chat-shell { margin-left: 224px !important; }
+  body.ui-nav-expanded.ui-route-home > header,
+  body.ui-nav-expanded.ui-route-amazon > header,
+  body.ui-nav-expanded.ui-route-fastmoss > header { left: 520px !important; right: 0 !important; width: auto !important; margin-left: 0 !important; }
+  body.ui-route-home > header,
+  body.ui-route-amazon > header,
+  body.ui-route-fastmoss > header { position: fixed !important; left: 368px !important; right: 0 !important; width: auto !important; margin-left: 0 !important; }
+  body.ui-route-home .messages:has(.empty-chat),
+  body.ui-route-amazon .messages:has(.empty-chat),
+  body.ui-route-fastmoss .messages:has(.empty-chat) { display: grid !important; place-items: center !important; padding: 0 24px 122px !important; }
+  body.ui-route-home .empty-chat,
+  body.ui-route-amazon .empty-chat,
+  body.ui-route-fastmoss .empty-chat { transform: none !important; margin: 0 auto !important; }
+  body.ui-route-report > header { display: flex !important; justify-content: flex-start !important; gap: 0 !important; }
+  body.ui-route-report > header .source-page-heading { margin-left: 0 !important; }
+  body.ui-route-proxy .publish-section .actions { display: grid !important; grid-template-columns: repeat(3, max-content) !important; justify-content: start !important; gap: 8px !important; }
+  body.ui-route-proxy .publish-section .actions .danger.solid { grid-column: 1 / -1 !important; justify-self: end !important; margin-left: 0 !important; }
+}
 body.ui-system .modal-head,
 body.ui-system .dialog-head,
 body.ui-system .modal-foot {
