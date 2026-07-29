@@ -379,6 +379,12 @@ social_jobs_running: set[str] = set()
 chat_store = ChatStore(DATA_DIR / "sessions.json")
 lan_chat_store = LanChatStore(DATA_DIR / "lan_chat.sqlite")
 feishu_capability_client = FeishuCapabilityClient()
+FEISHU_DIRECTORY_CACHE_SECONDS = max(
+    1.0, float(os.getenv("FEISHU_DIRECTORY_CACHE_SECONDS", "60"))
+)
+feishu_directory_cache_lock = threading.Lock()
+feishu_directory_cache_payload: dict[str, Any] | None = None
+feishu_directory_cache_expires_at = 0.0
 chat_provider_stores = {
     "home": chat_store,
     "amazon": ChatStore(SELLERSPRITE_CHAT_DATA_DIR / "chat_sessions.json"),
@@ -13819,13 +13825,45 @@ def stream_lan_chat_events(handler: BaseHTTPRequestHandler, after_id: int) -> No
         handler.close_connection = True
 
 
-def _feishu_users() -> dict[str, Any]:
-    payload = feishu_capability_client.list_users()
-    lan_chat_store.sync_feishu_users(payload["users"])
-    proxy_pool.sync_feishu_directory(
-        lan_chat_store.login_options().get("feishuUsers", [])
-    )
-    return payload
+def _feishu_users(*, force: bool = False) -> dict[str, Any]:
+    global feishu_directory_cache_payload, feishu_directory_cache_expires_at
+
+    with feishu_directory_cache_lock:
+        now = time.monotonic()
+        if (
+            not force
+            and feishu_directory_cache_payload is not None
+            and now < feishu_directory_cache_expires_at
+        ):
+            return feishu_directory_cache_payload
+
+        payload = feishu_capability_client.list_users()
+        lan_chat_store.sync_feishu_users(payload["users"])
+        proxy_pool.sync_feishu_directory(
+            lan_chat_store.login_options().get("feishuUsers", [])
+        )
+        feishu_directory_cache_payload = payload
+        feishu_directory_cache_expires_at = (
+            time.monotonic() + FEISHU_DIRECTORY_CACHE_SECONDS
+        )
+        return payload
+
+
+def _feishu_login_options() -> dict[str, Any]:
+    try:
+        _feishu_users()
+    except FeishuCapabilityError:
+        cached = lan_chat_store.login_options()
+        if cached.get("feishuUsers"):
+            return {
+                **cached,
+                "directoryStatus": {"source": "local-cache", "stale": True},
+            }
+        raise
+    return {
+        **lan_chat_store.login_options(),
+        "directoryStatus": {"source": "synced", "stale": False},
+    }
 
 
 def _proxy_feishu_binding(payload: dict[str, Any], *, required: bool) -> dict[str, Any]:
@@ -13834,7 +13872,7 @@ def _proxy_feishu_binding(payload: dict[str, Any], *, required: bool) -> dict[st
         return payload
     if not requested_id:
         raise ValueError("请选择飞书用户")
-    _feishu_users()
+    _feishu_users(force=True)
     options = lan_chat_store.login_options().get("feishuUsers", [])
     user = next(
         (
@@ -13894,10 +13932,10 @@ def handle_lan_chat_get(handler: BaseHTTPRequestHandler, parsed) -> bool:
     try:
         if path == "/api/lan-chat/login-options":
             try:
-                _feishu_users()
+                options = _feishu_login_options()
             except FeishuCapabilityError as exc:
                 raise LanChatError(f"无法读取飞书用户列表：{exc}", 502) from exc
-            json_response(handler, HTTPStatus.OK, lan_chat_store.login_options())
+            json_response(handler, HTTPStatus.OK, options)
             return True
         if path == "/api/lan-chat/bootstrap":
             json_response(handler, HTTPStatus.OK, lan_chat_store.bootstrap(_lan_chat_token(handler)))
