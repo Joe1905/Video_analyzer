@@ -402,6 +402,7 @@ CHAT_PROVIDER_UI = {
         "eyebrow": "\u667a\u80fd\u4efb\u52a1\u534f\u4f5c",
         "title": "\u4ece\u95ee\u9898\u51fa\u53d1\uff0c\u76f4\u63a5\u8c03\u7528\u5de5\u5177\u5b8c\u6210\u4efb\u52a1",
         "intro": "\u53ef\u67e5\u8be2\u65e5\u62a5\u3001\u5206\u6790\u89c6\u9891\u3001\u63d0\u53d6\u5546\u54c1\u4e0e\u68c0\u7d22\u6570\u636e\u3002\u8f93\u5165\u95ee\u9898\uff0c\u6216\u4ece\u5e38\u7528\u4efb\u52a1\u5f00\u59cb\u3002",
+        "placeholder": "\u8f93\u5165\u95ee\u9898\uff0c\u6216\u9009\u62e9\u5e38\u7528\u4efb\u52a1",
         "prompts": (
             ("\u5206\u6790\u4e00\u6761\u89c6\u9891", "\u5e2e\u6211\u5206\u6790\u4e00\u6761\u77ed\u89c6\u9891\uff0c\u603b\u7ed3\u5185\u5bb9\u7ed3\u6784\u548c\u6539\u8fdb\u5efa\u8bae"),
             ("\u603b\u7ed3\u4eca\u65e5\u8d8b\u52bf\u65e5\u62a5", "\u8bf7\u603b\u7ed3\u4eca\u5929\u7684\u70ed\u95e8\u89c6\u9891\u65e5\u62a5\u548c\u503c\u5f97\u5173\u6ce8\u7684\u8d8b\u52bf"),
@@ -416,6 +417,7 @@ CHAT_PROVIDER_UI = {
         "eyebrow": "\u9009\u54c1\u4e0e\u7ade\u54c1\u6d1e\u5bdf",
         "title": "\u628a\u5546\u54c1\u4e0e\u8bc4\u8bba\uff0c\u62c6\u6210\u53ef\u6267\u884c\u7684\u9009\u54c1\u6d1e\u5bdf",
         "intro": "\u8f93\u5165\u5173\u952e\u8bcd\u3001ASIN \u6216\u7ade\u54c1\u94fe\u63a5\uff0c\u5feb\u901f\u5b9a\u4f4d\u5e02\u573a\u673a\u4f1a\u3001\u7528\u6237\u75db\u70b9\u4e0e\u4ea7\u54c1\u6539\u8fdb\u65b9\u5411\u3002",
+        "placeholder": "\u8f93\u5165\u5173\u952e\u8bcd\u3001ASIN \u6216\u7ade\u54c1\u95ee\u9898",
         "prompts": (
             ("\u641c\u7d22\u5173\u952e\u8bcd\u4e0e\u7ec6\u5206\u5e02\u573a", "\u8bf7\u5206\u6790\u8fd9\u4e2a\u5173\u952e\u8bcd\u7684\u7ec6\u5206\u5e02\u573a\u548c\u9009\u54c1\u673a\u4f1a"),
             ("\u5206\u6790 ASIN \u4e0e\u7ade\u54c1\u8868\u73b0", "\u8bf7\u5206\u6790\u8fd9\u4e2a ASIN \u7684\u7ade\u54c1\u8868\u73b0\u548c\u5dee\u5f02\u5316\u7a7a\u95f4"),
@@ -430,6 +432,7 @@ CHAT_PROVIDER_UI = {
         "eyebrow": "\u8fbe\u4eba\u4e0e\u5546\u54c1\u6d1e\u5bdf",
         "title": "\u628a\u8fbe\u4eba\u4e0e\u5546\u54c1\u6570\u636e\uff0c\u62c6\u6210\u53ef\u590d\u7528\u7684\u589e\u957f\u7b56\u7565",
         "intro": "\u8f93\u5165\u8fbe\u4eba\u3001\u5546\u54c1\u6216\u89c6\u9891\u7ebf\u7d22\uff0c\u4ece\u5185\u5bb9\u8868\u73b0\u3001\u8f6c\u5316\u8bc1\u636e\u4e0e\u7ade\u54c1\u5dee\u5f02\u4e2d\u627e\u5230\u4e0b\u4e00\u6b65\u52a8\u4f5c\u3002",
+        "placeholder": "\u8f93\u5165\u8fbe\u4eba\u3001\u5546\u54c1\u6216\u89c6\u9891\u95ee\u9898",
         "prompts": (
             ("\u67e5\u627e\u540c\u8d5b\u9053\u9ad8\u589e\u957f\u8fbe\u4eba", "\u8bf7\u67e5\u627e\u540c\u8d5b\u9053\u8fd1\u671f\u9ad8\u589e\u957f\u8fbe\u4eba\uff0c\u5e76\u603b\u7ed3\u5185\u5bb9\u7279\u5f81"),
             ("\u5206\u6790\u5546\u54c1\u4e0e\u5e26\u8d27\u8868\u73b0", "\u8bf7\u5206\u6790\u8fd9\u4e2a\u5546\u54c1\u7684\u5e26\u8d27\u8868\u73b0\u3001\u5173\u8054\u8fbe\u4eba\u548c\u6210\u4ea4\u8d8b\u52bf"),
@@ -477,7 +480,7 @@ NAV_ITEMS = [
 ]
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
-UI_ASSET_VERSION = "20260729-10"
+UI_ASSET_VERSION = "20260729-11"
 APP_UI_ASSETS = f"""
 <script id="ui-nav-state-boot">
 let uiNavExpanded = false;
@@ -774,6 +777,7 @@ def serve_chat_template(handler: BaseHTTPRequestHandler, provider: str, path: st
     chat_html = chat_html.replace("__CHAT_HERO_EYEBROW__", provider_ui["eyebrow"])
     chat_html = chat_html.replace("__CHAT_HERO_TITLE__", provider_ui["title"])
     chat_html = chat_html.replace("__CHAT_HERO_INTRO__", provider_ui["intro"])
+    chat_html = chat_html.replace("__CHAT_INPUT_PLACEHOLDER__", provider_ui["placeholder"])
     for index, (label, prompt) in enumerate(provider_ui["prompts"], start=1):
         chat_html = chat_html.replace(f"__CHAT_PROMPT_{index}_LABEL__", label)
         chat_html = chat_html.replace(f"__CHAT_PROMPT_{index}_VALUE__", html_escape(prompt))
