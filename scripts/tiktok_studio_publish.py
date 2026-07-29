@@ -1346,7 +1346,51 @@ def _file_input_selected(file_input: Any) -> bool:
         return False
 
 
-def _set_video_file_via_native_chooser(page: Any, video: Path, display: str, file_input: Any) -> None:
+def _append_file_input_trace(log_dir: Path, event: str, **details: Any) -> None:
+    log_dir.mkdir(parents=True, exist_ok=True)
+    payload = {"at": datetime.now(timezone.utc).isoformat(), "event": event, **details}
+    with (log_dir / "file-input-trace.jsonl").open("a", encoding="utf-8") as file:
+        file.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
+
+
+def _cdp_file_input_state(page: Any) -> dict[str, Any]:
+    selector = "input[type='file'][accept*='video'], input[type='file']"
+    session = None
+    try:
+        session = page.context.new_cdp_session(page)
+        document = session.send("DOM.getDocument", {"depth": 1})
+        node_id = int(document["root"]["nodeId"])
+        input_node_id = int(session.send("DOM.querySelector", {"nodeId": node_id, "selector": selector}).get("nodeId") or 0)
+        state: dict[str, Any] = {"reachable": True, "input_node_id": input_node_id}
+        if input_node_id:
+            described = session.send("DOM.describeNode", {"nodeId": input_node_id})
+            state["backend_node_id"] = int((described.get("node") or {}).get("backendNodeId") or 0)
+        evaluated = session.send(
+            "Runtime.evaluate",
+            {
+                "expression": """(() => { const input = document.querySelector("input[type='file'][accept*='video'], input[type='file']"); return input ? { connected: input.isConnected, disabled: input.disabled, accept: input.accept, files: input.files ? input.files.length : -1 } : null; })()""",
+                "returnByValue": True,
+            },
+        )
+        state["runtime_value"] = ((evaluated.get("result") or {}).get("value"))
+        return state
+    except Exception as exc:
+        return {"reachable": False, "error": str(exc)}
+    finally:
+        if session:
+            try:
+                session.detach()
+            except Exception:
+                pass
+
+
+def _set_video_file_via_native_chooser(
+    page: Any,
+    video: Path,
+    display: str,
+    file_input: Any,
+    log_dir: Path,
+) -> None:
     if not display:
         raise RuntimeError("浏览器会话未提供虚拟显示器，无法使用系统文件选择器降级")
     select_button = _first_visible([
@@ -1355,6 +1399,7 @@ def _set_video_file_via_native_chooser(page: Any, video: Path, display: str, fil
     ])
     if not select_button:
         raise RuntimeError("未找到 TikTok Studio 的选择视频按钮")
+    _append_file_input_trace(log_dir, "native_chooser_opening", display=display, video=str(video))
     select_button.click(timeout=5000)
     page.wait_for_timeout(500)
     x11_env = {**os.environ, "DISPLAY": display}
@@ -1375,33 +1420,68 @@ def _set_video_file_via_native_chooser(page: Any, video: Path, display: str, fil
     xdotool("key", "--clearmodifiers", "ctrl+l")
     xdotool("type", "--clearmodifiers", "--delay", "1", str(video))
     xdotool("key", "Return")
+    _append_file_input_trace(log_dir, "native_chooser_path_submitted", submit_count=1)
     for _ in range(5):
         if _file_input_selected(file_input):
+            _append_file_input_trace(log_dir, "native_chooser_selected", submit_count=1)
             return
         page.wait_for_timeout(200)
     xdotool("key", "Return")
+    _append_file_input_trace(log_dir, "native_chooser_path_submitted", submit_count=2)
     for _ in range(25):
         if _file_input_selected(file_input):
+            _append_file_input_trace(log_dir, "native_chooser_selected", submit_count=2)
             return
         page.wait_for_timeout(200)
     raise RuntimeError("系统文件选择器未将视频选入 TikTok 上传控件")
 
 
-def _set_video_file(page: Any, video: Path, display: str = "") -> None:
+def _set_video_file(page: Any, video: Path, display: str = "", log_dir: Path | None = None) -> None:
+    trace_dir = log_dir or LOG_ROOT
     file_inputs = page.locator("input[type='file'][accept*='video']")
     if not file_inputs.count():
         file_inputs = page.locator("input[type='file']")
     if not file_inputs.count():
         raise RuntimeError("未找到 TikTok Studio 视频选择控件")
     file_input = file_inputs.first
+    _append_file_input_trace(
+        trace_dir,
+        "cdp_injection_start",
+        video=str(video),
+        video_bytes=video.stat().st_size,
+        display=display,
+        cdp_state=_cdp_file_input_state(page),
+    )
+    started_at = time.monotonic()
     try:
         file_input.set_input_files(str(video), timeout=10000)
+        _append_file_input_trace(
+            trace_dir,
+            "cdp_injection_succeeded",
+            elapsed_seconds=round(time.monotonic() - started_at, 3),
+            cdp_state=_cdp_file_input_state(page),
+        )
         return
     except Exception as direct_error:
         if _file_input_selected(file_input):
+            _append_file_input_trace(
+                trace_dir,
+                "cdp_injection_timeout_but_selected",
+                elapsed_seconds=round(time.monotonic() - started_at, 3),
+                error=str(direct_error),
+                cdp_state=_cdp_file_input_state(page),
+            )
             return
+        _append_file_input_trace(
+            trace_dir,
+            "cdp_injection_failed",
+            elapsed_seconds=round(time.monotonic() - started_at, 3),
+            error_type=type(direct_error).__name__,
+            error=str(direct_error),
+            cdp_state=_cdp_file_input_state(page),
+        )
         try:
-            _set_video_file_via_native_chooser(page, video, display, file_input)
+            _set_video_file_via_native_chooser(page, video, display, file_input, trace_dir)
             return
         except Exception as native_error:
             raise RuntimeError(
@@ -1681,7 +1761,7 @@ def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[str,
             _assert_account_ready(page)
             _discard_stale_edit(page, log_dir)
             _set_job(job["id"], "uploading", "uploading", session_id=session["id"])
-            _set_video_file(page, video, str(session.get("display") or ""))
+            _set_video_file(page, video, str(session.get("display") or ""), log_dir)
             page.wait_for_timeout(3000)
             _dismiss_upload_prompts(page)
             if job["manual_publish"]:
