@@ -734,6 +734,7 @@ body.ui-system #toolModal .tool-row { padding: 8px 0 9px !important; }
   body.ui-route-amazon > header,
   body.ui-route-fastmoss > header {
     left: 72px !important; right: 0 !important; width: auto !important; height: 70px !important;
+    margin-left: 0 !important;
     display: flex !important; align-items: center !important; padding: 0 22px !important;
     background: rgba(255,255,255,.94) !important; border-bottom: 1px solid var(--source-line) !important;
   }
