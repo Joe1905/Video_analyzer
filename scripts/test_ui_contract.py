@@ -14,16 +14,16 @@ STATIC_DIR = SCRIPTS_DIR / "static"
 UI_CSS = STATIC_DIR / "assets" / "ui-system.css"
 UI_JS = STATIC_DIR / "assets" / "ui-system.js"
 TEMPLATES = (
-    "amazon.html",
-    "chat.html",
-    "lan_chat.html",
-    "metrics.html",
-    "proxy.html",
-    "report.html",
-    "report_player.html",
-    "shop.html",
-    "tool.html",
-    "web_index.html",
+    STATIC_DIR / "amazon.html",
+    STATIC_DIR / "chat.html",
+    STATIC_DIR / "lan_chat.html",
+    STATIC_DIR / "metrics.html",
+    STATIC_DIR / "proxy.html",
+    STATIC_DIR / "report.html",
+    STATIC_DIR / "report_player.html",
+    STATIC_DIR / "shop.html",
+    STATIC_DIR / "tool.html",
+    SCRIPTS_DIR / "web_index.html",
 )
 
 
@@ -56,9 +56,10 @@ class ShellParser(HTMLParser):
 
 class UIContractTest(unittest.TestCase):
     def test_every_template_uses_the_shared_shell(self) -> None:
-        for name in TEMPLATES:
+        for path in TEMPLATES:
+            name = path.name
             with self.subTest(template=name):
-                text = (STATIC_DIR / name).read_text(encoding="utf-8")
+                text = path.read_text(encoding="utf-8")
                 self.assertEqual(text.count("<!-- UI_APP_NAV -->"), 1)
                 parser = ShellParser()
                 parser.feed(text)

@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>短视频分析器</title>
 <style>
+@layer legacy {
 :root{
   --bg:#f6f8fb;--surface:#fff;--text:#0f172a;--text2:#475569;--text3:#94a3b8;
   --border:#e2e8f0;--border2:#f1f5f9;--brand:#2563eb;--brand2:#1d4ed8;
@@ -165,11 +166,18 @@ header .pill .dot{width:7px;height:7px;border-radius:50%;background:var(--green)
   .report-toc{display:none}
   .outlet{min-height:60vh}
 }
+}
 </style>
 </head>
 <body>
+<div class="ui-app">
+<!-- UI_APP_NAV -->
+<div class="ui-frame">
+<header class="ui-header">
+  <div class="ui-page-heading"><span class="ui-page-heading__icon" aria-hidden="true"></span><span class="ui-page-heading__copy"><strong>视频分析</strong><small>上传、提取与生成结构化报告</small></span></div>
+</header>
+<div class="ui-main">
 <div id="drop" class="drop-overlay"><div class="drop-card"><b>松手以上传视频</b><p>支持一次拖入多个视频文件</p></div></div>
-<header><h1><span class="header-product">视频分析</span><span class="header-view">任务工作台</span></h1><nav class="app-nav" aria-label="主导航"><a class="app-nav__item" href="/" title="AI 聊天"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/></svg><span class="app-nav__label">首页</span></a><a class="app-nav__item" href="/report" title="每日报告"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h7l4 4v14H7z"/><path d="M14 3v5h5"/><path d="M10 12h6"/><path d="M10 16h4"/></svg><span class="app-nav__label">日报</span></a><a class="app-nav__item" href="/amazon" title="Amazon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7.5 12 3l8 4.5v9L12 21l-8-4.5z"/><path d="M4 7.5 12 12l8-4.5"/><path d="M12 12v9"/></svg><span class="app-nav__label">Amazon</span></a><a class="app-nav__item" href="/shop" title="Shop"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 8h12l1 13H5z"/><path d="M9 8V6a3 3 0 0 1 6 0v2"/><path d="M5 11h14"/></svg><span class="app-nav__label">Shop</span></a><a class="app-nav__item" href="/metrics" title="数据"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5"/><path d="M20 19H4"/><path d="M8 16v-5"/><path d="M12 16V8"/><path d="M16 16v-7"/></svg><span class="app-nav__label">数据</span></a><a class="app-nav__item active" href="/extract" title="视频分析"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4z"/><path d="m10 9 5 3-5 3z"/><path d="M8 21h8"/><path d="M12 19v2"/></svg><span class="app-nav__label">分析</span></a></nav></header>
 
 <main id="home" class="page active">
   <div class="main-shell">
@@ -264,6 +272,9 @@ header .pill .dot{width:7px;height:7px;border-radius:50%;background:var(--green)
   </div>
 </div>
 
+</div>
+</div>
+</div>
 <script>
 window.DEFAULT_ANALYSIS_MODE="__DEFAULT_ANALYSIS_MODE__";
 const DEFAULT_FEEDBACK_PROMPT=`请基于视频提取内容和分析结果，给出可执行的视频改进反馈。重点指出内容表达、开头吸引力、节奏、画面、字幕/口播、卖点呈现、信任感和转化引导的问题，并给出优先级明确的修改建议。
