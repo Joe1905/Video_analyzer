@@ -1446,6 +1446,29 @@ def _set_video_file(page: Any, video: Path, display: str = "", log_dir: Path | N
     file_input = file_inputs.first
     _append_file_input_trace(
         trace_dir,
+        "native_chooser_primary_start",
+        video=str(video),
+        video_bytes=video.stat().st_size,
+        display=display,
+        cdp_state=_cdp_file_input_state(page),
+    )
+    try:
+        _set_video_file_via_native_chooser(page, video, display, file_input, trace_dir)
+        return
+    except Exception as native_error:
+        _append_file_input_trace(
+            trace_dir,
+            "native_chooser_primary_failed",
+            error_type=type(native_error).__name__,
+            error=str(native_error),
+            cdp_state=_cdp_file_input_state(page),
+        )
+        if os.getenv("TIKTOK_PUBLISH_CDP_FILE_INPUT_FALLBACK", "0").strip().lower() not in {"1", "true", "yes", "on"}:
+            raise RuntimeError(f"系统文件选择器选取视频失败：{native_error}") from native_error
+
+    _append_file_input_trace(trace_dir, "cdp_injection_fallback_start")
+    _append_file_input_trace(
+        trace_dir,
         "cdp_injection_start",
         video=str(video),
         video_bytes=video.stat().st_size,
