@@ -140,16 +140,16 @@ class UIContractTest(unittest.TestCase):
         self.assertNotIn("APP_NAV_BEHAVIOR", app)
         self.assertNotIn('re.sub(r"(<header', app)
 
-    def test_page_headers_use_real_route_icons(self) -> None:
-        templates = (
-            SCRIPTS_DIR / "web_index.html",
-            STATIC_DIR / "metrics.html",
-            STATIC_DIR / "tool.html",
-            STATIC_DIR / "proxy.html",
+    def test_navigation_selection_and_page_heading_contract(self) -> None:
+        css = UI_CSS.read_text(encoding="utf-8")
+        self.assertRegex(
+            css,
+            r"\.ui-nav__item\.active::before\s*\{[^}]*left:\s*-14px;[^}]*width:\s*3px;",
         )
-        empty_icon = '<span class="ui-page-heading__icon" aria-hidden="true"></span>'
-        for template in templates:
-            self.assertNotIn(empty_icon, template.read_text(encoding="utf-8"), template.name)
+        self.assertRegex(
+            css,
+            r"\.ui-page-heading__icon,\s*\.source-page-icon,\s*\.chat-page-icon\s*\{[^}]*display:\s*none;",
+        )
 
     def test_chat_history_controls_are_shared_across_providers(self) -> None:
         chat = (STATIC_DIR / "chat.html").read_text(encoding="utf-8")

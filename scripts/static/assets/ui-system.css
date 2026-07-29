@@ -1171,9 +1171,22 @@
   }
 
   .ui-nav__item.active {
+    position: relative;
     color: var(--ui-nav-ink-active);
     background: rgba(255, 255, 255, .105);
-    box-shadow: inset 3px 0 0 var(--ui-brand);
+    box-shadow: none;
+    overflow: visible;
+  }
+
+  .ui-nav__item.active::before {
+    content: "";
+    position: absolute;
+    top: 12px;
+    left: -14px;
+    width: 3px;
+    height: 20px;
+    border-radius: 0 4px 4px 0;
+    background: var(--ui-brand);
   }
 
   .ui-nav__icon {
@@ -1864,6 +1877,20 @@
     body.ui-route-proxy table td:last-child {
       border-bottom: 0;
     }
+  }
+}
+
+@layer utilities {
+  .ui-page-heading__icon,
+  .source-page-icon,
+  .chat-page-icon {
+    display: none;
+  }
+
+  .ui-page-heading,
+  .source-page-heading,
+  .chat-page-heading {
+    gap: 0;
   }
 }
 
