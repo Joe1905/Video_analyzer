@@ -417,6 +417,23 @@ body.ui-route-lan-chat .message-body {
   position: relative;
 }
 
+body.ui-route-lan-chat .message-stack {
+  width: fit-content;
+  max-width: 100%;
+}
+
+body.ui-route-lan-chat .message.mine .message-stack {
+  margin-left: auto;
+}
+
+body.ui-route-lan-chat .message.has-reply .message-stack {
+  width: min(320px, 72vw);
+}
+
+body.ui-route-lan-chat .message.has-reply .bubble {
+  width: 100%;
+}
+
 body.ui-route-lan-chat .message-actions {
   position: absolute;
   z-index: 2;
@@ -495,10 +512,11 @@ body.ui-route-lan-chat .message.mine .bubble {
 
 body.ui-route-lan-chat .message-reply {
   display: flex;
+  width: 100%;
   min-width: 0;
   align-items: baseline;
   gap: 2px;
-  margin: -2px 0 8px;
+  margin: -2px 0 5px;
   padding: 7px 9px;
   border-left: 2px solid #a9cbc4;
   border-radius: 4px 8px 8px 4px;
@@ -557,11 +575,36 @@ body.ui-route-lan-chat .composer {
   border-radius: 17px;
   background: var(--ui-surface);
   box-shadow: 0 12px 32px rgba(25, 28, 34, .07);
+  position: relative;
+  isolation: isolate;
+  transition: border-color 150ms var(--ui-ease), background-color 150ms var(--ui-ease), box-shadow 150ms var(--ui-ease);
 }
 
 body.ui-route-lan-chat .composer:focus-within {
   border-color: var(--lan-accent-line);
   box-shadow: 0 0 0 3px rgba(47, 125, 115, .08), 0 12px 32px rgba(25, 28, 34, .07);
+}
+
+body.ui-route-lan-chat .composer.is-dragging {
+  border-color: var(--lan-accent);
+  background: var(--lan-accent-soft);
+  box-shadow: 0 0 0 4px rgba(47, 125, 115, .11), 0 12px 32px rgba(25, 28, 34, .07);
+}
+
+body.ui-route-lan-chat .composer.is-dragging::after {
+  content: "松开以添加到发送区";
+  position: absolute;
+  z-index: 4;
+  inset: 6px;
+  display: grid;
+  place-items: center;
+  border: 1px dashed var(--lan-accent);
+  border-radius: 12px;
+  background: rgba(238, 248, 246, .94);
+  color: var(--lan-accent);
+  font-size: 12px;
+  font-weight: 700;
+  pointer-events: none;
 }
 
 body.ui-route-lan-chat .composer-reply {
@@ -1575,6 +1618,10 @@ body.ui-route-lan-chat .right-rail {
   overflow: hidden;
 }
 
+body.ui-route-lan-chat .drawer-detail-head {
+  display: none;
+}
+
 body.ui-route-lan-chat .detail-scroll {
   height: 100%;
   min-height: 0;
@@ -1990,7 +2037,8 @@ body.ui-route-lan-chat.lan-details-closed .right-rail {
     right: 0;
     bottom: 0;
     width: min(330px, 88vw);
-    display: block;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
     visibility: hidden;
     opacity: 0;
     transform: translateX(104%);
@@ -2003,6 +2051,53 @@ body.ui-route-lan-chat.lan-details-closed .right-rail {
     opacity: 1;
     transform: none;
     transition-delay: 0s;
+  }
+
+  body.ui-route-lan-chat .drawer-detail-head {
+    min-height: 58px;
+    padding: 0 10px 0 18px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    border-bottom: 1px solid var(--ui-line);
+    background: rgba(255, 255, 255, .96);
+  }
+
+  body.ui-route-lan-chat .drawer-detail-head > div {
+    min-width: 0;
+  }
+
+  body.ui-route-lan-chat .drawer-detail-head strong,
+  body.ui-route-lan-chat .drawer-detail-head span {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  body.ui-route-lan-chat .drawer-detail-head strong {
+    color: var(--ui-ink);
+    font-size: 13px;
+  }
+
+  body.ui-route-lan-chat .drawer-detail-head span {
+    margin-top: 2px;
+    color: var(--ui-ink-subtle);
+    font-size: 9px;
+  }
+
+  body.ui-route-lan-chat .drawer-detail-head .icon-button {
+    width: 40px;
+    min-width: 40px;
+    height: 40px;
+    border: 0;
+    background: transparent;
+    font-size: 17px;
+  }
+
+  body.ui-route-lan-chat .detail-scroll {
+    height: auto;
   }
 }
 
@@ -2040,6 +2135,123 @@ body.ui-route-lan-chat.lan-details-closed .right-rail {
   body.ui-route-lan-chat .right-rail {
     top: 58px;
     width: min(88vw, 344px);
+  }
+
+  body.ui-route-lan-chat[data-lan-drawer="right"] .right-rail {
+    z-index: 90;
+    top: 0;
+    width: min(92vw, 360px);
+  }
+
+  body.ui-route-lan-chat[data-lan-drawer="right"] .drawer-backdrop {
+    z-index: 88;
+    inset: 0;
+    background: rgba(23, 26, 31, .32);
+    backdrop-filter: blur(4px);
+  }
+
+  body.ui-route-lan-chat .drawer-detail-head {
+    min-height: calc(62px + env(safe-area-inset-top));
+    padding: env(safe-area-inset-top) 8px 0 16px;
+  }
+
+  body.ui-route-lan-chat .drawer-detail-head strong {
+    font-size: 14px;
+  }
+
+  body.ui-route-lan-chat .drawer-detail-head span {
+    font-size: 10px;
+  }
+
+  body.ui-route-lan-chat .detail-scroll {
+    padding: 14px 14px max(24px, env(safe-area-inset-bottom));
+    overscroll-behavior: contain;
+  }
+
+  body.ui-route-lan-chat .channel-card {
+    padding: 15px;
+    border-color: transparent;
+    border-radius: 16px;
+  }
+
+  body.ui-route-lan-chat .channel-icon {
+    width: 38px;
+    height: 38px;
+    margin-bottom: 10px;
+    border-radius: 12px;
+  }
+
+  body.ui-route-lan-chat .channel-card > strong {
+    font-size: 15px;
+  }
+
+  body.ui-route-lan-chat .channel-card > p {
+    margin-top: 4px;
+    font-size: 11px;
+    line-height: 1.55;
+  }
+
+  body.ui-route-lan-chat .member-summary {
+    min-height: 34px;
+    margin-top: 10px;
+    font-size: 11px;
+  }
+
+  body.ui-route-lan-chat .detail-section {
+    padding: 14px 2px;
+  }
+
+  body.ui-route-lan-chat .detail-title {
+    min-height: 36px;
+    margin-bottom: 6px;
+  }
+
+  body.ui-route-lan-chat .detail-title strong {
+    font-size: 12px;
+  }
+
+  body.ui-route-lan-chat .detail-title button {
+    min-width: 68px;
+    min-height: 36px;
+    padding: 0 10px;
+    border-radius: 10px;
+    font-size: 10px;
+  }
+
+  body.ui-route-lan-chat .recent-file-row {
+    min-height: 58px;
+    padding: 8px 10px;
+    grid-template-columns: 36px minmax(0, 1fr) auto;
+    border-radius: 12px;
+  }
+
+  body.ui-route-lan-chat .file-mini {
+    width: 36px;
+    height: 36px;
+  }
+
+  body.ui-route-lan-chat .recent-file-copy strong {
+    font-size: 11px;
+  }
+
+  body.ui-route-lan-chat .recent-file-copy small {
+    font-size: 9px;
+  }
+
+  body.ui-route-lan-chat .recent-file-row > button {
+    min-width: 44px;
+    min-height: 36px;
+  }
+
+  body.ui-route-lan-chat .setting-row,
+  body.ui-route-lan-chat .detail-action {
+    min-height: 50px;
+    padding: 0 6px;
+    font-size: 12px;
+  }
+
+  body.ui-route-lan-chat .group-actions {
+    padding-top: 6px;
   }
 
   body.ui-route-lan-chat .left-rail {

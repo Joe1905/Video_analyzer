@@ -248,6 +248,27 @@ class UIContractTest(unittest.TestCase):
             r"\.message-reply\s*\{[^}]*border-left:\s*2px solid #a9cbc4;[^}]*background:\s*#f3f8f7;",
         )
 
+    def test_lan_chat_mobile_details_use_an_independent_drawer_header(self) -> None:
+        lan_chat = (STATIC_DIR / "lan_chat.html").read_text(encoding="utf-8")
+        lan_css = (STATIC_DIR / "assets" / "lan-chat.css").read_text(encoding="utf-8")
+        self.assertIn('class="drawer-detail-head"', lan_chat)
+        self.assertIn('id="mobileCloseDetails"', lan_chat)
+        self.assertIn('id="mobileDetailRoomName"', lan_chat)
+        self.assertIn("document.body.dataset.lanDrawer=side", lan_chat)
+        self.assertIn('body.ui-route-lan-chat[data-lan-drawer="right"] .right-rail', lan_css)
+        self.assertIn('body.ui-route-lan-chat[data-lan-drawer="right"] .drawer-backdrop', lan_css)
+
+    def test_lan_chat_composer_accepts_drop_and_pasted_images(self) -> None:
+        lan_chat = (STATIC_DIR / "lan_chat.html").read_text(encoding="utf-8")
+        lan_css = (STATIC_DIR / "assets" / "lan-chat.css").read_text(encoding="utf-8")
+        self.assertIn('composer.addEventListener("drop",handleComposerDrop)', lan_chat)
+        self.assertIn('messageInput.addEventListener("paste",pasteAttachment)', lan_chat)
+        self.assertIn("acceptAttachmentFiles(event.dataTransfer.files)", lan_chat)
+        self.assertIn('item.type.startsWith("image/")', lan_chat)
+        self.assertIn('class="message-stack"', lan_chat)
+        self.assertIn(".composer.is-dragging::after", lan_css)
+        self.assertIn(".message.has-reply .bubble", lan_css)
+
     def test_ui_test_mode_blocks_mutations_before_handlers(self) -> None:
         app = (SCRIPTS_DIR / "web_app.py").read_text(encoding="utf-8")
         self.assertIn(
