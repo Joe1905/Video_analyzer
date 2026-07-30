@@ -2186,16 +2186,16 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
     expected_exit_ip = _clean_text(payload.get("expected_exit_ip"), 80)
     source_type = _clean_text(payload.get("source_type"), 40)
     lowered_uri = source_uri.lower()
-    if lowered_uri.startswith("vless://"):
+    if not source_type and lowered_uri.startswith("vless://"):
         source_type = "vless"
-    elif lowered_uri.startswith("vmess://"):
+    elif not source_type and lowered_uri.startswith("vmess://"):
         source_type = "vmess"
-    elif lowered_uri.startswith(("socks://", "socks5://", "socks5h://", "http://", "https://")):
+    elif not source_type and lowered_uri.startswith(("socks://", "socks5://", "socks5h://", "http://", "https://")):
         source_type = "static"
     elif not source_type:
         source_type = "vless"
-    if source_type not in {"vless", "vmess", "static"}:
-        raise ValueError("代理类型必须为 vless、vmess 或 static")
+    if source_type not in {"vless", "vmess", "static", "direct"}:
+        raise ValueError("代理类型必须为 vless、vmess、static 或 direct")
     dialer_proxy = SYSTEM_PROXY_DIALER if source_type == "static" else ""
 
     parse_status = "manual"
@@ -2203,7 +2203,13 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
     parsed: dict[str, Any] = {}
     mihomo_proxy: dict[str, Any] = {}
     mihomo_name = name
-    if source_uri:
+    if source_type == "direct":
+        source_uri = ""
+        expected_exit_ip = ""
+        parse_status = "ok"
+        parsed = {"mode": "server_global"}
+        mihomo_name = SYSTEM_PROXY_DIALER
+    elif source_uri:
         try:
             if source_type == "vless":
                 parsed_result = parse_vless_uri(source_uri, fallback_name=name)
@@ -2283,7 +2289,7 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
     pool = get_pool(pool_id)
     if _sing_box_reality_pool(pool):
         core = ensure_proxy_cores(restart=True, required=True)
-    elif pool.get("parse_status") == "ok" and pool.get("mihomo_proxy"):
+    elif pool.get("parse_status") == "ok" and (pool.get("mihomo_proxy") or pool.get("source_type") == "direct"):
         if _clean_status(pool.get("status")) == STATUS_PAUSED:
             cleanup, _backup = _remove_mihomo_pool_config(pool)
             core = {"mihomo_cleanup": cleanup}
@@ -3084,6 +3090,8 @@ def _restore_mihomo_config(path: Path, original: bytes, mode: int) -> None:
 
 
 def _runtime_mihomo_name(pool: sqlite3.Row | dict[str, Any]) -> str:
+    if str(_pool_value(pool, "source_type") or "") == "direct":
+        return SYSTEM_PROXY_DIALER
     node_name = str(_pool_value(pool, "mihomo_name") or _pool_value(pool, "name") or "").strip()
     return f"{PROXY_MIHOMO_NAME_PREFIX}{node_name}" if node_name else ""
 
@@ -3119,25 +3127,29 @@ def _resolve_system_proxy_dialer(node_name: str) -> str:
 
 
 def _sync_mihomo_pool_config(pool: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    source_type = str(_pool_value(pool, "source_type") or "")
+    direct = source_type == "direct"
     proxy = _json_loads(_pool_value(pool, "mihomo_proxy_json", ""), {})
     if not proxy and isinstance(_pool_value(pool, "mihomo_proxy", {}), dict):
         proxy = dict(_pool_value(pool, "mihomo_proxy", {}))
     node_name = _runtime_mihomo_name(pool)
     local_port = int(_pool_value(pool, "local_port", 0) or 0)
     pool_id = int(_pool_value(pool, "id", 0) or 0)
-    if not proxy or not node_name or not local_port or not pool_id:
+    if not node_name or not local_port or not pool_id or (not direct and not proxy):
         raise ProxyConfigurationError("代理缺少可同步的 mihomo 节点、端口或记录 ID")
-    if str(_pool_value(pool, "source_type") or "") == "static":
+    if source_type == "static":
         proxy["dialer-proxy"] = _resolve_system_proxy_dialer(node_name)
-    else:
+    elif not direct:
         proxy.pop("dialer-proxy", None)
-    proxy["name"] = node_name
+    if not direct:
+        proxy["name"] = node_name
     listener = {
         "name": _runtime_mihomo_listener_name(pool),
         "type": "mixed",
         "port": local_port,
         "proxy": node_name,
     }
+
 
     # Mihomo does not reliably replace a listener when its name changes while
     # retaining the same port. Release a stale managed listener first, then add
@@ -3150,7 +3162,13 @@ def _sync_mihomo_pool_config(pool: sqlite3.Row | dict[str, Any]) -> dict[str, An
     original = path.read_bytes()
     mode = path.stat().st_mode & 0o777
     lines = original.decode("utf-8").splitlines(keepends=True)
-    lines = _replace_mihomo_yaml_item(lines, "proxies", pool_id, proxy, match_name=node_name)
+    lines = _replace_mihomo_yaml_item(
+        lines,
+        "proxies",
+        pool_id,
+        None if direct else proxy,
+        match_name="" if direct else node_name,
+    )
     lines = _replace_mihomo_yaml_item(lines, "listeners", pool_id, listener, match_port=local_port)
     updated = "".join(lines).encode("utf-8")
     backup_path = path.with_name(path.name + ".proxy-pool.bak")
@@ -3189,7 +3207,7 @@ def ensure_static_proxy_configs() -> dict[str, Any]:
     with connect() as conn:
         pools = conn.execute(
             """SELECT * FROM proxy_profiles
-               WHERE source_type = 'static' AND parse_status = 'ok' AND status <> ?
+               WHERE source_type IN ('static','direct') AND parse_status = 'ok' AND status <> ?
                ORDER BY id""",
             (STATUS_PAUSED,),
         ).fetchall()
@@ -3243,7 +3261,8 @@ def _remove_mihomo_pool_config(
     node_name = _runtime_mihomo_name(pool)
     local_port = int(_pool_value(pool, "local_port", 0) or 0)
     lines = original.decode("utf-8").splitlines(keepends=True)
-    lines = _replace_mihomo_yaml_item(lines, "proxies", pool_id, None, match_name=node_name)
+    if str(_pool_value(pool, "source_type") or "") != "direct":
+        lines = _replace_mihomo_yaml_item(lines, "proxies", pool_id, None, match_name=node_name)
     lines = _replace_mihomo_yaml_item(lines, "listeners", pool_id, None, match_port=local_port)
     updated = "".join(lines).encode("utf-8")
     if updated == original:
@@ -3662,23 +3681,28 @@ def check_binding(payload: dict[str, Any], require_account: bool = False) -> dic
                     "observed_ip": observed_ip,
                     "expected_exit_ip": str(pool["expected_exit_ip"] or "").strip(),
                 }
-        expected_ip = str(pool["expected_exit_ip"] or "").strip()
+        direct = str(pool["source_type"] or "") == "direct"
+        expected_ip = "" if direct else str(pool["expected_exit_ip"] or "").strip()
         should_bind = str(payload.get("bind") or "").lower() in {"1", "true", "yes", "on"}
-        if not expected_ip and should_bind:
+        if not direct and not expected_ip and should_bind:
             expected_ip = observed_ip
         pool_status = _clean_status(pool["status"])
-        ip_matches = bool(expected_ip and observed_ip == expected_ip)
-        next_pool_status = STATUS_ACTIVE if ip_matches and pool_status != STATUS_PAUSED else pool_status
-        allowed = bool(expected_ip and observed_ip == expected_ip and next_pool_status == STATUS_ACTIVE)
-        reason = ""
-        if not expected_ip:
-            reason = "代理还没有绑定出口 IP"
-        elif observed_ip != expected_ip:
-            reason = f"当前出口 IP {observed_ip} 与绑定 IP {expected_ip} 不一致"
-        elif next_pool_status != STATUS_ACTIVE:
-            reason = f"代理状态为 {next_pool_status}"
+        if direct:
+            next_pool_status = pool_status
+            allowed = next_pool_status == STATUS_ACTIVE
+            reason = "通过（使用服务器代理出口，不绑定固定 IP）" if allowed else f"代理状态为 {next_pool_status}"
         else:
-            reason = "通过"
+            ip_matches = bool(expected_ip and observed_ip == expected_ip)
+            next_pool_status = STATUS_ACTIVE if ip_matches and pool_status != STATUS_PAUSED else pool_status
+            allowed = bool(expected_ip and observed_ip == expected_ip and next_pool_status == STATUS_ACTIVE)
+            if not expected_ip:
+                reason = "代理还没有绑定出口 IP"
+            elif observed_ip != expected_ip:
+                reason = f"当前出口 IP {observed_ip} 与绑定 IP {expected_ip} 不一致"
+            elif next_pool_status != STATUS_ACTIVE:
+                reason = f"代理状态为 {next_pool_status}"
+            else:
+                reason = "通过"
         if should_bind and not allowed and next_pool_status != STATUS_PAUSED:
             next_pool_status = STATUS_ERROR
         geo = detected.get("geo") or lookup_ip_geo(observed_ip)
@@ -3966,7 +3990,7 @@ def start_login_session(payload: dict[str, Any]) -> dict[str, Any]:
             _wait_for_port(int(slot_ports["debug_port"]), "Chrome CDP", timeout=10.0)
             browser_observed_ip = _detect_browser_exit_ip(int(slot_ports["debug_port"]))
             expected_exit_ip = str(pool["expected_exit_ip"] or "").strip()
-            if browser_observed_ip != expected_exit_ip:
+            if str(pool["source_type"] or "") != "direct" and browser_observed_ip != expected_exit_ip:
                 reason = f"浏览器出口 IP {browser_observed_ip} 与绑定 IP {expected_exit_ip} 不一致"
                 conn.execute(
                     "UPDATE proxy_profiles SET status = ?, parse_error = ?, detected_exit_ip = ?, detected_at = ?, updated_at = ? WHERE id = ?",
