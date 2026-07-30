@@ -44,7 +44,9 @@
       const toggle = node.querySelector(":scope > .tree-row .tree-toggle");
       if (!toggle) return;
       const expanded = !node.classList.contains("collapsed");
-      const label = node.querySelector(":scope > .tree-row span:last-child")?.textContent.trim() || "工具分组";
+      const label = node.querySelector(":scope > .tree-row .tree-title")?.textContent.trim()
+        || node.querySelector(":scope > .tree-row span:last-child")?.textContent.trim()
+        || "工具分组";
       toggle.setAttribute("aria-expanded", String(expanded));
       toggle.setAttribute("aria-label", `${expanded ? "收起" : "展开"} ${label}`);
       toggle.title = `${expanded ? "收起" : "展开"} ${label}`;
