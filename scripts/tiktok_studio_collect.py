@@ -35,6 +35,10 @@ DETAIL_SECTIONS_TIMEOUT_SECONDS = max(
     5, int(os.getenv("TIKTOK_COLLECT_DETAIL_SECTIONS_TIMEOUT_SECONDS", "20") or "20")
 )
 WORKER_INTERVAL_SECONDS = max(3, int(os.getenv("TIKTOK_COLLECT_WORKER_INTERVAL_SECONDS", "10") or "10"))
+LIST_SCROLL_STEP_PX = max(60, min(240, int(os.getenv("TIKTOK_COLLECT_LIST_SCROLL_STEP_PX", "120") or "120")))
+LIST_SCROLL_WAIT_MS = max(300, min(3000, int(os.getenv("TIKTOK_COLLECT_LIST_SCROLL_WAIT_MS", "550") or "550")))
+LIST_SCROLL_MAX_ROUNDS = max(30, min(600, int(os.getenv("TIKTOK_COLLECT_LIST_SCROLL_MAX_ROUNDS", "240") or "240")))
+PENDING_COLLECTION_STATUS = "not_collected"
 JOB_ACTIVE_STATUSES = {"queued", "delayed", "preparing", "collecting"}
 JOB_RETRYABLE_STATUSES = {"failed", "partial", "cancelled"}
 STATUS_LABELS = {
@@ -51,6 +55,7 @@ STATUS_LABELS = {
 _worker_started = False
 _worker_lock = threading.Lock()
 _active_jobs: set[str] = set()
+_active_rescans: set[str] = set()
 _feishu_client = FeishuCapabilityClient(timeout=30)
 
 
@@ -155,6 +160,7 @@ def _job_row(row: Any) -> dict[str, Any]:
         "last_error": str(row["last_error"]),
         "feishu_failed_results": int(row["feishu_failed_results"] or 0) if "feishu_failed_results" in columns else 0,
         "feishu_unsynced_results": int(row["feishu_unsynced_results"] or 0) if "feishu_unsynced_results" in columns else 0,
+        "uncollected_videos": int(row["uncollected_videos"] or 0) if "uncollected_videos" in columns else 0,
         "created_at": str(row["created_at"]),
         "updated_at": str(row["updated_at"]),
     }
@@ -255,7 +261,9 @@ def dashboard(account_id: int) -> dict[str, Any]:
                        (SELECT COUNT(*) FROM collect_results r
                         WHERE r.job_id = j.id AND r.feishu_sync_status = 'failed') AS feishu_failed_results
                        ,(SELECT COUNT(*) FROM collect_results r
-                         WHERE r.job_id = j.id AND r.feishu_sync_status = 'not_synced') AS feishu_unsynced_results
+                         WHERE r.job_id = j.id AND r.feishu_sync_status = 'not_synced') AS feishu_unsynced_results,
+                       (SELECT COUNT(*) FROM collect_results r
+                         WHERE r.job_id = j.id AND r.feishu_sync_status = 'not_collected') AS uncollected_videos
                 FROM collect_jobs j
                 WHERE j.account_id = ?
                 ORDER BY j.created_at DESC
@@ -704,6 +712,222 @@ def _save_result(job: dict[str, Any], payload: dict[str, Any]) -> None:
         _sync_result_to_feishu(int(result["id"]), job, payload)
 
 
+def restore_uncollected_videos(
+    job_id: str,
+    sources: list[dict[str, Any]],
+    reason: str = "列表发现补录",
+) -> dict[str, int]:
+    """Persist verified-but-uncollected videos so the task can be safely retried."""
+    clean_job_id = _clean_text(job_id, 80)
+    if not clean_job_id:
+        raise ValueError("job_id is required")
+    recovered = 0
+    skipped = 0
+    now = _iso()
+    with proxy_pool.connect() as conn:
+        job_row = conn.execute("SELECT * FROM collect_jobs WHERE id = ?", (clean_job_id,)).fetchone()
+        if not job_row:
+            raise ValueError("collect job not found")
+        job = _job_row(job_row)
+        target_json = json.dumps(_job_feishu_target(job), ensure_ascii=False, separators=(",", ":"))
+        for raw_source in sources:
+            video_id = _clean_text(raw_source.get("id") or raw_source.get("video_id"), 120)
+            video_url = _clean_text(raw_source.get("url") or raw_source.get("video_url"), 1000)
+            title = _clean_text(raw_source.get("title") or raw_source.get("title_hint"), 2000)
+            published_at = _clean_text(raw_source.get("published_date") or raw_source.get("published_at"), 120)
+            if not video_id or not video_url or not published_at:
+                raise ValueError("待补录视频必须包含视频 ID、链接和发布日期")
+            existing = conn.execute(
+                "SELECT feishu_sync_status FROM collect_results WHERE job_id = ? AND video_id = ?",
+                (clean_job_id, video_id),
+            ).fetchone()
+            if existing and str(existing["feishu_sync_status"]) != PENDING_COLLECTION_STATUS:
+                skipped += 1
+                continue
+            payload = {
+                "collection_status": PENDING_COLLECTION_STATUS,
+                "collection_note": _clean_text(reason, 500),
+                "reconciled_at": now,
+                "video": {
+                    "id": video_id,
+                    "url": video_url,
+                    "title": title,
+                    "published_at": published_at,
+                },
+                "time_filter": {
+                    "requested": {
+                        "start": job["publish_date_start"],
+                        "end": job["publish_date_end"],
+                    },
+                    "applied": published_at,
+                },
+            }
+            conn.execute(
+                """
+                INSERT INTO collect_results (
+                    job_id, account_id, video_id, video_url, title, published_at,
+                    collected_at, retention_complete, payload_json, feishu_target_json,
+                    feishu_sync_status, feishu_sync_error, feishu_synced_at
+                ) VALUES (?, ?, ?, ?, ?, ?, '', 0, ?, ?, ?, '', '')
+                ON CONFLICT(job_id, video_id) DO UPDATE SET
+                    video_url = excluded.video_url,
+                    title = excluded.title,
+                    published_at = excluded.published_at,
+                    collected_at = '',
+                    retention_complete = 0,
+                    payload_json = excluded.payload_json,
+                    feishu_target_json = excluded.feishu_target_json,
+                    feishu_sync_status = excluded.feishu_sync_status,
+                    feishu_sync_error = '',
+                    feishu_synced_at = ''
+                WHERE collect_results.feishu_sync_status = 'not_collected'
+                """,
+                (
+                    clean_job_id,
+                    job["account_id"],
+                    video_id,
+                    video_url,
+                    title,
+                    published_at,
+                    json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                    target_json,
+                    PENDING_COLLECTION_STATUS,
+                ),
+            )
+            recovered += 1
+        completed = int(conn.execute(
+            "SELECT COUNT(*) FROM collect_results WHERE job_id = ? AND feishu_sync_status != ?",
+            (clean_job_id, PENDING_COLLECTION_STATUS),
+        ).fetchone()[0])
+        pending = int(conn.execute(
+            "SELECT COUNT(*) FROM collect_results WHERE job_id = ? AND feishu_sync_status = ?",
+            (clean_job_id, PENDING_COLLECTION_STATUS),
+        ).fetchone()[0])
+        total = completed + pending
+        detail = f"{_clean_text(reason, 120)}：已采集 {completed} 条，待补采 {pending} 条"
+        status = "partial" if pending else "complete"
+        conn.execute(
+            """
+            UPDATE collect_jobs
+            SET status = ?, stage = ?, status_detail = ?, last_error = '',
+                total_videos = ?, completed_videos = ?, failed_videos = 0,
+                current_video_id = '', completed_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (status, "recovery_pending" if pending else "complete", detail, total, completed, now, now, clean_job_id),
+        )
+        conn.commit()
+    return {"recovered": recovered, "skipped": skipped, "total": total, "completed": completed, "pending": pending}
+
+
+def _scan_job_video_list(job: dict[str, Any], session: dict[str, Any]) -> list[dict[str, str]]:
+    from playwright.sync_api import sync_playwright
+
+    log_dir = LOG_ROOT / job["id"]
+    log_dir.mkdir(parents=True, exist_ok=True)
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{session['debug_port']}")
+        context = browser.contexts[0]
+        page = context.pages[0] if context.pages else context.new_page()
+        target = "https://www.tiktok.com/tiktokstudio/content?lang=en"
+        navigate_with_retries(page, target, label="TikTok 视频列表重扫")
+        _skip_onboarding(page)
+        try:
+            list_state = wait_for_page_state(
+                page,
+                label="TikTok 视频列表重扫",
+                ready=lambda: bool(_discover_links_on_page(page)),
+                empty=lambda: bool(_first_visible([
+                    page.get_by_text(re.compile(r"no posts|no videos|haven't posted|暂无(?:作品|视频)|没有(?:作品|视频)", re.I)),
+                ])),
+                allow_ocr_empty=True,
+                timeout_seconds=75,
+                reload_attempts=1,
+                retry_action=lambda: navigate_with_retries(page, target, label="TikTok 视频列表重扫"),
+                diagnostic_dir=log_dir,
+                diagnostic_step="video-list-rescan",
+            )
+        except BrowserPageBlocked as exc:
+            raise AccountReviewRequired(str(exc)) from exc
+        _assert_account_ready(page)
+        if list_state.state == "empty":
+            raise RuntimeError("TikTok Studio 视频列表已加载，但账号当前没有视频")
+        return _discover_video_links(
+            page,
+            job["publish_date_start"],
+            job["publish_date_end"],
+            diagnostic_path=log_dir / "video-list-discovery.json",
+        )
+
+
+def _run_discovery_rescan(job_id: str) -> None:
+    session_id = 0
+    reused_observation = False
+    job: dict[str, Any] | None = None
+    try:
+        job = _load_job(job_id)
+        if not job:
+            return
+        original_status = str(job["status"])
+        _set_job(job_id, original_status, "rescan_discovery", "正在按新滚动逻辑重新扫描视频列表")
+        requested_session_id = int(job.get("session_id") or 0)
+        session = proxy_pool.claim_observation_session_for_job(job["account_id"], requested_session_id, job_id)
+        if session is not None:
+            reused_observation = True
+        else:
+            session = proxy_pool.start_automation_session(job["account_id"], f"rescan_{job_id}")["session"]
+        session_id = int(session["id"])
+        sources = _scan_job_video_list(job, session)
+        completed_ids = _completed_video_ids(job_id)
+        missing = [source for source in sources if source["id"] not in completed_ids]
+        restore_uncollected_videos(job_id, missing, "新列表扫描对账")
+    except Exception as exc:
+        if job:
+            _set_job(
+                job_id,
+                str(job["status"]),
+                "rescan_failed",
+                f"列表重扫失败：{_clean_text(exc, 400)}",
+                session_id=session_id or None,
+            )
+    finally:
+        if session_id and reused_observation:
+            try:
+                proxy_pool.release_observation_session_job(session_id, job_id)
+            except Exception:
+                pass
+        elif session_id:
+            try:
+                proxy_pool.finish_automation_session(session_id, "列表重扫结束")
+            except Exception:
+                pass
+        with _worker_lock:
+            _active_rescans.discard(job_id)
+
+
+def start_discovery_rescans(payload: dict[str, Any]) -> dict[str, Any]:
+    requested = payload.get("job_ids") or []
+    if isinstance(requested, str):
+        requested = [requested]
+    job_ids = [_clean_text(value, 80) for value in requested if _clean_text(value, 80)]
+    if not job_ids:
+        raise ValueError("job_ids is required")
+    queued: list[str] = []
+    with _worker_lock:
+        for job_id in dict.fromkeys(job_ids):
+            if job_id in _active_rescans:
+                continue
+            _active_rescans.add(job_id)
+            queued.append(job_id)
+
+    def run_batch() -> None:
+        for job_id in queued:
+            _run_discovery_rescan(job_id)
+
+    threading.Thread(target=run_batch, daemon=True, name="tiktok-collect-rescan").start()
+    return {"queued": len(queued), "job_ids": queued}
+
+
 def retry_failed_feishu_sync(payload: dict[str, Any]) -> dict[str, Any]:
     job_id = _clean_text(payload.get("job_id"), 80)
     account_id = int(payload.get("account_id") or 0)
@@ -928,10 +1152,76 @@ def _discover_links_on_page(page: Any) -> list[dict[str, str]]:
     return rows
 
 
+def _write_discovery_snapshot(path: Path | None, payload: dict[str, Any]) -> None:
+    if not path:
+        return
+    try:
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _list_scroll(page: Any, step_px: int, reset: bool = False) -> dict[str, Any]:
+    return page.evaluate(
+        """({stepPx, reset}) => {
+            const links = [...document.querySelectorAll(
+                "a[href*='/tiktokstudio/analytics/'], a[href*='/video/']"
+            )].filter(link => /\/(?:tiktokstudio\/analytics|video)\/\d{10,}/.test(link.getAttribute("href") || ""));
+            let root = document.scrollingElement;
+            const candidates = new Map();
+            for (const link of links) {
+                const videoId = ((link.getAttribute("href") || "").match(/\/(?:tiktokstudio\/analytics|video)\/(\d{10,})/) || [])[1];
+                let node = link.parentElement;
+                while (node && node !== document.documentElement) {
+                    if (node.scrollHeight > node.clientHeight + 20) {
+                        const candidate = candidates.get(node) || { node, videoIds: new Set() };
+                        if (videoId) candidate.videoIds.add(videoId);
+                        candidates.set(node, candidate);
+                    }
+                    node = node.parentElement;
+                }
+            }
+            const ranked = [...candidates.values()].sort((left, right) =>
+                right.videoIds.size - left.videoIds.size ||
+                (right.node.scrollHeight - right.node.clientHeight) - (left.node.scrollHeight - left.node.clientHeight)
+            );
+            if (ranked.length) root = ranked[0].node;
+            const beforePx = Number(root?.scrollTop || 0);
+            if (root) {
+                root.scrollTop = reset ? 0 : Math.min(
+                    root.scrollHeight,
+                    root.scrollTop + stepPx
+                );
+            }
+            const afterPx = Number(root?.scrollTop || 0);
+            const rootName = root === document.scrollingElement
+                ? "document"
+                : `${root?.tagName || "unknown"}.${String(root?.className || "").split(/\\s+/).filter(Boolean).slice(0, 3).join(".")}`;
+            return {
+                root: rootName,
+                before_px: beforePx,
+                after_px: afterPx,
+                delta_px: afterPx - beforePx,
+                scroll_height_px: Number(root?.scrollHeight || 0),
+                client_height_px: Number(root?.clientHeight || 0),
+                at_end: Boolean(root && afterPx + root.clientHeight >= root.scrollHeight - 2),
+                stalled: Boolean(root && root.scrollHeight > root.clientHeight + 20 && afterPx === beforePx),
+                candidate_video_links: ranked.length ? ranked[0].videoIds.size : 0,
+            };
+        }""",
+        {"stepPx": step_px, "reset": reset},
+    )
+
+
 def _discover_video_links(
-    page: Any, publish_date_start: str, publish_date_end: str
+    page: Any,
+    publish_date_start: str,
+    publish_date_end: str,
+    diagnostic_path: Path | None = None,
 ) -> list[dict[str, str]]:
     found: dict[str, dict[str, str]] = {}
+    scroll_events: list[dict[str, Any]] = []
+    stop_reason = "scan_limit"
 
     def collect() -> None:
         for row in _discover_links_on_page(page):
@@ -965,46 +1255,54 @@ def _discover_video_links(
             page.wait_for_timeout(1800)
             _assert_account_ready(page)
 
-    unchanged_rounds = 0
-    for _ in range(100):
-        before = len(found)
-        collect()
-        dated_rows = [row["published_date"] for row in found.values() if row.get("published_date")]
-        if dated_rows and min(dated_rows) < publish_date_start:
-            break
-        unchanged_rounds = unchanged_rounds + 1 if len(found) == before else 0
-        if unchanged_rounds >= 8:
-            break
-        links = page.locator("a[href*='/tiktokstudio/analytics/'], a[href*='/video/']")
-        if links.count():
-            try:
-                links.last.scroll_into_view_if_needed(timeout=3000)
-            except Exception:
-                pass
-        page.evaluate(
-            """() => {
-                const links = [...document.querySelectorAll(
-                    "a[href*='/tiktokstudio/analytics/'], a[href*='/video/']"
-                )];
-                const targets = [document.scrollingElement];
-                let node = links.length ? links[links.length - 1].parentElement : null;
-                while (node) {
-                    if (node.scrollHeight > node.clientHeight + 20) targets.push(node);
-                    node = node.parentElement;
-                }
-                for (const target of [...new Set(targets.filter(Boolean))]) {
-                    target.scrollTop = Math.min(
-                        target.scrollHeight,
-                        target.scrollTop + Math.max(700, target.clientHeight * 0.8)
-                    );
-                }
-                window.scrollBy(0, Math.max(700, window.innerHeight * 0.8));
-            }"""
-        )
-        page.mouse.wheel(0, 1200)
-        page.wait_for_timeout(900)
+    try:
+        reset_event = _list_scroll(page, LIST_SCROLL_STEP_PX, reset=True)
+        reset_event.update({"round": 0, "action": "reset", "discovered_videos": 0})
+        scroll_events.append(reset_event)
+        page.wait_for_timeout(LIST_SCROLL_WAIT_MS)
 
-    return matching()
+        unchanged_rounds = 0
+        for round_index in range(1, LIST_SCROLL_MAX_ROUNDS + 1):
+            before = len(found)
+            collect()
+            unchanged_rounds = unchanged_rounds + 1 if len(found) == before else 0
+            scroll_event = _list_scroll(page, LIST_SCROLL_STEP_PX)
+            scroll_event.update({
+                "round": round_index,
+                "action": "scroll",
+                "discovered_videos": len(found),
+                "unchanged_rounds": unchanged_rounds,
+            })
+            scroll_events.append(scroll_event)
+            if scroll_event["at_end"] and unchanged_rounds >= 6:
+                stop_reason = "list_end_reached"
+                break
+            if scroll_event["stalled"] and unchanged_rounds >= 6:
+                stop_reason = "scroll_stalled"
+                break
+            page.wait_for_timeout(LIST_SCROLL_WAIT_MS)
+        else:
+            raise RuntimeError(
+                f"TikTok Studio 视频列表扫描超过 {LIST_SCROLL_MAX_ROUNDS} 轮，未到达列表底部"
+            )
+        collect()
+        return matching()
+    finally:
+        _write_discovery_snapshot(
+            diagnostic_path,
+            {
+                "captured_at": _iso(),
+                "requested_publish_date_start": publish_date_start,
+                "requested_publish_date_end": publish_date_end,
+                "scroll_step_px": LIST_SCROLL_STEP_PX,
+                "scroll_wait_ms": LIST_SCROLL_WAIT_MS,
+                "stop_reason": stop_reason,
+                "discovered_video_count": len(found),
+                "matched_video_count": len(matching()),
+                "scroll_events": scroll_events,
+                "videos": sorted(found.values(), key=lambda row: (row.get("published_date", ""), row["id"])),
+            },
+        )
 
 
 def _lines(text: str) -> list[str]:
@@ -1387,8 +1685,33 @@ def _completed_video_ids(job_id: str) -> set[str]:
     with proxy_pool.connect() as conn:
         return {
             str(row["video_id"])
-            for row in conn.execute("SELECT video_id FROM collect_results WHERE job_id = ?", (job_id,)).fetchall()
+            for row in conn.execute(
+                "SELECT video_id FROM collect_results WHERE job_id = ? AND feishu_sync_status != ?",
+                (job_id, PENDING_COLLECTION_STATUS),
+            ).fetchall()
         }
+
+
+def _pending_video_sources(job_id: str) -> list[dict[str, str]]:
+    with proxy_pool.connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT video_id, video_url, title, published_at
+            FROM collect_results
+            WHERE job_id = ? AND feishu_sync_status = ?
+            ORDER BY published_at, video_id
+            """,
+            (job_id, PENDING_COLLECTION_STATUS),
+        ).fetchall()
+    return [
+        {
+            "id": str(row["video_id"]),
+            "url": str(row["video_url"]),
+            "title_hint": str(row["title"]),
+            "published_date": str(row["published_at"]),
+        }
+        for row in rows
+    ]
 
 
 def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[int, int, int]:
@@ -1442,19 +1765,26 @@ def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[int,
             page,
             job["publish_date_start"],
             job["publish_date_end"],
+            diagnostic_path=log_dir / "video-list-discovery.json",
         )
+        known_links = {source["id"] for source in links}
+        for source in _pending_video_sources(job["id"]):
+            if source["id"] not in known_links:
+                links.append(source)
+                known_links.add(source["id"])
         if not links:
             page.screenshot(path=str(log_dir / "no-video-links.png"), full_page=True)
             raise RuntimeError(
                 "TikTok Studio 没有发现发布日期位于 "
                 f"{job['publish_date_start']} 至 {job['publish_date_end']} 的视频"
             )
+        total_videos = len(known_links | completed_ids)
         _set_job(
             job["id"],
             "collecting",
             "video_list_ready",
             session_id=session["id"],
-            total_videos=len(links),
+            total_videos=total_videos,
             completed_videos=completed,
             failed_videos=0,
         )
@@ -1470,7 +1800,7 @@ def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[int,
                 "collecting",
                 "collect_video",
                 session_id=session["id"],
-                total_videos=len(links),
+                total_videos=total_videos,
                 completed_videos=completed,
                 failed_videos=failed,
                 current_video_id=source["id"],
@@ -1491,12 +1821,12 @@ def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[int,
                 "collecting",
                 "collect_video",
                 session_id=session["id"],
-                total_videos=len(links),
+                total_videos=total_videos,
                 completed_videos=completed,
                 failed_videos=failed,
                 current_video_id="",
             )
-    return len(links), completed, failed
+    return total_videos, completed, failed
 
 
 def _update_account(account_id: int, collected_at: str = "", error: str = "") -> None:
@@ -1560,12 +1890,21 @@ def _run_job(job_id: str) -> None:
         session_id = int(session["id"])
         _set_job(job_id, "preparing", "browser_ready", session_id=session_id, started_at=_iso())
         total, completed, failed = _execute_browser(job, session)
-        status = "complete" if failed == 0 else ("partial" if completed else "failed")
-        message = "" if failed == 0 else f"{failed} 个视频采集失败"
+        current = _load_job(job_id)
+        if current and current.get("status") == "cancelled":
+            return
+        missing = max(0, total - completed)
+        status = "complete" if failed == 0 and missing == 0 else ("partial" if completed else "failed")
+        message = "" if status == "complete" else "；".join(
+            part for part in (
+                f"{failed} 个视频采集失败" if failed else "",
+                f"{missing} 个视频待补采" if missing else "",
+            ) if part
+        )
         _set_job(
             job_id,
             status,
-            "complete",
+            "complete" if status == "complete" else "recovery_pending",
             message,
             session_id=session_id,
             total_videos=total,

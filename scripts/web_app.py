@@ -15565,6 +15565,8 @@ class Handler(BaseHTTPRequestHandler):
                 return json_response(self, HTTPStatus.OK, proxy_pool.upsert_pool(payload))
             if path == "/api/proxy/pools/delete":
                 return json_response(self, HTTPStatus.OK, proxy_pool.delete_pool(int(payload.get("id") or payload.get("proxy_profile_id") or 0)))
+            if path == "/api/proxy/mihomo-reconcile":
+                return json_response(self, HTTPStatus.OK, proxy_pool.reconcile_mihomo_pool_configs())
             if path == "/api/proxy/accounts":
                 payload = _proxy_feishu_binding(payload, required=not int(payload.get("id") or 0))
                 return json_response(self, HTTPStatus.OK, proxy_pool.upsert_account(payload))
@@ -15612,6 +15614,8 @@ class Handler(BaseHTTPRequestHandler):
                 return json_response(self, HTTPStatus.ACCEPTED, tiktok_studio_collect.create_job(payload))
             if path == "/api/proxy/collect/jobs/retry":
                 return json_response(self, HTTPStatus.OK, tiktok_studio_collect.retry_job(payload))
+            if path == "/api/proxy/collect/jobs/rescan-discovery":
+                return json_response(self, HTTPStatus.ACCEPTED, tiktok_studio_collect.start_discovery_rescans(payload))
             if path == "/api/proxy/collect/jobs/cancel":
                 return json_response(self, HTTPStatus.OK, tiktok_studio_collect.cancel_job(payload))
             if path == "/api/proxy/collect/results/resync":

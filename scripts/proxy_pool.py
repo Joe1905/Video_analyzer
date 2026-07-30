@@ -114,7 +114,45 @@ ACCOUNT_STATUS_MAP = {
 
 
 def browser_max_slots() -> int:
-    return max(1, int(os.getenv("TIKTOK_BROWSER_MAX_SLOTS", "2") or "2"))
+    return max(1, int(os.getenv("TIKTOK_BROWSER_MAX_SLOTS", "4") or "4"))
+
+
+def hidden_automation_slots() -> int:
+    configured = max(0, int(os.getenv("TIKTOK_BROWSER_HIDDEN_AUTOMATION_SLOTS", "1") or "1"))
+    # Keep all three existing observation slots available if an older
+    # deployment still explicitly caps total browser slots at three.
+    return min(configured, max(0, browser_max_slots() - 3))
+
+
+def visible_observation_slots() -> int:
+    return browser_max_slots() - hidden_automation_slots()
+
+
+def _memory_available_mb() -> int | None:
+    try:
+        for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) // 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+def _hidden_slot_capacity_error(slot: int) -> str:
+    if slot <= visible_observation_slots():
+        return ""
+    minimum_memory_mb = max(0, int(os.getenv("TIKTOK_HIDDEN_SLOT_MIN_AVAILABLE_MB", "4096") or "4096"))
+    available_memory_mb = _memory_available_mb()
+    if available_memory_mb is not None and available_memory_mb < minimum_memory_mb:
+        return f"后台浏览器槽位资源不足：可用内存 {available_memory_mb}MB，至少需要 {minimum_memory_mb}MB"
+    max_load_per_cpu = max(0.1, float(os.getenv("TIKTOK_HIDDEN_SLOT_MAX_LOAD_PER_CPU", "0.75") or "0.75"))
+    try:
+        load_per_cpu = os.getloadavg()[0] / max(1, os.cpu_count() or 1)
+    except (AttributeError, OSError):
+        return ""
+    if load_per_cpu > max_load_per_cpu:
+        return f"后台浏览器槽位资源不足：当前一分钟负载 {load_per_cpu:.2f}/核，上限 {max_load_per_cpu:.2f}/核"
+    return ""
 
 
 def pending_login_ttl_seconds() -> int:
@@ -127,8 +165,10 @@ def manual_observation_idle_seconds() -> int:
 
 def novnc_port_plan() -> dict[str, Any]:
     max_slots = browser_max_slots()
+    hidden_slots = hidden_automation_slots()
+    visible_slots = visible_observation_slots()
     manual_ports = max(1, NOVNC_MANUAL_PORTS)
-    total_ports = max_slots + manual_ports
+    total_ports = visible_slots + manual_ports
     # NOVNC_PORT is reserved for the existing server-level desktop. Account
     # sessions use the following ports so they cannot attach to another app.
     session_base = NOVNC_PORT + 1
@@ -138,6 +178,8 @@ def novnc_port_plan() -> dict[str, Any]:
         "reserved_port": NOVNC_PORT,
         "manual_ports": manual_ports,
         "max_slots": max_slots,
+        "hidden_automation_slots": hidden_slots,
+        "visible_observation_slots": visible_slots,
         "total_ports": total_ports,
         "allowed_ports": list(range(session_base, end_port + 1)),
         "allowed_range": f"{session_base}-{end_port}" if end_port != session_base else str(session_base),
@@ -945,6 +987,7 @@ def _active_sessions(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         pid = int(row["pid"] or 0)
         pending_expired = not row["account_id"] and _iso_epoch(str(row["created_at"] or "")) + pending_login_ttl_seconds() <= time.time()
         if str(row["runtime_id"] or "") != RUNTIME_ID:
+            _terminate_session_processes(row)
             _remove_unbound_session_profile(row)
             conn.execute("UPDATE browser_sessions SET status = 'stopped', last_error = ?, updated_at = ? WHERE id = ?", ("服务已重启，浏览器和观测通道已释放", now, row["id"]))
         elif pending_expired:
@@ -994,22 +1037,25 @@ def cleanup_expired_sessions() -> int:
         return max(0, int(before) - len(active)) + cleaned_profiles
 
 
-def _allocate_session_slot(conn: sqlite3.Connection) -> int:
+def _allocate_session_slot(conn: sqlite3.Connection, owner: str) -> int:
     max_slots = browser_max_slots()
-    used = {int(row["slot"] or 0) for row in _active_sessions(conn)}
-    for slot in range(1, max_slots + 1):
-        if slot not in used and _slot_ports_available(slot):
+    active_sessions = _active_sessions(conn)
+    if len(active_sessions) >= max_slots:
+        raise ValueError(f"浏览器观测槽位已满，当前最多同时运行 {max_slots} 个")
+    used = {int(row["slot"] or 0) for row in active_sessions}
+    allocatable_slots = max_slots if owner == "automation" else visible_observation_slots()
+    for slot in range(1, allocatable_slots + 1):
+        capacity_error = _hidden_slot_capacity_error(slot)
+        if slot not in used and not capacity_error and _slot_ports_available(slot):
             return slot
+        if slot not in used and capacity_error:
+            raise ValueError(capacity_error)
+    if owner != "automation" and hidden_automation_slots():
+        raise ValueError(
+            f"人工观测槽位已满，当前最多同时运行 {visible_observation_slots()} 个；"
+            "后台自动槽位仅供采集和发布任务使用"
+        )
     raise ValueError(f"浏览器观测槽位已满或端口被占用，当前最多同时运行 {max_slots} 个")
-
-
-def _allocate_manual_slot(conn: sqlite3.Connection) -> int:
-    if any(int(row["slot"] or 0) == 0 for row in _active_sessions(conn)):
-        raise ValueError("手动登录观测通道正在使用，请先完成或关闭当前登录")
-    if not _slot_ports_available(0):
-        ports = _slot_ports(0)
-        raise ValueError(f"手动登录观测通道端口被占用：VNC {ports['vnc_port']} / noVNC {ports['novnc_port']} / CDP {ports['debug_port']}")
-    return 0
 
 
 def _browser_binary() -> str:
@@ -1054,16 +1100,19 @@ def _novnc_web_dir() -> str:
 
 
 def _slot_ports(slot: int) -> dict[str, Any]:
-    # Auto slots occupy the first ports after the reserved server desktop;
-    # the single manual login slot is placed after all auto slots.
-    max_slots = browser_max_slots()
-    offset = slot if slot > 0 else max_slots + max(1, NOVNC_MANUAL_PORTS)
+    # All new sessions share slots 1..browser_max_slots. Slot 0 is retained
+    # only so a pre-existing legacy session can still be cleaned up safely.
+    offset = slot if slot > 0 else browser_max_slots() + max(1, NOVNC_MANUAL_PORTS)
     return {
         "display": f":{XVFB_DISPLAY_BASE + slot}",
         "vnc_port": VNC_PORT + offset,
         "novnc_port": NOVNC_PORT + offset,
         "debug_port": CDP_PORT + slot,
     }
+
+
+def _hidden_automation_slot(slot: int) -> bool:
+    return slot > visible_observation_slots()
 
 
 def _display_socket_active(path: Path) -> bool:
@@ -1092,10 +1141,10 @@ def _slot_ports_available(slot: int) -> bool:
             Path(f"/tmp/.X{display_number}-lock").unlink(missing_ok=True)
         except OSError:
             return False
-    return not any(
-        _port_open("127.0.0.1", int(ports[key]), timeout=0.15)
-        for key in ("vnc_port", "novnc_port", "debug_port")
-    )
+    checked_ports = ["debug_port"]
+    if not _hidden_automation_slot(slot):
+        checked_ports = ["vnc_port", "novnc_port", *checked_ports]
+    return not any(_port_open("127.0.0.1", int(ports[key]), timeout=0.15) for key in checked_ports)
 
 
 def _public_novnc_url(port: int) -> str:
@@ -1143,9 +1192,6 @@ def _launch_observation_channel(slot: int, session_id: int, log_dir: Path) -> di
     vnc_port = int(ports["vnc_port"])
     novnc_port = int(ports["novnc_port"])
     xvfb = _required_binary("Xvfb")
-    x11vnc = _required_binary("x11vnc")
-    websockify = _required_binary("websockify")
-    novnc_web = _novnc_web_dir()
 
     if not _slot_ports_available(slot):
         raise ValueError(f"观测槽位 {slot} 的显示或端口已被其他服务占用")
@@ -1155,6 +1201,20 @@ def _launch_observation_channel(slot: int, session_id: int, log_dir: Path) -> di
     if not _pid_alive(int(xvfb_proc.pid)):
         raise ValueError("独立 Xvfb 显示通道启动失败")
 
+    if _hidden_automation_slot(slot):
+        return {
+            "display": display,
+            "vnc_port": 0,
+            "novnc_port": 0,
+            "channel_url": "",
+            "xvfb_pid": int(xvfb_proc.pid),
+            "x11vnc_pid": 0,
+            "websockify_pid": 0,
+        }
+
+    x11vnc = _required_binary("x11vnc")
+    websockify = _required_binary("websockify")
+    novnc_web = _novnc_web_dir()
     x11vnc_proc = _open_process(
         log_dir,
         "x11vnc",
@@ -2126,16 +2186,16 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
     expected_exit_ip = _clean_text(payload.get("expected_exit_ip"), 80)
     source_type = _clean_text(payload.get("source_type"), 40)
     lowered_uri = source_uri.lower()
-    if lowered_uri.startswith("vless://"):
+    if not source_type and lowered_uri.startswith("vless://"):
         source_type = "vless"
-    elif lowered_uri.startswith("vmess://"):
+    elif not source_type and lowered_uri.startswith("vmess://"):
         source_type = "vmess"
-    elif lowered_uri.startswith(("socks://", "socks5://", "socks5h://", "http://", "https://")):
+    elif not source_type and lowered_uri.startswith(("socks://", "socks5://", "socks5h://", "http://", "https://")):
         source_type = "static"
     elif not source_type:
         source_type = "vless"
-    if source_type not in {"vless", "vmess", "static"}:
-        raise ValueError("代理类型必须为 vless、vmess 或 static")
+    if source_type not in {"vless", "vmess", "static", "direct"}:
+        raise ValueError("代理类型必须为 vless、vmess、static 或 direct")
     dialer_proxy = SYSTEM_PROXY_DIALER if source_type == "static" else ""
 
     parse_status = "manual"
@@ -2143,7 +2203,13 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
     parsed: dict[str, Any] = {}
     mihomo_proxy: dict[str, Any] = {}
     mihomo_name = name
-    if source_uri:
+    if source_type == "direct":
+        source_uri = ""
+        expected_exit_ip = ""
+        parse_status = "ok"
+        parsed = {"mode": "server_global"}
+        mihomo_name = SYSTEM_PROXY_DIALER
+    elif source_uri:
         try:
             if source_type == "vless":
                 parsed_result = parse_vless_uri(source_uri, fallback_name=name)
@@ -2223,7 +2289,7 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
     pool = get_pool(pool_id)
     if _sing_box_reality_pool(pool):
         core = ensure_proxy_cores(restart=True, required=True)
-    elif pool.get("parse_status") == "ok" and pool.get("mihomo_proxy"):
+    elif pool.get("parse_status") == "ok" and (pool.get("mihomo_proxy") or pool.get("source_type") == "direct"):
         if _clean_status(pool.get("status")) == STATUS_PAUSED:
             cleanup, _backup = _remove_mihomo_pool_config(pool)
             core = {"mihomo_cleanup": cleanup}
@@ -3024,13 +3090,18 @@ def _restore_mihomo_config(path: Path, original: bytes, mode: int) -> None:
 
 
 def _runtime_mihomo_name(pool: sqlite3.Row | dict[str, Any]) -> str:
+    if str(_pool_value(pool, "source_type") or "") == "direct":
+        return SYSTEM_PROXY_DIALER
     node_name = str(_pool_value(pool, "mihomo_name") or _pool_value(pool, "name") or "").strip()
     return f"{PROXY_MIHOMO_NAME_PREFIX}{node_name}" if node_name else ""
 
 
 def _runtime_mihomo_listener_name(pool: sqlite3.Row | dict[str, Any]) -> str:
     pool_name = str(_pool_value(pool, "name") or "").strip()
+    pool_id = int(_pool_value(pool, "id", 0) or 0)
     namespace = "" if PROXY_CONFIG_NAMESPACE == "formal" else f"{PROXY_CONFIG_NAMESPACE}-"
+    if pool_id:
+        return f"tiktok-{namespace}{pool_id}-{pool_name}"
     return f"tiktok-{namespace}{pool_name}"
 
 
@@ -3056,19 +3127,22 @@ def _resolve_system_proxy_dialer(node_name: str) -> str:
 
 
 def _sync_mihomo_pool_config(pool: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    source_type = str(_pool_value(pool, "source_type") or "")
+    direct = source_type == "direct"
     proxy = _json_loads(_pool_value(pool, "mihomo_proxy_json", ""), {})
     if not proxy and isinstance(_pool_value(pool, "mihomo_proxy", {}), dict):
         proxy = dict(_pool_value(pool, "mihomo_proxy", {}))
     node_name = _runtime_mihomo_name(pool)
     local_port = int(_pool_value(pool, "local_port", 0) or 0)
     pool_id = int(_pool_value(pool, "id", 0) or 0)
-    if not proxy or not node_name or not local_port or not pool_id:
+    if not node_name or not local_port or not pool_id or (not direct and not proxy):
         raise ProxyConfigurationError("代理缺少可同步的 mihomo 节点、端口或记录 ID")
-    if str(_pool_value(pool, "source_type") or "") == "static":
+    if source_type == "static":
         proxy["dialer-proxy"] = _resolve_system_proxy_dialer(node_name)
-    else:
+    elif not direct:
         proxy.pop("dialer-proxy", None)
-    proxy["name"] = node_name
+    if not direct:
+        proxy["name"] = node_name
     listener = {
         "name": _runtime_mihomo_listener_name(pool),
         "type": "mixed",
@@ -3076,11 +3150,25 @@ def _sync_mihomo_pool_config(pool: sqlite3.Row | dict[str, Any]) -> dict[str, An
         "proxy": node_name,
     }
 
+
+    # Mihomo does not reliably replace a listener when its name changes while
+    # retaining the same port. Release a stale managed listener first, then add
+    # the current one in a second reload.
+    listener_restore: tuple[Path, bytes, int] | None = None
+    if not _mihomo_listener_matches(pool):
+        _cleanup, listener_restore = _remove_mihomo_listener_config(local_port)
+
     path = _mihomo_config_path()
     original = path.read_bytes()
     mode = path.stat().st_mode & 0o777
     lines = original.decode("utf-8").splitlines(keepends=True)
-    lines = _replace_mihomo_yaml_item(lines, "proxies", pool_id, proxy, match_name=node_name)
+    lines = _replace_mihomo_yaml_item(
+        lines,
+        "proxies",
+        pool_id,
+        None if direct else proxy,
+        match_name="" if direct else node_name,
+    )
     lines = _replace_mihomo_yaml_item(lines, "listeners", pool_id, listener, match_port=local_port)
     updated = "".join(lines).encode("utf-8")
     backup_path = path.with_name(path.name + ".proxy-pool.bak")
@@ -3101,6 +3189,8 @@ def _sync_mihomo_pool_config(pool: sqlite3.Row | dict[str, Any]) -> dict[str, An
             raise ProxyConfigurationError(f"mihomo 重载后端口 {local_port} 未监听")
     except Exception as exc:
         _restore_mihomo_config(path, original, mode)
+        if listener_restore is not None:
+            _restore_mihomo_listener_config(*listener_restore)
         if isinstance(exc, ProxyConfigurationError):
             raise
         raise ProxyConfigurationError(f"mihomo 自动同步失败：{exc}") from exc
@@ -3117,7 +3207,7 @@ def ensure_static_proxy_configs() -> dict[str, Any]:
     with connect() as conn:
         pools = conn.execute(
             """SELECT * FROM proxy_profiles
-               WHERE source_type = 'static' AND parse_status = 'ok' AND status <> ?
+               WHERE source_type IN ('static','direct') AND parse_status = 'ok' AND status <> ?
                ORDER BY id""",
             (STATUS_PAUSED,),
         ).fetchall()
@@ -3131,6 +3221,36 @@ def ensure_static_proxy_configs() -> dict[str, Any]:
     return {"synced": synced, "errors": errors}
 
 
+def reconcile_mihomo_pool_configs() -> dict[str, Any]:
+    """Rebuild every managed Mihomo listener from the persisted pool binding.
+
+    A listener can remain open while still pointing at a previous node.  In that
+    case a reachability check alone cannot tell Mihomo to replace the mapping.
+    """
+    with connect() as conn:
+        pools = conn.execute(
+            """
+            SELECT * FROM proxy_profiles
+            WHERE parse_status = 'ok' AND status <> ?
+            ORDER BY local_port, id
+            """,
+            (STATUS_PAUSED,),
+        ).fetchall()
+    synced: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    for pool in pools:
+        pool_id = int(pool["id"])
+        if _sing_box_reality_pool(pool):
+            skipped.append({"id": pool_id, "name": str(pool["name"]), "reason": "sing-box"})
+            continue
+        try:
+            synced.append(_sync_mihomo_pool_config(pool))
+        except Exception as exc:
+            errors.append({"id": pool_id, "name": str(pool["name"]), "error": str(exc)})
+    return {"synced": synced, "skipped": skipped, "errors": errors}
+
+
 def _remove_mihomo_pool_config(
     pool: sqlite3.Row | dict[str, Any],
 ) -> tuple[dict[str, Any], tuple[Path, bytes, int] | None]:
@@ -3141,7 +3261,8 @@ def _remove_mihomo_pool_config(
     node_name = _runtime_mihomo_name(pool)
     local_port = int(_pool_value(pool, "local_port", 0) or 0)
     lines = original.decode("utf-8").splitlines(keepends=True)
-    lines = _replace_mihomo_yaml_item(lines, "proxies", pool_id, None, match_name=node_name)
+    if str(_pool_value(pool, "source_type") or "") != "direct":
+        lines = _replace_mihomo_yaml_item(lines, "proxies", pool_id, None, match_name=node_name)
     lines = _replace_mihomo_yaml_item(lines, "listeners", pool_id, None, match_port=local_port)
     updated = "".join(lines).encode("utf-8")
     if updated == original:
@@ -3174,6 +3295,35 @@ def _listener_port(block: list[str]) -> int:
         if match:
             return int(match.group(1))
     return 0
+
+
+def _mihomo_listener_matches(pool: sqlite3.Row | dict[str, Any]) -> bool:
+    """Whether the persisted pool is the current owner of its local port."""
+    local_port = int(_pool_value(pool, "local_port", 0) or 0)
+    node_name = _runtime_mihomo_name(pool)
+    listener_name = _runtime_mihomo_listener_name(pool)
+    config_value = os.getenv("MIHOMO_CONFIG_PATH", "").strip()
+    if not local_port or not node_name or not listener_name or not config_value:
+        return True
+    path = Path(config_value)
+    if not path.is_file():
+        return True
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+        start, end = _yaml_section_bounds(lines, "listeners")
+        if start < 0:
+            return False
+        for left, right in _yaml_list_item_ranges(lines, start, end):
+            block = lines[left:right]
+            if _listener_port(block) != local_port:
+                continue
+            return (
+                _yaml_block_field_matches(block, "name", listener_name)
+                and _yaml_block_field_matches(block, "proxy", node_name)
+            )
+    except OSError:
+        return True
+    return False
 
 
 def _remove_mihomo_listener_config(
@@ -3316,7 +3466,10 @@ def detect_exit_ip_for_pool(pool: sqlite3.Row) -> dict[str, Any]:
         _sync_mihomo_pool_config(pool)
     elif (
         local_port
-        and not _port_open("127.0.0.1", local_port, timeout=1.0)
+        and (
+            not _port_open("127.0.0.1", local_port, timeout=1.0)
+            or not _mihomo_listener_matches(pool)
+        )
         and not _sing_box_reality_pool(pool)
     ):
         _sync_mihomo_pool_config(pool)
@@ -3528,23 +3681,28 @@ def check_binding(payload: dict[str, Any], require_account: bool = False) -> dic
                     "observed_ip": observed_ip,
                     "expected_exit_ip": str(pool["expected_exit_ip"] or "").strip(),
                 }
-        expected_ip = str(pool["expected_exit_ip"] or "").strip()
+        direct = str(pool["source_type"] or "") == "direct"
+        expected_ip = "" if direct else str(pool["expected_exit_ip"] or "").strip()
         should_bind = str(payload.get("bind") or "").lower() in {"1", "true", "yes", "on"}
-        if not expected_ip and should_bind:
+        if not direct and not expected_ip and should_bind:
             expected_ip = observed_ip
         pool_status = _clean_status(pool["status"])
-        ip_matches = bool(expected_ip and observed_ip == expected_ip)
-        next_pool_status = STATUS_ACTIVE if ip_matches and pool_status != STATUS_PAUSED else pool_status
-        allowed = bool(expected_ip and observed_ip == expected_ip and next_pool_status == STATUS_ACTIVE)
-        reason = ""
-        if not expected_ip:
-            reason = "代理还没有绑定出口 IP"
-        elif observed_ip != expected_ip:
-            reason = f"当前出口 IP {observed_ip} 与绑定 IP {expected_ip} 不一致"
-        elif next_pool_status != STATUS_ACTIVE:
-            reason = f"代理状态为 {next_pool_status}"
+        if direct:
+            next_pool_status = pool_status
+            allowed = next_pool_status == STATUS_ACTIVE
+            reason = "通过（使用服务器代理出口，不绑定固定 IP）" if allowed else f"代理状态为 {next_pool_status}"
         else:
-            reason = "通过"
+            ip_matches = bool(expected_ip and observed_ip == expected_ip)
+            next_pool_status = STATUS_ACTIVE if ip_matches and pool_status != STATUS_PAUSED else pool_status
+            allowed = bool(expected_ip and observed_ip == expected_ip and next_pool_status == STATUS_ACTIVE)
+            if not expected_ip:
+                reason = "代理还没有绑定出口 IP"
+            elif observed_ip != expected_ip:
+                reason = f"当前出口 IP {observed_ip} 与绑定 IP {expected_ip} 不一致"
+            elif next_pool_status != STATUS_ACTIVE:
+                reason = f"代理状态为 {next_pool_status}"
+            else:
+                reason = "通过"
         if should_bind and not allowed and next_pool_status != STATUS_PAUSED:
             next_pool_status = STATUS_ERROR
         geo = detected.get("geo") or lookup_ip_geo(observed_ip)
@@ -3677,9 +3835,41 @@ def _session_by_id(conn: sqlite3.Connection, session_id: int) -> sqlite3.Row:
     return row
 
 
+def _direct_login_pool_id() -> int:
+    with connect() as conn:
+        row = conn.execute(
+            """SELECT p.id
+               FROM proxy_profiles p
+               WHERE p.source_type = 'direct' AND p.status = ? AND p.parse_status = 'ok'
+                 AND NOT EXISTS (
+                     SELECT 1 FROM tiktok_accounts a
+                     WHERE a.proxy_profile_id = p.id AND a.proxy_bound = 1 AND a.deleted_at = ''
+                 )
+                 AND NOT EXISTS (
+                     SELECT 1 FROM browser_sessions s
+                     WHERE s.proxy_profile_id = p.id AND s.status IN ('starting', 'running', 'observing')
+                 )
+               ORDER BY p.id
+               LIMIT 1""",
+            (STATUS_ACTIVE,),
+        ).fetchone()
+    if row:
+        return int(row["id"])
+    result = upsert_pool(
+        {
+            "name": "直连外网（服务器代理）",
+            "source_type": "direct",
+            "status": STATUS_ACTIVE,
+            "notes": "新增账号时自动创建；使用服务器 GLOBAL 代理出口，不绑定固定 IP",
+        }
+    )
+    return int(result["pool"]["id"])
+
+
 def start_login_session(payload: dict[str, Any]) -> dict[str, Any]:
     account_id = int(payload.get("account_id") or 0)
-    proxy_profile_id = int(payload.get("proxy_profile_id") or payload.get("pool_id") or 0)
+    requested_pool = str(payload.get("proxy_profile_id") or payload.get("pool_id") or "").strip()
+    proxy_profile_id = _direct_login_pool_id() if not account_id and requested_pool == "direct" else int(requested_pool or 0)
     saved_profile: dict[str, Any] = {}
     if account_id:
         with connect() as conn:
@@ -3736,12 +3926,12 @@ def start_login_session(payload: dict[str, Any]) -> dict[str, Any]:
                     raise ValueError("账号已经处于唤醒状态")
         owner = "automation" if payload.get("_automation") else "manual"
         current_job_id = _clean_text(payload.get("_current_job_id"), 80) if owner == "automation" else ""
-        slot = _allocate_session_slot(conn) if account_id else _allocate_manual_slot(conn)
+        slot = _allocate_session_slot(conn, owner)
         pending_name = f"pending-{proxy_profile_id}-{slot}-{int(time.time())}" if not username else username
         profile = _deep_merge(_isolation_profile(pending_name, proxy_profile_id, pool), saved_profile) if account_id else _isolation_profile(pending_name, proxy_profile_id, pool)
         profile_key = str((profile.get("isolation") or {}).get("browser_profile_key") or "")
         slot_ports = _slot_ports(slot)
-        channel_url = _public_novnc_url(int(slot_ports["novnc_port"]))
+        channel_url = "" if _hidden_automation_slot(slot) else _public_novnc_url(int(slot_ports["novnc_port"]))
         cur = conn.execute(
             """
             INSERT INTO browser_sessions (
@@ -3832,7 +4022,7 @@ def start_login_session(payload: dict[str, Any]) -> dict[str, Any]:
             _wait_for_port(int(slot_ports["debug_port"]), "Chrome CDP", timeout=10.0)
             browser_observed_ip = _detect_browser_exit_ip(int(slot_ports["debug_port"]))
             expected_exit_ip = str(pool["expected_exit_ip"] or "").strip()
-            if browser_observed_ip != expected_exit_ip:
+            if str(pool["source_type"] or "") != "direct" and browser_observed_ip != expected_exit_ip:
                 reason = f"浏览器出口 IP {browser_observed_ip} 与绑定 IP {expected_exit_ip} 不一致"
                 conn.execute(
                     "UPDATE proxy_profiles SET status = ?, parse_error = ?, detected_exit_ip = ?, detected_at = ?, updated_at = ? WHERE id = ?",
@@ -4314,5 +4504,9 @@ def runtime_status() -> dict[str, Any]:
         "pending_login_ttl_seconds": pending_login_ttl_seconds(),
         "manual_observation_idle_seconds": manual_observation_idle_seconds(),
         "browser_locale": TIKTOK_BROWSER_LOCALE,
-        "browser_notice": f"noVNC 放行端口按账号并发 {novnc_ports['max_slots']} + 手动 {novnc_ports['manual_ports']} 计算：{novnc_ports['allowed_range']}；服务器本机检测为准。",
+        "browser_notice": (
+            f"noVNC 放行端口按可见观测 {novnc_ports['visible_observation_slots']} + 手动 "
+            f"{novnc_ports['manual_ports']} 计算：{novnc_ports['allowed_range']}；"
+            f"另有 {novnc_ports['hidden_automation_slots']} 个后台自动槽位，服务器本机检测为准。"
+        ),
     }
