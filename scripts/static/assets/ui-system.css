@@ -58,6 +58,108 @@
   }
 }
 
+/*
+ * Navigation compatibility boundary.
+ * Legacy templates still contain unlayered global button rules, so the shared
+ * shell controls must be normalized at the same cascade level until those
+ * templates finish migrating into @layer legacy.
+ */
+body.ui-system .ui-mobile-nav-trigger,
+body.ui-system .ui-nav__mobile-close,
+body.ui-system .ui-nav__backdrop {
+  display: none;
+}
+
+body.ui-system .ui-nav__toggle {
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  min-height: 44px;
+  padding: 0 12px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  color: var(--ui-nav-ink);
+  background: transparent;
+  border: 0;
+  border-radius: 13px;
+  box-shadow: none;
+}
+
+body.ui-system .ui-nav__toggle:hover {
+  color: #e6e8ed;
+  background: transparent;
+}
+
+@media (max-width: 860px) {
+  body.ui-system .ui-nav__toggle {
+    display: none;
+  }
+
+  body.ui-system .ui-mobile-nav-trigger {
+    position: fixed;
+    top: max(10px, env(safe-area-inset-top));
+    left: max(10px, env(safe-area-inset-left));
+    z-index: 79;
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+    padding: 0;
+    display: grid;
+    place-items: center;
+    color: #f4f6fb;
+    background: var(--ui-nav-bg);
+    border: 0;
+    border-radius: 12px;
+    box-shadow: 0 8px 24px rgba(10, 14, 24, .16);
+  }
+
+  body.ui-system .ui-nav__mobile-close {
+    position: absolute;
+    top: 12px;
+    right: 14px;
+    z-index: 1;
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+    padding: 0;
+    display: grid;
+    place-items: center;
+    color: var(--ui-nav-ink);
+    background: transparent;
+    border: 0;
+    border-radius: 12px;
+    box-shadow: none;
+  }
+
+  body.ui-system .ui-nav__backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 78;
+    width: 100%;
+    min-width: 0;
+    height: 100%;
+    min-height: 0;
+    padding: 0;
+    display: block;
+    visibility: hidden;
+    opacity: 0;
+    pointer-events: none;
+    background: rgba(12, 16, 24, .34);
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  body.ui-system[data-mobile-nav="open"] .ui-nav__backdrop {
+    visibility: visible;
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
 @layer utilities {
   /* AI 对话设计回归：以 video_analyzer_redesign.html 为视觉基准。 */
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .ui-frame {
