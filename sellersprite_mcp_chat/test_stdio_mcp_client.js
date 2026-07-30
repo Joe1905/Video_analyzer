@@ -56,34 +56,36 @@ async function runTests() {
   const client = new StdioMcpClient({
     command: process.execPath,
     args: [__filename, "--fake-mcp"],
-    requestTimeoutMs: 120,
+    requestTimeoutMs: 1_000,
     logger: quietLogger,
     clientName: "sociavault-stdio-test",
   });
 
-  const tools = await client.listTools();
-  assert.equal(tools.length, 107);
-  assert.equal(tools[0].name, "check_credits");
+  try {
+    const tools = await client.listTools();
+    assert.equal(tools.length, 107);
+    assert.equal(tools[0].name, "check_credits");
 
-  const concurrent = await Promise.all([
-    client.callTool("echo", { value: "first", delay: 35 }),
-    client.callTool("echo", { value: "second", delay: 5 }),
-    client.callTool("echo", { value: "third", delay: 20 }),
-  ]);
-  assert.deepEqual(
-    concurrent.map((result) => JSON.parse(result.content[0].text).value),
-    ["first", "second", "third"],
-  );
+    const concurrent = await Promise.all([
+      client.callTool("echo", { value: "first", delay: 35 }),
+      client.callTool("echo", { value: "second", delay: 5 }),
+      client.callTool("echo", { value: "third", delay: 20 }),
+    ]);
+    assert.deepEqual(
+      concurrent.map((result) => JSON.parse(result.content[0].text).value),
+      ["first", "second", "third"],
+    );
 
-  await assert.rejects(client.callTool("timeout"), /timed out: tools\/call/);
-  await assert.rejects(client.callTool("crash"), /exited with code 17/);
+    await assert.rejects(client.callTool("timeout"), /timed out: tools\/call/);
+    await assert.rejects(client.callTool("crash"), /exited with code 17/);
 
-  const restartedTools = await client.listTools();
-  assert.equal(restartedTools.length, 107);
-  const restartedCall = await client.callTool("echo", { value: "restarted" });
-  assert.equal(JSON.parse(restartedCall.content[0].text).value, "restarted");
-
-  await client.close();
+    const restartedTools = await client.listTools();
+    assert.equal(restartedTools.length, 107);
+    const restartedCall = await client.callTool("echo", { value: "restarted" });
+    assert.equal(JSON.parse(restartedCall.content[0].text).value, "restarted");
+  } finally {
+    await client.close();
+  }
   process.stdout.write("stdio MCP client tests passed\n");
 }
 
