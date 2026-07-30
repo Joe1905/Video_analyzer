@@ -3062,7 +3062,7 @@ body.ui-route-lan-chat .announcement-modal {
 }
 
 body.ui-route-lan-chat .announcement-modal [hidden],
-body.ui-route-lan-chat #changeGroupAvatar[hidden] {
+body.ui-route-lan-chat #roomManageModal [hidden] {
   display: none !important;
 }
 
