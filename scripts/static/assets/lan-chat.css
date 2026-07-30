@@ -473,21 +473,24 @@ body.ui-route-lan-chat .message-actions svg {
 }
 
 body.ui-route-lan-chat .bubble {
+  width: fit-content;
   padding: 10px 12px;
   border: 1px solid var(--ui-line);
-  border-radius: 5px 14px 14px 14px;
+  border-radius: 5px 15px 15px 15px;
   background: var(--ui-surface);
   color: var(--ui-ink);
-  line-height: 1.65;
-  box-shadow: 0 6px 18px rgba(25, 28, 34, .045);
+  font-size: 12px;
+  line-height: 1.6;
+  box-shadow: 0 5px 16px rgba(30, 32, 39, .035);
 }
 
 body.ui-route-lan-chat .message.mine .bubble {
-  border-color: var(--lan-accent-line);
-  border-radius: 14px 5px 14px 14px;
-  background: var(--lan-accent-soft);
-  color: var(--ui-ink);
-  box-shadow: 0 6px 18px rgba(47, 125, 115, .055);
+  margin-left: auto;
+  border-color: var(--lan-accent);
+  border-radius: 15px 5px 15px 15px;
+  background: var(--lan-accent);
+  color: #fff;
+  box-shadow: 0 8px 20px rgba(47, 125, 115, .14);
 }
 
 body.ui-route-lan-chat .message-reply {
@@ -495,16 +498,18 @@ body.ui-route-lan-chat .message-reply {
   min-width: 0;
   align-items: baseline;
   gap: 2px;
-  margin: 0 0 8px;
-  padding: 1px 0 1px 9px;
-  border-left: 2px solid var(--lan-accent);
+  margin: -2px 0 8px;
+  padding: 7px 9px;
+  border-left: 2px solid #a9cbc4;
+  border-radius: 4px 8px 8px 4px;
+  background: #f3f8f7;
   color: var(--ui-ink-muted);
   font-size: 10px;
-  line-height: 1.45;
+  line-height: 1.5;
 }
 
-body.ui-route-lan-chat .bubble.has-image .message-reply {
-  margin: 6px 8px 8px;
+body.ui-route-lan-chat .message.mine .message-reply {
+  margin-left: auto;
 }
 
 body.ui-route-lan-chat .message-reply span {

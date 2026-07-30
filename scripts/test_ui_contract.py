@@ -234,6 +234,20 @@ class UIContractTest(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, f"inline script {index}: {result.stderr}")
 
+    def test_lan_chat_bubbles_follow_the_design_handoff(self) -> None:
+        lan_chat = (STATIC_DIR / "lan_chat.html").read_text(encoding="utf-8")
+        lan_css = (STATIC_DIR / "assets" / "lan-chat.css").read_text(encoding="utf-8")
+        self.assertIn("${replyQuote(message)}<div class=\"bubble", lan_chat)
+        self.assertNotIn("const quote=replyQuote(message)", lan_chat)
+        self.assertRegex(
+            lan_css,
+            r"\.message\.mine \.bubble\s*\{[^}]*background:\s*var\(--lan-accent\);[^}]*color:\s*#fff;",
+        )
+        self.assertRegex(
+            lan_css,
+            r"\.message-reply\s*\{[^}]*border-left:\s*2px solid #a9cbc4;[^}]*background:\s*#f3f8f7;",
+        )
+
     def test_ui_test_mode_blocks_mutations_before_handlers(self) -> None:
         app = (SCRIPTS_DIR / "web_app.py").read_text(encoding="utf-8")
         self.assertIn(
