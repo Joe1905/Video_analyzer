@@ -1189,7 +1189,7 @@
     width: var(--ui-nav-width);
     min-width: var(--ui-nav-width);
     height: 100dvh;
-    padding: 18px 14px;
+    padding: 12px 14px;
     display: flex;
     flex-direction: column;
     align-items: stretch;
@@ -1206,7 +1206,7 @@
     width: 44px;
     height: 44px;
     flex: 0 0 44px;
-    margin-bottom: 12px;
+    margin-bottom: 28px;
     display: grid;
     place-items: center;
     border-radius: 14px;
@@ -1249,10 +1249,27 @@
   }
 
   .ui-nav__toggle {
-    margin-bottom: 4px;
+    position: relative;
+    margin-bottom: 25px;
+    overflow: visible;
   }
 
-  .ui-nav__toggle:hover,
+  .ui-nav__toggle::after {
+    content: "";
+    position: absolute;
+    left: 8px;
+    bottom: -10px;
+    width: 28px;
+    height: 1px;
+    background: rgba(255, 255, 255, .1);
+    transition: width var(--ui-nav-speed) var(--ui-ease);
+  }
+
+  .ui-nav__toggle:hover {
+    color: #e6e8ed;
+    background: transparent;
+  }
+
   .ui-nav__item:hover {
     color: #e6e8ed;
     background: rgba(255, 255, 255, .075);
@@ -1318,6 +1335,17 @@
     opacity: 1;
     transform: none;
     transition-delay: 70ms;
+  }
+
+  html[data-nav="expanded"] .ui-nav__toggle::after,
+  body[data-nav="expanded"] .ui-nav__toggle::after {
+    width: 180px;
+  }
+
+  .ui-mobile-nav-trigger,
+  .ui-nav__mobile-close,
+  .ui-nav__backdrop {
+    display: none;
   }
 
   .ui-page-heading,
@@ -1830,7 +1858,139 @@
 
   @media (max-width: 860px) {
     .ui-nav {
+      display: flex;
+      width: min(224px, 82vw);
+      min-width: min(224px, 82vw);
+      padding: 12px 14px max(14px, env(safe-area-inset-bottom));
+      visibility: hidden;
+      pointer-events: none;
+      transform: translateX(-104%);
+      box-shadow: 18px 0 44px rgba(10, 14, 24, .22);
+      transition:
+        transform 200ms var(--ui-ease),
+        visibility 0s linear 200ms;
+    }
+
+    body[data-mobile-nav="open"] .ui-nav {
+      visibility: visible;
+      pointer-events: auto;
+      transform: translateX(0);
+      transition-delay: 0s;
+    }
+
+    .ui-nav__brand {
+      margin-bottom: 18px;
+    }
+
+    .ui-nav__toggle {
       display: none;
+    }
+
+    .ui-nav__item {
+      width: 196px;
+    }
+
+    .ui-nav__label {
+      opacity: 1;
+      transform: none;
+    }
+
+    .ui-nav__mobile-close {
+      position: absolute;
+      top: 12px;
+      right: 14px;
+      width: 44px;
+      min-width: 44px;
+      height: 44px;
+      min-height: 44px;
+      padding: 0;
+      display: grid;
+      place-items: center;
+      color: var(--ui-nav-ink);
+      background: transparent;
+      border: 0;
+      border-radius: 12px;
+      cursor: pointer;
+      transition: color var(--ui-fast), background-color var(--ui-fast);
+    }
+
+    .ui-nav__mobile-close:hover {
+      color: #fff;
+      background: rgba(255, 255, 255, .075);
+    }
+
+    .ui-nav__mobile-close svg,
+    .ui-mobile-nav-trigger svg {
+      width: 19px;
+      height: 19px;
+      display: block;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.75;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .ui-mobile-nav-trigger {
+      position: fixed;
+      top: max(10px, env(safe-area-inset-top));
+      left: max(10px, env(safe-area-inset-left));
+      z-index: 79;
+      width: 44px;
+      min-width: 44px;
+      height: 44px;
+      min-height: 44px;
+      padding: 0;
+      display: grid;
+      place-items: center;
+      color: #f4f6fb;
+      background: var(--ui-nav-bg);
+      border: 0;
+      border-radius: 12px;
+      box-shadow: 0 8px 24px rgba(10, 14, 24, .16);
+      cursor: pointer;
+      transition: opacity var(--ui-fast), transform var(--ui-fast), background-color var(--ui-fast);
+    }
+
+    .ui-mobile-nav-trigger:hover {
+      background: #242933;
+    }
+
+    body[data-mobile-nav="open"] .ui-mobile-nav-trigger {
+      opacity: 0;
+      pointer-events: none;
+      transform: translateX(-6px);
+    }
+
+    .ui-nav__backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 78;
+      width: 100%;
+      height: 100%;
+      padding: 0;
+      display: block;
+      visibility: hidden;
+      opacity: 0;
+      pointer-events: none;
+      background: rgba(12, 16, 24, .34);
+      border: 0;
+      border-radius: 0;
+      backdrop-filter: blur(2px);
+      transition:
+        opacity 180ms ease,
+        visibility 0s linear 180ms;
+    }
+
+    body[data-mobile-nav="open"] .ui-nav__backdrop {
+      visibility: visible;
+      opacity: 1;
+      pointer-events: auto;
+      transition-delay: 0s;
+    }
+
+    body.ui-system .ui-header {
+      padding-left: max(68px, calc(env(safe-area-inset-left) + 58px));
     }
 
     .ui-page-heading__icon,

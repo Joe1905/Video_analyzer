@@ -32,6 +32,24 @@
     });
   }
 
+  function setMobileNavigation(open, restoreFocus = false) {
+    const mobileOpen = !DESKTOP_QUERY.matches && Boolean(open);
+    const state = mobileOpen ? "open" : "closed";
+    document.documentElement.dataset.mobileNav = state;
+    document.body.dataset.mobileNav = state;
+    document.querySelectorAll(".ui-mobile-nav-trigger").forEach((trigger) => {
+      trigger.setAttribute("aria-expanded", String(mobileOpen));
+      trigger.setAttribute("aria-label", mobileOpen ? "关闭导航" : "打开导航");
+      trigger.title = mobileOpen ? "关闭导航" : "打开导航";
+      if (!mobileOpen && restoreFocus) trigger.focus();
+    });
+    if (mobileOpen) {
+      requestAnimationFrame(() => {
+        document.querySelector(".ui-nav__mobile-close")?.focus();
+      });
+    }
+  }
+
   function enhanceToolTree(root = document) {
     root.querySelectorAll("#toolModal .tree-children").forEach((children) => {
       if (children.firstElementChild?.classList.contains("ui-collapse__inner")) return;
@@ -130,6 +148,23 @@
     previewState();
 
     document.addEventListener("click", (event) => {
+      const mobileTrigger = event.target.closest(".ui-mobile-nav-trigger");
+      if (mobileTrigger) {
+        setMobileNavigation(true);
+        return;
+      }
+
+      const mobileClose = event.target.closest(".ui-nav__mobile-close, .ui-nav__backdrop");
+      if (mobileClose) {
+        setMobileNavigation(false, true);
+        return;
+      }
+
+      const mobileNavItem = event.target.closest(".ui-nav__item");
+      if (mobileNavItem && !DESKTOP_QUERY.matches) {
+        setMobileNavigation(false);
+      }
+
       const navToggle = event.target.closest(".ui-nav__toggle");
       if (navToggle) {
         const expanded = document.body.dataset.nav !== "expanded";
@@ -149,7 +184,16 @@
       }
     });
 
-    DESKTOP_QUERY.addEventListener("change", () => syncNavigation());
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && document.body.dataset.mobileNav === "open") {
+        setMobileNavigation(false, true);
+      }
+    });
+
+    DESKTOP_QUERY.addEventListener("change", () => {
+      setMobileNavigation(false);
+      syncNavigation();
+    });
 
     const observer = new MutationObserver((records) => {
       let tableChanged = false;

@@ -515,7 +515,7 @@ NAV_ITEMS = [
 ]
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
-UI_ASSET_VERSION = "20260730-21"
+UI_ASSET_VERSION = "20260730-22"
 APP_UI_ASSETS = f"""
 <script id="ui-nav-state-boot">
 let uiNavExpanded = false;
@@ -714,7 +714,27 @@ def render_app_nav(current_path: str) -> str:
         '<a class="ui-nav__brand" href="/" aria-label="\u8fd4\u56de\u9996\u9875" title="\u8fd4\u56de\u9996\u9875">'
         '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7 17 12 9 17Z"/></svg></a>'
     )
-    return '<nav class="ui-nav" aria-label="\u4e3b\u5bfc\u822a">' + brand + toggle + "".join(links) + "</nav>"
+    mobile_trigger = (
+        '<button class="ui-mobile-nav-trigger" type="button" aria-label="\u6253\u5f00\u5bfc\u822a" '
+        'aria-expanded="false" aria-controls="ui-app-nav" title="\u6253\u5f00\u5bfc\u822a">'
+        '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h14"/></svg>'
+        '</button>'
+    )
+    mobile_close = (
+        '<button class="ui-nav__mobile-close" type="button" aria-label="\u5173\u95ed\u5bfc\u822a" '
+        'title="\u5173\u95ed\u5bfc\u822a">'
+        '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17"/></svg>'
+        '</button>'
+    )
+    backdrop = (
+        '<button class="ui-nav__backdrop" type="button" aria-label="\u5173\u95ed\u5bfc\u822a" '
+        'tabindex="-1"></button>'
+    )
+    nav = (
+        '<nav class="ui-nav" id="ui-app-nav" aria-label="\u4e3b\u5bfc\u822a">'
+        + brand + mobile_close + toggle + "".join(links) + "</nav>"
+    )
+    return mobile_trigger + nav + backdrop
 
 
 def inject_unified_nav(html: str, current_path: str) -> str:

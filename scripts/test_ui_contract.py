@@ -98,6 +98,8 @@ class UIContractTest(unittest.TestCase):
             ".ui-nav",
             ".ui-nav__brand",
             ".ui-nav__icon",
+            ".ui-mobile-nav-trigger",
+            ".ui-nav__backdrop",
             ".ui-frame",
             ".ui-header",
             ".ui-main",
@@ -117,6 +119,7 @@ class UIContractTest(unittest.TestCase):
         script = UI_JS.read_text(encoding="utf-8")
         for behavior in (
             'body.dataset.nav',
+            'body.dataset.mobileNav',
             'document.cookie',
             'aria-expanded',
             'aria-hidden',
@@ -136,6 +139,9 @@ class UIContractTest(unittest.TestCase):
         self.assertIn('"amazon": "\\u5356\\u5bb6\\u7cbe\\u7075"', app)
         self.assertIn('class="ui-nav__icon"', app)
         self.assertIn('class="ui-nav__brand"', app)
+        self.assertIn('class="ui-mobile-nav-trigger"', app)
+        self.assertIn('class="ui-nav__mobile-close"', app)
+        self.assertIn('class="ui-nav__backdrop"', app)
         self.assertIn('id="ui-nav-state-boot"', app)
         self.assertIn("document.documentElement.dataset.nav", app)
         self.assertNotIn("APP_NAV_CSS", app)
