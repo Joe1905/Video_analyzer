@@ -47,17 +47,36 @@ class MockLanChatApi:
             "online": True,
             "lastSeen": time.time(),
         }
+        second = {
+            "id": "user-2",
+            "nickname": "产品同事",
+            "avatarUrl": AVATAR,
+            "avatarStatus": "ready",
+            "isCurrent": False,
+            "online": True,
+            "lastSeen": time.time(),
+        }
+        third = {
+            "id": "user-3",
+            "nickname": "设计同事",
+            "avatarUrl": AVATAR,
+            "avatarStatus": "ready",
+            "isCurrent": False,
+            "online": False,
+            "lastSeen": time.time() - 3600,
+        }
+        users = [user, second, third]
         return {
             "currentUser": user,
-            "users": [user],
+            "users": users,
             "rooms": [
                 {
                     "id": "public",
                     "kind": "public",
                     "systemKind": "public",
                     "name": "公共频道",
-                    "memberCount": 1,
-                    "members": [user],
+                    "memberCount": len(users),
+                    "members": users,
                     "unreadCount": 0,
                     "latestMessage": None,
                     "pinned": False,
@@ -69,14 +88,14 @@ class MockLanChatApi:
                     "kind": "group",
                     "systemKind": "custom",
                     "name": "测试群",
-                    "memberCount": 1,
-                    "members": [user],
+                    "memberCount": len(users),
+                    "members": users,
                     "unreadCount": 0,
                     "latestMessage": None,
                     "currentUserIsAdmin": True,
                     "canRename": True,
                     "canRemoveMembers": True,
-                    "canTransferAdmin": False,
+                    "canTransferAdmin": True,
                     "canLeave": True,
                     "canDissolve": True,
                     "pinned": False,
@@ -202,6 +221,22 @@ async def desktop_scenario(browser, base_url: str, screenshot_dir: Path) -> None
         browser, base_url, {"width": 1280, "height": 820}, api
     )
     try:
+        await page.locator("#newChat").click()
+        picker_inputs = page.locator("#groupMemberPicker input")
+        await expect(picker_inputs).to_have_count(2)
+        await expect(page.locator("#groupNameField")).to_be_hidden()
+        await picker_inputs.nth(0).check()
+        await expect(page.locator("#createConversationButton")).to_have_text(
+            "开始私聊"
+        )
+        await expect(page.locator("#groupNameField")).to_be_hidden()
+        await picker_inputs.nth(1).check()
+        await expect(page.locator("#createConversationButton")).to_have_text(
+            "创建群组"
+        )
+        await expect(page.locator("#groupNameField")).to_be_visible()
+        await page.locator("#groupModal .modal-head [data-close-modal]").click()
+
         file_input = page.locator("#imageInput")
         assert await file_input.get_attribute("multiple") is not None
 
