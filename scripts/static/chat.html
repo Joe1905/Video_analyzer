@@ -117,7 +117,9 @@
           <div class="quote-preview" id="quotePreview"><div class="quote-head"><span>&#24341;&#29992;&#20869;&#23481;</span><button class="ghost sm" id="clearQuote" title="取消引用">&times;</button></div><div class="quote-text" id="quotePreviewText"></div></div>
           <div class="attachment-preview" id="attachmentPreview"></div>
           <textarea id="input" rows="1" placeholder="__CHAT_INPUT_PLACEHOLDER__" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();send()}"></textarea>
-          <button id="expandInputBtn" class="expand-input-btn" type="button" title="展开输入框">&#8597;</button>
+          <button id="expandInputBtn" class="expand-input-btn" type="button" title="展开输入框" aria-label="展开输入框">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18M8 7l4-4 4 4M8 17l4 4 4-4"></path></svg>
+          </button>
           <input id="imageInput" class="file-input" type="file" accept="image/*" multiple>
         </div>
         <button id="toolBtn" class="tool-button" title="选择工具" aria-label="选择工具">

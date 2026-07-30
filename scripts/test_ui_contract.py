@@ -170,6 +170,12 @@ class UIContractTest(unittest.TestCase):
         css = UI_CSS.read_text(encoding="utf-8")
         self.assertIn("::-webkit-search-cancel-button", css)
         self.assertIn(".session-search-clear[hidden]", css)
+        self.assertIn("grid-template-columns: 44px minmax(0, 1fr) 44px 44px", css)
+        self.assertRegex(
+            css,
+            r"\.expand-input-btn\s*\{[^}]*bottom:\s*0;[^}]*border:\s*0;",
+        )
+        self.assertIn('aria-label="展开输入框"', chat)
         self.assertIn('query.get("query", [""])[0]', app)
         self.assertIn("message.content", app)
 

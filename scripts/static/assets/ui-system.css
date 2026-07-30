@@ -675,7 +675,7 @@
     margin: 0 auto 24px;
     padding: 10px;
     display: grid;
-    grid-template-columns: 38px minmax(0, 1fr) 38px 44px;
+    grid-template-columns: 44px minmax(0, 1fr) 44px 44px;
     align-items: end;
     gap: 8px;
     border: 1px solid var(--ui-line);
@@ -692,7 +692,7 @@
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .input-bar textarea {
     min-height: 44px;
     max-height: 120px;
-    padding: 11px 34px 10px 4px;
+    padding: 11px 52px 10px 4px;
     border: 0;
     border-radius: 0;
     background: transparent;
@@ -704,8 +704,8 @@
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .attach-button,
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .tool-button {
-    width: 38px;
-    min-width: 38px;
+    width: 44px;
+    min-width: 44px;
     height: 44px;
     min-height: 44px;
     padding: 0;
@@ -715,6 +715,7 @@
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .attach-button svg,
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .expand-input-btn svg,
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .tool-button svg,
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .send-button svg {
     width: 18px;
@@ -724,6 +725,22 @@
     stroke-width: 1.6;
     stroke-linecap: round;
     stroke-linejoin: round;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .expand-input-btn {
+    right: 0;
+    bottom: 0;
+    border: 0;
+    background: transparent;
+    color: var(--ui-ink-subtle);
+    box-shadow: none;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .attach-button:hover,
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .expand-input-btn:hover,
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .tool-button:hover {
+    background: var(--ui-surface-soft);
+    color: var(--ui-brand);
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .send-button {
@@ -857,7 +874,7 @@
       min-height: 62px;
       margin: 0 8px var(--ui-safe-bottom);
       padding: 7px;
-      grid-template-columns: 38px minmax(0, 1fr) 38px 44px;
+      grid-template-columns: 44px minmax(0, 1fr) 44px 44px;
       gap: 4px;
       border-radius: 17px;
     }
