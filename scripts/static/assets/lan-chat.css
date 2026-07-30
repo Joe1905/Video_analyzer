@@ -2102,8 +2102,24 @@ body.ui-route-lan-chat.lan-details-closed .right-rail {
 }
 
 @media (max-width: 780px) {
-  body.ui-route-lan-chat .app-header {
+  body.ui-system.ui-route-lan-chat .app-header.ui-header {
+    width: 100%;
+    padding-right: 8px;
+    display: grid;
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  body.ui-route-lan-chat .ui-mobile-nav-trigger {
+    color: var(--ui-ink-muted);
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  body.ui-route-lan-chat .ui-mobile-nav-trigger:hover {
+    color: var(--ui-ink);
+    background: transparent;
   }
 
   body.ui-route-lan-chat .rail-head {
@@ -2111,15 +2127,21 @@ body.ui-route-lan-chat.lan-details-closed .right-rail {
   }
 
   body.ui-route-lan-chat .chat-head {
+    width: 100%;
     min-height: 58px;
   }
 
   body.ui-route-lan-chat .header-room {
+    min-width: 0;
+    flex: 1 1 auto;
     display: flex;
     padding-left: 16px;
+    padding-right: 12px;
   }
 
   body.ui-route-lan-chat .header-actions {
+    margin-left: auto;
+    flex: 0 0 auto;
     padding-right: 8px;
   }
 
@@ -2141,6 +2163,10 @@ body.ui-route-lan-chat.lan-details-closed .right-rail {
     z-index: 90;
     top: 0;
     width: min(92vw, 360px);
+  }
+
+  body.ui-route-lan-chat[data-lan-drawer="right"] .ui-main {
+    transform: none;
   }
 
   body.ui-route-lan-chat[data-lan-drawer="right"] .drawer-backdrop {
