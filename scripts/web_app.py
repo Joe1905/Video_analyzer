@@ -119,6 +119,7 @@ from feishu_capabilities import FeishuCapabilityClient, FeishuCapabilityError
 from lan_chat import (
     FILE_TRANSFER_MAX_BYTES,
     MESSAGE_MEDIA_MAX_BYTES,
+    PROFILE_AVATAR_MAX_BYTES,
     LanChatError,
     LanChatStore,
 )
@@ -13664,12 +13665,14 @@ def handle_lan_chat_post(handler: BaseHTTPRequestHandler, parsed) -> bool:
         is_message_request = bool(
             re.fullmatch(r"/api/lan-chat/rooms/([^/]+)/messages", path)
         )
-        payload = _lan_chat_request_json(
-            handler,
-            max_bytes=(MESSAGE_MEDIA_MAX_BYTES * 4 // 3) + 2 * 1024 * 1024
-            if is_message_request
-            else 65536,
-        )
+        is_profile_request = path == "/api/lan-chat/profile"
+        if is_message_request:
+            json_max_bytes = (MESSAGE_MEDIA_MAX_BYTES * 4 // 3) + 2 * 1024 * 1024
+        elif is_profile_request:
+            json_max_bytes = (PROFILE_AVATAR_MAX_BYTES * 4 // 3) + 256 * 1024
+        else:
+            json_max_bytes = 65536
+        payload = _lan_chat_request_json(handler, max_bytes=json_max_bytes)
         if path == "/api/lan-chat/select-account":
             result = lan_chat_store.select_account(
                 str(payload.get("feishuUserId") or ""),
