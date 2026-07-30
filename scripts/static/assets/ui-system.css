@@ -3040,6 +3040,109 @@
     overflow: auto;
   }
 
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .ui-chat-close,
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-item .del-btn {
+    flex: 0 0 auto;
+    min-height: 0;
+    margin: 0;
+    padding: 0;
+    display: inline-grid;
+    place-items: center;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    box-shadow: none;
+    color: var(--ui-ink-subtle);
+    font-family: Arial, sans-serif;
+    font-weight: 400;
+    line-height: 1;
+    text-decoration: none;
+    transition: background-color var(--ui-fast), color var(--ui-fast), opacity var(--ui-fast);
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .ui-chat-close:hover,
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-item .del-btn:hover {
+    border: 0;
+    background: var(--ui-surface-soft);
+    color: var(--ui-ink);
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .ui-chat-close:focus-visible,
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-item .del-btn:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--ui-brand) 42%, transparent);
+    outline-offset: 2px;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .ui-chat-close--xs {
+    width: 20px;
+    min-width: 20px;
+    height: 20px;
+    font-size: 18px;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .ui-chat-close--sm {
+    width: 28px;
+    min-width: 28px;
+    height: 28px;
+    font-size: 20px;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-item .del-btn {
+    width: 28px;
+    min-width: 28px;
+    height: 28px;
+    font-size: 20px;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .ui-chat-close--md {
+    width: 32px;
+    min-width: 32px;
+    height: 32px;
+    font-size: 22px;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .ui-chat-close--lg {
+    width: 40px;
+    min-width: 40px;
+    height: 40px;
+    font-size: 26px;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-search-clear.ui-chat-close {
+    top: 7px;
+    right: 7px;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-item .del-btn {
+    top: 7px;
+    right: 7px;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .attachment-chip .ui-chat-close {
+    position: absolute;
+    z-index: 1;
+    top: 3px;
+    right: 3px;
+    color: var(--ui-ink);
+    text-shadow: 0 1px 1px rgba(255, 255, 255, .72);
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .attachment-chip .ui-chat-close:hover {
+    background: rgba(255, 255, 255, .78);
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .image-viewer .ui-chat-close {
+    position: fixed;
+    top: 18px;
+    right: 20px;
+    color: var(--ui-ink);
+    background: rgba(255, 255, 255, .92);
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .image-viewer .ui-chat-close:hover {
+    background: #fff;
+  }
+
   @media (max-width: 860px) {
     .ui-only-desktop {
       display: none;
