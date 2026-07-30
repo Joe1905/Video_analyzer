@@ -274,6 +274,14 @@ class UIContractTest(unittest.TestCase):
         self.assertIn('class="message-stack"', lan_chat)
         self.assertIn(".composer.is-dragging::after", lan_css)
         self.assertIn(".message.has-reply .bubble", lan_css)
+        self.assertRegex(
+            lan_css,
+            r"\.message\s*\{[^}]*align-items:\s*flex-end;",
+        )
+        self.assertRegex(
+            lan_css,
+            r"\.message\s*>\s*\.avatar\.tiny\s*\{[^}]*width:\s*34px;[^}]*height:\s*34px;",
+        )
         self.assertIn("body.ui-system.ui-route-lan-chat .app-header.ui-header", lan_css)
         self.assertIn("body.ui-system.ui-route-lan-chat .ui-mobile-nav-trigger", lan_css)
 

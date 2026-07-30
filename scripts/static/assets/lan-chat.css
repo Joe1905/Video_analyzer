@@ -398,8 +398,15 @@ body.ui-route-lan-chat .welcome p {
 
 body.ui-route-lan-chat .message {
   max-width: min(78%, 680px);
+  align-items: flex-end;
   gap: 9px;
   animation: lan-message-in 180ms var(--ui-ease) both;
+}
+
+body.ui-route-lan-chat .message > .avatar.tiny {
+  width: 34px;
+  height: 34px;
+  border-radius: 11px;
 }
 
 body.ui-route-lan-chat .message-head {
