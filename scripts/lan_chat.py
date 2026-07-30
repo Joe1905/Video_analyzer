@@ -6,6 +6,7 @@ import base64
 import binascii
 import hashlib
 import html
+import io
 import json
 import os
 import re
@@ -52,6 +53,14 @@ FILE_TRANSFER_CLEANUP_INTERVAL_SECONDS = 60 * 60
 FILE_COPY_CHUNK_BYTES = 1024 * 1024
 FEISHU_AVATAR_MAX_BYTES = 5 * 1024 * 1024
 PROFILE_AVATAR_MAX_BYTES = 5 * 1024 * 1024
+GROUP_ANNOUNCEMENT_MAX_LENGTH = 4000
+AVATAR_FILTER_COLORS = (
+    "#3b8f85",
+    "#6d91b7",
+    "#d69a72",
+    "#8c7ca8",
+    "#4b5663",
+)
 FEISHU_AVATAR_TYPES = {
     "image/jpeg": "jpg",
     "image/png": "png",
@@ -73,12 +82,20 @@ class LanChatStore:
         avatar_dir: Path | None = None,
         media_dir: Path | None = None,
         file_dir: Path | None = None,
+        group_avatar_dir: Path | None = None,
     ):
         self.db_path = Path(db_path)
         self.avatar_dir = Path(avatar_dir or self.db_path.parent / "lan_chat_avatars")
         self.media_dir = Path(media_dir or self.db_path.parent / "lan_chat_media")
         self.file_dir = Path(file_dir or self.db_path.parent / "lan_chat_files")
+        self.group_avatar_dir = Path(
+            group_avatar_dir or self.db_path.parent / "lan_chat_group_avatars"
+        )
+        asset_root = Path(__file__).resolve().parent / "static" / "assets"
+        self.default_avatar_dir = asset_root / "default-avatars"
+        self.group_avatar_preset_dir = asset_root / "group-avatars"
         self._avatar_lock = threading.Lock()
+        self._group_avatar_lock = threading.Lock()
         self._feishu_avatar_lock = threading.Lock()
         self._avatar_jobs: set[str] = set()
         self._media_poster_lock = threading.Lock()
@@ -92,6 +109,7 @@ class LanChatStore:
         self.avatar_dir.mkdir(parents=True, exist_ok=True)
         self.media_dir.mkdir(parents=True, exist_ok=True)
         self.file_dir.mkdir(parents=True, exist_ok=True)
+        self.group_avatar_dir.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.execute("PRAGMA journal_mode = WAL")
             conn.executescript(
@@ -133,6 +151,9 @@ class LanChatStore:
                     system_kind TEXT NOT NULL DEFAULT 'custom',
                     feishu_user_id TEXT,
                     admin_user_id TEXT,
+                    avatar_status TEXT NOT NULL DEFAULT 'fallback',
+                    avatar_filename TEXT,
+                    announcement TEXT NOT NULL DEFAULT '',
                     direct_key TEXT UNIQUE,
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL,
@@ -263,6 +284,16 @@ class LanChatStore:
                 conn.execute("ALTER TABLE rooms ADD COLUMN feishu_user_id TEXT")
             if "admin_user_id" not in room_columns:
                 conn.execute("ALTER TABLE rooms ADD COLUMN admin_user_id TEXT")
+            if "avatar_status" not in room_columns:
+                conn.execute(
+                    "ALTER TABLE rooms ADD COLUMN avatar_status TEXT NOT NULL DEFAULT 'fallback'"
+                )
+            if "avatar_filename" not in room_columns:
+                conn.execute("ALTER TABLE rooms ADD COLUMN avatar_filename TEXT")
+            if "announcement" not in room_columns:
+                conn.execute(
+                    "ALTER TABLE rooms ADD COLUMN announcement TEXT NOT NULL DEFAULT ''"
+                )
             conn.execute(
                 "UPDATE rooms SET system_kind = 'public' WHERE kind = 'public'"
             )
@@ -331,6 +362,8 @@ class LanChatStore:
                 self._ensure_feishu_default_group(
                     conn, str(owner["id"]), str(owner["name"]), now
                 )
+            self._ensure_random_user_avatars(conn)
+            self._ensure_random_group_avatars(conn)
         self.cleanup_expired_files()
         self.cleanup_expired_media()
         self._start_file_janitor()
@@ -373,6 +406,86 @@ class LanChatStore:
         )
         return room_id
 
+    @staticmethod
+    def _randomized_preset_avatar(preset_dir: Path) -> bytes:
+        try:
+            from PIL import Image, ImageColor, ImageOps
+        except ImportError as exc:
+            raise LanChatError("头像处理组件不可用", 500) from exc
+
+        candidates = [
+            preset_dir / f"{index:02d}.png"
+            for index in range(1, 11)
+            if (preset_dir / f"{index:02d}.png").is_file()
+        ]
+        if not candidates:
+            raise LanChatError("预设头像素材不存在", 500)
+        source_path = secrets.choice(candidates)
+        tone = secrets.choice(AVATAR_FILTER_COLORS)
+        strength = secrets.randbelow(41)
+        with Image.open(source_path) as source:
+            image = ImageOps.exif_transpose(source).convert("RGBA")
+            image = ImageOps.fit(image, (512, 512), method=Image.Resampling.LANCZOS)
+            overlay = Image.new("RGBA", image.size, (*ImageColor.getrgb(tone), 0))
+            overlay.putalpha(round(255 * strength / 100))
+            image = Image.alpha_composite(image, overlay)
+            output = io.BytesIO()
+            image.save(output, format="PNG", optimize=True)
+        return output.getvalue()
+
+    @staticmethod
+    def _write_avatar_file(directory: Path, filename: str, payload: bytes) -> None:
+        temporary = directory / f".{filename}.{uuid.uuid4().hex}.tmp"
+        temporary.write_bytes(payload)
+        temporary.replace(directory / filename)
+
+    def _assign_random_user_avatar(
+        self, conn: sqlite3.Connection, user_id: str
+    ) -> None:
+        filename = f"{user_id}.png"
+        payload = self._randomized_preset_avatar(self.default_avatar_dir)
+        with self._avatar_lock:
+            self._write_avatar_file(self.avatar_dir, filename, payload)
+        conn.execute(
+            """UPDATE users SET avatar_status = 'ready', avatar_filename = ?
+               WHERE id = ?""",
+            (filename, user_id),
+        )
+
+    def _assign_random_group_avatar(
+        self, conn: sqlite3.Connection, room_id: str
+    ) -> None:
+        filename = f"{room_id}.png"
+        payload = self._randomized_preset_avatar(self.group_avatar_preset_dir)
+        with self._group_avatar_lock:
+            self._write_avatar_file(self.group_avatar_dir, filename, payload)
+        conn.execute(
+            """UPDATE rooms SET avatar_status = 'ready', avatar_filename = ?
+               WHERE id = ?""",
+            (filename, room_id),
+        )
+
+    def _ensure_random_user_avatars(self, conn: sqlite3.Connection) -> None:
+        rows = conn.execute(
+            "SELECT id, avatar_status, avatar_filename FROM users"
+        ).fetchall()
+        for row in rows:
+            filename = str(row["avatar_filename"] or "")
+            has_file = bool(filename) and (self.avatar_dir / filename).is_file()
+            if str(row["avatar_status"]) != "ready" or not has_file:
+                self._assign_random_user_avatar(conn, str(row["id"]))
+
+    def _ensure_random_group_avatars(self, conn: sqlite3.Connection) -> None:
+        rows = conn.execute(
+            """SELECT id, avatar_status, avatar_filename FROM rooms
+               WHERE kind = 'group' AND system_kind = 'custom'"""
+        ).fetchall()
+        for row in rows:
+            filename = str(row["avatar_filename"] or "")
+            has_file = bool(filename) and (self.group_avatar_dir / filename).is_file()
+            if str(row["avatar_status"]) != "ready" or not has_file:
+                self._assign_random_group_avatar(conn, str(row["id"]))
+
     def register(self, device_token: str, nickname: str = "") -> tuple[dict[str, Any], bool]:
         token_hash = self._token_hash(device_token)
         now = time.time()
@@ -386,7 +499,6 @@ class LanChatStore:
                 user_id = uuid.uuid4().hex[:16]
                 clean_name = self._nickname(nickname, default=f"访客-{token_hash[:4].upper()}")
                 self._require_nickname_available(conn, clean_name)
-                avatar_status = "pending" if self._avatar_configured() else "fallback"
                 conn.execute(
                     """INSERT INTO users
                        (id, device_token_hash, feishu_user_id, nickname, avatar_color, avatar_status,
@@ -398,11 +510,12 @@ class LanChatStore:
                         DEFAULT_FEISHU_USER_ID,
                         clean_name,
                         AVATAR_COLORS[int(token_hash[:8], 16) % len(AVATAR_COLORS)],
-                        avatar_status,
+                        "fallback",
                         now,
                         now,
                     ),
                 )
+                self._assign_random_user_avatar(conn, user_id)
                 row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
             else:
                 conn.execute("UPDATE users SET last_seen = ? WHERE id = ?", (now, row["id"]))
@@ -410,10 +523,7 @@ class LanChatStore:
             self._ensure_feishu_default_group(
                 conn, DEFAULT_FEISHU_USER_ID, DEFAULT_FEISHU_USER_NAME, now
             )
-        user = self._public_user(row)
-        if user["avatarStatus"] == "pending":
-            self._start_avatar_generation(user["id"], user["nickname"])
-        return user, created
+        return self._public_user(row), created
 
     def login_options(self) -> dict[str, Any]:
         with self._connect() as conn:
@@ -512,7 +622,6 @@ class LanChatStore:
         now = time.time()
         user_id = uuid.uuid4().hex[:16]
         legacy_token_hash = hashlib.sha256(secrets.token_bytes(32)).hexdigest()
-        avatar_status = "pending" if self._avatar_configured() else "fallback"
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             owner = conn.execute(
@@ -532,18 +641,16 @@ class LanChatStore:
                     owner_id,
                     clean_name,
                     AVATAR_COLORS[int(legacy_token_hash[:8], 16) % len(AVATAR_COLORS)],
-                    avatar_status,
+                    "fallback",
                     now,
                     now,
                 ),
             )
+            self._assign_random_user_avatar(conn, user_id)
             self._ensure_feishu_default_group(conn, owner_id, str(owner["name"]), now)
             session_token = self._create_session(conn, user_id, now)
             row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-        user = self._public_user(row)
-        if user["avatarStatus"] == "pending":
-            self._start_avatar_generation(user["id"], user["nickname"])
-        return {"sessionToken": session_token, "user": user}
+        return {"sessionToken": session_token, "user": self._public_user(row)}
 
     def authenticate(self, device_token: str) -> dict[str, Any]:
         token_hash = self._token_hash(device_token)
@@ -734,6 +841,7 @@ class LanChatStore:
                    VALUES (?, 'group', ?, ?, 'custom', NULL, ?, NULL, ?, ?)""",
                 (room_id, clean_name, current["id"], current["id"], now, now),
             )
+            self._assign_random_group_avatar(conn, room_id)
             conn.executemany(
                 "INSERT INTO room_members(room_id, user_id, joined_at) VALUES (?, ?, ?)",
                 [(room_id, member_id, now) for member_id in members],
@@ -782,6 +890,46 @@ class LanChatStore:
             )
             conn.execute(
                 "UPDATE rooms SET updated_at = ? WHERE id = ?", (time.time(), room["id"])
+            )
+            room = conn.execute("SELECT * FROM rooms WHERE id = ?", (room["id"],)).fetchone()
+            return self._room_payload(conn, room, current["id"])
+
+    def update_group_avatar(
+        self, device_token: str, room_id: str, avatar_data_url: str
+    ) -> dict[str, Any]:
+        current = self.authenticate(device_token)
+        avatar_bytes = self._decode_profile_avatar(avatar_data_url)
+        if avatar_bytes is None:
+            raise LanChatError("请选择群头像")
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            room = self._require_custom_group(conn, room_id, current["id"], admin=True)
+            filename = f"{room['id']}.png"
+            with self._group_avatar_lock:
+                self._write_avatar_file(self.group_avatar_dir, filename, avatar_bytes)
+            conn.execute(
+                """UPDATE rooms
+                   SET avatar_status = 'ready', avatar_filename = ?, updated_at = ?
+                   WHERE id = ?""",
+                (filename, time.time(), room["id"]),
+            )
+            room = conn.execute("SELECT * FROM rooms WHERE id = ?", (room["id"],)).fetchone()
+            return self._room_payload(conn, room, current["id"])
+
+    def update_group_announcement(
+        self, device_token: str, room_id: str, announcement: str
+    ) -> dict[str, Any]:
+        current = self.authenticate(device_token)
+        clean_announcement = str(announcement or "").strip()
+        if len(clean_announcement) > GROUP_ANNOUNCEMENT_MAX_LENGTH:
+            raise LanChatError(
+                f"群公告不能超过 {GROUP_ANNOUNCEMENT_MAX_LENGTH} 个字符"
+            )
+        with self._connect() as conn:
+            room = self._require_custom_group(conn, room_id, current["id"], admin=True)
+            conn.execute(
+                "UPDATE rooms SET announcement = ?, updated_at = ? WHERE id = ?",
+                (clean_announcement, time.time(), room["id"]),
             )
             room = conn.execute("SELECT * FROM rooms WHERE id = ?", (room["id"],)).fetchone()
             return self._room_payload(conn, room, current["id"])
@@ -1544,6 +1692,33 @@ class LanChatStore:
                 return path.read_bytes(), "image/png"
         return self._fallback_avatar(row["nickname"], row["avatar_color"]), "image/svg+xml; charset=utf-8"
 
+    def group_avatar_bytes(self, room_id: str) -> tuple[bytes, str]:
+        clean_room_id = str(room_id or "").strip()
+        with self._connect() as conn:
+            room = conn.execute(
+                "SELECT id, kind, system_kind, avatar_filename FROM rooms WHERE id = ?",
+                (clean_room_id,),
+            ).fetchone()
+        if room is None or room["kind"] == "direct":
+            raise LanChatError("群头像不存在", 404)
+        system_kind = str(room["system_kind"] or "custom")
+        if system_kind == "public":
+            path = self.group_avatar_preset_dir / "public.png"
+        elif system_kind == "feishu":
+            path = self.group_avatar_preset_dir / "private.png"
+        else:
+            filename = str(room["avatar_filename"] or "")
+            path = (self.group_avatar_dir / filename).resolve()
+            if (
+                not filename
+                or path.parent != self.group_avatar_dir.resolve()
+                or not path.is_file()
+            ):
+                raise LanChatError("群头像不存在", 404)
+        if not path.is_file():
+            raise LanChatError("群头像素材不存在", 404)
+        return path.read_bytes(), "image/png"
+
     def feishu_avatar_bytes(self, owner_id: str) -> tuple[bytes, str]:
         with self._connect() as conn:
             row = conn.execute(
@@ -1659,6 +1834,23 @@ class LanChatStore:
                 pass
         return f"/api/lan-chat/avatars/{user_id}?v={version}"
 
+    def _group_avatar_url(self, room: sqlite3.Row) -> str:
+        system_kind = str(room["system_kind"] or "custom")
+        if system_kind == "public":
+            path = self.group_avatar_preset_dir / "public.png"
+        elif system_kind == "feishu":
+            path = self.group_avatar_preset_dir / "private.png"
+        else:
+            path = self.group_avatar_dir / str(room["avatar_filename"] or "")
+        try:
+            avatar_stat = path.stat()
+            version = f"{avatar_stat.st_mtime_ns:x}-{avatar_stat.st_size:x}"
+        except OSError:
+            version = hashlib.sha256(
+                f"{room['id']}:{system_kind}:{room['avatar_status']}".encode("utf-8")
+            ).hexdigest()[:12]
+        return f"/api/lan-chat/group-avatars/{room['id']}?v={version}"
+
     def _public_user(self, row: sqlite3.Row) -> dict[str, Any]:
         last_seen = float(row["last_seen"])
         return {
@@ -1735,6 +1927,10 @@ class LanChatStore:
             "id": room["id"],
             "kind": room["kind"],
             "name": name,
+            "avatarUrl": (
+                self._group_avatar_url(room) if room["kind"] != "direct" else ""
+            ),
+            "announcement": str(room["announcement"] or ""),
             "memberCount": len(members) if room["kind"] != "public" else self._user_count(conn),
             "members": [
                 {
@@ -1773,6 +1969,8 @@ class LanChatStore:
                 else None
             ),
             "canRename": current_user_is_admin,
+            "canEditAvatar": current_user_is_admin,
+            "canEditAnnouncement": current_user_is_admin,
             "canRemoveMembers": current_user_is_admin,
             "canTransferAdmin": current_user_is_admin and len(members) > 1,
             "canLeave": is_custom_group,

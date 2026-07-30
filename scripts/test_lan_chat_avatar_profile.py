@@ -47,6 +47,13 @@ class LanChatAvatarProfileTests(unittest.TestCase):
         self.assertTrue(created)
         self.assertEqual(updated_user["avatarUrl"], message["senderAvatarUrl"])
 
+    def test_new_account_receives_randomized_ready_avatar(self) -> None:
+        self.assertEqual("ready", self.user["avatarStatus"])
+        payload, content_type = self.store.avatar_bytes(self.user["id"])
+        self.assertEqual("image/png", content_type)
+        self.assertTrue(payload.startswith(b"\x89PNG\r\n\x1a\n"))
+        self.assertGreater(len(payload), 1024)
+
     def test_profile_rejects_non_png_avatar_payload(self) -> None:
         data_url = "data:image/jpeg;base64," + base64.b64encode(b"not-an-image").decode("ascii")
 

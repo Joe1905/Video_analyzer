@@ -13489,6 +13489,15 @@ def handle_lan_chat_get(handler: BaseHTTPRequestHandler, parsed) -> bool:
             body, content_type = lan_chat_store.avatar_bytes(avatar_match.group(1))
             binary_response(handler, HTTPStatus.OK, body, content_type)
             return True
+        group_avatar_match = re.fullmatch(
+            r"/api/lan-chat/group-avatars/([A-Za-z0-9_-]{1,80})", path
+        )
+        if group_avatar_match:
+            body, content_type = lan_chat_store.group_avatar_bytes(
+                group_avatar_match.group(1)
+            )
+            binary_response(handler, HTTPStatus.OK, body, content_type)
+            return True
         media_poster_match = re.fullmatch(
             r"/api/lan-chat/media/([0-9a-f]{32}\.(?:mp4|webm))/poster", path
         )
@@ -13665,7 +13674,9 @@ def handle_lan_chat_post(handler: BaseHTTPRequestHandler, parsed) -> bool:
         is_message_request = bool(
             re.fullmatch(r"/api/lan-chat/rooms/([^/]+)/messages", path)
         )
-        is_profile_request = path == "/api/lan-chat/profile"
+        is_profile_request = path == "/api/lan-chat/profile" or bool(
+            re.fullmatch(r"/api/lan-chat/rooms/([^/]+)/avatar", path)
+        )
         if is_message_request:
             json_max_bytes = (MESSAGE_MEDIA_MAX_BYTES * 4 // 3) + 2 * 1024 * 1024
         elif is_profile_request:
@@ -13725,6 +13736,28 @@ def handle_lan_chat_post(handler: BaseHTTPRequestHandler, parsed) -> bool:
                 _lan_chat_token(handler),
                 unquote(rename_group_match.group(1)),
                 str(payload.get("name") or ""),
+            )
+            json_response(handler, HTTPStatus.OK, {"room": room})
+            return True
+        group_avatar_match = re.fullmatch(
+            r"/api/lan-chat/rooms/([^/]+)/avatar", path
+        )
+        if group_avatar_match:
+            room = lan_chat_store.update_group_avatar(
+                _lan_chat_token(handler),
+                unquote(group_avatar_match.group(1)),
+                str(payload.get("avatarDataUrl") or ""),
+            )
+            json_response(handler, HTTPStatus.OK, {"room": room})
+            return True
+        announcement_match = re.fullmatch(
+            r"/api/lan-chat/rooms/([^/]+)/announcement", path
+        )
+        if announcement_match:
+            room = lan_chat_store.update_group_announcement(
+                _lan_chat_token(handler),
+                unquote(announcement_match.group(1)),
+                str(payload.get("announcement") or ""),
             )
             json_response(handler, HTTPStatus.OK, {"room": room})
             return True

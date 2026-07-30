@@ -87,7 +87,7 @@ body{max-width:100vw}
 }
 }
 </style>
-<link id="lan-chat-css" rel="stylesheet" href="/assets/lan-chat.css?v=20260730s">
+<link id="lan-chat-css" rel="stylesheet" href="/assets/lan-chat.css?v=20260730t">
 </head>
 <body class="lan-auth-pending">
 <div class="ui-app">
@@ -137,7 +137,7 @@ body{max-width:100vw}
       <section class="channel-card">
         <div class="channel-icon" id="detailRoomIcon"></div>
         <strong id="detailRoomName">公共频道</strong>
-        <p id="detailRoomDescription">所有注册成员可见。</p>
+        <button class="channel-announcement" id="detailRoomDescription" type="button">所有注册成员可见。</button>
         <button class="member-summary" id="openMemberList" type="button"><span class="member-avatar-stack" id="memberAvatarStack"></span><span id="memberCount">0 位成员</span><b>查看成员</b></button>
       </section>
       <section class="detail-section">
@@ -200,11 +200,11 @@ body{max-width:100vw}
 <div class="modal-backdrop" id="avatarPickerModal" role="dialog" aria-modal="true" aria-labelledby="avatarPickerTitle">
   <div class="modal avatar-picker-modal">
     <div class="modal-head">
-      <div><h2 id="avatarPickerTitle">选择头像</h2><p>从预设头像中选择，或上传一张自己的图片。</p></div>
+      <div><h2 id="avatarPickerTitle">选择头像</h2><p id="avatarPickerSubtitle">从预设头像中选择，或上传一张自己的图片。</p></div>
       <button class="icon-button avatar-dialog-close" id="closeAvatarPicker" type="button" aria-label="关闭">×</button>
     </div>
     <div class="modal-body avatar-picker-body">
-      <div class="avatar-section-label"><strong>默认头像</strong><span>10 个预设</span></div>
+      <div class="avatar-section-label"><strong id="avatarPresetLabel">默认头像</strong><span>10 个预设</span></div>
       <div class="avatar-choice-grid" id="avatarChoiceGrid"></div>
       <button class="avatar-upload-tile" id="avatarUploadTile" type="button">
         <span class="avatar-upload-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 16V5M8 9l4-4 4 4"/><path d="M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/></svg></span>
@@ -223,7 +223,7 @@ body{max-width:100vw}
 <div class="modal-backdrop" id="avatarEditorModal" role="dialog" aria-modal="true" aria-labelledby="avatarEditorTitle">
   <div class="modal avatar-editor-modal">
     <div class="modal-head">
-      <div><h2 id="avatarEditorTitle">编辑头像</h2><p>拖动图片调整位置，最终头像将按 1:1 比例保存。</p></div>
+      <div><h2 id="avatarEditorTitle">编辑头像</h2><p id="avatarEditorSubtitle">拖动图片调整位置，最终头像将按 1:1 比例保存。</p></div>
       <button class="icon-button avatar-dialog-close" id="closeAvatarEditor" type="button" aria-label="关闭">×</button>
     </div>
     <div class="modal-body avatar-editor-body">
@@ -296,11 +296,30 @@ body{max-width:100vw}
   <div class="modal">
     <div class="modal-head"><div><h2 id="roomManageTitle">管理群组</h2><p id="roomManageSubtitle">管理员可以修改群名称和移出成员。</p></div><button class="icon-button" type="button" data-close-modal aria-label="关闭">×</button></div>
     <div class="modal-body">
+      <div class="field manage-group-identity" id="manageGroupIdentity">
+        <label>群组资料</label>
+        <div class="manage-group-profile">
+          <img class="avatar" id="manageGroupAvatarPreview" alt="群头像">
+          <div><strong id="manageGroupProfileName">群组</strong><span>头像显示在会话列表和群详情中</span></div>
+          <button class="button secondary" id="changeGroupAvatar" type="button">修改头像</button>
+        </div>
+        <button class="manage-announcement-entry" id="openManageAnnouncement" type="button"><span><strong>群公告</strong><small id="manageAnnouncementPreview">暂无群公告</small></span><b>查看</b></button>
+      </div>
       <form class="field" id="renameGroupForm"><label for="manageGroupName">群组名称</label><div class="rename-row"><input id="manageGroupName" maxlength="32" required><button class="button primary" id="saveGroupName" type="submit">保存</button></div></form>
       <div class="field"><label>群组成员</label><div class="manage-member-list" id="manageMemberList"></div></div>
       <div class="field-note" id="adminTransferNote">管理员主动退出后，管理员身份会按进群时间移交给下一位成员。</div>
     </div>
     <div class="modal-foot"><button class="button danger" id="dissolveGroup" type="button">解散群组</button><button class="button secondary" id="leaveGroup" type="button">退出群组</button><button class="button secondary" type="button" data-close-modal>关闭</button></div>
+  </div>
+</div>
+<div class="modal-backdrop" id="announcementModal" role="dialog" aria-modal="true" aria-labelledby="announcementTitle">
+  <div class="modal announcement-modal">
+    <div class="modal-head"><div><h2 id="announcementTitle">群公告</h2><p id="announcementSubtitle">查看当前群组公告。</p></div><button class="icon-button" type="button" data-close-modal aria-label="关闭">×</button></div>
+    <div class="modal-body announcement-body">
+      <div class="announcement-content" id="announcementContent"></div>
+      <textarea class="announcement-editor" id="announcementEditor" maxlength="4000" aria-label="编辑群公告" hidden></textarea>
+    </div>
+    <div class="modal-foot"><span class="selection-summary" id="announcementCount"></span><button class="button secondary" id="editAnnouncement" type="button">编辑</button><button class="button primary" id="saveAnnouncement" type="button" hidden>保存公告</button><button class="button secondary" type="button" data-close-modal>关闭</button></div>
   </div>
 </div>
 <div class="image-viewer" id="imageViewer" role="dialog" aria-modal="true" aria-label="查看图片" hidden><div class="viewer-toolbar"><button id="viewerZoomOut" type="button" aria-label="缩小图片">−</button><span class="viewer-zoom-label" id="viewerZoomLabel" aria-live="polite"></span><button id="viewerZoomIn" type="button" aria-label="放大图片">＋</button><button class="viewer-reset" id="viewerReset" type="button" aria-label="适应画面" title="适应画面"></button><button class="viewer-close" id="closeImageViewer" type="button" aria-label="关闭大图">×</button></div><div class="viewer-viewport" id="viewerViewport"><div class="viewer-stage"><img id="viewerImage" alt="聊天图片大图" draggable="false"></div></div></div>
@@ -315,7 +334,8 @@ const $=id=>document.getElementById(id);
 const state={token:"",currentUser:null,users:[],rooms:[],activeRoomId:"public",messages:[],lastMessageId:0,oldestMessageId:0,hasMoreBefore:false,readRooms:{},messageTimer:null,bootstrapTimer:null,loadingMessages:false,loadingOlderMessages:false,messageSyncQueued:false,eventCursor:0,eventController:null,eventReconnectTimer:null,eventReconnectAttempts:0,posterObserver:null,draftAttachment:null,replyTarget:null,preparingAttachment:false,inlineMediaMaxBytes:100*1024*1024,inlineMediaRetentionSeconds:7*86400,fileMaxBytes:10*1024*1024*1024,fileRetentionSeconds:7*86400,messagePollIntervalMs:30000,bootstrapPollIntervalMs:10000,selectedFeishuUser:null,loginLoading:false,loginCancelable:false,uploadQueue:[],queueBatches:new Map(),queueRunning:false,queueExpanded:true,queueOwnerId:"",activeUpload:null,queueAuthPaused:false};
 const viewerState={scale:1,fitScale:1,drag:null};
 const DEFAULT_AVATARS=Array.from({length:10},(_,index)=>`/assets/default-avatars/${String(index+1).padStart(2,"0")}.png`);
-const avatarEditorState={source:DEFAULT_AVATARS[0],sourceLabel:"默认头像 01",selectedDefault:1,image:null,zoom:1.08,offsetX:0,offsetY:0,tone:"",strength:18,drag:null,draftDataUrl:""};
+const GROUP_AVATARS=Array.from({length:10},(_,index)=>`/assets/group-avatars/${String(index+1).padStart(2,"0")}.png`);
+const avatarEditorState={target:"profile",returnModal:"profileModal",source:DEFAULT_AVATARS[0],sourceLabel:"默认头像 01",selectedDefault:1,image:null,zoom:1.08,offsetX:0,offsetY:0,tone:"",strength:18,drag:null,draftDataUrl:""};
 function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]))}
 function responseError(payload,status){const error=new Error(payload.error||`请求失败 (${status})`);error.status=status;return error}
 async function publicRequest(path,options={}){const headers={...(options.headers||{})};if(options.body&&!(options.body instanceof FormData)&&!headers["Content-Type"])headers["Content-Type"]="application/json";const response=await fetch(path,{...options,headers});let payload={};try{payload=await response.json()}catch(e){}if(!response.ok)throw responseError(payload,response.status);return payload}
@@ -325,7 +345,7 @@ function formatTime(seconds){if(!seconds)return"";const date=new Date(seconds*10
 function relativeSeen(seconds){const delta=Math.max(0,Date.now()/1000-seconds);if(delta<90)return"在线";if(delta<3600)return`${Math.floor(delta/60)} 分钟前`;if(delta<86400)return`${Math.floor(delta/3600)} 小时前`;return`${Math.floor(delta/86400)} 天前`}
 function syncViewportHeight(){const height=Math.round(window.visualViewport?.height||window.innerHeight);document.documentElement.style.setProperty("--app-height",`${height}px`)}
 function roomGlyph(room){if(room.kind==="public")return'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7.5h16v9H9l-4.5 3 .9-3H4Z"/><path d="M8 12h.01M12 12h.01M16 12h.01"/></svg>';if(room.kind==="group")return'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 20v-1.5a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4V20M9.5 10.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7ZM17 8a3 3 0 0 1 0 6M21 20v-1.5a4 4 0 0 0-3-3.87"/></svg>';return'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5.5 6.5h13a3 3 0 0 1 3 3v5a3 3 0 0 1-3 3h-6l-4.5 3 .9-3H5.5a3 3 0 0 1-3-3v-5a3 3 0 0 1 3-3Z"/></svg>'}
-function roomIcon(room){if(room.kind==="direct"){const other=(room.members||[]).find(member=>member.id!==state.currentUser?.id);if(other)return avatar(other,"room-avatar")}return `<span class="room-glyph">${roomGlyph(room)}</span>`}
+function roomIcon(room){if(room.kind==="direct"){const other=(room.members||[]).find(member=>member.id!==state.currentUser?.id);if(other)return avatar(other,"room-avatar")}if(room.avatarUrl)return `<img class="avatar room-avatar group-room-avatar" src="${esc(room.avatarUrl)}" alt="${esc(room.name)}的头像" loading="lazy">`;return `<span class="room-glyph">${roomGlyph(room)}</span>`}
 function roomPreview(room){const latest=room.latestMessage;if(!latest)return room.kind==="public"?"所有人可见":"还没有消息";const attachment=latest.hasFile?"[文件] ":latest.mediaExpired?"[媒体已过期] ":latest.mediaKind==="video"?"[视频] ":latest.hasImage?"[图片] ":"";return`${latest.nickname}：${attachment}${latest.content||""}`}
 function saveRead(){localStorage.setItem(READ_KEY,JSON.stringify(state.readRooms))}
 function readStored(){try{state.readRooms=JSON.parse(localStorage.getItem(READ_KEY)||"{}")||{}}catch(e){state.readRooms={}}state.activeRoomId=localStorage.getItem(ROOM_KEY)||"public"}
@@ -355,30 +375,36 @@ function syncLoadedMessageProfiles(){const profiles=new Map([...state.users,stat
 function syncCurrentUserProfile(user){state.currentUser=user;state.users=state.users.map(item=>item.id===user.id?{...item,...user}:item);syncLoadedMessageProfiles()}
 async function bootstrap(render=true){const payload=await request("/api/lan-chat/bootstrap");state.currentUser=payload.currentUser;state.users=payload.users||[];state.rooms=payload.rooms||[];syncLoadedMessageProfiles();state.inlineMediaMaxBytes=Number(payload.inlineMediaMaxBytes)||state.inlineMediaMaxBytes;state.inlineMediaRetentionSeconds=Number(payload.inlineMediaRetentionSeconds)||state.inlineMediaRetentionSeconds;state.fileMaxBytes=Number(payload.fileMaxBytes)||state.fileMaxBytes;state.fileRetentionSeconds=Number(payload.fileRetentionSeconds)||state.fileRetentionSeconds;state.messagePollIntervalMs=Math.max(30000,Number(payload.messagePollIntervalMs||payload.pollIntervalMs)||30000);state.bootstrapPollIntervalMs=Number(payload.bootstrapPollIntervalMs)||state.bootstrapPollIntervalMs;if(!state.rooms.some(room=>room.id===state.activeRoomId)){state.activeRoomId=payload.publicRoomId||"public";state.messages=[];state.lastMessageId=0;state.oldestMessageId=0;state.hasMoreBefore=false;localStorage.setItem(ROOM_KEY,state.activeRoomId)}if(render){renderAll();renderMessages()}else{renderProfile();renderRooms();renderMembers();renderHeader()}return payload}
 function activeRoom(){return state.rooms.find(room=>room.id===state.activeRoomId)||state.rooms[0]}
+function avatarPresetPool(){return avatarEditorState.target==="group"?GROUP_AVATARS:DEFAULT_AVATARS}
 function renderAvatarChoices(){
   const grid=$("avatarChoiceGrid");
-  grid.innerHTML=DEFAULT_AVATARS.map((src,index)=>{
+  grid.innerHTML=avatarPresetPool().map((src,index)=>{
     const number=index+1,selected=avatarEditorState.selectedDefault===number;
-    return `<button class="avatar-choice ${selected?"selected":""}" type="button" data-avatar-src="${src}" data-avatar-index="${number}"><img src="${src}" alt="默认头像 ${String(number).padStart(2,"0")}"><small>${String(number).padStart(2,"0")}</small><i class="avatar-choice-check"><svg viewBox="0 0 16 16"><path d="m3 8 3 3 7-7"/></svg></i></button>`;
+    const label=avatarEditorState.target==="group"?"群头像":"默认头像";
+    return `<button class="avatar-choice ${selected?"selected":""}" type="button" data-avatar-src="${src}" data-avatar-index="${number}"><img src="${src}" alt="${label} ${String(number).padStart(2,"0")}"><small>${String(number).padStart(2,"0")}</small><i class="avatar-choice-check"><svg viewBox="0 0 16 16"><path d="m3 8 3 3 7-7"/></svg></i></button>`;
   }).join("");
   grid.querySelectorAll("[data-avatar-src]").forEach(button=>button.onclick=()=>{
     const number=Number(button.dataset.avatarIndex);
     avatarEditorState.source=button.dataset.avatarSrc;
-    avatarEditorState.sourceLabel=`默认头像 ${String(number).padStart(2,"0")}`;
+    avatarEditorState.sourceLabel=`${avatarEditorState.target==="group"?"群头像":"默认头像"} ${String(number).padStart(2,"0")}`;
     avatarEditorState.selectedDefault=number;
     $("avatarSelectionLabel").textContent=`已选择${avatarEditorState.sourceLabel}`;
     renderAvatarChoices();
   });
 }
 function showAvatarModal(id){
-  ["profileModal","avatarPickerModal","avatarEditorModal"].forEach(modalId=>$(modalId).classList.toggle("show",modalId===id));
+  ["profileModal","roomManageModal","avatarPickerModal","avatarEditorModal"].forEach(modalId=>$(modalId).classList.toggle("show",modalId===id));
 }
 function openAvatarPicker(){
+  const group=avatarEditorState.target==="group";
+  $("avatarPickerTitle").textContent=group?"选择群头像":"选择头像";
+  $("avatarPickerSubtitle").textContent=group?"从群组预设中选择，或上传一张自己的图片。":"从预设头像中选择，或上传一张自己的图片。";
+  $("avatarPresetLabel").textContent=group?"群组预设":"默认头像";
   renderAvatarChoices();
   $("avatarSelectionLabel").textContent=`已选择${avatarEditorState.sourceLabel}`;
   showAvatarModal("avatarPickerModal");
 }
-function returnToProfile(){showAvatarModal("profileModal")}
+function returnToAvatarOrigin(){showAvatarModal(avatarEditorState.returnModal)}
 function resetAvatarEditorControls(){
   avatarEditorState.zoom=1.08;
   avatarEditorState.offsetX=0;
@@ -432,6 +458,9 @@ function loadAvatarEditorSource(source){
 }
 async function openAvatarEditor(){
   try{
+    const group=avatarEditorState.target==="group";
+    $("avatarEditorTitle").textContent=group?"编辑群头像":"编辑头像";
+    $("avatarEditorSubtitle").textContent=group?"拖动图片调整位置，群头像将按 1:1 比例保存。":"拖动图片调整位置，最终头像将按 1:1 比例保存。";
     await loadAvatarEditorSource(avatarEditorState.source);
     showAvatarModal("avatarEditorModal");
   }catch(error){toast(error.message)}
@@ -474,13 +503,26 @@ function chooseAvatarFile(event){
   reader.onerror=()=>toast("图片读取失败，请重新选择");
   reader.readAsDataURL(file);
 }
-function applyEditedAvatar(){
+async function applyEditedAvatar(){
   if(!avatarEditorState.image)return;
   renderAvatarEditor();
   avatarEditorState.draftDataUrl=$("avatarCropCanvas").toDataURL("image/png");
+  if(avatarEditorState.target==="group"){
+    const room=activeRoom();
+    if(!room)return;
+    try{
+      await request(`/api/lan-chat/rooms/${encodeURIComponent(room.id)}/avatar`,{method:"POST",body:JSON.stringify({avatarDataUrl:avatarEditorState.draftDataUrl})});
+      avatarEditorState.draftDataUrl="";
+      await bootstrap(true);
+      showAvatarModal("roomManageModal");
+      openRoomManagement();
+      toast("群头像已保存");
+    }catch(error){toast(error.message)}
+    return;
+  }
   $("profileModalAvatar").src=avatarEditorState.draftDataUrl;
   $("avatarStatusText").textContent="新头像将在保存资料后生效";
-  returnToProfile();
+  returnToAvatarOrigin();
 }
 function bindAvatarEditor(){
   renderAvatarChoices();
@@ -489,9 +531,9 @@ function bindAvatarEditor(){
   $("avatarUploadTile").onclick=()=>$("avatarFileInput").click();
   $("avatarFileInput").onchange=chooseAvatarFile;
   $("openAvatarEditor").onclick=openAvatarEditor;
-  $("cancelAvatarPicker").onclick=returnToProfile;
-  $("closeAvatarPicker").onclick=returnToProfile;
-  $("closeAvatarEditor").onclick=returnToProfile;
+  $("cancelAvatarPicker").onclick=returnToAvatarOrigin;
+  $("closeAvatarPicker").onclick=returnToAvatarOrigin;
+  $("closeAvatarEditor").onclick=returnToAvatarOrigin;
   $("backAvatarPicker").onclick=openAvatarPicker;
   $("applyAvatar").onclick=applyEditedAvatar;
   $("avatarZoomOut").onclick=()=>setAvatarZoom(avatarEditorState.zoom-.05);
@@ -521,7 +563,8 @@ function roomMembers(room){return room?.kind==="public"?state.users:(room?.membe
 function renderMembers(){const room=activeRoom(),source=roomMembers(room),query=$("memberSearch").value.trim().toLowerCase(),users=source.filter(user=>!query||user.nickname.toLowerCase().includes(query));$("memberCount").textContent=`${source.length} 位成员`;$("membersModalCount").textContent=`${source.length} 位成员`;$("membersSubtitle").textContent=`${room?.name||"当前会话"} · ${source.filter(user=>user.online).length} 人在线`;$("memberAvatarStack").innerHTML=source.slice(0,4).map(user=>avatar(user,"tiny")).join("");$("memberList").innerHTML=users.map(user=>`<button class="member-item ${user.isCurrent?"current":""}" data-user-id="${esc(user.id)}" ${user.isCurrent?"disabled":""}>${avatar(user,"small")}<span class="member-copy"><strong>${esc(user.nickname)}${user.isCurrent?"（我）":""}${user.isAdmin?'<i class="member-role">管理员</i>':""}</strong><span>${user.online?'<i class="online-dot"></i> 在线':esc(relativeSeen(user.lastSeen))}</span></span>${user.isCurrent?"":'<span class="member-dm">私聊</span>'}</button>`).join("")||'<div class="login-empty">没有匹配的成员</div>';$("memberList").querySelectorAll("[data-user-id]:not([disabled])").forEach(button=>button.onclick=async()=>{closeModals();await startDirect(button.dataset.userId)})}
 function recentFileRows(files,compact=false){if(!files.length)return'<div class="detail-empty">当前会话还没有文件</div>';return files.map(file=>`<div class="recent-file-row ${compact?"compact":""}"><span class="file-mini">${fileIcon(file)}</span><span class="recent-file-copy"><strong title="${esc(file.name)}">${esc(file.name)}</strong><small>${formatBytes(file.size)} · ${formatTime(file.createdAt)}</small></span>${file.downloadAllowed?`<button type="button" data-recent-download="${esc(file.id)}">下载</button>`:'<span class="file-status">待接收</span>'}</div>`).join("")}
 function bindRecentFileActions(root){root.querySelectorAll("[data-recent-download]").forEach(button=>button.onclick=()=>downloadFile(button.dataset.recentDownload))}
-function renderDetails(){const room=activeRoom();if(!room)return;const files=room.recentFiles||[];$("mobileDetailRoomName").textContent=room.name;$("detailRoomIcon").innerHTML=roomIcon(room);$("detailRoomName").textContent=room.name;$("detailRoomDescription").textContent=room.kind==="public"?"所有注册成员可见，用于同步进展和共享文件。":room.kind==="direct"?"仅双方可见的私聊会话。":room.systemKind==="feishu"?"同一飞书用户下的设备账户共享此群组。":"成员可见的群组会话。";$("recentFiles").innerHTML=recentFileRows(files.slice(0,4),true);$("allRecentFiles").innerHTML=recentFileRows(files);bindRecentFileActions($("recentFiles"));bindRecentFileActions($("allRecentFiles"));$("recentFilesTitle").textContent=`${room.name} · 最近文件`;$("pinSwitch").classList.toggle("on",Boolean(room.pinned));$("muteSwitch").classList.toggle("on",Boolean(room.muted));const custom=room.kind==="group"&&room.systemKind==="custom";$("groupActions").hidden=!custom;$("roomManage").hidden=!custom;$("leaveGroupFromDetails").hidden=!room.canLeave}
+function roomDescription(room){if(room.kind==="public")return"所有注册成员可见，用于同步进展和共享文件。";if(room.kind==="direct")return"仅双方可见的私聊会话。";if(room.systemKind==="feishu")return"同一飞书用户下的设备账户共享此群组。";return room.announcement||"暂无群公告，点击查看"}
+function renderDetails(){const room=activeRoom();if(!room)return;const files=room.recentFiles||[],description=$("detailRoomDescription"),custom=room.kind==="group"&&room.systemKind==="custom";$("mobileDetailRoomName").textContent=room.name;$("detailRoomIcon").innerHTML=roomIcon(room);$("detailRoomName").textContent=room.name;description.textContent=roomDescription(room);description.disabled=!custom;description.classList.toggle("clickable",custom);description.title=custom?"查看群公告":"";$("recentFiles").innerHTML=recentFileRows(files.slice(0,4),true);$("allRecentFiles").innerHTML=recentFileRows(files);bindRecentFileActions($("recentFiles"));bindRecentFileActions($("allRecentFiles"));$("recentFilesTitle").textContent=`${room.name} · 最近文件`;$("pinSwitch").classList.toggle("on",Boolean(room.pinned));$("muteSwitch").classList.toggle("on",Boolean(room.muted));$("groupActions").hidden=!custom;$("roomManage").hidden=!custom;$("leaveGroupFromDetails").hidden=!room.canLeave}
 function renderHeader(){const room=activeRoom();if(!room)return;$("headerRoomName").textContent=room.name;$("headerRoomMeta").textContent=room.kind==="public"?`${room.memberCount} 位注册成员 · 系统默认群组`:room.systemKind==="feishu"?`${room.memberCount} 位旗下账户 · 飞书默认群组`:room.kind==="group"?`${room.memberCount} 位成员 · ${room.currentUserIsAdmin?"你是管理员":"群组聊天"}`:"仅双方可见";$("connectionSummary").textContent=`局域网连接正常 · ${state.users.filter(user=>user.online).length} 位成员在线`;renderDetails()}
 function renderAll(){renderProfile();renderRooms();renderMembers();renderHeader()}
 function scrollMessagesToBottom(behavior="auto"){const box=$("messages"),move=()=>box.scrollTo({top:box.scrollHeight,behavior});requestAnimationFrame(()=>{move();requestAnimationFrame(move)});setTimeout(move,80);setTimeout(move,260)}
@@ -557,12 +600,16 @@ async function loadOlderMessages(){if(state.loadingOlderMessages||!state.hasMore
 function multipartRequest(path,fieldName,file,content,clientUploadId,replyToMessageId,onProgress){return new Promise((resolve,reject)=>{const xhr=new XMLHttpRequest();xhr.open("POST",path);xhr.setRequestHeader("X-Lan-Chat-Token",state.token);xhr.upload.onprogress=event=>{if(event.lengthComputable)onProgress?.(Math.round(event.loaded/event.total*100))};xhr.onload=()=>{let payload={};try{payload=JSON.parse(xhr.responseText||"{}")}catch(error){}if(xhr.status>=200&&xhr.status<300){resolve(payload);return}const error=responseError(payload,xhr.status);if(xhr.status===401)expireSession();reject(error)};xhr.onerror=()=>{const error=new Error("网络连接失败");error.status=0;reject(error)};const form=new FormData();form.append(fieldName,file,file.name||"未命名附件");form.append("content",content);form.append("clientUploadId",clientUploadId);if(replyToMessageId)form.append("replyToMessageId",String(replyToMessageId));xhr.send(form)})}
 async function sendMessage(event){event.preventDefault();const input=$("messageInput"),content=input.value.trim(),draft=state.draftAttachment;if((!content&&!draft)||state.preparingAttachment)return;const sendButton=$("sendButton");sendButton.disabled=true;$("attachImage").disabled=true;const clientUploadId=newClientUploadId(),roomId=state.activeRoomId,replyToMessageId=state.replyTarget?.id||null;try{let payload;if(draft){const isFile=draft.kind==="file",path=`/api/lan-chat/rooms/${encodeURIComponent(roomId)}/${isFile?"files":"media"}`;payload=await multipartRequest(path,isFile?"file":"media",draft.file,content,clientUploadId,replyToMessageId,progress=>sendButton.textContent=`上传 ${progress}%`)}else payload=await request(`/api/lan-chat/rooms/${encodeURIComponent(roomId)}/messages`,{method:"POST",body:JSON.stringify({content,clientUploadId,replyToMessageId})});mergeServerMessage(payload.message);input.value="";setDraftAttachment(null);clearReply();resizeInput();renderMessages();state.readRooms[roomId]=Date.now()/1000;saveRead();await bootstrap(false)}catch(error){toast(error.message)}finally{sendButton.textContent="发送";sendButton.disabled=false;$("attachImage").disabled=false;input.focus()}}
 async function startDirect(userId){try{const payload=await request("/api/lan-chat/direct",{method:"POST",body:JSON.stringify({targetUserId:userId})});await bootstrap(false);await selectRoom(payload.room.id)}catch(error){toast(error.message)}}
-function openProfile(){avatarEditorState.draftDataUrl="";avatarEditorState.source=DEFAULT_AVATARS[0];avatarEditorState.sourceLabel="默认头像 01";avatarEditorState.selectedDefault=1;renderProfile();$("profileTitle").textContent="编辑资料";$("profileSubtitle").textContent="头像与昵称属于当前设备账户，会同步显示给局域网内其他成员。";$("profileModal").classList.add("show");setTimeout(()=>$("nicknameInput").select(),80)}
+function openProfile(){avatarEditorState.target="profile";avatarEditorState.returnModal="profileModal";avatarEditorState.draftDataUrl="";avatarEditorState.source=DEFAULT_AVATARS[0];avatarEditorState.sourceLabel="默认头像 01";avatarEditorState.selectedDefault=1;renderProfile();$("profileTitle").textContent="编辑资料";$("profileSubtitle").textContent="头像与昵称属于当前设备账户，会同步显示给局域网内其他成员。";$("profileModal").classList.add("show");setTimeout(()=>$("nicknameInput").select(),80)}
 function updateConversationSelection(){const selected=[...$("groupMemberPicker").querySelectorAll("input:checked")],count=selected.length,isGroup=count>1;$("groupNameField").hidden=!isGroup;$("groupNameInput").required=isGroup;$("conversationSelectionSummary").textContent=count===0?"尚未选择成员":count===1?"将发起私聊":`已选择 ${count} 位成员`;$("createConversationButton").disabled=count===0;$("createConversationButton").textContent=count===0?"开始聊天":isGroup?"创建群组":"开始私聊";$("groupSubtitle").textContent=isGroup?"填写群名后创建多人群组。":"选择一位成员发起私聊，选择多位成员创建群组。"}
 function openGroup(){const users=state.users.filter(user=>!user.isCurrent);$("groupMemberPicker").innerHTML=users.map(user=>`<label class="pick-row"><input type="checkbox" value="${esc(user.id)}">${avatar(user,"tiny")}<span><strong>${esc(user.nickname)}</strong><small>${user.online?"在线":esc(relativeSeen(user.lastSeen))}</small></span></label>`).join("")||'<div class="field-note ui-picker-empty">还没有其他注册成员。</div>';$("groupMemberPicker").querySelectorAll("input").forEach(input=>input.onchange=updateConversationSelection);$("groupNameInput").value="";updateConversationSelection();$("groupModal").classList.add("show")}
 function openMembers(){renderMembers();$("membersModal").classList.add("show");setTimeout(()=>$("memberSearch").focus(),80)}
 function openRecentFiles(){renderDetails();$("recentFilesModal").classList.add("show")}
-function openRoomManagement(){const room=activeRoom();if(!room||room.kind!=="group"||room.systemKind!=="custom")return;$("roomManageTitle").textContent=room.name;$("roomManageSubtitle").textContent=room.currentUserIsAdmin?"修改群名、管理成员或转移管理员。":"你可以查看成员或主动退出群组。";$("renameGroupForm").hidden=!room.canRename;$("manageGroupName").value=room.name;$("manageMemberList").innerHTML=(room.members||[]).map(user=>`<div class="manage-member">${avatar(user,"tiny")}<div class="manage-member-copy"><strong>${esc(user.nickname)}${user.isCurrent?"（我）":""}${user.isAdmin?'<i class="member-role">管理员</i>':""}</strong><span>${user.isAdmin?"当前群组管理员":`进群时间：${formatTime(user.joinedAt)}`}</span></div><div class="manage-member-actions">${room.canTransferAdmin&&!user.isCurrent&&!user.isAdmin?`<button class="transfer-member" type="button" data-transfer-user="${esc(user.id)}">转让</button>`:""}${room.canRemoveMembers&&!user.isCurrent&&!user.isAdmin?`<button class="remove-member" type="button" data-remove-user="${esc(user.id)}">移出</button>`:""}</div></div>`).join("");$("manageMemberList").querySelectorAll("[data-remove-user]").forEach(button=>button.onclick=()=>removeGroupMember(button.dataset.removeUser));$("manageMemberList").querySelectorAll("[data-transfer-user]").forEach(button=>button.onclick=()=>transferGroupAdmin(button.dataset.transferUser));$("leaveGroup").hidden=!room.canLeave;$("dissolveGroup").hidden=!room.canDissolve;$("adminTransferNote").textContent=room.currentUserIsAdmin?"转让管理员后，你将立即失去改名、踢人和解散权限。":"只有管理员可以改名、移出成员、转让权限或解散群组。";$("roomManageModal").classList.add("show")}
+function openRoomManagement(){const room=activeRoom();if(!room||room.kind!=="group"||room.systemKind!=="custom")return;$("roomManageTitle").textContent=room.name;$("roomManageSubtitle").textContent=room.currentUserIsAdmin?"修改群资料、管理成员或转移管理员。":"你可以查看群资料、成员或主动退出群组。";$("manageGroupAvatarPreview").src=room.avatarUrl;$("manageGroupProfileName").textContent=room.name;$("changeGroupAvatar").hidden=!room.canEditAvatar;$("manageAnnouncementPreview").textContent=room.announcement||"暂无群公告";$("openManageAnnouncement").querySelector("b").textContent=room.canEditAnnouncement?"编辑":"查看";$("renameGroupForm").hidden=!room.canRename;$("manageGroupName").value=room.name;$("manageMemberList").innerHTML=(room.members||[]).map(user=>`<div class="manage-member">${avatar(user,"tiny")}<div class="manage-member-copy"><strong>${esc(user.nickname)}${user.isCurrent?"（我）":""}${user.isAdmin?'<i class="member-role">管理员</i>':""}</strong><span>${user.isAdmin?"当前群组管理员":`进群时间：${formatTime(user.joinedAt)}`}</span></div><div class="manage-member-actions">${room.canTransferAdmin&&!user.isCurrent&&!user.isAdmin?`<button class="transfer-member" type="button" data-transfer-user="${esc(user.id)}">转让</button>`:""}${room.canRemoveMembers&&!user.isCurrent&&!user.isAdmin?`<button class="remove-member" type="button" data-remove-user="${esc(user.id)}">移出</button>`:""}</div></div>`).join("");$("manageMemberList").querySelectorAll("[data-remove-user]").forEach(button=>button.onclick=()=>removeGroupMember(button.dataset.removeUser));$("manageMemberList").querySelectorAll("[data-transfer-user]").forEach(button=>button.onclick=()=>transferGroupAdmin(button.dataset.transferUser));$("leaveGroup").hidden=!room.canLeave;$("dissolveGroup").hidden=!room.canDissolve;$("adminTransferNote").textContent=room.currentUserIsAdmin?"转让管理员后，你将立即失去改名、踢人和解散权限。":"只有管理员可以修改群资料、移出成员、转让权限或解散群组。";$("roomManageModal").classList.add("show")}
+function openGroupAvatarPicker(){const room=activeRoom();if(!room?.canEditAvatar)return;avatarEditorState.target="group";avatarEditorState.returnModal="roomManageModal";avatarEditorState.draftDataUrl="";avatarEditorState.source=room.avatarUrl||GROUP_AVATARS[0];avatarEditorState.sourceLabel="当前群头像";avatarEditorState.selectedDefault=0;openAvatarPicker()}
+function setAnnouncementEditMode(editing){const room=activeRoom(),canEdit=Boolean(room?.canEditAnnouncement);$("announcementContent").hidden=editing;$("announcementEditor").hidden=!editing;$("editAnnouncement").hidden=!canEdit||editing;$("saveAnnouncement").hidden=!canEdit||!editing;$("announcementCount").textContent=editing?`${$("announcementEditor").value.length}/4000`:"";if(editing)setTimeout(()=>$("announcementEditor").focus(),40)}
+function openAnnouncement(editing=false){const room=activeRoom();if(!room||room.kind!=="group")return;const announcement=room.announcement||"";$("announcementTitle").textContent=`${room.name} · 群公告`;$("announcementSubtitle").textContent=room.canEditAnnouncement?"管理员可以编辑并同步给所有群成员。":"由群管理员发布，所有群成员可见。";$("announcementContent").textContent=announcement||"暂无群公告";$("announcementContent").classList.toggle("empty",!announcement);$("announcementEditor").value=announcement;$("announcementModal").classList.add("show");setAnnouncementEditMode(Boolean(editing&&room.canEditAnnouncement))}
+async function saveAnnouncement(){const room=activeRoom();if(!room?.canEditAnnouncement)return;try{await request(`/api/lan-chat/rooms/${encodeURIComponent(room.id)}/announcement`,{method:"POST",body:JSON.stringify({announcement:$("announcementEditor").value})});await bootstrap(true);closeModals();toast("群公告已保存")}catch(error){toast(error.message)}}
 function closeModals(){document.querySelectorAll(".modal-backdrop.show:not(#loginModal)").forEach(modal=>modal.classList.remove("show"))}
 async function saveProfile(event){event.preventDefault();try{const payload=await request("/api/lan-chat/profile",{method:"POST",body:JSON.stringify({nickname:$("nicknameInput").value,avatarDataUrl:avatarEditorState.draftDataUrl})});syncCurrentUserProfile(payload.user);avatarEditorState.draftDataUrl="";closeModals();await bootstrap(true);toast("资料已保存")}catch(error){toast(error.message)}}
 async function createGroup(event){event.preventDefault();const memberIds=[...$("groupMemberPicker").querySelectorAll("input:checked")].map(input=>input.value);if(!memberIds.length)return;if(memberIds.length===1){closeModals();await startDirect(memberIds[0]);return}try{const payload=await request("/api/lan-chat/rooms",{method:"POST",body:JSON.stringify({name:$("groupNameInput").value,memberIds})});closeModals();await bootstrap(false);await selectRoom(payload.room.id);toast("群组已创建")}catch(error){toast(error.message)}}
@@ -612,7 +659,7 @@ function startViewerDrag(event){const viewport=$("viewerViewport");if(event.poin
 function moveViewerDrag(event){const drag=viewerState.drag;if(!drag||event.pointerId!==drag.pointerId)return;const viewport=$("viewerViewport");viewport.scrollLeft=drag.left-(event.clientX-drag.x);viewport.scrollTop=drag.top-(event.clientY-drag.y)}
 function stopViewerDrag(event){if(!viewerState.drag||event.pointerId!==viewerState.drag.pointerId)return;$("viewerViewport").classList.remove("dragging");viewerState.drag=null}
 function bindComposerTransfers(){const composer=$("composer"),messageInput=$("messageInput");composer.addEventListener("dragenter",handleComposerDragEnter);composer.addEventListener("dragover",handleComposerDragOver);composer.addEventListener("dragleave",handleComposerDragLeave);composer.addEventListener("drop",handleComposerDrop);messageInput.addEventListener("paste",pasteAttachment)}
-function bind(){ $("composer").onsubmit=sendMessage;$("messageInput").addEventListener("input",resizeInput);$("messageInput").addEventListener("keydown",event=>{if(event.key==="Enter"&&!event.shiftKey&&!event.isComposing){event.preventDefault();$("composer").requestSubmit()}});$("cancelReply").onclick=clearReply;$("attachImage").onclick=()=>$("imageInput").click();$("imageInput").onchange=chooseAttachment;$("removeImage").onclick=()=>setDraftAttachment(null);$("queueSummary").onclick=()=>{state.queueExpanded=!state.queueExpanded;renderUploadQueue()};$("closeImageViewer").onclick=closeImageViewer;$("viewerZoomOut").onclick=()=>zoomViewer(.8);$("viewerZoomIn").onclick=()=>zoomViewer(1.25);$("viewerReset").onclick=fitViewerImage;$("viewerImage").ondblclick=()=>applyViewerScale(Math.abs(viewerState.scale-viewerState.fitScale)<.02?Math.min(2,Math.max(1,viewerState.fitScale*2)):viewerState.fitScale);$("viewerViewport").onwheel=event=>{if(!event.ctrlKey&&!event.metaKey)return;event.preventDefault();zoomViewer(event.deltaY<0?1.12:.89)};$("viewerViewport").onpointerdown=startViewerDrag;$("viewerViewport").onpointermove=moveViewerDrag;$("viewerViewport").onpointerup=stopViewerDrag;$("viewerViewport").onpointercancel=stopViewerDrag;$("switchAccount").onclick=openAccountSwitcher;$("closeLogin").onclick=closeLoginChooser;$("editProfile").onclick=openProfile;$("mobileProfile").onclick=openProfile;$("newChat").onclick=openGroup;$("roomManage").onclick=openRoomManagement;$("openMembersHeader").onclick=openMembers;$("openMemberList").onclick=openMembers;$("openFilesHeader").onclick=openRecentFiles;$("openAllFiles").onclick=openRecentFiles;$("toggleDetails").onclick=()=>toggleDetailsPanel();$("closeDetails").onclick=()=>toggleDetailsPanel(false);$("mobileCloseDetails").onclick=()=>toggleDetailsPanel(false);$("togglePin").onclick=()=>toggleRoomPreference("pinned");$("toggleMute").onclick=()=>toggleRoomPreference("muted");$("leaveGroupFromDetails").onclick=leaveActiveGroup;$("memberSearch").oninput=renderMembers;$("profileForm").onsubmit=saveProfile;$("groupForm").onsubmit=createGroup;$("renameGroupForm").onsubmit=saveGroupName;$("leaveGroup").onclick=leaveActiveGroup;$("dissolveGroup").onclick=dissolveActiveGroup;$("createAccountForm").onsubmit=createLoginAccount;$("loginBack").onclick=showFeishuStep;document.querySelectorAll("[data-close-modal]").forEach(button=>button.onclick=closeModals);document.querySelectorAll(".modal-backdrop").forEach(backdrop=>backdrop.onclick=event=>{if(backdrop.id!=="loginModal"&&event.target===backdrop)closeModals()});$("mobileChannels").onclick=()=>openDrawer("left");$("mobileMembers").onclick=()=>openDrawer("right");$("mobileChat").onclick=closeDrawers;$("drawerBackdrop").onclick=closeDrawers;document.addEventListener("visibilitychange",()=>{if(canReadActiveRoom())loadMessages(false)});window.addEventListener("focus",()=>loadMessages(false));window.addEventListener("offline",()=>{if(state.activeUpload){state.activeUpload.item.status="waiting-network";state.activeUpload.item.abortReason="offline";state.activeUpload.xhr.abort()}renderUploadQueue();renderMessages()});window.addEventListener("online",async()=>{state.uploadQueue.forEach(item=>{if(item.status==="waiting-network")item.status="queued"});renderUploadQueue();renderMessages();try{await loadMessages(true)}finally{runUploadQueue()}});window.addEventListener("resize",()=>{if(!$("imageViewer").hidden)fitViewerImage();syncDetailsPanelToggle()});document.addEventListener("keydown",event=>{if(event.key==="Escape"){closeImageViewer();closeModals();closeDrawers()}});syncDetailsPanelToggle()}
+function bind(){ $("composer").onsubmit=sendMessage;$("messageInput").addEventListener("input",resizeInput);$("messageInput").addEventListener("keydown",event=>{if(event.key==="Enter"&&!event.shiftKey&&!event.isComposing){event.preventDefault();$("composer").requestSubmit()}});$("cancelReply").onclick=clearReply;$("attachImage").onclick=()=>$("imageInput").click();$("imageInput").onchange=chooseAttachment;$("removeImage").onclick=()=>setDraftAttachment(null);$("queueSummary").onclick=()=>{state.queueExpanded=!state.queueExpanded;renderUploadQueue()};$("closeImageViewer").onclick=closeImageViewer;$("viewerZoomOut").onclick=()=>zoomViewer(.8);$("viewerZoomIn").onclick=()=>zoomViewer(1.25);$("viewerReset").onclick=fitViewerImage;$("viewerImage").ondblclick=()=>applyViewerScale(Math.abs(viewerState.scale-viewerState.fitScale)<.02?Math.min(2,Math.max(1,viewerState.fitScale*2)):viewerState.fitScale);$("viewerViewport").onwheel=event=>{if(!event.ctrlKey&&!event.metaKey)return;event.preventDefault();zoomViewer(event.deltaY<0?1.12:.89)};$("viewerViewport").onpointerdown=startViewerDrag;$("viewerViewport").onpointermove=moveViewerDrag;$("viewerViewport").onpointerup=stopViewerDrag;$("viewerViewport").onpointercancel=stopViewerDrag;$("switchAccount").onclick=openAccountSwitcher;$("closeLogin").onclick=closeLoginChooser;$("editProfile").onclick=openProfile;$("mobileProfile").onclick=openProfile;$("newChat").onclick=openGroup;$("roomManage").onclick=openRoomManagement;$("changeGroupAvatar").onclick=openGroupAvatarPicker;$("openManageAnnouncement").onclick=()=>openAnnouncement(Boolean(activeRoom()?.canEditAnnouncement));$("detailRoomDescription").onclick=()=>openAnnouncement(false);$("editAnnouncement").onclick=()=>setAnnouncementEditMode(true);$("saveAnnouncement").onclick=saveAnnouncement;$("announcementEditor").oninput=()=>{$("announcementCount").textContent=`${$("announcementEditor").value.length}/4000`};$("openMembersHeader").onclick=openMembers;$("openMemberList").onclick=openMembers;$("openFilesHeader").onclick=openRecentFiles;$("openAllFiles").onclick=openRecentFiles;$("toggleDetails").onclick=()=>toggleDetailsPanel();$("closeDetails").onclick=()=>toggleDetailsPanel(false);$("mobileCloseDetails").onclick=()=>toggleDetailsPanel(false);$("togglePin").onclick=()=>toggleRoomPreference("pinned");$("toggleMute").onclick=()=>toggleRoomPreference("muted");$("leaveGroupFromDetails").onclick=leaveActiveGroup;$("memberSearch").oninput=renderMembers;$("profileForm").onsubmit=saveProfile;$("groupForm").onsubmit=createGroup;$("renameGroupForm").onsubmit=saveGroupName;$("leaveGroup").onclick=leaveActiveGroup;$("dissolveGroup").onclick=dissolveActiveGroup;$("createAccountForm").onsubmit=createLoginAccount;$("loginBack").onclick=showFeishuStep;document.querySelectorAll("[data-close-modal]").forEach(button=>button.onclick=closeModals);document.querySelectorAll(".modal-backdrop").forEach(backdrop=>backdrop.onclick=event=>{if(backdrop.id!=="loginModal"&&event.target===backdrop)closeModals()});$("mobileChannels").onclick=()=>openDrawer("left");$("mobileMembers").onclick=()=>openDrawer("right");$("mobileChat").onclick=closeDrawers;$("drawerBackdrop").onclick=closeDrawers;document.addEventListener("visibilitychange",()=>{if(canReadActiveRoom())loadMessages(false)});window.addEventListener("focus",()=>loadMessages(false));window.addEventListener("offline",()=>{if(state.activeUpload){state.activeUpload.item.status="waiting-network";state.activeUpload.item.abortReason="offline";state.activeUpload.xhr.abort()}renderUploadQueue();renderMessages()});window.addEventListener("online",async()=>{state.uploadQueue.forEach(item=>{if(item.status==="waiting-network")item.status="queued"});renderUploadQueue();renderMessages();try{await loadMessages(true)}finally{runUploadQueue()}});window.addEventListener("resize",()=>{if(!$("imageViewer").hidden)fitViewerImage();syncDetailsPanelToggle()});document.addEventListener("keydown",event=>{if(event.key==="Escape"){closeImageViewer();closeModals();closeDrawers()}});syncDetailsPanelToggle()}
 async function init(){syncViewportHeight();window.addEventListener("resize",syncViewportHeight);window.addEventListener("orientationchange",syncViewportHeight);window.visualViewport?.addEventListener("resize",syncViewportHeight);readStored();bind();bindAvatarEditor();bindComposerTransfers();await resumeOrChooseAccount()}
 init();
 </script>

@@ -17,7 +17,13 @@ from pathlib import Path
 from typing import Any
 
 
-CHAT_FILES = ("lan_chat.sqlite", "lan_chat_media", "lan_chat_files", "lan_chat_avatars")
+CHAT_FILES = (
+    "lan_chat.sqlite",
+    "lan_chat_media",
+    "lan_chat_files",
+    "lan_chat_avatars",
+    "lan_chat_group_avatars",
+)
 
 
 @contextmanager

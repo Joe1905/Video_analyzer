@@ -3,11 +3,18 @@
 
 from __future__ import annotations
 
+import base64
 import tempfile
 import unittest
 from pathlib import Path
 
 from lan_chat import DEFAULT_FEISHU_USER_ID, LanChatError, LanChatStore
+
+
+PNG_1X1 = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+    "+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
 
 
 class LanChatGroupManagementTest(unittest.TestCase):
@@ -159,6 +166,59 @@ class LanChatGroupManagementTest(unittest.TestCase):
         )
         self.assertEqual(governed["name"], "新管理员已接管")
 
+    def test_group_avatars_and_announcements_follow_permissions(self) -> None:
+        defaults = {
+            room["systemKind"]: room
+            for room in self.store.list_rooms(self.owner["user"]["id"])
+            if room["isDefault"]
+        }
+        self.assertIn("/api/lan-chat/group-avatars/public", defaults["public"]["avatarUrl"])
+        self.assertIn(
+            "/api/lan-chat/group-avatars/feishu_", defaults["feishu"]["avatarUrl"]
+        )
+        for room in defaults.values():
+            payload, content_type = self.store.group_avatar_bytes(room["id"])
+            self.assertEqual("image/png", content_type)
+            self.assertTrue(payload.startswith(b"\x89PNG\r\n\x1a\n"))
+
+        room = self.store.create_group(
+            self.owner["sessionToken"],
+            "头像公告测试",
+            [self.second["user"]["id"]],
+        )
+        payload, content_type = self.store.group_avatar_bytes(room["id"])
+        self.assertEqual("image/png", content_type)
+        self.assertTrue(payload.startswith(b"\x89PNG\r\n\x1a\n"))
+        self.assertTrue(room["canEditAvatar"])
+        self.assertTrue(room["canEditAnnouncement"])
+
+        announcement = "周五下午三点同步进度。\n请提前更新任务状态。"
+        updated = self.store.update_group_announcement(
+            self.owner["sessionToken"], room["id"], announcement
+        )
+        self.assertEqual(announcement, updated["announcement"])
+        self.assert_forbidden(
+            lambda: self.store.update_group_announcement(
+                self.second["sessionToken"], room["id"], "越权公告"
+            )
+        )
+
+        data_url = "data:image/png;base64," + base64.b64encode(PNG_1X1).decode(
+            "ascii"
+        )
+        avatar_updated = self.store.update_group_avatar(
+            self.owner["sessionToken"], room["id"], data_url
+        )
+        self.assertNotEqual(room["avatarUrl"], avatar_updated["avatarUrl"])
+        self.assertEqual(
+            PNG_1X1, self.store.group_avatar_bytes(room["id"])[0]
+        )
+        self.assert_forbidden(
+            lambda: self.store.update_group_avatar(
+                self.second["sessionToken"], room["id"], data_url
+            )
+        )
+
     def test_room_preferences_are_per_user_and_pinned_rooms_sort_first(self) -> None:
         room = self.store.create_group(
             self.owner["sessionToken"],
@@ -236,6 +296,20 @@ class LanChatGroupManagementTest(unittest.TestCase):
                 reply_to_message_id=original["id"],
             )
         self.assertEqual(context.exception.status, 404)
+
+    def test_group_identity_ui_and_assets_are_shipped(self) -> None:
+        script_dir = Path(__file__).parent
+        html = (script_dir / "static" / "lan_chat.html").read_text(encoding="utf-8")
+        source = (script_dir / "web_app.py").read_text(encoding="utf-8")
+        self.assertIn('id="manageGroupAvatarPreview"', html)
+        self.assertIn('id="announcementModal"', html)
+        self.assertIn('id="announcementEditor"', html)
+        self.assertIn("GROUP_AVATARS=Array.from({length:10}", html)
+        self.assertIn("/api/lan-chat/group-avatars/", source)
+        self.assertIn("/announcement", source)
+        group_assets = script_dir / "static" / "assets" / "group-avatars"
+        for name in [*(f"{index:02d}.png" for index in range(1, 11)), "private.png", "public.png"]:
+            self.assertTrue((group_assets / name).is_file(), name)
 
 
 if __name__ == "__main__":
