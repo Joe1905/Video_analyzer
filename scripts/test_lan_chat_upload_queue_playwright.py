@@ -60,6 +60,9 @@ class MockLanChatApi:
                     "members": [user],
                     "unreadCount": 0,
                     "latestMessage": None,
+                    "pinned": False,
+                    "muted": False,
+                    "recentFiles": [],
                 },
                 {
                     "id": "group-1",
@@ -73,8 +76,12 @@ class MockLanChatApi:
                     "currentUserIsAdmin": True,
                     "canRename": True,
                     "canRemoveMembers": True,
+                    "canTransferAdmin": False,
                     "canLeave": True,
                     "canDissolve": True,
+                    "pinned": False,
+                    "muted": False,
+                    "recentFiles": [],
                 },
             ],
             "publicRoomId": "public",
@@ -91,6 +98,13 @@ class MockLanChatApi:
         path = request.url.split("?", 1)[0]
         if path.endswith("/api/lan-chat/bootstrap"):
             await route.fulfill(json=self.bootstrap_payload())
+            return
+        if path.endswith("/api/lan-chat/events"):
+            await route.fulfill(
+                status=200,
+                content_type="text/event-stream",
+                body=": mock stream ready\n\n",
+            )
             return
         message_match = re.search(r"/api/lan-chat/rooms/([^/]+)/messages$", path)
         if message_match and request.method == "GET":
