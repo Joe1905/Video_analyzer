@@ -1669,6 +1669,44 @@ body.ui-route-lan-chat .danger-text {
   color: #a34b42;
 }
 
+/* Keep grouping structural rather than card-like, matching the V2 handoff. */
+body.ui-route-lan-chat .rail-scroll .section {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+body.ui-route-lan-chat .member-summary {
+  border-color: transparent;
+  background: var(--lan-surface-muted);
+}
+
+body.ui-route-lan-chat .member-summary:hover {
+  border-color: transparent;
+}
+
+body.ui-route-lan-chat .detail-empty {
+  border: 0;
+  background: var(--lan-surface-muted);
+}
+
+body.ui-route-lan-chat .detail-settings {
+  gap: 0;
+}
+
+body.ui-route-lan-chat .setting-row {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+body.ui-route-lan-chat .setting-row:hover {
+  background: transparent;
+}
+
 body.ui-route-lan-chat .selection-summary {
   margin-right: auto;
   color: var(--ui-ink-subtle);
