@@ -2062,7 +2062,7 @@
   /* Tool selection follows the approved hierarchy: one primary domain surface,
      nested categories, then leaf tools separated only by restrained dashes. */
   #toolModal .tool-modal-box {
-    width: min(1520px, calc(100vw - 120px));
+    width: calc(100vw - 120px);
     max-height: calc(100vh - 76px);
   }
 
@@ -2072,7 +2072,7 @@
     margin-bottom: 14px;
     border: 1px solid #e1e4ea;
     border-radius: 16px;
-    background: linear-gradient(135deg, #fbfcff, #f8f9fd);
+    background: #fbfbfa;
   }
 
   #toolModal .tree-domain.is-secondary > .tree-row { min-height: 58px; }
@@ -2177,6 +2177,15 @@
     #toolModal .tool-modal-head strong { font-size: 34px; line-height: 1.15; }
     #toolModal .tool-modal-head small { margin-top: 14px; font-size: 20px; }
     #toolModal .tool-modal-body { padding: 0 40px; }
+    #toolModal .tool-modal-head .ui-chat-close {
+      border: 0;
+      background: transparent;
+      box-shadow: none;
+    }
+
+    #toolModal .tool-modal-head .ui-chat-close:hover {
+      background: var(--ui-surface-soft);
+    }
 
     #toolModal .tool-modal-foot {
       min-height: 136px;
