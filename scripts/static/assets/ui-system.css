@@ -679,6 +679,7 @@
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .input-bar {
+    position: relative;
     width: min(820px, calc(100% - 48px));
     min-height: 68px;
     margin: 0 auto 24px;
@@ -691,6 +692,31 @@
     border-radius: 20px;
     background: rgba(255, 255, 255, .94);
     box-shadow: 0 14px 40px rgba(22, 24, 29, .09);
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .input-bar::after {
+    content: "拖放图片即可添加";
+    position: absolute;
+    z-index: 2;
+    inset: 5px;
+    display: grid;
+    place-items: center;
+    border: 1px dashed color-mix(in srgb, var(--ui-brand) 58%, transparent);
+    border-radius: 16px;
+    background: rgba(255, 255, 255, .9);
+    color: var(--ui-brand);
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: .02em;
+    opacity: 0;
+    pointer-events: none;
+    transform: scale(.985);
+    transition: opacity var(--ui-fast), transform var(--ui-fast);
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .input-bar.is-dragging::after {
+    opacity: 1;
+    transform: none;
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .input-bar .composer {
