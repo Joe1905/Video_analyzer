@@ -200,7 +200,7 @@ class UIContractTest(unittest.TestCase):
         self.assertIn('$("headerToolBtn").onclick=openModal', chat)
         self.assertIn("function restoreToolModalBlueprintState()", chat)
         self.assertIn("restoreToolModalBlueprintState();$('toolModal').classList.add('show')", chat)
-        self.assertIn('width: calc(100vw - 120px);', css)
+        self.assertIn('width: min(780px, calc(100vw - 40px));', css)
         self.assertIn('id="headerToolBtn"', app)
         self.assertNotIn('class="chat-model-status"', app)
         self.assertIn('query.get("query", [""])[0]', app)
