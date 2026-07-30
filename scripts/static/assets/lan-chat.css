@@ -3061,6 +3061,11 @@ body.ui-route-lan-chat .announcement-modal {
   width: min(560px, 100%);
 }
 
+body.ui-route-lan-chat .announcement-modal [hidden],
+body.ui-route-lan-chat #changeGroupAvatar[hidden] {
+  display: none !important;
+}
+
 body.ui-route-lan-chat .announcement-body {
   height: 280px;
   min-height: 280px;
