@@ -673,13 +673,25 @@ body.ui-route-lan-chat .modal-backdrop.show {
 }
 
 body.ui-route-lan-chat .modal {
+  position: relative;
+  inset: auto;
+  z-index: auto;
   width: min(500px, 100%);
   max-height: min(700px, calc(100dvh - 40px));
+  display: grid;
+  align-items: stretch;
+  justify-content: stretch;
+  padding: 0;
   border: 1px solid rgba(255, 255, 255, .8);
   border-radius: 20px;
   background: var(--ui-surface);
+  backdrop-filter: none;
   box-shadow: var(--ui-shadow-dialog);
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
   animation: lan-dialog-in 220ms var(--ui-ease) both;
+  transition: none;
 }
 
 body.ui-route-lan-chat .modal-head {
