@@ -20,6 +20,10 @@ if [[ ! -f "$env_file" ]]; then
   echo "Missing $env_file. Copy .env.ui-4004.example and merge only the required API settings from the server's existing .env." >&2
   exit 2
 fi
+if ! grep -Eq '^SOCIAVAULT_API_KEY=.+$' "$env_file"; then
+  echo "Missing non-empty SOCIAVAULT_API_KEY in $env_file." >&2
+  exit 2
+fi
 
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
   compose=(docker compose)
@@ -36,7 +40,15 @@ mkdir -p data-dev videos-dev output-dev data-dev/sing-box data-dev/mcp_tool_cach
 
 compose_args=(-p "$project_name" --env-file "$env_file" -f docker-compose.yml -f docker-compose.ui-4004.yml)
 echo "Building $image_name for isolated 4004 preview..."
-docker build --network host -t "$image_name" .
+build_proxy="${UI4004_BUILD_PROXY:-http://127.0.0.1:7890}"
+docker build --network host \
+  --build-arg HTTP_PROXY="$build_proxy" \
+  --build-arg HTTPS_PROXY="$build_proxy" \
+  --build-arg http_proxy="$build_proxy" \
+  --build-arg https_proxy="$build_proxy" \
+  --build-arg NO_PROXY="127.0.0.1,localhost" \
+  --build-arg no_proxy="127.0.0.1,localhost" \
+  -t "$image_name" .
 
 echo "Starting only the isolated 4004 web service..."
 if (( legacy_compose )); then

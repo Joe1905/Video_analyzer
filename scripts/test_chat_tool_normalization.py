@@ -2494,7 +2494,7 @@ def test_region_default_only_applies_when_schema_supports_it() -> None:
         web_app.list_mcp_bridge_tools = original
 
 
-def test_official_skill_chain_disables_frontend_tool_selection() -> None:
+def test_all_sites_disable_frontend_tool_selection() -> None:
     previous_fastmoss = os.environ.get("FASTMOSS_OFFICIAL_SKILL_ENABLED")
     previous_sellersprite = os.environ.get("SELLERSPRITE_OFFICIAL_SKILL_ENABLED")
     os.environ["FASTMOSS_OFFICIAL_SKILL_ENABLED"] = "1"
@@ -2502,7 +2502,7 @@ def test_official_skill_chain_disables_frontend_tool_selection() -> None:
     try:
         assert web_app.chat_tool_selection_enabled("fastmoss") is False
         assert web_app.chat_tool_selection_enabled("amazon") is False
-        assert web_app.chat_tool_selection_enabled("home") is True
+        assert web_app.chat_tool_selection_enabled("home") is False
     finally:
         if previous_fastmoss is None:
             os.environ.pop("FASTMOSS_OFFICIAL_SKILL_ENABLED", None)
@@ -2514,10 +2514,85 @@ def test_official_skill_chain_disables_frontend_tool_selection() -> None:
             os.environ["SELLERSPRITE_OFFICIAL_SKILL_ENABLED"] = previous_sellersprite
 
     chat_html = (ROOT / "scripts" / "static" / "chat.html").read_text(encoding="utf-8")
-    assert "headerToolButton.hidden=S.toolCatalog?.selectionEnabled===false" in chat_html
-    assert '$("headerToolBtn").onclick=openModal' in chat_html
+    assert "headerToolBtn" not in chat_html
+    assert "toolModal" not in chat_html
     assert 'id="toolBtn"' not in chat_html
-    assert "askPayload.enabledToolMasks" in chat_html
+    assert "enabledToolMasks" not in chat_html
+    assert "TOOL_SELECTION" not in chat_html
+
+
+def test_fixed_full_site_tool_sets_include_all_sociavault_tools() -> None:
+    sociavault_tools = [
+        {
+            "name": "check_credits" if index == 0 else f"social_tool_{index:03d}",
+            "description": f"SociaVault tool {index}",
+            "inputSchema": {"type": "object", "properties": {}},
+        }
+        for index in range(107)
+    ]
+    provider_tools = {
+        "sociavault": sociavault_tools,
+        "sellersprite": [{"name": "keyword_research", "inputSchema": {"type": "object"}}],
+        "fastmoss": [{"name": "product_search", "inputSchema": {"type": "object"}}],
+    }
+    original = web_app.list_mcp_bridge_tools
+    web_app.list_mcp_bridge_tools = lambda chat_type: provider_tools[chat_type]
+    try:
+        home_ids = web_app.provider_default_enabled_tool_ids("home")
+        amazon_ids = web_app.provider_default_enabled_tool_ids("amazon")
+        fastmoss_ids = web_app.provider_default_enabled_tool_ids("fastmoss")
+
+        assert len([tool_id for tool_id in home_ids if tool_id.startswith("sociavault__")]) == 107
+        assert not any(tool_id.startswith("function__tiktok_") for tool_id in home_ids)
+        assert "sellersprite__keyword_research" not in home_ids
+        assert "fastmoss__product_search" not in home_ids
+        assert "sellersprite__keyword_research" in amazon_ids
+        assert not any(tool_id.startswith("sociavault__") for tool_id in amazon_ids)
+        assert "fastmoss__product_search" in fastmoss_ids
+        assert not any(tool_id.startswith("sociavault__") for tool_id in fastmoss_ids)
+
+        home_model_tools = web_app.build_prefixed_model_tools(home_ids)
+        home_model_names = {
+            str(tool.get("function", {}).get("name") or "")
+            for tool in home_model_tools
+        }
+        assert len([name for name in home_model_names if name.startswith("sociavault__")]) == 107
+        assert not any(name.startswith("function__tiktok_") for name in home_model_names)
+        assert len(home_model_tools) <= 128
+
+        catalog = web_app.build_tool_catalog("home")
+        sociavault_domain = next(domain for domain in catalog["domains"] if domain["id"] == "sociavault")
+        catalog_tools = [
+            tool
+            for category in sociavault_domain["categories"]
+            for tool in category["tools"]
+            if not tool.get("disabled")
+        ]
+        assert catalog["selectionEnabled"] is False
+        assert len(catalog_tools) == 107
+    finally:
+        web_app.list_mcp_bridge_tools = original
+
+
+def test_social_platform_routes_use_sociavault_without_rest_fallback() -> None:
+    instagram = web_app.route_chat_intent("分析 instagram.com/creator 的最新帖子", "home")
+    assert instagram["intent"] == "sociavault_social"
+    assert instagram["tool_domain"] == "sociavault"
+    assert instagram["tool_prefixes"] == ("instagram_",)
+
+    tiktok = web_app.route_chat_intent("看看 TikTok 最近的热门趋势", "home")
+    assert tiktok["intent"] == "sociavault_social"
+    assert tiktok["tool_prefixes"] == ("tiktok_",)
+
+    generic = web_app.route_chat_intent("比较几个主流社交媒体平台的热度", "home")
+    assert generic["intent"] == "sociavault_social"
+    assert generic["tool_domain"] == "sociavault"
+    assert "tool_prefixes" not in generic
+
+    handler_source = inspect.getsource(web_app.Handler.do_POST)
+    assert 'enabled_tool_ids = None' in handler_source
+    assert "ignored legacy tool masks" in handler_source
+    assert "decode_tool_masks(enabled_masks)" not in handler_source
 
 
 def test_fastmoss_deep_dive_ids_must_come_from_current_task() -> None:
@@ -4401,7 +4476,9 @@ if __name__ == "__main__":
     test_dynamic_provider_planner_does_not_cap_repeated_calls()
     test_llm_orchestration_exposes_full_provider_tools_and_keeps_hard_guards()
     test_region_default_only_applies_when_schema_supports_it()
-    test_official_skill_chain_disables_frontend_tool_selection()
+    test_all_sites_disable_frontend_tool_selection()
+    test_fixed_full_site_tool_sets_include_all_sociavault_tools()
+    test_social_platform_routes_use_sociavault_without_rest_fallback()
     test_fastmoss_deep_dive_ids_must_come_from_current_task()
     test_tool_call_signature_deduplicates_argument_order()
     test_fastmoss_dual_ranking_plan_uses_three_sorted_category_pages_then_segments()

@@ -4,6 +4,7 @@ const path = require("node:path");
 const os = require("node:os");
 const { createHash, randomUUID } = require("node:crypto");
 const { ToolCacheStore } = require("./tool_cache.js");
+const { StdioMcpClient } = require("./stdio_mcp_client.js");
 
 const PORT = Number(process.env.PORT || 3001);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -19,8 +20,25 @@ const SELLERSPRITE_CACHE_TTL_SECONDS = Number(process.env.SELLERSPRITE_CACHE_TTL
 const FASTMOSS_MCP_API_KEY = process.env.FASTMOSS_MCP_API_KEY || process.env.FASTMOSS_API_KEY || "";
 const FASTMOSS_MCP_URL = process.env.FASTMOSS_MCP_URL || "https://mcp.fastmoss.com/mcp";
 const FASTMOSS_CACHE_TTL_SECONDS = Number(process.env.FASTMOSS_CACHE_TTL_SECONDS || 86400);
-const MCP_REMOTE_URL = process.env.MCP_REMOTE_URL || (MCP_CHAT_TYPE === "fastmoss" ? FASTMOSS_MCP_URL : SELLERSPRITE_MCP_URL);
-const MCP_CACHE_TTL_SECONDS = Number(process.env.MCP_CACHE_TTL_SECONDS || (MCP_CHAT_TYPE === "fastmoss" ? FASTMOSS_CACHE_TTL_SECONDS : SELLERSPRITE_CACHE_TTL_SECONDS));
+const SOCIAVAULT_API_KEY = process.env.SOCIAVAULT_API_KEY || "";
+const SOCIAVAULT_BASE_URL = process.env.SOCIAVAULT_BASE_URL || process.env.SOCIAVAULT_API_BASE || "https://api.sociavault.com";
+const SOCIAVAULT_MCP_COMMAND = process.env.SOCIAVAULT_MCP_COMMAND || "sociavault-mcp";
+const SOCIAVAULT_MCP_ARGS = safeJsonParse(process.env.SOCIAVAULT_MCP_ARGS_JSON || "[]", []);
+const SOCIAVAULT_MCP_CACHE_TTL_SECONDS = Number(process.env.SOCIAVAULT_MCP_CACHE_TTL_SECONDS || process.env.API_CACHE_TTL_SECONDS || 604800);
+const MCP_REMOTE_URL = process.env.MCP_REMOTE_URL || (
+  MCP_CHAT_TYPE === "sociavault"
+    ? SOCIAVAULT_BASE_URL
+    : MCP_CHAT_TYPE === "fastmoss"
+      ? FASTMOSS_MCP_URL
+      : SELLERSPRITE_MCP_URL
+);
+const MCP_CACHE_TTL_SECONDS = Number(process.env.MCP_CACHE_TTL_SECONDS || (
+  MCP_CHAT_TYPE === "sociavault"
+    ? SOCIAVAULT_MCP_CACHE_TTL_SECONDS
+    : MCP_CHAT_TYPE === "fastmoss"
+      ? FASTMOSS_CACHE_TTL_SECONDS
+      : SELLERSPRITE_CACHE_TTL_SECONDS
+));
 const PUBLIC_DIR = path.join(__dirname, "public");
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const SESSIONS_FILE = path.join(DATA_DIR, "sessions.json");
@@ -39,11 +57,18 @@ const MIME_TYPES = {
 };
 
 function providerCacheKey() {
+  if (MCP_CHAT_TYPE === "sociavault") return "sociavault_mcp";
   return MCP_CHAT_TYPE === "fastmoss" ? "fastmoss_mcp" : "sellersprite_mcp";
 }
 
 function providerCacheScope() {
-  const credential = MCP_CHAT_TYPE === "fastmoss" ? FASTMOSS_MCP_API_KEY : SELLERSPRITE_SECRET_KEY;
+  const credential = (
+    MCP_CHAT_TYPE === "sociavault"
+      ? SOCIAVAULT_API_KEY
+      : MCP_CHAT_TYPE === "fastmoss"
+        ? FASTMOSS_MCP_API_KEY
+        : SELLERSPRITE_SECRET_KEY
+  );
   return createHash("sha256")
     .update(JSON.stringify({ provider: providerCacheKey(), remote: MCP_REMOTE_URL, credential }))
     .digest("hex");
@@ -74,6 +99,7 @@ function mcpRequestHeaders(sessionId = null) {
 }
 
 function ensureMcpConfigured() {
+  if (MCP_CHAT_TYPE === "sociavault" && !SOCIAVAULT_API_KEY) throw new Error("请先设置环境变量 SOCIAVAULT_API_KEY。");
   if (MCP_CHAT_TYPE === "sellersprite" && !SELLERSPRITE_SECRET_KEY) throw new Error("请先设置环境变量 SELLERSPRITE_SECRET_KEY。");
   if (MCP_CHAT_TYPE === "fastmoss" && !FASTMOSS_MCP_API_KEY && !/[?&]api_key=/.test(MCP_REMOTE_URL)) {
     throw new Error("请先设置环境变量 FASTMOSS_MCP_API_KEY，或在 FASTMOSS_MCP_URL 中包含 api_key。");
@@ -200,7 +226,26 @@ class RemoteMcpClient {
   }
 }
 
-const mcpClient = new RemoteMcpClient();
+class ConfiguredStdioMcpClient extends StdioMcpClient {
+  async request(method, params = {}) {
+    ensureMcpConfigured();
+    return super.request(method, params);
+  }
+}
+
+const mcpClient = MCP_CHAT_TYPE === "sociavault"
+  ? new ConfiguredStdioMcpClient({
+      command: SOCIAVAULT_MCP_COMMAND,
+      args: Array.isArray(SOCIAVAULT_MCP_ARGS) ? SOCIAVAULT_MCP_ARGS : [],
+      env: {
+        ...process.env,
+        SOCIAVAULT_API_KEY,
+        SOCIAVAULT_BASE_URL,
+      },
+      requestTimeoutMs: Number(process.env.SOCIAVAULT_MCP_TIMEOUT_MS || 180000),
+      clientName: "sociavault-chat-bridge",
+    })
+  : new RemoteMcpClient();
 
 function parseMcpResponse(text) {
   const trimmed = text.trim();
@@ -302,6 +347,7 @@ function installShutdownSave() {
     try {
       clearTimeout(saveTimer);
       await saveSessionsToDisk();
+      if (typeof mcpClient.close === "function") await mcpClient.close();
     } catch (error) {
       console.warn(`Could not save sessions before shutdown: ${error.message}`);
     } finally {
@@ -351,7 +397,14 @@ function getToolCacheStore() {
   return toolCacheStore;
 }
 
-async function callSellerSpriteToolCached(name, args) {
+function shouldBypassToolCache(chatType, name) {
+  return chatType === "sociavault" && name === "check_credits";
+}
+
+async function callMcpToolCached(name, args) {
+  if (shouldBypassToolCache(MCP_CHAT_TYPE, name)) {
+    return mcpClient.callTool(name, args);
+  }
   const cached = await getToolCacheStore().getOrCall(
     name,
     args,
@@ -844,7 +897,7 @@ async function answerWithDeepSeek(session, userText, onProgress = null) {
       const toolResultEntry = { toolCall, args, result: null };
       toolResults.push(toolResultEntry);
       emitProgress();
-      const result = await callSellerSpriteToolCached(name, args);
+      const result = await callMcpToolCached(name, args);
       const toolError = getSellerSpriteToolError(result);
       const wrapped = {
         ok: !toolError,
@@ -970,7 +1023,7 @@ async function handleMcp(req, res) {
     return;
   }
   if (payload.method === "tools/call") {
-    const result = await callSellerSpriteToolCached(payload.params?.name, payload.params?.arguments || {});
+    const result = await callMcpToolCached(payload.params?.name, payload.params?.arguments || {});
     sendJson(res, 200, { jsonrpc: "2.0", id: payload.id ?? null, result });
     return;
   }
@@ -1056,4 +1109,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { mcpToolResponseIsError };
+module.exports = { mcpToolResponseIsError, shouldBypassToolCache };

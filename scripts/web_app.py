@@ -68,10 +68,12 @@ SELLERSPRITE_CHAT_DATA_DIR = DATA_DIR / "sellersprite_mcp"
 SELLERSPRITE_CHAT_PROCESS: subprocess.Popen | None = None
 SELLERSPRITE_CHAT_LOCK = threading.Lock()
 FASTMOSS_CHAT_DATA_DIR = DATA_DIR / "fastmoss_mcp"
+SOCIAVAULT_CHAT_DATA_DIR = DATA_DIR / "sociavault_mcp"
 MCP_CHAT_PROCESSES: dict[str, subprocess.Popen] = {}
 MCP_CHAT_LOCKS = {
     "sellersprite": SELLERSPRITE_CHAT_LOCK,
     "fastmoss": threading.Lock(),
+    "sociavault": threading.Lock(),
 }
 MCP_CHAT_CONFIGS = {
     "sellersprite": {
@@ -95,6 +97,17 @@ MCP_CHAT_CONFIGS = {
         "mcp_url_env": "FASTMOSS_MCP_URL",
         "default_mcp_url": "https://mcp.fastmoss.com/mcp",
         "cache_ttl_env": "FASTMOSS_CACHE_TTL_SECONDS",
+    },
+    "sociavault": {
+        "type": "sociavault",
+        "label": "SociaVault",
+        "base_path": "/sociavault",
+        "port_env": "SOCIAVAULT_MCP_PORT",
+        "default_port": 4103,
+        "data_dir": SOCIAVAULT_CHAT_DATA_DIR,
+        "mcp_url_env": "SOCIAVAULT_API_BASE",
+        "default_mcp_url": "https://api.sociavault.com",
+        "cache_ttl_env": "SOCIAVAULT_MCP_CACHE_TTL_SECONDS",
     },
 }
 
@@ -391,7 +404,7 @@ chat_provider_stores = {
     "fastmoss": ChatStore(FASTMOSS_CHAT_DATA_DIR / "chat_sessions.json"),
 }
 CHAT_PROVIDERS = {"home", "amazon", "fastmoss"}
-CHAT_TOOL_DOMAINS = ("system", "function", "sellersprite", "fastmoss")
+CHAT_TOOL_DOMAINS = ("system", "function", "sociavault", "sellersprite", "fastmoss")
 CHAT_PROVIDER_LABELS = {"home": "\u9996\u9875", "amazon": "\u5356\u5bb6\u7cbe\u7075", "fastmoss": "FastMoss"}
 CHAT_PROVIDER_UI = {
     "home": {
@@ -458,7 +471,7 @@ CHAT_PROVIDER_ICONS = {
     ),
 }
 CHAT_PROVIDER_DEFAULT_DOMAINS = {
-    "home": {"system", "function"},
+    "home": {"system", "function", "sociavault"},
     "amazon": {"system", "sellersprite"},
     "fastmoss": {"system", "fastmoss"},
 }
@@ -789,11 +802,6 @@ def serve_chat_template(handler: BaseHTTPRequestHandler, provider: str, path: st
         '<div class="chat-breadcrumb">'
         f'<span>{html_escape(provider_ui["crumb"])}</span><i>/</i>'
         '<strong id="currentSessionTitle">\u65b0\u5efa\u5bf9\u8bdd</strong></div>'
-        '<div class="chat-header-actions">'
-        '<button class="chat-header-more" id="headerToolBtn" type="button" '
-        'aria-label="选择工具" title="选择工具">'
-        '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.4"/>'
-        '<circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/></svg></button></div>'
     )
     if "<!-- UI_CHAT_HEADER -->" not in chat_html:
         raise RuntimeError("Chat header placeholder missing")
@@ -4253,11 +4261,16 @@ def is_media_availability_query(text: str) -> bool:
     return has_media and asks_exists
 
 
-MUSIC_QUERY_TOOLS = {"tiktok_search_music", "tiktok_music_info", "tiktok_music_videos", "tiktok_music_popular"}
+MUSIC_QUERY_TOOLS = {"tiktok_search_music", "tiktok_music_details", "tiktok_music_videos", "tiktok_music_popular"}
 WEB_SEARCH_TOOLS = {"web_search"}
 
 AMAZON_TOOLS = {"amazon_scrape_url", "amazon_scrape_asin", "amazon_search_keyword"}
-TIKTOK_SHOP_TOOLS = {"tiktok_shop_product", "tiktok_shop_details", "tiktok_shop_reviews", "tiktok_shop_search"}
+TIKTOK_SHOP_TOOLS = {
+    "tiktok_shop_products",
+    "tiktok_shop_product_details",
+    "tiktok_shop_product_reviews",
+    "tiktok_shop_search",
+}
 TIKTOK_USER_TOOLS = {
     "tiktok_profile",
     "tiktok_videos",
@@ -4284,6 +4297,39 @@ PRODUCT_RESEARCH_TOOLS = (
     | TIKTOK_SHOP_TOOLS
     | {"tiktok_search_keyword", "tiktok_search_top", "tiktok_trending", "tiktok_hashtags_popular"}
 )
+SOCIAVAULT_TIKTOK_TOOLS = (
+    TIKTOK_SHOP_TOOLS
+    | TIKTOK_USER_TOOLS
+    | TIKTOK_VIDEO_TOOLS
+    | TIKTOK_CONTENT_TOOLS
+    | MUSIC_QUERY_TOOLS
+)
+SOCIAVAULT_PLATFORM_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("tiktok_", ("tiktok", "tiktok.com", "tik tok", "抖音")),
+    ("instagram_", ("instagram", "instagram.com", "ig ", "ins ", "照片墙")),
+    ("youtube_", ("youtube", "youtube.com", "youtu.be", "油管")),
+    ("twitter_", ("twitter", "twitter.com", "x.com", "推特")),
+    ("linkedin_", ("linkedin", "linkedin.com", "领英")),
+    ("facebook_", ("facebook", "facebook.com", "fb ", "脸书")),
+    ("reddit_", ("reddit", "reddit.com")),
+    ("threads_", ("threads", "threads.net")),
+    ("pinterest_", ("pinterest", "pinterest.com")),
+    ("twitch_", ("twitch", "twitch.tv")),
+    ("google_", ("google", "谷歌")),
+)
+SOCIAVAULT_GENERIC_ALIASES = (
+    "social media", "social-media", "社交媒体", "社媒", "sociavault",
+)
+
+
+def sociavault_platform_prefixes(text: str) -> tuple[str, ...]:
+    lowered = str(text or "").lower()
+    prefixes = [
+        prefix
+        for prefix, aliases in SOCIAVAULT_PLATFORM_ALIASES
+        if any(alias in lowered for alias in aliases)
+    ]
+    return tuple(prefixes)
 
 
 def _contains_any(text: str, words: tuple[str, ...]) -> bool:
@@ -4529,6 +4575,12 @@ def attach_research_task(
 
 def route_chat_intent(text: str, provider: str | None = None) -> dict[str, Any]:
     lowered = (text or "").lower()
+    normalized_provider = normalize_chat_provider(provider)
+    social_prefixes = sociavault_platform_prefixes(lowered) if normalized_provider == "home" else ()
+    has_generic_social = normalized_provider == "home" and _contains_any(lowered, SOCIAVAULT_GENERIC_ALIASES)
+    asks_sociavault_credits = normalized_provider == "home" and "sociavault" in lowered and _contains_any(
+        lowered, ("credit", "credits", "balance", "余额", "积分"),
+    )
     web_lookup_words = (
         "\u77e5\u9053", "\u4e86\u89e3", "\u662f\u4ec0\u4e48", "\u662f\u4ec0\u9ebc",
         "\u662f\u8c01", "\u662f\u8ab0", "\u6709\u6ca1\u6709", "\u6709\u6c92\u6709",
@@ -4551,7 +4603,7 @@ def route_chat_intent(text: str, provider: str | None = None) -> dict[str, Any]:
 
     if has_mcp_interface:
         return {"intent": "mcp_interface", "tools": None, "max_rounds": 5}
-    if normalize_chat_provider(provider) == "fastmoss":
+    if normalized_provider == "fastmoss":
         playbook_id = fastmoss_playbook_intent(text)
         if playbook_id:
             playbook = FASTMOSS_PLAYBOOKS[playbook_id]
@@ -4563,6 +4615,27 @@ def route_chat_intent(text: str, provider: str | None = None) -> dict[str, Any]:
             }
     if is_chat_help_query(text):
         return {"intent": "help", "task_depth": "direct", "tools": None, "max_rounds": 1}
+    if asks_sociavault_credits:
+        return {
+            "intent": "sociavault_social",
+            "tools": {"sociavault__check_credits"},
+            "max_rounds": 2,
+        }
+    if social_prefixes:
+        return {
+            "intent": "sociavault_social",
+            "tools": None,
+            "tool_domain": "sociavault",
+            "tool_prefixes": social_prefixes,
+            "max_rounds": 5,
+        }
+    if has_generic_social:
+        return {
+            "intent": "sociavault_social",
+            "tools": None,
+            "tool_domain": "sociavault",
+            "max_rounds": 6,
+        }
     if is_music_link_query(text):
         return {"intent": "music_link", "tools": MUSIC_QUERY_TOOLS, "max_rounds": 2}
     if is_media_availability_query(text):
@@ -4663,7 +4736,7 @@ def chat_intent_router_should_call(text: str, fallback_route: dict[str, Any]) ->
     intent = str(fallback_route.get("intent") or "general")
     if intent in {
         "mcp_interface", "music_link", "media_availability", "video_analysis", "tiktok_video",
-        "product_availability", "help",
+        "product_availability", "sociavault_social", "help",
     }:
         return False
     lowered = str(text or "").lower()
@@ -6007,7 +6080,24 @@ def list_mcp_bridge_tools(chat_type: str) -> list[dict[str, Any]]:
     return tools
 
 
+MCP_CHAT_TOOL_PROVIDERS = (
+    ("sociavault", "sociavault"),
+    ("sellersprite", "sellersprite"),
+    ("fastmoss", "fastmoss"),
+)
+
+
+def chat_local_tools() -> list[dict[str, Any]]:
+    return [
+        tool
+        for tool in TOOLS
+        if not str(tool.get("name") or "").startswith("tiktok_")
+    ]
+
+
 def local_tool_domain(name: str) -> str:
+    if name in SOCIAVAULT_TIKTOK_TOOLS:
+        return "sociavault"
     return "system" if name in LOCAL_SYSTEM_TOOLS else "function"
 
 
@@ -6042,6 +6132,34 @@ def mcp_tool_category(name: str) -> str:
     if "product" in lowered or "asin" in lowered:
         return "\u5546\u54c1\u7814\u7a76"
     return "\u901a\u7528\u5de5\u5177"
+
+
+def sociavault_tool_category(name: str) -> str:
+    prefixes = (
+        ("tiktok_ad_library_", "TikTok 广告库"),
+        ("tiktok_shop_", "TikTok Shop"),
+        ("tiktok_", "TikTok"),
+        ("instagram_", "Instagram"),
+        ("youtube_", "YouTube"),
+        ("twitter_", "Twitter / X"),
+        ("linkedin_ad_library_", "LinkedIn 广告库"),
+        ("linkedin_", "LinkedIn"),
+        ("facebook_ad_library_", "Facebook 广告库"),
+        ("facebook_marketplace_", "Facebook Marketplace"),
+        ("facebook_", "Facebook"),
+        ("google_ad_library_", "Google 广告库"),
+        ("google_", "Google"),
+        ("reddit_", "Reddit"),
+        ("threads_", "Threads"),
+        ("pinterest_", "Pinterest"),
+        ("twitch_", "Twitch"),
+    )
+    if name == "check_credits":
+        return "账户"
+    for prefix, label in prefixes:
+        if name.startswith(prefix):
+            return label
+    return "其他"
 
 
 MCP_TOOL_WORD_LABELS = {
@@ -6100,12 +6218,12 @@ def provider_default_enabled_tool_ids(provider: str) -> set[str]:
     provider = normalize_chat_provider(provider)
     default_domains = CHAT_PROVIDER_DEFAULT_DOMAINS.get(provider, CHAT_PROVIDER_DEFAULT_DOMAINS["home"])
     selected: set[str] = set()
-    for tool in TOOLS:
+    for tool in chat_local_tools():
         name = str(tool.get("name") or "")
         domain = local_tool_domain(name)
         if domain in default_domains:
             selected.add(prefixed_tool_id(domain, name))
-    for domain, chat_type in (("sellersprite", "sellersprite"), ("fastmoss", "fastmoss")):
+    for domain, chat_type in MCP_CHAT_TOOL_PROVIDERS:
         if domain not in default_domains:
             continue
         try:
@@ -6122,13 +6240,13 @@ def provider_default_enabled_tool_ids(provider: str) -> set[str]:
 
 def registered_chat_tool_ids_by_domain() -> dict[str, list[str]]:
     ids: dict[str, list[str]] = {domain: [] for domain in CHAT_TOOL_DOMAINS}
-    for tool in TOOLS:
+    for tool in chat_local_tools():
         name = str(tool.get("name") or "")
         if not name:
             continue
         domain = local_tool_domain(name)
         ids.setdefault(domain, []).append(prefixed_tool_id(domain, name))
-    for domain, chat_type in (("sellersprite", "sellersprite"), ("fastmoss", "fastmoss")):
+    for domain, chat_type in MCP_CHAT_TOOL_PROVIDERS:
         try:
             tools = list_mcp_bridge_tools(chat_type)
         except Exception as exc:
@@ -6171,14 +6289,19 @@ def decode_tool_masks(masks: Any) -> set[str] | None:
 def build_prefixed_model_tools(enabled_tool_ids: set[str] | None) -> list[dict[str, Any]]:
     selected = enabled_tool_ids
     model_tools: list[dict[str, Any]] = []
-    for tool in TOOLS:
+    for tool in chat_local_tools():
         name = str(tool.get("name") or "")
         domain = local_tool_domain(name)
         tool_id = prefixed_tool_id(domain, name)
         if selected is not None and tool_id not in selected:
             continue
         model_tools.append(to_model_tool(tool, tool_id))
-    for domain, chat_type in (("sellersprite", "sellersprite"), ("fastmoss", "fastmoss")):
+    for domain, chat_type in MCP_CHAT_TOOL_PROVIDERS:
+        if selected is not None and not any(
+            split_prefixed_tool_id(tool_id)[0] == domain
+            for tool_id in selected
+        ):
+            continue
         try:
             tools = list_mcp_bridge_tools(chat_type)
         except Exception as exc:
@@ -6215,8 +6338,8 @@ def official_skill_market_default_instruction(provider: str) -> str:
 
 
 def chat_tool_selection_enabled(provider: str) -> bool:
-    """Official Skills require their complete provider tool catalog."""
-    return not official_skill_chain_enabled_for_provider(provider)
+    """Every chat provider always exposes its full site-owned tool catalog."""
+    return False
 
 
 def build_tool_catalog(provider: str) -> dict[str, Any]:
@@ -6225,6 +6348,7 @@ def build_tool_catalog(provider: str) -> dict[str, Any]:
     domains = [
         {"id": "system", "label": "\u7cfb\u7edf", "categories": [], "defaultSelected": True, "hidden": True},
         {"id": "function", "label": "\u529f\u80fd", "categories": [], "defaultSelected": "function" in default_domains},
+        {"id": "sociavault", "label": "SociaVault", "categories": [], "defaultSelected": "sociavault" in default_domains},
         {"id": "sellersprite", "label": "\u5356\u5bb6\u7cbe\u7075", "categories": [], "defaultSelected": "sellersprite" in default_domains},
         {"id": "fastmoss", "label": "FastMoss", "categories": [], "defaultSelected": "fastmoss" in default_domains},
     ]
@@ -6243,7 +6367,7 @@ def build_tool_catalog(provider: str) -> dict[str, Any]:
             by_domain[domain]["categories"].append(cats[category_id])
         cats[category_id]["tools"].append(tool)
 
-    for tool in TOOLS:
+    for tool in chat_local_tools():
         name = str(tool.get("name") or "")
         domain = local_tool_domain(name)
         cat_id = local_tool_category(name)
@@ -6254,7 +6378,7 @@ def build_tool_catalog(provider: str) -> dict[str, Any]:
             "description": tool.get("description") or "",
             "defaultSelected": domain in default_domains,
         })
-    for domain, chat_type in (("sellersprite", "sellersprite"), ("fastmoss", "fastmoss")):
+    for domain, chat_type in MCP_CHAT_TOOL_PROVIDERS:
         try:
             tools = list_mcp_bridge_tools(chat_type)
         except Exception as exc:
@@ -6271,7 +6395,7 @@ def build_tool_catalog(provider: str) -> dict[str, Any]:
             name = str(tool.get("name") or "")
             if not name:
                 continue
-            cat = mcp_tool_category(name)
+            cat = sociavault_tool_category(name) if domain == "sociavault" else mcp_tool_category(name)
             add_tool(domain, cat, cat, {
                 "id": prefixed_tool_id(domain, name),
                 "name": name,
@@ -6396,8 +6520,8 @@ def execute_prefixed_tool(tool_id: str, args: dict[str, Any], region: str | None
     try:
         if domain in {"system", "function"}:
             return execute_tool(name, args)
-        if domain in {"sellersprite", "fastmoss"}:
-            chat_type = "sellersprite" if domain == "sellersprite" else "fastmoss"
+        if domain in {"sociavault", "sellersprite", "fastmoss"}:
+            chat_type = domain
             normalized_args = apply_mcp_region_default(chat_type, name, args or {}, region)
             normalized_args, runtime_normalization = normalize_mcp_tool_arguments(chat_type, name, normalized_args)
             if runtime_normalization:
@@ -6577,7 +6701,7 @@ def normalize_prefixed_tool_result(tool_id: str, result: dict[str, Any]) -> dict
     if isinstance(normalized, dict):
         normalized.setdefault("tool_domain", domain)
         normalized.setdefault("tool_name", name)
-        if domain in {"sellersprite", "fastmoss"}:
+        if domain in {"sociavault", "sellersprite", "fastmoss"}:
             if normalized.get("ok") is not True:
                 normalized.update({
                     "data_state": "error",
@@ -6587,7 +6711,7 @@ def normalize_prefixed_tool_result(tool_id: str, result: dict[str, Any]) -> dict
                 return normalized
             text = mcp_text_content(result)
             parsed = parse_mcp_text_content(text)
-            content_error = fastmoss_mcp_content_error(result, text, parsed) if domain == "fastmoss" else ""
+            content_error = fastmoss_mcp_content_error(result, text, parsed) if domain in {"sociavault", "fastmoss"} else ""
             if content_error:
                 normalized.update({
                     "ok": False,
@@ -12585,12 +12709,44 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             for tool_id in route_tools
         }
         selected_tool_ids = route_tool_ids if effective_enabled_tool_ids is None else route_tool_ids & set(effective_enabled_tool_ids)
+    elif needs_tools and route.get("tool_domain") and not force_mcp_tools:
+        route_domain = str(route.get("tool_domain") or "")
+        prefixes = tuple(str(prefix) for prefix in (route.get("tool_prefixes") or ()))
+        selected_tool_ids = {
+            tool_id
+            for tool_id in set(effective_enabled_tool_ids or set())
+            if split_prefixed_tool_id(tool_id)[0] == route_domain
+            and (
+                not prefixes
+                or any(split_prefixed_tool_id(tool_id)[1].startswith(prefix) for prefix in prefixes)
+            )
+        }
     if provider == "fastmoss" and route_intent == "product_availability":
         selected_tool_ids = {"fastmoss__product_search"} & set(effective_enabled_tool_ids or set())
     elif needs_tools and not official_skill_chain:
         selected_tool_ids = provider_profile_tool_ids(provider, route, routing_text, selected_tool_ids, assistant_msg)
     tools = build_prefixed_model_tools(selected_tool_ids) if needs_tools else []
     max_tool_rounds = chat_max_tool_rounds(provider, route, len(tools))
+    sociavault_required = provider == "home" and route_intent in {
+        "sociavault_social",
+        "music_link",
+        "media_availability",
+        "tiktok_video",
+        "tiktok_shop",
+        "tiktok_user",
+        "tiktok_content",
+    }
+    if sociavault_required and not any(
+        str(tool.get("function", {}).get("name") or "").startswith("sociavault__")
+        for tool in tools
+    ):
+        fallback = (
+            "SociaVault MCP 当前不可用，因此本次无法取得真实社交媒体数据。"
+            "系统不会回退到旧 REST 接口，也不会用通用知识补造查询结果；请检查 MCP 服务和密钥后重试。"
+        )
+        store.update_message(session, assistant_msg, fallback, status="done")
+        store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": fallback})
+        return
     if force_mcp_tools and not forced_provider_domain_tool_available(provider, tools):
         label = "FastMoss" if provider == "fastmoss" else "SellerSprite"
         fallback = f"{label} 数据工具当前不可用，因此本次无法取得真实市场数据。我不会用通用知识或 OCR 内容补造数据；请检查对应 MCP 服务后重试。"
@@ -12647,6 +12803,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 "For market, product, category, competitor, trend, ranking, sales, GMV, keyword, ASIN, or time-sensitive questions, use the exposed tools before answering whenever at least one relevant tool is available. "
                 "For web_search intent, call system__web_search before the final answer and do not answer from memory. For unknown proper nouns, brand/person/product names, or broad public-knowledge questions, call system__web_search before answering whenever it is exposed. Do not use web_search for MCP/API/tool/schema/interface questions; answer from the local tool catalog and project context instead. "
                 "For locked Amazon/FastMoss providers, the selected MCP domain is mandatory: call the relevant sellersprite__ or fastmoss__ tools before the final answer unless the user is only greeting or asking UI/help. "
+                "For live social-platform data on the home provider, call the relevant sociavault__ tools before answering. If SociaVault returns an error or empty data, state that limitation; never fall back to legacy REST tools or invent social data. "
                 "Do not call tools for pure greetings, UI/help questions, or when no exposed tool matches the task. "
                 "For product/category research, use the currently selected domain tools only; do not cross from FastMoss to SellerSprite unless both domains are selected. "
                 "For ambiguous product phrases, do not collapse to one niche just because a related keyword has data; present competing interpretations and say what extra input would disambiguate. "
@@ -12949,7 +13106,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     continue
                 fn_args = _tool_call_arguments(tool_call)
                 domain, unprefixed_name = split_prefixed_tool_id(fn_name)
-                if domain in {"sellersprite", "fastmoss"}:
+                if domain in {"sociavault", "sellersprite", "fastmoss"}:
                     fn_args = apply_mcp_region_default(domain, unprefixed_name, fn_args, default_region)
                 if domain == "fastmoss" and route.get("playbook"):
                     fn_args = apply_fastmoss_business_defaults(
@@ -13728,6 +13885,7 @@ def ensure_mcp_chat_server(chat_type: str) -> tuple[bool, str]:
         data_dir = Path(config["data_dir"])
         data_dir.mkdir(parents=True, exist_ok=True)
         env = os.environ.copy()
+        cache_ttl_default = os.getenv("API_CACHE_TTL_SECONDS", "604800") if chat_type == "sociavault" else "86400"
         env.update(
             {
                 "HOST": "127.0.0.1",
@@ -13737,11 +13895,16 @@ def ensure_mcp_chat_server(chat_type: str) -> tuple[bool, str]:
                 "MCP_CHAT_LABEL": label,
                 "MCP_CHAT_BASE_PATH": str(config["base_path"]),
                 "MCP_REMOTE_URL": os.getenv(str(config["mcp_url_env"]), str(config["default_mcp_url"])),
-                "MCP_CACHE_TTL_SECONDS": os.getenv(str(config["cache_ttl_env"]), "86400"),
+                "MCP_CACHE_TTL_SECONDS": os.getenv(str(config["cache_ttl_env"]), cache_ttl_default),
                 "SELLERSPRITE_MCP_URL": os.getenv("SELLERSPRITE_MCP_URL", "https://mcp.sellersprite.com/mcp"),
                 "SELLERSPRITE_CACHE_TTL_SECONDS": os.getenv("SELLERSPRITE_CACHE_TTL_SECONDS", "86400"),
                 "FASTMOSS_MCP_URL": os.getenv("FASTMOSS_MCP_URL", "https://mcp.fastmoss.com/mcp"),
                 "FASTMOSS_CACHE_TTL_SECONDS": os.getenv("FASTMOSS_CACHE_TTL_SECONDS", "86400"),
+                "SOCIAVAULT_BASE_URL": os.getenv(
+                    "SOCIAVAULT_BASE_URL",
+                    os.getenv("SOCIAVAULT_API_BASE", "https://api.sociavault.com"),
+                ),
+                "SOCIAVAULT_MCP_COMMAND": os.getenv("SOCIAVAULT_MCP_COMMAND", "sociavault-mcp"),
             }
         )
         process = subprocess.Popen(
@@ -15716,15 +15879,9 @@ class Handler(BaseHTTPRequestHandler):
             session_id = str(payload.get("sessionId", "default")).strip() or "default"
             text = str(payload.get("message", "")).strip()
             raw_attachments = payload.get("attachments", [])
-            enabled_masks = payload.get("enabledToolMasks") if "enabledToolMasks" in payload else {}
-            enabled_tool_ids = decode_tool_masks(enabled_masks) if "enabledToolMasks" in payload else set()
-            enabled_tool_ids.update(system_chat_tool_ids())
-            decoded_domains = sorted({split_prefixed_tool_id(tool_id)[0] for tool_id in enabled_tool_ids})
-            print(
-                f"[CHAT] received tool masks provider={provider} masks={json.dumps(enabled_masks, ensure_ascii=False, sort_keys=True)} "
-                f"decoded_domains={','.join(decoded_domains) or '-'} decoded_count={len(enabled_tool_ids)}",
-                flush=True,
-            )
+            enabled_tool_ids = None
+            if "enabledToolMasks" in payload:
+                print(f"[CHAT] ignored legacy tool masks provider={provider}; full-site tools are enforced", flush=True)
             has_attachments = isinstance(raw_attachments, list) and bool(raw_attachments)
             if not text and not has_attachments:
                 return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "message or image is required"})

@@ -5,7 +5,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
-const { mcpToolResponseIsError } = require("../sellersprite_mcp_chat/server.js");
+const { mcpToolResponseIsError, shouldBypassToolCache } = require("../sellersprite_mcp_chat/server.js");
 const { ToolCacheStore } = require("../sellersprite_mcp_chat/tool_cache.js");
 
 async function main() {
@@ -13,6 +13,9 @@ async function main() {
   assert.equal(mcpToolResponseIsError({ error: { message: "failed" } }), true);
   assert.equal(mcpToolResponseIsError({ isError: false, content: [{ type: "text", text: "ok" }] }), false);
   assert.equal(mcpToolResponseIsError(null), false);
+  assert.equal(shouldBypassToolCache("sociavault", "check_credits"), true);
+  assert.equal(shouldBypassToolCache("sociavault", "tiktok_profile"), false);
+  assert.equal(shouldBypassToolCache("sellersprite", "check_credits"), false);
 
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-shared-cache-test-"));
   try {

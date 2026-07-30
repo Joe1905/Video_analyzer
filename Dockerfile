@@ -8,6 +8,7 @@ ARG ALL_PROXY=
 ARG all_proxy=
 ARG NO_PROXY=
 ARG no_proxy=
+ARG SOCIAVAULT_MCP_VERSION=2.0.0
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -55,7 +56,9 @@ RUN chmod 0711 /root \
 RUN pip install -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn "curl_cffi>=0.15,<0.16"
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends nodejs \
+    && apt-get install -y --no-install-recommends nodejs npm \
+    && npm install --global --omit=dev "sociavault-mcp@${SOCIAVAULT_MCP_VERSION}" \
+    && npm cache clean --force \
     && rm -rf /var/lib/apt/lists/*
 
 COPY scripts/ /workspace/scripts/
