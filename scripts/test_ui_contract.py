@@ -189,7 +189,7 @@ class UIContractTest(unittest.TestCase):
         self.assertIn('fetch("/healthz"', chat)
         self.assertIn("v2.0", chat)
         self.assertIn("ui-chat-close--xs", chat)
-        self.assertIn("ui-chat-close--md", chat)
+        self.assertNotIn("ui-chat-close--md", chat)
         self.assertIn("ui-chat-close--lg", chat)
         self.assertIn('aria-label="移除图片"', chat)
         self.assertIn(".ui-chat-close--xs", css)
