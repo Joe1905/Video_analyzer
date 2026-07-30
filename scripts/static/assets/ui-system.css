@@ -693,6 +693,10 @@
     align-self: center;
   }
 
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .attachment-preview:empty {
+    display: none;
+  }
+
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .input-bar textarea {
     min-height: 44px;
     max-height: 120px;

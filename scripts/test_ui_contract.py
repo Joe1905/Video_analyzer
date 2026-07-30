@@ -181,6 +181,7 @@ class UIContractTest(unittest.TestCase):
         self.assertIn('aria-expanded="false"', chat)
         self.assertIn('$("expandInputBtn").onclick', chat)
         self.assertIn(".composer.expanded textarea", css)
+        self.assertIn(".attachment-preview:empty", css)
         self.assertNotIn('id="toolBtn"', chat)
         self.assertIn('$("headerToolBtn").onclick=openModal', chat)
         self.assertIn('id="headerToolBtn"', app)
