@@ -175,9 +175,12 @@ class UIContractTest(unittest.TestCase):
         self.assertIn("grid-template-columns: 44px minmax(0, 1fr) 44px", css)
         self.assertRegex(
             css,
-            r"\.expand-input-btn\s*\{[^}]*bottom:\s*0;[^}]*border:\s*0;",
+            r"\.input-bar\s*\{[^}]*grid-template-columns:\s*44px minmax\(0, 1fr\) 44px;[^}]*align-items:\s*center;",
         )
-        self.assertIn('aria-label="展开输入框"', chat)
+        self.assertIn('id="expandInputBtn"', chat)
+        self.assertIn('aria-expanded="false"', chat)
+        self.assertIn('$("expandInputBtn").onclick', chat)
+        self.assertIn(".composer.expanded textarea", css)
         self.assertNotIn('id="toolBtn"', chat)
         self.assertIn('$("headerToolBtn").onclick=openModal', chat)
         self.assertIn('id="headerToolBtn"', app)
