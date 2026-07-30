@@ -204,6 +204,8 @@ class UIContractTest(unittest.TestCase):
         self.assertIn("event.target.closest('input,button,a,label')", chat)
         self.assertIn('width: min(780px, calc(100vw - 40px));', css)
         self.assertIn("#toolModal .tree-node.collapsed > .tree-children > .ui-collapse__inner", css)
+        self.assertIn("#toolModal .tree-domain:last-child { margin-bottom: 0; }", css)
+        self.assertIn("padding: 0 0 4px 72px;", css)
         self.assertIn('id="headerToolBtn"', app)
         self.assertNotIn('class="chat-model-status"', app)
         self.assertIn('query.get("query", [""])[0]', app)

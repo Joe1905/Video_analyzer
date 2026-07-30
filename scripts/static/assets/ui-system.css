@@ -2066,16 +2066,16 @@
     max-height: min(720px, calc(100vh - 40px));
   }
 
-  #toolModal .tree-domain { margin: 0; border: 0; border-radius: 0; background: transparent; }
-
-  #toolModal .tree-domain.is-primary {
-    margin-bottom: 14px;
+  #toolModal .tree-domain {
+    margin: 0 0 8px;
     border: 1px solid #e1e4ea;
     border-radius: 12px;
     background: #fbfbfa;
   }
 
-  #toolModal .tree-domain.is-secondary > .tree-row { min-height: 44px; }
+  #toolModal .tree-domain:last-child { margin-bottom: 0; }
+
+  #toolModal .tree-domain.is-secondary > .tree-row { min-height: 52px; }
   #toolModal .tree-domain.is-secondary > .tree-row:hover { background: #f8f8f6; }
 
   #toolModal .tree-row { min-height: 44px; padding: 0 16px; gap: 10px; cursor: pointer; }
@@ -2151,8 +2151,8 @@
   }
 
   #toolModal .tree-node:not(.collapsed) > .tree-row .tree-disclosure { transform: rotate(225deg) translate(-3px, -3px); }
-  #toolModal .tree-domain > .tree-children > .ui-collapse__inner { padding: 4px 16px 12px 44px; }
-  #toolModal .tree-category > .tree-children > .ui-collapse__inner { padding: 0 0 4px 28px; }
+  #toolModal .tree-domain > .tree-children > .ui-collapse__inner { padding: 4px 12px 12px 44px; }
+  #toolModal .tree-category > .tree-children > .ui-collapse__inner { padding: 0 0 4px 72px; }
   #toolModal .tree-children > .ui-collapse__inner { transition: padding-block 180ms var(--ui-ease); }
   #toolModal .tree-node.collapsed > .tree-children > .ui-collapse__inner {
     padding-top: 0;
@@ -2160,16 +2160,14 @@
   }
 
   #toolModal .tree-more > .tree-row {
-    min-height: 36px;
+    min-height: 44px;
     padding: 0 16px 0 18px;
     color: var(--ui-ink-muted);
   }
 
-  #toolModal .tree-more > .tree-row .tree-title { font-size: 12px; font-weight: 620; }
-  #toolModal .tree-more > .tree-children > .ui-collapse__inner { padding: 0 0 6px 18px; }
+  #toolModal .tree-more > .tree-row .tree-title { font-size: 13px; font-weight: 620; }
+  #toolModal .tree-more > .tree-children > .ui-collapse__inner { padding: 0 0 6px 28px; }
 
-  #toolModal .tree-domain.is-secondary > .tree-children > .ui-collapse__inner { padding: 0; }
-  #toolModal .tree-category > .tree-children > .ui-collapse__inner { padding-left: 28px; }
   #toolModal .tool-modal-head .ui-chat-close {
     border: 0;
     background: transparent;
@@ -2204,9 +2202,10 @@
   @media (max-width: 860px) {
     #toolModal .tool-modal-box { width: calc(100vw - 24px); max-height: calc(100dvh - 24px); }
     #toolModal .tree-row { padding: 0 16px; gap: 10px; }
-    #toolModal .tree-category > .tree-row { padding-left: 16px; }
-    #toolModal .tree-domain > .tree-children > .ui-collapse__inner { padding: 4px 14px 16px 42px; }
-    #toolModal .tree-category > .tree-children > .ui-collapse__inner { padding-left: 24px; }
+    #toolModal .tree-category > .tree-row { padding-left: 12px; }
+    #toolModal .tree-domain > .tree-children > .ui-collapse__inner { padding: 4px 10px 12px 36px; }
+    #toolModal .tree-more > .tree-children > .ui-collapse__inner { padding-left: 20px; }
+    #toolModal .tree-category > .tree-children > .ui-collapse__inner { padding-left: 54px; }
     #toolModal .tool-row { min-height: 50px; }
     #toolModal .tool-label { font-size: 13px; }
     #toolModal .tool-id { max-width: 132px; font-size: 10px; }
