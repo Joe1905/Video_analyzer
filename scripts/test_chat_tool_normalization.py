@@ -38,6 +38,7 @@ from sellersprite_evidence_renderer import (  # noqa: E402
     render_sellersprite_current_evidence,
     sellersprite_semantic_registry_diagnostics,
 )
+from social_tool_router import SOCIAVAULT_OFFICIAL_TOOL_NAMES  # noqa: E402
 from web_app import build_chat_history_context, build_deepseek_tool_assistant_message, build_prefixed_model_tools, build_tool_limit_final_context, chat_markdown_to_html, chat_request_needs_tools, chat_routing_text, compact_chat_tool_evidence, deepseek_tool_protocol_present, estimate_chat_context_tokens, fastmoss_analysis_evidence_gaps, fastmoss_availability_search_arguments, fastmoss_defaults_to_us, fastmoss_empty_availability_answer, fastmoss_playbook_instruction, fastmoss_playbook_intent, fastmoss_product_evidence_required, fastmoss_required_capability_gaps, filter_locked_provider_tool_ids, forced_provider_domain_tool_available, is_chat_retry_request, manage_chat_context, normalize_mcp_tool_arguments, normalize_prefixed_tool_result, normalize_tool_result, parse_chat_intent_decision, provider_default_enabled_tool_ids, provider_forces_mcp_tools, resolve_chat_intent, route_chat_intent  # noqa: E402
 from tools import _filter_relevant_search_results, execute_tool, get_tools_for_model, list_tools, parse_bing_html, parse_duckduckgo_html  # noqa: E402
 
@@ -2595,6 +2596,110 @@ def test_social_platform_routes_use_sociavault_without_rest_fallback() -> None:
     assert "decode_tool_masks(enabled_masks)" not in handler_source
 
 
+def test_social_router_inherits_platform_before_legacy_intent_model() -> None:
+    messages = [
+        SimpleNamespace(id="u1", role="user", content="看看 YouTube 频道", tool_calls=[]),
+        SimpleNamespace(
+            id="a1",
+            role="assistant",
+            content="",
+            tool_calls=[{"function": {"name": "sociavault__youtube_channel"}}],
+        ),
+        SimpleNamespace(id="u2", role="user", content="再看看评论", tool_calls=[]),
+    ]
+
+    class Requests:
+        def post(self, *_args, **_kwargs):
+            raise AssertionError("confirmed follow-up must not call an intent model")
+
+    intent = web_app.resolve_chat_intent(
+        messages,
+        "再看看评论",
+        "home",
+        "key",
+        "https://example.test/v1",
+        "model",
+        Requests(),
+    )
+    assert intent["intent"] == "sociavault_social"
+
+    route = web_app.resolve_sociavault_tool_route(
+        messages,
+        "",
+        "再看看评论",
+        list(SOCIAVAULT_OFFICIAL_TOOL_NAMES),
+        "key",
+        "https://example.test/v1",
+        "model",
+        Requests(),
+    )
+    assert route.source == "rules"
+    assert route.platforms == ("youtube",)
+    assert "youtube_video_comments" in route.candidate_tools
+    assert not any(name.startswith("tiktok_") for name in route.candidate_tools)
+
+
+def test_social_router_model_failures_fall_back_to_full_catalog() -> None:
+    class TimeoutRequests:
+        def post(self, *_args, **kwargs):
+            assert kwargs["timeout"] == 3
+            raise TimeoutError("controlled timeout")
+
+    timeout_route = web_app.resolve_sociavault_tool_route(
+        [],
+        "",
+        "比较几个主流社交媒体平台的热度",
+        list(SOCIAVAULT_OFFICIAL_TOOL_NAMES),
+        "key",
+        "https://example.test/v1",
+        "model",
+        TimeoutRequests(),
+    )
+    assert timeout_route.source == "fallback_all"
+    assert timeout_route.fallback_reason == "model_TimeoutError"
+    assert len(timeout_route.candidate_tools) == 107
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": [{"message": {"content": "not-json"}}]}
+
+    class InvalidRequests:
+        def post(self, *_args, **kwargs):
+            assert kwargs["timeout"] == 3
+            return Response()
+
+    original_record = web_app.record_api_call
+    web_app.record_api_call = lambda *_args, **_kwargs: None
+    try:
+        invalid_route = web_app.resolve_sociavault_tool_route(
+            [],
+            "",
+            "比较几个主流社交媒体平台的热度",
+            list(SOCIAVAULT_OFFICIAL_TOOL_NAMES),
+            "key",
+            "https://example.test/v1",
+            "model",
+            InvalidRequests(),
+        )
+    finally:
+        web_app.record_api_call = original_record
+    assert invalid_route.source == "fallback_all"
+    assert invalid_route.fallback_reason == "invalid_model_output"
+    assert len(invalid_route.candidate_tools) == 107
+
+
+def test_social_router_does_not_hijack_commerce_intents() -> None:
+    for text in (
+        "ASIN B0ABCDEF12 的关键词排名",
+        "这个商品和竞品相比怎么样",
+        "分析商品趋势和评论",
+    ):
+        assert web_app.route_chat_intent(text, "home")["intent"] != "sociavault_social"
+
+
 def test_fastmoss_deep_dive_ids_must_come_from_current_task() -> None:
     message = SimpleNamespace(
         tool_calls=[],
@@ -4479,6 +4584,9 @@ if __name__ == "__main__":
     test_all_sites_disable_frontend_tool_selection()
     test_fixed_full_site_tool_sets_include_all_sociavault_tools()
     test_social_platform_routes_use_sociavault_without_rest_fallback()
+    test_social_router_inherits_platform_before_legacy_intent_model()
+    test_social_router_model_failures_fall_back_to_full_catalog()
+    test_social_router_does_not_hijack_commerce_intents()
     test_fastmoss_deep_dive_ids_must_come_from_current_task()
     test_tool_call_signature_deduplicates_argument_order()
     test_fastmoss_dual_ranking_plan_uses_three_sorted_category_pages_then_segments()

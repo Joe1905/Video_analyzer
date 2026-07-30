@@ -155,6 +155,21 @@ from commerce_research_planner import (
     research_task_from,
     validate_research_task_hint,
 )
+from social_tool_router import (
+    SOCIAL_CAPABILITIES,
+    SOCIAL_PLATFORMS,
+    SocialToolRoute,
+    apply_social_route_mode,
+    detect_social_platforms,
+    detect_social_capabilities,
+    fallback_social_tool_route,
+    model_social_tool_route,
+    normalize_router_mode,
+    platforms_from_tool_names,
+    rule_social_tool_route,
+    sociavault_catalog_issues,
+    sociavault_tool_metadata,
+)
 from json_to_markdown import json_to_markdown
 from hot_video_report import (
     REPORT_COVER_DIR,
@@ -4327,6 +4342,15 @@ SOCIAVAULT_PLATFORM_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
 SOCIAVAULT_GENERIC_ALIASES = (
     "social media", "social-media", "社交媒体", "社媒", "sociavault",
 )
+SOCIAVAULT_ROUTED_INTENTS = frozenset({
+    "sociavault_social",
+    "music_link",
+    "media_availability",
+    "tiktok_video",
+    "tiktok_shop",
+    "tiktok_user",
+    "tiktok_content",
+})
 
 
 def sociavault_platform_prefixes(text: str) -> tuple[str, ...]:
@@ -4584,7 +4608,11 @@ def route_chat_intent(text: str, provider: str | None = None) -> dict[str, Any]:
     lowered = (text or "").lower()
     normalized_provider = normalize_chat_provider(provider)
     social_prefixes = sociavault_platform_prefixes(lowered) if normalized_provider == "home" else ()
-    has_generic_social = normalized_provider == "home" and _contains_any(lowered, SOCIAVAULT_GENERIC_ALIASES)
+    social_rule_platforms = detect_social_platforms(lowered) if normalized_provider == "home" else ()
+    has_generic_social = normalized_provider == "home" and (
+        bool(social_rule_platforms)
+        or _contains_any(lowered, SOCIAVAULT_GENERIC_ALIASES)
+    )
     asks_sociavault_credits = normalized_provider == "home" and "sociavault" in lowered and _contains_any(
         lowered, ("credit", "credits", "balance", "余额", "积分"),
     )
@@ -4839,6 +4867,18 @@ def resolve_chat_intent(
 ) -> dict[str, Any]:
     routing_text = chat_routing_text(user_text)
     fallback = route_chat_intent(routing_text, provider)
+    if (
+        normalize_chat_provider(provider) == "home"
+        and str(fallback.get("intent") or "") not in SOCIAVAULT_ROUTED_INTENTS
+        and detect_social_capabilities(routing_text)
+        and recent_sociavault_platforms(session_messages, routing_text)
+    ):
+        fallback = {
+            "intent": "sociavault_social",
+            "tools": None,
+            "tool_domain": "sociavault",
+            "max_rounds": 5,
+        }
     if not chat_intent_router_should_call(routing_text, fallback):
         return attach_research_task(_route_with_metadata(fallback, "rules"), provider, routing_text)
     recent_user_messages = [str(message.content or "").strip()[:1000] for message in session_messages if message.role == "user" and str(message.content or "").strip()][-3:]
@@ -4921,6 +4961,156 @@ def resolve_chat_intent(
             flush=True,
         )
         return route
+
+
+def sociavault_tool_router_mode() -> str:
+    return normalize_router_mode(os.getenv("SOCIAVAULT_TOOL_ROUTER_MODE", "off"))
+
+
+def sociavault_tool_router_confidence() -> float:
+    try:
+        value = float(os.getenv("SOCIAVAULT_TOOL_ROUTER_CONFIDENCE", "0.80"))
+    except ValueError:
+        value = 0.80
+    return max(0.0, min(value, 1.0))
+
+
+def recent_sociavault_platforms(
+    session_messages: list[Message],
+    current_user_text: str,
+    current_assistant_id: str = "",
+) -> tuple[str, ...]:
+    skipped_current_user = False
+    for message in reversed(session_messages[-10:]):
+        if message.id == current_assistant_id:
+            continue
+        if message.role == "user":
+            content = chat_routing_text(str(message.content or ""))
+            if not skipped_current_user and content == chat_routing_text(current_user_text):
+                skipped_current_user = True
+                continue
+            platforms = detect_social_platforms(content)
+            if platforms:
+                return platforms
+            continue
+        if message.role != "assistant":
+            continue
+        names = [
+            str(call.get("function", {}).get("name") or "")
+            for call in (message.tool_calls or [])
+            if str(call.get("function", {}).get("name") or "").startswith("sociavault__")
+        ]
+        platforms = platforms_from_tool_names(names)
+        if platforms:
+            return platforms
+    return ()
+
+
+def _sociavault_router_json_content(content: Any) -> Any:
+    text = str(content or "").strip()
+    text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*```$", "", text)
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+
+def request_sociavault_model_route(
+    user_text: str,
+    api_key: str,
+    api_url: str,
+    model: str,
+    requests_module: Any,
+) -> Any:
+    if not api_key:
+        raise RuntimeError("missing_deepseek_key")
+    system_prompt = (
+        "Classify one social-media data request. Return one JSON object only with keys "
+        "platforms, capabilities, confidence. platforms must be an array using only: "
+        + ", ".join(sorted(SOCIAL_PLATFORMS - {"account"}))
+        + ". capabilities must be an array using only: "
+        + ", ".join(sorted(SOCIAL_CAPABILITIES - {"account"}))
+        + ". Use multiple labels when the request compares platforms or asks for multiple capabilities. "
+        "Do not extract entities, regions, workflows or tool names. confidence must be a number from 0 to 1."
+    )
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": str(user_text or "")[:2000]},
+        ],
+        "response_format": {"type": "json_object"},
+        "temperature": 0,
+        "max_tokens": 180,
+    }
+    started = time.monotonic()
+    response = requests_module.post(
+        api_url.rstrip("/") + "/chat/completions",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json=payload,
+        timeout=3,
+    )
+    response.raise_for_status()
+    body = response.json()
+    record_api_call(
+        "deepseek",
+        "social_tool_route",
+        {
+            "api_url": api_url.rstrip("/") + "/chat/completions",
+            "model": model,
+            "payload_sha256": __import__("hashlib").sha256(
+                json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            ).hexdigest(),
+        },
+        body,
+        elapsed_ms=int((time.monotonic() - started) * 1000),
+    )
+    return _sociavault_router_json_content(
+        body["choices"][0]["message"].get("content", "")
+    )
+
+
+def resolve_sociavault_tool_route(
+    session_messages: list[Message],
+    current_assistant_id: str,
+    user_text: str,
+    available_tool_names: list[str],
+    api_key: str,
+    api_url: str,
+    model: str,
+    requests_module: Any,
+) -> SocialToolRoute:
+    if not available_tool_names:
+        return fallback_social_tool_route(available_tool_names, "empty_runtime_catalog")
+    inherited = recent_sociavault_platforms(
+        session_messages,
+        user_text,
+        current_assistant_id,
+    )
+    rule_route = rule_social_tool_route(user_text, available_tool_names, inherited)
+    if rule_route is not None:
+        return rule_route
+    try:
+        decision = request_sociavault_model_route(
+            chat_routing_text(user_text),
+            api_key,
+            api_url,
+            model,
+            requests_module,
+        )
+    except Exception as exc:
+        return fallback_social_tool_route(
+            available_tool_names,
+            f"model_{type(exc).__name__}",
+        )
+    return model_social_tool_route(
+        decision,
+        available_tool_names,
+        sociavault_tool_router_confidence(),
+    )
 
 
 LOCAL_SYSTEM_TOOLS = {"current_time", "web_search"}
@@ -6085,6 +6275,39 @@ def list_mcp_bridge_tools(chat_type: str) -> list[dict[str, Any]]:
         tools = []
     MCP_TOOL_CACHE[chat_type] = {"ts": now, "tools": tools}
     return tools
+
+
+def log_sociavault_router_catalog_diagnostics() -> None:
+    if sociavault_tool_router_mode() == "off":
+        return
+    try:
+        names = [
+            str(tool.get("name") or "")
+            for tool in list_mcp_bridge_tools("sociavault")
+            if isinstance(tool, dict) and str(tool.get("name") or "")
+        ]
+        metadata, unclassified = sociavault_tool_metadata(names)
+        catalog_issues = sociavault_catalog_issues(names)
+        assert not unclassified
+        assert not catalog_issues
+        assert len(metadata) == 107
+        payload = {
+            "event": "catalog_validated",
+            "mode": sociavault_tool_router_mode(),
+            "tool_count": len(metadata),
+            "unclassified_count": 0,
+        }
+    except Exception as exc:
+        payload = {
+            "event": "catalog_validation_failed",
+            "mode": sociavault_tool_router_mode(),
+            "error_type": type(exc).__name__,
+        }
+    print(
+        "[SOCIAL TOOL ROUTER] "
+        + json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        flush=True,
+    )
 
 
 MCP_CHAT_TOOL_PROVIDERS = (
@@ -12732,17 +12955,57 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
         selected_tool_ids = {"fastmoss__product_search"} & set(effective_enabled_tool_ids or set())
     elif needs_tools and not official_skill_chain:
         selected_tool_ids = provider_profile_tool_ids(provider, route, routing_text, selected_tool_ids, assistant_msg)
+    social_tool_route: SocialToolRoute | None = None
+    social_router_mode = "off"
+    social_candidate_tool_ids: set[str] = set()
+    if (
+        needs_tools
+        and provider == "home"
+        and route_intent in SOCIAVAULT_ROUTED_INTENTS
+    ):
+        full_enabled_tool_ids = set(effective_enabled_tool_ids or set())
+        available_sociavault_names = sorted(
+            split_prefixed_tool_id(tool_id)[1]
+            for tool_id in full_enabled_tool_ids
+            if split_prefixed_tool_id(tool_id)[0] == "sociavault"
+        )
+        social_router_mode = sociavault_tool_router_mode()
+        if social_router_mode != "off":
+            social_tool_route = resolve_sociavault_tool_route(
+                session.messages,
+                assistant_msg.id,
+                routing_text,
+                available_sociavault_names,
+                api_key,
+                api_url,
+                model,
+                req,
+            )
+            social_candidate_tool_ids = {
+                prefixed_tool_id("sociavault", name)
+                for name in social_tool_route.candidate_tools
+            }
+            selected_tool_ids = apply_social_route_mode(
+                social_router_mode,
+                full_enabled_tool_ids,
+                selected_tool_ids or set(),
+                social_tool_route,
+            )
+            print(
+                "[SOCIAL TOOL ROUTER] "
+                + json.dumps(
+                    social_tool_route.log_payload(
+                        mode=social_router_mode,
+                        full_tool_count=len(available_sociavault_names),
+                    ),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+                flush=True,
+            )
     tools = build_prefixed_model_tools(selected_tool_ids) if needs_tools else []
     max_tool_rounds = chat_max_tool_rounds(provider, route, len(tools))
-    sociavault_required = provider == "home" and route_intent in {
-        "sociavault_social",
-        "music_link",
-        "media_availability",
-        "tiktok_video",
-        "tiktok_shop",
-        "tiktok_user",
-        "tiktok_content",
-    }
+    sociavault_required = provider == "home" and route_intent in SOCIAVAULT_ROUTED_INTENTS
     if sociavault_required and not any(
         str(tool.get("function", {}).get("name") or "").startswith("sociavault__")
         for tool in tools
@@ -13107,6 +13370,22 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             )
             for tool_call in tool_calls:
                 fn_name = str(tool_call.get("function", {}).get("name") or "")
+                if fn_name.startswith("sociavault__") and social_tool_route is not None:
+                    print(
+                        "[SOCIAL TOOL ROUTER] "
+                        + json.dumps(
+                            {
+                                "event": "tool_selected",
+                                "mode": social_router_mode,
+                                "source": social_tool_route.source,
+                                "tool": fn_name,
+                                "candidate_miss": fn_name not in social_candidate_tool_ids,
+                            },
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        ),
+                        flush=True,
+                    )
                 if fn_name not in allowed_tool_ids:
                     skipped_tool_call_reasons.append("unexposed_tool")
                     print(f"[CHAT] skipped unexposed tool call: {fn_name}", flush=True)
@@ -16289,6 +16568,10 @@ def main() -> int:
     video_queue.start(execute_queue_job)
     report_scheduler_enabled = os.getenv("HOT_VIDEO_REPORT_SCHEDULER_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
     start_report_scheduler(enable_timer=report_scheduler_enabled)
+    threading.Thread(
+        target=log_sociavault_router_catalog_diagnostics,
+        daemon=True,
+    ).start()
     if not report_scheduler_enabled:
         print("Hot report daily scheduler disabled; manual report jobs remain available", flush=True)
     port = int(os.getenv("WEB_PORT", "4000"))
