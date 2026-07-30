@@ -3509,6 +3509,170 @@
     background: #fff;
   }
 
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .tool-log {
+    width: min(100%, 760px);
+    margin: 5px 0 7px;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .tool-log summary {
+    min-height: 28px;
+    margin: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    border-radius: 8px;
+    color: var(--ui-ink-muted);
+    font-size: 12px;
+    font-weight: 650;
+    list-style: none;
+    transition: color var(--ui-fast), background-color var(--ui-fast);
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .tool-log summary::-webkit-details-marker {
+    display: none;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .tool-log summary::before {
+    width: 7px;
+    height: 7px;
+    border-right: 1.5px solid currentColor;
+    border-bottom: 1.5px solid currentColor;
+    content: "";
+    transform: rotate(-45deg);
+    transition: transform 180ms var(--ui-ease);
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .tool-log[open] summary::before {
+    transform: rotate(45deg) translate(-1px, -1px);
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .tool-log summary:hover {
+    color: var(--ui-ink);
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .tool-log-count {
+    min-width: 20px;
+    height: 20px;
+    padding: 0 6px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    background: var(--ui-surface-soft);
+    color: var(--ui-ink-subtle);
+    font-size: 10px;
+    font-weight: 750;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .tool-card-list {
+    display: grid;
+    gap: 6px;
+    margin-top: 5px;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .tool-card {
+    min-width: 0;
+    margin: 0;
+    padding: 9px 11px;
+    border: 1px solid #e3e7ed;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, .76);
+    box-shadow: 0 1px 2px rgba(18, 24, 40, .025);
+    transition: border-color var(--ui-fast), background-color var(--ui-fast), box-shadow var(--ui-fast);
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .tool-card:hover {
+    border-color: #d7dde7;
+    background: #fff;
+    box-shadow: 0 4px 14px rgba(18, 24, 40, .045);
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .tool-card-head {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .tool-card .tool-domain {
+    flex: 0 0 auto;
+    margin: 0;
+    padding: 2px 7px;
+    border-color: #d9e3ff;
+    background: #f2f5ff;
+    color: var(--ui-brand);
+    font-size: 10px;
+    line-height: 1.4;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .tool-card .tool-name {
+    min-width: 0;
+    flex: 1 1 auto;
+    margin: 0;
+    overflow: hidden;
+    color: var(--ui-ink);
+    font-size: 12px;
+    font-weight: 680;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .tool-card .tool-status {
+    flex: 0 0 auto;
+    min-height: 24px;
+    padding: 2px 7px;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    border-radius: 999px;
+    background: var(--ui-surface-soft);
+    color: var(--ui-ink-muted);
+    font-size: 10px;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .tool-card .tool-status > i {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .tool-card .tool-status.ok {
+    background: #edf8f3;
+    color: #18845f;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .tool-card .tool-status.err {
+    background: #fff1f0;
+    color: #c84b43;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .tool-card .tool-status.running {
+    background: var(--ui-brand-soft);
+    color: var(--ui-brand);
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .tool-card .cache-tag {
+    margin-left: 1px;
+    padding: 1px 5px;
+    border: 0;
+    background: rgba(255, 255, 255, .72);
+    color: inherit;
+    font-size: 9px;
+  }
+
+  @media (max-width: 600px) {
+    body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .tool-card-head {
+      flex-wrap: wrap;
+    }
+
+    body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .tool-card .tool-name {
+      flex-basis: calc(100% - 52px);
+    }
+  }
+
   @media (max-width: 860px) {
     .ui-only-desktop {
       display: none;
