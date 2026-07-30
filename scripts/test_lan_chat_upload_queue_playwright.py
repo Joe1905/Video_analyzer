@@ -255,12 +255,18 @@ async def mobile_network_retry_scenario(
         await expect(page.locator("#headerRoomName")).to_be_visible()
         await page.locator("#mobileChannels").click()
         await expect(page.locator("#leftRail")).to_have_class(re.compile("open"))
+        left_rect = await page.locator("#leftRail").bounding_box()
+        assert left_rect is not None
+        assert abs(left_rect["x"]) < 1 and left_rect["width"] >= 320, left_rect
         await page.screenshot(
             path=str(screenshot_dir / "lan-chat-mobile-channels.png")
         )
         await page.locator("#drawerBackdrop").click(position={"x": 380, "y": 100})
         await page.locator("#mobileMembers").click()
         await expect(page.locator("#rightRail")).to_have_class(re.compile("open"))
+        right_rect = await page.locator("#rightRail").bounding_box()
+        assert right_rect is not None
+        assert right_rect["x"] <= 70 and right_rect["width"] >= 320, right_rect
         await page.screenshot(
             path=str(screenshot_dir / "lan-chat-mobile-details.png")
         )
