@@ -92,6 +92,10 @@ body.ui-system .ui-nav__toggle:hover {
 }
 
 @media (max-width: 860px) {
+  body.ui-system .ui-header {
+    padding-left: max(68px, calc(env(safe-area-inset-left) + 58px));
+  }
+
   body.ui-system .ui-nav__toggle {
     display: none;
   }

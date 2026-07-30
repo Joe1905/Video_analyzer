@@ -141,6 +141,7 @@
 
   function bootstrap() {
     syncNavigation();
+    setMobileNavigation(false);
     enhanceToolTree();
     enhanceTables();
     enhanceDialogs();
