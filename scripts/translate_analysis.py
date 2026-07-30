@@ -262,13 +262,6 @@ def set_path(value: Any, path: tuple[Any, ...], text: str) -> None:
 
 
 
-def get_path(value: Any, path: tuple[Any, ...]) -> Any:
-    cursor = value
-    for key in path:
-        cursor = cursor[key]
-    return cursor
-
-
 def looks_truncated_translation(original: str, translated: str) -> bool:
     source = str(original or "").strip()
     text = str(translated or "").strip()
@@ -283,23 +276,6 @@ def looks_truncated_translation(original: str, translated: str) -> bool:
     if len(source) >= 220 and text[-1] not in terminal_chars:
         return text[-1] in dangling_chars or len(text) < int(len(source) * 0.35)
     return False
-
-
-def suspicious_translation_paths(source_payload: Any, translated_payload: Any) -> list[tuple[Any, ...]]:
-    suspicious: list[tuple[Any, ...]] = []
-    for path, original in collect_strings(source_payload):
-        try:
-            translated = get_path(translated_payload, path)
-        except (KeyError, IndexError, TypeError):
-            suspicious.append(path)
-            continue
-        if isinstance(translated, str) and looks_truncated_translation(original, translated):
-            suspicious.append(path)
-    return suspicious
-
-
-def has_suspicious_translation(source_payload: Any, translated_payload: Any) -> bool:
-    return bool(suspicious_translation_paths(source_payload, translated_payload))
 
 
 def batches(rows: list[tuple[tuple[Any, ...], str]], max_chars: int) -> list[list[tuple[tuple[Any, ...], str]]]:

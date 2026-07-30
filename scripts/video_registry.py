@@ -251,11 +251,6 @@ def mark_extracted(filename: str, extraction_dir: str) -> None:
         conn.commit()
 
 
-def is_hidden_from_analyzer(filename: str) -> bool:
-    record = get_video_by_filename(filename)
-    return bool(record and int(record.get("hidden_from_analyzer") or 0))
-
-
 def analyzer_visible_source(filename: str) -> bool:
     record = get_video_by_filename(filename)
     if not record:

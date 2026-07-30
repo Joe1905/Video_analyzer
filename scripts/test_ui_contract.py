@@ -25,7 +25,7 @@ TEMPLATES = (
     STATIC_DIR / "report_player.html",
     STATIC_DIR / "shop.html",
     STATIC_DIR / "tool.html",
-    SCRIPTS_DIR / "web_index.html",
+    STATIC_DIR / "web_index.html",
 )
 
 

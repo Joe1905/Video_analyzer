@@ -62,7 +62,7 @@ DATA_DIR = ROOT / "data"
 VIDEOS_DIR = ROOT / "videos"
 OUTPUT_DIR = ROOT / "output"
 SCRIPTS_DIR = ROOT / "scripts"
-INDEX_HTML_PATH = SCRIPTS_DIR / "web_index.html"
+INDEX_HTML_PATH = SCRIPTS_DIR / "static" / "web_index.html"
 SELLERSPRITE_CHAT_DIR = ROOT / "sellersprite_mcp_chat"
 SELLERSPRITE_CHAT_DATA_DIR = DATA_DIR / "sellersprite_mcp"
 SELLERSPRITE_CHAT_PROCESS: subprocess.Popen | None = None
@@ -125,7 +125,7 @@ from lan_chat import (
 from sociavault_usage import read_sociavault_usage
 from sociavault_tiktok import call_api as call_sociavault_tiktok_api
 import sociavault_tiktok_shop
-from tools import TOOLS, execute_tool, get_tools_for_model, list_tools
+from tools import TOOLS, execute_tool
 from video_queue import video_queue, STATUS_META
 from api_cache import get_cached_or_call, record_api_call
 from api_cache import get_cached, store_response
@@ -315,21 +315,6 @@ def save_feedback_prompt(text: str) -> None:
 
 
 @dataclass
-class Job:
-    id: str
-    filename: str
-    postprocess: bool
-    analysis_mode: str
-    status: str = "queued"
-    created_at: float = field(default_factory=time.time)
-    updated_at: float = field(default_factory=time.time)
-    log: list[str] = field(default_factory=list)
-    output_dir: str | None = None
-    error: str | None = None
-    analysis_prompt: str = ""
-
-
-@dataclass
 class DownloadJob:
     id: str
     url: str
@@ -390,8 +375,6 @@ class AmazonJob:
     error: str | None = None
 
 
-jobs: dict[str, Job] = {}
-jobs_lock = threading.Lock()
 download_jobs: dict[str, DownloadJob] = {}
 download_jobs_lock = threading.Lock()
 shop_jobs: dict[str, ShopJob] = {}
@@ -540,14 +523,6 @@ def normalize_chat_provider(provider: str | None) -> str:
     return value if value in CHAT_PROVIDERS else "home"
 
 
-def chat_provider_from_path(path: str) -> str:
-    if path.startswith("/amazon"):
-        return "amazon"
-    if path.startswith("/fastmoss"):
-        return "fastmoss"
-    return "home"
-
-
 def chat_store_for_provider(provider: str | None) -> ChatStore:
     return chat_provider_stores[normalize_chat_provider(provider)]
 
@@ -676,12 +651,6 @@ def chat_session_key(provider: str, session_id: str) -> str:
     sid = str(session_id or "default").strip() or "default"
     prefix = f"{provider}__"
     return sid if sid.startswith(prefix) else prefix + sid
-
-
-def public_chat_session_id(provider: str, session_id: str) -> str:
-    prefix = f"{normalize_chat_provider(provider)}__"
-    sid = str(session_id or "")
-    return sid.removeprefix(prefix)
 
 
 def nav_active_key(current_path: str) -> str:
@@ -2472,34 +2441,6 @@ def mode_from_analysis(analysis: Any) -> str | None:
     return None
 
 
-def append_log(job: Job, line: str) -> None:
-    with jobs_lock:
-        job.log.append(line.rstrip())
-        job.updated_at = time.time()
-
-
-def run_command(job: Job, command: list[str], env_extra: dict[str, str] | None = None) -> None:
-    append_log(job, f"$ {' '.join(command)}")
-    env = os.environ.copy()
-    if env_extra:
-        env.update(env_extra)
-    process = subprocess.Popen(
-        command,
-        cwd=ROOT,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-    )
-    assert process.stdout is not None
-    for line in process.stdout:
-        append_log(job, line)
-    code = process.wait()
-    if code != 0:
-        raise RuntimeError(f"Command failed with exit code {code}: {' '.join(command)}")
-
-
 def append_download_log(job: DownloadJob, line: str) -> None:
     with download_jobs_lock:
         job.log.append(line.rstrip())
@@ -3411,98 +3352,6 @@ def run_download_job(job_id: str) -> None:
             job.log.append(str(exc))
 
 
-def run_job(job_id: str) -> None:
-    with jobs_lock:
-        job = jobs[job_id]
-        job.status = "running"
-        job.updated_at = time.time()
-
-    try:
-        output_dir = output_dir_for_filename(job.filename)
-        job.output_dir = str(output_dir.relative_to(ROOT))
-        output_dir.mkdir(parents=True, exist_ok=True)
-        prompt = job.analysis_prompt.strip() or DEFAULT_ANALYSIS_PROMPT
-        prompt_file = output_dir / "analysis_prompt.txt"
-        prompt_file.write_text(prompt, encoding="utf-8")
-        if job.analysis_mode == "direct_video":
-            run_command(
-                job,
-                [
-                    "python",
-                    str(SCRIPTS_DIR / "direct_video_analyze.py"),
-                    job.filename,
-                    "--output-dir",
-                    str(output_dir),
-                    "--prompt-file",
-                    str(prompt_file),
-                ],
-            )
-        else:
-            run_command(
-                job,
-                ["bash", str(SCRIPTS_DIR / "analyze_one.sh"), job.filename],
-                env_extra={"ANALYSIS_PROMPT_FILE": str(prompt_file), "ANALYSIS_OUTPUT_DIR": str(output_dir)},
-            )
-        mark_extracted(job.filename, output_dir.name)
-        if job.postprocess:
-            run_command(job, ["python", str(SCRIPTS_DIR / "deepseek_postprocess.py"), str(output_dir)])
-        with jobs_lock:
-            job.status = "complete"
-            job.updated_at = time.time()
-    except Exception as exc:
-        with jobs_lock:
-            job.status = "failed"
-            job.error = str(exc)
-            job.updated_at = time.time()
-            job.log.append(str(exc))
-
-
-def run_postprocess_job(job_id: str) -> None:
-    with jobs_lock:
-        job = jobs[job_id]
-        job.status = "running"
-        job.updated_at = time.time()
-
-    try:
-        output_dir = output_dir_for_filename(job.filename)
-        job.output_dir = str(output_dir.relative_to(ROOT))
-        if not (output_dir / "analysis.json").is_file():
-            raise FileNotFoundError(f"analysis.json not found: {output_dir / 'analysis.json'}")
-
-        run_command(job, ["python", str(SCRIPTS_DIR / "deepseek_postprocess.py"), str(output_dir)])
-        with jobs_lock:
-            job.status = "complete"
-            job.updated_at = time.time()
-    except Exception as exc:
-        with jobs_lock:
-            job.status = "failed"
-            job.error = str(exc)
-            job.updated_at = time.time()
-            job.log.append(str(exc))
-
-
-def public_job(job: Job) -> dict[str, Any]:
-    output_dir = output_dir_for_filename(job.filename)
-    return {
-        "id": job.id,
-        "filename": job.filename,
-        "postprocess": job.postprocess,
-        "analysis_mode": job.analysis_mode,
-        "status": job.status,
-        "created_at": job.created_at,
-        "updated_at": job.updated_at,
-        "output_dir": job.output_dir,
-        "error": job.error,
-        "log": job.log[-200:],
-        "analysis": read_json(output_dir / "analysis.json"),
-        "analysis_zh": read_json(output_dir / "analysis_zh.json"),
-        "audit_result": read_json(output_dir / "audit_result.json"),
-        "audit_result_zh": read_json(output_dir / "audit_result_zh.json"),
-        "feedback_result": read_json(output_dir / "feedback_result.json"),
-        "feedback_result_zh": read_json(output_dir / "feedback_result_zh.json"),
-    }
-
-
 def public_download_job(job: DownloadJob) -> dict[str, Any]:
     return {
         "id": job.id,
@@ -3530,10 +3379,9 @@ def payload_has_content(value: Any) -> bool:
     return True
 
 
-def build_video_feedback(filename: str = "", download_job_id: str = "", job_id: str = "") -> dict[str, Any]:
+def build_video_feedback(filename: str = "", download_job_id: str = "") -> dict[str, Any]:
     filename = safe_filename(filename) if filename else ""
     download_payload = None
-    job_payload = None
     failure_stage = ""
     failure_reason = ""
 
@@ -3548,18 +3396,6 @@ def build_video_feedback(filename: str = "", download_job_id: str = "", job_id: 
         if download_payload.get("status") == "failed":
             failure_stage = "download"
             failure_reason = str(download_payload.get("error") or "")
-
-    if job_id:
-        with jobs_lock:
-            job = jobs.get(job_id)
-            job_payload = public_job(job) if job else None
-        if not job_payload:
-            return {"ok": False, "state": "failed", "error": "Job not found", "job_id": job_id}
-        if not filename and job_payload.get("filename"):
-            filename = safe_filename(str(job_payload["filename"]))
-        if job_payload.get("status") == "failed":
-            failure_stage = "analysis"
-            failure_reason = str(job_payload.get("error") or "")
 
     output_dir = output_dir_for_filename(filename) if filename else OUTPUT_DIR / "_missing_"
     video_path = VIDEOS_DIR / filename if filename else None
@@ -3628,7 +3464,6 @@ def build_video_feedback(filename: str = "", download_job_id: str = "", job_id: 
         "label": labels.get(state, state),
         "filename": filename,
         "download_job_id": download_job_id,
-        "job_id": job_id,
         "file_ready": file_ready,
         "extraction_complete": extraction_complete,
         "analysis_complete": analysis_complete,
@@ -3641,7 +3476,6 @@ def build_video_feedback(filename: str = "", download_job_id: str = "", job_id: 
         "failure_stage": failure_stage,
         "failure_reason": failure_reason,
         "download": download_payload,
-        "job": job_payload,
         "updated_at": time.time(),
     }
 
@@ -4287,18 +4121,6 @@ def is_music_link_query(text: str) -> bool:
     return has_music and has_link
 
 
-def music_link_search_query(text: str) -> str:
-    query = str(text or "")
-    query = re.sub(
-        r"(有没有|有无|是否有|音频链接|音乐链接|声音链接|下载链接|链接|地址|url|URL|吗|么|呢|\?)",
-        " ",
-        query,
-        flags=re.IGNORECASE,
-    )
-    query = re.sub(r"\s+", " ", query).strip(" -—_:：，,。")
-    return query or str(text or "").strip()
-
-
 def is_media_availability_query(text: str) -> bool:
     lowered = (text or "").lower()
     has_media = any(word in lowered for word in ("video", "audio", "music", "sound", "bgm", "视频", "音频", "音乐", "链接"))
@@ -4341,13 +4163,6 @@ PRODUCT_RESEARCH_TOOLS = (
     AMAZON_TOOLS
     | TIKTOK_SHOP_TOOLS
     | {"tiktok_search_keyword", "tiktok_search_top", "tiktok_trending", "tiktok_hashtags_popular"}
-)
-SOCIAVAULT_TIKTOK_TOOLS = (
-    TIKTOK_SHOP_TOOLS
-    | TIKTOK_USER_TOOLS
-    | TIKTOK_VIDEO_TOOLS
-    | TIKTOK_CONTENT_TOOLS
-    | MUSIC_QUERY_TOOLS
 )
 SOCIAVAULT_PLATFORM_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("tiktok_", ("tiktok", "tiktok.com", "tik tok", "抖音")),
@@ -5140,12 +4955,6 @@ LOCAL_SYSTEM_TOOLS = {"current_time", "web_search"}
 LOCAL_TOOL_CATEGORY_LABELS = {
     "system": "\u7cfb\u7edf",
     "function_amazon": "Amazon",
-    "function_shop": "TikTok Shop",
-    "function_user": "TikTok \u7528\u6237",
-    "function_video": "TikTok \u89c6\u9891",
-    "function_search": "TikTok \u641c\u7d22",
-    "function_trend": "TikTok \u8d8b\u52bf",
-    "function_music": "TikTok \u97f3\u4e50",
     "function_analyze": "\u89c6\u9891\u5206\u6790",
     "function_other": "\u5176\u4ed6\u529f\u80fd",
 }
@@ -5758,20 +5567,6 @@ def _planner_result_payloads(assistant_msg: Message) -> list[Any]:
     return payloads
 
 
-def fastmoss_category_ranking_is_drilldown(arguments: dict[str, Any]) -> bool:
-    filters = arguments.get("filter") if isinstance(arguments.get("filter"), dict) else {}
-    return bool(str(filters.get("category_id") or "").strip())
-
-
-def fastmoss_category_ranking_drilldown_count(assistant_msg: Message) -> int:
-    return sum(
-        1
-        for call in assistant_msg.tool_calls or []
-        if str(call.get("function", {}).get("name") or "") == "fastmoss__market_category_ranking"
-        and fastmoss_category_ranking_is_drilldown(_tool_call_arguments(call))
-    )
-
-
 def research_planner_state(
     provider: str,
     route: dict[str, Any],
@@ -6349,8 +6144,6 @@ def chat_local_tools() -> list[dict[str, Any]]:
 
 
 def local_tool_domain(name: str) -> str:
-    if name in SOCIAVAULT_TIKTOK_TOOLS:
-        return "sociavault"
     return "system" if name in LOCAL_SYSTEM_TOOLS else "function"
 
 
@@ -6359,16 +6152,6 @@ def local_tool_category(name: str) -> str:
         return "system"
     if name.startswith("amazon_"):
         return "function_amazon"
-    if name.startswith("tiktok_shop_"):
-        return "function_shop"
-    if name in TIKTOK_USER_TOOLS:
-        return "function_user"
-    if name in TIKTOK_VIDEO_TOOLS:
-        return "function_video"
-    if name in MUSIC_QUERY_TOOLS:
-        return "function_music"
-    if name in TIKTOK_CONTENT_TOOLS:
-        return "function_search"
     if name in VIDEO_ANALYSIS_TOOLS:
         return "function_analyze"
     return "function_other"
@@ -6446,10 +6229,6 @@ def to_model_tool(tool: dict[str, Any], tool_id: str, description: str | None = 
     }
 
 
-def system_chat_tool_ids() -> set[str]:
-    return {prefixed_tool_id("system", name) for name in LOCAL_SYSTEM_TOOLS}
-
-
 LOCKED_PROVIDER_SYSTEM_TOOL_ALLOWLIST = {prefixed_tool_id("system", "current_time")}
 
 
@@ -6491,54 +6270,6 @@ def provider_default_enabled_tool_ids(provider: str) -> set[str]:
     return selected
 
 
-def registered_chat_tool_ids_by_domain() -> dict[str, list[str]]:
-    ids: dict[str, list[str]] = {domain: [] for domain in CHAT_TOOL_DOMAINS}
-    for tool in chat_local_tools():
-        name = str(tool.get("name") or "")
-        if not name:
-            continue
-        domain = local_tool_domain(name)
-        ids.setdefault(domain, []).append(prefixed_tool_id(domain, name))
-    for domain, chat_type in MCP_CHAT_TOOL_PROVIDERS:
-        try:
-            tools = list_mcp_bridge_tools(chat_type)
-        except Exception as exc:
-            print(f"[CHAT] {chat_type} registry tools/list failed: {exc}", flush=True)
-            tools = []
-        for tool in tools:
-            name = str(tool.get("name") or "")
-            if name:
-                ids.setdefault(domain, []).append(prefixed_tool_id(domain, name))
-    return ids
-
-
-def _decode_hex_mask(mask: Any, ids: list[str]) -> set[str] | None:
-    text = str(mask or "").strip().lower()
-    if not text:
-        return None
-    if text.startswith("0x"):
-        text = text[2:]
-    try:
-        value = int(text, 16)
-    except ValueError:
-        return None
-    return {tool_id for bit, tool_id in enumerate(ids) if value & (1 << bit)}
-
-
-def decode_tool_masks(masks: Any) -> set[str] | None:
-    if not isinstance(masks, dict):
-        return None
-    by_domain = registered_chat_tool_ids_by_domain()
-    selected: set[str] = set()
-    for domain in CHAT_TOOL_DOMAINS:
-        if domain not in masks:
-            continue
-        decoded = _decode_hex_mask(masks.get(domain), by_domain.get(domain, []))
-        if decoded is not None:
-            selected.update(decoded)
-    return selected
-
-
 def build_prefixed_model_tools(enabled_tool_ids: set[str] | None) -> list[dict[str, Any]]:
     selected = enabled_tool_ids
     model_tools: list[dict[str, Any]] = []
@@ -6571,15 +6302,6 @@ def build_prefixed_model_tools(enabled_tool_ids: set[str] | None) -> list[dict[s
     return model_tools
 
 
-def official_skill_chain_enabled_for_provider(provider: str) -> bool:
-    provider = normalize_chat_provider(provider)
-    if provider == "amazon":
-        return official_sellersprite_skill_enabled()
-    if provider == "fastmoss":
-        return official_fastmoss_skill_enabled()
-    return False
-
-
 def official_skill_market_default_instruction(provider: str) -> str:
     """Return the user-selected marketplace default without adding workflow rules."""
     provider = normalize_chat_provider(provider)
@@ -6590,30 +6312,19 @@ def official_skill_market_default_instruction(provider: str) -> str:
     return ""
 
 
-def chat_tool_selection_enabled(provider: str) -> bool:
-    """Every chat provider always exposes its full site-owned tool catalog."""
-    return False
-
-
 def build_tool_catalog(provider: str) -> dict[str, Any]:
     provider = normalize_chat_provider(provider)
-    default_domains = CHAT_PROVIDER_DEFAULT_DOMAINS.get(provider, CHAT_PROVIDER_DEFAULT_DOMAINS["home"])
     domains = [
-        {"id": "system", "label": "\u7cfb\u7edf", "categories": [], "defaultSelected": True, "hidden": True},
-        {"id": "function", "label": "\u529f\u80fd", "categories": [], "defaultSelected": "function" in default_domains},
-        {"id": "sociavault", "label": "SociaVault", "categories": [], "defaultSelected": "sociavault" in default_domains},
-        {"id": "sellersprite", "label": "\u5356\u5bb6\u7cbe\u7075", "categories": [], "defaultSelected": "sellersprite" in default_domains},
-        {"id": "fastmoss", "label": "FastMoss", "categories": [], "defaultSelected": "fastmoss" in default_domains},
+        {"id": "system", "label": "\u7cfb\u7edf", "categories": []},
+        {"id": "function", "label": "\u529f\u80fd", "categories": []},
+        {"id": "sociavault", "label": "SociaVault", "categories": []},
+        {"id": "sellersprite", "label": "\u5356\u5bb6\u7cbe\u7075", "categories": []},
+        {"id": "fastmoss", "label": "FastMoss", "categories": []},
     ]
     by_domain = {d["id"]: d for d in domains}
     cat_maps: dict[str, dict[str, dict[str, Any]]] = {d["id"]: {} for d in domains}
-    tool_registries: dict[str, list[str]] = {domain: [] for domain in CHAT_TOOL_DOMAINS}
 
     def add_tool(domain: str, category_id: str, category_label: str, tool: dict[str, Any]) -> None:
-        if not tool.get("disabled") and tool.get("id"):
-            domain_registry = tool_registries.setdefault(domain, [])
-            tool["domainMaskBit"] = len(domain_registry)
-            domain_registry.append(str(tool["id"]))
         cats = cat_maps[domain]
         if category_id not in cats:
             cats[category_id] = {"id": category_id, "label": category_label, "tools": []}
@@ -6629,7 +6340,6 @@ def build_tool_catalog(provider: str) -> dict[str, Any]:
             "name": name,
             "label": tool_label(name),
             "description": tool.get("description") or "",
-            "defaultSelected": domain in default_domains,
         })
     for domain, chat_type in MCP_CHAT_TOOL_PROVIDERS:
         try:
@@ -6641,7 +6351,6 @@ def build_tool_catalog(provider: str) -> dict[str, Any]:
                 "label": "\u5de5\u5177\u5217\u8868\u52a0\u8f7d\u5931\u8d25",
                 "description": str(exc),
                 "disabled": True,
-                "defaultSelected": False,
             })
             continue
         for tool in tools:
@@ -6654,17 +6363,13 @@ def build_tool_catalog(provider: str) -> dict[str, Any]:
                 "name": name,
                 "label": tool_label(name),
                 "description": tool.get("description") or "",
-                "defaultSelected": domain in default_domains,
             })
     return {
         "provider": provider,
         "domains": domains,
-        "toolRegistries": tool_registries,
-        "maskEncoding": "hex-lsb",
-        "maskLayers": ["domain"],
         "locked": provider_forces_mcp_tools(provider),
         "lockedDomains": sorted(CHAT_PROVIDER_DEFAULT_DOMAINS.get(provider, set())) if provider_forces_mcp_tools(provider) else [],
-        "selectionEnabled": chat_tool_selection_enabled(provider),
+        "selectionEnabled": False,
     }
 
 
@@ -7053,18 +6758,6 @@ def chat_max_tool_rounds(provider: str, route: dict[str, Any], tool_count: int) 
     else:
         limit = 10
     return min(base, limit)
-
-
-def tools_for_chat_intent(user_text: str, enabled: set[str] | None) -> tuple[list[dict], dict[str, Any]]:
-    route = route_chat_intent(user_text)
-    route_tools = route.get("tools")
-    if route_tools is None:
-        selected = enabled
-    elif enabled is None:
-        selected = set(route_tools)
-    else:
-        selected = set(route_tools) & enabled
-    return get_tools_for_model(selected), route
 
 
 class ChatAttachmentError(ValueError):
@@ -9593,11 +9286,6 @@ def fastmoss_render_report_evidence(dossier: dict[str, Any]) -> tuple[str, dict[
     }
 
 
-def fastmoss_report_evidence_markdown(dossier: dict[str, Any]) -> str:
-    """Render the complete dossier for an LLM without changing source evidence."""
-    return fastmoss_render_report_evidence(dossier)[0]
-
-
 def fastmoss_report_packet(manifest: dict[str, Any], route: dict[str, Any] | None = None) -> dict[str, Any]:
     """Build one compact, workflow-native source of truth for report synthesis."""
     playbook = str((route or {}).get("playbook") or "product")
@@ -10197,402 +9885,6 @@ def fastmoss_deterministic_quality_fallback(manifest: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def downgrade_fastmoss_absolute_market_claims(answer: str) -> str:
-    """Mechanically soften market-existence/opportunity claims that samples cannot prove."""
-    text = str(answer or "")
-    text = re.sub(
-        r"(?:不构成|不存在)(?:一个)?独立市场",
-        "在本次已获取样本中尚未显示出足以确认独立市场的强信号",
-        text,
-    )
-    text = re.sub(
-        r"(?:是|属于)(?:一个)?真实(?:的)?细分机会",
-        "在本次样本中显示出一定需求信号，但是否构成可进入机会仍需验证",
-        text,
-    )
-    text = re.sub(
-        r"(?:其余|剩余)\s*[\d,.]+\+?\s*(?:个|件|款)?\s*(?:商品|产品)[^\n。；]{0,80}?(?:不足|少于|低于|不到)\s*[\d,.]+\s*%",
-        "未抓取商品的销量占比无法由本次样本推导",
-        text,
-    )
-    text = re.sub(
-        r"(?:广告|投放)(?:的)?\s*ROI\s*(?:稳定|可行|健康|较高|不错)",
-        "广告投入效率仍需成本、转化和利润数据验证",
-        text,
-        flags=re.IGNORECASE,
-    )
-    text = re.sub(
-        r"(?:广告|联盟|视频|直播)(?:GMV|销量)?占比[^\n。；]{0,60}?(?:证明|说明)[^\n。；]{0,30}?(?:ROI|利润|投放模式可行)",
-        "该占比只能描述已观测渠道结构，不能证明 ROI、利润或投放效率",
-        text,
-        flags=re.IGNORECASE,
-    )
-    text = re.sub(
-        r"(?:该|这个|目标|Electric Food Shredder|Mini Meat Grinder)?\s*(?:细分|市场)\s*(?:极窄|非常窄|几乎不存在)",
-        "该细分在本轮样本中的销量信号较弱，整体市场范围仍需更多覆盖验证",
-        text,
-        flags=re.IGNORECASE,
-    )
-    text = re.sub(
-        r"(?:内容|视频)(?:转化)?效率(?:几乎)?为?\s*零",
-        "本轮代表商品视频未观测到可归因销量，内容效率仍需扩大样本验证",
-        text,
-        flags=re.IGNORECASE,
-    )
-    text = re.sub(
-        r"(?:广告|投放)(?:回报|效果)(?:极低|很低|很差)",
-        "已观测转化信号较弱，投放效率仍需广告成本与利润数据验证",
-        text,
-        flags=re.IGNORECASE,
-    )
-    text = re.sub(
-        r"(?:表明|说明)供给侧[^\n。；]{0,60}?竞争加剧",
-        "说明新品供给仍活跃，但不能据此判断竞争强度",
-        text,
-    )
-    text = re.sub(
-        r"(?:表明|说明)消费者[^\n。；]{0,100}?(?:内容的?耐受度|内容偏好|决策路径)[^\n。；]*",
-        "该渠道变化不能直接证明消费者内容偏好或决策路径改变",
-        text,
-    )
-    text = re.sub(
-        r"(?:表明|说明)[^\n。；]{0,80}?消费者认知[^\n。；]*(?:多数[^\n。；]{0,60})?",
-        "该样本只表明关键词下销量信号较弱，消费者认知和搜索路径仍需验证",
-        text,
-    )
-    text = re.sub(
-        r"(?:说明)?主要依靠商品卡自然流量或付费广告[^\n。；]*",
-        "零关联视频不能直接确定流量来源，需用该商品渠道归因数据验证",
-        text,
-    )
-    text = re.sub(
-        r"(?:依赖|依靠)[^\n。；]{0,60}?达人视频[^\n。；]{0,40}?(?:驱动|转化)[^\n。；]*",
-        "关联达人和视频规模较大，但其对销量的因果贡献仍需验证",
-        text,
-    )
-    text = re.sub(
-        r"(?:消费者)?(?:先)?搜(?:索)?了?(?:再|后)(?:购买|买)",
-        "商品卡成交占比较高，但具体搜索与购买路径未被本轮数据观测",
-        text,
-    )
-    text = re.sub(
-        r"[“\"]?商品卡[”\"]?(?:的)?(?:自然搜索|搜索)(?:流量|成交)",
-        "商品卡成交",
-        text,
-    )
-    text = re.sub(
-        r"(?:更|较为)?成熟[、，和且 ]*(?:更|较为)?活跃(?:[、，和且 ]*销售潜力更大)?",
-        "在本次已获取样本中相关销量或内容指标更高",
-        text,
-    )
-    text = re.sub(
-        r"(?:仍处于)?(?:萌芽(?:期|阶段)?|需求低迷|需求尚未启动)",
-        "本次样本信号较弱，实际需求状态仍待验证",
-        text,
-    )
-    text = text.replace("达人积极带动", "达人关联规模较大")
-    text = re.sub(
-        r"(?:这|由此)?表明单纯的?视频种草转化难度(?:正在|在)?增加",
-        "这只说明已观测渠道占比发生变化，不能直接判断内容转化难度",
-        text,
-    )
-    text = re.sub(
-        r"(?:进一步)?验证了?[^\n。；]{0,40}?是类目的核心驱动力",
-        "说明相关功能在本次头部样本中较常见",
-        text,
-    )
-    text = re.sub(
-        r"(?:过度|几乎全)?依赖商品卡成交",
-        "商品卡成交占比较高",
-        text,
-    )
-    text = re.sub(
-        r"这意味着[^\n。；]{0,80}?缺乏可持续的达人内容驱动力",
-        "但该渠道结构不能直接证明达人内容是否可持续",
-        text,
-    )
-    text = re.sub(
-        r"一旦竞争品进入[^\n。；]{0,60}?销量将锐减",
-        "竞争变化对后续销量的影响仍需持续观测",
-        text,
-    )
-    text = text.replace("至少有达人愿意带", "至少观测到达人关联")
-    text = text.replace("其增长有持续动力", "其达人关联规模更高")
-    text = re.sub(
-        r"(?:几乎全)?依赖搜索截流",
-        "商品卡成交占比较高，具体流量路径未被本轮数据观测",
-        text,
-    )
-    text = re.sub(
-        r"(?:一个)?典型的?[“\"]?发大量视频去做搜索截流[”\"]?的?模式",
-        "视频关联规模较高，但具体流量路径仍需验证",
-        text,
-    )
-    text = re.sub(
-        r"通过发布\s*(\*\*)?[\d,.]+(?:条|个)?(?:\*\*)?\s*视频关联此商品实现了销售",
-        "观测到较多关联视频和商品成交，但二者的因果关系仍需验证",
-        text,
-    )
-    text = re.sub(
-        r"(?:整体|类目|市场)?大盘(?:正在|持续)?萎缩|存量竞争(?:阶段|市场)?",
-        "类目同比下降仅描述本次观测周期，长期市场与竞争阶段仍待验证",
-        text,
-    )
-    text = re.sub(
-        r"(?:形成|建立|具备|强化)?(?:内容护城河|用户心智|抗风险能力)",
-        "长期内容效果（仍需后续数据验证）",
-        text,
-    )
-    text = text.replace("销售潜力更大", "本次样本中的已观测销量信号更高")
-    text = text.replace("达人驱动特征", "达人与内容关联特征")
-    return text
-
-
-def sanitize_fastmoss_unsupported_recommendations(answer: str) -> tuple[str, int]:
-    """Remove only operational numbers stated as recommendations, not observed metrics."""
-    text = str(answer or "")
-    rules: list[tuple[str, str]] = []
-
-    def replace(pattern: str, replacement: str) -> None:
-        rules.append((pattern, replacement))
-
-    replace(
-        r"(?:建议\s*)?(?:首批|先备货?|备货)\s*[\d,.]+\s*(?:[-~–—至到]\s*[\d,.]+\s*)?件",
-        "建议先以小批量验证",
-    )
-    replace(
-        r"(?:建议|计划|准备|首轮|测试|先用|控制)\s*(?:投放|广告)?预算\s*(?:为|在|到|约|：|:)?\s*"
-        r"(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+\s*(?:[-~–—至到]\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+)?",
-        "预算应在取得成本与转化证据后再确定",
-    )
-    replace(
-        r"(?:配合|邀请|联系|合作|寄样给)\s*[\d,.]+\s*(?:[-~–—至到]\s*[\d,.]+\s*)?个?达人",
-        "配合少量匹配达人",
-    )
-    replace(
-        r"(?:建议|计划|先)?(?:测试|观察|验证)\s*[\d,.]+\s*(?:[-~–—至到]\s*[\d,.]+\s*)?(?:天|周|个月|月)",
-        "安排完整测试周期",
-    )
-    replace(
-        r"(?:如果|若)[^\n。；]{0,60}?接下来\s*[\d,.]+\s*(?:天|周|个月|月)(?:内)?"
-        r"[^\n。；]{0,40}?从\s*[\d,.]+\s*(?:个|位)?人?[^\n。；]{0,20}?至\s*[\d,.]+\s*(?:个|位)?人?(?:以上)?",
-        "如果后续完整观察周期内达人覆盖持续增长",
-    )
-    replace(
-        r"筛选\s*[\d,.]+\s*(?:[kKwW万])?\s*[-~–—至到]\s*[\d,.]+\s*(?:[kKwW万])?\s*粉(?:丝)?的?",
-        "筛选受众匹配的",
-    )
-    replace(
-        r"(?:建议|目标|要求|控制|至少|不低于)[^\n。；]{0,30}?(?:ROI|转化率|毛利率)\s*"
-        r"(?:达到|为|在|不低于|至少|约|：|:)?\s*[\d,.]+\s*%?",
-        "相关经营指标应在测试数据形成后再设目标",
-    )
-    replace(
-        r"(?:ROI|转化率|毛利率)\s*(?:目标|建议|要求|达到|至少|不低于|控制在)\s*[\d,.]+\s*%?",
-        "相关经营指标应在测试数据形成后再设目标",
-    )
-    replace(
-        r"(?:建议|目标|要求|控制|不超过)[^\n。；]{0,24}?(?:供应链成本|采购成本|MOQ|起订量)\s*"
-        r"(?:为|在|低于|不超过|约|：|:)?\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+",
-        "供应链条件应以实际询价和打样结果为准",
-    )
-    replace(
-        r"(?:供应链成本|采购成本|MOQ|起订量)\s*(?:建议|目标|要求|控制在|不超过|低于)\s*"
-        r"(?:为|在|低于|不超过|控制在)?\s*"
-        r"(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+",
-        "供应链条件应以实际询价和打样结果为准",
-    )
-    replace(
-        r"(?:建议|推荐)(?:上市)?(?:售价|定价)\s*\*{0,2}(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+\s*"
-        r"(?:[-~–—至到]\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+)?\*{0,2}",
-        "建议先依据已观测价格带设定候选价，再结合成本与转化验证",
-    )
-    replace(
-        r"(?:以|用)\s*\*{0,2}(?:US\$|USD\s*|\$|¥|￥)\s*[\d,.]+\*{0,2}[^\n。；]{0,24}?上架",
-        "选择一个有证据支撑的候选价上架",
-    )
-    replace(
-        r"(?:设置|设定|建议)\s*\*{0,2}[\d,.]+\s*%\*{0,2}\s*佣金(?:率)?",
-        "佣金率应通过实际联盟测试确定",
-    )
-    replace(
-        r"(?:有潜力|预计|目标|争取)[^\n。；]{0,40}?[\d,.]+\s*(?:[-~–—至到]\s*[\d,.]+\s*)?个?月"
-        r"[^\n。；]{0,60}?(?:月销|销量)[^\n。；]{0,20}?[\d,.]+\+?\s*件",
-        "增长幅度和达成时间需通过实际测试验证",
-    )
-    replace(
-        r"(?:如果|若)按[^\n。；]{0,160}?(?:广告[^\n。；]{0,16}?成本|CPA|毛利|利润|ROI)[^\n。；]*",
-        "具体经营结果需用实际广告成本、转化与毛利数据验证",
-    )
-    replace(
-        r"建议定价\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+\s*"
-        r"(?:[-~–—至到]\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+)?",
-        "建议先依据已观测价格带设定候选价，再结合成本与转化验证",
-    )
-    replace(
-        r"用\s*(?:US\$|USD\s*|\$|¥|￥)\s*[\d,.]+\s*上架",
-        "选择一个有证据支撑的候选价上架测试",
-    )
-    replace(
-        r"(?:建议|计划|准备|首轮|首月|月度?|投放|广告)[^\n。；]{0,30}?预算\s*"
-        r"(?:为|在|到|约|控制在|：|:)?\s*(?:US\$|USD\s*|\$|¥|￥)?\s*"
-        r"[\d,.]+\s*(?:[kKwW万千])?\s*(?:[-~–—至到]\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+\s*(?:[kKwW万千])?)?",
-        "预算应在取得成本与转化证据后再确定",
-    )
-    replace(
-        r"(?:建议|计划|首批|先|招募|联系|合作|建联)[^\n。；]{0,20}?[\d,.]+\s*"
-        r"(?:[-~–—至到]\s*[\d,.]+\s*)?(?:个|位)\s*(?:达人|创作者)",
-        "先与少量匹配达人验证",
-    )
-    replace(
-        r"(?:找|寻找|物色)\s*[\d,.]+\s*(?:[-~–—至到]\s*[\d,.]+\s*)?(?:个|位)?\s*(?:达人|创作者)",
-        "寻找少量受众匹配的达人",
-    )
-    replace(
-        r"每\s*(?:周|星期|月)\s*(?:产出|发布|制作|投放)?\s*[\d,.]+\s*"
-        r"(?:[-~–—至到]\s*[\d,.]+\s*)?(?:条|个|支)\s*(?:视频|内容|素材)",
-        "按稳定节奏持续测试内容",
-    )
-    replace(
-        r"(?:可接受|目标|建议|控制|要求)[^\n。；]{0,20}?(?:CPO|CPA|获客成本|单次转化成本)\s*"
-        r"(?:为|在|到|约|不超过|控制在|：|:)?\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+\s*"
-        r"(?:[-~–—至到]\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+)?",
-        "获客成本目标应在实际投放数据形成后确定",
-    )
-    replace(
-        r"(?:CPO|CPA|获客成本|单次转化成本)\s*(?:目标|建议|要求|控制在|可接受)?\s*"
-        r"(?:为|在|到|约|不超过|：|:)?\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+\s*"
-        r"(?:[-~–—至到]\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+)?",
-        "获客成本目标应在实际投放数据形成后确定",
-    )
-    replace(
-        r"(?:每条|单条|每个)[^\n。；]{0,12}?(?:素材|视频|内容)[^\n。；]{0,12}?"
-        r"(?:预算|成本)\s*(?:为|约|：|:)?\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+",
-        "单条内容投入应通过实际测试确定",
-    )
-    replace(
-        r"(?:建议|目标|控制|要求)[^\n。；]{0,24}?(?:广告费率|广告费用|广告费|投放费用|佣金)"
-        r"[^\n。；]{0,12}?[\d,.]+\s*%",
-        "相关费率应通过实际经营数据确定",
-    )
-    replace(
-        r"(?:建议|计划|目标|先)?(?:测试|观察|验证)?周期\s*(?:为|约|：|:)?\s*[\d,.]+\s*"
-        r"(?:[-~–—至到]\s*[\d,.]+\s*)?(?:天|周|个月|月)",
-        "安排完整测试周期",
-    )
-    replace(
-        r"(?:建议|目标|计划|售价|定价)[^\n。；]{0,16}?(?:定在|设为|设置为|为|：|:)\s*"
-        r"\*{0,2}(?:US\$|USD\s*|\$|¥|￥)\s*[\d,.]+\s*"
-        r"(?:[-~–—至到]\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+)?\*{0,2}",
-        "候选售价应依据同形态样本、成本与转化验证后确定",
-    )
-    replace(
-        r"(?:建议|目标|优先|选择|控制)[^\n。；]{0,30}?[\d,.]+\s*"
-        r"(?:[-~–—至到]\s*[\d,.]+\s*)?[wW瓦](?:功率)?",
-        "产品功率规格应依据已核实的商品与供应链信息确定",
-    )
-    replace(
-        r"(?:前期|首月|每月|月度)?[^\n。；]{0,16}?(?:广告|投放)?预算\s*[（(]?[^\n。；]{0,16}?"
-        r"(?:US\$|USD\s*|\$|¥|￥)\s*[\d,.]+\s*(?:[kKwW万千])?\s*"
-        r"(?:[-~–—至到]\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+\s*(?:[kKwW万千])?)?[）)]?",
-        "预算应在取得成本与转化证据后再确定",
-    )
-    replace(
-        r"(?:筛选|邀约|建联|联系|合作)\s*[\d,.]+\s*(?:[-~–—至到]\s*[\d,.]+\s*)?"
-        r"(?:个|位)\s*(?:[\d,.]+\s*(?:[kKwW万])?\s*[-~–—至到]\s*[\d,.]+\s*(?:[kKwW万])?\s*粉丝?)?"
-        r"[^\n。；]{0,20}?(?:达人|创作者)",
-        "筛选少量受众匹配的达人",
-    )
-    replace(
-        r"(?:跑|测试|制作|准备)\s*[\d,.]+\s*(?:组|条|支|个)\s*(?:素材|视频|内容)",
-        "测试少量差异化内容素材",
-    )
-    replace(
-        r"(?:CPO|CPA|获客成本|单次转化成本)[^\n。；]{0,80}?"
-        r"(?:低于|不高于|控制在|目标为|可接受)[^\n。；]{0,12}?"
-        r"(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+\s*"
-        r"(?:[-~–—至到]\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+)?[^\n。；]{0,12}?(?:可接受)?",
-        "获客成本目标应在实际投放数据形成后确定",
-    )
-    replace(
-        r"(?:建议|目标|采用|使用|通过|免费寄样\s*\+?)[^\n。；]{0,30}?"
-        r"(?:高佣金|佣金(?:率)?)\s*[（(]?\s*[\d,.]+\s*%\s*"
-        r"(?:[-~–—至到]\s*[\d,.]+\s*%)?[）)]?",
-        "佣金率应通过实际联盟测试确定",
-    )
-    replace(
-        r"(?:广告费|投放费用|佣金)\s*[\d,.]+\s*%",
-        "相关费率应通过实际经营数据确定",
-    )
-    replace(
-        r"(?:同规格|目标|建议|选择)[^\n。；]{0,12}?[\d,.]+\s*"
-        r"(?:[-~–—至到]\s*[\d,.]+\s*)?[wW瓦](?:功率)?",
-        "目标功率规格需以已核实商品和供应链信息为准",
-    )
-    replace(
-        r"(?:每天|每日)平均(?:约)?\s*[\d,.]+\s*(?:[-~–—至到]\s*[\d,.]+\s*)?件"
-        r"[^\n。；]{0,24}?来自(?:付费|广告)流量",
-        "付费流量贡献需要逐日归因数据验证",
-    )
-    replace(
-        r"(?:先)?以\s*(?:US\$|USD\s*|\$|¥|￥)\s*[\d,.]+\s*(?:进行)?试价",
-        "先从已观测价格带中选择候选价测试",
-    )
-    replace(
-        r"(?:调高|上调|调低|下调)至\s*(?:US\$|USD\s*|\$|¥|￥)\s*[\d,.]+",
-        "再根据实际转化调整价格",
-    )
-    replace(
-        r"(?:可|建议|计划)?上架\s*(?:US\$|USD\s*|\$|¥|￥)\s*[\d,.]+",
-        "可在验证后测试候选价格",
-    )
-    replace(
-        r"[\d,.]+\s*(?:[-~–—至到]\s*[\d,.]+\s*)?(?:天|周|个月|月)后"
-        r"[^\n。；]{0,24}?(?:转化率|调价|调高|调低|复盘)",
-        "完成充分测试后再依据实际转化复盘调整",
-    )
-    replace(
-        r"(?:建议|计划|准备|先)?(?:与|联系|合作|建联)\s*[\d,.]+\s*"
-        r"(?:[-~–—至到]\s*[\d,.]+\s*)?(?:个|位)\s*"
-        r"(?:[\d,.]+\s*(?:[kKwW万])?\s*[-~–—至到]\s*[\d,.]+\s*(?:[kKwW万])?\s*粉丝?的?)?"
-        r"[^\n。；]{0,24}?(?:达人|创作者)(?:合作)?",
-        "先与少量受众匹配的达人验证",
-    )
-    replace(
-        r"(?:测试|试投|试卖)\s*(?:US\$|USD\s*|\$|¥|￥)\s*[\d,.]+\s*"
-        r"(?:[-~–—至到]\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+)?\s*价位",
-        "从已观测价格带中选择候选价进行验证",
-    )
-    replace(
-        r"(?:测试|试投|试卖)\s*(?:US\$|USD\s*|\$|¥|￥)\s*[\d,.]+\s*"
-        r"(?:[-~–—至到]\s*(?:US\$|USD\s*|\$|¥|￥)?\s*[\d,.]+)?\s*的?(?=\s*(?:[A-Za-z]|款|产品|商品))",
-        "测试已观测价格带内的",
-    )
-    replace(r"建议关注区间", "样本主体区间")
-    replace(
-        r"(?:头部商品)?毛利率?潜力\s*(?:\|\s*)?(?:较高|很高|高|较低|很低|低)(?:[^|\n]*)",
-        "毛利判断 | 暂无法判断（缺少成本证据）",
-    )
-    # A comma-separated clause, Markdown table cell, or sentence is one claim.
-    # Apply at most one deterministic rewrite to each claim so overlapping
-    # regular expressions cannot repeatedly mutate the same text.
-    cleanup_count = 0
-    segments = re.split(r"((?<!\d),(?!\d)|[，；;。\n])", text)
-    for index in range(0, len(segments), 2):
-        segment = segments[index]
-        if not segment:
-            continue
-        for pattern, replacement in rules:
-            updated, count = re.subn(
-                pattern, replacement, segment, count=1, flags=re.IGNORECASE
-            )
-            if count:
-                segments[index] = updated
-                cleanup_count += 1
-                break
-    return "".join(segments), cleanup_count
-
-
 def normalize_fastmoss_entity_id_abbreviations(
     answer: str,
     manifest: dict[str, Any],
@@ -10621,123 +9913,6 @@ def normalize_fastmoss_entity_id_abbreviations(
         return candidates[0]
 
     return re.sub(r"(?<!\d)\d{10,15}(?!\d)", expand, str(answer or "")), edits
-
-
-def cleanup_fastmoss_markdown_structure(answer: str) -> str:
-    """Remove empty sections and table gaps left by valid claim deletions."""
-    text = str(answer or "")
-    text = re.sub(r"(?m)(^\|[^\n]+\|\n)\s*\n+(?=^\|)", r"\1", text)
-    structural = (
-        r"(?:#{1,6}\s+[^\n]+|\*\*[^*\n]+\*\*|-\s+\*\*[^\n]+\*\*[：:]?)"
-    )
-    next_structural = r"(?=(?:#{1,6}\s+|\*\*[^*\n]+\*\*|---\s*$))"
-    text = re.sub(
-        rf"(?m)^{structural}\s*\n(?:[ \t]*\n)+{next_structural}",
-        "",
-        text,
-    )
-    return re.sub(r"\n{3,}", "\n\n", text).strip()
-
-
-def sanitize_fastmoss_state_contradictions(
-    answer: str,
-    manifest: dict[str, Any],
-) -> tuple[str, int]:
-    """Correct only explicit data/empty contradictions that can be tied to a query or ID."""
-    text = str(answer or "")
-    rules: list[tuple[str, str]] = []
-    for envelope in manifest.get("evidence_envelopes") or []:
-        if not isinstance(envelope, dict):
-            continue
-        state = str(envelope.get("data_state") or "")
-        arguments = envelope.get("arguments") if isinstance(envelope.get("arguments"), dict) else {}
-        query = str(arguments.get("keywords") or "").strip()
-        if query and state == "data":
-            pattern = rf"({re.escape(query)}[^\n。；]{{0,80}}?)(?:返回为空|没有返回|未返回|无数据|没有数据)"
-            rules.append((pattern, rf"\1本轮返回了可用样本"))
-        if state != "empty":
-            continue
-        for ref in envelope.get("entity_refs") or []:
-            if not isinstance(ref, dict):
-                continue
-            entity_id = str(ref.get("id") or "").strip()
-            if not _fastmoss_valid_entity_id(entity_id):
-                continue
-            pattern = rf"({re.escape(entity_id)}[^\n。；]{{0,80}}?)(?:为|等于)\s*0(?:\.0+)?"
-            rules.append((pattern, rf"\1本轮未返回可核对记录"))
-    signals = manifest.get("derived_signals") if isinstance(manifest.get("derived_signals"), dict) else {}
-    for item in signals.get("segment_queries") or []:
-        if not isinstance(item, dict):
-            continue
-        query = str(item.get("query") or "").strip()
-        fetched = int(item.get("fetched_unique") or 0)
-        active = int(item.get("products_with_units") or 0)
-        if not query or fetched <= 0:
-            continue
-        pattern = rf"({re.escape(query)}[^\n。；]{{0,50}}?)(?:几乎无|没有)(?:活跃)?(?:商品|产品)"
-        replacement = rf"\1本轮返回 {fetched} 款样本，其中 {active} 款有可核对销量"
-        rules.append((pattern, replacement))
-    top3_share = _fastmoss_number(signals.get("category_top3_share"))
-    if top3_share is not None and top3_share < 0.6:
-        rules.append((
-            r"头部集中度(?:很|较)?高",
-            f"本轮样本前三款销量占比约 {top3_share * 100:.1f}%，已形成头部但并非高度集中",
-        ))
-    cleanup_count = 0
-    segments = re.split(r"((?<!\d),(?!\d)|[，；;。\n])", text)
-    for index in range(0, len(segments), 2):
-        segment = segments[index]
-        if not segment:
-            continue
-        for pattern, replacement in rules:
-            updated, count = re.subn(
-                pattern, replacement, segment, count=1, flags=re.IGNORECASE
-            )
-            if count:
-                segments[index] = updated
-                cleanup_count += 1
-                break
-    return "".join(segments), cleanup_count
-
-
-def polish_fastmoss_report_tone(answer: str) -> str:
-    """Apply narrow deterministic cleanup without changing report structure."""
-    text, _ = sanitize_fastmoss_unsupported_recommendations(answer)
-    text = downgrade_fastmoss_absolute_market_claims(text)
-    text = re.sub(r"[（(]\s*修正版\s*[）)]", "", text, count=1)
-    text = text.replace("数据缺口（严重）", "需要留意的数据边界")
-    return text
-
-
-def fastmoss_rewrite_preserves_report_detail(
-    draft: str,
-    rewritten: str,
-    manifest: dict[str, Any],
-    route: dict[str, Any],
-) -> bool:
-    """Check semantic usability without enforcing headings, references, or length ratios."""
-    text = str(rewritten or "").strip()
-    if not text or deepseek_tool_protocol_present({"content": text}):
-        return False
-    if not any(marker in text for marker in ("结论", "判断", "整体来看", "核心观点", "方向")):
-        return False
-    if not any(marker in text for marker in ("建议", "下一步", "优先", "验证", "行动")):
-        return False
-    dimensions = {
-        str(fact.get("dimension") or "")
-        for fact in (manifest.get("evidence_facts") or [])
-        if isinstance(fact, dict)
-    }
-    semantic_groups: list[tuple[set[str], tuple[str, ...]]] = [
-        ({"category_analysis", "category_trend", "category_channel_ranking"}, ("类目", "渠道", "趋势")),
-        ({"new_products", "top_products"}, ("新品", "头部", "商品")),
-        ({"product_overview", "product_90d_trend"}, ("广告", "联盟", "趋势", "代表商品")),
-        ({"review_status"}, ("评论", "评价")),
-    ]
-    applicable = [terms for group, terms in semantic_groups if dimensions.intersection(group)]
-    if applicable and not any(any(term in text for term in terms) for terms in applicable):
-        return False
-    return True
 
 
 def fastmoss_high_risk_claims(draft: str) -> list[dict[str, Any]]:
@@ -10810,151 +9985,6 @@ def fastmoss_high_risk_claims(draft: str) -> list[dict[str, Any]]:
         if len(claims) >= 40:
             break
     return claims
-
-
-def validate_fastmoss_numeric_claims(
-    draft: str,
-    manifest: dict[str, Any],
-) -> tuple[str, int, int, int]:
-    """Correct deterministic metric mismatches before semantic LLM review.
-
-    Returns the edited report, edit count, registry-bound numeric token count,
-    and unbound token count.  It deliberately does not rewrite prose or draw
-    business conclusions.
-    """
-    registry = [item for item in (manifest.get("metric_registry") or []) if isinstance(item, dict)]
-    registry_values = {
-        str(item.get("value")) for item in registry if item.get("value") is not None
-    }
-    derived_values = {
-        str(value)
-        for fact in (manifest.get("derived_facts") or []) if isinstance(fact, dict)
-        for value in ([fact.get("value")] if isinstance(fact.get("value"), (int, float)) else [])
-    }
-    coverage_values: set[str] = set()
-
-    def collect_numbers(node: Any) -> None:
-        if isinstance(node, dict):
-            for value in node.values():
-                collect_numbers(value)
-        elif isinstance(node, list):
-            for value in node:
-                collect_numbers(value)
-        elif isinstance(node, (int, float)) and not isinstance(node, bool):
-            coverage_values.add(str(node))
-
-    collect_numbers(manifest.get("coverage_summary") or {})
-    authorized_values = registry_values | derived_values | coverage_values
-
-    def metric_values(metric_suffix: str, entity_id: str | None = None) -> list[float]:
-        values: list[float] = []
-        for item in registry:
-            if not str(item.get("metric") or "").endswith(metric_suffix):
-                continue
-            if entity_id and str(item.get("entity_id") or "") != entity_id:
-                continue
-            number = _fastmoss_number(item.get("value"))
-            if number is not None and number not in values:
-                values.append(number)
-        return values
-
-    def line_entity_id(line: str) -> str | None:
-        explicit = re.findall(r"(?<!\d)\d{16,20}(?!\d)", line)
-        if explicit:
-            return explicit[0]
-        lowered = line.lower()
-        matches: set[str] = set()
-        for item in registry:
-            context = item.get("context") if isinstance(item.get("context"), dict) else {}
-            title = str(context.get("title") or "").strip().lower()
-            category_name = str(context.get("category_name") or "").strip().lower()
-            query = str(context.get("query") or "").strip().lower()
-            if (
-                (title and (title in lowered or lowered in title))
-                or (category_name and category_name in lowered)
-                or (query and query in lowered)
-            ):
-                matches.add(str(item.get("entity_id") or ""))
-        return next(iter(matches)) if len(matches) == 1 else None
-
-    edits = 0
-    output_lines: list[str] = []
-    for original_line in str(draft or "").splitlines():
-        line = original_line
-        entity_id = line_entity_id(line)
-
-        # Percent metrics that share similar values are bound by semantic name,
-        # not merely by the appearance of the same number elsewhere.
-        metric_rules = (
-            (r"GMV\s*(?:成交)?\s*同比", "category_gmv_yoy_percent"),
-            (r"销量\s*同比", "category_units_sold_yoy_percent"),
-            (r"商品卡\s*(?:成交)?\s*GMV\s*占比", "channel_distribution.product_card.gmv_share_percent"),
-            (r"商品卡\s*(?:成交)?\s*销量\s*占比", "channel_distribution.product_card.units_sold_share_percent"),
-        )
-        for marker, metric_suffix in metric_rules:
-            values = metric_values(metric_suffix, entity_id)
-            if len(values) != 1:
-                continue
-            target = values[0]
-
-            def metric_replacement(match: re.Match[str]) -> str:
-                nonlocal edits
-                observed = _fastmoss_number(match.group("value"))
-                if observed is None or abs(observed - target) <= 1e-9:
-                    return match.group(0)
-                edits += 1
-                return f"{match.group('prefix')}{target:g}{match.group('suffix')}"
-
-            line = re.sub(
-                rf"(?P<prefix>{marker}[^\d%+\-]{{0,12}})(?P<value>[+\-]?\d+(?:\.\d+)?)(?P<suffix>\s*%)",
-                metric_replacement,
-                line,
-                count=1,
-                flags=re.IGNORECASE,
-            )
-
-        # A provider's linked-video count is not an ad-video count.
-        if re.search(r"(?:670|14)\s*(?:条|个)?\s*广告视频", line):
-            linked_values = metric_values("product_contribution.product_linked_video_count", entity_id)
-            linked_set = {float(value) for value in linked_values}
-
-            linked_edit_count = 0
-
-            def linked_video_replacement(match: re.Match[str]) -> str:
-                nonlocal linked_edit_count
-                value = _fastmoss_number(match.group("value"))
-                if value is None or value not in linked_set:
-                    return match.group(0)
-                linked_edit_count += 1
-                return match.group(0).replace("广告视频", "关联视频")
-
-            line = re.sub(
-                r"(?P<value>\d+(?:\.\d+)?)\s*(?:条|个)?\s*广告视频",
-                linked_video_replacement,
-                line,
-            )
-            edits += linked_edit_count
-
-        # Counts from different grains must never be divided into an invented
-        # per-video sales metric.
-        if re.search(r"\d[\d,.]*\s*件[^\n。；]{0,30}(?:÷|/)[^\n。；]{0,20}\d[\d,.]*\s*(?:条|个)?视频", line):
-            line = re.sub(
-                r"[^。；\n]*\d[\d,.]*\s*件[^。；\n]{0,30}(?:÷|/)[^。；\n]{0,30}\d[\d,.]*\s*(?:条|个)?视频[^。；\n]*",
-                "销量与视频数的统计口径不同，不能直接相除推导单条视频平均销量",
-                line,
-                count=1,
-            )
-            edits += 1
-        output_lines.append(line)
-
-    updated = "\n".join(output_lines)
-    numeric_tokens = re.findall(r"(?<![\w.])-?\d+(?:\.\d+)?", updated)
-    bound = 0
-    for token in numeric_tokens:
-        normalized = str(_fastmoss_number(token))
-        if normalized in authorized_values or token in authorized_values:
-            bound += 1
-    return updated, edits, bound, max(0, len(numeric_tokens) - bound)
 
 
 def fastmoss_candidate_evidence(
@@ -12034,27 +11064,6 @@ def manage_chat_context(
         "protocol_collapsed": protocol_collapsed,
         "over_budget": final_tokens > token_limit,
     }
-
-
-def provider_scope_short_circuit(
-    provider: str,
-    user_text: str,
-    enabled_tool_ids: set[str] | None = None,
-) -> str | None:
-    if normalize_chat_provider(provider) != "fastmoss":
-        return None
-    text = chat_routing_text(user_text).lower()
-    asks_amazon = (
-        any(term in text for term in ("亚马逊", "卖家精灵"))
-        or bool(re.search(r"\b(?:amazon|asin|sellersprite)\b", text))
-    )
-    has_sellersprite = any(str(tool_id).startswith("sellersprite__") for tool_id in (enabled_tool_ids or set()))
-    if not asks_amazon or has_sellersprite:
-        return None
-    return (
-        "当前 FastMoss 对话未启用 Amazon 数据能力，无法查询亚马逊市场、蓝海选品或热门新品。"
-        "请切换到顶部「Amazon」页面后重试。"
-    )
 
 
 def chat_query_uses_previous_entity(text: str) -> bool:
@@ -14156,10 +13165,6 @@ def mcp_chat_port(chat_type: str) -> int:
         return int(config["default_port"])
 
 
-def sellersprite_chat_port() -> int:
-    return mcp_chat_port("sellersprite")
-
-
 def ensure_mcp_chat_server(chat_type: str) -> tuple[bool, str]:
     global SELLERSPRITE_CHAT_PROCESS
     config = mcp_chat_config(chat_type)
@@ -14243,10 +13248,6 @@ def ensure_mcp_chat_server(chat_type: str) -> tuple[bool, str]:
         return True, ""
 
 
-def ensure_sellersprite_chat_server() -> tuple[bool, str]:
-    return ensure_mcp_chat_server("sellersprite")
-
-
 def proxy_mcp_chat(handler: BaseHTTPRequestHandler, chat_type: str) -> None:
     config = mcp_chat_config(chat_type)
     label = str(config["label"])
@@ -14303,10 +13304,6 @@ def proxy_mcp_chat(handler: BaseHTTPRequestHandler, chat_type: str) -> None:
             return json_response(handler, HTTPStatus.BAD_GATEWAY, {"error": f"{label} proxy failed: {exc}"})
     finally:
         conn.close()
-
-
-def proxy_sellersprite_chat(handler: BaseHTTPRequestHandler) -> None:
-    return proxy_mcp_chat(handler, "sellersprite")
 
 
 def _lan_chat_token(handler: BaseHTTPRequestHandler) -> str:
@@ -14698,7 +13695,9 @@ def handle_lan_chat_post(handler: BaseHTTPRequestHandler, parsed) -> bool:
             return True
         if path == "/api/lan-chat/profile":
             user = lan_chat_store.update_profile(
-                _lan_chat_token(handler), str(payload.get("nickname") or "")
+                _lan_chat_token(handler),
+                str(payload.get("nickname") or ""),
+                str(payload.get("avatarDataUrl") or ""),
             )
             json_response(handler, HTTPStatus.OK, {"user": user})
             return True
@@ -14846,7 +13845,7 @@ class Handler(BaseHTTPRequestHandler):
             player_html = (SCRIPTS_DIR / "static" / "report_player.html").read_text(encoding="utf-8")
             return text_response(self, HTTPStatus.OK, inject_unified_nav(player_html, parsed.path), "text/html; charset=utf-8")
         if parsed.path == "/extract":
-            template = INDEX_HTML_PATH.read_text(encoding="utf-8") if INDEX_HTML_PATH.is_file() else INDEX_HTML
+            template = INDEX_HTML_PATH.read_text(encoding="utf-8")
             html = template.replace(
                 "__DEFAULT_ANALYSIS_MODE__",
                 os.getenv("ANALYSIS_MODE", "analyzer"),
@@ -15098,21 +14097,6 @@ class Handler(BaseHTTPRequestHandler):
             with frame_path.open("rb") as file:
                 shutil.copyfileobj(file, self.wfile)
             return
-        if parsed.path == "/api/jobs":
-            with jobs_lock:
-                payload = [public_job(job) for job in sorted(jobs.values(), key=lambda item: item.created_at, reverse=True)]
-            return json_response(self, HTTPStatus.OK, payload)
-        if parsed.path == "/api/job":
-            job_id = parse_qs(parsed.query).get("id", [""])[0]
-            with jobs_lock:
-                job = jobs.get(job_id)
-                payload = public_job(job) if job else None
-            if payload is None:
-                return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Job not found"})
-            return json_response(self, HTTPStatus.OK, payload)
-        if parsed.path == "/api/job-events":
-            job_id = parse_qs(parsed.query).get("id", [""])[0]
-            return self.stream_job_events(job_id)
         if parsed.path == "/api/download-job":
             job_id = parse_qs(parsed.query).get("id", [""])[0]
             with download_jobs_lock:
@@ -15127,7 +14111,6 @@ class Handler(BaseHTTPRequestHandler):
                 payload = build_video_feedback(
                     filename=query.get("filename", [""])[0],
                     download_job_id=query.get("download_job_id", query.get("download_id", [""]))[0],
-                    job_id=query.get("job_id", query.get("id", [""]))[0],
                 )
             except ValueError as exc:
                 return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
@@ -15289,9 +14272,6 @@ class Handler(BaseHTTPRequestHandler):
                 filename=f"{filename}.{suffix}.pdf",
             )
         return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
-
-    def stream_job_events(self, job_id: str) -> None:
-        self.stream_events(job_id, jobs_lock, jobs, public_job, "Job not found")
 
     def stream_download_events(self, job_id: str) -> None:
         self.stream_events(job_id, download_jobs_lock, download_jobs, public_download_job, "Download job not found")
@@ -16008,8 +14988,16 @@ class Handler(BaseHTTPRequestHandler):
         if analysis_prompt:
             (output_dir / "analysis_prompt.txt").write_text(analysis_prompt, encoding="utf-8")
 
+        queued = ["analyze"]
         video_queue.enqueue(filename, "analyze")
-        return json_response(self, HTTPStatus.ACCEPTED, {"status": "queued", "filename": filename})
+        if postprocess:
+            video_queue.enqueue(filename, "report")
+            queued.append("report")
+        return json_response(
+            self,
+            HTTPStatus.ACCEPTED,
+            {"status": "queued", "filename": filename, "queued": queued},
+        )
 
     def handle_postprocess(self) -> None:
         content_length = int(self.headers.get("Content-Length", "0"))
@@ -16454,10 +15442,6 @@ class Handler(BaseHTTPRequestHandler):
             shutil.rmtree(output_dir)
             deleted_output = True
 
-        with jobs_lock:
-            for job_id in [job_id for job_id, job in jobs.items() if job.filename == filename]:
-                del jobs[job_id]
-
         return json_response(
             self,
             HTTPStatus.OK,
@@ -16518,7 +15502,6 @@ class SellerSpriteRedirectHandler(BaseHTTPRequestHandler):
 
 METRICS_HTML = (SCRIPTS_DIR / "static" / "metrics.html").read_text(encoding="utf-8")
 
-INDEX_HTML = '<!doctype html>\n<html lang="zh-CN">\n<head>\n<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">\n<title>Short Video Analyzer</title>\n<style>\n:root{--bg:#eef3f8;--card:#fff;--soft:#f7f9fc;--line:#d7e0ec;--text:#142033;--muted:#607089;--blue:#2563eb;--blue2:#1d4ed8;--blueSoft:#eaf1ff;--red:#b42318;--green:#087443;--dark:#0d1628;--shadow:0 18px 45px rgba(15,23,42,.10)}*{box-sizing:border-box}body{margin:0;background:linear-gradient(135deg,rgba(37,99,235,.10),transparent 34%),var(--bg);color:var(--text);font-family:"Segoe UI",system-ui,sans-serif}header{height:66px;display:flex;align-items:center;justify-content:space-between;padding:0 28px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.92);position:sticky;top:0;z-index:5}h1{font-size:20px;margin:0}.page{display:none;min-height:calc(100vh - 66px);padding:18px}.page.active{display:block}.grid{display:grid;grid-template-columns:minmax(320px,430px) minmax(0,1fr);gap:18px}.detail-grid{display:grid;grid-template-columns:minmax(260px,360px) minmax(0,1fr);gap:18px;height:calc(100vh - 102px)}.card{border:1px solid var(--line);border-radius:12px;background:var(--card);box-shadow:var(--shadow);overflow:hidden}.stack{display:grid;gap:16px;padding:18px}.title{font-weight:800;margin:0 0 10px}label{display:block;margin-bottom:7px;color:var(--muted);font-size:13px;font-weight:650}input,select,textarea{width:100%;border:1px solid var(--line);border-radius:9px;background:#fff;color:var(--text);outline:none}input,select{min-height:40px;padding:8px 11px}textarea{min-height:170px;padding:10px 12px;resize:vertical;font:13px/1.55 Consolas,monospace}button{min-height:40px;border:1px solid var(--blue);border-radius:9px;background:var(--blue);color:#fff;padding:8px 13px;font-weight:750;cursor:pointer;box-shadow:0 8px 18px rgba(37,99,235,.18)}button.secondary{background:#fff;color:var(--blue);box-shadow:none}button.danger{background:#fff;border-color:#fecaca;color:var(--red);box-shadow:none}button.small{min-height:32px;padding:5px 10px;font-size:13px}button:disabled{opacity:.55;cursor:not-allowed}.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.muted{color:var(--muted)}.status{min-height:42px;border:1px solid var(--line);border-radius:9px;padding:10px 12px;background:var(--soft);color:var(--muted);font-size:13px;overflow-wrap:anywhere}.status.ok{background:#ecfdf3;color:var(--green)}.status.bad{background:#fff1f2;color:var(--red)}.check{display:flex;align-items:center;gap:9px;color:var(--text);font-size:14px;font-weight:650}.check input{width:auto;min-height:auto}.prompt{display:none}.prompt.active{display:block}.log-wrap{display:grid;grid-template-rows:auto minmax(360px,1fr);min-height:calc(100vh - 102px)}.head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 18px;border-bottom:1px solid var(--line);background:#fff}.head h2{margin:0;font-size:18px}.log{margin:0;overflow:auto;padding:18px;background:var(--dark);color:#e6edf7;font:13px/1.7 Consolas,monospace;white-space:pre-wrap;word-break:break-word}.files{display:grid;gap:8px;max-height:260px;overflow:auto}.detail-files{padding:14px;overflow:auto}.file{display:flex;justify-content:space-between;align-items:center;gap:12px;border:1px solid var(--line);border-radius:9px;padding:10px;background:#fff;cursor:pointer}.file.selected{border-color:var(--blue);background:var(--blueSoft)}.file-name{font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.file-meta{min-width:0;display:grid;gap:4px}.file-actions{display:flex;gap:6px}.tabs{display:flex;gap:8px;padding:12px 14px;border-bottom:1px solid var(--line)}.tab{background:#fff;color:var(--text);border-color:var(--line);box-shadow:none}.tab.active{color:var(--blue);border-color:var(--blue);background:var(--blueSoft)}.toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 14px;border-bottom:1px solid var(--line);background:var(--soft)}.out{min-height:0;overflow:auto;padding:22px 24px;border-left:4px solid rgba(37,99,235,.22);white-space:pre-wrap;word-break:break-word;line-height:1.75}.out.raw{background:var(--dark);color:#e6edf7;font-family:Consolas,monospace}.report{display:grid;gap:14px;max-width:1180px}.hero,.section,.metric{border:1px solid var(--line);border-radius:12px;background:#fff}.hero{padding:18px 20px;background:linear-gradient(135deg,rgba(37,99,235,.10),transparent 42%),#fff}.hero h2{margin:4px 0;font-size:22px}.hero p{margin:0;color:var(--muted)}.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px}.metric{padding:10px 12px}.metric span{display:block;color:var(--muted);font-size:12px;font-weight:750}.metric strong{display:block;margin-top:5px}.section h3{margin:0;padding:12px 16px;border-bottom:1px solid var(--line);background:var(--soft);font-size:15px}.section div{padding:14px 16px}.drop{position:fixed;inset:14px;z-index:20;display:none;align-items:center;justify-content:center;border:2px dashed rgba(37,99,235,.55);border-radius:18px;background:rgba(239,246,255,.86);color:var(--blue2);pointer-events:none}.drop.active{display:flex}.drop>div{padding:26px 30px;border-radius:14px;background:#fff;text-align:center}@media(max-width:900px){.grid,.detail-grid{grid-template-columns:1fr;height:auto}.log-wrap{min-height:520px}.card.result{height:72vh;min-height:520px}}\n</style>\n</head>\n<body>\n<div id="drop" class="drop"><div><strong>??????</strong><br><span class="muted">??????????</span></div></div>\n<header><h1>Short Video Analyzer</h1><div id="current" class="muted">??</div></header>\n<main id="home" class="page active"><div class="grid"><section class="card stack">\n<div><p class="title">TikTok / ??????</p><label>??????</label><input id="url" type="url" placeholder="https://www.tiktok.com/@user/video/... ? https://v.douyin.com/..."></div><div class="row"><button id="download">????</button><button id="network" class="secondary">??????</button></div>\n<div><p class="title">??????</p><label>??? videos/</label><input id="videoFile" type="file" accept="video/*" multiple></div><div class="row"><button id="upload">??</button><button id="refresh" class="secondary">????</button></div>\n<div><p class="title">?????</p><div id="homeFiles" class="files"></div></div>\n<div><p class="title">????</p><label>????</label><select id="mode"><option value="analyzer">????????video-analyzer?</option><option value="direct_video">?????????Qwen?</option></select></div><button id="promptBtn" class="secondary">???????</button><div id="promptPanel" class="prompt"><label>?????</label><textarea id="prompt"></textarea></div>\n<label class="check"><input id="autoPost" type="checkbox">???? DeepSeek ??</label><div class="row"><button id="analyze" disabled>????</button><button id="post" class="secondary" disabled>????????</button></div><div id="status" class="status">?????????????</div>\n</section><section class="card log-wrap"><div class="head"><div><h2>????</h2><div class="muted">?????????????????????</div></div><button id="clearLog" class="secondary small">????</button></div><pre id="log" class="log">????...</pre></section></div></main>\n<main id="detail" class="page"><div class="detail-grid"><section class="card" style="display:grid;grid-template-rows:auto 1fr"><div class="head" style="display:grid"><button id="back" class="secondary">????</button><div><h2>?????</h2><div class="muted">???????</div></div></div><div id="detailFiles" class="detail-files files"></div></section><section class="card result" style="display:grid;grid-template-rows:auto auto minmax(0,1fr)"><div class="tabs"><button class="tab active" data-tab="content">????????</button><button class="tab" data-tab="audit">????????</button></div><div class="toolbar"><b id="outTitle">Qwen ?????DeepSeek ??</b><div class="row"><button id="source" class="secondary small">????</button><button id="json" class="secondary small">???? JSON</button></div></div><div id="out" class="out">{}</div></section></div></main>\n<script>\nwindow.DEFAULT_ANALYSIS_MODE="__DEFAULT_ANALYSIS_MODE__";\nconst S={file:"",files:[],result:null,job:null,tab:"content",raw:false,has:false,logs:[]};\nconst $=id=>document.getElementById(id), home=$(\'home\'), detail=$(\'detail\'), current=$(\'current\'), status=$(\'status\'), log=$(\'log\'), out=$(\'out\'); let de=null, je=null, drag=0;\nfunction esc(v){return String(v??\'\').replace(/[&<>"\']/g,c=>({\'&\':\'&amp;\',\'<\':\'&lt;\',\'>\':\'&gt;\',\'"\':\'&quot;\',"\'":\'&#39;\'}[c]))} function pretty(v){return v==null?\'{}\':typeof v===\'string\'?v:JSON.stringify(v,null,2)} function clean(v){let s=typeof v===\'string\'?v:(v&&typeof v.response===\'string\'?v.response:pretty(v));return s.replace(/^```(?:json)?\\s*/i,\'\').replace(/\\s*```$/i,\'\').trim()} function bytes(n){return `${Math.round(Number(n||0)/1024/1024*10)/10} MB`} function setStatus(m,k=\'\'){status.className=\'status \'+k;status.textContent=m} function addLog(m){S.logs.push(`[${new Date().toLocaleTimeString()}] ${m}`);if(S.logs.length>500)S.logs.splice(0,S.logs.length-500);log.textContent=S.logs.join(\'\\n\')||\'????...\';log.scrollTop=log.scrollHeight}\nfunction metric(k,v){return v==null||v===\'\'?\'\':`<div class="metric"><span>${esc(k)}</span><strong>${esc(v)}</strong></div>`} function sec(t,b){b=clean(b);return b?`<section class="section"><h3>${esc(t)}</h3><div>${esc(b)}</div></section>`:\'\'} function list(t,a,map=x=>x){if(!Array.isArray(a)||!a.length)return\'\';return `<section class="section"><h3>${esc(t)}</h3><div>${a.map((x,i)=>`- ${esc(clean(map(x,i)))}`).join(\'\\n\')}</div></section>`} function has(r){return !!(r&&(r.analysis||r.analysis_zh||r.audit_result||r.audit_result_zh))}\nfunction extraction(v){if(!v||typeof v!==\'object\')return pretty(v);const md=v.metadata||{},tr=v.transcript||{},u=v.usage||{},tl=Array.isArray(v.timeline)?v.timeline:[],ve=Array.isArray(v.visual_evidence)?v.visual_evidence:[],fa=Array.isArray(v.frame_analyses)?v.frame_analyses:[];return `<article class="report"><div class="hero"><small>Qwen Video Extraction</small><h2>??????</h2><p>${esc(clean(v.summary)||\'?????????????????????\')}</p></div><div class="metrics">${metric(\'????\',v.processing_mode)}${metric(\'????\',v.vision_model||md.model)}${metric(\'????\',v.audio_mode)}${metric(\'????\',md.frames_processed||md.frames_extracted)}${metric(\'????\',tr.language||md.audio_language)}${metric(\'?? Tokens\',u.input_tokens)}${metric(\'?? Tokens\',u.output_tokens)}${metric(\'? Tokens\',u.total_tokens)}${metric(\'API ??\',u.api_calls)}${metric(\'???\',u.elapsed_seconds==null?\'\':u.elapsed_seconds+\'s\')}</div>${sec(\'????\',v.summary)}${sec(\'??????\',v.video_description)}${list(\'???\',tl,x=>typeof x===\'string\'?x:`${x.time_range||x.timestamp||\'\'}\\n${x.visual||\'\'}\\n${x.audio||\'\'}`)}${list(\'????\',ve,x=>typeof x===\'string\'?x:(x.description||x.visual||pretty(x)))}${list(\'??????\',fa,(x,i)=>`[? ${i+1}]\\n${clean(x)}`)}${sec(\'????\',tr.text||\'?????\')}</article>`}\nfunction audit(v){if(!v||typeof v!==\'object\')return pretty(v);return `<article class="report"><div class="hero"><small>DeepSeek Audit</small><h2>??????</h2><p>${esc(v.summary||\'?????????????????\')}</p></div><div class="metrics">${metric(\'????\',v.risk_level)}${metric(\'????\',v.recommended_action)}${metric(\'????\',v.publish_suggestion)}</div>${sec(\'????\',v.summary)}${sec(\'????\',v.content_overview)}${sec(\'????\',v.transcript_notes)}${sec(\'????\',v.visual_notes)}${list(\'????\',v.risk_reasons)}${list(\'???\',v.issues)}</article>`}\nfunction renderOut(r){S.result=r;out.className=S.raw?\'out raw\':\'out\';let v;if(S.tab===\'content\'){v=S.raw?r?.analysis:(r?.analysis_zh||r?.analysis);$(\'json\').style.display=\'inline-flex\';$(\'outTitle\').textContent=S.raw?\'Qwen ??????? JSON\':\'Qwen ?????DeepSeek ??\';S.raw?out.textContent=pretty(v):out.innerHTML=extraction(v)}else{v=S.raw?r?.audit_result:(r?.audit_result_zh||r?.audit_result);$(\'json\').style.display=\'none\';$(\'outTitle\').textContent=S.raw?\'DeepSeek ???????\':\'DeepSeek ???????\';S.raw?out.textContent=pretty(v):out.innerHTML=audit(v)}$(\'source\').textContent=S.raw?\'????\':\'????\'}\nfunction buttons(){ $(\'analyze\').textContent=S.has?\'????\':\'????\'; $(\'analyze\').disabled=!S.file; $(\'post\').disabled=!S.file||!S.has||!!S.job }\nfunction renderFiles(){for(const [id,detailMode] of [[\'homeFiles\',false],[\'detailFiles\',true]]){const box=$(id);box.innerHTML=\'\';if(!S.files.length){box.innerHTML=\'<div class="muted">videos/ ??????</div>\';continue}S.files.forEach(f=>{const el=document.createElement(\'div\');el.className=\'file\'+(f.name===S.file?\' selected\':\'\');el.innerHTML=`<span class="file-meta"><span class="file-name">${esc(f.name)}</span><span class="muted">${bytes(f.size)}</span></span>${detailMode?\'\':`<span class="file-actions"><button class="secondary small">??</button><button class="danger small">??</button></span>`}`;el.onclick=()=>toDetail(f.name);if(!detailMode){const b=el.querySelectorAll(\'button\');b[0].onclick=e=>{e.stopPropagation();open(\'/video/\'+encodeURIComponent(f.name),\'_blank\',\'noopener\')};b[1].onclick=e=>{e.stopPropagation();delFile(f.name)}}box.appendChild(el)})}buttons()}\nfunction view(v,f=\'\'){home.classList.toggle(\'active\',v===\'home\');detail.classList.toggle(\'active\',v===\'detail\');current.textContent=v===\'detail\'&&f?f:\'??\'} function toHome(){location.hash=\'\';view(\'home\')} function toDetail(f){location.hash=\'detail=\'+encodeURIComponent(f)} function route(){const h=location.hash.slice(1);if(h.startsWith(\'detail=\')){select(decodeURIComponent(h.slice(7)),false);view(\'detail\',S.file)}else{view(\'home\');renderFiles()}}\nasync function refresh(){const r=await fetch(\'/api/files\');S.files=await r.json();if(!Array.isArray(S.files))S.files=[];renderFiles()} async function loadResult(name){const r=await fetch(\'/api/result?filename=\'+encodeURIComponent(name)),j=await r.json();if(r.ok&&has(j)){S.result=j;S.has=true;const p=j.analysis&&j.analysis.metadata&&j.analysis.metadata.analysis_prompt;if(p)$(\'prompt\').value=p;renderOut(j);setStatus(name+\': ???????\',\'ok\')}else{S.result=null;S.has=false;out.textContent=\'{}\';setStatus(name+\': ????\')}buttons()} function select(name,openDetail=true){S.file=name;current.textContent=name||\'??\';S.has=false;renderFiles();if(name)loadResult(name).catch(e=>setStatus(e.message,\'bad\'));if(openDetail&&name)toDetail(name)}\nasync function upload(files=null){const input=$(\'videoFile\'),arr=Array.from(files||input.files||[]);if(!arr.length)return setStatus(\'????????????\',\'bad\');const bad=arr.filter(f=>!f.type.startsWith(\'video/\'));if(bad.length){addLog(\'??????????????\'+bad.map(f=>f.name).join(\', \'));return setStatus(\'????????\',\'bad\')}const form=new FormData();arr.forEach(f=>form.append(\'video\',f));addLog(`???? ${arr.length} ????`);setStatus(\'????...\');const r=await fetch(\'/api/upload\',{method:\'POST\',body:form}),p=await r.json(),ok=Array.isArray(p.files)?p.files:[],err=Array.isArray(p.errors)?p.errors:[];ok.forEach(f=>addLog(`?????${f.filename} (${bytes(f.size)})`));err.forEach(e=>addLog(`?????${e.filename||\'????\'} - ${e.error||\'????\'}`));if(!r.ok&&!ok.length)return setStatus(p.error||\'????\',\'bad\');setStatus(`??????? ${ok.length} ???? ${err.length} ?`,err.length?\'bad\':\'ok\');input.value=\'\';await refresh();if(ok.length)select(ok.at(-1).filename,false)}\nasync function delFile(name){if(!confirm(`?? ${name} ?????????`))return;const r=await fetch(\'/api/delete\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({filename:name})}),p=await r.json();if(!r.ok)return setStatus(p.error||\'????\',\'bad\');addLog(\'?????\'+name);if(S.file===name){S.file=\'\';S.result=null;S.has=false;toHome()}await refresh()}\nfunction closeD(){if(de){de.close();de=null}}function closeJ(){if(je){je.close();je=null}} function lastLog(j){return j&&Array.isArray(j.log)&&j.log.length?j.log.at(-1):\'\'}\nasync function startDownload(){const url=$(\'url\').value.trim();if(!url)return setStatus(\'??? TikTok ????????\',\'bad\');$(\'download\').disabled=true;addLog(\'???????\'+url);const r=await fetch(\'/api/download\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({url})}),j=await r.json();if(!r.ok){$(\'download\').disabled=false;return setStatus(j.error||\'????????\',\'bad\')}closeD();de=new EventSource(\'/api/download-events?id=\'+encodeURIComponent(j.id));de.onmessage=async e=>{const j=JSON.parse(e.data),l=lastLog(j);if(l)addLog(\'???\'+l);if(j.status===\'running\'||j.status===\'queued\')return setStatus(`??????${j.status}`);closeD();$(\'download\').disabled=false;if(j.status!==\'complete\')return setStatus(\'???????\'+(j.error||\'????\'),\'bad\');setStatus(j.filename+\': ????\',\'ok\');$(\'url\').value=\'\';await refresh();select(j.filename,false)};de.onerror=()=>{closeD();$(\'download\').disabled=false;setStatus(\'????????\',\'bad\')}}\nasync function checkNet(){$(\'network\').disabled=true;setStatus(\'??????????????...\');try{const r=await fetch(\'/api/network-check\'),p=await r.json();const fmt=x=>!x?\'???\':(!x.ok?\'???\'+(x.error||\'????\'):`${x.ip||\'?? IP\'} / ${x.country_name||x.country||\'????\'} / ${x.is_us?\'????\':\'?????\'}`);addLog(\'???\'+fmt(p.direct));addLog(\'???\'+fmt(p.proxy));setStatus(`???${fmt(p.direct)}????${fmt(p.proxy)}`,p.proxy&&p.proxy.ok&&p.proxy.is_us?\'ok\':\'bad\')}catch(e){setStatus(e.message,\'bad\')}finally{$(\'network\').disabled=false}}\nasync function analyze(){if(!S.file)return;$(\'analyze\').disabled=true;$(\'post\').disabled=true;const reset=S.has;addLog(`${S.file}: ${reset?\'??????????\':\'??????\'}`);const r=await fetch(\'/api/analyze\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({filename:S.file,analysis_mode:$(\'mode\').value,analysis_prompt:$(\'prompt\').value,postprocess:$(\'autoPost\').checked,reset_output:reset})}),j=await r.json();if(!r.ok){setStatus(j.error||\'????\',\'bad\');return buttons()}S.job=j.id;openJob(j.id)}\nasync function postprocess(){if(!S.file||!S.has)return;const r=await fetch(\'/api/postprocess\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({filename:S.file})}),j=await r.json();if(!r.ok)return setStatus(j.error||\'????\',\'bad\');S.tab=\'audit\';document.querySelectorAll(\'.tab\').forEach(x=>x.classList.toggle(\'active\',x.dataset.tab===\'audit\'));S.job=j.id;openJob(j.id)}\nfunction openJob(id){closeJ();je=new EventSource(\'/api/job-events?id=\'+encodeURIComponent(id));je.onmessage=e=>{const j=JSON.parse(e.data),l=lastLog(j);if(l)addLog(`${j.filename}: ${l}`);S.result=j;if(location.hash.startsWith(\'#detail=\'))renderOut(j);if(j.status===\'running\'||j.status===\'queued\')return setStatus(`${j.filename}: ${j.status}`);closeJ();S.job=null;S.has=j.status===\'complete\'||has(j);buttons();setStatus(j.status===\'complete\'?`${j.filename}: ??`:`${j.filename}: ${j.error||\'??\'}`,j.status===\'complete\'?\'ok\':\'bad\')};je.onerror=()=>{closeJ();buttons();setStatus(\'????????\',\'bad\')}}\nfunction downloadJson(){const a=S.result&&S.result.analysis;if(!a)return setStatus(\'??????? analysis.json?\',\'bad\');const name=`${S.file||\'video\'}.analysis.json`,blob=new Blob([JSON.stringify(a,null,2)],{type:\'application/json;charset=utf-8\'}),url=URL.createObjectURL(blob),link=document.createElement(\'a\');link.href=url;link.download=name;document.body.appendChild(link);link.click();link.remove();URL.revokeObjectURL(url);addLog(\'???? JSON?\'+name)}\n$(\'download\').onclick=startDownload;$(\'network\').onclick=checkNet;$(\'upload\').onclick=()=>upload();$(\'refresh\').onclick=()=>refresh().then(()=>addLog(\'????????\'));$(\'analyze\').onclick=analyze;$(\'post\').onclick=postprocess;$(\'back\').onclick=toHome;$(\'clearLog\').onclick=()=>{S.logs=[];log.textContent=\'????...\'};$(\'source\').onclick=()=>{S.raw=!S.raw;renderOut(S.result)};$(\'json\').onclick=downloadJson;$(\'mode\').value=window.DEFAULT_ANALYSIS_MODE||\'analyzer\';$(\'promptBtn\').onclick=()=>{const p=$(\'promptPanel\');p.classList.toggle(\'active\');$(\'promptBtn\').textContent=p.classList.contains(\'active\')?\'???????\':\'???????\'};document.querySelectorAll(\'.tab\').forEach(t=>t.onclick=()=>{document.querySelectorAll(\'.tab\').forEach(x=>x.classList.remove(\'active\'));t.classList.add(\'active\');S.tab=t.dataset.tab;S.raw=false;renderOut(S.result)});addEventListener(\'hashchange\',route);addEventListener(\'dragenter\',e=>{e.preventDefault();drag++;$(\'drop\').classList.add(\'active\')});addEventListener(\'dragover\',e=>e.preventDefault());addEventListener(\'dragleave\',e=>{e.preventDefault();drag=Math.max(0,drag-1);if(!drag)$(\'drop\').classList.remove(\'active\')});addEventListener(\'drop\',e=>{e.preventDefault();drag=0;$(\'drop\').classList.remove(\'active\');if(e.dataTransfer.files.length)upload(e.dataTransfer.files)});fetch(\'/api/prompt\').then(r=>r.json()).then(p=>$(\'prompt\').value=p.prompt||\'\').catch(()=>{});refresh().then(route).catch(e=>setStatus(e.message,\'bad\'));\n</script>\n</body>\n</html>'
 
 
 

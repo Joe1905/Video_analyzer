@@ -40,7 +40,7 @@ from sellersprite_evidence_renderer import (  # noqa: E402
 )
 from social_tool_router import SOCIAVAULT_OFFICIAL_TOOL_NAMES  # noqa: E402
 from web_app import build_chat_history_context, build_deepseek_tool_assistant_message, build_prefixed_model_tools, build_tool_limit_final_context, chat_markdown_to_html, chat_request_needs_tools, chat_routing_text, compact_chat_tool_evidence, deepseek_tool_protocol_present, estimate_chat_context_tokens, fastmoss_analysis_evidence_gaps, fastmoss_availability_search_arguments, fastmoss_defaults_to_us, fastmoss_empty_availability_answer, fastmoss_playbook_instruction, fastmoss_playbook_intent, fastmoss_product_evidence_required, fastmoss_required_capability_gaps, filter_locked_provider_tool_ids, forced_provider_domain_tool_available, is_chat_retry_request, manage_chat_context, normalize_mcp_tool_arguments, normalize_prefixed_tool_result, normalize_tool_result, parse_chat_intent_decision, provider_default_enabled_tool_ids, provider_forces_mcp_tools, resolve_chat_intent, route_chat_intent  # noqa: E402
-from tools import _filter_relevant_search_results, execute_tool, get_tools_for_model, list_tools, parse_bing_html, parse_duckduckgo_html  # noqa: E402
+from tools import _filter_relevant_search_results, execute_tool, parse_bing_html, parse_duckduckgo_html  # noqa: E402
 
 
 def test_fastmoss_official_skill_chain_loads_exact_package_and_isolates_tools() -> None:
@@ -349,13 +349,11 @@ def test_current_time_tool_is_available() -> None:
     assert result["data"]["time"]
     assert result["data"]["utc_iso"]
 
-    model_tool_names = {item["function"]["name"] for item in get_tools_for_model()}
-    assert "current_time" in model_tool_names
-
-    categories = {item["category"]: item["tools"] for item in list_tools()}
-    assert any(tool["name"] == "current_time" for tool in categories["系统"])
-
-
+    model_tool_names = {
+        item["function"]["name"]
+        for item in web_app.build_prefixed_model_tools({"system__current_time"})
+    }
+    assert "system__current_time" in model_tool_names
 
 def test_web_search_route_exposes_web_search_tool() -> None:
     route = route_chat_intent("\u98de\u98de\u5154\u4f60\u77e5\u9053\u5417")
@@ -586,12 +584,11 @@ def test_web_search_tool_is_registered_and_normalized() -> None:
     assert result["enough_data"] is True
     assert result["results"][0]["url"] == "https://example.com/news"
 
-    model_tool_names = {item["function"]["name"] for item in get_tools_for_model()}
-    assert "web_search" in model_tool_names
-
-    categories = {item["category"]: item["tools"] for item in list_tools()}
-    assert any(tool["name"] == "web_search" for tools in categories.values() for tool in tools)
-
+    model_tool_names = {
+        item["function"]["name"]
+        for item in web_app.build_prefixed_model_tools({"system__web_search"})
+    }
+    assert "system__web_search" in model_tool_names
 
 def _chat_message(
     message_id: str,
@@ -2042,12 +2039,6 @@ def test_dynamic_provider_capability_graph_uses_task_scope_and_evidence() -> Non
     selected = web_app.provider_profile_tool_ids("fastmoss", fast_route, fast_text, fast_enabled, message)
     assert selected == {"system__current_time", "fastmoss__market_category_ranking"}
     assert web_app.fastmoss_clarifying_question("fastmoss", fast_route, fast_text) is None
-    drilldown_message = SimpleNamespace(tool_calls=[
-        {"function": {"name": "fastmoss__market_category_ranking", "arguments": '{"filter":{"region":"US"}}'}},
-        {"function": {"name": "fastmoss__market_category_ranking", "arguments": '{"filter":{"region":"US","category_id":3}}'}},
-    ])
-    assert web_app.fastmoss_category_ranking_drilldown_count(drilldown_message) == 1
-
     message.tool_calls.append({
         "function": {"name": "fastmoss__market_category_ranking", "arguments": '{"filter":{"region":"US"}}'},
     })
@@ -2496,28 +2487,12 @@ def test_region_default_only_applies_when_schema_supports_it() -> None:
 
 
 def test_all_sites_disable_frontend_tool_selection() -> None:
-    previous_fastmoss = os.environ.get("FASTMOSS_OFFICIAL_SKILL_ENABLED")
-    previous_sellersprite = os.environ.get("SELLERSPRITE_OFFICIAL_SKILL_ENABLED")
-    os.environ["FASTMOSS_OFFICIAL_SKILL_ENABLED"] = "1"
-    os.environ["SELLERSPRITE_OFFICIAL_SKILL_ENABLED"] = "1"
-    try:
-        assert web_app.chat_tool_selection_enabled("fastmoss") is False
-        assert web_app.chat_tool_selection_enabled("amazon") is False
-        assert web_app.chat_tool_selection_enabled("home") is False
-    finally:
-        if previous_fastmoss is None:
-            os.environ.pop("FASTMOSS_OFFICIAL_SKILL_ENABLED", None)
-        else:
-            os.environ["FASTMOSS_OFFICIAL_SKILL_ENABLED"] = previous_fastmoss
-        if previous_sellersprite is None:
-            os.environ.pop("SELLERSPRITE_OFFICIAL_SKILL_ENABLED", None)
-        else:
-            os.environ["SELLERSPRITE_OFFICIAL_SKILL_ENABLED"] = previous_sellersprite
-
     chat_html = (ROOT / "scripts" / "static" / "chat.html").read_text(encoding="utf-8")
+    ui_system_js = (ROOT / "scripts" / "static" / "assets" / "ui-system.js").read_text(encoding="utf-8")
     assert "headerToolBtn" not in chat_html
     assert "toolModal" not in chat_html
     assert 'id="toolBtn"' not in chat_html
+    assert "enhanceToolTree" not in ui_system_js
     assert "enabledToolMasks" not in chat_html
     assert "TOOL_SELECTION" not in chat_html
 
@@ -3226,17 +3201,6 @@ def test_fastmoss_answer_verifier_applies_local_edits_and_keeps_draft_on_failure
     assert "完整调研报告" in style and "可以自由提出执行建议" in style
     assert web_app.fastmoss_report_style_instruction({"task_depth": "lookup"}) == ""
 
-    native_report = (
-        "## 核心判断\n类目渠道结构显示视频成交更重要。\n"
-        "## 研究口径\n这里说明上级类目与样本边界。\n"
-        "## 平台成交结构\n广告和联盟数据用于核对代表商品。\n"
-        "## 验证建议\n优先验证同形态商品。"
-    )
-    native_manifest = {
-        "evidence_facts": [{"dimension": "category_channel_ranking"}, {"dimension": "product_overview"}],
-    }
-    assert web_app.fastmoss_rewrite_preserves_report_detail("", native_report, native_manifest, route)
-
     class FakeResponse:
         finish_reason = "stop"
 
@@ -3301,21 +3265,6 @@ def test_fastmoss_answer_verifier_applies_local_edits_and_keeps_draft_on_failure
             "$29.99", "$39.99", "$13–$16", "$14.99", "1–2个月", "月销1,000", "$5–$8",
         ):
             assert recommendation in edited, (recommendation, edited)
-
-        downgraded = web_app.polish_fastmoss_report_tone(
-            "该细分不存在独立市场，但它是真实细分机会。"
-        )
-        assert "尚未显示出足以确认独立市场的强信号" in downgraded
-        assert "是否构成可进入机会仍需验证" in downgraded
-
-        softened = web_app.polish_fastmoss_report_tone(
-            "首批500-1000件，配合3-5个达人，筛选10k-50k粉的创作者，观察2周，建议定价$29.99-$39.99。"
-        )
-        assert "500" not in softened and "3-5" not in softened
-        assert "10k" not in softened and "2周" not in softened
-        assert "$29.99" not in softened and "$39.99" not in softened
-        assert "小批量" in softened and "少量匹配达人" in softened
-        assert "受众匹配" in softened and "完整测试周期" in softened
 
         class ApprovedResponse(FakeResponse):
             def json(self):
@@ -3540,13 +3489,6 @@ def test_fastmoss_verifier_batches_claims_and_isolates_failures() -> None:
     assert "判断1：竞争强度仍需验证" in result
     for index in range(2, 12):
         assert f"判断{index}：" in result
-
-    unchanged, count = web_app.sanitize_fastmoss_state_contradictions(
-        "直播数据为0，但这是观测值。",
-        {"evidence_envelopes": [{"data_state": "empty", "entity_refs": [{"type": "live", "id": "0"}]}]},
-    )
-    assert unchanged == "直播数据为0，但这是观测值。" and count == 0
-
 
 def test_fastmoss_creator_video_facts_and_historical_rebuild() -> None:
     creator_payload = {
@@ -4026,20 +3968,6 @@ def test_fastmoss_22_call_semantic_registry_fixture() -> None:
     assert any(item.get("dimension") == "product_videos" for item in content_evidence["facts"])
     assert len(json.dumps(content_evidence, ensure_ascii=False)) < 40000
 
-    draft = (
-        "厨房家电销量同比 -15.57%，GMV同比 -15.57%。\n"
-        f"{representatives[1][0]} 商品卡GMV占比94%，商品卡销量占比94%。\n"
-        "Apex有670条广告视频，T ao有14条广告视频。\n"
-        "1716件 ÷ 146条视频 = 平均11.7件。"
-    )
-    corrected, edits, _bound, _unbound = web_app.validate_fastmoss_numeric_claims(draft, manifest)
-    assert edits == 6, (edits, corrected)
-    assert "GMV同比 -25.66%" in corrected
-    assert "商品卡GMV占比91%" in corrected and "商品卡销量占比92%" in corrected
-    assert "670条关联视频" in corrected and "14条关联视频" in corrected
-    assert "11.7" not in corrected and "不能直接相除" in corrected
-
-
 def test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence() -> None:
     class Response:
         def raise_for_status(self) -> None:
@@ -4219,48 +4147,7 @@ def test_fastmoss_analytical_answers_use_single_semantic_report_path() -> None:
     assert chat_source.count("complete_fastmoss_answer(") >= 5
 
 
-def test_fastmoss_claim_ids_and_extended_mechanical_cleanup() -> None:
-    draft = (
-        "## 建议\n"
-        "建议月度广告预算 $3K–$5K，首批联系20位达人，每周发布5–7条视频，"
-        "CPO控制在$15–$18，测试周期2周，建议功率300–500W，售价定在$39.99。\n"
-        "计划与 1–2 位 5k–50k 粉丝的西语美食达人合作，测试 $12–$15 价位，头部商品毛利率潜力较高。\n"
-        "其余1970个商品合计不足25%，所以广告ROI稳定。"
-    )
-    cleaned, count = web_app.sanitize_fastmoss_unsupported_recommendations(draft)
-    cleaned = web_app.downgrade_fastmoss_absolute_market_claims(cleaned)
-    assert count >= 6
-    for unsupported in (
-        "$3K", "$5K", "20位", "5–7", "$15", "$18", "2周", "300–500W", "$39.99",
-        "1–2 位", "5k–50k", "毛利率潜力", "1970", "25%", "ROI稳定",
-    ):
-        assert unsupported not in cleaned
-
-    downgraded = web_app.downgrade_fastmoss_absolute_market_claims(
-        "Electric Food Shredder 市场极窄，内容效率为零，广告回报极低。"
-    )
-    assert "市场极窄" not in downgraded
-    assert "效率为零" not in downgraded
-    assert "回报极低" not in downgraded
-
-    corrected, corrected_count = web_app.sanitize_fastmoss_state_contradictions(
-        "Electric Food Shredder 细分几乎无活跃商品，说明头部集中度高。",
-        {
-            "evidence_envelopes": [],
-            "derived_signals": {
-                "category_top3_share": 0.43,
-                "segment_queries": [{
-                    "query": "Electric Food Shredder",
-                    "fetched_unique": 10,
-                    "products_with_units": 6,
-                }],
-            },
-        },
-    )
-    assert corrected_count == 2
-    assert "10 款样本" in corrected and "6 款有可核对销量" in corrected
-    assert "并非高度集中" in corrected
-
+def test_fastmoss_claim_ids_and_verifier_edit_guards() -> None:
     claims = web_app.fastmoss_high_risk_claims("结论\n这个市场已经是低竞争蓝海。")
     assert claims and claims[0]["claim_id"] == "line-2"
     edited, applied = web_app.apply_fastmoss_verifier_edits(
@@ -4339,24 +4226,6 @@ def test_fastmoss_claim_ids_and_extended_mechanical_cleanup() -> None:
     )
     assert unbound_number_edits == 0 and "10件" in unbound_numbers
 
-    cleaned_markdown = web_app.cleanup_fastmoss_markdown_structure(
-        "| 指标 | A |\n|---|---|\n\n| 销量 | 10 |\n\n## 空章节\n\n## 下一节\n\n有内容。"
-    )
-    assert "|---|---|\n| 销量" in cleaned_markdown
-    assert "空章节" not in cleaned_markdown and "## 下一节" in cleaned_markdown
-
-    observed_price = "当前观测定价 $24.30，GMV推导单价为$21.21。"
-    kept_price, price_edits = web_app.sanitize_fastmoss_unsupported_recommendations(observed_price)
-    assert kept_price == observed_price and price_edits == 0
-
-    future_threshold = (
-        "如果其达人链接数在接下来2周内从10人翻倍至20人以上且出现首单，则测试$10-$15的 USB-C 产品。"
-    )
-    cleaned_threshold, threshold_edits = web_app.sanitize_fastmoss_unsupported_recommendations(future_threshold)
-    assert threshold_edits == 2
-    assert "2周" not in cleaned_threshold and "10人" not in cleaned_threshold and "20人" not in cleaned_threshold
-    assert "$10" not in cleaned_threshold and "$15" not in cleaned_threshold
-
     semantic_claims = web_app.fastmoss_high_risk_claims(
         "关键词返回量证明该细分市场容量很小，商业化程度低，不具备规模投入条件。\n"
         "该商品依靠广告投放实现爆发，说明产品生命周期已自然衰退。"
@@ -4376,35 +4245,6 @@ def test_fastmoss_claim_ids_and_extended_mechanical_cleanup() -> None:
     assert all(not claim["text"].startswith("##") for claim in metric_claims)
     metric_reasons = {reason for claim in metric_claims for reason in claim["reasons"]}
     assert {"metric_period", "cross_period_ratio"}.issubset(metric_reasons)
-
-    causal_cleaned = web_app.downgrade_fastmoss_absolute_market_claims(
-        "周均仍有250件新品入场，表明供给侧仍在积极测试，竞争加剧。\n"
-        "视频份额下降，说明消费者对内容的耐受度在降低，决策路径转向搜索。\n"
-        "样本10件销量28件，说明消费者认知尚未打开，多数购买者通过别的关键词进入。\n"
-        "该商品0条视频，说明主要依靠商品卡自然流量或付费广告，而非内容驱动。"
-    )
-    for unsupported in ("竞争加剧", "耐受度在降低", "消费者认知尚未打开", "主要依靠商品卡"):
-        assert unsupported not in causal_cleaned
-    assert "新品供给仍活跃" in causal_cleaned
-    assert "消费者认知和搜索路径仍需验证" in causal_cleaned
-    assert "渠道归因数据验证" in causal_cleaned
-
-    expanded_causal_cleaned = web_app.downgrade_fastmoss_absolute_market_claims(
-        "消费者搜了再买，商品卡自然搜索流量说明这个产品更成熟、更活跃、销售潜力更大。\n"
-        "另一个细分仍处于萌芽或需求低迷，前者由达人积极带动。\n"
-        "类目销量同比下降说明整体大盘萎缩、进入存量竞争阶段，但已经形成内容护城河和用户心智。\n"
-        "两款产品过度依赖“商品卡”自然搜索流量，这意味着它们缺乏可持续的达人内容驱动力；"
-        "一旦竞争品进入，销量将锐减。前者至少有达人愿意带，其增长有持续动力，后者依赖搜索截流。\n"
-        "视频份额变化表明单纯的视频种草转化难度在增加，Top5 功能进一步验证了它是类目的核心驱动力。"
-    )
-    for unsupported in (
-        "搜了再买", "自然搜索流量", "更成熟", "更活跃", "销售潜力更大",
-        "萌芽", "需求低迷", "达人积极带动", "大盘萎缩", "存量竞争", "内容护城河", "用户心智",
-        "缺乏可持续", "销量将锐减", "达人愿意带", "持续动力", "搜索截流", "转化难度在增加", "核心驱动力",
-    ):
-        assert unsupported not in expanded_causal_cleaned
-    assert "搜索与购买路径未被本轮数据观测" in expanded_causal_cleaned
-    assert "长期市场与竞争阶段仍待验证" in expanded_causal_cleaned
 
     cross_entity_claims = web_app.fastmoss_high_risk_claims(
         "两款商品都来自同一品牌 SPZTJK。"
@@ -4435,12 +4275,6 @@ def test_fastmoss_claim_ids_and_extended_mechanical_cleanup() -> None:
     )
     category_fact = next(item for item in operational_evidence["facts"] if item.get("scope") == "category_head")
     assert len(category_fact["products"]) == 3 and category_fact["page"] == 1
-
-    creator_cleaned, creator_count = web_app.sanitize_fastmoss_unsupported_recommendations(
-        "建议找1–2位达人先做验证。"
-    )
-    assert creator_count == 1 and "1–2" not in creator_cleaned
-
 
 def test_analytical_routes_use_report_model_and_fastmoss_preserves_pro_draft() -> None:
     assert web_app.chat_route_uses_report_model(

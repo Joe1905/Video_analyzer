@@ -2133,52 +2133,6 @@ def delete_product(product_id: str) -> dict[str, Any]:
     return {"deleted_product_id": cleaned_id, **list_products()}
 
 
-def upsert_products(products: list[dict[str, Any]]) -> dict[str, Any]:
-    if not isinstance(products, list):
-        raise ValueError("products must be a list")
-    now = now_iso()
-    conn = connect()
-    try:
-        for position, raw in enumerate(products):
-            if not isinstance(raw, dict):
-                continue
-            product = _product_payload(raw, source=_clean_text(raw.get("source"), 80) or "my_shop")
-            conn.execute(
-                """
-                INSERT INTO tiktok_products (
-                    product_id, product_name, product_url, image_url, price, stock, status, source, sort_order, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(product_id) DO UPDATE SET
-                    product_name = excluded.product_name,
-                    product_url = excluded.product_url,
-                    image_url = excluded.image_url,
-                    price = excluded.price,
-                    stock = excluded.stock,
-                    status = excluded.status,
-                    source = excluded.source,
-                    sort_order = excluded.sort_order,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    product["product_id"],
-                    product["product_name"],
-                    product["product_url"],
-                    product["image_url"],
-                    product["price"],
-                    product["stock"],
-                    product["status"],
-                    product["source"],
-                    int(raw.get("sort_order") or position),
-                    now,
-                    now,
-                ),
-            )
-        conn.commit()
-    finally:
-        conn.close()
-    return list_products()
-
-
 def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
     pool_id = int(payload.get("id") or 0)
     name = _clean_text(payload.get("name"), 160)

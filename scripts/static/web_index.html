@@ -87,6 +87,8 @@ header .pill .dot{width:7px;height:7px;border-radius:50%;background:var(--green)
 /* Detail bottom action bar */
 .detail-actions{display:flex;flex-direction:column;gap:8px;padding:14px 16px;border-top:1px solid var(--border);background:var(--surface)}
 .detail-actions button{min-height:46px;font-size:13px;width:100%}
+.mode-toggle{display:flex;align-items:center;gap:8px;min-height:36px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--border2);font-size:12px;font-weight:700;color:var(--text2)}
+.mode-toggle input{width:auto;margin:0;flex:0 0 auto}
 
 .drop-overlay{position:fixed;inset:16px;display:none;align-items:center;justify-content:center;border:2px dashed var(--brand);border-radius:var(--radius-lg);background:rgba(239,246,255,.92);z-index:20;pointer-events:none}
 .drop-overlay.active{display:flex}.drop-card{background:var(--surface);padding:28px 36px;border-radius:var(--radius-lg);text-align:center;box-shadow:var(--shadow-md)}
@@ -98,8 +100,20 @@ header .pill .dot{width:7px;height:7px;border-radius:50%;background:var(--green)
 .modal-box{background:var(--surface);border-radius:var(--radius-lg);box-shadow:0 20px 60px rgba(0,0,0,.15);width:560px;max-width:90vw;max-height:80vh;display:grid;grid-template-rows:auto 1fr auto}
 .modal-box .modal-head{padding:18px 20px 12px;border-bottom:1px solid var(--border);font-size:15px;font-weight:700}
 .modal-box .modal-body{padding:16px 20px;overflow:auto}
+.prompt-file-row{display:flex;align-items:center;gap:8px;margin-bottom:12px}
+.prompt-file-row input{flex:1}
+.prompt-file-row button{flex-shrink:0}
+.prompt-tabs{display:flex;gap:6px;margin-bottom:12px}
+.prompt-tab{background:var(--surface);color:var(--text2);border-color:var(--border);font-size:12px;border-radius:6px;min-height:30px;box-shadow:none}
+.prompt-tab.active{background:var(--brand);color:#fff;border-color:var(--brand)}
 .modal-box .modal-body textarea{min-height:280px;width:100%}
 .modal-box .modal-foot{padding:12px 20px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px}
+.modal-box.frame-modal{width:min(1200px,94vw);height:min(86vh,900px)}
+.frame-view{min-height:320px;background:#f8fafc;border:1px solid var(--border);border-radius:8px;padding:12px;overflow:auto}
+.frame-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;align-items:start}
+.frame-card{background:#fff;border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.frame-card img{width:100%;height:auto;display:block;background:#e2e8f0}
+.frame-card span{display:block;padding:7px 9px;font-size:12px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
 /* Detail page */
 .detail-shell{flex:1;min-height:0;display:grid;grid-template-columns:280px minmax(0,1fr);gap:0;overflow:hidden}
@@ -112,8 +126,16 @@ header .pill .dot{width:7px;height:7px;border-radius:50%;background:var(--green)
 .tab-btn.active{background:var(--brand);color:#fff;border-color:var(--brand)}
 .detail-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border);background:var(--border2)}
 .detail-toolbar .ttl{font-size:13px;font-weight:700}
-.outlet{min-height:0;overflow:auto;padding:24px;background:var(--bg);line-height:1.75;word-break:break-word}
+.report-area{min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 270px;background:var(--bg)}
+.outlet{min-height:0;overflow:auto;padding:24px;background:var(--bg);line-height:1.75;word-break:break-word;scroll-behavior:smooth}
 .outlet.raw{background:#0f172a;color:#e2e8f0;font:12px/1.6 ui-monospace,Consolas,monospace;white-space:pre-wrap}
+.report-toc{min-height:0;overflow:auto;padding:16px 18px;border-left:1px solid var(--border);background:var(--bg)}
+.report-toc.empty{display:none}
+.report-toc .toc-title{font-size:13px;font-weight:800;margin-bottom:10px}
+.report-toc .toc-list{display:grid;gap:6px}
+.report-toc button{width:100%;min-height:30px;text-align:left;border:0;background:transparent;color:var(--text2);box-shadow:none;padding:6px 8px;border-radius:6px;font-size:12px;font-weight:650;line-height:1.35}
+.report-toc button:hover{background:var(--border2);color:var(--text)}
+.report-toc button.active{background:#eaf1ff;color:var(--brand)}
 
 .report{display:flex;flex-direction:column;gap:14px;max-width:1180px}
 .hero{border:1px solid var(--border);border-radius:var(--radius);padding:20px 24px;background:linear-gradient(135deg,#eff6ff,#fff 62%)}
@@ -140,6 +162,8 @@ header .pill .dot{width:7px;height:7px;border-radius:50%;background:var(--green)
   .left-panel{overflow:visible;border-right:0;max-height:none}
   .right-panel{min-height:480px}
   .detail-shell{grid-template-columns:1fr}
+  .report-area{grid-template-columns:1fr}
+  .report-toc{display:none}
   .outlet{min-height:60vh}
 }
 }
@@ -191,15 +215,20 @@ header .pill .dot{width:7px;height:7px;border-radius:50%;background:var(--green)
       <div class="nav-back"><button id="back" class="secondary sm">← 返回主页</button><h3>已上传视频</h3><p>点击切换详情</p></div>
       <div id="detailFiles" class="file-list detail"></div>
       <div class="detail-actions">
+        <label class="mode-toggle"><input id="directMode" type="checkbox">直接调用 LLM</label>
         <button id="detailAnalyze" class="primary" disabled>开始分析</button>
         <button id="detailReport" class="secondary" disabled>生成报告</button>
+        <button id="detailFeedback" class="secondary" disabled>生成反馈</button>
         <button id="detailPrompt" class="secondary">显示提示词</button>
       </div>
     </section>
     <section class="detail-main">
-      <div class="tabs"><button class="tab-btn active" data-tab="content">提取内容（中文）</button><button class="tab-btn" data-tab="audit">分析结果（中文）</button></div>
-      <div class="detail-toolbar"><span class="ttl" id="outTitle">Qwen 输出内容，DeepSeek 翻译</span><div class="ui-inline-actions"><button id="source" class="secondary sm">显示原文</button><button id="pdf" class="secondary sm">导出 PDF</button><button id="json" class="secondary sm">下载 JSON</button></div></div>
-      <div id="out" class="outlet"><div class="empty-state"><div><b>选择视频查看报告</b><span class="ui-empty-copy">详情会显示提取内容、分析结果、Token 消耗和耗时。</span></div></div></div>
+      <div class="tabs"><button class="tab-btn active" data-tab="content">提取内容</button><button class="tab-btn" data-tab="direct">直接提取内容</button><button class="tab-btn" data-tab="audit">分析结果</button><button class="tab-btn" data-tab="feedback">反馈结果</button><button class="tab-btn" data-tab="comments">评论区分析</button><button class="tab-btn" data-tab="data">数据分析</button><button class="tab-btn" data-tab="creator">博主分析</button></div>
+      <div class="detail-toolbar"><span class="ttl" id="outTitle">Qwen 输出内容</span><div class="ui-inline-actions"><button id="socialRefresh" class="secondary sm ui-hidden">刷新数据</button><button id="socialInsights" class="secondary sm ui-hidden">生成洞察</button><button id="translate" class="secondary sm">手动翻译</button><button id="frames" class="secondary sm">查看抽帧</button><button id="source" class="secondary sm">显示原文</button><button id="pdf" class="secondary sm">导出 PDF</button><button id="json" class="secondary sm">下载 JSON</button></div></div>
+      <div class="report-area">
+        <div id="out" class="outlet"><div class="empty-state"><div><b>选择视频查看报告</b><span class="ui-empty-copy">详情会显示提取内容、分析结果、Token 消耗和耗时。</span></div></div></div>
+        <aside id="toc" class="report-toc empty" aria-label="报告目录"></aside>
+      </div>
       <div class="detail-log" id="detailLogPanel">
         <div class="log-head"><span class="log-title"><span class="log-dot"></span>运行日志</span><button id="clearLog" class="ghost sm">清空</button></div>
         <pre id="log" class="log-body">等待任务...</pre>
@@ -211,11 +240,34 @@ header .pill .dot{width:7px;height:7px;border-radius:50%;background:var(--green)
 <!-- Prompt Modal -->
 <div id="promptModal" class="modal-overlay">
   <div class="modal-box">
-    <div class="modal-head">编辑分析提示词</div>
-    <div class="modal-body"><textarea id="promptTextarea"></textarea></div>
+    <div class="modal-head">编辑提示词</div>
+    <div class="modal-body">
+      <div class="prompt-tabs"><button class="prompt-tab active" data-prompt-tab="analysis" type="button">分析提示词</button><button class="prompt-tab" data-prompt-tab="feedback" type="button">反馈提示词</button></div>
+      <div class="prompt-file-row">
+        <input id="promptFile" type="file" accept=".md,.txt,text/markdown,text/plain">
+        <button id="promptFileClear" class="secondary sm">清空选择</button>
+      </div>
+      <textarea id="promptTextarea"></textarea>
+    </div>
     <div class="modal-foot">
       <button id="promptSave" class="primary">保存</button>
       <button id="promptClose" class="secondary">取消</button>
+    </div>
+  </div>
+</div>
+
+<!-- Frames Modal -->
+<div id="framesModal" class="modal-overlay">
+  <div class="modal-box frame-modal">
+    <div class="modal-head">抽帧预览</div>
+    <div class="modal-body">
+      <div id="framesView" class="frame-view"></div>
+    </div>
+    <div class="modal-foot">
+      <button id="framesOpen" class="secondary">新窗口打开</button>
+      <button id="framesExport" class="secondary" disabled>合成导出</button>
+      <button id="framesRawExport" class="secondary" disabled>原始导出</button>
+      <button id="framesClose" class="secondary">关闭</button>
     </div>
   </div>
 </div>
@@ -225,9 +277,49 @@ header .pill .dot{width:7px;height:7px;border-radius:50%;background:var(--green)
 </div>
 <script>
 window.DEFAULT_ANALYSIS_MODE="__DEFAULT_ANALYSIS_MODE__";
-const S={file:"",files:[],result:null,job:null,tab:"content",raw:false,has:false,logs:[]};
-const $=id=>document.getElementById(id),home=$("home"),detail=$("detail"),status=$("status"),log=$("log"),out=$("out");
-let de=null,je=null,drag=0;
+const DEFAULT_FEEDBACK_PROMPT=`请基于视频提取内容和分析结果，给出可执行的视频改进反馈。重点指出内容表达、开头吸引力、节奏、画面、字幕/口播、卖点呈现、信任感和转化引导的问题，并给出优先级明确的修改建议。
+
+只返回严格可解析 JSON，不要 Markdown，不要代码块，不要额外解释。JSON 结构必须符合：
+{
+  "summary": "一句话总结视频当前最大改进方向",
+  "overall_score": 0-100,
+  "priority_actions": [
+    {
+      "priority": "high|medium|low",
+      "problem": "具体问题",
+      "why_it_matters": "为什么影响完播/互动/转化",
+      "fix": "可直接执行的修改建议",
+      "example": "可替换的文案、镜头或剪辑示例"
+    }
+  ],
+  "opening_feedback": {
+    "problem": "开头前3秒的问题",
+    "fix": "开头改法",
+    "example_hook": "建议使用的新开头钩子"
+  },
+  "content_feedback": {
+    "strengths": ["已有优点"],
+    "issues": ["内容表达问题"],
+    "fixes": ["内容改进建议"]
+  },
+  "visual_feedback": {
+    "issues": ["画面、构图、节奏、字幕问题"],
+    "fixes": ["视觉改进建议"]
+  },
+  "audio_feedback": {
+    "issues": ["口播、音乐、音效问题"],
+    "fixes": ["音频改进建议"]
+  },
+  "conversion_feedback": {
+    "issues": ["卖点、信任感、行动引导问题"],
+    "fixes": ["转化改进建议"],
+    "cta_examples": ["可直接使用的行动引导文案"]
+  },
+  "rewrite_brief": "给剪辑/拍摄人员的改版说明"
+}`;
+const S={file:"",files:[],result:null,job:null,tab:"content",raw:false,has:false,logs:[],feedbackPrompt:DEFAULT_FEEDBACK_PROMPT,promptTab:"analysis"};
+const $=id=>document.getElementById(id),home=$("home"),detail=$("detail"),status=$("status"),log=$("log"),out=$("out"),toc=$("toc");
+let de=null,drag=0;
 const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]));
 const pretty=v=>v==null?"{}":typeof v==="string"?v:JSON.stringify(v,null,2);
 const clean=v=>{let s=typeof v==="string"?v:(v&&typeof v.response==="string"?v.response:pretty(v));return s.replace(/^```(?:json)?\s*/i,"").replace(/\s*```$/i,"").trim()};function md(v){var s=esc(String(v||""));s=s.replace(/\*\*(.+?)\*\*/g,'<b>$1</b>');s=s.replace(/\*(.+?)\*/g,'<i>$1</i>');s=s.replace(/`([^`]+)`/g,'<code>$1</code>');s=s.replace(/\n\n/g,'<br><br>');s=s.replace(/\n/g,'<br>');return s}
@@ -239,43 +331,94 @@ function normalized(v){if(!v||typeof v!=="object")return v;const parsed=parseJso
 function metric(k,v){return v==null||v===""?"":`<div class="metric-card"><span>${esc(k)}</span><b>${esc(v)}</b></div>`}
 function sec(t,b){b=clean(b);return b?`<section class="report-sec"><h3>${esc(t)}</h3><div class="body">${esc(b)}</div></section>`:""}
 function list(t,a,map=x=>x){if(!Array.isArray(a)||!a.length)return"";return`<section class="report-sec"><h3>${esc(t)}</h3><div class="body">${a.map(x=>`- ${esc(clean(map(x)))}`).join("\n\n")}</div></section>`}
-function has(r){return!!(r&&(r.analysis||r.analysis_zh||r.audit_result||r.audit_result_zh))}
-function extraction(value){const v=normalized(value);if(!v||typeof v!=="object")return esc(pretty(v));const md=v.metadata||{},tr=v.transcript||{},u=v.usage||{},tl=Array.isArray(v.timeline)?v.timeline:[],ve=Array.isArray(v.visual_evidence)?v.visual_evidence:[];return`<article class="report"><div class="hero"><div class="kicker">Qwen Video Extraction</div><h2>提取内容报告</h2><p>${md(clean(v.summary)||"视频内容、画面证据和音频转写的结构化整理。")}</p></div><div class="metrics-grid">${metric("处理模式",v.processing_mode)}${metric("视觉模型",v.vision_model||md.model)}${metric("音频模式",v.audio_mode)}${metric("处理帧数",md.frames_processed||md.frames_extracted)}${metric("音频语言",tr.language||md.audio_language)}${metric("转写成功",tr.success===undefined?"":tr.success?"是":"否")}${metric("输入 Tokens",u.input_tokens)}${metric("输出 Tokens",u.output_tokens)}${metric("总 Tokens",u.total_tokens)}${metric("API 调用",u.api_calls)}${metric("总耗时",u.elapsed_seconds==null?"":u.elapsed_seconds+"s")}${metric("估算费用",u.estimated_cost_usd==null?"":"$"+u.estimated_cost_usd)}</div>${sec("模型总结",v.summary)}${sec("视频画面总述",v.video_description||v.opening_description||v.narrative_development)}${list("时间线",tl,x=>typeof x==="string"?x:`${x.time_range||x.timestamp||""}\n画面：${x.visual||x.description||""}\n音频：${x.audio||""}`)}${list("视觉证据",ve,x=>typeof x==="string"?x:(x.description||x.visual||pretty(x)))}${sec("转写文本",tr.text||"无转写文本")}</article>`}
-function audit(v){if(!v||typeof v!=="object")return esc(pretty(v));const keys=Object.keys(v).filter(k=>k!=='raw_result');let meta='';let body='';keys.forEach(k=>{const val=v[k];if(val===null||val===undefined||val==='')return;if(typeof val==='string'){body+=sec(k,val)}else if(Array.isArray(val)){body+=list(k,val)}else if(typeof val==='object'){body+=sec(k,pretty(val))}else{meta+=metric(k,val)}});return`<article class="report"><div class="hero"><div class="kicker">DeepSeek 分析</div><h2>分析结果报告</h2></div>${meta?`<div class="metrics-grid">${meta}</div>`:''}${body}</article>`}
-function renderOut(r){S.result=r;out.className=S.raw?"outlet raw":"outlet";let v;if(S.tab==="content"){v=S.raw?r?.analysis:(r?.analysis_zh||r?.analysis);$("json").style.display="inline-flex";$("outTitle").textContent=S.raw?"Qwen 输出内容，原文 JSON":"Qwen 输出内容，DeepSeek 翻译";S.raw?out.textContent=pretty(v):out.innerHTML=extraction(v)}else{v=S.raw?r?.audit_result:(r?.audit_result_zh||r?.audit_result);$("json").style.display="none";$("outTitle").textContent=S.raw?"DeepSeek 分析内容，原文":"DeepSeek 分析内容，中文";S.raw?out.textContent=pretty(v):out.innerHTML=audit(v)}$("pdf").style.display=S.raw?"none":"inline-flex";$("source").textContent=S.raw?"显示中文":"显示原文"}
-function buttons(){$("detailAnalyze").textContent=S.has?"内容解析":"开始分析";$("detailAnalyze").disabled=!S.file||!!S.job;$("detailReport").disabled=!S.file||!S.has||!!S.job}
-function renderFiles(){for(const[id]of[["homeFiles"],["detailFiles"]]){const box=$(id);if(!box)continue;box.innerHTML="";if(!S.files.length){box.innerHTML='<div class="empty-state ui-empty-compact"><div><b>暂无视频</b><span class="ui-empty-copy ui-empty-copy--small">上传或下载后会出现在这里。</span></div></div>';continue}S.files.forEach(f=>{const isDetail=id==="detailFiles";const st=f.status||"idle";const sc=f.status_color||"#94a3b8";const sb=f.status_bg||"#f1f5f9";const sl=f.status_label||"未分析";const badge=`<span class="ui-file-badge" style="--ui-badge-ink:${sc};--ui-badge-bg:${sb}">${sl}</span>`;const acts=isDetail?`<div class="acts"><button class="icon-btn play" title="播放">▶</button><button class="icon-btn del" title="删除">✕</button></div>`:`<div class="acts"><button class="secondary sm">详情</button></div>`;const el=document.createElement("div");el.className="file-item"+(f.name===S.file?" active":"");const title=f.title&&f.title!==f.name?f.title:f.name;el.innerHTML=`<div class="info"><div class="name">${esc(title)}</div><div class="meta">${bytes(f.size)}</div></div>${badge}${acts}`;el.onclick=e=>{if(e.target.closest("button"))return;select(f.name,isDetail?false:true)};const btns=el.querySelectorAll("button");if(isDetail){btns[0].onclick=e=>{e.stopPropagation();open("/video/"+encodeURIComponent(f.name),"_blank","noopener")};btns[1].onclick=e=>{e.stopPropagation();delFile(f.name)}}else{btns[0].onclick=e=>{e.stopPropagation();toDetail(f.name)}}box.appendChild(el)})}updateFileCount();buttons()}
+function has(r){return!!(r&&(r.analysis||r.analysis_zh))}
+function hasAny(r){return!!(r&&(r.analysis||r.analysis_zh||r.direct_analysis||r.direct_analysis_zh||r.audit_result||r.audit_result_zh||r.direct_audit_result||r.direct_audit_result_zh||r.feedback_result||r.feedback_result_zh||r.direct_feedback_result||r.direct_feedback_result_zh||r.social_context||r.social_insights))}
+function sourceMode(){return $("directMode")?.checked?"direct":"standard"}
+function sourceAnalysis(r=S.result){return sourceMode()==="direct"?(r?.direct_analysis_zh||r?.direct_analysis):(r?.analysis_zh||r?.analysis)}
+function sourceRawAnalysis(r=S.result){return sourceMode()==="direct"?r?.direct_analysis:r?.analysis}
+function sourceAudit(r=S.result){return sourceMode()==="direct"?(r?.direct_audit_result_zh||r?.direct_audit_result):(r?.audit_result_zh||r?.audit_result)}
+function sourceRawAudit(r=S.result){return sourceMode()==="direct"?r?.direct_audit_result:r?.audit_result}
+function sourceFeedback(r=S.result){return sourceMode()==="direct"?(r?.direct_feedback_result_zh||r?.direct_feedback_result):(r?.feedback_result_zh||r?.feedback_result)}
+function sourceRawFeedback(r=S.result){return sourceMode()==="direct"?r?.direct_feedback_result:r?.feedback_result}
+function extraction(value){const v=normalized(value);if(!v||typeof v!=="object")return esc(pretty(v));const meta=v.metadata||{},tr=v.transcript||{},u=v.usage||{},tl=Array.isArray(v.timeline)?v.timeline:[],ve=Array.isArray(v.visual_evidence)?v.visual_evidence:[];return`<article class="report"><div class="hero"><div class="kicker">Qwen Video Extraction</div><h2>提取内容报告</h2><p>${md(clean(v.summary)||"视频内容、画面证据和音频转写的结构化整理。")}</p></div><div class="metrics-grid">${metric("处理模式",v.processing_mode)}${metric("视觉模型",v.vision_model||meta.model)}${metric("音频模式",v.audio_mode)}${metric("处理帧数",meta.frames_processed||meta.frames_extracted)}${metric("音频语言",tr.language||meta.audio_language)}${metric("转写成功",tr.success===undefined?"":tr.success?"是":"否")}${metric("输入 Tokens",u.input_tokens)}${metric("输出 Tokens",u.output_tokens)}${metric("总 Tokens",u.total_tokens)}${metric("API 调用",u.api_calls)}${metric("总耗时",u.elapsed_seconds==null?"":u.elapsed_seconds+"s")}${metric("估算费用",u.estimated_cost_usd==null?"":"$"+u.estimated_cost_usd)}</div>${sec("模型总结",v.summary)}${sec("视频画面总述",v.video_description||v.opening_description||v.narrative_development)}${list("时间线",tl,x=>typeof x==="string"?x:`${x.time_range||x.timestamp||""}\n画面：${x.visual||x.description||""}\n音频：${x.audio||""}`)}${list("视觉证据",ve,x=>typeof x==="string"?x:(x.description||x.visual||pretty(x)))}${sec("转写文本",tr.text||"无转写文本")}</article>`}
+function audit(v,kind="audit"){if(!v||typeof v!=="object")return esc(pretty(v));const keys=Object.keys(v).filter(k=>k!=='raw_result');let meta='';let body='';keys.forEach(k=>{const val=v[k];if(val===null||val===undefined||val==='')return;if(typeof val==='string'){body+=sec(k,val)}else if(Array.isArray(val)){body+=list(k,val)}else if(typeof val==='object'){body+=sec(k,pretty(val))}else{meta+=metric(k,val)}});const isFeedback=kind==="feedback";return`<article class="report"><div class="hero"><div class="kicker">${isFeedback?"DeepSeek 反馈":"DeepSeek 分析"}</div><h2>${isFeedback?"反馈结果报告":"分析结果报告"}</h2></div>${meta?`<div class="metrics-grid">${meta}</div>`:''}${body}</article>`}
+function isSocialTab(tab=S.tab){return["comments","data","creator"].includes(tab)}
+function socialStatusText(status){return({complete:"已获取",partial:"部分缺失",unavailable:"无可用数据",failed:"获取失败",running:"获取中",missing:"未获取",ok:"已获取"})[status]||status||"未获取"}
+function socialDate(ts){if(!ts)return"";try{return new Date(Number(ts)*1000).toLocaleString()}catch{return""}}
+function socialReport(tab,context,insights){context=context&&typeof context==="object"?context:{};insights=insights&&typeof insights==="object"?insights:{};const items=context.items||{};const map={comments:"comments",data:"video_info",creator:"creator_profile"};const title={comments:"评论区分析",data:"数据分析",creator:"博主分析"}[tab];const item=items[map[tab]]||{};const data=item.data||{};const metrics=data.metrics||{};let meta=metric("状态",socialStatusText(item.status||context.status));meta+=metric("更新时间",socialDate(context.updated_at));meta+=metric("原始链接",context.source_url);let body="";if(tab==="comments"){const arr=Array.isArray(data.items)?data.items:[];meta+=metric("评论总数",data.count);meta+=metric("样本数",data.sample_count);body+=list("评论样本",arr,x=>`${x.user||"匿名"}：${x.text||""}${x.like_count!=null?`\n点赞：${x.like_count}`:""}`);body+=sec("评论洞察",insights.comment_insights||insights.comment_analysis||"")}else if(tab==="data"){meta+=metric("播放",metrics.play_count);meta+=metric("点赞",metrics.like_count);meta+=metric("评论",metrics.comment_count);meta+=metric("分享",metrics.share_count);meta+=metric("收藏",metrics.collect_count);body+=sec("视频基础数据",data);body+=sec("数据洞察",insights.data_insights||insights.data_analysis||"")}else{meta+=metric("博主",data.unique_id||data.nickname);meta+=metric("粉丝",metrics.follower_count);meta+=metric("作品数",metrics.video_count);meta+=metric("获赞",metrics.heart_count);body+=sec("博主资料",data);body+=sec("博主洞察",insights.creator_insights||insights.creator_analysis||"")}body+=list("行动建议",insights.recommended_actions);if(item.error)body+=sec("缺失/失败原因",item.error);if(!body)body=sec("暂无数据","该视频没有可用外部数据，或正在获取中。");return`<article class="report"><div class="hero"><div class="kicker">SociaVault + DeepSeek</div><h2>${title}</h2><p>${esc(insights.summary||socialStatusText(context.status)||"暂无外部数据")}</p></div><div class="metrics-grid">${meta}</div>${body}</article>`}
+function clearToc(){toc.className="report-toc empty";toc.innerHTML=""}
+function renderToc(){if(!toc||S.raw)return clearToc();const nodes=[...out.querySelectorAll(".hero,.report-sec")];const items=nodes.map((node,i)=>{const title=node.querySelector("h2,h3")?.textContent?.trim();if(!title)return null;node.id=`report-section-${i}`;return{node,title}}).filter(Boolean);if(items.length<2)return clearToc();toc.className="report-toc";toc.innerHTML=`<div class="toc-title">目录</div><div class="toc-list">${items.map((x,i)=>`<button type="button" data-target="${x.node.id}" class="${i===0?"active":""}">${esc(x.title)}</button>`).join("")}</div>`;toc.querySelectorAll("button").forEach(btn=>btn.onclick=()=>{toc.querySelectorAll("button").forEach(x=>x.classList.remove("active"));btn.classList.add("active");const target=$(btn.dataset.target);if(target){const top=target.getBoundingClientRect().top-out.getBoundingClientRect().top+out.scrollTop-8;out.scrollTo({top,behavior:"smooth"})}})}
+function renderOut(r){S.result=r;out.className=S.raw?"outlet raw":"outlet";let v;const social=isSocialTab();$("socialRefresh").classList.toggle("ui-hidden",!social);$("socialInsights").classList.toggle("ui-hidden",!social);$("translate").style.display=social?"none":"inline-flex";if(S.tab==="content"){v=S.raw?r?.analysis:(r?.analysis_zh||r?.analysis);$("json").style.display="inline-flex";$("outTitle").textContent=S.raw?"Qwen 输出内容，原文 JSON":(r?.analysis_zh?"Qwen 输出内容，已翻译":"Qwen 输出内容");S.raw?out.textContent=pretty(v):out.innerHTML=extraction(v)}else if(S.tab==="direct"){v=S.raw?r?.direct_analysis:(r?.direct_analysis_zh||r?.direct_analysis);$("json").style.display="inline-flex";$("outTitle").textContent=S.raw?"直接提取内容，原文 JSON":(r?.direct_analysis_zh?"直接提取内容，已翻译":"直接提取内容");S.raw?out.textContent=pretty(v):out.innerHTML=extraction(v)}else if(S.tab==="audit"){v=S.raw?sourceRawAudit(r):sourceAudit(r);$("json").style.display="none";$("outTitle").textContent=S.raw?"DeepSeek 分析内容，原文":(sourceMode()==="direct"?"DeepSeek 分析内容（直接提取）":"DeepSeek 分析内容");S.raw?out.textContent=pretty(v):out.innerHTML=audit(v)}else if(S.tab==="feedback"){v=S.raw?sourceRawFeedback(r):sourceFeedback(r);$("json").style.display="none";$("outTitle").textContent=S.raw?"DeepSeek 反馈内容，原文":(sourceMode()==="direct"?"DeepSeek 反馈内容（直接提取）":"DeepSeek 反馈内容");S.raw?out.textContent=pretty(v):out.innerHTML=audit(v,"feedback")}else{v={social_context:r?.social_context,social_insights:r?.social_insights};$("json").style.display="inline-flex";$("outTitle").textContent={comments:"评论区分析",data:"数据分析",creator:"博主分析"}[S.tab]||"外部数据分析";S.raw?out.textContent=pretty(v):out.innerHTML=socialReport(S.tab,r?.social_context,r?.social_insights)}$("pdf").style.display=S.raw?"none":"inline-flex";$("source").textContent=S.raw?"显示结果":"显示原文";$("translate").disabled=!S.file||S.raw||!v||social;$("socialRefresh").disabled=!S.file;$("socialInsights").disabled=!S.file||!r?.social_context;renderToc()}
+function setResultTab(tab){S.tab=tab;S.raw=false;document.querySelectorAll(".tab-btn").forEach(x=>x.classList.toggle("active",x.dataset.tab===tab));renderOut(S.result)}
+function jobLabel(t){return t==="report"?"报告":"解析"}
+function stepText(p){if(!p)return"";return p.message||`${p.current||""}: ${p.label||p.step||""}`.trim()}
+function fileQueueItem(name){return (S.queue||[]).find(i=>i.filename===name)}
+function buttons(){const q=S.file?fileQueueItem(S.file):null;const busy=!!q||!!S.job;$("detailAnalyze").textContent=(sourceRawAnalysis()||S.has)?"内容解析":"开始分析";$("detailAnalyze").disabled=!S.file||busy;$("detailReport").disabled=!S.file||busy;$("detailFeedback").disabled=!S.file||busy}
+async function applyQueueState(d){S.queue=Array.isArray(d.queue)?d.queue:[];S.progress=d.progress||{};const msg=stepText(S.progress);const key=[S.progress.current,S.progress.step,S.progress.updated_at,msg].join("|");if(msg&&key!==S.lastProgressKey){addLog(msg);S.lastProgressKey=key}await refresh();if(S.file){const q=fileQueueItem(S.file);if(q){setStatus(`${S.file}: ${q.active?"正在"+jobLabel(q.job_type):"排队等待"+jobLabel(q.job_type)}`);S.job=S.file}else if(S.progress&&S.progress.current===S.file&&S.progress.step){setStatus(`${S.file}: ${S.progress.label||S.progress.step}${S.progress.percent?` ${S.progress.percent}%`:""}`);S.job=S.progress.step==="completed"||S.progress.step==="failed"?null:S.file}else{S.job=null;const f=S.files.find(x=>x.name===S.file);if(f){setStatus(`${S.file}: ${f.status_label||"状态已更新"}`,f.status==="complete"||f.status==="analyzed"?"ok":"");if(f.status==="analyzed"||f.status==="complete")await loadResult(S.file)}}}buttons()}
+function renderFiles(){for(const[id]of[["homeFiles"],["detailFiles"]]){const box=$(id);if(!box)continue;box.innerHTML="";if(!S.files.length){box.innerHTML='<div class="empty-state ui-empty-compact"><div><b>暂无视频</b><span class="ui-empty-copy ui-empty-copy--small">上传或下载后会出现在这里。</span></div></div>';continue}S.files.forEach(f=>{const isDetail=id==="detailFiles";const st=f.status||"idle";const sc=f.status_color||"#94a3b8";const sb=f.status_bg||"#f1f5f9";const sl=f.status_label||"未分析";const badge=`<span class="ui-file-badge" style="--ui-badge-ink:${sc};--ui-badge-bg:${sb}">${sl}</span>`;const socialBadge=`<span class="ui-file-badge" style="--ui-badge-ink:${f.social_color||"#94a3b8"};--ui-badge-bg:${f.social_bg||"#f1f5f9"}">${esc(f.social_label||"未获取")}</span>`;const acts=isDetail?`<div class="acts"><button class="icon-btn play" title="播放">▶</button><button class="icon-btn del" title="删除">✕</button></div>`:`<div class="acts"><button class="secondary sm">详情</button></div>`;const el=document.createElement("div");el.className="file-item"+(f.name===S.file?" active":"");const title=f.title&&f.title!==f.name?f.title:f.name;el.innerHTML=`<div class="info"><div class="name">${esc(title)}</div><div class="meta">${bytes(f.size)}</div></div>${badge}${socialBadge}${acts}`;el.onclick=e=>{if(e.target.closest("button"))return;select(f.name,isDetail?false:true)};const btns=el.querySelectorAll("button");if(isDetail){btns[0].onclick=e=>{e.stopPropagation();open("/video/"+encodeURIComponent(f.name),"_blank","noopener")};btns[1].onclick=e=>{e.stopPropagation();delFile(f.name)}}else{btns[0].onclick=e=>{e.stopPropagation();toDetail(f.name)}}box.appendChild(el)})}updateFileCount();buttons()}
 function updateFileCount(){const el=$("fileCount");if(el)el.textContent=S.files.length}
 function view(v,f=""){home.classList.toggle("active",v==="home");detail.classList.toggle("active",v==="detail")}
 function toHome(){location.hash="";view("home")}function toDetail(f){if(!f){view("detail",S.file||"");renderFiles();return}location.hash="detail="+encodeURIComponent(f)}
 function route(){const h=location.hash.slice(1);if(h.startsWith("detail=")){select(decodeURIComponent(h.slice(7)),false);view("detail",S.file)}else{view("home");renderFiles()}}
 async function refresh(){const r=await fetch("/api/files");S.files=await r.json();if(!Array.isArray(S.files))S.files=[];renderFiles()}
-async function loadResult(name){const r=await fetch("/api/result?filename="+encodeURIComponent(name)),j=await r.json();if(r.ok&&has(j)){S.result=j;S.has=true;const p=j.analysis&&j.analysis.metadata&&j.analysis.metadata.analysis_prompt;if(p)$("promptTextarea").value=p;renderOut(j);setStatus(name+": 已加载已有输出","ok")}else{S.result=null;S.has=false;out.innerHTML='<div class="empty-state"><div><b>还没有分析结果</b><span class="ui-empty-copy">返回主页启动分析后，这里会显示报告。</span></div></div>';setStatus(name+": 等待分析")}buttons()}
+async function loadResult(name){const r=await fetch("/api/result?filename="+encodeURIComponent(name)),j=await r.json();if(r.ok&&hasAny(j)){S.result=j;S.has=has(j);renderOut(j);setStatus(name+(S.has?": 已加载已有输出":": 已加载外部数据，等待内容分析"),S.has?"ok":"")}else{S.result=null;S.has=false;out.innerHTML='<div class="empty-state"><div><b>还没有分析结果</b><span class="ui-empty-copy">返回主页启动分析后，这里会显示报告。</span></div></div>';clearToc();setStatus(name+": 等待分析")}buttons()}
 function select(name,openDetail=true){S.file=name;S.has=false;renderFiles();if(name)loadResult(name).catch(e=>setStatus(e.message,"bad"));if(openDetail&&name)toDetail(name)}
-async function upload(files=null){const input=$("videoFile"),arr=Array.from(files||input.files||[]);if(!arr.length)return setStatus("请选择至少一个视频文件。","bad");const bad=arr.filter(f=>!f.type.startsWith("video/"));if(bad.length){addLog("上传被拦截，存在非视频文件："+bad.map(f=>f.name).join(", "));return setStatus("请选择视频文件。","bad")}const form=new FormData();arr.forEach(f=>form.append("video",f));addLog(`开始上传 ${arr.length} 个视频。`);const r=await fetch("/api/upload",{method:"POST",body:form}),p=await r.json(),ok=Array.isArray(p.files)?p.files:[],err=Array.isArray(p.errors)?p.errors:[];ok.forEach(f=>addLog(`上传成功：${f.filename} (${bytes(f.size)})`));err.forEach(e=>addLog(`上传失败：${e.filename||"未知文件"} - ${e.error||"未知错误"}`));if(!r.ok&&!ok.length)return setStatus(p.error||"上传失败","bad");setStatus(`上传完成：成功 ${ok.length} 个，失败 ${err.length} 个`,err.length?"bad":"ok");input.value="";await refresh();if(ok.length)select(ok.at(-1).filename,false)}
+async function upload(files=null){const input=$("videoFile"),arr=Array.from(files||input.files||[]);if(!arr.length)return setStatus("请选择至少一个视频文件。","bad");const bad=arr.filter(f=>!f.type.startsWith("video/"));if(bad.length){addLog("上传被拦截，存在非视频文件："+bad.map(f=>f.name).join(", "));return setStatus("请选择视频文件。","bad")}const form=new FormData();form.append("source_tag","web_manual");arr.forEach(f=>form.append("video",f));addLog(`开始上传 ${arr.length} 个视频。`);const r=await fetch("/api/upload",{method:"POST",body:form}),p=await r.json(),ok=Array.isArray(p.files)?p.files:[],err=Array.isArray(p.errors)?p.errors:[];ok.forEach(f=>addLog(`上传成功：${f.filename} (${bytes(f.size)})`));err.forEach(e=>addLog(`上传失败：${e.filename||"未知文件"} - ${e.error||"未知错误"}`));if(!r.ok&&!ok.length)return setStatus(p.error||"上传失败","bad");setStatus(`上传完成：成功 ${ok.length} 个，失败 ${err.length} 个`,err.length?"bad":"ok");input.value="";await refresh();if(ok.length)select(ok.at(-1).filename,false)}
 async function delFile(name){if(!confirm(`删除 ${name} 及其所有分析输出？`))return;const r=await fetch("/api/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({filename:name})});if(!r.ok)return setStatus("删除失败","bad");addLog("删除完成："+name);if(S.file===name){S.file="";S.result=null;S.has=false;toHome()}await refresh()}
-function closeD(){if(de){de.close();de=null}}function closeJ(){if(je){je.close();je=null}}function lastLog(j){return j&&Array.isArray(j.log)&&j.log.length?j.log.at(-1):""}
-async function startDownload(){const url=$("url").value.trim();if(!url)return setStatus("请输入 TikTok 或抖音视频链接。","bad");$("download").disabled=true;addLog("提交视频下载："+url);const r=await fetch("/api/download",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url})}),j=await r.json();if(!r.ok){$("download").disabled=false;return setStatus(j.error||"下载任务提交失败","bad")}closeD();de=new EventSource("/api/download-events?id="+encodeURIComponent(j.id));de.onmessage=async e=>{const j=JSON.parse(e.data),l=lastLog(j);if(l)addLog("下载："+l);if(j.status==="running"||j.status==="queued")return setStatus(`视频下载中：${j.status}`);closeD();$("download").disabled=false;if(j.status!=="complete")return setStatus("视频下载失败："+(j.error||"未知错误"),"bad");setStatus(j.filename+": 下载完成","ok");$("url").value="";await refresh();select(j.filename,false)};de.onerror=()=>{closeD();$("download").disabled=false;setStatus("视频下载连接中断","bad")}}
+function closeD(){if(de){de.close();de=null}}function lastLog(j){return j&&Array.isArray(j.log)&&j.log.length?j.log.at(-1):""}
+async function startDownload(){const url=$("url").value.trim();if(!url)return setStatus("请输入 TikTok 或抖音视频链接。","bad");$("download").disabled=true;addLog("提交视频下载："+url);const r=await fetch("/api/download",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url,source_tag:"web_manual"})}),j=await r.json();if(!r.ok){$("download").disabled=false;return setStatus(j.error||"下载任务提交失败","bad")}closeD();de=new EventSource("/api/download-events?id="+encodeURIComponent(j.id));de.onmessage=async e=>{const j=JSON.parse(e.data),l=lastLog(j);if(l)addLog("下载："+l);if(j.status==="running"||j.status==="queued")return setStatus(`视频下载中：${j.status}`);closeD();$("download").disabled=false;if(j.status!=="complete")return setStatus("视频下载失败："+(j.error||"未知错误"),"bad");setStatus(j.filename+": 下载完成","ok");$("url").value="";await refresh();select(j.filename,false)};de.onerror=()=>{closeD();$("download").disabled=false;setStatus("视频下载连接中断","bad")}}
 async function checkNet(){$("network").disabled=true;try{const r=await fetch("/api/network-check"),p=await r.json();const fmt=x=>!x?"未配置":(!x.ok?"失败："+(x.error||"未知错误"):`${x.ip||"未知 IP"} / ${x.country_name||x.country||"未知地区"} / ${x.is_us?"美国出口":"非美国出口"}`);addLog("直连："+fmt(p.direct));addLog("代理："+fmt(p.proxy));setStatus(`直连：${fmt(p.direct)}；代理：${fmt(p.proxy)}`,p.proxy&&p.proxy.ok&&p.proxy.is_us?"ok":"bad")}catch(e){setStatus(e.message,"bad")}finally{$("network").disabled=false}}
-async function analyze(){if(!S.file)return;$("detailAnalyze").disabled=true;$("detailReport").disabled=true;const name=S.file;addLog(`${name}: 已加入分析队列`);const r=await fetch("/api/analyze",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({filename:name,analysis_mode:"analyzer",analysis_prompt:$("promptTextarea").value,postprocess:false,reset_output:S.has})});const j=await r.json();if(!r.ok){setStatus(j.error||"提交失败","bad");return buttons()}setStatus(`${name}: 待分析`)}async function postprocess(){if(!S.file||!S.has)return;const name=S.file;addLog(`${name}: 已加入报告队列`);const r=await fetch("/api/postprocess",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({filename:name,analysis_prompt:$("promptTextarea").value})});const j=await r.json();if(!r.ok){setStatus(j.error||"提交失败","bad");return}S.tab="audit";document.querySelectorAll(".tab-btn").forEach(x=>x.classList.toggle("active",x.dataset.tab==="audit"));setStatus(`${name}: 待报告`)}let statusSSE=null;function connectStatusStream(){if(statusSSE)return;statusSSE=new EventSource("/api/status-stream");statusSSE.onmessage=async e=>{try{const d=JSON.parse(e.data);if(d.queue&&d.queue.length){const active=d.queue.filter(function(i){return i.active});const waiting=d.queue.filter(function(i){return !i.active});if(active.length)addLog('正在执行: '+active.map(function(i){return i.filename}).join(', '));if(waiting.length)addLog('排队中: '+waiting.map(function(i){return i.filename}).join(', '));if(d.progress&&d.progress.current)setStatus('运行中：'+d.progress.current)}else{addLog('队列已清空');setStatus('队列已清空')}await refresh()}catch(err){}};statusSSE.onerror=function(){statusSSE=null;setTimeout(connectStatusStream,3000)}}connectStatusStream()
-function openJob(id){closeJ();je=new EventSource("/api/job-events?id="+encodeURIComponent(id));je.onmessage=e=>{const j=JSON.parse(e.data),l=lastLog(j);if(l)addLog(`${j.filename}: ${l}`);S.result=j;if(location.hash.startsWith("#detail="))renderOut(j);if(j.status==="running"||j.status==="queued")return setStatus(`${j.filename}: ${j.status}`);closeJ();S.job=null;S.has=j.status==="complete"||has(j);buttons();setStatus(j.status==="complete"?`${j.filename}: 完成`:`${j.filename}: ${j.error||"失败"}`,j.status==="complete"?"ok":"bad")};je.onerror=()=>{closeJ();buttons();setStatus("分析任务连接中断","bad")}}
-function downloadJson(){const a=S.result&&S.result.analysis;if(!a)return setStatus("当前视频还没有 analysis.json。","bad");const name=`${S.file||"video"}.analysis.json`,blob=new Blob([JSON.stringify(a,null,2)],{type:"application/json;charset=utf-8"}),url=URL.createObjectURL(blob),link=document.createElement("a");link.href=url;link.download=name;document.body.appendChild(link);link.click();link.remove();URL.revokeObjectURL(url);addLog("下载原文 JSON："+name)}
-async function exportPdf(){if(!S.file||!S.result||S.raw)return setStatus("请先切换到中文报告视图再导出 PDF。","bad");$("pdf").disabled=true;setStatus("正在生成 PDF...");try{const url=`/api/export-pdf?filename=${encodeURIComponent(S.file)}&tab=${encodeURIComponent(S.tab)}`;const r=await fetch(url);if(!r.ok){let msg="PDF 导出失败";try{const p=await r.json();msg=p.error||msg}catch{}throw new Error(msg)}const blob=await r.blob();const name=`${S.file}.${S.tab==="audit"?"audit":"analysis"}.pdf`;const href=URL.createObjectURL(blob),link=document.createElement("a");link.href=href;link.download=name;document.body.appendChild(link);link.click();link.remove();URL.revokeObjectURL(href);addLog("PDF 已下载："+name);setStatus("PDF 已生成并开始下载。","ok")}catch(e){setStatus(e.message,"bad")}finally{$("pdf").disabled=false}}
+function syncPromptDraft(){const el=$("promptTextarea");if(!el)return;if(S.promptTab==="feedback")S.feedbackPrompt=el.value;else S.analysisPromptDraft=el.value}
+function promptDraft(tab){return tab==="feedback"?(S.feedbackPrompt||DEFAULT_FEEDBACK_PROMPT):(S.analysisPromptDraft||"")}
+function analysisPromptValue(){if(S.promptTab==="analysis")syncPromptDraft();return S.analysisPromptDraft||""}
+async function savePromptDraft(tab){const t=promptDraft(tab).trim();if(!t)throw new Error("提示词不能为空。");if(t.length>50000)throw new Error("提示词过长，请控制在 50000 字以内。");const body=tab==="feedback"?{kind:"feedback",feedback_prompt:t}:{kind:"analysis",prompt:t};const r=await fetch("/api/prompt",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});if(!r.ok){let msg="提示词保存失败";try{const p=await r.json();msg=p.error||msg}catch{}throw new Error(msg)}return t}
+async function waitForResult(predicate,label,timeoutMs=600000){const started=Date.now();while(Date.now()-started<timeoutMs){await new Promise(r=>setTimeout(r,2000));if(S.file)await loadResult(S.file);if(predicate(S.result))return true;if(S.progress&&S.progress.current===S.file&&S.progress.step==="failed")throw new Error(label+"失败")}throw new Error(label+"超时")}
+async function ensureAnalysis(){if(sourceRawAnalysis())return;addLog(`${S.file}: 缺少${sourceMode()==="direct"?"直接":""}提取内容，自动补前置解析`);await analyze();await waitForResult(r=>sourceRawAnalysis(r),"内容解析")}
+async function ensureAudit(){if(sourceRawAudit())return;await ensureAnalysis();addLog(`${S.file}: 缺少${sourceMode()==="direct"?"直接":""}分析结果，自动生成报告`);await postprocess();await waitForResult(r=>sourceRawAudit(r),"生成报告")}
+async function analyze(){if(!S.file)return;$("detailAnalyze").disabled=true;$("detailReport").disabled=true;const name=S.file;const direct=sourceMode()==="direct";addLog(`${name}: 提交${direct?"直接":""}解析任务`);const r=await fetch("/api/analyze",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({filename:name,analysis_mode:direct?"direct_video":(window.DEFAULT_ANALYSIS_MODE||"analyzer"),analysis_prompt:analysisPromptValue(),postprocess:false,reset_output:direct?!!S.result?.direct_analysis:S.has})});const j=await r.json();if(!r.ok){S.job=null;setStatus(j.error||"提交失败","bad");return buttons()}S.job=name;if(direct)setResultTab("direct");setStatus(`${name}: 待分析`);await refresh();buttons()}
+async function postprocess(){if(!S.file)return;const name=S.file;const mode=sourceMode();addLog(`${name}: 提交${mode==="direct"?"直接":""}报告任务`);const r=await fetch("/api/postprocess",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({filename:name,analysis_prompt:analysisPromptValue(),analysis_source:mode})});const j=await r.json();if(!r.ok){S.job=null;setStatus(j.error||"提交失败","bad");return buttons()}S.job=name;setResultTab("audit");setStatus(`${name}: 待报告`);await refresh();buttons()}
+async function translateCurrent(){if(!S.file||S.raw||isSocialTab())return;const name=S.file;$("translate").disabled=true;setStatus("正在翻译当前页签...");addLog(`${name}: 翻译 ${S.tab}`);try{const r=await fetch("/api/translate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({filename:name,tab:S.tab,analysis_source:sourceMode()})});const j=await r.json();if(!r.ok)throw new Error(j.error||"翻译失败");await loadResult(name);setStatus("翻译完成。","ok")}catch(e){setStatus(e.message,"bad")}finally{buttons();renderOut(S.result)}}
+async function generateFeedback(){if(!S.file)return;const name=S.file;$("detailFeedback").disabled=true;setStatus("正在准备反馈前置数据...");try{await ensureAudit();setStatus("正在生成反馈...");addLog(`${name}: 提交${sourceMode()==="direct"?"直接":""}反馈生成任务`);const r=await fetch("/api/feedback",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({filename:name,feedback_prompt:S.feedbackPrompt,analysis_source:sourceMode()})});const j=await r.json();if(!r.ok)throw new Error(j.error||"生成反馈失败");await loadResult(name);setResultTab("feedback");setStatus("反馈已生成。","ok")}catch(e){setStatus(e.message,"bad")}finally{buttons()}}
+async function refreshSocial(){if(!S.file)return;$("socialRefresh").disabled=true;setStatus("正在刷新外部数据...");addLog(`${S.file}: 刷新评论/数据/博主信息`);try{const r=await fetch("/api/social-context/refresh",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({filename:S.file})});const j=await r.json();if(!r.ok)throw new Error(j.error||"刷新失败");await new Promise(resolve=>setTimeout(resolve,1200));await loadResult(S.file);await refresh();setStatus("外部数据刷新已提交。","ok")}catch(e){setStatus(e.message,"bad")}finally{renderOut(S.result);buttons()}}
+async function generateSocialInsights(){if(!S.file)return;$("socialInsights").disabled=true;setStatus("正在生成社交洞察...");addLog(`${S.file}: 生成社交洞察`);try{const r=await fetch("/api/social-insights",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({filename:S.file})});const j=await r.json();if(!r.ok)throw new Error(j.error||"生成洞察失败");await loadResult(S.file);setStatus("社交洞察已生成。","ok")}catch(e){setStatus(e.message,"bad")}finally{renderOut(S.result);buttons()}}
+let statusSSE=null;function connectStatusStream(){if(statusSSE)return;statusSSE=new EventSource("/api/status-stream");statusSSE.onmessage=e=>{try{applyQueueState(JSON.parse(e.data))}catch(err){addLog("状态流解析失败："+err.message)}};statusSSE.onerror=function(){statusSSE.close();statusSSE=null;setTimeout(connectStatusStream,3000)}}connectStatusStream();
+function setFrameExportButtons(enabled){$("framesOpen").disabled=!enabled;$("framesExport").disabled=!enabled;$("framesRawExport").disabled=!enabled}
+function closeFramesModal(){$("framesModal").classList.remove("show");$("framesView").innerHTML="";S.frameList=[];setFrameExportButtons(false)}
+function downloadFrameUrl(url,name){const link=document.createElement("a");link.href=url;link.download=name;document.body.appendChild(link);link.click();link.remove()}
+async function exportCompositeFrames(){if(!S.file||!(S.frameList||[]).length)return;downloadFrameUrl(`/api/frames-export?filename=${encodeURIComponent(S.file)}`,`${S.file}.frames.png`)}
+async function exportRawFrames(){if(!S.file||!(S.frameList||[]).length)return;setStatus(`开始下载 ${S.frameList.length} 张原始抽帧...`);S.frameList.forEach((f,i)=>{setTimeout(()=>downloadFrameUrl(`/api/frame-image?filename=${encodeURIComponent(S.file)}&frame=${encodeURIComponent(f.name)}&download=1`,`${S.file}.${f.name}`),i*180)})}
+async function showFramesSheet(){if(!S.file)return setStatus("请先选择视频。","bad");const listUrl=`/api/frames?filename=${encodeURIComponent(S.file)}`;S.frameList=[];setFrameExportButtons(false);$("framesView").innerHTML='<div class="empty-state"><div><b>正在读取抽帧...</b><span class="ui-empty-copy">窗口已打开，图片会逐个加载。</span></div></div>';$("framesModal").classList.add("show");$("frames").disabled=true;try{const r=await fetch(listUrl);const p=await r.json();if(!r.ok)throw new Error(p.error||"抽帧读取失败");const frames=Array.isArray(p.frames)?p.frames:[];S.frameList=frames;if(!frames.length){$("framesView").innerHTML='<div class="empty-state"><div><b>暂无抽帧</b><span class="ui-empty-copy">该视频还没有生成 frames 目录，或当前是直接调用 LLM 模式。</span></div></div>';setStatus("暂无抽帧。");return}const grid=frames.map(f=>{const src=`/api/frame-image?filename=${encodeURIComponent(S.file)}&frame=${encodeURIComponent(f.name)}`;const label=f.timestamp?`${f.index+1}. ${f.timestamp}`:`${f.index+1}. ${f.name}`;return`<div class="frame-card"><img loading="lazy" decoding="async" src="${src}" alt="${esc(f.name)}"><span>${esc(label)}</span></div>`}).join("");$("framesView").innerHTML=`<div class="frame-grid">${grid}</div>`;$("framesOpen").onclick=()=>open(`/api/frames-sheet?filename=${encodeURIComponent(S.file)}&columns=4&thumb_width=320`,"_blank","noopener");setFrameExportButtons(true);setStatus(`已找到 ${frames.length} 张抽帧，正在逐个加载。`,"ok")}catch(e){$("framesView").innerHTML=`<div class="empty-state"><div><b>暂无抽帧</b><span class="ui-empty-copy">${esc(e.message)}</span></div></div>`;setStatus(e.message,"bad")}finally{$("frames").disabled=false}}
+function downloadJson(){const key=isSocialTab()?"social_context":(S.tab==="direct"?"direct_analysis":(S.tab==="feedback"?(sourceMode()==="direct"?"direct_feedback_result":"feedback_result"):(S.tab==="audit"?(sourceMode()==="direct"?"direct_audit_result":"audit_result"):"analysis")));const a=isSocialTab()?{social_context:S.result?.social_context,social_insights:S.result?.social_insights}:(S.result&&S.result[key]);if(!a)return setStatus("当前页签还没有原文 JSON。","bad");const name=`${S.file||"video"}.${key}.json`,blob=new Blob([JSON.stringify(a,null,2)],{type:"application/json;charset=utf-8"}),url=URL.createObjectURL(blob),link=document.createElement("a");link.href=url;link.download=name;document.body.appendChild(link);link.click();link.remove();URL.revokeObjectURL(url);addLog("下载原文 JSON："+name)}
+async function exportPdf(){if(!S.file||!S.result||S.raw)return setStatus("请先切换到报告视图再导出 PDF。","bad");$("pdf").disabled=true;setStatus("正在生成 PDF...");try{const url=`/api/export-pdf?filename=${encodeURIComponent(S.file)}&tab=${encodeURIComponent(S.tab)}&source=${encodeURIComponent(sourceMode())}`;const r=await fetch(url);if(!r.ok){let msg="PDF 导出失败";try{const p=await r.json();msg=p.error||msg}catch{}throw new Error(msg)}const blob=await r.blob();const suffix={content:"analysis",direct:"direct_analysis",audit:"audit",feedback:"feedback",comments:"comments",data:"data",creator:"creator"}[S.tab]||"analysis";const name=`${S.file}.${suffix}.pdf`;const href=URL.createObjectURL(blob),link=document.createElement("a");link.href=href;link.download=name;document.body.appendChild(link);link.click();link.remove();URL.revokeObjectURL(href);addLog("PDF 已下载："+name);setStatus("PDF 已生成并开始下载。","ok")}catch(e){setStatus(e.message,"bad")}finally{$("pdf").disabled=false}}
 
 // Event bindings — use safeBind to skip missing elements
 const safeBind=(id,ev,fn)=>{const el=$(id);if(el)el[ev]=fn};
 safeBind("download","onclick",startDownload);safeBind("network","onclick",checkNet);safeBind("upload","onclick",()=>upload());safeBind("refresh","onclick",()=>refresh().then(()=>addLog("已刷新视频列表。")));
-async function detailAnalyzeAction(){if(!S.has){await analyze()}else{await postprocess()}}safeBind("detailAnalyze","onclick",detailAnalyzeAction);
-safeBind("detailReport","onclick",async ()=>{if(S.has)await postprocess()});
-safeBind("detailPrompt","onclick",()=>{$("promptTextarea").value=$("promptTextarea").value||"";$("promptModal").classList.add("show")});
-safeBind("promptSave","onclick",async ()=>{const t=$("promptTextarea").value.trim();if(t){await fetch("/api/prompt",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({prompt:t})});addLog("提示词已保存。")}$("promptModal").classList.remove("show")});
+async function detailAnalyzeAction(){if(!sourceRawAnalysis()){await analyze()}else{await postprocess()}}safeBind("detailAnalyze","onclick",detailAnalyzeAction);
+safeBind("detailReport","onclick",async ()=>{try{await ensureAnalysis();await postprocess()}catch(e){setStatus(e.message,"bad");buttons()}});
+safeBind("detailFeedback","onclick",generateFeedback);
+safeBind("translate","onclick",translateCurrent);
+safeBind("socialRefresh","onclick",refreshSocial);
+safeBind("socialInsights","onclick",generateSocialInsights);
+safeBind("directMode","onchange",()=>{S.raw=false;renderOut(S.result);buttons()});
+safeBind("frames","onclick",showFramesSheet);
+safeBind("framesClose","onclick",closeFramesModal);
+safeBind("framesModal","onclick",e=>{if(e.target===$("framesModal"))closeFramesModal()});
+safeBind("framesExport","onclick",exportCompositeFrames);
+safeBind("framesRawExport","onclick",exportRawFrames);
+function setPromptTab(tab){syncPromptDraft();S.promptTab=tab;document.querySelectorAll(".prompt-tab").forEach(x=>x.classList.toggle("active",x.dataset.promptTab===tab));$("promptTextarea").value=promptDraft(tab)}
+safeBind("detailPrompt","onclick",()=>{syncPromptDraft();setPromptTab(S.promptTab||"analysis");$("promptModal").classList.add("show")});
+document.querySelectorAll(".prompt-tab").forEach(t=>t.onclick=()=>setPromptTab(t.dataset.promptTab));
+safeBind("promptFile","onchange",async e=>{const file=e.target.files&&e.target.files[0];if(!file)return;const name=file.name.toLowerCase();if(!name.endsWith(".md")&&!name.endsWith(".txt")){setStatus("仅支持 md/txt 提示词文件。","bad");e.target.value="";return}if(file.size>200000){setStatus("提示词文件过大，请控制在 200KB 以内。","bad");e.target.value="";return}try{$("promptTextarea").value=await file.text();syncPromptDraft();await savePromptDraft(S.promptTab);addLog(`已导入并保存${S.promptTab==="feedback"?"反馈":"分析"}提示词文件：`+file.name);setStatus("提示词已保存。","ok")}catch(err){setStatus("提示词上传保存失败："+err.message,"bad")}});
+safeBind("promptFileClear","onclick",()=>{const f=$("promptFile");if(f)f.value=""});
+safeBind("promptSave","onclick",async ()=>{syncPromptDraft();const tab=S.promptTab;try{await savePromptDraft(tab);addLog(`${tab==="feedback"?"反馈":"分析"}提示词已保存。`);$("promptModal").classList.remove("show")}catch(err){setStatus(err.message,"bad")}});
 safeBind("promptClose","onclick",()=>$("promptModal").classList.remove("show"));
 safeBind("promptModal","onclick",e=>{if(e.target===$("promptModal"))$("promptModal").classList.remove("show")});
 safeBind("back","onclick",toHome);
 safeBind("source","onclick",()=>{S.raw=!S.raw;renderOut(S.result)});safeBind("pdf","onclick",exportPdf);safeBind("json","onclick",downloadJson);
-document.querySelectorAll(".tab-btn").forEach(t=>t.onclick=()=>{document.querySelectorAll(".tab-btn").forEach(x=>x.classList.remove("active"));t.classList.add("active");S.tab=t.dataset.tab;S.raw=false;renderOut(S.result)});
+document.querySelectorAll(".tab-btn").forEach(t=>t.onclick=()=>setResultTab(t.dataset.tab));
 addEventListener("hashchange",route);addEventListener("dragenter",e=>{e.preventDefault();drag++;$("drop").classList.add("active")});addEventListener("dragover",e=>e.preventDefault());addEventListener("dragleave",e=>{e.preventDefault();drag=Math.max(0,drag-1);if(!drag)$("drop").classList.remove("active")});addEventListener("drop",e=>{e.preventDefault();drag=0;$("drop").classList.remove("active");if(e.dataTransfer.files.length)upload(e.dataTransfer.files)});
-fetch("/api/prompt").then(r=>r.json()).then(p=>{$("promptTextarea").value=p.prompt||""}).catch(()=>{});refresh().then(route).catch(e=>setStatus(e.message,"bad"));
+fetch("/api/prompt").then(r=>r.json()).then(p=>{S.analysisPromptDraft=p.prompt||"";S.feedbackPrompt=p.feedback_prompt||DEFAULT_FEEDBACK_PROMPT;if(S.promptTab==="analysis")$("promptTextarea").value=S.analysisPromptDraft;else $("promptTextarea").value=S.feedbackPrompt}).catch(()=>{});refresh().then(route).catch(e=>setStatus(e.message,"bad"));
 </script>
 </body>
 </html>

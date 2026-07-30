@@ -50,27 +50,6 @@
     }
   }
 
-  function enhanceToolTree(root = document) {
-    root.querySelectorAll("#toolModal .tree-children").forEach((children) => {
-      if (children.firstElementChild?.classList.contains("ui-collapse__inner")) return;
-      const inner = document.createElement("div");
-      inner.className = "ui-collapse__inner";
-      while (children.firstChild) inner.appendChild(children.firstChild);
-      children.appendChild(inner);
-    });
-    root.querySelectorAll("#toolModal .tree-node").forEach((node) => {
-      const toggle = node.querySelector(":scope > .tree-row .tree-toggle");
-      if (!toggle) return;
-      const expanded = !node.classList.contains("collapsed");
-      const label = node.querySelector(":scope > .tree-row .tree-title")?.textContent.trim()
-        || node.querySelector(":scope > .tree-row span:last-child")?.textContent.trim()
-        || "工具分组";
-      toggle.setAttribute("aria-expanded", String(expanded));
-      toggle.setAttribute("aria-label", `${expanded ? "收起" : "展开"} ${label}`);
-      toggle.title = `${expanded ? "收起" : "展开"} ${label}`;
-    });
-  }
-
   function enhanceTables(root = document) {
     root.querySelectorAll("table").forEach((table) => {
       const labels = [...table.querySelectorAll("thead th")].map((cell) => cell.textContent.trim());
@@ -142,7 +121,6 @@
   function bootstrap() {
     syncNavigation();
     setMobileNavigation(false);
-    enhanceToolTree();
     enhanceTables();
     enhanceDialogs();
     enhanceMessageActions();
@@ -177,12 +155,6 @@
         return;
       }
 
-      const treeToggle = event.target.closest("#toolModal .tree-toggle");
-      if (treeToggle) {
-        requestAnimationFrame(() => {
-          enhanceToolTree();
-        });
-      }
     });
 
     document.addEventListener("keydown", (event) => {
@@ -199,20 +171,16 @@
     const observer = new MutationObserver((records) => {
       let tableChanged = false;
       let dialogChanged = false;
-      let toolChanged = false;
       let messagesChanged = false;
       records.forEach((record) => {
         if (record.type === "childList") {
           tableChanged = true;
-          toolChanged = true;
           messagesChanged = true;
         }
         if (record.type === "attributes") {
           dialogChanged = true;
-          toolChanged = true;
         }
       });
-      if (toolChanged) enhanceToolTree();
       if (tableChanged) enhanceTables();
       if (dialogChanged) enhanceDialogs();
       if (messagesChanged) enhanceMessageActions();

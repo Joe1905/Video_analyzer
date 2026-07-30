@@ -2004,41 +2004,6 @@ def _process_video(conn: sqlite3.Connection, report_date: str, item: dict[str, A
         _enqueue_report_video_translation(report_date, platform, video_id)
 
 
-def _build_summary_prompt(report_date: str, videos: list[dict[str, Any]]) -> str:
-    compact_videos = []
-    for video in videos:
-        compact_videos.append(
-            {
-                "rank": video.get("report_rank"),
-                "title": video.get("title"),
-                "author": video.get("author"),
-                "metrics": video.get("metrics"),
-                "hot_score": video.get("hot_score"),
-                "analysis": video.get("analysis"),
-                "audit_result": video.get("audit_result"),
-            }
-        )
-    return (
-        "You are a senior short-video growth analyst. Based on multiple hot-video "
-        "extraction results and analysis results, generate a daily report in Chinese. "
-        "Return strict JSON only. Do not return Markdown. Required JSON keys: "
-        "summary, common_patterns, hook_analysis, visual_patterns, topic_angles, "
-        "execution_tactics, reusable_ideas, risks, next_actions. Focus on why these "
-        "videos became hits, what patterns they share, and what can be reused in topic "
-        "selection, hooks, scripts, visual rhythm, and interaction design.\n\n"
-        f"report_date: {report_date}\nvideo_items:\n"
-        f"{json.dumps(compact_videos, ensure_ascii=False, indent=2)}"
-    )
-    return (
-        "你是短视频爆款研究员。请基于多个热视频的结构化提取内容和分析结果，生成一份中文日报。"
-        "只返回严格 JSON，不要 Markdown。JSON keys 必须包含：summary, common_patterns, hook_analysis, "
-        "visual_patterns, topic_angles, execution_tactics, reusable_ideas, risks, next_actions。"
-        "重点解释这些视频为什么成为爆款、共通性是什么、可以复用到选题和脚本里的方法。"
-        f"\n\nreport_date: {report_date}\nvideo_items:\n"
-        f"{json.dumps(compact_videos, ensure_ascii=False, indent=2)}"
-    )
-
-
 def _markdown_from_report(report: dict[str, Any]) -> str:
     parts = [f"# {report.get('summary') or '爆款视频日报'}"]
     labels = {
@@ -2651,33 +2616,6 @@ def _ensure_video_insight(
     return social_context, insight
 
 
-def _summary_prompt(report_date: str, video_items: list[dict[str, Any]], partial_summaries: list[dict[str, Any]] | None = None) -> str:
-    payload: dict[str, Any] = {"report_date": report_date}
-    if partial_summaries is None:
-        payload["video_items"] = video_items
-    else:
-        payload["partial_summaries"] = partial_summaries
-    return (
-        "你是资深短视频增长分析师。请基于热视频的结构化提取内容生成中文日报。"
-        "不要调用或假设额外的单视频分析结果，只使用输入里的标题、指标、转写、时间线和视觉证据。"
-        "重点解释这些视频为什么可能成为爆款、共通性是什么、可复用到选题和脚本的方法是什么。"
-        "只返回严格 JSON，不要 Markdown，不要代码块。JSON keys 必须包含："
-        "summary, common_patterns, hook_analysis, visual_patterns, topic_angles, "
-        "execution_tactics, reusable_ideas, risks, next_actions。\n\n"
-        f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
-    )
-
-
-def _chunk_summary_prompt(report_date: str, chunk_index: int, video_items: list[dict[str, Any]]) -> str:
-    payload = {"report_date": report_date, "chunk_index": chunk_index, "video_items": video_items}
-    return (
-        "你是短视频研究助理。请把这一组热视频提取内容压缩成可供最终日报使用的中文结构化摘要。"
-        "只保留爆款原因、开头钩子、节奏/视觉、选题角度、互动机制、风险。"
-        "只返回严格 JSON，不要 Markdown。JSON keys: key_observations, patterns, reusable_points, risks。\n\n"
-        f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
-    )
-
-
 def _summary_prompt_v2(report_date: str, video_items: list[dict[str, Any]], partial_summaries: list[dict[str, Any]] | None = None) -> str:
     payload: dict[str, Any] = {"report_date": report_date}
     if partial_summaries is None:
@@ -2932,73 +2870,6 @@ def _cached_report_from_videos(current_report: dict[str, Any], videos: list[dict
     rebuilt["reusable_ideas"] = ["先确保 video_id、标题、指标三者一致，再沉淀可复用脚本公式。"]
     rebuilt["risks"] = ["旧 insight/analysis 已视为脏数据处理；当前展示以刷新后的元数据为准。"]
     rebuilt["next_actions"] = ["如后续需要画面级时间轴，再对对应视频重新执行视频解析并刷新翻译缓存。"]
-    return rebuilt
-
-
-def refresh_report_metadata(report_date: str | None = None) -> dict[str, Any]:
-    """Refresh report video metadata and clear dirty analysis/insight caches without video LLM work."""
-    date = report_date or today_key()
-    api_key = os.getenv("SOCIAVAULT_API_KEY", "").strip()
-    if not api_key:
-        raise RuntimeError("Missing required environment variable: SOCIAVAULT_API_KEY")
-    api_base = os.getenv("SOCIAVAULT_API_BASE", DEFAULT_API_BASE).rstrip("/")
-    api_timeout = float(os.getenv("SOCIAVAULT_TIMEOUT", "180"))
-    with _connect() as conn:
-        row = conn.execute("SELECT id FROM daily_reports WHERE report_date = ?", (date,)).fetchone()
-        if not row:
-            raise ValueError(f"report not found for {date}")
-        report_id = row[0]
-        rows = conn.execute(
-            """
-            SELECT rv.platform, rv.video_id, rv.report_rank, rv.source_endpoint, rv.source_label,
-                   rv.source_rank, COALESCE(m.source_url, rv.raw_json), rv.raw_json
-            FROM hot_report_videos rv
-            JOIN hot_video_master m ON m.platform = rv.platform AND m.video_id = rv.video_id
-            WHERE rv.report_date = ?
-            ORDER BY rv.report_rank ASC
-            """,
-            (date,),
-        ).fetchall()
-        refreshed = 0
-        failed: list[dict[str, str]] = []
-        for platform, video_id, report_rank, source_endpoint, source_label, source_rank, source_url, raw_json in rows:
-            if platform != "tiktok" or not video_id:
-                continue
-            url = str(source_url or "").strip()
-            if not url.startswith("http"):
-                raw = _json_loads(raw_json, {})
-                url = _source_url(raw) if isinstance(raw, dict) else ""
-            if not url:
-                url = f"https://www.tiktok.com/@unknown/video/{video_id}"
-            try:
-                payload = call_api(api_key, api_base, "video-info", {"url": url}, api_timeout, cache_policy="record_only")
-                node = _extract_video_info_node(payload)
-                if not node:
-                    raise RuntimeError("video-info returned no video node")
-                item = _normalize_video(node, source_endpoint or "video-info", source_label or "metadata-refresh", _to_int(source_rank) or _to_int(report_rank) or 1)
-                if item.get("video_id") and item["video_id"] != video_id:
-                    raise RuntimeError(f"video-info id mismatch: {item['video_id']} != {video_id}")
-                item["video_id"] = video_id
-                _upsert_video(conn, report_id, date, item, _to_int(report_rank) or refreshed + 1)
-                refreshed += 1
-            except Exception as exc:
-                failed.append({"video_id": str(video_id), "error": str(exc)})
-        now = time.time()
-        conn.execute(
-            """
-            UPDATE hot_report_videos
-            SET analysis_json = NULL, analysis_zh_json = NULL, audit_json = NULL,
-                analysis_sha256 = NULL, analysis_zh_source_sha256 = NULL,
-                social_context_json = NULL, insight_json = NULL, insight_generated_at = NULL,
-                updated_at = ?
-            WHERE report_date = ?
-            """,
-            (now, date),
-        )
-        conn.commit()
-    rebuilt = rebuild_report_from_cached(date)
-    rebuilt["metadata_refreshed_count"] = refreshed
-    rebuilt["metadata_failed"] = failed
     return rebuilt
 
 

@@ -218,43 +218,6 @@ def extract_from_html(html: str) -> dict[str, Any]:
     }
 
 
-def response_text(response: Any) -> str:
-    value = getattr(response, "text", "")
-    if callable(value):
-        value = value()
-    if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace")
-    return str(value or "")
-
-
-def parse_mcp_text(text: str) -> Any:
-    cleaned = text.strip()
-    if not cleaned:
-        return ""
-    try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError:
-        return text
-
-
-def content_from_mcp_result(result: Any) -> Any:
-    structured = getattr(result, "structuredContent", None) or getattr(result, "structured_content", None)
-    if structured:
-        return structured
-    content = getattr(result, "content", None) or []
-    values: list[Any] = []
-    for item in content:
-        item_type = getattr(item, "type", None)
-        text = getattr(item, "text", None)
-        if item_type == "text" and text is not None:
-            values.append(parse_mcp_text(text))
-        elif text is not None:
-            values.append(text)
-    if len(values) == 1:
-        return values[0]
-    return values
-
-
 def find_text_payload(value: Any) -> str:
     if isinstance(value, str):
         return value

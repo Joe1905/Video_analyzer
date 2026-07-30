@@ -1258,32 +1258,3 @@ def execute_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
         return {"ok": True, "data": data, "elapsed": round(time.monotonic() - started, 2)}
     except Exception as exc:
         return {"ok": False, "error": str(exc), "elapsed": round(time.monotonic() - started, 2)}
-
-
-def get_tools_for_model(enabled: set[str] | None = None) -> list[dict]:
-    """Return tool definitions in DeepSeek function-calling format, filtered by enabled set."""
-    result = []
-    for t in TOOLS:
-        if enabled is None or t["name"] in enabled:
-            result.append({"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["parameters"]}})
-    return result
-
-
-def list_tools() -> list[dict]:
-    """List all tools grouped by category for the frontend selector."""
-    categories = {
-        "系统": ["current_time", "web_search"],
-        "Amazon": ["amazon_scrape_url", "amazon_scrape_asin", "amazon_search_keyword"],
-        "TikTok Shop": ["tiktok_shop_product", "tiktok_shop_details", "tiktok_shop_reviews", "tiktok_shop_search"],
-        "TikTok 用户": ["tiktok_profile", "tiktok_videos", "tiktok_videos_popular", "tiktok_followers", "tiktok_following", "tiktok_demographics"],
-        "TikTok 视频": ["tiktok_video_info", "tiktok_comments", "tiktok_comment_replies", "tiktok_transcript", "tiktok_live"],
-        "TikTok 搜索": ["tiktok_search_users", "tiktok_search_hashtag", "tiktok_search_keyword", "tiktok_search_music", "tiktok_search_top"],
-        "TikTok 趋势": ["tiktok_trending", "tiktok_creators_popular", "tiktok_hashtags_popular"],
-        "TikTok 音乐": ["tiktok_music_popular", "tiktok_music_info", "tiktok_music_videos"],
-        "视频分析": ["video_download", "video_analyze", "video_direct_analyze"],
-    }
-    result = []
-    for cat, names in categories.items():
-        items = [{"name": t["name"], "description": t["description"]} for t in TOOLS if t["name"] in names]
-        result.append({"category": cat, "tools": items})
-    return result
