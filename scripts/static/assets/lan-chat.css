@@ -661,14 +661,19 @@ body.ui-route-lan-chat .modal-backdrop {
   inset: 0;
   z-index: 210;
   padding: 20px;
+  display: none;
   align-items: center;
   justify-content: center;
+  visibility: hidden;
+  pointer-events: none;
   background: rgba(23, 26, 31, .34);
   backdrop-filter: blur(7px);
 }
 
 body.ui-route-lan-chat .modal-backdrop.show {
   display: flex;
+  visibility: visible;
+  pointer-events: auto;
   animation: lan-backdrop-in 180ms var(--ui-ease) both;
 }
 
