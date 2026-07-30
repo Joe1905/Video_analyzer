@@ -2154,6 +2154,15 @@
   #toolModal .tree-domain > .tree-children > .ui-collapse__inner { padding: 6px 36px 24px 92px; }
   #toolModal .tree-category > .tree-children > .ui-collapse__inner { padding: 0 0 8px 50px; }
 
+  #toolModal .tree-more > .tree-row {
+    min-height: 52px;
+    padding: 0 28px 0 34px;
+    color: var(--ui-ink-muted);
+  }
+
+  #toolModal .tree-more > .tree-row .tree-title { font-size: 14px; font-weight: 620; }
+  #toolModal .tree-more > .tree-children > .ui-collapse__inner { padding: 0 0 8px 24px; }
+
   #toolModal .tool-row { min-height: 74px; padding: 0 16px 0 0; gap: 18px; }
   #toolModal .tool-row + .tool-row::before { right: 54px; left: 0; border-top-color: rgba(133, 139, 151, .34); }
   #toolModal .tool-main { gap: 14px; }
