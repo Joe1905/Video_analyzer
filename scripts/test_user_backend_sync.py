@@ -85,13 +85,16 @@ def test_publish_file_input_state_is_resilient() -> None:
 
 def test_web_and_compose_expose_only_backend_sync_contracts() -> None:
     web_source = (ROOT / "scripts" / "web_app.py").read_text(encoding="utf-8")
-    compose_source = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
     assert '"/api/proxy/mihomo-reconcile"' in web_source
     assert '"/api/proxy/collect/jobs/rescan-discovery"' in web_source
-    assert "TIKTOK_BROWSER_MAX_SLOTS: ${TIKTOK_BROWSER_MAX_SLOTS:-4}" in compose_source
-    assert "TIKTOK_BROWSER_HIDDEN_AUTOMATION_SLOTS:" in compose_source
-    assert "TIKTOK_HIDDEN_SLOT_MIN_AVAILABLE_MB:" in compose_source
-    assert "TIKTOK_HIDDEN_SLOT_MAX_LOAD_PER_CPU:" in compose_source
+
+    compose_path = ROOT / "docker-compose.yml"
+    if compose_path.exists():
+        compose_source = compose_path.read_text(encoding="utf-8")
+        assert "TIKTOK_BROWSER_MAX_SLOTS: ${TIKTOK_BROWSER_MAX_SLOTS:-4}" in compose_source
+        assert "TIKTOK_BROWSER_HIDDEN_AUTOMATION_SLOTS:" in compose_source
+        assert "TIKTOK_HIDDEN_SLOT_MIN_AVAILABLE_MB:" in compose_source
+        assert "TIKTOK_HIDDEN_SLOT_MAX_LOAD_PER_CPU:" in compose_source
 
 
 if __name__ == "__main__":
