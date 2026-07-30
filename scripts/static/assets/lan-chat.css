@@ -107,6 +107,7 @@ body.ui-route-lan-chat .shell {
   grid-template-columns: 308px minmax(0, 1fr) 286px;
   overflow: hidden;
   background: var(--ui-canvas);
+  transition: grid-template-columns 180ms var(--ui-ease);
 }
 
 body.ui-route-lan-chat .rail {
@@ -1784,6 +1785,7 @@ body.ui-route-lan-chat.lan-details-closed .details-head,
 body.ui-route-lan-chat.lan-details-closed .right-rail {
   visibility: hidden;
   opacity: 0;
+  pointer-events: none;
 }
 
 @media (max-width: 1320px) {
@@ -1879,6 +1881,7 @@ body.ui-route-lan-chat.lan-details-closed .right-rail {
 
 @media (prefers-reduced-motion: reduce) {
   body.ui-route-lan-chat .app-header,
+  body.ui-route-lan-chat .shell,
   body.ui-route-lan-chat .launch-chat,
   body.ui-route-lan-chat .right-rail,
   body.ui-route-lan-chat .ui-switch,
