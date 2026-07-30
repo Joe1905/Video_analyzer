@@ -380,6 +380,11 @@
     box-shadow: 0 0 0 4px rgba(22, 120, 93, .1);
   }
 
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .sidebar-status.is-offline .sidebar-status-dot {
+    background: var(--ui-danger);
+    box-shadow: 0 0 0 4px rgba(194, 65, 12, .1);
+  }
+
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .chat-stage {
     min-width: 0;
     min-height: 0;
@@ -693,6 +698,14 @@
     align-self: center;
   }
 
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .input-bar.composer-expanded {
+    align-items: end;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .input-bar.composer-expanded .composer {
+    align-self: end;
+  }
+
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .attachment-preview:empty {
     display: none;
   }
@@ -716,9 +729,9 @@
     height: 44px;
     min-height: 44px;
     padding: 0;
-    border: 0;
+    border: 1px solid transparent;
     border-radius: 12px;
-    background: var(--ui-surface-soft);
+    background: transparent;
     color: var(--ui-brand);
   }
 
@@ -755,7 +768,14 @@
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .attach-button:hover {
     background: var(--ui-surface-soft);
+    border-color: var(--ui-line);
     color: var(--ui-brand);
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .attach-button:focus-visible {
+    border-color: var(--ui-line-strong);
+    outline: 2px solid color-mix(in srgb, var(--ui-brand) 38%, transparent);
+    outline-offset: 2px;
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .send-button {
