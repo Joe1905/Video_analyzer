@@ -234,6 +234,9 @@ class UIContractTest(unittest.TestCase):
             'UI_TEST_MODE_SAFE_POST_PATHS = frozenset({\n    "/api/lan-chat/select-account",',
             app,
         )
+        self.assertIn('"/api/lan-chat/direct",', app)
+        self.assertIn('"/api/lan-chat/rooms",', app)
+        self.assertIn("def ui_test_mode_safe_post(path: str) -> bool:", app)
         post = app.index("    def do_POST(self) -> None:", app.index("class Handler"))
         first_handler = app.index("handle_feishu_capability_post", post)
         guard = app.index("if UI_TEST_MODE:", post)

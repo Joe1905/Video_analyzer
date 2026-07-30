@@ -481,7 +481,21 @@ PROXY_POOL_ENABLED = os.getenv("PROXY_POOL_ENABLED", "1").strip().lower() in {"1
 UI_TEST_MODE = os.getenv("UI_TEST_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}
 UI_TEST_MODE_SAFE_POST_PATHS = frozenset({
     "/api/lan-chat/select-account",
+    "/api/lan-chat/direct",
+    "/api/lan-chat/rooms",
 })
+UI_TEST_MODE_SAFE_POST_PATTERNS = (
+    re.compile(
+        r"/api/lan-chat/rooms/[^/]+/"
+        r"(?:preferences|rename|members/remove|members/transfer|leave|dissolve)"
+    ),
+)
+
+
+def ui_test_mode_safe_post(path: str) -> bool:
+    return path in UI_TEST_MODE_SAFE_POST_PATHS or any(
+        pattern.fullmatch(path) for pattern in UI_TEST_MODE_SAFE_POST_PATTERNS
+    )
 NAV_ITEMS = [
     {"key": "home", "href": "/", "label": "\u9996\u9875", "title": "AI \u804a\u5929", "icon": '<path d="M3 10.5 12 3l9 7.5"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/>'},
     {"key": "lan-chat", "href": "/lan-chat", "label": "\u90bb\u804a", "title": "\u5c40\u57df\u7f51\u804a\u5929", "icon": '<path d="M21 15a4 4 0 0 1-4 4H8l-5 2 1.6-4.1A7 7 0 0 1 3 12c0-4 4-7 9-7s9 3 9 7z"/><path d="M8 12h.01M12 12h.01M16 12h.01"/>'},
@@ -14429,6 +14443,35 @@ def handle_lan_chat_post(handler: BaseHTTPRequestHandler, parsed) -> bool:
             )
             json_response(handler, HTTPStatus.OK, {"room": room})
             return True
+        transfer_admin_match = re.fullmatch(
+            r"/api/lan-chat/rooms/([^/]+)/members/transfer", path
+        )
+        if transfer_admin_match:
+            room = lan_chat_store.transfer_group_admin(
+                _lan_chat_token(handler),
+                unquote(transfer_admin_match.group(1)),
+                str(payload.get("targetUserId") or ""),
+            )
+            json_response(handler, HTTPStatus.OK, {"room": room})
+            return True
+        preferences_match = re.fullmatch(
+            r"/api/lan-chat/rooms/([^/]+)/preferences", path
+        )
+        if preferences_match:
+            pinned = payload.get("pinned") if "pinned" in payload else None
+            muted = payload.get("muted") if "muted" in payload else None
+            if pinned is not None and not isinstance(pinned, bool):
+                raise LanChatError("pinned 必须是布尔值")
+            if muted is not None and not isinstance(muted, bool):
+                raise LanChatError("muted 必须是布尔值")
+            room = lan_chat_store.update_room_preferences(
+                _lan_chat_token(handler),
+                unquote(preferences_match.group(1)),
+                pinned=pinned,
+                muted=muted,
+            )
+            json_response(handler, HTTPStatus.OK, {"room": room})
+            return True
         leave_group_match = re.fullmatch(r"/api/lan-chat/rooms/([^/]+)/leave", path)
         if leave_group_match:
             result = lan_chat_store.leave_group(
@@ -15106,7 +15149,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         if UI_TEST_MODE:
-            if parsed.path not in UI_TEST_MODE_SAFE_POST_PATHS:
+            if not ui_test_mode_safe_post(parsed.path):
                 return json_response(
                     self,
                     HTTPStatus.CONFLICT,

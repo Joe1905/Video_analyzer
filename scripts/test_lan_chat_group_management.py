@@ -108,6 +108,50 @@ class LanChatGroupManagementTest(unittest.TestCase):
             )
         )
 
+    def test_admin_can_transfer_ownership_explicitly(self) -> None:
+        room = self.store.create_group(
+            self.owner["sessionToken"],
+            "转移测试",
+            [self.second["user"]["id"], self.third["user"]["id"]],
+        )
+        updated = self.store.transfer_group_admin(
+            self.owner["sessionToken"],
+            room["id"],
+            self.second["user"]["id"],
+        )
+        self.assertEqual(updated["adminUserId"], self.second["user"]["id"])
+        self.assertFalse(updated["currentUserIsAdmin"])
+        self.assert_forbidden(
+            lambda: self.store.rename_group(
+                self.owner["sessionToken"], room["id"], "无权修改"
+            )
+        )
+        governed = self.store.rename_group(
+            self.second["sessionToken"], room["id"], "新管理员已接管"
+        )
+        self.assertEqual(governed["name"], "新管理员已接管")
+
+    def test_room_preferences_are_per_user_and_pinned_rooms_sort_first(self) -> None:
+        room = self.store.create_group(
+            self.owner["sessionToken"],
+            "偏好测试",
+            [self.second["user"]["id"]],
+        )
+        updated = self.store.update_room_preferences(
+            self.owner["sessionToken"], room["id"], pinned=True, muted=True
+        )
+        self.assertTrue(updated["pinned"])
+        self.assertTrue(updated["muted"])
+        owner_rooms = self.store.list_rooms(self.owner["user"]["id"])
+        self.assertEqual(owner_rooms[0]["id"], room["id"])
+        second_room = next(
+            item
+            for item in self.store.list_rooms(self.second["user"]["id"])
+            if item["id"] == room["id"]
+        )
+        self.assertFalse(second_room["pinned"])
+        self.assertFalse(second_room["muted"])
+
 
 if __name__ == "__main__":
     unittest.main()

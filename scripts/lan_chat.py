@@ -195,6 +195,16 @@ class LanChatStore:
                     FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE CASCADE,
                     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
                 );
+                CREATE TABLE IF NOT EXISTS room_preferences (
+                    room_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    pinned INTEGER NOT NULL DEFAULT 0,
+                    muted INTEGER NOT NULL DEFAULT 0,
+                    updated_at REAL NOT NULL,
+                    PRIMARY KEY (room_id, user_id),
+                    FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE CASCADE,
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                );
                 CREATE INDEX IF NOT EXISTS messages_room_id_idx
                     ON messages(room_id, id);
                 CREATE INDEX IF NOT EXISTS room_members_user_id_idx
@@ -203,6 +213,8 @@ class LanChatStore:
                     ON account_sessions(user_id);
                 CREATE INDEX IF NOT EXISTS room_reads_user_id_idx
                     ON room_reads(user_id, room_id);
+                CREATE INDEX IF NOT EXISTS room_preferences_user_id_idx
+                    ON room_preferences(user_id, pinned, updated_at);
                 CREATE INDEX IF NOT EXISTS file_attachments_expiry_idx
                     ON file_attachments(deleted_at, expires_at);
                 CREATE INDEX IF NOT EXISTS file_receipts_user_id_idx
@@ -584,13 +596,18 @@ class LanChatStore:
                    FROM rooms r
                    LEFT JOIN room_members rm ON rm.room_id = r.id
                    WHERE r.kind = 'public' OR rm.user_id = ?
-                   ORDER BY CASE r.system_kind
+                   ORDER BY COALESCE(
+                                (SELECT rp.pinned FROM room_preferences rp
+                                 WHERE rp.room_id = r.id AND rp.user_id = ?),
+                                0
+                            ) DESC,
+                            CASE r.system_kind
                                 WHEN 'public' THEN 0
                                 WHEN 'feishu' THEN 1
                                 ELSE 2
                             END,
                             r.updated_at DESC""",
-                (user_id,),
+                (user_id, user_id),
             ).fetchall()
             return [self._room_payload(conn, row, user_id) for row in rows]
 
@@ -705,6 +722,69 @@ class LanChatStore:
                 "UPDATE rooms SET updated_at = ? WHERE id = ?", (time.time(), room["id"])
             )
             room = conn.execute("SELECT * FROM rooms WHERE id = ?", (room["id"],)).fetchone()
+            return self._room_payload(conn, room, current["id"])
+
+    def transfer_group_admin(
+        self, device_token: str, room_id: str, target_user_id: str
+    ) -> dict[str, Any]:
+        current = self.authenticate(device_token)
+        target_id = str(target_user_id or "").strip()
+        if not target_id or target_id == current["id"]:
+            raise LanChatError("请选择其他群成员接任管理员")
+        with self._connect() as conn:
+            room = self._require_custom_group(conn, room_id, current["id"], admin=True)
+            member = conn.execute(
+                "SELECT 1 FROM room_members WHERE room_id = ? AND user_id = ?",
+                (room["id"], target_id),
+            ).fetchone()
+            if member is None:
+                raise LanChatError("接任者不是群组成员", 404)
+            conn.execute(
+                "UPDATE rooms SET admin_user_id = ?, updated_at = ? WHERE id = ?",
+                (target_id, time.time(), room["id"]),
+            )
+            room = conn.execute("SELECT * FROM rooms WHERE id = ?", (room["id"],)).fetchone()
+            return self._room_payload(conn, room, current["id"])
+
+    def update_room_preferences(
+        self,
+        device_token: str,
+        room_id: str,
+        *,
+        pinned: bool | None = None,
+        muted: bool | None = None,
+    ) -> dict[str, Any]:
+        current = self.authenticate(device_token)
+        if pinned is None and muted is None:
+            raise LanChatError("没有需要更新的会话设置")
+        now = time.time()
+        with self._connect() as conn:
+            room = self._require_room_access(conn, room_id, current["id"])
+            existing = conn.execute(
+                """SELECT pinned, muted FROM room_preferences
+                   WHERE room_id = ? AND user_id = ?""",
+                (room["id"], current["id"]),
+            ).fetchone()
+            next_pinned = int(
+                bool(pinned)
+                if pinned is not None
+                else bool(existing["pinned"]) if existing else False
+            )
+            next_muted = int(
+                bool(muted)
+                if muted is not None
+                else bool(existing["muted"]) if existing else False
+            )
+            conn.execute(
+                """INSERT INTO room_preferences
+                   (room_id, user_id, pinned, muted, updated_at)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(room_id, user_id) DO UPDATE SET
+                       pinned = excluded.pinned,
+                       muted = excluded.muted,
+                       updated_at = excluded.updated_at""",
+                (room["id"], current["id"], next_pinned, next_muted, now),
+            )
             return self._room_payload(conn, room, current["id"])
 
     def leave_group(self, device_token: str, room_id: str) -> dict[str, Any]:
@@ -1551,6 +1631,14 @@ class LanChatStore:
                 )
             )
         )
+        preference = conn.execute(
+            """SELECT pinned, muted FROM room_preferences
+               WHERE room_id = ? AND user_id = ?""",
+            (room["id"], current_user_id),
+        ).fetchone()
+        recent_files = self._recent_room_files(
+            conn, str(room["id"]), current_user_id, limit=20
+        )
         return {
             "id": room["id"],
             "kind": room["kind"],
@@ -1571,7 +1659,10 @@ class LanChatStore:
             "adminUserId": admin_user_id,
             "currentUserIsAdmin": current_user_is_admin,
             "updatedAt": float(room["updated_at"]),
+            "pinned": bool(preference["pinned"]) if preference is not None else False,
+            "muted": bool(preference["muted"]) if preference is not None else False,
             "unreadCount": unread_count,
+            "recentFiles": recent_files,
             "latestMessage": (
                 {
                     "content": latest["content"],
@@ -1591,9 +1682,64 @@ class LanChatStore:
             ),
             "canRename": current_user_is_admin,
             "canRemoveMembers": current_user_is_admin,
+            "canTransferAdmin": current_user_is_admin and len(members) > 1,
             "canLeave": is_custom_group,
             "canDissolve": current_user_is_admin,
         }
+
+    def _recent_room_files(
+        self,
+        conn: sqlite3.Connection,
+        room_id: str,
+        current_user_id: str,
+        *,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        rows = conn.execute(
+            """SELECT f.*, r.kind AS room_kind, u.nickname AS sender_name
+               FROM file_attachments f
+               JOIN rooms r ON r.id = f.room_id
+               JOIN users u ON u.id = f.sender_id
+               WHERE f.room_id = ? AND f.deleted_at IS NULL AND f.expires_at > ?
+               ORDER BY f.created_at DESC LIMIT ?""",
+            (room_id, time.time(), max(1, min(int(limit), 50))),
+        ).fetchall()
+        result = []
+        for row in rows:
+            is_sender = str(row["sender_id"]) == current_user_id
+            receipt = None
+            if row["room_kind"] == "direct" and not is_sender:
+                receipt = conn.execute(
+                    """SELECT status FROM file_receipts
+                       WHERE file_id = ? AND user_id = ?""",
+                    (row["id"], current_user_id),
+                ).fetchone()
+            receipt_status = (
+                str(receipt["status"])
+                if receipt is not None
+                else "available"
+                if row["room_kind"] != "direct" or is_sender
+                else "pending"
+            )
+            result.append(
+                {
+                    "id": row["id"],
+                    "name": row["original_name"],
+                    "mimeType": row["mime_type"],
+                    "size": int(row["size_bytes"]),
+                    "expiresAt": float(row["expires_at"]),
+                    "createdAt": float(row["created_at"]),
+                    "senderName": row["sender_name"],
+                    "requiresAcceptance": row["room_kind"] == "direct" and not is_sender,
+                    "receiptStatus": receipt_status,
+                    "downloadAllowed": (
+                        row["room_kind"] != "direct"
+                        or is_sender
+                        or receipt_status == "accepted"
+                    ),
+                }
+            )
+        return result
 
     @staticmethod
     def _user_count(conn: sqlite3.Connection) -> int:

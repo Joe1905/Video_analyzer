@@ -1242,3 +1242,606 @@ body.ui-route-lan-chat .viewer-toolbar .viewer-close {
     animation: none;
   }
 }
+
+/* V2 design handoff: restrained light workspace for human-to-human chat. */
+body.ui-route-lan-chat .ui-main,
+body.ui-route-lan-chat .shell {
+  min-width: 0;
+  min-height: 0;
+}
+
+body.ui-route-lan-chat .app-header {
+  transition: grid-template-columns 180ms var(--ui-ease);
+}
+
+body.ui-route-lan-chat .rail-head,
+body.ui-route-lan-chat .chat-head,
+body.ui-route-lan-chat .details-head {
+  min-width: 0;
+  min-height: var(--ui-header-height);
+  display: flex;
+  align-items: center;
+  background: rgba(255, 255, 255, .96);
+}
+
+body.ui-route-lan-chat .rail-head {
+  justify-content: space-between;
+  border-right: 1px solid var(--ui-line);
+}
+
+body.ui-route-lan-chat .rail-head .brand {
+  border: 0;
+}
+
+body.ui-route-lan-chat .chat-head {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+body.ui-route-lan-chat .header-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-right: 14px;
+}
+
+body.ui-route-lan-chat .header-actions svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.65;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+body.ui-route-lan-chat .details-head {
+  justify-content: space-between;
+  padding: 0 12px 0 18px;
+  border-left: 1px solid var(--ui-line);
+  color: var(--ui-ink);
+  font-size: 12px;
+}
+
+body.ui-route-lan-chat .left-rail {
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+}
+
+body.ui-route-lan-chat .profile-card {
+  min-height: 76px;
+  margin: 14px 16px 10px;
+  padding: 10px 11px;
+  border: 1px solid transparent;
+  border-radius: 14px;
+  background: var(--lan-surface-muted);
+}
+
+body.ui-route-lan-chat .profile-card:hover {
+  border-color: var(--ui-line);
+  background: #fff;
+}
+
+body.ui-route-lan-chat .launch-chat {
+  min-height: 44px;
+  margin: 0 16px 12px;
+  padding: 0 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid #181c22;
+  border-radius: 12px;
+  background: #181c22;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 720;
+  box-shadow: 0 8px 18px rgba(24, 28, 34, .1);
+  transition: transform 140ms var(--ui-ease), background 140ms var(--ui-ease);
+}
+
+body.ui-route-lan-chat .launch-chat:hover {
+  background: #262b32;
+  transform: translateY(-1px);
+}
+
+body.ui-route-lan-chat .launch-chat svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+}
+
+body.ui-route-lan-chat .rail-scroll {
+  padding: 0 16px 18px;
+}
+
+body.ui-route-lan-chat .section-head {
+  padding-inline: 0;
+  text-transform: uppercase;
+}
+
+body.ui-route-lan-chat .room-item {
+  min-height: 62px;
+  padding: 9px 10px;
+}
+
+body.ui-route-lan-chat .room-line {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+body.ui-route-lan-chat .room-line .room-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body.ui-route-lan-chat .room-line time {
+  flex: 0 0 auto;
+  color: var(--ui-ink-subtle);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+
+body.ui-route-lan-chat .room-trailing {
+  display: grid;
+  justify-items: end;
+  gap: 5px;
+}
+
+body.ui-route-lan-chat .room-pin {
+  color: var(--lan-accent);
+  font-size: 10px;
+}
+
+body.ui-route-lan-chat .ui-room-empty {
+  padding: 16px 8px;
+  line-height: 1.65;
+}
+
+body.ui-route-lan-chat .rail-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+body.ui-route-lan-chat .right-rail {
+  display: block;
+  overflow: hidden;
+}
+
+body.ui-route-lan-chat .detail-scroll {
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  padding: 20px 18px 28px;
+}
+
+body.ui-route-lan-chat .channel-card {
+  padding: 8px 0 18px;
+  text-align: center;
+}
+
+body.ui-route-lan-chat .channel-icon {
+  width: 50px;
+  height: 50px;
+  margin: 0 auto 11px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--lan-accent-line);
+  border-radius: 16px;
+  background: var(--lan-accent-soft);
+  color: var(--lan-accent);
+}
+
+body.ui-route-lan-chat .channel-icon .room-glyph {
+  background: transparent;
+  color: inherit;
+}
+
+body.ui-route-lan-chat .channel-card > strong {
+  display: block;
+  color: var(--ui-ink);
+  font-size: 14px;
+}
+
+body.ui-route-lan-chat .channel-card > p {
+  margin: 5px 0 15px;
+  color: var(--ui-ink-subtle);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+body.ui-route-lan-chat .member-summary {
+  width: 100%;
+  min-height: 48px;
+  padding: 8px 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--ui-line);
+  border-radius: 12px;
+  background: #fff;
+  color: var(--ui-ink-muted);
+  font-size: 10px;
+  box-shadow: none;
+}
+
+body.ui-route-lan-chat .member-summary:hover {
+  border-color: var(--lan-accent-line);
+  background: var(--lan-accent-soft);
+}
+
+body.ui-route-lan-chat .member-summary b {
+  margin-left: auto;
+  color: var(--lan-accent);
+  font-size: 10px;
+}
+
+body.ui-route-lan-chat .member-avatar-stack {
+  display: flex;
+  padding-left: 6px;
+}
+
+body.ui-route-lan-chat .member-avatar-stack .avatar {
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+  margin-left: -6px;
+  border: 2px solid #fff;
+  border-radius: 9px;
+  box-shadow: none;
+}
+
+body.ui-route-lan-chat .detail-section {
+  padding: 16px 0;
+  border-top: 1px solid var(--ui-line);
+}
+
+body.ui-route-lan-chat .detail-title {
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+body.ui-route-lan-chat .detail-title strong {
+  font-size: 11px;
+}
+
+body.ui-route-lan-chat .detail-title button {
+  color: var(--lan-accent);
+  font-size: 9px;
+}
+
+body.ui-route-lan-chat .recent-file-list {
+  display: grid;
+  gap: 4px;
+}
+
+body.ui-route-lan-chat .recent-file-row {
+  min-width: 0;
+  min-height: 54px;
+  padding: 8px;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--ui-line);
+  border-radius: 11px;
+  background: #fff;
+}
+
+body.ui-route-lan-chat .recent-file-row.compact {
+  border-color: transparent;
+  background: var(--lan-surface-muted);
+}
+
+body.ui-route-lan-chat .file-mini {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  background: var(--lan-accent-soft);
+  color: var(--lan-accent);
+  font-size: 8px;
+  font-weight: 800;
+}
+
+body.ui-route-lan-chat .recent-file-copy {
+  min-width: 0;
+}
+
+body.ui-route-lan-chat .recent-file-copy strong,
+body.ui-route-lan-chat .recent-file-copy small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body.ui-route-lan-chat .recent-file-copy strong {
+  font-size: 10px;
+}
+
+body.ui-route-lan-chat .recent-file-copy small {
+  margin-top: 3px;
+  color: var(--ui-ink-subtle);
+  font-size: 8px;
+}
+
+body.ui-route-lan-chat .recent-file-row > button {
+  min-height: 30px;
+  padding: 0 8px;
+  border-radius: 8px;
+  color: var(--lan-accent);
+  font-size: 9px;
+}
+
+body.ui-route-lan-chat .recent-file-row > button:hover {
+  background: var(--lan-accent-soft);
+}
+
+body.ui-route-lan-chat .detail-empty {
+  padding: 16px 8px;
+  border: 1px dashed var(--ui-line);
+  border-radius: 11px;
+  color: var(--ui-ink-subtle);
+  text-align: center;
+  font-size: 9px;
+}
+
+body.ui-route-lan-chat .detail-settings {
+  display: grid;
+  gap: 2px;
+}
+
+body.ui-route-lan-chat .setting-row,
+body.ui-route-lan-chat .detail-action {
+  width: 100%;
+  min-height: 42px;
+  padding: 0 4px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--ui-ink);
+  font-size: 11px;
+  text-align: left;
+}
+
+body.ui-route-lan-chat .setting-row:hover,
+body.ui-route-lan-chat .detail-action:hover {
+  color: var(--lan-accent);
+}
+
+body.ui-route-lan-chat .ui-switch {
+  width: 34px;
+  height: 20px;
+  padding: 2px;
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--ui-line);
+  border-radius: 999px;
+  background: #e9ebe9;
+  transition: background 150ms var(--ui-ease), border-color 150ms var(--ui-ease);
+}
+
+body.ui-route-lan-chat .ui-switch i {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(25, 28, 34, .16);
+  transition: transform 150ms var(--ui-ease);
+}
+
+body.ui-route-lan-chat .ui-switch.on {
+  border-color: var(--lan-accent);
+  background: var(--lan-accent);
+}
+
+body.ui-route-lan-chat .ui-switch.on i {
+  transform: translateX(14px);
+}
+
+body.ui-route-lan-chat .group-actions {
+  display: grid;
+  padding-top: 8px;
+}
+
+body.ui-route-lan-chat .group-actions[hidden] {
+  display: none;
+}
+
+body.ui-route-lan-chat .danger-text {
+  color: #a34b42;
+}
+
+body.ui-route-lan-chat .selection-summary {
+  margin-right: auto;
+  color: var(--ui-ink-subtle);
+  font-size: 10px;
+}
+
+body.ui-route-lan-chat .conversation-picker {
+  max-height: 300px;
+  padding: 5px;
+  border-color: var(--ui-line);
+  background: var(--lan-surface-muted);
+}
+
+body.ui-route-lan-chat .conversation-picker .pick-row {
+  min-height: 48px;
+  border: 0;
+  border-radius: 10px;
+}
+
+body.ui-route-lan-chat .conversation-picker .pick-row:hover {
+  background: #fff;
+}
+
+body.ui-route-lan-chat .ui-picker-empty {
+  padding: 22px;
+  text-align: center;
+}
+
+body.ui-route-lan-chat .members-modal,
+body.ui-route-lan-chat .files-modal {
+  width: min(520px, 100%);
+}
+
+body.ui-route-lan-chat .members-modal .member-search {
+  padding: 0 0 12px;
+  border: 0;
+}
+
+body.ui-route-lan-chat .members-modal .member-list {
+  max-height: 420px;
+  padding: 0;
+}
+
+body.ui-route-lan-chat .manage-member-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+body.ui-route-lan-chat .transfer-member,
+body.ui-route-lan-chat .remove-member {
+  min-height: 30px;
+  padding: 0 9px;
+  border-radius: 8px;
+  background: transparent;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+body.ui-route-lan-chat .transfer-member {
+  color: var(--lan-accent);
+}
+
+body.ui-route-lan-chat .transfer-member:hover {
+  background: var(--lan-accent-soft);
+}
+
+body.ui-route-lan-chat .remove-member {
+  color: #a34b42;
+}
+
+body.ui-route-lan-chat.lan-details-closed .app-header,
+body.ui-route-lan-chat.lan-details-closed .shell {
+  grid-template-columns: 308px minmax(0, 1fr) 0;
+}
+
+body.ui-route-lan-chat.lan-details-closed .details-head,
+body.ui-route-lan-chat.lan-details-closed .right-rail {
+  visibility: hidden;
+  opacity: 0;
+}
+
+@media (max-width: 1320px) {
+  body.ui-route-lan-chat .app-header,
+  body.ui-route-lan-chat .shell {
+    grid-template-columns: 292px minmax(0, 1fr);
+  }
+
+  body.ui-route-lan-chat .details-head {
+    display: none;
+  }
+
+  body.ui-route-lan-chat .right-rail {
+    position: fixed;
+    z-index: 76;
+    top: var(--ui-header-height);
+    right: 0;
+    bottom: 0;
+    width: min(330px, 88vw);
+    display: block;
+    visibility: hidden;
+    opacity: 0;
+    transform: translateX(104%);
+    transition: transform 200ms var(--ui-ease), opacity 160ms var(--ui-ease), visibility 0s linear 200ms;
+    box-shadow: -18px 0 46px rgba(25, 28, 34, .13);
+  }
+
+  body.ui-route-lan-chat .right-rail.open {
+    visibility: visible;
+    opacity: 1;
+    transform: none;
+    transition-delay: 0s;
+  }
+}
+
+@media (max-width: 780px) {
+  body.ui-route-lan-chat .app-header {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  body.ui-route-lan-chat .rail-head {
+    display: none;
+  }
+
+  body.ui-route-lan-chat .chat-head {
+    min-height: 58px;
+  }
+
+  body.ui-route-lan-chat .header-room {
+    padding-left: 16px;
+  }
+
+  body.ui-route-lan-chat .header-actions {
+    padding-right: 8px;
+  }
+
+  body.ui-route-lan-chat .header-actions #openFilesHeader {
+    display: none;
+  }
+
+  body.ui-route-lan-chat .shell {
+    display: block;
+  }
+
+  body.ui-route-lan-chat .left-rail,
+  body.ui-route-lan-chat .right-rail {
+    top: 58px;
+    width: min(88vw, 344px);
+  }
+
+  body.ui-route-lan-chat .left-rail {
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
+  }
+
+  body.ui-route-lan-chat .profile-card {
+    margin-top: 10px;
+  }
+
+  body.ui-route-lan-chat .message {
+    max-width: 90%;
+  }
+
+  body.ui-route-lan-chat .modal-foot {
+    flex-wrap: wrap;
+  }
+
+  body.ui-route-lan-chat .selection-summary {
+    width: 100%;
+    margin: 0 0 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.ui-route-lan-chat .app-header,
+  body.ui-route-lan-chat .launch-chat,
+  body.ui-route-lan-chat .right-rail,
+  body.ui-route-lan-chat .ui-switch,
+  body.ui-route-lan-chat .ui-switch i {
+    transition: none;
+  }
+}
