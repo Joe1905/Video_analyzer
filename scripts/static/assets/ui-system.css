@@ -189,6 +189,12 @@
     font-size: 12px;
   }
 
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-search-field input::-webkit-search-cancel-button {
+    display: none;
+    -webkit-appearance: none;
+    appearance: none;
+  }
+
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-search-clear {
     position: absolute;
     top: 5px;

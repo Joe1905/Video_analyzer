@@ -158,13 +158,16 @@ class UIContractTest(unittest.TestCase):
             'id="sessionSearchToggle"',
             'id="sessionSearchInput"',
             'id="sessionSearchClear"',
+            'title="清除搜索" hidden',
             "function sessionGroup",
             "function sessionStamp",
+            "function syncSessionSearchClear()",
             "m.role==='user'",
             "Math.min(innerHeight-height-8,picked.rect.top-height-8)",
             "fixedRootRect.left",
         ):
             self.assertIn(contract, chat)
+        self.assertIn("::-webkit-search-cancel-button", UI_CSS.read_text(encoding="utf-8"))
         self.assertIn('query.get("query", [""])[0]', app)
         self.assertIn("message.content", app)
 
