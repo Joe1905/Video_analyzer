@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import re
+import shutil
+import subprocess
 import unittest
 from html.parser import HTMLParser
 from pathlib import Path
@@ -182,6 +184,24 @@ class UIContractTest(unittest.TestCase):
         self.assertNotIn('class="chat-model-status"', app)
         self.assertIn('query.get("query", [""])[0]', app)
         self.assertIn("message.content", app)
+
+    def test_inline_chat_scripts_are_valid_javascript(self) -> None:
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("Node.js is not available for inline JavaScript syntax validation")
+        chat = (STATIC_DIR / "chat.html").read_text(encoding="utf-8")
+        scripts = re.findall(r"<script(?:\s[^>]*)?>([\s\S]*?)</script>", chat)
+        for index, script in enumerate(scripts):
+            if not script.strip():
+                continue
+            result = subprocess.run(
+                [node, "--check", "-"],
+                input=script,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, f"inline script {index}: {result.stderr}")
 
     def test_ui_test_mode_blocks_mutations_before_handlers(self) -> None:
         app = (SCRIPTS_DIR / "web_app.py").read_text(encoding="utf-8")
