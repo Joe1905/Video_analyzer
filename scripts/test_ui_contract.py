@@ -231,18 +231,23 @@ class UIContractTest(unittest.TestCase):
     def test_ui_test_mode_blocks_mutations_before_handlers(self) -> None:
         app = (SCRIPTS_DIR / "web_app.py").read_text(encoding="utf-8")
         self.assertIn(
-            'UI_TEST_MODE_SAFE_POST_PATHS = frozenset({\n    "/api/lan-chat/select-account",',
+            'UI_TEST_MODE_LIVE_WRITE_PREFIXES = ("/api/lan-chat/",)',
             app,
         )
-        self.assertIn('"/api/lan-chat/direct",', app)
-        self.assertIn('"/api/lan-chat/rooms",', app)
-        self.assertIn("def ui_test_mode_safe_post(path: str) -> bool:", app)
+        self.assertIn("def ui_test_mode_allows_live_write(path: str) -> bool:", app)
         post = app.index("    def do_POST(self) -> None:", app.index("class Handler"))
         first_handler = app.index("handle_feishu_capability_post", post)
         guard = app.index("if UI_TEST_MODE:", post)
+        self.assertIn(
+            "if not ui_test_mode_allows_live_write(parsed.path):",
+            app[guard:first_handler],
+        )
         self.assertLess(guard, first_handler)
         delete = app.index("    def do_DELETE(self) -> None:", post)
-        delete_guard = app.index("if UI_TEST_MODE:", delete)
+        delete_guard = app.index(
+            "if UI_TEST_MODE and not ui_test_mode_allows_live_write(parsed.path):",
+            delete,
+        )
         self.assertLess(delete_guard, app.index('parsed.path.startswith("/amazon/")', delete))
 
 

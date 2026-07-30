@@ -479,22 +479,12 @@ FORCED_MCP_CHAT_PROVIDERS = {"amazon", "fastmoss"}
 MCP_TOOL_CACHE: dict[str, dict[str, Any]] = {}
 PROXY_POOL_ENABLED = os.getenv("PROXY_POOL_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
 UI_TEST_MODE = os.getenv("UI_TEST_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}
-UI_TEST_MODE_SAFE_POST_PATHS = frozenset({
-    "/api/lan-chat/select-account",
-    "/api/lan-chat/direct",
-    "/api/lan-chat/rooms",
-})
-UI_TEST_MODE_SAFE_POST_PATTERNS = (
-    re.compile(
-        r"/api/lan-chat/rooms/[^/]+/"
-        r"(?:preferences|rename|members/remove|members/transfer|leave|dissolve)"
-    ),
-)
+UI_TEST_MODE_LIVE_WRITE_PREFIXES = ("/api/lan-chat/",)
 
 
-def ui_test_mode_safe_post(path: str) -> bool:
-    return path in UI_TEST_MODE_SAFE_POST_PATHS or any(
-        pattern.fullmatch(path) for pattern in UI_TEST_MODE_SAFE_POST_PATTERNS
+def ui_test_mode_allows_live_write(path: str) -> bool:
+    return any(
+        path.startswith(prefix) for prefix in UI_TEST_MODE_LIVE_WRITE_PREFIXES
     )
 NAV_ITEMS = [
     {"key": "home", "href": "/", "label": "\u9996\u9875", "title": "AI \u804a\u5929", "icon": '<path d="M3 10.5 12 3l9 7.5"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/>'},
@@ -15149,7 +15139,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         if UI_TEST_MODE:
-            if not ui_test_mode_safe_post(parsed.path):
+            if not ui_test_mode_allows_live_write(parsed.path):
                 return json_response(
                     self,
                     HTTPStatus.CONFLICT,
@@ -15354,7 +15344,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self) -> None:
         parsed = urlparse(self.path)
-        if UI_TEST_MODE:
+        if UI_TEST_MODE and not ui_test_mode_allows_live_write(parsed.path):
             return json_response(
                 self,
                 HTTPStatus.CONFLICT,
