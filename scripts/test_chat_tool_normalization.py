@@ -2514,7 +2514,9 @@ def test_official_skill_chain_disables_frontend_tool_selection() -> None:
             os.environ["SELLERSPRITE_OFFICIAL_SKILL_ENABLED"] = previous_sellersprite
 
     chat_html = (ROOT / "scripts" / "static" / "chat.html").read_text(encoding="utf-8")
-    assert 'selectionEnabled===false?"none":""' in chat_html
+    assert "headerToolButton.hidden=S.toolCatalog?.selectionEnabled===false" in chat_html
+    assert '$("headerToolBtn").onclick=openModal' in chat_html
+    assert 'id="toolBtn"' not in chat_html
     assert "askPayload.enabledToolMasks" in chat_html
 
 

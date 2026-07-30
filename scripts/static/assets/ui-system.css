@@ -456,6 +456,10 @@
     background: rgba(255, 255, 255, .8);
   }
 
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .chat-header-more[hidden] {
+    display: none;
+  }
+
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .chat-header-more svg {
     width: 16px;
     height: 16px;
@@ -675,7 +679,7 @@
     margin: 0 auto 24px;
     padding: 10px;
     display: grid;
-    grid-template-columns: 44px minmax(0, 1fr) 44px 44px;
+    grid-template-columns: 44px minmax(0, 1fr) 44px;
     align-items: end;
     gap: 8px;
     border: 1px solid var(--ui-line);
@@ -702,21 +706,20 @@
     line-height: 1.6;
   }
 
-  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .attach-button,
-  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .tool-button {
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .attach-button {
     width: 44px;
     min-width: 44px;
     height: 44px;
     min-height: 44px;
     padding: 0;
     border: 0;
-    background: transparent;
-    color: var(--ui-ink-subtle);
+    border-radius: 12px;
+    background: var(--ui-surface-soft);
+    color: var(--ui-brand);
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .attach-button svg,
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .expand-input-btn svg,
-  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .tool-button svg,
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .send-button svg {
     width: 18px;
     height: 18px;
@@ -737,8 +740,7 @@
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .attach-button:hover,
-  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .expand-input-btn:hover,
-  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .tool-button:hover {
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .expand-input-btn:hover {
     background: var(--ui-surface-soft);
     color: var(--ui-brand);
   }
@@ -874,7 +876,7 @@
       min-height: 62px;
       margin: 0 8px var(--ui-safe-bottom);
       padding: 7px;
-      grid-template-columns: 44px minmax(0, 1fr) 44px 44px;
+      grid-template-columns: 44px minmax(0, 1fr) 44px;
       gap: 4px;
       border-radius: 17px;
     }
@@ -1425,7 +1427,6 @@
   body.ui-system .icon-button,
   body.ui-system .account-icon-btn,
   body.ui-system .collect-target-icon-btn,
-  body.ui-system .tool-button,
   body.ui-system .expand-input-btn {
     width: 44px;
     min-width: 44px;
@@ -2626,7 +2627,7 @@
       margin: 0 8px var(--ui-safe-bottom);
       padding: 7px;
       display: grid;
-      grid-template-columns: minmax(0, 1fr) 44px 44px auto;
+      grid-template-columns: 44px minmax(0, 1fr) 44px;
       gap: 6px;
     }
 
