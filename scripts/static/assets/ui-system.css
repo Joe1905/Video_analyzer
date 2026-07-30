@@ -2163,6 +2163,36 @@
   #toolModal .tree-more > .tree-row .tree-title { font-size: 14px; font-weight: 620; }
   #toolModal .tree-more > .tree-children > .ui-collapse__inner { padding: 0 0 8px 24px; }
 
+  #toolModal .tree-domain.is-secondary > .tree-children > .ui-collapse__inner { padding: 0; }
+  #toolModal .tree-more > .tree-row { min-height: 32px; }
+  #toolModal .tree-more > .tree-row .tree-title { font-size: 12px; }
+  #toolModal .tree-category > .tree-children > .ui-collapse__inner { padding-left: 82px; }
+
+  @media (min-width: 861px) {
+    #toolModal .tool-modal-head {
+      min-height: 162px;
+      padding: 34px 44px;
+    }
+
+    #toolModal .tool-modal-head strong { font-size: 34px; line-height: 1.15; }
+    #toolModal .tool-modal-head small { margin-top: 14px; font-size: 20px; }
+    #toolModal .tool-modal-body { padding: 0 40px; }
+
+    #toolModal .tool-modal-foot {
+      min-height: 136px;
+      padding: 30px 44px;
+    }
+
+    #toolModal .tool-modal-foot > button {
+      min-height: 68px;
+      padding: 0 34px;
+      border-radius: 14px;
+      font-size: 22px;
+    }
+
+    #toolModal .tool-selection-summary { font-size: 18px; }
+  }
+
   #toolModal .tool-row { min-height: 74px; padding: 0 16px 0 0; gap: 18px; }
   #toolModal .tool-row + .tool-row::before { right: 54px; left: 0; border-top-color: rgba(133, 139, 151, .34); }
   #toolModal .tool-main { gap: 14px; }
