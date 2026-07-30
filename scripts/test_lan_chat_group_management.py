@@ -171,12 +171,18 @@ class LanChatGroupManagementTest(unittest.TestCase):
         self.assertTrue(updated["pinned"])
         self.assertTrue(updated["muted"])
         owner_rooms = self.store.list_rooms(self.owner["user"]["id"])
-        self.assertEqual(owner_rooms[0]["id"], room["id"])
+        self.assertIn(
+            room["id"],
+            [item["id"] for item in owner_rooms if item["pinned"]],
+        )
+        second_rooms = self.store.list_rooms(self.second["user"]["id"])
         second_room = next(
             item
-            for item in self.store.list_rooms(self.second["user"]["id"])
+            for item in second_rooms
             if item["id"] == room["id"]
         )
+        second_room_index = second_rooms.index(second_room)
+        self.assertTrue(all(item["pinned"] for item in second_rooms[:second_room_index]))
         self.assertFalse(second_room["pinned"])
         self.assertFalse(second_room["muted"])
 
