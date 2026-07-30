@@ -479,6 +479,9 @@ FORCED_MCP_CHAT_PROVIDERS = {"amazon", "fastmoss"}
 MCP_TOOL_CACHE: dict[str, dict[str, Any]] = {}
 PROXY_POOL_ENABLED = os.getenv("PROXY_POOL_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
 UI_TEST_MODE = os.getenv("UI_TEST_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}
+UI_TEST_MODE_SAFE_POST_PATHS = frozenset({
+    "/api/lan-chat/select-account",
+})
 NAV_ITEMS = [
     {"key": "home", "href": "/", "label": "\u9996\u9875", "title": "AI \u804a\u5929", "icon": '<path d="M3 10.5 12 3l9 7.5"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/>'},
     {"key": "lan-chat", "href": "/lan-chat", "label": "\u90bb\u804a", "title": "\u5c40\u57df\u7f51\u804a\u5929", "icon": '<path d="M21 15a4 4 0 0 1-4 4H8l-5 2 1.6-4.1A7 7 0 0 1 3 12c0-4 4-7 9-7s9 3 9 7z"/><path d="M8 12h.01M12 12h.01M16 12h.01"/>'},
@@ -15103,16 +15106,17 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         if UI_TEST_MODE:
-            return json_response(
-                self,
-                HTTPStatus.CONFLICT,
-                {
-                    "error": "UI 测试模式已拦截写操作，未触发真实业务。",
-                    "simulated": True,
-                    "status": "blocked",
-                    "path": parsed.path,
-                },
-            )
+            if parsed.path not in UI_TEST_MODE_SAFE_POST_PATHS:
+                return json_response(
+                    self,
+                    HTTPStatus.CONFLICT,
+                    {
+                        "error": "UI 测试模式已拦截写操作，未触发真实业务。",
+                        "simulated": True,
+                        "status": "blocked",
+                        "path": parsed.path,
+                    },
+                )
         if handle_feishu_capability_post(self, parsed):
             return
         if parsed.path.startswith("/api/lan-chat/") and handle_lan_chat_post(self, parsed):

@@ -230,6 +230,10 @@ class UIContractTest(unittest.TestCase):
 
     def test_ui_test_mode_blocks_mutations_before_handlers(self) -> None:
         app = (SCRIPTS_DIR / "web_app.py").read_text(encoding="utf-8")
+        self.assertIn(
+            'UI_TEST_MODE_SAFE_POST_PATHS = frozenset({\n    "/api/lan-chat/select-account",',
+            app,
+        )
         post = app.index("    def do_POST(self) -> None:", app.index("class Handler"))
         first_handler = app.index("handle_feishu_capability_post", post)
         guard = app.index("if UI_TEST_MODE:", post)

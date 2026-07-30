@@ -815,6 +815,20 @@ body.ui-route-lan-chat .login-backdrop {
   background: rgba(23, 26, 31, .38);
 }
 
+body.ui-route-lan-chat .toast {
+  z-index: 340;
+  width: max-content;
+  max-width: min(520px, calc(100vw - 32px));
+  padding: 11px 15px;
+  border: 1px solid rgba(255, 255, 255, .14);
+  border-radius: 12px;
+  background: rgba(24, 37, 55, .96);
+  color: #fff;
+  line-height: 1.5;
+  text-align: center;
+  box-shadow: 0 14px 36px rgba(15, 23, 42, .24);
+}
+
 body.ui-route-lan-chat .login-modal {
   width: min(620px, 100%);
   max-height: min(760px, calc(100dvh - 40px));
