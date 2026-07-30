@@ -1802,6 +1802,7 @@ body.ui-route-lan-chat.lan-details-closed .right-rail {
   }
 
   body.ui-route-lan-chat .header-room {
+    display: flex;
     padding-left: 16px;
   }
 
