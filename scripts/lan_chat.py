@@ -1647,14 +1647,27 @@ class LanChatStore:
         ):
             raise LanChatError("昵称已被使用，请换一个", 409)
 
-    @staticmethod
-    def _public_user(row: sqlite3.Row) -> dict[str, Any]:
+    def _avatar_url(self, user_id: str, avatar_status: str, nickname: str = "") -> str:
+        version = hashlib.sha256(
+            f"{avatar_status}:{nickname}".encode("utf-8")
+        ).hexdigest()[:12]
+        if avatar_status == "ready":
+            try:
+                avatar_stat = (self.avatar_dir / f"{user_id}.png").stat()
+                version = f"{avatar_stat.st_mtime_ns:x}-{avatar_stat.st_size:x}"
+            except OSError:
+                pass
+        return f"/api/lan-chat/avatars/{user_id}?v={version}"
+
+    def _public_user(self, row: sqlite3.Row) -> dict[str, Any]:
         last_seen = float(row["last_seen"])
         return {
             "id": row["id"],
             "feishuUserId": row["feishu_user_id"],
             "nickname": row["nickname"],
-            "avatarUrl": f"/api/lan-chat/avatars/{row['id']}?v={row['avatar_status']}",
+            "avatarUrl": self._avatar_url(
+                str(row["id"]), str(row["avatar_status"]), str(row["nickname"])
+            ),
             "avatarColor": row["avatar_color"],
             "avatarStatus": row["avatar_status"],
             "createdAt": float(row["created_at"]),
@@ -1932,7 +1945,11 @@ class LanChatStore:
             "clientUploadId": str(row["client_upload_id"] or ""),
             "senderId": row["sender_id"],
             "senderName": row["nickname"],
-            "senderAvatarUrl": f"/api/lan-chat/avatars/{row['sender_id']}",
+            "senderAvatarUrl": self._avatar_url(
+                str(row["sender_id"]),
+                str(row["avatar_status"]),
+                str(row["nickname"]),
+            ),
             "content": row["content"],
             "imageUrl": (
                 f"/api/lan-chat/media/{available_media_filename}"

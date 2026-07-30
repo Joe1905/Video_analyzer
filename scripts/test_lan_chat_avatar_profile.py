@@ -1,5 +1,6 @@
 import base64
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -34,6 +35,17 @@ class LanChatAvatarProfileTests(unittest.TestCase):
         self.assertEqual("ready", user["avatarStatus"])
         self.assertEqual("image/png", content_type)
         self.assertEqual(PNG_1X1, payload)
+        self.assertNotEqual(f"/api/lan-chat/avatars/{user['id']}?v=ready", user["avatarUrl"])
+
+        time.sleep(0.002)
+        updated_data_url = "data:image/png;base64," + base64.b64encode(
+            PNG_1X1 + b"\x00"
+        ).decode("ascii")
+        updated_user = self.store.update_profile(self.token, "新头像", updated_data_url)
+        self.assertNotEqual(user["avatarUrl"], updated_user["avatarUrl"])
+        message, created = self.store.send_message(self.token, "public", "头像已更新")
+        self.assertTrue(created)
+        self.assertEqual(updated_user["avatarUrl"], message["senderAvatarUrl"])
 
     def test_profile_rejects_non_png_avatar_payload(self) -> None:
         data_url = "data:image/jpeg;base64," + base64.b64encode(b"not-an-image").decode("ascii")
@@ -48,6 +60,8 @@ class LanChatAvatarProfileTests(unittest.TestCase):
         self.assertIn('id="avatarEditorModal"', html)
         self.assertIn('id="avatarCropCanvas"', html)
         self.assertIn('id="avatarStrengthRange"', html)
+        self.assertIn("syncCurrentUserProfile(payload.user)", html)
+        self.assertIn("syncLoadedMessageProfiles()", html)
         self.assertIn("Array.from({length:10}", html)
         for index in range(1, 11):
             avatar = Path(__file__).parent / "static" / "assets" / "default-avatars" / f"{index:02d}.png"
