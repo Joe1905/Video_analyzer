@@ -3835,9 +3835,41 @@ def _session_by_id(conn: sqlite3.Connection, session_id: int) -> sqlite3.Row:
     return row
 
 
+def _direct_login_pool_id() -> int:
+    with connect() as conn:
+        row = conn.execute(
+            """SELECT p.id
+               FROM proxy_profiles p
+               WHERE p.source_type = 'direct' AND p.status = ? AND p.parse_status = 'ok'
+                 AND NOT EXISTS (
+                     SELECT 1 FROM tiktok_accounts a
+                     WHERE a.proxy_profile_id = p.id AND a.proxy_bound = 1 AND a.deleted_at = ''
+                 )
+                 AND NOT EXISTS (
+                     SELECT 1 FROM browser_sessions s
+                     WHERE s.proxy_profile_id = p.id AND s.status IN ('starting', 'running', 'observing')
+                 )
+               ORDER BY p.id
+               LIMIT 1""",
+            (STATUS_ACTIVE,),
+        ).fetchone()
+    if row:
+        return int(row["id"])
+    result = upsert_pool(
+        {
+            "name": "直连外网（服务器代理）",
+            "source_type": "direct",
+            "status": STATUS_ACTIVE,
+            "notes": "新增账号时自动创建；使用服务器 GLOBAL 代理出口，不绑定固定 IP",
+        }
+    )
+    return int(result["pool"]["id"])
+
+
 def start_login_session(payload: dict[str, Any]) -> dict[str, Any]:
     account_id = int(payload.get("account_id") or 0)
-    proxy_profile_id = int(payload.get("proxy_profile_id") or payload.get("pool_id") or 0)
+    requested_pool = str(payload.get("proxy_profile_id") or payload.get("pool_id") or "").strip()
+    proxy_profile_id = _direct_login_pool_id() if not account_id and requested_pool == "direct" else int(requested_pool or 0)
     saved_profile: dict[str, Any] = {}
     if account_id:
         with connect() as conn:
