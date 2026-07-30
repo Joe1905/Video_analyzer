@@ -256,7 +256,7 @@ class UIContractTest(unittest.TestCase):
         self.assertIn('id="mobileDetailRoomName"', lan_chat)
         self.assertIn("document.body.dataset.lanDrawer=side", lan_chat)
         self.assertIn('body.ui-route-lan-chat[data-lan-drawer="right"] .right-rail', lan_css)
-        self.assertIn('body.ui-route-lan-chat[data-lan-drawer="right"] .ui-main', lan_css)
+        self.assertIn('body.ui-system.ui-route-lan-chat[data-lan-drawer="right"] .ui-main', lan_css)
         self.assertIn('body.ui-route-lan-chat[data-lan-drawer="right"] .drawer-backdrop', lan_css)
 
     def test_lan_chat_composer_accepts_drop_and_pasted_images(self) -> None:
@@ -270,7 +270,7 @@ class UIContractTest(unittest.TestCase):
         self.assertIn(".composer.is-dragging::after", lan_css)
         self.assertIn(".message.has-reply .bubble", lan_css)
         self.assertIn("body.ui-system.ui-route-lan-chat .app-header.ui-header", lan_css)
-        self.assertIn("body.ui-route-lan-chat .ui-mobile-nav-trigger", lan_css)
+        self.assertIn("body.ui-system.ui-route-lan-chat .ui-mobile-nav-trigger", lan_css)
 
     def test_ui_test_mode_blocks_mutations_before_handlers(self) -> None:
         app = (SCRIPTS_DIR / "web_app.py").read_text(encoding="utf-8")

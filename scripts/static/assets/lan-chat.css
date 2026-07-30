@@ -2109,7 +2109,7 @@ body.ui-route-lan-chat.lan-details-closed .right-rail {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  body.ui-route-lan-chat .ui-mobile-nav-trigger {
+  body.ui-system.ui-route-lan-chat .ui-mobile-nav-trigger {
     color: var(--ui-ink-muted);
     background: transparent;
     border: 0;
@@ -2117,9 +2117,10 @@ body.ui-route-lan-chat.lan-details-closed .right-rail {
     box-shadow: none;
   }
 
-  body.ui-route-lan-chat .ui-mobile-nav-trigger:hover {
+  body.ui-system.ui-route-lan-chat .ui-mobile-nav-trigger:hover {
     color: var(--ui-ink);
     background: transparent;
+    box-shadow: none;
   }
 
   body.ui-route-lan-chat .rail-head {
@@ -2165,7 +2166,8 @@ body.ui-route-lan-chat.lan-details-closed .right-rail {
     width: min(92vw, 360px);
   }
 
-  body.ui-route-lan-chat[data-lan-drawer="right"] .ui-main {
+  body.ui-system.ui-route-lan-chat[data-lan-drawer="right"] .ui-main {
+    animation: none;
     transform: none;
   }
 
