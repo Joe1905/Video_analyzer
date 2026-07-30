@@ -515,7 +515,7 @@ NAV_ITEMS = [
 ]
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
-UI_ASSET_VERSION = "20260730-24"
+UI_ASSET_VERSION = "20260730-25"
 APP_UI_ASSETS = f"""
 <script id="ui-nav-state-boot">
 let uiNavExpanded = false;
@@ -837,9 +837,12 @@ def serve_chat_template(handler: BaseHTTPRequestHandler, provider: str, path: st
         chat_html = chat_html.replace(f"__CHAT_PROMPT_{index}_LABEL__", label)
         chat_html = chat_html.replace(f"__CHAT_PROMPT_{index}_VALUE__", html_escape(prompt))
     page_heading = (
-        '<button class="secondary mobile-session-toggle" id="mobileSessionToggle" type="button" '
+        '<button class="mobile-session-toggle" id="mobileSessionToggle" type="button" '
         'aria-label="打开会话列表" aria-expanded="false">'
-        '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h14"/></svg>'
+        '<svg viewBox="0 0 24 24" aria-hidden="true">'
+        '<path d="M5.5 5.5h13a1.5 1.5 0 0 1 1.5 1.5v8a1.5 1.5 0 0 1-1.5 1.5h-8l-4 3v-3h-1A1.5 1.5 0 0 1 4 15V7a1.5 1.5 0 0 1 1.5-1.5Z"/>'
+        '<path d="M8 9h8M8 12.5h5"/>'
+        '</svg>'
         '</button>'
         '<div class="chat-breadcrumb">'
         f'<span>{html_escape(provider_ui["crumb"])}</span><i>/</i>'

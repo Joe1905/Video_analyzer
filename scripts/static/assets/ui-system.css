@@ -3557,6 +3557,61 @@ body.ui-system .ui-nav__toggle:hover {
   }
 
   @media (max-width: 860px) {
+    body.ui-system:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .ui-header {
+      padding-right: max(8px, env(safe-area-inset-right));
+      padding-left: max(68px, calc(env(safe-area-inset-left) + 58px));
+    }
+
+    body.ui-system:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .ui-header > .chat-breadcrumb {
+      order: 1;
+      flex: 1 1 auto;
+      margin-right: 4px;
+    }
+
+    body.ui-system:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .ui-header > .mobile-session-toggle {
+      order: 2;
+      flex: 0 0 44px;
+      width: 44px;
+      min-width: 44px;
+      height: 44px;
+      min-height: 44px;
+      margin-left: auto;
+      padding: 0;
+      display: inline-grid;
+      place-items: center;
+      color: var(--ui-ink-muted);
+      background: transparent;
+      border: 0;
+      border-radius: 12px;
+      box-shadow: none;
+      -webkit-tap-highlight-color: transparent;
+      transition:
+        color var(--ui-fast),
+        background-color var(--ui-fast);
+    }
+
+    body.ui-system:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .ui-header > .mobile-session-toggle:hover,
+    body.ui-system:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .ui-header > .mobile-session-toggle:focus-visible,
+    body.ui-system:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .ui-header > .mobile-session-toggle[aria-expanded="true"] {
+      color: var(--ui-ink);
+      background: var(--ui-surface-soft);
+    }
+
+    body.ui-system:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .ui-header > .mobile-session-toggle:focus-visible {
+      outline: 2px solid color-mix(in srgb, var(--ui-brand) 42%, transparent);
+      outline-offset: -2px;
+    }
+
+    body.ui-system:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .ui-header > .mobile-session-toggle svg {
+      width: 21px;
+      height: 21px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.7;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
     .ui-only-desktop {
       display: none;
     }
