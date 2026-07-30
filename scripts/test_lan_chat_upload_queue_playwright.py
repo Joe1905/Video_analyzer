@@ -258,13 +258,13 @@ async def mobile_network_retry_scenario(
         await page.screenshot(
             path=str(screenshot_dir / "lan-chat-mobile-channels.png")
         )
-        await page.locator("#drawerBackdrop").click()
+        await page.locator("#drawerBackdrop").click(position={"x": 380, "y": 100})
         await page.locator("#mobileMembers").click()
         await expect(page.locator("#rightRail")).to_have_class(re.compile("open"))
         await page.screenshot(
             path=str(screenshot_dir / "lan-chat-mobile-details.png")
         )
-        await page.locator("#drawerBackdrop").click()
+        await page.locator("#drawerBackdrop").click(position={"x": 10, "y": 100})
         await context.set_offline(True)
         await page.locator("#messageInput").fill("批次说明")
         await page.locator("#imageInput").set_input_files(
