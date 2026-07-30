@@ -165,8 +165,8 @@ function renderAccounts(){
     const fallbackRows=state.accounts.filter(a=>matchAccountFilters(a,{q,statusFilter:fs,skipPoolFilter:true}));
     if(fallbackRows.length){
       rows=fallbackRows;
-      state.selectedPool=0;
-      if(selected){
+      if(selected&&Number(selected.account_count||0)>0){
+        state.selectedPool=0;
         renderPools();
       }
     }
