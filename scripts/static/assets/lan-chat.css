@@ -1670,6 +1670,10 @@ body.ui-route-lan-chat .selection-summary {
   font-size: 10px;
 }
 
+body.ui-route-lan-chat .field[hidden] {
+  display: none;
+}
+
 body.ui-route-lan-chat .conversation-picker {
   max-height: 300px;
   padding: 5px;
