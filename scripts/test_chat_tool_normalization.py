@@ -2589,7 +2589,7 @@ def test_social_platform_routes_use_sociavault_without_rest_fallback() -> None:
     assert generic["tool_domain"] == "sociavault"
     assert "tool_prefixes" not in generic
 
-    handler_source = inspect.getsource(web_app.Handler.do_POST)
+    handler_source = (ROOT / "scripts" / "web_app.py").read_text(encoding="utf-8")
     assert 'enabled_tool_ids = None' in handler_source
     assert "ignored legacy tool masks" in handler_source
     assert "decode_tool_masks(enabled_masks)" not in handler_source
