@@ -167,7 +167,9 @@ class UIContractTest(unittest.TestCase):
             "fixedRootRect.left",
         ):
             self.assertIn(contract, chat)
-        self.assertIn("::-webkit-search-cancel-button", UI_CSS.read_text(encoding="utf-8"))
+        css = UI_CSS.read_text(encoding="utf-8")
+        self.assertIn("::-webkit-search-cancel-button", css)
+        self.assertIn(".session-search-clear[hidden]", css)
         self.assertIn('query.get("query", [""])[0]', app)
         self.assertIn("message.content", app)
 

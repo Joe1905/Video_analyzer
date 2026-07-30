@@ -210,6 +210,10 @@
     font-size: 18px;
   }
 
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-search-clear[hidden] {
+    display: none;
+  }
+
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-search-submit {
     width: 58px;
     min-width: 58px;
