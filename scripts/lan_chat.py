@@ -354,6 +354,18 @@ class LanChatStore:
                SELECT ?, id, created_at FROM users WHERE feishu_user_id = ?""",
             (room_id, owner_id),
         )
+        conn.execute(
+            """INSERT OR IGNORE INTO room_preferences
+               (room_id, user_id, pinned, muted, updated_at)
+               SELECT ?, id, 1, 0, ? FROM users WHERE feishu_user_id = ?""",
+            (PUBLIC_ROOM_ID, now, owner_id),
+        )
+        conn.execute(
+            """INSERT OR IGNORE INTO room_preferences
+               (room_id, user_id, pinned, muted, updated_at)
+               SELECT ?, id, 1, 0, ? FROM users WHERE feishu_user_id = ?""",
+            (room_id, now, owner_id),
+        )
         return room_id
 
     def register(self, device_token: str, nickname: str = "") -> tuple[dict[str, Any], bool]:

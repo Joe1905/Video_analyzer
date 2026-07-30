@@ -32,6 +32,7 @@ class LanChatGroupManagementTest(unittest.TestCase):
         second_rooms = self.store.list_rooms(self.second["user"]["id"])
         defaults = [room for room in owner_rooms if room["isDefault"]]
         self.assertEqual([room["systemKind"] for room in defaults], ["public", "feishu"])
+        self.assertTrue(all(room["pinned"] for room in defaults))
 
         feishu_room = next(room for room in defaults if room["systemKind"] == "feishu")
         second_feishu_room = next(
@@ -52,6 +53,33 @@ class LanChatGroupManagementTest(unittest.TestCase):
                 token, room_id, self.second["user"]["id"]
             )
         )
+
+    def test_default_room_backfill_preserves_manual_unpin(self) -> None:
+        public_room = next(
+            room
+            for room in self.store.list_rooms(self.owner["user"]["id"])
+            if room["systemKind"] == "public"
+        )
+        updated = self.store.update_room_preferences(
+            self.owner["sessionToken"], public_room["id"], pinned=False
+        )
+        self.assertFalse(updated["pinned"])
+
+        newcomer = self.store.create_account(DEFAULT_FEISHU_USER_ID, "新账户")
+        newcomer_defaults = [
+            room
+            for room in self.store.list_rooms(newcomer["user"]["id"])
+            if room["isDefault"]
+        ]
+        self.assertEqual(len(newcomer_defaults), 2)
+        self.assertTrue(all(room["pinned"] for room in newcomer_defaults))
+
+        owner_public_after_backfill = next(
+            room
+            for room in self.store.list_rooms(self.owner["user"]["id"])
+            if room["systemKind"] == "public"
+        )
+        self.assertFalse(owner_public_after_backfill["pinned"])
 
     def test_admin_transfers_by_join_order_and_successor_can_govern(self) -> None:
         room = self.store.create_group(
