@@ -1724,6 +1724,27 @@ body.ui-route-lan-chat .conversation-picker .pick-row {
   border-radius: 10px;
 }
 
+body.ui-route-lan-chat .field .conversation-picker .pick-row input[type="checkbox"] {
+  width: 17px;
+  min-width: 17px;
+  height: 17px;
+  min-height: 17px;
+  padding: 0;
+  border-radius: 4px;
+  box-shadow: none;
+  flex: 0 0 17px;
+}
+
+body.ui-route-lan-chat .field .conversation-picker .pick-row input[type="checkbox"]:focus {
+  border-color: initial;
+  box-shadow: none;
+}
+
+body.ui-route-lan-chat .field .conversation-picker .pick-row input[type="checkbox"]:focus-visible {
+  outline: 2px solid rgba(47, 125, 115, .28);
+  outline-offset: 2px;
+}
+
 body.ui-route-lan-chat .conversation-picker .pick-row:hover {
   background: #fff;
 }
