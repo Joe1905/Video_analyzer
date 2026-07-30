@@ -2059,6 +2059,129 @@
 
   #toolModal .tool-row .tool-check { margin-left: auto; margin-right: 14px; }
 
+  /* Tool selection follows the approved hierarchy: one primary domain surface,
+     nested categories, then leaf tools separated only by restrained dashes. */
+  #toolModal .tool-modal-box {
+    width: min(1520px, calc(100vw - 120px));
+    max-height: calc(100vh - 76px);
+  }
+
+  #toolModal .tree-domain { margin: 0; border: 0; border-radius: 0; background: transparent; }
+
+  #toolModal .tree-domain.is-primary {
+    margin-bottom: 14px;
+    border: 1px solid #e1e4ea;
+    border-radius: 16px;
+    background: linear-gradient(135deg, #fbfcff, #f8f9fd);
+  }
+
+  #toolModal .tree-domain.is-secondary > .tree-row { min-height: 58px; }
+  #toolModal .tree-domain.is-secondary > .tree-row:hover { background: #f8f8f6; }
+
+  #toolModal .tree-row { min-height: 58px; padding: 0 28px; gap: 16px; }
+  #toolModal .tree-domain > .tree-row { min-height: 64px; }
+  #toolModal .tree-category > .tree-row { min-height: 58px; padding: 0 28px 0 34px; }
+  #toolModal .tree-title { font-size: 15px; font-weight: 680; }
+  #toolModal .tree-domain > .tree-row .tree-title { font-size: 17px; font-weight: 760; }
+  #toolModal .tree-category > .tree-row .tree-title { font-size: 16px; font-weight: 680; }
+  #toolModal .tree-node-meta { font-size: 13px; color: #7e8491; }
+  #toolModal .tree-domain.is-primary > .tree-row .tree-node-meta,
+  #toolModal .tree-category:not(.collapsed) > .tree-row .tree-node-meta { color: var(--ui-brand); }
+
+  #toolModal .tree-row .tree-toggle {
+    order: -3;
+    position: relative;
+    width: 40px;
+    min-width: 40px;
+    height: 40px;
+    min-height: 40px;
+    margin: 0;
+    border: 1px solid #dfe3ea;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, .88);
+    color: var(--ui-brand);
+  }
+
+  #toolModal .tree-row .tree-toggle::before {
+    width: 15px;
+    height: 1.5px;
+    border: 0;
+    border-radius: 2px;
+    background: currentColor;
+    content: "";
+    transform: none;
+  }
+
+  #toolModal .tree-row .tree-toggle::after {
+    position: absolute;
+    width: 1.5px;
+    height: 15px;
+    border-radius: 2px;
+    background: currentColor;
+    content: "";
+    transform: scaleY(1);
+    transition: transform 180ms var(--ui-ease);
+  }
+
+  #toolModal .tree-node:not(.collapsed) > .tree-row .tree-toggle::after { transform: scaleY(0); }
+  #toolModal .tree-row .tree-toggle:hover { border-color: #c6d1ff; background: #fff; }
+
+  #toolModal .tree-domain > .tree-row > .tree-check {
+    order: -2;
+    margin: 0 6px 0 0;
+  }
+
+  #toolModal .tree-row .tree-check {
+    width: 22px;
+    min-width: 22px;
+    height: 22px;
+    min-height: 22px;
+  }
+
+  #toolModal .tree-category > .tree-row > .tree-check { margin-left: auto; }
+
+  #toolModal .tree-disclosure {
+    width: 12px;
+    height: 12px;
+    margin-left: 6px;
+    border-right: 1.7px solid #747b88;
+    border-bottom: 1.7px solid #747b88;
+    transform: rotate(45deg) translateY(-3px);
+    transition: transform 180ms var(--ui-ease);
+  }
+
+  #toolModal .tree-node:not(.collapsed) > .tree-row .tree-disclosure { transform: rotate(225deg) translate(-3px, -3px); }
+  #toolModal .tree-domain > .tree-children > .ui-collapse__inner { padding: 6px 36px 24px 92px; }
+  #toolModal .tree-category > .tree-children > .ui-collapse__inner { padding: 0 0 8px 50px; }
+
+  #toolModal .tool-row { min-height: 74px; padding: 0 16px 0 0; gap: 18px; }
+  #toolModal .tool-row + .tool-row::before { right: 54px; left: 0; border-top-color: rgba(133, 139, 151, .34); }
+  #toolModal .tool-main { gap: 14px; }
+  #toolModal .tool-label { font-size: 16px; font-weight: 620; }
+
+  #toolModal .tool-id {
+    max-width: 300px;
+    padding: 3px 10px;
+    border: 1px solid #dde5f2;
+    border-radius: 6px;
+    background: #f1f5fb;
+    color: #6b87bd;
+    font-size: 12px;
+  }
+
+  #toolModal .tool-row .tool-check { width: 24px; min-width: 24px; height: 24px; min-height: 24px; margin-right: 0; }
+
+  @media (max-width: 860px) {
+    #toolModal .tool-modal-box { width: calc(100vw - 24px); max-height: calc(100dvh - 24px); }
+    #toolModal .tree-row { padding: 0 16px; gap: 10px; }
+    #toolModal .tree-category > .tree-row { padding-left: 16px; }
+    #toolModal .tree-domain > .tree-children > .ui-collapse__inner { padding: 4px 14px 16px 42px; }
+    #toolModal .tree-category > .tree-children > .ui-collapse__inner { padding-left: 24px; }
+    #toolModal .tool-row { min-height: 50px; }
+    #toolModal .tool-label { font-size: 13px; }
+    #toolModal .tool-id { max-width: 132px; font-size: 10px; }
+  }
+
   @media (max-width: 860px) {
     .ui-nav {
       display: none;
