@@ -2078,7 +2078,7 @@
   #toolModal .tree-domain.is-secondary > .tree-row { min-height: 44px; }
   #toolModal .tree-domain.is-secondary > .tree-row:hover { background: #f8f8f6; }
 
-  #toolModal .tree-row { min-height: 44px; padding: 0 16px; gap: 10px; }
+  #toolModal .tree-row { min-height: 44px; padding: 0 16px; gap: 10px; cursor: pointer; }
   #toolModal .tree-domain > .tree-row { min-height: 52px; }
   #toolModal .tree-category > .tree-row { min-height: 44px; padding: 0 16px 0 18px; }
   #toolModal .tree-title { font-size: 13px; font-weight: 680; }
@@ -2153,6 +2153,11 @@
   #toolModal .tree-node:not(.collapsed) > .tree-row .tree-disclosure { transform: rotate(225deg) translate(-3px, -3px); }
   #toolModal .tree-domain > .tree-children > .ui-collapse__inner { padding: 4px 16px 12px 44px; }
   #toolModal .tree-category > .tree-children > .ui-collapse__inner { padding: 0 0 4px 28px; }
+  #toolModal .tree-children > .ui-collapse__inner { transition: padding-block 180ms var(--ui-ease); }
+  #toolModal .tree-node.collapsed > .tree-children > .ui-collapse__inner {
+    padding-top: 0;
+    padding-bottom: 0;
+  }
 
   #toolModal .tree-more > .tree-row {
     min-height: 36px;
