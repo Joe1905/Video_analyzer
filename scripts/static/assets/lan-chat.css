@@ -1624,9 +1624,20 @@ body.ui-route-lan-chat .detail-action {
   text-align: left;
 }
 
+body.ui-route-lan-chat .detail-action {
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  box-shadow: none;
+}
+
 body.ui-route-lan-chat .setting-row:hover,
 body.ui-route-lan-chat .detail-action:hover {
   color: var(--lan-accent);
+}
+
+body.ui-route-lan-chat .detail-action:hover {
+  background: var(--lan-surface-muted);
 }
 
 body.ui-route-lan-chat .ui-switch {
