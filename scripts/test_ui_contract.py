@@ -183,6 +183,8 @@ class UIContractTest(unittest.TestCase):
         self.assertIn(".composer.expanded textarea", css)
         self.assertIn(".input-bar.composer-expanded", css)
         self.assertIn(".attachment-preview:empty", css)
+        self.assertIn("preview.childElementCount>0", chat)
+        self.assertIn("new MutationObserver(syncLayout)", chat)
         self.assertIn('id="sidebarHealth"', chat)
         self.assertIn('fetch("/healthz"', chat)
         self.assertIn("v2.0", chat)
