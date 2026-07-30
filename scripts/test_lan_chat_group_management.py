@@ -186,6 +186,57 @@ class LanChatGroupManagementTest(unittest.TestCase):
         self.assertFalse(second_room["pinned"])
         self.assertFalse(second_room["muted"])
 
+    def test_message_reply_is_structured_and_limited_to_the_same_room(self) -> None:
+        public_room = next(
+            room
+            for room in self.store.list_rooms(self.owner["user"]["id"])
+            if room["systemKind"] == "public"
+        )
+        original, created = self.store.send_message(
+            self.owner["sessionToken"],
+            public_room["id"],
+            "日报已更新，大家可以开始查看了。",
+        )
+        self.assertTrue(created)
+
+        reply, created = self.store.send_message(
+            self.second["sessionToken"],
+            public_room["id"],
+            "收到。",
+            reply_to_message_id=original["id"],
+        )
+        self.assertTrue(created)
+        self.assertEqual(
+            reply["reply"],
+            {
+                "id": original["id"],
+                "senderName": "组织者",
+                "content": "日报已更新，大家可以开始查看了。",
+            },
+        )
+
+        listed = self.store.list_messages(
+            self.second["sessionToken"], public_room["id"]
+        )
+        listed_reply = next(
+            message for message in listed["messages"] if message["id"] == reply["id"]
+        )
+        self.assertEqual(listed_reply["reply"], reply["reply"])
+
+        other_room = self.store.create_group(
+            self.owner["sessionToken"],
+            "其他群组",
+            [self.second["user"]["id"]],
+        )
+        with self.assertRaises(LanChatError) as context:
+            self.store.send_message(
+                self.second["sessionToken"],
+                other_room["id"],
+                "不能跨会话引用",
+                reply_to_message_id=original["id"],
+            )
+        self.assertEqual(context.exception.status, 404)
+
 
 if __name__ == "__main__":
     unittest.main()

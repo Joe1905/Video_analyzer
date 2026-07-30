@@ -413,6 +413,58 @@ body.ui-route-lan-chat .message-name {
   font-weight: 660;
 }
 
+body.ui-route-lan-chat .message-body {
+  position: relative;
+}
+
+body.ui-route-lan-chat .message-actions {
+  position: absolute;
+  z-index: 2;
+  top: 18px;
+  left: calc(100% + 7px);
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(2px);
+  transition: opacity 140ms var(--ui-ease), transform 140ms var(--ui-ease);
+}
+
+body.ui-route-lan-chat .message.mine .message-actions {
+  right: calc(100% + 7px);
+  left: auto;
+}
+
+body.ui-route-lan-chat .message:hover .message-actions,
+body.ui-route-lan-chat .message:focus-within .message-actions {
+  opacity: 1;
+  pointer-events: auto;
+  transform: none;
+}
+
+body.ui-route-lan-chat .message-actions button {
+  min-width: 38px;
+  height: 25px;
+  padding: 0 8px;
+  border: 1px solid var(--ui-line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, .94);
+  color: var(--ui-ink-muted);
+  font-size: 10px;
+  font-weight: 680;
+  line-height: 1;
+  white-space: nowrap;
+  box-shadow: 0 5px 14px rgba(25, 28, 34, .06);
+}
+
+body.ui-route-lan-chat .message-actions button:hover,
+body.ui-route-lan-chat .message-actions button:focus-visible {
+  border-color: var(--lan-accent-line);
+  background: var(--lan-accent-soft);
+  color: var(--lan-accent);
+}
+
 body.ui-route-lan-chat .bubble {
   padding: 10px 12px;
   border: 1px solid var(--ui-line);
@@ -429,6 +481,41 @@ body.ui-route-lan-chat .message.mine .bubble {
   background: var(--lan-accent-soft);
   color: var(--ui-ink);
   box-shadow: 0 6px 18px rgba(47, 125, 115, .055);
+}
+
+body.ui-route-lan-chat .message-reply {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 2px;
+  margin: 0 0 8px;
+  padding: 1px 0 1px 9px;
+  border-left: 2px solid var(--lan-accent);
+  color: var(--ui-ink-muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+body.ui-route-lan-chat .bubble.has-image .message-reply {
+  margin: 6px 8px 8px;
+}
+
+body.ui-route-lan-chat .message-reply span {
+  flex: 0 0 auto;
+  font-weight: 700;
+}
+
+body.ui-route-lan-chat .message-reply span::after {
+  content: "：";
+}
+
+body.ui-route-lan-chat .message-reply strong {
+  min-width: 0;
+  overflow: hidden;
+  color: inherit;
+  font-weight: 520;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 body.ui-route-lan-chat .message.mine .file-card {
@@ -463,6 +550,60 @@ body.ui-route-lan-chat .composer {
 body.ui-route-lan-chat .composer:focus-within {
   border-color: var(--lan-accent-line);
   box-shadow: 0 0 0 3px rgba(47, 125, 115, .08), 0 12px 32px rgba(25, 28, 34, .07);
+}
+
+body.ui-route-lan-chat .composer-reply {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 1px 7px 0;
+  padding: 3px 1px 3px 10px;
+  border-left: 2px solid var(--lan-accent);
+}
+
+body.ui-route-lan-chat .composer-reply[hidden] {
+  display: none;
+}
+
+body.ui-route-lan-chat .composer-reply > span {
+  min-width: 0;
+  flex: 1;
+}
+
+body.ui-route-lan-chat .composer-reply small,
+body.ui-route-lan-chat .composer-reply strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body.ui-route-lan-chat .composer-reply small {
+  color: var(--lan-accent);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+body.ui-route-lan-chat .composer-reply strong {
+  margin-top: 2px;
+  color: var(--ui-ink-muted);
+  font-size: 11px;
+  font-weight: 520;
+}
+
+body.ui-route-lan-chat .composer-reply button {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  color: var(--ui-ink-subtle);
+  font-size: 18px;
+}
+
+body.ui-route-lan-chat .composer-reply button:hover {
+  background: var(--ui-canvas);
+  color: var(--ui-ink);
 }
 
 body.ui-route-lan-chat .composer-row {

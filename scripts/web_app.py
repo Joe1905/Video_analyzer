@@ -14591,6 +14591,7 @@ def handle_lan_chat_post(handler: BaseHTTPRequestHandler, parsed) -> bool:
                 media_item.file,
                 str(form.getfirst("content", "") or ""),
                 str(form.getfirst("clientUploadId", "") or ""),
+                str(form.getfirst("replyToMessageId", "") or ""),
             )
             json_response(
                 handler,
@@ -14631,6 +14632,7 @@ def handle_lan_chat_post(handler: BaseHTTPRequestHandler, parsed) -> bool:
                 file_item.file,
                 str(form.getfirst("content", "") or ""),
                 str(form.getfirst("clientUploadId", "") or ""),
+                str(form.getfirst("replyToMessageId", "") or ""),
             )
             json_response(
                 handler,
@@ -14772,6 +14774,7 @@ def handle_lan_chat_post(handler: BaseHTTPRequestHandler, parsed) -> bool:
                 str(payload.get("content") or ""),
                 str(payload.get("mediaData") or payload.get("imageData") or ""),
                 str(payload.get("clientUploadId") or ""),
+                payload.get("replyToMessageId"),
             )
             json_response(
                 handler,
