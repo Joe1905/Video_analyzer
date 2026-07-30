@@ -51,6 +51,7 @@ FILE_TRANSFER_RETENTION_SECONDS = 7 * 24 * 60 * 60
 FILE_TRANSFER_CLEANUP_INTERVAL_SECONDS = 60 * 60
 FILE_COPY_CHUNK_BYTES = 1024 * 1024
 FEISHU_AVATAR_MAX_BYTES = 5 * 1024 * 1024
+PROFILE_AVATAR_MAX_BYTES = 5 * 1024 * 1024
 FEISHU_AVATAR_TYPES = {
     "image/jpeg": "jpg",
     "image/png": "png",
@@ -585,15 +586,60 @@ class LanChatStore:
             "fileRetentionSeconds": FILE_TRANSFER_RETENTION_SECONDS,
         }
 
-    def update_profile(self, device_token: str, nickname: str) -> dict[str, Any]:
+    def update_profile(
+        self, device_token: str, nickname: str, avatar_data_url: str = ""
+    ) -> dict[str, Any]:
         current = self.authenticate(device_token)
         clean_name = self._nickname(nickname)
+        avatar_bytes = self._decode_profile_avatar(avatar_data_url)
+        avatar_filename = ""
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             self._require_nickname_available(conn, clean_name, current["id"])
-            conn.execute("UPDATE users SET nickname = ? WHERE id = ?", (clean_name, current["id"]))
+            if avatar_bytes is not None:
+                avatar_filename = f"{current['id']}.png"
+                with self._avatar_lock:
+                    tmp_path = self.avatar_dir / f".{avatar_filename}.{uuid.uuid4().hex}.tmp"
+                    tmp_path.write_bytes(avatar_bytes)
+                    tmp_path.replace(self.avatar_dir / avatar_filename)
+            if avatar_filename:
+                conn.execute(
+                    """UPDATE users
+                       SET nickname = ?, avatar_status = 'ready', avatar_filename = ?
+                       WHERE id = ?""",
+                    (clean_name, avatar_filename, current["id"]),
+                )
+            else:
+                conn.execute(
+                    "UPDATE users SET nickname = ? WHERE id = ?",
+                    (clean_name, current["id"]),
+                )
             row = conn.execute("SELECT * FROM users WHERE id = ?", (current["id"],)).fetchone()
         return self._public_user(row)
+
+    @staticmethod
+    def _decode_profile_avatar(avatar_data_url: str) -> bytes | None:
+        value = str(avatar_data_url or "").strip()
+        if not value:
+            return None
+        if "," not in value:
+            raise LanChatError("头像数据无效")
+        header, encoded = value.split(",", 1)
+        if header.lower() != "data:image/png;base64":
+            raise LanChatError("头像必须保存为 PNG 格式")
+        if len(encoded) > (PROFILE_AVATAR_MAX_BYTES * 4 // 3) + 8:
+            raise LanChatError("头像文件不能超过 5MB", 413)
+        try:
+            payload = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError, TypeError) as exc:
+            raise LanChatError("头像数据无效") from exc
+        if (
+            not payload
+            or len(payload) > PROFILE_AVATAR_MAX_BYTES
+            or not payload.startswith(b"\x89PNG\r\n\x1a\n")
+        ):
+            raise LanChatError("头像必须是有效的 PNG 图片")
+        return payload
 
     def list_users(self, current_user_id: str) -> list[dict[str, Any]]:
         with self._connect() as conn:
@@ -2136,6 +2182,12 @@ class LanChatStore:
                 raise ValueError("avatar API returned no image")
             if not image or len(image) > 8 * 1024 * 1024:
                 raise ValueError("avatar image size is invalid")
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT avatar_status FROM users WHERE id = ?", (user_id,)
+                ).fetchone()
+            if row is None or row["avatar_status"] != "pending":
+                return
             filename = f"{user_id}.png"
             tmp_path = self.avatar_dir / f".{filename}.tmp"
             tmp_path.write_bytes(image)

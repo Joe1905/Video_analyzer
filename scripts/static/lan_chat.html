@@ -87,7 +87,7 @@ body{max-width:100vw}
 }
 }
 </style>
-<link id="lan-chat-css" rel="stylesheet" href="/assets/lan-chat.css?v=20260730r">
+<link id="lan-chat-css" rel="stylesheet" href="/assets/lan-chat.css?v=20260730s">
 </head>
 <body class="lan-auth-pending">
 <div class="ui-app">
@@ -182,12 +182,93 @@ body{max-width:100vw}
   <form class="modal" id="profileForm">
     <div class="modal-head"><div><h2 id="profileTitle">设置你的昵称</h2><p id="profileSubtitle">账户昵称随时可以修改。</p></div><button class="icon-button" type="button" data-close-modal aria-label="关闭">×</button></div>
     <div class="modal-body">
-      <div class="profile-preview"><img class="avatar" id="profileModalAvatar" alt="默认头像"><div><strong id="profileModalName">新成员</strong><div class="field-note" id="avatarStatusText">默认头像会自动准备</div></div></div>
+      <div class="profile-preview">
+        <button class="profile-avatar-button" id="changeAvatar" type="button" aria-label="更换头像">
+          <img class="avatar" id="profileModalAvatar" alt="当前头像">
+          <span>更换</span>
+        </button>
+        <div class="profile-preview-copy"><strong id="profileModalName">新成员</strong><div class="field-note" id="avatarStatusText">默认头像会自动准备</div></div>
+        <button class="profile-change-action" id="changeAvatarAction" type="button">选择头像</button>
+      </div>
       <div class="field"><label for="nicknameInput">昵称</label><input id="nicknameInput" name="nickname" maxlength="24" autocomplete="nickname" required placeholder="输入 1-24 个字符"></div>
-      <div class="field-note">成员列表和消息中都会显示这个昵称。本地占位头像会立即可用；配置 AI 图片接口后，新注册账号会在后台自动生成专属头像。</div>
+      <div class="field-note">头像与昵称会同步显示在成员列表和消息中。你可以选择预设头像，或上传图片后按 1:1 比例裁切。</div>
     </div>
-    <div class="modal-foot"><button class="button secondary" type="button" data-close-modal>稍后设置</button><button class="button primary" type="submit">保存昵称</button></div>
+    <div class="modal-foot"><button class="button secondary" type="button" data-close-modal>取消</button><button class="button primary" type="submit">保存资料</button></div>
   </form>
+</div>
+
+<div class="modal-backdrop" id="avatarPickerModal" role="dialog" aria-modal="true" aria-labelledby="avatarPickerTitle">
+  <div class="modal avatar-picker-modal">
+    <div class="modal-head">
+      <div><h2 id="avatarPickerTitle">选择头像</h2><p>从预设头像中选择，或上传一张自己的图片。</p></div>
+      <button class="icon-button avatar-dialog-close" id="closeAvatarPicker" type="button" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-body avatar-picker-body">
+      <div class="avatar-section-label"><strong>默认头像</strong><span>10 个预设</span></div>
+      <div class="avatar-choice-grid" id="avatarChoiceGrid"></div>
+      <button class="avatar-upload-tile" id="avatarUploadTile" type="button">
+        <span class="avatar-upload-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 16V5M8 9l4-4 4 4"/><path d="M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/></svg></span>
+        <span class="avatar-upload-copy"><strong>上传自定义头像</strong><span>支持 PNG、JPG、WebP，建议使用清晰的正方形图片</span></span>
+        <span class="avatar-upload-arrow" aria-hidden="true">›</span>
+      </button>
+      <input id="avatarFileInput" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+    </div>
+    <div class="modal-foot avatar-dialog-foot">
+      <div class="avatar-selection-state"><i></i><span id="avatarSelectionLabel">已选择默认头像 01</span></div>
+      <div class="avatar-foot-actions"><button class="button secondary" id="cancelAvatarPicker" type="button">取消</button><button class="button primary" id="openAvatarEditor" type="button">下一步 · 编辑</button></div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="avatarEditorModal" role="dialog" aria-modal="true" aria-labelledby="avatarEditorTitle">
+  <div class="modal avatar-editor-modal">
+    <div class="modal-head">
+      <div><h2 id="avatarEditorTitle">编辑头像</h2><p>拖动图片调整位置，最终头像将按 1:1 比例保存。</p></div>
+      <button class="icon-button avatar-dialog-close" id="closeAvatarEditor" type="button" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-body avatar-editor-body">
+      <div class="avatar-crop-column">
+        <div class="avatar-crop-shell" id="avatarCropShell">
+          <canvas id="avatarCropCanvas" width="512" height="512" aria-label="头像裁切画布"></canvas>
+          <div class="avatar-crop-grid" aria-hidden="true"></div>
+          <div class="avatar-crop-corners" aria-hidden="true"></div>
+          <div class="avatar-crop-hint">拖动图片调整构图</div>
+        </div>
+        <div class="avatar-zoom-row">
+          <button class="avatar-zoom-button" id="avatarZoomOut" type="button" aria-label="缩小">−</button>
+          <input id="avatarZoomRange" type="range" min="1" max="1.8" step=".01" value="1.08" aria-label="图片缩放">
+          <button class="avatar-zoom-button" id="avatarZoomIn" type="button" aria-label="放大">＋</button>
+        </div>
+      </div>
+      <aside class="avatar-editor-panel">
+        <div class="avatar-preview-block">
+          <div class="avatar-preview-frame"><canvas id="avatarPreviewCanvas" width="192" height="192"></canvas></div>
+          <strong>头像预览</strong><span>实际显示为圆角方形</span>
+        </div>
+        <div class="avatar-panel-separator"></div>
+        <div>
+          <div class="avatar-filter-title"><strong>色彩滤镜</strong><span>纯色叠加</span></div>
+          <div class="avatar-filters" id="avatarFilters">
+            <button class="avatar-filter active" type="button" data-avatar-tone="" data-avatar-tone-name="原图"><i class="avatar-swatch original"></i><span>原图</span></button>
+            <button class="avatar-filter" type="button" data-avatar-tone="#3b8f85" data-avatar-tone-name="松石绿"><i class="avatar-swatch" style="--avatar-swatch:#3b8f85"></i><span>松石绿</span></button>
+            <button class="avatar-filter" type="button" data-avatar-tone="#6d91b7" data-avatar-tone-name="海盐蓝"><i class="avatar-swatch" style="--avatar-swatch:#6d91b7"></i><span>海盐蓝</span></button>
+            <button class="avatar-filter" type="button" data-avatar-tone="#d69a72" data-avatar-tone-name="暖杏"><i class="avatar-swatch" style="--avatar-swatch:#d69a72"></i><span>暖杏</span></button>
+            <button class="avatar-filter" type="button" data-avatar-tone="#8c7ca8" data-avatar-tone-name="雾紫"><i class="avatar-swatch" style="--avatar-swatch:#8c7ca8"></i><span>雾紫</span></button>
+            <button class="avatar-filter" type="button" data-avatar-tone="#4b5663" data-avatar-tone-name="石墨"><i class="avatar-swatch" style="--avatar-swatch:#4b5663"></i><span>石墨</span></button>
+          </div>
+          <div class="avatar-strength">
+            <div><strong>滤镜强度</strong><span id="avatarStrengthValue">18%</span></div>
+            <input id="avatarStrengthRange" type="range" min="0" max="40" value="18" aria-label="滤镜强度">
+          </div>
+          <p class="avatar-editor-note">滤镜只使用纯色与透明度叠加，不改变原图细节；选择“原图”时强度不生效。</p>
+        </div>
+      </aside>
+    </div>
+    <div class="modal-foot avatar-dialog-foot">
+      <div class="avatar-editor-foot-copy"><strong>1:1 方形裁切</strong><span>保存后同步到邻聊资料</span></div>
+      <div class="avatar-foot-actions"><button class="button secondary" id="backAvatarPicker" type="button">返回选择</button><button class="button primary" id="applyAvatar" type="button">应用头像</button></div>
+    </div>
+  </div>
 </div>
 
 <div class="modal-backdrop" id="groupModal" role="dialog" aria-modal="true" aria-labelledby="groupTitle">
@@ -233,6 +314,8 @@ const READ_KEY="videoAnalyzer.lanChat.readRooms.v1";
 const $=id=>document.getElementById(id);
 const state={token:"",currentUser:null,users:[],rooms:[],activeRoomId:"public",messages:[],lastMessageId:0,oldestMessageId:0,hasMoreBefore:false,readRooms:{},messageTimer:null,bootstrapTimer:null,loadingMessages:false,loadingOlderMessages:false,messageSyncQueued:false,eventCursor:0,eventController:null,eventReconnectTimer:null,eventReconnectAttempts:0,posterObserver:null,draftAttachment:null,replyTarget:null,preparingAttachment:false,inlineMediaMaxBytes:100*1024*1024,inlineMediaRetentionSeconds:7*86400,fileMaxBytes:10*1024*1024*1024,fileRetentionSeconds:7*86400,messagePollIntervalMs:30000,bootstrapPollIntervalMs:10000,selectedFeishuUser:null,loginLoading:false,loginCancelable:false,uploadQueue:[],queueBatches:new Map(),queueRunning:false,queueExpanded:true,queueOwnerId:"",activeUpload:null,queueAuthPaused:false};
 const viewerState={scale:1,fitScale:1,drag:null};
+const DEFAULT_AVATARS=Array.from({length:10},(_,index)=>`/assets/default-avatars/${String(index+1).padStart(2,"0")}.png`);
+const avatarEditorState={source:DEFAULT_AVATARS[0],sourceLabel:"默认头像 01",selectedDefault:1,image:null,zoom:1.08,offsetX:0,offsetY:0,tone:"",strength:18,drag:null,draftDataUrl:""};
 function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]))}
 function responseError(payload,status){const error=new Error(payload.error||`请求失败 (${status})`);error.status=status;return error}
 async function publicRequest(path,options={}){const headers={...(options.headers||{})};if(options.body&&!(options.body instanceof FormData)&&!headers["Content-Type"])headers["Content-Type"]="application/json";const response=await fetch(path,{...options,headers});let payload={};try{payload=await response.json()}catch(e){}if(!response.ok)throw responseError(payload,response.status);return payload}
@@ -270,7 +353,161 @@ async function resumeOrChooseAccount(){state.token=localStorage.getItem(SESSION_
 function avatar(user,extra=""){return `<img class="avatar ${extra}" src="${esc(user.avatarUrl)}" alt="${esc(user.nickname)}的头像" loading="lazy">`}
 async function bootstrap(render=true){const payload=await request("/api/lan-chat/bootstrap");state.currentUser=payload.currentUser;state.users=payload.users||[];state.rooms=payload.rooms||[];state.inlineMediaMaxBytes=Number(payload.inlineMediaMaxBytes)||state.inlineMediaMaxBytes;state.inlineMediaRetentionSeconds=Number(payload.inlineMediaRetentionSeconds)||state.inlineMediaRetentionSeconds;state.fileMaxBytes=Number(payload.fileMaxBytes)||state.fileMaxBytes;state.fileRetentionSeconds=Number(payload.fileRetentionSeconds)||state.fileRetentionSeconds;state.messagePollIntervalMs=Math.max(30000,Number(payload.messagePollIntervalMs||payload.pollIntervalMs)||30000);state.bootstrapPollIntervalMs=Number(payload.bootstrapPollIntervalMs)||state.bootstrapPollIntervalMs;if(!state.rooms.some(room=>room.id===state.activeRoomId)){state.activeRoomId=payload.publicRoomId||"public";state.messages=[];state.lastMessageId=0;state.oldestMessageId=0;state.hasMoreBefore=false;localStorage.setItem(ROOM_KEY,state.activeRoomId)}if(render){renderAll();renderMessages()}else{renderProfile();renderRooms();renderMembers();renderHeader()}return payload}
 function activeRoom(){return state.rooms.find(room=>room.id===state.activeRoomId)||state.rooms[0]}
-function renderProfile(){const user=state.currentUser;if(!user)return;$("profileAvatar").src=user.avatarUrl;$("profileModalAvatar").src=user.avatarUrl;$("profileName").textContent=user.nickname;$("profileModalName").textContent=user.nickname;if(!$("profileModal").classList.contains("show"))$("nicknameInput").value=user.nickname;$("avatarStatusText").textContent=user.avatarStatus==="ready"?"AI 默认头像已生成":user.avatarStatus==="pending"?"AI 默认头像正在后台生成":"本地默认头像已启用"}
+function renderAvatarChoices(){
+  const grid=$("avatarChoiceGrid");
+  grid.innerHTML=DEFAULT_AVATARS.map((src,index)=>{
+    const number=index+1,selected=avatarEditorState.selectedDefault===number;
+    return `<button class="avatar-choice ${selected?"selected":""}" type="button" data-avatar-src="${src}" data-avatar-index="${number}"><img src="${src}" alt="默认头像 ${String(number).padStart(2,"0")}"><small>${String(number).padStart(2,"0")}</small><i class="avatar-choice-check"><svg viewBox="0 0 16 16"><path d="m3 8 3 3 7-7"/></svg></i></button>`;
+  }).join("");
+  grid.querySelectorAll("[data-avatar-src]").forEach(button=>button.onclick=()=>{
+    const number=Number(button.dataset.avatarIndex);
+    avatarEditorState.source=button.dataset.avatarSrc;
+    avatarEditorState.sourceLabel=`默认头像 ${String(number).padStart(2,"0")}`;
+    avatarEditorState.selectedDefault=number;
+    $("avatarSelectionLabel").textContent=`已选择${avatarEditorState.sourceLabel}`;
+    renderAvatarChoices();
+  });
+}
+function showAvatarModal(id){
+  ["profileModal","avatarPickerModal","avatarEditorModal"].forEach(modalId=>$(modalId).classList.toggle("show",modalId===id));
+}
+function openAvatarPicker(){
+  renderAvatarChoices();
+  $("avatarSelectionLabel").textContent=`已选择${avatarEditorState.sourceLabel}`;
+  showAvatarModal("avatarPickerModal");
+}
+function returnToProfile(){showAvatarModal("profileModal")}
+function resetAvatarEditorControls(){
+  avatarEditorState.zoom=1.08;
+  avatarEditorState.offsetX=0;
+  avatarEditorState.offsetY=0;
+  avatarEditorState.tone="";
+  avatarEditorState.strength=18;
+  $("avatarZoomRange").value=String(avatarEditorState.zoom);
+  $("avatarStrengthRange").value=String(avatarEditorState.strength);
+  $("avatarStrengthValue").textContent=`${avatarEditorState.strength}%`;
+  $("avatarFilters").querySelectorAll("[data-avatar-tone]").forEach(button=>button.classList.toggle("active",button.dataset.avatarTone===""));
+}
+function avatarScale(){
+  const image=avatarEditorState.image;
+  return image?Math.max(512/image.naturalWidth,512/image.naturalHeight)*avatarEditorState.zoom:1;
+}
+function clampAvatarOffsets(){
+  const image=avatarEditorState.image;
+  if(!image)return;
+  const scale=avatarScale();
+  const maxX=Math.max(0,(image.naturalWidth*scale-512)/2);
+  const maxY=Math.max(0,(image.naturalHeight*scale-512)/2);
+  avatarEditorState.offsetX=Math.max(-maxX,Math.min(maxX,avatarEditorState.offsetX));
+  avatarEditorState.offsetY=Math.max(-maxY,Math.min(maxY,avatarEditorState.offsetY));
+}
+function renderAvatarEditor(){
+  const image=avatarEditorState.image,canvas=$("avatarCropCanvas");
+  if(!image||!image.naturalWidth)return;
+  clampAvatarOffsets();
+  const context=canvas.getContext("2d"),scale=avatarScale();
+  const width=image.naturalWidth*scale,height=image.naturalHeight*scale;
+  context.clearRect(0,0,512,512);
+  context.drawImage(image,(512-width)/2+avatarEditorState.offsetX,(512-height)/2+avatarEditorState.offsetY,width,height);
+  if(avatarEditorState.tone){
+    context.save();
+    context.globalAlpha=avatarEditorState.strength/100;
+    context.fillStyle=avatarEditorState.tone;
+    context.fillRect(0,0,512,512);
+    context.restore();
+  }
+  const preview=$("avatarPreviewCanvas"),previewContext=preview.getContext("2d");
+  previewContext.clearRect(0,0,preview.width,preview.height);
+  previewContext.drawImage(canvas,0,0,preview.width,preview.height);
+}
+function loadAvatarEditorSource(source){
+  return new Promise((resolve,reject)=>{
+    const image=new Image();
+    image.onload=()=>{avatarEditorState.image=image;resetAvatarEditorControls();renderAvatarEditor();resolve()};
+    image.onerror=()=>reject(new Error("头像图片无法读取，请重新选择"));
+    image.src=source;
+  });
+}
+async function openAvatarEditor(){
+  try{
+    await loadAvatarEditorSource(avatarEditorState.source);
+    showAvatarModal("avatarEditorModal");
+  }catch(error){toast(error.message)}
+}
+function setAvatarZoom(value){
+  avatarEditorState.zoom=Math.max(1,Math.min(1.8,Number(value)||1));
+  $("avatarZoomRange").value=String(avatarEditorState.zoom);
+  renderAvatarEditor();
+}
+function beginAvatarDrag(event){
+  const shell=$("avatarCropShell");
+  avatarEditorState.drag={pointerId:event.pointerId,startX:event.clientX,startY:event.clientY,offsetX:avatarEditorState.offsetX,offsetY:avatarEditorState.offsetY};
+  shell.setPointerCapture(event.pointerId);
+}
+function moveAvatarDrag(event){
+  const drag=avatarEditorState.drag;
+  if(!drag||drag.pointerId!==event.pointerId)return;
+  const rect=$("avatarCropShell").getBoundingClientRect(),ratio=512/Math.max(1,rect.width);
+  avatarEditorState.offsetX=drag.offsetX+(event.clientX-drag.startX)*ratio;
+  avatarEditorState.offsetY=drag.offsetY+(event.clientY-drag.startY)*ratio;
+  renderAvatarEditor();
+}
+function endAvatarDrag(event){
+  if(avatarEditorState.drag?.pointerId===event.pointerId)avatarEditorState.drag=null;
+}
+function chooseAvatarFile(event){
+  const file=event.target.files?.[0];
+  event.target.value="";
+  if(!file)return;
+  if(!["image/png","image/jpeg","image/webp"].includes(file.type)){toast("请选择 PNG、JPG 或 WebP 图片");return}
+  if(file.size>12*1024*1024){toast("原始图片不能超过 12MB");return}
+  const reader=new FileReader();
+  reader.onload=async()=>{
+    avatarEditorState.source=String(reader.result||"");
+    avatarEditorState.sourceLabel="上传图片";
+    avatarEditorState.selectedDefault=0;
+    $("avatarSelectionLabel").textContent="已选择上传图片";
+    await openAvatarEditor();
+  };
+  reader.onerror=()=>toast("图片读取失败，请重新选择");
+  reader.readAsDataURL(file);
+}
+function applyEditedAvatar(){
+  if(!avatarEditorState.image)return;
+  renderAvatarEditor();
+  avatarEditorState.draftDataUrl=$("avatarCropCanvas").toDataURL("image/png");
+  $("profileModalAvatar").src=avatarEditorState.draftDataUrl;
+  $("avatarStatusText").textContent="新头像将在保存资料后生效";
+  returnToProfile();
+}
+function bindAvatarEditor(){
+  renderAvatarChoices();
+  $("changeAvatar").onclick=openAvatarPicker;
+  $("changeAvatarAction").onclick=openAvatarPicker;
+  $("avatarUploadTile").onclick=()=>$("avatarFileInput").click();
+  $("avatarFileInput").onchange=chooseAvatarFile;
+  $("openAvatarEditor").onclick=openAvatarEditor;
+  $("cancelAvatarPicker").onclick=returnToProfile;
+  $("closeAvatarPicker").onclick=returnToProfile;
+  $("closeAvatarEditor").onclick=returnToProfile;
+  $("backAvatarPicker").onclick=openAvatarPicker;
+  $("applyAvatar").onclick=applyEditedAvatar;
+  $("avatarZoomOut").onclick=()=>setAvatarZoom(avatarEditorState.zoom-.05);
+  $("avatarZoomIn").onclick=()=>setAvatarZoom(avatarEditorState.zoom+.05);
+  $("avatarZoomRange").oninput=event=>setAvatarZoom(event.target.value);
+  $("avatarStrengthRange").oninput=event=>{avatarEditorState.strength=Number(event.target.value);$("avatarStrengthValue").textContent=`${avatarEditorState.strength}%`;renderAvatarEditor()};
+  $("avatarFilters").querySelectorAll("[data-avatar-tone]").forEach(button=>button.onclick=()=>{
+    avatarEditorState.tone=button.dataset.avatarTone;
+    $("avatarFilters").querySelectorAll("[data-avatar-tone]").forEach(item=>item.classList.toggle("active",item===button));
+    renderAvatarEditor();
+  });
+  const crop=$("avatarCropShell");
+  crop.onpointerdown=beginAvatarDrag;
+  crop.onpointermove=moveAvatarDrag;
+  crop.onpointerup=endAvatarDrag;
+  crop.onpointercancel=endAvatarDrag;
+}
+function renderProfile(){const user=state.currentUser;if(!user)return;$("profileAvatar").src=user.avatarUrl;if(!avatarEditorState.draftDataUrl)$("profileModalAvatar").src=user.avatarUrl;$("profileName").textContent=user.nickname;$("profileModalName").textContent=user.nickname;if(!$("profileModal").classList.contains("show"))$("nicknameInput").value=user.nickname;if(!avatarEditorState.draftDataUrl)$("avatarStatusText").textContent=user.avatarStatus==="ready"?"当前头像已同步":user.avatarStatus==="pending"?"默认头像正在后台生成":"本地默认头像已启用"}
 function unreadLabel(count){return count>99?"99+":String(count)}
 function setUnreadBadge(id,count){const badge=$(id);badge.hidden=!count;badge.textContent=count?unreadLabel(count):""}
 function renderUnreadSummary(){const total=state.rooms.reduce((sum,room)=>sum+Number(room.unreadCount||0),0);setUnreadBadge("mobileUnread",total);document.title=total?`(${unreadLabel(total)}) 邻聊 · 局域网聊天`:"邻聊 · 局域网聊天"}
@@ -318,14 +555,14 @@ async function loadOlderMessages(){if(state.loadingOlderMessages||!state.hasMore
 function multipartRequest(path,fieldName,file,content,clientUploadId,replyToMessageId,onProgress){return new Promise((resolve,reject)=>{const xhr=new XMLHttpRequest();xhr.open("POST",path);xhr.setRequestHeader("X-Lan-Chat-Token",state.token);xhr.upload.onprogress=event=>{if(event.lengthComputable)onProgress?.(Math.round(event.loaded/event.total*100))};xhr.onload=()=>{let payload={};try{payload=JSON.parse(xhr.responseText||"{}")}catch(error){}if(xhr.status>=200&&xhr.status<300){resolve(payload);return}const error=responseError(payload,xhr.status);if(xhr.status===401)expireSession();reject(error)};xhr.onerror=()=>{const error=new Error("网络连接失败");error.status=0;reject(error)};const form=new FormData();form.append(fieldName,file,file.name||"未命名附件");form.append("content",content);form.append("clientUploadId",clientUploadId);if(replyToMessageId)form.append("replyToMessageId",String(replyToMessageId));xhr.send(form)})}
 async function sendMessage(event){event.preventDefault();const input=$("messageInput"),content=input.value.trim(),draft=state.draftAttachment;if((!content&&!draft)||state.preparingAttachment)return;const sendButton=$("sendButton");sendButton.disabled=true;$("attachImage").disabled=true;const clientUploadId=newClientUploadId(),roomId=state.activeRoomId,replyToMessageId=state.replyTarget?.id||null;try{let payload;if(draft){const isFile=draft.kind==="file",path=`/api/lan-chat/rooms/${encodeURIComponent(roomId)}/${isFile?"files":"media"}`;payload=await multipartRequest(path,isFile?"file":"media",draft.file,content,clientUploadId,replyToMessageId,progress=>sendButton.textContent=`上传 ${progress}%`)}else payload=await request(`/api/lan-chat/rooms/${encodeURIComponent(roomId)}/messages`,{method:"POST",body:JSON.stringify({content,clientUploadId,replyToMessageId})});mergeServerMessage(payload.message);input.value="";setDraftAttachment(null);clearReply();resizeInput();renderMessages();state.readRooms[roomId]=Date.now()/1000;saveRead();await bootstrap(false)}catch(error){toast(error.message)}finally{sendButton.textContent="发送";sendButton.disabled=false;$("attachImage").disabled=false;input.focus()}}
 async function startDirect(userId){try{const payload=await request("/api/lan-chat/direct",{method:"POST",body:JSON.stringify({targetUserId:userId})});await bootstrap(false);await selectRoom(payload.room.id)}catch(error){toast(error.message)}}
-function openProfile(){renderProfile();$("profileTitle").textContent="编辑资料";$("profileSubtitle").textContent="昵称属于当前设备账户，会同步显示给局域网内其他成员。";$("profileModal").classList.add("show");setTimeout(()=>$("nicknameInput").select(),80)}
+function openProfile(){avatarEditorState.draftDataUrl="";avatarEditorState.source=DEFAULT_AVATARS[0];avatarEditorState.sourceLabel="默认头像 01";avatarEditorState.selectedDefault=1;renderProfile();$("profileTitle").textContent="编辑资料";$("profileSubtitle").textContent="头像与昵称属于当前设备账户，会同步显示给局域网内其他成员。";$("profileModal").classList.add("show");setTimeout(()=>$("nicknameInput").select(),80)}
 function updateConversationSelection(){const selected=[...$("groupMemberPicker").querySelectorAll("input:checked")],count=selected.length,isGroup=count>1;$("groupNameField").hidden=!isGroup;$("groupNameInput").required=isGroup;$("conversationSelectionSummary").textContent=count===0?"尚未选择成员":count===1?"将发起私聊":`已选择 ${count} 位成员`;$("createConversationButton").disabled=count===0;$("createConversationButton").textContent=count===0?"开始聊天":isGroup?"创建群组":"开始私聊";$("groupSubtitle").textContent=isGroup?"填写群名后创建多人群组。":"选择一位成员发起私聊，选择多位成员创建群组。"}
 function openGroup(){const users=state.users.filter(user=>!user.isCurrent);$("groupMemberPicker").innerHTML=users.map(user=>`<label class="pick-row"><input type="checkbox" value="${esc(user.id)}">${avatar(user,"tiny")}<span><strong>${esc(user.nickname)}</strong><small>${user.online?"在线":esc(relativeSeen(user.lastSeen))}</small></span></label>`).join("")||'<div class="field-note ui-picker-empty">还没有其他注册成员。</div>';$("groupMemberPicker").querySelectorAll("input").forEach(input=>input.onchange=updateConversationSelection);$("groupNameInput").value="";updateConversationSelection();$("groupModal").classList.add("show")}
 function openMembers(){renderMembers();$("membersModal").classList.add("show");setTimeout(()=>$("memberSearch").focus(),80)}
 function openRecentFiles(){renderDetails();$("recentFilesModal").classList.add("show")}
 function openRoomManagement(){const room=activeRoom();if(!room||room.kind!=="group"||room.systemKind!=="custom")return;$("roomManageTitle").textContent=room.name;$("roomManageSubtitle").textContent=room.currentUserIsAdmin?"修改群名、管理成员或转移管理员。":"你可以查看成员或主动退出群组。";$("renameGroupForm").hidden=!room.canRename;$("manageGroupName").value=room.name;$("manageMemberList").innerHTML=(room.members||[]).map(user=>`<div class="manage-member">${avatar(user,"tiny")}<div class="manage-member-copy"><strong>${esc(user.nickname)}${user.isCurrent?"（我）":""}${user.isAdmin?'<i class="member-role">管理员</i>':""}</strong><span>${user.isAdmin?"当前群组管理员":`进群时间：${formatTime(user.joinedAt)}`}</span></div><div class="manage-member-actions">${room.canTransferAdmin&&!user.isCurrent&&!user.isAdmin?`<button class="transfer-member" type="button" data-transfer-user="${esc(user.id)}">转让</button>`:""}${room.canRemoveMembers&&!user.isCurrent&&!user.isAdmin?`<button class="remove-member" type="button" data-remove-user="${esc(user.id)}">移出</button>`:""}</div></div>`).join("");$("manageMemberList").querySelectorAll("[data-remove-user]").forEach(button=>button.onclick=()=>removeGroupMember(button.dataset.removeUser));$("manageMemberList").querySelectorAll("[data-transfer-user]").forEach(button=>button.onclick=()=>transferGroupAdmin(button.dataset.transferUser));$("leaveGroup").hidden=!room.canLeave;$("dissolveGroup").hidden=!room.canDissolve;$("adminTransferNote").textContent=room.currentUserIsAdmin?"转让管理员后，你将立即失去改名、踢人和解散权限。":"只有管理员可以改名、移出成员、转让权限或解散群组。";$("roomManageModal").classList.add("show")}
 function closeModals(){document.querySelectorAll(".modal-backdrop.show:not(#loginModal)").forEach(modal=>modal.classList.remove("show"))}
-async function saveProfile(event){event.preventDefault();try{const payload=await request("/api/lan-chat/profile",{method:"POST",body:JSON.stringify({nickname:$("nicknameInput").value})});state.currentUser=payload.user;closeModals();await bootstrap(true);toast("昵称已保存")}catch(error){toast(error.message)}}
+async function saveProfile(event){event.preventDefault();try{const payload=await request("/api/lan-chat/profile",{method:"POST",body:JSON.stringify({nickname:$("nicknameInput").value,avatarDataUrl:avatarEditorState.draftDataUrl})});state.currentUser=payload.user;avatarEditorState.draftDataUrl="";closeModals();await bootstrap(true);toast("资料已保存")}catch(error){toast(error.message)}}
 async function createGroup(event){event.preventDefault();const memberIds=[...$("groupMemberPicker").querySelectorAll("input:checked")].map(input=>input.value);if(!memberIds.length)return;if(memberIds.length===1){closeModals();await startDirect(memberIds[0]);return}try{const payload=await request("/api/lan-chat/rooms",{method:"POST",body:JSON.stringify({name:$("groupNameInput").value,memberIds})});closeModals();await bootstrap(false);await selectRoom(payload.room.id);toast("群组已创建")}catch(error){toast(error.message)}}
 async function saveGroupName(event){event.preventDefault();const room=activeRoom();if(!room)return;try{await request(`/api/lan-chat/rooms/${encodeURIComponent(room.id)}/rename`,{method:"POST",body:JSON.stringify({name:$("manageGroupName").value})});await bootstrap(true);openRoomManagement();toast("群名称已修改")}catch(error){toast(error.message)}}
 async function removeGroupMember(userId){const room=activeRoom(),user=room?.members?.find(item=>item.id===userId);if(!room||!user||!confirm(`确定将“${user.nickname}”移出群组吗？`))return;try{await request(`/api/lan-chat/rooms/${encodeURIComponent(room.id)}/members/remove`,{method:"POST",body:JSON.stringify({targetUserId:userId})});await bootstrap(true);openRoomManagement();toast("成员已移出")}catch(error){toast(error.message)}}
@@ -374,7 +611,7 @@ function moveViewerDrag(event){const drag=viewerState.drag;if(!drag||event.point
 function stopViewerDrag(event){if(!viewerState.drag||event.pointerId!==viewerState.drag.pointerId)return;$("viewerViewport").classList.remove("dragging");viewerState.drag=null}
 function bindComposerTransfers(){const composer=$("composer"),messageInput=$("messageInput");composer.addEventListener("dragenter",handleComposerDragEnter);composer.addEventListener("dragover",handleComposerDragOver);composer.addEventListener("dragleave",handleComposerDragLeave);composer.addEventListener("drop",handleComposerDrop);messageInput.addEventListener("paste",pasteAttachment)}
 function bind(){ $("composer").onsubmit=sendMessage;$("messageInput").addEventListener("input",resizeInput);$("messageInput").addEventListener("keydown",event=>{if(event.key==="Enter"&&!event.shiftKey&&!event.isComposing){event.preventDefault();$("composer").requestSubmit()}});$("cancelReply").onclick=clearReply;$("attachImage").onclick=()=>$("imageInput").click();$("imageInput").onchange=chooseAttachment;$("removeImage").onclick=()=>setDraftAttachment(null);$("queueSummary").onclick=()=>{state.queueExpanded=!state.queueExpanded;renderUploadQueue()};$("closeImageViewer").onclick=closeImageViewer;$("viewerZoomOut").onclick=()=>zoomViewer(.8);$("viewerZoomIn").onclick=()=>zoomViewer(1.25);$("viewerReset").onclick=fitViewerImage;$("viewerImage").ondblclick=()=>applyViewerScale(Math.abs(viewerState.scale-viewerState.fitScale)<.02?Math.min(2,Math.max(1,viewerState.fitScale*2)):viewerState.fitScale);$("viewerViewport").onwheel=event=>{if(!event.ctrlKey&&!event.metaKey)return;event.preventDefault();zoomViewer(event.deltaY<0?1.12:.89)};$("viewerViewport").onpointerdown=startViewerDrag;$("viewerViewport").onpointermove=moveViewerDrag;$("viewerViewport").onpointerup=stopViewerDrag;$("viewerViewport").onpointercancel=stopViewerDrag;$("switchAccount").onclick=openAccountSwitcher;$("closeLogin").onclick=closeLoginChooser;$("editProfile").onclick=openProfile;$("mobileProfile").onclick=openProfile;$("newChat").onclick=openGroup;$("roomManage").onclick=openRoomManagement;$("openMembersHeader").onclick=openMembers;$("openMemberList").onclick=openMembers;$("openFilesHeader").onclick=openRecentFiles;$("openAllFiles").onclick=openRecentFiles;$("toggleDetails").onclick=()=>toggleDetailsPanel();$("closeDetails").onclick=()=>toggleDetailsPanel(false);$("mobileCloseDetails").onclick=()=>toggleDetailsPanel(false);$("togglePin").onclick=()=>toggleRoomPreference("pinned");$("toggleMute").onclick=()=>toggleRoomPreference("muted");$("leaveGroupFromDetails").onclick=leaveActiveGroup;$("memberSearch").oninput=renderMembers;$("profileForm").onsubmit=saveProfile;$("groupForm").onsubmit=createGroup;$("renameGroupForm").onsubmit=saveGroupName;$("leaveGroup").onclick=leaveActiveGroup;$("dissolveGroup").onclick=dissolveActiveGroup;$("createAccountForm").onsubmit=createLoginAccount;$("loginBack").onclick=showFeishuStep;document.querySelectorAll("[data-close-modal]").forEach(button=>button.onclick=closeModals);document.querySelectorAll(".modal-backdrop").forEach(backdrop=>backdrop.onclick=event=>{if(backdrop.id!=="loginModal"&&event.target===backdrop)closeModals()});$("mobileChannels").onclick=()=>openDrawer("left");$("mobileMembers").onclick=()=>openDrawer("right");$("mobileChat").onclick=closeDrawers;$("drawerBackdrop").onclick=closeDrawers;document.addEventListener("visibilitychange",()=>{if(canReadActiveRoom())loadMessages(false)});window.addEventListener("focus",()=>loadMessages(false));window.addEventListener("offline",()=>{if(state.activeUpload){state.activeUpload.item.status="waiting-network";state.activeUpload.item.abortReason="offline";state.activeUpload.xhr.abort()}renderUploadQueue();renderMessages()});window.addEventListener("online",async()=>{state.uploadQueue.forEach(item=>{if(item.status==="waiting-network")item.status="queued"});renderUploadQueue();renderMessages();try{await loadMessages(true)}finally{runUploadQueue()}});window.addEventListener("resize",()=>{if(!$("imageViewer").hidden)fitViewerImage();syncDetailsPanelToggle()});document.addEventListener("keydown",event=>{if(event.key==="Escape"){closeImageViewer();closeModals();closeDrawers()}});syncDetailsPanelToggle()}
-async function init(){syncViewportHeight();window.addEventListener("resize",syncViewportHeight);window.addEventListener("orientationchange",syncViewportHeight);window.visualViewport?.addEventListener("resize",syncViewportHeight);readStored();bind();bindComposerTransfers();await resumeOrChooseAccount()}
+async function init(){syncViewportHeight();window.addEventListener("resize",syncViewportHeight);window.addEventListener("orientationchange",syncViewportHeight);window.visualViewport?.addEventListener("resize",syncViewportHeight);readStored();bind();bindAvatarEditor();bindComposerTransfers();await resumeOrChooseAccount()}
 init();
 </script>
 </body>
