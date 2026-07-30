@@ -249,6 +249,22 @@ async def mobile_network_retry_scenario(
         browser, base_url, {"width": 390, "height": 844}, api
     )
     try:
+        assert await page.evaluate(
+            "document.body.scrollWidth === document.body.clientWidth"
+        )
+        await expect(page.locator("#headerRoomName")).to_be_visible()
+        await page.locator("#mobileChannels").click()
+        await expect(page.locator("#leftRail")).to_have_class(re.compile("open"))
+        await page.screenshot(
+            path=str(screenshot_dir / "lan-chat-mobile-channels.png")
+        )
+        await page.locator("#drawerBackdrop").click()
+        await page.locator("#mobileMembers").click()
+        await expect(page.locator("#rightRail")).to_have_class(re.compile("open"))
+        await page.screenshot(
+            path=str(screenshot_dir / "lan-chat-mobile-details.png")
+        )
+        await page.locator("#drawerBackdrop").click()
         await context.set_offline(True)
         await page.locator("#messageInput").fill("批次说明")
         await page.locator("#imageInput").set_input_files(
