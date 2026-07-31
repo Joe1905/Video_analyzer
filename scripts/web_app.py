@@ -142,6 +142,7 @@ from fastmoss_official_skill import (
 from sellersprite_official_skill import (
     load_official_sellersprite_skill_prompt,
     official_sellersprite_skill_enabled,
+    select_official_sellersprite_skill_prompt,
 )
 from sellersprite_evidence_renderer import (
     render_sellersprite_current_evidence,
@@ -11850,9 +11851,24 @@ def fastmoss_official_skill_system_instruction(
     return official_skill_prompt
 
 
-def sellersprite_official_skill_route(user_text: str = "") -> dict[str, Any]:
-    """Use the official Skill as-is; routing must not select or constrain a Skill."""
-    return {
+SELLERSPRITE_PRODUCT_RESEARCH_PRESET_ID = "comprehensive/product-research"
+SELLERSPRITE_PRODUCT_RESEARCH_SKILL_FILE = "comprehensive/product-research.md"
+SELLERSPRITE_PRODUCT_RESEARCH_TOOL_IDS = frozenset({
+    "sellersprite__product_node",
+    "sellersprite__product_research",
+    "sellersprite__asin_detail",
+    "sellersprite__asin_prediction",
+    "sellersprite__market_research_statistics",
+    "sellersprite__google_trend",
+})
+
+
+def sellersprite_official_skill_route(
+    user_text: str = "",
+    official_preset_id: str = "",
+) -> dict[str, Any]:
+    """Use all official Skills by default, or one request-scoped preset when supplied."""
+    route = {
         # A direct route prevents the project report synthesizer from replacing the
         # official Skill's own answer format after tool execution.
         "intent": "sellersprite_official_skill",
@@ -11867,6 +11883,29 @@ def sellersprite_official_skill_route(user_text: str = "") -> dict[str, Any]:
             "SELLERSPRITE_OFFICIAL_SKILL_MAX_ROUNDS", 24, 1, 50
         ),
     }
+    preset_id = str(official_preset_id or "").strip()
+    if (
+        not preset_id
+        and str(user_text or "").lstrip().startswith(
+            "请使用卖家精灵官方 Skill「智能选品助手」开始分析。"
+        )
+    ):
+        preset_id = SELLERSPRITE_PRODUCT_RESEARCH_PRESET_ID
+    if preset_id == SELLERSPRITE_PRODUCT_RESEARCH_PRESET_ID:
+        route.update({
+            "route_source": "official_preset",
+            "official_preset_id": preset_id,
+            "official_skill_file": SELLERSPRITE_PRODUCT_RESEARCH_SKILL_FILE,
+            "tools": sorted(SELLERSPRITE_PRODUCT_RESEARCH_TOOL_IDS),
+        })
+    elif preset_id:
+        print(
+            "[CHAT SELLERSPRITE OFFICIAL SKILL] unknown_preset="
+            f"{json.dumps(preset_id[:120], ensure_ascii=False)}; "
+            "falling back to full official catalog",
+            flush=True,
+        )
+    return route
 
 
 def sellersprite_official_skill_tool_ids(
@@ -11889,7 +11928,15 @@ def sellersprite_official_skill_system_instruction(
     return official_skill_prompt
 
 
-def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, provider: str = "home", enabled_tool_ids: set[str] | None = None) -> None:
+def run_chat_deepseek(
+    store: ChatStore,
+    session,
+    assistant_msg,
+    user_text: str,
+    provider: str = "home",
+    enabled_tool_ids: set[str] | None = None,
+    official_preset_id: str = "",
+) -> None:
     """Background thread: call DeepSeek with provider-scoped tools and stream results via SSE."""
     import requests as req
 
@@ -11913,6 +11960,13 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     official_skill_chain = (
         fastmoss_official_skill_chain or sellersprite_official_skill_chain
     )
+    official_skill_route = (
+        fastmoss_official_skill_route()
+        if fastmoss_official_skill_chain
+        else sellersprite_official_skill_route(user_text, official_preset_id)
+        if sellersprite_official_skill_chain
+        else None
+    )
     official_skill_prompt = ""
     if official_skill_chain:
         try:
@@ -11921,6 +11975,15 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 if fastmoss_official_skill_chain
                 else load_official_sellersprite_skill_prompt()
             )
+            if (
+                sellersprite_official_skill_chain
+                and official_skill_route
+                and official_skill_route.get("official_skill_file")
+            ):
+                official_skill_prompt = select_official_sellersprite_skill_prompt(
+                    official_skill_prompt,
+                    str(official_skill_route["official_skill_file"]),
+                )
         except Exception as exc:
             label = "FastMoss" if fastmoss_official_skill_chain else "SellerSprite"
             error_text = (
@@ -11959,10 +12022,8 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
 
     routing_text = chat_routing_text(user_text)
     route = (
-        fastmoss_official_skill_route()
-        if fastmoss_official_skill_chain
-        else sellersprite_official_skill_route(user_text)
-        if sellersprite_official_skill_chain
+        official_skill_route
+        if official_skill_route is not None
         else resolve_chat_intent(session.messages, user_text, provider, api_key, api_url, model, req)
     )
     if provider == "fastmoss" and not official_skill_chain:
@@ -12251,7 +12312,8 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     print(
         f"[CHAT] provider={provider} enabled={len(enabled_tool_ids or [])} "
         f"effective={len(effective_enabled_tool_ids or [])} tools={len(tools)} "
-        f"max_rounds={max_tool_rounds} official_skill={str(official_skill_chain).lower()}",
+        f"max_rounds={max_tool_rounds} official_skill={str(official_skill_chain).lower()} "
+        f"official_preset={route.get('official_preset_id') or '-'}",
         flush=True,
     )
     official_skill_context_max_tokens = (
@@ -15361,6 +15423,9 @@ class Handler(BaseHTTPRequestHandler):
             session_id = str(payload.get("sessionId", "default")).strip() or "default"
             text = str(payload.get("message", "")).strip()
             raw_attachments = payload.get("attachments", [])
+            official_preset_id = str(payload.get("officialPresetId") or "").strip()
+            if provider != "amazon":
+                official_preset_id = ""
             enabled_tool_ids = None
             if "enabledToolMasks" in payload:
                 print(f"[CHAT] ignored legacy tool masks provider={provider}; full-site tools are enforced", flush=True)
@@ -15417,7 +15482,19 @@ class Handler(BaseHTTPRequestHandler):
         assistant_msg = Message(id=str(uuid.uuid4()), role="assistant", content="", status="pending")
         store.add_message(session, assistant_msg)
 
-        thread = threading.Thread(target=run_chat_deepseek, args=(store, session, assistant_msg, model_text, provider, enabled_tool_ids), daemon=True)
+        thread = threading.Thread(
+            target=run_chat_deepseek,
+            args=(
+                store,
+                session,
+                assistant_msg,
+                model_text,
+                provider,
+                enabled_tool_ids,
+                official_preset_id,
+            ),
+            daemon=True,
+        )
         thread.start()
         return json_response(self, HTTPStatus.ACCEPTED, {
             "sessionId": session_id,

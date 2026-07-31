@@ -228,6 +228,25 @@ def load_official_sellersprite_skill_prompt(
         return prompt
 
 
+def select_official_sellersprite_skill_prompt(
+    prompt: str,
+    relative_name: str,
+) -> str:
+    """Return the pinned provenance header plus one exact official Skill document."""
+    if relative_name not in OFFICIAL_SELLERSPRITE_PROMPT_FILES:
+        raise ValueError(f"Unknown official SellerSprite Skill file: {relative_name}")
+    section_marker = f"\n\n## 官方文件：{relative_name}\n\n"
+    if section_marker not in prompt:
+        raise RuntimeError(
+            f"Official SellerSprite Skill prompt is missing file: {relative_name}"
+        )
+    header = prompt.split("\n\n## 官方文件：", 1)[0].strip()
+    document = prompt.split(section_marker, 1)[1].split(
+        "\n\n## 官方文件：", 1
+    )[0].strip()
+    return f"{header}{section_marker}{document}"
+
+
 def clear_official_sellersprite_skill_memory_cache() -> None:
     """Test helper; disk cache is intentionally preserved."""
     with _LOAD_LOCK:

@@ -30,6 +30,7 @@ from sellersprite_official_skill import (  # noqa: E402
     OFFICIAL_SELLERSPRITE_SKILL_ROOT,
     clear_official_sellersprite_skill_memory_cache,
     load_official_sellersprite_skill_prompt,
+    select_official_sellersprite_skill_prompt,
 )
 from sellersprite_evidence_renderer import (  # noqa: E402
     SELLERSPRITE_RENDER_SPECS,
@@ -172,6 +173,13 @@ def test_sellersprite_official_skill_chain_loads_full_bundle_and_isolates_tools(
     assert prompt == cached_prompt
     for relative_name in OFFICIAL_SELLERSPRITE_PROMPT_FILES:
         assert f"官方文件：{relative_name}" in prompt
+    product_research_prompt = select_official_sellersprite_skill_prompt(
+        prompt,
+        "comprehensive/product-research.md",
+    )
+    assert "官方文件：comprehensive/product-research.md" in product_research_prompt
+    assert "官方文件：comprehensive/market-analysis.md" not in product_research_prompt
+    assert len(product_research_prompt) < len(prompt)
 
     route = web_app.sellersprite_official_skill_route("/keyword-research flying toys")
     assert route["official_skill_chain"] is True
@@ -184,6 +192,30 @@ def test_sellersprite_official_skill_chain_loads_full_bundle_and_isolates_tools(
     lookup_route = web_app.sellersprite_official_skill_route("查询 flying toys 关键词的月搜索量")
     assert lookup_route == route
     assert web_app.chat_route_uses_report_model("amazon", lookup_route) is False
+    preset_route = web_app.sellersprite_official_skill_route(
+        "请使用卖家精灵官方 Skill「智能选品助手」开始分析。\n\n目标：解压玩具"
+    )
+    assert preset_route["route_source"] == "official_preset"
+    assert preset_route["official_preset_id"] == "comprehensive/product-research"
+    assert preset_route["official_skill_file"] == "comprehensive/product-research.md"
+    assert set(preset_route["tools"]) == set(
+        web_app.SELLERSPRITE_PRODUCT_RESEARCH_TOOL_IDS
+    )
+    assert {
+        web_app.split_prefixed_tool_id(tool_id)[1]
+        for tool_id in preset_route["tools"]
+    } <= set(SELLERSPRITE_TOOL_SEMANTICS)
+    explicit_preset_route = web_app.sellersprite_official_skill_route(
+        "解压玩具",
+        web_app.SELLERSPRITE_PRODUCT_RESEARCH_PRESET_ID,
+    )
+    assert explicit_preset_route == preset_route
+    unknown_preset_route = web_app.sellersprite_official_skill_route(
+        "解压玩具",
+        "comprehensive/unknown",
+    )
+    assert unknown_preset_route["tools"] is None
+    assert "official_preset_id" not in unknown_preset_route
     assert web_app.official_skill_market_default_instruction("amazon") == (
         "应用执行默认值：用户未指定站点时，对支持 marketplace 参数的 SellerSprite 工具使用 US。"
     )
