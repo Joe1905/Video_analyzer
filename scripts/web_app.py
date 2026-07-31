@@ -480,24 +480,24 @@ CHAT_PROVIDER_OFFICIAL_QUICK_ACTIONS = {
     ),
     "fastmoss": (
         {
-            "label": "\u5546\u54c1\u9009\u54c1\u5206\u6790",
-            "skill": "\u5546\u54c1\u9009\u54c1\u5206\u6790",
-            "preset_id": "comprehensive/product-research",
-            "description": "\u6309\u591a\u7ef4\u6761\u4ef6\u9009\u54c1\u4e0e\u8bc4\u4f30\u7c7b\u76ee",
+            "label": "\u9009\u54c1\u51b3\u7b56",
+            "skill": "\u9009\u54c1\u51b3\u7b56",
+            "preset_id": "fm-product-scout",
+            "description": "\u5224\u65ad\u9009\u54c1\u673a\u4f1a\u3001\u751f\u547d\u5468\u671f\u4e0e\u5165\u573a\u65f6\u673a",
             "icon": "bars",
         },
         {
-            "label": "\u8fbe\u4eba\u5e26\u8d27\u7b5b\u9009",
-            "skill": "\u8fbe\u4eba\u5e26\u8d27\u7b5b\u9009",
-            "preset_id": "comprehensive/creator-discovery",
-            "description": "\u7b5b\u9009\u9ad8\u589e\u957f\u8fbe\u4eba\u4e0e\u5e26\u8d27\u529b",
+            "label": "\u8fbe\u4eba\u5efa\u8054",
+            "skill": "\u8fbe\u4eba\u5efa\u8054",
+            "preset_id": "fm-creator-outreach",
+            "description": "\u7b5b\u9009\u8fbe\u4eba\u3001\u8bc4\u4f30\u5339\u914d\u5ea6\u5e76\u751f\u6210\u5efa\u8054\u6587\u6848",
             "icon": "trend",
         },
         {
-            "label": "\u7206\u6b3e\u89c6\u9891\u62c6\u89e3",
-            "skill": "\u7206\u6b3e\u89c6\u9891\u62c6\u89e3",
-            "preset_id": "comprehensive/content-dissect",
-            "description": "\u62c6\u89e3\u77ed\u89c6\u9891\u4e0e\u5e26\u8d27\u811a\u672c",
+            "label": "\u89c6\u9891\u7b56\u7565",
+            "skill": "\u89c6\u9891\u7b56\u7565",
+            "preset_id": "fm-video-brief",
+            "description": "\u62c6\u89e3\u7206\u6b3e\u89c6\u9891\u5e76\u5f62\u6210\u62cd\u6444 Brief",
             "icon": "compare",
         },
     ),
@@ -930,13 +930,11 @@ def render_chat_quick_actions(provider: str, provider_ui: dict[str, Any], offici
 def render_chat_official_workflow_modal(provider: str) -> dict[str, str]:
     if provider == "fastmoss":
         items = [
-            ("comprehensive/product-research", "商品选品分析", "按多维条件筛选潜力商品，评估进入可行性"),
-            ("comprehensive/creator-discovery", "达人带货筛选", "按带货力筛选达人，评估粉丝匹配与转化"),
-            ("comprehensive/content-dissect", "爆款视频拆解", "拆解短视频表现、脚本结构与带货转化"),
-            ("comprehensive/competitor-shop", "店铺渠道分析", "分析店铺 GMV 趋势、商品与达人全渠道布局"),
-            ("comprehensive/pricing-strategy", "价格分布与定价", "分析类目价格带分布，制定合理的定价策略"),
-            ("comprehensive/content-strategy", "类目内容策略", "提取类目爆款短视频模式与内容转化结构"),
-            ("comprehensive/competitor-analysis", "竞品商品对标", "全方位拆解竞品商品、渠道、达人与评论"),
+            ("fm-product-scout", "选品决策", "判断选品机会、生命周期与入场时机"),
+            ("fm-creator-outreach", "达人建联", "筛选达人、评估匹配度并生成建联文案"),
+            ("fm-competitor-batch", "竞品批量对比", "比较多个竞品并拆解突然爆发的原因"),
+            ("fm-store-diagnosis", "店铺诊断", "检查店铺商品、渠道、达人与集中度风险"),
+            ("fm-video-brief", "视频策略", "拆解爆款视频并形成拍摄或达人 Brief"),
         ]
         item_btns = [
             f'<button class="official-workflow-item" type="button" data-official-preset-id="{pid}" data-official-preset="{html_escape(lbl)}"><span class="official-workflow-icon">{idx:02d}</span><span><strong>{html_escape(lbl)}</strong><small>{html_escape(dsc)}</small></span><i>\u2192</i></button>'
@@ -945,10 +943,10 @@ def render_chat_official_workflow_modal(provider: str) -> dict[str, str]:
         return {
             "kicker": "FASTMOSS \u00b7 OFFICIAL SKILLS",
             "title": "FastMoss \u5b98\u65b9\u7b56\u7565\u5e93",
-            "intro": "\u9009\u62e9 FastMoss \u5b98\u65b9\u9884\u8bbe\uff0c\u8fdb\u5165\u5bf9\u5e94\u7684\u9009\u54c1\u3001\u8fbe\u4eba\u3001\u77ed\u89c6\u9891\u4e0e\u5e97\u94fa\u5206\u6790\u6d41\u7a0b\u3002",
+            "intro": "\u9009\u62e9 FastMoss \u5b98\u65b9 Skill\uff0c\u8fdb\u5165\u5bf9\u5e94\u7684\u9009\u54c1\u3001\u8fbe\u4eba\u3001\u7ade\u54c1\u3001\u5e97\u94fa\u6216\u89c6\u9891\u7b56\u7565\u6d41\u7a0b\u3002",
             "tabs_class": " official-workflow-tabs--single",
             "tabs_attributes": "",
-            "tabs": '<button class="official-workflow-tab is-active" type="button" role="tab" aria-selected="true" data-official-tab="comprehensive">\u5b98\u65b9\u7b56\u7565 <span>7</span></button>',
+            "tabs": '<button class="official-workflow-tab is-active" type="button" role="tab" aria-selected="true" data-official-tab="comprehensive">\u5b98\u65b9 Skills <span>5</span></button>',
             "panels": (
                 '<section class="official-workflow-panel is-active" role="tabpanel" data-official-panel="comprehensive">'
                 '<div class="official-workflow-grid">'
@@ -12170,10 +12168,13 @@ def chat_system_instruction(provider: str, current_date_shanghai: str) -> str:
 
 
 FASTMOSS_OFFICIAL_PRESETS: dict[str, dict[str, Any]] = {
-    "comprehensive/product-research": {
-        "label": "商品选品分析",
-        "skill_file": "references/tools-product.md",
-        "description": "按多维条件选品，评估潜力商品与进入可行性",
+    # These five IDs and workflow documents are defined by
+    # FastMoss/fastmoss-skills.  Tool lists are this application's execution
+    # boundary, derived from each official workflow's documented calls.
+    "fm-product-scout": {
+        "label": "选品决策",
+        "skill_file": "references/fm-product-scout.md",
+        "description": "判断选品机会、生命周期与入场时机",
         "tools": frozenset({
             "fastmoss__search_category_by_words",
             "fastmoss__market_category_analysis",
@@ -12185,15 +12186,15 @@ FASTMOSS_OFFICIAL_PRESETS: dict[str, dict[str, Any]] = {
             "fastmoss__product_overview",
             "fastmoss__product_sales_trend",
             "fastmoss__product_investment",
-            "fastmoss__product_review_list",
             "fastmoss__product_creator_analysis",
             "fastmoss__product_video_list",
+            "fastmoss__fastmoss_detail_url_examples",
         }),
     },
-    "comprehensive/creator-discovery": {
-        "label": "达人带货筛选",
-        "skill_file": "references/tools-creator.md",
-        "description": "按带货力找人、评估粉丝匹配度与带货表现",
+    "fm-creator-outreach": {
+        "label": "达人建联",
+        "skill_file": "references/fm-creator-outreach.md",
+        "description": "筛选达人、评估匹配度并生成建联文案",
         "tools": frozenset({
             "fastmoss__search_category_by_words",
             "fastmoss__product_search",
@@ -12205,25 +12206,43 @@ FASTMOSS_OFFICIAL_PRESETS: dict[str, dict[str, Any]] = {
             "fastmoss__creator_cargo_summary",
             "fastmoss__creator_data_trends",
             "fastmoss__creator_product_list",
+            "fastmoss__creator_fans_distribution",
+            "fastmoss__creator_video_analysis",
+            "fastmoss__product_creator_analysis",
+            "fastmoss__fastmoss_detail_url_examples",
         }),
     },
-    "comprehensive/content-dissect": {
-        "label": "爆款视频拆解",
-        "skill_file": "references/tools-product.md",
-        "description": "拆解短视频表现、脚本结构与带货转化",
+    "fm-competitor-batch": {
+        "label": "竞品批量对比",
+        "skill_file": "references/fm-competitor-batch.md",
+        "description": "比较多个竞品并拆解突然爆发的原因",
         "tools": frozenset({
             "fastmoss__product_search",
-            "fastmoss__video_search",
+            "fastmoss__shop_search",
+            "fastmoss__creator_search",
+            "fastmoss__product_detail_info",
+            "fastmoss__product_overview",
+            "fastmoss__product_sales_trend",
+            "fastmoss__product_creator_analysis",
             "fastmoss__product_video_list",
+            "fastmoss__product_investment",
+            "fastmoss__shop_base_info",
+            "fastmoss__shop_data_trends",
+            "fastmoss__shop_sale_analysis",
+            "fastmoss__shop_creator_analysis",
+            "fastmoss__shop_video_analysis",
+            "fastmoss__creator_profile_overview",
+            "fastmoss__creator_data_trends",
+            "fastmoss__video_search",
             "fastmoss__video_detail_analysis",
             "fastmoss__video_data_trends",
-            "fastmoss__video_script_info",
+            "fastmoss__fastmoss_detail_url_examples",
         }),
     },
-    "comprehensive/competitor-shop": {
-        "label": "店铺渠道分析",
-        "skill_file": "references/tools-shop.md",
-        "description": "分析店铺 GMV 趋势、热销商品与达人全渠道布局",
+    "fm-store-diagnosis": {
+        "label": "店铺诊断",
+        "skill_file": "references/fm-store-diagnosis.md",
+        "description": "检查店铺商品、渠道、达人与集中度风险",
         "tools": frozenset({
             "fastmoss__shop_search",
             "fastmoss__shop_base_info",
@@ -12234,29 +12253,16 @@ FASTMOSS_OFFICIAL_PRESETS: dict[str, dict[str, Any]] = {
             "fastmoss__shop_creator_analysis",
             "fastmoss__shop_video_analysis",
             "fastmoss__shop_live_analysis",
-            "fastmoss__ad_data_overview",
+            "fastmoss__fastmoss_detail_url_examples",
         }),
     },
-    "comprehensive/pricing-strategy": {
-        "label": "价格分布与定价",
-        "skill_file": "references/tools-product.md",
-        "description": "分析类目价格分布，制定合理价格带策略",
+    "fm-video-brief": {
+        "label": "视频策略",
+        "skill_file": "references/fm-video-brief.md",
+        "description": "拆解爆款视频并形成拍摄或达人 Brief",
         "tools": frozenset({
-            "fastmoss__search_category_by_words",
-            "fastmoss__market_category_analysis",
-            "fastmoss__product_rank_top_selling",
             "fastmoss__product_search",
-            "fastmoss__product_detail_info",
-            "fastmoss__product_review_list",
-        }),
-    },
-    "comprehensive/content-strategy": {
-        "label": "类目内容策略",
-        "skill_file": "references/tools-product.md",
-        "description": "提取类目爆款短视频模式与内容结构",
-        "tools": frozenset({
             "fastmoss__search_category_by_words",
-            "fastmoss__product_search",
             "fastmoss__product_rank_top_selling",
             "fastmoss__product_video_list",
             "fastmoss__video_search",
@@ -12265,28 +12271,8 @@ FASTMOSS_OFFICIAL_PRESETS: dict[str, dict[str, Any]] = {
             "fastmoss__video_script_info",
             "fastmoss__product_creator_analysis",
             "fastmoss__creator_search",
-        }),
-    },
-    "comprehensive/competitor-analysis": {
-        "label": "竞品商品对标",
-        "skill_file": "references/tools-product.md",
-        "description": "全方位拆解竞品商品、渠道、达人与评论",
-        "tools": frozenset({
-            "fastmoss__product_search",
-            "fastmoss__shop_search",
-            "fastmoss__product_detail_info",
-            "fastmoss__product_overview",
-            "fastmoss__product_sales_trend",
-            "fastmoss__shop_base_info",
-            "fastmoss__shop_data_trends",
-            "fastmoss__product_creator_analysis",
-            "fastmoss__product_video_list",
-            "fastmoss__product_review_list",
-            "fastmoss__shop_creator_analysis",
-            "fastmoss__shop_video_analysis",
-            "fastmoss__search_category_by_words",
-            "fastmoss__market_category_analysis",
-            "fastmoss__product_rank_top_selling",
+            "fastmoss__creator_video_analysis",
+            "fastmoss__fastmoss_detail_url_examples",
         }),
     },
 }

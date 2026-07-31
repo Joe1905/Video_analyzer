@@ -67,13 +67,13 @@ def test_fastmoss_official_skill_chain_loads_exact_package_and_isolates_tools() 
             info.size = len(content)
             archive.addfile(info, io.BytesIO(content))
     payload = archive_buffer.getvalue()
-    digest = base64.b64encode(hashlib.sha512(payload).digest()).decode("ascii")
+    digest = hashlib.sha256(payload).hexdigest()
     clear_official_fastmoss_skill_memory_cache()
     with tempfile.TemporaryDirectory() as temp_dir:
         prompt = load_official_fastmoss_skill_prompt(
             cache_dir=Path(temp_dir),
             archive_payload=payload,
-            expected_sha512=digest,
+            expected_sha256=digest,
         )
     assert "official-marker-0" in prompt
     for relative_name in OFFICIAL_PROMPT_FILES:

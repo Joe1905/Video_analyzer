@@ -1,4 +1,4 @@
-"""Manual mock-boundary verification for all seven FastMoss official presets.
+"""Manual mock-boundary verification for all five FastMoss official Skills.
 
 Run this only with ``FASTMOSS_TOOL_MOCK_MODE=1``.  It never contacts the
 FastMoss MCP service: every whitelisted call must return the standard test
@@ -22,18 +22,18 @@ def run_fastmoss_presets_simulation() -> None:
         )
 
     presets = web_app.FASTMOSS_OFFICIAL_PRESETS
-    assert len(presets) == 7, f"Expected 7 presets, found {len(presets)}"
+    assert len(presets) == 5, f"Expected 5 presets, found {len(presets)}"
     all_fastmoss_tools = set().union(*(info["tools"] for info in presets.values()))
     full_prompt = web_app.load_official_fastmoss_skill_prompt()
 
     print("=" * 80)
-    print("Starting 7 FastMoss Official Presets Tool Mock & Boundary Verification")
+    print("Starting 5 FastMoss Official Skills Tool Mock & Boundary Verification")
     print("=" * 80)
     for index, (preset_id, preset) in enumerate(presets.items(), start=1):
         label = preset["label"]
         allowed_tools = set(preset["tools"])
         skill_file = preset["skill_file"]
-        print(f"\n[{index:02d}/07] Testing preset: {label} ({preset_id})")
+        print(f"\n[{index:02d}/05] Testing preset: {label} ({preset_id})")
 
         route_by_id = web_app.fastmoss_official_skill_route(
             "测试目标", preset_id
@@ -53,7 +53,8 @@ def run_fastmoss_presets_simulation() -> None:
         )
         assert f"## 官方文件：{skill_file}" in selected_prompt
         assert "## 官方文件：SKILL.md" in selected_prompt
-        assert "## 官方文件：references/tool-call.md" in selected_prompt
+        assert "## 官方文件：references/PRINCIPLES.md" in selected_prompt
+        assert "## 官方文件：references/GLOSSARY.md" in selected_prompt
 
         exposed_tools = web_app.fastmoss_official_skill_tool_ids(
             all_fastmoss_tools | {"system__current_time"}, route_by_id["tools"]
@@ -85,7 +86,7 @@ def run_fastmoss_presets_simulation() -> None:
             assert forbidden not in exposed_tools
             print(f"  -> boundary preserved: {forbidden} excluded")
 
-    print("\nAll 7 FastMoss official presets passed mock boundary verification.")
+    print("\nAll 5 FastMoss official Skills passed mock boundary verification.")
 
 
 if __name__ == "__main__":

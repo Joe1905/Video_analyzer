@@ -17,8 +17,8 @@ from scripts.web_app import (
 
 class TestFastMossPresetsBoundary(unittest.TestCase):
     def test_presets_structure(self):
-        self.assertEqual(len(FASTMOSS_OFFICIAL_PRESETS), 7)
-        self.assertEqual(len(FASTMOSS_LABEL_TO_PRESET_ID), 7)
+        self.assertEqual(len(FASTMOSS_OFFICIAL_PRESETS), 5)
+        self.assertEqual(len(FASTMOSS_LABEL_TO_PRESET_ID), 5)
         for preset_id, info in FASTMOSS_OFFICIAL_PRESETS.items():
             self.assertIn("label", info)
             self.assertIn("skill_file", info)
@@ -30,19 +30,19 @@ class TestFastMossPresetsBoundary(unittest.TestCase):
                 self.assertTrue(tool_id.startswith("fastmoss__"), f"Invalid tool prefix: {tool_id}")
 
     def test_route_resolution_by_preset_id(self):
-        preset_id = "comprehensive/product-research"
+        preset_id = "fm-product-scout"
         route = fastmoss_official_skill_route(official_preset_id=preset_id)
         self.assertEqual(route["route_source"], "official_preset")
         self.assertEqual(route["official_preset_id"], preset_id)
-        self.assertEqual(route["official_skill_file"], "references/tools-product.md")
+        self.assertEqual(route["official_skill_file"], "references/fm-product-scout.md")
         self.assertEqual(route["tools"], sorted(FASTMOSS_OFFICIAL_PRESETS[preset_id]["tools"]))
 
     def test_route_resolution_by_user_text_prefix(self):
-        user_text = "请使用 FastMoss 官方 Skill「达人带货筛选」开始分析。"
+        user_text = "请使用 FastMoss 官方 Skill「达人建联」开始分析。"
         route = fastmoss_official_skill_route(user_text=user_text)
         self.assertEqual(route["route_source"], "official_preset")
-        self.assertEqual(route["official_preset_id"], "comprehensive/creator-discovery")
-        self.assertEqual(route["official_skill_file"], "references/tools-creator.md")
+        self.assertEqual(route["official_preset_id"], "fm-creator-outreach")
+        self.assertEqual(route["official_skill_file"], "references/fm-creator-outreach.md")
 
     def test_tool_ids_whitelist_isolation(self):
         enabled_tools = {
@@ -60,8 +60,8 @@ class TestFastMossPresetsBoundary(unittest.TestCase):
             "fastmoss__creator_search",
         })
 
-        # Whitelisted for creator-discovery
-        creator_tools = FASTMOSS_OFFICIAL_PRESETS["comprehensive/creator-discovery"]["tools"]
+        # Whitelisted for the official creator-outreach Skill.
+        creator_tools = FASTMOSS_OFFICIAL_PRESETS["fm-creator-outreach"]["tools"]
         isolated = fastmoss_official_skill_tool_ids(enabled_tools, allowed_tools=creator_tools)
         self.assertEqual(isolated, {
             "fastmoss__search_category_by_words",
@@ -75,35 +75,39 @@ class TestFastMossPresetsBoundary(unittest.TestCase):
         self.assertEqual(modal_ui["title"], "FastMoss 官方策略库")
         self.assertEqual(modal_ui["tabs_class"], " official-workflow-tabs--single")
         self.assertIn("进入对应的选品", modal_ui["intro"])
-        self.assertIn("官方策略 <span>7</span>", modal_ui["tabs"])
+        self.assertIn("官方 Skills <span>5</span>", modal_ui["tabs"])
         self.assertIn("<button", modal_ui["tabs"])
-        self.assertIn("comprehensive/product-research", modal_ui["panels"])
-        self.assertIn("comprehensive/creator-discovery", modal_ui["panels"])
+        self.assertIn("fm-product-scout", modal_ui["panels"])
+        self.assertIn("fm-creator-outreach", modal_ui["panels"])
 
     def test_selected_prompt_keeps_base_and_preset_reference(self):
         prompt = (
             "FastMoss provenance"
             "\n\n## 官方文件：SKILL.md\n\nbase"
-            "\n\n## 官方文件：references/tool-call.md\n\ncall rules"
-            "\n\n## 官方文件：references/tools-product.md\n\nproduct tools"
-            "\n\n## 官方文件：references/tools-creator.md\n\ncreator tools"
+            "\n\n## 官方文件：references/PRINCIPLES.md\n\nshared principles"
+            "\n\n## 官方文件：references/GLOSSARY.md\n\nglossary"
+            "\n\n## 官方文件：references/fm-product-scout.md\n\nproduct workflow"
+            "\n\n## 官方文件：references/fm-creator-outreach.md\n\ncreator workflow"
         )
         selected = select_official_fastmoss_skill_prompt(
-            prompt, "references/tools-product.md"
+            prompt, "references/fm-product-scout.md"
         )
         self.assertIn("SKILL.md", selected)
-        self.assertIn("references/tool-call.md", selected)
-        self.assertIn("references/tools-product.md", selected)
-        self.assertNotIn("references/tools-creator.md", selected)
+        self.assertIn("references/PRINCIPLES.md", selected)
+        self.assertIn("references/GLOSSARY.md", selected)
+        self.assertIn("references/fm-product-scout.md", selected)
+        self.assertNotIn(
+            "\n\n## 官方文件：references/fm-creator-outreach.md\n\n", selected
+        )
 
     def test_quick_actions_3_plus_1_format(self):
         html = render_chat_quick_actions("fastmoss", CHAT_PROVIDER_UI["fastmoss"], official_enabled=True)
-        self.assertIn("商品选品分析", html)
-        self.assertIn("达人带货筛选", html)
-        self.assertIn("爆款视频拆解", html)
-        self.assertIn('data-official-preset-id="comprehensive/product-research"', html)
-        self.assertIn('data-official-preset-id="comprehensive/creator-discovery"', html)
-        self.assertIn('data-official-preset-id="comprehensive/content-dissect"', html)
+        self.assertIn("选品决策", html)
+        self.assertIn("达人建联", html)
+        self.assertIn("视频策略", html)
+        self.assertIn('data-official-preset-id="fm-product-scout"', html)
+        self.assertIn('data-official-preset-id="fm-creator-outreach"', html)
+        self.assertIn('data-official-preset-id="fm-video-brief"', html)
         self.assertIn("official-workflow-launch", html)
         self.assertIn("查看全部", html)
 
@@ -115,8 +119,8 @@ class TestFastMossPresetsBoundary(unittest.TestCase):
             store.add_message(session, Message(
                 id="user-1", role="user", content="解压玩具",
                 official_preset={
-                    "id": "comprehensive/product-research",
-                    "label": "商品选品分析",
+                    "id": "fm-product-scout",
+                    "label": "选品决策",
                 },
             ))
             save_sessions_to_disk(store)
@@ -124,7 +128,7 @@ class TestFastMossPresetsBoundary(unittest.TestCase):
             load_sessions_from_disk(restored)
             self.assertEqual(
                 restored.get_session("fastmoss:demo").messages[0].official_preset,
-                {"id": "comprehensive/product-research", "label": "商品选品分析"},
+                {"id": "fm-product-scout", "label": "选品决策"},
             )
 
 

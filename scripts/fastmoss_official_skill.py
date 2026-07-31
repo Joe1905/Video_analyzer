@@ -1,7 +1,6 @@
 """Load the pinned official FastMoss Agent Skill for the experimental chat path."""
 from __future__ import annotations
 
-import base64
 import hashlib
 import io
 import json
@@ -13,26 +12,22 @@ from pathlib import Path, PurePosixPath
 from typing import Callable
 
 
-OFFICIAL_SKILL_VERSION = "0.1.17"
+OFFICIAL_SKILL_COMMIT = "a0248dbf8bf66ae2f8865d8584552715ee421324"
 OFFICIAL_SKILL_URL = (
-    "https://registry.npmjs.org/@fastmoss/skill/-/skill-0.1.17.tgz"
+    "https://codeload.github.com/FastMoss/fastmoss-skills/tar.gz/"
+    + OFFICIAL_SKILL_COMMIT
 )
-OFFICIAL_SKILL_SHA512 = (
-    "PLLeTaeIAfad4CXrU+gvilDthjFvYrdPIFYOUPXFo0DrGnp1EKoeLwsRjcMO/"
-    "l8Xz6zRZ7rctqI3QLAEVZt+Mg=="
-)
-OFFICIAL_SKILL_ROOT = "package/skills/fastmoss-cli/"
+OFFICIAL_SKILL_SHA256 = "48b28a724e37bd284a60321c411d95dabb5c7995879532ef49b8afd4dd9c0851"
+OFFICIAL_SKILL_ROOT = f"fastmoss-skills-{OFFICIAL_SKILL_COMMIT}/"
 OFFICIAL_PROMPT_FILES = (
     "SKILL.md",
-    "references/tool-call.md",
-    "references/tools.md",
-    "references/tools-advertising.md",
-    "references/tools-agency.md",
-    "references/tools-auxiliary-knowledge.md",
-    "references/tools-creator.md",
-    "references/tools-market.md",
-    "references/tools-product.md",
-    "references/tools-shop.md",
+    "references/PRINCIPLES.md",
+    "references/GLOSSARY.md",
+    "references/fm-product-scout.md",
+    "references/fm-creator-outreach.md",
+    "references/fm-competitor-batch.md",
+    "references/fm-store-diagnosis.md",
+    "references/fm-video-brief.md",
 )
 
 _LOAD_LOCK = threading.Lock()
@@ -52,12 +47,12 @@ def _skill_cache_dir() -> Path:
     return Path.cwd() / "data" / "fastmoss_official_skill"
 
 
-def _verify_archive(payload: bytes, expected_sha512: str = OFFICIAL_SKILL_SHA512) -> None:
-    actual = base64.b64encode(hashlib.sha512(payload).digest()).decode("ascii")
-    if actual != expected_sha512:
+def _verify_archive(payload: bytes, expected_sha256: str = OFFICIAL_SKILL_SHA256) -> None:
+    actual = hashlib.sha256(payload).hexdigest()
+    if actual != expected_sha256:
         raise RuntimeError(
             "FastMoss official Skill integrity verification failed: "
-            f"expected sha512-{expected_sha512}, got sha512-{actual}"
+            f"expected sha256-{expected_sha256}, got sha256-{actual}"
         )
 
 
@@ -123,8 +118,8 @@ def _read_cached_prompt_files(version_dir: Path) -> dict[str, str] | None:
     except (OSError, ValueError):
         return None
     if (
-        metadata.get("version") != OFFICIAL_SKILL_VERSION
-        or metadata.get("sha512") != OFFICIAL_SKILL_SHA512
+        metadata.get("commit") != OFFICIAL_SKILL_COMMIT
+        or metadata.get("sha256") != OFFICIAL_SKILL_SHA256
     ):
         return None
     found: dict[str, str] = {}
@@ -142,10 +137,10 @@ def _write_cached_prompt_files(version_dir: Path, files: dict[str, str]) -> None
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
     metadata = {
-        "package": "@fastmoss/skill",
-        "version": OFFICIAL_SKILL_VERSION,
+        "package": "FastMoss/fastmoss-skills",
+        "commit": OFFICIAL_SKILL_COMMIT,
         "url": OFFICIAL_SKILL_URL,
-        "sha512": OFFICIAL_SKILL_SHA512,
+        "sha256": OFFICIAL_SKILL_SHA256,
         "files": list(OFFICIAL_PROMPT_FILES),
     }
     (version_dir / "metadata.json").write_text(
@@ -157,7 +152,8 @@ def _write_cached_prompt_files(version_dir: Path, files: dict[str, str]) -> None
 def _compose_prompt(files: dict[str, str]) -> str:
     parts = [
         "以下内容来自 FastMoss 官方 Agent Skill，"
-        f"固定版本为 @fastmoss/skill@{OFFICIAL_SKILL_VERSION}。"
+        "固定来源为 FastMoss/fastmoss-skills，"
+        f"提交为 {OFFICIAL_SKILL_COMMIT}。"
     ]
     for relative_name in OFFICIAL_PROMPT_FILES:
         parts.append(f"\n\n## 官方文件：{relative_name}\n\n{files[relative_name].strip()}")
@@ -168,19 +164,19 @@ def load_official_fastmoss_skill_prompt(
     *,
     cache_dir: Path | None = None,
     archive_payload: bytes | None = None,
-    expected_sha512: str = OFFICIAL_SKILL_SHA512,
+    expected_sha256: str = OFFICIAL_SKILL_SHA256,
 ) -> str:
     """Return the exact official instruction/reference Markdown as one prompt."""
     root = cache_dir or _skill_cache_dir()
-    version_dir = root / OFFICIAL_SKILL_VERSION
-    cache_key = str(version_dir.resolve())
+    version_dir = root / OFFICIAL_SKILL_COMMIT
+    cache_key = f"{version_dir.resolve()}:{expected_sha256}"
     with _LOAD_LOCK:
         if cache_key in _PROMPT_CACHE:
             return _PROMPT_CACHE[cache_key]
         files = _read_cached_prompt_files(version_dir)
         if files is None:
             payload = archive_payload if archive_payload is not None else _download_archive()
-            _verify_archive(payload, expected_sha512)
+            _verify_archive(payload, expected_sha256)
             files = _read_prompt_files_from_archive(payload)
             _write_cached_prompt_files(version_dir, files)
         prompt = _compose_prompt(files)
@@ -192,14 +188,15 @@ def select_official_fastmoss_skill_prompt(
     prompt: str,
     relative_name: str,
 ) -> str:
-    """Keep the official base instructions and one preset-specific tool reference."""
+    """Keep the official entrypoint, shared rules, and one workflow Skill."""
     if relative_name not in OFFICIAL_PROMPT_FILES:
         raise ValueError(f"Unknown official FastMoss Skill file: {relative_name}")
 
     header = prompt.split("\n\n## 官方文件：", 1)[0].strip()
     selected_names = tuple(dict.fromkeys((
         "SKILL.md",
-        "references/tool-call.md",
+        "references/PRINCIPLES.md",
+        "references/GLOSSARY.md",
         relative_name,
     )))
     sections: list[str] = []
