@@ -214,6 +214,7 @@ class UIContractTest(unittest.TestCase):
         self.assertIn(".input-bar.is-dragging::after", css)
         self.assertIn("width: min(940px, 100%)", css)
         self.assertIn("calc((100% - 940px) / 2)", css)
+        self.assertIn(".ui-main:has(> .official-workflow-layer.is-open)", css)
         self.assertNotIn('id="toolBtn"', chat)
         self.assertNotIn("headerToolBtn", chat)
         self.assertNotIn("toolModal", chat)

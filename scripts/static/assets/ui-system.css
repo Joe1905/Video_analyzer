@@ -935,6 +935,10 @@ body.ui-system .ui-nav__toggle:hover {
     transition-delay: 0s;
   }
 
+  body.ui-system .ui-main:has(> .official-workflow-layer.is-open) {
+    z-index: 40;
+  }
+
   body.ui-system .official-workflow-backdrop {
     position: absolute;
     inset: 0;
