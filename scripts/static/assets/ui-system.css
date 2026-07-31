@@ -525,40 +525,27 @@ body.ui-system .ui-nav__toggle:hover {
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-item .save-title-btn,
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-item .cancel-title-btn {
-    flex: 0 0 26px;
-    width: 26px;
-    min-width: 26px;
-    height: 26px;
-    min-height: 26px;
+    flex: 0 0 24px;
+    width: 24px;
+    min-width: 24px;
+    height: 24px;
+    min-height: 24px;
     padding: 0;
     border: 0;
-    border-radius: 7px;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--ui-ink-subtle, #64748b);
+    font-size: 15px;
     display: inline-grid;
     place-items: center;
     cursor: pointer;
-    transition: background-color var(--ui-fast), color var(--ui-fast), transform var(--ui-fast);
+    transition: background-color var(--ui-fast), color var(--ui-fast);
   }
 
-  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-item .save-title-btn {
-    background: #ecfdf5;
-    color: #059669;
-    border: 1px solid #a7f3d0;
-  }
-
-  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-item .save-title-btn:hover {
-    background: #d1fae5;
-    color: #047857;
-  }
-
-  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-item .cancel-title-btn {
-    background: #fef2f2;
-    color: #dc2626;
-    border: 1px solid #fecaca;
-  }
-
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-item .save-title-btn:hover,
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-item .cancel-title-btn:hover {
-    background: #fee2e2;
-    color: #b91c1c;
+    background: var(--ui-surface-soft, rgba(0, 0, 0, 0.06));
+    color: var(--ui-ink, #0f172a);
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .sidebar-status {
