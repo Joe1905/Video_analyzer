@@ -6776,7 +6776,7 @@ def apply_mcp_region_default(chat_type: str, name: str, args: dict[str, Any], re
     return normalized
 
 
-def execute_prefixed_tool(tool_id: str, args: dict[str, Any], region: str | None = None) -> dict[str, Any]:
+def _deprecated_execute_prefixed_tool(tool_id: str, args: dict[str, Any], region: str | None = None) -> dict[str, Any]:
     domain, name = split_prefixed_tool_id(tool_id)
     started = time.monotonic()
     try:
