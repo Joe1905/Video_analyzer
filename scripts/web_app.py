@@ -459,18 +459,21 @@ CHAT_PROVIDER_OFFICIAL_QUICK_ACTIONS = {
         {
             "label": "\u667a\u80fd\u9009\u54c1\u52a9\u624b",
             "skill": "\u667a\u80fd\u9009\u54c1\u52a9\u624b",
+            "preset_id": "comprehensive/product-research",
             "description": "\u591a\u7ef4\u7b5b\u9009\u6f5c\u529b\u5546\u54c1",
             "icon": "bars",
         },
         {
             "label": "\u5e02\u573a\u5168\u666f\u5206\u6790",
             "skill": "\u5e02\u573a\u5168\u666f\u5206\u6790",
+            "preset_id": "comprehensive/market-analysis",
             "description": "\u8bc4\u4f30\u7c7b\u76ee\u9700\u6c42\u4e0e\u673a\u4f1a",
             "icon": "trend",
         },
         {
             "label": "\u7ade\u54c1\u6df1\u5ea6\u62c6\u89e3",
             "skill": "\u7ade\u54c1\u6df1\u5ea6\u62c6\u89e3",
+            "preset_id": "comprehensive/competitor-analysis",
             "description": "\u62c6\u89e3 ASIN \u4e0e\u5dee\u5f02\u5316\u7a7a\u95f4",
             "icon": "compare",
         },
@@ -479,18 +482,21 @@ CHAT_PROVIDER_OFFICIAL_QUICK_ACTIONS = {
         {
             "label": "\u5546\u54c1\u9009\u54c1\u5206\u6790",
             "skill": "\u5546\u54c1\u9009\u54c1\u5206\u6790",
+            "preset_id": "comprehensive/product-research",
             "description": "\u6309\u591a\u7ef4\u6761\u4ef6\u9009\u54c1\u4e0e\u8bc4\u4f30\u7c7b\u76ee",
             "icon": "bars",
         },
         {
             "label": "\u8fbe\u4eba\u5e26\u8d27\u7b5b\u9009",
             "skill": "\u8fbe\u4eba\u5e26\u8d27\u7b5b\u9009",
+            "preset_id": "comprehensive/creator-discovery",
             "description": "\u7b5b\u9009\u9ad8\u589e\u957f\u8fbe\u4eba\u4e0e\u5e26\u8d27\u529b",
             "icon": "trend",
         },
         {
             "label": "\u7206\u6b3e\u89c6\u9891\u62c6\u89e3",
             "skill": "\u7206\u6b3e\u89c6\u9891\u62c6\u89e3",
+            "preset_id": "comprehensive/content-dissect",
             "description": "\u62c6\u89e3\u77ed\u89c6\u9891\u4e0e\u5e26\u8d27\u811a\u672c",
             "icon": "compare",
         },
@@ -878,10 +884,12 @@ def render_chat_quick_actions(provider: str, provider_ui: dict[str, Any], offici
             icon = CHAT_QUICK_ACTION_ICONS.get(str(action.get("icon") or ""), "")
             label = html_escape(str(action.get("label") or ""))
             skill = html_escape(str(action.get("skill") or ""))
+            preset_id = html_escape(str(action.get("preset_id") or ""))
+            preset_id_attr = f' data-official-preset-id="{preset_id}"' if preset_id else ""
             description = html_escape(str(action.get("description") or ""))
             actions.append(
                 '<button type="button" class="quick-prompt official-workflow-shortcut" '
-                f'data-official-preset="{skill}">'
+                f'data-official-preset="{skill}"{preset_id_attr}>'
                 '<span class="quick-card-top">'
                 f'<span class="quick-number">{index:02d}</span>'
                 '<span class="quick-arrow" aria-hidden="true">\u2197</span>'

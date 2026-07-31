@@ -98,6 +98,9 @@ class TestFastMossPresetsBoundary(unittest.TestCase):
         self.assertIn("商品选品分析", html)
         self.assertIn("达人带货筛选", html)
         self.assertIn("爆款视频拆解", html)
+        self.assertIn('data-official-preset-id="comprehensive/product-research"', html)
+        self.assertIn('data-official-preset-id="comprehensive/creator-discovery"', html)
+        self.assertIn('data-official-preset-id="comprehensive/content-dissect"', html)
         self.assertIn("official-workflow-launch", html)
         self.assertIn("查看全部", html)
 
