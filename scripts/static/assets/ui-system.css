@@ -1473,6 +1473,43 @@ body.ui-system .ui-nav__toggle:hover {
     stroke-linejoin: round;
   }
 
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .official-preset-chip {
+    display: none;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 6px;
+    padding: 3px 10px;
+    width: fit-content;
+    background: #eef2ff;
+    border: 1px solid #c7d2fe;
+    border-radius: 8px;
+    color: var(--ui-brand, #2563eb);
+    font-size: 13px;
+    font-weight: 650;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .official-preset-chip.show {
+    display: inline-flex;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .official-preset-chip .preset-remove-btn {
+    border: 0;
+    background: transparent;
+    color: var(--ui-ink-subtle, #64748b);
+    font-size: 15px;
+    line-height: 1;
+    padding: 0 2px;
+    cursor: pointer;
+    border-radius: 4px;
+    display: inline-grid;
+    place-items: center;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .official-preset-chip .preset-remove-btn:hover {
+    background: rgba(0, 0, 0, 0.08);
+    color: #ef4444;
+  }
+
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .composer.expanded textarea {
     min-height: 160px;
     max-height: min(260px, 36vh);
