@@ -179,11 +179,16 @@ class UIContractTest(unittest.TestCase):
         self.assertIn("::-webkit-search-cancel-button", css)
         self.assertIn(".session-search-clear[hidden]", css)
         self.assertIn("grid-template-columns: 44px minmax(0, 1fr) 44px", css)
+        self.assertIn("grid-template-columns: 44px 44px minmax(0, 1fr) 44px", css)
         self.assertRegex(
             css,
             r"\.input-bar\s*\{[^}]*grid-template-columns:\s*44px minmax\(0, 1fr\) 44px;[^}]*align-items:\s*center;",
         )
         self.assertIn('id="expandInputBtn"', chat)
+        self.assertIn('id="officialWorkflowComposerLaunch"', chat)
+        self.assertIn("setOfficialWorkflowOpen(true,officialWorkflowComposerLaunch)", chat)
+        self.assertIn("ui-official-workflow-item-enter", css)
+        self.assertIn("--official-item-index", chat)
         self.assertIn('aria-expanded="false"', chat)
         self.assertIn('$("expandInputBtn").onclick', chat)
         self.assertIn(".composer.expanded textarea", css)
@@ -195,7 +200,7 @@ class UIContractTest(unittest.TestCase):
         self.assertIn('fetch("/healthz"', chat)
         self.assertIn("v2.0", chat)
         self.assertIn("ui-chat-close--xs", chat)
-        self.assertNotIn("ui-chat-close--md", chat)
+        self.assertIn("ui-chat-close--md", chat)
         self.assertIn("ui-chat-close--lg", chat)
         self.assertIn('aria-label="移除图片"', chat)
         self.assertIn(".ui-chat-close--xs", css)

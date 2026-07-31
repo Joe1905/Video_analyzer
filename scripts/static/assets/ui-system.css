@@ -1080,10 +1080,16 @@ body.ui-system .ui-nav__toggle:hover {
       background var(--ui-fast);
   }
 
+  body.ui-system .official-workflow-layer.is-open .official-workflow-panel.is-active .official-workflow-item {
+    animation: ui-official-workflow-item-enter 320ms var(--ui-ease) both;
+    animation-delay: calc(var(--official-item-index, 0) * 28ms);
+  }
+
   body.ui-system .official-workflow-item:hover {
-    transform: translateY(-1px);
+    transform: translateY(-2px);
     border-color: color-mix(in srgb, var(--ui-brand) 24%, var(--ui-line));
     background: var(--ui-surface);
+    box-shadow: 0 10px 24px rgba(25, 28, 34, .07);
   }
 
   body.ui-system .official-workflow-icon {
@@ -1132,7 +1138,18 @@ body.ui-system .ui-nav__toggle:hover {
 
   body.ui-system .official-workflow-item:hover > i {
     color: var(--ui-brand);
-    transform: translateX(2px);
+    transform: translateX(3px);
+  }
+
+  @keyframes ui-official-workflow-item-enter {
+    from {
+      opacity: 0;
+      transform: translateY(8px) scale(.992);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
   }
 
   body.ui-system .official-workflow-foot {
@@ -1279,6 +1296,10 @@ body.ui-system .ui-nav__toggle:hover {
     box-shadow: 0 14px 40px rgba(22, 24, 29, .09);
   }
 
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .input-bar.has-official-workflow {
+    grid-template-columns: 44px 44px minmax(0, 1fr) 44px;
+  }
+
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .input-bar::after {
     content: "拖放图片即可添加";
     position: absolute;
@@ -1334,7 +1355,8 @@ body.ui-system .ui-nav__toggle:hover {
     line-height: 1.6;
   }
 
-  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .attach-button {
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .attach-button,
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .official-workflow-composer-button {
     width: 44px;
     min-width: 44px;
     height: 44px;
@@ -1347,6 +1369,7 @@ body.ui-system .ui-nav__toggle:hover {
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .attach-button svg,
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .official-workflow-composer-button svg,
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .expand-input-btn svg,
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .send-button svg {
     width: 18px;
@@ -1377,16 +1400,22 @@ body.ui-system .ui-nav__toggle:hover {
     color: var(--ui-brand);
   }
 
-  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .attach-button:hover {
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .attach-button:hover,
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .official-workflow-composer-button:hover {
     background: var(--ui-surface-soft);
     border-color: var(--ui-line);
     color: var(--ui-brand);
   }
 
-  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .attach-button:focus-visible {
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .attach-button:focus-visible,
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .official-workflow-composer-button:focus-visible {
     border-color: var(--ui-line-strong);
     outline: 2px solid color-mix(in srgb, var(--ui-brand) 38%, transparent);
     outline-offset: 2px;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .official-workflow-composer-button[hidden] {
+    display: none;
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .send-button {
@@ -1544,6 +1573,10 @@ body.ui-system .ui-nav__toggle:hover {
       grid-template-columns: 44px minmax(0, 1fr) 44px;
       gap: 4px;
       border-radius: 17px;
+    }
+
+    body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .input-bar.has-official-workflow {
+      grid-template-columns: 44px 44px minmax(0, 1fr) 44px;
     }
 
     body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .input-bar textarea {
@@ -3468,6 +3501,12 @@ body.ui-system .ui-nav__toggle:hover {
       display: grid;
       grid-template-columns: 44px minmax(0, 1fr) 44px;
       gap: 6px;
+    }
+
+    body.ui-route-home .input-bar.has-official-workflow,
+    body.ui-route-amazon .input-bar.has-official-workflow,
+    body.ui-route-fastmoss .input-bar.has-official-workflow {
+      grid-template-columns: 44px 44px minmax(0, 1fr) 44px;
     }
 
     body.ui-route-lan-chat .ui-header {
