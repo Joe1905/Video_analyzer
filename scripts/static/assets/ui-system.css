@@ -491,6 +491,76 @@ body.ui-system .ui-nav__toggle:hover {
     color: var(--ui-ink);
   }
 
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-item .session-title-edit {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    margin: -2px 0;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-item .session-title-input {
+    flex: 1;
+    min-width: 0;
+    height: 30px;
+    padding: 3px 8px;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 650;
+    line-height: 1.3;
+    color: var(--ui-ink);
+    background: var(--ui-surface-soft, #f8fafc);
+    border: 1.5px solid var(--ui-brand, #2563eb);
+    border-radius: 8px;
+    outline: none;
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--ui-brand, #2563eb) 16%, transparent);
+    transition: border-color var(--ui-fast), box-shadow var(--ui-fast), background-color var(--ui-fast);
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-item .session-title-input:focus {
+    background: #ffffff;
+    border-color: var(--ui-brand, #2563eb);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--ui-brand, #2563eb) 22%, transparent);
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-item .save-title-btn,
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-item .cancel-title-btn {
+    flex: 0 0 26px;
+    width: 26px;
+    min-width: 26px;
+    height: 26px;
+    min-height: 26px;
+    padding: 0;
+    border: 0;
+    border-radius: 7px;
+    display: inline-grid;
+    place-items: center;
+    cursor: pointer;
+    transition: background-color var(--ui-fast), color var(--ui-fast), transform var(--ui-fast);
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-item .save-title-btn {
+    background: #ecfdf5;
+    color: #059669;
+    border: 1px solid #a7f3d0;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-item .save-title-btn:hover {
+    background: #d1fae5;
+    color: #047857;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-item .cancel-title-btn {
+    background: #fef2f2;
+    color: #dc2626;
+    border: 1px solid #fecaca;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-item .cancel-title-btn:hover {
+    background: #fee2e2;
+    color: #b91c1c;
+  }
+
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .sidebar-status {
     min-height: 35px;
     padding-top: 14px;
