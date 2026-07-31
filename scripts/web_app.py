@@ -6358,8 +6358,8 @@ def filter_locked_provider_tool_ids(provider: str, tool_ids: set[str] | None) ->
 
 def is_tool_mock_enabled(domain: str) -> bool:
     """Check whether test mock interception is enabled globally or for a specific provider."""
-    global_mock = str(os.getenv("CHAT_TOOL_MOCK_MODE", "1")).strip().lower() in {"1", "true", "yes", "on"}
-    provider_mock = str(os.getenv(f"{domain.upper()}_TOOL_MOCK_MODE", "1")).strip().lower() in {"1", "true", "yes", "on"}
+    global_mock = str(os.getenv("CHAT_TOOL_MOCK_MODE", "0")).strip().lower() in {"1", "true", "yes", "on"}
+    provider_mock = str(os.getenv(f"{domain.upper()}_TOOL_MOCK_MODE", "0")).strip().lower() in {"1", "true", "yes", "on"}
     return global_mock or provider_mock
 
 
