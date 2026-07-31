@@ -239,6 +239,19 @@ class UIContractTest(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, f"inline script {index}: {result.stderr}")
 
+    def test_chat_refresh_preserves_latest_question_answer_window(self) -> None:
+        chat = (STATIC_DIR / "chat.html").read_text(encoding="utf-8")
+        self.assertIn("async function fetchMessageWindow(before=null)", chat)
+        self.assertIn("!all.some(m=>m?.role==='user')", chat)
+        self.assertRegex(
+            chat,
+            r"async function loadMessages\(\).*?fetchMessageWindow\(older\?S\.nextBefore:null\)",
+        )
+        self.assertRegex(
+            chat,
+            r"async function refreshCurrentMessages\(scroll=false\).*?fetchMessageWindow\(\)",
+        )
+
     def test_lan_chat_bubbles_follow_the_design_handoff(self) -> None:
         lan_chat = (STATIC_DIR / "lan_chat.html").read_text(encoding="utf-8")
         lan_css = (STATIC_DIR / "assets" / "lan-chat.css").read_text(encoding="utf-8")
