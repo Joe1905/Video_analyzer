@@ -301,3 +301,78 @@ Do not use SCP, SFTP, rsync, archive piping, or a second checkout to synchronize
 - Use `apply_patch` for manual file edits.
 - Keep secrets out of logs, commits, and final summaries.
 - When API keys, network access, Docker, or external services are unavailable, document the limitation and verify what can be verified locally.
+
+## 4004 Current Project Memory (updated 2026-07-31)
+
+This section is the current-state supplement for the isolated 4004 worktree. It takes
+precedence over older generic port assumptions above when working in
+`Video_analyzer-ui-4004`.
+
+### Scope and deployment boundary
+
+- Active branch: `codex/ui-beautification-4004`.
+- Windows worktree: `C:\\Users\\admin\\Documents\\Video_analyzer-ui-4004`.
+- Server worktree: `/home/openclaw/Video_analyzer-ui-4004`.
+- Deploy only with `scripts/deploy_ui_4004.sh`; its Compose project is
+  `short-video-analyzer-ui-4004` and it replaces only the 4004 web container.
+- Preserve 4002 (`short-video-analyzer_web_1`) and 4003
+  (`video_analyzer-dev_web_1`) container IDs and health. Do not run their Compose
+  commands as part of 4004 work.
+- Windows GitHub traffic uses `127.0.0.1:7892`; server GitHub traffic uses
+  `127.0.0.1:7890`.
+
+### Current blocking state — fix before any deployment
+
+- Last GitHub and server checkout observed: `328133ad` (`fix: remove duplicated
+  stream_events body from web_app.py`).
+- At this revision `scripts/web_app.py` does not compile: the `except
+  (json.JSONDecodeError, ValueError) as exc:` near line 15849 in `handle_download`
+  has no indented body. `python -m py_compile scripts/web_app.py` fails with
+  `IndentationError`.
+- On the same verification, `short-video-analyzer-ui-4004_web_1` was
+  `restarting / unhealthy` and `http://127.0.0.1:4004/healthz` was unavailable.
+- Do not deploy feature work until the handler is restored, static compilation
+  passes, the 4004 container is healthy, and `/healthz` responds. Treat the series
+  of recent duplicate-definition/handler commits as a merge-sensitive area; do not
+  reintroduce duplicate `execute_prefixed_tool`, `stream_events`, or handler
+  exception blocks.
+
+### Current chat architecture
+
+- UI test/mock mode is off by default; normal 4004 chat uses live APIs.
+- User-level tool selection, masks, and `enabledToolMasks` are removed/ignored.
+  Tool catalog remains read-only for diagnostics with `selectionEnabled: false`.
+- Home chat uses SociaVault MCP tools. The `SocialToolRoute` platform/capability
+  router supports `off|shadow|enforce`; uncertain, invalid, empty, or mismatched
+  routing must fail open to the complete SociaVault MCP catalog. No SociaVault chat
+  REST fallback is allowed. `check_credits` is not cached; retain all other cache
+  keys and TTL behavior.
+- Amazon chat uses SellerSprite MCP. SellerSprite official Skills are pinned to
+  version `0.1.17`, commit `afea6ad232b3bcae38704b1e5a5953f82492bdf1`, and a
+  verified archive hash. `SELLERSPRITE_OFFICIAL_PRESETS` now covers all 27 UI
+  presets. A selected preset has a stable `officialPresetId`, loads only its one
+  official Skill document, exposes only its allowlisted `sellersprite__*` tools,
+  and validates execution against that request-scoped allowlist.
+- FastMoss now has seven configured preset routes in
+  `FASTMOSS_OFFICIAL_PRESETS`, plus three quick actions and a general action. Keep
+  their allowlists restricted to `fastmoss__*`, preserve their existing region/entity
+  guardrails, and distinguish project-defined route groupings from any upstream
+  official Skill wording.
+- The chat UI shows the selected official preset as a removable chip above the
+  composer. Tool invocation cards are capped at five visible rows with scrolling;
+  do not restore the old tool-selection modal.
+
+### Verification and documentation
+
+- Minimum static guard after editing `web_app.py`: `python -m py_compile
+  scripts/web_app.py` before Docker deployment.
+- Relevant regressions include `scripts/test_chat_tool_normalization.py`,
+  `scripts/test_fastmoss_presets_boundary.py`, `scripts/test_social_tool_router.py`,
+  `scripts/test_ui_contract.py`, `scripts/test_semantic_chinese_rendering.py`,
+  `scripts/test_fastmoss_evidence_renderer.py`, and `scripts/test_api_cache.py`.
+- The implementation handoff and source-of-truth rules are in
+  `docs/official-skill-tool-routing-handoff.md`. Read it before expanding presets
+  or changing cross-provider routing.
+- Validate tool boundaries separately from answer quality. Derived metrics,
+  parent-vs-child entity scope, sample scope, timestamp conflicts, and investment/IP
+  inferences require explicit evidence or an inference label.
