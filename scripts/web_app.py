@@ -556,7 +556,7 @@ NAV_ITEMS = [
 ]
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
-UI_ASSET_VERSION = "20260731-06"
+UI_ASSET_VERSION = "20260731-07"
 APP_UI_ASSETS = f"""
 <script id="ui-nav-state-boot">
 let uiNavExpanded = false;
@@ -861,7 +861,7 @@ def render_chat_quick_actions(provider: str, provider_ui: dict[str, Any], offici
                 '<button type="button" class="quick-prompt official-workflow-shortcut" '
                 f'data-official-preset="{skill}">'
                 '<span class="quick-card-top">'
-                f'<span class="quick-number">{index:02d} \u00b7 \u5b98\u65b9</span>'
+                f'<span class="quick-number">{index:02d}</span>'
                 '<span class="quick-arrow" aria-hidden="true">\u2197</span>'
                 '</span>'
                 f'<span class="quick-card-icon quick-card-icon--{html_escape(str(action.get("icon") or ""))}">{icon}</span>'
@@ -876,7 +876,7 @@ def render_chat_quick_actions(provider: str, provider_ui: dict[str, Any], offici
             '<span class="quick-arrow" aria-hidden="true">\u2197</span>'
             '</span>'
             f'<span class="quick-card-icon quick-card-icon--more">{CHAT_QUICK_ACTION_ICONS["more"]}</span>'
-            '<strong>\u66f4\u591a</strong><small>\u67e5\u770b\u5168\u90e8\u5b98\u65b9\u80fd\u529b</small>'
+            '<strong>\u66f4\u591a</strong><small>\u67e5\u770b\u5168\u90e8\u80fd\u529b</small>'
             '</button>'
         )
         return "".join(actions)
