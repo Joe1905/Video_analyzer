@@ -137,6 +137,44 @@ API responses are cached in `data/api_cache.sqlite` by default with a 7-day TTL.
 - `scripts/setup_amazon_scraper.sh`: checks/installs the remote Amazon scraper image.
 - `scripts/run_web.sh`: prepares dependencies and starts the web service on the first available port.
 
+## Current Chat and Official Skill State (2026-07-31)
+
+The shared AI chat shell is `scripts/static/chat.html` plus
+`scripts/static/assets/ui-system.css`; `web_app.py` injects the provider-specific
+labels, quick actions, and official-workflow modal. The active provider routes are
+the normal AI chat, SellerSprite (`/amazon`), and FastMoss (`/fastmoss`).
+
+- Official presets are request-scoped. SellerSprite has 27 presets (10 comprehensive
+  and 17 tactical) in `SELLERSPRITE_OFFICIAL_PRESETS`; FastMoss has 7 in
+  `FASTMOSS_OFFICIAL_PRESETS`. The UI sends `officialPresetId` only with the current
+  `/api/chat/ask` request. Do not persist it in local storage or let it leak into a
+  later free-form chat.
+- A preset's pinned official Skill file and static tool whitelist are the only source
+  of its permitted tools. The server must enforce that boundary both when exposing
+  tool schemas and immediately before `execute_prefixed_tool` runs. UI copy, model
+  guesses, and tool-name similarity are not permission sources; never mix
+  `sellersprite__*`, `fastmoss__*`, and `sociavault__*` tool domains.
+- Live MCP/API execution is the default. Mock payloads are enabled only when
+  `CHAT_TOOL_MOCK_MODE` or `<DOMAIN>_TOOL_MOCK_MODE` is explicitly enabled; both
+  default to `0`.
+- Chat sessions persist `title_is_custom`. Automatic titles recognize the selected
+  official Skill and its target; `scripts/retitle_sessions.py` updates legacy session
+  stores, including the provider-specific and development-data locations. Preserve a
+  manually renamed title during any migration.
+- `scripts/web_app.py` is a high-risk integration point. Recent regressions came from
+  duplicated `execute_prefixed_tool`, `handle_download`, and `stream_events` bodies.
+  Before changing these flows, confirm there is a single active definition and run the
+  relevant focused test.
+- After changing static chat CSS/JS/HTML, bump `UI_ASSET_VERSION` in `web_app.py` so
+  clients receive the new asset. The official-workflow overlay lives inside `.ui-main`;
+  while it is open, that container must remain above `.ui-header` so the backdrop
+  blurs the entire application chrome.
+- Focused chat checks include `scripts/test_chat_tool_normalization.py`,
+  `scripts/test_27_presets_mock_boundary.py`,
+  `scripts/test_fastmoss_presets_boundary.py`, and `scripts/test_ui_contract.py`.
+  The UI validation environment is isolated on port 4004; do not rebuild, stop, or
+  deploy over the existing 4002 service while validating UI work.
+
 ## Web Pages and Main Endpoints
 
 Pages:
