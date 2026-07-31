@@ -72,7 +72,7 @@ class TestFastMossPresetsBoundary(unittest.TestCase):
         self.assertEqual(modal_ui["tabs_class"], " official-workflow-tabs--single")
         self.assertIn("进入对应的选品", modal_ui["intro"])
         self.assertIn("官方策略 <span>7</span>", modal_ui["tabs"])
-        self.assertNotIn("<button", modal_ui["tabs"])
+        self.assertIn("<button", modal_ui["tabs"])
         self.assertIn("comprehensive/product-research", modal_ui["panels"])
         self.assertIn("comprehensive/creator-discovery", modal_ui["panels"])
 

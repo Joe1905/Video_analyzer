@@ -577,7 +577,7 @@ NAV_ITEMS = [
 ]
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
-UI_ASSET_VERSION = "20260731-13"
+UI_ASSET_VERSION = "20260731-14"
 APP_UI_ASSETS = f"""
 <script id="ui-nav-state-boot">
 let uiNavExpanded = false;
@@ -939,7 +939,7 @@ def render_chat_official_workflow_modal(provider: str) -> dict[str, str]:
             "intro": "\u9009\u62e9 FastMoss \u5b98\u65b9\u9884\u8bbe\uff0c\u8fdb\u5165\u5bf9\u5e94\u7684\u9009\u54c1\u3001\u8fbe\u4eba\u3001\u77ed\u89c6\u9891\u4e0e\u5e97\u94fa\u5206\u6790\u6d41\u7a0b\u3002",
             "tabs_class": " official-workflow-tabs--single",
             "tabs_attributes": "",
-            "tabs": '<span class="official-workflow-tab official-workflow-tab--single is-active" role="status">\u5b98\u65b9\u7b56\u7565 <span>7</span></span>',
+            "tabs": '<button class="official-workflow-tab is-active" type="button" role="tab" aria-selected="true" data-official-tab="comprehensive">\u5b98\u65b9\u7b56\u7565 <span>7</span></button>',
             "panels": (
                 '<section class="official-workflow-panel is-active" role="tabpanel" data-official-panel="comprehensive">'
                 '<div class="official-workflow-grid">'
