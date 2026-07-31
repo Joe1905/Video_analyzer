@@ -15384,34 +15384,6 @@ class Handler(BaseHTTPRequestHandler):
             )
             try:
                 if marker != last_marker:
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "keep-alive")
-        self.end_headers()
-
-        last_marker: tuple[Any, ...] | None = None
-        while True:
-            with lock:
-                job = store.get(job_id)
-                payload = serializer(job) if job else None
-
-            if payload is None:
-                try:
-                    write_sse_event(self, {"status": "missing", "error": missing_message})
-                except (BrokenPipeError, ConnectionResetError):
-                    pass
-                self.close_connection = True
-                return
-
-            marker = (
-                payload.get("status"),
-                payload.get("updated_at"),
-                len(payload.get("log") or []),
-                payload.get("error"),
-            )
-            try:
-                if marker != last_marker:
                     write_sse_event(self, payload)
                     last_marker = marker
                 if payload.get("status") not in {"queued", "running"}:
