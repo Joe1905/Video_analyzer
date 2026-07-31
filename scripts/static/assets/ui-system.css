@@ -1496,8 +1496,30 @@ body.ui-system .ui-nav__toggle:hover {
       gap: 8px;
     }
 
+    body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-actions:has(.official-workflow-launch) {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
     body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-actions .quick-prompt {
-      min-height: 68px;
+      min-height: 122px;
+      padding: 12px 13px 13px;
+      grid-template-rows: auto 34px auto auto;
+      gap: 6px;
+    }
+
+    body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-card-icon {
+      width: 34px;
+      height: 34px;
+      border-radius: 10px;
+    }
+
+    body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-card-icon svg {
+      width: 21px;
+      height: 21px;
+    }
+
+    body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-actions strong {
+      font-size: 13px;
     }
 
     body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .msg.user .bubble {
@@ -3432,32 +3454,6 @@ body.ui-system .ui-nav__toggle:hover {
     body.ui-route-amazon .quick-actions,
     body.ui-route-fastmoss .quick-actions {
       grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-
-    body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-actions:has(.official-workflow-launch) {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-
-    body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-actions .quick-prompt {
-      min-height: 122px;
-      padding: 12px 13px 13px;
-      grid-template-rows: auto 34px auto auto;
-      gap: 6px;
-    }
-
-    body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-card-icon {
-      width: 34px;
-      height: 34px;
-      border-radius: 10px;
-    }
-
-    body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-card-icon svg {
-      width: 21px;
-      height: 21px;
-    }
-
-    body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-actions strong {
-      font-size: 13px;
     }
 
     body.ui-route-home .quick-actions a,
