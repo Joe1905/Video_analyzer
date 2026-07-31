@@ -15833,26 +15833,6 @@ class Handler(BaseHTTPRequestHandler):
         thread.start()
         return json_response(self, HTTPStatus.ACCEPTED, public_shop_job(job))
 
-    def handle_video_metrics(self) -> None:
-        content_length = int(self.headers.get("Content-Length", "0"))
-        body = self.rfile.read(content_length)
-        try:
-            payload = json.loads(body.decode("utf-8") or "{}")
-            target = str(payload.get("target", "")).strip()
-            endpoint = str(payload.get("endpoint", "video-info")).strip()
-            if endpoint not in TIKTOK_ENDPOINTS:
-                raise ValueError(f"Unknown endpoint: {endpoint}")
-            if not target and endpoint not in ("trending", "music-popular"):
-                raise ValueError("target is required for this endpoint")
-            if len(target) > 2048:
-                raise ValueError("target is too long")
-        except (json.JSONDecodeError, ValueError) as exc:
-        with download_jobs_lock:
-            download_jobs[job.id] = job
-        thread = threading.Thread(target=run_download_job, args=(job.id,), daemon=True)
-        thread.start()
-        return json_response(self, HTTPStatus.ACCEPTED, public_download_job(job))
-
     def handle_shop_extract(self) -> None:
         content_length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(content_length)
