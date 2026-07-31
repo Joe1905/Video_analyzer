@@ -603,9 +603,23 @@ body.ui-system .ui-nav__toggle:hover {
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .chat-intro {
     width: min(820px, 100%);
+    max-height: var(--chat-intro-expanded-height, 480px);
     margin: 0 auto;
     flex: 0 0 auto;
+    overflow: clip;
     animation: ui-content-in 400ms var(--ui-ease) both;
+    transition:
+      max-height 220ms var(--ui-ease),
+      opacity 180ms ease,
+      transform 220ms var(--ui-ease);
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .chat-intro.is-leaving {
+    max-height: 0;
+    opacity: 0;
+    transform: translateY(-10px);
+    pointer-events: none;
+    animation: none;
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .chat-eyebrow {

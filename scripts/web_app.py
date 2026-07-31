@@ -499,7 +499,7 @@ NAV_ITEMS = [
 ]
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
-UI_ASSET_VERSION = "20260731-01"
+UI_ASSET_VERSION = "20260731-02"
 APP_UI_ASSETS = f"""
 <script id="ui-nav-state-boot">
 let uiNavExpanded = false;
