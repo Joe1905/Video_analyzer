@@ -212,6 +212,7 @@ class UIContractTest(unittest.TestCase):
         self.assertIn('addEventListener("drop"', chat)
         self.assertIn("is-dragging", chat)
         self.assertIn(".input-bar.is-dragging::after", css)
+        self.assertIn("width: min(940px, 100%)", css)
         self.assertNotIn('id="toolBtn"', chat)
         self.assertNotIn("headerToolBtn", chat)
         self.assertNotIn("toolModal", chat)

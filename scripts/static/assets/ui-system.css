@@ -1191,7 +1191,7 @@ body.ui-system .ui-nav__toggle:hover {
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .msg {
-    width: min(820px, 100%);
+    width: min(940px, 100%);
     max-width: none;
     margin: 0 auto;
     flex: 0 0 auto;
