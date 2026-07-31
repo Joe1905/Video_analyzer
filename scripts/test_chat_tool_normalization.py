@@ -183,9 +183,6 @@ def test_sellersprite_official_skill_chain_loads_full_bundle_and_isolates_tools(
 
     route = web_app.sellersprite_official_skill_route("/keyword-research flying toys")
     assert route["official_skill_chain"] is True
-
-    route = web_app.sellersprite_official_skill_route("/keyword-research flying toys")
-    assert route["official_skill_chain"] is True
     assert route["official_skill_provider"] == "sellersprite"
     assert route["route_source"] == "official_skill"
     assert route["dynamic_planner"] is False
@@ -226,6 +223,9 @@ def test_sellersprite_official_skill_chain_loads_full_bundle_and_isolates_tools(
         web_app.SELLERSPRITE_PRODUCT_RESEARCH_PRESET_ID,
     )
     assert explicit_preset_route == preset_route
+    unknown_preset_route = web_app.sellersprite_official_skill_route(
+        "解压玩具", "unknown-preset"
+    )
     assert unknown_preset_route["tools"] is None
     assert "official_preset_id" not in unknown_preset_route
     assert web_app.chat_route_uses_report_model("amazon", route) is False
@@ -240,7 +240,17 @@ def test_sellersprite_official_skill_chain_loads_full_bundle_and_isolates_tools(
     assert "[测试拦截/模拟发送]" in parsed_mock["notice"]
     assert parsed_mock["data"]["items"][0]["asin"] == "B08TEST001"
 
-    intercepted_exec = web_app.execute_prefixed_tool("sellersprite__product_research", {"asin": "B08TEST001"})
+    previous_mock_mode = os.environ.get("SELLERSPRITE_TOOL_MOCK_MODE")
+    os.environ["SELLERSPRITE_TOOL_MOCK_MODE"] = "1"
+    try:
+        intercepted_exec = web_app.execute_prefixed_tool(
+            "sellersprite__product_research", {"asin": "B08TEST001"}
+        )
+    finally:
+        if previous_mock_mode is None:
+            os.environ.pop("SELLERSPRITE_TOOL_MOCK_MODE", None)
+        else:
+            os.environ["SELLERSPRITE_TOOL_MOCK_MODE"] = previous_mock_mode
     assert intercepted_exec["ok"] is True
     assert "data" in intercepted_exec
 
