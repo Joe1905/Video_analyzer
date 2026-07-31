@@ -3434,6 +3434,10 @@ body.ui-system .ui-nav__toggle:hover {
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
+    body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-actions:has(.official-workflow-launch) {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
     body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-actions .quick-prompt {
       min-height: 122px;
       padding: 12px 13px 13px;
