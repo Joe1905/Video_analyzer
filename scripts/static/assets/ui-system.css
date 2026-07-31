@@ -1478,12 +1478,7 @@ body.ui-system .ui-nav__toggle:hover {
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .expand-input-btn {
-    right: 0;
-    bottom: 0;
-    border: 0;
-    background: transparent;
-    color: var(--ui-ink-subtle);
-    box-shadow: none;
+    display: none !important;
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .expand-input-btn:hover {
@@ -4340,4 +4335,9 @@ body.ui-system .ui-nav__toggle:hover {
       transition-duration: .01ms;
     }
   }
+}
+
+.expand-input-btn,
+#expandInputBtn {
+  display: none !important;
 }
