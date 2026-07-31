@@ -15384,6 +15384,34 @@ class Handler(BaseHTTPRequestHandler):
             )
             try:
                 if marker != last_marker:
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+
+        last_marker: tuple[Any, ...] | None = None
+        while True:
+            with lock:
+                job = store.get(job_id)
+                payload = serializer(job) if job else None
+
+            if payload is None:
+                try:
+                    write_sse_event(self, {"status": "missing", "error": missing_message})
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                self.close_connection = True
+                return
+
+            marker = (
+                payload.get("status"),
+                payload.get("updated_at"),
+                len(payload.get("log") or []),
+                payload.get("error"),
+            )
+            try:
+                if marker != last_marker:
                     write_sse_event(self, payload)
                     last_marker = marker
                 if payload.get("status") not in {"queued", "running"}:
@@ -15393,6 +15421,28 @@ class Handler(BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError):
                 self.close_connection = True
                 return
+
+    def handle_download(self) -> None:
+        body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        try:
+            payload = json.loads(body.decode("utf-8") or "{}")
+            target = str(payload.get("target", "")).strip()
+            endpoint = str(payload.get("endpoint", "video-info")).strip()
+            if endpoint not in TIKTOK_ENDPOINTS:
+                raise ValueError(f"Unknown endpoint: {endpoint}")
+            if not target and endpoint not in ("trending", "music-popular"):
+                raise ValueError("target is required for this endpoint")
+            if len(target) > 2048:
+                raise ValueError("target is too long")
+        except (json.JSONDecodeError, ValueError) as exc:
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+
+        job = create_download_job(target=target, endpoint=endpoint)
+        with download_jobs_lock:
+            download_jobs[job.id] = job
+        thread = threading.Thread(target=run_download_job, args=(job.id,), daemon=True)
+        thread.start()
+        return json_response(self, HTTPStatus.ACCEPTED, public_download_job(job))
 
     def serve_static_asset(self, relative_path: str) -> None:
         asset_root = (SCRIPTS_DIR / "static" / "assets").resolve()
