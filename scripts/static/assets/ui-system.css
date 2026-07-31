@@ -221,7 +221,7 @@ body.ui-system .ui-nav__toggle:hover {
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .sidebar-title-row > strong {
     min-width: 0;
     color: var(--ui-ink);
-    font-size: 15px;
+    font-size: 17px;
     font-weight: 760;
     letter-spacing: -.02em;
   }
@@ -292,7 +292,7 @@ body.ui-system .ui-nav__toggle:hover {
     border: 1px solid var(--ui-line);
     border-radius: 11px;
     background: #fff;
-    font-size: 12px;
+    font-size: 14px;
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-search-field input::-webkit-search-cancel-button {
@@ -330,7 +330,7 @@ body.ui-system .ui-nav__toggle:hover {
     border-radius: 11px;
     background: var(--ui-ink);
     color: #fff;
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 700;
   }
 
@@ -349,7 +349,7 @@ body.ui-system .ui-nav__toggle:hover {
     border-radius: 14px;
     background: var(--ui-ink);
     color: #fff;
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 700;
   }
 
@@ -380,7 +380,7 @@ body.ui-system .ui-nav__toggle:hover {
     padding: 0;
     background: transparent;
     color: var(--ui-ink-subtle);
-    font: 9px/1.4 "Cascadia Mono", "SFMono-Regular", monospace;
+    font: 11px/1.4 "Cascadia Mono", "SFMono-Regular", monospace;
     font-weight: 600;
     letter-spacing: .11em;
     text-transform: uppercase;
@@ -424,7 +424,7 @@ body.ui-system .ui-nav__toggle:hover {
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-item .title {
     padding-right: 34px;
     color: inherit;
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 680;
   }
 
@@ -436,7 +436,7 @@ body.ui-system .ui-nav__toggle:hover {
     justify-content: space-between;
     gap: 8px;
     color: var(--ui-ink-subtle);
-    font-size: 10px;
+    font-size: 12px;
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-item .meta time {
@@ -469,13 +469,13 @@ body.ui-system .ui-nav__toggle:hover {
     gap: 9px;
     border-top: 1px solid var(--ui-line);
     color: var(--ui-ink-muted);
-    font-size: 11px;
+    font-size: 13px;
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .sidebar-status small {
     margin-left: auto;
     color: var(--ui-ink-muted);
-    font: 9px "Cascadia Mono", "SFMono-Regular", monospace;
+    font: 11px "Cascadia Mono", "SFMono-Regular", monospace;
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .sidebar-status-dot {
@@ -514,7 +514,7 @@ body.ui-system .ui-nav__toggle:hover {
     align-items: center;
     gap: 10px;
     color: var(--ui-ink-subtle);
-    font-size: 12px;
+    font-size: 14px;
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .chat-breadcrumb i {
@@ -546,7 +546,7 @@ body.ui-system .ui-nav__toggle:hover {
     border-radius: 11px;
     background: rgba(255, 255, 255, .7);
     color: var(--ui-ink-muted);
-    font-size: 11px;
+    font-size: 13px;
     white-space: nowrap;
   }
 
@@ -613,7 +613,7 @@ body.ui-system .ui-nav__toggle:hover {
     align-items: center;
     gap: 10px;
     color: var(--ui-brand);
-    font: 10px/1.4 "Cascadia Mono", "SFMono-Regular", monospace;
+    font: 12px/1.4 "Cascadia Mono", "SFMono-Regular", monospace;
     letter-spacing: .12em;
     text-transform: uppercase;
   }
@@ -638,7 +638,7 @@ body.ui-system .ui-nav__toggle:hover {
     max-width: 680px;
     margin: 0;
     color: var(--ui-ink-subtle);
-    font-size: 13px;
+    font-size: 15px;
     line-height: 1.75;
   }
 
@@ -662,7 +662,7 @@ body.ui-system .ui-nav__toggle:hover {
     border-radius: 16px;
     background: rgba(255, 255, 255, .72);
     color: var(--ui-ink-muted);
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 500;
     text-decoration: none;
     transition: transform var(--ui-fast), border-color var(--ui-fast), box-shadow var(--ui-fast);
@@ -676,13 +676,13 @@ body.ui-system .ui-nav__toggle:hover {
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-number {
     color: var(--ui-ink-subtle);
-    font: 10px "Cascadia Mono", "SFMono-Regular", monospace;
+    font: 12px "Cascadia Mono", "SFMono-Regular", monospace;
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-actions strong {
     grid-column: 1 / -1;
     color: var(--ui-ink-muted);
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 550;
     line-height: 1.5;
   }
@@ -713,7 +713,7 @@ body.ui-system .ui-nav__toggle:hover {
     border-radius: 18px 18px 5px 18px;
     background: var(--ui-ink);
     color: #fff;
-    font-size: 13px;
+    font-size: 15px;
     line-height: 1.7;
   }
 
@@ -736,7 +736,7 @@ body.ui-system .ui-nav__toggle:hover {
     border-radius: 12px;
     background: var(--ui-brand-soft);
     color: var(--ui-brand);
-    font-size: 15px;
+    font-size: 17px;
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .msg.assistant .bubble {
@@ -748,7 +748,7 @@ body.ui-system .ui-nav__toggle:hover {
     background: #fff;
     color: var(--ui-ink);
     box-shadow: 0 10px 30px rgba(22, 24, 29, .065);
-    font-size: 13px;
+    font-size: 15px;
     line-height: 1.75;
   }
 
@@ -773,7 +773,7 @@ body.ui-system .ui-nav__toggle:hover {
     border-radius: 8px;
     background: transparent;
     color: var(--ui-ink-muted);
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 600;
   }
 
@@ -781,7 +781,7 @@ body.ui-system .ui-nav__toggle:hover {
     margin-top: 2px;
     padding: 0 4px;
     color: var(--ui-ink-subtle);
-    font: 9px "Cascadia Mono", "SFMono-Regular", monospace;
+    font: 11px "Cascadia Mono", "SFMono-Regular", monospace;
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .input-bar {
@@ -811,7 +811,7 @@ body.ui-system .ui-nav__toggle:hover {
     border-radius: 16px;
     background: rgba(255, 255, 255, .9);
     color: var(--ui-brand);
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 700;
     letter-spacing: .02em;
     opacity: 0;
@@ -851,7 +851,7 @@ body.ui-system .ui-nav__toggle:hover {
     background: transparent;
     box-shadow: none;
     resize: none;
-    font-size: 13px;
+    font-size: 15px;
     line-height: 1.6;
   }
 
@@ -1268,7 +1268,7 @@ body.ui-system .ui-nav__toggle:hover {
     border-radius: 999px;
     background: var(--ui-surface-soft);
     color: var(--ui-ink-muted);
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 700;
     line-height: 1;
     white-space: nowrap;
@@ -1424,7 +1424,7 @@ body.ui-system .ui-nav__toggle:hover {
   .ui-nav__label {
     opacity: 0;
     transform: translateX(-5px);
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 680;
     transition: opacity 100ms ease, transform var(--ui-nav-speed) var(--ui-ease);
   }
@@ -1519,7 +1519,7 @@ body.ui-system .ui-nav__toggle:hover {
   .chat-page-copy strong,
   .ui-header .header-product {
     color: var(--ui-ink);
-    font-size: 15px;
+    font-size: 17px;
     font-weight: 760;
     line-height: 1.15;
   }
@@ -1529,7 +1529,7 @@ body.ui-system .ui-nav__toggle:hover {
   .chat-page-copy small,
   .ui-header .header-view {
     color: var(--ui-ink-subtle);
-    font-size: 10px;
+    font-size: 12px;
     font-weight: 600;
     line-height: 1.25;
     white-space: nowrap;
@@ -1695,7 +1695,7 @@ body.ui-system .ui-nav__toggle:hover {
     border-radius: 999px;
     background: var(--ui-surface-soft);
     color: var(--ui-ink-muted);
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 700;
     line-height: 1.2;
     white-space: nowrap;
@@ -1855,7 +1855,7 @@ body.ui-system .ui-nav__toggle:hover {
     border-radius: 8px;
     background: var(--ui-nav-bg);
     color: #fff;
-    font-size: 11px;
+    font-size: 13px;
     line-height: 1.35;
     white-space: normal;
     opacity: 0;
@@ -2179,7 +2179,7 @@ body.ui-system .ui-nav__toggle:hover {
     body.ui-route-proxy table td::before {
       content: attr(data-label);
       color: var(--ui-ink-subtle);
-      font-size: 11px;
+      font-size: 13px;
       font-weight: 700;
     }
 
@@ -2320,7 +2320,7 @@ body.ui-system .ui-nav__toggle:hover {
     border: 1px solid var(--ui-line);
     border-radius: 13px;
     background: #fff;
-    font-size: 13px;
+    font-size: 15px;
   }
 
   body.ui-route-home .session-search-clear,
@@ -2363,7 +2363,7 @@ body.ui-system .ui-nav__toggle:hover {
     padding: 12px 8px 6px;
     background: rgba(255, 255, 255, .94);
     color: var(--ui-ink-subtle);
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 700;
     letter-spacing: .08em;
   }
@@ -2400,7 +2400,7 @@ body.ui-system .ui-nav__toggle:hover {
     justify-content: space-between;
     gap: 8px;
     color: var(--ui-ink-subtle);
-    font-size: 10px;
+    font-size: 12px;
   }
 
   body.ui-route-home .session-item .meta time,
@@ -2433,7 +2433,7 @@ body.ui-system .ui-nav__toggle:hover {
     border: 1px dashed var(--ui-line);
     border-radius: 14px;
     color: var(--ui-ink-subtle);
-    font-size: 12px;
+    font-size: 14px;
     text-align: center;
   }
 
@@ -2488,7 +2488,7 @@ body.ui-system .ui-nav__toggle:hover {
     padding: 4px 9px;
     border: 0;
     border-radius: 7px;
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 650;
     box-shadow: none;
   }
@@ -2528,7 +2528,7 @@ body.ui-system .ui-nav__toggle:hover {
   body.ui-route-fastmoss .empty-chat p {
     margin: 5px 0 0;
     color: var(--ui-ink-subtle);
-    font-size: 13px;
+    font-size: 15px;
   }
 
   body.ui-route-home .quick-actions,
@@ -2552,7 +2552,7 @@ body.ui-system .ui-nav__toggle:hover {
     border-radius: 16px;
     background: rgba(255, 255, 255, .8);
     color: var(--ui-ink);
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 700;
     text-decoration: none;
     transition: transform var(--ui-fast), border-color var(--ui-fast), box-shadow var(--ui-fast);
@@ -3081,7 +3081,7 @@ body.ui-system .ui-nav__toggle:hover {
 
   .ui-note {
     color: var(--ui-ink-subtle);
-    font-size: 12px;
+    font-size: 14px;
   }
 
   .ui-log-header {
@@ -3099,7 +3099,7 @@ body.ui-system .ui-nav__toggle:hover {
     padding: 0;
     border: 0;
     background: transparent;
-    font-size: 14px;
+    font-size: 16px;
   }
 
   .ui-compact-input {
@@ -3202,7 +3202,7 @@ body.ui-system .ui-nav__toggle:hover {
     background: var(--ui-brand);
     color: #fff;
     text-decoration: none;
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 700;
   }
 
@@ -3216,14 +3216,14 @@ body.ui-system .ui-nav__toggle:hover {
 
   .ui-file-section-title {
     margin: 0;
-    font-size: 14px;
+    font-size: 16px;
     font-weight: 700;
   }
 
   .ui-file-section-copy {
     margin: 2px 0 0;
     color: var(--ui-ink-muted);
-    font-size: 12px;
+    font-size: 14px;
   }
 
   .ui-file-list-pad {
@@ -3238,11 +3238,11 @@ body.ui-system .ui-nav__toggle:hover {
     display: block;
     margin-top: 2px;
     color: var(--ui-ink-subtle);
-    font-size: 13px;
+    font-size: 15px;
   }
 
   .ui-empty-copy--small {
-    font-size: 12px;
+    font-size: 14px;
   }
 
   .ui-empty-compact {
@@ -3258,7 +3258,7 @@ body.ui-system .ui-nav__toggle:hover {
     border-radius: 999px;
     background: var(--ui-badge-bg, var(--ui-surface-soft));
     color: var(--ui-badge-ink, var(--ui-ink-muted));
-    font-size: 10px;
+    font-size: 12px;
     font-weight: 700;
     white-space: nowrap;
   }
@@ -3405,7 +3405,7 @@ body.ui-system .ui-nav__toggle:hover {
     gap: 7px;
     border-radius: 8px;
     color: var(--ui-ink-muted);
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 650;
     list-style: none;
     transition: color var(--ui-fast), background-color var(--ui-fast);
@@ -3443,7 +3443,7 @@ body.ui-system .ui-nav__toggle:hover {
     border-radius: 999px;
     background: var(--ui-surface-soft);
     color: var(--ui-ink-subtle);
-    font-size: 10px;
+    font-size: 12px;
     font-weight: 750;
   }
 
@@ -3484,7 +3484,7 @@ body.ui-system .ui-nav__toggle:hover {
     border-color: #d9e3ff;
     background: #f2f5ff;
     color: var(--ui-brand);
-    font-size: 10px;
+    font-size: 12px;
     line-height: 1.4;
   }
 
@@ -3494,7 +3494,7 @@ body.ui-system .ui-nav__toggle:hover {
     margin: 0;
     overflow: hidden;
     color: var(--ui-ink);
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 680;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -3510,7 +3510,7 @@ body.ui-system .ui-nav__toggle:hover {
     border-radius: 999px;
     background: var(--ui-surface-soft);
     color: var(--ui-ink-muted);
-    font-size: 10px;
+    font-size: 12px;
     font-weight: 700;
     white-space: nowrap;
   }
@@ -3543,7 +3543,7 @@ body.ui-system .ui-nav__toggle:hover {
     border: 0;
     background: rgba(255, 255, 255, .72);
     color: inherit;
-    font-size: 9px;
+    font-size: 11px;
   }
 
   @media (max-width: 600px) {

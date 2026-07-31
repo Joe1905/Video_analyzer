@@ -63,7 +63,7 @@ body.ui-route-lan-chat .brand-mark svg {
 
 body.ui-route-lan-chat .brand-name {
   color: var(--ui-ink);
-  font-size: 15px;
+  font-size: 17px;
   font-weight: 760;
   letter-spacing: -.02em;
 }
@@ -71,7 +71,7 @@ body.ui-route-lan-chat .brand-name {
 body.ui-route-lan-chat .brand-note {
   margin-top: 2px;
   color: var(--ui-ink-subtle);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 560;
 }
 
@@ -88,14 +88,14 @@ body.ui-route-lan-chat .header-room {
 body.ui-route-lan-chat .header-room strong {
   max-width: 100%;
   color: var(--ui-ink);
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 720;
 }
 
 body.ui-route-lan-chat .header-room span {
   margin-top: 3px;
   color: var(--ui-ink-subtle);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 body.ui-route-lan-chat .shell {
@@ -162,14 +162,14 @@ body.ui-route-lan-chat .avatar.room-avatar {
 
 body.ui-route-lan-chat .profile-meta strong {
   color: var(--ui-ink);
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 720;
 }
 
 body.ui-route-lan-chat .profile-meta span {
   margin-top: 3px;
   color: var(--ui-ink-subtle);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 body.ui-route-lan-chat .online-dot {
@@ -223,7 +223,7 @@ body.ui-route-lan-chat .section-head {
   min-height: 32px;
   padding: 8px 9px 5px;
   color: var(--ui-ink-subtle);
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 720;
   letter-spacing: .08em;
 }
@@ -235,7 +235,7 @@ body.ui-route-lan-chat .section-head button {
   border-radius: 8px;
   background: transparent;
   color: var(--lan-accent);
-  font-size: 10px;
+  font-size: 12px;
   box-shadow: none;
 }
 
@@ -310,14 +310,14 @@ body.ui-route-lan-chat .room-item.active .room-glyph {
 
 body.ui-route-lan-chat .room-name {
   color: var(--ui-ink);
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 700;
 }
 
 body.ui-route-lan-chat .room-preview {
   margin-top: 4px;
   color: var(--ui-ink-subtle);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 body.ui-route-lan-chat .section-unread,
@@ -337,7 +337,7 @@ body.ui-route-lan-chat .rail-foot {
   padding: 12px 16px;
   border-top: 1px solid var(--ui-line);
   color: var(--ui-ink-subtle);
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.55;
   background: var(--ui-surface);
 }
@@ -393,7 +393,7 @@ body.ui-route-lan-chat .welcome h2 {
 
 body.ui-route-lan-chat .welcome p {
   color: var(--ui-ink-muted);
-  font-size: 12px;
+  font-size: 14px;
 }
 
 body.ui-route-lan-chat .message {
@@ -412,7 +412,7 @@ body.ui-route-lan-chat .message > .avatar.tiny {
 body.ui-route-lan-chat .message-head {
   margin: 0 3px 5px;
   color: var(--ui-ink-subtle);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 body.ui-route-lan-chat .message-name {
@@ -503,7 +503,7 @@ body.ui-route-lan-chat .bubble {
   border-radius: 5px 15px 15px 15px;
   background: var(--ui-surface);
   color: var(--ui-ink);
-  font-size: 12px;
+  font-size: 14px;
   line-height: 1.6;
   box-shadow: 0 5px 16px rgba(30, 32, 39, .035);
 }
@@ -529,7 +529,7 @@ body.ui-route-lan-chat .message-reply {
   border-radius: 4px 8px 8px 4px;
   background: #f3f8f7;
   color: var(--ui-ink-muted);
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.5;
 }
 
@@ -609,7 +609,7 @@ body.ui-route-lan-chat .composer.is-dragging::after {
   border-radius: 12px;
   background: rgba(238, 248, 246, .94);
   color: var(--lan-accent);
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 700;
   pointer-events: none;
 }
@@ -643,14 +643,14 @@ body.ui-route-lan-chat .composer-reply strong {
 
 body.ui-route-lan-chat .composer-reply small {
   color: var(--lan-accent);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 700;
 }
 
 body.ui-route-lan-chat .composer-reply strong {
   margin-top: 2px;
   color: var(--ui-ink-muted);
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 520;
 }
 
@@ -680,7 +680,7 @@ body.ui-route-lan-chat .composer-row textarea {
   border: 0;
   background: transparent;
   box-shadow: none;
-  font-size: 13px;
+  font-size: 15px;
 }
 
 body.ui-route-lan-chat .composer-row textarea:focus {
@@ -788,13 +788,13 @@ body.ui-route-lan-chat .right-title {
 
 body.ui-route-lan-chat .right-title strong {
   color: var(--ui-ink);
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 720;
 }
 
 body.ui-route-lan-chat .right-title span {
   color: var(--ui-ink-subtle);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 body.ui-route-lan-chat .room-manage-button {
@@ -804,7 +804,7 @@ body.ui-route-lan-chat .room-manage-button {
   border-color: var(--ui-line);
   background: var(--ui-surface);
   color: var(--lan-accent);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 body.ui-route-lan-chat .member-search {
@@ -819,7 +819,7 @@ body.ui-route-lan-chat .member-search input {
   border-color: var(--ui-line);
   border-radius: 11px;
   background: var(--lan-surface-muted);
-  font-size: 11px;
+  font-size: 13px;
 }
 
 body.ui-route-lan-chat .member-list {
@@ -842,13 +842,13 @@ body.ui-route-lan-chat .member-item:hover:not(:disabled) {
 
 body.ui-route-lan-chat .member-copy strong {
   color: var(--ui-ink);
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 680;
 }
 
 body.ui-route-lan-chat .member-copy span {
   color: var(--ui-ink-subtle);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 body.ui-route-lan-chat .member-dm,
@@ -919,7 +919,7 @@ body.ui-route-lan-chat .modal-head h2 {
 body.ui-route-lan-chat .modal-head p {
   margin-top: 4px;
   color: var(--ui-ink-muted);
-  font-size: 11px;
+  font-size: 13px;
 }
 
 body.ui-route-lan-chat .modal-head .icon-button {
@@ -943,7 +943,7 @@ body.ui-route-lan-chat .modal .button {
   min-height: 40px;
   height: 40px;
   border-radius: 11px;
-  font-size: 12px;
+  font-size: 14px;
 }
 
 body.ui-route-lan-chat .modal .button.primary {
@@ -965,7 +965,7 @@ body.ui-route-lan-chat .field {
 
 body.ui-route-lan-chat .field label {
   color: var(--ui-ink-muted);
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 650;
 }
 
@@ -983,7 +983,7 @@ body.ui-route-lan-chat .field input:focus {
 
 body.ui-route-lan-chat .field-note {
   color: var(--ui-ink-subtle);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 body.ui-route-lan-chat .profile-preview {
@@ -1016,7 +1016,7 @@ body.ui-route-lan-chat .remove-member {
   border-color: transparent;
   background: var(--ui-danger-soft);
   color: var(--ui-danger);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 body.ui-route-lan-chat .login-backdrop {
@@ -1066,7 +1066,7 @@ body.ui-route-lan-chat .login-step {
 body.ui-route-lan-chat .ui-field-note-spaced {
   margin-bottom: 10px;
   color: var(--ui-ink-subtle);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 650;
   letter-spacing: .04em;
 }
@@ -1103,14 +1103,14 @@ body.ui-route-lan-chat .owner-avatar {
 
 body.ui-route-lan-chat .login-card-copy strong {
   color: var(--ui-ink);
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 700;
 }
 
 body.ui-route-lan-chat .login-card-copy span {
   margin-top: 3px;
   color: var(--ui-ink-subtle);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 body.ui-route-lan-chat .login-chevron {
@@ -1124,18 +1124,18 @@ body.ui-route-lan-chat .login-back {
 
 body.ui-route-lan-chat .login-owner strong {
   color: var(--ui-ink);
-  font-size: 13px;
+  font-size: 15px;
 }
 
 body.ui-route-lan-chat .login-owner span {
   color: var(--ui-ink-subtle);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 body.ui-route-lan-chat .login-divider {
   margin: 16px 0;
   color: var(--ui-ink-subtle);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 body.ui-route-lan-chat .login-empty {
@@ -1385,7 +1385,7 @@ body.ui-route-lan-chat .viewer-toolbar .viewer-close {
     border-radius: 10px;
     background: transparent;
     color: var(--ui-ink-subtle);
-    font-size: 9px;
+    font-size: 11px;
     box-shadow: none;
   }
 
@@ -1397,7 +1397,7 @@ body.ui-route-lan-chat .viewer-toolbar .viewer-close {
   body.ui-route-lan-chat .mobile-tabs b {
     display: grid;
     place-items: center;
-    font-size: 14px;
+    font-size: 16px;
   }
 
   body.ui-route-lan-chat .mobile-tabs b svg {
@@ -1509,7 +1509,7 @@ body.ui-route-lan-chat .details-head {
   padding: 0 12px 0 18px;
   border-left: 1px solid var(--ui-line);
   color: var(--ui-ink);
-  font-size: 12px;
+  font-size: 14px;
 }
 
 body.ui-route-lan-chat .left-rail {
@@ -1542,7 +1542,7 @@ body.ui-route-lan-chat .launch-chat {
   border-radius: 12px;
   background: #181c22;
   color: #fff;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 720;
   box-shadow: 0 8px 18px rgba(24, 28, 34, .1);
   transition: transform 140ms var(--ui-ease), background 140ms var(--ui-ease);
@@ -1594,7 +1594,7 @@ body.ui-route-lan-chat .room-line .room-name {
 body.ui-route-lan-chat .room-line time {
   flex: 0 0 auto;
   color: var(--ui-ink-subtle);
-  font-size: 9px;
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -1606,7 +1606,7 @@ body.ui-route-lan-chat .room-trailing {
 
 body.ui-route-lan-chat .room-pin {
   color: var(--lan-accent);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 body.ui-route-lan-chat .ui-room-empty {
@@ -1664,13 +1664,13 @@ body.ui-route-lan-chat .channel-icon .room-glyph {
 body.ui-route-lan-chat .channel-card > strong {
   display: block;
   color: var(--ui-ink);
-  font-size: 13px;
+  font-size: 15px;
 }
 
 body.ui-route-lan-chat .channel-card > p {
   margin: 5px 0 0;
   color: var(--ui-ink-subtle);
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.6;
 }
 
@@ -1686,7 +1686,7 @@ body.ui-route-lan-chat .member-summary {
   border-radius: 0;
   background: transparent;
   color: var(--ui-ink-muted);
-  font-size: 10px;
+  font-size: 12px;
   box-shadow: none;
 }
 
@@ -1727,12 +1727,12 @@ body.ui-route-lan-chat .detail-title {
 }
 
 body.ui-route-lan-chat .detail-title strong {
-  font-size: 11px;
+  font-size: 13px;
 }
 
 body.ui-route-lan-chat .detail-title button {
   color: var(--lan-accent);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 body.ui-route-lan-chat .recent-file-list {
@@ -1766,7 +1766,7 @@ body.ui-route-lan-chat .file-mini {
   border-radius: 9px;
   background: var(--lan-accent-soft);
   color: var(--lan-accent);
-  font-size: 8px;
+  font-size: 11px;
   font-weight: 800;
 }
 
@@ -1783,13 +1783,13 @@ body.ui-route-lan-chat .recent-file-copy small {
 }
 
 body.ui-route-lan-chat .recent-file-copy strong {
-  font-size: 10px;
+  font-size: 12px;
 }
 
 body.ui-route-lan-chat .recent-file-copy small {
   margin-top: 3px;
   color: var(--ui-ink-subtle);
-  font-size: 8px;
+  font-size: 11px;
 }
 
 body.ui-route-lan-chat .recent-file-row > button {
@@ -1797,7 +1797,7 @@ body.ui-route-lan-chat .recent-file-row > button {
   padding: 0 8px;
   border-radius: 8px;
   color: var(--lan-accent);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 body.ui-route-lan-chat .recent-file-row > button:hover {
@@ -1810,7 +1810,7 @@ body.ui-route-lan-chat .detail-empty {
   border-radius: 11px;
   color: var(--ui-ink-subtle);
   text-align: center;
-  font-size: 9px;
+  font-size: 11px;
 }
 
 body.ui-route-lan-chat .detail-settings {
@@ -1827,7 +1827,7 @@ body.ui-route-lan-chat .detail-action {
   align-items: center;
   justify-content: space-between;
   color: var(--ui-ink);
-  font-size: 11px;
+  font-size: 13px;
   text-align: left;
 }
 
@@ -1922,7 +1922,7 @@ body.ui-route-lan-chat .setting-row:hover {
 body.ui-route-lan-chat .selection-summary {
   margin-right: auto;
   color: var(--ui-ink-subtle);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 body.ui-route-lan-chat .field[hidden] {
@@ -1999,7 +1999,7 @@ body.ui-route-lan-chat .remove-member {
   padding: 0 9px;
   border-radius: 8px;
   background: transparent;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 700;
 }
 
@@ -2085,13 +2085,13 @@ body.ui-route-lan-chat.lan-details-closed .right-rail {
 
   body.ui-route-lan-chat .drawer-detail-head strong {
     color: var(--ui-ink);
-    font-size: 13px;
+    font-size: 15px;
   }
 
   body.ui-route-lan-chat .drawer-detail-head span {
     margin-top: 2px;
     color: var(--ui-ink-subtle);
-    font-size: 9px;
+    font-size: 11px;
   }
 
   body.ui-route-lan-chat .drawer-detail-head .icon-button {
@@ -2191,11 +2191,11 @@ body.ui-route-lan-chat.lan-details-closed .right-rail {
   }
 
   body.ui-route-lan-chat .drawer-detail-head strong {
-    font-size: 14px;
+    font-size: 16px;
   }
 
   body.ui-route-lan-chat .drawer-detail-head span {
-    font-size: 10px;
+    font-size: 12px;
   }
 
   body.ui-route-lan-chat .detail-scroll {
@@ -2217,19 +2217,19 @@ body.ui-route-lan-chat.lan-details-closed .right-rail {
   }
 
   body.ui-route-lan-chat .channel-card > strong {
-    font-size: 15px;
+    font-size: 17px;
   }
 
   body.ui-route-lan-chat .channel-card > p {
     margin-top: 4px;
-    font-size: 11px;
+    font-size: 13px;
     line-height: 1.55;
   }
 
   body.ui-route-lan-chat .member-summary {
     min-height: 34px;
     margin-top: 10px;
-    font-size: 11px;
+    font-size: 13px;
   }
 
   body.ui-route-lan-chat .detail-section {
@@ -2242,7 +2242,7 @@ body.ui-route-lan-chat.lan-details-closed .right-rail {
   }
 
   body.ui-route-lan-chat .detail-title strong {
-    font-size: 12px;
+    font-size: 14px;
   }
 
   body.ui-route-lan-chat .detail-title button {
@@ -2250,7 +2250,7 @@ body.ui-route-lan-chat.lan-details-closed .right-rail {
     min-height: 36px;
     padding: 0 10px;
     border-radius: 10px;
-    font-size: 10px;
+    font-size: 12px;
   }
 
   body.ui-route-lan-chat .recent-file-row {
@@ -2266,11 +2266,11 @@ body.ui-route-lan-chat.lan-details-closed .right-rail {
   }
 
   body.ui-route-lan-chat .recent-file-copy strong {
-    font-size: 11px;
+    font-size: 13px;
   }
 
   body.ui-route-lan-chat .recent-file-copy small {
-    font-size: 9px;
+    font-size: 11px;
   }
 
   body.ui-route-lan-chat .recent-file-row > button {
@@ -2282,7 +2282,7 @@ body.ui-route-lan-chat.lan-details-closed .right-rail {
   body.ui-route-lan-chat .detail-action {
     min-height: 50px;
     padding: 0 6px;
-    font-size: 12px;
+    font-size: 14px;
   }
 
   body.ui-route-lan-chat .group-actions {
@@ -2352,7 +2352,7 @@ body.ui-route-lan-chat .profile-avatar-button > span {
   border-radius: 7px;
   background: rgba(23, 29, 32, .7);
   color: #fff;
-  font-size: 9px;
+  font-size: 11px;
   opacity: 0;
   transform: translateY(2px);
   transition: opacity 140ms var(--ui-ease), transform 140ms var(--ui-ease);
@@ -2382,7 +2382,7 @@ body.ui-route-lan-chat .profile-change-action {
   border-radius: 10px;
   background: var(--ui-surface);
   color: var(--lan-accent);
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 720;
 }
 
@@ -2409,12 +2409,12 @@ body.ui-route-lan-chat .avatar-section-label {
   align-items: center;
   justify-content: space-between;
   color: var(--ui-ink-muted);
-  font-size: 11px;
+  font-size: 13px;
 }
 
 body.ui-route-lan-chat .avatar-section-label strong {
   color: var(--ui-ink);
-  font-size: 12px;
+  font-size: 14px;
 }
 
 body.ui-route-lan-chat .avatar-choice-grid {
@@ -2457,7 +2457,7 @@ body.ui-route-lan-chat .avatar-choice img {
 
 body.ui-route-lan-chat .avatar-choice small {
   color: var(--ui-ink-subtle);
-  font-size: 10px;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -2551,13 +2551,13 @@ body.ui-route-lan-chat .avatar-upload-copy span {
 }
 
 body.ui-route-lan-chat .avatar-upload-copy strong {
-  font-size: 12px;
+  font-size: 14px;
 }
 
 body.ui-route-lan-chat .avatar-upload-copy span {
   margin-top: 3px;
   color: var(--ui-ink-muted);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 body.ui-route-lan-chat .avatar-upload-arrow {
@@ -2575,7 +2575,7 @@ body.ui-route-lan-chat .avatar-selection-state {
   align-items: center;
   gap: 8px;
   color: var(--ui-ink-muted);
-  font-size: 11px;
+  font-size: 13px;
 }
 
 body.ui-route-lan-chat .avatar-selection-state i {
@@ -2679,7 +2679,7 @@ body.ui-route-lan-chat .avatar-crop-hint {
   border-radius: 999px;
   background: rgba(22, 27, 30, .62);
   color: #fff;
-  font-size: 10px;
+  font-size: 12px;
   white-space: nowrap;
   backdrop-filter: blur(8px);
 }
@@ -2743,13 +2743,13 @@ body.ui-route-lan-chat .avatar-preview-block span {
 }
 
 body.ui-route-lan-chat .avatar-preview-block strong {
-  font-size: 12px;
+  font-size: 14px;
 }
 
 body.ui-route-lan-chat .avatar-preview-block span {
   margin-top: 4px;
   color: var(--ui-ink-muted);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 body.ui-route-lan-chat .avatar-panel-separator {
@@ -2767,11 +2767,11 @@ body.ui-route-lan-chat .avatar-strength > div {
 
 body.ui-route-lan-chat .avatar-filter-title {
   margin-bottom: 10px;
-  font-size: 11px;
+  font-size: 13px;
 }
 
 body.ui-route-lan-chat .avatar-filter-title strong {
-  font-size: 12px;
+  font-size: 14px;
 }
 
 body.ui-route-lan-chat .avatar-filter-title span,
@@ -2795,7 +2795,7 @@ body.ui-route-lan-chat .avatar-filter {
   border-radius: 11px;
   background: transparent;
   color: var(--ui-ink-muted);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 body.ui-route-lan-chat .avatar-filter:hover {
@@ -2829,7 +2829,7 @@ body.ui-route-lan-chat .avatar-strength {
 body.ui-route-lan-chat .avatar-strength > div {
   margin-bottom: 7px;
   color: var(--ui-ink-muted);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 body.ui-route-lan-chat .avatar-strength strong {
@@ -2840,13 +2840,13 @@ body.ui-route-lan-chat .avatar-strength strong {
 body.ui-route-lan-chat .avatar-editor-note {
   margin: 15px 0 0;
   color: var(--ui-ink-subtle);
-  font-size: 9px;
+  font-size: 11px;
   line-height: 1.55;
 }
 
 body.ui-route-lan-chat .avatar-editor-foot-copy {
   color: var(--ui-ink-muted);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 body.ui-route-lan-chat .avatar-editor-foot-copy strong,
@@ -2857,7 +2857,7 @@ body.ui-route-lan-chat .avatar-editor-foot-copy span {
 body.ui-route-lan-chat .avatar-editor-foot-copy strong {
   margin-bottom: 2px;
   color: var(--ui-ink);
-  font-size: 11px;
+  font-size: 13px;
 }
 
 @media (max-width: 760px) {
@@ -2951,7 +2951,7 @@ body.ui-route-lan-chat .channel-announcement {
   border: 0;
   background: transparent;
   color: var(--ui-ink-subtle);
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.6;
   text-align: left;
   text-overflow: ellipsis;
@@ -2999,7 +2999,7 @@ body.ui-route-lan-chat .manage-group-profile span {
 
 body.ui-route-lan-chat .manage-group-profile strong {
   overflow: hidden;
-  font-size: 12px;
+  font-size: 14px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3007,7 +3007,7 @@ body.ui-route-lan-chat .manage-group-profile strong {
 body.ui-route-lan-chat .manage-group-profile span {
   margin-top: 3px;
   color: var(--ui-ink-subtle);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 body.ui-route-lan-chat .manage-announcement-entry {
@@ -3039,14 +3039,14 @@ body.ui-route-lan-chat .manage-announcement-entry small {
 }
 
 body.ui-route-lan-chat .manage-announcement-entry strong {
-  font-size: 11px;
+  font-size: 13px;
 }
 
 body.ui-route-lan-chat .manage-announcement-entry small {
   margin-top: 4px;
   overflow: hidden;
   color: var(--ui-ink-subtle);
-  font-size: 10px;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3054,7 +3054,7 @@ body.ui-route-lan-chat .manage-announcement-entry small {
 body.ui-route-lan-chat .manage-announcement-entry b {
   flex: 0 0 auto;
   color: var(--lan-accent);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 body.ui-route-lan-chat .announcement-modal {
@@ -3078,7 +3078,7 @@ body.ui-route-lan-chat .announcement-editor {
   height: 100%;
   overflow: auto;
   color: var(--ui-ink);
-  font-size: 13px;
+  font-size: 15px;
   line-height: 1.75;
   white-space: pre-wrap;
   word-break: break-word;
