@@ -6438,16 +6438,7 @@ MCP_TOOL_WORD_LABELS = {
     "selling": "\u70ed\u9500", "shop": "\u5e97\u94fa", "summary": "\u6982\u89c8", "top": "\u70ed\u95e8", "trend": "\u8d8b\u52bf", "trends": "\u8d8b\u52bf",
     "video": "\u89c6\u9891", "videos": "\u89c6\u9891", "word": "\u8bcd", "words": "\u8bcd",
 }
-    "asin": "ASIN", "ad": "\u5e7f\u544a", "ads": "\u5e7f\u544a", "analysis": "\u5206\u6790", "analytics": "\u5206\u6790", "brand": "\u54c1\u724c",
-    "cargo": "\u5e26\u8d27", "category": "\u7c7b\u76ee", "categories": "\u7c7b\u76ee", "comment": "\u8bc4\u8bba", "comments": "\u8bc4\u8bba",
-    "competition": "\u7ade\u4e89", "competitor": "\u7ade\u54c1", "creator": "\u8fbe\u4eba", "creators": "\u8fbe\u4eba", "data": "\u6570\u636e",
-    "detail": "\u8be6\u60c5", "details": "\u8be6\u60c5", "distribution": "\u5206\u5e03", "ecommerce": "\u7535\u5546", "fans": "\u7c89\u4e1d",
-    "follower": "\u7c89\u4e1d", "followers": "\u7c89\u4e1d", "growth": "\u589e\u957f", "keyword": "\u5173\u952e\u8bcd", "keywords": "\u5173\u952e\u8bcd",
-    "list": "\u5217\u8868", "live": "\u76f4\u64ad", "market": "\u5e02\u573a", "node": "\u8282\u70b9", "popular": "\u70ed\u95e8", "price": "\u4ef7\u683c",
-    "product": "\u5546\u54c1", "products": "\u5546\u54c1", "rank": "\u699c\u5355", "review": "\u8bc4\u8bba", "reviews": "\u8bc4\u8bba", "search": "\u641c\u7d22", "web": "\u8054\u7f51",
-    "selling": "\u70ed\u9500", "shop": "\u5e97\u94fa", "summary": "\u6982\u89c8", "top": "\u70ed\u95e8", "trend": "\u8d8b\u52bf", "trends": "\u8d8b\u52bf",
-    "video": "\u89c6\u9891", "videos": "\u89c6\u9891", "word": "\u8bcd", "words": "\u8bcd",
-}
+
 
 def tool_label(name: str) -> str:
     if name in MCP_TOOL_LABELS:
