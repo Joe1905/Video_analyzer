@@ -3332,9 +3332,9 @@ def test_fastmoss_answer_verifier_applies_local_edits_and_keeps_draft_on_failure
                 return ApprovedResponse()
 
         approved = web_app.verify_fastmoss_final_answer(
-            native_report, message, "调研", route, ApprovedRequests, "key", "https://example.test/v1", "model"
+            draft, message, "调研", route, ApprovedRequests, "key", "https://example.test/v1", "model"
         )
-        assert approved == native_report
+        assert approved == draft
 
         detailed_report = (
             "# TikTok Shop 调研报告\n\n"
@@ -3409,7 +3409,7 @@ def test_fastmoss_answer_verifier_applies_local_edits_and_keeps_draft_on_failure
                 raise AssertionError("verifier must not run without FastMoss evidence")
 
         no_evidence = web_app.verify_fastmoss_final_answer(
-            native_report, system_only, "调研", route, MustNotCallRequests, "key", "https://example.test/v1", "model"
+            draft, system_only, "调研", route, MustNotCallRequests, "key", "https://example.test/v1", "model"
         )
         assert "## 先说结论" in no_evidence
         system_manifest = web_app.fastmoss_evidence_manifest(system_only, "调研", route)
