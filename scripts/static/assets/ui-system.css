@@ -665,58 +665,255 @@ body.ui-system .ui-nav__toggle:hover {
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-actions .quick-prompt {
+    position: relative;
     min-width: 0;
-    min-height: 92px;
-    padding: 14px 15px;
+    min-height: 132px;
+    padding: 14px 16px 15px;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-content: space-between;
-    gap: 12px;
+    grid-template-rows: auto 38px auto auto;
+    align-content: start;
+    gap: 7px;
+    overflow: hidden;
     border: 1px solid var(--ui-line);
     border-radius: 16px;
     background: rgba(255, 255, 255, .72);
     color: var(--ui-ink-muted);
     font-size: 14px;
     font-weight: 500;
+    text-align: left;
     text-decoration: none;
-    transition: transform var(--ui-fast), border-color var(--ui-fast), box-shadow var(--ui-fast);
+    transition:
+      transform var(--ui-fast),
+      border-color var(--ui-fast),
+      background-color var(--ui-fast),
+      box-shadow var(--ui-fast);
   }
 
-  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-actions .quick-prompt:hover {
-    transform: translateY(-2px);
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-actions .quick-prompt::after {
+    content: "";
+    position: absolute;
+    inset: auto 12px -28px;
+    height: 42px;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--ui-brand) 13%, transparent);
+    filter: blur(18px);
+    opacity: 0;
+    transform: translateY(8px);
+    transition: opacity var(--ui-fast), transform var(--ui-fast);
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-actions .quick-prompt:is(:hover, :focus-visible) {
+    transform: translateY(-3px);
     border-color: color-mix(in srgb, var(--ui-brand) 35%, var(--ui-line));
-    box-shadow: var(--ui-shadow-sm);
+    background: rgba(255, 255, 255, .94);
+    box-shadow: 0 14px 30px rgba(24, 31, 40, .08);
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-actions .quick-prompt:is(:hover, :focus-visible)::after {
+    opacity: 1;
+    transform: none;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-card-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-number {
     color: var(--ui-ink-subtle);
     font: 12px "Cascadia Mono", "SFMono-Regular", monospace;
+    letter-spacing: .02em;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-arrow {
+    color: var(--ui-ink-subtle);
+    font-size: 13px;
+    line-height: 1;
+    transition: color var(--ui-fast), transform var(--ui-fast);
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-prompt:is(:hover, :focus-visible) .quick-arrow {
+    color: var(--ui-brand);
+    transform: translate(2px, -2px);
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-card-icon {
+    width: 38px;
+    height: 38px;
+    display: grid;
+    place-items: center;
+    border: 1px solid color-mix(in srgb, var(--ui-brand) 10%, var(--ui-line));
+    border-radius: 11px;
+    background: color-mix(in srgb, var(--ui-brand) 7%, #fff);
+    color: var(--ui-brand);
+    transition: border-color var(--ui-fast), background-color var(--ui-fast);
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-prompt:is(:hover, :focus-visible) .quick-card-icon {
+    border-color: color-mix(in srgb, var(--ui-brand) 24%, var(--ui-line));
+    background: color-mix(in srgb, var(--ui-brand) 11%, #fff);
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-card-icon svg {
+    width: 23px;
+    height: 23px;
+    overflow: visible;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.55;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-chart-axis {
+    opacity: .38;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-chart-bar,
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-chart-compare {
+    transform-box: fill-box;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-chart-bar {
+    transform-origin: center bottom;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-chart-line {
+    stroke-dasharray: 24;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-chart-node {
+    fill: currentColor;
+    stroke: none;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-chart-compare {
+    transform-origin: left center;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-chart-tile {
+    fill: color-mix(in srgb, var(--ui-brand) 10%, transparent);
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-prompt:is(:hover, :focus-visible) .quick-chart-bar--1 {
+    animation: ui-quick-bar-build 360ms var(--ui-ease) both;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-prompt:is(:hover, :focus-visible) .quick-chart-bar--2 {
+    animation: ui-quick-bar-build 400ms 70ms var(--ui-ease) both;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-prompt:is(:hover, :focus-visible) .quick-chart-bar--3 {
+    animation: ui-quick-bar-build 440ms 140ms var(--ui-ease) both;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-prompt:is(:hover, :focus-visible) .quick-chart-line {
+    animation: ui-quick-line-build 560ms var(--ui-ease) both;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-prompt:is(:hover, :focus-visible) .quick-chart-node--1 {
+    animation: ui-quick-node-build 220ms 120ms var(--ui-ease) both;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-prompt:is(:hover, :focus-visible) .quick-chart-node--2 {
+    animation: ui-quick-node-build 220ms 240ms var(--ui-ease) both;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-prompt:is(:hover, :focus-visible) .quick-chart-node--3 {
+    animation: ui-quick-node-build 220ms 360ms var(--ui-ease) both;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-prompt:is(:hover, :focus-visible) .quick-chart-compare--1 {
+    animation: ui-quick-compare-build 320ms var(--ui-ease) both;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-prompt:is(:hover, :focus-visible) .quick-chart-compare--2 {
+    animation: ui-quick-compare-build 380ms 80ms var(--ui-ease) both;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-prompt:is(:hover, :focus-visible) .quick-chart-compare--3 {
+    animation: ui-quick-compare-build 340ms 160ms var(--ui-ease) both;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-prompt:is(:hover, :focus-visible) .quick-chart-tile--1 {
+    animation: ui-quick-tile-build 300ms var(--ui-ease) both;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-prompt:is(:hover, :focus-visible) .quick-chart-tile--2 {
+    animation: ui-quick-tile-build 300ms 70ms var(--ui-ease) both;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-prompt:is(:hover, :focus-visible) .quick-chart-tile--3 {
+    animation: ui-quick-tile-build 300ms 140ms var(--ui-ease) both;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-prompt:is(:hover, :focus-visible) .quick-chart-plus {
+    animation: ui-quick-node-build 260ms 210ms var(--ui-ease) both;
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-actions strong {
-    grid-column: 1 / -1;
     color: var(--ui-ink-muted);
     font-size: 14px;
-    font-weight: 550;
-    line-height: 1.5;
+    font-weight: 650;
+    line-height: 1.35;
   }
 
-  body:not(.ui-route-amazon) .official-workflow-launch {
-    display: none;
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-actions small {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--ui-ink-subtle);
+    font-size: 11px;
+    line-height: 1.35;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  body.ui-route-amazon .quick-actions:has(.official-workflow-launch) {
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-actions:has(.official-workflow-launch) {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
-  body.ui-route-amazon .official-workflow-launch {
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .official-workflow-launch {
     border-color: color-mix(in srgb, var(--ui-brand) 26%, var(--ui-line));
     background:
       linear-gradient(145deg, rgba(255, 255, 255, .92), rgba(231, 245, 239, .88));
   }
 
-  body.ui-route-amazon .official-workflow-launch .quick-number {
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .official-workflow-launch .quick-number {
     color: var(--ui-brand);
+  }
+
+  @keyframes ui-quick-bar-build {
+    from { opacity: .18; transform: scaleY(.12); }
+    to { opacity: 1; transform: scaleY(1); }
+  }
+
+  @keyframes ui-quick-line-build {
+    from { opacity: .22; stroke-dashoffset: 24; }
+    to { opacity: 1; stroke-dashoffset: 0; }
+  }
+
+  @keyframes ui-quick-node-build {
+    from { opacity: 0; transform: scale(.2); transform-origin: center; }
+    to { opacity: 1; transform: scale(1); transform-origin: center; }
+  }
+
+  @keyframes ui-quick-compare-build {
+    from { opacity: .18; transform: scaleX(.08); }
+    to { opacity: 1; transform: scaleX(1); }
+  }
+
+  @keyframes ui-quick-tile-build {
+    from { opacity: .18; transform: translateY(3px) scale(.72); transform-origin: center; }
+    to { opacity: 1; transform: none; transform-origin: center; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-prompt * {
+      animation-duration: .01ms;
+      animation-delay: 0ms;
+    }
   }
 
   body.ui-system .official-workflow-layer {
@@ -3235,6 +3432,28 @@ body.ui-system .ui-nav__toggle:hover {
     body.ui-route-amazon .quick-actions,
     body.ui-route-fastmoss .quick-actions {
       grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-actions .quick-prompt {
+      min-height: 122px;
+      padding: 12px 13px 13px;
+      grid-template-rows: auto 34px auto auto;
+      gap: 6px;
+    }
+
+    body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-card-icon {
+      width: 34px;
+      height: 34px;
+      border-radius: 10px;
+    }
+
+    body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-card-icon svg {
+      width: 21px;
+      height: 21px;
+    }
+
+    body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .quick-actions strong {
+      font-size: 13px;
     }
 
     body.ui-route-home .quick-actions a,

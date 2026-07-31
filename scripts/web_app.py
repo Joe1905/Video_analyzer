@@ -452,6 +452,63 @@ CHAT_PROVIDER_UI = {
         ),
     },
 }
+CHAT_PROVIDER_OFFICIAL_QUICK_ACTIONS = {
+    "amazon": (
+        {
+            "label": "\u667a\u80fd\u9009\u54c1\u52a9\u624b",
+            "skill": "\u667a\u80fd\u9009\u54c1\u52a9\u624b",
+            "description": "\u591a\u7ef4\u7b5b\u9009\u6f5c\u529b\u5546\u54c1",
+            "icon": "bars",
+        },
+        {
+            "label": "\u5e02\u573a\u5168\u666f\u5206\u6790",
+            "skill": "\u5e02\u573a\u5168\u666f\u5206\u6790",
+            "description": "\u8bc4\u4f30\u7c7b\u76ee\u9700\u6c42\u4e0e\u673a\u4f1a",
+            "icon": "trend",
+        },
+        {
+            "label": "\u7ade\u54c1\u6df1\u5ea6\u62c6\u89e3",
+            "skill": "\u7ade\u54c1\u6df1\u5ea6\u62c6\u89e3",
+            "description": "\u62c6\u89e3 ASIN \u4e0e\u5dee\u5f02\u5316\u7a7a\u95f4",
+            "icon": "compare",
+        },
+    ),
+}
+CHAT_QUICK_ACTION_ICONS = {
+    "bars": (
+        '<svg viewBox="0 0 24 24" aria-hidden="true">'
+        '<path class="quick-chart-axis" d="M4 19.5h16"/>'
+        '<path class="quick-chart-bar quick-chart-bar--1" d="M7 17v-4"/>'
+        '<path class="quick-chart-bar quick-chart-bar--2" d="M12 17V8"/>'
+        '<path class="quick-chart-bar quick-chart-bar--3" d="M17 17V5"/>'
+        "</svg>"
+    ),
+    "trend": (
+        '<svg viewBox="0 0 24 24" aria-hidden="true">'
+        '<path class="quick-chart-axis" d="M4 19.5h16"/>'
+        '<path class="quick-chart-line" d="m5 16 4-4 3 2 6-7"/>'
+        '<circle class="quick-chart-node quick-chart-node--1" cx="5" cy="16" r="1"/>'
+        '<circle class="quick-chart-node quick-chart-node--2" cx="12" cy="14" r="1"/>'
+        '<circle class="quick-chart-node quick-chart-node--3" cx="18" cy="7" r="1"/>'
+        "</svg>"
+    ),
+    "compare": (
+        '<svg viewBox="0 0 24 24" aria-hidden="true">'
+        '<path class="quick-chart-axis" d="M5 4v16"/>'
+        '<path class="quick-chart-compare quick-chart-compare--1" d="M7 7h6"/>'
+        '<path class="quick-chart-compare quick-chart-compare--2" d="M7 12h11"/>'
+        '<path class="quick-chart-compare quick-chart-compare--3" d="M7 17h8"/>'
+        "</svg>"
+    ),
+    "more": (
+        '<svg viewBox="0 0 24 24" aria-hidden="true">'
+        '<rect class="quick-chart-tile quick-chart-tile--1" x="5" y="5" width="5" height="5" rx="1"/>'
+        '<rect class="quick-chart-tile quick-chart-tile--2" x="14" y="5" width="5" height="5" rx="1"/>'
+        '<rect class="quick-chart-tile quick-chart-tile--3" x="5" y="14" width="5" height="5" rx="1"/>'
+        '<path class="quick-chart-plus" d="M16.5 14v5M14 16.5h5"/>'
+        "</svg>"
+    ),
+}
 CHAT_PROVIDER_ICONS = {
     "home": (
         '<path d="M3 10.5 12 3l9 7.5"/>'
@@ -499,7 +556,7 @@ NAV_ITEMS = [
 ]
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
-UI_ASSET_VERSION = "20260731-03"
+UI_ASSET_VERSION = "20260731-04"
 APP_UI_ASSETS = f"""
 <script id="ui-nav-state-boot">
 let uiNavExpanded = false;
@@ -791,14 +848,64 @@ def list_public_chat_sessions(provider: str, query: str = "") -> list[dict[str, 
     return rows
 
 
+def render_chat_quick_actions(provider: str, provider_ui: dict[str, Any], official_enabled: bool) -> str:
+    actions: list[str] = []
+    official_actions = CHAT_PROVIDER_OFFICIAL_QUICK_ACTIONS.get(provider, ())
+    if official_enabled and official_actions:
+        for index, action in enumerate(official_actions, start=1):
+            icon = CHAT_QUICK_ACTION_ICONS.get(str(action.get("icon") or ""), "")
+            label = html_escape(str(action.get("label") or ""))
+            skill = html_escape(str(action.get("skill") or ""))
+            description = html_escape(str(action.get("description") or ""))
+            actions.append(
+                '<button type="button" class="quick-prompt official-workflow-shortcut" '
+                f'data-official-preset="{skill}">'
+                '<span class="quick-card-top">'
+                f'<span class="quick-number">{index:02d} \u00b7 \u5b98\u65b9</span>'
+                '<span class="quick-arrow" aria-hidden="true">\u2197</span>'
+                '</span>'
+                f'<span class="quick-card-icon quick-card-icon--{html_escape(str(action.get("icon") or ""))}">{icon}</span>'
+                f'<strong>{label}</strong><small>{description}</small>'
+                '</button>'
+            )
+        actions.append(
+            '<button type="button" class="quick-prompt official-workflow-launch" '
+            'id="officialWorkflowLaunch" aria-haspopup="dialog">'
+            '<span class="quick-card-top">'
+            f'<span class="quick-number">{len(actions) + 1:02d}</span>'
+            '<span class="quick-arrow" aria-hidden="true">\u2197</span>'
+            '</span>'
+            f'<span class="quick-card-icon quick-card-icon--more">{CHAT_QUICK_ACTION_ICONS["more"]}</span>'
+            '<strong>\u66f4\u591a</strong><small>\u67e5\u770b\u5168\u90e8\u5b98\u65b9\u80fd\u529b</small>'
+            '</button>'
+        )
+        return "".join(actions)
+
+    for index, (label, prompt) in enumerate(provider_ui["prompts"], start=1):
+        icon_name = ("bars", "trend", "compare")[min(index - 1, 2)]
+        actions.append(
+            '<button type="button" class="quick-prompt" '
+            f'data-prompt="{html_escape(prompt)}">'
+            '<span class="quick-card-top">'
+            f'<span class="quick-number">{index:02d}</span>'
+            '<span class="quick-arrow" aria-hidden="true">\u2197</span>'
+            '</span>'
+            f'<span class="quick-card-icon quick-card-icon--{icon_name}">{CHAT_QUICK_ACTION_ICONS[icon_name]}</span>'
+            f'<strong>{html_escape(label)}</strong>'
+            '</button>'
+        )
+    return "".join(actions)
+
+
 def serve_chat_template(handler: BaseHTTPRequestHandler, provider: str, path: str) -> None:
     chat_html = (SCRIPTS_DIR / "static" / "chat.html").read_text(encoding="utf-8")
     provider = normalize_chat_provider(provider)
     provider_ui = CHAT_PROVIDER_UI[provider]
+    official_workflow_enabled = provider == "amazon" and official_sellersprite_skill_enabled()
     chat_html = chat_html.replace("__CHAT_PROVIDER__", provider)
     chat_html = chat_html.replace(
-        "__CHAT_OFFICIAL_SELLERSPRITE_SKILLS__",
-        "true" if official_sellersprite_skill_enabled() else "false",
+        "__CHAT_OFFICIAL_WORKFLOW_ENABLED__",
+        "true" if official_workflow_enabled else "false",
     )
     chat_html = chat_html.replace("__CHAT_PROVIDER_LABEL__", CHAT_PROVIDER_LABELS[provider])
     chat_html = chat_html.replace("__CHAT_WORKSPACE_LABEL__", provider_ui["workspace"])
@@ -807,9 +914,10 @@ def serve_chat_template(handler: BaseHTTPRequestHandler, provider: str, path: st
     chat_html = chat_html.replace("__CHAT_HERO_TITLE__", provider_ui["title"])
     chat_html = chat_html.replace("__CHAT_HERO_INTRO__", provider_ui["intro"])
     chat_html = chat_html.replace("__CHAT_INPUT_PLACEHOLDER__", provider_ui["placeholder"])
-    for index, (label, prompt) in enumerate(provider_ui["prompts"], start=1):
-        chat_html = chat_html.replace(f"__CHAT_PROMPT_{index}_LABEL__", label)
-        chat_html = chat_html.replace(f"__CHAT_PROMPT_{index}_VALUE__", html_escape(prompt))
+    chat_html = chat_html.replace(
+        "__CHAT_QUICK_ACTIONS__",
+        render_chat_quick_actions(provider, provider_ui, official_workflow_enabled),
+    )
     page_heading = (
         '<button class="mobile-session-toggle" id="mobileSessionToggle" type="button" '
         'aria-label="打开会话列表" aria-expanded="false">'
