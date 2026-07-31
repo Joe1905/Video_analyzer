@@ -4497,6 +4497,6 @@ if __name__ == "__main__":
     test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence()
     test_fastmoss_report_evidence_is_semantic()
     test_fastmoss_analytical_answers_use_single_semantic_report_path()
-    test_fastmoss_claim_ids_and_extended_mechanical_cleanup()
+    test_fastmoss_claim_ids_and_verifier_edit_guards()
     test_analytical_routes_use_report_model_and_fastmoss_preserves_pro_draft()
     print("chat tool normalization tests passed")
