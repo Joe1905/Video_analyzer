@@ -12435,6 +12435,53 @@ def sellersprite_official_skill_system_instruction(
     return official_skill_prompt
 
 
+def async_generate_session_title(store: ChatStore, session, user_text: str, provider: str = "home") -> None:
+    """Background thread: generate concise session title intent via DeepSeek LLM."""
+    def _worker():
+        import requests as req
+        try:
+            api_key = os.getenv("DEEPSEEK_API_KEY", "")
+            if not api_key:
+                return
+            api_url = os.getenv("DEEPSEEK_API_URL", "https://api.deepseek.com/v1").rstrip("/")
+            model = os.getenv("DEEPSEEK_CHAT_MODEL", "deepseek-v4-flash")
+
+            prompt = (
+                "根据用户发起的首条提问内容，归纳其核心业务意图，生成一个简短的会话标题。\n"
+                "要求：\n"
+                "1. 标题长度在 4 到 12 个字之间（包含汉字或数字）。\n"
+                "2. 突出核心意图与关键词，例如：'3C电子蓝海挖掘'、'ABA高增长词分析'、'潜质竞品ASIN拆解'。\n"
+                "3. 严禁包含'请使用卖家精灵官方Skill'、'开始分析'、'目标：'、标点符号、引号或多余修饰语。\n"
+                "4. 只直接输出标题文本，不要包含任何解释说明。\n\n"
+                f"用户提问：\n{user_text[:600]}"
+            )
+            headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+            payload = {
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 30,
+                "temperature": 0.3,
+            }
+            resp = req.post(f"{api_url}/chat/completions", json=payload, headers=headers, timeout=8)
+            if resp.status_code == 200:
+                data = resp.json()
+                raw_title = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+                cleaned_title = re.sub(r'["\'`“”‘’《》【】\n\r]', '', raw_title).strip()
+                if cleaned_title and len(cleaned_title) <= 30:
+                    with store._lock:
+                        if not getattr(session, "title_is_custom", False):
+                            session.title = cleaned_title
+                            session.updated_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                    store._schedule_save()
+                    prefix = f"{provider}__"
+                    public_sid = session.id.removeprefix(prefix) if session.id.startswith(prefix) else session.id
+                    store.broadcast(session.id, "title_updated", {"sessionId": public_sid, "title": cleaned_title})
+        except Exception as e:
+            print(f"[CHAT TITLE LLM] title generation failed: {e}", flush=True)
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
 def run_chat_deepseek(
     store: ChatStore,
     session,
@@ -15187,6 +15234,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_chat_ask()
         if parsed.path == "/api/chat/export-pdf":
             return self.handle_chat_export_pdf()
+        if parsed.path.startswith("/api/chat/sessions/") and parsed.path.endswith("/rename"):
+            return self.handle_chat_rename_session(parsed.path)
         if parsed.path == "/api/shop-extract":
             return self.handle_shop_extract()
         if parsed.path == "/api/video-metrics":
@@ -15445,6 +15494,69 @@ class Handler(BaseHTTPRequestHandler):
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
         job = DownloadJob(id=str(uuid.uuid4()), url=url, source=source)
+        with download_jobs_lock:
+            download_jobs[job.id] = job
+        thread = threading.Thread(target=run_download_job, args=(job.id,), daemon=True)
+        thread.start()
+        return json_response(self, HTTPStatus.ACCEPTED, public_download_job(job))
+
+    def handle_shop_extract(self) -> None:
+        content_length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(content_length)
+        try:
+            payload = json.loads(body.decode("utf-8") or "{}")
+            url = str(payload.get("url", "")).strip()
+            source_type = str(payload.get("source_type") or "product")
+            region = str(payload.get("region") or os.getenv("SOCIAVAULT_REGION", "US")).strip().upper()
+            max_pages = int(payload.get("max_pages") or os.getenv("SOCIAVAULT_MAX_PAGES", "1"))
+            review_pages = int(payload.get("review_pages") or os.getenv("SOCIAVAULT_REVIEW_PAGES", "1"))
+            prompt = str(payload.get("prompt") or "").strip()
+            analyze = bool(payload.get("analyze", True))
+            related_videos = bool(payload.get("related_videos", False))
+            if source_type not in {"product", "details", "reviews", "shop", "search"}:
+                raise ValueError("source_type must be product, details, reviews, shop, or search")
+            if not url or len(url) > 2048:
+                raise ValueError("A TikTok Shop URL is required")
+            if max_pages < 1 or max_pages > 20:
+                raise ValueError("max_pages must be between 1 and 20")
+            if review_pages < 0 or review_pages > 20:
+                raise ValueError("review_pages must be between 0 and 20")
+            if len(prompt) > 6000:
+                raise ValueError("prompt is too long")
+        except (json.JSONDecodeError, ValueError) as exc:
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+
+        job = ShopJob(
+            id=str(uuid.uuid4()),
+            url=url,
+            source_type=source_type,
+            region=region,
+            max_pages=max_pages,
+            review_pages=review_pages,
+            analyze=analyze,
+            related_videos=related_videos,
+            prompt=prompt,
+        )
+        with shop_jobs_lock:
+            shop_jobs[job.id] = job
+        thread = threading.Thread(target=run_shop_job, args=(job.id,), daemon=True)
+        thread.start()
+        return json_response(self, HTTPStatus.ACCEPTED, public_shop_job(job))
+
+    def handle_video_metrics(self) -> None:
+        content_length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(content_length)
+        try:
+            payload = json.loads(body.decode("utf-8") or "{}")
+            target = str(payload.get("target", "")).strip()
+            endpoint = str(payload.get("endpoint", "video-info")).strip()
+            if endpoint not in TIKTOK_ENDPOINTS:
+                raise ValueError(f"Unknown endpoint: {endpoint}")
+            if not target and endpoint not in ("trending", "music-popular"):
+                raise ValueError("target is required for this endpoint")
+            if len(target) > 2048:
+                raise ValueError("target is too long")
+        except (json.JSONDecodeError, ValueError) as exc:
         with download_jobs_lock:
             download_jobs[job.id] = job
         thread = threading.Thread(target=run_download_job, args=(job.id,), daemon=True)
@@ -15990,9 +16102,9 @@ class Handler(BaseHTTPRequestHandler):
 
         user_msg = Message(id=str(uuid.uuid4()), role="user", content=text, attachments=attachments)
         store.add_message(session, user_msg)
-        if not session.title:
-            title_seed = text or (attachments[0].get("name") if attachments else "Image")
-            session.title = str(title_seed)[:40] + ("..." if len(str(title_seed)) > 40 else "")
+        if not session.title or session.title == "新对话" or not getattr(session, "title_is_custom", False):
+            session.title = ChatStore._auto_title(session)
+            async_generate_session_title(store, session, text, provider)
 
         model_text = chat_message_content_for_model(user_msg)
         assistant_msg = Message(id=str(uuid.uuid4()), role="assistant", content="", status="pending")
@@ -16065,6 +16177,42 @@ class Handler(BaseHTTPRequestHandler):
             "application/pdf",
             filename=f"chat-reply-{stamp}.pdf",
         )
+
+    def handle_chat_rename_session(self, path: str) -> None:
+        try:
+            payload = self.read_json_body()
+            new_title = str(payload.get("title") or "").strip()
+            provider = normalize_chat_provider(payload.get("provider"))
+            parts = path.split("/")
+            sid = parts[4] if len(parts) > 4 else ""
+            if not sid:
+                return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Missing session ID"})
+            if not new_title:
+                return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "标题不能为空"})
+            if len(new_title) > 50:
+                return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "标题不能超过 50 个字符"})
+
+            store = chat_store_for_provider(provider)
+            stored_sid = provider_session_exists(provider, sid) or chat_session_key(provider, sid)
+            session = store.get_or_create(stored_sid)
+
+            with store._lock:
+                session.title = new_title
+                session.title_is_custom = True
+                session.updated_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            store._schedule_save()
+
+            prefix = f"{provider}__"
+            public_sid = session.id.removeprefix(prefix) if session.id.startswith(prefix) else session.id
+            store.broadcast(session.id, "title_updated", {"sessionId": public_sid, "title": new_title})
+
+            return json_response(self, HTTPStatus.OK, {
+                "ok": True,
+                "sessionId": public_sid,
+                "title": new_title,
+            })
+        except Exception as exc:
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
     def handle_mcp_chat_export_pdf(self, chat_type: str) -> None:
         content_length = int(self.headers.get("Content-Length", "0"))

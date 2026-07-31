@@ -29,6 +29,7 @@ class Message:
 class Session:
     id: str
     title: str = ""
+    title_is_custom: bool = False
     created_at: str = ""
     updated_at: str = ""
     messages: list[Message] = field(default_factory=list)
@@ -91,6 +92,7 @@ class ChatStore:
             return sorted(
                 [{
                     "id": s.id, "title": s.title or self._auto_title(s),
+                    "title_is_custom": getattr(s, "title_is_custom", False),
                     "created_at": s.created_at, "updated_at": s.updated_at,
                     "message_count": len(s.messages),
                 } for s in self.sessions.values()],
@@ -101,7 +103,17 @@ class ChatStore:
     def _auto_title(session) -> str:
         for msg in session.messages:
             if msg.role == "user" and msg.content:
-                return msg.content[:40] + ("..." if len(msg.content) > 40 else "")
+                text = msg.content
+                import re
+                m = re.search(r"Skill\s*[\u300c\u300e\"'](.+?)[\u300d\u300f\"']", text)
+                if m:
+                    skill_name = m.group(1).strip()
+                    target_m = re.search(r"\u76ee\u6807\s*[\uff1a:]\s*(.+)", text)
+                    if target_m and target_m.group(1).strip():
+                        target_str = target_m.group(1).strip().splitlines()[0][:20]
+                        return f"{skill_name} \u00b7 {target_str}"
+                    return skill_name
+                return text[:40] + ("..." if len(text) > 40 else "")
             if msg.role == "user" and msg.attachments:
                 name = str((msg.attachments[0] or {}).get("name") or "Image")
                 return name[:40] + ("..." if len(name) > 40 else "")
@@ -149,7 +161,8 @@ def save_sessions_to_disk(store: ChatStore):
     serialized = []
     for s in store.sessions.values():
         serialized.append({
-            "id": s.id, "title": ChatStore._auto_title(s),
+            "id": s.id, "title": s.title or ChatStore._auto_title(s),
+            "title_is_custom": getattr(s, "title_is_custom", False),
             "created_at": s.created_at, "updated_at": s.updated_at,
             "messages": [{
                 "id": m.id, "role": m.role, "content": m.content,
@@ -176,6 +189,7 @@ def load_sessions_from_disk(store: ChatStore):
             if not sid or not item.get("messages"):
                 continue
             session = Session(id=sid, title=str(item.get("title", "")),
+                              title_is_custom=bool(item.get("title_is_custom", False)),
                               created_at=item.get("created_at", ""),
                               updated_at=item.get("updated_at", ""))
             for m in item.get("messages", []):
@@ -191,3 +205,4 @@ def load_sessions_from_disk(store: ChatStore):
         print(f"Loaded {len(store.sessions)} chat sessions from disk.")
     except Exception as e:
         print(f"Could not load chat sessions: {e}")
+
