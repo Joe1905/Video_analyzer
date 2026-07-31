@@ -17,6 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from scripts import web_app
+from scripts.sellersprite_evidence_renderer import SELLERSPRITE_CURRENT_TOOL_NAMES
 
 
 def run_27_presets_simulation() -> None:
@@ -34,7 +35,7 @@ def run_27_presets_simulation() -> None:
 
     all_sellersprite_tools = {
         f"sellersprite__{name}"
-        for name in web_app.SELLERSPRITE_CURRENT_TOOL_NAMES
+        for name in SELLERSPRITE_CURRENT_TOOL_NAMES
     }
 
     for index, (pid, pinfo) in enumerate(presets.items(), start=1):
