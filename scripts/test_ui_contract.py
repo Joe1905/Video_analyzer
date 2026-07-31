@@ -215,6 +215,8 @@ class UIContractTest(unittest.TestCase):
         self.assertIn("width: min(940px, 100%)", css)
         self.assertIn("calc((100% - 940px) / 2)", css)
         self.assertIn(".ui-main:has(> .official-workflow-layer.is-open)", css)
+        self.assertIn("official-workflow-tabs--single", css)
+        self.assertIn("__OFFICIAL_WORKFLOW_TABS_CLASS__", chat)
         self.assertNotIn('id="toolBtn"', chat)
         self.assertNotIn("headerToolBtn", chat)
         self.assertNotIn("toolModal", chat)

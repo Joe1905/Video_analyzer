@@ -1109,6 +1109,15 @@ body.ui-system .ui-nav__toggle:hover {
     background: var(--ui-surface-soft);
   }
 
+  body.ui-system .official-workflow-tabs.official-workflow-tabs--single {
+    padding: 0;
+    display: inline-flex;
+    grid-template-columns: none;
+    gap: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+
   body.ui-system .official-workflow-tab {
     min-height: 38px;
     padding: 8px 14px;
@@ -1130,6 +1139,18 @@ body.ui-system .ui-nav__toggle:hover {
     background: var(--ui-surface);
     color: var(--ui-ink);
     box-shadow: 0 2px 8px rgba(25, 28, 34, .06);
+  }
+
+  body.ui-system .official-workflow-tab.official-workflow-tab--single,
+  body.ui-system .official-workflow-tab.official-workflow-tab--single.is-active {
+    min-height: 24px;
+    padding: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--ui-ink-subtle);
+    font-size: 12px;
+    font-weight: 650;
+    box-shadow: none;
   }
 
   body.ui-system .official-workflow-body {
@@ -1763,6 +1784,12 @@ body.ui-system .ui-nav__toggle:hover {
       width: calc(100% - 36px);
       margin: 0 18px;
       justify-self: stretch;
+    }
+
+    body.ui-system .official-workflow-tabs.official-workflow-tabs--single {
+      width: auto;
+      margin: 0 18px;
+      justify-self: start;
     }
 
     body.ui-system .official-workflow-body {

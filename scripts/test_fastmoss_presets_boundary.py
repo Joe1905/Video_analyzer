@@ -68,8 +68,10 @@ class TestFastMossPresetsBoundary(unittest.TestCase):
     def test_modal_rendering(self):
         modal_ui = render_chat_official_workflow_modal("fastmoss")
         self.assertEqual(modal_ui["kicker"], "FASTMOSS · OFFICIAL SKILLS")
-        self.assertIn("FastMoss 官方策略库", modal_ui["title"])
+        self.assertEqual(modal_ui["title"], "FastMoss 官方策略库")
+        self.assertEqual(modal_ui["tabs_class"], " official-workflow-tabs--single")
         self.assertIn("官方策略 <span>7</span>", modal_ui["tabs"])
+        self.assertNotIn("<button", modal_ui["tabs"])
         self.assertIn("comprehensive/product-research", modal_ui["panels"])
         self.assertIn("comprehensive/creator-discovery", modal_ui["panels"])
 

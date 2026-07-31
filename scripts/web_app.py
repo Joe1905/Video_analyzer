@@ -577,7 +577,7 @@ NAV_ITEMS = [
 ]
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
-UI_ASSET_VERSION = "20260731-11"
+UI_ASSET_VERSION = "20260731-12"
 APP_UI_ASSETS = f"""
 <script id="ui-nav-state-boot">
 let uiNavExpanded = false;
@@ -935,9 +935,11 @@ def render_chat_official_workflow_modal(provider: str) -> dict[str, str]:
         ]
         return {
             "kicker": "FASTMOSS \u00b7 OFFICIAL SKILLS",
-            "title": "FastMoss \u5918\u65b9\u7b56\u7565\u5e93",
-            "intro": "\u9009\u62e9 FastMoss \u5918\u65b9\u9884\u8bbe\uff0c\u8fdb\u5165\u5179\u5e94\u7684\u9009\u54c1\u3001\u8fbe\u4eba\u3001\u77ed\u89c6\u9891\u4e0e\u5e97\u94fa\u5206\u6790\u6d41\u7a0b\u3002",
-            "tabs": '<button class="official-workflow-tab is-active" type="button" role="tab" aria-selected="true" data-official-tab="comprehensive">\u5918\u65b9\u7b56\u7565 <span>7</span></button>',
+            "title": "FastMoss \u5b98\u65b9\u7b56\u7565\u5e93",
+            "intro": "\u9009\u62e9 FastMoss \u5b98\u65b9\u9884\u8bbe\uff0c\u8fdb\u5165\u5179\u5e94\u7684\u9009\u54c1\u3001\u8fbe\u4eba\u3001\u77ed\u89c6\u9891\u4e0e\u5e97\u94fa\u5206\u6790\u6d41\u7a0b\u3002",
+            "tabs_class": " official-workflow-tabs--single",
+            "tabs_attributes": "",
+            "tabs": '<span class="official-workflow-tab official-workflow-tab--single is-active" role="status">\u5b98\u65b9\u7b56\u7565 <span>7</span></span>',
             "panels": (
                 '<section class="official-workflow-panel is-active" role="tabpanel" data-official-panel="comprehensive">'
                 '<div class="official-workflow-grid">'
@@ -989,8 +991,10 @@ def render_chat_official_workflow_modal(provider: str) -> dict[str, str]:
 
     return {
         "kicker": "SELLERSPRITE \u00b7 OFFICIAL SKILLS",
-        "title": "\u5918\u65b9\u7b56\u7565\u5e93",
-        "intro": "\u9009\u62e9\u5918\u65b9\u9884\u8bbe\uff0c\u8fdb\u5165\u5179\u5e94\u7684\u9009\u54c1\u4e0e\u8fd0\u8425\u5206\u6790\u6d41\u7a0b\u3002",
+        "title": "\u5b98\u65b9\u7b56\u7565\u5e93",
+        "intro": "\u9009\u62e9\u5b98\u65b9\u9884\u8bbe\uff0c\u8fdb\u5165\u5179\u5e94\u7684\u9009\u54c1\u4e0e\u8fd0\u8425\u5206\u6790\u6d41\u7a0b\u3002",
+        "tabs_class": "",
+        "tabs_attributes": "",
         "tabs": (
             '<button class="official-workflow-tab is-active" type="button" role="tab" aria-selected="true" data-official-tab="comprehensive">\u7efc\u5408\u5206\u6790 <span>10</span></button>'
             '<button class="official-workflow-tab" type="button" role="tab" aria-selected="false" data-official-tab="tactical">\u6218\u672f\u9009\u54c1 <span>17</span></button>'
@@ -1021,6 +1025,8 @@ def serve_chat_template(handler: BaseHTTPRequestHandler, provider: str, path: st
     chat_html = chat_html.replace("__OFFICIAL_WORKFLOW_KICKER__", modal_ui["kicker"])
     chat_html = chat_html.replace("__OFFICIAL_WORKFLOW_TITLE__", modal_ui["title"])
     chat_html = chat_html.replace("__OFFICIAL_WORKFLOW_INTRO__", modal_ui["intro"])
+    chat_html = chat_html.replace("__OFFICIAL_WORKFLOW_TABS_CLASS__", modal_ui["tabs_class"])
+    chat_html = chat_html.replace("__OFFICIAL_WORKFLOW_TABS_ATTRIBUTES__", modal_ui["tabs_attributes"])
     chat_html = chat_html.replace("__OFFICIAL_WORKFLOW_TABS__", modal_ui["tabs"])
     chat_html = chat_html.replace("__OFFICIAL_WORKFLOW_PANELS__", modal_ui["panels"])
     chat_html = chat_html.replace("__CHAT_PROVIDER_LABEL__", CHAT_PROVIDER_LABELS[provider])
