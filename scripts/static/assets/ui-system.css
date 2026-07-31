@@ -445,10 +445,26 @@ body.ui-system .ui-nav__toggle:hover {
     white-space: nowrap;
   }
 
-  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-item .del-btn {
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-item .session-actions {
     position: absolute;
     top: 6px;
     right: 6px;
+    display: none;
+    align-items: center;
+    gap: 2px;
+    z-index: 5;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-item:hover .session-actions,
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-item.editing .session-actions {
+    display: flex;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-item .session-actions .rename-btn,
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-item .session-actions .del-btn {
+    position: static;
+    top: auto;
+    right: auto;
     width: 28px;
     min-width: 28px;
     height: 28px;
@@ -458,7 +474,21 @@ body.ui-system .ui-nav__toggle:hover {
     border-radius: 9px;
     background: transparent;
     color: var(--ui-ink-subtle);
+    font-size: 14px;
+    display: inline-grid;
+    place-items: center;
+    cursor: pointer;
+    transition: background-color var(--ui-fast), color var(--ui-fast);
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-item .session-actions .del-btn {
     font-size: 16px;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-item .session-actions .rename-btn:hover,
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-item .session-actions .del-btn:hover {
+    background: var(--ui-surface-soft, rgba(0, 0, 0, 0.06));
+    color: var(--ui-ink);
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .sidebar-status {
@@ -3004,12 +3034,17 @@ body.ui-system .ui-nav__toggle:hover {
     white-space: nowrap;
   }
 
-  body.ui-route-home .session-item .del-btn,
-  body.ui-route-amazon .session-item .del-btn,
-  body.ui-route-fastmoss .session-item .del-btn {
+  body.ui-route-home .session-item > .del-btn,
+  body.ui-route-amazon .session-item > .del-btn,
+  body.ui-route-fastmoss .session-item > .del-btn {
     position: absolute;
     top: 7px;
     right: 7px;
+  }
+
+  body.ui-route-home .session-item .del-btn,
+  body.ui-route-amazon .session-item .del-btn,
+  body.ui-route-fastmoss .session-item .del-btn {
     width: 28px;
     min-width: 28px;
     height: 28px;
@@ -3962,7 +3997,7 @@ body.ui-system .ui-nav__toggle:hover {
     right: 7px;
   }
 
-  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-item .del-btn {
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .session-item > .del-btn {
     top: 7px;
     right: 7px;
   }
