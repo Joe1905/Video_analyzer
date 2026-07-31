@@ -11,6 +11,7 @@ from scripts.web_app import (
     render_chat_official_workflow_modal,
     render_chat_quick_actions,
     CHAT_PROVIDER_UI,
+    fallback_chat_session_title,
     select_official_fastmoss_skill_prompt,
 )
 
@@ -130,6 +131,13 @@ class TestFastMossPresetsBoundary(unittest.TestCase):
                 restored.get_session("fastmoss:demo").messages[0].official_preset,
                 {"id": "fm-product-scout", "label": "选品决策"},
             )
+
+    def test_short_question_title_fallback_keeps_analysis_intent(self):
+        self.assertEqual(fallback_chat_session_title("解压玩具"), "解压玩具分析")
+        self.assertEqual(
+            fallback_chat_session_title("目标：Fidget Toys 市场机会"),
+            "Fidget Toys",
+        )
 
 
 if __name__ == "__main__":

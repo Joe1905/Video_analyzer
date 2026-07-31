@@ -12704,13 +12704,42 @@ def sellersprite_official_skill_system_instruction(
     return official_skill_prompt
 
 
+def fallback_chat_session_title(user_text: str) -> str:
+    """Keep a meaningful title when the optional LLM title request is unavailable."""
+    text = re.sub(r"\s+", " ", str(user_text or "")).strip()
+    target_match = re.search(r"(?:目标|问题)\s*[：:]\s*(.+)", text)
+    if target_match:
+        text = target_match.group(1).strip()
+    text = re.sub(r"^[^\n]{0,50}?官方\s*Skill[「『\"'].*?[」』\"']\s*", "", text)
+    text = re.sub(r"[\n\r`“”‘’《》【】]", "", text).strip(" ：:。！？!?,，")
+    if not text:
+        return "新对话"
+    if len(text) <= 8 and not re.search(r"(?:分析|调研|研究|查询|拆解)$", text):
+        return f"{text}分析"[:12]
+    return text[:12].rstrip()
+
+
 def async_generate_session_title(store: ChatStore, session, user_text: str, provider: str = "home") -> None:
     """Background thread: generate concise session title intent via DeepSeek LLM."""
     def _worker():
         import requests as req
+        fallback_title = fallback_chat_session_title(user_text)
+
+        def apply_title(title: str) -> None:
+            with store._lock:
+                if getattr(session, "title_is_custom", False):
+                    return
+                session.title = title
+                session.updated_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            store._schedule_save()
+            prefix = f"{provider}__"
+            public_sid = session.id.removeprefix(prefix) if session.id.startswith(prefix) else session.id
+            store.broadcast(session.id, "title_updated", {"sessionId": public_sid, "title": title})
+
         try:
             api_key = os.getenv("DEEPSEEK_API_KEY", "")
             if not api_key:
+                apply_title(fallback_title)
                 return
             api_url = os.getenv("DEEPSEEK_API_URL", "https://api.deepseek.com/v1").rstrip("/")
             model = os.getenv("DEEPSEEK_CHAT_MODEL", "deepseek-v4-flash")
@@ -12721,7 +12750,8 @@ def async_generate_session_title(store: ChatStore, session, user_text: str, prov
                 "1. 标题长度在 4 到 12 个字之间（包含汉字或数字）。\n"
                 "2. 突出核心意图与关键词，例如：'3C电子蓝海挖掘'、'ABA高增长词分析'、'潜质竞品ASIN拆解'。\n"
                 "3. 严禁包含'请使用卖家精灵官方Skill'、'开始分析'、'目标：'、标点符号、引号或多余修饰语。\n"
-                "4. 只直接输出标题文本，不要包含任何解释说明。\n\n"
+                "4. 原问题少于 6 个字时，必须补充业务意图，不能原样复用。\n"
+                "5. 只直接输出标题文本，不要包含任何解释说明。\n\n"
                 f"用户提问：\n{user_text[:600]}"
             )
             headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
@@ -12737,16 +12767,15 @@ def async_generate_session_title(store: ChatStore, session, user_text: str, prov
                 raw_title = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
                 cleaned_title = re.sub(r'["\'`“”‘’《》【】\n\r]', '', raw_title).strip()
                 if cleaned_title and len(cleaned_title) <= 30:
-                    with store._lock:
-                        if not getattr(session, "title_is_custom", False):
-                            session.title = cleaned_title
-                            session.updated_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-                    store._schedule_save()
-                    prefix = f"{provider}__"
-                    public_sid = session.id.removeprefix(prefix) if session.id.startswith(prefix) else session.id
-                    store.broadcast(session.id, "title_updated", {"sessionId": public_sid, "title": cleaned_title})
+                    apply_title(cleaned_title)
+                    return
+                print("[CHAT TITLE LLM] invalid title response; using fallback", flush=True)
+            else:
+                print(f"[CHAT TITLE LLM] status={resp.status_code}; using fallback", flush=True)
+            apply_title(fallback_title)
         except Exception as e:
             print(f"[CHAT TITLE LLM] title generation failed: {e}", flush=True)
+            apply_title(fallback_title)
 
     threading.Thread(target=_worker, daemon=True).start()
 

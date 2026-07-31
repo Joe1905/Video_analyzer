@@ -164,5 +164,8 @@ async function deleteSession(id){if(!confirm(TXT.deleteConfirm))return;const del
 <script>
 (()=>{const renderMsgWithStableToolScroll=renderMsg;renderMsg=function(message,scroll=true){const messageId=String(message?.id||""),clientId=String(message?._clientId||""),selector=`[data-msg-id="${CSS.escape(messageId)}"], [data-client-msg-id="${CSS.escape(clientId)}"]`,previousList=msgBox.querySelector(selector)?.querySelector(".tool-card-list"),previousTop=previousList?.scrollTop||0,previousCount=previousList?.querySelectorAll(".tool-card").length||0,wasFollowing=previousList?previousList.scrollHeight-previousList.clientHeight-previousTop<=8:false;renderMsgWithStableToolScroll(message,scroll);const currentList=msgBox.querySelector(selector)?.querySelector(".tool-card-list");if(!currentList)return;const maxTop=Math.max(0,currentList.scrollHeight-currentList.clientHeight),currentCount=currentList.querySelectorAll(".tool-card").length,hasNewTool=currentCount>previousCount;currentList.scrollTop=wasFollowing&&hasNewTool?maxTop:Math.min(previousTop,maxTop)}})();
 </script>
+<script>
+(()=>{const subscribeSSEWithTitle=subscribeSSE;subscribeSSE=function(sessionId,assistantMessage){subscribeSSEWithTitle(sessionId,assistantMessage);S.sse?.addEventListener("title_updated",event=>{const payload=JSON.parse(event.data||"{}");const item=S.sessions.find(session=>session.id===payload.sessionId);if(!item||!payload.title)return;item.title=payload.title;renderSessions()})}})();
+</script>
 </body>
 </html>
