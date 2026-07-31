@@ -474,6 +474,26 @@ CHAT_PROVIDER_OFFICIAL_QUICK_ACTIONS = {
             "icon": "compare",
         },
     ),
+    "fastmoss": (
+        {
+            "label": "\u5546\u54c1\u9009\u54c1\u5206\u6790",
+            "skill": "\u5546\u54c1\u9009\u54c1\u5206\u6790",
+            "description": "\u6309\u591a\u7ef4\u6761\u4ef6\u9009\u54c1\u4e0e\u8bc4\u4f30\u7c7b\u76ee",
+            "icon": "bars",
+        },
+        {
+            "label": "\u8fbe\u4eba\u5e26\u8d27\u7b5b\u9009",
+            "skill": "\u8fbe\u4eba\u5e26\u8d27\u7b5b\u9009",
+            "description": "\u7b5b\u9009\u9ad8\u589e\u957f\u8fbe\u4eba\u4e0e\u5e26\u8d27\u529b",
+            "icon": "trend",
+        },
+        {
+            "label": "\u7206\u6b3e\u89c6\u9891\u62c6\u89e3",
+            "skill": "\u7206\u6b3e\u89c6\u9891\u62c6\u89e3",
+            "description": "\u62c6\u89e3\u77ed\u89c6\u9891\u4e0e\u5e26\u8d27\u811a\u672c",
+            "icon": "compare",
+        },
+    ),
 }
 CHAT_QUICK_ACTION_ICONS = {
     "bars": (
@@ -898,16 +918,111 @@ def render_chat_quick_actions(provider: str, provider_ui: dict[str, Any], offici
     return "".join(actions)
 
 
+def render_chat_official_workflow_modal(provider: str) -> dict[str, str]:
+    if provider == "fastmoss":
+        items = [
+            ("comprehensive/product-research", "商品选品分析", "按多维条件筛选潜力商品，评估进入可行性"),
+            ("comprehensive/creator-discovery", "达人带货筛选", "按带货力筛选达人，评估粉丝匹配与转化"),
+            ("comprehensive/content-dissect", "爆款视频拆解", "拆解短视频表现、脚本结构与带货转化"),
+            ("comprehensive/competitor-shop", "店铺渠道分析", "分析店铺 GMV 趋势、商品与达人全渠道布局"),
+            ("comprehensive/pricing-strategy", "价格分布与定价", "分析类目价格带分布，制定合理的定价策略"),
+            ("comprehensive/content-strategy", "类目内容策略", "提取类目爆款短视频模式与内容转化结构"),
+            ("comprehensive/competitor-analysis", "竞品商品对标", "全方位拆解竞品商品、渠道、达人与评论"),
+        ]
+        item_btns = [
+            f'<button class="official-workflow-item" type="button" data-official-preset-id="{pid}" data-official-preset="{html_escape(lbl)}"><span class="official-workflow-icon">{idx:02d}</span><span><strong>{html_escape(lbl)}</strong><small>{html_escape(dsc)}</small></span><i>\u2192</i></button>'
+            for idx, (pid, lbl, dsc) in enumerate(items, start=1)
+        ]
+        return {
+            "kicker": "FASTMOSS \u00b7 OFFICIAL SKILLS",
+            "title": "FastMoss \u5918\u65b9\u7b56\u7565\u5e93",
+            "intro": "\u9009\u62e9 FastMoss \u5918\u65b9\u9884\u8bbe\uff0c\u8fdb\u5165\u5179\u5e94\u7684\u9009\u54c1\u3001\u8fbe\u4eba\u3001\u77ed\u89c6\u9891\u4e0e\u5e97\u94fa\u5206\u6790\u6d41\u7a0b\u3002",
+            "tabs": '<button class="official-workflow-tab is-active" type="button" role="tab" aria-selected="true" data-official-tab="comprehensive">\u5918\u65b9\u7b56\u7565 <span>7</span></button>',
+            "panels": (
+                '<section class="official-workflow-panel is-active" role="tabpanel" data-official-panel="comprehensive">'
+                '<div class="official-workflow-grid">'
+                + "".join(item_btns) +
+                '</div></section>'
+            ),
+        }
+
+    comprehensive_items = [
+        ("comprehensive/product-research", "智能选品助手", "按多维条件筛选潜力商品，评估进入可行性"),
+        ("comprehensive/market-analysis", "市场全景分析", "对目标类目进行 11 个维度的全方位评估"),
+        ("comprehensive/competitor-analysis", "竞品深度拆解", "对竞品 ASIN 进行 8 大维度全面拆解"),
+        ("comprehensive/keyword-research", "关键词选品研究", "基于关键词判断市场需求与选品空间"),
+        ("comprehensive/listing-optimizer", "Listing 优化诊断", "诊断质量并发现关键词覆盖缺口"),
+        ("comprehensive/traffic-analysis", "流量结构分析", "拆解自然、广告与推荐流量结构"),
+        ("comprehensive/opportunity-finder", "蓝海机会挖掘", "通过 ABA 趋势发现增长与潜力关键词"),
+        ("comprehensive/review-insights", "买家评论洞察", "提炼买家痛点、满意点与改进方向"),
+        ("comprehensive/pricing-strategy", "定价策略分析", "分析市场价格带并制定定价策略"),
+        ("comprehensive/ad-optimizer", "广告投放优化", "基于关键词数据优化 PPC 广告策略"),
+    ]
+    tactical_items = [
+        ("tactical/new-product-burst", "新品快速爆发", "新品爆发 · 上架 ≤2 月、销量 ≥300"),
+        ("tactical/hidden-bestseller", "隐形爆款", "新品爆发 · 高销量、低评论的早期机会"),
+        ("tactical/aba-high-growth-trend", "ABA高增长趋势词", "关键词趋势 · 近 3 月持续增长"),
+        ("tactical/low-monopoly-keyword", "流量分散关键词", "关键词趋势 · 搜索高、点击集中度低"),
+        ("tactical/title-density-gap", "标题密度漏洞", "关键词趋势 · 捕捉低标题密度长尾词"),
+        ("tactical/hot-low-rating", "热销低评分产品", "产品缺陷 · 高销量、低评分的改良机会"),
+        ("tactical/review-sentiment", "评论语义分析", "产品缺陷 · 差评聚类与产品改良指南"),
+        ("tactical/low-brand-monopoly", "低品牌垄断类目", "类目结构 · 品牌集中度低于 45%"),
+        ("tactical/high-new-product-ratio", "高新品占比市场", "类目结构 · 新品占比高且持续出单"),
+        ("tactical/high-margin-lightweight", "高毛利轻小品", "类目结构 · 低配送成本与高毛利验证"),
+        ("tactical/natural-traffic-audit", "自然流量反查", "流量防伪 · 验证自然流量占比"),
+        ("tactical/variant-gap-analysis", "变体拆解模型", "流量防伪 · 找到未覆盖的变体缺口"),
+        ("tactical/local-premium-disruption", "本土溢价降维", "机会捕捉 · 本土高价高销产品切入"),
+        ("tactical/fbm-intercept", "FBM拦截", "机会捕捉 · 锁定 FBM 高销量商品"),
+        ("tactical/poor-listing-winner", "低质量Listing高销量", "机会捕捉 · 识别低 LQS 的高销量产品"),
+        ("tactical/high-ticket-long-tail", "高客单长尾", "机会捕捉 · 高均价、适中搜索量长尾词"),
+        ("tactical/seasonal-prepositioning", "季节前置爆破", "机会捕捉 · 历史同期高增长词前置布局"),
+    ]
+
+    comp_btns = [
+        f'<button class="official-workflow-item" type="button" data-official-preset-id="{pid}" data-official-preset="{html_escape(lbl)}"><span class="official-workflow-icon">{idx:02d}</span><span><strong>{html_escape(lbl)}</strong><small>{html_escape(dsc)}</small></span><i>\u2192</i></button>'
+        for idx, (pid, lbl, dsc) in enumerate(comprehensive_items, start=1)
+    ]
+    tact_btns = [
+        f'<button class="official-workflow-item" type="button" data-official-preset-id="{pid}" data-official-preset="{html_escape(lbl)}"><span class="official-workflow-icon">{idx:02d}</span><span><strong>{html_escape(lbl)}</strong><small>{html_escape(dsc)}</small></span><i>\u2192</i></button>'
+        for idx, (pid, lbl, dsc) in enumerate(tactical_items, start=1)
+    ]
+
+    return {
+        "kicker": "SELLERSPRITE \u00b7 OFFICIAL SKILLS",
+        "title": "\u5918\u65b9\u7b56\u7565\u5e93",
+        "intro": "\u9009\u62e9\u5918\u65b9\u9884\u8bbe\uff0c\u8fdb\u5165\u5179\u5e94\u7684\u9009\u54c1\u4e0e\u8fd0\u8425\u5206\u6790\u6d41\u7a0b\u3002",
+        "tabs": (
+            '<button class="official-workflow-tab is-active" type="button" role="tab" aria-selected="true" data-official-tab="comprehensive">\u7efc\u5408\u5206\u6790 <span>10</span></button>'
+            '<button class="official-workflow-tab" type="button" role="tab" aria-selected="false" data-official-tab="tactical">\u6218\u672f\u9009\u54c1 <span>17</span></button>'
+        ),
+        "panels": (
+            '<section class="official-workflow-panel is-active" role="tabpanel" data-official-panel="comprehensive">'
+            '<div class="official-workflow-grid">' + "".join(comp_btns) + '</div></section>'
+            '<section class="official-workflow-panel" role="tabpanel" data-official-panel="tactical" hidden>'
+            '<div class="official-workflow-grid official-workflow-grid--compact">' + "".join(tact_btns) + '</div></section>'
+        ),
+    }
+
+
 def serve_chat_template(handler: BaseHTTPRequestHandler, provider: str, path: str) -> None:
     chat_html = (SCRIPTS_DIR / "static" / "chat.html").read_text(encoding="utf-8")
     provider = normalize_chat_provider(provider)
     provider_ui = CHAT_PROVIDER_UI[provider]
-    official_workflow_enabled = provider == "amazon" and official_sellersprite_skill_enabled()
+    official_workflow_enabled = (
+        (provider == "amazon" and official_sellersprite_skill_enabled())
+        or (provider == "fastmoss" and official_fastmoss_skill_enabled())
+    )
+    modal_ui = render_chat_official_workflow_modal(provider)
     chat_html = chat_html.replace("__CHAT_PROVIDER__", provider)
     chat_html = chat_html.replace(
         "__CHAT_OFFICIAL_WORKFLOW_ENABLED__",
         "true" if official_workflow_enabled else "false",
     )
+    chat_html = chat_html.replace("__OFFICIAL_WORKFLOW_KICKER__", modal_ui["kicker"])
+    chat_html = chat_html.replace("__OFFICIAL_WORKFLOW_TITLE__", modal_ui["title"])
+    chat_html = chat_html.replace("__OFFICIAL_WORKFLOW_INTRO__", modal_ui["intro"])
+    chat_html = chat_html.replace("__OFFICIAL_WORKFLOW_TABS__", modal_ui["tabs"])
+    chat_html = chat_html.replace("__OFFICIAL_WORKFLOW_PANELS__", modal_ui["panels"])
     chat_html = chat_html.replace("__CHAT_PROVIDER_LABEL__", CHAT_PROVIDER_LABELS[provider])
     chat_html = chat_html.replace("__CHAT_WORKSPACE_LABEL__", provider_ui["workspace"])
     chat_html = chat_html.replace("__CHAT_NEW_LABEL__", provider_ui["new_label"])
@@ -12048,30 +12163,192 @@ def chat_system_instruction(provider: str, current_date_shanghai: str) -> str:
     )
 
 
-def fastmoss_official_skill_route() -> dict[str, Any]:
-    """Create the isolated route used by the official-Skill experiment."""
-    return {
+FASTMOSS_OFFICIAL_PRESETS: dict[str, dict[str, Any]] = {
+    "comprehensive/product-research": {
+        "label": "商品选品分析",
+        "skill_file": "references/tools-product.md",
+        "description": "按多维条件选品，评估潜力商品与进入可行性",
+        "tools": frozenset({
+            "fastmoss__search_category_by_words",
+            "fastmoss__market_category_analysis",
+            "fastmoss__market_category_ranking",
+            "fastmoss__product_rank_top_selling",
+            "fastmoss__product_rank_new_listed",
+            "fastmoss__product_search",
+            "fastmoss__product_detail_info",
+            "fastmoss__product_overview",
+            "fastmoss__product_sales_trend",
+            "fastmoss__product_investment",
+            "fastmoss__product_review_list",
+            "fastmoss__product_creator_analysis",
+            "fastmoss__product_video_list",
+        }),
+    },
+    "comprehensive/creator-discovery": {
+        "label": "达人带货筛选",
+        "skill_file": "references/tools-creator.md",
+        "description": "按带货力找人、评估粉丝匹配度与带货表现",
+        "tools": frozenset({
+            "fastmoss__search_category_by_words",
+            "fastmoss__product_search",
+            "fastmoss__creator_search",
+            "fastmoss__creator_rank_top_ecommerce",
+            "fastmoss__creator_rank_top_growth",
+            "fastmoss__creator_rank_top_potential",
+            "fastmoss__creator_profile_overview",
+            "fastmoss__creator_cargo_summary",
+            "fastmoss__creator_data_trends",
+            "fastmoss__creator_product_list",
+        }),
+    },
+    "comprehensive/content-dissect": {
+        "label": "爆款视频拆解",
+        "skill_file": "references/tools-product.md",
+        "description": "拆解短视频表现、脚本结构与带货转化",
+        "tools": frozenset({
+            "fastmoss__product_search",
+            "fastmoss__video_search",
+            "fastmoss__product_video_list",
+            "fastmoss__video_detail_analysis",
+            "fastmoss__video_data_trends",
+            "fastmoss__video_script_info",
+        }),
+    },
+    "comprehensive/competitor-shop": {
+        "label": "店铺渠道分析",
+        "skill_file": "references/tools-shop.md",
+        "description": "分析店铺 GMV 趋势、热销商品与达人全渠道布局",
+        "tools": frozenset({
+            "fastmoss__shop_search",
+            "fastmoss__shop_base_info",
+            "fastmoss__shop_data_trends",
+            "fastmoss__shop_sale_analysis",
+            "fastmoss__shop_investment_analysis",
+            "fastmoss__shop_product_analysis",
+            "fastmoss__shop_creator_analysis",
+            "fastmoss__shop_video_analysis",
+            "fastmoss__shop_live_analysis",
+            "fastmoss__ad_data_overview",
+        }),
+    },
+    "comprehensive/pricing-strategy": {
+        "label": "价格分布与定价",
+        "skill_file": "references/tools-product.md",
+        "description": "分析类目价格分布，制定合理价格带策略",
+        "tools": frozenset({
+            "fastmoss__search_category_by_words",
+            "fastmoss__market_category_analysis",
+            "fastmoss__product_rank_top_selling",
+            "fastmoss__product_search",
+            "fastmoss__product_detail_info",
+            "fastmoss__product_review_list",
+        }),
+    },
+    "comprehensive/content-strategy": {
+        "label": "类目内容策略",
+        "skill_file": "references/tools-product.md",
+        "description": "提取类目爆款短视频模式与内容结构",
+        "tools": frozenset({
+            "fastmoss__search_category_by_words",
+            "fastmoss__product_search",
+            "fastmoss__product_rank_top_selling",
+            "fastmoss__product_video_list",
+            "fastmoss__video_search",
+            "fastmoss__video_detail_analysis",
+            "fastmoss__video_data_trends",
+            "fastmoss__video_script_info",
+            "fastmoss__product_creator_analysis",
+            "fastmoss__creator_search",
+        }),
+    },
+    "comprehensive/competitor-analysis": {
+        "label": "竞品商品对标",
+        "skill_file": "references/tools-product.md",
+        "description": "全方位拆解竞品商品、渠道、达人与评论",
+        "tools": frozenset({
+            "fastmoss__product_search",
+            "fastmoss__shop_search",
+            "fastmoss__product_detail_info",
+            "fastmoss__product_overview",
+            "fastmoss__product_sales_trend",
+            "fastmoss__shop_base_info",
+            "fastmoss__shop_data_trends",
+            "fastmoss__product_creator_analysis",
+            "fastmoss__product_video_list",
+            "fastmoss__product_review_list",
+            "fastmoss__shop_creator_analysis",
+            "fastmoss__shop_video_analysis",
+            "fastmoss__search_category_by_words",
+            "fastmoss__market_category_analysis",
+            "fastmoss__product_rank_top_selling",
+        }),
+    },
+}
+
+FASTMOSS_LABEL_TO_PRESET_ID = {
+    preset_info["label"]: preset_id
+    for preset_id, preset_info in FASTMOSS_OFFICIAL_PRESETS.items()
+}
+
+
+def fastmoss_official_skill_route(
+    user_text: str | None = None,
+    official_preset_id: str | None = None,
+) -> dict[str, Any]:
+    """Create the isolated route used by the official FastMoss Skill path."""
+    route: dict[str, Any] = {
         "intent": "fastmoss_official_skill",
-        # Keep the official model response intact after tool execution.
         "task_depth": "direct",
         "route_source": "official_skill",
         "tools": None,
         "playbook": None,
         "dynamic_planner": False,
         "official_skill_chain": True,
+        "official_skill_provider": "fastmoss",
         "max_rounds": _chat_int_setting(
             "FASTMOSS_OFFICIAL_SKILL_MAX_ROUNDS", 24, 1, 50
         ),
     }
+    preset_id = str(official_preset_id or "").strip()
+    if not preset_id and user_text:
+        text_clean = str(user_text).lstrip()
+        prefix_start = "请使用 FastMoss 官方 Skill「"
+        if text_clean.startswith(prefix_start):
+            label_part = text_clean[len(prefix_start):].split("」", 1)[0].strip()
+            if label_part in FASTMOSS_LABEL_TO_PRESET_ID:
+                preset_id = FASTMOSS_LABEL_TO_PRESET_ID[label_part]
+    if preset_id in FASTMOSS_OFFICIAL_PRESETS:
+        preset_info = FASTMOSS_OFFICIAL_PRESETS[preset_id]
+        route.update({
+            "route_source": "official_preset",
+            "official_preset_id": preset_id,
+            "official_skill_file": preset_info["skill_file"],
+            "tools": sorted(preset_info["tools"]),
+        })
+    elif preset_id:
+        print(
+            "[CHAT FASTMOSS OFFICIAL SKILL] unknown_preset="
+            f"{json.dumps(preset_id[:120], ensure_ascii=False)}; "
+            "falling back to full official catalog",
+            flush=True,
+        )
+    return route
 
 
-def fastmoss_official_skill_tool_ids(enabled_tool_ids: set[str] | None) -> set[str]:
-    """Keep the experimental chain isolated from SellerSprite and system tools."""
-    return {
+def fastmoss_official_skill_tool_ids(
+    enabled_tool_ids: set[str] | None,
+    allowed_tools: list[str] | set[str] | None = None,
+) -> set[str]:
+    """Keep the experimental chain isolated and enforce preset tool whitelist when provided."""
+    fastmoss_ids = {
         tool_id
         for tool_id in set(enabled_tool_ids or set())
         if split_prefixed_tool_id(tool_id)[0] == "fastmoss"
     }
+    if allowed_tools is not None:
+        whitelist = set(allowed_tools)
+        return fastmoss_ids & whitelist
+    return fastmoss_ids
 
 
 def fastmoss_official_skill_system_instruction(
