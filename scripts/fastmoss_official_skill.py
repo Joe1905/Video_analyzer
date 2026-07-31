@@ -188,6 +188,34 @@ def load_official_fastmoss_skill_prompt(
         return prompt
 
 
+def select_official_fastmoss_skill_prompt(
+    prompt: str,
+    relative_name: str,
+) -> str:
+    """Keep the official base instructions and one preset-specific tool reference."""
+    if relative_name not in OFFICIAL_PROMPT_FILES:
+        raise ValueError(f"Unknown official FastMoss Skill file: {relative_name}")
+
+    header = prompt.split("\n\n## 官方文件：", 1)[0].strip()
+    selected_names = tuple(dict.fromkeys((
+        "SKILL.md",
+        "references/tool-call.md",
+        relative_name,
+    )))
+    sections: list[str] = []
+    for name in selected_names:
+        marker = f"\n\n## 官方文件：{name}\n\n"
+        if marker not in prompt:
+            raise RuntimeError(
+                f"Official FastMoss Skill prompt is missing file: {name}"
+            )
+        document = prompt.split(marker, 1)[1].split(
+            "\n\n## 官方文件：", 1
+        )[0].strip()
+        sections.append(f"{marker}{document}")
+    return header + "".join(sections)
+
+
 def clear_official_fastmoss_skill_memory_cache() -> None:
     """Test helper; disk cache is intentionally preserved."""
     with _LOAD_LOCK:

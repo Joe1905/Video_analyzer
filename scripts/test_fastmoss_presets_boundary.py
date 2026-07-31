@@ -8,6 +8,7 @@ from scripts.web_app import (
     render_chat_official_workflow_modal,
     render_chat_quick_actions,
     CHAT_PROVIDER_UI,
+    select_official_fastmoss_skill_prompt,
 )
 
 
@@ -75,6 +76,22 @@ class TestFastMossPresetsBoundary(unittest.TestCase):
         self.assertIn("<button", modal_ui["tabs"])
         self.assertIn("comprehensive/product-research", modal_ui["panels"])
         self.assertIn("comprehensive/creator-discovery", modal_ui["panels"])
+
+    def test_selected_prompt_keeps_base_and_preset_reference(self):
+        prompt = (
+            "FastMoss provenance"
+            "\n\n## 官方文件：SKILL.md\n\nbase"
+            "\n\n## 官方文件：references/tool-call.md\n\ncall rules"
+            "\n\n## 官方文件：references/tools-product.md\n\nproduct tools"
+            "\n\n## 官方文件：references/tools-creator.md\n\ncreator tools"
+        )
+        selected = select_official_fastmoss_skill_prompt(
+            prompt, "references/tools-product.md"
+        )
+        self.assertIn("SKILL.md", selected)
+        self.assertIn("references/tool-call.md", selected)
+        self.assertIn("references/tools-product.md", selected)
+        self.assertNotIn("references/tools-creator.md", selected)
 
     def test_quick_actions_3_plus_1_format(self):
         html = render_chat_quick_actions("fastmoss", CHAT_PROVIDER_UI["fastmoss"], official_enabled=True)

@@ -138,6 +138,7 @@ from fastmoss_evidence_renderer import (
 from fastmoss_official_skill import (
     load_official_fastmoss_skill_prompt,
     official_fastmoss_skill_enabled,
+    select_official_fastmoss_skill_prompt,
 )
 from sellersprite_official_skill import (
     load_official_sellersprite_skill_prompt,
@@ -12789,7 +12790,7 @@ def run_chat_deepseek(
         fastmoss_official_skill_chain or sellersprite_official_skill_chain
     )
     official_skill_route = (
-        fastmoss_official_skill_route()
+        fastmoss_official_skill_route(user_text, official_preset_id)
         if fastmoss_official_skill_chain
         else sellersprite_official_skill_route(user_text, official_preset_id)
         if sellersprite_official_skill_chain
@@ -12803,14 +12804,17 @@ def run_chat_deepseek(
                 if fastmoss_official_skill_chain
                 else load_official_sellersprite_skill_prompt()
             )
-            if (
-                sellersprite_official_skill_chain
-                and official_skill_route
-                and official_skill_route.get("official_skill_file")
-            ):
-                official_skill_prompt = select_official_sellersprite_skill_prompt(
-                    official_skill_prompt,
-                    str(official_skill_route["official_skill_file"]),
+            if official_skill_route and official_skill_route.get("official_skill_file"):
+                official_skill_prompt = (
+                    select_official_fastmoss_skill_prompt(
+                        official_skill_prompt,
+                        str(official_skill_route["official_skill_file"]),
+                    )
+                    if fastmoss_official_skill_chain
+                    else select_official_sellersprite_skill_prompt(
+                        official_skill_prompt,
+                        str(official_skill_route["official_skill_file"]),
+                    )
                 )
         except Exception as exc:
             label = "FastMoss" if fastmoss_official_skill_chain else "SellerSprite"
@@ -12962,7 +12966,10 @@ def run_chat_deepseek(
         effective_enabled_tool_ids = provider_default_enabled_tool_ids(provider)
     if official_skill_chain:
         effective_enabled_tool_ids = (
-            fastmoss_official_skill_tool_ids(effective_enabled_tool_ids)
+            fastmoss_official_skill_tool_ids(
+                effective_enabled_tool_ids,
+                route.get("tools"),
+            )
             if fastmoss_official_skill_chain
             else sellersprite_official_skill_tool_ids(effective_enabled_tool_ids)
         )
@@ -16328,7 +16335,7 @@ class Handler(BaseHTTPRequestHandler):
             text = str(payload.get("message", "")).strip()
             raw_attachments = payload.get("attachments", [])
             official_preset_id = str(payload.get("officialPresetId") or "").strip()
-            if provider != "amazon":
+            if provider not in {"amazon", "fastmoss"}:
                 official_preset_id = ""
             enabled_tool_ids = None
             if "enabledToolMasks" in payload:
