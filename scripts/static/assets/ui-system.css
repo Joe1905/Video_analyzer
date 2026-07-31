@@ -4143,6 +4143,23 @@ body.ui-system .ui-nav__toggle:hover {
     display: grid;
     gap: 6px;
     margin-top: 5px;
+    max-height: 216px;
+    overflow-y: auto;
+    scroll-behavior: smooth;
+    padding-right: 2px;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .tool-card-list::-webkit-scrollbar {
+    width: 4px;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .tool-card-list::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.18);
+    border-radius: 4px;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .tool-card-list::-webkit-scrollbar-track {
+    background: transparent;
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .tool-card {
