@@ -6528,11 +6528,7 @@ def execute_prefixed_tool(tool_id: str, args: dict[str, Any], region: str | None
             return execute_tool(name, args)
         if domain in {"sociavault", "sellersprite", "fastmoss"}:
             chat_type = domain
-            normalized_args = apply_mcp_region_default(chat_type, name, args or {}, region)
-            normalized_args, runtime_normalization = normalize_mcp_tool_arguments(chat_type, name, normalized_args)
-            if runtime_normalization:
-                print(f"[CHAT] normalized {tool_id} arguments: {runtime_normalization}", flush=True)
-            normalized_args = apply_mcp_region_default(chat_type, name, normalized_args, region)
+            normalized_args = dict(args or {})
             
             if is_tool_mock_enabled(domain):
                 print(
@@ -6542,6 +6538,12 @@ def execute_prefixed_tool(tool_id: str, args: dict[str, Any], region: str | None
                 )
                 mock_result = generate_generic_mock_tool_payload(domain, name, normalized_args)
                 return {"ok": True, "elapsed": 0.005, "data": mock_result}
+
+            normalized_args = apply_mcp_region_default(chat_type, name, normalized_args, region)
+            normalized_args, runtime_normalization = normalize_mcp_tool_arguments(chat_type, name, normalized_args)
+            if runtime_normalization:
+                print(f"[CHAT] normalized {tool_id} arguments: {runtime_normalization}", flush=True)
+            normalized_args = apply_mcp_region_default(chat_type, name, normalized_args, region)
 
             result = mcp_bridge_request(chat_type, "tools/call", {"name": name, "arguments": normalized_args})
             return {"ok": True, "elapsed": round(time.monotonic() - started, 3), "data": result}
