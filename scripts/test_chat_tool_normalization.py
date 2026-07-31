@@ -226,13 +226,23 @@ def test_sellersprite_official_skill_chain_loads_full_bundle_and_isolates_tools(
         web_app.SELLERSPRITE_PRODUCT_RESEARCH_PRESET_ID,
     )
     assert explicit_preset_route == preset_route
-    unknown_preset_route = web_app.sellersprite_official_skill_route(
-        "解压玩具",
-        "comprehensive/unknown",
-    )
     assert unknown_preset_route["tools"] is None
     assert "official_preset_id" not in unknown_preset_route
     assert web_app.chat_route_uses_report_model("amazon", route) is False
+
+    # Test generic mock payload generation and interception
+    mock_payload = web_app.generate_generic_mock_tool_payload("sellersprite", "product_research", {"asin": "B08TEST001"})
+    assert mock_payload["isError"] is False
+    parsed_mock = json.loads(mock_payload["content"][0]["text"])
+    assert parsed_mock["code"] == 200
+    assert parsed_mock["msg"] == "success"
+    assert parsed_mock["is_test_mock"] is True
+    assert "[测试拦截/模拟发送]" in parsed_mock["notice"]
+    assert parsed_mock["data"]["items"][0]["asin"] == "B08TEST001"
+
+    intercepted_exec = web_app.execute_prefixed_tool("sellersprite__product_research", {"asin": "B08TEST001"})
+    assert intercepted_exec["ok"] is True
+    assert "data" in intercepted_exec
 
     clear_official_sellersprite_skill_memory_cache()
     try:

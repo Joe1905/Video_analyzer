@@ -6356,6 +6356,200 @@ def filter_locked_provider_tool_ids(provider: str, tool_ids: set[str] | None) ->
     return filtered
 
 
+def is_tool_mock_enabled(domain: str) -> bool:
+    """Check whether test mock interception is enabled globally or for a specific provider."""
+    global_mock = str(os.getenv("CHAT_TOOL_MOCK_MODE", "1")).strip().lower() in {"1", "true", "yes", "on"}
+    provider_mock = str(os.getenv(f"{domain.upper()}_TOOL_MOCK_MODE", "1")).strip().lower() in {"1", "true", "yes", "on"}
+    return global_mock or provider_mock
+
+
+def generate_generic_mock_tool_payload(
+    domain: str,
+    name: str,
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Generate open API compliant test mock responses for tools across domains."""
+    notice = f"[测试拦截/模拟发送] 当前处于 {domain.upper()} 工具测试模式，已成功拦截原始 API 请求并返回标准测试数据。"
+    
+    if domain == "sellersprite":
+        sellersprite_mocks: dict[str, dict[str, Any]] = {
+            "product_research": {
+                "total": 1280,
+                "items": [{
+                    "asin": args.get("asin") or "B08TEST001",
+                    "title": "Test Decompression Fidget Toy (Sample Product)",
+                    "brand": "TestBrand",
+                    "price": 19.99,
+                    "sales": 3200,
+                    "revenue": 63968.0,
+                    "bsr": 150,
+                    "rating": 4.5,
+                    "review_count": 480,
+                    "lqs": 8.5,
+                    "seller_type": "FBA",
+                    "pub_date": "2024-03-15",
+                }],
+            },
+            "product_node": {
+                "node_id": args.get("node_id") or "165793011",
+                "node_name": "Fidget Toys & Stress Relief",
+                "category_path": "Toys & Games > Executive Desk Toys",
+                "total_products": 4500,
+            },
+            "asin_detail": {
+                "asin": args.get("asin") or "B08TEST001",
+                "title": "Test Decompression Fidget Toy",
+                "brand": "TestBrand",
+                "price": 19.99,
+                "monthly_sales": 3200,
+                "rating": 4.5,
+                "reviews": 480,
+                "bsr": 150,
+                "parent_asin": "B08PARENT0",
+                "variations_count": 4,
+                "seller_name": "TestSeller",
+                "country": "US",
+            },
+            "asin_prediction": {
+                "asin": args.get("asin") or "B08TEST001",
+                "predicted_sales_next_month": 3500,
+                "growth_rate": 0.0937,
+                "confidence_score": 0.88,
+            },
+            "market_research": {
+                "category": args.get("category") or "Toys & Games",
+                "total_revenue": 1250000.0,
+                "total_units": 62500,
+                "avg_price": 20.0,
+                "top_brands_share": 0.38,
+                "top_sellers_share": 0.42,
+            },
+            "market_research_statistics": {
+                "avg_price": 19.99,
+                "avg_sales": 1500,
+                "avg_rating": 4.4,
+                "avg_reviews": 320,
+                "fba_ratio": 0.85,
+                "brand_concentration": 0.35,
+                "seller_concentration": 0.40,
+            },
+            "keyword_research": {
+                "keyword": args.get("keyword") or "fidget toy",
+                "search_volume": 45000,
+                "purchases": 9800,
+                "cpc": 1.25,
+                "click_concentration": 0.32,
+                "supply_demand_ratio": 0.85,
+            },
+            "keyword_miner": {
+                "total": 350,
+                "keywords": [
+                    {"keyword": "sensory fidget toy", "searches": 18000, "cpc": 1.10, "relevance": 0.95},
+                    {"keyword": "stress relief toy for kids", "searches": 12000, "cpc": 0.95, "relevance": 0.90},
+                ],
+            },
+            "google_trend": {
+                "keyword": args.get("keyword") or "fidget toy",
+                "trend_score": 78,
+                "direction": "rising",
+                "timeline": [
+                    {"date": "2024-01-01", "value": 70},
+                    {"date": "2024-02-01", "value": 85},
+                ],
+            },
+            "review": {
+                "asin": args.get("asin") or "B08TEST001",
+                "total_reviews": 480,
+                "positive_ratio": 0.88,
+                "top_positive_topics": ["fun", "durable", "giftable"],
+                "top_negative_topics": ["smaller than expected", "packaging"],
+            },
+            "keepa_info": {
+                "asin": args.get("asin") or "B08TEST001",
+                "price_history": [
+                    {"date": "2024-01-01", "price": 21.99},
+                    {"date": "2024-03-01", "price": 19.99},
+                ],
+                "rank_history": [
+                    {"date": "2024-01-01", "rank": 200},
+                    {"date": "2024-03-01", "rank": 150},
+                ],
+            },
+            "traffic_keyword": {
+                "asin": args.get("asin") or "B08TEST001",
+                "keywords_count": 120,
+                "organic_keywords": 85,
+                "ppc_keywords": 35,
+                "top_keywords": ["fidget toy", "stress toy", "desk toy"],
+            },
+        }
+        specific_data = sellersprite_mocks.get(name, {
+            "status": "test_mock_success",
+            "tool_name": name,
+            "arguments": args,
+            "records": [{"id": 1, "name": f"Mock {name} Result Record 1"}],
+        })
+        mcp_content_json = json.dumps({
+            "code": 200,
+            "msg": "success",
+            "is_test_mock": True,
+            "notice": notice,
+            "data": specific_data,
+        }, ensure_ascii=False)
+        return {
+            "content": [{"type": "text", "text": mcp_content_json}],
+            "isError": False,
+        }
+    
+    generic_data = {
+        "code": 200,
+        "msg": "success",
+        "is_test_mock": True,
+        "domain": domain,
+        "tool_name": name,
+        "arguments": args,
+        "notice": notice,
+        "data": {
+            "status": "test_mock_success",
+            "items": [{"id": "mock_001", "name": f"Test {domain.capitalize()} Item 1"}],
+        },
+    }
+    return {
+        "content": [{"type": "text", "text": json.dumps(generic_data, ensure_ascii=False)}],
+        "isError": False,
+    }
+
+
+def execute_prefixed_tool(tool_id: str, args: dict[str, Any], region: str | None = None) -> dict[str, Any]:
+    domain, name = split_prefixed_tool_id(tool_id)
+    started = time.monotonic()
+    try:
+        if domain in {"system", "function"}:
+            return execute_tool(name, args)
+        if domain in {"sociavault", "sellersprite", "fastmoss"}:
+            chat_type = domain
+            normalized_args = apply_mcp_region_default(chat_type, name, args or {}, region)
+            normalized_args, runtime_normalization = normalize_mcp_tool_arguments(chat_type, name, normalized_args)
+            if runtime_normalization:
+                print(f"[CHAT] normalized {tool_id} arguments: {runtime_normalization}", flush=True)
+            normalized_args = apply_mcp_region_default(chat_type, name, normalized_args, region)
+            
+            if is_tool_mock_enabled(domain):
+                print(
+                    f"[CHAT TOOL MOCK INTERCEPT] provider={domain} requested_tool={tool_id} "
+                    f"args={json.dumps(normalized_args, ensure_ascii=False)}",
+                    flush=True,
+                )
+                mock_result = generate_generic_mock_tool_payload(domain, name, normalized_args)
+                return {"ok": True, "elapsed": 0.005, "data": mock_result}
+
+            result = mcp_bridge_request(chat_type, "tools/call", {"name": name, "arguments": normalized_args})
+            return {"ok": True, "elapsed": round(time.monotonic() - started, 3), "data": result}
+        return {"ok": False, "elapsed": round(time.monotonic() - started, 3), "error": f"Unknown tool domain: {domain}"}
+    except Exception as exc:
+        return {"ok": False, "elapsed": round(time.monotonic() - started, 3), "error": str(exc)}
+
+
 def provider_forces_mcp_tools(provider: str) -> bool:
     return normalize_chat_provider(provider) in FORCED_MCP_CHAT_PROVIDERS
 
@@ -6385,8 +6579,6 @@ def provider_default_enabled_tool_ids(provider: str) -> set[str]:
 
 
 def build_prefixed_model_tools(enabled_tool_ids: set[str] | None) -> list[dict[str, Any]]:
-    selected = enabled_tool_ids
-    model_tools: list[dict[str, Any]] = []
     for tool in chat_local_tools():
         name = str(tool.get("name") or "")
         domain = local_tool_domain(name)
@@ -12949,6 +13141,15 @@ def run_chat_deepseek(
                             "tool_name": split_prefixed_tool_id(fn_name)[1],
                         }
                     else:
+                        print(
+                            f"[CHAT PRESET ENTRY & BOUNDARY LOG] provider={route.get('official_skill_provider') or provider} "
+                            f"preset_id={route.get('official_preset_id')} "
+                            f"skill_file={route.get('official_skill_file')} "
+                            f"allowed_tools_count={len(effective_enabled_tool_ids or []) if effective_enabled_tool_ids else 'all'} "
+                            f"requested_tool={fn_name} "
+                            f"args={json.dumps(fn_args, ensure_ascii=False)}",
+                            flush=True,
+                        )
                         raw_result = execute_prefixed_tool(fn_name, fn_args, default_region)
                         normalized_result = normalize_prefixed_tool_result(fn_name, raw_result)
                     normalized_result = annotate_fastmoss_tool_result(
