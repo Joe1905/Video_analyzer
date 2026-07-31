@@ -6520,36 +6520,7 @@ def generate_generic_mock_tool_payload(
     }
 
 
-def execute_prefixed_tool(tool_id: str, args: dict[str, Any], region: str | None = None) -> dict[str, Any]:
-    domain, name = split_prefixed_tool_id(tool_id)
-    started = time.monotonic()
-    try:
-        if domain in {"system", "function"}:
-            return execute_tool(name, args)
-        if domain in {"sociavault", "sellersprite", "fastmoss"}:
-            chat_type = domain
-            normalized_args = dict(args or {})
-            
-            if is_tool_mock_enabled(domain):
-                print(
-                    f"[CHAT TOOL MOCK INTERCEPT] provider={domain} requested_tool={tool_id} "
-                    f"args={json.dumps(normalized_args, ensure_ascii=False)}",
-                    flush=True,
-                )
-                mock_result = generate_generic_mock_tool_payload(domain, name, normalized_args)
-                return {"ok": True, "elapsed": 0.005, "data": mock_result}
 
-            normalized_args = apply_mcp_region_default(chat_type, name, normalized_args, region)
-            normalized_args, runtime_normalization = normalize_mcp_tool_arguments(chat_type, name, normalized_args)
-            if runtime_normalization:
-                print(f"[CHAT] normalized {tool_id} arguments: {runtime_normalization}", flush=True)
-            normalized_args = apply_mcp_region_default(chat_type, name, normalized_args, region)
-
-            result = mcp_bridge_request(chat_type, "tools/call", {"name": name, "arguments": normalized_args})
-            return {"ok": True, "elapsed": round(time.monotonic() - started, 3), "data": result}
-        return {"ok": False, "elapsed": round(time.monotonic() - started, 3), "error": f"Unknown tool domain: {domain}"}
-    except Exception as exc:
-        return {"ok": False, "elapsed": round(time.monotonic() - started, 3), "error": str(exc)}
 
 
 def provider_forces_mcp_tools(provider: str) -> bool:
