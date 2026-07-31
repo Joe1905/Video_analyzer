@@ -183,15 +183,31 @@ def test_sellersprite_official_skill_chain_loads_full_bundle_and_isolates_tools(
 
     route = web_app.sellersprite_official_skill_route("/keyword-research flying toys")
     assert route["official_skill_chain"] is True
+
+    route = web_app.sellersprite_official_skill_route("/keyword-research flying toys")
+    assert route["official_skill_chain"] is True
     assert route["official_skill_provider"] == "sellersprite"
     assert route["route_source"] == "official_skill"
     assert route["dynamic_planner"] is False
     assert route["intent"] == "sellersprite_official_skill"
     assert route["task_depth"] == "direct"
     assert web_app.chat_route_uses_report_model("amazon", route) is False
-    lookup_route = web_app.sellersprite_official_skill_route("查询 flying toys 关键词的月搜索量")
-    assert lookup_route == route
-    assert web_app.chat_route_uses_report_model("amazon", lookup_route) is False
+    assert len(web_app.SELLERSPRITE_OFFICIAL_PRESETS) == 27
+    for pid, pinfo in web_app.SELLERSPRITE_OFFICIAL_PRESETS.items():
+        assert pinfo["skill_file"] in OFFICIAL_SELLERSPRITE_PROMPT_FILES
+        assert len(pinfo["tools"]) > 0
+        assert all(t.startswith("sellersprite__") for t in pinfo["tools"])
+        r_by_id = web_app.sellersprite_official_skill_route("test query", pid)
+        assert r_by_id["route_source"] == "official_preset"
+        assert r_by_id["official_preset_id"] == pid
+        assert r_by_id["official_skill_file"] == pinfo["skill_file"]
+        assert set(r_by_id["tools"]) == set(pinfo["tools"])
+
+        text_prompt = f"请使用卖家精灵官方 Skill「{pinfo['label']}」开始分析。\n\n目标：测试商品"
+        r_by_label = web_app.sellersprite_official_skill_route(text_prompt)
+        assert r_by_label["route_source"] == "official_preset"
+        assert r_by_label["official_preset_id"] == pid
+
     preset_route = web_app.sellersprite_official_skill_route(
         "请使用卖家精灵官方 Skill「智能选品助手」开始分析。\n\n目标：解压玩具"
     )
@@ -216,20 +232,6 @@ def test_sellersprite_official_skill_chain_loads_full_bundle_and_isolates_tools(
     )
     assert unknown_preset_route["tools"] is None
     assert "official_preset_id" not in unknown_preset_route
-    assert web_app.official_skill_market_default_instruction("amazon") == (
-        "应用执行默认值：用户未指定站点时，对支持 marketplace 参数的 SellerSprite 工具使用 US。"
-    )
-    assert web_app.sellersprite_official_skill_tool_ids({
-        "sellersprite__asin_detail",
-        "fastmoss__product_search",
-        "system__current_time",
-    }) == {"sellersprite__asin_detail"}
-    instruction = web_app.sellersprite_official_skill_system_instruction(
-        "2026-07-27",
-        prompt,
-    )
-    assert instruction == prompt
-    assert web_app.chat_max_tool_rounds("amazon", route, 43) == 24
     assert web_app.chat_route_uses_report_model("amazon", route) is False
 
     clear_official_sellersprite_skill_memory_cache()

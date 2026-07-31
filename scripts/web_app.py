@@ -11851,16 +11851,290 @@ def fastmoss_official_skill_system_instruction(
     return official_skill_prompt
 
 
+SELLERSPRITE_OFFICIAL_PRESETS: dict[str, dict[str, Any]] = {
+    # 综合分析 (10)
+    "comprehensive/product-research": {
+        "label": "智能选品助手",
+        "skill_file": "comprehensive/product-research.md",
+        "tools": frozenset({
+            "sellersprite__product_node",
+            "sellersprite__product_research",
+            "sellersprite__asin_detail",
+            "sellersprite__asin_prediction",
+            "sellersprite__market_research_statistics",
+            "sellersprite__google_trend",
+        }),
+    },
+    "comprehensive/market-analysis": {
+        "label": "市场全景分析",
+        "skill_file": "comprehensive/market-analysis.md",
+        "tools": frozenset({
+            "sellersprite__product_node",
+            "sellersprite__market_research",
+            "sellersprite__market_research_statistics",
+            "sellersprite__market_brand_concentration",
+            "sellersprite__market_seller_concentration",
+            "sellersprite__market_product_concentration",
+            "sellersprite__market_listing_date_distribution",
+            "sellersprite__market_price_distribution",
+            "sellersprite__market_rating_distribution",
+            "sellersprite__market_ratings_count_distribution",
+            "sellersprite__market_ebc_distribution",
+            "sellersprite__market_seller_country_distribution",
+            "sellersprite__market_seller_type_concentration",
+        }),
+    },
+    "comprehensive/competitor-analysis": {
+        "label": "竞品深度拆解",
+        "skill_file": "comprehensive/competitor-analysis.md",
+        "tools": frozenset({
+            "sellersprite__asin_detail",
+            "sellersprite__asin_prediction",
+            "sellersprite__keepa_info",
+            "sellersprite__traffic_keyword",
+            "sellersprite__traffic_keyword_stat",
+            "sellersprite__traffic_listing",
+            "sellersprite__traffic_source",
+            "sellersprite__review",
+            "sellersprite__asin_coupon_trend",
+        }),
+    },
+    "comprehensive/keyword-research": {
+        "label": "关键词选品研究",
+        "skill_file": "comprehensive/keyword-research.md",
+        "tools": frozenset({
+            "sellersprite__keyword_research",
+            "sellersprite__keyword_miner",
+            "sellersprite__google_trend",
+            "sellersprite__keyword_research_trends",
+            "sellersprite__aba_research_weekly",
+            "sellersprite__aba_research_monthly",
+            "sellersprite__aba_research_trend",
+        }),
+    },
+    "comprehensive/listing-optimizer": {
+        "label": "Listing 优化诊断",
+        "skill_file": "comprehensive/listing-optimizer.md",
+        "tools": frozenset({
+            "sellersprite__asin_detail",
+            "sellersprite__asin_prediction",
+            "sellersprite__traffic_keyword",
+            "sellersprite__traffic_keyword_stat",
+            "sellersprite__traffic_extend",
+            "sellersprite__keyword_order",
+            "sellersprite__review",
+            "sellersprite__competitor_lookup",
+        }),
+    },
+    "comprehensive/traffic-analysis": {
+        "label": "流量结构分析",
+        "skill_file": "comprehensive/traffic-analysis.md",
+        "tools": frozenset({
+            "sellersprite__traffic_keyword",
+            "sellersprite__traffic_keyword_stat",
+            "sellersprite__traffic_source",
+            "sellersprite__traffic_extend",
+            "sellersprite__traffic_listing",
+            "sellersprite__traffic_listing_stat",
+            "sellersprite__keyword_order",
+        }),
+    },
+    "comprehensive/opportunity-finder": {
+        "label": "蓝海机会挖掘",
+        "skill_file": "comprehensive/opportunity-finder.md",
+        "tools": frozenset({
+            "sellersprite__keyword_research",
+            "sellersprite__keyword_research_trends",
+            "sellersprite__google_trend",
+            "sellersprite__market_research",
+            "sellersprite__aba_research_weekly",
+            "sellersprite__aba_research_monthly",
+            "sellersprite__aba_research_trend",
+        }),
+    },
+    "comprehensive/review-insights": {
+        "label": "买家评论洞察",
+        "skill_file": "comprehensive/review-insights.md",
+        "tools": frozenset({
+            "sellersprite__asin_detail",
+            "sellersprite__asin_prediction",
+            "sellersprite__review",
+            "sellersprite__keepa_info",
+        }),
+    },
+    "comprehensive/pricing-strategy": {
+        "label": "定价策略分析",
+        "skill_file": "comprehensive/pricing-strategy.md",
+        "tools": frozenset({
+            "sellersprite__product_research",
+            "sellersprite__market_price_distribution",
+            "sellersprite__competitor_lookup",
+        }),
+    },
+    "comprehensive/ad-optimizer": {
+        "label": "广告投放优化",
+        "skill_file": "comprehensive/ad-optimizer.md",
+        "tools": frozenset({
+            "sellersprite__asin_detail",
+            "sellersprite__traffic_keyword",
+            "sellersprite__traffic_keyword_stat",
+            "sellersprite__traffic_source",
+            "sellersprite__traffic_extend",
+            "sellersprite__keyword_miner",
+            "sellersprite__keyword_order",
+        }),
+    },
+    # 战术选品 (17)
+    "tactical/new-product-burst": {
+        "label": "新品快速爆发",
+        "skill_file": "tactical/new-product-burst.md",
+        "tools": frozenset({
+            "sellersprite__product_research",
+            "sellersprite__asin_prediction",
+            "sellersprite__traffic_source",
+        }),
+    },
+    "tactical/hidden-bestseller": {
+        "label": "隐形爆款",
+        "skill_file": "tactical/hidden-bestseller.md",
+        "tools": frozenset({
+            "sellersprite__product_research",
+        }),
+    },
+    "tactical/aba-high-growth-trend": {
+        "label": "ABA 高增长趋势词",
+        "skill_file": "tactical/aba-high-growth-trend.md",
+        "tools": frozenset({
+            "sellersprite__keyword_research",
+            "sellersprite__keyword_miner",
+            "sellersprite__google_trend",
+        }),
+    },
+    "tactical/low-monopoly-keyword": {
+        "label": "流量分散关键词",
+        "skill_file": "tactical/low-monopoly-keyword.md",
+        "tools": frozenset({
+            "sellersprite__keyword_research",
+            "sellersprite__keyword_miner",
+        }),
+    },
+    "tactical/title-density-gap": {
+        "label": "标题密度漏洞",
+        "skill_file": "tactical/title-density-gap.md",
+        "tools": frozenset({
+            "sellersprite__keyword_miner",
+            "sellersprite__traffic_extend",
+        }),
+    },
+    "tactical/hot-low-rating": {
+        "label": "热销低评分产品",
+        "skill_file": "tactical/hot-low-rating.md",
+        "tools": frozenset({
+            "sellersprite__product_research",
+            "sellersprite__asin_prediction",
+        }),
+    },
+    "tactical/review-sentiment": {
+        "label": "评论语义分析",
+        "skill_file": "tactical/review-sentiment.md",
+        "tools": frozenset({
+            "sellersprite__review",
+        }),
+    },
+    "tactical/low-brand-monopoly": {
+        "label": "低品牌垄断类目",
+        "skill_file": "tactical/low-brand-monopoly.md",
+        "tools": frozenset({
+            "sellersprite__market_research",
+            "sellersprite__market_brand_concentration",
+            "sellersprite__market_seller_concentration",
+            "sellersprite__market_product_concentration",
+        }),
+    },
+    "tactical/high-new-product-ratio": {
+        "label": "高新品占比市场",
+        "skill_file": "tactical/high-new-product-ratio.md",
+        "tools": frozenset({
+            "sellersprite__market_research",
+            "sellersprite__market_listing_date_distribution",
+            "sellersprite__market_listing_trend_distribution",
+        }),
+    },
+    "tactical/high-margin-lightweight": {
+        "label": "高毛利轻小品",
+        "skill_file": "tactical/high-margin-lightweight.md",
+        "tools": frozenset({
+            "sellersprite__product_research",
+            "sellersprite__asin_prediction",
+        }),
+    },
+    "tactical/natural-traffic-audit": {
+        "label": "自然流量反查",
+        "skill_file": "tactical/natural-traffic-audit.md",
+        "tools": frozenset({
+            "sellersprite__traffic_source",
+            "sellersprite__traffic_keyword_stat",
+            "sellersprite__keepa_info",
+        }),
+    },
+    "tactical/variant-gap-analysis": {
+        "label": "变体拆解模型",
+        "skill_file": "tactical/variant-gap-analysis.md",
+        "tools": frozenset({
+            "sellersprite__asin_detail",
+            "sellersprite__asin_prediction",
+            "sellersprite__keyword_miner",
+        }),
+    },
+    "tactical/local-premium-disruption": {
+        "label": "本土溢价降维",
+        "skill_file": "tactical/local-premium-disruption.md",
+        "tools": frozenset({
+            "sellersprite__product_research",
+            "sellersprite__asin_prediction",
+        }),
+    },
+    "tactical/fbm-intercept": {
+        "label": "FBM 拦截",
+        "skill_file": "tactical/fbm-intercept.md",
+        "tools": frozenset({
+            "sellersprite__product_research",
+            "sellersprite__asin_prediction",
+        }),
+    },
+    "tactical/poor-listing-winner": {
+        "label": "低质量 Listing 高销量",
+        "skill_file": "tactical/poor-listing-winner.md",
+        "tools": frozenset({
+            "sellersprite__product_research",
+            "sellersprite__traffic_keyword",
+        }),
+    },
+    "tactical/high-ticket-long-tail": {
+        "label": "高客单长尾",
+        "skill_file": "tactical/high-ticket-long-tail.md",
+        "tools": frozenset({
+            "sellersprite__keyword_research",
+            "sellersprite__keyword_miner",
+        }),
+    },
+    "tactical/seasonal-prepositioning": {
+        "label": "季节前置爆破",
+        "skill_file": "tactical/seasonal-prepositioning.md",
+        "tools": frozenset({
+            "sellersprite__keyword_miner",
+            "sellersprite__google_trend",
+        }),
+    },
+}
+
+SELLERSPRITE_LABEL_TO_PRESET_ID: dict[str, str] = {
+    info["label"]: pid for pid, info in SELLERSPRITE_OFFICIAL_PRESETS.items()
+}
+
 SELLERSPRITE_PRODUCT_RESEARCH_PRESET_ID = "comprehensive/product-research"
-SELLERSPRITE_PRODUCT_RESEARCH_SKILL_FILE = "comprehensive/product-research.md"
-SELLERSPRITE_PRODUCT_RESEARCH_TOOL_IDS = frozenset({
-    "sellersprite__product_node",
-    "sellersprite__product_research",
-    "sellersprite__asin_detail",
-    "sellersprite__asin_prediction",
-    "sellersprite__market_research_statistics",
-    "sellersprite__google_trend",
-})
+SELLERSPRITE_PRODUCT_RESEARCH_SKILL_FILE = SELLERSPRITE_OFFICIAL_PRESETS[SELLERSPRITE_PRODUCT_RESEARCH_PRESET_ID]["skill_file"]
+SELLERSPRITE_PRODUCT_RESEARCH_TOOL_IDS = SELLERSPRITE_OFFICIAL_PRESETS[SELLERSPRITE_PRODUCT_RESEARCH_PRESET_ID]["tools"]
 
 
 def sellersprite_official_skill_route(
@@ -11884,19 +12158,20 @@ def sellersprite_official_skill_route(
         ),
     }
     preset_id = str(official_preset_id or "").strip()
-    if (
-        not preset_id
-        and str(user_text or "").lstrip().startswith(
-            "请使用卖家精灵官方 Skill「智能选品助手」开始分析。"
-        )
-    ):
-        preset_id = SELLERSPRITE_PRODUCT_RESEARCH_PRESET_ID
-    if preset_id == SELLERSPRITE_PRODUCT_RESEARCH_PRESET_ID:
+    if not preset_id and user_text:
+        text_clean = str(user_text).lstrip()
+        prefix_start = "请使用卖家精灵官方 Skill「"
+        if text_clean.startswith(prefix_start):
+            label_part = text_clean[len(prefix_start):].split("」", 1)[0].strip()
+            if label_part in SELLERSPRITE_LABEL_TO_PRESET_ID:
+                preset_id = SELLERSPRITE_LABEL_TO_PRESET_ID[label_part]
+    if preset_id in SELLERSPRITE_OFFICIAL_PRESETS:
+        preset_info = SELLERSPRITE_OFFICIAL_PRESETS[preset_id]
         route.update({
             "route_source": "official_preset",
             "official_preset_id": preset_id,
-            "official_skill_file": SELLERSPRITE_PRODUCT_RESEARCH_SKILL_FILE,
-            "tools": sorted(SELLERSPRITE_PRODUCT_RESEARCH_TOOL_IDS),
+            "official_skill_file": preset_info["skill_file"],
+            "tools": sorted(preset_info["tools"]),
         })
     elif preset_id:
         print(
