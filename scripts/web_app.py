@@ -14962,6 +14962,7 @@ class Handler(BaseHTTPRequestHandler):
                     "attachments": m.attachments,
                     "tool_calls": m.tool_calls,
                     "tool_results": m.tool_results,
+                    "official_preset": m.official_preset,
                     "status": m.status,
                     "created_at": m.created_at,
                 }
@@ -16345,6 +16346,16 @@ class Handler(BaseHTTPRequestHandler):
             official_preset_id = str(payload.get("officialPresetId") or "").strip()
             if provider not in {"amazon", "fastmoss"}:
                 official_preset_id = ""
+            preset_catalog = (
+                FASTMOSS_OFFICIAL_PRESETS if provider == "fastmoss"
+                else SELLERSPRITE_OFFICIAL_PRESETS if provider == "amazon"
+                else {}
+            )
+            preset_info = preset_catalog.get(official_preset_id) or {}
+            official_preset = (
+                {"id": official_preset_id, "label": str(preset_info.get("label") or official_preset_id)}
+                if preset_info else None
+            )
             enabled_tool_ids = None
             if "enabledToolMasks" in payload:
                 print(f"[CHAT] ignored legacy tool masks provider={provider}; full-site tools are enforced", flush=True)
@@ -16362,7 +16373,10 @@ class Handler(BaseHTTPRequestHandler):
             attachments = process_chat_attachments(raw_attachments, text)
         except ChatAttachmentError as exc:
             attachments = exc.attachments
-            user_msg = Message(id=str(uuid.uuid4()), role="user", content=text, attachments=attachments)
+            user_msg = Message(
+                id=str(uuid.uuid4()), role="user", content=text,
+                attachments=attachments, official_preset=official_preset,
+            )
             store.add_message(session, user_msg)
             if not session.title:
                 title_seed = text or (attachments[0].get("name") if attachments else "Image")
@@ -16377,6 +16391,7 @@ class Handler(BaseHTTPRequestHandler):
                     "role": "user",
                     "content": user_msg.content,
                     "attachments": user_msg.attachments,
+                    "official_preset": user_msg.official_preset,
                     "status": user_msg.status,
                     "created_at": user_msg.created_at,
                 },
@@ -16391,7 +16406,10 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as exc:
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
-        user_msg = Message(id=str(uuid.uuid4()), role="user", content=text, attachments=attachments)
+        user_msg = Message(
+            id=str(uuid.uuid4()), role="user", content=text,
+            attachments=attachments, official_preset=official_preset,
+        )
         store.add_message(session, user_msg)
         if not session.title or session.title == "新对话" or not getattr(session, "title_is_custom", False):
             session.title = ChatStore._auto_title(session)
@@ -16423,6 +16441,7 @@ class Handler(BaseHTTPRequestHandler):
                 "role": "user",
                 "content": user_msg.content,
                 "attachments": user_msg.attachments,
+                "official_preset": user_msg.official_preset,
                 "status": user_msg.status,
                 "created_at": user_msg.created_at,
             },

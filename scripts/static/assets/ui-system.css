@@ -1308,6 +1308,29 @@ body.ui-system .ui-nav__toggle:hover {
     line-height: 1.7;
   }
 
+  body:is(.ui-route-amazon, .ui-route-fastmoss) .msg.user .message-preset {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 100%;
+    margin: 0 0 8px;
+    padding: 3px 7px;
+    border: 1px solid rgba(255, 255, 255, .2);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, .1);
+    color: rgba(255, 255, 255, .78);
+    font-size: 11px;
+    line-height: 1.35;
+  }
+
+  body:is(.ui-route-amazon, .ui-route-fastmoss) .msg.user .message-preset b {
+    overflow: hidden;
+    color: #fff;
+    font-weight: 700;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-fastmoss) .msg.assistant {
     position: relative;
     padding-left: 48px;

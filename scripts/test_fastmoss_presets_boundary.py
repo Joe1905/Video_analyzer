@@ -1,5 +1,8 @@
 """Test FastMoss official presets registration, tool whitelists, and boundary isolation."""
 import unittest
+from tempfile import TemporaryDirectory
+from pathlib import Path
+from scripts.chat_session import ChatStore, Message, load_sessions_from_disk, save_sessions_to_disk
 from scripts.web_app import (
     FASTMOSS_OFFICIAL_PRESETS,
     FASTMOSS_LABEL_TO_PRESET_ID,
@@ -103,6 +106,26 @@ class TestFastMossPresetsBoundary(unittest.TestCase):
         self.assertIn('data-official-preset-id="comprehensive/content-dissect"', html)
         self.assertIn("official-workflow-launch", html)
         self.assertIn("查看全部", html)
+
+    def test_official_preset_is_persisted_with_user_message(self):
+        with TemporaryDirectory() as temp_dir:
+            sessions_file = Path(temp_dir) / "sessions.json"
+            store = ChatStore(sessions_file)
+            session = store.get_or_create("fastmoss:demo")
+            store.add_message(session, Message(
+                id="user-1", role="user", content="解压玩具",
+                official_preset={
+                    "id": "comprehensive/product-research",
+                    "label": "商品选品分析",
+                },
+            ))
+            save_sessions_to_disk(store)
+            restored = ChatStore(sessions_file)
+            load_sessions_from_disk(restored)
+            self.assertEqual(
+                restored.get_session("fastmoss:demo").messages[0].official_preset,
+                {"id": "comprehensive/product-research", "label": "商品选品分析"},
+            )
 
 
 if __name__ == "__main__":

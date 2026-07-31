@@ -19,6 +19,7 @@ class Message:
     attachments: list[dict] | None = None
     tool_calls: list[dict] | None = None
     tool_results: list[dict] | None = None
+    official_preset: dict[str, str] | None = None
     status: str = "done"  # "pending" | "done" | "error"
     request: dict | None = None
     raw: dict | None = None
@@ -168,6 +169,7 @@ def save_sessions_to_disk(store: ChatStore):
                 "id": m.id, "role": m.role, "content": m.content,
                 "attachments": m.attachments,
                 "tool_calls": m.tool_calls, "tool_results": m.tool_results,
+                "official_preset": m.official_preset,
                 "status": m.status, "created_at": m.created_at,
             } for m in s.messages],
         })
@@ -198,6 +200,7 @@ def load_sessions_from_disk(store: ChatStore):
                     content=m.get("content", ""),
                     attachments=m.get("attachments"),
                     tool_calls=m.get("tool_calls"), tool_results=m.get("tool_results"),
+                    official_preset=m.get("official_preset"),
                     status=m.get("status", "done"),
                     created_at=m.get("created_at", time.time()),
                 ))
