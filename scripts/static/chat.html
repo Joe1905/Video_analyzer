@@ -103,6 +103,7 @@
             <button type="button" class="quick-prompt" data-prompt="__CHAT_PROMPT_1_VALUE__"><span class="quick-number">01</span><span aria-hidden="true">↗</span><strong>__CHAT_PROMPT_1_LABEL__</strong></button>
             <button type="button" class="quick-prompt" data-prompt="__CHAT_PROMPT_2_VALUE__"><span class="quick-number">02</span><span aria-hidden="true">↗</span><strong>__CHAT_PROMPT_2_LABEL__</strong></button>
             <button type="button" class="quick-prompt" data-prompt="__CHAT_PROMPT_3_VALUE__"><span class="quick-number">03</span><span aria-hidden="true">↗</span><strong>__CHAT_PROMPT_3_LABEL__</strong></button>
+            <button type="button" class="quick-prompt official-workflow-launch" id="officialWorkflowLaunch" aria-haspopup="dialog"><span class="quick-number">04 · 官方</span><span aria-hidden="true">↗</span><strong>官方策略库</strong></button>
           </div>
         </section>
         <div class="empty-chat" id="emptyChat"></div>
@@ -129,12 +130,68 @@
   </section>
 </div>
 <div class="quote-toolbar" id="quoteToolbar"><button class="secondary sm" id="quoteAskBtn">&#24341;&#29992;&#25552;&#38382;</button></div><div class="image-viewer" id="imageViewer"><button class="ui-chat-close ui-chat-close--lg" type="button" id="imageViewerClose" aria-label="关闭图片预览" title="关闭图片预览">&times;</button><img id="imageViewerImg" alt=""></div>
+<div class="official-workflow-layer" id="officialWorkflowLayer" aria-hidden="true">
+  <button class="official-workflow-backdrop" id="officialWorkflowBackdrop" type="button" aria-label="关闭官方策略库"></button>
+  <section class="official-workflow-dialog" role="dialog" aria-modal="true" aria-labelledby="officialWorkflowTitle">
+    <header class="official-workflow-head">
+      <div>
+        <div class="official-workflow-kicker">SELLERSPRITE · OFFICIAL SKILLS</div>
+        <h2 id="officialWorkflowTitle">官方策略库</h2>
+        <p>选择官方预设，进入对应的选品与运营分析流程。</p>
+      </div>
+      <button class="ui-chat-close ui-chat-close--md" id="officialWorkflowClose" type="button" aria-label="关闭官方策略库" title="关闭">&times;</button>
+    </header>
+    <div class="official-workflow-tabs" role="tablist" aria-label="官方策略分类">
+      <button class="official-workflow-tab is-active" type="button" role="tab" aria-selected="true" data-official-tab="comprehensive">综合分析 <span>10</span></button>
+      <button class="official-workflow-tab" type="button" role="tab" aria-selected="false" data-official-tab="tactical">战术选品 <span>17</span></button>
+    </div>
+    <div class="official-workflow-body">
+      <section class="official-workflow-panel is-active" role="tabpanel" data-official-panel="comprehensive">
+        <div class="official-workflow-grid">
+          <button class="official-workflow-item" type="button" data-official-preset="智能选品助手"><span class="official-workflow-icon">01</span><span><strong>智能选品助手</strong><small>按多维条件筛选潜力商品，评估进入可行性</small></span><i>→</i></button>
+          <button class="official-workflow-item" type="button" data-official-preset="市场全景分析"><span class="official-workflow-icon">02</span><span><strong>市场全景分析</strong><small>对目标类目进行 11 个维度的全方位评估</small></span><i>→</i></button>
+          <button class="official-workflow-item" type="button" data-official-preset="竞品深度拆解"><span class="official-workflow-icon">03</span><span><strong>竞品深度拆解</strong><small>对竞品 ASIN 进行 8 大维度全面拆解</small></span><i>→</i></button>
+          <button class="official-workflow-item" type="button" data-official-preset="关键词选品研究"><span class="official-workflow-icon">04</span><span><strong>关键词选品研究</strong><small>基于关键词判断市场需求与选品空间</small></span><i>→</i></button>
+          <button class="official-workflow-item" type="button" data-official-preset="Listing 优化诊断"><span class="official-workflow-icon">05</span><span><strong>Listing 优化诊断</strong><small>诊断质量并发现关键词覆盖缺口</small></span><i>→</i></button>
+          <button class="official-workflow-item" type="button" data-official-preset="流量结构分析"><span class="official-workflow-icon">06</span><span><strong>流量结构分析</strong><small>拆解自然、广告与推荐流量结构</small></span><i>→</i></button>
+          <button class="official-workflow-item" type="button" data-official-preset="蓝海机会挖掘"><span class="official-workflow-icon">07</span><span><strong>蓝海机会挖掘</strong><small>通过 ABA 趋势发现增长与潜力关键词</small></span><i>→</i></button>
+          <button class="official-workflow-item" type="button" data-official-preset="买家评论洞察"><span class="official-workflow-icon">08</span><span><strong>买家评论洞察</strong><small>提炼买家痛点、满意点与改进方向</small></span><i>→</i></button>
+          <button class="official-workflow-item" type="button" data-official-preset="定价策略分析"><span class="official-workflow-icon">09</span><span><strong>定价策略分析</strong><small>分析市场价格带并制定定价策略</small></span><i>→</i></button>
+          <button class="official-workflow-item" type="button" data-official-preset="广告投放优化"><span class="official-workflow-icon">10</span><span><strong>广告投放优化</strong><small>基于关键词数据优化 PPC 广告策略</small></span><i>→</i></button>
+        </div>
+      </section>
+      <section class="official-workflow-panel" role="tabpanel" data-official-panel="tactical" hidden>
+        <div class="official-workflow-grid official-workflow-grid--compact">
+          <button class="official-workflow-item" type="button" data-official-preset="新品快速爆发"><span class="official-workflow-icon">01</span><span><strong>新品快速爆发</strong><small>新品爆发 · 上架 ≤2 月、销量 ≥300</small></span><i>→</i></button>
+          <button class="official-workflow-item" type="button" data-official-preset="隐形爆款"><span class="official-workflow-icon">02</span><span><strong>隐形爆款</strong><small>新品爆发 · 高销量、低评论的早期机会</small></span><i>→</i></button>
+          <button class="official-workflow-item" type="button" data-official-preset="ABA高增长趋势词"><span class="official-workflow-icon">03</span><span><strong>ABA 高增长趋势词</strong><small>关键词趋势 · 近 3 月持续增长</small></span><i>→</i></button>
+          <button class="official-workflow-item" type="button" data-official-preset="流量分散关键词"><span class="official-workflow-icon">04</span><span><strong>流量分散关键词</strong><small>关键词趋势 · 搜索高、点击集中度低</small></span><i>→</i></button>
+          <button class="official-workflow-item" type="button" data-official-preset="标题密度漏洞"><span class="official-workflow-icon">05</span><span><strong>标题密度漏洞</strong><small>关键词趋势 · 捕捉低标题密度长尾词</small></span><i>→</i></button>
+          <button class="official-workflow-item" type="button" data-official-preset="热销低评分产品"><span class="official-workflow-icon">06</span><span><strong>热销低评分产品</strong><small>产品缺陷 · 高销量、低评分的改良机会</small></span><i>→</i></button>
+          <button class="official-workflow-item" type="button" data-official-preset="评论语义分析"><span class="official-workflow-icon">07</span><span><strong>评论语义分析</strong><small>产品缺陷 · 差评聚类与产品改良指南</small></span><i>→</i></button>
+          <button class="official-workflow-item" type="button" data-official-preset="低品牌垄断类目"><span class="official-workflow-icon">08</span><span><strong>低品牌垄断类目</strong><small>类目结构 · 品牌集中度低于 45%</small></span><i>→</i></button>
+          <button class="official-workflow-item" type="button" data-official-preset="高新品占比市场"><span class="official-workflow-icon">09</span><span><strong>高新品占比市场</strong><small>类目结构 · 新品占比高且持续出单</small></span><i>→</i></button>
+          <button class="official-workflow-item" type="button" data-official-preset="高毛利轻小品"><span class="official-workflow-icon">10</span><span><strong>高毛利轻小品</strong><small>类目结构 · 低配送成本与高毛利验证</small></span><i>→</i></button>
+          <button class="official-workflow-item" type="button" data-official-preset="自然流量反查"><span class="official-workflow-icon">11</span><span><strong>自然流量反查</strong><small>流量防伪 · 验证自然流量占比</small></span><i>→</i></button>
+          <button class="official-workflow-item" type="button" data-official-preset="变体拆解模型"><span class="official-workflow-icon">12</span><span><strong>变体拆解模型</strong><small>流量防伪 · 找到未覆盖的变体缺口</small></span><i>→</i></button>
+          <button class="official-workflow-item" type="button" data-official-preset="本土溢价降维"><span class="official-workflow-icon">13</span><span><strong>本土溢价降维</strong><small>机会捕捉 · 本土高价高销产品切入</small></span><i>→</i></button>
+          <button class="official-workflow-item" type="button" data-official-preset="FBM拦截"><span class="official-workflow-icon">14</span><span><strong>FBM 拦截</strong><small>机会捕捉 · 锁定 FBM 高销量商品</small></span><i>→</i></button>
+          <button class="official-workflow-item" type="button" data-official-preset="低质量Listing高销量"><span class="official-workflow-icon">15</span><span><strong>低质量 Listing 高销量</strong><small>机会捕捉 · 识别低 LQS 的高销量产品</small></span><i>→</i></button>
+          <button class="official-workflow-item" type="button" data-official-preset="高客单长尾"><span class="official-workflow-icon">16</span><span><strong>高客单长尾</strong><small>机会捕捉 · 高均价、适中搜索量长尾词</small></span><i>→</i></button>
+          <button class="official-workflow-item" type="button" data-official-preset="季节前置爆破"><span class="official-workflow-icon">17</span><span><strong>季节前置爆破</strong><small>机会捕捉 · 历史同期高增长词前置布局</small></span><i>→</i></button>
+        </div>
+      </section>
+    </div>
+    <footer class="official-workflow-foot"><span><i></i>当前接入固定版本官方链路</span><small>选择后请补充关键词、ASIN 或目标类目</small></footer>
+  </section>
+</div>
 </div>
 </div>
 </div>
 <script src="/assets/vendor/markdown-it.min.js"></script>
 <script>
 const CHAT_PROVIDER="__CHAT_PROVIDER__";
+const OFFICIAL_SELLERSPRITE_SKILLS=__CHAT_OFFICIAL_SELLERSPRITE_SKILLS__;
 const TXT={newChat:"\u65b0\u5bf9\u8bdd",messages:"\u6761\u6d88\u606f",loadMore:"\u52a0\u8f7d\u66f4\u591a...",thinking:"\u601d\u8003\u4e2d...",toolLog:"\u5de5\u5177\u8c03\u7528\u8bb0\u5f55",running:"\u6267\u884c\u4e2d...",success:"\u6210\u529f",fail:"\u5931\u8d25",sendFail:"\u53d1\u9001\u5931\u8d25",deleteConfirm:"\u5220\u9664\u6b64\u5bf9\u8bdd\uff1f",copy:"\u4e00\u952e\u590d\u5236",copied:"\u5df2\u590d\u5236",copyFail:"\u590d\u5236\u5931\u8d25",reply:"\u56de\u590d",replyReady:"\u5df2\u5f15\u7528\uff0c\u53ef\u7ee7\u7eed\u8f93\u5165",exportPdf:"\u5bfc\u51fa PDF",generating:"\u751f\u6210\u4e2d",downloaded:"\u5df2\u4e0b\u8f7d",pdfFail:"PDF \u5bfc\u51fa\u5931\u8d25",quotePrefix:"\u5f15\u7528\u5185\u5bb9",questionPrefix:"\u95ee\u9898",imageTooLarge:"\u56fe\u7247\u8d85\u8fc7 6MB",imageReadFail:"\u56fe\u7247\u8bfb\u53d6\u5931\u8d25",today:"\u4eca\u5929",yesterday:"\u6628\u5929",earlier:"\u66f4\u65e9",noSearchResults:"\u6ca1\u6709\u627e\u5230\u76f8\u5173\u5bf9\u8bdd"};
 const S={sessionId:"default",sessions:[],sessionQuery:"",messages:[],nextBefore:null,hasMore:false,loading:false,sse:null,quote:null,selectionText:"",attachments:[],queuedPrompt:null};
 const $=id=>document.getElementById(id),msgBox=$("messages"),input=$("input"),emptyChat=$("emptyChat"),chatIntro=$("chatIntro"),currentSessionTitle=$("currentSessionTitle"),quoteToolbar=$("quoteToolbar"),quotePreview=$("quotePreview"),quotePreviewText=$("quotePreviewText"),attachmentPreview=$("attachmentPreview"),imageInput=$("imageInput");
@@ -153,6 +210,11 @@ ${TXT.questionPrefix}:${raw}`:raw;const attachments=S.attachments.splice(0);inpu
 function openImageViewer(src,alt='image'){if(!src)return;const viewer=$('imageViewer'),img=$('imageViewerImg');img.src=src;img.alt=alt||'image';viewer.classList.add('show')}function closeImageViewer(){const viewer=$('imageViewer'),img=$('imageViewerImg');viewer.classList.remove('show');img.removeAttribute('src')}function currentAssistantSelection(){const sel=window.getSelection();if(!sel||!sel.rangeCount||sel.isCollapsed)return null;const text=sel.toString().replace(/\s+/g,' ').trim();if(text.length<2)return null;let node=sel.getRangeAt(0).commonAncestorContainer;if(node.nodeType===3)node=node.parentElement;const bubble=node?.closest?.('.msg.assistant .bubble');if(!bubble||!msgBox.contains(bubble))return null;return{text,rect:sel.getRangeAt(0).getBoundingClientRect()}}function showQuoteToolbar(){setTimeout(()=>{const picked=currentAssistantSelection();if(!picked){quoteToolbar.classList.remove('show');return}S.selectionText=picked.text.slice(0,2000);quoteToolbar.classList.add('show');requestAnimationFrame(()=>{const width=quoteToolbar.offsetWidth,height=quoteToolbar.offsetHeight,top=Math.min(innerHeight-height-8,picked.rect.top-height-8),left=Math.min(innerWidth-width-8,Math.max(8,picked.rect.left+picked.rect.width/2-width/2)),fixedRoot=quoteToolbar.closest('.ui-main'),fixedRootRect=fixedRoot&&getComputedStyle(fixedRoot).transform!=='none'?fixedRoot.getBoundingClientRect():{left:0,top:0};quoteToolbar.style.left=left-fixedRootRect.left+'px';quoteToolbar.style.top=Math.max(8,top)-fixedRootRect.top+'px'})},0)}function setQuote(text){S.quote=String(text||'').trim().slice(0,2000);if(!S.quote){clearQuote();return}quotePreviewText.textContent=S.quote;quotePreview.classList.add('show')}function clearQuote(){S.quote=null;quotePreviewText.textContent='';quotePreview.classList.remove('show')}function fileToAttachment(file){return new Promise((resolve,reject)=>{if(!file.type.startsWith('image/'))return resolve(null);if(file.size>6*1024*1024)return reject(new Error(TXT.imageTooLarge));const reader=new FileReader();reader.onload=()=>resolve({name:file.name||'image',type:file.type,size:file.size,dataUrl:reader.result});reader.onerror=()=>reject(new Error(TXT.imageReadFail));reader.readAsDataURL(file)})}async function addImageFiles(files){const items=[];for(const file of Array.from(files||[])){const item=await fileToAttachment(file);if(item)items.push(item)}S.attachments.push(...items);S.attachments.splice(6);renderAttachmentPreview()}function renderAttachmentPreview(){attachmentPreview.innerHTML='';S.attachments.forEach((a,i)=>{const chip=document.createElement('div');chip.className='attachment-chip';chip.innerHTML=`<img src="${esc(a.dataUrl)}" alt=""><button class="ui-chat-close ui-chat-close--xs" type="button" aria-label="移除图片" title="移除图片">&times;</button>`;chip.querySelector('button').onclick=()=>{S.attachments.splice(i,1);renderAttachmentPreview()};attachmentPreview.appendChild(chip)})}
 $("expandInputBtn").onclick=()=>{const box=input.closest('.composer'),expanded=box.classList.toggle('expanded'),button=$("expandInputBtn");button.title=expanded?'收起输入框':'展开输入框';button.setAttribute('aria-label',button.title);button.setAttribute('aria-expanded',String(expanded));input.focus()};$("imageBtn").onclick=()=>imageInput.click();imageInput.onchange=e=>addImageFiles(e.target.files).catch(err=>alert(err.message));input.addEventListener("paste",e=>{const files=[...(e.clipboardData?.files||[])].filter(f=>f.type.startsWith("image/"));if(files.length){e.preventDefault();addImageFiles(files).catch(err=>alert(err.message))}});
 document.querySelectorAll('.quick-prompt').forEach(button=>button.onclick=()=>{input.value=button.dataset.prompt||'';input.focus()});
+const officialWorkflowLaunch=$('officialWorkflowLaunch'),officialWorkflowLayer=$('officialWorkflowLayer'),officialWorkflowClose=$('officialWorkflowClose'),officialWorkflowBackdrop=$('officialWorkflowBackdrop');
+function setOfficialWorkflowOpen(open){if(CHAT_PROVIDER!=='amazon'||!officialWorkflowLayer)return;officialWorkflowLayer.classList.toggle('is-open',open);officialWorkflowLayer.setAttribute('aria-hidden',String(!open));officialWorkflowLaunch?.setAttribute('aria-expanded',String(open));if(open)requestAnimationFrame(()=>officialWorkflowClose?.focus());else officialWorkflowLaunch?.focus()}
+function selectOfficialWorkflowTab(name){document.querySelectorAll('[data-official-tab]').forEach(button=>{const active=button.dataset.officialTab===name;button.classList.toggle('is-active',active);button.setAttribute('aria-selected',String(active))});document.querySelectorAll('[data-official-panel]').forEach(panel=>{const active=panel.dataset.officialPanel===name;panel.classList.toggle('is-active',active);panel.hidden=!active})}
+function enterOfficialWorkflow(name){const preset=String(name||'').trim();if(!preset)return;input.value=`请使用卖家精灵官方 Skill「${preset}」开始分析。\n\n目标：`;setOfficialWorkflowOpen(false);requestAnimationFrame(()=>{input.focus();input.setSelectionRange(input.value.length,input.value.length)})}
+if(CHAT_PROVIDER==='amazon'&&OFFICIAL_SELLERSPRITE_SKILLS){officialWorkflowLaunch.setAttribute('aria-expanded','false');officialWorkflowLaunch.onclick=()=>setOfficialWorkflowOpen(true);officialWorkflowClose.onclick=()=>setOfficialWorkflowOpen(false);officialWorkflowBackdrop.onclick=()=>setOfficialWorkflowOpen(false);document.querySelectorAll('[data-official-tab]').forEach(button=>button.onclick=()=>selectOfficialWorkflowTab(button.dataset.officialTab));document.querySelectorAll('[data-official-preset]').forEach(button=>button.onclick=()=>enterOfficialWorkflow(button.dataset.officialPreset));document.addEventListener('keydown',event=>{if(event.key==='Escape'&&officialWorkflowLayer.classList.contains('is-open'))setOfficialWorkflowOpen(false)})}else{officialWorkflowLaunch.remove();officialWorkflowLayer.remove()}
 function submitSessionSearch(){clearTimeout(sessionSearchTimer);S.sessionQuery=$('sessionSearchInput').value.trim();loadSessions()}
 $('sessionSearchSubmit').onclick=submitSessionSearch;
 $('sessionSearchInput').addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();submitSessionSearch()}});

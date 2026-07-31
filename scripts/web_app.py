@@ -499,7 +499,7 @@ NAV_ITEMS = [
 ]
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
-UI_ASSET_VERSION = "20260731-02"
+UI_ASSET_VERSION = "20260731-03"
 APP_UI_ASSETS = f"""
 <script id="ui-nav-state-boot">
 let uiNavExpanded = false;
@@ -796,6 +796,10 @@ def serve_chat_template(handler: BaseHTTPRequestHandler, provider: str, path: st
     provider = normalize_chat_provider(provider)
     provider_ui = CHAT_PROVIDER_UI[provider]
     chat_html = chat_html.replace("__CHAT_PROVIDER__", provider)
+    chat_html = chat_html.replace(
+        "__CHAT_OFFICIAL_SELLERSPRITE_SKILLS__",
+        "true" if official_sellersprite_skill_enabled() else "false",
+    )
     chat_html = chat_html.replace("__CHAT_PROVIDER_LABEL__", CHAT_PROVIDER_LABELS[provider])
     chat_html = chat_html.replace("__CHAT_WORKSPACE_LABEL__", provider_ui["workspace"])
     chat_html = chat_html.replace("__CHAT_NEW_LABEL__", provider_ui["new_label"])
