@@ -19,6 +19,16 @@ from scripts.fastmoss_lightweight_skill import load_lightweight_fastmoss_skill_p
 
 
 class TestFastMossPresetsBoundary(unittest.TestCase):
+    def setUp(self):
+        self._previous_v2_mode = os.environ.get("FASTMOSS_PRODUCT_SCOUT_V2_MODE")
+        os.environ["FASTMOSS_PRODUCT_SCOUT_V2_MODE"] = "off"
+
+    def tearDown(self):
+        if self._previous_v2_mode is None:
+            os.environ.pop("FASTMOSS_PRODUCT_SCOUT_V2_MODE", None)
+        else:
+            os.environ["FASTMOSS_PRODUCT_SCOUT_V2_MODE"] = self._previous_v2_mode
+
     def test_presets_structure(self):
         self.assertEqual(len(FASTMOSS_OFFICIAL_PRESETS), 5)
         self.assertEqual(len(FASTMOSS_LABEL_TO_PRESET_ID), 5)
