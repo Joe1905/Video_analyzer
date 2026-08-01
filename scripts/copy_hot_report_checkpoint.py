@@ -210,8 +210,13 @@ def main() -> int:
         parser.error("source video and output directories must exist")
     if args.source_db.resolve() == args.target_db.resolve():
         parser.error("source and target databases must differ")
+    if args.source_db.with_name(f"{args.source_db.name}-wal").exists():
+        parser.error("source database has an active WAL file; create a verified SQLite backup before copying")
 
-    source_uri = f"file:{args.source_db.resolve().as_posix()}?mode=ro"
+    # The source is a read-only bind mount. immutable=1 avoids SQLite attempting
+    # to create a lock sidecar; an active WAL is rejected above so no committed
+    # checkpoint data is omitted.
+    source_uri = f"file://{args.source_db.resolve().as_posix()}?mode=ro&immutable=1"
     with sqlite3.connect(source_uri, uri=True, timeout=3) as source:
         integrity = source.execute("PRAGMA integrity_check").fetchone()[0]
         if integrity != "ok":
