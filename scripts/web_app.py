@@ -152,6 +152,7 @@ from hot_video_report import (
     get_report_progress,
     get_report_runtime_status,
     get_settings as get_report_settings,
+    initialize_hot_report_db,
     list_reports,
     recover_interrupted_reports,
     run_report,
@@ -15873,6 +15874,7 @@ def main() -> int:
         tiktok_studio_collect.start_worker()
     normalize_stored_chat_tool_results()
     video_queue.start(execute_queue_job)
+    initialize_hot_report_db()
     report_scheduler_enabled = os.getenv("HOT_VIDEO_REPORT_SCHEDULER_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
     start_report_scheduler(enable_timer=report_scheduler_enabled)
     if not report_scheduler_enabled:
