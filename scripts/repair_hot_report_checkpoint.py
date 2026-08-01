@@ -48,6 +48,20 @@ def _invalid_reason(row: sqlite3.Row, root: Path) -> str | None:
     return None
 
 
+def _checkpoint_update_sql(conn: sqlite3.Connection) -> tuple[str, set[str]]:
+    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(hot_report_videos)").fetchall()}
+    required = {"process_status", "process_error", "updated_at"}
+    missing = sorted(required - columns)
+    if missing:
+        raise RuntimeError(f"hot_report_videos is missing required columns: {', '.join(missing)}")
+    assignments = ["process_status='pending'", "process_error=?", "updated_at=?"]
+    if "process_step" in columns:
+        assignments.insert(1, "process_step='pending'")
+    if "last_error_at" in columns:
+        assignments.insert(-1, "last_error_at=?")
+    return ", ".join(assignments), columns
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     selector = parser.add_mutually_exclusive_group(required=True)
@@ -70,6 +84,7 @@ def main() -> int:
         integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
         if integrity != "ok":
             raise RuntimeError(f"database integrity check failed: {integrity}")
+        update_assignments, _ = _checkpoint_update_sql(conn)
         where, value = ("dr.report_date = ?", args.date) if args.date else ("dr.id = ?", args.report_id)
         rows = conn.execute(
             f"""
@@ -97,11 +112,15 @@ def main() -> int:
         now = time.time()
         conn.execute("BEGIN IMMEDIATE")
         for row, reason in invalid:
+            params: list[Any] = [f"checkpoint repair: {reason}"]
+            if "last_error_at=?" in update_assignments:
+                params.append(now)
+            params.append(now)
+            params.extend([row["report_id"], row["platform"], row["video_id"]])
             conn.execute(
-                """UPDATE hot_report_videos
-                SET process_status='pending', process_step='pending', process_error=?, last_error_at=?, updated_at=?
+                f"""UPDATE hot_report_videos SET {update_assignments}
                 WHERE report_id=? AND platform=? AND video_id=? AND process_status='complete'""",
-                (f"checkpoint repair: {reason}", now, now, row["report_id"], row["platform"], row["video_id"]),
+                params,
             )
         conn.commit()
         print(json.dumps({"applied": len(invalid), "backup_id": args.backup_id}, ensure_ascii=False))
