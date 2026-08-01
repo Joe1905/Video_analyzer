@@ -35,10 +35,10 @@ def _result(tool: str, data: dict, state: str = "data") -> dict:
 
 
 def _complete_results() -> list[dict]:
-    hot = [{"product_id": f"p{index}", "product_name": f"Hot {index}", "current_price": index + 10, "period_units_sold": 100 - index, "period_gmv": 1000 - index, "product_url": f"https://example.test/p{index}"} for index in range(1, 4)]
+    hot = [{"product_id": f"p{index}", "product_name": f"Hot {index}", "current_price": index + 10, "period_units_sold": 100 - index, "period_gmv": 1000 - index, "product_url": f"https://shop.test/p{index}"} for index in range(1, 4)]
     new = [{"product_id": f"n{index}", "product_name": f"New {index}", "launch_date": f"2026-07-0{index}", "day28_units_sold": index * 10} for index in range(1, 4)]
     return [
-        _result("market_category_analysis", {"market_size": 1000, "growth_rate": 0.1, "currency": "USD", "date_value": "2026-W30"}),
+        _result("market_category_analysis", {"market_size": 1000, "growth_rate": 0.1, "shop_count": 12, "currency": "USD", "date_value": "2026-W30"}),
         _result("product_rank_top_selling", {"items": hot}),
         _result("product_rank_new_listed", {"items": new}),
         _result("product_sales_trend", {"items": [{"product_id": "p1", "date": "2026-07-01", "units_sold": 10}]}),
@@ -76,7 +76,7 @@ class ProductScoutV2Tests(unittest.TestCase):
         self.assertEqual(contract.status, "sufficient")
         self.assertEqual(contract.payload["scope"]["market"]["source"], "user")
         self.assertEqual(len(contract.payload["hot_ranking"]["rows"]), 3)
-        self.assertEqual(contract.payload["hot_ranking"]["rows"][0]["link"], "https://example.test/p1")
+        self.assertEqual(contract.payload["hot_ranking"]["rows"][0]["link"], "https://shop.test/p1")
         self.assertIn("热销榜", render_deterministic_fact_blocks(contract))
         self.assertIn("新品榜", render_deterministic_fact_blocks(contract))
         self.assertIn("候选验证表", render_deterministic_fact_blocks(contract))
@@ -108,6 +108,26 @@ class ProductScoutV2Tests(unittest.TestCase):
         self.assertIn("建议先继续验证渠道信号", text)
         self.assertIn("interpretation_contains_unbound_number", violations)
         self.assertIn("unsupported_high_risk_claim", violations)
+
+    def test_ranking_removes_test_links_and_duplicate_entities_with_reasons(self):
+        results = _complete_results()
+        results[1] = _result("product_rank_top_selling", {"items": [
+            {"product_id": "p1", "product_name": "Valid", "product_url": "https://shop.test/p1"},
+            {"product_id": "p1", "product_name": "Duplicate", "product_url": "https://shop.test/p1-copy"},
+            {"product_id": "test", "product_name": "测试商品", "product_url": "https://example.test/test"},
+        ]})
+        contract = build_product_scout_evidence_contract(_calls(), results, "分析美国解压玩具", {"region": "US"})
+        ranking = contract.payload["hot_ranking"]
+        self.assertEqual(len(ranking["rows"]), 1)
+        self.assertEqual(ranking["returned_count"], 3)
+        self.assertEqual({item["reason"] for item in ranking["rejected_rows"]}, {"duplicate_entity", "test_or_placeholder_link"})
+
+    def test_interpretation_rejects_cost_absolute_and_unsupported_window_claims(self):
+        contract = build_product_scout_evidence_contract(_calls()[:2], _complete_results()[:2], "分析解压玩具", {})
+        _, violations = validate_interpretation("这是最佳低竞争窗口开放期，建议备货并确保毛利。", contract)
+        self.assertIn("unsupported_cost_or_inventory_claim", violations)
+        self.assertIn("unsupported_absolute_claim", violations)
+        self.assertIn("unsupported_growth_window_claim", violations)
 
 
 if __name__ == "__main__":

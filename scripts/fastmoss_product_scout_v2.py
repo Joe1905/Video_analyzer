@@ -172,7 +172,12 @@ def _row_value(row: Mapping[str, Any], *keys: str) -> Any:
     return _first(row, {re.sub(r"[^a-z0-9]", "", key.lower()) for key in keys})
 
 
-def _product_row(row: Mapping[str, Any], source_ref: str, period: Mapping[str, Any]) -> dict[str, Any]:
+def _product_row(
+    row: Mapping[str, Any],
+    source_ref: str,
+    period: Mapping[str, Any],
+    data_state: str,
+) -> dict[str, Any]:
     data = {
         "product": _row_value(row, "product_name", "title", "name", "product_title"),
         "link": _row_value(row, "product_url", "url", "detail_url", "link"),
@@ -187,11 +192,36 @@ def _product_row(row: Mapping[str, Any], source_ref: str, period: Mapping[str, A
         "channel": _row_value(row, "channel", "channel_type", "sales_channel"),
         "source_ref": source_ref,
         "period": dict(period),
+        "data_state": data_state,
     }
     data = {key: value for key, value in data.items() if value not in (None, "", {}, [])}
     identity = str(data.get("product_id") or data.get("product") or "unknown")
     data["fact_id"] = f"{source_ref}/product:{identity}"
     return data
+
+
+def _row_noise_reason(
+    row: Mapping[str, Any],
+    normalized: Mapping[str, Any],
+    seen_identities: set[str],
+    expected_market: str,
+) -> str | None:
+    """Keep only entities that can safely enter the deterministic ranking tables."""
+    product = str(normalized.get("product") or "").strip().lower()
+    link = str(normalized.get("link") or "").strip().lower()
+    identity = str(normalized.get("product_id") or normalized.get("link") or normalized.get("product") or "").strip().lower()
+    row_market = str(_row_value(row, "region", "market", "marketplace", "country", "site") or "").upper().strip()
+    if any(marker in link for marker in ("example.test", "localhost", "/test", "test-link")):
+        return "test_or_placeholder_link"
+    if any(marker in product for marker in ("测试", "test product", "screen display", "展示屏")):
+        return "test_or_placeholder_product"
+    if row_market and expected_market and row_market != expected_market:
+        return "market_mismatch"
+    if identity and identity in seen_identities:
+        return "duplicate_entity"
+    if identity:
+        seen_identities.add(identity)
+    return None
 
 
 @dataclass(frozen=True)
@@ -247,11 +277,18 @@ def build_product_scout_evidence_contract(
     def ranking(entries_for_tool: list[dict[str, Any]]) -> dict[str, Any]:
         rows: list[dict[str, Any]] = []
         rejected: list[dict[str, Any]] = []
+        seen_identities: set[str] = set()
         for entry in entries_for_tool:
             for row in _find_rows(entry["data"]):
-                normalized = _product_row(row, entry["source_ref"], entry["period"])
+                normalized = _product_row(row, entry["source_ref"], entry["period"], entry["state"])
                 if not normalized.get("product_id") and not normalized.get("product"):
                     rejected.append({"source_ref": entry["source_ref"], "reason": "product_identity_missing"})
+                elif reason := _row_noise_reason(row, normalized, seen_identities, market["value"]):
+                    rejected.append({
+                        "source_ref": entry["source_ref"],
+                        "reason": reason,
+                        "product_id": normalized.get("product_id"),
+                    })
                 else:
                     rows.append(normalized)
         states = [entry["state"] for entry in entries_for_tool]
@@ -328,7 +365,8 @@ def build_product_scout_evidence_contract(
     else:
         market_grain = "target_or_upstream_unverified"
     leading_count = sum(1 for item in candidates if item["creator_video_live_leading_signals"] == "verified")
-    has_market = market_state == "verified"
+    market_metric_names = {str(item.get("metric") or "") for item in market_metrics}
+    has_market = market_state == "verified" and {"scale", "growth", "competition_or_concentration"}.issubset(market_metric_names)
     has_hot = len(hot["rows"]) >= 3
     has_new = len(new["rows"]) >= 1
     has_candidate_trends = sum(1 for item in candidates if item["sales_trend"] == "verified")
@@ -491,6 +529,16 @@ def validate_interpretation(text: str, contract: ProductScoutEvidenceContract) -
     """Keep interpretation within the contract; deterministic fact blocks carry all numbers."""
     payload = contract.payload
     grade = contract.grade
+    market_metric_names = {
+        str(item.get("metric") or "")
+        for item in _as_dict(payload.get("market_evidence")).get("metrics") or []
+        if isinstance(item, Mapping)
+    }
+    candidates = list(payload.get("candidate_validations") or [])
+    has_growth_evidence = sum(1 for item in candidates if item.get("sales_trend") == "verified") >= 2
+    has_leading_evidence = sum(
+        1 for item in candidates if item.get("creator_video_live_leading_signals") == "verified"
+    ) >= 2
     output: list[str] = []
     violations: list[str] = []
     for line in str(text or "").splitlines():
@@ -499,6 +547,14 @@ def validate_interpretation(text: str, contract: ProductScoutEvidenceContract) -
             line_violations.append("interpretation_contains_unbound_number")
         if any(term in line for term in _HIGH_RISK_TERMS) and grade != "A":
             line_violations.append("unsupported_high_risk_claim")
+        if any(term in line for term in ("利润", "毛利", "备货")):
+            line_violations.append("unsupported_cost_or_inventory_claim")
+        if "低竞争" in line and "competition_or_concentration" not in market_metric_names:
+            line_violations.append("unsupported_competition_claim")
+        if any(term in line for term in ("爆发", "窗口开放")) and not (has_growth_evidence and has_leading_evidence):
+            line_violations.append("unsupported_growth_window_claim")
+        if any(term in line for term in ("最佳", "唯一")):
+            line_violations.append("unsupported_absolute_claim")
         if "直播" in line and "商品卡" in line and "占比" in line:
             line_violations.append("channel_denominator_mixing")
         if line_violations:
