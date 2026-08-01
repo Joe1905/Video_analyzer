@@ -2986,7 +2986,7 @@ def test_product_scout_v2_enforce_renders_deterministic_facts_without_v1_fallbac
         "ok": True,
         "data": {"content": [{"type": "text", "text": json.dumps({"items": [{
             "product_id": "p1", "product_name": "Stress Ball", "period_units_sold": 12,
-            "period_gmv": 120, "product_url": "https://example.test/p1",
+            "period_gmv": 120, "product_url": "https://shop.test/p1",
         }]})}]}
     }
     web_app.record_api_call = lambda *_args, **_kwargs: None
@@ -3014,7 +3014,7 @@ def test_product_scout_v2_enforce_renders_deterministic_facts_without_v1_fallbac
     assert assistant.status == "done"
     assert "## 数据口径卡" in assistant.content
     assert "## 热销榜" in assistant.content
-    assert "https://example.test/p1" in assistant.content
+    assert "https://shop.test/p1" in assistant.content
     assert "## 结论、风险与下一步" in assistant.content
     assert len(fake_requests.payloads) == 2
     assert "tools" not in fake_requests.payloads[1]
