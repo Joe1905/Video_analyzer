@@ -169,7 +169,14 @@ def _category_scope(calls: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _row_value(row: Mapping[str, Any], *keys: str) -> Any:
-    return _first(row, {re.sub(r"[^a-z0-9]", "", key.lower()) for key in keys})
+    normalized_keys = {re.sub(r"[^a-z0-9]", "", key.lower()) for key in keys}
+    # Ranking rows contain nested category IDs. Prefer a row's own product ID,
+    # title and other fields before recursively inspecting nested metadata.
+    for key, value in row.items():
+        normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
+        if normalized in normalized_keys and value not in (None, "", [], {}):
+            return value
+    return _first(row, normalized_keys)
 
 
 def _product_row(
@@ -332,10 +339,10 @@ def build_product_scout_evidence_contract(
     market_metrics: list[dict[str, Any]] = []
     for entry in market_entries:
         metric_values = {
-            "scale": _first(entry["data"], {"marketsize", "totalgmv", "periodgmv", "gmv", "salesamount"}),
-            "growth": _first(entry["data"], {"growthrate", "gmvgrowthrate", "unitssoldgrowthrate"}),
+            "scale": _first(entry["data"], {"marketsize", "totalgmv", "periodgmv", "gmv", "salesamount", "categorygmv", "categoryunitssold"}),
+            "growth": _first(entry["data"], {"growthrate", "gmvgrowthrate", "unitssoldgrowthrate", "categorygmvyoypercent", "categoryunitssoldyoypercent", "categorygmvmompercent"}),
             "channel_structure": _first(entry["data"], {"channelstructure", "channelratio", "channeldistribution"}),
-            "competition_or_concentration": _first(entry["data"], {"concentration", "cr3", "cr5", "shopcount", "sellercount"}),
+            "competition_or_concentration": _first(entry["data"], {"concentration", "cr3", "cr5", "shopcount", "sellercount", "topproductsgmvshare", "topshopsgmvshare"}),
         }
         for metric, value in metric_values.items():
             if value not in (None, "", [], {}):

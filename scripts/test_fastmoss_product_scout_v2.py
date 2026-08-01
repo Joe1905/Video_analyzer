@@ -122,6 +122,32 @@ class ProductScoutV2Tests(unittest.TestCase):
         self.assertEqual(ranking["returned_count"], 3)
         self.assertEqual({item["reason"] for item in ranking["rejected_rows"]}, {"duplicate_entity", "test_or_placeholder_link"})
 
+    def test_runtime_mcp_shapes_keep_product_ids_and_candidate_evidence(self):
+        calls = [
+            {"function": {"arguments": json.dumps({"filter": {"category_id": 869640, "date_type": "day", "date_value": "2026-07-31", "region": "US"}})}},
+            {"function": {"arguments": json.dumps({"filter": {"category_l3_id": 869640, "listing_start_date": "2026-06-29", "listing_end_date": "2026-07-28", "region": "US"}})}},
+            *[{"function": {"arguments": json.dumps({"filter": {"product_id": product_id, "time_range_days": 28}})}} for product_id in ("p1", "p2")],
+            *[{"function": {"arguments": json.dumps({"filter": {"product_id": product_id, "time_range_days": 28}})}} for product_id in ("p1", "p2")],
+            {"function": {"arguments": json.dumps({"filter": {"category_id": 19, "date_type": "week", "date_value": "2026-W30", "region": "US"}})}},
+        ]
+        category = {"l1": {"id": 19, "name": "Toys & Hobbies"}, "l3": {"id": 869640, "name": "Stress Relief Toys"}}
+        hot_rows = [{"category": category, "product_id": f"p{index}", "title": f"Hot {index}", "period_units_sold": 20 - index} for index in range(1, 4)]
+        new_rows = [{"category": category, "product_id": f"n{index}", "title": f"New {index}", "first_3d_units_sold": index} for index in range(1, 4)]
+        results = [
+            _result("product_rank_top_selling", {"list": hot_rows}),
+            _result("product_rank_new_listed", {"list": new_rows}),
+            *[_result("product_sales_trend", {"daily_trend": [{"date": "2026-07-01", "daily_units_sold": 3}]}) for _ in range(2)],
+            *[_result("product_video_list", {"videos": [{"video_id": "v1"}]}) for _ in range(2)],
+            _result("market_category_analysis", {"scale_metrics": {"category_gmv": 1000}, "growth_metrics": {"category_gmv_yoy_percent": 2}, "concentration_metrics": {"top_shops_gmv_share": 0.2}}),
+        ]
+        contract = build_product_scout_evidence_contract(calls, results, "分析美国解压玩具", {"region": "US"})
+        self.assertEqual(len(contract.payload["hot_ranking"]["rows"]), 3)
+        self.assertEqual([row["product_id"] for row in contract.payload["hot_ranking"]["rows"]], ["p1", "p2", "p3"])
+        self.assertEqual(len(contract.payload["new_ranking"]["rows"]), 3)
+        self.assertEqual(sum(item["sales_trend"] == "verified" for item in contract.payload["candidate_validations"]), 2)
+        self.assertEqual(sum(item["creator_video_live_leading_signals"] == "verified" for item in contract.payload["candidate_validations"]), 2)
+        self.assertTrue({"scale", "growth", "competition_or_concentration"}.issubset({item["metric"] for item in contract.payload["market_evidence"]["metrics"]}))
+
     def test_interpretation_rejects_cost_absolute_and_unsupported_window_claims(self):
         contract = build_product_scout_evidence_contract(_calls()[:2], _complete_results()[:2], "分析解压玩具", {})
         _, violations = validate_interpretation("这是最佳低竞争窗口开放期，建议备货并确保毛利。", contract)
