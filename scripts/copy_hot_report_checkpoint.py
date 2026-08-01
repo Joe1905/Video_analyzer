@@ -62,6 +62,30 @@ def _copy_tree(source: Path, target: Path) -> None:
             _copy_file(path, destination)
 
 
+def _verify_copyable(source: Path, target: Path) -> None:
+    if target.exists() and (not target.is_file() or target.stat().st_size != source.stat().st_size):
+        raise RuntimeError(f"target artifact already exists and differs: {target}")
+
+
+def _verify_tree_copyable(source: Path, target: Path) -> None:
+    if target.exists() and not target.is_dir():
+        raise RuntimeError(f"target output path is not a directory: {target}")
+    for path in source.rglob("*"):
+        if path.is_file():
+            _verify_copyable(path, target / path.relative_to(source))
+
+
+def _backup_database(source_db: Path, backup_db: Path) -> None:
+    if backup_db.exists():
+        raise RuntimeError(f"refusing to overwrite existing backup: {backup_db}")
+    backup_db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(source_db, timeout=3) as source, sqlite3.connect(backup_db, timeout=3) as backup:
+        source.backup(backup)
+        integrity = backup.execute("PRAGMA integrity_check").fetchone()[0]
+    if integrity != "ok":
+        raise RuntimeError(f"target backup integrity check failed: {integrity}")
+
+
 def _fetch_source(source: sqlite3.Connection, report_date: str) -> tuple[sqlite3.Row, list[sqlite3.Row]]:
     source.row_factory = sqlite3.Row
     report = source.execute(
@@ -122,16 +146,34 @@ def _apply(
     artifacts: list[dict[str, str]],
     source_videos: Path,
     source_output: Path,
+    replace_target: bool,
+    backup_db: Path | None,
+    expected_target_videos: int | None,
 ) -> None:
     initialize_hot_report_db()
     if target_db.resolve() != DB_PATH.resolve():
         raise RuntimeError("target database must be the development workspace hot_video_report.sqlite")
+    for artifact in artifacts:
+        _verify_copyable(source_videos / artifact["filename"], VIDEOS_DIR / artifact["filename"])
+        _verify_tree_copyable(source_output / artifact["extraction_dir"], OUTPUT_DIR / artifact["extraction_dir"])
+
     with sqlite3.connect(target_db, timeout=3) as target:
         existing = target.execute(
             "SELECT id FROM daily_reports WHERE report_date = ?", (report["report_date"],)
         ).fetchone()
-        if existing:
+        existing_count = target.execute(
+            "SELECT count(*) FROM hot_report_videos WHERE report_date = ?", (report["report_date"],)
+        ).fetchone()[0]
+        if existing and not replace_target:
             raise RuntimeError(f"target report date already exists: {report['report_date']}")
+        if existing and expected_target_videos != existing_count:
+            raise RuntimeError(
+                f"target checkpoint mismatch: expected {expected_target_videos} videos, got {existing_count}"
+            )
+    if existing:
+        if not backup_db:
+            raise RuntimeError("--replace-target requires --backup-db")
+        _backup_database(target_db, backup_db)
     for artifact in artifacts:
         _copy_file(source_videos / artifact["filename"], VIDEOS_DIR / artifact["filename"])
         _copy_tree(source_output / artifact["extraction_dir"], OUTPUT_DIR / artifact["extraction_dir"])
@@ -139,6 +181,9 @@ def _apply(
     with sqlite3.connect(target_db, timeout=3) as target:
         target.execute("PRAGMA foreign_keys=ON")
         target.execute("BEGIN IMMEDIATE")
+        if existing:
+            target.execute("DELETE FROM hot_report_videos WHERE report_date = ?", (report["report_date"],))
+            target.execute("DELETE FROM daily_reports WHERE report_date = ?", (report["report_date"],))
         _insert_common(target, "daily_reports", report)
         for row, artifact in zip(rows, artifacts):
             master = {
@@ -167,6 +212,13 @@ def _apply(
                     extraction_dir, first_seen_date, last_seen_date, latest_hot_score, max_hot_score,
                     latest_metrics_json, raw_json, hidden_from_analyzer, created_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(platform, video_id) DO UPDATE SET
+                    title=excluded.title, author=excluded.author, source_url=excluded.source_url,
+                    cover_url=excluded.cover_url, local_filename=excluded.local_filename,
+                    extraction_dir=excluded.extraction_dir, last_seen_date=excluded.last_seen_date,
+                    latest_hot_score=excluded.latest_hot_score, max_hot_score=excluded.max_hot_score,
+                    latest_metrics_json=excluded.latest_metrics_json, raw_json=excluded.raw_json,
+                    hidden_from_analyzer=excluded.hidden_from_analyzer, updated_at=excluded.updated_at
                 """,
                 tuple(master.values()),
             )
@@ -200,9 +252,14 @@ def main() -> int:
     parser.add_argument("--source-output", type=Path, required=True)
     parser.add_argument("--target-db", type=Path, default=TARGET_DB)
     parser.add_argument("--apply", action="store_true", help="copy into the current development workspace")
+    parser.add_argument("--replace-target", action="store_true", help="replace an existing target date after an online backup")
+    parser.add_argument("--backup-db", type=Path, help="new SQLite backup path; required with --replace-target")
+    parser.add_argument("--expected-target-videos", type=int, help="required exact existing target row count when replacing")
     parser.add_argument("--expected-videos", type=int, default=10)
     parser.add_argument("--expected-complete", type=int, default=5)
     args = parser.parse_args()
+    if args.replace_target and (not args.apply or not args.backup_db or args.expected_target_videos is None):
+        parser.error("--replace-target requires --apply, --backup-db, and --expected-target-videos")
 
     if not args.source_db.is_file():
         parser.error(f"source database does not exist: {args.source_db}")
@@ -240,8 +297,11 @@ def main() -> int:
     }, ensure_ascii=False, indent=2))
     if not args.apply:
         return 0
-    _apply(args.target_db, report, rows, artifacts, args.source_videos, args.source_output)
-    print(json.dumps({"copied": len(rows), "date": args.date}, ensure_ascii=False))
+    _apply(
+        args.target_db, report, rows, artifacts, args.source_videos, args.source_output,
+        args.replace_target, args.backup_db, args.expected_target_videos,
+    )
+    print(json.dumps({"copied": len(rows), "date": args.date, "backup_db": str(args.backup_db or "")}, ensure_ascii=False))
     return 0
 
 
