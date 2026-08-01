@@ -599,7 +599,7 @@ NAV_ITEMS = [
 ]
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
-UI_ASSET_VERSION = "20260731-14"
+UI_ASSET_VERSION = "20260801-01"
 APP_UI_ASSETS = f"""
 <script id="ui-nav-state-boot">
 let uiNavExpanded = false;
@@ -11233,6 +11233,22 @@ def complete_fastmoss_answer(
     model: str,
 ) -> str:
     """Route every evidence-led FastMoss report through the semantic dossier."""
+    if (
+        route.get("product_scout_v2")
+        and route.get("product_scout_v2_mode") == "enforce"
+    ):
+        # V2 owns every terminal path. In particular, an official Skill draft
+        # must never bypass the evidence contract merely because the model
+        # decides to answer before the tool-round ceiling is reached.
+        contract = build_product_scout_evidence_contract(
+            assistant_msg.tool_calls or [],
+            assistant_msg.tool_results or [],
+            user_text,
+            route,
+        )
+        return synthesize_fastmoss_product_scout_v2_answer(
+            contract, user_text, requests_module, api_key, api_url, model,
+        )
     if route.get("official_skill_chain"):
         # The official Skill owns the final answer format and interpretation.
         # Do not run it through the project's report synthesis, verifier, or

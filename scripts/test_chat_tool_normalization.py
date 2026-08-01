@@ -4416,11 +4416,15 @@ def test_fastmoss_analytical_answers_use_single_semantic_report_path() -> None:
     calls: list[str] = []
     original_synthesize = web_app.synthesize_fastmoss_report_from_packet
     original_finalize = web_app.finalize_fastmoss_answer
+    original_v2_synthesize = web_app.synthesize_fastmoss_product_scout_v2_answer
     web_app.synthesize_fastmoss_report_from_packet = (
         lambda *_args, **_kwargs: calls.append("semantic") or "semantic report"
     )
     web_app.finalize_fastmoss_answer = (
         lambda draft, *_args, **_kwargs: calls.append("direct") or f"direct: {draft}"
+    )
+    web_app.synthesize_fastmoss_product_scout_v2_answer = (
+        lambda *_args, **_kwargs: calls.append("v2") or "v2 evidence contract"
     )
     try:
         analytical = web_app.complete_fastmoss_answer(
@@ -4448,9 +4452,22 @@ def test_fastmoss_analytical_answers_use_single_semantic_report_path() -> None:
         )
         assert official == "official answer"
         assert calls == []
+
+        v2 = web_app.complete_fastmoss_answer(
+            "unsupported official draft", message, "分析美区美妆市场",
+            {
+                "official_skill_chain": True,
+                "product_scout_v2": True,
+                "product_scout_v2_mode": "enforce",
+            },
+            object(), "key", "https://example.invalid/v1", "deepseek-v4-pro-test",
+        )
+        assert v2 == "v2 evidence contract"
+        assert calls == ["v2"]
     finally:
         web_app.synthesize_fastmoss_report_from_packet = original_synthesize
         web_app.finalize_fastmoss_answer = original_finalize
+        web_app.synthesize_fastmoss_product_scout_v2_answer = original_v2_synthesize
 
     chat_source = inspect.getsource(web_app.run_chat_deepseek)
     assert "synthesize_fastmoss_report_from_packet(" not in chat_source
