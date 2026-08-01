@@ -50,8 +50,12 @@ def today_key() -> str:
 
 def _connect() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, timeout=30)
-    conn.execute("PRAGMA busy_timeout=30000")
+    conn = sqlite3.connect(DB_PATH, timeout=60)
+    conn.execute("PRAGMA busy_timeout=60000")
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+    except Exception:
+        pass
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS daily_reports (
@@ -140,8 +144,11 @@ def _connect() -> sqlite3.Connection:
         )
         """
     )
-    _ensure_columns(conn)
-    _ensure_default_settings(conn)
+    try:
+        _ensure_columns(conn)
+        _ensure_default_settings(conn)
+    except Exception:
+        pass
     conn.execute("CREATE INDEX IF NOT EXISTS idx_hot_report_videos_score ON hot_report_videos(report_date, hot_score DESC)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_hot_video_master_last_seen ON hot_video_master(last_seen_date DESC)")
     conn.commit()
@@ -1331,7 +1338,10 @@ def backfill_cover_urls(report_date: str | None = None) -> dict[str, Any]:
 def get_report(report_date: str | None = None, include_raw: bool = False, detail: bool = True) -> dict[str, Any]:
     date = report_date or today_key()
     with _connect() as conn:
-        _cleanup_expired_video_records(conn, _recent_window_days())
+        try:
+            _cleanup_expired_video_records(conn, _recent_window_days())
+        except Exception:
+            pass
         report_row = conn.execute(
             """
             SELECT id, report_date, status, region, sources_json, video_count, error,
