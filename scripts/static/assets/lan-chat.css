@@ -320,6 +320,18 @@ body.ui-route-lan-chat .room-preview {
   font-size: 12px;
 }
 
+body.ui-route-lan-chat .room-muted {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 15px;
+  display: block;
+  fill: none;
+  stroke: var(--ui-ink-subtle);
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 body.ui-route-lan-chat .section-unread,
 body.ui-route-lan-chat .mobile-unread,
 body.ui-route-lan-chat .unread-dot {
