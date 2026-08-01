@@ -220,7 +220,7 @@ def _row_noise_reason(
     row_market = str(_row_value(row, "region", "market", "marketplace", "country", "site") or "").upper().strip()
     if any(marker in link for marker in ("example.test", "localhost", "/test", "test-link")):
         return "test_or_placeholder_link"
-    if any(marker in product for marker in ("测试", "test product", "screen display", "展示屏")):
+    if any(marker in product for marker in ("测试", "test product", "screen display", "shown on screen", "shown on the screen", "展示屏")):
         return "test_or_placeholder_product"
     if row_market and expected_market and row_market != expected_market:
         return "market_mismatch"
@@ -413,7 +413,7 @@ def build_product_scout_evidence_contract(
         "status": status,
         "evidence_gaps": [
             item for item, present in (
-                ("market_evidence", has_market),
+                ("market_evidence", target_level_market and has_market),
                 ("hot_ranking", has_hot),
                 ("new_ranking", has_new),
                 ("candidate_sales_trend", has_candidate_trends >= 1),
@@ -549,6 +549,8 @@ def validate_interpretation(text: str, contract: ProductScoutEvidenceContract) -
     output: list[str] = []
     violations: list[str] = []
     for line in str(text or "").splitlines():
+        if re.match(r"^#{1,6}\s*结论、风险与下一步\s*$", line.strip()):
+            continue
         line_violations: list[str] = []
         if re.search(r"\d|[$￥€£]|\d\s*%", line):
             line_violations.append("interpretation_contains_unbound_number")

@@ -115,12 +115,13 @@ class ProductScoutV2Tests(unittest.TestCase):
             {"product_id": "p1", "product_name": "Valid", "product_url": "https://shop.test/p1"},
             {"product_id": "p1", "product_name": "Duplicate", "product_url": "https://shop.test/p1-copy"},
             {"product_id": "test", "product_name": "测试商品", "product_url": "https://example.test/test"},
+            {"product_id": "screen", "product_name": "B Squishy Shown On the Screen 7/18"},
         ]})
         contract = build_product_scout_evidence_contract(_calls(), results, "分析美国解压玩具", {"region": "US"})
         ranking = contract.payload["hot_ranking"]
         self.assertEqual(len(ranking["rows"]), 1)
-        self.assertEqual(ranking["returned_count"], 3)
-        self.assertEqual({item["reason"] for item in ranking["rejected_rows"]}, {"duplicate_entity", "test_or_placeholder_link"})
+        self.assertEqual(ranking["returned_count"], 4)
+        self.assertEqual({item["reason"] for item in ranking["rejected_rows"]}, {"duplicate_entity", "test_or_placeholder_link", "test_or_placeholder_product"})
 
     def test_runtime_mcp_shapes_keep_product_ids_and_candidate_evidence(self):
         calls = [
@@ -147,6 +148,7 @@ class ProductScoutV2Tests(unittest.TestCase):
         self.assertEqual(sum(item["sales_trend"] == "verified" for item in contract.payload["candidate_validations"]), 2)
         self.assertEqual(sum(item["creator_video_live_leading_signals"] == "verified" for item in contract.payload["candidate_validations"]), 2)
         self.assertTrue({"scale", "growth", "competition_or_concentration"}.issubset({item["metric"] for item in contract.payload["market_evidence"]["metrics"]}))
+        self.assertIn("market_evidence", contract.payload["evidence_gaps"])
 
     def test_interpretation_rejects_cost_absolute_and_unsupported_window_claims(self):
         contract = build_product_scout_evidence_contract(_calls()[:2], _complete_results()[:2], "分析解压玩具", {})

@@ -2960,7 +2960,7 @@ def test_product_scout_v2_enforce_renders_deterministic_facts_without_v1_fallbac
                         "arguments": json.dumps({"filter": {"region": "US", "date_type": "week", "date_value": "2026-W30"}}),
                     },
                 }]}}]})
-            return Response({"choices": [{"message": {"content": "建议先验证渠道和趋势信号，再决定是否继续初筛。"}}]})
+            return Response({"choices": [{"message": {"content": "## 结论、风险与下一步\n\n建议先验证渠道和趋势信号，再决定是否继续初筛。"}}]})
 
     class Store:
         def update_message(self, _session, message, content: str, status: str = "done") -> None:
@@ -3016,6 +3016,7 @@ def test_product_scout_v2_enforce_renders_deterministic_facts_without_v1_fallbac
     assert "## 热销榜" in assistant.content
     assert "https://shop.test/p1" in assistant.content
     assert "## 结论、风险与下一步" in assistant.content
+    assert assistant.content.count("## 结论、风险与下一步") == 1
     assert len(fake_requests.payloads) == 2
     assert "tools" not in fake_requests.payloads[1]
 
