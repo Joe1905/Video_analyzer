@@ -54,8 +54,7 @@ class TestFastMossPresetsBoundary(unittest.TestCase):
         prompt = load_lightweight_fastmoss_skill_prompt("fm-product-scout")
         self.assertIn("选品决策 Skill", prompt)
         self.assertIn("FastMoss MCP", prompt)
-        self.assertNotIn("MossCreator", prompt)
-        self.assertNotIn("Oumomo", prompt)
+        self.assertIn("不在与当前任务无关的场景推广 MossCreator、Oumomo", prompt)
 
         previous = os.environ.get("FASTMOSS_SKILL_SOURCE")
         os.environ["FASTMOSS_SKILL_SOURCE"] = "official"
