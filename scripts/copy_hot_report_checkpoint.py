@@ -20,8 +20,9 @@ import sqlite3
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
-from hot_video_report import DB_PATH, OUTPUT_DIR, VIDEOS_DIR, initialize_hot_report_db
+from hot_video_report import DB_PATH, OUTPUT_DIR, REPORT_COVER_DIR, VIDEOS_DIR, initialize_hot_report_db
 from video_registry import register_video
 
 
@@ -126,6 +127,21 @@ def _source_artifacts(rows: list[sqlite3.Row], source_videos: Path, source_outpu
     return artifacts
 
 
+def _source_covers(rows: list[sqlite3.Row], source_covers: Path) -> list[str]:
+    names: set[str] = set()
+    for row in rows:
+        reference = str(row["master_cover_url"] or row["cover_url"] or "").strip()
+        path = urlparse(reference).path
+        if "/report-cover/" not in path:
+            continue
+        name = _safe_name(Path(path).name, "cover filename")
+        source = source_covers / name
+        if not source.is_file():
+            raise RuntimeError(f"source cover artifact is missing: {source}")
+        names.add(name)
+    return sorted(names)
+
+
 def _insert_common(conn: sqlite3.Connection, table: str, row: sqlite3.Row, extra: dict[str, Any] | None = None) -> None:
     target_columns = set(_columns(conn, table))
     values = dict(row)
@@ -146,6 +162,8 @@ def _apply(
     artifacts: list[dict[str, str]],
     source_videos: Path,
     source_output: Path,
+    source_covers: Path,
+    cover_names: list[str],
     replace_target: bool,
     backup_db: Path | None,
     expected_target_videos: int | None,
@@ -156,6 +174,8 @@ def _apply(
     for artifact in artifacts:
         _verify_copyable(source_videos / artifact["filename"], VIDEOS_DIR / artifact["filename"])
         _verify_tree_copyable(source_output / artifact["extraction_dir"], OUTPUT_DIR / artifact["extraction_dir"])
+    for name in cover_names:
+        _verify_copyable(source_covers / name, REPORT_COVER_DIR / name)
 
     with sqlite3.connect(target_db, timeout=3) as target:
         existing = target.execute(
@@ -177,6 +197,8 @@ def _apply(
     for artifact in artifacts:
         _copy_file(source_videos / artifact["filename"], VIDEOS_DIR / artifact["filename"])
         _copy_tree(source_output / artifact["extraction_dir"], OUTPUT_DIR / artifact["extraction_dir"])
+    for name in cover_names:
+        _copy_file(source_covers / name, REPORT_COVER_DIR / name)
 
     with sqlite3.connect(target_db, timeout=3) as target:
         target.execute("PRAGMA foreign_keys=ON")
@@ -250,16 +272,20 @@ def main() -> int:
     parser.add_argument("--source-db", type=Path, required=True)
     parser.add_argument("--source-videos", type=Path, required=True)
     parser.add_argument("--source-output", type=Path, required=True)
+    parser.add_argument("--source-covers", type=Path, help="source report_covers directory; defaults beside --source-db")
     parser.add_argument("--target-db", type=Path, default=TARGET_DB)
     parser.add_argument("--apply", action="store_true", help="copy into the current development workspace")
     parser.add_argument("--replace-target", action="store_true", help="replace an existing target date after an online backup")
     parser.add_argument("--backup-db", type=Path, help="new SQLite backup path; required with --replace-target")
     parser.add_argument("--expected-target-videos", type=int, help="required exact existing target row count when replacing")
+    parser.add_argument("--sync-covers-only", action="store_true", help="copy only the local report-cover assets for the selected date")
     parser.add_argument("--expected-videos", type=int, default=10)
     parser.add_argument("--expected-complete", type=int, default=5)
     args = parser.parse_args()
     if args.replace_target and (not args.apply or not args.backup_db or args.expected_target_videos is None):
         parser.error("--replace-target requires --apply, --backup-db, and --expected-target-videos")
+    if args.sync_covers_only and not args.apply:
+        parser.error("--sync-covers-only requires --apply")
 
     if not args.source_db.is_file():
         parser.error(f"source database does not exist: {args.source_db}")
@@ -269,6 +295,7 @@ def main() -> int:
         parser.error("source and target databases must differ")
     if args.source_db.with_name(f"{args.source_db.name}-wal").exists():
         parser.error("source database has an active WAL file; create a verified SQLite backup before copying")
+    source_covers = args.source_covers or args.source_db.parent / "report_covers"
 
     # The source is a read-only bind mount. immutable=1 avoids SQLite attempting
     # to create a lock sidecar; an active WAL is rejected above so no committed
@@ -286,6 +313,7 @@ def main() -> int:
             f"{args.expected_complete} complete, got {len(rows)} / {complete_count}"
         )
     artifacts = _source_artifacts(rows, args.source_videos, args.source_output)
+    cover_names = _source_covers(rows, source_covers)
     print(json.dumps({
         "mode": "apply" if args.apply else "dry-run",
         "date": args.date,
@@ -293,12 +321,20 @@ def main() -> int:
         "video_count": len(rows),
         "complete_count": complete_count,
         "downloaded_artifacts": len(artifacts),
+        "cover_artifacts": len(cover_names),
         "target_db": str(args.target_db),
     }, ensure_ascii=False, indent=2))
     if not args.apply:
         return 0
+    if args.sync_covers_only:
+        for name in cover_names:
+            _verify_copyable(source_covers / name, REPORT_COVER_DIR / name)
+        for name in cover_names:
+            _copy_file(source_covers / name, REPORT_COVER_DIR / name)
+        print(json.dumps({"copied_covers": len(cover_names), "date": args.date}, ensure_ascii=False))
+        return 0
     _apply(
-        args.target_db, report, rows, artifacts, args.source_videos, args.source_output,
+        args.target_db, report, rows, artifacts, args.source_videos, args.source_output, source_covers, cover_names,
         args.replace_target, args.backup_db, args.expected_target_videos,
     )
     print(json.dumps({"copied": len(rows), "date": args.date, "backup_db": str(args.backup_db or "")}, ensure_ascii=False))
