@@ -2514,32 +2514,82 @@ def _video_insight_prompt(video: dict[str, Any], social_context: dict[str, Any])
     )
 
 
+def _step1_skeleton_prompt(video: dict[str, Any]) -> str:
+    analysis_payload = video.get("analysis") or {}
+    return (
+        "你是短视频结构化整理助手。请针对以下原始视频数据（字幕、视觉帧、评论、指标），"
+        "提炼一份高度精炼、事实准确的内容骨架摘要。\n"
+        "输出包含：1.视频核心内容与主题 2.关键台词与场景节点 3.评论区焦点与受众情绪。\n"
+        "只返回严格 JSON，不要 Markdown。Keys: content_summary, scene_nodes, audience_feedback。\n\n"
+        f"{json.dumps(analysis_payload, ensure_ascii=False, indent=2, default=str)}"
+    )
+
+
 def _generate_video_insight(video: dict[str, Any], social_context: dict[str, Any]) -> dict[str, Any]:
     api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("Missing required environment variable: DEEPSEEK_API_KEY")
-    max_tokens = _to_int(os.getenv("REPORT_VIDEO_INSIGHT_MAX_TOKENS", "2200"))
-    response = call_deepseek(
+
+    raw_analysis_str = json.dumps(video.get("analysis") or {}, ensure_ascii=False)
+    step1_max_tokens = int(max(2500, min(8192, len(raw_analysis_str) * 0.38)))
+
+    # Step 1: Low-thinking skeleton extraction
+    step1_response = call_deepseek(
         api_key=api_key,
-        prompt=_video_insight_prompt(video, social_context),
+        prompt=_step1_skeleton_prompt(video),
         api_url=os.getenv("DEEPSEEK_API_URL", DEFAULT_API_URL),
         model=os.getenv("DEEPSEEK_MODEL", DEFAULT_MODEL),
-        max_tokens=max_tokens,
+        max_tokens=step1_max_tokens,
+        reasoning_effort="low",
     )
+    step1_content = extract_content(step1_response)
+
+    # Step 2: High-thinking deep insight analysis
+    step2_video = dict(video)
+    step2_video["analysis"] = step1_content
+    step2_prompt = _video_insight_prompt(step2_video, social_context)
+
+    step2_max_tokens = int(max(4800, min(8192, 5700 + len(step1_content) * 1.2)))
+
     try:
-        content = extract_content(response)
-    except ValueError as exc:
-        retry_max_tokens = _to_int(os.getenv("REPORT_VIDEO_INSIGHT_RETRY_MAX_TOKENS", "4000"))
-        if "truncated" not in str(exc) or retry_max_tokens <= max_tokens:
-            raise
         response = call_deepseek(
             api_key=api_key,
-            prompt=_video_insight_prompt(video, social_context),
+            prompt=step2_prompt,
             api_url=os.getenv("DEEPSEEK_API_URL", DEFAULT_API_URL),
             model=os.getenv("DEEPSEEK_MODEL", DEFAULT_MODEL),
-            max_tokens=retry_max_tokens,
+            max_tokens=step2_max_tokens,
+            reasoning_effort="high",
         )
         content = extract_content(response)
+    except ValueError as exc:
+        if "truncated" not in str(exc):
+            raise
+        # Attempt 1: Additional 10% dynamic max_tokens allocation
+        boosted_tokens = min(8192, int(step2_max_tokens * 1.15))
+        try:
+            response = call_deepseek(
+                api_key=api_key,
+                prompt=step2_prompt,
+                api_url=os.getenv("DEEPSEEK_API_URL", DEFAULT_API_URL),
+                model=os.getenv("DEEPSEEK_MODEL", DEFAULT_MODEL),
+                max_tokens=boosted_tokens,
+                reasoning_effort="high",
+            )
+            content = extract_content(response)
+        except ValueError as exc2:
+            if "truncated" not in str(exc2):
+                raise
+            # Attempt 2: Reasoning effort downgrade to disabled
+            response = call_deepseek(
+                api_key=api_key,
+                prompt=step2_prompt,
+                api_url=os.getenv("DEEPSEEK_API_URL", DEFAULT_API_URL),
+                model=os.getenv("DEEPSEEK_MODEL", DEFAULT_MODEL),
+                max_tokens=boosted_tokens,
+                reasoning_effort="disabled",
+            )
+            content = extract_content(response)
+
     try:
         return parse_json_content(content)
     except Exception:
@@ -2618,21 +2668,17 @@ def _ensure_video_insight(
 
 def _summary_prompt_v2(report_date: str, video_items: list[dict[str, Any]], partial_summaries: list[dict[str, Any]] | None = None) -> str:
     payload: dict[str, Any] = {"report_date": report_date}
-    if partial_summaries is None:
-        payload["video_insights"] = video_items
-    else:
+    if partial_summaries:
         payload["partial_summaries"] = partial_summaries
+    else:
+        payload["video_insights"] = video_items
     return (
-        "\u4f60\u662f\u8d44\u6df1\u77ed\u89c6\u9891\u589e\u957f\u7814\u7a76\u5458\u3002"
-        "\u8bf7\u57fa\u4e8e\u8f93\u5165\u4e2d\u7684\u5355\u89c6\u9891\u7206\u6b3e\u62c6\u89e3\uff0c\u751f\u6210\u4e2d\u6587\u6df1\u5ea6\u65e5\u62a5\u3002\n"
-        "\u65e5\u62a5\u4e0d\u8981\u6d45\u5c1d\u8f84\u6b62\uff1a\u5fc5\u987b\u5148\u7ed9\u603b\u4f53\u5224\u65ad\uff0c\u518d\u603b\u7ed3\u8de8\u89c6\u9891\u5171\u6027\uff0c\u5e76\u9010\u6761\u63d0\u70bc\u6bcf\u4e2a\u89c6\u9891\u7684\u6838\u5fc3\u7206\u70b9\u3002\n"
-        "\u4e0d\u8981\u7f16\u9020\u8f93\u5165\u4e4b\u5916\u7684\u4fe1\u606f\uff1b\u5982\u679c\u67d0\u6761\u62c6\u89e3\u8bc1\u636e\u4e0d\u8db3\uff0c\u9700\u8981\u5728\u98ce\u9669\u91cc\u8bf4\u660e\u3002\n"
-        "\u8f93\u51fa\u8981\u5145\u5206\u4f46\u514b\u5236\uff1avideo_deep_dives \u6bcf\u6761\u4e0d\u8d85\u8fc7 450 \u4e2a\u4e2d\u6587\u5b57\uff0c\u5176\u4ed6\u6bcf\u4e2a\u5206\u533a\u4e0d\u8d85\u8fc7 6 \u6761\u8981\u70b9\u3002\n"
-        "\u53ea\u8fd4\u56de\u4e25\u683c JSON\uff0c\u4e0d\u8981 Markdown\uff0c\u4e0d\u8981\u4ee3\u7801\u5757\u3002"
-        "JSON keys \u5fc5\u987b\u5305\u542b\uff1asummary, common_patterns, hook_analysis, visual_patterns, topic_angles, execution_tactics, "
-        "video_deep_dives, reusable_ideas, risks, next_actions\u3002\n"
-        "\u5176\u4e2d video_deep_dives \u5fc5\u987b\u662f\u6570\u7ec4\uff0c\u6bcf\u6761\u5305\u542b rank, title, boom_reason, hook, structure, "
-        "audience_trigger, engagement_driver, replicable_formula, risk\u3002\n\n"
+        "你是短视频研究总监。请把输入的爆款视频拆解汇总成中文结构化日报。\n"
+        "要求：\n"
+        "1. 严格基于输入数据，禁止编造事实。\n"
+        "2. key_observations 控制在 4 条以内；video_deep_dives 必须包含每条视频的精炼拆解。\n"
+        "3. patterns / reusable_points / risks 各控制在 4 条以内，必须具备可操盘性。\n"
+        "4. 只返回严格 JSON，不要 Markdown。JSON keys: summary, key_observations, video_deep_dives, patterns, reusable_points, risks。\n\n"
         f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
     )
 
@@ -2672,19 +2718,21 @@ def _compact_summary_video_for_retry(video: dict[str, Any]) -> dict[str, Any]:
 
 
 def _extraction_fallback_deep_dive(video: dict[str, Any]) -> dict[str, Any]:
-    extraction = _compact_extraction(video.get("analysis"))
-    summary = _trim_text(extraction.get("summary"), 360) or "当前视频解析摘要不足。"
-    timeline = extraction.get("timeline") if isinstance(extraction.get("timeline"), list) else []
-    first_event = timeline[0] if timeline else {}
-    hook = _trim_text(first_event.get("visual") if isinstance(first_event, dict) else first_event, 220)
+    analysis = _compact_extraction(video.get("analysis"))
     metrics = video.get("metrics") if isinstance(video.get("metrics"), dict) else {}
     return {
-        "rank": _to_int(video.get("report_rank")) or 0,
-        "title": str(video.get("title") or "").strip(),
-        "boom_reason": f"单条深度拆解生成失败；当前仅依据该视频解析摘要：{summary}",
-        "hook": hook or f"标题/入口：{_trim_text(video.get('title'), 180)}",
-        "structure": summary,
-        "audience_trigger": "单条洞察证据不足，需结合当前视频标题、画面解析和评论样本进一步判断。",
+        "rank": _to_int(video.get("report_rank")),
+        "title": video.get("title"),
+        "author": video.get("author"),
+        "one_sentence": video.get("title") or "标题缺失",
+        "core_boom_reason": f"单视频拆解生成失败，退回解析摘要。原始摘要：{analysis.get('summary') or '无解析摘要'}",
+        "hook": (
+            f"台词片段：{_trim_text(analysis.get('transcript'), 200)} | "
+            f"镜头节点：{_trim_text(json.dumps(analysis.get('timeline') or [], ensure_ascii=False), 200)}"
+        ),
+        "content_structure": f"核心描述：{_trim_text(analysis.get('summary'), 300)}",
+        "visual_language": f"视觉画面：{_trim_text(json.dumps(analysis.get('visual_evidence') or [], ensure_ascii=False), 300)}",
+        "audience_trigger": "退回解析摘要，评论与受众触发锚点无法提炼。",
         "engagement_driver": (
             f"分享 {_to_int(metrics.get('share_count'))}、评论 {_to_int(metrics.get('comment_count'))}、"
             f"点赞 {_to_int(metrics.get('like_count'))}。"
@@ -2719,22 +2767,22 @@ def _chunk_summary_prompt_v2(report_date: str, chunk_index: int, video_items: li
     payload = {"report_date": report_date, "chunk_index": chunk_index, "video_insights": payload_items}
     if compact:
         length_instruction = (
-            "\u964d\u7ea7\u538b\u7f29\u6a21\u5f0f\uff1akey_observations \u4e0d\u8d85\u8fc7 3 \u6761\uff0c"
-            "video_deep_dives \u6bcf\u6761\u4e0d\u8d85\u8fc7 100 \u4e2a\u4e2d\u6587\u5b57\uff0c"
-            "patterns/reusable_points/risks \u5404\u4e0d\u8d85\u8fc7 3 \u6761\u3002"
+            "降级压缩模式：key_observations 不超过 3 条，"
+            "video_deep_dives 每条不超过 100 个中文字，"
+            "patterns/reusable_points/risks 各不超过 3 条。"
         )
     else:
         length_instruction = (
-            "\u8f93\u51fa\u957f\u5ea6\u5fc5\u987b\u53d7\u63a7\uff1akey_observations \u4e0d\u8d85\u8fc7 4 \u6761\uff0c"
-            "video_deep_dives \u6bcf\u6761\u4e0d\u8d85\u8fc7 160 \u4e2a\u4e2d\u6587\u5b57\uff0c"
-            "patterns/reusable_points/risks \u5404\u4e0d\u8d85\u8fc7 4 \u6761\u3002"
+            "输出长度必须受控：key_observations 不超过 4 条，"
+            "video_deep_dives 每条不超过 160 个中文字，"
+            "patterns/reusable_points/risks 各不超过 4 条。"
         )
     return (
-        "\u4f60\u662f\u77ed\u89c6\u9891\u7814\u7a76\u52a9\u7406\u3002"
-        "\u8bf7\u628a\u8fd9\u4e00\u7ec4\u5355\u89c6\u9891\u7206\u6b3e\u62c6\u89e3\u538b\u7f29\u6210\u53ef\u4f9b\u6700\u7ec8\u65e5\u62a5\u4f7f\u7528\u7684\u4e2d\u6587\u7ed3\u6784\u5316\u6458\u8981\u3002"
-        "\u5fc5\u987b\u4fdd\u7559\u6bcf\u6761\u89c6\u9891\u7684\u6838\u5fc3\u7206\u70b9\u3001\u5f00\u5934\u94a9\u5b50\u3001\u7ed3\u6784\u3001\u4e92\u52a8\u673a\u5236\u3001\u53ef\u590d\u7528\u516c\u5f0f\u548c\u98ce\u9669\u3002"
+        "你是短视频研究助理。"
+        "请把这一组单视频爆款拆解压缩成可供最终日报使用的中文结构化摘要。"
+        "必须保留每条视频的核心爆点、开头钩子、结构、互动机制、可复用公式和风险。"
         f"{length_instruction}"
-        "\u53ea\u8fd4\u56de\u4e25\u683c JSON\uff0c\u4e0d\u8981 Markdown\u3002JSON keys: key_observations, video_deep_dives, patterns, reusable_points, risks\u3002\n\n"
+        "只返回严格 JSON，不要 Markdown。JSON keys: key_observations, video_deep_dives, patterns, reusable_points, risks。\n\n"
         f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
     )
 
@@ -2749,63 +2797,95 @@ def _generate_daily_summary(report_date: str, success_videos: list[dict[str, Any
         normalized["report_rank"] = _to_int(video.get("report_rank")) or index
         normalized_videos.append(normalized)
     video_items = [_compact_summary_video(video) for video in normalized_videos]
-    prompt = _summary_prompt_v2(report_date, video_items)
-    prompt_limit = _to_int(os.getenv("REPORT_SUMMARY_PROMPT_CHAR_LIMIT", "28000"))
-    if len(prompt) > prompt_limit and len(video_items) > 1:
-        chunk_size = max(2, _to_int(os.getenv("REPORT_SUMMARY_CHUNK_SIZE", "4")))
-        chunk_max_tokens = _to_int(os.getenv("REPORT_DEEPSEEK_CHUNK_MAX_TOKENS", "2048"))
-        partials: list[dict[str, Any]] = []
-        for index in range(0, len(video_items), chunk_size):
-            chunk_items = video_items[index : index + chunk_size]
-            chunk_prompt = _chunk_summary_prompt_v2(report_date, index // chunk_size + 1, chunk_items)
+
+    # Unconditional fixed chunking (chunk_size = 4)
+    chunk_size = max(2, _to_int(os.getenv("REPORT_SUMMARY_CHUNK_SIZE", "4")))
+    partials: list[dict[str, Any]] = []
+    for index in range(0, len(video_items), chunk_size):
+        chunk_items = video_items[index : index + chunk_size]
+        chunk_prompt = _chunk_summary_prompt_v2(report_date, index // chunk_size + 1, chunk_items)
+        chunk_max_tokens = int(max(3500, min(8192, len(chunk_items) * 1100)))
+        try:
             chunk_response = call_deepseek(
                 api_key=api_key,
                 prompt=chunk_prompt,
                 api_url=os.getenv("DEEPSEEK_API_URL", DEFAULT_API_URL),
                 model=os.getenv("DEEPSEEK_MODEL", DEFAULT_MODEL),
                 max_tokens=chunk_max_tokens,
+                reasoning_effort="low",
             )
+            chunk_content = extract_content(chunk_response)
+        except ValueError as exc:
+            if "truncated" not in str(exc):
+                raise
+            retry_prompt = _chunk_summary_prompt_v2(report_date, index // chunk_size + 1, chunk_items, compact=True)
+            boosted_chunk_tokens = min(8192, int(chunk_max_tokens * 1.15))
             try:
-                chunk_content = extract_content(chunk_response)
-            except ValueError as exc:
-                if "truncated" not in str(exc):
-                    raise
-                retry_prompt = _chunk_summary_prompt_v2(report_date, index // chunk_size + 1, chunk_items, compact=True)
                 retry_response = call_deepseek(
                     api_key=api_key,
                     prompt=retry_prompt,
                     api_url=os.getenv("DEEPSEEK_API_URL", DEFAULT_API_URL),
                     model=os.getenv("DEEPSEEK_MODEL", DEFAULT_MODEL),
-                    max_tokens=chunk_max_tokens,
+                    max_tokens=boosted_chunk_tokens,
+                    reasoning_effort="low",
                 )
                 chunk_content = extract_content(retry_response)
-            try:
-                partials.append(parse_json_content(chunk_content))
-            except Exception:
-                partials.append({"raw_result": chunk_content})
-        prompt = _summary_prompt_v2(report_date, [], partial_summaries=partials)
-    max_tokens = _to_int(os.getenv("REPORT_DEEPSEEK_MAX_TOKENS", os.getenv("DEEPSEEK_POSTPROCESS_MAX_TOKENS", "8192")))
-    response = call_deepseek(
-        api_key=api_key,
-        prompt=prompt,
-        api_url=os.getenv("DEEPSEEK_API_URL", DEFAULT_API_URL),
-        model=os.getenv("DEEPSEEK_MODEL", DEFAULT_MODEL),
-        max_tokens=max_tokens,
-    )
+            except ValueError as exc2:
+                if "truncated" not in str(exc2):
+                    raise
+                retry_response = call_deepseek(
+                    api_key=api_key,
+                    prompt=retry_prompt,
+                    api_url=os.getenv("DEEPSEEK_API_URL", DEFAULT_API_URL),
+                    model=os.getenv("DEEPSEEK_MODEL", DEFAULT_MODEL),
+                    max_tokens=boosted_chunk_tokens,
+                    reasoning_effort="disabled",
+                )
+                chunk_content = extract_content(retry_response)
+        try:
+            partials.append(parse_json_content(chunk_content))
+        except Exception:
+            partials.append({"raw_result": chunk_content})
+
+    prompt = _summary_prompt_v2(report_date, [], partial_summaries=partials)
+    final_max_tokens = int(max(4500, min(8192, len(video_items) * 900)))
     try:
-        content = extract_content(response)
-    except ValueError as exc:
-        retry_max_tokens = _to_int(os.getenv("REPORT_DEEPSEEK_RETRY_MAX_TOKENS", "12000"))
-        if "truncated" not in str(exc) or retry_max_tokens <= max_tokens:
-            raise
         response = call_deepseek(
             api_key=api_key,
             prompt=prompt,
             api_url=os.getenv("DEEPSEEK_API_URL", DEFAULT_API_URL),
             model=os.getenv("DEEPSEEK_MODEL", DEFAULT_MODEL),
-            max_tokens=retry_max_tokens,
+            max_tokens=final_max_tokens,
+            reasoning_effort="low",
         )
         content = extract_content(response)
+    except ValueError as exc:
+        if "truncated" not in str(exc):
+            raise
+        boosted_final_tokens = min(8192, int(final_max_tokens * 1.15))
+        try:
+            response = call_deepseek(
+                api_key=api_key,
+                prompt=prompt,
+                api_url=os.getenv("DEEPSEEK_API_URL", DEFAULT_API_URL),
+                model=os.getenv("DEEPSEEK_MODEL", DEFAULT_MODEL),
+                max_tokens=boosted_final_tokens,
+                reasoning_effort="low",
+            )
+            content = extract_content(response)
+        except ValueError as exc2:
+            if "truncated" not in str(exc2):
+                raise
+            response = call_deepseek(
+                api_key=api_key,
+                prompt=prompt,
+                api_url=os.getenv("DEEPSEEK_API_URL", DEFAULT_API_URL),
+                model=os.getenv("DEEPSEEK_MODEL", DEFAULT_MODEL),
+                max_tokens=boosted_final_tokens,
+                reasoning_effort="disabled",
+            )
+            content = extract_content(response)
+
     report = _parse_daily_report_content(
         content=content,
         api_key=api_key,

@@ -104,31 +104,44 @@ def build_prompt(analysis: dict, user_prompt: str = "") -> str:
     )
 
 
-def call_deepseek(api_key: str, prompt: str, api_url: str, model: str, max_tokens: int) -> dict:
+def call_deepseek(
+    api_key: str,
+    prompt: str,
+    api_url: str,
+    model: str,
+    max_tokens: int,
+    reasoning_effort: str | None = None,
+) -> dict:
     started = time.monotonic()
     api_url = normalize_chat_completions_url(api_url)
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": "Return strict parseable JSON only.",
+            },
+            {
+                "role": "user",
+                "content": prompt,
+            },
+        ],
+        "temperature": 0.2,
+        "max_tokens": max_tokens,
+        "response_format": {"type": "json_object"},
+    }
+    if reasoning_effort:
+        payload["reasoning_effort"] = reasoning_effort
+        if reasoning_effort == "disabled":
+            payload["thinking"] = {"type": "disabled"}
+
     response = requests.post(
         api_url,
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         },
-        json={
-            "model": model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "Return strict parseable JSON only.",
-                },
-                {
-                    "role": "user",
-                    "content": prompt,
-                },
-            ],
-            "temperature": 0.2,
-            "max_tokens": max_tokens,
-            "response_format": {"type": "json_object"},
-        },
+        json=payload,
         timeout=120,
     )
     response.raise_for_status()
