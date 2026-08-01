@@ -24,6 +24,19 @@ def main() -> int:
     else:
         raise AssertionError("missing required report keys were accepted")
 
+    metrics = {
+        "play_count": 1000,
+        "like_count": 100,
+        "comment_count": 10,
+        "share_count": 5,
+        "favorite_count": 20,
+    }
+    assert report._score_hot_video(metrics, 1) == 101_250
+    final_prompt = report._summary_prompt_v2("2026-08-01", [], partial_summaries=[{}])
+    assert "common_patterns" in final_prompt
+    assert "video_deep_dives" in final_prompt
+    assert "不得输出 key_observations" in final_prompt
+
     captured = {}
     original_post = deepseek_postprocess.requests.post
     original_record = deepseek_postprocess.record_api_call

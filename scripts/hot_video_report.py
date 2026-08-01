@@ -895,16 +895,13 @@ def _score_hot_video(metrics: dict[str, int], rank: int) -> int:
     comment_count = int(metrics.get("comment_count") or 0)
     share_count = int(metrics.get("share_count") or 0)
     favorite_count = int(metrics.get("favorite_count") or 0)
-    engagement = like_count + comment_count * 3 + share_count * 2 + favorite_count
-    engagement_rate_bonus = int((engagement / max(play_count, 1)) * 100_000) if play_count else 0
-    return int(
+    return (
         play_count
-        + like_count * 20
-        + comment_count * 80
-        + share_count * 60
-        + favorite_count * 20
-        + engagement_rate_bonus
-        + max(0, 50 - rank) * 100
+        + like_count * 8
+        + comment_count * 15
+        + share_count * 20
+        + favorite_count * 10
+        + max(0, 100 - rank) * 1_000
     )
 
 
@@ -2350,6 +2347,7 @@ REQUIRED_DAILY_REPORT_KEYS = {
     "reusable_ideas",
     "risks",
     "next_actions",
+    "video_deep_dives",
 }
 
 
@@ -2857,9 +2855,10 @@ def _summary_prompt_v2(report_date: str, video_items: list[dict[str, Any]], part
         "你是短视频研究总监。请把输入的爆款视频拆解汇总成中文结构化日报。\n"
         "要求：\n"
         "1. 严格基于输入数据，禁止编造事实。\n"
-        "2. key_observations 控制在 4 条以内；video_deep_dives 必须包含每条视频的精炼拆解。\n"
-        "3. patterns / reusable_points / risks 各控制在 4 条以内，必须具备可操盘性。\n"
-        "4. 只返回严格 JSON，不要 Markdown。JSON keys: summary, key_observations, video_deep_dives, patterns, reusable_points, risks。\n\n"
+        "2. 这是最终日报阶段，必须输出完整日报，不得输出 key_observations、patterns、reusable_points 等分组摘要字段。\n"
+        "3. common_patterns、hook_analysis、visual_patterns、topic_angles、execution_tactics、reusable_ideas、risks、next_actions 各给出 4 至 6 条具体、可执行的中文要点。\n"
+        "4. video_deep_dives 必须覆盖每条输入视频，按 rank 返回对象；每条至少说明核心爆点、开头钩子、内容结构、受众触发、互动机制、可复用公式和风险。不要在叙述中重算或猜测播放、点赞等数值。\n"
+        "5. 只返回严格 JSON，不要 Markdown。JSON keys: summary, common_patterns, hook_analysis, visual_patterns, topic_angles, execution_tactics, reusable_ideas, risks, next_actions, video_deep_dives。\n\n"
         f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
     )
 
@@ -2923,14 +2922,7 @@ def _extraction_fallback_deep_dive(video: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _replace_invalid_insight_deep_dives(report: dict[str, Any], videos: list[dict[str, Any]]) -> None:
-    fallback_by_rank = {
-        _to_int(video.get("report_rank")): _extraction_fallback_deep_dive(video)
-        for video in videos
-        if not _is_valid_video_insight(video.get("insight"))
-    }
-    if not fallback_by_rank:
-        return
+def _merge_report_deep_dives(report: dict[str, Any], videos: list[dict[str, Any]]) -> None:
     deep_dives = report.get("video_deep_dives")
     if not isinstance(deep_dives, list):
         deep_dives = []
@@ -2939,8 +2931,27 @@ def _replace_invalid_insight_deep_dives(report: dict[str, Any], videos: list[dic
         for item in deep_dives
         if isinstance(item, dict) and _to_int(item.get("rank"))
     }
-    by_rank.update(fallback_by_rank)
-    report["video_deep_dives"] = [by_rank[rank] for rank in sorted(by_rank)]
+    merged: list[dict[str, Any]] = []
+    for video in sorted(videos, key=lambda item: _to_int(item.get("report_rank"))):
+        rank = _to_int(video.get("report_rank"))
+        existing = by_rank.get(rank)
+        if _is_valid_video_insight(video.get("insight")):
+            detail = dict(existing) if isinstance(existing, dict) else dict(video["insight"])
+            detail["rank"] = rank
+            detail["title"] = video.get("title") or detail.get("title") or ""
+        else:
+            detail = _extraction_fallback_deep_dive(video)
+        metrics = video.get("metrics") if isinstance(video.get("metrics"), dict) else {}
+        detail["verified_metrics"] = {
+            "play_count": _to_int(metrics.get("play_count")),
+            "like_count": _to_int(metrics.get("like_count")),
+            "comment_count": _to_int(metrics.get("comment_count")),
+            "share_count": _to_int(metrics.get("share_count")),
+            "favorite_count": _to_int(metrics.get("favorite_count")),
+            "hot_score": _to_int(video.get("hot_score")),
+        }
+        merged.append(detail)
+    report["video_deep_dives"] = merged
 
 
 def _chunk_summary_prompt_v2(report_date: str, chunk_index: int, video_items: list[dict[str, Any]], compact: bool = False) -> str:
@@ -2998,7 +3009,7 @@ def _local_daily_summary(report_date: str, videos: list[dict[str, Any]], reason:
 
 def _finalize_daily_report(report: dict[str, Any], videos: list[dict[str, Any]]) -> tuple[dict[str, Any], str]:
     validated = _validate_daily_report_shape(report)
-    _replace_invalid_insight_deep_dives(validated, videos)
+    _merge_report_deep_dives(validated, videos)
     markdown = _markdown_from_report(validated)
     return _normalize_report_for_display(validated), markdown
 
@@ -3326,6 +3337,88 @@ def _load_success_videos(conn: sqlite3.Connection, report_date: str) -> list[dic
         for video in _load_report_videos(conn, report_date, include_raw=True)
         if video.get("process_status") == "complete" and _is_video_checkpoint_valid(video)[0]
     ]
+
+
+def refresh_report_hot_scores(report_date: str) -> int:
+    """Recalculate persisted report scores with the active raw-score formula."""
+    with closing(_connect()) as conn:
+        rows = conn.execute(
+            """
+            SELECT platform, video_id, report_rank, metrics_json
+            FROM hot_report_videos
+            WHERE report_date = ?
+            ORDER BY report_rank ASC
+            """,
+            (report_date,),
+        ).fetchall()
+        if not rows:
+            raise ValueError(f"report has no video rows for {report_date}")
+        now = time.time()
+        conn.execute("BEGIN IMMEDIATE")
+        for platform, video_id, rank, metrics_json in rows:
+            metrics = _json_loads(metrics_json, {})
+            if not isinstance(metrics, dict):
+                raise ValueError(f"invalid metrics JSON for {platform}/{video_id}")
+            hot_score = _score_hot_video(metrics, _to_int(rank))
+            conn.execute(
+                """
+                UPDATE hot_report_videos
+                SET hot_score = ?, updated_at = ?
+                WHERE report_date = ? AND platform = ? AND video_id = ?
+                """,
+                (hot_score, now, report_date, platform, video_id),
+            )
+            conn.execute(
+                """
+                UPDATE hot_video_master
+                SET latest_hot_score = (
+                        SELECT rv.hot_score
+                        FROM hot_report_videos rv
+                        WHERE rv.platform = hot_video_master.platform
+                          AND rv.video_id = hot_video_master.video_id
+                        ORDER BY rv.report_date DESC, rv.updated_at DESC
+                        LIMIT 1
+                    ),
+                    max_hot_score = (
+                        SELECT MAX(rv.hot_score)
+                        FROM hot_report_videos rv
+                        WHERE rv.platform = hot_video_master.platform
+                          AND rv.video_id = hot_video_master.video_id
+                    ),
+                    updated_at = ?
+                WHERE platform = ? AND video_id = ?
+                """,
+                (now, platform, video_id),
+            )
+        conn.commit()
+    return len(rows)
+
+
+def regenerate_daily_report_summary(report_date: str) -> dict[str, Any]:
+    """Regenerate only the final daily summary from completed video checkpoints."""
+    refresh_report_hot_scores(report_date)
+    with closing(_connect()) as conn:
+        row = conn.execute(
+            "SELECT id FROM daily_reports WHERE report_date = ?", (report_date,)
+        ).fetchone()
+        if not row:
+            raise ValueError(f"report not found for {report_date}")
+        report_id = str(row[0])
+        success_videos = _load_success_videos(conn, report_date)
+    if not success_videos:
+        raise ValueError(f"report has no completed video checkpoints for {report_date}")
+    report_json, report_markdown = _generate_daily_summary(report_date, success_videos)
+    with closing(_connect()) as conn:
+        _finish_report(
+            conn,
+            report_id=report_id,
+            report_date=report_date,
+            status="complete",
+            report_json=report_json,
+            report_markdown=report_markdown,
+            resume_step="complete",
+        )
+    return get_report(report_date)
 
 
 def _cleanup_old_reports(conn: sqlite3.Connection) -> None:
