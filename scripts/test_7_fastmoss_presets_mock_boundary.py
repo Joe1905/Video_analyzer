@@ -7,6 +7,7 @@ interception notice.  The checks mirror SellerSprite's preset-boundary test.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -21,6 +22,8 @@ def run_fastmoss_presets_simulation() -> None:
             "Set FASTMOSS_TOOL_MOCK_MODE=1 before running this boundary test."
         )
 
+    previous_skill_source = os.environ.get("FASTMOSS_SKILL_SOURCE")
+    os.environ["FASTMOSS_SKILL_SOURCE"] = "local"
     presets = web_app.FASTMOSS_OFFICIAL_PRESETS
     assert len(presets) == 5, f"Expected 5 presets, found {len(presets)}"
     all_fastmoss_tools = set().union(*(info["tools"] for info in presets.values()))
@@ -38,7 +41,9 @@ def run_fastmoss_presets_simulation() -> None:
         route_by_id = web_app.fastmoss_official_skill_route(
             "测试目标", preset_id
         )
-        assert route_by_id["route_source"] == "official_preset"
+        expected_source = "lightweight_skill" if preset_id == "fm-product-scout" else "official_preset"
+        assert route_by_id["route_source"] == expected_source
+        assert bool(route_by_id.get("lightweight_fastmoss_skill")) == (preset_id == "fm-product-scout")
         assert route_by_id["official_preset_id"] == preset_id
         assert route_by_id["official_skill_file"] == skill_file
         assert set(route_by_id["tools"]) == allowed_tools
@@ -86,7 +91,11 @@ def run_fastmoss_presets_simulation() -> None:
             assert forbidden not in exposed_tools
             print(f"  -> boundary preserved: {forbidden} excluded")
 
-    print("\nAll 5 FastMoss official Skills passed mock boundary verification.")
+    if previous_skill_source is None:
+        os.environ.pop("FASTMOSS_SKILL_SOURCE", None)
+    else:
+        os.environ["FASTMOSS_SKILL_SOURCE"] = previous_skill_source
+    print("\nAll 5 FastMoss Skills passed mock boundary verification.")
 
 
 if __name__ == "__main__":

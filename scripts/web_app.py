@@ -140,6 +140,10 @@ from fastmoss_official_skill import (
     official_fastmoss_skill_enabled,
     select_official_fastmoss_skill_prompt,
 )
+from fastmoss_lightweight_skill import (
+    load_lightweight_fastmoss_skill_prompt,
+    uses_lightweight_fastmoss_skill,
+)
 from sellersprite_official_skill import (
     load_official_sellersprite_skill_prompt,
     official_sellersprite_skill_enabled,
@@ -7193,6 +7197,8 @@ def chat_request_needs_tools(user_text: str, route: dict[str, Any]) -> bool:
 def chat_max_tool_rounds(provider: str, route: dict[str, Any], tool_count: int) -> int:
     base = int(route.get("max_rounds") or 5)
     intent = str(route.get("intent") or "general")
+    if provider == "fastmoss" and route.get("lightweight_fastmoss_skill"):
+        return _chat_int_setting("FASTMOSS_LIGHTWEIGHT_SKILL_MAX_ROUNDS", 12, 1, 24)
     if provider == "fastmoss" and route.get("official_skill_chain"):
         return _chat_int_setting("FASTMOSS_OFFICIAL_SKILL_MAX_ROUNDS", 24, 1, 50)
     if provider == "amazon" and route.get("official_skill_chain"):
@@ -11543,6 +11549,40 @@ def tool_call_signature(tool_name: str, arguments: dict[str, Any]) -> str:
     return f"{tool_name}:{json.dumps(arguments or {}, ensure_ascii=False, sort_keys=True, separators=(',', ':'))}"
 
 
+def lightweight_fastmoss_tool_call_signature(tool_name: str, arguments: dict[str, Any]) -> str:
+    """Ignore presentation-only FastMoss arguments when detecting a repeated query."""
+    args = dict(arguments or {})
+    raw_filter = args.get("filter") if isinstance(args.get("filter"), dict) else {}
+    filter_keys = (
+        "product_id", "category_id", "category_l1_id", "category_l2_id", "category_l3_id",
+        "category_path", "region", "market", "marketplace", "country", "site",
+        "date_type", "date_value", "listing_start_date", "listing_end_date",
+    )
+    argument_keys = (
+        "query", "keywords", "analysis_type", "time_range_days", "page", "pagesize", "orderby",
+    )
+    normalized: dict[str, Any] = {
+        key: args[key] for key in argument_keys if key in args
+    }
+    normalized["filter"] = {
+        key: raw_filter[key] for key in filter_keys if key in raw_filter
+    }
+    return tool_call_signature(tool_name, normalized)
+
+
+def chat_tool_call_signature(
+    tool_name: str,
+    arguments: dict[str, Any],
+    route: dict[str, Any] | None = None,
+) -> str:
+    if (
+        (route or {}).get("lightweight_fastmoss_skill")
+        and str(tool_name or "").startswith("fastmoss__")
+    ):
+        return lightweight_fastmoss_tool_call_signature(tool_name, arguments)
+    return tool_call_signature(tool_name, arguments)
+
+
 FASTMOSS_PRODUCT_ID_TOOLS = {
     "fastmoss__product_detail_info", "fastmoss__product_overview", "fastmoss__product_sales_trend",
     "fastmoss__product_investment", "fastmoss__product_creator_analysis", "fastmoss__product_video_list",
@@ -11825,6 +11865,18 @@ def fastmoss_completed_week(today: Any | None = None) -> str:
     return f"{iso_year}-W{iso_week:02d}"
 
 
+_FASTMOSS_ABSOLUTE_PERIOD_RE = re.compile(
+    r"(?<!\d)(?:20\d{2}\s*[-/]\s*\d{1,2}(?:\s*[-/]\s*\d{1,2})?|"
+    r"20\d{2}\s*[- ]?W\s*\d{1,2}|20\d{2}\s*年)(?!\d)",
+    re.IGNORECASE,
+)
+
+
+def fastmoss_user_specified_absolute_period(user_text: str) -> bool:
+    """Keep a user's explicit historic period; relative dates use runtime context."""
+    return bool(_FASTMOSS_ABSOLUTE_PERIOD_RE.search(str(user_text or "")))
+
+
 def apply_fastmoss_business_defaults(
     name: str,
     args: dict[str, Any],
@@ -11836,13 +11888,24 @@ def apply_fastmoss_business_defaults(
     """Fill FastMoss-only business defaults using the current task's verified category path."""
     normalized = dict(args or {})
     path = fastmoss_current_category_path(assistant_msg, user_text)
-    task = (route or {}).get("research_task") if isinstance((route or {}).get("research_task"), dict) else {}
+    route = route or {}
+    task = route.get("research_task") if isinstance(route.get("research_task"), dict) else {}
     llm_owned = llm_orchestrated_route(route)
-    preserve_explicit_category = llm_owned
+    lightweight_skill = bool(route.get("lightweight_fastmoss_skill"))
+    preserve_explicit_category = llm_owned or lightweight_skill
+    preserve_explicit_period = lightweight_skill and fastmoss_user_specified_absolute_period(user_text)
     completed_week = fastmoss_completed_week(today)
 
     def copied_filter() -> dict[str, Any]:
         return dict(normalized.get("filter")) if isinstance(normalized.get("filter"), dict) else {}
+
+    def default_completed_week(filters: dict[str, Any]) -> None:
+        if lightweight_skill and not preserve_explicit_period:
+            filters["date_type"] = "week"
+            filters["date_value"] = completed_week
+        else:
+            filters.setdefault("date_type", "week")
+            filters.setdefault("date_value", completed_week)
 
     if name == "search_category_by_words":
         normalized.pop("desc", None)
@@ -11857,8 +11920,7 @@ def apply_fastmoss_business_defaults(
         filters = copied_filter()
         if path and (not preserve_explicit_category or "category_id" not in filters):
             filters["category_id"] = path["level2"]
-        filters.setdefault("date_type", "week")
-        filters.setdefault("date_value", completed_week)
+        default_completed_week(filters)
         normalized["filter"] = filters
         normalized.setdefault("analysis_type", "basic_metrics")
         normalized.setdefault("lang", "ZH_CN")
@@ -11866,8 +11928,7 @@ def apply_fastmoss_business_defaults(
         filters = copied_filter()
         if path and (not preserve_explicit_category or "category_id" not in filters):
             filters["category_id"] = path["level1"]
-        filters.setdefault("date_type", "week")
-        filters.setdefault("date_value", completed_week)
+        default_completed_week(filters)
         normalized["filter"] = filters
         normalized.setdefault("orderby", [{"field": "category_units_sold", "order": "desc"}])
         normalized.setdefault("page", 1)
@@ -11879,8 +11940,7 @@ def apply_fastmoss_business_defaults(
             # FastMoss category lookup explicitly instructs sales rankings to use
             # category_id_level2; level-3 here commonly produces misleading empties.
             filters["category_id"] = path["level2"]
-        filters.setdefault("date_type", "week")
-        filters.setdefault("date_value", completed_week)
+        default_completed_week(filters)
         normalized["filter"] = filters
         normalized.setdefault("orderby", [{"field": "period_units_sold", "order": "desc"}])
         normalized.setdefault("page", 1)
@@ -11900,8 +11960,12 @@ def apply_fastmoss_business_defaults(
             filters["category_l3_id"] = path["level3"]
         local_today = today or datetime.now(ZoneInfo("Asia/Shanghai")).date()
         listing_end = local_today - timedelta(days=4)
-        filters.setdefault("listing_start_date", (listing_end - timedelta(days=29)).isoformat())
-        filters.setdefault("listing_end_date", listing_end.isoformat())
+        if lightweight_skill and not preserve_explicit_period:
+            filters["listing_start_date"] = (listing_end - timedelta(days=29)).isoformat()
+            filters["listing_end_date"] = listing_end.isoformat()
+        else:
+            filters.setdefault("listing_start_date", (listing_end - timedelta(days=29)).isoformat())
+            filters.setdefault("listing_end_date", listing_end.isoformat())
         normalized["filter"] = filters
         normalized.setdefault("orderby", [{"field": "day3_units_sold", "order": "desc"}])
         normalized.setdefault("page", 1)
@@ -12317,6 +12381,14 @@ def fastmoss_official_skill_route(
             "official_skill_file": preset_info["skill_file"],
             "tools": sorted(preset_info["tools"]),
         })
+        if uses_lightweight_fastmoss_skill(preset_id):
+            route.update({
+                "route_source": "lightweight_skill",
+                "lightweight_fastmoss_skill": True,
+                "max_rounds": _chat_int_setting(
+                    "FASTMOSS_LIGHTWEIGHT_SKILL_MAX_ROUNDS", 12, 1, 24
+                ),
+            })
     elif preset_id:
         print(
             "[CHAT FASTMOSS OFFICIAL SKILL] unknown_preset="
@@ -12347,9 +12419,17 @@ def fastmoss_official_skill_system_instruction(
     current_date_shanghai: str,
     official_skill_prompt: str,
 ) -> str:
-    """Keep the FastMoss system message byte-for-byte official Skill content."""
-    del current_date_shanghai
-    return official_skill_prompt
+    """Attach only the runtime facts the upstream Skill cannot know."""
+    runtime_envelope = (
+        "## 4004 运行时上下文\n"
+        f"- 当前日期：{current_date_shanghai}；时区：Asia/Shanghai。\n"
+        "- ‘当前’、‘最近’、‘近 7 天/30 天’等相对时间以此日期解析；"
+        "用户明确指定历史日期时以用户指定为准。\n"
+        "- 不得查询未来周期；最终回答标明工具实际返回的数据周期。\n"
+        "- 只能依据当前可调用的 FastMoss MCP 工具返回值陈述实时数据；"
+        "空结果或错误必须如实说明。"
+    )
+    return str(official_skill_prompt or "").strip() + "\n\n---\n\n" + runtime_envelope
 
 
 SELLERSPRITE_OFFICIAL_PRESETS: dict[str, dict[str, Any]] = {
@@ -12822,25 +12902,38 @@ def run_chat_deepseek(
     official_skill_prompt = ""
     if official_skill_chain:
         try:
-            official_skill_prompt = (
-                load_official_fastmoss_skill_prompt()
-                if fastmoss_official_skill_chain
-                else load_official_sellersprite_skill_prompt()
-            )
-            if official_skill_route and official_skill_route.get("official_skill_file"):
-                official_skill_prompt = (
-                    select_official_fastmoss_skill_prompt(
-                        official_skill_prompt,
-                        str(official_skill_route["official_skill_file"]),
-                    )
-                    if fastmoss_official_skill_chain
-                    else select_official_sellersprite_skill_prompt(
-                        official_skill_prompt,
-                        str(official_skill_route["official_skill_file"]),
-                    )
+            if (
+                fastmoss_official_skill_chain
+                and official_skill_route
+                and official_skill_route.get("lightweight_fastmoss_skill")
+            ):
+                official_skill_prompt = load_lightweight_fastmoss_skill_prompt(
+                    str(official_skill_route.get("official_preset_id") or "")
                 )
+            else:
+                official_skill_prompt = (
+                    load_official_fastmoss_skill_prompt()
+                    if fastmoss_official_skill_chain
+                    else load_official_sellersprite_skill_prompt()
+                )
+                if official_skill_route and official_skill_route.get("official_skill_file"):
+                    official_skill_prompt = (
+                        select_official_fastmoss_skill_prompt(
+                            official_skill_prompt,
+                            str(official_skill_route["official_skill_file"]),
+                        )
+                        if fastmoss_official_skill_chain
+                        else select_official_sellersprite_skill_prompt(
+                            official_skill_prompt,
+                            str(official_skill_route["official_skill_file"]),
+                        )
+                    )
         except Exception as exc:
-            label = "FastMoss" if fastmoss_official_skill_chain else "SellerSprite"
+            label = (
+                "FastMoss 本地 Skill"
+                if official_skill_route and official_skill_route.get("lightweight_fastmoss_skill")
+                else "FastMoss" if fastmoss_official_skill_chain else "SellerSprite"
+            )
             error_text = (
                 f"{label} 官方Skill加载失败，已停止新链路，未回退到旧编排："
                 f"{type(exc).__name__}: {str(exc)[:500]}"
@@ -13261,7 +13354,7 @@ def run_chat_deepseek(
     seen_tool_calls: set[str] = set()
     for existing_call in assistant_msg.tool_calls or []:
         existing_name = str(existing_call.get("function", {}).get("name") or "")
-        seen_tool_calls.add(tool_call_signature(existing_name, _tool_call_arguments(existing_call)))
+        seen_tool_calls.add(chat_tool_call_signature(existing_name, _tool_call_arguments(existing_call), route))
     default_region = "US" if official_skill_chain else str(route.get("region") or "").strip().upper()
     if (
         not official_skill_chain
@@ -13290,7 +13383,7 @@ def run_chat_deepseek(
         if deterministic_call:
             fn_name, fn_args = deterministic_call
             if fn_args:
-                signature = tool_call_signature(fn_name, fn_args)
+                signature = chat_tool_call_signature(fn_name, fn_args, route)
                 if signature not in seen_tool_calls:
                     seen_tool_calls.add(signature)
                     tool_call = {
@@ -13459,7 +13552,9 @@ def run_chat_deepseek(
                 domain, unprefixed_name = split_prefixed_tool_id(fn_name)
                 if domain in {"sociavault", "sellersprite", "fastmoss"}:
                     fn_args = apply_mcp_region_default(domain, unprefixed_name, fn_args, default_region)
-                if domain == "fastmoss" and route.get("playbook"):
+                if domain == "fastmoss" and (
+                    route.get("playbook") or route.get("lightweight_fastmoss_skill")
+                ):
                     fn_args = apply_fastmoss_business_defaults(
                         unprefixed_name, fn_args, assistant_msg, user_text=routing_text, route=route
                     )
@@ -13477,7 +13572,7 @@ def run_chat_deepseek(
                         flush=True,
                     )
                     continue
-                signature = tool_call_signature(fn_name, fn_args)
+                signature = chat_tool_call_signature(fn_name, fn_args, route)
                 if signature in seen_tool_calls:
                     skipped_tool_call_reasons.append("duplicate")
                     print(f"[CHAT] skipped duplicate tool call: {fn_name} {fn_args}", flush=True)
@@ -13733,6 +13828,28 @@ def run_chat_deepseek(
                     "_context_scope": "system",
                 })
                 break
+            if (
+                provider == "fastmoss"
+                and route.get("lightweight_fastmoss_skill")
+                and assistant_msg.tool_results
+                and str(content or "").strip()
+                and not final_answer_forced
+            ):
+                messages.append({"role": "assistant", "content": content, "_context_scope": "current"})
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        "本轮 FastMoss 数据采集已经结束。现在禁止调用工具，重新完成最终回答。"
+                        "仅使用已取得的证据，直接回答用户决策；消化与结论相关的主要数据，"
+                        "说明关键驱动、风险或证据缺口，并给出可执行下一步。"
+                        "不要复述工具调用过程，不要编造未返回的数据，也不要加入无关产品推广。"
+                    ),
+                    "_context_scope": "system",
+                })
+                tools = []
+                final_answer_forced = True
+                print("[CHAT] FastMoss lightweight Skill promoting tools-off final synthesis", flush=True)
+                continue
             if official_skill_chain:
                 evidence_gaps = []
                 evidence_instruction = analysis_minimum_evidence_instruction

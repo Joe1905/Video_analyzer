@@ -119,7 +119,9 @@ def test_fastmoss_official_skill_chain_loads_exact_package_and_isolates_tools() 
         "2026-07-27",
         prompt,
     )
-    assert instruction == prompt
+    assert instruction.startswith(prompt)
+    assert "当前日期：2026-07-27" in instruction
+    assert "Asia/Shanghai" in instruction
 
     evidence = SimpleNamespace(tool_calls=[], tool_results=[{
         "tool_name": "fastmoss__product_search",
@@ -2763,6 +2765,53 @@ def test_tool_call_signature_deduplicates_argument_order() -> None:
     assert left == right
 
 
+def test_lightweight_fastmoss_skill_uses_runtime_dates_and_semantic_deduplication() -> None:
+    route = {"lightweight_fastmoss_skill": True}
+    today = __import__("datetime").date(2026, 7, 16)
+    message = SimpleNamespace(tool_calls=[], tool_results=[])
+
+    relative_period = web_app.apply_fastmoss_business_defaults(
+        "market_category_analysis",
+        {"filter": {"category_id": 935176, "date_type": "week", "date_value": "2025-W25"}},
+        message,
+        today,
+        user_text="分析美国解压玩具最近表现",
+        route=route,
+    )
+    assert relative_period["filter"]["category_id"] == 935176
+    assert relative_period["filter"]["date_value"] == "2026-W28"
+
+    historic_period = web_app.apply_fastmoss_business_defaults(
+        "market_category_analysis",
+        {"filter": {"category_id": 935176, "date_type": "week", "date_value": "2025-W25"}},
+        message,
+        today,
+        user_text="分析美国解压玩具在 2025-W25 的表现",
+        route=route,
+    )
+    assert historic_period["filter"]["date_value"] == "2025-W25"
+
+    first = web_app.chat_tool_call_signature(
+        "fastmoss__market_category_analysis",
+        {
+            "analysis_type": "basic_metrics",
+            "lang": "EN_US",
+            "filter": {"category_id": 935176, "date_type": "week", "date_value": "2026-W28"},
+        },
+        route,
+    )
+    second = web_app.chat_tool_call_signature(
+        "fastmoss__market_category_analysis",
+        {
+            "lang": "ZH_CN",
+            "analysis_type": "basic_metrics",
+            "filter": {"date_value": "2026-W28", "date_type": "week", "category_id": 935176},
+        },
+        route,
+    )
+    assert first == second
+
+
 def _fastmoss_search_message(calls: list[dict], results: list[dict] | None = None) -> SimpleNamespace:
     return SimpleNamespace(
         tool_calls=[{
@@ -4477,6 +4526,7 @@ if __name__ == "__main__":
     test_social_router_does_not_hijack_commerce_intents()
     test_fastmoss_deep_dive_ids_must_come_from_current_task()
     test_tool_call_signature_deduplicates_argument_order()
+    test_lightweight_fastmoss_skill_uses_runtime_dates_and_semantic_deduplication()
     test_fastmoss_dual_ranking_plan_uses_three_sorted_category_pages_then_segments()
     test_fastmoss_product_phase_waits_for_all_category_and_segment_searches()
     test_fastmoss_product_workflow_deterministically_advances_and_binds_two_targets()
