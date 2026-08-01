@@ -130,10 +130,10 @@ def call_deepseek(
         "max_tokens": max_tokens,
         "response_format": {"type": "json_object"},
     }
-    if reasoning_effort:
+    if reasoning_effort and reasoning_effort != "disabled":
         payload["reasoning_effort"] = reasoning_effort
-        if reasoning_effort == "disabled":
-            payload["thinking"] = {"type": "disabled"}
+    if reasoning_effort == "disabled":
+        payload["thinking"] = {"type": "disabled"}
 
     response = requests.post(
         api_url,
@@ -149,7 +149,14 @@ def call_deepseek(
     record_api_call(
         "deepseek",
         "postprocess",
-        {"api_url": api_url, "model": model, "prompt_sha256": __import__("hashlib").sha256(prompt.encode("utf-8")).hexdigest()},
+        {
+            "api_url": api_url,
+            "model": model,
+            "prompt_sha256": __import__("hashlib").sha256(prompt.encode("utf-8")).hexdigest(),
+            "max_tokens": max_tokens,
+            "reasoning_effort": reasoning_effort if reasoning_effort != "disabled" else None,
+            "thinking": "disabled" if reasoning_effort == "disabled" else "enabled" if reasoning_effort else "default",
+        },
         data,
         elapsed_ms=int((time.monotonic() - started) * 1000),
     )
