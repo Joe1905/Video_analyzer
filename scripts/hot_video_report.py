@@ -1687,10 +1687,12 @@ def _rank_with_topic_guarantees(
     return selected[:target_count]
 
 
-def _start_report(conn: sqlite3.Connection, report_date: str, region: str, sources: list[dict[str, Any]], scheduled: bool = False) -> str:
+def _start_report(conn: sqlite3.Connection, report_date: str, region: str, sources: list[dict[str, Any]], scheduled: bool = False, force_reset: bool = False) -> str:
     now = time.time()
     report_id = uuid.uuid4().hex
-    conn.execute("DELETE FROM hot_report_videos WHERE report_date = ?", (report_date,))
+    existing_count = conn.execute("SELECT COUNT(*) FROM hot_report_videos WHERE report_date = ?", (report_date,)).fetchone()[0]
+    if force_reset or existing_count == 0:
+        conn.execute("DELETE FROM hot_report_videos WHERE report_date = ?", (report_date,))
     conn.execute(
         """
         INSERT INTO daily_reports (
@@ -1700,17 +1702,10 @@ def _start_report(conn: sqlite3.Connection, report_date: str, region: str, sourc
         )
         VALUES (?, ?, 'running', ?, ?, 0, NULL, NULL, NULL, 0, 0, NULL, ?, ?, ?)
         ON CONFLICT(report_date) DO UPDATE SET
-            id = excluded.id,
             status = 'running',
             region = excluded.region,
             sources_json = excluded.sources_json,
-            video_count = 0,
             error = NULL,
-            report_json = NULL,
-            report_markdown = NULL,
-            analysis_success_count = 0,
-            analysis_failed_count = 0,
-            llm_generated_at = NULL,
             scheduled_at = excluded.scheduled_at,
             updated_at = excluded.updated_at
         """,
@@ -3133,33 +3128,54 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
                 return get_report(date, include_raw=True)
             try:
                 api_timeout = float(os.getenv("SOCIAVAULT_TIMEOUT", "180"))
-                candidates, source_errors = _collect_hot_video_candidates(
-                    date,
-                    region,
-                    candidate_target_count,
-                    recency_days,
-                    topic_keywords,
-                    api_key,
-                    api_base,
-                    api_timeout,
-                    counts,
-                    excluded_keys,
-                )
-                ranked = _rank_with_topic_guarantees(list(candidates.values()), topic_keywords, candidate_target_count)
-                counts["topic_guaranteed_count"] = sum(1 for item in ranked[:target_count] if item.get("selection_bucket") == "topic")
-                if not ranked:
-                    suffix = f"; source errors: {' | '.join(source_errors[:3])}" if source_errors else ""
-                    duplicate_note = (
-                        f"; skipped already reported videos: {counts.get('skipped_duplicate_report', 0)}"
-                        if counts.get("skipped_duplicate_report")
-                        else ""
+                existing_rows = conn.execute(
+                    """
+                    SELECT m.platform, m.video_id, COALESCE(m.title, rv.title), COALESCE(m.author, rv.author),
+                           COALESCE(m.source_url, rv.source_url), COALESCE(rv.cover_url, m.cover_url),
+                           rv.local_filename, rv.extraction_dir, rv.source_endpoint, rv.source_label,
+                           rv.source_rank, rv.report_rank, rv.hot_score, rv.metrics_json, rv.raw_json,
+                           rv.process_status, rv.process_error, rv.analysis_json, rv.analysis_zh_json, rv.audit_json,
+                           rv.social_context_json, rv.insight_json, rv.insight_generated_at,
+                           rv.created_at, rv.updated_at
+                    FROM hot_report_videos rv
+                    LEFT JOIN hot_video_master m ON m.platform = rv.platform AND m.video_id = rv.video_id
+                    WHERE rv.report_date = ?
+                    ORDER BY rv.report_rank ASC
+                    """,
+                    (date,),
+                ).fetchall()
+                if existing_rows:
+                    ranked = [_row_to_video(row, include_raw=False) for row in existing_rows]
+                    counts["candidate_count"] = len(ranked)
+                    _progress_payload(date, "running", "resuming", 30, f"自动识别到断点：找到已有 {len(ranked)} 条视频记录，直接从断点继续生成", counts)
+                else:
+                    candidates, source_errors = _collect_hot_video_candidates(
+                        date,
+                        region,
+                        candidate_target_count,
+                        recency_days,
+                        topic_keywords,
+                        api_key,
+                        api_base,
+                        api_timeout,
+                        counts,
+                        excluded_keys,
                     )
-                    error = f"No new unique hot videos published in the last {recency_days} days{duplicate_note}{suffix}"
-                    _finish_report(conn, report_id, date, "failed", error)
-                    _progress_payload(date, "failed", "finished", 100, error, counts)
-                    return get_report(date, include_raw=True)
-                _progress_payload(date, "running", "filtering", 24, f"筛选出最近 {recency_days} 天候选视频 {len(ranked)} 条", counts)
-                _progress_payload(date, "running", "downloading", 30, f"开始处理候选视频，目标成功 {analysis_limit} 条", counts)
+                    ranked = _rank_with_topic_guarantees(list(candidates.values()), topic_keywords, candidate_target_count)
+                    counts["topic_guaranteed_count"] = sum(1 for item in ranked[:target_count] if item.get("selection_bucket") == "topic")
+                    if not ranked:
+                        suffix = f"; source errors: {' | '.join(source_errors[:3])}" if source_errors else ""
+                        duplicate_note = (
+                            f"; skipped already reported videos: {counts.get('skipped_duplicate_report', 0)}"
+                            if counts.get("skipped_duplicate_report")
+                            else ""
+                        )
+                        error = f"No new unique hot videos published in the last {recency_days} days{duplicate_note}{suffix}"
+                        _finish_report(conn, report_id, date, "failed", error)
+                        _progress_payload(date, "failed", "finished", 100, error, counts)
+                        return get_report(date, include_raw=True)
+                    _progress_payload(date, "running", "filtering", 24, f"筛选出最近 {recency_days} 天候选视频 {len(ranked)} 条", counts)
+                    _progress_payload(date, "running", "downloading", 30, f"开始处理候选视频，目标成功 {analysis_limit} 条", counts)
 
                 job_timeout = _to_float(os.getenv("REPORT_JOB_TIMEOUT", str(DEFAULT_REPORT_JOB_TIMEOUT_SECONDS)), DEFAULT_REPORT_JOB_TIMEOUT_SECONDS)
                 deadline = time.time() + max(60.0, job_timeout)
