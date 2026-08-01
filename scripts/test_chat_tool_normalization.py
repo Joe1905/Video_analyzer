@@ -2983,6 +2983,7 @@ def test_product_scout_v2_enforce_renders_deterministic_facts_without_v1_fallbac
     )}
     sys.modules["requests"] = fake_requests
     web_app.execute_prefixed_tool = lambda *_args, **_kwargs: {
+        "ok": True,
         "data": {"content": [{"type": "text", "text": json.dumps({"items": [{
             "product_id": "p1", "product_name": "Stress Ball", "period_units_sold": 12,
             "period_gmv": 120, "product_url": "https://example.test/p1",
