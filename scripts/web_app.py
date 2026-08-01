@@ -11273,6 +11273,46 @@ def build_tool_limit_final_context(messages: list[dict[str, Any]], user_request:
     return working
 
 
+def build_lightweight_fastmoss_final_context(
+    messages: list[dict[str, Any]],
+    user_request: str,
+) -> list[dict[str, Any]]:
+    """Rebuild the local Skill synthesis turn from its instruction, request, and tool evidence only."""
+    skill_instruction = next(
+        (
+            dict(message)
+            for message in messages
+            if message.get("role") == "system" and message.get("_context_scope") == "system"
+        ),
+        None,
+    )
+    isolated = build_tool_limit_final_context(messages, user_request)
+    evidence = [
+        message for message in isolated
+        if message.get("_context_scope") == "current_evidence"
+    ]
+    rebuilt: list[dict[str, Any]] = []
+    if skill_instruction:
+        rebuilt.append(skill_instruction)
+    rebuilt.append({
+        "role": "user",
+        "content": str(user_request or ""),
+        "_context_scope": "current",
+        "_context_priority": "keep",
+    })
+    rebuilt.extend(evidence)
+    return rebuilt
+
+
+def lightweight_fastmoss_final_answer_usable(final_text: str, first_draft: str) -> bool:
+    """Reject empty or clearly truncated synthesis while allowing a genuinely concise conclusion."""
+    final_length = len(str(final_text or "").strip())
+    draft_length = len(str(first_draft or "").strip())
+    if not final_length:
+        return False
+    return not (draft_length >= 800 and final_length < max(320, int(draft_length * 0.3)))
+
+
 def _chat_tool_counts(tool_calls: list[dict] | None) -> str:
     counts: dict[str, int] = {}
     for tool_call in tool_calls or []:
@@ -11550,24 +11590,24 @@ def tool_call_signature(tool_name: str, arguments: dict[str, Any]) -> str:
 
 
 def lightweight_fastmoss_tool_call_signature(tool_name: str, arguments: dict[str, Any]) -> str:
-    """Ignore presentation-only FastMoss arguments when detecting a repeated query."""
-    args = dict(arguments or {})
-    raw_filter = args.get("filter") if isinstance(args.get("filter"), dict) else {}
-    filter_keys = (
-        "product_id", "category_id", "category_l1_id", "category_l2_id", "category_l3_id",
-        "category_path", "region", "market", "marketplace", "country", "site",
-        "date_type", "date_value", "listing_start_date", "listing_end_date",
-    )
-    argument_keys = (
-        "query", "keywords", "analysis_type", "time_range_days", "page", "pagesize", "orderby",
-    )
-    normalized: dict[str, Any] = {
-        key: args[key] for key in argument_keys if key in args
+    """Ignore only presentation settings; keep every nested business filter and time window."""
+    presentation_keys = {
+        "lang", "language", "locale", "currency", "currency_code", "timezone", "tz",
+        "desc", "description",
     }
-    normalized["filter"] = {
-        key: raw_filter[key] for key in filter_keys if key in raw_filter
-    }
-    return tool_call_signature(tool_name, normalized)
+
+    def without_presentation(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                str(key): without_presentation(item)
+                for key, item in value.items()
+                if str(key).lower() not in presentation_keys
+            }
+        if isinstance(value, list):
+            return [without_presentation(item) for item in value]
+        return value
+
+    return tool_call_signature(tool_name, without_presentation(arguments or {}))
 
 
 def chat_tool_call_signature(
@@ -11865,18 +11905,6 @@ def fastmoss_completed_week(today: Any | None = None) -> str:
     return f"{iso_year}-W{iso_week:02d}"
 
 
-_FASTMOSS_ABSOLUTE_PERIOD_RE = re.compile(
-    r"(?<!\d)(?:20\d{2}\s*[-/]\s*\d{1,2}(?:\s*[-/]\s*\d{1,2})?|"
-    r"20\d{2}\s*[- ]?W\s*\d{1,2}|20\d{2}\s*年)(?!\d)",
-    re.IGNORECASE,
-)
-
-
-def fastmoss_user_specified_absolute_period(user_text: str) -> bool:
-    """Keep a user's explicit historic period; relative dates use runtime context."""
-    return bool(_FASTMOSS_ABSOLUTE_PERIOD_RE.search(str(user_text or "")))
-
-
 def apply_fastmoss_business_defaults(
     name: str,
     args: dict[str, Any],
@@ -11893,19 +11921,16 @@ def apply_fastmoss_business_defaults(
     llm_owned = llm_orchestrated_route(route)
     lightweight_skill = bool(route.get("lightweight_fastmoss_skill"))
     preserve_explicit_category = llm_owned or lightweight_skill
-    preserve_explicit_period = lightweight_skill and fastmoss_user_specified_absolute_period(user_text)
     completed_week = fastmoss_completed_week(today)
 
     def copied_filter() -> dict[str, Any]:
         return dict(normalized.get("filter")) if isinstance(normalized.get("filter"), dict) else {}
 
     def default_completed_week(filters: dict[str, Any]) -> None:
-        if lightweight_skill and not preserve_explicit_period:
-            filters["date_type"] = "week"
-            filters["date_value"] = completed_week
-        else:
-            filters.setdefault("date_type", "week")
-            filters.setdefault("date_value", completed_week)
+        # The model receives the runtime date in the Skill envelope. Only fill a
+        # missing period here; never silently collapse an explicit tool window.
+        filters.setdefault("date_type", "week")
+        filters.setdefault("date_value", completed_week)
 
     if name == "search_category_by_words":
         normalized.pop("desc", None)
@@ -11960,12 +11985,8 @@ def apply_fastmoss_business_defaults(
             filters["category_l3_id"] = path["level3"]
         local_today = today or datetime.now(ZoneInfo("Asia/Shanghai")).date()
         listing_end = local_today - timedelta(days=4)
-        if lightweight_skill and not preserve_explicit_period:
-            filters["listing_start_date"] = (listing_end - timedelta(days=29)).isoformat()
-            filters["listing_end_date"] = listing_end.isoformat()
-        else:
-            filters.setdefault("listing_start_date", (listing_end - timedelta(days=29)).isoformat())
-            filters.setdefault("listing_end_date", listing_end.isoformat())
+        filters.setdefault("listing_start_date", (listing_end - timedelta(days=29)).isoformat())
+        filters.setdefault("listing_end_date", listing_end.isoformat())
         normalized["filter"] = filters
         normalized.setdefault("orderby", [{"field": "day3_units_sold", "order": "desc"}])
         normalized.setdefault("page", 1)
@@ -13351,6 +13372,7 @@ def run_chat_deepseek(
     unexecutable_protocol_retries = 0
     no_tool_retries = 0
     final_answer_forced = False
+    lightweight_fastmoss_first_draft = ""
     seen_tool_calls: set[str] = set()
     for existing_call in assistant_msg.tool_calls or []:
         existing_name = str(existing_call.get("function", {}).get("name") or "")
@@ -13787,6 +13809,22 @@ def run_chat_deepseek(
                 store.update_message(session, assistant_msg, fallback, status="done")
                 store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": fallback})
                 return
+            if (
+                final_answer_forced
+                and provider == "fastmoss"
+                and route.get("lightweight_fastmoss_skill")
+                and lightweight_fastmoss_first_draft
+                and not lightweight_fastmoss_final_answer_usable(
+                    str(content or ""), lightweight_fastmoss_first_draft
+                )
+            ):
+                print("[CHAT] FastMoss lightweight Skill synthesis unusable; returning first draft", flush=True)
+                store.update_message(session, assistant_msg, lightweight_fastmoss_first_draft, status="done")
+                store.broadcast(session.id, "done", {
+                    "messageId": assistant_msg.id,
+                    "content": lightweight_fastmoss_first_draft,
+                })
+                return
             if final_answer_forced and str(content or "").strip():
                 if (
                     provider == "amazon"
@@ -13835,7 +13873,8 @@ def run_chat_deepseek(
                 and str(content or "").strip()
                 and not final_answer_forced
             ):
-                messages.append({"role": "assistant", "content": content, "_context_scope": "current"})
+                lightweight_fastmoss_first_draft = str(content).strip()
+                messages = build_lightweight_fastmoss_final_context(messages, user_text)
                 messages.append({
                     "role": "system",
                     "content": (
@@ -13986,6 +14025,21 @@ def run_chat_deepseek(
                     err_text += " | body: " + exc.response.text[:300]
                 except Exception:
                     pass
+            if (
+                provider == "fastmoss"
+                and route.get("lightweight_fastmoss_skill")
+                and lightweight_fastmoss_first_draft
+            ):
+                print(
+                    f"[CHAT] FastMoss lightweight Skill synthesis failed; returning first draft: {err_text}",
+                    flush=True,
+                )
+                store.update_message(session, assistant_msg, lightweight_fastmoss_first_draft, status="done")
+                store.broadcast(session.id, "done", {
+                    "messageId": assistant_msg.id,
+                    "content": lightweight_fastmoss_first_draft,
+                })
+                return
             print(f"[CHAT] DeepSeek error: {err_text}", flush=True)
             store.update_message(session, assistant_msg, f"Request failed: {exc}", status="error")
             return

@@ -2770,26 +2770,27 @@ def test_lightweight_fastmoss_skill_uses_runtime_dates_and_semantic_deduplicatio
     today = __import__("datetime").date(2026, 7, 16)
     message = SimpleNamespace(tool_calls=[], tool_results=[])
 
-    relative_period = web_app.apply_fastmoss_business_defaults(
+    default_period = web_app.apply_fastmoss_business_defaults(
         "market_category_analysis",
-        {"filter": {"category_id": 935176, "date_type": "week", "date_value": "2025-W25"}},
+        {"filter": {"category_id": 935176}},
         message,
         today,
         user_text="分析美国解压玩具最近表现",
         route=route,
     )
-    assert relative_period["filter"]["category_id"] == 935176
-    assert relative_period["filter"]["date_value"] == "2026-W28"
+    assert default_period["filter"]["category_id"] == 935176
+    assert default_period["filter"]["date_value"] == "2026-W28"
 
-    historic_period = web_app.apply_fastmoss_business_defaults(
+    explicit_period = web_app.apply_fastmoss_business_defaults(
         "market_category_analysis",
-        {"filter": {"category_id": 935176, "date_type": "week", "date_value": "2025-W25"}},
+        {"filter": {"category_id": 935176, "date_type": "month", "date_value": "2026-06"}},
         message,
         today,
-        user_text="分析美国解压玩具在 2025-W25 的表现",
+        user_text="分析美国解压玩具最近 30 天表现",
         route=route,
     )
-    assert historic_period["filter"]["date_value"] == "2025-W25"
+    assert explicit_period["filter"]["date_type"] == "month"
+    assert explicit_period["filter"]["date_value"] == "2026-06"
 
     first = web_app.chat_tool_call_signature(
         "fastmoss__market_category_analysis",
@@ -2810,6 +2811,121 @@ def test_lightweight_fastmoss_skill_uses_runtime_dates_and_semantic_deduplicatio
         route,
     )
     assert first == second
+    different_window = web_app.chat_tool_call_signature(
+        "fastmoss__market_category_analysis",
+        {
+            "analysis_type": "basic_metrics",
+            "filter": {
+                "category_id": 935176,
+                "date_range": {"start_date": "2026-06-01", "end_date": "2026-06-30"},
+            },
+        },
+        route,
+    )
+    assert first != different_window
+
+
+def test_lightweight_fastmoss_skill_two_pass_synthesis_isolated_and_recovers_first_draft() -> None:
+    first_draft = "首稿证据与判断。" * 180
+    final_answer = "最终结论基于本轮工具证据，建议先验证代表性样本和竞争风险。" * 20
+
+    class Response:
+        status_code = 200
+        text = ""
+
+        def __init__(self, body: dict) -> None:
+            self.body = body
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return self.body
+
+    class FakeRequests:
+        def __init__(self, fail_synthesis: bool = False) -> None:
+            self.fail_synthesis = fail_synthesis
+            self.payloads: list[dict] = []
+
+        def post(self, _url: str, **kwargs):
+            self.payloads.append(json.loads(kwargs["data"].decode("utf-8")))
+            if len(self.payloads) == 1:
+                return Response({"choices": [{"message": {"content": "", "tool_calls": [{
+                    "id": "tool-1",
+                    "type": "function",
+                    "function": {
+                        "name": "fastmoss__search_category_by_words",
+                        "arguments": json.dumps({"query": ["解压玩具"]}),
+                    },
+                }]}}]})
+            if len(self.payloads) == 2:
+                return Response({"choices": [{"message": {"content": first_draft}}]})
+            if self.fail_synthesis:
+                raise TimeoutError("synthesis timeout")
+            return Response({"choices": [{"message": {"content": final_answer}}]})
+
+    class Store:
+        def update_message(self, _session, message, content: str, status: str = "done") -> None:
+            message.content = content
+            message.status = status
+
+        def broadcast(self, _session_id: str, _event: str, _data: dict) -> None:
+            return None
+
+    def run_case(fail_synthesis: bool) -> tuple[web_app.Message, list[dict]]:
+        fake_requests = FakeRequests(fail_synthesis)
+        user = web_app.Message("user-1", "user", "请使用 FastMoss 官方 Skill「选品决策」开始分析：解压玩具")
+        assistant = web_app.Message("assistant-1", "assistant", "", status="pending")
+        session = SimpleNamespace(id="fastmoss-test", messages=[user, assistant])
+        original_requests = sys.modules.get("requests")
+        original_execute = web_app.execute_prefixed_tool
+        original_record = web_app.record_api_call
+        previous_key = os.environ.get("DEEPSEEK_API_KEY")
+        previous_official = os.environ.get("FASTMOSS_OFFICIAL_SKILL_ENABLED")
+        previous_source = os.environ.get("FASTMOSS_SKILL_SOURCE")
+        sys.modules["requests"] = fake_requests
+        web_app.execute_prefixed_tool = lambda *_args, **_kwargs: {
+            "data": {"content": [{"type": "text", "text": '{"categories":[{"category_id_level1":13}]}' }]}
+        }
+        web_app.record_api_call = lambda *_args, **_kwargs: None
+        os.environ["DEEPSEEK_API_KEY"] = "test-key"
+        os.environ["FASTMOSS_OFFICIAL_SKILL_ENABLED"] = "1"
+        os.environ["FASTMOSS_SKILL_SOURCE"] = "local"
+        try:
+            web_app.run_chat_deepseek(Store(), session, assistant, user.content, "fastmoss", official_preset_id="fm-product-scout")
+        finally:
+            web_app.execute_prefixed_tool = original_execute
+            web_app.record_api_call = original_record
+            if original_requests is None:
+                sys.modules.pop("requests", None)
+            else:
+                sys.modules["requests"] = original_requests
+            for name, previous in (
+                ("DEEPSEEK_API_KEY", previous_key),
+                ("FASTMOSS_OFFICIAL_SKILL_ENABLED", previous_official),
+                ("FASTMOSS_SKILL_SOURCE", previous_source),
+            ):
+                if previous is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = previous
+        return assistant, fake_requests.payloads
+
+    assistant, payloads = run_case(False)
+    assert assistant.status == "done"
+    assert assistant.content == final_answer
+    assert len(payloads) == 3
+    synthesis_payload = payloads[-1]
+    assert synthesis_payload["tools"] is None
+    synthesis_context = json.dumps(synthesis_payload["messages"], ensure_ascii=False)
+    assert first_draft not in synthesis_context
+    assert "解压玩具" in synthesis_context
+    assert "category_id_level1" in synthesis_context
+
+    recovered, failed_payloads = run_case(True)
+    assert recovered.status == "done"
+    assert recovered.content == first_draft
+    assert len(failed_payloads) == 3
 
 
 def _fastmoss_search_message(calls: list[dict], results: list[dict] | None = None) -> SimpleNamespace:
@@ -4527,6 +4643,7 @@ if __name__ == "__main__":
     test_fastmoss_deep_dive_ids_must_come_from_current_task()
     test_tool_call_signature_deduplicates_argument_order()
     test_lightweight_fastmoss_skill_uses_runtime_dates_and_semantic_deduplication()
+    test_lightweight_fastmoss_skill_two_pass_synthesis_isolated_and_recovers_first_draft()
     test_fastmoss_dual_ranking_plan_uses_three_sorted_category_pages_then_segments()
     test_fastmoss_product_phase_waits_for_all_category_and_segment_searches()
     test_fastmoss_product_workflow_deterministically_advances_and_binds_two_targets()
