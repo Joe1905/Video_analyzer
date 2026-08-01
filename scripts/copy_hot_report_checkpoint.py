@@ -211,7 +211,8 @@ def main() -> int:
     if args.source_db.resolve() == args.target_db.resolve():
         parser.error("source and target databases must differ")
 
-    with sqlite3.connect(args.source_db, timeout=3) as source:
+    source_uri = f"file:{args.source_db.resolve().as_posix()}?mode=ro"
+    with sqlite3.connect(source_uri, uri=True, timeout=3) as source:
         integrity = source.execute("PRAGMA integrity_check").fetchone()[0]
         if integrity != "ok":
             raise RuntimeError(f"source database integrity check failed: {integrity}")
