@@ -2957,7 +2957,7 @@ def test_product_scout_v2_enforce_renders_deterministic_facts_without_v1_fallbac
                     "type": "function",
                     "function": {
                         "name": "fastmoss__product_rank_top_selling",
-                        "arguments": json.dumps({"filter": {"category_id": 935176, "region": "US", "date_type": "week", "date_value": "2026-W30"}}),
+                        "arguments": json.dumps({"filter": {"region": "US", "date_type": "week", "date_value": "2026-W30"}}),
                     },
                 }]}}]})
             return Response({"choices": [{"message": {"content": "建议先验证渠道和趋势信号，再决定是否继续初筛。"}}]})
