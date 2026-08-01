@@ -17,6 +17,9 @@ from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
+# This is a V1/V2 mixed regression suite. Individual V2 cases opt in explicitly;
+# legacy assertions must not inherit the deployed canary mode.
+os.environ["FASTMOSS_PRODUCT_SCOUT_V2_MODE"] = "off"
 
 import web_app  # noqa: E402
 from fastmoss_official_skill import (  # noqa: E402
