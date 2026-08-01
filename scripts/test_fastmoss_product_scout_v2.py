@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import json
+import sys
 import unittest
 from pathlib import Path
 
-from scripts.fastmoss_product_scout_v2 import (
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from fastmoss_product_scout_v2 import (
     build_product_scout_evidence_contract,
     contract_next_instruction,
     product_scout_v2_market_ambiguity_question,
