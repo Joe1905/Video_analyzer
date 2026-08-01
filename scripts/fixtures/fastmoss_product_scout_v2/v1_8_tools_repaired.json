@@ -1,0 +1,21 @@
+{
+  "fixture_version": "2026-08-01",
+  "source": "4004 existing FastMoss session: 解压玩具分析",
+  "redaction": "product, shop, creator, URL and numeric values removed; returned tool structure retained",
+  "observed_tool_count": 8,
+  "expected_contract": {
+    "must_preserve_actual_period": true,
+    "must_preserve_hot_and_new_rows": true,
+    "must_not_mix_channel_denominators": true,
+    "must_surface_evidence_gaps": true
+  },
+  "observed_tools": [
+    "search_category_by_words",
+    "market_category_analysis",
+    "market_category_ranking",
+    "product_rank_top_selling",
+    "product_rank_new_listed",
+    "product_overview",
+    "product_video_list"
+  ]
+}

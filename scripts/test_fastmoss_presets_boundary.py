@@ -68,6 +68,22 @@ class TestFastMossPresetsBoundary(unittest.TestCase):
         self.assertEqual(route["route_source"], "official_preset")
         self.assertNotIn("lightweight_fastmoss_skill", route)
 
+    def test_product_scout_v2_mode_is_scoped_to_this_preset(self):
+        previous = os.environ.get("FASTMOSS_PRODUCT_SCOUT_V2_MODE")
+        os.environ["FASTMOSS_PRODUCT_SCOUT_V2_MODE"] = "enforce"
+        try:
+            product_scout = fastmoss_official_skill_route(official_preset_id="fm-product-scout")
+            other_preset = fastmoss_official_skill_route(official_preset_id="fm-creator-outreach")
+        finally:
+            if previous is None:
+                os.environ.pop("FASTMOSS_PRODUCT_SCOUT_V2_MODE", None)
+            else:
+                os.environ["FASTMOSS_PRODUCT_SCOUT_V2_MODE"] = previous
+        self.assertEqual(product_scout["product_scout_v2_mode"], "enforce")
+        self.assertTrue(product_scout["product_scout_v2"])
+        self.assertEqual(product_scout["route_source"], "product_scout_v2_enforce")
+        self.assertNotIn("product_scout_v2", other_preset)
+
     def test_route_resolution_by_user_text_prefix(self):
         user_text = "请使用 FastMoss 官方 Skill「达人建联」开始分析。"
         route = fastmoss_official_skill_route(user_text=user_text)

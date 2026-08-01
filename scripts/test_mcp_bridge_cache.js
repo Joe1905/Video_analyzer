@@ -5,7 +5,12 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
-const { mcpToolResponseIsError, shouldBypassToolCache } = require("../sellersprite_mcp_chat/server.js");
+const {
+  mcpToolResponseIsError,
+  mcpToolResponseIsNormalEmpty,
+  normalizeFastmossProductScoutV2Request,
+  shouldBypassToolCache,
+} = require("../sellersprite_mcp_chat/server.js");
 const { ToolCacheStore } = require("../sellersprite_mcp_chat/tool_cache.js");
 
 async function main() {
@@ -16,6 +21,12 @@ async function main() {
   assert.equal(shouldBypassToolCache("sociavault", "check_credits"), true);
   assert.equal(shouldBypassToolCache("sociavault", "tiktok_profile"), false);
   assert.equal(shouldBypassToolCache("sellersprite", "check_credits"), false);
+  assert.equal(mcpToolResponseIsNormalEmpty({ content: [{ type: "text", text: JSON.stringify({ items: [] }) }] }), true);
+  assert.equal(mcpToolResponseIsNormalEmpty({ content: [{ type: "text", text: JSON.stringify({ items: [{ product_id: "p1" }] }) }] }), false);
+  assert.deepEqual(
+    normalizeFastmossProductScoutV2Request("search_category_by_words", { query: ["fidget toys"], top_k: "5", filter: { region: "us", ignored: "" } }),
+    { query: ["fidget toys"], top_k: 5, filter: { region: "US" } },
+  );
 
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-shared-cache-test-"));
   try {
@@ -68,6 +79,35 @@ async function main() {
       content: [{ type: "text", text: "whitespace-distinct result" }], isError: false,
     }));
     assert.equal(exactArgs.meta.hit, false);
+
+    const v2Options = { namespace: "fastmoss-product-scout-v2", schemaVersion: "2026-08-01" };
+    const v2Cache = new ToolCacheStore({ ...options, provider: "fastmoss_mcp", rootDir: path.join(tempRoot, "v2") });
+    let v2Calls = 0;
+    const v2First = await v2Cache.getOrCall("search_category_by_words", { query: ["fidget toys"] }, async () => {
+      v2Calls += 1;
+      return { content: [{ type: "text", text: JSON.stringify({ items: [] }) }], isError: false };
+    }, {
+      ...v2Options,
+      normalizeRequest: (request) => normalizeFastmossProductScoutV2Request("search_category_by_words", request),
+      ttlSecondsForResponse: () => 600,
+    });
+    const v2Second = await v2Cache.getOrCall("search_category_by_words", { query: ["fidget toys"], top_k: 5 }, async () => {
+      v2Calls += 1;
+      throw new Error("normalized V2 request should hit cache");
+    }, {
+      ...v2Options,
+      normalizeRequest: (request) => normalizeFastmossProductScoutV2Request("search_category_by_words", request),
+      ttlSecondsForResponse: () => 600,
+    });
+    assert.equal(v2First.meta.hit, false);
+    assert.equal(v2Second.meta.hit, true);
+    assert.equal(v2Second.meta.ttl_seconds, 600);
+    assert.equal(v2Calls, 1);
+    const differentV2Period = await v2Cache.getOrCall("search_category_by_words", { query: ["fidget toys"], top_k: 5, filter: { date_value: "2026-W30" } }, async () => {
+      v2Calls += 1;
+      return { content: [{ type: "text", text: "different period" }], isError: false };
+    }, v2Options);
+    assert.equal(differentV2Period.meta.hit, false);
 
     const concurrentOptions = { ...options, rootDir: path.join(tempRoot, "concurrent-shared") };
     const concurrentA = new ToolCacheStore(concurrentOptions);

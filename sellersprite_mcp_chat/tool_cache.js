@@ -52,12 +52,14 @@ class ToolCacheStore {
     this.migrationPromise = null;
   }
 
-  cacheKey(toolName, args) {
+  cacheKey(toolName, args, namespace = "", schemaVersion = "") {
     return createHash("sha256")
       .update(canonicalJson({
         provider: this.provider,
         scope: this.scope,
         endpoint: String(toolName || ""),
+        namespace: String(namespace || ""),
+        schema_version: String(schemaVersion || ""),
         request: args || {},
       }))
       .digest("hex");
@@ -207,10 +209,15 @@ class ToolCacheStore {
     return this.migrationPromise;
   }
 
-  async getOrCall(toolName, args, caller) {
+  async getOrCall(toolName, args, caller, options = {}) {
     await this.ensureMigrated();
-    const request = normalizeCacheValue(args || {});
-    const key = this.cacheKey(toolName, request);
+    const namespace = String(options.namespace || "");
+    const schemaVersion = String(options.schemaVersion || "");
+    const normalizer = typeof options.normalizeRequest === "function"
+      ? options.normalizeRequest
+      : (value) => value;
+    const request = normalizeCacheValue(normalizer(args || {}));
+    const key = this.cacheKey(toolName, request, namespace, schemaVersion);
     const now = Date.now();
     const ttlMs = this.ttlSeconds * 1000;
     let entry = await this.readEntry(key);
@@ -218,13 +225,16 @@ class ToolCacheStore {
       entry
       && (
         String(entry.endpoint || "") !== String(toolName || "")
+        || String(entry.namespace || "") !== namespace
+        || String(entry.schema_version || "") !== schemaVersion
         || canonicalJson(entry.request || {}) !== canonicalJson(request)
       )
     ) {
       this.logger.warn(`Ignored mismatched shared tool cache entry ${key.slice(0, 16)}`);
       entry = null;
     }
-    if (entry && now - Number(entry.createdAt || 0) <= ttlMs && !this.isError(entry.response)) {
+    const entryTtlSeconds = Math.max(1, Number(entry?.ttl_seconds || this.ttlSeconds) || this.ttlSeconds);
+    if (entry && now - Number(entry.createdAt || 0) <= entryTtlSeconds * 1000 && !this.isError(entry.response)) {
       this.recordHit(key).catch((error) => {
         this.logger.warn(`Could not update shared tool cache hit metadata: ${error.message}`);
       });
@@ -235,7 +245,7 @@ class ToolCacheStore {
           label: "缓存命中",
           provider: this.provider,
           endpoint: String(toolName),
-          ttl_seconds: this.ttlSeconds,
+          ttl_seconds: entryTtlSeconds,
           age_seconds: Math.round((now - Number(entry.createdAt || now)) / 1000),
         },
       };
@@ -244,13 +254,24 @@ class ToolCacheStore {
     const response = await caller();
     if (!this.isError(response)) {
       const createdAt = Date.now();
+      const ttlSeconds = Math.max(
+        1,
+        Number(
+          typeof options.ttlSecondsForResponse === "function"
+            ? options.ttlSecondsForResponse(response)
+            : this.ttlSeconds,
+        ) || this.ttlSeconds,
+      );
       await this.writeEntryIfNewer(key, {
         provider: this.provider,
         scope: this.scope,
         endpoint: String(toolName),
+        namespace,
+        schema_version: schemaVersion,
         request,
         response,
         createdAt,
+        ttl_seconds: ttlSeconds,
         lastHitAt: null,
         hitCount: 0,
       });
@@ -262,7 +283,11 @@ class ToolCacheStore {
         label: "实时调用",
         provider: this.provider,
         endpoint: String(toolName),
-        ttl_seconds: this.ttlSeconds,
+        ttl_seconds: Math.max(1, Number(
+          typeof options.ttlSecondsForResponse === "function"
+            ? options.ttlSecondsForResponse(response)
+            : this.ttlSeconds,
+        ) || this.ttlSeconds),
         age_seconds: 0,
       },
     };

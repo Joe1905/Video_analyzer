@@ -2928,6 +2928,94 @@ def test_lightweight_fastmoss_skill_two_pass_synthesis_isolated_and_recovers_fir
     assert len(failed_payloads) == 3
 
 
+def test_product_scout_v2_enforce_renders_deterministic_facts_without_v1_fallback() -> None:
+    class Response:
+        status_code = 200
+        text = ""
+
+        def __init__(self, body: dict) -> None:
+            self.body = body
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return self.body
+
+    class FakeRequests:
+        def __init__(self) -> None:
+            self.payloads: list[dict] = []
+
+        def post(self, _url: str, **kwargs):
+            self.payloads.append(json.loads(kwargs["data"].decode("utf-8")))
+            if len(self.payloads) == 1:
+                return Response({"choices": [{"message": {"content": "", "tool_calls": [{
+                    "id": "tool-v2",
+                    "type": "function",
+                    "function": {
+                        "name": "fastmoss__product_rank_top_selling",
+                        "arguments": json.dumps({"filter": {"category_id": 935176, "region": "US", "date_type": "week", "date_value": "2026-W30"}}),
+                    },
+                }]}}]})
+            return Response({"choices": [{"message": {"content": "建议先验证渠道和趋势信号，再决定是否继续初筛。"}}]})
+
+    class Store:
+        def update_message(self, _session, message, content: str, status: str = "done") -> None:
+            message.content = content
+            message.status = status
+
+        def broadcast(self, _session_id: str, _event: str, _data: dict) -> None:
+            return None
+
+    fake_requests = FakeRequests()
+    user = web_app.Message("v2-user", "user", "请使用 FastMoss 官方 Skill「选品决策」开始分析：美国解压玩具")
+    assistant = web_app.Message("v2-assistant", "assistant", "", status="pending")
+    session = SimpleNamespace(id="fastmoss-v2-test", messages=[user, assistant])
+    original_requests = sys.modules.get("requests")
+    original_execute = web_app.execute_prefixed_tool
+    original_record = web_app.record_api_call
+    previous_values = {name: os.environ.get(name) for name in (
+        "DEEPSEEK_API_KEY", "FASTMOSS_OFFICIAL_SKILL_ENABLED", "FASTMOSS_PRODUCT_SCOUT_V2_MODE",
+        "FASTMOSS_OFFICIAL_SKILL_MAX_ROUNDS", "FASTMOSS_SKILL_SOURCE",
+    )}
+    sys.modules["requests"] = fake_requests
+    web_app.execute_prefixed_tool = lambda *_args, **_kwargs: {
+        "data": {"content": [{"type": "text", "text": json.dumps({"items": [{
+            "product_id": "p1", "product_name": "Stress Ball", "period_units_sold": 12,
+            "period_gmv": 120, "product_url": "https://example.test/p1",
+        }]})}]}
+    }
+    web_app.record_api_call = lambda *_args, **_kwargs: None
+    os.environ.update({
+        "DEEPSEEK_API_KEY": "test-key",
+        "FASTMOSS_OFFICIAL_SKILL_ENABLED": "1",
+        "FASTMOSS_PRODUCT_SCOUT_V2_MODE": "enforce",
+        "FASTMOSS_OFFICIAL_SKILL_MAX_ROUNDS": "1",
+        "FASTMOSS_SKILL_SOURCE": "local",
+    })
+    try:
+        web_app.run_chat_deepseek(Store(), session, assistant, user.content, "fastmoss", official_preset_id="fm-product-scout")
+    finally:
+        web_app.execute_prefixed_tool = original_execute
+        web_app.record_api_call = original_record
+        if original_requests is None:
+            sys.modules.pop("requests", None)
+        else:
+            sys.modules["requests"] = original_requests
+        for name, previous in previous_values.items():
+            if previous is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = previous
+    assert assistant.status == "done"
+    assert "## 数据口径卡" in assistant.content
+    assert "## 热销榜" in assistant.content
+    assert "https://example.test/p1" in assistant.content
+    assert "## 结论、风险与下一步" in assistant.content
+    assert len(fake_requests.payloads) == 2
+    assert "tools" not in fake_requests.payloads[1]
+
+
 def _fastmoss_search_message(calls: list[dict], results: list[dict] | None = None) -> SimpleNamespace:
     return SimpleNamespace(
         tool_calls=[{
@@ -4644,6 +4732,7 @@ if __name__ == "__main__":
     test_tool_call_signature_deduplicates_argument_order()
     test_lightweight_fastmoss_skill_uses_runtime_dates_and_semantic_deduplication()
     test_lightweight_fastmoss_skill_two_pass_synthesis_isolated_and_recovers_first_draft()
+    test_product_scout_v2_enforce_renders_deterministic_facts_without_v1_fallback()
     test_fastmoss_dual_ranking_plan_uses_three_sorted_category_pages_then_segments()
     test_fastmoss_product_phase_waits_for_all_category_and_segment_searches()
     test_fastmoss_product_workflow_deterministically_advances_and_binds_two_targets()

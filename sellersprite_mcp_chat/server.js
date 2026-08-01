@@ -44,6 +44,9 @@ const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const SESSIONS_FILE = path.join(DATA_DIR, "sessions.json");
 const LEGACY_TOOL_CACHE_FILE = path.join(DATA_DIR, "tool_cache.json");
 const SHARED_TOOL_CACHE_ROOT = process.env.MCP_TOOL_CACHE_DIR || path.join(DATA_DIR, "tool_cache_entries");
+const FASTMOSS_PRODUCT_SCOUT_V2_CACHE_NAMESPACE = "fastmoss-product-scout-v2";
+const FASTMOSS_PRODUCT_SCOUT_V2_CACHE_SCHEMA_VERSION = "2026-08-01";
+const FASTMOSS_PRODUCT_SCOUT_V2_EMPTY_TTL_SECONDS = 600;
 
 const sessions = new Map();
 let saveTimer = null;
@@ -401,14 +404,65 @@ function shouldBypassToolCache(chatType, name) {
   return chatType === "sociavault" && name === "check_credits";
 }
 
-async function callMcpToolCached(name, args) {
+function normalizeFastmossProductScoutV2Request(name, args) {
+  const numericKeys = new Set(["page", "pagesize", "top_k", "max_total_results", "time_range_days"]);
+  const localeKeys = new Set(["region", "market", "marketplace", "country", "site", "lang", "language", "locale"]);
+  const normalize = (value, key = "") => {
+    if (Array.isArray(value)) return value.map((item) => normalize(item, key));
+    if (!value || typeof value !== "object") {
+      if (numericKeys.has(key) && typeof value === "string" && /^-?\d+(?:\.\d+)?$/.test(value.trim())) return Number(value);
+      if (localeKeys.has(key) && typeof value === "string") return value.trim().toUpperCase();
+      return value;
+    }
+    const output = {};
+    for (const [childKey, childValue] of Object.entries(value)) {
+      if (childValue === null || childValue === "") continue;
+      output[childKey] = normalize(childValue, childKey);
+    }
+    return output;
+  };
+  const request = normalize(args || {});
+  if (String(name || "") === "search_category_by_words" && request.top_k == null) request.top_k = 5;
+  return request;
+}
+
+function mcpToolResponseIsNormalEmpty(value) {
+  if (mcpToolResponseIsError(value)) return false;
+  const texts = Array.isArray(value?.content)
+    ? value.content.filter((item) => item?.type === "text").map((item) => item.text)
+    : [];
+  for (const text of texts) {
+    try {
+      const parsed = JSON.parse(text);
+      const collections = [parsed?.list, parsed?.items, parsed?.results, parsed?.products, parsed?.data?.list, parsed?.data?.items]
+        .filter((item) => Array.isArray(item));
+      if (collections.length && collections.every((item) => item.length === 0)) return true;
+    } catch {}
+  }
+  return false;
+}
+
+async function callMcpToolCached(name, args, cacheOptions = {}) {
   if (shouldBypassToolCache(MCP_CHAT_TYPE, name)) {
     return mcpClient.callTool(name, args);
   }
+  const v2Cache = MCP_CHAT_TYPE === "fastmoss"
+    && String(cacheOptions?.namespace || "") === FASTMOSS_PRODUCT_SCOUT_V2_CACHE_NAMESPACE;
+  const effectiveArgs = v2Cache ? normalizeFastmossProductScoutV2Request(name, args) : args;
   const cached = await getToolCacheStore().getOrCall(
     name,
-    args,
-    () => mcpClient.callTool(name, args),
+    effectiveArgs,
+    () => mcpClient.callTool(name, effectiveArgs),
+    v2Cache ? {
+      namespace: FASTMOSS_PRODUCT_SCOUT_V2_CACHE_NAMESPACE,
+      schemaVersion: FASTMOSS_PRODUCT_SCOUT_V2_CACHE_SCHEMA_VERSION,
+      normalizeRequest: (request) => normalizeFastmossProductScoutV2Request(name, request),
+      ttlSecondsForResponse: (response) => (
+        mcpToolResponseIsNormalEmpty(response)
+          ? FASTMOSS_PRODUCT_SCOUT_V2_EMPTY_TTL_SECONDS
+          : MCP_CACHE_TTL_SECONDS
+      ),
+    } : {},
   );
   return withCacheMeta(cached.value, cached.meta);
 }
@@ -1023,7 +1077,11 @@ async function handleMcp(req, res) {
     return;
   }
   if (payload.method === "tools/call") {
-    const result = await callMcpToolCached(payload.params?.name, payload.params?.arguments || {});
+    const result = await callMcpToolCached(
+      payload.params?.name,
+      payload.params?.arguments || {},
+      payload.params?.cache || {},
+    );
     sendJson(res, 200, { jsonrpc: "2.0", id: payload.id ?? null, result });
     return;
   }
@@ -1109,4 +1167,9 @@ if (require.main === module) {
   });
 }
 
-module.exports = { mcpToolResponseIsError, shouldBypassToolCache };
+module.exports = {
+  mcpToolResponseIsError,
+  mcpToolResponseIsNormalEmpty,
+  normalizeFastmossProductScoutV2Request,
+  shouldBypassToolCache,
+};

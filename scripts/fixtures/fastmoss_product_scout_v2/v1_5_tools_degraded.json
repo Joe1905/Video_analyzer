@@ -1,0 +1,12 @@
+{
+  "fixture_version": "2026-08-01",
+  "source": "4004 V1 review sample: Product Scout first local lightweight chain",
+  "redaction": "only quality-observable characteristics are retained",
+  "observed_tool_count": 5,
+  "expected_contract": {
+    "must_not_pass_by_answer_length": true,
+    "requires_deterministic_tables": true,
+    "requires_synthesis_fallback": true
+  },
+  "failure_mode": "first draft contained evidence but tools-off synthesis removed most tables and links"
+}
