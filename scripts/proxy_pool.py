@@ -233,7 +233,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             detected_at TEXT NOT NULL DEFAULT '',
             auto_check_failures INTEGER NOT NULL DEFAULT 0,
             next_auto_check_at TEXT NOT NULL DEFAULT '',
-            last_auto_check_at TEXT NOT NULL DEFAULT ''
+            last_auto_check_at TEXT NOT NULL DEFAULT '',
+            deleted_at TEXT NOT NULL DEFAULT ''
         );
         CREATE TABLE IF NOT EXISTS tiktok_accounts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -428,6 +429,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         "auto_check_failures": "INTEGER NOT NULL DEFAULT 0",
         "next_auto_check_at": "TEXT NOT NULL DEFAULT ''",
         "last_auto_check_at": "TEXT NOT NULL DEFAULT ''",
+        "deleted_at": "TEXT NOT NULL DEFAULT ''",
     }.items():
         existing = {row[1] for row in conn.execute("PRAGMA table_info(proxy_profiles)")}
         if name not in existing:
@@ -544,7 +546,7 @@ def init_db(conn: sqlite3.Connection) -> None:
                 if "duplicate column name" not in str(exc).lower():
                     raise
     for row in conn.execute(
-        "SELECT id, source_type, dialer_proxy, mihomo_proxy_json FROM proxy_profiles"
+        "SELECT id, source_type, dialer_proxy, mihomo_proxy_json FROM proxy_profiles WHERE deleted_at = ''"
     ):
         try:
             mihomo_proxy = json.loads(row["mihomo_proxy_json"] or "{}")
@@ -566,7 +568,7 @@ def init_db(conn: sqlite3.Connection) -> None:
                 (dialer_proxy, serialized, row["id"]),
             )
     used_ports: set[int] = set()
-    for row in conn.execute("SELECT id, local_port FROM proxy_profiles ORDER BY id"):
+    for row in conn.execute("SELECT id, local_port FROM proxy_profiles WHERE deleted_at = '' ORDER BY id"):
         local_port = int(row["local_port"] or 0)
         if PROXY_PORT_START <= local_port <= PROXY_PORT_END and local_port not in used_ports:
             used_ports.add(local_port)
@@ -612,14 +614,49 @@ def _clean_account_status(value: Any, default: str = ACCOUNT_STATUS_ACTIVE) -> s
 
 def _allocate_port(conn: sqlite3.Connection, current_id: int = 0) -> int:
     if current_id:
-        row = conn.execute("SELECT local_port FROM proxy_profiles WHERE id = ?", (current_id,)).fetchone()
+        row = conn.execute(
+            "SELECT local_port FROM proxy_profiles WHERE id = ? AND deleted_at = ''",
+            (current_id,),
+        ).fetchone()
         if row and int(row["local_port"] or 0):
             return int(row["local_port"])
-    used = {int(row["local_port"]) for row in conn.execute("SELECT local_port FROM proxy_profiles WHERE local_port > 0")}
+    used = {
+        int(row["local_port"])
+        for row in conn.execute(
+            "SELECT local_port FROM proxy_profiles WHERE local_port > 0 AND deleted_at = ''"
+        )
+    }
     for port in range(PROXY_PORT_START, PROXY_PORT_END + 1):
         if port not in used:
             return port
     raise ValueError(f"proxy port range exhausted: {PROXY_PORT_START}-{PROXY_PORT_END}")
+
+
+def _duplicate_exit_ip_pool(
+    conn: sqlite3.Connection,
+    pool_id: int,
+    observed_ip: str,
+) -> sqlite3.Row | None:
+    if not observed_ip:
+        return None
+    return conn.execute(
+        """
+        SELECT id, name, local_port
+        FROM proxy_profiles
+        WHERE id < ? AND deleted_at = '' AND source_type <> 'direct'
+          AND (detected_exit_ip = ? OR expected_exit_ip = ?)
+        ORDER BY id
+        LIMIT 1
+        """,
+        (pool_id, observed_ip, observed_ip),
+    ).fetchone()
+
+
+def _duplicate_exit_ip_reason(duplicate: sqlite3.Row, observed_ip: str) -> str:
+    return (
+        f"出口 IP {observed_ip} 已被代理「{duplicate['name']}」"
+        f"（本地端口 {int(duplicate['local_port'] or 0)}）使用，重复 IP 已强制标记为不可用"
+    )
 
 
 def _normal_username(value: Any) -> str:
@@ -1981,7 +2018,9 @@ def list_state() -> dict[str, Any]:
                 names.get(int(row["id"]), []),
                 pending_jobs.get(int(row["id"]), 0),
             )
-            for row in conn.execute("SELECT * FROM proxy_profiles ORDER BY updated_at DESC, id DESC")
+            for row in conn.execute(
+                "SELECT * FROM proxy_profiles WHERE deleted_at = '' ORDER BY updated_at DESC, id DESC"
+            )
         ]
         accounts = [_row_to_account(row) for row in conn.execute(
             """
@@ -2252,7 +2291,10 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
     }
     with connect() as conn:
         if pool_id:
-            exists = conn.execute("SELECT id FROM proxy_profiles WHERE id = ?", (pool_id,)).fetchone()
+            exists = conn.execute(
+                "SELECT id FROM proxy_profiles WHERE id = ? AND deleted_at = ''",
+                (pool_id,),
+            ).fetchone()
             if not exists:
                 raise ValueError("proxy profile not found")
             values["local_port"] = _allocate_port(conn, pool_id)
@@ -2285,6 +2327,15 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
                 {**values, "created_at": now},
             )
             pool_id = int(cur.lastrowid)
+        duplicate = _duplicate_exit_ip_pool(conn, pool_id, expected_exit_ip)
+        if duplicate:
+            duplicate_reason = _duplicate_exit_ip_reason(duplicate, expected_exit_ip)
+            conn.execute(
+                """UPDATE proxy_profiles
+                   SET status = ?, parse_error = ?, next_auto_check_at = '', updated_at = ?
+                   WHERE id = ?""",
+                (STATUS_ERROR, duplicate_reason, now, pool_id),
+            )
         conn.commit()
     pool = get_pool(pool_id)
     if _sing_box_reality_pool(pool):
@@ -2302,7 +2353,10 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
 
 def get_pool(pool_id: int) -> dict[str, Any]:
     with connect() as conn:
-        row = conn.execute("SELECT * FROM proxy_profiles WHERE id = ?", (pool_id,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM proxy_profiles WHERE id = ? AND deleted_at = ''",
+            (pool_id,),
+        ).fetchone()
         if not row:
             raise ValueError("proxy profile not found")
         count = conn.execute(
@@ -2341,7 +2395,7 @@ def _sing_box_reality_pool(row: sqlite3.Row | dict[str, Any]) -> bool:
 def sing_box_export() -> dict[str, Any]:
     with connect() as conn:
         rows = conn.execute(
-            "SELECT * FROM proxy_profiles WHERE status <> ? ORDER BY id",
+            "SELECT * FROM proxy_profiles WHERE status <> ? AND deleted_at = '' ORDER BY id",
             (STATUS_PAUSED,),
         ).fetchall()
     inbounds: list[dict[str, Any]] = []
@@ -2477,7 +2531,10 @@ def ensure_proxy_cores(restart: bool = False, required: bool = False) -> dict[st
 
 def delete_pool(pool_id: int) -> dict[str, Any]:
     with connect() as conn:
-        pool = conn.execute("SELECT * FROM proxy_profiles WHERE id = ?", (pool_id,)).fetchone()
+        pool = conn.execute(
+            "SELECT * FROM proxy_profiles WHERE id = ? AND deleted_at = ''",
+            (pool_id,),
+        ).fetchone()
         if not pool:
             raise ValueError("proxy profile not found")
 
@@ -2496,33 +2553,19 @@ def delete_pool(pool_id: int) -> dict[str, Any]:
         if int(count):
             raise ValueError("代理仍绑定账号，请先删除或迁移账号")
 
-        archived_account = conn.execute(
-            """
-            SELECT a.id
-            FROM tiktok_accounts AS a
-            WHERE a.proxy_profile_id = ? AND a.deleted_at <> ''
-              AND (
-                EXISTS (SELECT 1 FROM publish_assets WHERE account_id = a.id)
-                OR EXISTS (SELECT 1 FROM publish_jobs WHERE account_id = a.id)
-                OR EXISTS (SELECT 1 FROM collect_jobs WHERE account_id = a.id)
-                OR EXISTS (SELECT 1 FROM collect_results WHERE account_id = a.id)
-                OR EXISTS (SELECT 1 FROM collect_errors WHERE account_id = a.id)
-              )
-            LIMIT 1
-            """,
-            (pool_id,),
-        ).fetchone()
-        if archived_account:
-            raise ValueError("代理关联的已删除账号仍有发布或采集记录，不能删除")
-
         sing_box_managed = _sing_box_reality_pool(pool)
         cleanup, backup = ({"removed": False, "port": int(pool["local_port"] or 0)}, None)
         if not sing_box_managed:
             cleanup, backup = _remove_mihomo_pool_config(pool)
         try:
             conn.execute("DELETE FROM browser_sessions WHERE proxy_profile_id = ?", (pool_id,))
-            conn.execute("DELETE FROM tiktok_accounts WHERE proxy_profile_id = ? AND deleted_at <> ''", (pool_id,))
-            conn.execute("DELETE FROM proxy_profiles WHERE id = ?", (pool_id,))
+            deleted_at = now_iso()
+            conn.execute(
+                """UPDATE proxy_profiles
+                   SET status = ?, next_auto_check_at = '', deleted_at = ?, updated_at = ?
+                   WHERE id = ?""",
+                (STATUS_PAUSED, deleted_at, deleted_at, pool_id),
+            )
             conn.commit()
         except Exception:
             if backup is not None:
@@ -2583,7 +2626,10 @@ def upsert_account(payload: dict[str, Any]) -> dict[str, Any]:
             if not feishu_binding_provided:
                 values["feishu_user_active"] = int(existing_account["feishu_user_active"] or 0)
                 values["feishu_user_synced_at"] = str(existing_account["feishu_user_synced_at"] or "")
-        pool_row = conn.execute("SELECT * FROM proxy_profiles WHERE id = ?", (proxy_profile_id,)).fetchone()
+        pool_row = conn.execute(
+            "SELECT * FROM proxy_profiles WHERE id = ? AND deleted_at = ''",
+            (proxy_profile_id,),
+        ).fetchone()
         if not pool_row:
             raise ValueError("proxy profile not found")
         profile = _deep_merge(_isolation_profile(username, proxy_profile_id, pool_row), profile)
@@ -2808,7 +2854,10 @@ def update_account_proxy_binding(payload: dict[str, Any]) -> dict[str, Any]:
     with connect() as conn:
         _active_sessions(conn)
         conn.execute("BEGIN IMMEDIATE")
-        pool = conn.execute("SELECT * FROM proxy_profiles WHERE id = ?", (pool_id,)).fetchone()
+        pool = conn.execute(
+            "SELECT * FROM proxy_profiles WHERE id = ? AND deleted_at = ''",
+            (pool_id,),
+        ).fetchone()
         if not pool:
             raise ValueError("proxy profile not found")
         bound_account = conn.execute(
@@ -2899,7 +2948,10 @@ def _pool_for_check(conn: sqlite3.Connection, payload: dict[str, Any]) -> tuple[
         pool_id = int(payload.get("proxy_profile_id") or payload.get("pool_id") or 0)
     if not pool_id:
         raise ValueError("proxy profile is required")
-    pool = conn.execute("SELECT * FROM proxy_profiles WHERE id = ?", (pool_id,)).fetchone()
+    pool = conn.execute(
+        "SELECT * FROM proxy_profiles WHERE id = ? AND deleted_at = ''",
+        (pool_id,),
+    ).fetchone()
     if not pool:
         raise ValueError("proxy profile not found")
     return pool, account
@@ -3207,7 +3259,8 @@ def ensure_static_proxy_configs() -> dict[str, Any]:
     with connect() as conn:
         pools = conn.execute(
             """SELECT * FROM proxy_profiles
-               WHERE source_type IN ('static','direct') AND parse_status = 'ok' AND status <> ?
+               WHERE source_type IN ('static','direct') AND parse_status = 'ok'
+                 AND status <> ? AND deleted_at = ''
                ORDER BY id""",
             (STATUS_PAUSED,),
         ).fetchall()
@@ -3231,7 +3284,7 @@ def reconcile_mihomo_pool_configs() -> dict[str, Any]:
         pools = conn.execute(
             """
             SELECT * FROM proxy_profiles
-            WHERE parse_status = 'ok' AND status <> ?
+            WHERE parse_status = 'ok' AND status <> ? AND deleted_at = ''
             ORDER BY local_port, id
             """,
             (STATUS_PAUSED,),
@@ -3547,7 +3600,8 @@ def _schedule_proxy_recheck(
     expected_token: str = "",
 ) -> str:
     row = conn.execute(
-        "SELECT status, auto_check_failures, next_auto_check_at FROM proxy_profiles WHERE id = ?",
+        """SELECT status, auto_check_failures, next_auto_check_at
+           FROM proxy_profiles WHERE id = ? AND deleted_at = ''""",
         (pool_id,),
     ).fetchone()
     if expected_token and (
@@ -3588,7 +3642,10 @@ def _schedule_proxy_recheck(
 
 def schedule_proxy_recheck_for_pending_job(pool_id: int, error: Exception | str) -> str:
     with connect() as conn:
-        row = conn.execute("SELECT status FROM proxy_profiles WHERE id = ?", (pool_id,)).fetchone()
+        row = conn.execute(
+            "SELECT status FROM proxy_profiles WHERE id = ? AND deleted_at = ''",
+            (pool_id,),
+        ).fetchone()
         if not row or _clean_status(row["status"]) == STATUS_PAUSED:
             return ""
         next_check_at = _schedule_proxy_recheck(conn, pool_id, str(error))
@@ -3703,6 +3760,11 @@ def check_binding(payload: dict[str, Any], require_account: bool = False) -> dic
                 reason = f"代理状态为 {next_pool_status}"
             else:
                 reason = "通过"
+            duplicate = _duplicate_exit_ip_pool(conn, int(pool["id"]), observed_ip)
+            if duplicate:
+                next_pool_status = STATUS_ERROR
+                allowed = False
+                reason = _duplicate_exit_ip_reason(duplicate, observed_ip)
         if should_bind and not allowed and next_pool_status != STATUS_PAUSED:
             next_pool_status = STATUS_ERROR
         geo = detected.get("geo") or lookup_ip_geo(observed_ip)
@@ -3778,6 +3840,7 @@ def recheck_unavailable_proxies() -> dict[str, Any]:
             UPDATE proxy_profiles
             SET next_auto_check_at = ?, updated_at = ?
             WHERE status = ?
+              AND deleted_at = ''
               AND (next_auto_check_at = '' OR next_auto_check_at > ?)
               AND (
                 EXISTS (
@@ -3795,7 +3858,8 @@ def recheck_unavailable_proxies() -> dict[str, Any]:
             (queue_retry_at, now, STATUS_ERROR, queue_retry_at),
         )
         unscheduled = conn.execute(
-            "SELECT id, parse_error FROM proxy_profiles WHERE status = ? AND next_auto_check_at = ''",
+            """SELECT id, parse_error FROM proxy_profiles
+               WHERE status = ? AND next_auto_check_at = '' AND deleted_at = ''""",
             (STATUS_ERROR,),
         ).fetchall()
         for row in unscheduled:
@@ -3806,6 +3870,7 @@ def recheck_unavailable_proxies() -> dict[str, Any]:
             for row in conn.execute(
                 """SELECT id, next_auto_check_at FROM proxy_profiles
                    WHERE status = ? AND next_auto_check_at <> '' AND next_auto_check_at <= ?
+                     AND deleted_at = ''
                    ORDER BY next_auto_check_at, id""",
                 (STATUS_ERROR, now),
             ).fetchall()
@@ -3841,6 +3906,7 @@ def _direct_login_pool_id() -> int:
             """SELECT p.id
                FROM proxy_profiles p
                WHERE p.source_type = 'direct' AND p.status = ? AND p.parse_status = 'ok'
+                 AND p.deleted_at = ''
                  AND NOT EXISTS (
                      SELECT 1 FROM tiktok_accounts a
                      WHERE a.proxy_profile_id = p.id AND a.proxy_bound = 1 AND a.deleted_at = ''
@@ -3915,7 +3981,10 @@ def start_login_session(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(reason)
     now = now_iso()
     with connect() as conn:
-        pool = conn.execute("SELECT * FROM proxy_profiles WHERE id = ?", (proxy_profile_id,)).fetchone()
+        pool = conn.execute(
+            "SELECT * FROM proxy_profiles WHERE id = ? AND deleted_at = ''",
+            (proxy_profile_id,),
+        ).fetchone()
         if not pool:
             raise ValueError("proxy profile not found")
         if _clean_status(pool["status"]) != STATUS_ACTIVE:
@@ -4395,8 +4464,10 @@ def mihomo_export() -> dict[str, Any]:
     with connect() as conn:
         rows = conn.execute(
             """SELECT * FROM proxy_profiles
-               WHERE parse_status = 'ok'
-                  OR status IN (?, 'active', '可用', '已绑定', '未绑定')
+               WHERE deleted_at = '' AND (
+                    parse_status = 'ok'
+                    OR status IN (?, 'active', '可用', '已绑定', '未绑定')
+               )
                ORDER BY id""",
             (STATUS_ACTIVE,),
         ).fetchall()
