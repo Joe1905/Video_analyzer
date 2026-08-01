@@ -3503,7 +3503,9 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
                 deadline = time.time() + max(60.0, job_timeout)
                 timed_out = False
                 paused_external = False
-                total_to_process = max(1, len(ranked))
+                # ranked includes an over-fetched candidate pool for fallback. Progress
+                # must describe the configured report target, not that pool size.
+                total_to_process = max(1, target_count)
                 for index, item in enumerate(ranked, start=1):
                     if counts["analyzed_success"] >= analysis_limit:
                         break
