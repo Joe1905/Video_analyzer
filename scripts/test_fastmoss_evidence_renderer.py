@@ -24,7 +24,6 @@ from fastmoss_evidence_renderer import (  # noqa: E402
     PROFILE_TREND,
     business_leaf_paths,
     fastmoss_semantic_registry_diagnostics,
-    render_fastmoss_evidence_document,
     render_fastmoss_tool_evidence,
 )
 from fastmoss_evidence_renderer import _ENUM_VALUE_LABELS, _FIELD_LABELS  # noqa: E402
@@ -311,48 +310,6 @@ def test_new_product_sample_naturalizes_dates_units_and_audit_fields() -> None:
     assert any("cover_url" in path for path in result.exclusion_reasons)
 
 
-def test_document_keeps_call_order_boundaries_and_stats() -> None:
-    dossier = {
-        "workflow": "product",
-        "report_date": "2026-07-19",
-        "target_category_path": [13, 844168, 935176],
-        "analysis_targets": [{"entity_type": "product", "entity_id": "1730000000000000001"}],
-        "coverage_summary": {
-            "call_count": 2,
-            "completed_pages": [1, 2],
-            "exact_empty_results": [],
-        },
-        "tool_evidence": [
-            _entry("product_search", _fixture(PROFILE_RECORDS)),
-            _entry("product_sales_trend", _fixture(PROFILE_TREND)),
-        ],
-        "hard_fact_boundaries": {"rules": ["跨实体或跨周期数据不得直接相除"]},
-    }
-    rendered = render_fastmoss_evidence_document(dossier)
-    assert rendered.markdown.startswith("# 短视频电商调研证据")
-    assert rendered.markdown.index("商品搜索样本") < rendered.markdown.index("商品销售趋势")
-    assert "fastmoss__" not in rendered.markdown
-    assert "call:1" not in rendered.markdown
-    assert "硬事实边界" in rendered.markdown
-    assert "商品研究" in rendered.markdown
-    assert "分析目标" in rendered.markdown
-    assert "研究对象类型" in rendered.markdown
-    assert "调用总数" in rendered.markdown
-    assert "已完成页码" in rendered.markdown
-    assert "call count" not in rendered.markdown
-    assert "completed pages" not in rendered.markdown
-    assert "entity_type" not in rendered.markdown
-    assert rendered.stats["tool_count"] == 2
-
-    assert rendered.stats["registered_tool_count"] == 2
-    assert rendered.stats["fallback_tools"] == []
-    assert rendered.stats["business_leaf_count"] == (
-        rendered.stats["consumed_leaf_count"]
-        + rendered.stats["unmapped_leaf_count"]
-        + rendered.stats["excluded_leaf_count"]
-    )
-
-
 def test_registered_semantic_labels_and_enums_use_plain_chinese() -> None:
     technical_letters = re.compile(r"[A-Za-z]")
     for key, label in _FIELD_LABELS.items():
@@ -396,6 +353,5 @@ if __name__ == "__main__":
     test_week_request_keeps_provider_week_without_invented_calendar_boundary()
     test_product_ranking_boundaries_prevent_period_and_causal_overreach()
     test_new_product_sample_naturalizes_dates_units_and_audit_fields()
-    test_document_keeps_call_order_boundaries_and_stats()
     test_registered_semantic_labels_and_enums_use_plain_chinese()
     print("FastMoss evidence renderer tests passed")

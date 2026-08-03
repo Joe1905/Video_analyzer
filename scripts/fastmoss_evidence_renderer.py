@@ -2273,54 +2273,6 @@ def render_fastmoss_tool_evidence(entry: Mapping[str, Any]) -> RenderedToolEvide
         )
 
 
-def _context_markdown(dossier: Mapping[str, Any]) -> list[str]:
-    category_path = dossier.get("target_category_path") or []
-    category_text = " > ".join(str(item) for item in category_path) if isinstance(category_path, list) else str(category_path)
-    targets = _report_semantic_metadata(dossier.get("analysis_targets") or [])
-    rows = [
-        ("工作流", _semantic_value("workflow", dossier.get("workflow") or "product")),
-        ("报告日期", _semantic_value("report_date", dossier.get("report_date") or "")),
-        ("目标类目路径", category_text or "未指定"),
-        ("分析目标", _semantic_value("analysis_targets", targets)),
-    ]
-    return ["## 调研上下文", "", *_table(["项目", "值"], rows)]
-
-
-def render_fastmoss_evidence_document(dossier: Mapping[str, Any]) -> RenderedEvidenceDocument:
-    """Render a complete dossier while isolating per-call renderer failures."""
-
-    lines = ["# 短视频电商调研证据", "", *_context_markdown(dossier)]
-    results: list[RenderedToolEvidence] = []
-    for entry in dossier.get("tool_evidence") or []:
-        if not isinstance(entry, dict):
-            continue
-        result = render_fastmoss_tool_evidence(entry)
-        results.append(result)
-        lines.extend(["", result.markdown])
-
-    for title, key in (
-        ("覆盖摘要", "coverage_summary"),
-        ("程序派生事实", "derived_facts"),
-        ("冲突", "conflicts"),
-        ("限制", "limitations"),
-        ("硬事实边界", "hard_fact_boundaries"),
-    ):
-        value = dossier.get(key)
-        if value in (None, "", [], {}):
-            continue
-        semantic_value = _report_semantic_metadata(value, key)
-        if semantic_value in (None, "", [], {}):
-            continue
-        lines.extend(["", f"## {title}", ""])
-        generic = json_to_markdown(
-            semantic_value, title=title, include_paths=False
-        ).splitlines()[1:]
-        lines.extend(line for line in generic if line.strip())
-
-    markdown = "\n".join(lines).rstrip() + "\n"
-    return RenderedEvidenceDocument(markdown=markdown, tool_results=results)
-
-
 __all__ = [
     "EvidenceNode",
     "FASTMOSS_CURRENT_TOOL_NAMES",
@@ -2333,6 +2285,5 @@ __all__ = [
     "business_leaf_paths",
     "fastmoss_semantic_registry_diagnostics",
     "localize_semantic_value",
-    "render_fastmoss_evidence_document",
     "render_fastmoss_tool_evidence",
 ]
