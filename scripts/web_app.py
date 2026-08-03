@@ -9164,6 +9164,374 @@ def fastmoss_evidence_manifest(
     }
 
 
+def sellersprite_report_evidence_dossier(
+    assistant_msg: Message,
+    route: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build a lossless, call-scoped SellerSprite report input."""
+    tool_evidence: list[dict[str, Any]] = []
+    for result_index, item in enumerate(assistant_msg.tool_results or []):
+        if not isinstance(item, dict) or not isinstance(item.get("result"), dict):
+            continue
+        tool_name = str(item.get("tool_name") or "tool")
+        if split_prefixed_tool_id(tool_name)[0] != "sellersprite":
+            continue
+        result = item["result"]
+        arguments = _fastmoss_call_arguments_for_result(
+            assistant_msg, result_index, tool_name
+        )
+        data = result.get("mcp_data")
+        if data is None:
+            data = result.get("summary")
+        if data is None:
+            data = {
+                key: result.get(key)
+                for key in ("products", "items", "results", "error")
+                if result.get(key) is not None
+            }
+        cleaned_data = sellersprite_business_payload(
+            _current_chat_evidence_value(data)
+        )
+        tool_evidence.append({
+            "source_ref": f"call:{result_index + 1}",
+            "tool_name": tool_name,
+            "arguments": _current_chat_evidence_value(arguments),
+            "evidence_fence": {
+                "data_state": mcp_result_data_state(result),
+                "ok": result.get("ok"),
+                "enough_data": result.get("enough_data"),
+            },
+            "business_data": cleaned_data,
+            **({"error": str(result.get("error"))} if result.get("error") else {}),
+        })
+    return {
+        "type": "sellersprite_evidence_dossier",
+        "provider": "sellersprite",
+        "report_date": datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat(),
+        "research_task": dict((route or {}).get("research_task") or {}),
+        "quality_summary": mcp_evidence_quality_summary(assistant_msg),
+        "tool_evidence": tool_evidence,
+        "hard_fact_boundaries": {
+            "rules": [
+                "空结果只适用于对应 source_ref 的精确参数，不代表 Amazon 平台全局为零或不存在商品",
+                "关键词或商品列表的返回量不是市场容量，样本占比不是全市场份额",
+                "不同 marketplace、关键词、类目节点、ASIN 或周期的数据不得直接合并或互相解释",
+                "预测值、趋势值和观察期实际值必须区分，不得把相关关系写成因果关系",
+            ],
+        },
+    }
+
+
+def _semantic_inline_natural_text(value: Any) -> str:
+    if isinstance(value, dict):
+        return "；".join(
+            f"{key}：{_semantic_inline_natural_text(item)}"
+            for key, item in value.items()
+        ) or "没有内容"
+    if isinstance(value, list):
+        return "；".join(
+            f"第{index}项：{_semantic_inline_natural_text(item)}"
+            for index, item in enumerate(value, start=1)
+        ) or "没有记录"
+    return str(value)
+
+
+def _naturalize_and_log_semantic_braces(
+    provider: str,
+    markdown: str,
+) -> tuple[str, int, int]:
+    """Naturalize balanced mapping literals and log every success or failure."""
+    text = str(markdown or "")
+    output: list[str] = []
+    depth = 0
+    brace_start = -1
+    cursor = 0
+    success_count = 0
+    failure_count = 0
+    match_count = 0
+    for index, char in enumerate(text):
+        if char == "{":
+            if depth == 0:
+                brace_start = index
+            depth += 1
+        elif char == "}" and depth:
+            depth -= 1
+            if depth != 0 or brace_start < 0:
+                continue
+            match_count += 1
+            payload = text[brace_start + 1:index]
+            raw_mapping = text[brace_start:index + 1]
+            parsed: Any = None
+            errors: list[str] = []
+            try:
+                parsed = json.loads(raw_mapping)
+            except (TypeError, ValueError) as exc:
+                errors.append(type(exc).__name__)
+                try:
+                    parsed = ast.literal_eval(raw_mapping)
+                except (SyntaxError, ValueError) as fallback_exc:
+                    errors.append(type(fallback_exc).__name__)
+            output.append(text[cursor:brace_start])
+            if isinstance(parsed, (dict, list)):
+                natural_payload = _semantic_inline_natural_text(
+                    localize_semantic_value(parsed)
+                )
+                output.append("{" + natural_payload + "}")
+                success_count += 1
+                print(
+                    "[CHAT SEMANTIC BRACE RESIDUE] "
+                    f"provider={provider} match={match_count} status=naturalized "
+                    f"before={json.dumps(payload, ensure_ascii=False)} "
+                    f"after={json.dumps(natural_payload, ensure_ascii=False)}",
+                    flush=True,
+                )
+            else:
+                output.append(raw_mapping)
+                failure_count += 1
+                print(
+                    "[CHAT SEMANTIC BRACE RESIDUE] "
+                    f"provider={provider} match={match_count} status=unchanged "
+                    f"errors={','.join(errors) or 'unsupported_type'} "
+                    f"content={json.dumps(payload, ensure_ascii=False)}",
+                    flush=True,
+                )
+            cursor = index + 1
+            brace_start = -1
+    output.append(text[cursor:])
+    return "".join(output), success_count, failure_count
+
+
+def sellersprite_render_report_evidence(
+    dossier: dict[str, Any],
+) -> tuple[str, dict[str, Any]]:
+    """Render SellerSprite report evidence as semantic Markdown."""
+    rendered = render_sellersprite_evidence_document(dossier)
+    results = rendered.tool_results
+    markdown, naturalized_braces, unchanged_braces = _naturalize_and_log_semantic_braces(
+        "sellersprite", rendered.markdown
+    )
+    return markdown, {
+        "format": "semantic",
+        "tool_count": len(results),
+        "fallback_tools": [result.tool_name for result in results if result.fallback],
+        "empty_result_count": sum(1 for result in results if result.empty),
+        "business_leaf_count": sum(len(result.business_leaf_paths) for result in results),
+        "rendered_leaf_count": sum(len(result.consumed_paths) for result in results),
+        "audit_only_leaf_count": sum(len(result.excluded_paths) for result in results),
+        "unmapped_leaf_count": sum(len(result.unmapped_paths) for result in results),
+        "brace_pair_count": naturalized_braces + unchanged_braces,
+        "naturalized_brace_count": naturalized_braces,
+        "unchanged_brace_count": unchanged_braces,
+        "markdown_chars": len(markdown),
+    }
+
+
+SELLERSPRITE_REPORT_NOTICE = (
+    "## 注意事项\n\n"
+    "本报告基于 SellerSprite 接口在当前 Amazon 站点、查询条件和数据周期内返回的数据，并由大模型整理分析。"
+    "数据可能存在延迟、缺失、估算或统计口径差异，分析也可能出现理解偏差；"
+    "请以 SellerSprite 原始页面、Amazon 实际页面及业务验证为准，不建议将本报告作为唯一决策依据。"
+)
+
+
+def append_sellersprite_report_notice(answer: str, route: dict[str, Any]) -> str:
+    """Append one stable disclaimer to analytical SellerSprite reports only."""
+    text = str(answer or "").rstrip()
+    if not text or not chat_route_uses_report_model("amazon", route) or SELLERSPRITE_REPORT_NOTICE in text:
+        return text
+    return text + "\n\n---\n\n" + SELLERSPRITE_REPORT_NOTICE
+
+
+def sellersprite_report_system_instruction(
+    current_date_shanghai: str,
+    official_skill_document: str = "",
+) -> str:
+    """Build the Amazon final-report instruction, preserving an explicit official Skill."""
+    instruction = (
+        "你是负责撰写亚马逊市场调研报告的中文分析师。当前已经进入最终报告阶段，没有可调用工具。"
+        f"当前日期（Asia/Shanghai）：{current_date_shanghai}；它只用于解释相对时间，数据周期以 Semantic 证据为准。"
+        "用户问题和 Semantic 证据是唯一事实来源；不得使用编排历史、工具知识或常识补造数据。"
+        "Semantic 中每个有实质数据的业务证据段都必须在报告中得到使用，或明确说明它为什么不适用于当前问题。"
+        "这是一份完整调研报告，不是执行摘要。先给结论，再充分展开产品身份、统计范围、销售与排名趋势、"
+        "关键词与流量、竞争与价格、评论反馈、机会、风险和下一步验证；只写证据实际覆盖的主题，"
+        "但不得为了简洁省略重要对象、周期、对比、冲突、空结果或失败。"
+        "必须严格区分销量、销售额、BSR、类目排名、搜索量、购买量、购买率、评分和评论数；"
+        "除非证据直接提供，否则不得补造采购成本、利润、FBA费用、广告花费、ACoS、认证费用或市场份额。"
+        "每项核心判断都应写明观察数据、比较对象、适用范围和推断边界；空结果只代表该次查询条件。"
+        "报告不得出现内部工具名、调用编号、JSON路径、Schema、工具协议或建议用户调用某个内部工具。"
+        "使用简体中文和标准 Markdown；有足够同口径数据时使用表格，内容完整性优先于篇幅压缩和装饰。"
+    )
+    if not official_skill_document:
+        return instruction
+    return (
+        instruction
+        + "以下是用户显式触发的 SellerSprite 官方 Skill 原文。"
+        "在不违反上述事实边界的前提下，严格采用其数据覆盖范围和输出格式；"
+        "不要把其中的工具名、命令或执行步骤写入面向用户的正文。\n\n"
+        "===== 本轮 SellerSprite 官方 Skill 原文开始 =====\n"
+        + official_skill_document
+        + "\n===== 本轮 SellerSprite 官方 Skill 原文结束 ====="
+    )
+
+
+def log_sellersprite_report_pipeline(
+    answer: str,
+    dossier: dict[str, Any],
+    evidence_render_stats: dict[str, Any],
+    status: str,
+) -> None:
+    text = str(answer or "")
+    heading_count = sum(
+        1 for line in text.splitlines()
+        if re.match(r"^#{1,6}\s+", line)
+    )
+    states = [
+        str((entry.get("evidence_fence") or {}).get("data_state") or "")
+        for entry in (dossier.get("tool_evidence") or [])
+        if isinstance(entry, dict)
+    ]
+    print(
+        "[CHAT] SellerSprite report pipeline "
+        f"status={status} final_chars={len(text)} "
+        f"headings={heading_count} "
+        f"table_rows={sum(1 for line in text.splitlines() if line.lstrip().startswith('|'))} "
+        f"calls={len(states)} data={states.count('data')} empty={states.count('empty')} error={states.count('error')} "
+        f"business_leaves={int(evidence_render_stats.get('business_leaf_count') or 0)} "
+        f"rendered_leaves={int(evidence_render_stats.get('rendered_leaf_count') or 0)} "
+        f"audit_only_leaves={int(evidence_render_stats.get('audit_only_leaf_count') or 0)} "
+        f"unmapped_leaves={int(evidence_render_stats.get('unmapped_leaf_count') or 0)} "
+        f"fallback_tools={','.join(evidence_render_stats.get('fallback_tools') or []) or 'none'}",
+        flush=True,
+    )
+
+
+def synthesize_sellersprite_report_from_packet(
+    assistant_msg: Message,
+    user_text: str,
+    route: dict[str, Any],
+    requests_module: Any,
+    api_key: str,
+    api_url: str,
+    model: str,
+    official_skill_prompt: str = "",
+) -> str:
+    """Generate the final SellerSprite report from complete normalized evidence."""
+    dossier = sellersprite_report_evidence_dossier(assistant_msg, route)
+    dossier_json = json.dumps(dossier, ensure_ascii=False, separators=(",", ":"))
+    evidence_markdown, evidence_render_stats = sellersprite_render_report_evidence(dossier)
+    current_date_shanghai = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
+    semantic_input = (
+        chat_routing_text(user_text)
+        + "\n\n当前为报告生成阶段，没有可调用工具；请直接根据以下 Semantic 结构证据完成最终报告。"
+        + "\n\n--- Semantic 证据开始 ---\n"
+        + evidence_markdown
+        + "--- Semantic 证据结束 ---"
+    )
+    official_skill_file = str(route.get("official_skill_file") or "")
+    official_skill_document = ""
+    if official_skill_file and official_skill_prompt:
+        marker = f"## 官方文件：{official_skill_file}\n\n"
+        section = official_skill_prompt.split(marker, 1)
+        if len(section) == 2:
+            official_skill_document = section[1].split("\n\n## 官方文件：", 1)[0].strip()
+    messages = [
+        {
+            "role": "system",
+            "content": sellersprite_report_system_instruction(
+                current_date_shanghai,
+                official_skill_document,
+            ),
+        },
+        {"role": "user", "content": semantic_input},
+    ]
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": 0.2,
+        "max_tokens": 12000,
+    }
+    payload_str = json.dumps(payload, ensure_ascii=False)
+    started = time.monotonic()
+    try:
+        response = requests_module.post(
+            api_url.rstrip("/") + "/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            data=payload_str.encode("utf-8"),
+            timeout=180,
+        )
+        response.raise_for_status()
+        body = response.json()
+        record_api_call(
+            "deepseek",
+            "sellersprite_report_synthesis",
+            {
+                "model": model,
+                "dossier_chars": len(dossier_json),
+                "structured_evidence_chars": len(evidence_markdown),
+                "evidence_input_format": evidence_render_stats.get("format") or "semantic",
+                "evidence_render_stats": evidence_render_stats,
+                "dossier_calls": len(dossier.get("tool_evidence") or []),
+            },
+            body,
+            elapsed_ms=int((time.monotonic() - started) * 1000),
+        )
+        choice = body["choices"][0]
+        if str(choice.get("finish_reason") or "") == "length":
+            raise ValueError("SellerSprite report synthesis finish_reason=length")
+        draft = str((choice.get("message") or {}).get("content") or "").strip()
+        if not draft or deepseek_tool_protocol_present({"content": draft}):
+            raise ValueError("SellerSprite report synthesis returned empty or tool protocol")
+        print(
+            f"[CHAT] SellerSprite dossier synthesis dossier_chars={len(dossier_json)} "
+            f"structured_chars={len(evidence_markdown)} "
+            f"calls={len(dossier.get('tool_evidence') or [])} draft_chars={len(draft)} "
+            f"evidence_render={json.dumps(evidence_render_stats, ensure_ascii=False, separators=(',', ':'))}",
+            flush=True,
+        )
+        report = append_sellersprite_report_notice(draft, route)
+        log_sellersprite_report_pipeline(report, dossier, evidence_render_stats, "generated")
+        return report
+    except Exception as exc:
+        print(
+            f"[CHAT] SellerSprite dossier synthesis failed: {type(exc).__name__}: {str(exc)[:240]}",
+            flush=True,
+        )
+        quality = dossier.get("quality_summary") or {}
+        message = (
+            "SellerSprite 工具查询已结束，但报告模型暂时无法生成最终报告。"
+            f"已取得数据的接口 {len(quality.get('data', []))} 个，成功但为空的接口 {len(quality.get('empty', []))} 个，"
+            f"失败接口 {len(quality.get('error', []))} 个。系统没有使用 Flash 草稿替代 V4 Pro 报告；请稍后重试。"
+        )
+        log_sellersprite_report_pipeline(message, dossier, evidence_render_stats, "synthesis_failed")
+        return message
+
+
+def complete_sellersprite_answer(
+    draft: str,
+    assistant_msg: Message,
+    user_text: str,
+    route: dict[str, Any],
+    requests_module: Any,
+    api_key: str,
+    api_url: str,
+    model: str,
+    official_skill_prompt: str = "",
+) -> str:
+    """Route every evidence-led SellerSprite report through Semantic evidence and V4 Pro."""
+    has_sellersprite_evidence = any(
+        isinstance(item, dict)
+        and split_prefixed_tool_id(str(item.get("tool_name") or ""))[0] == "sellersprite"
+        for item in (assistant_msg.tool_results or [])
+    )
+    if has_sellersprite_evidence and chat_route_uses_report_model("amazon", route):
+        print("[CHAT] SellerSprite final route=semantic_report", flush=True)
+        return synthesize_sellersprite_report_from_packet(
+            assistant_msg, user_text, route,
+            requests_module, api_key, api_url, model, official_skill_prompt,
+        )
+    return str(draft or "").strip()
+
+
 FASTMOSS_REPORT_NOTICE = (
     "## 注意事项\n\n"
     "本报告基于 FastMoss 接口在当前查询条件和时间范围内返回的数据，并由大模型整理分析。"

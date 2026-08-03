@@ -52,3 +52,10 @@
 - Removed the no-longer-read `FASTMOSS_SKILL_SOURCE` and retired verifier configuration from the 4004 example/Compose environment. `FASTMOSS_LIGHTWEIGHT_SKILL_MAX_ROUNDS` remains because it still bounds the active local workflow.
 - Updated the manual five-preset mock-boundary script so Product Scout proves its local Skill is loaded while other presets retain their official Skill selection. It now also verifies execution-time whitelist rejection.
 - Added a focused unittest assertion that a forbidden FastMoss tool is rejected before any MCP call.
+
+### Phase 4 — regression recovery and deployment evidence
+
+- Commit for Phase 3: `bc8e1bd` (`docs: consolidate fastmoss product scout skill`).
+- First container run of `scripts/test_chat_tool_normalization.py` exposed an isolation regression: the initial V3 deletion range also contained SellerSprite's shared semantic report helpers. The failing missing symbol was `_naturalize_and_log_semantic_braces`.
+- Restored exactly the SellerSprite/shared helper range from pre-cleanup commit `0134d79` onto V3-removal commit `846e08d`: SellerSprite dossier, semantic inline/braces renderer, report synthesis and its notice/logger/completion functions. No FastMoss V3, verifier, packet or fallback symbols were restored.
+- This recovery is intentionally a separate reviewable commit before rerunning the full container regression and redeploying 4004.
