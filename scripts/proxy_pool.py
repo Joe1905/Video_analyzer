@@ -69,6 +69,7 @@ RUNTIME_ID = f"{os.getpid()}-{uuid.uuid4().hex}"
 STATUS_ACTIVE = "启用"
 STATUS_PAUSED = "禁用"
 STATUS_ERROR = "不可用"
+STATUS_DUPLICATE = "IP重复"
 _LOGIN_CAPTURE_LOCK = threading.Lock()
 _X_IDLE_LOCK = threading.Lock()
 
@@ -95,6 +96,10 @@ STATUS_MAP = {
     "error": STATUS_ERROR,
     "异常": STATUS_ERROR,
     "不可用": STATUS_ERROR,
+    "duplicate": STATUS_DUPLICATE,
+    "duplicate_ip": STATUS_DUPLICATE,
+    "ip重复": STATUS_DUPLICATE,
+    "IP重复": STATUS_DUPLICATE,
 }
 ACCOUNT_STATUS_ACTIVE = "可用"
 ACCOUNT_STATUS_PAUSED = "暂停"
@@ -584,6 +589,13 @@ def init_db(conn: sqlite3.Connection) -> None:
             (replacement, now_iso(), row["id"]),
         )
         used_ports.add(replacement)
+    conn.execute(
+        """UPDATE proxy_profiles
+           SET status = ?, auto_check_failures = 0, next_auto_check_at = '', updated_at = ?
+           WHERE deleted_at = '' AND status = ?
+             AND parse_error LIKE '出口 IP %已被代理%重复 IP%'""",
+        (STATUS_DUPLICATE, now_iso(), STATUS_ERROR),
+    )
     conn.commit()
 
 
@@ -602,7 +614,13 @@ def _clean_status(value: Any, default: str = STATUS_ACTIVE) -> str:
     raw = _clean_text(value, 40)
     if not raw:
         return default
-    return STATUS_MAP.get(raw.lower(), STATUS_MAP.get(raw, raw if raw in {STATUS_ACTIVE, STATUS_PAUSED, STATUS_ERROR} else default))
+    return STATUS_MAP.get(
+        raw.lower(),
+        STATUS_MAP.get(
+            raw,
+            raw if raw in {STATUS_ACTIVE, STATUS_PAUSED, STATUS_ERROR, STATUS_DUPLICATE} else default,
+        ),
+    )
 
 
 def _clean_account_status(value: Any, default: str = ACCOUNT_STATUS_ACTIVE) -> str:
@@ -655,7 +673,7 @@ def _duplicate_exit_ip_pool(
 def _duplicate_exit_ip_reason(duplicate: sqlite3.Row, observed_ip: str) -> str:
     return (
         f"出口 IP {observed_ip} 已被代理「{duplicate['name']}」"
-        f"（本地端口 {int(duplicate['local_port'] or 0)}）使用，重复 IP 已强制标记为不可用"
+        f"（本地端口 {int(duplicate['local_port'] or 0)}）使用，状态已标记为 IP重复"
     )
 
 
@@ -2271,7 +2289,7 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
 
     now = now_iso()
     normalized_status = _clean_status(payload.get("status"))
-    if parse_status == "ok" and normalized_status == STATUS_ERROR:
+    if parse_status == "ok" and normalized_status in {STATUS_ERROR, STATUS_DUPLICATE}:
         normalized_status = STATUS_ACTIVE
     values = {
         "name": name,
@@ -2334,7 +2352,7 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
                 """UPDATE proxy_profiles
                    SET status = ?, parse_error = ?, next_auto_check_at = '', updated_at = ?
                    WHERE id = ?""",
-                (STATUS_ERROR, duplicate_reason, now, pool_id),
+                (STATUS_DUPLICATE, duplicate_reason, now, pool_id),
             )
         conn.commit()
     pool = get_pool(pool_id)
@@ -3604,9 +3622,10 @@ def _schedule_proxy_recheck(
            FROM proxy_profiles WHERE id = ? AND deleted_at = ''""",
         (pool_id,),
     ).fetchone()
+    if not row or _clean_status(row["status"]) in {STATUS_PAUSED, STATUS_DUPLICATE}:
+        return ""
     if expected_token and (
-        not row
-        or _clean_status(row["status"]) != STATUS_ERROR
+        _clean_status(row["status"]) != STATUS_ERROR
         or str(row["next_auto_check_at"] or "") != expected_token
     ):
         return ""
@@ -3646,7 +3665,7 @@ def schedule_proxy_recheck_for_pending_job(pool_id: int, error: Exception | str)
             "SELECT status FROM proxy_profiles WHERE id = ? AND deleted_at = ''",
             (pool_id,),
         ).fetchone()
-        if not row or _clean_status(row["status"]) == STATUS_PAUSED:
+        if not row or _clean_status(row["status"]) in {STATUS_PAUSED, STATUS_DUPLICATE}:
             return ""
         next_check_at = _schedule_proxy_recheck(conn, pool_id, str(error))
         conn.commit()
@@ -3762,10 +3781,10 @@ def check_binding(payload: dict[str, Any], require_account: bool = False) -> dic
                 reason = "通过"
             duplicate = _duplicate_exit_ip_pool(conn, int(pool["id"]), observed_ip)
             if duplicate:
-                next_pool_status = STATUS_ERROR
+                next_pool_status = STATUS_DUPLICATE
                 allowed = False
                 reason = _duplicate_exit_ip_reason(duplicate, observed_ip)
-        if should_bind and not allowed and next_pool_status != STATUS_PAUSED:
+        if should_bind and not allowed and next_pool_status not in {STATUS_PAUSED, STATUS_DUPLICATE}:
             next_pool_status = STATUS_ERROR
         geo = detected.get("geo") or lookup_ip_geo(observed_ip)
         updated = conn.execute("""

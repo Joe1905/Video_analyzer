@@ -54,14 +54,25 @@ def create_manual_pool(name: str, expected_ip: str) -> dict:
     )["pool"]
 
 
-def test_duplicate_exit_ip_is_forced_unavailable() -> None:
+def test_duplicate_exit_ip_is_terminal_until_manual_recheck() -> None:
     with isolated_proxy_db():
         older = create_manual_pool("existing", "203.0.113.10")
         newer = create_manual_pool("duplicate", "203.0.113.10")
 
         assert older["status"] == proxy_pool.STATUS_ACTIVE
-        assert newer["status"] == proxy_pool.STATUS_ERROR
-        assert "重复 IP" in newer["parse_error"]
+        assert newer["status"] == proxy_pool.STATUS_DUPLICATE
+        assert newer["auto_check_failures"] == 0
+        assert newer["next_auto_check_at"] == ""
+        assert "状态已标记为 IP重复" in newer["parse_error"]
+
+        scheduled_at = proxy_pool.schedule_proxy_recheck_for_pending_job(
+            newer["id"],
+            "network error",
+        )
+        assert scheduled_at == ""
+        unchanged = proxy_pool.get_pool(newer["id"])
+        assert unchanged["status"] == proxy_pool.STATUS_DUPLICATE
+        assert unchanged["next_auto_check_at"] == ""
 
         checked = proxy_pool.check_binding(
             {
@@ -71,9 +82,52 @@ def test_duplicate_exit_ip_is_forced_unavailable() -> None:
             }
         )
         assert checked["allowed"] is False
-        assert checked["pool"]["status"] == proxy_pool.STATUS_ERROR
+        assert checked["pool"]["status"] == proxy_pool.STATUS_DUPLICATE
+        assert checked["pool"]["next_auto_check_at"] == ""
         assert "existing" in checked["reason"]
         assert str(older["local_port"]) in checked["reason"]
+        assert proxy_pool.recheck_unavailable_proxies()["attempted"] == 0
+
+        with proxy_pool.connect() as conn:
+            conn.execute(
+                "UPDATE proxy_profiles SET deleted_at = ?, status = ? WHERE id = ?",
+                (proxy_pool.now_iso(), proxy_pool.STATUS_PAUSED, older["id"]),
+            )
+            conn.commit()
+
+        recovered = proxy_pool.check_binding(
+            {
+                "proxy_profile_id": newer["id"],
+                "observed_ip": "203.0.113.10",
+                "bind": True,
+            }
+        )
+        assert recovered["allowed"] is True
+        assert recovered["pool"]["status"] == proxy_pool.STATUS_ACTIVE
+
+
+def test_existing_duplicate_error_is_migrated_without_retry() -> None:
+    with isolated_proxy_db():
+        older = create_manual_pool("existing", "203.0.113.30")
+        newer = create_manual_pool("duplicate", "203.0.113.30")
+        old_reason = (
+            f"出口 IP 203.0.113.30 已被代理「existing」（本地端口 {older['local_port']}）使用，"
+            "重复 IP 已强制标记为不可用"
+        )
+        with proxy_pool.connect() as conn:
+            conn.execute(
+                """UPDATE proxy_profiles
+                   SET status = ?, parse_error = ?, auto_check_failures = 3,
+                       next_auto_check_at = '2099-01-01T00:00:00Z'
+                   WHERE id = ?""",
+                (proxy_pool.STATUS_ERROR, old_reason, newer["id"]),
+            )
+            conn.commit()
+
+        migrated = proxy_pool.get_pool(newer["id"])
+        assert migrated["status"] == proxy_pool.STATUS_DUPLICATE
+        assert migrated["auto_check_failures"] == 0
+        assert migrated["next_auto_check_at"] == ""
 
 
 def test_delete_pool_preserves_archived_history_and_releases_port() -> None:
@@ -127,7 +181,8 @@ def test_delete_pool_preserves_archived_history_and_releases_port() -> None:
 
 
 def main() -> None:
-    test_duplicate_exit_ip_is_forced_unavailable()
+    test_duplicate_exit_ip_is_terminal_until_manual_recheck()
+    test_existing_duplicate_error_is_migrated_without_retry()
     test_delete_pool_preserves_archived_history_and_releases_port()
     print("proxy pool lifecycle tests passed")
 
