@@ -12894,6 +12894,7 @@ def clone_ui_chat_scroll_test_session(
                     for session_id, session in target_store.sessions.items()
                     if session_id == UI_CHAT_SCROLL_TEST_SOURCE_SESSION
                     or session_id.endswith(source_suffix)
+                    or session.title == UI_CHAT_SCROLL_TEST_SOURCE_SESSION
                 ),
                 None,
             )
