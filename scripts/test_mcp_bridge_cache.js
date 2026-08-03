@@ -8,8 +8,9 @@ const path = require("node:path");
 const {
   mcpToolResponseIsError,
   mcpToolResponseIsNormalEmpty,
-  normalizeFastmossProductScoutV2Request,
+  normalizeToolCacheRequest,
   shouldBypassToolCache,
+  toolCacheCoveragePolicy,
 } = require("../sellersprite_mcp_chat/server.js");
 const { ToolCacheStore } = require("../sellersprite_mcp_chat/tool_cache.js");
 
@@ -24,7 +25,7 @@ async function main() {
   assert.equal(mcpToolResponseIsNormalEmpty({ content: [{ type: "text", text: JSON.stringify({ items: [] }) }] }), true);
   assert.equal(mcpToolResponseIsNormalEmpty({ content: [{ type: "text", text: JSON.stringify({ items: [{ product_id: "p1" }] }) }] }), false);
   assert.deepEqual(
-    normalizeFastmossProductScoutV2Request("search_category_by_words", { query: ["fidget toys"], top_k: "5", filter: { region: "us", ignored: "" } }),
+    normalizeToolCacheRequest({ query: ["fidget toys"], top_k: "5", filter: { region: "us", ignored: "" } }),
     { query: ["fidget toys"], top_k: 5, filter: { region: "US" } },
   );
 
@@ -80,34 +81,61 @@ async function main() {
     }));
     assert.equal(exactArgs.meta.hit, false);
 
-    const v2Options = { namespace: "fastmoss-product-scout-v2", schemaVersion: "2026-08-01" };
-    const v2Cache = new ToolCacheStore({ ...options, provider: "fastmoss_mcp", rootDir: path.join(tempRoot, "v2") });
-    let v2Calls = 0;
-    const v2First = await v2Cache.getOrCall("search_category_by_words", { query: ["fidget toys"] }, async () => {
-      v2Calls += 1;
-      return { content: [{ type: "text", text: JSON.stringify({ items: [] }) }], isError: false };
-    }, {
-      ...v2Options,
-      normalizeRequest: (request) => normalizeFastmossProductScoutV2Request("search_category_by_words", request),
-      ttlSecondsForResponse: () => 600,
-    });
-    const v2Second = await v2Cache.getOrCall("search_category_by_words", { query: ["fidget toys"], top_k: 5 }, async () => {
-      v2Calls += 1;
-      throw new Error("normalized V2 request should hit cache");
-    }, {
-      ...v2Options,
-      normalizeRequest: (request) => normalizeFastmossProductScoutV2Request("search_category_by_words", request),
-      ttlSecondsForResponse: () => 600,
-    });
-    assert.equal(v2First.meta.hit, false);
-    assert.equal(v2Second.meta.hit, true);
-    assert.equal(v2Second.meta.ttl_seconds, 600);
-    assert.equal(v2Calls, 1);
-    const differentV2Period = await v2Cache.getOrCall("search_category_by_words", { query: ["fidget toys"], top_k: 5, filter: { date_value: "2026-W30" } }, async () => {
-      v2Calls += 1;
-      return { content: [{ type: "text", text: "different period" }], isError: false };
-    }, v2Options);
-    assert.equal(differentV2Period.meta.hit, false);
+    const coverageCache = new ToolCacheStore({ ...options, rootDir: path.join(tempRoot, "coverage") });
+    let coverageCalls = 0;
+    const rowResponse = (ids) => ({ content: [{ type: "text", text: JSON.stringify({ items: ids.map((product_id) => ({ product_id, price: 10 })) }) }] });
+    await coverageCache.getOrCall("product_search", { filter: { region: "US" }, top_k: 10 }, async () => {
+      coverageCalls += 1;
+      return rowResponse(["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"]);
+    }, { coveragePolicy: toolCacheCoveragePolicy("fastmoss", "product_search") });
+    const coveredTopK = await coverageCache.getOrCall("product_search", { filter: { region: "US" }, top_k: 5 }, async () => {
+      coverageCalls += 1;
+      throw new Error("covered top_k request should not call MCP");
+    }, { coveragePolicy: toolCacheCoveragePolicy("fastmoss", "product_search") });
+    assert.equal(coveredTopK.meta.match, "covered");
+    assert.equal(coveredTopK.meta.projected_rows, 5);
+    assert.equal(JSON.parse(coveredTopK.value.content[0].text).items.length, 5);
+    const differentMarket = await coverageCache.getOrCall("product_search", { filter: { region: "UK" }, top_k: 5 }, async () => {
+      coverageCalls += 1;
+      return rowResponse(["UK1"]);
+    }, { coveragePolicy: toolCacheCoveragePolicy("fastmoss", "product_search") });
+    assert.equal(differentMarket.meta.match, "miss");
+    const insufficientRows = await coverageCache.getOrCall("product_search", { filter: { region: "CA" }, top_k: 10 }, async () => rowResponse(["CA1", "CA2"]), { coveragePolicy: toolCacheCoveragePolicy("fastmoss", "product_search") });
+    const shortRequest = await coverageCache.getOrCall("product_search", { filter: { region: "CA" }, top_k: 5 }, async () => {
+      coverageCalls += 1;
+      return rowResponse(["CA1"]);
+    }, { coveragePolicy: toolCacheCoveragePolicy("fastmoss", "product_search") });
+    assert.equal(insufficientRows.meta.match, "miss");
+    assert.equal(shortRequest.meta.match, "miss");
+    const differentSort = await coverageCache.getOrCall("product_search", { filter: { region: "US" }, top_k: 5, orderby: [{ field: "gmv", order: "desc" }] }, async () => {
+      coverageCalls += 1;
+      return rowResponse(["S1"]);
+    }, { coveragePolicy: toolCacheCoveragePolicy("fastmoss", "product_search") });
+    assert.equal(differentSort.meta.match, "miss");
+    const differentPeriod = await coverageCache.getOrCall("product_search", { filter: { region: "US", date_value: "2026-W30" }, top_k: 5 }, async () => {
+      coverageCalls += 1;
+      return rowResponse(["T1"]);
+    }, { coveragePolicy: toolCacheCoveragePolicy("fastmoss", "product_search") });
+    assert.equal(differentPeriod.meta.match, "miss");
+    assert.equal(coverageCalls, 5);
+
+    const entityCache = new ToolCacheStore({ ...options, rootDir: path.join(tempRoot, "entity-coverage") });
+    await entityCache.getOrCall("product_search", { filter: { region: "US" }, product_ids: ["A", "B", "C"] }, async () => rowResponse(["A", "B", "C"]), { coveragePolicy: toolCacheCoveragePolicy("fastmoss", "product_search") });
+    const coveredEntities = await entityCache.getOrCall("product_search", { filter: { region: "US" }, product_ids: ["A", "B"] }, async () => {
+      throw new Error("covered entity subset should not call MCP");
+    }, { coveragePolicy: toolCacheCoveragePolicy("fastmoss", "product_search") });
+    assert.equal(coveredEntities.meta.match, "covered");
+    assert.deepEqual(JSON.parse(coveredEntities.value.content[0].text).items.map((item) => item.product_id), ["A", "B"]);
+
+    const expiryCache = new ToolCacheStore({ ...options, rootDir: path.join(tempRoot, "expiry"), ttlSeconds: 1 });
+    await expiryCache.getOrCall("product_search", { filter: { region: "US" }, top_k: 1 }, async () => rowResponse(["E1"]), { coveragePolicy: toolCacheCoveragePolicy("fastmoss", "product_search") });
+    const [expiryFile] = (await fs.readdir(expiryCache.entryDir)).filter((name) => name.endsWith(".json"));
+    const expiryPath = path.join(expiryCache.entryDir, expiryFile);
+    const expiredEntry = JSON.parse(await fs.readFile(expiryPath, "utf8"));
+    expiredEntry.createdAt = Date.now() - 2_000;
+    await fs.writeFile(expiryPath, JSON.stringify(expiredEntry));
+    const expired = await expiryCache.getOrCall("product_search", { filter: { region: "US" }, top_k: 1 }, async () => rowResponse(["E2"]), { coveragePolicy: toolCacheCoveragePolicy("fastmoss", "product_search") });
+    assert.equal(expired.meta.match, "miss");
 
     const concurrentOptions = { ...options, rootDir: path.join(tempRoot, "concurrent-shared") };
     const concurrentA = new ToolCacheStore(concurrentOptions);
@@ -140,6 +168,12 @@ async function main() {
     }
     assert.equal(errorCalls, 2);
 
+    const cacheFiles = (await fs.readdir(production.entryDir)).filter((name) => name.endsWith(".json"));
+    const cacheEntry = JSON.parse(await fs.readFile(path.join(production.entryDir, cacheFiles[0]), "utf8"));
+    assert.equal(cacheEntry.ttl_seconds, 3600);
+    assert.equal(cacheEntry.response_schema.version, "mcp-response-v1");
+    assert.ok(cacheEntry.raw_business_response);
+
     const now = Date.now();
     const legacyProduction = path.join(tempRoot, "legacy-production.json");
     const legacyDevelopment = path.join(tempRoot, "legacy-development.json");
@@ -162,7 +196,6 @@ async function main() {
     assert.equal(migrated.meta.hit, true);
     assert.equal(migrated.value.content[0].text, "newer");
 
-    const cacheFiles = (await fs.readdir(production.entryDir)).filter((name) => name.endsWith(".json"));
     assert.ok(cacheFiles.length >= 2);
     for (const file of cacheFiles) JSON.parse(await fs.readFile(path.join(production.entryDir, file), "utf8"));
   } finally {

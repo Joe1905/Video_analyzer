@@ -142,17 +142,7 @@ from fastmoss_official_skill import (
 )
 from fastmoss_lightweight_skill import (
     load_lightweight_fastmoss_skill_prompt,
-    load_product_scout_v2_skill_prompt,
     uses_lightweight_fastmoss_skill,
-)
-from fastmoss_product_scout_v2 import (
-    V2_CACHE_NAMESPACE,
-    build_product_scout_evidence_contract,
-    contract_next_instruction,
-    product_scout_v2_market_ambiguity_question,
-    product_scout_v2_mode,
-    render_deterministic_fact_blocks,
-    validate_interpretation,
 )
 from sellersprite_official_skill import (
     load_official_sellersprite_skill_prompt,
@@ -6704,7 +6694,6 @@ def execute_prefixed_tool(
     tool_id: str,
     args: dict[str, Any],
     region: str | None = None,
-    cache_namespace: str | None = None,
 ) -> dict[str, Any]:
     domain, name = split_prefixed_tool_id(tool_id)
     started = time.monotonic()
@@ -6726,9 +6715,8 @@ def execute_prefixed_tool(
             normalized_args, runtime_normalization = normalize_mcp_tool_arguments(chat_type, name, normalized_args)
             if runtime_normalization:
                 print(f"[CHAT] normalized {tool_id} arguments: {runtime_normalization}", flush=True)
-            cache = {"namespace": cache_namespace} if cache_namespace else {}
             result = mcp_bridge_request(
-                chat_type, "tools/call", {"name": name, "arguments": normalized_args, "cache": cache}
+                chat_type, "tools/call", {"name": name, "arguments": normalized_args, "cache": {}}
             )
             return {"ok": True, "elapsed": round(time.monotonic() - started, 3), "data": result}
         return {"ok": False, "elapsed": round(time.monotonic() - started, 3), "error": f"Unknown tool domain: {domain}"}
@@ -9176,6 +9164,12 @@ def fastmoss_evidence_manifest(
 
 def fastmoss_report_prompt_instruction(route: dict[str, Any]) -> str:
     """Return the original FastMoss report-writing instruction without its evidence payload."""
+    selected_skill = str(route.get("official_skill_prompt") or "").strip()
+    skill_context = (
+        "\n\n本轮固定官方 Skill（规划与最终综合必须遵循同一份）：\n"
+        + selected_skill
+        if selected_skill else ""
+    )
     return (
         fastmoss_report_style_instruction(route)
         + " "
@@ -9188,6 +9182,7 @@ def fastmoss_report_prompt_instruction(route: dict[str, Any]) -> str:
         "不得仅凭这些数据写成核心驱动力、决定性因素或直接原因。"
         "空结果只适用于该次调用的精确参数；关键词返回量不是市场容量；跨实体或跨周期数据不得直接相除或互相解释；"
         "渠道占比、关联达人/视频数和趋势只描述观察结构，除非有直接证据，否则不得写成流量来源、因果、效率或生命周期结论。"
+        + skill_context
     )
 
 
@@ -11233,33 +11228,12 @@ def complete_fastmoss_answer(
     model: str,
 ) -> str:
     """Route every evidence-led FastMoss report through the semantic dossier."""
-    if (
-        route.get("product_scout_v2")
-        and route.get("product_scout_v2_mode") == "enforce"
-    ):
-        # V2 owns every terminal path. In particular, an official Skill draft
-        # must never bypass the evidence contract merely because the model
-        # decides to answer before the tool-round ceiling is reached.
-        contract = build_product_scout_evidence_contract(
-            assistant_msg.tool_calls or [],
-            assistant_msg.tool_results or [],
-            user_text,
-            route,
-        )
-        return synthesize_fastmoss_product_scout_v2_answer(
-            contract, user_text, requests_module, api_key, api_url, model,
-        )
-    if route.get("official_skill_chain"):
-        # The official Skill owns the final answer format and interpretation.
-        # Do not run it through the project's report synthesis, verifier, or
-        # deterministic cleanup path.
-        return str(draft or "").strip()
     has_fastmoss_evidence = any(
         isinstance(item, dict)
         and split_prefixed_tool_id(str(item.get("tool_name") or ""))[0] == "fastmoss"
         for item in (assistant_msg.tool_results or [])
     )
-    if has_fastmoss_evidence and chat_route_uses_report_model("fastmoss", route):
+    if has_fastmoss_evidence:
         print("[CHAT] FastMoss final route=semantic_report", flush=True)
         return synthesize_fastmoss_report_from_packet(
             assistant_msg, user_text, route,
@@ -11269,90 +11243,6 @@ def complete_fastmoss_answer(
         draft, assistant_msg, user_text, route,
         requests_module, api_key, api_url, model,
     )
-
-
-def synthesize_fastmoss_product_scout_v2_answer(
-    contract: Any,
-    user_text: str,
-    requests_module: Any,
-    api_key: str,
-    api_url: str,
-    report_model: str,
-) -> str:
-    """Append a model interpretation after immutable V2 Product Scout fact blocks."""
-    fact_blocks = render_deterministic_fact_blocks(contract)
-    grade = str(contract.payload.get("coverage_grade") or "D")
-    gaps = "、".join(contract.payload.get("evidence_gaps") or []) or "无"
-    system = (
-        "你是 FastMoss 选品决策 V2 的解释层。页面已由程序固定展示口径、排行榜、候选验证、"
-        "数字、链接、周期和数据缺口；你绝不能复写、改写或补充其中的数字、链接、币种、周期和表格。"
-        "只用简体中文写‘结论、风险与下一步’，解释比较、保守结论与下一步验证对象。"
-        "不要使用任何数字、百分比、金额、排名、工具名或调用编号。"
-        "证据等级不足 A 时，不得声称低竞争、最佳、唯一、爆发、窗口开放、利润、毛利或备货。"
-        "若证据不足，只能说明初筛/快照边界和继续验证方向。"
-    )
-    prompt = (
-        f"用户问题：{chat_routing_text(user_text)}\n"
-        f"覆盖等级：{grade}\n"
-        f"能力缺口：{gaps}\n\n"
-        "以下是不可改写的确定性事实区块，仅用于解释：\n\n"
-        + fact_blocks
-    )
-
-    def request_interpretation(extra_instruction: str = "") -> str:
-        payload = {
-            "model": report_model,
-            "messages": [
-                {"role": "system", "content": system + extra_instruction},
-                {"role": "user", "content": prompt},
-            ],
-            "temperature": 0.2,
-            "max_tokens": 4000,
-        }
-        payload_text = json.dumps(payload, ensure_ascii=False)
-        started = time.monotonic()
-        response = requests_module.post(
-            api_url.rstrip("/") + "/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            data=payload_text.encode("utf-8"),
-            timeout=180,
-        )
-        response.raise_for_status()
-        body = response.json()
-        record_api_call(
-            "deepseek", "fastmoss_product_scout_v2_interpretation",
-            {"model": report_model, "coverage_grade": grade, "fact_block_chars": len(fact_blocks)},
-            body, elapsed_ms=int((time.monotonic() - started) * 1000),
-        )
-        choice = body["choices"][0]
-        if str(choice.get("finish_reason") or "") == "length":
-            raise ValueError("FastMoss Product Scout V2 interpretation finish_reason=length")
-        text = str((choice.get("message") or {}).get("content") or "").strip()
-        if not text or deepseek_tool_protocol_present({"content": text}):
-            raise ValueError("FastMoss Product Scout V2 interpretation returned empty or tool protocol")
-        return text
-
-    try:
-        interpretation = request_interpretation()
-        interpretation, violations = validate_interpretation(interpretation, contract)
-        if violations:
-            interpretation = request_interpretation(
-                "上一版存在以下不可接受问题：" + "、".join(violations)
-                + "。删除这些内容，严格只输出无数字、无高风险无证据声明的保守解释。"
-            )
-            interpretation, _ = validate_interpretation(interpretation, contract)
-        return fact_blocks + "\n\n## 结论、风险与下一步\n\n" + interpretation
-    except Exception as exc:
-        print(
-            f"[CHAT] FastMoss Product Scout V2 interpretation failed: {type(exc).__name__}: {str(exc)[:240]}",
-            flush=True,
-        )
-        return (
-            fact_blocks
-            + "\n\n## 结论、风险与下一步\n\n"
-            + "最终综合模型暂时不可用。以上为已通过程序校验的确定性事实与数据缺口；"
-            "本轮不生成进一步的市场进入判断，请根据缺口完成后续验证。"
-        )
 
 
 def build_tool_limit_final_context(messages: list[dict[str, Any]], user_request: str = "") -> list[dict[str, Any]]:
@@ -12491,13 +12381,6 @@ FASTMOSS_LABEL_TO_PRESET_ID = {
 }
 
 
-def fastmoss_product_scout_v2_route_mode(preset_id: str | None) -> str:
-    """V2 is intentionally scoped to the Product Scout preset only."""
-    if str(preset_id or "").strip() != "fm-product-scout":
-        return "off"
-    return product_scout_v2_mode(os.getenv("FASTMOSS_PRODUCT_SCOUT_V2_MODE", "off"))
-
-
 def fastmoss_official_skill_route(
     user_text: str | None = None,
     official_preset_id: str | None = None,
@@ -12538,18 +12421,6 @@ def fastmoss_official_skill_route(
                 "lightweight_fastmoss_skill": True,
                 "max_rounds": _chat_int_setting(
                     "FASTMOSS_LIGHTWEIGHT_SKILL_MAX_ROUNDS", 12, 1, 24
-                ),
-            })
-        v2_mode = fastmoss_product_scout_v2_route_mode(preset_id)
-        if v2_mode != "off":
-            route.update({
-                "route_source": f"product_scout_v2_{v2_mode}",
-                "product_scout_v2_mode": v2_mode,
-                "product_scout_v2": True,
-                # Shadow keeps V1 presentation only; V2 owns the sole MCP plan.
-                "lightweight_fastmoss_skill": v2_mode == "shadow",
-                "max_rounds": _chat_int_setting(
-                    "FASTMOSS_OFFICIAL_SKILL_MAX_ROUNDS", 24, 1, 50
                 ),
             })
     elif preset_id:
@@ -13068,12 +12939,6 @@ def run_chat_deepseek(
             if (
                 fastmoss_official_skill_chain
                 and official_skill_route
-                and official_skill_route.get("product_scout_v2_mode") == "enforce"
-            ):
-                official_skill_prompt = load_product_scout_v2_skill_prompt()
-            elif (
-                fastmoss_official_skill_chain
-                and official_skill_route
                 and official_skill_route.get("lightweight_fastmoss_skill")
             ):
                 official_skill_prompt = load_lightweight_fastmoss_skill_prompt(
@@ -13143,13 +13008,9 @@ def run_chat_deepseek(
         if official_skill_route is not None
         else resolve_chat_intent(session.messages, user_text, provider, api_key, api_url, model, req)
     )
-    if provider == "fastmoss" and route.get("product_scout_v2"):
-        ambiguity = product_scout_v2_market_ambiguity_question(routing_text)
-        if ambiguity:
-            print("[FASTMOSS PRODUCT SCOUT V2] scope=multi_market_ambiguous tools=0", flush=True)
-            store.update_message(session, assistant_msg, ambiguity, status="done")
-            store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": ambiguity})
-            return
+    if provider == "fastmoss" and official_skill_prompt:
+        # Planner and final semantic writer receive the exact same selected Skill.
+        route["official_skill_prompt"] = official_skill_prompt
     if provider == "fastmoss" and not official_skill_chain:
         inherited_segment_keywords = fastmoss_inherited_segment_keywords(session.messages, routing_text)
         if inherited_segment_keywords:
@@ -13817,10 +13678,6 @@ def run_chat_deepseek(
                             fn_name,
                             fn_args,
                             default_region,
-                            cache_namespace=(
-                                V2_CACHE_NAMESPACE
-                                if route.get("product_scout_v2") else None
-                            ),
                         )
                         normalized_result = normalize_prefixed_tool_result(fn_name, raw_result)
                     normalized_result = annotate_fastmoss_tool_result(
@@ -13859,50 +13716,6 @@ def run_chat_deepseek(
                         "content": "The two-search availability limit has been reached. Do not call more tools; answer concisely from the current search evidence.",
                         "_context_scope": "system",
                     })
-                elif provider == "fastmoss" and route.get("product_scout_v2"):
-                    contract = build_product_scout_evidence_contract(
-                        assistant_msg.tool_calls or [], assistant_msg.tool_results or [], routing_text, route,
-                    )
-                    route["product_scout_v2_contract"] = contract.payload
-                    print(
-                        "[FASTMOSS PRODUCT SCOUT V2] "
-                        + json.dumps({
-                            "mode": route.get("product_scout_v2_mode"),
-                            "status": contract.status,
-                            "coverage_grade": contract.grade,
-                            "gaps": contract.payload.get("evidence_gaps") or [],
-                            "tool_count": len(assistant_msg.tool_results or []),
-                        }, ensure_ascii=False, separators=(",", ":")),
-                        flush=True,
-                    )
-                    stop_for_contract = contract.status in {"sufficient", "unavailable"} or _ + 1 >= max_tool_rounds
-                    if stop_for_contract and route.get("product_scout_v2_mode") == "enforce":
-                        final_content = synthesize_fastmoss_product_scout_v2_answer(
-                            contract, user_text, req, api_key, api_url, report_model,
-                        )
-                        store.update_message(session, assistant_msg, final_content, status="done")
-                        store.broadcast(session.id, "done", {
-                            "messageId": assistant_msg.id,
-                            "content": final_content,
-                        })
-                        return
-                    if stop_for_contract:
-                        tools = []
-                        final_answer_forced = True
-                        messages.append({
-                            "role": "system",
-                            "content": (
-                                "V2 证据契约已停止继续调用。请基于当前证据完成 V1 可见回答，并明确："
-                                + "、".join(contract.payload.get("evidence_gaps") or ["当前覆盖等级"])
-                            ),
-                            "_context_scope": "system",
-                        })
-                    else:
-                        messages.append({
-                            "role": "system",
-                            "content": contract_next_instruction(contract),
-                            "_context_scope": "system",
-                        })
                 elif route.get("dynamic_planner") and provider in {"amazon", "fastmoss"}:
                     selected_tool_ids = provider_profile_tool_ids(
                         provider, route, routing_text,
@@ -14015,45 +13828,6 @@ def run_chat_deepseek(
                     )
                 store.update_message(session, assistant_msg, fallback, status="done")
                 store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": fallback})
-                return
-            if provider == "fastmoss" and route.get("product_scout_v2") and not final_answer_forced:
-                contract = build_product_scout_evidence_contract(
-                    assistant_msg.tool_calls or [], assistant_msg.tool_results or [], routing_text, route,
-                )
-                if contract.status == "unavailable" and route.get("product_scout_v2_mode") == "enforce":
-                    final_content = synthesize_fastmoss_product_scout_v2_answer(
-                        contract, user_text, req, api_key, api_url, report_model,
-                    )
-                    store.update_message(session, assistant_msg, final_content, status="done")
-                    store.broadcast(session.id, "done", {
-                        "messageId": assistant_msg.id,
-                        "content": final_content,
-                    })
-                    return
-                if no_tool_retries < 1 and tools:
-                    no_tool_retries += 1
-                    messages.append({"role": "assistant", "content": content, "_context_scope": "current"})
-                    messages.append({
-                        "role": "system",
-                        "content": contract_next_instruction(contract),
-                        "_context_scope": "system",
-                    })
-                    continue
-            if (
-                final_answer_forced
-                and provider == "fastmoss"
-                and route.get("lightweight_fastmoss_skill")
-                and lightweight_fastmoss_first_draft
-                and not lightweight_fastmoss_final_answer_usable(
-                    str(content or ""), lightweight_fastmoss_first_draft
-                )
-            ):
-                print("[CHAT] FastMoss lightweight Skill synthesis unusable; returning first draft", flush=True)
-                store.update_message(session, assistant_msg, lightweight_fastmoss_first_draft, status="done")
-                store.broadcast(session.id, "done", {
-                    "messageId": assistant_msg.id,
-                    "content": lightweight_fastmoss_first_draft,
-                })
                 return
             if final_answer_forced and str(content or "").strip():
                 if (
@@ -14255,21 +14029,6 @@ def run_chat_deepseek(
                     err_text += " | body: " + exc.response.text[:300]
                 except Exception:
                     pass
-            if (
-                provider == "fastmoss"
-                and route.get("lightweight_fastmoss_skill")
-                and lightweight_fastmoss_first_draft
-            ):
-                print(
-                    f"[CHAT] FastMoss lightweight Skill synthesis failed; returning first draft: {err_text}",
-                    flush=True,
-                )
-                store.update_message(session, assistant_msg, lightweight_fastmoss_first_draft, status="done")
-                store.broadcast(session.id, "done", {
-                    "messageId": assistant_msg.id,
-                    "content": lightweight_fastmoss_first_draft,
-                })
-                return
             print(f"[CHAT] DeepSeek error: {err_text}", flush=True)
             store.update_message(session, assistant_msg, f"Request failed: {exc}", status="error")
             return

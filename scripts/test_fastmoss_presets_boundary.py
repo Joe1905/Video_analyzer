@@ -19,16 +19,6 @@ from scripts.fastmoss_lightweight_skill import load_lightweight_fastmoss_skill_p
 
 
 class TestFastMossPresetsBoundary(unittest.TestCase):
-    def setUp(self):
-        self._previous_v2_mode = os.environ.get("FASTMOSS_PRODUCT_SCOUT_V2_MODE")
-        os.environ["FASTMOSS_PRODUCT_SCOUT_V2_MODE"] = "off"
-
-    def tearDown(self):
-        if self._previous_v2_mode is None:
-            os.environ.pop("FASTMOSS_PRODUCT_SCOUT_V2_MODE", None)
-        else:
-            os.environ["FASTMOSS_PRODUCT_SCOUT_V2_MODE"] = self._previous_v2_mode
-
     def test_presets_structure(self):
         self.assertEqual(len(FASTMOSS_OFFICIAL_PRESETS), 5)
         self.assertEqual(len(FASTMOSS_LABEL_TO_PRESET_ID), 5)
@@ -77,22 +67,6 @@ class TestFastMossPresetsBoundary(unittest.TestCase):
                 os.environ["FASTMOSS_SKILL_SOURCE"] = previous
         self.assertEqual(route["route_source"], "official_preset")
         self.assertNotIn("lightweight_fastmoss_skill", route)
-
-    def test_product_scout_v2_mode_is_scoped_to_this_preset(self):
-        previous = os.environ.get("FASTMOSS_PRODUCT_SCOUT_V2_MODE")
-        os.environ["FASTMOSS_PRODUCT_SCOUT_V2_MODE"] = "enforce"
-        try:
-            product_scout = fastmoss_official_skill_route(official_preset_id="fm-product-scout")
-            other_preset = fastmoss_official_skill_route(official_preset_id="fm-creator-outreach")
-        finally:
-            if previous is None:
-                os.environ.pop("FASTMOSS_PRODUCT_SCOUT_V2_MODE", None)
-            else:
-                os.environ["FASTMOSS_PRODUCT_SCOUT_V2_MODE"] = previous
-        self.assertEqual(product_scout["product_scout_v2_mode"], "enforce")
-        self.assertTrue(product_scout["product_scout_v2"])
-        self.assertEqual(product_scout["route_source"], "product_scout_v2_enforce")
-        self.assertNotIn("product_scout_v2", other_preset)
 
     def test_route_resolution_by_user_text_prefix(self):
         user_text = "请使用 FastMoss 官方 Skill「达人建联」开始分析。"

@@ -16,15 +16,16 @@ const MCP_CHAT_LABEL = process.env.MCP_CHAT_LABEL || (MCP_CHAT_TYPE === "fastmos
 const MCP_CHAT_BASE_PATH = process.env.MCP_CHAT_BASE_PATH || (MCP_CHAT_TYPE === "fastmoss" ? "/fastmoss" : "/amazon");
 const SELLERSPRITE_SECRET_KEY = process.env.SELLERSPRITE_SECRET_KEY || "";
 const SELLERSPRITE_MCP_URL = process.env.SELLERSPRITE_MCP_URL || "https://mcp.sellersprite.com/mcp";
-const SELLERSPRITE_CACHE_TTL_SECONDS = Number(process.env.SELLERSPRITE_CACHE_TTL_SECONDS || 86400);
+const BUSINESS_TOOL_CACHE_TTL_SECONDS = 86400;
+const SELLERSPRITE_CACHE_TTL_SECONDS = BUSINESS_TOOL_CACHE_TTL_SECONDS;
 const FASTMOSS_MCP_API_KEY = process.env.FASTMOSS_MCP_API_KEY || process.env.FASTMOSS_API_KEY || "";
 const FASTMOSS_MCP_URL = process.env.FASTMOSS_MCP_URL || "https://mcp.fastmoss.com/mcp";
-const FASTMOSS_CACHE_TTL_SECONDS = Number(process.env.FASTMOSS_CACHE_TTL_SECONDS || 86400);
+const FASTMOSS_CACHE_TTL_SECONDS = BUSINESS_TOOL_CACHE_TTL_SECONDS;
 const SOCIAVAULT_API_KEY = process.env.SOCIAVAULT_API_KEY || "";
 const SOCIAVAULT_BASE_URL = process.env.SOCIAVAULT_BASE_URL || process.env.SOCIAVAULT_API_BASE || "https://api.sociavault.com";
 const SOCIAVAULT_MCP_COMMAND = process.env.SOCIAVAULT_MCP_COMMAND || "sociavault-mcp";
 const SOCIAVAULT_MCP_ARGS = safeJsonParse(process.env.SOCIAVAULT_MCP_ARGS_JSON || "[]", []);
-const SOCIAVAULT_MCP_CACHE_TTL_SECONDS = Number(process.env.SOCIAVAULT_MCP_CACHE_TTL_SECONDS || process.env.API_CACHE_TTL_SECONDS || 604800);
+const SOCIAVAULT_MCP_CACHE_TTL_SECONDS = BUSINESS_TOOL_CACHE_TTL_SECONDS;
 const MCP_REMOTE_URL = process.env.MCP_REMOTE_URL || (
   MCP_CHAT_TYPE === "sociavault"
     ? SOCIAVAULT_BASE_URL
@@ -32,21 +33,12 @@ const MCP_REMOTE_URL = process.env.MCP_REMOTE_URL || (
       ? FASTMOSS_MCP_URL
       : SELLERSPRITE_MCP_URL
 );
-const MCP_CACHE_TTL_SECONDS = Number(process.env.MCP_CACHE_TTL_SECONDS || (
-  MCP_CHAT_TYPE === "sociavault"
-    ? SOCIAVAULT_MCP_CACHE_TTL_SECONDS
-    : MCP_CHAT_TYPE === "fastmoss"
-      ? FASTMOSS_CACHE_TTL_SECONDS
-      : SELLERSPRITE_CACHE_TTL_SECONDS
-));
+const MCP_CACHE_TTL_SECONDS = BUSINESS_TOOL_CACHE_TTL_SECONDS;
 const PUBLIC_DIR = path.join(__dirname, "public");
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const SESSIONS_FILE = path.join(DATA_DIR, "sessions.json");
 const LEGACY_TOOL_CACHE_FILE = path.join(DATA_DIR, "tool_cache.json");
 const SHARED_TOOL_CACHE_ROOT = process.env.MCP_TOOL_CACHE_DIR || path.join(DATA_DIR, "tool_cache_entries");
-const FASTMOSS_PRODUCT_SCOUT_V2_CACHE_NAMESPACE = "fastmoss-product-scout-v2";
-const FASTMOSS_PRODUCT_SCOUT_V2_CACHE_SCHEMA_VERSION = "2026-08-01";
-const FASTMOSS_PRODUCT_SCOUT_V2_EMPTY_TTL_SECONDS = 600;
 
 const sessions = new Map();
 let saveTimer = null;
@@ -404,7 +396,7 @@ function shouldBypassToolCache(chatType, name) {
   return chatType === "sociavault" && name === "check_credits";
 }
 
-function normalizeFastmossProductScoutV2Request(name, args) {
+function normalizeToolCacheRequest(args) {
   const numericKeys = new Set(["page", "pagesize", "top_k", "max_total_results", "time_range_days"]);
   const localeKeys = new Set(["region", "market", "marketplace", "country", "site", "lang", "language", "locale"]);
   const normalize = (value, key = "") => {
@@ -421,9 +413,27 @@ function normalizeFastmossProductScoutV2Request(name, args) {
     }
     return output;
   };
-  const request = normalize(args || {});
-  if (String(name || "") === "search_category_by_words" && request.top_k == null) request.top_k = 5;
-  return request;
+  return normalize(args || {});
+}
+
+function toolCacheCoveragePolicy(chatType, name) {
+  // Every unlisted tool is exact-only. These list endpoints have a documented
+  // deterministic response order and are only reusable after row projection.
+  const listTools = {
+    fastmoss: new Set([
+      "search_category_by_words", "market_category_ranking", "product_rank_top_selling",
+      "product_rank_new_listed", "product_search", "shop_search", "creator_search", "video_search",
+    ]),
+    sellersprite: new Set([
+      "keyword_research", "keyword_miner", "market_research", "product_research", "competitor_lookup",
+    ]),
+    sociavault: new Set(),
+  };
+  if (!listTools[chatType]?.has(String(name || ""))) return {};
+  return {
+    limit_paths: ["top_k", "limit", "page_size", "pagesize", "filter.top_k", "filter.limit", "filter.page_size", "filter.pagesize"],
+    entity_list_paths: ["ids", "product_ids", "asins", "filter.ids", "filter.product_ids", "filter.asins"],
+  };
 }
 
 function mcpToolResponseIsNormalEmpty(value) {
@@ -442,27 +452,19 @@ function mcpToolResponseIsNormalEmpty(value) {
   return false;
 }
 
-async function callMcpToolCached(name, args, cacheOptions = {}) {
+async function callMcpToolCached(name, args) {
   if (shouldBypassToolCache(MCP_CHAT_TYPE, name)) {
     return mcpClient.callTool(name, args);
   }
-  const v2Cache = MCP_CHAT_TYPE === "fastmoss"
-    && String(cacheOptions?.namespace || "") === FASTMOSS_PRODUCT_SCOUT_V2_CACHE_NAMESPACE;
-  const effectiveArgs = v2Cache ? normalizeFastmossProductScoutV2Request(name, args) : args;
+  const effectiveArgs = normalizeToolCacheRequest(args);
   const cached = await getToolCacheStore().getOrCall(
     name,
     effectiveArgs,
     () => mcpClient.callTool(name, effectiveArgs),
-    v2Cache ? {
-      namespace: FASTMOSS_PRODUCT_SCOUT_V2_CACHE_NAMESPACE,
-      schemaVersion: FASTMOSS_PRODUCT_SCOUT_V2_CACHE_SCHEMA_VERSION,
-      normalizeRequest: (request) => normalizeFastmossProductScoutV2Request(name, request),
-      ttlSecondsForResponse: (response) => (
-        mcpToolResponseIsNormalEmpty(response)
-          ? FASTMOSS_PRODUCT_SCOUT_V2_EMPTY_TTL_SECONDS
-          : MCP_CACHE_TTL_SECONDS
-      ),
-    } : {},
+    {
+      normalizeRequest: normalizeToolCacheRequest,
+      coveragePolicy: toolCacheCoveragePolicy(MCP_CHAT_TYPE, name),
+    },
   );
   return withCacheMeta(cached.value, cached.meta);
 }
@@ -1170,6 +1172,7 @@ if (require.main === module) {
 module.exports = {
   mcpToolResponseIsError,
   mcpToolResponseIsNormalEmpty,
-  normalizeFastmossProductScoutV2Request,
+  normalizeToolCacheRequest,
   shouldBypassToolCache,
+  toolCacheCoveragePolicy,
 };
