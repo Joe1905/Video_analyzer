@@ -141,9 +141,6 @@ async def run_viewport(browser, api, base_url: str, output_dir: Path, name: str)
     run_dir.mkdir(parents=True, exist_ok=True)
 
     context = await browser.new_context(viewport=VIEWPORTS[name])
-    await context.add_init_script(
-        f"localStorage.setItem('videoAnalyzer.chat.sessionId.amazon', {json.dumps(session_id)});"
-    )
     page = await context.new_page()
     console_errors: list[str] = []
     page.on(
@@ -156,7 +153,14 @@ async def run_viewport(browser, api, base_url: str, output_dir: Path, name: str)
 
     try:
         await page.goto(f"{base_url}/amazon", wait_until="domcontentloaded")
-        await page.wait_for_function("S.messages.length >= 8")
+        await page.evaluate(
+            "sessionId => localStorage.setItem('videoAnalyzer.chat.sessionId.amazon', sessionId)",
+            session_id,
+        )
+        await page.reload(wait_until="domcontentloaded")
+        await page.wait_for_function(
+            "document.querySelectorAll('#messages .msg').length >= 2"
+        )
         await page.wait_for_selector("#messages .msg")
 
         historical_tops = await page.eval_on_selector_all(
