@@ -12886,6 +12886,18 @@ def clone_ui_chat_scroll_test_session(
         "amazon", UI_CHAT_SCROLL_TEST_SOURCE_SESSION
     )
     if source is None:
+        source_suffix = f"__{UI_CHAT_SCROLL_TEST_SOURCE_SESSION}"
+        with target_store._lock:
+            source = next(
+                (
+                    session
+                    for session_id, session in target_store.sessions.items()
+                    if session_id == UI_CHAT_SCROLL_TEST_SOURCE_SESSION
+                    or session_id.endswith(source_suffix)
+                ),
+                None,
+            )
+    if source is None:
         raise LookupError(
             f"测试源会话不存在：{UI_CHAT_SCROLL_TEST_SOURCE_SESSION}"
         )

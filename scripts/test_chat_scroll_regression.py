@@ -92,6 +92,30 @@ class ChatScrollRegressionTest(unittest.TestCase):
                 sum(key.startswith(stored_prefix) for key in store.sessions), 1
             )
 
+    def test_setup_accepts_legacy_sellersprite_prefixed_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = ChatStore(Path(temp_dir) / "chat_sessions.json")
+            legacy_source = Session(
+                id=(
+                    "sellersprite__"
+                    + web_app.UI_CHAT_SCROLL_TEST_SOURCE_SESSION
+                ),
+                title="旧版长会话",
+                messages=[Message(id="u1", role="user", content="测试问题")],
+            )
+            store.sessions[legacy_source.id] = legacy_source
+
+            public_id, cloned, cleaned = (
+                web_app.clone_ui_chat_scroll_test_session(store)
+            )
+
+            self.assertEqual(cleaned, 0)
+            self.assertTrue(
+                public_id.startswith(web_app.UI_CHAT_SCROLL_TEST_SESSION_PREFIX)
+            )
+            self.assertEqual(cloned.messages[0].content, "测试问题")
+            self.assertIsNot(cloned.messages[0], legacy_source.messages[0])
+
     def test_sequence_emits_ten_fake_calls_without_real_llm_or_tools(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = RecordingStore(Path(temp_dir) / "chat_sessions.json")
