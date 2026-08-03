@@ -600,9 +600,9 @@ def init_db(conn: sqlite3.Connection) -> None:
                auto_check_failures = 0,
                next_auto_check_at = '',
                updated_at = ?
-           WHERE deleted_at = '' AND status = ?
+           WHERE deleted_at = '' AND status IN (?, ?)
              AND parse_error LIKE '出口 IP %已被代理%重复 IP%'""",
-        (STATUS_DUPLICATE, now_iso(), STATUS_ERROR),
+        (STATUS_DUPLICATE, now_iso(), STATUS_ERROR, STATUS_DUPLICATE),
     )
     conn.commit()
 

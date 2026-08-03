@@ -131,6 +131,18 @@ def test_existing_duplicate_error_is_migrated_without_retry() -> None:
         assert "状态已标记为 IP重复" in migrated["parse_error"]
         assert "标记为不可用" not in migrated["parse_error"]
 
+        with proxy_pool.connect() as conn:
+            conn.execute(
+                "UPDATE proxy_profiles SET parse_error = ? WHERE id = ?",
+                (old_reason, newer["id"]),
+            )
+            conn.commit()
+
+        remigrated = proxy_pool.get_pool(newer["id"])
+        assert remigrated["status"] == proxy_pool.STATUS_DUPLICATE
+        assert "状态已标记为 IP重复" in remigrated["parse_error"]
+        assert "标记为不可用" not in remigrated["parse_error"]
+
 
 def test_delete_pool_preserves_archived_history_and_releases_port() -> None:
     with isolated_proxy_db():
