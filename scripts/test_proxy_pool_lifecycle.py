@@ -128,6 +128,8 @@ def test_existing_duplicate_error_is_migrated_without_retry() -> None:
         assert migrated["status"] == proxy_pool.STATUS_DUPLICATE
         assert migrated["auto_check_failures"] == 0
         assert migrated["next_auto_check_at"] == ""
+        assert "状态已标记为 IP重复" in migrated["parse_error"]
+        assert "标记为不可用" not in migrated["parse_error"]
 
 
 def test_delete_pool_preserves_archived_history_and_releases_port() -> None:

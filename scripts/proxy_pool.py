@@ -591,7 +591,15 @@ def init_db(conn: sqlite3.Connection) -> None:
         used_ports.add(replacement)
     conn.execute(
         """UPDATE proxy_profiles
-           SET status = ?, auto_check_failures = 0, next_auto_check_at = '', updated_at = ?
+           SET status = ?,
+               parse_error = REPLACE(
+                   parse_error,
+                   '，重复 IP 已强制标记为不可用',
+                   '，状态已标记为 IP重复'
+               ),
+               auto_check_failures = 0,
+               next_auto_check_at = '',
+               updated_at = ?
            WHERE deleted_at = '' AND status = ?
              AND parse_error LIKE '出口 IP %已被代理%重复 IP%'""",
         (STATUS_DUPLICATE, now_iso(), STATUS_ERROR),
