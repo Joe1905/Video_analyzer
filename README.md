@@ -154,6 +154,8 @@ Expired videos that are older than this window are cleaned from report records o
 Report pipeline safeguards:
 - `REPORT_JOB_TIMEOUT` (seconds, default `1800`) limits total time spent on a single `/api/report/run` task.
 - `REPORT_DEEPSEEK_TIMEOUT` (seconds, default `180`) limits each per-video deep-dive audit call.
+- `REPORT_VIDEO_ANALYZE_TIMEOUT` (seconds, default `240`) limits a single downloaded video's Whisper/key-frame analysis; timeouts are recorded as that video's failure and the report continues with fallback candidates.
+- `REPORT_VIDEO_MAX_ATTEMPTS` (default `2`) and `REPORT_VIDEO_RETRY_BACKOFF_SECONDS` (default `900`) prevent an already failed video from immediately blocking a resumed report again.
 
 ## Amazon Scraper
 
