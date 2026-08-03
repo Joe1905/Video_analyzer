@@ -276,7 +276,45 @@ Do not write generated files into `scripts/` at runtime. Do not commit files fro
 
 ## Server-Direct Development and Deployment
 
-Codex tasks for this repository run directly in the production server checkout:
+### Server ports, deployed trees, and local worktrees
+
+The three long-running web ports on `192.168.1.254` are separate environments.
+Treat the port named by the user as an explicit environment selector; do not
+silently substitute another port, checkout, Compose project, or data directory.
+
+| Port | Meaning | Compose project / web container | Server checkout | Matching Windows worktree / long-lived branch |
+| --- | --- | --- | --- | --- |
+| `4002` | 正式版 / production | `short-video-analyzer` / `short-video-analyzer_web_1` | `/home/openclaw/Video_analyzer` | `C:\Users\admin\Documents\Video_analyzer` / `master` |
+| `4003` | 开发版 / development | `short-video-analyzer-dev` / `short-video-analyzer-dev_web_1` | `/home/openclaw/Video_analyzer-dev` | `C:\Users\admin\Documents\Video_analyzer-dev-merge` / `developer` |
+| `4004` | 2.0 / isolated UI and chat validation | `short-video-analyzer-ui-4004` / `short-video-analyzer-ui-4004_web_1` | `/home/openclaw/Video_analyzer-ui-4004` | `C:\Users\admin\Documents\Video_analyzer-ui-4004` / `codex/ui-beautification-4004` |
+
+The checkout paths, long-lived branches, and Compose project names are the
+durable mapping. Commit positions must still be rechecked with
+`git status --short --branch` and `git rev-parse --short HEAD` before changes or
+deployment. A Windows worktree is not automatically deployed; synchronize the
+intended branch through GitHub before treating it as a port's deployed source.
+
+When the user says "4004", they mean the 2.0 environment at
+`http://192.168.1.254:4004/`, its Windows worktree
+`C:\Users\admin\Documents\Video_analyzer-ui-4004`, and its server checkout
+`/home/openclaw/Video_analyzer-ui-4004`. Inspect, test, build, restart, and read
+logs only in the `short-video-analyzer-ui-4004` Compose project unless the user
+explicitly expands the scope. Never rebuild, stop, or deploy the 4002 production
+service while working on a 4004 request. Apply the same isolation rule to 4003.
+
+From Windows, connect to the server as `openclaw@192.168.1.254` with the dedicated
+private key `C:\Users\admin\.ssh\openclaw_codex_rsa`:
+
+```powershell
+ssh -i "$env:USERPROFILE\.ssh\openclaw_codex_rsa" openclaw@192.168.1.254
+```
+
+Use `openclaw_codex_rsa`, not its `.pub` companion. Never print, copy, upload, or
+commit the private key. The key authorizes operational SSH access only; source
+code synchronization from Windows must still go through GitHub as described
+below, never SCP/SFTP/rsync.
+
+The production server checkout is:
 
 ```text
 /home/openclaw/Video_analyzer
