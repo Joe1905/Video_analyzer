@@ -248,7 +248,7 @@ silently substitute another port, checkout, Compose project, or data directory.
 | --- | --- | --- | --- | --- |
 | `4002` | 正式版 / production | `short-video-analyzer` / `short-video-analyzer_web_1` | `/home/openclaw/Video_analyzer` | `C:\Users\admin\Documents\Video_analyzer` / `master` |
 | `4003` | 开发版 / development | `short-video-analyzer-dev` / `short-video-analyzer-dev_web_1` | `/home/openclaw/Video_analyzer-dev` | `C:\Users\admin\Documents\Video_analyzer-dev-merge` / `developer` |
-| `4004` | 2.0 / isolated UI and chat validation | `short-video-analyzer-ui-4004` / `short-video-analyzer-ui-4004_web_1` | `/home/openclaw/Video_analyzer-ui-4004` | `C:\Users\admin\Documents\Video_analyzer-ui-4004` / `codex/ui-beautification-4004` |
+| `4004` | 2.0 / isolated UI and chat validation | `short-video-analyzer-ui-4004` / `short-video-analyzer-ui-4004_web_1` | `/home/openclaw/Video_analyzer-ui-4004` | `C:\Users\admin\Documents\Video_analyzer-ui-4004` / `v2` |
 
 The checkout paths, long-lived branches, and Compose project names are the
 durable mapping. Commit positions must still be rechecked with
