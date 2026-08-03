@@ -44,3 +44,11 @@
 - Removed the now-unused `FASTMOSS_LLM_VERIFIER_ENABLED` reader and both `_deprecated_build_prefixed_model_tools` / `_deprecated_execute_prefixed_tool` implementations.
 - Retained `annotate_fastmoss_tool_result` and its normalized envelope because the live execution path still annotates MCP result state for UI/SSE and tool workflow state; per-tool Planner evidence is nevertheless emitted by `fastmoss_evidence_renderer`, not the retired report packet.
 - Removed only V3/verifier/report-packet-specific regression cases and replaced them with a direct Planner path assertion. Remaining FastMoss evidence-envelope tests continue to protect result-state and field preservation.
+
+### Phase 3 — single local Product Scout Skill
+
+- Commit for Phase 2: `846e08d` (`refactor: remove fastmoss v3 report pipeline`).
+- Removed the superseded `scripts/skills/fastmoss/BASE.md` and `scripts/skills/fastmoss/fm-product-scout.md`; the new `SKILL.md` is now the only local Product Scout prompt source.
+- Removed the no-longer-read `FASTMOSS_SKILL_SOURCE` and retired verifier configuration from the 4004 example/Compose environment. `FASTMOSS_LIGHTWEIGHT_SKILL_MAX_ROUNDS` remains because it still bounds the active local workflow.
+- Updated the manual five-preset mock-boundary script so Product Scout proves its local Skill is loaded while other presets retain their official Skill selection. It now also verifies execution-time whitelist rejection.
+- Added a focused unittest assertion that a forbidden FastMoss tool is rejected before any MCP call.

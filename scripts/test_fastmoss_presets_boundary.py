@@ -8,6 +8,7 @@ from scripts.web_app import (
     FASTMOSS_LABEL_TO_PRESET_ID,
     fastmoss_official_skill_route,
     fastmoss_official_skill_tool_ids,
+    execute_prefixed_tool,
     render_chat_official_workflow_modal,
     render_chat_quick_actions,
     CHAT_PROVIDER_UI,
@@ -88,6 +89,15 @@ class TestFastMossPresetsBoundary(unittest.TestCase):
             "fastmoss__creator_search",
         })
         self.assertNotIn("fastmoss__market_category_analysis", isolated)
+
+    def test_execution_boundary_rejects_before_mcp(self):
+        result = execute_prefixed_tool(
+            "fastmoss__product_search",
+            {"keyword": "fidget toy"},
+            allowed_tool_ids=set(),
+        )
+        self.assertFalse(result["ok"])
+        self.assertIn("active preset boundary", result["error"])
 
     def test_modal_rendering(self):
         modal_ui = render_chat_official_workflow_modal("fastmoss")

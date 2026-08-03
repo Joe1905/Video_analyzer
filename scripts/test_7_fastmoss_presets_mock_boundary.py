@@ -7,7 +7,6 @@ interception notice.  The checks mirror SellerSprite's preset-boundary test.
 from __future__ import annotations
 
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -22,8 +21,6 @@ def run_fastmoss_presets_simulation() -> None:
             "Set FASTMOSS_TOOL_MOCK_MODE=1 before running this boundary test."
         )
 
-    previous_skill_source = os.environ.get("FASTMOSS_SKILL_SOURCE")
-    os.environ["FASTMOSS_SKILL_SOURCE"] = "local"
     presets = web_app.FASTMOSS_OFFICIAL_PRESETS
     assert len(presets) == 5, f"Expected 5 presets, found {len(presets)}"
     all_fastmoss_tools = set().union(*(info["tools"] for info in presets.values()))
@@ -53,13 +50,18 @@ def run_fastmoss_presets_simulation() -> None:
         )
         assert route_by_label["official_preset_id"] == preset_id
 
-        selected_prompt = web_app.select_official_fastmoss_skill_prompt(
-            full_prompt, skill_file
-        )
-        assert f"## 官方文件：{skill_file}" in selected_prompt
-        assert "## 官方文件：SKILL.md" in selected_prompt
-        assert "## 官方文件：references/PRINCIPLES.md" in selected_prompt
-        assert "## 官方文件：references/GLOSSARY.md" in selected_prompt
+        if preset_id == "fm-product-scout":
+            selected_prompt = web_app.load_lightweight_fastmoss_skill_prompt(preset_id)
+            assert "FastMoss 选品决策 Skill（本地）" in selected_prompt
+            assert "官方文件：" not in selected_prompt
+        else:
+            selected_prompt = web_app.select_official_fastmoss_skill_prompt(
+                full_prompt, skill_file
+            )
+            assert f"## 官方文件：{skill_file}" in selected_prompt
+            assert "## 官方文件：SKILL.md" in selected_prompt
+            assert "## 官方文件：references/PRINCIPLES.md" in selected_prompt
+            assert "## 官方文件：references/GLOSSARY.md" in selected_prompt
 
         exposed_tools = web_app.fastmoss_official_skill_tool_ids(
             all_fastmoss_tools | {"system__current_time"}, route_by_id["tools"]
@@ -73,7 +75,9 @@ def run_fastmoss_presets_simulation() -> None:
                 "region": "US",
             }
             print(f"  -> mock intercepted: {tool_id} {json.dumps(args)}")
-            result = web_app.execute_prefixed_tool(tool_id, args)
+            result = web_app.execute_prefixed_tool(
+                tool_id, args, allowed_tool_ids=allowed_tools
+            )
             assert result["ok"] is True, result
             raw_data = result["data"]
             assert raw_data["isError"] is False
@@ -89,12 +93,12 @@ def run_fastmoss_presets_simulation() -> None:
         if forbidden_tools:
             forbidden = sorted(forbidden_tools)[0]
             assert forbidden not in exposed_tools
-            print(f"  -> boundary preserved: {forbidden} excluded")
-
-    if previous_skill_source is None:
-        os.environ.pop("FASTMOSS_SKILL_SOURCE", None)
-    else:
-        os.environ["FASTMOSS_SKILL_SOURCE"] = previous_skill_source
+            rejected = web_app.execute_prefixed_tool(
+                forbidden, {"region": "US"}, allowed_tool_ids=allowed_tools
+            )
+            assert rejected["ok"] is False
+            assert "active preset boundary" in rejected["error"]
+            print(f"  -> boundary preserved: {forbidden} excluded and rejected")
     print("\nAll 5 FastMoss Skills passed mock boundary verification.")
 
 
