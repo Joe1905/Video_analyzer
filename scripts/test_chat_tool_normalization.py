@@ -3559,7 +3559,8 @@ def test_fastmoss_answer_verifier_applies_local_edits_and_keeps_draft_on_failure
         no_evidence = web_app.verify_fastmoss_final_answer(
             draft, system_only, "调研", route, MustNotCallRequests, "key", "https://example.test/v1", "model"
         )
-        assert "## 先说结论" in no_evidence
+        assert "本轮没有取得可用于商业判断的 FastMoss 业务数据" in no_evidence
+        assert "## 先说结论" not in no_evidence
         system_manifest = web_app.fastmoss_evidence_manifest(system_only, "调研", route)
         assert system_manifest["quality_states"]["data"] == []
         assert system_manifest["evidence_fact_count"] == 0
