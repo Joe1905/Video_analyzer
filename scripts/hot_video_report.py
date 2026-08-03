@@ -1988,7 +1988,61 @@ def _mark_video_pending(conn: sqlite3.Connection, report_date: str, platform: st
 
 def _is_recoverable_external_error(error: BaseException | str) -> bool:
     text = str(error).lower()
-    return bool(re.search(r"\b(402|408|429|500|502|503|504)\b|timeout|timed out|temporarily unavailable|rate limit", text))
+    return bool(
+        re.search(
+            r"\b(?:http(?:\s+(?:status|error))?|status(?:\s+code)?|client error|server error)\D{0,16}"
+            r"(?:402|408|429|500|502|503|504)\b|\b(?:402|408|429|500|502|503|504)\s+(?:client|server)\s+error\b",
+            text,
+        )
+    )
+
+
+def _report_video_analyze_timeout_seconds() -> int:
+    return max(30, min(_to_int(os.getenv("REPORT_VIDEO_ANALYZE_TIMEOUT", "240")) or 240, 1800))
+
+
+def _failed_video_retry_state(
+    conn: sqlite3.Connection,
+    report_date: str,
+    platform: str,
+    video_id: str,
+    now: float | None = None,
+) -> str | None:
+    row = conn.execute(
+        """
+        SELECT process_status, attempt_count, last_attempt_at
+        FROM hot_report_videos
+        WHERE report_date = ? AND platform = ? AND video_id = ?
+        """,
+        (report_date, platform, video_id),
+    ).fetchone()
+    if not row or str(row[0] or "") not in {"failed", "paused_external"}:
+        return None
+    attempts = _to_int(row[1])
+    max_attempts = max(1, _to_int(os.getenv("REPORT_VIDEO_MAX_ATTEMPTS", "2")) or 2)
+    if attempts >= max_attempts:
+        return "retry_exhausted"
+    last_attempt_at = _to_float(row[2], 0.0)
+    base_delay = max(0.0, _to_float(os.getenv("REPORT_VIDEO_RETRY_BACKOFF_SECONDS", "900"), 900.0))
+    retry_at = last_attempt_at + base_delay * (2 ** max(0, attempts - 1))
+    if last_attempt_at and (now if now is not None else time.time()) < retry_at:
+        return "retry_backoff"
+    return None
+
+
+def _prioritize_retry_candidates(conn: sqlite3.Connection, report_date: str, ranked: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    primary: list[dict[str, Any]] = []
+    retries: list[dict[str, Any]] = []
+    deferred: list[dict[str, Any]] = []
+    for item in ranked:
+        state = _failed_video_retry_state(conn, report_date, str(item.get("platform") or ""), str(item.get("video_id") or ""))
+        if state:
+            deferred.append(item)
+        elif str(item.get("process_status") or "") in {"failed", "paused_external"}:
+            retries.append(item)
+        else:
+            primary.append(item)
+    return primary + retries + deferred
 
 
 def _process_video(conn: sqlite3.Connection, report_date: str, item: dict[str, Any]) -> None:
@@ -2038,7 +2092,10 @@ def _process_video(conn: sqlite3.Connection, report_date: str, item: dict[str, A
         output_dir = _output_dir_for_filename(filename)
         analysis_path = output_dir / "analysis.json"
         if not analysis_path.is_file():
-            result = execute_tool("video_analyze", {"filename": filename})
+            result = execute_tool(
+                "video_analyze",
+                {"filename": filename, "timeout_seconds": _report_video_analyze_timeout_seconds()},
+            )
             if not result.get("ok"):
                 raise RuntimeError(str(result.get("error") or "video extraction failed"))
         output_dir = _output_dir_for_filename(filename)
@@ -3524,6 +3581,8 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
         "target_count": target_count,
         "analyzed_success": 0,
         "analyzed_failed": 0,
+        "skipped_retry_backoff": 0,
+        "skipped_retry_exhausted": 0,
     }
     existing_report = get_report(date, include_raw=False, detail=False)
     if existing_report.get("status") == "complete":
@@ -3584,6 +3643,7 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
                         _finish_report(conn, report_id, date, "failed", error)
                         _progress_payload(date, "failed", "finished", 100, error, counts)
                         return get_report(date, include_raw=True)
+                ranked = _prioritize_retry_candidates(conn, date, ranked)
                 if not ranked:
                     error = f"No resumable or newly collected hot videos for {date}"
                     _finish_report(conn, report_id, date, "failed", error)
@@ -3611,6 +3671,10 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
                         continue
                     if item.get("process_status") == "complete":
                         _mark_video_pending(conn, date, item["platform"], item["video_id"], checkpoint_reason)
+                    retry_state = _failed_video_retry_state(conn, date, item["platform"], item["video_id"])
+                    if retry_state:
+                        counts[f"skipped_{retry_state}"] += 1
+                        continue
                     _upsert_video(conn, report_id, date, item, item["report_rank"])
                     conn.commit()
                     _heartbeat_report(conn, report_id, date, worker_lease, "processing")

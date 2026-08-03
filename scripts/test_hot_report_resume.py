@@ -67,9 +67,18 @@ def main() -> int:
 
         processed: list[str] = []
         def fake_collect(*args, **kwargs):
-            return {("tiktok", f"video-{index}"): _item(index) for index in range(6, 11)}, []
+            return {("tiktok", f"video-{index}"): _item(index) for index in range(6, 12)}, []
         def fake_process(conn, report_date, item):
             processed.append(item["video_id"])
+            if item["video_id"] == "video-6":
+                conn.execute(
+                    """UPDATE hot_report_videos SET process_status='failed', process_step='failed',
+                    process_error=?, attempt_count=attempt_count+1, last_attempt_at=?
+                    WHERE report_date=? AND platform=? AND video_id=?""",
+                    ("video analysis subprocess timed out after 240 seconds", 1_700_000_000, report_date, item["platform"], item["video_id"]),
+                )
+                conn.commit()
+                return
             filename = f"{item['video_id']}.mp4"
             (report.VIDEOS_DIR / filename).write_bytes(b"fixture")
             output = report.OUTPUT_DIR / filename
@@ -92,7 +101,11 @@ def main() -> int:
         os.environ["SOCIAVAULT_API_KEY"] = "fixture"
         first_run = report.run_report("2026-08-01")
         assert first_run["status"] == "complete"
-        assert processed == [f"video-{index}" for index in range(6, 11)]
+        assert processed == [f"video-{index}" for index in range(6, 12)]
+        with closing(report._connect()) as conn:
+            failed = conn.execute("SELECT process_status, attempt_count FROM hot_report_videos WHERE video_id='video-6'").fetchone()
+            assert failed == ("failed", 1)
+            assert report._failed_video_retry_state(conn, "2026-08-01", "tiktok", "video-6", now=1_700_000_001) == "retry_backoff"
         with closing(report._connect()) as conn:
             conn.execute("UPDATE daily_reports SET status='failed', report_json=NULL, report_markdown=NULL WHERE report_date='2026-08-01'")
             conn.commit()
@@ -100,11 +113,13 @@ def main() -> int:
         second_run = report.run_report("2026-08-01")
         assert second_run["status"] == "complete"
         assert processed == []
-        assert all(report._is_recoverable_external_error(message) for message in ("402 payment required", "429 rate limit", "request timeout", "503 unavailable"))
+        assert all(report._is_recoverable_external_error(message) for message in ("HTTP 402 payment required", "429 Client Error", "HTTP status 503"))
+        assert not report._is_recoverable_external_error("analyze_one.sh timed out after 600 seconds")
+        assert not report._is_recoverable_external_error("request timeout")
         with closing(report._connect()) as conn:
             conn.execute("UPDATE daily_reports SET status='failed', report_json=NULL, report_markdown=NULL WHERE report_date='2026-08-01'")
             conn.commit()
-        report._generate_daily_summary = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("429 rate limit"))
+        report._generate_daily_summary = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("429 Client Error"))
         paused_run = report.run_report("2026-08-01")
         assert paused_run["status"] == "paused_external"
         assert processed == []

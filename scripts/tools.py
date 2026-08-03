@@ -1034,7 +1034,47 @@ def _run_video_download(url: str) -> dict:
     )
 
 
-def _run_video_analyze(filename: str) -> dict:
+def _video_analyze_timeout_seconds(value: Any | None = None) -> int:
+    raw = value if value is not None else os.getenv("VIDEO_ANALYZE_TIMEOUT", "600")
+    try:
+        return max(30, min(int(raw), 1800))
+    except (TypeError, ValueError):
+        return 600
+
+
+def _timeout_output_text(value: Any) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value or "")
+
+
+def _write_video_analyze_timeout_log(out_dir: Path, cmd: list[str], timeout_seconds: int, exc: subprocess.TimeoutExpired) -> Path:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    log_path = out_dir / "analysis_timeout.log"
+    stdout = _timeout_output_text(getattr(exc, "stdout", None) or getattr(exc, "output", None))
+    stderr = _timeout_output_text(getattr(exc, "stderr", None))
+    log_path.write_text(
+        "\n".join(
+            [
+                "stage=video_analyze",
+                f"timeout_seconds={timeout_seconds}",
+                f"command={' '.join(cmd)}",
+                f"recorded_at={time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}",
+                "",
+                "--- stdout ---",
+                stdout,
+                "",
+                "--- stderr ---",
+                stderr,
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return log_path
+
+
+def _run_video_analyze(filename: str, timeout_seconds: Any | None = None) -> dict:
     out_dir = _video_output_dir(filename)
     analysis = out_dir / "analysis.json"
     if analysis.is_file():
@@ -1045,7 +1085,14 @@ def _run_video_analyze(filename: str) -> dict:
     cmd = ["bash", str(SCRIPTS_DIR / "analyze_one.sh"), filename]
     env = os.environ.copy()
     env["ANALYSIS_OUTPUT_DIR"] = str(out_dir)
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600, cwd=ROOT, env=env)
+    timeout = _video_analyze_timeout_seconds(timeout_seconds)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=ROOT, env=env)
+    except subprocess.TimeoutExpired as exc:
+        log_path = _write_video_analyze_timeout_log(out_dir, cmd, timeout, exc)
+        raise RuntimeError(
+            f"video analysis subprocess timed out after {timeout} seconds; diagnostic log: {log_path}"
+        ) from exc
     if result.returncode != 0:
         raise RuntimeError(result.stderr or result.stdout or f"Exit code {result.returncode}")
     mark_extracted(filename, out_dir.name)
@@ -1153,7 +1200,7 @@ TOOLS: list[dict[str, Any]] = [
     {"name": "video_download", "description": "下载 TikTok 或抖音的公开视频到服务器，返回视频文件名。下载后可进行分析。",
      "parameters": {"type": "object", "properties": {"url": {"type": "string", "description": "TikTok 或抖音视频链接"}}, "required": ["url"]}},
     {"name": "video_analyze", "description": "对已下载的视频进行关键帧提取分析（Qwen 视觉 + Whisper 转写）。需要先用 video_download 下载。",
-     "parameters": {"type": "object", "properties": {"filename": {"type": "string", "description": "videos/ 目录下的视频文件名"}}, "required": ["filename"]}},
+     "parameters": {"type": "object", "properties": {"filename": {"type": "string", "description": "videos/ 目录下的视频文件名"}, "timeout_seconds": {"type": "integer", "description": "分析子进程超时秒数（30-1800），默认读取 VIDEO_ANALYZE_TIMEOUT"}}, "required": ["filename"]}},
     {"name": "video_direct_analyze", "description": "对视频进行端到端分析（Qwen vision API），适用于7MB以下小视频。",
      "parameters": {"type": "object", "properties": {"filename": {"type": "string", "description": "videos/ 目录下的视频文件名"}}, "required": ["filename"]}},
 ]
@@ -1206,7 +1253,10 @@ _override_tool_schema(
 _override_tool_schema(
     "video_analyze",
     "Analyze a video file already downloaded by video_download. The filename must be exactly the filename returned by video_download.",
-    {"filename": {"type": "string", "description": "Local videos/ filename returned by video_download, not a URL."}},
+    {
+        "filename": {"type": "string", "description": "Local videos/ filename returned by video_download, not a URL."},
+        "timeout_seconds": {"type": "integer", "description": "Optional subprocess timeout in seconds (30-1800)."},
+    },
 )
 
 
@@ -1250,7 +1300,7 @@ def execute_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
         elif name == "video_download":
             data = _run_video_download(str(args["url"]))
         elif name == "video_analyze":
-            data = _run_video_analyze(str(args["filename"]))
+            data = _run_video_analyze(str(args["filename"]), args.get("timeout_seconds"))
         elif name == "video_direct_analyze":
             data = _run_video_direct_analyze(str(args["filename"]))
         else:
