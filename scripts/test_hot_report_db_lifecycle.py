@@ -76,7 +76,7 @@ def main() -> int:
             )
             conn.execute(
                 """INSERT INTO daily_reports (
-                id, report_date, status, region, source_json, video_count,
+                id, report_date, status, region, sources_json, video_count,
                 analysis_success_count, analysis_failed_count, created_at, updated_at
                 ) VALUES (?, ?, 'failed', 'US', '[]', 0, 0, 0, ?, ?)""",
                 ("legacy-report", "2020-01-01", time.time(), time.time()),
