@@ -8742,6 +8742,115 @@ def fastmoss_semantic_conflicts(facts: list[dict[str, Any]]) -> list[dict[str, A
     return conflicts
 
 
+def _fastmoss_report_data_value(value: Any) -> Any:
+    """Remove transport/media noise while preserving every business row and field."""
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.startswith(("{", "[")):
+            parsed = parse_mcp_text_content(stripped)
+            if parsed is not None and parsed != value:
+                return _fastmoss_report_data_value(parsed)
+        return value
+    if isinstance(value, list):
+        return [_fastmoss_report_data_value(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    skipped = {
+        "raw", "rawresponse", "responseblob", "html", "mcptextpreview",
+        "image", "images", "avatar", "avatarthumb", "urllist", "toolid", "params",
+    }
+    cleaned: dict[str, Any] = {}
+    for key, item in value.items():
+        normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
+        if normalized in skipped or normalized.endswith(("url", "uri")):
+            continue
+        cleaned[str(key)] = _fastmoss_report_data_value(item)
+    return cleaned
+
+
+def _fastmoss_requested_l3_id(arguments: dict[str, Any]) -> str:
+    filters = arguments.get("filter") if isinstance(arguments.get("filter"), dict) else {}
+    sources = [filters, arguments]
+    for source in sources:
+        for key, value in source.items():
+            normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
+            if normalized in {"categoryl3id", "categoryidlevel3"} and _fastmoss_valid_entity_id(value):
+                return str(value).strip()
+    for source in sources:
+        path = next((
+            value for key, value in source.items()
+            if re.sub(r"[^a-z0-9]", "", str(key).lower()) == "categorypath"
+            and isinstance(value, list)
+        ), None)
+        if path and len(path) >= 3 and _fastmoss_valid_entity_id(path[-1]):
+            return str(path[-1]).strip()
+    # Some list tools expose category_id plus explicit parent IDs rather than
+    # a category_l3_id field.  Only treat it as L3 when the parent IDs are also
+    # present; a lone category_id may legitimately refer to L1 or L2.
+    normalized_filters = {
+        re.sub(r"[^a-z0-9]", "", str(key).lower()): value
+        for key, value in filters.items()
+    }
+    if (
+        "categoryid" in normalized_filters
+        and any(key in normalized_filters for key in ("categoryl1id", "categoryidlevel1"))
+        and any(key in normalized_filters for key in ("categoryl2id", "categoryidlevel2"))
+        and _fastmoss_valid_entity_id(normalized_filters["categoryid"])
+    ):
+        return str(normalized_filters["categoryid"]).strip()
+    return ""
+
+
+def _fastmoss_report_scope_conflicts(
+    source_ref: str,
+    arguments: dict[str, Any],
+    data: Any,
+) -> list[dict[str, Any]]:
+    """Fence returned product rows whose exact L3 differs from the requested L3."""
+    requested_l3 = _fastmoss_requested_l3_id(arguments)
+    if not requested_l3:
+        return []
+    conflicts: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def visit(node: Any) -> None:
+        if isinstance(node, list):
+            for item in node:
+                visit(item)
+            return
+        if not isinstance(node, dict):
+            return
+        product_id = _fastmoss_record_value(node, {"productid", "goodsid", "itemid"})
+        category = node.get("category") if isinstance(node.get("category"), dict) else {}
+        l3 = category.get("l3") if isinstance(category.get("l3"), dict) else {}
+        actual_l3 = _fastmoss_record_value(l3, {"id", "categoryid"})
+        if actual_l3 in (None, ""):
+            actual_l3 = _fastmoss_record_value(node, {"categoryl3id", "categoryidlevel3"})
+        if (
+            _fastmoss_valid_entity_id(product_id)
+            and _fastmoss_valid_entity_id(actual_l3)
+            and str(actual_l3).strip() != requested_l3
+        ):
+            marker = (str(product_id).strip(), str(actual_l3).strip())
+            if marker not in seen:
+                seen.add(marker)
+                conflicts.append({
+                    "source_ref": source_ref,
+                    "conflict_type": "returned_product_outside_requested_l3",
+                    "product_id": marker[0],
+                    "requested_l3_id": requested_l3,
+                    "returned_l3_id": marker[1],
+                    "returned_l3_name": str(l3.get("name") or "").strip() or None,
+                    "claim_boundary": "该行可作为接口范围异常观察，但不得计入目标 L3 样本统计或共同特征",
+                })
+        for item in node.values():
+            if isinstance(item, (dict, list)):
+                visit(item)
+
+    visit(data)
+    return conflicts
+
+
 def fastmoss_evidence_manifest(
     assistant_msg: Message,
     user_text: str = "",
