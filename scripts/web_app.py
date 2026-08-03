@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import ast
+import copy
 import json
 import base64
 import binascii
@@ -569,12 +570,27 @@ MCP_TOOL_CACHE: dict[str, dict[str, Any]] = {}
 PROXY_POOL_ENABLED = os.getenv("PROXY_POOL_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
 UI_TEST_MODE = os.getenv("UI_TEST_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}
 UI_TEST_MODE_LIVE_WRITE_PREFIXES = ("/api/lan-chat/",)
+UI_CHAT_SCROLL_TEST_SCENARIO = "chat-scroll-regression"
+UI_CHAT_SCROLL_TEST_HEADER = "X-UI-Test-Scenario"
+UI_CHAT_SCROLL_TEST_SOURCE_SESSION = os.getenv(
+    "CHAT_SCROLL_TEST_SOURCE_SESSION", "B0GVZ3CWK1"
+).strip() or "B0GVZ3CWK1"
+UI_CHAT_SCROLL_TEST_SESSION_PREFIX = "ui-scroll-regression-"
 
 
 def ui_test_mode_allows_live_write(path: str) -> bool:
     return any(
         path.startswith(prefix) for prefix in UI_TEST_MODE_LIVE_WRITE_PREFIXES
     )
+
+
+def has_ui_chat_scroll_test_header(handler: BaseHTTPRequestHandler) -> bool:
+    value = str(handler.headers.get(UI_CHAT_SCROLL_TEST_HEADER) or "").strip()
+    return hmac.compare_digest(value, UI_CHAT_SCROLL_TEST_SCENARIO)
+
+
+def is_ui_chat_scroll_test_request(handler: BaseHTTPRequestHandler) -> bool:
+    return UI_TEST_MODE and has_ui_chat_scroll_test_header(handler)
 NAV_ITEMS = [
     {"key": "home", "href": "/", "label": "\u9996\u9875", "title": "AI \u804a\u5929", "icon": '<path d="M3 10.5 12 3l9 7.5"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/>'},
     {"key": "amazon", "href": "/amazon", "label": "\u5356\u5bb6\u7cbe\u7075", "title": "\u5356\u5bb6\u7cbe\u7075", "icon": '<circle cx="10.5" cy="10.5" r="5.5"/><path d="m14.5 14.5 4.5 4.5"/><path d="M18 3.5v4M16 5.5h4"/>'},
@@ -589,7 +605,7 @@ NAV_ITEMS = [
 ]
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
-UI_ASSET_VERSION = "20260801-02"
+UI_ASSET_VERSION = "20260803-01"
 APP_UI_ASSETS = f"""
 <script id="ui-nav-state-boot">
 let uiNavExpanded = false;
@@ -10145,233 +10161,182 @@ def fastmoss_report_system_instruction(current_date_shanghai: str) -> str:
     )
 
 
-def fastmoss_deterministic_quality_fallback(manifest: dict[str, Any]) -> str:
-    category = manifest.get("category_head") or {}
-    products = category.get("products") or []
-    segment = manifest.get("segment_head") or {}
-    segment_products = segment.get("products") or []
-    fetched = int(category.get("fetched_unique") or 0)
-    target_pages = int(category.get("target_pages") or 3)
-    completed_pages = category.get("completed_pages") or []
-    overlap_count = len(manifest.get("overlap_product_ids") or [])
-    signals = manifest.get("derived_signals") if isinstance(manifest.get("derived_signals"), dict) else {}
-    unit_values = [
-        value for product in products
-        for value in [_fastmoss_number(product.get("day28_units_sold"))]
-        if value is not None and value >= 0
-    ]
-    top3_share = (sum(unit_values[:3]) / sum(unit_values) * 100) if sum(unit_values) > 0 else None
-    price_values = [
-        value for product in products
-        for value in (_fastmoss_number(product.get("price_min")), _fastmoss_number(product.get("price_max")))
-        if value is not None
-    ]
-    top3_ratio = _fastmoss_number(signals.get("category_top3_share"))
-    if top3_ratio is None and top3_share is not None:
-        top3_ratio = top3_share / 100
-    overlap_segment_rate = _fastmoss_number(signals.get("overlap_rate_of_segment_sample"))
-    query_signals = [
-        item for item in (signals.get("segment_queries") or [])
-        if isinstance(item, dict) and str(item.get("query") or "").strip()
-    ]
-    leader = query_signals[0] if query_signals else None
-    runner_up = query_signals[1] if len(query_signals) > 1 else None
-    leader_name = str((leader or {}).get("query") or "").strip()
-    runner_name = str((runner_up or {}).get("query") or "").strip()
-    leader_units = _fastmoss_number((leader or {}).get("sample_units_total"))
-    runner_units = _fastmoss_number((runner_up or {}).get("sample_units_total"))
-    leader_top_share = _fastmoss_number((leader or {}).get("top_product_share"))
-    leader_count = int((leader or {}).get("fetched_unique") or 0)
-    runner_count = int((runner_up or {}).get("fetched_unique") or 0)
+FASTMOSS_DECISION_PACKET_MAX_CHARS = max(
+    12000, int(os.getenv("FASTMOSS_DECISION_PACKET_MAX_CHARS", "60000") or "60000")
+)
 
-    if top3_ratio is None:
-        concentration_view = "现有销量字段不足，暂时不能判断样本内的头部集中度。"
-    elif top3_ratio >= 0.6:
-        concentration_view = f"样本销量明显向少数商品集中：前三款贡献约 {top3_ratio * 100:.1f}%，新品不能只靠同质化跟随。"
-    elif top3_ratio >= 0.35:
-        concentration_view = f"样本已经形成清晰头部，但不是单品垄断：前三款贡献约 {top3_ratio * 100:.1f}%，仍有多种商品形态获得销量。"
-    else:
-        concentration_view = f"样本销量相对分散：前三款贡献约 {top3_ratio * 100:.1f}%，当前更应比较细分定位，而不是只模仿榜首。"
 
-    if overlap_segment_rate is None:
-        fit_view = "类目榜与细分榜缺少可比商品 ID，暂时不能判断目标词与宽类目的贴合度。"
-    elif overlap_segment_rate < 0.15:
-        fit_view = (
-            f"目标细分与宽类目头部的直接重合偏低：细分样本中只有 {overlap_count} 件同时进入类目头部样本"
-            f"（约 {overlap_segment_rate * 100:.1f}%）。因此当前宽类目数据不能直接替代目标细分的判断。"
-        )
-    elif overlap_segment_rate < 0.4:
-        fit_view = (
-            f"目标细分与宽类目头部有一定重合，但并不充分：细分样本中 {overlap_count} 件进入类目头部样本"
-            f"（约 {overlap_segment_rate * 100:.1f}%）。细分定位仍需单独验证。"
-        )
-    else:
-        fit_view = (
-            f"目标细分与宽类目头部重合较高：细分样本中 {overlap_count} 件进入类目头部样本"
-            f"（约 {overlap_segment_rate * 100:.1f}%），两组数据可以相互参考，但仍不能视作完整市场份额。"
-        )
+def _fastmoss_decision_ref_catalog(manifest: dict[str, Any], dossier: dict[str, Any]) -> dict[str, str]:
+    """Return the fact/source reference catalogue exposed to the decision model."""
+    catalog: dict[str, str] = {}
+    for entry in (dossier.get("tool_evidence") or []):
+        if not isinstance(entry, dict):
+            continue
+        source_ref = str(entry.get("source_ref") or "").strip()
+        if source_ref:
+            catalog[source_ref] = str(entry.get("tool_name") or "FastMoss 数据")
+    for fact in (manifest.get("evidence_facts") or []):
+        if not isinstance(fact, dict):
+            continue
+        fact_id = str(fact.get("fact_id") or "").strip()
+        if fact_id:
+            catalog[fact_id] = str(fact.get("dimension") or "FastMoss 证据")
+    for metric in (manifest.get("metric_registry") or []):
+        if not isinstance(metric, dict):
+            continue
+        for key in ("metric_id", "source_fact_id", "source_ref"):
+            value = str(metric.get(key) or "").strip()
+            if value:
+                catalog.setdefault(value, str(metric.get("metric") or "指标证据"))
+    return catalog
 
-    direction_view = ""
-    comparable_query_samples = (
-        leader_count > 0 and runner_count > 0
-        and min(leader_count, runner_count) / max(leader_count, runner_count) >= 0.8
-    )
-    if leader_name and runner_name and leader_units is not None and runner_units is not None and not comparable_query_samples:
-        direction_view = (
-            f"{leader_name} 与 {runner_name} 本轮分别取得 {leader_count} 件和 {runner_count} 件样本，"
-            "样本量不一致，不能直接用销量合计排优先级；应先补成同等覆盖后再比较。"
-        )
-    elif leader_name and runner_name and leader_units is not None and runner_units is not None:
-        if leader_units > runner_units:
-            direction_view = (
-                f"在本轮同口径细分样本里，{leader_name} 的样本销量合计为 {leader_units:g}，"
-                f"高于 {runner_name} 的 {runner_units:g}。这不是全市场规模，但足以把 {leader_name} 放到更高的验证优先级。"
-            )
-            if leader_top_share is not None and leader_top_share >= 0.5:
-                direction_view += (
-                    f"不过该方向最高单品占细分样本销量约 {leader_top_share * 100:.1f}%，"
-                    "现阶段应先验证它的成功是否可复制，而不是直接把单品表现外推为整个细分机会。"
-                )
-        else:
-            direction_view = (
-                f"{leader_name} 与 {runner_name} 的本轮样本销量没有拉开可解释差距，当前不宜仅凭关键词榜决定方向。"
-            )
-    elif leader_name and leader_units is not None:
-        direction_view = f"本轮只有 {leader_name} 形成可比较的细分销量样本，应先围绕它继续验证，其他方向暂不做强判断。"
 
-    conclusion_parts = [concentration_view, fit_view]
-    if direction_view:
-        conclusion_parts.append(direction_view)
-    lines = [
-        "## 先说结论",
-        "",
-        " ".join(conclusion_parts),
-        "",
-        "## 我怎么看",
-        "",
-        f"- **头部格局：** {concentration_view}",
-        f"- **类目匹配：** {fit_view}",
-        "",
-        "## 关键依据",
-    ]
-    if direction_view:
-        lines.insert(lines.index("", lines.index("## 我怎么看") + 2), f"- **方向取舍：** {direction_view}")
-    lines.append(
-        f"- 类目销量榜按近28天销量降序计划获取 {target_pages} 页；"
-        f"实际完成页码为 {completed_pages}，去重后取得 {fetched} 件商品。"
-    )
-    if category.get("reported_total") is not None:
-        lines.append(f"- 接口报告匹配总数为 {category['reported_total']}；该数字与本次实际获取数量不是同一概念。")
-    target_path = manifest.get("target_category_path")
-    if isinstance(target_path, dict):
-        ordered_path = [f"L{level} {target_path.get(f'level{level}')}" for level in (1, 2, 3) if target_path.get(f"level{level}")]
-        if ordered_path:
-            lines.append(f"- 本轮确认的目标类目路径：{' > '.join(ordered_path)}。")
-    elif target_path:
-        lines.append(f"- 本轮确认的目标类目路径：{target_path}。")
-    if top3_share is not None:
-        lines.append(f"- 在本轮已获取样本中，销量前三商品合计占样本销量约 {top3_share:.1f}%；这只是样本集中度，不是全市场份额。")
-    if products:
-        lines.extend([
-            "", "## 类目头部样本", "",
-            "以下是本轮按近28天销量字段取得并在本地复核排序的代表商品；它描述的是已获取样本，不是完整市场。", "",
-            "| 商品 | 商品ID | 价格 | 近28天销量 | 近28天GMV |", "|---|---:|---:|---:|---:|",
-        ])
-        for product in products[:10]:
-            price_min = product.get("price_min")
-            price_max = product.get("price_max")
-            price = "未返回" if price_min in (None, "") else str(price_min)
-            if price_max not in (None, "", price_min):
-                price += f"–{price_max}"
-            lines.append(
-                f"| {str(product.get('title') or '未返回标题').replace('|', '/')[:120]} | {product.get('product_id')} | "
-                f"{price} | {product.get('day28_units_sold', '未返回')} | {product.get('day28_gmv', '未返回')} |"
-            )
-    if segment_products:
-        lines.extend([
-            "", "## 细分匹配样本", "",
-            "这些商品来自短关键词补充检索，用来判断用户所说的细分方向；不能替代无关键词的类目头部榜。", "",
-            "| 查询词 | 商品 | 商品ID | 近28天销量 |", "|---|---|---:|---:|",
-        ])
-        for product in segment_products[:8]:
-            lines.append(
-                f"| {str(product.get('query') or '未记录').replace('|', '/')} | "
-                f"{str(product.get('title') or '未返回标题').replace('|', '/')[:120]} | {product.get('product_id')} | "
-                f"{product.get('day28_units_sold', '未返回')} |"
-            )
-        lines.extend(["", f"- 类目头部榜与细分匹配榜共有 {overlap_count} 件重合商品。"])
-        if query_signals:
-            lines.extend(["", "### 细分方向对比", ""])
-            for item in query_signals:
-                query = str(item.get("query") or "未记录")
-                count = int(item.get("fetched_unique") or 0)
-                sample_units = _fastmoss_number(item.get("sample_units_total"))
-                top_units = _fastmoss_number(item.get("top_product_units"))
-                top_share = _fastmoss_number(item.get("top_product_share"))
-                median_units = _fastmoss_number(item.get("median_product_units"))
-                units_text = f"样本销量合计 {sample_units:g}" if sample_units is not None else "销量字段不足"
-                top_text = f"，最高单品 {top_units:g}" if top_units is not None else ""
-                share_text = f"、占该词样本 {top_share * 100:.1f}%" if top_share is not None else ""
-                median_text = f"，单品销量中位数 {median_units:g}" if median_units is not None else ""
-                lines.append(f"- **{query}：** {count} 件去重样本，{units_text}{top_text}{share_text}{median_text}。")
-            if direction_view:
-                lines.append(f"- **判断：** {direction_view}")
-    else:
-        lines.extend([
-            "", "## 细分匹配样本", "",
-            "- 本轮细分关键词接口没有形成可用商品样本，因此不能据此判断目标细分没有需求，也不能把宽类目头部直接当成目标产品的头部。",
-        ])
-    lines.extend(["", "## 价格与定位", ""])
-    price_q1 = _fastmoss_number(signals.get("price_midpoint_q1"))
-    price_median = _fastmoss_number(signals.get("price_midpoint_median"))
-    price_q3 = _fastmoss_number(signals.get("price_midpoint_q3"))
-    if price_q1 is not None and price_median is not None and price_q3 is not None:
-        lines.append(
-            f"- 与其用极端最低价和最高价定义市场，我更看中间 50% 的商品价格中点：本轮为 {price_q1:.2f}–{price_q3:.2f}，"
-            f"中位数约 {price_median:.2f}。这是更稳健的样本主体带，不是建议售价。"
-        )
-    elif price_values:
-        lines.append(
-            f"- 已获取商品样本的返回价格落在 {min(price_values):g}–{max(price_values):g} 之间；"
-            "这是样本观察区间，不等于建议上市价。"
-        )
-    else:
-        lines.append("- 本轮没有形成可核对的价格区间，暂不提供精确上市价建议。")
-    lines.extend([
-        "- 定位上应先选定要对标的商品形态，再在同形态样本内比较价格；不能把配件、不同规格和不同使用场景的商品混成一个价格带。",
-        "- 定价前应剔除价格、销量与 GMV 无法互相校验的商品，再结合成本和目标毛利形成候选价。",
-        "", "## 内容与达人信号", "",
-        "- 本轮只有在视频、评论或达人接口返回了可核对数据时，才可据此判断内容打法；不能从商品销量反推内容因果。",
-        "- 若相关接口为空，含义只是本次未返回记录，不代表该类目没有达人或内容供给。",
-    ])
-    lines.extend(["", "## 需要留意"])
-    limitations = list(manifest.get("limitations") or [])
-    conflicts = list(manifest.get("conflicts") or [])
-    if not limitations and not conflicts:
-        lines.append("- 本轮证据没有形成完整闭环，因此只保留能够直接核对的事实。")
-    for item in limitations:
-        lines.append(f"- {item}")
-    for item in conflicts[:10]:
-        lines.append(f"- 商品 {item.get('product_id') or '未知'}：{item.get('issue')}")
-    lines.extend([
-        "- 空结果只代表对应接口本轮没有返回记录，不代表平台绝对不存在。",
-        "",
-        "## 如果要继续做",
-        "",
-        (
-            f"1. **先定方向：** 优先围绕 {leader_name} 的同形态商品继续验证，暂时不要把 {runner_name or '另一个目标词'} 与它合并成一个需求池。"
-            if leader_name else
-            "1. **先定方向：** 把目标词拆成可比较的商品形态，先补齐同口径销量样本，再决定主方向。"
-        ),
-        (
-            f"2. **再做商品深挖：** 优先核查同时出现在类目榜和细分榜的 {overlap_count} 件商品，"
-            "看其规格、卖点和价格是否能解释销量；这比继续扩大宽类目样本更直接。"
-            if overlap_count else
-            "2. **再做商品深挖：** 从细分榜中选择销量靠前且指标无冲突的商品，核查规格、卖点和价格。"
-        ),
-        "3. **最后补内容证据：** 只有评论、达人或视频接口取得有效记录后，再决定内容角度和合作对象；当前商品销量不能替代内容分析。",
-    ])
+def _fastmoss_decision_packet(
+    manifest: dict[str, Any], dossier: dict[str, Any], user_text: str, route: dict[str, Any],
+) -> dict[str, Any]:
+    """A compact, referenceable decision input; full rows stay in deterministic tables."""
+    report_packet = fastmoss_report_packet(manifest, route)
+    refs = _fastmoss_decision_ref_catalog(manifest, dossier)
+    return {
+        "type": "fastmoss_decision_packet_v3",
+        "user_request": str(user_text or ""),
+        "workflow": str(route.get("playbook") or "product"),
+        "report_date": datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat(),
+        "official_skill": str(route.get("official_skill_prompt") or ""),
+        "evidence": report_packet,
+        "reference_catalog": refs,
+        "boundaries": (dossier.get("hard_fact_boundaries") or {}).get("rules") or [],
+        "limitations": dossier.get("limitations") or [],
+        "conflicts": dossier.get("conflicts") or [],
+    }
+
+
+def _fastmoss_shrink_narrative_only(value: Any) -> Any:
+    """Last-resort packet compaction that never alters numeric, date, id or rank fields."""
+    protected = re.compile(r"(?:id|rank|price|gmv|sold|sale|count|date|time|period|rate|percent|commission|first|last|total|number)", re.I)
+    if isinstance(value, dict):
+        return {key: _fastmoss_shrink_narrative_only(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_fastmoss_shrink_narrative_only(item) for item in value]
+    if isinstance(value, str) and len(value) > 700:
+        # This helper is only called for known narrative leaves by its caller.
+        return value[:700] + "…（长描述已压缩，数值/周期/实体字段保留在其他结构字段中）"
+    return value
+
+
+def _fastmoss_compact_decision_packet(packet: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """Compress only non-structured descriptions after the configured packet threshold."""
+    raw = json.dumps(packet, ensure_ascii=False, separators=(",", ":"), default=str)
+    if len(raw) <= FASTMOSS_DECISION_PACKET_MAX_CHARS:
+        return packet, False
+    compact = copy.deepcopy(packet)
+    evidence = compact.get("evidence") if isinstance(compact.get("evidence"), dict) else {}
+    # Evidence facts are structured metrics. Only long free-text fields are eligible.
+    for collection in ("supporting_evidence", "target_evidence", "entity_bundles"):
+        rows = evidence.get(collection) if isinstance(evidence, dict) else None
+        if isinstance(rows, list):
+            for row in rows:
+                if isinstance(row, dict):
+                    for key in ("description", "caption", "content", "title", "summary", "transcript"):
+                        if isinstance(row.get(key), str) and len(row[key]) > 700:
+                            row[key] = _fastmoss_shrink_narrative_only(row[key])
+    return compact, True
+
+
+def _fastmoss_candidate_name(item: Any) -> str:
+    if not isinstance(item, dict):
+        return "未命名候选"
+    return str(item.get("candidate") or item.get("name") or item.get("product_id") or "未命名候选").strip()
+
+
+def _fastmoss_validate_decision(decision: Any, ref_catalog: dict[str, str]) -> tuple[dict[str, Any] | None, str]:
+    if not isinstance(decision, dict):
+        return None, "decision_not_object"
+    verdict = str(decision.get("overall_judgement") or decision.get("overall_verdict") or "").strip()
+    if not verdict:
+        return None, "decision_missing_verdict"
+    cleaned: dict[str, Any] = {"overall_judgement": verdict}
+    for key in ("recommend", "watch", "reject"):
+        source = decision.get(key)
+        if source is None:
+            source = decision.get({"recommend": "recommendations", "watch": "watchlist", "reject": "rejects"}[key], [])
+        if not isinstance(source, list):
+            return None, f"decision_{key}_not_list"
+        cleaned_rows: list[dict[str, Any]] = []
+        for raw in source[:6]:
+            if not isinstance(raw, dict):
+                continue
+            refs = [str(ref).strip() for ref in (raw.get("evidence_refs") or []) if str(ref).strip() in ref_catalog]
+            # A candidate can still be displayed as an evidence gap, but may not be
+            # promoted to a recommendation without two different evidence dimensions.
+            dimensions = {ref_catalog[ref] for ref in refs}
+            row = {
+                "candidate": _fastmoss_candidate_name(raw),
+                "reason": str(raw.get("reason") or raw.get("support") or "").strip(),
+                "counter_evidence": str(raw.get("counter_evidence") or raw.get("risk") or "").strip(),
+                "product_form": str(raw.get("product_form") or "").strip(),
+                "price_band": str(raw.get("price_band") or "").strip(),
+                "entry_conditions": str(raw.get("entry_conditions") or "").strip(),
+                "validation_actions": raw.get("validation_actions") if isinstance(raw.get("validation_actions"), list) else [],
+                "evidence_refs": refs,
+                "evidence_dimensions": sorted(dimensions),
+            }
+            if key == "recommend" and len(dimensions) < 2:
+                row["insufficient_evidence"] = True
+            cleaned_rows.append(row)
+        cleaned[key] = cleaned_rows
+    for key in ("can_support", "cannot_support", "next_actions"):
+        value = decision.get(key, [])
+        cleaned[key] = value if isinstance(value, list) else []
+    return cleaned, "ok"
+
+
+def _fastmoss_render_decision_analysis(decision: dict[str, Any]) -> str:
+    lines = ["## 数据驱动判断", "", str(decision.get("overall_judgement") or "本轮数据不足以形成明确进入判断。")]
+    labels = (("recommend", "推荐"), ("watch", "观察"), ("reject", "淘汰"))
+    for key, label in labels:
+        rows = decision.get(key) or []
+        if not rows:
+            continue
+        lines.extend(["", f"### {label}"])
+        for row in rows:
+            suffix = "（证据维度不足，暂不升级为推荐）" if row.get("insufficient_evidence") else ""
+            lines.append(f"- **{row['candidate']}：** {row.get('reason') or '未提供正向依据'}{suffix}")
+            if row.get("counter_evidence"):
+                lines.append(f"  - 反向证据/风险：{row['counter_evidence']}")
+            details = [
+                ("产品形态", row.get("product_form")), ("价格带", row.get("price_band")),
+                ("进入条件", row.get("entry_conditions")),
+            ]
+            for title, value in details:
+                if value:
+                    lines.append(f"  - {title}：{value}")
+            if row.get("validation_actions"):
+                lines.append("  - 验证动作：" + "；".join(str(item) for item in row["validation_actions"][:4]))
+            if row.get("evidence_refs"):
+                lines.append("  - 证据引用：" + "、".join(row["evidence_refs"]))
+    for key, title in (("can_support", "本轮能够支持的结论"), ("cannot_support", "本轮不能支持的结论"), ("next_actions", "下一步验证")):
+        values = [str(item).strip() for item in (decision.get(key) or []) if str(item).strip()]
+        if values:
+            lines.extend(["", f"### {title}", *[f"- {item}" for item in values[:8]]])
     return "\n".join(lines)
+
+
+def fastmoss_data_first_fallback(
+    evidence_markdown: str, manifest: dict[str, Any], reason: str,
+) -> str:
+    """Never discard usable MCP evidence when reasoning or verification cannot finish."""
+    data_count = sum(
+        1 for row in (manifest.get("evidence_envelopes") or [])
+        if isinstance(row, dict) and str(row.get("data_state") or "") == "data"
+    )
+    status = (
+        "深度分析未完成：本轮已取得 FastMoss 原始数据，以下保留完整数据表与证据边界；"
+        f"未将未完成的模型推理作为结论（原因：{reason}）。"
+    )
+    if data_count:
+        return "## 报告状态\n\n" + status + "\n\n## 完整数据表与证据边界\n\n" + str(evidence_markdown or "无可展示数据")
+    return "## 报告状态\n\n本轮没有取得可用于商业判断的 FastMoss 业务数据（原因：" + reason + "）。"
 
 
 def normalize_fastmoss_entity_id_abbreviations(
@@ -10915,83 +10880,113 @@ def synthesize_fastmoss_report_from_packet(
     api_url: str,
     model: str,
 ) -> str:
-    """Write freely from complete normalized evidence, outside the tool protocol conversation."""
+    """Make one structured high-reasoning decision over lossless deterministic evidence."""
     manifest = fastmoss_evidence_manifest(assistant_msg, user_text, route)
     dossier = fastmoss_report_evidence_dossier(assistant_msg, manifest, route)
-    dossier_json = json.dumps(dossier, ensure_ascii=False, separators=(",", ":"))
     evidence_markdown, evidence_render_stats = fastmoss_render_report_evidence(dossier)
-    current_date_shanghai = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
-    semantic_input = (
-        chat_routing_text(user_text)
-        + "\n\n当前为报告生成阶段，没有可调用工具；请直接根据以下 Semantic 结构证据完成最终报告。"
-        + "\n\n--- Semantic 证据开始 ---\n"
-        + evidence_markdown
-        + "--- Semantic 证据结束 ---"
+    packet, packet_compacted = _fastmoss_compact_decision_packet(
+        _fastmoss_decision_packet(manifest, dossier, user_text, route)
     )
-    messages = [
-        {"role": "system", "content": fastmoss_report_system_instruction(current_date_shanghai)},
-        {"role": "system", "content": fastmoss_report_prompt_instruction(route)},
-        {"role": "user", "content": semantic_input},
-    ]
-    payload = {
-        "model": model,
-        "messages": messages,
-        "temperature": 0.2,
-        "max_tokens": 12000,
-    }
-    payload_str = json.dumps(payload, ensure_ascii=False)
-    started = time.monotonic()
-    try:
+    packet_json = json.dumps(packet, ensure_ascii=False, separators=(",", ":"), default=str)
+    ref_catalog = dict(packet.get("reference_catalog") or {})
+    current_date_shanghai = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
+    decision_system = (
+        fastmoss_report_system_instruction(current_date_shanghai)
+        + "\n你只负责做选品决策，不复述完整数据表。必须返回 JSON 对象，键为 overall_judgement、"
+        "recommend、watch、reject、can_support、cannot_support、next_actions。recommend/watch/reject 每项都必须包含 "
+        "candidate、reason、counter_evidence、product_form、price_band、entry_conditions、validation_actions、evidence_refs。"
+        "evidence_refs 只能复制 reference_catalog 的键。推荐候选必须至少引用两个不同证据维度；否则放入 watch 并说明缺口。"
+        "不得编造价格、利润、因果、生命周期或未返回指标。"
+    )
+    skill_instruction = fastmoss_report_prompt_instruction(route)
+
+    def request_decision(stage: str, instruction: str, max_tokens: int = 3600) -> tuple[dict[str, Any], str]:
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": decision_system + "\n" + instruction},
+                {"role": "system", "content": skill_instruction},
+                {"role": "user", "content": packet_json},
+            ],
+            "response_format": {"type": "json_object"},
+            "temperature": 0.1,
+            "max_tokens": max_tokens,
+        }
+        payload_str = json.dumps(payload, ensure_ascii=False)
+        started = time.monotonic()
         response = requests_module.post(
             api_url.rstrip("/") + "/chat/completions",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            data=payload_str.encode("utf-8"),
-            timeout=180,
+            data=payload_str.encode("utf-8"), timeout=60,
         )
         response.raise_for_status()
         body = response.json()
-        record_api_call(
-            "deepseek",
-            "fastmoss_report_synthesis",
-            {
-                "model": model,
-                "dossier_chars": len(dossier_json),
-                "structured_evidence_chars": len(evidence_markdown),
-                "evidence_input_format": evidence_render_stats.get("format") or "semantic",
-                "evidence_render_stats": evidence_render_stats,
-                "dossier_calls": len(dossier.get("tool_evidence") or []),
-                "evidence_envelopes": manifest.get("evidence_envelope_count") or 0,
-                "evidence_facts": manifest.get("evidence_fact_count") or 0,
-            },
-            body,
-            elapsed_ms=int((time.monotonic() - started) * 1000),
-        )
+        record_api_call("deepseek", "fastmoss_v3_decision_" + stage, {
+            "model": model, "packet_chars": len(packet_json), "packet_compacted": packet_compacted,
+            "structured_evidence_chars": len(evidence_markdown), "evidence_render_stats": evidence_render_stats,
+            "dossier_calls": len(dossier.get("tool_evidence") or []),
+        }, body, elapsed_ms=int((time.monotonic() - started) * 1000))
         choice = body["choices"][0]
-        if str(choice.get("finish_reason") or "") == "length":
-            raise ValueError("report synthesis finish_reason=length")
-        draft = str((choice.get("message") or {}).get("content") or "").strip()
-        if not draft or deepseek_tool_protocol_present({"content": draft}):
-            raise ValueError("report synthesis returned empty or tool protocol")
+        if str(choice.get("finish_reason") or "").lower() == "length":
+            raise ValueError("finish_reason=length")
+        parsed = _chat_intent_json_content((choice.get("message") or {}).get("content"))
+        decision, status = _fastmoss_validate_decision(parsed, ref_catalog)
+        if decision is None:
+            raise ValueError(status)
+        return decision, status
+
+    try:
+        try:
+            decision, stage = request_decision("main", "请完成完整的市场与候选判断。")
+        except ValueError as exc:
+            if "finish_reason=length" not in str(exc):
+                raise
+            # Retry once with a tighter output schema. Never use truncated text.
+            try:
+                decision, stage = request_decision(
+                    "short_retry",
+                    "上次输出超长。只保留每个候选一句依据、一句风险、一条行动和证据引用，保持 JSON 完整。",
+                    1800,
+                )
+            except ValueError as retry_exc:
+                if "finish_reason=length" not in str(retry_exc):
+                    raise
+                # The two bounded calls have distinct business jobs, then their
+                # validated JSON is merged deterministically. No continuation of
+                # a truncated response is ever used.
+                market, _ = request_decision(
+                    "market_candidates",
+                    "只输出总体判断与 recommend/watch/reject；每项极简并保留证据引用。",
+                    1500,
+                )
+                risks, _ = request_decision(
+                    "risks_actions",
+                    "只输出总体判断、can_support、cannot_support、next_actions 和每个候选的风险/进入条件/验证动作；极简 JSON。",
+                    1500,
+                )
+                decision = dict(market)
+                for key in ("recommend", "watch", "reject"):
+                    decision[key] = list(market.get(key) or []) + [
+                        row for row in (risks.get(key) or [])
+                        if row.get("candidate") not in {item.get("candidate") for item in (market.get(key) or [])}
+                    ]
+                for key in ("can_support", "cannot_support", "next_actions"):
+                    decision[key] = list(market.get(key) or []) + list(risks.get(key) or [])
+                stage = "two_part"
+        analysis = _fastmoss_render_decision_analysis(decision)
+        report = "## 完整数据表\n\n" + evidence_markdown + "\n\n---\n\n" + analysis
+        report = finalize_fastmoss_answer(report, assistant_msg, user_text, route, requests_module, api_key, api_url, model)
         print(
-            f"[CHAT] FastMoss dossier synthesis dossier_chars={len(dossier_json)} "
-            f"structured_chars={len(evidence_markdown)} "
-            f"calls={len(dossier.get('tool_evidence') or [])} draft_chars={len(draft)} "
-            f"evidence_render={json.dumps(evidence_render_stats, ensure_ascii=False, separators=(',', ':'))}",
+            f"[CHAT] FastMoss V3 decision stage={stage} packet_chars={len(packet_json)} "
+            f"table_chars={len(evidence_markdown)} report_chars={len(report)} calls={len(dossier.get('tool_evidence') or [])}",
             flush=True,
         )
-        return finalize_fastmoss_answer(
-            draft, assistant_msg, user_text, route,
-            requests_module, api_key, api_url, model,
-        )
+        return report
     except Exception as exc:
-        print(f"[CHAT] FastMoss dossier synthesis failed: {type(exc).__name__}: {str(exc)[:240]}", flush=True)
-        fallback = append_fastmoss_report_notice(
-            fastmoss_deterministic_quality_fallback(manifest), route
-        )
-        _log_fastmoss_report_pipeline(
-            "", manifest, f"synthesis_failed:{type(exc).__name__}",
-            final_answer=fallback, fallback_reason="report_synthesis_failure"
-        )
+        reason = f"决策生成未完成：{type(exc).__name__}"
+        print(f"[CHAT] FastMoss V3 decision failed: {type(exc).__name__}: {str(exc)[:240]}", flush=True)
+        fallback = append_fastmoss_report_notice(fastmoss_data_first_fallback(evidence_markdown, manifest, reason), route)
+        _log_fastmoss_report_pipeline("", manifest, f"v3_failed:{type(exc).__name__}", final_answer=fallback, fallback_reason="data_first")
         return fallback
 
 
@@ -11024,7 +11019,9 @@ def verify_fastmoss_final_answer(
     elif not has_evidence:
         fallback_reason = "no_valid_evidence"
     if fallback_reason:
-        fallback = fastmoss_deterministic_quality_fallback(manifest)
+        dossier = fastmoss_report_evidence_dossier(assistant_msg, manifest, route)
+        evidence_markdown, _ = fastmoss_render_report_evidence(dossier)
+        fallback = fastmoss_data_first_fallback(evidence_markdown, manifest, fallback_reason)
         _log_fastmoss_report_pipeline(
             draft, manifest, "skipped", final_answer=fallback, fallback_reason=fallback_reason
         )
@@ -11284,46 +11281,6 @@ def build_tool_limit_final_context(messages: list[dict[str, Any]], user_request:
                 "_context_priority": "keep",
             })
     return working
-
-
-def build_lightweight_fastmoss_final_context(
-    messages: list[dict[str, Any]],
-    user_request: str,
-) -> list[dict[str, Any]]:
-    """Rebuild the local Skill synthesis turn from its instruction, request, and tool evidence only."""
-    skill_instruction = next(
-        (
-            dict(message)
-            for message in messages
-            if message.get("role") == "system" and message.get("_context_scope") == "system"
-        ),
-        None,
-    )
-    isolated = build_tool_limit_final_context(messages, user_request)
-    evidence = [
-        message for message in isolated
-        if message.get("_context_scope") == "current_evidence"
-    ]
-    rebuilt: list[dict[str, Any]] = []
-    if skill_instruction:
-        rebuilt.append(skill_instruction)
-    rebuilt.append({
-        "role": "user",
-        "content": str(user_request or ""),
-        "_context_scope": "current",
-        "_context_priority": "keep",
-    })
-    rebuilt.extend(evidence)
-    return rebuilt
-
-
-def lightweight_fastmoss_final_answer_usable(final_text: str, first_draft: str) -> bool:
-    """Reject empty or clearly truncated synthesis while allowing a genuinely concise conclusion."""
-    final_length = len(str(final_text or "").strip())
-    draft_length = len(str(first_draft or "").strip())
-    if not final_length:
-        return False
-    return not (draft_length >= 800 and final_length < max(320, int(draft_length * 0.3)))
 
 
 def _chat_tool_counts(tool_calls: list[dict] | None) -> str:
@@ -12894,6 +12851,143 @@ def async_generate_session_title(store: ChatStore, session, user_text: str, prov
     threading.Thread(target=_worker, daemon=True).start()
 
 
+def cleanup_ui_chat_scroll_test_sessions(store: ChatStore | None = None) -> int:
+    target_store = store or chat_store_for_provider("amazon")
+    stored_prefix = chat_session_key("amazon", UI_CHAT_SCROLL_TEST_SESSION_PREFIX)
+    with target_store._lock:
+        stale_ids = [
+            session_id
+            for session_id in target_store.sessions
+            if session_id.startswith(stored_prefix)
+        ]
+        for session_id in stale_ids:
+            del target_store.sessions[session_id]
+    if stale_ids:
+        target_store._schedule_save()
+    return len(stale_ids)
+
+
+def clone_ui_chat_scroll_test_session(
+    store: ChatStore | None = None,
+    source_session: Session | None = None,
+) -> tuple[str, Session, int]:
+    target_store = store or chat_store_for_provider("amazon")
+    cleanup_count = cleanup_ui_chat_scroll_test_sessions(target_store)
+    source = source_session or provider_display_session(
+        "amazon", UI_CHAT_SCROLL_TEST_SOURCE_SESSION
+    )
+    if source is None:
+        raise LookupError(
+            f"测试源会话不存在：{UI_CHAT_SCROLL_TEST_SOURCE_SESSION}"
+        )
+
+    public_session_id = f"{UI_CHAT_SCROLL_TEST_SESSION_PREFIX}{uuid.uuid4().hex[:12]}"
+    cloned = copy.deepcopy(source)
+    cloned.id = chat_session_key("amazon", public_session_id)
+    cloned.title = "UI 双滚动条回归"
+    cloned.title_is_custom = True
+    cloned.updated_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    with target_store._lock:
+        target_store.sessions[cloned.id] = cloned
+    target_store._schedule_save()
+    return public_session_id, cloned, cleanup_count
+
+
+def execute_ui_chat_scroll_test_tool(index: int) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "data": {
+            "test": UI_CHAT_SCROLL_TEST_SCENARIO,
+            "step": index,
+            "message": f"滚动回归测试工具完成第 {index} 步",
+        },
+        "cache": {"hit": False},
+    }
+
+
+def run_ui_chat_scroll_test_sequence(
+    store: ChatStore,
+    session: Session,
+    assistant_msg: Message,
+    sleep_fn: Any = time.sleep,
+    timing_scale: float = 1.0,
+) -> None:
+    """Emit deterministic tool updates without touching an LLM or real tool."""
+
+    def pause(seconds: float) -> None:
+        sleep_fn(max(0.0, seconds * timing_scale))
+
+    def emit_update() -> None:
+        store.broadcast(
+            session.id,
+            "update",
+            {
+                "messageId": assistant_msg.id,
+                "tool_calls": assistant_msg.tool_calls,
+                "tool_results": assistant_msg.tool_results,
+            },
+        )
+
+    def append_tool(index: int) -> None:
+        call = {
+            "id": f"ui-scroll-probe-{index:02d}",
+            "type": "function",
+            "function": {
+                "name": "system__ui_scroll_probe",
+                "arguments": json.dumps(
+                    {"step": index, "scenario": UI_CHAT_SCROLL_TEST_SCENARIO},
+                    ensure_ascii=False,
+                ),
+            },
+        }
+        assistant_msg.tool_calls = list(assistant_msg.tool_calls or []) + [call]
+        assistant_msg.tool_results = list(assistant_msg.tool_results or [])
+        emit_update()
+        pause(0.08)
+        assistant_msg.tool_results.append(
+            {
+                "tool_name": "system__ui_scroll_probe",
+                "result": execute_ui_chat_scroll_test_tool(index),
+            }
+        )
+        emit_update()
+
+    try:
+        assistant_msg.tool_calls = []
+        assistant_msg.tool_results = []
+        pause(0.25)
+        for index in range(1, 9):
+            append_tool(index)
+            pause(0.08)
+
+        pause(1.0)
+        for _ in range(3):
+            emit_update()
+            pause(0.25)
+
+        pause(0.6)
+        append_tool(9)
+        pause(1.0)
+        append_tool(10)
+        pause(0.4)
+
+        content = "滚动回归测试完成：10 次模拟工具调用均已结束。"
+        store.update_message(session, assistant_msg, content, status="done")
+        store.broadcast(
+            session.id,
+            "done",
+            {"messageId": assistant_msg.id, "content": content},
+        )
+    except Exception as exc:
+        error_text = f"滚动回归测试失败：{type(exc).__name__}: {exc}"
+        store.update_message(session, assistant_msg, error_text, status="error")
+        store.broadcast(
+            session.id,
+            "done",
+            {"messageId": assistant_msg.id, "content": error_text},
+        )
+
+
 def run_chat_deepseek(
     store: ChatStore,
     session,
@@ -13388,7 +13482,6 @@ def run_chat_deepseek(
     unexecutable_protocol_retries = 0
     no_tool_retries = 0
     final_answer_forced = False
-    lightweight_fastmoss_first_draft = ""
     seen_tool_calls: set[str] = set()
     for existing_call in assistant_msg.tool_calls or []:
         existing_name = str(existing_call.get("function", {}).get("name") or "")
@@ -13870,29 +13963,6 @@ def run_chat_deepseek(
                     "_context_scope": "system",
                 })
                 break
-            if (
-                provider == "fastmoss"
-                and route.get("lightweight_fastmoss_skill")
-                and assistant_msg.tool_results
-                and str(content or "").strip()
-                and not final_answer_forced
-            ):
-                lightweight_fastmoss_first_draft = str(content).strip()
-                messages = build_lightweight_fastmoss_final_context(messages, user_text)
-                messages.append({
-                    "role": "system",
-                    "content": (
-                        "本轮 FastMoss 数据采集已经结束。现在禁止调用工具，重新完成最终回答。"
-                        "仅使用已取得的证据，直接回答用户决策；消化与结论相关的主要数据，"
-                        "说明关键驱动、风险或证据缺口，并给出可执行下一步。"
-                        "不要复述工具调用过程，不要编造未返回的数据，也不要加入无关产品推广。"
-                    ),
-                    "_context_scope": "system",
-                })
-                tools = []
-                final_answer_forced = True
-                print("[CHAT] FastMoss lightweight Skill promoting tools-off final synthesis", flush=True)
-                continue
             if official_skill_chain:
                 evidence_gaps = []
                 evidence_instruction = analysis_minimum_evidence_instruction
@@ -15683,18 +15753,30 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        has_scroll_test_header = has_ui_chat_scroll_test_header(self)
+        scroll_test_request = is_ui_chat_scroll_test_request(self)
+        if has_scroll_test_header and not UI_TEST_MODE:
+            return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
+        if parsed.path.startswith("/api/ui-test/chat-scroll/"):
+            if not scroll_test_request:
+                return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
+            return self.handle_ui_chat_scroll_test(parsed.path)
         if UI_TEST_MODE:
+            allow_scroll_test_ask = (
+                parsed.path == "/api/chat/ask" and scroll_test_request
+            )
             if not ui_test_mode_allows_live_write(parsed.path):
-                return json_response(
-                    self,
-                    HTTPStatus.CONFLICT,
-                    {
-                        "error": "UI 测试模式已拦截写操作，未触发真实业务。",
-                        "simulated": True,
-                        "status": "blocked",
-                        "path": parsed.path,
-                    },
-                )
+                if not allow_scroll_test_ask:
+                    return json_response(
+                        self,
+                        HTTPStatus.CONFLICT,
+                        {
+                            "error": "UI 测试模式已拦截写操作，未触发真实业务。",
+                            "simulated": True,
+                            "status": "blocked",
+                            "path": parsed.path,
+                        },
+                    )
         if handle_feishu_capability_post(self, parsed):
             return
         if parsed.path.startswith("/api/lan-chat/") and handle_lan_chat_post(self, parsed):
@@ -16509,9 +16591,53 @@ class Handler(BaseHTTPRequestHandler):
         except (json.JSONDecodeError, ValueError) as exc:
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
+    def handle_ui_chat_scroll_test(self, path: str) -> None:
+        if path.endswith("/setup"):
+            try:
+                session_id, session, cleanup_count = clone_ui_chat_scroll_test_session()
+                return json_response(
+                    self,
+                    HTTPStatus.CREATED,
+                    {
+                        "sessionId": session_id,
+                        "provider": "amazon",
+                        "sourceSessionId": UI_CHAT_SCROLL_TEST_SOURCE_SESSION,
+                        "messageCount": len(session.messages),
+                        "cleanedSessions": cleanup_count,
+                    },
+                )
+            except LookupError as exc:
+                return json_response(
+                    self, HTTPStatus.NOT_FOUND, {"error": str(exc)}
+                )
+
+        if path.endswith("/cleanup"):
+            try:
+                content_length = int(self.headers.get("Content-Length", "0"))
+                raw = self.rfile.read(content_length) if content_length else b"{}"
+                payload = json.loads(raw.decode("utf-8") or "{}")
+                public_session_id = str(payload.get("sessionId") or "").strip()
+                if not public_session_id.startswith(UI_CHAT_SCROLL_TEST_SESSION_PREFIX):
+                    raise ValueError("无效的滚动回归测试会话")
+                store = chat_store_for_provider("amazon")
+                stored_session_id = chat_session_key("amazon", public_session_id)
+                deleted = store.delete_session(stored_session_id)
+                return json_response(
+                    self,
+                    HTTPStatus.OK,
+                    {"sessionId": public_session_id, "deleted": deleted},
+                )
+            except (json.JSONDecodeError, ValueError) as exc:
+                return json_response(
+                    self, HTTPStatus.BAD_REQUEST, {"error": str(exc)}
+                )
+
+        return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
+
     def handle_chat_ask(self) -> None:
         content_length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(content_length)
+        scroll_test_request = is_ui_chat_scroll_test_request(self)
         try:
             payload = json.loads(body.decode("utf-8") or "{}")
             provider = normalize_chat_provider(payload.get("provider"))
@@ -16588,25 +16714,33 @@ class Handler(BaseHTTPRequestHandler):
         store.add_message(session, user_msg)
         if not session.title or session.title == "新对话" or not getattr(session, "title_is_custom", False):
             session.title = ChatStore._auto_title(session)
-            async_generate_session_title(store, session, text, provider)
+            if not scroll_test_request:
+                async_generate_session_title(store, session, text, provider)
 
         model_text = chat_message_content_for_model(user_msg)
         assistant_msg = Message(id=str(uuid.uuid4()), role="assistant", content="", status="pending")
         store.add_message(session, assistant_msg)
 
-        thread = threading.Thread(
-            target=run_chat_deepseek,
-            args=(
-                store,
-                session,
-                assistant_msg,
-                model_text,
-                provider,
-                enabled_tool_ids,
-                official_preset_id,
-            ),
-            daemon=True,
-        )
+        if scroll_test_request:
+            thread = threading.Thread(
+                target=run_ui_chat_scroll_test_sequence,
+                args=(store, session, assistant_msg),
+                daemon=True,
+            )
+        else:
+            thread = threading.Thread(
+                target=run_chat_deepseek,
+                args=(
+                    store,
+                    session,
+                    assistant_msg,
+                    model_text,
+                    provider,
+                    enabled_tool_ids,
+                    official_preset_id,
+                ),
+                daemon=True,
+            )
         thread.start()
         return json_response(self, HTTPStatus.ACCEPTED, {
             "sessionId": session_id,

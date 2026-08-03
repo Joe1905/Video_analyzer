@@ -4234,7 +4234,7 @@ body.ui-system .ui-nav__toggle:hover {
     margin-top: 5px;
     max-height: 216px;
     overflow-y: auto;
-    scroll-behavior: smooth;
+    scroll-behavior: auto;
     padding-right: 2px;
   }
 

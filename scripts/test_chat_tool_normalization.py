@@ -2829,7 +2829,7 @@ def test_lightweight_fastmoss_skill_uses_runtime_dates_and_semantic_deduplicatio
 
 def test_lightweight_fastmoss_skill_final_path_uses_semantic_report_without_draft_fallback() -> None:
     first_draft = "首稿证据与判断。" * 180
-    final_answer = "最终结论基于本轮工具证据，建议先验证代表性样本和竞争风险。" * 20
+    final_answer = "最终结论基于本轮工具证据，建议先验证代表性样本和竞争风险。"
 
     class Response:
         status_code = 200
@@ -2864,7 +2864,15 @@ def test_lightweight_fastmoss_skill_final_path_uses_semantic_report_without_draf
                 return Response({"choices": [{"message": {"content": first_draft}}]})
             if self.fail_synthesis:
                 raise TimeoutError("synthesis timeout")
-            return Response({"choices": [{"message": {"content": final_answer}}]})
+            return Response({"choices": [{"message": {"content": json.dumps({
+                "overall_judgement": final_answer,
+                "recommend": [{
+                    "candidate": "解压玩具", "reason": "已取得类目解析证据", "counter_evidence": "尚待商品深挖",
+                    "product_form": "", "price_band": "", "entry_conditions": "补齐商品样本",
+                    "validation_actions": ["补查热销商品"], "evidence_refs": ["call:1"],
+                }], "watch": [], "reject": [], "can_support": ["已完成类目解析"],
+                "cannot_support": ["尚不能直接给出完整市场结论"], "next_actions": ["补齐商品深挖"],
+            }, ensure_ascii=False)}}]})
 
     class Store:
         def update_message(self, _session, message, content: str, status: str = "done") -> None:
@@ -2915,8 +2923,10 @@ def test_lightweight_fastmoss_skill_final_path_uses_semantic_report_without_draf
 
     assistant, payloads = run_case(False)
     assert assistant.status == "done"
-    assert assistant.content == final_answer
-    assert len(payloads) == 4
+    assert final_answer in assistant.content
+    assert "## 完整数据表" in assistant.content
+    assert "## 数据驱动判断" in assistant.content
+    assert len(payloads) == 3
     synthesis_payload = payloads[-1]
     assert "tools" not in synthesis_payload
     synthesis_context = json.dumps(synthesis_payload["messages"], ensure_ascii=False)
@@ -2924,7 +2934,8 @@ def test_lightweight_fastmoss_skill_final_path_uses_semantic_report_without_draf
     assert "解压玩具" in synthesis_context
 
     recovered, failed_payloads = run_case(True)
-    assert recovered.status == "error"
+    assert recovered.status == "done"
+    assert recovered.content
     assert first_draft not in recovered.content
     assert len(failed_payloads) == 3
 
@@ -3185,47 +3196,18 @@ def test_fastmoss_evidence_manifest_separates_total_fetched_overlap_and_conflict
     assert signals["segment_queries"][0]["sample_units_total"] == 100
 
 
-def test_fastmoss_deterministic_fallback_contains_analysis_and_prioritized_advice() -> None:
-    category_products = [
-        {"product_id": "1", "title": "Leader", "day28_units_sold": 400, "price_min": 30, "price_max": 40},
-        {"product_id": "2", "title": "Second", "day28_units_sold": 300, "price_min": 35, "price_max": 45},
-        {"product_id": "3", "title": "Third", "day28_units_sold": 200, "price_min": 40, "price_max": 50},
-        {"product_id": "4", "title": "Tail", "day28_units_sold": 100, "price_min": 45, "price_max": 55},
-    ]
-    segment_products = [
-        {"product_id": "1", "title": "Mini grinder leader", "query": "Mini Meat Grinder", "day28_units_sold": 300},
-        {"product_id": "5", "title": "Mini grinder tail", "query": "Mini Meat Grinder", "day28_units_sold": 100},
-        {"product_id": "6", "title": "Shredder", "query": "Electric Food Shredder", "day28_units_sold": 20},
-    ]
+def test_fastmoss_data_first_fallback_never_discards_usable_evidence() -> None:
     manifest = {
-        "category_head": {
-            "products": category_products, "fetched_unique": 4, "target_pages": 3,
-            "completed_pages": [1, 2, 3], "reported_total": 20,
-        },
-        "segment_head": {"products": segment_products, "fetched_unique": 3},
-        "overlap_product_ids": ["1"],
-        "target_category_path": {"level1": 13, "level2": 844168, "level3": 935176},
-        "derived_signals": {
-            "category_top3_share": 0.9,
-            "overlap_rate_of_segment_sample": 1 / 3,
-            "price_midpoint_q1": 38.75,
-            "price_midpoint_median": 42.5,
-            "price_midpoint_q3": 46.25,
-            "segment_queries": [
-                {"query": "Mini Meat Grinder", "fetched_unique": 2, "sample_units_total": 400, "top_product_units": 300},
-                {"query": "Electric Food Shredder", "fetched_unique": 2, "sample_units_total": 20, "top_product_units": 20},
-            ],
-        },
-        "limitations": [],
-        "conflicts": [],
+        "evidence_envelopes": [{"data_state": "data"}],
     }
-    report = web_app.fastmoss_deterministic_quality_fallback(manifest)
-    assert "样本销量明显向少数商品集中" in report
-    assert "Mini Meat Grinder 的样本销量合计为 400" in report
-    assert "把 Mini Meat Grinder 放到更高的验证优先级" in report
-    assert "中间 50%" in report and "38.75–46.25" in report and "中位数约 42.5" in report
-    assert "**先定方向：** 优先围绕 Mini Meat Grinder" in report
-    assert "不能把配件、不同规格和不同使用场景的商品混成一个价格带" in report
+    report = web_app.fastmoss_data_first_fallback(
+        "| 商品编号 | 1729421229342823356 |\n| 佣金率 | 8% |\n| 首3日 GMV | 1234 |",
+        manifest,
+        "finish_reason=length",
+    )
+    assert "深度分析未完成" in report
+    assert "1729421229342823356" in report
+    assert "佣金率" in report and "首3日 GMV" in report
 
 
 def test_fastmoss_l2_market_metrics_are_only_upstream_category_reference() -> None:
@@ -4197,7 +4179,14 @@ def test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence() -> None:
             return {
                 "choices": [{
                     "finish_reason": "stop",
-                    "message": {"content": "# 结论\n\n证据包已独立合成。"},
+                "message": {"content": json.dumps({
+                    "overall_judgement": "证据包已独立合成。",
+                    "recommend": [{
+                        "candidate": "Product 1", "reason": "样本与趋势证据齐备", "counter_evidence": "评论为空",
+                        "product_form": "", "price_band": "", "entry_conditions": "补齐评论",
+                        "validation_actions": ["核对详情"], "evidence_refs": ["call:1", "call:2"],
+                    }], "watch": [], "reject": [], "can_support": [], "cannot_support": [], "next_actions": [],
+                }, ensure_ascii=False)},
                 }],
             }
 
@@ -4244,20 +4233,20 @@ def test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence() -> None:
         )
     finally:
         web_app.verify_fastmoss_final_answer = original_verify
-    assert result.startswith("# 结论")
+    assert result.startswith("## 完整数据表")
     assert result.count(web_app.FASTMOSS_REPORT_NOTICE) == 1
     assert len(requests.payloads) == 1
     payload = requests.payloads[0]
     assert "tools" not in payload
-    assert payload["max_tokens"] == 12000
+    assert payload["max_tokens"] == 3600
     assert [message["role"] for message in payload["messages"]] == ["system", "system", "user"]
     base_system = payload["messages"][0]["content"]
     report_system = payload["messages"][1]["content"]
     semantic_content = payload["messages"][2]["content"]
     report_date = re.search(r"当前日期（Asia/Shanghai）：(\d{4}-\d{2}-\d{2})", base_system).group(1)
-    assert base_system == web_app.fastmoss_report_system_instruction(report_date)
+    assert base_system.startswith(web_app.fastmoss_report_system_instruction(report_date))
     assert base_system != web_app.sellersprite_report_system_instruction(report_date)
-    assert "每个有实质数据的业务证据段都必须在报告中得到使用" in base_system
+    assert "只负责做选品决策" in base_system
     assert "零关联或未返回不能推导私域、投流、刷单" in base_system
     assert "fastmoss__" not in base_system
     assert "sellersprite__" not in base_system
@@ -4269,27 +4258,10 @@ def test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence() -> None:
     assert "不得写成流量来源、因果、效率或生命周期结论" in report_system
     assert "事实边界优先于叙事完整性" in report_system
     assert "不得仅凭这些数据写成核心驱动力、决定性因素或直接原因" in report_system
-    assert "# 短视频电商调研证据" in semantic_content
-    assert "## 商品销售趋势" in semantic_content
-    assert "## 近期上架商品榜" in semantic_content
-    assert "## 商品评论样本" in semantic_content
-    assert "call:" not in semantic_content
-    assert "fastmoss__" not in semantic_content
-    assert "source_ref" not in semantic_content
-    assert "arguments" not in semantic_content
-    assert "evidence_dossier" not in semantic_content
-    assert "report_packet" not in semantic_content
-    assert "2026年6月1日" in semantic_content and "2026年7月1日" in semantic_content
-    assert all(product["product_id"] in semantic_content for product in products)
-    assert "返回记录超出请求的三级类目范围" in semantic_content
+    assert '"type":"fastmoss_decision_packet_v3"' in semantic_content
+    assert '"reference_catalog"' in semantic_content
+    assert "1730000000000000001" in semantic_content
     assert "关键词返回量不是市场容量" in semantic_content
-    assert "| 商品编号 | 1730000000000000001 |" in semantic_content
-    assert "针对上述精确对象、参数、地区和周期没有返回业务记录" in semantic_content
-    assert "| 报告日期 |" in semantic_content
-    assert "## 硬事实边界" in semantic_content
-    assert semantic_content.index("## 硬事实边界") > semantic_content.index("## 商品评论样本")
-    assert semantic_content.endswith("--- Semantic 证据结束 ---")
-    assert "omitted_items" not in semantic_content
 
 
 def test_fastmoss_report_evidence_is_semantic() -> None:
@@ -4315,6 +4287,81 @@ def test_fastmoss_report_evidence_is_semantic() -> None:
     assert "Mini Grinder" in semantic
     assert semantic_stats["format"] == "semantic"
     assert semantic_stats["registered_tool_count"] == 1
+
+
+def test_fastmoss_v3_length_retries_without_losing_real_rows() -> None:
+    class Response:
+        def __init__(self, body: dict) -> None:
+            self.body = body
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return self.body
+
+    decision = {
+        "overall_judgement": "样本存在可继续验证的候选，但不能据此外推全市场。",
+        "recommend": [{
+            "candidate": "Stress Ball", "reason": "销量和价格字段均已返回", "counter_evidence": "仍缺少完整成本",
+            "product_form": "解压球", "price_band": "$8-$12", "entry_conditions": "完成成本核验",
+            "validation_actions": ["核对同形态竞品"], "evidence_refs": ["call:1"],
+        }],
+        "watch": [], "reject": [], "can_support": ["可继续验证"],
+        "cannot_support": ["不能判断利润"], "next_actions": ["补齐成本和内容证据"],
+    }
+
+    class Requests:
+        def __init__(self) -> None:
+            self.payloads: list[dict] = []
+
+        def post(self, _url: str, **kwargs):
+            self.payloads.append(json.loads(kwargs["data"].decode("utf-8")))
+            if len(self.payloads) <= 2:
+                return Response({"choices": [{"finish_reason": "length", "message": {"content": "{\"partial\":"}}]})
+            return Response({"choices": [{"message": {"content": json.dumps(decision, ensure_ascii=False)}}]})
+
+    calls = [{"id": "c1", "function": {"name": "fastmoss__product_search", "arguments": json.dumps({"keywords": "stress relief toys", "page": 1})}}]
+    results = [{"tool_name": "fastmoss__product_search", "result": {"ok": True, "data_state": "data", "mcp_data": {
+        "list": [{"product_id": "1729421229342823356", "title": "Stress Ball", "current_price": 9.99,
+                  "commission_rate_percent": 8, "day28_units_sold": 17354, "first_3d_gmv": 1234}], "total": 1,
+    }}}]
+    requests = Requests()
+    original_record = web_app.record_api_call
+    web_app.record_api_call = lambda *_args, **_kwargs: None
+    try:
+        report = web_app.synthesize_fastmoss_report_from_packet(
+            SimpleNamespace(tool_calls=calls, tool_results=results), "解压玩具选品", {"playbook": "product", "task_depth": "workflow"},
+            requests, "test-key", "https://example.invalid/v1", "test-model",
+        )
+    finally:
+        web_app.record_api_call = original_record
+    assert len(requests.payloads) == 4
+    assert "1729421229342823356" in report
+    assert "佣金" in report and "上架后前3日成交金额" in report
+    assert "深度分析未完成" not in report
+    assert requests.payloads[0]["max_tokens"] == 3600
+    assert requests.payloads[1]["max_tokens"] == 1800
+    assert requests.payloads[2]["max_tokens"] == 1500
+
+
+def test_fastmoss_v3_failure_falls_back_to_data_not_zero_products() -> None:
+    class Requests:
+        def post(self, _url: str, **_kwargs):
+            raise TimeoutError("controlled high reasoning timeout")
+
+    calls = [{"id": "c1", "function": {"name": "fastmoss__product_search", "arguments": json.dumps({"keywords": "stress relief toys"})}}]
+    results = [{"tool_name": "fastmoss__product_search", "result": {"ok": True, "data_state": "data", "mcp_data": {
+        "list": [{"product_id": "1729421229342823356", "title": "Stress Ball", "current_price": 9.99,
+                  "commission_rate_percent": 8, "day28_units_sold": 17354}], "total": 1,
+    }}}]
+    report = web_app.synthesize_fastmoss_report_from_packet(
+        SimpleNamespace(tool_calls=calls, tool_results=results), "解压玩具选品", {"playbook": "product", "task_depth": "workflow"},
+        Requests(), "test-key", "https://example.invalid/v1", "test-model",
+    )
+    assert "深度分析未完成" in report
+    assert "1729421229342823356" in report
+    assert "0 商品" not in report
 
 
 def test_fastmoss_analytical_answers_use_single_semantic_report_path() -> None:
@@ -4650,7 +4697,7 @@ if __name__ == "__main__":
     test_fastmoss_product_workflow_deterministically_advances_and_binds_two_targets()
     test_fastmoss_product_search_defaults_force_category_pages_and_short_segment_queries()
     test_fastmoss_evidence_manifest_separates_total_fetched_overlap_and_conflicts()
-    test_fastmoss_deterministic_fallback_contains_analysis_and_prioritized_advice()
+    test_fastmoss_data_first_fallback_never_discards_usable_evidence()
     test_fastmoss_l2_market_metrics_are_only_upstream_category_reference()
     test_fastmoss_failed_category_page_is_not_counted_as_coverage()
     test_fastmoss_metadata_detects_unsorted_page_and_string_product_ids()
@@ -4664,6 +4711,8 @@ if __name__ == "__main__":
     test_fastmoss_22_call_semantic_registry_fixture()
     test_fastmoss_dossier_synthesis_preserves_complete_tool_evidence()
     test_fastmoss_report_evidence_is_semantic()
+    test_fastmoss_v3_length_retries_without_losing_real_rows()
+    test_fastmoss_v3_failure_falls_back_to_data_not_zero_products()
     test_fastmoss_analytical_answers_use_single_semantic_report_path()
     test_fastmoss_claim_ids_and_verifier_edit_guards()
     test_analytical_routes_use_report_model_and_fastmoss_preserves_pro_draft()
