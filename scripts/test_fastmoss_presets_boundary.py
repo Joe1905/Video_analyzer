@@ -1,5 +1,4 @@
-"""Test FastMoss official presets registration, tool whitelists, and boundary isolation."""
-import os
+"""Test FastMoss presets, Product Scout local Skill, tool whitelists, and isolation."""
 import unittest
 from tempfile import TemporaryDirectory
 from pathlib import Path
@@ -34,39 +33,29 @@ class TestFastMossPresetsBoundary(unittest.TestCase):
 
     def test_route_resolution_by_preset_id(self):
         preset_id = "fm-product-scout"
-        previous = os.environ.get("FASTMOSS_SKILL_SOURCE")
-        os.environ["FASTMOSS_SKILL_SOURCE"] = "local"
-        try:
-            route = fastmoss_official_skill_route(official_preset_id=preset_id)
-        finally:
-            if previous is None:
-                os.environ.pop("FASTMOSS_SKILL_SOURCE", None)
-            else:
-                os.environ["FASTMOSS_SKILL_SOURCE"] = previous
+        route = fastmoss_official_skill_route(official_preset_id=preset_id)
         self.assertEqual(route["route_source"], "lightweight_skill")
         self.assertTrue(route["lightweight_fastmoss_skill"])
         self.assertEqual(route["max_rounds"], 12)
         self.assertEqual(route["official_preset_id"], preset_id)
-        self.assertEqual(route["official_skill_file"], "references/fm-product-scout.md")
+        self.assertEqual(route["official_skill_file"], "local/fastmoss-product-scout/SKILL.md")
         self.assertEqual(route["tools"], sorted(FASTMOSS_OFFICIAL_PRESETS[preset_id]["tools"]))
 
-    def test_product_scout_local_skill_is_reviewable_and_can_roll_back(self):
+    def test_product_scout_local_skill_is_the_only_authority(self):
         prompt = load_lightweight_fastmoss_skill_prompt("fm-product-scout")
         self.assertIn("选品决策 Skill", prompt)
         self.assertIn("FastMoss MCP", prompt)
-        self.assertIn("不在与当前任务无关的场景推广 MossCreator、Oumomo", prompt)
+        self.assertIn("明确不支持的结论", prompt)
+        self.assertNotIn("官方文件：", prompt)
+        route = fastmoss_official_skill_route(official_preset_id="fm-product-scout")
+        self.assertEqual(route["route_source"], "lightweight_skill")
+        self.assertTrue(route["lightweight_fastmoss_skill"])
 
-        previous = os.environ.get("FASTMOSS_SKILL_SOURCE")
-        os.environ["FASTMOSS_SKILL_SOURCE"] = "official"
-        try:
-            route = fastmoss_official_skill_route(official_preset_id="fm-product-scout")
-        finally:
-            if previous is None:
-                os.environ.pop("FASTMOSS_SKILL_SOURCE", None)
-            else:
-                os.environ["FASTMOSS_SKILL_SOURCE"] = previous
-        self.assertEqual(route["route_source"], "official_preset")
-        self.assertNotIn("lightweight_fastmoss_skill", route)
+    def test_unknown_preset_fails_closed(self):
+        route = fastmoss_official_skill_route(official_preset_id="not-a-preset")
+        self.assertEqual(route["route_source"], "invalid_preset")
+        self.assertEqual(route["tools"], [])
+        self.assertEqual(route["invalid_preset"], "not-a-preset")
 
     def test_route_resolution_by_user_text_prefix(self):
         user_text = "请使用 FastMoss 官方 Skill「达人建联」开始分析。"

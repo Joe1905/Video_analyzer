@@ -135,6 +135,7 @@ from fastmoss_evidence_renderer import (
     FASTMOSS_CURRENT_TOOL_NAMES,
     localize_semantic_value,
     render_fastmoss_evidence_document,
+    render_fastmoss_tool_evidence,
 )
 from fastmoss_official_skill import (
     load_official_fastmoss_skill_prompt,
@@ -6719,10 +6720,17 @@ def execute_prefixed_tool(
     tool_id: str,
     args: dict[str, Any],
     region: str | None = None,
+    allowed_tool_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     domain, name = split_prefixed_tool_id(tool_id)
     started = time.monotonic()
     try:
+        if allowed_tool_ids is not None and tool_id not in allowed_tool_ids:
+            return {
+                "ok": False,
+                "elapsed": round(time.monotonic() - started, 3),
+                "error": f"Tool is outside the active preset boundary: {tool_id}",
+            }
         if domain in {"system", "function"}:
             return execute_tool(name, args)
         if domain in {"sociavault", "sellersprite", "fastmoss"}:
@@ -7582,6 +7590,29 @@ def current_chat_tool_evidence(
         rendered = render_sellersprite_current_evidence(evidence)
         print(
             f"[CHAT] SellerSprite Semantic tool={rendered.tool_name} profile={rendered.profile} "
+            f"nodes={','.join(rendered.node_types) or '-'} leaves={len(rendered.business_leaf_paths)} "
+            f"unmapped={len(rendered.unmapped_paths)} fallback={str(rendered.fallback).lower()} "
+            f"chars={len(rendered.markdown)}",
+            flush=True,
+        )
+        return rendered.markdown
+    if str(tool_name or "").startswith("fastmoss__"):
+        payload = evidence.get("data")
+        entry = {
+            "source_ref": "本次调用",
+            "tool_name": tool_name,
+            "arguments": arguments or {},
+            "evidence_fence": {
+                key: evidence.get(key)
+                for key in ("data_state", "market", "region", "period", "cache")
+                if evidence.get(key) not in (None, "", {}, [])
+            },
+            "business_data": payload,
+            **({"error": str(evidence.get("error"))} if evidence.get("error") else {}),
+        }
+        rendered = render_fastmoss_tool_evidence(entry)
+        print(
+            f"[CHAT] FastMoss Semantic tool={rendered.tool_name} profile={rendered.profile} "
             f"nodes={','.join(rendered.node_types) or '-'} leaves={len(rendered.business_leaf_paths)} "
             f"unmapped={len(rendered.unmapped_paths)} fallback={str(rendered.fallback).lower()} "
             f"chars={len(rendered.markdown)}",
@@ -11184,43 +11215,14 @@ def finalize_fastmoss_answer(
     api_url: str,
     model: str,
 ) -> str:
-    """Preserve the Pro draft by default; the legacy LLM editor is opt-in."""
-    if fastmoss_llm_verifier_enabled():
+    """Close the direct Planner answer without a second FastMoss report model."""
+    text = str(draft or "").strip()
+    if not text or deepseek_tool_protocol_present({"content": text}):
         return append_fastmoss_report_notice(
-            verify_fastmoss_final_answer(
-                draft, assistant_msg, user_text, route,
-                requests_module, api_key, api_url, model,
-            ),
+            "本轮 FastMoss 数据已采集，但模型未生成可用的分析结论。请基于本轮数据重新发起一次分析。",
             route,
         )
-    manifest = fastmoss_evidence_manifest(assistant_msg, user_text, route)
-    text = str(draft or "")
-    has_evidence = bool(
-        manifest.get("evidence_fact_count")
-        or (manifest.get("category_head") or {}).get("products")
-        or (manifest.get("segment_head") or {}).get("products")
-        or (manifest.get("quality_states") or {}).get("data")
-    )
-    if not text.strip() or deepseek_tool_protocol_present({"content": text}) or not has_evidence:
-        # These paths do not invoke the verifier model; verify_fastmoss_final_answer
-        # returns the deterministic fallback before building verifier batches.
-        return append_fastmoss_report_notice(
-            verify_fastmoss_final_answer(
-                text, assistant_msg, user_text, route,
-                requests_module, api_key, api_url, model,
-            ),
-            route,
-        )
-    prepared, _entity_id_cleanup_count = normalize_fastmoss_entity_id_abbreviations(text, manifest)
-    final_answer = append_fastmoss_report_notice(prepared, route)
-    _log_fastmoss_report_pipeline(
-        text,
-        manifest,
-        "disabled",
-        final_answer=final_answer,
-        claim_candidates=len(fastmoss_high_risk_claims(prepared)),
-    )
-    return final_answer
+    return append_fastmoss_report_notice(text, route)
 
 
 def complete_fastmoss_answer(
@@ -11233,18 +11235,8 @@ def complete_fastmoss_answer(
     api_url: str,
     model: str,
 ) -> str:
-    """Route every evidence-led FastMoss report through the semantic dossier."""
-    has_fastmoss_evidence = any(
-        isinstance(item, dict)
-        and split_prefixed_tool_id(str(item.get("tool_name") or ""))[0] == "fastmoss"
-        for item in (assistant_msg.tool_results or [])
-    )
-    if has_fastmoss_evidence:
-        print("[CHAT] FastMoss final route=semantic_report", flush=True)
-        return synthesize_fastmoss_report_from_packet(
-            assistant_msg, user_text, route,
-            requests_module, api_key, api_url, model,
-        )
+    """Finish FastMoss with the same Skill-guided Planner that collected evidence."""
+    print("[CHAT] FastMoss final route=planner_direct", flush=True)
     return finalize_fastmoss_answer(
         draft, assistant_msg, user_text, route,
         requests_module, api_key, api_url, model,
@@ -12237,7 +12229,7 @@ FASTMOSS_OFFICIAL_PRESETS: dict[str, dict[str, Any]] = {
     # boundary, derived from each official workflow's documented calls.
     "fm-product-scout": {
         "label": "选品决策",
-        "skill_file": "references/fm-product-scout.md",
+        "skill_file": "local/fastmoss-product-scout/SKILL.md",
         "description": "判断选品机会、生命周期与入场时机",
         "tools": frozenset({
             "fastmoss__search_category_by_words",
@@ -12252,7 +12244,6 @@ FASTMOSS_OFFICIAL_PRESETS: dict[str, dict[str, Any]] = {
             "fastmoss__product_investment",
             "fastmoss__product_creator_analysis",
             "fastmoss__product_video_list",
-            "fastmoss__fastmoss_detail_url_examples",
         }),
     },
     "fm-creator-outreach": {
@@ -12393,9 +12384,14 @@ def fastmoss_official_skill_route(
         print(
             "[CHAT FASTMOSS OFFICIAL SKILL] unknown_preset="
             f"{json.dumps(preset_id[:120], ensure_ascii=False)}; "
-            "falling back to full official catalog",
+            "rejecting request (fail closed)",
             flush=True,
         )
+        route.update({
+            "route_source": "invalid_preset",
+            "invalid_preset": preset_id,
+            "tools": [],
+        })
     return route
 
 
@@ -13033,8 +13029,13 @@ def run_chat_deepseek(
         store.update_message(session, assistant_msg, "Missing DEEPSEEK_API_KEY", status="error")
         return
 
+    fastmoss_preset_requested = provider == "fastmoss" and bool(str(official_preset_id or "").strip())
+    fastmoss_local_product_scout_chain = (
+        provider == "fastmoss" and str(official_preset_id or "").strip() == "fm-product-scout"
+    )
     fastmoss_official_skill_chain = (
-        provider == "fastmoss" and official_fastmoss_skill_enabled()
+        provider == "fastmoss"
+        and (official_fastmoss_skill_enabled() or fastmoss_preset_requested)
     )
     sellersprite_official_skill_chain = (
         provider == "amazon" and official_sellersprite_skill_enabled()
@@ -13049,11 +13050,16 @@ def run_chat_deepseek(
         if sellersprite_official_skill_chain
         else None
     )
+    if provider == "fastmoss" and official_skill_route and official_skill_route.get("invalid_preset"):
+        error_text = f"未知 FastMoss 预设：{official_skill_route['invalid_preset']}；请求已拒绝，未暴露工具目录。"
+        store.update_message(session, assistant_msg, error_text, status="error")
+        store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": error_text})
+        return
     official_skill_prompt = ""
     if official_skill_chain:
         try:
             if (
-                fastmoss_official_skill_chain
+                fastmoss_local_product_scout_chain
                 and official_skill_route
                 and official_skill_route.get("lightweight_fastmoss_skill")
             ):
@@ -13547,7 +13553,16 @@ def run_chat_deepseek(
                             "arguments": json.dumps(fn_args, ensure_ascii=False),
                         },
                     }
-                    raw_result = execute_prefixed_tool(fn_name, fn_args, default_region)
+                    raw_result = execute_prefixed_tool(
+                        fn_name,
+                        fn_args,
+                        default_region,
+                        allowed_tool_ids=(
+                            set(effective_enabled_tool_ids or set())
+                            if provider == "fastmoss" and route.get("official_preset_id")
+                            else None
+                        ),
+                    )
                     normalized_result = normalize_prefixed_tool_result(fn_name, raw_result)
                     normalized_result = annotate_fastmoss_tool_result(
                         fn_name, fn_args, normalized_result, raw_result
@@ -13793,6 +13808,11 @@ def run_chat_deepseek(
                             fn_name,
                             fn_args,
                             default_region,
+                            allowed_tool_ids=(
+                                set(effective_enabled_tool_ids or set())
+                                if provider == "fastmoss" and route.get("official_preset_id")
+                                else None
+                            ),
                         )
                         normalized_result = normalize_prefixed_tool_result(fn_name, raw_result)
                     normalized_result = annotate_fastmoss_tool_result(
