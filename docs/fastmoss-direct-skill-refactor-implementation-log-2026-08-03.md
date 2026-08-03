@@ -35,3 +35,12 @@
 - Added execution-time `allowed_tool_ids` enforcement to `execute_prefixed_tool` and pass the active FastMoss preset whitelist at both deterministic and model-driven calls. Unknown FastMoss preset IDs now fail closed before schema exposure/execution.
 - Removed `fastmoss__fastmoss_detail_url_examples` from Product Scout's whitelist.
 - Local static verification: `python -m py_compile scripts/web_app.py scripts/fastmoss_lightweight_skill.py` and `git diff --check` passed. Local unittest could not import `requests` from the bundled desktop Python; it will be run in the deployed container (environment limitation, not a test pass).
+
+### Phase 2 — retired V3/report/verifier cleanup
+
+- Commit for Phase 1: `0134d79` (`feat: use direct local skill for fastmoss product scout`).
+- Before deletion, CodeGraph traced `synthesize_fastmoss_report_from_packet`, verifier, decision packet, dossier and report packet as a legacy-only branch after the Phase 1 direct finalizer change. No production caller remains for the two `_deprecated_*` tool helpers.
+- Removed the entire legacy FastMoss report-only block: report prompts/dossier/packet rendering, V3 decision packet and high-reasoning retry, data-first full-table fallback, claim verifier/editor, integrity logging and entity-ID report rewriting.
+- Removed the now-unused `FASTMOSS_LLM_VERIFIER_ENABLED` reader and both `_deprecated_build_prefixed_model_tools` / `_deprecated_execute_prefixed_tool` implementations.
+- Retained `annotate_fastmoss_tool_result` and its normalized envelope because the live execution path still annotates MCP result state for UI/SSE and tool workflow state; per-tool Planner evidence is nevertheless emitted by `fastmoss_evidence_renderer`, not the retired report packet.
+- Removed only V3/verifier/report-packet-specific regression cases and replaced them with a direct Planner path assertion. Remaining FastMoss evidence-envelope tests continue to protect result-state and field preservation.
