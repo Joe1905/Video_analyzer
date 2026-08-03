@@ -12,7 +12,7 @@ from pathlib import Path
 from playwright.async_api import Page, Route, async_playwright
 
 
-TEST_HEADER = {"X-UI-Test-Scenario": "chat-scroll-regression"}
+TEST_QUERY = "ui_test_scenario=chat-scroll-regression"
 VIEWPORTS = {
     "desktop": {"width": 1280, "height": 800},
     "mobile": {"width": 390, "height": 844},
@@ -125,14 +125,13 @@ async def main_anchor(page: Page) -> dict:
 
 
 async def route_test_ask(route: Route) -> None:
-    headers = dict(route.request.headers)
-    headers.update(TEST_HEADER)
-    await route.continue_(headers=headers)
+    separator = "&" if "?" in route.request.url else "?"
+    await route.continue_(url=f"{route.request.url}{separator}{TEST_QUERY}")
 
 
 async def run_viewport(browser, api, base_url: str, output_dir: Path, name: str) -> None:
     setup = await api.post(
-        "/api/ui-test/chat-scroll/setup", headers=TEST_HEADER, data={}
+        f"/api/ui-test/chat-scroll/setup?{TEST_QUERY}", data={}
     )
     if setup.status != 201:
         raise AssertionError(f"setup failed ({setup.status}): {await setup.text()}")
@@ -328,8 +327,7 @@ async def run_viewport(browser, api, base_url: str, output_dir: Path, name: str)
     finally:
         await context.close()
         await api.post(
-            "/api/ui-test/chat-scroll/cleanup",
-            headers=TEST_HEADER,
+            f"/api/ui-test/chat-scroll/cleanup?{TEST_QUERY}",
             data={"sessionId": session_id},
         )
 

@@ -571,7 +571,8 @@ PROXY_POOL_ENABLED = os.getenv("PROXY_POOL_ENABLED", "1").strip().lower() in {"1
 UI_TEST_MODE = os.getenv("UI_TEST_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}
 UI_TEST_MODE_LIVE_WRITE_PREFIXES = ("/api/lan-chat/",)
 UI_CHAT_SCROLL_TEST_SCENARIO = "chat-scroll-regression"
-UI_CHAT_SCROLL_TEST_HEADER = "X-UI-Test-Scenario"
+UI_CHAT_SCROLL_TEST_QUERY = "ui_test_scenario"
+UI_CHAT_SCROLL_TEST_PORT = 4004
 UI_CHAT_SCROLL_TEST_SOURCE_SESSION = os.getenv(
     "CHAT_SCROLL_TEST_SOURCE_SESSION", "B0GVZ3CWK1"
 ).strip() or "B0GVZ3CWK1"
@@ -584,13 +585,21 @@ def ui_test_mode_allows_live_write(path: str) -> bool:
     )
 
 
-def has_ui_chat_scroll_test_header(handler: BaseHTTPRequestHandler) -> bool:
-    value = str(handler.headers.get(UI_CHAT_SCROLL_TEST_HEADER) or "").strip()
+def has_ui_chat_scroll_test_parameter(handler: BaseHTTPRequestHandler) -> bool:
+    parsed = urlparse(str(getattr(handler, "path", "") or ""))
+    value = str(parse_qs(parsed.query).get(UI_CHAT_SCROLL_TEST_QUERY, [""])[0]).strip()
     return hmac.compare_digest(value, UI_CHAT_SCROLL_TEST_SCENARIO)
 
 
 def is_ui_chat_scroll_test_request(handler: BaseHTTPRequestHandler) -> bool:
-    return UI_TEST_MODE and has_ui_chat_scroll_test_header(handler)
+    try:
+        server_port = int(handler.server.server_port)
+    except (AttributeError, TypeError, ValueError):
+        server_port = int(os.getenv("WEB_PORT", "0") or 0)
+    return (
+        server_port == UI_CHAT_SCROLL_TEST_PORT
+        and has_ui_chat_scroll_test_parameter(handler)
+    )
 NAV_ITEMS = [
     {"key": "home", "href": "/", "label": "\u9996\u9875", "title": "AI \u804a\u5929", "icon": '<path d="M3 10.5 12 3l9 7.5"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/>'},
     {"key": "amazon", "href": "/amazon", "label": "\u5356\u5bb6\u7cbe\u7075", "title": "\u5356\u5bb6\u7cbe\u7075", "icon": '<circle cx="10.5" cy="10.5" r="5.5"/><path d="m14.5 14.5 4.5 4.5"/><path d="M18 3.5v4M16 5.5h4"/>'},
@@ -15753,30 +15762,26 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
-        has_scroll_test_header = has_ui_chat_scroll_test_header(self)
+        has_scroll_test_parameter = has_ui_chat_scroll_test_parameter(self)
         scroll_test_request = is_ui_chat_scroll_test_request(self)
-        if has_scroll_test_header and not UI_TEST_MODE:
+        if has_scroll_test_parameter and not scroll_test_request:
             return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
         if parsed.path.startswith("/api/ui-test/chat-scroll/"):
             if not scroll_test_request:
                 return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
             return self.handle_ui_chat_scroll_test(parsed.path)
         if UI_TEST_MODE:
-            allow_scroll_test_ask = (
-                parsed.path == "/api/chat/ask" and scroll_test_request
-            )
             if not ui_test_mode_allows_live_write(parsed.path):
-                if not allow_scroll_test_ask:
-                    return json_response(
-                        self,
-                        HTTPStatus.CONFLICT,
-                        {
-                            "error": "UI 测试模式已拦截写操作，未触发真实业务。",
-                            "simulated": True,
-                            "status": "blocked",
-                            "path": parsed.path,
-                        },
-                    )
+                return json_response(
+                    self,
+                    HTTPStatus.CONFLICT,
+                    {
+                        "error": "UI 测试模式已拦截写操作，未触发真实业务。",
+                        "simulated": True,
+                        "status": "blocked",
+                        "path": parsed.path,
+                    },
+                )
         if handle_feishu_capability_post(self, parsed):
             return
         if parsed.path.startswith("/api/lan-chat/") and handle_lan_chat_post(self, parsed):

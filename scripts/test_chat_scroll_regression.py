@@ -6,15 +6,17 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from chat_session import ChatStore, Message, Session
 import web_app
 
 
-class HeaderOnlyHandler:
-    def __init__(self, value: str = "") -> None:
-        self.headers = {web_app.UI_CHAT_SCROLL_TEST_HEADER: value}
+class ParameterOnlyHandler:
+    def __init__(self, value: str = "", port: int = 4004) -> None:
+        self.path = f"/api/chat/ask?{web_app.UI_CHAT_SCROLL_TEST_QUERY}={value}"
+        self.server = SimpleNamespace(server_port=port)
 
 
 class RecordingStore(ChatStore):
@@ -34,16 +36,18 @@ class RecordingStore(ChatStore):
 
 
 class ChatScrollRegressionTest(unittest.TestCase):
-    def test_header_requires_ui_test_mode(self) -> None:
-        handler = HeaderOnlyHandler(web_app.UI_CHAT_SCROLL_TEST_SCENARIO)
-        with mock.patch.object(web_app, "UI_TEST_MODE", False):
-            self.assertTrue(web_app.has_ui_chat_scroll_test_header(handler))
-            self.assertFalse(web_app.is_ui_chat_scroll_test_request(handler))
-        with mock.patch.object(web_app, "UI_TEST_MODE", True):
-            self.assertTrue(web_app.is_ui_chat_scroll_test_request(handler))
-        wrong = HeaderOnlyHandler("wrong-scenario")
-        with mock.patch.object(web_app, "UI_TEST_MODE", True):
-            self.assertFalse(web_app.is_ui_chat_scroll_test_request(wrong))
+    def test_parameter_requires_exact_scenario_and_port_4004(self) -> None:
+        handler = ParameterOnlyHandler(web_app.UI_CHAT_SCROLL_TEST_SCENARIO)
+        self.assertTrue(web_app.has_ui_chat_scroll_test_parameter(handler))
+        self.assertTrue(web_app.is_ui_chat_scroll_test_request(handler))
+        self.assertFalse(
+            web_app.is_ui_chat_scroll_test_request(
+                ParameterOnlyHandler(web_app.UI_CHAT_SCROLL_TEST_SCENARIO, port=4002)
+            )
+        )
+        self.assertFalse(
+            web_app.is_ui_chat_scroll_test_request(ParameterOnlyHandler("wrong-scenario"))
+        )
 
     def test_setup_clones_only_one_source_session_and_cleans_stale_runs(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
