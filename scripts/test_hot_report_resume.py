@@ -39,6 +39,20 @@ def main() -> int:
         report.get_video_by_filename = lambda filename: None
         report.initialize_hot_report_db()
         with closing(report._connect()) as conn:
+            conn.execute("CREATE TABLE hot_videos (report_id TEXT, report_date TEXT, platform TEXT, video_id TEXT)")
+            conn.execute(
+                "INSERT INTO hot_videos (report_id, report_date, platform, video_id) VALUES (?, ?, ?, ?)",
+                ("orphan-report", "2026-07-31", "tiktok", "orphan-video"),
+            )
+            conn.commit()
+        report._initialized_db_path = None
+        report.initialize_hot_report_db()
+        with closing(report._connect()) as conn:
+            migrated_orphan = conn.execute(
+                "SELECT COUNT(*) FROM hot_report_videos WHERE report_date='2026-07-31' AND video_id='orphan-video'"
+            ).fetchone()[0]
+            assert migrated_orphan == 0
+        with closing(report._connect()) as conn:
             report_id = report._start_report(conn, "2026-08-01", "US", [], worker_lease="lease")
             for index in range(1, 6):
                 item = _item(index)

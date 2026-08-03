@@ -256,29 +256,34 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
         ).fetchall()
         for row in rows:
             item = dict(zip(aliases, row))
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO hot_report_videos (
-                    report_id, report_date, platform, video_id, source_endpoint, source_label,
-                    source_rank, report_rank, hot_score, metrics_json, raw_json, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    item["report_id"],
-                    item["report_date"],
-                    item["platform"],
-                    item["video_id"],
-                    item["source_endpoint"],
-                    item["source_label"],
-                    int(item["source_rank"] or 0),
-                    int(item["source_rank"] or 0),
-                    int(item["hot_score"] or 0),
-                    item["metrics_json"] or "{}",
-                    item["raw_json"] or "{}",
-                    float(item["created_at"] or time.time()),
-                    float(item["updated_at"] or time.time()),
-                ),
+            report_exists = bool(
+                item["report_id"]
+                and conn.execute("SELECT 1 FROM daily_reports WHERE id = ?", (item["report_id"],)).fetchone()
             )
+            if report_exists:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO hot_report_videos (
+                        report_id, report_date, platform, video_id, source_endpoint, source_label,
+                        source_rank, report_rank, hot_score, metrics_json, raw_json, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        item["report_id"],
+                        item["report_date"],
+                        item["platform"],
+                        item["video_id"],
+                        item["source_endpoint"],
+                        item["source_label"],
+                        int(item["source_rank"] or 0),
+                        int(item["source_rank"] or 0),
+                        int(item["hot_score"] or 0),
+                        item["metrics_json"] or "{}",
+                        item["raw_json"] or "{}",
+                        float(item["created_at"] or time.time()),
+                        float(item["updated_at"] or time.time()),
+                    ),
+                )
             conn.execute(
                 """
                 INSERT OR IGNORE INTO hot_video_master (
