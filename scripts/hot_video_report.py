@@ -3487,6 +3487,9 @@ def _cleanup_old_reports(conn: sqlite3.Connection) -> None:
     settings = get_settings()
     tz = ZoneInfo(settings["timezone"])
     cutoff = (datetime.now(tz) - timedelta(days=int(settings["retention_days"]) - 1)).strftime("%Y-%m-%d")
+    existing_tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if "hot_videos" in existing_tables:
+        conn.execute("DELETE FROM hot_videos WHERE report_date < ?", (cutoff,))
     conn.execute("DELETE FROM hot_report_videos WHERE report_date < ?", (cutoff,))
     conn.execute("DELETE FROM daily_reports WHERE report_date < ?", (cutoff,))
     conn.commit()
