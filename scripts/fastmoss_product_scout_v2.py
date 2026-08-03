@@ -453,6 +453,74 @@ def _table(headers: list[str], rows: list[list[Any]]) -> str:
     ])
 
 
+def _display_category_scope(category: Mapping[str, Any]) -> str:
+    """Format internal category identifiers as a compact user-facing scope."""
+    path = category.get("path")
+    if isinstance(path, (list, tuple)):
+        parts = [str(item).strip() for item in path if str(item).strip()]
+        if parts:
+            return " / ".join(parts)
+    if isinstance(path, str) and path.strip():
+        return path.strip()
+
+    ids = _as_dict(category.get("ids"))
+    labels = (
+        ("category_l1_id", "一级类目"),
+        ("category_l2_id", "二级类目"),
+        ("category_l3_id", "三级类目"),
+        ("category_id", "类目"),
+    )
+    parts = [f"{label} {ids[key]}" for key, label in labels if ids.get(key) not in (None, "")]
+    return " / ".join(parts) or "未确认"
+
+
+def _display_periods(periods: Any) -> str:
+    """Summarize requested and returned periods without exposing internal payloads."""
+    type_labels = {"day": "日", "week": "周", "month": "月"}
+    summaries: list[str] = []
+    for period in periods if isinstance(periods, list) else []:
+        item = _as_dict(period)
+        requested = _as_dict(item.get("requested"))
+        actual = _as_dict(item.get("actual"))
+        parts: list[str] = []
+        date_value = requested.get("date_value")
+        if date_value:
+            date_type = type_labels.get(str(requested.get("date_type") or ""), str(requested.get("date_type") or "统计"))
+            parts.append(f"{date_type}：{date_value}")
+        start, end = requested.get("listing_start_date"), requested.get("listing_end_date")
+        if start or end:
+            parts.append(f"上架区间：{start or '未指定'} 至 {end or '未指定'}")
+        if requested.get("time_range_days") not in (None, ""):
+            parts.append(f"近 {requested['time_range_days']} 天")
+        actual_value = actual.get("value")
+        actual_start, actual_end = actual.get("start"), actual.get("end")
+        if actual_start or actual_end:
+            parts.append(f"接口返回：{actual_start or '未返回'} 至 {actual_end or '未返回'}")
+        elif actual_value:
+            parts.append(f"接口返回：{actual_value}")
+        if parts:
+            summary = "；".join(parts)
+            if summary not in summaries:
+                summaries.append(summary)
+    return "；".join(summaries) or "接口未返回"
+
+
+def _display_tool_state_summary(states: Any) -> str:
+    """Keep execution provenance useful without printing a long internal call trace."""
+    entries = [item for item in states if isinstance(item, Mapping)] if isinstance(states, list) else []
+    if not entries:
+        return "接口未返回"
+    cached = sum(bool(_as_dict(item.get("cache")).get("hit")) for item in entries)
+    empty = sum(item.get("data_state") == "empty" for item in entries)
+    errors = sum(item.get("data_state") == "error" for item in entries)
+    summary = f"共 {len(entries)} 项调用：实时 {len(entries) - cached}，缓存 {cached}"
+    if empty:
+        summary += f"，空结果 {empty}"
+    if errors:
+        summary += f"，异常 {errors}"
+    return summary
+
+
 def render_deterministic_fact_blocks(contract: ProductScoutEvidenceContract) -> str:
     """Render the V2 user-visible facts; this output is never sent back for model rewriting."""
     payload = contract.payload
@@ -465,14 +533,10 @@ def render_deterministic_fact_blocks(contract: ProductScoutEvidenceContract) -> 
         ["覆盖等级", payload.get("coverage_grade")],
         ["市场", market.get("value") or "未确认"],
         ["市场来源", "用户指定" if market.get("source") == "user" else "页面默认"],
-        ["类目路径 / ID", category.get("path") or category.get("ids") or "未确认"],
-        ["实际周期", scope.get("actual_periods") or "接口未返回"],
+        ["类目路径 / ID", _display_category_scope(category)],
+        ["查询 / 统计周期", _display_periods(scope.get("actual_periods"))],
         ["币种", ", ".join(scope.get("currency") or []) or "接口未返回"],
-        ["数据状态", "; ".join(
-            f"{item.get('tool')}：{'缓存命中' if item.get('cache', {}).get('hit') else '实时调用'}"
-            + (f"（缓存 age {item.get('cache', {}).get('age_seconds')} 秒）" if item.get('cache', {}).get('age_seconds') is not None else "")
-            for item in payload.get("tool_states") or []
-        ) or "接口未返回"],
+        ["数据状态", _display_tool_state_summary(payload.get("tool_states"))],
     ]))
 
     lines.extend(["", "## 市场与类目表", ""])

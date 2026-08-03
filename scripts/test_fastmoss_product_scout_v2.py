@@ -81,6 +81,18 @@ class ProductScoutV2Tests(unittest.TestCase):
         self.assertIn("新品榜", render_deterministic_fact_blocks(contract))
         self.assertIn("候选验证表", render_deterministic_fact_blocks(contract))
 
+    def test_fact_card_formats_internal_scope_structures_for_display(self):
+        contract = build_product_scout_evidence_contract(
+            _calls(), _complete_results(), "请分析美国解压玩具", {"region": "US"},
+        )
+        rendered = render_deterministic_fact_blocks(contract)
+        self.assertIn("类目 935176", rendered)
+        self.assertIn("周：2026-W30", rendered)
+        self.assertIn("上架区间：2026-07-01 至 2026-07-14", rendered)
+        self.assertIn("共 7 项调用：实时 7，缓存 0", rendered)
+        self.assertNotIn("{'category_id'", rendered)
+        self.assertNotIn("'requested':", rendered)
+
     def test_contract_grades_b_c_d_are_conservative(self):
         results = _complete_results()
         partial = build_product_scout_evidence_contract(_calls()[:3], results[:3], "分析解压玩具", {})
