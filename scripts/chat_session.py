@@ -1,5 +1,7 @@
 """Session management and persistence for AI chat system."""
 import json
+import os
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -49,6 +51,8 @@ class ChatStore:
         self.sessions: dict[str, Session] = {}
         self.sse_clients: dict[str, set] = {}
         self._save_timer: threading.Timer | None = None
+        self._save_timer_lock = threading.Lock()
+        self._save_lock = threading.Lock()
         self._lock = threading.Lock()
 
     def create_session(self, session_id: str) -> Session:
@@ -121,10 +125,11 @@ class ChatStore:
         return "新对话"
 
     def _schedule_save(self):
-        if self._save_timer:
-            self._save_timer.cancel()
-        self._save_timer = threading.Timer(0.1, self._do_save)
-        self._save_timer.start()
+        with self._save_timer_lock:
+            if self._save_timer:
+                self._save_timer.cancel()
+            self._save_timer = threading.Timer(0.1, self._do_save)
+            self._save_timer.start()
 
     def _do_save(self):
         try:
@@ -159,22 +164,41 @@ class ChatStore:
 def save_sessions_to_disk(store: ChatStore):
     sessions_file = getattr(store, "sessions_file", SESSIONS_FILE)
     sessions_file.parent.mkdir(parents=True, exist_ok=True)
-    serialized = []
-    for s in store.sessions.values():
-        serialized.append({
-            "id": s.id, "title": s.title or ChatStore._auto_title(s),
-            "title_is_custom": getattr(s, "title_is_custom", False),
-            "created_at": s.created_at, "updated_at": s.updated_at,
-            "messages": [{
-                "id": m.id, "role": m.role, "content": m.content,
-                "attachments": m.attachments,
-                "tool_calls": m.tool_calls, "tool_results": m.tool_results,
-                "official_preset": m.official_preset,
-                "status": m.status, "created_at": m.created_at,
-            } for m in s.messages],
-        })
-    with open(sessions_file, "w", encoding="utf-8") as f:
-        json.dump(serialized, f, ensure_ascii=False, indent=2)
+    with store._save_lock:
+        with store._lock:
+            serialized = []
+            for s in store.sessions.values():
+                serialized.append({
+                    "id": s.id, "title": s.title or ChatStore._auto_title(s),
+                    "title_is_custom": getattr(s, "title_is_custom", False),
+                    "created_at": s.created_at, "updated_at": s.updated_at,
+                    "messages": [{
+                        "id": m.id, "role": m.role, "content": m.content,
+                        "attachments": m.attachments,
+                        "tool_calls": m.tool_calls, "tool_results": m.tool_results,
+                        "official_preset": m.official_preset,
+                        "status": m.status, "created_at": m.created_at,
+                    } for m in s.messages],
+                })
+
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=sessions_file.parent,
+                prefix=f".{sessions_file.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as f:
+                temp_path = Path(f.name)
+                json.dump(serialized, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, sessions_file)
+        finally:
+            if temp_path is not None and temp_path.exists():
+                temp_path.unlink()
 
 
 def load_sessions_from_disk(store: ChatStore):
