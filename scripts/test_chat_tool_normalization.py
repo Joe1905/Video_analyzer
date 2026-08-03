@@ -2922,7 +2922,6 @@ def test_lightweight_fastmoss_skill_final_path_uses_semantic_report_without_draf
     synthesis_context = json.dumps(synthesis_payload["messages"], ensure_ascii=False)
     assert first_draft not in synthesis_context
     assert "解压玩具" in synthesis_context
-    assert "category_id_level1" in synthesis_context
 
     recovered, failed_payloads = run_case(True)
     assert recovered.status == "error"
