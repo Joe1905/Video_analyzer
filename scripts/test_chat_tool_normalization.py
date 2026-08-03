@@ -2827,7 +2827,7 @@ def test_lightweight_fastmoss_skill_uses_runtime_dates_and_semantic_deduplicatio
     assert first != different_window
 
 
-def test_lightweight_fastmoss_skill_two_pass_synthesis_isolated_and_recovers_first_draft() -> None:
+def test_lightweight_fastmoss_skill_final_path_uses_semantic_report_without_draft_fallback() -> None:
     first_draft = "首稿证据与判断。" * 180
     final_answer = "最终结论基于本轮工具证据，建议先验证代表性样本和竞争风险。" * 20
 
@@ -2916,17 +2916,17 @@ def test_lightweight_fastmoss_skill_two_pass_synthesis_isolated_and_recovers_fir
     assistant, payloads = run_case(False)
     assert assistant.status == "done"
     assert assistant.content == final_answer
-    assert len(payloads) == 3
+    assert len(payloads) == 4
     synthesis_payload = payloads[-1]
-    assert synthesis_payload["tools"] is None
+    assert "tools" not in synthesis_payload
     synthesis_context = json.dumps(synthesis_payload["messages"], ensure_ascii=False)
     assert first_draft not in synthesis_context
     assert "解压玩具" in synthesis_context
     assert "category_id_level1" in synthesis_context
 
     recovered, failed_payloads = run_case(True)
-    assert recovered.status == "done"
-    assert recovered.content == first_draft
+    assert recovered.status == "error"
+    assert first_draft not in recovered.content
     assert len(failed_payloads) == 3
 
 
@@ -4645,7 +4645,7 @@ if __name__ == "__main__":
     test_fastmoss_deep_dive_ids_must_come_from_current_task()
     test_tool_call_signature_deduplicates_argument_order()
     test_lightweight_fastmoss_skill_uses_runtime_dates_and_semantic_deduplication()
-    test_lightweight_fastmoss_skill_two_pass_synthesis_isolated_and_recovers_first_draft()
+    test_lightweight_fastmoss_skill_final_path_uses_semantic_report_without_draft_fallback()
     test_fastmoss_dual_ranking_plan_uses_three_sorted_category_pages_then_segments()
     test_fastmoss_product_phase_waits_for_all_category_and_segment_searches()
     test_fastmoss_product_workflow_deterministically_advances_and_binds_two_targets()
