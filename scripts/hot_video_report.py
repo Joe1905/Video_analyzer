@@ -985,11 +985,18 @@ def _collect_hot_video_candidates(
     excluded_keys = excluded_keys or set()
     cutoff_ts = time.time() - recency_days * 86400
     max_pages = max(1, _to_int(os.getenv("HOT_VIDEO_POPULAR_MAX_PAGES", "15")))
+    topic_max_pages = max(1, _to_int(os.getenv("HOT_VIDEO_TOPIC_MAX_PAGES", "3")))
     source_errors: list[str] = []
     topic_min_views = max(0, _to_int(os.getenv("HOT_VIDEO_TOPIC_MIN_PLAY_COUNT", "5000")))
     stream_min_views = max(0, _to_int(os.getenv("HOT_VIDEO_STREAM_MIN_PLAY_COUNT", "10000")))
 
-    def collect_from(endpoint: str, params: dict[str, Any], label: str, min_play_count: int, bucket: str) -> int:
+    def collect_from(
+        endpoint: str,
+        params: dict[str, Any],
+        label: str,
+        min_play_count: int,
+        bucket: str,
+    ) -> tuple[int, Any | None]:
         _progress_payload(report_date, "running", "collecting", 6, f"Collecting source: {label}", counts)
         cache_policy = os.getenv("HOT_VIDEO_SOURCE_CACHE_POLICY", "record_only").strip() or "record_only"
         payload = call_api(api_key, api_base, endpoint, params, api_timeout, cache_policy=cache_policy)
@@ -1036,14 +1043,36 @@ def _collect_hot_video_candidates(
             if key not in candidates or item["hot_score"] > candidates[key]["hot_score"]:
                 candidates[key] = item
         _progress_payload(report_date, "running", "filtering", 18, f"{label} complete, valid candidates: {len(candidates)}", counts)
-        return len(candidates) - before_count
+        return len(candidates) - before_count, _response_next_cursor(payload)
+
+    def collect_topic_pages(
+        endpoint: str,
+        params: dict[str, Any],
+        label: str,
+    ) -> int:
+        added = 0
+        cursor: Any | None = None
+        seen_cursors: set[str] = set()
+        for page in range(1, topic_max_pages + 1):
+            page_params = dict(params)
+            if cursor not in (None, ""):
+                page_params["cursor"] = cursor
+            page_label = label if page == 1 else f"{label}:p{page}"
+            page_added, next_cursor = collect_from(endpoint, page_params, page_label, topic_min_views, "topic")
+            added += page_added
+            cursor_key = str(next_cursor or "")
+            if not cursor_key or cursor_key in seen_cursors:
+                break
+            seen_cursors.add(cursor_key)
+            cursor = next_cursor
+        return added
 
     topic_fetch = max(target_count * 2, 20)
     for keyword in topic_keywords:
         before_topic = len(candidates)
         try:
             for endpoint, params, label in _topic_source_requests(keyword, region, topic_fetch, recency_days, fallback=False):
-                collect_from(endpoint, params, label, topic_min_views, "topic")
+                collect_topic_pages(endpoint, params, label)
         except Exception as exc:
             source_errors.append(f"topic-search:{keyword}: {exc}")
         if len(candidates) > before_topic:
@@ -1051,14 +1080,14 @@ def _collect_hot_video_candidates(
         counts["topic_fallback_sources"] = counts.get("topic_fallback_sources", 0) + 1
         for endpoint, params, label in _topic_source_requests(keyword, region, topic_fetch, recency_days, fallback=True):
             try:
-                collect_from(endpoint, params, label, topic_min_views, "topic")
+                collect_topic_pages(endpoint, params, label)
                 if len(candidates) > before_topic:
                     break
             except Exception as exc:
                 source_errors.append(f"{label}: {exc}")
 
     page = 1
-    while len(candidates) < target_count and page <= max_pages:
+    while page <= max_pages and (page == 1 or len(candidates) < target_count):
         remaining = target_count - len(candidates)
         total_fetch = max(20, remaining * 3)
         popular_source_count = max(1, len(_split_csv_env("HOT_VIDEO_POPULAR_SORTS", "views,likes")))
@@ -1075,7 +1104,7 @@ def _collect_hot_video_candidates(
         page += 1
 
     page = 1
-    while len(candidates) < target_count and page <= max_pages:
+    while page <= max_pages and (page == 1 or len(candidates) < target_count):
         remaining = target_count - len(candidates)
         fetch_count = max(20, remaining * 3)
         page_success = False
@@ -1570,6 +1599,53 @@ def _split_csv_env(name: str, default: str) -> list[str]:
     return [item for item in values if item]
 
 
+def _response_next_cursor(payload: dict[str, Any]) -> Any | None:
+    containers: list[dict[str, Any]] = [payload]
+    data = payload.get("data")
+    if isinstance(data, dict):
+        containers.append(data)
+        nested = data.get("data")
+        if isinstance(nested, dict):
+            containers.append(nested)
+    for container in containers:
+        has_more = _first_present(container, ("has_more", "hasMore", "more"))
+        if has_more not in (None, "", [], {}):
+            normalized = str(has_more).strip().lower()
+            if normalized in {"0", "false", "no", "off"}:
+                return None
+        cursor = _first_present(container, ("cursor", "next_cursor", "nextCursor"))
+        if cursor not in (None, "", 0, "0", [], {}):
+            return cursor
+    return None
+
+
+def _sociavault_time_window(recency_days: int) -> str:
+    days = max(1, _to_int(recency_days))
+    if days <= 1:
+        return "yesterday"
+    if days <= 7:
+        return "this-week"
+    if days <= 31:
+        return "this-month"
+    if days <= 90:
+        return "last-3-months"
+    if days <= 180:
+        return "last-6-months"
+    return "all-time"
+
+
+def _topic_sort_by() -> str:
+    value = (os.getenv("HOT_VIDEO_TOPIC_SORT_BY", "most-liked").strip() or "most-liked").lower()
+    aliases = {
+        "create_time": "date-posted",
+        "create-time": "date-posted",
+        "views": "most-liked",
+        "likes": "most-liked",
+    }
+    value = aliases.get(value, value)
+    return value if value in {"relevance", "most-liked", "date-posted"} else "most-liked"
+
+
 def _normalize_topic_keywords(value: Any, fallback: list[str] | None = None) -> list[str]:
     if value in (None, ""):
         raw_items = fallback or []
@@ -1620,17 +1696,25 @@ def _topic_source_requests(
     topic = str(keyword or "").strip()
     if not topic:
         return []
-    common = {"query": topic, "region": region, "count": count, "days": recency_days}
+    time_window = _sociavault_time_window(recency_days)
     if not fallback:
-        params = dict(common)
-        params["sort_by"] = os.getenv("HOT_VIDEO_TOPIC_SORT_BY", "create_time").strip() or "create_time"
+        params = {
+            "query": topic,
+            "region": region,
+            "publish_time": time_window,
+            "sort_by": _topic_sort_by(),
+        }
         return [("search-top", params, f"topic-search-top:{topic}")]
     requests: list[tuple[str, dict[str, Any], str]] = [
-        ("search-keyword", dict(common), f"topic-search-keyword:{topic}"),
         (
-            "search-top",
-            {**common, "page": 2, "sort_by": os.getenv("HOT_VIDEO_TOPIC_SORT_BY", "create_time").strip() or "create_time"},
-            f"topic-search-top:{topic}:p2",
+            "search-keyword",
+            {
+                "query": topic,
+                "region": region,
+                "date_posted": time_window,
+                "sort_by": _topic_sort_by(),
+            },
+            f"topic-search-keyword:{topic}",
         ),
     ]
     hashtag = re.sub(r"^\s*#", "", topic).strip()
@@ -1638,7 +1722,7 @@ def _topic_source_requests(
         requests.append(
             (
                 "search-hashtag",
-                {"hashtag": hashtag, "region": region, "count": count, "days": recency_days},
+                {"hashtag": hashtag, "region": region},
                 f"topic-search-hashtag:{hashtag}",
             )
         )
@@ -1702,19 +1786,6 @@ def _rank_with_topic_guarantees(
             if key not in selected_keys:
                 selected.append(item)
                 selected_keys.add(key)
-    for bucket in ("topic", "stream"):
-        for item in sorted_candidates:
-            if len(selected) >= target_count:
-                break
-            if item.get("selection_bucket") != bucket:
-                continue
-            key = (item["platform"], item["video_id"])
-            if key in selected_keys:
-                continue
-            selected.append(item)
-            selected_keys.add(key)
-        if len(selected) >= target_count:
-            break
     for item in sorted_candidates:
         if len(selected) >= target_count:
             break
