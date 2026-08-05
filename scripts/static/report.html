@@ -111,8 +111,8 @@ body{background:var(--bg);color:var(--text);font-family:Inter,"PingFang SC","Mic
 .v-meta{display:flex;align-items:center;gap:5px;margin-top:5px;font-size:11px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .v-ava{width:16px;height:16px;border-radius:50%;background:var(--accent-soft);color:var(--accent2);display:grid;place-items:center;font-size:9px;font-weight:800;flex:none}
 
-/* Modal */
-.modal{position:fixed;inset:0;z-index:9999;display:none;background:rgba(15,23,42,.45);padding:20px;place-items:center;backdrop-filter:blur(4px)}
+/* Modal - Root level z-index */
+.modal{position:fixed;inset:0;z-index:99999;display:none;background:rgba(15,23,42,.45);padding:20px;place-items:center;backdrop-filter:blur(4px)}
 .modal.show{display:grid!important}
 .mock-modal{width:min(900px,100%);max-height:90vh;border-radius:var(--radius-lg);overflow:hidden;border:1px solid var(--border);box-shadow:var(--shadow-lg);background:var(--surface);display:flex;flex-direction:column}
 .m-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;padding:16px 20px;border-bottom:1px solid var(--border);flex:none}
@@ -186,8 +186,8 @@ body{background:var(--bg);color:var(--text);font-family:Inter,"PingFang SC","Mic
 .empty b{font-size:13.5px}
 .empty p{font-size:11.5px;color:var(--text3);margin:5px 0 12px}
 
-/* Context menu - Left Aligned Text */
-.menu{position:fixed;z-index:9999;display:none;min-width:150px;padding:6px;background:#fff;border:1px solid var(--border);border-radius:12px;box-shadow:0 10px 30px rgba(15,23,42,.18);flex-direction:column;gap:3px}
+/* Context menu - Left Aligned Text & Top Level Z-index */
+.menu{position:fixed;z-index:99999;display:none;min-width:150px;padding:6px;background:#fff;border:1px solid var(--border);border-radius:12px;box-shadow:0 10px 30px rgba(15,23,42,.18);flex-direction:column;gap:3px}
 .menu.show{display:flex!important}
 .menu button,.menu a{height:32px!important;min-height:32px!important;display:flex!important;align-items:center!important;text-align:left!important;justify-content:flex-start!important;text-decoration:none!important;background:transparent!important;border:0!important;color:var(--text)!important;border-radius:8px!important;font-size:12.5px!important;padding:0 12px!important;font-weight:500!important;width:100%!important;box-shadow:none!important;cursor:pointer!important}
 .menu button:hover,.menu a:hover{background:var(--border2)!important;color:var(--accent)!important}
@@ -364,11 +364,12 @@ body{background:var(--bg);color:var(--text);font-family:Inter,"PingFang SC","Mic
   </div>
   <div class="mobile-drawer-body" id="mobileHistory"></div>
 </div>
+</div>
+</div>
 
+<!-- Root-level Menu & Modal to avoid BFC/overflow constraints -->
 <div id="menu" class="menu"></div>
 <div id="modal" class="modal"><div id="modalContainer" style="width:100%;display:grid;place-items:center"></div></div>
-</div>
-</div>
 
 <script>
 const T={run:"生成今日报告",save:"保存设置",loading:"正在加载...",hotReport:"爆款视频日报",latest30:"最近 30 天暂无日报。",noReport:"暂无日报正文。生成完成后这里会展示爆款拆解与总体结论。",noVideos:"暂无热视频。",todayMissing:"今日还没有日报。",play:"播放",parse:"解析内容",audit:"分析内容",origin:"原视频链接",close:"关闭",saved:"已保存",saveFail:"保存失败",delete:"删除",deleteConfirm:"确定删除这天的日报？",contentEmpty:"暂无内容。",docEmpty:"该视频还没有生成对应内容。",updated:"更新时间",videos:"视频",success:"成功",failed:"失败",error:"错误",items:"条",hot:"热度",views:"播放",million:"万",billion:"亿"};
@@ -393,8 +394,16 @@ function getTopicStyle(i) {
 function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]))}
 function safeAuthor(v){
   if(!v)return "未知";
-  if(typeof v==="object")return esc(v.nickname||v.name||v.unique_id||v.uniqueId||"未知");
-  return esc(String(v));
+  let s = v;
+  if(typeof v === "object") s = v.nickname || v.name || v.unique_id || v.uniqueId || JSON.stringify(v);
+  s = String(s).replace(/&#039;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+  if(s.startsWith("{") || s.startsWith("[")) {
+    try {
+      const obj = JSON.parse(s);
+      if(typeof obj === "object") return esc(obj.nickname || obj.name || obj.unique_id || "未知");
+    } catch(e) {}
+  }
+  return esc(s.replace(/^@/, "").trim() || "未知");
 }
 function fmtMd(v){return esc(v).replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g,'<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>').replace(/\*\*([^*\n]+)\*\*/g,"<strong>$1</strong>")}
 function fmtTime(ts){return ts?new Date(ts*1000).toLocaleString("zh-CN",{hour12:false}):"-"}
@@ -610,7 +619,7 @@ function renderModalContent(v,type){
       </div>
     `;
   }
-  const data=type==="analysis"?v.analysis_zh||v.analysis:v.audit_result;
+  const data = type === "analysis" ? (v.analysis_zh || v.analysis || v.audit_result || v.summary) : v.audit_result;
   if(!data)return `<div class="w-card empty">${T.docEmpty}</div>`;
   return `<div class="mock-modal"><div class="m-head"><div class="m-title">${esc(selectedVideo?.title||"")}</div><button class="m-close" onclick="closeModal()">×</button></div><div style="padding:16px;overflow-y:auto"><pre style="white-space:pre-wrap;font-size:12px">${esc(typeof data==="object"?JSON.stringify(data,null,2):data)}</pre></div></div>`;
 }
@@ -838,8 +847,8 @@ function showMenu(e,i){
   menu.classList.add("show");
 
   const btnParse = $("menuItemParse"), btnDetail = $("menuItemDetail");
-  if(btnParse) btnParse.onclick = (evt) => { evt.stopPropagation(); openDoc('analysis'); };
-  if(btnDetail) btnDetail.onclick = (evt) => { evt.stopPropagation(); openDoc('detail'); };
+  if(btnParse) btnParse.onclick = (evt) => { evt.stopPropagation(); openDoc('analysis', evt); };
+  if(btnDetail) btnDetail.onclick = (evt) => { evt.stopPropagation(); openDoc('detail', evt); };
 }
 
 window.openDoc = function(type, e){
@@ -891,7 +900,6 @@ $("run").onclick=async()=>{
 };
 
 $("saveSettings").onclick=saveReportSettings;
-$("modal").onclick=e=>{if(e.target===$("modal"))closeModal()};
 
 function exportMarkdown(){
   if(!current?.report)return alert("暂无可导出的报告");

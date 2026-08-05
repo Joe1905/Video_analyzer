@@ -24,8 +24,8 @@ body{background:var(--bg);color:var(--text);font-family:Inter,"PingFang SC","Mic
 .btn-ghost{height:32px!important;min-height:32px!important;padding:0 12px!important;background:var(--surface)!important;color:var(--text2)!important;border:1px solid var(--border)!important;border-radius:var(--radius-sm)!important;font-weight:600;font-size:12.5px;display:inline-flex;align-items:center;justify-content:center;text-decoration:none!important;white-space:nowrap;box-shadow:none!important}
 .btn-ghost:hover{background:var(--accent-soft)!important;color:var(--accent)!important;border-color:#cbd5e1!important}
 
-.pl-pager{display:flex;align-items:center;gap:2px;border:1px solid var(--border);border-radius:9px;padding:2px;background:var(--surface)}
-.pl-pager button{width:26px!important;height:26px!important;min-height:26px!important;border:0!important;background:transparent!important;border-radius:6px!important;font-size:13px;color:var(--text2)!important;padding:0!important;display:grid;place-items:center;box-shadow:none!important}
+.pl-pager{display:flex;align-items:center;gap:2px;border:1px solid var(--border);border-radius:999px;padding:2px;background:var(--surface)}
+.pl-pager button{width:26px!important;height:26px!important;min-height:26px!important;border:0!important;background:transparent!important;border-radius:50%!important;font-size:13px;color:var(--text2)!important;padding:0!important;display:grid;place-items:center;box-shadow:none!important}
 .pl-pager button:hover{background:var(--border2)!important;color:var(--text)!important}
 .pl-pager button:disabled{opacity:.3!important;cursor:default!important}
 .pl-pager span{font-size:11.5px;color:var(--text2);min-width:36px;text-align:center;font-variant-numeric:tabular-nums}
@@ -33,18 +33,19 @@ body{background:var(--bg);color:var(--text);font-family:Inter,"PingFang SC","Mic
 .pill{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--border);border-radius:999px;padding:4px 12px;background:var(--surface);font-size:12px;font-weight:600;color:var(--text2)}
 
 .pl-shell{height:100%;min-height:0;display:grid;grid-template-columns:460px minmax(0,1fr);overflow:hidden}
-.pl-rail{background:var(--surface);border-right:1px solid var(--border);padding:16px;display:flex;flex-direction:column;gap:12px;overflow-y:auto}
+.pl-rail{background:var(--surface);border-right:1px solid var(--border);padding:16px;display:flex;flex-direction:column;gap:12px;height:100%;overflow:hidden}
 
-/* Maximize Left Video Player Stage */
-.pl-stage{position:relative;width:100%;aspect-ratio:9/16;max-height:520px;border-radius:12px;background:#0b1220;display:grid;place-items:center;overflow:hidden;flex:none;margin:0 auto;box-shadow:0 4px 16px rgba(15,23,42,.12)}
+/* Video Stage fills vertical rail height */
+.pl-stage{position:relative;width:100%;flex:1;min-height:0;height:100%;border-radius:12px;background:#0b1220;display:grid;place-items:center;overflow:hidden;box-shadow:0 4px 16px rgba(15,23,42,.12)}
 .pl-stage video{width:100%;height:100%;object-fit:contain}
 .pl-controls{position:absolute;left:10px;right:10px;bottom:10px;height:36px;display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:10px;background:rgba(15,23,42,.76);color:#fff;backdrop-filter:blur(8px)}
 .pl-controls button{width:24px!important;height:24px!important;min-height:24px!important;border:0!important;border-radius:50%!important;background:#fff!important;color:#0f172a!important;font-size:11px;padding:0!important;flex:none;line-height:1;display:grid;place-items:center;box-shadow:none!important}
 .pl-controls input[type="range"]{flex:1;accent-color:#fff;cursor:pointer}
 .pl-controls span{font-size:11px;color:#fff;font-variant-numeric:tabular-nums;white-space:nowrap}
 
+.pl-meta-box{flex:none;display:flex;flex-direction:column;gap:10px}
 .pl-title{font-size:14px;font-weight:750;line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-.pl-stats{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.pl-stats{display:flex;gap:6px;flex-wrap:wrap}
 .pl-stats span{height:24px;display:inline-flex;align-items:center;padding:0 9px;border:1px solid var(--border);border-radius:999px;font-size:11px;color:var(--text2);background:var(--surface)}
 .pl-stats .hot{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:700}
 
@@ -57,40 +58,40 @@ body{background:var(--bg);color:var(--text);font-family:Inter,"PingFang SC","Mic
 .pl-main{background:var(--bg);padding:16px 18px;display:flex;flex-direction:column;gap:14px;height:100%;min-height:0;overflow:hidden}
 .pl-main .card{flex:1;min-height:0;display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden}
 .pl-main .card .sect-head{flex:none;display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border);background:var(--surface)}
-.pl-main .card .sect-head b{font-size:13.5px;font-weight:750}
+.pl-main .card .sect-head b{font-size:14px;font-weight:750}
 
-/* Top Card: Scrollable parsed text body + Fixed bottom chips bar */
-.card-body-flex{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;padding:14px 16px}
-.seg-scroll-body{flex:1;min-height:0;overflow-y:auto;font-size:12.5px;color:#263244;line-height:1.6;padding-right:4px}
+/* Top Card: Full unclipped scrollable parsed text body + Fixed bottom chips bar */
+.card-body-flex{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;padding:16px}
+.seg-scroll-body{flex:1;min-height:0;overflow-y:auto;font-size:13.5px;color:#1e293b;line-height:1.65;white-space:pre-wrap;word-break:break-word;padding-right:4px}
 .tl-chips-bar{flex:none;padding-top:10px;margin-top:10px;border-top:1px solid var(--border2);display:flex;flex-wrap:wrap;gap:6px}
 
-/* Bottom Card: Formatted Markdown Scroll */
-.card-body-scroll{flex:1;min-height:0;overflow-y:auto;padding:14px 16px;font-size:12.5px;color:#263244;line-height:1.6}
+/* Bottom Card: Formatted Markdown Scroll with 14px boosted readable font size */
+.card-body-scroll{flex:1;min-height:0;overflow-y:auto;padding:16px;font-size:14px!important;color:#1e293b;line-height:1.7}
 
-/* Structured Markdown List Styling */
+/* Structured Markdown List Styling - Boosted Readability */
 .md-list{padding-left:18px;margin:8px 0}
-.md-list li{margin-bottom:6px;line-height:1.6}
-.md-p{margin-bottom:8px;line-height:1.6}
-.md-h2{font-size:15px;font-weight:750;margin:12px 0 6px;color:var(--accent)}
-.md-h3{font-size:14px;font-weight:700;margin:10px 0 5px;color:var(--accent2)}
-.md-h4{font-size:13px;font-weight:700;margin:8px 0 4px;color:var(--text)}
+.md-list li{font-size:14px!important;margin-bottom:8px;line-height:1.7;color:#1e293b}
+.md-p{font-size:14px!important;margin-bottom:10px;line-height:1.7;color:#1e293b}
+.md-h2{font-size:16px;font-weight:750;margin:14px 0 6px;color:var(--accent)}
+.md-h3{font-size:15px;font-weight:700;margin:12px 0 5px;color:var(--accent2)}
+.md-h4{font-size:14px;font-weight:700;margin:10px 0 4px;color:var(--text)}
 
-.seg-current{border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:10px;background:var(--surface);padding:11px 13px;margin-bottom:6px}
-.seg-current b{display:block;font-size:12px;color:var(--accent2);margin-bottom:5px}
-.seg-current p{font-size:12.5px;color:#263244;line-height:1.6}
+.seg-current{border:1px solid var(--border);border-left:4px solid var(--accent);border-radius:10px;background:var(--surface);padding:12px 14px;margin-bottom:6px}
+.seg-current b{display:block;font-size:13px;color:var(--accent2);margin-bottom:6px;font-weight:700}
+.seg-current p{font-size:13.5px;color:#1e293b;line-height:1.65;white-space:pre-wrap;word-break:break-word}
 
 /* Timeline Chips */
 .tl-chip{height:26px;padding:0 10px;border-radius:999px;border:1px solid var(--border);background:var(--surface);font-size:11px;color:var(--text2);font-weight:600;cursor:pointer;display:inline-flex;align-items:center;transition:.15s ease}
 .tl-chip:hover{border-color:#cbd5e1;background:var(--border2)}
 .tl-chip.active{background:var(--accent)!important;color:#fff!important;border-color:var(--accent)!important;font-weight:700}
 
-.empty{text-align:center;padding:24px 14px;color:var(--text3);font-size:12px}
+.empty{text-align:center;padding:24px 14px;color:var(--text3);font-size:13px}
 
 @media(max-width:980px){
   body{height:auto;overflow:auto}
   .pl-shell{display:flex;flex-direction:column;height:auto;min-height:100%}
   .pl-rail{height:auto;flex:none;display:flex;flex-direction:column;overflow:visible}
-  .pl-stage{max-height:360px}
+  .pl-stage{height:360px;flex:none}
   .pl-main{flex:none;height:auto;overflow:visible;padding:12px}
   .pl-main .card{height:auto;min-height:300px;flex:none}
   .header-actions{justify-content:flex-end}
@@ -135,14 +136,14 @@ body{background:var(--bg);color:var(--text);font-family:Inter,"PingFang SC","Mic
           <span id="videoClock">00:00</span>
         </div>
       </div>
-      <div>
+      <div class="pl-meta-box">
         <div class="pl-title" id="videoTitleSide">加载中...</div>
         <div class="pl-stats" id="stats"></div>
-      </div>
-      <div class="pl-facts">
-        <div><span>作者</span><b id="factAuthor">-</b></div>
-        <div><span>平台</span><b id="factPlatform">-</b></div>
-        <div><span>发布</span><b id="factPublish">-</b></div>
+        <div class="pl-facts">
+          <div><span>作者</span><b id="factAuthor">-</b></div>
+          <div><span>平台</span><b id="factPlatform">-</b></div>
+          <div><span>发布</span><b id="factPublish">-</b></div>
+        </div>
       </div>
     </aside>
 
@@ -171,8 +172,16 @@ let currentReport=null,currentVideo=null,currentTimeline=[];
 function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]))}
 function safeAuthor(v){
   if(!v)return "未知";
-  if(typeof v==="object")return esc(v.nickname||v.name||v.unique_id||v.uniqueId||"未知");
-  return esc(String(v));
+  let s = v;
+  if(typeof v === "object") s = v.nickname || v.name || v.unique_id || v.uniqueId || JSON.stringify(v);
+  s = String(s).replace(/&#039;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+  if(s.startsWith("{") || s.startsWith("[")) {
+    try {
+      const obj = JSON.parse(s);
+      if(typeof obj === "object") return esc(obj.nickname || obj.name || obj.unique_id || "未知");
+    } catch(e) {}
+  }
+  return esc(s.replace(/^@/, "").trim() || "未知");
 }
 function fmtMd(v){return esc(v).replace(/\*\*([^*\n]+)\*\*/g,"<strong>$1</strong>")}
 function fmtNum(n){n=Number(n||0);if(n>=1e8)return (n/1e8).toFixed(1)+"亿";if(n>=1e4)return (n/1e4).toFixed(1)+"万";return String(n||0)}
@@ -264,7 +273,6 @@ function deepDiveFor(report,video,index){
   return "";
 }
 
-// Timeline Chip Rendering: Full parsed text scrolls internally; Chips are fixed at bottom
 function renderSegment(segment,all,currentTime){
   $("timecode").textContent=fmtClock(currentTime);
   if(!all.length){
