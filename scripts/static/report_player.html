@@ -5,7 +5,6 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>爆款视频播放复盘</title>
 <style>
-@layer legacy {
 :root{
   --bg:#f6f8fb;--surface:#fff;--text:#0f172a;--text2:#475569;--text3:#94a3b8;
   --border:#e2e8f0;--border2:#f1f5f9;
@@ -18,19 +17,17 @@
 }
 *{box-sizing:border-box;margin:0}
 body{background:var(--bg);color:var(--text);font-family:Inter,"PingFang SC","Microsoft YaHei",system-ui,-apple-system,sans-serif;line-height:1.55;height:100vh;overflow:hidden}
-button,a{font:inherit;color:inherit;text-decoration:none}
-button{cursor:pointer;border:1px solid transparent;border-radius:var(--radius-sm);display:inline-flex;align-items:center;justify-content:center;gap:6px;font-weight:600;font-size:13px;white-space:nowrap;transition:.15s ease}
-
-.btn-ghost{height:32px;padding:0 12px;background:var(--surface);color:var(--text2);border:1px solid var(--border)}
-.btn-ghost:hover{background:var(--accent-soft);color:var(--accent);border-color:#cbd5e1}
 
 .ui-header{position:relative!important}
-.header-actions{display:flex;align-items:center;gap:8px}
+.header-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+
+.btn-ghost{height:32px!important;min-height:32px!important;padding:0 12px!important;background:var(--surface)!important;color:var(--text2)!important;border:1px solid var(--border)!important;border-radius:var(--radius-sm)!important;font-weight:600;font-size:12.5px;display:inline-flex;align-items:center;justify-content:center;text-decoration:none!important;white-space:nowrap;box-shadow:none!important}
+.btn-ghost:hover{background:var(--accent-soft)!important;color:var(--accent)!important;border-color:#cbd5e1!important}
 
 .pl-pager{display:flex;align-items:center;gap:2px;border:1px solid var(--border);border-radius:9px;padding:2px;background:var(--surface)}
-.pl-pager button{width:26px;height:26px;border:0;background:transparent;border-radius:6px;font-size:13px;color:var(--text2);padding:0}
-.pl-pager button:hover{background:var(--border2);color:var(--text)}
-.pl-pager button:disabled{opacity:.3;cursor:default}
+.pl-pager button{width:26px!important;height:26px!important;min-height:26px!important;border:0!important;background:transparent!important;border-radius:6px!important;font-size:13px;color:var(--text2)!important;padding:0!important;display:grid;place-items:center;box-shadow:none!important}
+.pl-pager button:hover{background:var(--border2)!important;color:var(--text)!important}
+.pl-pager button:disabled{opacity:.3!important;cursor:default!important}
 .pl-pager span{font-size:11.5px;color:var(--text2);min-width:36px;text-align:center;font-variant-numeric:tabular-nums}
 
 .pill{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--border);border-radius:999px;padding:4px 12px;background:var(--surface);font-size:12px;font-weight:600;color:var(--text2)}
@@ -41,7 +38,7 @@ button{cursor:pointer;border:1px solid transparent;border-radius:var(--radius-sm
 .pl-stage{position:relative;height:420px;border-radius:12px;background:#0b1220;display:grid;place-items:center;overflow:hidden;flex:none}
 .pl-stage video{width:100%;height:100%;object-fit:contain}
 .pl-controls{position:absolute;left:10px;right:10px;bottom:10px;height:36px;display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:10px;background:rgba(15,23,42,.76);color:#fff;backdrop-filter:blur(8px)}
-.pl-controls button{width:24px;height:24px;border:0;border-radius:50%;background:#fff;color:#0f172a;font-size:11px;padding:0;flex:none;line-height:1;display:grid;place-items:center}
+.pl-controls button{width:24px!important;height:24px!important;min-height:24px!important;border:0!important;border-radius:50%!important;background:#fff!important;color:#0f172a!important;font-size:11px;padding:0!important;flex:none;line-height:1;display:grid;place-items:center;box-shadow:none!important}
 .pl-controls input[type="range"]{flex:1;accent-color:#fff;cursor:pointer}
 .pl-controls span{font-size:11px;color:#fff;font-variant-numeric:tabular-nums;white-space:nowrap}
 
@@ -51,7 +48,7 @@ button{cursor:pointer;border:1px solid transparent;border-radius:var(--radius-sm
 .pl-stats .hot{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:700}
 
 .pl-facts{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
-.pl-facts div{border:1px solid var(--border2);border-radius:9px;padding:7px 9px;min-width:0}
+.pl-facts div{border:1px solid var(--border2);border-radius:999px;padding:7px 9px;min-width:0;border-radius:9px}
 .pl-facts span{display:block;font-size:10.5px;color:var(--text3);font-weight:700}
 .pl-facts b{display:block;font-size:12px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
@@ -65,18 +62,22 @@ button{cursor:pointer;border:1px solid transparent;border-radius:var(--radius-sm
 .seg-current b{display:block;font-size:12px;color:var(--accent2);margin-bottom:5px}
 .seg-current p{font-size:12.5px;color:#263244;line-height:1.6}
 
-.tl-list{display:flex;flex-direction:column;gap:8px}
-.tl-item{border:1px solid var(--border);border-radius:10px;padding:9px 11px;font-size:12px;color:#263244;cursor:pointer;background:var(--surface);transition:.12s ease}
-.tl-item:hover{border-color:#cbd5e1}
-.tl-item.active{border-color:var(--accent);background:var(--accent-soft)}
-.tl-item b{display:block;font-size:11px;color:var(--accent2);margin-bottom:3px}
+/* Timeline Chips (Label only) */
+.tl-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.tl-chip{height:26px;padding:0 10px;border-radius:999px;border:1px solid var(--border);background:var(--surface);font-size:11px;color:var(--text2);font-weight:600;cursor:pointer;display:inline-flex;align-items:center;transition:.15s ease}
+.tl-chip:hover{border-color:#cbd5e1;background:var(--border2)}
+.tl-chip.active{background:var(--accent)!important;color:#fff!important;border-color:var(--accent)!important;font-weight:700}
 
 .empty{text-align:center;padding:24px 14px;color:var(--text3);font-size:12px}
 
 @media(max-width:980px){
   body{height:auto;overflow:auto}
-  .pl-shell{grid-template-columns:1fr;height:auto}
-  .pl-stage{height:300px}
+  .pl-shell{display:flex;flex-direction:column;height:auto;min-height:100%}
+  .pl-rail{height:70vh;flex:none;display:flex;flex-direction:column;overflow:hidden}
+  .pl-stage{flex:1;min-height:0;height:auto}
+  .pl-main{flex:1;min-height:0;overflow-y:auto;padding:12px}
+  .header-actions{justify-content:flex-end}
+  .header-actions .btn-ghost{padding:0 8px!important;font-size:11px!important}
 }
 </style>
 </head>
@@ -90,7 +91,7 @@ button{cursor:pointer;border:1px solid transparent;border-radius:var(--radius-sm
       <svg viewBox="0 0 24 24"><path d="M4 5h16v14H4zM10 9l5 3-5 3z"/></svg>
     </span>
     <span class="source-page-copy">
-      <strong id="videoTitle">爆款视频播放复盘</strong>
+      <strong id="pageTitle">爆款视频播放复盘</strong>
       <small id="reportDateSub">视频复盘</small>
     </span>
   </div>
@@ -101,7 +102,7 @@ button{cursor:pointer;border:1px solid transparent;border-radius:var(--radius-sm
       <span id="videoPosition">- / -</span>
       <button id="nextVideoBtn" type="button" title="下一个">→</button>
     </div>
-    <button id="translateBtn" class="btn-ghost">翻译解析</button>
+    <button id="translateBtn" type="button" class="btn-ghost">翻译解析</button>
     <span class="pill" id="datePill">-</span>
     <a id="originLink" target="_blank" class="btn-ghost" rel="noopener noreferrer">原视频链接</a>
   </div>
@@ -148,6 +149,11 @@ const $=id=>document.getElementById(id), params=new URLSearchParams(location.sea
 let currentReport=null,currentVideo=null,currentTimeline=[];
 
 function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]))}
+function safeAuthor(v){
+  if(!v)return "未知";
+  if(typeof v==="object")return esc(v.nickname||v.name||v.unique_id||v.uniqueId||"未知");
+  return esc(String(v));
+}
 function fmtMd(v){return esc(v).replace(/\*\*([^*\n]+)\*\*/g,"<strong>$1</strong>")}
 function fmtNum(n){n=Number(n||0);if(n>=1e8)return (n/1e8).toFixed(1)+"亿";if(n>=1e4)return (n/1e4).toFixed(1)+"万";return String(n||0)}
 function fmtClock(s){s=Math.max(0,Number(s||0));const m=Math.floor(s/60),sec=Math.floor(s%60);return `${String(m).padStart(2,"0")}:${String(sec).padStart(2,"0")}`}
@@ -181,6 +187,7 @@ function textOf(value){if(value==null)return "";if(typeof value==="string")retur
 function timelineFromAnalysis(analysis){const items=[];const raw=analysis?.timeline||analysis?.segments||analysis?.frame_analyses||[];if(Array.isArray(raw)){raw.forEach((item,i)=>{const body=textOf(item),r=rangeOf(item,i,body);items.push({...r,title:item?.title||item?.scene||item?.time_range||item?.timestamp||`片段 ${i+1}`,body})})}return items.filter(x=>x.body)}
 function deepDiveFor(report,video,index){const dives=report?.video_deep_dives||[];if(!dives.length)return "";const rank=Number(video?.report_rank||index+1);const title=String(video?.title||"").slice(0,24);return dives.find(x=>String(x).includes(`视频 ${rank}`))||dives.find(x=>title&&String(x).includes(title))||dives[index]||dives[0]||""}
 
+// Timeline Chip Rendering: Chips show ONLY timecode label
 function renderSegment(segment,all,currentTime){
   $("timecode").textContent=fmtClock(currentTime);
   if(!all.length){$("currentSegment").innerHTML='<div class="empty">暂无时间轴解析，展示解析摘要。</div>';return}
@@ -190,17 +197,31 @@ function renderSegment(segment,all,currentTime){
       <p>${fmtMd(segment.body)}</p>
     </div>
     <div class="tl-list">
-      ${all.map((x,i)=>`<div class="tl-item ${x===segment?'active':''}" data-i="${i}"><b>${esc(x.label)}</b>${fmtMd(String(x.body))}</div>`).join("")}
+      ${all.map((x,i)=>`<span class="tl-chip ${x===segment?'active':''}" data-i="${i}">${esc(x.label)}</span>`).join("")}
     </div>
   `;
   $("currentSegment").innerHTML=html;
-  document.querySelectorAll(".tl-item").forEach(el=>el.onclick=()=>{
+  document.querySelectorAll(".tl-chip").forEach(el=>el.onclick=()=>{
     const item=all[Number(el.dataset.i)];
     if(item){$("video").currentTime=item.start;$("video").play().catch(()=>{});renderSegment(item,all,item.start)}
   });
 }
 
+function isCachedRebuiltReport(){
+  const summary=String(currentReport?.report?.summary||currentReport?.report_markdown||"");
+  return summary.includes("未沿用旧的逐条画面解析文本")||summary.includes("缓存重建");
+}
+function hasTrustedTimeline(video){
+  const ids=currentReport?.report?.timeline_trusted_video_ids;
+  return Array.isArray(ids)&&ids.map(String).includes(String(video?.video_id||""));
+}
+function cachedTimelineFallback(video){
+  const m=video?.metrics||{};
+  const rows=[`视频 ID：${video?.video_id||""}`,`标题：${video?.title||""}`,`来源：${video?.source_label||""}`,`播放：${fmtNum(m.play_count)}，点赞：${fmtNum(m.like_count)}，评论：${fmtNum(m.comment_count)}，分享：${fmtNum(m.share_count)}，热度：${fmtNum(video?.hot_score)}`,"旧时间轴画面解析疑似错配，已隐藏；这里保留已确认绑定的视频身份和互动数据。"];
+  return [{start:0,end:999999,label:"缓存重建摘要",title:"缓存重建摘要",body:rows.filter(Boolean).join("\n")}];
+}
 function buildTimeline(video){
+  if(isCachedRebuiltReport()&&!hasTrustedTimeline(video))return cachedTimelineFallback(video);
   const analysis=video.analysis_zh||video.analysis;
   const timeline=timelineFromAnalysis(analysis);
   const fallback=textOf(analysis?.summary||analysis?.video_description||analysis?.transcript?.text);
@@ -256,18 +277,19 @@ async function main(){
   const videos=(Array.isArray(data.videos)?data.videos:[]).map((video,index)=>({video,index})).sort((a,b)=>Number(a.video?.report_rank||a.index+1)-Number(b.video?.report_rank||b.index+1)).map(row=>row.video);
   const video=videos.find(v=>String(v.platform)===platform&&String(v.video_id)===videoId)||videos[0];
   currentVideo=video;
-  if(!video){$("videoTitle").textContent="未找到视频";return}
+  if(!video){$("pageTitle").textContent="未找到视频";return}
   const idx=videos.indexOf(video),m=video.metrics||{};
   setupPager(videos,idx);
 
-  $("videoTitle").textContent=video.title||"爆款视频播放复盘";
+  const authorName=safeAuthor(video.author);
+  $("pageTitle").textContent=video.title||"爆款视频播放复盘";
   if($("videoTitleSide"))$("videoTitleSide").textContent=video.title||"无标题";
   $("reportDateSub").textContent=`视频复盘 · ${data.report_date||date||"-"}`;
   $("datePill").textContent=data.report_date||date||"-";
   $("backLink").href=`/report${data.report_date?`?date=${encodeURIComponent(data.report_date)}`:""}`;
   $("rankPill").textContent=`排名 ${video.report_rank||idx+1}`;
 
-  $("factAuthor").textContent=video.author||"-";
+  $("factAuthor").textContent=authorName;
   $("factPlatform").textContent=video.platform||"-";
   $("factPublish").textContent=m.published_at?new Date(m.published_at*1000).toLocaleDateString("zh-CN"):"-";
 
@@ -296,7 +318,7 @@ async function main(){
   update();
 }
 
-main().catch(err=>{$("videoTitle").textContent=err.message;$("currentSegment").innerHTML=`<div class="empty">${esc(err.message)}</div>`});
+main().catch(err=>{$("pageTitle").textContent=err.message;$("currentSegment").innerHTML=`<div class="empty">${esc(err.message)}</div>`});
 </script>
 </body>
 </html>

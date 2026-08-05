@@ -5,7 +5,6 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>爆款视频日报</title>
 <style>
-@layer legacy {
 :root{
   --bg:#f6f8fb;--surface:#fff;--text:#0f172a;--text2:#475569;--text3:#94a3b8;
   --border:#e2e8f0;--border2:#f1f5f9;
@@ -19,22 +18,21 @@
 }
 *{box-sizing:border-box;margin:0}
 body{background:var(--bg);color:var(--text);font-family:Inter,"PingFang SC","Microsoft YaHei",system-ui,-apple-system,sans-serif;line-height:1.55;min-height:100vh}
-button,input,select{font:inherit;color:inherit}
-button{cursor:pointer;border:1px solid transparent;border-radius:var(--radius-sm);display:inline-flex;align-items:center;justify-content:center;gap:6px;font-weight:600;font-size:13px;white-space:nowrap;transition:.15s ease}
-button:disabled{opacity:.55;cursor:not-allowed}
 
-.btn-primary{min-height:36px;padding:0 15px;background:var(--accent);color:#fff}
-.btn-primary:hover{background:var(--accent2)}
-.btn-ghost{min-height:32px;padding:0 12px;background:transparent;color:var(--text2);border-color:var(--border)}
-.btn-ghost:hover{background:var(--accent-soft);color:var(--accent);border-color:#cbd5e1}
+.ui-header{position:relative!important}
+.header-actions{display:flex;align-items:center;gap:10px}
+
+.btn-primary{min-height:36px!important;padding:0 15px!important;background:var(--accent)!important;color:#fff!important;border-radius:var(--radius-sm)!important;font-weight:600;font-size:13px;display:inline-flex;align-items:center;justify-content:center;border:0!important;white-space:nowrap;box-shadow:none!important}
+.btn-primary:hover{background:var(--accent2)!important}
+.btn-primary:disabled{opacity:.55!important;cursor:not-allowed}
+
+.btn-ghost{min-height:32px!important;padding:0 12px!important;background:transparent!important;color:var(--text2)!important;border:1px solid var(--border)!important;border-radius:var(--radius-sm)!important;font-weight:600;font-size:13px;display:inline-flex;align-items:center;justify-content:center;text-decoration:none!important;white-space:nowrap;box-shadow:none!important}
+.btn-ghost:hover{background:var(--accent-soft)!important;color:var(--accent)!important;border-color:#cbd5e1!important}
 
 .pill{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--border);border-radius:999px;padding:4px 12px;background:var(--surface);font-size:12px;font-weight:600;color:var(--text2)}
 .pill .dot{width:7px;height:7px;border-radius:50%;background:var(--green)}
 .pill .dot.warn{background:var(--amber)}
 .pill .dot.fail{background:var(--red)}
-
-.ui-header{position:relative!important}
-.header-actions{display:flex;align-items:center;gap:10px}
 
 .mock-page{height:100%;display:flex;flex-direction:column;background:var(--bg);min-height:0}
 .shell{flex:1;min-height:0;display:grid;grid-template-columns:252px minmax(0,1fr) 348px;height:100%;overflow:hidden}
@@ -49,8 +47,9 @@ button:disabled{opacity:.55;cursor:not-allowed}
 /* History items */
 .h-item{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:11px;cursor:pointer;position:relative;margin-bottom:4px;transition:.12s ease}
 .h-item:hover{background:var(--border2)}
-.h-item.active{background:var(--accent-soft)}
-.h-glyph{width:34px;height:34px;border-radius:10px;background:var(--border2);color:var(--text2);display:grid;place-items:center;font-size:12px;font-weight:800;flex:none}
+.h-item:hover .h-glyph{background:#dbe3ec;color:var(--text)}
+.h-item.active{background:var(--accent-soft);box-shadow:inset 3px 0 0 var(--accent)}
+.h-glyph{width:34px;height:34px;border-radius:10px;background:var(--border2);color:var(--text2);display:grid;place-items:center;font-size:12px;font-weight:800;flex:none;transition:.15s ease}
 .h-item.active .h-glyph{background:var(--accent);color:#fff}
 .h-copy{min-width:0;flex:1}
 .h-copy b{display:block;font-size:13px;font-weight:700}
@@ -60,9 +59,10 @@ button:disabled{opacity:.55;cursor:not-allowed}
 .h-dot.ok{background:var(--green)}
 .h-dot.warn{background:var(--amber)}
 .h-dot.fail{background:var(--red)}
-.h-del{position:absolute;right:8px;top:8px;width:22px;height:22px;border-radius:6px;border:0;background:transparent;color:var(--text3);font-size:14px;display:none;align-items:center;justify-content:center}
-.h-item:hover .h-del{display:flex}
-.h-del:hover{background:var(--red-soft);color:var(--red)}
+
+.h-del{position:absolute;right:8px;top:50%;transform:translateY(-50%);width:20px;height:20px;border-radius:6px;border:0!important;background:transparent!important;color:var(--text3)!important;font-size:13px;display:none;align-items:center;justify-content:center;padding:0!important;min-height:auto!important;cursor:pointer}
+.h-item:hover .h-del{display:inline-flex!important}
+.h-del:hover{background:var(--red-soft)!important;color:var(--red)!important}
 
 /* Center main */
 .center{min-height:0;overflow-y:auto;padding:16px 18px;display:flex;flex-direction:column;gap:14px}
@@ -91,10 +91,10 @@ button:disabled{opacity:.55;cursor:not-allowed}
 .sect-body ul{padding-left:18px}
 .sect-body li{margin-bottom:6px}
 
-/* Video grid */
+/* Video grid & tool sort buttons */
 .v-tools{display:flex;gap:4px}
-.v-tool{height:24px;padding:0 8px;font-size:11px;border-radius:7px;background:transparent;color:var(--text3);border:0}
-.v-tool.active{background:var(--accent-soft);color:var(--accent2);font-weight:700}
+.v-tool{height:24px!important;min-height:24px!important;padding:0 8px!important;font-size:11px!important;border-radius:7px!important;background:transparent!important;color:var(--text3)!important;border:0!important;box-shadow:none!important;font-weight:500!important}
+.v-tool.active{background:var(--accent-soft)!important;color:var(--accent2)!important;font-weight:700!important}
 .v-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .v-card{background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;cursor:pointer;transition:.15s ease}
 .v-card:hover{border-color:#cbd5e1;box-shadow:0 8px 20px rgba(15,23,42,.08);transform:translateY(-1px)}
@@ -119,7 +119,7 @@ button:disabled{opacity:.55;cursor:not-allowed}
 .m-sub{font-size:12px;color:var(--text2);margin-top:4px}
 .m-status{display:inline-flex;align-items:center;height:22px;padding:0 9px;border-radius:999px;font-size:11px;font-weight:800;background:var(--green-soft);color:var(--green);margin-left:8px;vertical-align:2px}
 .m-status.fail{background:var(--red-soft);color:var(--red)}
-.m-close{width:32px;height:32px;border-radius:8px;background:var(--surface);border:1px solid var(--border);color:var(--text2);font-size:16px;flex:none;display:grid;place-items:center}
+.m-close{width:32px;height:32px;border-radius:8px;background:var(--surface);border:1px solid var(--border);color:var(--text2);font-size:16px;flex:none;display:grid;place-items:center;cursor:pointer}
 .m-close:hover{background:var(--red-soft);color:var(--red)}
 .m-body{display:grid;grid-template-columns:196px minmax(0,1fr);gap:18px;padding:18px 20px;overflow-y:auto;min-height:0}
 .m-cover-col{display:flex;flex-direction:column;gap:10px}
@@ -143,7 +143,7 @@ button:disabled{opacity:.55;cursor:not-allowed}
 .m-tag{display:inline-flex;align-items:center;height:24px;padding:0 10px;border-radius:999px;background:var(--accent-soft);color:var(--accent2);font-size:11.5px;font-weight:650}
 .m-linkrow{display:flex;align-items:center;gap:8px;border:1px solid var(--border2);border-radius:10px;padding:8px 10px}
 .m-linkrow .u{flex:1;min-width:0;font-size:12px;color:var(--blue);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.m-linkrow button{height:26px;padding:0 10px;font-size:11px;background:var(--surface);border:1px solid var(--border);color:var(--text2)}
+.m-linkrow button{height:26px!important;min-height:26px!important;padding:0 10px!important;font-size:11px!important;background:var(--surface)!important;border:1px solid var(--border)!important;color:var(--text2)!important}
 .m-analysis{border:1px solid var(--border2);border-radius:10px;overflow:hidden}
 .m-analysis .a-head{display:flex;align-items:center;justify-content:space-between;padding:9px 12px;background:var(--border2);font-size:12px;font-weight:700}
 .m-analysis .a-body{padding:10px 12px;font-size:12.5px;color:#263244;line-height:1.55}
@@ -180,21 +180,21 @@ button:disabled{opacity:.55;cursor:not-allowed}
 .empty b{font-size:13.5px}
 .empty p{font-size:11.5px;color:var(--text3);margin:5px 0 12px}
 
-/* Context menu (optional fallback) */
+/* Context menu */
 .menu{position:fixed;z-index:60;display:none;min-width:150px;padding:5px;background:var(--surface);border:1px solid var(--border);border-radius:12px;box-shadow:var(--shadow-lg)}
 .menu.show{display:flex;flex-direction:column;gap:2px}
-.menu button,.menu a{height:32px;display:flex;align-items:center;text-decoration:none;background:transparent;border:0;color:var(--text);border-radius:7px;font-size:12.5px;padding:0 10px}
-.menu button:hover,.menu a:hover{background:var(--border2)}
+.menu button,.menu a{height:32px!important;min-height:32px!important;display:flex!important;align-items:center!important;text-decoration:none!important;background:transparent!important;border:0!important;color:var(--text)!important;border-radius:7px!important;font-size:12.5px!important;padding:0 10px!important;box-shadow:none!important}
+.menu button:hover,.menu a:hover{background:var(--border2)!important}
 
 /* Mobile Header & Responsive Controls (≤980px) */
 .mobile-header-btns{display:none;gap:6px;align-items:center}
-.mobile-icon-btn{width:32px;height:32px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text2);display:grid;place-items:center}
+.mobile-icon-btn{width:32px!important;height:32px!important;min-height:32px!important;border-radius:8px!important;border:1px solid var(--border)!important;background:var(--surface)!important;color:var(--text2)!important;display:grid!important;place-items:center!important;padding:0!important}
 .mobile-icon-btn svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 
 .mobile-popover-menu{position:absolute;top:52px;right:16px;z-index:60;width:180px;background:var(--surface);border:1px solid var(--border);border-radius:12px;box-shadow:var(--shadow-lg);padding:6px;display:none;flex-direction:column;gap:2px}
 .mobile-popover-menu.show{display:flex}
-.mobile-popover-menu button{height:34px;padding:0 10px;border:0;background:transparent;text-align:left;font-size:12px;color:var(--text);border-radius:8px;justify-content:flex-start}
-.mobile-popover-menu button:hover{background:var(--border2)}
+.mobile-popover-menu button{height:34px!important;min-height:34px!important;padding:0 10px!important;border:0!important;background:transparent!important;text-align:left!important;font-size:12px!important;color:var(--text)!important;border-radius:8px!important;justify-content:flex-start!important;width:100%!important}
+.mobile-popover-menu button:hover{background:var(--border2)!important}
 .mobile-popover-menu .sep{height:1px;background:var(--border2);margin:4px 4px}
 
 /* Mobile Drawer (History) */
@@ -239,7 +239,7 @@ button:disabled{opacity:.55;cursor:not-allowed}
   </div>
   <div class="header-actions">
     <span class="pill" id="headerStatusPill"><span class="dot" id="headerStatusDot"></span><span id="headerStatusText">加载中...</span></span>
-    <button class="btn-primary" id="run">生成今日报告</button>
+    <button class="btn-primary" id="run" type="button">生成今日报告</button>
     <div class="mobile-header-btns">
       <button type="button" class="mobile-icon-btn" id="openMobileDrawer" title="往期日报">
         <svg viewBox="0 0 24 24"><path d="M5 5h14v14H5zM8 3v4M16 3v4M5 10h14"/></svg>
@@ -273,8 +273,8 @@ button:disabled{opacity:.55;cursor:not-allowed}
               <div class="meta" id="summary">加载中...</div>
             </div>
             <div class="acts">
-              <button class="btn-ghost" id="exportMdBtn">导出 Markdown</button>
-              <button class="btn-ghost" id="copyShareBtn">复制链接</button>
+              <button class="btn-ghost" id="exportMdBtn" type="button">导出 Markdown</button>
+              <button class="btn-ghost" id="copyShareBtn" type="button">复制链接</button>
             </div>
           </div>
           <div class="kpis">
@@ -309,7 +309,7 @@ button:disabled{opacity:.55;cursor:not-allowed}
               <div class="set-row">
                 <span class="l">定时</span><input id="scheduleTime" type="time" class="set-val" value="05:00">
                 <span class="l">分析数量</span><input id="analysisLimit" type="number" min="1" max="20" class="set-val" value="10" style="width:65px">
-                <button id="saveSettings" class="btn-ghost" style="margin-left:auto">保存设置</button>
+                <button id="saveSettings" type="button" class="btn-ghost" style="margin-left:auto">保存设置</button>
                 <span id="settingsMsg" style="font-size:11px;color:var(--text3)"></span>
               </div>
             </div>
@@ -324,9 +324,9 @@ button:disabled{opacity:.55;cursor:not-allowed}
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
             <b>爆款视频列表</b>
             <div class="v-tools" id="mobileVTools">
-              <button class="v-tool active" data-sort="hot">热度</button>
-              <button class="v-tool" data-sort="views">播放</button>
-              <button class="v-tool" data-sort="likes">互动率</button>
+              <button class="v-tool active" type="button" data-sort="hot">热度</button>
+              <button class="v-tool" type="button" data-sort="views">播放</button>
+              <button class="v-tool" type="button" data-sort="likes">互动率</button>
             </div>
           </div>
           <div class="v-grid" id="mobileVideosGrid"></div>
@@ -337,9 +337,9 @@ button:disabled{opacity:.55;cursor:not-allowed}
         <div class="rail-head">
           <b>爆款视频</b>
           <div class="v-tools" id="desktopVTools">
-            <button class="v-tool active" data-sort="hot">热度</button>
-            <button class="v-tool" data-sort="views">播放</button>
-            <button class="v-tool" data-sort="likes">互动率</button>
+            <button class="v-tool active" type="button" data-sort="hot">热度</button>
+            <button class="v-tool" type="button" data-sort="views">播放</button>
+            <button class="v-tool" type="button" data-sort="likes">互动率</button>
           </div>
         </div>
         <div class="rail-body">
@@ -371,6 +371,11 @@ const $=id=>document.getElementById(id);
 let current=null,selectedVideo=null,pollTimer=null,reportEvents=null,progressLines=[],settingsTopics=[],currentSort="hot";
 
 function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]))}
+function safeAuthor(v){
+  if(!v)return "未知";
+  if(typeof v==="object")return esc(v.nickname||v.name||v.unique_id||v.uniqueId||"未知");
+  return esc(String(v));
+}
 function fmtMd(v){return esc(v).replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g,'<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>').replace(/\*\*([^*\n]+)\*\*/g,"<strong>$1</strong>")}
 function fmtTime(ts){return ts?new Date(ts*1000).toLocaleString("zh-CN",{hour12:false}):"-"}
 function fmtNum(n){n=Number(n||0);if(n>=1e8)return (n/1e8).toFixed(1)+T.billion;if(n>=1e4)return (n/1e4).toFixed(1)+T.million;return String(n)}
@@ -513,12 +518,13 @@ function renderModalContent(v,type){
     const canPlay=Boolean(v.local_filename);
     const playerUrl=`/report/player?date=${encodeURIComponent(current?.report_date||"")}&platform=${encodeURIComponent(v.platform||"")}&video_id=${encodeURIComponent(v.video_id||"")}`;
     const analysisText=typeof v.analysis_zh==="object"?v.analysis_zh.summary:(v.analysis?.summary||v.audit_result?.summary||"暂无 AI 解析摘要");
+    const authorName=safeAuthor(v.author);
     return `
       <div class="mock-modal">
         <div class="m-head">
           <div>
             <div class="m-title">${esc(v.title||"无标题")}<span class="m-status ${isAnalyzed?'':'fail'}">${statusLabel(v.process_status||"-")}</span></div>
-            <div class="m-sub">${esc(v.author||"-")} · ${esc(v.platform||"-")} · ${m.published_at?fmtTime(m.published_at):"-"}</div>
+            <div class="m-sub">${authorName} · ${esc(v.platform||"-")} · ${m.published_at?fmtTime(m.published_at):"-"}</div>
           </div>
           <button class="m-close" onclick="closeModal()">×</button>
         </div>
@@ -532,7 +538,7 @@ function renderModalContent(v,type){
           </div>
           <div class="m-info">
             <div class="m-grid">
-              <div class="m-item"><span>作者</span><b>${esc(v.author||"-")}</b></div>
+              <div class="m-item"><span>作者</span><b>${authorName}</b></div>
               <div class="m-item"><span>平台</span><b>${esc(v.platform||"-")}</b></div>
               <div class="m-item"><span>视频 ID</span><b>${esc(v.video_id||"-")}</b></div>
               <div class="m-item"><span>来源</span><b>${esc(v.source_endpoint||"-")} / ${esc(v.source_label||"-")}</b></div>
@@ -582,9 +588,10 @@ function renderCard(v,i){
   const isFailed=v.process_status==="failed";
   const hotClass=isFailed?"v-hot fail":"v-hot";
   const hotText=isFailed?"失败":hotScore;
-  const initial=esc((v.author||"T").replace(/^@/,"").charAt(0).toUpperCase()||"T");
+  const authorName=safeAuthor(v.author);
+  const initial=esc(authorName.replace(/^@/,"").charAt(0).toUpperCase()||"T");
   const coverBg=v.cover_url?` style="background-image:url('${esc(v.cover_url)}');background-size:cover;background-position:center"`:"";
-  return `<div class="v-card" data-i="${i}"><div class="v-cover"${coverBg}><div class="v-play"></div><span class="${hotClass}">${hotText}</span><span class="v-views">${views}</span></div><div class="v-info"><div class="v-title">${esc(v.title||"无标题")}</div><div class="v-meta"><span class="v-ava">${initial}</span>${esc(v.author||"未知")} · 赞 ${fmtNum(m.like_count)}</div></div></div>`;
+  return `<div class="v-card" data-i="${i}"><div class="v-cover"${coverBg}><div class="v-play"></div><span class="${hotClass}">${hotText}</span><span class="v-views">${views}</span></div><div class="v-info"><div class="v-title">${esc(v.title||"无标题")}</div><div class="v-meta"><span class="v-ava">${initial}</span>${authorName} · 赞 ${fmtNum(m.like_count)}</div></div></div>`;
 }
 
 function getSortedVideos(videos,sortKey){
@@ -662,18 +669,18 @@ function render(data){
   $("headerStatusDot").className="dot "+(data.status==="complete"?"":data.status==="failed"?"fail":"warn");
   $("run").disabled=data.status==="running"||data.status==="queued";
 
-  // KPIs without misleading green -- subtext
+  // KPIs: Remove green up class when subtext is '--'
   const successCount=data.analysis_success_count||rawVideos.filter(v=>v.process_status==="complete"||v.process_status==="analyzed").length;
   let totalViews=0,maxViews=0,maxAuthor="-",totalHot=0;
   rawVideos.forEach(v=>{
     const p=Number(v.metrics?.play_count||0),h=Number(v.hot_score||0);
     totalViews+=p;totalHot+=h;
-    if(p>maxViews){maxViews=p;maxAuthor=v.author||"-"}
+    if(p>maxViews){maxViews=p;maxAuthor=safeAuthor(v.author)}
   });
-  setKpi("kpiCollected", data.video_count||rawVideos.length, "--");
-  setKpi("kpiSuccess", successCount, `成功率 ${rawVideos.length?Math.round(successCount/rawVideos.length*100):0}%`);
-  setKpi("kpiAvgViews", rawVideos.length?fmtNum(Math.round(totalViews/rawVideos.length)):"0", "均值", false);
-  setKpi("kpiAvgHot", rawVideos.length?fmtNum(Math.round(totalHot/rawVideos.length)):"0", "加权热度", false);
+  setKpi("kpiCollected", data.video_count||rawVideos.length, "--", false);
+  setKpi("kpiSuccess", successCount, `成功率 ${rawVideos.length?Math.round(successCount/rawVideos.length*100):0}%`, false);
+  setKpi("kpiAvgViews", rawVideos.length?fmtNum(Math.round(totalViews/rawVideos.length)):"0", "--", false);
+  setKpi("kpiAvgHot", rawVideos.length?fmtNum(Math.round(totalHot/rawVideos.length)):"0", "--", false);
   setKpi("kpiMaxViews", fmtNum(maxViews), maxAuthor, false);
 
   $("reportBody").innerHTML=renderReportDoc(data.report);
@@ -685,12 +692,9 @@ function render(data){
     $("mobileVideosContainer").style.display=window.innerWidth<=980?"block":"none";
   }
 
-  // Direct click opens detail modal directly!
+  // Popover menu on clicking video card
   document.querySelectorAll(".v-card").forEach(el=>{
-    el.onclick=()=>{
-      selectedVideo=current.videos[Number(el.dataset.i)];
-      openDoc('detail');
-    };
+    el.onclick=e=>showMenu(e, Number(el.dataset.i));
   });
 
   const active=data.status==="running"||data.status==="queued";
@@ -762,6 +766,16 @@ async function loadToday(){
   render(d);
   await loadHistory();
   updateReportUrl(d.report_date);
+}
+
+function showMenu(e,i){
+  selectedVideo=current.videos[i];
+  const menu=$("menu");
+  const canPlay=selectedVideo.local_filename,playerUrl=`/report/player?date=${encodeURIComponent(current.report_date||"")}&platform=${encodeURIComponent(selectedVideo.platform||"")}&video_id=${encodeURIComponent(selectedVideo.video_id||"")}`;
+  menu.innerHTML=`${canPlay?`<a href="${playerUrl}" target="_blank">${T.play}</a>`:""}<button type="button" onclick="openDoc('analysis')">${T.parse}</button><button type="button" onclick="openDoc('detail')">视频详情</button>${selectedVideo.source_url?`<a href="${esc(selectedVideo.source_url)}" target="_blank" rel="noopener noreferrer">${T.origin}</a>`:""}`;
+  menu.style.left=Math.min(e.clientX,window.innerWidth-170)+"px";
+  menu.style.top=Math.min(e.clientY,window.innerHeight-170)+"px";
+  menu.classList.add("show");
 }
 
 function openDoc(type){
