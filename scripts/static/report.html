@@ -101,7 +101,7 @@ body{background:var(--bg);color:var(--text);font-family:Inter,"PingFang SC","Mic
 .v-card:hover{border-color:#cbd5e1;box-shadow:0 8px 20px rgba(15,23,42,.08);transform:translateY(-1px)}
 .v-cover{position:relative;aspect-ratio:9/13;background:linear-gradient(135deg,#dfe6ee,#eef2f6);display:grid;place-items:center;overflow:hidden;background-size:cover;background-position:center}
 .v-play{width:32px;height:32px;border-radius:50%;border:2px solid rgba(255,255,255,.85);background:rgba(15,23,42,.32);display:grid;place-items:center;transition:.15s ease}
-.v-play::after{content:"";width:0;height:0;border-left:9px solid #fff;border-top:6px solid transparent;border-bottom:6px solid transparent;margin-left:2px}
+.v-play::after{content:"";width:0;height:0;border-left:99px;border-left:9px solid #fff;border-top:6px solid transparent;border-bottom:6px solid transparent;margin-left:2px}
 .v-card:hover .v-play{transform:scale(1.08);background:rgba(15,23,42,.5)}
 .v-hot{position:absolute;top:6px;left:6px;background:rgba(15,23,42,.8);color:#fff;font-size:10px;font-weight:800;padding:2px 7px;border-radius:999px}
 .v-hot.fail{background:rgba(220,38,38,.92)}
@@ -393,14 +393,18 @@ function getTopicStyle(i) {
 
 function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]))}
 function safeAuthor(v){
-  if(!v)return "未知";
-  let s = v;
-  if(typeof v === "object") s = v.nickname || v.name || v.unique_id || v.uniqueId || JSON.stringify(v);
-  s = String(s).replace(/&#039;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+  if(v == null) return "未知";
+  let s = "";
+  if(typeof v === "object") {
+    s = String(v.nickname || v.name || v.unique_id || v.uniqueId || JSON.stringify(v));
+  } else {
+    s = String(v);
+  }
+  s = s.replace(/&#039;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
   if(s.startsWith("{") || s.startsWith("[")) {
     try {
       const obj = JSON.parse(s);
-      if(typeof obj === "object") return esc(obj.nickname || obj.name || obj.unique_id || "未知");
+      if(obj && typeof obj === "object") return esc(obj.nickname || obj.name || obj.unique_id || "未知");
     } catch(e) {}
   }
   return esc(s.replace(/^@/, "").trim() || "未知");
@@ -559,7 +563,7 @@ function detailTags(v){
 }
 
 function renderModalContent(v,type){
-  if(!v)return `<div class="w-card empty">暂无内容</div>`;
+  if(!v)return `<div class="w-card empty" style="padding:40px;background:#fff;border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,.1)">暂无视频数据<br><button class="btn-ghost" style="margin-top:12px" onclick="closeModal()">关闭</button></div>`;
   if(type==="detail"){
     const m=v.metrics||{},tags=detailTags(v);
     const coverBg=v.cover_url?` style="background-image:url('${esc(v.cover_url)}');background-size:cover;background-position:center"`:"";
@@ -620,8 +624,8 @@ function renderModalContent(v,type){
     `;
   }
   const data = type === "analysis" ? (v.analysis_zh || v.analysis || v.audit_result || v.summary) : v.audit_result;
-  if(!data)return `<div class="w-card empty">${T.docEmpty}</div>`;
-  return `<div class="mock-modal"><div class="m-head"><div class="m-title">${esc(selectedVideo?.title||"")}</div><button class="m-close" onclick="closeModal()">×</button></div><div style="padding:16px;overflow-y:auto"><pre style="white-space:pre-wrap;font-size:12px">${esc(typeof data==="object"?JSON.stringify(data,null,2):data)}</pre></div></div>`;
+  if(!data)return `<div class="mock-modal" style="width:min(500px,100%)"><div class="m-head"><div class="m-title">${esc(v.title||"无标题")}</div><button class="m-close" onclick="closeModal()">×</button></div><div style="padding:24px;text-align:center;color:var(--text2)">该视频还没有生成对应解析内容。</div></div>`;
+  return `<div class="mock-modal"><div class="m-head"><div class="m-title">${esc(v.title||"")}</div><button class="m-close" onclick="closeModal()">×</button></div><div style="padding:16px;overflow-y:auto;max-height:80vh"><pre style="white-space:pre-wrap;font-size:12.5px;color:#1e293b;line-height:1.6">${esc(typeof data==="object"?JSON.stringify(data,null,2):data)}</pre></div></div>`;
 }
 
 function copyJson(){
@@ -832,43 +836,54 @@ async function loadToday(){
 
 function showMenu(e,i){
   if(e)e.stopPropagation();
-  selectedVideo=current.videos[i];
+  selectedVideo=(current && Array.isArray(current.videos)) ? current.videos[i] : null;
   const menu=$("menu");
   if(!menu)return;
-  const canPlay=selectedVideo?.local_filename,playerUrl=`/report/player?date=${encodeURIComponent(current.report_date||"")}&platform=${encodeURIComponent(selectedVideo.platform||"")}&video_id=${encodeURIComponent(selectedVideo.video_id||"")}`;
+  const canPlay=selectedVideo?.local_filename,playerUrl=`/report/player?date=${encodeURIComponent(current?.report_date||"")}&platform=${encodeURIComponent(selectedVideo?.platform||"")}&video_id=${encodeURIComponent(selectedVideo?.video_id||"")}`;
   menu.innerHTML=`
     ${canPlay?`<a href="${playerUrl}" target="_blank" class="menu-item">${T.play}</a>`:""}
-    <button type="button" class="menu-item" id="menuItemParse">${T.parse}</button>
-    <button type="button" class="menu-item" id="menuItemDetail">视频详情</button>
+    <button type="button" class="menu-item" id="menuItemParse" onclick="openDoc('analysis', event)">${T.parse}</button>
+    <button type="button" class="menu-item" id="menuItemDetail" onclick="openDoc('detail', event)">视频详情</button>
     ${selectedVideo?.source_url?`<a href="${esc(selectedVideo.source_url)}" target="_blank" rel="noopener noreferrer" class="menu-item">${T.origin}</a>`:""}
   `;
   menu.style.left=Math.min(e.clientX,window.innerWidth-170)+"px";
   menu.style.top=Math.min(e.clientY,window.innerHeight-170)+"px";
   menu.classList.add("show");
-
-  const btnParse = $("menuItemParse"), btnDetail = $("menuItemDetail");
-  if(btnParse) btnParse.onclick = (evt) => { evt.stopPropagation(); openDoc('analysis', evt); };
-  if(btnDetail) btnDetail.onclick = (evt) => { evt.stopPropagation(); openDoc('detail', evt); };
 }
 
 window.openDoc = function(type, e){
-  if(e)e.stopPropagation();
-  if($("menu"))$("menu").classList.remove("show");
-  if(!selectedVideo && current && current.videos && current.videos.length){
-    selectedVideo = current.videos[0];
+  if(e) {
+    if(typeof e.stopPropagation === "function") e.stopPropagation();
+    if(typeof e.preventDefault === "function") e.preventDefault();
   }
-  const container = $("modalContainer");
-  if(container){
-    container.innerHTML = renderModalContent(selectedVideo, type);
-  }
-  const modal = $("modal");
-  if(modal){
-    modal.classList.add("show");
-    modal.style.display = "grid";
+  const menu = $("menu");
+  if(menu) menu.classList.remove("show");
+  
+  const v = selectedVideo || (current && Array.isArray(current.videos) && current.videos[0]);
+  if(!v) return alert("未找到对应的视频数据");
+  
+  try {
+    const container = $("modalContainer");
+    if(container){
+      container.innerHTML = renderModalContent(v, type);
+    }
+    const modal = $("modal");
+    if(modal){
+      modal.classList.add("show");
+      modal.style.display = "grid";
+    }
+  } catch(err) {
+    console.error("openDoc error:", err);
+    alert("打开窗口失败: " + err.message);
   }
 };
 
 document.addEventListener("click", e => {
+  const btn = e.target.closest("#menu button, #menu a");
+  if(btn){
+    if(btn.id === "menuItemParse") { openDoc('analysis', e); return; }
+    if(btn.id === "menuItemDetail") { openDoc('detail', e); return; }
+  }
   const menu = $("menu");
   if (menu && !menu.contains(e.target) && !e.target.closest(".v-card")) {
     menu.classList.remove("show");
@@ -900,6 +915,7 @@ $("run").onclick=async()=>{
 };
 
 $("saveSettings").onclick=saveReportSettings;
+$("modal").onclick=e=>{if(e.target===$("modal"))closeModal()};
 
 function exportMarkdown(){
   if(!current?.report)return alert("暂无可导出的报告");
