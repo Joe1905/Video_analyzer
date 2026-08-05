@@ -421,10 +421,11 @@ function getTopicStyle(i) {
 }
 
 function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]))}
+
 function safeAuthor(v){
   if(v == null) return "未知";
   let s = "";
-  if(typeof v === "object") {
+  if(typeof v === "object" && v !== null) {
     s = String(v.nickname || v.name || v.unique_id || v.uniqueId || JSON.stringify(v));
   } else {
     s = String(v);
@@ -438,14 +439,20 @@ function safeAuthor(v){
   }
   return esc(s.replace(/^@/, "").trim() || "未知");
 }
+
 function fmtMd(v){return esc(v).replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g,'<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>').replace(/\*\*([^*\n]+)\*\*/g,"<strong>$1</strong>")}
+
 function fmtTime(ts){
   if(!ts) return "-";
   if(typeof ts === "number") return new Date(ts*1000).toLocaleString("zh-CN",{hour12:false});
   return String(ts);
 }
+
 function fmtNum(n){n=Number(n||0);if(n>=1e8)return (n/1e8).toFixed(1)+T.billion;if(n>=1e4)return (n/1e4).toFixed(1)+T.million;return String(n)}
 function statusLabel(s){return {complete:"已生成",partial_failed:"部分生成",failed:"失败",missing:"待生成",running:"生成中",queued:"已排队",pending:"待处理",processing:"处理中"}[s]||s}
+
+const LINE_LABELS={"Frame":"帧","Setting/Scene":"场景/环境","Action/Movement":"动作/运动","New Information":"新增信息","Continuity Points":"连贯信息","Key continuation points":"后续关注点","Visual":"画面","Audio":"声音","Text":"画面文字","Objects":"关键物体","People":"人物","Camera":"镜头","Mood":"情绪氛围"};
+function localizeText(v){let s=String(v||"").replace(/^```[a-zA-Z]*\s*/,"").replace(/\s*```$/,"").trim();for(const [en,zh] of Object.entries(LINE_LABELS)){s=s.replace(new RegExp(`(^|\\n)${en}:`,"g"),`$1${zh}：`)}return s.replace(/(^|\n)Frame\s+(\d+)\s+\(([^)]+)\)/g,"$1帧 $2（$3）").replace(/\bseconds?\b/g,"秒")}
 
 function renderInlineTopics(){
   const container=$("inlineTopics");
@@ -600,26 +607,98 @@ function detailTags(v){
   function walk(x,d=0){
     if(!x||d>5||out.size>=40)return;
     if(Array.isArray(x)){x.forEach(y=>walk(y,d+1));return}
-    if(typeof x!=="object")return;
+    if(typeof x!=="object"||x===null)return;
     for(const [k,val] of Object.entries(x)){
       if(["hashtag_name","hashtagName","challenge_name","challengeName","tag","keyword"].includes(k)){Array.isArray(val)?val.forEach(add):add(val)}
       else if(["text_extra","textExtra","cha_list","challenges","keywords","anchors"].includes(k)){walk(val,d+1)}
-      else if(typeof val==="object"&&d<3){walk(val,d+1)}
+      else if(typeof val==="object"&&val!==null&&d<3){walk(val,d+1)}
     }
   }
   walk(raw);
   return Array.from(out).slice(0,30);
 }
 
+function renderAnalysisDoc(data) {
+  if (!data) return '<div class="empty" style="padding:40px">暂无解析数据</div>';
+  
+  if (typeof data === "string") {
+    return `<div style="padding:16px;line-height:1.6;font-size:13.5px;color:#1e293b">${fmtMd(data)}</div>`;
+  }
+  
+  let html = '<div style="padding:16px 20px;display:flex;flex-direction:column;gap:14px;max-height:80vh;overflow-y:auto">';
+
+  if (data.summary) {
+    html += `
+      <div class="card" style="padding:14px 16px;border:1px solid var(--border);border-left:4px solid var(--accent);border-radius:10px">
+        <b style="font-size:13px;color:var(--accent2);display:block;margin-bottom:6px">AI 核心摘要</b>
+        <div style="font-size:13.5px;color:#1e293b;line-height:1.65">${fmtMd(data.summary)}</div>
+      </div>
+    `;
+  }
+
+  const timeline = data.timeline || data.segments || (data.raw_model_output && data.raw_model_output.frame_analyses);
+  if (Array.isArray(timeline) && timeline.length) {
+    html += `
+      <div class="card" style="border:1px solid var(--border);border-radius:10px;overflow:hidden">
+        <div style="padding:10px 14px;background:var(--border2);font-size:13px;font-weight:700">时间轴与分帧拆解 (${timeline.length} 片段)</div>
+        <div style="padding:12px 14px;display:flex;flex-direction:column;gap:10px;max-height:45vh;overflow-y:auto">
+    `;
+    timeline.forEach((item, idx) => {
+      const resp = item.response || item.body || (typeof item === "string" ? item : JSON.stringify(item));
+      html += `
+        <div style="border:1px solid var(--border2);border-radius:8px;padding:10px 12px;background:var(--surface)">
+          <div style="font-size:12px;font-weight:700;color:var(--blue);margin-bottom:4px">片段 ${idx + 1} ${item.time_range ? `(${esc(item.time_range)})` : ''}</div>
+          <div style="font-size:12.5px;color:#263244;line-height:1.6;white-space:pre-wrap">${fmtMd(localizeText(resp))}</div>
+        </div>
+      `;
+    });
+    html += `</div></div>`;
+  }
+
+  if (data.visual_evidence) {
+    html += `
+      <div class="card" style="padding:12px 14px;border:1px solid var(--border);border-radius:10px">
+        <b style="font-size:13px;color:var(--accent2);display:block;margin-bottom:6px">视觉证据</b>
+        <div style="font-size:13px;color:#263244;line-height:1.6;white-space:pre-wrap">${fmtMd(typeof data.visual_evidence === "object" ? JSON.stringify(data.visual_evidence, null, 2) : data.visual_evidence)}</div>
+      </div>
+    `;
+  }
+
+  if (data.transcript) {
+    const text = typeof data.transcript === "object" ? (data.transcript.text || JSON.stringify(data.transcript, null, 2)) : data.transcript;
+    html += `
+      <div class="card" style="padding:12px 14px;border:1px solid var(--border);border-radius:10px">
+        <b style="font-size:13px;color:var(--accent2);display:block;margin-bottom:6px">字幕与转写</b>
+        <div style="font-size:13px;color:#263244;line-height:1.6;white-space:pre-wrap">${esc(text)}</div>
+      </div>
+    `;
+  }
+
+  html += `
+    <details style="margin-top:6px">
+      <summary style="font-size:11.5px;color:var(--text3);cursor:pointer;user-select:none">查看原始 JSON 源码</summary>
+      <pre style="margin-top:8px;padding:12px;background:#0f172a;color:#e2e8f0;font-size:11px;border-radius:8px;max-height:200px;overflow-y:auto;white-space:pre-wrap">${esc(JSON.stringify(data, null, 2))}</pre>
+    </details>
+  `;
+
+  html += '</div>';
+  return html;
+}
+
 function renderModalContent(v,type){
   if(!v)return `<div class="w-card empty" style="padding:40px;background:#fff;border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,.1)">暂无视频数据<br><button class="btn-ghost" style="margin-top:12px" onclick="closeModal()">关闭</button></div>`;
+  
   if(type==="detail"){
     const m=v.metrics||{},tags=detailTags(v);
     const coverBg=v.cover_url?` style="background-image:url('${esc(v.cover_url)}');background-size:cover;background-position:center"`:"";
     const isAnalyzed=v.process_status==="complete"||v.process_status==="analyzed";
     const canPlay=Boolean(v.local_filename);
     const playerUrl=`/report/player?date=${encodeURIComponent(current?.report_date||"")}&platform=${encodeURIComponent(v.platform||"")}&video_id=${encodeURIComponent(v.video_id||"")}`;
-    const analysisText=typeof v.analysis_zh==="object"?v.analysis_zh.summary:(v.analysis?.summary||v.audit_result?.summary||"暂无 AI 解析摘要");
+    
+    const az = (v && typeof v.analysis_zh === "object" && v.analysis_zh !== null) ? v.analysis_zh : null;
+    const a = (v && typeof v.analysis === "object" && v.analysis !== null) ? v.analysis : null;
+    const ar = (v && typeof v.audit_result === "object" && v.audit_result !== null) ? v.audit_result : null;
+    const analysisText = (az && az.summary) || (a && a.summary) || (ar && ar.summary) || (v && v.summary) || "暂无 AI 解析摘要";
     const authorName=safeAuthor(v.author);
     return `
       <div class="mock-modal">
@@ -672,9 +751,10 @@ function renderModalContent(v,type){
       </div>
     `;
   }
+  
   const data = type === "analysis" ? (v.analysis_zh || v.analysis || v.audit_result || v.summary) : v.audit_result;
   if(!data)return `<div class="mock-modal" style="width:min(500px,100%)"><div class="m-head"><div class="m-title">${esc(v.title||"无标题")}</div><button class="m-close" onclick="closeModal()">×</button></div><div style="padding:24px;text-align:center;color:var(--text2)">该视频还没有生成对应解析内容。</div></div>`;
-  return `<div class="mock-modal"><div class="m-head"><div class="m-title">${esc(v.title||"")}</div><button class="m-close" onclick="closeModal()">×</button></div><div style="padding:16px;overflow-y:auto;max-height:80vh"><pre style="white-space:pre-wrap;font-size:12.5px;color:#1e293b;line-height:1.6">${esc(typeof data==="object"?JSON.stringify(data,null,2):data)}</pre></div></div>`;
+  return `<div class="mock-modal"><div class="m-head"><div class="m-title">${esc(v.title||"")}</div><button class="m-close" onclick="closeModal()">×</button></div>${renderAnalysisDoc(data)}</div>`;
 }
 
 function copyJson(){
