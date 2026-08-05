@@ -48,9 +48,9 @@ body{background:var(--bg);color:var(--text);font-family:Inter,"PingFang SC","Mic
 .h-item{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:11px;cursor:pointer;position:relative;margin-bottom:4px;transition:.12s ease}
 .h-item:hover{background:var(--border2)}
 .h-item:hover .h-glyph{background:#dbe3ec;color:var(--text)}
-.h-item.active{background:var(--accent-soft);box-shadow:inset 3px 0 0 var(--accent)}
+.h-item.active{background:#edf2f7!important;border:1px solid #cbd5e1!important;box-shadow:inset 4px 0 0 var(--accent)!important}
 .h-glyph{width:34px;height:34px;border-radius:10px;background:var(--border2);color:var(--text2);display:grid;place-items:center;font-size:12px;font-weight:800;flex:none;transition:.15s ease}
-.h-item.active .h-glyph{background:var(--accent);color:#fff}
+.h-item.active .h-glyph{background:var(--accent)!important;color:#fff!important}
 .h-copy{min-width:0;flex:1}
 .h-copy b{display:block;font-size:13px;font-weight:700}
 .h-item.active .h-copy b{color:var(--accent2)}
@@ -59,8 +59,9 @@ body{background:var(--bg);color:var(--text);font-family:Inter,"PingFang SC","Mic
 .h-dot.ok{background:var(--green)}
 .h-dot.warn{background:var(--amber)}
 .h-dot.fail{background:var(--red)}
+.h-item:hover .h-dot{display:none!important}
 
-.h-del{position:absolute;right:8px;top:50%;transform:translateY(-50%);width:20px;height:20px;border-radius:6px;border:0!important;background:transparent!important;color:var(--text3)!important;font-size:13px;display:none;align-items:center;justify-content:center;padding:0!important;min-height:auto!important;cursor:pointer}
+.h-del{position:absolute;right:8px;top:50%;transform:translateY(-50%);width:22px;height:22px;border-radius:6px;border:0!important;background:transparent!important;color:var(--text3)!important;font-size:14px;display:none;align-items:center;justify-content:center;padding:0!important;min-height:auto!important;cursor:pointer;z-index:2}
 .h-item:hover .h-del{display:inline-flex!important}
 .h-del:hover{background:var(--red-soft)!important;color:var(--red)!important}
 
@@ -111,8 +112,8 @@ body{background:var(--bg);color:var(--text);font-family:Inter,"PingFang SC","Mic
 .v-ava{width:16px;height:16px;border-radius:50%;background:var(--accent-soft);color:var(--accent2);display:grid;place-items:center;font-size:9px;font-weight:800;flex:none}
 
 /* Modal */
-.modal{position:fixed;inset:0;z-index:50;display:none;background:rgba(15,23,42,.45);padding:20px;place-items:center;backdrop-filter:blur(4px)}
-.modal.show{display:grid}
+.modal{position:fixed;inset:0;z-index:9999;display:none;background:rgba(15,23,42,.45);padding:20px;place-items:center;backdrop-filter:blur(4px)}
+.modal.show{display:grid!important}
 .mock-modal{width:min(900px,100%);max-height:90vh;border-radius:var(--radius-lg);overflow:hidden;border:1px solid var(--border);box-shadow:var(--shadow-lg);background:var(--surface);display:flex;flex-direction:column}
 .m-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;padding:16px 20px;border-bottom:1px solid var(--border);flex:none}
 .m-title{font-size:15px;font-weight:700;line-height:1.45}
@@ -170,9 +171,16 @@ body{background:var(--bg);color:var(--text);font-family:Inter,"PingFang SC","Mic
 .p-log{font:11px/1.6 ui-monospace,Consolas,monospace;color:var(--text2);background:var(--bg);border:1px solid var(--border2);border-radius:var(--radius-sm);padding:8px 10px;max-height:100px;overflow-y:auto;white-space:pre-wrap}
 .set-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px}
 .set-row .l{font-size:11px;color:var(--text3);font-weight:700}
-.tchip{display:inline-flex;align-items:center;gap:4px;height:24px;padding:0 9px;border-radius:999px;background:var(--accent-soft);color:var(--accent2);font-size:11.5px;font-weight:650}
-.tchip .x{font-weight:800;opacity:.6;cursor:pointer}
-.tchip.add{background:transparent;border:1px dashed #cbd5e1;color:var(--text2);cursor:pointer}
+
+/* Sleek Topic Chips & Inline Input */
+.tchip{display:inline-flex;align-items:center;gap:5px;height:26px;padding:0 10px;border-radius:999px;background:#f1f5f9;border:1px solid #e2e8f0;color:var(--text);font-size:12px;font-weight:600}
+.tchip .x{font-weight:700;font-size:12px;color:var(--text3);cursor:pointer;transition:.15s ease}
+.tchip .x:hover{color:var(--red)}
+.tchip.add-btn{background:#fff;border:1px solid var(--border);color:var(--text2);cursor:pointer;font-weight:600;transition:.15s ease}
+.tchip.add-btn:hover{background:var(--accent-soft);color:var(--accent);border-color:#cbd5e1}
+.inline-topic-input{height:26px;width:140px;border:1px solid var(--border);border-radius:999px;padding:0 10px;font-size:11.5px;background:var(--surface);outline:none;transition:.15s ease}
+.inline-topic-input:focus{border-color:var(--accent);box-shadow:0 0 0 2px rgba(15,23,42,.08)}
+
 .set-val{height:28px;display:inline-flex;align-items:center;padding:0 8px;border:1px solid var(--border);border-radius:8px;font-size:12px;background:var(--surface)}
 .empty{text-align:center;padding:24px 14px}
 .empty .ico{width:44px;height:44px;border-radius:15px;background:var(--blue-soft);color:var(--blue);display:grid;place-items:center;margin:0 auto 10px}
@@ -181,10 +189,10 @@ body{background:var(--bg);color:var(--text);font-family:Inter,"PingFang SC","Mic
 .empty p{font-size:11.5px;color:var(--text3);margin:5px 0 12px}
 
 /* Context menu */
-.menu{position:fixed;z-index:60;display:none;min-width:150px;padding:5px;background:var(--surface);border:1px solid var(--border);border-radius:12px;box-shadow:var(--shadow-lg)}
-.menu.show{display:flex;flex-direction:column;gap:2px}
-.menu button,.menu a{height:32px!important;min-height:32px!important;display:flex!important;align-items:center!important;text-decoration:none!important;background:transparent!important;border:0!important;color:var(--text)!important;border-radius:7px!important;font-size:12.5px!important;padding:0 10px!important;box-shadow:none!important}
-.menu button:hover,.menu a:hover{background:var(--border2)!important}
+.menu{position:fixed;z-index:9999;display:none;min-width:150px;padding:6px;background:#fff;border:1px solid var(--border);border-radius:12px;box-shadow:0 10px 30px rgba(15,23,42,.18);flex-direction:column;gap:3px}
+.menu.show{display:flex!important}
+.menu button,.menu a{height:32px!important;min-height:32px!important;display:flex!important;align-items:center!important;text-decoration:none!important;background:transparent!important;border:0!important;color:var(--text)!important;border-radius:8px!important;font-size:12.5px!important;padding:0 12px!important;font-weight:500!important;width:100%!important;box-shadow:none!important;cursor:pointer!important}
+.menu button:hover,.menu a:hover{background:var(--border2)!important;color:var(--accent)!important}
 
 /* Mobile Header & Responsive Controls (≤980px) */
 .mobile-header-btns{display:none;gap:6px;align-items:center}
@@ -303,8 +311,7 @@ body{background:var(--bg);color:var(--text);font-family:Inter,"PingFang SC","Mic
             <div class="w-body">
               <div class="set-row">
                 <span class="l">采集话题</span>
-                <div id="inlineTopics" style="display:inline-flex;gap:4px;flex-wrap:wrap"></div>
-                <button type="button" class="tchip add" id="topicConfig">+ 编辑话题</button>
+                <div id="inlineTopics" style="display:inline-flex;gap:6px;flex-wrap:wrap;align-items:center"></div>
               </div>
               <div class="set-row">
                 <span class="l">定时</span><input id="scheduleTime" type="time" class="set-val" value="05:00">
@@ -384,7 +391,27 @@ function statusLabel(s){return {complete:"已生成",partial_failed:"部分生�
 function renderInlineTopics(){
   const container=$("inlineTopics");
   if(!container)return;
-  container.innerHTML=settingsTopics.map((t,i)=>`<span class="tchip">${esc(t)} <span class="x" onclick="removeTopic(${i})">×</span></span>`).join("");
+  const chipsHtml = settingsTopics.map((t,i)=>`<span class="tchip">${esc(t)} <span class="x" onclick="removeTopic(${i})">×</span></span>`).join("");
+  container.innerHTML = `
+    ${chipsHtml}
+    <input id="inlineTopicInput" class="inline-topic-input" placeholder="+ 添加话题 (按回车)" />
+  `;
+  const input = $("inlineTopicInput");
+  if(input){
+    input.onkeydown = async e => {
+      if(e.key === "Enter"){
+        e.preventDefault();
+        const val = normalizeTopic(input.value);
+        if(!val) return;
+        const max = Number($("analysisLimit").value || 10);
+        if(settingsTopics.some(x=>x.toLowerCase()===val.toLowerCase())){ input.value=""; return; }
+        if(settingsTopics.length >= max){ alert(`话题数不能超过 ${max}`); return; }
+        settingsTopics.push(val);
+        renderInlineTopics();
+        await saveReportSettings();
+      }
+    };
+  }
 }
 
 function normalizeTopic(v){return String(v||"").replace(/\s+/g," ").trim().slice(0,80)}
@@ -669,7 +696,6 @@ function render(data){
   $("headerStatusDot").className="dot "+(data.status==="complete"?"":data.status==="failed"?"fail":"warn");
   $("run").disabled=data.status==="running"||data.status==="queued";
 
-  // KPIs: Remove green up class when subtext is '--'
   const successCount=data.analysis_success_count||rawVideos.filter(v=>v.process_status==="complete"||v.process_status==="analyzed").length;
   let totalViews=0,maxViews=0,maxAuthor="-",totalHot=0;
   rawVideos.forEach(v=>{
@@ -769,20 +795,40 @@ async function loadToday(){
 }
 
 function showMenu(e,i){
+  if(e)e.stopPropagation();
   selectedVideo=current.videos[i];
   const menu=$("menu");
-  const canPlay=selectedVideo.local_filename,playerUrl=`/report/player?date=${encodeURIComponent(current.report_date||"")}&platform=${encodeURIComponent(selectedVideo.platform||"")}&video_id=${encodeURIComponent(selectedVideo.video_id||"")}`;
-  menu.innerHTML=`${canPlay?`<a href="${playerUrl}" target="_blank">${T.play}</a>`:""}<button type="button" onclick="openDoc('analysis')">${T.parse}</button><button type="button" onclick="openDoc('detail')">视频详情</button>${selectedVideo.source_url?`<a href="${esc(selectedVideo.source_url)}" target="_blank" rel="noopener noreferrer">${T.origin}</a>`:""}`;
+  if(!menu)return;
+  const canPlay=selectedVideo?.local_filename,playerUrl=`/report/player?date=${encodeURIComponent(current.report_date||"")}&platform=${encodeURIComponent(selectedVideo.platform||"")}&video_id=${encodeURIComponent(selectedVideo.video_id||"")}`;
+  menu.innerHTML=`${canPlay?`<a href="${playerUrl}" target="_blank">${T.play}</a>`:""}<button type="button" onclick="openDoc('analysis', event)">${T.parse}</button><button type="button" onclick="openDoc('detail', event)">视频详情</button>${selectedVideo?.source_url?`<a href="${esc(selectedVideo.source_url)}" target="_blank" rel="noopener noreferrer">${T.origin}</a>`:""}`;
   menu.style.left=Math.min(e.clientX,window.innerWidth-170)+"px";
   menu.style.top=Math.min(e.clientY,window.innerHeight-170)+"px";
   menu.classList.add("show");
 }
 
-function openDoc(type){
+window.openDoc = function(type, e){
+  if(e)e.stopPropagation();
   if($("menu"))$("menu").classList.remove("show");
-  $("modalContainer").innerHTML=renderModalContent(selectedVideo,type);
-  $("modal").classList.add("show");
-}
+  if(!selectedVideo && current && current.videos && current.videos.length){
+    selectedVideo = current.videos[0];
+  }
+  const container = $("modalContainer");
+  if(container){
+    container.innerHTML = renderModalContent(selectedVideo, type);
+  }
+  const modal = $("modal");
+  if(modal){
+    modal.classList.add("show");
+    modal.style.display = "grid";
+  }
+};
+
+document.addEventListener("click", e => {
+  const menu = $("menu");
+  if (menu && !menu.contains(e.target) && !e.target.closest(".v-card")) {
+    menu.classList.remove("show");
+  }
+});
 
 async function loadSettings(){
   const s=await (await fetch("/api/report/settings")).json();
@@ -808,7 +854,6 @@ $("run").onclick=async()=>{
   }
 };
 
-$("topicConfig").onclick=openTopicModal;
 $("saveSettings").onclick=saveReportSettings;
 $("modal").onclick=e=>{if(e.target===$("modal"))closeModal()};
 

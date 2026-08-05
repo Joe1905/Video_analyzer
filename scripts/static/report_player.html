@@ -32,10 +32,10 @@ body{background:var(--bg);color:var(--text);font-family:Inter,"PingFang SC","Mic
 
 .pill{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--border);border-radius:999px;padding:4px 12px;background:var(--surface);font-size:12px;font-weight:600;color:var(--text2)}
 
-.pl-shell{height:100%;min-height:0;display:grid;grid-template-columns:380px minmax(0,1fr);overflow:hidden}
+.pl-shell{height:100%;min-height:0;display:grid;grid-template-columns:420px minmax(0,1fr);overflow:hidden}
 .pl-rail{background:var(--surface);border-right:1px solid var(--border);padding:16px;display:flex;flex-direction:column;gap:12px;overflow-y:auto}
 
-.pl-stage{position:relative;height:420px;border-radius:12px;background:#0b1220;display:grid;place-items:center;overflow:hidden;flex:none}
+.pl-stage{position:relative;width:100%;aspect-ratio:9/16;max-height:480px;border-radius:12px;background:#0b1220;display:grid;place-items:center;overflow:hidden;flex:none;margin:0 auto;box-shadow:0 4px 16px rgba(15,23,42,.12)}
 .pl-stage video{width:100%;height:100%;object-fit:contain}
 .pl-controls{position:absolute;left:10px;right:10px;bottom:10px;height:36px;display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:10px;background:rgba(15,23,42,.76);color:#fff;backdrop-filter:blur(8px)}
 .pl-controls button{width:24px!important;height:24px!important;min-height:24px!important;border:0!important;border-radius:50%!important;background:#fff!important;color:#0f172a!important;font-size:11px;padding:0!important;flex:none;line-height:1;display:grid;place-items:center;box-shadow:none!important}
@@ -48,21 +48,23 @@ body{background:var(--bg);color:var(--text);font-family:Inter,"PingFang SC","Mic
 .pl-stats .hot{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:700}
 
 .pl-facts{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
-.pl-facts div{border:1px solid var(--border2);border-radius:999px;padding:7px 9px;min-width:0;border-radius:9px}
+.pl-facts div{border:1px solid var(--border2);border-radius:9px;padding:7px 9px;min-width:0}
 .pl-facts span{display:block;font-size:10.5px;color:var(--text3);font-weight:700}
 .pl-facts b{display:block;font-size:12px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
-.pl-main{background:var(--bg);padding:16px 18px;display:flex;flex-direction:column;gap:12px;overflow-y:auto}
-.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow)}
-.sect-head{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)}
-.sect-head b{font-size:13.5px;font-weight:750}
+/* Right Main 50/50 vertical split */
+.pl-main{background:var(--bg);padding:16px 18px;display:flex;flex-direction:column;gap:14px;height:100%;min-height:0;overflow:hidden}
+.pl-main .card{flex:1;min-height:0;display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden}
+.pl-main .card .sect-head{flex:none;display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border);background:var(--surface)}
+.pl-main .card .sect-head b{font-size:13.5px;font-weight:750}
+.card-body-scroll{flex:1;min-height:0;overflow-y:auto;padding:14px 16px;font-size:12.5px;color:#263244;line-height:1.6}
 .timecode{font-size:12px;color:var(--text2);font-variant-numeric:tabular-nums}
 
 .seg-current{border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:10px;background:var(--surface);padding:11px 13px;margin-bottom:10px}
 .seg-current b{display:block;font-size:12px;color:var(--accent2);margin-bottom:5px}
 .seg-current p{font-size:12.5px;color:#263244;line-height:1.6}
 
-/* Timeline Chips (Label only) */
+/* Timeline Chips */
 .tl-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
 .tl-chip{height:26px;padding:0 10px;border-radius:999px;border:1px solid var(--border);background:var(--surface);font-size:11px;color:var(--text2);font-weight:600;cursor:pointer;display:inline-flex;align-items:center;transition:.15s ease}
 .tl-chip:hover{border-color:#cbd5e1;background:var(--border2)}
@@ -73,9 +75,10 @@ body{background:var(--bg);color:var(--text);font-family:Inter,"PingFang SC","Mic
 @media(max-width:980px){
   body{height:auto;overflow:auto}
   .pl-shell{display:flex;flex-direction:column;height:auto;min-height:100%}
-  .pl-rail{height:70vh;flex:none;display:flex;flex-direction:column;overflow:hidden}
-  .pl-stage{flex:1;min-height:0;height:auto}
-  .pl-main{flex:1;min-height:0;overflow-y:auto;padding:12px}
+  .pl-rail{height:auto;flex:none;display:flex;flex-direction:column;overflow:visible}
+  .pl-stage{max-height:360px}
+  .pl-main{flex:none;height:auto;overflow:visible;padding:12px}
+  .pl-main .card{height:auto;min-height:300px;flex:none}
   .header-actions{justify-content:flex-end}
   .header-actions .btn-ghost{padding:0 8px!important;font-size:11px!important}
 }
@@ -132,11 +135,11 @@ body{background:var(--bg);color:var(--text);font-family:Inter,"PingFang SC","Mic
     <main class="pl-main">
       <div class="card">
         <div class="sect-head"><b>当前时间段解析</b><span id="timecode" class="timecode">00:00</span></div>
-        <div style="padding:14px" id="currentSegment"><div class="empty">等待视频加载。</div></div>
+        <div class="card-body-scroll" id="currentSegment"><div class="empty">等待视频加载。</div></div>
       </div>
       <div class="card">
         <div class="sect-head"><b>总体爆款拆解</b><span id="rankPill" class="timecode"></span></div>
-        <div style="padding:14px;font-size:12.5px;color:#263244;line-height:1.6" id="deepDive"><div class="empty">暂无拆解内容。</div></div>
+        <div class="card-body-scroll" id="deepDive"><div class="empty">暂无拆解内容。</div></div>
       </div>
     </main>
   </div>
@@ -185,7 +188,30 @@ function parseTime(v){const s=String(v||"").trim();let m=s.match(/(\d{1,2}):(\d{
 function rangeOf(item,index,body=""){const raw=item?.time_range||item?.timeRange||item?.timestamp||item?.time||"";const parts=String(raw).split(/\s*(?:-|–|—|~|至|到)\s*/);let start=parseTime(parts[0]),end=parseTime(parts[1]);if(start==null){const m=String(body).match(/(?:Frame|帧)\s*\d+[^\d]{0,20}(\d+(?:\.\d+)?)\s*(?:s|seconds?|秒)/i)||String(body).match(/(?:at|在)\s*(\d+(?:\.\d+)?)\s*(?:s|seconds?|秒)/i);if(m)start=Number(m[1])}if(start==null)start=index;if(end==null||end<=start)end=start+1;return {start,end,label:raw||fmtClock(start)}}
 function textOf(value){if(value==null)return "";if(typeof value==="string")return localizeText(value);if(Array.isArray(value))return value.map(textOf).filter(Boolean).join("\n");if(typeof value==="object"){return Object.entries(value).filter(([k,v])=>!["start","end"].includes(k)&&v!=null&&v!==""&&k!=="time_range").map(([k,v])=>`${labelOf(k)}：${textOf(v)}`).join("\n")}return String(value)}
 function timelineFromAnalysis(analysis){const items=[];const raw=analysis?.timeline||analysis?.segments||analysis?.frame_analyses||[];if(Array.isArray(raw)){raw.forEach((item,i)=>{const body=textOf(item),r=rangeOf(item,i,body);items.push({...r,title:item?.title||item?.scene||item?.time_range||item?.timestamp||`片段 ${i+1}`,body})})}return items.filter(x=>x.body)}
-function deepDiveFor(report,video,index){const dives=report?.video_deep_dives||[];if(!dives.length)return "";const rank=Number(video?.report_rank||index+1);const title=String(video?.title||"").slice(0,24);return dives.find(x=>String(x).includes(`视频 ${rank}`))||dives.find(x=>title&&String(x).includes(title))||dives[index]||dives[0]||""}
+
+function deepDiveFor(report,video,index){
+  if(video?.audit_result){
+    if(typeof video.audit_result==="string")return video.audit_result;
+    if(typeof video.audit_result==="object"){
+      return Object.entries(video.audit_result)
+        .map(([k,v])=>`- **${k}**: ${typeof v==="object"?JSON.stringify(v):v}`)
+        .join("\n\n");
+    }
+  }
+  const dives = report?.video_deep_dives || [];
+  if (Array.isArray(dives) && dives.length) {
+    const rank = Number(video?.report_rank || index + 1);
+    const title = String(video?.title || "").slice(0, 24);
+    const match = dives.find(x => String(x).includes(`视频 ${rank}`)) ||
+                  dives.find(x => title && String(x).includes(title)) ||
+                  dives[index] || dives[0];
+    if (match) return typeof match === "object" ? JSON.stringify(match, null, 2) : String(match);
+  }
+  if (typeof report?.video_deep_dives === "string") return report.video_deep_dives;
+  const analysis = video?.analysis_zh || video?.analysis;
+  if (analysis?.summary) return analysis.summary;
+  return "";
+}
 
 // Timeline Chip Rendering: Chips show ONLY timecode label
 function renderSegment(segment,all,currentTime){
