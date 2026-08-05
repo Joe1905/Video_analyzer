@@ -44,13 +44,13 @@ body{background:var(--bg);color:var(--text);font-family:Inter,"PingFang SC","Mic
 .rail-head span{font-size:11px;color:var(--text3)}
 .rail-body{flex:1;min-height:0;overflow-y:auto;padding:10px}
 
-/* History items */
+/* History items - Active Logo & Item style */
 .h-item{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:11px;cursor:pointer;position:relative;margin-bottom:4px;transition:.12s ease}
 .h-item:hover{background:var(--border2)}
 .h-item:hover .h-glyph{background:#dbe3ec;color:var(--text)}
 .h-item.active{background:#edf2f7!important;border:1px solid #cbd5e1!important;box-shadow:inset 4px 0 0 var(--accent)!important}
 .h-glyph{width:34px;height:34px;border-radius:10px;background:var(--border2);color:var(--text2);display:grid;place-items:center;font-size:12px;font-weight:800;flex:none;transition:.15s ease}
-.h-item.active .h-glyph{background:var(--accent)!important;color:#fff!important}
+.h-item.active .h-glyph{background:#0f172a!important;color:#ffffff!important}
 .h-copy{min-width:0;flex:1}
 .h-copy b{display:block;font-size:13px;font-weight:700}
 .h-item.active .h-copy b{color:var(--accent2)}
@@ -172,12 +172,10 @@ body{background:var(--bg);color:var(--text);font-family:Inter,"PingFang SC","Mic
 .set-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px}
 .set-row .l{font-size:11px;color:var(--text3);font-weight:700}
 
-/* Sleek Topic Chips & Inline Input */
-.tchip{display:inline-flex;align-items:center;gap:5px;height:26px;padding:0 10px;border-radius:999px;background:#f1f5f9;border:1px solid #e2e8f0;color:var(--text);font-size:12px;font-weight:600}
-.tchip .x{font-weight:700;font-size:12px;color:var(--text3);cursor:pointer;transition:.15s ease}
-.tchip .x:hover{color:var(--red)}
-.tchip.add-btn{background:#fff;border:1px solid var(--border);color:var(--text2);cursor:pointer;font-weight:600;transition:.15s ease}
-.tchip.add-btn:hover{background:var(--accent-soft);color:var(--accent);border-color:#cbd5e1}
+/* Sleek Multi-color Topic Chips & Inline Input */
+.tchip{display:inline-flex;align-items:center;gap:5px;height:26px;padding:0 10px;border-radius:999px;font-size:12px;font-weight:650;transition:.15s ease}
+.tchip .x{font-weight:700;font-size:12px;opacity:.7;cursor:pointer;transition:.15s ease}
+.tchip .x:hover{opacity:1;color:var(--red)}
 .inline-topic-input{height:26px;width:140px;border:1px solid var(--border);border-radius:999px;padding:0 10px;font-size:11.5px;background:var(--surface);outline:none;transition:.15s ease}
 .inline-topic-input:focus{border-color:var(--accent);box-shadow:0 0 0 2px rgba(15,23,42,.08)}
 
@@ -188,10 +186,10 @@ body{background:var(--bg);color:var(--text);font-family:Inter,"PingFang SC","Mic
 .empty b{font-size:13.5px}
 .empty p{font-size:11.5px;color:var(--text3);margin:5px 0 12px}
 
-/* Context menu */
+/* Context menu - Left Aligned Text */
 .menu{position:fixed;z-index:9999;display:none;min-width:150px;padding:6px;background:#fff;border:1px solid var(--border);border-radius:12px;box-shadow:0 10px 30px rgba(15,23,42,.18);flex-direction:column;gap:3px}
 .menu.show{display:flex!important}
-.menu button,.menu a{height:32px!important;min-height:32px!important;display:flex!important;align-items:center!important;text-decoration:none!important;background:transparent!important;border:0!important;color:var(--text)!important;border-radius:8px!important;font-size:12.5px!important;padding:0 12px!important;font-weight:500!important;width:100%!important;box-shadow:none!important;cursor:pointer!important}
+.menu button,.menu a{height:32px!important;min-height:32px!important;display:flex!important;align-items:center!important;text-align:left!important;justify-content:flex-start!important;text-decoration:none!important;background:transparent!important;border:0!important;color:var(--text)!important;border-radius:8px!important;font-size:12.5px!important;padding:0 12px!important;font-weight:500!important;width:100%!important;box-shadow:none!important;cursor:pointer!important}
 .menu button:hover,.menu a:hover{background:var(--border2)!important;color:var(--accent)!important}
 
 /* Mobile Header & Responsive Controls (≤980px) */
@@ -377,6 +375,21 @@ const T={run:"生成今日报告",save:"保存设置",loading:"正在加载...",
 const $=id=>document.getElementById(id);
 let current=null,selectedVideo=null,pollTimer=null,reportEvents=null,progressLines=[],settingsTopics=[],currentSort="hot";
 
+const TOPIC_PALETTES = [
+  { bg: "#eff6ff", border: "#bfdbfe", color: "#1e40af" },
+  { bg: "#ecfdf5", border: "#a7f3d0", color: "#065f46" },
+  { bg: "#f3e8ff", border: "#e9d5ff", color: "#6b21a8" },
+  { bg: "#fffbeb", border: "#fde68a", color: "#92400e" },
+  { bg: "#fef2f2", border: "#fecaca", color: "#991b1b" },
+  { bg: "#f0fdf4", border: "#bbf7d0", color: "#166534" },
+  { bg: "#f5f3ff", border: "#ddd6fe", color: "#5b21b6" }
+];
+
+function getTopicStyle(i) {
+  const p = TOPIC_PALETTES[i % TOPIC_PALETTES.length];
+  return `background:${p.bg};border:1px solid ${p.border};color:${p.color};`;
+}
+
 function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]))}
 function safeAuthor(v){
   if(!v)return "未知";
@@ -391,7 +404,7 @@ function statusLabel(s){return {complete:"已生成",partial_failed:"部分生�
 function renderInlineTopics(){
   const container=$("inlineTopics");
   if(!container)return;
-  const chipsHtml = settingsTopics.map((t,i)=>`<span class="tchip">${esc(t)} <span class="x" onclick="removeTopic(${i})">×</span></span>`).join("");
+  const chipsHtml = settingsTopics.map((t,i)=>`<span class="tchip" style="${getTopicStyle(i)}">${esc(t)} <span class="x" onclick="removeTopic(${i})">×</span></span>`).join("");
   container.innerHTML = `
     ${chipsHtml}
     <input id="inlineTopicInput" class="inline-topic-input" placeholder="+ 添加话题 (按回车)" />
@@ -418,7 +431,7 @@ function normalizeTopic(v){return String(v||"").replace(/\s+/g," ").trim().slice
 
 function renderTopicEditor(){
   const max=Number($("analysisLimit").value||10);
-  const chips=settingsTopics.map((t,i)=>`<span class="tchip">${esc(t)}<span class="x" onclick="removeTopic(${i})">×</span></span>`).join("");
+  const chips=settingsTopics.map((t,i)=>`<span class="tchip" style="${getTopicStyle(i)}">${esc(t)}<span class="x" onclick="removeTopic(${i})">×</span></span>`).join("");
   $("modalContainer").innerHTML=`
     <div class="mock-modal" style="width:min(500px,100%)">
       <div class="m-head"><div><div class="m-title">采集话题设置</div><div class="m-sub">话题数量需小于等于采集视频数 (当前上限: ${max})</div></div><button class="m-close" onclick="closeModal()">×</button></div>
@@ -685,6 +698,16 @@ function setKpi(id, val, subVal, isUp=false) {
   }
 }
 
+function syncActiveHistory(date) {
+  document.querySelectorAll(".h-item").forEach(item => {
+    if (item.dataset.date === date) {
+      item.classList.add("active");
+    } else {
+      item.classList.remove("active");
+    }
+  });
+}
+
 function render(data){
   current=data;
   const rawVideos=Array.isArray(data.videos)?data.videos:[];
@@ -695,6 +718,8 @@ function render(data){
   $("headerStatusText").textContent=`${data.report_date||""} ${statusLabel(data.status||"missing")}`;
   $("headerStatusDot").className="dot "+(data.status==="complete"?"":data.status==="failed"?"fail":"warn");
   $("run").disabled=data.status==="running"||data.status==="queued";
+
+  syncActiveHistory(data.report_date);
 
   const successCount=data.analysis_success_count||rawVideos.filter(v=>v.process_status==="complete"||v.process_status==="analyzed").length;
   let totalViews=0,maxViews=0,maxAuthor="-",totalHot=0;
@@ -752,6 +777,8 @@ function renderHistoryList(h){
     $("mobileDrawerCount").textContent=`${h.length} 份日报`;
   }
 
+  if(current?.report_date) syncActiveHistory(current.report_date);
+
   document.querySelectorAll(".h-item").forEach(b=>b.onclick=e=>{
     if(e.target.classList.contains("h-del"))return;
     loadDate(b.dataset.date);
@@ -800,10 +827,19 @@ function showMenu(e,i){
   const menu=$("menu");
   if(!menu)return;
   const canPlay=selectedVideo?.local_filename,playerUrl=`/report/player?date=${encodeURIComponent(current.report_date||"")}&platform=${encodeURIComponent(selectedVideo.platform||"")}&video_id=${encodeURIComponent(selectedVideo.video_id||"")}`;
-  menu.innerHTML=`${canPlay?`<a href="${playerUrl}" target="_blank">${T.play}</a>`:""}<button type="button" onclick="openDoc('analysis', event)">${T.parse}</button><button type="button" onclick="openDoc('detail', event)">视频详情</button>${selectedVideo?.source_url?`<a href="${esc(selectedVideo.source_url)}" target="_blank" rel="noopener noreferrer">${T.origin}</a>`:""}`;
+  menu.innerHTML=`
+    ${canPlay?`<a href="${playerUrl}" target="_blank" class="menu-item">${T.play}</a>`:""}
+    <button type="button" class="menu-item" id="menuItemParse">${T.parse}</button>
+    <button type="button" class="menu-item" id="menuItemDetail">视频详情</button>
+    ${selectedVideo?.source_url?`<a href="${esc(selectedVideo.source_url)}" target="_blank" rel="noopener noreferrer" class="menu-item">${T.origin}</a>`:""}
+  `;
   menu.style.left=Math.min(e.clientX,window.innerWidth-170)+"px";
   menu.style.top=Math.min(e.clientY,window.innerHeight-170)+"px";
   menu.classList.add("show");
+
+  const btnParse = $("menuItemParse"), btnDetail = $("menuItemDetail");
+  if(btnParse) btnParse.onclick = (evt) => { evt.stopPropagation(); openDoc('analysis'); };
+  if(btnDetail) btnDetail.onclick = (evt) => { evt.stopPropagation(); openDoc('detail'); };
 }
 
 window.openDoc = function(type, e){

@@ -32,10 +32,11 @@ body{background:var(--bg);color:var(--text);font-family:Inter,"PingFang SC","Mic
 
 .pill{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--border);border-radius:999px;padding:4px 12px;background:var(--surface);font-size:12px;font-weight:600;color:var(--text2)}
 
-.pl-shell{height:100%;min-height:0;display:grid;grid-template-columns:420px minmax(0,1fr);overflow:hidden}
+.pl-shell{height:100%;min-height:0;display:grid;grid-template-columns:460px minmax(0,1fr);overflow:hidden}
 .pl-rail{background:var(--surface);border-right:1px solid var(--border);padding:16px;display:flex;flex-direction:column;gap:12px;overflow-y:auto}
 
-.pl-stage{position:relative;width:100%;aspect-ratio:9/16;max-height:480px;border-radius:12px;background:#0b1220;display:grid;place-items:center;overflow:hidden;flex:none;margin:0 auto;box-shadow:0 4px 16px rgba(15,23,42,.12)}
+/* Maximize Left Video Player Stage */
+.pl-stage{position:relative;width:100%;aspect-ratio:9/16;max-height:520px;border-radius:12px;background:#0b1220;display:grid;place-items:center;overflow:hidden;flex:none;margin:0 auto;box-shadow:0 4px 16px rgba(15,23,42,.12)}
 .pl-stage video{width:100%;height:100%;object-fit:contain}
 .pl-controls{position:absolute;left:10px;right:10px;bottom:10px;height:36px;display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:10px;background:rgba(15,23,42,.76);color:#fff;backdrop-filter:blur(8px)}
 .pl-controls button{width:24px!important;height:24px!important;min-height:24px!important;border:0!important;border-radius:50%!important;background:#fff!important;color:#0f172a!important;font-size:11px;padding:0!important;flex:none;line-height:1;display:grid;place-items:center;box-shadow:none!important}
@@ -57,15 +58,28 @@ body{background:var(--bg);color:var(--text);font-family:Inter,"PingFang SC","Mic
 .pl-main .card{flex:1;min-height:0;display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden}
 .pl-main .card .sect-head{flex:none;display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border);background:var(--surface)}
 .pl-main .card .sect-head b{font-size:13.5px;font-weight:750}
-.card-body-scroll{flex:1;min-height:0;overflow-y:auto;padding:14px 16px;font-size:12.5px;color:#263244;line-height:1.6}
-.timecode{font-size:12px;color:var(--text2);font-variant-numeric:tabular-nums}
 
-.seg-current{border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:10px;background:var(--surface);padding:11px 13px;margin-bottom:10px}
+/* Top Card: Scrollable parsed text body + Fixed bottom chips bar */
+.card-body-flex{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;padding:14px 16px}
+.seg-scroll-body{flex:1;min-height:0;overflow-y:auto;font-size:12.5px;color:#263244;line-height:1.6;padding-right:4px}
+.tl-chips-bar{flex:none;padding-top:10px;margin-top:10px;border-top:1px solid var(--border2);display:flex;flex-wrap:wrap;gap:6px}
+
+/* Bottom Card: Formatted Markdown Scroll */
+.card-body-scroll{flex:1;min-height:0;overflow-y:auto;padding:14px 16px;font-size:12.5px;color:#263244;line-height:1.6}
+
+/* Structured Markdown List Styling */
+.md-list{padding-left:18px;margin:8px 0}
+.md-list li{margin-bottom:6px;line-height:1.6}
+.md-p{margin-bottom:8px;line-height:1.6}
+.md-h2{font-size:15px;font-weight:750;margin:12px 0 6px;color:var(--accent)}
+.md-h3{font-size:14px;font-weight:700;margin:10px 0 5px;color:var(--accent2)}
+.md-h4{font-size:13px;font-weight:700;margin:8px 0 4px;color:var(--text)}
+
+.seg-current{border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:10px;background:var(--surface);padding:11px 13px;margin-bottom:6px}
 .seg-current b{display:block;font-size:12px;color:var(--accent2);margin-bottom:5px}
 .seg-current p{font-size:12.5px;color:#263244;line-height:1.6}
 
 /* Timeline Chips */
-.tl-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
 .tl-chip{height:26px;padding:0 10px;border-radius:999px;border:1px solid var(--border);background:var(--surface);font-size:11px;color:var(--text2);font-weight:600;cursor:pointer;display:inline-flex;align-items:center;transition:.15s ease}
 .tl-chip:hover{border-color:#cbd5e1;background:var(--border2)}
 .tl-chip.active{background:var(--accent)!important;color:#fff!important;border-color:var(--accent)!important;font-weight:700}
@@ -135,7 +149,10 @@ body{background:var(--bg);color:var(--text);font-family:Inter,"PingFang SC","Mic
     <main class="pl-main">
       <div class="card">
         <div class="sect-head"><b>当前时间段解析</b><span id="timecode" class="timecode">00:00</span></div>
-        <div class="card-body-scroll" id="currentSegment"><div class="empty">等待视频加载。</div></div>
+        <div class="card-body-flex">
+          <div class="seg-scroll-body" id="currentSegmentBody"><div class="empty">等待视频加载。</div></div>
+          <div class="tl-chips-bar" id="currentSegmentChips"></div>
+        </div>
       </div>
       <div class="card">
         <div class="sect-head"><b>总体爆款拆解</b><span id="rankPill" class="timecode"></span></div>
@@ -160,6 +177,40 @@ function safeAuthor(v){
 function fmtMd(v){return esc(v).replace(/\*\*([^*\n]+)\*\*/g,"<strong>$1</strong>")}
 function fmtNum(n){n=Number(n||0);if(n>=1e8)return (n/1e8).toFixed(1)+"亿";if(n>=1e4)return (n/1e4).toFixed(1)+"万";return String(n||0)}
 function fmtClock(s){s=Math.max(0,Number(s||0));const m=Math.floor(s/60),sec=Math.floor(s%60);return `${String(m).padStart(2,"0")}:${String(sec).padStart(2,"0")}`}
+
+function renderFormattedMarkdown(src) {
+  if (!src) return '<div class="empty">暂无拆解内容。</div>';
+  let str = String(src).trim();
+  if (str.startsWith("{") || str.startsWith("[")) {
+    try {
+      const obj = JSON.parse(str);
+      if (typeof obj === "object") {
+        return `<ul class="md-list">${Object.entries(obj).map(([k, v]) => `<li><strong>${esc(k)}</strong>: ${esc(typeof v === "object" ? JSON.stringify(v) : String(v))}</li>`).join("")}</ul>`;
+      }
+    } catch (e) {}
+  }
+  const lines = str.split("\n");
+  let html = "", inList = false;
+  lines.forEach(line => {
+    let l = line.trim();
+    if (!l) {
+      if (inList) { html += "</ul>"; inList = false; }
+      return;
+    }
+    if (l.startsWith("- ") || l.startsWith("* ") || l.startsWith("• ")) {
+      if (!inList) { html += '<ul class="md-list">'; inList = true; }
+      html += `<li>${fmtMd(l.slice(2))}</li>`;
+    } else {
+      if (inList) { html += "</ul>"; inList = false; }
+      if (l.startsWith("### ")) html += `<h4 class="md-h4">${fmtMd(l.slice(4))}</h4>`;
+      else if (l.startsWith("## ")) html += `<h3 class="md-h3">${fmtMd(l.slice(3))}</h3>`;
+      else if (l.startsWith("# ")) html += `<h2 class="md-h2">${fmtMd(l.slice(2))}</h2>`;
+      else html += `<p class="md-p">${fmtMd(l)}</p>`;
+    }
+  });
+  if (inList) html += "</ul>";
+  return html;
+}
 
 function syncVideoControls(){
   const vid=$("video"),seek=$("seek"),btn=$("playBtn"),clock=$("videoClock");
@@ -213,23 +264,32 @@ function deepDiveFor(report,video,index){
   return "";
 }
 
-// Timeline Chip Rendering: Chips show ONLY timecode label
+// Timeline Chip Rendering: Full parsed text scrolls internally; Chips are fixed at bottom
 function renderSegment(segment,all,currentTime){
   $("timecode").textContent=fmtClock(currentTime);
-  if(!all.length){$("currentSegment").innerHTML='<div class="empty">暂无时间轴解析，展示解析摘要。</div>';return}
-  const html=`
+  if(!all.length){
+    $("currentSegmentBody").innerHTML='<div class="empty">暂无时间轴解析，展示解析摘要。</div>';
+    $("currentSegmentChips").innerHTML='';
+    return;
+  }
+  const textHtml=`
     <div class="seg-current">
       <b>${esc(segment.label||segment.title)}</b>
       <p>${fmtMd(segment.body)}</p>
     </div>
-    <div class="tl-list">
-      ${all.map((x,i)=>`<span class="tl-chip ${x===segment?'active':''}" data-i="${i}">${esc(x.label)}</span>`).join("")}
-    </div>
   `;
-  $("currentSegment").innerHTML=html;
+  const chipsHtml=all.map((x,i)=>`<span class="tl-chip ${x===segment?'active':''}" data-i="${i}">${esc(x.label)}</span>`).join("");
+
+  $("currentSegmentBody").innerHTML=textHtml;
+  $("currentSegmentChips").innerHTML=chipsHtml;
+
   document.querySelectorAll(".tl-chip").forEach(el=>el.onclick=()=>{
     const item=all[Number(el.dataset.i)];
-    if(item){$("video").currentTime=item.start;$("video").play().catch(()=>{});renderSegment(item,all,item.start)}
+    if(item){
+      $("video").currentTime=item.start;
+      $("video").play().catch(()=>{});
+      renderSegment(item,all,item.start);
+    }
   });
 }
 
@@ -327,7 +387,7 @@ async function main(){
 
   if(video.local_filename)$("video").src=`/video/${encodeURIComponent(video.local_filename)}`;
   const deep=deepDiveFor(data.report,video,idx);
-  $("deepDive").innerHTML=deep?fmtMd(deep):'<div class="empty">暂无该视频总体拆解。</div>';
+  $("deepDive").innerHTML=renderFormattedMarkdown(deep);
 
   setupVideoControls();
   currentTimeline=buildTimeline(video);
@@ -344,7 +404,7 @@ async function main(){
   update();
 }
 
-main().catch(err=>{$("pageTitle").textContent=err.message;$("currentSegment").innerHTML=`<div class="empty">${esc(err.message)}</div>`});
+main().catch(err=>{$("pageTitle").textContent=err.message;$("currentSegmentBody").innerHTML=`<div class="empty">${esc(err.message)}</div>`});
 </script>
 </body>
 </html>
