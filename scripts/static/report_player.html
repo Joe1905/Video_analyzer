@@ -153,7 +153,6 @@ body{background:var(--bg);color:var(--text);font-family:Inter,"PingFang SC","Mic
 
     <main class="pl-main">
       <div class="card">
-        <div class="sect-head"><b>当前时间段解析</b><span id="timecode" class="timecode">00:00</span></div>
         <div class="card-body-flex">
           <div class="seg-scroll-body" id="currentSegmentBody"><div class="empty">等待视频加载。</div></div>
           <div class="tl-chips-bar" id="currentSegmentChips"></div>
@@ -235,7 +234,27 @@ function localizeText(v){let s=String(v||"").replace(/^```[a-zA-Z]*\s*/,"").repl
 function parseTime(v){const s=String(v||"").trim();let m=s.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?/);if(m){const a=Number(m[1]),b=Number(m[2]),c=m[3]==null?null:Number(m[3]);return c==null?a*60+b:a*3600+b*60+c}m=s.match(/(\d+(?:\.\d+)?)\s*s/i);if(m)return Number(m[1]);m=s.match(/^\d+(?:\.\d+)?$/);return m?Number(m[0]):null}
 function rangeOf(item,index,body=""){const raw=item?.time_range||item?.timeRange||item?.timestamp||item?.time||"";const parts=String(raw).split(/\s*(?:-|–|—|~|至|到)\s*/);let start=parseTime(parts[0]),end=parseTime(parts[1]);if(start==null){const m=String(body).match(/(?:Frame|帧)\s*\d+[^\d]{0,20}(\d+(?:\.\d+)?)\s*(?:s|seconds?|秒)/i)||String(body).match(/(?:at|在)\s*(\d+(?:\.\d+)?)\s*(?:s|seconds?|秒)/i);if(m)start=Number(m[1])}if(start==null)start=index;if(end==null||end<=start)end=start+1;return {start,end,label:raw||fmtClock(start)}}
 function textOf(value){if(value==null)return "";if(typeof value==="string")return localizeText(value);if(Array.isArray(value))return value.map(textOf).filter(Boolean).join("\n");if(typeof value==="object"){return Object.entries(value).filter(([k,v])=>!["start","end"].includes(k)&&v!=null&&v!==""&&k!=="time_range").map(([k,v])=>`${labelOf(k)}：${textOf(v)}`).join("\n")}return String(value)}
-function timelineFromAnalysis(analysis){const items=[];const raw=analysis?.timeline||analysis?.segments||analysis?.frame_analyses||[];if(Array.isArray(raw)){raw.forEach((item,i)=>{const body=textOf(item),r=rangeOf(item,i,body);items.push({...r,title:item?.title||item?.scene||item?.time_range||item?.timestamp||`片段 ${i+1}`,body})})}return items.filter(x=>x.body)}
+function timelineFromAnalysis(analysis){
+  const items=[];
+  const raw=analysis?.timeline||analysis?.segments||analysis?.frame_analyses||[];
+  if(Array.isArray(raw)){
+    raw.forEach((item,i)=>{
+      const body=textOf(item),r=rangeOf(item,i,body);
+      items.push({...r,title:item?.title||item?.scene||item?.time_range||item?.timestamp||`片段 ${i+1}`,body});
+    });
+  }
+  const filtered = items.filter(x=>x.body);
+  filtered.forEach((item, idx) => {
+    const nextStart = filtered[idx + 1] ? filtered[idx + 1].start : Math.max(item.start + 5, item.end);
+    if (item.end <= item.start || item.end === item.start + 1) {
+      item.end = nextStart > item.start ? nextStart : item.start + 3;
+    }
+    const intervalLabel = `${fmtClock(item.start)} - ${fmtClock(item.end)}`;
+    item.intervalLabel = intervalLabel;
+    item.label = intervalLabel;
+  });
+  return filtered;
+}
 
 function deepDiveFor(report,video,index){
   if(video?.audit_result){
@@ -262,20 +281,21 @@ function deepDiveFor(report,video,index){
 }
 
 function renderSegment(segment,all,currentTime){
-  $("timecode").textContent=fmtClock(currentTime);
+  if($("timecode"))$("timecode").textContent=fmtClock(currentTime);
   if(!all.length){
     $("currentSegmentBody").innerHTML='<div class="empty">暂无时间轴解析，展示解析摘要。</div>';
     $("currentSegmentChips").innerHTML='';
     return;
   }
   const cleanBody = String(segment.body || "").replace(/^\s+/, "");
+  const intervalTitle = segment.intervalLabel || segment.label || fmtClock(currentTime);
   const textHtml=`
     <div class="seg-current">
-      <b>${esc(segment.label||segment.title)}</b>
+      <b>${esc(intervalTitle)}</b>
       <p>${fmtMd(cleanBody)}</p>
     </div>
   `;
-  const chipsHtml=all.map((x,i)=>`<span class="tl-chip ${x===segment?'active':''}" data-i="${i}">${esc(x.label)}</span>`).join("");
+  const chipsHtml=all.map((x,i)=>`<span class="tl-chip ${x===segment?'active':''}" data-i="${i}">${esc(x.intervalLabel||x.label)}</span>`).join("");
 
   $("currentSegmentBody").innerHTML=textHtml;
   $("currentSegmentChips").innerHTML=chipsHtml;
