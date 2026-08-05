@@ -35,13 +35,9 @@ body{background:var(--bg);color:var(--text);font-family:Inter,"PingFang SC","Mic
 .pl-shell{height:100%;min-height:0;display:grid;grid-template-columns:460px minmax(0,1fr);overflow:hidden}
 .pl-rail{background:var(--surface);border-right:1px solid var(--border);padding:16px;display:flex;flex-direction:column;gap:12px;height:100%;overflow:hidden}
 
-/* Video Stage fills vertical rail height */
+/* Video Stage fills vertical rail height with native player controls */
 .pl-stage{position:relative;width:100%;flex:1;min-height:0;height:100%;border-radius:12px;background:#0b1220;display:grid;place-items:center;overflow:hidden;box-shadow:0 4px 16px rgba(15,23,42,.12)}
-.pl-stage video{width:100%;height:100%;object-fit:contain}
-.pl-controls{position:absolute;left:10px;right:10px;bottom:10px;height:36px;display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:10px;background:rgba(15,23,42,.76);color:#fff;backdrop-filter:blur(8px)}
-.pl-controls button{width:24px!important;height:24px!important;min-height:24px!important;border:0!important;border-radius:50%!important;background:#fff!important;color:#0f172a!important;font-size:11px;padding:0!important;flex:none;line-height:1;display:grid;place-items:center;box-shadow:none!important}
-.pl-controls input[type="range"]{flex:1;accent-color:#fff;cursor:pointer}
-.pl-controls span{font-size:11px;color:#fff;font-variant-numeric:tabular-nums;white-space:nowrap}
+.pl-stage video{width:100%;height:100%;object-fit:contain;outline:none}
 
 .pl-meta-box{flex:none;display:flex;flex-direction:column;gap:10px}
 .pl-title{font-size:14px;font-weight:750;line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
@@ -50,9 +46,9 @@ body{background:var(--bg);color:var(--text);font-family:Inter,"PingFang SC","Mic
 .pl-stats .hot{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:700}
 
 .pl-facts{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
-.pl-facts div{border:1px solid var(--border2);border-radius:9px;padding:7px 9px;min-width:0}
-.pl-facts span{display:block;font-size:10.5px;color:var(--text3);font-weight:700}
-.pl-facts b{display:block;font-size:12px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pl-facts div{border:1px solid var(--border2);border-radius:999px;padding:7px 12px;min-width:0;background:var(--surface);display:flex;align-items:center;gap:6px;overflow:hidden}
+.pl-facts span{font-size:11px;color:var(--text3);font-weight:700;flex:none}
+.pl-facts b{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
 
 /* Right Main 50/50 vertical split */
 .pl-main{background:var(--bg);padding:16px 18px;display:flex;flex-direction:column;gap:14px;height:100%;min-height:0;overflow:hidden}
@@ -129,12 +125,8 @@ body{background:var(--bg);color:var(--text);font-family:Inter,"PingFang SC","Mic
   <div class="pl-shell">
     <aside class="pl-rail">
       <div class="pl-stage">
-        <video id="video" playsinline></video>
-        <div class="pl-controls">
-          <button id="playBtn" type="button">▶</button>
-          <input id="seek" type="range" min="0" max="1000" value="0">
-          <span id="videoClock">00:00</span>
-        </div>
+        <!-- Native built-in HTML5 video player controls -->
+        <video id="video" controls playsinline></video>
       </div>
       <div class="pl-meta-box">
         <div class="pl-title" id="videoTitleSide">加载中...</div>
@@ -171,14 +163,14 @@ let currentReport=null,currentVideo=null,currentTimeline=[];
 
 function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]))}
 function safeAuthor(v){
-  if(!v)return "未知";
+  if(v == null) return "未知";
   let s = v;
-  if(typeof v === "object") s = v.nickname || v.name || v.unique_id || v.uniqueId || JSON.stringify(v);
+  if(typeof v === "object" && v !== null) s = v.nickname || v.name || v.unique_id || v.uniqueId || JSON.stringify(v);
   s = String(s).replace(/&#039;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
   if(s.startsWith("{") || s.startsWith("[")) {
     try {
       const obj = JSON.parse(s);
-      if(typeof obj === "object") return esc(obj.nickname || obj.name || obj.unique_id || "未知");
+      if(obj && typeof obj === "object") return esc(obj.nickname || obj.name || obj.unique_id || "未知");
     } catch(e) {}
   }
   return esc(s.replace(/^@/, "").trim() || "未知");
@@ -193,7 +185,7 @@ function renderFormattedMarkdown(src) {
   if (str.startsWith("{") || str.startsWith("[")) {
     try {
       const obj = JSON.parse(str);
-      if (typeof obj === "object") {
+      if (typeof obj === "object" && obj !== null) {
         return `<ul class="md-list">${Object.entries(obj).map(([k, v]) => `<li><strong>${esc(k)}</strong>: ${esc(typeof v === "object" ? JSON.stringify(v) : String(v))}</li>`).join("")}</ul>`;
       }
     } catch (e) {}
@@ -219,25 +211,6 @@ function renderFormattedMarkdown(src) {
   });
   if (inList) html += "</ul>";
   return html;
-}
-
-function syncVideoControls(){
-  const vid=$("video"),seek=$("seek"),btn=$("playBtn"),clock=$("videoClock");
-  if(!vid||!seek||!btn||!clock)return;
-  const duration=Number(vid.duration||0),cur=Number(vid.currentTime||0);
-  seek.value=duration?String(Math.round(cur/duration*1000)):"0";
-  btn.textContent=vid.paused?"▶":"Ⅱ";
-  clock.textContent=duration?`${fmtClock(cur)} / ${fmtClock(duration)}`:fmtClock(cur);
-}
-
-function setupVideoControls(){
-  const vid=$("video"),seek=$("seek"),btn=$("playBtn");
-  if(!vid||!seek||!btn)return;
-  const toggle=()=>{if(vid.paused)vid.play().catch(()=>{});else vid.pause()};
-  btn.onclick=toggle;
-  vid.onclick=toggle;
-  seek.oninput=()=>{if(Number(vid.duration||0))vid.currentTime=Number(seek.value)/1000*vid.duration};
-  ["play","pause","timeupdate","durationchange","loadedmetadata"].forEach(name=>vid.addEventListener(name,syncVideoControls));
 }
 
 const KEY_LABELS={index:"序号",time_range:"时间段",timeRange:"时间段",timestamp:"时间点",time:"时间",visual:"画面解析",audio:"声音/台词",transcript:"字幕/转写",summary:"摘要",video_description:"视频描述",description:"描述",scene:"场景",title:"标题"};
@@ -397,7 +370,6 @@ async function main(){
   const deep=deepDiveFor(data.report,video,idx);
   $("deepDive").innerHTML=renderFormattedMarkdown(deep);
 
-  setupVideoControls();
   currentTimeline=buildTimeline(video);
   function update(){
     const t=$("video").currentTime||0;
@@ -408,7 +380,6 @@ async function main(){
   $("video").addEventListener("loadedmetadata",update);
   $("translateBtn").onclick=translateCurrent;
   if(video.analysis_zh)$("translateBtn").textContent="已加载中文";
-  syncVideoControls();
   update();
 }
 
