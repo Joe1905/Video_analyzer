@@ -33,14 +33,11 @@ button:disabled{opacity:.55;cursor:not-allowed}
 .pill .dot.warn{background:var(--amber)}
 .pill .dot.fail{background:var(--red)}
 
-.mock-page{min-height:calc(100vh - 60px);display:flex;flex-direction:column;background:var(--bg)}
-.mock-header{height:54px;flex:none;display:flex;align-items:center;justify-content:space-between;padding:0 22px;background:rgba(255,255,255,.92);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:9;backdrop-filter:blur(12px)}
-.brand{display:flex;align-items:center;gap:11px}
-.brand-name{font-size:16px;font-weight:750;letter-spacing:-.02em}
-.brand-note{font-size:11px;color:var(--text3);margin-left:4px}
+.ui-header{position:relative!important}
 .header-actions{display:flex;align-items:center;gap:10px}
 
-.shell{flex:1;min-height:0;display:grid;grid-template-columns:252px minmax(0,1fr) 348px;height:calc(100vh - 114px)}
+.mock-page{height:100%;display:flex;flex-direction:column;background:var(--bg);min-height:0}
+.shell{flex:1;min-height:0;display:grid;grid-template-columns:252px minmax(0,1fr) 348px;height:100%;overflow:hidden}
 .rail{background:var(--surface);min-height:0;display:flex;flex-direction:column;overflow:hidden}
 .rail-l{border-right:1px solid var(--border)}
 .rail-r{border-left:1px solid var(--border)}
@@ -80,13 +77,14 @@ button:disabled{opacity:.55;cursor:not-allowed}
 .kpi .l{font-size:11px;color:var(--text2)}
 .kpi .v{font-size:20px;font-weight:750;margin-top:2px}
 .kpi .d{font-size:11px;margin-top:1px;color:var(--text3)}
-.kpi .up{color:var(--green)}
+.kpi .d.up{color:var(--green)}
 
 /* Accordion Sections */
 .sect{overflow:hidden;margin-bottom:10px}
 .sect-head{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;cursor:pointer;user-select:none}
 .sect-head b{font-size:13.5px;font-weight:700}
 .sect-head .hint{font-size:11px;color:var(--text3)}
+.mini-link{font-size:11px;color:var(--blue);font-weight:700;cursor:pointer}
 .sect-head.open{border-bottom:1px solid var(--border)}
 .sect-body{padding:14px 16px;font-size:13px;color:#263244;line-height:1.6}
 .sect-body p{margin-bottom:8px}
@@ -154,6 +152,7 @@ button:disabled{opacity:.55;cursor:not-allowed}
 
 /* Widgets & Progress */
 .mock-widgets{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}
+.mock-widgets.single-widget{grid-template-columns:1fr}
 .w-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden}
 .w-head{padding:10px 14px;border-bottom:1px solid var(--border);font-size:12px;font-weight:700;color:var(--text2);background:var(--border2);display:flex;justify-content:space-between;align-items:center}
 .w-body{padding:14px}
@@ -168,7 +167,7 @@ button:disabled{opacity:.55;cursor:not-allowed}
 .step.doing .c{color:var(--accent2)}
 .p-track{height:5px;border-radius:999px;background:var(--border2);overflow:hidden;margin:10px 0 8px}
 .p-fill{height:100%;width:0;background:var(--accent);border-radius:999px;transition:width .25s ease}
-.p-log{font:11px/1.6 ui-monospace,Consolas,monospace;color:var(--text2);background:var(--bg);border:1px solid var(--border2);border-radius:999px;padding:8px 10px;max-height:100px;overflow-y:auto;white-space:pre-wrap;border-radius:9px}
+.p-log{font:11px/1.6 ui-monospace,Consolas,monospace;color:var(--text2);background:var(--bg);border:1px solid var(--border2);border-radius:var(--radius-sm);padding:8px 10px;max-height:100px;overflow-y:auto;white-space:pre-wrap}
 .set-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px}
 .set-row .l{font-size:11px;color:var(--text3);font-weight:700}
 .tchip{display:inline-flex;align-items:center;gap:4px;height:24px;padding:0 9px;border-radius:999px;background:var(--accent-soft);color:var(--accent2);font-size:11.5px;font-weight:650}
@@ -181,13 +180,13 @@ button:disabled{opacity:.55;cursor:not-allowed}
 .empty b{font-size:13.5px}
 .empty p{font-size:11.5px;color:var(--text3);margin:5px 0 12px}
 
-/* Context menu */
+/* Context menu (optional fallback) */
 .menu{position:fixed;z-index:60;display:none;min-width:150px;padding:5px;background:var(--surface);border:1px solid var(--border);border-radius:12px;box-shadow:var(--shadow-lg)}
 .menu.show{display:flex;flex-direction:column;gap:2px}
 .menu button,.menu a{height:32px;display:flex;align-items:center;text-decoration:none;background:transparent;border:0;color:var(--text);border-radius:7px;font-size:12.5px;padding:0 10px}
 .menu button:hover,.menu a:hover{background:var(--border2)}
 
-/* Mobile Header & Responsive Controls (≤780px) */
+/* Mobile Header & Responsive Controls (≤980px) */
 .mobile-header-btns{display:none;gap:6px;align-items:center}
 .mobile-icon-btn{width:32px;height:32px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text2);display:grid;place-items:center}
 .mobile-icon-btn svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
@@ -210,7 +209,6 @@ button:disabled{opacity:.55;cursor:not-allowed}
   .shell{grid-template-columns:1fr;height:auto}
   .rail-l,.rail-r{display:none}
   .mobile-header-btns{display:flex}
-  .mock-header{padding:0 14px}
   .kpis{grid-template-columns:repeat(3,1fr)}
   .mock-widgets{grid-template-columns:1fr}
   .m-body{grid-template-columns:1fr}
@@ -229,119 +227,126 @@ button:disabled{opacity:.55;cursor:not-allowed}
 <div class="ui-app">
 <!-- UI_APP_NAV -->
 <div class="ui-frame">
-<div class="mock-page">
-  <div class="mock-header">
-    <div class="brand">
-      <span class="brand-name">爆款视频日报</span>
-      <span class="brand-note">趋势洞察与每日内容复盘</span>
-    </div>
-    <div class="header-actions">
-      <span class="pill" id="headerStatusPill"><span class="dot" id="headerStatusDot"></span><span id="headerStatusText">加载中...</span></span>
-      <button class="btn-primary" id="run">生成今日报告</button>
-      <div class="mobile-header-btns">
-        <button type="button" class="mobile-icon-btn" id="openMobileDrawer" title="往期日报">
-          <svg viewBox="0 0 24 24"><path d="M5 5h14v14H5zM8 3v4M16 3v4M5 10h14"/></svg>
-        </button>
-        <button type="button" class="mobile-icon-btn" id="openMobileMenu" title="操作菜单">
-          <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
-        </button>
-      </div>
-    </div>
-    <div class="mobile-popover-menu" id="mobilePopoverMenu">
-      <button type="button" onclick="$('run').click();closeMobileMenu()">生成今日报告</button>
-      <button type="button" onclick="openTopicModal();closeMobileMenu()">话题与定时设置</button>
-      <div class="sep"></div>
-      <button type="button" onclick="exportMarkdown();closeMobileMenu()">导出 Markdown</button>
-      <button type="button" onclick="copyShareLink();closeMobileMenu()">复制分享链接</button>
+<header class="ui-header">
+  <div class="source-page-heading">
+    <span class="source-page-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24"><path d="M7 3h7l4 4v14H7zM14 3v5h5M10 12h6M10 16h4"/></svg>
+    </span>
+    <span class="source-page-copy">
+      <strong>日报</strong>
+      <small>趋势洞察与每日内容复盘</small>
+    </span>
+  </div>
+  <div class="header-actions">
+    <span class="pill" id="headerStatusPill"><span class="dot" id="headerStatusDot"></span><span id="headerStatusText">加载中...</span></span>
+    <button class="btn-primary" id="run">生成今日报告</button>
+    <div class="mobile-header-btns">
+      <button type="button" class="mobile-icon-btn" id="openMobileDrawer" title="往期日报">
+        <svg viewBox="0 0 24 24"><path d="M5 5h14v14H5zM8 3v4M16 3v4M5 10h14"/></svg>
+      </button>
+      <button type="button" class="mobile-icon-btn" id="openMobileMenu" title="操作菜单">
+        <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+      </button>
     </div>
   </div>
+  <div class="mobile-popover-menu" id="mobilePopoverMenu">
+    <button type="button" onclick="$('run').click();closeMobileMenu()">生成今日报告</button>
+    <button type="button" onclick="openTopicModal();closeMobileMenu()">话题与定时设置</button>
+    <div class="sep"></div>
+    <button type="button" onclick="exportMarkdown();closeMobileMenu()">导出 Markdown</button>
+    <button type="button" onclick="copyShareLink();closeMobileMenu()">复制分享链接</button>
+  </div>
+</header>
+<div class="ui-main">
+  <div class="mock-page">
+    <div class="shell">
+      <aside class="rail rail-l">
+        <div class="rail-head"><b>最近 30 天</b><span id="historyCount">0 份</span></div>
+        <div class="rail-body" id="history"></div>
+      </aside>
 
-  <div class="shell">
-    <aside class="rail rail-l">
-      <div class="rail-head"><b>最近 30 天</b><span id="historyCount">0 份</span></div>
-      <div class="rail-body" id="history"></div>
-    </aside>
-
-    <main class="center">
-      <div class="card hero">
-        <div class="hero-top">
-          <div>
-            <h2 id="title">爆款视频日报</h2>
-            <div class="meta" id="summary">加载中...</div>
-          </div>
-          <div class="acts">
-            <button class="btn-ghost" id="exportMdBtn">导出 Markdown</button>
-            <button class="btn-ghost" id="copyShareBtn">复制链接</button>
-          </div>
-        </div>
-        <div class="kpis">
-          <div class="kpi"><div class="l">采集视频</div><div class="v" id="kpiCollected">-</div><div class="d" id="kpiCollectedSub">--</div></div>
-          <div class="kpi"><div class="l">分析成功</div><div class="v" id="kpiSuccess">-</div><div class="d" id="kpiSuccessSub">--</div></div>
-          <div class="kpi"><div class="l">平均播放</div><div class="v" id="kpiAvgViews">-</div><div class="d up" id="kpiAvgViewsSub">--</div></div>
-          <div class="kpi"><div class="l">平均热度</div><div class="v" id="kpiAvgHot">-</div><div class="d up" id="kpiAvgHotSub">--</div></div>
-          <div class="kpi"><div class="l">最高播放</div><div class="v" id="kpiMaxViews">-</div><div class="d" id="kpiMaxViewsSub">--</div></div>
-        </div>
-      </div>
-
-      <div class="mock-widgets">
-        <div class="w-card" id="progressPanel" style="display:none">
-          <div class="w-head"><span id="progressTitle">生成进度</span><span id="progressText" class="muted">0%</span></div>
-          <div class="w-body">
-            <div class="step" id="step1"><span class="n">1</span>采集视频<span class="c" id="step1Val">0/0</span></div>
-            <div class="step" id="step2"><span class="n">2</span>逐条分析<span class="c" id="step2Val">0/0</span></div>
-            <div class="step" id="step3"><span class="n">3</span>翻译与归一化<span class="c" id="step3Val">0/0</span></div>
-            <div class="step" id="step4"><span class="n">4</span>汇总日报<span class="c" id="step4Val">待执行</span></div>
-            <div class="p-track"><div id="progressFill" class="p-fill"></div></div>
-            <pre id="progressLog" class="p-log"></pre>
-          </div>
-        </div>
-        <div class="w-card">
-          <div class="w-head">定时与话题设置</div>
-          <div class="w-body">
-            <div class="set-row">
-              <span class="l">采集话题</span>
-              <div id="inlineTopics" style="display:inline-flex;gap:4px;flex-wrap:wrap"></div>
-              <button type="button" class="tchip add" id="topicConfig">+ 编辑话题</button>
+      <main class="center">
+        <div class="card hero">
+          <div class="hero-top">
+            <div>
+              <h2 id="title">爆款视频日报</h2>
+              <div class="meta" id="summary">加载中...</div>
             </div>
-            <div class="set-row">
-              <span class="l">定时</span><input id="scheduleTime" type="time" class="set-val" value="05:00">
-              <span class="l">分析数量</span><input id="analysisLimit" type="number" min="1" max="20" class="set-val" value="10" style="width:65px">
-              <button id="saveSettings" class="btn-ghost" style="margin-left:auto">保存设置</button>
-              <span id="settingsMsg" style="font-size:11px;color:var(--text3)"></span>
+            <div class="acts">
+              <button class="btn-ghost" id="exportMdBtn">导出 Markdown</button>
+              <button class="btn-ghost" id="copyShareBtn">复制链接</button>
             </div>
           </div>
+          <div class="kpis">
+            <div class="kpi"><div class="l">采集视频</div><div class="v" id="kpiCollected">-</div><div class="d" id="kpiCollectedSub">--</div></div>
+            <div class="kpi"><div class="l">分析成功</div><div class="v" id="kpiSuccess">-</div><div class="d" id="kpiSuccessSub">--</div></div>
+            <div class="kpi"><div class="l">平均播放</div><div class="v" id="kpiAvgViews">-</div><div class="d" id="kpiAvgViewsSub">--</div></div>
+            <div class="kpi"><div class="l">平均热度</div><div class="v" id="kpiAvgHot">-</div><div class="d" id="kpiAvgHotSub">--</div></div>
+            <div class="kpi"><div class="l">最高播放</div><div class="v" id="kpiMaxViews">-</div><div class="d" id="kpiMaxViewsSub">--</div></div>
+          </div>
         </div>
-      </div>
 
-      <!-- Mobile Video Grid section (visible on mobile screens) -->
-      <div class="card" id="mobileVideosContainer" style="display:none;padding:12px;margin-bottom:10px">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-          <b>爆款视频列表</b>
-          <div class="v-tools" id="mobileVTools">
+        <div class="mock-widgets single-widget" id="mockWidgets">
+          <div class="w-card" id="progressPanel" style="display:none">
+            <div class="w-head"><span id="progressTitle">生成进度</span><span id="progressText" class="muted">0%</span></div>
+            <div class="w-body">
+              <div class="step" id="step1"><span class="n">1</span>采集视频<span class="c" id="step1Val">0/0</span></div>
+              <div class="step" id="step2"><span class="n">2</span>逐条分析<span class="c" id="step2Val">0/0</span></div>
+              <div class="step" id="step3"><span class="n">3</span>翻译与归一化<span class="c" id="step3Val">0/0</span></div>
+              <div class="step" id="step4"><span class="n">4</span>汇总日报<span class="c" id="step4Val">待执行</span></div>
+              <div class="p-track"><div id="progressFill" class="p-fill"></div></div>
+              <pre id="progressLog" class="p-log"></pre>
+            </div>
+          </div>
+          <div class="w-card settings-card">
+            <div class="w-head">定时与话题设置</div>
+            <div class="w-body">
+              <div class="set-row">
+                <span class="l">采集话题</span>
+                <div id="inlineTopics" style="display:inline-flex;gap:4px;flex-wrap:wrap"></div>
+                <button type="button" class="tchip add" id="topicConfig">+ 编辑话题</button>
+              </div>
+              <div class="set-row">
+                <span class="l">定时</span><input id="scheduleTime" type="time" class="set-val" value="05:00">
+                <span class="l">分析数量</span><input id="analysisLimit" type="number" min="1" max="20" class="set-val" value="10" style="width:65px">
+                <button id="saveSettings" class="btn-ghost" style="margin-left:auto">保存设置</button>
+                <span id="settingsMsg" style="font-size:11px;color:var(--text3)"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Markdown Report Body -->
+        <article id="reportBody"></article>
+
+        <!-- Mobile Video Grid section (Positioned BELOW reportBody) -->
+        <div class="card" id="mobileVideosContainer" style="display:none;padding:12px;margin-top:14px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <b>爆款视频列表</b>
+            <div class="v-tools" id="mobileVTools">
+              <button class="v-tool active" data-sort="hot">热度</button>
+              <button class="v-tool" data-sort="views">播放</button>
+              <button class="v-tool" data-sort="likes">互动率</button>
+            </div>
+          </div>
+          <div class="v-grid" id="mobileVideosGrid"></div>
+        </div>
+      </main>
+
+      <aside class="rail rail-r" id="desktopRail">
+        <div class="rail-head">
+          <b>爆款视频</b>
+          <div class="v-tools" id="desktopVTools">
             <button class="v-tool active" data-sort="hot">热度</button>
             <button class="v-tool" data-sort="views">播放</button>
             <button class="v-tool" data-sort="likes">互动率</button>
           </div>
         </div>
-        <div class="v-grid" id="mobileVideosGrid"></div>
-      </div>
-
-      <article id="reportBody"></article>
-    </main>
-
-    <aside class="rail rail-r">
-      <div class="rail-head">
-        <b>爆款视频</b>
-        <div class="v-tools" id="desktopVTools">
-          <button class="v-tool active" data-sort="hot">热度</button>
-          <button class="v-tool" data-sort="views">播放</button>
-          <button class="v-tool" data-sort="likes">互动率</button>
+        <div class="rail-body">
+          <div class="v-grid" id="videos"></div>
         </div>
-      </div>
-      <div class="rail-body">
-        <div class="v-grid" id="videos"></div>
-      </div>
-    </aside>
+      </aside>
+    </div>
   </div>
 </div>
 
@@ -435,6 +440,12 @@ function mdList(v){
   return `<p>${fmtMd(typeof v==="object"?JSON.stringify(v,null,2):v)}</p>`;
 }
 
+function scrollToVideosSection(e){
+  if(e)e.stopPropagation();
+  const target=window.innerWidth<=980?$("mobileVideosContainer"):$("desktopRail");
+  if(target)target.scrollIntoView({behavior:"smooth",block:"start"});
+}
+
 function renderReportDoc(r){
   if(!r)return `<div class="w-card empty"><div class="ico"><svg viewBox="0 0 24 24"><path d="M7 3h7l4 4v14H7zM14 3v5h5M10 12h6M10 16h4"/></svg></div><b>今日还没有日报</b><p>每日 05:00 自动生成，也可立即手动生成</p><button class="btn-primary" onclick="$('run').click()">生成今日报告</button></div>`;
   const blocks=[
@@ -451,9 +462,13 @@ function renderReportDoc(r){
   ];
   const filtered=blocks.filter(x=>x[1]);
   if(!filtered.length)return `<pre style="font:11px/1.5 ui-monospace,monospace;background:#0f172a;color:#e2e8f0;padding:12px;border-radius:10px">${esc(JSON.stringify(r,null,2))}</pre>`;
+  const videoCount=Array.isArray(current?.videos)?current.videos.length:0;
+
   return filtered.map(([t,b],idx)=>{
     const isOpen=idx<2;
-    return `<div class="card sect"><div class="sect-head ${isOpen?'open':''}" onclick="toggleSect(this)"><b>${esc(t)}</b><span class="hint">${isOpen?'收起':'展开'}</span></div><div class="sect-body" style="display:${isOpen?'block':'none'}">${mdList(b)}</div></div>`;
+    const isDeepDive=t==="逐条爆点拆解";
+    const extraLink=isDeepDive?`<span class="mini-link" onclick="scrollToVideosSection(event)">${videoCount} 条已关联右侧视频 ↗</span>`:'';
+    return `<div class="card sect"><div class="sect-head ${isOpen?'open':''}" onclick="toggleSect(this)"><b>${esc(t)}</b>${extraLink||`<span class="hint">${isOpen?'收起':'展开'}</span>`}</div><div class="sect-body" style="display:${isOpen?'block':'none'}">${mdList(b)}</div></div>`;
   }).join("");
 }
 
@@ -551,8 +566,7 @@ function renderModalContent(v,type){
   }
   const data=type==="analysis"?v.analysis_zh||v.analysis:v.audit_result;
   if(!data)return `<div class="w-card empty">${T.docEmpty}</div>`;
-  let html='<div class="mock-modal"><div class="m-head"><div class="m-title">'+esc(selectedVideo?.title||"")+'</div><button class="m-close" onclick="closeModal()">×</button></div><div style="padding:16px;overflow-y:auto"><pre style="white-space:pre-wrap;font-size:12px">'+esc(typeof data==="object"?JSON.stringify(data,null,2):data)+'</pre></div></div>';
-  return html;
+  return `<div class="mock-modal"><div class="m-head"><div class="m-title">${esc(selectedVideo?.title||"")}</div><button class="m-close" onclick="closeModal()">×</button></div><div style="padding:16px;overflow-y:auto"><pre style="white-space:pre-wrap;font-size:12px">${esc(typeof data==="object"?JSON.stringify(data,null,2):data)}</pre></div></div>`;
 }
 
 function copyJson(){
@@ -583,6 +597,7 @@ function getSortedVideos(videos,sortKey){
 
 function renderProgress(p){
   $("progressPanel").style.display="block";
+  if($("mockWidgets"))$("mockWidgets").classList.remove("single-widget");
   $("progressFill").style.width=`${Number(p.progress||0)}%`;
   $("progressText").textContent=`${p.stage||""} · ${Number(p.progress||0)}%`;
   const stageNum=p.stage?.includes("采集")?1:p.stage?.includes("分析")?2:p.stage?.includes("翻译")?3:p.stage?.includes("汇总")?4:1;
@@ -602,6 +617,11 @@ function renderProgress(p){
   $("progressLog").scrollTop=$("progressLog").scrollHeight;
 }
 
+function hideProgress(){
+  $("progressPanel").style.display="none";
+  if($("mockWidgets"))$("mockWidgets").classList.add("single-widget");
+}
+
 function closeReportEvents(){if(reportEvents){reportEvents.close();reportEvents=null}}
 function schedulePoll(active){if(pollTimer){clearTimeout(pollTimer);pollTimer=null}if(active)pollTimer=setTimeout(()=>loadToday().catch(()=>{}),8000)}
 
@@ -614,10 +634,21 @@ function openReportEvents(date){
     renderProgress(p);
     if(p.status==="queued"||p.status==="running")return;
     closeReportEvents();
+    hideProgress();
     loadDate(p.report_date||date).catch(()=>{});
     loadHistory().catch(()=>{});
   };
   reportEvents.onerror=()=>{closeReportEvents();schedulePoll(true)};
+}
+
+function setKpi(id, val, subVal, isUp=false) {
+  const el=$(id), sub=$(id+"Sub");
+  if(el)el.textContent=val;
+  if(sub){
+    sub.textContent=subVal||"--";
+    if(isUp && subVal && subVal!=="--") sub.className="d up";
+    else sub.className="d";
+  }
 }
 
 function render(data){
@@ -631,7 +662,7 @@ function render(data){
   $("headerStatusDot").className="dot "+(data.status==="complete"?"":data.status==="failed"?"fail":"warn");
   $("run").disabled=data.status==="running"||data.status==="queued";
 
-  // KPIs
+  // KPIs without misleading green -- subtext
   const successCount=data.analysis_success_count||rawVideos.filter(v=>v.process_status==="complete"||v.process_status==="analyzed").length;
   let totalViews=0,maxViews=0,maxAuthor="-",totalHot=0;
   rawVideos.forEach(v=>{
@@ -639,12 +670,11 @@ function render(data){
     totalViews+=p;totalHot+=h;
     if(p>maxViews){maxViews=p;maxAuthor=v.author||"-"}
   });
-  $("kpiCollected").textContent=data.video_count||rawVideos.length;
-  $("kpiSuccess").textContent=successCount;
-  $("kpiAvgViews").textContent=rawVideos.length?fmtNum(Math.round(totalViews/rawVideos.length)):"0";
-  $("kpiAvgHot").textContent=rawVideos.length?fmtNum(Math.round(totalHot/rawVideos.length)):"0";
-  $("kpiMaxViews").textContent=fmtNum(maxViews);
-  $("kpiMaxViewsSub").textContent=maxAuthor;
+  setKpi("kpiCollected", data.video_count||rawVideos.length, "--");
+  setKpi("kpiSuccess", successCount, `成功率 ${rawVideos.length?Math.round(successCount/rawVideos.length*100):0}%`);
+  setKpi("kpiAvgViews", rawVideos.length?fmtNum(Math.round(totalViews/rawVideos.length)):"0", "均值", false);
+  setKpi("kpiAvgHot", rawVideos.length?fmtNum(Math.round(totalHot/rawVideos.length)):"0", "加权热度", false);
+  setKpi("kpiMaxViews", fmtNum(maxViews), maxAuthor, false);
 
   $("reportBody").innerHTML=renderReportDoc(data.report);
 
@@ -655,10 +685,17 @@ function render(data){
     $("mobileVideosContainer").style.display=window.innerWidth<=980?"block":"none";
   }
 
-  document.querySelectorAll(".v-card").forEach(el=>el.onclick=e=>showMenu(e,Number(el.dataset.i)));
+  // Direct click opens detail modal directly!
+  document.querySelectorAll(".v-card").forEach(el=>{
+    el.onclick=()=>{
+      selectedVideo=current.videos[Number(el.dataset.i)];
+      openDoc('detail');
+    };
+  });
 
   const active=data.status==="running"||data.status==="queued";
-  if(active)openReportEvents(data.report_date);
+  if(active) openReportEvents(data.report_date);
+  else hideProgress();
   schedulePoll(active);
 }
 
@@ -727,18 +764,8 @@ async function loadToday(){
   updateReportUrl(d.report_date);
 }
 
-function showMenu(e,i){
-  selectedVideo=current.videos[i];
-  const menu=$("menu");
-  const canPlay=selectedVideo.local_filename,playerUrl=`/report/player?date=${encodeURIComponent(current.report_date||"")}&platform=${encodeURIComponent(selectedVideo.platform||"")}&video_id=${encodeURIComponent(selectedVideo.video_id||"")}`;
-  menu.innerHTML=`${canPlay?`<a href="${playerUrl}" target="_blank">${T.play}</a>`:""}<button onclick="openDoc('analysis')">${T.parse}</button><button onclick="openDoc('detail')">视频详情</button>${selectedVideo.source_url?`<a href="${esc(selectedVideo.source_url)}" target="_blank" rel="noopener noreferrer">${T.origin}</a>`:""}`;
-  menu.style.left=Math.min(e.clientX,window.innerWidth-170)+"px";
-  menu.style.top=Math.min(e.clientY,window.innerHeight-170)+"px";
-  menu.classList.add("show");
-}
-
 function openDoc(type){
-  $("menu").classList.remove("show");
+  if($("menu"))$("menu").classList.remove("show");
   $("modalContainer").innerHTML=renderModalContent(selectedVideo,type);
   $("modal").classList.add("show");
 }
@@ -770,9 +797,6 @@ $("run").onclick=async()=>{
 $("topicConfig").onclick=openTopicModal;
 $("saveSettings").onclick=saveReportSettings;
 $("modal").onclick=e=>{if(e.target===$("modal"))closeModal()};
-document.addEventListener("click",e=>{
-  if(!e.target.closest(".v-card")&&!e.target.closest(".menu"))$("menu").classList.remove("show");
-});
 
 function exportMarkdown(){
   if(!current?.report)return alert("暂无可导出的报告");

@@ -24,8 +24,8 @@ button{cursor:pointer;border:1px solid transparent;border-radius:var(--radius-sm
 .btn-ghost{height:32px;padding:0 12px;background:var(--surface);color:var(--text2);border:1px solid var(--border)}
 .btn-ghost:hover{background:var(--accent-soft);color:var(--accent);border-color:#cbd5e1}
 
-.mock-page{height:calc(100vh - 60px);display:flex;flex-direction:column;background:var(--bg)}
-.mock-header{height:54px;flex:none;display:flex;align-items:center;justify-content:space-between;padding:0 20px;background:rgba(255,255,255,.92);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:9}
+.ui-header{position:relative!important}
+.header-actions{display:flex;align-items:center;gap:8px}
 
 .pl-pager{display:flex;align-items:center;gap:2px;border:1px solid var(--border);border-radius:9px;padding:2px;background:var(--surface)}
 .pl-pager button{width:26px;height:26px;border:0;background:transparent;border-radius:6px;font-size:13px;color:var(--text2);padding:0}
@@ -35,7 +35,7 @@ button{cursor:pointer;border:1px solid transparent;border-radius:var(--radius-sm
 
 .pill{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--border);border-radius:999px;padding:4px 12px;background:var(--surface);font-size:12px;font-weight:600;color:var(--text2)}
 
-.pl-shell{flex:1;min-height:0;display:grid;grid-template-columns:380px minmax(0,1fr)}
+.pl-shell{height:100%;min-height:0;display:grid;grid-template-columns:380px minmax(0,1fr);overflow:hidden}
 .pl-rail{background:var(--surface);border-right:1px solid var(--border);padding:16px;display:flex;flex-direction:column;gap:12px;overflow-y:auto}
 
 .pl-stage{position:relative;height:420px;border-radius:12px;background:#0b1220;display:grid;place-items:center;overflow:hidden;flex:none}
@@ -75,8 +75,7 @@ button{cursor:pointer;border:1px solid transparent;border-radius:var(--radius-sm
 
 @media(max-width:980px){
   body{height:auto;overflow:auto}
-  .mock-page{height:auto}
-  .pl-shell{grid-template-columns:1fr}
+  .pl-shell{grid-template-columns:1fr;height:auto}
   .pl-stage{height:300px}
 }
 </style>
@@ -85,27 +84,29 @@ button{cursor:pointer;border:1px solid transparent;border-radius:var(--radius-sm
 <div class="ui-app">
 <!-- UI_APP_NAV -->
 <div class="ui-frame">
-<div class="mock-page">
-  <div class="mock-header">
-    <div style="display:flex;align-items:center;gap:12px;min-width:0">
-      <a id="backLink" class="btn-ghost" href="/report">← 返回日报</a>
-      <div style="min-width:0">
-        <div id="videoTitle" style="font-size:14px;font-weight:750;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:380px">加载中...</div>
-        <div style="font-size:11px;color:var(--text3)">视频复盘 · <span id="reportDateSub">-</span></div>
-      </div>
-    </div>
-    <div style="display:flex;align-items:center;gap:8px;flex:none">
-      <div class="pl-pager">
-        <button id="prevVideoBtn" type="button" title="上一个">←</button>
-        <span id="videoPosition">- / -</span>
-        <button id="nextVideoBtn" type="button" title="下一个">→</button>
-      </div>
-      <button id="translateBtn" class="btn-ghost">翻译解析</button>
-      <span class="pill" id="datePill">-</span>
-      <a id="originLink" target="_blank" class="btn-ghost" rel="noopener noreferrer">原视频链接</a>
-    </div>
+<header class="ui-header">
+  <div class="source-page-heading">
+    <span class="source-page-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24"><path d="M4 5h16v14H4zM10 9l5 3-5 3z"/></svg>
+    </span>
+    <span class="source-page-copy">
+      <strong id="videoTitle">爆款视频播放复盘</strong>
+      <small id="reportDateSub">视频复盘</small>
+    </span>
   </div>
-
+  <div class="header-actions">
+    <a id="backLink" class="btn-ghost" href="/report">← 返回日报</a>
+    <div class="pl-pager">
+      <button id="prevVideoBtn" type="button" title="上一个">←</button>
+      <span id="videoPosition">- / -</span>
+      <button id="nextVideoBtn" type="button" title="下一个">→</button>
+    </div>
+    <button id="translateBtn" class="btn-ghost">翻译解析</button>
+    <span class="pill" id="datePill">-</span>
+    <a id="originLink" target="_blank" class="btn-ghost" rel="noopener noreferrer">原视频链接</a>
+  </div>
+</header>
+<div class="ui-main">
   <div class="pl-shell">
     <aside class="pl-rail">
       <div class="pl-stage">
@@ -261,7 +262,7 @@ async function main(){
 
   $("videoTitle").textContent=video.title||"爆款视频播放复盘";
   if($("videoTitleSide"))$("videoTitleSide").textContent=video.title||"无标题";
-  $("reportDateSub").textContent=data.report_date||date||"-";
+  $("reportDateSub").textContent=`视频复盘 · ${data.report_date||date||"-"}`;
   $("datePill").textContent=data.report_date||date||"-";
   $("backLink").href=`/report${data.report_date?`?date=${encodeURIComponent(data.report_date)}`:""}`;
   $("rankPill").textContent=`排名 ${video.report_rank||idx+1}`;
