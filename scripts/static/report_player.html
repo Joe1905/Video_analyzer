@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>爆款视频播放复盘</title>
+<!-- Off-the-shelf Plyr Video Player Styles -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/plyr@3.7.8/dist/plyr.css" />
 <style>
 :root{
   --bg:#f6f8fb;--surface:#fff;--text:#0f172a;--text2:#475569;--text3:#94a3b8;
@@ -14,6 +16,7 @@
   --radius-sm:8px;--radius:12px;--radius-lg:16px;
   --shadow:0 1px 3px rgba(0,0,0,.06),0 1px 2px rgba(0,0,0,.04);
   --shadow-lg:0 20px 60px rgba(15,23,42,.18);
+  --plyr-color-main: #2563eb;
 }
 *{box-sizing:border-box;margin:0}
 body{background:var(--bg);color:var(--text);font-family:Inter,"PingFang SC","Microsoft YaHei",system-ui,-apple-system,sans-serif;line-height:1.55;height:100vh;overflow:hidden}
@@ -35,9 +38,18 @@ body{background:var(--bg);color:var(--text);font-family:Inter,"PingFang SC","Mic
 .pl-shell{height:100%;min-height:0;display:grid;grid-template-columns:460px minmax(0,1fr);overflow:hidden}
 .pl-rail{background:var(--surface);border-right:1px solid var(--border);padding:16px;display:flex;flex-direction:column;gap:12px;height:100%;overflow:hidden}
 
-/* Video Stage fills vertical rail height with native player controls */
-.pl-stage{position:relative;width:100%;flex:1;min-height:0;height:100%;border-radius:12px;background:#0b1220;display:grid;place-items:center;overflow:hidden;box-shadow:0 4px 16px rgba(15,23,42,.12)}
-.pl-stage video{width:100%;height:100%;object-fit:contain;outline:none}
+/* Video Stage fills vertical rail height with Plyr / Native Video controls */
+.pl-stage{position:relative;width:100%;flex:1;min-height:0;height:100%;border-radius:12px;background:#0b1220;overflow:hidden;box-shadow:0 4px 16px rgba(15,23,42,.12);display:flex;align-items:center;justify-content:center}
+.pl-stage .plyr,
+.pl-stage .plyr__video-wrapper,
+.pl-stage video{width:100%!important;height:100%!important;max-height:100%!important;object-fit:contain;outline:none}
+
+/* Ensure controls are visible on hover regardless of video aspect ratio */
+.pl-stage:hover .plyr__controls,
+.pl-stage:hover video::-webkit-media-controls-panel {
+  opacity: 1 !important;
+  visibility: visible !important;
+}
 
 .pl-meta-box{flex:none;display:flex;flex-direction:column;gap:10px}
 .pl-title{font-size:14px;font-weight:750;line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
@@ -125,8 +137,8 @@ body{background:var(--bg);color:var(--text);font-family:Inter,"PingFang SC","Mic
   <div class="pl-shell">
     <aside class="pl-rail">
       <div class="pl-stage">
-        <!-- Native built-in HTML5 video player controls -->
-        <video id="video" controls playsinline></video>
+        <!-- Off-the-shelf Plyr HTML5 video player -->
+        <video id="video" controls playsinline preload="metadata"></video>
       </div>
       <div class="pl-meta-box">
         <div class="pl-title" id="videoTitleSide">加载中...</div>
@@ -157,9 +169,12 @@ body{background:var(--bg);color:var(--text);font-family:Inter,"PingFang SC","Mic
 </div>
 </div>
 
+<!-- Off-the-shelf Plyr Player Script -->
+<script src="https://cdn.jsdelivr.net/npm/plyr@3.7.8/dist/plyr.js"></script>
+
 <script>
 const $=id=>document.getElementById(id), params=new URLSearchParams(location.search);
-let currentReport=null,currentVideo=null,currentTimeline=[];
+let currentReport=null,currentVideo=null,currentTimeline=[],plyrPlayer=null;
 
 function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]))}
 function safeAuthor(v){
@@ -267,8 +282,14 @@ function renderSegment(segment,all,currentTime){
   document.querySelectorAll(".tl-chip").forEach(el=>el.onclick=()=>{
     const item=all[Number(el.dataset.i)];
     if(item){
-      $("video").currentTime=item.start;
-      $("video").play().catch(()=>{});
+      const vid = $("video");
+      if(plyrPlayer) {
+        plyrPlayer.currentTime = item.start;
+        plyrPlayer.play();
+      } else if(vid) {
+        vid.currentTime = item.start;
+        vid.play().catch(()=>{});
+      }
       renderSegment(item,all,item.start);
     }
   });
@@ -336,6 +357,28 @@ async function translateCurrent(){
   }
 }
 
+function initPlyrPlayer(){
+  const vid=$("video");
+  if(!vid)return;
+  if(typeof Plyr !== "undefined" && !plyrPlayer){
+    try {
+      plyrPlayer = new Plyr(vid, {
+        controls: ['play-large', 'play', 'progress', 'current-time', 'duration', 'mute', 'volume', 'fullscreen'],
+        tooltips: { controls: true, seek: true }
+      });
+      plyrPlayer.on('timeupdate', updateTimelineFromVideo);
+    } catch(e) {
+      console.warn("Plyr init fallback to native controls:", e);
+    }
+  }
+}
+
+function updateTimelineFromVideo(){
+  const t = (plyrPlayer ? plyrPlayer.currentTime : $("video").currentTime) || 0;
+  const seg = currentTimeline.find(x => t >= x.start && t < x.end) || currentTimeline[0];
+  renderSegment(seg, currentTimeline, t);
+}
+
 async function main(){
   const date=params.get("date")||"",platform=params.get("platform")||"",videoId=params.get("video_id")||"";
   const url=`/api/report?raw=1${date?`&date=${encodeURIComponent(date)}`:""}`;
@@ -371,16 +414,14 @@ async function main(){
   $("deepDive").innerHTML=renderFormattedMarkdown(deep);
 
   currentTimeline=buildTimeline(video);
-  function update(){
-    const t=$("video").currentTime||0;
-    const seg=currentTimeline.find(x=>t>=x.start&&t<x.end)||currentTimeline[0];
-    renderSegment(seg,currentTimeline,t);
-  }
-  $("video").addEventListener("timeupdate",update);
-  $("video").addEventListener("loadedmetadata",update);
+  
+  initPlyrPlayer();
+
+  $("video").addEventListener("timeupdate", updateTimelineFromVideo);
+  $("video").addEventListener("loadedmetadata", updateTimelineFromVideo);
   $("translateBtn").onclick=translateCurrent;
   if(video.analysis_zh)$("translateBtn").textContent="已加载中文";
-  update();
+  updateTimelineFromVideo();
 }
 
 main().catch(err=>{$("pageTitle").textContent=err.message;$("currentSegmentBody").innerHTML=`<div class="empty">${esc(err.message)}</div>`});
