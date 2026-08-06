@@ -358,7 +358,8 @@ body.ui-system #menu.show,
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
             <b>爆款视频列表</b>
             <div class="v-tools" id="mobileVTools">
-              <button class="v-tool active" type="button" data-sort="hot">热度</button>
+              <button class="v-tool active" type="button" data-sort="default">默认</button>
+              <button class="v-tool" type="button" data-sort="hot">热度</button>
               <button class="v-tool" type="button" data-sort="views">播放</button>
               <button class="v-tool" type="button" data-sort="likes">互动率</button>
             </div>
@@ -371,7 +372,8 @@ body.ui-system #menu.show,
         <div class="rail-head">
           <b>爆款视频</b>
           <div class="v-tools" id="desktopVTools">
-            <button class="v-tool active" type="button" data-sort="hot">热度</button>
+            <button class="v-tool active" type="button" data-sort="default">默认</button>
+            <button class="v-tool" type="button" data-sort="hot">热度</button>
             <button class="v-tool" type="button" data-sort="views">播放</button>
             <button class="v-tool" type="button" data-sort="likes">互动率</button>
           </div>
@@ -403,7 +405,7 @@ body.ui-system #menu.show,
 <script>
 const T={run:"生成今日报告",save:"保存设置",loading:"正在加载...",hotReport:"爆款视频日报",latest30:"最近 30 天暂无日报。",noReport:"暂无日报正文。生成完成后这里会展示爆款拆解与总体结论。",noVideos:"暂无热视频。",todayMissing:"今日还没有日报。",play:"播放",parse:"解析内容",audit:"分析内容",origin:"原视频链接",close:"关闭",saved:"已保存",saveFail:"保存失败",delete:"删除",deleteConfirm:"确定删除这天的日报？",contentEmpty:"暂无内容。",docEmpty:"该视频还没有生成对应内容。",updated:"更新时间",videos:"视频",success:"成功",failed:"失败",error:"错误",items:"条",hot:"热度",views:"播放",million:"万",billion:"亿"};
 const $=id=>document.getElementById(id);
-let current=null,selectedVideo=null,pollTimer=null,reportEvents=null,progressLines=[],settingsTopics=[],currentSort="hot";
+let current=null,selectedVideo=null,pollTimer=null,reportEvents=null,progressLines=[],settingsTopics=[],currentSort="default";
 
 const TOPIC_PALETTES = [
   { bg: "#eff6ff", border: "#bfdbfe", color: "#1e40af" },
@@ -780,7 +782,10 @@ function getSortedVideos(videos,sortKey){
   const list=[...videos];
   if(sortKey==="views")list.sort((a,b)=>Number(b.metrics?.play_count||0)-Number(a.metrics?.play_count||0));
   else if(sortKey==="likes")list.sort((a,b)=>Number(b.metrics?.like_count||0)-Number(a.metrics?.like_count||0));
-  else list.sort((a,b)=>Number(b.hot_score||0)-Number(a.hot_score||0));
+  else if(sortKey==="hot")list.sort((a,b)=>Number(b.hot_score||0)-Number(a.hot_score||0));
+  else if(sortKey==="default"){
+    list.sort((a,b)=>Number(a.report_rank||a.source_rank||0)-Number(b.report_rank||b.source_rank||0));
+  }
   return list;
 }
 
