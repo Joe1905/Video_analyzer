@@ -76,7 +76,7 @@ def main() -> int:
     assert report._report_backup_count() == 10
 
     # 下载/解析限时解析
-    assert report._report_video_download_timeout_seconds() is None or isinstance(report._report_video_download_timeout_seconds(), int)
+    assert isinstance(report._report_video_download_timeout_seconds(), int)
     assert report._report_video_analyze_timeout_seconds() >= 30
 
 
