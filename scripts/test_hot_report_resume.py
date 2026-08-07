@@ -80,19 +80,24 @@ def main() -> int:
             conn.commit()
 
         processed: list[str] = []
+        video6_attempts = {"count": 0}
         def fake_collect(*args, **kwargs):
             return {("tiktok", f"video-{index}"): _item(index) for index in range(6, 12)}, []
         def fake_process(conn, report_date, item):
             processed.append(item["video_id"])
             if item["video_id"] == "video-6":
-                conn.execute(
-                    """UPDATE hot_report_videos SET process_status='failed', process_step='failed',
-                    process_error=?, attempt_count=attempt_count+1, last_attempt_at=?
-                    WHERE report_date=? AND platform=? AND video_id=?""",
-                    ("video analysis subprocess timed out after 240 seconds", 1_700_000_000, report_date, item["platform"], item["video_id"]),
-                )
-                conn.commit()
-                return
+                video6_attempts["count"] += 1
+                if video6_attempts["count"] == 1:
+                    # 第一次失败 -> 触发同轮立即重试
+                    conn.execute(
+                        """UPDATE hot_report_videos SET process_status='failed', process_step='failed',
+                        process_error=?, attempt_count=attempt_count+1, last_attempt_at=?
+                        WHERE report_date=? AND platform=? AND video_id=?""",
+                        ("video analysis subprocess timed out after 240 seconds", 1_700_000_000, report_date, item["platform"], item["video_id"]),
+                    )
+                    conn.commit()
+                    return
+                # 同轮重试成功 -> 备份顶上机制救回
             filename = f"{item['video_id']}.mp4"
             (report.VIDEOS_DIR / filename).write_bytes(b"fixture")
             output = report.OUTPUT_DIR / filename
@@ -100,7 +105,8 @@ def main() -> int:
             (output / "analysis.json").write_text(json.dumps({"summary": "fixture"}), encoding="utf-8")
             conn.execute(
                 """UPDATE hot_report_videos SET process_status='complete', process_step='complete',
-                local_filename=?, analysis_json=?, insight_json=?, social_context_json=?
+                local_filename=?, analysis_json=?, insight_json=?, social_context_json=?,
+                attempt_count=attempt_count+1
                 WHERE report_date=? AND platform=? AND video_id=?""",
                 (filename, json.dumps({"summary": "fixture"}), json.dumps({"one_sentence": "ok"}), "{}", report_date, item["platform"], item["video_id"]),
             )
@@ -115,11 +121,22 @@ def main() -> int:
         os.environ["SOCIAVAULT_API_KEY"] = "fixture"
         first_run = report.run_report("2026-08-01")
         assert first_run["status"] == "complete"
-        assert processed == [f"video-{index}" for index in range(6, 12)]
+        # video-6 首次失败后同轮立即重试成功,因此 processed 中出现两次 video-6;
+        # v6+v7..v10 共 5 个新成功 + 已有 5 个 complete = 达标 10,提前 break,v11 不处理
+        assert processed == ["video-6", "video-6"] + [f"video-{index}" for index in range(7, 11)]
+        assert video6_attempts["count"] == 2
         with closing(report._connect()) as conn:
-            failed = conn.execute("SELECT process_status, attempt_count FROM hot_report_videos WHERE video_id='video-6'").fetchone()
-            assert failed == ("failed", 1)
-            assert report._failed_video_retry_state(conn, "2026-08-01", "tiktok", "video-6", now=1_700_000_001) == "retry_backoff"
+            row = conn.execute("SELECT process_status, attempt_count FROM hot_report_videos WHERE video_id='video-6'").fetchone()
+            # 重试救回:最终 complete,attempt_count=2
+            assert row == ("complete", 2)
+        # backoff 场景:attempt=1、last_attempt 在未来 -> 等待退避;attempt 达 max -> 不再重试
+        with closing(report._connect()) as conn:
+            assert report._failed_video_retry_state(conn, "2026-08-01", "tiktok", "video-6", now=1_700_000_001) is None
+            fake_conn = type(
+                "FC", (),
+                {"execute": lambda self, sql, params=(): type("C", (), {"fetchone": lambda self: ("failed", 2, 1_700_000_000)})()},
+            )()
+            assert report._failed_video_retry_state(fake_conn, "d", "p", "v", now=1_700_000_001) == "retry_exhausted"
         with closing(report._connect()) as conn:
             conn.execute("UPDATE daily_reports SET status='failed', report_json=NULL, report_markdown=NULL WHERE report_date='2026-08-01'")
             conn.commit()

@@ -26,7 +26,7 @@ def _video_node(index: int) -> dict:
             "share_count": 5,
             "collect_count": 20,
         },
-        "video": {"play_addr": {"url_list": [f"https://example.test/video-{index}.mp4"]}},
+        "video": {"play_addr": {"url_list": [f"https://example.test/video-{index}.mp4"]}, "duration": 30_000},
     }
 
 
@@ -50,6 +50,28 @@ def main() -> int:
         "favorite_count": 20,
     }
     assert report._score_hot_video(metrics, 1) == 101_250
+
+    # 长视频过滤:>180s 剔除,时长缺失保守放行
+    assert report._is_long_video({"duration_ms": 180_000}) is False
+    assert report._is_long_video({"duration_ms": 180_001}) is True
+    assert report._is_long_video({"duration_ms": None}) is False
+    assert report._extract_duration_ms({"video": {"duration": 64_565}}) == 64_565
+    assert report._extract_duration_ms({"duration": 180_000}) == 180_000
+    assert report._extract_duration_ms({"desc": "x"}) is None
+
+    # 候选池分层:10 主 + 10 备
+    pool = [{"platform": "tiktok", "video_id": f"v{i}", "hot_score": 1000 - i, "selection_bucket": "stream", "source_label": "x"} for i in range(25)]
+    layered = report._rank_with_topic_guarantees(pool, [], 10, backup_count=10)
+    assert len(layered) == 20
+    assert [item["selection_tier"] for item in layered] == ["primary"] * 10 + ["backup"] * 10
+    assert layered[0]["video_id"] == "v0" and layered[19]["video_id"] == "v19"
+    layered0 = report._rank_with_topic_guarantees(pool, [], 10, backup_count=0)
+    assert len(layered0) == 10 and all(item["selection_tier"] == "primary" for item in layered0)
+
+    # 下载/解析限时解析
+    assert report._report_video_download_timeout_seconds() is None or isinstance(report._report_video_download_timeout_seconds(), int)
+    assert report._report_video_analyze_timeout_seconds() >= 30
+
 
     previous_sort = os.environ.get("HOT_VIDEO_TOPIC_SORT_BY")
     previous_pages = os.environ.get("HOT_VIDEO_TOPIC_MAX_PAGES")

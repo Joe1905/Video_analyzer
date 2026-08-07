@@ -6,6 +6,7 @@ import re
 import shutil
 import ssl
 import subprocess
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -956,7 +957,47 @@ def _run_shop(source_type: str, url: str, **kwargs) -> dict:
 
 # ── Video Tools ───────────────────────────────────────────────────
 
-def _run_video_download(url: str) -> dict:
+def _video_download_timeout_seconds(value: Any | None = None) -> int | None:
+    """Overall video download timeout (None = no overall cap, keep per-stage timeouts)."""
+    raw = value if value is not None else os.getenv("VIDEO_DOWNLOAD_TIMEOUT", "")
+    if raw in (None, "", "0", 0):
+        return None
+    try:
+        return max(30, min(int(raw), 1800))
+    except (TypeError, ValueError):
+        return None
+
+
+def _run_video_download(url: str, timeout_seconds: Any | None = None) -> dict:
+    """Download a public video, with an optional overall deadline.
+
+    The download pipeline runs several subprocesses/network stages internally;
+    when ``timeout_seconds`` is set the whole pipeline is capped so a single
+    stuck stage cannot hold the hot-report job forever.
+    """
+    timeout = _video_download_timeout_seconds(timeout_seconds)
+    if timeout is None:
+        return _run_video_download_pipeline(url)
+
+    holder: dict[str, Any] = {}
+
+    def _worker() -> None:
+        try:
+            holder["data"] = _run_video_download_pipeline(url)
+        except Exception as exc:  # noqa: BLE001 - captured and re-raised
+            holder["error"] = exc
+
+    thread = threading.Thread(target=_worker, daemon=True, name="video-download")
+    thread.start()
+    thread.join(timeout)
+    if thread.is_alive():
+        raise RuntimeError(f"video download timed out after {timeout} seconds")
+    if "error" in holder:
+        raise holder["error"]
+    return holder["data"]
+
+
+def _run_video_download_pipeline(url: str) -> dict:
     result_path = OUTPUT_DIR / f"video_download_{uuid.uuid4().hex[:8]}.json"
     downloaded_result = _cached_download_result(url, result_path)
     if downloaded_result:
@@ -1198,7 +1239,7 @@ TOOLS: list[dict[str, Any]] = [
 
     # Video Tools (3)
     {"name": "video_download", "description": "下载 TikTok 或抖音的公开视频到服务器，返回视频文件名。下载后可进行分析。",
-     "parameters": {"type": "object", "properties": {"url": {"type": "string", "description": "TikTok 或抖音视频链接"}}, "required": ["url"]}},
+     "parameters": {"type": "object", "properties": {"url": {"type": "string", "description": "TikTok 或抖音视频链接"}, "timeout_seconds": {"type": "integer", "description": "整体下载超时秒数（30-1800），默认读取 VIDEO_DOWNLOAD_TIMEOUT"}}, "required": ["url"]}},
     {"name": "video_analyze", "description": "对已下载的视频进行关键帧提取分析（Qwen 视觉 + Whisper 转写）。需要先用 video_download 下载。",
      "parameters": {"type": "object", "properties": {"filename": {"type": "string", "description": "videos/ 目录下的视频文件名"}, "timeout_seconds": {"type": "integer", "description": "分析子进程超时秒数（30-1800），默认读取 VIDEO_ANALYZE_TIMEOUT"}}, "required": ["filename"]}},
     {"name": "video_direct_analyze", "description": "对视频进行端到端分析（Qwen vision API），适用于7MB以下小视频。",
@@ -1298,7 +1339,7 @@ def execute_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
                     params[p] = val
             data = _run_tiktok_api(endpoint, **params)
         elif name == "video_download":
-            data = _run_video_download(str(args["url"]))
+            data = _run_video_download(str(args["url"]), args.get("timeout_seconds"))
         elif name == "video_analyze":
             data = _run_video_analyze(str(args["filename"]), args.get("timeout_seconds"))
         elif name == "video_direct_analyze":
