@@ -621,13 +621,31 @@ function detailTags(v){
 }
 
 function renderFormattedText(src) {
-  if (!src) return "";
+  if (src == null) return "";
+  
+  if (typeof src === "object") {
+    if (Array.isArray(src)) {
+      if (!src.length) return '<span style="color:var(--text3);font-style:italic">暂无内容</span>';
+      return `<ul class="md-list" style="margin:4px 0;padding-left:18px">${src.map((x) => {
+        if (typeof x === "object" && x !== null) {
+          const pairs = Object.entries(x).map(([k, v]) => `<strong>${esc(labelOf(k))}</strong>: ${esc(typeof v === "object" ? JSON.stringify(v) : String(v))}`).join(" · ");
+          return `<li style="margin-bottom:6px;font-size:13px;line-height:1.6;color:#1e293b">${pairs}</li>`;
+        }
+        return `<li style="margin-bottom:6px;font-size:13px;line-height:1.6;color:#1e293b">${fmtMd(String(x))}</li>`;
+      }).join("")}</ul>`;
+    }
+    
+    const entries = Object.entries(src);
+    if (!entries.length) return '<span style="color:var(--text3);font-style:italic">暂无内容</span>';
+    return `<ul class="md-list" style="margin:4px 0;padding-left:18px">${entries.map(([k, v]) => `<li style="margin-bottom:6px;font-size:13px;line-height:1.6;color:#1e293b"><strong>${esc(labelOf(k))}</strong>: ${esc(typeof v === "object" ? JSON.stringify(v) : String(v))}</li>`).join("")}</ul>`;
+  }
+
   let str = String(src).trim();
   if (str.startsWith("{") || str.startsWith("[")) {
     try {
       const obj = JSON.parse(str);
       if (typeof obj === "object" && obj !== null) {
-        return `<ul class="md-list">${Object.entries(obj).map(([k, v]) => `<li><strong>${esc(k)}</strong>: ${esc(typeof v === "object" ? JSON.stringify(v) : String(v))}</li>`).join("")}</ul>`;
+        return renderFormattedText(obj);
       }
     } catch (e) {}
   }
@@ -655,6 +673,25 @@ function renderFormattedText(src) {
     }
   });
   return html;
+}
+
+function getTranscriptText(transcript) {
+  if (!transcript) return "无音频";
+  if (typeof transcript === "string") {
+    const s = transcript.trim();
+    if (!s || s === "null" || s === "undefined") return "无音频";
+    return s;
+  }
+  if (typeof transcript === "object" && transcript !== null) {
+    const text = String(transcript.text || "").trim();
+    if (text) return text;
+    if (Array.isArray(transcript.segments) && transcript.segments.length > 0) {
+      const segText = transcript.segments.map(s => s.text || s.body || "").filter(Boolean).join("\n");
+      if (segText) return segText;
+    }
+    return "无音频";
+  }
+  return "无音频";
 }
 
 function renderAnalysisDoc(data) {
@@ -704,11 +741,12 @@ function renderAnalysisDoc(data) {
   }
 
   if (data.transcript) {
-    const text = typeof data.transcript === "object" ? (data.transcript.text || JSON.stringify(data.transcript, null, 2)) : data.transcript;
+    const text = getTranscriptText(data.transcript);
+    const isNoAudio = text === "无音频";
     html += `
       <div class="card" style="padding:14px 16px;border:1px solid var(--border);border-radius:12px">
         <b style="font-size:13.5px;color:var(--accent2);display:block;margin-bottom:8px;font-weight:750">字幕与转写</b>
-        <div style="font-size:13px;color:#263244;line-height:1.7">${renderFormattedText(text)}</div>
+        <div style="font-size:13px;line-height:1.7">${isNoAudio ? '<span style="color:var(--text3);font-style:italic">无音频</span>' : renderFormattedText(text)}</div>
       </div>
     `;
   }
