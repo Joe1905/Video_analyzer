@@ -616,9 +616,11 @@ function detailTags(v){
       else if(typeof val==="object"&&val!==null&&d<3){walk(val,d+1)}
     }
   }
-  walk(raw);
   return Array.from(out).slice(0,30);
 }
+
+const KEY_LABELS={index:"序号",time_range:"时间段",timeRange:"时间段",timestamp:"时间点",time:"时间",visual:"画面解析",audio:"声音/台词",transcript:"字幕/转写",summary:"摘要",video_description:"视频描述",description:"描述",scene:"场景",title:"标题"};
+function labelOf(k){return KEY_LABELS[k]||k;}
 
 function renderFormattedText(src) {
   if (src == null) return "";
