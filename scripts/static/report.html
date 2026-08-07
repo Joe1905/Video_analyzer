@@ -557,10 +557,110 @@ async function removeTopic(i){
   await saveReportSettings();
 }
 
+function deepDiveFor(report, video, idx) {
+  if (!report || !report.video_deep_dives) return null;
+  const dives = report.video_deep_dives;
+  if (Array.isArray(dives)) {
+    if (!dives.length) return null;
+    const rank = Number(video?.report_rank || video?.source_rank || idx + 1);
+    const byRank = dives.find(d => {
+      const s = typeof d === "string" ? d : JSON.stringify(d);
+      return s.includes(`视频 ${rank}`) || s.includes(`视频${rank}`) || s.includes(`视频 ${idx + 1}`);
+    });
+    if (byRank) return byRank;
+    
+    if (video?.title) {
+      const titleSnippet = String(video.title).slice(0, 15);
+      const byTitle = dives.find(d => (typeof d === "string" ? d : JSON.stringify(d)).includes(titleSnippet));
+      if (byTitle) return byTitle;
+    }
+    
+    return dives[idx] || dives[0];
+  }
+  if (typeof dives === "object") {
+    return dives[video?.video_id] || dives[video?.report_rank] || null;
+  }
+  if (typeof dives === "string") return dives;
+  return null;
+}
+
+function formatDeepDiveItem(src) {
+  if (src == null) return "";
+  if (typeof src === "object") {
+    return `<div style="display:flex;flex-direction:column;gap:6px">` +
+      Object.entries(src).map(([k, v]) => {
+        const label = labelOf(k);
+        return `<div style="font-size:13px;line-height:1.65;color:#1e293b"><span style="color:var(--blue);font-weight:750">• ${esc(label)}:</span> ${fmtMd(typeof v === "object" ? JSON.stringify(v) : String(v))}</div>`;
+      }).join("") +
+      `</div>`;
+  }
+
+  let str = String(src).trim();
+  if (!str) return "";
+
+  const lines = str.split(/\n+/).map(l => l.trim()).filter(Boolean);
+  let headHtml = "";
+  let itemsHtml = [];
+
+  lines.forEach((line, i) => {
+    let l = line.replace(/^[-\*\•\s]+/, "").trim();
+    if (!l) return;
+
+    if (i === 0 && (l.includes("｜") || l.includes("|") || /^视频\s*\d+/i.test(l))) {
+      headHtml = `<div style="font-weight:750;font-size:14px;color:var(--text);margin-bottom:8px;line-height:1.5">${fmtMd(l)}</div>`;
+      return;
+    }
+
+    const kvMatch = l.match(/^[\*\_]*([a-zA-Z0-9_\u4e00-\u9fa5\s]+)[\*\_]*[\:\：]\s*(.*)/);
+    if (kvMatch) {
+      const keyRaw = kvMatch[1].trim();
+      const valRaw = kvMatch[2].trim();
+      const label = labelOf(keyRaw);
+      itemsHtml.push(`<div style="font-size:13px;line-height:1.65;color:#1e293b;margin-bottom:4px"><span style="color:var(--blue);font-weight:750">• ${esc(label)}:</span> ${fmtMd(valRaw)}</div>`);
+    } else {
+      const subParts = l.split(/\s+-\s+/).filter(Boolean);
+      if (subParts.length > 1) {
+        subParts.forEach(sp => {
+          let p = sp.replace(/^[\*\_]*/, "").trim();
+          const m = p.match(/^([a-zA-Z0-9_\u4e00-\u9fa5]+)[\*\_]*[\:\：]\s*(.*)/);
+          if (m) {
+            itemsHtml.push(`<div style="font-size:13px;line-height:1.65;color:#1e293b;margin-bottom:4px"><span style="color:var(--blue);font-weight:750">• ${esc(labelOf(m[1]))}:</span> ${fmtMd(m[2])}</div>`);
+          } else {
+            itemsHtml.push(`<div style="font-size:13px;line-height:1.65;color:#1e293b;margin-bottom:4px"><span style="color:var(--blue);font-weight:750">•</span> ${fmtMd(p)}</div>`);
+          }
+        });
+      } else {
+        itemsHtml.push(`<div style="font-size:13px;line-height:1.65;color:#1e293b;margin-bottom:4px"><span style="color:var(--blue);font-weight:750">•</span> ${fmtMd(l)}</div>`);
+      }
+    }
+  });
+
+  let res = "";
+  if (headHtml) res += headHtml;
+  if (itemsHtml.length) {
+    res += `<div style="padding-left:4px;display:flex;flex-direction:column;gap:2px">${itemsHtml.join("")}</div>`;
+  }
+  return res || `<div style="font-size:13px;line-height:1.65;color:#1e293b">${fmtMd(str)}</div>`;
+}
+
 function mdList(v){
   if(!v)return "";
-  if(Array.isArray(v))return `<ul>${v.map(x=>`<li>${fmtMd(typeof x==="object"?JSON.stringify(x):x)}</li>`).join("")}</ul>`;
-  return `<p>${fmtMd(typeof v==="object"?JSON.stringify(v,null,2):v)}</p>`;
+  if(Array.isArray(v)) {
+    return `<ul class="md-list" style="margin:4px 0;padding-left:0;list-style:none">${v.map(x => {
+      const formatted = formatDeepDiveItem(x);
+      return `<li style="margin-bottom:14px;padding:14px 16px;border:1px solid var(--border2);border-radius:10px;background:var(--surface)">${formatted}</li>`;
+    }).join("")}</ul>`;
+  }
+  if(typeof v === "string") {
+    const blocks = v.split(/(?=\*\*视频\s*\d+\*\*|视频\s*\d+\s*\||视频\s*\d+｜)/g).filter(Boolean);
+    if(blocks.length > 1) {
+      return `<ul class="md-list" style="margin:4px 0;padding-left:0;list-style:none">${blocks.map(x => {
+        const formatted = formatDeepDiveItem(x);
+        return `<li style="margin-bottom:14px;padding:14px 16px;border:1px solid var(--border2);border-radius:10px;background:var(--surface)">${formatted}</li>`;
+      }).join("")}</ul>`;
+    }
+  }
+  return `<p style="font-size:13.5px;color:#1e293b;line-height:1.75">${fmtMd(typeof v==="object"?JSON.stringify(v,null,2):v)}</p>`;
 }
 
 function scrollToVideosSection(e){
@@ -623,10 +723,11 @@ function detailTags(v){
       else if(typeof val==="object"&&val!==null&&d<3){walk(val,d+1)}
     }
   }
+  walk(raw);
   return Array.from(out).slice(0,30);
 }
 
-const KEY_LABELS={index:"序号",time_range:"时间段",timeRange:"时间段",timestamp:"时间点",time:"时间",visual:"画面解析",audio:"声音/台词",transcript:"字幕/转写",summary:"摘要",video_description:"视频描述",description:"描述",scene:"场景",title:"标题"};
+const KEY_LABELS={index:"序号",time_range:"时间段",timeRange:"时间段",timestamp:"时间点",time:"时间",visual:"画面解析",audio:"声音/台词",transcript:"字幕/转写",summary:"摘要",video_description:"视频描述",description:"描述",scene:"场景",title:"标题",core_hook:"核心钩子",hook:"开头钩子",content_structure:"内容结构",structure:"内容结构",audience_trigger:"受众触发点",interaction_mechanism:"互动机制",reusable_formula:"可复用公式",formula:"复用公式",risks:"风险提示",risk:"风险提示",verified_metrics:"已验证数据",metrics:"数据表现"};
 function labelOf(k){return KEY_LABELS[k]||k;}
 
 function renderFormattedText(src) {
@@ -784,7 +885,11 @@ function renderModalContent(v,type){
     const az = (v && typeof v.analysis_zh === "object" && v.analysis_zh !== null) ? v.analysis_zh : null;
     const a = (v && typeof v.analysis === "object" && v.analysis !== null) ? v.analysis : null;
     const ar = (v && typeof v.audit_result === "object" && v.audit_result !== null) ? v.audit_result : null;
-    const analysisText = (az && az.summary) || (a && a.summary) || (ar && ar.summary) || (v && v.summary) || "暂无 AI 解析摘要";
+    
+    const idx = Array.isArray(current?.videos) ? current.videos.indexOf(v) : 0;
+    const rawShortDive = deepDiveFor(current?.report, v, idx >= 0 ? idx : 0);
+    const shortText = rawShortDive ? formatDeepDiveItem(rawShortDive) : renderFormattedText((az && az.summary) || (a && a.summary) || (ar && ar.summary) || (v && v.summary) || "暂无 AI 爆款拆解");
+    
     const authorName=safeAuthor(v.author);
     return `
       <div class="mock-modal">
@@ -798,10 +903,16 @@ function renderModalContent(v,type){
         <div class="m-body">
           <div class="m-cover-col">
             <div class="m-cover"${coverBg}>
-              <div class="v-play" ${canPlay?`onclick="window.open('${playerUrl}','_blank')"`:''}></div>
-              <span class="m-hot-badge">热度 ${fmtNum(v.hot_score)}</span>
+              ${canPlay ? `
+                <video controls playsinline preload="metadata" style="position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain;background:#000;border-radius:12px;z-index:5;">
+                  <source src="/video/${encodeURIComponent(v.local_filename)}" type="video/mp4">
+                </video>
+              ` : `
+                <div class="v-play"></div>
+                <span class="m-hot-badge">热度 ${fmtNum(v.hot_score)}</span>
+              `}
             </div>
-            <div class="m-cover-hint">${canPlay?'点击封面播放本地视频':'未下载本地视频'}</div>
+            <div class="m-cover-hint">${canPlay ? '可以直接在上方内嵌播放器中播放' : '未下载本地视频'}</div>
           </div>
           <div class="m-info">
             <div class="m-grid">
@@ -823,8 +934,8 @@ function renderModalContent(v,type){
             ${tags.length?`<div class="m-tags">${tags.map(t=>`<span class="m-tag">#${esc(t)}</span>`).join("")}</div>`:''}
             ${v.source_url?`<div class="m-linkrow"><span class="u">${esc(v.source_url)}</span><button type="button" onclick="navigator.clipboard.writeText('${esc(v.source_url)}').then(()=>alert('已复制'))">复制</button><button type="button" onclick="window.open('${esc(v.source_url)}','_blank')">打开</button></div>`:''}
             <div class="m-analysis">
-              <div class="a-head">AI 解析摘要 ${canPlay?`<a href="${playerUrl}" target="_blank" style="color:var(--blue);font-weight:700">查看完整复盘 ↗</a>`:''}</div>
-              <div class="a-body">${fmtMd(analysisText)}</div>
+              <div class="a-head">AI 爆款拆解 ${canPlay?`<a href="${playerUrl}" target="_blank" style="color:var(--blue);font-weight:700">查看完整复盘 ↗</a>`:''}</div>
+              <div class="a-body" style="font-size:13px;line-height:1.75">${shortText}</div>
             </div>
           </div>
         </div>
