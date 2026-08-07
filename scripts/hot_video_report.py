@@ -32,7 +32,6 @@ DB_PATH = ROOT / "data" / "hot_video_report.sqlite"
 REPORT_COVER_DIR = ROOT / "data" / "report_covers"
 DEFAULT_API_BASE = "https://api.sociavault.com"
 DEFAULT_TZ = "Asia/Shanghai"
-DEFAULT_REPORT_JOB_TIMEOUT_SECONDS = 60 * 60
 
 _scheduler_started = False
 _scheduler_lock = threading.Lock()
@@ -256,29 +255,34 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
         ).fetchall()
         for row in rows:
             item = dict(zip(aliases, row))
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO hot_report_videos (
-                    report_id, report_date, platform, video_id, source_endpoint, source_label,
-                    source_rank, report_rank, hot_score, metrics_json, raw_json, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    item["report_id"],
-                    item["report_date"],
-                    item["platform"],
-                    item["video_id"],
-                    item["source_endpoint"],
-                    item["source_label"],
-                    int(item["source_rank"] or 0),
-                    int(item["source_rank"] or 0),
-                    int(item["hot_score"] or 0),
-                    item["metrics_json"] or "{}",
-                    item["raw_json"] or "{}",
-                    float(item["created_at"] or time.time()),
-                    float(item["updated_at"] or time.time()),
-                ),
+            report_exists = bool(
+                item["report_id"]
+                and conn.execute("SELECT 1 FROM daily_reports WHERE id = ?", (item["report_id"],)).fetchone()
             )
+            if report_exists:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO hot_report_videos (
+                        report_id, report_date, platform, video_id, source_endpoint, source_label,
+                        source_rank, report_rank, hot_score, metrics_json, raw_json, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        item["report_id"],
+                        item["report_date"],
+                        item["platform"],
+                        item["video_id"],
+                        item["source_endpoint"],
+                        item["source_label"],
+                        int(item["source_rank"] or 0),
+                        int(item["source_rank"] or 0),
+                        int(item["hot_score"] or 0),
+                        item["metrics_json"] or "{}",
+                        item["raw_json"] or "{}",
+                        float(item["created_at"] or time.time()),
+                        float(item["updated_at"] or time.time()),
+                    ),
+                )
             conn.execute(
                 """
                 INSERT OR IGNORE INTO hot_video_master (
@@ -845,6 +849,26 @@ def _has_usable_video_media(node: dict[str, Any]) -> bool:
     return bool(_iter_media_url_candidates(node))
 
 
+def _long_video_max_seconds() -> int:
+    return max(0, _to_int(os.getenv("REPORT_VIDEO_MAX_LONG_SECONDS", "180")) or 180)
+
+
+def _is_long_video(item: dict[str, Any]) -> bool:
+    """Reject videos longer than the configured cap (default 180s).
+
+    Duration is read from ``item["duration_ms"]`` (already normalized).
+    When the duration is missing/unknown we cannot prove it is too long,
+    so it is conservatively kept (callers track it via counts).
+    """
+    duration_ms = item.get("duration_ms")
+    if duration_ms is None:
+        return False
+    max_seconds = _long_video_max_seconds()
+    if max_seconds <= 0:
+        return False
+    return int(duration_ms) > max_seconds * 1000
+
+
 def _iter_video_nodes(value: Any) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     if isinstance(value, dict):
@@ -858,10 +882,34 @@ def _iter_video_nodes(value: Any) -> list[dict[str, Any]]:
     return out
 
 
+def _extract_duration_ms(node: dict[str, Any]) -> int | None:
+    """Extract the video duration in milliseconds from a SociaVault node.
+
+    The canonical field is ``node["video"]["duration"]`` (milliseconds).
+    Fall back to top-level duration-ish fields for other providers.
+    """
+    video = node.get("video")
+    if isinstance(video, dict):
+        duration = video.get("duration")
+        if duration not in (None, "", 0):
+            try:
+                return max(0, int(duration))
+            except (TypeError, ValueError):
+                pass
+    duration = _first_present(node, ("duration", "duration_ms", "video_duration_ms"))
+    if duration not in (None, "", 0):
+        try:
+            return max(0, int(duration))
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
 def _normalize_video(node: dict[str, Any], endpoint: str, label: str, rank: int) -> dict[str, Any]:
     video_id = _clean_id(_first_present(node, ("aweme_id", "awemeId", "video_id", "videoId", "item_id", "itemId", "id")))
     title = _compact(_first_present(node, ("desc", "description", "title", "caption")))
     author = _compact(_find_nested(node, ("unique_id", "uniqueId", "nickname", "author", "authorName")), 160)
+    duration_ms = _extract_duration_ms(node)
     metrics = {
         "play_count": _metric(node, ("play_count", "playCount", "view_count", "viewCount")),
         "like_count": _metric(node, ("digg_count", "diggCount", "like_count", "likeCount")),
@@ -884,6 +932,7 @@ def _normalize_video(node: dict[str, Any], endpoint: str, label: str, rank: int)
         "source_label": label,
         "source_rank": rank,
         "hot_score": int(hot_score),
+        "duration_ms": duration_ms,
         "metrics": metrics,
         "raw": node,
     }
@@ -980,11 +1029,18 @@ def _collect_hot_video_candidates(
     excluded_keys = excluded_keys or set()
     cutoff_ts = time.time() - recency_days * 86400
     max_pages = max(1, _to_int(os.getenv("HOT_VIDEO_POPULAR_MAX_PAGES", "15")))
+    topic_max_pages = max(1, _to_int(os.getenv("HOT_VIDEO_TOPIC_MAX_PAGES", "3")))
     source_errors: list[str] = []
     topic_min_views = max(0, _to_int(os.getenv("HOT_VIDEO_TOPIC_MIN_PLAY_COUNT", "5000")))
     stream_min_views = max(0, _to_int(os.getenv("HOT_VIDEO_STREAM_MIN_PLAY_COUNT", "10000")))
 
-    def collect_from(endpoint: str, params: dict[str, Any], label: str, min_play_count: int, bucket: str) -> int:
+    def collect_from(
+        endpoint: str,
+        params: dict[str, Any],
+        label: str,
+        min_play_count: int,
+        bucket: str,
+    ) -> tuple[int, Any | None]:
         _progress_payload(report_date, "running", "collecting", 6, f"Collecting source: {label}", counts)
         cache_policy = os.getenv("HOT_VIDEO_SOURCE_CACHE_POLICY", "record_only").strip() or "record_only"
         payload = call_api(api_key, api_base, endpoint, params, api_timeout, cache_policy=cache_policy)
@@ -998,6 +1054,11 @@ def _collect_hot_video_candidates(
             if not item["video_id"]:
                 continue
             counts["candidate_count"] += 1
+            if item.get("duration_ms") is None:
+                counts["unknown_duration"] = counts.get("unknown_duration", 0) + 1
+            if _is_long_video(item):
+                counts["skipped_long_video"] = counts.get("skipped_long_video", 0) + 1
+                continue
             published_at = item.get("metrics", {}).get("published_at")
             if not isinstance(published_at, (int, float)) or published_at <= 0:
                 item, enriched = _enrich_missing_publish_time(item, api_key, api_base, api_timeout)
@@ -1031,14 +1092,36 @@ def _collect_hot_video_candidates(
             if key not in candidates or item["hot_score"] > candidates[key]["hot_score"]:
                 candidates[key] = item
         _progress_payload(report_date, "running", "filtering", 18, f"{label} complete, valid candidates: {len(candidates)}", counts)
-        return len(candidates) - before_count
+        return len(candidates) - before_count, _response_next_cursor(payload)
+
+    def collect_topic_pages(
+        endpoint: str,
+        params: dict[str, Any],
+        label: str,
+    ) -> int:
+        added = 0
+        cursor: Any | None = None
+        seen_cursors: set[str] = set()
+        for page in range(1, topic_max_pages + 1):
+            page_params = dict(params)
+            if cursor not in (None, ""):
+                page_params["cursor"] = cursor
+            page_label = label if page == 1 else f"{label}:p{page}"
+            page_added, next_cursor = collect_from(endpoint, page_params, page_label, topic_min_views, "topic")
+            added += page_added
+            cursor_key = str(next_cursor or "")
+            if not cursor_key or cursor_key in seen_cursors:
+                break
+            seen_cursors.add(cursor_key)
+            cursor = next_cursor
+        return added
 
     topic_fetch = max(target_count * 2, 20)
     for keyword in topic_keywords:
         before_topic = len(candidates)
         try:
             for endpoint, params, label in _topic_source_requests(keyword, region, topic_fetch, recency_days, fallback=False):
-                collect_from(endpoint, params, label, topic_min_views, "topic")
+                collect_topic_pages(endpoint, params, label)
         except Exception as exc:
             source_errors.append(f"topic-search:{keyword}: {exc}")
         if len(candidates) > before_topic:
@@ -1046,14 +1129,14 @@ def _collect_hot_video_candidates(
         counts["topic_fallback_sources"] = counts.get("topic_fallback_sources", 0) + 1
         for endpoint, params, label in _topic_source_requests(keyword, region, topic_fetch, recency_days, fallback=True):
             try:
-                collect_from(endpoint, params, label, topic_min_views, "topic")
+                collect_topic_pages(endpoint, params, label)
                 if len(candidates) > before_topic:
                     break
             except Exception as exc:
                 source_errors.append(f"{label}: {exc}")
 
     page = 1
-    while len(candidates) < target_count and page <= max_pages:
+    while page <= max_pages and (page == 1 or len(candidates) < target_count):
         remaining = target_count - len(candidates)
         total_fetch = max(20, remaining * 3)
         popular_source_count = max(1, len(_split_csv_env("HOT_VIDEO_POPULAR_SORTS", "views,likes")))
@@ -1070,7 +1153,7 @@ def _collect_hot_video_candidates(
         page += 1
 
     page = 1
-    while len(candidates) < target_count and page <= max_pages:
+    while page <= max_pages and (page == 1 or len(candidates) < target_count):
         remaining = target_count - len(candidates)
         fetch_count = max(20, remaining * 3)
         page_success = False
@@ -1565,6 +1648,53 @@ def _split_csv_env(name: str, default: str) -> list[str]:
     return [item for item in values if item]
 
 
+def _response_next_cursor(payload: dict[str, Any]) -> Any | None:
+    containers: list[dict[str, Any]] = [payload]
+    data = payload.get("data")
+    if isinstance(data, dict):
+        containers.append(data)
+        nested = data.get("data")
+        if isinstance(nested, dict):
+            containers.append(nested)
+    for container in containers:
+        has_more = _first_present(container, ("has_more", "hasMore", "more"))
+        if has_more not in (None, "", [], {}):
+            normalized = str(has_more).strip().lower()
+            if normalized in {"0", "false", "no", "off"}:
+                return None
+        cursor = _first_present(container, ("cursor", "next_cursor", "nextCursor"))
+        if cursor not in (None, "", 0, "0", [], {}):
+            return cursor
+    return None
+
+
+def _sociavault_time_window(recency_days: int) -> str:
+    days = max(1, _to_int(recency_days))
+    if days <= 1:
+        return "yesterday"
+    if days <= 7:
+        return "this-week"
+    if days <= 31:
+        return "this-month"
+    if days <= 90:
+        return "last-3-months"
+    if days <= 180:
+        return "last-6-months"
+    return "all-time"
+
+
+def _topic_sort_by() -> str:
+    value = (os.getenv("HOT_VIDEO_TOPIC_SORT_BY", "most-liked").strip() or "most-liked").lower()
+    aliases = {
+        "create_time": "date-posted",
+        "create-time": "date-posted",
+        "views": "most-liked",
+        "likes": "most-liked",
+    }
+    value = aliases.get(value, value)
+    return value if value in {"relevance", "most-liked", "date-posted"} else "most-liked"
+
+
 def _normalize_topic_keywords(value: Any, fallback: list[str] | None = None) -> list[str]:
     if value in (None, ""):
         raw_items = fallback or []
@@ -1615,17 +1745,25 @@ def _topic_source_requests(
     topic = str(keyword or "").strip()
     if not topic:
         return []
-    common = {"query": topic, "region": region, "count": count, "days": recency_days}
+    time_window = _sociavault_time_window(recency_days)
     if not fallback:
-        params = dict(common)
-        params["sort_by"] = os.getenv("HOT_VIDEO_TOPIC_SORT_BY", "create_time").strip() or "create_time"
+        params = {
+            "query": topic,
+            "region": region,
+            "publish_time": time_window,
+            "sort_by": _topic_sort_by(),
+        }
         return [("search-top", params, f"topic-search-top:{topic}")]
     requests: list[tuple[str, dict[str, Any], str]] = [
-        ("search-keyword", dict(common), f"topic-search-keyword:{topic}"),
         (
-            "search-top",
-            {**common, "page": 2, "sort_by": os.getenv("HOT_VIDEO_TOPIC_SORT_BY", "create_time").strip() or "create_time"},
-            f"topic-search-top:{topic}:p2",
+            "search-keyword",
+            {
+                "query": topic,
+                "region": region,
+                "date_posted": time_window,
+                "sort_by": _topic_sort_by(),
+            },
+            f"topic-search-keyword:{topic}",
         ),
     ]
     hashtag = re.sub(r"^\s*#", "", topic).strip()
@@ -1633,7 +1771,7 @@ def _topic_source_requests(
         requests.append(
             (
                 "search-hashtag",
-                {"hashtag": hashtag, "region": region, "count": count, "days": recency_days},
+                {"hashtag": hashtag, "region": region},
                 f"topic-search-hashtag:{hashtag}",
             )
         )
@@ -1666,11 +1804,18 @@ def _source_requests(region: str, count: int, topic_keywords: list[str] | None =
     return requests
 
 
+def _report_backup_count() -> int:
+    return max(0, _to_int(os.getenv("REPORT_VIDEO_BACKUP_COUNT", "10")) or 10)
+
+
 def _rank_with_topic_guarantees(
     candidates: list[dict[str, Any]],
     topic_keywords: list[str],
     target_count: int,
+    backup_count: int | None = None,
 ) -> list[dict[str, Any]]:
+    backup_count = _report_backup_count() if backup_count is None else max(0, int(backup_count))
+    pool_size = target_count + backup_count
     selected: list[dict[str, Any]] = []
     selected_keys: set[tuple[str, str]] = set()
     sorted_candidates = sorted(candidates, key=lambda item: item["hot_score"], reverse=True)
@@ -1697,28 +1842,19 @@ def _rank_with_topic_guarantees(
             if key not in selected_keys:
                 selected.append(item)
                 selected_keys.add(key)
-    for bucket in ("topic", "stream"):
-        for item in sorted_candidates:
-            if len(selected) >= target_count:
-                break
-            if item.get("selection_bucket") != bucket:
-                continue
-            key = (item["platform"], item["video_id"])
-            if key in selected_keys:
-                continue
-            selected.append(item)
-            selected_keys.add(key)
-        if len(selected) >= target_count:
-            break
     for item in sorted_candidates:
-        if len(selected) >= target_count:
+        if len(selected) >= pool_size:
             break
         key = (item["platform"], item["video_id"])
         if key in selected_keys:
             continue
         selected.append(item)
         selected_keys.add(key)
-    return selected[:target_count]
+    # Mark primary (first target_count) vs backup (rest). Primary is processed
+    # first; backups fill in when a primary fails all its retries.
+    for index, item in enumerate(selected[:pool_size]):
+        item["selection_tier"] = "primary" if index < target_count else "backup"
+    return selected[:pool_size]
 
 
 def _start_report(
@@ -1988,7 +2124,68 @@ def _mark_video_pending(conn: sqlite3.Connection, report_date: str, platform: st
 
 def _is_recoverable_external_error(error: BaseException | str) -> bool:
     text = str(error).lower()
-    return bool(re.search(r"\b(402|408|429|500|502|503|504)\b|timeout|timed out|temporarily unavailable|rate limit", text))
+    return bool(
+        re.search(
+            r"\b(?:http(?:\s+(?:status|error))?|status(?:\s+code)?|client error|server error)\D{0,16}"
+            r"(?:402|408|429|500|502|503|504)\b|\b(?:402|408|429|500|502|503|504)\s+(?:client|server)\s+error\b",
+            text,
+        )
+    )
+
+
+def _report_video_analyze_timeout_seconds() -> int:
+    return max(30, min(_to_int(os.getenv("REPORT_VIDEO_ANALYZE_TIMEOUT", "240")) or 240, 1800))
+
+
+def _report_video_download_timeout_seconds() -> int | None:
+    raw = os.getenv("REPORT_VIDEO_DOWNLOAD_TIMEOUT", "")
+    if raw in (None, "", "0"):
+        return None
+    return max(30, min(_to_int(raw) or 240, 1800))
+
+
+def _failed_video_retry_state(
+    conn: sqlite3.Connection,
+    report_date: str,
+    platform: str,
+    video_id: str,
+    now: float | None = None,
+) -> str | None:
+    row = conn.execute(
+        """
+        SELECT process_status, attempt_count, last_attempt_at
+        FROM hot_report_videos
+        WHERE report_date = ? AND platform = ? AND video_id = ?
+        """,
+        (report_date, platform, video_id),
+    ).fetchone()
+    if not row or str(row[0] or "") not in {"failed", "paused_external"}:
+        return None
+    attempts = _to_int(row[1])
+    max_attempts = max(1, _to_int(os.getenv("REPORT_VIDEO_MAX_ATTEMPTS", "2")) or 2)
+    if attempts >= max_attempts:
+        return "retry_exhausted"
+    last_attempt_at = _to_float(row[2], 0.0)
+    base_delay = max(0.0, _to_float(os.getenv("REPORT_VIDEO_RETRY_BACKOFF_SECONDS", "0"), 0.0))
+    retry_at = last_attempt_at + base_delay * (2 ** max(0, attempts - 1))
+    if last_attempt_at and (now if now is not None else time.time()) < retry_at:
+        return "retry_backoff"
+    return None
+
+
+def _prioritize_retry_candidates(conn: sqlite3.Connection, report_date: str, ranked: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    primary: list[dict[str, Any]] = []
+    retries: list[dict[str, Any]] = []
+    deferred: list[dict[str, Any]] = []
+    for item in ranked:
+        state = _failed_video_retry_state(conn, report_date, str(item.get("platform") or ""), str(item.get("video_id") or ""))
+        if state:
+            deferred.append(item)
+        elif str(item.get("process_status") or "") in {"failed", "paused_external"}:
+            retries.append(item)
+        else:
+            primary.append(item)
+    return primary + retries + deferred
 
 
 def _process_video(conn: sqlite3.Connection, report_date: str, item: dict[str, Any]) -> None:
@@ -2015,7 +2212,10 @@ def _process_video(conn: sqlite3.Connection, report_date: str, item: dict[str, A
         if not filename:
             if not source_url:
                 raise RuntimeError("missing source_url")
-            result = execute_tool("video_download", {"url": source_url})
+            result = execute_tool(
+                "video_download",
+                {"url": source_url, "timeout_seconds": _report_video_download_timeout_seconds()},
+            )
             if not result.get("ok"):
                 raise RuntimeError(str(result.get("error") or "download failed"))
             data = result.get("data") or {}
@@ -2038,7 +2238,10 @@ def _process_video(conn: sqlite3.Connection, report_date: str, item: dict[str, A
         output_dir = _output_dir_for_filename(filename)
         analysis_path = output_dir / "analysis.json"
         if not analysis_path.is_file():
-            result = execute_tool("video_analyze", {"filename": filename})
+            result = execute_tool(
+                "video_analyze",
+                {"filename": filename, "timeout_seconds": _report_video_analyze_timeout_seconds()},
+            )
             if not result.get("ok"):
                 raise RuntimeError(str(result.get("error") or "video extraction failed"))
         output_dir = _output_dir_for_filename(filename)
@@ -3425,6 +3628,9 @@ def _cleanup_old_reports(conn: sqlite3.Connection) -> None:
     settings = get_settings()
     tz = ZoneInfo(settings["timezone"])
     cutoff = (datetime.now(tz) - timedelta(days=int(settings["retention_days"]) - 1)).strftime("%Y-%m-%d")
+    existing_tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if "hot_videos" in existing_tables:
+        conn.execute("DELETE FROM hot_videos WHERE report_date < ?", (cutoff,))
     conn.execute("DELETE FROM hot_report_videos WHERE report_date < ?", (cutoff,))
     conn.execute("DELETE FROM daily_reports WHERE report_date < ?", (cutoff,))
     conn.commit()
@@ -3500,7 +3706,8 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
     analysis_limit = int(settings["analysis_limit"])
     topic_keywords = list(settings.get("topic_keywords") or _split_csv_env("HOT_VIDEO_KEYWORDS", "AI toys"))
     target_count = analysis_limit
-    candidate_target_count = max(target_count * 3, target_count + 10)
+    backup_count = _report_backup_count()
+    candidate_target_count = target_count + backup_count
     recency_days = _recent_window_days()
     api_key = os.getenv("SOCIAVAULT_API_KEY", "").strip()
     api_base = os.getenv("SOCIAVAULT_API_BASE", DEFAULT_API_BASE).rstrip("/")
@@ -3524,6 +3731,8 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
         "target_count": target_count,
         "analyzed_success": 0,
         "analyzed_failed": 0,
+        "skipped_retry_backoff": 0,
+        "skipped_retry_exhausted": 0,
     }
     existing_report = get_report(date, include_raw=False, detail=False)
     if existing_report.get("status") == "complete":
@@ -3584,6 +3793,7 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
                         _finish_report(conn, report_id, date, "failed", error)
                         _progress_payload(date, "failed", "finished", 100, error, counts)
                         return get_report(date, include_raw=True)
+                ranked = _prioritize_retry_candidates(conn, date, ranked)
                 if not ranked:
                     error = f"No resumable or newly collected hot videos for {date}"
                     _finish_report(conn, report_id, date, "failed", error)
@@ -3592,18 +3802,12 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
                 _heartbeat_report(conn, report_id, date, worker_lease, "processing")
                 _progress_payload(date, "running", "downloading", 30, f"开始处理候选视频，目标成功 {analysis_limit} 条", counts)
 
-                job_timeout = _to_float(os.getenv("REPORT_JOB_TIMEOUT", str(DEFAULT_REPORT_JOB_TIMEOUT_SECONDS)), DEFAULT_REPORT_JOB_TIMEOUT_SECONDS)
-                deadline = time.time() + max(60.0, job_timeout)
-                timed_out = False
-                paused_external = False
+                # 无总限时:处理完整个候选池(primary + backup),成功数达标则提前完成。
                 # ranked includes an over-fetched candidate pool for fallback. Progress
-                # must describe the configured report target, not that pool size.
-                total_to_process = max(1, target_count)
+                # must describe the processed pool size, not only the target.
+                total_to_process = max(1, len(ranked))
                 for index, item in enumerate(ranked, start=1):
                     if counts["analyzed_success"] >= analysis_limit:
-                        break
-                    if time.time() >= deadline:
-                        timed_out = True
                         break
                     item["report_rank"] = _to_int(item.get("report_rank")) or index
                     checkpoint_valid, checkpoint_reason = _is_video_checkpoint_valid(item)
@@ -3611,6 +3815,10 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
                         continue
                     if item.get("process_status") == "complete":
                         _mark_video_pending(conn, date, item["platform"], item["video_id"], checkpoint_reason)
+                    retry_state = _failed_video_retry_state(conn, date, item["platform"], item["video_id"])
+                    if retry_state:
+                        counts[f"skipped_{retry_state}"] += 1
+                        continue
                     _upsert_video(conn, report_id, date, item, item["report_rank"])
                     conn.commit()
                     _heartbeat_report(conn, report_id, date, worker_lease, "processing")
@@ -3630,6 +3838,19 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
                         message = f"分析视频 {index}/{total_to_process}"
                     _progress_payload(date, "running", stage, 30 + int(index / total_to_process * 50), message, counts)
                     _process_video(conn, date, item)
+                    # 同轮立即重试:失败且未达 REPORT_VIDEO_MAX_ATTEMPTS 时马上再试,
+                    # 重试仍失败则放弃该视频,由后续备份候选顶上。
+                    max_attempts = max(1, _to_int(os.getenv("REPORT_VIDEO_MAX_ATTEMPTS", "2")) or 2)
+                    for _ in range(max(0, max_attempts - 1)):
+                        retry_row = conn.execute(
+                            "SELECT process_status FROM hot_report_videos WHERE report_date = ? AND platform = ? AND video_id = ?",
+                            (date, item["platform"], item["video_id"]),
+                        ).fetchone()
+                        if retry_row and retry_row[0] == "complete":
+                            break
+                        if _failed_video_retry_state(conn, date, item["platform"], item["video_id"]):
+                            break
+                        _process_video(conn, date, item)
                     row = conn.execute(
                         "SELECT process_status FROM hot_report_videos WHERE report_date = ? AND platform = ? AND video_id = ?",
                         (date, item["platform"], item["video_id"]),
@@ -3643,28 +3864,9 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
                         counts["analyzed_success"] += 1
                     else:
                         counts["analyzed_failed"] += 1
-                        if row and row[0] == "paused_external":
-                            paused_external = True
-                            break
 
                 success_videos = _load_success_videos(conn, date)
-                if timed_out:
-                    _finish_report(
-                        conn,
-                        report_id,
-                        date,
-                        "paused_external",
-                        f"Report job reached timeout ({int(job_timeout)}s) before target videos were processed: {len(success_videos)}/{analysis_limit}",
-                        resume_step="processing",
-                    )
-                    _progress_payload(date, "paused_external", "finished", 100, f"任务超时，成功视频 {len(success_videos)}/{analysis_limit}", counts)
-                    return get_report(date, include_raw=True)
-                if paused_external:
-                    error = f"External service paused processing at {len(success_videos)}/{analysis_limit} successful videos"
-                    _finish_report(conn, report_id, date, "paused_external", error, resume_step="processing")
-                    _progress_payload(date, "paused_external", "finished", 100, error, counts)
-                    return get_report(date, include_raw=True)
-                if len(success_videos) >= analysis_limit:
+                if success_videos:
                     _progress_payload(date, "running", "summarizing", 88, "开始生成爆款日报", counts)
                     _heartbeat_report(conn, report_id, date, worker_lease, "summarizing")
                     try:
@@ -3676,10 +3878,6 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
                         return get_report(date, include_raw=True)
                     _finish_report(conn, report_id, date, "complete", report_json=report_json, report_markdown=markdown)
                     _progress_payload(date, "complete", "finished", 100, "日报生成完成", counts)
-                elif success_videos:
-                    error = f"Only {len(success_videos)}/{analysis_limit} videos analyzed successfully"
-                    _finish_report(conn, report_id, date, "partial_failed", error)
-                    _progress_payload(date, "partial_failed", "finished", 100, error, counts)
                 else:
                     error = "No videos analyzed successfully"
                     _finish_report(conn, report_id, date, "failed", error)

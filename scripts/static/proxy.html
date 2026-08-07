@@ -130,14 +130,14 @@ function feishuOptionId(user){return String(user.feishuId||user.id||"")}
 function feishuForId(id){return state.feishuUsers.find(user=>feishuOptionId(user)===String(id||""))}
 function availableFeishuUsers(){return state.feishuUsers}
 async function loadFeishuUsers(force=false){if(!force&&state.feishuUsersLoadedAt&&Date.now()-state.feishuUsersLoadedAt<60000)return state.feishuUsers;const data=await api("/api/lan-chat/login-options");state.feishuUsers=Array.isArray(data.feishuUsers)?data.feishuUsers:[];state.feishuUsersLoadedAt=Date.now();return state.feishuUsers}
-function statusKind(v){return v==="已绑定"||v==="启用"||v==="可用"||v==="通过"||v==="唤醒中"||v==="发布中"||v==="采集中"||v==="已发布"||v==="TikTok已排程"||v==="采集完成"||v==="Active"?"ok":(v==="IP不可用"||v==="不可用"||v==="禁用"||v==="异常"||v==="阻断"||v==="发布失败"||v==="采集失败"||v==="写入失败"||v==="结果待确认"||v==="商品未绑定成功"?"bad":"warn")}
-function poolDisplayStatus(p){if(p.status==="不可用"||p.status==="异常")return "不可用";if(p.status==="禁用")return "禁用";return Number(p.account_count||0)>0?"已绑定":"未绑定"}
+function statusKind(v){return v==="已绑定"||v==="启用"||v==="可用"||v==="通过"||v==="唤醒中"||v==="发布中"||v==="采集中"||v==="已发布"||v==="TikTok已排程"||v==="采集完成"||v==="Active"?"ok":(v==="IP重复"||v==="IP不可用"||v==="不可用"||v==="禁用"||v==="异常"||v==="阻断"||v==="发布失败"||v==="采集失败"||v==="写入失败"||v==="结果待确认"||v==="商品未绑定成功"?"bad":"warn")}
+function poolDisplayStatus(p){if(p.status==="IP重复")return "IP重复";if(p.status==="不可用"||p.status==="异常")return "不可用";if(p.status==="禁用")return "禁用";return Number(p.account_count||0)>0?"已绑定":"未绑定"}
 function accountLine(p){const names=(p.account_names||[]).filter(Boolean);return `<div class="pool-line pool-sub"><span>${names.length?`绑定账号：${esc(names.map(x=>`@${x}`).join("、"))}`:"&nbsp;"}</span></div>`}
 function proxyRetryStatusHtml(){return '<div id="proxyRetryStatus" class="status bad" hidden></div>'}
 function retryPoolForEditor(){if(state.editing==="pool")return state.pools.find(p=>Number(p.id)===Number(state.selectedPool));if(state.editing==="account"){const a=state.accounts.find(x=>Number(x.id)===Number(state.selectedAccount));return a&&state.pools.find(p=>Number(p.id)===Number(a.proxy_profile_id))}return null}
 function updateProxyRetryIndicator(){const box=$("proxyRetryStatus");if(!box)return;const p=retryPoolForEditor();if(!p||!(p.status==="不可用"||p.status==="异常")){box.hidden=true;return}box.hidden=false;const target=Date.parse(p.next_auto_check_at||"");if(!Number.isFinite(target)){box.textContent="代理不可用，后台正在安排自动重试。";return}const seconds=Math.max(0,Math.ceil((target-Date.now())/1000)),minutes=Math.floor(seconds/60),rest=seconds%60,count=Number(p.pending_job_count||0),policy=count?`任务队列有 ${count} 项，固定每 5 分钟校验；`:"后台自动校验；",clock=new Date(target).toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit",second:"2-digit",hourCycle:"h23"});box.textContent=seconds>0?`${policy}${minutes?`${minutes}分${String(rest).padStart(2,"0")}秒`:`${rest}秒`}后重试（${clock}）`:`${policy}校验时间已到，正在刷新状态...`;box.title=`后台重试时间：${new Date(target).toLocaleString()}`;if(seconds===0){const key=`${p.id}:${p.next_auto_check_at}`;if(!state.retryRefreshBusy&&state.retryRefreshKey!==key){state.retryRefreshKey=key;state.retryRefreshBusy=true;loadAll(true).catch(()=>{}).finally(()=>{state.retryRefreshBusy=false})}}}
 function activeSessionForAccount(id){return state.sessions.find(s=>Number(s.account_id)===Number(id)&&["starting","running","observing"].includes(s.status))}
-function accountRuntimeStatus(a){if(!a.proxy_bound)return "未绑定";const p=state.pools.find(x=>x.id===Number(a.proxy_profile_id));if(!p||p.status==="禁用"||p.status==="不可用"||p.status==="异常")return "IP不可用";if(a.last_check_status==="阻断"||a.last_check_status==="blocked")return "IP不可用";if(p.expected_exit_ip&&a.last_checked_ip&&a.last_checked_ip!==p.expected_exit_ip)return "IP不可用";if(a.status==="异常")return "IP不可用";const s=activeSessionForAccount(a.id);if(s&&String(s.current_job_id||"").startsWith("collect_"))return "采集中";if(s&&s.current_job_id)return "发布中";if(s&&s.status==="running")return "采集中";if(s||state.automationPending.has(Number(a.id)))return "唤醒中";return "休眠中"}
+function accountRuntimeStatus(a){if(!a.proxy_bound)return "未绑定";const p=state.pools.find(x=>x.id===Number(a.proxy_profile_id));if(p&&p.status==="IP重复")return "IP重复";if(!p||p.status==="禁用"||p.status==="不可用"||p.status==="异常")return "IP不可用";if(a.last_check_status==="阻断"||a.last_check_status==="blocked")return "IP不可用";if(p.expected_exit_ip&&a.last_checked_ip&&a.last_checked_ip!==p.expected_exit_ip)return "IP不可用";if(a.status==="异常")return "IP不可用";const s=activeSessionForAccount(a.id);if(s&&String(s.current_job_id||"").startsWith("collect_"))return "采集中";if(s&&s.current_job_id)return "发布中";if(s&&s.status==="running")return "采集中";if(s||state.automationPending.has(Number(a.id)))return "唤醒中";return "休眠中"}
 function nextPoolName(){return `代理${state.pools.length+1}`}
 async function loadAll(silent=false){
   await loadFeishuUsers(!silent).catch(()=>{});
@@ -190,7 +190,7 @@ function renderAccounts(){
     const rs=accountRuntimeStatus(a);
     const s=activeSessionForAccount(a.id);
     const unbound=!a.proxy_bound;
-    const ipBad=rs==="IP不可用";
+    const ipBad=rs==="IP不可用"||rs==="IP重复";
     const busy=rs==="发布中"||rs==="采集中";
     const toggling=state.accountTogglePending.has(Number(a.id));
     const feishuNote=!a.feishu_user_id?"请在详情中选择":a.feishu_user_active?"":"已从飞书白名单移除";
