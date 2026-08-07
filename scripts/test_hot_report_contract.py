@@ -68,6 +68,13 @@ def main() -> int:
     layered0 = report._rank_with_topic_guarantees(pool, [], 10, backup_count=0)
     assert len(layered0) == 10 and all(item["selection_tier"] == "primary" for item in layered0)
 
+    # 备份数动态规则:目标 <10 时备份=目标数,>=10 时备份=10
+    assert report._report_backup_count(3) == 3
+    assert report._report_backup_count(9) == 9
+    assert report._report_backup_count(10) == 10
+    assert report._report_backup_count(20) == 10
+    assert report._report_backup_count() == 10
+
     # 下载/解析限时解析
     assert report._report_video_download_timeout_seconds() is None or isinstance(report._report_video_download_timeout_seconds(), int)
     assert report._report_video_analyze_timeout_seconds() >= 30
