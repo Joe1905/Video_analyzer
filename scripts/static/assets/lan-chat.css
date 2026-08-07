@@ -3126,3 +3126,232 @@ body.ui-route-lan-chat .announcement-editor:focus {
     min-height: min(46dvh, 360px);
   }
 }
+
+/* User Profile Card Modal - 4004 V2 Styling */
+body.ui-route-lan-chat .user-profile-card-modal {
+  width: min(380px, 92vw) !important;
+  max-width: 380px !important;
+  display: flex !important;
+  flex-direction: column !important;
+  padding: 0 !important;
+  border-radius: 20px !important;
+  overflow: hidden !important;
+  background: #ffffff !important;
+  border: 1px solid #dfded8 !important;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.12) !important;
+}
+
+body.ui-route-lan-chat .user-profile-card-modal .profile-card-head {
+  position: relative !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  padding: 22px 20px 16px !important;
+  background: linear-gradient(180deg, #f7f9f8 0%, #ffffff 100%) !important;
+  border-bottom: 1px solid #eeefed !important;
+}
+
+body.ui-route-lan-chat .user-profile-card-modal .profile-card-header-info {
+  display: flex !important;
+  align-items: center !important;
+  gap: 14px !important;
+  min-width: 0 !important;
+  flex: 1 !important;
+}
+
+body.ui-route-lan-chat .user-profile-card-modal .profile-card-avatar-wrap {
+  position: relative !important;
+  width: 56px !important;
+  height: 56px !important;
+  min-width: 56px !important;
+  flex-shrink: 0 !important;
+}
+
+body.ui-route-lan-chat .user-profile-card-modal .profile-card-avatar {
+  width: 56px !important;
+  height: 56px !important;
+  border-radius: 16px !important;
+  object-fit: cover !important;
+  border: 2px solid #ffffff !important;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08) !important;
+  background: #f0f2f1 !important;
+}
+
+body.ui-route-lan-chat .user-profile-card-modal .profile-card-status-dot {
+  position: absolute !important;
+  bottom: -2px !important;
+  right: -2px !important;
+  width: 13px !important;
+  height: 13px !important;
+  border-radius: 50% !important;
+  background: #10b981 !important;
+  border: 2px solid #ffffff !important;
+}
+
+body.ui-route-lan-chat .user-profile-card-modal .profile-card-status-dot.offline {
+  background: #9ca3af !important;
+}
+
+body.ui-route-lan-chat .user-profile-card-modal .profile-card-title-group {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 4px !important;
+  min-width: 0 !important;
+}
+
+body.ui-route-lan-chat .user-profile-card-modal .profile-card-title-group h2 {
+  margin: 0 !important;
+  font-size: 17px !important;
+  font-weight: 700 !important;
+  color: #1f2937 !important;
+  line-height: 1.25 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+body.ui-route-lan-chat .user-profile-card-modal .profile-card-status-text {
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  color: #10b981 !important;
+}
+
+body.ui-route-lan-chat .user-profile-card-modal .profile-card-status-text.offline {
+  color: #6b7280 !important;
+}
+
+body.ui-route-lan-chat .user-profile-card-modal .profile-card-close {
+  position: absolute !important;
+  top: 14px !important;
+  right: 14px !important;
+  width: 28px !important;
+  height: 28px !important;
+  border-radius: 50% !important;
+  border: none !important;
+  background: rgba(0, 0, 0, 0.05) !important;
+  color: #6b7280 !important;
+  font-size: 18px !important;
+  line-height: 1 !important;
+  cursor: pointer !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  transition: all 0.15s ease !important;
+}
+
+body.ui-route-lan-chat .user-profile-card-modal .profile-card-close:hover {
+  background: rgba(0, 0, 0, 0.1) !important;
+  color: #111827 !important;
+}
+
+body.ui-route-lan-chat .user-profile-card-modal .profile-card-body {
+  padding: 16px 20px !important;
+}
+
+body.ui-route-lan-chat .user-profile-card-modal .profile-card-detail-box {
+  background: #f8faf9 !important;
+  border: 1px solid #e8ebe9 !important;
+  border-radius: 14px !important;
+  padding: 12px 14px !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 10px !important;
+}
+
+body.ui-route-lan-chat .user-profile-card-modal .profile-card-detail-row {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  font-size: 13px !important;
+  min-height: 24px !important;
+}
+
+body.ui-route-lan-chat .user-profile-card-modal .profile-card-detail-label {
+  color: #6b7280 !important;
+  font-size: 12px !important;
+}
+
+body.ui-route-lan-chat .user-profile-card-modal .profile-card-detail-value {
+  color: #111827 !important;
+  font-weight: 600 !important;
+  font-size: 12.5px !important;
+}
+
+body.ui-route-lan-chat .user-profile-card-modal .profile-card-id-wrap {
+  display: flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+}
+
+body.ui-route-lan-chat .user-profile-card-modal .profile-card-id-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
+  background: #eef2f0 !important;
+  padding: 2px 7px !important;
+  border-radius: 6px !important;
+  font-size: 11.5px !important;
+  color: #2f7d73 !important;
+  letter-spacing: 0.2px !important;
+}
+
+body.ui-route-lan-chat .user-profile-card-modal .profile-card-copy-btn {
+  border: none !important;
+  background: transparent !important;
+  color: #2f7d73 !important;
+  font-size: 11.5px !important;
+  font-weight: 600 !important;
+  cursor: pointer !important;
+  padding: 2px 6px !important;
+  border-radius: 4px !important;
+  transition: background 0.15s ease !important;
+}
+
+body.ui-route-lan-chat .user-profile-card-modal .profile-card-copy-btn:hover {
+  background: rgba(47, 125, 115, 0.1) !important;
+}
+
+body.ui-route-lan-chat .user-profile-card-modal .profile-card-foot {
+  padding: 12px 20px 20px !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+  justify-content: stretch !important;
+  border-top: 1px solid #eeefed !important;
+}
+
+body.ui-route-lan-chat .user-profile-card-modal .profile-card-foot .button {
+  flex: 1 !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  border-radius: 10px !important;
+  font-size: 13.5px !important;
+  font-weight: 600 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  cursor: pointer !important;
+  transition: all 0.15s ease !important;
+  margin: 0 !important;
+}
+
+body.ui-route-lan-chat .user-profile-card-modal .profile-card-foot .button.secondary {
+  background: #f3f4f6 !important;
+  color: #374151 !important;
+  border: 1px solid #e5e7eb !important;
+}
+
+body.ui-route-lan-chat .user-profile-card-modal .profile-card-foot .button.secondary:hover {
+  background: #e5e7eb !important;
+  color: #111827 !important;
+}
+
+body.ui-route-lan-chat .user-profile-card-modal .profile-card-foot .button.primary {
+  background: #2f7d73 !important;
+  color: #ffffff !important;
+  border: none !important;
+  box-shadow: 0 2px 6px rgba(47, 125, 115, 0.22) !important;
+}
+
+body.ui-route-lan-chat .user-profile-card-modal .profile-card-foot .button.primary:hover {
+  background: #25665e !important;
+}
+
