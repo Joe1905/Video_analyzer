@@ -587,13 +587,37 @@ function deepDiveFor(report, video, idx) {
   return null;
 }
 
+function localizeValue(val) {
+  if (val == null) return "";
+  let s = String(val);
+  const metricMap = {
+    play_count: "播放数",
+    like_count: "点赞数",
+    comment_count: "评论数",
+    share_count: "分享数",
+    favorite_count: "收藏数",
+    collect_count: "收藏数",
+    hot_score: "热度值",
+    hot_count: "热度值",
+    views: "播放数",
+    likes: "点赞数",
+    comments: "评论数",
+    shares: "分享数"
+  };
+  for (const [en, zh] of Object.entries(metricMap)) {
+    s = s.replace(new RegExp(`\\b${en}\\b`, "g"), zh);
+  }
+  return s;
+}
+
 function formatDeepDiveItem(src) {
   if (src == null) return "";
   if (typeof src === "object") {
     return `<div style="display:flex;flex-direction:column;gap:6px">` +
       Object.entries(src).map(([k, v]) => {
         const label = labelOf(k);
-        return `<div style="font-size:13px;line-height:1.65;color:#1e293b"><span style="color:var(--blue);font-weight:750">• ${esc(label)}:</span> ${fmtMd(typeof v === "object" ? JSON.stringify(v) : String(v))}</div>`;
+        const valStr = localizeValue(typeof v === "object" ? JSON.stringify(v) : String(v));
+        return `<div style="font-size:13px;line-height:1.65;color:#1e293b"><span style="color:var(--text);font-weight:750">• ${esc(label)}:</span> ${fmtMd(valStr)}</div>`;
       }).join("") +
       `</div>`;
   }
@@ -617,9 +641,9 @@ function formatDeepDiveItem(src) {
     const kvMatch = l.match(/^[\*\_]*([a-zA-Z0-9_\u4e00-\u9fa5\s]+)[\*\_]*[\:\：]\s*(.*)/);
     if (kvMatch) {
       const keyRaw = kvMatch[1].trim();
-      const valRaw = kvMatch[2].trim();
+      const valRaw = localizeValue(kvMatch[2].trim());
       const label = labelOf(keyRaw);
-      itemsHtml.push(`<div style="font-size:13px;line-height:1.65;color:#1e293b;margin-bottom:4px"><span style="color:var(--blue);font-weight:750">• ${esc(label)}:</span> ${fmtMd(valRaw)}</div>`);
+      itemsHtml.push(`<div style="font-size:13px;line-height:1.65;color:#1e293b;margin-bottom:4px"><span style="color:var(--text);font-weight:750">• ${esc(label)}:</span> ${fmtMd(valRaw)}</div>`);
     } else {
       const subParts = l.split(/\s+-\s+/).filter(Boolean);
       if (subParts.length > 1) {
@@ -627,13 +651,13 @@ function formatDeepDiveItem(src) {
           let p = sp.replace(/^[\*\_]*/, "").trim();
           const m = p.match(/^([a-zA-Z0-9_\u4e00-\u9fa5]+)[\*\_]*[\:\：]\s*(.*)/);
           if (m) {
-            itemsHtml.push(`<div style="font-size:13px;line-height:1.65;color:#1e293b;margin-bottom:4px"><span style="color:var(--blue);font-weight:750">• ${esc(labelOf(m[1]))}:</span> ${fmtMd(m[2])}</div>`);
+            itemsHtml.push(`<div style="font-size:13px;line-height:1.65;color:#1e293b;margin-bottom:4px"><span style="color:var(--text);font-weight:750">• ${esc(labelOf(m[1]))}:</span> ${fmtMd(localizeValue(m[2]))}</div>`);
           } else {
-            itemsHtml.push(`<div style="font-size:13px;line-height:1.65;color:#1e293b;margin-bottom:4px"><span style="color:var(--blue);font-weight:750">•</span> ${fmtMd(p)}</div>`);
+            itemsHtml.push(`<div style="font-size:13px;line-height:1.65;color:#1e293b;margin-bottom:4px"><span style="color:var(--text);font-weight:750">•</span> ${fmtMd(localizeValue(p))}</div>`);
           }
         });
       } else {
-        itemsHtml.push(`<div style="font-size:13px;line-height:1.65;color:#1e293b;margin-bottom:4px"><span style="color:var(--blue);font-weight:750">•</span> ${fmtMd(l)}</div>`);
+        itemsHtml.push(`<div style="font-size:13px;line-height:1.65;color:#1e293b;margin-bottom:4px"><span style="color:var(--text);font-weight:750">•</span> ${fmtMd(localizeValue(l))}</div>`);
       }
     }
   });
@@ -643,7 +667,7 @@ function formatDeepDiveItem(src) {
   if (itemsHtml.length) {
     res += `<div style="padding-left:4px;display:flex;flex-direction:column;gap:2px">${itemsHtml.join("")}</div>`;
   }
-  return res || `<div style="font-size:13px;line-height:1.65;color:#1e293b">${fmtMd(str)}</div>`;
+  return res || `<div style="font-size:13px;line-height:1.65;color:#1e293b">${fmtMd(localizeValue(str))}</div>`;
 }
 
 function mdList(v){
