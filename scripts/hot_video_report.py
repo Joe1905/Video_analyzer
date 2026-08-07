@@ -2148,10 +2148,11 @@ def _report_video_analyze_timeout_seconds() -> int:
     return max(30, min(_to_int(os.getenv("REPORT_VIDEO_ANALYZE_TIMEOUT", "240")) or 240, 1800))
 
 
-def _report_video_download_timeout_seconds() -> int | None:
-    raw = os.getenv("REPORT_VIDEO_DOWNLOAD_TIMEOUT", "")
+def _report_video_download_timeout_seconds() -> int:
+    """Overall video download cap for hot-report jobs (default 240s)."""
+    raw = os.getenv("REPORT_VIDEO_DOWNLOAD_TIMEOUT", "240")
     if raw in (None, "", "0"):
-        return None
+        return 240
     return max(30, min(_to_int(raw) or 240, 1800))
 
 
