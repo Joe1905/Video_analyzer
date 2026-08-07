@@ -235,7 +235,7 @@ Chat/session/cache state lives under `data/` and should not be committed.
 
 - Daily summary generation must pass an explicit `max_tokens` value into `deepseek_postprocess.call_deepseek`; otherwise reports can finish video analysis but fail before writing the LLM summary.
 - TikTok Photo Mode/image posts can expose music or audio-only media while lacking a real video stream. Hot-report collection should filter these before download/analysis instead of treating `.mp3`/`.m4a` output as an encoding problem.
-- 日报已移除总限时(`REPORT_JOB_TIMEOUT`):候选池 = 目标 + 备份(`REPORT_VIDEO_BACKUP_COUNT`,默认动态:目标 <10 时备份=目标数,≥10 时备份=10),单视频下载/解析各有独立限时(`REPORT_VIDEO_DOWNLOAD_TIMEOUT` / `REPORT_VIDEO_ANALYZE_TIMEOUT`);失败视频同轮立即重试(`REPORT_VIDEO_MAX_ATTEMPTS`、`REPORT_VIDEO_RETRY_BACKOFF_SECONDS` 默认 0),重试耗尽后由备份顶上;候选采集阶段按 `REPORT_VIDEO_MAX_LONG_SECONDS`(默认 180s)与 photo-mode 过滤;处理完整池后只要成功数 ≥ 1 就生成日报(0 成功才 `failed`)。
+- 日报已移除总限时(`REPORT_JOB_TIMEOUT`):候选池 = 目标 + 备份(`REPORT_VIDEO_BACKUP_COUNT`,默认动态:目标 <10 时备份=目标数,≥10 时备份=10),单视频下载/解析各有独立限时且按视频时长动态缩放(`REPORT_VIDEO_DOWNLOAD_TIMEOUT`/`REPORT_VIDEO_DOWNLOAD_PER_SECOND`、`REPORT_VIDEO_ANALYZE_TIMEOUT`/`REPORT_VIDEO_ANALYZE_PER_SECOND`,时长越长限时越久);失败视频同轮立即重试(`REPORT_VIDEO_MAX_ATTEMPTS`、`REPORT_VIDEO_RETRY_BACKOFF_SECONDS` 默认 0),重试耗尽后由备份顶上;候选采集阶段按 `REPORT_VIDEO_MAX_LONG_SECONDS`(默认 180s)与 photo-mode 过滤;处理完整池后只要成功数 ≥ 1 就生成日报(0 成功才 `failed`)。
 - Hot-report single-video deep-dive cache entries in `hot_report_videos.insight_json` can contain failure placeholders, for example old DeepSeek endpoint errors. These placeholders must not be treated as valid cache hits; later report regeneration should detect `error` or "generated failed" placeholder content, recompute the single-video insight, and then regenerate the daily summary.
 
 ## Analysis Schema

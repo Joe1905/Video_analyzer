@@ -2149,16 +2149,35 @@ def _is_recoverable_external_error(error: BaseException | str) -> bool:
     )
 
 
-def _report_video_analyze_timeout_seconds() -> int:
-    return max(30, min(_to_int(os.getenv("REPORT_VIDEO_ANALYZE_TIMEOUT", "240")) or 240, 1800))
+def _report_video_analyze_timeout_seconds(duration_ms: int | None = None) -> int:
+    """Analysis subprocess cap, scaled by video duration (longer video -> longer cap).
+
+    base = REPORT_VIDEO_ANALYZE_TIMEOUT (default 120s) plus
+    REPORT_VIDEO_ANALYZE_PER_SECOND (default 2.0) seconds per video second.
+    A 20s clip => ~160s, a 60s clip => ~240s, a 180s clip => ~480s.
+    Falls back to the base cap when duration is unknown.
+    """
+    base = max(30, _to_int(os.getenv("REPORT_VIDEO_ANALYZE_TIMEOUT", "120")) or 120)
+    if duration_ms is None or _to_int(duration_ms) <= 0:
+        return base
+    per_second = max(0.0, _to_float(os.getenv("REPORT_VIDEO_ANALYZE_PER_SECOND", "2.0"), 2.0))
+    seconds = _to_int(duration_ms) / 1000.0
+    return max(30, min(int(base + seconds * per_second), 1800))
 
 
-def _report_video_download_timeout_seconds() -> int:
-    """Overall video download cap for hot-report jobs (default 240s)."""
-    raw = os.getenv("REPORT_VIDEO_DOWNLOAD_TIMEOUT", "240")
-    if raw in (None, "", "0"):
-        return 240
-    return max(30, min(_to_int(raw) or 240, 1800))
+def _report_video_download_timeout_seconds(duration_ms: int | None = None) -> int:
+    """Overall video download cap for hot-report jobs, scaled by duration.
+
+    base = REPORT_VIDEO_DOWNLOAD_TIMEOUT (default 60s) plus
+    REPORT_VIDEO_DOWNLOAD_PER_SECOND (default 0.5) seconds per video second.
+    Falls back to the base cap when duration is unknown.
+    """
+    base = max(30, _to_int(os.getenv("REPORT_VIDEO_DOWNLOAD_TIMEOUT", "60")) or 60)
+    if duration_ms is None or _to_int(duration_ms) <= 0:
+        return base
+    per_second = max(0.0, _to_float(os.getenv("REPORT_VIDEO_DOWNLOAD_PER_SECOND", "0.5"), 0.5))
+    seconds = _to_int(duration_ms) / 1000.0
+    return max(30, min(int(base + seconds * per_second), 1800))
 
 
 def _failed_video_retry_state(
@@ -2231,7 +2250,7 @@ def _process_video(conn: sqlite3.Connection, report_date: str, item: dict[str, A
                 raise RuntimeError("missing source_url")
             result = execute_tool(
                 "video_download",
-                {"url": source_url, "timeout_seconds": _report_video_download_timeout_seconds()},
+                {"url": source_url, "timeout_seconds": _report_video_download_timeout_seconds(item.get("duration_ms"))},
             )
             if not result.get("ok"):
                 raise RuntimeError(str(result.get("error") or "download failed"))
@@ -2257,7 +2276,7 @@ def _process_video(conn: sqlite3.Connection, report_date: str, item: dict[str, A
         if not analysis_path.is_file():
             result = execute_tool(
                 "video_analyze",
-                {"filename": filename, "timeout_seconds": _report_video_analyze_timeout_seconds()},
+                {"filename": filename, "timeout_seconds": _report_video_analyze_timeout_seconds(item.get("duration_ms"))},
             )
             if not result.get("ok"):
                 raise RuntimeError(str(result.get("error") or "video extraction failed"))
