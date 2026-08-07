@@ -1804,8 +1804,19 @@ def _source_requests(region: str, count: int, topic_keywords: list[str] | None =
     return requests
 
 
-def _report_backup_count() -> int:
-    return max(0, _to_int(os.getenv("REPORT_VIDEO_BACKUP_COUNT", "10")) or 10)
+def _report_backup_count(target_count: int | None = None) -> int:
+    """Backup pool size.
+
+    Default rule: backups mirror the target when it is below 10, and cap at 10
+    once the target reaches 10. An explicit ``REPORT_VIDEO_BACKUP_COUNT`` env
+    value always overrides the rule.
+    """
+    explicit = os.getenv("REPORT_VIDEO_BACKUP_COUNT", "")
+    if explicit not in (None, "", "0"):
+        return max(0, _to_int(explicit) or 10)
+    if target_count is not None:
+        return max(0, min(_to_int(target_count) or 10, 10))
+    return 10
 
 
 def _rank_with_topic_guarantees(
@@ -1814,7 +1825,7 @@ def _rank_with_topic_guarantees(
     target_count: int,
     backup_count: int | None = None,
 ) -> list[dict[str, Any]]:
-    backup_count = _report_backup_count() if backup_count is None else max(0, int(backup_count))
+    backup_count = _report_backup_count(target_count) if backup_count is None else max(0, int(backup_count))
     pool_size = target_count + backup_count
     selected: list[dict[str, Any]] = []
     selected_keys: set[tuple[str, str]] = set()
@@ -3706,7 +3717,7 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
     analysis_limit = int(settings["analysis_limit"])
     topic_keywords = list(settings.get("topic_keywords") or _split_csv_env("HOT_VIDEO_KEYWORDS", "AI toys"))
     target_count = analysis_limit
-    backup_count = _report_backup_count()
+    backup_count = _report_backup_count(target_count)
     candidate_target_count = target_count + backup_count
     recency_days = _recent_window_days()
     api_key = os.getenv("SOCIAVAULT_API_KEY", "").strip()
