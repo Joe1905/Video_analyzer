@@ -78,11 +78,12 @@ def main() -> int:
     # 下载/解析限时解析
     assert isinstance(report._report_video_download_timeout_seconds(), int)
     assert report._report_video_analyze_timeout_seconds() >= 30
-    # 动态限时:时长越长限时越久
+    # 动态限时:时长越长限时越久,且固定附加 REPORT_VIDEO_TIMEOUT_EXTRA_SECONDS(默认 20s)
     assert report._report_video_analyze_timeout_seconds(60000) > report._report_video_analyze_timeout_seconds(20000)
     assert report._report_video_download_timeout_seconds(180000) > report._report_video_download_timeout_seconds(20000)
     assert report._report_video_analyze_timeout_seconds(None) >= 30
     assert report._report_video_download_timeout_seconds(None) >= 30
+    assert report._report_timeout_extra_seconds() >= 0
 
 
     previous_sort = os.environ.get("HOT_VIDEO_TOPIC_SORT_BY")

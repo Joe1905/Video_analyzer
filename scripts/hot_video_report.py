@@ -2149,17 +2149,30 @@ def _is_recoverable_external_error(error: BaseException | str) -> bool:
     )
 
 
+def _report_timeout_extra_seconds() -> int:
+    """Fixed extra buffer added on top of any computed timeout cap (default 20s)."""
+    raw = os.getenv("REPORT_VIDEO_TIMEOUT_EXTRA_SECONDS", "20")
+    if raw in (None, ""):
+        return 20
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return 20
+
+
 def _report_video_analyze_timeout_seconds(duration_ms: int | None = None) -> int:
     """Analysis subprocess cap, scaled by video duration (longer video -> longer cap).
 
     base = REPORT_VIDEO_ANALYZE_TIMEOUT (default 120s) plus
-    REPORT_VIDEO_ANALYZE_PER_SECOND (default 2.0) seconds per video second.
-    A 20s clip => ~160s, a 60s clip => ~240s, a 180s clip => ~480s.
-    Falls back to the base cap when duration is unknown.
+    REPORT_VIDEO_ANALYZE_PER_SECOND (default 2.0) seconds per video second,
+    plus a fixed REPORT_VIDEO_TIMEOUT_EXTRA_SECONDS (default 20s) buffer.
+    A 20s clip => ~180s, a 60s clip => ~260s, a 180s clip => ~500s.
+    Falls back to the base cap + buffer when duration is unknown.
     """
-    base = max(30, _to_int(os.getenv("REPORT_VIDEO_ANALYZE_TIMEOUT", "120")) or 120)
+    extra = _report_timeout_extra_seconds()
+    base = max(30, _to_int(os.getenv("REPORT_VIDEO_ANALYZE_TIMEOUT", "120")) or 120) + extra
     if duration_ms is None or _to_int(duration_ms) <= 0:
-        return base
+        return max(30, min(base, 1800))
     per_second = max(0.0, _to_float(os.getenv("REPORT_VIDEO_ANALYZE_PER_SECOND", "2.0"), 2.0))
     seconds = _to_int(duration_ms) / 1000.0
     return max(30, min(int(base + seconds * per_second), 1800))
@@ -2169,12 +2182,14 @@ def _report_video_download_timeout_seconds(duration_ms: int | None = None) -> in
     """Overall video download cap for hot-report jobs, scaled by duration.
 
     base = REPORT_VIDEO_DOWNLOAD_TIMEOUT (default 60s) plus
-    REPORT_VIDEO_DOWNLOAD_PER_SECOND (default 0.5) seconds per video second.
-    Falls back to the base cap when duration is unknown.
+    REPORT_VIDEO_DOWNLOAD_PER_SECOND (default 0.5) seconds per video second,
+    plus a fixed REPORT_VIDEO_TIMEOUT_EXTRA_SECONDS (default 20s) buffer.
+    Falls back to the base cap + buffer when duration is unknown.
     """
-    base = max(30, _to_int(os.getenv("REPORT_VIDEO_DOWNLOAD_TIMEOUT", "60")) or 60)
+    extra = _report_timeout_extra_seconds()
+    base = max(30, _to_int(os.getenv("REPORT_VIDEO_DOWNLOAD_TIMEOUT", "60")) or 60) + extra
     if duration_ms is None or _to_int(duration_ms) <= 0:
-        return base
+        return max(30, min(base, 1800))
     per_second = max(0.0, _to_float(os.getenv("REPORT_VIDEO_DOWNLOAD_PER_SECOND", "0.5"), 0.5))
     seconds = _to_int(duration_ms) / 1000.0
     return max(30, min(int(base + seconds * per_second), 1800))
