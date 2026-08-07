@@ -1314,7 +1314,9 @@ def _attach_report_player_links(report: dict[str, Any], videos: list[dict[str, A
     for index, video in enumerate(videos, start=1):
         if not video.get("platform") or not video.get("video_id"):
             continue
-        rank = _to_int(video.get("report_rank")) or index
+        # 日报内连续序号(与 deep_dive 的 rank 一致):按成功视频顺序 1..N,
+        # 而非跳号的 report_rank,确保播放页链接指到正确视频
+        rank = _to_int(video.get("daily_rank")) or index
         rank_links[rank] = _report_player_url(report_date, video)
 
     def link_value(value: Any) -> Any:
@@ -1490,6 +1492,9 @@ def get_report(report_date: str | None = None, include_raw: bool = False, detail
     report["exists"] = True
     videos = [_row_to_video(row, include_raw=True) for row in rows] if detail else []
     videos = [video for video in videos if _is_video_checkpoint_valid(video)[0]] if detail else []
+    # 播放页与 deep_dive 统一使用日报内连续序号:按 report_rank 排序后编号 1..N
+    for daily_index, video in enumerate(videos, start=1):
+        video["daily_rank"] = daily_index
     if detail and not include_raw:
         for video in videos:
             video.pop("raw", None)
@@ -2835,7 +2840,7 @@ def _compact_summary_video(video: dict[str, Any]) -> dict[str, Any]:
     insight = video.get("insight")
     valid_insight = insight if _is_valid_video_insight(insight) else {}
     return {
-        "rank": video.get("report_rank"),
+        "rank": video.get("daily_rank") or video.get("report_rank"),
         "title": video.get("title"),
         "author": video.get("author"),
         "metrics": video.get("metrics"),
@@ -3072,7 +3077,7 @@ def _summary_prompt_v2(report_date: str, video_items: list[dict[str, Any]], part
         "1. 严格基于输入数据，禁止编造事实。\n"
         "2. 这是最终日报阶段，必须输出完整日报，不得输出 key_observations、patterns、reusable_points 等分组摘要字段。\n"
         "3. common_patterns、hook_analysis、visual_patterns、topic_angles、execution_tactics、reusable_ideas、risks、next_actions 各给出 4 至 6 条具体、可执行的中文要点。\n"
-        "4. video_deep_dives 必须覆盖每条输入视频，按 rank 返回对象；每条至少说明核心爆点、开头钩子、内容结构、受众触发、互动机制、可复用公式和风险。不要在叙述中重算或猜测播放、点赞等数值。\n"
+        "4. video_deep_dives 必须覆盖每条输入视频，严格按输入 video_insights 中的 rank 一一对应返回对象；rank 必须与输入完全一致（1..N 连续，不得跳号、重排或自行编号）。每条至少说明核心爆点、开头钩子、内容结构、受众触发、互动机制、可复用公式和风险。不要在叙述中重算或猜测播放、点赞等数值。\n"
         "5. 只返回严格 JSON，不要 Markdown。JSON keys: summary, common_patterns, hook_analysis, visual_patterns, topic_angles, execution_tactics, reusable_ideas, risks, next_actions, video_deep_dives。\n\n"
         f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
     )
@@ -3116,7 +3121,7 @@ def _extraction_fallback_deep_dive(video: dict[str, Any]) -> dict[str, Any]:
     analysis = _compact_extraction(video.get("analysis"))
     metrics = video.get("metrics") if isinstance(video.get("metrics"), dict) else {}
     return {
-        "rank": _to_int(video.get("report_rank")),
+        "rank": _to_int(video.get("daily_rank")) or _to_int(video.get("report_rank")),
         "title": video.get("title"),
         "author": video.get("author"),
         "one_sentence": video.get("title") or "标题缺失",
@@ -3147,12 +3152,12 @@ def _merge_report_deep_dives(report: dict[str, Any], videos: list[dict[str, Any]
         if isinstance(item, dict) and _to_int(item.get("rank"))
     }
     merged: list[dict[str, Any]] = []
-    for video in sorted(videos, key=lambda item: _to_int(item.get("report_rank"))):
-        rank = _to_int(video.get("report_rank"))
-        existing = by_rank.get(rank)
+    for video in sorted(videos, key=lambda item: _to_int(item.get("daily_rank")) or _to_int(item.get("report_rank"))):
+        daily_rank = _to_int(video.get("daily_rank")) or _to_int(video.get("report_rank"))
+        existing = by_rank.get(daily_rank)
         if _is_valid_video_insight(video.get("insight")):
             detail = dict(existing) if isinstance(existing, dict) else dict(video["insight"])
-            detail["rank"] = rank
+            detail["rank"] = daily_rank
             detail["title"] = video.get("title") or detail.get("title") or ""
         else:
             detail = _extraction_fallback_deep_dive(video)
@@ -3164,6 +3169,7 @@ def _merge_report_deep_dives(report: dict[str, Any], videos: list[dict[str, Any]
             "share_count": _to_int(metrics.get("share_count")),
             "favorite_count": _to_int(metrics.get("favorite_count")),
             "hot_score": _to_int(video.get("hot_score")),
+            "report_rank": _to_int(video.get("report_rank")) or 0,
         }
         merged.append(detail)
     report["video_deep_dives"] = merged
@@ -3188,6 +3194,7 @@ def _chunk_summary_prompt_v2(report_date: str, chunk_index: int, video_items: li
         "你是短视频研究助理。"
         "请把这一组单视频爆款拆解压缩成可供最终日报使用的中文结构化摘要。"
         "必须保留每条视频的核心爆点、开头钩子、结构、互动机制、可复用公式和风险。"
+        "video_deep_dives 必须按输入 video_insights 的 rank 一一对应（1..N 连续，不得跳号、重排），rank 与输入完全一致。"
         f"{length_instruction}"
         "只返回严格 JSON，不要 Markdown。JSON keys: key_observations, video_deep_dives, patterns, reusable_points, risks。\n\n"
         f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
@@ -3200,7 +3207,7 @@ def _local_daily_summary(report_date: str, videos: list[dict[str, Any]], reason:
         _extraction_fallback_deep_dive(video)
         if not _is_valid_video_insight(video.get("insight"))
         else {
-            "rank": _to_int(video.get("report_rank")),
+            "rank": _to_int(video.get("daily_rank")) or _to_int(video.get("report_rank")),
             "title": video.get("title") or "",
             **dict(video.get("insight") or {}),
         }
@@ -3237,6 +3244,8 @@ def _generate_daily_summary(report_date: str, success_videos: list[dict[str, Any
     for index, video in enumerate(success_videos, start=1):
         normalized = dict(video)
         normalized["report_rank"] = _to_int(video.get("report_rank")) or index
+        # 日报内连续序号:deep_dive/LLM 关联一律用 daily_rank,避免候选池 report_rank 跳号导致错位
+        normalized["daily_rank"] = index
         normalized_videos.append(normalized)
     video_items = [_compact_summary_video(video) for video in normalized_videos]
 
@@ -3379,7 +3388,7 @@ def _cached_deep_dive_for_video(video: dict[str, Any]) -> dict[str, Any]:
     title = str(video.get("title") or "").strip()
     source_label = str(video.get("source_label") or "").strip()
     return {
-        "rank": _to_int(video.get("report_rank")) or 0,
+        "rank": _to_int(video.get("daily_rank")) or _to_int(video.get("report_rank")) or 0,
         "title": title,
         "boom_reason": f"元数据已按 video_id 绑定：{metric_text}；热度 {video.get('hot_score') or 0}。",
         "hook": f"标题/入口：{_trim_text(title, 180)}",
