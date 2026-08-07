@@ -69,24 +69,24 @@ body{background:var(--bg);color:var(--text);font-family:Inter,"PingFang SC","Mic
 .pl-main .card .sect-head b{font-size:14px;font-weight:750}
 
 /* Top Card: Full unclipped scrollable parsed text body + Fixed bottom chips bar */
-.card-body-flex{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;padding:10px 16px 12px}
-.seg-scroll-body{flex:1;min-height:0;overflow-y:auto;font-size:13.5px;color:#1e293b;line-height:1.65;white-space:pre-wrap;word-break:break-word;padding-right:4px}
+.card-body-flex{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;padding:10px 16px 10px}
+.seg-scroll-body{flex:1;min-height:0;overflow-y:auto;font-size:13.5px;color:#1e293b;line-height:1.65;word-break:break-word;padding-right:4px}
 .tl-chips-bar{flex:none;padding-top:8px;margin-top:8px;border-top:1px solid var(--border2);display:flex;flex-wrap:wrap;gap:6px}
 
 /* Bottom Card: Formatted Markdown Scroll with 14px boosted readable font size */
 .card-body-scroll{flex:1;min-height:0;overflow-y:auto;padding:16px;font-size:14px!important;color:#1e293b;line-height:1.7}
 
 /* Structured Markdown List Styling - Boosted Readability */
-.md-list{padding-left:18px;margin:8px 0}
-.md-list li{font-size:14px!important;margin-bottom:8px;line-height:1.7;color:#1e293b}
-.md-p{font-size:14px!important;margin-bottom:10px;line-height:1.7;color:#1e293b}
-.md-h2{font-size:16px;font-weight:750;margin:14px 0 6px;color:var(--accent)}
-.md-h3{font-size:15px;font-weight:700;margin:12px 0 5px;color:var(--accent2)}
-.md-h4{font-size:14px;font-weight:700;margin:10px 0 4px;color:var(--text)}
+.md-list{padding-left:18px;margin:4px 0}
+.md-list li{font-size:14px!important;margin-bottom:6px;line-height:1.7;color:#1e293b}
+.md-p{font-size:14px!important;margin-bottom:6px;line-height:1.7;color:#1e293b}
+.md-h2{font-size:16px;font-weight:750;margin:10px 0 4px;color:var(--accent)}
+.md-h3{font-size:15px;font-weight:700;margin:8px 0 4px;color:var(--accent2)}
+.md-h4{font-size:14px;font-weight:700;margin:8px 0 3px;color:var(--text)}
 
 .seg-current{padding:0;margin:0;background:transparent;border:0;border-radius:0}
-.seg-current b{display:block;font-size:14px;font-weight:750;color:var(--text);margin:0 0 3px 0;line-height:1.3}
-.seg-current p{font-size:13.5px;color:#1e293b;line-height:1.6;white-space:pre-wrap;word-break:break-word;margin:0}
+.seg-current b{display:block;font-size:14px;font-weight:750;color:var(--text);margin:0 0 2px 0;line-height:1.25}
+.seg-current p{font-size:13.5px;color:#1e293b;line-height:1.65;white-space:pre-wrap;word-break:break-word;margin:0;padding:0}
 
 /* Timeline Chips */
 .tl-chip{height:26px;padding:0 10px;border-radius:999px;border:1px solid var(--border);background:var(--surface);font-size:11px;color:var(--text2);font-weight:600;cursor:pointer;display:inline-flex;align-items:center;transition:.15s ease}
@@ -289,12 +289,7 @@ function renderSegment(segment,all,currentTime){
   }
   const cleanBody = String(segment.body || "").replace(/^\s+/, "");
   const intervalTitle = segment.intervalLabel || segment.label || fmtClock(currentTime);
-  const textHtml=`
-    <div class="seg-current">
-      <b>${esc(intervalTitle)}</b>
-      <p>${fmtMd(cleanBody)}</p>
-    </div>
-  `;
+  const textHtml=`<div class="seg-current"><b>${esc(intervalTitle)}</b><p>${fmtMd(cleanBody)}</p></div>`;
   const chipsHtml=all.map((x,i)=>`<span class="tl-chip ${x===segment?'active':''}" data-i="${i}">${esc(x.intervalLabel||x.label)}</span>`).join("");
 
   $("currentSegmentBody").innerHTML=textHtml;
