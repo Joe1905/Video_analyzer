@@ -169,7 +169,10 @@ body.ui-system #modal.open,
 .m-tag{display:inline-flex;align-items:center;height:24px;padding:0 10px;border-radius:999px;background:var(--accent-soft);color:var(--accent2);font-size:11.5px;font-weight:650}
 .m-linkrow{display:flex;align-items:center;gap:8px;border:1px solid var(--border2);border-radius:10px;padding:8px 10px}
 .m-linkrow .u{flex:1;min-width:0;font-size:12px;color:var(--blue);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.m-linkrow button{height:26px!important;min-height:26px!important;padding:0 10px!important;font-size:11px!important;background:var(--surface)!important;border:1px solid var(--border)!important;color:var(--text2)!important}
+.m-icon-btn{width:30px!important;height:30px!important;min-width:30px!important;min-height:30px!important;border-radius:8px!important;border:1px solid var(--border)!important;background:var(--surface)!important;color:var(--text2)!important;display:grid!important;place-items:center!important;padding:0!important;cursor:pointer!important;position:relative!important;transition:all .15s ease!important;box-shadow:none!important}
+.m-icon-btn svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.m-icon-btn:hover{background:var(--border2)!important;color:var(--blue)!important;border-color:var(--blue)!important}
+.m-icon-btn[title]:hover::after{content:attr(title);position:absolute;bottom:calc(100% + 6px);left:50%;transform:translateX(-50%);background:#0f172a;color:#fff;font-size:11px;font-weight:600;padding:4px 8px;border-radius:6px;white-space:nowrap;pointer-events:none;z-index:99999;box-shadow:0 4px 12px rgba(0,0,0,.2)}
 .m-analysis{border:1px solid var(--border2);border-radius:10px;overflow:hidden}
 .m-analysis .a-head{display:flex;align-items:center;justify-content:space-between;padding:9px 12px;background:var(--border2);font-size:12px;font-weight:700}
 .m-analysis .a-body{padding:10px 12px;font-size:12.5px;color:#263244;line-height:1.55}
@@ -932,7 +935,17 @@ function renderModalContent(v,type){
               <div class="m-metric hot"><span>热度</span><b>${fmtNum(v.hot_score)}</b></div>
             </div>
             ${tags.length?`<div class="m-tags">${tags.map(t=>`<span class="m-tag">#${esc(t)}</span>`).join("")}</div>`:''}
-            ${v.source_url?`<div class="m-linkrow"><span class="u">${esc(v.source_url)}</span><button type="button" onclick="navigator.clipboard.writeText('${esc(v.source_url)}').then(()=>alert('已复制'))">复制</button><button type="button" onclick="window.open('${esc(v.source_url)}','_blank')">打开</button></div>`:''}
+            ${v.source_url ? `
+              <div class="m-linkrow">
+                <span class="u">${esc(v.source_url)}</span>
+                <button type="button" class="m-icon-btn" title="复制链接" onclick="copyToClipboard('${esc(v.source_url)}', '链接已复制到剪贴板')">
+                  <svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                </button>
+                <button type="button" class="m-icon-btn" title="打开原视频" onclick="window.open('${esc(v.source_url)}','_blank')">
+                  <svg viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
+                </button>
+              </div>
+            ` : ''}
             <div class="m-analysis">
               <div class="a-head">AI 爆款拆解 ${canPlay?`<a href="${playerUrl}" target="_blank" style="color:var(--blue);font-weight:700">查看完整复盘 ↗</a>`:''}</div>
               <div class="a-body" style="font-size:13px;line-height:1.75">${shortText}</div>
@@ -943,7 +956,7 @@ function renderModalContent(v,type){
           <span class="sp">数据更新于 ${fmtTime(current?.updated_at)}</span>
           <button type="button" class="btn-ghost" onclick="copyJson()">视频详情 JSON</button>
           ${v.source_url?`<a href="${esc(v.source_url)}" target="_blank" class="btn-ghost" style="text-decoration:none">原视频链接</a>`:''}
-          ${canPlay?`<a href="${playerUrl}" target="_blank" class="btn-primary" style="text-decoration:none">播放本地视频</a>`:''}
+          ${canPlay?`<a href="${playerUrl}" target="_blank" class="btn-primary" style="text-decoration:none">全屏复盘播放</a>`:''}
         </div>
       </div>
     `;
@@ -954,9 +967,57 @@ function renderModalContent(v,type){
   return `<div class="mock-modal"><div class="m-head"><div class="m-title">${esc(v.title||"")}</div><button class="m-close" onclick="closeModal()">×</button></div>${renderAnalysisDoc(data)}</div>`;
 }
 
+function copyToClipboard(text, msg = "已复制到剪贴板") {
+  if (!text) return;
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).then(() => {
+      showToast(msg);
+    }).catch(() => {
+      fallbackCopyText(text, msg);
+    });
+  } else {
+    fallbackCopyText(text, msg);
+  }
+}
+
+function fallbackCopyText(text, msg) {
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  textarea.style.top = "-9999px";
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+  try {
+    const successful = document.execCommand("copy");
+    if (successful) {
+      showToast(msg);
+    } else {
+      alert("复制失败，请手动选择复制");
+    }
+  } catch (err) {
+    alert("复制失败，请手动选择复制");
+  }
+  document.body.removeChild(textarea);
+}
+
+function showToast(msg) {
+  let toast = $("toast");
+  if (!toast) {
+    toast = document.createElement("div");
+    toast.id = "toast";
+    toast.style.cssText = "position:fixed;bottom:28px;left:50%;transform:translateX(-50%);background:#0f172a;color:#fff;padding:8px 18px;border-radius:9999px;font-size:12.5px;font-weight:600;z-index:999999;box-shadow:0 10px 25px rgba(0,0,0,.25);transition:opacity .25s ease;opacity:0;pointer-events:none;";
+    document.body.appendChild(toast);
+  }
+  toast.textContent = msg;
+  toast.style.opacity = "1";
+  setTimeout(() => { toast.style.opacity = "0"; }, 2000);
+}
+
 function copyJson(){
   if(selectedVideo){
-    navigator.clipboard.writeText(JSON.stringify(selectedVideo,null,2)).then(()=>alert("已复制 JSON 到剪贴板"));
+    copyToClipboard(JSON.stringify(selectedVideo,null,2), "已复制 JSON 到剪贴板");
   }
 }
 
