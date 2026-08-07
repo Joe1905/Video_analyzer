@@ -751,12 +751,14 @@ class LanChatStore:
     def list_users(self, current_user_id: str) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM users ORDER BY last_seen DESC, created_at ASC"
+                """SELECT u.*, f.name AS feishu_name FROM users u
+                   LEFT JOIN feishu_users f ON f.id = u.feishu_user_id
+                   ORDER BY u.last_seen DESC, u.created_at ASC"""
             ).fetchall()
-        return [
-            {**self._public_user(row), "isCurrent": row["id"] == current_user_id}
-            for row in rows
-        ]
+            return [
+                {**self._public_user(row, conn=conn), "isCurrent": row["id"] == current_user_id}
+                for row in rows
+            ]
 
     def list_rooms(self, user_id: str) -> list[dict[str, Any]]:
         with self._connect() as conn:
@@ -1851,11 +1853,36 @@ class LanChatStore:
             ).hexdigest()[:12]
         return f"/api/lan-chat/group-avatars/{room['id']}?v={version}"
 
-    def _public_user(self, row: sqlite3.Row) -> dict[str, Any]:
+    def _public_user(
+        self, row: sqlite3.Row, conn: sqlite3.Connection | None = None
+    ) -> dict[str, Any]:
         last_seen = float(row["last_seen"])
+        feishu_user_id = str(row["feishu_user_id"] or "")
+        feishu_name = ""
+        keys = row.keys() if hasattr(row, "keys") else []
+        if "feishu_name" in keys:
+            feishu_name = str(row["feishu_name"] or "")
+        elif feishu_user_id:
+            try:
+                if conn is not None:
+                    f_row = conn.execute(
+                        "SELECT name FROM feishu_users WHERE id = ?", (feishu_user_id,)
+                    ).fetchone()
+                    if f_row:
+                        feishu_name = str(f_row["name"] or "")
+                else:
+                    with self._connect() as local_conn:
+                        f_row = local_conn.execute(
+                            "SELECT name FROM feishu_users WHERE id = ?", (feishu_user_id,)
+                        ).fetchone()
+                        if f_row:
+                            feishu_name = str(f_row["name"] or "")
+            except Exception:
+                pass
         return {
             "id": row["id"],
-            "feishuUserId": row["feishu_user_id"],
+            "feishuUserId": feishu_user_id,
+            "feishuName": feishu_name,
             "nickname": row["nickname"],
             "avatarUrl": self._avatar_url(
                 str(row["id"]), str(row["avatar_status"]), str(row["nickname"])
