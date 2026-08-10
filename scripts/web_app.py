@@ -5,6 +5,7 @@ import json
 import base64
 import binascii
 import hmac
+import hashlib
 import http.client
 import mimetypes
 import os
@@ -583,6 +584,8 @@ MCP_TOOL_CACHE: dict[str, dict[str, Any]] = {}
 CHUHAIJIANG_CONFIRMATIONS: dict[tuple[str, str], dict[str, Any]] = {}
 CHUHAIJIANG_CONFIRMATIONS_LOCK = threading.Lock()
 CHAT_EXECUTION_CONTEXT = threading.local()
+CHUHAIJIANG_MCP_TRACE: list[dict[str, Any]] = []
+CHUHAIJIANG_MCP_TRACE_LOCK = threading.Lock()
 PROXY_POOL_ENABLED = os.getenv("PROXY_POOL_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
 UI_TEST_MODE = os.getenv("UI_TEST_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}
 UI_TEST_MODE_LIVE_WRITE_PREFIXES = ("/api/lan-chat/",)
@@ -6756,6 +6759,20 @@ def execute_prefixed_tool(
 ) -> dict[str, Any]:
     domain, name = split_prefixed_tool_id(tool_id)
     started = time.monotonic()
+    trace_id = str(uuid.uuid4())
+    args_digest = hashlib.sha256(
+        json.dumps(args or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:16]
+
+    def trace(stage: str, **extra: Any) -> None:
+        if domain != "chuhaijiang":
+            return
+        event = {"trace_id": trace_id, "stage": stage, "tool_id": tool_id, "args_sha256_16": args_digest, **extra}
+        with CHUHAIJIANG_MCP_TRACE_LOCK:
+            CHUHAIJIANG_MCP_TRACE.append(event)
+            del CHUHAIJIANG_MCP_TRACE[:-100]
+        print("[CHUHAIJIANG MCP TRACE] " + json.dumps(event, ensure_ascii=False, separators=(",", ":")), flush=True)
+
     try:
         if allowed_tool_ids is not None and tool_id not in allowed_tool_ids:
             return {
@@ -6767,7 +6784,14 @@ def execute_prefixed_tool(
             return execute_tool(name, args)
         if domain in {"sociavault", "sellersprite", "fastmoss", "chuhaijiang"}:
             if domain == "chuhaijiang" and name not in CHUHAIJIANG_OFFICIAL_TOOL_NAMES:
+                trace("blocked", reason="not_official_19_tool")
                 return {"ok": False, "elapsed": round(time.monotonic() - started, 3), "error": "Tool is outside the Chuhaijiang official 19-tool boundary"}
+            if domain == "chuhaijiang":
+                legacy_domains = {"fastmoss", "sellersprite", "sociavault"}
+                if allowed_tool_ids is not None and any(split_prefixed_tool_id(item)[0] in legacy_domains for item in allowed_tool_ids):
+                    trace("blocked", reason="legacy_domain_in_active_allowlist")
+                    return {"ok": False, "elapsed": round(time.monotonic() - started, 3), "error": "Legacy provider contamination blocked before Chuhaijiang MCP call"}
+                trace("preflight_ok", allowed_tool_count=len(allowed_tool_ids or ()))
             if domain == "chuhaijiang" and chuhaijiang_high_risk_tool(name, args):
                 context = getattr(CHAT_EXECUTION_CONTEXT, "chuhaijiang", {})
                 key = (str(context.get("owner_id") or ""), str(context.get("session_id") or ""))
@@ -6794,9 +6818,11 @@ def execute_prefixed_tool(
             result = mcp_bridge_request(
                 chat_type, "tools/call", {"name": name, "arguments": normalized_args, "cache": {}}
             )
+            trace("bridge_returned", ok=True)
             return {"ok": True, "elapsed": round(time.monotonic() - started, 3), "data": result}
         return {"ok": False, "elapsed": round(time.monotonic() - started, 3), "error": f"Unknown tool domain: {domain}"}
     except Exception as exc:
+        trace("bridge_error", error_type=type(exc).__name__)
         return {"ok": False, "elapsed": round(time.monotonic() - started, 3), "error": str(exc)}
 
 
