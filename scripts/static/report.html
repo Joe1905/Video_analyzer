@@ -111,32 +111,144 @@ body{background:var(--bg);color:var(--text);font-family:Inter,"PingFang SC","Mic
 .v-meta{display:flex;align-items:center;gap:5px;margin-top:5px;font-size:11px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .v-ava{width:16px;height:16px;border-radius:50%;background:var(--accent-soft);color:var(--accent2);display:grid;place-items:center;font-size:9px;font-weight:800;flex:none}
 
-/* High-specificity Modal override against ui-system.css body.ui-system .modal rule */
+/* Modern Motion & Dynamic Micro-animations Design System */
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(14px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes toastPop {
+  0% { opacity: 0; transform: translate(-50%, 16px) scale(0.92); }
+  60% { opacity: 1; transform: translate(-50%, -2px) scale(1.03); }
+  100% { opacity: 1; transform: translate(-50%, 0) scale(1); }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+/* Staggered Entrance Animations */
+.hero, .kpi, .card, .w-card {
+  animation: fadeInUp 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.kpi:nth-child(1) { animation-delay: 0.03s; }
+.kpi:nth-child(2) { animation-delay: 0.06s; }
+.kpi:nth-child(3) { animation-delay: 0.09s; }
+.kpi:nth-child(4) { animation-delay: 0.12s; }
+.kpi:nth-child(5) { animation-delay: 0.15s; }
+
+.v-card {
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.25s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.25s ease !important;
+  animation: fadeInUp 0.38s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.v-card:nth-child(1) { animation-delay: 0.02s; }
+.v-card:nth-child(2) { animation-delay: 0.05s; }
+.v-card:nth-child(3) { animation-delay: 0.08s; }
+.v-card:nth-child(4) { animation-delay: 0.11s; }
+.v-card:nth-child(5) { animation-delay: 0.14s; }
+.v-card:nth-child(6) { animation-delay: 0.17s; }
+.v-card:nth-child(7) { animation-delay: 0.20s; }
+.v-card:nth-child(8) { animation-delay: 0.23s; }
+.v-card:nth-child(9) { animation-delay: 0.26s; }
+.v-card:nth-child(10) { animation-delay: 0.29s; }
+
+.v-card:hover {
+  transform: translateY(-4px) scale(1.008) !important;
+  box-shadow: 0 14px 30px -4px rgba(15, 23, 42, 0.12), 0 4px 10px -2px rgba(15, 23, 42, 0.06) !important;
+  border-color: rgba(15, 23, 42, 0.25) !important;
+}
+.v-card:active {
+  transform: translateY(-1px) scale(0.995) !important;
+  box-shadow: 0 6px 16px -2px rgba(15, 23, 42, 0.1) !important;
+}
+.v-card .v-cover {
+  transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1) !important;
+}
+.v-card:hover .v-cover {
+  transform: scale(1.03);
+}
+
+.kpi, .w-card {
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.2s ease, border-color 0.2s ease;
+}
+.kpi:hover, .w-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 22px -4px rgba(15, 23, 42, 0.08);
+  border-color: rgba(15, 23, 42, 0.18);
+}
+
+.h-item {
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease !important;
+}
+.h-item:hover {
+  transform: translateX(4px);
+  background: rgba(15, 23, 42, 0.04) !important;
+}
+.h-item.active {
+  transform: translateX(4px);
+}
+
+.btn-primary, .btn-ghost, .m-icon-btn, .v-tool, .tchip {
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1) !important;
+}
+.btn-primary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.22);
+}
+.btn-primary:active, .btn-ghost:active, .m-icon-btn:active, .v-tool:active {
+  transform: translateY(1px) scale(0.97) !important;
+}
+.v-tool:hover {
+  background: rgba(15, 23, 42, 0.06) !important;
+  color: var(--text) !important;
+}
+.v-tool.active {
+  transform: scale(1.03);
+}
+
+/* High-specificity Modal Override with Smooth Backdrop Blur and Scale Spring */
 body.ui-system .modal,
 body.ui-system #modal,
-.modal{
-  position:fixed!important;
-  inset:0!important;
-  z-index:999999!important;
-  display:none!important;
-  opacity:0!important;
-  visibility:hidden!important;
-  pointer-events:none!important;
-  background:rgba(15,23,42,.45)!important;
-  padding:20px!important;
-  place-items:center!important;
-  backdrop-filter:blur(4px)!important;
+.modal {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 999999 !important;
+  display: grid !important;
+  opacity: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+  background: rgba(15, 23, 42, 0.48) !important;
+  padding: 20px !important;
+  place-items: center !important;
+  backdrop-filter: blur(6px) !important;
+  -webkit-backdrop-filter: blur(6px) !important;
+  transition: opacity 0.28s cubic-bezier(0.16, 1, 0.3, 1), visibility 0.28s ease !important;
 }
 body.ui-system .modal.show,
 body.ui-system .modal.open,
 body.ui-system #modal.show,
 body.ui-system #modal.open,
 .modal.show,
-.modal.open{
-  display:grid!important;
-  opacity:1!important;
-  visibility:visible!important;
-  pointer-events:auto!important;
+.modal.open {
+  opacity: 1 !important;
+  visibility: visible !important;
+  pointer-events: auto !important;
+}
+
+.modal .mock-modal {
+  transform: scale(0.94) translateY(14px);
+  opacity: 0;
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.25s ease !important;
+}
+body.ui-system .modal.show .mock-modal,
+body.ui-system .modal.open .mock-modal,
+body.ui-system #modal.show .mock-modal,
+body.ui-system #modal.open .mock-modal,
+.modal.show .mock-modal,
+.modal.open .mock-modal {
+  transform: scale(1) translateY(0) !important;
+  opacity: 1 !important;
 }
 
 .mock-modal{width:min(900px,100%);max-height:90vh;border-radius:var(--radius-lg);overflow:hidden;border:1px solid var(--border);box-shadow:var(--shadow-lg);background:var(--surface);display:flex;flex-direction:column}
