@@ -176,18 +176,64 @@ const $=id=>document.getElementById(id), params=new URLSearchParams(location.sea
 let currentReport=null,currentVideo=null,currentTimeline=[],plyrPlayer=null;
 
 function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]))}
-function safeAuthor(v){
-  if(v == null) return "未知";
-  let s = v;
-  if(typeof v === "object" && v !== null) s = v.nickname || v.name || v.unique_id || v.uniqueId || JSON.stringify(v);
-  s = String(s).replace(/&#039;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
-  if(s.startsWith("{") || s.startsWith("[")) {
-    try {
-      const obj = JSON.parse(s);
-      if(obj && typeof obj === "object") return esc(obj.nickname || obj.name || obj.unique_id || "未知");
-    } catch(e) {}
+function parseAuthorInfo(v) {
+  let name = "未知作者";
+  let handle = "";
+  let profileUrl = "";
+  
+  const rawAuthor = v?.author != null ? v.author : v;
+  if (rawAuthor) {
+    if (typeof rawAuthor === "object" && rawAuthor !== null) {
+      name = rawAuthor.nickname || rawAuthor.name || rawAuthor.unique_id || rawAuthor.uniqueId || rawAuthor.handle || "";
+      handle = rawAuthor.unique_id || rawAuthor.uniqueId || rawAuthor.handle || "";
+      profileUrl = rawAuthor.author_url || rawAuthor.profile_url || "";
+    } else {
+      let s = String(rawAuthor).trim();
+      s = s.replace(/&#039;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+      if (s.startsWith("{") || s.startsWith("[")) {
+        try {
+          const jsonStr = s.replace(/'/g, '"').replace(/None/g, 'null').replace(/True/g, 'true').replace(/False/g, 'false');
+          const obj = JSON.parse(jsonStr);
+          if (obj && typeof obj === "object") {
+            name = obj.nickname || obj.name || obj.unique_id || obj.uniqueId || obj.handle || "";
+            handle = obj.unique_id || obj.uniqueId || obj.handle || "";
+            profileUrl = obj.author_url || obj.profile_url || "";
+          }
+        } catch (e) {}
+      } else {
+        name = s.replace(/^@/, "").trim();
+        handle = name;
+      }
+    }
   }
-  return esc(s.replace(/^@/, "").trim() || "未知");
+
+  const srcUrl = String(v?.source_url || "");
+  const m = srcUrl.match(/(https?:\/\/(?:www\.)?(?:tiktok|douyin)\.com\/@[^\/]+)/i);
+  if (m) {
+    if (!profileUrl) profileUrl = m[1];
+    if (!handle) handle = m[1].split("@").pop();
+    if (!name || name === "未知作者") name = handle;
+  }
+
+  if (!profileUrl && handle) {
+    const platform = String(v?.platform || "").toLowerCase();
+    if (platform.includes("douyin")) {
+      profileUrl = `https://www.douyin.com/user/${handle}`;
+    } else {
+      profileUrl = `https://www.tiktok.com/@${handle.replace(/^@/, '')}`;
+    }
+  }
+
+  if (!name || name === "未知作者") {
+    name = handle || "未知作者";
+  }
+
+  return { name: String(name), profileUrl: profileUrl || "" };
+}
+
+function safeAuthor(v){
+  const info = parseAuthorInfo(typeof v === "object" && v !== null && (v.author || v.source_url) ? v : { author: v });
+  return info.name;
 }
 function fmtMd(v){return esc(v).replace(/\*\*([^*\n]+)\*\*/g,"<strong>$1</strong>")}
 function fmtNum(n){n=Number(n||0);if(n>=1e8)return (n/1e8).toFixed(1)+"亿";if(n>=1e4)return (n/1e4).toFixed(1)+"万";return String(n||0)}
@@ -415,7 +461,12 @@ async function main(){
   $("backLink").href=`/report${data.report_date?`?date=${encodeURIComponent(data.report_date)}`:""}`;
   $("rankPill").textContent=`排名 ${video.report_rank||idx+1}`;
 
-  $("factAuthor").textContent=authorName;
+  const authorInfo = parseAuthorInfo(video);
+  if (authorInfo.profileUrl) {
+    $("factAuthor").innerHTML = `<a href="${esc(authorInfo.profileUrl)}" target="_blank" rel="noopener noreferrer" style="color:var(--accent2);text-decoration:none;font-weight:700" title="在原平台打开作者主页">${esc(authorInfo.name)} ↗</a>`;
+  } else {
+    $("factAuthor").textContent = authorInfo.name;
+  }
   $("factPlatform").textContent=video.platform||"-";
   $("factPublish").textContent=m.published_at?new Date(m.published_at*1000).toLocaleDateString("zh-CN"):"-";
 

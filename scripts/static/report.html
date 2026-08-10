@@ -427,29 +427,64 @@ function getTopicStyle(i) {
 
 function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]))}
 
-function safeAuthor(v){
-  if(v == null) return "未知";
-  let s = "";
-  if(typeof v === "object" && v !== null) {
-    s = String(v.nickname || v.name || v.unique_id || v.uniqueId || v.handle || "");
-    if(s) return s;
-    s = JSON.stringify(v);
-  } else {
-    s = String(v).trim();
-  }
-  s = s.replace(/&#039;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
-  if(s.startsWith("{") || s.startsWith("[")) {
-    try {
-      const jsonStr = s.replace(/'/g, '"').replace(/None/g, 'null').replace(/True/g, 'true').replace(/False/g, 'false');
-      const obj = JSON.parse(jsonStr);
-      if(obj && typeof obj === "object") {
-        const name = obj.nickname || obj.name || obj.unique_id || obj.uniqueId || obj.handle || obj.author || "";
-        if (name) return String(name);
+function parseAuthorInfo(v) {
+  let name = "未知作者";
+  let handle = "";
+  let profileUrl = "";
+  
+  const rawAuthor = v?.author != null ? v.author : v;
+  if (rawAuthor) {
+    if (typeof rawAuthor === "object" && rawAuthor !== null) {
+      name = rawAuthor.nickname || rawAuthor.name || rawAuthor.unique_id || rawAuthor.uniqueId || rawAuthor.handle || "";
+      handle = rawAuthor.unique_id || rawAuthor.uniqueId || rawAuthor.handle || "";
+      profileUrl = rawAuthor.author_url || rawAuthor.profile_url || "";
+    } else {
+      let s = String(rawAuthor).trim();
+      s = s.replace(/&#039;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+      if (s.startsWith("{") || s.startsWith("[")) {
+        try {
+          const jsonStr = s.replace(/'/g, '"').replace(/None/g, 'null').replace(/True/g, 'true').replace(/False/g, 'false');
+          const obj = JSON.parse(jsonStr);
+          if (obj && typeof obj === "object") {
+            name = obj.nickname || obj.name || obj.unique_id || obj.uniqueId || obj.handle || "";
+            handle = obj.unique_id || obj.uniqueId || obj.handle || "";
+            profileUrl = obj.author_url || obj.profile_url || "";
+          }
+        } catch (e) {}
+      } else {
+        name = s.replace(/^@/, "").trim();
+        handle = name;
       }
-    } catch(e) {}
-    return "未知作者";
+    }
   }
-  return String(s).replace(/^@/, "").trim() || "未知";
+
+  const srcUrl = String(v?.source_url || "");
+  const m = srcUrl.match(/(https?:\/\/(?:www\.)?(?:tiktok|douyin)\.com\/@[^\/]+)/i);
+  if (m) {
+    if (!profileUrl) profileUrl = m[1];
+    if (!handle) handle = m[1].split("@").pop();
+    if (!name || name === "未知作者") name = handle;
+  }
+
+  if (!profileUrl && handle) {
+    const platform = String(v?.platform || "").toLowerCase();
+    if (platform.includes("douyin")) {
+      profileUrl = `https://www.douyin.com/user/${handle}`;
+    } else {
+      profileUrl = `https://www.tiktok.com/@${handle.replace(/^@/, '')}`;
+    }
+  }
+
+  if (!name || name === "未知作者") {
+    name = handle || "未知作者";
+  }
+
+  return { name: String(name), profileUrl: profileUrl || "" };
+}
+
+function safeAuthor(v){
+  const info = parseAuthorInfo(typeof v === "object" && v !== null && (v.author || v.source_url) ? v : { author: v });
+  return info.name;
 }
 
 function fmtMd(v){return esc(v).replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g,'<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>').replace(/\*\*([^*\n]+)\*\*/g,"<strong>$1</strong>")}
@@ -917,13 +952,14 @@ function renderModalContent(v,type){
     const rawShortDive = deepDiveFor(current?.report, v, idx >= 0 ? idx : 0);
     const shortText = rawShortDive ? formatDeepDiveItem(rawShortDive) : renderFormattedText((az && az.summary) || (a && a.summary) || (ar && ar.summary) || (v && v.summary) || "暂无 AI 爆款拆解");
     
-    const authorName=safeAuthor(v.author);
+    const authorInfo = parseAuthorInfo(v);
+    const authorHtml = authorInfo.profileUrl ? `<a href="${esc(authorInfo.profileUrl)}" target="_blank" rel="noopener noreferrer" style="color:var(--accent2);text-decoration:none;font-weight:700" title="在原平台打开作者主页">${esc(authorInfo.name)} ↗</a>` : esc(authorInfo.name);
     return `
       <div class="mock-modal">
         <div class="m-head">
           <div>
             <div class="m-title">${esc(v.title||"无标题")}<span class="m-status ${isAnalyzed?'':'fail'}">${statusLabel(v.process_status||"-")}</span></div>
-            <div class="m-sub">${authorName} · ${esc(v.platform||"-")} · ${m.published_at?fmtTime(m.published_at):"-"}</div>
+            <div class="m-sub">${authorHtml} · ${esc(v.platform||"-")} · ${m.published_at?fmtTime(m.published_at):"-"}</div>
           </div>
           <button class="m-close" onclick="closeModal()">×</button>
         </div>
@@ -943,7 +979,7 @@ function renderModalContent(v,type){
           </div>
           <div class="m-info">
             <div class="m-grid">
-              <div class="m-item"><span>作者</span><b>${authorName}</b></div>
+              <div class="m-item"><span>作者</span><b>${authorHtml}</b></div>
               <div class="m-item"><span>平台</span><b>${esc(v.platform||"-")}</b></div>
               <div class="m-item"><span>视频 ID</span><b>${esc(v.video_id||"-")}</b></div>
               <div class="m-item"><span>来源</span><b>${esc(v.source_endpoint||"-")} / ${esc(v.source_label||"-")}</b></div>
