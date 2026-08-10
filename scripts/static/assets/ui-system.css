@@ -3280,6 +3280,53 @@ body.ui-system .ui-nav__toggle:hover {
     text-align: center;
   }
 
+  body.ui-route-home .session-list:has(.session-empty-state),
+  body.ui-route-amazon .session-list:has(.session-empty-state),
+  body.ui-route-chuhaijiang .session-list:has(.session-empty-state) {
+    display: grid;
+    place-items: center;
+    padding: 24px 20px 42px;
+  }
+
+  body.ui-route-home .session-empty-state,
+  body.ui-route-amazon .session-empty-state,
+  body.ui-route-chuhaijiang .session-empty-state {
+    display: grid;
+    justify-items: center;
+    gap: 7px;
+    max-width: 164px;
+    color: var(--ui-ink-subtle);
+    text-align: center;
+  }
+
+  body.ui-route-home .session-empty-state svg,
+  body.ui-route-amazon .session-empty-state svg,
+  body.ui-route-chuhaijiang .session-empty-state svg {
+    width: 38px;
+    height: 38px;
+    margin-bottom: 3px;
+    fill: none;
+    stroke: color-mix(in srgb, var(--ui-ink-subtle) 62%, transparent);
+    stroke-width: 1.45;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  body.ui-route-home .session-empty-state strong,
+  body.ui-route-amazon .session-empty-state strong,
+  body.ui-route-chuhaijiang .session-empty-state strong {
+    color: var(--ui-ink-muted);
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  body.ui-route-home .session-empty-state span,
+  body.ui-route-amazon .session-empty-state span,
+  body.ui-route-chuhaijiang .session-empty-state span {
+    font-size: 11px;
+    line-height: 1.55;
+  }
+
   body.ui-route-home .session-item.active,
   body.ui-route-amazon .session-item.active,
   body.ui-route-chuhaijiang .session-item.active {

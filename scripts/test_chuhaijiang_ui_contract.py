@@ -98,6 +98,15 @@ class TestChuhaijiangUiContract(unittest.TestCase):
         self.assertIn('body[data-provider="amazon"]', styles)
         self.assertIn('body[data-provider="fastmoss"]', styles)
 
+    def test_empty_session_sidebar_has_an_icon_and_guidance_copy(self):
+        template = (web_app.SCRIPTS_DIR / "static" / "chat.html").read_text(encoding="utf-8")
+        styles = (web_app.SCRIPTS_DIR / "static" / "assets" / "ui-system.css").read_text(encoding="utf-8")
+        self.assertIn('class="session-empty-state"', template)
+        self.assertIn("还没有对话", template)
+        self.assertIn("从一次新的提问开始", template)
+        self.assertIn(".session-empty-state svg", styles)
+        self.assertIn(".session-list:has(.session-empty-state)", styles)
+
     def test_source_canonicalizes_slashes_and_cuts_off_v1_proxy_routes(self):
         source = Path(web_app.__file__).read_text(encoding="utf-8")
         self.assertIn('if parsed.path == "/amazon/":', source)
