@@ -635,16 +635,6 @@ NAV_ITEMS = [
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
 
-# The third tab deliberately keeps the page chrome the user used on 2026-08-09.
-# This list is presentation-only: its provider remains ``chuhaijiang`` and every
-# chat request still goes through the Python Chuhaijiang boundary below.
-CHUHAIJIANG_D534532_NAV_ITEMS = [
-    *NAV_ITEMS[:5],
-    {"key": "shop", "href": "/shop", "label": "Shop", "title": "Shop", "icon": '<path d="M6 8h12l1 13H5z"/><path d="M9 8V6a3 3 0 0 1 6 0v2"/><path d="M5 11h14"/>'},
-    *NAV_ITEMS[5:],
-    {"key": "metrics", "href": "/metrics", "label": "\u6570\u636e", "title": "\u6570\u636e", "icon": '<path d="M4 19V5"/><path d="M20 19H4"/><path d="M8 16v-5"/><path d="M12 16V8"/><path d="M16 16v-7"/>'},
-    {"key": "extract", "href": "/extract", "label": "\u5206\u6790", "title": "\u89c6\u9891\u5206\u6790", "icon": '<path d="M4 5h16v14H4z"/><path d="m10 9 5 3-5 3z"/><path d="M8 21h8"/><path d="M12 19v2"/>'},
-]
 UI_ASSET_VERSION = "20260810-14"
 APP_UI_ASSETS = f"""
 <script id="ui-nav-state-boot">
@@ -666,25 +656,6 @@ window.VideoAnalyzerGlobalUser = fetch("/api/global-user", {{ credentials: "same
 <link id="ui-system-css" rel="stylesheet" href="/assets/ui-system.css?v={UI_ASSET_VERSION}">
 <script id="ui-system-js" src="/assets/ui-system.js?v={UI_ASSET_VERSION}" defer></script>
 """.strip()
-
-CHUHAIJIANG_D534532_UI_ASSETS = f"""
-<script id="ui-nav-state-boot">
-let uiNavExpanded = false;
-try {{
-  const uiNavStored = localStorage.getItem("ui-nav-expanded");
-  uiNavExpanded = uiNavStored === null
-    ? document.cookie.split("; ").some((item) => item === "ui-nav-expanded=1")
-    : uiNavStored === "1";
-}} catch (_) {{
-  uiNavExpanded = document.cookie.split("; ").some((item) => item === "ui-nav-expanded=1");
-}}
-document.documentElement.dataset.nav =
-  window.matchMedia("(min-width: 861px)").matches && uiNavExpanded ? "expanded" : "collapsed";
-</script>
-<link id="ui-system-css" rel="stylesheet" href="/assets/ui-system.css?v={UI_ASSET_VERSION}">
-<script id="ui-system-js" src="/assets/ui-system.js?v={UI_ASSET_VERSION}" defer></script>
-""".strip()
-
 
 def normalize_chat_provider(provider: str | None) -> str:
     value = str(provider or "home").strip().lower()
@@ -842,10 +813,10 @@ def nav_active_key(current_path: str) -> str:
     return "home"
 
 
-def render_app_nav(current_path: str, *, legacy_chuhaijiang: bool = False) -> str:
+def render_app_nav(current_path: str) -> str:
     active = nav_active_key(current_path)
     links = []
-    for item in (CHUHAIJIANG_D534532_NAV_ITEMS if legacy_chuhaijiang else NAV_ITEMS):
+    for item in NAV_ITEMS:
         cls = "ui-nav__item active" if item["key"] == active else "ui-nav__item"
         links.append(
             f'<a class="{cls}" href="{item["href"]}" title="{html_escape(item["title"])}">'
@@ -859,9 +830,6 @@ def render_app_nav(current_path: str, *, legacy_chuhaijiang: bool = False) -> st
         '</button>'
     )
     brand = (
-        '<a class="ui-nav__brand" href="/" aria-label="\u8fd4\u56de\u9996\u9875" title="\u8fd4\u56de\u9996\u9875">'
-        '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7 17 12 9 17Z"/></svg></a>'
-        if legacy_chuhaijiang else
         '<a class="ui-nav__brand" href="/" aria-label="\u8fd4\u56de\u9996\u9875" title="\u8fd4\u56de\u9996\u9875">'
         '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">'
         '<defs>'
@@ -918,36 +886,20 @@ def render_app_nav(current_path: str, *, legacy_chuhaijiang: bool = False) -> st
     )
     nav = (
         '<nav class="ui-nav" id="ui-app-nav" aria-label="\u4e3b\u5bfc\u822a">'
-        + brand + mobile_close + toggle + "".join(links)
-        + ("" if legacy_chuhaijiang else identity) + "</nav>"
+        + brand + mobile_close + toggle + "".join(links) + identity + "</nav>"
     )
-    return mobile_trigger + nav + backdrop + ("" if legacy_chuhaijiang else identity_modal)
+    return mobile_trigger + nav + backdrop + identity_modal
 
 
-def inject_unified_nav(html: str, current_path: str, *, legacy_chuhaijiang: bool = False) -> str:
-    nav = render_app_nav(current_path, legacy_chuhaijiang=legacy_chuhaijiang)
+def inject_unified_nav(html: str, current_path: str) -> str:
+    nav = render_app_nav(current_path)
     if "<!-- UI_APP_NAV -->" not in html:
         raise RuntimeError(f"UI shell placeholder missing for {current_path}")
     html = html.replace("<!-- UI_APP_NAV -->", nav, 1)
     if 'id="ui-system-css"' not in html and "</head>" in html:
-        assets = CHUHAIJIANG_D534532_UI_ASSETS if legacy_chuhaijiang else APP_UI_ASSETS
-        html = html.replace("</head>", assets + "\n</head>", 1)
-    if legacy_chuhaijiang and "</head>" in html:
-        html = html.replace(
-            "</head>",
-            '<style id="chuhaijiang-d534532-nav-style">'
-            'body.ui-chuhaijiang-d534532 .ui-nav__brand{background:var(--ui-brand);box-shadow:0 10px 24px rgba(49,92,255,.26);border:0;position:static;overflow:visible;transition:none}'
-            'body.ui-chuhaijiang-d534532 .ui-nav__brand::before{display:none}'
-            'body.ui-chuhaijiang-d534532 .ui-nav__brand:hover{transform:none;box-shadow:0 10px 24px rgba(49,92,255,.26);border-color:transparent}'
-            'body.ui-chuhaijiang-d534532 .ui-nav__brand:active{transform:none}'
-            'body.ui-chuhaijiang-d534532 .ui-nav__brand svg{fill:currentColor;stroke:none;transform:translateX(1px);filter:none}'
-            '</style>\n</head>',
-            1,
-        )
+        html = html.replace("</head>", APP_UI_ASSETS + "\n</head>", 1)
     route_name = re.sub(r"[^a-z0-9]+", "-", (current_path or "home").strip("/").lower()) or "home"
     body_class = f"ui-system ui-route-{route_name}"
-    if legacy_chuhaijiang:
-        body_class += " ui-chuhaijiang-d534532"
     def add_ui_body_class(match: re.Match[str]) -> str:
         attrs = match.group(1)
         class_match = re.search(r"\bclass=([\"'])([^\"']*)([\"'])", attrs)
@@ -1081,18 +1033,6 @@ def render_chat_quick_actions(provider: str, provider_ui: dict[str, Any], offici
     return "".join(actions)
 
 
-def chat_presentation_provider(provider: str) -> str:
-    """Keep the retired FastMoss page as the Chuhaijiang presentation contract."""
-    provider = str(provider or "home").strip().lower()
-    return "fastmoss" if provider == "chuhaijiang" else provider
-
-
-def brand_chat_presentation(value: str, provider: str) -> str:
-    if normalize_chat_provider(provider) != "chuhaijiang":
-        return value
-    return value.replace("FASTMOSS", "CHUHAIJIANG").replace("FastMoss", "出海匠")
-
-
 def render_chat_official_workflow_modal(provider: str) -> dict[str, str]:
     if provider == "fastmoss":
         items = [
@@ -1181,21 +1121,58 @@ def render_chat_official_workflow_modal(provider: str) -> dict[str, str]:
     }
 
 
+def build_chuhaijiang_independent_template() -> str:
+    """Render the historic FastMoss slash-page shell on the isolated Python API."""
+    page = (SELLERSPRITE_CHAT_DIR / "public" / "index.html").read_text(encoding="utf-8")
+    replacements = {
+        '<title>SellerSprite 对话</title>': '<title>出海匠 对话</title>',
+        '<h1>SellerSprite 对话</h1>': '<h1>出海匠 对话</h1>',
+        '<b>SellerSprite MCP</b><span>输入 Amazon 选品、ASIN、关键词或类目问题</span>':
+            '<b>出海匠 MCP</b><span>输入 TikTok Shop 选品、店铺、达人、内容或竞品问题</span>',
+        'const BASE_PATH=location.pathname.startsWith("/fastmoss")?"/fastmoss":"/amazon";\n'
+        'const PROVIDER_TYPE=BASE_PATH==="/fastmoss"?"fastmoss":"sellersprite";\n'
+        'const PROVIDER_LABEL=PROVIDER_TYPE==="fastmoss"?"FastMoss":"SellerSprite";\n'
+        'const PROVIDER_EMPTY=PROVIDER_TYPE==="fastmoss"?"输入 TikTok Shop 选品、店铺、达人、内容或竞品问题":"输入 Amazon 选品、ASIN、关键词或类目问题";':
+            'const BASE_PATH="/chuhaijiang";\n'
+            'const PROVIDER_TYPE="chuhaijiang";\n'
+            'const PROVIDER_LABEL="出海匠";\n'
+            'const PROVIDER_EMPTY="输入 TikTok Shop 选品、店铺、达人、内容或竞品问题";',
+        'function api(path,params={}){const u=new URL(`${BASE_PATH}${path}`,location.origin);u.searchParams.set("session",S.sessionId);Object.entries(params).forEach(([k,v])=>{if(v!==undefined&&v!==null&&v!=="")u.searchParams.set(k,v)});return u.pathname+u.search}':
+            'function api(path,params={}){let target=path;if(path==="/api/messages")target=`/api/chat/sessions/${encodeURIComponent(S.sessionId)}/messages`;else if(path==="/api/events")target="/api/chat/events";else if(path==="/api/ask")target="/api/chat/ask";const u=new URL(target,location.origin);u.searchParams.set("provider","chuhaijiang");u.searchParams.set("session",S.sessionId);Object.entries(params).forEach(([k,v])=>{if(v!==undefined&&v!==null&&v!=="")u.searchParams.set(k==="maxChars"?"max_bytes":k,v)});return u.pathname+u.search}\nfunction normalizeMessages(d){return {messages:(d.messages||[]).map(m=>({...m,createdAt:m.created_at,raw:{toolResults:m.tool_results||[]}})),nextBefore:d.next_before||null,hasMore:!!d.has_more}}',
+        'const r=await fetch(`${BASE_PATH}/api/sessions`);const d=await r.json();S.sessions=d.sessions||[];renderSessions()':
+            'const r=await fetch("/api/chat/sessions?provider=chuhaijiang");const d=await r.json();S.sessions=(Array.isArray(d)?d:(d.sessions||[])).map(s=>({...s,messageCount:s.message_count||0,lastMessage:s.last_message||""}));renderSessions()',
+        'const d=await r.json();S.messages=d.messages||[];S.nextBefore=d.nextBefore||null;S.hasMore=!!d.hasMore;':
+            'const d=normalizeMessages(await r.json());S.messages=d.messages||[];S.nextBefore=d.nextBefore||null;S.hasMore=!!d.hasMore;',
+        'async function showGuide(){const r=await fetch(api("/api/guide"));const d=await r.json();if(d.guide)renderMsg({...d.guide,id:"guide"},true)}':
+            'async function showGuide(){}',
+        'function connectEvents(){closeSSE();const es=new EventSource(api("/api/events"));S.sse=es;es.addEventListener("message",e=>{const m=JSON.parse(e.data);const idx=S.messages.findIndex(x=>x.id===m.id);if(idx>=0){S.messages[idx]=m}else{const pendingIdx=S.messages.findIndex(x=>x.role==="assistant"&&x.status==="pending");if(pendingIdx>=0&&m.role==="assistant")S.messages[pendingIdx]=m;else S.messages.push(m)}showEmpty(false);renderMessages(true);loadSessions().catch(()=>{})});es.addEventListener("clear",()=>{S.messages=[];renderMessages();loadSessions().catch(()=>{})})}':
+            'function connectEvents(){closeSSE();const es=new EventSource(api("/api/events"));S.sse=es;["update","done","title_updated"].forEach(event=>es.addEventListener(event,()=>refreshCurrentMessages(true).catch(()=>{})))}',
+        'function apiForSession(path,id){const u=new URL(`${BASE_PATH}${path}`,location.origin);u.searchParams.set("session",id);return u.pathname+u.search}':
+            'function apiForSession(path,id){const u=new URL(`/api/chat/sessions/${encodeURIComponent(id)}/delete`,location.origin);u.searchParams.set("provider","chuhaijiang");return u.pathname+u.search}',
+        'body:JSON.stringify({sessionId:S.sessionId,message:text,attachments})':
+            'body:JSON.stringify({provider:"chuhaijiang",sessionId:S.sessionId,message:text,attachments})',
+        'fetch(`${BASE_PATH}/api/chat/export-pdf`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:S.sessionId,messageId})})':
+            'fetch("/api/chat/export-pdf",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({provider:"chuhaijiang",sessionId:S.sessionId,messageId})})',
+        'if(!document.querySelector(\'.app-nav__item[href="/fastmoss"]\')){const amazon=document.querySelector(\'.app-nav__item[href="/amazon"]\');if(amazon){const fast=amazon.cloneNode(true);fast.href="/fastmoss";fast.title="FastMoss";const label=fast.querySelector(".app-nav__label");if(label)label.textContent="FastMoss";fast.classList.toggle("active",BASE_PATH==="/fastmoss");amazon.after(fast)}}':
+            'if(!document.querySelector(\'.app-nav__item[href="/chuhaijiang"]\')){const amazon=document.querySelector(\'.app-nav__item[href="/amazon"]\');if(amazon){const chuhai=amazon.cloneNode(true);chuhai.href="/chuhaijiang/";chuhai.title="chuhaijiang";const label=chuhai.querySelector(".app-nav__label");if(label)label.textContent="chuhaijiang";chuhai.classList.add("active");amazon.after(chuhai)}}',
+    }
+    for old, new in replacements.items():
+        if old not in page:
+            raise RuntimeError("Chuhaijiang independent chat template baseline changed")
+        page = page.replace(old, new)
+    return page.replace("<body>", '<body data-chuhaijiang-independent="1">', 1)
+
+
+def serve_chuhaijiang_independent_template(handler: BaseHTTPRequestHandler) -> None:
+    return text_response(handler, HTTPStatus.OK, build_chuhaijiang_independent_template(), "text/html; charset=utf-8")
+
+
 def serve_chat_template(handler: BaseHTTPRequestHandler, provider: str, path: str) -> None:
     chat_html = (SCRIPTS_DIR / "static" / "chat.html").read_text(encoding="utf-8")
     provider = normalize_chat_provider(provider)
-    presentation_provider = chat_presentation_provider(provider)
-    provider_ui = dict(CHAT_PROVIDER_UI[presentation_provider])
-    for field in ("workspace", "crumb", "model"):
-        provider_ui[field] = brand_chat_presentation(str(provider_ui[field]), provider)
-    official_workflow_enabled = (
-        (presentation_provider == "amazon" and official_sellersprite_skill_enabled())
-        or presentation_provider == "fastmoss"
-    )
-    modal_ui = {
-        key: brand_chat_presentation(value, provider)
-        for key, value in render_chat_official_workflow_modal(presentation_provider).items()
-    }
+    provider_ui = dict(CHAT_PROVIDER_UI[provider])
+    official_workflow_enabled = provider == "amazon" and official_sellersprite_skill_enabled()
+    modal_ui = render_chat_official_workflow_modal(provider)
     chat_html = chat_html.replace("__CHAT_PROVIDER__", provider)
     chat_html = chat_html.replace(
         "__CHAT_OFFICIAL_WORKFLOW_ENABLED__",
@@ -1217,7 +1194,7 @@ def serve_chat_template(handler: BaseHTTPRequestHandler, provider: str, path: st
     chat_html = chat_html.replace("__CHAT_INPUT_PLACEHOLDER__", provider_ui["placeholder"])
     chat_html = chat_html.replace(
         "__CHAT_QUICK_ACTIONS__",
-        render_chat_quick_actions(presentation_provider, provider_ui, official_workflow_enabled),
+        render_chat_quick_actions(provider, provider_ui, official_workflow_enabled),
     )
     page_heading = (
         '<button class="mobile-session-toggle" id="mobileSessionToggle" type="button" '
@@ -1234,11 +1211,7 @@ def serve_chat_template(handler: BaseHTTPRequestHandler, provider: str, path: st
     if "<!-- UI_CHAT_HEADER -->" not in chat_html:
         raise RuntimeError("Chat header placeholder missing")
     chat_html = chat_html.replace("<!-- UI_CHAT_HEADER -->", page_heading, 1)
-    chat_html = inject_unified_nav(
-        chat_html,
-        path,
-        legacy_chuhaijiang=(provider == "chuhaijiang"),
-    )
+    chat_html = inject_unified_nav(chat_html, path)
     return text_response(handler, HTTPStatus.OK, chat_html, "text/html; charset=utf-8")
 
 
@@ -12507,10 +12480,10 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/amazon":
             return serve_chat_template(self, "amazon", parsed.path)
         if parsed.path in {"/chuhaijiang", "/chuhaijiang/"}:
-            return serve_chat_template(self, "chuhaijiang", parsed.path)
-        if parsed.path == "/fastmoss":
+            return serve_chuhaijiang_independent_template(self)
+        if parsed.path in {"/fastmoss", "/fastmoss/"}:
             self.send_response(HTTPStatus.TEMPORARY_REDIRECT)
-            self.send_header("Location", "/chuhaijiang")
+            self.send_header("Location", "/chuhaijiang/")
             self.end_headers()
             return
         if parsed.path.startswith("/amazon/"):
@@ -12519,7 +12492,7 @@ class Handler(BaseHTTPRequestHandler):
             return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
         if parsed.path.startswith("/fastmoss/"):
             self.send_response(HTTPStatus.TEMPORARY_REDIRECT)
-            self.send_header("Location", "/chuhaijiang" + parsed.path[len("/fastmoss"):])
+            self.send_header("Location", "/chuhaijiang/")
             self.end_headers()
             return
         if parsed.path == "/" or parsed.path == "/chat":
@@ -13192,22 +13165,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/amazon/api/chat/export-pdf":
             return self.handle_mcp_chat_export_pdf("sellersprite")
-        if parsed.path == "/fastmoss/api/chat/export-pdf":
+        if parsed.path.startswith("/fastmoss"):
             self.send_response(HTTPStatus.TEMPORARY_REDIRECT)
-            self.send_header("Location", "/chuhaijiang/api/chat/export-pdf")
+            self.send_header("Location", "/chuhaijiang/")
             self.end_headers()
             return
-        if parsed.path == "/chuhaijiang/api/chat/export-pdf":
-            return self.handle_mcp_chat_export_pdf("chuhaijiang")
         if parsed.path.startswith("/amazon/"):
             return proxy_mcp_chat(self, "sellersprite")
         if parsed.path.startswith("/chuhaijiang/"):
             return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
-        if parsed.path.startswith("/fastmoss/"):
-            self.send_response(HTTPStatus.TEMPORARY_REDIRECT)
-            self.send_header("Location", "/chuhaijiang" + parsed.path[len("/fastmoss"):])
-            self.end_headers()
-            return
         if parsed.path.startswith("/api/proxy/"):
             if not PROXY_POOL_ENABLED:
                 return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
@@ -13407,13 +13373,22 @@ class Handler(BaseHTTPRequestHandler):
                     "path": parsed.path,
                 },
             )
+        if parsed.path.startswith("/api/chat/sessions/") and parsed.path.endswith("/delete"):
+            qs = parse_qs(parsed.query)
+            provider = normalize_chat_provider(qs.get("provider", ["home"])[0])
+            sid = parsed.path.split("/")[4]
+            stored_sid = provider_session_exists(provider, sid, current_global_owner_id(self))
+            if not stored_sid:
+                return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Session not found"})
+            deleted = chat_store_for_provider(provider).delete_session(stored_sid)
+            return json_response(self, HTTPStatus.OK, {"deleted": deleted})
         if parsed.path.startswith("/amazon/"):
             return proxy_mcp_chat(self, "sellersprite")
         if parsed.path.startswith("/chuhaijiang/"):
             return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
-        if parsed.path.startswith("/fastmoss/"):
+        if parsed.path.startswith("/fastmoss"):
             self.send_response(HTTPStatus.TEMPORARY_REDIRECT)
-            self.send_header("Location", "/chuhaijiang" + parsed.path[len("/fastmoss"):])
+            self.send_header("Location", "/chuhaijiang/")
             self.end_headers()
             return
         return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})

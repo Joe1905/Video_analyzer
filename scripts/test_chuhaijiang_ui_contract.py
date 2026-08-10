@@ -1,4 +1,4 @@
-"""Lock the third tab to the 2026-08-09 FastMoss presentation contract."""
+"""Contract for the isolated Chuhaijiang independent MCP chat page."""
 import unittest
 from unittest.mock import patch
 
@@ -6,81 +6,64 @@ try:
     from scripts import web_app
     from scripts.web_app import (
         CHAT_PROVIDER_DEFAULT_DOMAINS,
-        CHAT_PROVIDER_UI,
         MCP_CHAT_CONFIGS,
-        chat_presentation_provider,
-        render_app_nav,
-        render_chat_official_workflow_modal,
-        render_chat_quick_actions,
-        serve_chat_template,
+        build_chuhaijiang_independent_template,
+        serve_chuhaijiang_independent_template,
     )
 except ModuleNotFoundError:
     import web_app
     from web_app import (
         CHAT_PROVIDER_DEFAULT_DOMAINS,
-        CHAT_PROVIDER_UI,
         MCP_CHAT_CONFIGS,
-        chat_presentation_provider,
-        render_app_nav,
-        render_chat_official_workflow_modal,
-        render_chat_quick_actions,
-        serve_chat_template,
+        build_chuhaijiang_independent_template,
+        serve_chuhaijiang_independent_template,
     )
 
 
 class TestChuhaijiangUiContract(unittest.TestCase):
-    def test_d534532_fastmoss_presentation_is_reused_with_chuhaijiang_backend_domain(self):
-        presentation = chat_presentation_provider("chuhaijiang")
-        self.assertEqual(presentation, "fastmoss")
+    def test_independent_fastmoss_slash_shell_is_reused_on_python_chuhaijiang_domain(self):
+        page = build_chuhaijiang_independent_template()
         self.assertEqual(CHAT_PROVIDER_DEFAULT_DOMAINS["chuhaijiang"], {"chuhaijiang"})
         self.assertEqual(MCP_CHAT_CONFIGS["chuhaijiang"]["default_port"], 4104)
-        self.assertEqual(
-            render_chat_quick_actions(presentation, CHAT_PROVIDER_UI[presentation], True),
-            render_chat_quick_actions("fastmoss", CHAT_PROVIDER_UI["fastmoss"], True),
-        )
-        self.assertEqual(
-            render_chat_official_workflow_modal(presentation),
-            render_chat_official_workflow_modal("fastmoss"),
-        )
+        for marker in ('<header>', 'class="chat-shell"', 'grid-template-columns:280px',
+                       'class="empty-chat"', 'class="input-bar"'):
+            self.assertIn(marker, page)
+        for workbench_marker in ('ui-nav', 'chat-hero', 'quick-prompt',
+                                 'official-workflow', 'ui-chuhaijiang-d534532'):
+            self.assertNotIn(workbench_marker, page)
+        self.assertIn('const BASE_PATH="/chuhaijiang";', page)
+        self.assertIn('const PROVIDER_TYPE="chuhaijiang";', page)
+        self.assertIn('const PROVIDER_LABEL="出海匠";', page)
+        self.assertIn('label.textContent="chuhaijiang"', page)
 
-    def test_d534532_navigation_is_provider_scoped_and_only_rebrands_third_tab(self):
-        nav = render_app_nav("/chuhaijiang", legacy_chuhaijiang=True)
-        self.assertIn('href="/chuhaijiang"', nav)
-        self.assertIn('>chuhaijiang<', nav)
-        self.assertNotIn('href="/fastmoss"', nav)
-        self.assertNotIn("ui-nav__identity", nav)
-        # These entries were present on yesterday's FastMoss page and must not
-        # be restored globally after the shared navigation was intentionally hidden.
-        for href in ("/shop", "/metrics", "/extract"):
-            self.assertIn(f'href="{href}"', nav)
+    def test_independent_page_uses_only_python_chuhaijiang_chat_api(self):
+        page = build_chuhaijiang_independent_template()
+        self.assertIn('/api/chat/sessions?provider=chuhaijiang', page)
+        self.assertIn('/api/chat/ask', page)
+        self.assertIn('provider:"chuhaijiang"', page)
+        self.assertIn('/api/chat/events', page)
+        self.assertIn('/api/chat/sessions/${encodeURIComponent(id)}/delete', page)
+        self.assertNotIn('/amazon/api/', page)
+        self.assertNotIn('/fastmoss/api/', page)
 
-    def test_both_chuhaijiang_urls_render_the_same_python_chat_template(self):
-        rendered = {}
+    def test_both_chuhaijiang_urls_render_identical_independent_page(self):
+        rendered = []
 
         def capture(_handler, _status, html, _content_type):
-            rendered.setdefault("pages", []).append(html)
+            rendered.append(html)
 
         with patch.object(web_app, "text_response", side_effect=capture):
-            serve_chat_template(None, "chuhaijiang", "/chuhaijiang")
-            serve_chat_template(None, "chuhaijiang", "/chuhaijiang/")
+            serve_chuhaijiang_independent_template(None)
+            serve_chuhaijiang_independent_template(None)
 
-        self.assertEqual(rendered["pages"][0], rendered["pages"][1])
-        page = rendered["pages"][0]
-        self.assertIn('const CHAT_PROVIDER="chuhaijiang"', page)
-        self.assertIn("ui-chuhaijiang-d534532", page)
-        self.assertIn("chuhaijiang-d534532-nav-style", page)
-        self.assertNotIn("ui-global-user-modal", page)
-        # The shared template always uses the provider-scoped Python APIs.
-        self.assertIn("fetch('/api/chat/ask'", page)
-        self.assertNotIn("/chuhaijiang/api/ask", page)
+        self.assertEqual(rendered[0], rendered[1])
+        self.assertIn('data-chuhaijiang-independent="1"', rendered[0])
 
-    def test_old_proxy_path_is_not_reachable_from_chuhaijiang(self):
-        app_source = web_app.__file__
-        with open(app_source, encoding="utf-8") as handle:
-            source = handle.read()
-        self.assertIn('if parsed.path in {"/chuhaijiang", "/chuhaijiang/"}:', source)
-        self.assertIn('if parsed.path.startswith("/chuhaijiang/"):\n            return json_response(self, HTTPStatus.NOT_FOUND', source)
-        self.assertIn('"chuhaijiang": "chuhaijiang"', source)
+    def test_source_cuts_off_legacy_fastmoss_proxy_and_shared_template(self):
+        source = open(web_app.__file__, encoding="utf-8").read()
+        self.assertIn('return serve_chuhaijiang_independent_template(self)', source)
+        self.assertIn('self.send_header("Location", "/chuhaijiang/")', source)
+        self.assertNotIn('legacy_chuhaijiang=', source)
 
 
 if __name__ == "__main__":
