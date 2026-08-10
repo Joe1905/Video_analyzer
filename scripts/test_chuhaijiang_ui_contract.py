@@ -1,13 +1,22 @@
 """Keep the Chuhaijiang page on the exact retired FastMoss presentation contract."""
 import unittest
 
-from scripts.web_app import (
-    CHAT_PROVIDER_DEFAULT_DOMAINS,
-    CHAT_PROVIDER_UI,
-    chat_presentation_provider,
-    render_chat_official_workflow_modal,
-    render_chat_quick_actions,
-)
+try:
+    from scripts.web_app import (
+        CHAT_PROVIDER_DEFAULT_DOMAINS,
+        CHAT_PROVIDER_UI,
+        chat_presentation_provider,
+        render_chat_official_workflow_modal,
+        render_chat_quick_actions,
+    )
+except ModuleNotFoundError:
+    from web_app import (
+        CHAT_PROVIDER_DEFAULT_DOMAINS,
+        CHAT_PROVIDER_UI,
+        chat_presentation_provider,
+        render_chat_official_workflow_modal,
+        render_chat_quick_actions,
+    )
 
 
 class TestChuhaijiangUiContract(unittest.TestCase):
