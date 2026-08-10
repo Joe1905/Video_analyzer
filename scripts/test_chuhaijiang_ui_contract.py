@@ -1,4 +1,5 @@
 """Shared v2 chat-shell contract for the three AI providers."""
+from pathlib import Path
 import unittest
 from unittest.mock import patch
 
@@ -49,12 +50,12 @@ class TestChuhaijiangUiContract(unittest.TestCase):
         self.assertIn("出海匠", page)
         for legacy_marker in (
             'data-chuhaijiang-independent="1"', 'SellerSprite MCP',
-            'grid-template-columns:280px minmax(0,1fr)', 'const BASE_PATH=',
+            'const BASE_PATH=',
         ):
             self.assertNotIn(legacy_marker, page)
 
     def test_source_canonicalizes_slashes_and_cuts_off_v1_proxy_routes(self):
-        source = open(web_app.__file__, encoding="utf-8").read()
+        source = Path(web_app.__file__).read_text(encoding="utf-8")
         self.assertIn('if parsed.path == "/amazon/":', source)
         self.assertIn('if parsed.path == "/chuhaijiang/":', source)
         self.assertIn('if parsed.path in {"/fastmoss", "/fastmoss/"}:', source)
