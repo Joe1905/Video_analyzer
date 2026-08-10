@@ -44,18 +44,34 @@ class TestOrphanUiCleanup(unittest.TestCase):
             with self.subTest(method=method, path=path):
                 status, headers, body = self.request(method, path)
                 self.assertEqual(status, HTTPStatus.TEMPORARY_REDIRECT)
-                self.assertEqual(headers.get("location"), "/chuhaijiang/")
+                self.assertEqual(headers.get("location"), "/chuhaijiang")
                 self.assertNotIn("FastMoss", body)
 
-    def test_chuhaijiang_urls_render_the_same_python_backed_page(self) -> None:
-        first = self.request("GET", "/chuhaijiang")
-        second = self.request("GET", "/chuhaijiang/")
-        self.assertEqual(first[0], HTTPStatus.OK)
-        self.assertEqual(second[0], HTTPStatus.OK)
-        self.assertEqual(first[2], second[2])
-        self.assertIn('const PROVIDER_TYPE="chuhaijiang"', first[2])
-        self.assertIn('/api/chat/ask', first[2])
-        self.assertNotIn('/fastmoss/api/', first[2])
+    def test_ai_chat_routes_use_the_shared_canonical_shell(self) -> None:
+        for path, canonical in (("/amazon/", "/amazon"), ("/chuhaijiang/", "/chuhaijiang")):
+            with self.subTest(path=path):
+                status, headers, _body = self.request("GET", path)
+                self.assertEqual(status, HTTPStatus.TEMPORARY_REDIRECT)
+                self.assertEqual(headers.get("location"), canonical)
+
+        pages = {
+            path: self.request("GET", path)
+            for path in ("/", "/amazon", "/chuhaijiang")
+        }
+        for path, (status, _headers, body) in pages.items():
+            with self.subTest(path=path):
+                self.assertEqual(status, HTTPStatus.OK)
+                self.assertIn('class="chat-shell"', body)
+                self.assertIn('id="ui-system-css"', body)
+                self.assertIn('id="ui-system-js"', body)
+                self.assertIn('/assets/ui-system.css?v=', body)
+                self.assertIn('/assets/ui-system.js?v=', body)
+
+        chuhaijiang = pages["/chuhaijiang"][2]
+        self.assertIn('const CHAT_PROVIDER="chuhaijiang"', chuhaijiang)
+        self.assertNotIn('/fastmoss/api/', chuhaijiang)
+        self.assertNotIn('data-chuhaijiang-independent="1"', chuhaijiang)
+        self.assertNotIn('const BASE_PATH=', chuhaijiang)
 
     def test_active_pages_and_shared_assets_remain_available(self) -> None:
         for path in (
