@@ -433,10 +433,10 @@ CHAT_TOOL_DOMAINS = ("system", "function", "sociavault", "sellersprite", "chuhai
 CHAT_PROVIDER_LABELS = {"home": "\u9996\u9875", "amazon": "\u5356\u5bb6\u7cbe\u7075", "chuhaijiang": "\u51fa\u6d77\u5320"}
 CHAT_PROVIDER_UI = {
     "home": {
-        "workspace": "AI \u5bf9\u8bdd",
+        "workspace": "SociaVault \u6570\u636e\u6d1e\u5bdf",
         "new_label": "\u65b0\u5efa\u5bf9\u8bdd",
-        "crumb": "\u5de5\u4f5c\u53f0",
-        "model": "AI \u5de5\u5177 \u00b7 \u5c31\u7eea",
+        "crumb": "SociaVault",
+        "model": "SociaVault \u00b7 \u5c31\u7eea",
         "eyebrow": "短视频洞察与运营协作",
         "title": "从热点视频、商品与数据中，找到内容增长的下一步",
         "intro": "输入短视频、商品或趋势问题，调用分析、日报与社媒数据工具形成行动建议。",
@@ -614,7 +614,7 @@ NAV_ITEMS = [
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
 
-UI_ASSET_VERSION = "20260810-17"
+UI_ASSET_VERSION = "20260810-18"
 APP_UI_ASSETS = f"""
 <script id="ui-nav-state-boot">
 let uiNavExpanded = false;

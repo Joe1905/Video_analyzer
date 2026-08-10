@@ -88,6 +88,16 @@ class TestChuhaijiangUiContract(unittest.TestCase):
         self.assertIn("亚马逊选品与竞品洞察", self.render("amazon", "/amazon"))
         self.assertIn("TikTok Shop 出海经营与内容运营", chuhaijiang)
 
+    def test_home_uses_sociavault_identity_and_a_distinct_accent(self):
+        home = self.render("home", "/")
+        styles = (web_app.SCRIPTS_DIR / "static" / "assets" / "ui-system.css").read_text(encoding="utf-8")
+        self.assertIn("SociaVault 数据洞察", home)
+        self.assertIn("SociaVault · 就绪", home)
+        self.assertIn('body[data-provider="home"]', styles)
+        self.assertIn("--ui-brand: #7447d9", styles)
+        self.assertIn('body[data-provider="amazon"]', styles)
+        self.assertIn('body[data-provider="fastmoss"]', styles)
+
     def test_source_canonicalizes_slashes_and_cuts_off_v1_proxy_routes(self):
         source = Path(web_app.__file__).read_text(encoding="utf-8")
         self.assertIn('if parsed.path == "/amazon/":', source)

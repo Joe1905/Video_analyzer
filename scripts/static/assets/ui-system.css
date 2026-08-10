@@ -45,6 +45,12 @@
     --ui-nav-width: 224px;
   }
 
+  body[data-provider="home"] {
+    --ui-brand: #7447d9;
+    --ui-brand-hover: #5d32bb;
+    --ui-brand-soft: #f0eaff;
+  }
+
   body[data-provider="amazon"] {
     --ui-brand: #17745e;
     --ui-brand-hover: #105e4c;
