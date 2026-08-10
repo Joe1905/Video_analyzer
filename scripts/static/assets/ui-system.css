@@ -3504,7 +3504,7 @@ body.ui-system .ui-nav__toggle:hover {
   }
 
   body.ui-route-report .hero {
-    background: linear-gradient(135deg, #fff, #eef2ff);
+    background: linear-gradient(135deg, #fffdfa, #f5e4da);
   }
 
   body.ui-route-report .video-side .empty {

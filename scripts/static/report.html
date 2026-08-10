@@ -373,6 +373,35 @@ body.ui-system #menu.show,
   .m-metrics{grid-template-columns:repeat(2,1fr)}
 }
 }
+
+/* 日报专属视觉：纸感阅读面与陶土行动色，避免和邻聊的蓝紫体系混淆。 */
+:root{
+  --bg:#f1eeea;--surface:#fffdfa;--text:#28231e;--text2:#716b63;--text3:#a39b91;
+  --border:#e4ddd4;--border2:#f1ece6;
+  --accent:#a85732;--accent2:#823c22;--accent-soft:#f5e4da;
+  --brand:#a85732;--brand-soft:#f5e4da;--blue:#a85732;--blue-soft:#f8ebe3;
+  --green:#477165;--green-soft:#e3eee9;--amber:#bd7a2d;--amber-soft:#fbf0dc;
+  --radius-sm:9px;--radius:16px;--radius-lg:22px;
+  --shadow:0 12px 30px rgba(56,43,31,.045);--shadow-lg:0 30px 80px rgba(48,34,24,.26);
+}
+body{background:var(--bg);font-family:"PingFang SC","Microsoft YaHei","Noto Sans SC",sans-serif}
+.mock-page{background:radial-gradient(circle at 58% -14%,rgba(237,207,188,.7),transparent 34rem),var(--bg)}
+.shell{grid-template-columns:238px minmax(0,1fr) 330px}
+.rail{background:rgba(255,253,250,.76)}.rail-l{border-right:1px solid rgba(84,65,47,.1)}.rail-r{border-left:1px solid rgba(84,65,47,.1)}
+.rail-head{height:56px;padding:0 17px;border-bottom:1px solid var(--border2)}.rail-head b{font-family:"Source Han Serif SC","Songti SC",STSong,serif;font-size:15px}.rail-body{padding:10px}
+.h-item{padding:10px;margin-bottom:3px;border-radius:12px}.h-item:hover{background:rgba(168,87,50,.065)!important}.h-item.active{border:0!important;background:var(--accent-soft)!important;box-shadow:inset 3px 0 0 var(--accent)!important}.h-item.active .h-glyph{background:var(--accent)!important}.h-item.active .h-copy b{color:var(--accent2)}
+.center{padding:22px clamp(18px,2.25vw,34px);gap:18px}.card{border:0;box-shadow:var(--shadow);border-radius:var(--radius)}
+.hero{padding:26px 27px 22px;background:rgba(255,253,250,.93)}.hero h2{font:700 24px/1.2 "Source Han Serif SC","Songti SC",STSong,serif;letter-spacing:-.04em}.hero .meta{color:var(--text2)}
+.btn-primary{background:var(--accent)!important;border-radius:10px!important}.btn-primary:hover{background:var(--accent2)!important}.btn-ghost{border-color:var(--border)!important;background:rgba(255,253,250,.74)!important}.btn-ghost:hover{background:var(--accent-soft)!important;border-color:#e3bda9!important;color:var(--accent2)!important}
+.kpis{gap:0;margin-top:25px}.kpi{padding:2px 18px;background:transparent;border-radius:0}.kpi:first-child{padding-left:0}.kpi+.kpi{border-left:1px solid var(--border2)}.kpi .l{color:var(--text3)}.kpi .v{font:700 23px/1.25 "Source Han Serif SC","Songti SC",STSong,serif;letter-spacing:-.03em}.kpi .d{color:var(--text3)}
+.mock-widgets{gap:0;margin-bottom:2px}.w-card{border:0;box-shadow:none;background:transparent}.settings-card{padding:18px 20px;border-radius:var(--radius);background:rgba(255,253,250,.7);border:1px solid rgba(84,65,47,.075)}.w-head{padding:0 0 14px;color:var(--text);background:transparent;border-bottom:0;font-size:13px}.w-body{padding:0}.set-row{margin-bottom:11px}.set-row:last-child{margin-bottom:0}.set-row .l{font-size:10px;color:var(--text3);letter-spacing:.06em}.set-val{border-color:var(--border)!important;background:#fffdfa!important}.inline-topic-input:focus{border-color:#d78e6d;box-shadow:0 0 0 3px rgba(168,87,50,.12)}
+.sect{border:0!important;box-shadow:none!important;border-radius:0!important;background:transparent!important}.sect-head{padding:20px 0 12px}.sect-head.open{border-bottom-color:var(--border2)}.sect-body{padding:14px 0;color:#595149}.mini-link{color:var(--accent)}
+.v-card{border:0;border-radius:12px;background:transparent}.v-card:hover{border-color:transparent;box-shadow:0 11px 24px rgba(61,42,29,.12)!important}.v-cover{border-radius:11px;background:linear-gradient(135deg,#d8cdc0,#f3ede7)}.v-hot{background:rgba(54,40,30,.82)}.v-tool.active{background:var(--accent-soft)!important;color:var(--accent2)!important}.v-tool:hover{background:rgba(168,87,50,.08)!important}.v-ava{background:var(--accent-soft);color:var(--accent2)}
+.modal{background:rgba(39,31,24,.48)!important;backdrop-filter:blur(9px)!important}.mock-modal{width:min(920px,100%);border:0;border-radius:22px;box-shadow:var(--shadow-lg);background:var(--surface)}.m-head{padding:22px 25px 17px;border-bottom:1px solid var(--border2)}.m-title{font:700 19px/1.3 "Source Han Serif SC","Songti SC",STSong,serif;letter-spacing:-.03em}.m-sub{color:var(--text2)}.m-close{border-radius:50%;background:var(--border2)!important}.m-close:hover{background:var(--accent-soft)!important;color:var(--accent2)!important}
+.m-body{grid-template-columns:224px minmax(0,1fr);gap:25px;padding:24px 25px}.m-cover{border-radius:14px;background:linear-gradient(155deg,#5b3526,#221812)}.m-cover-hint{color:var(--text3)}.m-hot-badge{background:rgba(168,87,50,.88)}.m-info{gap:14px}.m-grid{gap:0;border-top:1px solid var(--border2);border-bottom:1px solid var(--border2)}.m-item{min-height:61px;padding:11px 12px;border:0;border-radius:0}.m-item:nth-child(3n+2){border-left:1px solid var(--border2);border-right:1px solid var(--border2)}.m-item:nth-child(n+4){border-top:1px solid var(--border2)}.m-item span{color:var(--text3)}.m-item b{color:#4b433b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.m-metrics{gap:0}.m-metric{padding:2px 12px;background:transparent;border-radius:0}.m-metric:first-child{padding-left:0}.m-metric+.m-metric{border-left:1px solid var(--border2)}.m-metric span{color:var(--text3)}.m-metric b{font:700 17px "Source Han Serif SC","Songti SC",STSong,serif}.m-metric.hot{background:transparent}.m-metric.hot b{color:var(--accent)}.m-tag{height:23px;border-radius:6px;background:#f7ece6;color:#79543d}.m-linkrow{padding:9px 10px;border:0;border-radius:9px;background:#f7f3ee}.m-linkrow .u{color:var(--accent)}.m-icon-btn{border-color:transparent!important;background:transparent!important}.m-icon-btn:hover{border-color:#e4b49c!important;background:var(--surface)!important;color:var(--accent)!important}.m-analysis{border:0;border-top:1px solid var(--border2);border-radius:0}.m-analysis .a-head{padding:13px 0 7px;background:transparent;font-size:12px}.m-analysis .a-body{padding:0;color:#5e564f;line-height:1.8}.m-foot{padding:15px 25px;border-top:1px solid var(--border2);background:var(--surface)}
+.analysis-document{display:grid;gap:0;max-height:72vh;overflow:auto;padding:5px 25px 24px}.analysis-document--plain{padding:28px 25px;color:#544c45;font-size:13px;line-height:1.8}.analysis-section{padding:20px 0;border-bottom:1px solid var(--border2)}.analysis-section:last-of-type{border-bottom:0}.analysis-section-title{display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:13px;font-weight:750}.analysis-section-title::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--accent)}.analysis-section-body{color:#595149;font-size:13px;line-height:1.8}.analysis-timeline{margin-top:12px;padding-left:17px;border-left:1px solid #dfd4ca}.analysis-segment{position:relative;padding:0 0 15px}.analysis-segment:last-child{padding-bottom:0}.analysis-segment::before{content:"";position:absolute;left:-21px;top:6px;width:7px;height:7px;border-radius:50%;background:var(--accent)}.analysis-segment b{display:block;color:var(--accent);font-size:11px;margin-bottom:4px}.analysis-segment div{font-size:12px;line-height:1.75}.analysis-raw{margin-top:16px}.analysis-raw summary{color:var(--text3);font-size:11px;cursor:pointer}.analysis-raw pre{max-height:180px;overflow:auto;margin-top:9px;padding:12px;border-radius:9px;background:#251d18;color:#eadfd5;font:11px/1.55 ui-monospace,Consolas,monospace;white-space:pre-wrap}
+@media(max-width:980px){.shell{grid-template-columns:210px minmax(0,1fr)}.rail-r{display:none}.m-body{grid-template-columns:1fr}.m-cover-col{max-width:236px}.m-metrics{grid-template-columns:repeat(6,1fr)}}
+@media(max-width:640px){.center{padding:14px}.hero{padding:20px}.kpis{grid-template-columns:repeat(2,1fr);gap:13px}.kpi,.kpi:first-child{padding:0;border:0!important}.kpi+.kpi{border-left:0}.m-head,.m-body,.m-foot{padding-left:18px;padding-right:18px}.m-grid{grid-template-columns:repeat(2,1fr)}.m-item:nth-child(3n+2){border-left:0;border-right:0}.m-item:nth-child(even){border-left:1px solid var(--border2)}.m-item:nth-child(n+3){border-top:1px solid var(--border2)}.m-metrics{grid-template-columns:repeat(3,1fr);gap:12px}.m-metric{padding:0;border:0!important}.analysis-document{padding-left:18px;padding-right:18px}}
 </style>
 </head>
 <body>
@@ -982,47 +1011,36 @@ function getTranscriptText(transcript) {
 
 function renderAnalysisDoc(data) {
   if (!data) return '<div class="empty" style="padding:40px">暂无解析数据</div>';
-  
   if (typeof data === "string") {
-    return `<div style="padding:18px 22px;line-height:1.7;font-size:13.5px;color:#1e293b;max-height:80vh;overflow-y:auto">${renderFormattedText(data)}</div>`;
+    return `<div class="analysis-document analysis-document--plain">${renderFormattedText(data)}</div>`;
   }
-  
-  let html = '<div style="padding:18px 22px;display:flex;flex-direction:column;gap:14px;max-height:80vh;overflow-y:auto">';
+  let html = '<div class="analysis-document">';
 
   if (data.summary) {
     html += `
-      <div class="card" style="padding:16px 18px;border:1px solid var(--border);border-left:4px solid var(--accent);border-radius:12px;background:var(--surface)">
-        <b style="font-size:14px;color:var(--accent2);display:block;margin-bottom:10px;font-weight:750">AI 核心摘要</b>
-        <div style="font-size:13.5px;color:#1e293b">${renderFormattedText(data.summary)}</div>
-      </div>
+      <section class="analysis-section"><div class="analysis-section-title">AI 核心摘要</div><div class="analysis-section-body">${renderFormattedText(data.summary)}</div></section>
     `;
   }
 
   const timeline = data.timeline || data.segments || (data.raw_model_output && data.raw_model_output.frame_analyses);
   if (Array.isArray(timeline) && timeline.length) {
     html += `
-      <div class="card" style="border:1px solid var(--border);border-radius:12px;overflow:hidden">
-        <div style="padding:12px 16px;background:var(--border2);font-size:13.5px;font-weight:750">时间轴与分帧拆解 (${timeline.length} 片段)</div>
-        <div style="padding:14px 16px;display:flex;flex-direction:column;gap:12px;max-height:48vh;overflow-y:auto">
+      <section class="analysis-section">
+        <div class="analysis-section-title">时间轴与分帧拆解 · ${timeline.length} 片段</div>
+        <div class="analysis-timeline">
     `;
     timeline.forEach((item, idx) => {
       const resp = item.response || item.body || (typeof item === "string" ? item : JSON.stringify(item));
       html += `
-        <div style="border:1px solid var(--border2);border-radius:10px;padding:12px 14px;background:var(--surface)">
-          <div style="font-size:12.5px;font-weight:750;color:var(--blue);margin-bottom:6px">片段 ${idx + 1} ${item.time_range ? `(${esc(item.time_range)})` : ''}</div>
-          <div style="font-size:13px;color:#263244;line-height:1.7">${renderFormattedText(resp)}</div>
-        </div>
+        <article class="analysis-segment"><b>${item.time_range ? esc(item.time_range) : `片段 ${idx + 1}`}</b><div>${renderFormattedText(resp)}</div></article>
       `;
     });
-    html += `</div></div>`;
+    html += `</div></section>`;
   }
 
   if (data.visual_evidence) {
     html += `
-      <div class="card" style="padding:14px 16px;border:1px solid var(--border);border-radius:12px">
-        <b style="font-size:13.5px;color:var(--accent2);display:block;margin-bottom:8px;font-weight:750">视觉证据</b>
-        <div style="font-size:13px;color:#263244;line-height:1.7">${renderFormattedText(data.visual_evidence)}</div>
-      </div>
+      <section class="analysis-section"><div class="analysis-section-title">视觉证据</div><div class="analysis-section-body">${renderFormattedText(data.visual_evidence)}</div></section>
     `;
   }
 
@@ -1030,17 +1048,14 @@ function renderAnalysisDoc(data) {
     const text = getTranscriptText(data.transcript);
     const isNoAudio = text === "无音频";
     html += `
-      <div class="card" style="padding:14px 16px;border:1px solid var(--border);border-radius:12px">
-        <b style="font-size:13.5px;color:var(--accent2);display:block;margin-bottom:8px;font-weight:750">字幕与转写</b>
-        <div style="font-size:13px;line-height:1.7">${isNoAudio ? '<span style="color:var(--text3);font-style:italic">无音频</span>' : renderFormattedText(text)}</div>
-      </div>
+      <section class="analysis-section"><div class="analysis-section-title">字幕与转写</div><div class="analysis-section-body">${isNoAudio ? '<span style="color:var(--text3);font-style:italic">无音频</span>' : renderFormattedText(text)}</div></section>
     `;
   }
 
   html += `
-    <details style="margin-top:6px">
-      <summary style="font-size:11.5px;color:var(--text3);cursor:pointer;user-select:none">查看原始 JSON 源码</summary>
-      <pre style="margin-top:8px;padding:12px;background:#0f172a;color:#e2e8f0;font-size:11px;border-radius:8px;max-height:200px;overflow-y:auto;white-space:pre-wrap">${esc(JSON.stringify(data, null, 2))}</pre>
+    <details class="analysis-raw">
+      <summary>查看原始 JSON 源码</summary>
+      <pre>${esc(JSON.stringify(data, null, 2))}</pre>
     </details>
   `;
 
@@ -1138,7 +1153,8 @@ function renderModalContent(v,type){
   
   const data = type === "analysis" ? (v.analysis_zh || v.analysis || v.audit_result || v.summary) : v.audit_result;
   if(!data)return `<div class="mock-modal" style="width:min(500px,100%)"><div class="m-head"><div class="m-title">${esc(v.title||"无标题")}</div><button class="m-close" onclick="closeModal()">×</button></div><div style="padding:24px;text-align:center;color:var(--text2)">该视频还没有生成对应解析内容。</div></div>`;
-  return `<div class="mock-modal"><div class="m-head"><div class="m-title">${esc(v.title||"")}</div><button class="m-close" onclick="closeModal()">×</button></div>${renderAnalysisDoc(data)}</div>`;
+  const authorInfo = parseAuthorInfo(v);
+  return `<div class="mock-modal"><div class="m-head"><div><div class="m-title">${esc(v.title||"")}<span style="display:inline-block;margin-left:9px;color:var(--accent);font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase">解析内容</span></div><div class="m-sub">${esc(authorInfo.name)} · ${esc(v.platform||"-")} · ${statusLabel(v.process_status||"-")}</div></div><button class="m-close" onclick="closeModal()">×</button></div>${renderAnalysisDoc(data)}</div>`;
 }
 
 function copyToClipboard(text, msg = "已复制到剪贴板") {
