@@ -162,6 +162,7 @@ class UIContractTest(unittest.TestCase):
         self.assertIn(".ui-global-user-option.is-public", css)
         self.assertIn("min-height:132px", css)
         self.assertIn("html[data-nav=\"collapsed\"] .ui-nav__identity", css)
+        self.assertIn("box-sizing:border-box; margin-right:auto; margin-left:auto", css)
         self.assertIn(".ui-global-user-close svg", css)
 
     def test_navigation_selection_and_page_heading_contract(self) -> None:

@@ -87,7 +87,7 @@
 .ui-nav__identity-copy { display: grid; min-width: 0; }
 .ui-nav__identity-copy b,.ui-nav__identity-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ui-nav__identity-copy b { font-size: 12px; }.ui-nav__identity-copy small { opacity: .68; font-size: 10px; }
-html[data-nav="collapsed"] .ui-nav__identity,body[data-nav="collapsed"] .ui-nav__identity { width:48px; min-height:48px; margin-right:12px; margin-left:12px; justify-content:center; padding:6px; background:transparent; border-color:transparent; border-radius:50%; box-shadow:none; }
+html[data-nav="collapsed"] .ui-nav__identity,body[data-nav="collapsed"] .ui-nav__identity { width:48px; min-height:48px; box-sizing:border-box; margin-right:auto; margin-left:auto; justify-content:center; padding:6px; background:transparent; border-color:transparent; border-radius:50%; box-shadow:none; }
 html[data-nav="collapsed"] .ui-nav__identity:hover,body[data-nav="collapsed"] .ui-nav__identity:hover { background:rgba(255,255,255,.1); }
 html[data-nav="collapsed"] .ui-nav__identity-copy,body[data-nav="collapsed"] .ui-nav__identity-copy { display:none; }
 .ui-global-user-modal[hidden] { display: none; }
