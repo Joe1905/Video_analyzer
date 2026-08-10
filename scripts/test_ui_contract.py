@@ -16,7 +16,6 @@ STATIC_DIR = SCRIPTS_DIR / "static"
 UI_CSS = STATIC_DIR / "assets" / "ui-system.css"
 UI_JS = STATIC_DIR / "assets" / "ui-system.js"
 TEMPLATES = (
-    STATIC_DIR / "amazon.html",
     STATIC_DIR / "chat.html",
     STATIC_DIR / "lan_chat.html",
     STATIC_DIR / "metrics.html",

@@ -462,21 +462,6 @@ CHAT_PROVIDER_UI = {
             ("\u63d0\u70bc\u8bc4\u8bba\u75db\u70b9\u4e0e\u673a\u4f1a", "\u8bf7\u4ece\u7ade\u54c1\u8bc4\u8bba\u4e2d\u63d0\u70bc\u9ad8\u9891\u75db\u70b9\u3001\u6ee1\u610f\u70b9\u548c\u4ea7\u54c1\u6539\u8fdb\u673a\u4f1a"),
         ),
     },
-    "fastmoss": {
-        "workspace": "FastMoss \u5de5\u4f5c\u53f0",
-        "new_label": "\u65b0\u5efa\u5bf9\u8bdd",
-        "crumb": "FastMoss",
-        "model": "FastMoss \u00b7 \u5c31\u7eea",
-        "eyebrow": "\u8fbe\u4eba\u4e0e\u5546\u54c1\u6d1e\u5bdf",
-        "title": "\u628a\u8fbe\u4eba\u4e0e\u5546\u54c1\u6570\u636e\uff0c\u62c6\u6210\u53ef\u590d\u7528\u7684\u589e\u957f\u7b56\u7565",
-        "intro": "\u8f93\u5165\u8fbe\u4eba\u3001\u5546\u54c1\u6216\u89c6\u9891\u7ebf\u7d22\uff0c\u4ece\u5185\u5bb9\u8868\u73b0\u3001\u8f6c\u5316\u8bc1\u636e\u4e0e\u7ade\u54c1\u5dee\u5f02\u4e2d\u627e\u5230\u4e0b\u4e00\u6b65\u52a8\u4f5c\u3002",
-        "placeholder": "\u8f93\u5165\u8fbe\u4eba\u3001\u5546\u54c1\u6216\u89c6\u9891\u95ee\u9898",
-        "prompts": (
-            ("\u67e5\u627e\u540c\u8d5b\u9053\u9ad8\u589e\u957f\u8fbe\u4eba", "\u8bf7\u67e5\u627e\u540c\u8d5b\u9053\u8fd1\u671f\u9ad8\u589e\u957f\u8fbe\u4eba\uff0c\u5e76\u603b\u7ed3\u5185\u5bb9\u7279\u5f81"),
-            ("\u5206\u6790\u5546\u54c1\u4e0e\u5e26\u8d27\u8868\u73b0", "\u8bf7\u5206\u6790\u8fd9\u4e2a\u5546\u54c1\u7684\u5e26\u8d27\u8868\u73b0\u3001\u5173\u8054\u8fbe\u4eba\u548c\u6210\u4ea4\u8d8b\u52bf"),
-            ("\u62c6\u89e3\u7206\u6b3e\u89c6\u9891\u8f6c\u5316\u7ed3\u6784", "\u8bf7\u62c6\u89e3\u8fd9\u4e9b\u7206\u6b3e\u89c6\u9891\u7684\u5185\u5bb9\u7ed3\u6784\u548c\u8f6c\u5316\u8bc1\u636e"),
-        ),
-    },
 }
 CHAT_PROVIDER_OFFICIAL_QUICK_ACTIONS = {
     "amazon": (
@@ -499,29 +484,6 @@ CHAT_PROVIDER_OFFICIAL_QUICK_ACTIONS = {
             "skill": "\u7ade\u54c1\u6df1\u5ea6\u62c6\u89e3",
             "preset_id": "comprehensive/competitor-analysis",
             "description": "\u62c6\u89e3 ASIN \u4e0e\u5dee\u5f02\u5316\u7a7a\u95f4",
-            "icon": "compare",
-        },
-    ),
-    "fastmoss": (
-        {
-            "label": "\u9009\u54c1\u51b3\u7b56",
-            "skill": "\u9009\u54c1\u51b3\u7b56",
-            "preset_id": "fm-product-scout",
-            "description": "\u5224\u65ad\u9009\u54c1\u673a\u4f1a\u3001\u751f\u547d\u5468\u671f\u4e0e\u5165\u573a\u65f6\u673a",
-            "icon": "bars",
-        },
-        {
-            "label": "\u8fbe\u4eba\u5efa\u8054",
-            "skill": "\u8fbe\u4eba\u5efa\u8054",
-            "preset_id": "fm-creator-outreach",
-            "description": "\u7b5b\u9009\u8fbe\u4eba\u3001\u8bc4\u4f30\u5339\u914d\u5ea6\u5e76\u751f\u6210\u5efa\u8054\u6587\u6848",
-            "icon": "trend",
-        },
-        {
-            "label": "\u89c6\u9891\u7b56\u7565",
-            "skill": "\u89c6\u9891\u7b56\u7565",
-            "preset_id": "fm-video-brief",
-            "description": "\u62c6\u89e3\u7206\u6b3e\u89c6\u9891\u5e76\u5f62\u6210\u62cd\u6444 Brief",
             "icon": "compare",
         },
     ),
@@ -1034,33 +996,6 @@ def render_chat_quick_actions(provider: str, provider_ui: dict[str, Any], offici
 
 
 def render_chat_official_workflow_modal(provider: str) -> dict[str, str]:
-    if provider == "fastmoss":
-        items = [
-            ("fm-product-scout", "选品决策", "判断选品机会、生命周期与入场时机"),
-            ("fm-creator-outreach", "达人建联", "筛选达人、评估匹配度并生成建联文案"),
-            ("fm-competitor-batch", "竞品批量对比", "比较多个竞品并拆解突然爆发的原因"),
-            ("fm-store-diagnosis", "店铺诊断", "检查店铺商品、渠道、达人与集中度风险"),
-            ("fm-video-brief", "视频策略", "拆解爆款视频并形成拍摄或达人 Brief"),
-        ]
-        item_btns = [
-            f'<button class="official-workflow-item" type="button" data-official-preset-id="{pid}" data-official-preset="{html_escape(lbl)}"><span class="official-workflow-icon">{idx:02d}</span><span><strong>{html_escape(lbl)}</strong><small>{html_escape(dsc)}</small></span><i>\u2192</i></button>'
-            for idx, (pid, lbl, dsc) in enumerate(items, start=1)
-        ]
-        return {
-            "kicker": "FASTMOSS \u00b7 OFFICIAL SKILLS",
-            "title": "FastMoss \u5b98\u65b9\u7b56\u7565\u5e93",
-            "intro": "\u9009\u62e9 FastMoss \u5b98\u65b9 Skill\uff0c\u8fdb\u5165\u5bf9\u5e94\u7684\u9009\u54c1\u3001\u8fbe\u4eba\u3001\u7ade\u54c1\u3001\u5e97\u94fa\u6216\u89c6\u9891\u7b56\u7565\u6d41\u7a0b\u3002",
-            "tabs_class": " official-workflow-tabs--single",
-            "tabs_attributes": "",
-            "tabs": '<button class="official-workflow-tab is-active" type="button" role="tab" aria-selected="true" data-official-tab="comprehensive">\u5b98\u65b9 Skills <span>5</span></button>',
-            "panels": (
-                '<section class="official-workflow-panel is-active" role="tabpanel" data-official-panel="comprehensive">'
-                '<div class="official-workflow-grid">'
-                + "".join(item_btns) +
-                '</div></section>'
-            ),
-        }
-
     comprehensive_items = [
         ("comprehensive/product-research", "智能选品助手", "按多维条件筛选潜力商品，评估进入可行性"),
         ("comprehensive/market-analysis", "市场全景分析", "对目标类目进行 11 个维度的全方位评估"),
@@ -14415,14 +14350,6 @@ METRICS_HTML = (SCRIPTS_DIR / "static" / "metrics.html").read_text(encoding="utf
 
 
 
-
-
-
-
-
-AMAZON_HTML_PATH = SCRIPTS_DIR / "static" / "amazon.html"
-
-AMAZON_HTML = AMAZON_HTML_PATH.read_text(encoding="utf-8") if AMAZON_HTML_PATH.is_file() else ""
 
 
 

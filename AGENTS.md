@@ -111,7 +111,7 @@ API responses are cached in `data/api_cache.sqlite` by default with a 7-day TTL.
 - `docker-compose.yml`: defines `analyzer` and `web`, binds `videos/`, `output/`, `data/`, and mounts `scripts/` read-only.
 - `analysis_prompt.txt`: Chinese prompt template used by DeepSeek postprocess for TikTok/script analysis.
 - `scripts/`: Python and shell scripts. In containers this directory is mounted read-only, so generated data must go to `videos/`, `output/`, or `data/`.
-- `scripts/static/`: HTML templates loaded by `web_app.py` (`web_index.html`, `report.html`, `shop.html`, `metrics.html`, `amazon.html`, `chat.html`).
+- `scripts/static/`: HTML templates loaded by `web_app.py` (`web_index.html`, `report.html`, `shop.html`, `metrics.html`, `chat.html`).
 - `videos/`: input videos, gitignored.
 - `output/`: job outputs, gitignored.
 - `data/`: SQLite state and caches, gitignored.

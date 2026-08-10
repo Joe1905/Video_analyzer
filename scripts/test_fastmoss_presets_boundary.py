@@ -9,9 +9,6 @@ from scripts.web_app import (
     fastmoss_official_skill_route,
     fastmoss_official_skill_tool_ids,
     execute_prefixed_tool,
-    render_chat_official_workflow_modal,
-    render_chat_quick_actions,
-    CHAT_PROVIDER_UI,
     fallback_chat_session_title,
     select_official_fastmoss_skill_prompt,
 )
@@ -99,17 +96,6 @@ class TestFastMossPresetsBoundary(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("active preset boundary", result["error"])
 
-    def test_modal_rendering(self):
-        modal_ui = render_chat_official_workflow_modal("fastmoss")
-        self.assertEqual(modal_ui["kicker"], "FASTMOSS · OFFICIAL SKILLS")
-        self.assertEqual(modal_ui["title"], "FastMoss 官方策略库")
-        self.assertEqual(modal_ui["tabs_class"], " official-workflow-tabs--single")
-        self.assertIn("进入对应的选品", modal_ui["intro"])
-        self.assertIn("官方 Skills <span>5</span>", modal_ui["tabs"])
-        self.assertIn("<button", modal_ui["tabs"])
-        self.assertIn("fm-product-scout", modal_ui["panels"])
-        self.assertIn("fm-creator-outreach", modal_ui["panels"])
-
     def test_selected_prompt_keeps_base_and_preset_reference(self):
         prompt = (
             "FastMoss provenance"
@@ -129,17 +115,6 @@ class TestFastMossPresetsBoundary(unittest.TestCase):
         self.assertNotIn(
             "\n\n## 官方文件：references/fm-creator-outreach.md\n\n", selected
         )
-
-    def test_quick_actions_3_plus_1_format(self):
-        html = render_chat_quick_actions("fastmoss", CHAT_PROVIDER_UI["fastmoss"], official_enabled=True)
-        self.assertIn("选品决策", html)
-        self.assertIn("达人建联", html)
-        self.assertIn("视频策略", html)
-        self.assertIn('data-official-preset-id="fm-product-scout"', html)
-        self.assertIn('data-official-preset-id="fm-creator-outreach"', html)
-        self.assertIn('data-official-preset-id="fm-video-brief"', html)
-        self.assertIn("official-workflow-launch", html)
-        self.assertIn("查看全部", html)
 
     def test_official_preset_is_persisted_with_user_message(self):
         with TemporaryDirectory() as temp_dir:
