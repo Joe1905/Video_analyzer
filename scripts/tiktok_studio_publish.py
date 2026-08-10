@@ -588,12 +588,40 @@ def _set_description(page: Any, description: str) -> None:
     ])
     if not target:
         raise RuntimeError("未找到 TikTok Studio 的 Description 输入框")
+
+    def current_value() -> str:
+        try:
+            value = target.input_value()
+        except Exception:
+            try:
+                value = target.inner_text()
+            except Exception:
+                value = target.text_content()
+        return str(value or "").replace("\xa0", " ").strip()
+
+    expected = description.replace("\xa0", " ").strip()
+
+    # TikTok Studio often pre-fills this contenteditable.  `fill()` can report
+    # success while the editor keeps that draft text, so clear it explicitly
+    # and verify the resulting value instead of silently appending a caption.
     target.click()
+    target.press("Control+A")
+    target.press("Backspace")
+    target.type(description)
+    if current_value() == expected:
+        return
+
+    # Retry with Playwright's native replacement before failing the job.  The
+    # caller will retain the parameter-page screenshot for manual diagnosis.
+    target.click()
+    target.press("Control+A")
+    target.press("Backspace")
     try:
         target.fill(description)
-    except Exception:
-        target.press("Control+A")
-        target.type(description)
+    except Exception as exc:
+        raise RuntimeError(f"无法替换 TikTok Studio 的 Description 内容：{exc}") from exc
+    if current_value() != expected:
+        raise RuntimeError("TikTok Studio 的 Description 未能替换预填内容")
 
 
 def _set_ai_generated(page: Any, enabled: bool) -> None:
