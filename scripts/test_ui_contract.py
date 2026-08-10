@@ -158,6 +158,7 @@ class UIContractTest(unittest.TestCase):
         self.assertIn("user?.avatarUrl", script)
         self.assertIn("grid-template-columns:repeat(2,minmax(0,1fr))", css)
         self.assertIn(".ui-global-user-option.is-public", css)
+        self.assertIn("min-height:132px", css)
 
     def test_navigation_selection_and_page_heading_contract(self) -> None:
         css = UI_CSS.read_text(encoding="utf-8")
