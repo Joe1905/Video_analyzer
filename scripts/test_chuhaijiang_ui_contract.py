@@ -7,6 +7,7 @@ try:
     from scripts.web_app import (
         CHAT_PROVIDER_DEFAULT_DOMAINS,
         CHAT_PROVIDER_UI,
+        MCP_CHAT_CONFIGS,
         chat_presentation_provider,
         render_app_nav,
         render_chat_official_workflow_modal,
@@ -18,6 +19,7 @@ except ModuleNotFoundError:
     from web_app import (
         CHAT_PROVIDER_DEFAULT_DOMAINS,
         CHAT_PROVIDER_UI,
+        MCP_CHAT_CONFIGS,
         chat_presentation_provider,
         render_app_nav,
         render_chat_official_workflow_modal,
@@ -31,6 +33,7 @@ class TestChuhaijiangUiContract(unittest.TestCase):
         presentation = chat_presentation_provider("chuhaijiang")
         self.assertEqual(presentation, "fastmoss")
         self.assertEqual(CHAT_PROVIDER_DEFAULT_DOMAINS["chuhaijiang"], {"chuhaijiang"})
+        self.assertEqual(MCP_CHAT_CONFIGS["chuhaijiang"]["default_port"], 4104)
         self.assertEqual(
             render_chat_quick_actions(presentation, CHAT_PROVIDER_UI[presentation], True),
             render_chat_quick_actions("fastmoss", CHAT_PROVIDER_UI["fastmoss"], True),

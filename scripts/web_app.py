@@ -106,7 +106,8 @@ MCP_CHAT_CONFIGS = {
         "label": "出海匠",
         "base_path": "/chuhaijiang",
         "port_env": "CHUHAIJIANG_CHAT_PORT",
-        "default_port": 4102,
+        # 4102 is occupied by FastMoss on the shared host network.
+        "default_port": 4104,
         "data_dir": CHUHAIJIANG_CHAT_DATA_DIR,
         "mcp_url_env": "CHUHAIJIANG_MCP_URL",
         "default_mcp_url": "https://mcp.gateway.chuhaijiang.com/mcp",
