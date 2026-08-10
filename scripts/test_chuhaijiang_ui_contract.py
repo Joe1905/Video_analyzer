@@ -72,6 +72,22 @@ class TestChuhaijiangUiContract(unittest.TestCase):
         self.assertIn("data-chuhaijiang-scene", template)
         self.assertIn("clearOfficialPreset();input.value=button.dataset.prompt", template)
 
+    def test_all_three_providers_show_three_frequent_actions_and_a_more_entry(self):
+        home = self.render("home", "/")
+        chuhaijiang = self.render("chuhaijiang", "/chuhaijiang")
+        amazon = web_app.render_chat_quick_actions(
+            "amazon", web_app.CHAT_PROVIDER_UI["amazon"], True
+        )
+        for quick_actions in (home, chuhaijiang, amazon):
+            self.assertEqual(quick_actions.count('class="quick-prompt'), 4)
+            self.assertIn('id="officialWorkflowLaunch"', quick_actions)
+            self.assertIn("<strong>更多</strong>", quick_actions)
+        self.assertEqual(home.count('data-chat-scene="'), 6)
+        self.assertEqual(chuhaijiang.count('data-chuhaijiang-scene="'), 8)
+        self.assertIn("短视频洞察与运营协作", home)
+        self.assertIn("亚马逊选品与竞品洞察", self.render("amazon", "/amazon"))
+        self.assertIn("TikTok Shop 出海经营与内容运营", chuhaijiang)
+
     def test_source_canonicalizes_slashes_and_cuts_off_v1_proxy_routes(self):
         source = Path(web_app.__file__).read_text(encoding="utf-8")
         self.assertIn('if parsed.path == "/amazon/":', source)

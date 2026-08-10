@@ -437,14 +437,14 @@ CHAT_PROVIDER_UI = {
         "new_label": "\u65b0\u5efa\u5bf9\u8bdd",
         "crumb": "\u5de5\u4f5c\u53f0",
         "model": "AI \u5de5\u5177 \u00b7 \u5c31\u7eea",
-        "eyebrow": "\u667a\u80fd\u4efb\u52a1\u534f\u4f5c",
-        "title": "\u4ece\u95ee\u9898\u51fa\u53d1\uff0c\u76f4\u63a5\u8c03\u7528\u5de5\u5177\u5b8c\u6210\u4efb\u52a1",
-        "intro": "\u53ef\u67e5\u8be2\u65e5\u62a5\u3001\u5206\u6790\u89c6\u9891\u3001\u63d0\u53d6\u5546\u54c1\u4e0e\u68c0\u7d22\u6570\u636e\u3002\u8f93\u5165\u95ee\u9898\uff0c\u6216\u4ece\u5e38\u7528\u4efb\u52a1\u5f00\u59cb\u3002",
-        "placeholder": "\u8f93\u5165\u95ee\u9898\uff0c\u6216\u9009\u62e9\u5e38\u7528\u4efb\u52a1",
+        "eyebrow": "短视频洞察与运营协作",
+        "title": "从热点视频、商品与数据中，找到内容增长的下一步",
+        "intro": "输入短视频、商品或趋势问题，调用分析、日报与社媒数据工具形成行动建议。",
+        "placeholder": "输入短视频、商品或趋势问题",
         "prompts": (
-            ("\u5206\u6790\u4e00\u6761\u89c6\u9891", "\u5e2e\u6211\u5206\u6790\u4e00\u6761\u77ed\u89c6\u9891\uff0c\u603b\u7ed3\u5185\u5bb9\u7ed3\u6784\u548c\u6539\u8fdb\u5efa\u8bae"),
-            ("\u603b\u7ed3\u4eca\u65e5\u8d8b\u52bf\u65e5\u62a5", "\u8bf7\u603b\u7ed3\u4eca\u5929\u7684\u70ed\u95e8\u89c6\u9891\u65e5\u62a5\u548c\u503c\u5f97\u5173\u6ce8\u7684\u8d8b\u52bf"),
-            ("\u67e5\u8be2\u5546\u54c1\u4e0e\u89c6\u9891\u6570\u636e", "\u5e2e\u6211\u67e5\u8be2\u5546\u54c1\u4e0e\u89c6\u9891\u6570\u636e\uff0c\u5e76\u63d0\u70bc\u53ef\u6267\u884c\u7684\u7ed3\u8bba"),
+            ("分析一条短视频", "帮我分析一条短视频，总结内容结构、亮点和改进建议。"),
+            ("查看今日热点趋势", "请总结今天的热门视频日报和值得关注的趋势。"),
+            ("查询商品与视频数据", "帮我查询商品与视频数据，并提炼可执行的结论。"),
         ),
     },
     "amazon": {
@@ -452,9 +452,9 @@ CHAT_PROVIDER_UI = {
         "new_label": "\u65b0\u5efa\u5bf9\u8bdd",
         "crumb": "\u5356\u5bb6\u7cbe\u7075",
         "model": "\u5356\u5bb6\u7cbe\u7075 \u00b7 \u5c31\u7eea",
-        "eyebrow": "\u9009\u54c1\u4e0e\u7ade\u54c1\u6d1e\u5bdf",
-        "title": "\u628a\u5546\u54c1\u4e0e\u8bc4\u8bba\uff0c\u62c6\u6210\u53ef\u6267\u884c\u7684\u9009\u54c1\u6d1e\u5bdf",
-        "intro": "\u8f93\u5165\u5173\u952e\u8bcd\u3001ASIN \u6216\u7ade\u54c1\u94fe\u63a5\uff0c\u5feb\u901f\u5b9a\u4f4d\u5e02\u573a\u673a\u4f1a\u3001\u7528\u6237\u75db\u70b9\u4e0e\u4ea7\u54c1\u6539\u8fdb\u65b9\u5411\u3002",
+        "eyebrow": "亚马逊选品与竞品洞察",
+        "title": "从市场、商品与评论中，找到可验证的亚马逊选品机会",
+        "intro": "输入关键词、ASIN 或竞品链接，快速判断需求、竞争、用户痛点与差异化空间。",
         "placeholder": "\u8f93\u5165\u5173\u952e\u8bcd\u3001ASIN \u6216\u7ade\u54c1\u95ee\u9898",
         "prompts": (
             ("\u641c\u7d22\u5173\u952e\u8bcd\u4e0e\u7ec6\u5206\u5e02\u573a", "\u8bf7\u5206\u6790\u8fd9\u4e2a\u5173\u952e\u8bcd\u7684\u7ec6\u5206\u5e02\u573a\u548c\u9009\u54c1\u673a\u4f1a"),
@@ -467,14 +467,14 @@ CHAT_PROVIDER_UI = {
         "new_label": "新建对话",
         "crumb": "出海匠",
         "model": "出海匠 · 就绪",
-        "eyebrow": "海外市场与内容运营",
-        "title": "用出海工具把调研、内容与运营转化为可执行的下一步",
-        "intro": "输入目标市场、商品、创作者或内容问题，由出海匠官方 Skill 提供专业工具支持。",
+        "eyebrow": "TikTok Shop 出海经营与内容运营",
+        "title": "从选品、达人到内容运营，推进 TikTok Shop 出海增长",
+        "intro": "输入目标市场、商品、达人或运营问题，按出海匠官方 Skill 调用实时数据与运营能力。",
         "placeholder": "输入出海调研、内容或运营问题",
         "prompts": (
-            ("规划海外市场调研", "请帮我规划一份海外市场调研方案，明确要验证的假设和数据。"),
-            ("拆解竞品与内容机会", "请分析目标市场的竞品、内容机会与下一步验证建议。"),
-            ("生成海外运营执行清单", "请基于我的目标市场生成一份优先级明确的出海运营执行清单。"),
+            ("选品与市场调研", "我想做 TikTok Shop 选品与市场调研。目标市场是……，类目/关键词是……，请先按出海匠官方 Skill 的选品 SOP 帮我建立候选池。"),
+            ("利润测算", "我想测算 TikTok Shop 商品利润。目标市场是……，商品/商品 ID 是……，我已有的进货价、重量、物流与佣金信息是……。"),
+            ("达人筛选与建联", "我想筛选并建联达人。目标市场是……，类目是……，预算和合作目标是……，请先给出筛选与建联方案。"),
         ),
     },
 }
@@ -614,7 +614,7 @@ NAV_ITEMS = [
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
 
-UI_ASSET_VERSION = "20260810-16"
+UI_ASSET_VERSION = "20260810-17"
 APP_UI_ASSETS = f"""
 <script id="ui-nav-state-boot">
 let uiNavExpanded = false;
@@ -1009,10 +1009,48 @@ def render_chat_quick_actions(provider: str, provider_ui: dict[str, Any], offici
             f'<strong>{html_escape(label)}</strong>'
             '</button>'
         )
+    if official_enabled:
+        actions.append(
+            '<button type="button" class="quick-prompt official-workflow-launch" '
+            'id="officialWorkflowLaunch" aria-haspopup="dialog">'
+            '<span class="quick-card-top">'
+            f'<span class="quick-number">{len(actions) + 1:02d}</span>'
+            '<span class="quick-arrow" aria-hidden="true">↗</span>'
+            '</span>'
+            f'<span class="quick-card-icon quick-card-icon--more">{CHAT_QUICK_ACTION_ICONS["more"]}</span>'
+            '<strong>更多</strong><small>查看全部能力</small>'
+            '</button>'
+        )
     return "".join(actions)
 
 
 def render_chat_official_workflow_modal(provider: str) -> dict[str, str]:
+    if provider == "home":
+        common_items = [
+            ("分析一条短视频", "拆解内容结构、亮点与优化方向。", "帮我分析一条短视频，总结内容结构、亮点和改进建议。"),
+            ("查看今日热点趋势", "汇总热点视频与值得关注的趋势。", "请总结今天的热门视频日报和值得关注的趋势。"),
+            ("查询商品与视频数据", "检索商品或视频数据并提炼结论。", "帮我查询商品与视频数据，并提炼可执行的结论。"),
+            ("拆解竞品内容", "比较竞品内容策略与可复用方法。", "请拆解竞品短视频的内容策略，并给出可复用的创作建议。"),
+            ("规划内容选题", "围绕目标受众生成可验证的选题方向。", "请根据我的目标受众和商品，规划一组可测试的短视频选题。"),
+            ("整理运营行动", "把洞察转为有优先级的运营清单。", "请把当前的内容与数据洞察整理成一份有优先级的运营行动清单。"),
+        ]
+        buttons = "".join(
+            f'<button class="official-workflow-item" type="button" data-chat-scene="{html_escape(label)}" '
+            f'data-prompt="{html_escape(prompt)}"><span class="official-workflow-icon">{index:02d}</span>'
+            f'<span><strong>{html_escape(label)}</strong><small>{html_escape(description)}</small></span><i>→</i></button>'
+            for index, (label, description, prompt) in enumerate(common_items, start=1)
+        )
+        return {
+            "kicker": "VIDEO ANALYZER · COMMON TASKS",
+            "title": "常用任务",
+            "intro": "选择后只会填入提示词，可继续补充对象、目标和素材。",
+            "tabs_class": "",
+            "tabs_attributes": "",
+            "tabs": '<button class="official-workflow-tab is-active" type="button" role="tab" aria-selected="true" data-official-tab="common">常用任务 <span>6</span></button>',
+            "panels": '<section class="official-workflow-panel is-active" role="tabpanel" data-official-panel="common"><div class="official-workflow-grid">' + buttons + '</div></section>',
+            "footer_status": "按当前站点能力执行",
+            "footer_hint": "选择后只填入提示词，不会自动执行任何操作",
+        }
     if provider == "chuhaijiang":
         research_items = [
             ("选品与市场调研", "围绕目标市场和类目建立候选池、需求与机会判断。", "我想做 TikTok Shop 选品与市场调研。目标市场是……，类目/关键词是……，请先按出海匠官方 Skill 的选品 SOP 帮我建立候选池。"),
@@ -1134,7 +1172,7 @@ def serve_chat_template(handler: BaseHTTPRequestHandler, provider: str, path: st
     provider = normalize_chat_provider(provider)
     provider_ui = dict(CHAT_PROVIDER_UI[provider])
     official_workflow_enabled = (
-        provider == "chuhaijiang"
+        provider in {"home", "chuhaijiang"}
         or (provider == "amazon" and official_sellersprite_skill_enabled())
     )
     modal_ui = render_chat_official_workflow_modal(provider)
