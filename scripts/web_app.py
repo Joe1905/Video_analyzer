@@ -505,18 +505,21 @@ CHAT_PROVIDER_OFFICIAL_QUICK_ACTIONS = {
         {
             "label": "\u9009\u54c1\u51b3\u7b56",
             "skill": "\u9009\u54c1\u51b3\u7b56",
+            "prompt": "请基于目标市场、品类和预算，评估选品机会、生命周期与入场时机。",
             "description": "\u5224\u65ad\u9009\u54c1\u673a\u4f1a\u3001\u751f\u547d\u5468\u671f\u4e0e\u5165\u573a\u65f6\u673a",
             "icon": "bars",
         },
         {
             "label": "\u8fbe\u4eba\u5efa\u8054",
             "skill": "\u8fbe\u4eba\u5efa\u8054",
+            "prompt": "请筛选适合合作的达人，评估匹配度，并生成可直接使用的建联文案。",
             "description": "\u7b5b\u9009\u8fbe\u4eba\u3001\u8bc4\u4f30\u5339\u914d\u5ea6\u5e76\u751f\u6210\u5efa\u8054\u6587\u6848",
             "icon": "trend",
         },
         {
             "label": "\u89c6\u9891\u7b56\u7565",
             "skill": "\u89c6\u9891\u7b56\u7565",
+            "prompt": "请拆解爆款视频的内容结构，并形成可执行的拍摄 Brief。",
             "description": "\u62c6\u89e3\u7206\u6b3e\u89c6\u9891\u5e76\u5f62\u6210\u62cd\u6444 Brief",
             "icon": "compare",
         },
@@ -630,7 +633,7 @@ NAV_ITEMS = [
 ]
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
-UI_ASSET_VERSION = "20260810-11"
+UI_ASSET_VERSION = "20260810-12"
 APP_UI_ASSETS = f"""
 <script id="ui-nav-state-boot">
 let uiNavExpanded = false;
@@ -988,10 +991,15 @@ def render_chat_quick_actions(provider: str, provider_ui: dict[str, Any], offici
             skill = html_escape(str(action.get("skill") or ""))
             preset_id = html_escape(str(action.get("preset_id") or ""))
             preset_id_attr = f' data-official-preset-id="{preset_id}"' if preset_id else ""
+            prompt = html_escape(str(action.get("prompt") or ""))
+            action_attr = (
+                f'data-prompt="{prompt}"'
+                if prompt else f'data-official-preset="{skill}"{preset_id_attr}'
+            )
             description = html_escape(str(action.get("description") or ""))
             actions.append(
                 '<button type="button" class="quick-prompt official-workflow-shortcut" '
-                f'data-official-preset="{skill}"{preset_id_attr}>'
+                f'{action_attr}>'
                 '<span class="quick-card-top">'
                 f'<span class="quick-number">{index:02d}</span>'
                 '<span class="quick-arrow" aria-hidden="true">\u2197</span>'
@@ -1030,6 +1038,31 @@ def render_chat_quick_actions(provider: str, provider_ui: dict[str, Any], offici
 
 
 def render_chat_official_workflow_modal(provider: str) -> dict[str, str]:
+    if provider == "chuhaijiang":
+        items = [
+            ("选品决策", "判断目标市场的选品机会、生命周期与入场时机", "请基于目标市场、品类和预算，评估选品机会、生命周期与入场时机。"),
+            ("达人建联", "筛选达人、评估匹配度并生成建联文案", "请筛选适合合作的达人，评估匹配度，并生成可直接使用的建联文案。"),
+            ("视频策略", "拆解爆款视频并形成拍摄 Brief", "请拆解爆款视频的内容结构，并形成可执行的拍摄 Brief。"),
+        ]
+        item_btns = [
+            '<button class="official-workflow-item" type="button" '
+            f'data-chuhaijiang-prompt="{html_escape(prompt)}">'
+            f'<span class="official-workflow-icon">{idx:02d}</span><span><strong>{html_escape(label)}</strong>'
+            f'<small>{html_escape(description)}</small></span><i>\u2192</i></button>'
+            for idx, (label, description, prompt) in enumerate(items, start=1)
+        ]
+        return {
+            "kicker": "CHUHAIJIANG · OFFICIAL SKILL",
+            "title": "出海匠官方场景库",
+            "intro": "选择一个出海匠官方场景后，可继续补充市场、品类、达人或内容线索。",
+            "tabs_class": " official-workflow-tabs--single",
+            "tabs_attributes": "",
+            "tabs": '<button class="official-workflow-tab is-active" type="button" role="tab" aria-selected="true" data-official-tab="comprehensive">官方场景 <span>3</span></button>',
+            "panels": (
+                '<section class="official-workflow-panel is-active" role="tabpanel" data-official-panel="comprehensive">'
+                '<div class="official-workflow-grid">' + "".join(item_btns) + '</div></section>'
+            ),
+        }
     if provider == "fastmoss":
         items = [
             ("fm-product-scout", "选品决策", "判断选品机会、生命周期与入场时机"),
@@ -1124,6 +1157,7 @@ def serve_chat_template(handler: BaseHTTPRequestHandler, provider: str, path: st
     official_workflow_enabled = (
         (provider == "amazon" and official_sellersprite_skill_enabled())
         or (provider == "fastmoss" and official_fastmoss_skill_enabled())
+        or provider == "chuhaijiang"
     )
     modal_ui = render_chat_official_workflow_modal(provider)
     chat_html = chat_html.replace("__CHAT_PROVIDER__", provider)
