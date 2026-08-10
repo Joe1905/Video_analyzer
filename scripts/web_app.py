@@ -645,7 +645,7 @@ CHUHAIJIANG_D534532_NAV_ITEMS = [
     {"key": "metrics", "href": "/metrics", "label": "\u6570\u636e", "title": "\u6570\u636e", "icon": '<path d="M4 19V5"/><path d="M20 19H4"/><path d="M8 16v-5"/><path d="M12 16V8"/><path d="M16 16v-7"/>'},
     {"key": "extract", "href": "/extract", "label": "\u5206\u6790", "title": "\u89c6\u9891\u5206\u6790", "icon": '<path d="M4 5h16v14H4z"/><path d="m10 9 5 3-5 3z"/><path d="M8 21h8"/><path d="M12 19v2"/>'},
 ]
-UI_ASSET_VERSION = "20260810-13"
+UI_ASSET_VERSION = "20260810-14"
 APP_UI_ASSETS = f"""
 <script id="ui-nav-state-boot">
 let uiNavExpanded = false;

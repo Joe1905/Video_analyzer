@@ -308,6 +308,8 @@ class UIContractTest(unittest.TestCase):
         self.assertIn('if(state.readOnly){await enterPublicReadOnly();return}', lan_chat)
         self.assertIn('body.ui-system.ui-route-lan-chat.lan-read-only #attachImage', lan_chat)
         self.assertIn('body.ui-system.ui-route-lan-chat.lan-read-only #sendButton', lan_chat)
+        self.assertIn('body.ui-system.ui-route-lan-chat.lan-read-only .left-rail{grid-template-rows:auto minmax(0,1fr) auto}', lan_chat)
+        self.assertIn('/assets/lan-chat.css?v=20260810-01', lan_chat)
         self.assertIn('["attachImage","sendButton"].forEach(id=>$(id).disabled=true)', lan_chat)
 
     def test_lan_chat_mobile_details_use_an_independent_drawer_header(self) -> None:
