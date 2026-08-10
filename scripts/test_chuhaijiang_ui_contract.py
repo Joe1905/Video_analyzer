@@ -57,6 +57,21 @@ class TestChuhaijiangUiContract(unittest.TestCase):
         ):
             self.assertNotIn(legacy_marker, page)
 
+    def test_chuhaijiang_official_scene_dialog_fills_prompts_without_preset_ids(self):
+        page = self.render("chuhaijiang", "/chuhaijiang")
+        self.assertIn('const OFFICIAL_WORKFLOW_ENABLED=true', page)
+        self.assertIn('id="officialWorkflowComposerLaunch"', page)
+        self.assertEqual(page.count('data-chuhaijiang-scene="'), 8)
+        self.assertNotIn('data-official-preset-id=', page)
+        for label in (
+            "选品与市场调研", "利润测算", "达人筛选与建联", "竞品、店铺与广告分析",
+            "AI 内容生成", "AI 画布创作", "视频剪辑", "社媒运营",
+        ):
+            self.assertIn(label, page)
+        template = (web_app.SCRIPTS_DIR / "static" / "chat.html").read_text(encoding="utf-8")
+        self.assertIn("data-chuhaijiang-scene", template)
+        self.assertIn("clearOfficialPreset();input.value=button.dataset.prompt", template)
+
     def test_source_canonicalizes_slashes_and_cuts_off_v1_proxy_routes(self):
         source = Path(web_app.__file__).read_text(encoding="utf-8")
         self.assertIn('if parsed.path == "/amazon/":', source)

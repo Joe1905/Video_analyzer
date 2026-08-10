@@ -567,6 +567,8 @@ CHUHAIJIANG_CONFIRMATIONS_LOCK = threading.Lock()
 CHAT_EXECUTION_CONTEXT = threading.local()
 CHUHAIJIANG_MCP_TRACE: list[dict[str, Any]] = []
 CHUHAIJIANG_MCP_TRACE_LOCK = threading.Lock()
+CHUHAIJIANG_MCP_AUDIT_DB = CHUHAIJIANG_CHAT_DATA_DIR / "mcp_audit.sqlite"
+CHUHAIJIANG_MCP_AUDIT_LOCK = threading.Lock()
 PROXY_POOL_ENABLED = os.getenv("PROXY_POOL_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
 UI_TEST_MODE = os.getenv("UI_TEST_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}
 UI_TEST_MODE_LIVE_WRITE_PREFIXES = ("/api/lan-chat/",)
@@ -612,7 +614,7 @@ NAV_ITEMS = [
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
 
-UI_ASSET_VERSION = "20260810-15"
+UI_ASSET_VERSION = "20260810-16"
 APP_UI_ASSETS = f"""
 <script id="ui-nav-state-boot">
 let uiNavExpanded = false;
@@ -1011,6 +1013,47 @@ def render_chat_quick_actions(provider: str, provider_ui: dict[str, Any], offici
 
 
 def render_chat_official_workflow_modal(provider: str) -> dict[str, str]:
+    if provider == "chuhaijiang":
+        research_items = [
+            ("选品与市场调研", "围绕目标市场和类目建立候选池、需求与机会判断。", "我想做 TikTok Shop 选品与市场调研。目标市场是……，类目/关键词是……，请先按出海匠官方 Skill 的选品 SOP 帮我建立候选池。"),
+            ("利润测算", "根据商品、物流、佣金和定价信息测算利润空间。", "我想测算 TikTok Shop 商品利润。目标市场是……，商品/商品 ID 是……，我已有的进货价、重量、物流与佣金信息是……。"),
+            ("达人筛选与建联", "筛选目标达人并准备建联策略与沟通内容。", "我想筛选并建联达人。目标市场是……，类目是……，预算和合作目标是……，请先给出筛选与建联方案。"),
+            ("竞品、店铺与广告分析", "分析竞品商品、店铺表现或广告素材与机会。", "我想分析竞品、店铺或广告。目标市场是……，对象链接/商品/店铺信息是……，请找出可执行的差异化机会。"),
+        ]
+        content_items = [
+            ("AI 内容生成", "规划商品或社媒内容，并先生成可审阅的内容方案。", "我想生成海外内容方案。目标市场是……，商品/品牌是……，目标平台与内容目标是……，请先给出可审阅的文案和素材计划。"),
+            ("AI 画布创作", "先梳理画布需求、素材与页面结构，不直接生成或发布。", "我想规划 AI 画布创作。用途是……，目标市场是……，已有素材和品牌要求是……，请先给出画布结构与素材清单。"),
+            ("视频剪辑", "基于已有素材规划剪辑目标、结构与交接步骤。", "我想规划视频剪辑。已有素材是……，目标平台和时长是……，希望突出……，请先给出剪辑结构与下一步。"),
+            ("社媒运营", "查看已绑定账号的运营数据和待办，不执行发布或私信。", "我想管理已绑定的社媒账号。目标平台/账号是……，我想先查看数据、评论或待办；请不要执行发布、回复或私信。"),
+        ]
+
+        def scene_buttons(items: list[tuple[str, str, str]]) -> str:
+            return "".join(
+                f'<button class="official-workflow-item" type="button" data-chuhaijiang-scene="{html_escape(label)}" '
+                f'data-prompt="{html_escape(prompt)}"><span class="official-workflow-icon">{index:02d}</span>'
+                f'<span><strong>{html_escape(label)}</strong><small>{html_escape(description)}</small></span><i>→</i></button>'
+                for index, (label, description, prompt) in enumerate(items, start=1)
+            )
+
+        return {
+            "kicker": "CHUHAIJIANG · OFFICIAL SKILL 1.2.6",
+            "title": "出海匠官方场景",
+            "intro": "选择场景后只会填入普通提示词；发送前请补充国家、对象与目标。",
+            "tabs_class": "",
+            "tabs_attributes": "",
+            "tabs": (
+                '<button class="official-workflow-tab is-active" type="button" role="tab" aria-selected="true" data-official-tab="research">数据与经营 <span>4</span></button>'
+                '<button class="official-workflow-tab" type="button" role="tab" aria-selected="false" data-official-tab="content">内容与运营 <span>4</span></button>'
+            ),
+            "panels": (
+                '<section class="official-workflow-panel is-active" role="tabpanel" data-official-panel="research">'
+                '<div class="official-workflow-grid">' + scene_buttons(research_items) + '</div></section>'
+                '<section class="official-workflow-panel" role="tabpanel" data-official-panel="content" hidden>'
+                '<div class="official-workflow-grid">' + scene_buttons(content_items) + '</div></section>'
+            ),
+            "footer_status": "基于出海匠官方 Skill 1.2.6",
+            "footer_hint": "选择后只填入提示词，不会自动执行任何操作",
+        }
     if provider != "amazon":
         return {
             "kicker": "",
@@ -1020,6 +1063,8 @@ def render_chat_official_workflow_modal(provider: str) -> dict[str, str]:
             "tabs_attributes": "",
             "tabs": "",
             "panels": "",
+            "footer_status": "",
+            "footer_hint": "",
         }
 
     comprehensive_items = [
@@ -1079,6 +1124,8 @@ def render_chat_official_workflow_modal(provider: str) -> dict[str, str]:
             '<section class="official-workflow-panel" role="tabpanel" data-official-panel="tactical" hidden>'
             '<div class="official-workflow-grid official-workflow-grid--compact">' + "".join(tact_btns) + '</div></section>'
         ),
+        "footer_status": "当前接入固定版本官方链路",
+        "footer_hint": "选择后请补充关键词、ASIN 或目标类目",
     }
 
 
@@ -1086,7 +1133,10 @@ def serve_chat_template(handler: BaseHTTPRequestHandler, provider: str, path: st
     chat_html = (SCRIPTS_DIR / "static" / "chat.html").read_text(encoding="utf-8")
     provider = normalize_chat_provider(provider)
     provider_ui = dict(CHAT_PROVIDER_UI[provider])
-    official_workflow_enabled = provider == "amazon" and official_sellersprite_skill_enabled()
+    official_workflow_enabled = (
+        provider == "chuhaijiang"
+        or (provider == "amazon" and official_sellersprite_skill_enabled())
+    )
     modal_ui = render_chat_official_workflow_modal(provider)
     chat_html = chat_html.replace("__CHAT_PROVIDER__", provider)
     chat_html = chat_html.replace(
@@ -1100,6 +1150,8 @@ def serve_chat_template(handler: BaseHTTPRequestHandler, provider: str, path: st
     chat_html = chat_html.replace("__OFFICIAL_WORKFLOW_TABS_ATTRIBUTES__", modal_ui["tabs_attributes"])
     chat_html = chat_html.replace("__OFFICIAL_WORKFLOW_TABS__", modal_ui["tabs"])
     chat_html = chat_html.replace("__OFFICIAL_WORKFLOW_PANELS__", modal_ui["panels"])
+    chat_html = chat_html.replace("__OFFICIAL_WORKFLOW_FOOTER_STATUS__", modal_ui["footer_status"])
+    chat_html = chat_html.replace("__OFFICIAL_WORKFLOW_FOOTER_HINT__", modal_ui["footer_hint"])
     chat_html = chat_html.replace("__CHAT_PROVIDER_LABEL__", CHAT_PROVIDER_LABELS[provider])
     chat_html = chat_html.replace("__CHAT_WORKSPACE_LABEL__", provider_ui["workspace"])
     chat_html = chat_html.replace("__CHAT_NEW_LABEL__", provider_ui["new_label"])
@@ -6713,6 +6765,107 @@ def generate_generic_mock_tool_payload(
     }
 
 
+def _chuhaijiang_audit_hash(value: Any) -> str:
+    return hashlib.sha256(str(value or "").encode("utf-8")).hexdigest()[:16]
+
+
+def record_chuhaijiang_mcp_audit(
+    *,
+    trace_id: str,
+    owner_id: str,
+    session_id: str,
+    tool_id: str,
+    args_digest: str,
+    stage: str,
+    **detail: Any,
+) -> None:
+    """Persist a redacted, owner-scoped audit event without affecting tool execution."""
+    sensitive_detail_keys = {
+        "args", "arguments", "authorization", "cookie", "error", "error_message",
+        "headers", "key", "payload", "secret", "token", "x-api-key",
+    }
+    safe_detail = {
+        str(key): value
+        for key, value in detail.items()
+        if str(key).strip().lower() not in sensitive_detail_keys
+        and (
+            value is None or isinstance(value, (str, int, float, bool))
+            or (isinstance(value, list) and all(isinstance(item, str) for item in value))
+        )
+    }
+    event = {
+        "timestamp": round(time.time(), 3),
+        "trace_id": str(trace_id),
+        "tool_id": str(tool_id),
+        "args_sha256_16": str(args_digest),
+        "stage": str(stage),
+        **safe_detail,
+    }
+    try:
+        CHUHAIJIANG_MCP_AUDIT_DB.parent.mkdir(parents=True, exist_ok=True)
+        with CHUHAIJIANG_MCP_AUDIT_LOCK, sqlite3.connect(CHUHAIJIANG_MCP_AUDIT_DB, timeout=3) as conn:
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS chuhaijiang_mcp_audit (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp REAL NOT NULL,
+                    trace_id TEXT NOT NULL,
+                    owner_hash TEXT NOT NULL,
+                    session_hash TEXT NOT NULL,
+                    tool_id TEXT NOT NULL,
+                    args_sha256_16 TEXT NOT NULL,
+                    stage TEXT NOT NULL,
+                    detail_json TEXT NOT NULL
+                )"""
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_chuhaijiang_mcp_audit_owner_id "
+                "ON chuhaijiang_mcp_audit(owner_hash, id DESC)"
+            )
+            conn.execute(
+                """INSERT INTO chuhaijiang_mcp_audit
+                   (timestamp, trace_id, owner_hash, session_hash, tool_id, args_sha256_16, stage, detail_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    event["timestamp"], event["trace_id"], _chuhaijiang_audit_hash(owner_id),
+                    _chuhaijiang_audit_hash(session_id), event["tool_id"], event["args_sha256_16"],
+                    event["stage"], json.dumps(safe_detail, ensure_ascii=False, separators=(",", ":")),
+                ),
+            )
+            retention = max(100, min(int(os.getenv("CHUHAIJIANG_MCP_AUDIT_RETENTION", "10000")), 100000))
+            conn.execute(
+                "DELETE FROM chuhaijiang_mcp_audit WHERE id NOT IN "
+                "(SELECT id FROM chuhaijiang_mcp_audit ORDER BY id DESC LIMIT ?)",
+                (retention,),
+            )
+    except Exception as exc:
+        print(f"[CHUHAIJIANG MCP AUDIT] write_failed error_type={type(exc).__name__}", flush=True)
+
+
+def list_chuhaijiang_mcp_audit(owner_id: str, limit: int = 100) -> list[dict[str, Any]]:
+    """Return only the caller's redacted audit trail; raw parameters and credentials are never stored."""
+    bounded_limit = max(1, min(int(limit), 200))
+    if not CHUHAIJIANG_MCP_AUDIT_DB.is_file():
+        return []
+    try:
+        with sqlite3.connect(CHUHAIJIANG_MCP_AUDIT_DB, timeout=3) as conn:
+            rows = conn.execute(
+                """SELECT timestamp, trace_id, session_hash, tool_id, args_sha256_16, stage, detail_json
+                   FROM chuhaijiang_mcp_audit WHERE owner_hash = ? ORDER BY id DESC LIMIT ?""",
+                (_chuhaijiang_audit_hash(owner_id), bounded_limit),
+            ).fetchall()
+        return [
+            {
+                "timestamp": row[0], "trace_id": row[1], "session_hash": row[2], "tool_id": row[3],
+                "args_sha256_16": row[4], "stage": row[5],
+                "detail": json.loads(row[6]) if row[6] else {},
+            }
+            for row in rows
+        ]
+    except Exception as exc:
+        print(f"[CHUHAIJIANG MCP AUDIT] read_failed error_type={type(exc).__name__}", flush=True)
+        return []
+
+
 def execute_prefixed_tool(
     tool_id: str,
     args: dict[str, Any],
@@ -6729,14 +6882,31 @@ def execute_prefixed_tool(
     def trace(stage: str, **extra: Any) -> None:
         if domain != "chuhaijiang":
             return
-        event = {"trace_id": trace_id, "stage": stage, "tool_id": tool_id, "args_sha256_16": args_digest, **extra}
+        context = getattr(CHAT_EXECUTION_CONTEXT, "chuhaijiang", {})
+        elapsed_ms = round((time.monotonic() - started) * 1000)
+        event = {
+            "timestamp": round(time.time(), 3), "trace_id": trace_id, "stage": stage,
+            "tool_id": tool_id, "args_sha256_16": args_digest, "elapsed_ms": elapsed_ms, **extra,
+        }
         with CHUHAIJIANG_MCP_TRACE_LOCK:
             CHUHAIJIANG_MCP_TRACE.append(event)
             del CHUHAIJIANG_MCP_TRACE[:-100]
+        record_chuhaijiang_mcp_audit(
+            trace_id=trace_id,
+            owner_id=str(context.get("owner_id") or "public"),
+            session_id=str(context.get("session_id") or ""),
+            tool_id=tool_id,
+            args_digest=args_digest,
+            stage=stage,
+            elapsed_ms=elapsed_ms,
+            **extra,
+        )
         print("[CHUHAIJIANG MCP TRACE] " + json.dumps(event, ensure_ascii=False, separators=(",", ":")), flush=True)
 
     try:
+        trace("received", allowed_tool_count=len(allowed_tool_ids or ()))
         if allowed_tool_ids is not None and tool_id not in allowed_tool_ids:
+            trace("blocked", reason="outside_active_allowlist")
             return {
                 "ok": False,
                 "elapsed": round(time.monotonic() - started, 3),
@@ -6761,14 +6931,26 @@ def execute_prefixed_tool(
                 approved = context.get("approved") or {}
                 if not (approved.get("tool_id") == tool_id and approved.get("arguments") == canonical):
                     with CHUHAIJIANG_CONFIRMATIONS_LOCK:
-                        CHUHAIJIANG_CONFIRMATIONS[key] = {"tool_id": tool_id, "arguments": canonical, "expires_at": time.time() + 300}
+                        CHUHAIJIANG_CONFIRMATIONS[key] = {
+                            "tool_id": tool_id, "arguments": canonical, "expires_at": time.time() + 300,
+                            "trace_id": trace_id,
+                        }
+                    trace("confirmation_required", expires_in_seconds=300)
                     return {"ok": False, "elapsed": round(time.monotonic() - started, 3), "error": "confirmation_required", "confirmation_required": {"tool": tool_id, "arguments": args or {}, "expires_in_seconds": 300}}
             if is_tool_mock_enabled(domain):
-                print(
-                    f"[CHAT TOOL MOCK INTERCEPT] provider={domain} requested_tool={tool_id} "
-                    f"args={json.dumps(args or {}, ensure_ascii=False)}",
-                    flush=True,
-                )
+                trace("mock_intercepted")
+                if domain == "chuhaijiang":
+                    print(
+                        f"[CHAT TOOL MOCK INTERCEPT] provider={domain} requested_tool={tool_id} "
+                        f"args_sha256_16={args_digest}",
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f"[CHAT TOOL MOCK INTERCEPT] provider={domain} requested_tool={tool_id} "
+                        f"args={json.dumps(args or {}, ensure_ascii=False)}",
+                        flush=True,
+                    )
                 mock_payload = generate_generic_mock_tool_payload(domain, name, args or {})
                 return {"ok": True, "elapsed": 0.005, "data": mock_payload}
             chat_type = domain
@@ -6777,15 +6959,28 @@ def execute_prefixed_tool(
             normalized_args, runtime_normalization = normalize_mcp_tool_arguments(chat_type, name, normalized_args)
             if runtime_normalization:
                 print(f"[CHAT] normalized {tool_id} arguments: {runtime_normalization}", flush=True)
+                trace("arguments_normalized", normalization_action=runtime_normalization)
             result = mcp_bridge_request(
                 chat_type, "tools/call", {"name": name, "arguments": normalized_args, "cache": {}}
             )
-            trace("bridge_returned", ok=True)
+            cache_meta = result.get("_cache") if isinstance(result, dict) else None
+            trace("bridge_returned", ok=True, cache_hit=bool((cache_meta or {}).get("hit")))
             return {"ok": True, "elapsed": round(time.monotonic() - started, 3), "data": result}
         return {"ok": False, "elapsed": round(time.monotonic() - started, 3), "error": f"Unknown tool domain: {domain}"}
     except Exception as exc:
-        trace("bridge_error", error_type=type(exc).__name__)
-        return {"ok": False, "elapsed": round(time.monotonic() - started, 3), "error": str(exc)}
+        error_text = str(exc).lower()
+        error_kind = (
+            "authentication" if "401" in error_text or "auth" in error_text
+            else "timeout" if "timeout" in error_text or "timed out" in error_text
+            else "connection" if "connect" in error_text or "bridge" in error_text
+            else "execution"
+        )
+        trace("bridge_error", error_type=type(exc).__name__, error_kind=error_kind)
+        error_message = (
+            f"Chuhaijiang MCP {error_kind} error"
+            if domain == "chuhaijiang" else str(exc)
+        )
+        return {"ok": False, "elapsed": round(time.monotonic() - started, 3), "error": error_message}
 
 
 def provider_forces_mcp_tools(provider: str) -> bool:
@@ -12479,6 +12674,18 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/chat/tool-catalog":
             provider = normalize_chat_provider(parse_qs(parsed.query).get("provider", ["home"])[0])
             return json_response(self, HTTPStatus.OK, build_tool_catalog(provider))
+        if parsed.path == "/api/chat/mcp-audit":
+            query = parse_qs(parsed.query)
+            provider = normalize_chat_provider(query.get("provider", ["home"])[0])
+            if provider != "chuhaijiang":
+                return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Audit trail is only available for chuhaijiang"})
+            try:
+                limit = int(query.get("limit", ["100"])[0])
+            except (TypeError, ValueError):
+                return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Invalid audit limit"})
+            return json_response(self, HTTPStatus.OK, {
+                "events": list_chuhaijiang_mcp_audit(current_global_owner_id(self), limit),
+            })
         if parsed.path.startswith("/api/chat/attachments/"):
             attachment_id = unquote(parsed.path.rsplit("/", 1)[-1])
             return self.serve_chat_attachment(attachment_id)
@@ -13999,14 +14206,32 @@ class Handler(BaseHTTPRequestHandler):
         if provider == "chuhaijiang":
             confirmation_key = (str(owner_id), str(session.id))
             explicit_confirmation = bool(re.fullmatch(r"(?:确认|确认执行|同意|好的，?确认|是，?确认)[!！。]?", text.strip(), re.I))
+            pending: dict[str, Any] | None = None
+            confirmation_stage = ""
             with CHUHAIJIANG_CONFIRMATIONS_LOCK:
                 pending = CHUHAIJIANG_CONFIRMATIONS.get(confirmation_key)
                 if pending and float(pending.get("expires_at") or 0) >= time.time() and explicit_confirmation:
                     chuhaijiang_confirmation = dict(pending)
                     CHUHAIJIANG_CONFIRMATIONS.pop(confirmation_key, None)
+                    confirmation_stage = "confirmation_accepted"
                 else:
                     # Any non-confirmation message, expiry, or retry invalidates the pending action.
                     CHUHAIJIANG_CONFIRMATIONS.pop(confirmation_key, None)
+                    if pending:
+                        confirmation_stage = (
+                            "confirmation_expired"
+                            if float(pending.get("expires_at") or 0) < time.time()
+                            else "confirmation_invalidated"
+                        )
+            if pending and confirmation_stage:
+                record_chuhaijiang_mcp_audit(
+                    trace_id=str(pending.get("trace_id") or "confirmation"),
+                    owner_id=owner_id,
+                    session_id=str(session.id),
+                    tool_id=str(pending.get("tool_id") or ""),
+                    args_digest=_chuhaijiang_audit_hash(pending.get("arguments") or ""),
+                    stage=confirmation_stage,
+                )
 
         try:
             attachments = process_chat_attachments(raw_attachments, text)

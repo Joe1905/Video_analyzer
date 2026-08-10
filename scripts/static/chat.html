@@ -103,7 +103,7 @@
     <div class="official-workflow-body">
       __OFFICIAL_WORKFLOW_PANELS__
     </div>
-    <footer class="official-workflow-foot"><span><i></i>当前接入固定版本官方链路</span><small>选择后请补充关键词、ASIN 或目标类目</small></footer>
+    <footer class="official-workflow-foot"><span><i></i>__OFFICIAL_WORKFLOW_FOOTER_STATUS__</span><small>__OFFICIAL_WORKFLOW_FOOTER_HINT__</small></footer>
   </section>
 </div>
 </div>
@@ -155,6 +155,9 @@ async function deleteSession(id){if(!confirm(TXT.deleteConfirm))return;const del
 </script>
 <script>
 (()=>{const originalRenderMsg=renderMsg;renderMsg=function(message,scroll=true){originalRenderMsg(message,scroll);if(message?.role!=="user")return;const preset=message.official_preset,label=String(preset?.label||"").trim();if(!label)return;const messageId=String(message.id||""),clientId=String(message._clientId||"");let item=messageId?msgBox.querySelector(`[data-msg-id="${CSS.escape(messageId)}"]`):null;if(!item&&clientId)item=msgBox.querySelector(`[data-client-msg-id="${CSS.escape(clientId)}"]`);const bubble=item?.querySelector(".bubble");if(!bubble||bubble.querySelector(".message-preset"))return;const marker=document.createElement("div");marker.className="message-preset";marker.title="本次消息按官方预设约束工具范围";const prefix=document.createElement("span"),name=document.createElement("b");prefix.textContent="官方预设";name.textContent=label;marker.append(prefix,name);bubble.prepend(marker)};const sendWithPresetMarker=send;send=async function(){const preset=S.officialPresetId?{id:S.officialPresetId,label:S.officialPresetName||""}:null,before=new Set(S.messages);const result=await sendWithPresetMarker();if(!preset)return result;const message=[...S.messages].reverse().find(item=>item.role==="user"&&!before.has(item));if(message){message.official_preset=preset;renderMsg(message,false)}return result}})();
+</script>
+<script>
+(()=>{if(CHAT_PROVIDER!=="chuhaijiang")return;const previousDomainLabel=domainLabel;domainLabel=function(domain){return domain==="chuhaijiang"?"出海匠":previousDomainLabel(domain)};document.querySelectorAll('[data-chuhaijiang-scene]').forEach(button=>button.addEventListener('click',()=>{clearOfficialPreset();input.value=button.dataset.prompt||"";adjustInputHeight();if(officialWorkflowLayer?.classList.contains('is-open'))setOfficialWorkflowOpen(false);requestAnimationFrame(()=>input.focus())}))})();
 </script>
 <script>
 (()=>{const bar=document.querySelector(".input-bar");if(!bar)return;let dragDepth=0;const hasFiles=event=>Array.from(event.dataTransfer?.types||[]).includes("Files"),clear=()=>{dragDepth=0;bar.classList.remove("is-dragging")};bar.addEventListener("dragenter",event=>{if(!hasFiles(event))return;event.preventDefault();dragDepth++;bar.classList.add("is-dragging")});bar.addEventListener("dragover",event=>{if(!hasFiles(event))return;event.preventDefault();event.dataTransfer.dropEffect="copy";bar.classList.add("is-dragging")});bar.addEventListener("dragleave",event=>{if(!bar.classList.contains("is-dragging"))return;dragDepth=Math.max(0,dragDepth-1);if(!dragDepth)bar.classList.remove("is-dragging")});bar.addEventListener("drop",event=>{if(!hasFiles(event)){clear();return}event.preventDefault();const files=event.dataTransfer?.files;clear();if(files?.length)addImageFiles(files).catch(error=>alert(error.message))});})();
