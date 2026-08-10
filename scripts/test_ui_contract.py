@@ -293,6 +293,17 @@ class UIContractTest(unittest.TestCase):
             r"\.message-reply\s*\{[^}]*border-left:\s*2px solid #a9cbc4;[^}]*background:\s*#f3f8f7;",
         )
 
+    def test_lan_chat_uses_dock_identity_and_public_is_read_only(self) -> None:
+        lan_chat = (STATIC_DIR / "lan_chat.html").read_text(encoding="utf-8")
+        self.assertNotIn("先选择飞书用户", lan_chat)
+        self.assertNotIn("feishuStep", lan_chat)
+        self.assertNotIn("chooseFeishuUser", lan_chat)
+        self.assertIn("function renderDeviceAccounts(accounts)", lan_chat)
+        self.assertIn('publicRequest("/api/lan-chat/account-options")', lan_chat)
+        self.assertIn("async function enterPublicReadOnly()", lan_chat)
+        self.assertIn('$("messageInput").placeholder="公共账户仅可查看公共频道"', lan_chat)
+        self.assertIn('if(state.readOnly){await enterPublicReadOnly();return}', lan_chat)
+
     def test_lan_chat_mobile_details_use_an_independent_drawer_header(self) -> None:
         lan_chat = (STATIC_DIR / "lan_chat.html").read_text(encoding="utf-8")
         lan_css = (STATIC_DIR / "assets" / "lan-chat.css").read_text(encoding="utf-8")
