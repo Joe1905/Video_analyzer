@@ -26,13 +26,13 @@ class TestChuhaijiangBoundary(unittest.TestCase):
         self.assertFalse(is_high_risk_tool("canvas", {"action": "load"}))
         self.assertFalse(is_high_risk_tool("account_info", {}))
 
-    def test_legacy_workflow_presentation_has_no_preset_id(self):
+    def test_legacy_workflow_presentation_uses_registered_presets(self):
         web_app = Path(__file__).with_name("web_app.py").read_text(encoding="utf-8")
         chat_html = Path(__file__).with_name("static").joinpath("chat.html").read_text(encoding="utf-8")
         self.assertIn('or provider == "chuhaijiang"', web_app)
-        self.assertIn('data-chuhaijiang-prompt=', web_app)
-        self.assertIn('data-prompt="{prompt}"', web_app)
-        self.assertIn('data-chuhaijiang-prompt', chat_html)
+        self.assertIn('"preset_id": "cj-product-scout"', web_app)
+        self.assertIn('data-official-preset-id="{preset_id}"', web_app)
+        self.assertNotIn('data-chuhaijiang-prompt', chat_html)
 
 
 if __name__ == "__main__":
