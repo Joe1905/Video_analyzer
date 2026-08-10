@@ -56,14 +56,14 @@ body{background:var(--bg);color:var(--text);font-family:Inter,"PingFang SC","Mic
 .h-copy b{display:block;font-size:13px;font-weight:700}
 .h-item.active .h-copy b{color:var(--accent2)}
 .h-copy span{display:block;font-size:11px;color:var(--text3);margin-top:1px}
-.h-dot{width:7px;height:7px;border-radius:50%;flex:none}
+.h-dot{width:7px;height:7px;border-radius:50%;flex:none;opacity:1;visibility:visible;transition:opacity .14s ease,visibility .14s step-end}
 .h-dot.ok{background:var(--green)}
 .h-dot.warn{background:var(--amber)}
 .h-dot.fail{background:var(--red)}
-.h-item:hover .h-dot{display:none!important}
+.h-item:hover .h-dot,.h-item:focus-within .h-dot{opacity:0!important;visibility:hidden!important;pointer-events:none}
 
-.h-del{position:absolute;right:8px;top:50%;transform:translateY(-50%);width:22px;height:22px;border-radius:6px;border:0!important;background:transparent!important;color:var(--text3)!important;font-size:14px;display:none;align-items:center;justify-content:center;padding:0!important;min-height:auto!important;cursor:pointer;z-index:2}
-.h-item:hover .h-del{display:inline-flex!important}
+.h-del{position:absolute;right:8px;top:50%;transform:translateY(-50%);width:22px;height:22px;border-radius:6px;border:0!important;background:transparent!important;color:var(--text3)!important;font-size:14px;display:inline-flex!important;align-items:center;justify-content:center;padding:0!important;min-height:auto!important;cursor:pointer;z-index:2;opacity:0;visibility:hidden;pointer-events:none;transition:opacity .14s ease,visibility .14s step-end}
+.h-item:hover .h-del,.h-item:focus-within .h-del{opacity:1;visibility:visible;pointer-events:auto;transition:opacity .14s ease,visibility 0s}
 .h-del:hover{background:var(--red-soft)!important;color:var(--red)!important}
 
 /* Center main */
