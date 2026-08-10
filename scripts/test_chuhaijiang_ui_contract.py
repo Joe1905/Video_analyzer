@@ -45,9 +45,12 @@ class TestChuhaijiangUiContract(unittest.TestCase):
 
     def test_chuhaijiang_has_provider_copy_but_never_the_old_independent_shell(self):
         page = self.render("chuhaijiang", "/chuhaijiang")
+        shared_styles = (web_app.SCRIPTS_DIR / "static" / "assets" / "ui-system.css").read_text(encoding="utf-8")
         self.assertEqual(CHAT_PROVIDER_DEFAULT_DOMAINS["chuhaijiang"], {"chuhaijiang"})
         self.assertEqual(MCP_CHAT_CONFIGS["chuhaijiang"]["default_port"], 4104)
         self.assertIn("出海匠", page)
+        self.assertIn("ui-route-chuhaijiang", shared_styles)
+        self.assertNotIn("ui-route-fastmoss", shared_styles)
         for legacy_marker in (
             'data-chuhaijiang-independent="1"', 'SellerSprite MCP',
             'const BASE_PATH=',
