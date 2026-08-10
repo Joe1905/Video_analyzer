@@ -92,7 +92,7 @@ class TestChuhaijiangUiContract(unittest.TestCase):
         home = self.render("home", "/")
         styles = (web_app.SCRIPTS_DIR / "static" / "assets" / "ui-system.css").read_text(encoding="utf-8")
         self.assertIn("SociaVault 数据洞察", home)
-        self.assertIn("SociaVault · 就绪", home)
+        self.assertEqual(web_app.CHAT_PROVIDER_UI["home"]["model"], "SociaVault · 就绪")
         self.assertIn('body[data-provider="home"]', styles)
         self.assertIn("--ui-brand: #7447d9", styles)
         self.assertIn('body[data-provider="amazon"]', styles)
