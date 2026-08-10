@@ -58,6 +58,39 @@
   }
 }
 
+/* Product-wide identity selector. Kept in the shared shell so every route has
+   the same data scope before page-specific code starts. */
+.ui-nav__identity {
+  margin: auto 10px 12px;
+  width: calc(100% - 20px);
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px;
+  color: inherit;
+  background: rgba(255,255,255,.06);
+  border: 1px solid rgba(255,255,255,.12);
+  border-radius: 12px;
+  cursor: pointer;
+  text-align: left;
+}
+.ui-nav__identity:hover { background: rgba(255,255,255,.12); }
+.ui-nav__identity-avatar {
+  width: 28px; height: 28px; display: grid; place-items: center; flex: 0 0 auto;
+  border-radius: 50%; background: rgba(255,255,255,.18); font-size: 12px; font-weight: 700;
+}
+.ui-nav__identity-copy { display: grid; min-width: 0; }
+.ui-nav__identity-copy b,.ui-nav__identity-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ui-nav__identity-copy b { font-size: 12px; }.ui-nav__identity-copy small { opacity: .68; font-size: 10px; }
+.ui-global-user-modal[hidden] { display: none; }
+.ui-global-user-modal { position: fixed; inset: 0; z-index: 10050; display: grid; place-items: center; padding: 20px; }
+.ui-global-user-backdrop { position: absolute; inset: 0; border: 0; background: rgba(15,23,42,.48); backdrop-filter: blur(8px); }
+.ui-global-user-panel { position: relative; width: min(440px,100%); max-height: min(680px,calc(100vh - 40px)); overflow: auto; border: 1px solid rgba(148,163,184,.32); border-radius: 18px; background: #fff; color: #182033; box-shadow: 0 24px 70px rgba(15,23,42,.3); }
+.ui-global-user-panel header { display:flex; justify-content:space-between; align-items:start; padding: 20px 20px 12px; }.ui-global-user-panel h2 { margin:2px 0 0; font-size:20px; }.ui-global-user-panel header small { color:#64748b; }.ui-global-user-close { border:0; background:transparent; font-size:24px; cursor:pointer; color:#64748b; }
+.ui-global-user-options { display:grid; gap:8px; padding: 8px 14px 16px; }.ui-global-user-option { display:flex; align-items:center; gap:12px; width:100%; padding:12px; border:1px solid #e2e8f0; border-radius:12px; background:#fff; cursor:pointer; text-align:left; }.ui-global-user-option:hover,.ui-global-user-option.is-current { border-color:#6d7cff; background:#f5f7ff; }.ui-global-user-option .avatar { width:34px; height:34px; border-radius:50%; display:grid; place-items:center; background:#e2e8f0; overflow:hidden; font-weight:700; }.ui-global-user-option .avatar img { width:100%; height:100%; object-fit:cover; }.ui-global-user-option .copy { display:grid; gap:2px; }.ui-global-user-option small { color:#64748b; }.ui-global-user-loading { padding:18px; text-align:center; color:#64748b; }
+@media (max-width: 860px) { .ui-nav__identity { margin-top: 14px; margin-bottom: 0; } }
+
 /*
  * Navigation compatibility boundary.
  * Legacy templates still contain unlayered global button rules, so the shared
@@ -2086,19 +2119,41 @@ body.ui-system .ui-nav__toggle:hover {
     display: grid;
     place-items: center;
     border-radius: 14px;
-    background: var(--ui-brand);
+    background: linear-gradient(135deg, #2563eb 0%, #4f46e5 50%, #7c3aed 100%);
     color: #fff;
-    box-shadow: 0 10px 24px rgba(49, 92, 255, .26);
+    box-shadow: 0 8px 20px -4px rgba(37, 99, 235, 0.45), inset 0 1px 1px rgba(255, 255, 255, 0.3);
+    border: 1px solid rgba(255, 255, 255, 0.18);
     text-decoration: none;
+    position: relative;
+    overflow: hidden;
+    transition: transform 0.22s var(--ui-ease), box-shadow 0.22s var(--ui-ease), border-color 0.22s var(--ui-ease);
+  }
+
+  .ui-nav__brand::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(circle at 25% 20%, rgba(255, 255, 255, 0.28), transparent 70%);
+    pointer-events: none;
+  }
+
+  .ui-nav__brand:hover {
+    transform: translateY(-2px) scale(1.04);
+    box-shadow: 0 12px 26px -4px rgba(37, 99, 235, 0.55), 0 0 16px rgba(124, 58, 237, 0.35), inset 0 1px 1px rgba(255, 255, 255, 0.45);
+    border-color: rgba(255, 255, 255, 0.35);
+  }
+
+  .ui-nav__brand:active {
+    transform: translateY(0) scale(0.97);
   }
 
   .ui-nav__brand svg {
     width: 24px;
     height: 24px;
     display: block;
-    fill: currentColor;
-    stroke: none;
-    transform: translateX(1px);
+    position: relative;
+    z-index: 1;
+    filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.18));
   }
 
   .ui-nav__toggle,

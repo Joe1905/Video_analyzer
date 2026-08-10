@@ -612,7 +612,7 @@ NAV_ITEMS = [
 ]
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
-UI_ASSET_VERSION = "20260803-04"
+UI_ASSET_VERSION = "20260810-01"
 APP_UI_ASSETS = f"""
 <script id="ui-nav-state-boot">
 let uiNavExpanded = false;
@@ -734,12 +734,12 @@ def legacy_mcp_session_summaries(provider: str) -> list[dict[str, Any]]:
     return rows
 
 
-def provider_display_session(provider: str, public_id: str) -> Session | None:
+def provider_display_session(provider: str, public_id: str, owner_id: str = "public") -> Session | None:
     provider = normalize_chat_provider(provider)
     store = chat_store_for_provider(provider)
-    stored_sid = provider_session_exists(provider, public_id)
+    stored_sid = provider_session_exists(provider, public_id, owner_id)
     current = store.get_session(stored_sid) if stored_sid else None
-    legacy = legacy_mcp_session(provider, public_id) if provider in {"amazon", "fastmoss"} else None
+    legacy = legacy_mcp_session(provider, public_id) if owner_id == "public" and provider in {"amazon", "fastmoss"} else None
     legacy_session = legacy_mcp_session_to_session(legacy) if legacy else None
     if legacy_session and current:
         merged = Session(
@@ -795,7 +795,22 @@ def render_app_nav(current_path: str) -> str:
     )
     brand = (
         '<a class="ui-nav__brand" href="/" aria-label="\u8fd4\u56de\u9996\u9875" title="\u8fd4\u56de\u9996\u9875">'
-        '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7 17 12 9 17Z"/></svg></a>'
+        '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">'
+        '<defs>'
+        '<linearGradient id="uiBrandFg" x1="8" y1="4" x2="18" y2="16" gradientUnits="userSpaceOnUse">'
+        '<stop offset="0%" stop-color="#FFFFFF"/>'
+        '<stop offset="100%" stop-color="#E2E8F0"/>'
+        '</linearGradient>'
+        '<linearGradient id="uiBrandAura" x1="7" y1="2" x2="19" y2="18" gradientUnits="userSpaceOnUse">'
+        '<stop offset="0%" stop-color="#93C5FD"/>'
+        '<stop offset="100%" stop-color="#C084FC"/>'
+        '</linearGradient>'
+        '</defs>'
+        '<path d="M7 4.75A2.75 2.75 0 0 1 11.23 2.44l8.25 5.25a2.75 2.75 0 0 1 0 4.62l-8.25 5.25A2.75 2.75 0 0 1 7 15.25V4.75Z" fill="url(#uiBrandAura)" opacity="0.38"/>'
+        '<path d="M8 5.6A1.6 1.6 0 0 1 10.46 4.25l7.5 4.9a1.6 1.6 0 0 1 0 2.7l-7.5 4.9A1.6 1.6 0 0 1 8 15.4V5.6Z" fill="url(#uiBrandFg)"/>'
+        '<path d="M18.5 2C18.7 3.1 19.4 3.8 20.5 4C19.4 4.2 18.7 4.9 18.5 6C18.3 4.9 17.6 4.2 16.5 4C17.6 3.8 18.3 3.1 18.5 2Z" fill="#F472B6"/>'
+        '<path d="M5 18.5C5.1 19.2 5.5 19.6 6.2 19.7C5.5 19.8 5.1 20.2 5 20.9C4.9 20.2 4.5 19.8 3.8 19.7C4.5 19.6 4.9 19.2 5 18.5Z" fill="#60A5FA" opacity="0.9"/>'
+        '</svg></a>'
     )
     mobile_trigger = (
         '<button class="ui-mobile-nav-trigger" type="button" aria-label="\u6253\u5f00\u5bfc\u822a" '
@@ -813,11 +828,27 @@ def render_app_nav(current_path: str) -> str:
         '<button class="ui-nav__backdrop" type="button" aria-label="\u5173\u95ed\u5bfc\u822a" '
         'tabindex="-1"></button>'
     )
+    identity = (
+        '<button class="ui-nav__identity" type="button" data-global-user-trigger '
+        'aria-label="切换全局身份" title="切换全局身份">'
+        '<span class="ui-nav__identity-avatar" aria-hidden="true">…</span>'
+        '<span class="ui-nav__identity-copy"><b>正在识别身份</b><small>全局身份</small></span>'
+        '</button>'
+    )
+    identity_modal = (
+        '<div class="ui-global-user-modal" id="ui-global-user-modal" hidden>'
+        '<button class="ui-global-user-backdrop" type="button" data-global-user-close aria-label="关闭身份选择"></button>'
+        '<section class="ui-global-user-panel" role="dialog" aria-modal="true" aria-labelledby="ui-global-user-title">'
+        '<header><div><small>全站数据作用域</small><h2 id="ui-global-user-title">切换身份</h2></div>'
+        '<button type="button" class="ui-global-user-close" data-global-user-close aria-label="关闭">×</button></header>'
+        '<div class="ui-global-user-options" data-global-user-options><div class="ui-global-user-loading">正在读取可用身份…</div></div>'
+        '</section></div>'
+    )
     nav = (
         '<nav class="ui-nav" id="ui-app-nav" aria-label="\u4e3b\u5bfc\u822a">'
-        + brand + mobile_close + toggle + "".join(links) + "</nav>"
+        + brand + mobile_close + toggle + "".join(links) + identity + "</nav>"
     )
-    return mobile_trigger + nav + backdrop
+    return mobile_trigger + nav + backdrop + identity_modal
 
 
 def inject_unified_nav(html: str, current_path: str) -> str:
@@ -853,15 +884,15 @@ def inject_unified_nav(html: str, current_path: str) -> str:
 
 
 
-def provider_session_exists(provider: str, public_id: str) -> str | None:
+def provider_session_exists(provider: str, public_id: str, owner_id: str = "public") -> str | None:
     provider = normalize_chat_provider(provider)
     store = chat_store_for_provider(provider)
     key = chat_session_key(provider, public_id)
-    if store.get_session(key):
+    if store.get_session(key) and store.get_session(key).owner_id == owner_id:
         return key
-    if store.get_session(public_id):
+    if store.get_session(public_id) and store.get_session(public_id).owner_id == owner_id:
         return public_id
-    if provider == "home" and chat_store.get_session(public_id):
+    if provider == "home" and chat_store.get_session(public_id) and chat_store.get_session(public_id).owner_id == owner_id:
         return public_id
     return None
 
@@ -879,14 +910,14 @@ def public_chat_session_summary(provider: str, summary: dict[str, Any]) -> dict[
     return None
 
 
-def list_public_chat_sessions(provider: str, query: str = "") -> list[dict[str, Any]]:
+def list_public_chat_sessions(provider: str, query: str = "", owner_id: str = "public") -> list[dict[str, Any]]:
     provider = normalize_chat_provider(provider)
     rows = []
-    for summary in chat_store_for_provider(provider).list_sessions():
+    for summary in chat_store_for_provider(provider).list_sessions(owner_id):
         public = public_chat_session_summary(provider, summary)
         if public is not None:
             rows.append(public)
-    if provider in {"amazon", "fastmoss"}:
+    if owner_id == "public" and provider in {"amazon", "fastmoss"}:
         existing_ids = {str(row.get("id") or "") for row in rows}
         rows.extend(row for row in legacy_mcp_session_summaries(provider) if str(row.get("id") or "") not in existing_ids)
         rows.sort(key=lambda row: str(row.get("updated_at") or row.get("created_at") or ""), reverse=True)
@@ -897,7 +928,7 @@ def list_public_chat_sessions(provider: str, query: str = "") -> list[dict[str, 
             if needle in str(row.get("title") or "").casefold():
                 matches.append(row)
                 continue
-            session = provider_display_session(provider, str(row.get("id") or ""))
+            session = provider_display_session(provider, str(row.get("id") or ""), owner_id)
             if session and any(needle in str(message.content or "").casefold() for message in session.messages):
                 matches.append(row)
         rows = matches
@@ -1802,11 +1833,18 @@ def amazon_url_for_target(target: str, target_type: str) -> str:
     raise ValueError("target_type must be url, asin, or keyword")
 
 
-def json_response(handler: BaseHTTPRequestHandler, status: int, payload: Any) -> None:
+def json_response(
+    handler: BaseHTTPRequestHandler,
+    status: int,
+    payload: Any,
+    headers: dict[str, str] | None = None,
+) -> None:
     body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(body)))
+    for key, value in (headers or {}).items():
+        handler.send_header(key, value)
     handler.end_headers()
     handler.wfile.write(body)
 
@@ -7197,6 +7235,18 @@ def chat_attachment_path(attachment_id: str) -> Path | None:
     return None
 
 
+def chat_attachment_belongs_to_owner(attachment_id: str, owner_id: str) -> bool:
+    for store in chat_provider_stores.values():
+        for session in store.sessions.values():
+            if getattr(session, "owner_id", "public") != owner_id:
+                continue
+            for message in session.messages:
+                for item in message.attachments or []:
+                    if isinstance(item, dict) and str(item.get("id") or "") == attachment_id:
+                        return True
+    return False
+
+
 def _decode_chat_image_data_url(item: dict[str, Any], index: int) -> tuple[str, str, bytes]:
     if not isinstance(item, dict):
         raise ValueError(f"attachments[{index}] is invalid")
@@ -11581,6 +11631,16 @@ def _lan_chat_token(handler: BaseHTTPRequestHandler) -> str:
     return handler.headers.get("X-Lan-Chat-Token", "").strip()
 
 
+def _require_lan_global_user(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+    global_user = current_global_user(handler)
+    if global_user["id"] == "public":
+        raise LanChatError("公共账户为只读模式", 403)
+    device_user = lan_chat_store.authenticate(_lan_chat_token(handler))
+    if str(device_user.get("feishuUserId") or "") != global_user["id"]:
+        raise LanChatError("设备账户不属于当前飞书用户，请重新选择账户", 401)
+    return device_user
+
+
 def _lan_chat_request_json(
     handler: BaseHTTPRequestHandler, max_bytes: int = 65536
 ) -> dict[str, Any]:
@@ -11602,7 +11662,7 @@ def _lan_chat_request_json(
 def stream_lan_chat_events(handler: BaseHTTPRequestHandler, after_id: int) -> None:
     """Long-poll-like SSE backed by the message database for lossless reconnects."""
     token = _lan_chat_token(handler)
-    lan_chat_store.authenticate(token)
+    _require_lan_global_user(handler)
     handler.send_response(HTTPStatus.OK)
     handler.send_header("Content-Type", "text/event-stream; charset=utf-8")
     handler.send_header("Cache-Control", "no-cache, no-store")
@@ -11673,7 +11733,80 @@ def _feishu_login_options() -> dict[str, Any]:
     }
 
 
-def _proxy_feishu_binding(payload: dict[str, Any], *, required: bool) -> dict[str, Any]:
+GLOBAL_USER_COOKIE = "video_analyzer_global_user"
+PUBLIC_GLOBAL_USER = {
+    "id": "public",
+    "feishuId": "",
+    "name": "公共账户",
+    "avatarUrl": "",
+    "kind": "public",
+}
+
+
+def _global_users() -> tuple[list[dict[str, str]], dict[str, Any]]:
+    """Return the selectable product-wide identities, using cached LAN data offline."""
+    options = _feishu_login_options()
+    users: list[dict[str, str]] = [dict(PUBLIC_GLOBAL_USER)]
+    for item in options.get("feishuUsers", []):
+        if not isinstance(item, dict) or not str(item.get("id") or "").strip():
+            continue
+        users.append({
+            "id": str(item["id"]),
+            "feishuId": str(item.get("feishuId") or item["id"]),
+            "name": str(item.get("name") or "飞书用户"),
+            "avatarUrl": str(item.get("avatarUrl") or ""),
+            "kind": "feishu",
+        })
+    return users, dict(options.get("directoryStatus") or {})
+
+
+def _cookie_value(handler: BaseHTTPRequestHandler, name: str) -> str:
+    for part in str(handler.headers.get("Cookie") or "").split(";"):
+        key, separator, value = part.strip().partition("=")
+        if separator and key == name:
+            return unquote(value)
+    return ""
+
+
+def current_global_user(handler: BaseHTTPRequestHandler) -> dict[str, str]:
+    requested_id = _cookie_value(handler, GLOBAL_USER_COOKIE)
+    try:
+        users, _ = _global_users()
+    except FeishuCapabilityError:
+        return dict(PUBLIC_GLOBAL_USER)
+    return next((user for user in users if user["id"] == requested_id), dict(PUBLIC_GLOBAL_USER))
+
+
+def current_global_owner_id(handler: BaseHTTPRequestHandler) -> str:
+    return str(current_global_user(handler).get("id") or "public")
+
+
+def global_user_payload(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+    try:
+        users, directory_status = _global_users()
+    except FeishuCapabilityError:
+        users, directory_status = [dict(PUBLIC_GLOBAL_USER)], {"source": "unavailable", "stale": True}
+    requested_id = _cookie_value(handler, GLOBAL_USER_COOKIE)
+    current = next((user for user in users if user["id"] == requested_id), users[0])
+    return {"currentUser": current, "users": users, "directoryStatus": directory_status}
+
+
+def global_user_cookie(owner_id: str, *, clear: bool = False) -> str:
+    max_age = 0 if clear else 31536000
+    value = "public" if clear else quote(str(owner_id or "public"), safe="")
+    return f"{GLOBAL_USER_COOKIE}={value}; Path=/; Max-Age={max_age}; SameSite=Lax"
+
+
+def _proxy_feishu_binding(
+    payload: dict[str, Any], *, required: bool, global_user: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    if global_user and global_user.get("id") != "public":
+        requested = str(payload.get("feishu_user_id") or "").strip()
+        allowed = {str(global_user["id"]), str(global_user.get("feishuId") or "")}
+        if requested and requested not in allowed:
+            raise ValueError("当前飞书身份不能绑定其他用户的账号")
+        payload = dict(payload)
+        payload["feishu_user_id"] = str(global_user.get("feishuId") or global_user["id"])
     requested_id = str(payload.get("feishu_user_id") or "").strip()
     if not requested_id and not required:
         return payload
@@ -11697,6 +11830,32 @@ def _proxy_feishu_binding(payload: dict[str, Any], *, required: bool) -> dict[st
     result["feishu_avatar_url"] = str(user.get("avatarUrl") or "")
     result["feishu_user_active"] = True
     return result
+
+
+def scoped_proxy_state(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+    state = proxy_pool.list_state()
+    user = current_global_user(handler)
+    if user["id"] == "public":
+        return state
+    valid_ids = {str(user["id"]), str(user.get("feishuId") or "")}
+    accounts = [item for item in state.get("accounts", []) if str(item.get("feishu_user_id") or "") in valid_ids]
+    account_ids = {int(item["id"]) for item in accounts if str(item.get("id") or "").isdigit()}
+    scoped = dict(state)
+    scoped["accounts"] = accounts
+    scoped["sessions"] = [item for item in state.get("sessions", []) if int(item.get("account_id") or 0) in account_ids]
+    pools = []
+    for pool in state.get("pools", []):
+        item = dict(pool)
+        visible = [account for account in accounts if int(account.get("proxy_profile_id") or 0) == int(pool.get("id") or 0)]
+        if visible:
+            item["account_count"] = len(visible)
+            item["account_names"] = [str(account.get("username") or "") for account in visible]
+        elif int(pool.get("account_count") or 0):
+            item["account_count"] = 0
+            item["account_names"] = ["其他用户占用"]
+        pools.append(item)
+    scoped["pools"] = pools
+    return scoped
 
 
 def handle_feishu_capability_get(handler: BaseHTTPRequestHandler, parsed) -> bool:
@@ -11745,7 +11904,19 @@ def handle_lan_chat_get(handler: BaseHTTPRequestHandler, parsed) -> bool:
             json_response(handler, HTTPStatus.OK, options)
             return True
         if path == "/api/lan-chat/bootstrap":
-            json_response(handler, HTTPStatus.OK, lan_chat_store.bootstrap(_lan_chat_token(handler)))
+            if current_global_owner_id(handler) == "public":
+                json_response(handler, HTTPStatus.OK, lan_chat_store.public_bootstrap())
+            else:
+                _require_lan_global_user(handler)
+                json_response(handler, HTTPStatus.OK, lan_chat_store.bootstrap(_lan_chat_token(handler)))
+            return True
+        if path == "/api/lan-chat/account-options":
+            global_user = current_global_user(handler)
+            if global_user["id"] == "public":
+                raise LanChatError("公共账户没有设备账户", 403)
+            options = lan_chat_store.login_options().get("feishuUsers", [])
+            owner = next((item for item in options if str(item.get("id") or "") == global_user["id"]), None)
+            json_response(handler, HTTPStatus.OK, {"currentUser": global_user, "accounts": (owner or {}).get("accounts", [])})
             return True
         feishu_avatar_match = re.fullmatch(
             r"/api/lan-chat/feishu-avatars/([a-z0-9-]{1,64})", path
@@ -11772,9 +11943,13 @@ def handle_lan_chat_get(handler: BaseHTTPRequestHandler, parsed) -> bool:
             r"/api/lan-chat/media/([0-9a-f]{32}\.(?:mp4|webm))/poster", path
         )
         if media_poster_match:
-            body, content_type = lan_chat_store.message_video_poster_bytes(
-                media_poster_match.group(1)
-            )
+            filename = media_poster_match.group(1)
+            if current_global_owner_id(handler) == "public":
+                # Validate public-room membership before the poster generator opens the media.
+                lan_chat_store.public_message_media_info(filename)
+            else:
+                _require_lan_global_user(handler)
+            body, content_type = lan_chat_store.message_video_poster_bytes(filename)
             binary_response(handler, HTTPStatus.OK, body, content_type)
             return True
         media_download_match = re.fullmatch(
@@ -11782,25 +11957,33 @@ def handle_lan_chat_get(handler: BaseHTTPRequestHandler, parsed) -> bool:
             path,
         )
         if media_download_match:
-            file_path, filename, content_type, size = lan_chat_store.message_media_info(
-                media_download_match.group(1)
-            )
+            media_id = media_download_match.group(1)
+            if current_global_owner_id(handler) == "public":
+                file_path, filename, content_type, size = lan_chat_store.public_message_media_info(media_id)
+            else:
+                _require_lan_global_user(handler)
+                file_path, filename, content_type, size = lan_chat_store.message_media_info(media_id)
             file_response(handler, file_path, content_type, filename, size)
             return True
         media_match = re.fullmatch(
             r"/api/lan-chat/media/([0-9a-f]{32}\.(?:jpg|png|gif|webp|mp4|webm))", path
         )
         if media_match:
-            file_path, filename, content_type, size = lan_chat_store.message_media_info(
-                media_match.group(1)
-            )
+            media_id = media_match.group(1)
+            if current_global_owner_id(handler) == "public":
+                file_path, filename, content_type, size = lan_chat_store.public_message_media_info(media_id)
+            else:
+                _require_lan_global_user(handler)
+                file_path, filename, content_type, size = lan_chat_store.message_media_info(media_id)
             file_response(handler, file_path, content_type, filename, size, download=False)
             return True
         file_match = re.fullmatch(r"/api/lan-chat/files/([0-9a-f]{32})", path)
         if file_match:
-            file_path, filename, content_type, size = lan_chat_store.file_download_info(
-                _lan_chat_token(handler), file_match.group(1)
-            )
+            if current_global_owner_id(handler) == "public":
+                file_path, filename, content_type, size = lan_chat_store.public_file_download_info(file_match.group(1))
+            else:
+                _require_lan_global_user(handler)
+                file_path, filename, content_type, size = lan_chat_store.file_download_info(_lan_chat_token(handler), file_match.group(1))
             file_response(handler, file_path, content_type, filename, size)
             return True
         message_match = re.fullmatch(r"/api/lan-chat/rooms/([^/]+)/messages", path)
@@ -11812,13 +11995,12 @@ def handle_lan_chat_get(handler: BaseHTTPRequestHandler, parsed) -> bool:
                 limit = int(query.get("limit", ["100"])[0])
             except ValueError as exc:
                 raise LanChatError("分页参数无效") from exc
-            payload = lan_chat_store.list_messages(
-                _lan_chat_token(handler),
-                unquote(message_match.group(1)),
-                after_id=after_id,
-                before_id=before_id,
-                limit=limit,
-            )
+            room_id = unquote(message_match.group(1))
+            if current_global_owner_id(handler) == "public":
+                payload = lan_chat_store.public_list_messages(room_id, after_id=after_id, before_id=before_id, limit=limit)
+            else:
+                _require_lan_global_user(handler)
+                payload = lan_chat_store.list_messages(_lan_chat_token(handler), room_id, after_id=after_id, before_id=before_id, limit=limit)
             json_response(handler, HTTPStatus.OK, payload)
             return True
         if path == "/api/lan-chat/events":
@@ -11840,6 +12022,14 @@ def handle_lan_chat_post(handler: BaseHTTPRequestHandler, parsed) -> bool:
     if not path.startswith("/api/lan-chat/"):
         return False
     try:
+        global_user = current_global_user(handler)
+        public_file_download = bool(re.fullmatch(r"/api/lan-chat/files/[0-9a-f]{32}/download", path))
+        if global_user["id"] == "public" and not public_file_download:
+            raise LanChatError("公共账户为只读模式", 403)
+        selecting_account = path in {"/api/lan-chat/select-account", "/api/lan-chat/accounts"}
+        if not selecting_account and not public_file_download:
+            # Reject writes before consuming multipart bodies or other large payloads.
+            _require_lan_global_user(handler)
         download_match = re.fullmatch(r"/api/lan-chat/files/([0-9a-f]{32})/download", path)
         if download_match:
             try:
@@ -11854,9 +12044,10 @@ def handle_lan_chat_post(handler: BaseHTTPRequestHandler, parsed) -> bool:
                 raise LanChatError("下载请求无效") from exc
             form_data = parse_qs(form_body)
             download_token = str(form_data.get("token", [""])[0] or "")
-            file_path, filename, content_type, size = lan_chat_store.file_download_info(
-                download_token, download_match.group(1)
-            )
+            if global_user["id"] == "public":
+                file_path, filename, content_type, size = lan_chat_store.public_file_download_info(download_match.group(1))
+            else:
+                file_path, filename, content_type, size = lan_chat_store.file_download_info(download_token, download_match.group(1))
             file_response(handler, file_path, content_type, filename, size)
             return True
 
@@ -11955,15 +12146,18 @@ def handle_lan_chat_post(handler: BaseHTTPRequestHandler, parsed) -> bool:
             json_max_bytes = 65536
         payload = _lan_chat_request_json(handler, max_bytes=json_max_bytes)
         if path == "/api/lan-chat/select-account":
+            legacy_owner = str(payload.get("feishuUserId") or "").strip()
+            if legacy_owner and legacy_owner != global_user["id"]:
+                raise LanChatError("不能选择其他飞书用户的设备账户", 403)
             result = lan_chat_store.select_account(
-                str(payload.get("feishuUserId") or ""),
+                global_user["id"],
                 str(payload.get("accountId") or ""),
             )
             json_response(handler, HTTPStatus.OK, result)
             return True
         if path == "/api/lan-chat/accounts":
             result = lan_chat_store.create_account(
-                str(payload.get("feishuUserId") or ""),
+                global_user["id"],
                 str(payload.get("nickname") or ""),
             )
             json_response(handler, HTTPStatus.CREATED, result)
@@ -12174,6 +12368,15 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_proxy_api_get(parsed.path, parsed.query)
         if parsed.path.startswith("/assets/"):
             return self.serve_static_asset(parsed.path.removeprefix("/assets/"))
+        if parsed.path == "/api/global-user":
+            payload = global_user_payload(self)
+            requested_id = _cookie_value(self, GLOBAL_USER_COOKIE)
+            headers = (
+                {"Set-Cookie": global_user_cookie("public", clear=True)}
+                if requested_id and payload["currentUser"]["id"] != requested_id
+                else None
+            )
+            return json_response(self, HTTPStatus.OK, payload, headers)
         if handle_feishu_capability_get(self, parsed):
             return
         if parsed.path.startswith("/api/lan-chat/") and handle_lan_chat_get(self, parsed):
@@ -12183,7 +12386,9 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/chat/sessions":
             query = parse_qs(parsed.query)
             provider = normalize_chat_provider(query.get("provider", ["home"])[0])
-            return json_response(self, HTTPStatus.OK, list_public_chat_sessions(provider, query.get("query", [""])[0]))
+            return json_response(self, HTTPStatus.OK, list_public_chat_sessions(
+                provider, query.get("query", [""])[0], current_global_owner_id(self)
+            ))
         if parsed.path == "/api/chat/tool-catalog":
             provider = normalize_chat_provider(parse_qs(parsed.query).get("provider", ["home"])[0])
             return json_response(self, HTTPStatus.OK, build_tool_catalog(provider))
@@ -12195,7 +12400,7 @@ class Handler(BaseHTTPRequestHandler):
             sid = parts[4] if len(parts) > 4 else ""
             qs = parse_qs(parsed.query)
             provider = normalize_chat_provider(qs.get("provider", ["home"])[0])
-            session = provider_display_session(provider, sid)
+            session = provider_display_session(provider, sid, current_global_owner_id(self))
             if not session:
                 return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Session not found"})
             def public_message(m: Message) -> dict[str, Any]:
@@ -12258,12 +12463,14 @@ class Handler(BaseHTTPRequestHandler):
             qs = parse_qs(parsed.query)
             provider = normalize_chat_provider(qs.get("provider", ["home"])[0])
             sid = qs.get("session", [""])[0]
-            return self.stream_chat_events(provider, chat_session_key(provider, sid))
+            return self.stream_chat_events(provider, sid, current_global_owner_id(self))
         if parsed.path.startswith("/api/chat/sessions/") and parsed.path.endswith("/delete"):
             qs = parse_qs(parsed.query)
             provider = normalize_chat_provider(qs.get("provider", ["home"])[0])
             sid = parsed.path.split("/")[4]
-            stored_sid = provider_session_exists(provider, sid) or chat_session_key(provider, sid)
+            stored_sid = provider_session_exists(provider, sid, current_global_owner_id(self))
+            if not stored_sid:
+                return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Session not found"})
             deleted = chat_store_for_provider(provider).delete_session(stored_sid)
             return json_response(self, HTTPStatus.OK, {"deleted": deleted})
         if parsed.path == "/api/network-check":
@@ -12699,6 +12906,8 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     def serve_chat_attachment(self, attachment_id: str) -> None:
+        if not chat_attachment_belongs_to_owner(attachment_id, current_global_owner_id(self)):
+            return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Attachment not found"})
         attachment_path = chat_attachment_path(attachment_id)
         if not attachment_path:
             return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Attachment not found"})
@@ -12772,6 +12981,22 @@ class Handler(BaseHTTPRequestHandler):
                         "path": parsed.path,
                     },
                 )
+        if parsed.path == "/api/global-user/select":
+            try:
+                payload = self.read_json_body()
+                wanted = str(payload.get("id") or "").strip()
+                users, _ = _global_users()
+                selected = next((user for user in users if user["id"] == wanted), None)
+                if selected is None:
+                    return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "飞书用户不在当前白名单中"})
+                return json_response(
+                    self,
+                    HTTPStatus.OK,
+                    {"currentUser": selected},
+                    {"Set-Cookie": global_user_cookie(selected["id"])},
+                )
+            except (ValueError, FeishuCapabilityError) as exc:
+                return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
         if handle_feishu_capability_post(self, parsed):
             return
         if parsed.path.startswith("/api/lan-chat/") and handle_lan_chat_post(self, parsed):
@@ -12855,7 +13080,7 @@ class Handler(BaseHTTPRequestHandler):
     def handle_proxy_api_get(self, path: str, query: str = "") -> None:
         try:
             if path == "/api/proxy/pools":
-                return json_response(self, HTTPStatus.OK, proxy_pool.list_state())
+                return json_response(self, HTTPStatus.OK, scoped_proxy_state(self))
             if path == "/api/proxy/mihomo-export":
                 return json_response(self, HTTPStatus.OK, proxy_pool.mihomo_export())
             if path == "/api/proxy/runtime":
@@ -12910,7 +13135,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/proxy/mihomo-reconcile":
                 return json_response(self, HTTPStatus.OK, proxy_pool.reconcile_mihomo_pool_configs())
             if path == "/api/proxy/accounts":
-                payload = _proxy_feishu_binding(payload, required=not int(payload.get("id") or 0))
+                payload = _proxy_feishu_binding(payload, required=not int(payload.get("id") or 0), global_user=current_global_user(self))
                 return json_response(self, HTTPStatus.OK, proxy_pool.upsert_account(payload))
             if path == "/api/proxy/accounts/delete":
                 return json_response(self, HTTPStatus.OK, proxy_pool.delete_account(int(payload.get("id") or payload.get("account_id") or 0)))
@@ -12934,7 +13159,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/proxy/products/delete":
                 return json_response(self, HTTPStatus.OK, proxy_pool.delete_product(str(payload.get("product_id") or "")))
             if path == "/api/proxy/login-session/start":
-                payload = _proxy_feishu_binding(payload, required=not int(payload.get("account_id") or 0))
+                payload = _proxy_feishu_binding(payload, required=not int(payload.get("account_id") or 0), global_user=current_global_user(self))
                 return json_response(self, HTTPStatus.OK, proxy_pool.start_login_session(payload))
             if path == "/api/proxy/login-session/stop":
                 return json_response(self, HTTPStatus.OK, proxy_pool.stop_login_session(payload))
@@ -13662,8 +13887,16 @@ class Handler(BaseHTTPRequestHandler):
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
         store = chat_store_for_provider(provider)
+        owner_id = current_global_owner_id(self)
         stored_session_id = chat_session_key(provider, session_id)
-        session = store.get_or_create(stored_session_id)
+        session = store.get_session(stored_session_id)
+        if session is not None and session.owner_id != owner_id:
+            # Never allow a client supplied ID to claim another owner's history.
+            session_id = uuid.uuid4().hex
+            stored_session_id = chat_session_key(provider, session_id)
+            session = None
+        if session is None:
+            session = store.create_session(stored_session_id, owner_id)
 
         try:
             attachments = process_chat_attachments(raw_attachments, text)
@@ -13765,7 +13998,7 @@ class Handler(BaseHTTPRequestHandler):
         except (json.JSONDecodeError, ValueError) as exc:
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
-        session = provider_display_session(provider, session_id)
+        session = provider_display_session(provider, session_id, current_global_owner_id(self))
         if not session:
             return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Session not found"})
 
@@ -13807,8 +14040,12 @@ class Handler(BaseHTTPRequestHandler):
                 return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "标题不能超过 50 个字符"})
 
             store = chat_store_for_provider(provider)
-            stored_sid = provider_session_exists(provider, sid) or chat_session_key(provider, sid)
-            session = store.get_or_create(stored_sid)
+            stored_sid = provider_session_exists(provider, sid, current_global_owner_id(self))
+            if not stored_sid:
+                return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Session not found"})
+            session = store.get_session(stored_sid)
+            if session is None:
+                return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Session not found"})
 
             with store._lock:
                 session.title = new_title
@@ -13908,21 +14145,24 @@ class Handler(BaseHTTPRequestHandler):
             video_queue.unregister_sse(self)
             self.close_connection = True
 
-    def stream_chat_events(self, provider: str, session_id: str) -> None:
+    def stream_chat_events(self, provider: str, session_id: str, owner_id: str) -> None:
         store = chat_store_for_provider(provider)
+        stored_sid = provider_session_exists(provider, session_id, owner_id)
+        if not stored_sid:
+            return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Session not found"})
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "keep-alive")
         self.end_headers()
-        store.register_sse(session_id, self)
+        store.register_sse(stored_sid, self)
         try:
             while not self.wfile.closed:
                 time.sleep(5)
         except (BrokenPipeError, ConnectionResetError):
             pass
         finally:
-            store.unregister_sse(session_id, self)
+            store.unregister_sse(stored_sid, self)
             self.close_connection = True
 
     def handle_delete(self) -> None:
