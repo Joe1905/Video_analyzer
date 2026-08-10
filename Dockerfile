@@ -27,6 +27,10 @@ RUN apt-get update \
 RUN pip install --upgrade pip \
     && pip install "video-analyzer @ git+https://github.com/byjlw/video-analyzer.git" requests openai-whisper "Pillow>=11.1,<13"
 
+# Keep the existing reconstruction-budget layer stable so heavyweight downstream
+# browser layers can be reused from the deployed image.
+RUN python -c "import video_analyzer, os; p=os.path.join(os.path.dirname(video_analyzer.__file__),'analyzer.py'); s=open(p,encoding='utf-8').read(); assert 'num_predict=1000' in s, 'num_predict=1000 not found in analyzer.py'; s=s.replace('num_predict=1000','num_predict=8192'); open(p,'w',encoding='utf-8').write(s); print('patched video_analyzer/analyzer.py: reconstruction 1000 -> 8192')"
+
 RUN pip install yt-dlp playwright httpx "scrapling[ai]" \
     && python -m playwright install --with-deps chromium \
     && python -m playwright install chrome \
@@ -54,9 +58,9 @@ RUN apt-get update \
     && npm cache clean --force \
     && rm -rf /var/lib/apt/lists/*
 
-# Patch this after all heavyweight dependency layers so a budget-only change does
-# not force Playwright/browser dependencies to be downloaded again on rebuild.
-RUN python -c "import video_analyzer, os; p=os.path.join(os.path.dirname(video_analyzer.__file__),'analyzer.py'); s=open(p,encoding='utf-8').read(); assert 'num_predict=300' in s, 'num_predict=300 not found in analyzer.py'; assert 'num_predict=1000' in s, 'num_predict=1000 not found in analyzer.py'; s=s.replace('num_predict=300','num_predict=1024').replace('num_predict=1000','num_predict=8192'); open(p,'w',encoding='utf-8').write(s); print('patched video_analyzer/analyzer.py: per-frame 300 -> 1024; reconstruction 1000 -> 8192')"
+# Patch this after all heavyweight dependency layers so a frame-budget-only
+# change does not force Playwright/browser dependencies to be downloaded again.
+RUN python -c "import video_analyzer, os; p=os.path.join(os.path.dirname(video_analyzer.__file__),'analyzer.py'); s=open(p,encoding='utf-8').read(); assert 'num_predict=300' in s, 'num_predict=300 not found in analyzer.py'; s=s.replace('num_predict=300','num_predict=1024'); open(p,'w',encoding='utf-8').write(s); print('patched video_analyzer/analyzer.py: per-frame 300 -> 1024')"
 
 COPY scripts/ /workspace/scripts/
 COPY sellersprite_mcp_chat/ /workspace/sellersprite_mcp_chat/
