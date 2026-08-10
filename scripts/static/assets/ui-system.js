@@ -3,6 +3,48 @@
 
   const NAV_KEY = "ui-nav-expanded";
   const DESKTOP_QUERY = window.matchMedia("(min-width: 861px)");
+  const globalUserPromise = window.VideoAnalyzerGlobalUser || Promise.resolve({
+    currentUser: { id: "public", name: "公共账户", kind: "public" }, users: [],
+  });
+
+  function userInitial(user) {
+    return String(user?.name || "公").trim().slice(0, 1) || "公";
+  }
+
+  function renderGlobalUser(payload) {
+    const current = payload.currentUser || { id: "public", name: "公共账户", kind: "public" };
+    document.querySelectorAll(".ui-nav__identity").forEach((button) => {
+      button.querySelector(".ui-nav__identity-avatar").textContent = userInitial(current);
+      button.querySelector(".ui-nav__identity-copy b").textContent = current.name;
+      button.querySelector(".ui-nav__identity-copy small").textContent = current.kind === "feishu" ? "飞书账户" : "公共账户";
+    });
+    const options = document.querySelector("[data-global-user-options]");
+    if (!options) return;
+    options.innerHTML = (payload.users || []).map((user) => {
+      const avatar = user.avatarUrl
+        ? `<img src="${String(user.avatarUrl).replace(/&/g, "&amp;").replace(/\"/g, "&quot;")}" alt="">`
+        : userInitial(user);
+      return `<button type="button" class="ui-global-user-option ${user.id === current.id ? "is-current" : ""}" data-global-user-id="${String(user.id).replace(/\"/g, "&quot;")}"><span class="avatar">${avatar}</span><span class="copy"><b>${String(user.name || "公共账户")}</b><small>${user.kind === "feishu" ? "飞书账户" : "公共账户"}</small></span></button>`;
+    }).join("") || '<div class="ui-global-user-loading">暂无可用身份</div>';
+    options.querySelectorAll("[data-global-user-id]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const response = await fetch("/api/global-user/select", {
+          method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: button.dataset.globalUserId }),
+        });
+        if (response.ok) location.reload();
+      });
+    });
+  }
+
+  function setupGlobalUser() {
+    const modal = document.getElementById("ui-global-user-modal");
+    if (!modal) return;
+    const close = () => { modal.hidden = true; };
+    document.querySelectorAll("[data-global-user-trigger]").forEach((button) => button.addEventListener("click", () => { modal.hidden = false; }));
+    modal.querySelectorAll("[data-global-user-close]").forEach((button) => button.addEventListener("click", close));
+    globalUserPromise.then(renderGlobalUser);
+  }
 
   function navCookieExpanded() {
     return document.cookie.split("; ").some((item) => item === `${NAV_KEY}=1`);
@@ -125,6 +167,7 @@
     enhanceDialogs();
     enhanceMessageActions();
     previewState();
+    setupGlobalUser();
 
     document.addEventListener("click", (event) => {
       const mobileTrigger = event.target.closest(".ui-mobile-nav-trigger");

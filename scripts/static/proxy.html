@@ -91,9 +91,10 @@
 </div>
 </div>
 <script>
-const state={pools:[],accounts:[],sessions:[],feishuUsers:[],feishuUsersLoadedAt:0,feishuSort:"",loginFeishuUser:"",selectedPool:0,selectedAccount:0,editing:"",portRange:"18900-18999",novncUrl:"http://192.168.1.254:6081",loginSession:null,loginPollTimer:0,browserMaxSlots:2,pendingLoginTtlMinutes:15,browserLocale:"en-US",publishAccount:0,publishJobs:[],publishProducts:[],publishSelectedProduct:"",publishProductTab:"library",productSearchResults:[],productSearchSelected:"",productSearchBusy:false,productEditingId:"",publishEditing:"",publishBusy:false,publishDryRun:false,collectAccount:0,collectJobs:[],collectResults:[],collectSelectedJob:"",collectDetailResultId:0,collectErrors:[],collectTargets:[],collectSetting:{},collectBusy:false,collectManualDirty:false,collectLoadToken:0,automationPending:new Set(),accountTogglePending:new Set(),retryRefreshBusy:false,retryRefreshKey:""};
+const state={pools:[],accounts:[],sessions:[],feishuUsers:[],feishuUsersLoadedAt:0,feishuSort:"",loginFeishuUser:"",selectedPool:0,selectedAccount:0,editing:"",portRange:"18900-18999",novncUrl:"http://192.168.1.254:6081",loginSession:null,loginPollTimer:0,browserMaxSlots:2,pendingLoginTtlMinutes:15,browserLocale:"en-US",publishAccount:0,publishJobs:[],publishProducts:[],publishSelectedProduct:"",publishProductTab:"library",productSearchResults:[],productSearchSelected:"",productSearchBusy:false,productEditingId:"",publishEditing:"",publishBusy:false,publishDryRun:false,collectAccount:0,collectJobs:[],collectResults:[],collectSelectedJob:"",collectDetailResultId:0,collectErrors:[],collectTargets:[],collectSetting:{},collectBusy:false,collectManualDirty:false,collectLoadToken:0,automationPending:new Set(),accountTogglePending:new Set(),retryRefreshBusy:false,retryRefreshKey:"",globalUser:{id:"public",kind:"public"}};
 const $=id=>document.getElementById(id);
 function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
+function visibleAccounts(){if(state.globalUser?.kind!=="feishu")return state.accounts;const ids=new Set([String(state.globalUser.id||""),String(state.globalUser.feishuId||"")]);return state.accounts.filter(account=>ids.has(String(account.feishu_user_id||"")))}
 function textOrEmpty(v){return v==null?"":String(v)}
 function lowerText(v){return textOrEmpty(v).toLowerCase()}
 function normalizeAccountRecord(account){
@@ -173,9 +174,9 @@ function renderAccounts(){
   const q=lowerText($("search").value.trim());
   const fs=normalizeStatusFilter($("filterStatus").value);
   const selected=state.pools.find(p=>p.id===Number(state.selectedPool));
-  let rows=state.accounts.filter(a=>matchAccountFilters(a,{q,statusFilter:fs}));
-  if(!rows.length && state.accounts.length && (selected||q||fs)){
-    const fallbackRows=state.accounts.filter(a=>matchAccountFilters(a,{q,statusFilter:fs,skipPoolFilter:true}));
+  let rows=visibleAccounts().filter(a=>matchAccountFilters(a,{q,statusFilter:fs}));
+  if(!rows.length && visibleAccounts().length && (selected||q||fs)){
+    const fallbackRows=visibleAccounts().filter(a=>matchAccountFilters(a,{q,statusFilter:fs,skipPoolFilter:true}));
     if(fallbackRows.length){
       rows=fallbackRows;
       if(selected&&Number(selected.account_count||0)>0){
@@ -404,7 +405,7 @@ async function retryCollectJob(id){if(state.collectBusy)return;state.collectSele
 async function cancelCollectJob(id){if(!confirm("取消这个采集任务？"))return;try{const r=await api("/api/proxy/collect/jobs/cancel",{job_id:id});state.collectJobs=r.jobs||[];state.collectResults=r.results||[];renderCollectJobs();renderCollectResults();$("collectHint").className="status ok";$("collectHint").textContent="采集任务已取消。"}catch(e){$("collectHint").className="status bad";$("collectHint").textContent=apiError(e)}}
 async function exportMihomo(){try{const p=await api("/api/proxy/mihomo-export");$("editorTitle").textContent="mihomo 导出";$("editor").innerHTML='<div class="muted">包含 proxies 和 listeners。端口段专用于 TikTok 账号代理池。</div>';$("detail").textContent=p.yaml||"";setStatus("已生成 mihomo 配置片段。","ok")}catch(e){setStatus(apiError(e),"bad")}}
 window.addEventListener("pagehide",stopLoginPoll);
-clearEditor();loadRuntime();loadAll().catch(e=>setStatus(apiError(e),"bad"));setInterval(()=>{loadAll(true).catch(()=>{});if(state.publishAccount&&!state.publishBusy)loadPublishJobs();if(state.collectAccount&&!state.collectBusy)loadCollectDashboard()},10000);
+clearEditor();(async()=>{const payload=await (window.VideoAnalyzerGlobalUser||Promise.resolve({currentUser:{id:"public",kind:"public"}}));state.globalUser=payload.currentUser||state.globalUser;await loadRuntime();await loadAll().catch(e=>setStatus(apiError(e),"bad"));})();setInterval(()=>{loadAll(true).catch(()=>{});if(state.publishAccount&&!state.publishBusy)loadPublishJobs();if(state.collectAccount&&!state.collectBusy)loadCollectDashboard()},10000);
 setInterval(updateProxyRetryIndicator,1000);
 const _legacyRenderPoolForm=renderPoolForm,_legacySyncPoolSourceForm=syncPoolSourceForm,_legacySavePool=savePool,_legacyCheckPool=checkPool;
 function _configureDirectPoolType(){const select=$("pType");if(!select)return;const option=select.querySelector('option[value="subscription"]');if(option){option.value="direct";option.textContent="直连外网（服务器代理）"}}

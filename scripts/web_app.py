@@ -612,7 +612,7 @@ NAV_ITEMS = [
 ]
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
-UI_ASSET_VERSION = "20260810-01"
+UI_ASSET_VERSION = "20260810-02"
 APP_UI_ASSETS = f"""
 <script id="ui-nav-state-boot">
 let uiNavExpanded = false;
@@ -626,6 +626,9 @@ try {{
 }}
 document.documentElement.dataset.nav =
   window.matchMedia("(min-width: 861px)").matches && uiNavExpanded ? "expanded" : "collapsed";
+window.VideoAnalyzerGlobalUser = fetch("/api/global-user", {{ credentials: "same-origin" }})
+  .then((response) => response.ok ? response.json() : Promise.reject(new Error("无法读取全局身份")))
+  .catch(() => ({{ currentUser: {{ id: "public", name: "公共账户", kind: "public" }}, users: [] }}));
 </script>
 <link id="ui-system-css" rel="stylesheet" href="/assets/ui-system.css?v={UI_ASSET_VERSION}">
 <script id="ui-system-js" src="/assets/ui-system.js?v={UI_ASSET_VERSION}" defer></script>
@@ -760,11 +763,22 @@ def provider_display_session(provider: str, public_id: str, owner_id: str = "pub
     return current or legacy_session
 
 
-def chat_session_key(provider: str, session_id: str) -> str:
+def chat_session_key(provider: str, session_id: str, owner_id: str = "public") -> str:
     provider = normalize_chat_provider(provider)
     sid = str(session_id or "default").strip() or "default"
-    prefix = f"{provider}__"
+    owner = re.sub(r"[^A-Za-z0-9_-]+", "-", str(owner_id or "public")).strip("-") or "public"
+    prefix = f"{provider}__{owner}__"
     return sid if sid.startswith(prefix) else prefix + sid
+
+
+def chat_public_session_id(provider: str, internal_id: str, owner_id: str = "public") -> str:
+    internal_id = str(internal_id or "")
+    owner = re.sub(r"[^A-Za-z0-9_-]+", "-", str(owner_id or "public")).strip("-") or "public"
+    prefix = f"{normalize_chat_provider(provider)}__{owner}__"
+    if internal_id.startswith(prefix):
+        return internal_id.removeprefix(prefix)
+    legacy_prefix = f"{normalize_chat_provider(provider)}__"
+    return internal_id.removeprefix(legacy_prefix) if internal_id.startswith(legacy_prefix) else internal_id
 
 
 def nav_active_key(current_path: str) -> str:
@@ -887,25 +901,32 @@ def inject_unified_nav(html: str, current_path: str) -> str:
 def provider_session_exists(provider: str, public_id: str, owner_id: str = "public") -> str | None:
     provider = normalize_chat_provider(provider)
     store = chat_store_for_provider(provider)
-    key = chat_session_key(provider, public_id)
+    key = chat_session_key(provider, public_id, owner_id)
     if store.get_session(key) and store.get_session(key).owner_id == owner_id:
         return key
-    if store.get_session(public_id) and store.get_session(public_id).owner_id == owner_id:
-        return public_id
-    if provider == "home" and chat_store.get_session(public_id) and chat_store.get_session(public_id).owner_id == owner_id:
+    # Pre-isolation records use provider__<public id> (or a bare home ID) and
+    # are deliberately readable only by the migrated public owner.
+    legacy_key = f"{provider}__{public_id}"
+    if owner_id == "public" and store.get_session(legacy_key) and store.get_session(legacy_key).owner_id == owner_id:
+        return legacy_key
+    if owner_id == "public" and store.get_session(public_id) and store.get_session(public_id).owner_id == owner_id:
         return public_id
     return None
 
 
-def public_chat_session_summary(provider: str, summary: dict[str, Any]) -> dict[str, Any] | None:
+def public_chat_session_summary(provider: str, summary: dict[str, Any], owner_id: str = "public") -> dict[str, Any] | None:
     provider = normalize_chat_provider(provider)
     sid = str(summary.get("id") or "")
-    prefix = f"{provider}__"
+    prefix = f"{provider}__{re.sub(r'[^A-Za-z0-9_-]+', '-', str(owner_id or 'public')).strip('-') or 'public'}__"
     if sid.startswith(prefix):
         out = dict(summary)
         out["id"] = sid.removeprefix(prefix)
         return out
-    if "__" not in sid:
+    if owner_id == "public" and sid.startswith(f"{provider}__"):
+        out = dict(summary)
+        out["id"] = sid.removeprefix(f"{provider}__")
+        return out
+    if owner_id == "public" and "__" not in sid:
         return dict(summary)
     return None
 
@@ -914,7 +935,7 @@ def list_public_chat_sessions(provider: str, query: str = "", owner_id: str = "p
     provider = normalize_chat_provider(provider)
     rows = []
     for summary in chat_store_for_provider(provider).list_sessions(owner_id):
-        public = public_chat_session_summary(provider, summary)
+        public = public_chat_session_summary(provider, summary, owner_id)
         if public is not None:
             rows.append(public)
     if owner_id == "public" and provider in {"amazon", "fastmoss"}:
@@ -9816,7 +9837,7 @@ def async_generate_session_title(store: ChatStore, session, user_text: str, prov
                 session.updated_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             store._schedule_save()
             prefix = f"{provider}__"
-            public_sid = session.id.removeprefix(prefix) if session.id.startswith(prefix) else session.id
+            public_sid = chat_public_session_id(provider, session.id, getattr(session, "owner_id", "public"))
             store.broadcast(session.id, "title_updated", {"sessionId": public_sid, "title": title})
 
         try:
@@ -13888,13 +13909,8 @@ class Handler(BaseHTTPRequestHandler):
 
         store = chat_store_for_provider(provider)
         owner_id = current_global_owner_id(self)
-        stored_session_id = chat_session_key(provider, session_id)
+        stored_session_id = provider_session_exists(provider, session_id, owner_id) or chat_session_key(provider, session_id, owner_id)
         session = store.get_session(stored_session_id)
-        if session is not None and session.owner_id != owner_id:
-            # Never allow a client supplied ID to claim another owner's history.
-            session_id = uuid.uuid4().hex
-            stored_session_id = chat_session_key(provider, session_id)
-            session = None
         if session is None:
             session = store.create_session(stored_session_id, owner_id)
 
@@ -14054,7 +14070,7 @@ class Handler(BaseHTTPRequestHandler):
             store._schedule_save()
 
             prefix = f"{provider}__"
-            public_sid = session.id.removeprefix(prefix) if session.id.startswith(prefix) else session.id
+            public_sid = chat_public_session_id(provider, session.id, getattr(session, "owner_id", "public"))
             store.broadcast(session.id, "title_updated", {"sessionId": public_sid, "title": new_title})
 
             return json_response(self, HTTPStatus.OK, {
@@ -14077,42 +14093,22 @@ class Handler(BaseHTTPRequestHandler):
         except (json.JSONDecodeError, ValueError) as exc:
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
-        config = mcp_chat_config(chat_type)
-        sessions_path = Path(config["data_dir"]) / "sessions.json"
-        try:
-            stored = json.loads(sessions_path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Session data not found"})
-        except json.JSONDecodeError as exc:
-            return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"Session data is invalid: {exc}"})
-
-        sessions = stored if isinstance(stored, list) else stored.get("sessions", [])
-        session = next((item for item in sessions if str(item.get("id", "")) == session_id), None)
+        provider = {"sellersprite": "amazon", "fastmoss": "fastmoss"}.get(chat_type)
+        if provider is None:
+            return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Session not found"})
+        session = provider_display_session(provider, session_id, current_global_owner_id(self))
         if not session:
             return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Session not found"})
-        messages = session.get("messages") if isinstance(session, dict) else []
-        message = next((item for item in messages or [] if str(item.get("id", "")) == message_id), None)
+        message = next((item for item in session.messages if str(item.id) == message_id), None)
         if not message:
             return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Message not found"})
-        if message.get("role") != "assistant":
+        if message.role != "assistant":
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Only assistant replies can be exported"})
-        if str(message.get("status") or "done").lower() in {"pending", "error"} or not str(message.get("content") or "").strip():
+        if str(message.status or "done").lower() in {"pending", "error"} or not str(message.content or "").strip():
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Assistant reply is not ready"})
 
-        created_raw = message.get("createdAt")
         try:
-            created_at = datetime.fromisoformat(str(created_raw).replace("Z", "+00:00")).timestamp() if created_raw else time.time()
-        except ValueError:
-            created_at = time.time()
-
-        try:
-            html = build_chat_reply_pdf_html(Message(
-                id=message_id,
-                role="assistant",
-                content=str(message.get("content") or ""),
-                status=str(message.get("status") or "done"),
-                created_at=created_at,
-            ))
+            html = build_chat_reply_pdf_html(message)
             pdf = render_pdf_bytes(html)
         except Exception as exc:
             return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"PDF export failed: {exc}"})

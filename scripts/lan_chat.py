@@ -693,6 +693,50 @@ class LanChatStore:
             "fileRetentionSeconds": FILE_TRANSFER_RETENTION_SECONDS,
         }
 
+    def public_bootstrap(self) -> dict[str, Any]:
+        """Read-only view of the shared public room without creating a device user."""
+        with self._connect() as conn:
+            room = conn.execute("SELECT * FROM rooms WHERE id = ?", (PUBLIC_ROOM_ID,)).fetchone()
+            if room is None:
+                raise LanChatError("公共频道不存在", 404)
+            rooms = [self._room_payload(conn, room, "public")]
+            users = [self._public_user(row, conn=conn) for row in conn.execute(
+                """SELECT DISTINCT u.* FROM users u JOIN messages m ON m.sender_id = u.id
+                   WHERE m.room_id = ? ORDER BY u.nickname COLLATE NOCASE""", (PUBLIC_ROOM_ID,)
+            ).fetchall()]
+        return {
+            "currentUser": {"id": "public", "nickname": "公共账户", "feishuUserId": "", "online": True},
+            "users": users,
+            "rooms": rooms,
+            "publicRoomId": PUBLIC_ROOM_ID,
+            "readOnly": True,
+            "pollIntervalMs": 3000,
+            "messagePollIntervalMs": 3000,
+            "bootstrapPollIntervalMs": 10000,
+            "inlineMediaMaxBytes": MESSAGE_MEDIA_MAX_BYTES,
+            "inlineMediaRetentionSeconds": MESSAGE_MEDIA_RETENTION_SECONDS,
+            "fileMaxBytes": FILE_TRANSFER_MAX_BYTES,
+            "fileRetentionSeconds": FILE_TRANSFER_RETENTION_SECONDS,
+        }
+
+    def public_list_messages(self, room_id: str, after_id: int = 0, limit: int = 100, before_id: int = 0) -> dict[str, Any]:
+        if room_id != PUBLIC_ROOM_ID:
+            raise LanChatError("公共账户只能访问公共频道", 403)
+        # Reuse the regular pagination implementation without recording room_reads.
+        after_id, before_id = max(0, int(after_id or 0)), max(0, int(before_id or 0))
+        limit = max(1, min(int(limit or 100), 200))
+        with self._connect() as conn:
+            if after_id:
+                rows = conn.execute("SELECT m.*, u.nickname, u.avatar_color, u.avatar_status FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.room_id=? AND m.id>? ORDER BY m.id ASC LIMIT ?", (PUBLIC_ROOM_ID, after_id, limit)).fetchall()
+            else:
+                upper = before_id if before_id else 2**63 - 1
+                rows = conn.execute("SELECT m.*, u.nickname, u.avatar_color, u.avatar_status FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.room_id=? AND m.id<? ORDER BY m.id DESC LIMIT ?", (PUBLIC_ROOM_ID, upper, limit)).fetchall()
+                rows.reverse()
+            messages = [self._message_payload(conn, row, "public") for row in rows]
+            oldest = int(rows[0]["id"]) if rows else before_id
+            has_more = bool(oldest and conn.execute("SELECT 1 FROM messages WHERE room_id=? AND id<? LIMIT 1", (PUBLIC_ROOM_ID, oldest)).fetchone())
+        return {"messages": messages, "lastId": messages[-1]["id"] if messages else after_id, "oldestId": messages[0]["id"] if messages else before_id, "hasMoreBefore": has_more}
+
     def update_profile(
         self, device_token: str, nickname: str, avatar_data_url: str = ""
     ) -> dict[str, Any]:
@@ -1543,6 +1587,34 @@ class LanChatStore:
                 str(attachment["mime_type"]),
                 int(attachment["size_bytes"]),
             )
+
+    def public_file_download_info(self, file_id: str) -> tuple[Path, str, str, int]:
+        clean_id = self._clean_file_id(file_id)
+        self.cleanup_expired_files()
+        with self._connect() as conn:
+            attachment = conn.execute(
+                """SELECT f.* FROM file_attachments f JOIN rooms r ON r.id=f.room_id
+                   WHERE f.id=? AND r.kind='public'""", (clean_id,)
+            ).fetchone()
+            if attachment is None:
+                raise LanChatError("文件不存在", 404)
+            if attachment["deleted_at"] is not None or float(attachment["expires_at"]) <= time.time():
+                raise LanChatError("文件已过期并从服务器清理", 410)
+            path = self._stored_file_path(attachment["stored_filename"])
+            if not path.is_file():
+                raise LanChatError("文件已从服务器清理", 410)
+            return path, str(attachment["original_name"]), str(attachment["mime_type"]), int(attachment["size_bytes"])
+
+    def public_message_media_info(self, filename: str) -> tuple[Path, str, str, int]:
+        clean_name = str(filename or "").strip().lower()
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT 1 FROM messages m JOIN rooms r ON r.id=m.room_id
+                   WHERE m.image_filename=? AND r.kind='public' LIMIT 1""", (clean_name,)
+            ).fetchone()
+        if row is None:
+            raise LanChatError("媒体不存在", 404)
+        return self.message_media_info(clean_name)
 
     def cleanup_expired_files(self, now: float | None = None) -> int:
         cutoff = float(now if now is not None else time.time())

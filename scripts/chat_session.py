@@ -31,6 +31,7 @@ class Message:
 @dataclass
 class Session:
     id: str
+    owner_id: str = "public"
     title: str = ""
     title_is_custom: bool = False
     created_at: str = ""
@@ -55,9 +56,9 @@ class ChatStore:
         self._save_lock = threading.Lock()
         self._lock = threading.Lock()
 
-    def create_session(self, session_id: str) -> Session:
+    def create_session(self, session_id: str, owner_id: str = "public") -> Session:
         with self._lock:
-            session = Session(id=session_id)
+            session = Session(id=session_id, owner_id=owner_id or "public")
             self.sessions[session_id] = session
             return session
 
@@ -65,10 +66,10 @@ class ChatStore:
         with self._lock:
             return self.sessions.get(session_id)
 
-    def get_or_create(self, session_id: str) -> Session:
+    def get_or_create(self, session_id: str, owner_id: str = "public") -> Session:
         session = self.get_session(session_id)
         if session is None:
-            session = self.create_session(session_id)
+            session = self.create_session(session_id, owner_id)
         return session
 
     def add_message(self, session: Session, message: Message) -> None:
@@ -92,7 +93,7 @@ class ChatStore:
                 return True
             return False
 
-    def list_sessions(self) -> list[dict]:
+    def list_sessions(self, owner_id: str | None = None) -> list[dict]:
         with self._lock:
             return sorted(
                 [{
@@ -100,7 +101,9 @@ class ChatStore:
                     "title_is_custom": getattr(s, "title_is_custom", False),
                     "created_at": s.created_at, "updated_at": s.updated_at,
                     "message_count": len(s.messages),
-                } for s in self.sessions.values()],
+                    "owner_id": getattr(s, "owner_id", "public"),
+                } for s in self.sessions.values()
+                 if owner_id is None or getattr(s, "owner_id", "public") == owner_id],
                 key=lambda x: x["updated_at"], reverse=True,
             )
 
@@ -169,7 +172,8 @@ def save_sessions_to_disk(store: ChatStore):
             serialized = []
             for s in store.sessions.values():
                 serialized.append({
-                    "id": s.id, "title": s.title or ChatStore._auto_title(s),
+                    "id": s.id, "owner_id": getattr(s, "owner_id", "public"),
+                    "title": s.title or ChatStore._auto_title(s),
                     "title_is_custom": getattr(s, "title_is_custom", False),
                     "created_at": s.created_at, "updated_at": s.updated_at,
                     "messages": [{
@@ -210,11 +214,15 @@ def load_sessions_from_disk(store: ChatStore):
             saved = json.load(f)
         if not isinstance(saved, list):
             return
+        migrated = False
         for item in saved:
             sid = str(item.get("id", ""))
             if not sid or not item.get("messages"):
                 continue
-            session = Session(id=sid, title=str(item.get("title", "")),
+            owner_id = str(item.get("owner_id") or "public")
+            if "owner_id" not in item:
+                migrated = True
+            session = Session(id=sid, owner_id=owner_id, title=str(item.get("title", "")),
                               title_is_custom=bool(item.get("title_is_custom", False)),
                               created_at=item.get("created_at", ""),
                               updated_at=item.get("updated_at", ""))
@@ -229,6 +237,8 @@ def load_sessions_from_disk(store: ChatStore):
                     created_at=m.get("created_at", time.time()),
                 ))
             store.sessions[sid] = session
+        if migrated:
+            save_sessions_to_disk(store)
         print(f"Loaded {len(store.sessions)} chat sessions from disk.")
     except Exception as e:
         print(f"Could not load chat sessions: {e}")
