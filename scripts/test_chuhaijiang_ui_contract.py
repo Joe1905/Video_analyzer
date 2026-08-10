@@ -1,4 +1,4 @@
-"""Contract for the isolated Chuhaijiang independent MCP chat page."""
+"""Shared v2 chat-shell contract for the three AI providers."""
 import unittest
 from unittest.mock import patch
 
@@ -7,63 +7,61 @@ try:
     from scripts.web_app import (
         CHAT_PROVIDER_DEFAULT_DOMAINS,
         MCP_CHAT_CONFIGS,
-        build_chuhaijiang_independent_template,
-        serve_chuhaijiang_independent_template,
+        serve_chat_template,
     )
 except ModuleNotFoundError:
     import web_app
     from web_app import (
         CHAT_PROVIDER_DEFAULT_DOMAINS,
         MCP_CHAT_CONFIGS,
-        build_chuhaijiang_independent_template,
-        serve_chuhaijiang_independent_template,
+        serve_chat_template,
     )
 
 
 class TestChuhaijiangUiContract(unittest.TestCase):
-    def test_independent_fastmoss_slash_shell_is_reused_on_python_chuhaijiang_domain(self):
-        page = build_chuhaijiang_independent_template()
+    @staticmethod
+    def render(provider: str, path: str) -> str:
+        captured = []
+        with patch.object(web_app, "text_response", side_effect=lambda *_args: captured.append(_args[2])):
+            serve_chat_template(None, provider, path)
+        return captured[0]
+
+    def test_three_providers_share_the_v2_chat_shell_and_assets(self):
+        pages = {
+            provider: self.render(provider, path)
+            for provider, path in (("home", "/"), ("amazon", "/amazon"), ("chuhaijiang", "/chuhaijiang"))
+        }
+        core = (
+            'class="chat-shell"', 'class="sidebar"', 'class="chat-main"',
+            'class="input-bar"', 'id="ui-system-css"', 'id="ui-system-js"',
+            'class="ui-nav"', 'const CHAT_PROVIDER=',
+        )
+        for page in pages.values():
+            for marker in core:
+                self.assertIn(marker, page)
+        self.assertIn('const CHAT_PROVIDER="chuhaijiang"', pages["chuhaijiang"])
+        self.assertIn('body data-provider="chuhaijiang"', pages["chuhaijiang"])
+
+    def test_chuhaijiang_has_provider_copy_but_never_the_old_independent_shell(self):
+        page = self.render("chuhaijiang", "/chuhaijiang")
         self.assertEqual(CHAT_PROVIDER_DEFAULT_DOMAINS["chuhaijiang"], {"chuhaijiang"})
         self.assertEqual(MCP_CHAT_CONFIGS["chuhaijiang"]["default_port"], 4104)
-        for marker in ('<header>', 'class="chat-shell"', 'grid-template-columns:280px',
-                       'class="empty-chat"', 'class="input-bar"'):
-            self.assertIn(marker, page)
-        for workbench_marker in ('ui-nav', 'chat-hero', 'quick-prompt',
-                                 'official-workflow', 'ui-chuhaijiang-d534532'):
-            self.assertNotIn(workbench_marker, page)
-        self.assertIn('const BASE_PATH="/chuhaijiang";', page)
-        self.assertIn('const PROVIDER_TYPE="chuhaijiang";', page)
-        self.assertIn('const PROVIDER_LABEL="出海匠";', page)
-        self.assertIn('label.textContent="chuhaijiang"', page)
+        self.assertIn("出海匠", page)
+        for legacy_marker in (
+            'data-chuhaijiang-independent="1"', 'SellerSprite MCP',
+            'grid-template-columns:280px minmax(0,1fr)', 'const BASE_PATH=',
+        ):
+            self.assertNotIn(legacy_marker, page)
 
-    def test_independent_page_uses_only_python_chuhaijiang_chat_api(self):
-        page = build_chuhaijiang_independent_template()
-        self.assertIn('/api/chat/sessions?provider=chuhaijiang', page)
-        self.assertIn('/api/chat/ask', page)
-        self.assertIn('provider:"chuhaijiang"', page)
-        self.assertIn('/api/chat/events', page)
-        self.assertIn('/api/chat/sessions/${encodeURIComponent(id)}/delete', page)
-        self.assertNotIn('/amazon/api/', page)
-        self.assertNotIn('/fastmoss/api/', page)
-
-    def test_both_chuhaijiang_urls_render_identical_independent_page(self):
-        rendered = []
-
-        def capture(_handler, _status, html, _content_type):
-            rendered.append(html)
-
-        with patch.object(web_app, "text_response", side_effect=capture):
-            serve_chuhaijiang_independent_template(None)
-            serve_chuhaijiang_independent_template(None)
-
-        self.assertEqual(rendered[0], rendered[1])
-        self.assertIn('data-chuhaijiang-independent="1"', rendered[0])
-
-    def test_source_cuts_off_legacy_fastmoss_proxy_and_shared_template(self):
+    def test_source_canonicalizes_slashes_and_cuts_off_v1_proxy_routes(self):
         source = open(web_app.__file__, encoding="utf-8").read()
-        self.assertIn('return serve_chuhaijiang_independent_template(self)', source)
-        self.assertIn('self.send_header("Location", "/chuhaijiang/")', source)
-        self.assertNotIn('legacy_chuhaijiang=', source)
+        self.assertIn('if parsed.path == "/amazon/":', source)
+        self.assertIn('if parsed.path == "/chuhaijiang/":', source)
+        self.assertIn('if parsed.path in {"/fastmoss", "/fastmoss/"}:', source)
+        self.assertIn('self.send_header("Location", "/chuhaijiang")', source)
+        self.assertNotIn("build_chuhaijiang_independent_template", source)
+        self.assertNotIn("serve_chuhaijiang_independent_template", source)
+        self.assertNotIn('proxy_mcp_chat(self, "sellersprite")', source)
 
 
 if __name__ == "__main__":
