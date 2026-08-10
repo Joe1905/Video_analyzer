@@ -362,6 +362,7 @@ class LanChatStore:
                 self._ensure_feishu_default_group(
                     conn, str(owner["id"]), str(owner["name"]), now
                 )
+            self._ensure_public_avatar()
             self._ensure_random_user_avatars(conn)
             self._ensure_random_group_avatars(conn)
         self.cleanup_expired_files()
@@ -451,6 +452,17 @@ class LanChatStore:
                WHERE id = ?""",
             (filename, user_id),
         )
+
+    def _ensure_public_avatar(self) -> None:
+        """Create the read-only public account avatar once and keep it on disk."""
+        filename = "public.png"
+        path = self.avatar_dir / filename
+        if path.is_file():
+            return
+        payload = self._randomized_preset_avatar(self.default_avatar_dir)
+        with self._avatar_lock:
+            if not path.is_file():
+                self._write_avatar_file(self.avatar_dir, filename, payload)
 
     def _assign_random_group_avatar(
         self, conn: sqlite3.Connection, room_id: str
@@ -705,7 +717,14 @@ class LanChatStore:
                    WHERE m.room_id = ? ORDER BY u.nickname COLLATE NOCASE""", (PUBLIC_ROOM_ID,)
             ).fetchall()]
         return {
-            "currentUser": {"id": "public", "nickname": "公共账户", "feishuUserId": "", "online": True},
+            "currentUser": {
+                "id": "public",
+                "nickname": "公共账户",
+                "feishuUserId": "",
+                "avatarUrl": self._public_avatar_url(),
+                "avatarStatus": "ready",
+                "online": True,
+            },
             "users": users,
             "rooms": rooms,
             "publicRoomId": PUBLIC_ROOM_ID,
@@ -1755,6 +1774,9 @@ class LanChatStore:
         return self.message_media_bytes(filename)
 
     def avatar_bytes(self, user_id: str) -> tuple[bytes, str]:
+        if user_id == "public":
+            self._ensure_public_avatar()
+            return (self.avatar_dir / "public.png").read_bytes(), "image/png"
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
         if row is None:
@@ -1907,6 +1929,15 @@ class LanChatStore:
             except OSError:
                 pass
         return f"/api/lan-chat/avatars/{user_id}?v={version}"
+
+    def _public_avatar_url(self) -> str:
+        self._ensure_public_avatar()
+        path = self.avatar_dir / "public.png"
+        try:
+            version = f"{path.stat().st_mtime_ns:x}-{path.stat().st_size:x}"
+        except OSError:
+            version = "fallback"
+        return f"/api/lan-chat/avatars/public?v={version}"
 
     def _group_avatar_url(self, room: sqlite3.Row) -> str:
         system_kind = str(room["system_kind"] or "custom")

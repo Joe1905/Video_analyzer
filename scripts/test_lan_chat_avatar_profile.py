@@ -54,6 +54,17 @@ class LanChatAvatarProfileTests(unittest.TestCase):
         self.assertTrue(payload.startswith(b"\x89PNG\r\n\x1a\n"))
         self.assertGreater(len(payload), 1024)
 
+    def test_public_account_receives_a_persistent_random_avatar(self) -> None:
+        public_user = self.store.public_bootstrap()["currentUser"]
+        repeated_public_user = self.store.public_bootstrap()["currentUser"]
+        payload, content_type = self.store.avatar_bytes("public")
+
+        self.assertEqual("ready", public_user["avatarStatus"])
+        self.assertEqual(public_user["avatarUrl"], repeated_public_user["avatarUrl"])
+        self.assertIn("/api/lan-chat/avatars/public?v=", public_user["avatarUrl"])
+        self.assertEqual("image/png", content_type)
+        self.assertTrue(payload.startswith(b"\x89PNG\r\n\x1a\n"))
+
     def test_profile_rejects_non_png_avatar_payload(self) -> None:
         data_url = "data:image/jpeg;base64," + base64.b64encode(b"not-an-image").decode("ascii")
 
@@ -83,6 +94,7 @@ class LanChatAvatarProfileTests(unittest.TestCase):
             "json_max_bytes = (PROFILE_AVATAR_MAX_BYTES * 4 // 3) + 256 * 1024",
             source,
         )
+        self.assertIn('avatars/(public|[0-9a-f]{16})', source)
 
 
 if __name__ == "__main__":
