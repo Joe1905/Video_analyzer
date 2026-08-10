@@ -154,11 +154,15 @@ class UIContractTest(unittest.TestCase):
         script = UI_JS.read_text(encoding="utf-8")
         self.assertIn('class="ui-nav__identity-avatar-image"', app)
         self.assertIn('class="ui-nav__identity-avatar-fallback"', app)
+        self.assertIn('class="ui-global-user-close"', app)
+        self.assertIn('<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7.5 7.5 9 9m0-9-9 9"/></svg>', app)
         self.assertIn("function setIdentityAvatar", script)
         self.assertIn("user?.avatarUrl", script)
         self.assertIn("grid-template-columns:repeat(2,minmax(0,1fr))", css)
         self.assertIn(".ui-global-user-option.is-public", css)
         self.assertIn("min-height:132px", css)
+        self.assertIn("html[data-nav=\"collapsed\"] .ui-nav__identity", css)
+        self.assertIn(".ui-global-user-close svg", css)
 
     def test_navigation_selection_and_page_heading_contract(self) -> None:
         css = UI_CSS.read_text(encoding="utf-8")

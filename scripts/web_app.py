@@ -612,7 +612,7 @@ NAV_ITEMS = [
 ]
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
-UI_ASSET_VERSION = "20260810-04"
+UI_ASSET_VERSION = "20260810-05"
 APP_UI_ASSETS = f"""
 <script id="ui-nav-state-boot">
 let uiNavExpanded = false;
@@ -857,7 +857,8 @@ def render_app_nav(current_path: str) -> str:
         '<section class="ui-global-user-panel" role="dialog" aria-modal="true" aria-labelledby="ui-global-user-title">'
         '<header><div><small>全站数据作用域</small><h2 id="ui-global-user-title">切换工作身份</h2>'
         '<p>身份会同步应用到聊天、邻聊和账号池。</p></div>'
-        '<button type="button" class="ui-global-user-close" data-global-user-close aria-label="关闭">×</button></header>'
+        '<button type="button" class="ui-global-user-close" data-global-user-close aria-label="关闭" title="关闭">'
+        '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7.5 7.5 9 9m0-9-9 9"/></svg></button></header>'
         '<div class="ui-global-user-options" data-global-user-options><div class="ui-global-user-loading">正在读取可用身份…</div></div>'
         '</section></div>'
     )
