@@ -26,12 +26,12 @@ class TestChuhaijiangBoundary(unittest.TestCase):
         self.assertFalse(is_high_risk_tool("canvas", {"action": "load"}))
         self.assertFalse(is_high_risk_tool("account_info", {}))
 
-    def test_legacy_workflow_presentation_uses_registered_presets(self):
+    def test_fastmoss_presentation_is_reused_without_static_fork(self):
         web_app = Path(__file__).with_name("web_app.py").read_text(encoding="utf-8")
         chat_html = Path(__file__).with_name("static").joinpath("chat.html").read_text(encoding="utf-8")
-        self.assertIn('or provider == "chuhaijiang"', web_app)
-        self.assertIn('"preset_id": "cj-product-scout"', web_app)
-        self.assertIn('data-official-preset-id="{preset_id}"', web_app)
+        self.assertIn('return "fastmoss" if provider == "chuhaijiang" else provider', web_app)
+        self.assertIn('render_chat_quick_actions(presentation_provider, provider_ui, official_workflow_enabled)', web_app)
+        self.assertIn('if provider not in {"amazon", "fastmoss"}:', web_app)
         self.assertNotIn('data-chuhaijiang-prompt', chat_html)
 
 

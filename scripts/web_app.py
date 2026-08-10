@@ -461,11 +461,11 @@ CHAT_PROVIDER_UI = {
             ("\u63d0\u70bc\u8bc4\u8bba\u75db\u70b9\u4e0e\u673a\u4f1a", "\u8bf7\u4ece\u7ade\u54c1\u8bc4\u8bba\u4e2d\u63d0\u70bc\u9ad8\u9891\u75db\u70b9\u3001\u6ee1\u610f\u70b9\u548c\u4ea7\u54c1\u6539\u8fdb\u673a\u4f1a"),
         ),
     },
-    "chuhaijiang": {
-        "workspace": "\u51fa\u6d77\u5320 \u5de5\u4f5c\u53f0",
+    "fastmoss": {
+        "workspace": "FastMoss \u5de5\u4f5c\u53f0",
         "new_label": "\u65b0\u5efa\u5bf9\u8bdd",
-        "crumb": "\u51fa\u6d77\u5320",
-        "model": "\u51fa\u6d77\u5320 \u00b7 \u5c31\u7eea",
+        "crumb": "FastMoss",
+        "model": "FastMoss \u00b7 \u5c31\u7eea",
         "eyebrow": "\u8fbe\u4eba\u4e0e\u5546\u54c1\u6d1e\u5bdf",
         "title": "\u628a\u8fbe\u4eba\u4e0e\u5546\u54c1\u6570\u636e\uff0c\u62c6\u6210\u53ef\u590d\u7528\u7684\u589e\u957f\u7b56\u7565",
         "intro": "\u8f93\u5165\u8fbe\u4eba\u3001\u5546\u54c1\u6216\u89c6\u9891\u7ebf\u7d22\uff0c\u4ece\u5185\u5bb9\u8868\u73b0\u3001\u8f6c\u5316\u8bc1\u636e\u4e0e\u7ade\u54c1\u5dee\u5f02\u4e2d\u627e\u5230\u4e0b\u4e00\u6b65\u52a8\u4f5c\u3002",
@@ -501,25 +501,25 @@ CHAT_PROVIDER_OFFICIAL_QUICK_ACTIONS = {
             "icon": "compare",
         },
     ),
-    "chuhaijiang": (
+    "fastmoss": (
         {
             "label": "\u9009\u54c1\u51b3\u7b56",
             "skill": "\u9009\u54c1\u51b3\u7b56",
-            "preset_id": "cj-product-scout",
+            "preset_id": "fm-product-scout",
             "description": "\u5224\u65ad\u9009\u54c1\u673a\u4f1a\u3001\u751f\u547d\u5468\u671f\u4e0e\u5165\u573a\u65f6\u673a",
             "icon": "bars",
         },
         {
             "label": "\u8fbe\u4eba\u5efa\u8054",
             "skill": "\u8fbe\u4eba\u5efa\u8054",
-            "preset_id": "cj-creator-outreach",
+            "preset_id": "fm-creator-outreach",
             "description": "\u7b5b\u9009\u8fbe\u4eba\u3001\u8bc4\u4f30\u5339\u914d\u5ea6\u5e76\u751f\u6210\u5efa\u8054\u6587\u6848",
             "icon": "trend",
         },
         {
             "label": "\u89c6\u9891\u7b56\u7565",
             "skill": "\u89c6\u9891\u7b56\u7565",
-            "preset_id": "cj-video-brief",
+            "preset_id": "fm-video-brief",
             "description": "\u62c6\u89e3\u7206\u6b3e\u89c6\u9891\u5e76\u5f62\u6210\u62cd\u6444 Brief",
             "icon": "compare",
         },
@@ -1032,31 +1032,19 @@ def render_chat_quick_actions(provider: str, provider_ui: dict[str, Any], offici
     return "".join(actions)
 
 
+def chat_presentation_provider(provider: str) -> str:
+    """Keep the retired FastMoss page as the Chuhaijiang presentation contract."""
+    provider = str(provider or "home").strip().lower()
+    return "fastmoss" if provider == "chuhaijiang" else provider
+
+
+def brand_chat_presentation(value: str, provider: str) -> str:
+    if normalize_chat_provider(provider) != "chuhaijiang":
+        return value
+    return value.replace("FASTMOSS", "CHUHAIJIANG").replace("FastMoss", "出海匠")
+
+
 def render_chat_official_workflow_modal(provider: str) -> dict[str, str]:
-    if provider == "chuhaijiang":
-        items = [
-            ("cj-product-scout", "选品决策", "判断选品机会、生命周期与入场时机"),
-            ("cj-creator-outreach", "达人建联", "筛选达人、评估匹配度并生成建联文案"),
-            ("cj-competitor-batch", "竞品批量对比", "比较多个竞品并拆解突然爆发的原因"),
-            ("cj-store-diagnosis", "店铺诊断", "检查店铺商品、渠道、达人与集中度风险"),
-            ("cj-video-brief", "视频策略", "拆解爆款视频并形成拍摄或达人 Brief"),
-        ]
-        item_btns = [
-            f'<button class="official-workflow-item" type="button" data-official-preset-id="{preset_id}" data-official-preset="{html_escape(label)}"><span class="official-workflow-icon">{idx:02d}</span><span><strong>{html_escape(label)}</strong><small>{html_escape(description)}</small></span><i>\u2192</i></button>'
-            for idx, (preset_id, label, description) in enumerate(items, start=1)
-        ]
-        return {
-            "kicker": "CHUHAIJIANG · OFFICIAL SKILL",
-            "title": "出海匠官方场景库",
-            "intro": "选择出海匠官方 Skill，进入对应的选品、达人、竞品、店铺或视频策略流程。",
-            "tabs_class": " official-workflow-tabs--single",
-            "tabs_attributes": "",
-            "tabs": '<button class="official-workflow-tab is-active" type="button" role="tab" aria-selected="true" data-official-tab="comprehensive">官方 Skills <span>5</span></button>',
-            "panels": (
-                '<section class="official-workflow-panel is-active" role="tabpanel" data-official-panel="comprehensive">'
-                '<div class="official-workflow-grid">' + "".join(item_btns) + '</div></section>'
-            ),
-        }
     if provider == "fastmoss":
         items = [
             ("fm-product-scout", "选品决策", "判断选品机会、生命周期与入场时机"),
@@ -1147,13 +1135,18 @@ def render_chat_official_workflow_modal(provider: str) -> dict[str, str]:
 def serve_chat_template(handler: BaseHTTPRequestHandler, provider: str, path: str) -> None:
     chat_html = (SCRIPTS_DIR / "static" / "chat.html").read_text(encoding="utf-8")
     provider = normalize_chat_provider(provider)
-    provider_ui = CHAT_PROVIDER_UI[provider]
+    presentation_provider = chat_presentation_provider(provider)
+    provider_ui = dict(CHAT_PROVIDER_UI[presentation_provider])
+    for field in ("workspace", "crumb", "model"):
+        provider_ui[field] = brand_chat_presentation(str(provider_ui[field]), provider)
     official_workflow_enabled = (
-        (provider == "amazon" and official_sellersprite_skill_enabled())
-        or (provider == "fastmoss" and official_fastmoss_skill_enabled())
-        or provider == "chuhaijiang"
+        (presentation_provider == "amazon" and official_sellersprite_skill_enabled())
+        or presentation_provider == "fastmoss"
     )
-    modal_ui = render_chat_official_workflow_modal(provider)
+    modal_ui = {
+        key: brand_chat_presentation(value, provider)
+        for key, value in render_chat_official_workflow_modal(presentation_provider).items()
+    }
     chat_html = chat_html.replace("__CHAT_PROVIDER__", provider)
     chat_html = chat_html.replace(
         "__CHAT_OFFICIAL_WORKFLOW_ENABLED__",
@@ -1175,7 +1168,7 @@ def serve_chat_template(handler: BaseHTTPRequestHandler, provider: str, path: st
     chat_html = chat_html.replace("__CHAT_INPUT_PLACEHOLDER__", provider_ui["placeholder"])
     chat_html = chat_html.replace(
         "__CHAT_QUICK_ACTIONS__",
-        render_chat_quick_actions(provider, provider_ui, official_workflow_enabled),
+        render_chat_quick_actions(presentation_provider, provider_ui, official_workflow_enabled),
     )
     page_heading = (
         '<button class="mobile-session-toggle" id="mobileSessionToggle" type="button" '
