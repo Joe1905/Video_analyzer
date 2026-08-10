@@ -303,6 +303,8 @@ class UIContractTest(unittest.TestCase):
         self.assertIn("async function enterPublicReadOnly()", lan_chat)
         self.assertIn('$("messageInput").placeholder="公共账户仅可查看公共频道"', lan_chat)
         self.assertIn('if(state.readOnly){await enterPublicReadOnly();return}', lan_chat)
+        self.assertIn('body.lan-read-only #attachImage,body.lan-read-only #sendButton', lan_chat)
+        self.assertIn('["attachImage","sendButton"].forEach(id=>$(id).disabled=true)', lan_chat)
 
     def test_lan_chat_mobile_details_use_an_independent_drawer_header(self) -> None:
         lan_chat = (STATIC_DIR / "lan_chat.html").read_text(encoding="utf-8")
