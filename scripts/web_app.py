@@ -6830,7 +6830,7 @@ def provider_default_enabled_tool_ids(provider: str) -> set[str]:
 
 def official_skill_market_default_instruction(provider: str) -> str:
     """Return the user-selected marketplace default without adding workflow rules."""
-    provider = normalize_chat_provider(provider)
+    provider = str(provider or "").strip().lower()
     if provider == "fastmoss":
         return "应用执行默认值：用户未指定地区时，对支持 region 参数的 FastMoss 工具使用 US。"
     if provider == "amazon":
