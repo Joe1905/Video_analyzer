@@ -20,6 +20,8 @@ const BUSINESS_TOOL_CACHE_TTL_SECONDS = 86400;
 const SELLERSPRITE_CACHE_TTL_SECONDS = BUSINESS_TOOL_CACHE_TTL_SECONDS;
 const FASTMOSS_MCP_API_KEY = process.env.FASTMOSS_MCP_API_KEY || process.env.FASTMOSS_API_KEY || "";
 const FASTMOSS_MCP_URL = process.env.FASTMOSS_MCP_URL || "https://mcp.fastmoss.com/mcp";
+const CHUHAIJIANG_MCP_API_KEY = process.env.CHUHAIJIANG_MCP_API_KEY || "";
+const CHUHAIJIANG_MCP_URL = process.env.CHUHAIJIANG_MCP_URL || "https://mcp.gateway.chuhaijiang.com/mcp";
 const FASTMOSS_CACHE_TTL_SECONDS = BUSINESS_TOOL_CACHE_TTL_SECONDS;
 const SOCIAVAULT_API_KEY = process.env.SOCIAVAULT_API_KEY || "";
 const SOCIAVAULT_BASE_URL = process.env.SOCIAVAULT_BASE_URL || process.env.SOCIAVAULT_API_BASE || "https://api.sociavault.com";
@@ -29,6 +31,8 @@ const SOCIAVAULT_MCP_CACHE_TTL_SECONDS = BUSINESS_TOOL_CACHE_TTL_SECONDS;
 const MCP_REMOTE_URL = process.env.MCP_REMOTE_URL || (
   MCP_CHAT_TYPE === "sociavault"
     ? SOCIAVAULT_BASE_URL
+    : MCP_CHAT_TYPE === "chuhaijiang"
+      ? CHUHAIJIANG_MCP_URL
     : MCP_CHAT_TYPE === "fastmoss"
       ? FASTMOSS_MCP_URL
       : SELLERSPRITE_MCP_URL
@@ -42,7 +46,7 @@ const SHARED_TOOL_CACHE_ROOT = process.env.MCP_TOOL_CACHE_DIR || path.join(DATA_
 
 const sessions = new Map();
 let saveTimer = null;
-let toolCacheStore = null;
+const toolCacheStores = new Map();
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -53,7 +57,8 @@ const MIME_TYPES = {
 
 function providerCacheKey() {
   if (MCP_CHAT_TYPE === "sociavault") return "sociavault_mcp";
-  return MCP_CHAT_TYPE === "fastmoss" ? "fastmoss_mcp" : "sellersprite_mcp";
+  if (MCP_CHAT_TYPE === "fastmoss") return "fastmoss_mcp";
+  return MCP_CHAT_TYPE === "chuhaijiang" ? "chuhaijiang_mcp" : "sellersprite_mcp";
 }
 
 function providerCacheScope() {
@@ -62,6 +67,8 @@ function providerCacheScope() {
       ? SOCIAVAULT_API_KEY
       : MCP_CHAT_TYPE === "fastmoss"
         ? FASTMOSS_MCP_API_KEY
+        : MCP_CHAT_TYPE === "chuhaijiang"
+          ? CHUHAIJIANG_MCP_API_KEY
         : SELLERSPRITE_SECRET_KEY
   );
   return createHash("sha256")
@@ -77,6 +84,7 @@ function providerKeywordsPattern() {
 }
 
 function mcpRequestUrl() {
+  if (MCP_CHAT_TYPE === "chuhaijiang") return MCP_REMOTE_URL;
   if (MCP_CHAT_TYPE !== "fastmoss") return MCP_REMOTE_URL;
   if (!FASTMOSS_MCP_API_KEY || /[?&]api_key=/.test(MCP_REMOTE_URL)) return MCP_REMOTE_URL;
   const separator = MCP_REMOTE_URL.includes("?") ? "&" : "?";
@@ -89,6 +97,7 @@ function mcpRequestHeaders(sessionId = null) {
     accept: "application/json, text/event-stream",
   };
   if (MCP_CHAT_TYPE === "sellersprite") headers["secret-key"] = SELLERSPRITE_SECRET_KEY;
+  if (MCP_CHAT_TYPE === "chuhaijiang") headers["X-API-Key"] = CHUHAIJIANG_MCP_API_KEY;
   if (sessionId) headers["mcp-session-id"] = sessionId;
   return headers;
 }
@@ -99,6 +108,7 @@ function ensureMcpConfigured() {
   if (MCP_CHAT_TYPE === "fastmoss" && !FASTMOSS_MCP_API_KEY && !/[?&]api_key=/.test(MCP_REMOTE_URL)) {
     throw new Error("请先设置环境变量 FASTMOSS_MCP_API_KEY，或在 FASTMOSS_MCP_URL 中包含 api_key。");
   }
+  if (MCP_CHAT_TYPE === "chuhaijiang" && !CHUHAIJIANG_MCP_API_KEY) throw new Error("请先设置环境变量 CHUHAIJIANG_MCP_API_KEY。");
 }
 
 function guideMessage() {
@@ -377,23 +387,30 @@ function mcpToolResponseIsError(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value) && (value.isError === true || value.error));
 }
 
-function getToolCacheStore() {
-  if (!toolCacheStore) {
-    toolCacheStore = new ToolCacheStore({
+function getToolCacheStore(ttlSeconds = MCP_CACHE_TTL_SECONDS) {
+  const key = String(ttlSeconds);
+  if (!toolCacheStores.has(key)) {
+    toolCacheStores.set(key, new ToolCacheStore({
       rootDir: SHARED_TOOL_CACHE_ROOT,
       provider: providerCacheKey(),
       scope: providerCacheScope(),
       legacyFile: LEGACY_TOOL_CACHE_FILE,
-      ttlSeconds: MCP_CACHE_TTL_SECONDS,
+      ttlSeconds,
       isError: mcpToolResponseIsError,
       logger: console,
-    });
+    }));
   }
-  return toolCacheStore;
+  return toolCacheStores.get(key);
 }
 
 function shouldBypassToolCache(chatType, name) {
+  if (chatType === "chuhaijiang") return !new Set(["get_detail", "amazon", "search", "get_related", "social_analytics"]).has(name);
   return chatType === "sociavault" && name === "check_credits";
+}
+
+function chuhaijiangCacheTtl(name, args) {
+  if (name === "get_detail" || (name === "amazon" && args?.action === "detail")) return Number(process.env.CHUHAIJIANG_DETAIL_CACHE_TTL_SECONDS || 86400);
+  return Number(process.env.CHUHAIJIANG_QUERY_CACHE_TTL_SECONDS || 3600);
 }
 
 function normalizeToolCacheRequest(args) {
@@ -457,7 +474,8 @@ async function callMcpToolCached(name, args) {
     return mcpClient.callTool(name, args);
   }
   const effectiveArgs = normalizeToolCacheRequest(args);
-  const cached = await getToolCacheStore().getOrCall(
+  const ttl = MCP_CHAT_TYPE === "chuhaijiang" ? chuhaijiangCacheTtl(name, effectiveArgs) : MCP_CACHE_TTL_SECONDS;
+  const cached = await getToolCacheStore(ttl).getOrCall(
     name,
     effectiveArgs,
     () => mcpClient.callTool(name, effectiveArgs),
