@@ -27,11 +27,12 @@ RUN apt-get update \
 RUN pip install --upgrade pip \
     && pip install "video-analyzer @ git+https://github.com/byjlw/video-analyzer.git" requests openai-whisper "Pillow>=11.1,<13"
 
-# Patch video_analyzer: raise reconstruct_video max_tokens (num_predict) from 1000 to 8192
-# so the final video_description is not truncated mid-sentence. Kept as a separate RUN layer
+# Patch video_analyzer output budgets: each frame needs enough room to finish its
+# structured description, while the reconstructed video summary needs a larger budget.
+# Kept as a separate RUN layer
 # so the pip install layer above stays byte-identical and cache-friendly (no re-clone of the
 # upstream git repo on rebuild, which matters when github is hard to reach from the build host).
-RUN python -c "import video_analyzer, os; p=os.path.join(os.path.dirname(video_analyzer.__file__),'analyzer.py'); s=open(p,encoding='utf-8').read(); assert 'num_predict=1000' in s, 'num_predict=1000 not found in analyzer.py'; s=s.replace('num_predict=1000','num_predict=8192'); open(p,'w',encoding='utf-8').write(s); print('patched video_analyzer/analyzer.py: num_predict=1000 -> 8192')"
+RUN python -c "import video_analyzer, os; p=os.path.join(os.path.dirname(video_analyzer.__file__),'analyzer.py'); s=open(p,encoding='utf-8').read(); assert 'num_predict=300' in s, 'num_predict=300 not found in analyzer.py'; assert 'num_predict=1000' in s, 'num_predict=1000 not found in analyzer.py'; s=s.replace('num_predict=300','num_predict=1024').replace('num_predict=1000','num_predict=8192'); open(p,'w',encoding='utf-8').write(s); print('patched video_analyzer/analyzer.py: per-frame 300 -> 1024; reconstruction 1000 -> 8192')"
 
 RUN pip install yt-dlp playwright httpx "scrapling[ai]" \
     && python -m playwright install --with-deps chromium \
