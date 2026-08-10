@@ -612,7 +612,7 @@ NAV_ITEMS = [
 ]
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
-UI_ASSET_VERSION = "20260810-02"
+UI_ASSET_VERSION = "20260810-03"
 APP_UI_ASSETS = f"""
 <script id="ui-nav-state-boot">
 let uiNavExpanded = false;
@@ -845,7 +845,9 @@ def render_app_nav(current_path: str) -> str:
     identity = (
         '<button class="ui-nav__identity" type="button" data-global-user-trigger '
         'aria-label="切换全局身份" title="切换全局身份">'
-        '<span class="ui-nav__identity-avatar" aria-hidden="true">…</span>'
+        '<span class="ui-nav__identity-avatar" aria-hidden="true">'
+        '<img class="ui-nav__identity-avatar-image" alt="" hidden>'
+        '<span class="ui-nav__identity-avatar-fallback">…</span></span>'
         '<span class="ui-nav__identity-copy"><b>正在识别身份</b><small>全局身份</small></span>'
         '</button>'
     )
@@ -853,7 +855,8 @@ def render_app_nav(current_path: str) -> str:
         '<div class="ui-global-user-modal" id="ui-global-user-modal" hidden>'
         '<button class="ui-global-user-backdrop" type="button" data-global-user-close aria-label="关闭身份选择"></button>'
         '<section class="ui-global-user-panel" role="dialog" aria-modal="true" aria-labelledby="ui-global-user-title">'
-        '<header><div><small>全站数据作用域</small><h2 id="ui-global-user-title">切换身份</h2></div>'
+        '<header><div><small>全站数据作用域</small><h2 id="ui-global-user-title">切换工作身份</h2>'
+        '<p>身份会同步应用到聊天、邻聊和账号池。</p></div>'
         '<button type="button" class="ui-global-user-close" data-global-user-close aria-label="关闭">×</button></header>'
         '<div class="ui-global-user-options" data-global-user-options><div class="ui-global-user-loading">正在读取可用身份…</div></div>'
         '</section></div>'

@@ -148,6 +148,17 @@ class UIContractTest(unittest.TestCase):
         self.assertNotIn("APP_NAV_BEHAVIOR", app)
         self.assertNotIn('re.sub(r"(<header', app)
 
+    def test_global_identity_uses_feishu_avatar_in_dock_and_compact_picker(self) -> None:
+        app = (SCRIPTS_DIR / "web_app.py").read_text(encoding="utf-8")
+        css = UI_CSS.read_text(encoding="utf-8")
+        script = UI_JS.read_text(encoding="utf-8")
+        self.assertIn('class="ui-nav__identity-avatar-image"', app)
+        self.assertIn('class="ui-nav__identity-avatar-fallback"', app)
+        self.assertIn("function setIdentityAvatar", script)
+        self.assertIn("user?.avatarUrl", script)
+        self.assertIn("grid-template-columns:repeat(2,minmax(0,1fr))", css)
+        self.assertIn(".ui-global-user-option.is-public", css)
+
     def test_navigation_selection_and_page_heading_contract(self) -> None:
         css = UI_CSS.read_text(encoding="utf-8")
         self.assertRegex(

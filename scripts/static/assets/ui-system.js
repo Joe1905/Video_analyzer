@@ -11,10 +11,32 @@
     return String(user?.name || "公").trim().slice(0, 1) || "公";
   }
 
+  function setIdentityAvatar(avatar, user) {
+    if (!avatar) return;
+    const image = avatar.querySelector(".ui-nav__identity-avatar-image");
+    const fallback = avatar.querySelector(".ui-nav__identity-avatar-fallback");
+    if (!image || !fallback) {
+      avatar.textContent = userInitial(user);
+      return;
+    }
+    fallback.textContent = userInitial(user);
+    image.hidden = true;
+    image.removeAttribute("src");
+    if (!user?.avatarUrl) return;
+    image.onload = () => { image.hidden = false; fallback.hidden = true; };
+    image.onerror = () => {
+      image.hidden = true;
+      fallback.hidden = false;
+      image.removeAttribute("src");
+    };
+    fallback.hidden = false;
+    image.src = user.avatarUrl;
+  }
+
   function renderGlobalUser(payload) {
     const current = payload.currentUser || { id: "public", name: "公共账户", kind: "public" };
     document.querySelectorAll(".ui-nav__identity").forEach((button) => {
-      button.querySelector(".ui-nav__identity-avatar").textContent = userInitial(current);
+      setIdentityAvatar(button.querySelector(".ui-nav__identity-avatar"), current);
       button.querySelector(".ui-nav__identity-copy b").textContent = current.name;
       button.querySelector(".ui-nav__identity-copy small").textContent = current.kind === "feishu" ? "飞书账户" : "公共账户";
     });
@@ -24,7 +46,7 @@
       const avatar = user.avatarUrl
         ? `<img src="${String(user.avatarUrl).replace(/&/g, "&amp;").replace(/\"/g, "&quot;")}" alt="">`
         : userInitial(user);
-      return `<button type="button" class="ui-global-user-option ${user.id === current.id ? "is-current" : ""}" data-global-user-id="${String(user.id).replace(/\"/g, "&quot;")}"><span class="avatar">${avatar}</span><span class="copy"><b>${String(user.name || "公共账户")}</b><small>${user.kind === "feishu" ? "飞书账户" : "公共账户"}</small></span></button>`;
+      return `<button type="button" class="ui-global-user-option ${user.kind === "public" ? "is-public" : ""} ${user.id === current.id ? "is-current" : ""}" data-global-user-id="${String(user.id).replace(/\"/g, "&quot;")}"><span class="avatar">${avatar}</span><span class="copy"><b>${String(user.name || "公共账户")}</b><small>${user.kind === "feishu" ? "飞书账户" : "公共账户"}</small></span><span class="state" aria-hidden="true">${user.id === current.id ? "当前" : ""}</span></button>`;
     }).join("") || '<div class="ui-global-user-loading">暂无可用身份</div>';
     options.querySelectorAll("[data-global-user-id]").forEach((button) => {
       button.addEventListener("click", async () => {
