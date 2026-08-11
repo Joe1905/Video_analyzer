@@ -1752,7 +1752,10 @@ def _instagram_reels_url(job: dict[str, Any]) -> str:
 
 def _instagram_relative_date(text: str, anchor: datetime) -> tuple[str, str]:
     """Convert Instagram's relative post time using one fixed job-start clock."""
-    raw = _clean_text(text, 500)
+    # Instagram's body text starts with its navigation and the reel caption.  The
+    # publication label (for example, "4 hours ago") is frequently well after
+    # the first 500 characters, so do not truncate it out before parsing.
+    raw = _clean_text(text, 12000)
     normalized = raw.lower().replace("\u00a0", " ")
     match = re.search(r"\b(\d+)\s*(?:h|hr|hrs|hour|hours)\s*(?:ago)?\b", normalized)
     if match:
