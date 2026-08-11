@@ -292,6 +292,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             feishu_avatar_url TEXT NOT NULL DEFAULT '',
             profile_key TEXT NOT NULL DEFAULT '',
             user_data_dir TEXT NOT NULL DEFAULT '',
+            login_platform TEXT NOT NULL DEFAULT '',
             last_activity_at TEXT NOT NULL DEFAULT '',
             last_error TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
@@ -494,6 +495,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         "feishu_user_name": "TEXT NOT NULL DEFAULT ''",
         "feishu_avatar_url": "TEXT NOT NULL DEFAULT ''",
         "runtime_id": "TEXT NOT NULL DEFAULT ''",
+        "login_platform": "TEXT NOT NULL DEFAULT ''",
         "last_activity_at": "TEXT NOT NULL DEFAULT ''",
     }.items():
         if name not in existing_session_cols:
@@ -1056,6 +1058,7 @@ def _row_to_session(row: sqlite3.Row) -> dict[str, Any]:
         "feishu_avatar_url": row["feishu_avatar_url"],
         "profile_key": row["profile_key"],
         "user_data_dir": row["user_data_dir"],
+        "login_platform": row["login_platform"],
         "last_activity_at": row["last_activity_at"],
         "last_error": row["last_error"],
         "created_at": row["created_at"],
@@ -4220,8 +4223,15 @@ def _direct_login_pool_id() -> int:
 def start_login_session(payload: dict[str, Any]) -> dict[str, Any]:
     account_id = int(payload.get("account_id") or 0)
     start_platform = _clean_text(payload.get("start_platform"), 32).lower() or "tiktok"
+    login_platform = _clean_text(payload.get("login_platform"), 32).lower()
     if start_platform not in PLATFORM_START_URLS:
         raise ValueError("启动平台仅支持 TikTok 或 Instagram")
+    if login_platform and login_platform not in PLATFORM_START_URLS:
+        raise ValueError("新增登录仅支持 TikTok 或 Instagram")
+    if login_platform and not account_id:
+        raise ValueError("新增平台登录必须指定已有账号")
+    if login_platform:
+        start_platform = login_platform
     requested_pool = str(payload.get("proxy_profile_id") or payload.get("pool_id") or "").strip()
     proxy_profile_id = _direct_login_pool_id() if not account_id and requested_pool == "direct" else int(requested_pool or 0)
     saved_profile: dict[str, Any] = {}
@@ -4241,7 +4251,14 @@ def start_login_session(payload: dict[str, Any]) -> dict[str, Any]:
         proxy_profile_id = bound_proxy_id
         username = str(account_row["username"] or "")
         saved_profile = _json_loads(account_row["profile_json"], {})
-        if start_platform == "instagram" and not _instagram_login_metadata(saved_profile).get("logged_in"):
+        deleted_platforms = saved_profile.get("platform_deletions") if isinstance(saved_profile, dict) else {}
+        if not isinstance(deleted_platforms, dict):
+            deleted_platforms = {}
+        if login_platform == "instagram" and _instagram_login_metadata(saved_profile).get("logged_in"):
+            raise ValueError("当前 Chrome Profile 已登录 Instagram")
+        if login_platform == "tiktok" and not bool(deleted_platforms.get("tiktok")):
+            raise ValueError("当前 Chrome Profile 已登录 TikTok")
+        if start_platform == "instagram" and not login_platform and not _instagram_login_metadata(saved_profile).get("logged_in"):
             raise ValueError("当前 Chrome Profile 未检测到 Instagram 登录")
         feishu_user_id = str(account_row["feishu_user_id"] or "")
         feishu_user_name = str(account_row["feishu_user_name"] or "")
@@ -4297,9 +4314,9 @@ def start_login_session(payload: dict[str, Any]) -> dict[str, Any]:
                 slot, proxy_profile_id, account_id, username, status, channel_url, runtime_id,
                 pid, xvfb_pid, x11vnc_pid, websockify_pid, display, vnc_port, novnc_port,
                 debug_port, owner, current_job_id, feishu_user_id, feishu_user_name,
-                feishu_avatar_url, profile_key, user_data_dir, last_activity_at,
+                feishu_avatar_url, profile_key, user_data_dir, login_platform, last_activity_at,
                 last_error, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)
             """,
             (
                 slot,
@@ -4320,6 +4337,7 @@ def start_login_session(payload: dict[str, Any]) -> dict[str, Any]:
                 feishu_avatar_url,
                 profile_key,
                 str((profile.get("isolation") or {}).get("user_data_dir") or ""),
+                login_platform,
                 now,
                 now,
                 now,
@@ -4647,7 +4665,57 @@ def _inspect_login_session(payload: dict[str, Any]) -> dict[str, Any]:
             return {"active": False, "bound": False, "status": row["status"], "reason": str(row["last_error"] or "登录通道已结束")}
         if row["account_id"]:
             account = conn.execute("SELECT * FROM tiktok_accounts WHERE id = ?", (row["account_id"],)).fetchone()
-            return {"active": True, "bound": True, "status": "bound", "account": _row_to_account(account) if account else None, **list_state()}
+            login_platform = str(row["login_platform"] or "").lower()
+            if not login_platform:
+                return {"active": True, "bound": True, "status": "bound", "account": _row_to_account(account) if account else None, **list_state()}
+            user_data_dir = str(row["user_data_dir"] or "")
+            if not account or not user_data_dir:
+                return {"active": True, "bound": False, "status": "waiting", "reason": "浏览器 profile 尚未就绪"}
+            cookie_names = ("sessionid",) if login_platform == "instagram" else ("sessionid", "sessionid_ss", "sid_tt", "sid_guard")
+            login = _platform_login_metadata(
+                {"isolation": {"user_data_dir": user_data_dir}},
+                "%instagram.com%" if login_platform == "instagram" else "%tiktok.com%",
+                cookie_names,
+            )
+            if not login.get("logged_in"):
+                return {"active": True, "bound": False, "status": "waiting_login", "platform": login_platform}
+            profile = _json_loads(account["profile_json"], {})
+            if not isinstance(profile, dict):
+                profile = {}
+            deleted_platforms = profile.get("platform_deletions")
+            if not isinstance(deleted_platforms, dict):
+                deleted_platforms = {}
+            deleted_platforms.pop(login_platform, None)
+            profile["platform_deletions"] = deleted_platforms
+            updated_at = now_iso()
+            conn.execute(
+                """UPDATE tiktok_accounts
+                   SET profile_json = ?, last_login_at = ?, last_error = '', updated_at = ?
+                   WHERE id = ?""",
+                (json.dumps(profile, ensure_ascii=False, separators=(",", ":")), updated_at, updated_at, int(row["account_id"])),
+            )
+            conn.execute(
+                "UPDATE browser_sessions SET login_platform = '', updated_at = ? WHERE id = ?",
+                (updated_at, session_id),
+            )
+            conn.commit()
+            bootstrap = {}
+            if login_platform == "instagram":
+                try:
+                    bootstrap = bootstrap_instagram_profile(int(row["account_id"]), session_id)
+                except Exception as exc:
+                    bootstrap = {"configured": False, "reason": _clean_text(exc, 500)}
+            result = {
+                "active": True,
+                "bound": True,
+                "status": "bound",
+                "platform": login_platform,
+                "account": get_account(int(row["account_id"])),
+                **list_state(),
+            }
+            if bootstrap and not bootstrap.get("configured"):
+                result["reason"] = str(bootstrap.get("reason") or "Instagram 登录已保存，Reels 入口将在下次打开时补齐")
+            return result
         pool = conn.execute("SELECT * FROM proxy_profiles WHERE id = ?", (row["proxy_profile_id"],)).fetchone()
         user_data_dir = str(row["user_data_dir"] or "")
     if not pool or not user_data_dir:
@@ -4736,7 +4804,8 @@ def capture_pending_login_sessions() -> dict[str, Any]:
             int(row["id"])
             for row in conn.execute(
                 """SELECT id FROM browser_sessions
-                   WHERE account_id IS NULL AND status = 'observing' AND owner = 'manual'
+                   WHERE status = 'observing' AND owner = 'manual'
+                     AND (account_id IS NULL OR login_platform <> '')
                    ORDER BY id"""
             ).fetchall()
         ]
