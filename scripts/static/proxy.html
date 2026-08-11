@@ -499,9 +499,9 @@
     .platform-switcher button { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 9px; border: 0; border-radius: 6px; color: var(--muted); background: transparent; font-size: 12px; font-weight: 750; transition: color .18s ease, background .18s ease, box-shadow .18s ease; }
     .platform-switcher button:hover { color: var(--text); background: #f5f6f8; }
     .platform-switcher button[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 0 0 1px rgba(82,103,243,.13); }
-    .platform-mark { display: inline-grid; width: 15px; height: 15px; place-items: center; border-radius: 5px; color: currentColor; font-size: 8px; font-style: normal; font-weight: 900; letter-spacing: -.04em; background: currentColor; }
-    .platform-mark span { color: #fff; transform: scale(.82); }
-    .platform-mark.instagram { border-radius: 5px; background: #d85a78; }
+    .platform-mark { display: inline-grid; width: 15px; height: 15px; place-items: center; border: 1px solid rgba(18,24,34,.16); border-radius: 50%; color: #fff; font-size: 7px; font-style: normal; font-weight: 850; letter-spacing: -.06em; background: #202833; box-shadow: inset 0 1px rgba(255,255,255,.19); }
+    .platform-mark span { transform: scale(.86); }
+    .platform-mark.instagram { border-color: rgba(190,69,109,.26); background: linear-gradient(135deg,#f0a06f 0%,#d85286 54%,#7657c8 100%); }
     .accounts th:nth-child(1) { width: 30%; }
     .accounts th:nth-child(2) { width: 18%; }
     .accounts th:nth-child(3) { width: 16%; }
@@ -552,15 +552,15 @@
     .login-browser-placeholder { display: grid; min-height: 156px; place-items: center; border: 1px dashed #c8ced8; border-radius: 10px; color: var(--muted); text-align: center; font-size: 12px; }
     .login-browser-placeholder b { display: block; margin-bottom: 4px; color: var(--text); font-size: 13px; }
     .login-session-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 2px; }
-    .account-platform-topline { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 20px; margin-bottom: 3px; }
-    .platform-ledger { display: inline-flex; align-items: center; gap: 3px; }
-    .platform-ledger-item { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 6px 0 4px; border: 1px solid transparent; border-radius: 5px; color: #8b95a2; font-size: 10px; font-weight: 750; }
-    .platform-ledger-item .platform-mark { width: 12px; height: 12px; border-radius: 3px; font-size: 6px; }
-    .platform-ledger-item .platform-mark span { transform: scale(.7); }
-    .platform-ledger-item.active { border-color: #dfe4ee; color: var(--text); background: #f7f8fb; }
-    .inline-platform-switch { display: inline-grid; width: 23px; height: 23px; place-items: center; padding: 0; border: 1px solid #dfe4ea; border-radius: 6px; color: var(--muted); background: #fff; transition: color .16s ease, border-color .16s ease, background .16s ease; }
-    .inline-platform-switch .icon { width: 14px; height: 14px; }
-    .inline-platform-switch:hover { border-color: #bfc8ff; color: var(--accent); background: #fbfbff; }
+    .account-platform-topline { display: flex; align-items: center; justify-content: space-between; gap: 7px; min-height: 24px; margin: -1px 0 4px; }
+    .platform-ledger { display: inline-flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid #e1e5eb; border-radius: 999px; background: rgba(255,255,255,.82); box-shadow: 0 1px 1px rgba(26,35,49,.035); }
+    .platform-ledger-item { display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 7px 0 5px; border: 1px solid transparent; border-radius: 999px; color: #7c8694; font-size: 10px; font-style: normal; font-weight: 720; letter-spacing: -.01em; line-height: 1; }
+    .platform-ledger-item .platform-mark { width: 12px; height: 12px; font-size: 6px; }
+    .platform-ledger-item .platform-mark span { transform: scale(.74); }
+    .platform-ledger-item.active { border-color: #dfe4ee; color: #263143; background: #f1f4f8; box-shadow: 0 1px 2px rgba(29,39,55,.06); }
+    .inline-platform-switch { display: inline-grid; width: 24px; height: 24px; place-items: center; padding: 0; border: 1px solid #e1e5eb; border-radius: 50%; color: #6f7a88; background: #fff; box-shadow: 0 1px 1px rgba(26,35,49,.035); transition: color .16s ease, border-color .16s ease, background .16s ease, transform .16s ease; }
+    .inline-platform-switch .icon { width: 13px; height: 13px; }
+    .inline-platform-switch:hover { border-color: #bfc8ff; color: var(--accent); background: #f7f8ff; transform: rotate(180deg); }
     @media (max-width: 1040px) { .platform-switcher button { padding: 0 7px; } .platform-switcher button > span { display: none; } }
   </style>
   <script>window.__PROXY_BOOTSTRAP__ = /* PROXY_BOOTSTRAP */ null;</script>
@@ -736,7 +736,7 @@
         const sessionFor = id => sessions.find(session => Number(session.account_id) === Number(id) && ['starting', 'running', 'observing'].includes(session.status));
         accountRows = (payload.accounts || []).map(account => {
           const pool = byPool.get(Number(account.proxy_profile_id)), session = sessionFor(account.id), runtime = liveRuntimeStatus(account, pool, session);
-          const linked = account.platforms || {}, tiktokLogged = Boolean(linked.tiktok && linked.tiktok.linked), instagramLogged = Boolean(linked.instagram && linked.instagram.logged_in);
+          const linked = account.platforms || {}, tiktokLogged = Boolean(linked.tiktok && linked.tiktok.linked), instagramLogged = Boolean((linked.instagram && linked.instagram.logged_in) || account.profile?.instagram?.profile_url);
           const makePlatform = loggedIn => ({ loggedIn, awake: Boolean(session), status: loggedIn ? runtime.status : '未登录', kind: loggedIn ? runtime.kind : 'off', session: session ? '会话在线 · 可观测' : loggedIn ? '会话已释放' : '等待新增平台登录' });
           return { accountId: account.id, id: account.username || `account-${account.id}`, initials: String(account.username || '?').slice(0, 2).toUpperCase(), owner: account.feishu_user_name || account.display_name || '未绑定飞书用户', avatar: account.feishu_avatar_url || account.tiktok_avatar_url || '', proxy: pool?.name || '未绑定代理', ip: pool?.expected_exit_ip || '待校验', platforms: { tiktok: makePlatform(tiktokLogged), instagram: makePlatform(instagramLogged) } };
         });
