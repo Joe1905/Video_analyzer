@@ -93,6 +93,24 @@ def _form(label: str, prompt: str, fields: list[dict[str, Any]], intro: str = "�
     }
 
 
+def _social_research_form(
+    label: str,
+    prompt: str,
+    target_label: str,
+    target_placeholder: str,
+    focus_placeholder: str,
+) -> dict[str, Any]:
+    return _form(
+        label,
+        prompt,
+        [
+            _field("target", target_label, target_placeholder, required=True, full=True),
+            _field("focus", "研究重点", focus_placeholder, multiline=True, full=True),
+        ],
+        "本次请求只暴露该平台预设登记的 SociaVault MCP 工具。",
+    )
+
+
 def _marketplace(value: str = "US") -> dict[str, Any]:
     return _field(
         "marketplace",
@@ -476,6 +494,77 @@ HOME_PRESET_FORMS: dict[str, dict[str, Any]] = {
             _field("focus", "研究重点", "例如价格带、卖点、评论痛点、竞品或机会判断", multiline=True, full=True),
         ],
         "此工作流只调用本地 Amazon 抓取外挂与公开网页检索，不调用社媒 MCP。",
+    ),
+    "home/tiktok-account-live": _social_research_form(
+        "TikTok 账号与直播",
+        "请按 TikTok 账号与直播工作流处理，查询账号、作品、受众、关注关系及直播数据。",
+        "TikTok 账号 / 主页链接", "输入 @账号或 TikTok 主页链接", "例如受众画像、近期内容、直播状态或粉丝关系",
+    ),
+    "home/tiktok-ad-library": _social_research_form(
+        "TikTok 广告库",
+        "请按 TikTok 广告库工作流处理，检索广告素材并查看必要的广告详情。",
+        "品牌 / 广告关键词", "输入品牌名、广告主或素材关键词", "例如投放创意、CTA、竞品素材或投放线索",
+    ),
+    "home/instagram-research": _social_research_form(
+        "Instagram 内容洞察",
+        "请按 Instagram 内容洞察工作流处理，分析账号、帖子、Reels、精选、音乐与评论互动。",
+        "Instagram 账号 / 帖子 / 关键词", "输入 @账号、公开链接、帖子 ID 或音乐关键词", "例如 Reels 选题、互动、评论反馈或账号定位",
+    ),
+    "home/youtube-research": _social_research_form(
+        "YouTube 频道与视频",
+        "请按 YouTube 频道与视频工作流处理，研究频道、视频、Shorts、直播、社区帖、播放列表与评论。",
+        "YouTube 频道 / 视频 / 关键词", "输入频道、公开视频链接或检索关键词", "例如 Shorts 趋势、视频脚本、频道定位或评论反馈",
+    ),
+    "home/facebook-research": _social_research_form(
+        "Facebook 生态洞察",
+        "请按 Facebook 生态洞察工作流处理，分析主页、帖子、Reels、群组、评论与 Marketplace 商品。",
+        "Facebook 主页 / 帖子 / 商品", "输入公开主页、帖子、群组或 Marketplace 链接", "例如内容互动、社群讨论、商品线索或评论反馈",
+    ),
+    "home/x-twitter-research": _social_research_form(
+        "X / Twitter 舆情",
+        "请按 X / Twitter 舆情工作流处理，追踪账号、推文、互动、社群与关注关系。",
+        "X 账号 / 推文 / 关键词", "输入 @账号、x.com 链接或检索关键词", "例如舆情、传播路径、引用转推或社群话题",
+    ),
+    "home/linkedin-research": _social_research_form(
+        "LinkedIn 品牌研究",
+        "请按 LinkedIn 品牌研究工作流处理，查询个人、公司和公开职业内容。",
+        "个人 / 公司 / 帖子", "输入 LinkedIn 公开链接、公司名或目标人物", "例如品牌定位、人才动态、公司内容或行业观点",
+    ),
+    "home/reddit-research": _social_research_form(
+        "Reddit 社区聆听",
+        "请按 Reddit 社区聆听工作流处理，研究 Subreddit、帖子、评论、转录与关键词讨论。",
+        "Subreddit / 帖子 / 关键词", "输入 r/社区、帖子链接或检索关键词", "例如真实痛点、口碑、讨论主题或竞品反馈",
+    ),
+    "home/threads-research": _social_research_form(
+        "Threads 话题追踪",
+        "请按 Threads 话题追踪工作流处理，查看账号、帖子、详情、用户与关键词搜索结果。",
+        "Threads 账号 / 帖子 / 关键词", "输入账号、threads.net 链接或检索关键词", "例如话题传播、讨论观点、创作者或互动反馈",
+    ),
+    "home/pinterest-research": _social_research_form(
+        "Pinterest 灵感研究",
+        "请按 Pinterest 灵感研究工作流处理，检索 Pins、看板与用户内容并提炼视觉选题。",
+        "Pin / 看板 / 关键词", "输入公开链接、看板名或检索关键词", "例如视觉风格、选题趋势、商品灵感或竞品素材",
+    ),
+    "home/twitch-research": _social_research_form(
+        "Twitch 主播监测",
+        "请按 Twitch 主播监测工作流处理，查询主播档案、视频、开播排期与精彩片段。",
+        "Twitch 主播 / 视频", "输入主播名、频道或公开视频链接", "例如直播排期、内容类型、精彩片段或竞品主播",
+    ),
+    "home/ad-library-research": _social_research_form(
+        "跨平台广告情报",
+        "请按跨平台广告情报工作流处理，研究 Facebook、Google 与 LinkedIn 广告库的公开广告信息。",
+        "广告主 / 品牌 / 关键词", "输入广告主、品牌、竞品或素材关键词", "例如活跃广告、创意卖点、投放平台或竞品投放",
+    ),
+    "home/google-search": _social_research_form(
+        "Google 搜索研究",
+        "请按 Google 搜索研究工作流处理，使用 SociaVault Google 搜索获取指定地区的公开搜索结果。",
+        "搜索问题", "输入品牌、商品、趋势或公开资料问题", "例如目标地区、信息来源或需要核验的结论",
+    ),
+    "home/sociavault-credits": _form(
+        "SociaVault 额度查询",
+        "请查询当前 SociaVault API 的可用额度，并简洁说明结果。",
+        [],
+        "此工作流只调用 SociaVault 额度查询 MCP 工具。",
     ),
 }
 

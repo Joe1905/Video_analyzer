@@ -1160,7 +1160,7 @@ body.ui-system .ui-nav__toggle:hover {
   }
 
   body.ui-system .official-workflow-tabs.official-workflow-tabs--home {
-    grid-template-columns: repeat(3, max-content);
+    grid-template-columns: repeat(4, max-content);
   }
 
   body.ui-system .official-workflow-tab {
@@ -2053,6 +2053,7 @@ body.ui-system .ui-nav__toggle:hover {
     body.ui-system .official-workflow-tabs.official-workflow-tabs--home {
       width: fit-content;
       justify-self: start;
+      grid-template-columns: repeat(2, max-content);
     }
 
     body.ui-system .official-workflow-body {
