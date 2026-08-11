@@ -50,6 +50,15 @@ class TestChatPresetForms(unittest.TestCase):
                     self.assertTrue(field["name"])
                     self.assertTrue(field["label"])
                     self.assertIn("placeholder", field)
+                    self.assertTrue(field["empty_meaning"])
+
+    def test_semantic_fields_keep_friendly_labels_and_canonical_execution_values(self):
+        seller_market = SELLERSPRITE_PRESET_FORMS["comprehensive/product-research"]["fields"][0]
+        chuhaijiang_market = CHUHAIJIANG_PRESET_FORMS["chuhaijiang/product-selection"]["fields"][0]
+        self.assertEqual(seller_market["parameter"], "marketplace")
+        self.assertIn({"value": "US", "label": "美国"}, seller_market["options"])
+        self.assertEqual(chuhaijiang_market["parameter"], "country")
+        self.assertIn({"value": "US", "label": "美国"}, chuhaijiang_market["options"])
 
     def test_rendered_pages_inject_only_their_own_form_definitions(self):
         amazon = self.render("amazon", "/amazon")
@@ -74,6 +83,10 @@ class TestChatPresetForms(unittest.TestCase):
         self.assertIn("askPayload.officialPresetId=S.officialPresetId", template)
         self.assertIn("function buildPresetPrompt()", template)
         self.assertIn("请填写${control.dataset.presetLabel}", template)
+        self.assertIn('"用户意图："', template)
+        self.assertIn('"执行语义："', template)
+        self.assertIn("未指定项不得自行臆造具体值", template)
+        self.assertIn("control.dataset.presetEmptyMeaning", template)
         self.assertNotIn('input.placeholder="补充说明（可选）"', template)
         styles = (web_app.SCRIPTS_DIR / "static" / "assets" / "ui-system.css").read_text(encoding="utf-8")
         self.assertIn(".input-bar.has-preset-form #input", styles)

@@ -7,6 +7,46 @@ The backend official-Skill and tool-whitelist boundaries remain authoritative.
 from typing import Any
 
 
+SELLERSPRITE_MARKETPLACE_OPTIONS = (
+    {"value": "US", "label": "美国"},
+    {"value": "UK", "label": "英国"},
+    {"value": "DE", "label": "德国"},
+    {"value": "FR", "label": "法国"},
+    {"value": "IT", "label": "意大利"},
+    {"value": "ES", "label": "西班牙"},
+    {"value": "JP", "label": "日本"},
+    {"value": "CA", "label": "加拿大"},
+    {"value": "MX", "label": "墨西哥"},
+    {"value": "AU", "label": "澳大利亚"},
+)
+
+CHUHAIJIANG_COUNTRY_OPTIONS = (
+    {"value": "US", "label": "美国"},
+    {"value": "GB", "label": "英国"},
+    {"value": "DE", "label": "德国"},
+    {"value": "FR", "label": "法国"},
+    {"value": "IT", "label": "意大利"},
+    {"value": "ES", "label": "西班牙"},
+    {"value": "JP", "label": "日本"},
+    {"value": "CA", "label": "加拿大"},
+    {"value": "MX", "label": "墨西哥"},
+    {"value": "BR", "label": "巴西"},
+    {"value": "TH", "label": "泰国"},
+    {"value": "ID", "label": "印度尼西亚"},
+    {"value": "VN", "label": "越南"},
+    {"value": "MY", "label": "马来西亚"},
+    {"value": "PH", "label": "菲律宾"},
+    {"value": "SG", "label": "新加坡"},
+)
+
+SOCIAL_PLATFORM_OPTIONS = (
+    {"value": "tiktok", "label": "TikTok"},
+    {"value": "instagram", "label": "Instagram"},
+    {"value": "youtube", "label": "YouTube"},
+    {"value": "facebook", "label": "Facebook"},
+)
+
+
 def _field(
     name: str,
     label: str,
@@ -16,6 +56,9 @@ def _field(
     value: str = "",
     multiline: bool = False,
     full: bool = False,
+    parameter: str = "",
+    options: tuple[dict[str, str], ...] = (),
+    empty_meaning: str = "",
 ) -> dict[str, Any]:
     return {
         "name": name,
@@ -25,6 +68,9 @@ def _field(
         "value": value,
         "multiline": multiline,
         "full": full,
+        "parameter": parameter,
+        "options": [dict(option) for option in options],
+        "empty_meaning": empty_meaning or "用户未指定，表示无额外限制；不要臆造，按官方 Skill 默认值或完整范围处理。",
     }
 
 
@@ -41,13 +87,33 @@ def _form(label: str, prompt: str, fields: list[dict[str, Any]], intro: str = "�
                 "可选：补充目标、限制条件或希望重点关注的内容",
                 multiline=True,
                 full=True,
+                empty_meaning="用户没有额外补充，以其他表单项表达的意图为准。",
             ),
         ],
     }
 
 
 def _marketplace(value: str = "US") -> dict[str, Any]:
-    return _field("marketplace", "亚马逊站点", "例如 US、UK、DE、JP", value=value)
+    return _field(
+        "marketplace",
+        "亚马逊站点",
+        "选择亚马逊站点",
+        value=value,
+        parameter="marketplace",
+        options=SELLERSPRITE_MARKETPLACE_OPTIONS,
+    )
+
+
+def _target_market(value: str = "US") -> dict[str, Any]:
+    return _field(
+        "market",
+        "目标市场",
+        "选择国家或地区",
+        required=True,
+        value=value,
+        parameter="country",
+        options=CHUHAIJIANG_COUNTRY_OPTIONS,
+    )
 
 
 def _asin(label: str = "ASIN", *, required: bool = True) -> dict[str, Any]:
@@ -68,7 +134,18 @@ SELLERSPRITE_PRESET_FORMS: dict[str, dict[str, Any]] = {
             _field("price_range", "价格区间", "例如 20-50 美元"),
             _field("monthly_sales", "最低月销量", "例如 300"),
             _field("rating", "最低评分", "例如 4.2"),
-            _field("seller_type", "卖家类型", "例如 FBA / FBM / 不限"),
+            _field(
+                "seller_type",
+                "配送方式",
+                "选择配送方式",
+                value="ANY",
+                parameter="fulfillment",
+                options=(
+                    {"value": "ANY", "label": "不限"},
+                    {"value": "FBA", "label": "亚马逊配送（FBA）"},
+                    {"value": "FBM", "label": "卖家自配送（FBM）"},
+                ),
+            ),
         ],
     ),
     "comprehensive/market-analysis": _form(
@@ -107,7 +184,21 @@ SELLERSPRITE_PRESET_FORMS: dict[str, dict[str, Any]] = {
         [
             _marketplace(),
             _keyword("关键词 / 类目"),
-            _field("search_mode", "机会模式", "热销 / 异动 / 增长 / 飙升 / 潜力 / 长尾", value="增长"),
+            _field(
+                "search_mode",
+                "机会模式",
+                "选择机会类型",
+                value="growth",
+                parameter="search_mode",
+                options=(
+                    {"value": "hot", "label": "热销"},
+                    {"value": "anomaly", "label": "异动"},
+                    {"value": "growth", "label": "持续增长"},
+                    {"value": "surge", "label": "快速飙升"},
+                    {"value": "potential", "label": "潜力机会"},
+                    {"value": "long_tail", "label": "长尾机会"},
+                ),
+            ),
         ],
     ),
     "comprehensive/review-insights": _form(
@@ -188,12 +279,12 @@ SELLERSPRITE_PRESET_FORMS: dict[str, dict[str, Any]] = {
     "tactical/local-premium-disruption": _form(
         "本土溢价降维",
         "请按卖家精灵官方战术 Skill「本土溢价降维」寻找切入机会。",
-        [_marketplace(), _keyword(required=False), _field("seller_nation", "卖家国家", "例如 US", value="US"), _field("min_price", "最低价格", "例如 35 美元", value="35 美元"), _field("min_units", "最低月销量", "例如 500", value="500")],
+        [_marketplace(), _keyword(required=False), _field("seller_nation", "卖家国家", "选择卖家所在国家", value="US", parameter="sellerNation", options=CHUHAIJIANG_COUNTRY_OPTIONS), _field("min_price", "最低价格", "例如 35 美元", value="35 美元"), _field("min_units", "最低月销量", "例如 500", value="500")],
     ),
     "tactical/fbm-intercept": _form(
         "FBM 拦截",
         "请按卖家精灵官方战术 Skill「FBM 拦截」筛选机会。",
-        [_marketplace(), _keyword(required=False), _field("fulfillment", "配送方式", "FBM", value="FBM"), _field("min_units", "最低月销量", "例如 300", value="300"), _field("has_variants", "需要变体", "是 / 否", value="是")],
+        [_marketplace(), _keyword(required=False), _field("fulfillment", "配送方式", "选择配送方式", value="FBM", parameter="fulfillment", options=({"value": "FBM", "label": "卖家自配送（FBM）"}, {"value": "FBA", "label": "亚马逊配送（FBA）"})), _field("min_units", "最低月销量", "例如 300", value="300"), _field("has_variants", "需要变体", "选择是否需要变体", value="Y", parameter="variation", options=({"value": "Y", "label": "是"}, {"value": "N", "label": "否"}))],
     ),
     "tactical/poor-listing-winner": _form(
         "低质量 Listing 高销量",
@@ -218,7 +309,7 @@ CHUHAIJIANG_PRESET_FORMS: dict[str, dict[str, Any]] = {
         "选品与市场调研",
         "请按出海匠官方 Skill 的「选品与市场调研」流程处理以下信息。",
         [
-            _field("market", "目标市场", "国家或地区，例如 US / 美国", required=True),
+            _target_market(),
             _field("category", "类目 / 关键词", "例如 家居收纳 / storage", required=True),
             _field("price_range", "目标价格带", "例如 20-40 美元"),
             _field("seller_type", "卖家 / 履约偏好", "例如本土店、跨境店、FBT"),
@@ -229,7 +320,7 @@ CHUHAIJIANG_PRESET_FORMS: dict[str, dict[str, Any]] = {
         "利润测算",
         "请按出海匠官方 Skill 的「利润测算」流程处理以下信息。",
         [
-            _field("market", "目标市场", "国家或地区，例如 US / 美国", required=True),
+            _target_market(),
             _field("product", "商品 / 商品 ID", "商品名称、链接或 ID", required=True),
             _field("selling_price", "预计售价", "填写币种，例如 29.99 USD", required=True),
             _field("purchase_cost", "采购成本", "填写币种，例如 45 CNY", required=True),
@@ -244,7 +335,7 @@ CHUHAIJIANG_PRESET_FORMS: dict[str, dict[str, Any]] = {
         "达人筛选与建联",
         "请按出海匠官方 Skill 的「达人筛选与建联」流程处理以下信息。",
         [
-            _field("market", "目标市场", "国家或地区，例如 US / 美国", required=True),
+            _target_market(),
             _field("product", "商品 / 类目", "商品名称、链接或类目", required=True),
             _field("budget", "合作预算 / 佣金", "例如 1000 USD；佣金 15%"),
             _field("creator_profile", "达人画像", "例如女性、10万粉内、近30天有带货", multiline=True, full=True),
@@ -255,9 +346,21 @@ CHUHAIJIANG_PRESET_FORMS: dict[str, dict[str, Any]] = {
         "竞品、店铺与广告分析",
         "请按出海匠官方 Skill 的「竞品、店铺与广告分析」流程处理以下信息。",
         [
-            _field("market", "目标市场", "国家或地区，例如 US / 美国", required=True),
+            _target_market(),
             _field("target", "分析对象", "商品、店铺或广告链接 / ID / 名称", required=True),
-            _field("object_type", "对象类型", "商品 / 店铺 / 广告", required=True),
+            _field(
+                "object_type",
+                "对象类型",
+                "选择分析对象类型",
+                required=True,
+                value="products",
+                parameter="entity",
+                options=(
+                    {"value": "products", "label": "商品"},
+                    {"value": "sellers", "label": "店铺"},
+                    {"value": "ads", "label": "广告"},
+                ),
+            ),
             _field("focus", "重点关注", "例如销量趋势、内容打法、价格与差异化机会", multiline=True, full=True),
         ],
     ),
@@ -267,7 +370,8 @@ CHUHAIJIANG_PRESET_FORMS: dict[str, dict[str, Any]] = {
         [
             _field("content_type", "内容类型", "例如商品标题、详情页、短视频脚本", required=True),
             _field("product", "商品 / 品牌", "商品信息、卖点或品牌名称", required=True),
-            _field("market_platform", "目标市场 / 平台", "例如美国 TikTok Shop", required=True),
+            _target_market(),
+            _field("platform", "目标平台", "选择目标平台", required=True, value="tiktok", parameter="platform", options=SOCIAL_PLATFORM_OPTIONS),
             _field("goal", "内容目标", "例如提升点击、转化或品牌认知", required=True),
             _field("assets", "参考素材 / 链接", "已有图片、视频、文案或参考链接", multiline=True, full=True),
         ],
@@ -277,7 +381,8 @@ CHUHAIJIANG_PRESET_FORMS: dict[str, dict[str, Any]] = {
         "请按出海匠官方 Skill 的「AI 画布创作」流程先规划画布，不直接生成或发布。",
         [
             _field("usage", "画布用途", "例如商品详情图、广告图、社媒帖子", required=True),
-            _field("market", "目标市场 / 受众", "例如美国 25-35 岁女性", required=True),
+            _target_market(),
+            _field("audience", "目标受众", "例如 25-35 岁女性、户外爱好者", required=True),
             _field("message", "核心卖点 / CTA", "希望突出的卖点、标题与行动号召", required=True),
             _field("assets", "已有素材", "图片、Logo、品牌色或参考链接", multiline=True, full=True),
             _field("size", "尺寸 / 版式", "例如 1080×1350、1:1"),
@@ -288,7 +393,8 @@ CHUHAIJIANG_PRESET_FORMS: dict[str, dict[str, Any]] = {
         "请按出海匠官方 Skill 的「视频剪辑」流程先生成剪辑方案。",
         [
             _field("material", "已有素材", "素材名称、链接或内容说明", required=True),
-            _field("platform", "目标平台 / 比例", "例如 TikTok 9:16", required=True),
+            _field("platform", "目标平台", "选择目标平台", required=True, value="tiktok", parameter="platform", options=SOCIAL_PLATFORM_OPTIONS),
+            _field("aspect_ratio", "画面比例", "选择输出画面比例", required=True, value="9:16", parameter="aspect_ratio", options=({"value": "9:16", "label": "竖屏 9:16"}, {"value": "1:1", "label": "方形 1:1"}, {"value": "16:9", "label": "横屏 16:9"}, {"value": "4:5", "label": "竖版 4:5"})),
             _field("duration", "目标时长", "例如 20 秒", required=True),
             _field("goal", "剪辑目标", "例如突出前三秒钩子和使用效果", required=True),
             _field("requirements", "剪辑要求", "字幕、音乐、节奏、转场与禁用内容", multiline=True, full=True),
@@ -298,8 +404,9 @@ CHUHAIJIANG_PRESET_FORMS: dict[str, dict[str, Any]] = {
         "社媒运营",
         "请按出海匠官方 Skill 的「社媒运营」流程处理；默认只查看，不执行发布、回复或私信。",
         [
-            _field("account", "平台 / 已绑定账号", "例如 TikTok @brand", required=True),
-            _field("task", "想查看或规划的任务", "例如查看近 7 天数据、评论或待办", required=True),
+            _field("platform", "社媒平台", "选择社媒平台", required=True, value="tiktok", parameter="platform", options=SOCIAL_PLATFORM_OPTIONS),
+            _field("account", "已绑定账号", "输入账号名称，例如 @brand", required=True),
+            _field("task", "运营任务", "选择需要查看或规划的任务", required=True, value="analytics", parameter="action", options=({"value": "analytics", "label": "查看运营数据"}, {"value": "comments", "label": "查看评论"}, {"value": "content_plan", "label": "规划内容"}, {"value": "todo", "label": "整理运营待办"})),
             _field("time_range", "时间范围", "例如近 7 天"),
             _field("content_target", "内容 / 对象", "指定帖子、评论、达人或主题"),
             _field("action_boundary", "操作边界", "默认：只查看，不发布、不回复、不私信", value="只查看，不发布、不回复、不私信", multiline=True, full=True),

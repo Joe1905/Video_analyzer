@@ -1657,6 +1657,7 @@ body.ui-system .ui-nav__toggle:hover {
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .preset-form-field input,
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .preset-form-field select,
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .preset-form-field textarea {
     width: 100%;
     min-height: 40px;
@@ -1679,12 +1680,14 @@ body.ui-system .ui-nav__toggle:hover {
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .preset-form-field input:focus,
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .preset-form-field select:focus,
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .preset-form-field textarea:focus {
     border-color: color-mix(in srgb, var(--ui-brand) 58%, var(--ui-line));
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--ui-brand) 10%, transparent);
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .preset-form-field.has-error input,
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .preset-form-field.has-error select,
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .preset-form-field.has-error textarea {
     border-color: #dc2626;
   }
