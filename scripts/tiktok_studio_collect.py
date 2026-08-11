@@ -1769,6 +1769,31 @@ def _instagram_relative_date(text: str, anchor: datetime) -> tuple[str, str]:
     match = re.search(r"\b(\d+)\s*(?:w|week|weeks)\s*(?:ago)?\b", normalized)
     if match:
         return (anchor - timedelta(weeks=int(match.group(1)))).date().isoformat(), match.group(0)
+    month_names = {
+        "january": 1, "february": 2, "march": 3, "april": 4,
+        "may": 5, "june": 6, "july": 7, "august": 8,
+        "september": 9, "october": 10, "november": 11, "december": 12,
+        "jan": 1, "feb": 2, "mar": 3, "apr": 4,
+        "jun": 6, "jul": 7, "aug": 8, "sep": 9,
+        "sept": 9, "oct": 10, "nov": 11, "dec": 12,
+    }
+    match = re.search(
+        r"\b(" + "|".join(month_names) + r")\.?\s+(\d{1,2})(?:,?\s+(\d{4}))?\b",
+        normalized,
+    )
+    if match:
+        month = month_names[match.group(1)]
+        day = int(match.group(2))
+        year = int(match.group(3) or anchor.year)
+        try:
+            value = datetime(year, month, day, tzinfo=anchor.tzinfo)
+        except ValueError:
+            return "", ""
+        # Instagram omits the year for recent posts.  A resulting future date is
+        # necessarily from the previous calendar year.
+        if not match.group(3) and value.date() > anchor.date():
+            value = value.replace(year=year - 1)
+        return value.date().isoformat(), match.group(0)
     return "", ""
 
 
@@ -1877,7 +1902,6 @@ def _execute_instagram_browser(job: dict[str, Any], session: dict[str, Any]) -> 
     completed = len(completed_ids)
     failed = 0
     matched = 0
-    old_in_a_row = 0
     unparsed = 0
     stop_scan = False
     with sync_playwright() as playwright:
@@ -1904,12 +1928,11 @@ def _execute_instagram_browser(job: dict[str, Any], session: dict[str, Any]) -> 
                             unparsed += 1
                             continue
                         if published_date < job["publish_date_start"]:
-                            old_in_a_row += 1
-                            if old_in_a_row >= 6:
-                                stop_scan = True
-                                break
-                            continue
-                        old_in_a_row = 0
+                            # Reels are scanned newest to oldest.  Once the
+                            # first resolved date falls below the requested
+                            # range, every following item is out of range.
+                            stop_scan = True
+                            break
                         if published_date > job["publish_date_end"]:
                             continue
                         matched += 1
