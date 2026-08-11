@@ -1908,12 +1908,29 @@ def _execute_instagram_browser(job: dict[str, Any], session: dict[str, Any]) -> 
         browser = playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{session['debug_port']}")
         context = browser.contexts[0]
         list_page = context.pages[0] if context.pages else context.new_page()
+        _set_job(
+            job["id"], "collecting", "load_instagram_reels",
+            session_id=session["id"],
+            status_detail="正在打开已保存的 Instagram Reels 列表…",
+        )
         list_page.goto(reels_url, wait_until="domcontentloaded", timeout=60000)
-        list_page.wait_for_timeout(1200)
+        try:
+            list_page.locator("a[href*='/reel/']").first.wait_for(state="visible", timeout=15000)
+        except Exception:
+            # A zero-video profile remains a valid scan result; the loop below
+            # will finish it with a clear summary instead of treating it as a
+            # page-load failure.
+            pass
         collect_page = context.new_page()
         try:
             for round_index in range(LIST_SCROLL_MAX_ROUNDS):
                 sources = _instagram_reel_sources(list_page)
+                if sources:
+                    _set_job(
+                        job["id"], "collecting", "scan_instagram_reels",
+                        session_id=session["id"],
+                        status_detail=f"正在核对 Reels 发布时间，已发现 {len(seen | {item['id'] for item in sources})} 条链接。",
+                    )
                 for source in sources:
                     if source["id"] in seen:
                         continue
