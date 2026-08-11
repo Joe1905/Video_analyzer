@@ -599,7 +599,7 @@ body.ui-system .ui-nav__toggle:hover {
     padding-top: 14px;
     display: flex;
     align-items: center;
-    gap: 9px;
+    gap: 8px;
     border-top: 1px solid var(--ui-line);
     color: var(--ui-ink-muted);
     font-size: 13px;
@@ -1153,6 +1153,49 @@ body.ui-system .ui-nav__toggle:hover {
     gap: 4px;
     border-radius: 12px;
     background: var(--ui-surface-soft);
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .sidebar-health-state,
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .sidebar-credit-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    white-space: nowrap;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .sidebar-credit-status {
+    gap: 4px;
+    padding-left: 8px;
+    border-left: 1px solid var(--ui-line);
+    font-size: 12px;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .sidebar-credit-status[hidden] {
+    display: none !important;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .sidebar-credit-refresh {
+    width: auto;
+    min-width: 0;
+    min-height: 22px;
+    height: 22px;
+    padding: 1px 5px;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--ui-accent);
+    font-size: 11px;
+    font-weight: 650;
+    box-shadow: none;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .sidebar-credit-refresh:hover {
+    background: var(--ui-surface-soft);
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .sidebar-credit-refresh:disabled {
+    cursor: wait;
+    opacity: .62;
   }
 
   body.ui-system .official-workflow-tabs.official-workflow-tabs--single {

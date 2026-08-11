@@ -1,11 +1,14 @@
 """Track SociaVault credit balance from API response metadata."""
 import json
+import threading
 import time
 from pathlib import Path
 from typing import Any
 
 ROOT = Path.cwd()
 USAGE_FILE = ROOT / "data" / "sociavault_usage.json"
+BALANCE_FILE = ROOT / "data" / "sociavault_credit_balance.json"
+_BALANCE_LOCK = threading.Lock()
 
 
 def _parse_number(value: Any) -> float | int | None:
@@ -90,6 +93,121 @@ def _body_credit_fields(body: Any) -> dict[str, Any]:
     return result
 
 
+def extract_credits_used(body: Any) -> float | int | None:
+    """Return the explicit per-request credit charge from a SociaVault payload."""
+    if isinstance(body, dict):
+        for key in ("credits_used", "creditsUsed"):
+            parsed = _parse_number(body.get(key))
+            if parsed is not None:
+                return parsed
+        children = body.values()
+    elif isinstance(body, list):
+        children = body
+    else:
+        return None
+    for value in children:
+        parsed = extract_credits_used(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _empty_balance() -> dict[str, Any]:
+    return {
+        "credits": None,
+        "subscription_status": "",
+        "updated_at": None,
+        "last_refreshed_at": None,
+        "last_credits_used": None,
+        "last_source": "",
+        "estimated": False,
+        "observed": False,
+    }
+
+
+def _read_balance_unlocked() -> dict[str, Any]:
+    if not BALANCE_FILE.is_file():
+        return _empty_balance()
+    try:
+        stored = json.loads(BALANCE_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return _empty_balance()
+    if not isinstance(stored, dict):
+        return _empty_balance()
+    return {
+        "credits": _parse_number(stored.get("credits")),
+        "subscription_status": str(stored.get("subscription_status") or ""),
+        "updated_at": stored.get("updated_at"),
+        "last_refreshed_at": stored.get("last_refreshed_at"),
+        "last_credits_used": _parse_number(stored.get("last_credits_used")),
+        "last_source": str(stored.get("last_source") or ""),
+        "estimated": bool(stored.get("estimated")),
+        "observed": bool(stored.get("observed")),
+    }
+
+
+def _write_balance_unlocked(payload: dict[str, Any]) -> None:
+    BALANCE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    temporary = BALANCE_FILE.with_suffix(BALANCE_FILE.suffix + ".tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(BALANCE_FILE)
+
+
+def read_sociavault_credit_balance() -> dict[str, Any]:
+    """Read the sanitized local balance snapshot exposed to the UI."""
+    with _BALANCE_LOCK:
+        return _read_balance_unlocked()
+
+
+def set_sociavault_credit_balance(credits: Any, subscription_status: str = "") -> dict[str, Any]:
+    """Replace the estimate with an authoritative balance from check_credits."""
+    parsed = _parse_number(credits)
+    if parsed is None or parsed < 0:
+        raise ValueError("Invalid SociaVault credit balance")
+    now = time.time()
+    payload = {
+        "credits": parsed,
+        "subscription_status": str(subscription_status or ""),
+        "updated_at": now,
+        "last_refreshed_at": now,
+        "last_credits_used": None,
+        "last_source": "check_credits",
+        "estimated": False,
+        "observed": True,
+    }
+    with _BALANCE_LOCK:
+        _write_balance_unlocked(payload)
+    return payload
+
+
+def record_sociavault_credits_used(
+    credits_used: Any,
+    *,
+    source: str = "",
+    cache_hit: bool = False,
+) -> dict[str, Any]:
+    """Deduct a real request charge from an existing authoritative snapshot."""
+    parsed = _parse_number(credits_used)
+    if cache_hit or parsed is None or parsed <= 0:
+        return read_sociavault_credit_balance()
+    with _BALANCE_LOCK:
+        payload = _read_balance_unlocked()
+        current = _parse_number(payload.get("credits"))
+        if current is None or not payload.get("observed"):
+            return payload
+        payload.update(
+            {
+                "credits": max(0, current - parsed),
+                "updated_at": time.time(),
+                "last_credits_used": parsed,
+                "last_source": str(source or "sociavault_api"),
+                "estimated": True,
+            }
+        )
+        _write_balance_unlocked(payload)
+        return payload
+
+
 def _usage_payload(response: Any, body: Any = None) -> dict[str, Any]:
     headers = getattr(response, "headers", None)
     normalized_headers = _header_map(headers)
@@ -118,6 +236,17 @@ def update_sociavault_usage_from_response(response: Any, body: Any = None) -> No
         USAGE_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     except OSError as exc:
         write_error = str(exc)
+    try:
+        remaining = payload.get("remaining_credits")
+        if remaining is not None:
+            set_sociavault_credit_balance(remaining)
+        else:
+            record_sociavault_credits_used(
+                extract_credits_used(body),
+                source="sociavault_rest",
+            )
+    except OSError as exc:
+        print(f"[SOCIAVAULT CREDITS] ledger_write_failed error_type={type(exc).__name__}", flush=True)
     print(
         "[SOCIAVAULT_USAGE] "
         + json.dumps(

@@ -519,12 +519,6 @@ HOME_PRESET_FORMS: dict[str, dict[str, Any]] = {
         ],
         "此工作流只调用联网检索外挂，不调用社媒 MCP 或下载功能。",
     ),
-    "home/sociavault-credits": _form(
-        "SociaVault 额度查询",
-        "请查询当前 SociaVault API 的可用额度，并简洁说明结果。",
-        [],
-        "此工作流只调用 SociaVault 额度查询 MCP 工具。",
-    ),
 }
 
 

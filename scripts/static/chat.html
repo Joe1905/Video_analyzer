@@ -45,7 +45,11 @@
       </button>
     </div>
     <div class="session-list" id="sessionList"></div>
-    <div class="sidebar-status" id="sidebarHealth" role="status" aria-live="polite"><span class="sidebar-status-dot" id="sidebarHealthDot"></span><span id="sidebarHealthText">正在检测</span><small>v2.0</small></div>
+    <div class="sidebar-status" id="sidebarHealth" role="status" aria-live="polite">
+      <span class="sidebar-health-state"><span class="sidebar-status-dot" id="sidebarHealthDot"></span><span id="sidebarHealthText">正在检测</span></span>
+      <span class="sidebar-credit-status" id="sidebarCreditStatus" hidden><span id="sidebarCreditValue">额度 --</span><button class="sidebar-credit-refresh" id="sidebarCreditRefresh" type="button" title="更新 SociaVault 余额">更新</button></span>
+      <small>v2.0</small>
+    </div>
   </aside>
   <section class="chat-stage">
     <main class="chat-main">
@@ -157,6 +161,9 @@ async function deleteSession(id){if(!confirm(TXT.deleteConfirm))return;const del
 </script>
 <script>
 (()=>{const status=document.getElementById("sidebarHealth"),text=document.getElementById("sidebarHealthText");if(!status||!text)return;const setHealth=healthy=>{status.classList.toggle("is-offline",!healthy);text.textContent=healthy?"服务正常":"服务异常";status.setAttribute("aria-label",text.textContent)};const checkHealth=async()=>{try{const response=await fetch("/healthz",{cache:"no-store"}),payload=await response.json();setHealth(response.ok&&payload?.status==="ok")}catch(error){setHealth(false)}};checkHealth();setInterval(checkHealth,30000)})();
+</script>
+<script>
+(()=>{if(CHAT_PROVIDER!=="home")return;const root=document.getElementById("sidebarCreditStatus"),value=document.getElementById("sidebarCreditValue"),refresh=document.getElementById("sidebarCreditRefresh");if(!root||!value||!refresh)return;root.hidden=false;let hasBalance=false,loading=false;const format=credits=>new Intl.NumberFormat("zh-CN",{maximumFractionDigits:2}).format(credits);const render=payload=>{if(!payload?.observed||typeof payload.credits!=="number")return;hasBalance=true;value.textContent=`额度 ${format(payload.credits)}`;const updated=payload.updated_at?new Date(payload.updated_at*1000).toLocaleString("zh-CN"):"";root.title=`SociaVault ${payload.estimated?"本地估算余额":"已校准余额"}${updated?` · ${updated}`:""}`};const load=async force=>{if(loading)return;loading=true;if(force){refresh.disabled=true;refresh.classList.add("is-loading");refresh.textContent="更新中"}try{const response=await fetch(`/api/sociavault-credits${force?"?refresh=1":""}`,{cache:"no-store"}),payload=await response.json();if(!response.ok||!payload?.ok)throw new Error(payload?.error||"额度更新失败");render(payload)}catch(error){root.title=error.message||"额度更新失败";if(!hasBalance)value.textContent="额度 --"}finally{loading=false;if(force){refresh.disabled=false;refresh.classList.remove("is-loading");refresh.textContent="更新"}}};refresh.addEventListener("click",()=>load(true));load(false);setInterval(()=>load(false),30000)})();
 </script>
 <script>
 (()=>{const bar=document.querySelector(".input-bar"),composer=document.querySelector(".composer"),expand=document.getElementById("expandInputBtn"),preview=document.getElementById("attachmentPreview");if(!bar||!composer||!expand||!preview)return;const syncLayout=()=>bar.classList.toggle("composer-expanded",composer.classList.contains("expanded")||preview.childElementCount>0);expand.addEventListener("click",()=>queueMicrotask(syncLayout));new MutationObserver(syncLayout).observe(preview,{childList:true});syncLayout()})();

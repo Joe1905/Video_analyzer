@@ -78,6 +78,7 @@ MCP_CHAT_LOCKS = {
     "chuhaijiang": threading.Lock(),
     "sociavault": threading.Lock(),
 }
+SOCIAVAULT_CREDIT_OPERATION_LOCK = threading.RLock()
 MCP_CHAT_CONFIGS = {
     "sellersprite": {
         "type": "sellersprite",
@@ -139,7 +140,13 @@ from lan_chat import (
     LanChatError,
     LanChatStore,
 )
-from sociavault_usage import read_sociavault_usage
+from sociavault_usage import (
+    extract_credits_used,
+    read_sociavault_credit_balance,
+    read_sociavault_usage,
+    record_sociavault_credits_used,
+    set_sociavault_credit_balance,
+)
 from sociavault_tiktok import call_api as call_sociavault_tiktok_api
 import sociavault_tiktok_shop
 from tools import TOOLS, execute_tool
@@ -709,11 +716,6 @@ HOME_WORKFLOW_PRESETS: dict[str, dict[str, Any]] = {
         "description": "以公开网页来源核验品牌、商品与趋势信息。",
         "tools": _home_tools("system__web_search"),
     },
-    "home/sociavault-credits": {
-        "label": "SociaVault 额度查询",
-        "description": "查询当前 SociaVault API 的可用额度。",
-        "tools": _home_tools("sociavault__check_credits"),
-    },
 }
 CHAT_QUICK_ACTION_ICONS = {
     "bars": (
@@ -826,7 +828,7 @@ NAV_ITEMS = [
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
 
-UI_ASSET_VERSION = "20260811-30"
+UI_ASSET_VERSION = "20260811-31"
 APP_UI_ASSETS = f"""
 <script id="ui-nav-state-boot">
 let uiNavExpanded = false;
@@ -1275,7 +1277,6 @@ def render_chat_official_workflow_modal(provider: str) -> dict[str, str]:
             ("/report", "每日热点日报", "进入既有日报工作流，生成并查看 TikTok 热点洞察。"),
             ("/shop", "TikTok Shop 采集", "进入既有店铺与商品采集、评论分析工作流。"),
             ("/metrics", "社媒视频数据", "进入既有视频链接指标查询与导出工作流。"),
-            ("home/sociavault-credits", "SociaVault 额度查询", "查看当前 SociaVault API 可用额度。"),
         ]
 
         def preset_button(preset_id: str, label: str, description: str, index: int) -> str:
@@ -1315,7 +1316,7 @@ def render_chat_official_workflow_modal(provider: str) -> dict[str, str]:
                 '<button class="official-workflow-tab is-active" type="button" role="tab" aria-selected="true" data-official-tab="content-growth">内容增长 <span>4</span></button>'
                 '<button class="official-workflow-tab" type="button" role="tab" aria-selected="false" data-official-tab="market-audience">市场与人群 <span>4</span></button>'
                 '<button class="official-workflow-tab" type="button" role="tab" aria-selected="false" data-official-tab="brand-ad">品牌与投放 <span>3</span></button>'
-                '<button class="official-workflow-tab" type="button" role="tab" aria-selected="false" data-official-tab="system">系统工作流 <span>4</span></button>'
+                '<button class="official-workflow-tab" type="button" role="tab" aria-selected="false" data-official-tab="system">系统工作流 <span>3</span></button>'
             ),
             "panels": (
                 '<section class="official-workflow-panel is-active" role="tabpanel" data-official-panel="content-growth"><div class="official-workflow-grid">' + preset_buttons(content_growth_items) + '</div></section>'
@@ -7397,10 +7398,26 @@ def execute_prefixed_tool(
             if runtime_normalization:
                 print(f"[CHAT] normalized {tool_id} arguments: {runtime_normalization}", flush=True)
                 trace("arguments_normalized", normalization_action=runtime_normalization)
-            result = mcp_bridge_request(
-                chat_type, "tools/call", {"name": name, "arguments": normalized_args, "cache": {}}
-            )
-            cache_meta = result.get("_cache") if isinstance(result, dict) else None
+            credit_lock = SOCIAVAULT_CREDIT_OPERATION_LOCK if domain == "sociavault" else None
+            if credit_lock is not None:
+                credit_lock.acquire()
+            try:
+                result = mcp_bridge_request(
+                    chat_type, "tools/call", {"name": name, "arguments": normalized_args, "cache": {}}
+                )
+                cache_meta = result.get("_cache") if isinstance(result, dict) else None
+                if domain == "sociavault" and name != "check_credits":
+                    try:
+                        record_sociavault_credits_used(
+                            sociavault_mcp_credits_used(result),
+                            source=f"sociavault__{name}",
+                            cache_hit=bool((cache_meta or {}).get("hit")),
+                        )
+                    except OSError as exc:
+                        print(f"[SOCIAVAULT CREDITS] ledger_write_failed error_type={type(exc).__name__}", flush=True)
+            finally:
+                if credit_lock is not None:
+                    credit_lock.release()
             trace("bridge_returned", ok=True, cache_hit=bool((cache_meta or {}).get("hit")))
             return {"ok": True, "elapsed": round(time.monotonic() - started, 3), "data": result}
         return {"ok": False, "elapsed": round(time.monotonic() - started, 3), "error": f"Unknown tool domain: {domain}"}
@@ -7653,6 +7670,73 @@ def parse_mcp_text_content(text: str) -> Any:
         return json.loads(cleaned)
     except Exception:
         return None
+
+
+def sociavault_mcp_credits_used(result: Any) -> float | int | None:
+    """Read the official MCP envelope's explicit per-call charge."""
+    if not isinstance(result, dict):
+        return None
+    parsed = extract_credits_used(result.get("structuredContent"))
+    if parsed is not None:
+        return parsed
+    content = result.get("content")
+    if isinstance(content, list):
+        for item in content:
+            if not isinstance(item, dict) or not isinstance(item.get("text"), str):
+                continue
+            parsed = extract_credits_used(parse_mcp_text_content(item["text"]))
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def _sociavault_credit_account(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        if "credits" in value:
+            return value
+        for child in value.values():
+            found = _sociavault_credit_account(child)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _sociavault_credit_account(child)
+            if found is not None:
+                return found
+    return None
+
+
+def refresh_sociavault_credit_balance() -> dict[str, Any]:
+    """Fetch and persist a sanitized authoritative balance via the official MCP."""
+    with SOCIAVAULT_CREDIT_OPERATION_LOCK:
+        result = execute_prefixed_tool(
+            "sociavault__check_credits",
+            {},
+            allowed_tool_ids={"sociavault__check_credits"},
+        )
+        if not result.get("ok"):
+            raise RuntimeError("SociaVault credit refresh failed")
+        raw = result.get("data")
+        candidates: list[Any] = []
+        if isinstance(raw, dict):
+            candidates.append(raw.get("structuredContent"))
+            content = raw.get("content")
+            if isinstance(content, list):
+                candidates.extend(
+                    parse_mcp_text_content(item.get("text", ""))
+                    for item in content
+                    if isinstance(item, dict) and isinstance(item.get("text"), str)
+                )
+        account = next(
+            (found for candidate in candidates if (found := _sociavault_credit_account(candidate)) is not None),
+            None,
+        )
+        if account is None:
+            raise RuntimeError("SociaVault credit response did not contain a balance")
+        return set_sociavault_credit_balance(
+            account.get("credits"),
+            str(account.get("subscriptionStatus") or account.get("subscription_status") or ""),
+        )
 
 
 def mcp_collection_content_state(value: Any) -> tuple[bool, bool]:
@@ -13376,6 +13460,20 @@ class Handler(BaseHTTPRequestHandler):
             return json_response(self, HTTPStatus.OK, public_network_check())
         if parsed.path == "/api/sociavault-usage":
             return json_response(self, HTTPStatus.OK, read_sociavault_usage())
+        if parsed.path == "/api/sociavault-credits":
+            refresh = parse_qs(parsed.query).get("refresh", ["0"])[0].lower() in {"1", "true", "yes"}
+            if not refresh:
+                return json_response(self, HTTPStatus.OK, {"ok": True, **read_sociavault_credit_balance()})
+            try:
+                balance = refresh_sociavault_credit_balance()
+            except Exception as exc:
+                print(f"[SOCIAVAULT CREDITS] refresh_failed error_type={type(exc).__name__}", flush=True)
+                return json_response(
+                    self,
+                    HTTPStatus.BAD_GATEWAY,
+                    {"ok": False, "error": "额度更新失败", "cached": read_sociavault_credit_balance()},
+                )
+            return json_response(self, HTTPStatus.OK, {"ok": True, **balance})
         if parsed.path == "/api/report/today":
             include_raw = parse_qs(parsed.query).get("raw", ["0"])[0] in {"1", "true", "yes"}
             return json_response(self, HTTPStatus.OK, get_report(include_raw=include_raw, detail=include_raw))

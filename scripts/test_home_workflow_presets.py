@@ -5,6 +5,7 @@ from __future__ import annotations
 import unittest
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scripts import web_app
@@ -52,10 +53,12 @@ class HomeWorkflowPresetTests(unittest.TestCase):
         self.assertIn('href="/report"', modal["panels"])
         self.assertIn('href="/shop"', modal["panels"])
         self.assertIn('href="/metrics"', modal["panels"])
+        self.assertNotIn("home/sociavault-credits", modal["panels"])
+        self.assertIn('data-official-tab="system">系统工作流 <span>3</span>', modal["tabs"])
         self.assertEqual(modal["tabs_class"], " official-workflow-tabs--home")
 
     def test_research_scenarios_are_cross_platform_but_never_full_catalog(self) -> None:
-        auxiliary_ids = {"home/web-verification", "home/sociavault-credits"}
+        auxiliary_ids = {"home/web-verification"}
         scenario_ids = set(web_app.HOME_WORKFLOW_PRESETS) - auxiliary_ids
         self.assertEqual(len(scenario_ids), 10)
         official_names = set(SOCIAVAULT_OFFICIAL_TOOL_NAMES)
@@ -89,6 +92,28 @@ class HomeWorkflowPresetTests(unittest.TestCase):
         )
         self.assertFalse(blocked["ok"])
         self.assertIn("outside the active preset boundary", blocked["error"])
+
+    def test_sociavault_credit_envelopes_are_normalized_without_account_details(self) -> None:
+        call_result = {
+            "structuredContent": {"data": {"items": []}, "creditsUsed": 3},
+        }
+        self.assertEqual(web_app.sociavault_mcp_credits_used(call_result), 3)
+
+        credit_result = {
+            "ok": True,
+            "data": {
+                "structuredContent": {
+                    "data": {"credits": 16030, "subscriptionStatus": "active", "subscriptionId": "hidden"}
+                }
+            },
+        }
+        expected = {"credits": 16030, "subscription_status": "active", "observed": True}
+        with (
+            patch.object(web_app, "execute_prefixed_tool", return_value=credit_result),
+            patch.object(web_app, "set_sociavault_credit_balance", return_value=expected) as save_balance,
+        ):
+            self.assertEqual(web_app.refresh_sociavault_credit_balance(), expected)
+        save_balance.assert_called_once_with(16030, "active")
 
 
 if __name__ == "__main__":
