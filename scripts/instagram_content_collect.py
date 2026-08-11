@@ -32,7 +32,6 @@ ROOT = Path.cwd()
 DATA_DIR = ROOT / "data"
 OUTPUT_ROOT = DATA_DIR / "instagram_content_simulations"
 INSTAGRAM_CONTENT_URL = "https://www.instagram.com/accounts/insights/content/"
-ACTIVE_SESSION_STATUSES = ("starting", "running", "observing")
 LOGIN_URL_MARKERS = ("/accounts/login", "/login/")
 MEDIA_PATH_PATTERN = re.compile(r"^/(?:p|reel|tv|insights/media)/([^/?#]+)/?$")
 HTTP_URL_PATTERN = re.compile(r"https?://[^\s\"'<>]+")
@@ -158,14 +157,28 @@ def instagram_login_status(profile_dir: Path) -> dict[str, Any]:
     return {"profile_has_instagram_login": False, "reason": "profile 中没有 Chrome Cookies 文件"}
 
 
-def _active_profile_session(profile_dir: Path) -> bool:
+def _borrow_observation_session(account_id: int, session_id: int, job_id: str) -> dict[str, Any] | None:
+    """Reserve a Web-owned observation session without applying a new runtime ID.
+
+    This collector is an external CDP client. Calling proxy_pool's normal claim
+    helper here would see the collector process's runtime ID and incorrectly
+    release the browser that is owned by the Web service.
+    """
     with proxy_pool.connect() as conn:
-        row = conn.execute(
-            """SELECT 1 FROM browser_sessions
-               WHERE status IN (?, ?, ?) AND user_data_dir = ? LIMIT 1""",
-            (*ACTIVE_SESSION_STATUSES, str(profile_dir)),
-        ).fetchone()
-    return bool(row)
+        row = conn.execute("SELECT * FROM browser_sessions WHERE id = ?", (session_id,)).fetchone()
+        if not row or int(row["account_id"] or 0) != int(account_id):
+            raise InstagramCollectionError("观测通道不属于当前账号")
+        if str(row["status"] or "") not in {"starting", "running", "observing"}:
+            return None
+        current_job_id = str(row["current_job_id"] or "")
+        if current_job_id and current_job_id != job_id:
+            raise InstagramCollectionError("观测通道正在执行其他任务")
+        conn.execute(
+            "UPDATE browser_sessions SET current_job_id = ?, last_activity_at = ?, updated_at = ? WHERE id = ?",
+            (job_id, now_iso(), now_iso(), session_id),
+        )
+        conn.commit()
+        return proxy_pool._row_to_session(conn.execute("SELECT * FROM browser_sessions WHERE id = ?", (session_id,)).fetchone())
 
 
 def _exclusive_lock(profile_dir: Path) -> Path:
@@ -302,7 +315,7 @@ def run_simulation(account_id: int, max_videos: int, check_login_only: bool, ses
     borrowed_observation = False
     try:
         if session_id:
-            session = proxy_pool.claim_observation_session_for_job(account_id, session_id, job_id)
+            session = _borrow_observation_session(account_id, session_id, job_id)
             if not session:
                 raise InstagramCollectionError("指定观测通道未运行，无法执行 INS 采集")
             borrowed_observation = True
