@@ -1828,7 +1828,13 @@ def _instagram_collect_payload(page: Any, job: dict[str, Any], source: dict[str,
     if not insight:
         raise RuntimeError("该 Reels 未显示 View insights，无法读取账号洞察数据")
     insight.click(timeout=7000)
-    page.wait_for_timeout(1500)
+    # The insights route renders its shell before the metric cards.  Wait for
+    # the card label rather than treating the initial player counters as data.
+    try:
+        page.get_by_text(re.compile(r"^views$", re.I)).last.wait_for(state="visible", timeout=12000)
+    except Exception:
+        pass
+    page.wait_for_timeout(500)
     body = page.locator("body").inner_text(timeout=15000)
     lines = _lines(body)
     views = _value_after_label(lines, ["Views", "观看次数", "播放次数"])
