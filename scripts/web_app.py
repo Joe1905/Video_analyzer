@@ -14841,7 +14841,8 @@ class Handler(BaseHTTPRequestHandler):
                 return json_response(self, HTTPStatus.OK, tiktok_studio_publish.runtime_status())
             if path == "/api/proxy/collect/dashboard":
                 account_id = int(parse_qs(query).get("account_id", ["0"])[0] or 0)
-                return json_response(self, HTTPStatus.OK, tiktok_studio_collect.dashboard(account_id))
+                platform = parse_qs(query).get("platform", ["tiktok"])[0]
+                return json_response(self, HTTPStatus.OK, tiktok_studio_collect.dashboard(account_id, platform))
             if path == "/api/proxy/collect/runtime":
                 return json_response(self, HTTPStatus.OK, tiktok_studio_collect.runtime_status())
             if path.startswith("/api/proxy/publish/videos/"):
