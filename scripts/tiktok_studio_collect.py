@@ -1853,16 +1853,24 @@ def _execute_instagram_browser(job: dict[str, Any], session: dict[str, Any]) -> 
 
     log_dir = LOG_ROOT / job["id"]
     log_dir.mkdir(parents=True, exist_ok=True)
-    bootstrap = proxy_pool.bootstrap_instagram_profile(int(job["account_id"]), int(session["id"]))
-    if not bootstrap.get("configured"):
-        raise RuntimeError(str(bootstrap.get("reason") or "Instagram 账号主页初始化失败"))
-    refreshed = _load_job(job["id"])
-    if refreshed:
-        job.update(refreshed)
     profile = job.get("profile") if isinstance(job.get("profile"), dict) else {}
     instagram = profile.get("instagram") if isinstance(profile.get("instagram"), dict) else {}
+    try:
+        reels_url = _instagram_reels_url(job)
+    except RuntimeError:
+        # Binding/login success performs the avatar click once and persists the
+        # Reels entry.  A collection run only needs that saved entry; retry the
+        # bootstrap solely for legacy accounts where it is absent.
+        bootstrap = proxy_pool.bootstrap_instagram_profile(int(job["account_id"]), int(session["id"]))
+        if not bootstrap.get("configured"):
+            raise RuntimeError(str(bootstrap.get("reason") or "Instagram 账号主页初始化失败"))
+        refreshed = _load_job(job["id"])
+        if refreshed:
+            job.update(refreshed)
+        profile = job.get("profile") if isinstance(job.get("profile"), dict) else {}
+        instagram = profile.get("instagram") if isinstance(profile.get("instagram"), dict) else {}
+        reels_url = _instagram_reels_url(job)
     job["instagram_username"] = _clean_text(instagram.get("username"), 200)
-    reels_url = _instagram_reels_url(job)
     anchor = _utc_now().astimezone(ZoneInfo(TIMEZONE_NAME))
     seen: set[str] = set()
     completed_ids = _completed_video_ids(job["id"])
