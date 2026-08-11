@@ -282,6 +282,16 @@
       .collect-results-section .collect-result-row { animation: none !important; transition: none !important; }
     }
   </style>
+  <style>
+    /* 版面由 Grid 负责分配：侧栏只在可用空间足够时出现，中间工作区永远保持可收缩。 */
+    :root{--dock-width:72px}
+    .app{width:calc(100vw - var(--dock-width));min-width:0}
+    .page,.desk,.lane,.table-scroll,.account-tools{min-width:0}
+    .desk{grid-template-columns:clamp(240px,18vw,270px) minmax(560px,1fr) clamp(280px,20vw,310px)}
+    .account-tools{flex-wrap:nowrap}.search-wrap{min-width:0}
+    @media(max-width:1180px){.desk{grid-template-columns:clamp(228px,23vw,250px) minmax(0,1fr)}}
+    @media(max-width:820px){:root{--dock-width:0px}.app{width:100%}.account-tools{flex-wrap:wrap}.search-wrap{flex-basis:100%}.table-scroll{overflow-x:auto}}
+  </style>
 </head>
 <body>
   <svg aria-hidden="true" width="0" height="0" style="position:absolute;overflow:hidden">
