@@ -261,6 +261,42 @@ def _discover_media_links(page: Any, limit: int) -> list[dict[str, str]]:
     return found
 
 
+def _page_diagnostics(page: Any) -> dict[str, Any]:
+    """Return token-safe evidence when Instagram changes its content-card DOM."""
+    snapshot = page.evaluate(
+        """() => ({
+            body_text: (document.body?.innerText || '').slice(0, 2500),
+            counts: {
+                anchors: document.querySelectorAll('a[href]').length,
+                buttons: document.querySelectorAll('[role=button]').length,
+                images: document.querySelectorAll('img').length,
+                iframes: document.querySelectorAll('iframe').length
+            },
+            clickables: [...document.querySelectorAll('a[href], [role=button]')]
+                .slice(0, 40)
+                .map(node => ({
+                    tag: node.tagName.toLowerCase(),
+                    href: node.href || '',
+                    label: node.getAttribute('aria-label') || '',
+                    text: (node.innerText || '').trim().slice(0, 240)
+                }))
+        })"""
+    )
+    clickables = []
+    for item in snapshot.get("clickables") or []:
+        clickables.append({
+            "tag": _safe_text(item.get("tag"), 20),
+            "href": canonical_url(str(item.get("href") or "")),
+            "label": _safe_text(item.get("label"), 240),
+            "text": _safe_text(item.get("text"), 240),
+        })
+    return {
+        "body_text": _safe_text(snapshot.get("body_text"), 2500),
+        "counts": snapshot.get("counts") or {},
+        "clickables": clickables,
+    }
+
+
 def _click_one_media(page: Any, source: dict[str, str]) -> dict[str, Any]:
     locator = page.locator(f'a[href="{source["url"]}"]').first
     if not locator.count():
@@ -324,6 +360,11 @@ def run_simulation(account_id: int, max_videos: int, check_login_only: bool) -> 
                 result["login"] = {**login, "profile_has_instagram_login": False, "reason": "Instagram 已跳转到登录页"}
                 return result
             links = _discover_media_links(page, max_videos)
+            if not links:
+                screenshot_path = log_dir / "content-page-no-media-links.png"
+                page.screenshot(path=str(screenshot_path), full_page=False)
+                result["diagnostics"] = _page_diagnostics(page)
+                result["diagnostic_screenshot"] = str(screenshot_path.relative_to(ROOT))
             result.update({
                 "job_id": job_id,
                 "content_page_url": canonical_url(page.url),
