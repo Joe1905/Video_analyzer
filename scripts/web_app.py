@@ -14931,6 +14931,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/proxy/login-session/start":
                 payload = _proxy_feishu_binding(payload, required=not int(payload.get("account_id") or 0))
                 return json_response(self, HTTPStatus.OK, proxy_pool.start_login_session(payload))
+            if path == "/api/proxy/login-session/open-platform":
+                return json_response(self, HTTPStatus.OK, proxy_pool.open_observation_platform(payload))
             if path == "/api/proxy/login-session/stop":
                 return json_response(self, HTTPStatus.OK, proxy_pool.stop_login_session(payload))
             if path == "/api/proxy/login-session/status":

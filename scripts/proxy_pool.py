@@ -4371,6 +4371,72 @@ def stop_login_session(payload: dict[str, Any]) -> dict[str, Any]:
     return list_state()
 
 
+def open_observation_platform(payload: dict[str, Any]) -> dict[str, Any]:
+    """Open a platform tab in an existing account observation browser."""
+    session_id = int(payload.get("session_id") or payload.get("id") or 0)
+    platform = _clean_text(payload.get("platform"), 32).lower()
+    targets = {
+        "tiktok": "https://www.tiktok.com/?lang=en",
+        "instagram": "https://www.instagram.com/",
+    }
+    if not session_id:
+        raise ValueError("session_id is required")
+    if platform not in targets:
+        raise ValueError("仅支持打开 TikTok 或 Instagram 观测页面")
+    with connect() as conn:
+        row = _session_by_id(conn, session_id)
+        if row["status"] not in {"starting", "running", "observing"}:
+            raise ValueError("观测通道当前不可用，请先唤醒账号")
+        account_id = int(row["account_id"] or 0)
+        if not account_id:
+            raise ValueError("未绑定账号的登录通道不能打开平台观测")
+        account = conn.execute(
+            "SELECT profile_json FROM tiktok_accounts WHERE id = ? AND deleted_at = ''",
+            (account_id,),
+        ).fetchone()
+        if not account:
+            raise ValueError("account not found")
+        profile = _json_loads(account["profile_json"], {})
+        deleted_platforms = profile.get("platform_deletions") if isinstance(profile, dict) else {}
+        if platform == "tiktok" and bool((deleted_platforms or {}).get("tiktok")):
+            raise ValueError("TikTok 登录资料已删除")
+        if platform == "instagram" and not _instagram_login_metadata(profile)["logged_in"]:
+            raise ValueError("当前 Chrome Profile 未检测到 Instagram 登录")
+        debug_port = int(row["debug_port"] or 0)
+        if not debug_port:
+            raise ValueError("观测浏览器调试端口不可用")
+    page = None
+    try:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{debug_port}")
+            if not browser.contexts:
+                raise ValueError("Chrome 没有可用的浏览器上下文")
+            # Always create a separate tab: this leaves an active collection
+            # list or other task page untouched in the same persistent profile.
+            page = browser.contexts[0].new_page()
+            response = page.goto(targets[platform], wait_until="domcontentloaded", timeout=30000)
+            if response is not None and not response.ok:
+                raise ValueError(f"{platform} 页面打开失败：HTTP {response.status}")
+            page.bring_to_front()
+    except Exception as exc:
+        if page is not None:
+            try:
+                page.close()
+            except Exception:
+                pass
+        raise ValueError(f"打开 {platform} 观测页面失败：{exc}") from exc
+    with connect() as conn:
+        conn.execute(
+            "UPDATE browser_sessions SET last_activity_at = ?, updated_at = ? WHERE id = ?",
+            (now_iso(), now_iso(), session_id),
+        )
+        conn.commit()
+        session = _session_by_id(conn, session_id)
+    return {"session": _row_to_session(session), "platform": platform, **list_state()}
+
+
 def start_automation_session(account_id: int, job_id: str) -> dict[str, Any]:
     return start_login_session({"account_id": account_id, "_automation": True, "_current_job_id": job_id})
 
