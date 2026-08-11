@@ -187,15 +187,33 @@ def _free_debug_port() -> int:
     return port
 
 
-def _launch_browser(profile_dir: Path, proxy_port: int, log_dir: Path) -> tuple[Any, int]:
+def _free_display() -> str:
+    for number in range(150, 200):
+        socket_path = Path(f"/tmp/.X11-unix/X{number}")
+        if not socket_path.exists() or not proxy_pool._display_socket_active(socket_path):
+            return f":{number}"
+    raise InstagramCollectionError("没有可用的 Instagram 隔离显示通道")
+
+
+def _launch_browser(profile_dir: Path, proxy_port: int, log_dir: Path) -> tuple[Any, int, Any]:
     paths = proxy_pool._prepare_browser_profile_dir(profile_dir)
     debug_port = _free_debug_port()
     browser = proxy_pool._browser_binary()
+    display = _free_display()
+    xvfb = proxy_pool._required_binary("Xvfb")
+    xvfb_process = proxy_pool._open_process(
+        log_dir,
+        "instagram-xvfb",
+        [xvfb, display, "-screen", "0", "1280x900x24", "-nolisten", "tcp"],
+    )
+    time.sleep(0.8)
+    if not proxy_pool._pid_alive(int(xvfb_process.pid)):
+        proxy_pool._terminate_pid(int(xvfb_process.pid))
+        raise InstagramCollectionError("Instagram 隔离显示通道启动失败")
     args = [
         browser,
         f"--user-data-dir={profile_dir}",
         f"--proxy-server=http://127.0.0.1:{proxy_port}",
-        "--headless=new",
         "--remote-debugging-address=127.0.0.1",
         f"--remote-debugging-port={debug_port}",
         "--no-first-run",
@@ -211,6 +229,7 @@ def _launch_browser(profile_dir: Path, proxy_port: int, log_dir: Path) -> tuple[
     ]
     env = os.environ.copy()
     env.update({
+        "DISPLAY": display,
         "HOME": str(paths["home"]),
         "XDG_CONFIG_HOME": str(paths["config"]),
         "XDG_CACHE_HOME": str(paths["cache"]),
@@ -219,20 +238,22 @@ def _launch_browser(profile_dir: Path, proxy_port: int, log_dir: Path) -> tuple[
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
     })
-    process = proxy_pool._open_process(
-        log_dir,
-        "instagram-browser",
-        args,
-        env=env,
-        user=proxy_pool.TIKTOK_BROWSER_UID,
-        group=proxy_pool.TIKTOK_BROWSER_GID,
-    )
     try:
+        process = proxy_pool._open_process(
+            log_dir,
+            "instagram-browser",
+            args,
+            env=env,
+            user=proxy_pool.TIKTOK_BROWSER_UID,
+            group=proxy_pool.TIKTOK_BROWSER_GID,
+        )
         proxy_pool._wait_for_port(debug_port, "Instagram Chrome CDP", timeout=15.0)
     except Exception:
-        proxy_pool._terminate_pid(int(process.pid))
+        if "process" in locals():
+            proxy_pool._terminate_pid(int(process.pid))
+        proxy_pool._terminate_pid(int(xvfb_process.pid))
         raise
-    return process, debug_port
+    return process, debug_port, xvfb_process
 
 
 def _is_login_page(url: str) -> bool:
@@ -346,8 +367,9 @@ def run_simulation(account_id: int, max_videos: int, check_login_only: bool) -> 
     log_dir.mkdir(parents=True, exist_ok=False)
     lock_path = _exclusive_lock(profile_dir)
     process = None
+    xvfb_process = None
     try:
-        process, debug_port = _launch_browser(profile_dir, proxy_port, log_dir)
+        process, debug_port, xvfb_process = _launch_browser(profile_dir, proxy_port, log_dir)
         from playwright.sync_api import sync_playwright
 
         with sync_playwright() as playwright:
@@ -379,6 +401,8 @@ def run_simulation(account_id: int, max_videos: int, check_login_only: bool) -> 
     finally:
         if process is not None:
             proxy_pool._terminate_pid(int(process.pid))
+        if xvfb_process is not None:
+            proxy_pool._terminate_pid(int(xvfb_process.pid))
         lock_path.unlink(missing_ok=True)
 
 
