@@ -828,7 +828,7 @@ NAV_ITEMS = [
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
 
-UI_ASSET_VERSION = "20260811-32"
+UI_ASSET_VERSION = "20260811-33"
 APP_UI_ASSETS = f"""
 <script id="ui-nav-state-boot">
 let uiNavExpanded = false;
@@ -12694,7 +12694,7 @@ PUBLIC_GLOBAL_USER = {
     "id": "public",
     "feishuId": "",
     "name": "公共账户",
-    "avatarUrl": "",
+    "avatarUrl": "/api/lan-chat/avatars/public",
     "kind": "public",
 }
 

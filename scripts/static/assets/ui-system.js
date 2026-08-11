@@ -33,13 +33,26 @@
     image.src = user.avatarUrl;
   }
 
+  function applyCurrentUserAvatar(root = document) {
+    const current = window.VideoAnalyzerCurrentUser;
+    if (!current || !root) return;
+    if (root.matches?.("[data-current-user-avatar]")) setIdentityAvatar(root, current);
+    root.querySelectorAll?.("[data-current-user-avatar]").forEach((avatar) => {
+      setIdentityAvatar(avatar, current);
+    });
+  }
+
+  window.VideoAnalyzerApplyCurrentUserAvatar = applyCurrentUserAvatar;
+
   function renderGlobalUser(payload) {
     const current = payload.currentUser || { id: "public", name: "公共账户", kind: "public" };
+    window.VideoAnalyzerCurrentUser = current;
     document.querySelectorAll(".ui-nav__identity").forEach((button) => {
       setIdentityAvatar(button.querySelector(".ui-nav__identity-avatar"), current);
       button.querySelector(".ui-nav__identity-copy b").textContent = current.name;
       button.querySelector(".ui-nav__identity-copy small").textContent = current.kind === "feishu" ? "飞书账户" : "公共账户";
     });
+    applyCurrentUserAvatar();
     const options = document.querySelector("[data-global-user-options]");
     if (!options) return;
     options.innerHTML = (payload.users || []).map((user) => {

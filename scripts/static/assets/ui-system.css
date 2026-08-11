@@ -732,6 +732,7 @@ body.ui-system .ui-nav__toggle:hover {
     gap: 26px;
     overflow: auto;
     overscroll-behavior: contain;
+    scrollbar-gutter: stable both-edges;
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .chat-intro {
@@ -1382,11 +1383,24 @@ body.ui-system .ui-nav__toggle:hover {
     width: min(940px, 100%);
     max-width: none;
     margin: 0 auto;
+    display: grid;
+    grid-template-columns: minmax(48px, 1fr) minmax(0, 820px) minmax(48px, 1fr);
+    align-items: start;
     flex: 0 0 auto;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .msg-content {
+    grid-column: 2;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .msg.user {
     align-self: center;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .msg.user .msg-content {
     align-items: flex-end;
   }
 
@@ -1462,25 +1476,45 @@ body.ui-system .ui-nav__toggle:hover {
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .msg.assistant {
-    position: relative;
-    padding-left: 48px;
     align-self: center;
-    align-items: stretch;
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .msg.assistant::before {
-    content: "✦";
-    position: absolute;
-    top: 0;
-    left: 0;
+    content: none;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .chat-message-avatar {
     width: 34px;
     height: 34px;
     display: grid;
     place-items: center;
+    overflow: hidden;
+    flex: 0 0 auto;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .chat-message-avatar--assistant {
+    grid-column: 1;
+    justify-self: start;
     border-radius: 12px;
     background: var(--ui-brand-soft);
     color: var(--ui-brand);
     font-size: 17px;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .chat-message-avatar--user {
+    grid-column: 3;
+    justify-self: end;
+    border-radius: 11px;
+    background: var(--ui-surface-soft);
+    color: var(--ui-ink-muted);
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .chat-message-avatar img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .msg.assistant .bubble {
@@ -4021,6 +4055,17 @@ body.ui-system .ui-nav__toggle:hover {
     body.ui-route-amazon .messages,
     body.ui-route-chuhaijiang .messages {
       padding: 18px 14px 96px;
+      scrollbar-gutter: auto;
+    }
+
+    body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .msg {
+      grid-template-columns: 36px minmax(0, 1fr) 36px;
+    }
+
+    body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .chat-message-avatar {
+      width: 26px;
+      height: 26px;
+      border-radius: 9px;
     }
 
     body.ui-route-home .messages:has(.empty-chat),

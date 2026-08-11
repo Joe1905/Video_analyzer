@@ -156,7 +156,9 @@ class UIContractTest(unittest.TestCase):
         self.assertIn('class="ui-global-user-close"', app)
         self.assertIn('<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7.5 7.5 9 9m0-9-9 9"/></svg>', app)
         self.assertIn("function setIdentityAvatar", script)
+        self.assertIn('"avatarUrl": "/api/lan-chat/avatars/public"', app)
         self.assertIn("user?.avatarUrl", script)
+        self.assertIn("function applyCurrentUserAvatar", script)
         self.assertIn("grid-template-columns:repeat(2,minmax(0,1fr))", css)
         self.assertIn(".ui-global-user-option.is-public", css)
         self.assertIn("min-height:132px", css)
@@ -166,6 +168,22 @@ class UIContractTest(unittest.TestCase):
         self.assertIn("flex: 1 1 0", css)
         self.assertIn("color: #c4ccd8", css)
         self.assertIn(".ui-global-user-close svg", css)
+
+    def test_chat_messages_center_content_between_neighbor_chat_sized_avatars(self) -> None:
+        chat = (STATIC_DIR / "chat.html").read_text(encoding="utf-8")
+        css = UI_CSS.read_text(encoding="utf-8")
+        self.assertIn('className="msg-content"', chat)
+        self.assertIn('dataset.currentUserAvatar=""', chat)
+        self.assertIn("window.VideoAnalyzerApplyCurrentUserAvatar?.(item)", chat)
+        self.assertIn("scrollbar-gutter: stable both-edges", css)
+        self.assertIn(
+            "grid-template-columns: minmax(48px, 1fr) minmax(0, 820px) minmax(48px, 1fr)",
+            css,
+        )
+        self.assertRegex(
+            css,
+            r"\.chat-message-avatar\s*\{[^}]*width:\s*34px;[^}]*height:\s*34px;",
+        )
 
     def test_navigation_selection_and_page_heading_contract(self) -> None:
         css = UI_CSS.read_text(encoding="utf-8")
