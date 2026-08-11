@@ -173,6 +173,7 @@ from video_registry import (
     set_hidden_from_analyzer,
 )
 from proxy_state import ensure_us_proxy
+import instagram_content_collect
 import proxy_pool
 import tiktok_studio_publish
 import tiktok_studio_collect
@@ -14878,6 +14879,33 @@ class Handler(BaseHTTPRequestHandler):
                 return json_response(self, HTTPStatus.OK, proxy_pool.upsert_account(payload))
             if path == "/api/proxy/accounts/delete":
                 return json_response(self, HTTPStatus.OK, proxy_pool.delete_account(int(payload.get("id") or payload.get("account_id") or 0)))
+            if path == "/api/proxy/accounts/platform/delete":
+                return json_response(
+                    self,
+                    HTTPStatus.OK,
+                    proxy_pool.delete_account_platform(
+                        int(payload.get("id") or payload.get("account_id") or 0),
+                        str(payload.get("platform") or ""),
+                    ),
+                )
+            if path == "/api/proxy/instagram/collect":
+                max_videos = int(payload.get("max_videos") or 5)
+                if not 1 <= max_videos <= 20:
+                    raise ValueError("max_videos 必须在 1 至 20 之间")
+                result = instagram_content_collect.run_simulation(
+                    int(payload.get("account_id") or 0),
+                    max_videos,
+                    False,
+                    int(payload.get("session_id") or 0),
+                )
+                login = result.get("login")
+                if isinstance(login, dict):
+                    result["login"] = {"profile_has_instagram_login": bool(login.get("profile_has_instagram_login"))}
+                return json_response(
+                    self,
+                    HTTPStatus.OK,
+                    result,
+                )
             if path == "/api/proxy/accounts/proxy-binding":
                 return json_response(self, HTTPStatus.OK, proxy_pool.update_account_proxy_binding(payload))
             if path == "/api/proxy/check":

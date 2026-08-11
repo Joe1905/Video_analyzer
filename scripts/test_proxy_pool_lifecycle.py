@@ -208,6 +208,10 @@ def test_account_state_exposes_instagram_login_without_cookie_value() -> None:
                 "INSERT INTO cookies VALUES (?, ?, ?)",
                 (".instagram.com", "sessionid", "must-not-leak"),
             )
+            cookie_conn.execute(
+                "INSERT INTO cookies VALUES (?, ?, ?)",
+                (".tiktok.com", "sessionid", "also-must-not-leak"),
+            )
             cookie_conn.commit()
         now = proxy_pool.now_iso()
         with proxy_pool.connect() as conn:
@@ -234,7 +238,18 @@ def test_account_state_exposes_instagram_login_without_cookie_value() -> None:
             "profile_available": True,
             "logged_in": True,
         }
+        assert account["platforms"]["tiktok"]["linked"] is True
         assert "must-not-leak" not in str(account)
+
+        instagram_deleted = proxy_pool.delete_account_platform(account_id, "instagram")
+        kept_account = next(item for item in instagram_deleted["accounts"] if item["id"] == account_id)
+        assert kept_account["platforms"]["instagram"]["logged_in"] is False
+        assert kept_account["platforms"]["tiktok"]["linked"] is True
+        assert instagram_deleted["deleted_account"] is False
+
+        tiktok_deleted = proxy_pool.delete_account_platform(account_id, "tiktok")
+        assert tiktok_deleted["deleted_account"] is True
+        assert not any(item["id"] == account_id for item in tiktok_deleted["accounts"])
 
 
 def main() -> None:

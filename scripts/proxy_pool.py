@@ -826,12 +826,11 @@ def _row_to_pool(
     }
 
 
-def _instagram_login_metadata(profile: dict[str, Any]) -> dict[str, Any]:
-    """Expose only an Instagram login state; cookie values never leave Chrome."""
+def _browser_profile_dir(profile: dict[str, Any]) -> Path | None:
     isolation = profile.get("isolation") if isinstance(profile, dict) else {}
     user_data_dir = str((isolation or {}).get("user_data_dir") or "").strip()
     if not user_data_dir:
-        return {"status": "no_profile", "profile_available": False, "logged_in": False}
+        return None
     profile_dir = Path(user_data_dir)
     if not profile_dir.is_absolute():
         profile_dir = ROOT / profile_dir
@@ -839,9 +838,18 @@ def _instagram_login_metadata(profile: dict[str, Any]) -> dict[str, Any]:
         profile_dir = profile_dir.resolve()
         profiles_root = (DATA_DIR / "tiktok_browser_profiles").resolve()
     except OSError:
-        return {"status": "unavailable", "profile_available": False, "logged_in": False}
+        return None
     if profile_dir != profiles_root and profiles_root not in profile_dir.parents:
-        return {"status": "unavailable", "profile_available": False, "logged_in": False}
+        return None
+    return profile_dir
+
+
+def _platform_login_metadata(profile: dict[str, Any], host_pattern: str, cookie_names: tuple[str, ...]) -> dict[str, Any]:
+    """Expose login presence only; cookie values never leave Chrome."""
+    profile_dir = _browser_profile_dir(profile)
+    if profile_dir is None:
+        return {"status": "no_profile", "profile_available": False, "logged_in": False}
+    placeholders = ", ".join("?" for _ in cookie_names)
     for cookie_path in (profile_dir / "Default" / "Cookies", profile_dir / "Default" / "Network" / "Cookies"):
         if not cookie_path.is_file():
             continue
@@ -849,7 +857,8 @@ def _instagram_login_metadata(profile: dict[str, Any]) -> dict[str, Any]:
             conn = sqlite3.connect(f"file:{cookie_path}?mode=ro", uri=True, timeout=1)
             try:
                 row = conn.execute(
-                    "SELECT 1 FROM cookies WHERE host_key LIKE '%instagram.com%' AND name = 'sessionid' LIMIT 1"
+                    f"SELECT 1 FROM cookies WHERE lower(host_key) LIKE ? AND name IN ({placeholders}) LIMIT 1",
+                    (host_pattern.lower(), *cookie_names),
                 ).fetchone()
             finally:
                 conn.close()
@@ -863,8 +872,14 @@ def _instagram_login_metadata(profile: dict[str, Any]) -> dict[str, Any]:
     return {"status": "not_logged_in", "profile_available": True, "logged_in": False}
 
 
+def _instagram_login_metadata(profile: dict[str, Any]) -> dict[str, Any]:
+    return _platform_login_metadata(profile, "%instagram.com%", ("sessionid",))
+
+
 def _row_to_account(row: sqlite3.Row) -> dict[str, Any]:
     profile = _json_loads(row["profile_json"], {})
+    deleted_platforms = profile.get("platform_deletions") if isinstance(profile, dict) else {}
+    tiktok_linked = not bool((deleted_platforms or {}).get("tiktok"))
     return {
         "id": row["id"],
         "username": row["username"],
@@ -880,7 +895,7 @@ def _row_to_account(row: sqlite3.Row) -> dict[str, Any]:
         "status": _clean_account_status(row["status"]),
         "profile": profile,
         "platforms": {
-            "tiktok": {"linked": True},
+            "tiktok": {"linked": tiktok_linked, "status": "linked" if tiktok_linked else "deleted"},
             "instagram": _instagram_login_metadata(profile),
         },
         "notes": row["notes"],
@@ -2866,6 +2881,76 @@ def delete_account(account_id: int) -> dict[str, Any]:
         )
         conn.commit()
     return list_state()
+
+
+def delete_account_platform(account_id: int, platform: str) -> dict[str, Any]:
+    """Remove one platform's login data while preserving another platform's profile."""
+    platform = str(platform or "").strip().lower()
+    definitions = {
+        "tiktok": ("%tiktok.com%", ("sessionid", "sessionid_ss", "sid_tt")),
+        "instagram": ("%instagram.com%", ("sessionid",)),
+    }
+    if platform not in definitions:
+        raise ValueError("仅支持删除 TikTok 或 Instagram 登录资料")
+    with connect() as conn:
+        _require_account_binding_idle(conn, account_id)
+        account = conn.execute(
+            "SELECT * FROM tiktok_accounts WHERE id = ? AND deleted_at = ''",
+            (account_id,),
+        ).fetchone()
+        if not account:
+            raise ValueError("account not found")
+        profile = _json_loads(account["profile_json"], {})
+        profile_dir = _browser_profile_dir(profile)
+        if profile_dir is None:
+            raise ValueError("该账号没有可删除的平台浏览器 Profile")
+        host_pattern, cookie_names = definitions[platform]
+        removed = 0
+        placeholders = ", ".join("?" for _ in cookie_names)
+        for cookie_path in (profile_dir / "Default" / "Cookies", profile_dir / "Default" / "Network" / "Cookies"):
+            if not cookie_path.is_file():
+                continue
+            try:
+                cookie_conn = sqlite3.connect(cookie_path, timeout=3)
+                try:
+                    cursor = cookie_conn.execute(
+                        f"DELETE FROM cookies WHERE lower(host_key) LIKE ? AND name IN ({placeholders})",
+                        (host_pattern.lower(), *cookie_names),
+                    )
+                    cookie_conn.commit()
+                    removed += max(0, int(cursor.rowcount or 0))
+                finally:
+                    cookie_conn.close()
+            except sqlite3.Error as exc:
+                raise ValueError(f"无法删除 {platform} 登录资料，请稍后重试：{exc}") from exc
+        if not removed and platform != "tiktok":
+            raise ValueError(f"未找到可删除的 {platform} 登录资料")
+        now = now_iso()
+        if not isinstance(profile, dict):
+            profile = {}
+        deleted_platforms = profile.get("platform_deletions")
+        if not isinstance(deleted_platforms, dict):
+            deleted_platforms = {}
+        if platform == "tiktok":
+            deleted_platforms["tiktok"] = now
+        profile["platform_deletions"] = deleted_platforms
+        remaining_tiktok = not bool(deleted_platforms.get("tiktok"))
+        remaining_instagram = _instagram_login_metadata(profile)["logged_in"]
+        deleted_account = not remaining_tiktok and not remaining_instagram
+        if deleted_account:
+            conn.execute(
+                "UPDATE tiktok_accounts SET username = ?, status = ?, deleted_at = ?, updated_at = ? WHERE id = ?",
+                (f"{account['username']}__deleted_{account_id}", ACCOUNT_STATUS_PAUSED, now, now, account_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE tiktok_accounts SET profile_json = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(profile, ensure_ascii=False, separators=(",", ":")), now, account_id),
+            )
+        conn.commit()
+    result = list_state()
+    result.update({"deleted_platform": platform, "deleted_account": deleted_account})
+    return result
 
 
 def account_proxy_bound(account: sqlite3.Row | dict[str, Any]) -> bool:
