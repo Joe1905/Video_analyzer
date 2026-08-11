@@ -1408,7 +1408,7 @@ body.ui-system .ui-nav__toggle:hover {
     max-width: 68%;
     padding: 14px 18px;
     border: 0;
-    border-radius: 18px 18px 5px 18px;
+    border-radius: 18px 5px 18px 18px;
     background: var(--ui-ink);
     color: #fff;
     font-size: 15px;
