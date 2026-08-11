@@ -173,6 +173,7 @@ from video_registry import (
     set_hidden_from_analyzer,
 )
 from proxy_state import ensure_us_proxy
+import instagram_content_collect
 import proxy_pool
 import tiktok_studio_publish
 import tiktok_studio_collect
@@ -14840,7 +14841,8 @@ class Handler(BaseHTTPRequestHandler):
                 return json_response(self, HTTPStatus.OK, tiktok_studio_publish.runtime_status())
             if path == "/api/proxy/collect/dashboard":
                 account_id = int(parse_qs(query).get("account_id", ["0"])[0] or 0)
-                return json_response(self, HTTPStatus.OK, tiktok_studio_collect.dashboard(account_id))
+                platform = parse_qs(query).get("platform", ["tiktok"])[0]
+                return json_response(self, HTTPStatus.OK, tiktok_studio_collect.dashboard(account_id, platform))
             if path == "/api/proxy/collect/runtime":
                 return json_response(self, HTTPStatus.OK, tiktok_studio_collect.runtime_status())
             if path.startswith("/api/proxy/publish/videos/"):
@@ -14878,6 +14880,36 @@ class Handler(BaseHTTPRequestHandler):
                 return json_response(self, HTTPStatus.OK, proxy_pool.upsert_account(payload))
             if path == "/api/proxy/accounts/delete":
                 return json_response(self, HTTPStatus.OK, proxy_pool.delete_account(int(payload.get("id") or payload.get("account_id") or 0)))
+            if path == "/api/proxy/accounts/platform/delete":
+                return json_response(
+                    self,
+                    HTTPStatus.OK,
+                    proxy_pool.delete_account_platform(
+                        int(payload.get("id") or payload.get("account_id") or 0),
+                        str(payload.get("platform") or ""),
+                    ),
+                )
+            if path == "/api/proxy/instagram/collect":
+                max_videos = int(payload.get("max_videos") or 5)
+                if not 1 <= max_videos <= 20:
+                    raise ValueError("max_videos 必须在 1 至 20 之间")
+                try:
+                    result = instagram_content_collect.run_simulation(
+                        int(payload.get("account_id") or 0),
+                        max_videos,
+                        False,
+                        int(payload.get("session_id") or 0),
+                    )
+                except instagram_content_collect.InstagramCollectionError as exc:
+                    return json_response(self, HTTPStatus.CONFLICT, {"error": str(exc)})
+                login = result.get("login")
+                if isinstance(login, dict):
+                    result["login"] = {"profile_has_instagram_login": bool(login.get("profile_has_instagram_login"))}
+                return json_response(
+                    self,
+                    HTTPStatus.OK,
+                    result,
+                )
             if path == "/api/proxy/accounts/proxy-binding":
                 return json_response(self, HTTPStatus.OK, proxy_pool.update_account_proxy_binding(payload))
             if path == "/api/proxy/check":
@@ -14900,6 +14932,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/proxy/login-session/start":
                 payload = _proxy_feishu_binding(payload, required=not int(payload.get("account_id") or 0))
                 return json_response(self, HTTPStatus.OK, proxy_pool.start_login_session(payload))
+            if path == "/api/proxy/login-session/open-platform":
+                return json_response(self, HTTPStatus.OK, proxy_pool.open_observation_platform(payload))
             if path == "/api/proxy/login-session/stop":
                 return json_response(self, HTTPStatus.OK, proxy_pool.stop_login_session(payload))
             if path == "/api/proxy/login-session/status":

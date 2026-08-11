@@ -41,6 +41,7 @@ LIST_SCROLL_MAX_ROUNDS = max(30, min(600, int(os.getenv("TIKTOK_COLLECT_LIST_SCR
 PENDING_COLLECTION_STATUS = "not_collected"
 JOB_ACTIVE_STATUSES = {"queued", "delayed", "preparing", "collecting"}
 JOB_RETRYABLE_STATUSES = {"failed", "partial", "cancelled"}
+COLLECT_PLATFORMS = {"tiktok", "instagram"}
 STATUS_LABELS = {
     "queued": "待采集",
     "delayed": "延迟等待",
@@ -73,6 +74,13 @@ def _iso(value: datetime | None = None) -> str:
 
 def _clean_text(value: Any, limit: int = 2000) -> str:
     return str(value or "").strip()[:limit]
+
+
+def _collect_platform(value: Any) -> str:
+    platform = _clean_text(value, 32).lower() or "tiktok"
+    if platform not in COLLECT_PLATFORMS:
+        raise ValueError("采集平台仅支持 TikTok 或 Instagram")
+    return platform
 
 
 def _json_loads(value: Any, fallback: Any) -> Any:
@@ -138,6 +146,7 @@ def _job_row(row: Any) -> dict[str, Any]:
         "id": str(row["id"]),
         "account_id": int(row["account_id"]),
         "proxy_profile_id": int(row["proxy_profile_id"]),
+        "platform": _collect_platform(row["platform"] if "platform" in columns else "tiktok"),
         "trigger_type": str(row["trigger_type"]),
         "schedule_date": str(row["schedule_date"]),
         "max_videos": int(row["max_videos"]),
@@ -247,9 +256,10 @@ def _account(conn: Any, account_id: int) -> Any:
     return row
 
 
-def dashboard(account_id: int) -> dict[str, Any]:
+def dashboard(account_id: int, platform: str = "tiktok") -> dict[str, Any]:
     if not account_id:
         raise ValueError("account_id is required")
+    platform = _collect_platform(platform)
     with proxy_pool.connect() as conn:
         account = _account(conn, account_id)
         setting = conn.execute("SELECT * FROM collect_settings WHERE account_id = ?", (account_id,)).fetchone()
@@ -265,25 +275,31 @@ def dashboard(account_id: int) -> dict[str, Any]:
                        (SELECT COUNT(*) FROM collect_results r
                          WHERE r.job_id = j.id AND r.feishu_sync_status = 'not_collected') AS uncollected_videos
                 FROM collect_jobs j
-                WHERE j.account_id = ?
+                WHERE j.account_id = ? AND j.platform = ?
                 ORDER BY j.created_at DESC
                 LIMIT 40
                 """,
-                (account_id,),
+                (account_id, platform),
             ).fetchall()
         ]
         results = [
             _result_row(row)
             for row in conn.execute(
-                "SELECT * FROM collect_results WHERE account_id = ? ORDER BY collected_at DESC, id DESC LIMIT 100",
-                (account_id,),
+                """SELECT r.* FROM collect_results r
+                   JOIN collect_jobs j ON j.id = r.job_id
+                   WHERE r.account_id = ? AND j.platform = ?
+                   ORDER BY r.collected_at DESC, r.id DESC LIMIT 100""",
+                (account_id, platform),
             ).fetchall()
         ]
         errors = [
             dict(row)
             for row in conn.execute(
-                "SELECT * FROM collect_errors WHERE account_id = ? ORDER BY created_at DESC, id DESC LIMIT 30",
-                (account_id,),
+                """SELECT e.* FROM collect_errors e
+                   JOIN collect_jobs j ON j.id = e.job_id
+                   WHERE e.account_id = ? AND j.platform = ?
+                   ORDER BY e.created_at DESC, e.id DESC LIMIT 30""",
+                (account_id, platform),
             ).fetchall()
         ]
     setting_data = _setting_row(setting, account_id)
@@ -295,6 +311,7 @@ def dashboard(account_id: int) -> dict[str, Any]:
         setting_data["feishu_target"] = last_target
     return {
         "account": {"id": int(account["id"]), "username": str(account["username"])},
+        "platform": platform,
         "setting": setting_data,
         "jobs": jobs,
         "results": results,
@@ -348,24 +365,26 @@ def _insert_job(
     schedule_date: str = "",
     session_id: int = 0,
     auto_sync: bool = True,
+    platform: str = "tiktok",
 ) -> str:
     job_id = f"collect_{uuid.uuid4().hex}"
     now = _iso()
     conn.execute(
         """
         INSERT INTO collect_jobs (
-            id, account_id, proxy_profile_id, trigger_type, schedule_date, max_videos,
+            id, account_id, proxy_profile_id, platform, trigger_type, schedule_date, max_videos,
             publish_date_start, publish_date_end, feishu_target_json,
             auto_sync,
             status, stage, attempt_count, next_attempt_at, session_id,
             total_videos, completed_videos, failed_videos, current_video_id,
             started_at, completed_at, last_error, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', '', 0, '', ?, 0, 0, 0, '', '', '', '', ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', '', 0, '', ?, 0, 0, 0, '', '', '', '', ?, ?)
         """,
         (
             job_id,
             int(account["id"]),
             int(account["proxy_profile_id"]),
+            _collect_platform(platform),
             trigger_type,
             schedule_date,
             0,
@@ -385,6 +404,7 @@ def create_job(payload: dict[str, Any]) -> dict[str, Any]:
     account_id = int(payload.get("account_id") or 0)
     if not account_id:
         raise ValueError("account_id is required")
+    platform = _collect_platform(payload.get("platform"))
     with proxy_pool.connect() as conn:
         account = _account(conn, account_id)
         proxy_pool.require_account_proxy_bound(account)
@@ -402,6 +422,7 @@ def create_job(payload: dict[str, Any]) -> dict[str, Any]:
             feishu_target_json,
             session_id=int(payload.get("observation_session_id") or 0),
             auto_sync=payload.get("write_to_feishu") is not False,
+            platform=platform,
         )
         now = _iso()
         conn.execute(
@@ -415,7 +436,7 @@ def create_job(payload: dict[str, Any]) -> dict[str, Any]:
             (account_id, feishu_target_json, now, now),
         )
         conn.commit()
-    data = dashboard(account_id)
+    data = dashboard(account_id, platform)
     data["job"] = next(job for job in data["jobs"] if job["id"] == job_id)
     return data
 
@@ -445,7 +466,8 @@ def retry_job(payload: dict[str, Any]) -> dict[str, Any]:
         )
         conn.commit()
         account_id = int(row["account_id"])
-    return dashboard(account_id)
+        platform = _collect_platform(row["platform"] if "platform" in row.keys() else "tiktok")
+    return dashboard(account_id, platform)
 
 
 def cancel_job(payload: dict[str, Any]) -> dict[str, Any]:
@@ -464,7 +486,8 @@ def cancel_job(payload: dict[str, Any]) -> dict[str, Any]:
         )
         conn.commit()
         account_id = int(row["account_id"])
-    return dashboard(account_id)
+        platform = _collect_platform(row["platform"] if "platform" in row.keys() else "tiktok")
+    return dashboard(account_id, platform)
 
 
 def runtime_status() -> dict[str, Any]:
@@ -562,13 +585,15 @@ def _feishu_fields(target: dict[str, Any], payload: dict[str, Any]) -> dict[str,
     engagement = payload.get("engagement") or {}
     retention = payload.get("retention") or {}
     available = {str(field.get("name") or ""): field for field in target.get("fields") or []}
+    is_instagram = _collect_platform(payload.get("platform") or (payload.get("collection_job") or {}).get("platform")) == "instagram"
+    username = _clean_text(account.get("username"), 200)
     values = {
-        "账号名称": account.get("username") or "",
+        "账号名称": f"ins_{username}" if is_instagram and username else username,
         "发布时间": time_filter.get("applied") or video.get("published_at") or "",
         "24小时播放量": _metric_number(overview.get("play_count")),
-        "视频完播率": overview.get("completion_rate") or "",
-        "头3秒播放率": retention.get("0:03") or "",
-        "头6秒播放率": retention.get("0:06") or "",
+        "视频完播率": "" if is_instagram else overview.get("completion_rate") or "",
+        "头3秒播放率": "" if is_instagram else retention.get("0:03") or "",
+        "头6秒播放率": "" if is_instagram else retention.get("0:06") or "",
         "点赞": _metric_number(engagement.get("likes")),
         "评论": _metric_number(engagement.get("comments")),
         "收藏": _metric_number(engagement.get("favorites")),
@@ -1667,7 +1692,7 @@ def _load_job(job_id: str) -> dict[str, Any] | None:
     with proxy_pool.connect() as conn:
         row = conn.execute(
             """
-            SELECT j.*, a.username, a.last_checked_ip
+            SELECT j.*, a.username, a.last_checked_ip, a.profile_json
             FROM collect_jobs j JOIN tiktok_accounts a ON a.id = j.account_id
             WHERE j.id = ?
             """,
@@ -1678,6 +1703,7 @@ def _load_job(job_id: str) -> dict[str, Any] | None:
         job = _job_row(row)
         job["username"] = str(row["username"])
         job["observed_ip"] = str(row["last_checked_ip"])
+        job["profile"] = _json_loads(row["profile_json"], {})
         return job
 
 
@@ -1714,7 +1740,263 @@ def _pending_video_sources(job_id: str) -> list[dict[str, str]]:
     ]
 
 
+def _instagram_reels_url(job: dict[str, Any]) -> str:
+    profile = job.get("profile") if isinstance(job.get("profile"), dict) else {}
+    instagram = profile.get("instagram") if isinstance(profile.get("instagram"), dict) else {}
+    value = _clean_text(instagram.get("reels_url"), 1000)
+    parsed = urlparse(value)
+    if parsed.scheme == "https" and parsed.netloc.lower().endswith("instagram.com") and re.fullmatch(r"/[A-Za-z0-9._]+/reels/?", parsed.path):
+        return f"https://www.instagram.com{parsed.path.rstrip('/')}/"
+    raise RuntimeError("Instagram Reels 采集入口尚未初始化，请重新保存该账号以定位头像主页")
+
+
+def _instagram_relative_date(text: str, anchor: datetime) -> tuple[str, str]:
+    """Convert Instagram's relative post time using one fixed job-start clock."""
+    # Instagram's body text starts with its navigation and the reel caption.  The
+    # publication label (for example, "4 hours ago") is frequently well after
+    # the first 500 characters, so do not truncate it out before parsing.
+    raw = _clean_text(text, 12000)
+    normalized = raw.lower().replace("\u00a0", " ")
+    month_names = {
+        "january": 1, "february": 2, "march": 3, "april": 4,
+        "may": 5, "june": 6, "july": 7, "august": 8,
+        "september": 9, "october": 10, "november": 11, "december": 12,
+        "jan": 1, "feb": 2, "mar": 3, "apr": 4,
+        "jun": 6, "jul": 7, "aug": 8, "sep": 9,
+        "sept": 9, "oct": 10, "nov": 11, "dec": 12,
+    }
+    match = re.search(
+        r"\b(" + "|".join(month_names) + r")\.?\s+(\d{1,2})(?:,?\s+(\d{4}))?\b",
+        normalized,
+    )
+    if match:
+        month = month_names[match.group(1)]
+        day = int(match.group(2))
+        year = int(match.group(3) or anchor.year)
+        try:
+            value = datetime(year, month, day, tzinfo=anchor.tzinfo)
+        except ValueError:
+            return "", ""
+        # Instagram omits the year for recent posts.  A resulting future date is
+        # necessarily from the previous calendar year.
+        if not match.group(3) and value.date() > anchor.date():
+            value = value.replace(year=year - 1)
+        return value.date().isoformat(), match.group(0)
+    match = re.search(r"\b(\d+)\s*(?:h|hr|hrs|hour|hours)\s*(?:ago)?\b", normalized)
+    if match:
+        return (anchor - timedelta(hours=int(match.group(1)))).date().isoformat(), match.group(0)
+    match = re.search(r"\b(\d+)\s*(?:m|min|mins|minute|minutes)\s*(?:ago)?\b", normalized)
+    if match:
+        return (anchor - timedelta(minutes=int(match.group(1)))).date().isoformat(), match.group(0)
+    match = re.search(r"\b(\d+)\s*(?:d|day|days)\s*(?:ago)?\b", normalized)
+    if match:
+        return (anchor - timedelta(days=int(match.group(1)))).date().isoformat(), match.group(0)
+    match = re.search(r"\b(\d+)\s*(?:w|week|weeks)\s*(?:ago)?\b", normalized)
+    if match:
+        return (anchor - timedelta(weeks=int(match.group(1)))).date().isoformat(), match.group(0)
+    return "", ""
+
+
+def _instagram_reel_sources(page: Any) -> list[dict[str, str]]:
+    found: dict[str, dict[str, str]] = {}
+    links = page.locator("a[href*='/reel/']")
+    for index in range(min(links.count(), 160)):
+        item = links.nth(index)
+        try:
+            href = str(item.get_attribute("href") or "")
+            parsed = urlparse(href)
+            path = parsed.path if parsed.scheme else href.split("?", 1)[0]
+            # Profile Reels grids use /<username>/reel/<shortcode>/ while
+            # individual pages use /reel/<shortcode>/.  Keep the source path
+            # so scrolling can locate the grid tile before opening its detail.
+            match = re.fullmatch(r"/(?:[A-Za-z0-9._]+/)?reel/([A-Za-z0-9_-]+)/?", path)
+            if not match:
+                continue
+            shortcode = match.group(1)
+            found.setdefault(shortcode, {"id": f"ins_{shortcode}", "shortcode": shortcode, "href": path})
+        except Exception:
+            continue
+    return list(found.values())
+
+
+def _instagram_collect_payload(page: Any, job: dict[str, Any], source: dict[str, str], published_date: str, relative_time: str) -> dict[str, Any]:
+    insight = _first_visible([
+        page.get_by_text(re.compile(r"^view insights$", re.I)),
+        page.get_by_role("button", name=re.compile(r"view insights", re.I)),
+        page.get_by_role("link", name=re.compile(r"view insights", re.I)),
+    ])
+    if not insight:
+        raise RuntimeError("该 Reels 未显示 View insights，无法读取账号洞察数据")
+    insight.click(timeout=7000)
+    # The insights route renders its shell before the metric cards.  Wait for
+    # the card label rather than treating the initial player counters as data.
+    try:
+        page.get_by_text(re.compile(r"^views$", re.I)).last.wait_for(state="visible", timeout=12000)
+    except Exception:
+        pass
+    page.wait_for_timeout(500)
+    body = page.locator("body").inner_text(timeout=15000)
+    lines = _lines(body)
+    views = _value_after_label(lines, ["Views", "观看次数", "播放次数"])
+    likes = _value_after_label(lines, ["Likes", "赞", "点赞"])
+    comments = _value_after_label(lines, ["Comments", "评论"])
+    shares = _value_after_label(lines, ["Shares", "分享"])
+    saves = _value_after_label(lines, ["Saves", "收藏"])
+    if not any((views, likes, comments, shares, saves)):
+        raise RuntimeError("View insights 已打开，但未识别到可采集指标")
+    canonical_url = page.url.split("?", 1)[0].split("#", 1)[0]
+    if "/insights/" in urlparse(canonical_url).path:
+        canonical_url = f"https://www.instagram.com/reel/{source['shortcode']}/"
+    title = ""
+    try:
+        title = _clean_text(page.locator("meta[property='og:description']").get_attribute("content"), 2000)
+    except Exception:
+        pass
+    return {
+        "platform": "instagram",
+        "account": {
+            "id": job["account_id"],
+            "username": job.get("instagram_username") or job["username"],
+            "proxy_profile_id": job["proxy_profile_id"],
+            "observed_ip": job["observed_ip"],
+            "browser_session_id": job["session_id"],
+        },
+        "collection_job": {"job_id": job["id"], "trigger_type": job["trigger_type"], "platform": "instagram"},
+        "video": {"id": source["id"], "title": title, "published_at": published_date, "url": canonical_url},
+        "time_filter": {
+            "requested": {"publish_date_start": job["publish_date_start"], "publish_date_end": job["publish_date_end"], "timezone": TIMEZONE_NAME},
+            "applied": published_date,
+            "source_relative_time": relative_time,
+            "scope": "instagram_reel_publish_date",
+            "applied_successfully": True,
+        },
+        "overview": {"play_count": views, "completion_rate": ""},
+        "engagement": {"likes": likes, "comments": comments, "favorites": saves, "shares": shares},
+        "retention": {},
+        "retention_complete": True,
+        "data_complete": True,
+        "collected_at": _iso(),
+    }
+
+
+def _execute_instagram_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[int, int, int]:
+    from playwright.sync_api import sync_playwright
+
+    log_dir = LOG_ROOT / job["id"]
+    log_dir.mkdir(parents=True, exist_ok=True)
+    profile = job.get("profile") if isinstance(job.get("profile"), dict) else {}
+    instagram = profile.get("instagram") if isinstance(profile.get("instagram"), dict) else {}
+    try:
+        reels_url = _instagram_reels_url(job)
+    except RuntimeError:
+        # Binding/login success performs the avatar click once and persists the
+        # Reels entry.  A collection run only needs that saved entry; retry the
+        # bootstrap solely for legacy accounts where it is absent.
+        bootstrap = proxy_pool.bootstrap_instagram_profile(int(job["account_id"]), int(session["id"]))
+        if not bootstrap.get("configured"):
+            raise RuntimeError(str(bootstrap.get("reason") or "Instagram 账号主页初始化失败"))
+        refreshed = _load_job(job["id"])
+        if refreshed:
+            job.update(refreshed)
+        profile = job.get("profile") if isinstance(job.get("profile"), dict) else {}
+        instagram = profile.get("instagram") if isinstance(profile.get("instagram"), dict) else {}
+        reels_url = _instagram_reels_url(job)
+    job["instagram_username"] = _clean_text(instagram.get("username"), 200)
+    anchor = _utc_now().astimezone(ZoneInfo(TIMEZONE_NAME))
+    seen: set[str] = set()
+    completed_ids = _completed_video_ids(job["id"])
+    completed = len(completed_ids)
+    failed = 0
+    matched = 0
+    unparsed = 0
+    stop_scan = False
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{session['debug_port']}")
+        context = browser.contexts[0]
+        list_page = context.pages[0] if context.pages else context.new_page()
+        _set_job(
+            job["id"], "collecting", "load_instagram_reels",
+            session_id=session["id"],
+            status_detail="正在打开已保存的 Instagram Reels 列表…",
+        )
+        list_page.goto(reels_url, wait_until="domcontentloaded", timeout=60000)
+        try:
+            list_page.locator("a[href*='/reel/']").first.wait_for(state="visible", timeout=15000)
+        except Exception:
+            # A zero-video profile remains a valid scan result; the loop below
+            # will finish it with a clear summary instead of treating it as a
+            # page-load failure.
+            pass
+        collect_page = context.new_page()
+        try:
+            for round_index in range(LIST_SCROLL_MAX_ROUNDS):
+                sources = _instagram_reel_sources(list_page)
+                if sources:
+                    _set_job(
+                        job["id"], "collecting", "scan_instagram_reels",
+                        session_id=session["id"],
+                        status_detail=f"正在核对 Reels 发布时间，已发现 {len(seen | {item['id'] for item in sources})} 条链接。",
+                    )
+                for source in sources:
+                    if source["id"] in seen:
+                        continue
+                    seen.add(source["id"])
+                    try:
+                        list_page.locator(f'a[href="{source["href"]}"]').first.scroll_into_view_if_needed(timeout=5000)
+                        collect_page.goto(f"https://www.instagram.com{source['href']}", wait_until="domcontentloaded", timeout=30000)
+                        collect_page.wait_for_timeout(700)
+                        body = collect_page.locator("body").inner_text(timeout=15000)
+                        published_date, relative_time = _instagram_relative_date(body, anchor)
+                        if not published_date:
+                            unparsed += 1
+                            continue
+                        if published_date < job["publish_date_start"]:
+                            # Reels are scanned newest to oldest.  Once the
+                            # first resolved date falls below the requested
+                            # range, every following item is out of range.
+                            stop_scan = True
+                            break
+                        if published_date > job["publish_date_end"]:
+                            continue
+                        matched += 1
+                        _set_job(job["id"], "collecting", "collect_instagram_reel", session_id=session["id"], total_videos=matched, completed_videos=completed, failed_videos=failed, current_video_id=source["id"])
+                        if source["id"] not in completed_ids:
+                            payload = _instagram_collect_payload(collect_page, job, source, published_date, relative_time)
+                            _save_result(job, payload)
+                            completed += 1
+                            completed_ids.add(source["id"])
+                    except Exception as exc:
+                        failed += 1
+                        _record_error(job, source["id"], f"https://www.instagram.com{source['href']}", "collect_instagram_reel", exc)
+                if stop_scan:
+                    break
+                scroll = list_page.evaluate("""() => {
+                    const root = document.scrollingElement || document.documentElement;
+                    const before = root.scrollTop;
+                    root.scrollBy(0, Math.max(520, Math.round(window.innerHeight * .82)));
+                    return {before, after: root.scrollTop, end: root.scrollTop + root.clientHeight >= root.scrollHeight - 4};
+                }""")
+                list_page.wait_for_timeout(LIST_SCROLL_WAIT_MS)
+                if bool(scroll.get("end")) and round_index >= 4:
+                    break
+        finally:
+            try:
+                collect_page.close()
+            except Exception:
+                pass
+    if matched:
+        job["_execution_status_detail"] = f"已扫描 {len(seen)} 条 Reels，命中 {matched} 条目标日期视频。"
+    elif seen:
+        suffix = f"，其中 {unparsed} 条未识别到发布时间" if unparsed else ""
+        job["_execution_status_detail"] = f"已扫描 {len(seen)} 条 Reels，未找到 {job['publish_date_start']} 的视频{suffix}。"
+    else:
+        job["_execution_status_detail"] = "Reels 页面未发现可采集的视频链接。"
+    return matched, completed, failed
+
+
 def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[int, int, int]:
+    if _collect_platform(job.get("platform")) == "instagram":
+        return _execute_instagram_browser(job, session)
     from playwright.sync_api import sync_playwright
 
     log_dir = LOG_ROOT / job["id"]
@@ -1806,8 +2088,11 @@ def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[int,
                 current_video_id=source["id"],
             )
             job["session_id"] = int(session["id"])
+            collect_page = context.new_page()
             try:
-                payload = _collect_video(page, job, source, log_dir)
+                # Keep the Studio content list on the observation page. The
+                # individual analytics page is an isolated temporary tab.
+                payload = _collect_video(collect_page, job, source, log_dir)
                 _save_result(job, payload)
                 completed += 1
                 completed_ids.add(source["id"])
@@ -1816,6 +2101,11 @@ def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[int,
             except Exception as exc:
                 failed += 1
                 _record_error(job, source["id"], source["url"], "collect_video", exc)
+            finally:
+                try:
+                    collect_page.close()
+                except Exception:
+                    pass
             _set_job(
                 job["id"],
                 "collecting",
@@ -1886,7 +2176,9 @@ def _run_job(job_id: str) -> None:
         if session is not None:
             reused_observation = True
         else:
-            session = proxy_pool.start_automation_session(job["account_id"], job_id)["session"]
+            session = proxy_pool.start_automation_session(
+                job["account_id"], job_id, start_platform=_collect_platform(job.get("platform"))
+            )["session"]
         session_id = int(session["id"])
         _set_job(job_id, "preparing", "browser_ready", session_id=session_id, started_at=_iso())
         total, completed, failed = _execute_browser(job, session)
@@ -1912,6 +2204,7 @@ def _run_job(job_id: str) -> None:
             failed_videos=failed,
             current_video_id="",
             completed_at=_iso(),
+            status_detail=_clean_text(job.get("_execution_status_detail"), 500),
         )
         _update_account(job["account_id"], collected_at=_iso() if completed else "", error=message)
     except Exception as exc:

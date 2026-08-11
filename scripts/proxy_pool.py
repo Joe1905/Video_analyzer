@@ -66,6 +66,10 @@ TIKTOK_BROWSER_GID = int(os.getenv("TIKTOK_BROWSER_GID", "10001") or "10001")
 TIKTOK_BROWSER_LOCALE = os.getenv("TIKTOK_BROWSER_LOCALE", "en-US").strip() or "en-US"
 TIKTOK_BROWSER_ACCEPT_LANGUAGE = os.getenv("TIKTOK_BROWSER_ACCEPT_LANGUAGE", "en-US,en").strip() or "en-US,en"
 RUNTIME_ID = f"{os.getpid()}-{uuid.uuid4().hex}"
+PLATFORM_START_URLS = {
+    "tiktok": "https://www.tiktok.com/?lang=en",
+    "instagram": "https://www.instagram.com/",
+}
 STATUS_ACTIVE = "启用"
 STATUS_PAUSED = "禁用"
 STATUS_ERROR = "不可用"
@@ -288,6 +292,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             feishu_avatar_url TEXT NOT NULL DEFAULT '',
             profile_key TEXT NOT NULL DEFAULT '',
             user_data_dir TEXT NOT NULL DEFAULT '',
+            login_platform TEXT NOT NULL DEFAULT '',
             last_activity_at TEXT NOT NULL DEFAULT '',
             last_error TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
@@ -364,6 +369,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             id TEXT PRIMARY KEY,
             account_id INTEGER NOT NULL REFERENCES tiktok_accounts(id) ON DELETE RESTRICT,
             proxy_profile_id INTEGER NOT NULL REFERENCES proxy_profiles(id) ON DELETE RESTRICT,
+            platform TEXT NOT NULL DEFAULT 'tiktok',
             trigger_type TEXT NOT NULL DEFAULT 'manual',
             schedule_date TEXT NOT NULL DEFAULT '',
             max_videos INTEGER NOT NULL DEFAULT 0,
@@ -489,6 +495,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         "feishu_user_name": "TEXT NOT NULL DEFAULT ''",
         "feishu_avatar_url": "TEXT NOT NULL DEFAULT ''",
         "runtime_id": "TEXT NOT NULL DEFAULT ''",
+        "login_platform": "TEXT NOT NULL DEFAULT ''",
         "last_activity_at": "TEXT NOT NULL DEFAULT ''",
     }.items():
         if name not in existing_session_cols:
@@ -526,6 +533,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             "publish_date_end": "TEXT NOT NULL DEFAULT ''",
         },
         "collect_jobs": {
+            "platform": "TEXT NOT NULL DEFAULT 'tiktok'",
             "feishu_target_json": "TEXT NOT NULL DEFAULT '{}'",
             "publish_date_start": "TEXT NOT NULL DEFAULT ''",
             "publish_date_end": "TEXT NOT NULL DEFAULT ''",
@@ -826,7 +834,175 @@ def _row_to_pool(
     }
 
 
+def _browser_profile_dir(profile: dict[str, Any]) -> Path | None:
+    isolation = profile.get("isolation") if isinstance(profile, dict) else {}
+    user_data_dir = str((isolation or {}).get("user_data_dir") or "").strip()
+    if not user_data_dir:
+        return None
+    profile_dir = Path(user_data_dir)
+    if not profile_dir.is_absolute():
+        profile_dir = ROOT / profile_dir
+    try:
+        profile_dir = profile_dir.resolve()
+        profiles_root = (DATA_DIR / "tiktok_browser_profiles").resolve()
+    except OSError:
+        return None
+    if profile_dir != profiles_root and profiles_root not in profile_dir.parents:
+        return None
+    return profile_dir
+
+
+def _platform_login_metadata(profile: dict[str, Any], host_pattern: str, cookie_names: tuple[str, ...]) -> dict[str, Any]:
+    """Expose login presence only; cookie values never leave Chrome."""
+    profile_dir = _browser_profile_dir(profile)
+    if profile_dir is None:
+        return {"status": "no_profile", "profile_available": False, "logged_in": False}
+    placeholders = ", ".join("?" for _ in cookie_names)
+    for cookie_path in (profile_dir / "Default" / "Cookies", profile_dir / "Default" / "Network" / "Cookies"):
+        if not cookie_path.is_file():
+            continue
+        try:
+            conn = sqlite3.connect(f"file:{cookie_path}?mode=ro", uri=True, timeout=1)
+            try:
+                row = conn.execute(
+                    f"SELECT 1 FROM cookies WHERE lower(host_key) LIKE ? AND name IN ({placeholders}) LIMIT 1",
+                    (host_pattern.lower(), *cookie_names),
+                ).fetchone()
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            return {"status": "unavailable", "profile_available": True, "logged_in": False}
+        return {
+            "status": "logged_in" if row else "not_logged_in",
+            "profile_available": True,
+            "logged_in": bool(row),
+        }
+    return {"status": "not_logged_in", "profile_available": True, "logged_in": False}
+
+
+def _instagram_login_metadata(profile: dict[str, Any]) -> dict[str, Any]:
+    return _platform_login_metadata(profile, "%instagram.com%", ("sessionid",))
+
+
+def _chrome_bookmark_timestamp() -> str:
+    return str(int((time.time() + 11644473600) * 1_000_000))
+
+
+def _save_instagram_reels_bookmark(profile: dict[str, Any], reels_url: str) -> bool:
+    """Persist the account's Reels entry in Chrome's bookmark bar without tokens."""
+    profile_dir = _browser_profile_dir(profile)
+    if profile_dir is None:
+        return False
+    bookmark_path = profile_dir / "Default" / "Bookmarks"
+    try:
+        data = _json_loads(bookmark_path.read_text(encoding="utf-8"), {}) if bookmark_path.is_file() else {}
+        if not isinstance(data, dict):
+            data = {}
+        roots = data.setdefault("roots", {})
+        bar = roots.setdefault(
+            "bookmark_bar",
+            {"children": [], "date_added": _chrome_bookmark_timestamp(), "date_modified": "0", "id": "1", "name": "Bookmarks bar", "type": "folder"},
+        )
+        children = bar.setdefault("children", [])
+        if not isinstance(children, list):
+            children = []
+            bar["children"] = children
+        if any(isinstance(item, dict) and str(item.get("url") or "") == reels_url for item in children):
+            return True
+        children.append(
+            {
+                "date_added": _chrome_bookmark_timestamp(),
+                "guid": str(uuid.uuid4()),
+                "id": str(int(time.time() * 1_000_000)),
+                "name": "Instagram Reels 采集入口",
+                "type": "url",
+                "url": reels_url,
+            }
+        )
+        bar["date_modified"] = _chrome_bookmark_timestamp()
+        data.setdefault("version", 1)
+        temporary = bookmark_path.with_suffix(".tmp")
+        bookmark_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        temporary.replace(bookmark_path)
+        return True
+    except OSError:
+        return False
+
+
+def bootstrap_instagram_profile(account_id: int, session_id: int) -> dict[str, Any]:
+    """Click the logged-in Instagram avatar and retain the profile Reels entry point."""
+    with connect() as conn:
+        account = conn.execute("SELECT profile_json FROM tiktok_accounts WHERE id = ? AND deleted_at = ''", (account_id,)).fetchone()
+        session = _session_by_id(conn, session_id)
+        if not account or int(session["account_id"] or 0) != int(account_id):
+            raise ValueError("观测通道不属于当前账号")
+        profile = _json_loads(account["profile_json"], {})
+        if not _instagram_login_metadata(profile).get("logged_in"):
+            return {"configured": False, "reason": "当前 Profile 未检测到 Instagram 登录"}
+        debug_port = int(session["debug_port"] or 0)
+    if not debug_port:
+        return {"configured": False, "reason": "Chrome 调试端口不可用"}
+    profile_url = ""
+    try:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{debug_port}")
+            if not browser.contexts:
+                raise ValueError("Chrome 没有可用的浏览器上下文")
+            page = browser.contexts[0].pages[0] if browser.contexts[0].pages else browser.contexts[0].new_page()
+            page.goto(PLATFORM_START_URLS["instagram"], wait_until="domcontentloaded", timeout=30000)
+            page.wait_for_timeout(1200)
+            href = ""
+            excluded = {"", "/", "/accounts/", "/direct/", "/explore/", "/reels/", "/stories/"}
+            preferred = page.locator("a[aria-label*='Profile' i][href], a[aria-label*='profile' i][href]")
+            if preferred.count():
+                href = str(preferred.first.get_attribute("href") or "").split("?", 1)[0]
+            if not href:
+                links = page.locator("a[href]")
+                for index in range(min(links.count(), 240)):
+                    candidate = str(links.nth(index).get_attribute("href") or "").strip()
+                    parsed = urlparse(candidate)
+                    path = parsed.path if parsed.scheme else candidate.split("?", 1)[0]
+                    if path in excluded or not re.fullmatch(r"/[A-Za-z0-9._]+/", path):
+                        continue
+                    href = path
+                    break
+            if not href:
+                raise ValueError("未找到 Instagram 头像主页入口")
+            page.locator(f'a[href="{href}"]').first.click(timeout=5000)
+            page.wait_for_timeout(1000)
+            parsed = urlparse(page.url)
+            if parsed.netloc.lower() not in {"instagram.com", "www.instagram.com"} or not re.fullmatch(r"/[A-Za-z0-9._]+/", parsed.path):
+                raise ValueError("点击头像后未进入 Instagram 账号主页")
+            profile_url = f"https://www.instagram.com{parsed.path}"
+    except Exception as exc:
+        return {"configured": False, "reason": _clean_text(exc, 500)}
+    handle = profile_url.rstrip("/").rsplit("/", 1)[-1]
+    reels_url = f"https://www.instagram.com/{handle}/reels/"
+    bookmark_saved = _save_instagram_reels_bookmark(profile, reels_url)
+    profile["instagram"] = {
+        "username": handle,
+        "profile_url": profile_url,
+        "reels_url": reels_url,
+        "bookmark_name": "Instagram Reels 采集入口",
+        "bookmark_saved": bookmark_saved,
+        "configured_at": now_iso(),
+    }
+    with connect() as conn:
+        conn.execute(
+            "UPDATE tiktok_accounts SET profile_json = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(profile, ensure_ascii=False, separators=(",", ":")), now_iso(), account_id),
+        )
+        conn.commit()
+    return {"configured": True, "profile_url": profile_url, "reels_url": reels_url, "bookmark_saved": bookmark_saved}
+
+
 def _row_to_account(row: sqlite3.Row) -> dict[str, Any]:
+    profile = _json_loads(row["profile_json"], {})
+    deleted_platforms = profile.get("platform_deletions") if isinstance(profile, dict) else {}
+    tiktok_linked = not bool((deleted_platforms or {}).get("tiktok"))
     return {
         "id": row["id"],
         "username": row["username"],
@@ -840,7 +1016,11 @@ def _row_to_account(row: sqlite3.Row) -> dict[str, Any]:
         "proxy_profile_id": row["proxy_profile_id"],
         "proxy_bound": bool(row["proxy_bound"]),
         "status": _clean_account_status(row["status"]),
-        "profile": _json_loads(row["profile_json"], {}),
+        "profile": profile,
+        "platforms": {
+            "tiktok": {"linked": tiktok_linked, "status": "linked" if tiktok_linked else "deleted"},
+            "instagram": _instagram_login_metadata(profile),
+        },
         "notes": row["notes"],
         "last_checked_ip": row["last_checked_ip"],
         "last_check_status": row["last_check_status"],
@@ -878,6 +1058,7 @@ def _row_to_session(row: sqlite3.Row) -> dict[str, Any]:
         "feishu_avatar_url": row["feishu_avatar_url"],
         "profile_key": row["profile_key"],
         "user_data_dir": row["user_data_dir"],
+        "login_platform": row["login_platform"],
         "last_activity_at": row["last_activity_at"],
         "last_error": row["last_error"],
         "created_at": row["created_at"],
@@ -2735,7 +2916,17 @@ def upsert_account(payload: dict[str, Any]) -> dict[str, Any]:
         if session_id:
             conn.execute("UPDATE browser_sessions SET account_id = ?, username = ?, updated_at = ? WHERE id = ?", (account_id, username, now, session_id))
         conn.commit()
-    return {"account": get_account(account_id), **list_state()}
+    result = {"account": get_account(account_id), **list_state()}
+    if session_id:
+        try:
+            result["instagram_bootstrap"] = bootstrap_instagram_profile(account_id, session_id)
+            result["account"] = get_account(account_id)
+            result.update(list_state())
+        except Exception as exc:
+            # TikTok account binding must remain available even when an optional
+            # Instagram profile bootstrap cannot be completed.
+            result["instagram_bootstrap"] = {"configured": False, "reason": _clean_text(exc, 500)}
+    return result
 
 
 def get_account(account_id: int) -> dict[str, Any]:
@@ -2824,6 +3015,76 @@ def delete_account(account_id: int) -> dict[str, Any]:
         )
         conn.commit()
     return list_state()
+
+
+def delete_account_platform(account_id: int, platform: str) -> dict[str, Any]:
+    """Remove one platform's login data while preserving another platform's profile."""
+    platform = str(platform or "").strip().lower()
+    definitions = {
+        "tiktok": ("%tiktok.com%", ("sessionid", "sessionid_ss", "sid_tt")),
+        "instagram": ("%instagram.com%", ("sessionid",)),
+    }
+    if platform not in definitions:
+        raise ValueError("仅支持删除 TikTok 或 Instagram 登录资料")
+    with connect() as conn:
+        _require_account_binding_idle(conn, account_id)
+        account = conn.execute(
+            "SELECT * FROM tiktok_accounts WHERE id = ? AND deleted_at = ''",
+            (account_id,),
+        ).fetchone()
+        if not account:
+            raise ValueError("account not found")
+        profile = _json_loads(account["profile_json"], {})
+        profile_dir = _browser_profile_dir(profile)
+        if profile_dir is None:
+            raise ValueError("该账号没有可删除的平台浏览器 Profile")
+        host_pattern, cookie_names = definitions[platform]
+        removed = 0
+        placeholders = ", ".join("?" for _ in cookie_names)
+        for cookie_path in (profile_dir / "Default" / "Cookies", profile_dir / "Default" / "Network" / "Cookies"):
+            if not cookie_path.is_file():
+                continue
+            try:
+                cookie_conn = sqlite3.connect(cookie_path, timeout=3)
+                try:
+                    cursor = cookie_conn.execute(
+                        f"DELETE FROM cookies WHERE lower(host_key) LIKE ? AND name IN ({placeholders})",
+                        (host_pattern.lower(), *cookie_names),
+                    )
+                    cookie_conn.commit()
+                    removed += max(0, int(cursor.rowcount or 0))
+                finally:
+                    cookie_conn.close()
+            except sqlite3.Error as exc:
+                raise ValueError(f"无法删除 {platform} 登录资料，请稍后重试：{exc}") from exc
+        if not removed and platform != "tiktok":
+            raise ValueError(f"未找到可删除的 {platform} 登录资料")
+        now = now_iso()
+        if not isinstance(profile, dict):
+            profile = {}
+        deleted_platforms = profile.get("platform_deletions")
+        if not isinstance(deleted_platforms, dict):
+            deleted_platforms = {}
+        if platform == "tiktok":
+            deleted_platforms["tiktok"] = now
+        profile["platform_deletions"] = deleted_platforms
+        remaining_tiktok = not bool(deleted_platforms.get("tiktok"))
+        remaining_instagram = _instagram_login_metadata(profile)["logged_in"]
+        deleted_account = not remaining_tiktok and not remaining_instagram
+        if deleted_account:
+            conn.execute(
+                "UPDATE tiktok_accounts SET username = ?, status = ?, deleted_at = ?, updated_at = ? WHERE id = ?",
+                (f"{account['username']}__deleted_{account_id}", ACCOUNT_STATUS_PAUSED, now, now, account_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE tiktok_accounts SET profile_json = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(profile, ensure_ascii=False, separators=(",", ":")), now, account_id),
+            )
+        conn.commit()
+    result = list_state()
+    result.update({"deleted_platform": platform, "deleted_account": deleted_account})
+    return result
 
 
 def account_proxy_bound(account: sqlite3.Row | dict[str, Any]) -> bool:
@@ -3961,6 +4222,16 @@ def _direct_login_pool_id() -> int:
 
 def start_login_session(payload: dict[str, Any]) -> dict[str, Any]:
     account_id = int(payload.get("account_id") or 0)
+    start_platform = _clean_text(payload.get("start_platform"), 32).lower() or "tiktok"
+    login_platform = _clean_text(payload.get("login_platform"), 32).lower()
+    if start_platform not in PLATFORM_START_URLS:
+        raise ValueError("启动平台仅支持 TikTok 或 Instagram")
+    if login_platform and login_platform not in PLATFORM_START_URLS:
+        raise ValueError("新增登录仅支持 TikTok 或 Instagram")
+    if login_platform and not account_id:
+        raise ValueError("新增平台登录必须指定已有账号")
+    if login_platform:
+        start_platform = login_platform
     requested_pool = str(payload.get("proxy_profile_id") or payload.get("pool_id") or "").strip()
     proxy_profile_id = _direct_login_pool_id() if not account_id and requested_pool == "direct" else int(requested_pool or 0)
     saved_profile: dict[str, Any] = {}
@@ -3980,6 +4251,15 @@ def start_login_session(payload: dict[str, Any]) -> dict[str, Any]:
         proxy_profile_id = bound_proxy_id
         username = str(account_row["username"] or "")
         saved_profile = _json_loads(account_row["profile_json"], {})
+        deleted_platforms = saved_profile.get("platform_deletions") if isinstance(saved_profile, dict) else {}
+        if not isinstance(deleted_platforms, dict):
+            deleted_platforms = {}
+        if login_platform == "instagram" and _instagram_login_metadata(saved_profile).get("logged_in"):
+            raise ValueError("当前 Chrome Profile 已登录 Instagram")
+        if login_platform == "tiktok" and not bool(deleted_platforms.get("tiktok")):
+            raise ValueError("当前 Chrome Profile 已登录 TikTok")
+        if start_platform == "instagram" and not login_platform and not _instagram_login_metadata(saved_profile).get("logged_in"):
+            raise ValueError("当前 Chrome Profile 未检测到 Instagram 登录")
         feishu_user_id = str(account_row["feishu_user_id"] or "")
         feishu_user_name = str(account_row["feishu_user_name"] or "")
         feishu_avatar_url = str(account_row["feishu_avatar_url"] or "")
@@ -4034,9 +4314,9 @@ def start_login_session(payload: dict[str, Any]) -> dict[str, Any]:
                 slot, proxy_profile_id, account_id, username, status, channel_url, runtime_id,
                 pid, xvfb_pid, x11vnc_pid, websockify_pid, display, vnc_port, novnc_port,
                 debug_port, owner, current_job_id, feishu_user_id, feishu_user_name,
-                feishu_avatar_url, profile_key, user_data_dir, last_activity_at,
+                feishu_avatar_url, profile_key, user_data_dir, login_platform, last_activity_at,
                 last_error, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)
             """,
             (
                 slot,
@@ -4057,6 +4337,7 @@ def start_login_session(payload: dict[str, Any]) -> dict[str, Any]:
                 feishu_avatar_url,
                 profile_key,
                 str((profile.get("isolation") or {}).get("user_data_dir") or ""),
+                login_platform,
                 now,
                 now,
                 now,
@@ -4098,7 +4379,11 @@ def start_login_session(payload: dict[str, Any]) -> dict[str, Any]:
                 ),
             )
             conn.commit()
-            start_url = "https://www.tiktok.com/?lang=en" if account_id else "https://www.tiktok.com/login?lang=en"
+            login_start_urls = {
+                "tiktok": "https://www.tiktok.com/login?lang=en",
+                "instagram": "https://www.instagram.com/accounts/login/",
+            }
+            start_url = login_start_urls[start_platform] if login_platform else (PLATFORM_START_URLS[start_platform] if account_id else login_start_urls["tiktok"])
             pid, user_data_dir = _launch_browser_for_session(
                 profile,
                 pool,
@@ -4244,8 +4529,98 @@ def stop_login_session(payload: dict[str, Any]) -> dict[str, Any]:
     return list_state()
 
 
-def start_automation_session(account_id: int, job_id: str) -> dict[str, Any]:
-    return start_login_session({"account_id": account_id, "_automation": True, "_current_job_id": job_id})
+def open_observation_platform(payload: dict[str, Any]) -> dict[str, Any]:
+    """Open a platform tab in an existing account observation browser."""
+    session_id = int(payload.get("session_id") or payload.get("id") or 0)
+    platform = _clean_text(payload.get("platform"), 32).lower()
+    login_platform = bool(payload.get("login_platform"))
+    targets = {
+        "tiktok": "https://www.tiktok.com/?lang=en",
+        "instagram": "https://www.instagram.com/",
+    }
+    if not session_id:
+        raise ValueError("session_id is required")
+    if platform not in targets:
+        raise ValueError("仅支持打开 TikTok 或 Instagram 观测页面")
+    with connect() as conn:
+        row = _session_by_id(conn, session_id)
+        if row["status"] not in {"starting", "running", "observing"}:
+            raise ValueError("观测通道当前不可用，请先唤醒账号")
+        account_id = int(row["account_id"] or 0)
+        if not account_id:
+            raise ValueError("未绑定账号的登录通道不能打开平台观测")
+        account = conn.execute(
+            "SELECT profile_json FROM tiktok_accounts WHERE id = ? AND deleted_at = ''",
+            (account_id,),
+        ).fetchone()
+        if not account:
+            raise ValueError("account not found")
+        profile = _json_loads(account["profile_json"], {})
+        deleted_platforms = profile.get("platform_deletions") if isinstance(profile, dict) else {}
+        if login_platform and platform == "tiktok" and not bool((deleted_platforms or {}).get("tiktok")):
+            raise ValueError("当前 Chrome Profile 已登录 TikTok")
+        if login_platform and platform == "instagram" and _instagram_login_metadata(profile)["logged_in"]:
+            raise ValueError("当前 Chrome Profile 已登录 Instagram")
+        if not login_platform and platform == "tiktok" and bool((deleted_platforms or {}).get("tiktok")):
+            raise ValueError("TikTok 登录资料已删除")
+        if not login_platform and platform == "instagram" and not _instagram_login_metadata(profile)["logged_in"]:
+            raise ValueError("当前 Chrome Profile 未检测到 Instagram 登录")
+        debug_port = int(row["debug_port"] or 0)
+        if not debug_port:
+            raise ValueError("观测浏览器调试端口不可用")
+    if login_platform:
+        preflight = check_binding({"account_id": account_id}, require_account=True)
+        if not preflight.get("allowed"):
+            raise ValueError(str(preflight.get("reason") or "代理 IP 校验未通过"))
+        with connect() as conn:
+            conn.execute(
+                "UPDATE browser_sessions SET login_platform = ?, updated_at = ? WHERE id = ?",
+                (platform, now_iso(), session_id),
+            )
+            conn.commit()
+    page = None
+    try:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{debug_port}")
+            if not browser.contexts:
+                raise ValueError("Chrome 没有可用的浏览器上下文")
+            # Reuse the browser's initial business page. A platform switch must
+            # not leave a startup TikTok tab plus a newly-created Instagram tab.
+            page = browser.contexts[0].pages[0] if browser.contexts[0].pages else browser.contexts[0].new_page()
+            target_url = (
+                "https://www.tiktok.com/login?lang=en"
+                if login_platform and platform == "tiktok"
+                else "https://www.instagram.com/accounts/login/"
+                if login_platform
+                else targets[platform]
+            )
+            response = page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+            if response is not None and not response.ok:
+                raise ValueError(f"{platform} 页面打开失败：HTTP {response.status}")
+            page.bring_to_front()
+    except Exception as exc:
+        if page is not None:
+            try:
+                page.close()
+            except Exception:
+                pass
+        raise ValueError(f"打开 {platform} 观测页面失败：{exc}") from exc
+    with connect() as conn:
+        conn.execute(
+            "UPDATE browser_sessions SET last_activity_at = ?, updated_at = ? WHERE id = ?",
+            (now_iso(), now_iso(), session_id),
+        )
+        conn.commit()
+        session = _session_by_id(conn, session_id)
+    return {"session": _row_to_session(session), "platform": platform, "login_platform": login_platform, **list_state()}
+
+
+def start_automation_session(account_id: int, job_id: str, start_platform: str = "tiktok") -> dict[str, Any]:
+    return start_login_session(
+        {"account_id": account_id, "_automation": True, "_current_job_id": job_id, "start_platform": start_platform}
+    )
 
 
 def claim_observation_session_for_job(account_id: int, session_id: int, job_id: str) -> dict[str, Any] | None:
@@ -4316,7 +4691,57 @@ def _inspect_login_session(payload: dict[str, Any]) -> dict[str, Any]:
             return {"active": False, "bound": False, "status": row["status"], "reason": str(row["last_error"] or "登录通道已结束")}
         if row["account_id"]:
             account = conn.execute("SELECT * FROM tiktok_accounts WHERE id = ?", (row["account_id"],)).fetchone()
-            return {"active": True, "bound": True, "status": "bound", "account": _row_to_account(account) if account else None, **list_state()}
+            login_platform = str(row["login_platform"] or "").lower()
+            if not login_platform:
+                return {"active": True, "bound": True, "status": "bound", "account": _row_to_account(account) if account else None, **list_state()}
+            user_data_dir = str(row["user_data_dir"] or "")
+            if not account or not user_data_dir:
+                return {"active": True, "bound": False, "status": "waiting", "reason": "浏览器 profile 尚未就绪"}
+            cookie_names = ("sessionid",) if login_platform == "instagram" else ("sessionid", "sessionid_ss", "sid_tt", "sid_guard")
+            login = _platform_login_metadata(
+                {"isolation": {"user_data_dir": user_data_dir}},
+                "%instagram.com%" if login_platform == "instagram" else "%tiktok.com%",
+                cookie_names,
+            )
+            if not login.get("logged_in"):
+                return {"active": True, "bound": False, "status": "waiting_login", "platform": login_platform}
+            profile = _json_loads(account["profile_json"], {})
+            if not isinstance(profile, dict):
+                profile = {}
+            deleted_platforms = profile.get("platform_deletions")
+            if not isinstance(deleted_platforms, dict):
+                deleted_platforms = {}
+            deleted_platforms.pop(login_platform, None)
+            profile["platform_deletions"] = deleted_platforms
+            updated_at = now_iso()
+            conn.execute(
+                """UPDATE tiktok_accounts
+                   SET profile_json = ?, last_login_at = ?, last_error = '', updated_at = ?
+                   WHERE id = ?""",
+                (json.dumps(profile, ensure_ascii=False, separators=(",", ":")), updated_at, updated_at, int(row["account_id"])),
+            )
+            conn.execute(
+                "UPDATE browser_sessions SET login_platform = '', updated_at = ? WHERE id = ?",
+                (updated_at, session_id),
+            )
+            conn.commit()
+            bootstrap = {}
+            if login_platform == "instagram":
+                try:
+                    bootstrap = bootstrap_instagram_profile(int(row["account_id"]), session_id)
+                except Exception as exc:
+                    bootstrap = {"configured": False, "reason": _clean_text(exc, 500)}
+            result = {
+                "active": True,
+                "bound": True,
+                "status": "bound",
+                "platform": login_platform,
+                "account": get_account(int(row["account_id"])),
+                **list_state(),
+            }
+            if bootstrap and not bootstrap.get("configured"):
+                result["reason"] = str(bootstrap.get("reason") or "Instagram 登录已保存，Reels 入口将在下次打开时补齐")
+            return result
         pool = conn.execute("SELECT * FROM proxy_profiles WHERE id = ?", (row["proxy_profile_id"],)).fetchone()
         user_data_dir = str(row["user_data_dir"] or "")
     if not pool or not user_data_dir:
@@ -4405,7 +4830,8 @@ def capture_pending_login_sessions() -> dict[str, Any]:
             int(row["id"])
             for row in conn.execute(
                 """SELECT id FROM browser_sessions
-                   WHERE account_id IS NULL AND status = 'observing' AND owner = 'manual'
+                   WHERE status = 'observing' AND owner = 'manual'
+                     AND (account_id IS NULL OR login_platform <> '')
                    ORDER BY id"""
             ).fetchall()
         ]
