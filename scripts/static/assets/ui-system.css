@@ -1171,7 +1171,7 @@ body.ui-system .ui-nav__toggle:hover {
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .sidebar-credit-status[hidden] {
-    display: none !important;
+    display: none;
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .sidebar-credit-refresh {
