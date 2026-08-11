@@ -57,12 +57,12 @@ class TestChuhaijiangUiContract(unittest.TestCase):
         ):
             self.assertNotIn(legacy_marker, page)
 
-    def test_chuhaijiang_official_scene_dialog_opens_forms_without_preset_ids(self):
+    def test_chuhaijiang_official_scene_dialog_opens_forms_with_request_scoped_preset_ids(self):
         page = self.render("chuhaijiang", "/chuhaijiang")
         self.assertIn('const OFFICIAL_WORKFLOW_ENABLED=true', page)
         self.assertIn('id="officialWorkflowComposerLaunch"', page)
         self.assertEqual(page.count('data-chuhaijiang-scene="'), 8)
-        self.assertNotIn('data-official-preset-id=', page)
+        self.assertIn('data-official-preset-id="chuhaijiang/product-selection"', page)
         for label in (
             "选品与市场调研", "利润测算", "达人筛选与建联", "竞品、店铺与广告分析",
             "AI 内容生成", "AI 画布创作", "视频剪辑", "社媒运营",
@@ -70,7 +70,7 @@ class TestChuhaijiangUiContract(unittest.TestCase):
             self.assertIn(label, page)
         template = (web_app.SCRIPTS_DIR / "static" / "chat.html").read_text(encoding="utf-8")
         self.assertIn("data-chuhaijiang-scene", template)
-        self.assertIn("enterPresetForm(button.dataset.chuhaijiangScene,button.dataset.presetFormId)", template)
+        self.assertIn("enterPresetForm(button.dataset.chuhaijiangScene,button.dataset.presetFormId,button.dataset.presetFormId)", template)
         self.assertIn('id="presetForm"', template)
 
     def test_all_three_providers_show_three_frequent_actions_and_a_more_entry(self):

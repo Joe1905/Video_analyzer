@@ -413,14 +413,19 @@ function chuhaijiangCacheTtl(name, args) {
   return Number(process.env.CHUHAIJIANG_QUERY_CACHE_TTL_SECONDS || 3600);
 }
 
-function normalizeToolCacheRequest(args) {
+function normalizeToolCacheRequest(args, chatType = MCP_CHAT_TYPE, toolName = "") {
   const numericKeys = new Set(["page", "pagesize", "top_k", "max_total_results", "time_range_days"]);
   const localeKeys = new Set(["region", "market", "marketplace", "country", "site", "lang", "language", "locale"]);
   const normalize = (value, key = "") => {
     if (Array.isArray(value)) return value.map((item) => normalize(item, key));
     if (!value || typeof value !== "object") {
       if (numericKeys.has(key) && typeof value === "string" && /^-?\d+(?:\.\d+)?$/.test(value.trim())) return Number(value);
-      if (localeKeys.has(key) && typeof value === "string") return value.trim().toUpperCase();
+      if (localeKeys.has(key) && typeof value === "string") {
+        if (chatType === "chuhaijiang" && toolName === "amazon" && key === "marketplace") {
+          return value.trim().toLowerCase();
+        }
+        return value.trim().toUpperCase();
+      }
       return value;
     }
     const output = {};
@@ -473,14 +478,14 @@ async function callMcpToolCached(name, args) {
   if (shouldBypassToolCache(MCP_CHAT_TYPE, name)) {
     return mcpClient.callTool(name, args);
   }
-  const effectiveArgs = normalizeToolCacheRequest(args);
+  const effectiveArgs = normalizeToolCacheRequest(args, MCP_CHAT_TYPE, name);
   const ttl = MCP_CHAT_TYPE === "chuhaijiang" ? chuhaijiangCacheTtl(name, effectiveArgs) : MCP_CACHE_TTL_SECONDS;
   const cached = await getToolCacheStore(ttl).getOrCall(
     name,
     effectiveArgs,
     () => mcpClient.callTool(name, effectiveArgs),
     {
-      normalizeRequest: normalizeToolCacheRequest,
+      normalizeRequest: (value) => normalizeToolCacheRequest(value, MCP_CHAT_TYPE, name),
       coveragePolicy: toolCacheCoveragePolicy(MCP_CHAT_TYPE, name),
     },
   );

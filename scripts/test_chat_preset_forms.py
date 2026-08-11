@@ -28,6 +28,7 @@ class TestChatPresetForms(unittest.TestCase):
 
     def test_all_eight_chuhaijiang_scenes_have_multi_field_forms(self):
         self.assertEqual(len(CHUHAIJIANG_PRESET_FORMS), 8)
+        self.assertEqual(set(CHUHAIJIANG_PRESET_FORMS), set(web_app.CHUHAIJIANG_OFFICIAL_PRESETS))
         for form_id, definition in CHUHAIJIANG_PRESET_FORMS.items():
             with self.subTest(form_id=form_id):
                 self.assertTrue(form_id.startswith("chuhaijiang/"))
@@ -109,12 +110,40 @@ class TestChatPresetForms(unittest.TestCase):
             )
         )
 
-    def test_form_submission_keeps_sellersprite_boundary_and_chuhaijiang_normal_chat(self):
+    def test_chuhaijiang_legacy_prompt_recovers_metadata_and_title(self):
+        prompt = """请按出海匠官方 Skill 的「选品与市场调研」流程处理以下信息。
+
+用户意图：
+- 目标市场：美国
+- 类目 / 关键词：AI智能翻译机
+- 目标价格带：用户未指定，表示无额外限制。
+- 卖家 / 履约偏好：用户未指定，表示无额外限制。
+- 调研目标：用户未指定，表示无额外限制。
+- 补充说明：用户没有额外补充，以其他表单项表达的意图为准。
+
+执行语义：
+- country 使用标准值 "US"。"""
+        metadata = web_app.chat_official_preset_metadata("chuhaijiang", "", prompt)
+        self.assertEqual(metadata["id"], "chuhaijiang/product-selection")
+        self.assertEqual(metadata["label"], "选品与市场调研")
+        self.assertEqual(metadata["fields"][1], {"label": "类目 / 关键词", "value": "AI智能翻译机"})
+        self.assertEqual(metadata["fields"][2], {"label": "目标价格带", "value": "未填写"})
+        self.assertEqual(web_app.official_preset_session_title(metadata), "选品与市场调研 · AI智能翻译机")
+        session = web_app.Session(
+            id="legacy",
+            title="用户未指定，表示无额外限制",
+            messages=[web_app.Message(id="user", role="user", content=prompt)],
+        )
+        self.assertTrue(web_app.repair_chat_official_preset_session("chuhaijiang", session))
+        self.assertEqual(session.title, "选品与市场调研 · AI智能翻译机")
+        self.assertEqual(session.messages[0].official_preset, metadata)
+
+    def test_form_submission_keeps_official_preset_identity_for_both_providers(self):
         amazon = self.render("amazon", "/amazon")
         chuhaijiang = self.render("chuhaijiang", "/chuhaijiang")
         self.assertIn('data-official-preset-id="comprehensive/product-research"', amazon)
         self.assertIn('data-preset-form-id="comprehensive/product-research"', amazon)
-        self.assertNotIn("data-official-preset-id=", chuhaijiang)
+        self.assertIn('data-official-preset-id="chuhaijiang/product-selection"', chuhaijiang)
         self.assertIn('data-preset-form-id="chuhaijiang/product-selection"', chuhaijiang)
         template = (web_app.SCRIPTS_DIR / "static" / "chat.html").read_text(encoding="utf-8")
         self.assertIn("askPayload.officialPresetId=S.officialPresetId", template)
@@ -139,6 +168,7 @@ class TestChatPresetForms(unittest.TestCase):
         self.assertNotIn('input.value=""', enter_form)
         self.assertIn("function presetMessageFields(message)", template)
         self.assertIn('bubble.replaceChildren()', template)
+        self.assertIn("button.dataset.presetFormId,button.dataset.presetFormId", template)
         self.assertIn(".preset-message-fields", styles)
 
 

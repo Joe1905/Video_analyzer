@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from typing import Iterable
 
 
 OFFICIAL_SKILL_VERSION = "1.2.6"
@@ -38,11 +39,18 @@ def verify_official_skill() -> None:
         raise RuntimeError("Chuhaijiang official Skill version mismatch")
 
 
-def load_official_skill_prompt() -> str:
+def load_official_skill_prompt(selected_files: Iterable[str] | None = None) -> str:
     verify_official_skill()
     root = skill_root()
+    prompt_files = OFFICIAL_PROMPT_FILES
+    if selected_files is not None:
+        requested = tuple(dict.fromkeys(str(item or "").strip() for item in selected_files))
+        unknown = [item for item in requested if item not in OFFICIAL_PROMPT_FILES]
+        if unknown:
+            raise ValueError("Unknown Chuhaijiang official Skill file(s): " + ", ".join(unknown))
+        prompt_files = tuple(dict.fromkeys(("SKILL.md", *requested)))
     sections = []
-    for relative in OFFICIAL_PROMPT_FILES:
+    for relative in prompt_files:
         sections.append(f"## 官方文件：{relative}\n\n{(root / relative).read_text(encoding='utf-8').strip()}")
     return "\n\n".join(sections)
 

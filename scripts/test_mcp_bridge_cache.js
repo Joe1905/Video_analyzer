@@ -28,6 +28,14 @@ async function main() {
     normalizeToolCacheRequest({ query: ["fidget toys"], top_k: "5", filter: { region: "us", ignored: "" } }),
     { query: ["fidget toys"], top_k: 5, filter: { region: "US" } },
   );
+  assert.deepEqual(
+    normalizeToolCacheRequest({ action: "search", marketplace: "US" }, "chuhaijiang", "amazon"),
+    { action: "search", marketplace: "us" },
+  );
+  assert.deepEqual(
+    normalizeToolCacheRequest({ entity: "products", country: "us" }, "chuhaijiang", "search"),
+    { entity: "products", country: "US" },
+  );
 
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-shared-cache-test-"));
   try {
