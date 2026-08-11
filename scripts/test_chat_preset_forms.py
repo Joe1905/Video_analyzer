@@ -42,6 +42,10 @@ class TestChatPresetForms(unittest.TestCase):
                 self.assertTrue(definition["prompt"])
                 names = [field["name"] for field in definition["fields"]]
                 self.assertEqual(len(names), len(set(names)))
+                self.assertEqual(names[-1], "additional_notes")
+                self.assertEqual(definition["fields"][-1]["label"], "补充说明")
+                self.assertFalse(definition["fields"][-1]["required"])
+                self.assertTrue(definition["fields"][-1]["full"])
                 for field in definition["fields"]:
                     self.assertTrue(field["name"])
                     self.assertTrue(field["label"])
@@ -70,6 +74,10 @@ class TestChatPresetForms(unittest.TestCase):
         self.assertIn("askPayload.officialPresetId=S.officialPresetId", template)
         self.assertIn("function buildPresetPrompt()", template)
         self.assertIn("请填写${control.dataset.presetLabel}", template)
+        self.assertNotIn('input.placeholder="补充说明（可选）"', template)
+        styles = (web_app.SCRIPTS_DIR / "static" / "assets" / "ui-system.css").read_text(encoding="utf-8")
+        self.assertIn(".input-bar.has-preset-form #input", styles)
+        self.assertIn(".input-bar.has-preset-form .expand-input-btn", styles)
 
 
 if __name__ == "__main__":

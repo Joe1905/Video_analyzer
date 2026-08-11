@@ -29,7 +29,21 @@ def _field(
 
 
 def _form(label: str, prompt: str, fields: list[dict[str, Any]], intro: str = "填写后发送，系统会按当前官方流程执行。") -> dict[str, Any]:
-    return {"label": label, "intro": intro, "prompt": prompt, "fields": fields}
+    return {
+        "label": label,
+        "intro": intro,
+        "prompt": prompt,
+        "fields": [
+            *fields,
+            _field(
+                "additional_notes",
+                "补充说明",
+                "可选：补充目标、限制条件或希望重点关注的内容",
+                multiline=True,
+                full=True,
+            ),
+        ],
+    }
 
 
 def _marketplace(value: str = "US") -> dict[str, Any]:

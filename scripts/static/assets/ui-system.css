@@ -1469,6 +1469,11 @@ body.ui-system .ui-nav__toggle:hover {
     align-items: end;
   }
 
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .input-bar.has-preset-form #input,
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .input-bar.has-preset-form .expand-input-btn {
+    display: none;
+  }
+
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .input-bar::after {
     content: "拖放图片即可添加";
     position: absolute;
