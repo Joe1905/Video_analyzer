@@ -625,9 +625,27 @@
         const contextActions = document.querySelector('.context-actions');
         if (contextActions) contextActions.innerHTML = `<button type="button" data-platform-action="observe" ${!item.loggedIn || !item.awake ? 'disabled title="请先唤醒账号后再观测"' : ''}>${actions.observe.svg}<span>观测</span></button>${state.platform === 'tiktok' ? `<button type="button" data-platform-action="publish" ${!item.loggedIn ? 'disabled' : ''}>${actions.publish.svg}<span>发布</span></button>` : `<button type="button" data-platform-action="collect" ${!item.loggedIn ? 'disabled' : ''}>${actions.collect.svg}<span>采集</span></button>`}<button type="button" data-platform-action="login">${actions.login.svg}<span>新增登录</span></button>${state.platform === 'tiktok' ? `<button type="button" data-platform-action="collect" ${!item.loggedIn ? 'disabled' : ''}>${actions.collect.svg}<span>采集</span></button>` : `<button type="button" data-platform-action="binding">${icon('i-link')}<span>绑定</span></button>`}`;
       };
-      const syncPlatformViews = () => {
+      const syncPlatformViews = async () => {
         const row = accountFor(), item = platformFor(row), meta = platformMeta[state.platform];
         views.observe = { ...views.observe, k: 'SESSION OBSERVATION', title: `${meta.label} 账号观测`, desc: `${row.id} · ${row.proxy}出口 · ${item.awake ? '当前会话在线' : '账号尚未唤醒'}。`, body: `<div class="placeholder"><div>${mark(state.platform)}<b style="display:block;margin-top:9px;color:var(--text)">${meta.label} 观测窗口</b><span>将复用当前隔离浏览器，只打开 ${meta.label} 对应页面。</span></div></div><div class="callout" style="margin-top:16px">观测只在账号已唤醒时可用；不会改变另一个平台的登录状态或正在执行的采集。</div>` };
+        const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' })[char]);
+        let dashboard = { jobs: [], results: [], setting: {} };
+        try {
+          const response = await fetch(`/api/proxy/collect/dashboard?account_id=${encodeURIComponent(row.accountId || '')}&platform=${encodeURIComponent(state.platform)}`);
+          if (response.ok) dashboard = await response.json();
+        } catch (_) {}
+        const jobs = Array.isArray(dashboard.jobs) ? dashboard.jobs : [];
+        const results = Array.isArray(dashboard.results) ? dashboard.results : [];
+        const setting = dashboard.setting || {};
+        const target = setting.feishu_target?.name || setting.feishu_target?.table_name || '尚未选择飞书目标';
+        const statusKind = label => /完成|运行|采集/.test(label) ? 'live' : /取消|失败|不可用/.test(label) ? 'off' : 'delay';
+        const jobRows = jobs.length ? jobs.slice(0, 5).map(job => `<div class="task-side-row"><div><b>${escape(job.schedule_date || job.created_at || '未命名任务')} <span class="status ${statusKind(job.status_label)}">${escape(job.status_label || job.status || '待处理')}</span></b><small>${escape(job.status_detail || `${job.completed_videos || 0} / ${job.total_videos || 0} 条视频`)}</small></div></div>`).join('') : '<div class="drawer-empty">当前账号还没有采集任务</div>';
+        const resultRows = results.length ? results.slice(0, 5).map(result => `<div class="task-list-row"><div><b>${escape(result.video_title || result.video_id || '未命名视频')}</b><small>${escape(result.status_label || result.feishu_sync_status || '已采集')}</small></div></div>`).join('') : '<div class="drawer-empty">本账号暂时没有采集结果</div>';
+        const autoLabel = setting.enabled ? `已启用 · 每日 ${escape(setting.daily_time || '--:--')}` : '未启用';
+        const collectBody = `<div class="task-flow collect-task-flow"><div class="task-main"><section class="task-step"><div class="task-step-head"><b><span class="task-number">01</span>手动采集设置</b><small>按${escape(row.proxy)}发布时间筛选</small></div><div class="task-fields"><div class="collect-account-context wide-field"><span class="person-avatar">${escape(row.initials)}</span><div><small>当前账号</small><b>${escape(row.id)} · ${escape(meta.label)}</b></div><span>${escape(row.proxy)}出口 · ${item.awake ? '会话在线' : '会话休眠'}</span></div><label class="task-field wide-field">发布日期<div class="collect-date-range"><label>开始日期<input type="date" aria-label="开始日期"></label><label>结束日期<input type="date" aria-label="结束日期"></label></div></label><label class="task-field wide-field">写入飞书多维表格<div class="task-choice"><span>${escape(target)}</span><button data-open="collectAllowlist">管理</button></div></label></div></section><section class="task-step"><div class="task-step-head"><b><span class="task-number">02</span>自动采集状态</b><button class="task-link" data-open="collectAuto">设置</button></div><div class="collect-auto-summary"><div><b>自动采集：${autoLabel}</b><small>${setting.enabled ? '将按当前规则自动创建任务。' : '不会影响本次手动采集。'}</small></div><span class="status ${setting.enabled ? 'live' : 'delay'}">${setting.enabled ? '已启用' : '未启用'}</span></div></section></div><aside class="task-side"><div class="task-side-head"><b>采集任务</b><button class="task-link" data-open="collectHistory">查看全部</button></div><div class="collect-parent-list">${jobRows}</div><div class="callout">点击“立即采集”后，任务和结果会在这里显示；当前不填充任何示例数据。</div></aside></div>`;
+        views.collect = { ...tiktokCollectView, k: 'METRICS COLLECTION', title: `${meta.label} 视频数据采集`, desc: `以 ${escape(row.id)} 的 ${meta.label} 会话创建手动采集；任务和结果均来自当前账号。`, body: collectBody };
+        views.collectHistory = { k: 'COLLECTION HISTORY', title: '采集任务与结果', desc: `仅显示 ${escape(row.id)} 在 ${meta.label} 下的实际记录。`, parent: 'collect', body: `<div class="drawer-form"><section class="collect-section"><div class="collect-title"><h4>采集任务</h4><span>${jobs.length} 项</span></div><div class="task-list">${jobRows}</div></section><section class="collect-section"><div class="collect-title"><h4>采集结果</h4><span>${results.length} 条</span></div><div class="task-list">${resultRows}</div></section></div>` };
+        return;
         if (state.platform === 'tiktok') {
           views.collect = { ...tiktokCollectView, title: 'TikTok 视频数据采集', desc: `以 ${row.id} 的 TikTok 会话创建手动采集；右侧任务列表是结果的唯一入口。` };
           return;
@@ -642,10 +660,10 @@
         const row = accountFor(), key = state.loginChoice || state.platform, meta = platformMeta[key];
         views.platformLoginSession = { k: 'LOGIN SESSION', title: `${meta.label} 登录会话`, desc: '登录过程始终留在当前抽屉中；完成后返回账号主界面。', parent: 'platformLogin', body: `<div class="login-session-card"><div class="login-session-target">${mark(key)}<div><b>${row.id} · ${meta.label}</b><small>固定使用 ${row.proxy} 出口与当前隔离 Chrome Profile</small></div></div><div class="login-ip-check"><i></i><span>绑定 IP 已校验：${row.ip} · 网络环境可用于 ${meta.label} 登录</span></div><div class="login-browser-placeholder"><div><b>noVNC 登录窗口</b><span>完成平台登录后，系统会定时检测 Cookie；也可手动触发登录成功检测。</span></div></div><div class="login-session-actions"><button type="button" class="button">重新校验 IP</button><button type="button" class="button primary" data-platform-login-complete>检测登录成功</button></div></div>` };
       };
-      const openPlatformAction = action => {
+      const openPlatformAction = async action => {
         const row = accountFor(), item = platformFor(row);
         if (action === 'observe') { if (item.loggedIn && item.awake) { syncPlatformViews(); open('observe'); } return; }
-        if (action === 'collect') { if (item.loggedIn) { syncPlatformViews(); open('collect'); } return; }
+        if (action === 'collect') { if (item.loggedIn) { await syncPlatformViews(); open('collect'); } return; }
         if (action === 'publish') { open('publish'); return; }
         if (action === 'login') { state.loginChoice = ''; renderPlatformLogin(); open('platformLogin'); return; }
         if (action === 'binding') { open('binding'); return; }
@@ -655,7 +673,7 @@
       const accountTitle = document.querySelector('.account-head .lane-title span');
       if (accountTitle) accountTitle.textContent = '按状态管理当前可执行工作';
       const rawOpen = open;
-      open = function(name) { if (['observe', 'collect'].includes(name)) syncPlatformViews(); if (name === 'platformLogin') renderPlatformLogin(); return rawOpen(name); };
+      open = function(name) { if (name === 'observe') void syncPlatformViews(); if (name === 'platformLogin') renderPlatformLogin(); return rawOpen(name); };
       document.addEventListener('click', event => {
         const rowPlatformSwitch = event.target.closest('[data-row-platform-switch]');
         if (rowPlatformSwitch) { event.preventDefault(); event.stopPropagation(); state.accountId = rowPlatformSwitch.dataset.rowPlatformSwitch; const current = activePlatformByAccount[state.accountId] || 'tiktok'; activePlatformByAccount[state.accountId] = current === 'tiktok' ? 'instagram' : 'tiktok'; state.platform = activePlatformByAccount[state.accountId]; renderAccounts(); return; }
@@ -713,7 +731,7 @@
           const pool = byPool.get(Number(account.proxy_profile_id)), session = sessionFor(account.id), runtime = liveRuntimeStatus(account, pool, session);
           const linked = account.platforms || {}, tiktokLogged = Boolean(linked.tiktok && linked.tiktok.linked), instagramLogged = Boolean(linked.instagram && linked.instagram.logged_in);
           const makePlatform = loggedIn => ({ loggedIn, awake: Boolean(session), status: loggedIn ? runtime.status : '未登录', kind: loggedIn ? runtime.kind : 'off', session: session ? '会话在线 · 可观测' : loggedIn ? '会话已释放' : '等待新增平台登录' });
-          return { id: account.username || `account-${account.id}`, initials: String(account.username || '?').slice(0, 2).toUpperCase(), owner: account.feishu_user_name || account.display_name || '未绑定飞书用户', avatar: account.feishu_avatar_url || account.tiktok_avatar_url || '', proxy: pool?.name || '未绑定代理', ip: pool?.expected_exit_ip || '待校验', platforms: { tiktok: makePlatform(tiktokLogged), instagram: makePlatform(instagramLogged) } };
+          return { accountId: account.id, id: account.username || `account-${account.id}`, initials: String(account.username || '?').slice(0, 2).toUpperCase(), owner: account.feishu_user_name || account.display_name || '未绑定飞书用户', avatar: account.feishu_avatar_url || account.tiktok_avatar_url || '', proxy: pool?.name || '未绑定代理', ip: pool?.expected_exit_ip || '待校验', platforms: { tiktok: makePlatform(tiktokLogged), instagram: makePlatform(instagramLogged) } };
         });
         accountRows.forEach(row => { activePlatformByAccount[row.id] = row.platforms.tiktok.loggedIn ? 'tiktok' : row.platforms.instagram.loggedIn ? 'instagram' : 'tiktok'; });
         if (accountRows.length) { state.accountId = accountRows[0].id; state.platform = activePlatformByAccount[state.accountId]; }
