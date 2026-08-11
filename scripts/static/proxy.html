@@ -709,7 +709,7 @@
       };
       const updateLiveAccountSummary = () => {
         const online = accountRows.filter(row => Object.values(row.platforms).some(item => item.loggedIn && item.awake)).length;
-        const pending = accountRows.filter(row => Object.values(row.platforms).some(item => !item.loggedIn || item.kind === 'off')).length;
+        const pending = accountRows.filter(row => platformFor(row).kind === 'off').length;
         const values = [online, Math.max(0, accountRows.length - online), pending];
         document.querySelectorAll('.account-head .summary-item b').forEach((node, index) => { node.textContent = String(values[index] || 0); });
       };
