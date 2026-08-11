@@ -15,6 +15,7 @@ def test_canonical_url_removes_token() -> None:
 
 def test_media_id_uses_canonical_path() -> None:
     assert media_id_from_url("https://www.instagram.com/reel/ABC123/?token=secret") == "ABC123"
+    assert media_id_from_url("https://www.instagram.com/insights/media/3942425900332987854/?token=secret") == "3942425900332987854"
     assert media_id_from_url("https://www.instagram.com/explore/") == ""
 
 

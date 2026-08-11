@@ -16,7 +16,6 @@ import argparse
 import json
 import os
 import re
-import socket
 import sqlite3
 import sys
 import time
@@ -35,8 +34,9 @@ OUTPUT_ROOT = DATA_DIR / "instagram_content_simulations"
 INSTAGRAM_CONTENT_URL = "https://www.instagram.com/accounts/insights/content/"
 ACTIVE_SESSION_STATUSES = ("starting", "running", "observing")
 LOGIN_URL_MARKERS = ("/accounts/login", "/login/")
-MEDIA_PATH_PATTERN = re.compile(r"^/(?:p|reel|tv)/([^/?#]+)/?$")
+MEDIA_PATH_PATTERN = re.compile(r"^/(?:p|reel|tv|insights/media)/([^/?#]+)/?$")
 HTTP_URL_PATTERN = re.compile(r"https?://[^\s\"'<>]+")
+VIEW_LABEL_PATTERN = re.compile(r"^\d+(?:\.\d+)?(?:[KMB])?$")
 
 
 class InstagramCollectionError(RuntimeError):
@@ -179,110 +179,43 @@ def _exclusive_lock(profile_dir: Path) -> Path:
     return lock_path
 
 
-def _free_debug_port() -> int:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.bind(("127.0.0.1", 0))
-    port = int(sock.getsockname()[1])
-    sock.close()
-    return port
-
-
-def _free_display() -> str:
-    for number in range(150, 200):
-        socket_path = Path(f"/tmp/.X11-unix/X{number}")
-        if not socket_path.exists() or not proxy_pool._display_socket_active(socket_path):
-            return f":{number}"
-    raise InstagramCollectionError("没有可用的 Instagram 隔离显示通道")
-
-
-def _launch_browser(profile_dir: Path, proxy_port: int, log_dir: Path) -> tuple[Any, int, Any]:
-    paths = proxy_pool._prepare_browser_profile_dir(profile_dir)
-    debug_port = _free_debug_port()
-    browser = proxy_pool._browser_binary()
-    display = _free_display()
-    xvfb = proxy_pool._required_binary("Xvfb")
-    xvfb_process = proxy_pool._open_process(
-        log_dir,
-        "instagram-xvfb",
-        [xvfb, display, "-screen", "0", "1280x900x24", "-nolisten", "tcp"],
-    )
-    time.sleep(0.8)
-    if not proxy_pool._pid_alive(int(xvfb_process.pid)):
-        proxy_pool._terminate_pid(int(xvfb_process.pid))
-        raise InstagramCollectionError("Instagram 隔离显示通道启动失败")
-    args = [
-        browser,
-        f"--user-data-dir={profile_dir}",
-        f"--proxy-server=http://127.0.0.1:{proxy_port}",
-        "--remote-debugging-address=127.0.0.1",
-        f"--remote-debugging-port={debug_port}",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--disable-sync",
-        "--disable-translate",
-        "--disable-background-networking",
-        "--disable-default-apps",
-        "--disable-gpu",
-        "--use-angle=swiftshader",
-        "--enable-unsafe-swiftshader",
-        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
-        "--disable-session-crashed-bubble",
-        "--window-size=1280,900",
-        INSTAGRAM_CONTENT_URL,
-    ]
-    env = os.environ.copy()
-    env.update({
-        "DISPLAY": display,
-        "HOME": str(paths["home"]),
-        "XDG_CONFIG_HOME": str(paths["config"]),
-        "XDG_CACHE_HOME": str(paths["cache"]),
-        "XDG_RUNTIME_DIR": str(paths["runtime"]),
-        "LANGUAGE": "en_US:en",
-        "LANG": "C.UTF-8",
-        "LC_ALL": "C.UTF-8",
-    })
-    try:
-        process = proxy_pool._open_process(
-            log_dir,
-            "instagram-browser",
-            args,
-            env=env,
-            user=proxy_pool.TIKTOK_BROWSER_UID,
-            group=proxy_pool.TIKTOK_BROWSER_GID,
-        )
-        proxy_pool._wait_for_port(debug_port, "Instagram Chrome CDP", timeout=15.0)
-    except Exception:
-        if "process" in locals():
-            proxy_pool._terminate_pid(int(process.pid))
-        proxy_pool._terminate_pid(int(xvfb_process.pid))
-        raise
-    return process, debug_port, xvfb_process
-
-
 def _is_login_page(url: str) -> bool:
     path = urlsplit(url).path.lower()
     return any(marker in path for marker in LOGIN_URL_MARKERS)
 
 
-def _discover_media_links(page: Any, limit: int) -> list[dict[str, str]]:
-    raw_links = page.locator("a[href]").evaluate_all(
-        """anchors => anchors.map(anchor => ({
-            href: anchor.href,
-            text: (anchor.innerText || anchor.getAttribute('aria-label') || '').trim()
+def _discover_media_cards(page: Any, limit: int) -> list[dict[str, Any]]:
+    """Find insight cards by their view labels without navigating the list page."""
+    raw_buttons = page.locator("[role=button]").evaluate_all(
+        """buttons => buttons.map((button, index) => ({
+            index,
+            text: (button.innerText || button.getAttribute('aria-label') || '').trim()
         }))"""
     )
-    found: list[dict[str, str]] = []
-    seen: set[str] = set()
-    for item in raw_links:
-        url = canonical_url(str(item.get("href") or ""))
-        media_id = media_id_from_url(url)
-        if not media_id or url in seen:
+    cards: list[dict[str, Any]] = []
+    for item in raw_buttons:
+        view_label = _safe_text(item.get("text"), 40)
+        if not VIEW_LABEL_PATTERN.fullmatch(view_label):
             continue
-        seen.add(url)
-        found.append({"id": media_id, "url": url, "label": _safe_text(item.get("text"), 500)})
-        if len(found) >= limit:
+        cards.append({
+            "rank": len(cards) + 1,
+            "button_index": int(item["index"]),
+            "views": view_label,
+        })
+        if len(cards) >= limit:
             break
-    return found
+    return cards
+
+
+def _wait_for_content_cards(page: Any, limit: int) -> list[dict[str, Any]]:
+    """Wait for content-card controls without page.evaluate polling (blocked by INS CSP)."""
+    deadline = time.monotonic() + 35
+    while time.monotonic() < deadline:
+        cards = _discover_media_cards(page, limit)
+        if cards:
+            return cards
+        page.wait_for_timeout(500)
+    return []
 
 
 def _page_diagnostics(page: Any) -> dict[str, Any]:
@@ -321,38 +254,37 @@ def _page_diagnostics(page: Any) -> dict[str, Any]:
     }
 
 
-def _click_one_media(page: Any, source: dict[str, str]) -> dict[str, Any]:
-    locator = page.locator(f'a[href="{source["url"]}"]').first
-    if not locator.count():
-        return {**source, "clicked": False, "error": "内容卡片已不在当前页面"}
+def _click_one_media(context: Any, source: dict[str, Any]) -> dict[str, Any]:
+    """Open one disposable detail tab, preserving the master content list page."""
+    detail_page = context.new_page()
     try:
+        detail_page.goto(INSTAGRAM_CONTENT_URL, wait_until="domcontentloaded", timeout=45000)
+        cards = _wait_for_content_cards(detail_page, source["rank"])
+        if len(cards) < source["rank"]:
+            return {**source, "clicked": False, "error": "新建详情页未加载到对应内容卡片"}
+        card = cards[source["rank"] - 1]
+        locator = detail_page.locator("[role=button]").nth(card["button_index"])
         locator.scroll_into_view_if_needed(timeout=5000)
         locator.click(timeout=7000)
-        page.wait_for_timeout(1200)
-        detail_url = canonical_url(page.url)
+        detail_page.wait_for_timeout(1200)
+        detail_url = canonical_url(detail_page.url)
         result = {
             **source,
             "clicked": True,
             "detail_url": detail_url,
-            "page_title": _safe_text(page.title(), 200),
+            "media_id": media_id_from_url(detail_url),
+            "page_title": _safe_text(detail_page.title(), 200),
             "clicked_at": now_iso(),
         }
-        if detail_url and detail_url != INSTAGRAM_CONTENT_URL:
-            try:
-                page.go_back(wait_until="domcontentloaded", timeout=10000)
-                page.wait_for_timeout(700)
-            except Exception:
-                page.goto(INSTAGRAM_CONTENT_URL, wait_until="domcontentloaded", timeout=30000)
-        else:
-            page.keyboard.press("Escape")
-            page.wait_for_timeout(300)
         return result
     except Exception as exc:
         return {**source, "clicked": False, "error": _safe_error(exc, 500), "clicked_at": now_iso()}
+    finally:
+        detail_page.close()
 
 
-def run_simulation(account_id: int, max_videos: int, check_login_only: bool) -> dict[str, Any]:
-    account, profile_dir, proxy_port = _account_and_profile(account_id)
+def run_simulation(account_id: int, max_videos: int, check_login_only: bool, session_id: int = 0) -> dict[str, Any]:
+    account, profile_dir, _proxy_port = _account_and_profile(account_id)
     login = instagram_login_status(profile_dir)
     result: dict[str, Any] = {
         "account": {"id": int(account["id"]), "username": str(account["username"] or "")},
@@ -362,56 +294,62 @@ def run_simulation(account_id: int, max_videos: int, check_login_only: bool) -> 
     }
     if check_login_only or not login.get("profile_has_instagram_login"):
         return result
-    if _active_profile_session(profile_dir):
-        raise InstagramCollectionError("该账号浏览器正在运行，请先休眠观测会话再执行 INS 采集模拟")
-
     job_id = f"ins_sim_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:8]}"
     log_dir = OUTPUT_ROOT / job_id
     log_dir.mkdir(parents=True, exist_ok=False)
     lock_path = _exclusive_lock(profile_dir)
-    process = None
-    xvfb_process = None
+    active_session_id = 0
+    borrowed_observation = False
     try:
-        process, debug_port, xvfb_process = _launch_browser(profile_dir, proxy_port, log_dir)
+        if session_id:
+            session = proxy_pool.claim_observation_session_for_job(account_id, session_id, job_id)
+            if not session:
+                raise InstagramCollectionError("指定观测通道未运行，无法执行 INS 采集")
+            borrowed_observation = True
+        else:
+            started = proxy_pool.start_automation_session(account_id, job_id)
+            session = started["session"]
+        active_session_id = int(session["id"])
+        debug_port = int(session["debug_port"])
         from playwright.sync_api import sync_playwright
 
         with sync_playwright() as playwright:
             browser = playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{debug_port}")
             context = browser.contexts[0]
-            page = context.pages[0] if context.pages else context.new_page()
-            page.goto(INSTAGRAM_CONTENT_URL, wait_until="domcontentloaded", timeout=45000)
-            try:
-                page.wait_for_function("document.body && document.body.innerText.trim().length > 30", timeout=20000)
-            except Exception:
-                # The diagnostic below captures a token-safe page summary when
-                # Instagram renders only an application shell.
-                pass
-            page.wait_for_timeout(1200)
-            if _is_login_page(page.url):
+            list_page = context.new_page()
+            list_page.goto(INSTAGRAM_CONTENT_URL, wait_until="domcontentloaded", timeout=45000)
+            list_page.wait_for_timeout(1200)
+            if _is_login_page(list_page.url):
                 result["login"] = {**login, "profile_has_instagram_login": False, "reason": "Instagram 已跳转到登录页"}
                 return result
-            links = _discover_media_links(page, max_videos)
-            if not links:
+            cards = _wait_for_content_cards(list_page, max_videos)
+            if not cards:
                 screenshot_path = log_dir / "content-page-no-media-links.png"
-                page.screenshot(path=str(screenshot_path), full_page=False)
-                result["diagnostics"] = _page_diagnostics(page)
+                list_page.screenshot(path=str(screenshot_path), full_page=False)
+                result["diagnostics"] = _page_diagnostics(list_page)
                 result["diagnostic_screenshot"] = str(screenshot_path.relative_to(ROOT))
             result.update({
                 "job_id": job_id,
-                "content_page_url": canonical_url(page.url),
-                "discovered_videos": len(links),
-                "videos": [_click_one_media(page, source) for source in links],
+                "session_id": active_session_id,
+                "content_page_url": canonical_url(list_page.url),
+                "discovered_videos": len(cards),
+                "detail_tabs_opened": len(cards),
+                "videos": [_click_one_media(context, source) for source in cards],
             })
-            browser.close()
+            # A borrowed observation browser remains open on the content list so
+            # the operator can keep watching it after this read-only simulation.
+            if not borrowed_observation:
+                browser.close()
         output_path = log_dir / "result.json"
         output_path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         result["result_path"] = str(output_path.relative_to(ROOT))
         return result
     finally:
-        if process is not None:
-            proxy_pool._terminate_pid(int(process.pid))
-        if xvfb_process is not None:
-            proxy_pool._terminate_pid(int(xvfb_process.pid))
+        if active_session_id:
+            if borrowed_observation:
+                proxy_pool.release_observation_session_job(active_session_id, job_id)
+            else:
+                proxy_pool.finish_automation_session(active_session_id, "Instagram 内容采集模拟结束")
         lock_path.unlink(missing_ok=True)
 
 
@@ -419,12 +357,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Instagram Insights 内容页逐视频点击采集模拟")
     parser.add_argument("--account-id", type=int, required=True, help="代理池账号 ID")
     parser.add_argument("--max-videos", type=int, default=5, help="最多点击的视频数（默认 5，最大 20）")
+    parser.add_argument("--session-id", type=int, default=0, help="复用运行中的观测浏览器会话 ID")
     parser.add_argument("--check-login", action="store_true", help="只检测 INS 登录资料，不启动浏览器")
     args = parser.parse_args()
     if not 1 <= args.max_videos <= 20:
         parser.error("--max-videos 必须在 1 至 20 之间")
     try:
-        result = run_simulation(args.account_id, args.max_videos, args.check_login)
+        result = run_simulation(args.account_id, args.max_videos, args.check_login, args.session_id)
     except InstagramCollectionError as exc:
         print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 2
