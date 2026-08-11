@@ -289,6 +289,7 @@
     .page,.desk,.lane,.table-scroll,.account-tools{min-width:0}
     .desk{grid-template-columns:clamp(240px,18vw,270px) minmax(560px,1fr) clamp(280px,20vw,310px)}
     .account-tools{flex-wrap:nowrap}.search-wrap{min-width:0}
+    .account-empty{height:180px!important;color:var(--muted);text-align:center}.proxy-list .proxy-row{cursor:default}.proxy-list .proxy-row:hover{background:transparent}
     @media(max-width:1180px){.desk{grid-template-columns:clamp(228px,23vw,250px) minmax(0,1fr)}}
     @media(max-width:820px){:root{--dock-width:0px}.app{width:100%}.account-tools{flex-wrap:wrap}.search-wrap{flex-basis:100%}.table-scroll{overflow-x:auto}}
   </style>
@@ -556,20 +557,7 @@
         tiktok: { label: 'TikTok', short: 'TK', className: 'tiktok', collection: 'TikTok 视频数据采集', resultLabel: '视频表现' },
         instagram: { label: 'Instagram', short: 'IG', className: 'instagram', collection: 'Instagram Reels 数据采集', resultLabel: 'Reels 表现' }
       };
-      let accountRows = [
-        { id: 'lumi.home', initials: 'LM', owner: '林漫', avatar: 'https://i.pravatar.cc/64?img=47', proxy: '洛杉矶', ip: '154.12.88.64 :18902', platforms: {
-          tiktok: { loggedIn: true, awake: true, status: '发布中', kind: 'live', session: '会话在线 · 可观测' },
-          instagram: { loggedIn: true, awake: true, status: '可采集', kind: 'live', session: 'Reels 入口已保存' }
-        } },
-        { id: 'maker.daily', initials: 'MK', owner: '马可', avatar: 'https://i.pravatar.cc/64?img=12', proxy: '洛杉矶', ip: '154.12.88.64 :18902', platforms: {
-          tiktok: { loggedIn: true, awake: true, status: '采集中', kind: 'live', session: '会话在线 · 任务进行中' },
-          instagram: { loggedIn: false, awake: true, status: '待登录', kind: 'delay', session: '尚未保存登录资料' }
-        } },
-        { id: 'sole.shop', initials: 'SO', owner: '苏欧', avatar: 'https://i.pravatar.cc/64?img=32', proxy: '纽约', ip: '172.84.90.32 :18905', platforms: {
-          tiktok: { loggedIn: false, awake: false, status: '需要登录', kind: 'delay', session: '会话已释放' },
-          instagram: { loggedIn: false, awake: false, status: '未登录', kind: 'off', session: '等待新增平台登录' }
-        } }
-      ];
+      let accountRows = [];
       const svg = (paths, label) => `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"${label ? ` aria-label="${label}"` : ''}>${paths}</svg>`;
       const actions = {
         observe: { text: '打开当前平台观测', svg: svg('<path d="M3.5 12s3-5 8.5-5 8.5 5 8.5 5-3 5-8.5 5-8.5-5-8.5-5Z"/><circle cx="12" cy="12" r="2"/>') },
@@ -580,8 +568,8 @@
         login: { text: '新增平台登录', svg: svg('<path d="M13 4h6v16h-6M4 12h11m0 0-3-3m3 3-3 3"/><path d="M5 5h7"/>') },
         remove: { text: '删除账号', svg: svg('<path d="M5 7h14M9 7V4h6v3m-8 0 1 13h8l1-13M10 11v5m4-5v5"/>') }
       };
-      const state = { platform: 'tiktok', accountId: 'lumi.home', loginChoice: '' };
-      const activePlatformByAccount = { 'lumi.home': 'tiktok', 'maker.daily': 'tiktok', 'sole.shop': 'tiktok' };
+      const state = { platform: 'tiktok', accountId: '', loginChoice: '' };
+      const activePlatformByAccount = {};
       const tiktokCollectView = { ...views.collect };
       const accountFor = () => accountRows.find(row => row.id === state.accountId) || accountRows[0];
       const platformFor = row => row.platforms[activePlatformByAccount[row.id] || 'tiktok'];
@@ -603,6 +591,11 @@
         if (!table) return;
         const labels = ['账号', '绑定代理', '状态', '飞书用户', '操作'];
         table.querySelector('thead tr').innerHTML = labels.map((label, index) => `<th>${index === 4 ? `<span class="visually-hidden">${label}</span>` : label}</th>`).join('');
+        if (!accountRows.length) {
+          table.querySelector('tbody').innerHTML = '<tr><td colspan="5" class="account-empty">暂无可显示的账号，请检查数据连接后重试。</td></tr>';
+          ['context-name', 'context-owner', 'context-place', 'context-ip', 'context-status'].forEach(id => { const node = el(id); if (node) node.textContent = '—'; });
+          return;
+        }
         table.querySelector('tbody').innerHTML = accountRows.map(row => {
           const platform = activePlatformByAccount[row.id] || 'tiktok', item = platformFor(row);
           const multiLoggedIn = Object.values(row.platforms).filter(value => value.loggedIn).length > 1;
@@ -708,18 +701,11 @@
         if (titleCount) titleCount.textContent = String(visible.length);
         if (metric) metric.innerHTML = `<strong>${usable}</strong><span>可用 / ${visible.length} 已配置</span>`;
         if (meter) meter.style.width = `${visible.length ? Math.round(usable / visible.length * 100) : 0}%`;
-        list.innerHTML = visible.map((pool, index) => {
+        list.innerHTML = visible.map(pool => {
           const bad = ['不可用', '异常', '禁用'].includes(pool.status), delay = pool.status === 'IP重复';
           const label = bad ? '不可用' : delay ? '延迟' : Number(pool.account_count || 0) ? '已绑定' : '可用';
-          return `<button class="proxy-row ${index === 0 ? 'selected' : ''}" data-place="${pool.name || '未命名出口'}" data-ip="${pool.expected_exit_ip || '待校验'} :${pool.local_port || '—'}"><i class="proxy-dot ${bad ? 'off' : delay ? 'delay' : ''}"></i><span><span class="proxy-name">${pool.name || '未命名出口'}</span><span class="proxy-ip">${pool.expected_exit_ip || '待校验'} :${pool.local_port || '—'}</span></span><span class="status ${bad ? 'off' : delay ? 'delay' : 'live'}">${label}</span></button>`;
+          return `<div class="proxy-row"><i class="proxy-dot ${bad ? 'off' : delay ? 'delay' : ''}"></i><span><span class="proxy-name">${pool.name || '未命名出口'}</span><span class="proxy-ip">${pool.expected_exit_ip || '待校验'} :${pool.local_port || '—'}</span></span><span class="status ${bad ? 'off' : delay ? 'delay' : 'live'}">${label}</span></div>`;
         }).join('') || '<p class="proxy-foot">暂无代理出口</p>';
-        list.querySelectorAll('.proxy-row').forEach(row => row.addEventListener('click', () => {
-          list.querySelectorAll('.proxy-row').forEach(item => item.classList.remove('selected'));
-          row.classList.add('selected');
-          const place = el('context-place'), ip = el('context-ip');
-          if (place) place.textContent = row.dataset.place || '';
-          if (ip) ip.textContent = row.dataset.ip || '';
-        }));
       };
       const hydrateLiveData = async () => {
         const response = await fetch('/api/proxy/pools');
@@ -738,8 +724,10 @@
         updateLiveProxyList(pools);
         renderAccounts();
       };
+      const initialProxyList = document.querySelector('#proxy-list');
+      if (initialProxyList) initialProxyList.innerHTML = '<p class="proxy-foot">正在加载代理出口…</p>';
       renderAccounts();
-      hydrateLiveData().catch(() => {});
+      hydrateLiveData().catch(renderAccounts);
     })();
   </script>
 </body>
