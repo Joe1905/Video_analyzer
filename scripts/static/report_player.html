@@ -382,17 +382,30 @@ function deepDiveFor(report,video,index){
   }
   const dives = report?.video_deep_dives || [];
   if (Array.isArray(dives) && dives.length) {
-    const rank = Number(video?.report_rank || index + 1);
+    const rank = Number(video?.daily_rank || video?.report_rank || index + 1);
     const title = String(video?.title || "").slice(0, 24);
-    const match = dives.find(x => String(x).includes(`视频 ${rank}`)) ||
-                  dives.find(x => title && String(x).includes(title)) ||
-                  dives[index] || dives[0];
+    const exact = predicate => dives.find(item => {
+      const text = typeof item === "string"
+        ? item
+        : (item && typeof item === "object" ? (item.text || item.content || "") : "");
+      return predicate(String(text));
+    });
+    const rankPattern = new RegExp(`视频\\s*${rank}\\s*\\*\\*`);
+    const nextRankPattern = new RegExp(`视频\\s*${rank}\\d`);
+    const byHeading = exact(text => rankPattern.test(text) && !nextRankPattern.test(text));
+    const byTitle = title ? exact(text => new RegExp(escapeRegex(title)).test(text)) : null;
+    const byRankField = dives.find(item => item && typeof item === "object" && Number(item.rank) === rank);
+    const match = byHeading || byTitle || byRankField || dives[index] || dives[0];
     if (match) return typeof match === "object" ? JSON.stringify(match, null, 2) : String(match);
   }
   if (typeof report?.video_deep_dives === "string") return report.video_deep_dives;
   const analysis = video?.analysis_zh || video?.analysis;
   if (analysis?.summary) return analysis.summary;
   return "";
+}
+
+function escapeRegex(value){
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
 }
 
 function renderSegment(segment,all,currentTime){
