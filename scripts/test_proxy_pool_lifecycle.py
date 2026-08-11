@@ -2,6 +2,8 @@
 """Focused regression tests for proxy IP uniqueness and safe proxy deletion."""
 from __future__ import annotations
 
+import json
+import sqlite3
 import sys
 import tempfile
 from contextlib import contextmanager
@@ -194,10 +196,52 @@ def test_delete_pool_preserves_archived_history_and_releases_port() -> None:
         assert replacement["local_port"] == pool["local_port"]
 
 
+def test_account_state_exposes_instagram_login_without_cookie_value() -> None:
+    with isolated_proxy_db():
+        pool = create_manual_pool("instagram", "203.0.113.40")
+        profile_dir = proxy_pool.DATA_DIR / "tiktok_browser_profiles" / "account" / "user-data"
+        cookie_path = profile_dir / "Default" / "Cookies"
+        cookie_path.parent.mkdir(parents=True)
+        with sqlite3.connect(cookie_path) as cookie_conn:
+            cookie_conn.execute("CREATE TABLE cookies (host_key TEXT, name TEXT, value TEXT)")
+            cookie_conn.execute(
+                "INSERT INTO cookies VALUES (?, ?, ?)",
+                (".instagram.com", "sessionid", "must-not-leak"),
+            )
+            cookie_conn.commit()
+        now = proxy_pool.now_iso()
+        with proxy_pool.connect() as conn:
+            account_id = int(
+                conn.execute(
+                    """INSERT INTO tiktok_accounts (
+                           username, proxy_profile_id, status, profile_json, created_at, updated_at
+                       ) VALUES (?, ?, ?, ?, ?, ?)""",
+                    (
+                        "instagram_account",
+                        pool["id"],
+                        proxy_pool.ACCOUNT_STATUS_ACTIVE,
+                        json.dumps({"isolation": {"user_data_dir": str(profile_dir)}}),
+                        now,
+                        now,
+                    ),
+                ).lastrowid
+            )
+            conn.commit()
+
+        account = proxy_pool.get_account(account_id)
+        assert account["platforms"]["instagram"] == {
+            "status": "logged_in",
+            "profile_available": True,
+            "logged_in": True,
+        }
+        assert "must-not-leak" not in str(account)
+
+
 def main() -> None:
     test_duplicate_exit_ip_is_terminal_until_manual_recheck()
     test_existing_duplicate_error_is_migrated_without_retry()
     test_delete_pool_preserves_archived_history_and_releases_port()
+    test_account_state_exposes_instagram_login_without_cookie_value()
     print("proxy pool lifecycle tests passed")
 
 

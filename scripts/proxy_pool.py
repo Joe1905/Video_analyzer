@@ -826,7 +826,45 @@ def _row_to_pool(
     }
 
 
+def _instagram_login_metadata(profile: dict[str, Any]) -> dict[str, Any]:
+    """Expose only an Instagram login state; cookie values never leave Chrome."""
+    isolation = profile.get("isolation") if isinstance(profile, dict) else {}
+    user_data_dir = str((isolation or {}).get("user_data_dir") or "").strip()
+    if not user_data_dir:
+        return {"status": "no_profile", "profile_available": False, "logged_in": False}
+    profile_dir = Path(user_data_dir)
+    if not profile_dir.is_absolute():
+        profile_dir = ROOT / profile_dir
+    try:
+        profile_dir = profile_dir.resolve()
+        profiles_root = (DATA_DIR / "tiktok_browser_profiles").resolve()
+    except OSError:
+        return {"status": "unavailable", "profile_available": False, "logged_in": False}
+    if profile_dir != profiles_root and profiles_root not in profile_dir.parents:
+        return {"status": "unavailable", "profile_available": False, "logged_in": False}
+    for cookie_path in (profile_dir / "Default" / "Cookies", profile_dir / "Default" / "Network" / "Cookies"):
+        if not cookie_path.is_file():
+            continue
+        try:
+            conn = sqlite3.connect(f"file:{cookie_path}?mode=ro", uri=True, timeout=1)
+            try:
+                row = conn.execute(
+                    "SELECT 1 FROM cookies WHERE host_key LIKE '%instagram.com%' AND name = 'sessionid' LIMIT 1"
+                ).fetchone()
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            return {"status": "unavailable", "profile_available": True, "logged_in": False}
+        return {
+            "status": "logged_in" if row else "not_logged_in",
+            "profile_available": True,
+            "logged_in": bool(row),
+        }
+    return {"status": "not_logged_in", "profile_available": True, "logged_in": False}
+
+
 def _row_to_account(row: sqlite3.Row) -> dict[str, Any]:
+    profile = _json_loads(row["profile_json"], {})
     return {
         "id": row["id"],
         "username": row["username"],
@@ -840,7 +878,11 @@ def _row_to_account(row: sqlite3.Row) -> dict[str, Any]:
         "proxy_profile_id": row["proxy_profile_id"],
         "proxy_bound": bool(row["proxy_bound"]),
         "status": _clean_account_status(row["status"]),
-        "profile": _json_loads(row["profile_json"], {}),
+        "profile": profile,
+        "platforms": {
+            "tiktok": {"linked": True},
+            "instagram": _instagram_login_metadata(profile),
+        },
         "notes": row["notes"],
         "last_checked_ip": row["last_checked_ip"],
         "last_check_status": row["last_check_status"],
