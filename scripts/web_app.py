@@ -129,6 +129,7 @@ MCP_CHAT_CONFIGS = {
 import sys
 sys.path.insert(0, str(SCRIPTS_DIR))
 from chat_session import ChatStore, Message, Session, load_sessions_from_disk
+from chat_preset_forms import preset_forms_for_provider
 from image_tag_tool import ImageTagToolError, normalize_tag, prepare_image_for_delivery
 from feishu_capabilities import FeishuCapabilityClient, FeishuCapabilityError
 from lan_chat import (
@@ -502,6 +503,29 @@ CHAT_PROVIDER_OFFICIAL_QUICK_ACTIONS = {
             "icon": "compare",
         },
     ),
+    "chuhaijiang": (
+        {
+            "label": "选品与市场调研",
+            "skill": "选品与市场调研",
+            "form_id": "chuhaijiang/product-selection",
+            "description": "建立候选池与市场机会判断",
+            "icon": "bars",
+        },
+        {
+            "label": "利润测算",
+            "skill": "利润测算",
+            "form_id": "chuhaijiang/profit-calculation",
+            "description": "拆解成本、物流与利润空间",
+            "icon": "trend",
+        },
+        {
+            "label": "达人筛选与建联",
+            "skill": "达人筛选与建联",
+            "form_id": "chuhaijiang/creator-outreach",
+            "description": "筛选达人并准备建联方案",
+            "icon": "compare",
+        },
+    ),
 }
 CHAT_QUICK_ACTION_ICONS = {
     "bars": (
@@ -614,7 +638,7 @@ NAV_ITEMS = [
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
 
-UI_ASSET_VERSION = "20260810-19"
+UI_ASSET_VERSION = "20260811-20"
 APP_UI_ASSETS = f"""
 <script id="ui-nav-state-boot">
 let uiNavExpanded = false;
@@ -971,10 +995,12 @@ def render_chat_quick_actions(provider: str, provider_ui: dict[str, Any], offici
             skill = html_escape(str(action.get("skill") or ""))
             preset_id = html_escape(str(action.get("preset_id") or ""))
             preset_id_attr = f' data-official-preset-id="{preset_id}"' if preset_id else ""
+            form_id = html_escape(str(action.get("form_id") or action.get("preset_id") or ""))
+            form_id_attr = f' data-preset-form-id="{form_id}"' if form_id else ""
             description = html_escape(str(action.get("description") or ""))
             actions.append(
                 '<button type="button" class="quick-prompt official-workflow-shortcut" '
-                f'data-official-preset="{skill}"{preset_id_attr}>'
+                f'data-official-preset="{skill}"{preset_id_attr}{form_id_attr}>'
                 '<span class="quick-card-top">'
                 f'<span class="quick-number">{index:02d}</span>'
                 '<span class="quick-arrow" aria-hidden="true">\u2197</span>'
@@ -1053,30 +1079,30 @@ def render_chat_official_workflow_modal(provider: str) -> dict[str, str]:
         }
     if provider == "chuhaijiang":
         research_items = [
-            ("选品与市场调研", "围绕目标市场和类目建立候选池、需求与机会判断。", "我想做 TikTok Shop 选品与市场调研。目标市场是……，类目/关键词是……，请先按出海匠官方 Skill 的选品 SOP 帮我建立候选池。"),
-            ("利润测算", "根据商品、物流、佣金和定价信息测算利润空间。", "我想测算 TikTok Shop 商品利润。目标市场是……，商品/商品 ID 是……，我已有的进货价、重量、物流与佣金信息是……。"),
-            ("达人筛选与建联", "筛选目标达人并准备建联策略与沟通内容。", "我想筛选并建联达人。目标市场是……，类目是……，预算和合作目标是……，请先给出筛选与建联方案。"),
-            ("竞品、店铺与广告分析", "分析竞品商品、店铺表现或广告素材与机会。", "我想分析竞品、店铺或广告。目标市场是……，对象链接/商品/店铺信息是……，请找出可执行的差异化机会。"),
+            ("chuhaijiang/product-selection", "选品与市场调研", "围绕目标市场和类目建立候选池、需求与机会判断。"),
+            ("chuhaijiang/profit-calculation", "利润测算", "根据商品、物流、佣金和定价信息测算利润空间。"),
+            ("chuhaijiang/creator-outreach", "达人筛选与建联", "筛选目标达人并准备建联策略与沟通内容。"),
+            ("chuhaijiang/competitor-analysis", "竞品、店铺与广告分析", "分析竞品商品、店铺表现或广告素材与机会。"),
         ]
         content_items = [
-            ("AI 内容生成", "规划商品或社媒内容，并先生成可审阅的内容方案。", "我想生成海外内容方案。目标市场是……，商品/品牌是……，目标平台与内容目标是……，请先给出可审阅的文案和素材计划。"),
-            ("AI 画布创作", "先梳理画布需求、素材与页面结构，不直接生成或发布。", "我想规划 AI 画布创作。用途是……，目标市场是……，已有素材和品牌要求是……，请先给出画布结构与素材清单。"),
-            ("视频剪辑", "基于已有素材规划剪辑目标、结构与交接步骤。", "我想规划视频剪辑。已有素材是……，目标平台和时长是……，希望突出……，请先给出剪辑结构与下一步。"),
-            ("社媒运营", "查看已绑定账号的运营数据和待办，不执行发布或私信。", "我想管理已绑定的社媒账号。目标平台/账号是……，我想先查看数据、评论或待办；请不要执行发布、回复或私信。"),
+            ("chuhaijiang/content-generation", "AI 内容生成", "规划商品或社媒内容，并先生成可审阅的内容方案。"),
+            ("chuhaijiang/canvas-creation", "AI 画布创作", "先梳理画布需求、素材与页面结构，不直接生成或发布。"),
+            ("chuhaijiang/video-editing", "视频剪辑", "基于已有素材规划剪辑目标、结构与交接步骤。"),
+            ("chuhaijiang/social-operation", "社媒运营", "查看已绑定账号的运营数据和待办，不执行发布或私信。"),
         ]
 
         def scene_buttons(items: list[tuple[str, str, str]]) -> str:
             return "".join(
                 f'<button class="official-workflow-item" type="button" data-chuhaijiang-scene="{html_escape(label)}" '
-                f'data-prompt="{html_escape(prompt)}"><span class="official-workflow-icon">{index:02d}</span>'
+                f'data-preset-form-id="{html_escape(form_id)}"><span class="official-workflow-icon">{index:02d}</span>'
                 f'<span><strong>{html_escape(label)}</strong><small>{html_escape(description)}</small></span><i>→</i></button>'
-                for index, (label, description, prompt) in enumerate(items, start=1)
+                for index, (form_id, label, description) in enumerate(items, start=1)
             )
 
         return {
             "kicker": "CHUHAIJIANG · OFFICIAL SKILL 1.2.6",
             "title": "出海匠官方场景",
-            "intro": "选择场景后只会填入普通提示词；发送前请补充国家、对象与目标。",
+            "intro": "选择场景后填写对应表单；多个必要信息会分别显示输入框。",
             "tabs_class": "",
             "tabs_attributes": "",
             "tabs": (
@@ -1090,7 +1116,7 @@ def render_chat_official_workflow_modal(provider: str) -> dict[str, str]:
                 '<div class="official-workflow-grid">' + scene_buttons(content_items) + '</div></section>'
             ),
             "footer_status": "基于出海匠官方 Skill 1.2.6",
-            "footer_hint": "选择后只填入提示词，不会自动执行任何操作",
+            "footer_hint": "填写并发送后进入官方 Skill 对话链路",
         }
     if provider != "amazon":
         return {
@@ -1138,11 +1164,11 @@ def render_chat_official_workflow_modal(provider: str) -> dict[str, str]:
     ]
 
     comp_btns = [
-        f'<button class="official-workflow-item" type="button" data-official-preset-id="{pid}" data-official-preset="{html_escape(lbl)}"><span class="official-workflow-icon">{idx:02d}</span><span><strong>{html_escape(lbl)}</strong><small>{html_escape(dsc)}</small></span><i>\u2192</i></button>'
+        f'<button class="official-workflow-item" type="button" data-official-preset-id="{pid}" data-preset-form-id="{pid}" data-official-preset="{html_escape(lbl)}"><span class="official-workflow-icon">{idx:02d}</span><span><strong>{html_escape(lbl)}</strong><small>{html_escape(dsc)}</small></span><i>\u2192</i></button>'
         for idx, (pid, lbl, dsc) in enumerate(comprehensive_items, start=1)
     ]
     tact_btns = [
-        f'<button class="official-workflow-item" type="button" data-official-preset-id="{pid}" data-official-preset="{html_escape(lbl)}"><span class="official-workflow-icon">{idx:02d}</span><span><strong>{html_escape(lbl)}</strong><small>{html_escape(dsc)}</small></span><i>\u2192</i></button>'
+        f'<button class="official-workflow-item" type="button" data-official-preset-id="{pid}" data-preset-form-id="{pid}" data-official-preset="{html_escape(lbl)}"><span class="official-workflow-icon">{idx:02d}</span><span><strong>{html_escape(lbl)}</strong><small>{html_escape(dsc)}</small></span><i>\u2192</i></button>'
         for idx, (pid, lbl, dsc) in enumerate(tactical_items, start=1)
     ]
 
@@ -1181,6 +1207,8 @@ def serve_chat_template(handler: BaseHTTPRequestHandler, provider: str, path: st
         "__CHAT_OFFICIAL_WORKFLOW_ENABLED__",
         "true" if official_workflow_enabled else "false",
     )
+    preset_forms_json = json.dumps(preset_forms_for_provider(provider), ensure_ascii=False, separators=(",", ":"))
+    chat_html = chat_html.replace("__CHAT_PRESET_FORMS__", preset_forms_json.replace("</", "<\\/"))
     chat_html = chat_html.replace("__OFFICIAL_WORKFLOW_KICKER__", modal_ui["kicker"])
     chat_html = chat_html.replace("__OFFICIAL_WORKFLOW_TITLE__", modal_ui["title"])
     chat_html = chat_html.replace("__OFFICIAL_WORKFLOW_INTRO__", modal_ui["intro"])

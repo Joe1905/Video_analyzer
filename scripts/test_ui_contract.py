@@ -210,7 +210,7 @@ class UIContractTest(unittest.TestCase):
         self.assertIn("--official-item-index", chat)
         self.assertIn('aria-expanded="false"', chat)
         self.assertIn('$("expandInputBtn").onclick', chat)
-        self.assertIn(".composer.expanded textarea", css)
+        self.assertIn(".composer.expanded #input", css)
         self.assertIn(".input-bar.composer-expanded", css)
         self.assertIn(".attachment-preview:empty", css)
         self.assertIn("preview.childElementCount>0", chat)

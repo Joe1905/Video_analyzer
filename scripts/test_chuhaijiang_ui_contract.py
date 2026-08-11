@@ -57,7 +57,7 @@ class TestChuhaijiangUiContract(unittest.TestCase):
         ):
             self.assertNotIn(legacy_marker, page)
 
-    def test_chuhaijiang_official_scene_dialog_fills_prompts_without_preset_ids(self):
+    def test_chuhaijiang_official_scene_dialog_opens_forms_without_preset_ids(self):
         page = self.render("chuhaijiang", "/chuhaijiang")
         self.assertIn('const OFFICIAL_WORKFLOW_ENABLED=true', page)
         self.assertIn('id="officialWorkflowComposerLaunch"', page)
@@ -70,7 +70,8 @@ class TestChuhaijiangUiContract(unittest.TestCase):
             self.assertIn(label, page)
         template = (web_app.SCRIPTS_DIR / "static" / "chat.html").read_text(encoding="utf-8")
         self.assertIn("data-chuhaijiang-scene", template)
-        self.assertIn("clearOfficialPreset();input.value=button.dataset.prompt", template)
+        self.assertIn("enterPresetForm(button.dataset.chuhaijiangScene,button.dataset.presetFormId)", template)
+        self.assertIn('id="presetForm"', template)
 
     def test_all_three_providers_show_three_frequent_actions_and_a_more_entry(self):
         home = self.render("home", "/")
