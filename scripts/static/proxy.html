@@ -550,6 +550,7 @@
     .inline-platform-switch:hover { border-color: #bfc8ff; color: var(--accent); background: #fbfbff; }
     @media (max-width: 1040px) { .platform-switcher button { padding: 0 7px; } .platform-switcher button > span { display: none; } }
   </style>
+  <script>window.__PROXY_BOOTSTRAP__ = /* PROXY_BOOTSTRAP */ null;</script>
   <script>
     /* 4003 的真实平台语义：登录、观测和采集必须使用同一个当前平台。 */
     (() => {
@@ -714,9 +715,10 @@
         document.querySelectorAll('.account-head .summary-item b').forEach((node, index) => { node.textContent = String(values[index] || 0); });
       };
       const hydrateLiveData = async () => {
-        const response = await fetch('/api/proxy/pools');
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const payload = await response.json(), pools = payload.pools || [], sessions = payload.sessions || [];
+        const bootstrap = window.__PROXY_BOOTSTRAP__;
+        const response = bootstrap ? null : await fetch('/api/proxy/pools');
+        if (response && !response.ok) throw new Error(`HTTP ${response.status}`);
+        const payload = bootstrap || await response.json(), pools = payload.pools || [], sessions = payload.sessions || [];
         const byPool = new Map(pools.map(pool => [Number(pool.id), pool]));
         const sessionFor = id => sessions.find(session => Number(session.account_id) === Number(id) && ['starting', 'running', 'observing'].includes(session.status));
         accountRows = (payload.accounts || []).map(account => {

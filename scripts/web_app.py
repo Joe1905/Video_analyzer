@@ -1122,6 +1122,15 @@ def inject_unified_nav(html: str, current_path: str) -> str:
     return html
 
 
+def inject_proxy_bootstrap(html: str) -> str:
+    """Embed the sanitized proxy display state so the account desk has no first-paint fetch gap."""
+    try:
+        payload = json.dumps(proxy_pool.list_state(), ensure_ascii=False).replace("<", "\\u003c")
+    except Exception:
+        payload = "{}"
+    return html.replace("/* PROXY_BOOTSTRAP */ null", payload, 1)
+
+
 
 def provider_session_exists(provider: str, public_id: str, owner_id: str = "public") -> str | None:
     provider = normalize_chat_provider(provider)
@@ -13332,7 +13341,7 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/proxy":
             if not PROXY_POOL_ENABLED:
                 return text_response(self, HTTPStatus.NOT_FOUND, "Not found")
-            return text_response(self, HTTPStatus.OK, inject_unified_nav(PROXY_HTML, parsed.path), "text/html; charset=utf-8")
+            return text_response(self, HTTPStatus.OK, inject_proxy_bootstrap(inject_unified_nav(PROXY_HTML, parsed.path)), "text/html; charset=utf-8")
         if parsed.path.startswith("/api/proxy/"):
             if not PROXY_POOL_ENABLED:
                 return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
