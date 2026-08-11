@@ -1916,6 +1916,28 @@ body.ui-system .ui-nav__toggle:hover {
 
     body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .input-bar.has-preset-form {
       width: calc(100% - 16px);
+      grid-template-columns: 44px 44px minmax(0, 1fr) 44px;
+    }
+
+    body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .input-bar.has-preset-form .composer {
+      grid-column: 1 / -1;
+      grid-row: 1;
+      width: 100%;
+    }
+
+    body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .input-bar.has-preset-form .attach-button {
+      grid-column: 1;
+      grid-row: 2;
+    }
+
+    body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .input-bar.has-preset-form .official-workflow-composer-button {
+      grid-column: 2;
+      grid-row: 2;
+    }
+
+    body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .input-bar.has-preset-form .send-button {
+      grid-column: 4;
+      grid-row: 2;
     }
 
     body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .preset-form {
