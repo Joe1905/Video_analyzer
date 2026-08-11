@@ -91,6 +91,15 @@ class TestChatPresetForms(unittest.TestCase):
         styles = (web_app.SCRIPTS_DIR / "static" / "assets" / "ui-system.css").read_text(encoding="utf-8")
         self.assertIn(".input-bar.has-preset-form #input", styles)
         self.assertIn(".input-bar.has-preset-form .expand-input-btn", styles)
+        self.assertIn('id="presetFormCancel"', template)
+        self.assertIn('id="presetFormSubmit"', template)
+        self.assertNotIn('id="officialPresetChip"', template)
+        self.assertIn(".input-bar.has-preset-form > .attach-button", styles)
+        self.assertIn(".input-bar.has-preset-form > .official-workflow-composer-button", styles)
+        self.assertIn(".input-bar.has-preset-form > .send-button", styles)
+        self.assertIn("S.presetInputDraft=draft", template)
+        enter_form = template.split("function enterPresetForm", 1)[1].split("function buildPresetPrompt", 1)[0]
+        self.assertNotIn('input.value=""', enter_form)
 
 
 if __name__ == "__main__":

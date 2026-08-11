@@ -1466,12 +1466,28 @@ body.ui-system .ui-nav__toggle:hover {
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .input-bar.has-preset-form {
     width: min(960px, calc(100% - 48px));
-    align-items: end;
+    min-height: 0;
+    padding: 0;
+    display: block;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .input-bar.has-preset-form #input,
-  body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .input-bar.has-preset-form .expand-input-btn {
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .input-bar.has-preset-form .expand-input-btn,
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .input-bar.has-preset-form > .attach-button,
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .input-bar.has-preset-form > .official-workflow-composer-button,
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .input-bar.has-preset-form > .send-button,
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .input-bar.has-preset-form .pending-preview,
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .input-bar.has-preset-form .quote-preview,
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .input-bar.has-preset-form .attachment-preview {
     display: none;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .input-bar.has-preset-form .composer {
+    width: 100%;
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .input-bar::after {
@@ -1555,45 +1571,8 @@ body.ui-system .ui-nav__toggle:hover {
     stroke-linejoin: round;
   }
 
-  body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .official-preset-chip {
-    display: none;
-    align-items: center;
-    gap: 6px;
-    margin-bottom: 6px;
-    padding: 3px 10px;
-    width: fit-content;
-    background: #eef2ff;
-    border: 1px solid #c7d2fe;
-    border-radius: 8px;
-    color: var(--ui-brand, #2563eb);
-    font-size: 13px;
-    font-weight: 650;
-  }
-
-  body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .official-preset-chip.show {
-    display: inline-flex;
-  }
-
-  body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .official-preset-chip .preset-remove-btn {
-    border: 0;
-    background: transparent;
-    color: var(--ui-ink-subtle, #64748b);
-    font-size: 15px;
-    line-height: 1;
-    padding: 0 2px;
-    cursor: pointer;
-    border-radius: 4px;
-    display: inline-grid;
-    place-items: center;
-  }
-
-  body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .official-preset-chip .preset-remove-btn:hover {
-    background: rgba(0, 0, 0, 0.08);
-    color: #ef4444;
-  }
-
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .preset-form {
-    margin: 2px 0 8px;
+    margin: 0;
     padding: 14px;
     border: 1px solid color-mix(in srgb, var(--ui-brand) 18%, var(--ui-line));
     border-radius: 14px;
@@ -1698,6 +1677,43 @@ body.ui-system .ui-nav__toggle:hover {
     margin-top: 3px;
     color: #c2410c;
     font-size: 11px;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .preset-form-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid color-mix(in srgb, var(--ui-brand) 12%, var(--ui-line));
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .preset-form-actions button {
+    min-width: 84px;
+    height: 40px;
+    padding: 0 18px;
+    border-radius: 10px;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .preset-form-cancel {
+    border: 1px solid var(--ui-line);
+    background: #fff;
+    color: var(--ui-ink-muted);
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .preset-form-submit {
+    border: 1px solid var(--ui-brand);
+    background: var(--ui-brand);
+    color: #fff;
+    box-shadow: 0 8px 18px color-mix(in srgb, var(--ui-brand) 22%, transparent);
+  }
+
+  body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .preset-form-actions button:hover {
+    transform: translateY(-1px);
   }
 
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .composer.expanded #input {
@@ -1924,28 +1940,10 @@ body.ui-system .ui-nav__toggle:hover {
 
     body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .input-bar.has-preset-form {
       width: calc(100% - 16px);
-      grid-template-columns: 44px 44px minmax(0, 1fr) 44px;
     }
 
     body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .input-bar.has-preset-form .composer {
-      grid-column: 1 / -1;
-      grid-row: 1;
       width: 100%;
-    }
-
-    body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .input-bar.has-preset-form .attach-button {
-      grid-column: 1;
-      grid-row: 2;
-    }
-
-    body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .input-bar.has-preset-form .official-workflow-composer-button {
-      grid-column: 2;
-      grid-row: 2;
-    }
-
-    body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .input-bar.has-preset-form .send-button {
-      grid-column: 4;
-      grid-row: 2;
     }
 
     body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .preset-form {
