@@ -1757,18 +1757,6 @@ def _instagram_relative_date(text: str, anchor: datetime) -> tuple[str, str]:
     # the first 500 characters, so do not truncate it out before parsing.
     raw = _clean_text(text, 12000)
     normalized = raw.lower().replace("\u00a0", " ")
-    match = re.search(r"\b(\d+)\s*(?:h|hr|hrs|hour|hours)\s*(?:ago)?\b", normalized)
-    if match:
-        return (anchor - timedelta(hours=int(match.group(1)))).date().isoformat(), match.group(0)
-    match = re.search(r"\b(\d+)\s*(?:m|min|mins|minute|minutes)\s*(?:ago)?\b", normalized)
-    if match:
-        return (anchor - timedelta(minutes=int(match.group(1)))).date().isoformat(), match.group(0)
-    match = re.search(r"\b(\d+)\s*(?:d|day|days)\s*(?:ago)?\b", normalized)
-    if match:
-        return (anchor - timedelta(days=int(match.group(1)))).date().isoformat(), match.group(0)
-    match = re.search(r"\b(\d+)\s*(?:w|week|weeks)\s*(?:ago)?\b", normalized)
-    if match:
-        return (anchor - timedelta(weeks=int(match.group(1)))).date().isoformat(), match.group(0)
     month_names = {
         "january": 1, "february": 2, "march": 3, "april": 4,
         "may": 5, "june": 6, "july": 7, "august": 8,
@@ -1794,6 +1782,18 @@ def _instagram_relative_date(text: str, anchor: datetime) -> tuple[str, str]:
         if not match.group(3) and value.date() > anchor.date():
             value = value.replace(year=year - 1)
         return value.date().isoformat(), match.group(0)
+    match = re.search(r"\b(\d+)\s*(?:h|hr|hrs|hour|hours)\s*(?:ago)?\b", normalized)
+    if match:
+        return (anchor - timedelta(hours=int(match.group(1)))).date().isoformat(), match.group(0)
+    match = re.search(r"\b(\d+)\s*(?:m|min|mins|minute|minutes)\s*(?:ago)?\b", normalized)
+    if match:
+        return (anchor - timedelta(minutes=int(match.group(1)))).date().isoformat(), match.group(0)
+    match = re.search(r"\b(\d+)\s*(?:d|day|days)\s*(?:ago)?\b", normalized)
+    if match:
+        return (anchor - timedelta(days=int(match.group(1)))).date().isoformat(), match.group(0)
+    match = re.search(r"\b(\d+)\s*(?:w|week|weeks)\s*(?:ago)?\b", normalized)
+    if match:
+        return (anchor - timedelta(weeks=int(match.group(1)))).date().isoformat(), match.group(0)
     return "", ""
 
 
