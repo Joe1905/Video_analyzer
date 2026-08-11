@@ -614,6 +614,14 @@ HOME_WORKFLOW_PRESETS: dict[str, dict[str, Any]] = {
         "description": "以公开网页来源核验品牌、商品与趋势信息。",
         "tools": _home_tools("system__web_search"),
     },
+    "home/amazon-product-research": {
+        "label": "Amazon 商品研究",
+        "description": "抓取 Amazon 商品页、ASIN 或关键词结果，并结合公开资料研判。",
+        "tools": _home_tools(
+            "function__amazon_scrape_url", "function__amazon_scrape_asin",
+            "function__amazon_search_keyword", "system__web_search",
+        ),
+    },
 }
 CHAT_QUICK_ACTION_ICONS = {
     "bars": (
@@ -726,7 +734,7 @@ NAV_ITEMS = [
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
 
-UI_ASSET_VERSION = "20260811-27"
+UI_ASSET_VERSION = "20260811-28"
 APP_UI_ASSETS = f"""
 <script id="ui-nav-state-boot">
 let uiNavExpanded = false;
@@ -1150,31 +1158,68 @@ def render_chat_quick_actions(provider: str, provider_ui: dict[str, Any], offici
 
 def render_chat_official_workflow_modal(provider: str) -> dict[str, str]:
     if provider == "home":
-        common_items = [
+        insight_items = [
             ("home/video-analysis", "短视频深度分析", "SociaVault 实时数据 + 本地画面与音频分析。"),
             ("home/tiktok-trends", "今日热点趋势", "热门内容、话题、音乐与创作者实时趋势。"),
-            ("home/shop-research", "商品与视频数据", "TikTok Shop 商品、评论与内容线索。"),
             ("home/creator-competitor", "达人与竞品追踪", "账号、作品、受众与竞品内容拆解。"),
-            ("home/cross-platform-research", "跨平台内容研究", "TikTok、Instagram、YouTube、Facebook 公开内容研究。"),
-            ("home/web-verification", "联网资料验证", "仅使用公开网页来源核验信息。"),
         ]
-        buttons = "".join(
-            f'<button class="official-workflow-item" type="button" data-official-preset-id="{html_escape(preset_id)}" '
-            f'data-preset-form-id="{html_escape(preset_id)}" data-official-preset="{html_escape(label)}">'
-            f'<span class="official-workflow-icon">{index:02d}</span>'
-            f'<span><strong>{html_escape(label)}</strong><small>{html_escape(description)}</small></span><i>→</i></button>'
-            for index, (preset_id, label, description) in enumerate(common_items, start=1)
-        )
+        research_items = [
+            ("home/shop-research", "商品与视频数据", "TikTok Shop 商品、评论与内容线索。"),
+            ("home/cross-platform-research", "跨平台内容研究", "TikTok、Instagram、YouTube、Facebook 公开内容研究。"),
+            ("home/amazon-product-research", "Amazon 商品研究", "商品页、ASIN 或关键词抓取与公开资料研判。"),
+        ]
+        system_items = [
+            ("/report", "每日热点日报", "进入既有日报工作流，生成并查看 TikTok 热点洞察。"),
+            ("/shop", "TikTok Shop 采集", "进入既有店铺与商品采集、评论分析工作流。"),
+            ("/metrics", "社媒视频数据", "进入既有视频链接指标查询与导出工作流。"),
+            ("home/web-verification", "联网资料验证", "仅使用公开网页来源核验品牌、商品与趋势信息。"),
+        ]
+
+        def preset_button(preset_id: str, label: str, description: str, index: int) -> str:
+            return (
+                f'<button class="official-workflow-item" type="button" data-official-preset-id="{html_escape(preset_id)}" '
+                f'data-preset-form-id="{html_escape(preset_id)}" data-official-preset="{html_escape(label)}">'
+                f'<span class="official-workflow-icon">{index:02d}</span>'
+                f'<span><strong>{html_escape(label)}</strong><small>{html_escape(description)}</small></span><i>→</i></button>'
+            )
+
+        def preset_buttons(items: list[tuple[str, str, str]]) -> str:
+            return "".join(
+                preset_button(preset_id, label, description, index)
+                for index, (preset_id, label, description) in enumerate(items, start=1)
+            )
+
+        def system_buttons(items: list[tuple[str, str, str]]) -> str:
+            buttons: list[str] = []
+            for index, (target, label, description) in enumerate(items, start=1):
+                if target.startswith("/"):
+                    buttons.append(
+                        f'<a class="official-workflow-item official-workflow-item--link" href="{html_escape(target)}">'
+                        f'<span class="official-workflow-icon">{index:02d}</span>'
+                        f'<span><strong>{html_escape(label)}</strong><small>{html_escape(description)}</small></span><i>→</i></a>'
+                    )
+                else:
+                    buttons.append(preset_button(target, label, description, index))
+            return "".join(buttons)
+
         return {
             "kicker": "SOCIA VAULT · REGISTERED WORKFLOWS",
             "title": "预设工作流",
-            "intro": "选择后填写必要信息；本次请求只会暴露该工作流登记的 MCP 与本地工具。",
+            "intro": "按场景选择；对话工作流仅暴露登记的 MCP 与本地工具，系统工作流会进入原有页面。",
             "tabs_class": "",
             "tabs_attributes": "",
-            "tabs": '<button class="official-workflow-tab is-active" type="button" role="tab" aria-selected="true" data-official-tab="common">常用任务 <span>6</span></button>',
-            "panels": '<section class="official-workflow-panel is-active" role="tabpanel" data-official-panel="common"><div class="official-workflow-grid">' + buttons + '</div></section>',
+            "tabs": (
+                '<button class="official-workflow-tab is-active" type="button" role="tab" aria-selected="true" data-official-tab="insight">社媒洞察 <span>3</span></button>'
+                '<button class="official-workflow-tab" type="button" role="tab" aria-selected="false" data-official-tab="research">商品研究 <span>3</span></button>'
+                '<button class="official-workflow-tab" type="button" role="tab" aria-selected="false" data-official-tab="system">系统工作流 <span>4</span></button>'
+            ),
+            "panels": (
+                '<section class="official-workflow-panel is-active" role="tabpanel" data-official-panel="insight"><div class="official-workflow-grid">' + preset_buttons(insight_items) + '</div></section>'
+                '<section class="official-workflow-panel" role="tabpanel" data-official-panel="research" hidden><div class="official-workflow-grid">' + preset_buttons(research_items) + '</div></section>'
+                '<section class="official-workflow-panel" role="tabpanel" data-official-panel="system" hidden><div class="official-workflow-grid">' + system_buttons(system_items) + '</div></section>'
+            ),
             "footer_status": "已登记 MCP 与本地工具边界",
-            "footer_hint": "填写并发送后才会调用工具；不会复用到下一次自由对话",
+            "footer_hint": "填写并发送后才会调用工具；页面入口沿用既有任务与结果记录",
         }
     if provider == "chuhaijiang":
         research_items = [

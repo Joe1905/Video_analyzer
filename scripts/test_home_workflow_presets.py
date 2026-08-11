@@ -30,6 +30,22 @@ class HomeWorkflowPresetTests(unittest.TestCase):
         self.assertIn("function__video_download", tools)
         self.assertIn("function__video_analyze", tools)
 
+    def test_amazon_workflow_uses_only_registered_local_plugins(self) -> None:
+        tools = web_app.HOME_WORKFLOW_PRESETS["home/amazon-product-research"]["tools"]
+        self.assertIn("function__amazon_scrape_url", tools)
+        self.assertIn("function__amazon_search_keyword", tools)
+        self.assertNotIn("sociavault__tiktok_video_info", tools)
+
+    def test_home_modal_has_populated_tabs_and_system_page_entries(self) -> None:
+        modal = web_app.render_chat_official_workflow_modal("home")
+        self.assertIn('data-official-tab="insight"', modal["tabs"])
+        self.assertIn('data-official-tab="research"', modal["tabs"])
+        self.assertIn('data-official-tab="system"', modal["tabs"])
+        self.assertIn('data-official-panel="system"', modal["panels"])
+        self.assertIn('href="/report"', modal["panels"])
+        self.assertIn('href="/shop"', modal["panels"])
+        self.assertIn('href="/metrics"', modal["panels"])
+
     def test_route_and_execution_fail_closed(self) -> None:
         route = web_app.home_workflow_preset_route("home/web-verification")
         self.assertEqual(route["route_source"], "home_preset")

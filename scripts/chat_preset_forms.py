@@ -468,6 +468,15 @@ HOME_PRESET_FORMS: dict[str, dict[str, Any]] = {
         ],
         "此工作流只调用联网检索外挂，不调用社媒 MCP 或下载功能。",
     ),
+    "home/amazon-product-research": _form(
+        "Amazon 商品研究",
+        "请按 Amazon 商品研究工作流处理，先抓取商品页、ASIN 或关键词结果，再结合公开资料给出研判。",
+        [
+            _field("target", "商品链接 / ASIN / 关键词", "输入 Amazon 商品链接、ASIN 或检索关键词", required=True, full=True),
+            _field("focus", "研究重点", "例如价格带、卖点、评论痛点、竞品或机会判断", multiline=True, full=True),
+        ],
+        "此工作流只调用本地 Amazon 抓取外挂与公开网页检索，不调用社媒 MCP。",
+    ),
 }
 
 
