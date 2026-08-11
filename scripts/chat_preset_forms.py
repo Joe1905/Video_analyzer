@@ -415,13 +415,72 @@ CHUHAIJIANG_PRESET_FORMS: dict[str, dict[str, Any]] = {
 }
 
 
+HOME_PRESET_FORMS: dict[str, dict[str, Any]] = {
+    "home/video-analysis": _form(
+        "短视频深度分析",
+        "请按短视频深度分析工作流处理：先取得实时视频数据；需要画面与音频证据时，再下载并分析视频。",
+        [
+            _field("video_url", "视频链接", "粘贴 TikTok 或抖音公开视频链接", required=True, full=True),
+            _field("focus", "分析重点", "例如前三秒钩子、评论反馈、转化线索或脚本结构", multiline=True, full=True),
+        ],
+        "会结合 SociaVault 实时数据与本地视频解析；仅在需要画面或音频证据时下载视频。",
+    ),
+    "home/tiktok-trends": _form(
+        "今日热点趋势",
+        "请按今日 TikTok 热点趋势工作流处理，基于实时热门内容、话题、音乐和创作者数据给出结论。",
+        [
+            _field("market", "目标市场", "例如 US、GB；留空时按 SociaVault 返回的可用范围说明", parameter="region"),
+            _field("topic", "关注主题", "例如美妆、宠物、露营；留空则概览当前热点"),
+        ],
+        "只使用 SociaVault MCP 的实时趋势数据，不以模型记忆代替实时榜单。",
+    ),
+    "home/shop-research": _form(
+        "商品与视频数据",
+        "请按商品与视频数据研究工作流处理，先检索 TikTok Shop 商品及关联内容数据，再给出可执行结论。",
+        [
+            _field("query", "商品关键词 / 链接", "输入商品关键词、TikTok Shop 商品链接或商品 ID", required=True, full=True),
+            _field("focus", "关注维度", "例如价格、评论痛点、带货内容或竞品", multiline=True, full=True),
+        ],
+        "使用 SociaVault TikTok Shop MCP 数据；必要时仅补充公开网页验证结果。",
+    ),
+    "home/creator-competitor": _form(
+        "达人与竞品追踪",
+        "请按达人与竞品追踪工作流处理，查询账号、作品和受众数据，并输出可复用的内容打法。",
+        [
+            _field("target", "达人 / 竞品账号", "输入 @账号、主页链接或搜索关键词", required=True, full=True),
+            _field("focus", "关注维度", "例如粉丝增长、爆款内容、受众画像或竞品对比", multiline=True, full=True),
+        ],
+    ),
+    "home/cross-platform-research": _form(
+        "跨平台内容研究",
+        "请按跨平台内容研究工作流处理，使用 SociaVault 查询指定平台的公开内容和互动数据。",
+        [
+            _field("platform", "社媒平台", "选择社媒平台", required=True, value="tiktok", options=SOCIAL_PLATFORM_OPTIONS),
+            _field("target", "账号 / 视频 / 关键词", "输入公开链接、账号名或检索关键词", required=True, full=True),
+            _field("focus", "研究目标", "例如选题、互动反馈、竞品内容或账号定位", multiline=True, full=True),
+        ],
+    ),
+    "home/web-verification": _form(
+        "联网资料验证",
+        "请按联网资料验证工作流处理，只检索公开网页并标注来源与检索时间。",
+        [
+            _field("query", "检索问题", "输入需要核验的品牌、产品、趋势或公开资料问题", required=True, full=True),
+        ],
+        "此工作流只调用联网检索外挂，不调用社媒 MCP 或下载功能。",
+    ),
+}
+
+
 CHAT_PRESET_FORMS: dict[str, dict[str, Any]] = {
+    **HOME_PRESET_FORMS,
     **SELLERSPRITE_PRESET_FORMS,
     **CHUHAIJIANG_PRESET_FORMS,
 }
 
 
 def preset_forms_for_provider(provider: str) -> dict[str, dict[str, Any]]:
+    if provider == "home":
+        return HOME_PRESET_FORMS
     if provider == "amazon":
         return SELLERSPRITE_PRESET_FORMS
     if provider == "chuhaijiang":

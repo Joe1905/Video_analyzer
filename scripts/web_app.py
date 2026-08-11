@@ -481,6 +481,29 @@ CHAT_PROVIDER_UI = {
     },
 }
 CHAT_PROVIDER_OFFICIAL_QUICK_ACTIONS = {
+    "home": (
+        {
+            "label": "分析一条短视频",
+            "skill": "短视频深度分析",
+            "preset_id": "home/video-analysis",
+            "description": "实时数据 + 画面与音频证据",
+            "icon": "bars",
+        },
+        {
+            "label": "查看今日热点趋势",
+            "skill": "今日热点趋势",
+            "preset_id": "home/tiktok-trends",
+            "description": "热门内容、话题、音乐与创作者",
+            "icon": "trend",
+        },
+        {
+            "label": "查询商品与视频数据",
+            "skill": "商品与视频数据",
+            "preset_id": "home/shop-research",
+            "description": "TikTok Shop 商品、评论与内容线索",
+            "icon": "compare",
+        },
+    ),
     "amazon": (
         {
             "label": "\u667a\u80fd\u9009\u54c1\u52a9\u624b",
@@ -530,6 +553,67 @@ CHAT_PROVIDER_OFFICIAL_QUICK_ACTIONS = {
             "icon": "compare",
         },
     ),
+}
+
+
+def _home_tools(*names: str) -> frozenset[str]:
+    return frozenset(names)
+
+
+HOME_WORKFLOW_PRESETS: dict[str, dict[str, Any]] = {
+    "home/video-analysis": {
+        "label": "短视频深度分析",
+        "description": "结合实时视频数据、评论与本地画面/音频分析。",
+        "tools": _home_tools(
+            "sociavault__tiktok_video_info", "sociavault__tiktok_comments",
+            "sociavault__tiktok_transcript", "function__video_download",
+            "function__video_analyze", "function__video_direct_analyze",
+        ),
+    },
+    "home/tiktok-trends": {
+        "label": "今日热点趋势",
+        "description": "从实时热门内容、话题、音乐与创作者中提炼趋势。",
+        "tools": _home_tools(
+            "sociavault__tiktok_trending", "sociavault__tiktok_videos_popular",
+            "sociavault__tiktok_hashtags_popular", "sociavault__tiktok_music_popular",
+            "sociavault__tiktok_creators_popular", "sociavault__tiktok_search_keyword",
+            "sociavault__tiktok_search_top",
+        ),
+    },
+    "home/shop-research": {
+        "label": "商品与视频数据",
+        "description": "查询 TikTok Shop 商品、评论及公开资料验证。",
+        "tools": _home_tools(
+            "sociavault__tiktok_shop_search", "sociavault__tiktok_shop_products",
+            "sociavault__tiktok_shop_product_details", "sociavault__tiktok_shop_product_reviews",
+            "system__web_search",
+        ),
+    },
+    "home/creator-competitor": {
+        "label": "达人与竞品追踪",
+        "description": "基于账号、作品和受众数据拆解内容打法。",
+        "tools": _home_tools(
+            "sociavault__tiktok_search_users", "sociavault__tiktok_profile",
+            "sociavault__tiktok_videos", "sociavault__tiktok_demographics",
+            "sociavault__tiktok_videos_popular",
+        ),
+    },
+    "home/cross-platform-research": {
+        "label": "跨平台内容研究",
+        "description": "研究 TikTok、Instagram、YouTube 与 Facebook 的公开内容。",
+        "tools": _home_tools(
+            "sociavault__tiktok_search_keyword", "sociavault__instagram_profile",
+            "sociavault__instagram_posts", "sociavault__instagram_post_info",
+            "sociavault__youtube_search", "sociavault__youtube_video",
+            "sociavault__youtube_video_comments", "sociavault__facebook_profile",
+            "sociavault__facebook_profile_posts",
+        ),
+    },
+    "home/web-verification": {
+        "label": "联网资料验证",
+        "description": "以公开网页来源核验品牌、商品与趋势信息。",
+        "tools": _home_tools("system__web_search"),
+    },
 }
 CHAT_QUICK_ACTION_ICONS = {
     "bars": (
@@ -642,7 +726,7 @@ NAV_ITEMS = [
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
 
-UI_ASSET_VERSION = "20260811-26"
+UI_ASSET_VERSION = "20260811-27"
 APP_UI_ASSETS = f"""
 <script id="ui-nav-state-boot">
 let uiNavExpanded = false;
@@ -1067,29 +1151,30 @@ def render_chat_quick_actions(provider: str, provider_ui: dict[str, Any], offici
 def render_chat_official_workflow_modal(provider: str) -> dict[str, str]:
     if provider == "home":
         common_items = [
-            ("分析一条短视频", "拆解内容结构、亮点与优化方向。", "帮我分析一条短视频，总结内容结构、亮点和改进建议。"),
-            ("查看今日热点趋势", "汇总热点视频与值得关注的趋势。", "请总结今天的热门视频日报和值得关注的趋势。"),
-            ("查询商品与视频数据", "检索商品或视频数据并提炼结论。", "帮我查询商品与视频数据，并提炼可执行的结论。"),
-            ("拆解竞品内容", "比较竞品内容策略与可复用方法。", "请拆解竞品短视频的内容策略，并给出可复用的创作建议。"),
-            ("规划内容选题", "围绕目标受众生成可验证的选题方向。", "请根据我的目标受众和商品，规划一组可测试的短视频选题。"),
-            ("整理运营行动", "把洞察转为有优先级的运营清单。", "请把当前的内容与数据洞察整理成一份有优先级的运营行动清单。"),
+            ("home/video-analysis", "短视频深度分析", "SociaVault 实时数据 + 本地画面与音频分析。"),
+            ("home/tiktok-trends", "今日热点趋势", "热门内容、话题、音乐与创作者实时趋势。"),
+            ("home/shop-research", "商品与视频数据", "TikTok Shop 商品、评论与内容线索。"),
+            ("home/creator-competitor", "达人与竞品追踪", "账号、作品、受众与竞品内容拆解。"),
+            ("home/cross-platform-research", "跨平台内容研究", "TikTok、Instagram、YouTube、Facebook 公开内容研究。"),
+            ("home/web-verification", "联网资料验证", "仅使用公开网页来源核验信息。"),
         ]
         buttons = "".join(
-            f'<button class="official-workflow-item" type="button" data-chat-scene="{html_escape(label)}" '
-            f'data-prompt="{html_escape(prompt)}"><span class="official-workflow-icon">{index:02d}</span>'
+            f'<button class="official-workflow-item" type="button" data-official-preset-id="{html_escape(preset_id)}" '
+            f'data-preset-form-id="{html_escape(preset_id)}" data-official-preset="{html_escape(label)}">'
+            f'<span class="official-workflow-icon">{index:02d}</span>'
             f'<span><strong>{html_escape(label)}</strong><small>{html_escape(description)}</small></span><i>→</i></button>'
-            for index, (label, description, prompt) in enumerate(common_items, start=1)
+            for index, (preset_id, label, description) in enumerate(common_items, start=1)
         )
         return {
-            "kicker": "VIDEO ANALYZER · COMMON TASKS",
-            "title": "常用任务",
-            "intro": "选择后只会填入提示词，可继续补充对象、目标和素材。",
+            "kicker": "SOCIA VAULT · REGISTERED WORKFLOWS",
+            "title": "预设工作流",
+            "intro": "选择后填写必要信息；本次请求只会暴露该工作流登记的 MCP 与本地工具。",
             "tabs_class": "",
             "tabs_attributes": "",
             "tabs": '<button class="official-workflow-tab is-active" type="button" role="tab" aria-selected="true" data-official-tab="common">常用任务 <span>6</span></button>',
             "panels": '<section class="official-workflow-panel is-active" role="tabpanel" data-official-panel="common"><div class="official-workflow-grid">' + buttons + '</div></section>',
-            "footer_status": "按当前站点能力执行",
-            "footer_hint": "选择后只填入提示词，不会自动执行任何操作",
+            "footer_status": "已登记 MCP 与本地工具边界",
+            "footer_hint": "填写并发送后才会调用工具；不会复用到下一次自由对话",
         }
     if provider == "chuhaijiang":
         research_items = [
@@ -1311,6 +1396,8 @@ def chat_official_preset_metadata(
 
 def official_preset_catalog_for_provider(provider: str) -> dict[str, dict[str, Any]]:
     provider = normalize_chat_provider(provider)
+    if provider == "home":
+        return HOME_WORKFLOW_PRESETS
     if provider == "amazon":
         return SELLERSPRITE_OFFICIAL_PRESETS
     if provider == "fastmoss":
@@ -10323,6 +10410,30 @@ def sellersprite_official_skill_tool_ids(
     return sellersprite_ids
 
 
+def home_workflow_preset_route(official_preset_id: str = "") -> dict[str, Any]:
+    """Resolve a request-scoped homepage workflow and fail closed for unknown IDs."""
+    preset_id = str(official_preset_id or "").strip()
+    preset_info = HOME_WORKFLOW_PRESETS.get(preset_id)
+    if not preset_info:
+        return {
+            "intent": "home_workflow_preset",
+            "task_depth": "workflow",
+            "route_source": "invalid_preset",
+            "official_preset_id": preset_id,
+            "invalid_preset": preset_id,
+            "tools": [],
+            "max_rounds": 1,
+        }
+    return {
+        "intent": "home_workflow_preset",
+        "task_depth": "workflow",
+        "route_source": "home_preset",
+        "official_preset_id": preset_id,
+        "tools": sorted(preset_info["tools"]),
+        "max_rounds": _chat_int_setting("HOME_WORKFLOW_PRESET_MAX_ROUNDS", 8, 1, 16),
+    }
+
+
 def sellersprite_official_skill_system_instruction(
     current_date_shanghai: str,
     official_skill_prompt: str,
@@ -10587,6 +10698,7 @@ def run_chat_deepseek(
         store.update_message(session, assistant_msg, "Missing DEEPSEEK_API_KEY", status="error")
         return
 
+    home_preset_requested = provider == "home" and bool(str(official_preset_id or "").strip())
     fastmoss_preset_requested = provider == "fastmoss" and bool(str(official_preset_id or "").strip())
     fastmoss_local_product_scout_chain = (
         provider == "fastmoss" and str(official_preset_id or "").strip() == "fm-product-scout"
@@ -10611,6 +10723,16 @@ def run_chat_deepseek(
         if sellersprite_official_skill_chain
         else None
     )
+    home_preset_route = (
+        home_workflow_preset_route(official_preset_id)
+        if home_preset_requested
+        else None
+    )
+    if home_preset_route and home_preset_route.get("invalid_preset"):
+        error_text = f"未知首页预设：{home_preset_route['invalid_preset']}；请求已拒绝，未暴露工具目录。"
+        store.update_message(session, assistant_msg, error_text, status="error")
+        store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": error_text})
+        return
     if official_skill_route and official_skill_route.get("invalid_preset"):
         provider_label = (
             "出海匠" if provider == "chuhaijiang"
@@ -10711,7 +10833,9 @@ def run_chat_deepseek(
 
     routing_text = chat_routing_text(user_text)
     route = (
-        official_skill_route
+        home_preset_route
+        if home_preset_route is not None
+        else official_skill_route
         if official_skill_route is not None
         else resolve_chat_intent(session.messages, user_text, provider, api_key, api_url, model, req)
     )
@@ -10790,7 +10914,7 @@ def run_chat_deepseek(
     )
     needs_tools = (
         True
-        if official_skill_chain
+        if official_skill_chain or home_preset_route is not None
         else False
         if route_intent == "mcp_interface"
         else True
@@ -11400,8 +11524,12 @@ def run_chat_deepseek(
                             default_region,
                             allowed_tool_ids=(
                                 set(allowed_tool_ids)
-                                if official_skill_chain and (
-                                    provider == "chuhaijiang" or route.get("official_preset_id")
+                                if (
+                                    home_preset_route is not None
+                                    or (
+                                        official_skill_chain
+                                        and (provider == "chuhaijiang" or route.get("official_preset_id"))
+                                    )
                                 )
                                 else None
                             ),
@@ -14534,13 +14662,14 @@ class Handler(BaseHTTPRequestHandler):
             text = str(payload.get("message", "")).strip()
             raw_attachments = payload.get("attachments", [])
             official_preset_id = str(payload.get("officialPresetId") or "").strip()
-            if provider not in {"amazon", "fastmoss", "chuhaijiang"}:
+            if provider not in {"home", "amazon", "fastmoss", "chuhaijiang"}:
                 official_preset_id = ""
             preset_catalog = official_preset_catalog_for_provider(provider)
             preset_info = preset_catalog.get(official_preset_id) or {}
             if official_preset_id and not preset_info:
                 provider_label = (
-                    "出海匠" if provider == "chuhaijiang"
+                    "首页" if provider == "home"
+                    else "出海匠" if provider == "chuhaijiang"
                     else "FastMoss" if provider == "fastmoss"
                     else "SellerSprite"
                 )
