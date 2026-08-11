@@ -14892,12 +14892,15 @@ class Handler(BaseHTTPRequestHandler):
                 max_videos = int(payload.get("max_videos") or 5)
                 if not 1 <= max_videos <= 20:
                     raise ValueError("max_videos 必须在 1 至 20 之间")
-                result = instagram_content_collect.run_simulation(
-                    int(payload.get("account_id") or 0),
-                    max_videos,
-                    False,
-                    int(payload.get("session_id") or 0),
-                )
+                try:
+                    result = instagram_content_collect.run_simulation(
+                        int(payload.get("account_id") or 0),
+                        max_videos,
+                        False,
+                        int(payload.get("session_id") or 0),
+                    )
+                except instagram_content_collect.InstagramCollectionError as exc:
+                    return json_response(self, HTTPStatus.CONFLICT, {"error": str(exc)})
                 login = result.get("login")
                 if isinstance(login, dict):
                     result["login"] = {"profile_has_instagram_login": bool(login.get("profile_has_instagram_login"))}
