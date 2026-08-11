@@ -72,6 +72,43 @@ class TestChatPresetForms(unittest.TestCase):
         self.assertEqual(set(chuhaijiang_forms), set(CHUHAIJIANG_PRESET_FORMS))
         self.assertEqual(home_forms, {})
 
+    def test_server_builds_safe_structured_preset_summary(self):
+        metadata = web_app.chat_official_preset_metadata(
+            "amazon",
+            "comprehensive/product-research",
+            """请使用卖家精灵官方 Skill「智能选品助手」完成选品研究。
+
+用户意图：
+- 亚马逊站点：美国
+- 关键词 / 类目：AI智能翻译机
+- 价格区间：用户未指定，表示无额外限制。
+- 最低月销量：用户未指定，表示无额外限制。
+- 最低评分：4.2
+- 配送方式：不限
+- 补充说明：用户没有额外补充，以其他表单项表达的意图为准。
+
+执行语义：
+- marketplace 使用标准值 \"US\"。""",
+        )
+        self.assertEqual(metadata["label"], "智能选品助手")
+        self.assertEqual(
+            metadata["fields"],
+            [
+                {"label": "亚马逊站点", "value": "美国"},
+                {"label": "关键词 / 类目", "value": "AI智能翻译机"},
+                {"label": "价格区间", "value": "未填写"},
+                {"label": "最低月销量", "value": "未填写"},
+                {"label": "最低评分", "value": "4.2"},
+                {"label": "配送方式", "value": "不限"},
+                {"label": "补充说明", "value": "未填写"},
+            ],
+        )
+        self.assertIsNone(
+            web_app.chat_official_preset_metadata(
+                "amazon", "unknown-preset", "用户意图：\n- 关键词 / 类目：伪造"
+            )
+        )
+
     def test_form_submission_keeps_sellersprite_boundary_and_chuhaijiang_normal_chat(self):
         amazon = self.render("amazon", "/amazon")
         chuhaijiang = self.render("chuhaijiang", "/chuhaijiang")
@@ -100,6 +137,9 @@ class TestChatPresetForms(unittest.TestCase):
         self.assertIn("S.presetInputDraft=draft", template)
         enter_form = template.split("function enterPresetForm", 1)[1].split("function buildPresetPrompt", 1)[0]
         self.assertNotIn('input.value=""', enter_form)
+        self.assertIn("function presetMessageFields(message)", template)
+        self.assertIn('bubble.replaceChildren()', template)
+        self.assertIn(".preset-message-fields", styles)
 
 
 if __name__ == "__main__":

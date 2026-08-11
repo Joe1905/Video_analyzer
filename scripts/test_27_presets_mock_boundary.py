@@ -70,7 +70,11 @@ def run_27_presets_simulation() -> None:
                 f"args={json.dumps(sample_args, ensure_ascii=False)}"
             )
 
-            result = web_app.execute_prefixed_tool(tool_id, sample_args)
+            result = web_app.execute_prefixed_tool(
+                tool_id,
+                sample_args,
+                allowed_tool_ids=set(allowed_tools),
+            )
             assert result["ok"] is True, f"Execution failed for {tool_id}: {result}"
             
             raw_data = result["data"]
@@ -93,6 +97,13 @@ def run_27_presets_simulation() -> None:
             assert out_of_bound_candidate not in preset_exposed, (
                 f"Boundary failure: Forbidden tool {out_of_bound_candidate} leaked into preset {pid}"
             )
+            blocked = web_app.execute_prefixed_tool(
+                out_of_bound_candidate,
+                {"keyword": "must-not-run"},
+                allowed_tool_ids=set(allowed_tools),
+            )
+            assert blocked["ok"] is False
+            assert "outside the active preset boundary" in blocked["error"]
             print(f"  - Out-of-bounds tool check: Forbidden '{out_of_bound_candidate}' correctly excluded.")
 
     print("\n" + "=" * 80)

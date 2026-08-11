@@ -1377,6 +1377,38 @@ body.ui-system .ui-nav__toggle:hover {
     white-space: nowrap;
   }
 
+  body:is(.ui-route-amazon, .ui-route-chuhaijiang) .msg.user .preset-message-fields {
+    margin: 0;
+    padding: 0;
+    display: grid;
+    list-style: none;
+  }
+
+  body:is(.ui-route-amazon, .ui-route-chuhaijiang) .msg.user .preset-message-fields li {
+    min-width: 0;
+    padding: 7px 0;
+    display: grid;
+    grid-template-columns: minmax(92px, .7fr) minmax(0, 1.3fr);
+    gap: 14px;
+    border-top: 1px solid rgba(255, 255, 255, .12);
+  }
+
+  body:is(.ui-route-amazon, .ui-route-chuhaijiang) .msg.user .preset-message-fields span {
+    color: rgba(255, 255, 255, .62);
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  body:is(.ui-route-amazon, .ui-route-chuhaijiang) .msg.user .preset-message-fields b {
+    min-width: 0;
+    color: #fff;
+    font-size: 13px;
+    font-weight: 650;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+  }
+
   body:is(.ui-route-home, .ui-route-amazon, .ui-route-chuhaijiang) .msg.assistant {
     position: relative;
     padding-left: 48px;

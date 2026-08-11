@@ -21,7 +21,7 @@ class Message:
     attachments: list[dict] | None = None
     tool_calls: list[dict] | None = None
     tool_results: list[dict] | None = None
-    official_preset: dict[str, str] | None = None
+    official_preset: dict[str, Any] | None = None
     status: str = "done"  # "pending" | "done" | "error"
     request: dict | None = None
     raw: dict | None = None

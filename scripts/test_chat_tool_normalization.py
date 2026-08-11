@@ -227,10 +227,19 @@ def test_sellersprite_official_skill_chain_loads_full_bundle_and_isolates_tools(
         web_app.SELLERSPRITE_PRODUCT_RESEARCH_PRESET_ID,
     )
     assert explicit_preset_route == preset_route
+    assert web_app.sellersprite_official_skill_tool_ids(
+        {
+            *web_app.provider_default_enabled_tool_ids("amazon"),
+            "fastmoss__product_search",
+        },
+        preset_route["tools"],
+    ) == set(preset_route["tools"])
     unknown_preset_route = web_app.sellersprite_official_skill_route(
         "解压玩具", "unknown-preset"
     )
-    assert unknown_preset_route["tools"] is None
+    assert unknown_preset_route["route_source"] == "invalid_preset"
+    assert unknown_preset_route["tools"] == []
+    assert unknown_preset_route["invalid_preset"] == "unknown-preset"
     assert "official_preset_id" not in unknown_preset_route
     assert web_app.chat_route_uses_report_model("amazon", route) is False
 

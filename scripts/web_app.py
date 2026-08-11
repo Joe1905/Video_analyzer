@@ -638,7 +638,7 @@ NAV_ITEMS = [
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
 
-UI_ASSET_VERSION = "20260811-24"
+UI_ASSET_VERSION = "20260811-25"
 APP_UI_ASSETS = f"""
 <script id="ui-nav-state-boot">
 let uiNavExpanded = false;
@@ -1246,6 +1246,55 @@ def serve_chat_template(handler: BaseHTTPRequestHandler, provider: str, path: st
     chat_html = chat_html.replace("<!-- UI_CHAT_HEADER -->", page_heading, 1)
     chat_html = inject_unified_nav(chat_html, path)
     return text_response(handler, HTTPStatus.OK, chat_html, "text/html; charset=utf-8")
+
+
+def chat_official_preset_metadata(
+    provider: str,
+    preset_id: str,
+    message_text: str,
+) -> dict[str, Any] | None:
+    """Build an authoritative, display-only preset summary from the submitted prompt."""
+    provider = normalize_chat_provider(provider)
+    preset_id = str(preset_id or "").strip()
+    preset_catalog = (
+        SELLERSPRITE_OFFICIAL_PRESETS if provider == "amazon"
+        else FASTMOSS_OFFICIAL_PRESETS if provider == "fastmoss"
+        else {}
+    )
+    preset_info = preset_catalog.get(preset_id)
+    if not preset_info:
+        return None
+    metadata: dict[str, Any] = {
+        "id": preset_id,
+        "label": str(preset_info.get("label") or preset_id),
+    }
+    form = preset_forms_for_provider(provider).get(preset_id)
+    if not form:
+        return metadata
+
+    intent_section = str(message_text or "").split("用户意图：", 1)
+    if len(intent_section) < 2:
+        return metadata
+    intent_text = intent_section[1].split("\n执行语义：", 1)[0].strip()
+    submitted: dict[str, str] = {}
+    for match in re.finditer(
+        r"(?:^|\n)-\s*([^：:\n]+)[：:]\s*([\s\S]*?)(?=\n-\s*[^：:\n]+[：:]|$)",
+        intent_text,
+    ):
+        submitted[match.group(1).strip()] = match.group(2).strip()
+
+    fields: list[dict[str, str]] = []
+    for field in form.get("fields") or []:
+        label = str(field.get("label") or "").strip()
+        if not label:
+            continue
+        value = submitted.get(label, "").strip()
+        if not value or value.startswith("用户未指定") or value.startswith("用户没有额外"):
+            value = "未填写"
+        fields.append({"label": label[:80], "value": value[:1000]})
+    if fields:
+        metadata["fields"] = fields
+    return metadata
 
 
 def load_env_file() -> None:
@@ -10063,21 +10112,30 @@ def sellersprite_official_skill_route(
         print(
             "[CHAT SELLERSPRITE OFFICIAL SKILL] unknown_preset="
             f"{json.dumps(preset_id[:120], ensure_ascii=False)}; "
-            "falling back to full official catalog",
+            "rejecting request (fail closed)",
             flush=True,
         )
+        route.update({
+            "route_source": "invalid_preset",
+            "invalid_preset": preset_id,
+            "tools": [],
+        })
     return route
 
 
 def sellersprite_official_skill_tool_ids(
     enabled_tool_ids: set[str] | None,
+    allowed_tools: list[str] | set[str] | None = None,
 ) -> set[str]:
-    """Expose the complete SellerSprite catalog and no other tool domain."""
-    return {
+    """Expose only SellerSprite tools, intersected with a preset whitelist when supplied."""
+    sellersprite_ids = {
         tool_id
         for tool_id in set(enabled_tool_ids or set())
         if split_prefixed_tool_id(tool_id)[0] == "sellersprite"
     }
+    if allowed_tools is not None:
+        return sellersprite_ids & set(allowed_tools)
+    return sellersprite_ids
 
 
 def sellersprite_official_skill_system_instruction(
@@ -10368,8 +10426,9 @@ def run_chat_deepseek(
         if sellersprite_official_skill_chain
         else None
     )
-    if provider == "fastmoss" and official_skill_route and official_skill_route.get("invalid_preset"):
-        error_text = f"未知 FastMoss 预设：{official_skill_route['invalid_preset']}；请求已拒绝，未暴露工具目录。"
+    if official_skill_route and official_skill_route.get("invalid_preset"):
+        provider_label = "FastMoss" if provider == "fastmoss" else "SellerSprite"
+        error_text = f"未知 {provider_label} 预设：{official_skill_route['invalid_preset']}；请求已拒绝，未暴露工具目录。"
         store.update_message(session, assistant_msg, error_text, status="error")
         store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": error_text})
         return
@@ -10577,7 +10636,10 @@ def run_chat_deepseek(
                 route.get("tools"),
             )
             if fastmoss_official_skill_chain
-            else sellersprite_official_skill_tool_ids(effective_enabled_tool_ids)
+            else sellersprite_official_skill_tool_ids(
+                effective_enabled_tool_ids,
+                route.get("tools"),
+            )
         )
     selected_tool_ids = effective_enabled_tool_ids
     if needs_tools and route_tools is not None and not force_mcp_tools:
@@ -11140,8 +11202,8 @@ def run_chat_deepseek(
                             fn_args,
                             default_region,
                             allowed_tool_ids=(
-                                set(effective_enabled_tool_ids or set())
-                                if provider == "fastmoss" and route.get("official_preset_id")
+                                set(allowed_tool_ids)
+                                if provider in {"amazon", "fastmoss"} and route.get("official_preset_id")
                                 else None
                             ),
                         )
@@ -14248,10 +14310,14 @@ class Handler(BaseHTTPRequestHandler):
                 else {}
             )
             preset_info = preset_catalog.get(official_preset_id) or {}
-            official_preset = (
-                {"id": official_preset_id, "label": str(preset_info.get("label") or official_preset_id)}
-                if preset_info else None
-            )
+            if official_preset_id and not preset_info:
+                provider_label = "FastMoss" if provider == "fastmoss" else "SellerSprite"
+                return json_response(
+                    self,
+                    HTTPStatus.BAD_REQUEST,
+                    {"error": f"未知 {provider_label} 预设：{official_preset_id}"},
+                )
+            official_preset = chat_official_preset_metadata(provider, official_preset_id, text)
             enabled_tool_ids = None
             if "enabledToolMasks" in payload:
                 print(f"[CHAT] ignored legacy tool masks provider={provider}; full-site tools are enforced", flush=True)

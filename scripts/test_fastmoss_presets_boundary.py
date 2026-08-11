@@ -126,6 +126,7 @@ class TestFastMossPresetsBoundary(unittest.TestCase):
                 official_preset={
                     "id": "fm-product-scout",
                     "label": "选品决策",
+                    "fields": [{"label": "目标市场", "value": "美国"}],
                 },
             ))
             save_sessions_to_disk(store)
@@ -133,7 +134,11 @@ class TestFastMossPresetsBoundary(unittest.TestCase):
             load_sessions_from_disk(restored)
             self.assertEqual(
                 restored.get_session("fastmoss:demo").messages[0].official_preset,
-                {"id": "fm-product-scout", "label": "选品决策"},
+                {
+                    "id": "fm-product-scout",
+                    "label": "选品决策",
+                    "fields": [{"label": "目标市场", "value": "美国"}],
+                },
             )
 
     def test_short_question_title_fallback_keeps_analysis_intent(self):
