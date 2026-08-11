@@ -1089,10 +1089,6 @@ def render_app_nav(current_path: str) -> str:
 def inject_unified_nav(html: str, current_path: str) -> str:
     nav = render_app_nav(current_path)
     if "<!-- UI_APP_NAV -->" not in html:
-        # Proxy 2.0 is a self-contained application shell (its source design owns
-        # the dock and responsive workspace), so do not inject a second nav.
-        if current_path == "/proxy":
-            return html
         raise RuntimeError(f"UI shell placeholder missing for {current_path}")
     html = html.replace("<!-- UI_APP_NAV -->", nav, 1)
     if 'id="ui-system-css"' not in html and "</head>" in html:
