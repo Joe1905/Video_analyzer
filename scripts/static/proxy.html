@@ -586,13 +586,13 @@
         list.push(build('remove'));
         return `<div class="row-actions${row.id === state.accountId ? ' expanded' : ''}"><div class="action-tray">${list.join('')}</div><button type="button" class="row-toggle" data-platform-menu="${row.id}" title="账号操作" aria-label="账号操作">${icon('i-more')}</button></div>`;
       };
-      const renderAccounts = () => {
+      const renderAccounts = (emptyMessage = '正在加载账号…') => {
         const table = document.querySelector('.accounts');
         if (!table) return;
         const labels = ['账号', '绑定代理', '状态', '飞书用户', '操作'];
         table.querySelector('thead tr').innerHTML = labels.map((label, index) => `<th>${index === 4 ? `<span class="visually-hidden">${label}</span>` : label}</th>`).join('');
         if (!accountRows.length) {
-          table.querySelector('tbody').innerHTML = '<tr><td colspan="5" class="account-empty">暂无可显示的账号，请检查数据连接后重试。</td></tr>';
+          table.querySelector('tbody').innerHTML = `<tr><td colspan="5" class="account-empty">${emptyMessage}</td></tr>`;
           ['context-name', 'context-owner', 'context-place', 'context-ip', 'context-status'].forEach(id => { const node = el(id); if (node) node.textContent = '—'; });
           return;
         }
@@ -707,6 +707,12 @@
           return `<div class="proxy-row"><i class="proxy-dot ${bad ? 'off' : delay ? 'delay' : ''}"></i><span><span class="proxy-name">${pool.name || '未命名出口'}</span><span class="proxy-ip">${pool.expected_exit_ip || '待校验'} :${pool.local_port || '—'}</span></span><span class="status ${bad ? 'off' : delay ? 'delay' : 'live'}">${label}</span></div>`;
         }).join('') || '<p class="proxy-foot">暂无代理出口</p>';
       };
+      const updateLiveAccountSummary = () => {
+        const online = accountRows.filter(row => Object.values(row.platforms).some(item => item.loggedIn && item.awake)).length;
+        const pending = accountRows.filter(row => Object.values(row.platforms).some(item => !item.loggedIn || item.kind === 'off')).length;
+        const values = [online, Math.max(0, accountRows.length - online), pending];
+        document.querySelectorAll('.account-head .summary-item b').forEach((node, index) => { node.textContent = String(values[index] || 0); });
+      };
       const hydrateLiveData = async () => {
         const response = await fetch('/api/proxy/pools');
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -722,12 +728,20 @@
         accountRows.forEach(row => { activePlatformByAccount[row.id] = row.platforms.tiktok.loggedIn ? 'tiktok' : row.platforms.instagram.loggedIn ? 'instagram' : 'tiktok'; });
         if (accountRows.length) { state.accountId = accountRows[0].id; state.platform = activePlatformByAccount[state.accountId]; }
         updateLiveProxyList(pools);
+        updateLiveAccountSummary();
         renderAccounts();
       };
       const initialProxyList = document.querySelector('#proxy-list');
       if (initialProxyList) initialProxyList.innerHTML = '<p class="proxy-foot">正在加载代理出口…</p>';
       renderAccounts();
-      hydrateLiveData().catch(renderAccounts);
+      const loadLiveData = async () => {
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          try { await hydrateLiveData(); return; }
+          catch (_) { if (attempt === 0) await new Promise(resolve => setTimeout(resolve, 300)); }
+        }
+        renderAccounts('账号数据暂时无法加载，请刷新页面重试。');
+      };
+      loadLiveData();
     })();
   </script>
 </body>
