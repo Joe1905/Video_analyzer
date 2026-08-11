@@ -499,9 +499,9 @@
     .platform-switcher button { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 9px; border: 0; border-radius: 6px; color: var(--muted); background: transparent; font-size: 12px; font-weight: 750; transition: color .18s ease, background .18s ease, box-shadow .18s ease; }
     .platform-switcher button:hover { color: var(--text); background: #f5f6f8; }
     .platform-switcher button[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 0 0 1px rgba(82,103,243,.13); }
-    .platform-mark { display: inline-grid; width: 15px; height: 15px; place-items: center; border: 1px solid rgba(18,24,34,.16); border-radius: 50%; color: #fff; font-size: 7px; font-style: normal; font-weight: 850; letter-spacing: -.06em; background: #202833; box-shadow: inset 0 1px rgba(255,255,255,.19); }
-    .platform-mark span { transform: scale(.86); }
-    .platform-mark.instagram { border-color: rgba(190,69,109,.26); background: linear-gradient(135deg,#f0a06f 0%,#d85286 54%,#7657c8 100%); }
+    .platform-mark { display: inline-grid; width: 15px; height: 15px; place-items: center; flex:0 0 15px; color:#273244; font-style:normal; }
+    .platform-mark svg { width:15px; height:15px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+    .platform-mark.instagram { color:#c45778; }
     .accounts th:nth-child(1) { width: 30%; }
     .accounts th:nth-child(2) { width: 18%; }
     .accounts th:nth-child(3) { width: 16%; }
@@ -552,15 +552,21 @@
     .login-browser-placeholder { display: grid; min-height: 156px; place-items: center; border: 1px dashed #c8ced8; border-radius: 10px; color: var(--muted); text-align: center; font-size: 12px; }
     .login-browser-placeholder b { display: block; margin-bottom: 4px; color: var(--text); font-size: 13px; }
     .login-session-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 2px; }
-    .account-platform-topline { display: flex; align-items: center; justify-content: space-between; gap: 7px; min-height: 24px; margin: -1px 0 4px; }
-    .platform-ledger { display: inline-flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid #e1e5eb; border-radius: 999px; background: rgba(255,255,255,.82); box-shadow: 0 1px 1px rgba(26,35,49,.035); }
-    .platform-ledger-item { display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 7px 0 5px; border: 1px solid transparent; border-radius: 999px; color: #7c8694; font-size: 10px; font-style: normal; font-weight: 720; letter-spacing: -.01em; line-height: 1; }
-    .platform-ledger-item .platform-mark { width: 12px; height: 12px; font-size: 6px; }
-    .platform-ledger-item .platform-mark span { transform: scale(.74); }
-    .platform-ledger-item.active { border-color: #dfe4ee; color: #263143; background: #f1f4f8; box-shadow: 0 1px 2px rgba(29,39,55,.06); }
-    .inline-platform-switch { display: inline-grid; width: 24px; height: 24px; place-items: center; padding: 0; border: 1px solid #e1e5eb; border-radius: 50%; color: #6f7a88; background: #fff; box-shadow: 0 1px 1px rgba(26,35,49,.035); transition: color .16s ease, border-color .16s ease, background .16s ease, transform .16s ease; }
-    .inline-platform-switch .icon { width: 13px; height: 13px; }
-    .inline-platform-switch:hover { border-color: #bfc8ff; color: var(--accent); background: #f7f8ff; transform: rotate(180deg); }
+    /* 账号的多平台信息是工作上下文，不做成一排有边框的“标签”。 */
+    .account-platform-topline { display:flex; align-items:center; gap:8px; min-height:21px; margin:0 0 3px; }
+    .platform-ledger { display:inline-flex; align-items:center; gap:10px; min-width:0; }
+    .platform-ledger-item { position:relative; display:inline-flex; align-items:center; gap:4px; height:20px; padding:0 0 2px; color:#929aa5; font-size:10px; font-style:normal; font-weight:650; letter-spacing:.015em; line-height:1; }
+    .platform-ledger-item .platform-mark { width:13px; height:13px; flex-basis:13px; }
+    .platform-ledger-item .platform-mark svg { width:13px; height:13px; }
+    .platform-ledger-item.active { color:#1f2937; font-weight:780; }
+    .platform-ledger-item.active::after { position:absolute; right:0; bottom:0; left:17px; height:1px; border-radius:1px; background:currentColor; content:""; opacity:.55; }
+    .inline-platform-switch { display:inline-grid; width:21px; height:20px; place-items:center; padding:0 0 0 7px; border:0; border-left:1px solid #dfe4ea; border-radius:0; color:#87919e; background:transparent; transition:color .18s ease,transform .28s cubic-bezier(.22,.61,.36,1); }
+    .inline-platform-switch .icon { width:14px; height:14px; }
+    .inline-platform-switch:hover { color:var(--accent); transform:rotate(180deg); }
+    /* 所有运行态统一为色点 + 文字，避免左栏、主表和抽屉出现药丸堆叠。 */
+    .status { gap:6px; padding:0; border-radius:0; background:transparent!important; font-weight:720; line-height:1.4; }
+    .status::before { width:6px; height:6px; flex:0 0 6px; border-radius:50%; background:currentColor; content:""; }
+    .status.live { color:#16846a; }.status.delay { color:#b87922; }.status.off { color:#bd5967; }
     @media (max-width: 1040px) { .platform-switcher button { padding: 0 7px; } .platform-switcher button > span { display: none; } }
   </style>
   <script>window.__PROXY_BOOTSTRAP__ = /* PROXY_BOOTSTRAP */ null;</script>
@@ -595,7 +601,11 @@
         renderAccounts();
       };
       window.proxySwitchAccountPlatform = switchAccountPlatform;
-      const mark = key => `<i class="platform-mark ${platformMeta[key].className}"><span>${platformMeta[key].short}</span></i>`;
+      const platformGlyph = {
+        tiktok: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4v9.2a3.8 3.8 0 1 1-2.6-3.6"/><path d="M14 4c1.1 2.3 2.8 3.5 5 3.8"/></svg>',
+        instagram: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4.2" y="4.2" width="15.6" height="15.6" rx="4.4"/><circle cx="12" cy="12" r="3.2"/><path d="M17.4 6.8h.01"/></svg>'
+      };
+      const mark = key => `<i class="platform-mark ${platformMeta[key].className}">${platformGlyph[key]}</i>`;
       const availability = item => item.loggedIn
         ? `<span class="platform-availability ready"><i></i>已登录</span>`
         : `<span class="platform-availability ${item.awake ? 'pending' : 'missing'}"><i></i>${item.awake ? '可新增登录' : '等待登录'}</span>`;
