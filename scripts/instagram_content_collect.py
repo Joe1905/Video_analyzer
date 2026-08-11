@@ -222,6 +222,9 @@ def _launch_browser(profile_dir: Path, proxy_port: int, log_dir: Path) -> tuple[
         "--disable-translate",
         "--disable-background-networking",
         "--disable-default-apps",
+        "--disable-gpu",
+        "--use-angle=swiftshader",
+        "--enable-unsafe-swiftshader",
         "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
         "--disable-session-crashed-bubble",
         "--window-size=1280,900",
@@ -377,7 +380,13 @@ def run_simulation(account_id: int, max_videos: int, check_login_only: bool) -> 
             context = browser.contexts[0]
             page = context.pages[0] if context.pages else context.new_page()
             page.goto(INSTAGRAM_CONTENT_URL, wait_until="domcontentloaded", timeout=45000)
-            page.wait_for_timeout(2000)
+            try:
+                page.wait_for_function("document.body && document.body.innerText.trim().length > 30", timeout=20000)
+            except Exception:
+                # The diagnostic below captures a token-safe page summary when
+                # Instagram renders only an application shell.
+                pass
+            page.wait_for_timeout(1200)
             if _is_login_page(page.url):
                 result["login"] = {**login, "profile_has_instagram_login": False, "reason": "Instagram 已跳转到登录页"}
                 return result
