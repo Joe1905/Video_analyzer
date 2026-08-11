@@ -4379,7 +4379,11 @@ def start_login_session(payload: dict[str, Any]) -> dict[str, Any]:
                 ),
             )
             conn.commit()
-            start_url = PLATFORM_START_URLS[start_platform] if account_id else "https://www.tiktok.com/login?lang=en"
+            login_start_urls = {
+                "tiktok": "https://www.tiktok.com/login?lang=en",
+                "instagram": "https://www.instagram.com/accounts/login/",
+            }
+            start_url = login_start_urls[start_platform] if login_platform else (PLATFORM_START_URLS[start_platform] if account_id else login_start_urls["tiktok"])
             pid, user_data_dir = _launch_browser_for_session(
                 profile,
                 pool,
@@ -4529,6 +4533,7 @@ def open_observation_platform(payload: dict[str, Any]) -> dict[str, Any]:
     """Open a platform tab in an existing account observation browser."""
     session_id = int(payload.get("session_id") or payload.get("id") or 0)
     platform = _clean_text(payload.get("platform"), 32).lower()
+    login_platform = bool(payload.get("login_platform"))
     targets = {
         "tiktok": "https://www.tiktok.com/?lang=en",
         "instagram": "https://www.instagram.com/",
@@ -4552,13 +4557,27 @@ def open_observation_platform(payload: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("account not found")
         profile = _json_loads(account["profile_json"], {})
         deleted_platforms = profile.get("platform_deletions") if isinstance(profile, dict) else {}
-        if platform == "tiktok" and bool((deleted_platforms or {}).get("tiktok")):
+        if login_platform and platform == "tiktok" and not bool((deleted_platforms or {}).get("tiktok")):
+            raise ValueError("当前 Chrome Profile 已登录 TikTok")
+        if login_platform and platform == "instagram" and _instagram_login_metadata(profile)["logged_in"]:
+            raise ValueError("当前 Chrome Profile 已登录 Instagram")
+        if not login_platform and platform == "tiktok" and bool((deleted_platforms or {}).get("tiktok")):
             raise ValueError("TikTok 登录资料已删除")
-        if platform == "instagram" and not _instagram_login_metadata(profile)["logged_in"]:
+        if not login_platform and platform == "instagram" and not _instagram_login_metadata(profile)["logged_in"]:
             raise ValueError("当前 Chrome Profile 未检测到 Instagram 登录")
         debug_port = int(row["debug_port"] or 0)
         if not debug_port:
             raise ValueError("观测浏览器调试端口不可用")
+    if login_platform:
+        preflight = check_binding({"account_id": account_id}, require_account=True)
+        if not preflight.get("allowed"):
+            raise ValueError(str(preflight.get("reason") or "代理 IP 校验未通过"))
+        with connect() as conn:
+            conn.execute(
+                "UPDATE browser_sessions SET login_platform = ?, updated_at = ? WHERE id = ?",
+                (platform, now_iso(), session_id),
+            )
+            conn.commit()
     page = None
     try:
         from playwright.sync_api import sync_playwright
@@ -4570,7 +4589,14 @@ def open_observation_platform(payload: dict[str, Any]) -> dict[str, Any]:
             # Reuse the browser's initial business page. A platform switch must
             # not leave a startup TikTok tab plus a newly-created Instagram tab.
             page = browser.contexts[0].pages[0] if browser.contexts[0].pages else browser.contexts[0].new_page()
-            response = page.goto(targets[platform], wait_until="domcontentloaded", timeout=30000)
+            target_url = (
+                "https://www.tiktok.com/login?lang=en"
+                if login_platform and platform == "tiktok"
+                else "https://www.instagram.com/accounts/login/"
+                if login_platform
+                else targets[platform]
+            )
+            response = page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
             if response is not None and not response.ok:
                 raise ValueError(f"{platform} 页面打开失败：HTTP {response.status}")
             page.bring_to_front()
@@ -4588,7 +4614,7 @@ def open_observation_platform(payload: dict[str, Any]) -> dict[str, Any]:
         )
         conn.commit()
         session = _session_by_id(conn, session_id)
-    return {"session": _row_to_session(session), "platform": platform, **list_state()}
+    return {"session": _row_to_session(session), "platform": platform, "login_platform": login_platform, **list_state()}
 
 
 def start_automation_session(account_id: int, job_id: str, start_platform: str = "tiktok") -> dict[str, Any]:
