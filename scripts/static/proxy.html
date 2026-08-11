@@ -587,6 +587,13 @@
       const tiktokCollectView = { ...views.collect };
       const accountFor = () => accountRows.find(row => row.id === state.accountId) || accountRows[0];
       const platformFor = row => row.platforms[activePlatformByAccount[row.id] || 'tiktok'];
+      const switchAccountPlatform = accountId => {
+        state.accountId = accountId;
+        const current = activePlatformByAccount[accountId] || 'tiktok';
+        activePlatformByAccount[accountId] = current === 'tiktok' ? 'instagram' : 'tiktok';
+        state.platform = activePlatformByAccount[accountId];
+        renderAccounts();
+      };
       const mark = key => `<i class="platform-mark ${platformMeta[key].className}"><span>${platformMeta[key].short}</span></i>`;
       const availability = item => item.loggedIn
         ? `<span class="platform-availability ready"><i></i>已登录</span>`
@@ -616,6 +623,13 @@
           const platformTopline = multiLoggedIn ? `<span class="account-platform-topline"><span class="platform-ledger">${Object.keys(row.platforms).map(key => `<i class="platform-ledger-item${key === platform ? ' active' : ''}">${mark(key)}${platformMeta[key].label}</i>`).join('')}</span><button type="button" class="inline-platform-switch" data-row-platform-switch="${row.id}" title="切换当前平台" aria-label="切换当前平台">${svg('<path d="M7 7h11l-3-3m3 3-3 3M17 17H6l3 3m-3-3 3-3"/>')}</button></span>` : '';
           return `<tr class="${row.id === state.accountId ? 'selected' : ''}" data-platform-row="${row.id}"><td><span class="account-person"><i class="person-avatar">${row.initials}</i><span>${platformTopline}<b class="person-name">${row.id}</b><span class="person-sub">${row.owner} · ${item.awake ? '会话在线' : item.loggedIn ? '会话休眠' : '会话已释放'}</span></span></span></td><td><span class="proxy-cell"><i></i>${row.proxy}</span><span class="person-sub">${row.ip}</span></td><td><span class="status ${item.kind}">${item.status}</span><span class="platform-session ${item.awake && item.loggedIn ? 'awake' : item.loggedIn ? '' : 'offline'}"><i></i>${item.awake && item.loggedIn ? '浏览器已唤醒' : item.loggedIn ? '浏览器已休眠' : '平台未登录'}</span></td><td><span class="feishu-identity"><img src="${row.avatar}" alt=""><span><b>${row.owner}</b><small>已绑定 · 可授权</small></span></span></td><td>${rowActions(row, item, platform)}</td></tr>`;
         }).join('');
+        table.querySelectorAll('[data-row-platform-switch]').forEach(button => {
+          button.addEventListener('click', event => {
+            event.preventDefault();
+            event.stopPropagation();
+            switchAccountPlatform(button.dataset.rowPlatformSwitch);
+          });
+        });
         renderContext();
       };
       const renderContext = () => {
@@ -682,8 +696,6 @@
       const rawOpen = open;
       open = function(name) { if (name === 'observe') void syncPlatformViews(); if (name === 'platformLogin') renderPlatformLogin(); return rawOpen(name); };
       document.addEventListener('click', event => {
-        const rowPlatformSwitch = event.target.closest('[data-row-platform-switch]');
-        if (rowPlatformSwitch) { event.preventDefault(); event.stopPropagation(); state.accountId = rowPlatformSwitch.dataset.rowPlatformSwitch; const current = activePlatformByAccount[state.accountId] || 'tiktok'; activePlatformByAccount[state.accountId] = current === 'tiktok' ? 'instagram' : 'tiktok'; state.platform = activePlatformByAccount[state.accountId]; renderAccounts(); return; }
         const row = event.target.closest('[data-platform-row]');
         if (row && !event.target.closest('button')) { state.accountId = row.dataset.platformRow; state.platform = activePlatformByAccount[state.accountId] || 'tiktok'; renderAccounts(); return; }
         const menu = event.target.closest('[data-platform-menu]');
@@ -696,7 +708,7 @@
         if (loginSubmit && state.loginChoice) { event.preventDefault(); renderLoginSession(); open('platformLoginSession'); return; }
         const loginComplete = event.target.closest('[data-platform-login-complete]');
         if (loginComplete) { const item = accountFor().platforms[state.loginChoice]; item.loggedIn = true; item.awake = true; item.status = '可采集'; item.kind = 'live'; item.session = state.loginChoice === 'instagram' ? 'Reels 入口已保存' : '会话在线 · 可观测'; renderAccounts(); open('platformLogin'); }
-      }, true);
+      });
       const liveRuntimeStatus = (account, pool, session) => {
         if (!account.proxy_bound) return { status: '未绑定', kind: 'delay' };
         if (!pool || ['不可用', '异常', '禁用'].includes(pool.status) || account.last_check_status === '阻断') return { status: 'IP不可用', kind: 'off' };
