@@ -1089,10 +1089,10 @@ body.ui-system .ui-nav__toggle:hover {
   body.ui-system .official-workflow-dialog {
     position: relative;
     width: min(940px, 100%);
-    max-height: min(720px, calc(100dvh - 60px));
+    height: min(720px, calc(100dvh - 60px));
     min-height: 0;
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
     overflow: hidden;
     border: 1px solid rgba(255, 255, 255, .72);
     border-radius: 26px;
@@ -1147,8 +1147,8 @@ body.ui-system .ui-nav__toggle:hover {
   body.ui-system .official-workflow-tabs {
     margin: 0 28px;
     padding: 4px;
-    display: flex;
-    flex-wrap: wrap;
+    display: inline-grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     justify-self: start;
     gap: 4px;
     border-radius: 12px;
@@ -1157,6 +1157,10 @@ body.ui-system .ui-nav__toggle:hover {
 
   body.ui-system .official-workflow-tabs.official-workflow-tabs--single {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  body.ui-system .official-workflow-tabs.official-workflow-tabs--home {
+    grid-template-columns: repeat(3, max-content);
   }
 
   body.ui-system .official-workflow-tab {
@@ -1183,9 +1187,7 @@ body.ui-system .ui-nav__toggle:hover {
   }
 
   body.ui-system .official-workflow-body {
-    flex: 0 1 auto;
     min-height: 0;
-    max-height: min(492px, calc(100dvh - 228px));
     margin-top: 16px;
     padding: 0 28px 24px;
     overflow: auto;
@@ -2016,7 +2018,7 @@ body.ui-system .ui-nav__toggle:hover {
 
     body.ui-system .official-workflow-dialog {
       width: 100%;
-      max-height: min(92dvh, calc(100dvh - max(12px, env(safe-area-inset-top))));
+      height: min(92dvh, calc(100dvh - max(12px, env(safe-area-inset-top))));
       border-right: 0;
       border-bottom: 0;
       border-left: 0;
@@ -2048,8 +2050,12 @@ body.ui-system .ui-nav__toggle:hover {
       justify-self: start;
     }
 
+    body.ui-system .official-workflow-tabs.official-workflow-tabs--home {
+      width: fit-content;
+      justify-self: start;
+    }
+
     body.ui-system .official-workflow-body {
-      max-height: calc(92dvh - 216px);
       margin-top: 12px;
       padding: 0 14px 18px;
     }

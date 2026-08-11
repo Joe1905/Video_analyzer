@@ -45,6 +45,7 @@ class HomeWorkflowPresetTests(unittest.TestCase):
         self.assertIn('href="/report"', modal["panels"])
         self.assertIn('href="/shop"', modal["panels"])
         self.assertIn('href="/metrics"', modal["panels"])
+        self.assertEqual(modal["tabs_class"], "official-workflow-tabs--home")
 
     def test_route_and_execution_fail_closed(self) -> None:
         route = web_app.home_workflow_preset_route("home/web-verification")
