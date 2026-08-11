@@ -1206,7 +1206,7 @@ def render_chat_official_workflow_modal(provider: str) -> dict[str, str]:
             "kicker": "SOCIA VAULT · REGISTERED WORKFLOWS",
             "title": "预设工作流",
             "intro": "按场景选择；对话工作流仅暴露登记的 MCP 与本地工具，系统工作流会进入原有页面。",
-            "tabs_class": "official-workflow-tabs--home",
+            "tabs_class": " official-workflow-tabs--home",
             "tabs_attributes": "",
             "tabs": (
                 '<button class="official-workflow-tab is-active" type="button" role="tab" aria-selected="true" data-official-tab="insight">社媒洞察 <span>3</span></button>'
