@@ -93,24 +93,6 @@ def _form(label: str, prompt: str, fields: list[dict[str, Any]], intro: str = "�
     }
 
 
-def _social_research_form(
-    label: str,
-    prompt: str,
-    target_label: str,
-    target_placeholder: str,
-    focus_placeholder: str,
-) -> dict[str, Any]:
-    return _form(
-        label,
-        prompt,
-        [
-            _field("target", target_label, target_placeholder, required=True, full=True),
-            _field("focus", "研究重点", focus_placeholder, multiline=True, full=True),
-        ],
-        "本次请求只暴露该平台预设登记的 SociaVault MCP 工具。",
-    )
-
-
 def _marketplace(value: str = "US") -> dict[str, Any]:
     return _field(
         "marketplace",
@@ -435,48 +417,99 @@ CHUHAIJIANG_PRESET_FORMS: dict[str, dict[str, Any]] = {
 
 HOME_PRESET_FORMS: dict[str, dict[str, Any]] = {
     "home/video-analysis": _form(
-        "短视频深度分析",
-        "请按短视频深度分析工作流处理：先取得实时视频数据；需要画面与音频证据时，再下载并分析视频。",
+        "跨平台短视频深度分析",
+        "请按跨平台短视频深度分析工作流处理：先识别视频平台并取得内容、转录与评论；仅在本地分析支持时下载并补充画面和音频证据。",
         [
-            _field("video_url", "视频链接", "粘贴 TikTok 或抖音公开视频链接", required=True, full=True),
-            _field("focus", "分析重点", "例如前三秒钩子、评论反馈、转化线索或脚本结构", multiline=True, full=True),
+            _field("video_url", "视频链接", "粘贴 TikTok、Instagram、YouTube、Facebook 或 X 公共视频链接", required=True, full=True),
+            _field("focus", "分析重点", "例如前三秒钩子、叙事结构、评论反馈、转化线索或脚本结构", multiline=True, full=True),
         ],
-        "会结合 SociaVault 实时数据与本地视频解析；仅在需要画面或音频证据时下载视频。",
+        "只暴露视频详情、转录、评论和本地分析相关工具；不会开放无关的平台能力。",
     ),
     "home/tiktok-trends": _form(
-        "今日热点趋势",
-        "请按今日 TikTok 热点趋势工作流处理，基于实时热门内容、话题、音乐和创作者数据给出结论。",
+        "跨平台热点与选题",
+        "请按跨平台热点与选题工作流处理，从短视频、社区、搜索和视觉平台交叉验证趋势并形成选题建议。",
         [
-            _field("market", "目标市场", "例如 US、GB；留空时按 SociaVault 返回的可用范围说明", parameter="region"),
-            _field("topic", "关注主题", "例如美妆、宠物、露营；留空则概览当前热点"),
+            _field("market", "目标市场", "例如 US、GB、JP；留空时说明数据地域限制", parameter="region"),
+            _field("topic", "行业 / 主题", "例如美妆、宠物、露营；留空则做综合趋势扫描", required=True),
+            _field("focus", "选题目标", "例如寻找增长话题、热门音乐、视觉趋势或差异化切口", multiline=True, full=True),
         ],
-        "只使用 SociaVault MCP 的实时趋势数据，不以模型记忆代替实时榜单。",
+        "限定调用趋势、搜索、Shorts/Reels 与视觉发现相关工具。",
     ),
     "home/shop-research": _form(
-        "商品与视频数据",
-        "请按商品与视频数据研究工作流处理，先检索 TikTok Shop 商品及关联内容数据，再给出可执行结论。",
+        "商品与商业机会",
+        "请按商品与商业机会工作流处理，联查 TikTok Shop、Facebook Marketplace、Amazon 和公开搜索数据。",
         [
-            _field("query", "商品关键词 / 链接", "输入商品关键词、TikTok Shop 商品链接或商品 ID", required=True, full=True),
-            _field("focus", "关注维度", "例如价格、评论痛点、带货内容或竞品", multiline=True, full=True),
+            _field("query", "商品 / 类目 / 链接", "输入商品关键词、类目、商品链接、ASIN 或商品 ID", required=True, full=True),
+            _field("market", "目标市场", "例如 US、GB、DE", parameter="region"),
+            _field("focus", "关注维度", "例如价格带、评论痛点、供需、竞品或内容机会", multiline=True, full=True),
         ],
-        "使用 SociaVault TikTok Shop MCP 数据；必要时仅补充公开网页验证结果。",
+        "只开放商城、Marketplace、Amazon 抓取与网页核验工具。",
     ),
     "home/creator-competitor": _form(
-        "达人与竞品追踪",
-        "请按达人与竞品追踪工作流处理，查询账号、作品和受众数据，并输出可复用的内容打法。",
+        "达人与账号对标",
+        "请按达人与账号对标工作流处理，跨平台比较账号、受众、作品结构与内容打法。",
         [
-            _field("target", "达人 / 竞品账号", "输入 @账号、主页链接或搜索关键词", required=True, full=True),
-            _field("focus", "关注维度", "例如粉丝增长、爆款内容、受众画像或竞品对比", multiline=True, full=True),
+            _field("targets", "达人 / 品牌账号", "输入一个或多个 @账号、主页链接或搜索关键词，并注明平台", required=True, full=True),
+            _field("focus", "对标维度", "例如受众画像、内容结构、更新频率、爆款主题或账号差异", multiline=True, full=True),
         ],
+        "限定调用账号、受众和账号内容列表工具，不开放评论、广告或商城工具。",
     ),
     "home/cross-platform-research": _form(
-        "跨平台内容研究",
-        "请按跨平台内容研究工作流处理，使用 SociaVault 查询指定平台的公开内容和互动数据。",
+        "品牌与竞品舆情",
+        "请按品牌与竞品舆情工作流处理，从搜索、社媒和社区信号交叉核验品牌动态与公众反馈。",
         [
-            _field("platform", "社媒平台", "选择社媒平台", required=True, value="tiktok", options=SOCIAL_PLATFORM_OPTIONS),
-            _field("target", "账号 / 视频 / 关键词", "输入公开链接、账号名或检索关键词", required=True, full=True),
-            _field("focus", "研究目标", "例如选题、互动反馈、竞品内容或账号定位", multiline=True, full=True),
+            _field("targets", "品牌 / 竞品", "输入品牌、产品、竞品名称或公开主页", required=True, full=True),
+            _field("market", "市场 / 语言", "例如美国英语、英国、东南亚"),
+            _field("focus", "研究目标", "例如声量来源、争议、增长信号、竞品动态或风险", multiline=True, full=True),
         ],
+        "限定调用品牌发现、公开内容与社区检索工具。",
+    ),
+    "home/comment-demand-insights": _form(
+        "评论与用户需求洞察",
+        "请按评论与用户需求洞察工作流处理，跨平台汇总评论、回复及传播互动并提炼需求。",
+        [
+            _field("targets", "内容链接 / 关键词", "输入一个或多个视频、帖子链接或产品关键词", required=True, full=True),
+            _field("focus", "洞察目标", "例如用户痛点、购买阻力、满意点、常见问题或功能诉求", multiline=True, full=True),
+        ],
+        "限定调用内容详情、评论、回复和必要的搜索工具。",
+    ),
+    "home/ad-creative-research": _form(
+        "广告素材与投放研究",
+        "请按广告素材与投放研究工作流处理，比较 TikTok、Meta、Google 与 LinkedIn 广告库中的公开投放。",
+        [
+            _field("targets", "品牌 / 广告主 / 关键词", "输入品牌、广告主、竞品或素材关键词", required=True, full=True),
+            _field("market", "目标市场", "例如 US、GB、DE", parameter="region"),
+            _field("focus", "研究目标", "例如活跃广告、创意卖点、CTA、素材形式或投放周期", multiline=True, full=True),
+        ],
+        "只开放四类广告库工具，不开放平台账号或普通内容工具。",
+    ),
+    "home/community-listening": _form(
+        "社区口碑与话题追踪",
+        "请按社区口碑与话题追踪工作流处理，聚合 Reddit、Threads、X 社群和 Facebook 群组讨论。",
+        [
+            _field("topic", "品牌 / 产品 / 话题", "输入需要追踪的品牌、产品、事件或关键词", required=True, full=True),
+            _field("communities", "指定社区", "可选：Subreddit、X Community、Threads 账号或 Facebook 群组", full=True),
+            _field("focus", "研究目标", "例如口碑、争议、真实体验、观点分歧或趋势变化", multiline=True, full=True),
+        ],
+        "限定调用社区、群组、帖子与评论工具。",
+    ),
+    "home/live-content-monitor": _form(
+        "直播与短内容监测",
+        "请按直播与短内容监测工作流处理，联查 TikTok、YouTube、Twitch 与 Instagram 的直播和短内容。",
+        [
+            _field("targets", "账号 / 频道 / 主题", "输入主播、频道、账号、主页链接或主题关键词", required=True, full=True),
+            _field("focus", "监测目标", "例如直播状态、开播排期、Shorts/Reels 更新或精彩片段", multiline=True, full=True),
+        ],
+        "限定调用直播、排期、短内容和账号识别工具。",
+    ),
+    "home/visual-inspiration": _form(
+        "视觉灵感与创意趋势",
+        "请按视觉灵感与创意趋势工作流处理，从音乐、Reels、Shorts、Pins 与看板提炼创意方向。",
+        [
+            _field("topic", "品类 / 视觉主题", "例如春季露营、极简家居、宠物用品", required=True, full=True),
+            _field("focus", "创意目标", "例如视觉风格、音乐、构图、短视频形式、看板或素材方向", multiline=True, full=True),
+        ],
+        "限定调用视觉发现、热门音乐、Reels、Shorts 与 Pinterest 工具。",
     ),
     "home/web-verification": _form(
         "联网资料验证",
@@ -485,80 +518,6 @@ HOME_PRESET_FORMS: dict[str, dict[str, Any]] = {
             _field("query", "检索问题", "输入需要核验的品牌、产品、趋势或公开资料问题", required=True, full=True),
         ],
         "此工作流只调用联网检索外挂，不调用社媒 MCP 或下载功能。",
-    ),
-    "home/amazon-product-research": _form(
-        "Amazon 商品研究",
-        "请按 Amazon 商品研究工作流处理，先抓取商品页、ASIN 或关键词结果，再结合公开资料给出研判。",
-        [
-            _field("target", "商品链接 / ASIN / 关键词", "输入 Amazon 商品链接、ASIN 或检索关键词", required=True, full=True),
-            _field("focus", "研究重点", "例如价格带、卖点、评论痛点、竞品或机会判断", multiline=True, full=True),
-        ],
-        "此工作流只调用本地 Amazon 抓取外挂与公开网页检索，不调用社媒 MCP。",
-    ),
-    "home/tiktok-account-live": _social_research_form(
-        "TikTok 账号与直播",
-        "请按 TikTok 账号与直播工作流处理，查询账号、作品、受众、关注关系及直播数据。",
-        "TikTok 账号 / 主页链接", "输入 @账号或 TikTok 主页链接", "例如受众画像、近期内容、直播状态或粉丝关系",
-    ),
-    "home/tiktok-ad-library": _social_research_form(
-        "TikTok 广告库",
-        "请按 TikTok 广告库工作流处理，检索广告素材并查看必要的广告详情。",
-        "品牌 / 广告关键词", "输入品牌名、广告主或素材关键词", "例如投放创意、CTA、竞品素材或投放线索",
-    ),
-    "home/instagram-research": _social_research_form(
-        "Instagram 内容洞察",
-        "请按 Instagram 内容洞察工作流处理，分析账号、帖子、Reels、精选、音乐与评论互动。",
-        "Instagram 账号 / 帖子 / 关键词", "输入 @账号、公开链接、帖子 ID 或音乐关键词", "例如 Reels 选题、互动、评论反馈或账号定位",
-    ),
-    "home/youtube-research": _social_research_form(
-        "YouTube 频道与视频",
-        "请按 YouTube 频道与视频工作流处理，研究频道、视频、Shorts、直播、社区帖、播放列表与评论。",
-        "YouTube 频道 / 视频 / 关键词", "输入频道、公开视频链接或检索关键词", "例如 Shorts 趋势、视频脚本、频道定位或评论反馈",
-    ),
-    "home/facebook-research": _social_research_form(
-        "Facebook 生态洞察",
-        "请按 Facebook 生态洞察工作流处理，分析主页、帖子、Reels、群组、评论与 Marketplace 商品。",
-        "Facebook 主页 / 帖子 / 商品", "输入公开主页、帖子、群组或 Marketplace 链接", "例如内容互动、社群讨论、商品线索或评论反馈",
-    ),
-    "home/x-twitter-research": _social_research_form(
-        "X / Twitter 舆情",
-        "请按 X / Twitter 舆情工作流处理，追踪账号、推文、互动、社群与关注关系。",
-        "X 账号 / 推文 / 关键词", "输入 @账号、x.com 链接或检索关键词", "例如舆情、传播路径、引用转推或社群话题",
-    ),
-    "home/linkedin-research": _social_research_form(
-        "LinkedIn 品牌研究",
-        "请按 LinkedIn 品牌研究工作流处理，查询个人、公司和公开职业内容。",
-        "个人 / 公司 / 帖子", "输入 LinkedIn 公开链接、公司名或目标人物", "例如品牌定位、人才动态、公司内容或行业观点",
-    ),
-    "home/reddit-research": _social_research_form(
-        "Reddit 社区聆听",
-        "请按 Reddit 社区聆听工作流处理，研究 Subreddit、帖子、评论、转录与关键词讨论。",
-        "Subreddit / 帖子 / 关键词", "输入 r/社区、帖子链接或检索关键词", "例如真实痛点、口碑、讨论主题或竞品反馈",
-    ),
-    "home/threads-research": _social_research_form(
-        "Threads 话题追踪",
-        "请按 Threads 话题追踪工作流处理，查看账号、帖子、详情、用户与关键词搜索结果。",
-        "Threads 账号 / 帖子 / 关键词", "输入账号、threads.net 链接或检索关键词", "例如话题传播、讨论观点、创作者或互动反馈",
-    ),
-    "home/pinterest-research": _social_research_form(
-        "Pinterest 灵感研究",
-        "请按 Pinterest 灵感研究工作流处理，检索 Pins、看板与用户内容并提炼视觉选题。",
-        "Pin / 看板 / 关键词", "输入公开链接、看板名或检索关键词", "例如视觉风格、选题趋势、商品灵感或竞品素材",
-    ),
-    "home/twitch-research": _social_research_form(
-        "Twitch 主播监测",
-        "请按 Twitch 主播监测工作流处理，查询主播档案、视频、开播排期与精彩片段。",
-        "Twitch 主播 / 视频", "输入主播名、频道或公开视频链接", "例如直播排期、内容类型、精彩片段或竞品主播",
-    ),
-    "home/ad-library-research": _social_research_form(
-        "跨平台广告情报",
-        "请按跨平台广告情报工作流处理，研究 Facebook、Google 与 LinkedIn 广告库的公开广告信息。",
-        "广告主 / 品牌 / 关键词", "输入广告主、品牌、竞品或素材关键词", "例如活跃广告、创意卖点、投放平台或竞品投放",
-    ),
-    "home/google-search": _social_research_form(
-        "Google 搜索研究",
-        "请按 Google 搜索研究工作流处理，使用 SociaVault Google 搜索获取指定地区的公开搜索结果。",
-        "搜索问题", "输入品牌、商品、趋势或公开资料问题", "例如目标地区、信息来源或需要核验的结论",
     ),
     "home/sociavault-credits": _form(
         "SociaVault 额度查询",

@@ -483,24 +483,24 @@ CHAT_PROVIDER_UI = {
 CHAT_PROVIDER_OFFICIAL_QUICK_ACTIONS = {
     "home": (
         {
-            "label": "分析一条短视频",
-            "skill": "短视频深度分析",
+            "label": "跨平台短视频分析",
+            "skill": "跨平台短视频深度分析",
             "preset_id": "home/video-analysis",
-            "description": "实时数据 + 画面与音频证据",
+            "description": "内容、转录、评论 + 本地证据",
             "icon": "bars",
         },
         {
-            "label": "查看今日热点趋势",
-            "skill": "今日热点趋势",
+            "label": "发现热点与选题",
+            "skill": "跨平台热点与选题",
             "preset_id": "home/tiktok-trends",
-            "description": "热门内容、话题、音乐与创作者",
+            "description": "短视频、社区、搜索与视觉趋势",
             "icon": "trend",
         },
         {
-            "label": "查询商品与视频数据",
-            "skill": "商品与视频数据",
+            "label": "研究商品与商业机会",
+            "skill": "商品与商业机会",
             "preset_id": "home/shop-research",
-            "description": "TikTok Shop 商品、评论与内容线索",
+            "description": "社媒商城、Amazon 与公开搜索",
             "icon": "compare",
         },
     ),
@@ -562,193 +562,152 @@ def _home_tools(*names: str) -> frozenset[str]:
 
 HOME_WORKFLOW_PRESETS: dict[str, dict[str, Any]] = {
     "home/video-analysis": {
-        "label": "短视频深度分析",
-        "description": "结合实时视频数据、评论与本地画面/音频分析。",
+        "label": "跨平台短视频深度分析",
+        "description": "结合多平台内容、转录、评论与本地画面/音频证据拆解视频。",
         "tools": _home_tools(
-            "sociavault__tiktok_video_info", "sociavault__tiktok_comments",
-            "sociavault__tiktok_comment_replies", "sociavault__tiktok_transcript", "function__video_download",
+            "sociavault__tiktok_video_info", "sociavault__tiktok_transcript",
+            "sociavault__tiktok_comments", "sociavault__tiktok_comment_replies",
+            "sociavault__instagram_post_info", "sociavault__instagram_transcript",
+            "sociavault__instagram_comments", "sociavault__youtube_video",
+            "sociavault__youtube_video_transcript", "sociavault__youtube_video_comments",
+            "sociavault__youtube_video_comment_replies", "sociavault__facebook_post",
+            "sociavault__facebook_post_transcript", "sociavault__facebook_post_comments",
+            "sociavault__twitter_tweet", "sociavault__twitter_tweet_transcript",
+            "sociavault__twitter_comments", "function__video_download",
             "function__video_analyze", "function__video_direct_analyze",
         ),
     },
     "home/tiktok-trends": {
-        "label": "今日热点趋势",
-        "description": "从实时热门内容、话题、音乐与创作者中提炼趋势。",
+        "label": "跨平台热点与选题",
+        "description": "从短视频、社区、搜索和视觉平台发现趋势并形成选题。",
         "tools": _home_tools(
             "sociavault__tiktok_trending", "sociavault__tiktok_videos_popular",
             "sociavault__tiktok_hashtags_popular", "sociavault__tiktok_music_popular",
-            "sociavault__tiktok_creators_popular", "sociavault__tiktok_search_keyword",
-            "sociavault__tiktok_search_top", "sociavault__tiktok_search_hashtag",
-            "sociavault__tiktok_search_music", "sociavault__tiktok_music_details",
-            "sociavault__tiktok_music_videos",
+            "sociavault__tiktok_search_keyword", "sociavault__tiktok_search_hashtag",
+            "sociavault__instagram_reels", "sociavault__instagram_reels_by_song",
+            "sociavault__youtube_search", "sociavault__youtube_search_hashtag",
+            "sociavault__youtube_shorts_trending", "sociavault__twitter_search",
+            "sociavault__reddit_search", "sociavault__threads_search",
+            "sociavault__pinterest_search", "sociavault__google_search",
         ),
     },
     "home/shop-research": {
-        "label": "商品与视频数据",
-        "description": "查询 TikTok Shop 商品、评论及公开资料验证。",
+        "label": "商品与商业机会",
+        "description": "联查社媒商城、Marketplace、Amazon 与公开搜索数据。",
         "tools": _home_tools(
             "sociavault__tiktok_shop_search", "sociavault__tiktok_shop_products",
             "sociavault__tiktok_shop_product_details", "sociavault__tiktok_shop_product_reviews",
+            "sociavault__facebook_marketplace_location_search",
+            "sociavault__facebook_marketplace_search", "sociavault__facebook_marketplace_item",
+            "sociavault__google_search", "function__amazon_scrape_url",
+            "function__amazon_scrape_asin", "function__amazon_search_keyword",
             "system__web_search",
         ),
     },
     "home/creator-competitor": {
-        "label": "达人与竞品追踪",
-        "description": "基于账号、作品和受众数据拆解内容打法。",
+        "label": "达人与账号对标",
+        "description": "跨平台比较账号、受众、作品结构与内容打法。",
         "tools": _home_tools(
             "sociavault__tiktok_search_users", "sociavault__tiktok_profile",
-            "sociavault__tiktok_videos", "sociavault__tiktok_demographics",
-            "sociavault__tiktok_videos_popular",
+            "sociavault__tiktok_demographics", "sociavault__tiktok_videos",
+            "sociavault__instagram_profile", "sociavault__instagram_posts",
+            "sociavault__instagram_reels", "sociavault__youtube_channel",
+            "sociavault__youtube_channel_videos", "sociavault__youtube_channel_shorts",
+            "sociavault__facebook_profile", "sociavault__facebook_profile_posts",
+            "sociavault__facebook_profile_reels", "sociavault__twitter_profile",
+            "sociavault__twitter_user_tweets", "sociavault__twitter_followers",
+            "sociavault__linkedin_profile", "sociavault__linkedin_company",
+            "sociavault__twitch_profile", "sociavault__twitch_user_videos",
         ),
     },
     "home/cross-platform-research": {
-        "label": "跨平台内容研究",
-        "description": "研究 TikTok、Instagram、YouTube 与 Facebook 的公开内容。",
+        "label": "品牌与竞品舆情",
+        "description": "从搜索、社媒和社区信号交叉核验品牌与竞品动态。",
         "tools": _home_tools(
-            "sociavault__tiktok_search_keyword", "sociavault__instagram_profile",
-            "sociavault__instagram_posts", "sociavault__instagram_post_info",
-            "sociavault__youtube_search", "sociavault__youtube_video",
-            "sociavault__youtube_video_comments", "sociavault__facebook_profile",
-            "sociavault__facebook_profile_posts",
+            "sociavault__google_search", "sociavault__twitter_search",
+            "sociavault__twitter_profile", "sociavault__twitter_user_tweets",
+            "sociavault__reddit_search", "sociavault__reddit_subreddit_search",
+            "sociavault__reddit_post_comments", "sociavault__threads_search",
+            "sociavault__facebook_profile", "sociavault__facebook_profile_posts",
+            "sociavault__linkedin_company", "sociavault__linkedin_post",
+            "sociavault__youtube_search", "sociavault__instagram_profile",
+            "sociavault__instagram_posts",
+        ),
+    },
+    "home/comment-demand-insights": {
+        "label": "评论与用户需求洞察",
+        "description": "跨平台汇总评论、回复和传播互动，提炼痛点与需求。",
+        "tools": _home_tools(
+            "sociavault__tiktok_video_info", "sociavault__tiktok_comments",
+            "sociavault__tiktok_comment_replies", "sociavault__instagram_post_info",
+            "sociavault__instagram_comments", "sociavault__youtube_search",
+            "sociavault__youtube_video", "sociavault__youtube_video_comments",
+            "sociavault__youtube_video_comment_replies", "sociavault__facebook_post",
+            "sociavault__facebook_post_comments", "sociavault__facebook_comment_replies",
+            "sociavault__twitter_tweet", "sociavault__twitter_comments",
+            "sociavault__twitter_quotes", "sociavault__twitter_retweets",
+            "sociavault__reddit_search", "sociavault__reddit_post_comments",
+        ),
+    },
+    "home/ad-creative-research": {
+        "label": "广告素材与投放研究",
+        "description": "限定调用 TikTok、Meta、Google 与 LinkedIn 广告库。",
+        "tools": _home_tools(
+            "sociavault__tiktok_ad_library_search", "sociavault__tiktok_ad_library_ad",
+            "sociavault__facebook_ad_library_search",
+            "sociavault__facebook_ad_library_ad_details",
+            "sociavault__facebook_ad_library_company_ads",
+            "sociavault__facebook_ad_library_search_companies",
+            "sociavault__google_ad_library_search_advertisers",
+            "sociavault__google_ad_library_company_ads",
+            "sociavault__google_ad_library_ad_details",
+            "sociavault__linkedin_ad_library_search",
+            "sociavault__linkedin_ad_library_ad_details",
+        ),
+    },
+    "home/community-listening": {
+        "label": "社区口碑与话题追踪",
+        "description": "聚合 Reddit、Threads、X 社群与 Facebook 群组讨论。",
+        "tools": _home_tools(
+            "sociavault__reddit_subreddit_details", "sociavault__reddit_subreddit",
+            "sociavault__reddit_subreddit_search", "sociavault__reddit_search",
+            "sociavault__reddit_post_comments", "sociavault__threads_profile",
+            "sociavault__threads_user_posts", "sociavault__threads_post",
+            "sociavault__threads_search", "sociavault__twitter_search",
+            "sociavault__twitter_community", "sociavault__twitter_community_tweets",
+            "sociavault__facebook_group_posts", "sociavault__facebook_post_comments",
+        ),
+    },
+    "home/live-content-monitor": {
+        "label": "直播与短内容监测",
+        "description": "联查 TikTok、YouTube、Twitch 与 Instagram 的直播和短内容。",
+        "tools": _home_tools(
+            "sociavault__tiktok_profile", "sociavault__tiktok_live",
+            "sociavault__youtube_channel", "sociavault__youtube_channel_lives",
+            "sociavault__youtube_channel_shorts", "sociavault__youtube_shorts_trending",
+            "sociavault__twitch_profile", "sociavault__twitch_user_schedule",
+            "sociavault__twitch_user_videos", "sociavault__twitch_clip",
+            "sociavault__instagram_profile", "sociavault__instagram_reels",
+            "sociavault__instagram_highlights",
+        ),
+    },
+    "home/visual-inspiration": {
+        "label": "视觉灵感与创意趋势",
+        "description": "从音乐、Reels、Shorts、Pins 和看板提炼创意方向。",
+        "tools": _home_tools(
+            "sociavault__tiktok_music_popular", "sociavault__tiktok_search_music",
+            "sociavault__tiktok_music_details", "sociavault__tiktok_music_videos",
+            "sociavault__tiktok_search_hashtag", "sociavault__instagram_reels",
+            "sociavault__instagram_reels_by_song", "sociavault__instagram_highlights",
+            "sociavault__youtube_shorts_trending", "sociavault__youtube_search_hashtag",
+            "sociavault__pinterest_search", "sociavault__pinterest_pin",
+            "sociavault__pinterest_user_boards", "sociavault__pinterest_board",
         ),
     },
     "home/web-verification": {
         "label": "联网资料验证",
         "description": "以公开网页来源核验品牌、商品与趋势信息。",
         "tools": _home_tools("system__web_search"),
-    },
-    "home/amazon-product-research": {
-        "label": "Amazon 商品研究",
-        "description": "抓取 Amazon 商品页、ASIN 或关键词结果，并结合公开资料研判。",
-        "tools": _home_tools(
-            "function__amazon_scrape_url", "function__amazon_scrape_asin",
-            "function__amazon_search_keyword", "system__web_search",
-        ),
-    },
-    "home/tiktok-account-live": {
-        "label": "TikTok 账号与直播",
-        "description": "查看账号、作品、受众、关注关系与直播数据。",
-        "tools": _home_tools(
-            "sociavault__tiktok_profile", "sociavault__tiktok_videos",
-            "sociavault__tiktok_demographics", "sociavault__tiktok_following",
-            "sociavault__tiktok_followers", "sociavault__tiktok_live",
-        ),
-    },
-    "home/tiktok-ad-library": {
-        "label": "TikTok 广告库",
-        "description": "检索 TikTok 广告素材并查看广告详情。",
-        "tools": _home_tools(
-            "sociavault__tiktok_ad_library_search", "sociavault__tiktok_ad_library_ad",
-        ),
-    },
-    "home/instagram-research": {
-        "label": "Instagram 内容洞察",
-        "description": "分析账号、帖子、Reels、精选、音乐与评论互动。",
-        "tools": _home_tools(
-            "sociavault__instagram_profile", "sociavault__instagram_posts",
-            "sociavault__instagram_post_info", "sociavault__instagram_transcript",
-            "sociavault__instagram_comments", "sociavault__instagram_reels",
-            "sociavault__instagram_highlights", "sociavault__instagram_highlight_detail",
-            "sociavault__instagram_reels_by_song",
-        ),
-    },
-    "home/youtube-research": {
-        "label": "YouTube 频道与视频",
-        "description": "研究频道、长视频、Shorts、直播、社区帖、播放列表与评论。",
-        "tools": _home_tools(
-            "sociavault__youtube_channel", "sociavault__youtube_channel_videos",
-            "sociavault__youtube_channel_shorts", "sociavault__youtube_video",
-            "sociavault__youtube_video_transcript", "sociavault__youtube_search",
-            "sociavault__youtube_search_hashtag", "sociavault__youtube_video_comments",
-            "sociavault__youtube_video_comment_replies", "sociavault__youtube_shorts_trending",
-            "sociavault__youtube_channel_playlists", "sociavault__youtube_channel_lives",
-            "sociavault__youtube_channel_community_posts",
-        ),
-    },
-    "home/facebook-research": {
-        "label": "Facebook 生态洞察",
-        "description": "分析主页、帖子、Reels、群组、评论与 Marketplace 商品。",
-        "tools": _home_tools(
-            "sociavault__facebook_profile", "sociavault__facebook_profile_posts",
-            "sociavault__facebook_comment_replies", "sociavault__facebook_profile_reels",
-            "sociavault__facebook_group_posts", "sociavault__facebook_post",
-            "sociavault__facebook_post_transcript", "sociavault__facebook_post_comments",
-            "sociavault__facebook_marketplace_location_search",
-            "sociavault__facebook_marketplace_search", "sociavault__facebook_marketplace_item",
-        ),
-    },
-    "home/x-twitter-research": {
-        "label": "X / Twitter 舆情",
-        "description": "追踪账号、推文、转录、互动、社群与关注关系。",
-        "tools": _home_tools(
-            "sociavault__twitter_profile", "sociavault__twitter_user_tweets",
-            "sociavault__twitter_user_tweets_all", "sociavault__twitter_tweet",
-            "sociavault__twitter_tweet_transcript", "sociavault__twitter_comments",
-            "sociavault__twitter_quotes", "sociavault__twitter_retweets",
-            "sociavault__twitter_search", "sociavault__twitter_followers",
-            "sociavault__twitter_followings", "sociavault__twitter_community",
-            "sociavault__twitter_community_tweets",
-        ),
-    },
-    "home/linkedin-research": {
-        "label": "LinkedIn 品牌研究",
-        "description": "查询个人、公司与公开职业内容。",
-        "tools": _home_tools(
-            "sociavault__linkedin_profile", "sociavault__linkedin_company", "sociavault__linkedin_post",
-        ),
-    },
-    "home/reddit-research": {
-        "label": "Reddit 社区聆听",
-        "description": "研究 Subreddit、帖子、评论、转录和关键词讨论。",
-        "tools": _home_tools(
-            "sociavault__reddit_subreddit_details", "sociavault__reddit_subreddit",
-            "sociavault__reddit_subreddit_search", "sociavault__reddit_post_comments",
-            "sociavault__reddit_post_transcript", "sociavault__reddit_search",
-        ),
-    },
-    "home/threads-research": {
-        "label": "Threads 话题追踪",
-        "description": "查看账号、帖子、详情、用户与关键词搜索结果。",
-        "tools": _home_tools(
-            "sociavault__threads_profile", "sociavault__threads_user_posts",
-            "sociavault__threads_post", "sociavault__threads_search",
-            "sociavault__threads_search_users",
-        ),
-    },
-    "home/pinterest-research": {
-        "label": "Pinterest 灵感研究",
-        "description": "检索 Pins、看板与用户内容，提炼视觉选题。",
-        "tools": _home_tools(
-            "sociavault__pinterest_search", "sociavault__pinterest_pin",
-            "sociavault__pinterest_user_boards", "sociavault__pinterest_board",
-        ),
-    },
-    "home/twitch-research": {
-        "label": "Twitch 主播监测",
-        "description": "查询主播档案、视频、开播排期与精彩片段。",
-        "tools": _home_tools(
-            "sociavault__twitch_profile", "sociavault__twitch_user_videos",
-            "sociavault__twitch_user_schedule", "sociavault__twitch_clip",
-        ),
-    },
-    "home/ad-library-research": {
-        "label": "跨平台广告情报",
-        "description": "统一研究 Facebook、Google 与 LinkedIn 广告库。",
-        "tools": _home_tools(
-            "sociavault__facebook_ad_library_ad_details",
-            "sociavault__facebook_ad_library_search",
-            "sociavault__facebook_ad_library_company_ads",
-            "sociavault__facebook_ad_library_search_companies",
-            "sociavault__google_ad_library_company_ads",
-            "sociavault__google_ad_library_ad_details",
-            "sociavault__google_ad_library_search_advertisers",
-            "sociavault__linkedin_ad_library_search",
-            "sociavault__linkedin_ad_library_ad_details",
-        ),
-    },
-    "home/google-search": {
-        "label": "Google 搜索研究",
-        "description": "使用 SociaVault Google 搜索获取指定地区的公开搜索结果。",
-        "tools": _home_tools("sociavault__google_search"),
     },
     "home/sociavault-credits": {
         "label": "SociaVault 额度查询",
@@ -1295,36 +1254,27 @@ def render_chat_quick_actions(provider: str, provider_ui: dict[str, Any], offici
 
 def render_chat_official_workflow_modal(provider: str) -> dict[str, str]:
     if provider == "home":
-        tiktok_items = [
-            ("home/video-analysis", "短视频深度分析", "SociaVault 实时数据 + 本地画面与音频分析。"),
-            ("home/tiktok-trends", "今日热点趋势", "热门内容、话题、音乐与创作者实时趋势。"),
-            ("home/creator-competitor", "达人与竞品追踪", "账号、作品、受众与竞品内容拆解。"),
-            ("home/tiktok-account-live", "TikTok 账号与直播", "账号、受众、关注关系、作品与直播数据。"),
-            ("home/tiktok-ad-library", "TikTok 广告库", "检索 TikTok 广告素材并查看广告详情。"),
-            ("home/shop-research", "TikTok Shop 商品研究", "商品、评论、搜索与内容线索。"),
+        content_growth_items = [
+            ("home/video-analysis", "跨平台短视频深度分析", "内容、转录、评论与本地画面/音频证据。"),
+            ("home/tiktok-trends", "跨平台热点与选题", "短视频、社区、搜索和视觉平台趋势。"),
+            ("home/live-content-monitor", "直播与短内容监测", "TikTok、YouTube、Twitch 与 Instagram。"),
+            ("home/visual-inspiration", "视觉灵感与创意趋势", "音乐、Reels、Shorts、Pins 与看板。"),
         ]
-        video_social_items = [
-            ("home/instagram-research", "Instagram 内容洞察", "账号、帖子、Reels、精选、音乐与评论互动。"),
-            ("home/youtube-research", "YouTube 频道与视频", "长视频、Shorts、直播、社区帖、播放列表与评论。"),
-            ("home/facebook-research", "Facebook 生态洞察", "主页、帖子、Reels、群组、评论与 Marketplace 商品。"),
-            ("home/x-twitter-research", "X / Twitter 舆情", "账号、推文、互动、社群与关注关系追踪。"),
-            ("home/linkedin-research", "LinkedIn 品牌研究", "个人、公司与公开职业内容研究。"),
+        market_audience_items = [
+            ("home/shop-research", "商品与商业机会", "社媒商城、Marketplace、Amazon 与公开搜索。"),
+            ("home/creator-competitor", "达人与账号对标", "跨平台账号、受众、作品结构与内容打法。"),
+            ("home/comment-demand-insights", "评论与用户需求洞察", "跨平台评论、回复、痛点与需求。"),
+            ("home/community-listening", "社区口碑与话题追踪", "Reddit、Threads、X 社群与 Facebook 群组。"),
         ]
-        community_ad_items = [
-            ("home/reddit-research", "Reddit 社区聆听", "Subreddit、帖子、评论、转录与关键词讨论。"),
-            ("home/threads-research", "Threads 话题追踪", "账号、帖子、用户与关键词搜索结果。"),
-            ("home/pinterest-research", "Pinterest 灵感研究", "Pins、看板与用户内容的视觉选题研究。"),
-            ("home/twitch-research", "Twitch 主播监测", "主播、视频、开播排期与精彩片段。"),
-            ("home/ad-library-research", "跨平台广告情报", "Facebook、Google 与 LinkedIn 广告库。"),
-            ("home/google-search", "Google 搜索研究", "通过 SociaVault 获取指定地区公开搜索结果。"),
+        brand_ad_items = [
+            ("home/cross-platform-research", "品牌与竞品舆情", "搜索、社媒和社区信号交叉核验。"),
+            ("home/ad-creative-research", "广告素材与投放研究", "TikTok、Meta、Google 与 LinkedIn 广告库。"),
+            ("home/web-verification", "联网资料验证", "仅使用公开网页来源核验外部信息。"),
         ]
         system_items = [
-            ("home/cross-platform-research", "跨平台内容研究", "TikTok、Instagram、YouTube 与 Facebook 公开内容研究。"),
-            ("home/amazon-product-research", "Amazon 商品研究", "商品页、ASIN 或关键词抓取与公开资料研判。"),
             ("/report", "每日热点日报", "进入既有日报工作流，生成并查看 TikTok 热点洞察。"),
             ("/shop", "TikTok Shop 采集", "进入既有店铺与商品采集、评论分析工作流。"),
             ("/metrics", "社媒视频数据", "进入既有视频链接指标查询与导出工作流。"),
-            ("home/web-verification", "联网资料验证", "仅使用公开网页来源核验品牌、商品与趋势信息。"),
             ("home/sociavault-credits", "SociaVault 额度查询", "查看当前 SociaVault API 可用额度。"),
         ]
 
@@ -1358,19 +1308,19 @@ def render_chat_official_workflow_modal(provider: str) -> dict[str, str]:
         return {
             "kicker": "SOCIA VAULT · REGISTERED WORKFLOWS",
             "title": "预设工作流",
-            "intro": "覆盖 SociaVault 的全量平台能力；每次对话只暴露所选场景登记的 MCP 与本地工具。",
+            "intro": "按业务场景组合多平台数据；每次对话只暴露完成该场景所需的 MCP 与本地工具。",
             "tabs_class": " official-workflow-tabs--home",
             "tabs_attributes": "",
             "tabs": (
-                '<button class="official-workflow-tab is-active" type="button" role="tab" aria-selected="true" data-official-tab="tiktok">TikTok 与电商 <span>6</span></button>'
-                '<button class="official-workflow-tab" type="button" role="tab" aria-selected="false" data-official-tab="video-social">视频与社交 <span>5</span></button>'
-                '<button class="official-workflow-tab" type="button" role="tab" aria-selected="false" data-official-tab="community-ad">社区与广告 <span>6</span></button>'
-                '<button class="official-workflow-tab" type="button" role="tab" aria-selected="false" data-official-tab="system">综合与系统 <span>7</span></button>'
+                '<button class="official-workflow-tab is-active" type="button" role="tab" aria-selected="true" data-official-tab="content-growth">内容增长 <span>4</span></button>'
+                '<button class="official-workflow-tab" type="button" role="tab" aria-selected="false" data-official-tab="market-audience">市场与人群 <span>4</span></button>'
+                '<button class="official-workflow-tab" type="button" role="tab" aria-selected="false" data-official-tab="brand-ad">品牌与投放 <span>3</span></button>'
+                '<button class="official-workflow-tab" type="button" role="tab" aria-selected="false" data-official-tab="system">系统工作流 <span>4</span></button>'
             ),
             "panels": (
-                '<section class="official-workflow-panel is-active" role="tabpanel" data-official-panel="tiktok"><div class="official-workflow-grid">' + preset_buttons(tiktok_items) + '</div></section>'
-                '<section class="official-workflow-panel" role="tabpanel" data-official-panel="video-social" hidden><div class="official-workflow-grid">' + preset_buttons(video_social_items) + '</div></section>'
-                '<section class="official-workflow-panel" role="tabpanel" data-official-panel="community-ad" hidden><div class="official-workflow-grid">' + preset_buttons(community_ad_items) + '</div></section>'
+                '<section class="official-workflow-panel is-active" role="tabpanel" data-official-panel="content-growth"><div class="official-workflow-grid">' + preset_buttons(content_growth_items) + '</div></section>'
+                '<section class="official-workflow-panel" role="tabpanel" data-official-panel="market-audience" hidden><div class="official-workflow-grid">' + preset_buttons(market_audience_items) + '</div></section>'
+                '<section class="official-workflow-panel" role="tabpanel" data-official-panel="brand-ad" hidden><div class="official-workflow-grid">' + preset_buttons(brand_ad_items) + '</div></section>'
                 '<section class="official-workflow-panel" role="tabpanel" data-official-panel="system" hidden><div class="official-workflow-grid">' + system_buttons(system_items) + '</div></section>'
             ),
             "footer_status": "已登记 MCP 与本地工具边界",
