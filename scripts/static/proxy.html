@@ -696,7 +696,7 @@
         if (loginSubmit && state.loginChoice) { event.preventDefault(); renderLoginSession(); open('platformLoginSession'); return; }
         const loginComplete = event.target.closest('[data-platform-login-complete]');
         if (loginComplete) { const item = accountFor().platforms[state.loginChoice]; item.loggedIn = true; item.awake = true; item.status = '可采集'; item.kind = 'live'; item.session = state.loginChoice === 'instagram' ? 'Reels 入口已保存' : '会话在线 · 可观测'; renderAccounts(); open('platformLogin'); }
-      });
+      }, true);
       const liveRuntimeStatus = (account, pool, session) => {
         if (!account.proxy_bound) return { status: '未绑定', kind: 'delay' };
         if (!pool || ['不可用', '异常', '禁用'].includes(pool.status) || account.last_check_status === '阻断') return { status: 'IP不可用', kind: 'off' };
