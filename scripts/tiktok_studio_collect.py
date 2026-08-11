@@ -1780,11 +1780,15 @@ def _instagram_reel_sources(page: Any) -> list[dict[str, str]]:
         try:
             href = str(item.get_attribute("href") or "")
             parsed = urlparse(href)
-            match = re.fullmatch(r"/reel/([A-Za-z0-9_-]+)/?", parsed.path if parsed.scheme else href.split("?", 1)[0])
+            path = parsed.path if parsed.scheme else href.split("?", 1)[0]
+            # Profile Reels grids use /<username>/reel/<shortcode>/ while
+            # individual pages use /reel/<shortcode>/.  Keep the source path
+            # so scrolling can locate the grid tile before opening its detail.
+            match = re.fullmatch(r"/(?:[A-Za-z0-9._]+/)?reel/([A-Za-z0-9_-]+)/?", path)
             if not match:
                 continue
             shortcode = match.group(1)
-            found.setdefault(shortcode, {"id": f"ins_{shortcode}", "shortcode": shortcode, "href": f"/reel/{shortcode}/"})
+            found.setdefault(shortcode, {"id": f"ins_{shortcode}", "shortcode": shortcode, "href": path})
         except Exception:
             continue
     return list(found.values())
@@ -1866,6 +1870,8 @@ def _execute_instagram_browser(job: dict[str, Any], session: dict[str, Any]) -> 
     failed = 0
     matched = 0
     old_in_a_row = 0
+    unparsed = 0
+    stop_scan = False
     with sync_playwright() as playwright:
         browser = playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{session['debug_port']}")
         context = browser.contexts[0]
@@ -1874,52 +1880,63 @@ def _execute_instagram_browser(job: dict[str, Any], session: dict[str, Any]) -> 
         list_page.wait_for_timeout(1200)
         collect_page = context.new_page()
         try:
-          for round_index in range(LIST_SCROLL_MAX_ROUNDS):
-            sources = _instagram_reel_sources(list_page)
-            for source in sources:
-                if source["id"] in seen:
-                    continue
-                seen.add(source["id"])
-                try:
-                    list_page.locator(f'a[href="{source["href"]}"]').first.scroll_into_view_if_needed(timeout=5000)
-                    collect_page.goto(f"https://www.instagram.com{source['href']}", wait_until="domcontentloaded", timeout=30000)
-                    collect_page.wait_for_timeout(700)
-                    body = collect_page.locator("body").inner_text(timeout=15000)
-                    published_date, relative_time = _instagram_relative_date(body, anchor)
-                    if not published_date:
+            for round_index in range(LIST_SCROLL_MAX_ROUNDS):
+                sources = _instagram_reel_sources(list_page)
+                for source in sources:
+                    if source["id"] in seen:
                         continue
-                    if published_date < job["publish_date_start"]:
-                        old_in_a_row += 1
-                        if old_in_a_row >= 6:
-                            return matched, completed, failed
-                        continue
-                    old_in_a_row = 0
-                    if published_date > job["publish_date_end"]:
-                        continue
-                    matched += 1
-                    _set_job(job["id"], "collecting", "collect_instagram_reel", session_id=session["id"], total_videos=matched, completed_videos=completed, failed_videos=failed, current_video_id=source["id"])
-                    if source["id"] not in completed_ids:
-                        payload = _instagram_collect_payload(collect_page, job, source, published_date, relative_time)
-                        _save_result(job, payload)
-                        completed += 1
-                        completed_ids.add(source["id"])
-                except Exception as exc:
-                    failed += 1
-                    _record_error(job, source["id"], f"https://www.instagram.com{source['href']}", "collect_instagram_reel", exc)
-            scroll = list_page.evaluate("""() => {
-                const root = document.scrollingElement || document.documentElement;
-                const before = root.scrollTop;
-                root.scrollBy(0, Math.max(520, Math.round(window.innerHeight * .82)));
-                return {before, after: root.scrollTop, end: root.scrollTop + root.clientHeight >= root.scrollHeight - 4};
-            }""")
-            list_page.wait_for_timeout(LIST_SCROLL_WAIT_MS)
-            if bool(scroll.get("end")) and round_index >= 4:
-                break
+                    seen.add(source["id"])
+                    try:
+                        list_page.locator(f'a[href="{source["href"]}"]').first.scroll_into_view_if_needed(timeout=5000)
+                        collect_page.goto(f"https://www.instagram.com{source['href']}", wait_until="domcontentloaded", timeout=30000)
+                        collect_page.wait_for_timeout(700)
+                        body = collect_page.locator("body").inner_text(timeout=15000)
+                        published_date, relative_time = _instagram_relative_date(body, anchor)
+                        if not published_date:
+                            unparsed += 1
+                            continue
+                        if published_date < job["publish_date_start"]:
+                            old_in_a_row += 1
+                            if old_in_a_row >= 6:
+                                stop_scan = True
+                                break
+                            continue
+                        old_in_a_row = 0
+                        if published_date > job["publish_date_end"]:
+                            continue
+                        matched += 1
+                        _set_job(job["id"], "collecting", "collect_instagram_reel", session_id=session["id"], total_videos=matched, completed_videos=completed, failed_videos=failed, current_video_id=source["id"])
+                        if source["id"] not in completed_ids:
+                            payload = _instagram_collect_payload(collect_page, job, source, published_date, relative_time)
+                            _save_result(job, payload)
+                            completed += 1
+                            completed_ids.add(source["id"])
+                    except Exception as exc:
+                        failed += 1
+                        _record_error(job, source["id"], f"https://www.instagram.com{source['href']}", "collect_instagram_reel", exc)
+                if stop_scan:
+                    break
+                scroll = list_page.evaluate("""() => {
+                    const root = document.scrollingElement || document.documentElement;
+                    const before = root.scrollTop;
+                    root.scrollBy(0, Math.max(520, Math.round(window.innerHeight * .82)));
+                    return {before, after: root.scrollTop, end: root.scrollTop + root.clientHeight >= root.scrollHeight - 4};
+                }""")
+                list_page.wait_for_timeout(LIST_SCROLL_WAIT_MS)
+                if bool(scroll.get("end")) and round_index >= 4:
+                    break
         finally:
             try:
                 collect_page.close()
             except Exception:
                 pass
+    if matched:
+        job["_execution_status_detail"] = f"已扫描 {len(seen)} 条 Reels，命中 {matched} 条目标日期视频。"
+    elif seen:
+        suffix = f"，其中 {unparsed} 条未识别到发布时间" if unparsed else ""
+        job["_execution_status_detail"] = f"已扫描 {len(seen)} 条 Reels，未找到 {job['publish_date_start']} 的视频{suffix}。"
+    else:
+        job["_execution_status_detail"] = "Reels 页面未发现可采集的视频链接。"
     return matched, completed, failed
 
 
@@ -2133,6 +2150,7 @@ def _run_job(job_id: str) -> None:
             failed_videos=failed,
             current_video_id="",
             completed_at=_iso(),
+            status_detail=_clean_text(job.get("_execution_status_detail"), 500),
         )
         _update_account(job["account_id"], collected_at=_iso() if completed else "", error=message)
     except Exception as exc:
