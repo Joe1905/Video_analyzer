@@ -279,13 +279,25 @@ def _click_one_media(context: Any, source: dict[str, Any]) -> dict[str, Any]:
         locator = detail_page.locator("[role=button]").nth(card["button_index"])
         locator.scroll_into_view_if_needed(timeout=5000)
         locator.click(timeout=7000)
-        detail_page.wait_for_timeout(1200)
-        detail_url = canonical_url(detail_page.url)
+        detail_url = ""
+        for _ in range(12):
+            detail_page.wait_for_timeout(500)
+            detail_url = canonical_url(detail_page.url)
+            if media_id_from_url(detail_url):
+                break
+        media_id = media_id_from_url(detail_url)
+        if not media_id:
+            return {
+                **source,
+                "clicked": False,
+                "error": "点击后未进入内容详情页",
+                "clicked_at": now_iso(),
+            }
         result = {
             **source,
             "clicked": True,
             "detail_url": detail_url,
-            "media_id": media_id_from_url(detail_url),
+            "media_id": media_id,
             "page_title": _safe_text(detail_page.title(), 200),
             "clicked_at": now_iso(),
         }
