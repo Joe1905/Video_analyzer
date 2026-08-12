@@ -310,11 +310,11 @@
     <symbol id="i-play" viewBox="0 0 24 24"><path d="m9 6 8 6-8 6z"/></symbol><symbol id="i-home" viewBox="0 0 24 24"><path d="m3.5 10 8.5-7 8.5 7"/><path d="M5.5 9.5V20h13V9.5M9.5 20v-6h5v6"/></symbol><symbol id="i-chart" viewBox="0 0 24 24"><path d="M5 19V5m0 14h14M9 15v-4m4 4V8m4 7V5"/></symbol><symbol id="i-chat" viewBox="0 0 24 24"><path d="M20 11.5a7.5 7.5 0 0 1-10.8 6.7L4 20l1.8-4.2A7.5 7.5 0 1 1 20 11.5Z"/></symbol><symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4a12 12 0 0 1 0 16M12 4a12 12 0 0 0 0 16"/></symbol><symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol><symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0 1.2 4.2M20 5v6h-6"/></symbol><symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11m0 0 4-4m-4 4-4-4M5 20h14"/></symbol><symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="5.8"/><path d="m16 16 4 4"/></symbol><symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol><symbol id="i-eye" viewBox="0 0 24 24"><path d="M3.5 12s3-5 8.5-5 8.5 5 8.5 5-3 5-8.5 5-8.5-5-8.5-5Z"/><circle cx="12" cy="12" r="2"/></symbol><symbol id="i-send" viewBox="0 0 24 24"><path d="m4 5 16 7-16 7 3-7-3-7Z"/><path d="M7 12h13"/></symbol><symbol id="i-collect" viewBox="0 0 24 24"><path d="M5 6h14M5 12h14M5 18h9"/><circle cx="18" cy="18" r="3"/></symbol><symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13.8a4 4 0 0 0 5.7.1l2-2a4 4 0 0 0-5.7-5.7l-1.1 1.1M14 10.2a4 4 0 0 0-5.7-.1l-2 2a4 4 0 1 0 5.7 5.7l1.1-1.1"/></symbol><symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
   </svg>
   <div class="app">
-    <header class="app-head"><div class="brandline"><h1>账号运营台</h1><p>代理、会话与内容任务</p></div><div class="head-actions"><span class="service"><i></i>服务正常</span><button class="icon-button" title="刷新运行状态" aria-label="刷新运行状态"><svg class="icon"><use href="#i-refresh"/></svg></button><button class="icon-button" title="导出 Mihomo 配置" aria-label="导出 Mihomo 配置"><svg class="icon"><use href="#i-download"/></svg></button><button class="icon-button primary" data-open="proxy" title="新增代理" aria-label="新增代理"><svg class="icon"><use href="#i-plus"/></svg></button></div></header>
+    <header class="app-head"><div class="brandline"><h1>账号运营台</h1><p>代理、会话与内容任务</p></div><div class="head-actions"><span class="service"><i></i>服务正常</span><button class="icon-button" data-proxy-refresh title="刷新运行状态" aria-label="刷新运行状态"><svg class="icon"><use href="#i-refresh"/></svg></button></div></header>
     <main class="page">
       <section class="desk" aria-label="Proxy 账号运营台">
-        <aside class="lane proxy-lane"><header class="lane-head"><div class="lane-title"><h3>代理出口</h3><span>28</span></div><button class="tiny-action" data-open="proxy" title="管理代理" aria-label="管理代理"><svg class="icon"><use href="#i-more"/></svg></button></header><div class="proxy-meta"><div class="metric-line"><strong>24</strong><span>可用 / 28 已配置</span></div><div class="meter"><b></b></div></div><div class="proxy-list" id="proxy-list"><button class="proxy-row selected" data-place="洛杉矶 · US West" data-ip="154.12.88.64 :18902"><i class="proxy-dot"></i><span><span class="proxy-name">洛杉矶 · US West</span><span class="proxy-ip">154.12.88.64 :18902</span></span><span class="status live">稳定</span></button><button class="proxy-row" data-place="达拉斯 · US Central" data-ip="38.54.21.105 :18903"><i class="proxy-dot"></i><span><span class="proxy-name">达拉斯 · US Central</span><span class="proxy-ip">38.54.21.105 :18903</span></span><span class="status live">稳定</span></button><button class="proxy-row" data-place="纽约 · US East" data-ip="172.84.90.32 :18905"><i class="proxy-dot delay"></i><span><span class="proxy-name">纽约 · US East</span><span class="proxy-ip">172.84.90.32 :18905</span></span><span class="status delay">延迟</span></button><button class="proxy-row" data-place="东京 · JP" data-ip="103.17.85.49 :18916"><i class="proxy-dot off"></i><span><span class="proxy-name">东京 · JP</span><span class="proxy-ip">103.17.85.49 :18916</span></span><span class="status off">不可用</span></button></div><p class="proxy-foot"><b>1 个出口</b> 正在延迟重检</p></aside>
-        <section class="lane"><header class="lane-head account-head"><div class="lane-title"><h3>账号编排</h3><span>按状态管理当前可执行工作</span></div><div class="summary"><div class="summary-item"><b>18</b><span>在线</span></div><div class="summary-item"><b>4</b><span>休眠</span></div><div class="summary-item"><b>2</b><span>待处理</span></div></div></header><div class="account-tools"><div class="search-wrap"><svg class="icon"><use href="#i-search"/></svg><input class="search" placeholder="搜索账号、昵称或飞书用户"></div><select class="filter" aria-label="状态筛选"><option>全部状态</option><option>发布中</option><option>采集中</option><option>需要登录</option></select><button class="icon-button" data-open="binding" title="账号绑定与预检" aria-label="账号绑定与预检"><svg class="icon"><use href="#i-link"/></svg></button><button class="icon-button primary" data-open="login" title="新增账号" aria-label="新增账号"><svg class="icon"><use href="#i-plus"/></svg></button></div><div class="table-scroll"><table class="accounts"><thead><tr><th>账号</th><th>出口</th><th>状态</th><th>当前任务</th><th><span class="visually-hidden">操作</span></th></tr></thead><tbody><tr class="selected" data-account="lumi.home" data-owner="林漫 · 飞书身份已绑定" data-status="发布中"><td><span class="account-person"><i class="person-avatar">LM</i><span><b class="person-name">lumi.home</b><span class="person-sub">林漫 · 会话在线</span></span></span></td><td><span class="proxy-cell"><i></i>洛杉矶</span></td><td><span class="status live">发布中</span></td><td><span class="task">夏季凉鞋素材 <small>排期 10:00 · 复用当前会话</small></span></td><td><button class="row-menu" data-open="menu" title="账号操作" aria-label="账号操作"><svg class="icon"><use href="#i-more"/></svg></button></td></tr><tr data-account="maker.daily" data-owner="马可 · 飞书身份已绑定" data-status="采集中"><td><span class="account-person"><i class="person-avatar">MK</i><span><b class="person-name">maker.daily</b><span class="person-sub">马可 · 会话在线</span></span></span></td><td><span class="proxy-cell"><i></i>洛杉矶</span></td><td><span class="status live">采集中</span></td><td><span class="task">08/09 视频表现 <small>8/10 条目正在回写飞书</small></span></td><td><button class="row-menu" data-open="menu" title="账号操作" aria-label="账号操作"><svg class="icon"><use href="#i-more"/></svg></button></td></tr><tr data-account="sole.shop" data-owner="苏欧 · 等待身份验证" data-status="需要登录"><td><span class="account-person"><i class="person-avatar">SO</i><span><b class="person-name">sole.shop</b><span class="person-sub">苏欧 · 会话已过期</span></span></span></td><td><span class="proxy-cell"><i></i>纽约</span></td><td><span class="status delay">需要登录</span></td><td><span class="task">暂无任务 <small>完成登录后恢复已排期任务</small></span></td><td><button class="row-menu" data-open="menu" title="账号操作" aria-label="账号操作"><svg class="icon"><use href="#i-more"/></svg></button></td></tr></tbody></table></div></section>
+        <aside class="lane proxy-lane"><header class="lane-head"><div class="lane-title"><h3>代理出口</h3><span>28</span></div><button class="tiny-action" data-proxy-pool-open title="管理 IP 池" aria-label="管理 IP 池"><svg class="icon"><use href="#i-more"/></svg></button></header><div class="proxy-meta"><div class="metric-line"><strong>24</strong><span>可用 / 28 已配置</span></div><div class="meter"><b></b></div></div><div class="proxy-list" id="proxy-list"><button class="proxy-row selected" data-place="洛杉矶 · US West" data-ip="154.12.88.64 :18902"><i class="proxy-dot"></i><span><span class="proxy-name">洛杉矶 · US West</span><span class="proxy-ip">154.12.88.64 :18902</span></span><span class="status live">稳定</span></button><button class="proxy-row" data-place="达拉斯 · US Central" data-ip="38.54.21.105 :18903"><i class="proxy-dot"></i><span><span class="proxy-name">达拉斯 · US Central</span><span class="proxy-ip">38.54.21.105 :18903</span></span><span class="status live">稳定</span></button><button class="proxy-row" data-place="纽约 · US East" data-ip="172.84.90.32 :18905"><i class="proxy-dot delay"></i><span><span class="proxy-name">纽约 · US East</span><span class="proxy-ip">172.84.90.32 :18905</span></span><span class="status delay">延迟</span></button><button class="proxy-row" data-place="东京 · JP" data-ip="103.17.85.49 :18916"><i class="proxy-dot off"></i><span><span class="proxy-name">东京 · JP</span><span class="proxy-ip">103.17.85.49 :18916</span></span><span class="status off">不可用</span></button></div><p class="proxy-foot"><b>1 个出口</b> 正在延迟重检</p></aside>
+        <section class="lane"><header class="lane-head account-head"><div class="lane-title"><h3>账号编排</h3><span>按状态管理当前可执行工作</span></div><div class="summary"><div class="summary-item"><b>18</b><span>在线</span></div><div class="summary-item"><b>4</b><span>休眠</span></div><div class="summary-item"><b>2</b><span>待处理</span></div></div></header><div class="account-tools"><div class="search-wrap"><svg class="icon"><use href="#i-search"/></svg><input class="search" placeholder="搜索账号、昵称或飞书用户"></div><button type="button" class="owner-filter" data-feishu-filter-toggle hidden aria-label="取消飞书用户筛选"><span class="owner-filter-avatar"></span><span class="owner-filter-label"></span><svg class="icon"><use href="#i-close"/></svg></button><select class="filter" aria-label="状态筛选"><option value="">全部状态</option><option value="发布中">发布中</option><option value="采集中">采集中</option><option value="需要登录">需要登录</option></select><button class="icon-button" data-open="binding" title="账号绑定与预检" aria-label="账号绑定与预检"><svg class="icon"><use href="#i-link"/></svg></button><button class="icon-button primary" data-open="login" title="新增账号" aria-label="新增账号"><svg class="icon"><use href="#i-plus"/></svg></button></div><div class="table-scroll"><table class="accounts"><thead><tr><th>账号</th><th>出口</th><th>状态</th><th>当前任务</th><th><span class="visually-hidden">操作</span></th></tr></thead><tbody><tr class="selected" data-account="lumi.home" data-owner="林漫 · 飞书身份已绑定" data-status="发布中"><td><span class="account-person"><i class="person-avatar">LM</i><span><b class="person-name">lumi.home</b><span class="person-sub">林漫 · 会话在线</span></span></span></td><td><span class="proxy-cell"><i></i>洛杉矶</span></td><td><span class="status live">发布中</span></td><td><span class="task">夏季凉鞋素材 <small>排期 10:00 · 复用当前会话</small></span></td><td><button class="row-menu" data-open="menu" title="账号操作" aria-label="账号操作"><svg class="icon"><use href="#i-more"/></svg></button></td></tr><tr data-account="maker.daily" data-owner="马可 · 飞书身份已绑定" data-status="采集中"><td><span class="account-person"><i class="person-avatar">MK</i><span><b class="person-name">maker.daily</b><span class="person-sub">马可 · 会话在线</span></span></span></td><td><span class="proxy-cell"><i></i>洛杉矶</span></td><td><span class="status live">采集中</span></td><td><span class="task">08/09 视频表现 <small>8/10 条目正在回写飞书</small></span></td><td><button class="row-menu" data-open="menu" title="账号操作" aria-label="账号操作"><svg class="icon"><use href="#i-more"/></svg></button></td></tr><tr data-account="sole.shop" data-owner="苏欧 · 等待身份验证" data-status="需要登录"><td><span class="account-person"><i class="person-avatar">SO</i><span><b class="person-name">sole.shop</b><span class="person-sub">苏欧 · 会话已过期</span></span></span></td><td><span class="proxy-cell"><i></i>纽约</span></td><td><span class="status delay">需要登录</span></td><td><span class="task">暂无任务 <small>完成登录后恢复已排期任务</small></span></td><td><button class="row-menu" data-open="menu" title="账号操作" aria-label="账号操作"><svg class="icon"><use href="#i-more"/></svg></button></td></tr></tbody></table></div></section>
         <aside class="lane context"><header class="lane-head"><div class="lane-title"><h3>账号上下文</h3></div><button class="tiny-action" data-open="binding" title="编辑账号配置" aria-label="编辑账号配置"><svg class="icon"><use href="#i-more"/></svg></button></header><div class="context-main"><div class="context-account"><i class="person-avatar" id="context-avatar">LM</i><div><b id="context-name">lumi.home</b><small id="context-owner">林漫 · 飞书身份已绑定</small></div></div><section class="context-block"><h4>连接状态</h4><div class="keyline"><span>代理出口</span><b id="context-place">洛杉矶 · US West</b></div><div class="keyline"><span>登录会话</span><b class="healthy" id="context-status">在线 · 可复用</b></div><div class="keyline"><span>对外 IP</span><b id="context-ip">154.12.88.64 :18902</b></div></section><section class="context-block"><h4>需要关注</h4><div class="attention"><i></i><div><b>发布任务正在排期</b><span>将使用当前浏览器会话，10:00 开始。</span></div></div><div class="attention"><i></i><div><b>纽约出口延迟偏高</b><span>正在自动重检，不影响当前账号。</span></div></div></section></div><footer class="context-actions"><button data-open="observe"><svg class="icon"><use href="#i-eye"/></svg><span>观测</span></button><button data-open="publish"><svg class="icon"><use href="#i-send"/></svg><span>发布</span></button><button data-open="collect"><svg class="icon"><use href="#i-collect"/></svg><span>采集</span></button><button data-open="binding"><svg class="icon"><use href="#i-link"/></svg><span>绑定</span></button></footer></aside>
       </section>
     </main>
@@ -488,7 +488,7 @@
     replaceTaskActions('collectTaskAug07',[]);
   </script>
   <script>
-    const closeDrawer=()=>{const overlay=el('overlay'),drawer=el('drawer');if(!overlay.classList.contains('open')||drawer.classList.contains('is-closing'))return;const dialog=drawer.classList.contains('dialog-panel'),duration=dialog?260:450;drawer.classList.add('is-closing');overlay.classList.add('is-closing');drawer.style.setProperty('--panel-transform',dialog?'translate(-50%,-50%) scale(.96)':'translateX(104%)');drawer.style.setProperty('--panel-opacity',dialog?'0':'.72');setTimeout(()=>{overlay.classList.remove('open','is-closing');drawer.classList.remove('is-closing','subview-leaving','subview-entering');drawer.style.removeProperty('--panel-transform');drawer.style.removeProperty('--panel-opacity');delete drawer.dataset.root},duration)};
+    const closeDrawer=()=>{const overlay=el('overlay'),drawer=el('drawer');if(!overlay.classList.contains('open')||drawer.classList.contains('is-closing'))return;const dialog=drawer.classList.contains('dialog-panel'),left=drawer.classList.contains('left-panel'),duration=dialog?260:450;drawer.classList.add('is-closing');overlay.classList.add('is-closing');drawer.style.setProperty('--panel-transform',dialog?'translate(-50%,-50%) scale(.96)':left?'translateX(-104%)':'translateX(104%)');drawer.style.setProperty('--panel-opacity',dialog?'0':'.72');setTimeout(()=>{overlay.classList.remove('open','is-closing');drawer.classList.remove('is-closing','subview-leaving','subview-entering');drawer.style.removeProperty('--panel-transform');drawer.style.removeProperty('--panel-opacity');delete drawer.dataset.root},duration)};
     document.addEventListener('click',event=>{const trigger=event.target.closest('[data-close]');if(!trigger)return;event.preventDefault();event.stopImmediatePropagation();closeDrawer()},true);
     el('overlay').addEventListener('click',event=>{if(event.target!==el('overlay'))return;event.preventDefault();event.stopImmediatePropagation();closeDrawer()},true);
   </script>
@@ -573,7 +573,37 @@
     body.ui-system.ui-route-proxy .drawer-head .icon-button[data-close] { border-color:transparent; background:transparent; box-shadow:none; }
     body.ui-system.ui-route-proxy .drawer-head .icon-button[data-close]:hover { border-color:var(--line); color:var(--muted); background:#fff; }
     body.ui-system.ui-route-proxy .drawer-head .icon-button[data-close]:focus-visible { border-color:transparent; }
+    body.ui-system.ui-route-proxy .owner-filter { display:inline-flex; flex:0 1 auto; align-items:center; gap:6px; min-width:0; height:30px; min-height:30px; padding:0 7px 0 5px; border:1px solid #dfe4ee; border-radius:7px; color:#526071; background:#fff; font-size:12px; }
+    body.ui-system.ui-route-proxy .owner-filter[hidden] { display:none; }
+    body.ui-system.ui-route-proxy .owner-filter:hover { border-color:#bec8ff; color:var(--accent); background:#fbfbff; }
+    .owner-filter-avatar { display:grid; flex:0 0 18px; width:18px; height:18px; place-items:center; overflow:hidden; border-radius:5px; color:#557086; background:#eaf0f3; font-size:8px; font-weight:800; }
+    .owner-filter-avatar img { width:100%; height:100%; object-fit:cover; }
+    .owner-filter-label { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .owner-filter .icon { width:13px; height:13px; flex:0 0 13px; color:#7f8a97; }
+    body.ui-system.ui-route-proxy .proxy-search { padding:10px 12px; }
+    body.ui-system.ui-route-proxy .proxy-search svg { top:50%; left:23px; transform:translateY(-50%); pointer-events:none; }
+    body.ui-system.ui-route-proxy .proxy-search input { box-sizing:border-box; min-height:42px; height:42px; padding:0 12px 0 34px; line-height:42px; }
+    body.ui-system.ui-route-proxy #overlay .drawer.left-panel { top:0!important; right:auto!important; left:0!important; width:min(500px,calc(100vw - 24px)); height:100%!important; transform:var(--panel-transform,translateX(-104%))!important; opacity:var(--panel-opacity,1)!important; transition:transform .34s cubic-bezier(.22,.61,.36,1),opacity .22s ease!important; }
+    body.ui-system.ui-route-proxy #overlay .drawer.left-panel.is-closing { transition:transform .42s cubic-bezier(.22,.61,.36,1),opacity .34s ease!important; }
+    .pool-manager { display:grid; gap:18px; }
+    .pool-manager-head { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+    .pool-manager-head span { color:var(--muted); font-size:12px; }
+    .pool-manager-list { overflow:auto; max-height:calc(100dvh - 280px); border-top:1px solid var(--line); }
+    .pool-manager-row { display:grid; grid-template-columns:8px minmax(0,1fr) auto; align-items:center; gap:10px; padding:14px 2px; border-bottom:1px solid var(--line); }
+    .pool-manager-row b { display:block; overflow:hidden; font-size:14px; text-overflow:ellipsis; white-space:nowrap; }
+    .pool-manager-row small { display:block; margin-top:3px; color:var(--muted); font-size:12px; }
+    .pool-manager-row .status { justify-self:end; }
+    .pool-manager-empty { margin:0; padding:28px 0; color:var(--muted); font-size:13px; text-align:center; }
+    .pool-create-form { display:none; gap:12px; padding:16px; border:1px solid var(--line); border-radius:10px; background:#f7f9fc; }
+    .pool-create-form.is-open { display:grid; animation:pool-form-in .18s ease-out; }
+    .pool-create-form label { display:grid; gap:6px; color:var(--muted); font-size:12px; font-weight:700; }
+    .pool-create-form input,.pool-create-form select { box-sizing:border-box; width:100%; min-height:40px; height:40px; padding:0 10px; border:1px solid var(--line); border-radius:8px; color:var(--text); background:#fff; font-size:14px; }
+    .pool-create-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    .pool-create-actions { display:flex; justify-content:flex-end; gap:8px; padding-top:2px; }
+    .pool-manager-error { min-height:18px; color:#bd5062; font-size:12px; }
+    @keyframes pool-form-in { from { opacity:0; transform:translateY(-6px); } to { opacity:1; transform:none; } }
     @media (max-width: 1040px) { .platform-switcher button { padding: 0 7px; } .platform-switcher button > span { display: none; } }
+    @media (max-width: 720px) { .owner-filter { max-width:160px; } .pool-create-grid { grid-template-columns:1fr; } }
   </style>
   <script>window.__PROXY_BOOTSTRAP__ = /* PROXY_BOOTSTRAP */ null;</script>
   <script>
@@ -594,10 +624,31 @@
         login: { text: '新增平台登录', svg: svg('<path d="M13 4h6v16h-6M4 12h11m0 0-3-3m3 3-3 3"/><path d="M5 5h7"/>') },
         remove: { text: '删除账号', svg: svg('<path d="M5 7h14M9 7V4h6v3m-8 0 1 13h8l1-13M10 11v5m4-5v5"/>') }
       };
-      const state = { platform: 'tiktok', accountId: '', loginChoice: '' };
+      const state = { platform: 'tiktok', accountId: '', loginChoice: '', query: '', statusFilter: '', feishuFilterId: '', feishuFilterName: '', feishuFilterAvatar: '', feishuFilterActive: false };
       const activePlatformByAccount = {};
       const tiktokCollectView = { ...views.collect };
-      const accountFor = () => accountRows.find(row => row.id === state.accountId) || accountRows[0];
+      const visibleAccountRows = () => accountRows.filter(row => {
+        const item = platformFor(row);
+        const byFeishu = !state.feishuFilterActive || String(row.feishuUserId || '') === state.feishuFilterId;
+        const byStatus = !state.statusFilter || item.status === state.statusFilter;
+        const query = state.query.trim().toLowerCase();
+        const haystack = `${row.id} ${row.owner} ${row.proxy} ${row.ip} ${item.status}`.toLowerCase();
+        return byFeishu && byStatus && (!query || haystack.includes(query));
+      });
+      const accountFor = () => visibleAccountRows().find(row => row.id === state.accountId) || visibleAccountRows()[0] || accountRows[0];
+      const renderFeishuFilterControl = () => {
+        const control = document.querySelector('[data-feishu-filter-toggle]');
+        if (!control) return;
+        const enabled = Boolean(state.feishuFilterId);
+        control.hidden = !enabled;
+        if (!enabled) return;
+        const avatar = control.querySelector('.owner-filter-avatar');
+        const label = control.querySelector('.owner-filter-label');
+        if (avatar) avatar.innerHTML = state.feishuFilterAvatar ? `<img src="${state.feishuFilterAvatar}" alt="">` : state.feishuFilterName.slice(0, 1);
+        if (label) label.textContent = state.feishuFilterActive ? `飞书：${state.feishuFilterName}` : '全部飞书用户';
+        control.setAttribute('aria-label', state.feishuFilterActive ? '取消当前飞书用户筛选' : `按 ${state.feishuFilterName} 筛选账号`);
+        control.title = state.feishuFilterActive ? '取消筛选，查看全部账户' : `按 ${state.feishuFilterName} 筛选`;
+      };
       const platformFor = row => row.platforms[activePlatformByAccount[row.id] || 'tiktok'];
       const switchAccountPlatform = accountId => {
         state.accountId = accountId;
@@ -623,14 +674,18 @@
       const renderAccounts = (emptyMessage = '正在加载账号…') => {
         const table = document.querySelector('.accounts');
         if (!table) return;
+        const rows = visibleAccountRows();
         const labels = ['账号', '绑定代理', '状态', '飞书用户', '操作'];
         table.querySelector('thead tr').innerHTML = labels.map((label, index) => `<th>${index === 4 ? `<span class="visually-hidden">${label}</span>` : label}</th>`).join('');
-        if (!accountRows.length) {
-          table.querySelector('tbody').innerHTML = `<tr><td colspan="5" class="account-empty">${emptyMessage}</td></tr>`;
+        renderFeishuFilterControl();
+        if (!rows.length) {
+          const message = accountRows.length && state.feishuFilterActive ? '当前飞书用户暂无已绑定账户，点击筛选标签可查看全部账户。' : emptyMessage;
+          table.querySelector('tbody').innerHTML = `<tr><td colspan="5" class="account-empty">${message}</td></tr>`;
           ['context-name', 'context-owner', 'context-place', 'context-ip', 'context-status'].forEach(id => { const node = el(id); if (node) node.textContent = '—'; });
           return;
         }
-        table.querySelector('tbody').innerHTML = accountRows.map(row => {
+        if (!rows.some(row => row.id === state.accountId)) state.accountId = rows[0].id;
+        table.querySelector('tbody').innerHTML = rows.map(row => {
           const platform = activePlatformByAccount[row.id] || 'tiktok', item = platformFor(row);
           const multiLoggedIn = Object.values(row.platforms).filter(value => value.loggedIn).length > 1;
           const platformTopline = multiLoggedIn ? `<span class="account-platform-topline"><span class="platform-ledger">${Object.keys(row.platforms).map(key => `<i class="platform-ledger-item${key === platform ? ' active' : ''}">${mark(key)}${platformMeta[key].label}</i>`).join('')}</span><button type="button" class="inline-platform-switch" data-row-platform-switch="${row.id}" onclick="event.preventDefault();event.stopPropagation();window.proxySwitchAccountPlatform(this.dataset.rowPlatformSwitch)" title="切换当前平台" aria-label="切换当前平台">${svg('<path d="M7 7h11l-3-3m3 3-3 3M17 17H6l3 3m-3-3 3-3"/>')}</button></span>` : '';
@@ -640,6 +695,7 @@
       };
       const renderContext = () => {
         const row = accountFor();
+        if (!row) return;
         state.platform = activePlatformByAccount[row.id] || 'tiktok';
         const item = platformFor(row), meta = platformMeta[state.platform];
         el('context-avatar').textContent = row.initials;
@@ -740,9 +796,10 @@
         }).join('') || '<p class="proxy-foot">暂无代理出口</p>';
       };
       const updateLiveAccountSummary = () => {
-        const online = accountRows.filter(row => Object.values(row.platforms).some(item => item.loggedIn && item.awake)).length;
-        const pending = accountRows.filter(row => platformFor(row).kind === 'off').length;
-        const values = [online, Math.max(0, accountRows.length - online), pending];
+        const rows = visibleAccountRows();
+        const online = rows.filter(row => Object.values(row.platforms).some(item => item.loggedIn && item.awake)).length;
+        const pending = rows.filter(row => platformFor(row).kind === 'off').length;
+        const values = [online, Math.max(0, rows.length - online), pending];
         document.querySelectorAll('.account-head .summary-item b').forEach((node, index) => { node.textContent = String(values[index] || 0); });
       };
       const hydrateLiveData = async () => {
@@ -756,7 +813,7 @@
           const pool = byPool.get(Number(account.proxy_profile_id)), session = sessionFor(account.id), runtime = liveRuntimeStatus(account, pool, session);
           const linked = account.platforms || {}, tiktokLogged = Boolean(linked.tiktok && linked.tiktok.linked), instagramLogged = Boolean((linked.instagram && linked.instagram.logged_in) || account.profile?.instagram?.profile_url);
           const makePlatform = loggedIn => ({ loggedIn, awake: Boolean(session), status: loggedIn ? runtime.status : '未登录', kind: loggedIn ? runtime.kind : 'off', session: session ? '会话在线 · 可观测' : loggedIn ? '会话已释放' : '等待新增平台登录' });
-          return { accountId: account.id, id: account.username || `account-${account.id}`, initials: String(account.username || '?').slice(0, 2).toUpperCase(), owner: account.feishu_user_name || account.display_name || '未绑定飞书用户', avatar: account.feishu_avatar_url || account.tiktok_avatar_url || '', proxy: pool?.name || '未绑定代理', ip: pool?.expected_exit_ip || '待校验', platforms: { tiktok: makePlatform(tiktokLogged), instagram: makePlatform(instagramLogged) } };
+          return { accountId: account.id, id: account.username || `account-${account.id}`, initials: String(account.username || '?').slice(0, 2).toUpperCase(), feishuUserId: String(account.feishu_user_id || ''), owner: account.feishu_user_name || account.display_name || '未绑定飞书用户', avatar: account.feishu_avatar_url || account.tiktok_avatar_url || '', proxy: pool?.name || '未绑定代理', ip: pool?.expected_exit_ip || '待校验', platforms: { tiktok: makePlatform(tiktokLogged), instagram: makePlatform(instagramLogged) } };
         });
         accountRows.forEach(row => { activePlatformByAccount[row.id] = row.platforms.tiktok.loggedIn ? 'tiktok' : row.platforms.instagram.loggedIn ? 'instagram' : 'tiktok'; });
         if (accountRows.length) { state.accountId = accountRows[0].id; state.platform = activePlatformByAccount[state.accountId]; }
@@ -774,7 +831,96 @@
         }
         renderAccounts('账号数据暂时无法加载，请刷新页面重试。');
       };
+      const refreshAccountView = () => { updateLiveAccountSummary(); renderAccounts(); };
+      document.querySelector('.account-tools .search')?.addEventListener('input', event => { state.query = event.currentTarget.value || ''; refreshAccountView(); });
+      document.querySelector('.account-tools .filter')?.addEventListener('change', event => { state.statusFilter = event.currentTarget.value || ''; refreshAccountView(); });
+      document.addEventListener('click', event => {
+        const filterToggle = event.target.closest('[data-feishu-filter-toggle]');
+        if (!filterToggle || !state.feishuFilterId) return;
+        event.preventDefault();
+        state.feishuFilterActive = !state.feishuFilterActive;
+        refreshAccountView();
+      });
+      document.querySelector('[data-proxy-refresh]')?.addEventListener('click', () => loadLiveData());
+      window.addEventListener('proxy:refresh', () => loadLiveData());
+      (window.VideoAnalyzerGlobalUser || Promise.resolve({ currentUser: {} })).then(payload => {
+        const user = payload && payload.currentUser ? payload.currentUser : {};
+        const userId = String(user.feishuId || user.id || '');
+        if (!userId || userId === 'public' || user.kind === 'public') return;
+        state.feishuFilterId = userId;
+        state.feishuFilterName = String(user.name || '当前飞书用户');
+        state.feishuFilterAvatar = String(user.avatarUrl || '');
+        state.feishuFilterActive = true;
+        refreshAccountView();
+      }).catch(() => {});
       loadLiveData();
+    })();
+  </script>
+  <script>
+    (() => {
+      const escapePoolText = value => String(value ?? '').replace(/[&<>'"]/g, char => ({ '&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;' })[char]);
+      const closeIcon = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>';
+      const poolStatus = pool => ['不可用', '异常', '禁用'].includes(pool.status) ? 'off' : pool.status === 'IP重复' ? 'delay' : 'live';
+      const poolLabel = pool => ['不可用', '异常', '禁用'].includes(pool.status) ? '不可用' : pool.status === 'IP重复' ? 'IP重复' : Number(pool.account_count || 0) ? '已绑定' : '可用';
+      const renderPoolManager = (payload, formOpen = false) => {
+        const pools = Array.isArray(payload?.pools) ? payload.pools.filter(pool => pool.source_type !== 'direct') : [];
+        const drawer = el('drawer'), overlay = el('overlay');
+        drawer.dataset.root = 'proxyPool';
+        drawer.className = 'drawer left-panel pool-panel motion-prep';
+        drawer.style.setProperty('--panel-transform', 'translateX(-104%)');
+        drawer.style.setProperty('--panel-opacity', '0');
+        el('drawer-head').innerHTML = `<div><p class="eyebrow">PROXY POOL</p><h3>IP 池管理</h3><p>管理代理出口与绑定状态；新增 IP 会在保存后进入可用出口列表。</p></div><button class="icon-button" data-close aria-label="关闭">${closeIcon}</button>`;
+        const rows = pools.map(pool => `<div class="pool-manager-row"><i class="proxy-dot ${poolStatus(pool) === 'off' ? 'off' : poolStatus(pool) === 'delay' ? 'delay' : ''}"></i><div><b>${escapePoolText(pool.name || '未命名出口')}</b><small>${escapePoolText(pool.expected_exit_ip || '待校验')} · :${escapePoolText(pool.local_port || '—')} · ${Number(pool.account_count || 0)} 个账户</small></div><span class="status ${poolStatus(pool)}">${poolLabel(pool)}</span></div>`).join('') || '<p class="pool-manager-empty">尚未配置代理出口</p>';
+        el('drawer-body').innerHTML = `<div class="pool-manager"><div class="pool-manager-head"><span>${pools.length} 个出口</span><button type="button" class="button primary" data-proxy-pool-create>新增 IP</button></div><form class="pool-create-form${formOpen ? ' is-open' : ''}" data-proxy-pool-form><label>出口名称<input name="name" placeholder="例如：洛杉矶 · US West" required></label><label>代理类型<select name="source_type"><option value="vless">VLESS</option><option value="vmess">VMess</option><option value="static">HTTP / SOCKS</option></select></label><label>订阅或连接 URI<input name="source_uri" placeholder="vless:// 或 socks5://（可稍后补充）"></label><div class="pool-create-grid"><label>预期出口 IP<input name="expected_exit_ip" placeholder="154.12.88.64"></label><label>地区<input name="region" placeholder="US West"></label></div><p class="pool-manager-error" data-proxy-pool-error></p><div class="pool-create-actions"><button type="button" class="button" data-proxy-pool-create>取消</button><button type="submit" class="button primary">保存出口</button></div></form><div class="pool-manager-list">${rows}</div></div>`;
+        el('drawer-foot').innerHTML = '<button class="button" data-close>关闭</button>';
+        overlay.classList.add('open');
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          drawer.classList.remove('motion-prep');
+          drawer.style.setProperty('--panel-transform', 'translateX(0)');
+          drawer.style.setProperty('--panel-opacity', '1');
+        }));
+      };
+      const openPoolManager = async (formOpen = false) => {
+        try {
+          const response = await fetch('/api/proxy/pools');
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          renderPoolManager(await response.json(), formOpen);
+        } catch (_) {
+          renderPoolManager({ pools: [] }, formOpen);
+          const notice = document.querySelector('[data-proxy-pool-error]');
+          if (notice) notice.textContent = '暂时无法读取 IP 池，请稍后重试。';
+        }
+      };
+      document.addEventListener('click', event => {
+        const opener = event.target.closest('[data-proxy-pool-open]');
+        if (opener) { event.preventDefault(); openPoolManager(); return; }
+        const create = event.target.closest('[data-proxy-pool-create]');
+        if (create) {
+          event.preventDefault();
+          const form = document.querySelector('[data-proxy-pool-form]');
+          if (form) form.classList.toggle('is-open');
+        }
+      });
+      document.addEventListener('submit', async event => {
+        const form = event.target.closest('[data-proxy-pool-form]');
+        if (!form) return;
+        event.preventDefault();
+        const error = form.querySelector('[data-proxy-pool-error]');
+        const submit = form.querySelector('[type="submit"]');
+        if (error) error.textContent = '';
+        if (submit) submit.disabled = true;
+        try {
+          const payload = Object.fromEntries(new FormData(form).entries());
+          const response = await fetch('/api/proxy/pools', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || '保存失败');
+          window.dispatchEvent(new Event('proxy:refresh'));
+          await openPoolManager(false);
+        } catch (err) {
+          if (error) error.textContent = err?.message || '保存失败，请检查 IP 与连接 URI。';
+          if (submit) submit.disabled = false;
+        }
+      });
     })();
   </script>
 </body>
