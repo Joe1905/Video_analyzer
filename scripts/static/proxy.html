@@ -586,9 +586,18 @@
     body.ui-system.ui-route-proxy .proxy-search svg { top:50%; left:23px; transform:translateY(-50%); pointer-events:none; }
     body.ui-system.ui-route-proxy .proxy-search input { box-sizing:border-box; min-height:42px; height:42px; padding:0 12px 0 34px; line-height:42px; }
     body.ui-system.ui-route-proxy { -webkit-font-smoothing:auto; text-rendering:optimizeLegibility; }
+    /* 中文标题禁用 em 级负字距：它会把字形放到非整数像素，DPR=1 时容易发虚。 */
+    body.ui-system.ui-route-proxy .drawer-head h3,
+    body.ui-system.ui-route-proxy .drawer-subview-intro h4,
+    body.ui-system.ui-route-proxy .task-step-head b,
+    body.ui-system.ui-route-proxy .task-side-head b,
+    body.ui-system.ui-route-proxy .collect-title h4,
+    body.ui-system.ui-route-proxy .section-head h4 { letter-spacing:0; }
+    body.ui-system.ui-route-proxy .drawer-head .eyebrow,
+    body.ui-system.ui-route-proxy .drawer-subview-intro .eyebrow { letter-spacing:1px; }
     body.ui-system.ui-route-proxy #overlay .drawer.left-panel { top:0!important; right:auto!important; bottom:0!important; left:0!important; width:min(500px,calc(100vw - 24px)); height:100%!important; animation:none!important; transform:var(--panel-transform,translateX(-104%))!important; transform-origin:left center!important; opacity:var(--panel-opacity,1)!important; transition:transform .34s cubic-bezier(.22,.61,.36,1),opacity .22s ease!important; }
     body.ui-system.ui-route-proxy #overlay .drawer.side-panel.is-settled,
-    body.ui-system.ui-route-proxy #overlay .drawer.left-panel.is-settled { transform:none!important; }
+    body.ui-system.ui-route-proxy #overlay .drawer.left-panel.is-settled { transform:none!important; opacity:1!important; transition:none!important; }
     body.ui-system.ui-route-proxy #overlay .drawer.left-panel.is-closing { transition:transform .42s cubic-bezier(.22,.61,.36,1),opacity .34s ease!important; }
     body.ui-system.ui-route-proxy #overlay .drawer.left-panel:not(.pool-has-footer) .drawer-foot { max-height:0; padding-top:0; padding-bottom:0; border-top-color:transparent; opacity:0; pointer-events:none; }
     body.ui-system.ui-route-proxy #overlay .drawer.left-panel.pool-has-footer .drawer-foot { min-height:64px; max-height:76px; will-change:transform,opacity; }
