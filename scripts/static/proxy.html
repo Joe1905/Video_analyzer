@@ -491,7 +491,7 @@
     let drawerLifecycleVersion=0,drawerCloseTimer=0;
     const cancelDrawerClosing=()=>{drawerLifecycleVersion++;if(drawerCloseTimer){clearTimeout(drawerCloseTimer);drawerCloseTimer=0}const overlay=el('overlay'),drawer=el('drawer'),wasClosing=drawer.classList.contains('is-closing');overlay.classList.remove('is-closing');drawer.classList.remove('is-closing');if(wasClosing){drawer.style.removeProperty('--panel-transform');drawer.style.removeProperty('--panel-opacity')}return wasClosing};
     const settleDrawerSurface=(delay=360)=>{const version=++drawerLifecycleVersion;window.setTimeout(()=>{const overlay=el('overlay'),drawer=el('drawer');if(version===drawerLifecycleVersion&&overlay.classList.contains('open')&&!drawer.classList.contains('is-closing')&&!drawer.classList.contains('dialog-panel'))drawer.classList.add('is-settled')},delay)};
-    const closeDrawer=()=>{const overlay=el('overlay'),drawer=el('drawer');if(!overlay.classList.contains('open')||drawer.classList.contains('is-closing'))return;const dialog=drawer.classList.contains('dialog-panel'),left=drawer.classList.contains('left-panel'),duration=dialog?260:450,version=++drawerLifecycleVersion;drawer.classList.remove('is-settled');drawer.classList.add('is-closing');overlay.classList.add('is-closing');drawer.style.setProperty('--panel-transform',dialog?'translate(-50%,-50%) scale(.96)':left?'translateX(-104%)':'translateX(104%)');drawer.style.setProperty('--panel-opacity',dialog?'0':'.72');drawerCloseTimer=window.setTimeout(()=>{if(version!==drawerLifecycleVersion)return;drawerCloseTimer=0;overlay.classList.remove('open','is-closing');drawer.classList.remove('is-closing','subview-leaving','subview-entering','is-settled');drawer.style.removeProperty('--panel-transform');drawer.style.removeProperty('--panel-opacity');['left','right','top','bottom','height','animation'].forEach(prop=>drawer.style.removeProperty(prop));delete drawer.dataset.root},duration)};
+    const closeDrawer=()=>{const overlay=el('overlay'),drawer=el('drawer');if(!overlay.classList.contains('open')||drawer.classList.contains('is-closing'))return;const dialog=drawer.classList.contains('dialog-panel'),left=drawer.classList.contains('left-panel'),duration=dialog?260:450,version=++drawerLifecycleVersion;drawer.classList.remove('is-settled');drawer.classList.add('is-closing');overlay.classList.add('is-closing');drawer.style.setProperty('--panel-transform',dialog?'translate(-50%,-50%) scale(.96)':left?'translateX(calc(-100% - var(--proxy-left-drawer-offset)))':'translateX(104%)');drawer.style.setProperty('--panel-opacity',dialog?'0':'.72');drawerCloseTimer=window.setTimeout(()=>{if(version!==drawerLifecycleVersion)return;drawerCloseTimer=0;overlay.classList.remove('open','is-closing');drawer.classList.remove('is-closing','subview-leaving','subview-entering','is-settled');drawer.style.removeProperty('--panel-transform');drawer.style.removeProperty('--panel-opacity');['left','right','top','bottom','height','animation'].forEach(prop=>drawer.style.removeProperty(prop));delete drawer.dataset.root},duration)};
     const openWithSettledSurface=open;
     open=function(name){const drawer=el('drawer'),overlay=el('overlay'),isInner=overlay.classList.contains('open')&&drawer.classList.contains('side-panel')&&drawer.dataset.root===resolveDrawerRoot(name);cancelDrawerClosing();const result=openWithSettledSurface(name);if(!drawer.classList.contains('dialog-panel')){if(isInner)drawer.classList.add('is-settled');else{drawer.classList.remove('is-settled');settleDrawerSurface()}}return result};
     document.addEventListener('click',event=>{const trigger=event.target.closest('[data-close]');if(!trigger)return;event.preventDefault();event.stopImmediatePropagation();closeDrawer()},true);
@@ -612,7 +612,7 @@
     body.ui-system.ui-route-proxy .task-step-head .task-link,
     body.ui-system.ui-route-proxy .drawer .button { line-height:20px; }
     /* 左抽屉始终停靠在现有黑色导航右侧，避免内容落到导航下方。 */
-    body.ui-system.ui-route-proxy #overlay .drawer.left-panel { top:0!important; right:auto!important; bottom:0!important; left:72px!important; width:min(500px,calc(100vw - 96px)); height:100%!important; animation:none!important; transform:var(--panel-transform,translateX(-104%))!important; transform-origin:left center!important; opacity:var(--panel-opacity,1)!important; transition:transform .34s cubic-bezier(.22,.61,.36,1),opacity .22s ease!important; }
+    body.ui-system.ui-route-proxy #overlay .drawer.left-panel { --proxy-left-drawer-offset:72px; top:0!important; right:auto!important; bottom:0!important; left:72px!important; width:min(500px,calc(100vw - 96px)); height:100%!important; animation:none!important; transform:var(--panel-transform,translateX(calc(-100% - var(--proxy-left-drawer-offset))))!important; transform-origin:left center!important; opacity:var(--panel-opacity,1)!important; transition:transform .34s cubic-bezier(.22,.61,.36,1),opacity .22s ease!important; }
     body.ui-system.ui-route-proxy #overlay .drawer.side-panel:not(.is-settled):not(.motion-prep):not(.is-closing),
     body.ui-system.ui-route-proxy #overlay .drawer.left-panel:not(.is-settled):not(.motion-prep):not(.is-closing) { transition:transform .34s cubic-bezier(.22,.61,.36,1),opacity .22s ease!important; will-change:transform,opacity; }
     body.ui-system.ui-route-proxy #overlay .drawer.side-panel.is-settled,
@@ -622,7 +622,7 @@
     body.ui-system.ui-route-proxy #overlay .drawer.left-panel.pool-has-footer .drawer-foot { min-height:64px; max-height:76px; }
     body.ui-system.ui-route-proxy #overlay .drawer.left-panel.pool-has-footer.subview-leaving .drawer-foot { opacity:0; transform:translateY(16px); }
     body.ui-system.ui-route-proxy #overlay .drawer.left-panel.pool-has-footer.subview-entering .drawer-foot { opacity:0; transform:translateY(-16px); }
-    @media(max-width:820px){body.ui-system.ui-route-proxy #overlay .drawer.left-panel { left:0!important; width:100vw; }}
+    @media(max-width:820px){body.ui-system.ui-route-proxy #overlay .drawer.left-panel { --proxy-left-drawer-offset:0px; left:0!important; width:100vw; }}
     body.ui-system.ui-route-proxy .proxy-list .proxy-row { cursor:pointer; transition:background .16s ease,box-shadow .16s ease; }
     body.ui-system.ui-route-proxy .proxy-list .proxy-row:hover { background:#f7f8ff; box-shadow:inset 2px 0 var(--accent); }
     body.ui-system.ui-route-proxy .proxy-list .proxy-row:focus-visible { outline:2px solid #cfd5ff; outline-offset:-2px; }
@@ -983,7 +983,7 @@
           drawer.style.setProperty('height', '100%');
           drawer.style.setProperty('animation', 'none');
           if (initial) {
-            drawer.style.setProperty('--panel-transform', 'translateX(-104%)');
+            drawer.style.setProperty('--panel-transform', 'translateX(calc(-100% - var(--proxy-left-drawer-offset)))');
             drawer.style.setProperty('--panel-opacity', '0');
           }
           el('drawer-head').innerHTML = `<div><p class="eyebrow">PROXY POOL</p><h3>${title}</h3><p>${desc}</p></div><button class="icon-button" data-close aria-label="关闭">${closeIcon}</button>`;
