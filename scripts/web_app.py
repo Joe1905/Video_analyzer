@@ -819,16 +819,16 @@ def is_ui_chat_scroll_test_request(handler: BaseHTTPRequestHandler) -> bool:
 NAV_ITEMS = [
     {"key": "home", "href": "/", "label": "\u9996\u9875", "title": "AI \u804a\u5929", "icon": '<path d="M3 10.5 12 3l9 7.5"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/>'},
     {"key": "amazon", "href": "/amazon", "label": "\u5356\u5bb6\u7cbe\u7075", "title": "\u5356\u5bb6\u7cbe\u7075", "icon": '<circle cx="10.5" cy="10.5" r="5.5"/><path d="m14.5 14.5 4.5 4.5"/><path d="M18 3.5v4M16 5.5h4"/>'},
-    {"key": "chuhaijiang", "href": "/chuhaijiang", "label": "chuhaijiang", "title": "\u51fa\u6d77\u5320", "icon": '<path d="M4 19V5M4 19h16"/><path d="m7 15 3.2-4 3 2.2L19 6"/><path d="M16 6h3v3"/>'},
+    {"key": "chuhaijiang", "href": "/chuhaijiang", "label": "\u51fa\u6d77\u5320", "title": "\u51fa\u6d77\u5320", "icon": '<path d="M4 19V5M4 19h16"/><path d="m7 15 3.2-4 3 2.2L19 6"/><path d="M16 6h3v3"/>'},
     {"key": "lan-chat", "href": "/lan-chat", "label": "\u90bb\u804a", "title": "\u5c40\u57df\u7f51\u804a\u5929", "icon": '<path d="M21 15a4 4 0 0 1-4 4H8l-5 2 1.6-4.1A7 7 0 0 1 3 12c0-4 4-7 9-7s9 3 9 7z"/><path d="M8 12h.01M12 12h.01M16 12h.01"/>'},
     {"key": "report", "href": "/report", "label": "\u65e5\u62a5", "title": "\u6bcf\u65e5\u62a5\u544a", "icon": '<path d="M7 3h7l4 4v14H7z"/><path d="M14 3v5h5"/><path d="M10 12h6"/><path d="M10 16h4"/>'},
-    {"key": "proxy", "href": "/proxy", "label": "Proxy", "title": "账号 IP 池", "icon": '<path d="M4 12a8 8 0 0 1 16 0"/><path d="M8 12a4 4 0 0 1 8 0"/><path d="M12 12v8"/><path d="M9 20h6"/>'},
+    {"key": "proxy", "href": "/proxy", "label": "账号运营台", "title": "账号运营台", "icon": '<path d="M4 12a8 8 0 0 1 16 0"/><path d="M8 12a4 4 0 0 1 8 0"/><path d="M12 12v8"/><path d="M9 20h6"/>'},
     {"key": "tool", "href": "/tool", "label": "工具", "title": "图片标签工具", "icon": '<path d="M4 5h16v14H4z"/><path d="m8 15 3-3 2 2 3-4 3 5"/><circle cx="9" cy="9" r="1"/>'},
 ]
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
 
-UI_ASSET_VERSION = "20260812-36"
+UI_ASSET_VERSION = "20260812-37"
 APP_UI_ASSETS = f"""
 <script id="ui-nav-state-boot">
 let uiNavExpanded = false;
@@ -1027,20 +1027,9 @@ def render_app_nav(current_path: str) -> str:
     brand = (
         '<a class="ui-nav__brand" href="/" aria-label="\u8fd4\u56de\u9996\u9875" title="\u8fd4\u56de\u9996\u9875">'
         '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">'
-        '<defs>'
-        '<linearGradient id="uiBrandFg" x1="8" y1="4" x2="18" y2="16" gradientUnits="userSpaceOnUse">'
-        '<stop offset="0%" stop-color="#FFFFFF"/>'
-        '<stop offset="100%" stop-color="#E2E8F0"/>'
-        '</linearGradient>'
-        '<linearGradient id="uiBrandAura" x1="7" y1="2" x2="19" y2="18" gradientUnits="userSpaceOnUse">'
-        '<stop offset="0%" stop-color="#93C5FD"/>'
-        '<stop offset="100%" stop-color="#C084FC"/>'
-        '</linearGradient>'
-        '</defs>'
-        '<path d="M7 4.75A2.75 2.75 0 0 1 11.23 2.44l8.25 5.25a2.75 2.75 0 0 1 0 4.62l-8.25 5.25A2.75 2.75 0 0 1 7 15.25V4.75Z" fill="url(#uiBrandAura)" opacity="0.38"/>'
-        '<path d="M8 5.6A1.6 1.6 0 0 1 10.46 4.25l7.5 4.9a1.6 1.6 0 0 1 0 2.7l-7.5 4.9A1.6 1.6 0 0 1 8 15.4V5.6Z" fill="url(#uiBrandFg)"/>'
-        '<path d="M18.5 2C18.7 3.1 19.4 3.8 20.5 4C19.4 4.2 18.7 4.9 18.5 6C18.3 4.9 17.6 4.2 16.5 4C17.6 3.8 18.3 3.1 18.5 2Z" fill="#F472B6"/>'
-        '<path d="M5 18.5C5.1 19.2 5.5 19.6 6.2 19.7C5.5 19.8 5.1 20.2 5 20.9C4.9 20.2 4.5 19.8 3.8 19.7C4.5 19.6 4.9 19.2 5 18.5Z" fill="#60A5FA" opacity="0.9"/>'
+        '<rect x="4.5" y="4.5" width="6.25" height="6.25" rx="1.8" fill="#FFFFFF"/>'
+        '<rect x="13.25" y="4.5" width="6.25" height="6.25" rx="1.8" stroke="#FFFFFF" stroke-width="1.7" opacity="0.84"/>'
+        '<rect x="8.875" y="13.25" width="6.25" height="6.25" rx="1.8" fill="#FFFFFF" opacity="0.72"/>'
         '</svg></a>'
     )
     mobile_trigger = (

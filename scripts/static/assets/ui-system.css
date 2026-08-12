@@ -67,8 +67,10 @@
 /* Product-wide identity selector. Kept in the shared shell so every route has
    the same data scope before page-specific code starts. */
 .ui-nav__identity {
-  margin: auto 9px 12px;
+  align-self: center;
+  margin: auto auto 12px;
   width: calc(100% - 20px);
+  box-sizing: border-box;
   min-height: 48px;
   display: flex;
   align-items: center;
