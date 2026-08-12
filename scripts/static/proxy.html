@@ -672,6 +672,8 @@
     .mini-action.is-busy { position:relative; pointer-events:none; }
     .mini-action.is-busy .icon { opacity:.16; }
     .mini-action.is-busy::after { position:absolute; width:13px; height:13px; border:1.5px solid currentColor; border-top-color:transparent; border-radius:50%; content:""; animation:proxy-action-spin .7s linear infinite; }
+    #proxy-action-tooltip { position:fixed; z-index:80; max-width:220px; padding:6px 8px; border-radius:6px; color:#fff; background:#202733; box-shadow:0 7px 18px rgba(21,27,37,.16); font-size:11px; font-weight:650; line-height:1.35; pointer-events:none; opacity:0; transform:translate(-50%,-3px); transition:opacity .12s ease,transform .12s ease; }
+    #proxy-action-tooltip.visible { opacity:1; transform:translate(-50%,0); }
     @keyframes pool-status-refresh { from { opacity:.42; } to { opacity:1; } }
     @keyframes proxy-action-spin { to { transform:rotate(360deg); } }
     .pool-editor { display:grid; gap:18px; }
@@ -729,7 +731,7 @@
         login: { text: '新增平台登录', svg: svg('<path d="M13 4h6v16h-6M4 12h11m0 0-3-3m3 3-3 3"/><path d="M5 5h7"/>') },
         remove: { text: '删除账号', svg: svg('<path d="M5 7h14M9 7V4h6v3m-8 0 1 13h8l1-13M10 11v5m4-5v5"/>') }
       };
-      const state = { platform: 'tiktok', accountId: '', loginChoice: '', loginSessionId: null, loginSession: null, query: '', statusFilter: '', feishuFilterId: '', feishuFilterName: '', feishuFilterAvatar: '', feishuFilterActive: false, sessions: [], collectContext: null, startingPlatforms: new Map() };
+      const state = { platform: 'tiktok', accountId: '', loginChoice: '', loginSessionId: null, loginSession: null, query: '', statusFilter: '', feishuFilterId: '', feishuFilterName: '', feishuFilterAvatar: '', feishuFilterActive: false, sessions: [], collectContext: null, sessionTransitions: new Map() };
       const platformStorageKey = 'proxy.activePlatformByAccount.v1';
       const activePlatformByAccount = (() => {
         try {
@@ -788,7 +790,10 @@
         ? `<span class="platform-availability ready"><i></i>已登录</span>`
         : `<span class="platform-availability ${item.awake ? 'pending' : 'missing'}"><i></i>${item.awake ? '可新增登录' : '等待登录'}</span>`;
       const rowActions = (row, item, platform) => {
-        const build = (name, disabled = false, blockedText = '') => `<button type="button" class="mini-action" data-platform-action="${name}" data-account-id="${row.id}" title="${disabled ? (blockedText || (name === 'observe' ? '请等待会话可观测后再打开' : '当前平台已登录')) : actions[name].text}" aria-label="${actions[name].text}" ${disabled ? 'disabled' : ''}>${actions[name].svg}</button>`;
+        const build = (name, disabled = false, blockedText = '') => {
+          const tip = disabled ? (blockedText || (name === 'observe' ? '请等待会话可观测后再打开' : '当前平台已登录')) : actions[name].text;
+          return `<button type="button" class="mini-action" data-platform-action="${name}" data-account-id="${row.id}" data-tooltip="${tip}" aria-label="${actions[name].text}" ${disabled ? 'disabled' : ''}>${actions[name].svg}</button>`;
+        };
         const list = [build('observe', !item.loggedIn || !item.observable, item.starting ? '会话启动中，请稍候' : ''), build(item.session ? 'sleep' : 'wake')];
         if (platform === 'tiktok') list.push(build('publish', !item.loggedIn));
         list.push(build('collect', !item.loggedIn));
@@ -816,7 +821,7 @@
           const platform = activePlatformByAccount[row.id] || 'tiktok', item = platformFor(row);
           const multiLoggedIn = Object.values(row.platforms).filter(value => value.loggedIn).length > 1;
           const platformTopline = multiLoggedIn ? `<span class="account-platform-topline"><span class="platform-ledger">${Object.keys(row.platforms).map(key => `<i class="platform-ledger-item${key === platform ? ' active' : ''}">${mark(key)}${platformMeta[key].label}</i>`).join('')}</span><button type="button" class="inline-platform-switch" data-row-platform-switch="${row.id}" onclick="event.preventDefault();event.stopPropagation();window.proxySwitchAccountPlatform(this.dataset.rowPlatformSwitch)" title="切换当前平台" aria-label="切换当前平台">${svg('<path d="M7 7h11l-3-3m3 3-3 3M17 17H6l3 3m-3-3 3-3"/>')}</button></span>` : '';
-          return `<tr class="${row.id === state.accountId ? 'selected' : ''}" data-platform-row="${row.id}"><td><span class="account-person"><i class="person-avatar">${row.initials}</i><span>${platformTopline}<b class="person-name">${row.id}</b><span class="person-sub">${row.owner} · ${item.starting ? '会话启动中' : item.observable ? '会话在线' : item.loggedIn ? '会话休眠' : '会话已释放'}</span></span></span></td><td><span class="proxy-cell"><i></i>${row.proxy}</span><span class="person-sub">${row.ip}</span></td><td><span class="account-state"><span class="status ${item.kind}">${item.status}</span><span class="platform-session ${item.observable && item.loggedIn ? 'awake' : item.loggedIn ? '' : 'offline'}"><i></i>${item.starting ? '浏览器启动中' : item.observable && item.loggedIn ? '浏览器已唤醒' : item.loggedIn ? '浏览器已休眠' : '平台未登录'}</span></span></td><td><span class="feishu-identity">${row.avatar ? `<img src="${row.avatar}" alt="">` : `<i class="person-avatar">${row.owner.slice(0, 1)}</i>`}<span><b>${row.owner}</b><small>已绑定 · 可授权</small></span></span></td><td>${rowActions(row, item, platform)}</td></tr>`;
+          return `<tr class="${row.id === state.accountId ? 'selected' : ''}" data-platform-row="${row.id}"><td><span class="account-person"><i class="person-avatar">${row.initials}</i><span>${platformTopline}<b class="person-name">${row.id}</b><span class="person-sub">${row.owner} · ${item.starting ? '会话启动中' : item.sleeping ? '会话正在休眠' : item.observable ? '会话在线' : item.loggedIn ? '会话休眠' : '会话已释放'}</span></span></span></td><td><span class="proxy-cell"><i></i>${row.proxy}</span><span class="person-sub">${row.ip}</span></td><td><span class="account-state"><span class="status ${item.kind}">${item.status}</span><span class="platform-session ${item.observable && item.loggedIn ? 'awake' : item.loggedIn ? '' : 'offline'}"><i></i>${item.starting ? '浏览器启动中' : item.sleeping ? '浏览器正在休眠' : item.observable && item.loggedIn ? '浏览器已唤醒' : item.loggedIn ? '浏览器已休眠' : '平台未登录'}</span></span></td><td><span class="feishu-identity">${row.avatar ? `<img src="${row.avatar}" alt="">` : `<i class="person-avatar">${row.owner.slice(0, 1)}</i>`}<span><b>${row.owner}</b><small>已绑定 · 可授权</small></span></span></td><td>${rowActions(row, item, platform)}</td></tr>`;
         }).join('');
         renderContext();
       };
@@ -830,8 +835,8 @@
         el('context-owner').innerHTML = `${row.owner} · 飞书身份已绑定<div class="context-platform">${mark(state.platform)}${meta.label} 当前上下文</div>`;
         el('context-place').textContent = `${row.proxy} · ${state.platform === 'instagram' ? 'Reels 采集出口' : 'TikTok Studio'}`;
         el('context-ip').textContent = row.ip;
-        el('context-status').textContent = item.loggedIn ? (item.starting ? '启动中 · 暂不可观测' : item.observable ? '在线 · 可观测' : '已登录 · 已休眠') : '未登录 · 暂不可用';
-        el('context-status').className = item.loggedIn ? (item.observable ? 'healthy' : item.starting ? 'attention-text' : '') : 'attention-text';
+        el('context-status').textContent = item.loggedIn ? (item.starting ? '启动中 · 暂不可观测' : item.sleeping ? '正在休眠 · 暂不可观测' : item.observable ? '在线 · 可观测' : '已登录 · 已休眠') : '未登录 · 暂不可用';
+        el('context-status').className = item.loggedIn ? (item.observable ? 'healthy' : item.starting || item.sleeping ? 'attention-text' : '') : 'attention-text';
         const contextActions = document.querySelector('.context-actions');
         if (contextActions) contextActions.innerHTML = `<button type="button" data-platform-action="observe" ${!item.loggedIn || !item.observable ? 'disabled title="请等待会话可观测后再打开"' : ''}>${actions.observe.svg}<span>观测</span></button>${state.platform === 'tiktok' ? `<button type="button" data-platform-action="publish" ${!item.loggedIn ? 'disabled' : ''}>${actions.publish.svg}<span>发布</span></button>` : `<button type="button" data-platform-action="collect" ${!item.loggedIn ? 'disabled' : ''}>${actions.collect.svg}<span>采集</span></button>`}<button type="button" data-platform-action="login">${actions.login.svg}<span>新增登录</span></button>${state.platform === 'tiktok' ? `<button type="button" data-platform-action="collect" ${!item.loggedIn ? 'disabled' : ''}>${actions.collect.svg}<span>采集</span></button>` : `<button type="button" data-platform-action="binding">${icon('i-link')}<span>绑定</span></button>`}`;
       };
@@ -889,7 +894,29 @@
         if (status === 'starting' || status === 'running') return 'starting';
         return 'inactive';
       };
-      const activeSessionFor = row => state.sessions.filter(session => Number(session.account_id) === Number(row.accountId) && ['starting', 'running', 'observing'].includes(String(session.status || ''))).sort((a, b) => Number(b.id || 0) - Number(a.id || 0))[0] || null;
+      const transitionFor = accountId => state.sessionTransitions.get(String(accountId)) || null;
+      const activeSessionFor = row => {
+        const live = state.sessions.filter(session => Number(session.account_id) === Number(row?.accountId) && ['starting', 'running', 'observing'].includes(String(session.status || ''))).sort((a, b) => Number(b.id || 0) - Number(a.id || 0))[0] || null;
+        if (live) return live;
+        const transition = transitionFor(row?.accountId);
+        if (transition?.session && ['starting', 'running', 'observing'].includes(String(transition.session.status || ''))) return transition.session;
+        return null;
+      };
+      const setSessionTransition = (accountId, phase, session = null, platform = '') => {
+        const key = String(accountId);
+        if (!phase) { state.sessionTransitions.delete(key); return; }
+        state.sessionTransitions.set(key, { phase, session, platform });
+      };
+      const refreshSessionTransition = async (row, sessionId) => {
+        for (let attempt = 0; attempt < 8; attempt += 1) {
+          await new Promise(resolve => window.setTimeout(resolve, 700));
+          const transition = transitionFor(row.accountId);
+          if (!transition || Number(transition.session?.id) !== Number(sessionId)) return;
+          await loadLiveData().catch(() => {});
+          const session = state.sessions.filter(item => Number(item.account_id) === Number(row.accountId) && Number(item.id) === Number(sessionId))[0] || null;
+          if (sessionStage(session) !== 'starting') { setSessionTransition(row.accountId, ''); renderAccounts(); return; }
+        }
+      };
       const actionOperations = new Map();
       const beginAction = (key, trigger, label) => {
         actionOperations.get(key)?.controller.abort();
@@ -932,14 +959,14 @@
         trigger.disabled = true;
         trigger.classList.add('is-busy');
         trigger.setAttribute('aria-busy', 'true');
-        trigger.title = label;
+        trigger.setAttribute('data-tooltip', label);
       };
       const clearAccountActionBusy = trigger => {
         if (!trigger || !trigger.isConnected) return;
         trigger.disabled = false;
         trigger.classList.remove('is-busy');
         trigger.removeAttribute('aria-busy');
-        trigger.removeAttribute('title');
+        trigger.setAttribute('data-tooltip', trigger.getAttribute('aria-label') || '操作');
       };
       const openObservationChannel = (session, channel = null) => {
         const channelUrl = String(session?.channel_url || '').trim();
@@ -959,13 +986,19 @@
           try {
             let session = activeSessionFor(row);
             if (!session) {
-              state.startingPlatforms.set(String(row.accountId), platform);
+              setSessionTransition(row.accountId, 'starting', { account_id: row.accountId, status: 'starting' }, platform);
               renderAccounts();
               const started = await proxyPost('/api/proxy/login-session/start', { account_id: row.accountId, start_platform: platform }, { signal: operation.controller.signal });
               session = started.session || null;
-              state.startingPlatforms.delete(String(row.accountId));
+              setSessionTransition(row.accountId, sessionStage(session) === 'starting' ? 'starting' : '', session, platform);
+              renderAccounts();
             }
-            if (!session || sessionStage(session) === 'starting') throw new Error('会话仍在启动中，请稍后再打开观测');
+            if (!session) throw new Error('会话启动失败，请稍后重试');
+            if (sessionStage(session) === 'starting') {
+              void refreshSessionTransition(row, session.id);
+              if (action === 'observe') throw new Error('会话仍在启动中，请稍后再打开观测');
+              return;
+            }
             if (action === 'observe') {
               const opened = await proxyPost('/api/proxy/login-session/open-platform', { session_id: session.id, platform }, { signal: operation.controller.signal });
               session = opened.session || session;
@@ -981,7 +1014,6 @@
           }
           finally {
             if (isLatestAction(actionKey, operation)) {
-              state.startingPlatforms.delete(String(row.accountId));
               renderAccounts();
             }
             finishAction(actionKey, operation);
@@ -996,8 +1028,10 @@
           const session = activeSessionFor(row);
           if (!session) return;
           const actionKey = `account:${row.accountId}`, operation = beginAction(actionKey, trigger, '正在休眠账号…');
-          try { await proxyPost('/api/proxy/login-session/stop', { session_id: session.id }, { signal: operation.controller.signal }); if (isLatestAction(actionKey, operation)) await loadLiveData(); }
-          catch (error) { if (error?.name !== 'AbortError') showProxyActionError(error.message || '无法休眠账号会话'); }
+          setSessionTransition(row.accountId, 'sleeping', session, state.platform);
+          renderAccounts();
+          try { await proxyPost('/api/proxy/login-session/stop', { session_id: session.id }, { signal: operation.controller.signal }); if (isLatestAction(actionKey, operation)) { state.sessions = state.sessions.filter(item => Number(item.id) !== Number(session.id)); setSessionTransition(row.accountId, ''); renderAccounts(); await loadLiveData(); } }
+          catch (error) { if (error?.name !== 'AbortError') { setSessionTransition(row.accountId, ''); renderAccounts(); showProxyActionError(error.message || '无法休眠账号会话'); } }
           finally { finishAction(actionKey, operation); }
           return;
         }
@@ -1137,14 +1171,15 @@
         const byPool = new Map(pools.map(pool => [Number(pool.id), pool]));
         const sessionFor = id => sessions.filter(session => Number(session.account_id) === Number(id) && ['starting', 'running', 'observing'].includes(session.status)).sort((left, right) => Number(right.id || 0) - Number(left.id || 0))[0];
         accountRows = (payload.accounts || []).filter(account => !account.profile?.ui_demo && !String(account.notes || '').includes('4004 UI 演示')).map(account => {
-          const pool = byPool.get(Number(account.proxy_profile_id)), session = sessionFor(account.id), runtime = liveRuntimeStatus(account, pool, session), stage = sessionStage(session);
+          const pool = byPool.get(Number(account.proxy_profile_id)), transition = transitionFor(account.id), session = sessionFor(account.id) || transition?.session || null, runtime = liveRuntimeStatus(account, pool, session), stage = transition?.phase === 'sleeping' ? 'sleeping' : sessionStage(session);
           const linked = account.platforms || {}, tiktokLogged = Boolean(linked.tiktok && linked.tiktok.linked), instagramLogged = Boolean(linked.instagram && linked.instagram.logged_in);
           const makePlatform = (platform, loggedIn) => {
-            const starting = stage === 'starting' || state.startingPlatforms.get(String(account.id)) === platform;
-            const platformRuntime = starting ? { status: '启动中', kind: 'delay' } : runtime;
-            return { loggedIn, awake: stage === 'observable', observable: stage === 'observable', starting, status: loggedIn ? platformRuntime.status : '未登录', kind: loggedIn ? platformRuntime.kind : 'off', session, sessionLabel: stage === 'observable' ? '会话在线 · 可观测' : starting ? '会话启动中' : loggedIn ? '会话已释放' : '等待新增平台登录' };
+            const starting = stage === 'starting' && (!transition?.platform || transition.platform === platform);
+            const sleeping = stage === 'sleeping';
+            const platformRuntime = starting ? { status: '启动中', kind: 'delay' } : sleeping ? { status: '正在休眠', kind: 'delay' } : runtime;
+            return { loggedIn, awake: stage === 'observable', observable: stage === 'observable', starting, sleeping, status: loggedIn ? platformRuntime.status : '未登录', kind: loggedIn ? platformRuntime.kind : 'off', session, sessionLabel: stage === 'observable' ? '会话在线 · 可观测' : starting ? '浏览器启动中' : sleeping ? '正在关闭浏览器' : loggedIn ? '会话已释放' : '等待新增平台登录' };
           };
-          if (stage !== 'starting') state.startingPlatforms.delete(String(account.id));
+          if (transition && stage !== 'starting' && stage !== 'sleeping') state.sessionTransitions.delete(String(account.id));
           return { accountId: account.id, id: account.username || `account-${account.id}`, initials: String(account.username || '?').slice(0, 2).toUpperCase(), feishuUserId: String(account.feishu_user_id || ''), owner: account.feishu_user_name || account.display_name || '未绑定飞书用户', avatar: account.feishu_avatar_url || account.tiktok_avatar_url || '', proxy: pool?.name || '未绑定代理', ip: pool?.expected_exit_ip || '待校验', platforms: { tiktok: makePlatform('tiktok', tiktokLogged), instagram: makePlatform('instagram', instagramLogged) } };
         });
         if (uiPreview) accountRows = previewRows.map(row => ({ ...row, platforms: { ...row.platforms } }));
@@ -1194,6 +1229,37 @@
       });
       document.querySelector('[data-proxy-refresh]')?.addEventListener('click', () => loadLiveData());
       window.addEventListener('proxy:refresh', () => loadLiveData());
+      const actionTooltip = document.createElement('div');
+      actionTooltip.id = 'proxy-action-tooltip';
+      actionTooltip.setAttribute('role', 'tooltip');
+      document.body.append(actionTooltip);
+      const hideActionTooltip = () => actionTooltip.classList.remove('visible');
+      document.addEventListener('pointerover', event => {
+        const button = event.target.closest('button[data-tooltip]');
+        if (!button) return;
+        const label = button.getAttribute('data-tooltip');
+        if (!label) return;
+        actionTooltip.textContent = label;
+        const rect = button.getBoundingClientRect();
+        actionTooltip.style.left = `${Math.round(rect.left + rect.width / 2)}px`;
+        actionTooltip.style.top = `${Math.round(rect.top - 8)}px`;
+        actionTooltip.classList.add('visible');
+      });
+      document.addEventListener('pointerout', event => {
+        if (event.target.closest('button[data-tooltip]')) hideActionTooltip();
+      });
+      document.addEventListener('focusin', event => {
+        const button = event.target.closest('button[data-tooltip]');
+        if (!button) return;
+        const label = button.getAttribute('data-tooltip');
+        if (!label) return;
+        actionTooltip.textContent = label;
+        const rect = button.getBoundingClientRect();
+        actionTooltip.style.left = `${Math.round(rect.left + rect.width / 2)}px`;
+        actionTooltip.style.top = `${Math.round(rect.top - 8)}px`;
+        actionTooltip.classList.add('visible');
+      });
+      document.addEventListener('focusout', hideActionTooltip);
       (window.VideoAnalyzerGlobalUser || Promise.resolve({ currentUser: {} })).then(payload => {
         const user = payload && payload.currentUser ? payload.currentUser : {};
         const userId = String(user.feishuId || user.id || '');
