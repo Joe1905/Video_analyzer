@@ -1068,6 +1068,16 @@
         } catch (err) { openPoolDetail(id, { kind: 'error', text: err?.message || '删除失败，请稍后重试。' }); }
       };
       document.addEventListener('click', event => {
+        const detail = event.target.closest('[data-proxy-pool-detail]');
+        if (!detail) return;
+        event.preventDefault();
+        event.stopPropagation();
+        void openPoolDetail(detail.dataset.proxyPoolDetail).catch(err => openLeftDrawer({
+          root: 'proxyPoolDetail', title: 'IP 出口详情', desc: '该出口信息暂时无法读取。',
+          body: `<p class="pool-detail-empty">${escapePoolText(err?.message || '请稍后重试。')}</p>`, foot: ''
+        }));
+      }, true);
+      document.addEventListener('click', event => {
         const create = event.target.closest('[data-proxy-pool-create]');
         if (create) { event.preventDefault(); openPoolCreate(); return; }
         const copy = event.target.closest('[data-proxy-pool-copy]');
@@ -1080,14 +1090,6 @@
         if (toggle) { event.preventDefault(); togglePool(toggle.dataset.proxyPoolToggle); return; }
         const remove = event.target.closest('[data-proxy-pool-delete]');
         if (remove) { event.preventDefault(); deletePool(remove.dataset.proxyPoolDelete); return; }
-        const detail = event.target.closest('[data-proxy-pool-detail]');
-        if (detail) {
-          event.preventDefault();
-          void openPoolDetail(detail.dataset.proxyPoolDetail).catch(err => openLeftDrawer({
-            root: 'proxyPoolDetail', title: 'IP 出口详情', desc: '该出口信息暂时无法读取。',
-            body: `<p class="pool-detail-empty">${escapePoolText(err?.message || '请稍后重试。')}</p>`, foot: ''
-          }));
-        }
       });
       document.addEventListener('submit', async event => {
         const form = event.target.closest('[data-proxy-pool-form], [data-proxy-pool-edit-form]');
