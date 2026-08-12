@@ -961,6 +961,21 @@
           return (payload.pools || []).find(pool => String(pool.id) === String(id)) || null;
         } catch (_) { return cached || null; }
       };
+      const poolFromLane = id => {
+        const row = document.querySelector(`[data-proxy-pool-detail="${Number(id)}"]`);
+        if (!row) return null;
+        const endpoint = String(row.querySelector('.proxy-ip')?.textContent || '');
+        const match = endpoint.match(/^\s*([^\s]+)\s*:\s*(\d+)/);
+        const label = String(row.querySelector('.status')?.textContent || '').trim();
+        return {
+          id: Number(id),
+          name: String(row.querySelector('.proxy-name')?.textContent || '未命名出口').trim(),
+          source_type: 'demo', source_uri: '', region: '', notes: '',
+          expected_exit_ip: match?.[1] || '', local_port: match?.[2] || '',
+          status: label === '不可用' ? '不可用' : label === '延迟' ? 'IP重复' : '可用',
+          account_count: label === '已绑定' ? 1 : 0, pending_job_count: 0
+        };
+      };
       const poolPayload = (pool, status = pool.status) => ({
         id: pool.id,
         name: pool.name || '',
@@ -972,7 +987,7 @@
         status
       });
       const openPoolDetail = async (id, result = null) => {
-        const pool = await loadPool(id);
+        const pool = poolFromLane(id) || await loadPool(id);
         if (!pool) {
           openLeftDrawer({ root: 'proxyPoolDetail', title: 'IP 出口详情', desc: '该出口信息暂时无法读取。', body: '<p class="pool-detail-empty">请稍后刷新左侧 IP 池后重试。</p>', foot: '' });
           return;
