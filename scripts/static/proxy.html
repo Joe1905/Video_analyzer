@@ -663,6 +663,14 @@
     .pool-result.success { border-left-color:#1ca77f; color:#147d61; background:#effaf6; }
     .pool-result.error { border-left-color:#d66a78; color:#b54d5d; background:#fff5f6; }
     .pool-result.pending { border-left-color:var(--accent); color:#526178; background:#f4f5ff; }
+    .pool-detail-updating .pool-detail-summary,
+    .pool-detail-updating .pool-detail-actions,
+    .pool-detail-updating .pool-result { animation:pool-status-refresh .22s ease-out; }
+    .mini-action.is-busy { position:relative; pointer-events:none; }
+    .mini-action.is-busy .icon { opacity:.16; }
+    .mini-action.is-busy::after { position:absolute; width:13px; height:13px; border:1.5px solid currentColor; border-top-color:transparent; border-radius:50%; content:""; animation:proxy-action-spin .7s linear infinite; }
+    @keyframes pool-status-refresh { from { opacity:.42; } to { opacity:1; } }
+    @keyframes proxy-action-spin { to { transform:rotate(360deg); } }
     .pool-editor { display:grid; gap:18px; }
     .pool-editor-copy { display:grid; gap:4px; }
     .pool-editor-copy h4 { margin:0; color:var(--text); font-size:17px; }
@@ -855,10 +863,26 @@
         note.textContent = message;
         context.prepend(note);
       };
-      const openPlatformAction = async action => {
+      const setAccountActionBusy = (trigger, label) => {
+        if (!trigger) return;
+        trigger.disabled = true;
+        trigger.classList.add('is-busy');
+        trigger.setAttribute('aria-busy', 'true');
+        trigger.title = label;
+      };
+      const openObservationChannel = (session, channel = null) => {
+        const channelUrl = String(session?.channel_url || '').trim();
+        if (!channelUrl) throw new Error('观测通道未生成，请稍后重试');
+        const target = channel || window.open('', '_blank');
+        if (!target) throw new Error('浏览器阻止了观测通道，请允许本页面打开新标签页');
+        target.location.replace(channelUrl);
+      };
+      const openPlatformAction = async (action, trigger = null) => {
         const row = accountFor(), item = platformFor(row);
         if (!row) return;
         if (action === 'observe' || action === 'wake') {
+          const observationChannel = action === 'observe' ? window.open('', '_blank') : null;
+          setAccountActionBusy(trigger, action === 'observe' ? '正在打开观测…' : '正在唤醒账号…');
           try {
             let session = activeSessionFor(row);
             if (!session) {
@@ -866,8 +890,8 @@
               session = started.session || null;
               await loadLiveData();
             }
-            if (action === 'observe') { await syncPlatformViews(); open('observe'); }
-          } catch (error) { showProxyActionError(error.message || '无法启动账号会话'); }
+            if (action === 'observe') openObservationChannel(session || activeSessionFor(row), observationChannel);
+          } catch (error) { observationChannel?.close(); showProxyActionError(error.message || '无法启动账号会话'); }
           return;
         }
         if (action === 'collect') { if (item.loggedIn) { await syncPlatformViews(); open('collect'); } return; }
@@ -877,6 +901,7 @@
         if (action === 'sleep') {
           const session = activeSessionFor(row);
           if (!session) return;
+          setAccountActionBusy(trigger, '正在休眠账号…');
           try { await proxyPost('/api/proxy/login-session/stop', { session_id: session.id }); await loadLiveData(); }
           catch (error) { showProxyActionError(error.message || '无法休眠账号会话'); }
           return;
@@ -893,7 +918,7 @@
         const menu = event.target.closest('[data-platform-menu]');
         if (menu) { event.preventDefault(); event.stopPropagation(); state.accountId = menu.dataset.platformMenu; const target = menu.closest('.row-actions'); target.classList.toggle('expanded'); return; }
         const trigger = event.target.closest('[data-platform-action]');
-        if (trigger) { event.preventDefault(); event.stopPropagation(); if (trigger.dataset.accountId) { state.accountId = trigger.dataset.accountId; state.platform = activePlatformByAccount[state.accountId] || 'tiktok'; } if (!trigger.disabled) openPlatformAction(trigger.dataset.platformAction); return; }
+        if (trigger) { event.preventDefault(); event.stopPropagation(); if (trigger.dataset.accountId) { state.accountId = trigger.dataset.accountId; state.platform = activePlatformByAccount[state.accountId] || 'tiktok'; } if (!trigger.disabled) void openPlatformAction(trigger.dataset.platformAction, trigger); return; }
         const choice = event.target.closest('[data-platform-login-choice]');
         if (choice) { state.loginChoice = choice.dataset.platformLoginChoice; renderPlatformLogin(); const view = views.platformLogin; el('drawer-body').innerHTML = view.body; el('drawer-foot').innerHTML = view.foot; return; }
         const loginSubmit = event.target.closest('[data-platform-login-submit]');
@@ -993,7 +1018,10 @@
         });
         if (uiPreview) accountRows = previewRows.map(row => ({ ...row, platforms: { ...row.platforms } }));
         accountRows.forEach(row => { activePlatformByAccount[row.id] = row.platforms.tiktok.loggedIn ? 'tiktok' : row.platforms.instagram.loggedIn ? 'instagram' : 'tiktok'; });
-        if (accountRows.length) { state.accountId = accountRows[0].id; state.platform = activePlatformByAccount[state.accountId]; }
+        if (accountRows.length) {
+          if (!accountRows.some(row => row.id === state.accountId)) state.accountId = accountRows[0].id;
+          state.platform = activePlatformByAccount[state.accountId] || 'tiktok';
+        }
         updateLiveProxyList(pools);
         updateLiveAccountSummary();
         renderAccounts();
@@ -1097,11 +1125,11 @@
         body: `<form class="pool-create-form" id="proxy-pool-form" data-proxy-pool-form><label>出口名称<input name="name" placeholder="例如：洛杉矶 · US West" required></label><label>代理类型<select name="source_type"><option value="">默认解析</option><option value="vless">VLESS</option><option value="vmess">VMess</option><option value="static">HTTP / SOCKS</option></select></label><label>订阅或连接 URI<input name="source_uri" placeholder="vless:// 或 socks5://（可稍后补充）"></label><div class="pool-create-grid"><label>预期出口 IP<input name="expected_exit_ip" placeholder="154.12.88.64"></label><label>地区<input name="region" placeholder="US West"></label></div><p class="pool-create-note">连接 URI 仅用于保存出口配置，不会在列表中直接显示。</p><p class="pool-drawer-error" data-proxy-pool-error></p></form>`,
         foot: '<button class="button" data-close>取消</button><button type="submit" class="button primary" form="proxy-pool-form">保存出口</button>'
       });
-      const loadPool = async id => {
+      const loadPool = async (id, { fresh = false } = {}) => {
         const listPools = document.querySelector('#proxy-list')?.__proxyPoolData || [];
         const bootstrapPools = document.documentElement.__proxyBootstrapPools || [];
         const cached = [...listPools, ...bootstrapPools].find(pool => String(pool.id) === String(id));
-        if (cached) return cached;
+        if (cached && !fresh) return cached;
         try {
           const response = await fetch('/api/proxy/pools');
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -1134,12 +1162,7 @@
         notes: pool.notes || '',
         status
       });
-      const openPoolDetail = async (id, result = null) => {
-        const pool = poolFromLane(id) || await loadPool(id);
-        if (!pool) {
-          openLeftDrawer({ root: 'proxyPoolDetail', title: 'IP 出口详情', desc: '该出口信息暂时无法读取。', body: '<p class="pool-detail-empty">请稍后刷新左侧 IP 池后重试。</p>', foot: '' });
-          return;
-        }
+      const poolDetailBody = (pool, result = null) => {
         const status = poolStatus(pool), label = poolLabel(pool), name = escapePoolText(pool.name || '未命名出口');
         const ip = escapePoolText(pool.expected_exit_ip || pool.detected_exit_ip || '待校验');
         const port = escapePoolText(pool.local_port || '—'), region = escapePoolText(pool.region || '未标注');
@@ -1148,11 +1171,34 @@
         const rawStatus = escapePoolText(pool.status || label);
         const isPaused = String(pool.status || '') === '禁用';
         const resultHtml = result ? `<p class="pool-result ${escapePoolText(result.kind || '')}" role="status">${escapePoolText(result.text || '')}</p>` : '';
+        return `<div class="pool-detail"><section class="pool-detail-summary"><i class="proxy-dot ${status === 'off' ? 'off' : status === 'delay' ? 'delay' : ''}"></i><div><b>${name}</b><small>${ip} · :${port}</small></div><span class="status ${status}">${rawStatus}</span></section><section class="pool-uri-card"><div class="pool-uri-head"><span>连接 URI</span><div class="pool-uri-tools"><button type="button" class="tiny-action" data-proxy-pool-copy="${pool.id}" title="复制连接 URI" aria-label="复制连接 URI">${copyIcon}<span class="visually-hidden">复制</span></button><button type="button" class="tiny-action" data-proxy-pool-edit="${pool.id}" title="编辑出口配置" aria-label="编辑出口配置">${editIcon}</button></div></div><code class="pool-uri-value">${uri}</code></section><section class="pool-detail-grid"><div class="pool-detail-cell"><span>预期出口 IP</span><b>${ip}</b><small>:${port}</small></div><div class="pool-detail-cell"><span>地区</span><b>${region}</b></div><div class="pool-detail-cell"><span>代理类型</span><b>${escapePoolText(sourceLabel(pool.source_type))}</b></div><div class="pool-detail-cell"><span>本地端口</span><b>${port}</b></div><div class="pool-detail-cell"><span>已绑定账户</span><b>${accountCount} 个</b></div><div class="pool-detail-cell"><span>待处理任务</span><b>${pendingCount} 个</b></div></section><section class="pool-detail-actions"><button type="button" class="button" data-proxy-pool-check="${pool.id}">校验</button><button type="button" class="button" data-proxy-pool-toggle="${pool.id}">${isPaused ? '启用出口' : '禁用出口'}</button><button type="button" class="button danger" data-proxy-pool-delete="${pool.id}">删除</button></section>${resultHtml}</div>`;
+      };
+      const patchPoolDetail = (pool, result = null) => {
+        const drawer = el('pool-drawer');
+        if (!pool || drawer.dataset.root !== `proxyPoolDetail:${pool.id}` || !el('pool-overlay').classList.contains('open')) return false;
+        drawer.classList.add('pool-detail-updating');
+        el('pool-drawer-body').innerHTML = poolDetailBody(pool, result);
+        requestAnimationFrame(() => requestAnimationFrame(() => drawer.classList.remove('pool-detail-updating')));
+        return true;
+      };
+      const setPoolActionBusy = (id, action, text) => {
+        const button = el('pool-drawer-body').querySelector(`[data-proxy-pool-${action}="${Number(id)}"]`);
+        if (!button) return;
+        button.disabled = true;
+        button.textContent = text;
+      };
+      const openPoolDetail = async (id, result = null) => {
+        const pool = await loadPool(id, { fresh: true }) || poolFromLane(id);
+        if (!pool) {
+          openLeftDrawer({ root: 'proxyPoolDetail', title: 'IP 出口详情', desc: '该出口信息暂时无法读取。', body: '<p class="pool-detail-empty">请稍后刷新左侧 IP 池后重试。</p>', foot: '' });
+          return;
+        }
+        if (patchPoolDetail(pool, result)) return;
         openLeftDrawer({
           root: `proxyPoolDetail:${pool.id}`,
           title: 'IP 出口详情',
           desc: '查看该出口的连接状态与当前使用情况。',
-          body: `<div class="pool-detail"><section class="pool-detail-summary"><i class="proxy-dot ${status === 'off' ? 'off' : status === 'delay' ? 'delay' : ''}"></i><div><b>${name}</b><small>${ip} · :${port}</small></div><span class="status ${status}">${rawStatus}</span></section><section class="pool-uri-card"><div class="pool-uri-head"><span>连接 URI</span><div class="pool-uri-tools"><button type="button" class="tiny-action" data-proxy-pool-copy="${pool.id}" title="复制连接 URI" aria-label="复制连接 URI">${copyIcon}</button><button type="button" class="tiny-action" data-proxy-pool-edit="${pool.id}" title="编辑出口配置" aria-label="编辑出口配置">${editIcon}</button></div></div><code class="pool-uri-value">${uri}</code></section><section class="pool-detail-grid"><div class="pool-detail-cell"><span>预期出口 IP</span><b>${ip}</b><small>:${port}</small></div><div class="pool-detail-cell"><span>地区</span><b>${region}</b></div><div class="pool-detail-cell"><span>代理类型</span><b>${escapePoolText(sourceLabel(pool.source_type))}</b></div><div class="pool-detail-cell"><span>本地端口</span><b>${port}</b></div><div class="pool-detail-cell"><span>已绑定账户</span><b>${accountCount} 个</b></div><div class="pool-detail-cell"><span>待处理任务</span><b>${pendingCount} 个</b></div></section><section class="pool-detail-actions"><button type="button" class="button" data-proxy-pool-check="${pool.id}">校验</button><button type="button" class="button" data-proxy-pool-toggle="${pool.id}">${isPaused ? '启用出口' : '禁用出口'}</button><button type="button" class="button danger" data-proxy-pool-delete="${pool.id}">删除</button></section>${resultHtml}</div>`,
+          body: poolDetailBody(pool, result),
           foot: ''
         });
       };
@@ -1183,26 +1229,35 @@
         } catch (_) { openPoolDetail(id, { kind: 'error', text: '复制失败，请检查浏览器剪贴板权限。' }); }
       };
       const checkPool = async id => {
-        openPoolDetail(id, { kind: 'pending', text: '正在校验出口 IP…' });
+        const pool = await loadPool(id, { fresh: true });
+        if (!pool) return openPoolDetail(id, { kind: 'error', text: '出口信息已失效，请刷新后重试。' });
+        patchPoolDetail(pool, { kind: 'pending', text: '正在校验出口 IP…' });
+        setPoolActionBusy(id, 'check', '校验中…');
         try {
           const response = await fetch('/api/proxy/check', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ proxy_profile_id: Number(id), bind: false }) });
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || '校验失败');
           window.dispatchEvent(new Event('proxy:refresh'));
-          openPoolDetail(id, { kind: result.allowed ? 'success' : 'error', text: result.reason || (result.allowed ? '出口校验通过。' : '出口校验未通过。') });
-        } catch (err) { openPoolDetail(id, { kind: 'error', text: err?.message || '校验失败，请稍后重试。' }); }
+          await loadLiveData();
+          const updated = await loadPool(id, { fresh: true });
+          patchPoolDetail(updated || pool, { kind: result.allowed ? 'success' : 'error', text: result.reason || (result.allowed ? '出口校验通过。' : '出口校验未通过。') });
+        } catch (err) { patchPoolDetail(pool, { kind: 'error', text: err?.message || '校验失败，请稍后重试。' }); }
       };
       const togglePool = async id => {
-        const pool = await loadPool(id);
+        const pool = await loadPool(id, { fresh: true });
         if (!pool) return openPoolDetail(id, { kind: 'error', text: '出口信息已失效，请刷新后重试。' });
         const nextStatus = String(pool.status || '') === '禁用' ? '可用' : '禁用';
+        patchPoolDetail(pool, { kind: 'pending', text: nextStatus === '禁用' ? '正在禁用出口…' : '正在启用出口…' });
+        setPoolActionBusy(id, 'toggle', nextStatus === '禁用' ? '禁用中…' : '启用中…');
         try {
           const response = await fetch('/api/proxy/pools', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(poolPayload(pool, nextStatus)) });
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || '状态更新失败');
           window.dispatchEvent(new Event('proxy:refresh'));
-          openPoolDetail(id, { kind: 'success', text: nextStatus === '禁用' ? '出口已禁用，不再参与后续任务。' : '出口已启用，可重新参与任务。' });
-        } catch (err) { openPoolDetail(id, { kind: 'error', text: err?.message || '状态更新失败，请稍后重试。' }); }
+          await loadLiveData();
+          const updated = await loadPool(id, { fresh: true });
+          patchPoolDetail(updated || { ...pool, status: nextStatus }, { kind: 'success', text: nextStatus === '禁用' ? '出口已禁用，不再参与后续任务。' : '出口已启用，可重新参与任务。' });
+        } catch (err) { patchPoolDetail(pool, { kind: 'error', text: err?.message || '状态更新失败，请稍后重试。' }); }
       };
       const deletePool = async id => {
         const pool = await loadPool(id);
