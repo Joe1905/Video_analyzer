@@ -956,7 +956,13 @@
               openObservationChannel(session, observationChannel);
             }
             if (isLatestAction(actionKey, operation)) await loadLiveData();
-          } catch (error) { observationChannel?.close(); if (error?.name !== 'AbortError') showProxyActionError(error.message || '无法启动账号会话'); }
+          } catch (error) {
+            observationChannel?.close();
+            if (error?.name !== 'AbortError') {
+              showProxyActionError(error.message || '无法启动账号会话');
+              if (isLatestAction(actionKey, operation)) await loadLiveData().catch(() => {});
+            }
+          }
           finally {
             if (isLatestAction(actionKey, operation)) {
               state.startingPlatforms.delete(String(row.accountId));
@@ -1115,7 +1121,7 @@
         const sessionFor = id => sessions.filter(session => Number(session.account_id) === Number(id) && ['starting', 'running', 'observing'].includes(session.status)).sort((left, right) => Number(right.id || 0) - Number(left.id || 0))[0];
         accountRows = (payload.accounts || []).filter(account => !account.profile?.ui_demo && !String(account.notes || '').includes('4004 UI 演示')).map(account => {
           const pool = byPool.get(Number(account.proxy_profile_id)), session = sessionFor(account.id), runtime = liveRuntimeStatus(account, pool, session), stage = sessionStage(session);
-          const linked = account.platforms || {}, tiktokLogged = Boolean(linked.tiktok && linked.tiktok.linked), instagramLogged = Boolean((linked.instagram && linked.instagram.logged_in) || account.profile?.instagram?.profile_url);
+          const linked = account.platforms || {}, tiktokLogged = Boolean(linked.tiktok && linked.tiktok.linked), instagramLogged = Boolean(linked.instagram && linked.instagram.logged_in);
           const makePlatform = (platform, loggedIn) => {
             const starting = stage === 'starting' || state.startingPlatforms.get(String(account.id)) === platform;
             const platformRuntime = starting ? { status: '启动中', kind: 'delay' } : runtime;
