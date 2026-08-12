@@ -907,6 +907,10 @@
         if (!phase) { state.sessionTransitions.delete(key); return; }
         state.sessionTransitions.set(key, { phase, session, platform });
       };
+      const keepTransitionVisible = async (startedAt, minimumMs = 560) => {
+        const remaining = minimumMs - (performance.now() - startedAt);
+        if (remaining > 0) await new Promise(resolve => window.setTimeout(resolve, remaining));
+      };
       const refreshSessionTransition = async (row, sessionId) => {
         for (let attempt = 0; attempt < 8; attempt += 1) {
           await new Promise(resolve => window.setTimeout(resolve, 700));
@@ -986,10 +990,12 @@
           try {
             let session = activeSessionFor(row);
             if (!session) {
+              const transitionStartedAt = performance.now();
               setSessionTransition(row.accountId, 'starting', { account_id: row.accountId, status: 'starting' }, platform);
               renderAccounts();
               const started = await proxyPost('/api/proxy/login-session/start', { account_id: row.accountId, start_platform: platform }, { signal: operation.controller.signal });
               session = started.session || null;
+              await keepTransitionVisible(transitionStartedAt);
               setSessionTransition(row.accountId, sessionStage(session) === 'starting' ? 'starting' : '', session, platform);
               renderAccounts();
             }
@@ -1028,9 +1034,10 @@
           const session = activeSessionFor(row);
           if (!session) return;
           const actionKey = `account:${row.accountId}`, operation = beginAction(actionKey, trigger, '正在休眠账号…');
+          const transitionStartedAt = performance.now();
           setSessionTransition(row.accountId, 'sleeping', session, state.platform);
           renderAccounts();
-          try { await proxyPost('/api/proxy/login-session/stop', { session_id: session.id }, { signal: operation.controller.signal }); if (isLatestAction(actionKey, operation)) { state.sessions = state.sessions.filter(item => Number(item.id) !== Number(session.id)); setSessionTransition(row.accountId, ''); renderAccounts(); await loadLiveData(); } }
+          try { await proxyPost('/api/proxy/login-session/stop', { session_id: session.id }, { signal: operation.controller.signal }); await keepTransitionVisible(transitionStartedAt); if (isLatestAction(actionKey, operation)) { state.sessions = state.sessions.filter(item => Number(item.id) !== Number(session.id)); setSessionTransition(row.accountId, ''); renderAccounts(); await loadLiveData(); } }
           catch (error) { if (error?.name !== 'AbortError') { setSessionTransition(row.accountId, ''); renderAccounts(); showProxyActionError(error.message || '无法休眠账号会话'); } }
           finally { finishAction(actionKey, operation); }
           return;
