@@ -32,8 +32,9 @@ body.ui-route-tool .tool-page {
   height: 100%;
   min-height: 0;
   margin: 0 auto;
-  padding: 44px 34px 54px;
-  overflow: auto;
+  /* 桌面首屏完整呈现；队列超量时仅让队列自身承载滚动。 */
+  padding: 36px 34px 20px;
+  overflow: hidden;
   color: var(--tool-ink);
   background: transparent;
   font: 14px/1.55 "PingFang SC", "Microsoft YaHei", sans-serif;
@@ -80,7 +81,9 @@ body.ui-route-tool .tool-queue-label { display: flex; align-items: center; gap: 
 body.ui-route-tool .tool-queue-count { color: var(--tool-subtle); font-size: 12px; }
 body.ui-route-tool .tool-secondary { padding: 5px 0; color: var(--tool-muted); border: 0; background: transparent; font-size: 12px; }
 body.ui-route-tool .tool-secondary:hover { color: var(--tool-ink); }
-body.ui-route-tool .tool-file-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 10px; min-height: 95px; }
+body.ui-route-tool .tool-file-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 10px; min-height: 95px; max-height: 246px; overflow: auto; }
+body.ui-route-tool .tool-file-grid::-webkit-scrollbar { width: 5px; }
+body.ui-route-tool .tool-file-grid::-webkit-scrollbar-thumb { border-radius: 99px; background: var(--tool-line-strong); }
 body.ui-route-tool .tool-empty { min-height: 95px; display: grid; grid-template-columns: 43px 1fr; align-items: center; gap: 12px; padding: 14px; overflow: hidden; color: var(--tool-muted); border: 1px solid var(--tool-line); border-radius: var(--tool-radius-sm); background: #fcfcfa; font-size: 12px; }
 body.ui-route-tool .tool-empty::before { width: 43px; height: 43px; display: grid; place-items: center; content: ""; border-radius: 11px; background: var(--tool-surface-soft) center / 18px no-repeat; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2390959e' stroke-width='1.5'%3E%3Cpath d='M4 7.5h16v11H4z'/%3E%3Cpath d='M8 7.5V5h8v2.5M8 12h8'/%3E%3C/svg%3E"); }
 body.ui-route-tool .tool-file-grid .file { position: relative; min-width: 0; overflow: hidden; border: 1px solid var(--tool-line); border-radius: 10px; background: #fff; }
@@ -119,7 +122,7 @@ body.ui-route-tool .tool-footnote { margin: 15px 0 0; color: var(--tool-subtle);
   body.ui-route-tool .tool-settings { min-height: 420px; }
 }
 @media (max-width: 720px) {
-  body.ui-route-tool .tool-page { padding: 28px 14px 40px; }
+  body.ui-route-tool .tool-page { height: auto; min-height: 100%; padding: 28px 14px 40px; overflow: auto; }
   body.ui-route-tool .tool-steps { flex-wrap: wrap; white-space: normal; }
   body.ui-route-tool .tool-step-line { width: 11px; }
   body.ui-route-tool .tool-stage, body.ui-route-tool .tool-settings { padding: 18px; }
