@@ -890,7 +890,9 @@
       };
       const sessionStage = session => {
         const status = String(session?.status || '').toLowerCase();
-        if (status === 'observing' && String(session?.channel_url || '').trim()) return 'observable';
+        // 列表接口有意省略 noVNC URL；observing 本身就是可观测的权威状态，
+        // 真正打开通道时再由 open-platform 返回当前平台的专用 URL。
+        if (status === 'observing') return 'observable';
         if (status === 'starting' || status === 'running') return 'starting';
         return 'inactive';
       };
