@@ -488,7 +488,9 @@
     replaceTaskActions('collectTaskAug07',[]);
   </script>
   <script>
-    const closeDrawer=()=>{const overlay=el('overlay'),drawer=el('drawer');if(!overlay.classList.contains('open')||drawer.classList.contains('is-closing'))return;const dialog=drawer.classList.contains('dialog-panel'),left=drawer.classList.contains('left-panel'),duration=dialog?260:450;drawer.classList.add('is-closing');overlay.classList.add('is-closing');drawer.style.setProperty('--panel-transform',dialog?'translate(-50%,-50%) scale(.96)':left?'translateX(-104%)':'translateX(104%)');drawer.style.setProperty('--panel-opacity',dialog?'0':'.72');setTimeout(()=>{overlay.classList.remove('open','is-closing');drawer.classList.remove('is-closing','subview-leaving','subview-entering');drawer.style.removeProperty('--panel-transform');drawer.style.removeProperty('--panel-opacity');['left','right','top','bottom','height','animation'].forEach(prop=>drawer.style.removeProperty(prop));delete drawer.dataset.root},duration)};
+    const closeDrawer=()=>{const overlay=el('overlay'),drawer=el('drawer');if(!overlay.classList.contains('open')||drawer.classList.contains('is-closing'))return;const dialog=drawer.classList.contains('dialog-panel'),left=drawer.classList.contains('left-panel'),duration=dialog?260:450;drawer.classList.remove('is-settled');drawer.classList.add('is-closing');overlay.classList.add('is-closing');drawer.style.setProperty('--panel-transform',dialog?'translate(-50%,-50%) scale(.96)':left?'translateX(-104%)':'translateX(104%)');drawer.style.setProperty('--panel-opacity',dialog?'0':'.72');setTimeout(()=>{overlay.classList.remove('open','is-closing');drawer.classList.remove('is-closing','subview-leaving','subview-entering','is-settled');drawer.style.removeProperty('--panel-transform');drawer.style.removeProperty('--panel-opacity');['left','right','top','bottom','height','animation'].forEach(prop=>drawer.style.removeProperty(prop));delete drawer.dataset.root},duration)};
+    const openWithSettledSurface=open;
+    open=function(name){const result=openWithSettledSurface(name),drawer=el('drawer');if(!drawer.classList.contains('dialog-panel')){drawer.classList.remove('is-settled');window.setTimeout(()=>{if(el('overlay').classList.contains('open')&&!drawer.classList.contains('is-closing')&&!drawer.classList.contains('dialog-panel'))drawer.classList.add('is-settled')},320)}return result};
     document.addEventListener('click',event=>{const trigger=event.target.closest('[data-close]');if(!trigger)return;event.preventDefault();event.stopImmediatePropagation();closeDrawer()},true);
     el('overlay').addEventListener('click',event=>{if(event.target!==el('overlay'))return;event.preventDefault();event.stopImmediatePropagation();closeDrawer()},true);
   </script>
@@ -583,7 +585,10 @@
     body.ui-system.ui-route-proxy .proxy-search { padding:10px 12px; }
     body.ui-system.ui-route-proxy .proxy-search svg { top:50%; left:23px; transform:translateY(-50%); pointer-events:none; }
     body.ui-system.ui-route-proxy .proxy-search input { box-sizing:border-box; min-height:42px; height:42px; padding:0 12px 0 34px; line-height:42px; }
+    body.ui-system.ui-route-proxy { -webkit-font-smoothing:auto; text-rendering:optimizeLegibility; }
     body.ui-system.ui-route-proxy #overlay .drawer.left-panel { top:0!important; right:auto!important; bottom:0!important; left:0!important; width:min(500px,calc(100vw - 24px)); height:100%!important; animation:none!important; transform:var(--panel-transform,translateX(-104%))!important; transform-origin:left center!important; opacity:var(--panel-opacity,1)!important; transition:transform .34s cubic-bezier(.22,.61,.36,1),opacity .22s ease!important; }
+    body.ui-system.ui-route-proxy #overlay .drawer.side-panel.is-settled,
+    body.ui-system.ui-route-proxy #overlay .drawer.left-panel.is-settled { transform:none!important; }
     body.ui-system.ui-route-proxy #overlay .drawer.left-panel.is-closing { transition:transform .42s cubic-bezier(.22,.61,.36,1),opacity .34s ease!important; }
     body.ui-system.ui-route-proxy #overlay .drawer.left-panel:not(.pool-has-footer) .drawer-foot { max-height:0; padding-top:0; padding-bottom:0; border-top-color:transparent; opacity:0; pointer-events:none; }
     body.ui-system.ui-route-proxy #overlay .drawer.left-panel.pool-has-footer .drawer-foot { min-height:64px; max-height:76px; will-change:transform,opacity; }
@@ -949,6 +954,9 @@
           drawer.classList.remove('motion-prep');
           drawer.style.setProperty('--panel-transform', 'translateX(0)');
           drawer.style.setProperty('--panel-opacity', '1');
+          window.setTimeout(() => {
+            if (overlay.classList.contains('open') && !drawer.classList.contains('is-closing')) drawer.classList.add('is-settled');
+          }, 360);
         }));
       };
       const openPoolCreate = () => openLeftDrawer({

@@ -32,6 +32,13 @@
     --ui-shadow-dialog: 0 26px 70px rgba(25, 28, 34, .19);
     --ui-nav-width: 72px;
     --ui-header-height: 70px;
+    /* 公共控制件仅保留三档尺寸；页面只覆盖品牌色，不覆盖字号或高度。 */
+    --ui-control-height: 40px;
+    --ui-control-height-compact: 32px;
+    --ui-control-height-icon: 36px;
+    --ui-control-font-size: 13px;
+    --ui-control-font-size-compact: 12px;
+    --ui-control-radius: 9px;
     --ui-ease: cubic-bezier(.2, .72, .2, 1);
     --ui-fast: 140ms;
     --ui-nav-speed: 180ms;
@@ -2671,18 +2678,19 @@ body.ui-system .ui-nav__toggle:hover {
   body.ui-system .button,
   body.ui-system .btn,
   body.ui-system .link-btn {
-    min-height: 44px;
+    min-height: var(--ui-control-height);
     padding: 0 14px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     gap: 7px;
     border: 1px solid var(--ui-line);
-    border-radius: 11px;
+    border-radius: var(--ui-control-radius);
     background: var(--ui-surface);
     color: var(--ui-ink);
     box-shadow: none;
-    font-weight: 680;
+    font-size: var(--ui-control-font-size);
+    font-weight: 700;
     line-height: 1;
     white-space: nowrap;
     transition:
@@ -2753,12 +2761,23 @@ body.ui-system .ui-nav__toggle:hover {
   body.ui-system .account-icon-btn,
   body.ui-system .collect-target-icon-btn,
   body.ui-system .expand-input-btn {
-    width: 44px;
-    min-width: 44px;
-    height: 44px;
-    min-height: 44px;
+    width: var(--ui-control-height-icon);
+    min-width: var(--ui-control-height-icon);
+    height: var(--ui-control-height-icon);
+    min-height: var(--ui-control-height-icon);
     padding: 0;
-    border-radius: 12px;
+    border-radius: var(--ui-control-radius);
+  }
+
+  body.ui-system button.sm,
+  body.ui-system .button.sm,
+  body.ui-system .btn.sm,
+  body.ui-system .button.compact,
+  body.ui-system .btn.compact {
+    min-height: var(--ui-control-height-compact);
+    padding: 0 10px;
+    border-radius: 8px;
+    font-size: var(--ui-control-font-size-compact);
   }
 
   body.ui-system .msg-icon-action,
