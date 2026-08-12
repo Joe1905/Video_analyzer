@@ -168,6 +168,11 @@ class UIContractTest(unittest.TestCase):
         self.assertIn("flex: 1 1 0", css)
         self.assertIn("color: #c4ccd8", css)
         self.assertIn(".ui-global-user-close svg", css)
+        self.assertIn("border:1px solid transparent", css)
+        self.assertIn("@keyframes ui-global-user-option-in", css)
+        self.assertIn(".ui-global-user-options.is-revealing", css)
+        self.assertIn("function revealGlobalUserOptions", script)
+        self.assertIn("revealGlobalUserOptions(modal.querySelector", script)
 
     def test_chat_messages_center_content_between_neighbor_chat_sized_avatars(self) -> None:
         chat = (STATIC_DIR / "chat.html").read_text(encoding="utf-8")

@@ -61,6 +61,7 @@
         : userInitial(user);
       return `<button type="button" class="ui-global-user-option ${user.kind === "public" ? "is-public" : ""} ${user.id === current.id ? "is-current" : ""}" data-global-user-id="${String(user.id).replace(/\"/g, "&quot;")}"><span class="avatar">${avatar}</span><span class="copy"><b>${String(user.name || "公共账户")}</b><small>${user.kind === "feishu" ? "飞书账户" : "公共账户"}</small></span><span class="state" aria-hidden="true">${user.id === current.id ? "当前" : ""}</span></button>`;
     }).join("") || '<div class="ui-global-user-loading">暂无可用身份</div>';
+    if (!options.closest(".ui-global-user-modal")?.hidden) revealGlobalUserOptions(options);
     options.querySelectorAll("[data-global-user-id]").forEach((button) => {
       button.addEventListener("click", async () => {
         const response = await fetch("/api/global-user/select", {
@@ -72,11 +73,23 @@
     });
   }
 
+  function revealGlobalUserOptions(options) {
+    if (!options?.querySelector(".ui-global-user-option")) return;
+    options.classList.remove("is-revealing");
+    window.requestAnimationFrame(() => {
+      if (!options.closest(".ui-global-user-modal")?.hidden) options.classList.add("is-revealing");
+    });
+  }
+
   function setupGlobalUser() {
     const modal = document.getElementById("ui-global-user-modal");
     if (!modal) return;
     const close = () => { modal.hidden = true; };
-    document.querySelectorAll("[data-global-user-trigger]").forEach((button) => button.addEventListener("click", () => { modal.hidden = false; }));
+    const open = () => {
+      modal.hidden = false;
+      revealGlobalUserOptions(modal.querySelector("[data-global-user-options]"));
+    };
+    document.querySelectorAll("[data-global-user-trigger]").forEach((button) => button.addEventListener("click", open));
     modal.querySelectorAll("[data-global-user-close]").forEach((button) => button.addEventListener("click", close));
     globalUserPromise.then(renderGlobalUser);
   }
