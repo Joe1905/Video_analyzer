@@ -561,6 +561,14 @@
     .inline-platform-switch { display: inline-grid; width: 23px; height: 23px; place-items: center; padding: 0; border: 1px solid #dfe4ea; border-radius: 6px; color: var(--muted); background: #fff; transition: color .16s ease, border-color .16s ease, background .16s ease; }
     .inline-platform-switch .icon { width:14px; height:14px; }
     .inline-platform-switch:hover { border-color: #bfc8ff; color: var(--accent); background: #fbfbff; }
+    /* Keep the compact mockup control scale inside the shared UI shell. */
+    body.ui-system.ui-route-proxy .account-tools .search { width:100%; min-height:36px; height:36px; padding:0 10px 0 32px; font-size:12px; }
+    body.ui-system.ui-route-proxy .account-tools .filter { flex:0 0 auto; width:auto; min-height:36px; height:36px; padding:0 26px 0 9px; font-size:12px; }
+    body.ui-system.ui-route-proxy .icon-button { width:36px; min-width:36px; min-height:36px; height:36px; padding:0; border-radius:9px; }
+    body.ui-system.ui-route-proxy .mini-action,
+    body.ui-system.ui-route-proxy .row-toggle { width:30px; min-width:30px; min-height:30px; height:30px; padding:0; border-radius:8px; }
+    body.ui-system.ui-route-proxy .inline-platform-switch { width:23px; min-width:23px; min-height:23px; height:23px; padding:0; border-radius:6px; }
+    body.ui-system.ui-route-proxy .tiny-action { width:28px; min-width:28px; min-height:28px; height:28px; padding:0; border-radius:7px; }
     @media (max-width: 1040px) { .platform-switcher button { padding: 0 7px; } .platform-switcher button > span { display: none; } }
   </style>
   <script>window.__PROXY_BOOTSTRAP__ = /* PROXY_BOOTSTRAP */ null;</script>
