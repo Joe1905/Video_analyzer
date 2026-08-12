@@ -797,7 +797,7 @@
         if (titleCount) titleCount.textContent = String(visible.length);
         if (metric) metric.innerHTML = `<strong>${usable}</strong><span>可用 / ${visible.length} 已配置</span>`;
         if (meter) meter.style.width = `${visible.length ? Math.round(usable / visible.length * 100) : 0}%`;
-        const foot = document.querySelector('.proxy-lane .proxy-foot');
+        const foot = document.querySelector('.proxy-lane > .proxy-foot');
         const delayed = visible.filter(pool => pool.status === 'IP重复').length;
         if (foot) foot.innerHTML = delayed ? `<b>${delayed} 个出口</b> 正在延迟重检` : '全部出口状态已同步';
         list.innerHTML = visible.map(pool => {
