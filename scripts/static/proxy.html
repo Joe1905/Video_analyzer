@@ -674,6 +674,7 @@
     .pool-editor-readonly b { display:block; margin-top:5px; color:var(--text); font-size:14px; }
     .pool-detail-empty { margin:0; padding:36px 0; color:var(--muted); font-size:13px; text-align:center; }
     .pool-drawer-error { min-height:18px; margin:0; color:#bd5062; font-size:12px; }
+    .proxy-action-error { margin:0 0 12px; padding:9px 10px; border-left:3px solid #bd5062; border-radius:0 7px 7px 0; background:#fff5f6; color:#9c4252; font-size:12px; line-height:1.45; }
     @media (max-width: 1040px) { .platform-switcher button { padding: 0 7px; } .platform-switcher button > span { display: none; } }
     @media (max-width: 720px) { .owner-filter { max-width:160px; } .pool-create-grid,.pool-editor-readonly { grid-template-columns:1fr; } .pool-editor-readonly div { border-right:0; border-bottom:1px solid var(--line); } .pool-editor-readonly div:last-child { border-bottom:0; } }
   </style>
@@ -715,7 +716,7 @@
         login: { text: '新增平台登录', svg: svg('<path d="M13 4h6v16h-6M4 12h11m0 0-3-3m3 3-3 3"/><path d="M5 5h7"/>') },
         remove: { text: '删除账号', svg: svg('<path d="M5 7h14M9 7V4h6v3m-8 0 1 13h8l1-13M10 11v5m4-5v5"/>') }
       };
-      const state = { platform: 'tiktok', accountId: '', loginChoice: '', query: '', statusFilter: '', feishuFilterId: '', feishuFilterName: '', feishuFilterAvatar: '', feishuFilterActive: false };
+      const state = { platform: 'tiktok', accountId: '', loginChoice: '', loginSessionId: null, query: '', statusFilter: '', feishuFilterId: '', feishuFilterName: '', feishuFilterAvatar: '', feishuFilterActive: false, sessions: [], collectContext: null };
       const activePlatformByAccount = {};
       const tiktokCollectView = { ...views.collect };
       const visibleAccountRows = () => accountRows.filter(row => {
@@ -820,7 +821,8 @@
         const resultRows = results.length ? results.slice(0, 5).map(result => `<div class="task-list-row"><div><b>${escape(result.video_title || result.video_id || '未命名视频')}</b><small>${escape(result.status_label || result.feishu_sync_status || '已采集')}</small></div></div>`).join('') : '<div class="drawer-empty">本账号暂时没有采集结果</div>';
         const autoLabel = setting.enabled ? `已启用 · 每日 ${escape(setting.daily_time || '--:--')}` : '未启用';
         const collectBody = `<div class="task-flow collect-task-flow"><div class="task-main"><section class="task-step"><div class="task-step-head"><b><span class="task-number">01</span>手动采集设置</b><small>按${escape(row.proxy)}发布时间筛选</small></div><div class="task-fields"><div class="collect-account-context wide-field"><span class="person-avatar">${escape(row.initials)}</span><div><small>当前账号</small><b>${escape(row.id)} · ${escape(meta.label)}</b></div><span>${escape(row.proxy)}出口 · ${item.awake ? '会话在线' : '会话休眠'}</span></div><label class="task-field wide-field">发布日期<div class="collect-date-range"><label>开始日期<input type="date" aria-label="开始日期"></label><label>结束日期<input type="date" aria-label="结束日期"></label></div></label><label class="task-field wide-field">写入飞书多维表格<div class="task-choice"><span>${escape(target)}</span><button data-open="collectAllowlist">管理</button></div></label></div></section><section class="task-step"><div class="task-step-head"><b><span class="task-number">02</span>自动采集状态</b><button class="task-link" data-open="collectAuto">设置</button></div><div class="collect-auto-summary"><div><b>自动采集：${autoLabel}</b><small>${setting.enabled ? '将按当前规则自动创建任务。' : '不会影响本次手动采集。'}</small></div><span class="status ${setting.enabled ? 'live' : 'delay'}">${setting.enabled ? '已启用' : '未启用'}</span></div></section></div><aside class="task-side"><div class="task-side-head"><b>采集任务</b><button class="task-link" data-open="collectHistory">查看全部</button></div><div class="collect-parent-list">${jobRows}</div><div class="callout">点击“立即采集”后，任务和结果会在这里显示；当前不填充任何示例数据。</div></aside></div>`;
-        views.collect = { ...tiktokCollectView, k: 'METRICS COLLECTION', title: `${meta.label} 视频数据采集`, desc: `以 ${escape(row.id)} 的 ${meta.label} 会话创建手动采集；任务和结果均来自当前账号。`, body: collectBody };
+        state.collectContext = { accountId: row.accountId, platform: state.platform, target: setting.feishu_target || {} };
+        views.collect = { ...tiktokCollectView, k: 'METRICS COLLECTION', title: `${meta.label} 视频数据采集`, desc: `以 ${escape(row.id)} 的 ${meta.label} 会话创建手动采集；任务和结果均来自当前账号。`, body: collectBody, foot: '<button class="button" data-close>取消</button><button class="button primary" data-live-collect>立即采集</button>' };
         views.collectHistory = { k: 'COLLECTION HISTORY', title: '采集任务与结果', desc: `仅显示 ${escape(row.id)} 在 ${meta.label} 下的实际记录。`, parent: 'collect', body: `<div class="drawer-form"><section class="collect-section"><div class="collect-title"><h4>采集任务</h4><span>${jobs.length} 项</span></div><div class="task-list">${jobRows}</div></section><section class="collect-section"><div class="collect-title"><h4>采集结果</h4><span>${results.length} 条</span></div><div class="task-list">${resultRows}</div></section></div>` };
         return;
         if (state.platform === 'tiktok') {
@@ -837,21 +839,55 @@
         const row = accountFor(), key = state.loginChoice || state.platform, meta = platformMeta[key];
         views.platformLoginSession = { k: 'LOGIN SESSION', title: `${meta.label} 登录会话`, desc: '登录过程始终留在当前抽屉中；完成后返回账号主界面。', parent: 'platformLogin', body: `<div class="login-session-card"><div class="login-session-target">${mark(key)}<div><b>${row.id} · ${meta.label}</b><small>固定使用 ${row.proxy} 出口与当前隔离 Chrome Profile</small></div></div><div class="login-ip-check"><i></i><span>绑定 IP 已校验：${row.ip} · 网络环境可用于 ${meta.label} 登录</span></div><div class="login-browser-placeholder"><div><b>noVNC 登录窗口</b><span>完成平台登录后，系统会定时检测 Cookie；也可手动触发登录成功检测。</span></div></div><div class="login-session-actions"><button type="button" class="button">重新校验 IP</button><button type="button" class="button primary" data-platform-login-complete>检测登录成功</button></div></div>` };
       };
+      const proxyPost = async (path, payload) => {
+        const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || `请求失败（${response.status}）`);
+        return data;
+      };
+      const activeSessionFor = row => state.sessions.find(session => Number(session.account_id) === Number(row.accountId) && ['starting', 'running', 'observing'].includes(String(session.status || '')));
+      const showProxyActionError = message => {
+        const context = document.querySelector('.context-main');
+        if (!context) return;
+        context.querySelector('.proxy-action-error')?.remove();
+        const note = document.createElement('p');
+        note.className = 'proxy-action-error';
+        note.textContent = message;
+        context.prepend(note);
+      };
       const openPlatformAction = async action => {
         const row = accountFor(), item = platformFor(row);
-        if (action === 'observe') { if (item.loggedIn && item.awake) { syncPlatformViews(); open('observe'); } return; }
+        if (!row) return;
+        if (action === 'observe' || action === 'wake') {
+          try {
+            let session = activeSessionFor(row);
+            if (!session) {
+              const started = await proxyPost('/api/proxy/login-session/start', { account_id: row.accountId, start_platform: state.platform });
+              session = started.session || null;
+              await loadLiveData();
+            }
+            if (action === 'observe') { await syncPlatformViews(); open('observe'); }
+          } catch (error) { showProxyActionError(error.message || '无法启动账号会话'); }
+          return;
+        }
         if (action === 'collect') { if (item.loggedIn) { await syncPlatformViews(); open('collect'); } return; }
         if (action === 'publish') { open('publish'); return; }
         if (action === 'login') { state.loginChoice = ''; renderPlatformLogin(); open('platformLogin'); return; }
         if (action === 'binding') { open('binding'); return; }
-        if (action === 'sleep' || action === 'wake') { item.awake = action === 'wake'; renderAccounts(); return; }
+        if (action === 'sleep') {
+          const session = activeSessionFor(row);
+          if (!session) return;
+          try { await proxyPost('/api/proxy/login-session/stop', { session_id: session.id }); await loadLiveData(); }
+          catch (error) { showProxyActionError(error.message || '无法休眠账号会话'); }
+          return;
+        }
         if (action === 'remove') open('remove');
       };
       const accountTitle = document.querySelector('.account-head .lane-title span');
       if (accountTitle) accountTitle.textContent = '按状态管理当前可执行工作';
       const rawOpen = open;
       open = function(name) { if (name === 'observe') void syncPlatformViews(); if (name === 'platformLogin') renderPlatformLogin(); return rawOpen(name); };
-      document.addEventListener('click', event => {
+      document.addEventListener('click', async event => {
         const row = event.target.closest('[data-platform-row]');
         if (row && !event.target.closest('button')) { state.accountId = row.dataset.platformRow; state.platform = activePlatformByAccount[state.accountId] || 'tiktok'; renderAccounts(); return; }
         const menu = event.target.closest('[data-platform-menu]');
@@ -861,9 +897,48 @@
         const choice = event.target.closest('[data-platform-login-choice]');
         if (choice) { state.loginChoice = choice.dataset.platformLoginChoice; renderPlatformLogin(); const view = views.platformLogin; el('drawer-body').innerHTML = view.body; el('drawer-foot').innerHTML = view.foot; return; }
         const loginSubmit = event.target.closest('[data-platform-login-submit]');
-        if (loginSubmit && state.loginChoice) { event.preventDefault(); renderLoginSession(); open('platformLoginSession'); return; }
+        if (loginSubmit && state.loginChoice) {
+          event.preventDefault();
+          loginSubmit.disabled = true;
+          try {
+            const started = await proxyPost('/api/proxy/login-session/start', { account_id: accountFor().accountId, login_platform: state.loginChoice, start_platform: state.loginChoice });
+            state.loginSessionId = started.session?.id || null;
+            renderLoginSession();
+            open('platformLoginSession');
+            await loadLiveData();
+          } catch (error) { showProxyActionError(error.message || '无法启动平台登录会话'); }
+          finally { loginSubmit.disabled = false; }
+          return;
+        }
         const loginComplete = event.target.closest('[data-platform-login-complete]');
-        if (loginComplete) { const item = accountFor().platforms[state.loginChoice]; item.loggedIn = true; item.awake = true; item.status = '可采集'; item.kind = 'live'; item.session = state.loginChoice === 'instagram' ? 'Reels 入口已保存' : '会话在线 · 可观测'; renderAccounts(); open('platformLogin'); }
+        if (loginComplete) {
+          event.preventDefault();
+          if (!state.loginSessionId) { showProxyActionError('登录会话不存在，请重新开始登录'); return; }
+          loginComplete.disabled = true;
+          try {
+            const inspected = await proxyPost('/api/proxy/login-session/capture', { session_id: state.loginSessionId });
+            if (!inspected.bound) { showProxyActionError(inspected.reason || '暂未检测到登录 Cookie，请完成网页登录后重试'); return; }
+            await loadLiveData();
+            state.loginSessionId = null;
+            open('platformLogin');
+          } catch (error) { showProxyActionError(error.message || '无法检测平台登录状态'); }
+          finally { loginComplete.disabled = false; }
+        }
+        const collect = event.target.closest('[data-live-collect]');
+        if (collect) {
+          event.preventDefault();
+          const context = state.collectContext;
+          const begin = el('drawer-body').querySelector('[aria-label="开始日期"]')?.value || '';
+          const end = el('drawer-body').querySelector('[aria-label="结束日期"]')?.value || '';
+          if (!context?.accountId || !begin || !end) { showProxyActionError('请选择完整的采集日期范围'); return; }
+          collect.disabled = true;
+          try {
+            await proxyPost('/api/proxy/collect/jobs', { account_id: context.accountId, platform: context.platform, publish_date_start: begin, publish_date_end: end, feishu_target: context.target, write_to_feishu: true });
+            await syncPlatformViews();
+            open('collect');
+          } catch (error) { showProxyActionError(error.message || '无法创建采集任务'); }
+          finally { collect.disabled = false; }
+        }
       });
       const liveRuntimeStatus = (account, pool, session) => {
         if (!account.proxy_bound) return { status: '未绑定', kind: 'delay' };
@@ -907,6 +982,7 @@
         const response = bootstrap ? null : await fetch('/api/proxy/pools');
         if (response && !response.ok) throw new Error(`HTTP ${response.status}`);
         const payload = bootstrap || await response.json(), pools = payload.pools || [], sessions = payload.sessions || [];
+        state.sessions = sessions;
         const byPool = new Map(pools.map(pool => [Number(pool.id), pool]));
         const sessionFor = id => sessions.find(session => Number(session.account_id) === Number(id) && ['starting', 'running', 'observing'].includes(session.status));
         accountRows = (payload.accounts || []).filter(account => !account.profile?.ui_demo && !String(account.notes || '').includes('4004 UI 演示')).map(account => {
