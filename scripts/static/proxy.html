@@ -1170,11 +1170,12 @@
       let liveLoadGeneration = 0;
       let liveLoadController = null;
       const hydrateLiveData = async ({ signal, generation } = {}) => {
-        const bootstrap = bootstrapPayload;
+        // 账号会话是高频变化数据。首屏也必须取实时接口，不能使用渲染时的
+        // bootstrap 快照，否则 observing/starting 会被旧快照覆盖成“休眠”。
         bootstrapPayload = null;
-        const response = bootstrap ? null : await fetch('/api/proxy/pools', { cache: 'no-store', signal });
-        if (response && !response.ok) throw new Error(`HTTP ${response.status}`);
-        const payload = bootstrap || await response.json(), pools = payload.pools || [], sessions = payload.sessions || [];
+        const response = await fetch('/api/proxy/pools', { cache: 'no-store', signal });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const payload = await response.json(), pools = payload.pools || [], sessions = payload.sessions || [];
         if (generation && generation !== liveLoadGeneration) return false;
         state.sessions = sessions;
         const byPool = new Map(pools.map(pool => [Number(pool.id), pool]));
