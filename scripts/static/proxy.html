@@ -585,6 +585,8 @@
     body.ui-system.ui-route-proxy .proxy-search { padding:10px 12px; }
     body.ui-system.ui-route-proxy .proxy-search svg { top:50%; left:23px; transform:translateY(-50%); pointer-events:none; }
     body.ui-system.ui-route-proxy .proxy-search input { box-sizing:border-box; min-height:42px; height:42px; padding:0 12px 0 34px; line-height:42px; }
+    /* 运营台不保留全局入场动画的 translateY(0) 合成层，避免其子级文字被整体栅格化。 */
+    body.ui-system.ui-route-proxy .ui-main { animation:none!important; transform:none!important; }
     body.ui-system.ui-route-proxy { -webkit-font-smoothing:auto; text-rendering:optimizeLegibility; }
     /* 中文标题禁用 em 级负字距：它会把字形放到非整数像素，DPR=1 时容易发虚。 */
     body.ui-system.ui-route-proxy .drawer-head h3,
@@ -595,12 +597,20 @@
     body.ui-system.ui-route-proxy .section-head h4 { letter-spacing:0; }
     body.ui-system.ui-route-proxy .drawer-head .eyebrow,
     body.ui-system.ui-route-proxy .drawer-subview-intro .eyebrow { letter-spacing:1px; }
+    /* 抽屉标题与底部按钮使用整数行高，避免文字落在 0.15 / 0.40px 的基线上。 */
+    body.ui-system.ui-route-proxy .drawer-head .eyebrow { margin:4px 0 4px; line-height:20px; }
+    body.ui-system.ui-route-proxy .drawer-head h3 { line-height:26px; }
+    body.ui-system.ui-route-proxy .drawer-head p:not(.eyebrow) { line-height:20px; }
+    body.ui-system.ui-route-proxy .task-step-head b { line-height:24px; }
+    body.ui-system.ui-route-proxy .task-step-head small,
+    body.ui-system.ui-route-proxy .task-step-head .task-link,
+    body.ui-system.ui-route-proxy .drawer .button { line-height:20px; }
     body.ui-system.ui-route-proxy #overlay .drawer.left-panel { top:0!important; right:auto!important; bottom:0!important; left:0!important; width:min(500px,calc(100vw - 24px)); height:100%!important; animation:none!important; transform:var(--panel-transform,translateX(-104%))!important; transform-origin:left center!important; opacity:var(--panel-opacity,1)!important; transition:transform .34s cubic-bezier(.22,.61,.36,1),opacity .22s ease!important; }
     body.ui-system.ui-route-proxy #overlay .drawer.side-panel.is-settled,
-    body.ui-system.ui-route-proxy #overlay .drawer.left-panel.is-settled { transform:none!important; opacity:1!important; transition:none!important; }
+    body.ui-system.ui-route-proxy #overlay .drawer.left-panel.is-settled { transform:none!important; opacity:1!important; transition:none!important; will-change:auto!important; }
     body.ui-system.ui-route-proxy #overlay .drawer.left-panel.is-closing { transition:transform .42s cubic-bezier(.22,.61,.36,1),opacity .34s ease!important; }
     body.ui-system.ui-route-proxy #overlay .drawer.left-panel:not(.pool-has-footer) .drawer-foot { max-height:0; padding-top:0; padding-bottom:0; border-top-color:transparent; opacity:0; pointer-events:none; }
-    body.ui-system.ui-route-proxy #overlay .drawer.left-panel.pool-has-footer .drawer-foot { min-height:64px; max-height:76px; will-change:transform,opacity; }
+    body.ui-system.ui-route-proxy #overlay .drawer.left-panel.pool-has-footer .drawer-foot { min-height:64px; max-height:76px; }
     body.ui-system.ui-route-proxy #overlay .drawer.left-panel.pool-has-footer.subview-leaving .drawer-foot { opacity:0; transform:translateY(16px); }
     body.ui-system.ui-route-proxy #overlay .drawer.left-panel.pool-has-footer.subview-entering .drawer-foot { opacity:0; transform:translateY(-16px); }
     body.ui-system.ui-route-proxy .proxy-list .proxy-row { cursor:pointer; transition:background .16s ease,box-shadow .16s ease; }
