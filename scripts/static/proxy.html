@@ -488,7 +488,7 @@
     replaceTaskActions('collectTaskAug07',[]);
   </script>
   <script>
-    const closeDrawer=()=>{const overlay=el('overlay'),drawer=el('drawer');if(!overlay.classList.contains('open')||drawer.classList.contains('is-closing'))return;const dialog=drawer.classList.contains('dialog-panel'),left=drawer.classList.contains('left-panel'),duration=dialog?260:450;drawer.classList.add('is-closing');overlay.classList.add('is-closing');drawer.style.setProperty('--panel-transform',dialog?'translate(-50%,-50%) scale(.96)':left?'translateX(-104%)':'translateX(104%)');drawer.style.setProperty('--panel-opacity',dialog?'0':'.72');setTimeout(()=>{overlay.classList.remove('open','is-closing');drawer.classList.remove('is-closing','subview-leaving','subview-entering');drawer.style.removeProperty('--panel-transform');drawer.style.removeProperty('--panel-opacity');delete drawer.dataset.root},duration)};
+    const closeDrawer=()=>{const overlay=el('overlay'),drawer=el('drawer');if(!overlay.classList.contains('open')||drawer.classList.contains('is-closing'))return;const dialog=drawer.classList.contains('dialog-panel'),left=drawer.classList.contains('left-panel'),duration=dialog?260:450;drawer.classList.add('is-closing');overlay.classList.add('is-closing');drawer.style.setProperty('--panel-transform',dialog?'translate(-50%,-50%) scale(.96)':left?'translateX(-104%)':'translateX(104%)');drawer.style.setProperty('--panel-opacity',dialog?'0':'.72');setTimeout(()=>{overlay.classList.remove('open','is-closing');drawer.classList.remove('is-closing','subview-leaving','subview-entering');drawer.style.removeProperty('--panel-transform');drawer.style.removeProperty('--panel-opacity');['left','right','top','bottom','height','animation'].forEach(prop=>drawer.style.removeProperty(prop));delete drawer.dataset.root},duration)};
     document.addEventListener('click',event=>{const trigger=event.target.closest('[data-close]');if(!trigger)return;event.preventDefault();event.stopImmediatePropagation();closeDrawer()},true);
     el('overlay').addEventListener('click',event=>{if(event.target!==el('overlay'))return;event.preventDefault();event.stopImmediatePropagation();closeDrawer()},true);
   </script>
@@ -583,8 +583,12 @@
     body.ui-system.ui-route-proxy .proxy-search { padding:10px 12px; }
     body.ui-system.ui-route-proxy .proxy-search svg { top:50%; left:23px; transform:translateY(-50%); pointer-events:none; }
     body.ui-system.ui-route-proxy .proxy-search input { box-sizing:border-box; min-height:42px; height:42px; padding:0 12px 0 34px; line-height:42px; }
-    body.ui-system.ui-route-proxy #overlay .drawer.left-panel { top:0!important; right:auto!important; left:0!important; width:min(500px,calc(100vw - 24px)); height:100%!important; transform:var(--panel-transform,translateX(-104%))!important; opacity:var(--panel-opacity,1)!important; transition:transform .34s cubic-bezier(.22,.61,.36,1),opacity .22s ease!important; }
+    body.ui-system.ui-route-proxy #overlay .drawer.left-panel { top:0!important; right:auto!important; bottom:0!important; left:0!important; width:min(500px,calc(100vw - 24px)); height:100%!important; animation:none!important; transform:var(--panel-transform,translateX(-104%))!important; transform-origin:left center!important; opacity:var(--panel-opacity,1)!important; transition:transform .34s cubic-bezier(.22,.61,.36,1),opacity .22s ease!important; }
     body.ui-system.ui-route-proxy #overlay .drawer.left-panel.is-closing { transition:transform .42s cubic-bezier(.22,.61,.36,1),opacity .34s ease!important; }
+    body.ui-system.ui-route-proxy #overlay .drawer.left-panel:not(.pool-has-footer) .drawer-foot { max-height:0; padding-top:0; padding-bottom:0; border-top-color:transparent; opacity:0; pointer-events:none; }
+    body.ui-system.ui-route-proxy #overlay .drawer.left-panel.pool-has-footer .drawer-foot { min-height:64px; max-height:76px; will-change:transform,opacity; }
+    body.ui-system.ui-route-proxy #overlay .drawer.left-panel.pool-has-footer.subview-leaving .drawer-foot { opacity:0; transform:translateY(16px); }
+    body.ui-system.ui-route-proxy #overlay .drawer.left-panel.pool-has-footer.subview-entering .drawer-foot { opacity:0; transform:translateY(-16px); }
     body.ui-system.ui-route-proxy .proxy-list .proxy-row { cursor:pointer; transition:background .16s ease,box-shadow .16s ease; }
     body.ui-system.ui-route-proxy .proxy-list .proxy-row:hover { background:#f7f8ff; box-shadow:inset 2px 0 var(--accent); }
     body.ui-system.ui-route-proxy .proxy-list .proxy-row:focus-visible { outline:2px solid #cfd5ff; outline-offset:-2px; }
@@ -628,7 +632,6 @@
     .pool-editor-readonly div:last-child { border-right:0; }
     .pool-editor-readonly span { display:block; color:var(--muted); font-size:12px; }
     .pool-editor-readonly b { display:block; margin-top:5px; color:var(--text); font-size:14px; }
-    .pool-inline-actions { display:flex; justify-content:flex-end; gap:8px; padding-top:4px; }
     .pool-detail-empty { margin:0; padding:36px 0; color:var(--muted); font-size:13px; text-align:center; }
     .pool-drawer-error { min-height:18px; margin:0; color:#bd5062; font-size:12px; }
     @media (max-width: 1040px) { .platform-switcher button { padding: 0 7px; } .platform-switcher button > span { display: none; } }
@@ -916,7 +919,13 @@
         const isInnerView = overlay.classList.contains('open') && drawer.classList.contains('left-panel') && drawer.dataset.root === root;
         const render = initial => {
           drawer.dataset.root = root;
-          drawer.className = `drawer left-panel pool-panel${initial ? ' motion-prep' : ''}`;
+          drawer.className = `drawer left-panel pool-panel${foot ? ' pool-has-footer' : ''}${initial ? ' motion-prep' : ''}`;
+          drawer.style.setProperty('top', '0');
+          drawer.style.setProperty('right', 'auto');
+          drawer.style.setProperty('bottom', '0');
+          drawer.style.setProperty('left', '0');
+          drawer.style.setProperty('height', '100%');
+          drawer.style.setProperty('animation', 'none');
           if (initial) {
             drawer.style.setProperty('--panel-transform', 'translateX(-104%)');
             drawer.style.setProperty('--panel-opacity', '0');
@@ -1017,8 +1026,8 @@
           root: `proxyPoolDetail:${pool.id}`,
           title: 'IP 出口详情',
           desc: '查看该出口的连接状态与当前使用情况。',
-          body: `<div class="drawer-subview-page pool-editor"><nav class="drawer-subview-nav"><button type="button" data-proxy-pool-detail="${pool.id}">${backIcon}返回 IP 出口详情</button></nav><div class="pool-editor-copy"><p class="eyebrow">PROXY CONFIGURATION</p><h4>编辑出口配置</h4><p>代理类型可保持默认解析，也可手动指定；URI 会以脱敏形式显示。</p></div><div class="pool-editor-readonly"><div><span>本地端口</span><b>${escapePoolText(pool.local_port || '—')}</b></div><div><span>当前状态</span><b>${status}</b></div></div><form class="pool-create-form" data-proxy-pool-edit-form><input type="hidden" name="id" value="${Number(pool.id)}"><input type="hidden" name="status" value="${status}"><label>出口名称<input name="name" value="${escapePoolText(pool.name || '')}" required></label><label>代理类型<select name="source_type"><option value=""${pool.source_type === 'demo' || !pool.source_type ? ' selected' : ''}>默认解析</option><option value="vless"${selected('vless')}>VLESS</option><option value="vmess"${selected('vmess')}>VMess</option><option value="static"${selected('static')}>HTTP / SOCKS</option><option value="direct"${selected('direct')}>直连</option></select></label><label>订阅或连接 URI<textarea name="source_uri" placeholder="vless:// 或 socks5://（可稍后补充）">${escapePoolText(pool.source_uri || '')}</textarea></label><div class="pool-create-grid"><label>预期出口 IP<input name="expected_exit_ip" value="${escapePoolText(pool.expected_exit_ip || '')}" placeholder="154.12.88.64"></label><label>地区<input name="region" value="${escapePoolText(pool.region || '')}" placeholder="US West"></label></div><label>备注<textarea name="notes" placeholder="可选，用于说明线路来源或用途">${escapePoolText(pool.notes || '')}</textarea></label><p class="pool-drawer-error" data-proxy-pool-error></p><div class="pool-inline-actions"><button type="button" class="button" data-proxy-pool-detail="${pool.id}">取消</button><button type="submit" class="button primary">保存更改</button></div></form></div>`,
-          foot: ''
+          body: `<div class="drawer-subview-page pool-editor"><nav class="drawer-subview-nav"><button type="button" data-proxy-pool-detail="${pool.id}">${backIcon}返回 IP 出口详情</button></nav><div class="pool-editor-copy"><p class="eyebrow">PROXY CONFIGURATION</p><h4>编辑出口配置</h4><p>代理类型可保持默认解析，也可手动指定；URI 会以脱敏形式显示。</p></div><div class="pool-editor-readonly"><div><span>本地端口</span><b>${escapePoolText(pool.local_port || '—')}</b></div><div><span>当前状态</span><b>${status}</b></div></div><form class="pool-create-form" id="proxy-pool-edit-form" data-proxy-pool-edit-form><input type="hidden" name="id" value="${Number(pool.id)}"><input type="hidden" name="status" value="${status}"><label>出口名称<input name="name" value="${escapePoolText(pool.name || '')}" required></label><label>代理类型<select name="source_type"><option value=""${pool.source_type === 'demo' || !pool.source_type ? ' selected' : ''}>默认解析</option><option value="vless"${selected('vless')}>VLESS</option><option value="vmess"${selected('vmess')}>VMess</option><option value="static"${selected('static')}>HTTP / SOCKS</option><option value="direct"${selected('direct')}>直连</option></select></label><label>订阅或连接 URI<textarea name="source_uri" placeholder="vless:// 或 socks5://（可稍后补充）">${escapePoolText(pool.source_uri || '')}</textarea></label><div class="pool-create-grid"><label>预期出口 IP<input name="expected_exit_ip" value="${escapePoolText(pool.expected_exit_ip || '')}" placeholder="154.12.88.64"></label><label>地区<input name="region" value="${escapePoolText(pool.region || '')}" placeholder="US West"></label></div><label>备注<textarea name="notes" placeholder="可选，用于说明线路来源或用途">${escapePoolText(pool.notes || '')}</textarea></label><p class="pool-drawer-error" data-proxy-pool-error></p></form></div>`,
+          foot: `<button type="button" class="button" data-proxy-pool-detail="${pool.id}">取消</button><button type="submit" class="button primary" form="proxy-pool-edit-form">保存更改</button>`
         });
       };
       const copyUri = async id => {
@@ -1096,7 +1105,7 @@
         if (!form) return;
         event.preventDefault();
         const error = form.querySelector('[data-proxy-pool-error]');
-        const submit = form.querySelector('[type="submit"]');
+        const submit = form.querySelector('[type="submit"]') || document.querySelector(`[form="${form.id}"]`);
         if (error) error.textContent = '';
         if (submit) submit.disabled = true;
         try {
