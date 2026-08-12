@@ -1081,7 +1081,13 @@
         const remove = event.target.closest('[data-proxy-pool-delete]');
         if (remove) { event.preventDefault(); deletePool(remove.dataset.proxyPoolDelete); return; }
         const detail = event.target.closest('[data-proxy-pool-detail]');
-        if (detail) { event.preventDefault(); openPoolDetail(detail.dataset.proxyPoolDetail); }
+        if (detail) {
+          event.preventDefault();
+          void openPoolDetail(detail.dataset.proxyPoolDetail).catch(err => openLeftDrawer({
+            root: 'proxyPoolDetail', title: 'IP 出口详情', desc: '该出口信息暂时无法读取。',
+            body: `<p class="pool-detail-empty">${escapePoolText(err?.message || '请稍后重试。')}</p>`, foot: ''
+          }));
+        }
       });
       document.addEventListener('submit', async event => {
         const form = event.target.closest('[data-proxy-pool-form], [data-proxy-pool-edit-form]');
