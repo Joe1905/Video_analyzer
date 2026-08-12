@@ -870,6 +870,13 @@
         trigger.setAttribute('aria-busy', 'true');
         trigger.title = label;
       };
+      const clearAccountActionBusy = trigger => {
+        if (!trigger || !trigger.isConnected) return;
+        trigger.disabled = false;
+        trigger.classList.remove('is-busy');
+        trigger.removeAttribute('aria-busy');
+        trigger.removeAttribute('title');
+      };
       const openObservationChannel = (session, channel = null) => {
         const channelUrl = String(session?.channel_url || '').trim();
         if (!channelUrl) throw new Error('观测通道未生成，请稍后重试');
@@ -892,6 +899,7 @@
             }
             if (action === 'observe') openObservationChannel(session || activeSessionFor(row), observationChannel);
           } catch (error) { observationChannel?.close(); showProxyActionError(error.message || '无法启动账号会话'); }
+          finally { clearAccountActionBusy(trigger); }
           return;
         }
         if (action === 'collect') { if (item.loggedIn) { await syncPlatformViews(); open('collect'); } return; }
@@ -904,6 +912,7 @@
           setAccountActionBusy(trigger, '正在休眠账号…');
           try { await proxyPost('/api/proxy/login-session/stop', { session_id: session.id }); await loadLiveData(); }
           catch (error) { showProxyActionError(error.message || '无法休眠账号会话'); }
+          finally { clearAccountActionBusy(trigger); }
           return;
         }
         if (action === 'remove') open('remove');
@@ -1002,9 +1011,11 @@
         const values = [online, Math.max(0, rows.length - online), pending];
         document.querySelectorAll('.account-head .summary-item b').forEach((node, index) => { node.textContent = String(values[index] || 0); });
       };
+      let bootstrapPayload = window.__PROXY_BOOTSTRAP__ || null;
       const hydrateLiveData = async () => {
-        const bootstrap = window.__PROXY_BOOTSTRAP__;
-        const response = bootstrap ? null : await fetch('/api/proxy/pools');
+        const bootstrap = bootstrapPayload;
+        bootstrapPayload = null;
+        const response = bootstrap ? null : await fetch('/api/proxy/pools', { cache: 'no-store' });
         if (response && !response.ok) throw new Error(`HTTP ${response.status}`);
         const payload = bootstrap || await response.json(), pools = payload.pools || [], sessions = payload.sessions || [];
         state.sessions = sessions;
