@@ -2385,6 +2385,16 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
     source_uri = _clean_text(payload.get("source_uri"), 10000)
     expected_exit_ip = _clean_text(payload.get("expected_exit_ip"), 80)
     source_type = _clean_text(payload.get("source_type"), 40)
+    # 已同步但尚未录入 URI 的出口保留“默认解析”状态；只改名称、地区或禁用时，
+    # 不应把它无意改写成 VLESS。
+    if pool_id and not source_type and not source_uri:
+        with connect() as conn:
+            existing = conn.execute(
+                "SELECT source_type FROM proxy_profiles WHERE id = ? AND deleted_at = ''",
+                (pool_id,),
+            ).fetchone()
+        if existing and str(existing["source_type"] or "") == "demo":
+            source_type = "demo"
     lowered_uri = source_uri.lower()
     if not source_type and lowered_uri.startswith("vless://"):
         source_type = "vless"
@@ -2394,7 +2404,7 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
         source_type = "static"
     elif not source_type:
         source_type = "vless"
-    if source_type not in {"vless", "vmess", "static", "direct"}:
+    if source_type not in {"vless", "vmess", "static", "direct", "demo"}:
         raise ValueError("代理类型必须为 vless、vmess、static 或 direct")
     dialer_proxy = SYSTEM_PROXY_DIALER if source_type == "static" else ""
 

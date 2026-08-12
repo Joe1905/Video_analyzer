@@ -590,7 +590,8 @@
     body.ui-system.ui-route-proxy .proxy-list .proxy-row:focus-visible { outline:2px solid #cfd5ff; outline-offset:-2px; }
     .pool-create-form { display:grid; gap:12px; }
     .pool-create-form label { display:grid; gap:6px; color:var(--muted); font-size:12px; font-weight:700; }
-    .pool-create-form input,.pool-create-form select { box-sizing:border-box; width:100%; min-height:40px; height:40px; padding:0 10px; border:1px solid var(--line); border-radius:8px; color:var(--text); background:#fff; font-size:14px; }
+    .pool-create-form input,.pool-create-form select,.pool-create-form textarea { box-sizing:border-box; width:100%; min-height:40px; padding:0 10px; border:1px solid var(--line); border-radius:8px; color:var(--text); background:#fff; font-size:14px; }
+    .pool-create-form textarea { min-height:92px; padding:10px; line-height:1.55; resize:vertical; }
     .pool-create-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
     .pool-create-note { margin:2px 0 0; color:var(--muted); font-size:12px; line-height:1.6; }
     .pool-detail { display:grid; gap:18px; }
@@ -604,10 +605,34 @@
     .pool-detail-cell span { display:block; color:var(--muted); font-size:12px; }
     .pool-detail-cell b { display:block; overflow:hidden; margin-top:6px; color:var(--text); font-size:14px; text-overflow:ellipsis; white-space:nowrap; }
     .pool-detail-cell small { display:block; margin-top:4px; color:var(--muted); font:11px/1.35 "SF Mono",Consolas,monospace; }
+    .pool-uri-card { display:grid; gap:9px; padding:14px; border:1px solid var(--line); border-radius:10px; background:#fff; }
+    .pool-uri-head { display:flex; align-items:center; justify-content:space-between; gap:12px; color:var(--muted); font-size:12px; font-weight:700; }
+    .pool-uri-tools { display:flex; align-items:center; gap:5px; }
+    .pool-uri-tools .tiny-action { color:var(--muted); }
+    .pool-uri-tools .tiny-action:hover { color:var(--accent); border-color:#cfd5ff; background:#f7f8ff; }
+    .pool-uri-value { display:block; overflow:hidden; padding:9px 10px; border-radius:7px; color:#46546a; background:#f6f8fb; font:12px/1.5 "SF Mono",Consolas,monospace; text-overflow:ellipsis; white-space:nowrap; }
+    .pool-detail-actions { display:flex; flex-wrap:wrap; gap:8px; padding-top:1px; }
+    .pool-detail-actions .button { min-height:34px; padding:6px 10px; font-size:13px; }
+    .pool-detail-actions .button.danger { border-color:#f0d2d7; color:#c25163; background:#fff; }
+    .pool-detail-actions .button.danger:hover { border-color:#e4a7b1; background:#fff7f8; }
+    .pool-result { margin:0; padding:10px 12px; border-left:3px solid #d8dee9; border-radius:7px; color:#5b6879; background:#f7f9fc; font-size:13px; line-height:1.55; }
+    .pool-result.success { border-left-color:#1ca77f; color:#147d61; background:#effaf6; }
+    .pool-result.error { border-left-color:#d66a78; color:#b54d5d; background:#fff5f6; }
+    .pool-result.pending { border-left-color:var(--accent); color:#526178; background:#f4f5ff; }
+    .pool-editor { display:grid; gap:18px; }
+    .pool-editor-copy { display:grid; gap:4px; }
+    .pool-editor-copy h4 { margin:0; color:var(--text); font-size:17px; }
+    .pool-editor-copy p { margin:0; color:var(--muted); font-size:13px; line-height:1.55; }
+    .pool-editor-readonly { display:grid; grid-template-columns:1fr 1fr; overflow:hidden; border:1px solid var(--line); border-radius:10px; }
+    .pool-editor-readonly div { min-height:68px; padding:11px 12px; border-right:1px solid var(--line); }
+    .pool-editor-readonly div:last-child { border-right:0; }
+    .pool-editor-readonly span { display:block; color:var(--muted); font-size:12px; }
+    .pool-editor-readonly b { display:block; margin-top:5px; color:var(--text); font-size:14px; }
+    .pool-inline-actions { display:flex; justify-content:flex-end; gap:8px; padding-top:4px; }
     .pool-detail-empty { margin:0; padding:36px 0; color:var(--muted); font-size:13px; text-align:center; }
     .pool-drawer-error { min-height:18px; margin:0; color:#bd5062; font-size:12px; }
     @media (max-width: 1040px) { .platform-switcher button { padding: 0 7px; } .platform-switcher button > span { display: none; } }
-    @media (max-width: 720px) { .owner-filter { max-width:160px; } .pool-create-grid { grid-template-columns:1fr; } }
+    @media (max-width: 720px) { .owner-filter { max-width:160px; } .pool-create-grid,.pool-editor-readonly { grid-template-columns:1fr; } .pool-editor-readonly div { border-right:0; border-bottom:1px solid var(--line); } .pool-editor-readonly div:last-child { border-bottom:0; } }
   </style>
   <script>window.__PROXY_BOOTSTRAP__ = /* PROXY_BOOTSTRAP */ null;</script>
   <script>
@@ -872,18 +897,44 @@
     (() => {
       const escapePoolText = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' })[char]);
       const closeIcon = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>';
+      const backIcon = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m14.5 5-7 7 7 7M8 12h10"/></svg>';
+      const copyIcon = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="10" height="10" rx="2"/><path d="M15 9V7a2 2 0 0 0-2-2H7a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"/></svg>';
+      const editIcon = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m4 16.5-.7 4.2 4.2-.7L18.8 8.7l-3.5-3.5L4 16.5Z"/><path d="m13.9 6.6 3.5 3.5"/></svg>';
       const poolStatus = pool => ['不可用', '异常', '禁用'].includes(pool?.status) ? 'off' : pool?.status === 'IP重复' ? 'delay' : 'live';
       const poolLabel = pool => ['不可用', '异常', '禁用'].includes(pool?.status) ? '不可用' : pool?.status === 'IP重复' ? 'IP重复' : Number(pool?.account_count || 0) ? '已绑定' : '可用';
-      const sourceLabel = source => ({ vless: 'VLESS', vmess: 'VMess', static: 'HTTP / SOCKS', direct: '直连', demo: '演示出口' })[String(source || '').toLowerCase()] || String(source || '未标注');
+      const sourceLabel = source => ({ vless: 'VLESS', vmess: 'VMess', static: 'HTTP / SOCKS', direct: '直连', demo: '默认解析' })[String(source || '').toLowerCase()] || '默认解析';
+      const maskUri = value => {
+        const uri = String(value || '').trim();
+        if (!uri) return '未保存连接 URI';
+        const schemeEnd = uri.indexOf('://');
+        const prefix = uri.slice(0, schemeEnd >= 0 ? schemeEnd + 3 : Math.min(12, uri.length));
+        const suffix = uri.length > prefix.length + 10 ? uri.slice(-7) : '';
+        return `${prefix}••••••${suffix}`;
+      };
       const openLeftDrawer = ({ root, title, desc, body, foot }) => {
         const drawer = el('drawer'), overlay = el('overlay');
-        drawer.dataset.root = root;
-        drawer.className = 'drawer left-panel pool-panel motion-prep';
-        drawer.style.setProperty('--panel-transform', 'translateX(-104%)');
-        drawer.style.setProperty('--panel-opacity', '0');
-        el('drawer-head').innerHTML = `<div><p class="eyebrow">PROXY POOL</p><h3>${title}</h3><p>${desc}</p></div><button class="icon-button" data-close aria-label="关闭">${closeIcon}</button>`;
-        el('drawer-body').innerHTML = body;
-        el('drawer-foot').innerHTML = foot;
+        const isInnerView = overlay.classList.contains('open') && drawer.classList.contains('left-panel') && drawer.dataset.root === root;
+        const render = initial => {
+          drawer.dataset.root = root;
+          drawer.className = `drawer left-panel pool-panel${initial ? ' motion-prep' : ''}`;
+          if (initial) {
+            drawer.style.setProperty('--panel-transform', 'translateX(-104%)');
+            drawer.style.setProperty('--panel-opacity', '0');
+          }
+          el('drawer-head').innerHTML = `<div><p class="eyebrow">PROXY POOL</p><h3>${title}</h3><p>${desc}</p></div><button class="icon-button" data-close aria-label="关闭">${closeIcon}</button>`;
+          el('drawer-body').innerHTML = body;
+          el('drawer-foot').innerHTML = foot;
+        };
+        if (isInnerView) {
+          drawer.classList.add('subview-leaving');
+          window.setTimeout(() => {
+            render(false);
+            drawer.classList.add('subview-entering');
+            requestAnimationFrame(() => requestAnimationFrame(() => drawer.classList.remove('subview-entering')));
+          }, 130);
+          return;
+        }
+        render(true);
         overlay.classList.add('open');
         requestAnimationFrame(() => requestAnimationFrame(() => {
           drawer.classList.remove('motion-prep');
@@ -895,7 +946,7 @@
         root: 'proxyPoolCreate',
         title: '新增 IP',
         desc: '配置一个代理出口；保存后会直接加入左侧 IP 池。',
-        body: `<form class="pool-create-form" id="proxy-pool-form" data-proxy-pool-form><label>出口名称<input name="name" placeholder="例如：洛杉矶 · US West" required></label><label>代理类型<select name="source_type"><option value="vless">VLESS</option><option value="vmess">VMess</option><option value="static">HTTP / SOCKS</option></select></label><label>订阅或连接 URI<input name="source_uri" placeholder="vless:// 或 socks5://（可稍后补充）"></label><div class="pool-create-grid"><label>预期出口 IP<input name="expected_exit_ip" placeholder="154.12.88.64"></label><label>地区<input name="region" placeholder="US West"></label></div><p class="pool-create-note">连接 URI 仅用于保存出口配置，不会在列表中直接显示。</p><p class="pool-drawer-error" data-proxy-pool-error></p></form>`,
+        body: `<form class="pool-create-form" id="proxy-pool-form" data-proxy-pool-form><label>出口名称<input name="name" placeholder="例如：洛杉矶 · US West" required></label><label>代理类型<select name="source_type"><option value="">默认解析</option><option value="vless">VLESS</option><option value="vmess">VMess</option><option value="static">HTTP / SOCKS</option></select></label><label>订阅或连接 URI<input name="source_uri" placeholder="vless:// 或 socks5://（可稍后补充）"></label><div class="pool-create-grid"><label>预期出口 IP<input name="expected_exit_ip" placeholder="154.12.88.64"></label><label>地区<input name="region" placeholder="US West"></label></div><p class="pool-create-note">连接 URI 仅用于保存出口配置，不会在列表中直接显示。</p><p class="pool-drawer-error" data-proxy-pool-error></p></form>`,
         foot: '<button class="button" data-close>取消</button><button type="submit" class="button primary" form="proxy-pool-form">保存出口</button>'
       });
       const loadPool = async id => {
@@ -907,7 +958,17 @@
           return (payload.pools || []).find(pool => String(pool.id) === String(id)) || cached || null;
         } catch (_) { return cached || null; }
       };
-      const openPoolDetail = async id => {
+      const poolPayload = (pool, status = pool.status) => ({
+        id: pool.id,
+        name: pool.name || '',
+        source_type: pool.source_type === 'demo' ? '' : (pool.source_type || ''),
+        source_uri: pool.source_uri || '',
+        expected_exit_ip: pool.expected_exit_ip || '',
+        region: pool.region || '',
+        notes: pool.notes || '',
+        status
+      });
+      const openPoolDetail = async (id, result = null) => {
         const pool = await loadPool(id);
         if (!pool) {
           openLeftDrawer({ root: 'proxyPoolDetail', title: 'IP 出口详情', desc: '该出口信息暂时无法读取。', body: '<p class="pool-detail-empty">请稍后刷新左侧 IP 池后重试。</p>', foot: '' });
@@ -917,26 +978,99 @@
         const ip = escapePoolText(pool.expected_exit_ip || pool.detected_exit_ip || '待校验');
         const port = escapePoolText(pool.local_port || '—'), region = escapePoolText(pool.region || '未标注');
         const accountCount = Number(pool.account_count || 0), pendingCount = Number(pool.pending_job_count || 0);
+        const uri = escapePoolText(maskUri(pool.source_uri));
+        const rawStatus = escapePoolText(pool.status || label);
+        const isPaused = String(pool.status || '') === '禁用';
+        const resultHtml = result ? `<p class="pool-result ${escapePoolText(result.kind || '')}" role="status">${escapePoolText(result.text || '')}</p>` : '';
         openLeftDrawer({
           root: `proxyPoolDetail:${pool.id}`,
           title: 'IP 出口详情',
           desc: '查看该出口的连接状态与当前使用情况。',
-          body: `<div class="pool-detail"><section class="pool-detail-summary"><i class="proxy-dot ${status === 'off' ? 'off' : status === 'delay' ? 'delay' : ''}"></i><div><b>${name}</b><small>${ip} · :${port}</small></div><span class="status ${status}">${label}</span></section><section class="pool-detail-grid"><div class="pool-detail-cell"><span>预期出口 IP</span><b>${ip}</b><small>:${port}</small></div><div class="pool-detail-cell"><span>地区</span><b>${region}</b></div><div class="pool-detail-cell"><span>代理类型</span><b>${escapePoolText(sourceLabel(pool.source_type))}</b></div><div class="pool-detail-cell"><span>连接配置</span><b>${pool.source_uri ? '已保存' : '待补充'}</b></div><div class="pool-detail-cell"><span>已绑定账户</span><b>${accountCount} 个</b></div><div class="pool-detail-cell"><span>待处理任务</span><b>${pendingCount} 个</b></div></section></div>`,
+          body: `<div class="pool-detail"><section class="pool-detail-summary"><i class="proxy-dot ${status === 'off' ? 'off' : status === 'delay' ? 'delay' : ''}"></i><div><b>${name}</b><small>${ip} · :${port}</small></div><span class="status ${status}">${rawStatus}</span></section><section class="pool-uri-card"><div class="pool-uri-head"><span>连接 URI</span><div class="pool-uri-tools"><button type="button" class="tiny-action" data-proxy-pool-copy="${pool.id}" title="复制连接 URI" aria-label="复制连接 URI">${copyIcon}</button><button type="button" class="tiny-action" data-proxy-pool-edit="${pool.id}" title="编辑出口配置" aria-label="编辑出口配置">${editIcon}</button></div></div><code class="pool-uri-value">${uri}</code></section><section class="pool-detail-grid"><div class="pool-detail-cell"><span>预期出口 IP</span><b>${ip}</b><small>:${port}</small></div><div class="pool-detail-cell"><span>地区</span><b>${region}</b></div><div class="pool-detail-cell"><span>代理类型</span><b>${escapePoolText(sourceLabel(pool.source_type))}</b></div><div class="pool-detail-cell"><span>本地端口</span><b>${port}</b></div><div class="pool-detail-cell"><span>已绑定账户</span><b>${accountCount} 个</b></div><div class="pool-detail-cell"><span>待处理任务</span><b>${pendingCount} 个</b></div></section><section class="pool-detail-actions"><button type="button" class="button" data-proxy-pool-check="${pool.id}">校验</button><button type="button" class="button" data-proxy-pool-toggle="${pool.id}">${isPaused ? '启用出口' : '禁用出口'}</button><button type="button" class="button danger" data-proxy-pool-delete="${pool.id}">删除</button></section>${resultHtml}</div>`,
           foot: ''
         });
+      };
+      const openPoolEditor = async id => {
+        const pool = await loadPool(id);
+        if (!pool) return openPoolDetail(id, { kind: 'error', text: '出口信息已失效，请刷新后重试。' });
+        const selected = value => String(pool.source_type || '') === value ? ' selected' : '';
+        const status = escapePoolText(pool.status || '可用');
+        openLeftDrawer({
+          root: `proxyPoolDetail:${pool.id}`,
+          title: 'IP 出口详情',
+          desc: '查看该出口的连接状态与当前使用情况。',
+          body: `<div class="drawer-subview-page pool-editor"><nav class="drawer-subview-nav"><button type="button" data-proxy-pool-detail="${pool.id}">${backIcon}返回 IP 出口详情</button></nav><div class="pool-editor-copy"><p class="eyebrow">PROXY CONFIGURATION</p><h4>编辑出口配置</h4><p>代理类型可保持默认解析，也可手动指定；URI 会以脱敏形式显示。</p></div><div class="pool-editor-readonly"><div><span>本地端口</span><b>${escapePoolText(pool.local_port || '—')}</b></div><div><span>当前状态</span><b>${status}</b></div></div><form class="pool-create-form" data-proxy-pool-edit-form><input type="hidden" name="id" value="${Number(pool.id)}"><input type="hidden" name="status" value="${status}"><label>出口名称<input name="name" value="${escapePoolText(pool.name || '')}" required></label><label>代理类型<select name="source_type"><option value=""${pool.source_type === 'demo' || !pool.source_type ? ' selected' : ''}>默认解析</option><option value="vless"${selected('vless')}>VLESS</option><option value="vmess"${selected('vmess')}>VMess</option><option value="static"${selected('static')}>HTTP / SOCKS</option><option value="direct"${selected('direct')}>直连</option></select></label><label>订阅或连接 URI<textarea name="source_uri" placeholder="vless:// 或 socks5://（可稍后补充）">${escapePoolText(pool.source_uri || '')}</textarea></label><div class="pool-create-grid"><label>预期出口 IP<input name="expected_exit_ip" value="${escapePoolText(pool.expected_exit_ip || '')}" placeholder="154.12.88.64"></label><label>地区<input name="region" value="${escapePoolText(pool.region || '')}" placeholder="US West"></label></div><label>备注<textarea name="notes" placeholder="可选，用于说明线路来源或用途">${escapePoolText(pool.notes || '')}</textarea></label><p class="pool-drawer-error" data-proxy-pool-error></p><div class="pool-inline-actions"><button type="button" class="button" data-proxy-pool-detail="${pool.id}">取消</button><button type="submit" class="button primary">保存更改</button></div></form></div>`,
+          foot: ''
+        });
+      };
+      const copyUri = async id => {
+        const pool = await loadPool(id);
+        const uri = String(pool?.source_uri || '').trim();
+        if (!pool || !uri) return openPoolDetail(id, { kind: 'error', text: '该出口尚未保存连接 URI，无法复制。' });
+        try {
+          if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(uri);
+          else {
+            const input = document.createElement('textarea');
+            input.value = uri; document.body.appendChild(input); input.select(); document.execCommand('copy'); input.remove();
+          }
+          openPoolDetail(id, { kind: 'success', text: '连接 URI 已复制到剪贴板。' });
+        } catch (_) { openPoolDetail(id, { kind: 'error', text: '复制失败，请检查浏览器剪贴板权限。' }); }
+      };
+      const checkPool = async id => {
+        openPoolDetail(id, { kind: 'pending', text: '正在校验出口 IP…' });
+        try {
+          const response = await fetch('/api/proxy/check', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ proxy_profile_id: Number(id), bind: false }) });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || '校验失败');
+          window.dispatchEvent(new Event('proxy:refresh'));
+          openPoolDetail(id, { kind: result.allowed ? 'success' : 'error', text: result.reason || (result.allowed ? '出口校验通过。' : '出口校验未通过。') });
+        } catch (err) { openPoolDetail(id, { kind: 'error', text: err?.message || '校验失败，请稍后重试。' }); }
+      };
+      const togglePool = async id => {
+        const pool = await loadPool(id);
+        if (!pool) return openPoolDetail(id, { kind: 'error', text: '出口信息已失效，请刷新后重试。' });
+        const nextStatus = String(pool.status || '') === '禁用' ? '可用' : '禁用';
+        try {
+          const response = await fetch('/api/proxy/pools', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(poolPayload(pool, nextStatus)) });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || '状态更新失败');
+          window.dispatchEvent(new Event('proxy:refresh'));
+          openPoolDetail(id, { kind: 'success', text: nextStatus === '禁用' ? '出口已禁用，不再参与后续任务。' : '出口已启用，可重新参与任务。' });
+        } catch (err) { openPoolDetail(id, { kind: 'error', text: err?.message || '状态更新失败，请稍后重试。' }); }
+      };
+      const deletePool = async id => {
+        const pool = await loadPool(id);
+        if (!pool || !window.confirm(`确定删除出口“${pool.name || id}”吗？`)) return;
+        try {
+          const response = await fetch('/api/proxy/pools/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: Number(id) }) });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || '删除失败');
+          window.dispatchEvent(new Event('proxy:refresh'));
+          closeDrawer();
+        } catch (err) { openPoolDetail(id, { kind: 'error', text: err?.message || '删除失败，请稍后重试。' }); }
       };
       document.addEventListener('click', event => {
         const create = event.target.closest('[data-proxy-pool-create]');
         if (create) { event.preventDefault(); openPoolCreate(); return; }
+        const copy = event.target.closest('[data-proxy-pool-copy]');
+        if (copy) { event.preventDefault(); copyUri(copy.dataset.proxyPoolCopy); return; }
+        const edit = event.target.closest('[data-proxy-pool-edit]');
+        if (edit) { event.preventDefault(); openPoolEditor(edit.dataset.proxyPoolEdit); return; }
+        const check = event.target.closest('[data-proxy-pool-check]');
+        if (check) { event.preventDefault(); checkPool(check.dataset.proxyPoolCheck); return; }
+        const toggle = event.target.closest('[data-proxy-pool-toggle]');
+        if (toggle) { event.preventDefault(); togglePool(toggle.dataset.proxyPoolToggle); return; }
+        const remove = event.target.closest('[data-proxy-pool-delete]');
+        if (remove) { event.preventDefault(); deletePool(remove.dataset.proxyPoolDelete); return; }
         const detail = event.target.closest('[data-proxy-pool-detail]');
         if (detail) { event.preventDefault(); openPoolDetail(detail.dataset.proxyPoolDetail); }
       });
       document.addEventListener('submit', async event => {
-        const form = event.target.closest('[data-proxy-pool-form]');
+        const form = event.target.closest('[data-proxy-pool-form], [data-proxy-pool-edit-form]');
         if (!form) return;
         event.preventDefault();
         const error = form.querySelector('[data-proxy-pool-error]');
-        const submit = document.querySelector('[form="proxy-pool-form"]');
+        const submit = form.querySelector('[type="submit"]');
         if (error) error.textContent = '';
         if (submit) submit.disabled = true;
         try {
@@ -945,7 +1079,8 @@
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || '保存失败');
           window.dispatchEvent(new Event('proxy:refresh'));
-          closeDrawer();
+          if (form.matches('[data-proxy-pool-edit-form]')) openPoolDetail(result.pool?.id || payload.id, { kind: 'success', text: '出口配置已保存。' });
+          else closeDrawer();
         } catch (err) {
           if (error) error.textContent = err?.message || '保存失败，请检查 IP 与连接 URI。';
           if (submit) submit.disabled = false;
