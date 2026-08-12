@@ -12782,10 +12782,10 @@ def _proxy_feishu_binding(
     return result
 
 
-def scoped_proxy_state(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+def scoped_proxy_state(handler: BaseHTTPRequestHandler, *, include_all: bool = False) -> dict[str, Any]:
     state = proxy_pool.list_state()
     user = current_global_user(handler)
-    if user["id"] == "public":
+    if include_all or user["id"] == "public":
         return state
     valid_ids = {str(user["id"]), str(user.get("feishuId") or "")}
     accounts = [item for item in state.get("accounts", []) if str(item.get("feishu_user_id") or "") in valid_ids]
@@ -14077,7 +14077,8 @@ class Handler(BaseHTTPRequestHandler):
     def handle_proxy_api_get(self, path: str, query: str = "") -> None:
         try:
             if path == "/api/proxy/pools":
-                return json_response(self, HTTPStatus.OK, scoped_proxy_state(self))
+                include_all = parse_qs(query).get("scope", [""])[0] == "all"
+                return json_response(self, HTTPStatus.OK, scoped_proxy_state(self, include_all=include_all))
             if path == "/api/proxy/mihomo-export":
                 return json_response(self, HTTPStatus.OK, proxy_pool.mihomo_export())
             if path == "/api/proxy/runtime":

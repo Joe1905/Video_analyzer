@@ -1015,7 +1015,8 @@
       const hydrateLiveData = async () => {
         const bootstrap = bootstrapPayload;
         bootstrapPayload = null;
-        const response = bootstrap ? null : await fetch('/api/proxy/pools', { cache: 'no-store' });
+        const scope = state.feishuFilterActive ? '' : '?scope=all';
+        const response = bootstrap ? null : await fetch(`/api/proxy/pools${scope}`, { cache: 'no-store' });
         if (response && !response.ok) throw new Error(`HTTP ${response.status}`);
         const payload = bootstrap || await response.json(), pools = payload.pools || [], sessions = payload.sessions || [];
         state.sessions = sessions;
@@ -1056,7 +1057,7 @@
         if (!filterToggle || !state.feishuFilterId) return;
         event.preventDefault();
         state.feishuFilterActive = !state.feishuFilterActive;
-        refreshAccountView();
+        void loadLiveData();
       });
       document.querySelector('[data-proxy-refresh]')?.addEventListener('click', () => loadLiveData());
       window.addEventListener('proxy:refresh', () => loadLiveData());
@@ -1068,7 +1069,7 @@
         state.feishuFilterName = String(user.name || '当前飞书用户');
         state.feishuFilterAvatar = String(user.avatarUrl || '');
         state.feishuFilterActive = true;
-        refreshAccountView();
+        void loadLiveData();
       }).catch(() => {});
       loadLiveData();
     })();
