@@ -1092,7 +1092,12 @@ def inject_unified_nav(html: str, current_path: str) -> str:
         raise RuntimeError(f"UI shell placeholder missing for {current_path}")
     html = html.replace("<!-- UI_APP_NAV -->", nav, 1)
     if 'id="ui-system-css"' not in html and "</head>" in html:
-        html = html.replace("</head>", APP_UI_ASSETS + "\n</head>", 1)
+        # Proxy keeps a purpose-built, compact control scale.  Load the shared
+        # shell first so the page's own design rules retain final precedence.
+        if current_path == "/proxy" and "<head>" in html:
+            html = html.replace("<head>", "<head>\n" + APP_UI_ASSETS, 1)
+        else:
+            html = html.replace("</head>", APP_UI_ASSETS + "\n</head>", 1)
     route_name = re.sub(r"[^a-z0-9]+", "-", (current_path or "home").strip("/").lower()) or "home"
     body_class = f"ui-system ui-route-{route_name}"
     def add_ui_body_class(match: re.Match[str]) -> str:
