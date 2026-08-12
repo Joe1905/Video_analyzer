@@ -950,7 +950,8 @@
         foot: '<button class="button" data-close>取消</button><button type="submit" class="button primary" form="proxy-pool-form">保存出口</button>'
       });
       const loadPool = async id => {
-        const cached = (liveProxyPools || []).find(pool => String(pool.id) === String(id));
+        const bootstrapPools = Array.isArray(window.__PROXY_BOOTSTRAP__?.pools) ? window.__PROXY_BOOTSTRAP__.pools : [];
+        const cached = [...liveProxyPools, ...bootstrapPools].find(pool => String(pool.id) === String(id));
         if (cached) return cached;
         try {
           const response = await fetch('/api/proxy/pools');
