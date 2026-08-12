@@ -634,7 +634,7 @@
     @media (max-width: 1040px) { .platform-switcher button { padding: 0 7px; } .platform-switcher button > span { display: none; } }
     @media (max-width: 720px) { .owner-filter { max-width:160px; } .pool-create-grid,.pool-editor-readonly { grid-template-columns:1fr; } .pool-editor-readonly div { border-right:0; border-bottom:1px solid var(--line); } .pool-editor-readonly div:last-child { border-bottom:0; } }
   </style>
-  <script>window.__PROXY_BOOTSTRAP__ = /* PROXY_BOOTSTRAP */ null;</script>
+  <script>window.__PROXY_BOOTSTRAP__ = /* PROXY_BOOTSTRAP */ null; let liveProxyPools = [];</script>
   <script>
     /* 4003 的真实平台语义：登录、观测和采集必须使用同一个当前平台。 */
     (() => {
@@ -813,7 +813,7 @@
         const list = document.querySelector('#proxy-list');
         if (!list) return;
         const visible = pools.filter(pool => pool.source_type !== 'direct' && pool.name !== 'UI 演示代理' && !String(pool.notes || '').includes('4004 UI 演示'));
-        window.__proxyLivePools = visible;
+        liveProxyPools = visible;
         const escapeProxyText = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' })[char]);
         const usable = visible.filter(pool => !['不可用', '异常', '禁用'].includes(pool.status)).length;
         const titleCount = document.querySelector('.proxy-lane .lane-title span');
@@ -950,7 +950,7 @@
         foot: '<button class="button" data-close>取消</button><button type="submit" class="button primary" form="proxy-pool-form">保存出口</button>'
       });
       const loadPool = async id => {
-        const cached = (window.__proxyLivePools || []).find(pool => String(pool.id) === String(id));
+        const cached = (liveProxyPools || []).find(pool => String(pool.id) === String(id));
         if (cached) return cached;
         try {
           const response = await fetch('/api/proxy/pools');
