@@ -951,11 +951,12 @@
       });
       const loadPool = async id => {
         const cached = (window.__proxyLivePools || []).find(pool => String(pool.id) === String(id));
+        if (cached) return cached;
         try {
           const response = await fetch('/api/proxy/pools');
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
           const payload = await response.json();
-          return (payload.pools || []).find(pool => String(pool.id) === String(id)) || cached || null;
+          return (payload.pools || []).find(pool => String(pool.id) === String(id)) || null;
         } catch (_) { return cached || null; }
       };
       const poolPayload = (pool, status = pool.status) => ({
