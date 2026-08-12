@@ -794,7 +794,7 @@
           const tip = disabled ? (blockedText || (name === 'observe' ? '请等待会话可观测后再打开' : '当前平台已登录')) : actions[name].text;
           return `<button type="button" class="mini-action" data-platform-action="${name}" data-account-id="${row.id}" data-tooltip="${tip}" aria-label="${actions[name].text}" ${disabled ? 'disabled' : ''}>${actions[name].svg}</button>`;
         };
-        const list = [build('observe', !item.loggedIn || !item.observable, item.starting ? '会话启动中，请稍候' : ''), build(item.session ? 'sleep' : 'wake')];
+        const list = [build('observe', !item.loggedIn || !item.observable, item.starting ? '会话启动中，请稍候' : ''), item.starting || item.sleeping ? build('wake', true, item.starting ? '会话启动中，请稍候' : '会话正在休眠，请稍候') : build(item.session ? 'sleep' : 'wake')];
         if (platform === 'tiktok') list.push(build('publish', !item.loggedIn));
         list.push(build('collect', !item.loggedIn));
         list.push(build('login'));
