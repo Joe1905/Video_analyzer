@@ -2,6 +2,7 @@
   "use strict";
 
   const NAV_KEY = "ui-nav-expanded";
+  const GLOBAL_USER_PICKER_KEY = "ui-global-user-picker-completed";
   const DESKTOP_QUERY = window.matchMedia("(min-width: 861px)");
   const globalUserPromise = window.VideoAnalyzerGlobalUser || Promise.resolve({
     currentUser: { id: "public", name: "公共账户", kind: "public" }, users: [],
@@ -68,7 +69,10 @@
           method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ id: button.dataset.globalUserId }),
         });
-        if (response.ok) location.reload();
+        if (response.ok) {
+          rememberGlobalUserPickerChoice();
+          location.reload();
+        }
       });
     });
   }
@@ -81,6 +85,22 @@
     });
   }
 
+  function globalUserPickerChoiceSaved() {
+    try {
+      return localStorage.getItem(GLOBAL_USER_PICKER_KEY) === "1";
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function rememberGlobalUserPickerChoice() {
+    try {
+      localStorage.setItem(GLOBAL_USER_PICKER_KEY, "1");
+    } catch (_) {
+      // Storage may be disabled; the picker will then appear again next time.
+    }
+  }
+
   function setupGlobalUser() {
     const modal = document.getElementById("ui-global-user-modal");
     if (!modal) return;
@@ -91,7 +111,10 @@
     };
     document.querySelectorAll("[data-global-user-trigger]").forEach((button) => button.addEventListener("click", open));
     modal.querySelectorAll("[data-global-user-close]").forEach((button) => button.addEventListener("click", close));
-    globalUserPromise.then(renderGlobalUser);
+    globalUserPromise.then((payload) => {
+      renderGlobalUser(payload);
+      if (!globalUserPickerChoiceSaved()) open();
+    });
   }
 
   function navCookieExpanded() {

@@ -173,6 +173,11 @@ class UIContractTest(unittest.TestCase):
         self.assertIn(".ui-global-user-options.is-revealing", css)
         self.assertIn("function revealGlobalUserOptions", script)
         self.assertIn("revealGlobalUserOptions(modal.querySelector", script)
+        self.assertIn('GLOBAL_USER_PICKER_KEY = "ui-global-user-picker-completed"', script)
+        self.assertIn("function globalUserPickerChoiceSaved", script)
+        self.assertIn("function rememberGlobalUserPickerChoice", script)
+        self.assertIn("rememberGlobalUserPickerChoice();", script)
+        self.assertIn("if (!globalUserPickerChoiceSaved()) open();", script)
 
     def test_chat_messages_center_content_between_neighbor_chat_sized_avatars(self) -> None:
         chat = (STATIC_DIR / "chat.html").read_text(encoding="utf-8")
