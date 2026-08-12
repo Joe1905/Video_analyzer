@@ -880,9 +880,9 @@
       const openObservationChannel = (session, channel = null) => {
         const channelUrl = String(session?.channel_url || '').trim();
         if (!channelUrl) throw new Error('观测通道未生成，请稍后重试');
-        const target = channel || window.open('', '_blank');
-        if (!target) throw new Error('浏览器阻止了观测通道，请允许本页面打开新标签页');
-        target.location.replace(channelUrl);
+        const target = channel || window.open(channelUrl, '_blank');
+        if (target) { target.location.replace(channelUrl); return; }
+        window.location.assign(channelUrl);
       };
       const openPlatformAction = async (action, trigger = null) => {
         const row = accountFor(), item = platformFor(row);
