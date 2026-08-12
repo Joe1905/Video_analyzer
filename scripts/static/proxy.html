@@ -730,7 +730,22 @@
         remove: { text: '删除账号', svg: svg('<path d="M5 7h14M9 7V4h6v3m-8 0 1 13h8l1-13M10 11v5m4-5v5"/>') }
       };
       const state = { platform: 'tiktok', accountId: '', loginChoice: '', loginSessionId: null, loginSession: null, query: '', statusFilter: '', feishuFilterId: '', feishuFilterName: '', feishuFilterAvatar: '', feishuFilterActive: false, sessions: [], collectContext: null, startingPlatforms: new Map() };
-      const activePlatformByAccount = {};
+      const platformStorageKey = 'proxy.activePlatformByAccount.v1';
+      const activePlatformByAccount = (() => {
+        try {
+          const saved = JSON.parse(window.localStorage.getItem(platformStorageKey) || '{}');
+          return saved && typeof saved === 'object' ? saved : {};
+        } catch (_) {
+          return {};
+        }
+      })();
+      const persistActivePlatforms = () => {
+        try {
+          window.localStorage.setItem(platformStorageKey, JSON.stringify(activePlatformByAccount));
+        } catch (_) {
+          // 存储不可用时仍保留当前页面的选择，不影响代理操作。
+        }
+      };
       const tiktokCollectView = { ...views.collect };
       const visibleAccountRows = () => accountRows.filter(row => {
         const item = platformFor(row);
@@ -764,6 +779,7 @@
         state.accountId = accountId;
         activePlatformByAccount[accountId] = next;
         state.platform = activePlatformByAccount[accountId];
+        persistActivePlatforms();
         renderAccounts();
       };
       window.proxySwitchAccountPlatform = switchAccountPlatform;
@@ -1045,6 +1061,7 @@
             await loadLiveData();
             activePlatformByAccount[accountFor().id] = state.loginChoice;
             state.platform = state.loginChoice;
+            persistActivePlatforms();
             renderAccounts();
             state.loginSessionId = null;
             state.loginSession = null;
@@ -1131,10 +1148,15 @@
           return { accountId: account.id, id: account.username || `account-${account.id}`, initials: String(account.username || '?').slice(0, 2).toUpperCase(), feishuUserId: String(account.feishu_user_id || ''), owner: account.feishu_user_name || account.display_name || '未绑定飞书用户', avatar: account.feishu_avatar_url || account.tiktok_avatar_url || '', proxy: pool?.name || '未绑定代理', ip: pool?.expected_exit_ip || '待校验', platforms: { tiktok: makePlatform('tiktok', tiktokLogged), instagram: makePlatform('instagram', instagramLogged) } };
         });
         if (uiPreview) accountRows = previewRows.map(row => ({ ...row, platforms: { ...row.platforms } }));
+        let platformSelectionCorrected = false;
         accountRows.forEach(row => {
           const current = activePlatformByAccount[row.id];
-          if (!current || !row.platforms[current]?.loggedIn) activePlatformByAccount[row.id] = row.platforms.tiktok.loggedIn ? 'tiktok' : row.platforms.instagram.loggedIn ? 'instagram' : 'tiktok';
+          if (!current || !row.platforms[current]?.loggedIn) {
+            activePlatformByAccount[row.id] = row.platforms.tiktok.loggedIn ? 'tiktok' : row.platforms.instagram.loggedIn ? 'instagram' : 'tiktok';
+            platformSelectionCorrected = true;
+          }
         });
+        if (platformSelectionCorrected) persistActivePlatforms();
         if (accountRows.length) {
           if (!accountRows.some(row => row.id === state.accountId)) state.accountId = accountRows[0].id;
           state.platform = activePlatformByAccount[state.accountId] || 'tiktok';
