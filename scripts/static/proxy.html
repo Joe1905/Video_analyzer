@@ -562,6 +562,9 @@
     .login-ip-check i { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
     .login-browser-placeholder { display: grid; min-height: 156px; place-items: center; border: 1px dashed #c8ced8; border-radius: 10px; color: var(--muted); text-align: center; font-size: 12px; }
     .login-browser-placeholder b { display: block; margin-bottom: 4px; color: var(--text); font-size: 13px; }
+    .login-browser-frame { overflow:hidden; border:1px solid var(--line); border-radius:10px; background:#f7f9fc; }
+    .login-browser-frame iframe { display:block; width:100%; height:360px; border:0; background:#fff; }
+    .login-browser-frame a { display:block; padding:9px 12px; border-top:1px solid var(--line); color:var(--accent); font-size:12px; font-weight:700; text-align:right; }
     .login-session-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 2px; }
     .account-platform-topline { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 20px; margin-bottom: 3px; }
     .platform-ledger { display: inline-flex; align-items: center; gap: 3px; }
@@ -683,6 +686,8 @@
     .pool-detail-empty { margin:0; padding:36px 0; color:var(--muted); font-size:13px; text-align:center; }
     .pool-drawer-error { min-height:18px; margin:0; color:#bd5062; font-size:12px; }
     .proxy-action-error { margin:0 0 12px; padding:9px 10px; border-left:3px solid #bd5062; border-radius:0 7px 7px 0; background:#fff5f6; color:#9c4252; font-size:12px; line-height:1.45; }
+    .proxy-action-error a { color:inherit; font-weight:800; text-decoration:underline; text-underline-offset:2px; }
+    .proxy-action-error.success { border-left-color:#169b77; background:#edfaf5; color:#16795e; }
     @media (max-width: 1040px) { .platform-switcher button { padding: 0 7px; } .platform-switcher button > span { display: none; } }
     @media (max-width: 720px) { .owner-filter { max-width:160px; } .pool-create-grid,.pool-editor-readonly { grid-template-columns:1fr; } .pool-editor-readonly div { border-right:0; border-bottom:1px solid var(--line); } .pool-editor-readonly div:last-child { border-bottom:0; } }
   </style>
@@ -724,7 +729,7 @@
         login: { text: '新增平台登录', svg: svg('<path d="M13 4h6v16h-6M4 12h11m0 0-3-3m3 3-3 3"/><path d="M5 5h7"/>') },
         remove: { text: '删除账号', svg: svg('<path d="M5 7h14M9 7V4h6v3m-8 0 1 13h8l1-13M10 11v5m4-5v5"/>') }
       };
-      const state = { platform: 'tiktok', accountId: '', loginChoice: '', loginSessionId: null, query: '', statusFilter: '', feishuFilterId: '', feishuFilterName: '', feishuFilterAvatar: '', feishuFilterActive: false, sessions: [], collectContext: null };
+      const state = { platform: 'tiktok', accountId: '', loginChoice: '', loginSessionId: null, loginSession: null, query: '', statusFilter: '', feishuFilterId: '', feishuFilterName: '', feishuFilterAvatar: '', feishuFilterActive: false, sessions: [], collectContext: null, startingPlatforms: new Map() };
       const activePlatformByAccount = {};
       const tiktokCollectView = { ...views.collect };
       const visibleAccountRows = () => accountRows.filter(row => {
@@ -749,11 +754,15 @@
         control.setAttribute('aria-label', state.feishuFilterActive ? '取消当前飞书用户筛选' : `按 ${state.feishuFilterName} 筛选账号`);
         control.title = state.feishuFilterActive ? '取消筛选，查看全部账户' : `按 ${state.feishuFilterName} 筛选`;
       };
-      const platformFor = row => row.platforms[activePlatformByAccount[row.id] || 'tiktok'];
+      const platformFor = row => row?.platforms?.[activePlatformByAccount[row?.id] || 'tiktok'] || { loggedIn:false, awake:false, observable:false, starting:false, status:'未登录', kind:'off', session:null };
       const switchAccountPlatform = accountId => {
-        state.accountId = accountId;
+        const row = accountRows.find(item => item.id === accountId);
+        if (!row) return;
         const current = activePlatformByAccount[accountId] || 'tiktok';
-        activePlatformByAccount[accountId] = current === 'tiktok' ? 'instagram' : 'tiktok';
+        const next = current === 'tiktok' ? 'instagram' : 'tiktok';
+        if (!row.platforms[next]?.loggedIn) return;
+        state.accountId = accountId;
+        activePlatformByAccount[accountId] = next;
         state.platform = activePlatformByAccount[accountId];
         renderAccounts();
       };
@@ -763,8 +772,8 @@
         ? `<span class="platform-availability ready"><i></i>已登录</span>`
         : `<span class="platform-availability ${item.awake ? 'pending' : 'missing'}"><i></i>${item.awake ? '可新增登录' : '等待登录'}</span>`;
       const rowActions = (row, item, platform) => {
-        const build = (name, disabled = false) => `<button type="button" class="mini-action" data-platform-action="${name}" data-account-id="${row.id}" title="${disabled ? (name === 'observe' ? '请先唤醒账号后再观测' : '当前平台已登录') : actions[name].text}" aria-label="${actions[name].text}" ${disabled ? 'disabled' : ''}>${actions[name].svg}</button>`;
-        const list = [build('observe', !item.loggedIn || !item.awake), build(item.awake ? 'sleep' : 'wake')];
+        const build = (name, disabled = false, blockedText = '') => `<button type="button" class="mini-action" data-platform-action="${name}" data-account-id="${row.id}" title="${disabled ? (blockedText || (name === 'observe' ? '请等待会话可观测后再打开' : '当前平台已登录')) : actions[name].text}" aria-label="${actions[name].text}" ${disabled ? 'disabled' : ''}>${actions[name].svg}</button>`;
+        const list = [build('observe', !item.loggedIn || !item.observable, item.starting ? '会话启动中，请稍候' : ''), build(item.session ? 'sleep' : 'wake')];
         if (platform === 'tiktok') list.push(build('publish', !item.loggedIn));
         list.push(build('collect', !item.loggedIn));
         list.push(build('login'));
@@ -791,7 +800,7 @@
           const platform = activePlatformByAccount[row.id] || 'tiktok', item = platformFor(row);
           const multiLoggedIn = Object.values(row.platforms).filter(value => value.loggedIn).length > 1;
           const platformTopline = multiLoggedIn ? `<span class="account-platform-topline"><span class="platform-ledger">${Object.keys(row.platforms).map(key => `<i class="platform-ledger-item${key === platform ? ' active' : ''}">${mark(key)}${platformMeta[key].label}</i>`).join('')}</span><button type="button" class="inline-platform-switch" data-row-platform-switch="${row.id}" onclick="event.preventDefault();event.stopPropagation();window.proxySwitchAccountPlatform(this.dataset.rowPlatformSwitch)" title="切换当前平台" aria-label="切换当前平台">${svg('<path d="M7 7h11l-3-3m3 3-3 3M17 17H6l3 3m-3-3 3-3"/>')}</button></span>` : '';
-          return `<tr class="${row.id === state.accountId ? 'selected' : ''}" data-platform-row="${row.id}"><td><span class="account-person"><i class="person-avatar">${row.initials}</i><span>${platformTopline}<b class="person-name">${row.id}</b><span class="person-sub">${row.owner} · ${item.awake ? '会话在线' : item.loggedIn ? '会话休眠' : '会话已释放'}</span></span></span></td><td><span class="proxy-cell"><i></i>${row.proxy}</span><span class="person-sub">${row.ip}</span></td><td><span class="account-state"><span class="status ${item.kind}">${item.status}</span><span class="platform-session ${item.awake && item.loggedIn ? 'awake' : item.loggedIn ? '' : 'offline'}"><i></i>${item.awake && item.loggedIn ? '浏览器已唤醒' : item.loggedIn ? '浏览器已休眠' : '平台未登录'}</span></span></td><td><span class="feishu-identity">${row.avatar ? `<img src="${row.avatar}" alt="">` : `<i class="person-avatar">${row.owner.slice(0, 1)}</i>`}<span><b>${row.owner}</b><small>已绑定 · 可授权</small></span></span></td><td>${rowActions(row, item, platform)}</td></tr>`;
+          return `<tr class="${row.id === state.accountId ? 'selected' : ''}" data-platform-row="${row.id}"><td><span class="account-person"><i class="person-avatar">${row.initials}</i><span>${platformTopline}<b class="person-name">${row.id}</b><span class="person-sub">${row.owner} · ${item.starting ? '会话启动中' : item.observable ? '会话在线' : item.loggedIn ? '会话休眠' : '会话已释放'}</span></span></span></td><td><span class="proxy-cell"><i></i>${row.proxy}</span><span class="person-sub">${row.ip}</span></td><td><span class="account-state"><span class="status ${item.kind}">${item.status}</span><span class="platform-session ${item.observable && item.loggedIn ? 'awake' : item.loggedIn ? '' : 'offline'}"><i></i>${item.starting ? '浏览器启动中' : item.observable && item.loggedIn ? '浏览器已唤醒' : item.loggedIn ? '浏览器已休眠' : '平台未登录'}</span></span></td><td><span class="feishu-identity">${row.avatar ? `<img src="${row.avatar}" alt="">` : `<i class="person-avatar">${row.owner.slice(0, 1)}</i>`}<span><b>${row.owner}</b><small>已绑定 · 可授权</small></span></span></td><td>${rowActions(row, item, platform)}</td></tr>`;
         }).join('');
         renderContext();
       };
@@ -805,10 +814,10 @@
         el('context-owner').innerHTML = `${row.owner} · 飞书身份已绑定<div class="context-platform">${mark(state.platform)}${meta.label} 当前上下文</div>`;
         el('context-place').textContent = `${row.proxy} · ${state.platform === 'instagram' ? 'Reels 采集出口' : 'TikTok Studio'}`;
         el('context-ip').textContent = row.ip;
-        el('context-status').textContent = item.loggedIn ? (item.awake ? '在线 · 可观测' : '已登录 · 已休眠') : '未登录 · 暂不可用';
-        el('context-status').className = item.loggedIn ? (item.awake ? 'healthy' : '') : 'attention-text';
+        el('context-status').textContent = item.loggedIn ? (item.starting ? '启动中 · 暂不可观测' : item.observable ? '在线 · 可观测' : '已登录 · 已休眠') : '未登录 · 暂不可用';
+        el('context-status').className = item.loggedIn ? (item.observable ? 'healthy' : item.starting ? 'attention-text' : '') : 'attention-text';
         const contextActions = document.querySelector('.context-actions');
-        if (contextActions) contextActions.innerHTML = `<button type="button" data-platform-action="observe" ${!item.loggedIn || !item.awake ? 'disabled title="请先唤醒账号后再观测"' : ''}>${actions.observe.svg}<span>观测</span></button>${state.platform === 'tiktok' ? `<button type="button" data-platform-action="publish" ${!item.loggedIn ? 'disabled' : ''}>${actions.publish.svg}<span>发布</span></button>` : `<button type="button" data-platform-action="collect" ${!item.loggedIn ? 'disabled' : ''}>${actions.collect.svg}<span>采集</span></button>`}<button type="button" data-platform-action="login">${actions.login.svg}<span>新增登录</span></button>${state.platform === 'tiktok' ? `<button type="button" data-platform-action="collect" ${!item.loggedIn ? 'disabled' : ''}>${actions.collect.svg}<span>采集</span></button>` : `<button type="button" data-platform-action="binding">${icon('i-link')}<span>绑定</span></button>`}`;
+        if (contextActions) contextActions.innerHTML = `<button type="button" data-platform-action="observe" ${!item.loggedIn || !item.observable ? 'disabled title="请等待会话可观测后再打开"' : ''}>${actions.observe.svg}<span>观测</span></button>${state.platform === 'tiktok' ? `<button type="button" data-platform-action="publish" ${!item.loggedIn ? 'disabled' : ''}>${actions.publish.svg}<span>发布</span></button>` : `<button type="button" data-platform-action="collect" ${!item.loggedIn ? 'disabled' : ''}>${actions.collect.svg}<span>采集</span></button>`}<button type="button" data-platform-action="login">${actions.login.svg}<span>新增登录</span></button>${state.platform === 'tiktok' ? `<button type="button" data-platform-action="collect" ${!item.loggedIn ? 'disabled' : ''}>${actions.collect.svg}<span>采集</span></button>` : `<button type="button" data-platform-action="binding">${icon('i-link')}<span>绑定</span></button>`}`;
       };
       const syncPlatformViews = async () => {
         const row = accountFor(), item = platformFor(row), meta = platformMeta[state.platform];
@@ -843,25 +852,64 @@
         const row = accountFor();
         views.platformLogin = { k: 'PLATFORM LOGIN', title: '新增平台登录', desc: `为 ${row.id} 在同一隔离 Profile 中补充平台登录；已登录的平台不可重复选择。`, foot: `<button class="button" data-close>取消</button><button class="button primary" data-platform-login-submit ${state.loginChoice ? '' : 'disabled'}>开始登录</button>`, body: `<div class="platform-login-list">${Object.keys(platformMeta).map(key => { const item = row.platforms[key], selected = state.loginChoice === key; return `<button type="button" class="platform-login-option${selected ? ' selected' : ''}" data-platform-login-choice="${key}" ${item.loggedIn ? 'disabled' : ''}>${mark(key)}<span><b>${platformMeta[key].label}</b><small>${item.loggedIn ? '当前 Profile 已保存登录资料' : item.awake ? '将复用已唤醒的 Chrome 并打开登录页' : '将先校验绑定 IP，再启动隔离浏览器'}</small></span><em>${item.loggedIn ? '已登录' : selected ? '已选择' : '可登录'}</em></button>`; }).join('')}</div><div class="callout" style="margin-top:16px">选择平台后会先验证当前绑定出口，再打开该平台登录页；登录成功会自动保存 Cookie。Instagram 还会定位头像主页并保存 Reels 入口。</div>` };
       };
-      const renderLoginSession = () => {
+      const escapeAttribute = value => String(value || '').replace(/[&<>"]/g, char => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' })[char]);
+      const renderLoginSession = session => {
         const row = accountFor(), key = state.loginChoice || state.platform, meta = platformMeta[key];
-        views.platformLoginSession = { k: 'LOGIN SESSION', title: `${meta.label} 登录会话`, desc: '登录过程始终留在当前抽屉中；完成后返回账号主界面。', parent: 'platformLogin', body: `<div class="login-session-card"><div class="login-session-target">${mark(key)}<div><b>${row.id} · ${meta.label}</b><small>固定使用 ${row.proxy} 出口与当前隔离 Chrome Profile</small></div></div><div class="login-ip-check"><i></i><span>绑定 IP 已校验：${row.ip} · 网络环境可用于 ${meta.label} 登录</span></div><div class="login-browser-placeholder"><div><b>noVNC 登录窗口</b><span>完成平台登录后，系统会定时检测 Cookie；也可手动触发登录成功检测。</span></div></div><div class="login-session-actions"><button type="button" class="button">重新校验 IP</button><button type="button" class="button primary" data-platform-login-complete>检测登录成功</button></div></div>` };
+        const channelUrl = String((session || state.loginSession || {}).channel_url || '').trim();
+        const channel = channelUrl
+          ? `<div class="login-browser-frame"><iframe src="${escapeAttribute(channelUrl)}" title="${meta.label} 登录窗口" referrerpolicy="no-referrer"></iframe><a href="${escapeAttribute(channelUrl)}" target="_blank" rel="noopener">在新窗口打开登录通道</a></div>`
+          : `<div class="login-browser-placeholder"><div><b>观测通道正在准备</b><span>会话尚未生成可用 noVNC 通道，请稍后重新打开。</span></div></div>`;
+        views.platformLoginSession = { k: 'LOGIN SESSION', title: `${meta.label} 登录会话`, desc: '登录过程始终留在当前抽屉中；完成后返回账号主界面。', parent: 'platformLogin', body: `<div class="login-session-card"><div class="login-session-target">${mark(key)}<div><b>${row.id} · ${meta.label}</b><small>固定使用 ${row.proxy} 出口与当前隔离 Chrome Profile</small></div></div><div class="login-ip-check"><i></i><span>当前出口：${row.ip} · 可重新执行真实 IP 校验</span></div>${channel}<div class="login-session-actions"><button type="button" class="button" data-platform-login-preflight>重新校验 IP</button><button type="button" class="button primary" data-platform-login-complete>检测登录成功</button></div></div>` };
       };
-      const proxyPost = async (path, payload) => {
-        const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const proxyPost = async (path, payload, { signal } = {}) => {
+        const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), signal });
         const data = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(data.error || `请求失败（${response.status}）`);
         return data;
       };
-      const activeSessionFor = row => state.sessions.find(session => Number(session.account_id) === Number(row.accountId) && ['starting', 'running', 'observing'].includes(String(session.status || '')));
-      const showProxyActionError = message => {
-        const context = document.querySelector('.context-main');
-        if (!context) return;
-        context.querySelector('.proxy-action-error')?.remove();
+      const sessionStage = session => {
+        const status = String(session?.status || '').toLowerCase();
+        if (status === 'observing' && String(session?.channel_url || '').trim()) return 'observable';
+        if (status === 'starting' || status === 'running') return 'starting';
+        return 'inactive';
+      };
+      const activeSessionFor = row => state.sessions.filter(session => Number(session.account_id) === Number(row.accountId) && ['starting', 'running', 'observing'].includes(String(session.status || ''))).sort((a, b) => Number(b.id || 0) - Number(a.id || 0))[0] || null;
+      const actionOperations = new Map();
+      const beginAction = (key, trigger, label) => {
+        actionOperations.get(key)?.controller.abort();
+        const operation = { token: Symbol(key), controller: new AbortController(), trigger };
+        actionOperations.set(key, operation);
+        setAccountActionBusy(trigger, label);
+        return operation;
+      };
+      const isLatestAction = (key, operation) => actionOperations.get(key)?.token === operation.token;
+      const finishAction = (key, operation) => {
+        if (!isLatestAction(key, operation)) return;
+        actionOperations.delete(key);
+        clearAccountActionBusy(operation.trigger);
+      };
+      const actionNoticeHost = () => {
+        const drawer = el('drawer'), overlay = el('overlay');
+        if (drawer && overlay?.classList.contains('open')) return el('drawer-body');
+        return document.querySelector('.account-tools')?.parentElement || document.querySelector('.account-lane');
+      };
+      const showProxyActionError = (message, { link = '', kind = 'error' } = {}) => {
+        const host = actionNoticeHost();
+        if (!host) return;
         const note = document.createElement('p');
-        note.className = 'proxy-action-error';
+        note.className = `proxy-action-error${kind === 'success' ? ' success' : ''}`;
+        note.setAttribute('role', kind === 'success' ? 'status' : 'alert');
         note.textContent = message;
-        context.prepend(note);
+        if (link) {
+          const anchor = document.createElement('a');
+          anchor.href = link;
+          anchor.target = '_blank';
+          anchor.rel = 'noopener';
+          anchor.textContent = '打开观测通道';
+          note.append(' ', anchor);
+        }
+        host.querySelector('.proxy-action-error')?.remove();
+        host.prepend(note);
       };
       const setAccountActionBusy = (trigger, label) => {
         if (!trigger) return;
@@ -880,26 +928,42 @@
       const openObservationChannel = (session, channel = null) => {
         const channelUrl = String(session?.channel_url || '').trim();
         if (!channelUrl) throw new Error('观测通道未生成，请稍后重试');
-        const target = channel || window.open(channelUrl, '_blank');
-        if (target) { target.location.replace(channelUrl); return; }
-        window.location.assign(channelUrl);
+        const target = channel || window.open('', '_blank');
+        if (target) { target.location.replace(channelUrl); return true; }
+        showProxyActionError('浏览器拦截了观测窗口；运营台保持在当前页面。', { link: channelUrl });
+        return false;
       };
       const openPlatformAction = async (action, trigger = null) => {
         const row = accountFor(), item = platformFor(row);
         if (!row) return;
         if (action === 'observe' || action === 'wake') {
           const observationChannel = action === 'observe' ? window.open('', '_blank') : null;
-          setAccountActionBusy(trigger, action === 'observe' ? '正在打开观测…' : '正在唤醒账号…');
+          const actionKey = `account:${row.accountId}`, operation = beginAction(actionKey, trigger, action === 'observe' ? '正在打开观测…' : '正在唤醒账号…');
+          const platform = state.platform;
           try {
             let session = activeSessionFor(row);
             if (!session) {
-              const started = await proxyPost('/api/proxy/login-session/start', { account_id: row.accountId, start_platform: state.platform });
+              state.startingPlatforms.set(String(row.accountId), platform);
+              renderAccounts();
+              const started = await proxyPost('/api/proxy/login-session/start', { account_id: row.accountId, start_platform: platform }, { signal: operation.controller.signal });
               session = started.session || null;
-              await loadLiveData();
+              state.startingPlatforms.delete(String(row.accountId));
             }
-            if (action === 'observe') openObservationChannel(session || activeSessionFor(row), observationChannel);
-          } catch (error) { observationChannel?.close(); showProxyActionError(error.message || '无法启动账号会话'); }
-          finally { clearAccountActionBusy(trigger); }
+            if (!session || sessionStage(session) === 'starting') throw new Error('会话仍在启动中，请稍后再打开观测');
+            if (action === 'observe') {
+              const opened = await proxyPost('/api/proxy/login-session/open-platform', { session_id: session.id, platform }, { signal: operation.controller.signal });
+              session = opened.session || session;
+              openObservationChannel(session, observationChannel);
+            }
+            if (isLatestAction(actionKey, operation)) await loadLiveData();
+          } catch (error) { observationChannel?.close(); if (error?.name !== 'AbortError') showProxyActionError(error.message || '无法启动账号会话'); }
+          finally {
+            if (isLatestAction(actionKey, operation)) {
+              state.startingPlatforms.delete(String(row.accountId));
+              renderAccounts();
+            }
+            finishAction(actionKey, operation);
+          }
           return;
         }
         if (action === 'collect') { if (item.loggedIn) { await syncPlatformViews(); open('collect'); } return; }
@@ -909,10 +973,10 @@
         if (action === 'sleep') {
           const session = activeSessionFor(row);
           if (!session) return;
-          setAccountActionBusy(trigger, '正在休眠账号…');
-          try { await proxyPost('/api/proxy/login-session/stop', { session_id: session.id }); await loadLiveData(); }
-          catch (error) { showProxyActionError(error.message || '无法休眠账号会话'); }
-          finally { clearAccountActionBusy(trigger); }
+          const actionKey = `account:${row.accountId}`, operation = beginAction(actionKey, trigger, '正在休眠账号…');
+          try { await proxyPost('/api/proxy/login-session/stop', { session_id: session.id }, { signal: operation.controller.signal }); if (isLatestAction(actionKey, operation)) await loadLiveData(); }
+          catch (error) { if (error?.name !== 'AbortError') showProxyActionError(error.message || '无法休眠账号会话'); }
+          finally { finishAction(actionKey, operation); }
           return;
         }
         if (action === 'remove') open('remove');
@@ -933,15 +997,35 @@
         const loginSubmit = event.target.closest('[data-platform-login-submit]');
         if (loginSubmit && state.loginChoice) {
           event.preventDefault();
-          loginSubmit.disabled = true;
+          const row = accountFor();
+          const actionKey = `account:${row.accountId}`, operation = beginAction(actionKey, loginSubmit, '正在打开平台登录…');
           try {
-            const started = await proxyPost('/api/proxy/login-session/start', { account_id: accountFor().accountId, login_platform: state.loginChoice, start_platform: state.loginChoice });
-            state.loginSessionId = started.session?.id || null;
-            renderLoginSession();
+            const existing = activeSessionFor(row);
+            const started = existing
+              ? await proxyPost('/api/proxy/login-session/open-platform', { session_id: existing.id, platform: state.loginChoice, login_platform: true }, { signal: operation.controller.signal })
+              : await proxyPost('/api/proxy/login-session/start', { account_id: row.accountId, login_platform: state.loginChoice, start_platform: state.loginChoice }, { signal: operation.controller.signal });
+            if (!isLatestAction(actionKey, operation)) return;
+            state.loginSession = started.session || null;
+            state.loginSessionId = state.loginSession?.id || null;
+            renderLoginSession(state.loginSession);
             open('platformLoginSession');
             await loadLiveData();
-          } catch (error) { showProxyActionError(error.message || '无法启动平台登录会话'); }
-          finally { loginSubmit.disabled = false; }
+          } catch (error) { if (error?.name !== 'AbortError') showProxyActionError(error.message || '无法启动平台登录会话'); }
+          finally { finishAction(actionKey, operation); }
+          return;
+        }
+        const loginPreflight = event.target.closest('[data-platform-login-preflight]');
+        if (loginPreflight) {
+          event.preventDefault();
+          const row = accountFor();
+          const actionKey = `account:${row.accountId}`, operation = beginAction(actionKey, loginPreflight, '正在校验 IP…');
+          try {
+            const checked = await proxyPost('/api/proxy/accounts/preflight', { account_id: row.accountId }, { signal: operation.controller.signal });
+            if (!isLatestAction(actionKey, operation)) return;
+            await loadLiveData();
+            if (isLatestAction(actionKey, operation)) showProxyActionError(checked.allowed ? (checked.reason || '绑定出口 IP 校验通过。') : (checked.reason || '绑定出口 IP 校验未通过。'), { kind: checked.allowed ? 'success' : 'error' });
+          } catch (error) { if (error?.name !== 'AbortError') showProxyActionError(error.message || '绑定出口 IP 校验失败。'); }
+          finally { finishAction(actionKey, operation); }
           return;
         }
         const loginComplete = event.target.closest('[data-platform-login-complete]');
@@ -953,7 +1037,11 @@
             const inspected = await proxyPost('/api/proxy/login-session/capture', { session_id: state.loginSessionId });
             if (!inspected.bound) { showProxyActionError(inspected.reason || '暂未检测到登录 Cookie，请完成网页登录后重试'); return; }
             await loadLiveData();
+            activePlatformByAccount[accountFor().id] = state.loginChoice;
+            state.platform = state.loginChoice;
+            renderAccounts();
             state.loginSessionId = null;
+            state.loginSession = null;
             open('platformLogin');
           } catch (error) { showProxyActionError(error.message || '无法检测平台登录状态'); }
           finally { loginComplete.disabled = false; }
@@ -977,9 +1065,10 @@
       const liveRuntimeStatus = (account, pool, session) => {
         if (!account.proxy_bound) return { status: '未绑定', kind: 'delay' };
         if (!pool || ['不可用', '异常', '禁用'].includes(pool.status) || account.last_check_status === '阻断') return { status: 'IP不可用', kind: 'off' };
+        if (sessionStage(session) === 'starting') return { status: '启动中', kind: 'delay' };
         if (session && String(session.current_job_id || '').startsWith('collect_')) return { status: '采集中', kind: 'live' };
         if (session && session.current_job_id) return { status: '发布中', kind: 'live' };
-        return session ? { status: '会话在线', kind: 'live' } : { status: '休眠中', kind: 'delay' };
+        return sessionStage(session) === 'observable' ? { status: '会话在线', kind: 'live' } : { status: '休眠中', kind: 'delay' };
       };
       const updateLiveProxyList = pools => {
         const list = document.querySelector('#proxy-list');
@@ -1012,24 +1101,34 @@
         document.querySelectorAll('.account-head .summary-item b').forEach((node, index) => { node.textContent = String(values[index] || 0); });
       };
       let bootstrapPayload = window.__PROXY_BOOTSTRAP__ || null;
-      const hydrateLiveData = async () => {
+      let liveLoadGeneration = 0;
+      let liveLoadController = null;
+      const hydrateLiveData = async ({ signal, generation } = {}) => {
         const bootstrap = bootstrapPayload;
         bootstrapPayload = null;
-        const scope = state.feishuFilterActive ? '' : '?scope=all';
-        const response = bootstrap ? null : await fetch(`/api/proxy/pools${scope}`, { cache: 'no-store' });
+        const response = bootstrap ? null : await fetch('/api/proxy/pools', { cache: 'no-store', signal });
         if (response && !response.ok) throw new Error(`HTTP ${response.status}`);
         const payload = bootstrap || await response.json(), pools = payload.pools || [], sessions = payload.sessions || [];
+        if (generation && generation !== liveLoadGeneration) return false;
         state.sessions = sessions;
         const byPool = new Map(pools.map(pool => [Number(pool.id), pool]));
-        const sessionFor = id => sessions.find(session => Number(session.account_id) === Number(id) && ['starting', 'running', 'observing'].includes(session.status));
+        const sessionFor = id => sessions.filter(session => Number(session.account_id) === Number(id) && ['starting', 'running', 'observing'].includes(session.status)).sort((left, right) => Number(right.id || 0) - Number(left.id || 0))[0];
         accountRows = (payload.accounts || []).filter(account => !account.profile?.ui_demo && !String(account.notes || '').includes('4004 UI 演示')).map(account => {
-          const pool = byPool.get(Number(account.proxy_profile_id)), session = sessionFor(account.id), runtime = liveRuntimeStatus(account, pool, session);
+          const pool = byPool.get(Number(account.proxy_profile_id)), session = sessionFor(account.id), runtime = liveRuntimeStatus(account, pool, session), stage = sessionStage(session);
           const linked = account.platforms || {}, tiktokLogged = Boolean(linked.tiktok && linked.tiktok.linked), instagramLogged = Boolean((linked.instagram && linked.instagram.logged_in) || account.profile?.instagram?.profile_url);
-          const makePlatform = loggedIn => ({ loggedIn, awake: Boolean(session), status: loggedIn ? runtime.status : '未登录', kind: loggedIn ? runtime.kind : 'off', session: session ? '会话在线 · 可观测' : loggedIn ? '会话已释放' : '等待新增平台登录' });
-          return { accountId: account.id, id: account.username || `account-${account.id}`, initials: String(account.username || '?').slice(0, 2).toUpperCase(), feishuUserId: String(account.feishu_user_id || ''), owner: account.feishu_user_name || account.display_name || '未绑定飞书用户', avatar: account.feishu_avatar_url || account.tiktok_avatar_url || '', proxy: pool?.name || '未绑定代理', ip: pool?.expected_exit_ip || '待校验', platforms: { tiktok: makePlatform(tiktokLogged), instagram: makePlatform(instagramLogged) } };
+          const makePlatform = (platform, loggedIn) => {
+            const starting = stage === 'starting' || state.startingPlatforms.get(String(account.id)) === platform;
+            const platformRuntime = starting ? { status: '启动中', kind: 'delay' } : runtime;
+            return { loggedIn, awake: stage === 'observable', observable: stage === 'observable', starting, status: loggedIn ? platformRuntime.status : '未登录', kind: loggedIn ? platformRuntime.kind : 'off', session, sessionLabel: stage === 'observable' ? '会话在线 · 可观测' : starting ? '会话启动中' : loggedIn ? '会话已释放' : '等待新增平台登录' };
+          };
+          if (stage !== 'starting') state.startingPlatforms.delete(String(account.id));
+          return { accountId: account.id, id: account.username || `account-${account.id}`, initials: String(account.username || '?').slice(0, 2).toUpperCase(), feishuUserId: String(account.feishu_user_id || ''), owner: account.feishu_user_name || account.display_name || '未绑定飞书用户', avatar: account.feishu_avatar_url || account.tiktok_avatar_url || '', proxy: pool?.name || '未绑定代理', ip: pool?.expected_exit_ip || '待校验', platforms: { tiktok: makePlatform('tiktok', tiktokLogged), instagram: makePlatform('instagram', instagramLogged) } };
         });
         if (uiPreview) accountRows = previewRows.map(row => ({ ...row, platforms: { ...row.platforms } }));
-        accountRows.forEach(row => { activePlatformByAccount[row.id] = row.platforms.tiktok.loggedIn ? 'tiktok' : row.platforms.instagram.loggedIn ? 'instagram' : 'tiktok'; });
+        accountRows.forEach(row => {
+          const current = activePlatformByAccount[row.id];
+          if (!current || !row.platforms[current]?.loggedIn) activePlatformByAccount[row.id] = row.platforms.tiktok.loggedIn ? 'tiktok' : row.platforms.instagram.loggedIn ? 'instagram' : 'tiktok';
+        });
         if (accountRows.length) {
           if (!accountRows.some(row => row.id === state.accountId)) state.accountId = accountRows[0].id;
           state.platform = activePlatformByAccount[state.accountId] || 'tiktok';
@@ -1037,16 +1136,22 @@
         updateLiveProxyList(pools);
         updateLiveAccountSummary();
         renderAccounts();
+        return true;
       };
       const initialProxyList = document.querySelector('#proxy-list');
       if (initialProxyList) initialProxyList.innerHTML = '<p class="proxy-foot">正在加载代理出口…</p>';
       renderAccounts();
       const loadLiveData = async () => {
-        for (let attempt = 0; attempt < 2; attempt += 1) {
-          try { await hydrateLiveData(); return; }
-          catch (_) { if (attempt === 0) await new Promise(resolve => setTimeout(resolve, 300)); }
-        }
-        renderAccounts('账号数据暂时无法加载，请刷新页面重试。');
+        const generation = ++liveLoadGeneration;
+        liveLoadController?.abort();
+        const controller = new AbortController();
+        liveLoadController = controller;
+        try { return await hydrateLiveData({ signal: controller.signal, generation }); }
+        catch (error) {
+          if (error?.name === 'AbortError') return false;
+          if (generation === liveLoadGeneration) renderAccounts('账号数据暂时无法加载，请刷新页面重试。');
+          throw error;
+        } finally { if (generation === liveLoadGeneration) liveLoadController = null; }
       };
       window.proxyLoadLiveData = loadLiveData;
       const refreshAccountView = () => { updateLiveAccountSummary(); renderAccounts(); };
@@ -1057,7 +1162,7 @@
         if (!filterToggle || !state.feishuFilterId) return;
         event.preventDefault();
         state.feishuFilterActive = !state.feishuFilterActive;
-        void loadLiveData();
+        refreshAccountView();
       });
       document.querySelector('[data-proxy-refresh]')?.addEventListener('click', () => loadLiveData());
       window.addEventListener('proxy:refresh', () => loadLiveData());
@@ -1069,9 +1174,9 @@
         state.feishuFilterName = String(user.name || '当前飞书用户');
         state.feishuFilterAvatar = String(user.avatarUrl || '');
         state.feishuFilterActive = true;
-        void loadLiveData();
+        refreshAccountView();
       }).catch(() => {});
-      loadLiveData();
+      void loadLiveData().catch(error => showProxyActionError(error.message || '账号数据加载失败。'));
     })();
   </script>
   <script>
@@ -1183,14 +1288,35 @@
         const uri = escapePoolText(maskUri(pool.source_uri));
         const rawStatus = escapePoolText(pool.status || label);
         const isPaused = String(pool.status || '') === '禁用';
-        const resultHtml = result ? `<p class="pool-result ${escapePoolText(result.kind || '')}" role="status">${escapePoolText(result.text || '')}</p>` : '';
-        return `<div class="pool-detail"><section class="pool-detail-summary"><i class="proxy-dot ${status === 'off' ? 'off' : status === 'delay' ? 'delay' : ''}"></i><div><b>${name}</b><small>${ip} · :${port}</small></div><span class="status ${status}">${rawStatus}</span></section><section class="pool-uri-card"><div class="pool-uri-head"><span>连接 URI</span><div class="pool-uri-tools"><button type="button" class="tiny-action" data-proxy-pool-copy="${pool.id}" title="复制连接 URI" aria-label="复制连接 URI">${copyIcon}<span class="visually-hidden">复制</span></button><button type="button" class="tiny-action" data-proxy-pool-edit="${pool.id}" title="编辑出口配置" aria-label="编辑出口配置">${editIcon}</button></div></div><code class="pool-uri-value">${uri}</code></section><section class="pool-detail-grid"><div class="pool-detail-cell"><span>预期出口 IP</span><b>${ip}</b><small>:${port}</small></div><div class="pool-detail-cell"><span>地区</span><b>${region}</b></div><div class="pool-detail-cell"><span>代理类型</span><b>${escapePoolText(sourceLabel(pool.source_type))}</b></div><div class="pool-detail-cell"><span>本地端口</span><b>${port}</b></div><div class="pool-detail-cell"><span>已绑定账户</span><b>${accountCount} 个</b></div><div class="pool-detail-cell"><span>待处理任务</span><b>${pendingCount} 个</b></div></section><section class="pool-detail-actions"><button type="button" class="button" data-proxy-pool-check="${pool.id}">校验</button><button type="button" class="button" data-proxy-pool-toggle="${pool.id}">${isPaused ? '启用出口' : '禁用出口'}</button><button type="button" class="button danger" data-proxy-pool-delete="${pool.id}">删除</button></section>${resultHtml}</div>`;
+        const resultClass = result ? ` ${escapePoolText(result.kind || '')}` : '';
+        return `<div class="pool-detail" data-pool-detail="${pool.id}"><section class="pool-detail-summary" data-pool-summary><i class="proxy-dot ${status === 'off' ? 'off' : status === 'delay' ? 'delay' : ''}" data-pool-dot></i><div><b data-pool-name>${name}</b><small data-pool-endpoint>${ip} · :${port}</small></div><span class="status ${status}" data-pool-status>${rawStatus}</span></section><section class="pool-uri-card"><div class="pool-uri-head"><span>连接 URI</span><div class="pool-uri-tools"><button type="button" class="tiny-action" data-proxy-pool-copy="${pool.id}" title="复制连接 URI" aria-label="复制连接 URI">${copyIcon}<span class="visually-hidden">复制</span></button><button type="button" class="tiny-action" data-proxy-pool-edit="${pool.id}" title="编辑出口配置" aria-label="编辑出口配置">${editIcon}</button></div></div><code class="pool-uri-value" data-pool-uri>${uri}</code></section><section class="pool-detail-grid"><div class="pool-detail-cell"><span>预期出口 IP</span><b data-pool-ip>${ip}</b><small data-pool-port-prefix>:${port}</small></div><div class="pool-detail-cell"><span>地区</span><b data-pool-region>${region}</b></div><div class="pool-detail-cell"><span>代理类型</span><b data-pool-source>${escapePoolText(sourceLabel(pool.source_type))}</b></div><div class="pool-detail-cell"><span>本地端口</span><b data-pool-port>${port}</b></div><div class="pool-detail-cell"><span>已绑定账户</span><b data-pool-account-count>${accountCount} 个</b></div><div class="pool-detail-cell"><span>待处理任务</span><b data-pool-pending-count>${pendingCount} 个</b></div></section><section class="pool-detail-actions"><button type="button" class="button" data-proxy-pool-check="${pool.id}">校验</button><button type="button" class="button" data-proxy-pool-toggle="${pool.id}" data-pool-toggle-label>${isPaused ? '启用出口' : '禁用出口'}</button><button type="button" class="button danger" data-proxy-pool-delete="${pool.id}">删除</button></section><p class="pool-result${resultClass}" data-pool-result role="status"${result ? '' : ' hidden'}>${result ? escapePoolText(result.text || '') : ''}</p></div>`;
       };
       const patchPoolDetail = (pool, result = null) => {
         const drawer = el('pool-drawer');
-        if (!pool || drawer.dataset.root !== `proxyPoolDetail:${pool.id}` || !el('pool-overlay').classList.contains('open')) return false;
+        const detail = el('pool-drawer-body')?.querySelector(`[data-pool-detail="${Number(pool?.id)}"]`);
+        if (!pool || !detail || drawer.dataset.root !== `proxyPoolDetail:${pool.id}` || !el('pool-overlay').classList.contains('open')) return false;
+        const status = poolStatus(pool), ip = pool.expected_exit_ip || pool.detected_exit_ip || '待校验', port = pool.local_port || '—';
+        const setText = (selector, value) => { const node = detail.querySelector(selector); if (node) node.textContent = String(value); };
         drawer.classList.add('pool-detail-updating');
-        el('pool-drawer-body').innerHTML = poolDetailBody(pool, result);
+        const dot = detail.querySelector('[data-pool-dot]');
+        if (dot) dot.className = `proxy-dot ${status === 'off' ? 'off' : status === 'delay' ? 'delay' : ''}`;
+        const statusNode = detail.querySelector('[data-pool-status]');
+        if (statusNode) { statusNode.className = `status ${status}`; statusNode.textContent = pool.status || poolLabel(pool); }
+        setText('[data-pool-name]', pool.name || '未命名出口');
+        setText('[data-pool-endpoint]', `${ip} · :${port}`);
+        setText('[data-pool-uri]', maskUri(pool.source_uri));
+        setText('[data-pool-ip]', ip);
+        setText('[data-pool-port-prefix]', `:${port}`);
+        setText('[data-pool-region]', pool.region || '未标注');
+        setText('[data-pool-source]', sourceLabel(pool.source_type));
+        setText('[data-pool-port]', port);
+        setText('[data-pool-account-count]', `${Number(pool.account_count || 0)} 个`);
+        setText('[data-pool-pending-count]', `${Number(pool.pending_job_count || 0)} 个`);
+        setText('[data-pool-toggle-label]', String(pool.status || '') === '禁用' ? '启用出口' : '禁用出口');
+        const checkButton = detail.querySelector(`[data-proxy-pool-check="${Number(pool.id)}"]`);
+        if (checkButton && !checkButton.disabled) checkButton.textContent = '校验';
+        const resultNode = detail.querySelector('[data-pool-result]');
+        if (resultNode) { resultNode.hidden = !result; resultNode.className = `pool-result${result ? ` ${result.kind || ''}` : ''}`; resultNode.textContent = result?.text || ''; }
         requestAnimationFrame(() => requestAnimationFrame(() => drawer.classList.remove('pool-detail-updating')));
         return true;
       };
@@ -1199,6 +1325,22 @@
         if (!button) return;
         button.disabled = true;
         button.textContent = text;
+      };
+      const poolOperations = new Map();
+      const beginPoolOperation = (id, action, text) => {
+        const key = Number(id);
+        if (poolOperations.has(key)) return null;
+        const operation = { token: Symbol(`pool:${key}`), controller: new AbortController(), action };
+        poolOperations.set(key, operation);
+        setPoolActionBusy(key, action, text);
+        return operation;
+      };
+      const isLatestPoolOperation = (id, operation) => poolOperations.get(Number(id))?.token === operation?.token;
+      const finishPoolOperation = (id, operation) => {
+        if (!isLatestPoolOperation(id, operation)) return;
+        poolOperations.delete(Number(id));
+        const button = el('pool-drawer-body')?.querySelector(`[data-proxy-pool-${operation.action}="${Number(id)}"]`);
+        if (button) { button.disabled = false; if (operation.action === 'check') button.textContent = '校验'; }
       };
       const openPoolDetail = async (id, result = null) => {
         const pool = await loadPool(id, { fresh: true }) || poolFromLane(id);
@@ -1244,33 +1386,35 @@
       const checkPool = async id => {
         const pool = await loadPool(id, { fresh: true });
         if (!pool) return openPoolDetail(id, { kind: 'error', text: '出口信息已失效，请刷新后重试。' });
+        const operation = beginPoolOperation(id, 'check', '校验中…');
+        if (!operation) return;
         patchPoolDetail(pool, { kind: 'pending', text: '正在校验出口 IP…' });
-        setPoolActionBusy(id, 'check', '校验中…');
         try {
-          const response = await fetch('/api/proxy/check', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ proxy_profile_id: Number(id), bind: false }) });
+          const response = await fetch('/api/proxy/check', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ proxy_profile_id: Number(id), bind: false }), signal: operation.controller.signal });
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || '校验失败');
-          window.dispatchEvent(new Event('proxy:refresh'));
           await window.proxyLoadLiveData?.();
           const updated = await loadPool(id, { fresh: true });
-          patchPoolDetail(updated || pool, { kind: result.allowed ? 'success' : 'error', text: result.reason || (result.allowed ? '出口校验通过。' : '出口校验未通过。') });
-        } catch (err) { patchPoolDetail(pool, { kind: 'error', text: err?.message || '校验失败，请稍后重试。' }); }
+          if (isLatestPoolOperation(id, operation)) patchPoolDetail(updated || pool, { kind: result.allowed ? 'success' : 'error', text: result.reason || (result.allowed ? '出口校验通过。' : '出口校验未通过。') });
+        } catch (err) { if (err?.name !== 'AbortError' && isLatestPoolOperation(id, operation)) patchPoolDetail(pool, { kind: 'error', text: err?.message || '校验失败，请稍后重试。' }); }
+        finally { finishPoolOperation(id, operation); }
       };
       const togglePool = async id => {
         const pool = await loadPool(id, { fresh: true });
         if (!pool) return openPoolDetail(id, { kind: 'error', text: '出口信息已失效，请刷新后重试。' });
         const nextStatus = String(pool.status || '') === '禁用' ? '可用' : '禁用';
+        const operation = beginPoolOperation(id, 'toggle', nextStatus === '禁用' ? '禁用中…' : '启用中…');
+        if (!operation) return;
         patchPoolDetail(pool, { kind: 'pending', text: nextStatus === '禁用' ? '正在禁用出口…' : '正在启用出口…' });
-        setPoolActionBusy(id, 'toggle', nextStatus === '禁用' ? '禁用中…' : '启用中…');
         try {
-          const response = await fetch('/api/proxy/pools', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(poolPayload(pool, nextStatus)) });
+          const response = await fetch('/api/proxy/pools', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(poolPayload(pool, nextStatus)), signal: operation.controller.signal });
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || '状态更新失败');
-          window.dispatchEvent(new Event('proxy:refresh'));
           await window.proxyLoadLiveData?.();
           const updated = await loadPool(id, { fresh: true });
-          patchPoolDetail(updated || { ...pool, status: nextStatus }, { kind: 'success', text: nextStatus === '禁用' ? '出口已禁用，不再参与后续任务。' : '出口已启用，可重新参与任务。' });
-        } catch (err) { patchPoolDetail(pool, { kind: 'error', text: err?.message || '状态更新失败，请稍后重试。' }); }
+          if (isLatestPoolOperation(id, operation)) patchPoolDetail(updated || { ...pool, status: nextStatus }, { kind: 'success', text: nextStatus === '禁用' ? '出口已禁用，不再参与后续任务。' : '出口已启用，可重新参与任务。' });
+        } catch (err) { if (err?.name !== 'AbortError' && isLatestPoolOperation(id, operation)) patchPoolDetail(pool, { kind: 'error', text: err?.message || '状态更新失败，请稍后重试。' }); }
+        finally { finishPoolOperation(id, operation); }
       };
       const deletePool = async id => {
         const pool = await loadPool(id);
