@@ -1036,6 +1036,7 @@
         }
         renderAccounts('账号数据暂时无法加载，请刷新页面重试。');
       };
+      window.proxyLoadLiveData = loadLiveData;
       const refreshAccountView = () => { updateLiveAccountSummary(); renderAccounts(); };
       document.querySelector('.account-tools .search')?.addEventListener('input', event => { state.query = event.currentTarget.value || ''; refreshAccountView(); });
       document.querySelector('.account-tools .filter')?.addEventListener('change', event => { state.statusFilter = event.currentTarget.value || ''; refreshAccountView(); });
@@ -1238,7 +1239,7 @@
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || '校验失败');
           window.dispatchEvent(new Event('proxy:refresh'));
-          await loadLiveData();
+          await window.proxyLoadLiveData?.();
           const updated = await loadPool(id, { fresh: true });
           patchPoolDetail(updated || pool, { kind: result.allowed ? 'success' : 'error', text: result.reason || (result.allowed ? '出口校验通过。' : '出口校验未通过。') });
         } catch (err) { patchPoolDetail(pool, { kind: 'error', text: err?.message || '校验失败，请稍后重试。' }); }
@@ -1254,7 +1255,7 @@
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || '状态更新失败');
           window.dispatchEvent(new Event('proxy:refresh'));
-          await loadLiveData();
+          await window.proxyLoadLiveData?.();
           const updated = await loadPool(id, { fresh: true });
           patchPoolDetail(updated || { ...pool, status: nextStatus }, { kind: 'success', text: nextStatus === '禁用' ? '出口已禁用，不再参与后续任务。' : '出口已启用，可重新参与任务。' });
         } catch (err) { patchPoolDetail(pool, { kind: 'error', text: err?.message || '状态更新失败，请稍后重试。' }); }
