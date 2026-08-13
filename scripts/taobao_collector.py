@@ -394,7 +394,10 @@ def start_session(user: dict[str, Any]) -> dict[str, Any]:
         cur = conn.execute(
             """INSERT INTO taobao_sessions (owner_id, slot, proxy_profile_id, status, display, vnc_port, novnc_port, debug_port, created_at, updated_at)
                VALUES (?, ?, ?, 'starting', ?, ?, ?, ?, ?, ?)""",
-            (profile["owner_id"], slot, int(pool["id"]), str(ports["display"]), int(ports["vnc_port"]), int(ports["novnc_port"]), int(ports["debug_port"]), now, now),
+            # proxy_profile_id is a legacy non-null column. It is retained for
+            # session-schema compatibility only; browser routing uses the
+            # Taobao-only binding above (pool["local_port"]).
+            (profile["owner_id"], slot, int(profile["proxy_profile_id"]), str(ports["display"]), int(ports["vnc_port"]), int(ports["novnc_port"]), int(ports["debug_port"]), now, now),
         )
         session_id = int(cur.lastrowid)
         conn.commit()
