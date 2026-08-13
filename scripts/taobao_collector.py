@@ -468,6 +468,7 @@ def stop_session(user: dict[str, Any]) -> dict[str, Any]:
         row = conn.execute("SELECT * FROM taobao_sessions WHERE owner_id = ? AND status IN ('starting','running','observing') ORDER BY id DESC LIMIT 1", (profile["owner_id"],)).fetchone()
         if row:
             _terminate(row)
+            _reclaim_stale_display_socket(str(row["display"] or ""))
             conn.execute("UPDATE taobao_sessions SET status = 'stopped', current_job_id = '', last_error = '手动关闭浏览器', updated_at = ? WHERE id = ?", (proxy_pool.now_iso(), row["id"]))
             conn.commit()
     return state(user)
@@ -867,6 +868,27 @@ def export_markdown(user: dict[str, Any], archive_id: str) -> str:
 def cleanup_expired_sessions() -> int:
     with _LOCK, _connect() as conn:
         before = conn.execute("SELECT COUNT(*) AS count FROM taobao_sessions WHERE status IN ('starting','running','observing')").fetchone()["count"]
-        _active_rows(conn)
+        active_rows = _active_rows(conn)
         after = conn.execute("SELECT COUNT(*) AS count FROM taobao_sessions WHERE status IN ('starting','running','observing')").fetchone()["count"]
-        return max(0, int(before) - int(after))
+        active_displays = {str(row["display"] or "") for row in active_rows}
+        released_sockets = _reclaim_stale_display_sockets(active_displays)
+        return max(0, int(before) - int(after)) + released_sockets
+
+
+def _reclaim_stale_display_sockets(active_displays: set[str]) -> int:
+    """Remove dead Xvfb sockets not owned by a live Taobao browser session."""
+    released = 0
+    for slot in range(1, MAX_SLOTS + 1):
+        display = str(_slot_ports(slot)["display"])
+        if display in active_displays:
+            continue
+        if _reclaim_stale_display_socket(display):
+            released += 1
+    return released
+
+
+def _reclaim_stale_display_socket(display: str) -> bool:
+    if not display:
+        return False
+    path = Path(f"/tmp/.X11-unix/X{display.lstrip(':')}")
+    return path.exists() and not _display_socket_active(path)

@@ -15364,7 +15364,9 @@ def proxy_session_janitor() -> None:
         except Exception as exc:
             print(f"Proxy session cleanup failed: {exc}", flush=True)
         try:
-            taobao_collector.cleanup_expired_sessions()
+            released = taobao_collector.cleanup_expired_sessions()
+            if released:
+                print(f"Released {released} expired Taobao browser resource(s)", flush=True)
         except Exception as exc:
             print(f"Taobao session cleanup failed: {exc}", flush=True)
         try:
