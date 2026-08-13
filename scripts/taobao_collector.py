@@ -374,9 +374,17 @@ def state(user: dict[str, Any]) -> dict[str, Any]:
         _active_rows(conn)
         row = conn.execute("SELECT * FROM taobao_sessions WHERE owner_id = ? ORDER BY id DESC LIMIT 1", (profile["owner_id"],)).fetchone()
         binding = conn.execute("SELECT * FROM taobao_proxy_bindings WHERE owner_id = ?", (profile["owner_id"],)).fetchone()
+    try:
+        profile_json = json.loads(str(profile["profile_json"] or "{}"))
+    except json.JSONDecodeError:
+        profile_json = {}
     return {
         "configured": True,
-        "profile": {"fingerprintId": profile["fingerprint_id"], "proxyReady": bool(binding and binding["status"] == "active")},
+        "profile": {
+            "fingerprintId": profile["fingerprint_id"],
+            "proxyReady": bool(binding and binding["status"] == "active"),
+            "loginPersisted": _has_taobao_login_state(profile_json),
+        },
         "session": _session_public(row) if row else {"active": False, "status": "stopped"},
     }
 
