@@ -170,6 +170,11 @@ def _ready_proxy(conn, profile: dict[str, Any]):
 
 def _sync_taobao_listener(binding: dict[str, Any]) -> None:
     port = int(binding["local_port"])
+    # A migrated user may already have a working listener from the previous
+    # implementation. Reusing it avoids an unnecessary Mihomo reload and keeps
+    # the active browser's proxy connection stable.
+    if proxy_pool._port_open("127.0.0.1", port, timeout=0.5):
+        return
     path = proxy_pool._mihomo_config_path()
     original = path.read_bytes()
     mode = path.stat().st_mode & 0o777
