@@ -672,7 +672,8 @@
     .mini-action.is-busy { position:relative; pointer-events:none; }
     .mini-action.is-busy:disabled { opacity:1; color:var(--accent); background:var(--accent-soft); }
     .mini-action.is-busy .icon { opacity:0; }
-    .mini-action.is-busy::after { position:absolute; width:13px; height:13px; border:1.5px solid currentColor; border-top-color:transparent; border-radius:50%; content:""; animation:proxy-action-spin .7s linear infinite; }
+    /* ui-system reserves ::after for tooltips; keep the loading ring on ::before so both stay visible. */
+    .mini-action.is-busy::before { position:absolute; width:13px; height:13px; border:1.5px solid currentColor; border-top-color:transparent; border-radius:50%; content:""; animation:proxy-action-spin .7s linear infinite; }
     #proxy-action-tooltip { position:fixed; z-index:80; max-width:220px; padding:6px 8px; border-radius:6px; color:#fff; background:#202733; box-shadow:0 7px 18px rgba(21,27,37,.16); font-size:11px; font-weight:650; line-height:1.35; pointer-events:none; opacity:0; transform:translate(-50%,-103%); transition:opacity .12s ease,transform .12s ease; }
     #proxy-action-tooltip.visible { opacity:1; transform:translate(-50%,-100%); }
     @keyframes pool-status-refresh { from { opacity:.42; } to { opacity:1; } }
