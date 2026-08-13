@@ -52,6 +52,15 @@ def _connect():
             updated_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_taobao_profiles_proxy ON taobao_profiles(proxy_profile_id);
+        CREATE TABLE IF NOT EXISTS taobao_proxy_bindings (
+            owner_id TEXT PRIMARY KEY REFERENCES taobao_profiles(owner_id) ON DELETE CASCADE,
+            slot INTEGER NOT NULL UNIQUE,
+            local_port INTEGER NOT NULL UNIQUE,
+            upstream_mode TEXT NOT NULL DEFAULT 'global',
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS taobao_sessions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             owner_id TEXT NOT NULL REFERENCES taobao_profiles(owner_id) ON DELETE CASCADE,
@@ -159,6 +168,61 @@ def _ready_proxy(conn, profile: dict[str, Any]):
     return row if start_port <= int(row["local_port"] or 0) <= end_port else None
 
 
+def _sync_taobao_listener(binding: dict[str, Any]) -> None:
+    port = int(binding["local_port"])
+    path = proxy_pool._mihomo_config_path()
+    original = path.read_bytes()
+    mode = path.stat().st_mode & 0o777
+    lines = original.decode("utf-8").splitlines(keepends=True)
+    value = {"name": f"taobao-user-{int(binding['slot'])}", "type": "mixed", "port": port, "proxy": proxy_pool.SYSTEM_PROXY_DIALER}
+    updated = proxy_pool._replace_mihomo_yaml_item(lines, "listeners", 900000 + int(binding["slot"]), value, match_port=port)
+    body = "".join(updated).encode("utf-8")
+    if body == original:
+        return
+    proxy_pool._atomic_write(path, body, mode)
+    try:
+        proxy_pool._reload_mihomo_config()
+        proxy_pool._wait_for_port(port, "淘宝代理监听", timeout=10.0)
+    except Exception:
+        proxy_pool._atomic_write(path, original, mode)
+        try:
+            proxy_pool._reload_mihomo_config()
+        except Exception:
+            pass
+        raise
+
+
+def _ensure_taobao_proxy(owner_id: str) -> dict[str, Any]:
+    with _LOCK, _connect() as conn:
+        row = conn.execute("SELECT * FROM taobao_proxy_bindings WHERE owner_id = ?", (owner_id,)).fetchone()
+        if row:
+            binding = dict(row)
+        else:
+            start_port, end_port = proxy_pool._port_range(proxy_pool.PORT_SCOPE_TAOBAO)
+            used = {int(item["slot"]) for item in conn.execute("SELECT slot FROM taobao_proxy_bindings")}
+            legacy = conn.execute(
+                """SELECT p.local_port FROM taobao_profiles t
+                   JOIN proxy_profiles p ON p.id = t.proxy_profile_id
+                   WHERE t.owner_id = ? AND p.deleted_at = '' AND p.port_scope = ?""",
+                (owner_id, proxy_pool.PORT_SCOPE_TAOBAO),
+            ).fetchone()
+            legacy_port = int(legacy["local_port"] or 0) if legacy else 0
+            slot = legacy_port - start_port + 1 if start_port <= legacy_port <= end_port and (legacy_port - start_port + 1) not in used else 0
+            slot = slot or next((item for item in range(1, end_port - start_port + 2) if item not in used), 0)
+            if not slot:
+                raise ValueError("淘宝独立代理端口已用完，请联系管理员扩容")
+            now = proxy_pool.now_iso()
+            port = start_port + slot - 1
+            conn.execute(
+                "INSERT INTO taobao_proxy_bindings (owner_id, slot, local_port, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                (owner_id, slot, port, now, now),
+            )
+            conn.commit()
+            binding = {"owner_id": owner_id, "slot": slot, "local_port": port, "upstream_mode": "global", "status": "active"}
+    _sync_taobao_listener(binding)
+    return binding
+
+
 def _has_taobao_login_state(profile: dict[str, Any]) -> bool:
     isolation = profile.get("isolation") if isinstance(profile, dict) else {}
     user_data_value = str((isolation or {}).get("user_data_dir") or "").strip()
@@ -190,50 +254,25 @@ def _profile_for_user(user: dict[str, Any], *, create: bool) -> dict[str, Any] |
     owner_id, feishu_id, name = _owner(user)
     with _LOCK, _connect() as conn:
         row = conn.execute("SELECT * FROM taobao_profiles WHERE owner_id = ?", (owner_id,)).fetchone()
-        previous = dict(row) if row else None
-        if previous and _ready_proxy(conn, previous):
-            return previous
-        if previous and not create:
-            return previous
-        if previous:
-            active = conn.execute(
-                "SELECT 1 FROM taobao_sessions WHERE owner_id = ? AND status IN ('starting','running','observing') LIMIT 1",
-                (owner_id,),
-            ).fetchone()
-            if active:
-                raise ValueError("当前淘宝浏览器仍在运行，不能迁移代理端口")
-        pool = _allocate_proxy(conn, owner_id)
-        pool_id = int(pool["id"])
-    pool = proxy_pool.reserve_pool_port_scope(pool_id, proxy_pool.PORT_SCOPE_TAOBAO)
-    if previous:
-        key = str(previous["profile_key"])
-        data_dir = str(previous["user_data_dir"])
-        fingerprint_id = str(previous["fingerprint_id"])
-        profile = json.loads(str(previous["profile_json"] or "{}"))
-        if not isinstance(profile, dict):
-            key, data_dir, fingerprint_id, profile = _profile_payload(owner_id, feishu_id, int(pool["id"]))
-    else:
-        key, data_dir, fingerprint_id, profile = _profile_payload(owner_id, feishu_id, int(pool["id"]))
-    now = proxy_pool.now_iso()
-    with _LOCK, _connect() as conn:
-        if previous:
-            conn.execute(
-                """UPDATE taobao_profiles
-                   SET feishu_user_id = ?, feishu_user_name = ?, proxy_profile_id = ?, profile_key = ?,
-                       user_data_dir = ?, fingerprint_id = ?, profile_json = ?, updated_at = ?
-                   WHERE owner_id = ?""",
-                (feishu_id, name, int(pool["id"]), key, data_dir, fingerprint_id,
-                 json.dumps(profile, ensure_ascii=False, separators=(",", ":")), now, owner_id),
-            )
-        else:
-            conn.execute(
-                """INSERT INTO taobao_profiles (
-                       owner_id, feishu_user_id, feishu_user_name, proxy_profile_id,
-                       profile_key, user_data_dir, fingerprint_id, profile_json, created_at, updated_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (owner_id, feishu_id, name, int(pool["id"]), key, data_dir, fingerprint_id,
-                 json.dumps(profile, ensure_ascii=False, separators=(",", ":")), now, now),
-            )
+        if row:
+            return dict(row)
+        if not create:
+            return None
+        # Legacy column retained for database compatibility only; Taobao no
+        # longer reads this record for routing or allocation.
+        legacy = conn.execute("SELECT id FROM proxy_profiles WHERE deleted_at = '' ORDER BY id LIMIT 1").fetchone()
+        if not legacy:
+            raise ValueError("淘宝代理系统尚未初始化")
+        key, data_dir, fingerprint_id, profile = _profile_payload(owner_id, feishu_id, 0)
+        now = proxy_pool.now_iso()
+        conn.execute(
+            """INSERT INTO taobao_profiles (
+                   owner_id, feishu_user_id, feishu_user_name, proxy_profile_id,
+                   profile_key, user_data_dir, fingerprint_id, profile_json, created_at, updated_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (owner_id, feishu_id, name, int(legacy["id"]), key, data_dir, fingerprint_id,
+             json.dumps(profile, ensure_ascii=False, separators=(",", ":")), now, now),
+        )
         conn.commit()
         return dict(conn.execute("SELECT * FROM taobao_profiles WHERE owner_id = ?", (owner_id,)).fetchone())
 
@@ -329,10 +368,10 @@ def state(user: dict[str, Any]) -> dict[str, Any]:
     with _connect() as conn:
         _active_rows(conn)
         row = conn.execute("SELECT * FROM taobao_sessions WHERE owner_id = ? ORDER BY id DESC LIMIT 1", (profile["owner_id"],)).fetchone()
-        pool = conn.execute("SELECT * FROM proxy_profiles WHERE id = ?", (profile["proxy_profile_id"],)).fetchone()
+        binding = conn.execute("SELECT * FROM taobao_proxy_bindings WHERE owner_id = ?", (profile["owner_id"],)).fetchone()
     return {
         "configured": True,
-        "profile": {"fingerprintId": profile["fingerprint_id"], "proxyReady": bool(pool and pool["status"] == proxy_pool.STATUS_ACTIVE and str(pool["port_scope"] or "") == proxy_pool.PORT_SCOPE_TAOBAO)},
+        "profile": {"fingerprintId": profile["fingerprint_id"], "proxyReady": bool(binding and binding["status"] == "active")},
         "session": _session_public(row) if row else {"active": False, "status": "stopped"},
     }
 
@@ -343,12 +382,8 @@ def start_session(user: dict[str, Any]) -> dict[str, Any]:
         for row in _active_rows(conn):
             if str(row["owner_id"]) == str(profile["owner_id"]):
                 return {"session": _session_public(row), "openUrl": str(row["channel_url"]), **state(user)}
-        pool = conn.execute("SELECT * FROM proxy_profiles WHERE id = ? AND deleted_at = ''", (profile["proxy_profile_id"],)).fetchone()
-        if not pool:
-            raise ValueError("已绑定的代理出口不存在，请联系管理员重新分配")
-        preflight = proxy_pool.check_binding({"proxy_profile_id": int(pool["id"]), "bind": True})
-        if not preflight.get("allowed"):
-            raise ValueError(str(preflight.get("reason") or "代理 IP 校验未通过"))
+        binding = _ensure_taobao_proxy(str(profile["owner_id"]))
+        pool = {"local_port": int(binding["local_port"]), "expected_exit_ip": "", "source_type": "direct"}
         slot, ports = _allocate_slot(conn)
         now = proxy_pool.now_iso()
         cur = conn.execute(
@@ -411,7 +446,10 @@ def _active_session(user: dict[str, Any]):
         row = next((item for item in rows if str(item["owner_id"]) == str(profile["owner_id"])), None)
         if not row:
             raise ValueError("淘宝浏览器未运行，请先启动并完成登录")
-        return profile, dict(row), dict(conn.execute("SELECT * FROM proxy_profiles WHERE id = ?", (profile["proxy_profile_id"],)).fetchone())
+        binding = conn.execute("SELECT * FROM taobao_proxy_bindings WHERE owner_id = ?", (profile["owner_id"],)).fetchone()
+        if not binding:
+            raise ValueError("淘宝代理监听尚未初始化")
+        return profile, dict(row), {"local_port": int(binding["local_port"]), "expected_exit_ip": "", "source_type": "direct"}
 
 
 def open_login(user: dict[str, Any]) -> dict[str, Any]:
