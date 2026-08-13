@@ -135,35 +135,69 @@ def _allocate_proxy(conn, owner_id: str):
               SELECT 1 FROM taobao_profiles t
               WHERE t.proxy_profile_id = p.id AND t.owner_id <> ?
           )
-        ORDER BY p.id
+        ORDER BY CASE WHEN p.port_scope = ? THEN 0 ELSE 1 END, p.id
         LIMIT 1
         """,
-        (proxy_pool.STATUS_ACTIVE, owner_id),
+        (proxy_pool.STATUS_ACTIVE, owner_id, proxy_pool.PORT_SCOPE_TAOBAO),
     ).fetchone()
     if not row:
         raise ValueError("没有可分配的独立代理出口；请先在账号运营台添加启用的专用 IP 池")
     return row
 
 
+def _ready_proxy(conn, profile: dict[str, Any]):
+    row = conn.execute(
+        """SELECT * FROM proxy_profiles
+           WHERE id = ? AND deleted_at = '' AND status = ? AND parse_status = 'ok'
+             AND port_scope = ?""",
+        (int(profile["proxy_profile_id"]), proxy_pool.STATUS_ACTIVE, proxy_pool.PORT_SCOPE_TAOBAO),
+    ).fetchone()
+    if not row:
+        return None
+    start_port, end_port = proxy_pool._port_range(proxy_pool.PORT_SCOPE_TAOBAO)
+    return row if start_port <= int(row["local_port"] or 0) <= end_port else None
+
+
 def _profile_for_user(user: dict[str, Any], *, create: bool) -> dict[str, Any] | None:
     owner_id, feishu_id, name = _owner(user)
     with _LOCK, _connect() as conn:
         row = conn.execute("SELECT * FROM taobao_profiles WHERE owner_id = ?", (owner_id,)).fetchone()
-        if row:
-            return dict(row)
-        if not create:
-            return None
+        previous = dict(row) if row else None
+        if previous and _ready_proxy(conn, previous):
+            return previous
+        if previous and not create:
+            return previous
+        if previous:
+            active = conn.execute(
+                "SELECT 1 FROM taobao_sessions WHERE owner_id = ? AND status IN ('starting','running','observing') LIMIT 1",
+                (owner_id,),
+            ).fetchone()
+            if active:
+                raise ValueError("当前淘宝浏览器仍在运行，不能迁移代理端口")
         pool = _allocate_proxy(conn, owner_id)
-        key, data_dir, fingerprint_id, profile = _profile_payload(owner_id, feishu_id, int(pool["id"]))
-        now = proxy_pool.now_iso()
-        conn.execute(
-            """INSERT INTO taobao_profiles (
-                   owner_id, feishu_user_id, feishu_user_name, proxy_profile_id,
-                   profile_key, user_data_dir, fingerprint_id, profile_json, created_at, updated_at
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (owner_id, feishu_id, name, int(pool["id"]), key, data_dir, fingerprint_id,
-             json.dumps(profile, ensure_ascii=False, separators=(",", ":")), now, now),
-        )
+        pool_id = int(pool["id"])
+    pool = proxy_pool.reserve_pool_port_scope(pool_id, proxy_pool.PORT_SCOPE_TAOBAO)
+    key, data_dir, fingerprint_id, profile = _profile_payload(owner_id, feishu_id, int(pool["id"]))
+    now = proxy_pool.now_iso()
+    with _LOCK, _connect() as conn:
+        if previous:
+            conn.execute(
+                """UPDATE taobao_profiles
+                   SET feishu_user_id = ?, feishu_user_name = ?, proxy_profile_id = ?, profile_key = ?,
+                       user_data_dir = ?, fingerprint_id = ?, profile_json = ?, updated_at = ?
+                   WHERE owner_id = ?""",
+                (feishu_id, name, int(pool["id"]), key, data_dir, fingerprint_id,
+                 json.dumps(profile, ensure_ascii=False, separators=(",", ":")), now, owner_id),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO taobao_profiles (
+                       owner_id, feishu_user_id, feishu_user_name, proxy_profile_id,
+                       profile_key, user_data_dir, fingerprint_id, profile_json, created_at, updated_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (owner_id, feishu_id, name, int(pool["id"]), key, data_dir, fingerprint_id,
+                 json.dumps(profile, ensure_ascii=False, separators=(",", ":")), now, now),
+            )
         conn.commit()
         return dict(conn.execute("SELECT * FROM taobao_profiles WHERE owner_id = ?", (owner_id,)).fetchone())
 
@@ -262,7 +296,7 @@ def state(user: dict[str, Any]) -> dict[str, Any]:
         pool = conn.execute("SELECT * FROM proxy_profiles WHERE id = ?", (profile["proxy_profile_id"],)).fetchone()
     return {
         "configured": True,
-        "profile": {"fingerprintId": profile["fingerprint_id"], "proxyReady": bool(pool and pool["status"] == proxy_pool.STATUS_ACTIVE)},
+        "profile": {"fingerprintId": profile["fingerprint_id"], "proxyReady": bool(pool and pool["status"] == proxy_pool.STATUS_ACTIVE and str(pool["port_scope"] or "") == proxy_pool.PORT_SCOPE_TAOBAO)},
         "session": _session_public(row) if row else {"active": False, "status": "stopped"},
     }
 

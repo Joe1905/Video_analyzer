@@ -39,6 +39,10 @@ SING_BOX_COMPOSE_PROJECT = os.getenv("SING_BOX_COMPOSE_PROJECT", "short-video-an
 SING_BOX_COMPOSE_SERVICE = os.getenv("SING_BOX_COMPOSE_SERVICE", "sing-box").strip() or "sing-box"
 PROXY_PORT_START = int(os.getenv("PROXY_POOL_PORT_START", "18900") or "18900")
 PROXY_PORT_END = int(os.getenv("PROXY_POOL_PORT_END", "18999") or "18999")
+TAOBAO_PROXY_PORT_START = int(os.getenv("TAOBAO_PROXY_PORT_START", "19020") or "19020")
+TAOBAO_PROXY_PORT_END = int(os.getenv("TAOBAO_PROXY_PORT_END", "19039") or "19039")
+PORT_SCOPE_DEFAULT = "default"
+PORT_SCOPE_TAOBAO = "taobao"
 PROXY_REQUEST_ATTEMPTS = max(1, int(os.getenv("PROXY_REQUEST_ATTEMPTS", "3") or "3"))
 PROXY_REACHABILITY_ATTEMPTS = max(1, int(os.getenv("PROXY_REACHABILITY_ATTEMPTS", "10") or "10"))
 PROXY_RECHECK_DELAYS_SECONDS = (5 * 60, 10 * 60, 30 * 60)
@@ -204,7 +208,29 @@ def is_retryable_proxy_error(error: Exception | str) -> bool:
     return bool(message and any(marker in message for marker in PROXY_RETRYABLE_ERROR_MARKERS))
 
 
+def _clean_port_scope(value: Any) -> str:
+    return PORT_SCOPE_TAOBAO if str(value or "").strip().lower() == PORT_SCOPE_TAOBAO else PORT_SCOPE_DEFAULT
+
+
+def _port_range(port_scope: str = PORT_SCOPE_DEFAULT) -> tuple[int, int]:
+    if _clean_port_scope(port_scope) == PORT_SCOPE_TAOBAO:
+        return TAOBAO_PROXY_PORT_START, TAOBAO_PROXY_PORT_END
+    return PROXY_PORT_START, PROXY_PORT_END
+
+
+def _validate_port_ranges() -> None:
+    for label, start, end in (
+        ("IP 池", PROXY_PORT_START, PROXY_PORT_END),
+        ("淘宝", TAOBAO_PROXY_PORT_START, TAOBAO_PROXY_PORT_END),
+    ):
+        if start < 1024 or end < start or end > 65535:
+            raise ValueError(f"{label}代理端口范围无效：{start}-{end}")
+    if not (TAOBAO_PROXY_PORT_END < PROXY_PORT_START or TAOBAO_PROXY_PORT_START > PROXY_PORT_END):
+        raise ValueError("淘宝代理端口范围不能与 IP 池端口范围重叠")
+
+
 def connect() -> sqlite3.Connection:
+    _validate_port_ranges()
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -234,6 +260,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             local_port INTEGER NOT NULL DEFAULT 0,
+            port_scope TEXT NOT NULL DEFAULT 'default',
             detected_exit_ip TEXT NOT NULL DEFAULT '',
             detected_country TEXT NOT NULL DEFAULT '',
             detected_region TEXT NOT NULL DEFAULT '',
@@ -431,6 +458,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     for name, definition in {
         "dialer_proxy": "TEXT NOT NULL DEFAULT ''",
         "local_port": "INTEGER NOT NULL DEFAULT 0",
+        "port_scope": "TEXT NOT NULL DEFAULT 'default'",
         "detected_exit_ip": "TEXT NOT NULL DEFAULT ''",
         "detected_country": "TEXT NOT NULL DEFAULT ''",
         "detected_region": "TEXT NOT NULL DEFAULT ''",
@@ -581,20 +609,24 @@ def init_db(conn: sqlite3.Connection) -> None:
                 (dialer_proxy, serialized, row["id"]),
             )
     used_ports: set[int] = set()
-    for row in conn.execute("SELECT id, local_port FROM proxy_profiles WHERE deleted_at = '' ORDER BY id"):
+    for row in conn.execute("SELECT id, local_port, port_scope FROM proxy_profiles WHERE deleted_at = '' ORDER BY id"):
+        port_scope = _clean_port_scope(row["port_scope"])
+        start_port, end_port = _port_range(port_scope)
         local_port = int(row["local_port"] or 0)
-        if PROXY_PORT_START <= local_port <= PROXY_PORT_END and local_port not in used_ports:
+        if start_port <= local_port <= end_port and local_port not in used_ports:
+            if str(row["port_scope"] or "") != port_scope:
+                conn.execute("UPDATE proxy_profiles SET port_scope = ?, updated_at = ? WHERE id = ?", (port_scope, now_iso(), row["id"]))
             used_ports.add(local_port)
             continue
         replacement = next(
-            (port for port in range(PROXY_PORT_START, PROXY_PORT_END + 1) if port not in used_ports),
+            (port for port in range(start_port, end_port + 1) if port not in used_ports),
             0,
         )
         if not replacement:
-            raise ValueError(f"proxy port range exhausted: {PROXY_PORT_START}-{PROXY_PORT_END}")
+            raise ValueError(f"{port_scope} proxy port range exhausted: {start_port}-{end_port}")
         conn.execute(
-            "UPDATE proxy_profiles SET local_port = ?, updated_at = ? WHERE id = ?",
-            (replacement, now_iso(), row["id"]),
+            "UPDATE proxy_profiles SET local_port = ?, port_scope = ?, updated_at = ? WHERE id = ?",
+            (replacement, port_scope, now_iso(), row["id"]),
         )
         used_ports.add(replacement)
     conn.execute(
@@ -646,13 +678,15 @@ def _clean_account_status(value: Any, default: str = ACCOUNT_STATUS_ACTIVE) -> s
     return ACCOUNT_STATUS_MAP.get(raw.lower(), ACCOUNT_STATUS_MAP.get(raw, raw if raw in {ACCOUNT_STATUS_ACTIVE, ACCOUNT_STATUS_PAUSED, ACCOUNT_STATUS_ERROR} else default))
 
 
-def _allocate_port(conn: sqlite3.Connection, current_id: int = 0) -> int:
+def _allocate_port(conn: sqlite3.Connection, current_id: int = 0, port_scope: str = PORT_SCOPE_DEFAULT) -> int:
+    port_scope = _clean_port_scope(port_scope)
+    start_port, end_port = _port_range(port_scope)
     if current_id:
         row = conn.execute(
-            "SELECT local_port FROM proxy_profiles WHERE id = ? AND deleted_at = ''",
+            "SELECT local_port, port_scope FROM proxy_profiles WHERE id = ? AND deleted_at = ''",
             (current_id,),
         ).fetchone()
-        if row and int(row["local_port"] or 0):
+        if row and _clean_port_scope(row["port_scope"]) == port_scope and start_port <= int(row["local_port"] or 0) <= end_port:
             return int(row["local_port"])
     used = {
         int(row["local_port"])
@@ -660,10 +694,68 @@ def _allocate_port(conn: sqlite3.Connection, current_id: int = 0) -> int:
             "SELECT local_port FROM proxy_profiles WHERE local_port > 0 AND deleted_at = ''"
         )
     }
-    for port in range(PROXY_PORT_START, PROXY_PORT_END + 1):
+    for port in range(start_port, end_port + 1):
         if port not in used:
             return port
-    raise ValueError(f"proxy port range exhausted: {PROXY_PORT_START}-{PROXY_PORT_END}")
+    raise ValueError(f"{port_scope} proxy port range exhausted: {start_port}-{end_port}")
+
+
+def reserve_pool_port_scope(pool_id: int, port_scope: str) -> dict[str, Any]:
+    """Move an unused proxy listener into an isolated port scope and resync it."""
+    port_scope = _clean_port_scope(port_scope)
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM proxy_profiles WHERE id = ? AND deleted_at = ''",
+            (int(pool_id),),
+        ).fetchone()
+        if not row:
+            raise ValueError("代理出口不存在，无法迁移到独立端口范围")
+        old_pool = dict(row)
+        if _clean_port_scope(row["port_scope"]) == port_scope:
+            return _row_to_pool(row, 0, [], _proxy_pending_job_count(conn, int(pool_id)))
+        account = conn.execute(
+            "SELECT 1 FROM tiktok_accounts WHERE proxy_profile_id = ? AND proxy_bound = 1 AND deleted_at = '' LIMIT 1",
+            (int(pool_id),),
+        ).fetchone()
+        session = conn.execute(
+            "SELECT 1 FROM browser_sessions WHERE proxy_profile_id = ? AND status IN ('starting','running','observing') LIMIT 1",
+            (int(pool_id),),
+        ).fetchone()
+        if account or session:
+            raise ValueError("代理出口正在被 IP 池账号使用，不能迁移到淘宝独立端口范围")
+        new_port = _allocate_port(conn, 0, port_scope)
+
+    listener_restore = None
+    if not _sing_box_reality_pool(old_pool):
+        _cleanup, listener_restore = _remove_mihomo_pool_config(old_pool)
+    try:
+        with connect() as conn:
+            conn.execute(
+                "UPDATE proxy_profiles SET local_port = ?, port_scope = ?, updated_at = ? WHERE id = ?",
+                (new_port, port_scope, now_iso(), int(pool_id)),
+            )
+            conn.commit()
+        pool = get_pool(int(pool_id))
+        if _sing_box_reality_pool(pool):
+            ensure_proxy_cores(restart=True, required=True)
+        else:
+            _sync_mihomo_pool_config(pool)
+        return get_pool(int(pool_id))
+    except Exception:
+        with connect() as conn:
+            conn.execute(
+                "UPDATE proxy_profiles SET local_port = ?, port_scope = ?, updated_at = ? WHERE id = ?",
+                (int(old_pool["local_port"] or 0), _clean_port_scope(old_pool.get("port_scope")), now_iso(), int(pool_id)),
+            )
+            conn.commit()
+        try:
+            if listener_restore is not None:
+                _restore_mihomo_listener_config(*listener_restore)
+            elif not _sing_box_reality_pool(old_pool):
+                _sync_mihomo_pool_config(old_pool)
+        except Exception:
+            pass
+        raise
 
 
 def _duplicate_exit_ip_pool(
@@ -2394,20 +2486,24 @@ def delete_product(product_id: str) -> dict[str, Any]:
 
 def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
     pool_id = int(payload.get("id") or 0)
+    port_scope = _clean_port_scope(payload.get("port_scope"))
     name = _clean_text(payload.get("name"), 160)
     source_uri = _clean_text(payload.get("source_uri"), 10000)
     expected_exit_ip = _clean_text(payload.get("expected_exit_ip"), 80)
     source_type = _clean_text(payload.get("source_type"), 40)
     # 已同步但尚未录入 URI 的出口保留“默认解析”状态；只改名称、地区或禁用时，
     # 不应把它无意改写成 VLESS。
-    if pool_id and not source_type and not source_uri:
+    existing = None
+    if pool_id:
         with connect() as conn:
             existing = conn.execute(
-                "SELECT source_type FROM proxy_profiles WHERE id = ? AND deleted_at = ''",
+                "SELECT source_type, port_scope FROM proxy_profiles WHERE id = ? AND deleted_at = ''",
                 (pool_id,),
             ).fetchone()
-        if existing and str(existing["source_type"] or "") == "demo":
+        if existing and not source_type and not source_uri and str(existing["source_type"] or "") == "demo":
             source_type = "demo"
+        if existing and "port_scope" not in payload:
+            port_scope = _clean_port_scope(existing["port_scope"])
     lowered_uri = source_uri.lower()
     if not source_type and lowered_uri.startswith("vless://"):
         source_type = "vless"
@@ -2471,6 +2567,7 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
         "mihomo_name": mihomo_name or name,
         "parsed_json": json.dumps(parsed, ensure_ascii=False, separators=(",", ":")),
         "mihomo_proxy_json": json.dumps(mihomo_proxy, ensure_ascii=False, separators=(",", ":")),
+        "port_scope": port_scope,
         "updated_at": now,
     }
     with connect() as conn:
@@ -2481,12 +2578,12 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
             ).fetchone()
             if not exists:
                 raise ValueError("proxy profile not found")
-            values["local_port"] = _allocate_port(conn, pool_id)
+            values["local_port"] = _allocate_port(conn, pool_id, port_scope)
             conn.execute(
                 """
                 UPDATE proxy_profiles
                 SET name=:name, source_type=:source_type, source_uri=:source_uri, dialer_proxy=:dialer_proxy,
-                    expected_exit_ip=:expected_exit_ip, region=:region, status=:status, local_port=:local_port,
+                    expected_exit_ip=:expected_exit_ip, region=:region, status=:status, local_port=:local_port, port_scope=:port_scope,
                     notes=:notes, parse_status=:parse_status, parse_error=:parse_error,
                     mihomo_name=:mihomo_name, parsed_json=:parsed_json,
                     mihomo_proxy_json=:mihomo_proxy_json, updated_at=:updated_at
@@ -2495,15 +2592,15 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
                 {**values, "id": pool_id},
             )
         else:
-            values["local_port"] = _allocate_port(conn, 0)
+            values["local_port"] = _allocate_port(conn, 0, port_scope)
             cur = conn.execute(
                 """
                 INSERT INTO proxy_profiles (
-                    name, source_type, source_uri, dialer_proxy, expected_exit_ip, region, status, notes, local_port,
+                    name, source_type, source_uri, dialer_proxy, expected_exit_ip, region, status, notes, local_port, port_scope,
                     parse_status, parse_error, mihomo_name, parsed_json, mihomo_proxy_json,
                     created_at, updated_at
                 ) VALUES (
-                    :name, :source_type, :source_uri, :dialer_proxy, :expected_exit_ip, :region, :status, :notes, :local_port,
+                    :name, :source_type, :source_uri, :dialer_proxy, :expected_exit_ip, :region, :status, :notes, :local_port, :port_scope,
                     :parse_status, :parse_error, :mihomo_name, :parsed_json, :mihomo_proxy_json,
                     :created_at, :updated_at
                 )
