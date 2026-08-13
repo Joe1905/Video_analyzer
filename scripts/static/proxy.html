@@ -1338,6 +1338,13 @@
         const suffix = uri.length > prefix.length + 10 ? uri.slice(-7) : '';
         return `${prefix}••••••${suffix}`;
       };
+      // 与 v1 保持一致：新增出口默认按当前池数量顺序命名，用户可直接覆盖。
+      const nextPoolName = () => {
+        const livePools = document.querySelector('#proxy-list')?.__proxyPoolData;
+        const bootstrapPools = document.documentElement.__proxyBootstrapPools;
+        const pools = Array.isArray(livePools) ? livePools : (Array.isArray(bootstrapPools) ? bootstrapPools : []);
+        return `代理${pools.length + 1}`;
+      };
       const openLeftDrawer = ({ root, title, desc, body, foot }) => {
         const drawer = el('pool-drawer'), overlay = el('pool-overlay');
         cancelPoolDrawerClosing();
@@ -1381,7 +1388,7 @@
         root: 'proxyPoolCreate',
         title: '新增 IP',
         desc: '配置一个代理出口；保存后会直接加入左侧 IP 池。',
-        body: `<form class="pool-create-form" id="proxy-pool-form" data-proxy-pool-form><label>出口名称<input name="name" placeholder="例如：洛杉矶 · US West" required></label><label>代理类型<select name="source_type"><option value="">默认解析</option><option value="vless">VLESS</option><option value="vmess">VMess</option><option value="static">HTTP / SOCKS</option></select></label><label>订阅或连接 URI<input name="source_uri" placeholder="vless:// 或 socks5://（可稍后补充）"></label><div class="pool-create-grid"><label>预期出口 IP<input name="expected_exit_ip" placeholder="154.12.88.64"></label><label>地区<input name="region" placeholder="US West"></label></div><p class="pool-create-note">连接 URI 仅用于保存出口配置，不会在列表中直接显示。</p><p class="pool-drawer-error" data-proxy-pool-error></p></form>`,
+        body: `<form class="pool-create-form" id="proxy-pool-form" data-proxy-pool-form><label>出口名称<input name="name" value="${escapePoolText(nextPoolName())}" placeholder="例如：洛杉矶 · US West" required></label><label>代理类型<select name="source_type"><option value="">默认解析</option><option value="vless">VLESS</option><option value="vmess">VMess</option><option value="static">HTTP / SOCKS</option></select></label><label>订阅或连接 URI<input name="source_uri" placeholder="vless:// 或 socks5://（可稍后补充）"></label><div class="pool-create-grid"><label>预期出口 IP<input name="expected_exit_ip" placeholder="154.12.88.64"></label><label>地区<input name="region" placeholder="US West"></label></div><p class="pool-create-note">连接 URI 仅用于保存出口配置，不会在列表中直接显示。</p><p class="pool-drawer-error" data-proxy-pool-error></p></form>`,
         foot: '<button class="button" data-close>取消</button><button type="submit" class="button primary" form="proxy-pool-form">保存出口</button>'
       });
       const loadPool = async (id, { fresh = false } = {}) => {
