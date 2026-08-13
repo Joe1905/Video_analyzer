@@ -883,7 +883,13 @@
         views.platformLoginSession = { k: 'LOGIN SESSION', title: `${meta.label} 登录会话`, desc: '登录过程始终留在当前抽屉中；完成后返回账号主界面。', parent: 'platformLogin', body: `<div class="login-session-card"><div class="login-session-target">${mark(key)}<div><b>${row.id} · ${meta.label}</b><small>固定使用 ${row.proxy} 出口与当前隔离 Chrome Profile</small></div></div><div class="login-ip-check"><i></i><span>当前出口：${row.ip} · 可重新执行真实 IP 校验</span></div>${channel}<div class="login-session-actions"><button type="button" class="button" data-platform-login-preflight>重新校验 IP</button><button type="button" class="button primary" data-platform-login-complete>检测登录成功</button></div></div>` };
       };
       const proxyPost = async (path, payload, { signal } = {}) => {
-        const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), signal });
+        let response;
+        try {
+          response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), signal });
+        } catch (error) {
+          if (error?.name === 'AbortError') throw error;
+          throw new Error('运营台与服务的连接暂时中断，请稍后重试');
+        }
         const data = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(data.error || `请求失败（${response.status}）`);
         return data;
@@ -1017,10 +1023,25 @@
               session = opened.session || session;
               openObservationChannel(session);
             }
-            if (isLatestAction(actionKey, operation)) await loadLiveData();
+            if (isLatestAction(actionKey, operation)) {
+              try {
+                await loadLiveData();
+              } catch (_) {
+                showProxyActionError(action === 'wake' ? '账号已唤醒，列表状态刷新暂时失败；请稍后点击刷新确认。' : '观测通道已打开，列表状态刷新暂时失败；请稍后点击刷新确认。', { kind: 'success' });
+              }
+            }
           } catch (error) {
             if (error?.name !== 'AbortError') {
-              showProxyActionError(error.message || '无法启动账号会话');
+              const connectionInterrupted = error?.message === '运营台与服务的连接暂时中断，请稍后重试';
+              if (connectionInterrupted && isLatestAction(actionKey, operation)) {
+                await new Promise(resolve => window.setTimeout(resolve, 700));
+                const refreshed = await loadLiveData().catch(() => false);
+                if (refreshed) {
+                  showProxyActionError(action === 'wake' ? '唤醒请求已提交，已同步当前账号状态。' : '观测请求已提交，已同步当前账号状态。', { kind: 'success' });
+                  return;
+                }
+              }
+              showProxyActionError(connectionInterrupted ? '服务连接短暂中断，已保留当前启动状态；请稍后点击刷新确认。' : (error.message || '无法启动账号会话'));
               if (isLatestAction(actionKey, operation)) await loadLiveData().catch(() => {});
             }
           }
@@ -1043,7 +1064,7 @@
           const transitionStartedAt = performance.now();
           setSessionTransition(row.accountId, 'sleeping', session, state.platform);
           renderAccounts();
-          try { await proxyPost('/api/proxy/login-session/stop', { session_id: session.id }, { signal: operation.controller.signal }); await keepTransitionVisible(transitionStartedAt); if (isLatestAction(actionKey, operation)) { state.sessions = state.sessions.filter(item => Number(item.id) !== Number(session.id)); setSessionTransition(row.accountId, ''); renderAccounts(); await loadLiveData(); } }
+          try { await proxyPost('/api/proxy/login-session/stop', { session_id: session.id }, { signal: operation.controller.signal }); await keepTransitionVisible(transitionStartedAt); if (isLatestAction(actionKey, operation)) { state.sessions = state.sessions.filter(item => Number(item.id) !== Number(session.id)); setSessionTransition(row.accountId, ''); renderAccounts(); await loadLiveData().catch(() => showProxyActionError('账号已休眠，列表状态刷新暂时失败；请稍后点击刷新确认。', { kind: 'success' })); } }
           catch (error) { if (error?.name !== 'AbortError') { setSessionTransition(row.accountId, ''); renderAccounts(); showProxyActionError(error.message || '无法休眠账号会话'); } }
           finally { finishAction(actionKey, operation); }
           return;
