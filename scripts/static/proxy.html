@@ -1218,13 +1218,25 @@
         const generation = ++liveLoadGeneration;
         liveLoadController?.abort();
         const controller = new AbortController();
+        const deadline = window.setTimeout(() => controller.abort(new DOMException('账号数据请求超时', 'TimeoutError')), 12000);
         liveLoadController = controller;
         try { return await hydrateLiveData({ signal: controller.signal, generation }); }
         catch (error) {
-          if (error?.name === 'AbortError') return false;
+          if (error?.name === 'AbortError' || error?.name === 'TimeoutError') {
+            // 被最新请求替换时由最新请求接管视图；只有当前这一代真的超时/中断，
+            // 才替换首屏的“正在加载”，避免账号列表永久停在加载态。
+            if (generation === liveLoadGeneration) {
+              const timedOut = controller.signal.reason?.name === 'TimeoutError' || error?.name === 'TimeoutError';
+              renderAccounts(timedOut ? '账号加载超时，请点击刷新重试。' : '账号刷新已中断，请点击刷新重试。');
+            }
+            return false;
+          }
           if (generation === liveLoadGeneration) renderAccounts('账号数据暂时无法加载，请刷新页面重试。');
           throw error;
-        } finally { if (generation === liveLoadGeneration) liveLoadController = null; }
+        } finally {
+          window.clearTimeout(deadline);
+          if (generation === liveLoadGeneration) liveLoadController = null;
+        }
       };
       window.proxyLoadLiveData = loadLiveData;
       const refreshAccountView = () => { updateLiveAccountSummary(); renderAccounts(); };
