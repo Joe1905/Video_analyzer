@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import random
 import re
 import sqlite3
 import threading
@@ -17,7 +18,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
 from urllib.request import ProxyHandler, Request, build_opener
 
 import proxy_pool
@@ -26,6 +27,7 @@ import proxy_pool
 MAX_IMAGES = max(1, min(12, int(os.getenv("TAOBAO_ARCHIVE_MAX_IMAGES", "8") or "8")))
 MAX_IMAGE_BYTES = max(1024 * 1024, int(os.getenv("TAOBAO_ARCHIVE_MAX_IMAGE_BYTES", str(8 * 1024 * 1024)) or str(8 * 1024 * 1024)))
 MAX_SLOTS = max(1, int(os.getenv("TAOBAO_BROWSER_MAX_SLOTS", "4") or "4"))
+MAX_SEARCH_CANDIDATES = max(10, min(120, int(os.getenv("TAOBAO_SEARCH_MAX_CANDIDATES", "80") or "80")))
 NOVNC_PORT_START = max(1024, int(os.getenv("TAOBAO_NOVNC_PORT_START", "6101") or "6101"))
 VNC_PORT_START = max(1024, int(os.getenv("TAOBAO_VNC_PORT_START", "5911") or "5911"))
 CDP_PORT_START = max(1024, int(os.getenv("TAOBAO_CDP_PORT_START", "19301") or "19301"))
@@ -493,6 +495,147 @@ def _validate_url(value: Any) -> str:
     return parsed.geturl()
 
 
+def _validate_search_keyword(value: Any) -> str:
+    keyword = re.sub(r"\s+", " ", str(value or "").strip())
+    if not keyword:
+        raise ValueError("搜索名为必填项")
+    if len(keyword) > 100:
+        raise ValueError("搜索名不能超过 100 个字符")
+    return keyword
+
+
+def _validate_optional_url(value: Any) -> str:
+    cleaned = str(value or "").strip()
+    return _validate_url(cleaned) if cleaned else ""
+
+
+def _product_key(value: str) -> str:
+    parsed = urlparse(value)
+    host = (parsed.hostname or "").lower()
+    product_id = (parse_qs(parsed.query).get("id") or [""])[0].strip()
+    if product_id:
+        return f"id:{product_id}"
+    retained = [(key, item) for key, item in parse_qs(parsed.query, keep_blank_values=True).items()
+                if key.lower() not in {"spm", "ali_refid", "utparam", "ns", "abbucket"}]
+    query = urlencode(retained, doseq=True)
+    return urlunparse(("https", host, parsed.path.rstrip("/"), "", query, ""))
+
+
+def _first_visible_locator(page: Any, selectors: tuple[str, ...]) -> Any | None:
+    for selector in selectors:
+        locator = page.locator(selector)
+        try:
+            for index in range(min(locator.count(), 12)):
+                item = locator.nth(index)
+                if item.is_visible():
+                    return item
+        except Exception:
+            continue
+    return None
+
+
+def _random_point(box: dict[str, float], padding: int = 8) -> dict[str, float]:
+    x_min, x_max = box["x"] + padding, box["x"] + max(padding + 1, box["width"] - padding)
+    y_min, y_max = box["y"] + padding, box["y"] + max(padding + 1, box["height"] - padding)
+    return {"x": random.uniform(x_min, x_max), "y": random.uniform(y_min, y_max)}
+
+
+def _move_with_curve(page: Any, source: dict[str, float], target: dict[str, float]) -> None:
+    control = {
+        "x": (source["x"] + target["x"]) / 2 + random.uniform(-60, 60),
+        "y": (source["y"] + target["y"]) / 2 + random.uniform(-40, 40),
+    }
+    steps = random.randint(8, 16)
+    for index in range(1, steps + 1):
+        ratio = index / steps
+        x = (1 - ratio) ** 2 * source["x"] + 2 * (1 - ratio) * ratio * control["x"] + ratio ** 2 * target["x"]
+        y = (1 - ratio) ** 2 * source["y"] + 2 * (1 - ratio) * ratio * control["y"] + ratio ** 2 * target["y"]
+        page.mouse.move(x, y)
+        page.wait_for_timeout(random.randint(25, 80))
+
+
+def _type_search_keyword(page: Any, keyword: str) -> dict[str, float]:
+    search = _first_visible_locator(page, ("input#q", "input[name='q']", "input[type='search']", "input[placeholder*='搜索']"))
+    if not search:
+        raise ValueError("未找到淘宝搜索框，请在新页签确认淘宝首页已正常加载后重试")
+    search.scroll_into_view_if_needed(timeout=5000)
+    box = search.bounding_box()
+    if not box:
+        raise ValueError("淘宝搜索框不可见，请在新页签确认页面状态后重试")
+    viewport = page.viewport_size or {"width": 1365, "height": 900}
+    source = {"x": random.uniform(viewport["width"] * .38, viewport["width"] * .62), "y": random.uniform(viewport["height"] * .36, viewport["height"] * .58)}
+    target = _random_point(box)
+    _move_with_curve(page, source, target)
+    page.mouse.click(target["x"], target["y"])
+    page.wait_for_timeout(random.randint(90, 210))
+    page.keyboard.press("Control+A")
+    page.keyboard.type(keyword, delay=random.randint(55, 115))
+    page.wait_for_timeout(random.randint(180, 420))
+    page.keyboard.press("Enter")
+    return target
+
+
+def _search_candidates(page: Any) -> list[dict[str, Any]]:
+    links = page.locator("a[href]")
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index in range(min(links.count(), MAX_SEARCH_CANDIDATES * 8)):
+        link = links.nth(index)
+        try:
+            href = str(link.get_attribute("href") or "").strip()
+            absolute_url = urljoin(page.url, href)
+            try:
+                _validate_url(absolute_url)
+            except ValueError:
+                continue
+            key = _product_key(absolute_url)
+            if key in seen:
+                continue
+            seen.add(key)
+            text = str(link.get_attribute("title") or link.get_attribute("aria-label") or link.inner_text() or "").strip()
+            if not text:
+                text = str(link.locator("xpath=..").inner_text() or "").strip()
+            candidates.append({"index": index, "url": absolute_url, "key": key, "title": re.sub(r"\s+", " ", text)[:300]})
+            if len(candidates) >= MAX_SEARCH_CANDIDATES:
+                break
+        except Exception:
+            continue
+    return candidates
+
+
+def _select_search_candidate(candidates: list[dict[str, Any]], keyword: str, requested_url: str) -> tuple[dict[str, Any] | None, int]:
+    if requested_url:
+        target_key = _product_key(requested_url)
+        for checked, candidate in enumerate(candidates, start=1):
+            if candidate["key"] == target_key:
+                return candidate, checked
+        return None, len(candidates)
+    needle = re.sub(r"\s+", "", keyword).lower()
+    ranked = sorted(
+        enumerate(candidates),
+        key=lambda item: (
+            needle not in re.sub(r"\s+", "", str(item[1]["title"])).lower(),
+            -sum(char in re.sub(r"\s+", "", str(item[1]["title"])).lower() for char in set(needle)),
+            item[0],
+        ),
+    )
+    return (ranked[0][1] if ranked else None), 1 if ranked else 0
+
+
+def _open_search_candidate(page: Any, candidate: dict[str, Any], mouse: dict[str, float]) -> None:
+    link = page.locator("a[href]").nth(int(candidate["index"]))
+    link.scroll_into_view_if_needed(timeout=5000)
+    page.wait_for_timeout(random.randint(180, 460))
+    box = link.bounding_box()
+    if not box:
+        raise ValueError("匹配商品已不在可点击区域，请重试")
+    target = _random_point(box, padding=5)
+    _move_with_curve(page, mouse, target)
+    page.mouse.click(target["x"], target["y"])
+    page.wait_for_timeout(random.randint(900, 1600))
+    page.wait_for_load_state("domcontentloaded", timeout=60000)
+
+
 def _risk_status(page) -> str:
     text = page.locator("body").inner_text(timeout=5000)[:8000]
     title = page.title()
@@ -538,14 +681,22 @@ def _save_image(source_url: str, target: Path, referer: str, pool: dict[str, Any
         return str(response.headers.get("Content-Type") or ""), len(payload)
 
 
-def collect(user: dict[str, Any], raw_url: Any) -> dict[str, Any]:
-    requested_url = _validate_url(raw_url)
+def collect(user: dict[str, Any], raw_keyword: Any, raw_url: Any = "") -> dict[str, Any]:
+    keyword = _validate_search_keyword(raw_keyword)
+    requested_url = _validate_optional_url(raw_url)
     profile, session, pool = _active_session(user)
     archive_id = _archive_id()
     archive_dir = _owner_archive_dir(str(profile["owner_id"])) / archive_id
     archive_dir.mkdir(parents=True, exist_ok=True)
     files: dict[str, Any] = {"metadata": "metadata.json", "dom": "dom.html", "screenshot": "page.png", "images": []}
-    metadata: dict[str, Any] = {"id": archive_id, "requestedUrl": requested_url, "createdAt": proxy_pool.now_iso(), "files": files, "status": "running"}
+    metadata: dict[str, Any] = {
+        "id": archive_id,
+        "requestedUrl": requested_url or None,
+        "searchKeyword": keyword,
+        "createdAt": proxy_pool.now_iso(),
+        "files": files,
+        "status": "running",
+    }
     with _connect() as conn:
         conn.execute("UPDATE taobao_sessions SET current_job_id = ?, updated_at = ? WHERE id = ?", (archive_id, proxy_pool.now_iso(), int(session["id"])))
         conn.commit()
@@ -555,13 +706,58 @@ def collect(user: dict[str, Any], raw_url: Any) -> dict[str, Any]:
             browser = playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{int(session['debug_port'])}")
             context = browser.contexts[0]
             page = context.pages[0] if context.pages else context.new_page()
-            page.goto(requested_url, wait_until="domcontentloaded", timeout=60000)
-            page.wait_for_timeout(3500)
+            page.goto("https://www.taobao.com/", wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(random.randint(900, 1600))
+            risk = _risk_status(page)
+            if risk:
+                page.screenshot(path=str(archive_dir / files["screenshot"]), full_page=False)
+                metadata.update({"ok": False, "status": risk, "humanReviewRequired": True, "message": "请在新页签的浏览器中完成人工登录或验证后重试"})
+                _write_json(archive_dir / files["metadata"], metadata)
+                return metadata
+            mouse = _type_search_keyword(page, keyword)
+            page.wait_for_timeout(random.randint(1200, 2400))
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=10000)
+            except Exception:
+                pass
+            risk = _risk_status(page)
+            if risk:
+                page.screenshot(path=str(archive_dir / files["screenshot"]), full_page=False)
+                metadata.update({"ok": False, "status": risk, "humanReviewRequired": True, "message": "搜索过程中需要登录或验证，请在新页签处理后重试"})
+                _write_json(archive_dir / files["metadata"], metadata)
+                return metadata
+            candidates = _search_candidates(page)
+            candidate, checked = _select_search_candidate(candidates, keyword, requested_url)
+            metadata["search"] = {
+                "keyword": keyword,
+                "candidateCount": len(candidates),
+                "checkedCandidateCount": checked,
+                "requestedProductUrl": requested_url or None,
+                "matchedProductUrl": str(candidate["url"]) if candidate else None,
+                "matchedTitle": str(candidate["title"]) if candidate else None,
+            }
+            if not candidate:
+                dom = page.content()
+                (archive_dir / files["dom"]).write_text(dom, encoding="utf-8")
+                page.screenshot(path=str(archive_dir / files["screenshot"]), full_page=True)
+                message = "搜索列表中未找到与链接一致的商品" if requested_url else "搜索列表中未找到可采集的商品"
+                metadata.update({
+                    "ok": False,
+                    "status": "search_no_match",
+                    "message": message,
+                    "detail": {"title": keyword, "shopName": None, "price": None},
+                    "domBytes": len(dom.encode("utf-8")),
+                    "imageCount": 0,
+                })
+                _write_json(archive_dir / files["metadata"], metadata)
+                return metadata
+            _open_search_candidate(page, candidate, mouse)
+            page.wait_for_timeout(random.randint(1100, 2200))
             risk = _risk_status(page)
             metadata["finalUrl"] = page.url
             if risk:
                 page.screenshot(path=str(archive_dir / files["screenshot"]), full_page=False)
-                metadata.update({"ok": False, "status": risk, "humanReviewRequired": True, "message": "请在新页签的浏览器中完成人工登录或验证后重试"})
+                metadata.update({"ok": False, "status": risk, "humanReviewRequired": True, "message": "打开匹配商品时需要登录或验证，请在新页签处理后重试"})
                 _write_json(archive_dir / files["metadata"], metadata)
                 return metadata
             dom = page.content()

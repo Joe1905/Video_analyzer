@@ -830,7 +830,7 @@ NAV_ITEMS = [
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
 
-UI_ASSET_VERSION = "20260813-43"
+UI_ASSET_VERSION = "20260813-44"
 APP_UI_ASSETS = f"""
 <script id="ui-nav-state-boot">
 let uiNavExpanded = false;
@@ -14254,7 +14254,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/taobao/session/open-login":
                 return json_response(self, HTTPStatus.OK, taobao_collector.open_login(user))
             if path == "/api/taobao/collect":
-                return json_response(self, HTTPStatus.OK, taobao_collector.collect(user, payload.get("url")))
+                return json_response(self, HTTPStatus.OK, taobao_collector.collect(user, payload.get("keyword"), payload.get("url")))
             return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
         except ValueError as exc:
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
