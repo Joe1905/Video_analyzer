@@ -12,6 +12,7 @@ import json
 import os
 import random
 import re
+import socket
 import sqlite3
 import threading
 import time
@@ -296,9 +297,26 @@ def _slot_ports(slot: int) -> dict[str, int | str]:
 
 def _ports_available(ports: dict[str, int | str]) -> bool:
     display = str(ports["display"]).lstrip(":")
-    if Path(f"/tmp/.X11-unix/X{display}").exists():
+    display_socket = Path(f"/tmp/.X11-unix/X{display}")
+    if display_socket.exists() and _display_socket_active(display_socket):
         return False
     return not any(proxy_pool._port_open("127.0.0.1", int(ports[key]), timeout=0.15) for key in ("vnc_port", "novnc_port", "debug_port"))
+
+
+def _display_socket_active(path: Path) -> bool:
+    """Return whether an Xvfb Unix socket is live, removing a stale marker."""
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(0.15)
+            client.connect(str(path))
+        return True
+    except OSError:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            # A path we cannot remove is conservatively treated as occupied.
+            return True
+        return False
 
 
 def _active_rows(conn) -> list[Any]:
