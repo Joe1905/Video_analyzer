@@ -237,6 +237,7 @@ from video_registry import (
 from proxy_state import ensure_us_proxy
 import instagram_content_collect
 import proxy_pool
+import taobao_collector
 import tiktok_studio_publish
 import tiktok_studio_collect
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
@@ -823,12 +824,13 @@ NAV_ITEMS = [
     {"key": "lan-chat", "href": "/lan-chat", "label": "\u90bb\u804a", "title": "\u5c40\u57df\u7f51\u804a\u5929", "icon": '<path d="M21 15a4 4 0 0 1-4 4H8l-5 2 1.6-4.1A7 7 0 0 1 3 12c0-4 4-7 9-7s9 3 9 7z"/><path d="M8 12h.01M12 12h.01M16 12h.01"/>'},
     {"key": "report", "href": "/report", "label": "\u65e5\u62a5", "title": "\u6bcf\u65e5\u62a5\u544a", "icon": '<path d="M7 3h7l4 4v14H7z"/><path d="M14 3v5h5"/><path d="M10 12h6"/><path d="M10 16h4"/>'},
     {"key": "proxy", "href": "/proxy", "label": "账号运营台", "title": "账号运营台", "icon": '<path d="M4 12a8 8 0 0 1 16 0"/><path d="M8 12a4 4 0 0 1 8 0"/><path d="M12 12v8"/><path d="M9 20h6"/>'},
+    {"key": "taobao", "href": "/taobao", "label": "淘宝采集", "title": "淘宝商品采集", "icon": '<path d="M5 7h14l-1 13H6z"/><path d="M4 7h16"/><path d="M9 7a3 3 0 0 1 6 0"/><path d="M9 12h6"/>'},
     {"key": "tool", "href": "/tool", "label": "工具", "title": "图片标签工具", "icon": '<path d="M4 5h16v14H4z"/><path d="m8 15 3-3 2 2 3-4 3 5"/><circle cx="9" cy="9" r="1"/>'},
 ]
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
 
-UI_ASSET_VERSION = "20260812-38"
+UI_ASSET_VERSION = "20260813-39"
 APP_UI_ASSETS = f"""
 <script id="ui-nav-state-boot">
 let uiNavExpanded = false;
@@ -13312,6 +13314,10 @@ class Handler(BaseHTTPRequestHandler):
             if not PROXY_POOL_ENABLED:
                 return text_response(self, HTTPStatus.NOT_FOUND, "Not found")
             return text_response(self, HTTPStatus.OK, inject_proxy_bootstrap(inject_unified_nav(PROXY_HTML, parsed.path)), "text/html; charset=utf-8")
+        if parsed.path == "/taobao":
+            return text_response(self, HTTPStatus.OK, inject_unified_nav(TAOBAO_HTML, parsed.path), "text/html; charset=utf-8")
+        if parsed.path.startswith("/api/taobao/"):
+            return self.handle_taobao_api_get(parsed.path, parsed.query)
         if parsed.path.startswith("/api/proxy/"):
             if not PROXY_POOL_ENABLED:
                 return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
@@ -13990,6 +13996,8 @@ class Handler(BaseHTTPRequestHandler):
             if not PROXY_POOL_ENABLED:
                 return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
             return self.handle_proxy_api_post(parsed.path)
+        if parsed.path.startswith("/api/taobao/"):
+            return self.handle_taobao_api_post(parsed.path)
         if parsed.path == "/api/tool/convert":
             return self.handle_tool_convert()
         if parsed.path == "/api/upload":
@@ -14086,6 +14094,36 @@ class Handler(BaseHTTPRequestHandler):
                 asset_id = unquote(path.removeprefix("/api/proxy/publish/videos/"))
                 return self.serve_video(tiktok_studio_publish.video_path(asset_id))
             return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
+        except Exception as exc:
+            return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+
+    def handle_taobao_api_get(self, path: str, query: str = "") -> None:
+        user = current_global_user(self)
+        try:
+            if path == "/api/taobao/state":
+                return json_response(self, HTTPStatus.OK, taobao_collector.state(user))
+            if path == "/api/taobao/archives":
+                return json_response(self, HTTPStatus.OK, {"archives": taobao_collector.list_archives(user)})
+            export_match = re.fullmatch(r"/api/taobao/archives/([0-9]{14}-[a-f0-9]{8})/export", path)
+            if export_match:
+                requested_format = str(parse_qs(query).get("format", ["json"])[0]).lower()
+                archive_id = export_match.group(1)
+                if requested_format == "md":
+                    return binary_response(self, HTTPStatus.OK, taobao_collector.export_markdown(user, archive_id).encode("utf-8"), "text/markdown; charset=utf-8", f"taobao-{archive_id}.md", "no-store")
+                if requested_format == "json":
+                    archive = taobao_collector.archive_path(user, archive_id, "metadata.json")
+                    return file_response(self, archive, "application/json; charset=utf-8", f"taobao-{archive_id}.json", archive.stat().st_size)
+                raise ValueError("导出格式仅支持 json 或 md")
+            file_match = re.fullmatch(r"/api/taobao/archives/([0-9]{14}-[a-f0-9]{8})/([A-Za-z0-9._-]+)", path)
+            if file_match:
+                archive = taobao_collector.archive_path(user, file_match.group(1), file_match.group(2))
+                content_type = mimetypes.guess_type(archive.name)[0] or "application/octet-stream"
+                return file_response(self, archive, content_type, archive.name, archive.stat().st_size, download=archive.suffix.lower() in {".html", ".json"})
+            return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
+        except FileNotFoundError:
+            return json_response(self, HTTPStatus.NOT_FOUND, {"error": "归档文件不存在"})
+        except ValueError as exc:
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
         except Exception as exc:
             return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
 
@@ -14201,6 +14239,24 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as exc:
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
         except sqlite3.IntegrityError as exc:
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+        except Exception as exc:
+            return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+
+    def handle_taobao_api_post(self, path: str) -> None:
+        user = current_global_user(self)
+        try:
+            payload = self.read_json_body()
+            if path == "/api/taobao/session/start":
+                return json_response(self, HTTPStatus.OK, taobao_collector.start_session(user))
+            if path == "/api/taobao/session/stop":
+                return json_response(self, HTTPStatus.OK, taobao_collector.stop_session(user))
+            if path == "/api/taobao/session/open-login":
+                return json_response(self, HTTPStatus.OK, taobao_collector.open_login(user))
+            if path == "/api/taobao/collect":
+                return json_response(self, HTTPStatus.OK, taobao_collector.collect(user, payload.get("url")))
+            return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
+        except ValueError as exc:
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
         except Exception as exc:
             return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
@@ -15295,6 +15351,8 @@ SHOP_HTML_PATH = SCRIPTS_DIR / "static" / "shop.html"
 SHOP_HTML = SHOP_HTML_PATH.read_text(encoding="utf-8") if SHOP_HTML_PATH.is_file() else ""
 PROXY_HTML_PATH = SCRIPTS_DIR / "static" / "proxy.html"
 PROXY_HTML = PROXY_HTML_PATH.read_text(encoding="utf-8") if PROXY_HTML_PATH.is_file() else ""
+TAOBAO_HTML_PATH = SCRIPTS_DIR / "static" / "taobao.html"
+TAOBAO_HTML = TAOBAO_HTML_PATH.read_text(encoding="utf-8") if TAOBAO_HTML_PATH.is_file() else ""
 
 
 def proxy_session_janitor() -> None:
@@ -15305,6 +15363,10 @@ def proxy_session_janitor() -> None:
                 print(f"Released {released} expired proxy browser session(s)", flush=True)
         except Exception as exc:
             print(f"Proxy session cleanup failed: {exc}", flush=True)
+        try:
+            taobao_collector.cleanup_expired_sessions()
+        except Exception as exc:
+            print(f"Taobao session cleanup failed: {exc}", flush=True)
         try:
             recheck = proxy_pool.recheck_unavailable_proxies()
             if recheck["attempted"]:

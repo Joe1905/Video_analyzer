@@ -1506,10 +1506,13 @@ def _abs_workspace_path(value: str) -> Path:
 
 
 def _prepare_browser_profile_dir(user_data_dir: Path) -> dict[str, Path]:
-    profiles_root = (DATA_DIR / "tiktok_browser_profiles").resolve()
+    profiles_roots = (
+        (DATA_DIR / "tiktok_browser_profiles").resolve(),
+        (DATA_DIR / "taobao_browser_profiles").resolve(),
+    )
     profile_root = user_data_dir.parent.resolve()
-    if profile_root != profiles_root and profiles_root not in profile_root.parents:
-        raise ValueError("浏览器 profile 必须位于 data/tiktok_browser_profiles 目录")
+    if not any(profile_root == root or root in profile_root.parents for root in profiles_roots):
+        raise ValueError("浏览器 profile 必须位于受管的数据目录")
 
     paths = {
         "home": profile_root / "home",
@@ -1674,6 +1677,7 @@ def _tiktok_identity(body: Any) -> dict[str, str]:
 
 def _launch_browser_for_session(profile: dict[str, Any], pool: sqlite3.Row, session_id: int, display: str, debug_port: int, start_url: str) -> tuple[int, str]:
     isolation = profile.get("isolation") if isinstance(profile.get("isolation"), dict) else {}
+    browser_settings = profile.get("browser_settings") if isinstance(profile.get("browser_settings"), dict) else {}
     user_data_dir = _abs_workspace_path(str(isolation.get("user_data_dir") or f"data/tiktok_browser_profiles/session-{session_id}/user-data"))
     _configure_browser_preferences(user_data_dir)
     profile_paths = _prepare_browser_profile_dir(user_data_dir)
@@ -1682,11 +1686,17 @@ def _launch_browser_for_session(profile: dict[str, Any], pool: sqlite3.Row, sess
     proxy_port = int(pool["local_port"] or 0)
     if not proxy_port:
         raise ValueError("代理没有专用本地端口，不能启动独立浏览器")
+    window_size = browser_settings.get("window_size") or (1280, 900)
+    try:
+        window_width, window_height = (max(800, int(window_size[0])), max(600, int(window_size[1])))
+    except (TypeError, ValueError, IndexError):
+        window_width, window_height = 1280, 900
+    locale = str(browser_settings.get("locale") or TIKTOK_BROWSER_LOCALE).strip() or TIKTOK_BROWSER_LOCALE
     args = [
         browser,
         f"--user-data-dir={user_data_dir}",
         f"--proxy-server=http://127.0.0.1:{proxy_port}",
-        f"--lang={TIKTOK_BROWSER_LOCALE}",
+        f"--lang={locale}",
         "--remote-debugging-address=127.0.0.1",
         f"--remote-debugging-port={debug_port}",
         "--no-first-run",
@@ -1697,10 +1707,13 @@ def _launch_browser_for_session(profile: dict[str, Any], pool: sqlite3.Row, sess
         "--disable-default-apps",
         "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
         "--disable-session-crashed-bubble",
-        "--window-size=1280,900",
+        f"--window-size={window_width},{window_height}",
         "--new-window",
         start_url,
     ]
+    user_agent = str(browser_settings.get("user_agent") or "").strip()
+    if user_agent:
+        args.insert(4, f"--user-agent={user_agent}")
     env = os.environ.copy()
     env["DISPLAY"] = display
     env["HOME"] = str(profile_paths["home"])
