@@ -974,19 +974,24 @@
         trigger.removeAttribute('aria-busy');
         trigger.setAttribute('data-tooltip', trigger.getAttribute('aria-label') || '操作');
       };
-      const openObservationChannel = (session, channel = null) => {
+      const openObservationChannel = session => {
         const channelUrl = String(session?.channel_url || '').trim();
         if (!channelUrl) throw new Error('观测通道未生成，请稍后重试');
-        const target = channel || window.open('', '_blank');
-        if (target) { target.location.replace(channelUrl); return true; }
-        showProxyActionError('浏览器拦截了观测窗口；运营台保持在当前页面。', { link: channelUrl });
-        return false;
+        const row = accountFor(), meta = platformMeta[state.platform];
+        views.observe = {
+          k: 'SESSION OBSERVATION',
+          title: `${meta.label} 账号观测`,
+          desc: `${row.id} · ${row.proxy}出口 · 当前会话在线。`,
+          foot: '',
+          body: `<div class="login-browser-frame observation-browser-frame"><iframe src="${escapeAttribute(channelUrl)}" title="${meta.label} 观测窗口" referrerpolicy="no-referrer"></iframe><a href="${escapeAttribute(channelUrl)}" target="_blank" rel="noopener">在新窗口打开观测通道</a></div><div class="callout" style="margin-top:16px">观测已在当前运营台中打开；如浏览器不允许嵌入通道，可使用上方链接在新窗口打开。</div>`
+        };
+        open('observe');
+        return true;
       };
       const openPlatformAction = async (action, trigger = null) => {
         const row = accountFor(), item = platformFor(row);
         if (!row) return;
         if (action === 'observe' || action === 'wake') {
-          const observationChannel = action === 'observe' ? window.open('', '_blank') : null;
           const actionKey = `account:${row.accountId}`, operation = beginAction(actionKey, trigger, action === 'observe' ? '正在打开观测…' : '正在唤醒账号…');
           const platform = state.platform;
           try {
@@ -1010,11 +1015,10 @@
             if (action === 'observe') {
               const opened = await proxyPost('/api/proxy/login-session/open-platform', { session_id: session.id, platform }, { signal: operation.controller.signal });
               session = opened.session || session;
-              openObservationChannel(session, observationChannel);
+              openObservationChannel(session);
             }
             if (isLatestAction(actionKey, operation)) await loadLiveData();
           } catch (error) {
-            observationChannel?.close();
             if (error?.name !== 'AbortError') {
               showProxyActionError(error.message || '无法启动账号会话');
               if (isLatestAction(actionKey, operation)) await loadLiveData().catch(() => {});
