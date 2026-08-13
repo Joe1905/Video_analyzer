@@ -670,7 +670,8 @@
     .pool-detail-updating .pool-detail-actions,
     .pool-detail-updating .pool-result { animation:pool-status-refresh .22s ease-out; }
     .mini-action.is-busy { position:relative; pointer-events:none; }
-    .mini-action.is-busy .icon { opacity:.16; }
+    .mini-action.is-busy:disabled { opacity:1; color:var(--accent); background:var(--accent-soft); }
+    .mini-action.is-busy .icon { opacity:0; }
     .mini-action.is-busy::after { position:absolute; width:13px; height:13px; border:1.5px solid currentColor; border-top-color:transparent; border-radius:50%; content:""; animation:proxy-action-spin .7s linear infinite; }
     #proxy-action-tooltip { position:fixed; z-index:80; max-width:220px; padding:6px 8px; border-radius:6px; color:#fff; background:#202733; box-shadow:0 7px 18px rgba(21,27,37,.16); font-size:11px; font-weight:650; line-height:1.35; pointer-events:none; opacity:0; transform:translate(-50%,-103%); transition:opacity .12s ease,transform .12s ease; }
     #proxy-action-tooltip.visible { opacity:1; transform:translate(-50%,-100%); }
@@ -790,11 +791,13 @@
         ? `<span class="platform-availability ready"><i></i>已登录</span>`
         : `<span class="platform-availability ${item.awake ? 'pending' : 'missing'}"><i></i>${item.awake ? '可新增登录' : '等待登录'}</span>`;
       const rowActions = (row, item, platform) => {
-        const build = (name, disabled = false, blockedText = '') => {
-          const tip = disabled ? (blockedText || (name === 'observe' ? '请等待会话可观测后再打开' : '当前平台已登录')) : actions[name].text;
-          return `<button type="button" class="mini-action" data-platform-action="${name}" data-account-id="${row.id}" data-tooltip="${tip}" aria-label="${actions[name].text}" ${disabled ? 'disabled' : ''}>${actions[name].svg}</button>`;
+        const build = (name, disabled = false, blockedText = '', busy = false) => {
+          const tip = busy ? blockedText : (disabled ? (blockedText || (name === 'observe' ? '请等待会话可观测后再打开' : '当前平台已登录')) : actions[name].text);
+          return `<button type="button" class="mini-action${busy ? ' is-busy' : ''}" data-platform-action="${name}" data-account-id="${row.id}" data-tooltip="${tip}" aria-label="${actions[name].text}" ${busy ? 'aria-busy="true"' : ''} ${disabled ? 'disabled' : ''}>${actions[name].svg}</button>`;
         };
-        const list = [build('observe', !item.loggedIn || !item.observable, item.starting ? '会话启动中，请稍候' : ''), item.starting || item.sleeping ? build('wake', true, item.starting ? '会话启动中，请稍候' : '会话正在休眠，请稍候') : build(item.session ? 'sleep' : 'wake')];
+        const transitionAction = item.starting ? 'wake' : 'sleep';
+        const transitionTip = item.starting ? '正在唤醒账号…' : '正在休眠账号…';
+        const list = [build('observe', !item.loggedIn || !item.observable, item.starting ? '会话启动中，请稍候' : ''), item.starting || item.sleeping ? build(transitionAction, true, transitionTip, true) : build(item.session ? 'sleep' : 'wake')];
         if (platform === 'tiktok') list.push(build('publish', !item.loggedIn));
         list.push(build('collect', !item.loggedIn));
         list.push(build('login'));
