@@ -1531,7 +1531,7 @@
         if (!operation) return;
         patchPoolDetail(pool, { kind: 'pending', text: '正在校验出口 IP…' });
         try {
-          const response = await fetch('/api/proxy/check', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ proxy_profile_id: Number(id), bind: false }), signal: operation.controller.signal });
+          const response = await fetch('/api/proxy/check', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ proxy_profile_id: Number(id), bind: pool.source_type !== 'direct' }), signal: operation.controller.signal });
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || '校验失败');
           await window.proxyLoadLiveData?.();
@@ -1564,8 +1564,8 @@
           const response = await fetch('/api/proxy/pools/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: Number(id) }) });
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || '删除失败');
-          window.dispatchEvent(new Event('proxy:refresh'));
-          closeDrawer();
+          closePoolDrawer();
+          await window.proxyLoadLiveData?.();
         } catch (err) { openPoolDetail(id, { kind: 'error', text: err?.message || '删除失败，请稍后重试。' }); }
       };
       document.addEventListener('click', event => {
@@ -1605,9 +1605,13 @@
           const response = await fetch('/api/proxy/pools', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || '保存失败');
-          window.dispatchEvent(new Event('proxy:refresh'));
-          if (form.matches('[data-proxy-pool-edit-form]')) openPoolDetail(result.pool?.id || payload.id, { kind: 'success', text: '出口配置已保存。' });
-          else closeDrawer();
+          await window.proxyLoadLiveData?.();
+          const poolId = result.pool?.id || payload.id;
+          if (form.matches('[data-proxy-pool-edit-form]')) openPoolDetail(poolId, { kind: 'success', text: '出口配置已保存。' });
+          else {
+            await openPoolDetail(poolId, { kind: 'pending', text: '出口已保存，正在自动校验出口 IP…' });
+            void checkPool(poolId);
+          }
         } catch (err) {
           if (error) error.textContent = err?.message || '保存失败，请检查 IP 与连接 URI。';
           if (submit) submit.disabled = false;
