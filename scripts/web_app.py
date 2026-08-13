@@ -12783,29 +12783,9 @@ def _proxy_feishu_binding(
 
 
 def scoped_proxy_state(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
-    state = proxy_pool.list_state()
-    user = current_global_user(handler)
-    if user["id"] == "public":
-        return state
-    valid_ids = {str(user["id"]), str(user.get("feishuId") or "")}
-    accounts = [item for item in state.get("accounts", []) if str(item.get("feishu_user_id") or "") in valid_ids]
-    account_ids = {int(item["id"]) for item in accounts if str(item.get("id") or "").isdigit()}
-    scoped = dict(state)
-    scoped["accounts"] = accounts
-    scoped["sessions"] = [item for item in state.get("sessions", []) if int(item.get("account_id") or 0) in account_ids]
-    pools = []
-    for pool in state.get("pools", []):
-        item = dict(pool)
-        visible = [account for account in accounts if int(account.get("proxy_profile_id") or 0) == int(pool.get("id") or 0)]
-        if visible:
-            item["account_count"] = len(visible)
-            item["account_names"] = [str(account.get("username") or "") for account in visible]
-        elif int(pool.get("account_count") or 0):
-            item["account_count"] = 0
-            item["account_names"] = ["其他用户占用"]
-        pools.append(item)
-    scoped["pools"] = pools
-    return scoped
+    # Proxy 运营台是内网公共工作台：账号、会话与出口始终使用完整运行态。
+    # 飞书身份仅由前端筛选标签控制，不能改变 API 返回的工作集。
+    return proxy_pool.list_state()
 
 
 def handle_feishu_capability_get(handler: BaseHTTPRequestHandler, parsed) -> bool:
