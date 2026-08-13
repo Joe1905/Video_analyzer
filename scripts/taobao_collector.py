@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 import threading
 import time
 import uuid
@@ -158,6 +159,33 @@ def _ready_proxy(conn, profile: dict[str, Any]):
     return row if start_port <= int(row["local_port"] or 0) <= end_port else None
 
 
+def _has_taobao_login_state(profile: dict[str, Any]) -> bool:
+    isolation = profile.get("isolation") if isinstance(profile, dict) else {}
+    user_data_value = str((isolation or {}).get("user_data_dir") or "").strip()
+    if not user_data_value:
+        return False
+    user_data_dir = proxy_pool._abs_workspace_path(user_data_value)
+    cookie_names = ("cookie2", "_tb_token_", "tracknick", "lgc", "unb")
+    placeholders = ", ".join("?" for _ in cookie_names)
+    for cookie_path in (user_data_dir / "Default" / "Cookies", user_data_dir / "Default" / "Network" / "Cookies"):
+        if not cookie_path.is_file():
+            continue
+        try:
+            conn = sqlite3.connect(f"file:{cookie_path}?mode=ro", uri=True, timeout=1)
+            try:
+                row = conn.execute(
+                    f"SELECT 1 FROM cookies WHERE lower(host_key) LIKE ? AND lower(name) IN ({placeholders}) LIMIT 1",
+                    ("%taobao.com%", *cookie_names),
+                ).fetchone()
+            finally:
+                conn.close()
+            if row:
+                return True
+        except sqlite3.Error:
+            continue
+    return False
+
+
 def _profile_for_user(user: dict[str, Any], *, create: bool) -> dict[str, Any] | None:
     owner_id, feishu_id, name = _owner(user)
     with _LOCK, _connect() as conn:
@@ -177,7 +205,15 @@ def _profile_for_user(user: dict[str, Any], *, create: bool) -> dict[str, Any] |
         pool = _allocate_proxy(conn, owner_id)
         pool_id = int(pool["id"])
     pool = proxy_pool.reserve_pool_port_scope(pool_id, proxy_pool.PORT_SCOPE_TAOBAO)
-    key, data_dir, fingerprint_id, profile = _profile_payload(owner_id, feishu_id, int(pool["id"]))
+    if previous:
+        key = str(previous["profile_key"])
+        data_dir = str(previous["user_data_dir"])
+        fingerprint_id = str(previous["fingerprint_id"])
+        profile = json.loads(str(previous["profile_json"] or "{}"))
+        if not isinstance(profile, dict):
+            key, data_dir, fingerprint_id, profile = _profile_payload(owner_id, feishu_id, int(pool["id"]))
+    else:
+        key, data_dir, fingerprint_id, profile = _profile_payload(owner_id, feishu_id, int(pool["id"]))
     now = proxy_pool.now_iso()
     with _LOCK, _connect() as conn:
         if previous:
@@ -325,8 +361,9 @@ def start_session(user: dict[str, Any]) -> dict[str, Any]:
         try:
             channel = _launch_channel(ports, session_id)
             profile_json = json.loads(str(profile["profile_json"] or "{}"))
+            start_url = "https://www.taobao.com/" if _has_taobao_login_state(profile_json) else "https://login.taobao.com/member/login.jhtml"
             pid, user_data_dir = proxy_pool._launch_browser_for_session(
-                profile_json, pool, session_id, str(ports["display"]), int(ports["debug_port"]), "https://login.taobao.com/member/login.jhtml"
+                profile_json, pool, session_id, str(ports["display"]), int(ports["debug_port"]), start_url
             )
             time.sleep(2.0)
             if not proxy_pool._pid_alive(pid):
@@ -384,7 +421,7 @@ def open_login(user: dict[str, Any]) -> dict[str, Any]:
         browser = playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{int(session['debug_port'])}")
         context = browser.contexts[0]
         page = context.pages[0] if context.pages else context.new_page()
-        page.goto("https://login.taobao.com/member/login.jhtml", wait_until="domcontentloaded", timeout=60000)
+        page.goto("https://www.taobao.com/", wait_until="domcontentloaded", timeout=60000)
         page.bring_to_front()
     with _connect() as conn:
         conn.execute("UPDATE taobao_sessions SET updated_at = ? WHERE id = ?", (proxy_pool.now_iso(), int(session["id"])))
