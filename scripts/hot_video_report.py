@@ -856,14 +856,6 @@ def _has_usable_video_media(node: dict[str, Any]) -> bool:
     return bool(_iter_media_url_candidates(node))
 
 
-def _direct_video_public_url(item: dict[str, Any]) -> str:
-    raw = item.get("raw")
-    candidates = _iter_media_url_candidates(raw) if isinstance(raw, dict) else []
-    if not candidates:
-        return ""
-    return sorted(candidates, key=lambda candidate: candidate[0], reverse=True)[0][2]
-
-
 def _long_video_max_seconds() -> int:
     return max(0, _to_int(os.getenv("REPORT_VIDEO_MAX_LONG_SECONDS", "180")) or 180)
 
@@ -2318,7 +2310,6 @@ def _process_video(conn: sqlite3.Connection, report_date: str, item: dict[str, A
                             "audio_mode": "none",
                             "timeout_seconds": _report_video_analyze_timeout_seconds(item.get("duration_ms")),
                             "prompt": REPORT_DIRECT_VIDEO_PROMPT,
-                            "public_url": _direct_video_public_url(item),
                         },
                     )
                     if fallback.get("ok"):

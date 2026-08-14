@@ -44,15 +44,39 @@ def load_env_file() -> None:
         os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
+def _compress_for_base64(path: Path, target: Path) -> None:
+    result = subprocess.run(
+        [
+            "ffmpeg", "-y", "-i", str(path), "-map", "0:v:0", "-an",
+            "-vf", "scale=-2:480", "-c:v", "libx264", "-preset", "veryfast",
+            "-crf", "30", "-movflags", "+faststart", str(target),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr or result.stdout or "ffmpeg video compression failed")
+
+
 def read_video_data_url(path: Path) -> str:
-    size = path.stat().st_size
+    source_path = path
+    temp_dir: tempfile.TemporaryDirectory[str] | None = None
+    if path.stat().st_size > MAX_BASE64_BYTES:
+        temp_dir = tempfile.TemporaryDirectory(prefix="direct_video_")
+        source_path = Path(temp_dir.name) / "video.mp4"
+        _compress_for_base64(path, source_path)
+    size = source_path.stat().st_size
     if size > MAX_BASE64_BYTES:
+        if temp_dir:
+            temp_dir.cleanup()
         raise ValueError(
-            f"Direct video Base64 mode only supports files up to 7MB. "
-            f"{path.name} is {size / 1024 / 1024:.2f}MB. Provide --public-url or use analyzer mode."
+            f"Compressed direct video still exceeds the 7MB Base64 safety limit: "
+            f"{path.name} is {size / 1024 / 1024:.2f}MB."
         )
     mime_type = mimetypes.guess_type(path.name)[0] or "video/mp4"
-    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    encoded = base64.b64encode(source_path.read_bytes()).decode("ascii")
+    if temp_dir:
+        temp_dir.cleanup()
     return f"data:{mime_type};base64,{encoded}"
 
 
