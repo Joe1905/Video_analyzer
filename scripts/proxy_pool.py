@@ -3806,6 +3806,14 @@ def _repair_proxy_core_once(pool: sqlite3.Row) -> dict[str, Any]:
     try:
         if core == "sing-box":
             result = ensure_proxy_cores(restart=True, required=True)
+            local_port = int(pool["local_port"] or 0)
+            deadline = time.monotonic() + 10
+            while local_port and time.monotonic() < deadline:
+                if _port_open("127.0.0.1", local_port, timeout=0.2):
+                    break
+                time.sleep(0.2)
+            else:
+                raise ProxyConfigurationError(f"sing-box 重启后本地端口 {local_port} 未监听")
         else:
             result = _sync_mihomo_pool_config(pool)
     except Exception as exc:
