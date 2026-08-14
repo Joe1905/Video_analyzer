@@ -1630,5 +1630,181 @@
       });
     })();
   </script>
+  <style>
+    /* Real workflow surfaces reuse the drawer rhythm without reintroducing card-heavy UI. */
+    .workflow-notice{margin:0;padding:10px 12px;border-left:3px solid var(--accent);border-radius:0 8px 8px 0;background:#f5f6ff;color:#566175;font-size:12px;line-height:1.55}.workflow-notice.error{border-left-color:#bd5062;background:#fff5f6;color:#9c4252}.workflow-notice.success{border-left-color:#169b77;background:#edfaf5;color:#16795e}.workflow-row-actions{display:inline-flex;align-items:center;gap:8px;flex:0 0 auto}.workflow-row-actions button{border:0;background:transparent;color:var(--accent);font-size:12px;font-weight:750}.workflow-row-actions button:disabled{color:var(--muted);cursor:not-allowed}.task-upload input:focus-visible+span{outline:2px solid var(--accent);outline-offset:4px;border-radius:7px}.product-row{cursor:pointer;transition:background .16s ease,transform .16s ease}.product-row:hover{background:#fafbff;transform:translateX(2px)}.workflow-scroll{max-height:min(440px,calc(100vh - 330px));overflow:auto;scrollbar-color:#c8ced8 transparent;scrollbar-width:thin}.task-choice input{width:100%;min-width:0;height:28px;padding:0;border:0;background:transparent;color:var(--text);font:inherit;font-size:14px;outline:0}.task-choice:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+  </style>
+  <script>
+    /*
+     * Real task workflows.  The page chrome above is intentionally kept as the
+     * v2 design system; this controller replaces only the old mock publish /
+     * collect subviews with the already-established proxy API contract.
+     */
+    (() => {
+      const workflow = { context: null, publish: { jobs: [], products: [], selectedProductId: '', editing: null }, collect: { dashboard: null, targets: [], selectedJobId: '' } };
+      const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' })[char]);
+      const request = async (path, payload, form = false) => {
+        const options = payload === undefined ? {} : form
+          ? { method: 'POST', body: payload }
+          : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) };
+        const response = await fetch(path, options);
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || `请求失败（${response.status}）`);
+        return data;
+      };
+      const activePlatform = key => {
+        try { return JSON.parse(localStorage.getItem('proxy.activePlatformByAccount.v1') || '{}')[key] || 'tiktok'; }
+        catch (_) { return 'tiktok'; }
+      };
+      const localDateTime = () => new Date(Date.now() + 30 * 60 * 1000).toISOString().slice(0, 16);
+      const selectedAccountKey = trigger => trigger?.dataset?.accountId || document.querySelector('.accounts tbody tr.selected')?.dataset?.platformRow || '';
+      const resolveContext = async trigger => {
+        const key = selectedAccountKey(trigger);
+        const data = await request('/api/proxy/pools');
+        const accounts = Array.isArray(data.accounts) ? data.accounts : [];
+        const account = accounts.find(item => String(item.id) === String(key) || String(item.username) === String(key));
+        if (!account) throw new Error('未找到当前账号，请刷新列表后重试。');
+        workflow.context = { account, platform: activePlatform(String(account.username || account.id)), pools: Array.isArray(data.pools) ? data.pools : [] };
+        return workflow.context;
+      };
+      const contextLabel = () => {
+        const context = workflow.context;
+        if (!context) return '当前账号';
+        const pool = context.pools.find(item => Number(item.id) === Number(context.account.proxy_profile_id));
+        return `${context.account.username || context.account.id} · ${context.platform === 'instagram' ? 'Instagram' : 'TikTok'} · ${pool?.name || '未绑定出口'}`;
+      };
+      const status = (label, tone = '') => `<span class="status ${tone}">${escape(label || '待处理')}</span>`;
+      const drawerNotice = (id, message = '', tone = '') => `<p class="workflow-notice ${tone}" id="${id}" role="alert" ${message ? '' : 'hidden'}>${escape(message)}</p>`;
+      const setNotice = (id, message, tone = '') => { const node = document.getElementById(id); if (!node) return; node.hidden = !message; node.className = `workflow-notice ${tone}`; node.textContent = message || ''; };
+      const showWorkflowError = message => { let node = document.getElementById('proxy-workflow-alert'); if (!node) { node = document.createElement('p'); node.id = 'proxy-workflow-alert'; node.className = 'proxy-action-error'; node.setAttribute('role', 'alert'); document.querySelector('.account-head')?.before(node); } node.textContent = message; };
+      const jobLabel = job => job.status_label || job.status || '待处理';
+      const productById = id => workflow.publish.products.find(item => String(item.product_id) === String(id));
+      const productName = id => productById(id)?.product_name || (id ? `商品 ID ${id}` : '未关联商品');
+      const publishRows = () => workflow.publish.jobs.length
+        ? workflow.publish.jobs.map(job => `<div class="task-side-row workflow-row"><div><b>${escape(job.original_name || '未命名视频')} ${status(jobLabel(job), /失败|取消/.test(jobLabel(job)) ? 'off' : /完成|排期|发布/.test(jobLabel(job)) ? 'live' : 'delay')}</b><small>${escape(job.status_detail || `${productName(job.product_link)} · ${job.scheduled_at || '未设置时间'}`)}</small></div><span class="workflow-row-actions">${['draft','queued','delayed','failed','cancelled','manual_ready','product_link_failed','product_link_review'].includes(job.status) ? `<button type="button" data-live-publish-edit="${escape(job.id)}">编辑</button>` : ''}${['failed','product_link_failed','product_link_review'].includes(job.status) ? `<button type="button" data-live-publish-retry="${escape(job.id)}">重试</button>` : ''}<button type="button" data-live-publish-delete="${escape(job.id)}" ${['preparing','uploading','publishing','scheduled_on_tiktok'].includes(job.status) ? 'disabled title="运行中任务不能删除"' : ''}>删除</button></span></div>`).join('')
+        : '<div class="drawer-empty">当前账号没有发布任务。</div>';
+      const renderPublish = () => {
+        const editing = workflow.publish.editing;
+        const selected = productById(workflow.publish.selectedProductId);
+        views.publish = {
+          k: 'CONTENT PUBLISHING', title: '发布任务', desc: `以 ${contextLabel()} 创建真实 TikTok 发布任务。`, wide: true,
+          foot: `<button class="button" data-close>取消</button><button class="button" data-live-publish-submit="draft">保存草稿</button><button class="button primary" data-live-publish-submit="queue">加入发布队列</button>`,
+          body: `<form class="task-flow publish-task-flow" id="live-publish-form"><div class="task-main"><section class="task-step"><div class="task-step-head"><b><span class="task-number">01</span>选择素材</b><small>MP4、MOV、M4V、WebM · 最大 2GB</small></div><label class="task-upload"><input type="file" name="video" accept="video/mp4,video/quicktime,video/webm,.m4v" ${editing ? '' : 'required'} hidden><span>${rowSvg.upload}<span>${editing ? `编辑 ${escape(editing.original_name)}（无需重新上传）` : '选择视频上传'}</span></span></label></section><section class="task-step"><div class="task-step-head"><b><span class="task-number">02</span>填写发布内容</b><small>${escape(contextLabel())}</small></div><div class="task-fields"><label class="task-field wide-field">视频说明<textarea name="description" maxlength="2200" placeholder="输入 TikTok Studio 的视频说明">${escape(editing?.description || '')}</textarea></label><div class="task-field wide-field"><span>关联商品</span><div class="task-choice"><span>${escape(selected?.product_name || '不关联商品')}</span><button type="button" data-live-product-picker>选择</button></div><input type="hidden" name="product_link" value="${escape(workflow.publish.selectedProductId)}"></div></div></section><section class="task-step"><div class="task-step-head"><b><span class="task-number">03</span>选择发布方式</b><small>所有时间均为洛杉矶时间</small></div><div class="task-fields"><label class="task-field">目标发布时间<input type="datetime-local" name="scheduled_at" value="${escape(editing?.scheduled_at ? String(editing.scheduled_at).slice(0,16) : localDateTime())}" required></label></div><label class="checkline"><input type="checkbox" name="ai_generated" ${editing?.ai_generated ? 'checked' : ''}>AI-generated content</label></section>${drawerNotice('live-publish-notice')}</div><aside class="task-side"><div class="task-side-head"><b>发布队列</b><small>${workflow.publish.jobs.length} 项</small></div>${publishRows()}</aside></form>`
+        };
+      };
+      const loadPublish = async trigger => {
+        const context = await resolveContext(trigger);
+        if (context.platform !== 'tiktok') throw new Error('Instagram 当前不支持自动发布，请切换至 TikTok 后操作。');
+        const [jobs, products] = await Promise.all([request(`/api/proxy/publish/jobs?account_id=${encodeURIComponent(context.account.id)}`), request('/api/proxy/products')]);
+        workflow.publish.jobs = Array.isArray(jobs.jobs) ? jobs.jobs : [];
+        workflow.publish.products = Array.isArray(products.products) ? products.products : [];
+        workflow.publish.editing = null; workflow.publish.selectedProductId = '';
+        renderPublish(); open('publish');
+      };
+      const renderProducts = () => {
+        const rows = workflow.publish.products.map(product => `<div class="task-list-row product-row" data-live-product-select="${escape(product.product_id)}"><div><b>${escape(product.product_name || '未命名商品')}</b><small>ID ${escape(product.product_id)} · ${escape(product.price || '价格待补充')} · 库存 ${escape(product.stock || '未知')}</small></div><span class="workflow-row-actions"><button type="button" data-live-product-edit="${escape(product.product_id)}">编辑</button><button type="button" data-live-product-delete="${escape(product.product_id)}">删除</button></span></div>`).join('') || '<div class="drawer-empty">通用商品库为空。可搜索 TikTok Shop 商品后加入。</div>';
+        views.products = { k:'PRODUCT LINKING', title:'关联商品', desc:'商品库为共用目录；本次只将选中的商品 ID 写入发布任务。', parent:'publish', body:`<div class="drawer-form"><label class="task-field">搜索 TikTok Shop 商品或粘贴商品链接<div class="task-choice"><input id="live-product-query" placeholder="商品关键词或 https:// TikTok Shop 链接"><button type="button" data-live-product-search>搜索</button></div></label>${drawerNotice('live-product-notice')}<section class="collect-section"><div class="collect-title"><h4>通用商品库</h4><span>${workflow.publish.products.length} 项</span></div><div class="task-list">${rows}</div></section><section class="collect-section" id="live-product-search-results" hidden></section></div>` };
+        open('products');
+      };
+      const renderProductSearch = products => {
+        const box = document.getElementById('live-product-search-results'); if (!box) return;
+        box.hidden = false;
+        box.innerHTML = `<div class="collect-title"><h4>搜索结果</h4><span>${products.length} 项</span></div><div class="task-list">${products.map(product => `<div class="task-list-row"><div><b>${escape(product.product_name || '未命名商品')}</b><small>ID ${escape(product.product_id)} · ${escape(product.price || '价格待补充')}</small></div><button type="button" data-live-product-add="${escape(product.product_id)}" ${product.already_added ? 'disabled' : ''}>${product.already_added ? '已入库' : '加入商品库'}</button></div>`).join('') || '<div class="drawer-empty">未找到商品。</div>'}</div>`;
+        workflow.publish.searchResults = products;
+      };
+      const renderProductEditor = product => {
+        views.productEditor = { k:'PRODUCT CATALOG', title: product ? '编辑商品' : '新增商品', desc:'商品 ID 是发布任务的绑定键；保存后可立刻用于当前任务。', parent:'products', body:`<form class="drawer-form" id="live-product-editor"><input type="hidden" name="product_id" value="${escape(product?.product_id || '')}"><label class="task-field">商品名称<input name="product_name" value="${escape(product?.product_name || '')}" required></label><label class="task-field">商品链接<input name="product_url" value="${escape(product?.product_url || '')}"></label><div class="task-fields"><label class="task-field">价格<input name="price" value="${escape(product?.price || '')}"></label><label class="task-field">库存<input name="stock" value="${escape(product?.stock || '')}"></label></div><label class="task-field">状态<select name="status"><option ${product?.status === 'Active' ? 'selected' : ''}>Active</option><option ${product?.status === 'Inactive' ? 'selected' : ''}>Inactive</option></select></label>${drawerNotice('live-product-editor-notice')}</form>`, foot:`<button class="button" data-open="products">取消</button><button type="submit" form="live-product-editor" class="button primary">保存商品</button>` };
+        open('productEditor');
+      };
+      const loadCollect = async trigger => {
+        const context = await resolveContext(trigger);
+        const [dashboard, allowlist] = await Promise.all([request(`/api/proxy/collect/dashboard?account_id=${encodeURIComponent(context.account.id)}&platform=${encodeURIComponent(context.platform)}`), request('/api/feishu/bitable/write-allowlist')]);
+        workflow.collect.dashboard = dashboard;
+        workflow.collect.targets = Array.isArray(allowlist.targets) ? allowlist.targets : [];
+        workflow.collect.selectedJobId = String(dashboard.jobs?.[0]?.id || '');
+        renderCollect(); open('collect');
+      };
+      const targetKey = target => JSON.stringify(target || {});
+      const targets = selected => `<option value="">请选择飞书目标</option>${workflow.collect.targets.map(target => `<option value="${escape(targetKey(target))}" ${targetKey(target) === targetKey(selected) ? 'selected' : ''}>${escape(target.appName || target.appToken || '飞书多维表格')} · ${escape(target.tableName || target.tableId || '')}</option>`).join('')}`;
+      const collectRows = () => {
+        const jobs = workflow.collect.dashboard?.jobs || [];
+        return jobs.length ? jobs.map(job => `<div class="task-side-row"><div><b>${escape(job.schedule_date || job.created_at || '采集任务')} ${status(jobLabel(job), /完成/.test(jobLabel(job)) ? 'live' : /失败|取消/.test(jobLabel(job)) ? 'off' : 'delay')}</b><small>${escape(job.status_detail || `${job.completed_videos || 0} / ${job.total_videos || 0} 条视频`)}</small></div><span class="workflow-row-actions"><button type="button" data-live-collect-detail="${escape(job.id)}">结果</button><button type="button" data-live-collect-resync-job="${escape(job.id)}">补写</button><button type="button" data-live-collect-retry="${escape(job.id)}">重试</button><button type="button" data-live-collect-rescan="${escape(job.id)}">重发现</button>${['queued','delayed'].includes(String(job.status)) ? `<button type="button" data-live-collect-cancel="${escape(job.id)}">取消</button>` : ''}</span></div>`).join('') : '<div class="drawer-empty">当前账号没有采集任务。</div>';
+      };
+      const renderCollect = () => {
+        const dashboard = workflow.collect.dashboard || {}, setting = dashboard.setting || {}, context = workflow.context;
+        const date = today();
+        const automation = context.platform === 'instagram' ? `<div class="task-step-head"><b><span class="task-number">02</span>自动采集状态</b><small>Instagram 暂不支持自动规则</small></div><div class="collect-auto-summary"><div><b>仅支持手动采集</b><small>任务会读取符合日期范围的 Reels 洞察。</small></div>${status('未设置', 'delay')}</div>` : `<div class="task-step-head"><b><span class="task-number">02</span>自动采集状态</b><button class="task-link" data-live-collect-auto>设置</button></div><div class="collect-auto-summary"><div><b>自动采集：${setting.enabled ? `已启用 · 每日 ${escape(setting.daily_time || '--:--')}` : '未启用'}</b><small>不会影响本次手动采集。</small></div>${status(setting.enabled ? '已启用' : '未启用', setting.enabled ? 'live' : 'delay')}</div>`;
+        views.collect = { k:'METRICS COLLECTION', title:`${context.platform === 'instagram' ? 'Instagram Reels' : 'TikTok'} 视频数据采集`, desc:`以 ${contextLabel()} 创建真实采集任务，结果按任务分组查看。`, wide:true, foot:'<button class="button" data-close>取消</button><button class="button primary" data-live-collect-submit>立即采集</button>', body:`<div class="task-flow collect-task-flow"><div class="task-main"><section class="task-step"><div class="task-step-head"><b><span class="task-number">01</span>手动采集设置</b><small>当前账号固定，不可切换</small></div><div class="task-fields"><div class="collect-account-context wide-field"><span class="person-avatar">${escape(String(context.account.username || '?').slice(0,2).toUpperCase())}</span><div><small>当前账号</small><b>${escape(contextLabel())}</b></div></div><label class="task-field wide-field">发布日期<div class="collect-date-range"><label>开始日期<input type="date" id="live-collect-start" value="${date}" required></label><label>结束日期<input type="date" id="live-collect-end" value="${date}" required></label></div></label><label class="task-field wide-field">写入飞书多维表格<select id="live-collect-target">${targets(setting.feishu_target || {})}</select></label></div></section><section class="task-step">${automation}</section>${drawerNotice('live-collect-notice')}</div><aside class="task-side"><div class="task-side-head"><b>采集任务</b><small>${(dashboard.jobs || []).length} 项</small></div>${collectRows()}</aside></div>` };
+      };
+      const renderCollectDetail = jobId => {
+        const dashboard = workflow.collect.dashboard || {}, job = (dashboard.jobs || []).find(item => String(item.id) === String(jobId));
+        const results = (dashboard.results || []).filter(item => String(item.job_id) === String(jobId));
+        workflow.collect.selectedJobId = String(jobId || '');
+        views.collectDetail = { k:'COLLECTION TASK', title:job?.schedule_date || '采集结果', desc:job?.status_detail || '按本次任务显示全部实际结果。', parent:'collect', body:`<section class="collect-section"><div class="collect-title"><h4>采集结果</h4><span>${results.length} 条</span></div><div class="task-list workflow-scroll">${results.map(result => { const video = result.payload?.video || {}; const overview = result.payload?.overview || {}; return `<div class="task-list-row"><div><b>${escape(video.title || result.title || result.video_id || '未命名视频')}</b><small>${escape(overview.play_count || '—')} 播放 · ${escape(result.feishu_sync_status || '未写入飞书')}</small></div><button type="button" data-live-collect-resync="${escape(result.id)}">写入飞书</button></div>`; }).join('') || '<div class="drawer-empty">该任务暂无结果。</div>'}</div></section>${drawerNotice('live-collect-detail-notice')}` };
+        open('collectDetail');
+      };
+      const refreshCollect = async () => { const context = workflow.context; const dashboard = await request(`/api/proxy/collect/dashboard?account_id=${encodeURIComponent(context.account.id)}&platform=${encodeURIComponent(context.platform)}`); workflow.collect.dashboard = dashboard; return dashboard; };
+      const formValue = (id, fallback = '') => document.getElementById(id)?.value || fallback;
+      const today = () => new Intl.DateTimeFormat('en-CA', { timeZone:'America/Los_Angeles', year:'numeric', month:'2-digit', day:'2-digit' }).format(new Date());
+
+      document.addEventListener('click', event => {
+        const action = event.target.closest('[data-platform-action]');
+        if (!action || !['publish','collect'].includes(action.dataset.platformAction) || action.disabled) return;
+        event.preventDefault(); event.stopImmediatePropagation();
+        const load = action.dataset.platformAction === 'publish' ? loadPublish : loadCollect;
+        void load(action).catch(error => showWorkflowError(error.message || '无法读取当前工作流。'));
+      }, true);
+      document.addEventListener('click', event => {
+        const productPicker = event.target.closest('[data-live-product-picker]');
+        if (productPicker) { event.preventDefault(); renderProducts(); return; }
+        const productSelect = !event.target.closest('[data-live-product-edit],[data-live-product-delete]') && event.target.closest('[data-live-product-select]');
+        if (productSelect) { workflow.publish.selectedProductId = productSelect.dataset.liveProductSelect; renderPublish(); open('publish'); return; }
+        const search = event.target.closest('[data-live-product-search]');
+        if (search) { event.preventDefault(); const query = formValue('live-product-query').trim(); if (!query) return setNotice('live-product-notice', '请输入商品关键词或 TikTok Shop 商品链接。', 'error'); void request('/api/proxy/products/search', { query }).then(data => renderProductSearch(Array.isArray(data.products) ? data.products : [])).catch(error => setNotice('live-product-notice', error.message, 'error')); return; }
+        const add = event.target.closest('[data-live-product-add]');
+        if (add) { event.preventDefault(); const product = (workflow.publish.searchResults || []).find(item => String(item.product_id) === String(add.dataset.liveProductAdd)); if (!product) return; void request('/api/proxy/products', { action:'create', ...product }).then(data => { workflow.publish.products = data.products || workflow.publish.products; workflow.publish.selectedProductId = product.product_id; renderProducts(); setNotice('live-product-notice', '商品已加入通用商品库并选中。', 'success'); }).catch(error => setNotice('live-product-notice', error.message, 'error')); return; }
+        const edit = event.target.closest('[data-live-product-edit]'); if (edit) { event.preventDefault(); renderProductEditor(productById(edit.dataset.liveProductEdit)); return; }
+        const remove = event.target.closest('[data-live-product-delete]'); if (remove) { event.preventDefault(); const product = productById(remove.dataset.liveProductDelete); if (!product || !confirm(`删除通用商品“${product.product_name}”？`)) return; void request('/api/proxy/products/delete', { product_id: product.product_id }).then(data => { workflow.publish.products = data.products || []; if (String(workflow.publish.selectedProductId) === String(product.product_id)) workflow.publish.selectedProductId = ''; renderProducts(); }).catch(error => setNotice('live-product-notice', error.message, 'error')); return; }
+        const editJob = event.target.closest('[data-live-publish-edit]'); if (editJob) { workflow.publish.editing = workflow.publish.jobs.find(item => String(item.id) === String(editJob.dataset.livePublishEdit)) || null; workflow.publish.selectedProductId = workflow.publish.editing?.product_link || ''; renderPublish(); open('publish'); return; }
+        const retry = event.target.closest('[data-live-publish-retry]'); if (retry) { void request('/api/proxy/publish/jobs/retry', { job_id: retry.dataset.livePublishRetry }).then(async data => { workflow.publish.jobs = data.jobs || workflow.publish.jobs; renderPublish(); open('publish'); setNotice('live-publish-notice', '发布任务已重新加入队列。', 'success'); await window.proxyLoadLiveData?.(); }).catch(error => setNotice('live-publish-notice', error.message, 'error')); return; }
+        const deleteJob = event.target.closest('[data-live-publish-delete]'); if (deleteJob) { if (!confirm('删除此发布任务？')) return; void request('/api/proxy/publish/jobs/delete', { job_id: deleteJob.dataset.livePublishDelete }).then(data => { workflow.publish.jobs = data.jobs || []; renderPublish(); open('publish'); }).catch(error => setNotice('live-publish-notice', error.message, 'error')); return; }
+        const auto = event.target.closest('[data-live-collect-auto]'); if (auto) { event.preventDefault(); const setting = workflow.collect.dashboard?.setting || {}; views.collectAuto = { k:'COLLECTION AUTOMATION', title:'自动采集设置', desc:'为当前账号保存真实的每日执行规则。', parent:'collect', body:`<form class="drawer-form" id="live-collect-auto-form"><label class="checkline"><input type="checkbox" name="enabled" ${setting.enabled ? 'checked' : ''}>启用每天自动采集</label><label class="task-field">执行时间（洛杉矶）<input type="time" name="daily_time" value="${escape(setting.daily_time || '03:00')}"></label><label class="task-field">采集日期<select name="date_rule"><option value="previous_day" ${setting.date_rule !== 'same_day' ? 'selected' : ''}>执行日的前一天</option><option value="same_day" ${setting.date_rule === 'same_day' ? 'selected' : ''}>执行当天</option></select></label><label class="task-field">写入飞书多维表格<select name="target">${targets(setting.feishu_target || {})}</select></label>${drawerNotice('live-collect-auto-notice')}</form>`, foot:'<button class="button" data-open="collect">取消</button><button class="button primary" type="submit" form="live-collect-auto-form">保存自动设置</button>' }; open('collectAuto'); return; }
+        const collectDetail = event.target.closest('[data-live-collect-detail]'); if (collectDetail) { renderCollectDetail(collectDetail.dataset.liveCollectDetail); return; }
+        const collectRetry = event.target.closest('[data-live-collect-retry]'); if (collectRetry) { void request('/api/proxy/collect/jobs/retry', { job_id: collectRetry.dataset.liveCollectRetry }).then(async () => { await refreshCollect(); renderCollect(); open('collect'); setNotice('live-collect-notice', '采集任务已重新加入队列。', 'success'); }).catch(error => setNotice('live-collect-notice', error.message, 'error')); return; }
+        const collectRescan = event.target.closest('[data-live-collect-rescan]'); if (collectRescan) { void request('/api/proxy/collect/jobs/rescan-discovery', { job_id: collectRescan.dataset.liveCollectRescan }).then(async () => { await refreshCollect(); renderCollect(); open('collect'); setNotice('live-collect-notice', '已创建视频重新发现任务。', 'success'); }).catch(error => setNotice('live-collect-notice', error.message, 'error')); return; }
+        const collectCancel = event.target.closest('[data-live-collect-cancel]'); if (collectCancel) { if (!confirm('取消此采集任务？')) return; void request('/api/proxy/collect/jobs/cancel', { job_id: collectCancel.dataset.liveCollectCancel }).then(async () => { await refreshCollect(); renderCollect(); open('collect'); setNotice('live-collect-notice', '采集任务已取消。', 'success'); }).catch(error => setNotice('live-collect-notice', error.message, 'error')); return; }
+        const resyncJob = event.target.closest('[data-live-collect-resync-job]'); if (resyncJob) { void request('/api/proxy/collect/results/resync', { job_id: resyncJob.dataset.liveCollectResyncJob }).then(async () => { await refreshCollect(); renderCollect(); open('collect'); setNotice('live-collect-notice', '已提交该任务的飞书补写。', 'success'); }).catch(error => setNotice('live-collect-notice', error.message, 'error')); return; }
+        const resync = event.target.closest('[data-live-collect-resync]'); if (resync) { void request('/api/proxy/collect/results/resync', { result_id: resync.dataset.liveCollectResync }).then(async () => { await refreshCollect(); renderCollectDetail(workflow.collect.selectedJobId); setNotice('live-collect-detail-notice', '已提交飞书写入。', 'success'); }).catch(error => setNotice('live-collect-detail-notice', error.message, 'error')); }
+      }, true);
+      document.addEventListener('submit', event => {
+        const form = event.target;
+        if (form.id === 'live-product-editor') { event.preventDefault(); const payload = Object.fromEntries(new FormData(form).entries()); payload.action = payload.product_id ? 'update' : 'create'; void request('/api/proxy/products', payload).then(data => { workflow.publish.products = data.products || []; workflow.publish.selectedProductId = payload.product_id || workflow.publish.selectedProductId; renderProducts(); }).catch(error => setNotice('live-product-editor-notice', error.message, 'error')); }
+        if (form.id === 'live-collect-auto-form') { event.preventDefault(); const payload = Object.fromEntries(new FormData(form).entries()); let target; try { target = JSON.parse(payload.target || '{}'); } catch (_) { return setNotice('live-collect-auto-notice', '请选择写入飞书目标。', 'error'); } void request('/api/proxy/collect/settings', { account_id: workflow.context.account.id, enabled: form.querySelector('[name=enabled]').checked, daily_time: payload.daily_time, date_rule: payload.date_rule, feishu_target: target }).then(async () => { await refreshCollect(); renderCollect(); open('collect'); }).catch(error => setNotice('live-collect-auto-notice', error.message, 'error')); }
+      }, true);
+      document.addEventListener('click', event => {
+        const submit = event.target.closest('[data-live-publish-submit]');
+        if (!submit) return;
+        event.preventDefault(); const form = document.getElementById('live-publish-form'); if (!form || !workflow.context) return;
+        const action = submit.dataset.livePublishSubmit; const data = new FormData(form); const scheduled = String(data.get('scheduled_at') || '');
+        if (!scheduled) return setNotice('live-publish-notice', '请选择目标发布时间。', 'error');
+        submit.disabled = true; setNotice('live-publish-notice', action === 'draft' ? '正在保存草稿…' : '正在上传视频并创建发布任务…');
+        const done = response => { workflow.publish.jobs = response.jobs || workflow.publish.jobs; workflow.publish.editing = null; workflow.publish.selectedProductId = ''; renderPublish(); open('publish'); setNotice('live-publish-notice', action === 'draft' ? '草稿已保存。' : '发布任务已加入队列。', 'success'); void window.proxyLoadLiveData?.(); };
+        if (workflow.publish.editing) { void request('/api/proxy/publish/jobs/update', { job_id: workflow.publish.editing.id, description: data.get('description') || '', product_link: data.get('product_link') || '', ai_generated: data.get('ai_generated') === 'on', scheduled_at: scheduled, queue: action !== 'draft' }).then(done).catch(error => setNotice('live-publish-notice', error.message, 'error')).finally(() => { submit.disabled = false; }); return; }
+        const file = data.get('video'); if (!(file instanceof File) || !file.size) { submit.disabled = false; return setNotice('live-publish-notice', '请选择视频文件。', 'error'); }
+        data.set('account_id', String(workflow.context.account.id)); data.set('action', action); void request('/api/proxy/publish/jobs', data, true).then(done).catch(error => setNotice('live-publish-notice', error.message, 'error')).finally(() => { submit.disabled = false; });
+      }, true);
+      document.addEventListener('click', event => {
+        const submit = event.target.closest('[data-live-collect-submit]'); if (!submit || !workflow.context) return;
+        event.preventDefault(); const start = formValue('live-collect-start', today()), end = formValue('live-collect-end', today()); let target;
+        try { target = JSON.parse(formValue('live-collect-target', '{}')); } catch (_) { return setNotice('live-collect-notice', '请选择写入飞书目标。', 'error'); }
+        if (!target || !Object.keys(target).length) return setNotice('live-collect-notice', '请选择写入飞书目标。', 'error');
+        submit.disabled = true; setNotice('live-collect-notice', '正在创建采集任务…'); void request('/api/proxy/collect/jobs', { account_id: workflow.context.account.id, platform: workflow.context.platform, publish_date_start: start, publish_date_end: end, feishu_target: target, write_to_feishu: true }).then(async () => { await refreshCollect(); renderCollect(); open('collect'); setNotice('live-collect-notice', '采集任务已创建。', 'success'); void window.proxyLoadLiveData?.(); }).catch(error => setNotice('live-collect-notice', error.message, 'error')).finally(() => { submit.disabled = false; });
+      }, true);
+      document.addEventListener('change', event => {
+        if (event.target?.id === 'live-collect-start' && !formValue('live-collect-end')) document.getElementById('live-collect-end').value = event.target.value;
+      });
+      window.addEventListener('proxy:refresh', () => { if (!document.getElementById('live-publish-form')) return; void loadPublish().catch(() => {}); });
+    })();
+  </script>
 </body>
 </html>
