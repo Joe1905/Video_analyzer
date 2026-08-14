@@ -3797,6 +3797,37 @@ def _proxy_url_reachable(url: str, proxy_port: int, timeout: float = 10.0) -> tu
     return False, last_error
 
 
+def _proxy_runtime_core(pool: sqlite3.Row) -> str:
+    return "sing-box" if _sing_box_reality_pool(pool) else "mihomo"
+
+
+def _repair_proxy_core_once(pool: sqlite3.Row) -> dict[str, Any]:
+    core = _proxy_runtime_core(pool)
+    try:
+        if core == "sing-box":
+            result = ensure_proxy_cores(restart=True, required=True)
+        else:
+            result = _sync_mihomo_pool_config(pool)
+    except Exception as exc:
+        raise ProxyConfigurationError(f"{core} 自动修复失败：{exc}") from exc
+    return {"attempted": True, "core": core, "result": result}
+
+
+def _detect_exit_ip_with_single_repair(pool: sqlite3.Row) -> dict[str, Any]:
+    try:
+        return detect_exit_ip_for_pool(pool)
+    except Exception as first_error:
+        repair = _repair_proxy_core_once(pool)
+        try:
+            detected = detect_exit_ip_for_pool(pool)
+        except Exception as retry_error:
+            raise ProxyConfigurationError(
+                f"{repair['core']} 已自动修复一次，但出口校验仍失败：{retry_error}"
+            ) from retry_error
+        detected["auto_repair"] = repair
+        return detected
+
+
 def detect_exit_ip_for_pool(pool: sqlite3.Row) -> dict[str, Any]:
     node_name = _runtime_mihomo_name(pool)
     if not node_name:
@@ -3837,6 +3868,7 @@ def detect_exit_ip_for_pool(pool: sqlite3.Row) -> dict[str, Any]:
         detected = {
             "ip": ip,
             "geo": {"country": country, "region": region, "city": city, "address": address},
+            "runtime_core": _proxy_runtime_core(pool),
             "mihomo": switch,
             "raw": body,
             "check_url": target,
@@ -3998,9 +4030,7 @@ def check_binding(payload: dict[str, Any], require_account: bool = False) -> dic
             raise ValueError("account_id or username is required")
         if not observed_ip:
             try:
-                detected = detect_exit_ip_for_pool(pool)
-            except ProxyConfigurationError:
-                raise
+                detected = _detect_exit_ip_with_single_repair(pool)
             except Exception as exc:
                 if _clean_status(pool["status"]) != STATUS_PAUSED:
                     _schedule_proxy_recheck(conn, int(pool["id"]), str(exc), recheck_token)
