@@ -32,6 +32,13 @@ DB_PATH = ROOT / "data" / "hot_video_report.sqlite"
 REPORT_COVER_DIR = ROOT / "data" / "report_covers"
 DEFAULT_API_BASE = "https://api.sociavault.com"
 DEFAULT_TZ = "Asia/Shanghai"
+REPORT_DIRECT_VIDEO_PROMPT = (
+    "你正在为短视频爆款日报做视频直连降级解析。只返回严格 JSON，不要 Markdown。"
+    "必须包含 summary、timeline、visual_evidence 三个键；summary 用中文概括内容、开头钩子、"
+    "画面节奏和可复用创意，timeline 是按时间顺序的数组，每项包含 time_range、visual、audio，"
+    "visual_evidence 是可核验的画面事实。没有可靠 ASR 时，不得臆造、引用或总结口播；"
+    "audio 字段应写“未可靠识别”或仅描述可直接观察到的声音线索。"
+)
 
 _scheduler_started = False
 _scheduler_lock = threading.Lock()
@@ -2294,7 +2301,26 @@ def _process_video(conn: sqlite3.Connection, report_date: str, item: dict[str, A
                 {"filename": filename, "timeout_seconds": _report_video_analyze_timeout_seconds(item.get("duration_ms"))},
             )
             if not result.get("ok"):
-                raise RuntimeError(str(result.get("error") or "video extraction failed"))
+                primary_error = str(result.get("error") or "video extraction failed")
+                if os.getenv("REPORT_DIRECT_VIDEO_FALLBACK", "1").strip().lower() not in {"0", "false", "no", "off"}:
+                    fallback = execute_tool(
+                        "video_direct_analyze",
+                        {
+                            "filename": filename,
+                            "audio_mode": "none",
+                            "timeout_seconds": _report_video_analyze_timeout_seconds(item.get("duration_ms")),
+                            "prompt": REPORT_DIRECT_VIDEO_PROMPT,
+                        },
+                    )
+                    if fallback.get("ok"):
+                        analysis_path = output_dir / "analysis.json"
+                    else:
+                        raise RuntimeError(
+                            f"primary analyzer failed: {primary_error}; "
+                            f"direct video fallback failed: {fallback.get('error') or 'unknown error'}"
+                        )
+                else:
+                    raise RuntimeError(primary_error)
         output_dir = _output_dir_for_filename(filename)
         analysis = _json_loads((output_dir / "analysis.json").read_text(encoding="utf-8") if (output_dir / "analysis.json").is_file() else "", {})
         analysis_sha256 = _analysis_sha256(analysis)

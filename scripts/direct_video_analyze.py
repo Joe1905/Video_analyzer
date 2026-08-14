@@ -95,6 +95,12 @@ def transcribe_audio(video_path: Path, language: str, whisper_model: str) -> dic
 
 def build_prompt(transcript: dict[str, Any], analysis_prompt: str) -> str:
     prompt = analysis_prompt.strip() or DEFAULT_ANALYSIS_PROMPT
+    if not transcript.get("available"):
+        return (
+            f"{prompt}\n\n"
+            "No reliable ASR transcript is available. Do not invent, quote, or summarize "
+            "spoken dialogue. Base the result on observable video content only."
+        )
     return f"{prompt}\n\nWhisper transcript:\n{json.dumps(transcript, ensure_ascii=False, indent=2)}"
 
 
@@ -233,6 +239,7 @@ def main() -> int:
     parser.add_argument("--upload-mode", default=os.getenv("DIRECT_VIDEO_UPLOAD_MODE", "auto"))
     parser.add_argument("--public-url", default=os.getenv("DIRECT_VIDEO_PUBLIC_URL", ""))
     parser.add_argument("--prompt-file", default=os.getenv("ANALYSIS_PROMPT_FILE", ""))
+    parser.add_argument("--prompt", default="")
     parser.add_argument("--language", default=os.getenv("LANGUAGE", "zh"))
     parser.add_argument("--whisper-model", default=os.getenv("WHISPER_MODEL", "small"))
     parser.add_argument(
@@ -263,11 +270,15 @@ def main() -> int:
         video_url = read_video_data_url(video_path)
         upload_mode = "base64"
 
-    if args.audio_mode != "whisper":
-        raise ValueError("Only DIRECT_VIDEO_AUDIO_MODE=whisper is currently supported")
-    transcript = transcribe_audio(video_path, args.language, args.whisper_model)
-    analysis_prompt = DEFAULT_ANALYSIS_PROMPT
-    if args.prompt_file:
+    if args.audio_mode == "whisper":
+        transcript = transcribe_audio(video_path, args.language, args.whisper_model)
+        transcript["available"] = True
+    elif args.audio_mode == "none":
+        transcript = {"text": "", "segments": [], "language": args.language, "successful": False, "available": False}
+    else:
+        raise ValueError("DIRECT_VIDEO_AUDIO_MODE must be 'whisper' or 'none'")
+    analysis_prompt = args.prompt.strip() or DEFAULT_ANALYSIS_PROMPT
+    if not args.prompt.strip() and args.prompt_file:
         prompt_path = Path(args.prompt_file)
         if prompt_path.is_file():
             analysis_prompt = prompt_path.read_text(encoding="utf-8").strip() or DEFAULT_ANALYSIS_PROMPT
