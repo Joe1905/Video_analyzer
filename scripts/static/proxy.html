@@ -1057,8 +1057,8 @@
           }
           return;
         }
-        if (action === 'collect') { if (item.loggedIn) { await syncPlatformViews(); open('collect'); } return; }
-        if (action === 'publish') { open('publish'); return; }
+        if (action === 'collect') { if (item.loggedIn) { if (window.proxyRealWorkflow) return window.proxyRealWorkflow.open('collect', trigger); await syncPlatformViews(); open('collect'); } return; }
+        if (action === 'publish') { if (window.proxyRealWorkflow) return window.proxyRealWorkflow.open('publish', trigger); open('publish'); return; }
         if (action === 'login') { state.loginChoice = ''; renderPlatformLogin(); open('platformLogin'); return; }
         if (action === 'binding') { open('binding'); return; }
         if (action === 'sleep') {
@@ -1079,6 +1079,11 @@
       if (accountTitle) accountTitle.textContent = '按状态管理当前可执行工作';
       const rawOpen = open;
       open = function(name) { if (name === 'observe' && !views.observe.body.includes('observation-browser-frame')) void syncPlatformViews(); if (name === 'platformLogin') renderPlatformLogin(); return rawOpen(name); };
+      window.proxyWorkflowHost = {
+        present(name, view) { views[name] = view; open(name); },
+        showError(message) { showProxyActionError(message); },
+        uploadIcon: rowSvg.upload
+      };
       document.addEventListener('click', async event => {
         const row = event.target.closest('[data-platform-row]');
         if (row && !event.target.closest('button')) { state.accountId = row.dataset.platformRow; state.platform = activePlatformByAccount[state.accountId] || 'tiktok'; renderAccounts(); return; }
@@ -1641,6 +1646,11 @@
      * collect subviews with the already-established proxy API contract.
      */
     (() => {
+      const host = window.proxyWorkflowHost;
+      if (!host) return;
+      const views = new Proxy({}, { set(_target, name, view) { host.present(name, view); return true; } });
+      const open = () => {};
+      const rowSvg = { upload: host.uploadIcon };
       const workflow = { context: null, publish: { jobs: [], products: [], selectedProductId: '', editing: null }, collect: { dashboard: null, targets: [], selectedJobId: '' } };
       const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' })[char]);
       const request = async (path, payload, form = false) => {
@@ -1676,7 +1686,7 @@
       const status = (label, tone = '') => `<span class="status ${tone}">${escape(label || '待处理')}</span>`;
       const drawerNotice = (id, message = '', tone = '') => `<p class="workflow-notice ${tone}" id="${id}" role="alert" ${message ? '' : 'hidden'}>${escape(message)}</p>`;
       const setNotice = (id, message, tone = '') => { const node = document.getElementById(id); if (!node) return; node.hidden = !message; node.className = `workflow-notice ${tone}`; node.textContent = message || ''; };
-      const showWorkflowError = message => { let node = document.getElementById('proxy-workflow-alert'); if (!node) { node = document.createElement('p'); node.id = 'proxy-workflow-alert'; node.className = 'proxy-action-error'; node.setAttribute('role', 'alert'); document.querySelector('.account-head')?.before(node); } node.textContent = message; };
+      const showWorkflowError = message => host.showError(message);
       const jobLabel = job => job.status_label || job.status || '待处理';
       const productById = id => workflow.publish.products.find(item => String(item.product_id) === String(id));
       const productName = id => productById(id)?.product_name || (id ? `商品 ID ${id}` : '未关联商品');
@@ -1747,13 +1757,12 @@
       const formValue = (id, fallback = '') => document.getElementById(id)?.value || fallback;
       const today = () => new Intl.DateTimeFormat('en-CA', { timeZone:'America/Los_Angeles', year:'numeric', month:'2-digit', day:'2-digit' }).format(new Date());
 
-      document.addEventListener('click', event => {
-        const action = event.target.closest('[data-platform-action]');
-        if (!action || !['publish','collect'].includes(action.dataset.platformAction) || action.disabled) return;
-        event.preventDefault(); event.stopImmediatePropagation();
-        const load = action.dataset.platformAction === 'publish' ? loadPublish : loadCollect;
-        void load(action).catch(error => showWorkflowError(error.message || '无法读取当前工作流。'));
-      }, true);
+      window.proxyRealWorkflow = {
+        open(kind, trigger) {
+          const load = kind === 'publish' ? loadPublish : loadCollect;
+          return load(trigger).catch(error => showWorkflowError(error.message || '无法读取当前工作流。'));
+        }
+      };
       document.addEventListener('click', event => {
         const productPicker = event.target.closest('[data-live-product-picker]');
         if (productPicker) { event.preventDefault(); renderProducts(); return; }
