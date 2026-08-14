@@ -3832,6 +3832,7 @@ def detect_exit_ip_for_pool(pool: sqlite3.Row) -> dict[str, Any]:
     node_name = _runtime_mihomo_name(pool)
     if not node_name:
         raise ValueError("代理没有 mihomo 节点名")
+    runtime_core = _proxy_runtime_core(pool)
     local_port = int(pool["local_port"] or 0)
     if str(pool["source_type"] or "") == "static":
         _sync_mihomo_pool_config(pool)
@@ -3847,6 +3848,8 @@ def detect_exit_ip_for_pool(pool: sqlite3.Row) -> dict[str, Any]:
     if local_port and _port_open("127.0.0.1", local_port, timeout=1.0):
         proxy_port = local_port
         switch = {"node": node_name, "groups": [], "loaded": True, "listener_port": local_port}
+    elif runtime_core == "sing-box":
+        raise ProxyConfigurationError(f"sing-box 本地端口 {local_port} 未监听")
     else:
         switch = _switch_mihomo_node(node_name)
         proxy_port = int(os.getenv("MIHOMO_PROXY_PORT", "7890") or "7890")
@@ -3868,7 +3871,7 @@ def detect_exit_ip_for_pool(pool: sqlite3.Row) -> dict[str, Any]:
         detected = {
             "ip": ip,
             "geo": {"country": country, "region": region, "city": city, "address": address},
-            "runtime_core": _proxy_runtime_core(pool),
+            "runtime_core": runtime_core,
             "mihomo": switch,
             "raw": body,
             "check_url": target,
