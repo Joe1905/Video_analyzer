@@ -1,9 +1,11 @@
 """AI Chat Tool Registry — 32 tools wrapping existing API scripts."""
 import base64
+from contextlib import contextmanager
 import json
 import os
 import re
 import shutil
+import signal
 import ssl
 import subprocess
 import threading
@@ -16,6 +18,11 @@ from urllib.parse import parse_qs, quote_plus, unquote, urlencode, urlparse, url
 from urllib.request import Request, build_opener, ProxyHandler, urlopen
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - the production containers run Linux.
+    fcntl = None
+
 from api_cache import get_cached, get_cached_or_call, store_response
 from proxy_state import ensure_us_proxy
 from tiktok_download import video_cache_metadata, video_cache_request, with_download_cache_meta
@@ -25,6 +32,7 @@ ROOT = Path.cwd()
 SCRIPTS_DIR = ROOT / "scripts"
 OUTPUT_DIR = ROOT / "output" / "chat_tools"
 VIDEOS_DIR = ROOT / "videos"
+VIDEO_ANALYZE_LOCK_PATH = ROOT / "data" / "video_analyze.lock"
 SAFE_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
 DEFAULT_SOCIA_VAULT_API_BASE = "https://api.sociavault.com"
 VIDEO_INFO_TTL_SECONDS = 24 * 60 * 60
@@ -1089,6 +1097,81 @@ def _timeout_output_text(value: Any) -> str:
     return str(value or "")
 
 
+def _available_memory_bytes() -> int | None:
+    meminfo = Path("/proc/meminfo")
+    if not meminfo.is_file():
+        return None
+    try:
+        values = dict(
+            line.split(":", 1)
+            for line in meminfo.read_text(encoding="utf-8").splitlines()
+            if ":" in line
+        )
+        return int(values["MemAvailable"].strip().split()[0]) * 1024
+    except (KeyError, ValueError):
+        return None
+
+
+def _require_video_analyze_memory() -> None:
+    try:
+        minimum_mb = max(0, int(os.getenv("VIDEO_ANALYZE_MIN_AVAILABLE_MB", "4096")))
+    except ValueError:
+        minimum_mb = 4096
+    available = _available_memory_bytes()
+    if available is not None and available < minimum_mb * 1024 * 1024:
+        raise RuntimeError(
+            f"video analysis not started: only {available / 1024 / 1024:.0f}MB memory available, "
+            f"below VIDEO_ANALYZE_MIN_AVAILABLE_MB={minimum_mb}"
+        )
+
+
+@contextmanager
+def _video_analyze_lock():
+    if fcntl is None:
+        yield
+        return
+    try:
+        wait_seconds = max(0, int(os.getenv("VIDEO_ANALYZE_LOCK_TIMEOUT_SECONDS", "30")))
+    except ValueError:
+        wait_seconds = 30
+    VIDEO_ANALYZE_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with VIDEO_ANALYZE_LOCK_PATH.open("a+", encoding="utf-8") as lock_file:
+        deadline = time.monotonic() + wait_seconds
+        while True:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("video analysis already running; resource lock wait timed out")
+                time.sleep(0.25)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _terminate_video_analyze_process_group(process: subprocess.Popen[str]) -> tuple[str, str]:
+    if os.name == "posix":
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    else:
+        process.terminate()
+    try:
+        return process.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        if os.name == "posix":
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        else:
+            process.kill()
+        return process.communicate()
+
+
 def _write_video_analyze_timeout_log(out_dir: Path, cmd: list[str], timeout_seconds: int, exc: subprocess.TimeoutExpired) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     log_path = out_dir / "analysis_timeout.log"
@@ -1127,13 +1210,29 @@ def _run_video_analyze(filename: str, timeout_seconds: Any | None = None) -> dic
     env = os.environ.copy()
     env["ANALYSIS_OUTPUT_DIR"] = str(out_dir)
     timeout = _video_analyze_timeout_seconds(timeout_seconds)
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=ROOT, env=env)
-    except subprocess.TimeoutExpired as exc:
-        log_path = _write_video_analyze_timeout_log(out_dir, cmd, timeout, exc)
-        raise RuntimeError(
-            f"video analysis subprocess timed out after {timeout} seconds; diagnostic log: {log_path}"
-        ) from exc
+    with _video_analyze_lock():
+        _require_video_analyze_memory()
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=ROOT,
+            env=env,
+            start_new_session=True,
+        )
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            stdout, stderr = _terminate_video_analyze_process_group(process)
+            exc.stdout = stdout
+            exc.stderr = stderr
+            log_path = _write_video_analyze_timeout_log(out_dir, cmd, timeout, exc)
+            raise RuntimeError(
+                f"video analysis subprocess timed out after {timeout} seconds; process group terminated; "
+                f"diagnostic log: {log_path}"
+            ) from exc
+    result = subprocess.CompletedProcess(cmd, process.returncode, stdout, stderr)
     if result.returncode != 0:
         raise RuntimeError(result.stderr or result.stdout or f"Exit code {result.returncode}")
     mark_extracted(filename, out_dir.name)

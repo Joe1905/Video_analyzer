@@ -1671,6 +1671,20 @@ def _wait_for_product_row(page: Any, product_id: str, timeout_ms: int = 8000) ->
     return None
 
 
+def _wait_for_linked_product(page: Any, product_name: str, timeout_ms: int = 10000) -> Any | None:
+    product_name = product_name.strip()
+    if not product_name:
+        return None
+    locator = page.get_by_text(re.compile(re.escape(product_name[:24]), re.I))
+    deadline = time.monotonic() + timeout_ms / 1000
+    while time.monotonic() < deadline:
+        linked_product = _first_visible([locator])
+        if linked_product:
+            return linked_product
+        page.wait_for_timeout(250)
+    return None
+
+
 def _trigger_product_search(page: Any, search: Any) -> None:
     wrapper = search.locator("xpath=..")
     search_button = _first_visible([
@@ -1850,9 +1864,7 @@ def _add_product_link(page: Any, product_id: str, log_dir: Path) -> None:
     except Exception as exc:
         page.screenshot(path=str(log_dir / "product-add-failed.png"), full_page=True)
         raise ManualReviewRequired("点击 Add 后商品绑定弹窗未关闭") from exc
-    product_name = _first_visible([
-        page.get_by_text(re.compile(re.escape(product["product_name"][:24]), re.I)),
-    ])
+    product_name = _wait_for_linked_product(page, product["product_name"])
     if not product_name:
         page.screenshot(path=str(log_dir / "product-link-unconfirmed.png"), full_page=True)
         raise ManualReviewRequired("商品弹窗已关闭，但页面未显示所选商品，无法确认绑定成功")
