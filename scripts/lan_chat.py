@@ -664,6 +664,54 @@ class LanChatStore:
             row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
         return {"sessionToken": session_token, "user": self._public_user(row)}
 
+    def enter_primary_account(self, feishu_user_id: str) -> dict[str, Any]:
+        """Return the owner's first account, creating a same-named one when needed."""
+        owner_id = str(feishu_user_id or "").strip()
+        now = time.time()
+        created = False
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            owner = conn.execute(
+                "SELECT id, name FROM feishu_users WHERE id = ? AND active = 1", (owner_id,)
+            ).fetchone()
+            if owner is None:
+                raise LanChatError("飞书用户不存在", 404)
+            row = conn.execute(
+                """SELECT * FROM users WHERE feishu_user_id = ?
+                   ORDER BY created_at ASC LIMIT 1""",
+                (owner_id,),
+            ).fetchone()
+            if row is None:
+                user_id = uuid.uuid4().hex[:16]
+                token_hash = hashlib.sha256(secrets.token_bytes(32)).hexdigest()
+                nickname = self._nickname(str(owner["name"]))
+                avatar_status = "fallback"
+                conn.execute(
+                    """INSERT INTO users
+                       (id, device_token_hash, feishu_user_id, nickname, avatar_color, avatar_status,
+                        avatar_filename, created_at, last_seen)
+                       VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)""",
+                    (
+                        user_id,
+                        token_hash,
+                        owner_id,
+                        nickname,
+                        AVATAR_COLORS[int(token_hash[:8], 16) % len(AVATAR_COLORS)],
+                        avatar_status,
+                        now,
+                        now,
+                    ),
+                )
+                self._assign_random_user_avatar(conn, user_id)
+                row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+                created = True
+            self._ensure_feishu_default_group(conn, owner_id, str(owner["name"]), now)
+            session_token = self._create_session(conn, str(row["id"]), now)
+            conn.execute("UPDATE users SET last_seen = ? WHERE id = ?", (now, row["id"]))
+            row = conn.execute("SELECT * FROM users WHERE id = ?", (row["id"],)).fetchone()
+        user = self._public_user(row)
+        return {"sessionToken": session_token, "user": user, "created": created}
+
     def authenticate(self, device_token: str) -> dict[str, Any]:
         token_hash = self._token_hash(device_token)
         now = time.time()

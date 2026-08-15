@@ -12958,7 +12958,11 @@ def handle_lan_chat_post(handler: BaseHTTPRequestHandler, parsed) -> bool:
         public_file_download = bool(re.fullmatch(r"/api/lan-chat/files/[0-9a-f]{32}/download", path))
         if global_user["id"] == "public" and not public_file_download:
             raise LanChatError("公共账户为只读模式", 403)
-        selecting_account = path in {"/api/lan-chat/select-account", "/api/lan-chat/accounts"}
+        selecting_account = path in {
+            "/api/lan-chat/select-account",
+            "/api/lan-chat/accounts",
+            "/api/lan-chat/primary-account",
+        }
         if not selecting_account and not public_file_download:
             # Reject writes before consuming multipart bodies or other large payloads.
             _require_lan_global_user(handler)
@@ -13093,6 +13097,10 @@ def handle_lan_chat_post(handler: BaseHTTPRequestHandler, parsed) -> bool:
                 str(payload.get("nickname") or ""),
             )
             json_response(handler, HTTPStatus.CREATED, result)
+            return True
+        if path == "/api/lan-chat/primary-account":
+            result = lan_chat_store.enter_primary_account(global_user["id"])
+            json_response(handler, HTTPStatus.CREATED if result["created"] else HTTPStatus.OK, result)
             return True
         if path == "/api/lan-chat/register":
             user, created = lan_chat_store.register(
