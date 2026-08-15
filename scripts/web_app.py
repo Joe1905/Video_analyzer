@@ -14024,6 +14024,12 @@ def handle_lan_chat_post(handler: BaseHTTPRequestHandler, parsed) -> bool:
             )
             json_response(handler, HTTPStatus.CREATED, result)
             return True
+        if path == "/api/lan-chat/primary-account":
+            result = lan_chat_store.enter_primary_account(
+                str(payload.get("feishuUserId") or "")
+            )
+            json_response(handler, HTTPStatus.CREATED if result["created"] else HTTPStatus.OK, result)
+            return True
         if path == "/api/lan-chat/register":
             user, created = lan_chat_store.register(
                 str(payload.get("deviceToken") or ""), str(payload.get("nickname") or "")
