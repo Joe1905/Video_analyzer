@@ -13264,6 +13264,22 @@ class Handler(BaseHTTPRequestHandler):
                 HTTPStatus.OK,
                 {"status": "ok", "ui_test_mode": UI_TEST_MODE},
             )
+        if parsed.path == "/harness":
+            page = (SCRIPTS_DIR / "static" / "harness.html").read_text(encoding="utf-8")
+            return text_response(self, HTTPStatus.OK, page, "text/html; charset=utf-8")
+        if parsed.path == "/harness-ca.crt":
+            certificate = ROOT / "data" / "harness-internal-ca.crt"
+            if not certificate.is_file():
+                return text_response(self, HTTPStatus.NOT_FOUND, "Harness certificate is not available", "text/plain; charset=utf-8")
+            payload = certificate.read_bytes()
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/x-x509-ca-cert")
+            self.send_header("Content-Disposition", 'attachment; filename="harness-internal-ca.crt"')
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(payload)
+            return
         if parsed.path == "/amazon/":
             self.send_response(HTTPStatus.TEMPORARY_REDIRECT)
             self.send_header("Location", "/amazon")
