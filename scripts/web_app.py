@@ -824,7 +824,6 @@ NAV_ITEMS = [
     {"key": "lan-chat", "href": "/lan-chat", "label": "\u90bb\u804a", "title": "\u5c40\u57df\u7f51\u804a\u5929", "icon": '<path d="M21 15a4 4 0 0 1-4 4H8l-5 2 1.6-4.1A7 7 0 0 1 3 12c0-4 4-7 9-7s9 3 9 7z"/><path d="M8 12h.01M12 12h.01M16 12h.01"/>'},
     {"key": "report", "href": "/report", "label": "\u65e5\u62a5", "title": "\u6bcf\u65e5\u62a5\u544a", "icon": '<path d="M7 3h7l4 4v14H7z"/><path d="M14 3v5h5"/><path d="M10 12h6"/><path d="M10 16h4"/>'},
     {"key": "proxy", "href": "/proxy", "label": "账号运营台", "title": "账号运营台", "icon": '<path d="M4 12a8 8 0 0 1 16 0"/><path d="M8 12a4 4 0 0 1 8 0"/><path d="M12 12v8"/><path d="M9 20h6"/>'},
-    {"key": "taobao", "href": "/taobao", "label": "淘宝采集", "title": "淘宝商品采集", "icon": '<path d="M5 7h14l-1 13H6z"/><path d="M4 7h16"/><path d="M9 7a3 3 0 0 1 6 0"/><path d="M9 12h6"/>'},
     {"key": "tool", "href": "/tool", "label": "工具", "title": "图片标签工具", "icon": '<path d="M4 5h16v14H4z"/><path d="m8 15 3-3 2 2 3-4 3 5"/><circle cx="9" cy="9" r="1"/>'},
 ]
 if not PROXY_POOL_ENABLED:
