@@ -1536,6 +1536,8 @@ def _analysis_sha256(analysis: Any) -> str:
 
 
 def translate_report_video_analysis(report_date: str, platform: str, video_id: str, force: bool = False) -> dict[str, Any]:
+    if not _auto_translate_enabled():
+        raise ValueError("日报逐视频翻译已关闭")
     date = str(report_date or today_key()).strip()
     platform = str(platform or "").strip()
     video_id = str(video_id or "").strip()
@@ -1596,7 +1598,7 @@ def translate_report_video_analysis(report_date: str, platform: str, video_id: s
 
 
 def _auto_translate_enabled() -> bool:
-    return os.getenv("REPORT_AUTO_TRANSLATE_ANALYSIS", "1").strip().lower() not in {"0", "false", "no", "off"}
+    return os.getenv("REPORT_AUTO_TRANSLATE_ANALYSIS", "0").strip().lower() not in {"0", "false", "no", "off"}
 
 
 def _run_report_video_translation_job(report_date: str, platform: str, video_id: str) -> None:
