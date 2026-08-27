@@ -134,6 +134,7 @@ from chat_preset_forms import preset_forms_for_provider
 from image_tag_tool import ImageTagToolError, normalize_tag, prepare_image_for_delivery
 from feishu_capabilities import FeishuCapabilityClient, FeishuCapabilityError
 from lan_chat import (
+    FILE_ARCHIVE_MAX_FILES,
     FILE_TRANSFER_MAX_BYTES,
     MESSAGE_MEDIA_MAX_BYTES,
     PROFILE_AVATAR_MAX_BYTES,
@@ -830,7 +831,7 @@ NAV_ITEMS = [
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
 
-UI_ASSET_VERSION = "20260813-44"
+UI_ASSET_VERSION = "20260827-45"
 APP_UI_ASSETS = f"""
 <script id="ui-nav-state-boot">
 let uiNavExpanded = false;
@@ -13057,6 +13058,59 @@ def handle_lan_chat_post(handler: BaseHTTPRequestHandler, parsed) -> bool:
                 str(getattr(file_item, "filename", "") or ""),
                 str(getattr(file_item, "type", "") or "application/octet-stream"),
                 file_item.file,
+                str(form.getfirst("content", "") or ""),
+                str(form.getfirst("clientUploadId", "") or ""),
+                str(form.getfirst("replyToMessageId", "") or ""),
+            )
+            json_response(
+                handler,
+                HTTPStatus.CREATED if created else HTTPStatus.OK,
+                {"message": message, "created": created},
+            )
+            return True
+
+        archive_upload_match = re.fullmatch(
+            r"/api/lan-chat/rooms/([^/]+)/file-archives", path
+        )
+        if archive_upload_match:
+            try:
+                content_length = int(handler.headers.get("Content-Length", "0") or "0")
+            except ValueError as exc:
+                raise LanChatError("请求长度无效") from exc
+            if content_length <= 0 or content_length > FILE_TRANSFER_MAX_BYTES + 2 * 1024 * 1024:
+                raise LanChatError("上传内容为空或超过 10GB 限制", 413)
+            if not handler.headers.get("Content-Type", "").lower().startswith("multipart/form-data"):
+                raise LanChatError("压缩包上传必须使用 multipart/form-data")
+            form = cgi.FieldStorage(
+                fp=handler.rfile,
+                headers=handler.headers,
+                environ={
+                    "REQUEST_METHOD": "POST",
+                    "CONTENT_TYPE": handler.headers.get("Content-Type", ""),
+                    "CONTENT_LENGTH": str(content_length),
+                },
+            )
+            if "files" not in form:
+                raise LanChatError("请选择要打包的文件")
+            file_items = form["files"]
+            if not isinstance(file_items, list):
+                file_items = [file_items]
+            if len(file_items) < 2:
+                raise LanChatError("至少选择 2 个文件才能打包")
+            if len(file_items) > FILE_ARCHIVE_MAX_FILES:
+                raise LanChatError(f"一次最多打包 {FILE_ARCHIVE_MAX_FILES} 个文件")
+            archive_files = []
+            for item in file_items:
+                if not getattr(item, "file", None):
+                    raise LanChatError("压缩包中包含无效文件")
+                archive_files.append(
+                    (str(getattr(item, "filename", "") or ""), item.file)
+                )
+            message, created = lan_chat_store.send_file_archive(
+                _lan_chat_token(handler),
+                unquote(archive_upload_match.group(1)),
+                str(form.getfirst("archiveName", "") or ""),
+                archive_files,
                 str(form.getfirst("content", "") or ""),
                 str(form.getfirst("clientUploadId", "") or ""),
                 str(form.getfirst("replyToMessageId", "") or ""),

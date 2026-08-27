@@ -9,6 +9,7 @@ import sqlite3
 import tempfile
 import time
 import unittest
+import zipfile
 from io import BytesIO
 from pathlib import Path
 
@@ -126,6 +127,53 @@ class LanChatFileTransferTest(unittest.TestCase):
                 self.receiver["sessionToken"], attachment["id"]
             )
         self.assertEqual(context.exception.status, 410)
+
+    def test_group_file_archive_downloads_as_zip(self) -> None:
+        room = self.store.create_group(
+            self.sender["sessionToken"],
+            "压缩包群",
+            [self.receiver["user"]["id"]],
+        )
+        message, created = self.store.send_file_archive(
+            self.sender["sessionToken"],
+            room["id"],
+            "项目资料.zip",
+            [
+                ("说明.txt", BytesIO("第一份".encode("utf-8"))),
+                ("说明.txt", BytesIO("第二份".encode("utf-8"))),
+            ],
+            "请查收压缩包",
+            "archive_upload_abcdefghijkl",
+        )
+        self.assertTrue(created)
+        attachment = message["file"]
+        self.assertEqual(attachment["name"], "项目资料.zip")
+        self.assertEqual(attachment["mimeType"], "application/zip")
+        self.assertTrue(attachment["downloadAllowed"])
+
+        path, name, content_type, size = self.store.file_download_info(
+            self.receiver["sessionToken"], attachment["id"]
+        )
+        self.assertEqual(name, "项目资料.zip")
+        self.assertEqual(content_type, "application/zip")
+        self.assertEqual(size, path.stat().st_size)
+        with zipfile.ZipFile(path) as archive:
+            self.assertEqual(archive.namelist(), ["说明.txt", "说明 (2).txt"])
+            self.assertEqual(archive.read("说明.txt"), "第一份".encode("utf-8"))
+            self.assertEqual(archive.read("说明 (2).txt"), "第二份".encode("utf-8"))
+
+        duplicate, duplicate_created = self.store.send_file_archive(
+            self.sender["sessionToken"],
+            room["id"],
+            "重复请求.zip",
+            [
+                ("a.txt", BytesIO(b"a")),
+                ("b.txt", BytesIO(b"b")),
+            ],
+            client_upload_id="archive_upload_abcdefghijkl",
+        )
+        self.assertFalse(duplicate_created)
+        self.assertEqual(duplicate["id"], message["id"])
 
     def test_direct_file_requires_receiver_acceptance(self) -> None:
         room = self.store.open_direct(

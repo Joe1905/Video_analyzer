@@ -16,6 +16,7 @@ import subprocess
 import threading
 import time
 import uuid
+import zipfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -51,6 +52,7 @@ FILE_TRANSFER_MAX_BYTES = 10 * 1024 * 1024 * 1024
 FILE_TRANSFER_RETENTION_SECONDS = 7 * 24 * 60 * 60
 FILE_TRANSFER_CLEANUP_INTERVAL_SECONDS = 60 * 60
 FILE_COPY_CHUNK_BYTES = 1024 * 1024
+FILE_ARCHIVE_MAX_FILES = 20
 FEISHU_AVATAR_MAX_BYTES = 5 * 1024 * 1024
 PROFILE_AVATAR_MAX_BYTES = 5 * 1024 * 1024
 GROUP_ANNOUNCEMENT_MAX_LENGTH = 4000
@@ -1587,6 +1589,168 @@ class LanChatStore:
         self._notify_message_event()
         return payload, True
 
+    def send_file_archive(
+        self,
+        device_token: str,
+        room_id: str,
+        archive_name: str,
+        files: list[tuple[str, BinaryIO]],
+        content: str = "",
+        client_upload_id: str = "",
+        reply_to_message_id: int | str | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        current = self.authenticate(device_token)
+        clean_upload_id = self._clean_client_upload_id(client_upload_id)
+        clean_content = str(content or "").strip()
+        if len(clean_content) > 4000:
+            raise LanChatError("消息不能超过 4000 个字符")
+        if len(files) < 2:
+            raise LanChatError("至少选择 2 个文件才能打包")
+        if len(files) > FILE_ARCHIVE_MAX_FILES:
+            raise LanChatError(f"一次最多打包 {FILE_ARCHIVE_MAX_FILES} 个文件")
+        raw_archive_name = str(archive_name or "邻聊文件.zip").strip()
+        if not raw_archive_name.lower().endswith(".zip"):
+            raw_archive_name += ".zip"
+        clean_name = self._clean_file_name(raw_archive_name)
+
+        with self._connect() as conn:
+            room = self._require_room_access(conn, room_id, current["id"])
+            clean_reply_id = self._reply_target_id(
+                conn, room_id, reply_to_message_id
+            )
+            existing = self._client_upload_message(
+                conn, current["id"], room_id, clean_upload_id
+            )
+            if existing is not None:
+                return existing, False
+            receiver_ids = []
+            if room["kind"] == "direct":
+                receiver_ids = [
+                    str(row["user_id"])
+                    for row in conn.execute(
+                        "SELECT user_id FROM room_members WHERE room_id = ? AND user_id != ?",
+                        (room_id, current["id"]),
+                    ).fetchall()
+                ]
+                if len(receiver_ids) != 1:
+                    raise LanChatError("私信接收人不存在", 409)
+
+        attachment_id = uuid.uuid4().hex
+        final_path = self.file_dir / attachment_id
+        temp_path = self.file_dir / f".{attachment_id}.upload"
+        source_size_bytes = 0
+        used_names: set[str] = set()
+        try:
+            with zipfile.ZipFile(
+                temp_path,
+                "w",
+                compression=zipfile.ZIP_DEFLATED,
+                compresslevel=1,
+                allowZip64=True,
+            ) as archive:
+                for original_name, file_stream in files:
+                    clean_member_name = self._clean_file_name(original_name)
+                    member_name = self._unique_archive_member_name(
+                        clean_member_name, used_names
+                    )
+                    member_size = 0
+                    with archive.open(member_name, "w", force_zip64=True) as output:
+                        while True:
+                            chunk = file_stream.read(FILE_COPY_CHUNK_BYTES)
+                            if not chunk:
+                                break
+                            if not isinstance(chunk, bytes):
+                                raise LanChatError("上传文件数据无效")
+                            member_size += len(chunk)
+                            source_size_bytes += len(chunk)
+                            if source_size_bytes > FILE_TRANSFER_MAX_BYTES:
+                                raise LanChatError("压缩包内文件总大小不能超过 10GB", 413)
+                            output.write(chunk)
+                    if member_size <= 0:
+                        raise LanChatError(f"{clean_member_name} 不能为空")
+            size_bytes = temp_path.stat().st_size
+            if size_bytes <= 0:
+                raise LanChatError("压缩包不能为空")
+            if size_bytes > FILE_TRANSFER_MAX_BYTES:
+                raise LanChatError("生成的压缩包不能超过 10GB", 413)
+            temp_path.replace(final_path)
+
+            now = time.time()
+            expires_at = now + FILE_TRANSFER_RETENTION_SECONDS
+            with self._connect() as conn:
+                room = self._require_room_access(conn, room_id, current["id"])
+                existing = self._client_upload_message(
+                    conn, current["id"], room_id, clean_upload_id
+                )
+                if existing is not None:
+                    final_path.unlink(missing_ok=True)
+                    return existing, False
+                conn.execute(
+                    """INSERT INTO file_attachments
+                       (id, room_id, sender_id, stored_filename, original_name, mime_type,
+                        size_bytes, expires_at, deleted_at, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)""",
+                    (
+                        attachment_id,
+                        room_id,
+                        current["id"],
+                        attachment_id,
+                        clean_name,
+                        "application/zip",
+                        size_bytes,
+                        expires_at,
+                        now,
+                    ),
+                )
+                cursor = conn.execute(
+                    """INSERT INTO messages
+                       (room_id, sender_id, content, image_filename, image_mime_type,
+                        file_id, client_upload_id, reply_to_message_id, created_at)
+                       VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, ?)""",
+                    (
+                        room_id,
+                        current["id"],
+                        clean_content,
+                        attachment_id,
+                        clean_upload_id or None,
+                        clean_reply_id,
+                        now,
+                    ),
+                )
+                if room["kind"] == "direct":
+                    conn.execute(
+                        """INSERT INTO file_receipts
+                           (file_id, user_id, status, decided_at)
+                           VALUES (?, ?, 'pending', NULL)""",
+                        (attachment_id, receiver_ids[0]),
+                    )
+                conn.execute("UPDATE rooms SET updated_at = ? WHERE id = ?", (now, room_id))
+                row = conn.execute(
+                    """SELECT m.*, u.nickname, u.avatar_color, u.avatar_status
+                       FROM messages m JOIN users u ON u.id = m.sender_id
+                       WHERE m.id = ?""",
+                    (cursor.lastrowid,),
+                ).fetchone()
+                payload = self._message_payload(conn, row, current["id"])
+        except sqlite3.IntegrityError:
+            temp_path.unlink(missing_ok=True)
+            final_path.unlink(missing_ok=True)
+            if clean_upload_id:
+                with self._connect() as conn:
+                    self._require_room_access(conn, room_id, current["id"])
+                    existing = self._client_upload_message(
+                        conn, current["id"], room_id, clean_upload_id
+                    )
+                    if existing is not None:
+                        return existing, False
+            raise
+        except Exception:
+            temp_path.unlink(missing_ok=True)
+            final_path.unlink(missing_ok=True)
+            raise
+        self._notify_message_event()
+        return payload, True
+
     def accept_file(self, device_token: str, file_id: str) -> dict[str, Any]:
         current = self.authenticate(device_token)
         clean_id = self._clean_file_id(file_id)
@@ -2457,6 +2621,20 @@ class LanChatStore:
         if len(filename.encode("utf-8")) > 255:
             raise LanChatError("文件名不能超过 255 字节")
         return filename
+
+    @staticmethod
+    def _unique_archive_member_name(filename: str, used_names: set[str]) -> str:
+        candidate = filename
+        stem = Path(filename).stem
+        suffix = Path(filename).suffix
+        index = 2
+        while candidate.casefold() in used_names:
+            candidate = f"{stem} ({index}){suffix}"
+            if len(candidate.encode("utf-8")) > 255:
+                raise LanChatError("压缩包内存在无法自动重命名的重复文件")
+            index += 1
+        used_names.add(candidate.casefold())
+        return candidate
 
     @staticmethod
     def _clean_file_id(value: str) -> str:

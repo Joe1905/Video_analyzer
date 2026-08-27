@@ -32,6 +32,7 @@ class MockLanChatApi:
         self.messages: dict[str, list[dict]] = {"public": [], "group-1": []}
         self.upload_names: list[str] = []
         self.upload_bodies: list[str] = []
+        self.archive_members: list[list[str]] = []
         self.active_uploads = 0
         self.max_active_uploads = 0
         self.next_message_id = 1
@@ -133,19 +134,36 @@ class MockLanChatApi:
                 json={"messages": messages, "lastId": messages[-1]["id"] if messages else 0}
             )
             return
+        archive_match = re.search(
+            r"/api/lan-chat/rooms/([^/]+)/file-archives$", path
+        )
+        if archive_match and request.method == "POST":
+            await self._handle_upload(route, archive_match.group(1), archive=True)
+            return
         file_match = re.search(r"/api/lan-chat/rooms/([^/]+)/files$", path)
         if file_match and request.method == "POST":
             await self._handle_upload(route, file_match.group(1))
             return
         await route.fulfill(status=404, json={"error": "mock route not found"})
 
-    async def _handle_upload(self, route: Route, room_id: str) -> None:
+    async def _handle_upload(
+        self, route: Route, room_id: str, *, archive: bool = False
+    ) -> None:
         body = (route.request.post_data_buffer or b"").decode("utf-8", "replace")
-        filename_match = re.search(r'filename="([^"]+)"', body)
+        filenames = re.findall(r'filename="([^"]+)"', body)
+        archive_name_match = re.search(
+            r'name="archiveName"\r\n\r\n([^\r\n]+)', body
+        )
         upload_id_match = re.search(
             r'name="clientUploadId"\r\n\r\n([^\r\n]+)', body
         )
-        filename = filename_match.group(1) if filename_match else "unknown.bin"
+        filename = (
+            archive_name_match.group(1)
+            if archive and archive_name_match
+            else filenames[0] if filenames else "unknown.bin"
+        )
+        if archive:
+            self.archive_members.append(filenames)
         client_upload_id = upload_id_match.group(1) if upload_id_match else ""
         self.upload_names.append(filename)
         self.upload_bodies.append(body)
@@ -177,7 +195,7 @@ class MockLanChatApi:
                 "file": {
                     "id": f"file-{self.next_message_id}",
                     "name": filename,
-                    "mimeType": "text/plain",
+                    "mimeType": "application/zip" if archive else "text/plain",
                     "size": 4,
                     "expiresAt": time.time() + 7 * 86400,
                     "expired": False,
@@ -199,7 +217,8 @@ class MockLanChatApi:
 async def open_chat(browser, base_url: str, viewport: dict, api: MockLanChatApi):
     context = await browser.new_context(viewport=viewport)
     await context.add_init_script(
-        "localStorage.setItem('videoAnalyzer.lanChat.sessionToken.v2','test-token')"
+        "window.VideoAnalyzerGlobalUser=Promise.resolve({currentUser:{id:'test-owner',kind:'feishu'}});"
+        "localStorage.setItem('videoAnalyzer.lanChat.sessionToken.v3.test-owner','test-token')"
     )
     page = await context.new_page()
     console_errors: list[str] = []
@@ -244,6 +263,7 @@ async def desktop_scenario(browser, base_url: str, screenshot_dir: Path) -> None
             [{"name": "single.txt", "mimeType": "text/plain", "buffer": b"one"}]
         )
         await expect(page.locator("#imageDraft")).to_be_visible()
+        await expect(page.locator("#archiveOption")).to_be_hidden()
         assert not api.upload_names
         await page.locator("#removeImage").click()
 
@@ -255,21 +275,37 @@ async def desktop_scenario(browser, base_url: str, screenshot_dir: Path) -> None
                 {"name": "c.txt", "mimeType": "text/plain", "buffer": b"c"},
             ]
         )
+        await expect(page.locator("#imageDraft")).to_be_visible()
+        await expect(page.locator("#archiveOption")).to_be_visible()
+        await expect(page.locator("#archiveFiles")).not_to_be_checked()
+        assert not api.upload_names
+        await page.locator("#archiveFiles").check()
+        await expect(page.locator("#imageDraftName")).to_have_text(
+            re.compile(r"邻聊文件-\d{8}-\d{6}\.zip")
+        )
+        await expect(page.locator("#draftHint")).to_contain_text(
+            "将作为 1 个 ZIP 压缩包发送"
+        )
+        await page.locator("#sendButton").click()
         await expect(page.locator("#uploadQueue")).to_be_visible()
-        await expect(page.locator(".queue-placeholder")).to_have_count(3)
+        await expect(page.locator(".queue-placeholder")).to_have_count(1)
         await expect(page.locator("#queueSummaryStatus")).to_contain_text("上传中")
         await expect(page.locator(".queue-progress").first).to_be_visible()
         await page.locator('[data-room-id="group-1"]').click()
         await expect(page.locator("#queueSummaryText")).to_contain_text("公共频道")
         await expect(page.locator(".queue-placeholder")).to_have_count(0)
-        await wait_until(lambda: len(api.upload_names) == 3)
-        assert api.upload_names == ["a.txt", "b.txt", "c.txt"]
+        await wait_until(lambda: len(api.upload_names) == 1)
+        assert re.fullmatch(r"邻聊文件-\d{8}-\d{6}\.zip", api.upload_names[0])
+        assert api.archive_members == [["a.txt", "b.txt", "c.txt"]]
         assert api.max_active_uploads == 1
         assert sum("批次说明" in body for body in api.upload_bodies) == 1
         await page.locator('[data-room-id="public"]').click()
-        await expect(page.locator("[data-message-id]")).to_have_count(3)
+        await expect(page.locator("[data-message-id]")).to_have_count(1)
+        await expect(page.locator(".file-card strong")).to_have_text(
+            re.compile(r"邻聊文件-\d{8}-\d{6}\.zip")
+        )
         await page.evaluate("mergeServerMessage(state.messages[0]); renderMessages()")
-        await expect(page.locator("[data-message-id]")).to_have_count(3)
+        await expect(page.locator("[data-message-id]")).to_have_count(1)
         await page.screenshot(path=str(screenshot_dir / "lan-chat-upload-queue-desktop.png"))
         assert not console_errors, console_errors
     finally:
@@ -317,6 +353,9 @@ async def mobile_network_retry_scenario(
                 {"name": "ok.txt", "mimeType": "text/plain", "buffer": b"z"},
             ]
         )
+        await expect(page.locator("#archiveOption")).to_be_visible()
+        await expect(page.locator("#archiveFiles")).not_to_be_checked()
+        await page.locator("#sendButton").click()
         await expect(page.locator("#queueSummaryStatus")).to_have_text("等待网络")
         await expect(page.locator(".queue-placeholder-status").first).to_contain_text(
             "等待网络"
