@@ -57,6 +57,10 @@ def today_key() -> str:
     return datetime.now(ZoneInfo(DEFAULT_TZ)).strftime("%Y-%m-%d")
 
 
+def hot_report_enabled() -> bool:
+    return os.getenv("HOT_VIDEO_REPORT_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
 def initialize_hot_report_db() -> None:
     """Create or migrate the report database once for the current process/path."""
     global _initialized_db_path
@@ -3682,6 +3686,8 @@ def refresh_report_hot_scores(report_date: str) -> int:
 
 def regenerate_daily_report_summary(report_date: str) -> dict[str, Any]:
     """Regenerate only the final daily summary from completed video checkpoints."""
+    if not hot_report_enabled():
+        raise RuntimeError("日报功能已暂停")
     refresh_report_hot_scores(report_date)
     with closing(_connect()) as conn:
         row = conn.execute(
@@ -3783,6 +3789,8 @@ def _heartbeat_report(conn: sqlite3.Connection, report_id: str, report_date: str
 
 
 def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[str, Any]:
+    if not hot_report_enabled():
+        raise RuntimeError("日报功能已暂停")
     settings = get_settings()
     date = report_date or today_key()
     region = os.getenv("SOCIAVAULT_REGION", "US").strip() or "US"
@@ -3979,10 +3987,12 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
 def get_report_runtime_status() -> dict[str, Any]:
     with _active_job_lock:
         active = _active_job
-    return {"active_date": active, "queued": list(_job_queue.queue)}
+    return {"enabled": hot_report_enabled(), "active_date": active, "queued": list(_job_queue.queue)}
 
 
 def enqueue_report(report_date: str | None = None) -> dict[str, Any]:
+    if not hot_report_enabled():
+        raise RuntimeError("日报功能已暂停")
     date = report_date or today_key()
     _job_queue.put(date)
     _progress_payload(date, "queued", "queued", 0, "日报任务已排队", {})
@@ -4039,6 +4049,8 @@ def _scheduler_loop() -> None:
 
 def start_report_scheduler(enable_timer: bool = True) -> None:
     global _scheduler_started
+    if not hot_report_enabled():
+        return
     with _scheduler_lock:
         if _scheduler_started:
             return
