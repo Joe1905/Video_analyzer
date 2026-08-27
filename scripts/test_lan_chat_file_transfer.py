@@ -274,6 +274,22 @@ class LanChatFileTransferTest(unittest.TestCase):
         self.assertNotIn("readAsDataUrl", template)
         self.assertNotIn("mediaData:prepared.dataUrl", template)
 
+    def test_multi_image_draft_and_media_cookie_contract(self) -> None:
+        scripts_dir = Path(__file__).parent
+        template = (scripts_dir / "static" / "lan_chat.html").read_text(
+            encoding="utf-8"
+        )
+        web_source = (scripts_dir / "web_app.py").read_text(encoding="utf-8")
+        self.assertIn('if(files.length>1){setDraftAttachment({kind:"batch"', template)
+        self.assertIn('class="draft-thumb"', template)
+        self.assertIn('Path=/api/lan-chat/media/; SameSite=Strict', template)
+        self.assertIn(
+            'LAN_CHAT_MEDIA_COOKIE = "video_analyzer_lan_chat_media"', web_source
+        )
+        self.assertIn(
+            "or _cookie_value(handler, LAN_CHAT_MEDIA_COOKIE).strip()", web_source
+        )
+
     def test_streamed_media_is_paginated_and_emits_events(self) -> None:
         payload = b"\x00\x00\x00\x18ftypisom" + b"streamed-video"
         sent = []

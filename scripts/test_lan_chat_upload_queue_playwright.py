@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import json
 import re
 import time
@@ -14,6 +15,9 @@ from playwright.async_api import Route, async_playwright, expect
 
 
 AVATAR = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E"
+PNG_BYTES = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2n1cAAAAASUVORK5CYII="
+)
 
 
 async def wait_until(predicate, timeout: float = 8.0) -> None:
@@ -33,6 +37,7 @@ class MockLanChatApi:
         self.upload_names: list[str] = []
         self.upload_bodies: list[str] = []
         self.archive_members: list[list[str]] = []
+        self.media_request_cookies: list[str] = []
         self.active_uploads = 0
         self.max_active_uploads = 0
         self.next_message_id = 1
@@ -126,6 +131,17 @@ class MockLanChatApi:
                 body=": mock stream ready\n\n",
             )
             return
+        media_get_match = re.search(
+            r"/api/lan-chat/media/[0-9a-f]{32}\.jpg(?:/download)?$", path
+        )
+        if media_get_match and request.method == "GET":
+            cookie = request.headers.get("cookie", "")
+            self.media_request_cookies.append(cookie)
+            if "video_analyzer_lan_chat_media=test-token" not in cookie:
+                await route.fulfill(status=401, json={"error": "missing media cookie"})
+                return
+            await route.fulfill(body=PNG_BYTES, content_type="image/png")
+            return
         message_match = re.search(r"/api/lan-chat/rooms/([^/]+)/messages$", path)
         if message_match and request.method == "GET":
             room_id = message_match.group(1)
@@ -140,6 +156,10 @@ class MockLanChatApi:
         if archive_match and request.method == "POST":
             await self._handle_upload(route, archive_match.group(1), archive=True)
             return
+        media_match = re.search(r"/api/lan-chat/rooms/([^/]+)/media$", path)
+        if media_match and request.method == "POST":
+            await self._handle_upload(route, media_match.group(1), media=True)
+            return
         file_match = re.search(r"/api/lan-chat/rooms/([^/]+)/files$", path)
         if file_match and request.method == "POST":
             await self._handle_upload(route, file_match.group(1))
@@ -147,7 +167,12 @@ class MockLanChatApi:
         await route.fulfill(status=404, json={"error": "mock route not found"})
 
     async def _handle_upload(
-        self, route: Route, room_id: str, *, archive: bool = False
+        self,
+        route: Route,
+        room_id: str,
+        *,
+        archive: bool = False,
+        media: bool = False,
     ) -> None:
         body = (route.request.post_data_buffer or b"").decode("utf-8", "replace")
         filenames = re.findall(r'filename="([^"]+)"', body)
@@ -176,6 +201,7 @@ class MockLanChatApi:
                 self.failed.add(filename)
                 await route.fulfill(status=400, json={"error": "模拟的 4xx 失败"})
                 return
+            media_id = f"{self.next_message_id:032x}.jpg" if media else ""
             message = {
                 "id": self.next_message_id,
                 "roomId": room_id,
@@ -184,15 +210,17 @@ class MockLanChatApi:
                 "senderName": "测试手机",
                 "senderAvatarUrl": AVATAR,
                 "content": "批次说明" if "批次说明" in body else "",
-                "imageUrl": "",
-                "mediaUrl": "",
+                "imageUrl": f"/api/lan-chat/media/{media_id}" if media else "",
+                "mediaUrl": f"/api/lan-chat/media/{media_id}" if media else "",
                 "mediaPosterUrl": "",
-                "mediaDownloadUrl": "",
-                "mediaMimeType": "",
-                "mediaKind": "",
-                "mediaExpiresAt": None,
+                "mediaDownloadUrl": (
+                    f"/api/lan-chat/media/{media_id}/download" if media else ""
+                ),
+                "mediaMimeType": "image/jpeg" if media else "",
+                "mediaKind": "image" if media else "",
+                "mediaExpiresAt": time.time() + 7 * 86400 if media else None,
                 "mediaExpired": False,
-                "file": {
+                "file": None if media else {
                     "id": f"file-{self.next_message_id}",
                     "name": filename,
                     "mimeType": "application/zip" if archive else "text/plain",
@@ -229,7 +257,12 @@ async def open_chat(browser, base_url: str, viewport: dict, api: MockLanChatApi)
         else None,
     )
     await page.route("**/api/lan-chat/**", api.handle)
-    await page.goto(f"{base_url}/lan-chat", wait_until="domcontentloaded")
+    target_url = (
+        base_url
+        if base_url.rstrip("/").endswith((".html", "/lan-chat"))
+        else f"{base_url.rstrip('/')}/lan-chat"
+    )
+    await page.goto(target_url, wait_until="domcontentloaded")
     await expect(page.locator("#loginModal")).not_to_have_class(re.compile("show"))
     return context, page, console_errors
 
@@ -267,6 +300,35 @@ async def desktop_scenario(browser, base_url: str, screenshot_dir: Path) -> None
         assert not api.upload_names
         await page.locator("#removeImage").click()
 
+        await file_input.set_input_files(
+            [
+                {"name": "one.png", "mimeType": "image/png", "buffer": PNG_BYTES},
+                {"name": "two.png", "mimeType": "image/png", "buffer": PNG_BYTES},
+                {"name": "three.png", "mimeType": "image/png", "buffer": PNG_BYTES},
+            ]
+        )
+        await expect(page.locator("#imageDraft")).to_be_visible()
+        await expect(page.locator("#imageDraftName")).to_have_text("已选择 3 张图片")
+        await expect(page.locator("#draftHint")).to_contain_text("点发送后逐个发送")
+        await expect(page.locator("#archiveOption")).to_be_hidden()
+        await expect(page.locator("#draftPreview .draft-thumb img")).to_have_count(3)
+        assert not api.upload_names
+        await page.screenshot(
+            path=str(screenshot_dir / "lan-chat-multi-image-draft-desktop.png")
+        )
+        await page.locator("#sendButton").click()
+        await wait_until(lambda: len(api.upload_names) == 3)
+        await expect(page.locator("[data-message-id]")).to_have_count(3)
+        await expect(page.locator(".message-image img")).to_have_count(3)
+        await page.wait_for_function(
+            "[...document.querySelectorAll('.message-image img')].every(img => img.complete && img.naturalWidth > 0)"
+        )
+        assert api.media_request_cookies
+        assert all(
+            "video_analyzer_lan_chat_media=test-token" in cookie
+            for cookie in api.media_request_cookies
+        )
+
         await page.locator("#messageInput").fill("批次说明")
         await file_input.set_input_files(
             [
@@ -294,18 +356,18 @@ async def desktop_scenario(browser, base_url: str, screenshot_dir: Path) -> None
         await page.locator('[data-room-id="group-1"]').click()
         await expect(page.locator("#queueSummaryText")).to_contain_text("公共频道")
         await expect(page.locator(".queue-placeholder")).to_have_count(0)
-        await wait_until(lambda: len(api.upload_names) == 1)
-        assert re.fullmatch(r"邻聊文件-\d{8}-\d{6}\.zip", api.upload_names[0])
+        await wait_until(lambda: len(api.upload_names) == 4)
+        assert re.fullmatch(r"邻聊文件-\d{8}-\d{6}\.zip", api.upload_names[-1])
         assert api.archive_members == [["a.txt", "b.txt", "c.txt"]]
         assert api.max_active_uploads == 1
         assert sum("批次说明" in body for body in api.upload_bodies) == 1
         await page.locator('[data-room-id="public"]').click()
-        await expect(page.locator("[data-message-id]")).to_have_count(1)
+        await expect(page.locator("[data-message-id]")).to_have_count(4)
         await expect(page.locator(".file-card strong")).to_have_text(
             re.compile(r"邻聊文件-\d{8}-\d{6}\.zip")
         )
-        await page.evaluate("mergeServerMessage(state.messages[0]); renderMessages()")
-        await expect(page.locator("[data-message-id]")).to_have_count(1)
+        await page.evaluate("mergeServerMessage(state.messages.at(-1)); renderMessages()")
+        await expect(page.locator("[data-message-id]")).to_have_count(4)
         await page.screenshot(path=str(screenshot_dir / "lan-chat-upload-queue-desktop.png"))
         assert not console_errors, console_errors
     finally:

@@ -831,7 +831,7 @@ NAV_ITEMS = [
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
 
-UI_ASSET_VERSION = "20260827-45"
+UI_ASSET_VERSION = "20260827-46"
 APP_UI_ASSETS = f"""
 <script id="ui-nav-state-boot">
 let uiNavExpanded = false;
@@ -12580,8 +12580,14 @@ def proxy_mcp_chat(handler: BaseHTTPRequestHandler, chat_type: str) -> None:
         conn.close()
 
 
+LAN_CHAT_MEDIA_COOKIE = "video_analyzer_lan_chat_media"
+
+
 def _lan_chat_token(handler: BaseHTTPRequestHandler) -> str:
-    return handler.headers.get("X-Lan-Chat-Token", "").strip()
+    return (
+        handler.headers.get("X-Lan-Chat-Token", "").strip()
+        or _cookie_value(handler, LAN_CHAT_MEDIA_COOKIE).strip()
+    )
 
 
 def _require_lan_global_user(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
