@@ -310,9 +310,21 @@ async def desktop_scenario(browser, base_url: str, screenshot_dir: Path) -> None
         await expect(page.locator("#imageDraft")).to_be_visible()
         await expect(page.locator("#imageDraftName")).to_have_text("已选择 3 张图片")
         await expect(page.locator("#draftHint")).to_contain_text("点发送后逐个发送")
-        await expect(page.locator("#archiveOption")).to_be_hidden()
+        await expect(page.locator("#archiveOption")).to_be_visible()
+        await expect(page.locator("#archiveFiles")).not_to_be_checked()
         await expect(page.locator("#draftPreview .draft-thumb img")).to_have_count(3)
         assert not api.upload_names
+        await page.locator("#archiveFiles").check()
+        await expect(page.locator("#imageDraftName")).to_have_text(
+            re.compile(r"邻聊文件-\d{8}-\d{6}\.zip")
+        )
+        await expect(page.locator("#draftHint")).to_contain_text(
+            "将作为 1 个 ZIP 压缩包发送"
+        )
+        await expect(page.locator("#draftPreview")).to_have_text("ZIP")
+        await page.locator("#archiveFiles").uncheck()
+        await expect(page.locator("#imageDraftName")).to_have_text("已选择 3 张图片")
+        await expect(page.locator("#draftPreview .draft-thumb img")).to_have_count(3)
         await page.screenshot(
             path=str(screenshot_dir / "lan-chat-multi-image-draft-desktop.png")
         )
