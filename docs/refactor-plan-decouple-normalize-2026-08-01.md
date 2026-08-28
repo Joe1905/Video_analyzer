@@ -37,7 +37,7 @@ git merge-base --is-ancestor b364276 v2
 6. 视频分析超时测试更新为当前 `Popen`/进程组终止实现。
 7. 4004 代理运行时使用独立命名空间 `v2`、Mihomo 节点前缀 `v2-`、普通代理端口 `19300-19399`、淘宝代理端口 `19400-19419`；V2 web 默认端口固定为 `4004`。
 8. 代理端口迁移会同步已绑定账号的 `proxy_binding.local_port` 和 `browser_settings.proxy_server`；sing-box 检测同时兼容数据库行和归一化后的 pool 字典。
-9. 活动聊天 provider 收紧为 Home、SellerSprite、出海匠；`/fastmoss*` 只保留到 `/chuhaijiang` 的 307 兼容重定向。代理页已补齐共享 `.ui-header` 契约。
+9. 活动聊天 provider 收紧为 Home、SellerSprite、出海匠；当前部署仍有的 `/fastmoss*` 307 重定向只是待清理遗留，Phase 0 不保留该路由。代理页已补齐共享 `.ui-header` 契约。
 
 4004 隔离要求保持不变：Compose 项目、sing-box 项目、测试端口和服务操作都不得落到 4002/4003。`0232f9f` 已通过 GitHub 同步并部署到 `/home/openclaw/Video_analyzer-ui-4004`；部署后 4002、4003、4004 的 `/healthz` 均返回 200。
 
@@ -138,7 +138,7 @@ web_app → routes → services/chat/proxy/jobs → core
 新增 `scripts/test_web_smoke.py`，使用临时数据目录和只读/测试模式启动服务，覆盖：
 
 - 页面：`/`、`/chat`、`/amazon`、`/chuhaijiang`、`/report`、`/report/player`、`/extract`、`/shop`、`/tool`、`/metrics`、`/lan-chat`、`/proxy`、`/taobao`、`/harness`。
-- 路由兼容：`/amazon/`、`/chuhaijiang/`、`/fastmoss*` 的规范化或重定向。
+- 路由规范化：`/amazon/`、`/chuhaijiang/` 的规范化或重定向，以及所有未注册路径的统一 404。
 - 只读 API：`/healthz`、聊天 session/tool catalog、文件列表、日报历史、代理池状态。
 - 功能开关：关闭日报或代理功能时返回稳定的 404/禁用响应，不抛服务器异常。
 
@@ -162,8 +162,8 @@ HOT_VIDEO_REPORT_ENABLED=0
 | --- | --- |
 | `GET /amazon/` | 307，`Location: /amazon` |
 | `GET /chuhaijiang/` | 307，`Location: /chuhaijiang` |
-| `GET/POST /fastmoss`、`/fastmoss/`、`/fastmoss/<tail>` | 307，`Location: /chuhaijiang` |
 | `GET /amazon/<tail>`、`/chuhaijiang/<tail>` | 404 JSON `{"error":"Not found"}` |
+| 任意未注册的 GET/POST 路径 | 走通用 404，不存在历史 provider 重定向 |
 | 日报关闭时 `GET /report` | 200，历史日报仍可读，页面显示暂停生成态 |
 | 日报关闭时 `POST /api/report/run` | 503 JSON `{"error":"日报功能已暂停"}` |
 | 代理关闭时 `GET /proxy` | 404 text `Not found` |
@@ -183,9 +183,9 @@ HOT_VIDEO_REPORT_ENABLED=0
 | `test_chuhaijiang_boundary.py` | 5 项通过 | 保持活动 provider 与工具域隔离门禁 |
 | `test_proxy_pool_lifecycle.py` | 通过 | 保持端口迁移、删池解绑、重新绑定和 sing-box 检测门禁 |
 | `test_27_presets_mock_boundary.py` | 27 个 SellerSprite 官方预设通过 | mock 开关只注入测试子进程，生产默认仍为 0 |
-| `test_chat_tool_normalization.py` | 仍是 V1/V2 混合套件；包含已退役 FastMoss provider 断言 | 按活动 provider 拆出 V2 套件；旧 FastMoss 仅保留重定向/历史兼容测试，不得恢复 provider |
+| `test_chat_tool_normalization.py` | 仍是 V1/V2 混合套件；包含已退役 FastMoss provider 断言 | 按活动 provider 拆出 V2 套件；删除全部旧 FastMoss 断言，不新增兼容套件 |
 
-已知的运行时与 UI 红灯已关闭。Phase 0 尚未完成的是新增统一 HTTP smoke、拆分混合聊天套件、落库测试矩阵与首批响应契约。这些不能笼统标记为“历史问题”后继续重构：每项必须最终落为活动 V2 套件中的 `pass`、带明确条件的 `skip`，或独立的旧 FastMoss 兼容测试。
+已知的运行时与 UI 红灯已关闭。Phase 0 尚未完成的是新增统一 HTTP smoke、拆分混合聊天套件、落库测试矩阵与首批响应契约。这些不能笼统标记为“历史问题”后继续重构：每项必须最终落为活动 V2 套件中的 `pass` 或带明确条件的 `skip`；退役 provider 测试直接删除，不转成兼容测试。
 
 ### 4.4 建立测试矩阵
 
@@ -199,7 +199,48 @@ HOT_VIDEO_REPORT_ENABLED=0
 
 响应基线存放在 `scripts/contracts/`。快照生成时只允许规范化随机 ID、时间戳、临时绝对路径和日志时间前缀；字段缺失、状态码、重定向目标、SSE event/data 结构不得被归一掉。快照中只能使用合成数据，不得写入凭据、Cookie、真实账号或请求头。
 
-**Phase 0 验收：** 服务器 4004 容器中 smoke 通过；混合聊天套件完成拆分；现有测试没有“来源不明”的红灯；测试矩阵写入仓库。
+### 4.5 退役 FastMoss 全量清理
+
+FastMoss 已不是 V2 活动 provider。本计划按“零兼容、零运行时残留”处理：不保留 URL 重定向、provider/API 别名、工具域特判、会话迁移器、MCP Bridge、Skill、预设、配置项、前端分支或仓库内历史文档。旧 URL 删除专用路由后自然落入通用 404；旧 provider/tool 值按通用未知值处理，不写任何 FastMoss 专用兼容代码。
+
+2026-08-28 盘点表明，遗留不只在测试中：`scripts/web_app.py` 约 615 处、`scripts/test_chat_tool_normalization.py` 约 379 处，另有 Compose/env、MCP Bridge、三个 FastMoss 专用 Python 模块、一个本地 Skill、三个专项测试和多份历史文档。行数只用于说明影响面，实施时以 CodeGraph 调用关系和 `git grep -i -E 'fastmoss|fast_moss'` 的当时结果为准。
+
+清理范围：
+
+| 类别 | 必须删除/迁移的内容 | 必须保护的行为 |
+| --- | --- | --- |
+| URL 与 API | 删除 `web_app.py` 中所有旧 URL 重定向和专用分支；从 provider/chat type 注册表、请求处理和 PDF/export 映射中移除旧 provider | 未注册路径统一返回 404，且不带 `Location`；外部 provider 入参使用通用严格校验，未知值不得静默降级到 Home |
+| 工具安全边界 | 从 catalog、schema 暴露、参数归一、执行网关、LLM 编排和缓存域中删除专用 tool namespace | 任意未注册工具前缀都走通用 fail-closed 路径，不得到达 Bridge/API；SellerSprite、出海匠和 SociaVault 工具集不变 |
+| 运行时与编排 | 删除 presets、playbooks、evidence/finalizer、业务默认值、报告模型分支、provider 会话、标题和旧 session 读取逻辑 | Home、SellerSprite、出海匠的 prompt、工具白名单、会话隔离和报告输出快照无差异 |
+| 共享语义渲染 | `sellersprite_evidence_renderer.py` 仍从 FastMoss 命名模块导入通用 profile、renderer 和本地化函数；必须先迁入中性命名模块，再删旧文件 | 先对 SellerSprite semantic Markdown 做快照；迁移提交只改归属/命名，不改渲染结果 |
+| 通用辅助函数 | 对被 SellerSprite、出海匠或 SociaVault 调用的旧 provider 命名 helper 先改为中性命名；其余直接删除 | 逐个函数用 CodeGraph 确认调用方；不允许因名字属于旧 provider 就误删共享能力 |
+| Bridge 与配置 | 从 `sellersprite_mcp_chat/server.js`、`.env*.example`、`docker-compose.yml` 移除 endpoint/key/port/cache/Skill/report-model 变量和双 provider 分支 | SellerSprite Bridge 的工具列表、调用、缓存键与 TTL 测试通过 |
+| 专用源码与资源 | 删除 `fastmoss_official_skill.py`、`fastmoss_lightweight_skill.py`、旧 provider 专用 renderer 业务部分、`skills/fastmoss-product-scout/`、专用测试、前端 CSS/label 和文件名含 FastMoss 的所有资产 | 只能在共享能力迁移且活动 provider 回归通过后删文件 |
+| 历史会话与缓存 | 部署前将服务器 `data/fastmoss_mcp/` 和 `data/fastmoss_official_skill/` 备份到项目目录之外，验证备份后从 V2 应用数据目录删除；`retitle_sessions.py` 移除旧 store | 备份不挂载、不被运行时读取，仅用于部署回滚；回滚期后删除站外备份属破坏性操作，实施时再明确确认 |
+| 文档 | README、AGENTS 和设计交付改为当前三 provider 契约；直接删除仓库中旧 FastMoss 设计、Skill 修复和实施日志 | 不在仓库新建历史兼容文档；审计记录由 Git 历史保留 |
+
+实施顺序与提交边界：
+
+1. **加活动域门禁：** 新增通用未注册路由/provider/tool 的 404/fail-closed 契约、SellerSprite 语义渲染快照和三 provider catalog 快照；此提交不删代码，也不新增旧 provider 专用契约。
+2. **中性化共享能力：** 迁移 SellerSprite 仍使用的 semantic renderer/profile/localization 以及被其他域调用的通用 MCP 内容检查 helper；此提交不改外部行为。
+3. **删除 provider 与专用路由：** 清理 `web_app.py`、`commerce_research_planner.py` 中的 provider、preset、orchestration、tool domain、session 路径和所有 307 分支；旧路径直接走通用 404。
+4. **删运行时资产：** 清理 Bridge、Compose/env、前端分支、专用模块、Skill、专用测试和旧文档；此提交不删服务器真实数据。
+5. **数据移出与零遗留检查：** 先生成项目外回滚备份并校验，再删除 V2 应用目录中的旧数据，最后运行全仓搜索和 4004 验收。
+
+清理后，除本小节的计划记录外，以下命令必须无输出：
+
+```bash
+git grep -i -E 'fastmoss|fast_moss' -- . \
+  ':(exclude)docs/refactor-plan-decouple-normalize-2026-08-01.md'
+git ls-files | rg -i 'fastmoss|fast_moss'
+find data -maxdepth 1 -iname '*fastmoss*' -print
+```
+
+三条命令都必须无输出。这意味着运行时 Python/JS/CSS、Compose/env、测试、README/AGENTS、普通文档、文件名和 V2 应用数据目录均不得再出现 FastMoss。不以“已无 UI 入口”、“断言暂时 skip”、“已转历史文档”或“运行时未触发”作为验收理由。
+
+**FastMoss 清理验收：** 旧 URL 返回通用 404 且无 `Location`；活动 provider 只有 Home、SellerSprite、出海匠；三者的 catalog、会话隔离和专项测试通过；SellerSprite renderer/Bridge 快照无差异；Compose 生效配置和 4004 容器环境无 `FASTMOSS_`；项目内无旧 session/cache/Skill 目录；上述全仓搜索无输出；4004 日志无 FastMoss 进程、请求或启动失败。
+
+**Phase 0 验收：** 服务器 4004 容器中 smoke 通过；混合聊天套件完成拆分；FastMoss 全量清理达到上述验收标准；现有测试没有“来源不明”的红灯；测试矩阵写入仓库。
 
 ## 五、Phase 1：抽取低风险基础设施
 
@@ -326,7 +367,7 @@ Transport 规则必须显式化：只对连接失败、429 和可重试 5xx 在�
 - 数据请求、状态 store、drawer workflow 分成小型原生 JS 模块。
 - 共享导航继续由 `ui-system.css/js` 提供。
 
-静态资源变化必须更新 `UI_ASSET_VERSION`。不得借重构恢复旧 FastMoss 页面或拆出三套聊天壳。
+静态资源变化必须更新 `UI_ASSET_VERSION`。不得借重构恢复任何已退役 provider 页面或拆出三套聊天壳。
 
 **Phase 6 验收：** 代理页桌面/窄屏浏览器回归；无控制台错误；所有写操作仍有确认、禁用和错误反馈。
 
@@ -368,12 +409,13 @@ docker-compose -p short-video-analyzer-ui-4004 run --rm --no-deps \
 
 ```text
 Phase 0 测试基线
-  → Phase 1 HTTP/config/store
-    → Phase 2 路由边界
-      → Phase 3 任务注册表
-        → Phase 4 代理子系统
-          → Phase 5 聊天与 LLM
-            → Phase 6 前端资源
+  → Phase 0.5 退役 provider 零兼容清理
+    → Phase 1 HTTP/config/store
+      → Phase 2 路由边界
+        → Phase 3 任务注册表
+          → Phase 4 代理子系统
+            → Phase 5 聊天与 LLM
+              → Phase 6 前端资源
 ```
 
 最终完成条件：
@@ -382,17 +424,19 @@ Phase 0 测试基线
 - `proxy_pool.py` 被兼容 facade 替代，核心逻辑进入 `proxy/` 且事务边界清晰。
 - 新增业务域不再修改巨型 `do_GET`/`do_POST`。
 - 三 provider、日报、代理、视频和邻聊各有独立测试门禁。
-- 4004 的 URL、API schema、SSE 格式、数据目录和 Compose 隔离保持兼容。
+- 4004 活动功能的 URL、API schema、SSE 格式、数据目录和 Compose 隔离保持兼容；已退役 provider 不属于兼容范围。
 - CodeGraph 中不存在 `routes → web_app`、`service → routes` 的反向依赖。
 
 ## 十三、建议的第一批实施任务
 
-第一批只做 Phase 0 和 Phase 1.1，控制在 3～5 个小提交：
+第一批只完成 Phase 0/0.5，不进入 `core/http.py`。建议拆成 5～7 个可独立回退的小提交：
 
-1. 新增可重复运行的 `test_web_smoke.py`。
-2. 拆分 `test_chat_tool_normalization.py`：活动 V2 provider 测试、SellerSprite mock 边界、旧 FastMoss 重定向兼容各自独立；禁止通过恢复 FastMoss provider 让旧断言通过。
-3. 为禁用日报、禁用代理的 404/提示分支加契约测试。
-4. 抽 `core/http.py`，保留 `web_app.py` 显式兼容导出。
-5. 在 Docker 4004 环境跑 smoke 与专项测试后再进入配置拆分。
+1. 新增可重复运行的 `test_web_smoke.py`，冻结活动页面、通用未注册路由 404 和功能开关契约。
+2. 拆分 `test_chat_tool_normalization.py`：只保留 Home、SellerSprite、出海匠套件，删除全部旧 FastMoss 断言和专用测试。
+3. 为活动 provider catalog、SellerSprite semantic renderer/Bridge、通用未知 provider/tool fail-closed 补快照与门禁。
+4. 把 SellerSprite 和其他域仍调用的共享 renderer/helper 迁到中性命名模块，保持输出不变。
+5. 删除 `web_app.py`、planner、Bridge、Compose/env、前端、Skill、专用模块与文档中的全部 FastMoss 逻辑，不保留路由或 API 兼容。
+6. 通过 GitHub 同步到服务器，在项目外备份后删除 V2 应用目录中的旧会话/cache/Skill 数据，然后重建且验证 4004。
+7. 运行全仓零遗留搜索、三 provider 专项测试、HTTP smoke 和服务日志检查；全绿后才开始 Phase 1.1。
 
-这一批不触碰聊天权限逻辑、代理事务、Job 继承或前端资源拆分。
+第二批才抽 `core/http.py` 并为禁用日报、禁用代理的 404/提示分支加契约测试。第一批不触碰代理事务、Job 继承或前端资源拆分；聊天代码只处理退役 provider 删除和为保护活动 provider 所必需的中性化迁移。
