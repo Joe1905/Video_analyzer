@@ -125,6 +125,10 @@ class FakeVideoQueue:
         return {"label": "测试队列", "color": "#000", "bg": "#fff"}
 
     @staticmethod
+    def get_title(filename: str) -> str:
+        return filename
+
+    @staticmethod
     def get_progress() -> dict[str, Any]:
         return {}
 

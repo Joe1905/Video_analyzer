@@ -333,7 +333,16 @@ def test_web_search_route_exposes_web_search_tool() -> None:
 
 
 def test_locked_amazon_provider_filters_system_web_search() -> None:
-    selected = filter_locked_provider_tool_ids("amazon", provider_default_enabled_tool_ids("amazon"))
+    original_list_tools = web_app.list_mcp_bridge_tools
+    web_app.list_mcp_bridge_tools = lambda chat_type: ([{
+        "name": "product_research",
+        "description": "isolated SellerSprite contract fixture",
+        "inputSchema": {"type": "object", "properties": {}},
+    }] if chat_type == "sellersprite" else [])
+    try:
+        selected = filter_locked_provider_tool_ids("amazon", provider_default_enabled_tool_ids("amazon"))
+    finally:
+        web_app.list_mcp_bridge_tools = original_list_tools
     assert "system__web_search" not in selected
     assert "system__current_time" in selected
     assert any(tool_id.startswith("sellersprite__") for tool_id in selected)
@@ -344,8 +353,17 @@ def test_locked_amazon_product_route_keeps_sellersprite_tools() -> None:
     route_intent = str(route.get("intent") or "general")
     force_mcp_tools = provider_forces_mcp_tools(provider) and route_intent not in {"web_search", "mcp_interface"}
     assert force_mcp_tools is True
-    effective = filter_locked_provider_tool_ids(provider, provider_default_enabled_tool_ids(provider))
-    tools = build_prefixed_model_tools(effective) if chat_request_needs_tools("Bark Collars", route) or force_mcp_tools else []
+    original_list_tools = web_app.list_mcp_bridge_tools
+    web_app.list_mcp_bridge_tools = lambda chat_type: ([{
+        "name": "product_research",
+        "description": "isolated SellerSprite contract fixture",
+        "inputSchema": {"type": "object", "properties": {}},
+    }] if chat_type == "sellersprite" else [])
+    try:
+        effective = filter_locked_provider_tool_ids(provider, provider_default_enabled_tool_ids(provider))
+        tools = build_prefixed_model_tools(effective) if chat_request_needs_tools("Bark Collars", route) or force_mcp_tools else []
+    finally:
+        web_app.list_mcp_bridge_tools = original_list_tools
     names = {item["function"]["name"] for item in tools}
     assert "system__web_search" not in names
     assert any(name.startswith("sellersprite__") for name in names)
