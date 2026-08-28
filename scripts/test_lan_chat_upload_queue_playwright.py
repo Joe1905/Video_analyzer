@@ -465,7 +465,13 @@ async def main(base_url: str, screenshot_dir: Path) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--base-url", default="http://127.0.0.1:4003")
-    parser.add_argument("--screenshot-dir", type=Path, default=Path("/tmp"))
+    parser.add_argument("--base-url", default="http://127.0.0.1:4004")
+    parser.add_argument(
+        "--output-dir",
+        "--screenshot-dir",
+        dest="output_dir",
+        type=Path,
+        default=Path("/tmp"),
+    )
     arguments = parser.parse_args()
-    asyncio.run(main(arguments.base_url, arguments.screenshot_dir))
+    asyncio.run(main(arguments.base_url.rstrip("/"), arguments.output_dir))
