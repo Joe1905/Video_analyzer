@@ -1275,7 +1275,7 @@ def test_sellersprite_mcp_content_success_is_normalized() -> None:
 
 def test_mcp_sql_error_text_is_not_evidence() -> None:
     raw = {"ok": True, "data": {"content": [{"type": "text", "text": "SQLSTATE[42S22]: Unknown column 'format_price'"}]}}
-    normalized = normalize_prefixed_tool_result("sellersprite__asin_detail", raw)
+    normalized = normalize_prefixed_tool_result("chuhaijiang__get_detail", raw)
     assert normalized["ok"] is False
     assert normalized["enough_data"] is False
     assert normalized["evidence_observed"] is False
