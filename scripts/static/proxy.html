@@ -296,21 +296,21 @@
   <style>
     /* 页面壳交给统一导航；本页只管理自身的三栏工作区。 */
     body.ui-system.ui-route-proxy { overflow: hidden; }
-    body.ui-system.ui-route-proxy .ui-frame { grid-template-rows: minmax(0, 1fr); }
-    body.ui-system.ui-route-proxy .ui-main { grid-row: 1; height: 100dvh; min-height: 100dvh; }
-    body.ui-system.ui-route-proxy .app { width: 100%; height: 100%; min-height: 100dvh; margin-left: 0; }
+    body.ui-system.ui-route-proxy .ui-frame { grid-template-rows: 72px minmax(0, 1fr); }
+    body.ui-system.ui-route-proxy .ui-main { grid-row: 2; height: calc(100dvh - 72px); min-height: calc(100dvh - 72px); }
+    body.ui-system.ui-route-proxy .app { display: block; width: 100%; height: 100%; min-height: 0; margin-left: 0; }
   </style>
 </head>
 <body>
 <div class="ui-app">
 <!-- UI_APP_NAV -->
 <div class="ui-frame">
+  <header class="ui-header app-head"><div class="brandline"><h1>账号运营台</h1><p>代理、会话与内容任务</p></div><div class="head-actions"><span class="service"><i></i>服务正常</span><button class="icon-button" data-proxy-refresh title="刷新运行状态" aria-label="刷新运行状态"><svg class="icon"><use href="#i-refresh"/></svg></button></div></header>
   <div class="ui-main proxy-main">
   <svg aria-hidden="true" width="0" height="0" style="position:absolute;overflow:hidden">
     <symbol id="i-play" viewBox="0 0 24 24"><path d="m9 6 8 6-8 6z"/></symbol><symbol id="i-home" viewBox="0 0 24 24"><path d="m3.5 10 8.5-7 8.5 7"/><path d="M5.5 9.5V20h13V9.5M9.5 20v-6h5v6"/></symbol><symbol id="i-chart" viewBox="0 0 24 24"><path d="M5 19V5m0 14h14M9 15v-4m4 4V8m4 7V5"/></symbol><symbol id="i-chat" viewBox="0 0 24 24"><path d="M20 11.5a7.5 7.5 0 0 1-10.8 6.7L4 20l1.8-4.2A7.5 7.5 0 1 1 20 11.5Z"/></symbol><symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4a12 12 0 0 1 0 16M12 4a12 12 0 0 0 0 16"/></symbol><symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol><symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0 1.2 4.2M20 5v6h-6"/></symbol><symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11m0 0 4-4m-4 4-4-4M5 20h14"/></symbol><symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="5.8"/><path d="m16 16 4 4"/></symbol><symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol><symbol id="i-eye" viewBox="0 0 24 24"><path d="M3.5 12s3-5 8.5-5 8.5 5 8.5 5-3 5-8.5 5-8.5-5-8.5-5Z"/><circle cx="12" cy="12" r="2"/></symbol><symbol id="i-send" viewBox="0 0 24 24"><path d="m4 5 16 7-16 7 3-7-3-7Z"/><path d="M7 12h13"/></symbol><symbol id="i-collect" viewBox="0 0 24 24"><path d="M5 6h14M5 12h14M5 18h9"/><circle cx="18" cy="18" r="3"/></symbol><symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13.8a4 4 0 0 0 5.7.1l2-2a4 4 0 0 0-5.7-5.7l-1.1 1.1M14 10.2a4 4 0 0 0-5.7-.1l-2 2a4 4 0 1 0 5.7 5.7l1.1-1.1"/></symbol><symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
   </svg>
   <div class="app">
-    <header class="app-head"><div class="brandline"><h1>账号运营台</h1><p>代理、会话与内容任务</p></div><div class="head-actions"><span class="service"><i></i>服务正常</span><button class="icon-button" data-proxy-refresh title="刷新运行状态" aria-label="刷新运行状态"><svg class="icon"><use href="#i-refresh"/></svg></button></div></header>
     <main class="page">
       <section class="desk" aria-label="Proxy 账号运营台">
         <aside class="lane proxy-lane"><header class="lane-head"><div class="lane-title"><h3>代理出口</h3><span>—</span></div><button class="tiny-action" data-proxy-pool-create title="新增 IP" aria-label="新增 IP"><svg class="icon"><use href="#i-plus"/></svg></button></header><div class="proxy-meta"><div class="metric-line"><strong>—</strong><span>正在同步出口状态</span></div><div class="meter"><b></b></div></div><div class="proxy-list" id="proxy-list"><p class="proxy-foot">正在同步代理出口…</p></div><p class="proxy-foot">正在同步出口状态…</p></aside>

@@ -69,7 +69,7 @@ class TestChuhaijiangBoundary(unittest.TestCase):
         self.assertIn('"chuhaijiang": {"chuhaijiang"}', web_app)
         self.assertIn('return serve_chat_template(self, "chuhaijiang", parsed.path)', web_app)
         self.assertNotIn('build_chuhaijiang_independent_template', web_app)
-        self.assertIn('if provider not in {"amazon", "fastmoss", "chuhaijiang"}:', web_app)
+        self.assertIn('if provider not in {"home", "amazon", "chuhaijiang"}:', web_app)
         self.assertNotIn('data-chuhaijiang-prompt', chat_html)
 
 

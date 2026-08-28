@@ -15032,7 +15032,7 @@ class Handler(BaseHTTPRequestHandler):
             text = str(payload.get("message", "")).strip()
             raw_attachments = payload.get("attachments", [])
             official_preset_id = str(payload.get("officialPresetId") or "").strip()
-            if provider not in {"home", "amazon", "fastmoss", "chuhaijiang"}:
+            if provider not in {"home", "amazon", "chuhaijiang"}:
                 official_preset_id = ""
             preset_catalog = official_preset_catalog_for_provider(provider)
             preset_info = preset_catalog.get(official_preset_id) or {}

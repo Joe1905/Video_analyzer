@@ -83,7 +83,7 @@ class TestChuhaijiangUiContract(unittest.TestCase):
             self.assertEqual(quick_actions.count('class="quick-prompt'), 4)
             self.assertIn('id="officialWorkflowLaunch"', quick_actions)
             self.assertIn("<strong>更多</strong>", quick_actions)
-        self.assertEqual(home.count('data-chat-scene="'), 6)
+        self.assertEqual(home.count('data-chat-scene="'), 0)
         self.assertEqual(chuhaijiang.count('data-chuhaijiang-scene="'), 8)
         self.assertIn("短视频洞察与运营协作", home)
         self.assertIn("亚马逊选品与竞品洞察", self.render("amazon", "/amazon"))
