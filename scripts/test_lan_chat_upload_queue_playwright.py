@@ -367,7 +367,7 @@ async def desktop_scenario(browser, base_url: str, screenshot_dir: Path) -> None
         await expect(page.locator("#imageDraft")).to_be_visible()
         await expect(page.locator("#archiveOption")).to_be_visible()
         await expect(page.locator("#archiveFiles")).not_to_be_checked()
-        assert not api.upload_names
+        assert len(api.upload_names) == 3
         await page.locator("#archiveFiles").check()
         await expect(page.locator("#imageDraftName")).to_have_text(
             re.compile(r"邻聊文件-\d{8}-\d{6}\.zip")
