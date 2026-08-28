@@ -474,7 +474,7 @@ def test_fastmoss_defaults_to_us_unless_another_region_is_named() -> None:
     assert fastmoss_defaults_to_us("Compare US and JP markets") is False
 
 
-def test_fastmoss_playbook_intent_routes_official_workflows() -> None:
+def test_fastmoss_playbook_intent_classifies_legacy_redirect_content() -> None:
     cases = {
         "帮我做防偷拍探测器选品，并给出定价建议": "product",
         "拆解这个竞品店铺的打法": "competitor",
@@ -486,9 +486,6 @@ def test_fastmoss_playbook_intent_routes_official_workflows() -> None:
     }
     for text, expected in cases.items():
         assert fastmoss_playbook_intent(text) == expected
-        route = route_chat_intent(text, "fastmoss")
-        assert route["intent"] == f"fastmoss_{expected}"
-        assert route["playbook"] == expected
 
     assert "playbook" not in route_chat_intent("给这个商品定价", "home")
 
@@ -3091,7 +3088,7 @@ if __name__ == "__main__":
     test_amazon_url_query_api_fragment_does_not_disable_tools()
     test_ocr_metadata_does_not_change_chat_route()
     test_fastmoss_defaults_to_us_unless_another_region_is_named()
-    test_fastmoss_playbook_intent_routes_official_workflows()
+    test_fastmoss_playbook_intent_classifies_legacy_redirect_content()
     test_fastmoss_selection_playbook_includes_pricing_model()
     test_fastmoss_product_evidence_is_scoped_by_playbook()
     test_fastmoss_analysis_requires_domain_and_evidence_capabilities()
