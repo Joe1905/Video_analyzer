@@ -185,7 +185,7 @@ HOT_VIDEO_REPORT_ENABLED=0
 | `test_27_presets_mock_boundary.py` | 27 个 SellerSprite 官方预设通过 | mock 开关只注入测试子进程，生产默认仍为 0 |
 | `test_chat_tool_normalization.py` | 仍是 V1/V2 混合套件；包含已退役 FastMoss provider 断言 | 按活动 provider 拆出 V2 套件；删除全部旧 FastMoss 断言，不新增兼容套件 |
 
-已知的运行时与 UI 红灯已关闭。Phase 0 尚未完成的是新增统一 HTTP smoke、拆分混合聊天套件、落库测试矩阵与首批响应契约。这些不能笼统标记为“历史问题”后继续重构：每项必须最终落为活动 V2 套件中的 `pass` 或带明确条件的 `skip`；退役 provider 测试直接删除，不转成兼容测试。
+已知的运行时与 UI 红灯已经关闭。统一 HTTP smoke、活动 provider 契约、混合聊天套件拆分和浏览器回归已于 2026-08-28 完成并在服务器 4004 通过全量门禁；退役 provider 测试直接删除，不转成兼容测试。后续若测试矩阵新增红灯，不得笼统标记为“历史问题”后继续重构：每项必须落为活动 V2 套件中的 `pass`，或带有明确外部条件且不掩盖回归的 `skip`。
 
 ### 4.4 建立测试矩阵
 
@@ -196,6 +196,8 @@ HOT_VIDEO_REPORT_ENABLED=0
 - 代理：节点生命周期、删池解绑、重新绑定、发布/采集任务暂停与恢复。
 - 视频：超时诊断、孤儿进程清理、direct-video prompt/压缩回退。
 - UI：共享导航、三 provider 共享壳、代理绑定抽屉、日报禁用态。
+
+2026-08-28 交叉审计确认，原矩阵对上传、下载、分析、翻译、后处理、店铺抽取和指标任务仍以页面 smoke/辅助函数测试为主，缺少无外网的 HTTP job 生命周期契约。Phase 0.5B 已新增 `scripts/test_web_workflow_lifecycle.py` 合成 fixture：覆盖请求校验、任务创建、状态查询、SSE 完成/失败结构、结果读取和临时目录清理；该测试禁止使用真实 API key、账号、额度、媒体发布、生产数据删除或外网抓取。页面返回 200 不能替代这些功能契约。
 
 响应基线存放在 `scripts/contracts/`。快照生成时只允许规范化随机 ID、时间戳、临时绝对路径和日志时间前缀；字段缺失、状态码、重定向目标、SSE event/data 结构不得被归一掉。快照中只能使用合成数据，不得写入凭据、Cookie、真实账号或请求头。
 
@@ -240,7 +242,33 @@ find data -maxdepth 1 -iname '*fastmoss*' -print
 
 **FastMoss 清理验收：** 旧 URL 返回通用 404 且无 `Location`；活动 provider 只有 Home、SellerSprite、出海匠；三者的 catalog、会话隔离和专项测试通过；SellerSprite renderer/Bridge 快照无差异；Compose 生效配置和 4004 容器环境无 `FASTMOSS_`；项目内无旧 session/cache/Skill 目录；上述全仓搜索无输出；4004 日志无 FastMoss 进程、请求或启动失败。
 
-**Phase 0 验收：** 服务器 4004 容器中 smoke 通过；混合聊天套件完成拆分；FastMoss 全量清理达到上述验收标准；现有测试没有“来源不明”的红灯；测试矩阵写入仓库。
+**Phase 0 验收：** 服务器 4004 容器中 smoke 通过；混合聊天套件完成拆分；现有测试没有“来源不明”的红灯；测试矩阵写入仓库。
+
+**Phase 0.5 验收：** FastMoss 全量清理达到上述验收标准，且清理后的完整活动功能回归通过；不得把 Phase 0 的旧基线结果当作 Phase 0.5 的验收结果。
+
+### 4.6 当前执行状态、并行边界与阶段级回归门禁
+
+2026-08-28 执行状态：
+
+| 阶段 | 状态 | 阶段出口 |
+| --- | --- | --- |
+| Phase 0 测试基线 | 已完成 | 服务器 4004 确定性套件、HTTP smoke、桌面/移动浏览器回归全绿 |
+| Phase 0.5A 共享能力中性化 | 已完成 | SellerSprite semantic renderer 输出保持一致；服务器 4004 全量回归全绿 |
+| Phase 0.5B 运行时和仓库资产清理 | 进行中 | 运行时、Bridge/配置、UI/文档三条工作线合并后零残留扫描通过；补齐无外网的核心 workflow HTTP 生命周期 fixture；服务器 4004 全量回归全绿 |
+| Phase 0.5C V2 应用数据清理 | 待执行 | 项目外备份校验后只删除 4004 专属旧数据；服务器 4004 再跑一次全量回归和数据零残留核验 |
+| Phase 1.1 `core/http.py` | 未开始 | 只有 Phase 0.5C 出口通过后才能开始；独立提交并再次跑全量回归 |
+
+Phase 0.5B 可以多智能体并行，但文件所有权必须互斥：一条线负责 Python 运行时与专用模块，一条线负责 MCP Bridge/Compose/env，一条线负责静态 UI 与受控文档；README、计划文档、资产版本、跨线冲突和最终集成由主任务统一处理。子智能体只运行专项测试，不得独立提交；主任务合并审计后统一提交和部署。
+
+“每个阶段全功能回归”定义为以下集合，适用于 Phase 0.5B、0.5C，以及 Phase 1～6 中每个会改变运行时的子阶段；专项测试通过不能代替该集合：
+
+1. Windows 工作树完成 `git diff --check`、Python/Node 语法检查、依赖边界检查和仓库零遗留扫描；本地不构建 Docker。
+2. 源码提交并通过 GitHub 同步到 `/home/openclaw/Video_analyzer-ui-4004`，服务器使用 `docker-compose -p short-video-analyzer-ui-4004 build web` 重新构建镜像。
+3. 在新镜像中运行登记的全部确定性 Python 套件、带显式功能开关的专项套件和 Node Bridge 套件；不只运行本阶段改动对应的测试。
+4. 部署后检查 `/healthz`、全部活动页面和 API smoke；未注册路径以及已退役路径必须是无 `Location` 的通用 404。
+5. 桌面与移动视口分别运行聊天滚动和邻聊上传队列 Playwright 回归，检查浏览器控制台和页面错误。
+6. 检查 4004 容器环境、生效 Compose 配置、进程和近期日志；不得出现退役 provider、启动失败或触碰 4002/4003 的证据。
+7. 记录镜像 ID、提交 SHA、测试总数和失败数。任一项失败即留在当前阶段修复并重跑完整集合，不得带红灯进入下一阶段。
 
 ## 五、Phase 1：抽取低风险基础设施
 

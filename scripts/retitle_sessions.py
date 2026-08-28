@@ -17,13 +17,9 @@ SESSION_FILES = [
     DATA_DIR / "sessions.json",
     DATA_DIR / "sellersprite_mcp" / "chat_sessions.json",
     DATA_DIR / "sellersprite_mcp" / "sessions.json",
-    DATA_DIR / "fastmoss_mcp" / "chat_sessions.json",
-    DATA_DIR / "fastmoss_mcp" / "sessions.json",
     DATA_DEV_DIR / "sessions.json",
     DATA_DEV_DIR / "sellersprite_mcp" / "chat_sessions.json",
     DATA_DEV_DIR / "sellersprite_mcp" / "sessions.json",
-    DATA_DEV_DIR / "fastmoss_mcp" / "chat_sessions.json",
-    DATA_DEV_DIR / "fastmoss_mcp" / "sessions.json",
     ROOT / "sellersprite_mcp_chat" / "data" / "sessions.json",
 ]
 

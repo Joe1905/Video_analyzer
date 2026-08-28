@@ -12,17 +12,14 @@ const DEEPSEEK_API_URL = process.env.DEEPSEEK_API_URL || "https://api.deepseek.c
 const DEEPSEEK_MODEL = process.env.MCP_CHAT_MODEL || process.env.DEEPSEEK_CHAT_MODEL || process.env.DEEPSEEK_V4_PRO_MODEL || "deepseek-v4-pro";
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || "";
 const MCP_CHAT_TYPE = (process.env.MCP_CHAT_TYPE || "sellersprite").toLowerCase();
-const MCP_CHAT_LABEL = process.env.MCP_CHAT_LABEL || (MCP_CHAT_TYPE === "fastmoss" ? "FastMoss" : "SellerSprite");
-const MCP_CHAT_BASE_PATH = process.env.MCP_CHAT_BASE_PATH || (MCP_CHAT_TYPE === "fastmoss" ? "/fastmoss" : "/amazon");
+const MCP_CHAT_LABEL = process.env.MCP_CHAT_LABEL || "SellerSprite";
+const MCP_CHAT_BASE_PATH = process.env.MCP_CHAT_BASE_PATH || "/amazon";
 const SELLERSPRITE_SECRET_KEY = process.env.SELLERSPRITE_SECRET_KEY || "";
 const SELLERSPRITE_MCP_URL = process.env.SELLERSPRITE_MCP_URL || "https://mcp.sellersprite.com/mcp";
 const BUSINESS_TOOL_CACHE_TTL_SECONDS = 86400;
 const SELLERSPRITE_CACHE_TTL_SECONDS = BUSINESS_TOOL_CACHE_TTL_SECONDS;
-const FASTMOSS_MCP_API_KEY = process.env.FASTMOSS_MCP_API_KEY || process.env.FASTMOSS_API_KEY || "";
-const FASTMOSS_MCP_URL = process.env.FASTMOSS_MCP_URL || "https://mcp.fastmoss.com/mcp";
 const CHUHAIJIANG_MCP_API_KEY = process.env.CHUHAIJIANG_MCP_API_KEY || "";
 const CHUHAIJIANG_MCP_URL = process.env.CHUHAIJIANG_MCP_URL || "https://mcp.gateway.chuhaijiang.com/mcp";
-const FASTMOSS_CACHE_TTL_SECONDS = BUSINESS_TOOL_CACHE_TTL_SECONDS;
 const SOCIAVAULT_API_KEY = process.env.SOCIAVAULT_API_KEY || "";
 const SOCIAVAULT_BASE_URL = process.env.SOCIAVAULT_BASE_URL || process.env.SOCIAVAULT_API_BASE || "https://api.sociavault.com";
 const SOCIAVAULT_MCP_COMMAND = process.env.SOCIAVAULT_MCP_COMMAND || "sociavault-mcp";
@@ -33,8 +30,6 @@ const MCP_REMOTE_URL = process.env.MCP_REMOTE_URL || (
     ? SOCIAVAULT_BASE_URL
     : MCP_CHAT_TYPE === "chuhaijiang"
       ? CHUHAIJIANG_MCP_URL
-    : MCP_CHAT_TYPE === "fastmoss"
-      ? FASTMOSS_MCP_URL
       : SELLERSPRITE_MCP_URL
 );
 const MCP_CACHE_TTL_SECONDS = BUSINESS_TOOL_CACHE_TTL_SECONDS;
@@ -57,7 +52,6 @@ const MIME_TYPES = {
 
 function providerCacheKey() {
   if (MCP_CHAT_TYPE === "sociavault") return "sociavault_mcp";
-  if (MCP_CHAT_TYPE === "fastmoss") return "fastmoss_mcp";
   return MCP_CHAT_TYPE === "chuhaijiang" ? "chuhaijiang_mcp" : "sellersprite_mcp";
 }
 
@@ -65,10 +59,8 @@ function providerCacheScope() {
   const credential = (
     MCP_CHAT_TYPE === "sociavault"
       ? SOCIAVAULT_API_KEY
-      : MCP_CHAT_TYPE === "fastmoss"
-        ? FASTMOSS_MCP_API_KEY
-        : MCP_CHAT_TYPE === "chuhaijiang"
-          ? CHUHAIJIANG_MCP_API_KEY
+      : MCP_CHAT_TYPE === "chuhaijiang"
+        ? CHUHAIJIANG_MCP_API_KEY
         : SELLERSPRITE_SECRET_KEY
   );
   return createHash("sha256")
@@ -77,18 +69,11 @@ function providerCacheScope() {
 }
 
 function providerKeywordsPattern() {
-  if (MCP_CHAT_TYPE === "fastmoss") {
-    return /FastMoss|TikTok Shop|TikTok|小店|达人|创作者|带货|商品|产品|店铺|竞品|类目|销量|销售额|GMV|直播|短视频|广告|素材|内容|定价|美国|美区|英区|US|UK|creator|shop|product|GMV|trend/i;
-  }
   return /Amazon|亚马逊|ASIN|asin|关键词|产品|商品|类目|市场|选品|销量|销售额|BSR|竞品|品牌|评论|流量|趋势|抓取|查询|分析|US|UK|DE|JP|智能|家居/i;
 }
 
 function mcpRequestUrl() {
-  if (MCP_CHAT_TYPE === "chuhaijiang") return MCP_REMOTE_URL;
-  if (MCP_CHAT_TYPE !== "fastmoss") return MCP_REMOTE_URL;
-  if (!FASTMOSS_MCP_API_KEY || /[?&]api_key=/.test(MCP_REMOTE_URL)) return MCP_REMOTE_URL;
-  const separator = MCP_REMOTE_URL.includes("?") ? "&" : "?";
-  return `${MCP_REMOTE_URL}${separator}api_key=${encodeURIComponent(FASTMOSS_MCP_API_KEY)}`;
+  return MCP_REMOTE_URL;
 }
 
 function mcpRequestHeaders(sessionId = null) {
@@ -105,50 +90,14 @@ function mcpRequestHeaders(sessionId = null) {
 function ensureMcpConfigured() {
   if (MCP_CHAT_TYPE === "sociavault" && !SOCIAVAULT_API_KEY) throw new Error("请先设置环境变量 SOCIAVAULT_API_KEY。");
   if (MCP_CHAT_TYPE === "sellersprite" && !SELLERSPRITE_SECRET_KEY) throw new Error("请先设置环境变量 SELLERSPRITE_SECRET_KEY。");
-  if (MCP_CHAT_TYPE === "fastmoss" && !FASTMOSS_MCP_API_KEY && !/[?&]api_key=/.test(MCP_REMOTE_URL)) {
-    throw new Error("请先设置环境变量 FASTMOSS_MCP_API_KEY，或在 FASTMOSS_MCP_URL 中包含 api_key。");
-  }
   if (MCP_CHAT_TYPE === "chuhaijiang" && !CHUHAIJIANG_MCP_API_KEY) throw new Error("请先设置环境变量 CHUHAIJIANG_MCP_API_KEY。");
 }
 
 function guideMessage() {
-  if (MCP_CHAT_TYPE === "fastmoss") {
-    return [
-      "### FastMoss MCP 使用手册",
-      "",
-      "直接输入自然语言即可，我会通过 DeepSeek 调用 FastMoss 官方 MCP 工具。",
-      "",
-      "- **选品研究**：查询 TikTok Shop 商品榜单、销量、GMV、趋势和价格带。",
-      "- **竞品店铺**：分析店铺 GMV、渠道构成、热销商品和达人活跃度。",
-      "- **达人建联**：按带货力、垂类、GMV 潜力和受众匹配筛选达人。",
-      "- **内容辅助**：基于真实销售和互动数据生成脚本、钩子和商品文案。",
-      "- **账户能力**：可询问当前 MCP 工具列表和调用方式。",
-      "",
-      "示例：`使用 FastMoss 查看今天美区美妆品类销量前 3 的商品，返回商品名、价格、销量、GMV 和趋势`。",
-    ].join("\n");
-  }
   return USER_GUIDE_MESSAGE;
 }
 
 function systemPrompt() {
-  if (MCP_CHAT_TYPE === "fastmoss") {
-    return [
-      "你是 FastMoss MCP 的中文 TikTok Shop 商业分析助手，面向跨境电商选品、竞品店铺、达人建联、内容脚本、广告素材和定价分析。",
-      "",
-      "工具调用原则：",
-      "1. 用户询问 TikTok Shop、FastMoss、商品、店铺、达人、带货、销量、GMV、类目、趋势、内容、广告、定价或竞品数据时，必须先调用 FastMoss MCP 工具；不要直接凭常识回答。",
-      "2. 如果缺少必要参数，先问用户补充；地区或时间窗未说明时可默认美区和近期/今天，但要在回答中说明默认值。",
-      "3. 没有实际工具结果时，不得声称已查询实时数据；工具未授权、次数用尽或空数据时，要说明真实错误。",
-      "4. 已有部分成功工具结果时，继续基于成功结果分析，并把缺失数据标注为未获取到。",
-      "",
-      "回答质量要求：",
-      "1. 输出中文 Markdown 商业分析，不要只给一句概括。",
-      "2. 选品/类目分析至少覆盖销量/GMV、价格带、趋势、竞争格局、内容机会、达人合作和下一步动作。",
-      "3. 店铺/竞品分析至少覆盖热销商品、渠道构成、达人活跃度、内容打法、优势风险和可执行建议。",
-      "4. 所有数字和事实必须来自工具结果；没有拿到的数据明确标注未获取到。",
-      "5. 不要输出 HTML/H5 标签。",
-    ].join("\n");
-  }
   return [
     "你是 SellerSprite Open API 的中文商业分析助手，面向跨境电商选品、类目研究、ASIN/关键词/品牌/竞品分析。",
     "",
@@ -442,10 +391,6 @@ function toolCacheCoveragePolicy(chatType, name) {
   // Every unlisted tool is exact-only. These list endpoints have a documented
   // deterministic response order and are only reusable after row projection.
   const listTools = {
-    fastmoss: new Set([
-      "search_category_by_words", "market_category_ranking", "product_rank_top_selling",
-      "product_rank_new_listed", "product_search", "shop_search", "creator_search", "video_search",
-    ]),
     sellersprite: new Set([
       "keyword_research", "keyword_miner", "market_research", "product_research", "competitor_lookup",
     ]),
@@ -669,13 +614,6 @@ function getSellerSpriteToolError(result) {
 }
 
 function providerCredentialHints() {
-  if (MCP_CHAT_TYPE === "fastmoss") {
-    return [
-      "- \u5f53\u524d `FASTMOSS_MCP_API_KEY` \u662f\u5426\u4ecd\u6709\u6548\u3002",
-      "- FastMoss \u8d26\u53f7\u662f\u5426\u6709\u8c03\u7528\u8be5\u5de5\u5177/API \u7684\u6743\u9650\u6216\u989d\u5ea6\u3002",
-      "- FastMoss \u540e\u53f0\u662f\u5426\u9700\u8981\u91cd\u65b0\u751f\u6210\u6216\u7ed1\u5b9a MCP API key\u3002",
-    ];
-  }
   return [
     "- \u5f53\u524d `SELLERSPRITE_SECRET_KEY` \u662f\u5426\u4ecd\u6709\u6548\u3002",
     "- \u8be5\u5bc6\u94a5\u5bf9\u5e94\u8d26\u53f7\u662f\u5426\u6709\u8c03\u7528\u8fd9\u4e2a\u5de5\u5177/API \u7684\u6743\u9650\u3002",

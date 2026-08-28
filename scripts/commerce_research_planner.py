@@ -25,20 +25,19 @@ RESEARCH_OBJECTIVES = {
 }
 RESEARCH_SCOPES = {"cross_category", "category", "keyword", "entity"}
 RESEARCH_ENTITY_TYPES = {
-    "none", "category", "keyword", "product", "product_id", "shop",
+    "none", "category", "keyword", "product", "shop",
     "creator", "video", "asin",
 }
 RESEARCH_ENTITY_SOURCES = {"none", "explicit", "inherited", "evidence"}
 
 
 _ASIN_RE = re.compile(r"\b(?:B0[A-Z0-9]{8}|[0-9]{9}[0-9X])\b", re.IGNORECASE)
-_FASTMOSS_PRODUCT_ID_RE = re.compile(r"\b\d{16,20}\b")
 _TIME_WINDOW_RE = re.compile(
     r"(?:最近|近|过去)?\s*\d+\s*(?:[-—~到至]\s*\d+\s*)?(?:天|周|个月|月|年)",
     re.IGNORECASE,
 )
 _TASK_ONLY_PARTS = re.compile(
-    r"(?i)fastmoss|seller\s*sprite|sellersprite|amazon|tiktok\s*shop|tiktok|"
+    r"(?i)seller\s*sprite|sellersprite|amazon|tiktok\s*shop|tiktok|"
     r"亚马逊|卖家精灵|美区|美国|帮我|给我|请|查找|寻找|找|搜索|查询|看看|一下|分析|调研|研究|报告|"
     r"最近|过去|近|热门|热销|趋势|新品|新产品|潜力|蓝海|机会|选品|产品|商品|品类|类目|"
     r"需求大|卖家少|竞争小|等等|情况|方向|推荐|这个|这款|该|但|的|和|与|、|，|。|；|：|\s+"
@@ -61,9 +60,6 @@ def structured_research_entity(text: str) -> str:
     asin = _ASIN_RE.search(value)
     if asin:
         return asin.group(0).upper()
-    product_id = _FASTMOSS_PRODUCT_ID_RE.search(value)
-    if product_id:
-        return product_id.group(0)
     urls = re.findall(r"https?://\S+", value, re.IGNORECASE)
     return urls[0] if urls else ""
 
@@ -108,8 +104,6 @@ def validate_research_task_hint(decision: dict[str, Any] | None) -> dict[str, st
             return None
     if entity_type == "asin" and not _ASIN_RE.fullmatch(entity):
         return None
-    if entity_type == "product_id" and not _FASTMOSS_PRODUCT_ID_RE.fullmatch(entity):
-        return None
     return {
         "objective": objective,
         "scope": scope,
@@ -129,9 +123,6 @@ def normalize_research_entity(text: str) -> str:
     asin = _ASIN_RE.search(value)
     if asin:
         return asin.group(0).upper()
-    product_id = _FASTMOSS_PRODUCT_ID_RE.search(value)
-    if product_id:
-        return product_id.group(0)
     urls = re.findall(r"https?://\S+", value, re.IGNORECASE)
     if urls:
         return urls[0]
@@ -206,8 +197,6 @@ def research_task_from(
     entity_type_hint = str(hint.get("entity_type") or "").strip().lower()
     if _ASIN_RE.fullmatch(entity):
         entity_type = "asin"
-    elif _FASTMOSS_PRODUCT_ID_RE.fullmatch(entity):
-        entity_type = "product_id"
     elif re.match(r"https?://", entity, re.IGNORECASE):
         entity_type = "product"
     elif entity and entity_type_hint in RESEARCH_ENTITY_TYPES - {"none"}:
@@ -218,7 +207,7 @@ def research_task_from(
         entity_type = "none"
 
     scope_hint = str(hint.get("scope") or "").strip().lower()
-    if entity_type in {"asin", "product_id", "product", "shop", "creator", "video"}:
+    if entity_type in {"asin", "product", "shop", "creator", "video"}:
         scope = "entity"
     elif entity_type == "category":
         scope = "category"
@@ -251,41 +240,10 @@ def research_task_from(
     }
 
 
-FASTMOSS_TOOL_CAPABILITIES: dict[str, str] = {}
-
-
-def _register_fastmoss(capability: str, names: Iterable[str]) -> None:
-    FASTMOSS_TOOL_CAPABILITIES.update({name: capability for name in names})
-
-
-_register_fastmoss("category_resolution", ("search_category_by_words", "product_category_info"))
-_register_fastmoss("category_discovery", ("market_category_ranking",))
-_register_fastmoss("category_context", ("market_category_analysis", "market_category_author_sales_matrix"))
-_register_fastmoss("product_discovery", ("product_rank_new_listed", "product_rank_top_selling", "product_search"))
-_register_fastmoss("product_detail", ("product_detail_info", "product_overview", "product_sku"))
-_register_fastmoss("product_trend", ("product_investment", "product_sales_trend"))
-_register_fastmoss("product_content", ("product_creator_analysis", "product_review_list", "product_video_list"))
-_register_fastmoss("shop_discovery", ("shop_rank_top_selling", "shop_search"))
-_register_fastmoss("shop_detail", ("shop_base_info", "shop_data_trends", "shop_investment_analysis"))
-_register_fastmoss("shop_analysis", ("shop_creator_analysis", "shop_live_analysis", "shop_product_analysis", "shop_sale_analysis", "shop_video_analysis"))
-_register_fastmoss("creator_discovery", ("creator_rank_top_ecommerce", "creator_rank_top_growth", "creator_rank_top_potential", "creator_search"))
-_register_fastmoss("creator_detail", ("creator_profile_overview", "creator_data_trends", "creator_cargo_summary", "creator_fans_distribution"))
-_register_fastmoss("creator_content", ("creator_product_list", "creator_video_analysis"))
-_register_fastmoss("video_discovery", ("video_search", "ad_search"))
-_register_fastmoss("video_detail", ("video_detail_analysis", "video_data_trends", "video_script_info", "ad_data_overview"))
-_register_fastmoss("live_discovery", ("live_search",))
-_register_fastmoss("live_detail", ("live_detail_analysis", "live_products_list"))
-_register_fastmoss("agency_discovery", ("agency_rank_top", "agency_search"))
-_register_fastmoss("agency_detail", ("agency_profile_overview", "agency_creator_analysis", "agency_product_analysis", "agency_product_list", "agency_shop_analysis"))
-_register_fastmoss("reference", ("fastmoss_detail_url_examples", "search_fastmoss_documents"))
-
-
 def provider_tool_capability(provider: str, tool_name: str) -> str:
     name = str(tool_name or "").split("__", 1)[-1]
     if provider == "amazon":
         return SELLERSPRITE_TOOL_CAPABILITIES.get(name, "unknown")
-    if provider == "fastmoss":
-        return FASTMOSS_TOOL_CAPABILITIES.get(name, "unknown")
     return "unknown"
 
 
@@ -301,36 +259,6 @@ def eligible_provider_capabilities(provider: str, task: dict[str, Any], state: d
     has_shop = bool(state.get("has_shop"))
     has_creator = bool(state.get("has_creator"))
     has_video = bool(state.get("has_video"))
-
-    if provider == "fastmoss":
-        if objective == "shop" or entity_type == "shop":
-            return {"shop_discovery"} | ({"shop_detail", "shop_analysis"} if has_shop else set())
-        if objective == "creator" or entity_type == "creator":
-            return {"creator_discovery"} | ({"creator_detail", "creator_content"} if has_creator else set())
-        if objective == "content" or entity_type == "video":
-            capabilities = {"video_discovery", "product_discovery"}
-            if has_product:
-                capabilities.add("product_content")
-            if has_video:
-                capabilities.add("video_detail")
-            return capabilities
-        if entity_type in {"product", "product_id"} or has_product:
-            return {"product_detail", "product_trend", "product_content"}
-        if scope == "cross_category" and objective in {"trend_discovery", "opportunity_discovery"}:
-            if "category_discovery" not in attempted:
-                return {"category_discovery"}
-            capabilities = {"category_discovery", "category_resolution"}
-            if has_category:
-                capabilities.update({"category_context", "product_discovery"})
-            if has_product:
-                capabilities.update({"product_detail", "product_trend", "product_content"})
-            return capabilities
-        capabilities = {"category_resolution"}
-        if has_category:
-            capabilities.update({"category_discovery", "category_context", "product_discovery"})
-        if has_product:
-            capabilities.update({"product_detail", "product_trend", "product_content"})
-        return capabilities
 
     if provider == "amazon":
         if entity_type == "asin":
@@ -363,12 +291,9 @@ def eligible_provider_tool_names(provider: str, task: dict[str, Any], state: dic
     capabilities = eligible_provider_capabilities(provider, task, state)
     if provider == "amazon":
         mapping = SELLERSPRITE_TOOL_CAPABILITIES
-    elif provider == "fastmoss":
-        mapping = FASTMOSS_TOOL_CAPABILITIES
     else:
         return set()
     return {
         name for name, capability in mapping.items()
         if capability in capabilities
-        and not (provider == "fastmoss" and name == "product_category_info" and not state.get("has_product"))
     }

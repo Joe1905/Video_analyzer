@@ -187,7 +187,6 @@ def _report_context_value(value: Any) -> Any:
         "Amazon": "亚马逊",
 
         "ASIN": "亚马逊商品编号",
-        "FastMoss": "短视频电商数据平台",
         "SellerSprite": "亚马逊数据平台",
     }.items():
         text = re.sub(rf"\b{re.escape(raw)}\b", label, text)

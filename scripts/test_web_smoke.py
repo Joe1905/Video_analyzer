@@ -7,6 +7,7 @@ external APIs.
 """
 from __future__ import annotations
 
+import ast
 import http.client
 import json
 import os
@@ -33,6 +34,20 @@ ACTIVE_PAGES = (
     "/taobao",
     "/harness",
 )
+
+
+def assert_unique_handler_methods() -> None:
+    tree = ast.parse((ROOT / "scripts" / "web_app.py").read_text(encoding="utf-8"))
+    handler = next(
+        node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "Handler"
+    )
+    names = [
+        node.name
+        for node in handler.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    assert not duplicates, f"Handler has duplicate method definitions: {duplicates}"
 
 
 def request(port: int, method: str, path: str, payload: dict[str, Any] | None = None) -> tuple[int, dict[str, str], bytes]:
@@ -95,6 +110,20 @@ def run_smoke(port: int) -> None:
     status, headers, body = request(port, "DELETE", "/__smoke_unknown__")
     assert_json_error(status, headers, body, 404, "Not found")
 
+    retired_provider = "fast" + "moss"
+    retired_requests = (
+        ("GET", f"/{retired_provider}", None),
+        ("GET", f"/{retired_provider}/", None),
+        ("GET", f"/{retired_provider}/api/ask", None),
+        ("POST", f"/{retired_provider}/api/ask", {}),
+        ("POST", f"/{retired_provider}/api/chat/export-pdf", {}),
+        ("DELETE", f"/{retired_provider}/api/chat/sessions/smoke", None),
+    )
+    for method, path, payload in retired_requests:
+        status, headers, body = request(port, method, path, payload)
+        assert "location" not in headers, (method, path, headers)
+        assert_json_error(status, headers, body, 404, "Not found")
+
     status, headers, body = request(port, "POST", "/api/report/run", {})
     assert_json_error(status, headers, body, 503, "日报功能已暂停")
 
@@ -111,6 +140,7 @@ def run_smoke(port: int) -> None:
 
 
 def main() -> int:
+    assert_unique_handler_methods()
     with tempfile.TemporaryDirectory(prefix="video-analyzer-v2-smoke-") as temporary:
         test_root = Path(temporary)
         port_file = test_root / "web.port"

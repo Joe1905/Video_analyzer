@@ -391,11 +391,6 @@ precedence over older generic port assumptions above when working in
   presets. A selected preset has a stable `officialPresetId`, loads only its one
   official Skill document, exposes only its allowlisted `sellersprite__*` tools,
   and validates execution against that request-scoped allowlist.
-- FastMoss now has seven configured preset routes in
-  `FASTMOSS_OFFICIAL_PRESETS`, plus three quick actions and a general action. Keep
-  their allowlists restricted to `fastmoss__*`, preserve their existing region/entity
-  guardrails, and distinguish project-defined route groupings from any upstream
-  official Skill wording.
 - The chat UI shows the selected official preset as a removable chip above the
   composer. Tool invocation cards are capped at five visible rows with scrolling;
   do not restore the old tool-selection modal.
@@ -405,9 +400,8 @@ precedence over older generic port assumptions above when working in
 - Minimum static guard after editing `web_app.py`: `python -m py_compile
   scripts/web_app.py` before Docker deployment.
 - Relevant regressions include `scripts/test_chat_tool_normalization.py`,
-  `scripts/test_fastmoss_presets_boundary.py`, `scripts/test_social_tool_router.py`,
-  `scripts/test_ui_contract.py`, `scripts/test_semantic_chinese_rendering.py`,
-  `scripts/test_fastmoss_evidence_renderer.py`, and `scripts/test_api_cache.py`.
+  `scripts/test_social_tool_router.py`, `scripts/test_ui_contract.py`,
+  `scripts/test_semantic_chinese_rendering.py`, and `scripts/test_api_cache.py`.
 - The implementation handoff and source-of-truth rules are in
   `docs/official-skill-tool-routing-handoff.md`. Read it before expanding presets
   or changing cross-provider routing.

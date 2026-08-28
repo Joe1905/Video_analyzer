@@ -13,7 +13,7 @@
 
 | 层次 | 归属 | 说明 |
 |---|---|---|
-| 工具选择依据 | 官方 | SellerSprite/FastMoss 官方 Skill，或 SociaVault 官方 MCP 工具目录与文档 |
+| 工具选择依据 | 官方 | SellerSprite 官方 Skill，或 SociaVault 官方 MCP 工具目录与文档 |
 | 预设识别、白名单、执行拦截、降级和日志 | 4004 自建 | 这是项目自己的实现规则，不得描述成官方权限系统 |
 
 禁止根据 UI 卡片文案、工具英文名、模型猜测或旧版意图分类器自行决定预设工具。
@@ -24,9 +24,8 @@
 
 1. SellerSprite 剩余 26 个官方预设；
 2. SellerSprite 前端预设 ID 到后端工具白名单的稳定传递；
-3. FastMoss 在其官方 Skill 依据范围内的工具收敛；
-4. SociaVault 在官方 MCP 工具目录基础上的平台/能力路由；
-5. 所有站点统一的工具越界测试、运行时目录校验和答案事实边界验收。
+3. SociaVault 在官方 MCP 工具目录基础上的平台/能力路由；
+4. 所有站点统一的工具越界测试、运行时目录校验和答案事实边界验收。
 
 本交接不授权：
 
@@ -34,7 +33,7 @@
 - 恢复用户工具选择；
 - 改变现有 MCP 协议、缓存键或 TTL；
 - 增加 REST 回退；
-- 混用 `sellersprite__*`、`fastmoss__*`、`sociavault__*`；
+- 混用 `sellersprite__*`、`sociavault__*`；
 - 把项目自建分类宣称为官方规则；
 - 因为某个预设暂未完成就把错误工具临时塞进去。
 
@@ -90,7 +89,7 @@
 - SellerSprite 运行时目录：43 个工具；
 - 实际暴露：6 个工具；
 - 实际调用：14 次，工具名称全部属于这 6 个；
-- 无 FastMoss、SociaVault、本地功能工具越界；
+- 无其他站点或本地功能工具越界；
 - 无未知工具执行；
 - 官方完整提示约 69,481 字符，单预设提示约 2,414 字符；
 - 路由日志：`effective=43 tools=6 official_preset=comprehensive/product-research`。
@@ -255,38 +254,7 @@ requested_tool_id ∈ request_scoped_allowed_tool_ids
 
 不得把预设 ID长期写入全局 localStorage。它是单次请求范围，不应污染后续自由对话。
 
-## 8. FastMoss 的适配边界
-
-FastMoss 的官方依据与 SellerSprite 不同。
-
-当前固定来源：
-
-- npm 包：`@fastmoss/skill@0.1.17`
-- 完整性：SHA-512 固定校验；
-- 加载器：`scripts/fastmoss_official_skill.py`
-- 官方文件包括 `SKILL.md`、`references/tool-call.md` 和各业务工具参考文档。
-
-后续 Agent 必须先回答：
-
-1. 官方包是否真实定义了命名工作流或预设？
-2. 某个工作流的工具集合能否从官方执行步骤直接得到？
-3. 若只有统一 Skill 和工具说明，是否应该保持全量官方 Skill，而只做项目自建能力路由？
-
-执行规则：
-
-- 只有官方包真实存在的命名工作流才能称为“官方预设”；
-- 不得复制 SellerSprite 的 27 个名称到 FastMoss；
-- 项目自建的商品、市场、达人、店铺、视频等能力分类必须标记为 4004 路由；
-- 工具白名单只允许 `fastmoss__*`；
-- 继续使用运行时 `tools/list` 和 `scripts/fastmoss_evidence_renderer.py` 做目录/语义完整性校验；
-- 保留官方要求的地区、类目 ID、商品 ID 和并行调用约束；
-- 不改 FastMoss 缓存和 TTL；
-- 不因路由失败回退 SellerSprite 或 SociaVault。
-
-如果官方包没有单预设文件隔离能力，不要伪造
-`select_official_fastmoss_skill_prompt(...)` 的文件结构。应在交接结果中明确说明“官方依据是统一 Skill，工具收敛是项目自建规则”。
-
-## 9. SociaVault 的适配边界
+## 8. SociaVault 的适配边界
 
 SociaVault 当前没有与 SellerSprite 等价的 27 份官方 Skill。其官方依据是：
 
@@ -311,7 +279,7 @@ SociaVault 当前没有与 SellerSprite 等价的 27 份官方 Skill。其官方
 
 平台/能力映射可以参照 SellerSprite 的“静态清单 + 运行时校验 + 执行白名单”机制，但不得称为官方 Skill 分类。
 
-## 10. 缓存、TTL 和 MCP 生命周期
+## 9. 缓存、TTL 和 MCP 生命周期
 
 本任务只改工具暴露，不改数据调用语义。
 
@@ -320,7 +288,7 @@ SociaVault 当前没有与 SellerSprite 等价的 27 份官方 Skill。其官方
 - MCP `tools/list` 运行时发现机制；
 - 现有工具目录内存缓存；
 - 现有工具结果缓存键；
-- 各 provider 当前 TTL；
+- 各活动站点当前 TTL；
 - 缓存命中/实时调用标识；
 - stdio/HTTP MCP 的初始化、超时、并发和异常恢复；
 - SociaVault `check_credits` 不缓存；
@@ -328,7 +296,7 @@ SociaVault 当前没有与 SellerSprite 等价的 27 份官方 Skill。其官方
 
 不要在预设清单中实现第二套缓存，也不要把“预设 ID”加入业务结果缓存键，除非工具名和参数之外确实改变了上游请求语义。
 
-## 11. 答案事实边界
+## 10. 答案事实边界
 
 工具边界通过不代表答案质量自动通过。最新“智能选品助手”线上 review 暴露了以下通用问题，后续预设必须加入验收：
 
@@ -343,7 +311,7 @@ SociaVault 当前没有与 SellerSprite 等价的 27 份官方 Skill。其官方
 
 不要直接修改固定官方 Skill 文本来塞入项目规则。事实边界应通过已有系统级防幻觉约束、结果规范化、确定性计算或独立质量校验完成。
 
-## 12. 自动测试最低要求
+## 11. 自动测试最低要求
 
 ### 12.1 清单完整性
 
@@ -381,7 +349,6 @@ python scripts/test_chat_tool_normalization.py
 python scripts/test_social_tool_router.py
 python scripts/test_ui_contract.py
 python scripts/test_semantic_chinese_rendering.py
-python scripts/test_fastmoss_evidence_renderer.py
 python scripts/test_api_cache.py
 ```
 
@@ -400,7 +367,7 @@ python scripts/test_api_cache.py
 
 默认使用 fixture、mock 或已有缓存，不主动触发付费查询。真实付费 smoke query 必须获得用户明确授权。
 
-## 13. 日志要求
+## 12. 日志要求
 
 每次官方预设请求至少记录：
 
@@ -422,7 +389,7 @@ python scripts/test_api_cache.py
 - 完整工具返回；
 - Cookie、代理凭据或其他敏感配置。
 
-## 14. 多 Agent 协作建议
+## 13. 多 Agent 协作建议
 
 这些文件是冲突热点：
 
@@ -436,13 +403,12 @@ python scripts/test_api_cache.py
 2. SellerSprite 通用后端路由；
 3. 前端显式 `officialPresetId`；
 4. SellerSprite 27 预设回归；
-5. FastMoss 官方依据审计及适配；
-6. SociaVault 映射完整性和现有路由回归；
-7. 统一线上验收。
+5. SociaVault 映射完整性和现有路由回归；
+6. 统一线上验收。
 
 如果必须并行，先明确文件所有权，其他 Agent 只提交独立模块或独立测试文件，由一个协调 Agent 最终接入 `web_app.py` 和 `chat.html`。
 
-## 15. 4004 部署流程
+## 14. 4004 部署流程
 
 所有源代码从 Windows 到服务器必须经 GitHub：
 
@@ -459,13 +425,13 @@ python scripts/test_api_cache.py
 - 4003 容器 ID 和健康状态；
 - 4004 容器 ID 和健康状态；
 - 4004 `/healthz`；
-- Amazon/FastMoss/Home 只读工具目录；
+- Amazon/Home 只读工具目录；
 - 已知预设的实际暴露工具数；
 - 4002/4003 容器 ID 必须保持不变。
 
 部署脚本执行 Docker build 可能超过 60 秒。若前台 SSH 等待超时，先检查远端进程和旧容器状态，再使用后台执行和轮询日志；不要盲目重复部署。
 
-## 16. Definition of Done
+## 15. Definition of Done
 
 只有同时满足以下条件才算完成：
 
@@ -476,7 +442,7 @@ python scripts/test_api_cache.py
 - [ ] schema 暴露和执行层都实施相同白名单；
 - [ ] 越界调用测试通过；
 - [ ] 未知/缺失/空数据路径行为明确；
-- [ ] FastMoss 与 SociaVault 没有被伪装成 SellerSprite 式官方预设；
+- [ ] SociaVault 没有被伪装成 SellerSprite 式官方预设；
 - [ ] 缓存、TTL、MCP 生命周期和 REST 边界未改变；
 - [ ] 事实边界回归覆盖派生指标、粒度、样本和推断；
 - [ ] 自动回归通过；
@@ -484,7 +450,7 @@ python scripts/test_api_cache.py
 - [ ] 4002、4003 容器未变化；
 - [ ] 未泄露或提交任何 Key。
 
-## 17. 后续 Agent 开始前的最短检查
+## 16. 后续 Agent 开始前的最短检查
 
 ```text
 1. 确认当前仓库是 Video_analyzer-ui-4004。

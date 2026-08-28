@@ -68,11 +68,13 @@ class UIContractTest(unittest.TestCase):
         markdown_renderer = (SCRIPTS_DIR / "json_to_markdown.py").read_text(
             encoding="utf-8"
         )
+        chat_template = (STATIC_DIR / "chat.html").read_text(encoding="utf-8")
 
         self.assertIn("from semantic_evidence_renderer import", sellersprite_renderer)
         self.assertNotIn(retired_renderer, sellersprite_renderer)
         self.assertNotIn(retired_renderer, semantic_renderer)
         self.assertNotRegex(markdown_renderer, rf"(?i){retired_provider[:4]}(?:_)?{retired_provider[4:]}")
+        self.assertNotRegex(chat_template, rf"(?i){retired_provider[:4]}(?:_)?{retired_provider[4:]}")
 
     def test_every_template_uses_the_shared_shell(self) -> None:
         for path in TEMPLATES:
