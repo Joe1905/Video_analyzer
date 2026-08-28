@@ -10843,7 +10843,7 @@ def cleanup_ui_chat_scroll_test_sessions(store: ChatStore | None = None) -> int:
 
 def synthetic_ui_chat_scroll_test_session() -> Session:
     """Build deterministic history when the optional deployed source is absent."""
-    detail = "滚动回归使用本地合成历史，确保主消息区域有足够内容验证锚点与工具列表滚动。" * 40
+    detail = "滚动回归使用本地合成历史，确保主消息区域有足够内容验证锚点与工具列表滚动。" * 48
     messages: list[Message] = []
     for index in range(1, 7):
         messages.extend(
