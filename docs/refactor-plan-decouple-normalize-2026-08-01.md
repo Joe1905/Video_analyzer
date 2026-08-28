@@ -282,7 +282,7 @@ Phase 0.5 最终证据（2026-08-28）：源码清理提交为 `0618559`，回�
 
 Phase 1.1 只迁移 `json_response`、`text_response`、`binary_response`、`file_response`、`write_sse_event` 五个稳定响应/SSE helper。路由和请求体读取仍留在 `web_app.py`；不得在本阶段移动 `_lan_chat_request_json`、multipart/JSON body 解析、静态资源/视频/附件服务、SSE 生命周期或任何业务异常映射。
 
-按以下互斥边界实施，每个运行时提交后都必须执行本节上方完整的 38 脚本门禁：
+按以下互斥边界实施，每个运行时提交后都必须执行当时登记的完整门禁；Phase 1.1 新增两项测试后为 40 个自动化脚本：
 
 1. **1.1A 新模块与字节级单测：** 只拥有 `scripts/core/http.py`、`scripts/core/__init__.py` 和新建的纯 helper 单测。使用 `FakeHandler`/`BytesIO` 锁定 JSON UTF-8 与缩进、no-cache、HEAD、Range 206/416、RFC 5987 文件名、1 MiB 流式读取、BrokenPipe 行为以及 SSE `data:` 帧和 flush；不导入 `web_app.py`，不产生循环依赖。
 2. **1.1B 调用方替换：** 单独拥有 `scripts/web_app.py`，显式导入上述五个 helper 并逐个替换原定义。AST 终审确认真实直接调用量为 278 个 JSON、13 个 text、12 个 binary、6 个 file 和 4 个 SSE，共 313 个；状态码、headers、异常捕获和 Handler 签名必须保持不变，不改路由条件和业务分支。
