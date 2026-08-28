@@ -254,8 +254,8 @@ find data -maxdepth 1 -iname '*fastmoss*' -print
 | --- | --- | --- |
 | Phase 0 测试基线 | 已完成 | 服务器 4004 确定性套件、HTTP smoke、桌面/移动浏览器回归全绿 |
 | Phase 0.5A 共享能力中性化 | 已完成 | SellerSprite semantic renderer 输出保持一致；服务器 4004 全量回归全绿 |
-| Phase 0.5B 运行时和仓库资产清理 | 进行中 | 运行时、Bridge/配置、UI/文档三条工作线合并后零残留扫描通过；补齐无外网的核心 workflow HTTP 生命周期 fixture；服务器 4004 全量回归全绿 |
-| Phase 0.5C V2 应用数据清理 | 待执行 | 项目外备份校验后只删除 4004 专属旧数据；服务器 4004 再跑一次全量回归和数据零残留核验 |
+| Phase 0.5B 运行时和仓库资产清理 | 已完成 | 运行时、Bridge/配置、UI/文档三条工作线合并后零残留扫描通过；补齐无外网的核心 workflow HTTP 生命周期 fixture；服务器 4004 全量回归全绿 |
+| Phase 0.5C V2 应用数据清理 | 已完成 | `data/`、`data-dev/`、历史 session/cache/Skill 和旧 `.pyc` 已移出 V2 项目树；项目外备份逐文件校验通过；镜像、运行容器和服务器 4004 再次全量回归全绿 |
 | Phase 1.1 `core/http.py` | 未开始 | 只有 Phase 0.5C 出口通过后才能开始；独立提交并再次跑全量回归 |
 
 Phase 0.5B 可以多智能体并行，但文件所有权必须互斥：一条线负责 Python 运行时与专用模块，一条线负责 MCP Bridge/Compose/env，一条线负责静态 UI 与受控文档；README、计划文档、资产版本、跨线冲突和最终集成由主任务统一处理。子智能体只运行专项测试，不得独立提交；主任务合并审计后统一提交和部署。
@@ -270,15 +270,26 @@ Phase 0.5B 可以多智能体并行，但文件所有权必须互斥：一条线
 6. 检查 4004 容器环境、生效 Compose 配置、进程和近期日志；不得出现退役 provider、启动失败或触碰 4002/4003 的证据。
 7. 记录镜像 ID、提交 SHA、测试总数和失败数。任一项失败即留在当前阶段修复并重跑完整集合，不得带红灯进入下一阶段。
 
+固定计数口径：每个阶段先在 4004 服务器新镜像中运行 **36 项构建前确定性回归**，即 32 个常规 Python、`test_hot_report_resume.py`、启用 `SELLERSPRITE_TOOL_MOCK_MODE=1` 的 `test_27_presets_mock_boundary.py`，以及 `scripts/test_mcp_bridge_cache.js`、`sellersprite_mcp_chat/test_stdio_mcp_client.js` 两个 Node 门禁。部署后再运行 **2 个 Playwright 脚本**，每个脚本都覆盖桌面和移动 viewport；每阶段合计 **38 个自动化测试脚本**。`test_api.py` 是吞异常的固定历史数据探针，`test_low_reasoning_video_insight.py` 会调用付费外部模型且失败仍返回成功，二者只作为人工实验，不计入阶段门禁。
+
+Phase 0.5 最终证据（2026-08-28）：源码清理提交为 `0618559`，回归夹具修复为 `bd864cd`、`e362e7b`，递归排除历史 Python 字节码的构建修复为 `d1d4d2c`；服务器部署镜像为 `a70c61cd2e9f`。最终 36 项构建前回归失败数为 0，两个部署后 Playwright 均通过；`/healthz` 和 12 个活动页面为 200，旧路径 GET/POST/DELETE 均为无 `Location` 的 404。V2 项目树、镜像、容器环境、生效 Compose 和进程扫描均无旧 provider 残留。项目外回滚备份覆盖 11 组、128 个文件、3,788,317 字节，manifest SHA-256 为 `7f1c552462b943e733424e1f32c1a952a162256d3d247696b23dfdc70c61a91f`；备份保留原权限，未来恢复其中 root 文件时需要 `sudo`。
+
 ## 五、Phase 1：抽取低风险基础设施
 
 每个子步骤独立提交，保持行为不变。
 
 ### 5.1 `core/http.py`
 
-先迁移 `json_response`、`text_response`、`binary_response`、`file_response`、请求体读取、SSE 写入。路由仍留在 `Handler` 中，只把稳定纯工具替换为显式导入。
+Phase 1.1 只迁移 `json_response`、`text_response`、`binary_response`、`file_response`、`write_sse_event` 五个稳定响应/SSE helper。路由和请求体读取仍留在 `web_app.py`；不得在本阶段移动 `_lan_chat_request_json`、multipart/JSON body 解析、静态资源/视频/附件服务、SSE 生命周期或任何业务异常映射。
 
-验收：HTTP smoke、SSE 相关专项测试、禁用功能 404 分支通过。
+按以下互斥边界实施，每个运行时提交后都必须执行本节上方完整的 38 脚本门禁：
+
+1. **1.1A 新模块与字节级单测：** 只拥有 `scripts/core/http.py`、`scripts/core/__init__.py` 和新建的纯 helper 单测。使用 `FakeHandler`/`BytesIO` 锁定 JSON UTF-8 与缩进、no-cache、HEAD、Range 206/416、RFC 5987 文件名、1 MiB 流式读取、BrokenPipe 行为以及 SSE `data:` 帧和 flush；不导入 `web_app.py`，不产生循环依赖。
+2. **1.1B 调用方替换：** 单独拥有 `scripts/web_app.py`，显式导入上述五个 helper 并逐个替换原定义。39 个 JSON、8 个 binary、3 个 file、2 个 text 和 3 个 SSE 调用点的状态码、headers、异常捕获和 Handler 签名必须保持不变；不改路由条件和业务分支。
+3. **1.1C HTTP 黑盒契约：** 单独拥有 HTTP contract 测试文件，补齐当前 smoke 未锁定的 Range、Content-Disposition、HEAD、SSE 帧和断连行为。它可以与 1.1A 并行准备，但必须在 1.1A 合入后执行，在 1.1B 合入后作为端到端回归再次执行。
+4. **1.1D 只读交叉审计：** 用 CodeGraph 核对调用数、导入方向和遗漏定义；不得修改 A/B/C 拥有的文件。主任务统一提交、GitHub 同步、服务器构建和部署。
+
+验收：新增字节级单测、HTTP smoke、workflow lifecycle、SSE 专项、未注册/禁用功能 404 分支通过，且完整 38 脚本门禁全绿。
 
 ### 5.2 `core/config.py`
 
