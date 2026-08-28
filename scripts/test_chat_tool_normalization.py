@@ -1254,15 +1254,23 @@ def test_empty_mcp_collections_are_not_enough_data() -> None:
     assert direct_empty["data_state"] == "empty"
 
 
-def test_mcp_content_error_rules_are_provider_specific() -> None:
+def test_sellersprite_mcp_content_success_is_normalized() -> None:
     def result(payload: dict) -> dict:
         return {"ok": True, "data": {"content": [{"type": "text", "text": json.dumps(payload)}], "isError": False}}
 
-    success = normalize_prefixed_tool_result("sellersprite__asin_detail", result({"code": "OK", "data": {"asin": "B0FBVL7SG7", "price": 26.99}}))
-    assert success["ok"] is True
-    failure = normalize_prefixed_tool_result("sellersprite__product_research", result({"code": "ERROR_QUERY", "message": "query failed", "data": None}))
-    assert failure["ok"] is False
-    assert failure["data_state"] == "error"
+    sellersprite = normalize_prefixed_tool_result(
+        "sellersprite__asin_detail",
+        result({
+            "code": "OK",
+            "message": "成功",
+            "data": {"asin": "B0FBVL7SG7", "price": 26.99, "rating": 4.3, "ratings": 344},
+        }),
+    )
+    assert sellersprite["ok"] is True
+    assert sellersprite["enough_data"] is True
+    assert sellersprite["data_state"] == "data"
+    assert sellersprite["mcp_data"]["data"]["asin"] == "B0FBVL7SG7"
+    assert "error" not in sellersprite
 
 
 def test_mcp_sql_error_text_is_not_evidence() -> None:
@@ -1455,7 +1463,7 @@ if __name__ == "__main__":
     test_intent_decision_validation_and_fallback()
     test_intent_router_uses_recent_context_and_falls_back_on_failure()
     test_empty_mcp_collections_are_not_enough_data()
-    test_mcp_content_error_rules_are_provider_specific()
+    test_sellersprite_mcp_content_success_is_normalized()
     test_mcp_sql_error_text_is_not_evidence()
     test_deepseek_tool_turn_preserves_reasoning_content()
     test_only_structured_direct_requests_bypass_intent_llm()
