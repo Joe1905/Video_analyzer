@@ -133,6 +133,22 @@ class ChatScrollRegressionTest(unittest.TestCase):
             self.assertEqual(cloned.messages[0].content, "长对话问题")
             self.assertIsNot(cloned.messages[0], titled_source.messages[0])
 
+    def test_setup_uses_synthetic_history_when_source_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = ChatStore(Path(temp_dir) / "chat_sessions.json")
+
+            public_id, cloned, cleaned = web_app.clone_ui_chat_scroll_test_session(store)
+
+            self.assertEqual(cleaned, 0)
+            self.assertTrue(public_id.startswith(web_app.UI_CHAT_SCROLL_TEST_SESSION_PREFIX))
+            self.assertEqual(cloned.title, "UI 双滚动条回归")
+            self.assertGreaterEqual(len(cloned.messages), 12)
+            self.assertEqual({message.role for message in cloned.messages}, {"user", "assistant"})
+            self.assertGreater(
+                sum(len(message.content) for message in cloned.messages),
+                10_000,
+            )
+
     def test_sequence_emits_ten_fake_calls_without_real_llm_or_tools(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = RecordingStore(Path(temp_dir) / "chat_sessions.json")

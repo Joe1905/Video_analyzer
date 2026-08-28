@@ -18,6 +18,11 @@ AVATAR = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E"
 PNG_BYTES = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2n1cAAAAASUVORK5CYII="
 )
+TEST_GLOBAL_USER = {
+    "id": "test-owner",
+    "name": "测试飞书用户",
+    "kind": "feishu",
+}
 
 
 async def wait_until(predicate, timeout: float = 8.0) -> None:
@@ -53,6 +58,7 @@ class MockLanChatApi:
             "online": True,
             "lastSeen": time.time(),
         }
+
         second = {
             "id": "user-2",
             "nickname": "产品同事",
@@ -117,6 +123,12 @@ class MockLanChatApi:
             "messagePollIntervalMs": 3000,
             "bootstrapPollIntervalMs": 10000,
         }
+
+    @staticmethod
+    async def handle_global_user(route: Route) -> None:
+        await route.fulfill(
+            json={"currentUser": TEST_GLOBAL_USER, "users": [TEST_GLOBAL_USER]}
+        )
 
     async def handle(self, route: Route) -> None:
         request = route.request
@@ -245,7 +257,6 @@ class MockLanChatApi:
 async def open_chat(browser, base_url: str, viewport: dict, api: MockLanChatApi):
     context = await browser.new_context(viewport=viewport)
     await context.add_init_script(
-        "window.VideoAnalyzerGlobalUser=Promise.resolve({currentUser:{id:'test-owner',kind:'feishu'}});"
         "localStorage.setItem('videoAnalyzer.lanChat.sessionToken.v3.test-owner','test-token')"
     )
     page = await context.new_page()
@@ -256,6 +267,7 @@ async def open_chat(browser, base_url: str, viewport: dict, api: MockLanChatApi)
         if message.type == "error"
         else None,
     )
+    await page.route("**/api/global-user", MockLanChatApi.handle_global_user)
     await page.route("**/api/lan-chat/**", api.handle)
     target_url = (
         base_url
@@ -264,6 +276,8 @@ async def open_chat(browser, base_url: str, viewport: dict, api: MockLanChatApi)
     )
     await page.goto(target_url, wait_until="domcontentloaded")
     await expect(page.locator("#loginModal")).not_to_have_class(re.compile("show"))
+    await expect(page.locator("body")).not_to_have_class(re.compile("lan-read-only"))
+    await expect(page.locator("#newChat")).to_be_visible()
     return context, page, console_errors
 
 

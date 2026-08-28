@@ -10841,6 +10841,32 @@ def cleanup_ui_chat_scroll_test_sessions(store: ChatStore | None = None) -> int:
     return len(stale_ids)
 
 
+def synthetic_ui_chat_scroll_test_session() -> Session:
+    """Build deterministic history when the optional deployed source is absent."""
+    detail = "滚动回归使用本地合成历史，确保主消息区域有足够内容验证锚点与工具列表滚动。" * 40
+    messages: list[Message] = []
+    for index in range(1, 7):
+        messages.extend(
+            [
+                Message(
+                    id=f"ui-scroll-history-user-{index}",
+                    role="user",
+                    content=f"第 {index} 轮滚动回归历史问题：请保留上下文并继续分析。",
+                ),
+                Message(
+                    id=f"ui-scroll-history-assistant-{index}",
+                    role="assistant",
+                    content=f"第 {index} 轮历史回答。{detail}",
+                ),
+            ]
+        )
+    return Session(
+        id="ui-scroll-synthetic-source",
+        title="UI 滚动回归合成历史",
+        messages=messages,
+    )
+
+
 def clone_ui_chat_scroll_test_session(
     store: ChatStore | None = None,
     source_session: Session | None = None,
@@ -10864,9 +10890,7 @@ def clone_ui_chat_scroll_test_session(
                 None,
             )
     if source is None:
-        raise LookupError(
-            f"测试源会话不存在：{UI_CHAT_SCROLL_TEST_SOURCE_SESSION}"
-        )
+        source = synthetic_ui_chat_scroll_test_session()
 
     public_session_id = f"{UI_CHAT_SCROLL_TEST_SESSION_PREFIX}{uuid.uuid4().hex[:12]}"
     cloned = copy.deepcopy(source)
