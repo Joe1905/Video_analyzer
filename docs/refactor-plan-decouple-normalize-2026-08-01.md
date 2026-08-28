@@ -14,6 +14,7 @@
 - 开发版：`developer`，基线 `a4f1bfd`
 - V2：`v2`，对齐前基线 `38cfff9`
 - V2 对齐提交：`b364276`
+- V2 功能对齐完成提交：`0232f9f`
 
 结论：`developer` 的有效补丁已被 `master` 覆盖，因此 V2 以 `master` 为功能来源，同时保留 V2 独有的统一聊天壳、出海匠、邻聊、淘宝、代理运营台和 4004 隔离配置。没有用正式版页面覆盖 V2 页面。
 
@@ -34,17 +35,20 @@ git merge-base --is-ancestor b364276 v2
 4. V2 对应补齐账号重新绑定 UI；绑定成功后可恢复因代理删除而暂停的等待任务。
 5. TikTok Studio 异常信息保留，避免离开 `except` 作用域后丢失。
 6. 视频分析超时测试更新为当前 `Popen`/进程组终止实现。
+7. 4004 代理运行时使用独立命名空间 `v2`、Mihomo 节点前缀 `v2-`、普通代理端口 `19300-19399`、淘宝代理端口 `19400-19419`；V2 web 默认端口固定为 `4004`。
+8. 代理端口迁移会同步已绑定账号的 `proxy_binding.local_port` 和 `browser_settings.proxy_server`；sing-box 检测同时兼容数据库行和归一化后的 pool 字典。
+9. 活动聊天 provider 收紧为 Home、SellerSprite、出海匠；`/fastmoss*` 只保留到 `/chuhaijiang` 的 307 兼容重定向。代理页已补齐共享 `.ui-header` 契约。
 
-4004 隔离要求保持不变：Compose 项目、sing-box 项目、测试端口和服务操作都不得落到 4002/4003。
+4004 隔离要求保持不变：Compose 项目、sing-box 项目、测试端口和服务操作都不得落到 4002/4003。`0232f9f` 已通过 GitHub 同步并部署到 `/home/openclaw/Video_analyzer-ui-4004`；部署后 4002、4003、4004 的 `/healthz` 均返回 200。
 
 ## 二、当前代码总览
 
-CodeGraph 对齐后索引：99 个文件、3,676 个节点、12,800 条边。主要热点如下：
+CodeGraph 已在 `0232f9f` 上重新同步。主要热点如下：
 
 | 文件 | 规模 | 当前职责 | 判断 |
 | --- | ---: | --- | --- |
 | `scripts/web_app.py` | 15,535 行 / 735 KB | 配置、页面装配、聊天 provider、HTTP 工具、四类临时任务、下载/店铺/指标/Amazon、全部 GET/POST 路由、后台线程启动 | 第一重构对象，但必须分批拆 |
-| `scripts/proxy_pool.py` | 5,286 行 / 236 KB | SQLite schema、代理解析、端口分配、mihomo/sing-box、账号会话、发布、采集、运行时状态 | 独立子系统，应在自己的包内拆分 |
+| `scripts/proxy_pool.py` | 5,319 行 / 238 KB | SQLite schema、代理解析、端口分配、mihomo/sing-box、账号会话、发布、采集、运行时状态 | 独立子系统，应在自己的包内拆分 |
 | `scripts/hot_video_report.py` | 4,032 行 / 178 KB | 日报采集、下载、单视频分析、LLM 摘要、恢复与持久化 | 已有清晰文件边界，先稳定接口，不优先内部大拆 |
 | `scripts/tools.py` | 1,470 行 / 72 KB | 聊天工具归一与执行、视频分析子进程 | 需要把“聊天工具”和“视频执行器”分开 |
 | `scripts/static/proxy.html` | 1,856 行 / 291 KB | 代理运营台 HTML/CSS/JS、数据装配、任务交互 | 前端第二个上帝文件，后端 API 稳定后再拆资源 |
@@ -164,21 +168,24 @@ HOT_VIDEO_REPORT_ENABLED=0
 | 日报关闭时 `POST /api/report/run` | 503 JSON `{"error":"日报功能已暂停"}` |
 | 代理关闭时 `GET /proxy` | 404 text `Not found` |
 | 代理关闭时 `GET/POST /api/proxy/<tail>` | 404 JSON `{"error":"Not found"}`；POST 用 Handler 单元契约验证，避免被 UI 测试模式的 409 提前拦截 |
-| 所有活跃页面模板 | 原始模板内恰好一个 `.ui-header`，且位于 `.ui-app > .ui-frame`；当前代理页不满足，按产品缺陷修复 |
+| 所有活跃页面模板 | 原始模板内恰好一个 `.ui-header`，且位于 `.ui-app > .ui-frame`；代理页已按该契约修复 |
 | Home 快捷入口 | 4 个 `.quick-prompt`，`data-chat-scene` 恰好 0；旧的“6 个 scene”断言删除 |
 | 出海匠官方场景 | `data-chuhaijiang-scene` 恰好 8 |
 
 ### 4.3 先处理现有红灯
 
-2026-08-28 本地基线中，以下失败在对齐前 V2 已存在：
+2026-08-28 功能对齐完成后的门禁状态如下：
 
 | 检查 | 当前结果 | 重构前处理 |
 | --- | --- | --- |
-| `test_ui_contract.py` | 代理页 `.ui-header` 数量契约失败 | 确认共享导航注入后的唯一权威 DOM，再修测试或页面 |
-| `test_chuhaijiang_ui_contract.py` | 首页 `data-chat-scene` 数量期望与当前共享壳不一致 | 以当前三 provider 共享壳为准更新契约 |
-| `test_chat_tool_normalization.py` | 本机缺少 SellerSprite 凭据时官方工具断言失败 | 将静态权限契约与真实凭据集成测试分开 |
+| `test_ui_contract.py` | 15 项通过 | 保持为共享壳和代理页 DOM 门禁 |
+| `test_chuhaijiang_ui_contract.py` | 7 项通过 | 保持 Home 0 个旧 scene、出海匠 8 个官方 scene 的契约 |
+| `test_chuhaijiang_boundary.py` | 5 项通过 | 保持活动 provider 与工具域隔离门禁 |
+| `test_proxy_pool_lifecycle.py` | 通过 | 保持端口迁移、删池解绑、重新绑定和 sing-box 检测门禁 |
+| `test_27_presets_mock_boundary.py` | 27 个 SellerSprite 官方预设通过 | mock 开关只注入测试子进程，生产默认仍为 0 |
+| `test_chat_tool_normalization.py` | 仍是 V1/V2 混合套件；包含已退役 FastMoss provider 断言 | 按活动 provider 拆出 V2 套件；旧 FastMoss 仅保留重定向/历史兼容测试，不得恢复 provider |
 
-不能把这些红灯笼统标记为“历史问题”后继续重构。每项必须最终落为 `pass`、带明确条件的 `skip`，或拆为单独的凭据集成测试；不能只写说明后继续重构。
+已知的运行时与 UI 红灯已关闭。Phase 0 尚未完成的是新增统一 HTTP smoke、拆分混合聊天套件、落库测试矩阵与首批响应契约。这些不能笼统标记为“历史问题”后继续重构：每项必须最终落为活动 V2 套件中的 `pass`、带明确条件的 `skip`，或独立的旧 FastMoss 兼容测试。
 
 ### 4.4 建立测试矩阵
 
@@ -192,7 +199,7 @@ HOT_VIDEO_REPORT_ENABLED=0
 
 响应基线存放在 `scripts/contracts/`。快照生成时只允许规范化随机 ID、时间戳、临时绝对路径和日志时间前缀；字段缺失、状态码、重定向目标、SSE event/data 结构不得被归一掉。快照中只能使用合成数据，不得写入凭据、Cookie、真实账号或请求头。
 
-**Phase 0 验收：** Docker 中 smoke 通过；现有测试没有“来源不明”的红灯；测试矩阵写入仓库。
+**Phase 0 验收：** 服务器 4004 容器中 smoke 通过；混合聊天套件完成拆分；现有测试没有“来源不明”的红灯；测试矩阵写入仓库。
 
 ## 五、Phase 1：抽取低风险基础设施
 
@@ -331,20 +338,26 @@ Transport 规则必须显式化：只对连接失败、429 和可重试 5xx 在�
 2. 仓库存在 `.codegraph/` 时，先运行 `codegraph sync .`，再用 `codegraph explore "<待迁移符号、调用方和相关测试>"` 检查影响面；不存在时用 `rg` 完成等价清单。
 3. 先复制测试保护，再移动代码；不在同一提交顺手修业务。
 4. `git diff --check` 通过。
-5. 使用 4004 Compose 项目运行相关验证：
-
-smoke 必须从 V2 Windows 工作树根目录执行。测试脚本自行启动临时 web 子进程，不先启动持久化 `web` 服务：
+5. Windows 工作树只做静态检查和提交，不在本地构建 Docker。源码必须先通过 GitHub 同步，再在服务器 4004 checkout 中构建和验证：
 
 ```powershell
 Set-Location 'C:\Users\admin\Documents\Video_analyzer-ui-4004'
 if ((git branch --show-current) -ne 'v2') { throw '必须在 v2 分支执行' }
 git merge-base --is-ancestor b364276 HEAD
 if ($LASTEXITCODE -ne 0) { throw '当前 HEAD 尚未包含 V2 对齐提交 b364276' }
-docker compose -p short-video-analyzer-ui-4004 build
-docker compose -p short-video-analyzer-ui-4004 run --rm --no-deps `
-  -e UI_TEST_MODE=1 -e APP_TEST_ROOT=/tmp/v2-smoke `
-  -e APP_TEST_PORT_FILE=/tmp/v2-smoke/web.port `
-  -e HOT_VIDEO_REPORT_ENABLED=0 -e PROXY_POOL_ENABLED=0 analyzer `
+git -c http.proxy=http://127.0.0.1:7892 -c https.proxy=http://127.0.0.1:7892 push origin v2
+```
+
+服务器使用 `/home/openclaw/Video_analyzer-ui-4004`、分支 `v2` 和项目名 `short-video-analyzer-ui-4004`。当前服务器安装的是 legacy `docker-compose`，不是 Compose v2 插件：
+
+```bash
+cd /home/openclaw/Video_analyzer-ui-4004
+git -c http.proxy=http://127.0.0.1:7890 -c https.proxy=http://127.0.0.1:7890 pull --ff-only origin v2
+docker-compose -p short-video-analyzer-ui-4004 build web
+docker-compose -p short-video-analyzer-ui-4004 run --rm --no-deps \
+  -e UI_TEST_MODE=1 -e APP_TEST_ROOT=/tmp/v2-smoke \
+  -e APP_TEST_PORT_FILE=/tmp/v2-smoke/web.port \
+  -e HOT_VIDEO_REPORT_ENABLED=0 -e PROXY_POOL_ENABLED=0 analyzer \
   python scripts/test_web_smoke.py
 ```
 
@@ -377,7 +390,7 @@ Phase 0 测试基线
 第一批只做 Phase 0 和 Phase 1.1，控制在 3～5 个小提交：
 
 1. 新增可重复运行的 `test_web_smoke.py`。
-2. 修正/分类三项现有测试红灯，形成可信基线。
+2. 拆分 `test_chat_tool_normalization.py`：活动 V2 provider 测试、SellerSprite mock 边界、旧 FastMoss 重定向兼容各自独立；禁止通过恢复 FastMoss provider 让旧断言通过。
 3. 为禁用日报、禁用代理的 404/提示分支加契约测试。
 4. 抽 `core/http.py`，保留 `web_app.py` 显式兼容导出。
 5. 在 Docker 4004 环境跑 smoke 与专项测试后再进入配置拆分。
