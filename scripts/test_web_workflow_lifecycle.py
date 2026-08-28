@@ -134,7 +134,9 @@ class FakeVideoQueue:
 
 
 def run_lifecycle() -> None:
-    temp_root = Path(tempfile.mkdtemp(prefix="video-analyzer-v2-workflow-"))
+    # Production result payloads expose output paths relative to the repository
+    # root, so keep the isolated fixture under that same root as well.
+    temp_root = Path(tempfile.mkdtemp(prefix=".test-v2-workflow-", dir=ROOT))
     server = None
     thread = None
     try:
