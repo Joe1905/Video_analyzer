@@ -31,7 +31,7 @@ DATA_DIR = ROOT / "data"
 DB_PATH = DATA_DIR / "proxy_pool.sqlite"
 DEFAULT_NOVNC_PUBLIC_URL = os.getenv("NOVNC_PUBLIC_URL", "http://192.168.1.254:6080/vnc.html?autoconnect=1&resize=scale")
 DEFAULT_MIHOMO_API = os.getenv("MIHOMO_API_URL", "http://127.0.0.1:9090")
-SYSTEM_PROXY_DIALER = os.getenv("PROXY_POOL_UPSTREAM_DIALER", "备用订阅").strip() or "备用订阅"
+SYSTEM_PROXY_DIALER = os.getenv("PROXY_POOL_UPSTREAM_DIALER", "故障转移").strip() or "故障转移"
 PROXY_CONFIG_NAMESPACE = os.getenv("PROXY_POOL_CONFIG_NAMESPACE", "formal").strip() or "formal"
 PROXY_MIHOMO_NAME_PREFIX = os.getenv("PROXY_POOL_MIHOMO_PREFIX", "").strip()
 SING_BOX_CONFIG_PATH = Path(os.getenv("SING_BOX_CONFIG_PATH", str(DATA_DIR / "sing-box" / "config.json")))
