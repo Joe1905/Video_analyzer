@@ -64,12 +64,12 @@ class TestChuhaijiangBoundary(unittest.TestCase):
         self.assertFalse(is_high_risk_tool("account_info", {}))
 
     def test_shared_presentation_keeps_only_active_provider_domains(self):
-        web_app = Path(__file__).with_name("web_app.py").read_text(encoding="utf-8")
+        source = Path(__file__).with_name("web_app.py").read_text(encoding="utf-8")
         chat_html = Path(__file__).with_name("static").joinpath("chat.html").read_text(encoding="utf-8")
-        self.assertIn('"chuhaijiang": {"chuhaijiang"}', web_app)
-        self.assertIn('return serve_chat_template(self, "chuhaijiang", parsed.path)', web_app)
-        self.assertNotIn('build_chuhaijiang_independent_template', web_app)
-        self.assertIn('if provider not in {"home", "amazon", "chuhaijiang"}:', web_app)
+        self.assertIn('"chuhaijiang": {"chuhaijiang"}', source)
+        self.assertIn('return serve_chat_template(self, "chuhaijiang", parsed.path)', source)
+        self.assertNotIn('build_chuhaijiang_independent_template', source)
+        self.assertIn('if provider not in {"home", "amazon", "chuhaijiang"}:', source)
         self.assertEqual(web_app.CHAT_PROVIDERS, {"home", "amazon", "chuhaijiang"})
         self.assertEqual(
             set(web_app.CHAT_TOOL_DOMAINS),

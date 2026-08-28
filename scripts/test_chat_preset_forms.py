@@ -8,10 +8,10 @@ from unittest.mock import patch
 
 try:
     from scripts import web_app
-    from scripts.chat_preset_forms import CHUHAIJIANG_PRESET_FORMS, SELLERSPRITE_PRESET_FORMS
+    from scripts.chat_preset_forms import CHUHAIJIANG_PRESET_FORMS, HOME_PRESET_FORMS, SELLERSPRITE_PRESET_FORMS
 except ModuleNotFoundError:
     import web_app
-    from chat_preset_forms import CHUHAIJIANG_PRESET_FORMS, SELLERSPRITE_PRESET_FORMS
+    from chat_preset_forms import CHUHAIJIANG_PRESET_FORMS, HOME_PRESET_FORMS, SELLERSPRITE_PRESET_FORMS
 
 
 class TestChatPresetForms(unittest.TestCase):
@@ -71,7 +71,11 @@ class TestChatPresetForms(unittest.TestCase):
         home_forms = json.loads(re.search(pattern, home).group(1))
         self.assertEqual(set(amazon_forms), set(SELLERSPRITE_PRESET_FORMS))
         self.assertEqual(set(chuhaijiang_forms), set(CHUHAIJIANG_PRESET_FORMS))
-        self.assertEqual(home_forms, {})
+        self.assertEqual(set(home_forms), set(HOME_PRESET_FORMS))
+        self.assertEqual(
+            home_forms,
+            json.loads(json.dumps(HOME_PRESET_FORMS, ensure_ascii=False)),
+        )
 
     def test_server_builds_safe_structured_preset_summary(self):
         metadata = web_app.chat_official_preset_metadata(

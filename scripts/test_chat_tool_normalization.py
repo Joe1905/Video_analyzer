@@ -116,10 +116,27 @@ def test_sellersprite_official_skill_chain_loads_full_bundle_and_isolates_tools(
         web_app.SELLERSPRITE_PRODUCT_RESEARCH_PRESET_ID,
     )
     assert explicit_preset_route == preset_route
+    allowlisted_tool_id = next(iter(preset_route["tools"]))
+    allowlisted_tool_name = web_app.split_prefixed_tool_id(allowlisted_tool_id)[1]
+    bridge_tools = [{
+        "name": allowlisted_tool_name,
+        "description": "isolated SellerSprite test tool",
+        "inputSchema": {"type": "object", "properties": {}},
+    }]
+    # 静态官方 Skill 契约不应访问真实 MCP bridge 或依赖本机凭据。
+    original_list_tools = web_app.list_mcp_bridge_tools
+    web_app.list_mcp_bridge_tools = lambda chat_type: (
+        bridge_tools if chat_type == "sellersprite" else []
+    )
+    try:
+        default_tool_ids = web_app.provider_default_enabled_tool_ids("amazon")
+    finally:
+        web_app.list_mcp_bridge_tools = original_list_tools
+    assert allowlisted_tool_id in default_tool_ids
     assert web_app.sellersprite_official_skill_tool_ids(
-        {*web_app.provider_default_enabled_tool_ids("amazon"), "unregistered__tool"},
+        {allowlisted_tool_id, "unregistered__tool"},
         preset_route["tools"],
-    ) == set(preset_route["tools"])
+    ) == {allowlisted_tool_id}
     unknown_preset_route = web_app.sellersprite_official_skill_route(
         "解压玩具", "unknown-preset"
     )

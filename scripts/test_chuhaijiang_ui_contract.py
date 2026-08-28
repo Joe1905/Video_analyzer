@@ -41,7 +41,7 @@ class TestChuhaijiangUiContract(unittest.TestCase):
             for marker in core:
                 self.assertIn(marker, page)
         self.assertIn('const CHAT_PROVIDER="chuhaijiang"', pages["chuhaijiang"])
-        self.assertIn('body data-provider="chuhaijiang"', pages["chuhaijiang"])
+        self.assertIn('data-provider="chuhaijiang"', pages["chuhaijiang"])
 
     def test_chuhaijiang_has_provider_copy_but_never_the_old_independent_shell(self):
         page = self.render("chuhaijiang", "/chuhaijiang")

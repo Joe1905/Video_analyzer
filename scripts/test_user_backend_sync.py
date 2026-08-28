@@ -42,7 +42,7 @@ def test_browser_slot_partition_and_legacy_three_slot_compatibility() -> None:
 
 def test_direct_proxy_and_mihomo_reconcile_contracts_exist() -> None:
     source = (ROOT / "scripts" / "proxy_pool.py").read_text(encoding="utf-8")
-    assert 'source_type not in {"vless", "vmess", "static", "direct"}' in source
+    assert 'source_type not in {"vless", "vmess", "static", "direct", "demo"}' in source
     assert 'if source_type == "direct":' in source
     assert "def _direct_login_pool_id() -> int:" in source
     assert "def reconcile_mihomo_pool_configs() -> dict[str, Any]:" in source
