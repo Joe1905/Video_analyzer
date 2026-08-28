@@ -313,6 +313,11 @@ def test_v2_proxy_page_exposes_account_rebind_flow() -> None:
     assert "重新选择后，因原代理删除而暂停的等待任务会自动恢复排队" in source
 
 
+def test_v2_sing_box_default_stays_in_4004_project() -> None:
+    source = (ROOT / "scripts" / "proxy_pool.py").read_text(encoding="utf-8")
+    assert 'os.getenv("SING_BOX_COMPOSE_PROJECT", "short-video-analyzer-ui-4004")' in source
+
+
 def test_account_state_exposes_instagram_login_without_cookie_value() -> None:
     with isolated_proxy_db():
         pool = create_manual_pool("instagram", "203.0.113.40")
