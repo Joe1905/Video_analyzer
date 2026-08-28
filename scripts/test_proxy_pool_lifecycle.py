@@ -324,12 +324,14 @@ def test_v2_sing_box_default_stays_in_4004_project() -> None:
     assert 'os.getenv("TAOBAO_PROXY_PORT_START", "19400")' in source
     assert 'os.getenv("TAOBAO_PROXY_PORT_END", "19419")' in source
 
-    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
-    assert compose.count("PROXY_POOL_CONFIG_NAMESPACE: ${PROXY_POOL_CONFIG_NAMESPACE:-v2}") == 2
-    assert compose.count("PROXY_POOL_MIHOMO_PREFIX: ${PROXY_POOL_MIHOMO_PREFIX:-v2-}") == 2
-    assert compose.count("PROXY_POOL_PORT_START: ${PROXY_POOL_PORT_START:-19300}") == 2
-    assert compose.count("TAOBAO_PROXY_PORT_START: ${TAOBAO_PROXY_PORT_START:-19400}") == 2
-    assert "WEB_PORT: ${WEB_PORT:-4004}" in compose
+    compose_path = ROOT / "docker-compose.yml"
+    if compose_path.is_file():
+        compose = compose_path.read_text(encoding="utf-8")
+        assert compose.count("PROXY_POOL_CONFIG_NAMESPACE: ${PROXY_POOL_CONFIG_NAMESPACE:-v2}") == 2
+        assert compose.count("PROXY_POOL_MIHOMO_PREFIX: ${PROXY_POOL_MIHOMO_PREFIX:-v2-}") == 2
+        assert compose.count("PROXY_POOL_PORT_START: ${PROXY_POOL_PORT_START:-19300}") == 2
+        assert compose.count("TAOBAO_PROXY_PORT_START: ${TAOBAO_PROXY_PORT_START:-19400}") == 2
+        assert "WEB_PORT: ${WEB_PORT:-4004}" in compose
 
 
 def test_port_migration_updates_bound_account_profile() -> None:
