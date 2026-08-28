@@ -59,9 +59,17 @@ TIKTOK_ENDPOINTS: dict[str, str] = {
 }
 
 ROOT = Path.cwd()
-DATA_DIR = ROOT / "data"
-VIDEOS_DIR = ROOT / "videos"
-OUTPUT_DIR = ROOT / "output"
+UI_TEST_MODE = os.getenv("UI_TEST_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}
+APP_TEST_ROOT_VALUE = os.getenv("APP_TEST_ROOT", "").strip()
+APP_TEST_ROOT = (
+    Path(APP_TEST_ROOT_VALUE).expanduser().resolve()
+    if UI_TEST_MODE and APP_TEST_ROOT_VALUE
+    else None
+)
+RUNTIME_ROOT = APP_TEST_ROOT or ROOT
+DATA_DIR = RUNTIME_ROOT / "data"
+VIDEOS_DIR = RUNTIME_ROOT / "videos"
+OUTPUT_DIR = RUNTIME_ROOT / "output"
 SCRIPTS_DIR = ROOT / "scripts"
 INDEX_HTML_PATH = SCRIPTS_DIR / "static" / "web_index.html"
 SELLERSPRITE_CHAT_DIR = ROOT / "sellersprite_mcp_chat"
@@ -787,7 +795,6 @@ CHUHAIJIANG_MCP_TRACE_LOCK = threading.Lock()
 CHUHAIJIANG_MCP_AUDIT_DB = CHUHAIJIANG_CHAT_DATA_DIR / "mcp_audit.sqlite"
 CHUHAIJIANG_MCP_AUDIT_LOCK = threading.Lock()
 PROXY_POOL_ENABLED = os.getenv("PROXY_POOL_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
-UI_TEST_MODE = os.getenv("UI_TEST_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}
 UI_TEST_MODE_LIVE_WRITE_PREFIXES = ("/api/lan-chat/",)
 UI_CHAT_SCROLL_TEST_SCENARIO = "chat-scroll-regression"
 UI_CHAT_SCROLL_TEST_QUERY = "ui_test_scenario"
@@ -801,6 +808,68 @@ UI_CHAT_SCROLL_TEST_SESSION_PREFIX = "ui-scroll-regression-"
 def ui_test_mode_allows_live_write(path: str) -> bool:
     return any(
         path.startswith(prefix) for prefix in UI_TEST_MODE_LIVE_WRITE_PREFIXES
+    )
+
+
+def is_registered_post_route(path: str) -> bool:
+    """Return whether ``do_POST`` has a route for *path*.
+
+    UI test mode rejects registered mutations before their handlers run.  Unknown
+    paths must retain the application's normal 404 contract instead of being
+    reported as blocked mutations.
+    """
+    if path in {
+        "/api/global-user/select",
+        "/api/feishu/bitable/records/update",
+        "/api/feishu/bitable/write-allowlist",
+        "/api/tool/convert",
+        "/api/upload",
+        "/api/download",
+        "/api/chat/ask",
+        "/api/chat/export-pdf",
+        "/api/shop-extract",
+        "/api/video-metrics",
+        "/api/report/run",
+        "/api/report/delete",
+        "/api/report/settings",
+        "/api/report/translate",
+        "/api/report/backfill-covers",
+        "/api/amazon-scrape",
+        "/api/analyze",
+        "/api/postprocess",
+        "/api/translate",
+        "/api/feedback",
+        "/api/social-context/refresh",
+        "/api/social-insights",
+        "/api/prompt",
+        "/api/delete",
+    }:
+        return True
+    if path.startswith(("/api/proxy/", "/api/taobao/", "/amazon/", "/chuhaijiang/")):
+        return True
+    if path.startswith("/api/chat/sessions/") and path.endswith("/rename"):
+        return True
+    if path in {
+        "/api/lan-chat/select-account",
+        "/api/lan-chat/accounts",
+        "/api/lan-chat/primary-account",
+        "/api/lan-chat/register",
+        "/api/lan-chat/profile",
+        "/api/lan-chat/direct",
+        "/api/lan-chat/rooms",
+    }:
+        return True
+    return bool(re.fullmatch(
+        r"/api/lan-chat/(?:files/[0-9a-f]{32}/(?:download|accept)|rooms/[^/]+/(?:media|files|file-archives|messages|rename|avatar|announcement|members/remove|members/transfer|preferences|leave|dissolve))",
+        path,
+    ))
+
+
+def is_registered_delete_route(path: str) -> bool:
+    """Return whether ``do_DELETE`` has a route for *path*."""
+    return (
+        bool(re.fullmatch(r"/api/chat/sessions/[^/]+/delete", path))
+        or path.startswith(("/amazon/", "/chuhaijiang/"))
     )
 
 
@@ -14036,6 +14105,14 @@ class Handler(BaseHTTPRequestHandler):
             if not scroll_test_request:
                 return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
             return self.handle_ui_chat_scroll_test(parsed.path)
+        if UI_TEST_MODE and not is_registered_post_route(parsed.path):
+            return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
+        # These feature-off responses are side-effect free.  Keep them observable
+        # in UI test mode instead of returning the generic mutation-test response.
+        if parsed.path == "/api/report/run" and not hot_report_enabled():
+            return json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {"error": "日报功能已暂停"})
+        if parsed.path.startswith("/api/proxy/") and not PROXY_POOL_ENABLED:
+            return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
         if UI_TEST_MODE:
             if not ui_test_mode_allows_live_write(parsed.path):
                 return json_response(
@@ -14348,6 +14425,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self) -> None:
         parsed = urlparse(self.path)
+        if UI_TEST_MODE and not is_registered_delete_route(parsed.path):
+            return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
         if UI_TEST_MODE and not ui_test_mode_allows_live_write(parsed.path):
             return json_response(
                 self,
@@ -15485,38 +15564,42 @@ def proxy_login_capture_worker() -> None:
 
 
 def main() -> int:
-    load_env_file()
+    if not UI_TEST_MODE:
+        load_env_file()
     VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     lan_chat_store.initialize()
-    for store in chat_provider_stores.values():
-        load_sessions_from_disk(store)
-    mark_interrupted_chat_messages()
-    if PROXY_POOL_ENABLED:
-        proxy_pool.ensure_proxy_cores(restart=True)
-        proxy_pool.list_state()
-        static_proxy_sync = proxy_pool.ensure_static_proxy_configs()
-        if static_proxy_sync["errors"]:
-            print(f"Static proxy config sync errors: {static_proxy_sync['errors']}", flush=True)
-        threading.Thread(target=proxy_session_janitor, daemon=True).start()
-        threading.Thread(target=proxy_login_capture_worker, daemon=True).start()
-        tiktok_studio_publish.start_worker()
-        tiktok_studio_collect.start_worker()
-    normalize_stored_chat_tool_results()
-    video_queue.start(execute_queue_job)
-    initialize_hot_report_db()
-    report_enabled = hot_report_enabled()
-    report_scheduler_enabled = report_enabled and os.getenv("HOT_VIDEO_REPORT_SCHEDULER_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
-    if report_enabled:
-        start_report_scheduler(enable_timer=report_scheduler_enabled)
+    if not UI_TEST_MODE:
+        for store in chat_provider_stores.values():
+            load_sessions_from_disk(store)
+        mark_interrupted_chat_messages()
+        if PROXY_POOL_ENABLED:
+            proxy_pool.ensure_proxy_cores(restart=True)
+            proxy_pool.list_state()
+            static_proxy_sync = proxy_pool.ensure_static_proxy_configs()
+            if static_proxy_sync["errors"]:
+                print(f"Static proxy config sync errors: {static_proxy_sync['errors']}", flush=True)
+            threading.Thread(target=proxy_session_janitor, daemon=True).start()
+            threading.Thread(target=proxy_login_capture_worker, daemon=True).start()
+            tiktok_studio_publish.start_worker()
+            tiktok_studio_collect.start_worker()
+        normalize_stored_chat_tool_results()
+        video_queue.start(execute_queue_job)
+        initialize_hot_report_db()
+        report_enabled = hot_report_enabled()
+        report_scheduler_enabled = report_enabled and os.getenv("HOT_VIDEO_REPORT_SCHEDULER_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+        if report_enabled:
+            start_report_scheduler(enable_timer=report_scheduler_enabled)
+        else:
+            print("Hot report generation disabled; historical reports remain available", flush=True)
+        threading.Thread(
+            target=log_sociavault_router_catalog_diagnostics,
+            daemon=True,
+        ).start()
+        if report_enabled and not report_scheduler_enabled:
+            print("Hot report daily scheduler disabled; manual report jobs remain available", flush=True)
     else:
-        print("Hot report generation disabled; historical reports remain available", flush=True)
-    threading.Thread(
-        target=log_sociavault_router_catalog_diagnostics,
-        daemon=True,
-    ).start()
-    if report_enabled and not report_scheduler_enabled:
-        print("Hot report daily scheduler disabled; manual report jobs remain available", flush=True)
+        print("UI test mode: background workers, schedulers, MCP and external diagnostics are disabled", flush=True)
     port = int(os.getenv("WEB_PORT", "4000"))
     sellersprite_redirect_port = int(os.getenv("SELLERSPRITE_REDIRECT_PORT", "0") or "0")
     if sellersprite_redirect_port and sellersprite_redirect_port != port:
@@ -15525,6 +15608,13 @@ def main() -> int:
         threading.Thread(target=redirect_server.serve_forever, daemon=True).start()
         print(f"SellerSprite redirect listening on http://0.0.0.0:{sellersprite_redirect_port} -> /amazon")
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
+    test_port_file = os.getenv("APP_TEST_PORT_FILE", "").strip()
+    if UI_TEST_MODE and test_port_file:
+        target = Path(test_port_file).expanduser()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+        temporary.write_text(f"{server.server_port}\n", encoding="utf-8")
+        os.replace(temporary, target)
     print(f"Web UI listening on http://0.0.0.0:{port}")
     server.serve_forever()
     return 0
