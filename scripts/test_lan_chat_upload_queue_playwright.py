@@ -257,7 +257,8 @@ class MockLanChatApi:
 async def open_chat(browser, base_url: str, viewport: dict, api: MockLanChatApi):
     context = await browser.new_context(viewport=viewport)
     await context.add_init_script(
-        "localStorage.setItem('videoAnalyzer.lanChat.sessionToken.v3.test-owner','test-token')"
+        "localStorage.setItem('videoAnalyzer.lanChat.sessionToken.v3.test-owner','test-token');"
+        "localStorage.setItem('ui-global-user-picker-completed','1')"
     )
     page = await context.new_page()
     console_errors: list[str] = []

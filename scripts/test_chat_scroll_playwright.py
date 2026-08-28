@@ -141,6 +141,9 @@ async def run_viewport(browser, api, base_url: str, output_dir: Path, name: str)
     run_dir.mkdir(parents=True, exist_ok=True)
 
     context = await browser.new_context(viewport=VIEWPORTS[name])
+    await context.add_init_script(
+        "localStorage.setItem('ui-global-user-picker-completed','1')"
+    )
     page = await context.new_page()
     console_errors: list[str] = []
     page.on(
