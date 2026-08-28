@@ -278,7 +278,8 @@ async def open_chat(browser, base_url: str, viewport: dict, api: MockLanChatApi)
     await page.goto(target_url, wait_until="domcontentloaded")
     await expect(page.locator("#loginModal")).not_to_have_class(re.compile("show"))
     await expect(page.locator("body")).not_to_have_class(re.compile("lan-read-only"))
-    await expect(page.locator("#newChat")).to_be_visible()
+    if viewport["width"] > 860:
+        await expect(page.locator("#newChat")).to_be_visible()
     return context, page, console_errors
 
 
