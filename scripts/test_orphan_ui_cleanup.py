@@ -34,18 +34,18 @@ class TestOrphanUiCleanup(unittest.TestCase):
         connection.close()
         return response.status, headers, body
 
-    def test_fastmoss_only_redirects_to_canonical_chuhaijiang(self) -> None:
+    def test_unknown_provider_paths_return_not_found_without_redirect(self) -> None:
         for method, path in (
-            ("GET", "/fastmoss"),
-            ("GET", "/fastmoss/"),
-            ("GET", "/fastmoss/api/ask"),
-            ("POST", "/fastmoss/api/chat/export-pdf"),
+            ("GET", "/retired-provider"),
+            ("GET", "/retired-provider/"),
+            ("GET", "/retired-provider/api/ask"),
+            ("POST", "/retired-provider/api/chat/export-pdf"),
         ):
             with self.subTest(method=method, path=path):
                 status, headers, body = self.request(method, path)
-                self.assertEqual(status, HTTPStatus.TEMPORARY_REDIRECT)
-                self.assertEqual(headers.get("location"), "/chuhaijiang")
-                self.assertNotIn("FastMoss", body)
+                self.assertEqual(status, HTTPStatus.NOT_FOUND)
+                self.assertNotIn("location", headers)
+                self.assertIn("Not found", body)
 
     def test_ai_chat_routes_use_the_shared_canonical_shell(self) -> None:
         for path, canonical in (("/amazon/", "/amazon"), ("/chuhaijiang/", "/chuhaijiang")):
@@ -69,7 +69,6 @@ class TestOrphanUiCleanup(unittest.TestCase):
 
         chuhaijiang = pages["/chuhaijiang"][2]
         self.assertIn('const CHAT_PROVIDER="chuhaijiang"', chuhaijiang)
-        self.assertNotIn('/fastmoss/api/', chuhaijiang)
         self.assertNotIn('data-chuhaijiang-independent="1"', chuhaijiang)
         self.assertNotIn('const BASE_PATH=', chuhaijiang)
 

@@ -50,7 +50,7 @@ class TestChuhaijiangUiContract(unittest.TestCase):
         self.assertEqual(MCP_CHAT_CONFIGS["chuhaijiang"]["default_port"], 4104)
         self.assertIn("出海匠", page)
         self.assertIn("ui-route-chuhaijiang", shared_styles)
-        self.assertNotIn("ui-route-fastmoss", shared_styles)
+        self.assertNotIn("ui-route-retired-provider", shared_styles)
         for legacy_marker in (
             'data-chuhaijiang-independent="1"', 'SellerSprite MCP',
             'const BASE_PATH=',
@@ -97,7 +97,7 @@ class TestChuhaijiangUiContract(unittest.TestCase):
         self.assertIn('body[data-provider="home"]', styles)
         self.assertIn("--ui-brand: #7447d9", styles)
         self.assertIn('body[data-provider="amazon"]', styles)
-        self.assertIn('body[data-provider="fastmoss"]', styles)
+        self.assertIn('body[data-provider="chuhaijiang"]', styles)
 
     def test_empty_session_sidebar_has_an_icon_and_guidance_copy(self):
         template = (web_app.SCRIPTS_DIR / "static" / "chat.html").read_text(encoding="utf-8")
@@ -108,12 +108,10 @@ class TestChuhaijiangUiContract(unittest.TestCase):
         self.assertIn(".session-empty-state svg", styles)
         self.assertIn(".session-list:has(.session-empty-state)", styles)
 
-    def test_source_canonicalizes_slashes_and_cuts_off_v1_proxy_routes(self):
+    def test_source_canonicalizes_active_provider_slashes(self):
         source = Path(web_app.__file__).read_text(encoding="utf-8")
         self.assertIn('if parsed.path == "/amazon/":', source)
         self.assertIn('if parsed.path == "/chuhaijiang/":', source)
-        self.assertIn('if parsed.path in {"/fastmoss", "/fastmoss/"}:', source)
-        self.assertIn('self.send_header("Location", "/chuhaijiang")', source)
         self.assertNotIn("build_chuhaijiang_independent_template", source)
         self.assertNotIn("serve_chuhaijiang_independent_template", source)
         self.assertNotIn('proxy_mcp_chat(self, "sellersprite")', source)
