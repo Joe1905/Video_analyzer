@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from json_to_markdown import json_text_to_markdown, json_to_markdown  # noqa: E402
 
 
-def fastmoss_fixture() -> dict:
+def transport_envelope_fixture() -> dict:
     return {
         "code": 0,
         "message": "",
@@ -45,9 +45,9 @@ def fastmoss_fixture() -> dict:
     }
 
 
-def test_fastmoss_envelope_and_flat_list_table() -> None:
-    markdown = json_to_markdown(fastmoss_fixture(), title="FastMoss 响应")
-    assert markdown.startswith("# FastMoss 响应\n")
+def test_transport_envelope_and_flat_list_table() -> None:
+    markdown = json_to_markdown(transport_envelope_fixture(), title="接口响应")
+    assert markdown.startswith("# 接口响应\n")
     assert "## 响应元数据" in markdown
     assert "| code | 0 | $.code |" in markdown
     assert "| message | \"\" | $.message |" in markdown
@@ -103,14 +103,14 @@ def test_path_narrative_override_replaces_empty_transport_shape() -> None:
     source = {
         "tool_evidence": [
             {
-                "tool_name": "fastmoss__product_review_list",
+                "tool_name": "catalog__product_review_list",
                 "arguments": {"filter": {"product_id": "1732249989673554739"}},
                 "business_data": {"list": [], "total": 0},
             }
         ]
     }
     sentence = (
-        "call:1（fastmoss__product_review_list）调用成功，但针对商品 "
+        "call:1（catalog__product_review_list）调用成功，但针对商品 "
         "1732249989673554739 没有返回评论记录。"
     )
     markdown = json_to_markdown(
@@ -134,8 +134,8 @@ def test_default_rendering_is_complete_and_deterministic() -> None:
 
 
 def test_json_text_and_invalid_input() -> None:
-    text = json.dumps(fastmoss_fixture(), ensure_ascii=False)
-    assert json_text_to_markdown(text) == json_to_markdown(fastmoss_fixture())
+    text = json.dumps(transport_envelope_fixture(), ensure_ascii=False)
+    assert json_text_to_markdown(text) == json_to_markdown(transport_envelope_fixture())
     try:
         json_text_to_markdown('{"data":')
     except ValueError as exc:
@@ -156,7 +156,7 @@ def test_rejects_non_json_python_values() -> None:
 def test_cli_reads_file_and_writes_stdout() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         source = Path(temp_dir) / "response.json"
-        source.write_text(json.dumps(fastmoss_fixture()), encoding="utf-8")
+        source.write_text(json.dumps(transport_envelope_fixture()), encoding="utf-8")
         result = subprocess.run(
             [sys.executable, str(ROOT / "scripts" / "json_to_markdown.py"), str(source)],
             check=False,
@@ -169,7 +169,7 @@ def test_cli_reads_file_and_writes_stdout() -> None:
 
 
 if __name__ == "__main__":
-    test_fastmoss_envelope_and_flat_list_table()
+    test_transport_envelope_and_flat_list_table()
     test_nested_values_and_empty_states_are_explicit()
     test_missing_field_is_distinct_from_null()
     test_optional_row_limit_is_never_silent()

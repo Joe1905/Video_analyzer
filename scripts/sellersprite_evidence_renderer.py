@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
-from fastmoss_evidence_renderer import (
+from semantic_evidence_renderer import (
     PROFILE_DISTRIBUTION,
     PROFILE_ENTITY,
     PROFILE_GENERIC,

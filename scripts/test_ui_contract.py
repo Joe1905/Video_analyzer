@@ -56,6 +56,24 @@ class ShellParser(HTMLParser):
 
 
 class UIContractTest(unittest.TestCase):
+    def test_active_renderers_do_not_depend_on_retired_provider_code(self) -> None:
+        retired_provider = "fast" + "moss"
+        retired_renderer = f"{retired_provider}_evidence_renderer"
+        sellersprite_renderer = (SCRIPTS_DIR / "sellersprite_evidence_renderer.py").read_text(
+            encoding="utf-8"
+        )
+        semantic_renderer = (SCRIPTS_DIR / "semantic_evidence_renderer.py").read_text(
+            encoding="utf-8"
+        )
+        markdown_renderer = (SCRIPTS_DIR / "json_to_markdown.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("from semantic_evidence_renderer import", sellersprite_renderer)
+        self.assertNotIn(retired_renderer, sellersprite_renderer)
+        self.assertNotIn(retired_renderer, semantic_renderer)
+        self.assertNotRegex(markdown_renderer, rf"(?i){retired_provider[:4]}(?:_)?{retired_provider[4:]}")
+
     def test_every_template_uses_the_shared_shell(self) -> None:
         for path in TEMPLATES:
             name = path.name

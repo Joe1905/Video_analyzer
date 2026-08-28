@@ -3,9 +3,9 @@
 
 The renderer is intentionally domain-neutral.  It preserves source field names and
 JSON paths, does not calculate metrics, and never silently drops rows or values.
-FastMoss responses are recognised only to separate their transport metadata from
-the business ``data`` payload; payload fields are rendered by the same generic
-rules as any other JSON document.
+Transport envelopes are recognised only to separate their metadata from the
+business ``data`` payload; payload fields are rendered by the same generic rules
+as any other JSON document.
 """
 
 from __future__ import annotations
@@ -22,7 +22,13 @@ from typing import Any, Mapping, Sequence
 JSONScalar = str | int | float | bool | None
 JSONValue = JSONScalar | list["JSONValue"] | dict[str, "JSONValue"]
 
-_ENVELOPE_FIELDS = ("code", "msg", "message", "timestamp", "request_id")
+_TRANSPORT_ENVELOPE_METADATA_FIELDS = (
+    "code",
+    "msg",
+    "message",
+    "timestamp",
+    "request_id",
+)
 _SIMPLE_PATH_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -128,9 +134,13 @@ class JSONMarkdownRenderer:
         _validate_json_value(value)
         lines = [f"# {_escape_heading(title or 'JSON 数据')}"]
 
-        if self._is_fastmoss_envelope(value):
+        if self._is_transport_envelope(value):
             assert isinstance(value, dict)
-            metadata = [(key, value[key]) for key in _ENVELOPE_FIELDS if key in value]
+            metadata = [
+                (key, value[key])
+                for key in _TRANSPORT_ENVELOPE_METADATA_FIELDS
+                if key in value
+            ]
             if metadata:
                 lines.extend(["", "## 响应元数据", ""])
                 rows = []
@@ -146,7 +156,9 @@ class JSONMarkdownRenderer:
             lines.extend(self._render_value(value["data"], "$.data", 3))
 
             extra_keys = [
-                key for key in value if key not in {*_ENVELOPE_FIELDS, "data"}
+                key
+                for key in value
+                if key not in {*_TRANSPORT_ENVELOPE_METADATA_FIELDS, "data"}
             ]
             if extra_keys:
                 lines.extend(["", "## 其他顶层字段", ""])
@@ -159,11 +171,11 @@ class JSONMarkdownRenderer:
         return "\n".join(lines).rstrip() + "\n"
 
     @staticmethod
-    def _is_fastmoss_envelope(value: JSONValue) -> bool:
+    def _is_transport_envelope(value: JSONValue) -> bool:
         return (
             isinstance(value, dict)
             and "data" in value
-            and any(key in value for key in _ENVELOPE_FIELDS)
+            and any(key in value for key in _TRANSPORT_ENVELOPE_METADATA_FIELDS)
         )
 
     def _heading(self, level: int, label: str, path: str) -> str:
