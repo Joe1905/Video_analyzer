@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import sys
 import tempfile
@@ -376,6 +377,24 @@ def test_port_migration_updates_bound_account_profile() -> None:
         assert profile["preserved"] is True
 
 
+def test_sing_box_detection_accepts_serialized_pool_dict() -> None:
+    previous = os.environ.get("PROXY_REALITY_CORE")
+    os.environ["PROXY_REALITY_CORE"] = "sing-box"
+    try:
+        assert proxy_pool._sing_box_reality_pool(
+            {
+                "source_type": "vless",
+                "parsed": {},
+                "local_port": proxy_pool.PROXY_PORT_START,
+            }
+        ) is False
+    finally:
+        if previous is None:
+            os.environ.pop("PROXY_REALITY_CORE", None)
+        else:
+            os.environ["PROXY_REALITY_CORE"] = previous
+
+
 def test_account_state_exposes_instagram_login_without_cookie_value() -> None:
     with isolated_proxy_db():
         pool = create_manual_pool("instagram", "203.0.113.40")
@@ -441,6 +460,7 @@ def main() -> None:
     test_v2_proxy_page_exposes_account_rebind_flow()
     test_v2_sing_box_default_stays_in_4004_project()
     test_port_migration_updates_bound_account_profile()
+    test_sing_box_detection_accepts_serialized_pool_dict()
     test_account_state_exposes_instagram_login_without_cookie_value()
     print("proxy pool lifecycle tests passed")
 

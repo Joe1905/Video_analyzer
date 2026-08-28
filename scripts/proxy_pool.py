@@ -2717,7 +2717,11 @@ def _sing_box_reality_enabled() -> bool:
 def _sing_box_reality_pool(row: sqlite3.Row | dict[str, Any]) -> bool:
     if not _sing_box_reality_enabled() or str(row["source_type"] or "") != "vless":
         return False
-    parsed = _json_loads(str(row["parsed_json"] or ""), {})
+    if isinstance(row, dict):
+        raw_parsed = row.get("parsed_json", row.get("parsed", {}))
+    else:
+        raw_parsed = row["parsed_json"]
+    parsed = raw_parsed if isinstance(raw_parsed, dict) else _json_loads(str(raw_parsed or ""), {})
     query = parsed.get("query") if isinstance(parsed.get("query"), dict) else {}
     return (
         str(parsed.get("network") or "tcp") == "tcp"
