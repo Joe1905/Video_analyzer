@@ -15902,9 +15902,9 @@ def main() -> int:
     if PROXY_POOL_ENABLED:
         proxy_pool.ensure_proxy_cores(restart=True)
         proxy_pool.list_state()
-        static_proxy_sync = proxy_pool.ensure_static_proxy_configs()
-        if static_proxy_sync["errors"]:
-            print(f"Static proxy config sync errors: {static_proxy_sync['errors']}", flush=True)
+        proxy_config_sync = proxy_pool.ensure_static_proxy_configs()
+        if proxy_config_sync["errors"]:
+            print(f"Proxy config sync errors: {proxy_config_sync['errors']}", flush=True)
         threading.Thread(target=proxy_session_janitor, daemon=True).start()
         threading.Thread(target=proxy_login_capture_worker, daemon=True).start()
         tiktok_studio_publish.start_worker()

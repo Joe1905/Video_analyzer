@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import sys
 import tempfile
@@ -252,11 +253,130 @@ def test_account_state_exposes_instagram_login_without_cookie_value() -> None:
         assert not any(item["id"] == account_id for item in tiktok_deleted["accounts"])
 
 
+def test_unified_upstream_keeps_backup_group_dynamic() -> None:
+    original_request = proxy_pool._mihomo_request
+    calls: list[str] = []
+
+    def fake_request(method: str, path: str, body=None, timeout: float = 5.0):
+        calls.append(path)
+        return True, {
+            "name": proxy_pool.SYSTEM_PROXY_DIALER,
+            "type": "Fallback",
+            "now": "backup-us",
+            "all": ["backup-us", "backup-jp"],
+        }, ""
+
+    proxy_pool._mihomo_request = fake_request
+    try:
+        assert proxy_pool._resolve_system_proxy_dialer("managed-static") == proxy_pool.SYSTEM_PROXY_DIALER
+        assert calls == [f"/proxies/{proxy_pool.quote_path(proxy_pool.SYSTEM_PROXY_DIALER)}"]
+        try:
+            proxy_pool._resolve_system_proxy_dialer("backup-us")
+        except proxy_pool.ProxyConfigurationError as exc:
+            assert "无法建立无环代理链" in str(exc)
+        else:
+            raise AssertionError("backup group members must not dial through their own group")
+    finally:
+        proxy_pool._mihomo_request = original_request
+
+
+def test_all_non_direct_pool_types_store_unified_upstream() -> None:
+    with isolated_proxy_db():
+        for source_type in ("vless", "vmess", "static"):
+            pool = proxy_pool.upsert_pool(
+                {
+                    "name": f"{source_type}-manual",
+                    "source_type": source_type,
+                    "status": proxy_pool.STATUS_ACTIVE,
+                }
+            )["pool"]
+            assert pool["dialer_proxy"] == proxy_pool.SYSTEM_PROXY_DIALER
+
+
+def test_mihomo_upstream_listener_targets_backup_group() -> None:
+    original_config_path = proxy_pool._mihomo_config_path
+    original_reload = proxy_pool._reload_mihomo_config
+    original_port_open = proxy_pool._port_open
+    original_request = proxy_pool._mihomo_request
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
+        config_path = Path(temp_dir) / "config.yaml"
+        config_path.write_text("proxies:\nproxy-groups:\nrules:\n", encoding="utf-8")
+        proxy_pool._mihomo_config_path = lambda: config_path
+        proxy_pool._reload_mihomo_config = lambda: None
+        proxy_pool._port_open = lambda host, port, timeout=1.5: port == proxy_pool.SYSTEM_PROXY_PORT
+        proxy_pool._mihomo_request = lambda *args, **kwargs: (
+            True,
+            {
+                "name": proxy_pool.SYSTEM_PROXY_DIALER,
+                "type": "Fallback",
+                "now": "backup-us",
+                "all": ["backup-us", "backup-jp"],
+            },
+            "",
+        )
+        try:
+            result = proxy_pool._sync_mihomo_upstream_listener()
+            rendered = config_path.read_text(encoding="utf-8")
+            assert result["dialer_proxy"] == proxy_pool.SYSTEM_PROXY_DIALER
+            assert result["port"] == proxy_pool.SYSTEM_PROXY_PORT
+            assert f"port: {proxy_pool.SYSTEM_PROXY_PORT}" in rendered
+            assert f"proxy: {proxy_pool.SYSTEM_PROXY_DIALER}" in rendered
+            assert "proxy-pool-managed-formal-id: -1" in rendered
+        finally:
+            proxy_pool._mihomo_config_path = original_config_path
+            proxy_pool._reload_mihomo_config = original_reload
+            proxy_pool._port_open = original_port_open
+            proxy_pool._mihomo_request = original_request
+
+
+def test_reality_export_uses_unified_backup_upstream() -> None:
+    original_reality_core = os.environ.get("PROXY_REALITY_CORE")
+    original_ensure = proxy_pool.ensure_proxy_cores
+    os.environ["PROXY_REALITY_CORE"] = "sing-box"
+    proxy_pool.ensure_proxy_cores = lambda *args, **kwargs: {"sing_box": {"enabled": True}}
+    try:
+        with isolated_proxy_db():
+            pool = proxy_pool.upsert_pool(
+                {
+                    "name": "reality-test",
+                    "source_type": "vless",
+                    "source_uri": (
+                        "vless://00000000-0000-4000-8000-000000000001@example.com:443"
+                        "?type=tcp&security=reality&sni=example.com&fp=safari&pbk=test-key#reality-test"
+                    ),
+                    "status": proxy_pool.STATUS_ACTIVE,
+                }
+            )["pool"]
+            assert pool["dialer_proxy"] == proxy_pool.SYSTEM_PROXY_DIALER
+
+            exported = proxy_pool.sing_box_export()
+            outbounds = exported["config"]["outbounds"]
+            reality = next(item for item in outbounds if item.get("tag") == f"reality-out-{pool['id']}")
+            upstream = next(item for item in outbounds if item.get("tag") == "proxy-pool-upstream")
+            assert reality["detour"] == "proxy-pool-upstream"
+            assert upstream == {
+                "type": "http",
+                "tag": "proxy-pool-upstream",
+                "server": "127.0.0.1",
+                "server_port": proxy_pool.SYSTEM_PROXY_PORT,
+            }
+    finally:
+        proxy_pool.ensure_proxy_cores = original_ensure
+        if original_reality_core is None:
+            os.environ.pop("PROXY_REALITY_CORE", None)
+        else:
+            os.environ["PROXY_REALITY_CORE"] = original_reality_core
+
+
 def main() -> None:
     test_duplicate_exit_ip_is_terminal_until_manual_recheck()
     test_existing_duplicate_error_is_migrated_without_retry()
     test_delete_pool_preserves_archived_history_and_releases_port()
     test_account_state_exposes_instagram_login_without_cookie_value()
+    test_unified_upstream_keeps_backup_group_dynamic()
+    test_all_non_direct_pool_types_store_unified_upstream()
+    test_mihomo_upstream_listener_targets_backup_group()
+    test_reality_export_uses_unified_backup_upstream()
     print("proxy pool lifecycle tests passed")
 
 

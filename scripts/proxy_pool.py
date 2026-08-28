@@ -31,7 +31,7 @@ DATA_DIR = ROOT / "data"
 DB_PATH = DATA_DIR / "proxy_pool.sqlite"
 DEFAULT_NOVNC_PUBLIC_URL = os.getenv("NOVNC_PUBLIC_URL", "http://192.168.1.254:6080/vnc.html?autoconnect=1&resize=scale")
 DEFAULT_MIHOMO_API = os.getenv("MIHOMO_API_URL", "http://127.0.0.1:9090")
-SYSTEM_PROXY_DIALER = "GLOBAL"
+SYSTEM_PROXY_DIALER = os.getenv("PROXY_POOL_UPSTREAM_DIALER", "备用订阅").strip() or "备用订阅"
 PROXY_CONFIG_NAMESPACE = os.getenv("PROXY_POOL_CONFIG_NAMESPACE", "formal").strip() or "formal"
 PROXY_MIHOMO_NAME_PREFIX = os.getenv("PROXY_POOL_MIHOMO_PREFIX", "").strip()
 SING_BOX_CONFIG_PATH = Path(os.getenv("SING_BOX_CONFIG_PATH", str(DATA_DIR / "sing-box" / "config.json")))
@@ -39,6 +39,7 @@ SING_BOX_COMPOSE_PROJECT = os.getenv("SING_BOX_COMPOSE_PROJECT", "short-video-an
 SING_BOX_COMPOSE_SERVICE = os.getenv("SING_BOX_COMPOSE_SERVICE", "sing-box").strip() or "sing-box"
 PROXY_PORT_START = int(os.getenv("PROXY_POOL_PORT_START", "18900") or "18900")
 PROXY_PORT_END = int(os.getenv("PROXY_POOL_PORT_END", "18999") or "18999")
+SYSTEM_PROXY_PORT = int(os.getenv("PROXY_POOL_UPSTREAM_PORT", "18899") or "18899")
 PROXY_REQUEST_ATTEMPTS = max(1, int(os.getenv("PROXY_REQUEST_ATTEMPTS", "3") or "3"))
 PROXY_REACHABILITY_ATTEMPTS = max(1, int(os.getenv("PROXY_REACHABILITY_ATTEMPTS", "10") or "10"))
 PROXY_RECHECK_DELAYS_SECONDS = (5 * 60, 10 * 60, 30 * 60)
@@ -567,7 +568,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             mihomo_proxy = {}
         if not isinstance(mihomo_proxy, dict):
             mihomo_proxy = {}
-        dialer_proxy = SYSTEM_PROXY_DIALER if row["source_type"] == "static" else ""
+        dialer_proxy = SYSTEM_PROXY_DIALER if row["source_type"] != "direct" else ""
         if dialer_proxy:
             mihomo_proxy["dialer-proxy"] = dialer_proxy
         else:
@@ -2442,7 +2443,7 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
         source_type = "vless"
     if source_type not in {"vless", "vmess", "static", "direct"}:
         raise ValueError("代理类型必须为 vless、vmess、static 或 direct")
-    dialer_proxy = SYSTEM_PROXY_DIALER if source_type == "static" else ""
+    dialer_proxy = SYSTEM_PROXY_DIALER if source_type != "direct" else ""
 
     parse_status = "manual"
     parse_error = ""
@@ -2453,7 +2454,7 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
         source_uri = ""
         expected_exit_ip = ""
         parse_status = "ok"
-        parsed = {"mode": "server_global"}
+        parsed = {"mode": "server_backup_upstream", "dialer_proxy": SYSTEM_PROXY_DIALER}
         mihomo_name = SYSTEM_PROXY_DIALER
     elif source_uri:
         try:
@@ -2473,7 +2474,7 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
         name = mihomo_name or expected_exit_ip
     if mihomo_proxy and not mihomo_proxy.get("name"):
         mihomo_proxy["name"] = name
-    if source_type == "static" and mihomo_proxy:
+    if source_type != "direct" and mihomo_proxy:
         mihomo_proxy["dialer-proxy"] = dialer_proxy
 
     now = now_iso()
@@ -2484,7 +2485,7 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
         "name": name,
         "source_type": source_type,
         "source_uri": source_uri,
-        "dialer_proxy": dialer_proxy if source_type == "static" else "",
+        "dialer_proxy": dialer_proxy if source_type != "direct" else "",
         "expected_exit_ip": expected_exit_ip,
         "region": _clean_text(payload.get("region"), 80),
         "status": normalized_status,
@@ -2587,7 +2588,13 @@ def _sing_box_reality_enabled() -> bool:
 def _sing_box_reality_pool(row: sqlite3.Row | dict[str, Any]) -> bool:
     if not _sing_box_reality_enabled() or str(row["source_type"] or "") != "vless":
         return False
-    parsed = _json_loads(str(row["parsed_json"] or ""), {})
+    try:
+        parsed_json = row["parsed_json"]
+    except (KeyError, IndexError):
+        parsed_json = ""
+    parsed = _json_loads(str(parsed_json or ""), {})
+    if not parsed and isinstance(row, dict) and isinstance(row.get("parsed"), dict):
+        parsed = row["parsed"]
     query = parsed.get("query") if isinstance(parsed.get("query"), dict) else {}
     return (
         str(parsed.get("network") or "tcp") == "tcp"
@@ -2637,6 +2644,7 @@ def sing_box_export() -> dict[str, Any]:
             "server_port": int(parsed.get("port") or 0),
             "uuid": str(parsed.get("uuid") or ""),
             "network": "tcp",
+            "detour": "proxy-pool-upstream",
             "tls": tls,
         }
         if query.get("flow"):
@@ -2659,6 +2667,15 @@ def sing_box_export() -> dict[str, Any]:
                 "fingerprint": tls["utls"]["fingerprint"],
             }
         )
+    if pools:
+        outbounds.append(
+            {
+                "type": "http",
+                "tag": "proxy-pool-upstream",
+                "server": "127.0.0.1",
+                "server_port": SYSTEM_PROXY_PORT,
+            }
+        )
     outbounds.append({"type": "direct", "tag": "direct"})
     return {
         "config": {
@@ -2672,8 +2689,8 @@ def sing_box_export() -> dict[str, Any]:
     }
 
 
-def _write_sing_box_config() -> dict[str, Any]:
-    exported = sing_box_export()
+def _write_sing_box_config(exported: dict[str, Any] | None = None) -> dict[str, Any]:
+    exported = exported or sing_box_export()
     SING_BOX_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     os.chmod(SING_BOX_CONFIG_PATH.parent, 0o700)
     temporary = SING_BOX_CONFIG_PATH.with_suffix(SING_BOX_CONFIG_PATH.suffix + ".tmp")
@@ -2724,13 +2741,16 @@ def _restart_sing_box_container(required: bool = False) -> dict[str, Any]:
 def ensure_proxy_cores(restart: bool = False, required: bool = False) -> dict[str, Any]:
     if not _sing_box_reality_enabled():
         return {"sing_box": {"enabled": False}}
-    exported = _write_sing_box_config()
+    exported = sing_box_export()
+    upstream = _sync_mihomo_upstream_listener() if exported["pools"] else {"configured": False}
+    exported = _write_sing_box_config(exported)
     runtime = _restart_sing_box_container(required=required) if restart else {"restarted": False, "containers": []}
     return {
         "sing_box": {
             "enabled": True,
             "config_path": str(SING_BOX_CONFIG_PATH),
             "pools": exported["pools"],
+            "upstream": upstream,
             **runtime,
         }
     }
@@ -3444,25 +3464,75 @@ def _runtime_mihomo_listener_name(pool: sqlite3.Row | dict[str, Any]) -> str:
     return f"tiktok-{namespace}{pool_name}"
 
 
-def _resolve_system_proxy_dialer(node_name: str) -> str:
-    current = SYSTEM_PROXY_DIALER
-    visited: set[str] = set()
-    for _attempt in range(8):
-        if current == node_name:
-            raise ProxyConfigurationError("系统代理当前指向该静态代理，无法建立代理链")
-        if current.upper() in {"DIRECT", "REJECT", "REJECT-DROP", "PASS"}:
-            raise ProxyConfigurationError(f"系统代理当前未选择可用节点：{current}")
-        if current in visited:
-            raise ProxyConfigurationError("系统代理策略组存在循环引用")
-        visited.add(current)
-        ok, body, error = _mihomo_request("GET", f"/proxies/{quote_path(current)}", timeout=8)
-        if not ok or not isinstance(body, dict):
-            raise ProxyConfigurationError(f"无法读取系统代理当前节点 {current}：{error}")
-        selected = str(body.get("now") or "").strip()
-        if not selected or selected == current:
-            return current
-        current = selected
-    raise ProxyConfigurationError("系统代理策略组嵌套过深")
+def _resolve_system_proxy_dialer(node_name: str = "") -> str:
+    if SYSTEM_PROXY_DIALER.upper() in {"DIRECT", "REJECT", "REJECT-DROP", "PASS"}:
+        raise ProxyConfigurationError(f"统一备用代理不能使用直连或拒绝策略：{SYSTEM_PROXY_DIALER}")
+    ok, body, error = _mihomo_request(
+        "GET",
+        f"/proxies/{quote_path(SYSTEM_PROXY_DIALER)}",
+        timeout=8,
+    )
+    if not ok or not isinstance(body, dict):
+        raise ProxyConfigurationError(f"无法读取统一备用代理 {SYSTEM_PROXY_DIALER}：{error}")
+    group_type = str(body.get("type") or "").strip().lower()
+    if group_type not in {"fallback", "urltest", "loadbalance"}:
+        raise ProxyConfigurationError(
+            f"统一备用代理 {SYSTEM_PROXY_DIALER} 必须是自动策略组，当前类型为 {body.get('type') or '未知'}"
+        )
+    members = {str(item).strip() for item in body.get("all", []) if str(item).strip()}
+    if node_name and (node_name == SYSTEM_PROXY_DIALER or node_name in members):
+        raise ProxyConfigurationError(
+            f"统一备用代理 {SYSTEM_PROXY_DIALER} 包含当前节点 {node_name}，无法建立无环代理链"
+        )
+    return SYSTEM_PROXY_DIALER
+
+
+def _sync_mihomo_upstream_listener() -> dict[str, Any]:
+    if not 1 <= SYSTEM_PROXY_PORT <= 65535:
+        raise ProxyConfigurationError(f"统一备用代理端口无效：{SYSTEM_PROXY_PORT}")
+    if PROXY_PORT_START <= SYSTEM_PROXY_PORT <= PROXY_PORT_END:
+        raise ProxyConfigurationError("统一备用代理端口不能占用账号代理池端口段")
+    dialer = _resolve_system_proxy_dialer()
+    namespace = "" if PROXY_CONFIG_NAMESPACE == "formal" else f"-{PROXY_CONFIG_NAMESPACE}"
+    listener = {
+        "name": f"proxy-pool{namespace}-upstream",
+        "type": "mixed",
+        "listen": "127.0.0.1",
+        "port": SYSTEM_PROXY_PORT,
+        "proxy": dialer,
+    }
+    path = _mihomo_config_path()
+    original = path.read_bytes()
+    mode = path.stat().st_mode & 0o777
+    lines = original.decode("utf-8").splitlines(keepends=True)
+    lines = _replace_mihomo_yaml_item(
+        lines,
+        "listeners",
+        -1,
+        listener,
+        match_port=SYSTEM_PROXY_PORT,
+    )
+    updated = "".join(lines).encode("utf-8")
+    if updated != original:
+        _atomic_write(path, updated, mode)
+        try:
+            _reload_mihomo_config()
+        except Exception as exc:
+            _restore_mihomo_config(path, original, mode)
+            raise ProxyConfigurationError(f"统一备用代理入口同步失败：{exc}") from exc
+    for _attempt in range(100):
+        if _port_open("127.0.0.1", SYSTEM_PROXY_PORT, timeout=0.2):
+            break
+        time.sleep(0.1)
+    else:
+        if updated != original:
+            _restore_mihomo_config(path, original, mode)
+        raise ProxyConfigurationError(f"统一备用代理入口端口 {SYSTEM_PROXY_PORT} 未监听")
+    return {
+        "configured": True,
+        "dialer_proxy": dialer,
+        "port": SYSTEM_PROXY_PORT,
+    }
 
 
 def _sync_mihomo_pool_config(pool: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
@@ -3476,10 +3546,10 @@ def _sync_mihomo_pool_config(pool: sqlite3.Row | dict[str, Any]) -> dict[str, An
     pool_id = int(_pool_value(pool, "id", 0) or 0)
     if not node_name or not local_port or not pool_id or (not direct and not proxy):
         raise ProxyConfigurationError("代理缺少可同步的 mihomo 节点、端口或记录 ID")
-    if source_type == "static":
+    if direct:
+        _resolve_system_proxy_dialer()
+    else:
         proxy["dialer-proxy"] = _resolve_system_proxy_dialer(node_name)
-    elif not direct:
-        proxy.pop("dialer-proxy", None)
     if not direct:
         proxy["name"] = node_name
     listener = {
@@ -3546,7 +3616,7 @@ def ensure_static_proxy_configs() -> dict[str, Any]:
     with connect() as conn:
         pools = conn.execute(
             """SELECT * FROM proxy_profiles
-               WHERE source_type IN ('static','direct') AND parse_status = 'ok'
+               WHERE parse_status = 'ok'
                  AND status <> ? AND deleted_at = ''
                ORDER BY id""",
             (STATUS_PAUSED,),
@@ -3554,6 +3624,8 @@ def ensure_static_proxy_configs() -> dict[str, Any]:
     synced: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
     for pool in pools:
+        if _sing_box_reality_pool(pool):
+            continue
         try:
             synced.append(_sync_mihomo_pool_config(pool))
         except Exception as exc:
@@ -4255,7 +4327,7 @@ def _direct_login_pool_id() -> int:
             "name": "直连外网（服务器代理）",
             "source_type": "direct",
             "status": STATUS_ACTIVE,
-            "notes": "新增账号时自动创建；使用服务器 GLOBAL 代理出口，不绑定固定 IP",
+            "notes": f"新增账号时自动创建；统一使用服务器 {SYSTEM_PROXY_DIALER} 出口，不绑定固定 IP",
         }
     )
     return int(result["pool"]["id"])
