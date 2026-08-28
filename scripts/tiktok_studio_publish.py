@@ -1592,11 +1592,12 @@ def _set_video_file(page: Any, video: Path, display: str = "", log_dir: Path | N
         _set_video_file_via_cdp(page, video, file_input, trace_dir)
         return
     except Exception as cdp_error:
+        cdp_error_message = str(cdp_error)
         _append_file_input_trace(
             trace_dir,
             "cdp_direct_injection_failed",
             error_type=type(cdp_error).__name__,
-            error=str(cdp_error),
+            error=cdp_error_message,
             cdp_state=_cdp_file_input_state(page),
         )
     _append_file_input_trace(
@@ -1619,7 +1620,7 @@ def _set_video_file(page: Any, video: Path, display: str = "", log_dir: Path | N
             cdp_state=_cdp_file_input_state(page),
         )
         raise RuntimeError(
-            f"CDP 直接文件注入失败：{cdp_error}; 系统文件选择器降级也失败：{native_error}"
+            f"CDP 直接文件注入失败：{cdp_error_message}; 系统文件选择器降级也失败：{native_error}"
         ) from native_error
 
 
@@ -1668,6 +1669,20 @@ def _wait_for_product_row(page: Any, product_id: str, timeout_ms: int = 8000) ->
         if row:
             return row
         page.wait_for_timeout(300)
+    return None
+
+
+def _wait_for_linked_product(page: Any, product_name: str, timeout_ms: int = 10000) -> Any | None:
+    product_name = product_name.strip()
+    if not product_name:
+        return None
+    locator = page.get_by_text(re.compile(re.escape(product_name[:24]), re.I))
+    deadline = time.monotonic() + timeout_ms / 1000
+    while time.monotonic() < deadline:
+        linked_product = _first_visible([locator])
+        if linked_product:
+            return linked_product
+        page.wait_for_timeout(250)
     return None
 
 
@@ -1850,9 +1865,7 @@ def _add_product_link(page: Any, product_id: str, log_dir: Path) -> None:
     except Exception as exc:
         page.screenshot(path=str(log_dir / "product-add-failed.png"), full_page=True)
         raise ManualReviewRequired("点击 Add 后商品绑定弹窗未关闭") from exc
-    product_name = _first_visible([
-        page.get_by_text(re.compile(re.escape(product["product_name"][:24]), re.I)),
-    ])
+    product_name = _wait_for_linked_product(page, product["product_name"])
     if not product_name:
         page.screenshot(path=str(log_dir / "product-link-unconfirmed.png"), full_page=True)
         raise ManualReviewRequired("商品弹窗已关闭，但页面未显示所选商品，无法确认绑定成功")

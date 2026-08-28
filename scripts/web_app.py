@@ -215,6 +215,7 @@ from hot_video_report import (
     get_report_progress,
     get_report_runtime_status,
     get_settings as get_report_settings,
+    hot_report_enabled,
     initialize_hot_report_db,
     list_reports,
     recover_interrupted_reports,
@@ -13396,7 +13397,7 @@ class Handler(BaseHTTPRequestHandler):
             return text_response(self, HTTPStatus.OK, inject_unified_nav(METRICS_HTML, parsed.path), "text/html; charset=utf-8")
         if parsed.path == "/proxy":
             if not PROXY_POOL_ENABLED:
-                return text_response(self, HTTPStatus.NOT_FOUND, "Not found")
+                return text_response(self, HTTPStatus.NOT_FOUND, "Not found", "text/plain; charset=utf-8")
             return text_response(self, HTTPStatus.OK, inject_proxy_bootstrap(inject_unified_nav(PROXY_HTML, parsed.path)), "text/html; charset=utf-8")
         if parsed.path == "/taobao":
             return text_response(self, HTTPStatus.OK, inject_unified_nav(TAOBAO_HTML, parsed.path), "text/html; charset=utf-8")
@@ -14379,6 +14380,8 @@ class Handler(BaseHTTPRequestHandler):
         return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
 
     def handle_report_run(self) -> None:
+        if not hot_report_enabled():
+            return json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {"error": "日报功能已暂停"})
         try:
             recover_interrupted_reports()
             payload = enqueue_report()
@@ -15502,13 +15505,17 @@ def main() -> int:
     normalize_stored_chat_tool_results()
     video_queue.start(execute_queue_job)
     initialize_hot_report_db()
-    report_scheduler_enabled = os.getenv("HOT_VIDEO_REPORT_SCHEDULER_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
-    start_report_scheduler(enable_timer=report_scheduler_enabled)
+    report_enabled = hot_report_enabled()
+    report_scheduler_enabled = report_enabled and os.getenv("HOT_VIDEO_REPORT_SCHEDULER_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+    if report_enabled:
+        start_report_scheduler(enable_timer=report_scheduler_enabled)
+    else:
+        print("Hot report generation disabled; historical reports remain available", flush=True)
     threading.Thread(
         target=log_sociavault_router_catalog_diagnostics,
         daemon=True,
     ).start()
-    if not report_scheduler_enabled:
+    if report_enabled and not report_scheduler_enabled:
         print("Hot report daily scheduler disabled; manual report jobs remain available", flush=True)
     port = int(os.getenv("WEB_PORT", "4000"))
     sellersprite_redirect_port = int(os.getenv("SELLERSPRITE_REDIRECT_PORT", "0") or "0")

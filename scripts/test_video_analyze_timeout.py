@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run with: docker compose -p short-video-analyzer run --rm analyzer python scripts/test_video_analyze_timeout.py"""
+"""Run with: docker compose -p short-video-analyzer-ui-4004 run --rm analyzer python scripts/test_video_analyze_timeout.py"""
 from __future__ import annotations
 
 import subprocess
@@ -14,20 +14,34 @@ import tools
 
 
 def main() -> int:
-    original_run = tools.subprocess.run
+    original_popen = tools.subprocess.Popen
+    original_terminate = tools._terminate_video_analyze_process_group
     original_output_dir = tools._video_output_dir
     with tempfile.TemporaryDirectory() as directory:
         output_dir = Path(directory) / "video-output"
+        terminated: list[object] = []
 
-        def fake_run(*args, **kwargs):
-            raise subprocess.TimeoutExpired(
-                args[0],
-                kwargs["timeout"],
-                output="phase=whisper\ntranscribing audio",
-                stderr="phase=qwen\nwaiting for response",
+        class FakeProcess:
+            pid = 12345
+            returncode = None
+
+            def communicate(self, timeout=None):
+                raise subprocess.TimeoutExpired(
+                    ["bash", "scripts/analyze_one.sh", "fixture.mp4"],
+                    timeout,
+                    output="phase=whisper\ntranscribing audio",
+                    stderr="phase=qwen\nwaiting for response",
+                )
+
+        def fake_terminate(process):
+            terminated.append(process)
+            return (
+                "phase=whisper\ntranscribing audio",
+                "phase=qwen\nwaiting for response",
             )
 
-        tools.subprocess.run = fake_run
+        tools.subprocess.Popen = lambda *args, **kwargs: FakeProcess()
+        tools._terminate_video_analyze_process_group = fake_terminate
         tools._video_output_dir = lambda filename: output_dir
         try:
             try:
@@ -36,12 +50,14 @@ def main() -> int:
                 assert "timed out after 123 seconds" in str(exc)
             else:
                 raise AssertionError("timeout should be reported as a video analysis failure")
+            assert len(terminated) == 1
             diagnostic = (output_dir / "analysis_timeout.log").read_text(encoding="utf-8")
             assert "timeout_seconds=123" in diagnostic
             assert "phase=whisper" in diagnostic
             assert "phase=qwen" in diagnostic
         finally:
-            tools.subprocess.run = original_run
+            tools.subprocess.Popen = original_popen
+            tools._terminate_video_analyze_process_group = original_terminate
             tools._video_output_dir = original_output_dir
     print("video analysis timeout diagnostics: OK")
     return 0

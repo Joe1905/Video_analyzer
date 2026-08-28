@@ -22,6 +22,7 @@ def isolated_proxy_db() -> Iterator[None]:
     original_db_path = proxy_pool.DB_PATH
     original_lookup = proxy_pool.lookup_ip_geo
     original_remove = proxy_pool._remove_mihomo_pool_config
+    original_sync = proxy_pool._sync_mihomo_pool_config
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
         data_dir = Path(temp_dir)
         proxy_pool.DATA_DIR = data_dir
@@ -36,6 +37,10 @@ def isolated_proxy_db() -> Iterator[None]:
             {"removed": True, "port": int(pool["local_port"] or 0)},
             None,
         )
+        proxy_pool._sync_mihomo_pool_config = lambda pool: {
+            "loaded": True,
+            "listener_port": int(pool["local_port"] or 0),
+        }
         try:
             yield
         finally:
@@ -43,6 +48,7 @@ def isolated_proxy_db() -> Iterator[None]:
             proxy_pool.DB_PATH = original_db_path
             proxy_pool.lookup_ip_geo = original_lookup
             proxy_pool._remove_mihomo_pool_config = original_remove
+            proxy_pool._sync_mihomo_pool_config = original_sync
 
 
 def create_manual_pool(name: str, expected_ip: str) -> dict:
@@ -196,6 +202,117 @@ def test_delete_pool_preserves_archived_history_and_releases_port() -> None:
         assert replacement["local_port"] == pool["local_port"]
 
 
+def test_delete_bound_pool_unbinds_account_until_explicit_rebind() -> None:
+    with isolated_proxy_db():
+        pool = create_manual_pool("removed-static", "203.0.113.25")
+        now = proxy_pool.now_iso()
+        with proxy_pool.connect() as conn:
+            account_id = int(
+                conn.execute(
+                    """INSERT INTO tiktok_accounts (
+                           username, proxy_profile_id, proxy_bound, status, profile_json,
+                           last_checked_ip, last_check_status, created_at, updated_at
+                       ) VALUES (?, ?, 1, ?, ?, ?, '通过', ?, ?)""",
+                    (
+                        "needs_rebind",
+                        pool["id"],
+                        proxy_pool.ACCOUNT_STATUS_ACTIVE,
+                        json.dumps({
+                            "proxy_binding": {"proxy_profile_id": pool["id"]},
+                            "browser_settings": {"proxy_server": f"127.0.0.1:{pool['local_port']}", "locale": "en-US"},
+                        }),
+                        "203.0.113.25",
+                        now,
+                        now,
+                    ),
+                ).lastrowid
+            )
+            conn.execute(
+                """INSERT INTO publish_assets (id, account_id, original_name, stored_path, created_at)
+                   VALUES ('asset-rebind', ?, 'video.mp4', 'data/video.mp4', ?)""",
+                (account_id, now),
+            )
+            conn.execute(
+                """INSERT INTO publish_jobs (
+                       id, account_id, proxy_profile_id, asset_id, scheduled_at,
+                       status, created_at, updated_at
+                   ) VALUES ('publish-rebind', ?, ?, 'asset-rebind', ?, 'queued', ?, ?)""",
+                (account_id, pool["id"], now, now, now),
+            )
+            conn.execute(
+                """INSERT INTO collect_jobs (
+                       id, account_id, proxy_profile_id, status, created_at, updated_at
+                   ) VALUES ('collect-rebind', ?, ?, 'delayed', ?, ?)""",
+                (account_id, pool["id"], now, now),
+            )
+            conn.commit()
+
+        deleted = proxy_pool.delete_pool(pool["id"])
+        account = next(item for item in deleted["accounts"] if item["id"] == account_id)
+        assert account["proxy_bound"] is False
+        assert account["last_check_status"] == "未绑定"
+        assert account["last_checked_ip"] == ""
+        assert "proxy_binding" not in account["profile"]
+        assert "proxy_server" not in account["profile"]["browser_settings"]
+        assert deleted["unbound_accounts"] == 1
+        assert deleted["delayed_jobs"] == {"publish": 1, "collect": 1}
+
+        with proxy_pool.connect() as conn:
+            publish = conn.execute("SELECT * FROM publish_jobs WHERE id = 'publish-rebind'").fetchone()
+            collect = conn.execute("SELECT * FROM collect_jobs WHERE id = 'collect-rebind'").fetchone()
+            assert (publish["status"], publish["stage"]) == ("delayed", "waiting_proxy")
+            assert (collect["status"], collect["stage"]) == ("delayed", "waiting_proxy")
+
+        rebound = proxy_pool.update_account_proxy_binding({
+            "action": "bind",
+            "account_id": account_id,
+            "proxy_profile_id": "direct",
+        })
+        assert rebound["account"]["proxy_bound"] is True
+        direct_pool = next(item for item in rebound["pools"] if item["id"] == rebound["account"]["proxy_profile_id"])
+        assert direct_pool["source_type"] == "direct"
+        assert rebound["resumed"] == {"publish_jobs": 1, "collect_jobs": 1}
+        with proxy_pool.connect() as conn:
+            publish = conn.execute("SELECT * FROM publish_jobs WHERE id = 'publish-rebind'").fetchone()
+            collect = conn.execute("SELECT * FROM collect_jobs WHERE id = 'collect-rebind'").fetchone()
+            assert publish["proxy_profile_id"] == direct_pool["id"]
+            assert (publish["status"], publish["stage"]) == ("queued", "proxy_rebound")
+            assert collect["proxy_profile_id"] == direct_pool["id"]
+            assert (collect["status"], collect["stage"]) == ("queued", "proxy_rebound")
+
+
+def test_direct_pool_recovers_after_successful_recheck() -> None:
+    with isolated_proxy_db():
+        pool = proxy_pool.upsert_pool({
+            "name": "server-global",
+            "source_type": "direct",
+            "status": proxy_pool.STATUS_ACTIVE,
+        })["pool"]
+        with proxy_pool.connect() as conn:
+            conn.execute(
+                "UPDATE proxy_profiles SET status = ?, parse_error = ? WHERE id = ?",
+                (proxy_pool.STATUS_ERROR, "transient failure", pool["id"]),
+            )
+            conn.commit()
+
+        checked = proxy_pool.check_binding({
+            "proxy_profile_id": pool["id"],
+            "observed_ip": "203.0.113.50",
+        })
+        assert checked["allowed"] is True
+        assert checked["pool"]["status"] == proxy_pool.STATUS_ACTIVE
+        assert checked["pool"]["parse_error"] == ""
+
+
+def test_v2_proxy_page_exposes_account_rebind_flow() -> None:
+    source = (ROOT / "scripts" / "static" / "proxy.html").read_text(encoding="utf-8")
+    assert "/api/proxy/accounts/proxy-binding" in source
+    assert "data-live-binding-submit" in source
+    assert "data-live-binding-unbind" in source
+    assert "target.dataset.open==='binding'&&window.proxyRealWorkflow" in source
+    assert "重新选择后，因原代理删除而暂停的等待任务会自动恢复排队" in source
+
+
 def test_account_state_exposes_instagram_login_without_cookie_value() -> None:
     with isolated_proxy_db():
         pool = create_manual_pool("instagram", "203.0.113.40")
@@ -256,6 +373,9 @@ def main() -> None:
     test_duplicate_exit_ip_is_terminal_until_manual_recheck()
     test_existing_duplicate_error_is_migrated_without_retry()
     test_delete_pool_preserves_archived_history_and_releases_port()
+    test_delete_bound_pool_unbinds_account_until_explicit_rebind()
+    test_direct_pool_recovers_after_successful_recheck()
+    test_v2_proxy_page_exposes_account_rebind_flow()
     test_account_state_exposes_instagram_login_without_cookie_value()
     print("proxy pool lifecycle tests passed")
 

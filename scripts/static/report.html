@@ -552,7 +552,7 @@ body{background:var(--bg);font-family:"PingFang SC","Microsoft YaHei","Noto Sans
 <script>
 const T={run:"生成今日报告",save:"保存设置",loading:"正在加载...",hotReport:"爆款视频日报",latest30:"最近 30 天暂无日报。",noReport:"暂无日报正文。生成完成后这里会展示爆款拆解与总体结论。",noVideos:"暂无热视频。",todayMissing:"今日还没有日报。",play:"播放",parse:"解析内容",audit:"分析内容",origin:"原视频链接",close:"关闭",saved:"已保存",saveFail:"保存失败",delete:"删除",deleteConfirm:"确定删除这天的日报？",contentEmpty:"暂无内容。",docEmpty:"该视频还没有生成对应内容。",updated:"更新时间",videos:"视频",success:"成功",failed:"失败",error:"错误",items:"条",hot:"热度",views:"播放",million:"万",billion:"亿"};
 const $=id=>document.getElementById(id);
-let current=null,selectedVideo=null,pollTimer=null,reportEvents=null,progressLines=[],settingsTopics=[],currentSort="default";
+let current=null,selectedVideo=null,pollTimer=null,reportEvents=null,progressLines=[],settingsTopics=[],currentSort="default",reportEnabled=true;
 
 const TOPIC_PALETTES = [
   { bg: "#eff6ff", border: "#bfdbfe", color: "#1e40af" },
@@ -1318,7 +1318,7 @@ function render(data){
   $("summary").textContent=data.exists?`更新于 ${fmtTime(data.updated_at)} · 话题 ${(settingsTopics[0]||'AI toys')} · 来源 TikTok 热榜`:T.todayMissing;
   $("headerStatusText").textContent=`${data.report_date||""} ${statusLabel(data.status||"missing")}`;
   $("headerStatusDot").className="dot "+(data.status==="complete"?"":data.status==="failed"?"fail":"warn");
-  $("run").disabled=data.status==="running"||data.status==="queued";
+  $("run").disabled=!reportEnabled||data.status==="running"||data.status==="queued";
 
   syncActiveHistory(data.report_date);
 
@@ -1486,22 +1486,33 @@ async function loadSettings(){
   $("scheduleTime").value=s.schedule_time||"05:00";
   $("analysisLimit").value=s.analysis_limit||10;
   settingsTopics=Array.isArray(s.topic_keywords)?s.topic_keywords:["AI toys"];
+  reportEnabled=s.enabled!==false;
   renderInlineTopics();
+  if(!reportEnabled){
+    $("run").disabled=true;
+    $("run").textContent="日报已暂停";
+    $("settingsMsg").textContent="日报生成已暂停，历史报告仍可查看";
+  }
 }
 
 // Controls & Sort handlers
 $("run").onclick=async()=>{
+  if(!reportEnabled)return;
   $("run").disabled=true;
   progressLines=[];
   try{
     if(!(await saveReportSettings()))return;
-    const p=await (await fetch("/api/report/run",{method:"POST"})).json();
+    const response=await fetch("/api/report/run",{method:"POST"});
+    const p=await response.json();
+    if(!response.ok)throw new Error(p.error||"日报生成失败");
     renderProgress({status:"queued",stage:"queued",progress:0,message:"日报任务已排队",updated_at:Date.now()/1000});
     openReportEvents(p.report_date);
     await loadToday();
     loadHistory();
+  }catch(e){
+    $("settingsMsg").textContent=e.message||"日报生成失败";
   }finally{
-    if(current?.status!=="running"&&current?.status!=="queued")$("run").disabled=false;
+    if(reportEnabled&&current?.status!=="running"&&current?.status!=="queued")$("run").disabled=false;
   }
 };
 

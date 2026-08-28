@@ -785,6 +785,33 @@ def _duplicate_exit_ip_reason(duplicate: sqlite3.Row, observed_ip: str) -> str:
     )
 
 
+def _duplicate_exit_ip_pool(
+    conn: sqlite3.Connection,
+    pool_id: int,
+    observed_ip: str,
+) -> sqlite3.Row | None:
+    if not observed_ip:
+        return None
+    return conn.execute(
+        """
+        SELECT id, name, local_port
+        FROM proxy_profiles
+        WHERE id < ? AND deleted_at = '' AND source_type <> 'direct'
+          AND (detected_exit_ip = ? OR expected_exit_ip = ?)
+        ORDER BY id
+        LIMIT 1
+        """,
+        (pool_id, observed_ip, observed_ip),
+    ).fetchone()
+
+
+def _duplicate_exit_ip_reason(duplicate: sqlite3.Row, observed_ip: str) -> str:
+    return (
+        f"出口 IP {observed_ip} 已被代理「{duplicate['name']}」"
+        f"（本地端口 {int(duplicate['local_port'] or 0)}）使用，状态已标记为 IP重复"
+    )
+
+
 def _normal_username(value: Any) -> str:
     username = _clean_text(value, 120).lstrip("@")
     if not username:
@@ -2810,6 +2837,21 @@ def ensure_proxy_cores(restart: bool = False, required: bool = False) -> dict[st
     }
 
 
+def _profile_without_proxy_binding(raw_profile: str) -> str:
+    profile = _json_loads(raw_profile, {})
+    if not isinstance(profile, dict):
+        profile = {}
+    profile.pop("proxy_binding", None)
+    browser_settings = profile.get("browser_settings")
+    if isinstance(browser_settings, dict):
+        browser_settings.pop("proxy_server", None)
+        if browser_settings:
+            profile["browser_settings"] = browser_settings
+        else:
+            profile.pop("browser_settings", None)
+    return json.dumps(profile, ensure_ascii=False, separators=(",", ":"))
+
+
 def delete_pool(pool_id: int) -> dict[str, Any]:
     with connect() as conn:
         pool = conn.execute(
@@ -2827,18 +2869,65 @@ def delete_pool(pool_id: int) -> dict[str, Any]:
         if active_session:
             raise ValueError("代理仍有运行中的浏览器或观测通道，请先释放")
 
-        count = conn.execute(
-            "SELECT COUNT(*) AS count FROM tiktok_accounts WHERE proxy_profile_id = ? AND deleted_at = ''",
+        conn.execute("BEGIN IMMEDIATE")
+        active_job = conn.execute(
+            """SELECT id FROM publish_jobs
+               WHERE proxy_profile_id = ? AND deleted_at = ''
+                 AND status IN ('preparing','uploading','publishing')
+               UNION ALL
+               SELECT id FROM collect_jobs
+               WHERE proxy_profile_id = ? AND status IN ('preparing','collecting')
+               LIMIT 1""",
+            (pool_id, pool_id),
+        ).fetchone()
+        if active_job:
+            conn.rollback()
+            raise ValueError("代理仍有执行中的任务，请等待完成后再删除")
+        bound_accounts = conn.execute(
+            """SELECT id, profile_json FROM tiktok_accounts
+               WHERE proxy_profile_id = ? AND proxy_bound = 1 AND deleted_at = ''""",
             (pool_id,),
-        ).fetchone()["count"]
-        if int(count):
-            raise ValueError("代理仍绑定账号，请先删除或迁移账号")
+        ).fetchall()
 
         sing_box_managed = _sing_box_reality_pool(pool)
         cleanup, backup = ({"removed": False, "port": int(pool["local_port"] or 0)}, None)
         if not sing_box_managed:
             cleanup, backup = _remove_mihomo_pool_config(pool)
         try:
+            unbound_reason = "原绑定代理已删除，请重新选择代理或直连"
+            for account in bound_accounts:
+                conn.execute(
+                    """UPDATE tiktok_accounts
+                       SET proxy_bound = 0, profile_json = ?, last_checked_ip = '',
+                           last_check_status = '未绑定', last_check_at = '',
+                           last_error = ?, updated_at = ?
+                       WHERE id = ?""",
+                    (
+                        _profile_without_proxy_binding(str(account["profile_json"] or "{}")),
+                        unbound_reason,
+                        now_iso(),
+                        int(account["id"]),
+                    ),
+                )
+                conn.execute(
+                    "UPDATE collect_settings SET enabled = 0, updated_at = ? WHERE account_id = ?",
+                    (now_iso(), int(account["id"])),
+                )
+            publish_jobs = conn.execute(
+                """UPDATE publish_jobs
+                   SET status = 'delayed', stage = 'waiting_proxy', next_attempt_at = '',
+                       last_error = ?, updated_at = ?
+                   WHERE proxy_profile_id = ? AND deleted_at = ''
+                     AND status IN ('queued','delayed')""",
+                (unbound_reason, now_iso(), pool_id),
+            ).rowcount
+            collect_jobs = conn.execute(
+                """UPDATE collect_jobs
+                   SET status = 'delayed', stage = 'waiting_proxy', next_attempt_at = '',
+                       last_error = ?, updated_at = ?
+                   WHERE proxy_profile_id = ? AND status IN ('queued','delayed')""",
+                (unbound_reason, now_iso(), pool_id),
+            ).rowcount
             conn.execute("DELETE FROM browser_sessions WHERE proxy_profile_id = ?", (pool_id,))
             deleted_at = now_iso()
             conn.execute(
@@ -2849,6 +2938,7 @@ def delete_pool(pool_id: int) -> dict[str, Any]:
             )
             conn.commit()
         except Exception:
+            conn.rollback()
             if backup is not None:
                 try:
                     _restore_mihomo_listener_config(*backup)
@@ -2856,7 +2946,13 @@ def delete_pool(pool_id: int) -> dict[str, Any]:
                     pass
             raise
     core = ensure_proxy_cores(restart=True, required=True) if sing_box_managed else {}
-    return {**list_state(), "mihomo_cleanup": cleanup, **core}
+    return {
+        **list_state(),
+        "mihomo_cleanup": cleanup,
+        "unbound_accounts": len(bound_accounts),
+        "delayed_jobs": {"publish": publish_jobs, "collect": collect_jobs},
+        **core,
+    }
 
 
 def upsert_account(payload: dict[str, Any]) -> dict[str, Any]:
@@ -3173,7 +3269,12 @@ def require_account_proxy_bound(account: sqlite3.Row | dict[str, Any]) -> None:
         raise ValueError("账号未绑定代理，无法执行任务或观测")
 
 
-def _require_account_binding_idle(conn: sqlite3.Connection, account_id: int) -> None:
+def _require_account_binding_idle(
+    conn: sqlite3.Connection,
+    account_id: int,
+    *,
+    allow_waiting_proxy: bool = False,
+) -> None:
     active_session = conn.execute(
         """SELECT id FROM browser_sessions
            WHERE account_id = ? AND status IN ('starting','running','observing')
@@ -3182,20 +3283,30 @@ def _require_account_binding_idle(conn: sqlite3.Connection, account_id: int) -> 
     ).fetchone()
     if active_session:
         raise ValueError("账号仍处于唤醒或运行状态，请先休眠账号")
+    publish_statuses = (
+        "('preparing','uploading','publishing')"
+        if allow_waiting_proxy
+        else "('queued','delayed','preparing','uploading','publishing')"
+    )
     active_publish = conn.execute(
-        """SELECT id FROM publish_jobs
-           WHERE account_id = ? AND deleted_at = ''
-             AND status IN ('queued','delayed','preparing','uploading','publishing')
-           LIMIT 1""",
+        f"""SELECT id FROM publish_jobs
+            WHERE account_id = ? AND deleted_at = ''
+              AND status IN {publish_statuses}
+            LIMIT 1""",
         (account_id,),
     ).fetchone()
     if active_publish:
         raise ValueError("账号仍有待发布或运行中的发布任务，请先取消或等待完成")
+    collect_statuses = (
+        "('preparing','collecting')"
+        if allow_waiting_proxy
+        else "('queued','delayed','preparing','collecting')"
+    )
     active_collect = conn.execute(
-        """SELECT id FROM collect_jobs
-           WHERE account_id = ?
-             AND status IN ('queued','delayed','preparing','collecting')
-           LIMIT 1""",
+        f"""SELECT id FROM collect_jobs
+            WHERE account_id = ?
+              AND status IN {collect_statuses}
+            LIMIT 1""",
         (account_id,),
     ).fetchone()
     if active_collect:
@@ -3204,7 +3315,8 @@ def _require_account_binding_idle(conn: sqlite3.Connection, account_id: int) -> 
 
 def update_account_proxy_binding(payload: dict[str, Any]) -> dict[str, Any]:
     action = _clean_text(payload.get("action"), 20).lower()
-    pool_id = int(payload.get("proxy_profile_id") or payload.get("pool_id") or 0)
+    requested_pool = str(payload.get("proxy_profile_id") or payload.get("pool_id") or "").strip()
+    pool_id = _direct_login_pool_id() if action == "bind" and requested_pool == "direct" else int(requested_pool or 0)
     if action not in {"bind", "unbind"}:
         raise ValueError("action must be bind or unbind")
     if not pool_id:
@@ -3233,12 +3345,14 @@ def update_account_proxy_binding(payload: dict[str, Any]) -> dict[str, Any]:
                 raise ValueError("该代理当前未绑定账号")
             account_id = int(bound_account["id"])
             _require_account_binding_idle(conn, account_id)
+            profile_json = _profile_without_proxy_binding(str(bound_account["profile_json"] or "{}"))
             conn.execute(
                 """UPDATE tiktok_accounts
-                   SET proxy_bound = 0, last_check_status = '未绑定',
+                   SET proxy_bound = 0, profile_json = ?, last_checked_ip = '',
+                       last_check_status = '未绑定', last_check_at = '',
                        last_error = '账号未绑定代理，无法执行任务或观测', updated_at = ?
                    WHERE id = ?""",
-                (now, account_id),
+                (profile_json, now, account_id),
             )
             conn.execute(
                 "UPDATE collect_settings SET enabled = 0, updated_at = ? WHERE account_id = ?",
@@ -3258,7 +3372,7 @@ def update_account_proxy_binding(payload: dict[str, Any]) -> dict[str, Any]:
                 raise ValueError("account not found")
             if account_proxy_bound(account):
                 raise ValueError("该账号已绑定其他代理，请先解绑")
-            _require_account_binding_idle(conn, account_id)
+            _require_account_binding_idle(conn, account_id, allow_waiting_proxy=True)
             profile = _json_loads(account["profile_json"], {})
             if not isinstance(profile, dict):
                 profile = {}
@@ -3287,8 +3401,26 @@ def update_account_proxy_binding(payload: dict[str, Any]) -> dict[str, Any]:
                     account_id,
                 ),
             )
+            publish_jobs = conn.execute(
+                """UPDATE publish_jobs
+                   SET proxy_profile_id = ?, status = 'queued', stage = 'proxy_rebound',
+                       next_attempt_at = '', last_error = '', updated_at = ?
+                   WHERE account_id = ? AND deleted_at = ''
+                     AND status = 'delayed' AND stage = 'waiting_proxy'""",
+                (pool_id, now, account_id),
+            ).rowcount
+            collect_jobs = conn.execute(
+                """UPDATE collect_jobs
+                   SET proxy_profile_id = ?, status = 'queued', stage = 'proxy_rebound',
+                       next_attempt_at = '', last_error = '', updated_at = ?
+                   WHERE account_id = ? AND status = 'delayed' AND stage = 'waiting_proxy'""",
+                (pool_id, now, account_id),
+            ).rowcount
         conn.commit()
-    return {"account": get_account(account_id), **list_state()}
+    result = {"account": get_account(account_id), **list_state()}
+    if action == "bind":
+        result["resumed"] = {"publish_jobs": publish_jobs, "collect_jobs": collect_jobs}
+    return result
 
 
 def _pool_for_check(conn: sqlite3.Connection, payload: dict[str, Any]) -> tuple[sqlite3.Row | None, sqlite3.Row | None]:
@@ -3871,10 +4003,50 @@ def _proxy_url_reachable(url: str, proxy_port: int, timeout: float = 10.0) -> tu
     return False, last_error
 
 
+def _proxy_runtime_core(pool: sqlite3.Row) -> str:
+    return "sing-box" if _sing_box_reality_pool(pool) else "mihomo"
+
+
+def _repair_proxy_core_once(pool: sqlite3.Row) -> dict[str, Any]:
+    core = _proxy_runtime_core(pool)
+    try:
+        if core == "sing-box":
+            result = ensure_proxy_cores(restart=True, required=True)
+            local_port = int(pool["local_port"] or 0)
+            deadline = time.monotonic() + 10
+            while local_port and time.monotonic() < deadline:
+                if _port_open("127.0.0.1", local_port, timeout=0.2):
+                    break
+                time.sleep(0.2)
+            else:
+                raise ProxyConfigurationError(f"sing-box 重启后本地端口 {local_port} 未监听")
+        else:
+            result = _sync_mihomo_pool_config(pool)
+    except Exception as exc:
+        raise ProxyConfigurationError(f"{core} 自动修复失败：{exc}") from exc
+    return {"attempted": True, "core": core, "result": result}
+
+
+def _detect_exit_ip_with_single_repair(pool: sqlite3.Row) -> dict[str, Any]:
+    try:
+        return detect_exit_ip_for_pool(pool)
+    except Exception as first_error:
+        repair = _repair_proxy_core_once(pool)
+        try:
+            detected = detect_exit_ip_for_pool(pool)
+        except Exception as retry_error:
+            raise ProxyConfigurationError(
+                f"{repair['core']} 已自动修复一次，但出口校验仍失败：{retry_error}"
+            ) from retry_error
+        detected["auto_repair"] = repair
+        return detected
+
+
 def detect_exit_ip_for_pool(pool: sqlite3.Row) -> dict[str, Any]:
     node_name = _runtime_mihomo_name(pool)
     if not node_name:
         raise ValueError("代理没有 mihomo 节点名")
+    runtime_core = _proxy_runtime_core(pool)
     local_port = int(pool["local_port"] or 0)
     if str(pool["source_type"] or "") == "static":
         _sync_mihomo_pool_config(pool)
@@ -3890,6 +4062,8 @@ def detect_exit_ip_for_pool(pool: sqlite3.Row) -> dict[str, Any]:
     if local_port and _port_open("127.0.0.1", local_port, timeout=1.0):
         proxy_port = local_port
         switch = {"node": node_name, "groups": [], "loaded": True, "listener_port": local_port}
+    elif runtime_core == "sing-box":
+        raise ProxyConfigurationError(f"sing-box 本地端口 {local_port} 未监听")
     else:
         switch = _switch_mihomo_node(node_name)
         proxy_port = int(os.getenv("MIHOMO_PROXY_PORT", "7890") or "7890")
@@ -3911,6 +4085,7 @@ def detect_exit_ip_for_pool(pool: sqlite3.Row) -> dict[str, Any]:
         detected = {
             "ip": ip,
             "geo": {"country": country, "region": region, "city": city, "address": address},
+            "runtime_core": runtime_core,
             "mihomo": switch,
             "raw": body,
             "check_url": target,
@@ -4072,9 +4247,7 @@ def check_binding(payload: dict[str, Any], require_account: bool = False) -> dic
             raise ValueError("account_id or username is required")
         if not observed_ip:
             try:
-                detected = detect_exit_ip_for_pool(pool)
-            except ProxyConfigurationError:
-                raise
+                detected = _detect_exit_ip_with_single_repair(pool)
             except Exception as exc:
                 if _clean_status(pool["status"]) != STATUS_PAUSED:
                     _schedule_proxy_recheck(conn, int(pool["id"]), str(exc), recheck_token)
@@ -4107,7 +4280,10 @@ def check_binding(payload: dict[str, Any], require_account: bool = False) -> dic
             expected_ip = observed_ip
         pool_status = _clean_status(pool["status"])
         if direct:
-            next_pool_status = pool_status
+            # Reaching this branch means both the exit-IP lookup and TikTok
+            # reachability checks succeeded. A transient failure must not leave
+            # the server-global outlet permanently stuck in the error state.
+            next_pool_status = STATUS_PAUSED if pool_status == STATUS_PAUSED else STATUS_ACTIVE
             allowed = next_pool_status == STATUS_ACTIVE
             reason = "通过（使用服务器代理出口，不绑定固定 IP）" if allowed else f"代理状态为 {next_pool_status}"
         else:

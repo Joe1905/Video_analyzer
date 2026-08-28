@@ -338,7 +338,7 @@
       menu:{k:'ACCOUNT ACTIONS',title:'lumi.home',desc:'当前会话在线，代理出口稳定。',body:`<div class="job-list"><div class="job"><div><b>打开账号观测</b><small>手动查看当前浏览器会话</small></div><button data-open="observe">打开</button></div><div class="job"><div><b>创建发布任务</b><small>上传素材、排期或立即发布</small></div><button data-open="publish">新建</button></div><div class="job"><div><b>创建采集任务</b><small>采集视频表现并同步飞书</small></div><button data-open="collect">新建</button></div><div class="job"><div><b>绑定与预检</b><small>管理出口、身份和运行策略</small></div><button data-open="binding">管理</button></div></div>`}
     };
     function open(name){const v=views[name];if(!v)return;const compact=['observe','sleep','wake','remove','descriptionEditor'].includes(name);el('drawer').className=`drawer ${compact?'dialog-panel compact-dialog':'side-panel'}${v.wide?' wide':''}${name==='descriptionEditor'?' description-editor':''}`;el('drawer-head').innerHTML=`<div><p class="eyebrow">${v.k}</p><h3>${v.title}</h3><p>${v.desc}</p></div><button class="icon-button" data-close aria-label="关闭">${icon('i-close')}</button>`;el('drawer-body').innerHTML=v.body;el('drawer-foot').innerHTML='<button class="button" data-close>取消</button><button class="button primary">确认执行</button>';el('overlay').classList.add('open')}
-    document.addEventListener('click',event=>{const target=event.target.closest('[data-open],[data-close]');if(!target)return;if(target.hasAttribute('data-close')){el('overlay').classList.remove('open');return}open(target.dataset.open)});
+    document.addEventListener('click',event=>{const target=event.target.closest('[data-open],[data-close]');if(!target)return;if(target.hasAttribute('data-close')){el('overlay').classList.remove('open');return}if(target.dataset.open==='binding'&&window.proxyRealWorkflow){event.preventDefault();return window.proxyRealWorkflow.open('binding',target)}open(target.dataset.open)});
     el('overlay').addEventListener('click',event=>{if(event.target===el('overlay'))el('overlay').classList.remove('open')});
     document.querySelectorAll('#proxy-list .proxy-row').forEach(row=>row.addEventListener('click',()=>{document.querySelectorAll('#proxy-list .proxy-row').forEach(item=>item.classList.remove('selected'));row.classList.add('selected');el('context-place').textContent=row.dataset.place;el('context-ip').textContent=row.dataset.ip}));
     document.querySelectorAll('.accounts tbody tr').forEach(row=>row.addEventListener('click',event=>{if(event.target.closest('[data-open]'))return;document.querySelectorAll('.accounts tbody tr').forEach(item=>item.classList.remove('selected'));row.classList.add('selected');el('context-name').textContent=row.dataset.account;el('context-owner').textContent=row.dataset.owner;el('context-status').textContent=row.dataset.status==='需要登录'?'需要重新登录':'在线 · 可复用';el('context-avatar').textContent=row.dataset.account.slice(0,2).toUpperCase()}));
@@ -1060,7 +1060,7 @@
         if (action === 'collect') { if (item.loggedIn) { if (window.proxyRealWorkflow) return window.proxyRealWorkflow.open('collect', trigger); await syncPlatformViews(); open('collect'); } return; }
         if (action === 'publish') { if (window.proxyRealWorkflow) return window.proxyRealWorkflow.open('publish', trigger); open('publish'); return; }
         if (action === 'login') { state.loginChoice = ''; renderPlatformLogin(); open('platformLogin'); return; }
-        if (action === 'binding') { open('binding'); return; }
+        if (action === 'binding') { if (window.proxyRealWorkflow) return window.proxyRealWorkflow.open('binding', trigger); open('binding'); return; }
         if (action === 'sleep') {
           const session = activeSessionFor(row);
           if (!session) return;
@@ -1575,13 +1575,15 @@
       };
       const deletePool = async id => {
         const pool = await loadPool(id);
-        if (!pool || !window.confirm(`确定删除出口“${pool.name || id}”吗？`)) return;
+        if (!pool || !window.confirm(`删除出口“${pool.name || id}”后，关联账号将变为未绑定，等待任务会暂停，直到重新选择代理或直连。确认删除？`)) return;
         try {
           const response = await fetch('/api/proxy/pools/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: Number(id) }) });
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || '删除失败');
           closePoolDrawer();
           await window.proxyLoadLiveData?.();
+          const count = Number(result.unbound_accounts || 0);
+          showProxyActionError(count ? `出口已删除，${count} 个账号已置为未绑定。请重新选择代理或直连。` : '出口已删除。', { kind: 'success' });
         } catch (err) { openPoolDetail(id, { kind: 'error', text: err?.message || '删除失败，请稍后重试。' }); }
       };
       document.addEventListener('click', event => {
@@ -1690,6 +1692,20 @@
       const jobLabel = job => job.status_label || job.status || '待处理';
       const productById = id => workflow.publish.products.find(item => String(item.product_id) === String(id));
       const productName = id => productById(id)?.product_name || (id ? `商品 ID ${id}` : '未关联商品');
+      const renderBinding = () => {
+        const context = workflow.context, account = context.account, bound = Boolean(account.proxy_bound);
+        const current = context.pools.find(item => Number(item.id) === Number(account.proxy_profile_id));
+        const available = context.pools.filter(item => item.source_type !== 'direct' && !Number(item.account_count || 0) && !['禁用','不可用','异常','IP重复'].includes(String(item.status || '')));
+        const options = available.map(item => `<option value="${Number(item.id)}">${escape(item.name || `出口 ${item.id}`)} · ${escape(item.expected_exit_ip || '待校验')}</option>`).join('');
+        views.binding = {
+          k:'ACCOUNT BINDING', title:'绑定与预检', desc:`管理 ${escape(account.username || account.id)} 的代理方式与任务可执行状态。`,
+          foot: bound
+            ? '<button class="button" data-close>取消</button><button class="button danger" data-live-binding-unbind>解除当前绑定</button>'
+            : '<button class="button" data-close>取消</button><button class="button primary" data-live-binding-submit>确认绑定</button>',
+          body:`<div class="drawer-form"><div class="callout"><b>当前状态：${bound ? `已绑定 ${escape(current?.name || '现有出口')}` : '未绑定'}</b><br>${bound ? '解除绑定前请先休眠账号并处理运行中的任务。' : '重新选择后，因原代理删除而暂停的等待任务会自动恢复排队。'}</div>${bound ? '' : `<label class="task-field">代理方式<select id="live-binding-pool"><option value="direct">直连外网（服务器代理）</option>${options}</select></label>`}${drawerNotice('live-binding-notice')}</div>`
+        };
+      };
+      const loadBinding = async trigger => { await resolveContext(trigger); renderBinding(); open('binding'); };
       const publishRows = () => workflow.publish.jobs.length
         ? workflow.publish.jobs.map(job => `<div class="task-side-row workflow-row"><div><b>${escape(job.original_name || '未命名视频')} ${status(jobLabel(job), /失败|取消/.test(jobLabel(job)) ? 'off' : /完成|排期|发布/.test(jobLabel(job)) ? 'live' : 'delay')}</b><small>${escape(job.status_detail || `${productName(job.product_link)} · ${job.scheduled_at || '未设置时间'}`)}</small></div><span class="workflow-row-actions">${['draft','queued','delayed','failed','cancelled','manual_ready','product_link_failed','product_link_review'].includes(job.status) ? `<button type="button" data-live-publish-edit="${escape(job.id)}">编辑</button>` : ''}${['failed','product_link_failed','product_link_review'].includes(job.status) ? `<button type="button" data-live-publish-retry="${escape(job.id)}">重试</button>` : ''}<button type="button" data-live-publish-delete="${escape(job.id)}" ${['preparing','uploading','publishing','scheduled_on_tiktok'].includes(job.status) ? 'disabled title="运行中任务不能删除"' : ''}>删除</button></span></div>`).join('')
         : '<div class="drawer-empty">当前账号没有发布任务。</div>';
@@ -1759,7 +1775,7 @@
 
       window.proxyRealWorkflow = {
         open(kind, trigger) {
-          const load = kind === 'publish' ? loadPublish : loadCollect;
+          const load = kind === 'publish' ? loadPublish : kind === 'binding' ? loadBinding : loadCollect;
           return load(trigger).catch(error => showWorkflowError(error.message || '无法读取当前工作流。'));
         }
       };
@@ -1784,6 +1800,27 @@
         const collectCancel = event.target.closest('[data-live-collect-cancel]'); if (collectCancel) { if (!confirm('取消此采集任务？')) return; void request('/api/proxy/collect/jobs/cancel', { job_id: collectCancel.dataset.liveCollectCancel }).then(async () => { await refreshCollect(); renderCollect(); open('collect'); setNotice('live-collect-notice', '采集任务已取消。', 'success'); }).catch(error => setNotice('live-collect-notice', error.message, 'error')); return; }
         const resyncJob = event.target.closest('[data-live-collect-resync-job]'); if (resyncJob) { void request('/api/proxy/collect/results/resync', { job_id: resyncJob.dataset.liveCollectResyncJob }).then(async () => { await refreshCollect(); renderCollect(); open('collect'); setNotice('live-collect-notice', '已提交该任务的飞书补写。', 'success'); }).catch(error => setNotice('live-collect-notice', error.message, 'error')); return; }
         const resync = event.target.closest('[data-live-collect-resync]'); if (resync) { void request('/api/proxy/collect/results/resync', { result_id: resync.dataset.liveCollectResync }).then(async () => { await refreshCollect(); renderCollectDetail(workflow.collect.selectedJobId); setNotice('live-collect-detail-notice', '已提交飞书写入。', 'success'); }).catch(error => setNotice('live-collect-detail-notice', error.message, 'error')); }
+      }, true);
+      document.addEventListener('click', event => {
+        const bind = event.target.closest('[data-live-binding-submit]');
+        const unbind = event.target.closest('[data-live-binding-unbind]');
+        if ((!bind && !unbind) || !workflow.context) return;
+        event.preventDefault();
+        const account = workflow.context.account;
+        const payload = unbind
+          ? { action:'unbind', proxy_profile_id:account.proxy_profile_id }
+          : { action:'bind', account_id:account.id, proxy_profile_id:formValue('live-binding-pool', 'direct') };
+        const button = bind || unbind;
+        button.disabled = true;
+        setNotice('live-binding-notice', unbind ? '正在解除绑定…' : '正在绑定并恢复等待任务…');
+        void request('/api/proxy/accounts/proxy-binding', payload).then(async data => {
+          workflow.context.account = data.account;
+          workflow.context.pools = Array.isArray(data.pools) ? data.pools : workflow.context.pools;
+          renderBinding(); open('binding');
+          const resumed = data.resumed || {}, resumedCount = Number(resumed.publish_jobs || 0) + Number(resumed.collect_jobs || 0);
+          setNotice('live-binding-notice', unbind ? '账号已解除绑定，任务与观测已暂停。' : `账号已绑定${resumedCount ? `，${resumedCount} 个等待任务已恢复排队` : ''}。`, 'success');
+          await window.proxyLoadLiveData?.();
+        }).catch(error => setNotice('live-binding-notice', error.message, 'error')).finally(() => { button.disabled = false; });
       }, true);
       document.addEventListener('submit', event => {
         const form = event.target;

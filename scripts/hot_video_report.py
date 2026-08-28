@@ -32,6 +32,13 @@ DB_PATH = ROOT / "data" / "hot_video_report.sqlite"
 REPORT_COVER_DIR = ROOT / "data" / "report_covers"
 DEFAULT_API_BASE = "https://api.sociavault.com"
 DEFAULT_TZ = "Asia/Shanghai"
+REPORT_DIRECT_VIDEO_PROMPT = (
+    "你正在为短视频爆款日报做视频直连降级解析。只返回严格 JSON，不要 Markdown。"
+    "必须包含 summary、timeline、visual_evidence 三个键；summary 用中文概括内容、开头钩子、"
+    "画面节奏和可复用创意，timeline 是按时间顺序的数组，每项包含 time_range、visual、audio，"
+    "visual_evidence 是可核验的画面事实。没有可靠 ASR 时，不得臆造、引用或总结口播；"
+    "audio 字段应写“未可靠识别”或仅描述可直接观察到的声音线索。"
+)
 
 _scheduler_started = False
 _scheduler_lock = threading.Lock()
@@ -48,6 +55,10 @@ _initialized_db_path: Path | None = None
 
 def today_key() -> str:
     return datetime.now(ZoneInfo(DEFAULT_TZ)).strftime("%Y-%m-%d")
+
+
+def hot_report_enabled() -> bool:
+    return os.getenv("HOT_VIDEO_REPORT_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 
 
 def initialize_hot_report_db() -> None:
@@ -1529,6 +1540,8 @@ def _analysis_sha256(analysis: Any) -> str:
 
 
 def translate_report_video_analysis(report_date: str, platform: str, video_id: str, force: bool = False) -> dict[str, Any]:
+    if not _auto_translate_enabled():
+        raise ValueError("日报逐视频翻译已关闭")
     date = str(report_date or today_key()).strip()
     platform = str(platform or "").strip()
     video_id = str(video_id or "").strip()
@@ -1589,7 +1602,7 @@ def translate_report_video_analysis(report_date: str, platform: str, video_id: s
 
 
 def _auto_translate_enabled() -> bool:
-    return os.getenv("REPORT_AUTO_TRANSLATE_ANALYSIS", "1").strip().lower() not in {"0", "false", "no", "off"}
+    return os.getenv("REPORT_AUTO_TRANSLATE_ANALYSIS", "0").strip().lower() not in {"0", "false", "no", "off"}
 
 
 def _run_report_video_translation_job(report_date: str, platform: str, video_id: str) -> None:
@@ -2294,7 +2307,26 @@ def _process_video(conn: sqlite3.Connection, report_date: str, item: dict[str, A
                 {"filename": filename, "timeout_seconds": _report_video_analyze_timeout_seconds(item.get("duration_ms"))},
             )
             if not result.get("ok"):
-                raise RuntimeError(str(result.get("error") or "video extraction failed"))
+                primary_error = str(result.get("error") or "video extraction failed")
+                if os.getenv("REPORT_DIRECT_VIDEO_FALLBACK", "1").strip().lower() not in {"0", "false", "no", "off"}:
+                    fallback = execute_tool(
+                        "video_direct_analyze",
+                        {
+                            "filename": filename,
+                            "audio_mode": "none",
+                            "timeout_seconds": _report_video_analyze_timeout_seconds(item.get("duration_ms")),
+                            "prompt": REPORT_DIRECT_VIDEO_PROMPT,
+                        },
+                    )
+                    if fallback.get("ok"):
+                        analysis_path = output_dir / "analysis.json"
+                    else:
+                        raise RuntimeError(
+                            f"primary analyzer failed: {primary_error}; "
+                            f"direct video fallback failed: {fallback.get('error') or 'unknown error'}"
+                        )
+                else:
+                    raise RuntimeError(primary_error)
         output_dir = _output_dir_for_filename(filename)
         analysis = _json_loads((output_dir / "analysis.json").read_text(encoding="utf-8") if (output_dir / "analysis.json").is_file() else "", {})
         analysis_sha256 = _analysis_sha256(analysis)
@@ -3035,6 +3067,35 @@ def _ensure_video_insight(
     return social_context, insight
 
 
+def _summary_prompt(report_date: str, video_items: list[dict[str, Any]], partial_summaries: list[dict[str, Any]] | None = None) -> str:
+    payload: dict[str, Any] = {"report_date": report_date}
+    if partial_summaries:
+        payload["partial_summaries"] = partial_summaries
+    else:
+        payload["video_insights"] = video_items
+    return (
+        "你是短视频研究总监。请根据输入的每日爆款视频拆解，撰写一份结构化每日热榜总结报告。\n"
+        "要求：\n"
+        "1. 只依赖所给证据，不得捏造未出现的数值或现象。\n"
+        "2. key_observations 总结今日最核心的跨视频规律，重点看题材、受众反应、爆发机制。\n"
+        "3. video_deep_dives 必须对每条视频给出准确核心洞察，不可漏项；视频拆解缺失时必须降级退回使用解析摘要。\n"
+        "4. patterns/reusable_points/risks 必须给运营与剪辑团队可执行的提炼。\n"
+        "5. 只返回严格 JSON，不要 Markdown，不要代码块。\n"
+        "JSON keys 必须包含：summary, key_observations, video_deep_dives, patterns, reusable_points, risks。\n\n"
+        f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
+    )
+
+
+def _chunk_summary_prompt(report_date: str, chunk_index: int, video_items: list[dict[str, Any]]) -> str:
+    payload = {"report_date": report_date, "chunk_index": chunk_index, "video_items": video_items}
+    return (
+        "你是短视频研究助理。请把这一组热视频提取内容压缩成可供最终日报使用的中文结构化摘要。"
+        "只保留爆款原因、开头钩子、节奏/视觉、选题角度、互动机制、风险。"
+        "只返回严格 JSON，不要 Markdown。JSON keys: key_observations, patterns, reusable_points, risks。\n\n"
+        f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
+    )
+
+
 def _summary_prompt_v2(report_date: str, video_items: list[dict[str, Any]], partial_summaries: list[dict[str, Any]] | None = None) -> str:
     payload: dict[str, Any] = {"report_date": report_date}
     if partial_summaries:
@@ -3392,6 +3453,73 @@ def _cached_report_from_videos(current_report: dict[str, Any], videos: list[dict
     return rebuilt
 
 
+def refresh_report_metadata(report_date: str | None = None) -> dict[str, Any]:
+    """Refresh report video metadata and clear dirty analysis/insight caches without video LLM work."""
+    date = report_date or today_key()
+    api_key = os.getenv("SOCIAVAULT_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("Missing required environment variable: SOCIAVAULT_API_KEY")
+    api_base = os.getenv("SOCIAVAULT_API_BASE", DEFAULT_API_BASE).rstrip("/")
+    api_timeout = float(os.getenv("SOCIAVAULT_TIMEOUT", "180"))
+    with closing(_connect()) as conn:
+        row = conn.execute("SELECT id FROM daily_reports WHERE report_date = ?", (date,)).fetchone()
+        if not row:
+            raise ValueError(f"report not found for {date}")
+        report_id = row[0]
+        rows = conn.execute(
+            """
+            SELECT rv.platform, rv.video_id, rv.report_rank, rv.source_endpoint, rv.source_label,
+                   rv.source_rank, COALESCE(m.source_url, rv.raw_json), rv.raw_json
+            FROM hot_report_videos rv
+            JOIN hot_video_master m ON m.platform = rv.platform AND m.video_id = rv.video_id
+            WHERE rv.report_date = ?
+            ORDER BY rv.report_rank ASC
+            """,
+            (date,),
+        ).fetchall()
+        refreshed = 0
+        failed: list[dict[str, str]] = []
+        for platform, video_id, report_rank, source_endpoint, source_label, source_rank, source_url, raw_json in rows:
+            if platform != "tiktok" or not video_id:
+                continue
+            url = str(source_url or "").strip()
+            if not url.startswith("http"):
+                raw = _json_loads(raw_json, {})
+                url = _source_url(raw) if isinstance(raw, dict) else ""
+            if not url:
+                url = f"https://www.tiktok.com/@unknown/video/{video_id}"
+            try:
+                payload = call_api(api_key, api_base, "video-info", {"url": url}, api_timeout, cache_policy="record_only")
+                node = _extract_video_info_node(payload)
+                if not node:
+                    raise RuntimeError("video-info returned no video node")
+                item = _normalize_video(node, source_endpoint or "video-info", source_label or "metadata-refresh", _to_int(source_rank) or _to_int(report_rank) or 1)
+                if item.get("video_id") and item["video_id"] != video_id:
+                    raise RuntimeError(f"video-info id mismatch: {item['video_id']} != {video_id}")
+                item["video_id"] = video_id
+                _upsert_video(conn, report_id, date, item, _to_int(report_rank) or refreshed + 1)
+                refreshed += 1
+            except Exception as exc:
+                failed.append({"video_id": str(video_id), "error": str(exc)})
+        now = time.time()
+        conn.execute(
+            """
+            UPDATE hot_report_videos
+            SET analysis_json = NULL, analysis_zh_json = NULL, audit_json = NULL,
+                analysis_sha256 = NULL, analysis_zh_source_sha256 = NULL,
+                social_context_json = NULL, insight_json = NULL, insight_generated_at = NULL,
+                updated_at = ?
+            WHERE report_date = ?
+            """,
+            (now, date),
+        )
+        conn.commit()
+    rebuilt = rebuild_report_from_cached(date)
+    rebuilt["metadata_refreshed_count"] = refreshed
+    rebuilt["metadata_failed"] = failed
+    return rebuilt
+
+
 def rebuild_report_from_cached(report_date: str | None = None) -> dict[str, Any]:
     """Rebuild report display fields from cached per-video records without LLM calls."""
     date = report_date or today_key()
@@ -3523,6 +3651,8 @@ def refresh_report_hot_scores(report_date: str) -> int:
 
 def regenerate_daily_report_summary(report_date: str) -> dict[str, Any]:
     """Regenerate only the final daily summary from completed video checkpoints."""
+    if not hot_report_enabled():
+        raise RuntimeError("日报功能已暂停")
     refresh_report_hot_scores(report_date)
     with closing(_connect()) as conn:
         row = conn.execute(
@@ -3624,6 +3754,8 @@ def _heartbeat_report(conn: sqlite3.Connection, report_id: str, report_date: str
 
 
 def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[str, Any]:
+    if not hot_report_enabled():
+        raise RuntimeError("日报功能已暂停")
     settings = get_settings()
     date = report_date or today_key()
     region = os.getenv("SOCIAVAULT_REGION", "US").strip() or "US"
@@ -3820,10 +3952,12 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
 def get_report_runtime_status() -> dict[str, Any]:
     with _active_job_lock:
         active = _active_job
-    return {"active_date": active, "queued": list(_job_queue.queue)}
+    return {"enabled": hot_report_enabled(), "active_date": active, "queued": list(_job_queue.queue)}
 
 
 def enqueue_report(report_date: str | None = None) -> dict[str, Any]:
+    if not hot_report_enabled():
+        raise RuntimeError("日报功能已暂停")
     date = report_date or today_key()
     _job_queue.put(date)
     _progress_payload(date, "queued", "queued", 0, "日报任务已排队", {})
@@ -3880,6 +4014,8 @@ def _scheduler_loop() -> None:
 
 def start_report_scheduler(enable_timer: bool = True) -> None:
     global _scheduler_started
+    if not hot_report_enabled():
+        return
     with _scheduler_lock:
         if _scheduler_started:
             return
