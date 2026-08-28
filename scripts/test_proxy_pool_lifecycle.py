@@ -316,6 +316,17 @@ def test_v2_proxy_page_exposes_account_rebind_flow() -> None:
 def test_v2_sing_box_default_stays_in_4004_project() -> None:
     source = (ROOT / "scripts" / "proxy_pool.py").read_text(encoding="utf-8")
     assert 'os.getenv("SING_BOX_COMPOSE_PROJECT", "short-video-analyzer-ui-4004")' in source
+    assert 'os.getenv("PROXY_POOL_CONFIG_NAMESPACE", "v2")' in source
+    assert 'os.getenv("PROXY_POOL_PORT_START", "19100")' in source
+    assert 'os.getenv("PROXY_POOL_PORT_END", "19199")' in source
+    assert 'os.getenv("TAOBAO_PROXY_PORT_START", "19200")' in source
+    assert 'os.getenv("TAOBAO_PROXY_PORT_END", "19219")' in source
+
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    assert compose.count("PROXY_POOL_CONFIG_NAMESPACE: ${PROXY_POOL_CONFIG_NAMESPACE:-v2}") == 2
+    assert compose.count("PROXY_POOL_PORT_START: ${PROXY_POOL_PORT_START:-19100}") == 2
+    assert compose.count("TAOBAO_PROXY_PORT_START: ${TAOBAO_PROXY_PORT_START:-19200}") == 2
+    assert "WEB_PORT: ${WEB_PORT:-4004}" in compose
 
 
 def test_account_state_exposes_instagram_login_without_cookie_value() -> None:
@@ -381,6 +392,7 @@ def main() -> None:
     test_delete_bound_pool_unbinds_account_until_explicit_rebind()
     test_direct_pool_recovers_after_successful_recheck()
     test_v2_proxy_page_exposes_account_rebind_flow()
+    test_v2_sing_box_default_stays_in_4004_project()
     test_account_state_exposes_instagram_login_without_cookie_value()
     print("proxy pool lifecycle tests passed")
 
