@@ -33,7 +33,7 @@ DEFAULT_NOVNC_PUBLIC_URL = os.getenv("NOVNC_PUBLIC_URL", "http://192.168.1.254:6
 DEFAULT_MIHOMO_API = os.getenv("MIHOMO_API_URL", "http://127.0.0.1:9090")
 SYSTEM_PROXY_DIALER = "GLOBAL"
 PROXY_CONFIG_NAMESPACE = os.getenv("PROXY_POOL_CONFIG_NAMESPACE", "v2").strip() or "v2"
-PROXY_MIHOMO_NAME_PREFIX = os.getenv("PROXY_POOL_MIHOMO_PREFIX", "").strip()
+PROXY_MIHOMO_NAME_PREFIX = os.getenv("PROXY_POOL_MIHOMO_PREFIX", "v2-").strip()
 SING_BOX_CONFIG_PATH = Path(os.getenv("SING_BOX_CONFIG_PATH", str(DATA_DIR / "sing-box" / "config.json")))
 SING_BOX_COMPOSE_PROJECT = os.getenv("SING_BOX_COMPOSE_PROJECT", "short-video-analyzer-ui-4004").strip() or "short-video-analyzer-ui-4004"
 SING_BOX_COMPOSE_SERVICE = os.getenv("SING_BOX_COMPOSE_SERVICE", "sing-box").strip() or "sing-box"
@@ -629,6 +629,35 @@ def init_db(conn: sqlite3.Connection) -> None:
             (replacement, port_scope, now_iso(), row["id"]),
         )
         used_ports.add(replacement)
+    for row in conn.execute(
+        """SELECT a.id, a.profile_json, p.local_port
+           FROM tiktok_accounts a
+           JOIN proxy_profiles p ON p.id = a.proxy_profile_id
+           WHERE a.deleted_at = '' AND a.proxy_bound = 1 AND p.deleted_at = ''"""
+    ):
+        try:
+            profile = json.loads(row["profile_json"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            profile = {}
+        if not isinstance(profile, dict):
+            profile = {}
+        local_port = int(row["local_port"] or 0)
+        proxy_binding = profile.get("proxy_binding")
+        if not isinstance(proxy_binding, dict):
+            proxy_binding = {}
+        proxy_binding["local_port"] = local_port
+        profile["proxy_binding"] = proxy_binding
+        browser_settings = profile.get("browser_settings")
+        if not isinstance(browser_settings, dict):
+            browser_settings = {}
+        browser_settings["proxy_server"] = f"127.0.0.1:{local_port}"
+        profile["browser_settings"] = browser_settings
+        serialized = json.dumps(profile, ensure_ascii=False, separators=(",", ":"))
+        if serialized != row["profile_json"]:
+            conn.execute(
+                "UPDATE tiktok_accounts SET profile_json = ?, updated_at = ? WHERE id = ?",
+                (serialized, now_iso(), row["id"]),
+            )
     conn.execute(
         """UPDATE proxy_profiles
            SET status = ?,

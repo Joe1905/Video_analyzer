@@ -317,6 +317,7 @@ def test_v2_sing_box_default_stays_in_4004_project() -> None:
     source = (ROOT / "scripts" / "proxy_pool.py").read_text(encoding="utf-8")
     assert 'os.getenv("SING_BOX_COMPOSE_PROJECT", "short-video-analyzer-ui-4004")' in source
     assert 'os.getenv("PROXY_POOL_CONFIG_NAMESPACE", "v2")' in source
+    assert 'os.getenv("PROXY_POOL_MIHOMO_PREFIX", "v2-")' in source
     assert 'os.getenv("PROXY_POOL_PORT_START", "19300")' in source
     assert 'os.getenv("PROXY_POOL_PORT_END", "19399")' in source
     assert 'os.getenv("TAOBAO_PROXY_PORT_START", "19400")' in source
@@ -324,9 +325,55 @@ def test_v2_sing_box_default_stays_in_4004_project() -> None:
 
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
     assert compose.count("PROXY_POOL_CONFIG_NAMESPACE: ${PROXY_POOL_CONFIG_NAMESPACE:-v2}") == 2
+    assert compose.count("PROXY_POOL_MIHOMO_PREFIX: ${PROXY_POOL_MIHOMO_PREFIX:-v2-}") == 2
     assert compose.count("PROXY_POOL_PORT_START: ${PROXY_POOL_PORT_START:-19300}") == 2
     assert compose.count("TAOBAO_PROXY_PORT_START: ${TAOBAO_PROXY_PORT_START:-19400}") == 2
     assert "WEB_PORT: ${WEB_PORT:-4004}" in compose
+
+
+def test_port_migration_updates_bound_account_profile() -> None:
+    with isolated_proxy_db():
+        pool = create_manual_pool("migrated", "203.0.113.50")
+        now = proxy_pool.now_iso()
+        with proxy_pool.connect() as conn:
+            conn.execute("UPDATE proxy_profiles SET local_port = 18900 WHERE id = ?", (pool["id"],))
+            account_id = int(
+                conn.execute(
+                    """INSERT INTO tiktok_accounts
+                       (username, proxy_profile_id, proxy_bound, status, profile_json, created_at, updated_at)
+                       VALUES (?, ?, 1, ?, ?, ?, ?)""",
+                    (
+                        "migrated_account",
+                        pool["id"],
+                        proxy_pool.ACCOUNT_STATUS_ACTIVE,
+                        json.dumps(
+                            {
+                                "proxy_binding": {"local_port": 18900},
+                                "browser_settings": {"proxy_server": "127.0.0.1:18900"},
+                                "preserved": True,
+                            }
+                        ),
+                        now,
+                        now,
+                    ),
+                ).lastrowid
+            )
+            conn.commit()
+
+        with proxy_pool.connect() as conn:
+            migrated = conn.execute(
+                """SELECT a.profile_json, p.local_port
+                   FROM tiktok_accounts a
+                   JOIN proxy_profiles p ON p.id = a.proxy_profile_id
+                   WHERE a.id = ?""",
+                (account_id,),
+            ).fetchone()
+
+        profile = json.loads(migrated["profile_json"])
+        assert migrated["local_port"] == proxy_pool.PROXY_PORT_START
+        assert profile["proxy_binding"]["local_port"] == proxy_pool.PROXY_PORT_START
+        assert profile["browser_settings"]["proxy_server"] == f"127.0.0.1:{proxy_pool.PROXY_PORT_START}"
+        assert profile["preserved"] is True
 
 
 def test_account_state_exposes_instagram_login_without_cookie_value() -> None:
@@ -393,6 +440,7 @@ def main() -> None:
     test_direct_pool_recovers_after_successful_recheck()
     test_v2_proxy_page_exposes_account_rebind_flow()
     test_v2_sing_box_default_stays_in_4004_project()
+    test_port_migration_updates_bound_account_profile()
     test_account_state_exposes_instagram_login_without_cookie_value()
     print("proxy pool lifecycle tests passed")
 
