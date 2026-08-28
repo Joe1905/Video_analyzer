@@ -64,7 +64,7 @@
     --ui-brand-soft: #e7f5ef;
   }
 
-  body[data-provider="fastmoss"] {
+  body[data-provider="chuhaijiang"] {
     --ui-brand: #6448bd;
     --ui-brand-hover: #5239a4;
     --ui-brand-soft: #f0ecff;

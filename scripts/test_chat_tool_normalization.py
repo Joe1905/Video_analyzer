@@ -1174,7 +1174,22 @@ def test_social_router_does_not_hijack_commerce_intents() -> None:
 def test_intent_decision_validation_and_fallback() -> None:
     fallback = route_chat_intent("research wireless earbuds", "amazon")
     valid = parse_chat_intent_decision(
-        {"intent": "product_research", "task_depth": "analysis", "entity": "wireless earbuds", "region": "US", "confidence": 0.94},
+        {
+            "intent": "product_research",
+            "task_depth": "analysis",
+            "entity": "wireless earbuds",
+            "region": "US",
+            "confidence": 0.94,
+            "research_task": {
+                "objective": "entity_analysis",
+                "scope": "keyword",
+                "entity_type": "keyword",
+                "entity": "wireless earbuds",
+                "entity_source": "explicit",
+                "region": "US",
+                "time_window": "recent month",
+            },
+        },
         fallback, "amazon", "research wireless earbuds",
     )
     assert valid["intent"] == "product_research"
