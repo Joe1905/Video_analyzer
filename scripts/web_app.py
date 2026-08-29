@@ -18,6 +18,7 @@ import threading
 import time
 import uuid
 import zipfile
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from http import HTTPStatus
@@ -31,6 +32,11 @@ import cgi
 from html import escape as html_escape
 from html import unescape as html_unescape
 from io import BytesIO
+
+_BOOTSTRAP_ROOT = Path.cwd()
+_BOOTSTRAP_SCRIPTS_DIR = _BOOTSTRAP_ROOT / "scripts"
+sys.path.insert(0, str(_BOOTSTRAP_SCRIPTS_DIR))
+from core.config import AppConfig
 
 # SociaVault TikTok endpoints (mirrored from sociavault_tiktok.py)
 TIKTOK_ENDPOINTS: dict[str, str] = {
@@ -58,19 +64,15 @@ TIKTOK_ENDPOINTS: dict[str, str] = {
     "music-videos": "/v1/scrape/tiktok/music/videos",
 }
 
-ROOT = Path.cwd()
-UI_TEST_MODE = os.getenv("UI_TEST_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}
-APP_TEST_ROOT_VALUE = os.getenv("APP_TEST_ROOT", "").strip()
-APP_TEST_ROOT = (
-    Path(APP_TEST_ROOT_VALUE).expanduser().resolve()
-    if UI_TEST_MODE and APP_TEST_ROOT_VALUE
-    else None
-)
-RUNTIME_ROOT = APP_TEST_ROOT or ROOT
-DATA_DIR = RUNTIME_ROOT / "data"
-VIDEOS_DIR = RUNTIME_ROOT / "videos"
-OUTPUT_DIR = RUNTIME_ROOT / "output"
-SCRIPTS_DIR = ROOT / "scripts"
+APP_CONFIG = AppConfig.from_env(os.environ, root=_BOOTSTRAP_ROOT)
+ROOT = APP_CONFIG.root
+UI_TEST_MODE = APP_CONFIG.ui_test_mode
+APP_TEST_ROOT = APP_CONFIG.app_test_root
+RUNTIME_ROOT = APP_CONFIG.runtime_root
+DATA_DIR = APP_CONFIG.data_dir
+VIDEOS_DIR = APP_CONFIG.videos_dir
+OUTPUT_DIR = APP_CONFIG.output_dir
+SCRIPTS_DIR = APP_CONFIG.scripts_dir
 INDEX_HTML_PATH = SCRIPTS_DIR / "static" / "web_index.html"
 SELLERSPRITE_CHAT_DIR = ROOT / "sellersprite_mcp_chat"
 SELLERSPRITE_CHAT_DATA_DIR = DATA_DIR / "sellersprite_mcp"
@@ -121,8 +123,6 @@ MCP_CHAT_CONFIGS = {
     },
 }
 
-import sys
-sys.path.insert(0, str(SCRIPTS_DIR))
 from core.http import binary_response, file_response, json_response, text_response, write_sse_event
 from chat_session import ChatStore, Message, Session, load_sessions_from_disk
 from chat_preset_forms import preset_forms_for_provider

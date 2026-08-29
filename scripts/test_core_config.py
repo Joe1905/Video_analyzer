@@ -1,5 +1,6 @@
 """Regression coverage for the isolated import-time web configuration."""
 
+import ast
 import sys
 import unittest
 from dataclasses import FrozenInstanceError
@@ -12,7 +13,114 @@ if str(SCRIPTS_DIR) not in sys.path:
 from core.config import AppConfig  # noqa: E402
 
 
+WEB_APP_PATH = SCRIPTS_DIR / "web_app.py"
+_PATH_CONFIG_BINDINGS = {
+    "ROOT": "root",
+    "UI_TEST_MODE": "ui_test_mode",
+    "APP_TEST_ROOT": "app_test_root",
+    "RUNTIME_ROOT": "runtime_root",
+    "DATA_DIR": "data_dir",
+    "VIDEOS_DIR": "videos_dir",
+    "OUTPUT_DIR": "output_dir",
+    "SCRIPTS_DIR": "scripts_dir",
+}
+_DEFERRED_MODULE_ENV_BINDINGS = {
+    "VIDEO_MEDIA_TTL_SECONDS",
+    "SOCIAL_COMMENT_COUNT",
+    "SOCIAL_API_TIMEOUT",
+    "CHAT_IMAGE_MAX_BYTES",
+    "CHAT_IMAGE_MAX_COUNT",
+    "OCR_API_URL",
+    "OCR_SHARED_DIR",
+    "OCR_SERVER_SHARED_DIR",
+    "FEISHU_DIRECTORY_CACHE_SECONDS",
+    "PROXY_POOL_ENABLED",
+    "UI_CHAT_SCROLL_TEST_SOURCE_SESSION",
+}
+
+
+def web_app_module_tree() -> ast.Module:
+    return ast.parse(WEB_APP_PATH.read_text(encoding="utf-8"), filename=str(WEB_APP_PATH))
+
+
+def top_level_assignments(tree: ast.Module) -> dict[str, ast.expr]:
+    assignments: dict[str, ast.expr] = {}
+    for statement in tree.body:
+        value: ast.expr | None = None
+        targets: list[ast.expr] = []
+        if isinstance(statement, ast.Assign):
+            value = statement.value
+            targets = statement.targets
+        elif isinstance(statement, ast.AnnAssign) and statement.value is not None:
+            value = statement.value
+            targets = [statement.target]
+        if value is None:
+            continue
+        for target in targets:
+            if isinstance(target, ast.Name):
+                assignments[target.id] = value
+    return assignments
+
+
+def is_os_getenv_call(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "os"
+        and node.func.attr == "getenv"
+    )
+
+
+def is_app_config_from_env_call(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "AppConfig"
+        and node.func.attr == "from_env"
+    )
+
+
 class AppConfigTests(unittest.TestCase):
+    def test_phase_1_2b_web_app_uses_one_explicit_app_config_factory(self) -> None:
+        tree = web_app_module_tree()
+        assignments = top_level_assignments(tree)
+        factory_calls = [
+            node for node in ast.walk(tree) if is_app_config_from_env_call(node)
+        ]
+
+        self.assertEqual(len(factory_calls), 1)
+        self.assertIn("APP_CONFIG", assignments)
+        self.assertTrue(is_app_config_from_env_call(assignments["APP_CONFIG"]))
+
+    def test_phase_1_2b_web_app_path_globals_are_explicit_app_config_fields(self) -> None:
+        assignments = top_level_assignments(web_app_module_tree())
+
+        for name, field_name in _PATH_CONFIG_BINDINGS.items():
+            with self.subTest(name=name):
+                value = assignments.get(name)
+                self.assertIsInstance(value, ast.Attribute)
+                if not isinstance(value, ast.Attribute):
+                    continue
+                self.assertIsInstance(value.value, ast.Name)
+                if not isinstance(value.value, ast.Name):
+                    continue
+                self.assertEqual(value.value.id, "APP_CONFIG")
+                self.assertEqual(value.attr, field_name)
+
+    def test_phase_1_2b_only_deferred_module_globals_still_read_environment(self) -> None:
+        assignments = top_level_assignments(web_app_module_tree())
+        getenv_bindings = {
+            name
+            for name, value in assignments.items()
+            if any(is_os_getenv_call(node) for node in ast.walk(value))
+        }
+
+        self.assertNotIn("UI_TEST_MODE", getenv_bindings)
+        self.assertNotIn("APP_TEST_ROOT", getenv_bindings)
+        self.assertEqual(getenv_bindings, _DEFERRED_MODULE_ENV_BINDINGS)
+
     def test_default_root_uses_current_working_directory(self) -> None:
         config = AppConfig.from_env({})
 
