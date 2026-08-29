@@ -174,6 +174,7 @@ class RouterTests(unittest.TestCase):
             route_imports,
             {
                 "routes.health",
+                "routes.extract",
                 "routes.harness",
                 "routes.lan_chat",
                 "routes.metrics",
@@ -210,6 +211,7 @@ class RouterTests(unittest.TestCase):
         self.assertNotIn("/lan-chat", exact_route_branches)
         self.assertNotIn("/tool", exact_route_branches)
         self.assertNotIn("/harness", exact_route_branches)
+        self.assertNotIn("/extract", exact_route_branches)
         self.assertNotIn("/shop", exact_route_branches)
         self.assertNotIn("/metrics", exact_route_branches)
         self.assertNotIn("/taobao", exact_route_branches)
@@ -222,6 +224,7 @@ class RouterTests(unittest.TestCase):
         self.assertIn('if parsed.path.startswith("/api/taobao/"):', source)
         self.assertIn('if parsed.path == "/api/shop-job":', source)
         self.assertIn('if parsed.path == "/api/video-metrics-job":', source)
+        self.assertIn('if parsed.path == "/api/analyze":', source)
 
 
 if __name__ == "__main__":

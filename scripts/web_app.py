@@ -39,6 +39,7 @@ sys.path.insert(0, str(_BOOTSTRAP_SCRIPTS_DIR))
 from core.config import AppConfig
 from core.json_store import atomic_write_json, read_json
 from routes.health import register_health_route
+from routes.extract import register_extract_page
 from routes.harness import register_harness_page
 from routes.lan_chat import register_lan_chat_page
 from routes.metrics import register_metrics_page
@@ -1191,6 +1192,12 @@ register_tool_page(
     inject_nav=inject_unified_nav,
 )
 register_harness_page(WEB_ROUTER, scripts_dir=SCRIPTS_DIR)
+register_extract_page(
+    WEB_ROUTER,
+    template_path=INDEX_HTML_PATH,
+    analysis_mode=lambda: os.getenv("ANALYSIS_MODE", "analyzer"),
+    inject_nav=inject_unified_nav,
+)
 
 
 def inject_proxy_bootstrap(html: str) -> str:
@@ -11095,13 +11102,6 @@ class Handler(BaseHTTPRequestHandler):
             return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
         if parsed.path == "/" or parsed.path == "/chat":
             return serve_chat_template(self, "home", parsed.path)
-        if parsed.path == "/extract":
-            template = INDEX_HTML_PATH.read_text(encoding="utf-8")
-            html = template.replace(
-                "__DEFAULT_ANALYSIS_MODE__",
-                os.getenv("ANALYSIS_MODE", "analyzer"),
-            )
-            return text_response(self, HTTPStatus.OK, inject_unified_nav(html, parsed.path), "text/html; charset=utf-8")
         if parsed.path == "/proxy":
             if not PROXY_POOL_ENABLED:
                 return text_response(self, HTTPStatus.NOT_FOUND, "Not found", "text/plain; charset=utf-8")
