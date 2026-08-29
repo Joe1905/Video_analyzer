@@ -39,8 +39,10 @@ sys.path.insert(0, str(_BOOTSTRAP_SCRIPTS_DIR))
 from core.config import AppConfig
 from core.json_store import atomic_write_json, read_json
 from routes.health import register_health_route
+from routes.lan_chat import register_lan_chat_page
 from routes.report_pages import register_report_pages
 from routes.router import MethodNotAllowed, RouteNotFound, Router
+from routes.tool import register_tool_page
 
 # SociaVault TikTok endpoints (mirrored from sociavault_tiktok.py)
 TIKTOK_ENDPOINTS: dict[str, str] = {
@@ -1170,6 +1172,16 @@ def inject_unified_nav(html: str, current_path: str) -> str:
 
 
 register_report_pages(
+    WEB_ROUTER,
+    scripts_dir=SCRIPTS_DIR,
+    inject_nav=inject_unified_nav,
+)
+register_lan_chat_page(
+    WEB_ROUTER,
+    scripts_dir=SCRIPTS_DIR,
+    inject_nav=inject_unified_nav,
+)
+register_tool_page(
     WEB_ROUTER,
     scripts_dir=SCRIPTS_DIR,
     inject_nav=inject_unified_nav,
@@ -11081,9 +11093,6 @@ class Handler(BaseHTTPRequestHandler):
             return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
         if parsed.path == "/" or parsed.path == "/chat":
             return serve_chat_template(self, "home", parsed.path)
-        if parsed.path == "/lan-chat":
-            lan_chat_html = (SCRIPTS_DIR / "static" / "lan_chat.html").read_text(encoding="utf-8")
-            return text_response(self, HTTPStatus.OK, inject_unified_nav(lan_chat_html, parsed.path), "text/html; charset=utf-8")
         if parsed.path == "/extract":
             template = INDEX_HTML_PATH.read_text(encoding="utf-8")
             html = template.replace(
@@ -11093,9 +11102,6 @@ class Handler(BaseHTTPRequestHandler):
             return text_response(self, HTTPStatus.OK, inject_unified_nav(html, parsed.path), "text/html; charset=utf-8")
         if parsed.path == "/shop":
             return text_response(self, HTTPStatus.OK, inject_unified_nav(SHOP_HTML, parsed.path), "text/html; charset=utf-8")
-        if parsed.path == "/tool":
-            tool_html = (SCRIPTS_DIR / "static" / "tool.html").read_text(encoding="utf-8")
-            return text_response(self, HTTPStatus.OK, inject_unified_nav(tool_html, parsed.path), "text/html; charset=utf-8")
         if parsed.path == "/metrics":
             return text_response(self, HTTPStatus.OK, inject_unified_nav(METRICS_HTML, parsed.path), "text/html; charset=utf-8")
         if parsed.path == "/proxy":

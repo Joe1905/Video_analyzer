@@ -170,7 +170,16 @@ class RouterTests(unittest.TestCase):
             elif isinstance(node, ast.ImportFrom):
                 if node.module == "routes" or bool(node.module and node.module.startswith("routes.")):
                     route_imports.add(node.module)
-        self.assertEqual(route_imports, {"routes.health", "routes.report_pages", "routes.router"})
+        self.assertEqual(
+            route_imports,
+            {
+                "routes.health",
+                "routes.lan_chat",
+                "routes.report_pages",
+                "routes.router",
+                "routes.tool",
+            },
+        )
         handler = next(
             node for node in web_app.body
             if isinstance(node, ast.ClassDef) and node.name == "Handler"
@@ -194,6 +203,11 @@ class RouterTests(unittest.TestCase):
         }
         self.assertNotIn("/report", exact_route_branches)
         self.assertNotIn("/report/player", exact_route_branches)
+        self.assertNotIn("/lan-chat", exact_route_branches)
+        self.assertNotIn("/tool", exact_route_branches)
+        source = (root / "web_app.py").read_text(encoding="utf-8")
+        self.assertIn('parsed.path.startswith("/api/lan-chat/") and handle_lan_chat_get', source)
+        self.assertIn('if parsed.path == "/api/tool/convert":', source)
 
 
 if __name__ == "__main__":
