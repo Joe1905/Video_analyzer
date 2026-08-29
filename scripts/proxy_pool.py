@@ -2507,14 +2507,23 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
         "mihomo_proxy_json": json.dumps(mihomo_proxy, ensure_ascii=False, separators=(",", ":")),
         "updated_at": now,
     }
+    source_changed = False
+    refresh_ip_after_save = False
     with connect() as conn:
         if pool_id:
             exists = conn.execute(
-                "SELECT id FROM proxy_profiles WHERE id = ? AND deleted_at = ''",
+                """SELECT id, source_type, source_uri
+                   FROM proxy_profiles WHERE id = ? AND deleted_at = ''""",
                 (pool_id,),
             ).fetchone()
             if not exists:
                 raise ValueError("proxy profile not found")
+            source_changed = (
+                source_type != str(exists["source_type"] or "")
+                or source_uri != str(exists["source_uri"] or "")
+            )
+            if source_changed and source_type != "direct":
+                values["expected_exit_ip"] = ""
             values["local_port"] = _allocate_port(conn, pool_id)
             conn.execute(
                 """
@@ -2528,6 +2537,28 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
                 """,
                 {**values, "id": pool_id},
             )
+            if source_changed:
+                conn.execute(
+                    """UPDATE proxy_profiles
+                       SET detected_exit_ip = '', detected_country = '', detected_region = '',
+                           detected_city = '', detected_address = '', detected_at = '',
+                           parse_error = '', auto_check_failures = 0,
+                           last_auto_check_at = '', next_auto_check_at = ''
+                       WHERE id = ?""",
+                    (pool_id,),
+                )
+                conn.execute(
+                    """UPDATE tiktok_accounts
+                       SET last_checked_ip = '', last_check_status = ?, last_check_at = '',
+                           last_error = ?, updated_at = ?
+                       WHERE proxy_profile_id = ? AND proxy_bound = 1 AND deleted_at = ''""",
+                    (
+                        "通过" if source_type == "direct" else "待校验",
+                        "" if source_type == "direct" else "代理链接已更新，等待重新校验出口 IP",
+                        now,
+                        pool_id,
+                    ),
+                )
         else:
             values["local_port"] = _allocate_port(conn, 0)
             cur = conn.execute(
@@ -2545,7 +2576,8 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
                 {**values, "created_at": now},
             )
             pool_id = int(cur.lastrowid)
-        duplicate = _duplicate_exit_ip_pool(conn, pool_id, expected_exit_ip)
+            source_changed = source_type != "direct" and bool(source_uri)
+        duplicate = _duplicate_exit_ip_pool(conn, pool_id, str(values["expected_exit_ip"] or ""))
         if duplicate:
             duplicate_reason = _duplicate_exit_ip_reason(duplicate, expected_exit_ip)
             conn.execute(
@@ -2555,6 +2587,12 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
                 (STATUS_DUPLICATE, duplicate_reason, now, pool_id),
             )
         conn.commit()
+    refresh_ip_after_save = bool(
+        source_changed
+        and source_type != "direct"
+        and parse_status == "ok"
+        and normalized_status != STATUS_PAUSED
+    )
     pool = get_pool(pool_id)
     if _sing_box_reality_pool(pool):
         core = ensure_proxy_cores(restart=True, required=True)
@@ -2566,7 +2604,18 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
             core = {"mihomo_sync": _sync_mihomo_pool_config(pool)}
     else:
         core = {}
-    return {"pool": get_pool(pool_id), **list_state(), **core}
+    ip_refresh: dict[str, Any] = {}
+    if refresh_ip_after_save:
+        try:
+            ip_refresh = check_binding({"proxy_profile_id": pool_id, "bind": True})
+        except Exception as exc:
+            ip_refresh = {"allowed": False, "error": str(exc)}
+    return {
+        "pool": get_pool(pool_id),
+        **list_state(),
+        **core,
+        **({"ip_refresh": ip_refresh} if refresh_ip_after_save else {}),
+    }
 
 
 def get_pool(pool_id: int) -> dict[str, Any]:
@@ -4305,10 +4354,16 @@ def check_binding(payload: dict[str, Any], require_account: bool = False) -> dic
                     "expected_exit_ip": str(pool["expected_exit_ip"] or "").strip(),
                 }
         direct = str(pool["source_type"] or "") == "direct"
-        expected_ip = "" if direct else str(pool["expected_exit_ip"] or "").strip()
-        should_bind = str(payload.get("bind") or "").lower() in {"1", "true", "yes", "on"}
-        if not direct and not expected_ip and should_bind:
+        previous_expected_ip = "" if direct else str(pool["expected_exit_ip"] or "").strip()
+        expected_ip = previous_expected_ip
+        bind_value = payload.get("bind")
+        should_bind = not direct and (
+            bind_value is None
+            or str(bind_value).lower() in {"1", "true", "yes", "on"}
+        )
+        if not direct and should_bind:
             expected_ip = observed_ip
+        ip_updated = bool(not direct and should_bind and expected_ip != previous_expected_ip)
         pool_status = _clean_status(pool["status"])
         if direct:
             # Reaching this branch means both the exit-IP lookup and TikTok
@@ -4327,6 +4382,10 @@ def check_binding(payload: dict[str, Any], require_account: bool = False) -> dic
                 reason = f"当前出口 IP {observed_ip} 与绑定 IP {expected_ip} 不一致"
             elif next_pool_status != STATUS_ACTIVE:
                 reason = f"代理状态为 {next_pool_status}"
+            elif ip_updated and previous_expected_ip:
+                reason = f"通过（出口 IP 已从 {previous_expected_ip} 更新为 {expected_ip}）"
+            elif ip_updated:
+                reason = f"通过（出口 IP 已绑定为 {expected_ip}）"
             else:
                 reason = "通过"
             duplicate = _duplicate_exit_ip_pool(conn, int(pool["id"]), observed_ip)
@@ -4355,6 +4414,14 @@ def check_binding(payload: dict[str, Any], require_account: bool = False) -> dic
         resumed = {"publish_jobs": 0, "collect_jobs": 0}
         if allowed:
             resumed = _clear_proxy_recheck(conn, int(pool["id"]), observed_ip, now)
+            if ip_updated:
+                conn.execute(
+                    """UPDATE tiktok_accounts
+                       SET last_checked_ip = ?, last_check_status = '通过', last_check_at = ?,
+                           last_error = '', updated_at = ?
+                       WHERE proxy_profile_id = ? AND proxy_bound = 1 AND deleted_at = ''""",
+                    (observed_ip, now, now, int(pool["id"])),
+                )
         elif next_pool_status == STATUS_ERROR:
             _schedule_proxy_recheck(conn, int(pool["id"]), reason, recheck_token)
         if account is not None:
@@ -4392,6 +4459,8 @@ def check_binding(payload: dict[str, Any], require_account: bool = False) -> dic
             "reason": reason,
             "observed_ip": observed_ip,
             "expected_exit_ip": expected_ip,
+            "previous_expected_exit_ip": previous_expected_ip,
+            "ip_updated": ip_updated,
             "checked_at": now,
             "pool": _row_to_pool(pool),
             "account": _row_to_account(account) if account is not None else None,

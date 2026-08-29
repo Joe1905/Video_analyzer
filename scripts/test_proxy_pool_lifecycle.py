@@ -305,6 +305,108 @@ def test_direct_pool_recovers_after_successful_recheck() -> None:
         assert checked["pool"]["parse_error"] == ""
 
 
+def test_semidynamic_pool_rebinds_changed_ip_on_check() -> None:
+    with isolated_proxy_db():
+        pool = create_manual_pool("semi-dynamic", "203.0.113.70")
+        with proxy_pool.connect() as conn:
+            conn.execute(
+                "UPDATE proxy_profiles SET status = ?, parse_error = ? WHERE id = ?",
+                (proxy_pool.STATUS_ERROR, "old exit changed", pool["id"]),
+            )
+            conn.commit()
+
+        checked = proxy_pool.check_binding({
+            "proxy_profile_id": pool["id"],
+            "observed_ip": "203.0.113.71",
+            "bind": True,
+        })
+        assert checked["allowed"] is True
+        assert checked["ip_updated"] is True
+        assert checked["previous_expected_exit_ip"] == "203.0.113.70"
+        assert checked["expected_exit_ip"] == "203.0.113.71"
+        assert checked["pool"]["status"] == proxy_pool.STATUS_ACTIVE
+        assert checked["pool"]["auto_check_failures"] == 0
+        assert "已从 203.0.113.70 更新为 203.0.113.71" in checked["reason"]
+
+        preflight = proxy_pool.check_binding({
+            "proxy_profile_id": pool["id"],
+            "observed_ip": "203.0.113.72",
+        })
+        assert preflight["allowed"] is True
+        assert preflight["ip_updated"] is True
+        assert preflight["expected_exit_ip"] == "203.0.113.72"
+
+
+def test_background_recheck_rebinds_semidynamic_ip() -> None:
+    with isolated_proxy_db():
+        pool = create_manual_pool("background-refresh", "203.0.113.75")
+        with proxy_pool.connect() as conn:
+            conn.execute(
+                """UPDATE proxy_profiles
+                   SET status = ?, parse_error = ?, next_auto_check_at = ?
+                   WHERE id = ?""",
+                (proxy_pool.STATUS_ERROR, "old exit changed", "2000-01-01T00:00:00Z", pool["id"]),
+            )
+            conn.commit()
+        original_detect = proxy_pool._detect_exit_ip_with_single_repair
+        proxy_pool._detect_exit_ip_with_single_repair = lambda _pool: {
+            "ip": "203.0.113.76",
+            "geo": {"country": "", "region": "", "city": "", "address": ""},
+        }
+        try:
+            result = proxy_pool.recheck_unavailable_proxies()
+        finally:
+            proxy_pool._detect_exit_ip_with_single_repair = original_detect
+
+        assert result["recovered"] == [pool["id"]]
+        assert proxy_pool.get_pool(pool["id"])["expected_exit_ip"] == "203.0.113.76"
+
+
+def test_source_uri_change_refreshes_exit_ip_and_account_state() -> None:
+    with isolated_proxy_db():
+        pool = create_manual_pool("uri-refresh", "203.0.113.80")
+        now = proxy_pool.now_iso()
+        with proxy_pool.connect() as conn:
+            conn.execute(
+                """INSERT INTO tiktok_accounts (
+                       username, proxy_profile_id, proxy_bound, status,
+                       last_checked_ip, last_check_status, created_at, updated_at
+                   ) VALUES (?, ?, 1, ?, ?, '通过', ?, ?)""",
+                (
+                    "uri_refresh_account",
+                    pool["id"],
+                    proxy_pool.ACCOUNT_STATUS_ACTIVE,
+                    "203.0.113.80",
+                    now,
+                    now,
+                ),
+            )
+            conn.commit()
+        original_detect = proxy_pool._detect_exit_ip_with_single_repair
+        proxy_pool._detect_exit_ip_with_single_repair = lambda _pool: {
+            "ip": "203.0.113.81",
+            "geo": {"country": "US", "region": "Texas", "city": "Dallas", "address": "US / Texas / Dallas"},
+        }
+        try:
+            updated = proxy_pool.upsert_pool({
+                "id": pool["id"],
+                "name": pool["name"],
+                "source_type": "vless",
+                "source_uri": "vless://11111111-1111-1111-1111-111111111111@proxy.example:443?security=tls#updated",
+                "status": proxy_pool.STATUS_ACTIVE,
+                "expected_exit_ip": "203.0.113.80",
+            })
+        finally:
+            proxy_pool._detect_exit_ip_with_single_repair = original_detect
+
+        assert updated["ip_refresh"]["allowed"] is True
+        assert updated["ip_refresh"]["ip_updated"] is True
+        assert updated["pool"]["expected_exit_ip"] == "203.0.113.81"
+        account = next(item for item in updated["accounts"] if item["username"] == "uri_refresh_account")
+        assert account["last_checked_ip"] == "203.0.113.81"
+        assert account["last_check_status"] == "通过"
+
+
 def test_stale_mihomo_listener_cleanup_preserves_unmanaged_config() -> None:
     with isolated_proxy_db():
         stale = create_manual_pool("deleted-static", "203.0.113.60")
@@ -415,6 +517,9 @@ def main() -> None:
     test_delete_pool_preserves_archived_history_and_releases_port()
     test_delete_bound_pool_unbinds_account_until_explicit_rebind()
     test_direct_pool_recovers_after_successful_recheck()
+    test_semidynamic_pool_rebinds_changed_ip_on_check()
+    test_background_recheck_rebinds_semidynamic_ip()
+    test_source_uri_change_refreshes_exit_ip_and_account_state()
     test_stale_mihomo_listener_cleanup_preserves_unmanaged_config()
     test_account_state_exposes_instagram_login_without_cookie_value()
     print("proxy pool lifecycle tests passed")
