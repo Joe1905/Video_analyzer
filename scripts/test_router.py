@@ -174,6 +174,7 @@ class RouterTests(unittest.TestCase):
             route_imports,
             {
                 "routes.health",
+                "routes.harness",
                 "routes.lan_chat",
                 "routes.report_pages",
                 "routes.router",
@@ -191,7 +192,7 @@ class RouterTests(unittest.TestCase):
         self.assertTrue(any(
             isinstance(node, ast.If)
             and isinstance(node.test, ast.Compare)
-            and any(isinstance(value, ast.Constant) and value.value == "/harness" for value in node.test.comparators)
+            and any(isinstance(value, ast.Constant) and value.value == "/harness-ca.crt" for value in node.test.comparators)
             for node in ast.walk(get_method)
         ))
         exact_route_branches = {
@@ -205,9 +206,13 @@ class RouterTests(unittest.TestCase):
         self.assertNotIn("/report/player", exact_route_branches)
         self.assertNotIn("/lan-chat", exact_route_branches)
         self.assertNotIn("/tool", exact_route_branches)
+        self.assertNotIn("/harness", exact_route_branches)
         source = (root / "web_app.py").read_text(encoding="utf-8")
         self.assertIn('parsed.path.startswith("/api/lan-chat/") and handle_lan_chat_get', source)
         self.assertIn('if parsed.path == "/api/tool/convert":', source)
+        self.assertIn('if parsed.path == "/harness-ca.crt":', source)
+        self.assertIn('self.send_header("Content-Type", "application/x-x509-ca-cert")', source)
+        self.assertIn('self.send_header("Content-Disposition", \'attachment; filename="harness-internal-ca.crt"\')', source)
 
 
 if __name__ == "__main__":

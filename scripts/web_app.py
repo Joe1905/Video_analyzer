@@ -39,6 +39,7 @@ sys.path.insert(0, str(_BOOTSTRAP_SCRIPTS_DIR))
 from core.config import AppConfig
 from core.json_store import atomic_write_json, read_json
 from routes.health import register_health_route
+from routes.harness import register_harness_page
 from routes.lan_chat import register_lan_chat_page
 from routes.report_pages import register_report_pages
 from routes.router import MethodNotAllowed, RouteNotFound, Router
@@ -1186,6 +1187,7 @@ register_tool_page(
     scripts_dir=SCRIPTS_DIR,
     inject_nav=inject_unified_nav,
 )
+register_harness_page(WEB_ROUTER, scripts_dir=SCRIPTS_DIR)
 
 
 def inject_proxy_bootstrap(html: str) -> str:
@@ -11057,9 +11059,6 @@ class Handler(BaseHTTPRequestHandler):
             pass
         else:
             return route_match.handler(self, route_match.params)
-        if parsed.path == "/harness":
-            page = (SCRIPTS_DIR / "static" / "harness.html").read_text(encoding="utf-8")
-            return text_response(self, HTTPStatus.OK, page, "text/html; charset=utf-8")
         if parsed.path == "/harness-ca.crt":
             certificate = ROOT / "data" / "harness-internal-ca.crt"
             if not certificate.is_file():

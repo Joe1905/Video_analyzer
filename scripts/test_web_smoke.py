@@ -145,6 +145,25 @@ def run_smoke(port: int) -> None:
         assert head_body == b""
         assert "allow" not in head_headers
 
+    status, headers, body = request(port, "GET", "/harness")
+    assert status == 200, (status, body.decode("utf-8", errors="replace"))
+    query_status, query_headers, query_body = request(port, "GET", "/harness?probe=1")
+    assert query_status == status
+    assert query_body == body
+    for key in ("content-type", "content-length", "cache-control", "location"):
+        assert query_headers.get(key) == headers.get(key), key
+    slash_status, slash_headers, slash_body = request(port, "GET", "/harness/")
+    assert_json_error(slash_status, slash_headers, slash_body, 404, "Not found")
+    assert "location" not in slash_headers
+    for method in ("POST", "DELETE"):
+        method_status, method_headers, method_body = request(port, method, "/harness", {} if method == "POST" else None)
+        assert_json_error(method_status, method_headers, method_body, 404, "Not found")
+        assert "allow" not in method_headers
+    head_status, head_headers, head_body = request(port, "HEAD", "/harness")
+    assert head_status == 404
+    assert head_body == b""
+    assert "allow" not in head_headers
+
     for path in ACTIVE_PAGES:
         status, headers, body = request(port, "GET", path)
         assert status == 200, (path, status, body.decode("utf-8", errors="replace"))
