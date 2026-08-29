@@ -200,7 +200,7 @@ HOT_VIDEO_REPORT_ENABLED=0
 | `test_27_presets_mock_boundary.py` | 27 个 SellerSprite 官方预设通过 | mock 开关只注入测试子进程，生产默认仍为 0 |
 | `test_chat_tool_normalization.py` | 活动 provider、工具域与执行边界 | 仅保留当前活动域和通用 unknown fail-closed 契约，完整门禁通过 |
 
-已知的运行时与 UI 红灯已经关闭。统一 HTTP smoke、活动 provider 契约、混合聊天套件拆分和浏览器回归已于 2026-08-28 完成并在服务器 4004 通过全量门禁；退役 provider 测试直接删除，不转成兼容测试。后续若测试矩阵新增红灯，不得笼统标记为“历史问题”后继续重构：每项必须落为活动 V2 套件中的 `pass`，或带有明确外部条件且不掩盖回归的 `skip`。
+已知的运行时与 UI 红灯已经关闭。统一 HTTP smoke、活动 provider 契约、混合聊天套件拆分和浏览器回归已于 2026-08-28 完成并在服务器 4004 通过全量门禁。后续若测试矩阵新增红灯，不得笼统标记为“历史问题”后继续重构：每项必须落为活动 V2 套件中的 `pass`，或带有明确外部条件且不掩盖回归的 `skip`。
 
 ### 4.4 建立测试矩阵
 
@@ -226,13 +226,13 @@ HOT_VIDEO_REPORT_ENABLED=0
 | Phase 0.5A 共享能力中性化 | 已完成 | SellerSprite semantic renderer 输出保持一致；服务器 4004 全量回归全绿 |
 | Phase 0.5B 运行时和仓库资产清理 | 已完成 | 运行时、Bridge/配置、UI/文档三条工作线合并后零残留扫描通过；补齐无外网的核心 workflow HTTP 生命周期 fixture；服务器 4004 全量回归全绿 |
 | Phase 0.5C V2 应用数据清理 | 已完成 | `data/`、`data-dev/`、历史 session/cache/Skill 和旧 `.pyc` 已移出 V2 项目树；项目外备份逐文件校验通过；镜像、运行容器和服务器 4004 再次全量回归全绿 |
-| Phase 0.5D 中性语义边界补漏 | 已完成 | 删除 7 个退役工具的不可达指标规则和 3 个隐藏枚举值；SellerSprite boundary、工具专属审计字段和查询标题规则全部回归 provider adapter；服务器 4004 完整门禁全绿 |
+| Phase 0.5D 中性语义边界补漏 | 已完成 | 删除中性 renderer 中 7 项不可达指标规则和 3 个隐藏枚举值；SellerSprite boundary、工具专属审计字段和查询标题规则全部回归 provider adapter；服务器 4004 完整门禁全绿 |
 | Phase 1.1 `core/http.py` | 已完成 | 五个响应/SSE helper 已迁入纯 stdlib 模块；字节级与黑盒 HTTP 契约已补齐；两次独立服务器全量门禁均全绿 |
 | Phase 1.1R HTTP 断连可靠性补漏 | 已完成 | JSON/text 非流式响应仅在 body 写入阶段忽略客户端断连；序列化/header/SSE 异常语义保持不变；部署后 Playwright 日志零 traceback |
 | Phase 1.2A `core/config.py` 模型与测试 | 已完成 | `6c9731d`；纯 stdlib 不可变配置模型及隔离构造测试通过，服务器完整门禁全绿 |
 | Phase 1.2B 路径配置切换 | 已完成 | `64e63af`；单一 `APP_CONFIG` 接管根路径与测试根路径，服务器完整门禁全绿 |
 | Phase 1.2C 其余导入期配置切换 | 已完成 | `2115c5f`；模块级 `os.getenv` 为 0，函数期动态读取为 56 且基线多重集合不变，服务器完整门禁全绿 |
-| Phase 1.2R 工具目录、外部 provider 与部署边界漏洞收口 | 已完成 | `a30b494`、`afacd7c`；出海匠工具目录五域完整，外部未知/退役 provider 与 4004 部署入口 fail-closed，服务器完整门禁全绿 |
+| Phase 1.2R 工具目录、外部 provider 与部署边界漏洞收口 | 已完成 | `a30b494`、`afacd7c`；出海匠工具目录五域完整，未知外部 provider 与 4004 部署入口 fail-closed，服务器完整门禁全绿 |
 | Phase 1.3A `core/json_store.py` 原子原语与故障注入 | 已完成 | `1f231c4`；纯 stdlib JSON 原语、12 项专项测试和同进程规范化路径写锁通过，服务器完整门禁全绿 |
 | Phase 1.3B `web_app` helper 切换 | 已完成 | `1c630be`；47 个读、10 个原子写、旧 helper 定义 0 的 AST 契约通过，服务器完整门禁全绿 |
 | Phase 1.3C `ChatStore` 只读复用审计 | 已完成（默认不迁移） | session 无末尾换行、debounce、双锁、迁移和异常日志的严格等价契约尚不足；保留领域实现 |
@@ -255,9 +255,9 @@ Phase 0.5B 可以多智能体并行，但文件所有权必须互斥：一条线
 1. Windows 工作树完成 `git diff --check`、Python/Node 语法检查、依赖边界检查和仓库零遗留扫描；本地不构建 Docker。
 2. 源码提交并通过 GitHub 同步到 `/home/openclaw/Video_analyzer-ui-4004`，服务器只使用 `bash scripts/deploy_ui_4004.sh` 构建并部署 4004 专属镜像。
 3. 在新镜像中运行登记的全部确定性 Python 套件、带显式功能开关的专项套件和 Node Bridge 套件；不只运行本阶段改动对应的测试。
-4. 部署后检查 `/healthz`、全部活动页面和 API smoke；未注册路径以及已退役路径必须是无 `Location` 的通用 404。
+4. 部署后检查 `/healthz`、全部活动页面和 API smoke；未注册路径必须是无 `Location` 的通用 404。
 5. 桌面与移动视口分别运行聊天滚动和邻聊上传队列 Playwright 回归，检查浏览器控制台和页面错误。
-6. 检查 4004 容器环境、生效 Compose 配置、进程和近期日志；不得出现退役 provider、启动失败或触碰 4002/4003 的证据。
+6. 检查 4004 容器环境、生效 Compose 配置、进程和近期日志；不得出现未注册 provider、启动失败或触碰 4002/4003 的证据。
 7. 记录镜像 ID、提交 SHA、测试总数和失败数。任一项失败即留在当前阶段修复并重跑完整集合，不得带红灯进入下一阶段。
 
 固定计数口径：Phase 0.5 先在 4004 服务器新镜像中运行 **36 项构建前确定性回归**，即 32 个常规 Python、`test_hot_report_resume.py`、启用 `SELLERSPRITE_TOOL_MOCK_MODE=1` 的 `test_27_presets_mock_boundary.py`，以及 `scripts/test_mcp_bridge_cache.js`、`sellersprite_mcp_chat/test_stdio_mcp_client.js` 两个 Node 门禁；部署后再运行 **2 个 Playwright 脚本**，合计 38 个自动化脚本。Phase 1.1 新增 `test_core_http.py` 和 `test_http_response_contract.py`、Phase 1.2 新增 `test_core_config.py` 后，历史登记门禁为 **39 项构建前确定性回归 + 2 个部署后 Playwright = 41 个自动化脚本**。Phase 1.3 新增 `test_core_json_store.py` 后，当时登记门禁为 **40 项构建前确定性回归 + 2 个部署后 Playwright = 42 个自动化脚本**。Phase 1.R1 新增 `test_deploy_ui_4004_boundary.py` 后，当时登记门禁为 **41 项确定性回归 + 2 个部署后 Playwright = 43 个自动化脚本**。Phase 2.1 新增 `test_router.py` 后，当时登记门禁为 **42 项确定性回归 + 2 个部署后 Playwright = 44 个自动化脚本**。Phase 2.2A 新增 `test_health_route_contract.py` 后，当时登记门禁为 **43 项确定性回归 + 2 个部署后 Playwright = 45 个自动化脚本**。Phase 2.2B-1 新增 `test_report_page_routes_contract.py` 后，当时登记门禁为 **44 项确定性回归 + 2 个部署后 Playwright = 46 个自动化脚本**。Phase 2.2B-2 新增 `test_lan_tool_page_routes_contract.py` 后，当时登记门禁为 **45 项确定性回归 + 2 个部署后 Playwright = 47 个自动化脚本**。Phase 2.2B-3 新增 `test_harness_page_route_contract.py` 后，当时登记门禁为 **46 项确定性回归 + 2 个部署后 Playwright = 48 个自动化脚本**。Phase 2.2B-4 新增 `test_cached_page_routes_contract.py` 后，当时登记门禁为 **47 项确定性回归 + 2 个部署后 Playwright = 49 个自动化脚本**。Phase 2.2B-5 新增 `test_extract_page_route_contract.py` 后，当时登记门禁为 **48 项确定性回归 + 2 个部署后 Playwright = 50 个自动化脚本**。Phase 2.3A 新增 `test_static_asset_contract.py` 与 `test_harness_certificate_contract.py` 后，当前登记门禁为 **50 项确定性回归 + 2 个部署后 Playwright = 52 个自动化脚本**；其中部署边界脚本在服务器源码 checkout 执行，容器内执行 46 个常规确定性 Python、单独以 `HOT_VIDEO_REPORT_ENABLED=1` 和隔离临时根目录执行 `test_hot_report_resume.py`，再执行两个 Node 门禁。其他 smoke 容器显式使用 `HOT_VIDEO_REPORT_ENABLED=0` 与隔离 `APP_TEST_ROOT`。Node stdio 门禁的实际路径为 `sellersprite_mcp_chat/test_stdio_mcp_client.js`。两个 Playwright 都覆盖桌面和移动 viewport。`test_api.py` 是吞异常的固定历史数据探针，`test_low_reasoning_video_insight.py` 会调用付费外部模型且失败仍返回成功，二者只作为人工实验，不计入阶段门禁。
@@ -283,7 +283,7 @@ Phase 1.1 只迁移 `json_response`、`text_response`、`binary_response`、`fil
 
 Phase 1.1 最终证据（2026-08-28）：`6d7a52b` 新增纯 stdlib `scripts/core/http.py`、12 项字节级单测和 HTTP 黑盒契约，`03827ac` 只在 `web_app.py` 增加一次显式导入并删除五个原定义。AST 验收为旧 FunctionDef 0、导入 1、313 个直接调用数保持不变；CodeGraph 已在最终代码上重新同步。A/C 集成提交和 B 调用方切换提交分别在服务器新镜像执行 38 项构建前回归，均为 0 失败；最终部署镜像 `fc57b7755c31` 的 `/healthz`、12 个活动页面、HTTP smoke 和两个桌面/移动 Playwright 全部通过，4002/4003 健康检查仍为 200。部署日志无 import、语法或启动失败；Playwright 导航取消产生的两条 `BrokenPipeError` 为抽取前既有的客户端断连行为，本阶段按行为等价要求保留，后续若要静默应作为独立可靠性改动并单独回归。
 
-2026-08-29 补漏证据：`b957587` 将 SellerSprite 的指标边界、工具专属审计字段、查询标题规则和匿名关键词动态提示全部移回 provider adapter，并从中性 renderer 删除 7 个退役工具规则和 3 个隐藏枚举值；服务器镜像 `4e6701d89667` 通过 38 项确定性回归、2 个 Playwright、12 个活动页面和 4002/4003 隔离检查。`8572f31` 只在 JSON/text 非流式响应的 body 写入阶段捕获 `BrokenPipeError`/`ConnectionResetError`，新增断连与序列化异常单测后服务器镜像 `bb4a08d9e487` 再次通过同一完整门禁；Playwright 后容器日志中的 traceback、BrokenPipe、ConnectionReset、语法和 import 错误匹配数为 0。SSE 断连仍向上传播以终止事件循环，JSON 序列化和 header 异常仍显式失败。
+2026-08-29 补漏证据：`b957587` 将 SellerSprite 的指标边界、工具专属审计字段、查询标题规则和匿名关键词动态提示全部移回 provider adapter，并从中性 renderer 删除 7 项不可达工具规则和 3 个隐藏枚举值；服务器镜像 `4e6701d89667` 通过 38 项确定性回归、2 个 Playwright、12 个活动页面和 4002/4003 隔离检查。`8572f31` 只在 JSON/text 非流式响应的 body 写入阶段捕获 `BrokenPipeError`/`ConnectionResetError`，新增断连与序列化异常单测后服务器镜像 `bb4a08d9e487` 再次通过同一完整门禁；Playwright 后容器日志中的 traceback、BrokenPipe、ConnectionReset、语法和 import 错误匹配数为 0。SSE 断连仍向上传播以终止事件循环，JSON 序列化和 header 异常仍显式失败。
 
 ### 5.2 `core/config.py`
 
@@ -301,7 +301,7 @@ Phase 1.2 已按以下子阶段完成，每个阶段均独立提交并执行当�
 
 Phase 1.2 最终证据（2026-08-29）：`6c9731d`（1.2A）服务器镜像 `5a40219821e279f3c3e7d1bc27a9a2e8053c3efadfe4725ad130874311238577`、`64e63af`（1.2B）服务器镜像 `3923dfaff675cb86f6f98f6c2c4095134ad1a7e7cd11507a96ed61c1edde7c18`、`2115c5f`（1.2C）服务器镜像 `00a5deeca714557a23ebf76df888ee2a1105a0a421bccf9d1f4f8bb091bd37cc` 均通过 **39 项确定性回归 + 2 个 Playwright = 41 项**，失败数为 0。1.2C 的 AST 终审确认模块级 `os.getenv` 为 0、函数期动态读取为 56，读取键的基线多重集合不变。
 
-Phase 1.2R 漏洞收口证据（2026-08-29）：`a30b494` 的服务器镜像为 `sha256:42fd8d8cff7d6d6e3de4c5b17e99dd0cc8fe357d61049e5fa68d762de16041b0`，**39 项确定性回归 + 2 个 Playwright = 41 项**全绿。`/api/chat/tool-catalog` 恢复 200 并包含 system、function、SociaVault、SellerSprite、出海匠五域；全部 10 个外部 chat provider 入口均 fail-closed，unknown/retired provider 在 sessions、messages、catalog、events、ask、export、rename 和删除等读写路径返回 400，内部 `None` 仍归 Home；4004 近期日志异常匹配为 0，4002/4003 健康检查均为 200。
+Phase 1.2R 漏洞收口证据（2026-08-29）：`a30b494` 的服务器镜像为 `sha256:42fd8d8cff7d6d6e3de4c5b17e99dd0cc8fe357d61049e5fa68d762de16041b0`，**39 项确定性回归 + 2 个 Playwright = 41 项**全绿。`/api/chat/tool-catalog` 恢复 200 并包含 system、function、SociaVault、SellerSprite、出海匠五域；全部 10 个外部 chat provider 入口均 fail-closed，未知外部 provider 在 sessions、messages、catalog、events、ask、export、rename 和删除等读写路径返回 400，内部 `None` 仍归 Home；4004 近期日志异常匹配为 0，4002/4003 健康检查均为 200。
 
 部署边界终审发现旧 `UI4004_BRANCH` / `ALLOW_NON_UI4004_BRANCH` 可绕过分支检查后，`afacd7c` 将部署分支硬锁为 `v2` 并增加防回归断言，所有 legacy、非 `v2`、非 4004 项目名和非 4004 端口均在首次 Docker 探测前 fail-closed。最终服务器镜像为 `sha256:2fa76aa8a45faade8cd34af16fc257e9962ba1d24c8669eee29d553cbfb7342e`，再次通过 **39 项确定性回归 + 2 个 Playwright = 41 项**；12 个活动页面全部 200，五域 catalog 与 unknown provider 黑盒检查通过，4004 日志异常匹配为 0，4002/4003/4004 健康检查均为 200。
 
@@ -505,7 +505,7 @@ docker-compose -p short-video-analyzer-ui-4004 run --rm --no-deps \
 
 ```text
 Phase 0 测试基线
-  → Phase 0.5 退役 provider 零兼容清理
+  → Phase 0.5 共享能力中性化与资产清理
     → Phase 1 HTTP/config/store
       → Phase 2 无业务状态路由骨架
         → Phase 3 任务快照与注册表
