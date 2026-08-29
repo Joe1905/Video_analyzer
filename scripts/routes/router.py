@@ -55,6 +55,13 @@ class _Route:
     literal_specificity: int
 
 
+@dataclass(frozen=True)
+class _PrefixRoute:
+    method: str
+    prefix: str
+    handler: Callable[..., object]
+
+
 def _validate_method(method: str, *, registering: bool) -> None:
     if not isinstance(method, str) or not _METHOD_RE.fullmatch(method):
         raise ValueError("method must be an uppercase HTTP token")
@@ -88,6 +95,14 @@ def _validate_path(path: str, *, name: str) -> None:
         raise ValueError(f"{name} must not contain a query string or fragment")
 
 
+def _validate_prefix(prefix: str) -> None:
+    _validate_path(prefix, name="prefix")
+    if prefix == "/" or not prefix.endswith("/"):
+        raise ValueError("prefix must be a non-root path ending in '/'")
+    if any(character in prefix for character in "{}*[]"):
+        raise ValueError("prefix must be literal")
+
+
 def _routes_overlap(left: _Route, right: _Route) -> bool:
     if len(left.segments) != len(right.segments):
         return False
@@ -119,6 +134,7 @@ class Router:
 
     def __init__(self) -> None:
         self._routes: list[_Route] = []
+        self._prefix_routes: list[_PrefixRoute] = []
 
     def add(self, method: str, pattern: str, handler: Callable[..., object]) -> None:
         _validate_method(method, registering=True)
@@ -140,6 +156,15 @@ class Router:
     def get(self, pattern: str, handler: Callable[..., object]) -> None:
         self.add("GET", pattern, handler)
 
+    def get_prefix(self, prefix: str, handler: Callable[..., object]) -> None:
+        """Register a literal GET prefix route with an un-decoded ``suffix`` param."""
+        if not callable(handler):
+            raise TypeError("handler must be callable")
+        _validate_prefix(prefix)
+        if any(route.prefix == prefix for route in self._prefix_routes):
+            raise RouteConflictError(f"conflicting GET prefix route: {prefix}")
+        self._prefix_routes.append(_PrefixRoute("GET", prefix, handler))
+
     def post(self, pattern: str, handler: Callable[..., object]) -> None:
         self.add("POST", pattern, handler)
 
@@ -159,12 +184,31 @@ class Router:
             allowed.add(route.method)
             if route.method == method:
                 matches.append((route, params))
-        if not allowed:
-            raise RouteNotFound(raw_path)
-        if not matches:
+        if matches:
+            route, params = max(matches, key=lambda item: item[0].literal_specificity)
+            return RouteMatch(route.handler, MappingProxyType(params))
+        if allowed:
             allowed_methods = tuple(
                 registered for registered in _REGISTERED_METHODS if registered in allowed
             )
             raise MethodNotAllowed(raw_path, allowed_methods)
-        route, params = max(matches, key=lambda item: item[0].literal_specificity)
-        return RouteMatch(route.handler, MappingProxyType(params))
+        prefix_matches = [
+            route for route in self._prefix_routes if raw_path.startswith(route.prefix)
+        ]
+        matching_prefixes = [
+            route for route in prefix_matches if route.method == method
+        ]
+        if matching_prefixes:
+            route = max(matching_prefixes, key=lambda candidate: len(candidate.prefix))
+            return RouteMatch(
+                route.handler,
+                MappingProxyType({"suffix": raw_path.removeprefix(route.prefix)}),
+            )
+        if prefix_matches:
+            allowed_methods = tuple(
+                registered
+                for registered in _REGISTERED_METHODS
+                if any(route.method == registered for route in prefix_matches)
+            )
+            raise MethodNotAllowed(raw_path, allowed_methods)
+        raise RouteNotFound(raw_path)

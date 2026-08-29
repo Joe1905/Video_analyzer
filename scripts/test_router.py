@@ -123,6 +123,98 @@ class RouterTests(unittest.TestCase):
         with self.assertRaises(RouteNotFound):
             router.resolve("GET", "/missing")
 
+    def test_get_prefix_preserves_raw_suffix_and_uses_longest_match(self) -> None:
+        def assets_handler() -> None:
+            pass
+
+        def vendor_handler() -> None:
+            pass
+
+        for registration in (("assets", "vendor"), ("vendor", "assets")):
+            with self.subTest(registration=registration):
+                router = Router()
+                for route_name in registration:
+                    if route_name == "assets":
+                        router.get_prefix("/assets/", assets_handler)
+                    else:
+                        router.get_prefix("/assets/vendor/", vendor_handler)
+                assets = router.resolve("GET", "/assets/nested//raw%2Fbundle.js")
+                vendor = router.resolve("GET", "/assets/vendor/markdown-it.min.js")
+                empty_suffix = router.resolve("GET", "/assets/")
+                self.assertIs(assets.handler, assets_handler)
+                self.assertEqual(
+                    dict(assets.params), {"suffix": "nested//raw%2Fbundle.js"}
+                )
+                self.assertIs(vendor.handler, vendor_handler)
+                self.assertEqual(dict(vendor.params), {"suffix": "markdown-it.min.js"})
+                self.assertEqual(dict(empty_suffix.params), {"suffix": ""})
+                with self.assertRaises(TypeError):
+                    assets.params["suffix"] = "changed"  # type: ignore[index]
+
+    def test_exact_and_template_routes_take_precedence_over_prefix_routes(self) -> None:
+        for first, second in (("prefix", "routes"), ("routes", "prefix")):
+            with self.subTest(first=first):
+                router = Router()
+
+                def prefix_handler() -> None:
+                    pass
+
+                def exact_handler() -> None:
+                    pass
+
+                def template_handler() -> None:
+                    pass
+
+                for registration in (first, second):
+                    if registration == "prefix":
+                        router.get_prefix("/assets/", prefix_handler)
+                    else:
+                        router.get("/assets/current", exact_handler)
+                        router.get("/assets/{name}", template_handler)
+                self.assertIs(router.resolve("GET", "/assets/current").handler, exact_handler)
+                self.assertIs(router.resolve("GET", "/assets/other").handler, template_handler)
+                prefix_match = router.resolve("GET", "/assets/nested/item")
+                self.assertIs(prefix_match.handler, prefix_handler)
+                self.assertEqual(dict(prefix_match.params), {"suffix": "nested/item"})
+
+        router = Router()
+        router.post("/assets/{name}", _handler)
+        router.delete("/assets/{name}", _handler)
+        router.get_prefix("/assets/", _handler)
+        for method in ("GET", "HEAD"):
+            with self.subTest(method=method), self.assertRaises(MethodNotAllowed) as captured:
+                router.resolve(method, "/assets/current")
+            self.assertEqual(captured.exception.allowed_methods, ("POST", "DELETE"))
+
+    def test_get_prefix_rejects_invalid_or_duplicate_definitions_and_keeps_methods_strict(self) -> None:
+        router = Router()
+        for prefix in (
+            "assets/",
+            "/assets",
+            "/",
+            "/assets?query",
+            "/assets#fragment",
+            "/assets/{name}/",
+            "/assets/*.css",
+            "/assets/[name]/",
+        ):
+            with self.subTest(prefix=prefix):
+                with self.assertRaises(ValueError):
+                    router.get_prefix(prefix, _handler)
+        with self.assertRaises(TypeError):
+            router.get_prefix("/assets/", object())  # type: ignore[arg-type]
+        with self.assertRaises(RouteNotFound):
+            router.resolve("GET", "/assets/item.css")
+        router.get_prefix("/assets/", _handler)
+        with self.assertRaises(RouteConflictError):
+            router.get_prefix("/assets/", _handler)
+        for method in ("POST", "DELETE", "HEAD"):
+            with self.subTest(method=method), self.assertRaises(MethodNotAllowed) as captured:
+                router.resolve(method, "/assets/item.css")
+            self.assertEqual(captured.exception.allowed_methods, ("GET",))
+        with self.assertRaises(RouteNotFound):
+            router.resolve("GET", "/assets")
+
     def test_routes_are_one_way_and_web_app_only_imports_registered_route_modules(self) -> None:
         root = Path(__file__).resolve().parent
         for route_file in (root / "routes").glob("*.py"):
