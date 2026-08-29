@@ -219,6 +219,17 @@ def run_lifecycle() -> None:
             thread.start()
             port = server.server_port
 
+            status, headers, invalid_download = json_request(
+                port, "POST", "/api/download", {"url": "ftp://fixture.invalid/video"}
+            )
+            assert status == 400
+            assert headers.get("content-type") == "application/json; charset=utf-8"
+            assert invalid_download == {"error": "Only http/https short-video URLs are supported"}
+            status, health_headers, health = json_request(port, "GET", "/healthz")
+            assert status == 200
+            assert health_headers.get("content-type") == "application/json; charset=utf-8"
+            assert health == {"status": "ok", "ui_test_mode": True}
+
             status, _headers, download = json_request(
                 port, "POST", "/api/download", {"url": "https://www.tiktok.com/@fixture/video/123"}
             )

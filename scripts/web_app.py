@@ -12123,7 +12123,6 @@ class Handler(BaseHTTPRequestHandler):
             job.log.append(str(exc))
             with download_jobs_lock:
                 download_jobs[job.id] = job
-                write_download_job_log(job)
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
         job = DownloadJob(id=str(uuid.uuid4()), url=url, source=source)
