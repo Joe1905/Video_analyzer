@@ -232,7 +232,17 @@ def assert_public_payloads(web_app: Any, jobs: dict[str, Any]) -> dict[str, dict
         original_log = list(payloads[name]["log"])
         job.log.append("after-snapshot")
         assert payloads[name]["log"] == original_log
-    assert payloads["download"]["result"] is jobs["download"].result
+    download_result = jobs["download"].result
+    assert payloads["download"]["result"] == download_result
+    assert payloads["download"]["result"] is not download_result
+    assert payloads["download"]["result"]["meta"] is not download_result["meta"]
+    assert json.loads(json_body(payloads["download"]))["result"] == download_result
+    payloads["download"]["result"]["meta"]["source"] = "payload-mutated"
+    assert download_result["meta"]["source"] == "fixture"
+    download_result["meta"]["source"] = "job-mutated"
+    assert payloads["download"]["result"]["meta"]["source"] == "payload-mutated"
+    none_result = web_app.DownloadJob(id="download-none", url="https://example.invalid", result=None)
+    assert web_app.public_download_job(none_result)["result"] is None
     assert payloads["shop"]["extract"] == {"items": [{"id": "extract"}]}
     assert payloads["shop"]["analysis"] == {"summary": "analysis"}
     assert payloads["metrics"]["result"] == {"metric": {"views": 7}}

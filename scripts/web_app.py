@@ -4114,7 +4114,7 @@ def public_download_job(job: DownloadJob) -> dict[str, Any]:
         "filename": job.filename,
         "error": job.error,
         "log": job.log[-80:],
-        "result": job.result,
+        "result": copy.deepcopy(job.result),
     }
 
 
