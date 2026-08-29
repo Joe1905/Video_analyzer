@@ -158,6 +158,38 @@ SELLERSPRITE_RENDER_SPECS = {
 }
 SELLERSPRITE_CURRENT_TOOL_NAMES = frozenset(SELLERSPRITE_TOOL_SEMANTICS)
 
+SELLERSPRITE_TOOL_BOUNDARIES = {
+    "keyword_research": (
+        "调用参数中的查询关键词只限定本次检索范围，不自动成为每一条返回记录的关键词名称；每条记录必须以其自身返回的关键词字段识别。",
+        "如果某条记录没有返回关键词名称，该行只能视为匿名候选记录，不得根据指标、排序位置或常识为其补写长尾词名称，也不得把该行指标归到查询主词。",
+    ),
+    "aba_research_monthly": (
+        "头部3个品牌和头部3个亚马逊商品仅代表该关键词返回的头部样本，不能单独证明整个类目的品牌集中度或卖家国别结构。",
+        "关联类目表示关键词可能出现的亚马逊类目，不等同于该类目的市场规模或竞争强度。",
+    ),
+    "keyword_miner": (
+        "商品数是工具口径下的相关商品数量，不是独立卖家数量。供需比是数据平台返回的计算指标，不能改写成搜索量除以卖家数。",
+        "点击集中度描述点击向头部结果集中的程度，不等同于品牌集中度；标题密度也不等同于卖家数量。",
+    ),
+}
+SELLERSPRITE_TOOL_AUDIT_ONLY_FIELDS = {
+    "asin_detail_with_coupon_trend": {"overviews"},
+    "asin_sales_trend": {"overviews"},
+    "traffic_keyword": {"gk_datas"},
+    "traffic_keyword_stat": {"ac", "ad", "er", "fs", "hr", "ns", "sb", "sv"},
+    "traffic_listing": {"symbol"},
+    "traffic_listing_stat": {"relation"},
+}
+SELLERSPRITE_QUERY_TITLE_TOOLS = frozenset({
+    "keyword_research",
+    "keyword_miner",
+    "market_research",
+    "product_research",
+    "competitor_lookup",
+    "google_trend",
+    "trademark_list",
+})
+
 _INTERNAL_CALL_RE = re.compile(r"\bcall:\d+\b")
 _INTERNAL_TOOL_RE = re.compile(r"\bsellersprite__([A-Za-z0-9_]+)\b")
 
@@ -227,6 +259,26 @@ def _business_data(evidence: Mapping[str, Any]) -> Any:
     return None
 
 
+def _sellersprite_boundary_notes(tool_name: str, data: Any) -> tuple[str, ...]:
+    notes = list(SELLERSPRITE_TOOL_BOUNDARIES.get(tool_name, ()))
+    if tool_name != "keyword_research":
+        return tuple(notes)
+    items = data.get("items") if isinstance(data, Mapping) else None
+    if not isinstance(items, list) or not any(isinstance(item, Mapping) for item in items):
+        return tuple(notes)
+    identified = sum(
+        1
+        for item in items
+        if isinstance(item, Mapping)
+        and (item.get("keywords") not in (None, "") or item.get("keyword") not in (None, ""))
+    )
+    if identified < len(items):
+        notes.append(
+            f"本次返回 {len(items)} 条记录，其中 {len(items) - identified} 条没有关键词名称；这些匿名行的数值不得绑定到任何具体关键词。"
+        )
+    return tuple(notes)
+
+
 def render_sellersprite_current_evidence(evidence: Mapping[str, Any]) -> RenderedToolEvidence:
     """Render one current-turn SellerSprite result without dropping fields."""
     full_tool_name = str(evidence.get("tool") or "sellersprite__unknown")
@@ -271,6 +323,21 @@ def render_sellersprite_tool_evidence(entry: Mapping[str, Any]) -> RenderedToolE
         entry,
         render_specs=SELLERSPRITE_RENDER_SPECS,
         strict_contract=True,
+        boundary_notes=_sellersprite_boundary_notes(tool_name, entry.get("business_data")),
+        audit_only_fields=SELLERSPRITE_TOOL_AUDIT_ONLY_FIELDS.get(tool_name, ()),
+        field_exclusion_reasons=(
+            {
+                "items": "关联类型代码尚无经核验的中文业务含义，明细整组仅保留在审计证据中",
+            }
+            if tool_name == "traffic_listing_stat"
+            else None
+        ),
+        field_exclusion_diagnostics=(
+            {"items": f"{tool_name}: 关联类型代码明细仅审计"}
+            if tool_name == "traffic_listing_stat"
+            else None
+        ),
+        include_query_hint_in_title=tool_name in SELLERSPRITE_QUERY_TITLE_TOOLS,
     )
     try:
         result = renderer.render()

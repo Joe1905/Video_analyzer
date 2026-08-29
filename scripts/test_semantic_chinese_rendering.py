@@ -14,10 +14,22 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from semantic_evidence_renderer import localize_semantic_value  # noqa: E402
 from sellersprite_evidence_renderer import (  # noqa: E402
     SELLERSPRITE_CURRENT_TOOL_NAMES,
+    SELLERSPRITE_TOOL_BOUNDARIES,
     SELLERSPRITE_TOOL_TITLES,
     render_sellersprite_evidence_document,
     render_sellersprite_tool_evidence,
 )
+
+
+RETIRED_TOOL_BOUNDARY_NAMES = {
+    "market_category_analysis",
+    "market_category_ranking",
+    "product_creator_analysis",
+    "product_overview",
+    "product_rank_new_listed",
+    "product_rank_top_selling",
+    "product_sales_trend",
+}
 
 
 TECHNICAL_TOKENS = (
@@ -75,6 +87,29 @@ def test_all_registered_tools_use_chinese_business_titles() -> None:
             }
             result = renderer(entry)
             _assert_report_clean(result.markdown)
+
+
+def test_provider_boundaries_are_active_and_absent_from_neutral_renderer() -> None:
+    assert set(SELLERSPRITE_TOOL_BOUNDARIES) <= SELLERSPRITE_CURRENT_TOOL_NAMES
+    neutral_source = (ROOT / "scripts" / "semantic_evidence_renderer.py").read_text(encoding="utf-8")
+    for tool_name in RETIRED_TOOL_BOUNDARY_NAMES:
+        assert tool_name not in neutral_source, tool_name
+
+    result = render_sellersprite_tool_evidence({
+        "source_ref": "call:boundary",
+        "tool_name": "sellersprite__keyword_research",
+        "arguments": {"request": {"marketplace": "US", "keywords": "stroller fan"}},
+        "business_data": {
+            "items": [
+                {"keyword": "stroller fan", "searches": 1200},
+                {"searches": 800},
+            ],
+        },
+        "evidence_fence": {"data_state": "data"},
+    })
+    assert "调用参数中的查询关键词只限定本次检索范围" in result.markdown
+    assert "其中 1 条没有关键词名称" in result.markdown
+    assert not result.unmapped_paths
 
 
 def test_all_registered_tools_naturalize_negative_sentinels() -> None:
@@ -312,6 +347,7 @@ def test_nested_asin_identity_is_naturalized_without_mapping_repr() -> None:
 
 if __name__ == "__main__":
     test_all_registered_tools_use_chinese_business_titles()
+    test_provider_boundaries_are_active_and_absent_from_neutral_renderer()
     test_all_registered_tools_naturalize_negative_sentinels()
     test_sellersprite_problem_fields_and_time_are_naturalized()
     test_sellersprite_prediction_and_unverified_codes_are_isolated()

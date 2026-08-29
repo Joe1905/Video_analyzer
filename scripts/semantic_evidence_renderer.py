@@ -874,14 +874,6 @@ _AUDIT_ONLY_FIELD_KEYS = {
     "image_urls", "keyword_jp", "link", "request_id", "sales_rank_url", "timestamp",
     "tiktok_url", "tool_id", "url_list", "zoom_image_url",
 }
-_TOOL_AUDIT_ONLY_FIELD_KEYS = {
-    "asin_detail_with_coupon_trend": {"overviews"},
-    "asin_sales_trend": {"overviews"},
-    "traffic_keyword": {"gk_datas"},
-    "traffic_keyword_stat": {"ac", "ad", "er", "fs", "hr", "ns", "sb", "sv"},
-    "traffic_listing": {"symbol"},
-    "traffic_listing_stat": {"relation"},
-}
 _INTERNAL_REPORT_KEYS = {
     "source_ref", "source_tool", "source_call_index", "tool_name", "fact_id",
     "input_fact_ids", "evidence_refs", "parser_status", "metric_grain",
@@ -1061,54 +1053,7 @@ _ENUM_VALUE_LABELS = {
         "category": "类目", "product": "商品", "shop": "店铺", "creator": "达人",
         "video": "视频", "live": "直播", "asin": "亚马逊商品编号", "keyword": "关键词", "none": "无单一对象",
     },
-    "metric_grain": {
-        "market_category_ranking": "市场类目榜单",
-        "product_rank_new_listed": "新品榜单商品",
-        "product_rank_top_selling": "热销榜单商品",
-    },
 }
-
-_TOOL_EVIDENCE_BOUNDARIES = {
-    "market_category_ranking": (
-        "类目榜中的视频、直播和其他渠道成交金额占比只描述本周期的成交结构，不能单独证明某渠道驱动了增长、某类商家具有优势或者存在特定流量因果。",
-        "若报告需解释类目增长原因，应另行取得商品、视频、直播或达人粒度证据；未取得时只能描述占比现象。",
-    ),
-    "product_rank_new_listed": (
-        "上架后前3日成交金额和前3日销量是三日累计口径，不是单日或一天内的指标。",
-        "该榜单未返回具体视频、直播或达人证据；不得把新品爆发归因于某个视频、直播间或达人。需解释爆发原因时应先调用对应工具，否则只可标注为待验证假设。",
-    ),
-    "product_rank_top_selling": (
-        "周期销量、销售额和增长率只适用于调用参数指定的地区与周期，不能改写为实时趋势或单日表现。",
-        "该榜单未返回具体视频、直播或达人证据；如未调用对应工具，不得宣称某商品由单一爆款视频、直播或达人驱动。",
-    ),
-    "keyword_research": (
-        "调用参数中的查询关键词只限定本次检索范围，不自动成为每一条返回记录的关键词名称；每条记录必须以其自身返回的关键词字段识别。",
-        "如果某条记录没有返回关键词名称，该行只能视为匿名候选记录，不得根据指标、排序位置或常识为其补写长尾词名称，也不得把该行指标归到查询主词。",
-    ),
-    "aba_research_monthly": (
-        "头部3个品牌和头部3个亚马逊商品仅代表该关键词返回的头部样本，不能单独证明整个类目的品牌集中度或卖家国别结构。",
-        "关联类目表示关键词可能出现的亚马逊类目，不等同于该类目的市场规模或竞争强度。",
-    ),
-    "keyword_miner": (
-        "商品数是工具口径下的相关商品数量，不是独立卖家数量。供需比是数据平台返回的计算指标，不能改写成搜索量除以卖家数。",
-        "点击集中度描述点击向头部结果集中的程度，不等同于品牌集中度；标题密度也不等同于卖家数量。",
-    ),
-    "product_overview": (
-        "广告归因、成交渠道和内容类型是三组并列口径，不能互相替代，也不能据此拼接出“视频种草后由商品卡成交”的因果链。",
-        "广告归因占比为零只表示当前周期没有广告归因流量，不能证明广告花费为零；广告花费应以商品广告投放分析证据为准。",
-        "商品卡占比不能证明流量由达人视频、直播或推荐系统产生。",
-    ),
-    "product_sales_trend": (
-        "每日销量或成交金额的同时变化只能描述时间趋势，不能单独证明由达人视频、直播、广告或其他事件导致。",
-    ),
-    "product_creator_analysis": (
-        "关联达人数量和达人贡献描述已返回的关联结构，不能单独证明全部流量来源或达人内容与销量之间的因果关系。",
-    ),
-    "market_category_analysis": (
-        "类目指标只适用于调用参数中的地区、类目和统计周期，不能直接外推为目标商品自身的表现。",
-    ),
-}
-
 
 def unprefixed_tool_name(tool_name: str) -> str:
     return str(tool_name or "").split("__", 1)[-1]
@@ -1490,6 +1435,11 @@ class SemanticToolRenderer:
         render_specs: Mapping[str, ToolRenderSpec],
         *,
         strict_contract: bool,
+        boundary_notes: Sequence[str] = (),
+        audit_only_fields: Iterable[str] = (),
+        field_exclusion_reasons: Mapping[str, str] | None = None,
+        field_exclusion_diagnostics: Mapping[str, str] | None = None,
+        include_query_hint_in_title: bool = False,
     ) -> None:
         self.entry = dict(entry)
         self.full_tool_name = str(entry.get("tool_name") or "mcp__unknown")
@@ -1500,6 +1450,23 @@ class SemanticToolRenderer:
             ToolRenderSpec(self.tool_name, PROFILE_GENERIC, "reference"),
         )
         self.strict_contract = strict_contract
+        self.boundary_notes = tuple(str(note).strip() for note in boundary_notes if str(note).strip())
+        self.audit_only_fields = {
+            _normalized_field_key(field_name)
+            for field_name in audit_only_fields
+            if str(field_name).strip()
+        }
+        self.field_exclusion_reasons = {
+            _normalized_field_key(field_name): str(reason)
+            for field_name, reason in (field_exclusion_reasons or {}).items()
+            if str(field_name).strip() and str(reason).strip()
+        }
+        self.field_exclusion_diagnostics = {
+            _normalized_field_key(field_name): str(diagnostic)
+            for field_name, diagnostic in (field_exclusion_diagnostics or {}).items()
+            if str(field_name).strip() and str(diagnostic).strip()
+        }
+        self.include_query_hint_in_title = include_query_hint_in_title
         self.nodes: list[EvidenceNode] = []
         self.consumed: set[str] = set()
         self.unmapped: set[str] = set()
@@ -1519,12 +1486,7 @@ class SemanticToolRenderer:
         error = str(self.entry.get("error") or "").strip()
         query_hint = _argument_query_hint(self.entry.get("arguments"))
         evidence_title = self.spec.evidence_title
-        if query_hint and self.tool_name in {
-            "product_search", "shop_search", "creator_search", "video_search", "live_search",
-            "agency_search", "search_category_by_words", "ad_search",
-            "keyword_research", "keyword_miner", "market_research", "product_research",
-            "competitor_lookup", "google_trend", "trademark_list",
-        }:
+        if query_hint and self.include_query_hint_in_title:
             evidence_title = f"{query_hint} · {evidence_title}"
         lines = (
 
@@ -1643,18 +1605,14 @@ class SemanticToolRenderer:
 
     def _strict_label(self, key: str, value: Any, path: str) -> str | None:
         normalized = _normalized_field_key(key)
-        if self.tool_name == "traffic_listing_stat" and normalized == "items":
-            self._exclude_value(
-                value,
-                path,
-                "关联类型代码尚无经核验的中文业务含义，明细整组仅保留在审计证据中",
-            )
-            self.diagnostics.append(f"{self.tool_name}: 关联类型代码明细仅审计")
+        exclusion_reason = self.field_exclusion_reasons.get(normalized)
+        if exclusion_reason:
+            self._exclude_value(value, path, exclusion_reason)
+            diagnostic = self.field_exclusion_diagnostics.get(normalized)
+            if diagnostic:
+                self.diagnostics.append(diagnostic)
             return None
-        if (
-            normalized in _AUDIT_ONLY_FIELD_KEYS
-            or normalized in _TOOL_AUDIT_ONLY_FIELD_KEYS.get(self.tool_name, set())
-        ):
+        if normalized in _AUDIT_ONLY_FIELD_KEYS or normalized in self.audit_only_fields:
             self._exclude_value(value, path, f"{normalized} 仅供接口审计，不参与报告推理")
             return None
         label = _known_field_label(key)
@@ -1789,23 +1747,13 @@ class SemanticToolRenderer:
         return rows
 
     def _tool_boundary_lines(self) -> list[str]:
-        notes = list(_TOOL_EVIDENCE_BOUNDARIES.get(self.tool_name, ()))
-        if self.tool_name == "keyword_research":
-            data = self.entry.get("business_data")
-            items = data.get("items") if isinstance(data, Mapping) else None
-            if isinstance(items, list) and any(isinstance(item, Mapping) for item in items):
-                identified = sum(
-                    1 for item in items
-                    if isinstance(item, Mapping)
-                    and (item.get("keywords") not in (None, "") or item.get("keyword") not in (None, ""))
-                )
-                if identified < len(items):
-                    notes.append(
-                        f"本次返回 {len(items)} 条记录，其中 {len(items) - identified} 条没有关键词名称；这些匿名行的数值不得绑定到任何具体关键词。"
-                    )
-        if not notes:
+        if not self.boundary_notes:
             return []
-        return ["### 指标口径与限制", "", *(f"- {note}" for note in notes)]
+        return [
+            "### 指标口径与限制",
+            "",
+            *(f"- {note}" for note in self.boundary_notes),
+        ]
 
     def _flatten(self, value: Mapping[str, Any], prefix: str = "") -> list[tuple[str, Any]]:
         rows: list[tuple[str, Any]] = []
