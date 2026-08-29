@@ -25,7 +25,10 @@ def json_response(
     for key, value in (headers or {}).items():
         handler.send_header(key, value)
     handler.end_headers()
-    handler.wfile.write(body)
+    try:
+        handler.wfile.write(body)
+    except (BrokenPipeError, ConnectionResetError):
+        pass
 
 
 def text_response(handler: BaseHTTPRequestHandler, status: int, body: str, content_type: str) -> None:
@@ -35,7 +38,10 @@ def text_response(handler: BaseHTTPRequestHandler, status: int, body: str, conte
     handler.send_header("Content-Length", str(len(encoded)))
     handler.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
     handler.end_headers()
-    handler.wfile.write(encoded)
+    try:
+        handler.wfile.write(encoded)
+    except (BrokenPipeError, ConnectionResetError):
+        pass
 
 
 def binary_response(

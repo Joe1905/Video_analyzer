@@ -95,6 +95,34 @@ class CoreHttpTests(unittest.TestCase):
         self.assertEqual(json_handler.wfile.getvalue(), b'{\n  "ok": true\n}')
         self.assertEqual(text_handler.wfile.getvalue(), b"body")
 
+    def test_json_and_text_responses_swallow_disconnects_after_headers(self) -> None:
+        cases = (
+            (
+                "json-broken-pipe",
+                FakeHandler(writer=DisconnectingWriter(BrokenPipeError)),
+                lambda handler: json_response(handler, 200, {"ok": True}),
+            ),
+            (
+                "text-connection-reset",
+                FakeHandler(writer=DisconnectingWriter(ConnectionResetError)),
+                lambda handler: text_response(handler, 200, "body", "text/plain"),
+            ),
+        )
+        for label, handler, send in cases:
+            with self.subTest(label=label):
+                send(handler)
+                self.assertEqual(handler.responses, [200])
+                self.assertEqual(handler.end_headers_count, 1)
+
+    def test_json_serialization_errors_still_propagate_before_headers(self) -> None:
+        handler = FakeHandler()
+
+        with self.assertRaises(TypeError):
+            json_response(handler, 200, {"invalid": object()})
+
+        self.assertEqual(handler.responses, [])
+        self.assertEqual(handler.end_headers_count, 0)
+
     def test_binary_response_honors_head_and_sanitizes_filename(self) -> None:
         handler = FakeHandler(command="HEAD")
 
