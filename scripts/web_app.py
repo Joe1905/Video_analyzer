@@ -288,9 +288,9 @@ DEFAULT_FEEDBACK_PROMPT = """请基于视频提取内容和分析结果，给出
 }"""
 DEFAULT_SOCIA_VAULT_API_BASE = "https://api.sociavault.com"
 VIDEO_INFO_TTL_SECONDS = 24 * 60 * 60
-VIDEO_MEDIA_TTL_SECONDS = int(os.getenv("VIDEO_MEDIA_TTL_SECONDS", "900"))
-SOCIAL_COMMENT_COUNT = int(os.getenv("SOCIAL_COMMENT_COUNT", "50"))
-SOCIAL_API_TIMEOUT = float(os.getenv("SOCIAL_API_TIMEOUT", "45"))
+VIDEO_MEDIA_TTL_SECONDS = APP_CONFIG.video_media_ttl_seconds
+SOCIAL_COMMENT_COUNT = APP_CONFIG.social_comment_count
+SOCIAL_API_TIMEOUT = APP_CONFIG.social_api_timeout
 CHAT_IMAGE_ALLOWED_MIME = {
     "image/png": ".png",
     "image/jpeg": ".jpg",
@@ -298,11 +298,11 @@ CHAT_IMAGE_ALLOWED_MIME = {
     "image/gif": ".gif",
     "image/bmp": ".bmp",
 }
-CHAT_IMAGE_MAX_BYTES = int(os.getenv("CHAT_IMAGE_MAX_BYTES", "6291456"))
-CHAT_IMAGE_MAX_COUNT = int(os.getenv("CHAT_IMAGE_MAX_COUNT", "6"))
-OCR_API_URL = os.getenv("OCR_API_URL", "http://127.0.0.1:4000/v1/ocr/extract")
-OCR_SHARED_DIR = Path(os.getenv("OCR_SHARED_DIR", "/home/openclaw/ocr-shared"))
-OCR_SERVER_SHARED_DIR = os.getenv("OCR_SERVER_SHARED_DIR", "/home/openclaw/ocr-shared").rstrip("/")
+CHAT_IMAGE_MAX_BYTES = APP_CONFIG.chat_image_max_bytes
+CHAT_IMAGE_MAX_COUNT = APP_CONFIG.chat_image_max_count
+OCR_API_URL = APP_CONFIG.ocr_api_url
+OCR_SHARED_DIR = APP_CONFIG.ocr_shared_dir
+OCR_SERVER_SHARED_DIR = APP_CONFIG.ocr_server_shared_dir
 CHAT_ATTACHMENT_DIR = OCR_SHARED_DIR / "incoming" / "chat"
 
 
@@ -412,9 +412,7 @@ social_jobs_running: set[str] = set()
 chat_store = ChatStore(DATA_DIR / "sessions.json")
 lan_chat_store = LanChatStore(DATA_DIR / "lan_chat.sqlite")
 feishu_capability_client = FeishuCapabilityClient()
-FEISHU_DIRECTORY_CACHE_SECONDS = max(
-    1.0, float(os.getenv("FEISHU_DIRECTORY_CACHE_SECONDS", "60"))
-)
+FEISHU_DIRECTORY_CACHE_SECONDS = APP_CONFIG.feishu_directory_cache_seconds
 feishu_directory_cache_lock = threading.Lock()
 feishu_directory_cache_payload: dict[str, Any] | None = None
 feishu_directory_cache_expires_at = 0.0
@@ -769,14 +767,12 @@ CHUHAIJIANG_MCP_TRACE: list[dict[str, Any]] = []
 CHUHAIJIANG_MCP_TRACE_LOCK = threading.Lock()
 CHUHAIJIANG_MCP_AUDIT_DB = CHUHAIJIANG_CHAT_DATA_DIR / "mcp_audit.sqlite"
 CHUHAIJIANG_MCP_AUDIT_LOCK = threading.Lock()
-PROXY_POOL_ENABLED = os.getenv("PROXY_POOL_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
+PROXY_POOL_ENABLED = APP_CONFIG.proxy_pool_enabled
 UI_TEST_MODE_LIVE_WRITE_PREFIXES = ("/api/lan-chat/",)
 UI_CHAT_SCROLL_TEST_SCENARIO = "chat-scroll-regression"
 UI_CHAT_SCROLL_TEST_QUERY = "ui_test_scenario"
 UI_CHAT_SCROLL_TEST_PORT = 4004
-UI_CHAT_SCROLL_TEST_SOURCE_SESSION = os.getenv(
-    "CHAT_SCROLL_TEST_SOURCE_SESSION", "B0GVZ3CWK1"
-).strip() or "B0GVZ3CWK1"
+UI_CHAT_SCROLL_TEST_SOURCE_SESSION = APP_CONFIG.ui_chat_scroll_test_source_session
 UI_CHAT_SCROLL_TEST_SESSION_PREFIX = "ui-scroll-regression-"
 
 

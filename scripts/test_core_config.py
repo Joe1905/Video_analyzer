@@ -14,7 +14,7 @@ from core.config import AppConfig  # noqa: E402
 
 
 WEB_APP_PATH = SCRIPTS_DIR / "web_app.py"
-_PATH_CONFIG_BINDINGS = {
+_MODULE_CONFIG_BINDINGS = {
     "ROOT": "root",
     "UI_TEST_MODE": "ui_test_mode",
     "APP_TEST_ROOT": "app_test_root",
@@ -23,19 +23,17 @@ _PATH_CONFIG_BINDINGS = {
     "VIDEOS_DIR": "videos_dir",
     "OUTPUT_DIR": "output_dir",
     "SCRIPTS_DIR": "scripts_dir",
-}
-_DEFERRED_MODULE_ENV_BINDINGS = {
-    "VIDEO_MEDIA_TTL_SECONDS",
-    "SOCIAL_COMMENT_COUNT",
-    "SOCIAL_API_TIMEOUT",
-    "CHAT_IMAGE_MAX_BYTES",
-    "CHAT_IMAGE_MAX_COUNT",
-    "OCR_API_URL",
-    "OCR_SHARED_DIR",
-    "OCR_SERVER_SHARED_DIR",
-    "FEISHU_DIRECTORY_CACHE_SECONDS",
-    "PROXY_POOL_ENABLED",
-    "UI_CHAT_SCROLL_TEST_SOURCE_SESSION",
+    "VIDEO_MEDIA_TTL_SECONDS": "video_media_ttl_seconds",
+    "SOCIAL_COMMENT_COUNT": "social_comment_count",
+    "SOCIAL_API_TIMEOUT": "social_api_timeout",
+    "CHAT_IMAGE_MAX_BYTES": "chat_image_max_bytes",
+    "CHAT_IMAGE_MAX_COUNT": "chat_image_max_count",
+    "OCR_API_URL": "ocr_api_url",
+    "OCR_SHARED_DIR": "ocr_shared_dir",
+    "OCR_SERVER_SHARED_DIR": "ocr_server_shared_dir",
+    "FEISHU_DIRECTORY_CACHE_SECONDS": "feishu_directory_cache_seconds",
+    "PROXY_POOL_ENABLED": "proxy_pool_enabled",
+    "UI_CHAT_SCROLL_TEST_SOURCE_SESSION": "ui_chat_scroll_test_source_session",
 }
 
 
@@ -82,8 +80,27 @@ def is_app_config_from_env_call(node: ast.AST) -> bool:
     )
 
 
+def getenv_calls_by_scope(tree: ast.Module) -> tuple[list[ast.Call], list[ast.Call]]:
+    parents = {
+        child: parent
+        for parent in ast.walk(tree)
+        for child in ast.iter_child_nodes(parent)
+    }
+    module_calls: list[ast.Call] = []
+    function_calls: list[ast.Call] = []
+    function_scopes = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+    for node in ast.walk(tree):
+        if not is_os_getenv_call(node):
+            continue
+        ancestor = parents.get(node)
+        while ancestor is not None and not isinstance(ancestor, function_scopes):
+            ancestor = parents.get(ancestor)
+        (function_calls if ancestor is not None else module_calls).append(node)
+    return module_calls, function_calls
+
+
 class AppConfigTests(unittest.TestCase):
-    def test_phase_1_2b_web_app_uses_one_explicit_app_config_factory(self) -> None:
+    def test_phase_1_2c_web_app_uses_one_explicit_app_config_factory(self) -> None:
         tree = web_app_module_tree()
         assignments = top_level_assignments(tree)
         factory_calls = [
@@ -94,10 +111,10 @@ class AppConfigTests(unittest.TestCase):
         self.assertIn("APP_CONFIG", assignments)
         self.assertTrue(is_app_config_from_env_call(assignments["APP_CONFIG"]))
 
-    def test_phase_1_2b_web_app_path_globals_are_explicit_app_config_fields(self) -> None:
+    def test_phase_1_2c_web_app_module_globals_are_explicit_app_config_fields(self) -> None:
         assignments = top_level_assignments(web_app_module_tree())
 
-        for name, field_name in _PATH_CONFIG_BINDINGS.items():
+        for name, field_name in _MODULE_CONFIG_BINDINGS.items():
             with self.subTest(name=name):
                 value = assignments.get(name)
                 self.assertIsInstance(value, ast.Attribute)
@@ -109,17 +126,11 @@ class AppConfigTests(unittest.TestCase):
                 self.assertEqual(value.value.id, "APP_CONFIG")
                 self.assertEqual(value.attr, field_name)
 
-    def test_phase_1_2b_only_deferred_module_globals_still_read_environment(self) -> None:
-        assignments = top_level_assignments(web_app_module_tree())
-        getenv_bindings = {
-            name
-            for name, value in assignments.items()
-            if any(is_os_getenv_call(node) for node in ast.walk(value))
-        }
+    def test_phase_1_2c_only_functions_and_methods_keep_dynamic_getenv_reads(self) -> None:
+        module_calls, function_calls = getenv_calls_by_scope(web_app_module_tree())
 
-        self.assertNotIn("UI_TEST_MODE", getenv_bindings)
-        self.assertNotIn("APP_TEST_ROOT", getenv_bindings)
-        self.assertEqual(getenv_bindings, _DEFERRED_MODULE_ENV_BINDINGS)
+        self.assertEqual(module_calls, [])
+        self.assertEqual(len(function_calls), 56)
 
     def test_default_root_uses_current_working_directory(self) -> None:
         config = AppConfig.from_env({})
