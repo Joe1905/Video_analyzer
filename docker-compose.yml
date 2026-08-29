@@ -299,7 +299,7 @@ services:
         all_proxy: ${all_proxy:-}
         NO_PROXY: ${NO_PROXY:-}
         no_proxy: ${no_proxy:-}
-    image: short-video-analyzer:latest
+    image: ${ANALYZER_IMAGE:-short-video-analyzer:latest}
     command: python scripts/sellersprite_redirect.py
     environment:
       WEB_PORT: ${WEB_PORT:-4002}

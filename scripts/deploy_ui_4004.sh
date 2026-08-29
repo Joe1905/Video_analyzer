@@ -11,7 +11,12 @@ if [[ "$legacy_preview" != "0" ]]; then
 fi
 
 env_file="${UI4004_ENV_FILE:-.env}"
-image_name="${ANALYZER_IMAGE:-short-video-analyzer:latest}"
+expected_image="short-video-analyzer-ui-4004:latest"
+image_name="${ANALYZER_IMAGE:-$expected_image}"
+if [[ "$image_name" != "$expected_image" ]]; then
+  echo "Refusing non-4004 analyzer image: $image_name" >&2
+  exit 2
+fi
 current_branch="$(git branch --show-current)"
 if [[ "$current_branch" != "v2" ]]; then
   echo "Refusing 4004 deployment from '$current_branch'; expected 'v2'." >&2
