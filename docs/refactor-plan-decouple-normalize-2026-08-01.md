@@ -43,11 +43,11 @@ git merge-base --is-ancestor b364276 v2
 
 ## 二、当前代码总览
 
-CodeGraph 已在当前运行时代码 `a59baa8` 上重新同步。主要热点如下：
+CodeGraph 已在当前运行时代码 `70f8982` 上重新同步。主要热点如下：
 
 | 文件 | 规模 | 当前职责 | 判断 |
 | --- | ---: | --- | --- |
-| `scripts/web_app.py` | 13,200 行 / 608,872 字节（约 594.60 KiB） | 配置、页面装配、聊天 provider、四类临时任务、下载/店铺/指标/Amazon、遗留 GET/POST 路由、后台线程启动 | 第一重构对象，但必须分批拆；HTTP response/SSE helper、导入期配置、JSON 文件原语、health 与首批日报页面路由已完成抽取 |
+| `scripts/web_app.py` | 13,206 行 / 608,654 字节（约 594.39 KiB） | 配置、页面装配、聊天 provider、四类临时任务、下载/店铺/指标/Amazon、遗留 GET/POST 路由、后台线程启动 | 第一重构对象，但必须分批拆；HTTP response/SSE helper、导入期配置、JSON 文件原语、health 与四个纯页面路由已完成抽取 |
 | `scripts/proxy_pool.py` | 5,319 行 / 238 KB | SQLite schema、代理解析、端口分配、mihomo/sing-box、账号会话、发布、采集、运行时状态 | 独立子系统，应在自己的包内拆分 |
 | `scripts/hot_video_report.py` | 4,032 行 / 178 KB | 日报采集、下载、单视频分析、LLM 摘要、恢复与持久化 | 已有清晰文件边界，先稳定接口，不优先内部大拆 |
 | `scripts/tools.py` | 1,470 行 / 72 KB | 聊天工具归一与执行、视频分析子进程 | 需要把“聊天工具”和“视频执行器”分开 |
@@ -286,6 +286,7 @@ find data -maxdepth 1 -iname '*fastmoss*' -print
 | Phase 2.2A `/healthz` 单路由接线 | 已完成 | `be39cbb`；独立 health route、旧分派 fallback、字节级响应契约，服务器 45 项完整门禁全绿 |
 | Phase 2.2B-0 纯页面只读盘点 | 已完成 | 两个 Terra 只读审计交叉确认读取时机、导航注入、feature flag、重定向、query/尾斜杠与业务状态边界；首批只选择同构的 `/report`、`/report/player` |
 | Phase 2.2B-1 日报纯页面路由 | 已完成 | `a59baa8`；逐请求模板读取与导航注入语义不变，旧内联分支删除，服务器 46 项完整门禁全绿 |
+| Phase 2.2B-2 邻聊与工具纯页面路由 | 已完成 | `70f8982`；按领域建立两个窄 route，只迁移 GET HTML，邻聊与工具 API 边界保持不变，服务器 47 项完整门禁全绿 |
 
 Phase 0.5B 可以多智能体并行，但文件所有权必须互斥：一条线负责 Python 运行时与专用模块，一条线负责 MCP Bridge/Compose/env，一条线负责静态 UI 与受控文档；README、计划文档、资产版本、跨线冲突和最终集成由主任务统一处理。子智能体只运行专项测试，不得独立提交；主任务合并审计后统一提交和部署。
 
@@ -299,7 +300,7 @@ Phase 0.5B 可以多智能体并行，但文件所有权必须互斥：一条线
 6. 检查 4004 容器环境、生效 Compose 配置、进程和近期日志；不得出现退役 provider、启动失败或触碰 4002/4003 的证据。
 7. 记录镜像 ID、提交 SHA、测试总数和失败数。任一项失败即留在当前阶段修复并重跑完整集合，不得带红灯进入下一阶段。
 
-固定计数口径：Phase 0.5 先在 4004 服务器新镜像中运行 **36 项构建前确定性回归**，即 32 个常规 Python、`test_hot_report_resume.py`、启用 `SELLERSPRITE_TOOL_MOCK_MODE=1` 的 `test_27_presets_mock_boundary.py`，以及 `scripts/test_mcp_bridge_cache.js`、`sellersprite_mcp_chat/test_stdio_mcp_client.js` 两个 Node 门禁；部署后再运行 **2 个 Playwright 脚本**，合计 38 个自动化脚本。Phase 1.1 新增 `test_core_http.py` 和 `test_http_response_contract.py`、Phase 1.2 新增 `test_core_config.py` 后，历史登记门禁为 **39 项构建前确定性回归 + 2 个部署后 Playwright = 41 个自动化脚本**。Phase 1.3 新增 `test_core_json_store.py` 后，当时登记门禁为 **40 项构建前确定性回归 + 2 个部署后 Playwright = 42 个自动化脚本**。Phase 1.R1 新增 `test_deploy_ui_4004_boundary.py` 后，当时登记门禁为 **41 项确定性回归 + 2 个部署后 Playwright = 43 个自动化脚本**。Phase 2.1 新增 `test_router.py` 后，当时登记门禁为 **42 项确定性回归 + 2 个部署后 Playwright = 44 个自动化脚本**。Phase 2.2A 新增 `test_health_route_contract.py` 后，当时登记门禁为 **43 项确定性回归 + 2 个部署后 Playwright = 45 个自动化脚本**。Phase 2.2B-1 新增 `test_report_page_routes_contract.py` 后，当前登记门禁为 **44 项确定性回归 + 2 个部署后 Playwright = 46 个自动化脚本**；其中部署边界脚本在服务器源码 checkout 执行，容器内执行 40 个常规确定性 Python、单独以 `HOT_VIDEO_REPORT_ENABLED=1` 和隔离临时根目录执行 `test_hot_report_resume.py`，再执行两个 Node 门禁。其他 smoke 容器显式使用 `HOT_VIDEO_REPORT_ENABLED=0` 与隔离 `APP_TEST_ROOT`。Node stdio 门禁的实际路径为 `sellersprite_mcp_chat/test_stdio_mcp_client.js`。两个 Playwright 都覆盖桌面和移动 viewport。`test_api.py` 是吞异常的固定历史数据探针，`test_low_reasoning_video_insight.py` 会调用付费外部模型且失败仍返回成功，二者只作为人工实验，不计入阶段门禁。
+固定计数口径：Phase 0.5 先在 4004 服务器新镜像中运行 **36 项构建前确定性回归**，即 32 个常规 Python、`test_hot_report_resume.py`、启用 `SELLERSPRITE_TOOL_MOCK_MODE=1` 的 `test_27_presets_mock_boundary.py`，以及 `scripts/test_mcp_bridge_cache.js`、`sellersprite_mcp_chat/test_stdio_mcp_client.js` 两个 Node 门禁；部署后再运行 **2 个 Playwright 脚本**，合计 38 个自动化脚本。Phase 1.1 新增 `test_core_http.py` 和 `test_http_response_contract.py`、Phase 1.2 新增 `test_core_config.py` 后，历史登记门禁为 **39 项构建前确定性回归 + 2 个部署后 Playwright = 41 个自动化脚本**。Phase 1.3 新增 `test_core_json_store.py` 后，当时登记门禁为 **40 项构建前确定性回归 + 2 个部署后 Playwright = 42 个自动化脚本**。Phase 1.R1 新增 `test_deploy_ui_4004_boundary.py` 后，当时登记门禁为 **41 项确定性回归 + 2 个部署后 Playwright = 43 个自动化脚本**。Phase 2.1 新增 `test_router.py` 后，当时登记门禁为 **42 项确定性回归 + 2 个部署后 Playwright = 44 个自动化脚本**。Phase 2.2A 新增 `test_health_route_contract.py` 后，当时登记门禁为 **43 项确定性回归 + 2 个部署后 Playwright = 45 个自动化脚本**。Phase 2.2B-1 新增 `test_report_page_routes_contract.py` 后，当时登记门禁为 **44 项确定性回归 + 2 个部署后 Playwright = 46 个自动化脚本**。Phase 2.2B-2 新增 `test_lan_tool_page_routes_contract.py` 后，当前登记门禁为 **45 项确定性回归 + 2 个部署后 Playwright = 47 个自动化脚本**；其中部署边界脚本在服务器源码 checkout 执行，容器内执行 41 个常规确定性 Python、单独以 `HOT_VIDEO_REPORT_ENABLED=1` 和隔离临时根目录执行 `test_hot_report_resume.py`，再执行两个 Node 门禁。其他 smoke 容器显式使用 `HOT_VIDEO_REPORT_ENABLED=0` 与隔离 `APP_TEST_ROOT`。Node stdio 门禁的实际路径为 `sellersprite_mcp_chat/test_stdio_mcp_client.js`。两个 Playwright 都覆盖桌面和移动 viewport。`test_api.py` 是吞异常的固定历史数据探针，`test_low_reasoning_video_insight.py` 会调用付费外部模型且失败仍返回成功，二者只作为人工实验，不计入阶段门禁。
 
 Phase 0.5 最终证据（2026-08-28）：源码清理提交为 `0618559`，回归夹具修复为 `bd864cd`、`e362e7b`，递归排除历史 Python 字节码的构建修复为 `d1d4d2c`；服务器部署镜像为 `a70c61cd2e9f`。最终 36 项构建前回归失败数为 0，两个部署后 Playwright 均通过；`/healthz` 和 12 个活动页面为 200，旧路径 GET/POST/DELETE 均为无 `Location` 的 404。V2 项目树、镜像、容器环境、生效 Compose 和进程扫描均无旧 provider 残留。项目外回滚备份覆盖 11 组、128 个文件、3,788,317 字节，manifest SHA-256 为 `7f1c552462b943e733424e1f32c1a952a162256d3d247696b23dfdc70c61a91f`；备份保留原权限，未来恢复其中 root 文件时需要 `sudo`。
 
@@ -311,7 +312,7 @@ Phase 0.5 最终证据（2026-08-28）：源码清理提交为 `0618559`，回�
 
 Phase 1.1 只迁移 `json_response`、`text_response`、`binary_response`、`file_response`、`write_sse_event` 五个稳定响应/SSE helper。路由和请求体读取仍留在 `web_app.py`；不得在本阶段移动 `_lan_chat_request_json`、multipart/JSON body 解析、静态资源/视频/附件服务、SSE 生命周期或任何业务异常映射。
 
-按以下互斥边界实施，每个运行时提交后都必须执行当时登记的完整门禁；Phase 1.1 当时登记门禁为 40 个自动化脚本，后续阶段当前登记门禁为 46 个：
+按以下互斥边界实施，每个运行时提交后都必须执行当时登记的完整门禁；Phase 1.1 当时登记门禁为 40 个自动化脚本，后续阶段当前登记门禁为 47 个：
 
 1. **1.1A 新模块与字节级单测：** 只拥有 `scripts/core/http.py`、`scripts/core/__init__.py` 和新建的纯 helper 单测。使用 `FakeHandler`/`BytesIO` 锁定 JSON UTF-8 与缩进、no-cache、HEAD、Range 206/416、RFC 5987 文件名、1 MiB 流式读取、BrokenPipe 行为以及 SSE `data:` 帧和 flush；不导入 `web_app.py`，不产生循环依赖。
 2. **1.1B 调用方替换：** 单独拥有 `scripts/web_app.py`，显式导入上述五个 helper 并逐个替换原定义。AST 终审确认真实直接调用量为 278 个 JSON、13 个 text、12 个 binary、6 个 file 和 4 个 SSE，共 313 个；状态码、headers、异常捕获和 Handler 签名必须保持不变，不改路由条件和业务分支。
@@ -362,7 +363,7 @@ Phase 1.3 最终证据（2026-08-29）：`1f231c4`（1.3A）服务器镜像 `sha
 
 Phase 1 漏洞复审与收口证据（2026-08-29）：`40d2b2e` 让 `deploy_ui_4004.sh` 默认且只允许 `short-video-analyzer-ui-4004:latest`，并在 Docker 探测前拒绝共享/错误标签；通用 Compose 的 analyzer/web 默认保持 `short-video-analyzer:latest`，sellersprite-redirect 只改为可被 `ANALYZER_IMAGE` 覆盖，避免反向污染 4002/4003。首次完整门禁准确捕获了部署测试在容器中不可见 Compose 源码及 `test_proxy_pool_lifecycle.py` 的陈旧共享标签断言；`4f978ea` 将 Compose 静态检查固定为服务器源码 checkout 门禁并更新旧契约，随后完整重跑全绿。历史污染的共享标签已恢复到 4002 正式镜像 `sha256:a5f9a71d4637c408f4fb0f66e940dfa6b3547d85f76fb801b3c5e57fa1c1d39c`，P1 最终 4004 镜像为 `sha256:c3a11ff94fe2127c9148df7f7e0b85c2a9b669988d739ea52a374ceb376e2378`。`2f9502f` 将 `run_amazon_job` 唯一非 helper 写入切换为 `atomic_write_json(result_path, result)`，AST 契约更新为 `read_json` 47、`atomic_write_json` 11、非原子 Amazon JSON 写入 0；P2 最终 4004 镜像为 `sha256:a1d1830cb093faf3af2aaa4a0990d496961805c65264693f5d10cb252cd3681a`。两个收口阶段均分别通过 **41 项确定性回归 + 2 个 Playwright = 43 项**，失败数为 0；最终 12 个活动页面均为 200，4002/4003/4004 健康检查均为 200，未知外部 provider 返回 400，FastMoss GET/POST/DELETE 均为无 `Location` 的 404，容器日志异常匹配为 0。
 
-**Phase 1 整体验收：已完成并通过漏洞复审。** HTTP smoke 与 Phase 0 测试矩阵全绿；最终部署后 `test_web_workflow_lifecycle.py` 连续独立执行两次均通过，确认临时根目录可重复运行；`web_app.py` 仅通过显式 import 使用 `core/http.py`、`core/config.py` 和 `core/json_store.py` 三个 core 模块；对外响应快照无非规范化差异。4004 构建标签与 4002 正式标签已经隔离，Amazon 结果文件不存在半写读取窗口。Phase 2.1 纯 Router、Phase 2.2A `/healthz` 首条运行时接线与 Phase 2.2B-1 日报纯页面首批迁移均已完成，下一步继续 Phase 2.2B 同构页面小批迁移。
+**Phase 1 整体验收：已完成并通过漏洞复审。** HTTP smoke 与 Phase 0 测试矩阵全绿；最终部署后 `test_web_workflow_lifecycle.py` 连续独立执行两次均通过，确认临时根目录可重复运行；`web_app.py` 仅通过显式 import 使用 `core/http.py`、`core/config.py` 和 `core/json_store.py` 三个 core 模块；对外响应快照无非规范化差异。4004 构建标签与 4002 正式标签已经隔离，Amazon 结果文件不存在半写读取窗口。Phase 2.1 纯 Router、Phase 2.2A `/healthz` 首条运行时接线、Phase 2.2B-1 日报页面与 Phase 2.2B-2 邻聊/工具页面迁移均已完成，下一步继续 Phase 2.2B 单页面小批迁移。
 
 ## 六、Phase 2：建立无业务状态的路由骨架
 
@@ -377,11 +378,11 @@ Router 只负责 method/path 匹配、path 参数和 404/405；不得拥有业�
 
 Phase 2.1 已冻结 Router 契约：调用方先 `urlparse` 并只传入未整体解码的 `parsed.path`；query、fragment、尾斜杠、连续斜杠和 percent encoding 不由 Router 规范化。模板只允许完整 `{name}` segment，literal specificity 高者优先且与注册顺序无关；同方法、同 specificity 且可匹配同一路径的模板注册时报冲突，不允许隐式阴影。`resolve` 只返回不可变的 handler/params 匹配结果，不执行 handler；HEAD 不自动回退 GET。`RouteNotFound` 与 `MethodNotAllowed` 只是结构化匹配结果，Phase 2.2 接线不得借此把现有全站 404 擅自改成 405。
 
-按以下子阶段实施，每个子阶段独立提交并执行当前登记的至少 46 脚本门禁；新增专项脚本时同步提高总数：
+按以下子阶段实施，每个子阶段独立提交并执行当前登记的至少 47 脚本门禁；新增专项脚本时同步提高总数：
 
 1. **2.1 Router 匹配与冲突测试（已完成）：** `635c360` 新增 GET/POST/DELETE、根/精确/参数路径、原始编码、404/405、不可变匹配、冲突和注册顺序无关测试；AST 锁定 `routes → web_app` 为 0，且 `web_app` 尚未接入 Router。
 2. **2.2A health 单路由接线（已完成）：** `be39cbb` 只迁移 GET `/healthz`。状态码、JSON 字节、Content-Type、Content-Length 与不存在的 cache header 已冻结；composition root 创建 Router，命中后调用显式 handler，未命中或方法不符继续进入旧分派。POST/DELETE `/healthz` 保持 JSON 404，HEAD 保持空 body 404，未启用全局 405/Allow 或 HEAD fallback。
-3. **2.2B 纯页面分批迁移（进行中）：** 2.2B-0 只读盘点与 2.2B-1 `/report`、`/report/player` 已完成；下一批只处理同为逐请求读模板并注入统一导航的 `/lan-chat`、`/tool`。`/harness` 无导航注入，导入期缓存的 `/shop`、`/metrics`、`/taobao` 读取时机不同，必须分别成批；`/amazon/`、`/chuhaijiang/` 两条显式 307 与其他严格尾斜杠行为必须分别锁定，不做全局 slash 归一化。每迁移一组都用路由表快照确认 URL、method 和 handler 唯一。
+3. **2.2B 纯页面分批迁移（进行中）：** 2.2B-0 只读盘点、2.2B-1 `/report`/`/report/player` 与 2.2B-2 `/lan-chat`/`/tool` 已完成；下一批只处理无导航注入的 `/harness`。导入期缓存的 `/shop`、`/metrics`、`/taobao` 读取时机不同，必须另行审计并分别成批；`/amazon/`、`/chuhaijiang/` 两条显式 307 与其他严格尾斜杠行为必须分别锁定，不做全局 slash 归一化。每迁移一组都用路由表快照确认 URL、method 和 handler 唯一。
 4. **2.3 静态资源：** 只迁移资源定位和 content type 映射，Range/附件/视频仍使用 `core/http.py` 已冻结的 helper；不得把文件系统根目录重新推导一遍。
 
 Phase 2.1 最终证据（2026-08-29）：`635c360` 仅新增 `scripts/routes/__init__.py`、`scripts/routes/router.py` 和 `scripts/test_router.py`，`web_app.py` 零改动、零运行时接线。Router 只依赖 stdlib，不含 store、job、线程、锁、数据库或 provider 配置；11 项专项测试覆盖根路径、GET/POST/DELETE、单/多参数、空段与跨段拒绝、原始 `%2F`、尾斜杠/连续斜杠、不可变结果、非 callable、literal 优先、等 specificity 冲突、404/405 和固定 Allow 顺序。服务器镜像为 `sha256:8ee38e8054c846a052aa9feb7dd96a125c7dc6c1983c44fce0f5abd4116b820e`，完整门禁为 **42 项确定性回归 + 2 个 Playwright = 44 项**，失败数为 0；12 个活动页面均为 200，4002/4003/4004 健康检查均为 200，未知 provider 与 FastMoss 边界全绿，容器日志异常匹配为 0。
@@ -389,6 +390,8 @@ Phase 2.1 最终证据（2026-08-29）：`635c360` 仅新增 `scripts/routes/__i
 Phase 2.2A 最终证据（2026-08-29）：`be39cbb` 新增 `scripts/routes/health.py` 和 `scripts/test_health_route_contract.py`，并只修改 `web_app.py` 的 Router 导入、模块级注册与 `do_GET` 首个分派；`do_POST`、`do_DELETE`、`do_HEAD` 及其余 GET 分支未改。专项测试锁定 UI test true/false 的 44/45 字节 JSON、无尾随换行、Content-Type、Content-Length、无 Cache-Control/Allow、query 等价、严格尾斜杠及非 GET 旧行为。服务器镜像为 `sha256:238f86e11cb404849e77a16c9bed44dabc36d68517ab0ed7b80e973dd04979bc`；完整门禁为 **43 项确定性回归 + 2 个 Playwright = 45 项**，失败数为 0。12 个活动页面均为 200，4002/4003/4004 健康检查均为 200，FastMoss GET/POST/DELETE 均为无 Location 的 404，未知 provider 返回 400，容器最近日志异常匹配为 0；4004 专属镜像与 4002 正式共享标签继续隔离。
 
 Phase 2.2B-1 最终证据（2026-08-29）：`a59baa8` 新增 `scripts/routes/report_pages.py` 与 `scripts/test_report_page_routes_contract.py`，只迁移 GET `/report`、`/report/player` 并删除两个旧内联分支。注册函数只接收 `scripts_dir` 与 `inject_nav` 显式依赖，不导入 `web_app`、store、job、provider 或数据库；每次请求重新读取 UTF-8 模板的时机保持不变。专项测试冻结模板热更新、精确导航路径、响应 header、缺失模板异常传播，smoke 冻结 query 等价与严格尾斜杠 404。服务器镜像为 `sha256:643d1b3e97fafd489b9fad97d74d074a932b5af7cda89939de384bd1a573cd0d`；完整门禁为 **44 项确定性回归 + 2 个 Playwright = 46 项**，失败数为 0。12 个活动页面均为 200，4002/4003/4004 健康检查均为 200，共享正式镜像仍为 `sha256:a5f9a71d4637c408f4fb0f66e940dfa6b3547d85f76fb801b3c5e57fa1c1d39c`，FastMoss 三方法无 `Location` 404，未知 provider 有效 JSON 请求返回 400，最近日志异常匹配为 0。
+
+Phase 2.2B-2 最终证据（2026-08-29）：`70f8982` 新增按领域命名的 `scripts/routes/lan_chat.py`、`scripts/routes/tool.py` 与共享专项脚本 `scripts/test_lan_tool_page_routes_contract.py`，只迁移 GET `/lan-chat`、`/tool`。两个 route 均每请求读取自己的 UTF-8 模板并注入精确路径，不建立通用模板 registry，不导入 `web_app`、store、API、provider 或任务状态；`/api/lan-chat/*`、`/api/tool/convert`、UI_TEST_MODE 写入策略及 HEAD/POST/DELETE 分派保持原位。服务器镜像为 `sha256:205b43a84a366efe69490b5a2314aeac142f7e415c17966387be0f8f97066a46`；完整门禁为 **45 项确定性回归 + 2 个 Playwright = 47 项**，失败数为 0。12 个活动页面均为 200，两页 query 响应体等价且尾斜杠无重定向 404，邻聊 bootstrap 为 200、工具转换 GET 为 404；4002/4003/4004 健康均为 200，共享正式镜像未变化，FastMoss 三方法 404、未知 provider 400、最近日志异常匹配为 0。
 
 **Phase 2 验收：** 新增一个纯页面或静态资源路由不需要编辑 `Handler.do_GET`/`do_POST`；CodeGraph 不存在 `routes → web_app`；原 URL、状态码、Content-Type、缓存 header 和 404/405 行为不变。业务 API 仍留在原位置，等待 Phase 3 的任务边界稳定后按垂直切片迁移。
 
@@ -406,7 +409,7 @@ class JobSnapshot(TypedDict):
     error: str
 ```
 
-按以下子阶段实施，每个子阶段独立提交并执行当前登记的至少 46 脚本门禁：
+按以下子阶段实施，每个子阶段独立提交并执行当前登记的至少 47 脚本门禁：
 
 1. **3.1 快照协议：** 为四类任务分别增加纯 `snapshot()` adapter，逐字段锁定现有 API/SSE 输出；业务专属字段继续由各 adapter 显式补充，不要求共享 dataclass 基类。
 2. **3.2 `JobRegistry`：** 统一锁内注册、查找、日志追加、状态读取和不可变快照；测试并发 append/snapshot、任务不存在和异常后锁释放。Registry 不启动线程、不执行业务命令、不持久化数据库。
@@ -436,7 +439,7 @@ class JobSnapshot(TypedDict):
 
 ## 九、Phase 5：拆分代理子系统
 
-`proxy_pool.py` 不应与普通 web service 一起大搬。按事务边界拆，并在每个子阶段执行当前登记的至少 46 脚本门禁及代理专项故障注入：
+`proxy_pool.py` 不应与普通 web service 一起大搬。按事务边界拆，并在每个子阶段执行当前登记的至少 47 脚本门禁及代理专项故障注入：
 
 1. `proxy/repository.py`：schema、migration、查询、事务函数。
 2. `proxy/nodes.py`：VLESS/VMess/static/direct 解析、端口作用域与序列化。
@@ -473,7 +476,7 @@ class JobSnapshot(TypedDict):
 
 不采用旧计划中单一 `call_llm(prompt, ...)` 覆盖所有调用的方案。统一的应是传输层能力：认证、URL、超时、重试、错误标准化、usage 提取；各调用方继续保留消息结构、system prompt、tools、response format、视觉输入和业务解析。
 
-先为现有 DeepSeek/Qwen 调用补 contract test，再引入 transport adapter。`hot_video_report.py` 保持显式 `max_tokens`，不能依赖隐式默认值。每个 transport/provider/chat 子阶段仍执行当前登记的至少 46 脚本门禁，专项测试不能替代完整门禁。
+先为现有 DeepSeek/Qwen 调用补 contract test，再引入 transport adapter。`hot_video_report.py` 保持显式 `max_tokens`，不能依赖隐式默认值。每个 transport/provider/chat 子阶段仍执行当前登记的至少 47 脚本门禁，专项测试不能替代完整门禁。
 
 Transport 规则必须显式化：只对连接失败、429 和可重试 5xx 在首个响应字节前重试；次数和退避由调用方配置；流式输出开始后不得自动重放；带副作用的工具调用不得由 transport 重试；错误类型和 usage 合并规则对调用方保持兼容。请求快照必须删除认证头、Cookie、真实媒体 URL 和用户内容，只保留合成 fixture。
 
@@ -488,7 +491,7 @@ Transport 规则必须显式化：只对连接失败、429 和可重试 5xx 在�
 - 数据请求、状态 store、drawer workflow 分成小型原生 JS 模块。
 - 共享导航继续由 `ui-system.css/js` 提供。
 
-静态资源变化必须更新 `UI_ASSET_VERSION`。不得借重构恢复任何已退役 provider 页面或拆出三套聊天壳。每个可独立部署的资源拆分子阶段执行当前登记的至少 46 脚本门禁，并检查两个 Playwright 的桌面/移动 viewport、控制台和页面错误。
+静态资源变化必须更新 `UI_ASSET_VERSION`。不得借重构恢复任何已退役 provider 页面或拆出三套聊天壳。每个可独立部署的资源拆分子阶段执行当前登记的至少 47 脚本门禁，并检查两个 Playwright 的桌面/移动 viewport、控制台和页面错误。
 
 **Phase 7 验收：** 代理页桌面/窄屏浏览器回归；无控制台错误；所有写操作仍有确认、禁用和错误反馈。
 
@@ -553,12 +556,12 @@ Phase 0 测试基线
 
 ## 十四、下一批实施任务
 
-Phase 0、0.5、1.1、2026-08-29 两个补漏阶段、Phase 1.2、Phase 1.3、Phase 2.1、Phase 2.2A、**Phase 2.2B-0 与 Phase 2.2B-1** 已完成。下一步实施 **Phase 2.2B-2 `/lan-chat` + `/tool` 同构页面迁移**；不迁移静态资源或任何业务 routes/services。
+Phase 0、0.5、1.1、2026-08-29 两个补漏阶段、Phase 1.2、Phase 1.3、Phase 2.1、Phase 2.2A、**Phase 2.2B-0、B-1 与 B-2** 已完成。下一步实施 **Phase 2.2B-3 `/harness` 单页面迁移**；它没有统一导航注入，必须保持这一差异，不迁移证书下载或任何业务 routes/services。
 
 Phase 2.2B 按以下边界继续复用现有 Terra 子智能体，避免为同一长期任务无限新增执行记录：
 
-1. 复用一个 Terra 先复核 `/lan-chat` 与 `/tool` 的逐请求模板读取、统一导航注入、URL/query/尾斜杠、Content-Type、Cache-Control、模板缺失异常和无业务状态结论；不得修改代码。
-2. 复核无漂移后，只允许另一个 Terra 实现任务持有 `routes`、`web_app.py` 接线与专项测试写权限；不得混入 `/harness`、导入期缓存页面、静态资源、邻聊 API 或工具转换 API。
-3. 主代理复核调用图、旧分派 fallback、测试有效性和用户脏文件边界，执行不少于当前 **44 项确定性回归 + 2 项 Playwright = 46 项** 的完整门禁；新增专项脚本时同步提高门禁总数。
+1. 复用一个 Terra 只读复核 `/harness` 的逐请求模板读取、无导航注入、URL/query/尾斜杠、Content-Type、Cache-Control、模板缺失异常与无业务状态结论；明确 `/harness-ca.crt` 是独立文件下载，不得混迁。
+2. 复核无漂移后，只允许另一个 Terra 实现任务持有单一 harness route、`web_app.py` 接线与专项测试写权限；不得借用需要 `inject_nav` 的页面 helper，也不得修改模板、证书、静态资源或缓存页面。
+3. 主代理复核调用图、旧分派 fallback、测试有效性和用户脏文件边界，执行不少于当前 **45 项确定性回归 + 2 项 Playwright = 47 项** 的完整门禁；新增专项脚本时同步提高门禁总数。
 
-Phase 2.2B-2 门禁未通过前，不启动 2.2B-3 或 Phase 2.3 static。后续预定边界为：2.2B-3 单独迁移无导航的 `/harness`；2.2B-4 再审计导入期缓存的 `/shop`、`/metrics`、`/taobao`，只有读取时机和缺失模板语义分别冻结后才允许成批。仍按纯页面小批 → static → Phase 3 JobRegistry 的顺序推进；不得跳过 Phase 3 直接迁移 Shop/Metrics/Amazon 业务路由。
+Phase 2.2B-3 门禁未通过前，不启动 2.2B-4 或 Phase 2.3 static。B-3 通过后再审计导入期缓存的 `/shop`、`/metrics`、`/taobao`，只有读取时机和缺失模板语义分别冻结后才允许成批。仍按纯页面小批 → static → Phase 3 JobRegistry 的顺序推进；不得跳过 Phase 3 直接迁移 Shop/Metrics/Amazon 业务路由。
