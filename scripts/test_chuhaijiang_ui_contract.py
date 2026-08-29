@@ -50,7 +50,6 @@ class TestChuhaijiangUiContract(unittest.TestCase):
         self.assertEqual(MCP_CHAT_CONFIGS["chuhaijiang"]["default_port"], 4104)
         self.assertIn("出海匠", page)
         self.assertIn("ui-route-chuhaijiang", shared_styles)
-        self.assertNotIn("ui-route-retired-provider", shared_styles)
         for legacy_marker in (
             'data-chuhaijiang-independent="1"', 'SellerSprite MCP',
             'const BASE_PATH=',

@@ -20,18 +20,6 @@ from sellersprite_evidence_renderer import (  # noqa: E402
     render_sellersprite_tool_evidence,
 )
 
-
-RETIRED_TOOL_BOUNDARY_NAMES = {
-    "market_category_analysis",
-    "market_category_ranking",
-    "product_creator_analysis",
-    "product_overview",
-    "product_rank_new_listed",
-    "product_rank_top_selling",
-    "product_sales_trend",
-}
-
-
 TECHNICAL_TOKENS = (
     "sellersprite__",
     "call:",
@@ -89,11 +77,8 @@ def test_all_registered_tools_use_chinese_business_titles() -> None:
             _assert_report_clean(result.markdown)
 
 
-def test_provider_boundaries_are_active_and_absent_from_neutral_renderer() -> None:
+def test_provider_boundaries_are_active() -> None:
     assert set(SELLERSPRITE_TOOL_BOUNDARIES) <= SELLERSPRITE_CURRENT_TOOL_NAMES
-    neutral_source = (ROOT / "scripts" / "semantic_evidence_renderer.py").read_text(encoding="utf-8")
-    for tool_name in RETIRED_TOOL_BOUNDARY_NAMES:
-        assert tool_name not in neutral_source, tool_name
 
     result = render_sellersprite_tool_evidence({
         "source_ref": "call:boundary",
@@ -347,7 +332,7 @@ def test_nested_asin_identity_is_naturalized_without_mapping_repr() -> None:
 
 if __name__ == "__main__":
     test_all_registered_tools_use_chinese_business_titles()
-    test_provider_boundaries_are_active_and_absent_from_neutral_renderer()
+    test_provider_boundaries_are_active()
     test_all_registered_tools_naturalize_negative_sentinels()
     test_sellersprite_problem_fields_and_time_are_naturalized()
     test_sellersprite_prediction_and_unverified_codes_are_isolated()

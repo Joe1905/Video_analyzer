@@ -80,7 +80,7 @@ class TestChuhaijiangBoundary(unittest.TestCase):
         self.assertNotIn('data-chuhaijiang-prompt', chat_html)
 
     def test_external_provider_input_is_fail_closed_without_changing_internal_default(self):
-        """HTTP provider input must not turn a retired/unknown domain into Home."""
+        """HTTP provider input must not turn an unknown external domain into Home."""
         self.assertEqual(web_app.normalize_chat_provider(None), "home")
 
         with self.assertRaises(ValueError):
