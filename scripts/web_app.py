@@ -41,8 +41,11 @@ from core.json_store import atomic_write_json, read_json
 from routes.health import register_health_route
 from routes.harness import register_harness_page
 from routes.lan_chat import register_lan_chat_page
+from routes.metrics import register_metrics_page
 from routes.report_pages import register_report_pages
 from routes.router import MethodNotAllowed, RouteNotFound, Router
+from routes.shop import register_shop_page
+from routes.taobao import register_taobao_page
 from routes.tool import register_tool_page
 
 # SociaVault TikTok endpoints (mirrored from sociavault_tiktok.py)
@@ -11099,16 +11102,10 @@ class Handler(BaseHTTPRequestHandler):
                 os.getenv("ANALYSIS_MODE", "analyzer"),
             )
             return text_response(self, HTTPStatus.OK, inject_unified_nav(html, parsed.path), "text/html; charset=utf-8")
-        if parsed.path == "/shop":
-            return text_response(self, HTTPStatus.OK, inject_unified_nav(SHOP_HTML, parsed.path), "text/html; charset=utf-8")
-        if parsed.path == "/metrics":
-            return text_response(self, HTTPStatus.OK, inject_unified_nav(METRICS_HTML, parsed.path), "text/html; charset=utf-8")
         if parsed.path == "/proxy":
             if not PROXY_POOL_ENABLED:
                 return text_response(self, HTTPStatus.NOT_FOUND, "Not found", "text/plain; charset=utf-8")
             return text_response(self, HTTPStatus.OK, inject_proxy_bootstrap(inject_unified_nav(PROXY_HTML, parsed.path)), "text/html; charset=utf-8")
-        if parsed.path == "/taobao":
-            return text_response(self, HTTPStatus.OK, inject_unified_nav(TAOBAO_HTML, parsed.path), "text/html; charset=utf-8")
         if parsed.path.startswith("/api/taobao/"):
             return self.handle_taobao_api_get(parsed.path, parsed.query)
         if parsed.path.startswith("/api/proxy/"):
@@ -13100,6 +13097,10 @@ PROXY_HTML_PATH = SCRIPTS_DIR / "static" / "proxy.html"
 PROXY_HTML = PROXY_HTML_PATH.read_text(encoding="utf-8") if PROXY_HTML_PATH.is_file() else ""
 TAOBAO_HTML_PATH = SCRIPTS_DIR / "static" / "taobao.html"
 TAOBAO_HTML = TAOBAO_HTML_PATH.read_text(encoding="utf-8") if TAOBAO_HTML_PATH.is_file() else ""
+
+register_shop_page(WEB_ROUTER, html_snapshot=SHOP_HTML, inject_nav=inject_unified_nav)
+register_metrics_page(WEB_ROUTER, html_snapshot=METRICS_HTML, inject_nav=inject_unified_nav)
+register_taobao_page(WEB_ROUTER, html_snapshot=TAOBAO_HTML, inject_nav=inject_unified_nav)
 
 
 def proxy_session_janitor() -> None:
