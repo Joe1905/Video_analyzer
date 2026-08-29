@@ -3,6 +3,7 @@
 import ast
 import sys
 import unittest
+from collections import Counter
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 from types import MappingProxyType
@@ -35,6 +36,48 @@ _MODULE_CONFIG_BINDINGS = {
     "PROXY_POOL_ENABLED": "proxy_pool_enabled",
     "UI_CHAT_SCROLL_TEST_SOURCE_SESSION": "ui_chat_scroll_test_source_session",
 }
+_DYNAMIC_GETENV_KEY_COUNTS = Counter(
+    {
+        "<dynamic>": 6,
+        "AMAZON_MAX_PAGES": 1,
+        "ANALYSIS_MODE": 3,
+        "API_CACHE_TTL_SECONDS": 1,
+        "APP_TEST_PORT_FILE": 1,
+        "CHAT_INTENT_ROUTER_CONFIDENCE": 1,
+        "CHAT_INTENT_ROUTER_ENABLED": 1,
+        "CHAT_INTENT_ROUTER_TIMEOUT_SECONDS": 1,
+        "CHAT_TOOL_MOCK_MODE": 1,
+        "CHUHAIJIANG_DETAIL_CACHE_TTL_SECONDS": 1,
+        "CHUHAIJIANG_MCP_API_KEY": 1,
+        "CHUHAIJIANG_MCP_AUDIT_RETENTION": 1,
+        "CHUHAIJIANG_MCP_URL": 1,
+        "CHUHAIJIANG_QUERY_CACHE_TTL_SECONDS": 1,
+        "DEEPSEEK_API_KEY": 3,
+        "DEEPSEEK_API_URL": 2,
+        "DEEPSEEK_CHAT_MODEL": 2,
+        "DEEPSEEK_REPORT_MODEL": 1,
+        "DEEPSEEK_V4_PRO_MODEL": 1,
+        "DOWNLOAD_COMMAND_TIMEOUT": 1,
+        "HOT_VIDEO_REPORT_SCHEDULER_ENABLED": 1,
+        "REPORT_BOT_TOKEN": 1,
+        "SELLERSPRITE_CACHE_TTL_SECONDS": 1,
+        "SELLERSPRITE_MCP_URL": 1,
+        "SELLERSPRITE_REDIRECT_PORT": 1,
+        "SOCIAVAULT_API_BASE": 4,
+        "SOCIAVAULT_API_KEY": 3,
+        "SOCIAVAULT_BASE_URL": 1,
+        "SOCIAVAULT_MAX_PAGES": 1,
+        "SOCIAVAULT_MCP_COMMAND": 1,
+        "SOCIAVAULT_REGION": 1,
+        "SOCIAVAULT_REVIEW_PAGES": 1,
+        "SOCIAVAULT_TIMEOUT": 1,
+        "SOCIAVAULT_TOOL_ROUTER_CONFIDENCE": 1,
+        "SOCIAVAULT_TOOL_ROUTER_MODE": 1,
+        "TIKTOK_MAX_BYTES": 1,
+        "TIKTOK_PROXY_URL": 2,
+        "WEB_PORT": 2,
+    }
+)
 
 
 def web_app_module_tree() -> ast.Module:
@@ -80,6 +123,16 @@ def is_app_config_from_env_call(node: ast.AST) -> bool:
     )
 
 
+def getenv_key(node: ast.Call) -> str:
+    if (
+        node.args
+        and isinstance(node.args[0], ast.Constant)
+        and isinstance(node.args[0].value, str)
+    ):
+        return node.args[0].value
+    return "<dynamic>"
+
+
 def getenv_calls_by_scope(tree: ast.Module) -> tuple[list[ast.Call], list[ast.Call]]:
     parents = {
         child: parent
@@ -110,6 +163,18 @@ class AppConfigTests(unittest.TestCase):
         self.assertEqual(len(factory_calls), 1)
         self.assertIn("APP_CONFIG", assignments)
         self.assertTrue(is_app_config_from_env_call(assignments["APP_CONFIG"]))
+        factory = factory_calls[0]
+        self.assertEqual(len(factory.args), 1)
+        self.assertIsInstance(factory.args[0], ast.Attribute)
+        if isinstance(factory.args[0], ast.Attribute):
+            self.assertIsInstance(factory.args[0].value, ast.Name)
+            if isinstance(factory.args[0].value, ast.Name):
+                self.assertEqual(factory.args[0].value.id, "os")
+            self.assertEqual(factory.args[0].attr, "environ")
+        self.assertEqual([keyword.arg for keyword in factory.keywords], ["root"])
+        self.assertIsInstance(factory.keywords[0].value, ast.Name)
+        if isinstance(factory.keywords[0].value, ast.Name):
+            self.assertEqual(factory.keywords[0].value.id, "_BOOTSTRAP_ROOT")
 
     def test_phase_1_2c_web_app_module_globals_are_explicit_app_config_fields(self) -> None:
         assignments = top_level_assignments(web_app_module_tree())
@@ -131,6 +196,10 @@ class AppConfigTests(unittest.TestCase):
 
         self.assertEqual(module_calls, [])
         self.assertEqual(len(function_calls), 56)
+        self.assertEqual(
+            Counter(getenv_key(call) for call in function_calls),
+            _DYNAMIC_GETENV_KEY_COUNTS,
+        )
 
     def test_default_root_uses_current_working_directory(self) -> None:
         config = AppConfig.from_env({})

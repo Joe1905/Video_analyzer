@@ -111,6 +111,22 @@ def run_smoke(port: int) -> None:
     assert_json_error(status, headers, body, 404, "Not found")
 
     retired_provider = "fast" + "moss"
+    status, headers, body = request(port, "GET", "/api/chat/tool-catalog?provider=home")
+    assert status == 200, (status, body.decode("utf-8", errors="replace"))
+    assert headers.get("content-type", "").startswith("application/json")
+    catalog = json.loads(body.decode("utf-8"))
+    assert {domain["id"] for domain in catalog["domains"]} == {
+        "system", "function", "sociavault", "sellersprite", "chuhaijiang",
+    }
+
+    for provider in (retired_provider, "unregistered-provider"):
+        for path in (
+            f"/api/chat/sessions?provider={provider}",
+            f"/api/chat/tool-catalog?provider={provider}",
+        ):
+            status, headers, body = request(port, "GET", path)
+            assert_json_error(status, headers, body, 400, "Unknown chat provider")
+
     retired_requests = (
         ("GET", f"/{retired_provider}", None),
         ("GET", f"/{retired_provider}/", None),

@@ -39,6 +39,36 @@ from tools import _filter_relevant_search_results, execute_tool, parse_bing_html
 
 
 
+def test_tool_catalog_groups_chuhaijiang_mcp_tools() -> None:
+    original_list_tools = web_app.list_mcp_bridge_tools
+    web_app.list_mcp_bridge_tools = lambda chat_type: (
+        [{
+            "name": "social_seller",
+            "description": "mock Chuhaijiang catalog tool",
+        }]
+        if chat_type == "chuhaijiang"
+        else []
+    )
+    try:
+        catalog = web_app.build_tool_catalog("chuhaijiang")
+    finally:
+        web_app.list_mcp_bridge_tools = original_list_tools
+
+    domains = {domain["id"]: domain for domain in catalog["domains"]}
+    assert "chuhaijiang" in domains
+    tools = [
+        tool
+        for category in domains["chuhaijiang"]["categories"]
+        for tool in category["tools"]
+    ]
+    assert tools == [{
+        "id": "chuhaijiang__social_seller",
+        "name": "social_seller",
+        "label": web_app.tool_label("social_seller"),
+        "description": "mock Chuhaijiang catalog tool",
+    }]
+
+
 def test_sellersprite_official_skill_chain_loads_full_bundle_and_isolates_tools() -> None:
     assert len(OFFICIAL_SELLERSPRITE_PROMPT_FILES) == 30
     archive_buffer = io.BytesIO()
@@ -1449,6 +1479,7 @@ def test_tool_call_signature_deduplicates_argument_order() -> None:
 
 
 if __name__ == "__main__":
+    test_tool_catalog_groups_chuhaijiang_mcp_tools()
     test_sellersprite_official_skill_chain_loads_full_bundle_and_isolates_tools()
     test_tiktok_search_keeps_analysis_fields()
     test_amazon_keeps_product_fields()

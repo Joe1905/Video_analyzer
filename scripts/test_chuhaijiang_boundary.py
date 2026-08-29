@@ -1,4 +1,6 @@
 """Focused contract tests for the isolated Chuhaijiang provider."""
+import ast
+import io
 import json
 import unittest
 from pathlib import Path
@@ -69,13 +71,79 @@ class TestChuhaijiangBoundary(unittest.TestCase):
         self.assertIn('"chuhaijiang": {"chuhaijiang"}', source)
         self.assertIn('return serve_chat_template(self, "chuhaijiang", parsed.path)', source)
         self.assertNotIn('build_chuhaijiang_independent_template', source)
-        self.assertIn('if provider not in {"home", "amazon", "chuhaijiang"}:', source)
+        self.assertNotIn('if provider not in {"home", "amazon", "chuhaijiang"}:', source)
         self.assertEqual(web_app.CHAT_PROVIDERS, {"home", "amazon", "chuhaijiang"})
         self.assertEqual(
             set(web_app.CHAT_TOOL_DOMAINS),
             {"system", "function", "sociavault", "sellersprite", "chuhaijiang"},
         )
         self.assertNotIn('data-chuhaijiang-prompt', chat_html)
+
+    def test_external_provider_input_is_fail_closed_without_changing_internal_default(self):
+        """HTTP provider input must not turn a retired/unknown domain into Home."""
+        self.assertEqual(web_app.normalize_chat_provider(None), "home")
+
+        for value in ("fast" + "moss", "unregistered-provider"):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    web_app.parse_external_chat_provider(value)
+
+        class FakeHandler:
+            def __init__(self):
+                self.status = None
+                self.headers = {}
+                self.wfile = io.BytesIO()
+
+            def send_response(self, status):
+                self.status = status
+
+            def send_header(self, name, value):
+                self.headers[name.lower()] = value
+
+            def end_headers(self):
+                return None
+
+        handler = FakeHandler()
+        result = web_app.Handler.require_external_chat_provider(
+            handler, "unregistered-provider"
+        )
+        self.assertIsNone(result)
+        self.assertEqual(handler.status, 400)
+        self.assertEqual(
+            json.loads(handler.wfile.getvalue().decode("utf-8")),
+            {"error": "Unknown chat provider"},
+        )
+
+        source = Path(__file__).with_name("web_app.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        expected_handler_calls = {
+            "do_GET": 6,
+            "do_DELETE": 1,
+            "handle_chat_ask": 1,
+            "handle_chat_export_pdf": 1,
+            "handle_chat_rename_session": 1,
+        }
+        handler = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.ClassDef) and node.name == "Handler"
+        )
+        actual_handler_calls = {
+            node.name: sum(
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Attribute)
+                and isinstance(call.func.value, ast.Name)
+                and call.func.value.id == "self"
+                and call.func.attr == "require_external_chat_provider"
+                for call in ast.walk(node)
+            )
+            for node in handler.body
+            if isinstance(node, ast.FunctionDef)
+        }
+        self.assertEqual(
+            {name: actual_handler_calls.get(name, 0) for name in expected_handler_calls},
+            expected_handler_calls,
+        )
 
 
 if __name__ == "__main__":

@@ -333,6 +333,18 @@ def test_v2_sing_box_default_stays_in_4004_project() -> None:
         assert compose.count("TAOBAO_PROXY_PORT_START: ${TAOBAO_PROXY_PORT_START:-19400}") == 2
         assert "WEB_PORT: ${WEB_PORT:-4004}" in compose
 
+    deploy = (ROOT / "scripts" / "deploy_ui_4004.sh").read_text(encoding="utf-8")
+    assert 'legacy_preview="${UI4004_LEGACY_PREVIEW:-0}"' in deploy
+    assert 'expected_branch="${UI4004_BRANCH:-v2}"' in deploy
+    assert 'env_file="${UI4004_ENV_FILE:-.env}"' in deploy
+    assert 'image_name="${ANALYZER_IMAGE:-short-video-analyzer:latest}"' in deploy
+    assert 'compose_args=(-p "$project_name" --env-file "$env_file" -f docker-compose.yml)' in deploy
+    assert 'if [[ "$legacy_preview" != "0" ]]; then' in deploy
+    assert 'if [[ "$project_name" != "short-video-analyzer-ui-4004" ]]; then' in deploy
+    assert 'if [[ "$web_port" != "4004" ]]; then' in deploy
+    assert 'ANALYZER_IMAGE="$image_name" WEB_PORT="$web_port"' in deploy
+    assert "docker-compose.ui-4004.yml" not in deploy
+
 
 def test_port_migration_updates_bound_account_profile() -> None:
     with isolated_proxy_db():

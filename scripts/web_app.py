@@ -899,6 +899,15 @@ def normalize_chat_provider(provider: str | None) -> str:
     return value if value in CHAT_PROVIDERS else "home"
 
 
+def parse_external_chat_provider(provider: str | None) -> str:
+    value = str(provider or "").strip().lower()
+    if not value:
+        return "home"
+    if value not in CHAT_PROVIDERS:
+        raise ValueError("Unknown chat provider")
+    return value
+
+
 def chat_store_for_provider(provider: str | None) -> ChatStore:
     return chat_provider_stores[normalize_chat_provider(provider)]
 
@@ -6689,6 +6698,7 @@ def build_tool_catalog(provider: str) -> dict[str, Any]:
         {"id": "function", "label": "\u529f\u80fd", "categories": []},
         {"id": "sociavault", "label": "SociaVault", "categories": []},
         {"id": "sellersprite", "label": "\u5356\u5bb6\u7cbe\u7075", "categories": []},
+        {"id": "chuhaijiang", "label": "\u51fa\u6d77\u5320", "categories": []},
     ]
     by_domain = {d["id"]: d for d in domains}
     cat_maps: dict[str, dict[str, dict[str, Any]]] = {d["id"]: {} for d in domains}
@@ -11021,6 +11031,13 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
         print(f"{self.address_string()} - {format % args}")
 
+    def require_external_chat_provider(self, provider: str | None) -> str | None:
+        try:
+            return parse_external_chat_provider(provider)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            return None
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         if parsed.path == "/healthz":
@@ -11119,16 +11136,22 @@ class Handler(BaseHTTPRequestHandler):
             return json_response(self, HTTPStatus.OK, {"prompt": load_prompt(), "feedback_prompt": load_feedback_prompt()})
         if parsed.path == "/api/chat/sessions":
             query = parse_qs(parsed.query)
-            provider = normalize_chat_provider(query.get("provider", ["home"])[0])
+            provider = self.require_external_chat_provider(query.get("provider", ["home"])[0])
+            if provider is None:
+                return
             return json_response(self, HTTPStatus.OK, list_public_chat_sessions(
                 provider, query.get("query", [""])[0], current_global_owner_id(self)
             ))
         if parsed.path == "/api/chat/tool-catalog":
-            provider = normalize_chat_provider(parse_qs(parsed.query).get("provider", ["home"])[0])
+            provider = self.require_external_chat_provider(parse_qs(parsed.query).get("provider", ["home"])[0])
+            if provider is None:
+                return
             return json_response(self, HTTPStatus.OK, build_tool_catalog(provider))
         if parsed.path == "/api/chat/mcp-audit":
             query = parse_qs(parsed.query)
-            provider = normalize_chat_provider(query.get("provider", ["home"])[0])
+            provider = self.require_external_chat_provider(query.get("provider", ["home"])[0])
+            if provider is None:
+                return
             if provider != "chuhaijiang":
                 return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Audit trail is only available for chuhaijiang"})
             try:
@@ -11145,7 +11168,9 @@ class Handler(BaseHTTPRequestHandler):
             parts = parsed.path.split("/")
             sid = parts[4] if len(parts) > 4 else ""
             qs = parse_qs(parsed.query)
-            provider = normalize_chat_provider(qs.get("provider", ["home"])[0])
+            provider = self.require_external_chat_provider(qs.get("provider", ["home"])[0])
+            if provider is None:
+                return
             session = provider_display_session(provider, sid, current_global_owner_id(self))
             if not session:
                 return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Session not found"})
@@ -11207,12 +11232,16 @@ class Handler(BaseHTTPRequestHandler):
             })
         if parsed.path == "/api/chat/events":
             qs = parse_qs(parsed.query)
-            provider = normalize_chat_provider(qs.get("provider", ["home"])[0])
+            provider = self.require_external_chat_provider(qs.get("provider", ["home"])[0])
+            if provider is None:
+                return
             sid = qs.get("session", [""])[0]
             return self.stream_chat_events(provider, sid, current_global_owner_id(self))
         if parsed.path.startswith("/api/chat/sessions/") and parsed.path.endswith("/delete"):
             qs = parse_qs(parsed.query)
-            provider = normalize_chat_provider(qs.get("provider", ["home"])[0])
+            provider = self.require_external_chat_provider(qs.get("provider", ["home"])[0])
+            if provider is None:
+                return
             sid = parsed.path.split("/")[4]
             stored_sid = provider_session_exists(provider, sid, current_global_owner_id(self))
             if not stored_sid:
@@ -12037,7 +12066,9 @@ class Handler(BaseHTTPRequestHandler):
             )
         if parsed.path.startswith("/api/chat/sessions/") and parsed.path.endswith("/delete"):
             qs = parse_qs(parsed.query)
-            provider = normalize_chat_provider(qs.get("provider", ["home"])[0])
+            provider = self.require_external_chat_provider(qs.get("provider", ["home"])[0])
+            if provider is None:
+                return
             sid = parsed.path.split("/")[4]
             stored_sid = provider_session_exists(provider, sid, current_global_owner_id(self))
             if not stored_sid:
@@ -12655,13 +12686,13 @@ class Handler(BaseHTTPRequestHandler):
         scroll_test_request = is_ui_chat_scroll_test_request(self)
         try:
             payload = json.loads(body.decode("utf-8") or "{}")
-            provider = normalize_chat_provider(payload.get("provider"))
+            provider = self.require_external_chat_provider(payload.get("provider"))
+            if provider is None:
+                return
             session_id = str(payload.get("sessionId", "default")).strip() or "default"
             text = str(payload.get("message", "")).strip()
             raw_attachments = payload.get("attachments", [])
             official_preset_id = str(payload.get("officialPresetId") or "").strip()
-            if provider not in {"home", "amazon", "chuhaijiang"}:
-                official_preset_id = ""
             preset_catalog = official_preset_catalog_for_provider(provider)
             preset_info = preset_catalog.get(official_preset_id) or {}
             if official_preset_id and not preset_info:
@@ -12819,7 +12850,9 @@ class Handler(BaseHTTPRequestHandler):
         body = self.rfile.read(content_length)
         try:
             payload = json.loads(body.decode("utf-8") or "{}")
-            provider = normalize_chat_provider(payload.get("provider"))
+            provider = self.require_external_chat_provider(payload.get("provider"))
+            if provider is None:
+                return
             session_id = str(payload.get("sessionId", "")).strip()
             message_id = str(payload.get("messageId", "")).strip()
             if not session_id or not message_id:
@@ -12858,7 +12891,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             payload = self.read_json_body()
             new_title = str(payload.get("title") or "").strip()
-            provider = normalize_chat_provider(payload.get("provider"))
+            provider = self.require_external_chat_provider(payload.get("provider"))
+            if provider is None:
+                return
             parts = path.split("/")
             sid = parts[4] if len(parts) > 4 else ""
             if not sid:

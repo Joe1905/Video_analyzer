@@ -4,7 +4,15 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-expected_branch="${UI4004_BRANCH:-codex/ui-beautification-4004}"
+legacy_preview="${UI4004_LEGACY_PREVIEW:-0}"
+if [[ "$legacy_preview" != "0" ]]; then
+  echo "Legacy 4004 preview deployment is disabled; use the canonical v2 environment." >&2
+  exit 2
+fi
+
+expected_branch="${UI4004_BRANCH:-v2}"
+env_file="${UI4004_ENV_FILE:-.env}"
+image_name="${ANALYZER_IMAGE:-short-video-analyzer:latest}"
 current_branch="$(git branch --show-current)"
 if [[ "$current_branch" != "$expected_branch" && "${ALLOW_NON_UI4004_BRANCH:-0}" != "1" ]]; then
   echo "Refusing 4004 deployment from '$current_branch'; expected '$expected_branch'." >&2
@@ -12,12 +20,18 @@ if [[ "$current_branch" != "$expected_branch" && "${ALLOW_NON_UI4004_BRANCH:-0}"
 fi
 
 project_name="${COMPOSE_PROJECT_NAME:-short-video-analyzer-ui-4004}"
-env_file="${UI4004_ENV_FILE:-.env.ui-4004}"
-image_name="${ANALYZER_IMAGE:-short-video-analyzer-ui-4004:latest}"
 web_port="${WEB_PORT:-4004}"
+if [[ "$project_name" != "short-video-analyzer-ui-4004" ]]; then
+  echo "Refusing non-4004 Compose project: $project_name" >&2
+  exit 2
+fi
+if [[ "$web_port" != "4004" ]]; then
+  echo "Refusing non-4004 web port: $web_port" >&2
+  exit 2
+fi
 
 if [[ ! -f "$env_file" ]]; then
-  echo "Missing $env_file. Copy .env.ui-4004.example and merge only the required API settings from the server's existing .env." >&2
+  echo "Missing $env_file for the v2 deployment." >&2
   exit 2
 fi
 if ! grep -Eq '^SOCIAVAULT_API_KEY=.+$' "$env_file"; then
@@ -36,10 +50,10 @@ else
   exit 127
 fi
 
-mkdir -p data-dev videos-dev output-dev data-dev/sing-box data-dev/mcp_tool_cache_shared
+mkdir -p data videos output data/sing-box data/mcp_tool_cache_shared
+compose_args=(-p "$project_name" --env-file "$env_file" -f docker-compose.yml)
 
-compose_args=(-p "$project_name" --env-file "$env_file" -f docker-compose.yml -f docker-compose.ui-4004.yml)
-echo "Building $image_name for isolated 4004 preview..."
+echo "Building $image_name for isolated 4004 v2..."
 build_proxy="${UI4004_BUILD_PROXY:-http://127.0.0.1:7890}"
 docker build --network host \
   --build-arg HTTP_PROXY="$build_proxy" \
@@ -52,9 +66,9 @@ docker build --network host \
 
 echo "Starting only the isolated 4004 web service..."
 if (( legacy_compose )); then
-  "${compose[@]}" "${compose_args[@]}" rm -s -f web >/dev/null 2>&1 || true
+  ANALYZER_IMAGE="$image_name" WEB_PORT="$web_port" "${compose[@]}" "${compose_args[@]}" rm -s -f web >/dev/null 2>&1 || true
 fi
-"${compose[@]}" "${compose_args[@]}" up -d --no-deps --no-build web
+ANALYZER_IMAGE="$image_name" WEB_PORT="$web_port" "${compose[@]}" "${compose_args[@]}" up -d --no-deps --no-build web
 
 health_url="http://127.0.0.1:${web_port}/healthz"
 for attempt in $(seq 1 45); do
