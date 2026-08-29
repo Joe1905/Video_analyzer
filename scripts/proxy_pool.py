@@ -19,6 +19,7 @@ import subprocess
 import threading
 import time
 import uuid
+from functools import wraps
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
@@ -76,10 +77,20 @@ STATUS_ERROR = "不可用"
 STATUS_DUPLICATE = "IP重复"
 _LOGIN_CAPTURE_LOCK = threading.Lock()
 _X_IDLE_LOCK = threading.Lock()
+_MIHOMO_CONFIG_LOCK = threading.RLock()
 
 
 class ProxyConfigurationError(ValueError):
     """Raised when the local proxy core is not configured to load a parsed pool."""
+
+
+def _mihomo_config_locked(function):
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        with _MIHOMO_CONFIG_LOCK:
+            return function(*args, **kwargs)
+
+    return wrapped
 
 
 STATUS_MAP = {
@@ -2722,8 +2733,9 @@ def _restart_sing_box_container(required: bool = False) -> dict[str, Any]:
 
 
 def ensure_proxy_cores(restart: bool = False, required: bool = False) -> dict[str, Any]:
+    mihomo_cleanup = cleanup_stale_mihomo_pool_configs()
     if not _sing_box_reality_enabled():
-        return {"sing_box": {"enabled": False}}
+        return {"sing_box": {"enabled": False}, "mihomo_cleanup": mihomo_cleanup}
     exported = _write_sing_box_config()
     runtime = _restart_sing_box_container(required=required) if restart else {"restarted": False, "containers": []}
     return {
@@ -2732,7 +2744,8 @@ def ensure_proxy_cores(restart: bool = False, required: bool = False) -> dict[st
             "config_path": str(SING_BOX_CONFIG_PATH),
             "pools": exported["pools"],
             **runtime,
-        }
+        },
+        "mihomo_cleanup": mihomo_cleanup,
     }
 
 
@@ -3570,6 +3583,7 @@ def _resolve_system_proxy_dialer(node_name: str) -> str:
     raise ProxyConfigurationError("系统代理策略组嵌套过深")
 
 
+@_mihomo_config_locked
 def _sync_mihomo_pool_config(pool: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     source_type = str(_pool_value(pool, "source_type") or "")
     direct = source_type == "direct"
@@ -3666,12 +3680,133 @@ def ensure_static_proxy_configs() -> dict[str, Any]:
     return {"synced": synced, "errors": errors}
 
 
+def _managed_yaml_pool_id(block: list[str]) -> int:
+    for line in block:
+        match = re.search(r"proxy-pool-managed(?:-[A-Za-z0-9_.-]+)?-id:\s*(\d+)", line)
+        if match:
+            return int(match.group(1))
+    return 0
+
+
+@_mihomo_config_locked
+def cleanup_stale_mihomo_pool_configs() -> dict[str, Any]:
+    """Remove managed Mihomo items that no active pool still owns.
+
+    In particular, a deleted Mihomo listener must not reclaim a port that has
+    since been assigned to a sing-box Reality pool.
+    """
+    config_value = os.getenv("MIHOMO_CONFIG_PATH", "").strip()
+    if not config_value:
+        return {"configured": False, "removed": [], "removed_ports": []}
+    path = Path(config_value)
+    if not path.is_file():
+        return {"configured": False, "removed": [], "removed_ports": []}
+
+    with connect() as conn:
+        pools = conn.execute(
+            """SELECT * FROM proxy_profiles
+               WHERE parse_status = 'ok' AND status <> ? AND deleted_at = ''
+               ORDER BY id""",
+            (STATUS_PAUSED,),
+        ).fetchall()
+    desired_proxies: dict[int, str] = {}
+    desired_listeners: dict[int, tuple[str, int, str]] = {}
+    sing_box_ports: set[int] = set()
+    for pool in pools:
+        pool_id = int(pool["id"])
+        local_port = int(pool["local_port"] or 0)
+        if _sing_box_reality_pool(pool):
+            if local_port:
+                sing_box_ports.add(local_port)
+            continue
+        node_name = _runtime_mihomo_name(pool)
+        if str(pool["source_type"] or "") != "direct":
+            desired_proxies[pool_id] = node_name
+        if local_port:
+            desired_listeners[pool_id] = (
+                _runtime_mihomo_listener_name(pool),
+                local_port,
+                node_name,
+            )
+
+    original = path.read_bytes()
+    mode = path.stat().st_mode & 0o777
+    lines = original.decode("utf-8").splitlines(keepends=True)
+    remove_indexes: set[int] = set()
+    removed: list[dict[str, Any]] = []
+    seen: dict[str, set[int]] = {"proxies": set(), "listeners": set()}
+    for section in ("proxies", "listeners"):
+        start, end = _yaml_section_bounds(lines, section)
+        if start < 0:
+            continue
+        for left, right in _yaml_list_item_ranges(lines, start, end):
+            block = lines[left:right]
+            pool_id = _managed_yaml_pool_id(block)
+            port = _listener_port(block) if section == "listeners" else 0
+            remove = False
+            reason = ""
+            if pool_id:
+                if pool_id in seen[section]:
+                    remove, reason = True, "duplicate"
+                elif section == "proxies":
+                    expected_name = desired_proxies.get(pool_id)
+                    if not expected_name:
+                        remove, reason = True, "deleted_or_sing_box"
+                    elif not _yaml_block_field_matches(block, "name", expected_name):
+                        remove, reason = True, "stale_mapping"
+                else:
+                    expected = desired_listeners.get(pool_id)
+                    if not expected:
+                        remove, reason = True, "deleted_or_sing_box"
+                    elif not (
+                        _yaml_block_field_matches(block, "name", expected[0])
+                        and port == expected[1]
+                        and _yaml_block_field_matches(block, "proxy", expected[2])
+                    ):
+                        remove, reason = True, "stale_mapping"
+                seen[section].add(pool_id)
+            elif section == "listeners" and port in sing_box_ports:
+                # Only remove unmarked legacy listeners that still use the
+                # application's own naming convention.
+                if any("name: tiktok-" in line or 'name: "tiktok-' in line for line in block):
+                    remove, reason = True, "sing_box_port_conflict"
+            if remove:
+                remove_indexes.update(range(left, right))
+                removed.append({
+                    "section": section,
+                    "pool_id": pool_id,
+                    "port": port,
+                    "reason": reason,
+                })
+
+    if not remove_indexes:
+        return {"configured": True, "removed": [], "removed_ports": []}
+    updated = "".join(
+        line for index, line in enumerate(lines) if index not in remove_indexes
+    ).encode("utf-8")
+    backup_path = path.with_name(path.name + ".proxy-pool.bak")
+    _atomic_write(backup_path, original, mode)
+    _atomic_write(path, updated, mode)
+    try:
+        _reload_mihomo_config()
+    except Exception as exc:
+        _restore_mihomo_config(path, original, mode)
+        raise ProxyConfigurationError(f"mihomo 陈旧监听清理失败：{exc}") from exc
+    return {
+        "configured": True,
+        "removed": removed,
+        "removed_ports": sorted({item["port"] for item in removed if item["port"]}),
+        "backup_path": str(backup_path),
+    }
+
+
 def reconcile_mihomo_pool_configs() -> dict[str, Any]:
     """Rebuild every managed Mihomo listener from the persisted pool binding.
 
     A listener can remain open while still pointing at a previous node.  In that
     case a reachability check alone cannot tell Mihomo to replace the mapping.
     """
+    cleanup = cleanup_stale_mihomo_pool_configs()
     with connect() as conn:
         pools = conn.execute(
             """
@@ -3693,9 +3828,10 @@ def reconcile_mihomo_pool_configs() -> dict[str, Any]:
             synced.append(_sync_mihomo_pool_config(pool))
         except Exception as exc:
             errors.append({"id": pool_id, "name": str(pool["name"]), "error": str(exc)})
-    return {"synced": synced, "skipped": skipped, "errors": errors}
+    return {"cleanup": cleanup, "synced": synced, "skipped": skipped, "errors": errors}
 
 
+@_mihomo_config_locked
 def _remove_mihomo_pool_config(
     pool: sqlite3.Row | dict[str, Any],
 ) -> tuple[dict[str, Any], tuple[Path, bytes, int] | None]:
@@ -3729,6 +3865,7 @@ def _remove_mihomo_pool_config(
     }, (path, original, mode)
 
 
+@_mihomo_config_locked
 def _restore_mihomo_listener_config(path: Path, original: bytes, mode: int) -> None:
     _atomic_write(path, original, mode)
     _reload_mihomo_config()
@@ -3771,6 +3908,7 @@ def _mihomo_listener_matches(pool: sqlite3.Row | dict[str, Any]) -> bool:
     return False
 
 
+@_mihomo_config_locked
 def _remove_mihomo_listener_config(
     required_port: int,
 ) -> tuple[dict[str, Any], tuple[Path, bytes, int] | None]:
@@ -3789,20 +3927,14 @@ def _remove_mihomo_listener_config(
     original = path.read_bytes()
     mode = path.stat().st_mode & 0o777
     lines = original.decode("utf-8").splitlines(keepends=True)
-    start = next((index for index, line in enumerate(lines) if line.startswith("listeners:")), -1)
+    start, end = _yaml_section_bounds(lines, "listeners")
     if start < 0:
         if _port_open("127.0.0.1", required_port, timeout=0.5):
             raise ValueError(f"mihomo 仍监听 {required_port}，但配置中找不到 listeners 段")
         return {"configured": True, "removed_ports": []}, None
-    end = next(
-        (index for index in range(start + 1, len(lines)) if re.match(r"^[A-Za-z0-9_-]+:", lines[index])),
-        len(lines),
-    )
-    item_starts = [index for index in range(start + 1, end) if lines[index].startswith("-")]
     remove_ranges: list[tuple[int, int]] = []
     removed_ports: list[int] = []
-    for position, item_start in enumerate(item_starts):
-        item_end = item_starts[position + 1] if position + 1 < len(item_starts) else end
+    for item_start, item_end in _yaml_list_item_ranges(lines, start, end):
         port = _listener_port(lines[item_start:item_end])
         if port == required_port:
             remove_ranges.append((item_start, item_end))

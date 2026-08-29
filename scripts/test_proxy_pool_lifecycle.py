@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import sys
 import tempfile
@@ -304,6 +305,54 @@ def test_direct_pool_recovers_after_successful_recheck() -> None:
         assert checked["pool"]["parse_error"] == ""
 
 
+def test_stale_mihomo_listener_cleanup_preserves_unmanaged_config() -> None:
+    with isolated_proxy_db():
+        stale = create_manual_pool("deleted-static", "203.0.113.60")
+        with proxy_pool.connect() as conn:
+            conn.execute(
+                "UPDATE proxy_profiles SET status = ?, deleted_at = ? WHERE id = ?",
+                (proxy_pool.STATUS_PAUSED, proxy_pool.now_iso(), stale["id"]),
+            )
+            conn.commit()
+        config_path = proxy_pool.DATA_DIR / "mihomo.yaml"
+        config_path.write_text(
+            f"""mode: global
+listeners:
+  - name: user-listener
+    type: mixed
+    port: 18080
+    proxy: DIRECT
+  - name: tiktok-stale
+    type: mixed
+    port: 18901
+    proxy: stale-node
+    # proxy-pool-managed-formal-id: {stale['id']}
+profile:
+  store-selected: true
+""",
+            encoding="utf-8",
+        )
+        original_path = os.environ.get("MIHOMO_CONFIG_PATH")
+        original_reload = proxy_pool._reload_mihomo_config
+        os.environ["MIHOMO_CONFIG_PATH"] = str(config_path)
+        proxy_pool._reload_mihomo_config = lambda: {"reloaded": True}
+        try:
+            cleaned = proxy_pool.cleanup_stale_mihomo_pool_configs()
+            text = config_path.read_text(encoding="utf-8")
+            assert cleaned["removed_ports"] == [18901]
+            assert "tiktok-stale" not in text
+            assert "user-listener" in text
+            assert "mode: global" in text
+            assert "store-selected: true" in text
+            assert proxy_pool.cleanup_stale_mihomo_pool_configs()["removed"] == []
+        finally:
+            proxy_pool._reload_mihomo_config = original_reload
+            if original_path is None:
+                os.environ.pop("MIHOMO_CONFIG_PATH", None)
+            else:
+                os.environ["MIHOMO_CONFIG_PATH"] = original_path
+
+
 def test_account_state_exposes_instagram_login_without_cookie_value() -> None:
     with isolated_proxy_db():
         pool = create_manual_pool("instagram", "203.0.113.40")
@@ -366,6 +415,7 @@ def main() -> None:
     test_delete_pool_preserves_archived_history_and_releases_port()
     test_delete_bound_pool_unbinds_account_until_explicit_rebind()
     test_direct_pool_recovers_after_successful_recheck()
+    test_stale_mihomo_listener_cleanup_preserves_unmanaged_config()
     test_account_state_exposes_instagram_login_without_cookie_value()
     print("proxy pool lifecycle tests passed")
 
