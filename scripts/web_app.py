@@ -47,6 +47,7 @@ from routes.metrics import register_metrics_page
 from routes.report_pages import register_report_pages
 from routes.router import MethodNotAllowed, RouteNotFound, Router
 from routes.shop import register_shop_page
+from routes.static_assets import register_static_asset_route
 from routes.taobao import register_taobao_page
 from routes.tool import register_tool_page
 
@@ -1196,6 +1197,11 @@ register_harness_page(WEB_ROUTER, scripts_dir=SCRIPTS_DIR)
 register_harness_certificate_route(
     WEB_ROUTER,
     certificate_path=ROOT / "data" / "harness-internal-ca.crt",
+)
+register_static_asset_route(
+    WEB_ROUTER,
+    asset_root=SCRIPTS_DIR / "static" / "assets",
+    guess_type=mimetypes.guess_type,
 )
 register_extract_page(
     WEB_ROUTER,
@@ -11104,8 +11110,6 @@ class Handler(BaseHTTPRequestHandler):
             if not PROXY_POOL_ENABLED:
                 return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
             return self.handle_proxy_api_get(parsed.path, parsed.query)
-        if parsed.path.startswith("/assets/"):
-            return self.serve_static_asset(parsed.path.removeprefix("/assets/"))
         if parsed.path == "/api/global-user":
             payload = global_user_payload(self)
             requested_id = _cookie_value(self, GLOBAL_USER_COOKIE)
@@ -11642,22 +11646,6 @@ class Handler(BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError):
                 self.close_connection = True
                 return
-
-    def serve_static_asset(self, relative_path: str) -> None:
-        asset_root = (SCRIPTS_DIR / "static" / "assets").resolve()
-        asset_path = (asset_root / unquote(relative_path)).resolve()
-        if asset_path != asset_root and asset_root not in asset_path.parents:
-            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Invalid asset path"})
-        if not asset_path.is_file():
-            return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Asset not found"})
-        content_type = mimetypes.guess_type(asset_path.name)[0] or "application/octet-stream"
-        return binary_response(
-            self,
-            HTTPStatus.OK,
-            asset_path.read_bytes(),
-            content_type,
-            cache_control="no-cache, no-store, must-revalidate",
-        )
 
     def serve_chat_attachment(self, attachment_id: str) -> None:
         if not chat_attachment_belongs_to_owner(attachment_id, current_global_owner_id(self)):

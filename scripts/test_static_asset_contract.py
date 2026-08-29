@@ -14,6 +14,7 @@ import sys
 import tempfile
 import time
 import unittest
+import ast
 from typing import Iterator
 
 
@@ -166,6 +167,91 @@ def isolated_server(test_root: Path) -> Iterator[int]:
 
 
 class StaticAssetContractTests(unittest.TestCase):
+    def test_static_asset_route_is_one_way_and_replaces_legacy_handler_method(self) -> None:
+        route_module = ast.parse(
+            (ROOT / "scripts" / "routes" / "static_assets.py").read_text(encoding="utf-8")
+        )
+        imported_modules = {
+            node.module
+            for node in ast.walk(route_module)
+            if isinstance(node, ast.ImportFrom) and node.module
+        }
+        self.assertEqual(
+            imported_modules,
+            {
+                "__future__",
+                "core.http",
+                "http",
+                "pathlib",
+                "routes.router",
+                "typing",
+                "urllib.parse",
+            },
+        )
+        web_app = ast.parse((ROOT / "scripts" / "web_app.py").read_text(encoding="utf-8"))
+        handler = next(
+            node
+            for node in web_app.body
+            if isinstance(node, ast.ClassDef) and node.name == "Handler"
+        )
+        self.assertFalse(
+            any(
+                isinstance(node, ast.FunctionDef) and node.name == "serve_static_asset"
+                for node in handler.body
+            )
+        )
+        get_method = next(
+            node
+            for node in handler.body
+            if isinstance(node, ast.FunctionDef) and node.name == "do_GET"
+        )
+        self.assertFalse(
+            any(
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "startswith"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and node.args[0].value == "/assets/"
+                for node in ast.walk(get_method)
+            )
+        )
+        self.assertFalse(
+            any(
+                isinstance(node, ast.Attribute) and node.attr == "serve_static_asset"
+                for node in ast.walk(get_method)
+            )
+        )
+        self.assertEqual(
+            sum(
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "register_static_asset_route"
+                and len(node.args) == 1
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id == "WEB_ROUTER"
+                and {keyword.arg for keyword in node.keywords} == {"asset_root", "guess_type"}
+                for node in ast.walk(web_app)
+            ),
+            1,
+        )
+        self.assertEqual(
+            sum(
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "get_prefix"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "router"
+                and len(node.args) == 2
+                and isinstance(node.args[0], ast.Constant)
+                and node.args[0].value == "/assets/"
+                and isinstance(node.args[1], ast.Name)
+                and node.args[1].id == "serve_static_asset"
+                for node in ast.walk(route_module)
+            ),
+            1,
+        )
+
     def assert_asset(self, response: tuple[int, dict[str, str], bytes], expected: bytes, name: str) -> None:
         status, headers, body = response
         self.assertEqual(status, 200)
@@ -186,6 +272,7 @@ class StaticAssetContractTests(unittest.TestCase):
         self.assertEqual(headers.get("content-type"), "application/json; charset=utf-8")
         self.assertEqual(headers.get("content-length"), str(len(expected)))
         self.assertNotIn("cache-control", headers)
+        self.assertNotIn("location", headers)
         self.assertEqual(body, expected)
 
     @contextmanager

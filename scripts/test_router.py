@@ -235,6 +235,7 @@ class RouterTests(unittest.TestCase):
                             "typing",
                             "core.http",
                             "routes.router",
+                            "urllib.parse",
                         },
                     )
                     self.assertNotIn("web_app", node.module)
@@ -273,6 +274,7 @@ class RouterTests(unittest.TestCase):
                 "routes.metrics",
                 "routes.report_pages",
                 "routes.router",
+                "routes.static_assets",
                 "routes.shop",
                 "routes.taobao",
                 "routes.tool",
