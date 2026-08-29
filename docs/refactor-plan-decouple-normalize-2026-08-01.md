@@ -1,7 +1,7 @@
 # V2 解耦化与归一化重构执行计划
 
 初版日期：2026-08-01
-复核日期：2026-08-28
+复核日期：2026-08-29
 适用环境：`v2` / 4004 / `short-video-analyzer-ui-4004`
 技术路线：保留 stdlib `http.server`，先建立行为基线，再按稳定边界拆分
 执行原则：同一提交只做“行为修复”或“结构搬迁”中的一种
@@ -37,17 +37,17 @@ git merge-base --is-ancestor b364276 v2
 6. 视频分析超时测试更新为当前 `Popen`/进程组终止实现。
 7. 4004 代理运行时使用独立命名空间 `v2`、Mihomo 节点前缀 `v2-`、普通代理端口 `19300-19399`、淘宝代理端口 `19400-19419`；V2 web 默认端口固定为 `4004`。
 8. 代理端口迁移会同步已绑定账号的 `proxy_binding.local_port` 和 `browser_settings.proxy_server`；sing-box 检测同时兼容数据库行和归一化后的 pool 字典。
-9. 活动聊天 provider 收紧为 Home、SellerSprite、出海匠；当前部署仍有的 `/fastmoss*` 307 重定向只是待清理遗留，Phase 0 不保留该路由。代理页已补齐共享 `.ui-header` 契约。
+9. 活动聊天 provider 收紧为 Home、SellerSprite、出海匠；本条最初盘点时存在的 `/fastmoss*` 307 重定向已在 Phase 0.5 删除，当前旧路径自然返回无 `Location` 的 404。代理页已补齐共享 `.ui-header` 契约。
 
 4004 隔离要求保持不变：Compose 项目、sing-box 项目、测试端口和服务操作都不得落到 4002/4003。`0232f9f` 已通过 GitHub 同步并部署到 `/home/openclaw/Video_analyzer-ui-4004`；部署后 4002、4003、4004 的 `/healthz` 均返回 200。
 
 ## 二、当前代码总览
 
-CodeGraph 已在 `0232f9f` 上重新同步。主要热点如下：
+CodeGraph 已在当前运行时代码 `8572f31` 上重新同步。主要热点如下：
 
 | 文件 | 规模 | 当前职责 | 判断 |
 | --- | ---: | --- | --- |
-| `scripts/web_app.py` | 15,535 行 / 735 KB | 配置、页面装配、聊天 provider、HTTP 工具、四类临时任务、下载/店铺/指标/Amazon、全部 GET/POST 路由、后台线程启动 | 第一重构对象，但必须分批拆 |
+| `scripts/web_app.py` | 13,176 行 / 594 KB | 配置、页面装配、聊天 provider、四类临时任务、下载/店铺/指标/Amazon、全部 GET/POST 路由、后台线程启动 | 第一重构对象，但必须分批拆；HTTP response/SSE helper 已完成抽取 |
 | `scripts/proxy_pool.py` | 5,319 行 / 238 KB | SQLite schema、代理解析、端口分配、mihomo/sing-box、账号会话、发布、采集、运行时状态 | 独立子系统，应在自己的包内拆分 |
 | `scripts/hot_video_report.py` | 4,032 行 / 178 KB | 日报采集、下载、单视频分析、LLM 摘要、恢复与持久化 | 已有清晰文件边界，先稳定接口，不优先内部大拆 |
 | `scripts/tools.py` | 1,470 行 / 72 KB | 聊天工具归一与执行、视频分析子进程 | 需要把“聊天工具”和“视频执行器”分开 |
@@ -85,13 +85,15 @@ main()
 ```text
 scripts/
   web_app.py                 # 兼容入口、Handler 组装、main
+  semantic_evidence_renderer.py      # 中性证据渲染协议与通用格式
+  sellersprite_evidence_renderer.py  # SellerSprite 指标边界 adapter
   core/
-    config.py                # 路径与环境配置的唯一来源
-    http.py                  # response、请求体、SSE、静态文件
-    json_store.py            # 原子 JSON 读写等通用持久化
+    config.py                # 仅收口稳定的模块导入期配置
+    http.py                  # 无业务状态的 HTTP response/SSE 原语
+    json_store.py            # 原子 JSON 文件原语，不是通用 repository
   jobs/
     model.py                 # 稳定的任务快照协议
-    registry.py              # 锁、注册、日志、状态读取
+    registry.py              # 进程内锁、注册、日志、只读快照
   chat/
     providers.py             # provider 归一、UI 配置、会话作用域
     tool_gateway.py          # schema 暴露、白名单和执行前复核
@@ -121,13 +123,25 @@ scripts/
     taobao.py
 ```
 
-强制 import 方向：`web_app` 可导入 `routes`；`routes` 可导入 `services/chat/proxy/jobs`；领域模块可导入 `core`。反向 import 一律禁止。
+强制 import 方向：`web_app` 可导入 `routes`；`routes` 可导入 `services/chat/proxy/jobs`；领域模块可导入 `core`。中性证据 renderer 不导入任何 provider，provider adapter 只能单向注入活动工具规则。反向 import 一律禁止。
 
 ```text
 web_app → routes → services/chat/proxy/jobs → core
 ```
 
-`web_app.py` 可以在过渡期显式 re-export 兼容符号，但禁止 `from ... import *`。每个兼容导出都必须有调用方和删除条件。
+`web_app.py` 可以在过渡期为活动功能显式 re-export 兼容符号，但禁止 `from ... import *`。每个兼容导出都必须有调用方和删除条件；已退役 provider 不得以任何兼容导出、路由、配置别名或数据迁移重新进入代码。
+
+### 3.1 需求漂移与复用准入门禁
+
+每个子阶段开始前建立一页变更账本，明确“冻结契约、允许变化、禁止顺手修改、回滚点”。结构搬迁默认必须行为等价；原子写入、断连静默等可靠性变化必须独立提交、独立测试，不能夹在搬迁中。出现未登记的 URL、状态码、JSON/SSE 字段、数据目录、任务状态机、权限或 provider 作用域变化时，当前阶段立即停止，不以“重构需要”为理由吸收需求。
+
+可复用模块只有在满足以下条件时才创建或扩张：
+
+- 已存在至少两个活动调用方，或存在一个已经由契约测试锁定、即将迁移的稳定协议；不得为猜测中的未来需求抽象。
+- 共享模块只拥有真正相同的机制，领域字段、错误文案、权限、状态机和补偿策略留在 adapter/service。
+- `core` 只放无业务语义、纯 stdlib、可独立测试的原语；`jobs` 不启动线程或执行命令；`routes` 不持有状态；`services` 不认识 HTTP handler。
+- 新抽象必须减少真实重复或切断反向依赖；如果只是增加 facade 转发、参数透传或文件数量，则保留现状。
+- 每个阶段用 CodeGraph/AST 记录迁移前后调用数和 import 方向，并用黑盒契约证明没有功能漂移。
 
 ## 四、Phase 0：冻结并修正测试基线
 
@@ -174,16 +188,16 @@ HOT_VIDEO_REPORT_ENABLED=0
 
 ### 4.3 先处理现有红灯
 
-2026-08-28 功能对齐完成后的门禁状态如下：
+2026-08-28 功能对齐完成后曾出现的门禁状态及其处理结果如下：
 
-| 检查 | 当前结果 | 重构前处理 |
+| 检查 | 对齐后状态 | 处理结果 |
 | --- | --- | --- |
 | `test_ui_contract.py` | 15 项通过 | 保持为共享壳和代理页 DOM 门禁 |
 | `test_chuhaijiang_ui_contract.py` | 7 项通过 | 保持 Home 0 个旧 scene、出海匠 8 个官方 scene 的契约 |
 | `test_chuhaijiang_boundary.py` | 5 项通过 | 保持活动 provider 与工具域隔离门禁 |
 | `test_proxy_pool_lifecycle.py` | 通过 | 保持端口迁移、删池解绑、重新绑定和 sing-box 检测门禁 |
 | `test_27_presets_mock_boundary.py` | 27 个 SellerSprite 官方预设通过 | mock 开关只注入测试子进程，生产默认仍为 0 |
-| `test_chat_tool_normalization.py` | 仍是 V1/V2 混合套件；包含已退役 FastMoss provider 断言 | 按活动 provider 拆出 V2 套件；删除全部旧 FastMoss 断言，不新增兼容套件 |
+| `test_chat_tool_normalization.py` | 当时仍是 V1/V2 混合套件，包含已退役 provider 断言 | Phase 0.5 已按活动 provider 收口并删除旧断言；未新增兼容套件，当前完整门禁通过 |
 
 已知的运行时与 UI 红灯已经关闭。统一 HTTP smoke、活动 provider 契约、混合聊天套件拆分和浏览器回归已于 2026-08-28 完成并在服务器 4004 通过全量门禁；退役 provider 测试直接删除，不转成兼容测试。后续若测试矩阵新增红灯，不得笼统标记为“历史问题”后继续重构：每项必须落为活动 V2 套件中的 `pass`，或带有明确外部条件且不掩盖回归的 `skip`。
 
@@ -248,7 +262,7 @@ find data -maxdepth 1 -iname '*fastmoss*' -print
 
 ### 4.6 当前执行状态、并行边界与阶段级回归门禁
 
-2026-08-28 执行状态：
+截至 2026-08-29 的执行状态：
 
 | 阶段 | 状态 | 阶段出口 |
 | --- | --- | --- |
@@ -256,11 +270,13 @@ find data -maxdepth 1 -iname '*fastmoss*' -print
 | Phase 0.5A 共享能力中性化 | 已完成 | SellerSprite semantic renderer 输出保持一致；服务器 4004 全量回归全绿 |
 | Phase 0.5B 运行时和仓库资产清理 | 已完成 | 运行时、Bridge/配置、UI/文档三条工作线合并后零残留扫描通过；补齐无外网的核心 workflow HTTP 生命周期 fixture；服务器 4004 全量回归全绿 |
 | Phase 0.5C V2 应用数据清理 | 已完成 | `data/`、`data-dev/`、历史 session/cache/Skill 和旧 `.pyc` 已移出 V2 项目树；项目外备份逐文件校验通过；镜像、运行容器和服务器 4004 再次全量回归全绿 |
+| Phase 0.5D 中性语义边界补漏 | 已完成 | 删除 7 个退役工具的不可达指标规则和 3 个隐藏枚举值；SellerSprite boundary、工具专属审计字段和查询标题规则全部回归 provider adapter；服务器 4004 完整门禁全绿 |
 | Phase 1.1 `core/http.py` | 已完成 | 五个响应/SSE helper 已迁入纯 stdlib 模块；字节级与黑盒 HTTP 契约已补齐；两次独立服务器全量门禁均全绿 |
+| Phase 1.1R HTTP 断连可靠性补漏 | 已完成 | JSON/text 非流式响应仅在 body 写入阶段忽略客户端断连；序列化/header/SSE 异常语义保持不变；部署后 Playwright 日志零 traceback |
 
 Phase 0.5B 可以多智能体并行，但文件所有权必须互斥：一条线负责 Python 运行时与专用模块，一条线负责 MCP Bridge/Compose/env，一条线负责静态 UI 与受控文档；README、计划文档、资产版本、跨线冲突和最终集成由主任务统一处理。子智能体只运行专项测试，不得独立提交；主任务合并审计后统一提交和部署。
 
-“每个阶段全功能回归”定义为以下集合，适用于 Phase 0.5B、0.5C，以及 Phase 1～6 中每个会改变运行时的子阶段；专项测试通过不能代替该集合：
+“每个阶段全功能回归”定义为以下集合，适用于 Phase 0.5B、0.5C、0.5D，以及 Phase 1～7 中每个可执行代码子阶段；专项测试通过不能代替该集合。即使子阶段只新增尚未接线的 core/router 模块，也要执行完整门禁，防止导入、镜像内容或测试发现规则发生漂移：
 
 1. Windows 工作树完成 `git diff --check`、Python/Node 语法检查、依赖边界检查和仓库零遗留扫描；本地不构建 Docker。
 2. 源码提交并通过 GitHub 同步到 `/home/openclaw/Video_analyzer-ui-4004`，服务器使用 `docker-compose -p short-video-analyzer-ui-4004 build web` 重新构建镜像。
@@ -293,48 +309,60 @@ Phase 1.1 只迁移 `json_response`、`text_response`、`binary_response`、`fil
 
 Phase 1.1 最终证据（2026-08-28）：`6d7a52b` 新增纯 stdlib `scripts/core/http.py`、12 项字节级单测和 HTTP 黑盒契约，`03827ac` 只在 `web_app.py` 增加一次显式导入并删除五个原定义。AST 验收为旧 FunctionDef 0、导入 1、313 个直接调用数保持不变；CodeGraph 已在最终代码上重新同步。A/C 集成提交和 B 调用方切换提交分别在服务器新镜像执行 38 项构建前回归，均为 0 失败；最终部署镜像 `fc57b7755c31` 的 `/healthz`、12 个活动页面、旧路径 404、两个桌面/移动 Playwright 全部通过，4002/4003 健康检查仍为 200。部署日志无 import、语法或启动失败；Playwright 导航取消产生的两条 `BrokenPipeError` 为抽取前既有的客户端断连行为，本阶段按行为等价要求保留，后续若要静默应作为独立可靠性改动并单独回归。
 
+2026-08-29 补漏证据：`b957587` 将 SellerSprite 的指标边界、工具专属审计字段、查询标题规则和匿名关键词动态提示全部移回 provider adapter，并从中性 renderer 删除 7 个退役工具规则和 3 个隐藏枚举值；服务器镜像 `4e6701d89667` 通过 38 项确定性回归、2 个 Playwright、12 个活动页面、旧路径 404 和 4002/4003 隔离检查。`8572f31` 只在 JSON/text 非流式响应的 body 写入阶段捕获 `BrokenPipeError`/`ConnectionResetError`，新增断连与序列化异常单测后服务器镜像 `bb4a08d9e487` 再次通过同一完整门禁；Playwright 后容器日志中的 traceback、BrokenPipe、ConnectionReset、语法和 import 错误匹配数为 0。SSE 断连仍向上传播以终止事件循环，JSON 序列化和 header 异常仍显式失败。
+
 ### 5.2 `core/config.py`
 
-归一 `ROOT`、`SCRIPTS_DIR`、`DATA_DIR`、`VIDEOS_DIR`、`OUTPUT_DIR` 和布尔/整数环境变量解析。配置对象必须可在测试中显式构造，避免测试依赖 import 时的宿主环境。
+本阶段只收口**模块导入期配置**，不把所有 `os.getenv` 机械搬入一个全局对象。2026-08-29 审计基线为 `web_app.py` 共 69 处环境读取，其中 13 处发生在模块导入期，包含路径、布尔、整数、浮点和字符串；请求期 API Key、Mock 开关、tool router mode、动态端口和任务参数继续在所属 service/request 边界读取，避免把安全开关和测试覆盖冻结为进程启动快照。
 
-验收：不同临时数据目录可在同一测试进程中运行；4004 Compose 默认值不回落到正式项目。
+配置模块使用纯 stdlib 和不可变 `AppConfig`，提供显式 `from_env(env: Mapping[str, str], root: Path | None = None)` 构造入口。默认 `root` 继续使用 `Path.cwd()`，不得借重构改为 `__file__` 推导；布尔、整数和浮点解析必须保持当前默认值、空值和非法值失败语义。不得把真实密钥、Cookie、token 或 provider 会话放入配置对象，也不得导入 `web_app`、store、route 或 service。
+
+按以下子阶段实施，每个子阶段独立提交并执行完整 40 脚本门禁：
+
+1. **1.2A 纯配置模型与解析测试：** 新增 `core/config.py` 和纯单测，覆盖两份 env mapping 在同一进程独立构造、路径派生、测试根目录只在 `UI_TEST_MODE` 开启时生效、布尔同义值、整数/浮点边界和非法值显式报错；不切换 `web_app.py`。
+2. **1.2B 路径配置切换：** `web_app.py` 从单个 `APP_CONFIG` 派生 `ROOT`、`RUNTIME_ROOT`、`SCRIPTS_DIR`、`DATA_DIR`、`VIDEOS_DIR`、`OUTPUT_DIR` 及其路径常量；过渡期只允许显式同名赋值，不允许 `from core.config import *`。保持 4004 Compose 工作目录和 `APP_TEST_ROOT` 行为不变。
+3. **1.2C 其余导入期配置切换：** 收口当前剩余导入期的 TTL、数量限制、超时、OCR 路径、Feishu cache、proxy enabled 和 UI 测试来源配置；AST 门禁要求 `web_app.py` 模块顶层不再直接调用 `os.getenv`。函数体内的动态环境读取不在本阶段迁移。
+
+验收边界必须写清：Phase 1.2 保证“同一进程可构造多个互不污染的 `AppConfig`”，不承诺“同一进程同时运行多套完整 web 应用”。`ChatStore`、`LanChatStore` 和 provider stores 当前仍由 composition root 在导入期实例化，完整多实例应用要等路由/服务组装边界建立后再评估；测试 web 运行时继续使用独立子进程与 `APP_TEST_ROOT`。4004 默认值不得回落到 4002/4003 的项目名、数据目录或端口。
 
 ### 5.3 `core/json_store.py`
 
-只归一原子 JSON 读写、文件锁和安全替换；SQLite 事务仍留在各领域 repository 中，不做“通用数据库层”。
+只提供纯函数式 JSON 文件原语，不创建通用 repository、ORM、数据库基类或有业务状态的 `JSONStore`。SQLite 事务继续留在各领域 repository 中；`ChatStore` 的 debounce、领域锁、异常日志和 session 迁移仍归 `chat_session.py` 所有。
 
-验收：覆盖临时文件原子替换失败、并发读写、损坏 JSON 的显式报错、异常后的锁释放；确认没有 SQLite 调用迁入该模块。
+原子写入是明确的可靠性变化，不再标记为“纯行为等价搬运”。新实现必须保持 UTF-8、`ensure_ascii=False`、两空格缩进、末尾换行、父目录创建、文件不存在时的既有返回契约和损坏 JSON 显式异常；临时文件必须与目标同目录，完成 flush/fsync 后用 `os.replace`，替换失败时清理临时文件且保留旧目标。锁的承诺限定为**同一进程内按规范化路径串行写入**；跨进程防丢更新不在本阶段伪装保证，跨进程一致性继续由 SQLite 或领域协议解决。
+
+按以下子阶段实施，每个子阶段独立提交并执行完整 40 脚本门禁：
+
+1. **1.3A 原子原语与故障注入测试：** 新增 `read_json`、`atomic_write_json` 及临时文件/锁管理测试，不切换运行时调用方。覆盖并发读写始终得到完整 JSON、替换失败保留旧文件、序列化失败不创建目标、损坏 JSON 抛错和异常后锁释放。
+2. **1.3B `web_app` helper 切换：** 只替换 `web_app.py` 当前的 `read_json`/`write_json` 定义与调用；迁移前后对缺失文件、损坏文件、缩进和末尾换行做字节契约。`result_path.write_text(json.dumps(...))` 等非 helper 写入必须逐项审计，不允许顺手全仓替换。
+3. **1.3C 只读复用审计（默认不迁移）：** `chat_session.py` 当前已有自己的 `tempfile + fsync + os.replace`、双锁和 debounce，而且 session 文件当前没有末尾换行，与 `web_app.write_json` 的字节契约不同。只有 contract test 证明 debounce、锁顺序、迁移、错误日志和文件字节完全不变时才允许复用更底层的临时文件原语；否则保留领域实现，不作为 Phase 1 阻塞项。
+
+验收：故障注入和并发测试全绿；确认没有 SQLite、业务 dataclass、session schema 或 job 状态迁入 `core/json_store.py`；可靠性变化单独记录，不能夹带业务修复。
 
 **Phase 1 整体验收：** HTTP smoke 与 Phase 0 测试矩阵全绿；临时根目录可重复运行；`web_app.py` 只通过显式 import 使用三个 core 模块；对外响应快照无非规范化差异。
 
-## 六、Phase 2：稳定路由边界
+## 六、Phase 2：建立无业务状态的路由骨架
 
-先建立一个很薄的 stdlib 路由注册表，再逐域迁移：
+先建立一个很薄的 stdlib 路由注册表，但本阶段只迁移健康检查、纯页面和静态资源，不提前搬 Shop/Metrics/Amazon 等依赖任务全局状态的业务路由：
 
 ```python
-router.get('/healthz', healthz)
-router.post('/api/report/run', run_report)
+router.get("/healthz", healthz)
+router.get("/report", report_page)
 ```
 
-路由 handler 只允许做四件事：读取参数、调用 service、映射错误、写响应。业务状态修改不得继续写在 `do_GET`/`do_POST` 分支中。
+Router 只负责 method/path 匹配、path 参数和 404/405；不得拥有业务 store、job 字典、线程、数据库连接或 provider 配置。注册函数接收 handler 或显式依赖，不得导入 `web_app`。`web_app.py` 作为 composition root 创建 router 并保留 fallback，过渡期只允许 `web_app → routes`。
 
-迁移顺序：
+按以下子阶段实施，每个子阶段独立提交并执行完整 40 脚本门禁：
 
-1. 健康检查、静态资源和纯页面路由。
-2. Shop、Metrics、Amazon 等边界较清晰的域。
-3. 视频下载与分析。
-4. 日报 web 适配层。
-5. 邻聊和淘宝。
-6. 代理路由。
-7. 聊天路由最后迁移。
+1. **2.1 Router 匹配与冲突测试：** 新增 GET/POST/DELETE、精确路径、参数路径、404、405、重复注册和注册顺序测试，不接入运行时。
+2. **2.2 health 与纯页面：** 先迁移 `/healthz`，再迁移只读取静态模板的页面入口；每迁移一组都用路由表快照确认 URL、method 和 handler 唯一。
+3. **2.3 静态资源：** 只迁移资源定位和 content type 映射，Range/附件/视频仍使用 `core/http.py` 已冻结的 helper；不得把文件系统根目录重新推导一遍。
 
-聊天最后迁移的原因是它同时承载 provider 作用域、官方 Skill、工具白名单、流式响应和 session 兼容，影响面最大。
+**Phase 2 验收：** 新增一个纯页面或静态资源路由不需要编辑 `Handler.do_GET`/`do_POST`；CodeGraph 不存在 `routes → web_app`；原 URL、状态码、Content-Type、缓存 header 和 404/405 行为不变。业务 API 仍留在原位置，等待 Phase 3 的任务边界稳定后按垂直切片迁移。
 
-**Phase 2 验收：** 新增一个路由不需要编辑 `Handler.do_GET`/`do_POST`；原 URL、状态码、JSON 字段和 SSE 格式不变。
+## 七、Phase 3：任务模型与注册表归一
 
-## 七、Phase 3：任务模型归一
-
-不要先用继承强行统一 `DownloadJob`、`ShopJob`、`MetricsJob`、`AmazonJob`。先定义稳定的只读快照协议：
+本阶段提前到业务路由迁移之前，避免新 route/service 反向访问 `web_app.py` 中的 `download_jobs`、`shop_jobs`、`metrics_jobs`、`amazon_jobs` 和四把锁。不要先用继承强行统一四类任务；先定义稳定的只读快照协议：
 
 ```python
 class JobSnapshot(TypedDict):
@@ -346,26 +374,44 @@ class JobSnapshot(TypedDict):
     error: str
 ```
 
-步骤：
+按以下子阶段实施，每个子阶段独立提交并执行完整 40 脚本门禁：
 
-1. 为四类任务补齐一致的 `snapshot()` 行为和并发测试。
-2. 抽 `JobRegistry` 统一锁、查找、日志追加和状态读取。
-3. 各业务任务保留自己的字段和状态机。
-4. 最后评估是否需要 dataclass 基类；若只是少量字段复用，可不引入继承。
+1. **3.1 快照协议：** 为四类任务分别增加纯 `snapshot()` adapter，逐字段锁定现有 API/SSE 输出；业务专属字段继续由各 adapter 显式补充，不要求共享 dataclass 基类。
+2. **3.2 `JobRegistry`：** 统一锁内注册、查找、日志追加、状态读取和不可变快照；测试并发 append/snapshot、任务不存在和异常后锁释放。Registry 不启动线程、不执行业务命令、不持久化数据库。
+3. **3.3 调用方切换：** 四类任务逐域切换 registry，每切换一类都验证 API 查询与 SSE 字节契约。SSE 端点只消费快照，不直接访问可变任务对象。
+4. **3.4 基类复核：** 只有发现除快照字段外还有稳定共享行为才评估基类；若只是少量字段复用，明确记录“不引入继承”。
 
-SSE 端点只消费快照，不直接访问可变任务对象。
+**Phase 3 验收：** `web_app.py` 不再直接维护四套 job 字典/锁；四类任务的 API/SSE 输出与基线逐字段一致；并发测试无死锁、丢日志或可变对象泄漏；`jobs` 不导入 route/service/web_app。
 
-**Phase 3 验收：** 四类任务的 API/SSE 输出与基线逐字段一致；并发读写测试无死锁和丢日志。
+## 八、Phase 4：按业务垂直切片迁移 service 与 route
 
-## 八、Phase 4：拆分代理子系统
+本阶段补齐旧计划缺失的 services 实施步骤。每个垂直切片必须同时交付 `services/<domain>.py`、`routes/<domain>.py`、领域 contract test 和完整门禁；禁止只搬 route 后继续调用 `web_app` 全局函数。
 
-`proxy_pool.py` 不应与普通 web service 一起大搬。按事务边界拆：
+路由 handler 只允许做四件事：读取并校验 HTTP 参数、调用 service、把已登记的领域错误映射为 HTTP、写响应。Service 拥有业务编排但不认识 `BaseHTTPRequestHandler`，不写 HTTP header，不导入 route 或 web_app。跨域共享只能依赖 `jobs/core` 或已有稳定领域接口。
+
+迁移顺序：
+
+1. **4.1 Shop：** 任务创建、命令编排、状态/结果读取和 SSE adapter。
+2. **4.2 Metrics：** 保持 endpoint/target 校验和结果注册语义。
+3. **4.3 Amazon：** 保持 scraper 容器生命周期、输出目录和错误映射。
+4. **4.4 下载与分析：** 下载、上传、分析、翻译、postprocess 分开迁移，不能合成新的万能 VideoService。此阶段只把 `tools.py` 中与视频子进程执行直接相关的能力迁入 analyzer service，并保留活动调用方所需的窄 facade；聊天工具归一与权限逻辑留到 Phase 6。
+5. **4.5 日报 web adapter：** 只迁移 HTTP/调度适配，核心继续留在 `hot_video_report.py`；显式 `max_tokens`、resume、候选备份和单视频 cache 规则不变。
+6. **4.6 邻聊与淘宝：** 先冻结全局用户隔离、文件传输和写操作授权，再迁移；不得顺手改变账号模型。
+
+代理和聊天因各自具有外部进程/安全边界，分别留到 Phase 5、Phase 6，不在 Phase 4 建立临时兼容 route。
+
+**Phase 4 验收：** 上述业务 API 不再编辑巨型 `do_GET`/`do_POST`；CodeGraph 满足 `web_app → routes → services → jobs/core`，不存在 `routes/services → web_app` 或 `services → routes`；每个域的 URL、状态码、JSON 字段、SSE 帧、数据目录和任务生命周期与 Phase 0 基线一致。
+
+## 九、Phase 5：拆分代理子系统
+
+`proxy_pool.py` 不应与普通 web service 一起大搬。按事务边界拆，并在每个子阶段执行完整 40 脚本门禁及代理专项故障注入：
 
 1. `proxy/repository.py`：schema、migration、查询、事务函数。
 2. `proxy/nodes.py`：VLESS/VMess/static/direct 解析、端口作用域与序列化。
 3. `proxy/runtime.py`：mihomo/sing-box 配置生成、启动、检查和清理。
 4. `proxy/accounts.py`：账号、代理绑定、会话和预检。
 5. `proxy/publishing.py`、`proxy/collection.py`：任务状态机。
+6. `routes/proxy.py`：最后接入已稳定的 proxy facade，不直接操作 SQLite 或外部进程。
 
 关键不变量：
 
@@ -376,11 +422,11 @@ SSE 端点只消费快照，不直接访问可变任务对象。
 
 迁移数据库前必须复制隔离 fixture，验证旧 schema 升级、重复执行 migration、失败回滚和升级后读取。故障注入至少覆盖：运行时配置清理失败、数据库提交失败、运行时重启失败；每种情况都要断言账号绑定、任务状态和代理配置三者最终一致或进入可重试的明确状态。
 
-**Phase 4 验收：** `test_proxy_pool_lifecycle.py` 全绿；用合成账号/代理 seed 在 `/proxy` 完成删池、未绑定、重新绑定、任务恢复。浏览器固定验证 1440×900 和 390×844 两个 viewport，保存 DOM 契约、控制台错误和截图，测试后删除 seed 数据。
+**Phase 5 验收：** `test_proxy_pool_lifecycle.py` 全绿；用合成账号/代理 seed 在 `/proxy` 完成删池、未绑定、重新绑定、任务恢复。浏览器固定验证 1440×900 和 390×844 两个 viewport，保存 DOM 契约、控制台错误和截图，测试后删除 seed 数据；`proxy` 包和 route 均不导入 `web_app`。
 
-## 九、Phase 5：聊天与 LLM 归一
+## 十、Phase 6：聊天、LLM 与聊天路由归一
 
-### 9.1 聊天边界
+### 10.1 聊天边界
 
 保持 `chat.html` 为 Home、SellerSprite、出海匠的唯一共享壳。拆分后仍必须满足：
 
@@ -388,18 +434,20 @@ SSE 端点只消费快照，不直接访问可变任务对象。
 - tool schema 暴露和执行前都复核官方 Skill 白名单。
 - `sellersprite__*`、`chuhaijiang__*`、`sociavault__*` 等工具域不能交叉泄漏。
 - `officialPresetId` 仅属于当前请求，不能持久化或污染下一次自由聊天。
+- `routes/chat.py` 最后接入稳定的 provider/tool/service 接口，不直接读取 MCP 进程字典或修改 session 内部对象。
+- `tools.py` 中剩余的聊天工具归一、schema 和执行入口按契约迁入 `chat/tool_gateway.py`；只有活动调用方全部切换后才能删除 facade，不以“文件变小”为目的重写工具行为。
 
-### 9.2 LLM transport
+### 10.2 LLM transport
 
 不采用旧计划中单一 `call_llm(prompt, ...)` 覆盖所有调用的方案。统一的应是传输层能力：认证、URL、超时、重试、错误标准化、usage 提取；各调用方继续保留消息结构、system prompt、tools、response format、视觉输入和业务解析。
 
-先为现有 DeepSeek/Qwen 调用补 contract test，再引入 transport adapter。`hot_video_report.py` 保持显式 `max_tokens`，不能依赖隐式默认值。
+先为现有 DeepSeek/Qwen 调用补 contract test，再引入 transport adapter。`hot_video_report.py` 保持显式 `max_tokens`，不能依赖隐式默认值。每个 transport/provider/chat 子阶段仍执行完整 40 脚本门禁，专项测试不能替代完整门禁。
 
 Transport 规则必须显式化：只对连接失败、429 和可重试 5xx 在首个响应字节前重试；次数和退避由调用方配置；流式输出开始后不得自动重放；带副作用的工具调用不得由 transport 重试；错误类型和 usage 合并规则对调用方保持兼容。请求快照必须删除认证头、Cookie、真实媒体 URL 和用户内容，只保留合成 fixture。
 
-**Phase 5 验收：** 三 provider 工具边界测试、日报 LLM fallback、翻译、postprocess、direct-video 分别通过；请求 payload 与基线快照一致。
+**Phase 6 验收：** 三 provider 工具边界测试、日报 LLM fallback、翻译、postprocess、direct-video 分别通过；请求 payload 与基线快照一致；聊天 route 不导入 `web_app`，provider 工具域、会话作用域和官方 Skill 白名单继续 fail closed。
 
-## 十、Phase 6：前端资源拆分
+## 十一、Phase 7：前端资源拆分
 
 后端 API 稳定后再处理 `proxy.html`：
 
@@ -408,11 +456,11 @@ Transport 规则必须显式化：只对连接失败、429 和可重试 5xx 在�
 - 数据请求、状态 store、drawer workflow 分成小型原生 JS 模块。
 - 共享导航继续由 `ui-system.css/js` 提供。
 
-静态资源变化必须更新 `UI_ASSET_VERSION`。不得借重构恢复任何已退役 provider 页面或拆出三套聊天壳。
+静态资源变化必须更新 `UI_ASSET_VERSION`。不得借重构恢复任何已退役 provider 页面或拆出三套聊天壳。每个可独立部署的资源拆分子阶段执行完整 40 脚本门禁，并检查两个 Playwright 的桌面/移动 viewport、控制台和页面错误。
 
-**Phase 6 验收：** 代理页桌面/窄屏浏览器回归；无控制台错误；所有写操作仍有确认、禁用和错误反馈。
+**Phase 7 验收：** 代理页桌面/窄屏浏览器回归；无控制台错误；所有写操作仍有确认、禁用和错误反馈。
 
-## 十一、提交和验证规范
+## 十二、提交和验证规范
 
 每个重构提交都必须满足：
 
@@ -446,38 +494,40 @@ docker-compose -p short-video-analyzer-ui-4004 run --rm --no-deps \
 6. 页面变更在 4004 隔离端口验证，不构建、停止或部署 4002/4003。
 7. 一个提交只迁移一个稳定边界，可独立回退。
 
-## 十二、阶段门禁与完成定义
+## 十三、阶段门禁与完成定义
 
 ```text
 Phase 0 测试基线
   → Phase 0.5 退役 provider 零兼容清理
     → Phase 1 HTTP/config/store
-      → Phase 2 路由边界
-        → Phase 3 任务注册表
-          → Phase 4 代理子系统
-            → Phase 5 聊天与 LLM
-              → Phase 6 前端资源
+      → Phase 2 无业务状态路由骨架
+        → Phase 3 任务快照与注册表
+          → Phase 4 业务 service/route 垂直切片
+            → Phase 5 代理子系统
+              → Phase 6 聊天、LLM 与聊天路由
+                → Phase 7 前端资源
 ```
 
 最终完成条件：
 
-- `web_app.py` 只保留兼容入口、Handler 组装和启动序列，目标小于 800 行；小于 500 行不是硬指标。
+- `web_app.py` 只保留 composition root、Handler/Router 组装、明确的过渡期兼容导出和启动序列；不以机械行数作为完成门禁。小于 800 行只作为拆分结果的观察指标，不能为了达标制造 facade 转发层或无业务边界的小文件。
 - `proxy_pool.py` 被兼容 facade 替代，核心逻辑进入 `proxy/` 且事务边界清晰。
+- `tools.py` 只在视频执行器和聊天 tool gateway 分别完成迁移后删除或缩成有明确调用方的窄 facade。
 - 新增业务域不再修改巨型 `do_GET`/`do_POST`。
 - 三 provider、日报、代理、视频和邻聊各有独立测试门禁。
 - 4004 活动功能的 URL、API schema、SSE 格式、数据目录和 Compose 隔离保持兼容；已退役 provider 不属于兼容范围。
-- CodeGraph 中不存在 `routes → web_app`、`service → routes` 的反向依赖。
+- `core` 不包含 provider/tool/业务实体专属规则；provider adapter 注入的规则必须全部属于活动注册表。
+- CodeGraph 中不存在 `routes/services/jobs/core → web_app`、`services → routes` 或 `core → 领域模块` 的反向依赖。
 
-## 十三、建议的第一批实施任务
+## 十四、下一批实施任务
 
-第一批只完成 Phase 0/0.5，不进入 `core/http.py`。建议拆成 5～7 个可独立回退的小提交：
+Phase 0、0.5、1.1 及 2026-08-29 两个补漏阶段已经完成。下一批只实施 Phase 1.2 和 Phase 1.3，不提前创建业务 routes/services。建议顺序如下：
 
-1. 新增可重复运行的 `test_web_smoke.py`，冻结活动页面、通用未注册路由 404 和功能开关契约。
-2. 拆分 `test_chat_tool_normalization.py`：只保留 Home、SellerSprite、出海匠套件，删除全部旧 FastMoss 断言和专用测试。
-3. 为活动 provider catalog、SellerSprite semantic renderer/Bridge、通用未知 provider/tool fail-closed 补快照与门禁。
-4. 把 SellerSprite 和其他域仍调用的共享 renderer/helper 迁到中性命名模块，保持输出不变。
-5. 删除 `web_app.py`、planner、Bridge、Compose/env、前端、Skill、专用模块与文档中的全部 FastMoss 逻辑，不保留路由或 API 兼容。
-6. 通过 GitHub 同步到服务器，在项目外备份后删除 V2 应用目录中的旧会话/cache/Skill 数据，然后重建且验证 4004。
-7. 运行全仓零遗留搜索、三 provider 专项测试、HTTP smoke 和服务日志检查；全绿后才开始 Phase 1.1。
+1. 重新用 CodeGraph 和 AST 固化 13 个导入期环境读取清单，建立 `test_core_config.py`，完成 1.2A 并跑完整门禁。
+2. 只切换路径配置，确认 `APP_TEST_ROOT`、4004 工作目录和数据目录无变化，完成 1.2B 并跑完整门禁。
+3. 切换其余导入期配置，AST 证明 `web_app.py` 模块顶层 `os.getenv` 为 0；动态安全/Mock 配置仍留在函数边界，完成 1.2C 并跑完整门禁。
+4. 新增 `core/json_store.py` 原子原语和故障注入测试，不接线运行时，完成 1.3A 并跑完整门禁。
+5. 只切换 `web_app.read_json/write_json`，做字节契约、并发、损坏文件和替换失败验证，完成 1.3B 并跑完整门禁。
+6. 对 `ChatStore` 做只读复用审计；不满足严格等价就保留现状，不为追求复用强行迁移。
 
-第二批才抽 `core/http.py` 并为禁用日报、禁用代理的 404/提示分支加契约测试。第一批不触碰代理事务、Job 继承或前端资源拆分；聊天代码只处理退役 provider 删除和为保护活动 provider 所必需的中性化迁移。
+完成 Phase 1 整体验收后，下一批只能先做 Phase 2 的 Router/health/page/static 骨架，再做 Phase 3 JobRegistry；不得跳过 Phase 3 直接迁移 Shop/Metrics/Amazon 业务路由。每个子阶段仍遵循 GitHub 同步、服务器 4004 构建、38 项确定性回归、部署、2 项 Playwright、日志扫描和 4002/4003 只读健康检查。
