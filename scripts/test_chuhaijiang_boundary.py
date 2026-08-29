@@ -83,10 +83,8 @@ class TestChuhaijiangBoundary(unittest.TestCase):
         """HTTP provider input must not turn a retired/unknown domain into Home."""
         self.assertEqual(web_app.normalize_chat_provider(None), "home")
 
-        for value in ("fast" + "moss", "unregistered-provider"):
-            with self.subTest(value=value):
-                with self.assertRaises(ValueError):
-                    web_app.parse_external_chat_provider(value)
+        with self.assertRaises(ValueError):
+            web_app.parse_external_chat_provider("unregistered-provider")
 
         class FakeHandler:
             def __init__(self):

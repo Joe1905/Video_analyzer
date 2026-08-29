@@ -204,14 +204,16 @@ def run_smoke(port: int) -> None:
 
     status, headers, body = request(port, "GET", "/__smoke_unknown__")
     assert_json_error(status, headers, body, 404, "Not found")
+    assert "location" not in headers
 
     status, headers, body = request(port, "POST", "/__smoke_unknown__", {})
     assert_json_error(status, headers, body, 404, "Not found")
+    assert "location" not in headers
 
     status, headers, body = request(port, "DELETE", "/__smoke_unknown__")
     assert_json_error(status, headers, body, 404, "Not found")
+    assert "location" not in headers
 
-    retired_provider = "fast" + "moss"
     status, headers, body = request(port, "GET", "/api/chat/tool-catalog?provider=home")
     assert status == 200, (status, body.decode("utf-8", errors="replace"))
     assert headers.get("content-type", "").startswith("application/json")
@@ -220,26 +222,12 @@ def run_smoke(port: int) -> None:
         "system", "function", "sociavault", "sellersprite", "chuhaijiang",
     }
 
-    for provider in (retired_provider, "unregistered-provider"):
-        for path in (
-            f"/api/chat/sessions?provider={provider}",
-            f"/api/chat/tool-catalog?provider={provider}",
-        ):
-            status, headers, body = request(port, "GET", path)
-            assert_json_error(status, headers, body, 400, "Unknown chat provider")
-
-    retired_requests = (
-        ("GET", f"/{retired_provider}", None),
-        ("GET", f"/{retired_provider}/", None),
-        ("GET", f"/{retired_provider}/api/ask", None),
-        ("POST", f"/{retired_provider}/api/ask", {}),
-        ("POST", f"/{retired_provider}/api/chat/export-pdf", {}),
-        ("DELETE", f"/{retired_provider}/api/chat/sessions/smoke", None),
-    )
-    for method, path, payload in retired_requests:
-        status, headers, body = request(port, method, path, payload)
-        assert "location" not in headers, (method, path, headers)
-        assert_json_error(status, headers, body, 404, "Not found")
+    for path in (
+        "/api/chat/sessions?provider=unregistered-provider",
+        "/api/chat/tool-catalog?provider=unregistered-provider",
+    ):
+        status, headers, body = request(port, "GET", path)
+        assert_json_error(status, headers, body, 400, "Unknown chat provider")
 
     status, headers, body = request(port, "POST", "/api/report/run", {})
     assert_json_error(status, headers, body, 503, "日报功能已暂停")
