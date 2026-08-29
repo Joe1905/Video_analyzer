@@ -250,6 +250,7 @@ HOT_VIDEO_REPORT_ENABLED=0
 | Phase 2.3B 固定证书 exact GET 路由 | 已完成 | `d720c25`；新增窄领域 route 并删除旧内联分支，保持固定路径、headers、正文、缺失、query 与非 GET 语义，清理历史会话数据中的 2 处退役条目后服务器 52 项完整门禁全绿 |
 | Phase 2.3C Router 最小前缀匹配 | 已完成 | `2b6ad36`；只扩展纯 Router 与既有专项测试，冻结 exact/template 总体优先、最长前缀、重复冲突及未解码不可变 suffix，未接线 `/assets/`，服务器 52 项完整门禁全绿 |
 | Phase 2.3D `/assets/` 前缀路由接线 | 已完成 | `656282d`、`2cd64a5`；新增窄静态资源 route 并删除旧 Handler 分支/方法，修正随迁移失效的 UI 结构断言，保持路径安全与全部 HTTP 语义，服务器 52 项完整门禁全绿 |
+| Phase 3.0 任务模型与消费边界只读盘点 | 已完成 | 三路 Terra 与主审交叉列清四类 dataclass、字典/锁、全部创建/更新/查询/日志/API/SSE 消费点和逐字段差异；零运行时代码改动，发现下载校验失败分支存在独立未定义调用风险 |
 | 执行要求归一与门禁审计 | 已完成 | `df1c7a1`、`3937623`、`1b9f4aa`、`d715d93`；建立唯一要求入口，清除非活动域专项断言并保留通用 fail-closed 契约，服务器 52 项完整门禁全绿 |
 
 Phase 0.5B 可以多智能体并行，但文件所有权必须互斥：一条线负责 Python 运行时与专用模块，一条线负责 MCP Bridge/Compose/env，一条线负责静态 UI 与受控文档；README、计划文档、资产版本、跨线冲突和最终集成由主任务统一处理。子智能体只运行专项测试，不得独立提交；主任务合并审计后统一提交和部署。
@@ -387,6 +388,10 @@ Phase 2.3D 最终证据（2026-08-29）：`656282d` 新增 `scripts/routes/stati
 
 **Phase 2 验收：已完成。** 新增一个纯页面或静态资源路由不需要编辑 `Handler.do_GET`/`do_POST`；CodeGraph 不存在 `routes → web_app`；原 URL、状态码、Content-Type、缓存 header 和 404/405 行为不变。业务 API 仍留在原位置，等待 Phase 3 的任务边界稳定后按垂直切片迁移。
 
+**Phase 3.0 总结与漂移审计：已完成。** 四类任务只有 `id/status/created_at/updated_at/log/error` 六个共同内部字段，领域输入、结果来源、日志窗口和公开字段均不同，因此当前没有引入共享 dataclass、继承或 registry 的充分依据。Download 公共 payload 为 `id/url/status/created_at/updated_at/filename/error/log/result`，日志窗口 80 且 `result` 直接引用 job 上的可变字典；Shop 隐藏 `prompt`，公开输入字段、120 条日志以及从磁盘读取的 `extract/analysis`；Metrics 和 Amazon 各公开领域输入、120 条日志及从磁盘读取的 `result`。四类 GET 在各自锁内查找并序列化，SSE 也在锁内调用相同 serializer，缺失 GET 是领域错误文案的 JSON 404，缺失 SSE 则保持 HTTP 200 并发送 `status=missing` 后关闭；SSE 变化标记严格为 `status/updated_at/log长度/error`。POST 启动线程后才序列化 202，初始 `queued/running` 存在现有竞态，测试不得错误收紧为固定 queued。现有生命周期测试只覆盖 Download complete、Shop complete、Metrics failed，Amazon、逐字段集合、四类缺失、日志截断/复制和 artifact 结果均未完整冻结。
+
+审计未发现需求漂移或新的反向依赖，但发现 `handle_download` 的输入校验失败分支在登记 failed job 后调用全仓无定义的 `write_download_job_log`，可能在预期 JSON 400 前抛出 `NameError`。该问题必须以独立行为修复提交先收口，不得与快照结构搬迁混合；其后 3.1A 新增唯一任务快照契约脚本，完整门禁基线相应从 **50+2=52** 提升为 **51+2=53**。3.1B 只新增零接线的领域纯 adapter，并显式验证深复制后的不可变快照与现有外部 JSON 等价；不得把持锁磁盘读取优化、任务清理策略或 POST 初态竞态改造夹带其中。
+
 ## 七、Phase 3：任务模型与注册表归一
 
 本阶段提前到业务路由迁移之前，避免新 route/service 反向访问 `web_app.py` 中的 `download_jobs`、`shop_jobs`、`metrics_jobs`、`amazon_jobs` 和四把锁。不要先用继承强行统一四类任务；先定义稳定的只读快照协议：
@@ -398,15 +403,17 @@ class JobSnapshot(TypedDict):
     created_at: float
     updated_at: float
     log: list[str]
-    error: str
+    error: str | None
 ```
 
 按以下子阶段实施，每个子阶段独立提交并执行当前登记的至少 52 脚本门禁：
 
-1. **3.1 快照协议：** 为四类任务分别增加纯 `snapshot()` adapter，逐字段锁定现有 API/SSE 输出；业务专属字段继续由各 adapter 显式补充，不要求共享 dataclass 基类。
-2. **3.2 `JobRegistry`：** 统一锁内注册、查找、日志追加、状态读取和不可变快照；测试并发 append/snapshot、任务不存在和异常后锁释放。Registry 不启动线程、不执行业务命令、不持久化数据库。
-3. **3.3 调用方切换：** 四类任务逐域切换 registry，每切换一类都验证 API 查询与 SSE 字节契约。SSE 端点只消费快照，不直接访问可变任务对象。
-4. **3.4 基类复核：** 只有发现除快照字段外还有稳定共享行为才评估基类；若只是少量字段复用，明确记录“不引入继承”。
+1. **3.R1 下载校验失败分支修复：** 以独立行为修复提交删除或替换未定义调用，并在既有隔离 lifecycle 中冻结 JSON 400；不改任务结构、成功请求或持久化策略。
+2. **3.1A 快照基线：** 用唯一专项逐字段锁定四类任务当前的 API/SSE 输出、缺失差异、日志窗口/复制、artifact 读取和初态竞态；本批不改运行时代码。
+3. **3.1B 纯快照 adapter：** 为四类任务分别增加纯 `snapshot()` adapter，业务专属字段继续由各 adapter 显式补充，零运行时切换且不要求共享 dataclass 基类。
+4. **3.2 `JobRegistry`：** 统一锁内注册、查找、日志追加、状态读取和不可变快照；测试并发 append/snapshot、任务不存在和异常后锁释放。Registry 不启动线程、不执行业务命令、不持久化数据库。
+5. **3.3 调用方切换：** 四类任务逐域切换 registry，每切换一类都验证 API 查询与 SSE 字节契约。SSE 端点只消费快照，不直接访问可变任务对象。
+6. **3.4 基类复核：** 只有发现除快照字段外还有稳定共享行为才评估基类；若只是少量字段复用，明确记录“不引入继承”。
 
 **Phase 3 验收：** `web_app.py` 不再直接维护四套 job 字典/锁；四类任务的 API/SSE 输出与基线逐字段一致；并发测试无死锁、丢日志或可变对象泄漏；`jobs` 不导入 route/service/web_app。
 
@@ -548,7 +555,7 @@ Phase 0 测试基线
 
 ## 十四、下一批实施任务
 
-Phase 0、0.5、1.1、2026-08-29 两个补漏阶段、Phase 1.2、Phase 1.3 与 **Phase 2.1～2.3D** 已完成，Phase 2 无业务状态路由骨架关闭。Amazon 与出海匠聊天壳延期到 Chat/Provider 阶段，Proxy 页面延期到代理垂直切片。下一步实施 **Phase 3.0 任务模型与消费边界只读盘点**。
+Phase 0、0.5、1.1、2026-08-29 两个补漏阶段、Phase 1.2、Phase 1.3、**Phase 2.1～2.3D** 与 **Phase 3.0** 已完成。Phase 2 无业务状态路由骨架关闭；Phase 3.0 已冻结四类任务的字段、字典/锁、变更点及 API/SSE 消费边界。Amazon 与出海匠聊天壳延期到 Chat/Provider 阶段，Proxy 页面延期到代理垂直切片。下一步先实施 **Phase 3.R1 下载校验失败分支独立行为修复**，再进入 3.1A 快照基线。
 
 Phase 2.3 继续复用现有 Terra 子智能体，避免为同一长期任务无限新增执行记录，并按以下门槛推进：
 
@@ -562,7 +569,8 @@ Phase 2.3 继续复用现有 Terra 子智能体，避免为同一长期任务无
 
 Phase 3 下一批按以下门槛推进：
 
-1. **3.0 只读盘点：** 用 CodeGraph 和现有契约列出 `DownloadJob`、`ShopJob`、`MetricsJob`、`AmazonJob` 的字段、四套字典/锁、所有创建/更新/查询/日志/SSE 消费点，以及 API 返回的领域专属字段；本批不改运行时代码。
-2. **3.1A 快照基线：** 先在隔离测试中逐字段冻结四类任务当前的 API/SSE 可观察输出、缺失任务、日志复制和可变对象泄漏边界；不先写共享继承或 registry。
-3. **3.1B 纯 adapter：** 只有基线收口后才新增按领域显式补充字段的纯 snapshot adapter，零运行时切换，并执行当前 52 项完整门禁。
-4. Phase 3 不把下载、Shop、Metrics、Amazon 的业务专属字段塞入共享基类；`jobs` 不得导入 route、service 或 `web_app`，SSE 归一只消费不可变快照。
+1. **3.0 只读盘点（已完成）：** CodeGraph 与三路交叉审计已列出 `DownloadJob`、`ShopJob`、`MetricsJob`、`AmazonJob` 的字段、四套字典/锁、所有创建/更新/查询/日志/SSE 消费点，以及 API 返回的领域专属字段；运行时代码零改动。
+2. **3.R1 行为漏洞收口：** 只处理下载输入校验失败路径的未定义调用，补预期 400 JSON 与服务可继续响应的隔离回归；使用既有测试脚本，完整门禁仍为 52 项。
+3. **3.1A 快照基线：** 新增 `scripts/test_job_snapshot_contract.py`，逐字段冻结四类任务当前的 API/SSE 可观察输出、四类缺失任务、日志 80/120 窗口与复制、下载结果 alias 现状、后三类 artifact 读取和 SSE marker；不先写共享继承或 registry。新增脚本后完整门禁提高为 53 项。
+4. **3.1B 纯 adapter：** 只有基线收口后才新增按领域显式补充字段的纯 snapshot adapter，零运行时切换，并执行当前 53 项完整门禁。
+5. Phase 3 不把下载、Shop、Metrics、Amazon 的业务专属字段塞入共享基类；`jobs` 不得导入 route、service 或 `web_app`，SSE 归一只消费不可变快照。
