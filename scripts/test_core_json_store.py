@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 from pathlib import Path
@@ -197,6 +198,70 @@ class JsonStoreTests(unittest.TestCase):
         self.assertEqual(
             self.path.read_bytes(),
             '{\n  "中文": "值",\n  "items": [\n    1,\n    2\n  ]\n}\n'.encode("utf-8"),
+        )
+
+    def test_web_app_json_store_wiring_contract(self) -> None:
+        source_path = Path(__file__).with_name("web_app.py")
+        tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+
+        imports = [
+            node
+            for node in tree.body
+            if isinstance(node, ast.ImportFrom) and node.module == "core.json_store"
+        ]
+        self.assertEqual(len(imports), 1)
+        self.assertEqual(
+            [(alias.name, alias.asname) for alias in imports[0].names],
+            [("atomic_write_json", None), ("read_json", None)],
+        )
+
+        definitions = [
+            node.name
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name in {"read_json", "write_json"}
+        ]
+        self.assertEqual(definitions, [])
+
+        calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
+        self.assertEqual(
+            sum(isinstance(node.func, ast.Name) and node.func.id == "read_json" for node in calls),
+            47,
+        )
+        self.assertEqual(
+            sum(isinstance(node.func, ast.Name) and node.func.id == "write_json" for node in calls),
+            0,
+        )
+        self.assertEqual(
+            sum(isinstance(node.func, ast.Name) and node.func.id == "atomic_write_json" for node in calls),
+            10,
+        )
+        self.assertEqual(
+            sum(
+                isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "json"
+                and node.func.attr == "dump"
+                for node in calls
+            ),
+            0,
+        )
+        self.assertEqual(
+            sum(
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "write_text"
+                and any(
+                    isinstance(child, ast.Call)
+                    and isinstance(child.func, ast.Attribute)
+                    and isinstance(child.func.value, ast.Name)
+                    and child.func.value.id == "json"
+                    and child.func.attr == "dumps"
+                    for argument in node.args
+                    for child in ast.walk(argument)
+                )
+                for node in calls
+            ),
+            1,
         )
 
 

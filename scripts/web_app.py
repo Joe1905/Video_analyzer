@@ -37,6 +37,7 @@ _BOOTSTRAP_ROOT = Path.cwd()
 _BOOTSTRAP_SCRIPTS_DIR = _BOOTSTRAP_ROOT / "scripts"
 sys.path.insert(0, str(_BOOTSTRAP_SCRIPTS_DIR))
 from core.config import AppConfig
+from core.json_store import atomic_write_json, read_json
 
 # SociaVault TikTok endpoints (mirrored from sociavault_tiktok.py)
 TIKTOK_ENDPOINTS: dict[str, str] = {
@@ -1926,7 +1927,7 @@ def summarize_social_status(context: Any) -> dict[str, str]:
 
 def write_social_running(filename: str, source_url: str) -> None:
     output_dir = output_dir_for_filename(filename)
-    write_json(output_dir / "social_context.json", {
+    atomic_write_json(output_dir / "social_context.json", {
         "filename": filename,
         "source_url": source_url,
         "status": "running",
@@ -1967,7 +1968,7 @@ def fetch_social_context(filename: str, generate_insights: bool = True) -> dict[
     output_dir = output_dir_for_filename(filename)
     if not source_url:
         context = build_social_unavailable(filename, "No TikTok/Douyin source URL is available for this video.")
-        write_json(output_dir / "social_context.json", context)
+        atomic_write_json(output_dir / "social_context.json", context)
         return context
 
     api_key = os.getenv("SOCIAVAULT_API_KEY", "").strip()
@@ -1975,7 +1976,7 @@ def fetch_social_context(filename: str, generate_insights: bool = True) -> dict[
         context = build_social_unavailable(filename, "Missing SOCIAVAULT_API_KEY.")
         context["source_url"] = source_url
         context["status"] = "failed"
-        write_json(output_dir / "social_context.json", context)
+        atomic_write_json(output_dir / "social_context.json", context)
         return context
 
     api_base = os.getenv("SOCIAVAULT_API_BASE", DEFAULT_SOCIA_VAULT_API_BASE)
@@ -2035,13 +2036,13 @@ def fetch_social_context(filename: str, generate_insights: bool = True) -> dict[
         "updated_at": time.time(),
         "items": items,
     }
-    write_json(output_dir / "social_context.json", context)
+    atomic_write_json(output_dir / "social_context.json", context)
     if generate_insights and ok_count:
         try:
             generate_social_insights(filename)
         except Exception as exc:
             context["insights_error"] = str(exc)
-            write_json(output_dir / "social_context.json", context)
+            atomic_write_json(output_dir / "social_context.json", context)
     return context
 
 
@@ -2078,7 +2079,7 @@ def run_social_context_job(filename: str, generate_insights: bool = True) -> Non
         context["status"] = "failed"
         context["updated_at"] = time.time()
         context["error"] = str(exc)
-        write_json(output_dir / "social_context.json", context)
+        atomic_write_json(output_dir / "social_context.json", context)
     finally:
         with social_jobs_lock:
             social_jobs_running.discard(filename)
@@ -2512,13 +2513,6 @@ def _build_feishu_report_payload(
     }
 
 
-def read_json(path: Path) -> Any | None:
-    if not path.is_file():
-        return None
-    with path.open("r", encoding="utf-8") as file:
-        return json.load(file)
-
-
 def build_frames_sheet(output_dir: Path, thumb_width: int = 320, columns: int = 4) -> tuple[bytes, int]:
     frames_dir = output_dir / "frames"
     if not frames_dir.is_dir():
@@ -2680,13 +2674,6 @@ def build_frames_export(output_dir: Path, max_size: int = 2000) -> tuple[bytes, 
     return out.getvalue(), len(frame_paths)
 
 
-def write_json(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as file:
-        json.dump(payload, file, ensure_ascii=False, indent=2)
-        file.write("\n")
-
-
 def _media_flag_key(path: Path) -> str:
     try:
         return str(path.relative_to(ROOT)).replace("\\", "/")
@@ -2700,7 +2687,7 @@ def _read_media_flags() -> dict[str, Any]:
 
 
 def _write_media_flags(flags: dict[str, Any]) -> None:
-    write_json(ANALYZER_MEDIA_FLAGS_FILE, flags)
+    atomic_write_json(ANALYZER_MEDIA_FLAGS_FILE, flags)
 
 
 def _probe_analyzer_video(path: Path) -> tuple[bool, str]:
@@ -3387,7 +3374,7 @@ def try_cached_download_result(job: DownloadJob, result_path: Path) -> bool:
             hidden_from_analyzer=video_source_hidden(job.source),
         )
         make_web_manual_visible(job.source, platform, video_id)
-    write_json(result_path, result)
+    atomic_write_json(result_path, result)
     append_download_log(job, "下载结果缓存命中，复用本地视频文件。")
     return True
 
@@ -3450,7 +3437,7 @@ def _try_media_cache_payload_download(job: DownloadJob, payload: Any, result_pat
             if isinstance(payload, dict) and isinstance(payload.get("_cache"), dict):
                 result["media_cache"] = payload["_cache"]
             result = store_download_result(job, result)
-            write_json(result_path, result)
+            atomic_write_json(result_path, result)
             return True
         except Exception as exc:
             append_download_log(job, f"{source_label} 候选地址不可用：{exc}")
@@ -3528,7 +3515,7 @@ def try_sociavault_video_info_download(job: DownloadJob, result_path: Path) -> b
             result = read_json(result_path)
             if isinstance(result, dict):
                 result["sociavault_video_info"] = str(output_path.relative_to(ROOT))
-                write_json(result_path, result)
+                atomic_write_json(result_path, result)
             return True
         return False
     except Exception as exc:
