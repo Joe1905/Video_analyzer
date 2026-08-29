@@ -43,11 +43,11 @@ git merge-base --is-ancestor b364276 v2
 
 ## 二、当前代码总览
 
-CodeGraph 已在当前运行时代码 `2115c5f` 上重新同步。主要热点如下：
+CodeGraph 已在当前运行时代码 `afacd7c` 上重新同步。主要热点如下：
 
 | 文件 | 规模 | 当前职责 | 判断 |
 | --- | ---: | --- | --- |
-| `scripts/web_app.py` | 13,173 行 / 594 KB | 配置、页面装配、聊天 provider、四类临时任务、下载/店铺/指标/Amazon、全部 GET/POST 路由、后台线程启动 | 第一重构对象，但必须分批拆；HTTP response/SSE helper 与导入期配置已完成抽取 |
+| `scripts/web_app.py` | 13,207 行 / 609 KB | 配置、页面装配、聊天 provider、四类临时任务、下载/店铺/指标/Amazon、全部 GET/POST 路由、后台线程启动 | 第一重构对象，但必须分批拆；HTTP response/SSE helper 与导入期配置已完成抽取 |
 | `scripts/proxy_pool.py` | 5,319 行 / 238 KB | SQLite schema、代理解析、端口分配、mihomo/sing-box、账号会话、发布、采集、运行时状态 | 独立子系统，应在自己的包内拆分 |
 | `scripts/hot_video_report.py` | 4,032 行 / 178 KB | 日报采集、下载、单视频分析、LLM 摘要、恢复与持久化 | 已有清晰文件边界，先稳定接口，不优先内部大拆 |
 | `scripts/tools.py` | 1,470 行 / 72 KB | 聊天工具归一与执行、视频分析子进程 | 需要把“聊天工具”和“视频执行器”分开 |
@@ -276,6 +276,7 @@ find data -maxdepth 1 -iname '*fastmoss*' -print
 | Phase 1.2A `core/config.py` 模型与测试 | 已完成 | `6c9731d`；纯 stdlib 不可变配置模型及隔离构造测试通过，服务器完整门禁全绿 |
 | Phase 1.2B 路径配置切换 | 已完成 | `64e63af`；单一 `APP_CONFIG` 接管根路径与测试根路径，服务器完整门禁全绿 |
 | Phase 1.2C 其余导入期配置切换 | 已完成 | `2115c5f`；模块级 `os.getenv` 为 0，函数期动态读取为 56 且基线多重集合不变，服务器完整门禁全绿 |
+| Phase 1.2R 工具目录、外部 provider 与部署边界漏洞收口 | 已完成 | `a30b494`、`afacd7c`；出海匠工具目录五域完整，外部未知/退役 provider 与 4004 部署入口 fail-closed，服务器完整门禁全绿 |
 
 Phase 0.5B 可以多智能体并行，但文件所有权必须互斥：一条线负责 Python 运行时与专用模块，一条线负责 MCP Bridge/Compose/env，一条线负责静态 UI 与受控文档；README、计划文档、资产版本、跨线冲突和最终集成由主任务统一处理。子智能体只运行专项测试，不得独立提交；主任务合并审计后统一提交和部署。
 
@@ -329,6 +330,10 @@ Phase 1.2 已按以下子阶段完成，每个阶段均独立提交并执行当�
 验收边界必须写清：Phase 1.2 保证“同一进程可构造多个互不污染的 `AppConfig`”，不承诺“同一进程同时运行多套完整 web 应用”。`ChatStore`、`LanChatStore` 和 provider stores 当前仍由 composition root 在导入期实例化，完整多实例应用要等路由/服务组装边界建立后再评估；测试 web 运行时继续使用独立子进程与 `APP_TEST_ROOT`。4004 默认值不得回落到 4002/4003 的项目名、数据目录或端口。
 
 Phase 1.2 最终证据（2026-08-29）：`6c9731d`（1.2A）服务器镜像 `5a40219821e279f3c3e7d1bc27a9a2e8053c3efadfe4725ad130874311238577`、`64e63af`（1.2B）服务器镜像 `3923dfaff675cb86f6f98f6c2c4095134ad1a7e7cd11507a96ed61c1edde7c18`、`2115c5f`（1.2C）服务器镜像 `00a5deeca714557a23ebf76df888ee2a1105a0a421bccf9d1f4f8bb091bd37cc` 均通过 **39 项确定性回归 + 2 个 Playwright = 41 项**，失败数为 0。1.2C 的 AST 终审确认模块级 `os.getenv` 为 0、函数期动态读取为 56，读取键的基线多重集合不变。
+
+Phase 1.2R 漏洞收口证据（2026-08-29）：`a30b494` 的服务器镜像为 `sha256:42fd8d8cff7d6d6e3de4c5b17e99dd0cc8fe357d61049e5fa68d762de16041b0`，**39 项确定性回归 + 2 个 Playwright = 41 项**全绿。`/api/chat/tool-catalog` 恢复 200 并包含 system、function、SociaVault、SellerSprite、出海匠五域；全部 10 个外部 chat provider 入口均 fail-closed，unknown/retired provider 在 sessions、messages、catalog、events、ask、export、rename 和删除等读写路径返回 400，内部 `None` 仍归 Home。FastMoss URL 的 GET/POST/DELETE 均为无 `Location` 的 404；4004 近期日志异常匹配为 0，4002/4003 健康检查均为 200。
+
+部署边界终审发现旧 `UI4004_BRANCH` / `ALLOW_NON_UI4004_BRANCH` 可绕过分支检查后，`afacd7c` 将部署分支硬锁为 `v2` 并增加防回归断言，所有 legacy、非 `v2`、非 4004 项目名和非 4004 端口均在首次 Docker 探测前 fail-closed。最终服务器镜像为 `sha256:2fa76aa8a45faade8cd34af16fc257e9962ba1d24c8669eee29d553cbfb7342e`，再次通过 **39 项确定性回归 + 2 个 Playwright = 41 项**；12 个活动页面全部 200，五域 catalog 与 unknown provider 黑盒检查通过，FastMoss 三方法仍为无 `Location` 的 404，4004 日志异常匹配为 0，Compose/容器环境退役配置匹配为 0，4002/4003/4004 健康检查均为 200。
 
 ### 5.3 `core/json_store.py`
 
@@ -483,7 +488,7 @@ if ($LASTEXITCODE -ne 0) { throw '当前 HEAD 尚未包含 V2 对齐提交 b3642
 git -c http.proxy=http://127.0.0.1:7892 -c https.proxy=http://127.0.0.1:7892 push origin v2
 ```
 
-服务器使用 `/home/openclaw/Video_analyzer-ui-4004`、分支 `v2` 和项目名 `short-video-analyzer-ui-4004`。当前服务器安装的是 legacy `docker-compose`，不是 Compose v2 插件：
+4004 部署唯一入口是 `scripts/deploy_ui_4004.sh`：它默认且只允许分支 `v2`、项目名 `short-video-analyzer-ui-4004`、端口 `4004` 和基础 `docker-compose.yml`。当前 V2 禁止使用 overlay；任何 legacy preview 开关只要非 `0` 必须直接拒绝部署，不得回退到 preview/overlay Compose 配置。当前服务器安装的是 legacy `docker-compose`，不是 Compose v2 插件；下列为脚本采用的基础构建与服务器验证命令，不得替代该部署入口：
 
 ```bash
 cd /home/openclaw/Video_analyzer-ui-4004
