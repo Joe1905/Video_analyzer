@@ -248,6 +248,7 @@ HOT_VIDEO_REPORT_ENABLED=0
 | Phase 2.2B-5 Extract 纯页面路由 | 已完成 | `75d96ef`；只迁移 `/extract` exact GET，保持逐请求模板读取、逐请求 analysis mode、全量占位符替换与分析业务 API 边界，服务器 50 项完整门禁全绿 |
 | Phase 2.3A 静态/文件边界审计与契约 | 已完成 | `8e17845`；三个 Terra 交叉审计 `/assets/`、固定证书、授权附件、Range/HEAD 与动态导出，新增两份隔离 HTTP 契约，服务器 52 项完整门禁全绿 |
 | Phase 2.3B 固定证书 exact GET 路由 | 已完成 | `d720c25`；新增窄领域 route 并删除旧内联分支，保持固定路径、headers、正文、缺失、query 与非 GET 语义，清理历史会话数据中的 2 处退役条目后服务器 52 项完整门禁全绿 |
+| Phase 2.3C Router 最小前缀匹配 | 已完成 | `2b6ad36`；只扩展纯 Router 与既有专项测试，冻结 exact/template 总体优先、最长前缀、重复冲突及未解码不可变 suffix，未接线 `/assets/`，服务器 52 项完整门禁全绿 |
 | 执行要求归一与门禁审计 | 已完成 | `df1c7a1`、`3937623`、`1b9f4aa`、`d715d93`；建立唯一要求入口，清除非活动域专项断言并保留通用 fail-closed 契约，服务器 52 项完整门禁全绿 |
 
 Phase 0.5B 可以多智能体并行，但文件所有权必须互斥：一条线负责 Python 运行时与专用模块，一条线负责 MCP Bridge/Compose/env，一条线负责静态 UI 与受控文档；README、计划文档、资产版本、跨线冲突和最终集成由主任务统一处理。子智能体只运行专项测试，不得独立提交；主任务合并审计后统一提交和部署。
@@ -325,7 +326,7 @@ Phase 1.3 最终证据（2026-08-29）：`1f231c4`（1.3A）服务器镜像 `sha
 
 Phase 1 漏洞复审与收口证据（2026-08-29）：`40d2b2e` 让 `deploy_ui_4004.sh` 默认且只允许 `short-video-analyzer-ui-4004:latest`，并在 Docker 探测前拒绝共享/错误标签；通用 Compose 的 analyzer/web 默认保持 `short-video-analyzer:latest`，sellersprite-redirect 只改为可被 `ANALYZER_IMAGE` 覆盖，避免反向污染 4002/4003。首次完整门禁准确捕获了部署测试在容器中不可见 Compose 源码及 `test_proxy_pool_lifecycle.py` 的陈旧共享标签断言；`4f978ea` 将 Compose 静态检查固定为服务器源码 checkout 门禁并更新旧契约，随后完整重跑全绿。历史污染的共享标签已恢复到 4002 正式镜像 `sha256:a5f9a71d4637c408f4fb0f66e940dfa6b3547d85f76fb801b3c5e57fa1c1d39c`，P1 最终 4004 镜像为 `sha256:c3a11ff94fe2127c9148df7f7e0b85c2a9b669988d739ea52a374ceb376e2378`。`2f9502f` 将 `run_amazon_job` 唯一非 helper 写入切换为 `atomic_write_json(result_path, result)`，AST 契约更新为 `read_json` 47、`atomic_write_json` 11、非原子 Amazon JSON 写入 0；P2 最终 4004 镜像为 `sha256:a1d1830cb093faf3af2aaa4a0990d496961805c65264693f5d10cb252cd3681a`。两个收口阶段均分别通过 **41 项确定性回归 + 2 个 Playwright = 43 项**，失败数为 0；最终 12 个活动页面均为 200，4002/4003/4004 健康检查均为 200，未知外部 provider 返回 400，容器日志异常匹配为 0。
 
-**Phase 1 整体验收：已完成并通过漏洞复审。** HTTP smoke 与 Phase 0 测试矩阵全绿；最终部署后 `test_web_workflow_lifecycle.py` 连续独立执行两次均通过，确认临时根目录可重复运行；`web_app.py` 仅通过显式 import 使用 `core/http.py`、`core/config.py` 和 `core/json_store.py` 三个 core 模块；对外响应快照无非规范化差异。4004 构建标签与 4002 正式标签已经隔离，Amazon 结果文件不存在半写读取窗口。Phase 2.1 纯 Router、Phase 2.2A `/healthz` 首条运行时接线、Phase 2.2B-1～B-5 页面小批迁移及 Phase 2.3A 文件响应契约均已完成；下一步是 Phase 2.3B 固定证书 exact GET 小步迁移。
+**Phase 1 整体验收：已完成并通过漏洞复审。** HTTP smoke 与 Phase 0 测试矩阵全绿；最终部署后 `test_web_workflow_lifecycle.py` 连续独立执行两次均通过，确认临时根目录可重复运行；`web_app.py` 仅通过显式 import 使用 `core/http.py`、`core/config.py` 和 `core/json_store.py` 三个 core 模块；对外响应快照无非规范化差异。4004 构建标签与 4002 正式标签已经隔离，Amazon 结果文件不存在半写读取窗口。Phase 2.1 纯 Router、Phase 2.2A `/healthz` 首条运行时接线、Phase 2.2B-1～B-5 页面小批迁移及 Phase 2.3A～2.3C 均已完成；下一步是 Phase 2.3D `/assets/` 独立接线。
 
 ## 六、Phase 2：建立无业务状态的路由骨架
 
@@ -345,7 +346,7 @@ Phase 2.1 已冻结 Router 契约：调用方先 `urlparse` 并只传入未整�
 1. **2.1 Router 匹配与冲突测试（已完成）：** `635c360` 新增 GET/POST/DELETE、根/精确/参数路径、原始编码、404/405、不可变匹配、冲突和注册顺序无关测试；AST 锁定 `routes → web_app` 为 0，且 `web_app` 尚未接入 Router。
 2. **2.2A health 单路由接线（已完成）：** `be39cbb` 只迁移 GET `/healthz`。状态码、JSON 字节、Content-Type、Content-Length 与不存在的 cache header 已冻结；composition root 创建 Router，命中后调用显式 handler，未命中或方法不符继续进入旧分派。POST/DELETE `/healthz` 保持 JSON 404，HEAD 保持空 body 404，未启用全局 405/Allow 或 HEAD fallback。
 3. **2.2B 纯页面分批迁移（已完成）：** 2.2B-0 只读盘点、2.2B-1 `/report`/`/report/player`、2.2B-2 `/lan-chat`/`/tool`、2.2B-3 `/harness`、2.2B-4 `/shop`/`/metrics`/`/taobao` 与 2.2B-5 `/extract` 均已完成。`/harness-ca.crt` 继续留给 2.3 文件下载边界；`/`、`/chat`、`/amazon`、`/chuhaijiang` 因动态 provider 装配延期，`/proxy` 因状态注入和 feature flag 延期。`/amazon/`、`/chuhaijiang/` 两条显式 307 与其他严格尾斜杠行为必须留待对应 provider 阶段分别锁定，不做全局 slash 归一化。
-4. **2.3 静态资源与固定文件响应（2.3A、2.3B 已完成）：** `/assets/` 与固定证书端点的黑盒契约已经冻结，固定证书 exact GET 已迁入窄领域 route；下一步只增加 Router 最小前缀匹配能力，assets 接线继续留到独立提交。只迁移静态资源定位、路径安全、content type 与既有二进制响应；授权附件、报表封面、视频 Range、邻聊/淘宝文件和动态导出保留各自实现，不做通用文件服务抽象。
+4. **2.3 静态资源与固定文件响应（2.3A～2.3C 已完成）：** `/assets/` 与固定证书端点的黑盒契约已经冻结，固定证书 exact GET 已迁入窄领域 route，Router 最小前缀匹配能力已独立完成且尚未运行时接线；下一步只迁移 `/assets/` 的定位、安全校验、content type 与既有二进制响应。授权附件、报表封面、视频 Range、邻聊/淘宝文件和动态导出保留各自实现，不做通用文件服务抽象。
 
 Phase 2.1 最终证据（2026-08-29）：`635c360` 仅新增 `scripts/routes/__init__.py`、`scripts/routes/router.py` 和 `scripts/test_router.py`，`web_app.py` 零改动、零运行时接线。Router 只依赖 stdlib，不含 store、job、线程、锁、数据库或 provider 配置；11 项专项测试覆盖根路径、GET/POST/DELETE、单/多参数、空段与跨段拒绝、原始 `%2F`、尾斜杠/连续斜杠、不可变结果、非 callable、literal 优先、等 specificity 冲突、404/405 和固定 Allow 顺序。服务器镜像为 `sha256:8ee38e8054c846a052aa9feb7dd96a125c7dc6c1983c44fce0f5abd4116b820e`，完整门禁为 **42 项确定性回归 + 2 个 Playwright = 44 项**，失败数为 0；12 个活动页面均为 200，4002/4003/4004 健康检查均为 200，未知 provider 边界全绿，容器日志异常匹配为 0。
 
@@ -367,13 +368,17 @@ Phase 2.3A 最终证据（2026-08-29）：`8e17845` 只新增 `scripts/test_stat
 
 Phase 2.3B 最终证据（2026-08-29）：`d720c25` 新增 `scripts/routes/harness_certificate.py`，由 composition root 只注入固定证书路径并注册 exact GET，删除 `Handler.do_GET` 中唯一对应内联分支；没有新增通用文件 helper、前缀路由、Range、HEAD fallback、授权附件或业务 API 迁移。专项 HTTP 与 AST 契约共 3 项，冻结存在/缺失、x509 attachment、Content-Length、`no-store`、query 等价、严格尾斜杠及 HEAD/POST/DELETE 旧 404，并证明 `routes → web_app` 为 0、旧内联分支为 0。Terra 实现、独立语义审查和架构审查均通过，CodeGraph 确认 route 只有 composition root 一个调用方且依赖方向为 `web_app → routes → core`。服务器提交 `d720c25a5e200c71a5242b2b63926715224a8077`、镜像 `sha256:e2beed79bf7ee0ad8757c2cc0e6632debee23d51b66853009f06499c0e190d6f` 通过清理后的 **50 项确定性回归 + 2 个 Playwright = 52 项**，失败数为 0；独立日报续跑通过。部署黑盒确认 13 个页面为 200，证书正文 1,874 字节且 query 等价，尾斜杠与非 GET 为 404，通用未知路径无重定向 404，未知 provider 为 400 JSON；4002/4003/4004 首页健康均为 200，正式镜像仍为 `sha256:a5f9a71d4637c408f4fb0f66e940dfa6b3547d85f76fb801b3c5e57fa1c1d39c`。零残留复核发现并原子清理 `sessions.json` 同一条历史助手回复中的 2 处退役条目，源码、镜像、环境、文件名和持久化数据最终命中均为 0；4004 只使用原镜像重启，未构建、停止或改写 4002/4003。容器启动时仍有 1 条既有静态代理节点同步 404 告警，页面与路由回归不受影响；该运行配置问题单独跟踪，不并入本次结构迁移。
 
+Phase 2.3C 最终证据（2026-08-29）：`2b6ad36` 只修改 `scripts/routes/router.py` 与既有 `scripts/test_router.py`，新增冻结的 literal prefix route、GET-only 注册、最长前缀、重复冲突及 raw suffix 不可变映射；exact/template 路径候选在方法边界上也总体优先，避免宽前缀穿透既有 POST/DELETE 业务路径。没有修改 `web_app.py`、没有注册 `/assets/`、没有 URL decode、glob、正则、middleware 或 HEAD fallback。Terra 实现与两路交叉审查曾对跨方法优先级给出不同建议，主审按现有 Router 安全边界选择 exact/template 总体优先，并以 GET/HEAD 405、POST/DELETE 允许列表和纯 prefix 方法边界专项锁定；Router 专项由 11 项增至 14 项，未新增脚本，因此完整门禁仍为 **50 项确定性回归 + 2 个 Playwright = 52 项**，失败数为 0。服务器提交 `2b6ad36cde56443f130f512e45d78f42b4c129c0`、镜像 `sha256:578f54c72f10b2d50067b4eb2803f237413ce253d436fe515d9ec09d518928e1` 的 46 个常规 Python、独立日报续跑、两个 Node 和两个 Playwright 全绿。部署黑盒确认 13 个页面、4002/4003/4004 健康、现有静态文件 query/尾斜杠/Range/穿越/非 GET、证书、通用未知路径和未知 provider 行为均未变化；4002/4003 镜像与启动时间未变化，源码、镜像、环境和持久化数据零残留，4004 新容器日志异常与静态代理同步告警匹配均为 0。
+
 执行要求归一与门禁审计证据（2026-08-29）：`df1c7a1` 建立 `docs/refactor-execution-requirements.md` 唯一入口，`3937623` 与 `1b9f4aa` 只收紧测试为活动域和通用未知输入契约，`d715d93` 只整理主计划；运行时代码、路由、provider 注册、API schema、SSE、数据目录和 UI 行为均未修改。CodeGraph 依赖审计无新增边，tracked/worktree/镜像/运行容器/data 文件名与容器环境扫描命中 0。服务器镜像 `sha256:12982ce1eff91175b1d18c2057fa641587b94a4bfce9d8461dd9257b8ec116c9` 通过 **50 项确定性回归 + 2 个 Playwright = 52 项**，失败数为 0；13 个现存页面均为 200，通用未知路径 GET/POST/DELETE 均为无 `Location` 的 404，未知 provider 为 400 JSON，4002/4003/4004 健康均为 200，共享正式镜像保持 `sha256:a5f9a71d4637c408f4fb0f66e940dfa6b3547d85f76fb801b3c5e57fa1c1d39c`，4004 最近日志异常匹配为 0。
 
-**执行要求归一总结与漂移审计：已完成。** 本批没有实施结构迁移，也没有建立 facade、兼容层或新抽象；通用未知输入门禁取代所有非活动域专项断言，测试覆盖更直接且不保留专用分支。模块依赖、复用准入、安全边界和 Phase 2.3 停止条件均未变化；下一步仍是 Phase 2.3B 固定证书 exact GET 小步迁移。
+**执行要求归一总结与漂移审计：已完成。** 本批没有实施结构迁移，也没有建立 facade、兼容层或新抽象；通用未知输入门禁取代所有非活动域专项断言，测试覆盖更直接且不保留专用分支。模块依赖、复用准入、安全边界和 Phase 2.3 停止条件均未变化；当前下一步为 Phase 2.3D `/assets/` 独立接线。
 
 **Phase 2.3A 总结与漂移审计：已完成。** 本批只建立可观察 HTTP 基线，没有把当前 Handler 结构或未来 route 模块名写成永久契约；交叉审查已移除直接导入副作用、动态 Date header 比较和“尚未迁移”断言。`/harness-ca.crt` 可进入独立 exact GET 迁移；`/assets/` 仍需先扩展最小前缀 Router 能力。授权附件、报表封面、视频 Range、邻聊/淘宝文件和动态导出继续排除在 Phase 2.3 通用化范围外。
 
 **Phase 2.3B 总结与漂移审计：已完成。** 本批只迁移一个固定 GET 边界，URL、响应字节、headers、query、缺失和方法分派均保持不变；没有引入兼容层、通用下载抽象或跨领域复用，也没有触及 `/assets/`、Range、附件鉴权、业务状态或外部 API。固定路径由 composition root 显式注入，route 只依赖 Router 与 `core.http`，复用边界合理且无反向 import。下一步保持账本约束，只在 Router 内增加未解码 suffix 的最小前缀匹配能力，不在同一提交接线 assets；现存静态代理同步告警作为独立运行配置问题，不改变 Phase 2.3C 的代码范围。
+
+**Phase 2.3C 总结与漂移审计：已完成。** 本批只增加一个已由相邻静态资源迁移明确需要的 Router 原语，未接入任何运行时路由，因此对外行为、数据、鉴权和业务状态均为零变更。模块仍为纯 stdlib，handler 只接收不可变的未解码 suffix，没有路径解析或文件职责，也不存在 `routes → web_app` 反向依赖；该能力的抽取时机与复用边界合理。终审没有发现需求漂移、兼容层、通用文件服务或为减少行数而扩大的抽象。下一步 Phase 2.3D 只接线 `/assets/`，删除对应旧内联分支并保持已冻结的全部 HTTP 与路径安全语义；Range、HEAD、授权附件及其他文件响应继续排除。
 
 **Phase 2 验收：** 新增一个纯页面或静态资源路由不需要编辑 `Handler.do_GET`/`do_POST`；CodeGraph 不存在 `routes → web_app`；原 URL、状态码、Content-Type、缓存 header 和 404/405 行为不变。业务 API 仍留在原位置，等待 Phase 3 的任务边界稳定后按垂直切片迁移。
 
@@ -538,14 +543,14 @@ Phase 0 测试基线
 
 ## 十四、下一批实施任务
 
-Phase 0、0.5、1.1、2026-08-29 两个补漏阶段、Phase 1.2、Phase 1.3、Phase 2.1、Phase 2.2A、**Phase 2.2B-0～B-5**、**Phase 2.3A** 与 **Phase 2.3B** 已完成。Amazon 与出海匠聊天壳延期到 Chat/Provider 阶段，Proxy 页面延期到代理垂直切片；纯页面迁移到此关闭。下一步实施 **Phase 2.3C Router 最小前缀匹配能力**，本批不接线 `/assets/`。
+Phase 0、0.5、1.1、2026-08-29 两个补漏阶段、Phase 1.2、Phase 1.3、Phase 2.1、Phase 2.2A、**Phase 2.2B-0～B-5** 与 **Phase 2.3A～2.3C** 已完成。Amazon 与出海匠聊天壳延期到 Chat/Provider 阶段，Proxy 页面延期到代理垂直切片；纯页面迁移到此关闭。下一步实施 **Phase 2.3D `/assets/` 独立接线**。
 
 Phase 2.3 继续复用现有 Terra 子智能体，避免为同一长期任务无限新增执行记录，并按以下门槛推进：
 
 1. 2.3A 只补契约、不接线（已完成，`8e17845`）：为 `/assets/` 冻结合法/嵌套资源、MIME、Content-Length、cache、query、原始 URL suffix、解码后路径穿越、缺失 JSON 404 与现有 HEAD 404；为 `/harness-ca.crt` 冻结存在/缺失、证书 headers、正文与现有 HEAD 404。测试只使用临时工作树与假夹具。
 2. 2.3B 固定证书 exact GET 小步迁移（已完成，`d720c25`）：只接收固定证书路径，未抽象成通用下载框架，未与 `/assets/` 同提交；HTTP/AST 专项、CodeGraph、52 项完整门禁和部署黑盒均通过。
-3. 2.3C 若前缀路由确有必要，先为 Router 增加最小 `get_prefix("/assets/", handler)` 能力：精确路由优先、最长前缀优先、重复前缀冲突、只传未解码 suffix。不得引入 glob、正则、全局 URL decode、自动 HEAD→GET 或 middleware 框架。Router 能力与 assets 接线应分开提交并逐阶段全量回归。
-4. 2.3D 才迁移 `/assets/` 定位与响应：保持 `unquote → resolve → containment`、400/404 JSON、MIME 与 `no-cache, no-store, must-revalidate`；composition root 只注入固定静态根和 MIME guesser，route 不导入 `web_app`、配置对象、provider、store 或 job。
+3. 2.3C Router 最小前缀能力（已完成，`2b6ad36`）：实现 exact/template 总体优先、最长前缀、重复冲突及未解码不可变 suffix；没有 glob、正则、全局 URL decode、自动 HEAD→GET、middleware 或 `/assets/` 运行时接线，专项、CodeGraph、52 项完整门禁和部署黑盒均通过。
+4. 2.3D `/assets/` 独立接线（下一步）：保持 `unquote → resolve → containment`、400/404 JSON、MIME、Content-Length、query/尾斜杠/Range 与 `no-cache, no-store, must-revalidate`；composition root 只注入固定静态根和 MIME guesser，route 不导入 `web_app`、配置对象、provider、store 或 job。只删除对应旧内联分支，不扩展到其他文件响应。
 5. 主代理逐步复核 CodeGraph 导入方向、测试有效性与用户脏文件边界，每个新增专项脚本都同步提高当前 **50 项确定性回归 + 2 项 Playwright = 52 项** 的完整门禁总数。
 
 停止结论必须保留：`/assets/` 是动态多段前缀，现有 Router 的 `{param}` 不跨 `/`，不能伪装成 `/assets/{path}`；路径安全、URL 解码和 MIME 归属 route，不归 Router。`/harness-ca.crt`、普通 assets、授权附件、报表封面、视频 Range、邻聊/淘宝文件、frames/PDF 动态生成是不同响应边界，禁止为了复用而合并。尤其不得用 `file_response` 未审计替换 `serve_video`、为 `binary_response` 自动增加 Range、扩大 HEAD 支持、绕过 owner/token 检查或统一 Content-Disposition。任何一项需要改变既有 HTTP 语义时，立即停止该代码批并先补现状基线与显式变更决策；不得越过 Phase 3 直接迁移业务 API。
