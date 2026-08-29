@@ -415,6 +415,12 @@ Phase 3.2 最终证据（2026-08-29）：`fed5df9` 只新增 `scripts/jobs/regis
 
 审计同时确认 Download `result` identity 只在进程内 helper 可见、HTTP/SSE 只观察 JSON 值，但既有测试已显式冻结；其 defensive copy 必须作为 Download 接线前的独立可靠性提交，不混入结构迁移。Shop/Metrics/Amazon 的锁只保护内存字段，不保护锁外子进程的 artifact 写入；迁移时由 Registry 先取不可变内存快照、再由领域 adapter 读 artifact，不等同于把 I/O 交给 Registry。每个域仍须用确定性时序测试证明 artifact 读取次数、终态先后、POST queued/running 竞态、GET/SSE marker 与 missing 行为保持基线。迁移顺序定为 Download → Metrics → Shop → Amazon，每域独立提交和完整门禁。
 
+Phase 3.3.P1 最终证据（2026-08-29）：`2509e0f` 只扩展 `scripts/jobs/registry.py` 与既有 `scripts/test_job_registry.py`。`update_fields` 接受字段 mapping，拒绝非 mapping、非字符串/私有/`log`/`updated_at`/未知字段和空操作；锁内以候选副本完成对象与字段值深复制、可选原文末日志和注入时钟，全部成功后才单次替换 Registry 条目，missing 为 `KeyError`。专项覆盖多字段原子提交、输入/快照嵌套隔离、raw final log、校验、stored/value deepcopy 与 clock 异常零部分写、锁释放，以及 Event 控制的 update/append 真实重叠和日志不丢失。交叉审查发现并收口既有 `append_log` 在时钟异常时先写日志的半状态；最终实现先取得时钟再触碰存储，同时不为逐条流日志深复制整个任务。没有生产调用者、领域字段表、状态机、callback、public replace/live get、I/O、线程职责、兼容层或反向依赖。
+
+服务器只通过 4004 部署脚本构建，提交 `2509e0ffd359eed15eb69f7a993bd33dcd43e372`、镜像 `sha256:6e1804472f87ed31baa13d0e1c9aa9aed5bbc3b4444eb0baf199df91f1cca2f4`。Playwright 首次把测试容器自身的 loopback 误作 Web 地址而连接失败，随即切换为服务器 LAN 地址并从第 1 项完整重跑，最终通过 **53 项确定性回归 + 2 个 Playwright = 55 项**；13 页面、四类缺失 GET/SSE、未知 provider、三端健康、专属镜像、clean checkout、严重日志与镜像/环境/root 只读零残留均通过，4002/4003 镜像和启动时间未变化。启动时仍有 1 条既有静态代理节点同步 404 配置告警；它不依赖本批代码且擅自修复会触碰真实代理数据，因此记录为 Phase 5/运维边界的非阻断风险，不混入 P1。
+
+**Phase 3.3.P1 总结与漂移审计：已完成。** 三路阶段审计均为 0 blocker。本批只建立零接线受锁更新能力，没有改变四套运行时字典/锁、worker、serializer、artifact 时序、URL、HTTP/SSE、数据或 UI；`jobs` 继续只依赖 stdlib。copy-on-write 对终态多字段更新是合理原子边界，但不用于高频逐条日志；未来接入大型 `result` 前必须先完成独立对象隔离决策。下一步 3.3.D0 只把 `public_download_job` 的 `result` 改为深复制并更新既有契约为“值相同、嵌套双向隔离”，不接入 Registry；D0 完整门禁通过后才进入 3.3.D1 Download 单域切换。
+
 ## 七、Phase 3：任务模型与注册表归一
 
 本阶段提前到业务路由迁移之前，避免新 route/service 反向访问 `web_app.py` 中的 `download_jobs`、`shop_jobs`、`metrics_jobs`、`amazon_jobs` 和四把锁。不要先用继承强行统一四类任务；先定义稳定的只读快照协议：
@@ -437,8 +443,9 @@ class JobSnapshot(TypedDict):
 4. **3.2 `JobRegistry`：** 统一锁内注册、查找、日志追加、状态读取和不可变快照；测试并发 append/snapshot、任务不存在和异常后锁释放。Registry 不启动线程、不执行业务命令、不持久化数据库。
 5. **3.3.0 更新与锁时序契约：** 先只读列出四域每个字段赋值、日志、serializer、artifact 读取、线程启动与 GET/SSE 锁范围；明确下载结果对象身份和后三域锁内 I/O 的处理方式。若需要可靠性变化，必须独立提交、独立测试；本批不接线、不双写、不访问 Registry 私有成员，也不预设通用 callback。
 6. **3.3.P1 原子字段更新纯能力：** 扩展现有 Registry 与同一专项，不新增运行时调用者；冻结原子多字段、字段校验、值深复制、同锁可选末条日志、时钟、missing、异常零部分写和 append 并发不丢日志。
-7. **3.3 调用方切换：** 在 3.3.P1 通过后，按 Download → Metrics → Shop → Amazon 单域独立提交切换 registry；Download 接线前先以独立可靠性提交处理已冻结的 result identity。每切换一类都验证 API 查询与 SSE 字节契约。SSE 端点只消费快照，不直接访问可变任务对象。
-8. **3.4 基类复核：** 只有发现除快照字段外还有稳定共享行为才评估基类；若只是少量字段复用，明确记录“不引入继承”。
+7. **3.3.D0 Download result 隔离：** 独立可靠性提交只让 `public_download_job` 对 `result` 返回深复制，并把既有契约从 Python alias 改为值相同与嵌套双向隔离；不接入 Registry、不改 worker、字典/锁、HTTP JSON、SSE、日志窗口或 POST 时序。
+8. **3.3.D1～D4 调用方切换：** D0 通过后按 Download → Metrics → Shop → Amazon 单域独立提交切换 registry；每切换一类都验证 API 查询与 SSE 字节契约。SSE 端点只消费快照，不直接访问可变任务对象；禁止双写旧/新 store。
+9. **3.4 基类复核：** 只有发现除快照字段外还有稳定共享行为才评估基类；若只是少量字段复用，明确记录“不引入继承”。
 
 **Phase 3 验收：** `web_app.py` 不再直接维护四套 job 字典/锁；四类任务的 API/SSE 输出与基线逐字段一致；并发测试无死锁、丢日志或可变对象泄漏；`jobs` 不导入 route/service/web_app。
 
@@ -580,7 +587,7 @@ Phase 0 测试基线
 
 ## 十四、下一批实施任务
 
-Phase 0、0.5、1.1、2026-08-29 两个补漏阶段、Phase 1.2、Phase 1.3、**Phase 2.1～2.3D**、**Phase 3.0**、**Phase 3.R1**、**Phase 3.1A**、**Phase 3.1B**、**Phase 3.2** 与 **Phase 3.3.0** 已完成。Phase 2 无业务状态路由骨架关闭；Phase 3 已建立四类任务公开契约、领域纯快照 adapter、零接线纯 Registry，并完成字段更新与锁/artifact 时序审计。Amazon 与出海匠聊天壳延期到 Chat/Provider 阶段，Proxy 页面延期到代理垂直切片。下一步实施 **Phase 3.3.P1 原子字段更新纯能力**；通过前不得切换任一运行时调用方。
+Phase 0、0.5、1.1、2026-08-29 两个补漏阶段、Phase 1.2、Phase 1.3、**Phase 2.1～2.3D**、**Phase 3.0**、**Phase 3.R1**、**Phase 3.1A**、**Phase 3.1B**、**Phase 3.2**、**Phase 3.3.0** 与 **Phase 3.3.P1** 已完成。Phase 2 无业务状态路由骨架关闭；Phase 3 已建立四类任务公开契约、领域纯快照 adapter、零接线纯 Registry 与原子字段更新能力。Amazon 与出海匠聊天壳延期到 Chat/Provider 阶段，Proxy 页面延期到代理垂直切片。下一步实施 **Phase 3.3.D0 Download result 隔离**；D0 完整门禁通过前不得切换 Download 或任一其他运行时调用方。
 
 Phase 2.3 继续复用现有 Terra 子智能体，避免为同一长期任务无限新增执行记录，并按以下门槛推进：
 
@@ -600,5 +607,7 @@ Phase 3 下一批按以下门槛推进：
 4. **3.1B 纯 adapter（已完成，`c60119d`）：** 四个领域显式 snapshot adapter 已深复制 result/artifact、保留 80/120 日志窗口并以纯 stdlib 专项冻结；生产调用者为 0，服务器 54 项完整门禁通过。
 5. **3.2 纯 JobRegistry（已完成，`fed5df9`）：** 只新增 registry 与并发专项，负责锁内注册、查找、日志追加、状态/快照读取、missing 与异常释放锁；生产调用者为 0，服务器 55 项完整门禁通过。
 6. **3.3.0 更新与锁时序契约（已完成）：** 四域更新点和时序已逐项审计；否决双写、整对象 replace、live get、私有成员访问和通用 callback，确认 artifact 写入不受旧内存锁保护，并确定 Download → Metrics → Shop → Amazon 的单域顺序。
-7. **3.3.P1 原子字段更新纯能力（当前）：** 只扩展 `JobRegistry` 与既有专项，增加字段 mapping 的原子深复制更新和同锁可选末条日志；零运行时接线、零领域字段表、零 I/O/线程/状态机，完整门禁总数仍为 55。
-8. Phase 3 不把下载、Shop、Metrics、Amazon 的业务专属字段塞入共享基类；`jobs` 不得导入 route、service 或 `web_app`，SSE 归一只消费不可变快照。
+7. **3.3.P1 原子字段更新纯能力（已完成，`2509e0f`）：** `JobRegistry` 已增加字段 mapping 的原子深复制更新和同锁可选末条日志，并收口 append 时钟异常半状态；零运行时接线，服务器 55 项完整门禁通过。
+8. **3.3.D0 Download result 隔离（当前）：** 只修改 `public_download_job` 与既有快照契约，把 `result` 从 Python alias 改为 defensive copy；JSON 值、字段、状态码、SSE、worker、字典/锁和 POST 时序不变，仍不接入 Registry。
+9. **3.3.D1 Download 单域切换（D0 后）：** 一次性迁移 Download 的创建、失败输入登记、worker、GET、SSE 与 `build_video_feedback` 查询，移除旧 Download 字典/锁且禁止双写；普通日志用 `append_log`，终态多字段与末条错误日志用 `update_fields`，并确定性冻结 queued/running 竞态、200/404、missing SSE 200、80 条日志窗口、marker 与 result JSON 值。
+10. Phase 3 不把下载、Shop、Metrics、Amazon 的业务专属字段塞入共享基类；`jobs` 不得导入 route、service 或 `web_app`，SSE 归一只消费不可变快照。
