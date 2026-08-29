@@ -335,7 +335,9 @@ def test_v2_sing_box_default_stays_in_4004_project() -> None:
 
     deploy = (ROOT / "scripts" / "deploy_ui_4004.sh").read_text(encoding="utf-8")
     assert 'legacy_preview="${UI4004_LEGACY_PREVIEW:-0}"' in deploy
-    assert 'expected_branch="${UI4004_BRANCH:-v2}"' in deploy
+    assert 'if [[ "$current_branch" != "v2" ]]; then' in deploy
+    assert "UI4004_BRANCH" not in deploy
+    assert "ALLOW_NON_UI4004_BRANCH" not in deploy
     assert 'env_file="${UI4004_ENV_FILE:-.env}"' in deploy
     assert 'image_name="${ANALYZER_IMAGE:-short-video-analyzer:latest}"' in deploy
     assert 'compose_args=(-p "$project_name" --env-file "$env_file" -f docker-compose.yml)' in deploy
@@ -344,6 +346,11 @@ def test_v2_sing_box_default_stays_in_4004_project() -> None:
     assert 'if [[ "$web_port" != "4004" ]]; then' in deploy
     assert 'ANALYZER_IMAGE="$image_name" WEB_PORT="$web_port"' in deploy
     assert "docker-compose.ui-4004.yml" not in deploy
+    first_docker_probe = deploy.index("if command -v docker")
+    assert deploy.index('if [[ "$legacy_preview" != "0" ]]; then') < first_docker_probe
+    assert deploy.index('if [[ "$current_branch" != "v2" ]]; then') < first_docker_probe
+    assert deploy.index('if [[ "$project_name" != "short-video-analyzer-ui-4004" ]]; then') < first_docker_probe
+    assert deploy.index('if [[ "$web_port" != "4004" ]]; then') < first_docker_probe
 
 
 def test_port_migration_updates_bound_account_profile() -> None:

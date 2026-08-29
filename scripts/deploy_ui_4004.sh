@@ -10,12 +10,11 @@ if [[ "$legacy_preview" != "0" ]]; then
   exit 2
 fi
 
-expected_branch="${UI4004_BRANCH:-v2}"
 env_file="${UI4004_ENV_FILE:-.env}"
 image_name="${ANALYZER_IMAGE:-short-video-analyzer:latest}"
 current_branch="$(git branch --show-current)"
-if [[ "$current_branch" != "$expected_branch" && "${ALLOW_NON_UI4004_BRANCH:-0}" != "1" ]]; then
-  echo "Refusing 4004 deployment from '$current_branch'; expected '$expected_branch'." >&2
+if [[ "$current_branch" != "v2" ]]; then
+  echo "Refusing 4004 deployment from '$current_branch'; expected 'v2'." >&2
   exit 2
 fi
 
