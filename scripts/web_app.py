@@ -38,6 +38,8 @@ _BOOTSTRAP_SCRIPTS_DIR = _BOOTSTRAP_ROOT / "scripts"
 sys.path.insert(0, str(_BOOTSTRAP_SCRIPTS_DIR))
 from core.config import AppConfig
 from core.json_store import atomic_write_json, read_json
+from routes.health import register_health_route
+from routes.router import MethodNotAllowed, RouteNotFound, Router
 
 # SociaVault TikTok endpoints (mirrored from sociavault_tiktok.py)
 TIKTOK_ENDPOINTS: dict[str, str] = {
@@ -74,6 +76,8 @@ DATA_DIR = APP_CONFIG.data_dir
 VIDEOS_DIR = APP_CONFIG.videos_dir
 OUTPUT_DIR = APP_CONFIG.output_dir
 SCRIPTS_DIR = APP_CONFIG.scripts_dir
+WEB_ROUTER = Router()
+register_health_route(WEB_ROUTER, ui_test_mode=UI_TEST_MODE)
 INDEX_HTML_PATH = SCRIPTS_DIR / "static" / "web_index.html"
 SELLERSPRITE_CHAT_DIR = ROOT / "sellersprite_mcp_chat"
 SELLERSPRITE_CHAT_DATA_DIR = DATA_DIR / "sellersprite_mcp"
@@ -11027,12 +11031,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path == "/healthz":
-            return json_response(
-                self,
-                HTTPStatus.OK,
-                {"status": "ok", "ui_test_mode": UI_TEST_MODE},
-            )
+        try:
+            route_match = WEB_ROUTER.resolve("GET", parsed.path)
+        except (RouteNotFound, MethodNotAllowed):
+            pass
+        else:
+            return route_match.handler(self, route_match.params)
         if parsed.path == "/harness":
             page = (SCRIPTS_DIR / "static" / "harness.html").read_text(encoding="utf-8")
             return text_response(self, HTTPStatus.OK, page, "text/html; charset=utf-8")

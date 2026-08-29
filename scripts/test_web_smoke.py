@@ -96,6 +96,23 @@ def run_smoke(port: int) -> None:
     assert headers.get("content-type", "").startswith("application/json")
     assert json.loads(body.decode("utf-8")) == {"status": "ok", "ui_test_mode": True}
 
+    query_status, query_headers, query_body = request(port, "GET", "/healthz?probe=1")
+    assert query_status == status
+    assert query_body == body
+    for key in ("content-type", "content-length", "cache-control", "allow"):
+        assert query_headers.get(key) == headers.get(key), key
+
+    status, headers, body = request(port, "GET", "/healthz/")
+    assert_json_error(status, headers, body, 404, "Not found")
+    for method in ("POST", "DELETE"):
+        status, headers, body = request(port, method, "/healthz")
+        assert_json_error(status, headers, body, 404, "Not found")
+        assert "allow" not in headers, (method, headers)
+    status, headers, body = request(port, "HEAD", "/healthz")
+    assert status == 404
+    assert body == b""
+    assert "allow" not in headers
+
     for path in ACTIVE_PAGES:
         status, headers, body = request(port, "GET", path)
         assert status == 200, (path, status, body.decode("utf-8", errors="replace"))

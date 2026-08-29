@@ -123,7 +123,7 @@ class RouterTests(unittest.TestCase):
         with self.assertRaises(RouteNotFound):
             router.resolve("GET", "/missing")
 
-    def test_routes_have_no_application_imports_and_web_app_is_not_wired(self) -> None:
+    def test_routes_are_one_way_and_web_app_only_imports_health_and_router(self) -> None:
         root = Path(__file__).resolve().parent
         for route_file in (root / "routes").glob("*.py"):
             module = ast.parse(route_file.read_text(encoding="utf-8"))
@@ -132,13 +132,45 @@ class RouterTests(unittest.TestCase):
                     for alias in node.names:
                         self.assertIn(alias.name.split(".")[0], {"dataclasses", "types", "typing", "re"})
                 elif isinstance(node, ast.ImportFrom) and node.module:
-                    self.assertIn(node.module.split(".")[0], {"__future__", "dataclasses", "types", "typing"})
+                    self.assertIn(
+                        node.module,
+                        {
+                            "__future__",
+                            "dataclasses",
+                            "http",
+                            "types",
+                            "typing",
+                            "core.http",
+                            "routes.router",
+                        },
+                    )
+                    self.assertNotIn("web_app", node.module)
         web_app = ast.parse((root / "web_app.py").read_text(encoding="utf-8"))
+        route_imports: set[str] = set()
         for node in ast.walk(web_app):
             if isinstance(node, ast.Import):
-                self.assertFalse(any(alias.name == "routes" or alias.name.startswith("routes.") for alias in node.names))
+                route_imports.update(
+                    alias.name for alias in node.names
+                    if alias.name == "routes" or alias.name.startswith("routes.")
+                )
             elif isinstance(node, ast.ImportFrom):
-                self.assertFalse(node.module == "routes" or bool(node.module and node.module.startswith("routes.")))
+                if node.module == "routes" or bool(node.module and node.module.startswith("routes.")):
+                    route_imports.add(node.module)
+        self.assertEqual(route_imports, {"routes.health", "routes.router"})
+        handler = next(
+            node for node in web_app.body
+            if isinstance(node, ast.ClassDef) and node.name == "Handler"
+        )
+        get_method = next(
+            node for node in handler.body
+            if isinstance(node, ast.FunctionDef) and node.name == "do_GET"
+        )
+        self.assertTrue(any(
+            isinstance(node, ast.If)
+            and isinstance(node.test, ast.Compare)
+            and any(isinstance(value, ast.Constant) and value.value == "/harness" for value in node.test.comparators)
+            for node in ast.walk(get_method)
+        ))
 
 
 if __name__ == "__main__":
