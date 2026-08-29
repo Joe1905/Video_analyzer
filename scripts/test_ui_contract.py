@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import re
 import shutil
 import subprocess
@@ -136,10 +137,41 @@ class UIContractTest(unittest.TestCase):
 
     def test_runtime_uses_placeholders_and_external_assets(self) -> None:
         app = (SCRIPTS_DIR / "web_app.py").read_text(encoding="utf-8")
+        static_assets = ast.parse(
+            (SCRIPTS_DIR / "routes" / "static_assets.py").read_text(encoding="utf-8")
+        )
         self.assertIn('html.replace("<!-- UI_APP_NAV -->", nav, 1)', app)
         self.assertIn('href="/assets/ui-system.css?v=', app)
         self.assertIn('src="/assets/ui-system.js?v=', app)
-        self.assertIn('cache_control="no-cache, no-store, must-revalidate"', app)
+        cache_control_assignments = [
+            node
+            for node in static_assets.body
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name) and target.id == "CACHE_CONTROL"
+                for target in node.targets
+            )
+        ]
+        self.assertEqual(len(cache_control_assignments), 1)
+        self.assertIsInstance(cache_control_assignments[0].value, ast.Constant)
+        self.assertEqual(
+            cache_control_assignments[0].value.value,
+            "no-cache, no-store, must-revalidate",
+        )
+        cache_control_responses = [
+            node
+            for node in ast.walk(static_assets)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "binary_response"
+            and any(
+                keyword.arg == "cache_control"
+                and isinstance(keyword.value, ast.Name)
+                and keyword.value.id == "CACHE_CONTROL"
+                for keyword in node.keywords
+            )
+        ]
+        self.assertEqual(len(cache_control_responses), 1)
         self.assertIn('CHAT_PROVIDER_ICONS', app)
         self.assertIn('"amazon": "\\u5356\\u5bb6\\u7cbe\\u7075"', app)
         self.assertIn('class="ui-nav__icon"', app)
