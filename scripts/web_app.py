@@ -39,6 +39,7 @@ sys.path.insert(0, str(_BOOTSTRAP_SCRIPTS_DIR))
 from core.config import AppConfig
 from core.json_store import atomic_write_json, read_json
 from routes.health import register_health_route
+from routes.report_pages import register_report_pages
 from routes.router import MethodNotAllowed, RouteNotFound, Router
 
 # SociaVault TikTok endpoints (mirrored from sociavault_tiktok.py)
@@ -1166,6 +1167,13 @@ def inject_unified_nav(html: str, current_path: str) -> str:
         count=1,
     )
     return html
+
+
+register_report_pages(
+    WEB_ROUTER,
+    scripts_dir=SCRIPTS_DIR,
+    inject_nav=inject_unified_nav,
+)
 
 
 def inject_proxy_bootstrap(html: str) -> str:
@@ -11076,12 +11084,6 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/lan-chat":
             lan_chat_html = (SCRIPTS_DIR / "static" / "lan_chat.html").read_text(encoding="utf-8")
             return text_response(self, HTTPStatus.OK, inject_unified_nav(lan_chat_html, parsed.path), "text/html; charset=utf-8")
-        if parsed.path == "/report":
-            report_html = (SCRIPTS_DIR / "static" / "report.html").read_text(encoding="utf-8")
-            return text_response(self, HTTPStatus.OK, inject_unified_nav(report_html, parsed.path), "text/html; charset=utf-8")
-        if parsed.path == "/report/player":
-            player_html = (SCRIPTS_DIR / "static" / "report_player.html").read_text(encoding="utf-8")
-            return text_response(self, HTTPStatus.OK, inject_unified_nav(player_html, parsed.path), "text/html; charset=utf-8")
         if parsed.path == "/extract":
             template = INDEX_HTML_PATH.read_text(encoding="utf-8")
             html = template.replace(

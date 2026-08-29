@@ -113,6 +113,18 @@ def run_smoke(port: int) -> None:
     assert body == b""
     assert "allow" not in headers
 
+    for path in ("/report", "/report/player"):
+        status, headers, body = request(port, "GET", path)
+        assert status == 200, (path, status, body.decode("utf-8", errors="replace"))
+        query_status, query_headers, query_body = request(port, "GET", f"{path}?probe=1")
+        assert query_status == status
+        assert query_body == body
+        for key in ("content-type", "content-length", "cache-control", "location"):
+            assert query_headers.get(key) == headers.get(key), (path, key)
+        slash_status, slash_headers, slash_body = request(port, "GET", f"{path}/")
+        assert_json_error(slash_status, slash_headers, slash_body, 404, "Not found")
+        assert "location" not in slash_headers, path
+
     for path in ACTIVE_PAGES:
         status, headers, body = request(port, "GET", path)
         assert status == 200, (path, status, body.decode("utf-8", errors="replace"))
