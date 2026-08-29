@@ -3934,7 +3934,7 @@ def run_amazon_job(job_id: str) -> None:
         cache_label = cache_log_label(result)
         if cache_label:
             append_amazon_log(job, cache_label)
-        result_path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        atomic_write_json(result_path, result)
 
         with amazon_jobs_lock:
             if not (isinstance(result, dict) and result.get("status") == "ERROR"):

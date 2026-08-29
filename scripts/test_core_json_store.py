@@ -234,7 +234,7 @@ class JsonStoreTests(unittest.TestCase):
         )
         self.assertEqual(
             sum(isinstance(node.func, ast.Name) and node.func.id == "atomic_write_json" for node in calls),
-            10,
+            11,
         )
         self.assertEqual(
             sum(
@@ -261,7 +261,28 @@ class JsonStoreTests(unittest.TestCase):
                 )
                 for node in calls
             ),
-            1,
+            0,
+        )
+
+        run_amazon_job = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "run_amazon_job"
+        )
+        amazon_atomic_writes = [
+            node
+            for node in ast.walk(run_amazon_job)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "atomic_write_json"
+        ]
+        self.assertEqual(len(amazon_atomic_writes), 1)
+        self.assertEqual(
+            [
+                ast.unparse(argument)
+                for argument in amazon_atomic_writes[0].args
+            ],
+            ["result_path", "result"],
         )
 
 
