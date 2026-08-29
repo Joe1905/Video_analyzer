@@ -50,6 +50,7 @@ class DeployUi4004BoundaryTest(unittest.TestCase):
         self.assertIn("Refusing non-4004 analyzer image", result.stderr)
         self.assertNotIn("Docker Compose is required", result.stderr)
 
+    @unittest.skipUnless(COMPOSE_FILE.is_file(), "requires docker-compose.yml in a source checkout")
     def test_every_service_uses_the_same_overridable_image_expression(self) -> None:
         text = COMPOSE_FILE.read_text(encoding="utf-8")
         image_expression = f"${{ANALYZER_IMAGE:-{SHARED_IMAGE}}}"
