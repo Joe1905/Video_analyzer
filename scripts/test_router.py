@@ -176,6 +176,7 @@ class RouterTests(unittest.TestCase):
                 "routes.health",
                 "routes.extract",
                 "routes.harness",
+                "routes.harness_certificate",
                 "routes.lan_chat",
                 "routes.metrics",
                 "routes.report_pages",
@@ -193,12 +194,6 @@ class RouterTests(unittest.TestCase):
             node for node in handler.body
             if isinstance(node, ast.FunctionDef) and node.name == "do_GET"
         )
-        self.assertTrue(any(
-            isinstance(node, ast.If)
-            and isinstance(node.test, ast.Compare)
-            and any(isinstance(value, ast.Constant) and value.value == "/harness-ca.crt" for value in node.test.comparators)
-            for node in ast.walk(get_method)
-        ))
         exact_route_branches = {
             value.value
             for node in ast.walk(get_method)
@@ -211,6 +206,7 @@ class RouterTests(unittest.TestCase):
         self.assertNotIn("/lan-chat", exact_route_branches)
         self.assertNotIn("/tool", exact_route_branches)
         self.assertNotIn("/harness", exact_route_branches)
+        self.assertNotIn("/harness-ca.crt", exact_route_branches)
         self.assertNotIn("/extract", exact_route_branches)
         self.assertNotIn("/shop", exact_route_branches)
         self.assertNotIn("/metrics", exact_route_branches)
@@ -218,9 +214,6 @@ class RouterTests(unittest.TestCase):
         source = (root / "web_app.py").read_text(encoding="utf-8")
         self.assertIn('parsed.path.startswith("/api/lan-chat/") and handle_lan_chat_get', source)
         self.assertIn('if parsed.path == "/api/tool/convert":', source)
-        self.assertIn('if parsed.path == "/harness-ca.crt":', source)
-        self.assertIn('self.send_header("Content-Type", "application/x-x509-ca-cert")', source)
-        self.assertIn('self.send_header("Content-Disposition", \'attachment; filename="harness-internal-ca.crt"\')', source)
         self.assertIn('if parsed.path.startswith("/api/taobao/"):', source)
         self.assertIn('if parsed.path == "/api/shop-job":', source)
         self.assertIn('if parsed.path == "/api/video-metrics-job":', source)

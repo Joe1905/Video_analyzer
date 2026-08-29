@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import http.client
 import json
 import os
@@ -208,6 +209,60 @@ class HarnessCertificateContractTests(unittest.TestCase):
                 self.assertEqual(headers.get("content-length"), str(len(MISSING_MESSAGE.encode("utf-8"))))
                 self.assertEqual(headers.get("cache-control"), "no-cache, no-store, must-revalidate")
                 self.assertEqual(body.decode("utf-8"), MISSING_MESSAGE)
+
+    def test_router_wiring_replaces_the_handler_exact_branch(self) -> None:
+        web_source = (ROOT / "scripts" / "web_app.py").read_text(encoding="utf-8")
+        web_tree = ast.parse(web_source)
+        route_imports = {
+            alias.name
+            for node in web_tree.body
+            if isinstance(node, ast.ImportFrom)
+            and node.module == "routes.harness_certificate"
+            for alias in node.names
+        }
+        self.assertEqual(route_imports, {"register_harness_certificate_route"})
+
+        registrations = [
+            node
+            for node in ast.walk(web_tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "register_harness_certificate_route"
+        ]
+        self.assertEqual(len(registrations), 1)
+        self.assertEqual(ast.unparse(registrations[0].args[0]), "WEB_ROUTER")
+        self.assertEqual(
+            {keyword.arg: ast.unparse(keyword.value) for keyword in registrations[0].keywords},
+            {"certificate_path": "ROOT / 'data' / 'harness-internal-ca.crt'"},
+        )
+
+        handler_class = next(
+            node
+            for node in web_tree.body
+            if isinstance(node, ast.ClassDef) and node.name == "Handler"
+        )
+        do_get = next(
+            node
+            for node in handler_class.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "do_GET"
+        )
+        self.assertNotIn(CERTIFICATE_PATH, ast.dump(do_get))
+
+        route_path = ROOT / "scripts" / "routes" / "harness_certificate.py"
+        route_tree = ast.parse(route_path.read_text(encoding="utf-8"))
+        imported_modules = {
+            node.module
+            for node in ast.walk(route_tree)
+            if isinstance(node, ast.ImportFrom) and node.module
+        }
+        self.assertNotIn("web_app", imported_modules)
+        route_constants = {
+            node.value
+            for node in ast.walk(route_tree)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        }
+        self.assertIn(CERTIFICATE_PATH, route_constants)
 
 if __name__ == "__main__":
     unittest.main()

@@ -40,6 +40,7 @@ from core.config import AppConfig
 from core.json_store import atomic_write_json, read_json
 from routes.health import register_health_route
 from routes.extract import register_extract_page
+from routes.harness_certificate import register_harness_certificate_route
 from routes.harness import register_harness_page
 from routes.lan_chat import register_lan_chat_page
 from routes.metrics import register_metrics_page
@@ -1192,6 +1193,10 @@ register_tool_page(
     inject_nav=inject_unified_nav,
 )
 register_harness_page(WEB_ROUTER, scripts_dir=SCRIPTS_DIR)
+register_harness_certificate_route(
+    WEB_ROUTER,
+    certificate_path=ROOT / "data" / "harness-internal-ca.crt",
+)
 register_extract_page(
     WEB_ROUTER,
     template_path=INDEX_HTML_PATH,
@@ -11069,19 +11074,6 @@ class Handler(BaseHTTPRequestHandler):
             pass
         else:
             return route_match.handler(self, route_match.params)
-        if parsed.path == "/harness-ca.crt":
-            certificate = ROOT / "data" / "harness-internal-ca.crt"
-            if not certificate.is_file():
-                return text_response(self, HTTPStatus.NOT_FOUND, "Harness certificate is not available", "text/plain; charset=utf-8")
-            payload = certificate.read_bytes()
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "application/x-x509-ca-cert")
-            self.send_header("Content-Disposition", 'attachment; filename="harness-internal-ca.crt"')
-            self.send_header("Content-Length", str(len(payload)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(payload)
-            return
         if parsed.path == "/amazon/":
             self.send_response(HTTPStatus.TEMPORARY_REDIRECT)
             self.send_header("Location", "/amazon")
