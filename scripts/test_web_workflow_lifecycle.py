@@ -497,6 +497,208 @@ def assert_real_shop_worker_registry_updates(web_app: Any, runner: Any) -> None:
         web_app.shop_job_registry = original_registry
 
 
+def assert_real_amazon_worker_registry_updates(web_app: Any, runner: Any) -> None:
+    original_registry = web_app.amazon_job_registry
+    registry = web_app.JobRegistry()
+    web_app.amazon_job_registry = registry
+    try:
+        class FakeAmazonProcess:
+            def __init__(self, lines: list[str], returncode: int) -> None:
+                self.stdout = iter(lines)
+                self.returncode = returncode
+
+            def wait(self) -> int:
+                return self.returncode
+
+        command_success_id = "amazon-command-success"
+        command = ["docker", "fixture-amazon"]
+        registry.register(
+            command_success_id,
+            web_app.AmazonJob(
+                id=command_success_id,
+                target="B000COMMAND",
+                target_type="asin",
+                url="https://www.amazon.com/dp/B000COMMAND",
+                pages=1,
+            ),
+        )
+        with patch.object(web_app, "subprocess", subprocess), patch.object(
+            subprocess, "Popen", return_value=FakeAmazonProcess(["first stdout  \n", "second stdout\r\n"], 0)
+        ) as popen:
+            output, code = web_app.run_amazon_command(command_success_id, command)
+        assert (output, code) == ("first stdout  \nsecond stdout\r\n", 0)
+        assert popen.call_args.args == (command,)
+        assert popen.call_args.kwargs["cwd"] == web_app.ROOT
+        assert popen.call_args.kwargs["stdout"] is subprocess.PIPE
+        assert popen.call_args.kwargs["stderr"] is subprocess.STDOUT
+        assert popen.call_args.kwargs["text"] is True
+        assert registry.snapshot(command_success_id).log == [
+            "$ docker fixture-amazon", "first stdout", "second stdout",
+        ]
+
+        command_failure_id = "amazon-command-failure"
+        registry.register(
+            command_failure_id,
+            web_app.AmazonJob(
+                id=command_failure_id,
+                target="B000COMMANDFAIL",
+                target_type="asin",
+                url="https://www.amazon.com/dp/B000COMMANDFAIL",
+                pages=1,
+            ),
+        )
+        with patch.object(web_app, "subprocess", subprocess), patch.object(
+            subprocess, "Popen", return_value=FakeAmazonProcess(["failure stdout  \n"], 7)
+        ) as popen:
+            output, code = web_app.run_amazon_command(command_failure_id, ["docker", "fixture-amazon-fail"])
+        assert (output, code) == ("failure stdout  \n", 7)
+        assert popen.call_args.args == (["docker", "fixture-amazon-fail"],)
+        assert registry.snapshot(command_failure_id).log == [
+            "$ docker fixture-amazon-fail", "failure stdout", "Command exited with code 7",
+        ]
+
+        success_id = "amazon-worker-success"
+        success_url = "https://www.amazon.com/dp/B000WORKER"
+        registry.register(
+            success_id,
+            web_app.AmazonJob(
+                id=success_id,
+                target="B000WORKER",
+                target_type="asin",
+                url=success_url,
+                pages=3,
+            ),
+        )
+        command_payload = {"products": [{"asin": "B000WORKER", "title": "fixture product"}]}
+        proxy_calls: list[str] = []
+        cache_calls: list[tuple[str, str, dict[str, Any]]] = []
+        commands: list[list[str]] = []
+
+        def ensure_proxy(name: str, *, log: Any) -> None:
+            proxy_calls.append(name)
+            log("fixture amazon proxy ready")
+
+        def command_success(job_id: str, command: list[str]) -> tuple[str, int]:
+            assert job_id == success_id
+            commands.append(command)
+            assert command == [
+                "docker", "run", "--rm", "--network", "host",
+                "-e", "AMAZON_PROXY", "-e", "AMAZON_PROXIES",
+                "amazon-scraper", "node", "assets/amazon_handler.js",
+                success_url, "--pages", "3",
+            ]
+            return json.dumps(command_payload), 0
+
+        def cache_success(service: str, operation: str, request: dict[str, Any], fetch: Any, *, metadata_builder: Any) -> dict[str, Any]:
+            cache_calls.append((service, operation, request))
+            assert metadata_builder(command_payload) == {
+                "entity_type": "amazon",
+                "entity_id": "B000WORKER",
+                "title": "fixture product",
+                "source_url": success_url,
+            }
+            registry.update_fields(
+                success_id,
+                {"url": "https://www.amazon.com/dp/B000MUTATED", "pages": 5},
+            )
+            return fetch()
+
+        worker_snapshot_ids: list[str] = []
+        original_snapshot = registry.snapshot
+
+        def recording_worker_snapshot(job_id: str) -> Any:
+            worker_snapshot_ids.append(job_id)
+            return original_snapshot(job_id)
+
+        with patch.object(web_app, "ensure_us_proxy", side_effect=ensure_proxy), patch.object(
+            web_app, "run_amazon_command", side_effect=command_success
+        ), patch.object(web_app, "get_cached_or_call", side_effect=cache_success), patch.object(
+            registry, "snapshot", side_effect=recording_worker_snapshot
+        ):
+            runner(success_id)
+        assert worker_snapshot_ids == [success_id]
+        success = registry.snapshot(success_id)
+        assert success is not None
+        assert success.status == "complete"
+        output_dir = web_app.OUTPUT_DIR / "amazon" / success_id
+        assert success.output_dir == str(output_dir.relative_to(web_app.ROOT))
+        assert proxy_calls == ["amazon"]
+        assert cache_calls == [("amazon_scraper", "web", {"url": success_url, "pages": 3})]
+        assert len(commands) == 1
+        assert success.url == "https://www.amazon.com/dp/B000MUTATED"
+        assert success.pages == 5
+        result_path = output_dir / "result.json"
+        assert web_app.read_json(result_path) == command_payload
+        payload = web_app.public_amazon_job(success, result=web_app.read_json(result_path))
+        assert payload["result"] == command_payload
+        payload["result"]["products"][0]["title"] = "mutated"
+        assert web_app.read_json(result_path) == command_payload
+
+        error_id = "amazon-worker-result-error"
+        registry.register(
+            error_id,
+            web_app.AmazonJob(
+                id=error_id,
+                target="B000ERROR1",
+                target_type="asin",
+                url="https://www.amazon.com/dp/B000ERROR1",
+                pages=1,
+            ),
+        )
+        with patch.object(
+            web_app, "get_cached_or_call", return_value={"status": "ERROR", "message": "fixture scraper error"}
+        ):
+            runner(error_id)
+        result_error = registry.snapshot(error_id)
+        assert result_error is not None
+        assert result_error.status == "failed"
+        assert result_error.error == "fixture scraper error"
+        assert result_error.log == []
+        assert web_app.read_json(web_app.OUTPUT_DIR / "amazon" / error_id / "result.json") == {
+            "status": "ERROR", "message": "fixture scraper error",
+        }
+
+        docker_missing_id = "amazon-worker-docker-missing"
+        registry.register(
+            docker_missing_id,
+            web_app.AmazonJob(
+                id=docker_missing_id,
+                target="B000DOCKER",
+                target_type="asin",
+                url="https://www.amazon.com/dp/B000DOCKER",
+                pages=1,
+            ),
+        )
+        with patch.object(web_app, "get_cached_or_call", side_effect=FileNotFoundError):
+            runner(docker_missing_id)
+        docker_missing = registry.snapshot(docker_missing_id)
+        assert docker_missing is not None
+        assert docker_missing.status == "failed"
+        assert docker_missing.error == "Docker CLI is not available in the web container"
+        assert docker_missing.log[-1] == docker_missing.error
+
+        failure_id = "amazon-worker-failure"
+        registry.register(
+            failure_id,
+            web_app.AmazonJob(
+                id=failure_id,
+                target="B000FAILURE",
+                target_type="asin",
+                url="https://www.amazon.com/dp/B000FAILURE",
+                pages=1,
+            ),
+        )
+        with patch.object(web_app, "get_cached_or_call", side_effect=RuntimeError("fixture raw amazon failure")):
+            runner(failure_id)
+        failure = registry.snapshot(failure_id)
+        assert failure is not None
+        assert failure.status == "failed"
+        assert failure.error == "fixture raw amazon failure"
+        assert failure.log[-1] == failure.error
+    finally:
+        web_app.amazon_job_registry = original_registry
+
+
 def run_lifecycle() -> None:
     # Production result payloads expose output paths relative to the repository
     # root, so keep the isolated fixture under that same root as well.
@@ -512,6 +714,7 @@ def run_lifecycle() -> None:
         real_download_worker = web_app.run_download_job
         real_shop_worker = web_app.run_shop_job
         real_metrics_worker = web_app.run_metrics_job
+        real_amazon_worker = web_app.run_amazon_job
         fake_queue = FakeVideoQueue(web_app.output_dir_for_filename)
         download_release = threading.Event()
         download_started = threading.Event()
@@ -523,10 +726,15 @@ def run_lifecycle() -> None:
         metrics_success_started = threading.Event()
         metrics_failure_release = threading.Event()
         metrics_failure_started = threading.Event()
+        amazon_success_release = threading.Event()
+        amazon_success_started = threading.Event()
+        amazon_failure_release = threading.Event()
+        amazon_failure_started = threading.Event()
         allowed_writes = {
             "/api/download",
             "/api/shop-extract",
             "/api/video-metrics",
+            "/api/amazon-scrape",
             "/api/upload",
             "/api/analyze",
             "/api/translate",
@@ -611,6 +819,37 @@ def run_lifecycle() -> None:
                 final_log="fixture metrics complete",
             )
 
+        def complete_amazon(job_id: str) -> None:
+            registry = web_app.amazon_job_registry
+            current = registry.snapshot(job_id)
+            assert current is not None
+            registry.update_fields(job_id, {"status": "running"})
+            if current.target == "B000FAIL01":
+                amazon_failure_started.set()
+                assert amazon_failure_release.wait(timeout=5)
+                registry.update_fields(
+                    job_id,
+                    {"status": "failed", "error": "fixture amazon failure"},
+                    final_log="fixture amazon failure",
+                )
+                return
+            amazon_success_started.set()
+            assert amazon_success_release.wait(timeout=5)
+            result_path = web_app.OUTPUT_DIR / "amazon" / job_id / "result.json"
+            result_path.parent.mkdir(parents=True, exist_ok=True)
+            result_path.write_text(
+                json.dumps({"products": [{"asin": current.target.upper(), "title": "fixture amazon"}]}),
+                encoding="utf-8",
+            )
+            registry.update_fields(
+                job_id,
+                {
+                    "status": "complete",
+                    "output_dir": str(result_path.parent.relative_to(web_app.ROOT)),
+                },
+                final_log="fixture amazon complete",
+            )
+
         def fake_translate(command: list[str], **_kwargs: Any) -> SimpleNamespace:
             output = Path(command[command.index("--output") + 1])
             output.write_text(json.dumps({"summary": "fixture translation"}), encoding="utf-8")
@@ -623,6 +862,7 @@ def run_lifecycle() -> None:
             patches.enter_context(patch.object(web_app, "run_download_job", side_effect=complete_download))
             patches.enter_context(patch.object(web_app, "run_shop_job", side_effect=complete_shop))
             patches.enter_context(patch.object(web_app, "run_metrics_job", side_effect=complete_metrics))
+            patches.enter_context(patch.object(web_app, "run_amazon_job", side_effect=complete_amazon))
             patches.enter_context(patch.object(web_app, "video_queue", fake_queue))
             patches.enter_context(patch.object(web_app, "subprocess", SimpleNamespace(run=fake_translate)))
             patches.enter_context(patch.object(web_app, "ensure_analyzer_media_or_delete", side_effect=lambda _path: None))
@@ -635,6 +875,7 @@ def run_lifecycle() -> None:
             assert_real_download_worker_registry_updates(web_app, real_download_worker)
             assert_real_shop_worker_registry_updates(web_app, real_shop_worker)
             assert_real_metrics_worker_registry_updates(web_app, real_metrics_worker)
+            assert_real_amazon_worker_registry_updates(web_app, real_amazon_worker)
 
             server = web_app.ThreadingHTTPServer(("127.0.0.1", 0), web_app.Handler)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -851,6 +1092,99 @@ def run_lifecycle() -> None:
             )
             assert status == 202 and music_popular_metrics["status"] in {"queued", "running"}
             wait_for_job(port, f"/api/video-metrics-job?id={music_popular_metrics['id']}", "complete")
+
+            invalid_amazon_requests = (
+                ({}, "Amazon URL, ASIN, or keyword is required"),
+                ({"target": "ftp://www.amazon.com/dp/B000AMZ001", "target_type": "url"}, "Only http/https Amazon URLs are supported"),
+                ({"target": "https://example.com/dp/B000AMZ001", "target_type": "url"}, "Only amazon.com URLs are supported"),
+                ({"target": "https://www.amazon.com/" + "x" * 2049, "target_type": "url"}, "URL is too long"),
+                ({"target": "B000SHORT", "target_type": "asin"}, "ASIN must be 10 letters or digits"),
+                ({"target": "fixture", "target_type": "invalid"}, "target_type must be url, asin, or keyword"),
+                ({"target": "x" * 201, "target_type": "keyword"}, "Keyword is too long"),
+                ({"target": "B000AMZ001", "target_type": "asin", "pages": 0}, "pages must be between 1 and 5"),
+                ({"target": "B000AMZ001", "target_type": "asin", "pages": 6}, "pages must be between 1 and 5"),
+            )
+            for payload, error in invalid_amazon_requests:
+                status, _headers, invalid_amazon = json_request(port, "POST", "/api/amazon-scrape", payload)
+                assert status == 400 and invalid_amazon == {"error": error}
+
+            def run_amazon_success(payload: dict[str, Any], expected_fields: dict[str, Any]) -> dict[str, Any]:
+                amazon_success_started.clear()
+                amazon_success_release.clear()
+                status, _headers, amazon = json_request(port, "POST", "/api/amazon-scrape", payload)
+                assert status == 202 and amazon["status"] in {"queued", "running"}
+                assert {name: amazon[name] for name in expected_fields} == expected_fields
+                amazon_id = amazon["id"]
+                assert amazon_success_started.wait(timeout=5)
+                status, _headers, running_amazon = json_request(port, "GET", f"/api/amazon-job?id={amazon_id}")
+                assert status == 200 and running_amazon["status"] == "running"
+                assert {name: running_amazon[name] for name in expected_fields} == expected_fields
+                amazon_success_release.set()
+                complete_amazon = wait_for_job(port, f"/api/amazon-job?id={amazon_id}", "complete")
+                assert {name: complete_amazon[name] for name in expected_fields} == expected_fields
+                event = sse_payload(port, f"/api/amazon-events?id={amazon_id}")
+                assert event["status"] == "complete"
+                assert {name: event[name] for name in expected_fields} == expected_fields
+                return complete_amazon
+
+            asin_fields = {
+                "target": "b000amz001",
+                "target_type": "asin",
+                "url": "https://www.amazon.com/dp/B000AMZ001",
+                "pages": 5,
+            }
+            amazon = run_amazon_success(
+                {"target": "b000amz001", "target_type": "asin", "pages": 5}, asin_fields
+            )
+            expected_amazon_output_dir = str(
+                (web_app.OUTPUT_DIR / "amazon" / amazon["id"]).relative_to(web_app.ROOT)
+            )
+            assert amazon["output_dir"] == expected_amazon_output_dir
+            assert amazon["result"] == {"products": [{"asin": "B000AMZ001", "title": "fixture amazon"}]}
+            run_amazon_success(
+                {"target": "https://www.amazon.com/dp/B000URL001", "target_type": "url", "pages": 1},
+                {
+                    "target": "https://www.amazon.com/dp/B000URL001",
+                    "target_type": "url",
+                    "url": "https://www.amazon.com/dp/B000URL001",
+                    "pages": 1,
+                },
+            )
+            run_amazon_success(
+                {"target": "fixture keyboard", "target_type": "keyword", "pages": 2},
+                {
+                    "target": "fixture keyboard",
+                    "target_type": "keyword",
+                    "url": "https://www.amazon.com/s?k=fixture+keyboard",
+                    "pages": 2,
+                },
+            )
+
+            amazon_failure_started.clear()
+            amazon_failure_release.clear()
+            status, _headers, failed_amazon = json_request(
+                port,
+                "POST",
+                "/api/amazon-scrape",
+                {"target": "B000FAIL01", "target_type": "asin", "pages": 4},
+            )
+            assert status == 202 and failed_amazon["status"] in {"queued", "running"}
+            failed_amazon_id = failed_amazon["id"]
+            assert amazon_failure_started.wait(timeout=5)
+            status, _headers, running_failed_amazon = json_request(port, "GET", f"/api/amazon-job?id={failed_amazon_id}")
+            assert status == 200 and running_failed_amazon["status"] == "running"
+            amazon_failure_release.set()
+            failed_amazon_job = wait_for_job(port, f"/api/amazon-job?id={failed_amazon_id}", "failed")
+            assert failed_amazon_job["error"] == "fixture amazon failure"
+            assert failed_amazon_job["log"][-1] == "fixture amazon failure"
+            assert {name: failed_amazon_job[name] for name in {"target", "target_type", "url", "pages"}} == {
+                "target": "B000FAIL01",
+                "target_type": "asin",
+                "url": "https://www.amazon.com/dp/B000FAIL01",
+                "pages": 4,
+            }
+            failed_amazon_event = sse_payload(port, f"/api/amazon-events?id={failed_amazon_id}")
+            assert failed_amazon_event["status"] == "failed" and failed_amazon_event["error"] == "fixture amazon failure"
 
             upload_body, upload_type = multipart_video("fixture.mp4", b"not-a-real-video")
             status, _headers, uploaded = json_request(

@@ -225,10 +225,11 @@ class JsonStoreTests(unittest.TestCase):
 
         calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
         # D2 moves Metrics artifact reads out of the serializer into GET/SSE/POST
-        # after snapshotting (+2); D3 does the same for two Shop artifacts (+4).
+        # after snapshotting (+2); D3 does the same for two Shop artifacts (+4);
+        # D4 replaces one Amazon serializer read with GET/POST/SSE reads (+2).
         self.assertEqual(
             sum(isinstance(node.func, ast.Name) and node.func.id == "read_json" for node in calls),
-            53,
+            55,
         )
         self.assertEqual(
             sum(isinstance(node.func, ast.Name) and node.func.id == "write_json" for node in calls),

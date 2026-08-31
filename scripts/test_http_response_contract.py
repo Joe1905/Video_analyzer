@@ -10,7 +10,6 @@ import io
 import json
 import sys
 import tempfile
-import threading
 from http import HTTPStatus
 from pathlib import Path
 
@@ -29,11 +28,6 @@ class RecordingWriter(io.BytesIO):
     def flush(self) -> None:
         self.flush_count += 1
         super().flush()
-
-
-class BrokenPipeWriter(RecordingWriter):
-    def write(self, payload: bytes) -> int:
-        raise BrokenPipeError("client disconnected")
 
 
 class FakeHandler:
@@ -164,21 +158,6 @@ def test_sse_frame_flush_and_disconnect_contract() -> None:
     web_app.write_sse_event(event_handler, {"status": "done", "label": "中文"})
     assert event_handler.wfile.getvalue() == b'data: {"status":"done","label":' + "\"中文\"".encode("utf-8") + b"}\n\n"
     assert event_handler.wfile.flush_count == 1
-
-    missing_handler = FakeHandler(writer=BrokenPipeWriter())
-    web_app.Handler.stream_events(
-        missing_handler,
-        "missing-job",
-        threading.Lock(),
-        {},
-        lambda job: {"status": "done"},
-        "job not found",
-    )
-    assert_response(missing_handler, HTTPStatus.OK)
-    assert missing_handler.header("Content-Type") == "text/event-stream; charset=utf-8"
-    assert missing_handler.header("Cache-Control") == "no-cache"
-    assert missing_handler.header("Connection") == "keep-alive"
-    assert missing_handler.close_connection is True
 
 
 def main() -> int:

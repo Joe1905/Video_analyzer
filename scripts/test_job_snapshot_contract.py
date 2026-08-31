@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ast
+from copy import deepcopy
 import importlib
 import io
 import json
@@ -71,7 +72,6 @@ def sse_body(payload: dict[str, Any]) -> bytes:
 def dispatch_get(web_app: Any, path: str) -> FakeHandler:
     handler = FakeHandler(path)
     for name in (
-        "stream_events",
         "stream_download_events",
         "stream_shop_events",
         "stream_metrics_events",
@@ -171,13 +171,18 @@ def public_shop_payload(web_app: Any, job: Any) -> dict[str, Any]:
     return web_app.public_shop_job(job, extract=extract, analysis=analysis)
 
 
+def public_amazon_payload(web_app: Any, job: Any) -> dict[str, Any]:
+    result = web_app.read_json(web_app.OUTPUT_DIR / "amazon" / job.id / "result.json")
+    return web_app.public_amazon_job(job, result=result)
+
+
 def assert_public_payloads(web_app: Any, jobs: dict[str, Any]) -> dict[str, dict[str, Any]]:
     metrics_result_path = web_app.OUTPUT_DIR / "tiktok_api" / jobs["metrics"].id / "result.json"
     payloads = {
         "download": web_app.public_download_job(jobs["download"]),
         "shop": public_shop_payload(web_app, jobs["shop"]),
         "metrics": web_app.public_metrics_job(jobs["metrics"], result=web_app.read_json(metrics_result_path)),
-        "amazon": web_app.public_amazon_job(jobs["amazon"]),
+        "amazon": public_amazon_payload(web_app, jobs["amazon"]),
     }
     assert set(payloads["download"]) == {"id", "url", "status", "created_at", "updated_at", "filename", "error", "log", "result"}
     assert set(payloads["shop"]) == {"id", "url", "source_type", "region", "max_pages", "review_pages", "analyze", "related_videos", "status", "created_at", "updated_at", "output_dir", "error", "log", "extract", "analysis"}
@@ -274,7 +279,7 @@ def assert_public_payloads(web_app: Any, jobs: dict[str, Any]) -> dict[str, dict
     write_json(web_app.OUTPUT_DIR / "amazon" / jobs["amazon"].id / "result.json", {"products": [{"asin": "B000FIXTUREV2"}]})
     refreshed_shop = public_shop_payload(web_app, jobs["shop"])
     refreshed_metrics = web_app.public_metrics_job(jobs["metrics"], result=web_app.read_json(metrics_result_path))
-    refreshed_amazon = web_app.public_amazon_job(jobs["amazon"])
+    refreshed_amazon = public_amazon_payload(web_app, jobs["amazon"])
     assert refreshed_shop["extract"] == {"items": [{"id": "extract-v2"}]}
     assert refreshed_shop["analysis"] == {"summary": "analysis-v2"}
     assert refreshed_metrics["result"] == {"metric": {"views": 8}}
@@ -324,7 +329,7 @@ def assert_public_payloads(web_app: Any, jobs: dict[str, Any]) -> dict[str, dict
     assert web_app.public_metrics_job(jobs["metrics"], result=web_app.read_json(metrics_result_path))["result"] == {
         "metric": {"views": 8}
     }
-    assert web_app.public_amazon_job(jobs["amazon"])["result"] == {"products": [{"asin": "B000FIXTUREV2"}]}
+    assert public_amazon_payload(web_app, jobs["amazon"])["result"] == {"products": [{"asin": "B000FIXTUREV2"}]}
     return payloads
 
 
@@ -371,6 +376,27 @@ def assert_no_shop_legacy_store() -> None:
         and node.attr in {"_jobs", "_lock"}
     ]
     assert not private_registry_access
+
+
+def assert_no_amazon_legacy_store() -> None:
+    tree = ast.parse((SCRIPTS_DIR / "web_app.py").read_text(encoding="utf-8"))
+    names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+    assert not {"amazon_jobs", "amazon_jobs_lock"} & names
+    private_registry_access = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "amazon_job_registry"
+        and node.attr in {"_jobs", "_lock"}
+    ]
+    assert not private_registry_access
+    generic_streams = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "stream_events"
+    ]
+    assert not generic_streams
 
 
 def assert_get_and_sse_contracts(web_app: Any, jobs: dict[str, Any]) -> None:
@@ -467,22 +493,82 @@ def assert_get_and_sse_contracts(web_app: Any, jobs: dict[str, Any]) -> None:
     finally:
         web_app.shop_job_registry = original_shop_registry
 
-    specs = (("amazon", web_app.amazon_jobs_lock, web_app.amazon_jobs, web_app.public_amazon_job, "/api/amazon-job", "/api/amazon-events", "Amazon job not found"),)
-    for name, lock, store, serializer, get_path, events_path, missing_message in specs:
-        job = jobs[name]
-        with lock:
-            store.clear()
-            store[job.id] = job
-        expected = serializer(job)
-        assert_json_response(dispatch_get(web_app, f"{get_path}?id={job.id}"), 200, expected)
-        assert_sse_response(dispatch_get(web_app, f"{events_path}?id={job.id}"), expected)
-        with lock:
-            store.clear()
-        assert_json_response(dispatch_get(web_app, f"{get_path}?id=missing"), 404, {"error": missing_message})
-        assert_sse_response(
-            dispatch_get(web_app, f"{events_path}?id=missing"),
-            {"status": "missing", "error": missing_message},
+    amazon = jobs["amazon"]
+    original_amazon_registry = web_app.amazon_job_registry
+    amazon_registry = web_app.JobRegistry()
+    web_app.amazon_job_registry = amazon_registry
+    try:
+        amazon_registry.register(amazon.id, amazon)
+        snapshot = amazon_registry.snapshot(amazon.id)
+        assert snapshot is not None
+        expected = public_amazon_payload(web_app, snapshot)
+        assert_json_response(dispatch_get(web_app, f"/api/amazon-job?id={amazon.id}"), 200, expected)
+        assert_sse_response(dispatch_get(web_app, f"/api/amazon-events?id={amazon.id}"), expected)
+        assert_json_response(
+            dispatch_get(web_app, "/api/amazon-job?id=missing"), 404, {"error": "Amazon job not found"}
         )
+        assert_sse_response(
+            dispatch_get(web_app, "/api/amazon-events?id=missing"),
+            {"status": "missing", "error": "Amazon job not found"},
+        )
+
+        call_order: list[str] = []
+        original_snapshot = amazon_registry.snapshot
+        original_read_json = web_app.read_json
+
+        def recording_snapshot(job_id: str) -> Any:
+            call_order.append("snapshot")
+            return original_snapshot(job_id)
+
+        def recording_read_json(path: Path) -> Any:
+            call_order.append(path.name)
+            return original_read_json(path)
+
+        with patch.object(amazon_registry, "snapshot", side_effect=recording_snapshot), patch.object(
+            web_app, "read_json", side_effect=recording_read_json
+        ):
+            assert_json_response(dispatch_get(web_app, f"/api/amazon-job?id={amazon.id}"), 200, expected)
+        assert call_order == ["snapshot", "result.json"]
+
+        class DeferredThread:
+            def __init__(self, *, target: Any, args: tuple[Any, ...], daemon: bool) -> None:
+                self.target = target
+                self.args = args
+                self.daemon = daemon
+
+            def start(self) -> None:
+                post_order.append("thread.start")
+                return None
+
+        post_body = json.dumps({"target": "B000POST01", "target_type": "asin", "pages": 3}).encode("utf-8")
+        post_handler = FakeHandler()
+        post_handler.headers = {"Content-Length": str(len(post_body))}
+        post_handler.rfile = io.BytesIO(post_body)
+        post_order: list[str] = []
+
+        def recording_post_snapshot(job_id: str) -> Any:
+            post_order.append("snapshot")
+            return original_snapshot(job_id)
+
+        def recording_post_register(job_id: str, job: Any) -> None:
+            post_order.append("register")
+            return original_register(job_id, job)
+
+        def recording_post_read_json(path: Path) -> Any:
+            post_order.append(path.name)
+            return original_read_json(path)
+
+        original_register = amazon_registry.register
+        with patch.object(web_app.threading, "Thread", DeferredThread), patch.object(
+            amazon_registry, "register", side_effect=recording_post_register
+        ), patch.object(
+            amazon_registry, "snapshot", side_effect=recording_post_snapshot
+        ), patch.object(web_app, "read_json", side_effect=recording_post_read_json):
+            web_app.Handler.handle_amazon_scrape(post_handler)
+        assert post_handler.responses == [202]
+        assert post_order == ["register", "thread.start", "snapshot", "result.json"]
+    finally:
+        web_app.amazon_job_registry = original_amazon_registry
 
 
 def assert_sse_marker(web_app: Any) -> None:
@@ -696,6 +782,104 @@ def assert_shop_sse_marker(web_app: Any) -> None:
     assert handler.close_connection is True
 
 
+def assert_amazon_sse_marker(web_app: Any) -> None:
+    job = web_app.AmazonJob(
+        id="amazon-marker-fixture",
+        target="B000MARKER",
+        target_type="asin",
+        url="https://www.amazon.com/dp/B000MARKER",
+        pages=2,
+        status="queued",
+        created_at=80.0,
+        updated_at=81.0,
+        output_dir="output/amazon/amazon-marker-fixture",
+    )
+    result_path = web_app.OUTPUT_DIR / "amazon" / job.id / "result.json"
+    write_json(result_path, {"products": [{"asin": "B000MARKER", "title": "v1"}]})
+    original_registry = web_app.amazon_job_registry
+    registry = web_app.JobRegistry()
+    registry.register(job.id, job)
+    web_app.amazon_job_registry = registry
+    handler = FakeHandler()
+    original_sleep = web_app.time.sleep
+    original_read_json = web_app.read_json
+    read_order: list[str] = []
+    calls = 0
+
+    artifact_only = deepcopy(job)
+    error_only = deepcopy(job)
+    error_only.error = "amazon marker error"
+    log_changed = deepcopy(error_only)
+    log_changed.log.append("amazon marker log")
+    log_changed.updated_at = 82.0
+    completed = deepcopy(log_changed)
+    completed.status = "complete"
+    completed.updated_at = 83.0
+    snapshots = (job, artifact_only, error_only, log_changed, completed)
+    snapshot_index = 0
+
+    def advance(_seconds: float) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            write_json(result_path, {"products": [{"asin": "B000MARKER", "title": "v2"}]})
+
+    def recording_snapshot(job_id: str) -> Any:
+        nonlocal snapshot_index
+        read_order.append("snapshot")
+        assert job_id == job.id
+        snapshot = snapshots[snapshot_index]
+        snapshot_index += 1
+        return deepcopy(snapshot)
+
+    def recording_read_json(path: Path) -> Any:
+        read_order.append(path.name)
+        return original_read_json(path)
+
+    try:
+        web_app.time.sleep = advance
+        with patch.object(registry, "snapshot", side_effect=recording_snapshot), patch.object(
+            web_app, "read_json", side_effect=recording_read_json
+        ):
+            web_app.Handler.stream_amazon_events(handler, job.id)
+    finally:
+        web_app.time.sleep = original_sleep
+        web_app.amazon_job_registry = original_registry
+    frames = [json.loads(line[6:]) for line in handler.wfile.getvalue().decode("utf-8").splitlines() if line.startswith("data: ")]
+    assert [frame["status"] for frame in frames] == ["queued", "queued", "queued", "complete"]
+    assert [frame["result"] for frame in frames] == [
+        {"products": [{"asin": "B000MARKER", "title": "v1"}]},
+        {"products": [{"asin": "B000MARKER", "title": "v2"}]},
+        {"products": [{"asin": "B000MARKER", "title": "v2"}]},
+        {"products": [{"asin": "B000MARKER", "title": "v2"}]},
+    ]
+    assert [len(frame["log"]) for frame in frames] == [0, 0, 1, 1]
+    assert [frame["error"] for frame in frames] == [None, "amazon marker error", "amazon marker error", "amazon marker error"]
+    assert [frame["updated_at"] for frame in frames] == [81.0, 81.0, 82.0, 83.0]
+    assert calls == 4
+    assert read_order == ["snapshot", "result.json"] * 5
+    assert handler.ended is True
+    assert handler.close_connection is True
+
+    class BrokenPipeWriter:
+        def write(self, _data: bytes) -> int:
+            raise BrokenPipeError
+
+        def flush(self) -> None:
+            return None
+
+    missing_handler = FakeHandler()
+    missing_handler.wfile = BrokenPipeWriter()
+    web_app.amazon_job_registry = type("MissingRegistry", (), {"snapshot": lambda _self, _job_id: None})()
+    try:
+        web_app.Handler.stream_amazon_events(missing_handler, "missing-amazon-job")
+    finally:
+        web_app.amazon_job_registry = original_registry
+    assert missing_handler.responses == [200]
+    assert missing_handler.ended is True
+    assert missing_handler.close_connection is True
+
+
 def run_contract() -> None:
     temporary = Path(tempfile.mkdtemp(prefix=".test-v2-job-snapshot-", dir=ROOT))
     original_environment = {key: os.environ.get(key) for key in ("UI_TEST_MODE", "APP_TEST_ROOT", "PROXY_POOL_ENABLED", "HOT_VIDEO_REPORT_ENABLED")}
@@ -712,17 +896,15 @@ def run_contract() -> None:
         assert_no_download_legacy_store()
         assert_no_metrics_legacy_store()
         assert_no_shop_legacy_store()
+        assert_no_amazon_legacy_store()
         jobs = make_jobs(web_app)
         assert_public_payloads(web_app, jobs)
         assert_get_and_sse_contracts(web_app, jobs)
         assert_sse_marker(web_app)
         assert_metrics_sse_marker(web_app)
         assert_shop_sse_marker(web_app)
+        assert_amazon_sse_marker(web_app)
     finally:
-        if web_app is not None:
-            for lock, store in ((web_app.amazon_jobs_lock, web_app.amazon_jobs),):
-                with lock:
-                    store.clear()
         for key, value in original_environment.items():
             if value is None:
                 os.environ.pop(key, None)
