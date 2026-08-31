@@ -320,6 +320,183 @@ def assert_real_metrics_worker_registry_updates(web_app: Any, runner: Any) -> No
         web_app.metrics_job_registry = original_registry
 
 
+def assert_real_shop_worker_registry_updates(web_app: Any, runner: Any) -> None:
+    original_registry = web_app.shop_job_registry
+    registry = web_app.JobRegistry()
+    web_app.shop_job_registry = registry
+    try:
+        success_id = "shop-worker-success"
+        success_url = "https://shop.tiktok.com/view/product/worker"
+        success_prompt = "private worker prompt"
+        registry.register(
+            success_id,
+            web_app.ShopJob(
+                id=success_id,
+                url=success_url,
+                source_type="product",
+                region="US",
+                max_pages=20,
+                review_pages=20,
+                analyze=True,
+                related_videos=True,
+                prompt=success_prompt,
+            ),
+        )
+        output_dir = web_app.OUTPUT_DIR / "tiktok_shop" / success_id
+        extract_path = output_dir / "shop_extract.json"
+        analysis_path = output_dir / "shop_analysis.json"
+        commands: list[list[str]] = []
+
+        def command_success(job_id: str, command: list[str]) -> None:
+            assert job_id == success_id
+            commands.append(command)
+            if len(commands) == 1:
+                assert command == [
+                    "python",
+                    str(web_app.SCRIPTS_DIR / "sociavault_tiktok_shop.py"),
+                    success_url,
+                    "--source-type",
+                    "product",
+                    "--region",
+                    "US",
+                    "--max-pages",
+                    "20",
+                    "--review-pages",
+                    "20",
+                    "--output",
+                    str(extract_path),
+                    "--related-videos",
+                ]
+                extract_path.parent.mkdir(parents=True, exist_ok=True)
+                extract_path.write_text(json.dumps({"items": [{"id": "worker-extract"}]}), encoding="utf-8")
+            elif len(commands) == 2:
+                assert command == [
+                    "python",
+                    str(web_app.SCRIPTS_DIR / "deepseek_shop_analyze.py"),
+                    str(extract_path),
+                    "--output",
+                    str(analysis_path),
+                    "--prompt",
+                    success_prompt,
+                ]
+                analysis_path.write_text(json.dumps({"summary": "worker-analysis"}), encoding="utf-8")
+            else:
+                raise AssertionError(f"unexpected shop command: {command}")
+
+        with patch.object(web_app, "run_shop_command", side_effect=command_success):
+            runner(success_id)
+        success = registry.snapshot(success_id)
+        assert success is not None
+        assert success.status == "complete"
+        assert success.output_dir == str(output_dir.relative_to(web_app.ROOT))
+        assert len(commands) == 2
+        extract = web_app.read_json(extract_path)
+        analysis = web_app.read_json(analysis_path)
+        assert extract == {"items": [{"id": "worker-extract"}]}
+        assert analysis == {"summary": "worker-analysis"}
+        payload = web_app.public_shop_job(success, extract=extract, analysis=analysis)
+        assert payload["extract"] == extract
+        assert payload["analysis"] == analysis
+        assert "prompt" not in payload
+        payload["extract"]["items"][0]["id"] = "mutated"
+        payload["analysis"]["summary"] = "mutated"
+        assert web_app.read_json(extract_path) == {"items": [{"id": "worker-extract"}]}
+        assert web_app.read_json(analysis_path) == {"summary": "worker-analysis"}
+
+        class FakeShopProcess:
+            def __init__(self, lines: list[str], returncode: int) -> None:
+                self.stdout = iter(lines)
+                self.returncode = returncode
+
+            def wait(self) -> int:
+                return self.returncode
+
+        command_log_id = "shop-command-log"
+        registry.register(
+            command_log_id,
+            web_app.ShopJob(
+                id=command_log_id,
+                url=success_url,
+                source_type="product",
+                region="US",
+                max_pages=1,
+                review_pages=1,
+                analyze=False,
+                related_videos=False,
+            ),
+        )
+        command = ["python", "fixture-shop.py"]
+        with patch.object(web_app, "subprocess", subprocess), patch.object(
+            subprocess,
+            "Popen",
+            return_value=FakeShopProcess(["fixture stdout  \n", "second stdout\r\n"], 0),
+        ) as popen:
+            web_app.run_shop_command(command_log_id, command)
+        popen.assert_called_once()
+        command_log = registry.snapshot(command_log_id)
+        assert command_log is not None
+        assert command_log.log == ["$ python fixture-shop.py", "fixture stdout", "second stdout"]
+
+        command_failure_id = "shop-command-failure"
+        registry.register(
+            command_failure_id,
+            web_app.ShopJob(
+                id=command_failure_id,
+                url=success_url,
+                source_type="product",
+                region="US",
+                max_pages=1,
+                review_pages=1,
+                analyze=False,
+                related_videos=False,
+            ),
+        )
+        failure_command = ["python", "fixture-shop-fail.py"]
+        with patch.object(web_app, "subprocess", subprocess), patch.object(
+            subprocess,
+            "Popen",
+            return_value=FakeShopProcess([], 9),
+        ):
+            try:
+                web_app.run_shop_command(command_failure_id, failure_command)
+            except RuntimeError as exc:
+                assert str(exc) == "Command failed with exit code 9: python fixture-shop-fail.py"
+            else:
+                raise AssertionError("non-zero shop command must fail")
+        command_failure = registry.snapshot(command_failure_id)
+        assert command_failure is not None
+        assert command_failure.log == ["$ python fixture-shop-fail.py"]
+
+        failure_id = "shop-worker-failure"
+        registry.register(
+            failure_id,
+            web_app.ShopJob(
+                id=failure_id,
+                url=success_url,
+                source_type="product",
+                region="US",
+                max_pages=1,
+                review_pages=1,
+                analyze=False,
+                related_videos=False,
+            ),
+        )
+
+        def command_failure_worker(job_id: str, _command: list[str]) -> None:
+            web_app.append_shop_log(job_id, "fixture prior shop failure")
+            raise RuntimeError("fixture raw shop failure")
+
+        with patch.object(web_app, "run_shop_command", side_effect=command_failure_worker):
+            runner(failure_id)
+        failure = registry.snapshot(failure_id)
+        assert failure is not None
+        assert failure.status == "failed"
+        assert failure.error == "fixture raw shop failure"
+        assert failure.log[-2:] == ["fixture prior shop failure", "fixture raw shop failure"]
+    finally:
+        web_app.shop_job_registry = original_registry
+
+
 def run_lifecycle() -> None:
     # Production result payloads expose output paths relative to the repository
     # root, so keep the isolated fixture under that same root as well.
@@ -333,11 +510,15 @@ def run_lifecycle() -> None:
         os.environ["HOT_VIDEO_REPORT_ENABLED"] = "0"
         web_app = importlib.import_module("web_app")
         real_download_worker = web_app.run_download_job
+        real_shop_worker = web_app.run_shop_job
         real_metrics_worker = web_app.run_metrics_job
         fake_queue = FakeVideoQueue(web_app.output_dir_for_filename)
         download_release = threading.Event()
         download_started = threading.Event()
-        shop_release = threading.Event()
+        shop_success_release = threading.Event()
+        shop_success_started = threading.Event()
+        shop_failure_release = threading.Event()
+        shop_failure_started = threading.Event()
         metrics_success_release = threading.Event()
         metrics_success_started = threading.Event()
         metrics_failure_release = threading.Event()
@@ -369,18 +550,38 @@ def run_lifecycle() -> None:
             )
 
         def complete_shop(job_id: str) -> None:
-            assert shop_release.wait(timeout=5)
-            with web_app.shop_jobs_lock:
-                job = web_app.shop_jobs[job_id]
-                output_dir = web_app.OUTPUT_DIR / "tiktok_shop" / job.id
-                output_dir.mkdir(parents=True, exist_ok=True)
-                (output_dir / "shop_extract.json").write_text(
-                    json.dumps({"items": [{"id": "fixture-shop"}]}), encoding="utf-8"
+            registry = web_app.shop_job_registry
+            current = registry.snapshot(job_id)
+            assert current is not None
+            registry.update_fields(job_id, {"status": "running"})
+            if current.url.endswith("/fixture-failure"):
+                shop_failure_started.set()
+                assert shop_failure_release.wait(timeout=5)
+                registry.update_fields(
+                    job_id,
+                    {"status": "failed", "error": "fixture shop failure"},
+                    final_log="fixture shop failure",
                 )
-                job.status = "complete"
-                job.output_dir = "fixture/shop"
-                job.log.append("fixture shop complete")
-                job.updated_at = time.time()
+                return
+            shop_success_started.set()
+            assert shop_success_release.wait(timeout=5)
+            output_dir = web_app.OUTPUT_DIR / "tiktok_shop" / job_id
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (output_dir / "shop_extract.json").write_text(
+                json.dumps({"items": [{"id": "fixture-shop"}]}), encoding="utf-8"
+            )
+            if current.analyze:
+                (output_dir / "shop_analysis.json").write_text(
+                    json.dumps({"summary": "fixture shop analysis"}), encoding="utf-8"
+                )
+            registry.update_fields(
+                job_id,
+                {
+                    "status": "complete",
+                    "output_dir": str(output_dir.relative_to(web_app.ROOT)),
+                },
+                final_log="fixture shop complete",
+            )
 
         def complete_metrics(job_id: str) -> None:
             registry = web_app.metrics_job_registry
@@ -432,6 +633,7 @@ def run_lifecycle() -> None:
             patches.enter_context(patch.object(web_app, "analyzer_media_is_valid", side_effect=lambda _path: True))
 
             assert_real_download_worker_registry_updates(web_app, real_download_worker)
+            assert_real_shop_worker_registry_updates(web_app, real_shop_worker)
             assert_real_metrics_worker_registry_updates(web_app, real_metrics_worker)
 
             server = web_app.ThreadingHTTPServer(("127.0.0.1", 0), web_app.Handler)
@@ -485,18 +687,89 @@ def run_lifecycle() -> None:
                 "download_job_id": "missing",
             }
 
+            invalid_shop_requests = (
+                ({}, "A TikTok Shop URL is required"),
+                ({"url": "x" * 2049}, "A TikTok Shop URL is required"),
+                ({"url": "https://shop.tiktok.com/view/product/fixture", "source_type": "invalid"}, "source_type must be product, details, reviews, shop, or search"),
+                ({"url": "https://shop.tiktok.com/view/product/fixture", "max_pages": -1}, "max_pages must be between 1 and 20"),
+                ({"url": "https://shop.tiktok.com/view/product/fixture", "max_pages": 21}, "max_pages must be between 1 and 20"),
+                ({"url": "https://shop.tiktok.com/view/product/fixture", "review_pages": -1}, "review_pages must be between 0 and 20"),
+                ({"url": "https://shop.tiktok.com/view/product/fixture", "review_pages": 21}, "review_pages must be between 0 and 20"),
+                ({"url": "https://shop.tiktok.com/view/product/fixture", "prompt": "p" * 6001}, "prompt is too long"),
+            )
+            for payload, error in invalid_shop_requests:
+                status, _headers, invalid_shop = json_request(port, "POST", "/api/shop-extract", payload)
+                assert status == 400 and invalid_shop == {"error": error}
+
+            shop_prompt = "unique HTTP shop prompt"
+            expected_shop_fields = {
+                "source_type": "search",
+                "region": "US",
+                "max_pages": 20,
+                "review_pages": 20,
+                "analyze": False,
+                "related_videos": True,
+            }
             status, _headers, shop = json_request(
                 port,
                 "POST",
                 "/api/shop-extract",
-                {"url": "https://shop.tiktok.com/view/product/fixture", "analyze": False},
+                {
+                    "url": "https://shop.tiktok.com/view/product/fixture",
+                    "source_type": "search",
+                    "region": "us",
+                    "max_pages": 20,
+                    "review_pages": 20,
+                    "analyze": False,
+                    "related_videos": True,
+                    "prompt": shop_prompt,
+                },
             )
-            assert status == 202 and shop["status"] == "queued"
+            assert status == 202 and shop["status"] in {"queued", "running"}
+            assert {name: shop[name] for name in expected_shop_fields} == expected_shop_fields
+            assert "prompt" not in shop and shop_prompt not in json.dumps(shop, ensure_ascii=False)
             shop_id = shop["id"]
-            shop_release.set()
+            assert shop_success_started.wait(timeout=5)
+            status, _headers, running_shop = json_request(port, "GET", f"/api/shop-job?id={shop_id}")
+            assert status == 200 and running_shop["status"] == "running"
+            assert {name: running_shop[name] for name in expected_shop_fields} == expected_shop_fields
+            assert "prompt" not in running_shop and shop_prompt not in json.dumps(running_shop, ensure_ascii=False)
+            shop_success_release.set()
             job = wait_for_job(port, f"/api/shop-job?id={shop_id}", "complete")
             assert job["extract"]["items"][0]["id"] == "fixture-shop"
-            assert sse_payload(port, f"/api/shop-events?id={shop_id}")["status"] == "complete"
+            assert job["analysis"] is None
+            assert {name: job[name] for name in expected_shop_fields} == expected_shop_fields
+            assert "prompt" not in job and shop_prompt not in json.dumps(job, ensure_ascii=False)
+            event = sse_payload(port, f"/api/shop-events?id={shop_id}")
+            assert event["status"] == "complete" and event["analysis"] is None
+            assert {name: event[name] for name in expected_shop_fields} == expected_shop_fields
+            assert "prompt" not in event and shop_prompt not in json.dumps(event, ensure_ascii=False)
+
+            status, _headers, failed_shop = json_request(
+                port,
+                "POST",
+                "/api/shop-extract",
+                {
+                    "url": "https://shop.tiktok.com/view/product/fixture-failure",
+                    "analyze": False,
+                    "prompt": shop_prompt,
+                },
+            )
+            assert status == 202 and failed_shop["status"] in {"queued", "running"}
+            assert "prompt" not in failed_shop and shop_prompt not in json.dumps(failed_shop, ensure_ascii=False)
+            failed_shop_id = failed_shop["id"]
+            assert shop_failure_started.wait(timeout=5)
+            status, _headers, running_failed_shop = json_request(port, "GET", f"/api/shop-job?id={failed_shop_id}")
+            assert status == 200 and running_failed_shop["status"] == "running"
+            assert "prompt" not in running_failed_shop and shop_prompt not in json.dumps(running_failed_shop, ensure_ascii=False)
+            shop_failure_release.set()
+            failed_job = wait_for_job(port, f"/api/shop-job?id={failed_shop_id}", "failed")
+            assert failed_job["error"] == "fixture shop failure"
+            assert failed_job["log"][-1] == "fixture shop failure"
+            assert "prompt" not in failed_job and shop_prompt not in json.dumps(failed_job, ensure_ascii=False)
+            failed_event = sse_payload(port, f"/api/shop-events?id={failed_shop_id}")
+            assert failed_event["status"] == "failed" and failed_event["error"] == "fixture shop failure"
+            assert "prompt" not in failed_event and shop_prompt not in json.dumps(failed_event, ensure_ascii=False)
 
             status, _headers, invalid_metrics = json_request(
                 port,

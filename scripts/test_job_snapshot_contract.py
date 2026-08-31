@@ -158,11 +158,24 @@ def make_jobs(web_app: Any) -> dict[str, Any]:
     return {"download": download, "shop": shop, "metrics": metrics, "amazon": amazon}
 
 
+def shop_artifacts(web_app: Any, job: Any) -> tuple[Any, Any]:
+    output_dir = web_app.OUTPUT_DIR / "tiktok_shop" / job.id
+    return (
+        web_app.read_json(output_dir / "shop_extract.json"),
+        web_app.read_json(output_dir / "shop_analysis.json"),
+    )
+
+
+def public_shop_payload(web_app: Any, job: Any) -> dict[str, Any]:
+    extract, analysis = shop_artifacts(web_app, job)
+    return web_app.public_shop_job(job, extract=extract, analysis=analysis)
+
+
 def assert_public_payloads(web_app: Any, jobs: dict[str, Any]) -> dict[str, dict[str, Any]]:
     metrics_result_path = web_app.OUTPUT_DIR / "tiktok_api" / jobs["metrics"].id / "result.json"
     payloads = {
         "download": web_app.public_download_job(jobs["download"]),
-        "shop": web_app.public_shop_job(jobs["shop"]),
+        "shop": public_shop_payload(web_app, jobs["shop"]),
         "metrics": web_app.public_metrics_job(jobs["metrics"], result=web_app.read_json(metrics_result_path)),
         "amazon": web_app.public_amazon_job(jobs["amazon"]),
     }
@@ -259,7 +272,7 @@ def assert_public_payloads(web_app: Any, jobs: dict[str, Any]) -> dict[str, dict
     write_json(web_app.OUTPUT_DIR / "tiktok_shop" / jobs["shop"].id / "shop_analysis.json", {"summary": "analysis-v2"})
     write_json(web_app.OUTPUT_DIR / "tiktok_api" / jobs["metrics"].id / "result.json", {"metric": {"views": 8}})
     write_json(web_app.OUTPUT_DIR / "amazon" / jobs["amazon"].id / "result.json", {"products": [{"asin": "B000FIXTUREV2"}]})
-    refreshed_shop = web_app.public_shop_job(jobs["shop"])
+    refreshed_shop = public_shop_payload(web_app, jobs["shop"])
     refreshed_metrics = web_app.public_metrics_job(jobs["metrics"], result=web_app.read_json(metrics_result_path))
     refreshed_amazon = web_app.public_amazon_job(jobs["amazon"])
     assert refreshed_shop["extract"] == {"items": [{"id": "extract-v2"}]}
@@ -278,8 +291,36 @@ def assert_public_payloads(web_app: Any, jobs: dict[str, Any]) -> dict[str, dict
     original_shop_analysis["summary"] = "mutated"
     original_metrics_result["metric"]["views"] = 99
     original_amazon_result["products"][0]["asin"] = "mutated"
-    assert web_app.public_shop_job(jobs["shop"])["extract"] == {"items": [{"id": "extract-v2"}]}
-    assert web_app.public_shop_job(jobs["shop"])["analysis"] == {"summary": "analysis-v2"}
+    assert public_shop_payload(web_app, jobs["shop"])["extract"] == {"items": [{"id": "extract-v2"}]}
+    assert public_shop_payload(web_app, jobs["shop"])["analysis"] == {"summary": "analysis-v2"}
+    refreshed_shop["extract"]["items"][0]["id"] = "payload-extract-mutated"
+    assert web_app.read_json(web_app.OUTPUT_DIR / "tiktok_shop" / jobs["shop"].id / "shop_extract.json") == {
+        "items": [{"id": "extract-v2"}]
+    }
+    write_json(web_app.OUTPUT_DIR / "tiktok_shop" / jobs["shop"].id / "shop_extract.json", {"items": [{"id": "extract-v3"}]})
+    assert refreshed_shop["extract"] == {"items": [{"id": "payload-extract-mutated"}]}
+    assert refreshed_shop["analysis"] == {"summary": "analysis-v2"}
+    after_extract_refresh = public_shop_payload(web_app, jobs["shop"])
+    assert after_extract_refresh["extract"] == {"items": [{"id": "extract-v3"}]}
+    assert after_extract_refresh["analysis"] == {"summary": "analysis-v2"}
+    after_extract_refresh["extract"]["items"][0]["id"] = "second-payload-extract-mutated"
+    assert web_app.read_json(web_app.OUTPUT_DIR / "tiktok_shop" / jobs["shop"].id / "shop_extract.json") == {
+        "items": [{"id": "extract-v3"}]
+    }
+    refreshed_shop["analysis"]["summary"] = "payload-analysis-mutated"
+    assert web_app.read_json(web_app.OUTPUT_DIR / "tiktok_shop" / jobs["shop"].id / "shop_analysis.json") == {
+        "summary": "analysis-v2"
+    }
+    write_json(web_app.OUTPUT_DIR / "tiktok_shop" / jobs["shop"].id / "shop_analysis.json", {"summary": "analysis-v3"})
+    assert refreshed_shop["extract"] == {"items": [{"id": "payload-extract-mutated"}]}
+    assert refreshed_shop["analysis"] == {"summary": "payload-analysis-mutated"}
+    after_analysis_refresh = public_shop_payload(web_app, jobs["shop"])
+    assert after_analysis_refresh["extract"] == {"items": [{"id": "extract-v3"}]}
+    assert after_analysis_refresh["analysis"] == {"summary": "analysis-v3"}
+    after_analysis_refresh["analysis"]["summary"] = "second-payload-analysis-mutated"
+    assert web_app.read_json(web_app.OUTPUT_DIR / "tiktok_shop" / jobs["shop"].id / "shop_analysis.json") == {
+        "summary": "analysis-v3"
+    }
     assert web_app.public_metrics_job(jobs["metrics"], result=web_app.read_json(metrics_result_path))["result"] == {
         "metric": {"views": 8}
     }
@@ -312,6 +353,21 @@ def assert_no_metrics_legacy_store() -> None:
         if isinstance(node, ast.Attribute)
         and isinstance(node.value, ast.Name)
         and node.value.id == "metrics_job_registry"
+        and node.attr in {"_jobs", "_lock"}
+    ]
+    assert not private_registry_access
+
+
+def assert_no_shop_legacy_store() -> None:
+    tree = ast.parse((SCRIPTS_DIR / "web_app.py").read_text(encoding="utf-8"))
+    names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+    assert not {"shop_jobs", "shop_jobs_lock"} & names
+    private_registry_access = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "shop_job_registry"
         and node.attr in {"_jobs", "_lock"}
     ]
     assert not private_registry_access
@@ -369,10 +425,49 @@ def assert_get_and_sse_contracts(web_app: Any, jobs: dict[str, Any]) -> None:
     finally:
         web_app.metrics_job_registry = original_metrics_registry
 
-    specs = (
-        ("shop", web_app.shop_jobs_lock, web_app.shop_jobs, web_app.public_shop_job, "/api/shop-job", "/api/shop-events", "TikTok Shop job not found"),
-        ("amazon", web_app.amazon_jobs_lock, web_app.amazon_jobs, web_app.public_amazon_job, "/api/amazon-job", "/api/amazon-events", "Amazon job not found"),
-    )
+    shop = jobs["shop"]
+    original_shop_registry = web_app.shop_job_registry
+    shop_registry = web_app.JobRegistry()
+    web_app.shop_job_registry = shop_registry
+    try:
+        shop_registry.register(shop.id, shop)
+        snapshot = shop_registry.snapshot(shop.id)
+        assert snapshot is not None
+        expected = public_shop_payload(web_app, snapshot)
+        assert "prompt" not in expected
+        assert "private fixture prompt" not in json_body(expected).decode("utf-8")
+        assert_json_response(dispatch_get(web_app, f"/api/shop-job?id={shop.id}"), 200, expected)
+        assert_sse_response(dispatch_get(web_app, f"/api/shop-events?id={shop.id}"), expected)
+        assert "private fixture prompt" not in dispatch_get(web_app, f"/api/shop-events?id={shop.id}").wfile.getvalue().decode("utf-8")
+        assert_json_response(
+            dispatch_get(web_app, "/api/shop-job?id=missing"), 404, {"error": "TikTok Shop job not found"}
+        )
+        assert_sse_response(
+            dispatch_get(web_app, "/api/shop-events?id=missing"),
+            {"status": "missing", "error": "TikTok Shop job not found"},
+        )
+
+        call_order: list[str] = []
+        original_snapshot = shop_registry.snapshot
+        original_read_json = web_app.read_json
+
+        def recording_snapshot(job_id: str) -> Any:
+            call_order.append("snapshot")
+            return original_snapshot(job_id)
+
+        def recording_read_json(path: Path) -> Any:
+            call_order.append(path.name)
+            return original_read_json(path)
+
+        with patch.object(shop_registry, "snapshot", side_effect=recording_snapshot), patch.object(
+            web_app, "read_json", side_effect=recording_read_json
+        ):
+            assert_json_response(dispatch_get(web_app, f"/api/shop-job?id={shop.id}"), 200, expected)
+        assert call_order == ["snapshot", "shop_extract.json", "shop_analysis.json"]
+    finally:
+        web_app.shop_job_registry = original_shop_registry
+
+    specs = (("amazon", web_app.amazon_jobs_lock, web_app.amazon_jobs, web_app.public_amazon_job, "/api/amazon-job", "/api/amazon-events", "Amazon job not found"),)
     for name, lock, store, serializer, get_path, events_path, missing_message in specs:
         job = jobs[name]
         with lock:
@@ -516,6 +611,91 @@ def assert_metrics_sse_marker(web_app: Any) -> None:
     assert handler.close_connection is True
 
 
+def assert_shop_sse_marker(web_app: Any) -> None:
+    job = web_app.ShopJob(
+        id="shop-marker-fixture",
+        url="https://shop.tiktok.com/view/product/marker",
+        source_type="product",
+        region="US",
+        max_pages=1,
+        review_pages=0,
+        analyze=True,
+        related_videos=False,
+        prompt="private marker prompt",
+        status="queued",
+        created_at=70.0,
+        updated_at=71.0,
+        output_dir="output/tiktok_shop/shop-marker-fixture",
+    )
+    output_dir = web_app.OUTPUT_DIR / "tiktok_shop" / job.id
+    extract_path = output_dir / "shop_extract.json"
+    analysis_path = output_dir / "shop_analysis.json"
+    write_json(extract_path, {"items": [{"id": "extract-v1"}]})
+    write_json(analysis_path, {"summary": {"id": "analysis-v1"}})
+    original_registry = web_app.shop_job_registry
+    timestamps = iter((72.0, 73.0))
+    registry = web_app.JobRegistry(clock=lambda: next(timestamps))
+    registry.register(job.id, job)
+    web_app.shop_job_registry = registry
+    handler = FakeHandler()
+    original_sleep = web_app.time.sleep
+    original_snapshot = registry.snapshot
+    original_read_json = web_app.read_json
+    read_order: list[str] = []
+    calls = 0
+
+    def advance(_seconds: float) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            write_json(extract_path, {"items": [{"id": "extract-v2"}]})
+        elif calls == 2:
+            write_json(analysis_path, {"summary": {"id": "analysis-v2"}})
+        elif calls == 3:
+            registry.append_log(job.id, "shop marker log")
+        else:
+            registry.update_fields(job.id, {"status": "complete"})
+
+    def recording_snapshot(job_id: str) -> Any:
+        read_order.append("snapshot")
+        return original_snapshot(job_id)
+
+    def recording_read_json(path: Path) -> Any:
+        read_order.append(path.name)
+        return original_read_json(path)
+
+    try:
+        web_app.time.sleep = advance
+        with patch.object(registry, "snapshot", side_effect=recording_snapshot), patch.object(
+            web_app, "read_json", side_effect=recording_read_json
+        ):
+            web_app.Handler.stream_shop_events(handler, job.id)
+    finally:
+        web_app.time.sleep = original_sleep
+        web_app.shop_job_registry = original_registry
+    frames = [json.loads(line[6:]) for line in handler.wfile.getvalue().decode("utf-8").splitlines() if line.startswith("data: ")]
+    assert [frame["status"] for frame in frames] == ["queued", "queued", "complete"]
+    assert [frame["extract"] for frame in frames] == [
+        {"items": [{"id": "extract-v1"}]},
+        {"items": [{"id": "extract-v2"}]},
+        {"items": [{"id": "extract-v2"}]},
+    ]
+    assert [frame["analysis"] for frame in frames] == [
+        {"summary": {"id": "analysis-v1"}},
+        {"summary": {"id": "analysis-v2"}},
+        {"summary": {"id": "analysis-v2"}},
+    ]
+    assert [len(frame["log"]) for frame in frames] == [0, 1, 1]
+    assert [frame["updated_at"] for frame in frames] == [71.0, 72.0, 73.0]
+    assert all("prompt" not in frame for frame in frames)
+    assert all("private marker prompt" not in json.dumps(frame, ensure_ascii=False) for frame in frames)
+    assert registry.status(job.id) == "complete"
+    assert calls == 4
+    assert read_order == ["snapshot", "shop_extract.json", "shop_analysis.json"] * 5
+    assert handler.ended is True
+    assert handler.close_connection is True
+
+
 def run_contract() -> None:
     temporary = Path(tempfile.mkdtemp(prefix=".test-v2-job-snapshot-", dir=ROOT))
     original_environment = {key: os.environ.get(key) for key in ("UI_TEST_MODE", "APP_TEST_ROOT", "PROXY_POOL_ENABLED", "HOT_VIDEO_REPORT_ENABLED")}
@@ -531,17 +711,16 @@ def run_contract() -> None:
         web_app = importlib.import_module("web_app")
         assert_no_download_legacy_store()
         assert_no_metrics_legacy_store()
+        assert_no_shop_legacy_store()
         jobs = make_jobs(web_app)
         assert_public_payloads(web_app, jobs)
         assert_get_and_sse_contracts(web_app, jobs)
         assert_sse_marker(web_app)
         assert_metrics_sse_marker(web_app)
+        assert_shop_sse_marker(web_app)
     finally:
         if web_app is not None:
-            for lock, store in (
-                (web_app.shop_jobs_lock, web_app.shop_jobs),
-                (web_app.amazon_jobs_lock, web_app.amazon_jobs),
-            ):
+            for lock, store in ((web_app.amazon_jobs_lock, web_app.amazon_jobs),):
                 with lock:
                     store.clear()
         for key, value in original_environment.items():
