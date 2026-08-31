@@ -39,7 +39,7 @@ sys.path.insert(0, str(_BOOTSTRAP_SCRIPTS_DIR))
 from core.config import AppConfig
 from core.json_store import atomic_write_json, read_json
 from jobs.registry import JobRegistry
-from jobs.snapshots import snapshot_download_job
+from jobs.snapshots import snapshot_download_job, snapshot_metrics_job
 from routes.health import register_health_route
 from routes.extract import register_extract_page
 from routes.harness_certificate import register_harness_certificate_route
@@ -417,8 +417,7 @@ class AmazonJob:
 download_job_registry = JobRegistry()
 shop_jobs: dict[str, ShopJob] = {}
 shop_jobs_lock = threading.Lock()
-metrics_jobs: dict[str, MetricsJob] = {}
-metrics_jobs_lock = threading.Lock()
+metrics_job_registry = JobRegistry()
 amazon_jobs: dict[str, AmazonJob] = {}
 amazon_jobs_lock = threading.Lock()
 social_jobs_lock = threading.Lock()
@@ -3798,14 +3797,12 @@ def run_shop_job(job_id: str) -> None:
             job.log.append(str(exc))
 
 
-def append_metrics_log(job: MetricsJob, line: str) -> None:
-    with metrics_jobs_lock:
-        job.log.append(line.rstrip())
-        job.updated_at = time.time()
+def append_metrics_log(job_id: str, line: str) -> None:
+    metrics_job_registry.append_log(job_id, line)
 
 
-def run_metrics_command(job: MetricsJob, command: list[str]) -> None:
-    append_metrics_log(job, f"$ {' '.join(command)}")
+def run_metrics_command(job_id: str, command: list[str]) -> None:
+    append_metrics_log(job_id, f"$ {' '.join(command)}")
     process = subprocess.Popen(
         command,
         cwd=ROOT,
@@ -3816,59 +3813,57 @@ def run_metrics_command(job: MetricsJob, command: list[str]) -> None:
     )
     assert process.stdout is not None
     for line in process.stdout:
-        append_metrics_log(job, line)
+        append_metrics_log(job_id, line)
     code = process.wait()
     if code != 0:
         raise RuntimeError(f"Command failed with exit code {code}: {' '.join(command)}")
 
 
 def run_metrics_job(job_id: str) -> None:
-    with metrics_jobs_lock:
-        job = metrics_jobs[job_id]
-        job.status = "running"
-        job.updated_at = time.time()
+    initial = metrics_job_registry.snapshot(job_id)
+    if initial is None:
+        return
+    target = initial.target
+    endpoint = initial.endpoint
+    metrics_job_registry.update_fields(job_id, {"status": "running"})
 
     output_dir = OUTPUT_DIR / "tiktok_api" / job_id
     metrics_path = output_dir / "result.json"
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
-        with metrics_jobs_lock:
-            job.output_dir = str(output_dir.relative_to(ROOT))
-            job.updated_at = time.time()
+        metrics_job_registry.update_fields(job_id, {"output_dir": str(output_dir.relative_to(ROOT))})
 
         cmd = [
             "python",
             str(SCRIPTS_DIR / "sociavault_tiktok.py"),
-            "--endpoint", job.endpoint,
+            "--endpoint", endpoint,
             "--output", str(metrics_path),
         ]
-        if job.target:
-            if job.target.startswith("http"):
-                cmd.extend(["--url", job.target])
-            elif job.target.startswith("#"):
-                cmd.extend(["--hashtag", job.target.lstrip("#")])
-            elif job.target.startswith("@"):
-                cmd.extend(["--handle", job.target.lstrip("@")])
-            elif job.endpoint in ("music-info", "music-videos"):
-                cmd.extend(["--sound-id", job.target])
-            elif job.endpoint.startswith("search-"):
-                cmd.extend(["--query", job.target])
+        if target:
+            if target.startswith("http"):
+                cmd.extend(["--url", target])
+            elif target.startswith("#"):
+                cmd.extend(["--hashtag", target.lstrip("#")])
+            elif target.startswith("@"):
+                cmd.extend(["--handle", target.lstrip("@")])
+            elif endpoint in ("music-info", "music-videos"):
+                cmd.extend(["--sound-id", target])
+            elif endpoint.startswith("search-"):
+                cmd.extend(["--query", target])
             else:
-                cmd.extend(["--handle", job.target])
+                cmd.extend(["--handle", target])
 
-        run_metrics_command(job, cmd)
-        if job.endpoint == "video-info" and metrics_path.is_file():
-            register_from_payload(read_json(metrics_path), source_url=job.target)
+        run_metrics_command(job_id, cmd)
+        if endpoint == "video-info" and metrics_path.is_file():
+            register_from_payload(read_json(metrics_path), source_url=target)
 
-        with metrics_jobs_lock:
-            job.status = "complete"
-            job.updated_at = time.time()
+        metrics_job_registry.update_fields(job_id, {"status": "complete"})
     except Exception as exc:
-        with metrics_jobs_lock:
-            job.status = "failed"
-            job.error = str(exc)
-            job.updated_at = time.time()
-            job.log.append(str(exc))
+        metrics_job_registry.update_fields(
+            job_id,
+            {"status": "failed", "error": str(exc)},
+            final_log=str(exc),
+        )
 
 
 def append_amazon_log(job: AmazonJob, line: str) -> None:
@@ -4244,20 +4239,8 @@ def public_shop_job(job: ShopJob) -> dict[str, Any]:
     }
 
 
-def public_metrics_job(job: MetricsJob) -> dict[str, Any]:
-    output_dir = OUTPUT_DIR / "tiktok_api" / job.id
-    return {
-        "id": job.id,
-        "target": job.target,
-        "endpoint": job.endpoint,
-        "status": job.status,
-        "created_at": job.created_at,
-        "updated_at": job.updated_at,
-        "output_dir": job.output_dir,
-        "error": job.error,
-        "log": job.log[-120:],
-        "result": read_json(output_dir / "result.json"),
-    }
+def public_metrics_job(job: MetricsJob, result: Any) -> dict[str, Any]:
+    return snapshot_metrics_job(job, result=result)
 
 
 def public_amazon_job(job: AmazonJob) -> dict[str, Any]:
@@ -11415,9 +11398,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.stream_shop_events(job_id)
         if parsed.path == "/api/video-metrics-job":
             job_id = parse_qs(parsed.query).get("id", [""])[0]
-            with metrics_jobs_lock:
-                job = metrics_jobs.get(job_id)
-                payload = public_metrics_job(job) if job else None
+            job = metrics_job_registry.snapshot(job_id)
+            payload = public_metrics_job(job, read_json(OUTPUT_DIR / "tiktok_api" / job.id / "result.json")) if job else None
             if payload is None:
                 return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Video metrics job not found"})
             return json_response(self, HTTPStatus.OK, payload)
@@ -11597,7 +11579,41 @@ class Handler(BaseHTTPRequestHandler):
         self.stream_events(job_id, shop_jobs_lock, shop_jobs, public_shop_job, "TikTok Shop job not found")
 
     def stream_metrics_events(self, job_id: str) -> None:
-        self.stream_events(job_id, metrics_jobs_lock, metrics_jobs, public_metrics_job, "Video metrics job not found")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+
+        last_marker: tuple[Any, ...] | None = None
+        while True:
+            job = metrics_job_registry.snapshot(job_id)
+            payload = public_metrics_job(job, read_json(OUTPUT_DIR / "tiktok_api" / job.id / "result.json")) if job else None
+            if payload is None:
+                try:
+                    write_sse_event(self, {"status": "missing", "error": "Video metrics job not found"})
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                self.close_connection = True
+                return
+
+            marker = (
+                payload.get("status"),
+                payload.get("updated_at"),
+                len(payload.get("log") or []),
+                payload.get("error"),
+            )
+            try:
+                if marker != last_marker:
+                    write_sse_event(self, payload)
+                    last_marker = marker
+                if payload.get("status") not in {"queued", "running"}:
+                    self.close_connection = True
+                    return
+                time.sleep(1)
+            except (BrokenPipeError, ConnectionResetError):
+                self.close_connection = True
+                return
 
     def stream_amazon_events(self, job_id: str) -> None:
         self.stream_events(job_id, amazon_jobs_lock, amazon_jobs, public_amazon_job, "Amazon job not found")
@@ -12214,11 +12230,15 @@ class Handler(BaseHTTPRequestHandler):
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
         job = MetricsJob(id=str(uuid.uuid4()), target=target, endpoint=endpoint)
-        with metrics_jobs_lock:
-            metrics_jobs[job.id] = job
+        metrics_job_registry.register(job.id, job)
         thread = threading.Thread(target=run_metrics_job, args=(job.id,), daemon=True)
         thread.start()
-        return json_response(self, HTTPStatus.ACCEPTED, public_metrics_job(job))
+        snapshot = metrics_job_registry.snapshot(job.id)
+        return json_response(
+            self,
+            HTTPStatus.ACCEPTED,
+            public_metrics_job(snapshot, read_json(OUTPUT_DIR / "tiktok_api" / snapshot.id / "result.json")),
+        )
 
     def handle_amazon_scrape(self) -> None:
         content_length = int(self.headers.get("Content-Length", "0"))

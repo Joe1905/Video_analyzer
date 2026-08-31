@@ -190,6 +190,94 @@ def assert_real_download_worker_registry_updates(web_app: Any, runner: Any) -> N
         web_app.download_job_registry = original_registry
 
 
+def assert_real_metrics_worker_registry_updates(web_app: Any, runner: Any) -> None:
+    original_registry = web_app.metrics_job_registry
+    registry = web_app.JobRegistry()
+    web_app.metrics_job_registry = registry
+    try:
+        success_id = "metrics-worker-success"
+        success_target = "https://www.tiktok.com/@fixture/video/metrics-worker"
+        registry.register(success_id, web_app.MetricsJob(id=success_id, target=success_target, endpoint="video-info"))
+        registered_payloads: list[tuple[dict[str, Any], str]] = []
+
+        def command_success(job_id: str, command: list[str]) -> None:
+            assert job_id == success_id
+            assert command[command.index("--endpoint") + 1] == "video-info"
+            assert command[command.index("--url") + 1] == success_target
+            result_path = Path(command[command.index("--output") + 1])
+            result_path.parent.mkdir(parents=True, exist_ok=True)
+            result_path.write_text(json.dumps({"metric": {"views": 7}}), encoding="utf-8")
+
+        def record_video(payload: dict[str, Any], *, source_url: str) -> None:
+            registered_payloads.append((payload, source_url))
+
+        with patch.object(web_app, "run_metrics_command", side_effect=command_success), patch.object(
+            web_app, "register_from_payload", side_effect=record_video
+        ):
+            runner(success_id)
+        success = registry.snapshot(success_id)
+        assert success is not None
+        assert success.status == "complete"
+        assert success.output_dir == f"output/tiktok_api/{success_id}"
+        result_path = web_app.OUTPUT_DIR / "tiktok_api" / success_id / "result.json"
+        assert web_app.read_json(result_path) == {"metric": {"views": 7}}
+        payload = web_app.public_metrics_job(success, result=web_app.read_json(result_path))
+        assert payload["result"] == {"metric": {"views": 7}}
+        assert registered_payloads == [({"metric": {"views": 7}}, success_target)]
+        payload["result"]["metric"]["views"] = 99
+        assert web_app.read_json(result_path) == {"metric": {"views": 7}}
+
+        command_cases = (
+            ("#fixture-tag", "profile", "--hashtag", "fixture-tag"),
+            ("@fixture-handle", "profile", "--handle", "fixture-handle"),
+            ("music-fixture", "music-info", "--sound-id", "music-fixture"),
+            ("music-videos-fixture", "music-videos", "--sound-id", "music-videos-fixture"),
+            ("fixture query", "search-keyword", "--query", "fixture query"),
+            ("fixture-fallback", "profile", "--handle", "fixture-fallback"),
+            ("", "music-popular", None, None),
+        )
+        target_flags = {"--url", "--hashtag", "--handle", "--sound-id", "--query"}
+        for index, (target, endpoint, expected_flag, expected_value) in enumerate(command_cases):
+            job_id = f"metrics-command-{index}"
+            registry.register(job_id, web_app.MetricsJob(id=job_id, target=target, endpoint=endpoint))
+            commands: list[list[str]] = []
+
+            def capture_command(captured_job_id: str, command: list[str]) -> None:
+                assert captured_job_id == job_id
+                commands.append(command)
+                result_path = Path(command[command.index("--output") + 1])
+                result_path.parent.mkdir(parents=True, exist_ok=True)
+                result_path.write_text(json.dumps({"metric": {"case": index}}), encoding="utf-8")
+
+            with patch.object(web_app, "run_metrics_command", side_effect=capture_command):
+                runner(job_id)
+            assert registry.status(job_id) == "complete"
+            assert len(commands) == 1
+            command = commands[0]
+            assert command[command.index("--endpoint") + 1] == endpoint
+            if expected_flag is None:
+                assert not target_flags & set(command)
+            else:
+                assert command[command.index(expected_flag) + 1] == expected_value
+
+        failure_id = "metrics-worker-failure"
+        registry.register(failure_id, web_app.MetricsJob(id=failure_id, target="@fixture", endpoint="profile"))
+
+        def command_failure(job_id: str, _command: list[str]) -> None:
+            web_app.append_metrics_log(job_id, "fixture prior failure")
+            raise RuntimeError("fixture raw metrics failure")
+
+        with patch.object(web_app, "run_metrics_command", side_effect=command_failure):
+            runner(failure_id)
+        failure = registry.snapshot(failure_id)
+        assert failure is not None
+        assert failure.status == "failed"
+        assert failure.error == "fixture raw metrics failure"
+        assert failure.log[-2:] == ["fixture prior failure", "fixture raw metrics failure"]
+    finally:
+        web_app.metrics_job_registry = original_registry
+
+
 def run_lifecycle() -> None:
     # Production result payloads expose output paths relative to the repository
     # root, so keep the isolated fixture under that same root as well.
@@ -203,11 +291,15 @@ def run_lifecycle() -> None:
         os.environ["HOT_VIDEO_REPORT_ENABLED"] = "0"
         web_app = importlib.import_module("web_app")
         real_download_worker = web_app.run_download_job
+        real_metrics_worker = web_app.run_metrics_job
         fake_queue = FakeVideoQueue(web_app.output_dir_for_filename)
         download_release = threading.Event()
         download_started = threading.Event()
         shop_release = threading.Event()
-        metrics_release = threading.Event()
+        metrics_success_release = threading.Event()
+        metrics_success_started = threading.Event()
+        metrics_failure_release = threading.Event()
+        metrics_failure_started = threading.Event()
         allowed_writes = {
             "/api/download",
             "/api/shop-extract",
@@ -248,14 +340,33 @@ def run_lifecycle() -> None:
                 job.log.append("fixture shop complete")
                 job.updated_at = time.time()
 
-        def fail_metrics(job_id: str) -> None:
-            assert metrics_release.wait(timeout=5)
-            with web_app.metrics_jobs_lock:
-                job = web_app.metrics_jobs[job_id]
-                job.status = "failed"
-                job.error = "fixture metrics failure"
-                job.log.append(job.error)
-                job.updated_at = time.time()
+        def complete_metrics(job_id: str) -> None:
+            registry = web_app.metrics_job_registry
+            current = registry.snapshot(job_id)
+            assert current is not None
+            registry.update_fields(job_id, {"status": "running"})
+            if current.target == "@fixture-failure":
+                metrics_failure_started.set()
+                assert metrics_failure_release.wait(timeout=5)
+                registry.update_fields(
+                    job_id,
+                    {"status": "failed", "error": "fixture metrics failure"},
+                    final_log="fixture metrics failure",
+                )
+                return
+            metrics_success_started.set()
+            assert metrics_success_release.wait(timeout=5)
+            result_path = web_app.OUTPUT_DIR / "tiktok_api" / job_id / "result.json"
+            result_path.parent.mkdir(parents=True, exist_ok=True)
+            result_path.write_text(json.dumps({"metric": {"views": 7}}), encoding="utf-8")
+            registry.update_fields(
+                job_id,
+                {
+                    "status": "complete",
+                    "output_dir": str(result_path.parent.relative_to(web_app.ROOT)),
+                },
+                final_log="fixture metrics complete",
+            )
 
         def fake_translate(command: list[str], **_kwargs: Any) -> SimpleNamespace:
             output = Path(command[command.index("--output") + 1])
@@ -268,7 +379,7 @@ def run_lifecycle() -> None:
             )
             patches.enter_context(patch.object(web_app, "run_download_job", side_effect=complete_download))
             patches.enter_context(patch.object(web_app, "run_shop_job", side_effect=complete_shop))
-            patches.enter_context(patch.object(web_app, "run_metrics_job", side_effect=fail_metrics))
+            patches.enter_context(patch.object(web_app, "run_metrics_job", side_effect=complete_metrics))
             patches.enter_context(patch.object(web_app, "video_queue", fake_queue))
             patches.enter_context(patch.object(web_app, "subprocess", SimpleNamespace(run=fake_translate)))
             patches.enter_context(patch.object(web_app, "ensure_analyzer_media_or_delete", side_effect=lambda _path: None))
@@ -279,6 +390,7 @@ def run_lifecycle() -> None:
             patches.enter_context(patch.object(web_app, "analyzer_media_is_valid", side_effect=lambda _path: True))
 
             assert_real_download_worker_registry_updates(web_app, real_download_worker)
+            assert_real_metrics_worker_registry_updates(web_app, real_metrics_worker)
 
             server = web_app.ThreadingHTTPServer(("127.0.0.1", 0), web_app.Handler)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -344,19 +456,74 @@ def run_lifecycle() -> None:
             assert job["extract"]["items"][0]["id"] == "fixture-shop"
             assert sse_payload(port, f"/api/shop-events?id={shop_id}")["status"] == "complete"
 
+            status, _headers, invalid_metrics = json_request(
+                port,
+                "POST",
+                "/api/video-metrics",
+                {"target": "@fixture", "endpoint": "not-an-endpoint"},
+            )
+            assert status == 400 and invalid_metrics == {"error": "Unknown endpoint: not-an-endpoint"}
+            status, _headers, missing_metrics_target = json_request(
+                port,
+                "POST",
+                "/api/video-metrics",
+                {"endpoint": "profile"},
+            )
+            assert status == 400 and missing_metrics_target == {"error": "target is required for this endpoint"}
+            status, _headers, long_metrics_target = json_request(
+                port,
+                "POST",
+                "/api/video-metrics",
+                {"target": "x" * 2049, "endpoint": "profile"},
+            )
+            assert status == 400 and long_metrics_target == {"error": "target is too long"}
+
             status, _headers, metrics = json_request(
                 port,
                 "POST",
                 "/api/video-metrics",
                 {"target": "https://www.tiktok.com/@fixture/video/123", "endpoint": "video-info"},
             )
-            assert status == 202 and metrics["status"] == "queued"
+            assert status == 202 and metrics["status"] in {"queued", "running"}
             metrics_id = metrics["id"]
-            metrics_release.set()
-            job = wait_for_job(port, f"/api/video-metrics-job?id={metrics_id}", "failed")
-            assert job["error"] == "fixture metrics failure"
+            assert metrics_success_started.wait(timeout=5)
+            status, _headers, running_metrics = json_request(port, "GET", f"/api/video-metrics-job?id={metrics_id}")
+            assert status == 200 and running_metrics["status"] == "running"
+            metrics_success_release.set()
+            job = wait_for_job(port, f"/api/video-metrics-job?id={metrics_id}", "complete")
+            assert job["output_dir"] == f"output/tiktok_api/{metrics_id}"
+            assert job["result"] == {"metric": {"views": 7}}
             event = sse_payload(port, f"/api/video-metrics-events?id={metrics_id}")
-            assert event["status"] == "failed" and event["error"] == "fixture metrics failure"
+            assert event["status"] == "complete" and event["result"] == job["result"]
+
+            status, _headers, failed_metrics = json_request(
+                port,
+                "POST",
+                "/api/video-metrics",
+                {"target": "@fixture-failure", "endpoint": "profile"},
+            )
+            assert status == 202 and failed_metrics["status"] in {"queued", "running"}
+            failed_metrics_id = failed_metrics["id"]
+            assert metrics_failure_started.wait(timeout=5)
+            status, _headers, running_failed_metrics = json_request(
+                port, "GET", f"/api/video-metrics-job?id={failed_metrics_id}"
+            )
+            assert status == 200 and running_failed_metrics["status"] == "running"
+            metrics_failure_release.set()
+            failed_job = wait_for_job(port, f"/api/video-metrics-job?id={failed_metrics_id}", "failed")
+            assert failed_job["error"] == "fixture metrics failure"
+            assert failed_job["log"][-1] == "fixture metrics failure"
+            failed_event = sse_payload(port, f"/api/video-metrics-events?id={failed_metrics_id}")
+            assert failed_event["status"] == "failed" and failed_event["error"] == "fixture metrics failure"
+
+            status, _headers, trending_metrics = json_request(
+                port,
+                "POST",
+                "/api/video-metrics",
+                {"target": "", "endpoint": "trending"},
+            )
+            assert status == 202 and trending_metrics["status"] in {"queued", "running"}
+            wait_for_job(port, f"/api/video-metrics-job?id={trending_metrics['id']}", "complete")
 
             upload_body, upload_type = multipart_video("fixture.mp4", b"not-a-real-video")
             status, _headers, uploaded = json_request(

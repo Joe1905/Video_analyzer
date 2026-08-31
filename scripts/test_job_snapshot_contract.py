@@ -13,6 +13,7 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -158,10 +159,11 @@ def make_jobs(web_app: Any) -> dict[str, Any]:
 
 
 def assert_public_payloads(web_app: Any, jobs: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    metrics_result_path = web_app.OUTPUT_DIR / "tiktok_api" / jobs["metrics"].id / "result.json"
     payloads = {
         "download": web_app.public_download_job(jobs["download"]),
         "shop": web_app.public_shop_job(jobs["shop"]),
-        "metrics": web_app.public_metrics_job(jobs["metrics"]),
+        "metrics": web_app.public_metrics_job(jobs["metrics"], result=web_app.read_json(metrics_result_path)),
         "amazon": web_app.public_amazon_job(jobs["amazon"]),
     }
     assert set(payloads["download"]) == {"id", "url", "status", "created_at", "updated_at", "filename", "error", "log", "result"}
@@ -258,7 +260,7 @@ def assert_public_payloads(web_app: Any, jobs: dict[str, Any]) -> dict[str, dict
     write_json(web_app.OUTPUT_DIR / "tiktok_api" / jobs["metrics"].id / "result.json", {"metric": {"views": 8}})
     write_json(web_app.OUTPUT_DIR / "amazon" / jobs["amazon"].id / "result.json", {"products": [{"asin": "B000FIXTUREV2"}]})
     refreshed_shop = web_app.public_shop_job(jobs["shop"])
-    refreshed_metrics = web_app.public_metrics_job(jobs["metrics"])
+    refreshed_metrics = web_app.public_metrics_job(jobs["metrics"], result=web_app.read_json(metrics_result_path))
     refreshed_amazon = web_app.public_amazon_job(jobs["amazon"])
     assert refreshed_shop["extract"] == {"items": [{"id": "extract-v2"}]}
     assert refreshed_shop["analysis"] == {"summary": "analysis-v2"}
@@ -278,7 +280,9 @@ def assert_public_payloads(web_app: Any, jobs: dict[str, Any]) -> dict[str, dict
     original_amazon_result["products"][0]["asin"] = "mutated"
     assert web_app.public_shop_job(jobs["shop"])["extract"] == {"items": [{"id": "extract-v2"}]}
     assert web_app.public_shop_job(jobs["shop"])["analysis"] == {"summary": "analysis-v2"}
-    assert web_app.public_metrics_job(jobs["metrics"])["result"] == {"metric": {"views": 8}}
+    assert web_app.public_metrics_job(jobs["metrics"], result=web_app.read_json(metrics_result_path))["result"] == {
+        "metric": {"views": 8}
+    }
     assert web_app.public_amazon_job(jobs["amazon"])["result"] == {"products": [{"asin": "B000FIXTUREV2"}]}
     return payloads
 
@@ -298,6 +302,21 @@ def assert_no_download_legacy_store() -> None:
     assert not private_registry_access
 
 
+def assert_no_metrics_legacy_store() -> None:
+    tree = ast.parse((SCRIPTS_DIR / "web_app.py").read_text(encoding="utf-8"))
+    names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+    assert not {"metrics_jobs", "metrics_jobs_lock"} & names
+    private_registry_access = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "metrics_job_registry"
+        and node.attr in {"_jobs", "_lock"}
+    ]
+    assert not private_registry_access
+
+
 def assert_get_and_sse_contracts(web_app: Any, jobs: dict[str, Any]) -> None:
     download = jobs["download"]
     web_app.download_job_registry.register(download.id, download)
@@ -310,9 +329,48 @@ def assert_get_and_sse_contracts(web_app: Any, jobs: dict[str, Any]) -> None:
         {"status": "missing", "error": "Download job not found"},
     )
 
+    metrics = jobs["metrics"]
+    original_metrics_registry = web_app.metrics_job_registry
+    metrics_registry = web_app.JobRegistry()
+    web_app.metrics_job_registry = metrics_registry
+    try:
+        metrics_registry.register(metrics.id, metrics)
+        result_path = web_app.OUTPUT_DIR / "tiktok_api" / metrics.id / "result.json"
+        expected = web_app.public_metrics_job(metrics_registry.snapshot(metrics.id), result=web_app.read_json(result_path))
+        assert_json_response(dispatch_get(web_app, f"/api/video-metrics-job?id={metrics.id}"), 200, expected)
+        assert_sse_response(dispatch_get(web_app, f"/api/video-metrics-events?id={metrics.id}"), expected)
+        assert_json_response(
+            dispatch_get(web_app, "/api/video-metrics-job?id=missing"),
+            404,
+            {"error": "Video metrics job not found"},
+        )
+        assert_sse_response(
+            dispatch_get(web_app, "/api/video-metrics-events?id=missing"),
+            {"status": "missing", "error": "Video metrics job not found"},
+        )
+
+        call_order: list[str] = []
+        original_snapshot = metrics_registry.snapshot
+        original_read_json = web_app.read_json
+
+        def recording_snapshot(job_id: str) -> Any:
+            call_order.append("snapshot")
+            return original_snapshot(job_id)
+
+        def recording_read_json(path: Path) -> Any:
+            call_order.append("read")
+            return original_read_json(path)
+
+        with patch.object(metrics_registry, "snapshot", side_effect=recording_snapshot), patch.object(
+            web_app, "read_json", side_effect=recording_read_json
+        ):
+            assert_json_response(dispatch_get(web_app, f"/api/video-metrics-job?id={metrics.id}"), 200, expected)
+        assert call_order == ["snapshot", "read"]
+    finally:
+        web_app.metrics_job_registry = original_metrics_registry
+
     specs = (
         ("shop", web_app.shop_jobs_lock, web_app.shop_jobs, web_app.public_shop_job, "/api/shop-job", "/api/shop-events", "TikTok Shop job not found"),
-        ("metrics", web_app.metrics_jobs_lock, web_app.metrics_jobs, web_app.public_metrics_job, "/api/video-metrics-job", "/api/video-metrics-events", "Video metrics job not found"),
         ("amazon", web_app.amazon_jobs_lock, web_app.amazon_jobs, web_app.public_amazon_job, "/api/amazon-job", "/api/amazon-events", "Amazon job not found"),
     )
     for name, lock, store, serializer, get_path, events_path, missing_message in specs:
@@ -381,6 +439,83 @@ def assert_sse_marker(web_app: Any) -> None:
     assert handler.close_connection is True
 
 
+def assert_metrics_sse_marker(web_app: Any) -> None:
+    job = web_app.MetricsJob(
+        id="metrics-marker-fixture",
+        target="@fixture",
+        endpoint="profile",
+        status="queued",
+        created_at=60.0,
+        updated_at=61.0,
+        output_dir="output/tiktok_api/metrics-marker-fixture",
+    )
+    result_path = web_app.OUTPUT_DIR / "tiktok_api" / job.id / "result.json"
+    write_json(result_path, {"metric": {"views": 1}})
+    original_registry = web_app.metrics_job_registry
+    timestamps = iter((62.0, 63.0, 64.0))
+    registry = web_app.JobRegistry(clock=lambda: next(timestamps))
+    registry.register(job.id, job)
+    web_app.metrics_job_registry = registry
+    handler = FakeHandler()
+    original_sleep = web_app.time.sleep
+    original_snapshot = registry.snapshot
+    original_read_json = web_app.read_json
+    read_order: list[str] = []
+    calls = 0
+
+    def advance(_seconds: float) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            write_json(result_path, {"metric": {"views": 2}})
+        elif calls == 2:
+            registry.append_log(job.id, "metrics marker log")
+        elif calls == 3:
+            registry.update_fields(job.id, {"error": "metrics marker error"})
+        else:
+            registry.update_fields(job.id, {"status": "complete"})
+
+    def recording_snapshot(job_id: str) -> Any:
+        read_order.append("snapshot")
+        return original_snapshot(job_id)
+
+    def recording_read_json(path: Path) -> Any:
+        read_order.append("read")
+        return original_read_json(path)
+
+    try:
+        web_app.time.sleep = advance
+        with patch.object(
+            registry,
+            "snapshot",
+            side_effect=recording_snapshot,
+        ), patch.object(
+            web_app,
+            "read_json",
+            side_effect=recording_read_json,
+        ):
+            web_app.Handler.stream_metrics_events(handler, job.id)
+    finally:
+        web_app.time.sleep = original_sleep
+        web_app.metrics_job_registry = original_registry
+    frames = [json.loads(line[6:]) for line in handler.wfile.getvalue().decode("utf-8").splitlines() if line.startswith("data: ")]
+    assert [frame["status"] for frame in frames] == ["queued", "queued", "queued", "complete"]
+    assert [frame["result"] for frame in frames] == [
+        {"metric": {"views": 1}},
+        {"metric": {"views": 2}},
+        {"metric": {"views": 2}},
+        {"metric": {"views": 2}},
+    ]
+    assert [frame["updated_at"] for frame in frames] == [61.0, 62.0, 63.0, 64.0]
+    assert [len(frame["log"]) for frame in frames] == [0, 1, 1, 1]
+    assert [frame["error"] for frame in frames] == [None, None, "metrics marker error", "metrics marker error"]
+    assert registry.status(job.id) == "complete"
+    assert calls == 4
+    assert read_order == ["snapshot", "read"] * 5
+    assert handler.ended is True
+    assert handler.close_connection is True
+
+
 def run_contract() -> None:
     temporary = Path(tempfile.mkdtemp(prefix=".test-v2-job-snapshot-", dir=ROOT))
     original_environment = {key: os.environ.get(key) for key in ("UI_TEST_MODE", "APP_TEST_ROOT", "PROXY_POOL_ENABLED", "HOT_VIDEO_REPORT_ENABLED")}
@@ -395,15 +530,16 @@ def run_contract() -> None:
         sys.modules.pop("web_app", None)
         web_app = importlib.import_module("web_app")
         assert_no_download_legacy_store()
+        assert_no_metrics_legacy_store()
         jobs = make_jobs(web_app)
         assert_public_payloads(web_app, jobs)
         assert_get_and_sse_contracts(web_app, jobs)
         assert_sse_marker(web_app)
+        assert_metrics_sse_marker(web_app)
     finally:
         if web_app is not None:
             for lock, store in (
                 (web_app.shop_jobs_lock, web_app.shop_jobs),
-                (web_app.metrics_jobs_lock, web_app.metrics_jobs),
                 (web_app.amazon_jobs_lock, web_app.amazon_jobs),
             ):
                 with lock:
