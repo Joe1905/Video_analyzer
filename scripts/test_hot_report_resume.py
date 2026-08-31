@@ -32,6 +32,7 @@ def main() -> int:
     )
     with tempfile.TemporaryDirectory() as directory:
         base = Path(directory)
+        report_date = report.today_key()
         report.DB_PATH, report.VIDEOS_DIR, report.OUTPUT_DIR = base / "report.sqlite", base / "videos", base / "output"
         report.VIDEOS_DIR.mkdir()
         report.OUTPUT_DIR.mkdir()
@@ -53,10 +54,10 @@ def main() -> int:
             ).fetchone()[0]
             assert migrated_orphan == 0
         with closing(report._connect()) as conn:
-            report_id = report._start_report(conn, "2026-08-01", "US", [], worker_lease="lease")
+            report_id = report._start_report(conn, report_date, "US", [], worker_lease="lease")
             for index in range(1, 6):
                 item = _item(index)
-                report._upsert_video(conn, report_id, "2026-08-01", item, index)
+                report._upsert_video(conn, report_id, report_date, item, index)
                 filename = f"video-{index}.mp4"
                 (report.VIDEOS_DIR / filename).write_bytes(b"fixture")
                 output = report.OUTPUT_DIR / filename
@@ -66,14 +67,14 @@ def main() -> int:
                     """UPDATE hot_report_videos SET process_status='complete', process_step='complete',
                     local_filename=?, analysis_json=?, insight_json=?, social_context_json=?
                     WHERE report_date=? AND platform=? AND video_id=?""",
-                    (filename, json.dumps({"summary": "fixture"}), json.dumps({"one_sentence": "ok"}), "{}", "2026-08-01", "tiktok", f"video-{index}"),
+                    (filename, json.dumps({"summary": "fixture"}), json.dumps({"one_sentence": "ok"}), "{}", report_date, "tiktok", f"video-{index}"),
                 )
             conn.commit()
-            assert len(report._load_success_videos(conn, "2026-08-01")) == 5
+            assert len(report._load_success_videos(conn, report_date)) == 5
             invalid = _item(6)
             invalid.update({"local_filename": "missing.mp4", "analysis": {}, "insight": {"error": "generated failed"}, "social_context": {}})
             assert not report._is_video_checkpoint_valid(invalid)[0]
-            report._mark_video_pending(conn, "2026-08-01", "tiktok", "video-1", "fixture invalidation")
+            report._mark_video_pending(conn, report_date, "tiktok", "video-1", "fixture invalidation")
             status = conn.execute("SELECT process_status FROM hot_report_videos WHERE video_id='video-1'").fetchone()[0]
             assert status == "pending"
             conn.execute("UPDATE hot_report_videos SET process_status='complete', process_step='complete' WHERE video_id='video-1'")
@@ -119,7 +120,7 @@ def main() -> int:
         report._process_video = fake_process
         report._generate_daily_summary = fake_summary
         os.environ["SOCIAVAULT_API_KEY"] = "fixture"
-        first_run = report.run_report("2026-08-01")
+        first_run = report.run_report(report_date)
         assert first_run["status"] == "complete"
         # video-6 首次失败后同轮立即重试成功,因此 processed 中出现两次 video-6;
         # v6+v7..v10 共 5 个新成功 + 已有 5 个 complete = 达标 10,提前 break,v11 不处理
@@ -131,27 +132,27 @@ def main() -> int:
             assert row == ("complete", 2)
         # backoff 场景:attempt=1、last_attempt 在未来 -> 等待退避;attempt 达 max -> 不再重试
         with closing(report._connect()) as conn:
-            assert report._failed_video_retry_state(conn, "2026-08-01", "tiktok", "video-6", now=1_700_000_001) is None
+            assert report._failed_video_retry_state(conn, report_date, "tiktok", "video-6", now=1_700_000_001) is None
             fake_conn = type(
                 "FC", (),
                 {"execute": lambda self, sql, params=(): type("C", (), {"fetchone": lambda self: ("failed", 2, 1_700_000_000)})()},
             )()
             assert report._failed_video_retry_state(fake_conn, "d", "p", "v", now=1_700_000_001) == "retry_exhausted"
         with closing(report._connect()) as conn:
-            conn.execute("UPDATE daily_reports SET status='failed', report_json=NULL, report_markdown=NULL WHERE report_date='2026-08-01'")
+            conn.execute("UPDATE daily_reports SET status='failed', report_json=NULL, report_markdown=NULL WHERE report_date=?", (report_date,))
             conn.commit()
         processed.clear()
-        second_run = report.run_report("2026-08-01")
+        second_run = report.run_report(report_date)
         assert second_run["status"] == "complete"
         assert processed == []
         assert all(report._is_recoverable_external_error(message) for message in ("HTTP 402 payment required", "429 Client Error", "HTTP status 503"))
         assert not report._is_recoverable_external_error("analyze_one.sh timed out after 600 seconds")
         assert not report._is_recoverable_external_error("request timeout")
         with closing(report._connect()) as conn:
-            conn.execute("UPDATE daily_reports SET status='failed', report_json=NULL, report_markdown=NULL WHERE report_date='2026-08-01'")
+            conn.execute("UPDATE daily_reports SET status='failed', report_json=NULL, report_markdown=NULL WHERE report_date=?", (report_date,))
             conn.commit()
         report._generate_daily_summary = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("429 Client Error"))
-        paused_run = report.run_report("2026-08-01")
+        paused_run = report.run_report(report_date)
         assert paused_run["status"] == "paused_external"
         assert processed == []
     (
