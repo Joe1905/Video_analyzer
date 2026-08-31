@@ -44,11 +44,11 @@ git merge-base --is-ancestor b364276 v2
 
 ## 二、当前代码总览
 
-CodeGraph 已在当前运行时代码 `46dab34` 上重新同步。主要热点如下：
+CodeGraph 已在当前运行时代码 `8a63493` 上重新同步。主要热点如下：
 
 | 文件 | 规模 | 当前职责 | 判断 |
 | --- | ---: | --- | --- |
-| `scripts/web_app.py` | 13,206 行 / 608,465 字节（约 594.20 KiB） | 配置、页面装配、聊天 provider、四类临时任务、下载/店铺/指标/Amazon、遗留 GET/POST 路由、后台线程启动 | 第一重构对象，但必须分批拆；HTTP response/SSE helper、导入期配置、JSON 文件原语、health 与八个纯页面路由已完成抽取 |
+| `scripts/web_app.py` | 13,059 行 / 603,062 字节（`8a63493`） | composition root、页面装配、聊天 provider、三类仍内联的临时任务、下载/指标/Amazon、遗留 GET/POST 路由、后台线程启动 | 第一重构对象，但必须分批拆；Shop service/API route、HTTP response/SSE helper、导入期配置、JSON 文件原语、health 与八个纯页面路由已完成抽取 |
 | `scripts/proxy_pool.py` | 5,319 行 / 238 KB | SQLite schema、代理解析、端口分配、mihomo/sing-box、账号会话、发布、采集、运行时状态 | 独立子系统，应在自己的包内拆分 |
 | `scripts/hot_video_report.py` | 4,032 行 / 178 KB | 日报采集、下载、单视频分析、LLM 摘要、恢复与持久化 | 已有清晰文件边界，先稳定接口，不优先内部大拆 |
 | `scripts/tools.py` | 1,470 行 / 72 KB | 聊天工具归一与执行、视频分析子进程 | 需要把“聊天工具”和“视频执行器”分开 |
@@ -519,6 +519,14 @@ class JobSnapshot(TypedDict):
 
 **Phase 4 验收：** 上述业务 API 不再编辑巨型 `do_GET`/`do_POST`；CodeGraph 满足 `web_app → routes → services → jobs/core`，不存在 `routes/services → web_app` 或 `services → routes`；每个域的 URL、状态码、JSON 字段、SSE 帧、数据目录和任务生命周期与 Phase 0 基线一致。
 
+### 8.1 Phase 4.1 Shop 垂直切片（已完成）
+
+1. **行为冻结（`f700266`、`c424a0a`）：** 在生产迁移前补齐两份 artifact 缺失/无效 JSON 的 GET/SSE 现状、prompt、120 条日志、输出目录、终态及 `snapshot → extract → analysis → adapter` 顺序；夹具缺少 `related_videos` 的问题以独立测试提交修正。
+2. **结构迁移（`c8b433b`）：** 新增 `services/shop.py`，把 Shop 任务模型、创建、线程、命令、状态和 artifact payload 编排迁出；`routes/shop.py` 接管 GET/POST/SSE，`web_app.py` 只保留 Registry、显式依赖注入和 Router 装配。旧 Shop dataclass、worker、adapter、Handler GET/POST/SSE 分支、store/lock 和 artifact 常量均为 0；CodeGraph 为 `web_app → routes.shop → services.shop → jobs/core`，无反向依赖、兼容层、共享业务基类或通用 SSE。
+3. **完整门禁捕获并收口测试归属（`8a63493`）：** 首轮镜像回归在第 10 项发现旧 AST 只统计 `web_app.py` 的动态环境读取，迁移后应为 53 而非 56。修正后的契约精确锁定 `web_app=53`、仅 `routes.shop.shop_extract=3`、总计仍为 56，并验证 kw-only 默认注入仍是 `os.getenv`；随后重新构建并从第 1 项重跑全部门禁。
+4. **最终验证：** Windows 工作树经 7892 推送 GitHub，服务器经 7890 执行 `pull --ff-only` 后，仅以 `bash scripts/deploy_ui_4004.sh` 部署；服务器提交 `8a634935`，4004 专属镜像 `sha256:55f905ee84cb690fdc3738629c5fe676b8cb36db33b4c12dc677cba30d38dbfa`，启动时间 `2026-08-31T09:06:45.425143654Z`。49 个普通确定性脚本、5 个特殊确定性门禁和 2 个 Playwright 共 56/56 通过；13 个页面、Shop missing/invalid/错误方法、4 个通用未知 provider、三端口健康、严格日志和 checkout/镜像/运行容器/持久化数据/Compose 环境五层零残留均通过。4002、4003 镜像与启动时间未变化，服务器 checkout clean。
+5. **阶段后审计：** 需求漂移、模块解耦、复用合理性、安全边界和测试有效性均无代码问题或假绿；`JobRegistry`、领域 snapshot adapter、Router/core HTTP 是唯一复用边界。流程上记录一次提交纯度偏差：`c8b433b` 除结构迁移所需的测试接线外，还补入了正常 payload SSE 断连覆盖。行为基线已在前置测试提交冻结，且该偏差未改变生产语义；不重写已部署历史。Phase 4.2 起必须先以独立测试提交冻结所有新增行为契约，再以结构提交只做迁移和必要的调用方接线，归属计数修正继续单独提交。
+
 ## 九、Phase 5：拆分代理子系统
 
 `proxy_pool.py` 不应与普通 web service 一起大搬。按事务边界拆，并在每个子阶段执行当前登记的至少 52 脚本门禁及代理专项故障注入：
@@ -638,7 +646,7 @@ Phase 0 测试基线
 
 ## 十四、下一批实施任务
 
-Phase 0、0.5、1.1、2026-08-29 两个补漏阶段、Phase 1.2、Phase 1.3、**Phase 2.1～2.3D** 与 **Phase 3.0～3.4** 已完成。Phase 2 无业务状态路由骨架和 Phase 3 四类任务 Registry 归一均已关闭；四域已有公开契约、领域纯快照 adapter、单一 Registry、原子字段更新、真实 worker 与精确 POST/SSE 时序门禁。3.4 复核确认不引入任务继承、共享业务基类、通用 SSE 或万能 service。下一步实施 **Phase 4.1 Shop 垂直切片**；先以只读/测试批冻结 Shop 两份 artifact 缺失与无效 JSON 的现有 GET/SSE 行为，再同时交付 `services/shop.py`、`routes/shop.py`、领域 contract test 和完整门禁。Amazon 与出海匠聊天壳仍延期到 Chat/Provider 阶段，Proxy 页面及真实代理选择仍延期到代理垂直切片；不得在 4.1 顺手迁移 Metrics、Amazon、Download、代理或聊天。
+Phase 0、0.5、1.1、2026-08-29 两个补漏阶段、Phase 1.2、Phase 1.3、**Phase 2.1～2.3D**、**Phase 3.0～3.4** 与 **Phase 4.1** 已完成。Shop 已形成首个完整的 `web_app → routes → services → jobs/core` 垂直切片，并通过服务器 56/56 门禁和阶段后审计。下一步实施 **Phase 4.2 Metrics**，但第一批只能做只读盘点和独立测试冻结：锁定 endpoint/target 校验、`music-popular` 空 target、真实命令映射、worker 成败、`result.json` 缺失/无效 JSON、120 条日志、深复制、SSE marker/BrokenPipe、POST 精确时序、领域动态环境读取当前为 0，以及现有 UI_TEST 拦截顺序。冻结提交通过完整门禁后，下一独立结构提交再交付 `services/metrics.py` 与 `routes/metrics.py`。Amazon、Download、代理、聊天和日报不得在 4.2 顺手迁移。
 
 Phase 2.3 继续复用现有 Terra 子智能体，避免为同一长期任务无限新增执行记录，并按以下门槛推进：
 
@@ -666,4 +674,5 @@ Phase 3 下一批按以下门槛推进：
 12. **3.3.D3 Shop 单域切换（已完成，`a3e0a14`、`f6ab9b0`）：** Shop 创建、日志、真实 worker、GET、POST 与专用 SSE 已切换到单 Registry；两份 artifact 在不可变快照后锁外读取，旧生产字典/锁和私有访问为 0，prompt 安全边界未回退，服务器 56 项完整门禁通过。
 13. **3.3.D4 Amazon 单域切换（已完成，`53eb409`、`95c2e1d`、`b1e405c`、`da88ede`）：** Amazon 创建、日志、真实命令/worker、GET、POST 与专用 SSE 已切换到单 Registry；旧 store/lock、通用 SSE、私有访问和双写为 0，服务器 56 项完整门禁通过。
 14. **3.4 基类复核与 Phase 3 关闭（已完成，`d09add4`）：** 四域共同机制止于现有 Registry，模型、结果载体、日志窗口、失败语义与 SSE payload 均存在稳定领域差异，因此明确不引入继承、共享业务基类、通用 SSE 或万能 service；四域 POST 精确时序和仅四个 Registry 真源已自动化，Phase 3 验收通过。
-15. **Phase 4.1 Shop 垂直切片（下一步）：** 先补测试冻结 `shop_extract.json`/`shop_analysis.json` 缺失与无效 JSON 的现有 GET/SSE 行为，以及私有 prompt、120 条日志、输出目录、终态和 `snapshot → extract → analysis → adapter` 顺序；随后以同一垂直切片迁移 service 与 route，严格保持 `web_app → routes → services → jobs/core`，禁止 `routes/services → web_app`、跨域顺手修改和临时兼容层。
+15. **Phase 4.1 Shop 垂直切片（已完成，`f700266`、`c424a0a`、`c8b433b`、`8a63493`）：** 行为冻结、service/route 迁移、动态配置归属修正、服务器 56/56、部署黑盒和阶段后审计均已通过；流程偏差及后续提交纯度规则已记录在 8.1。
+16. **Phase 4.2 Metrics（下一步）：** 先以独立测试提交冻结 `result.json` 缺失/无效 JSON 的 GET/SSE、public result 深复制、120 条日志、四元 marker、missing/normal BrokenPipe、endpoint/target 与 `music-popular` 空 target、完整命令、worker 成败、POST 时序、领域动态环境读取为 0、现有 UI_TEST 拦截顺序和旧实现 AST；再以独立结构提交迁移 `services/metrics.py` 与 `routes/metrics.py`。仅复用 Registry、Metrics snapshot adapter、Router/core HTTP，禁止 JobService、通用 SSE、继承基类、Shop facade 或跨域改动。
