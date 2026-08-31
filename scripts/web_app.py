@@ -3574,6 +3574,19 @@ def append_shop_log(job: ShopJob, line: str) -> None:
         job.updated_at = time.time()
 
 
+def _shop_command_display(command: list[str]) -> str:
+    display = list(command)
+    for index, value in enumerate(display[:-1]):
+        if value == "--prompt":
+            display[index + 1] = "[redacted]"
+    return " ".join(display)
+
+
+def _shop_prompt_values(command: list[str]) -> list[str]:
+    values = [command[index + 1] for index, value in enumerate(command[:-1]) if value == "--prompt" and command[index + 1]]
+    return sorted(dict.fromkeys(values), key=len, reverse=True)
+
+
 def _shop_product_nodes(payload: Any, limit: int = 40) -> list[dict[str, Any]]:
     found: list[dict[str, Any]] = []
 
@@ -3721,7 +3734,9 @@ def search_shop_catalog_products(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def run_shop_command(job: ShopJob, command: list[str]) -> None:
-    append_shop_log(job, f"$ {' '.join(command)}")
+    display_command = _shop_command_display(command)
+    prompt_values = _shop_prompt_values(command)
+    append_shop_log(job, f"$ {display_command}")
     process = subprocess.Popen(
         command,
         cwd=ROOT,
@@ -3732,10 +3747,12 @@ def run_shop_command(job: ShopJob, command: list[str]) -> None:
     )
     assert process.stdout is not None
     for line in process.stdout:
+        for prompt in prompt_values:
+            line = line.replace(prompt, "[redacted]")
         append_shop_log(job, line)
     code = process.wait()
     if code != 0:
-        raise RuntimeError(f"Command failed with exit code {code}: {' '.join(command)}")
+        raise RuntimeError(f"Command failed with exit code {code}: {display_command}")
 
 
 def run_shop_job(job_id: str) -> None:
