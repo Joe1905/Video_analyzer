@@ -228,6 +228,46 @@ def assert_real_metrics_worker_registry_updates(web_app: Any, runner: Any) -> No
         payload["result"]["metric"]["views"] = 99
         assert web_app.read_json(result_path) == {"metric": {"views": 7}}
 
+        class FakeMetricsProcess:
+            def __init__(self, lines: list[str], returncode: int) -> None:
+                self.stdout = iter(lines)
+                self.returncode = returncode
+
+            def wait(self) -> int:
+                return self.returncode
+
+        command_log_id = "metrics-command-log"
+        registry.register(command_log_id, web_app.MetricsJob(id=command_log_id, target="@fixture", endpoint="profile"))
+        command = ["python", "fixture-metrics.py"]
+        with patch.object(
+            web_app.subprocess,
+            "Popen",
+            return_value=FakeMetricsProcess(["fixture stdout  \n", "second stdout\r\n"], 0),
+        ) as popen:
+            web_app.run_metrics_command(command_log_id, command)
+        popen.assert_called_once()
+        command_log = registry.snapshot(command_log_id)
+        assert command_log is not None
+        assert command_log.log == ["$ python fixture-metrics.py", "fixture stdout", "second stdout"]
+
+        command_failure_id = "metrics-command-failure"
+        registry.register(command_failure_id, web_app.MetricsJob(id=command_failure_id, target="@fixture", endpoint="profile"))
+        failure_command = ["python", "fixture-metrics-fail.py"]
+        with patch.object(
+            web_app.subprocess,
+            "Popen",
+            return_value=FakeMetricsProcess([], 9),
+        ):
+            try:
+                web_app.run_metrics_command(command_failure_id, failure_command)
+            except RuntimeError as exc:
+                assert str(exc) == "Command failed with exit code 9: python fixture-metrics-fail.py"
+            else:
+                raise AssertionError("non-zero metrics command must fail")
+        command_failure = registry.snapshot(command_failure_id)
+        assert command_failure is not None
+        assert command_failure.log == ["$ python fixture-metrics-fail.py"]
+
         command_cases = (
             ("#fixture-tag", "profile", "--hashtag", "fixture-tag"),
             ("@fixture-handle", "profile", "--handle", "fixture-handle"),
@@ -528,6 +568,15 @@ def run_lifecycle() -> None:
             )
             assert status == 202 and trending_metrics["status"] in {"queued", "running"}
             wait_for_job(port, f"/api/video-metrics-job?id={trending_metrics['id']}", "complete")
+
+            status, _headers, music_popular_metrics = json_request(
+                port,
+                "POST",
+                "/api/video-metrics",
+                {"target": "", "endpoint": "music-popular"},
+            )
+            assert status == 202 and music_popular_metrics["status"] in {"queued", "running"}
+            wait_for_job(port, f"/api/video-metrics-job?id={music_popular_metrics['id']}", "complete")
 
             upload_body, upload_type = multipart_video("fixture.mp4", b"not-a-real-video")
             status, _headers, uploaded = json_request(
