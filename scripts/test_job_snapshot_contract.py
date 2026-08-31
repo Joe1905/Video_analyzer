@@ -783,6 +783,7 @@ def assert_shop_artifact_failure_contract(web_app: Any) -> None:
                 max_pages=1,
                 review_pages=1,
                 analyze=True,
+                related_videos=False,
                 status="complete",
                 created_at=90.0,
                 updated_at=91.0,
