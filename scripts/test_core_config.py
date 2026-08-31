@@ -15,6 +15,7 @@ from core.config import AppConfig  # noqa: E402
 
 
 WEB_APP_PATH = SCRIPTS_DIR / "web_app.py"
+SHOP_ROUTE_PATH = SCRIPTS_DIR / "routes" / "shop.py"
 _MODULE_CONFIG_BINDINGS = {
     "ROOT": "root",
     "UI_TEST_MODE": "ui_test_mode",
@@ -78,10 +79,24 @@ _DYNAMIC_GETENV_KEY_COUNTS = Counter(
         "WEB_PORT": 2,
     }
 )
+_SHOP_ROUTE_GETENV_KEY_COUNTS = Counter(
+    {
+        "SOCIAVAULT_MAX_PAGES": 1,
+        "SOCIAVAULT_REGION": 1,
+        "SOCIAVAULT_REVIEW_PAGES": 1,
+    }
+)
 
 
 def web_app_module_tree() -> ast.Module:
     return ast.parse(WEB_APP_PATH.read_text(encoding="utf-8"), filename=str(WEB_APP_PATH))
+
+
+def shop_route_module_tree() -> ast.Module:
+    return ast.parse(
+        SHOP_ROUTE_PATH.read_text(encoding="utf-8"),
+        filename=str(SHOP_ROUTE_PATH),
+    )
 
 
 def top_level_assignments(tree: ast.Module) -> dict[str, ast.expr]:
@@ -193,12 +208,63 @@ class AppConfigTests(unittest.TestCase):
 
     def test_phase_1_2c_only_functions_and_methods_keep_dynamic_getenv_reads(self) -> None:
         module_calls, function_calls = getenv_calls_by_scope(web_app_module_tree())
+        shop_tree = shop_route_module_tree()
+        shop_module_calls, shop_function_calls = getenv_calls_by_scope(shop_tree)
+        shop_getenv_calls = [
+            node
+            for node in ast.walk(shop_tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getenv"
+        ]
+        shop_parents = {
+            child: parent
+            for parent in ast.walk(shop_tree)
+            for child in ast.iter_child_nodes(parent)
+        }
+        shop_getenv_scopes: list[str] = []
+        for call in shop_getenv_calls:
+            ancestor = shop_parents.get(call)
+            while ancestor is not None and not isinstance(ancestor, ast.FunctionDef):
+                ancestor = shop_parents.get(ancestor)
+            shop_getenv_scopes.append(ancestor.name if isinstance(ancestor, ast.FunctionDef) else "")
+        register = next(
+            node
+            for node in shop_tree.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "register_shop_api_routes"
+        )
+        keyword_defaults = dict(
+            zip(
+                (argument.arg for argument in register.args.kwonlyargs),
+                register.args.kw_defaults,
+            )
+        )
+        getenv_default = keyword_defaults["getenv"]
 
         self.assertEqual(module_calls, [])
-        self.assertEqual(len(function_calls), 56)
+        self.assertEqual(shop_module_calls, [])
+        self.assertEqual(shop_function_calls, [])
+        self.assertEqual(len(function_calls), 53)
+        self.assertEqual(len(shop_getenv_calls), 3)
+        self.assertEqual(shop_getenv_scopes, ["shop_extract"] * 3)
+        self.assertIsInstance(getenv_default, ast.Attribute)
+        if isinstance(getenv_default, ast.Attribute):
+            self.assertIsInstance(getenv_default.value, ast.Name)
+            if isinstance(getenv_default.value, ast.Name):
+                self.assertEqual(getenv_default.value.id, "os")
+            self.assertEqual(getenv_default.attr, "getenv")
         self.assertEqual(
             Counter(getenv_key(call) for call in function_calls),
-            _DYNAMIC_GETENV_KEY_COUNTS,
+            _DYNAMIC_GETENV_KEY_COUNTS - _SHOP_ROUTE_GETENV_KEY_COUNTS,
+        )
+        self.assertEqual(
+            Counter(getenv_key(call) for call in shop_getenv_calls),
+            _SHOP_ROUTE_GETENV_KEY_COUNTS,
+        )
+        self.assertEqual(
+            len(function_calls) + len(shop_getenv_calls),
+            sum(_DYNAMIC_GETENV_KEY_COUNTS.values()),
         )
 
     def test_default_root_uses_current_working_directory(self) -> None:
