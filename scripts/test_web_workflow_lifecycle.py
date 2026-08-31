@@ -218,7 +218,8 @@ def assert_real_metrics_worker_registry_updates(web_app: Any, runner: Any) -> No
         success = registry.snapshot(success_id)
         assert success is not None
         assert success.status == "complete"
-        assert success.output_dir == f"output/tiktok_api/{success_id}"
+        expected_output_dir = str((web_app.OUTPUT_DIR / "tiktok_api" / success_id).relative_to(web_app.ROOT))
+        assert success.output_dir == expected_output_dir
         result_path = web_app.OUTPUT_DIR / "tiktok_api" / success_id / "result.json"
         assert web_app.read_json(result_path) == {"metric": {"views": 7}}
         payload = web_app.public_metrics_job(success, result=web_app.read_json(result_path))
@@ -491,7 +492,10 @@ def run_lifecycle() -> None:
             assert status == 200 and running_metrics["status"] == "running"
             metrics_success_release.set()
             job = wait_for_job(port, f"/api/video-metrics-job?id={metrics_id}", "complete")
-            assert job["output_dir"] == f"output/tiktok_api/{metrics_id}"
+            expected_metrics_output_dir = str(
+                (web_app.OUTPUT_DIR / "tiktok_api" / metrics_id).relative_to(web_app.ROOT)
+            )
+            assert job["output_dir"] == expected_metrics_output_dir
             assert job["result"] == {"metric": {"views": 7}}
             event = sse_payload(port, f"/api/video-metrics-events?id={metrics_id}")
             assert event["status"] == "complete" and event["result"] == job["result"]
