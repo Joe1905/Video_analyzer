@@ -39,7 +39,7 @@ sys.path.insert(0, str(_BOOTSTRAP_SCRIPTS_DIR))
 from core.config import AppConfig
 from core.json_store import atomic_write_json, read_json
 from jobs.registry import JobRegistry
-from jobs.snapshots import snapshot_download_job, snapshot_metrics_job, snapshot_shop_job
+from jobs.snapshots import snapshot_amazon_job, snapshot_download_job, snapshot_metrics_job, snapshot_shop_job
 from routes.health import register_health_route
 from routes.extract import register_extract_page
 from routes.harness_certificate import register_harness_certificate_route
@@ -417,8 +417,7 @@ class AmazonJob:
 download_job_registry = JobRegistry()
 shop_job_registry = JobRegistry()
 metrics_job_registry = JobRegistry()
-amazon_jobs: dict[str, AmazonJob] = {}
-amazon_jobs_lock = threading.Lock()
+amazon_job_registry = JobRegistry()
 social_jobs_lock = threading.Lock()
 social_jobs_running: set[str] = set()
 
@@ -3884,10 +3883,8 @@ def run_metrics_job(job_id: str) -> None:
         )
 
 
-def append_amazon_log(job: AmazonJob, line: str) -> None:
-    with amazon_jobs_lock:
-        job.log.append(line.rstrip())
-        job.updated_at = time.time()
+def append_amazon_log(job_id: str, line: str) -> None:
+    amazon_job_registry.append_log(job_id, line)
 
 
 def parse_json_from_process_output(output: str) -> Any:
@@ -3913,8 +3910,8 @@ def parse_json_from_process_output(output: str) -> Any:
         return parsed_values[0]
 
 
-def run_amazon_command(job: AmazonJob, command: list[str]) -> tuple[str, int]:
-    append_amazon_log(job, f"$ {' '.join(command)}")
+def run_amazon_command(job_id: str, command: list[str]) -> tuple[str, int]:
+    append_amazon_log(job_id, f"$ {' '.join(command)}")
     env = os.environ.copy()
     process = subprocess.Popen(
         command,
@@ -3929,27 +3926,27 @@ def run_amazon_command(job: AmazonJob, command: list[str]) -> tuple[str, int]:
     output_lines = []
     for line in process.stdout:
         output_lines.append(line)
-        append_amazon_log(job, line)
+        append_amazon_log(job_id, line)
     code = process.wait()
     output = "".join(output_lines)
     if code != 0:
-        append_amazon_log(job, f"Command exited with code {code}")
+        append_amazon_log(job_id, f"Command exited with code {code}")
     return output, code
 
 
 def run_amazon_job(job_id: str) -> None:
-    with amazon_jobs_lock:
-        job = amazon_jobs[job_id]
-        job.status = "running"
-        job.updated_at = time.time()
+    initial = amazon_job_registry.snapshot(job_id)
+    if initial is None:
+        return
+    url = initial.url
+    pages = initial.pages
+    amazon_job_registry.update_fields(job_id, {"status": "running"})
 
     output_dir = OUTPUT_DIR / "amazon" / job_id
     result_path = output_dir / "result.json"
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
-        with amazon_jobs_lock:
-            job.output_dir = str(output_dir.relative_to(ROOT))
-            job.updated_at = time.time()
+        amazon_job_registry.update_fields(job_id, {"output_dir": str(output_dir.relative_to(ROOT))})
 
         def normalized_amazon_url(value: str) -> str:
             parsed = urlparse(value.strip())
@@ -3957,7 +3954,7 @@ def run_amazon_job(job_id: str) -> None:
             return parsed._replace(scheme=(parsed.scheme or "https").lower(), netloc=host, fragment="").geturl()
 
         def fetch_amazon() -> dict[str, Any]:
-            ensure_us_proxy("amazon", log=lambda line: append_amazon_log(job, line))
+            ensure_us_proxy("amazon", log=lambda line: append_amazon_log(job_id, line))
             command = [
                 "docker",
                 "run",
@@ -3968,11 +3965,11 @@ def run_amazon_job(job_id: str) -> None:
                 "amazon-scraper",
                 "node",
                 "assets/amazon_handler.js",
-                job.url,
+                url,
                 "--pages",
-                str(job.pages),
+                str(pages),
             ]
-            output, code = run_amazon_command(job, command)
+            output, code = run_amazon_command(job_id, command)
             parsed = parse_json_from_process_output(output)
             if code != 0 and not (isinstance(parsed, dict) and parsed.get("status") == "ERROR"):
                 raise RuntimeError(f"amazon-scraper exited with code {code}")
@@ -3981,40 +3978,43 @@ def run_amazon_job(job_id: str) -> None:
         result = get_cached_or_call(
             "amazon_scraper",
             "web",
-            {"url": normalized_amazon_url(job.url), "pages": int(job.pages)},
+            {"url": normalized_amazon_url(url), "pages": int(pages)},
             fetch_amazon,
             metadata_builder=lambda payload: {
                 "entity_type": "amazon",
-                "entity_id": str((payload.get("products") or [{}])[0].get("asin") or normalized_amazon_url(job.url)) if isinstance(payload, dict) else normalized_amazon_url(job.url),
+                "entity_id": str((payload.get("products") or [{}])[0].get("asin") or normalized_amazon_url(url)) if isinstance(payload, dict) else normalized_amazon_url(url),
                 "title": str((payload.get("products") or [{}])[0].get("title") or "") if isinstance(payload, dict) else "",
-                "source_url": normalized_amazon_url(job.url),
+                "source_url": normalized_amazon_url(url),
             },
         )
         cache_label = cache_log_label(result)
         if cache_label:
-            append_amazon_log(job, cache_label)
+            append_amazon_log(job_id, cache_label)
         atomic_write_json(result_path, result)
 
-        with amazon_jobs_lock:
-            if not (isinstance(result, dict) and result.get("status") == "ERROR"):
-                job.status = "complete"
-            else:
-                job.status = "failed"
-                job.error = str(result.get("message") or "amazon-scraper failed") if isinstance(result, dict) else "amazon-scraper failed"
-            job.updated_at = time.time()
+        if not (isinstance(result, dict) and result.get("status") == "ERROR"):
+            amazon_job_registry.update_fields(job_id, {"status": "complete"})
+        else:
+            amazon_job_registry.update_fields(
+                job_id,
+                {
+                    "status": "failed",
+                    "error": str(result.get("message") or "amazon-scraper failed") if isinstance(result, dict) else "amazon-scraper failed",
+                },
+            )
     except FileNotFoundError:
         message = "Docker CLI is not available in the web container"
-        with amazon_jobs_lock:
-            job.status = "failed"
-            job.error = message
-            job.updated_at = time.time()
-            job.log.append(message)
+        amazon_job_registry.update_fields(
+            job_id,
+            {"status": "failed", "error": message},
+            final_log=message,
+        )
     except Exception as exc:
-        with amazon_jobs_lock:
-            job.status = "failed"
-            job.error = str(exc)
-            job.updated_at = time.time()
-            job.log.append(str(exc))
+        amazon_job_registry.update_fields(
+            job_id,
+            {"status": "failed", "error": str(exc)},
+            final_log=str(exc),
+        )
 
 
 def run_download_job(job_id: str) -> None:
@@ -4243,22 +4243,8 @@ def public_metrics_job(job: MetricsJob, result: Any) -> dict[str, Any]:
     return snapshot_metrics_job(job, result=result)
 
 
-def public_amazon_job(job: AmazonJob) -> dict[str, Any]:
-    output_dir = OUTPUT_DIR / "amazon" / job.id
-    return {
-        "id": job.id,
-        "target": job.target,
-        "target_type": job.target_type,
-        "url": job.url,
-        "pages": job.pages,
-        "status": job.status,
-        "created_at": job.created_at,
-        "updated_at": job.updated_at,
-        "output_dir": job.output_dir,
-        "error": job.error,
-        "log": job.log[-120:],
-        "result": read_json(output_dir / "result.json"),
-    }
+def public_amazon_job(job: AmazonJob, *, result: Any) -> dict[str, Any]:
+    return snapshot_amazon_job(job, result=result)
 
 
 def check_ip_route(name: str, proxy_url: str | None = None) -> dict[str, Any]:
@@ -11411,9 +11397,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.stream_metrics_events(job_id)
         if parsed.path == "/api/amazon-job":
             job_id = parse_qs(parsed.query).get("id", [""])[0]
-            with amazon_jobs_lock:
-                job = amazon_jobs.get(job_id)
-                payload = public_amazon_job(job) if job else None
+            job = amazon_job_registry.snapshot(job_id)
+            payload = public_amazon_job(
+                job,
+                result=read_json(OUTPUT_DIR / "amazon" / job.id / "result.json"),
+            ) if job else None
             if payload is None:
                 return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Amazon job not found"})
             return json_response(self, HTTPStatus.OK, payload)
@@ -11657,7 +11645,44 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
     def stream_amazon_events(self, job_id: str) -> None:
-        self.stream_events(job_id, amazon_jobs_lock, amazon_jobs, public_amazon_job, "Amazon job not found")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+
+        last_marker: tuple[Any, ...] | None = None
+        while True:
+            job = amazon_job_registry.snapshot(job_id)
+            payload = public_amazon_job(
+                job,
+                result=read_json(OUTPUT_DIR / "amazon" / job.id / "result.json"),
+            ) if job else None
+            if payload is None:
+                try:
+                    write_sse_event(self, {"status": "missing", "error": "Amazon job not found"})
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                self.close_connection = True
+                return
+
+            marker = (
+                payload.get("status"),
+                payload.get("updated_at"),
+                len(payload.get("log") or []),
+                payload.get("error"),
+            )
+            try:
+                if marker != last_marker:
+                    write_sse_event(self, payload)
+                    last_marker = marker
+                if payload.get("status") not in {"queued", "running"}:
+                    self.close_connection = True
+                    return
+                time.sleep(1)
+            except (BrokenPipeError, ConnectionResetError):
+                self.close_connection = True
+                return
 
     def stream_report_events(self, report_date: str | None) -> None:
         self.send_response(HTTPStatus.OK)
@@ -11675,45 +11700,6 @@ class Handler(BaseHTTPRequestHandler):
                 payload.get("progress"),
                 payload.get("message"),
                 payload.get("updated_at"),
-            )
-            try:
-                if marker != last_marker:
-                    write_sse_event(self, payload)
-                    last_marker = marker
-                if payload.get("status") not in {"queued", "running"}:
-                    self.close_connection = True
-                    return
-                time.sleep(1)
-            except (BrokenPipeError, ConnectionResetError):
-                self.close_connection = True
-                return
-
-    def stream_events(self, job_id: str, lock: threading.Lock, store: dict[str, Any], serializer: Any, missing_message: str) -> None:
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "keep-alive")
-        self.end_headers()
-
-        last_marker: tuple[Any, ...] | None = None
-        while True:
-            with lock:
-                job = store.get(job_id)
-                payload = serializer(job) if job else None
-
-            if payload is None:
-                try:
-                    write_sse_event(self, {"status": "missing", "error": missing_message})
-                except (BrokenPipeError, ConnectionResetError):
-                    pass
-                self.close_connection = True
-                return
-
-            marker = (
-                payload.get("status"),
-                payload.get("updated_at"),
-                len(payload.get("log") or []),
-                payload.get("error"),
             )
             try:
                 if marker != last_marker:
@@ -12312,11 +12298,18 @@ class Handler(BaseHTTPRequestHandler):
             url=url,
             pages=pages,
         )
-        with amazon_jobs_lock:
-            amazon_jobs[job.id] = job
+        amazon_job_registry.register(job.id, job)
         thread = threading.Thread(target=run_amazon_job, args=(job.id,), daemon=True)
         thread.start()
-        return json_response(self, HTTPStatus.ACCEPTED, public_amazon_job(job))
+        snapshot = amazon_job_registry.snapshot(job.id)
+        return json_response(
+            self,
+            HTTPStatus.ACCEPTED,
+            public_amazon_job(
+                snapshot,
+                result=read_json(OUTPUT_DIR / "amazon" / snapshot.id / "result.json"),
+            ),
+        )
 
     def handle_tool_convert(self) -> None:
         try:
