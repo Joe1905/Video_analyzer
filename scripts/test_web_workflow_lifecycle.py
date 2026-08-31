@@ -1075,6 +1075,8 @@ def run_lifecycle() -> None:
             failed_event = sse_payload(port, f"/api/video-metrics-events?id={failed_metrics_id}")
             assert failed_event["status"] == "failed" and failed_event["error"] == "fixture metrics failure"
 
+            metrics_success_started.clear()
+            metrics_success_release.clear()
             status, _headers, trending_metrics = json_request(
                 port,
                 "POST",
@@ -1082,8 +1084,12 @@ def run_lifecycle() -> None:
                 {"target": "", "endpoint": "trending"},
             )
             assert status == 202 and trending_metrics["status"] in {"queued", "running"}
+            assert metrics_success_started.wait(timeout=5)
+            metrics_success_release.set()
             wait_for_job(port, f"/api/video-metrics-job?id={trending_metrics['id']}", "complete")
 
+            metrics_success_started.clear()
+            metrics_success_release.clear()
             status, _headers, music_popular_metrics = json_request(
                 port,
                 "POST",
@@ -1091,6 +1097,8 @@ def run_lifecycle() -> None:
                 {"target": "", "endpoint": "music-popular"},
             )
             assert status == 202 and music_popular_metrics["status"] in {"queued", "running"}
+            assert metrics_success_started.wait(timeout=5)
+            metrics_success_release.set()
             wait_for_job(port, f"/api/video-metrics-job?id={music_popular_metrics['id']}", "complete")
 
             invalid_amazon_requests = (
