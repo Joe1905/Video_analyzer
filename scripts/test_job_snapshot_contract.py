@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import importlib
 import io
 import json
@@ -282,9 +283,34 @@ def assert_public_payloads(web_app: Any, jobs: dict[str, Any]) -> dict[str, dict
     return payloads
 
 
+def assert_no_download_legacy_store() -> None:
+    tree = ast.parse((SCRIPTS_DIR / "web_app.py").read_text(encoding="utf-8"))
+    names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+    assert not {"download_jobs", "download_jobs_lock"} & names
+    private_registry_access = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "download_job_registry"
+        and node.attr in {"_jobs", "_lock"}
+    ]
+    assert not private_registry_access
+
+
 def assert_get_and_sse_contracts(web_app: Any, jobs: dict[str, Any]) -> None:
+    download = jobs["download"]
+    web_app.download_job_registry.register(download.id, download)
+    expected = web_app.public_download_job(web_app.download_job_registry.snapshot(download.id))
+    assert_json_response(dispatch_get(web_app, f"/api/download-job?id={download.id}"), 200, expected)
+    assert_sse_response(dispatch_get(web_app, f"/api/download-events?id={download.id}"), expected)
+    assert_json_response(dispatch_get(web_app, "/api/download-job?id=missing"), 404, {"error": "Download job not found"})
+    assert_sse_response(
+        dispatch_get(web_app, "/api/download-events?id=missing"),
+        {"status": "missing", "error": "Download job not found"},
+    )
+
     specs = (
-        ("download", web_app.download_jobs_lock, web_app.download_jobs, web_app.public_download_job, "/api/download-job", "/api/download-events", "Download job not found"),
         ("shop", web_app.shop_jobs_lock, web_app.shop_jobs, web_app.public_shop_job, "/api/shop-job", "/api/shop-events", "TikTok Shop job not found"),
         ("metrics", web_app.metrics_jobs_lock, web_app.metrics_jobs, web_app.public_metrics_job, "/api/video-metrics-job", "/api/video-metrics-events", "Video metrics job not found"),
         ("amazon", web_app.amazon_jobs_lock, web_app.amazon_jobs, web_app.public_amazon_job, "/api/amazon-job", "/api/amazon-events", "Amazon job not found"),
@@ -315,8 +341,11 @@ def assert_sse_marker(web_app: Any) -> None:
         updated_at=51.0,
         result={"version": 1},
     )
-    lock = web_app.threading.Lock()
-    store = {job.id: job}
+    original_registry = web_app.download_job_registry
+    timestamps = iter((52.0, 53.0, 54.0, 55.0))
+    registry = web_app.JobRegistry(clock=lambda: next(timestamps))
+    registry.register(job.id, job)
+    web_app.download_job_registry = registry
     handler = FakeHandler()
     original_sleep = web_app.time.sleep
     calls = 0
@@ -324,38 +353,30 @@ def assert_sse_marker(web_app: Any) -> None:
     def advance(_seconds: float) -> None:
         nonlocal calls
         calls += 1
-        with lock:
-            if calls == 1:
-                job.result["version"] = 2
-            elif calls == 2:
-                job.updated_at = 52.0
-            elif calls == 3:
-                job.log.append("marker log")
-            elif calls == 4:
-                job.error = "marker error"
-            else:
-                job.status = "complete"
+        if calls == 1:
+            registry.update_fields(job.id, {"result": {"version": 2}})
+        elif calls == 2:
+            registry.append_log(job.id, "marker log")
+        elif calls == 3:
+            registry.update_fields(job.id, {"error": "marker error"})
+        else:
+            registry.update_fields(job.id, {"status": "complete"})
 
     try:
         web_app.time.sleep = advance
-        web_app.Handler.stream_events(
-            handler,
-            job.id,
-            lock,
-            store,
-            web_app.public_download_job,
-            "Download job not found",
-        )
+        web_app.Handler.stream_download_events(handler, job.id)
     finally:
         web_app.time.sleep = original_sleep
+        web_app.download_job_registry = original_registry
     frames = [json.loads(line[6:]) for line in handler.wfile.getvalue().decode("utf-8").splitlines() if line.startswith("data: ")]
     assert [frame["status"] for frame in frames] == ["queued", "queued", "queued", "queued", "complete"]
     assert frames[0]["result"] == {"version": 1}
     assert [frame["result"] for frame in frames[1:]] == [{"version": 2}] * 4
-    assert [frame["updated_at"] for frame in frames] == [51.0, 52.0, 52.0, 52.0, 52.0]
+    assert [frame["updated_at"] for frame in frames] == [51.0, 52.0, 53.0, 54.0, 55.0]
     assert [len(frame["log"]) for frame in frames] == [0, 0, 1, 1, 1]
     assert [frame["error"] for frame in frames] == [None, None, None, "marker error", "marker error"]
-    assert calls == 5
+    assert registry.status(job.id) == "complete"
+    assert calls == 4
     assert handler.ended is True
     assert handler.close_connection is True
 
@@ -373,6 +394,7 @@ def run_contract() -> None:
         })
         sys.modules.pop("web_app", None)
         web_app = importlib.import_module("web_app")
+        assert_no_download_legacy_store()
         jobs = make_jobs(web_app)
         assert_public_payloads(web_app, jobs)
         assert_get_and_sse_contracts(web_app, jobs)
@@ -380,7 +402,6 @@ def run_contract() -> None:
     finally:
         if web_app is not None:
             for lock, store in (
-                (web_app.download_jobs_lock, web_app.download_jobs),
                 (web_app.shop_jobs_lock, web_app.shop_jobs),
                 (web_app.metrics_jobs_lock, web_app.metrics_jobs),
                 (web_app.amazon_jobs_lock, web_app.amazon_jobs),

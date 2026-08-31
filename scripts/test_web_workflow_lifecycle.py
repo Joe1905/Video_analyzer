@@ -22,6 +22,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
+from uuid import UUID
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -133,6 +134,62 @@ class FakeVideoQueue:
         return {}
 
 
+def assert_real_download_worker_registry_updates(web_app: Any, runner: Any) -> None:
+    original_registry = web_app.download_job_registry
+    registry = web_app.JobRegistry()
+    web_app.download_job_registry = registry
+    try:
+        success_id = "worker-success"
+        success_filename = "worker-success.mp4"
+        registry.register(
+            success_id,
+            web_app.DownloadJob(id=success_id, url="https://www.tiktok.com/@fixture/video/worker"),
+        )
+        web_app.VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
+        (web_app.VIDEOS_DIR / success_filename).write_bytes(b"fixture")
+
+        def cached_success(_job_id: str, _url: str, _source: str, result_path: Path) -> bool:
+            result_path.write_text(
+                json.dumps({"filename": success_filename, "meta": {"source": "worker"}}),
+                encoding="utf-8",
+            )
+            return True
+
+        with patch.object(web_app, "try_cached_download_result", side_effect=cached_success):
+            runner(success_id)
+        success = registry.snapshot(success_id)
+        assert success is not None
+        assert success.status == "complete"
+        assert success.filename == success_filename
+        assert success.result == {"filename": success_filename, "meta": {"source": "worker"}}
+        assert success.result is not None
+        success.result["meta"]["source"] = "mutated"
+        assert registry.snapshot(success_id).result == {
+            "filename": success_filename,
+            "meta": {"source": "worker"},
+        }
+
+        failure_id = "worker-failure"
+        registry.register(
+            failure_id,
+            web_app.DownloadJob(id=failure_id, url="https://www.tiktok.com/@fixture/video/failure"),
+        )
+
+        def cached_failure(job_id: str, _url: str, _source: str, _result_path: Path) -> bool:
+            web_app.append_download_log(job_id, "fixture useful failure")
+            raise RuntimeError("fixture raw failure")
+
+        with patch.object(web_app, "try_cached_download_result", side_effect=cached_failure):
+            runner(failure_id)
+        failure = registry.snapshot(failure_id)
+        assert failure is not None
+        assert failure.status == "failed"
+        assert failure.error == "fixture useful failure"
+        assert failure.log[-1] == "fixture raw failure"
+    finally:
+        web_app.download_job_registry = original_registry
+
+
 def run_lifecycle() -> None:
     # Production result payloads expose output paths relative to the repository
     # root, so keep the isolated fixture under that same root as well.
@@ -145,8 +202,10 @@ def run_lifecycle() -> None:
         os.environ["PROXY_POOL_ENABLED"] = "0"
         os.environ["HOT_VIDEO_REPORT_ENABLED"] = "0"
         web_app = importlib.import_module("web_app")
+        real_download_worker = web_app.run_download_job
         fake_queue = FakeVideoQueue(web_app.output_dir_for_filename)
         download_release = threading.Event()
+        download_started = threading.Event()
         shop_release = threading.Event()
         metrics_release = threading.Event()
         allowed_writes = {
@@ -161,14 +220,19 @@ def run_lifecycle() -> None:
         }
 
         def complete_download(job_id: str) -> None:
+            web_app.download_job_registry.update_fields(job_id, {"status": "running"})
+            download_started.set()
             assert download_release.wait(timeout=5)
-            with web_app.download_jobs_lock:
-                job = web_app.download_jobs[job_id]
-                job.status = "complete"
-                job.filename = "fixture-download.mp4"
-                job.result = {"filename": job.filename, "source": "fixture"}
-                job.log.append("fixture download complete")
-                job.updated_at = time.time()
+            (web_app.VIDEOS_DIR / "fixture-download.mp4").write_bytes(b"fixture")
+            web_app.download_job_registry.update_fields(
+                job_id,
+                {
+                    "status": "complete",
+                    "filename": "fixture-download.mp4",
+                    "result": {"filename": "fixture-download.mp4", "source": "fixture"},
+                },
+                final_log="fixture download complete",
+            )
 
         def complete_shop(job_id: str) -> None:
             assert shop_release.wait(timeout=5)
@@ -214,17 +278,27 @@ def run_lifecycle() -> None:
             patches.enter_context(patch.object(web_app, "analyzer_visible_source", side_effect=lambda _name: True))
             patches.enter_context(patch.object(web_app, "analyzer_media_is_valid", side_effect=lambda _path: True))
 
+            assert_real_download_worker_registry_updates(web_app, real_download_worker)
+
             server = web_app.ThreadingHTTPServer(("127.0.0.1", 0), web_app.Handler)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             port = server.server_port
 
-            status, headers, invalid_download = json_request(
-                port, "POST", "/api/download", {"url": "ftp://fixture.invalid/video"}
-            )
+            invalid_id = "00000000-0000-0000-0000-000000000001"
+            with patch.object(web_app.uuid, "uuid4", return_value=UUID(invalid_id)):
+                status, headers, invalid_download = json_request(
+                    port, "POST", "/api/download", {"url": "ftp://fixture.invalid/video"}
+                )
             assert status == 400
             assert headers.get("content-type") == "application/json; charset=utf-8"
             assert invalid_download == {"error": "Only http/https short-video URLs are supported"}
+            status, _headers, invalid_job = json_request(port, "GET", f"/api/download-job?id={invalid_id}")
+            assert status == 200
+            assert invalid_job["id"] == invalid_id
+            assert invalid_job["status"] == "failed"
+            assert invalid_job["error"] == invalid_download["error"]
+            assert invalid_job["log"] == [invalid_download["error"]]
             status, health_headers, health = json_request(port, "GET", "/healthz")
             assert status == 200
             assert health_headers.get("content-type") == "application/json; charset=utf-8"
@@ -233,12 +307,29 @@ def run_lifecycle() -> None:
             status, _headers, download = json_request(
                 port, "POST", "/api/download", {"url": "https://www.tiktok.com/@fixture/video/123"}
             )
-            assert status == 202 and download["status"] == "queued"
+            assert status == 202 and download["status"] in {"queued", "running"}
             download_id = download["id"]
+            assert download_started.wait(timeout=5)
+            status, _headers, running_download = json_request(port, "GET", f"/api/download-job?id={download_id}")
+            assert status == 200 and running_download["status"] == "running"
+            status, _headers, running_feedback = json_request(port, "GET", f"/api/video-feedback?download_job_id={download_id}")
+            assert status == 200 and running_feedback["download"]["status"] == "running"
             download_release.set()
             job = wait_for_job(port, f"/api/download-job?id={download_id}", "complete")
-            assert job["result"]["source"] == "fixture"
-            assert sse_payload(port, f"/api/download-events?id={download_id}")["status"] == "complete"
+            assert job["result"] == {"filename": "fixture-download.mp4", "source": "fixture"}
+            event = sse_payload(port, f"/api/download-events?id={download_id}")
+            assert event["status"] == "complete" and event["result"] == job["result"]
+            status, _headers, complete_feedback = json_request(port, "GET", f"/api/video-feedback?download_job_id={download_id}")
+            assert status == 200
+            assert complete_feedback["state"] == "uploaded"
+            assert complete_feedback["download"] == job
+            status, _headers, missing_feedback = json_request(port, "GET", "/api/video-feedback?download_job_id=missing")
+            assert status == 404 and missing_feedback == {
+                "ok": False,
+                "state": "failed",
+                "error": "Download job not found",
+                "download_job_id": "missing",
+            }
 
             status, _headers, shop = json_request(
                 port,
