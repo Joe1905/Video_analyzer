@@ -2,10 +2,10 @@
 """Safely demote invalid completed hot-report checkpoints for a single report.
 
 Run a dry run first:
-  docker compose -p short-video-analyzer run --rm analyzer python scripts/repair_hot_report_checkpoint.py --date YYYY-MM-DD
+  docker-compose -p short-video-analyzer-ui-4004 run --rm analyzer python scripts/repair_hot_report_checkpoint.py --date YYYY-MM-DD
 
 Apply only after an online SQLite backup has been created and verified:
-  docker compose -p short-video-analyzer run --rm analyzer python scripts/repair_hot_report_checkpoint.py --date YYYY-MM-DD --apply --backup-id <backup-path-or-id> --expected-rows N
+  docker-compose -p short-video-analyzer-ui-4004 run --rm analyzer python scripts/repair_hot_report_checkpoint.py --date YYYY-MM-DD --apply --backup-id <backup-path-or-id> --expected-rows N
 """
 from __future__ import annotations
 

@@ -19,6 +19,7 @@ EXPECTED_IMAGE = "short-video-analyzer-ui-4004:latest"
 SHARED_IMAGE = "short-video-analyzer:latest"
 SCRIPT_LIFECYCLE = ROOT / "scripts" / "script_lifecycle.json"
 TEMPORARY_SCRIPTS_DIR = ROOT / "scripts" / "temporary"
+HOT_REPORT_REPAIR_SCRIPT = ROOT / "scripts" / "repair_hot_report_checkpoint.py"
 LIFECYCLE_README = "scripts/temporary/README.md"
 PLAYWRIGHT_TESTS = {
     "test_chat_scroll_playwright.py",
@@ -127,6 +128,12 @@ class DeployUi4004BoundaryTest(unittest.TestCase):
 
 
 class ScriptLifecycleBoundaryTest(unittest.TestCase):
+    def test_permanent_recovery_example_stays_in_the_4004_project(self) -> None:
+        text = HOT_REPORT_REPAIR_SCRIPT.read_text(encoding="utf-8")
+        self.assertEqual(text.count("docker-compose -p short-video-analyzer-ui-4004 run"), 2)
+        self.assertNotIn("docker compose -p short-video-analyzer run", text)
+        self.assertNotIn("docker-compose -p short-video-analyzer run", text)
+
     def test_temporary_scripts_have_a_live_bounded_ttl(self) -> None:
         manifest = json.loads(SCRIPT_LIFECYCLE.read_text(encoding="utf-8"))
         on_disk_paths = {
