@@ -769,6 +769,92 @@ def assert_get_and_sse_contracts(web_app: Any, jobs: dict[str, Any]) -> None:
         web_app.amazon_job_registry = original_amazon_registry
 
 
+def assert_shop_artifact_failure_contract(web_app: Any) -> None:
+    original_registry = web_app.shop_job_registry
+    registry = web_app.JobRegistry()
+    web_app.shop_job_registry = registry
+    try:
+        def shop_job(job_id: str) -> Any:
+            return web_app.ShopJob(
+                id=job_id,
+                url="https://shop.tiktok.com/view/product/artifact-fixture",
+                source_type="product",
+                region="US",
+                max_pages=1,
+                review_pages=1,
+                analyze=True,
+                status="complete",
+                created_at=90.0,
+                updated_at=91.0,
+                output_dir=f"output/tiktok_shop/{job_id}",
+            )
+
+        def paths_for(job_id: str) -> tuple[Path, Path]:
+            output_dir = web_app.OUTPUT_DIR / "tiktok_shop" / job_id
+            return output_dir / "shop_extract.json", output_dir / "shop_analysis.json"
+
+        def handler_for_get(job_id: str) -> FakeHandler:
+            handler = FakeHandler(f"/api/shop-job?id={job_id}")
+            handler.stream_shop_events = web_app.Handler.stream_shop_events.__get__(handler, FakeHandler)
+            return handler
+
+        for missing_name in ("shop_extract.json", "shop_analysis.json"):
+            job_id = f"shop-missing-{missing_name.removesuffix('.json')}"
+            registry.register(job_id, shop_job(job_id))
+            extract_path, analysis_path = paths_for(job_id)
+            write_json(extract_path, {"items": ["extract"]})
+            write_json(analysis_path, {"summary": "analysis"})
+            (extract_path if missing_name == "shop_extract.json" else analysis_path).unlink()
+            snapshot = registry.snapshot(job_id)
+            assert snapshot is not None
+            expected = public_shop_payload(web_app, snapshot)
+            assert expected["extract" if missing_name == "shop_extract.json" else "analysis"] is None
+            get_handler = handler_for_get(job_id)
+            web_app.Handler.do_GET(get_handler)
+            assert_json_response(get_handler, 200, expected)
+            sse_handler = FakeHandler()
+            web_app.Handler.stream_shop_events(sse_handler, job_id)
+            assert_sse_response(sse_handler, expected)
+
+        for invalid_name in ("shop_extract.json", "shop_analysis.json"):
+            job_id = f"shop-invalid-{invalid_name.removesuffix('.json')}"
+            registry.register(job_id, shop_job(job_id))
+            extract_path, analysis_path = paths_for(job_id)
+            write_json(extract_path, {"items": ["extract"]})
+            write_json(analysis_path, {"summary": "analysis"})
+            (extract_path if invalid_name == "shop_extract.json" else analysis_path).write_text("{not json", encoding="utf-8")
+
+            get_handler = handler_for_get(job_id)
+            try:
+                web_app.Handler.do_GET(get_handler)
+            except json.JSONDecodeError:
+                pass
+            else:
+                raise AssertionError(f"GET did not raise for invalid {invalid_name}")
+            assert get_handler.responses == []
+            assert get_handler.wfile.getvalue() == b""
+            assert get_handler.ended is False
+            assert get_handler.close_connection is False
+
+            sse_handler = FakeHandler()
+            try:
+                web_app.Handler.stream_shop_events(sse_handler, job_id)
+            except json.JSONDecodeError:
+                pass
+            else:
+                raise AssertionError(f"SSE did not raise for invalid {invalid_name}")
+            assert sse_handler.responses == [200]
+            assert sse_handler.header("Content-Type") == "text/event-stream; charset=utf-8"
+            assert sse_handler.header("Cache-Control") == "no-cache"
+            assert sse_handler.header("Connection") == "keep-alive"
+            assert sse_handler.wfile.getvalue() == b""
+            assert sse_handler.wfile.flush_count == 0
+            assert sse_handler.ended is True
+            assert sse_handler.close_connection is False
+    finally:
+        web_app.shop_job_registry = original_registry
+
+
 def assert_sse_marker(web_app: Any) -> None:
     job = web_app.DownloadJob(
         id="marker-fixture",
@@ -1099,6 +1185,7 @@ def run_contract() -> None:
         assert_public_payloads(web_app, jobs)
         assert_post_order_contracts(web_app)
         assert_get_and_sse_contracts(web_app, jobs)
+        assert_shop_artifact_failure_contract(web_app)
         assert_sse_marker(web_app)
         assert_metrics_sse_marker(web_app)
         assert_shop_sse_marker(web_app)
