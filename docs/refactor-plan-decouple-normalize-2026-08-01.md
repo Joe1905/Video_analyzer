@@ -258,6 +258,7 @@ HOT_VIDEO_REPORT_ENABLED=0
 | Phase 3.3.P1 原子字段更新能力 | 已完成 | `2509e0f`；增加字段校验、copy-on-write 原子更新与可选末日志，保持零运行时接线，服务器 55 项完整门禁全绿 |
 | Phase 3.3.D0 Download result 隔离 | 已完成 | `c2fb2a1`、`2d8cb65`；独立关闭结果对象泄漏并修正跨保留期失效的测试日期夹具，服务器 55 项完整门禁全绿 |
 | Phase 3.3.D1 Download 单域切换 | 已完成 | `2e1390d`；创建、失败登记、worker、GET、SSE 与反馈查询一次性切换到单 Registry，旧字典/锁及废弃修复脚本删除，服务器 55 项完整门禁全绿 |
+| Phase 3.3.D2 Metrics 单域切换 | 已完成 | `280e739`、`7e4ab98`、`49f63e0`、`f17e4fa`、`edbaa38`、`607f839`；创建、worker、GET、POST 与专用 SSE 切换到单 Registry，删除旧生产运行时字典/锁并补齐真实命令 helper 与两个空 target HTTP 契约，服务器 55 项完整门禁全绿 |
 | 执行要求归一与门禁审计 | 已完成 | `df1c7a1`、`3937623`、`1b9f4aa`、`d715d93`；建立唯一要求入口，清除非活动域专项断言并保留通用 fail-closed 契约，服务器 52 项完整门禁全绿 |
 
 Phase 0.5B 可以多智能体并行，但文件所有权必须互斥：一条线负责 Python 运行时与专用模块，一条线负责 MCP Bridge/Compose/env，一条线负责静态 UI 与受控文档；README、计划文档、资产版本、跨线冲突和最终集成由主任务统一处理。子智能体只运行专项测试，不得独立提交；主任务合并审计后统一提交和部署。
@@ -435,6 +436,14 @@ Phase 3.3.D1 最终证据（2026-08-31）：`2e1390d` 将 Download 的创建、�
 
 **Phase 3.3.D1 总结与漂移审计：已完成。** 两路 Terra 阶段后审计和主审均为 P0/P1/P2 0。Download 已形成单一 Registry 真源，不存在双写、兼容访问、私有成员访问、live stored object、反向依赖或跨域状态机抽象；`jobs` 继续只依赖 stdlib。删除废弃修复脚本不改变 Metrics 运行时。下一步为 3.3.D2 Metrics 单域切换；不得回改 Download，亦不得提前迁移 Shop 或 Amazon。
 
+Phase 3.3.D2 最终证据（2026-08-31）：`280e739` 将 Metrics 的创建、普通日志、worker 状态与终态、GET、POST 和专用 SSE 一次性切换到 `JobRegistry` 公共 API；生产运行时中的旧 `metrics_jobs`/`metrics_jobs_lock` 已删除，测试继续保留旧名称的 AST 禁止断言。worker 从首次不可变快照提取 `target/endpoint`，普通日志走 `append_log`，终态走 `update_fields`；Registry 不读取 artifact、不执行命令。GET、POST 与 SSE 都按 `snapshot → 锁外 read_json → snapshot_metrics_job` 读取固定的 `output/tiktok_api/<id>/result.json`，保持 120 条日志窗口、200/404、missing SSE 200、marker、终态关闭、POST queued/running 竞态、endpoint/target 校验和结果 JSON 值。`7e4ab98` 只修正 lifecycle 在隔离测试根下的 Metrics 输出路径，`49f63e0` 只把 JSON store 的静态调用基线按净增两处从 47 更新为 49；两者均未改变生产行为。
+
+阶段后测试审计发现两个 P2 并在进入下一阶段前收口：`f17e4fa` 用 fake `Popen` 直接执行真实 `run_metrics_command`，冻结命令首日志、stdout 归一和非零退出异常，并补齐 `music-popular` 空 target 的真实 HTTP 202/完成态；`edbaa38`、`607f839` 只修正 lifecycle 已替换 `subprocess` 的测试夹具，使局部测试恢复标准库常量并只 mock `Popen`。两次新专项失败均发生在 fixture 兼容性设置或预期断言之前，且没有启动真实外部进程；修正后先做服务器只读挂载预检，再只通过 4004 部署脚本构建最终提交 `607f839da3ca3205af417a44de087699e614ac26`，专属镜像为 `sha256:cd166f86506096119413f125a930c555874a35fc88452b9955eecdd675eea1d7`。最终从第 1 项连续通过 **53/53** 确定性回归和镜像内 **2/2** Playwright，合计 **55/55**；确定性发现规则保留离线 `test_api_cache.py`，明确排除两个手工外部 API 脚本，不用合成 key 把在线调用伪装成门禁。
+
+部署黑盒的 13 个活动页面、四类 missing GET/SSE、四个通用未知 provider 拒绝、三端健康、服务器 clean checkout 和严重日志均通过；4002/4003 镜像及启动时间未变化。全字节审计额外发现本地与服务器的历史 API 缓存行和生成字节码，已只对命中缓存行做定向删除与 SQLite 安全压缩，并只删除命中的可再生 `.pyc`；未清空缓存库，未触碰报告、会话、账号、输出或其他真实数据。最终本地工作树、服务器 checkout、最终镜像和运行容器全字节零残留。
+
+**Phase 3.3.D2 总结与漂移审计：已完成。** Terra 架构终审、测试终审与主审最终均为 P0/P1/P2 0。Metrics 已形成单一 Registry 真源，没有双写、兼容访问、私有成员访问、live object、Registry 锁内 artifact I/O、共享业务基类或反向依赖；Download、Shop、Amazon 运行时语义未被本批修改。按既定 Download → Metrics → Shop → Amazon 顺序，下一步为 3.3.D3 Shop 单域切换；开始实现前必须先重新盘点 Shop 创建、日志、worker、GET/POST/SSE、两份 artifact 与公开字段时序，不得回改 Download/Metrics 或提前迁移 Amazon。
+
 ## 七、Phase 3：任务模型与注册表归一
 
 本阶段提前到业务路由迁移之前，避免新 route/service 反向访问 `web_app.py` 中的 `download_jobs`、`shop_jobs`、`metrics_jobs`、`amazon_jobs` 和四把锁。不要先用继承强行统一四类任务；先定义稳定的只读快照协议：
@@ -601,7 +610,7 @@ Phase 0 测试基线
 
 ## 十四、下一批实施任务
 
-Phase 0、0.5、1.1、2026-08-29 两个补漏阶段、Phase 1.2、Phase 1.3、**Phase 2.1～2.3D**、**Phase 3.0**、**Phase 3.R1**、**Phase 3.1A**、**Phase 3.1B**、**Phase 3.2**、**Phase 3.3.0**、**Phase 3.3.P1**、**Phase 3.3.D0** 与 **Phase 3.3.D1** 已完成。Phase 2 无业务状态路由骨架关闭；Phase 3 已建立四类任务公开契约、领域纯快照 adapter、单一 Registry 与原子字段更新能力，并已完成 Download 的结果隔离和首个单域运行时切换。Amazon 与出海匠聊天壳延期到 Chat/Provider 阶段，Proxy 页面及真实代理选择延期到代理垂直切片。下一步实施 **Phase 3.3.D2 Metrics 单域切换**；只迁移 Metrics，完整门禁通过前不得开始 Shop 或 Amazon 切换，也不得顺手回改 Download。
+Phase 0、0.5、1.1、2026-08-29 两个补漏阶段、Phase 1.2、Phase 1.3、**Phase 2.1～2.3D**、**Phase 3.0**、**Phase 3.R1**、**Phase 3.1A**、**Phase 3.1B**、**Phase 3.2**、**Phase 3.3.0**、**Phase 3.3.P1**、**Phase 3.3.D0**、**Phase 3.3.D1** 与 **Phase 3.3.D2** 已完成。Phase 2 无业务状态路由骨架关闭；Phase 3 已建立四类任务公开契约、领域纯快照 adapter、单一 Registry 与原子字段更新能力，并已完成 Download 与 Metrics 两个单域运行时切换。Amazon 与出海匠聊天壳延期到 Chat/Provider 阶段，Proxy 页面及真实代理选择延期到代理垂直切片。下一步实施 **Phase 3.3.D3 Shop 单域切换**；只迁移 Shop，完整门禁通过前不得开始 Amazon 切换，也不得顺手回改 Download 或 Metrics。
 
 Phase 2.3 继续复用现有 Terra 子智能体，避免为同一长期任务无限新增执行记录，并按以下门槛推进：
 
@@ -624,5 +633,6 @@ Phase 3 下一批按以下门槛推进：
 7. **3.3.P1 原子字段更新纯能力（已完成，`2509e0f`）：** `JobRegistry` 已增加字段 mapping 的原子深复制更新和同锁可选末条日志，并收口 append 时钟异常半状态；零运行时接线，服务器 55 项完整门禁通过。
 8. **3.3.D0 Download result 隔离（已完成，`c2fb2a1`、`2d8cb65`）：** `public_download_job` 已对 `result` defensive copy，JSON 值、字段、状态码、SSE、worker、字典/锁和 POST 时序不变；独立修复跨保留期失效的日报续跑测试夹具后，服务器 55 项完整门禁通过，仍未接入 Registry。
 9. **3.3.D1 Download 单域切换（已完成，`2e1390d`）：** 创建、失败输入登记、worker、GET、专用 SSE 与 `build_video_feedback` 已切换到单 Registry；旧字典/锁、双写、私有访问和废弃修复脚本均为 0，服务器 55 项完整门禁通过。
-10. **3.3.D2 Metrics 单域切换（当前）：** 先由 Terra 与主审重新列出 Metrics 的创建、日志、worker 字段更新、GET/SSE 和 `result.json` 读取时序，再一次性迁移 `metrics_jobs`/`metrics_jobs_lock`。普通日志走 `append_log`，终态字段走 `update_fields`；Registry 只保存内存任务模型，不读取 artifact、不执行命令。GET/SSE 必须先取得不可变任务快照，再按现有顺序在锁外读取同一 `output_dir/result.json` 并显式传给 `snapshot_metrics_job`，保持 120 条日志窗口、200/404、missing SSE 200、marker、POST queued/running 竞态、endpoint/target 校验和结果 JSON 值。禁止双写、`_jobs`/`_lock`、live object、整对象 replace、callback/CAS/共享业务基类，也不得修改 Download、Shop 或 Amazon。
-11. Phase 3 不把下载、Shop、Metrics、Amazon 的业务专属字段塞入共享基类；`jobs` 不得导入 route、service 或 `web_app`，SSE 归一只消费不可变快照。
+10. **3.3.D2 Metrics 单域切换（已完成，`280e739`、`7e4ab98`、`49f63e0`、`f17e4fa`、`edbaa38`、`607f839`）：** Metrics 创建、worker、GET、POST、专用 SSE 与 artifact 显式注入已切换到单 Registry；生产运行时旧字典/锁、双写、私有访问和 Registry 锁内 I/O 均为 0，补齐真实命令 helper 及两个空 target HTTP 契约后服务器 55 项完整门禁通过。
+11. **3.3.D3 Shop 单域切换（当前）：** 先由 Terra 与主审只读列出 Shop 的创建、普通日志、抽取/分析 worker 字段更新、GET/POST/SSE、`shop_extract.json` 与 `shop_analysis.json` 读取时序及全部公开专属字段，再一次性迁移 `shop_jobs`/`shop_jobs_lock`。Registry 只保存内存任务模型，两份 artifact 必须在不可变快照之后于锁外读取并显式传给 `snapshot_shop_job`；保持 120 条日志窗口、200/404、missing SSE 200、marker、POST queued/running 竞态、目标/模式/关联视频/分析开关校验、输出目录和错误文案。代码切换前必须先增加同步执行真实 `run_shop_job` 的成功/失败 fixture，逐项冻结两份 artifact 的独立深复制及各自单独变化时的现有 SSE marker 行为，并断言自定义 prompt 在 POST、GET、SSE 三条公开路径均不泄露；这些契约未完成不得实施 D3。自定义 prompt 继续只用于服务端执行，不得扩入公开 payload。禁止双写、`_jobs`/`_lock`、live object、整对象 replace、callback/CAS/共享业务基类，也不得修改 Download、Metrics 或 Amazon。
+12. Phase 3 不把下载、Shop、Metrics、Amazon 的业务专属字段塞入共享基类；`jobs` 不得导入 route、service 或 `web_app`，SSE 归一只消费不可变快照。
