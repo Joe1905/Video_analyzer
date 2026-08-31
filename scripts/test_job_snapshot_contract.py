@@ -397,6 +397,190 @@ def assert_no_amazon_legacy_store() -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "stream_events"
     ]
     assert not generic_streams
+    top_level_registries = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name)
+        and node.value.func.id == "JobRegistry"
+    ]
+    all_registry_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "JobRegistry"
+    ]
+    assert len(all_registry_calls) == 4
+    assert len(top_level_registries) == 4
+    assert {
+        target.id
+        for node in top_level_registries
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    } == {
+        "download_job_registry",
+        "shop_job_registry",
+        "metrics_job_registry",
+        "amazon_job_registry",
+    }
+
+
+def assert_post_order_contracts(web_app: Any) -> None:
+    def handler_for(payload: dict[str, Any]) -> FakeHandler:
+        body = json.dumps(payload).encode("utf-8")
+        handler = FakeHandler()
+        handler.headers = {"Content-Length": str(len(body))}
+        handler.rfile = io.BytesIO(body)
+        return handler
+
+    def deferred_thread(order: list[str]) -> type[Any]:
+        class DeferredThread:
+            def __init__(self, *, target: Any, args: tuple[Any, ...], daemon: bool) -> None:
+                self.target = target
+                self.args = args
+                self.daemon = daemon
+
+            def start(self) -> None:
+                order.append("thread.start")
+
+        return DeferredThread
+
+    download_url = "https://www.tiktok.com/@fixture/video/123"
+    original_download_registry = web_app.download_job_registry
+    download_registry = web_app.JobRegistry()
+    web_app.download_job_registry = download_registry
+    try:
+        order: list[str] = []
+        original_register = download_registry.register
+        original_snapshot = download_registry.snapshot
+        original_serializer = web_app.public_download_job
+
+        def recording_register(job_id: str, job: Any) -> None:
+            order.append("register")
+            assert job.url == download_url and job.source == web_app.SOURCE_WEB_MANUAL
+            return original_register(job_id, job)
+
+        def recording_snapshot(job_id: str) -> Any:
+            order.append("snapshot")
+            return original_snapshot(job_id)
+
+        def recording_serializer(job: Any) -> dict[str, Any]:
+            order.append("serializer")
+            return original_serializer(job)
+
+        handler = handler_for({"url": download_url, "source": "web"})
+        with patch.object(web_app.threading, "Thread", deferred_thread(order)), patch.object(
+            download_registry, "register", side_effect=recording_register
+        ), patch.object(download_registry, "snapshot", side_effect=recording_snapshot), patch.object(
+            web_app, "public_download_job", side_effect=recording_serializer
+        ):
+            web_app.Handler.handle_download(handler)
+        response = json.loads(handler.wfile.getvalue().decode("utf-8"))
+        assert handler.responses == [202]
+        assert response["url"] == download_url and response["status"] == "queued"
+        assert order == ["register", "thread.start", "snapshot", "serializer"]
+    finally:
+        web_app.download_job_registry = original_download_registry
+
+    shop_url = "https://shop.tiktok.com/view/product/fixture"
+    original_shop_registry = web_app.shop_job_registry
+    shop_registry = web_app.JobRegistry()
+    web_app.shop_job_registry = shop_registry
+    try:
+        order = []
+        original_register = shop_registry.register
+        original_snapshot = shop_registry.snapshot
+        original_read_json = web_app.read_json
+        original_serializer = web_app.public_shop_job
+
+        def recording_register(job_id: str, job: Any) -> None:
+            order.append("register")
+            assert (job.url, job.source_type, job.region, job.max_pages, job.review_pages) == (
+                shop_url, "search", "JP", 2, 1,
+            )
+            assert job.analyze is False and job.related_videos is True and job.prompt == "private post prompt"
+            return original_register(job_id, job)
+
+        def recording_snapshot(job_id: str) -> Any:
+            order.append("snapshot")
+            return original_snapshot(job_id)
+
+        def recording_read_json(path: Path) -> Any:
+            order.append(path.name)
+            return {"fixture": path.name}
+
+        def recording_serializer(job: Any, *, extract: Any, analysis: Any) -> dict[str, Any]:
+            order.append("serializer")
+            return original_serializer(job, extract=extract, analysis=analysis)
+
+        handler = handler_for({
+            "url": shop_url,
+            "source_type": "search",
+            "region": "jp",
+            "max_pages": 2,
+            "review_pages": 1,
+            "analyze": False,
+            "related_videos": True,
+            "prompt": "private post prompt",
+        })
+        with patch.object(web_app.threading, "Thread", deferred_thread(order)), patch.object(
+            shop_registry, "register", side_effect=recording_register
+        ), patch.object(shop_registry, "snapshot", side_effect=recording_snapshot), patch.object(
+            web_app, "read_json", side_effect=recording_read_json
+        ), patch.object(web_app, "public_shop_job", side_effect=recording_serializer):
+            web_app.Handler.handle_shop_extract(handler)
+        response = json.loads(handler.wfile.getvalue().decode("utf-8"))
+        assert handler.responses == [202]
+        assert response["url"] == shop_url and response["status"] == "queued"
+        assert response["source_type"] == "search" and response["region"] == "JP"
+        assert "prompt" not in response
+        assert order == ["register", "thread.start", "snapshot", "shop_extract.json", "shop_analysis.json", "serializer"]
+    finally:
+        web_app.shop_job_registry = original_shop_registry
+
+    metrics_target = "https://www.tiktok.com/@fixture/video/456"
+    original_metrics_registry = web_app.metrics_job_registry
+    metrics_registry = web_app.JobRegistry()
+    web_app.metrics_job_registry = metrics_registry
+    try:
+        order = []
+        original_register = metrics_registry.register
+        original_snapshot = metrics_registry.snapshot
+        original_serializer = web_app.public_metrics_job
+
+        def recording_register(job_id: str, job: Any) -> None:
+            order.append("register")
+            assert (job.target, job.endpoint) == (metrics_target, "video-info")
+            return original_register(job_id, job)
+
+        def recording_snapshot(job_id: str) -> Any:
+            order.append("snapshot")
+            return original_snapshot(job_id)
+
+        def recording_read_json(path: Path) -> Any:
+            order.append(path.name)
+            return {"metric": "fixture"}
+
+        def recording_serializer(job: Any, result: Any) -> dict[str, Any]:
+            order.append("serializer")
+            return original_serializer(job, result)
+
+        handler = handler_for({"target": metrics_target, "endpoint": "video-info"})
+        with patch.object(web_app.threading, "Thread", deferred_thread(order)), patch.object(
+            metrics_registry, "register", side_effect=recording_register
+        ), patch.object(metrics_registry, "snapshot", side_effect=recording_snapshot), patch.object(
+            web_app, "read_json", side_effect=recording_read_json
+        ), patch.object(web_app, "public_metrics_job", side_effect=recording_serializer):
+            web_app.Handler.handle_video_metrics(handler)
+        response = json.loads(handler.wfile.getvalue().decode("utf-8"))
+        assert handler.responses == [202]
+        assert response["target"] == metrics_target and response["endpoint"] == "video-info"
+        assert response["status"] == "queued"
+        assert order == ["register", "thread.start", "snapshot", "result.json", "serializer"]
+    finally:
+        web_app.metrics_job_registry = original_metrics_registry
 
 
 def assert_get_and_sse_contracts(web_app: Any, jobs: dict[str, Any]) -> None:
@@ -552,21 +736,35 @@ def assert_get_and_sse_contracts(web_app: Any, jobs: dict[str, Any]) -> None:
 
         def recording_post_register(job_id: str, job: Any) -> None:
             post_order.append("register")
+            assert (job.target, job.target_type, job.url, job.pages) == (
+                "B000POST01", "asin", "https://www.amazon.com/dp/B000POST01", 3,
+            )
             return original_register(job_id, job)
 
         def recording_post_read_json(path: Path) -> Any:
             post_order.append(path.name)
             return original_read_json(path)
 
+        def recording_post_serializer(job: Any, *, result: Any) -> dict[str, Any]:
+            post_order.append("serializer")
+            return original_serializer(job, result=result)
+
         original_register = amazon_registry.register
+        original_serializer = web_app.public_amazon_job
         with patch.object(web_app.threading, "Thread", DeferredThread), patch.object(
             amazon_registry, "register", side_effect=recording_post_register
         ), patch.object(
             amazon_registry, "snapshot", side_effect=recording_post_snapshot
-        ), patch.object(web_app, "read_json", side_effect=recording_post_read_json):
+        ), patch.object(web_app, "read_json", side_effect=recording_post_read_json), patch.object(
+            web_app, "public_amazon_job", side_effect=recording_post_serializer
+        ):
             web_app.Handler.handle_amazon_scrape(post_handler)
+        response = json.loads(post_handler.wfile.getvalue().decode("utf-8"))
         assert post_handler.responses == [202]
-        assert post_order == ["register", "thread.start", "snapshot", "result.json"]
+        assert (response["target"], response["target_type"], response["url"], response["pages"], response["status"]) == (
+            "B000POST01", "asin", "https://www.amazon.com/dp/B000POST01", 3, "queued",
+        )
+        assert post_order == ["register", "thread.start", "snapshot", "result.json", "serializer"]
     finally:
         web_app.amazon_job_registry = original_amazon_registry
 
@@ -899,6 +1097,7 @@ def run_contract() -> None:
         assert_no_amazon_legacy_store()
         jobs = make_jobs(web_app)
         assert_public_payloads(web_app, jobs)
+        assert_post_order_contracts(web_app)
         assert_get_and_sse_contracts(web_app, jobs)
         assert_sse_marker(web_app)
         assert_metrics_sse_marker(web_app)
