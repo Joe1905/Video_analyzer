@@ -1109,7 +1109,6 @@ def run_lifecycle() -> None:
                 ({"target": "B000SHORT", "target_type": "asin"}, "ASIN must be 10 letters or digits"),
                 ({"target": "fixture", "target_type": "invalid"}, "target_type must be url, asin, or keyword"),
                 ({"target": "x" * 201, "target_type": "keyword"}, "Keyword is too long"),
-                ({"target": "B000AMZ001", "target_type": "asin", "pages": 0}, "pages must be between 1 and 5"),
                 ({"target": "B000AMZ001", "target_type": "asin", "pages": 6}, "pages must be between 1 and 5"),
             )
             for payload, error in invalid_amazon_requests:
@@ -1149,6 +1148,16 @@ def run_lifecycle() -> None:
             )
             assert amazon["output_dir"] == expected_amazon_output_dir
             assert amazon["result"] == {"products": [{"asin": "B000AMZ001", "title": "fixture amazon"}]}
+            with patch.dict(os.environ, {"AMAZON_MAX_PAGES": "3"}):
+                run_amazon_success(
+                    {"target": "B000ZERO01", "target_type": "asin", "pages": 0},
+                    {
+                        "target": "B000ZERO01",
+                        "target_type": "asin",
+                        "url": "https://www.amazon.com/dp/B000ZERO01",
+                        "pages": 3,
+                    },
+                )
             run_amazon_success(
                 {"target": "https://www.amazon.com/dp/B000URL001", "target_type": "url", "pages": 1},
                 {
