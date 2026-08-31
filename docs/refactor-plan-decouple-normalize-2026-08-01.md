@@ -254,6 +254,10 @@ HOT_VIDEO_REPORT_ENABLED=0
 | Phase 3.R1 下载校验失败分支修复 | 已完成 | `6111887`；只删除未定义调用并在既有 lifecycle 冻结精确 JSON 400 与后续健康响应，服务器 52 项完整门禁全绿 |
 | Phase 3.1A 四类任务快照契约基线 | 已完成 | `a728a5c`；只新增一份隔离契约，冻结四类 public/GET/SSE、缺失差异、日志窗口/复制、artifact 重读、下载结果 alias 与 SSE marker，服务器 53 项完整门禁全绿 |
 | Phase 3.1B 四类纯快照 adapter | 已完成 | `c60119d`；新增四个领域显式纯函数与纯 stdlib 专项，深复制结果、显式注入 artifact、零运行时接线，服务器 54 项完整门禁全绿 |
+| Phase 3.2 纯 JobRegistry | 已完成 | `fed5df9`；建立深复制注册、只读快照、日志追加和并发契约，服务器 55 项完整门禁全绿 |
+| Phase 3.3.P1 原子字段更新能力 | 已完成 | `2509e0f`；增加字段校验、copy-on-write 原子更新与可选末日志，保持零运行时接线，服务器 55 项完整门禁全绿 |
+| Phase 3.3.D0 Download result 隔离 | 已完成 | `c2fb2a1`、`2d8cb65`；独立关闭结果对象泄漏并修正跨保留期失效的测试日期夹具，服务器 55 项完整门禁全绿 |
+| Phase 3.3.D1 Download 单域切换 | 已完成 | `2e1390d`；创建、失败登记、worker、GET、SSE 与反馈查询一次性切换到单 Registry，旧字典/锁及废弃修复脚本删除，服务器 55 项完整门禁全绿 |
 | 执行要求归一与门禁审计 | 已完成 | `df1c7a1`、`3937623`、`1b9f4aa`、`d715d93`；建立唯一要求入口，清除非活动域专项断言并保留通用 fail-closed 契约，服务器 52 项完整门禁全绿 |
 
 Phase 0.5B 可以多智能体并行，但文件所有权必须互斥：一条线负责 Python 运行时与专用模块，一条线负责 MCP Bridge/Compose/env，一条线负责静态 UI 与受控文档；README、计划文档、资产版本、跨线冲突和最终集成由主任务统一处理。子智能体只运行专项测试，不得独立提交；主任务合并审计后统一提交和部署。
@@ -425,6 +429,12 @@ Phase 3.3.D0 最终证据（2026-08-31）：`c2fb2a1` 只将 `public_download_jo
 
 **Phase 3.3.D0 总结与漂移审计：已完成。** 三路 Terra 最终审计均为 0 blocker。D0 是独立可靠性修正，CodeGraph 与源码复核确认生产运行时仍只使用旧 Download 字典/锁，`JobRegistry` 没有生产导入或调用；没有双写、兼容层、反向依赖、通用抽象或跨域改动。服务器部署期间确认备用订阅已加载但 Mihomo `GLOBAL` 仍选择 default 节点，当前 GitHub HTTPS 与 Git 均已恢复；该真实代理选择属于 Proxy/运维边界，本阶段未擅自切换。服务器旧 `docker-compose 1.29.2` 与 Docker 29 的容器复用路径会触发 `ContainerConfig` 兼容错误，后续 4004 部署继续只使用 `bash scripts/deploy_ui_4004.sh` 的专属镜像与显式重建路径，不用裸 Compose 命令替代。下一步为 3.3.D1 Download 单域切换；只允许一次性迁移创建、失败输入登记、worker、GET、SSE 和 `build_video_feedback` 查询并删除旧字典/锁，禁止双写或保留兼容访问。
 
+Phase 3.3.D1 最终证据（2026-08-31）：`2e1390d` 将 Download 的创建、无效输入 failed 登记、普通日志、worker 状态与终态、GET、专用 SSE 和 `build_video_feedback` 查询一次性切换到 `JobRegistry` 公共 API；旧 `download_jobs`/`download_jobs_lock` 与未被导入的一次性历史修复脚本已删除。worker 只从初始快照提取 `url/source`，普通日志走 `append_log`，成功与失败终态分别通过一次 `update_fields` 提交；失败路径在提交前重读最新快照选择有效日志。`public_download_job` 继续复用领域 adapter，保持 80 条日志窗口和 `result` 深复制；URL、HTTP 状态、JSON/SSE 字段、missing SSE 200、marker、POST 启动线程后 queued/running 竞态与 `output/download_jobs/` 数据目录均未改变。
+
+专项在新镜像中覆盖 Registry、四域快照契约和真实 HTTP lifecycle，其中真实 `run_download_job` 的确定性成功/失败 fixture 验证终态原子更新、错误选择和嵌套深复制，无效 POST 使用固定 UUID 后再次 GET 验证 failed 登记。服务器只通过 4004 部署脚本构建，专属镜像为 `sha256:94a5ab20224d3f108e7dea2896295efc1e2c46d4f13ef2aeb3918144ea9f1dc2`；一次连续确定性运行通过 **53/53**，随后镜像内两个 Playwright 通过 **2/2**，合计 **55/55**。Playwright 首次误用未安装依赖的服务器宿主 Python，测试代码尚未启动即报模块缺失；改回包含浏览器依赖的新镜像后两项均通过，不属于产品或测试失败。部署黑盒的 13 页面、四类 missing GET/SSE、四个通用未知 provider 拒绝、三端健康、服务器 clean checkout、严重日志和本地/服务器/镜像/运行容器零残留均通过；4002/4003 启动时间未变化。
+
+**Phase 3.3.D1 总结与漂移审计：已完成。** 两路 Terra 阶段后审计和主审均为 P0/P1/P2 0。Download 已形成单一 Registry 真源，不存在双写、兼容访问、私有成员访问、live stored object、反向依赖或跨域状态机抽象；`jobs` 继续只依赖 stdlib。删除废弃修复脚本不改变 Metrics 运行时。下一步为 3.3.D2 Metrics 单域切换；不得回改 Download，亦不得提前迁移 Shop 或 Amazon。
+
 ## 七、Phase 3：任务模型与注册表归一
 
 本阶段提前到业务路由迁移之前，避免新 route/service 反向访问 `web_app.py` 中的 `download_jobs`、`shop_jobs`、`metrics_jobs`、`amazon_jobs` 和四把锁。不要先用继承强行统一四类任务；先定义稳定的只读快照协议：
@@ -591,7 +601,7 @@ Phase 0 测试基线
 
 ## 十四、下一批实施任务
 
-Phase 0、0.5、1.1、2026-08-29 两个补漏阶段、Phase 1.2、Phase 1.3、**Phase 2.1～2.3D**、**Phase 3.0**、**Phase 3.R1**、**Phase 3.1A**、**Phase 3.1B**、**Phase 3.2**、**Phase 3.3.0**、**Phase 3.3.P1** 与 **Phase 3.3.D0** 已完成。Phase 2 无业务状态路由骨架关闭；Phase 3 已建立四类任务公开契约、领域纯快照 adapter、零接线纯 Registry、原子字段更新能力，并已独立关闭 Download `result` 可变对象泄漏。Amazon 与出海匠聊天壳延期到 Chat/Provider 阶段，Proxy 页面及真实代理选择延期到代理垂直切片。下一步实施 **Phase 3.3.D1 Download 单域切换**；只迁移 Download，完整门禁通过前不得开始 Metrics、Shop 或 Amazon 切换。
+Phase 0、0.5、1.1、2026-08-29 两个补漏阶段、Phase 1.2、Phase 1.3、**Phase 2.1～2.3D**、**Phase 3.0**、**Phase 3.R1**、**Phase 3.1A**、**Phase 3.1B**、**Phase 3.2**、**Phase 3.3.0**、**Phase 3.3.P1**、**Phase 3.3.D0** 与 **Phase 3.3.D1** 已完成。Phase 2 无业务状态路由骨架关闭；Phase 3 已建立四类任务公开契约、领域纯快照 adapter、单一 Registry 与原子字段更新能力，并已完成 Download 的结果隔离和首个单域运行时切换。Amazon 与出海匠聊天壳延期到 Chat/Provider 阶段，Proxy 页面及真实代理选择延期到代理垂直切片。下一步实施 **Phase 3.3.D2 Metrics 单域切换**；只迁移 Metrics，完整门禁通过前不得开始 Shop 或 Amazon 切换，也不得顺手回改 Download。
 
 Phase 2.3 继续复用现有 Terra 子智能体，避免为同一长期任务无限新增执行记录，并按以下门槛推进：
 
@@ -613,5 +623,6 @@ Phase 3 下一批按以下门槛推进：
 6. **3.3.0 更新与锁时序契约（已完成）：** 四域更新点和时序已逐项审计；否决双写、整对象 replace、live get、私有成员访问和通用 callback，确认 artifact 写入不受旧内存锁保护，并确定 Download → Metrics → Shop → Amazon 的单域顺序。
 7. **3.3.P1 原子字段更新纯能力（已完成，`2509e0f`）：** `JobRegistry` 已增加字段 mapping 的原子深复制更新和同锁可选末条日志，并收口 append 时钟异常半状态；零运行时接线，服务器 55 项完整门禁通过。
 8. **3.3.D0 Download result 隔离（已完成，`c2fb2a1`、`2d8cb65`）：** `public_download_job` 已对 `result` defensive copy，JSON 值、字段、状态码、SSE、worker、字典/锁和 POST 时序不变；独立修复跨保留期失效的日报续跑测试夹具后，服务器 55 项完整门禁通过，仍未接入 Registry。
-9. **3.3.D1 Download 单域切换（当前）：** 一次性迁移 Download 的创建、失败输入登记、worker、GET、SSE 与 `build_video_feedback` 查询，移除旧 Download 字典/锁且禁止双写；普通日志用 `append_log`，终态多字段与末条错误日志用 `update_fields`，并确定性冻结 queued/running 竞态、200/404、missing SSE 200、80 条日志窗口、marker 与 result JSON 值。worker 现有读写点必须在实施前再次逐项核对，读取使用不可变快照或显式不可变入参，状态变化只经 Registry 公共 API；禁止 `_jobs`/`_lock`、live object、整对象 replace、callback/CAS/通用状态机或磁盘 I/O。
-10. Phase 3 不把下载、Shop、Metrics、Amazon 的业务专属字段塞入共享基类；`jobs` 不得导入 route、service 或 `web_app`，SSE 归一只消费不可变快照。
+9. **3.3.D1 Download 单域切换（已完成，`2e1390d`）：** 创建、失败输入登记、worker、GET、专用 SSE 与 `build_video_feedback` 已切换到单 Registry；旧字典/锁、双写、私有访问和废弃修复脚本均为 0，服务器 55 项完整门禁通过。
+10. **3.3.D2 Metrics 单域切换（当前）：** 先由 Terra 与主审重新列出 Metrics 的创建、日志、worker 字段更新、GET/SSE 和 `result.json` 读取时序，再一次性迁移 `metrics_jobs`/`metrics_jobs_lock`。普通日志走 `append_log`，终态字段走 `update_fields`；Registry 只保存内存任务模型，不读取 artifact、不执行命令。GET/SSE 必须先取得不可变任务快照，再按现有顺序在锁外读取同一 `output_dir/result.json` 并显式传给 `snapshot_metrics_job`，保持 120 条日志窗口、200/404、missing SSE 200、marker、POST queued/running 竞态、endpoint/target 校验和结果 JSON 值。禁止双写、`_jobs`/`_lock`、live object、整对象 replace、callback/CAS/共享业务基类，也不得修改 Download、Shop 或 Amazon。
+11. Phase 3 不把下载、Shop、Metrics、Amazon 的业务专属字段塞入共享基类；`jobs` 不得导入 route、service 或 `web_app`，SSE 归一只消费不可变快照。
