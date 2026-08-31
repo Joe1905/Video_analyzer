@@ -13,6 +13,7 @@ import importlib
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -239,11 +240,10 @@ def assert_real_metrics_worker_registry_updates(web_app: Any, runner: Any) -> No
         command_log_id = "metrics-command-log"
         registry.register(command_log_id, web_app.MetricsJob(id=command_log_id, target="@fixture", endpoint="profile"))
         command = ["python", "fixture-metrics.py"]
-        with patch.object(
-            web_app.subprocess,
+        with patch.object(web_app, "subprocess", subprocess), patch.object(
+            subprocess,
             "Popen",
             return_value=FakeMetricsProcess(["fixture stdout  \n", "second stdout\r\n"], 0),
-            create=True,
         ) as popen:
             web_app.run_metrics_command(command_log_id, command)
         popen.assert_called_once()
@@ -254,11 +254,10 @@ def assert_real_metrics_worker_registry_updates(web_app: Any, runner: Any) -> No
         command_failure_id = "metrics-command-failure"
         registry.register(command_failure_id, web_app.MetricsJob(id=command_failure_id, target="@fixture", endpoint="profile"))
         failure_command = ["python", "fixture-metrics-fail.py"]
-        with patch.object(
-            web_app.subprocess,
+        with patch.object(web_app, "subprocess", subprocess), patch.object(
+            subprocess,
             "Popen",
             return_value=FakeMetricsProcess([], 9),
-            create=True,
         ):
             try:
                 web_app.run_metrics_command(command_failure_id, failure_command)
