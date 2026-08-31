@@ -219,26 +219,30 @@ class RouterTests(unittest.TestCase):
         root = Path(__file__).resolve().parent
         for route_file in (root / "routes").glob("*.py"):
             module = ast.parse(route_file.read_text(encoding="utf-8"))
+            allowed_imports = {"dataclasses", "types", "typing", "re", "pathlib"}
+            allowed_from_modules = {
+                "__future__",
+                "dataclasses",
+                "http",
+                "pathlib",
+                "types",
+                "typing",
+                "core.http",
+                "routes.router",
+                "urllib.parse",
+            }
+            if route_file.name == "shop.py":
+                allowed_imports.update({"json", "os", "time"})
+                allowed_from_modules.add("services.shop")
             for node in ast.walk(module):
                 if isinstance(node, ast.Import):
                     for alias in node.names:
-                        self.assertIn(alias.name.split(".")[0], {"dataclasses", "types", "typing", "re", "pathlib"})
+                        self.assertIn(alias.name.split(".")[0], allowed_imports)
                 elif isinstance(node, ast.ImportFrom) and node.module:
-                    self.assertIn(
-                        node.module,
-                        {
-                            "__future__",
-                            "dataclasses",
-                            "http",
-                            "pathlib",
-                            "types",
-                            "typing",
-                            "core.http",
-                            "routes.router",
-                            "urllib.parse",
-                        },
-                    )
+                    self.assertIn(node.module, allowed_from_modules)
                     self.assertNotIn("web_app", node.module)
+                    if route_file.name != "shop.py":
+                        self.assertFalse(node.module.startswith("services."))
             if route_file.name == "router.py":
                 imports = {
                     alias.name.split(".")[0]
@@ -309,7 +313,8 @@ class RouterTests(unittest.TestCase):
         self.assertIn('parsed.path.startswith("/api/lan-chat/") and handle_lan_chat_get', source)
         self.assertIn('if parsed.path == "/api/tool/convert":', source)
         self.assertIn('if parsed.path.startswith("/api/taobao/"):', source)
-        self.assertIn('if parsed.path == "/api/shop-job":', source)
+        self.assertIn("register_shop_api_routes(WEB_ROUTER, shop_service)", source)
+        self.assertNotIn('if parsed.path == "/api/shop-job":', source)
         self.assertIn('if parsed.path == "/api/video-metrics-job":', source)
         self.assertIn('if parsed.path == "/api/analyze":', source)
 

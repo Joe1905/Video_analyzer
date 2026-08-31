@@ -25,6 +25,8 @@ from typing import Any
 from unittest.mock import patch
 from uuid import UUID
 
+from services.shop import ShopJob, ShopService
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = ROOT / "scripts"
@@ -320,181 +322,79 @@ def assert_real_metrics_worker_registry_updates(web_app: Any, runner: Any) -> No
         web_app.metrics_job_registry = original_registry
 
 
-def assert_real_shop_worker_registry_updates(web_app: Any, runner: Any) -> None:
-    original_registry = web_app.shop_job_registry
+def assert_real_shop_worker_registry_updates(web_app: Any) -> None:
     registry = web_app.JobRegistry()
-    web_app.shop_job_registry = registry
-    try:
-        success_id = "shop-worker-success"
-        success_url = "https://shop.tiktok.com/view/product/worker"
-        success_prompt = "private worker prompt"
-        registry.register(
-            success_id,
-            web_app.ShopJob(
-                id=success_id,
-                url=success_url,
-                source_type="product",
-                region="US",
-                max_pages=20,
-                review_pages=20,
-                analyze=True,
-                related_videos=True,
-                prompt=success_prompt,
-            ),
-        )
-        output_dir = web_app.OUTPUT_DIR / "tiktok_shop" / success_id
-        extract_path = output_dir / "shop_extract.json"
-        analysis_path = output_dir / "shop_analysis.json"
-        commands: list[list[str]] = []
+    service = ShopService(
+        registry, web_app.ROOT, web_app.OUTPUT_DIR, web_app.SCRIPTS_DIR,
+        web_app.read_json, subprocess.Popen, threading.Thread, lambda: "unused",
+    )
+    success_id = "shop-worker-success"
+    success_url = "https://shop.tiktok.com/view/product/worker"
+    success_prompt = "private worker prompt"
+    registry.register(success_id, ShopJob(success_id, success_url, "product", "US", 20, 20, True, True, success_prompt))
+    output_dir = web_app.OUTPUT_DIR / "tiktok_shop" / success_id
+    extract_path, analysis_path = output_dir / "shop_extract.json", output_dir / "shop_analysis.json"
+    commands: list[list[str]] = []
 
-        def command_success(job_id: str, command: list[str]) -> None:
-            assert job_id == success_id
-            commands.append(command)
-            if len(commands) == 1:
-                assert command == [
-                    "python",
-                    str(web_app.SCRIPTS_DIR / "sociavault_tiktok_shop.py"),
-                    success_url,
-                    "--source-type",
-                    "product",
-                    "--region",
-                    "US",
-                    "--max-pages",
-                    "20",
-                    "--review-pages",
-                    "20",
-                    "--output",
-                    str(extract_path),
-                    "--related-videos",
-                ]
-                extract_path.parent.mkdir(parents=True, exist_ok=True)
-                extract_path.write_text(json.dumps({"items": [{"id": "worker-extract"}]}), encoding="utf-8")
-            elif len(commands) == 2:
-                assert command == [
-                    "python",
-                    str(web_app.SCRIPTS_DIR / "deepseek_shop_analyze.py"),
-                    str(extract_path),
-                    "--output",
-                    str(analysis_path),
-                    "--prompt",
-                    success_prompt,
-                ]
-                analysis_path.write_text(json.dumps({"summary": "worker-analysis"}), encoding="utf-8")
-            else:
-                raise AssertionError(f"unexpected shop command: {command}")
+    def command_success(job_id: str, command: list[str]) -> None:
+        assert job_id == success_id
+        commands.append(command)
+        if len(commands) == 1:
+            assert command == [
+                "python",
+                str(web_app.SCRIPTS_DIR / "sociavault_tiktok_shop.py"),
+                success_url,
+                "--source-type",
+                "product",
+                "--region",
+                "US",
+                "--max-pages",
+                "20",
+                "--review-pages",
+                "20",
+                "--output",
+                str(extract_path),
+                "--related-videos",
+            ]
+            extract_path.parent.mkdir(parents=True, exist_ok=True)
+            extract_path.write_text(json.dumps({"items": [{"id": "worker-extract"}]}), encoding="utf-8")
+        elif len(commands) == 2:
+            assert command == [
+                "python",
+                str(web_app.SCRIPTS_DIR / "deepseek_shop_analyze.py"),
+                str(extract_path),
+                "--output",
+                str(analysis_path),
+                "--prompt",
+                success_prompt,
+            ]
+            analysis_path.write_text(json.dumps({"summary": "worker-analysis"}), encoding="utf-8")
+        else:
+            raise AssertionError(f"unexpected Shop worker command: {command}")
 
-        with patch.object(web_app, "run_shop_command", side_effect=command_success):
-            runner(success_id)
-        success = registry.snapshot(success_id)
-        assert success is not None
-        assert success.status == "complete"
-        assert success.output_dir == str(output_dir.relative_to(web_app.ROOT))
-        assert len(commands) == 2
-        extract = web_app.read_json(extract_path)
-        analysis = web_app.read_json(analysis_path)
-        assert extract == {"items": [{"id": "worker-extract"}]}
-        assert analysis == {"summary": "worker-analysis"}
-        payload = web_app.public_shop_job(success, extract=extract, analysis=analysis)
-        assert payload["extract"] == extract
-        assert payload["analysis"] == analysis
-        assert "prompt" not in payload
-        payload["extract"]["items"][0]["id"] = "mutated"
-        payload["analysis"]["summary"] = "mutated"
-        assert web_app.read_json(extract_path) == {"items": [{"id": "worker-extract"}]}
-        assert web_app.read_json(analysis_path) == {"summary": "worker-analysis"}
+    with patch.object(service, "run_command", side_effect=command_success):
+        service.run_job(success_id)
+    success = registry.snapshot(success_id)
+    assert success is not None and success.status == "complete"
+    assert success.output_dir == str(output_dir.relative_to(web_app.ROOT))
+    assert len(commands) == 2
+    payload = service.payload_for(success_id)
+    assert payload is not None and payload["extract"] == {"items": [{"id": "worker-extract"}]}
+    assert payload["analysis"] == {"summary": "worker-analysis"} and "prompt" not in payload
 
-        class FakeShopProcess:
-            def __init__(self, lines: list[str], returncode: int) -> None:
-                self.stdout = iter(lines)
-                self.returncode = returncode
+    failure_id = "shop-worker-failure"
+    registry.register(failure_id, ShopJob(failure_id, success_url, "product", "US", 1, 1, False, False))
 
-            def wait(self) -> int:
-                return self.returncode
+    def command_failure(job_id: str, _command: list[str]) -> None:
+        service.append_log(job_id, "fixture prior shop failure")
+        raise RuntimeError("fixture raw shop failure")
 
-        command_log_id = "shop-command-log"
-        registry.register(
-            command_log_id,
-            web_app.ShopJob(
-                id=command_log_id,
-                url=success_url,
-                source_type="product",
-                region="US",
-                max_pages=1,
-                review_pages=1,
-                analyze=False,
-                related_videos=False,
-            ),
-        )
-        command = ["python", "fixture-shop.py"]
-        with patch.object(web_app, "subprocess", subprocess), patch.object(
-            subprocess,
-            "Popen",
-            return_value=FakeShopProcess(["fixture stdout  \n", "second stdout\r\n"], 0),
-        ) as popen:
-            web_app.run_shop_command(command_log_id, command)
-        popen.assert_called_once()
-        command_log = registry.snapshot(command_log_id)
-        assert command_log is not None
-        assert command_log.log == ["$ python fixture-shop.py", "fixture stdout", "second stdout"]
-
-        command_failure_id = "shop-command-failure"
-        registry.register(
-            command_failure_id,
-            web_app.ShopJob(
-                id=command_failure_id,
-                url=success_url,
-                source_type="product",
-                region="US",
-                max_pages=1,
-                review_pages=1,
-                analyze=False,
-                related_videos=False,
-            ),
-        )
-        failure_command = ["python", "fixture-shop-fail.py"]
-        with patch.object(web_app, "subprocess", subprocess), patch.object(
-            subprocess,
-            "Popen",
-            return_value=FakeShopProcess([], 9),
-        ):
-            try:
-                web_app.run_shop_command(command_failure_id, failure_command)
-            except RuntimeError as exc:
-                assert str(exc) == "Command failed with exit code 9: python fixture-shop-fail.py"
-            else:
-                raise AssertionError("non-zero shop command must fail")
-        command_failure = registry.snapshot(command_failure_id)
-        assert command_failure is not None
-        assert command_failure.log == ["$ python fixture-shop-fail.py"]
-
-        failure_id = "shop-worker-failure"
-        registry.register(
-            failure_id,
-            web_app.ShopJob(
-                id=failure_id,
-                url=success_url,
-                source_type="product",
-                region="US",
-                max_pages=1,
-                review_pages=1,
-                analyze=False,
-                related_videos=False,
-            ),
-        )
-
-        def command_failure_worker(job_id: str, _command: list[str]) -> None:
-            web_app.append_shop_log(job_id, "fixture prior shop failure")
-            raise RuntimeError("fixture raw shop failure")
-
-        with patch.object(web_app, "run_shop_command", side_effect=command_failure_worker):
-            runner(failure_id)
-        failure = registry.snapshot(failure_id)
-        assert failure is not None
-        assert failure.status == "failed"
-        assert failure.error == "fixture raw shop failure"
-        assert failure.log[-2:] == ["fixture prior shop failure", "fixture raw shop failure"]
-    finally:
-        web_app.shop_job_registry = original_registry
+    with patch.object(service, "run_command", side_effect=command_failure):
+        service.run_job(failure_id)
+    failure = registry.snapshot(failure_id)
+    assert failure is not None and failure.status == "failed"
+    assert failure.error == "fixture raw shop failure"
+    assert failure.log[-2:] == ["fixture prior shop failure", "fixture raw shop failure"]
 
 
 def assert_real_amazon_worker_registry_updates(web_app: Any, runner: Any) -> None:
@@ -712,7 +612,6 @@ def run_lifecycle() -> None:
         os.environ["HOT_VIDEO_REPORT_ENABLED"] = "0"
         web_app = importlib.import_module("web_app")
         real_download_worker = web_app.run_download_job
-        real_shop_worker = web_app.run_shop_job
         real_metrics_worker = web_app.run_metrics_job
         real_amazon_worker = web_app.run_amazon_job
         fake_queue = FakeVideoQueue(web_app.output_dir_for_filename)
@@ -860,7 +759,7 @@ def run_lifecycle() -> None:
                 patch.object(web_app, "ui_test_mode_allows_live_write", side_effect=lambda path: path in allowed_writes)
             )
             patches.enter_context(patch.object(web_app, "run_download_job", side_effect=complete_download))
-            patches.enter_context(patch.object(web_app, "run_shop_job", side_effect=complete_shop))
+            patches.enter_context(patch.object(web_app.shop_service, "run_job", side_effect=complete_shop))
             patches.enter_context(patch.object(web_app, "run_metrics_job", side_effect=complete_metrics))
             patches.enter_context(patch.object(web_app, "run_amazon_job", side_effect=complete_amazon))
             patches.enter_context(patch.object(web_app, "video_queue", fake_queue))
@@ -873,7 +772,7 @@ def run_lifecycle() -> None:
             patches.enter_context(patch.object(web_app, "analyzer_media_is_valid", side_effect=lambda _path: True))
 
             assert_real_download_worker_registry_updates(web_app, real_download_worker)
-            assert_real_shop_worker_registry_updates(web_app, real_shop_worker)
+            assert_real_shop_worker_registry_updates(web_app)
             assert_real_metrics_worker_registry_updates(web_app, real_metrics_worker)
             assert_real_amazon_worker_registry_updates(web_app, real_amazon_worker)
 

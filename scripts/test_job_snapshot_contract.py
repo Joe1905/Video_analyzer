@@ -21,6 +21,12 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
+from jobs.registry import JobRegistry
+from routes.router import Router
+from routes.shop import register_shop_api_routes
+from services import shop as shop_module
+from services.shop import ShopJob, ShopService
+
 
 class RecordingWriter(io.BytesIO):
     def __init__(self) -> None:
@@ -73,12 +79,43 @@ def dispatch_get(web_app: Any, path: str) -> FakeHandler:
     handler = FakeHandler(path)
     for name in (
         "stream_download_events",
-        "stream_shop_events",
         "stream_metrics_events",
         "stream_amazon_events",
     ):
         setattr(handler, name, getattr(web_app.Handler, name).__get__(handler, FakeHandler))
     web_app.Handler.do_GET(handler)
+    return handler
+
+
+def make_shop_service(
+    web_app: Any,
+    registry: JobRegistry,
+    *,
+    read_json_file: Any | None = None,
+    thread_factory: Any | None = None,
+    job_id_factory: Any | None = None,
+) -> ShopService:
+    return ShopService(
+        registry=registry,
+        root=web_app.ROOT,
+        output_dir=web_app.OUTPUT_DIR,
+        scripts_dir=web_app.SCRIPTS_DIR,
+        read_json_file=read_json_file or web_app.read_json,
+        popen_factory=lambda *_args, **_kwargs: None,
+        thread_factory=thread_factory or (lambda **_kwargs: None),
+        job_id_factory=job_id_factory or (lambda: "shop-post-fixture"),
+    )
+
+
+def make_shop_router(service: ShopService, *, sleep: Any = lambda _seconds: None) -> Router:
+    router = Router()
+    register_shop_api_routes(router, service, sleep=sleep)
+    return router
+
+
+def dispatch_shop(router: Router, method: str, handler: FakeHandler) -> FakeHandler:
+    route = router.resolve(method, handler.path.partition("?")[0])
+    route.handler(handler, route.params)
     return handler
 
 
@@ -113,7 +150,7 @@ def make_jobs(web_app: Any) -> dict[str, Any]:
         filename="fixture.mp4",
         result=download_result,
     )
-    shop = web_app.ShopJob(
+    shop = ShopJob(
         id="shop-fixture",
         url="https://shop.tiktok.com/view/product/fixture",
         source_type="product",
@@ -155,20 +192,22 @@ def make_jobs(web_app: Any) -> dict[str, Any]:
     write_json(web_app.OUTPUT_DIR / "tiktok_shop" / shop.id / "shop_analysis.json", {"summary": "analysis"})
     write_json(web_app.OUTPUT_DIR / "tiktok_api" / metrics.id / "result.json", {"metric": {"views": 7}})
     write_json(web_app.OUTPUT_DIR / "amazon" / amazon.id / "result.json", {"products": [{"asin": "B000FIXTURE"}]})
-    return {"download": download, "shop": shop, "metrics": metrics, "amazon": amazon}
+    shop_registry = JobRegistry()
+    shop_registry.register(shop.id, shop)
+    return {
+        "download": download,
+        "shop": shop,
+        "shop_registry": shop_registry,
+        "shop_service": make_shop_service(web_app, shop_registry),
+        "metrics": metrics,
+        "amazon": amazon,
+    }
 
 
-def shop_artifacts(web_app: Any, job: Any) -> tuple[Any, Any]:
-    output_dir = web_app.OUTPUT_DIR / "tiktok_shop" / job.id
-    return (
-        web_app.read_json(output_dir / "shop_extract.json"),
-        web_app.read_json(output_dir / "shop_analysis.json"),
-    )
-
-
-def public_shop_payload(web_app: Any, job: Any) -> dict[str, Any]:
-    extract, analysis = shop_artifacts(web_app, job)
-    return web_app.public_shop_job(job, extract=extract, analysis=analysis)
+def public_shop_payload(service: ShopService, job: ShopJob) -> dict[str, Any]:
+    payload = service.payload_for(job.id)
+    assert payload is not None
+    return payload
 
 
 def public_amazon_payload(web_app: Any, job: Any) -> dict[str, Any]:
@@ -180,7 +219,7 @@ def assert_public_payloads(web_app: Any, jobs: dict[str, Any]) -> dict[str, dict
     metrics_result_path = web_app.OUTPUT_DIR / "tiktok_api" / jobs["metrics"].id / "result.json"
     payloads = {
         "download": web_app.public_download_job(jobs["download"]),
-        "shop": public_shop_payload(web_app, jobs["shop"]),
+        "shop": public_shop_payload(jobs["shop_service"], jobs["shop"]),
         "metrics": web_app.public_metrics_job(jobs["metrics"], result=web_app.read_json(metrics_result_path)),
         "amazon": public_amazon_payload(web_app, jobs["amazon"]),
     }
@@ -248,7 +287,8 @@ def assert_public_payloads(web_app: Any, jobs: dict[str, Any]) -> dict[str, dict
     assert payloads["download"]["log"] == [f"download-{index}" for index in range(2, 82)]
     for name in ("shop", "metrics", "amazon"):
         assert payloads[name]["log"] == [f"{name}-{index}" for index in range(2, 122)]
-    for name, job in jobs.items():
+    for name in ("download", "shop", "metrics", "amazon"):
+        job = jobs[name]
         assert payloads[name]["log"] is not job.log
         original_log = list(payloads[name]["log"])
         job.log.append("after-snapshot")
@@ -277,7 +317,7 @@ def assert_public_payloads(web_app: Any, jobs: dict[str, Any]) -> dict[str, dict
     write_json(web_app.OUTPUT_DIR / "tiktok_shop" / jobs["shop"].id / "shop_analysis.json", {"summary": "analysis-v2"})
     write_json(web_app.OUTPUT_DIR / "tiktok_api" / jobs["metrics"].id / "result.json", {"metric": {"views": 8}})
     write_json(web_app.OUTPUT_DIR / "amazon" / jobs["amazon"].id / "result.json", {"products": [{"asin": "B000FIXTUREV2"}]})
-    refreshed_shop = public_shop_payload(web_app, jobs["shop"])
+    refreshed_shop = public_shop_payload(jobs["shop_service"], jobs["shop"])
     refreshed_metrics = web_app.public_metrics_job(jobs["metrics"], result=web_app.read_json(metrics_result_path))
     refreshed_amazon = public_amazon_payload(web_app, jobs["amazon"])
     assert refreshed_shop["extract"] == {"items": [{"id": "extract-v2"}]}
@@ -296,8 +336,8 @@ def assert_public_payloads(web_app: Any, jobs: dict[str, Any]) -> dict[str, dict
     original_shop_analysis["summary"] = "mutated"
     original_metrics_result["metric"]["views"] = 99
     original_amazon_result["products"][0]["asin"] = "mutated"
-    assert public_shop_payload(web_app, jobs["shop"])["extract"] == {"items": [{"id": "extract-v2"}]}
-    assert public_shop_payload(web_app, jobs["shop"])["analysis"] == {"summary": "analysis-v2"}
+    assert public_shop_payload(jobs["shop_service"], jobs["shop"])["extract"] == {"items": [{"id": "extract-v2"}]}
+    assert public_shop_payload(jobs["shop_service"], jobs["shop"])["analysis"] == {"summary": "analysis-v2"}
     refreshed_shop["extract"]["items"][0]["id"] = "payload-extract-mutated"
     assert web_app.read_json(web_app.OUTPUT_DIR / "tiktok_shop" / jobs["shop"].id / "shop_extract.json") == {
         "items": [{"id": "extract-v2"}]
@@ -305,7 +345,7 @@ def assert_public_payloads(web_app: Any, jobs: dict[str, Any]) -> dict[str, dict
     write_json(web_app.OUTPUT_DIR / "tiktok_shop" / jobs["shop"].id / "shop_extract.json", {"items": [{"id": "extract-v3"}]})
     assert refreshed_shop["extract"] == {"items": [{"id": "payload-extract-mutated"}]}
     assert refreshed_shop["analysis"] == {"summary": "analysis-v2"}
-    after_extract_refresh = public_shop_payload(web_app, jobs["shop"])
+    after_extract_refresh = public_shop_payload(jobs["shop_service"], jobs["shop"])
     assert after_extract_refresh["extract"] == {"items": [{"id": "extract-v3"}]}
     assert after_extract_refresh["analysis"] == {"summary": "analysis-v2"}
     after_extract_refresh["extract"]["items"][0]["id"] = "second-payload-extract-mutated"
@@ -319,7 +359,7 @@ def assert_public_payloads(web_app: Any, jobs: dict[str, Any]) -> dict[str, dict
     write_json(web_app.OUTPUT_DIR / "tiktok_shop" / jobs["shop"].id / "shop_analysis.json", {"summary": "analysis-v3"})
     assert refreshed_shop["extract"] == {"items": [{"id": "payload-extract-mutated"}]}
     assert refreshed_shop["analysis"] == {"summary": "payload-analysis-mutated"}
-    after_analysis_refresh = public_shop_payload(web_app, jobs["shop"])
+    after_analysis_refresh = public_shop_payload(jobs["shop_service"], jobs["shop"])
     assert after_analysis_refresh["extract"] == {"items": [{"id": "extract-v3"}]}
     assert after_analysis_refresh["analysis"] == {"summary": "analysis-v3"}
     after_analysis_refresh["analysis"]["summary"] = "second-payload-analysis-mutated"
@@ -376,6 +416,42 @@ def assert_no_shop_legacy_store() -> None:
         and node.attr in {"_jobs", "_lock"}
     ]
     assert not private_registry_access
+    obsolete_definitions = {
+        "ShopJob", "append_shop_log", "run_shop_command", "run_shop_job", "public_shop_job",
+    }
+    assert not {
+        node.name for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        and node.name in obsolete_definitions
+    }
+    handler = next(node for node in ast.walk(tree) if isinstance(node, ast.ClassDef) and node.name == "Handler")
+    assert not {
+        node.name for node in handler.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name in {"handle_shop_extract", "stream_shop_events"}
+    }
+    assert not {
+        node.value for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        and node.value in {
+            "shop_extract.json", "shop_analysis.json",
+            "/api/shop-extract", "/api/shop-job", "/api/shop-events",
+        }
+    }
+    for source_path, forbidden in (
+        (SCRIPTS_DIR / "routes" / "shop.py", {"web_app"}),
+        (SCRIPTS_DIR / "services" / "shop.py", {"web_app", "routes"}),
+    ):
+        source_tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+        imported = {
+            alias.name.split(".", 1)[0]
+            for node in ast.walk(source_tree)
+            for alias in (node.names if isinstance(node, ast.Import) else [])
+        } | {
+            str(node.module or "").split(".", 1)[0]
+            for node in ast.walk(source_tree) if isinstance(node, ast.ImportFrom)
+        }
+        assert not imported & forbidden
 
 
 def assert_no_amazon_legacy_store() -> None:
@@ -485,60 +561,60 @@ def assert_post_order_contracts(web_app: Any) -> None:
         web_app.download_job_registry = original_download_registry
 
     shop_url = "https://shop.tiktok.com/view/product/fixture"
-    original_shop_registry = web_app.shop_job_registry
-    shop_registry = web_app.JobRegistry()
-    web_app.shop_job_registry = shop_registry
-    try:
-        order = []
-        original_register = shop_registry.register
-        original_snapshot = shop_registry.snapshot
-        original_read_json = web_app.read_json
-        original_serializer = web_app.public_shop_job
+    order: list[str] = []
+    shop_registry = JobRegistry()
+    original_register = shop_registry.register
+    original_snapshot = shop_registry.snapshot
+    original_serializer = shop_module.snapshot_shop_job
 
-        def recording_register(job_id: str, job: Any) -> None:
-            order.append("register")
-            assert (job.url, job.source_type, job.region, job.max_pages, job.review_pages) == (
-                shop_url, "search", "JP", 2, 1,
-            )
-            assert job.analyze is False and job.related_videos is True and job.prompt == "private post prompt"
-            return original_register(job_id, job)
+    def recording_register(job_id: str, job: Any) -> None:
+        order.append("register")
+        assert (job.url, job.source_type, job.region, job.max_pages, job.review_pages) == (
+            shop_url, "search", "JP", 2, 1,
+        )
+        assert job.analyze is False and job.related_videos is True and job.prompt == "private post prompt"
+        return original_register(job_id, job)
 
-        def recording_snapshot(job_id: str) -> Any:
-            order.append("snapshot")
-            return original_snapshot(job_id)
+    def recording_snapshot(job_id: str) -> Any:
+        order.append("snapshot")
+        return original_snapshot(job_id)
 
-        def recording_read_json(path: Path) -> Any:
-            order.append(path.name)
-            return {"fixture": path.name}
+    def recording_read_json(path: Path) -> Any:
+        order.append(path.name)
+        return {"fixture": path.name}
 
-        def recording_serializer(job: Any, *, extract: Any, analysis: Any) -> dict[str, Any]:
-            order.append("serializer")
-            return original_serializer(job, extract=extract, analysis=analysis)
+    def recording_serializer(job: Any, *, extract: Any, analysis: Any) -> dict[str, Any]:
+        order.append("serializer")
+        return original_serializer(job, extract=extract, analysis=analysis)
 
-        handler = handler_for({
-            "url": shop_url,
-            "source_type": "search",
-            "region": "jp",
-            "max_pages": 2,
-            "review_pages": 1,
-            "analyze": False,
-            "related_videos": True,
-            "prompt": "private post prompt",
-        })
-        with patch.object(web_app.threading, "Thread", deferred_thread(order)), patch.object(
-            shop_registry, "register", side_effect=recording_register
-        ), patch.object(shop_registry, "snapshot", side_effect=recording_snapshot), patch.object(
-            web_app, "read_json", side_effect=recording_read_json
-        ), patch.object(web_app, "public_shop_job", side_effect=recording_serializer):
-            web_app.Handler.handle_shop_extract(handler)
-        response = json.loads(handler.wfile.getvalue().decode("utf-8"))
-        assert handler.responses == [202]
-        assert response["url"] == shop_url and response["status"] == "queued"
-        assert response["source_type"] == "search" and response["region"] == "JP"
-        assert "prompt" not in response
-        assert order == ["register", "thread.start", "snapshot", "shop_extract.json", "shop_analysis.json", "serializer"]
-    finally:
-        web_app.shop_job_registry = original_shop_registry
+    service = make_shop_service(
+        web_app,
+        shop_registry,
+        read_json_file=recording_read_json,
+        thread_factory=deferred_thread(order),
+    )
+    router = make_shop_router(service)
+    handler = handler_for({
+        "url": shop_url,
+        "source_type": "search",
+        "region": "jp",
+        "max_pages": 2,
+        "review_pages": 1,
+        "analyze": False,
+        "related_videos": True,
+        "prompt": "private post prompt",
+    })
+    handler.path = "/api/shop-extract"
+    with patch.object(shop_registry, "register", side_effect=recording_register), patch.object(
+        shop_registry, "snapshot", side_effect=recording_snapshot
+    ), patch.object(shop_module, "snapshot_shop_job", side_effect=recording_serializer):
+        dispatch_shop(router, "POST", handler)
+    response = json.loads(handler.wfile.getvalue().decode("utf-8"))
+    assert handler.responses == [202]
+    assert response["url"] == shop_url and response["status"] == "queued"
+    assert response["source_type"] == "search" and response["region"] == "JP"
+    assert "prompt" not in response
+    assert order == ["register", "thread.start", "snapshot", "shop_extract.json", "shop_analysis.json", "serializer"]
 
     metrics_target = "https://www.tiktok.com/@fixture/video/456"
     original_metrics_registry = web_app.metrics_job_registry
@@ -636,46 +712,48 @@ def assert_get_and_sse_contracts(web_app: Any, jobs: dict[str, Any]) -> None:
         web_app.metrics_job_registry = original_metrics_registry
 
     shop = jobs["shop"]
-    original_shop_registry = web_app.shop_job_registry
-    shop_registry = web_app.JobRegistry()
-    web_app.shop_job_registry = shop_registry
-    try:
-        shop_registry.register(shop.id, shop)
-        snapshot = shop_registry.snapshot(shop.id)
-        assert snapshot is not None
-        expected = public_shop_payload(web_app, snapshot)
-        assert "prompt" not in expected
-        assert "private fixture prompt" not in json_body(expected).decode("utf-8")
-        assert_json_response(dispatch_get(web_app, f"/api/shop-job?id={shop.id}"), 200, expected)
-        assert_sse_response(dispatch_get(web_app, f"/api/shop-events?id={shop.id}"), expected)
-        assert "private fixture prompt" not in dispatch_get(web_app, f"/api/shop-events?id={shop.id}").wfile.getvalue().decode("utf-8")
+    shop_registry = jobs["shop_registry"]
+    shop_service = jobs["shop_service"]
+    shop_router = make_shop_router(shop_service)
+    expected = public_shop_payload(shop_service, shop)
+    assert "prompt" not in expected
+    assert "private fixture prompt" not in json_body(expected).decode("utf-8")
+    assert_json_response(
+        dispatch_shop(shop_router, "GET", FakeHandler(f"/api/shop-job?id={shop.id}")), 200, expected
+    )
+    assert_sse_response(
+        dispatch_shop(shop_router, "GET", FakeHandler(f"/api/shop-events?id={shop.id}")), expected
+    )
+    assert "private fixture prompt" not in dispatch_shop(
+        shop_router, "GET", FakeHandler(f"/api/shop-events?id={shop.id}")
+    ).wfile.getvalue().decode("utf-8")
+    assert_json_response(
+        dispatch_shop(shop_router, "GET", FakeHandler("/api/shop-job?id=missing")),
+        404,
+        {"error": "TikTok Shop job not found"},
+    )
+    assert_sse_response(
+        dispatch_shop(shop_router, "GET", FakeHandler("/api/shop-events?id=missing")),
+        {"status": "missing", "error": "TikTok Shop job not found"},
+    )
+
+    call_order: list[str] = []
+    original_snapshot = shop_registry.snapshot
+
+    def recording_snapshot(job_id: str) -> Any:
+        call_order.append("snapshot")
+        return original_snapshot(job_id)
+
+    def recording_read_json(path: Path) -> Any:
+        call_order.append(path.name)
+        return web_app.read_json(path)
+
+    ordered_router = make_shop_router(make_shop_service(web_app, shop_registry, read_json_file=recording_read_json))
+    with patch.object(shop_registry, "snapshot", side_effect=recording_snapshot):
         assert_json_response(
-            dispatch_get(web_app, "/api/shop-job?id=missing"), 404, {"error": "TikTok Shop job not found"}
+            dispatch_shop(ordered_router, "GET", FakeHandler(f"/api/shop-job?id={shop.id}")), 200, expected
         )
-        assert_sse_response(
-            dispatch_get(web_app, "/api/shop-events?id=missing"),
-            {"status": "missing", "error": "TikTok Shop job not found"},
-        )
-
-        call_order: list[str] = []
-        original_snapshot = shop_registry.snapshot
-        original_read_json = web_app.read_json
-
-        def recording_snapshot(job_id: str) -> Any:
-            call_order.append("snapshot")
-            return original_snapshot(job_id)
-
-        def recording_read_json(path: Path) -> Any:
-            call_order.append(path.name)
-            return original_read_json(path)
-
-        with patch.object(shop_registry, "snapshot", side_effect=recording_snapshot), patch.object(
-            web_app, "read_json", side_effect=recording_read_json
-        ):
-            assert_json_response(dispatch_get(web_app, f"/api/shop-job?id={shop.id}"), 200, expected)
-        assert call_order == ["snapshot", "shop_extract.json", "shop_analysis.json"]
-    finally:
-        web_app.shop_job_registry = original_shop_registry
+    assert call_order == ["snapshot", "shop_extract.json", "shop_analysis.json"]
 
     amazon = jobs["amazon"]
     original_amazon_registry = web_app.amazon_job_registry
@@ -770,90 +848,225 @@ def assert_get_and_sse_contracts(web_app: Any, jobs: dict[str, Any]) -> None:
 
 
 def assert_shop_artifact_failure_contract(web_app: Any) -> None:
-    original_registry = web_app.shop_job_registry
-    registry = web_app.JobRegistry()
-    web_app.shop_job_registry = registry
+    registry = JobRegistry()
+    service = make_shop_service(web_app, registry)
+    router = make_shop_router(service)
+
+    def shop_job(job_id: str) -> ShopJob:
+        return ShopJob(
+            id=job_id,
+            url="https://shop.tiktok.com/view/product/artifact-fixture",
+            source_type="product",
+            region="US",
+            max_pages=1,
+            review_pages=1,
+            analyze=True,
+            related_videos=False,
+            status="complete",
+            created_at=90.0,
+            updated_at=91.0,
+            output_dir=f"output/tiktok_shop/{job_id}",
+        )
+
+    def paths_for(job_id: str) -> tuple[Path, Path]:
+        output_dir = web_app.OUTPUT_DIR / "tiktok_shop" / job_id
+        return output_dir / "shop_extract.json", output_dir / "shop_analysis.json"
+
+    for missing_name in ("shop_extract.json", "shop_analysis.json"):
+        job_id = f"shop-missing-{missing_name.removesuffix('.json')}"
+        job = shop_job(job_id)
+        registry.register(job_id, job)
+        extract_path, analysis_path = paths_for(job_id)
+        write_json(extract_path, {"items": ["extract"]})
+        write_json(analysis_path, {"summary": "analysis"})
+        (extract_path if missing_name == "shop_extract.json" else analysis_path).unlink()
+        expected = public_shop_payload(service, job)
+        assert expected["extract" if missing_name == "shop_extract.json" else "analysis"] is None
+        assert_json_response(
+            dispatch_shop(router, "GET", FakeHandler(f"/api/shop-job?id={job_id}")), 200, expected
+        )
+        assert_sse_response(
+            dispatch_shop(router, "GET", FakeHandler(f"/api/shop-events?id={job_id}")), expected
+        )
+
+    for invalid_name in ("shop_extract.json", "shop_analysis.json"):
+        job_id = f"shop-invalid-{invalid_name.removesuffix('.json')}"
+        registry.register(job_id, shop_job(job_id))
+        extract_path, analysis_path = paths_for(job_id)
+        write_json(extract_path, {"items": ["extract"]})
+        write_json(analysis_path, {"summary": "analysis"})
+        (extract_path if invalid_name == "shop_extract.json" else analysis_path).write_text("{not json", encoding="utf-8")
+
+        get_handler = FakeHandler(f"/api/shop-job?id={job_id}")
+        try:
+            dispatch_shop(router, "GET", get_handler)
+        except json.JSONDecodeError:
+            pass
+        else:
+            raise AssertionError(f"GET did not raise for invalid {invalid_name}")
+        assert get_handler.responses == []
+        assert get_handler.wfile.getvalue() == b""
+        assert get_handler.ended is False
+        assert get_handler.close_connection is False
+
+        sse_handler = FakeHandler(f"/api/shop-events?id={job_id}")
+        try:
+            dispatch_shop(router, "GET", sse_handler)
+        except json.JSONDecodeError:
+            pass
+        else:
+            raise AssertionError(f"SSE did not raise for invalid {invalid_name}")
+        assert sse_handler.responses == [200]
+        assert sse_handler.header("Content-Type") == "text/event-stream; charset=utf-8"
+        assert sse_handler.header("Cache-Control") == "no-cache"
+        assert sse_handler.header("Connection") == "keep-alive"
+        assert sse_handler.wfile.getvalue() == b""
+        assert sse_handler.wfile.flush_count == 0
+        assert sse_handler.ended is True
+        assert sse_handler.close_connection is False
+
+
+def assert_shop_route_defaults_and_broken_pipe(web_app: Any) -> None:
+    registry = JobRegistry()
+    started: list[str] = []
+
+    class DeferredThread:
+        def __init__(self, *, target: Any, args: tuple[Any, ...], daemon: bool) -> None:
+            self.target = target
+            self.args = args
+            self.daemon = daemon
+
+        def start(self) -> None:
+            started.append(self.args[0])
+
+    defaults = {
+        "SOCIAVAULT_REGION": "ca",
+        "SOCIAVAULT_MAX_PAGES": "3",
+        "SOCIAVAULT_REVIEW_PAGES": "4",
+    }
+    service = make_shop_service(web_app, registry, thread_factory=DeferredThread, job_id_factory=lambda: "shop-defaults")
+    router = Router()
+    register_shop_api_routes(router, service, getenv=lambda name, default: defaults.get(name, default))
+    body = json.dumps({
+        "url": "https://shop.tiktok.com/view/product/defaults",
+        "analyze": "false",
+        "related_videos": "false",
+    }).encode("utf-8")
+    handler = FakeHandler("/api/shop-extract")
+    handler.headers = {"Content-Length": str(len(body))}
+    handler.rfile = io.BytesIO(body)
+    dispatch_shop(router, "POST", handler)
+    response = json.loads(handler.wfile.getvalue().decode("utf-8"))
+    job = registry.snapshot("shop-defaults")
+    assert job is not None
+    assert (job.region, job.max_pages, job.review_pages, job.analyze, job.related_videos) == ("CA", 3, 4, True, True)
+    assert response["status"] == "queued"
+    assert (response["region"], response["max_pages"], response["review_pages"], response["analyze"], response["related_videos"]) == (
+        "CA", 3, 4, True, True,
+    )
+    assert started == ["shop-defaults"]
+
+    class BrokenPipeWriter:
+        def __init__(self) -> None:
+            self.write_attempts = 0
+
+        def write(self, _data: bytes) -> int:
+            self.write_attempts += 1
+            raise BrokenPipeError
+
+        def flush(self) -> None:
+            return None
+
+    missing_handler = FakeHandler("/api/shop-events?id=missing-shop-job")
+    missing_handler.wfile = BrokenPipeWriter()
+    dispatch_shop(router, "GET", missing_handler)
+    assert missing_handler.responses == [200]
+    assert missing_handler.header("Content-Type") == "text/event-stream; charset=utf-8"
+    assert missing_handler.header("Cache-Control") == "no-cache"
+    assert missing_handler.header("Connection") == "keep-alive"
+    assert missing_handler.ended is True
+    assert missing_handler.close_connection is True
+    assert missing_handler.wfile.write_attempts == 1
+
+    output_dir = web_app.OUTPUT_DIR / "tiktok_shop" / "shop-defaults"
+    write_json(output_dir / "shop_extract.json", {"items": [{"id": "broken-pipe"}]})
+    write_json(output_dir / "shop_analysis.json", {"summary": "broken-pipe"})
+    payload_handler = FakeHandler("/api/shop-events?id=shop-defaults")
+    payload_handler.wfile = BrokenPipeWriter()
+    dispatch_shop(router, "GET", payload_handler)
+    assert payload_handler.responses == [200]
+    assert payload_handler.header("Content-Type") == "text/event-stream; charset=utf-8"
+    assert payload_handler.header("Cache-Control") == "no-cache"
+    assert payload_handler.header("Connection") == "keep-alive"
+    assert payload_handler.ended is True
+    assert payload_handler.close_connection is True
+    assert payload_handler.wfile.write_attempts == 1
+
+
+def assert_shop_composition_contract(web_app: Any) -> None:
+    job_id = "shop-composition-fixture"
+    job = ShopJob(
+        id=job_id,
+        url="https://shop.tiktok.com/view/product/composition",
+        source_type="product",
+        region="US",
+        max_pages=1,
+        review_pages=1,
+        analyze=True,
+        related_videos=False,
+        prompt="private composition prompt",
+        status="complete",
+        output_dir=f"output/tiktok_shop/{job_id}",
+    )
+    output_dir = web_app.OUTPUT_DIR / "tiktok_shop" / job_id
+    extract_path = output_dir / "shop_extract.json"
+    analysis_path = output_dir / "shop_analysis.json"
+    write_json(extract_path, {"items": [{"id": "composition"}]})
+    write_json(analysis_path, {"summary": "composition"})
+    web_app.shop_job_registry.register(job_id, job)
+    payload = web_app.shop_service.payload_for(job_id)
+    assert payload is not None
+    assert payload["extract"] == {"items": [{"id": "composition"}]}
+    assert "prompt" not in payload
+    assert_json_response(dispatch_get(web_app, f"/api/shop-job?id={job_id}"), 200, payload)
+    assert_sse_response(dispatch_get(web_app, f"/api/shop-events?id={job_id}"), payload)
+    assert_json_response(
+        dispatch_get(web_app, "/api/shop-job?id=missing-composition"),
+        404,
+        {"error": "TikTok Shop job not found"},
+    )
+    assert_sse_response(
+        dispatch_get(web_app, "/api/shop-events?id=missing-composition"),
+        {"status": "missing", "error": "TikTok Shop job not found"},
+    )
+
+    extract_path.write_text("{not json", encoding="utf-8")
+    get_handler = FakeHandler(f"/api/shop-job?id={job_id}")
     try:
-        def shop_job(job_id: str) -> Any:
-            return web_app.ShopJob(
-                id=job_id,
-                url="https://shop.tiktok.com/view/product/artifact-fixture",
-                source_type="product",
-                region="US",
-                max_pages=1,
-                review_pages=1,
-                analyze=True,
-                related_videos=False,
-                status="complete",
-                created_at=90.0,
-                updated_at=91.0,
-                output_dir=f"output/tiktok_shop/{job_id}",
-            )
+        web_app.Handler.do_GET(get_handler)
+    except json.JSONDecodeError:
+        pass
+    else:
+        raise AssertionError("composed Shop GET did not raise for invalid extract")
+    assert get_handler.responses == []
+    assert get_handler.wfile.getvalue() == b""
+    assert get_handler.ended is False
 
-        def paths_for(job_id: str) -> tuple[Path, Path]:
-            output_dir = web_app.OUTPUT_DIR / "tiktok_shop" / job_id
-            return output_dir / "shop_extract.json", output_dir / "shop_analysis.json"
-
-        def handler_for_get(job_id: str) -> FakeHandler:
-            handler = FakeHandler(f"/api/shop-job?id={job_id}")
-            handler.stream_shop_events = web_app.Handler.stream_shop_events.__get__(handler, FakeHandler)
-            return handler
-
-        for missing_name in ("shop_extract.json", "shop_analysis.json"):
-            job_id = f"shop-missing-{missing_name.removesuffix('.json')}"
-            registry.register(job_id, shop_job(job_id))
-            extract_path, analysis_path = paths_for(job_id)
-            write_json(extract_path, {"items": ["extract"]})
-            write_json(analysis_path, {"summary": "analysis"})
-            (extract_path if missing_name == "shop_extract.json" else analysis_path).unlink()
-            snapshot = registry.snapshot(job_id)
-            assert snapshot is not None
-            expected = public_shop_payload(web_app, snapshot)
-            assert expected["extract" if missing_name == "shop_extract.json" else "analysis"] is None
-            get_handler = handler_for_get(job_id)
-            web_app.Handler.do_GET(get_handler)
-            assert_json_response(get_handler, 200, expected)
-            sse_handler = FakeHandler()
-            web_app.Handler.stream_shop_events(sse_handler, job_id)
-            assert_sse_response(sse_handler, expected)
-
-        for invalid_name in ("shop_extract.json", "shop_analysis.json"):
-            job_id = f"shop-invalid-{invalid_name.removesuffix('.json')}"
-            registry.register(job_id, shop_job(job_id))
-            extract_path, analysis_path = paths_for(job_id)
-            write_json(extract_path, {"items": ["extract"]})
-            write_json(analysis_path, {"summary": "analysis"})
-            (extract_path if invalid_name == "shop_extract.json" else analysis_path).write_text("{not json", encoding="utf-8")
-
-            get_handler = handler_for_get(job_id)
-            try:
-                web_app.Handler.do_GET(get_handler)
-            except json.JSONDecodeError:
-                pass
-            else:
-                raise AssertionError(f"GET did not raise for invalid {invalid_name}")
-            assert get_handler.responses == []
-            assert get_handler.wfile.getvalue() == b""
-            assert get_handler.ended is False
-            assert get_handler.close_connection is False
-
-            sse_handler = FakeHandler()
-            try:
-                web_app.Handler.stream_shop_events(sse_handler, job_id)
-            except json.JSONDecodeError:
-                pass
-            else:
-                raise AssertionError(f"SSE did not raise for invalid {invalid_name}")
-            assert sse_handler.responses == [200]
-            assert sse_handler.header("Content-Type") == "text/event-stream; charset=utf-8"
-            assert sse_handler.header("Cache-Control") == "no-cache"
-            assert sse_handler.header("Connection") == "keep-alive"
-            assert sse_handler.wfile.getvalue() == b""
-            assert sse_handler.wfile.flush_count == 0
-            assert sse_handler.ended is True
-            assert sse_handler.close_connection is False
-    finally:
-        web_app.shop_job_registry = original_registry
+    sse_handler = FakeHandler(f"/api/shop-events?id={job_id}")
+    try:
+        web_app.Handler.do_GET(sse_handler)
+    except json.JSONDecodeError:
+        pass
+    else:
+        raise AssertionError("composed Shop SSE did not raise for invalid extract")
+    assert sse_handler.responses == [200]
+    assert sse_handler.header("Content-Type") == "text/event-stream; charset=utf-8"
+    assert sse_handler.header("Cache-Control") == "no-cache"
+    assert sse_handler.header("Connection") == "keep-alive"
+    assert sse_handler.wfile.getvalue() == b""
+    assert sse_handler.wfile.flush_count == 0
+    assert sse_handler.ended is True
+    assert sse_handler.close_connection is False
 
 
 def assert_sse_marker(web_app: Any) -> None:
@@ -983,7 +1196,7 @@ def assert_metrics_sse_marker(web_app: Any) -> None:
 
 
 def assert_shop_sse_marker(web_app: Any) -> None:
-    job = web_app.ShopJob(
+    job = ShopJob(
         id="shop-marker-fixture",
         url="https://shop.tiktok.com/view/product/marker",
         source_type="product",
@@ -1003,13 +1216,10 @@ def assert_shop_sse_marker(web_app: Any) -> None:
     analysis_path = output_dir / "shop_analysis.json"
     write_json(extract_path, {"items": [{"id": "extract-v1"}]})
     write_json(analysis_path, {"summary": {"id": "analysis-v1"}})
-    original_registry = web_app.shop_job_registry
     timestamps = iter((72.0, 73.0))
-    registry = web_app.JobRegistry(clock=lambda: next(timestamps))
+    registry = JobRegistry(clock=lambda: next(timestamps))
     registry.register(job.id, job)
-    web_app.shop_job_registry = registry
     handler = FakeHandler()
-    original_sleep = web_app.time.sleep
     original_snapshot = registry.snapshot
     original_read_json = web_app.read_json
     read_order: list[str] = []
@@ -1035,15 +1245,11 @@ def assert_shop_sse_marker(web_app: Any) -> None:
         read_order.append(path.name)
         return original_read_json(path)
 
-    try:
-        web_app.time.sleep = advance
-        with patch.object(registry, "snapshot", side_effect=recording_snapshot), patch.object(
-            web_app, "read_json", side_effect=recording_read_json
-        ):
-            web_app.Handler.stream_shop_events(handler, job.id)
-    finally:
-        web_app.time.sleep = original_sleep
-        web_app.shop_job_registry = original_registry
+    service = make_shop_service(web_app, registry, read_json_file=recording_read_json)
+    router = make_shop_router(service, sleep=advance)
+    with patch.object(registry, "snapshot", side_effect=recording_snapshot):
+        handler.path = f"/api/shop-events?id={job.id}"
+        dispatch_shop(router, "GET", handler)
     frames = [json.loads(line[6:]) for line in handler.wfile.getvalue().decode("utf-8").splitlines() if line.startswith("data: ")]
     assert [frame["status"] for frame in frames] == ["queued", "queued", "complete"]
     assert [frame["extract"] for frame in frames] == [
@@ -1187,6 +1393,8 @@ def run_contract() -> None:
         assert_post_order_contracts(web_app)
         assert_get_and_sse_contracts(web_app, jobs)
         assert_shop_artifact_failure_contract(web_app)
+        assert_shop_route_defaults_and_broken_pipe(web_app)
+        assert_shop_composition_contract(web_app)
         assert_sse_marker(web_app)
         assert_metrics_sse_marker(web_app)
         assert_shop_sse_marker(web_app)

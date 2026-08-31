@@ -3,15 +3,17 @@
 
 from __future__ import annotations
 
-import importlib
 import io
-import os
 import shutil
 import sys
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+
+from jobs.registry import JobRegistry
+from services import shop as shop_service
+from services.shop import ShopJob, ShopService
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,8 +34,8 @@ class FakeProcess:
         return self._code
 
 
-def make_job(web_app: Any, job_id: str) -> Any:
-    return web_app.ShopJob(
+def make_job(job_id: str) -> ShopJob:
+    return ShopJob(
         id=job_id,
         url="https://shop.tiktok.com/view/product/fixture",
         source_type="product",
@@ -48,17 +50,26 @@ def make_job(web_app: Any, job_id: str) -> Any:
 
 def run_contract() -> None:
     temporary = Path(tempfile.mkdtemp(prefix=".test-shop-prompt-redaction-", dir=ROOT))
-    original_environment = {key: os.environ.get(key) for key in ("UI_TEST_MODE", "APP_TEST_ROOT")}
-    web_app: Any | None = None
     try:
-        os.environ.update({"UI_TEST_MODE": "1", "APP_TEST_ROOT": str(temporary)})
-        sys.modules.pop("web_app", None)
-        web_app = importlib.import_module("web_app")
-        original_registry = web_app.shop_job_registry
-        registry = web_app.JobRegistry()
-        web_app.shop_job_registry = registry
+        registry = JobRegistry()
+        current_popen: Any = None
 
-        success_job = make_job(web_app, "shop-redaction-success")
+        def popen_factory(command: list[str], **kwargs: Any) -> FakeProcess:
+            assert current_popen is not None
+            return current_popen(command, **kwargs)
+
+        service = ShopService(
+            registry,
+            ROOT,
+            temporary / "output",
+            SCRIPTS_DIR,
+            lambda _path: None,
+            popen_factory,
+            threading.Thread,
+            lambda: "unused",
+        )
+
+        success_job = make_job("shop-redaction-success")
         success_command = ["python", "worker.py", "--prompt", SHORT_SECRET, "--prompt", SECRET, "--region", "US"]
         received_commands: list[list[str]] = []
 
@@ -67,14 +78,14 @@ def run_contract() -> None:
             return FakeProcess(f"fixture stdout {SHORT_SECRET} and {SECRET}\nordinary stdout unchanged  \n", 0)
 
         registry.register(success_job.id, success_job)
-        with patch.object(web_app.subprocess, "Popen", side_effect=successful_popen):
-            web_app.run_shop_command(success_job.id, success_command)
+        current_popen = successful_popen
+        service.run_command(success_job.id, success_command)
 
         assert received_commands == [success_command]
         assert success_command.count("--prompt") == 2
         assert success_command.count(SHORT_SECRET) == 1
         assert success_command.count(SECRET) == 1
-        assert web_app._shop_prompt_values(success_command) == [SECRET, SHORT_SECRET]
+        assert shop_service._shop_prompt_values(success_command) == [SECRET, SHORT_SECRET]
         success = registry.snapshot(success_job.id)
         assert success is not None
         success_log = "\n".join(success.log)
@@ -88,16 +99,16 @@ def run_contract() -> None:
             "ordinary stdout unchanged",
         ]
 
-        failure_job = make_job(web_app, "shop-redaction-failure")
+        failure_job = make_job("shop-redaction-failure")
         failure_command = ["python", "worker.py", "--prompt", SECRET]
         registry.register(failure_job.id, failure_job)
-        with patch.object(web_app.subprocess, "Popen", return_value=FakeProcess(f"failure stdout {SECRET}\n", 7)):
-            try:
-                web_app.run_shop_command(failure_job.id, failure_command)
-            except RuntimeError as exc:
-                error = str(exc)
-            else:
-                raise AssertionError("Expected a non-zero Shop command to raise RuntimeError")
+        current_popen = lambda _command, **_kwargs: FakeProcess(f"failure stdout {SECRET}\n", 7)
+        try:
+            service.run_command(failure_job.id, failure_command)
+        except RuntimeError as exc:
+            error = str(exc)
+        else:
+            raise AssertionError("Expected a non-zero Shop command to raise RuntimeError")
         failure = registry.snapshot(failure_job.id)
         assert failure is not None
         failure_log = "\n".join(failure.log)
@@ -108,25 +119,17 @@ def run_contract() -> None:
         assert error == "Command failed with exit code 7: python worker.py --prompt [redacted]"
         assert failure.log == ["$ python worker.py --prompt [redacted]", "failure stdout [redacted]"]
 
-        plain_job = make_job(web_app, "shop-redaction-plain")
+        plain_job = make_job("shop-redaction-plain")
         plain_command = ["python", "worker.py", "--region", "US"]
         registry.register(plain_job.id, plain_job)
-        with patch.object(web_app.subprocess, "Popen", return_value=FakeProcess("plain stdout\n", 0)):
-            web_app.run_shop_command(plain_job.id, plain_command)
+        current_popen = lambda _command, **_kwargs: FakeProcess("plain stdout\n", 0)
+        service.run_command(plain_job.id, plain_command)
         plain = registry.snapshot(plain_job.id)
         assert plain is not None
         assert plain.log == ["$ python worker.py --region US", "plain stdout"]
-        assert web_app._shop_command_display(["python", "worker.py", "--prompt"]) == "python worker.py --prompt"
-        assert web_app._shop_prompt_values(["python", "worker.py", "--prompt", ""]) == []
+        assert shop_service._shop_command_display(["python", "worker.py", "--prompt"]) == "python worker.py --prompt"
+        assert shop_service._shop_prompt_values(["python", "worker.py", "--prompt", ""]) == []
     finally:
-        if web_app is not None:
-            web_app.shop_job_registry = original_registry
-        sys.modules.pop("web_app", None)
-        for key, value in original_environment.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
         shutil.rmtree(temporary, ignore_errors=False)
         assert not temporary.exists()
 

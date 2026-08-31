@@ -224,12 +224,28 @@ class JsonStoreTests(unittest.TestCase):
         self.assertEqual(definitions, [])
 
         calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
-        # D2 moves Metrics artifact reads out of the serializer into GET/SSE/POST
-        # after snapshotting (+2); D3 does the same for two Shop artifacts (+4);
-        # D4 replaces one Amazon serializer read with GET/POST/SSE reads (+2).
+        # D2 and D4 add explicit GET/SSE/POST reads; 4.1 moves the six Shop
+        # reads into ShopService.payload_for, keeping web_app at this baseline.
         self.assertEqual(
             sum(isinstance(node.func, ast.Name) and node.func.id == "read_json" for node in calls),
-            55,
+            49,
+        )
+        shop_source_path = source_path.with_name("services") / "shop.py"
+        shop_tree = ast.parse(shop_source_path.read_text(encoding="utf-8"), filename=str(shop_source_path))
+        payload_for = next(
+            node for node in ast.walk(shop_tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "payload_for"
+        )
+        self.assertEqual(
+            sum(
+                isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "self"
+                and node.func.attr == "_read_json_file"
+                for node in ast.walk(payload_for)
+                if isinstance(node, ast.Call)
+            ),
+            2,
         )
         self.assertEqual(
             sum(isinstance(node.func, ast.Name) and node.func.id == "write_json" for node in calls),

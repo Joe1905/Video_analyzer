@@ -39,7 +39,7 @@ sys.path.insert(0, str(_BOOTSTRAP_SCRIPTS_DIR))
 from core.config import AppConfig
 from core.json_store import atomic_write_json, read_json
 from jobs.registry import JobRegistry
-from jobs.snapshots import snapshot_amazon_job, snapshot_download_job, snapshot_metrics_job, snapshot_shop_job
+from jobs.snapshots import snapshot_amazon_job, snapshot_download_job, snapshot_metrics_job
 from routes.health import register_health_route
 from routes.extract import register_extract_page
 from routes.harness_certificate import register_harness_certificate_route
@@ -48,10 +48,11 @@ from routes.lan_chat import register_lan_chat_page
 from routes.metrics import register_metrics_page
 from routes.report_pages import register_report_pages
 from routes.router import MethodNotAllowed, RouteNotFound, Router
-from routes.shop import register_shop_page
+from routes.shop import register_shop_api_routes, register_shop_page
 from routes.static_assets import register_static_asset_route
 from routes.taobao import register_taobao_page
 from routes.tool import register_tool_page
+from services.shop import ShopService
 
 # SociaVault TikTok endpoints (mirrored from sociavault_tiktok.py)
 TIKTOK_ENDPOINTS: dict[str, str] = {
@@ -368,25 +369,6 @@ class DownloadJob:
 
 
 @dataclass
-class ShopJob:
-    id: str
-    url: str
-    source_type: str
-    region: str
-    max_pages: int
-    review_pages: int
-    analyze: bool
-    related_videos: bool
-    prompt: str = ""
-    status: str = "queued"
-    created_at: float = field(default_factory=time.time)
-    updated_at: float = field(default_factory=time.time)
-    log: list[str] = field(default_factory=list)
-    output_dir: str | None = None
-    error: str | None = None
-
-
-@dataclass
 class MetricsJob:
     id: str
     target: str
@@ -418,6 +400,16 @@ download_job_registry = JobRegistry()
 shop_job_registry = JobRegistry()
 metrics_job_registry = JobRegistry()
 amazon_job_registry = JobRegistry()
+shop_service = ShopService(
+    registry=shop_job_registry,
+    root=ROOT,
+    output_dir=OUTPUT_DIR,
+    scripts_dir=SCRIPTS_DIR,
+    read_json_file=read_json,
+    popen_factory=subprocess.Popen,
+    thread_factory=threading.Thread,
+    job_id_factory=lambda: str(uuid.uuid4()),
+)
 social_jobs_lock = threading.Lock()
 social_jobs_running: set[str] = set()
 
@@ -802,6 +794,12 @@ def is_registered_post_route(path: str) -> bool:
     paths must retain the application's normal 404 contract instead of being
     reported as blocked mutations.
     """
+    try:
+        WEB_ROUTER.resolve("POST", path)
+    except (RouteNotFound, MethodNotAllowed):
+        pass
+    else:
+        return True
     if path in {
         "/api/global-user/select",
         "/api/feishu/bitable/records/update",
@@ -811,7 +809,6 @@ def is_registered_post_route(path: str) -> bool:
         "/api/download",
         "/api/chat/ask",
         "/api/chat/export-pdf",
-        "/api/shop-extract",
         "/api/video-metrics",
         "/api/report/run",
         "/api/report/delete",
@@ -3566,23 +3563,6 @@ def try_sociavault_video_info_download(job_id: str, url: str, source: str, resul
         return False
 
 
-def append_shop_log(job_id: str, line: str) -> None:
-    shop_job_registry.append_log(job_id, line)
-
-
-def _shop_command_display(command: list[str]) -> str:
-    display = list(command)
-    for index, value in enumerate(display[:-1]):
-        if value == "--prompt":
-            display[index + 1] = "[redacted]"
-    return " ".join(display)
-
-
-def _shop_prompt_values(command: list[str]) -> list[str]:
-    values = [command[index + 1] for index, value in enumerate(command[:-1]) if value == "--prompt" and command[index + 1]]
-    return sorted(dict.fromkeys(values), key=len, reverse=True)
-
-
 def _shop_product_nodes(payload: Any, limit: int = 40) -> list[dict[str, Any]]:
     found: list[dict[str, Any]] = []
 
@@ -3727,91 +3707,6 @@ def search_shop_catalog_products(payload: dict[str, Any]) -> dict[str, Any]:
     for product in products:
         product["already_added"] = product["product_id"] in existing
     return {"mode": mode, "query": target, "products": products}
-
-
-def run_shop_command(job_id: str, command: list[str]) -> None:
-    display_command = _shop_command_display(command)
-    prompt_values = _shop_prompt_values(command)
-    append_shop_log(job_id, f"$ {display_command}")
-    process = subprocess.Popen(
-        command,
-        cwd=ROOT,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-    )
-    assert process.stdout is not None
-    for line in process.stdout:
-        for prompt in prompt_values:
-            line = line.replace(prompt, "[redacted]")
-        append_shop_log(job_id, line)
-    code = process.wait()
-    if code != 0:
-        raise RuntimeError(f"Command failed with exit code {code}: {display_command}")
-
-
-def run_shop_job(job_id: str) -> None:
-    initial = shop_job_registry.snapshot(job_id)
-    if initial is None:
-        return
-    url = initial.url
-    source_type = initial.source_type
-    region = initial.region
-    max_pages = initial.max_pages
-    review_pages = initial.review_pages
-    analyze = initial.analyze
-    related_videos = initial.related_videos
-    prompt = initial.prompt
-    shop_job_registry.update_fields(job_id, {"status": "running"})
-
-    output_dir = OUTPUT_DIR / "tiktok_shop" / job_id
-    extract_path = output_dir / "shop_extract.json"
-    analysis_path = output_dir / "shop_analysis.json"
-    try:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        shop_job_registry.update_fields(job_id, {"output_dir": str(output_dir.relative_to(ROOT))})
-
-        command = [
-            "python",
-            str(SCRIPTS_DIR / "sociavault_tiktok_shop.py"),
-            url,
-            "--source-type",
-            source_type,
-            "--region",
-            region,
-            "--max-pages",
-            str(max_pages),
-            "--review-pages",
-            str(review_pages),
-            "--output",
-            str(extract_path),
-        ]
-        if related_videos:
-            command.append("--related-videos")
-        run_shop_command(job_id, command)
-
-        if analyze:
-            run_shop_command(
-                job_id,
-                [
-                    "python",
-                    str(SCRIPTS_DIR / "deepseek_shop_analyze.py"),
-                    str(extract_path),
-                    "--output",
-                    str(analysis_path),
-                    "--prompt",
-                    prompt,
-                ],
-            )
-
-        shop_job_registry.update_fields(job_id, {"status": "complete"})
-    except Exception as exc:
-        shop_job_registry.update_fields(
-            job_id,
-            {"status": "failed", "error": str(exc)},
-            final_log=str(exc),
-        )
 
 
 def append_metrics_log(job_id: str, line: str) -> None:
@@ -4233,10 +4128,6 @@ def build_video_feedback(filename: str = "", download_job_id: str = "") -> dict[
         "download": download_payload,
         "updated_at": time.time(),
     }
-
-
-def public_shop_job(job: ShopJob, *, extract: Any, analysis: Any) -> dict[str, Any]:
-    return snapshot_shop_job(job, extract=extract, analysis=analysis)
 
 
 def public_metrics_job(job: MetricsJob, result: Any) -> dict[str, Any]:
@@ -11371,20 +11262,6 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/download-events":
             job_id = parse_qs(parsed.query).get("id", [""])[0]
             return self.stream_download_events(job_id)
-        if parsed.path == "/api/shop-job":
-            job_id = parse_qs(parsed.query).get("id", [""])[0]
-            job = shop_job_registry.snapshot(job_id)
-            payload = public_shop_job(
-                job,
-                extract=read_json(OUTPUT_DIR / "tiktok_shop" / job.id / "shop_extract.json"),
-                analysis=read_json(OUTPUT_DIR / "tiktok_shop" / job.id / "shop_analysis.json"),
-            ) if job else None
-            if payload is None:
-                return json_response(self, HTTPStatus.NOT_FOUND, {"error": "TikTok Shop job not found"})
-            return json_response(self, HTTPStatus.OK, payload)
-        if parsed.path == "/api/shop-events":
-            job_id = parse_qs(parsed.query).get("id", [""])[0]
-            return self.stream_shop_events(job_id)
         if parsed.path == "/api/video-metrics-job":
             job_id = parse_qs(parsed.query).get("id", [""])[0]
             job = metrics_job_registry.snapshot(job_id)
@@ -11543,47 +11420,6 @@ class Handler(BaseHTTPRequestHandler):
             if payload is None:
                 try:
                     write_sse_event(self, {"status": "missing", "error": "Download job not found"})
-                except (BrokenPipeError, ConnectionResetError):
-                    pass
-                self.close_connection = True
-                return
-
-            marker = (
-                payload.get("status"),
-                payload.get("updated_at"),
-                len(payload.get("log") or []),
-                payload.get("error"),
-            )
-            try:
-                if marker != last_marker:
-                    write_sse_event(self, payload)
-                    last_marker = marker
-                if payload.get("status") not in {"queued", "running"}:
-                    self.close_connection = True
-                    return
-                time.sleep(1)
-            except (BrokenPipeError, ConnectionResetError):
-                self.close_connection = True
-                return
-
-    def stream_shop_events(self, job_id: str) -> None:
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "keep-alive")
-        self.end_headers()
-
-        last_marker: tuple[Any, ...] | None = None
-        while True:
-            job = shop_job_registry.snapshot(job_id)
-            payload = public_shop_job(
-                job,
-                extract=read_json(OUTPUT_DIR / "tiktok_shop" / job.id / "shop_extract.json"),
-                analysis=read_json(OUTPUT_DIR / "tiktok_shop" / job.id / "shop_analysis.json"),
-            ) if job else None
-            if payload is None:
-                try:
-                    write_sse_event(self, {"status": "missing", "error": "TikTok Shop job not found"})
                 except (BrokenPipeError, ConnectionResetError):
                     pass
                 self.close_connection = True
@@ -11797,6 +11633,12 @@ class Handler(BaseHTTPRequestHandler):
                         "path": parsed.path,
                     },
                 )
+        try:
+            route_match = WEB_ROUTER.resolve("POST", parsed.path)
+        except (RouteNotFound, MethodNotAllowed):
+            pass
+        else:
+            return route_match.handler(self, route_match.params)
         if parsed.path == "/api/global-user/select":
             try:
                 payload = self.read_json_body()
@@ -11839,8 +11681,6 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_chat_export_pdf()
         if parsed.path.startswith("/api/chat/sessions/") and parsed.path.endswith("/rename"):
             return self.handle_chat_rename_session(parsed.path)
-        if parsed.path == "/api/shop-extract":
-            return self.handle_shop_extract()
         if parsed.path == "/api/video-metrics":
             return self.handle_video_metrics()
         if parsed.path == "/api/report/run":
@@ -12196,57 +12036,6 @@ class Handler(BaseHTTPRequestHandler):
         thread.start()
         snapshot = download_job_registry.snapshot(job.id)
         return json_response(self, HTTPStatus.ACCEPTED, public_download_job(snapshot))
-
-    def handle_shop_extract(self) -> None:
-        content_length = int(self.headers.get("Content-Length", "0"))
-        body = self.rfile.read(content_length)
-        try:
-            payload = json.loads(body.decode("utf-8") or "{}")
-            url = str(payload.get("url", "")).strip()
-            source_type = str(payload.get("source_type") or "product")
-            region = str(payload.get("region") or os.getenv("SOCIAVAULT_REGION", "US")).strip().upper()
-            max_pages = int(payload.get("max_pages") or os.getenv("SOCIAVAULT_MAX_PAGES", "1"))
-            review_pages = int(payload.get("review_pages") or os.getenv("SOCIAVAULT_REVIEW_PAGES", "1"))
-            prompt = str(payload.get("prompt") or "").strip()
-            analyze = bool(payload.get("analyze", True))
-            related_videos = bool(payload.get("related_videos", False))
-            if source_type not in {"product", "details", "reviews", "shop", "search"}:
-                raise ValueError("source_type must be product, details, reviews, shop, or search")
-            if not url or len(url) > 2048:
-                raise ValueError("A TikTok Shop URL is required")
-            if max_pages < 1 or max_pages > 20:
-                raise ValueError("max_pages must be between 1 and 20")
-            if review_pages < 0 or review_pages > 20:
-                raise ValueError("review_pages must be between 0 and 20")
-            if len(prompt) > 6000:
-                raise ValueError("prompt is too long")
-        except (json.JSONDecodeError, ValueError) as exc:
-            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
-
-        job = ShopJob(
-            id=str(uuid.uuid4()),
-            url=url,
-            source_type=source_type,
-            region=region,
-            max_pages=max_pages,
-            review_pages=review_pages,
-            analyze=analyze,
-            related_videos=related_videos,
-            prompt=prompt,
-        )
-        shop_job_registry.register(job.id, job)
-        thread = threading.Thread(target=run_shop_job, args=(job.id,), daemon=True)
-        thread.start()
-        snapshot = shop_job_registry.snapshot(job.id)
-        return json_response(
-            self,
-            HTTPStatus.ACCEPTED,
-            public_shop_job(
-                snapshot,
-                extract=read_json(OUTPUT_DIR / "tiktok_shop" / snapshot.id / "shop_extract.json"),
-                analysis=read_json(OUTPUT_DIR / "tiktok_shop" / snapshot.id / "shop_analysis.json"),
-            ),
-        )
 
     def handle_video_metrics(self) -> None:
         content_length = int(self.headers.get("Content-Length", "0"))
@@ -13162,6 +12951,7 @@ TAOBAO_HTML_PATH = SCRIPTS_DIR / "static" / "taobao.html"
 TAOBAO_HTML = TAOBAO_HTML_PATH.read_text(encoding="utf-8") if TAOBAO_HTML_PATH.is_file() else ""
 
 register_shop_page(WEB_ROUTER, html_snapshot=SHOP_HTML, inject_nav=inject_unified_nav)
+register_shop_api_routes(WEB_ROUTER, shop_service)
 register_metrics_page(WEB_ROUTER, html_snapshot=METRICS_HTML, inject_nav=inject_unified_nav)
 register_taobao_page(WEB_ROUTER, html_snapshot=TAOBAO_HTML, inject_nav=inject_unified_nav)
 
