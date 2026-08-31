@@ -279,6 +279,8 @@ Phase 0.5B 可以多智能体并行，但文件所有权必须互斥：一条线
 
 固定计数口径：Phase 0.5 先在 4004 服务器新镜像中运行 **36 项构建前确定性回归**，即 32 个常规 Python、`test_hot_report_resume.py`、启用 `SELLERSPRITE_TOOL_MOCK_MODE=1` 的 `test_27_presets_mock_boundary.py`，以及 `scripts/test_mcp_bridge_cache.js`、`sellersprite_mcp_chat/test_stdio_mcp_client.js` 两个 Node 门禁；部署后再运行 **2 个 Playwright 脚本**，合计 38 个自动化脚本。Phase 1.1 新增 `test_core_http.py` 和 `test_http_response_contract.py`、Phase 1.2 新增 `test_core_config.py` 后，历史登记门禁为 **39 项构建前确定性回归 + 2 个部署后 Playwright = 41 个自动化脚本**。Phase 1.3 新增 `test_core_json_store.py` 后，当时登记门禁为 **40 项构建前确定性回归 + 2 个部署后 Playwright = 42 个自动化脚本**。Phase 1.R1 新增 `test_deploy_ui_4004_boundary.py` 后，当时登记门禁为 **41 项确定性回归 + 2 个部署后 Playwright = 43 个自动化脚本**。Phase 2.1 新增 `test_router.py` 后，当时登记门禁为 **42 项确定性回归 + 2 个部署后 Playwright = 44 个自动化脚本**。Phase 2.2A 新增 `test_health_route_contract.py` 后，当时登记门禁为 **43 项确定性回归 + 2 个部署后 Playwright = 45 个自动化脚本**。Phase 2.2B-1 新增 `test_report_page_routes_contract.py` 后，当时登记门禁为 **44 项确定性回归 + 2 个部署后 Playwright = 46 个自动化脚本**。Phase 2.2B-2 新增 `test_lan_tool_page_routes_contract.py` 后，当时登记门禁为 **45 项确定性回归 + 2 个部署后 Playwright = 47 个自动化脚本**。Phase 2.2B-3 新增 `test_harness_page_route_contract.py` 后，当时登记门禁为 **46 项确定性回归 + 2 个部署后 Playwright = 48 个自动化脚本**。Phase 2.2B-4 新增 `test_cached_page_routes_contract.py` 后，当时登记门禁为 **47 项确定性回归 + 2 个部署后 Playwright = 49 个自动化脚本**。Phase 2.2B-5 新增 `test_extract_page_route_contract.py` 后，当时登记门禁为 **48 项确定性回归 + 2 个部署后 Playwright = 50 个自动化脚本**。Phase 2.3A 新增 `test_static_asset_contract.py` 与 `test_harness_certificate_contract.py` 后，当前登记门禁为 **50 项确定性回归 + 2 个部署后 Playwright = 52 个自动化脚本**；其中部署边界脚本在服务器源码 checkout 执行，容器内执行 46 个常规确定性 Python、单独以 `HOT_VIDEO_REPORT_ENABLED=1` 和隔离临时根目录执行 `test_hot_report_resume.py`，再执行两个 Node 门禁。其他 smoke 容器显式使用 `HOT_VIDEO_REPORT_ENABLED=0` 与隔离 `APP_TEST_ROOT`。Node stdio 门禁的实际路径为 `sellersprite_mcp_chat/test_stdio_mcp_client.js`。两个 Playwright 都覆盖桌面和移动 viewport。`test_api.py` 是吞异常的固定历史数据探针，`test_low_reasoning_video_insight.py` 会调用付费外部模型且失败仍返回成功，二者只作为人工实验，不计入阶段门禁。
 
+2026-08-31 脚本资产治理更新：上段历史计数中提到的两个非门禁人工探针已删除；当前正式基线以 Phase 4.1 的 **54 项确定性回归 + 2 个 Playwright = 56 项**为准，不因删除人工探针而变化。
+
 Phase 0.5 最终证据（2026-08-28）：源码清理提交为 `0618559`，回归夹具修复为 `bd864cd`、`e362e7b`，递归排除历史 Python 字节码的构建修复为 `d1d4d2c`；服务器部署镜像为 `a70c61cd2e9f`。最终 36 项构建前回归失败数为 0，两个部署后 Playwright 均通过；`/healthz` 和 12 个活动页面为 200。V2 项目树、镜像、容器环境、生效 Compose 和进程扫描均通过。项目外回滚备份覆盖 11 组、128 个文件、3,788,317 字节，manifest SHA-256 为 `7f1c552462b943e733424e1f32c1a952a162256d3d247696b23dfdc70c61a91f`；备份保留原权限，未来恢复其中 root 文件时需要 `sudo`。
 
 ## 五、Phase 1：抽取低风险基础设施
@@ -619,6 +621,8 @@ docker-compose -p short-video-analyzer-ui-4004 run --rm --no-deps \
 6. 页面变更在 4004 隔离端口验证，不构建、停止或部署 4002/4003。
 7. 一个提交只迁移一个稳定边界，可独立回退。
 
+一次性脚本不计为长期资产。创建时必须放入 `scripts/temporary/` 并登记 owner、用途、创建/到期日期、删除/转正条件；最长 TTL 14 天，且所属阶段验收完成时应立即处置。`test_deploy_ui_4004_boundary.py` 复用现有宿主门禁校验清单、路径和到期状态，不新增独立 TTL 测试脚本。2026-08-31 首次治理删除了两个历史人工探针、旧语法修复器、硬编码跨环境同步器和一次性会话改名迁移器；它们均无生产、Compose、部署或正式门禁调用。日报 checkpoint 复制/修复/汇总重建、邻聊维护和 4004 部署脚本属于已审计的长期恢复/运维资产，不按一次性 TTL 删除。
+
 ## 十三、阶段门禁与完成定义
 
 ```text
@@ -646,7 +650,7 @@ Phase 0 测试基线
 
 ## 十四、下一批实施任务
 
-Phase 0、0.5、1.1、2026-08-29 两个补漏阶段、Phase 1.2、Phase 1.3、**Phase 2.1～2.3D**、**Phase 3.0～3.4** 与 **Phase 4.1** 已完成。Shop 已形成首个完整的 `web_app → routes → services → jobs/core` 垂直切片，并通过服务器 56/56 门禁和阶段后审计。下一步实施 **Phase 4.2 Metrics**，但第一批只能做只读盘点和独立测试冻结：锁定 endpoint/target 校验、`music-popular` 空 target、真实命令映射、worker 成败、`result.json` 缺失/无效 JSON、120 条日志、深复制、SSE marker/BrokenPipe、POST 精确时序、领域动态环境读取当前为 0，以及现有 UI_TEST 拦截顺序。冻结提交通过完整门禁后，下一独立结构提交再交付 `services/metrics.py` 与 `routes/metrics.py`。Amazon、Download、代理、聊天和日报不得在 4.2 顺手迁移。
+Phase 0、0.5、1.1、2026-08-29 两个补漏阶段、Phase 1.2、Phase 1.3、**Phase 2.1～2.3D**、**Phase 3.0～3.4** 与 **Phase 4.1** 已完成。Shop 已形成首个完整的 `web_app → routes → services → jobs/core` 垂直切片，并通过服务器 56/56 门禁和阶段后审计。Phase 4.2 前先完成一次独立脚本资产治理：清理已过期的一次性脚本、建立最长 14 天 TTL 清单与现有宿主门禁，且不改变 56 项正式回归基线。治理提交验证通过后再实施 **Phase 4.2 Metrics**；第一批只能复用现有测试文件做只读盘点和独立行为冻结，不新建 `test_*.py`：锁定 endpoint/target 校验、`music-popular` 空 target、真实命令映射、worker 成败、`result.json` 缺失/无效 JSON、120 条日志、深复制、SSE marker/BrokenPipe、POST 精确时序、领域动态环境读取当前为 0，以及现有 UI_TEST 拦截顺序。冻结提交通过完整门禁后，下一独立结构提交再交付 `services/metrics.py` 与 `routes/metrics.py`。Amazon、Download、代理、聊天和日报不得在 4.2 顺手迁移。
 
 Phase 2.3 继续复用现有 Terra 子智能体，避免为同一长期任务无限新增执行记录，并按以下门槛推进：
 

@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "max_ttl_days": 14,
+  "active_phase": null,
+  "scripts": []
+}
