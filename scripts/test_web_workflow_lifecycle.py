@@ -243,6 +243,7 @@ def assert_real_metrics_worker_registry_updates(web_app: Any, runner: Any) -> No
             web_app.subprocess,
             "Popen",
             return_value=FakeMetricsProcess(["fixture stdout  \n", "second stdout\r\n"], 0),
+            create=True,
         ) as popen:
             web_app.run_metrics_command(command_log_id, command)
         popen.assert_called_once()
@@ -257,6 +258,7 @@ def assert_real_metrics_worker_registry_updates(web_app: Any, runner: Any) -> No
             web_app.subprocess,
             "Popen",
             return_value=FakeMetricsProcess([], 9),
+            create=True,
         ):
             try:
                 web_app.run_metrics_command(command_failure_id, failure_command)
