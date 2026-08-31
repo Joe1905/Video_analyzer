@@ -224,9 +224,11 @@ class JsonStoreTests(unittest.TestCase):
         self.assertEqual(definitions, [])
 
         calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
+        # D2 moves Metrics artifact reads out of the serializer into GET/SSE/POST
+        # after snapshotting, so the explicit read_json call count gains two.
         self.assertEqual(
             sum(isinstance(node.func, ast.Name) and node.func.id == "read_json" for node in calls),
-            47,
+            49,
         )
         self.assertEqual(
             sum(isinstance(node.func, ast.Name) and node.func.id == "write_json" for node in calls),
