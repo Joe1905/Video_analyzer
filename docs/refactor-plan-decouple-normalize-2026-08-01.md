@@ -623,6 +623,8 @@ docker-compose -p short-video-analyzer-ui-4004 run --rm --no-deps \
 
 一次性脚本不计为长期资产。创建时必须放入 `scripts/temporary/` 并登记 owner、用途、创建/到期日期、删除/转正条件；最长 TTL 14 天，且所属阶段验收完成时应立即处置。`test_deploy_ui_4004_boundary.py` 复用现有宿主门禁校验清单、路径和到期状态，不新增独立 TTL 测试脚本。2026-08-31 首次治理删除了两个历史人工探针、旧语法修复器、硬编码跨环境同步器和一次性会话改名迁移器；它们均无生产、Compose、部署或正式门禁调用。日报 checkpoint 复制/修复/汇总重建、邻聊维护和 4004 部署脚本属于已审计的长期恢复/运维资产，不按一次性 TTL 删除。
 
+2026-08-31 脚本资产治理已完成（`4d09761`、`b52cea9`）：共新增 144 行、删除 501 行，净减少 357 行；删除 3 个已过期的一次性工具和 2 个非门禁人工探针，新增长期测试脚本为 0。清单当前 `active_phase=null`、临时条目为空，既有宿主门禁覆盖清单/目录双向一致、任意扩展名、14 天 UTC、未来日期、过期、阶段清空、临时 `test_*.py` 和正式 56 项发现口径。审计同时把保留的日报 checkpoint 修复示例硬锁到 legacy `docker-compose`、`short-video-analyzer-ui-4004`，未改变其 dry-run、备份或数据库逻辑。最终服务器提交 `b52cea99`、4004 镜像 `sha256:c86ade697520136fbd3010097a125ecc940dafb444fbc1a2cd295f115be2a960`；49 个普通 Python、3 个特殊 Python、2 个 Node 和 2 个 Playwright 共 56/56 通过。`/`、`/chat`、`/amazon`、`/chuhaijiang`、`/report`、`/report/player`、`/extract`、`/shop`、`/tool`、`/metrics`、`/lan-chat`、`/proxy`、`/taobao`、`/harness` 共 14 个页面全部 200，4 个通用未知 provider 全部 400，三端健康均为 200，4004 近期严重日志匹配为 0，服务器 checkout clean；4002/4003 镜像和启动时间未变化。
+
 ## 十三、阶段门禁与完成定义
 
 ```text
@@ -650,7 +652,7 @@ Phase 0 测试基线
 
 ## 十四、下一批实施任务
 
-Phase 0、0.5、1.1、2026-08-29 两个补漏阶段、Phase 1.2、Phase 1.3、**Phase 2.1～2.3D**、**Phase 3.0～3.4** 与 **Phase 4.1** 已完成。Shop 已形成首个完整的 `web_app → routes → services → jobs/core` 垂直切片，并通过服务器 56/56 门禁和阶段后审计。Phase 4.2 前先完成一次独立脚本资产治理：清理已过期的一次性脚本、建立最长 14 天 TTL 清单与现有宿主门禁，且不改变 56 项正式回归基线。治理提交验证通过后再实施 **Phase 4.2 Metrics**；第一批只能复用现有测试文件做只读盘点和独立行为冻结，不新建 `test_*.py`：锁定 endpoint/target 校验、`music-popular` 空 target、真实命令映射、worker 成败、`result.json` 缺失/无效 JSON、120 条日志、深复制、SSE marker/BrokenPipe、POST 精确时序、领域动态环境读取当前为 0，以及现有 UI_TEST 拦截顺序。冻结提交通过完整门禁后，下一独立结构提交再交付 `services/metrics.py` 与 `routes/metrics.py`。Amazon、Download、代理、聊天和日报不得在 4.2 顺手迁移。
+Phase 0、0.5、1.1、2026-08-29 两个补漏阶段、Phase 1.2、Phase 1.3、**Phase 2.1～2.3D**、**Phase 3.0～3.4**、**Phase 4.1** 与脚本资产 TTL 治理已完成。Shop 已形成首个完整的 `web_app → routes → services → jobs/core` 垂直切片，TTL 治理删除过期脚本并建立最长 14 天的 fail-closed 门禁，两阶段均通过服务器 56/56 和阶段后审计。下一步实施 **Phase 4.2 Metrics**；第一批只能复用现有测试文件做只读盘点和独立行为冻结，不新建 `test_*.py`：锁定 endpoint/target 校验、`music-popular` 空 target、真实命令映射、worker 成败、`result.json` 缺失/无效 JSON、120 条日志、深复制、SSE marker/BrokenPipe、POST 精确时序、领域动态环境读取当前为 0，以及现有 UI_TEST 拦截顺序。冻结提交通过完整门禁后，下一独立结构提交再交付 `services/metrics.py` 与 `routes/metrics.py`。Amazon、Download、代理、聊天和日报不得在 4.2 顺手迁移。
 
 Phase 2.3 继续复用现有 Terra 子智能体，避免为同一长期任务无限新增执行记录，并按以下门槛推进：
 
