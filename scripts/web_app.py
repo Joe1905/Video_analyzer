@@ -41,6 +41,7 @@ from jobs.registry import JobRegistry
 from routes.amazon import register_amazon_routes
 from routes.analyze import register_analyze_routes
 from routes.downloads import register_download_routes
+from routes.postprocess import register_postprocess_routes
 from routes.translate import register_translate_routes
 from routes.upload import register_upload_routes
 from routes.health import register_health_route
@@ -59,6 +60,7 @@ from services.amazon import AmazonService
 from services.analyze import AnalyzeService
 from services.downloads import DownloadService, validate_short_video_url
 from services.metrics import MetricsService
+from services.postprocess import PostprocessService
 from services.shop import ShopService
 from services.translate import TranslateService
 from services.upload import UploadService
@@ -772,7 +774,6 @@ def is_registered_post_route(path: str) -> bool:
         "/api/report/settings",
         "/api/report/translate",
         "/api/report/backfill-covers",
-        "/api/postprocess",
         "/api/feedback",
         "/api/social-context/refresh",
         "/api/social-insights",
@@ -10772,8 +10773,6 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/report/backfill-covers":
             result = backfill_cover_urls()
             return json_response(self, HTTPStatus.OK, result)
-        if parsed.path == "/api/postprocess":
-            return self.handle_postprocess()
         if parsed.path == "/api/feedback":
             return self.handle_feedback()
         if parsed.path == "/api/social-context/refresh":
@@ -11163,46 +11162,6 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             with zip_path.open("rb") as archive_file:
                 shutil.copyfileobj(archive_file, self.wfile, length=64 * 1024)
-
-    def handle_postprocess(self) -> None:
-        content_length = int(self.headers.get("Content-Length", "0"))
-        body = self.rfile.read(content_length)
-        try:
-            payload = json.loads(body.decode("utf-8") or "{}")
-            filename = safe_filename(str(payload.get("filename", "")))
-            analysis_prompt = str(payload.get("analysis_prompt") or "").strip()
-            analysis_source = str(payload.get("analysis_source") or payload.get("source") or "standard").strip()
-            if analysis_source not in {"standard", "direct"}:
-                raise ValueError("analysis_source must be standard or direct")
-        except (json.JSONDecodeError, ValueError) as exc:
-            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
-
-        output_dir = output_dir_for_filename(filename)
-        analysis_name = "direct_analysis.json" if analysis_source == "direct" else "analysis.json"
-        audit_names = ("direct_audit_result.json", "direct_audit_result_zh.json") if analysis_source == "direct" else ("audit_result.json", "audit_result_zh.json")
-        if not (output_dir / analysis_name).is_file():
-            if analysis_source == "direct":
-                output_dir.mkdir(parents=True, exist_ok=True)
-                (output_dir / "analysis_mode.txt").write_text("direct_video", encoding="utf-8")
-                (output_dir / "report_source.txt").write_text("direct", encoding="utf-8")
-                video_queue.enqueue(filename, "analyze")
-                video_queue.enqueue(filename, "report")
-                return json_response(self, HTTPStatus.ACCEPTED, {"status": "queued", "filename": filename, "queued": ["analyze", "report"]})
-            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": f"{analysis_name} not found for {filename}"})
-
-        # Save user prompt for DeepSeek report
-        output_dir.mkdir(parents=True, exist_ok=True)
-        (output_dir / "report_source.txt").write_text(analysis_source, encoding="utf-8")
-        if analysis_prompt:
-            (output_dir / "analysis_prompt.txt").write_text(analysis_prompt, encoding="utf-8")
-
-        for report_name in audit_names:
-            report_path = output_dir / report_name
-            if report_path.is_file():
-                report_path.unlink()
-
-        video_queue.enqueue(filename, "report")
-        return json_response(self, HTTPStatus.ACCEPTED, {"status": "queued", "filename": filename})
 
     def handle_feedback(self) -> None:
         content_length = int(self.headers.get("Content-Length", "0"))
@@ -11839,6 +11798,11 @@ translate_service = TranslateService(
     run_factory=subprocess.run,
     environ=os.environ,
 )
+postprocess_service = PostprocessService(
+    output_dir_for_filename=output_dir_for_filename,
+    safe_filename=safe_filename,
+    queue_enqueue=video_queue.enqueue,
+)
 
 register_shop_page(WEB_ROUTER, html_snapshot=SHOP_HTML, inject_nav=inject_unified_nav)
 register_shop_api_routes(WEB_ROUTER, shop_service)
@@ -11854,6 +11818,7 @@ register_upload_routes(
 )
 register_analyze_routes(WEB_ROUTER, analyze_service)
 register_translate_routes(WEB_ROUTER, translate_service)
+register_postprocess_routes(WEB_ROUTER, postprocess_service)
 register_taobao_page(WEB_ROUTER, html_snapshot=TAOBAO_HTML, inject_nav=inject_unified_nav)
 
 

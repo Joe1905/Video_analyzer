@@ -30,10 +30,12 @@ from services.metrics import MetricsJob, MetricsService
 from services.amazon import AmazonJob, AmazonService, parse_json_from_process_output
 from services.analyze import AnalyzeService
 from services.downloads import DownloadJob, DownloadService
+from services.postprocess import PostprocessService
 from services.translate import TranslateService
 from services.upload import UploadService
 from jobs.registry import JobRegistry
 from routes.analyze import register_analyze_routes
+from routes.postprocess import register_postprocess_routes
 from routes.router import Router
 from routes.translate import register_translate_routes
 from routes.upload import MAX_UPLOAD_BYTES as UPLOAD_MAX_UPLOAD_BYTES, register_upload_routes
@@ -631,11 +633,19 @@ def assert_postprocess_http_contract(web_app: Any, port: int) -> None:
         for name in names:
             (output_dir / name).write_text(f"fixture {name}", encoding="utf-8")
 
+    def router_for(queue: RecordingPostprocessQueue) -> Router:
+        service = PostprocessService(
+            output_dir_for_filename=registry_style_output_dir,
+            safe_filename=web_app.safe_filename,
+            queue_enqueue=queue.enqueue,
+        )
+        router = Router()
+        register_postprocess_routes(router, service)
+        return router
+
     reset_output()
     queue = RecordingPostprocessQueue(output_dir)
-    with patch.object(web_app, "output_dir_for_filename", side_effect=registry_style_output_dir), patch.object(
-        web_app, "video_queue", queue
-    ):
+    with patch.object(web_app, "WEB_ROUTER", router_for(queue)):
         for payload, error in (
             ({}, "Missing filename"),
             ({"filename": filename, "analysis_source": "invalid"}, "analysis_source must be standard or direct"),
@@ -680,6 +690,7 @@ def assert_postprocess_http_contract(web_app: Any, port: int) -> None:
         )
         assert status == 202 and standard == {"status": "queued", "filename": filename}
         assert queue.calls == [(filename, "report")]
+        assert output_requests == [filename]
         queued_standard = queue.snapshots[-1][2]
         assert queued_standard["report_source.txt"] == "standard"
         assert queued_standard["analysis_prompt.txt"] == "standard prompt"
@@ -738,7 +749,7 @@ def assert_postprocess_http_contract(web_app: Any, port: int) -> None:
         ):
             reset_output()
             failing_queue = RecordingPostprocessQueue(output_dir, fail_on=failed_job)
-            with patch.object(web_app, "video_queue", failing_queue):
+            with patch.object(web_app, "WEB_ROUTER", router_for(failing_queue)):
                 try:
                     json_request(port, "POST", "/api/postprocess", {"filename": filename, "source": "direct"})
                 except http.client.RemoteDisconnected:
@@ -750,10 +761,15 @@ def assert_postprocess_http_contract(web_app: Any, port: int) -> None:
             assert (output_dir / "report_source.txt").read_text(encoding="utf-8") == "direct"
 
         reset_output()
+        blocked_router = Router()
+        blocked_router.post(
+            "/api/postprocess",
+            lambda _handler, _params: (_ for _ in ()).throw(
+                AssertionError("UI_TEST gate must run before Postprocess route and body parsing")
+            ),
+        )
         with patch.object(web_app, "ui_test_mode_allows_live_write", return_value=False), patch.object(
-            web_app.Handler,
-            "handle_postprocess",
-            side_effect=AssertionError("UI_TEST gate must run before Postprocess body parsing and business"),
+            web_app, "WEB_ROUTER", blocked_router
         ):
             status, _headers, blocked = json_request(
                 port, "POST", "/api/postprocess", body=b"{", content_type="application/json"
@@ -2399,9 +2415,19 @@ def run_lifecycle() -> None:
                 )
             assert status == 200 and translated == {"status": "translated", "filename": filename, "tab": "content"}
 
-            status, _headers, postprocessed = json_request(
-                port, "POST", "/api/postprocess", {"filename": filename, "analysis_prompt": "fixture"}
+            postprocess_router = Router()
+            register_postprocess_routes(
+                postprocess_router,
+                PostprocessService(
+                    output_dir_for_filename=lambda requested: web_app.OUTPUT_DIR / requested,
+                    safe_filename=web_app.safe_filename,
+                    queue_enqueue=fake_queue.enqueue,
+                ),
             )
+            with patch.object(web_app, "WEB_ROUTER", postprocess_router):
+                status, _headers, postprocessed = json_request(
+                    port, "POST", "/api/postprocess", {"filename": filename, "analysis_prompt": "fixture"}
+                )
             assert status == 202 and postprocessed["status"] == "queued"
             assert fake_queue.calls[-1] == (filename, "report")
 
