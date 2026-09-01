@@ -28,11 +28,70 @@ from uuid import UUID
 from services.shop import ShopJob, ShopService
 from services.metrics import MetricsJob, MetricsService
 from services.amazon import AmazonJob, AmazonService, parse_json_from_process_output
+from services.downloads import DownloadJob, DownloadService
+from jobs.registry import JobRegistry
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
+
+
+def make_download_service(
+    web_app: Any,
+    registry: JobRegistry,
+    *,
+    read_json_file: Any | None = None,
+    write_json_file: Any | None = None,
+    run_factory: Any | None = None,
+    thread_factory: Any | None = None,
+    get_cached: Any | None = None,
+    store_response: Any | None = None,
+    register_video: Any | None = None,
+    register_from_payload: Any | None = None,
+    make_web_manual_visible: Any | None = None,
+    start_social_context_job: Any | None = None,
+    analyzer_media_is_valid: Any | None = None,
+    ensure_analyzer_media_or_delete: Any | None = None,
+    ensure_us_proxy: Any | None = None,
+    requests_get: Any | None = None,
+) -> DownloadService:
+    generated_ids = iter(range(1, 10_000))
+    return DownloadService(
+        registry=registry,
+        root=web_app.ROOT,
+        videos_dir=web_app.VIDEOS_DIR,
+        output_dir=web_app.OUTPUT_DIR,
+        scripts_dir=web_app.SCRIPTS_DIR,
+        read_json_file=read_json_file or web_app.read_json,
+        write_json_file=write_json_file or web_app.atomic_write_json,
+        run_factory=run_factory or (lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="")),
+        thread_factory=thread_factory or threading.Thread,
+        job_id_factory=lambda: f"download-lifecycle-fixture-{next(generated_ids)}",
+        fallback_video_id_factory=lambda: "download-fallback-fixture",
+        environ=os.environ,
+        get_cached=get_cached or web_app.get_cached,
+        store_response=store_response or web_app.store_response,
+        video_cache_request=web_app.video_cache_request,
+        video_cache_metadata=web_app.video_cache_metadata,
+        with_download_cache_meta=web_app.with_download_cache_meta,
+        register_video=register_video or web_app.register_video,
+        register_from_payload=register_from_payload or web_app.register_from_payload,
+        platform_for_url=web_app.platform_for_url,
+        video_source_hidden=web_app.video_source_hidden,
+        make_web_manual_visible=make_web_manual_visible or web_app.make_web_manual_visible,
+        start_social_context_job=start_social_context_job or web_app.start_social_context_job,
+        safe_filename=web_app.safe_filename,
+        analyzer_media_is_valid=analyzer_media_is_valid or web_app.analyzer_media_is_valid,
+        ensure_analyzer_media_or_delete=ensure_analyzer_media_or_delete or web_app.ensure_analyzer_media_or_delete,
+        ensure_us_proxy=ensure_us_proxy or web_app.ensure_us_proxy,
+        requests_get=requests_get or (lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected requests.get"))),
+        cache_log_label=web_app.cache_log_label,
+        normalize_video_source=web_app.normalize_video_source,
+        default_source=web_app.SOURCE_API_UPLOAD,
+        video_media_ttl_seconds=web_app.APP_CONFIG.video_media_ttl_seconds,
+        default_sociavault_api_base=web_app.DEFAULT_SOCIA_VAULT_API_BASE,
+    )
 
 
 def request(
@@ -139,89 +198,65 @@ class FakeVideoQueue:
         return {}
 
 
-def assert_real_download_worker_registry_updates(web_app: Any, runner: Any) -> None:
-    original_registry = web_app.download_job_registry
-    registry = web_app.JobRegistry()
-    web_app.download_job_registry = registry
-    try:
-        success_id = "worker-success"
-        success_filename = "worker-success.mp4"
-        registry.register(
-            success_id,
-            web_app.DownloadJob(id=success_id, url="https://www.tiktok.com/@fixture/video/worker"),
-        )
-        web_app.VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
-        (web_app.VIDEOS_DIR / success_filename).write_bytes(b"fixture")
+def assert_real_download_worker_registry_updates(web_app: Any) -> None:
+    registry = JobRegistry()
+    service = make_download_service(web_app, registry)
+    success_id = "worker-success"
+    success_filename = "worker-success.mp4"
+    registry.register(success_id, DownloadJob(id=success_id, url="https://www.tiktok.com/@fixture/video/worker"))
+    web_app.VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
+    (web_app.VIDEOS_DIR / success_filename).write_bytes(b"fixture")
 
-        def cached_success(_job_id: str, _url: str, _source: str, result_path: Path) -> bool:
-            result_path.write_text(
-                json.dumps({"filename": success_filename, "meta": {"source": "worker"}}),
-                encoding="utf-8",
-            )
+    def cached_success(_job_id: str, _url: str, _source: str, result_path: Path) -> bool:
+        result_path.write_text(json.dumps({"filename": success_filename, "meta": {"source": "worker"}}), encoding="utf-8")
+        return True
+
+    with patch.object(service, "try_cached_download_result", side_effect=cached_success):
+        service.run_job(success_id)
+    success = registry.snapshot(success_id)
+    assert success is not None and success.status == "complete"
+    assert success.filename == success_filename
+    assert success.result == {"filename": success_filename, "meta": {"source": "worker"}}
+    assert success.result is not None
+    success.result["meta"]["source"] = "mutated"
+    assert registry.snapshot(success_id).result == {"filename": success_filename, "meta": {"source": "worker"}}
+
+    failure_id = "worker-failure"
+    registry.register(failure_id, DownloadJob(id=failure_id, url="https://www.tiktok.com/@fixture/video/failure"))
+
+    def cached_failure(job_id: str, _url: str, _source: str, _result_path: Path) -> bool:
+        service.append_log(job_id, "fixture useful failure")
+        raise RuntimeError("fixture raw failure")
+
+    with patch.object(service, "try_cached_download_result", side_effect=cached_failure):
+        service.run_job(failure_id)
+    failure = registry.snapshot(failure_id)
+    assert failure is not None and failure.status == "failed"
+    assert failure.error == "fixture useful failure" and failure.log[-1] == "fixture raw failure"
+
+    for job_id, result, expected_error in (
+        ("worker-missing-filename", {}, "Downloader did not return a video filename"),
+        ("worker-missing-file", {"filename": "worker-absent.mp4"}, "Downloaded file not found: worker-absent.mp4"),
+    ):
+        registry.register(job_id, DownloadJob(id=job_id, url=f"https://www.tiktok.com/@fixture/video/{job_id}"))
+
+        def cached_incomplete(_job_id: str, _url: str, _source: str, result_path: Path, *, payload=result) -> bool:
+            result_path.write_text(json.dumps(payload), encoding="utf-8")
             return True
 
-        with patch.object(web_app, "try_cached_download_result", side_effect=cached_success):
-            runner(success_id)
-        success = registry.snapshot(success_id)
-        assert success is not None
-        assert success.status == "complete"
-        assert success.filename == success_filename
-        assert success.result == {"filename": success_filename, "meta": {"source": "worker"}}
-        assert success.result is not None
-        success.result["meta"]["source"] = "mutated"
-        assert registry.snapshot(success_id).result == {
-            "filename": success_filename,
-            "meta": {"source": "worker"},
-        }
-
-        failure_id = "worker-failure"
-        registry.register(
-            failure_id,
-            web_app.DownloadJob(id=failure_id, url="https://www.tiktok.com/@fixture/video/failure"),
-        )
-
-        def cached_failure(job_id: str, _url: str, _source: str, _result_path: Path) -> bool:
-            web_app.append_download_log(job_id, "fixture useful failure")
-            raise RuntimeError("fixture raw failure")
-
-        with patch.object(web_app, "try_cached_download_result", side_effect=cached_failure):
-            runner(failure_id)
-        failure = registry.snapshot(failure_id)
-        assert failure is not None
-        assert failure.status == "failed"
-        assert failure.error == "fixture useful failure"
-        assert failure.log[-1] == "fixture raw failure"
-
-        for job_id, result, expected_error in (
-            ("worker-missing-filename", {}, "Downloader did not return a video filename"),
-            ("worker-missing-file", {"filename": "worker-absent.mp4"}, "Downloaded file not found: worker-absent.mp4"),
-        ):
-            registry.register(
-                job_id,
-                web_app.DownloadJob(id=job_id, url=f"https://www.tiktok.com/@fixture/video/{job_id}"),
-            )
-
-            def cached_incomplete(_job_id: str, _url: str, _source: str, result_path: Path, *, payload=result) -> bool:
-                result_path.write_text(json.dumps(payload), encoding="utf-8")
-                return True
-
-            with patch.object(web_app, "try_cached_download_result", side_effect=cached_incomplete):
-                runner(job_id)
-            failed = registry.snapshot(job_id)
-            assert failed is not None and failed.status == "failed"
-            assert failed.error == expected_error
-            assert failed.log[-1] == expected_error
-    finally:
-        web_app.download_job_registry = original_registry
+        with patch.object(service, "try_cached_download_result", side_effect=cached_incomplete):
+            service.run_job(job_id)
+        failed = registry.snapshot(job_id)
+        assert failed is not None and failed.status == "failed"
+        assert failed.error == expected_error and failed.log[-1] == expected_error
 
 
-def assert_download_command_cache_and_fallback_contract(web_app: Any, runner: Any) -> None:
-    original_registry = web_app.download_job_registry
-    registry = web_app.JobRegistry()
-    web_app.download_job_registry = registry
+def assert_download_command_cache_and_fallback_contract(web_app: Any) -> None:
+    registry = JobRegistry()
+    service = make_download_service(web_app, registry)
     try:
         command_id = "download-command-success"
-        registry.register(command_id, web_app.DownloadJob(id=command_id, url="https://www.tiktok.com/@fixture/video/command"))
+        registry.register(command_id, DownloadJob(id=command_id, url="https://www.tiktok.com/@fixture/video/command"))
         command = ["python", "fixture-download.py", "--url", "fixture"]
         calls: list[tuple[list[str], dict[str, Any]]] = []
 
@@ -230,9 +265,9 @@ def assert_download_command_cache_and_fallback_contract(web_app: Any, runner: An
             return SimpleNamespace(returncode=0, stdout="first stdout\nsecond stdout\n")
 
         with patch.dict(os.environ, {"DOWNLOAD_COMMAND_TIMEOUT": "37"}), patch.object(
-            web_app.subprocess, "run", side_effect=successful_run
+            service, "_run_factory", side_effect=successful_run
         ):
-            web_app.run_download_command(command_id, command)
+            service.run_command(command_id, command)
         assert calls == [(
             command,
             {
@@ -248,10 +283,10 @@ def assert_download_command_cache_and_fallback_contract(web_app: Any, runner: An
         assert command_job.log == ["$ python fixture-download.py --url fixture", "first stdout", "second stdout"]
 
         failed_command_id = "download-command-failure"
-        registry.register(failed_command_id, web_app.DownloadJob(id=failed_command_id, url="https://www.tiktok.com/@fixture/video/failure"))
-        with patch.object(web_app.subprocess, "run", return_value=SimpleNamespace(returncode=7, stdout="failure stdout\n")):
+        registry.register(failed_command_id, DownloadJob(id=failed_command_id, url="https://www.tiktok.com/@fixture/video/failure"))
+        with patch.object(service, "_run_factory", return_value=SimpleNamespace(returncode=7, stdout="failure stdout\n")):
             try:
-                web_app.run_download_command(failed_command_id, command)
+                service.run_command(failed_command_id, command)
             except RuntimeError as exc:
                 assert str(exc) == "Command failed with exit code 7: python fixture-download.py --url fixture"
             else:
@@ -261,13 +296,13 @@ def assert_download_command_cache_and_fallback_contract(web_app: Any, runner: An
         assert failed_command.log == ["$ python fixture-download.py --url fixture", "failure stdout"]
 
         timeout_command_id = "download-command-timeout"
-        registry.register(timeout_command_id, web_app.DownloadJob(id=timeout_command_id, url="https://www.tiktok.com/@fixture/video/timeout"))
-        timeout_error = web_app.subprocess.TimeoutExpired(command, 37, output="timeout first\ntimeout second\n")
+        registry.register(timeout_command_id, DownloadJob(id=timeout_command_id, url="https://www.tiktok.com/@fixture/video/timeout"))
+        timeout_error = subprocess.TimeoutExpired(command, 37, output="timeout first\ntimeout second\n")
         with patch.dict(os.environ, {"DOWNLOAD_COMMAND_TIMEOUT": "37"}), patch.object(
-            web_app.subprocess, "run", side_effect=timeout_error
+            service, "_run_factory", side_effect=timeout_error
         ):
             try:
-                web_app.run_download_command(timeout_command_id, command)
+                service.run_command(timeout_command_id, command)
             except RuntimeError as exc:
                 assert str(exc) == "Command timed out after 37s: python fixture-download.py --url fixture"
             else:
@@ -286,17 +321,17 @@ def assert_download_command_cache_and_fallback_contract(web_app: Any, runner: An
         web_app.VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
         cached_path.write_bytes(b"fixture")
         cache_id = "download-cache-hit"
-        registry.register(cache_id, web_app.DownloadJob(id=cache_id, url=url, source=web_app.SOURCE_WEB_MANUAL))
+        registry.register(cache_id, DownloadJob(id=cache_id, url=url, source=web_app.SOURCE_WEB_MANUAL))
         registered: list[dict[str, Any]] = []
         visible: list[tuple[str, str, str]] = []
         cache_payload = {"filename": cached_filename, "id": "cache-video", "title": "fixture"}
         result_path = web_app.OUTPUT_DIR / "download_jobs" / f"{cache_id}.json"
-        with patch.object(web_app, "get_cached", return_value=cache_payload) as get_cached, patch.object(
-            web_app, "analyzer_media_is_valid", return_value=True
-        ), patch.object(web_app, "register_video", side_effect=lambda **kwargs: registered.append(kwargs)), patch.object(
-            web_app, "make_web_manual_visible", side_effect=lambda *args: visible.append(args)
+        with patch.object(service, "_get_cached", return_value=cache_payload) as get_cached, patch.object(
+            service, "_analyzer_media_is_valid", return_value=True
+        ), patch.object(service, "_register_video", side_effect=lambda **kwargs: registered.append(kwargs)), patch.object(
+            service, "_make_web_manual_visible", side_effect=lambda *args: visible.append(args)
         ):
-            assert web_app.try_cached_download_result(cache_id, url, web_app.SOURCE_WEB_MANUAL, result_path) is True
+            assert service.try_cached_download_result(cache_id, url, web_app.SOURCE_WEB_MANUAL, result_path) is True
         get_cached.assert_called_once_with("short_video_download", "download", web_app.video_cache_request(url))
         cached_result = web_app.read_json(result_path)
         assert cached_result["filename"] == cached_filename
@@ -316,11 +351,11 @@ def assert_download_command_cache_and_fallback_contract(web_app: Any, runner: An
             path = web_app.VIDEOS_DIR / filename
             path.write_bytes(b"invalid")
             job_id = f"download-{filename}"
-            registry.register(job_id, web_app.DownloadJob(id=job_id, url=url))
-            with patch.object(web_app, "get_cached", return_value={"filename": filename}), patch.object(
-                web_app, "analyzer_media_is_valid", return_value=valid_media
+            registry.register(job_id, DownloadJob(id=job_id, url=url))
+            with patch.object(service, "_get_cached", return_value={"filename": filename}), patch.object(
+                service, "_analyzer_media_is_valid", return_value=valid_media
             ):
-                assert web_app.try_cached_download_result(job_id, url, web_app.SOURCE_API_UPLOAD, web_app.OUTPUT_DIR / "download_jobs" / f"{job_id}.json") is False
+                assert service.try_cached_download_result(job_id, url, web_app.SOURCE_API_UPLOAD, web_app.OUTPUT_DIR / "download_jobs" / f"{job_id}.json") is False
             assert not path.exists()
             cached_job = registry.snapshot(job_id)
             assert cached_job is not None and expected_log in cached_job.log
@@ -328,7 +363,7 @@ def assert_download_command_cache_and_fallback_contract(web_app: Any, runner: An
         fallback_id = "download-sociavault-fallback"
         fallback_url = "https://www.douyin.com/video/fallback"
         fallback_filename = "fallback.mp4"
-        registry.register(fallback_id, web_app.DownloadJob(id=fallback_id, url=fallback_url, source=web_app.SOURCE_WEB_MANUAL))
+        registry.register(fallback_id, DownloadJob(id=fallback_id, url=fallback_url, source=web_app.SOURCE_WEB_MANUAL))
         fallback_result_path = web_app.OUTPUT_DIR / "download_jobs" / f"{fallback_id}.json"
         fallback_registered: list[dict[str, Any]] = []
         fallback_visible: list[tuple[str, str, str]] = []
@@ -356,14 +391,14 @@ def assert_download_command_cache_and_fallback_contract(web_app: Any, runner: An
             result_path.write_text(json.dumps({"filename": fallback_filename, "id": "fallback-video"}), encoding="utf-8")
             return True
 
-        with patch.object(web_app, "try_cached_download_result", side_effect=cache_result_miss), patch.object(
-            web_app, "try_cached_video_info_download", side_effect=video_info_cache_miss
-        ), patch.object(web_app, "run_download_command", side_effect=crawler_failure), patch.object(
-            web_app, "try_sociavault_video_info_download", side_effect=socia_fallback
-        ), patch.object(web_app, "register_video", side_effect=lambda **kwargs: fallback_registered.append(kwargs)), patch.object(
-            web_app, "make_web_manual_visible", side_effect=lambda *args: fallback_visible.append(args)
-        ), patch.object(web_app, "start_social_context_job", side_effect=lambda filename, *, generate_insights: social.append((filename, generate_insights))):
-            runner(fallback_id)
+        with patch.object(service, "try_cached_download_result", side_effect=cache_result_miss), patch.object(
+            service, "try_cached_video_info_download", side_effect=video_info_cache_miss
+        ), patch.object(service, "run_command", side_effect=crawler_failure), patch.object(
+            service, "try_sociavault_video_info_download", side_effect=socia_fallback
+        ), patch.object(service, "_register_video", side_effect=lambda **kwargs: fallback_registered.append(kwargs)), patch.object(
+            service, "_make_web_manual_visible", side_effect=lambda *args: fallback_visible.append(args)
+        ), patch.object(service, "_start_social_context_job", side_effect=lambda filename, *, generate_insights: social.append((filename, generate_insights))):
+            service.run_job(fallback_id)
         fallback = registry.snapshot(fallback_id)
         assert fallback is not None and fallback.status == "complete"
         assert fallback.filename == fallback_filename and fallback.result == {"filename": fallback_filename, "id": "fallback-video"}
@@ -385,7 +420,7 @@ def assert_download_command_cache_and_fallback_contract(web_app: Any, runner: An
             job_id = f"download-original-{suffix[1:]}"
             crawler_filename = f"crawler-output{suffix}"
             recovered_filename = f"recovered-{suffix[1:]}.mp4"
-            registry.register(job_id, web_app.DownloadJob(id=job_id, url=url))
+            registry.register(job_id, DownloadJob(id=job_id, url=url))
             fallback_calls: list[tuple[str, str, str, Path]] = []
 
             def crawler_output(_job_id: str, _command: list[str]) -> None:
@@ -405,14 +440,14 @@ def assert_download_command_cache_and_fallback_contract(web_app: Any, runner: An
                 raise RuntimeError("fixture invalid media")
 
             invalid_media = reject_invalid_media if suffix == ".mp4" else None
-            with patch.object(web_app, "try_cached_download_result", return_value=False), patch.object(
-                web_app, "try_cached_video_info_download", return_value=False
-            ), patch.object(web_app, "run_download_command", side_effect=crawler_output), patch.object(
-                web_app, "try_sociavault_video_info_download", side_effect=recover_from_sociavault
-            ), patch.object(web_app, "ensure_analyzer_media_or_delete", side_effect=invalid_media), patch.object(
-                web_app, "start_social_context_job", return_value=False
+            with patch.object(service, "try_cached_download_result", return_value=False), patch.object(
+                service, "try_cached_video_info_download", return_value=False
+            ), patch.object(service, "run_command", side_effect=crawler_output), patch.object(
+                service, "try_sociavault_video_info_download", side_effect=recover_from_sociavault
+            ), patch.object(service, "_ensure_analyzer_media_or_delete", side_effect=invalid_media), patch.object(
+                service, "_start_social_context_job", return_value=False
             ):
-                runner(job_id)
+                service.run_job(job_id)
             recovered = registry.snapshot(job_id)
             assert recovered is not None and recovered.status == "complete"
             assert recovered.filename == recovered_filename
@@ -423,7 +458,7 @@ def assert_download_command_cache_and_fallback_contract(web_app: Any, runner: An
             ]
 
         dynamic_job_id = "download-dynamic-boundaries"
-        registry.register(dynamic_job_id, web_app.DownloadJob(id=dynamic_job_id, url=url))
+        registry.register(dynamic_job_id, DownloadJob(id=dynamic_job_id, url=url))
         proxy_attempts: list[dict[str, str] | None] = []
 
         class DirectResponse:
@@ -450,14 +485,13 @@ def assert_download_command_cache_and_fallback_contract(web_app: Any, runner: An
                 raise RuntimeError("fixture proxy failure")
             return DirectResponse()
 
-        requests_module = SimpleNamespace(get=direct_get)
-        with patch.dict(sys.modules, {"requests": requests_module}), patch.dict(
+        with patch.object(service, "_requests_get", side_effect=direct_get), patch.dict(
             os.environ,
             {"TIKTOK_MAX_BYTES": "600000", "TIKTOK_PROXY_URL": "http://proxy.fixture:8080"},
-        ), patch.object(web_app, "ensure_us_proxy", return_value=None), patch.object(
-            web_app, "ensure_analyzer_media_or_delete", return_value=None
+        ), patch.object(service, "_ensure_us_proxy", return_value=None), patch.object(
+            service, "_ensure_analyzer_media_or_delete", return_value=None
         ):
-            direct_result = web_app._download_direct_media(
+            direct_result = service._download_direct_media(
                 dynamic_job_id,
                 "https://cdn.fixture/video.mp4",
                 url,
@@ -468,11 +502,11 @@ def assert_download_command_cache_and_fallback_contract(web_app: Any, runner: An
         assert direct_result["size"] == 524288
 
         max_bytes_error = RuntimeError("not raised")
-        with patch.dict(sys.modules, {"requests": SimpleNamespace(get=lambda *_args, **_kwargs: DirectResponse())}), patch.dict(
+        with patch.object(service, "_requests_get", side_effect=lambda *_args, **_kwargs: DirectResponse()), patch.dict(
             os.environ, {"TIKTOK_MAX_BYTES": "524287", "TIKTOK_PROXY_URL": ""}
-        ), patch.object(web_app, "ensure_us_proxy", return_value=None):
+        ), patch.object(service, "_ensure_us_proxy", return_value=None):
             try:
-                web_app._download_direct_media(dynamic_job_id, "https://cdn.fixture/too-large.mp4", url, {"id": "too-large"})
+                service._download_direct_media(dynamic_job_id, "https://cdn.fixture/too-large.mp4", url, {"id": "too-large"})
             except RuntimeError as exc:
                 max_bytes_error = exc
         assert str(max_bytes_error) == "direct: SociaVault media is too large: 524288 bytes"
@@ -497,11 +531,11 @@ def assert_download_command_cache_and_fallback_contract(web_app: Any, runner: An
 
         stream_target = web_app.VIDEOS_DIR / "shortvideo_SociaVault_stream-over-limit.mp4"
         stream_part = stream_target.with_suffix(".mp4.part")
-        with patch.dict(sys.modules, {"requests": SimpleNamespace(get=lambda *_args, **_kwargs: StreamingTooLargeResponse())}), patch.dict(
+        with patch.object(service, "_requests_get", side_effect=lambda *_args, **_kwargs: StreamingTooLargeResponse()), patch.dict(
             os.environ, {"TIKTOK_MAX_BYTES": "500000", "TIKTOK_PROXY_URL": ""}
-        ), patch.object(web_app, "ensure_us_proxy", return_value=None):
+        ), patch.object(service, "_ensure_us_proxy", return_value=None):
             try:
-                web_app._download_direct_media(dynamic_job_id, "https://cdn.fixture/stream-over-limit.mp4", url, {"id": "stream-over-limit"})
+                service._download_direct_media(dynamic_job_id, "https://cdn.fixture/stream-over-limit.mp4", url, {"id": "stream-over-limit"})
             except RuntimeError as exc:
                 assert str(exc) == "direct: SociaVault media exceeded max size: 600000 bytes"
             else:
@@ -510,18 +544,18 @@ def assert_download_command_cache_and_fallback_contract(web_app: Any, runner: An
         assert not stream_target.exists()
 
         missing_key_id = "download-sociavault-missing-key"
-        registry.register(missing_key_id, web_app.DownloadJob(id=missing_key_id, url=url))
+        registry.register(missing_key_id, DownloadJob(id=missing_key_id, url=url))
         with patch.dict(os.environ, {"SOCIAVAULT_API_KEY": ""}), patch.object(
-            web_app, "run_download_command", side_effect=AssertionError("missing key must skip command")
+            service, "run_command", side_effect=AssertionError("missing key must skip command")
         ):
-            assert web_app.try_sociavault_video_info_download(
+            assert service.try_sociavault_video_info_download(
                 missing_key_id, url, web_app.SOURCE_API_UPLOAD, web_app.OUTPUT_DIR / "download_jobs" / f"{missing_key_id}.json"
             ) is False
         missing_key = registry.snapshot(missing_key_id)
         assert missing_key is not None and missing_key.log == ["未配置 SOCIAVAULT_API_KEY，跳过 SociaVault video-info。"]
 
         configured_id = "download-sociavault-configured"
-        registry.register(configured_id, web_app.DownloadJob(id=configured_id, url=url))
+        registry.register(configured_id, DownloadJob(id=configured_id, url=url))
         configured_result = web_app.OUTPUT_DIR / "download_jobs" / f"{configured_id}.json"
         captured_sociavault_commands: list[list[str]] = []
 
@@ -531,14 +565,14 @@ def assert_download_command_cache_and_fallback_contract(web_app: Any, runner: An
             output_path.write_text(json.dumps({"data": "fixture"}), encoding="utf-8")
 
         with patch.dict(os.environ, {"SOCIAVAULT_API_KEY": "fixture-key", "SOCIAVAULT_API_BASE": "https://api.fixture.test/"}), patch.object(
-            web_app, "run_download_command", side_effect=capture_sociavault_command
-        ), patch.object(web_app, "_try_video_info_payload_download", return_value=False):
-            assert web_app._sociavault_video_info_request(url) == {
+            service, "run_command", side_effect=capture_sociavault_command
+        ), patch.object(service, "_try_video_info_payload_download", return_value=False):
+            assert service._sociavault_video_info_request(url) == {
                 "api_base": "https://api.fixture.test",
                 "endpoint": "video-info",
                 "params": {"url": url},
             }
-            assert web_app.try_sociavault_video_info_download(
+            assert service.try_sociavault_video_info_download(
                 configured_id, url, web_app.SOURCE_API_UPLOAD, configured_result
             ) is False
         assert captured_sociavault_commands == [[
@@ -552,7 +586,7 @@ def assert_download_command_cache_and_fallback_contract(web_app: Any, runner: An
             str(configured_result.with_suffix(".sociavault-video-info.json")),
         ]]
     finally:
-        web_app.download_job_registry = original_registry
+        pass
 
 
 def assert_real_metrics_worker_registry_updates(web_app: Any) -> None:
@@ -978,7 +1012,7 @@ def run_lifecycle() -> None:
         os.environ["PROXY_POOL_ENABLED"] = "0"
         os.environ["HOT_VIDEO_REPORT_ENABLED"] = "0"
         web_app = importlib.import_module("web_app")
-        real_download_worker = web_app.run_download_job
+        composed_download_service = web_app.download_service
         composed_metrics_registry = web_app.metrics_job_registry
         composed_amazon_registry = web_app.amazon_job_registry
         fake_queue = FakeVideoQueue(web_app.output_dir_for_filename)
@@ -1121,26 +1155,25 @@ def run_lifecycle() -> None:
             output.write_text(json.dumps({"summary": "fixture translation"}), encoding="utf-8")
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-        assert_download_command_cache_and_fallback_contract(web_app, real_download_worker)
+        assert_download_command_cache_and_fallback_contract(web_app)
 
         with ExitStack() as patches:
             patches.enter_context(
                 patch.object(web_app, "ui_test_mode_allows_live_write", side_effect=lambda path: path in allowed_writes)
             )
-            patches.enter_context(patch.object(web_app, "run_download_job", side_effect=complete_download))
+            patches.enter_context(patch.object(composed_download_service, "run_job", side_effect=complete_download))
             patches.enter_context(patch.object(web_app.shop_service, "run_job", side_effect=complete_shop))
             patches.enter_context(patch.object(web_app.metrics_service, "run_job", side_effect=complete_metrics))
             patches.enter_context(patch.object(web_app.amazon_service, "run_job", side_effect=complete_amazon))
             patches.enter_context(patch.object(web_app, "video_queue", fake_queue))
             patches.enter_context(patch.object(web_app, "subprocess", SimpleNamespace(run=fake_translate)))
-            patches.enter_context(patch.object(web_app, "ensure_analyzer_media_or_delete", side_effect=lambda _path: None))
-            patches.enter_context(patch.object(web_app, "register_video", side_effect=lambda **_kwargs: None))
-            patches.enter_context(patch.object(web_app, "make_web_manual_visible", side_effect=lambda *_args: None))
-            patches.enter_context(patch.object(web_app, "start_social_context_job", side_effect=lambda *_args, **_kwargs: None))
-            patches.enter_context(patch.object(web_app, "analyzer_visible_source", side_effect=lambda _name: True))
-            patches.enter_context(patch.object(web_app, "analyzer_media_is_valid", side_effect=lambda _path: True))
+            patches.enter_context(patch.object(composed_download_service, "_ensure_analyzer_media_or_delete", side_effect=lambda _path: None))
+            patches.enter_context(patch.object(composed_download_service, "_register_video", side_effect=lambda **_kwargs: None))
+            patches.enter_context(patch.object(composed_download_service, "_make_web_manual_visible", side_effect=lambda *_args: None))
+            patches.enter_context(patch.object(composed_download_service, "_start_social_context_job", side_effect=lambda *_args, **_kwargs: None))
+            patches.enter_context(patch.object(composed_download_service, "_analyzer_media_is_valid", side_effect=lambda _path: True))
 
-            assert_real_download_worker_registry_updates(web_app, real_download_worker)
+            assert_real_download_worker_registry_updates(web_app)
             assert_real_shop_worker_registry_updates(web_app)
             assert_real_metrics_worker_registry_updates(web_app)
             assert_real_amazon_worker_registry_updates(web_app)
@@ -1184,9 +1217,9 @@ def run_lifecycle() -> None:
             assert health == {"status": "ok", "ui_test_mode": True}
 
             with patch.object(web_app, "ui_test_mode_allows_live_write", return_value=False), patch.object(
-                web_app.Handler,
-                "handle_download",
-                side_effect=AssertionError("UI_TEST gate must run before the Download handler"),
+                composed_download_service,
+                "create_and_start",
+                side_effect=AssertionError("UI_TEST gate must run before the Download service"),
             ):
                 status, _headers, blocked_download = json_request(
                     port,

@@ -19,6 +19,7 @@ SHOP_ROUTE_PATH = SCRIPTS_DIR / "routes" / "shop.py"
 AMAZON_ROUTE_PATH = SCRIPTS_DIR / "routes" / "amazon.py"
 METRICS_ROUTE_PATH = SCRIPTS_DIR / "routes" / "metrics.py"
 METRICS_SERVICE_PATH = SCRIPTS_DIR / "services" / "metrics.py"
+DOWNLOAD_SERVICE_PATH = SCRIPTS_DIR / "services" / "downloads.py"
 _MODULE_CONFIG_BINDINGS = {
     "ROOT": "root",
     "UI_TEST_MODE": "ui_test_mode",
@@ -28,7 +29,6 @@ _MODULE_CONFIG_BINDINGS = {
     "VIDEOS_DIR": "videos_dir",
     "OUTPUT_DIR": "output_dir",
     "SCRIPTS_DIR": "scripts_dir",
-    "VIDEO_MEDIA_TTL_SECONDS": "video_media_ttl_seconds",
     "SOCIAL_COMMENT_COUNT": "social_comment_count",
     "SOCIAL_API_TIMEOUT": "social_api_timeout",
     "CHAT_IMAGE_MAX_BYTES": "chat_image_max_bytes",
@@ -90,6 +90,13 @@ _SHOP_ROUTE_GETENV_KEY_COUNTS = Counter(
     }
 )
 _AMAZON_ROUTE_GETENV_KEY_COUNTS = Counter({"AMAZON_MAX_PAGES": 1})
+_DOWNLOAD_SERVICE_ENV_KEY_COUNTS = Counter({
+    "DOWNLOAD_COMMAND_TIMEOUT": 1,
+    "TIKTOK_MAX_BYTES": 1,
+    "TIKTOK_PROXY_URL": 1,
+    "SOCIAVAULT_API_BASE": 1,
+    "SOCIAVAULT_API_KEY": 1,
+})
 
 
 def web_app_module_tree() -> ast.Module:
@@ -305,8 +312,29 @@ class AppConfigTests(unittest.TestCase):
                 if isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Name)
                 and node.func.id == "getenv"
-            ])
-        self.assertEqual(len(function_calls), 52)
+                ])
+        download_tree = ast.parse(
+            DOWNLOAD_SERVICE_PATH.read_text(encoding="utf-8"), filename=str(DOWNLOAD_SERVICE_PATH)
+        )
+        download_module_calls, download_function_calls = getenv_calls_by_scope(download_tree)
+        self.assertEqual(download_module_calls, [])
+        self.assertEqual(download_function_calls, [])
+        download_environ_keys = [
+            str(node.args[0].value)
+            for node in ast.walk(download_tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Attribute)
+            and isinstance(node.func.value.value, ast.Name)
+            and node.func.value.value.id == "self"
+            and node.func.value.attr == "_environ"
+            and node.func.attr == "get"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ]
+        self.assertEqual(Counter(download_environ_keys), _DOWNLOAD_SERVICE_ENV_KEY_COUNTS)
+        self.assertEqual(len(function_calls), 47)
         self.assertEqual(len(shop_getenv_calls), 3)
         self.assertEqual(shop_getenv_scopes, ["shop_extract"] * 3)
         self.assertEqual(len(amazon_getenv_calls), 1)
@@ -315,7 +343,8 @@ class AppConfigTests(unittest.TestCase):
             Counter(getenv_key(call) for call in function_calls),
             _DYNAMIC_GETENV_KEY_COUNTS
             - _SHOP_ROUTE_GETENV_KEY_COUNTS
-            - _AMAZON_ROUTE_GETENV_KEY_COUNTS,
+            - _AMAZON_ROUTE_GETENV_KEY_COUNTS
+            - _DOWNLOAD_SERVICE_ENV_KEY_COUNTS,
         )
         self.assertEqual(
             Counter(getenv_key(call) for call in shop_getenv_calls),
@@ -326,7 +355,7 @@ class AppConfigTests(unittest.TestCase):
             _AMAZON_ROUTE_GETENV_KEY_COUNTS,
         )
         self.assertEqual(
-            len(function_calls) + len(shop_getenv_calls) + len(amazon_getenv_calls),
+            len(function_calls) + len(shop_getenv_calls) + len(amazon_getenv_calls) + len(download_environ_keys),
             sum(_DYNAMIC_GETENV_KEY_COUNTS.values()),
         )
 

@@ -23,12 +23,15 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 
 from jobs.registry import JobRegistry
 from routes.amazon import register_amazon_routes
+from routes.downloads import register_download_routes
 from routes.metrics import register_metrics_api_routes
 from routes.router import Router
 from routes.shop import register_shop_api_routes
 from services import metrics as metrics_module
 from services import shop as shop_module
+from services import downloads as downloads_module
 from services.amazon import AmazonJob, AmazonService
+from services.downloads import DownloadJob, DownloadService
 from services.metrics import MetricsJob, MetricsService
 from services.shop import ShopJob, ShopService
 
@@ -80,14 +83,6 @@ def sse_body(payload: dict[str, Any]) -> bytes:
     return b"data: " + json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n\n"
 
 
-def dispatch_get(web_app: Any, path: str) -> FakeHandler:
-    handler = FakeHandler(path)
-    for name in ("stream_download_events",):
-        setattr(handler, name, getattr(web_app.Handler, name).__get__(handler, FakeHandler))
-    web_app.Handler.do_GET(handler)
-    return handler
-
-
 def make_shop_service(
     web_app: Any,
     registry: JobRegistry,
@@ -131,6 +126,56 @@ def make_metrics_service(
     )
 
 
+def make_download_service(
+    web_app: Any,
+    registry: JobRegistry,
+    *,
+    read_json_file: Any | None = None,
+    write_json_file: Any | None = None,
+    run_factory: Any | None = None,
+    thread_factory: Any | None = None,
+    job_id_factory: Any | None = None,
+    environ: Any | None = None,
+    requests_get: Any | None = None,
+) -> DownloadService:
+    generated_ids = iter(range(1, 10_000))
+    return DownloadService(
+        registry=registry,
+        root=web_app.ROOT,
+        videos_dir=web_app.VIDEOS_DIR,
+        output_dir=web_app.OUTPUT_DIR,
+        scripts_dir=web_app.SCRIPTS_DIR,
+        read_json_file=read_json_file or web_app.read_json,
+        write_json_file=write_json_file or web_app.atomic_write_json,
+        run_factory=run_factory or (lambda *_args, **_kwargs: None),
+        thread_factory=thread_factory or (lambda **_kwargs: None),
+        job_id_factory=job_id_factory or (lambda: f"download-post-fixture-{next(generated_ids)}"),
+        fallback_video_id_factory=lambda: "fallback-video-id",
+        environ=environ if environ is not None else os.environ,
+        get_cached=web_app.get_cached,
+        store_response=web_app.store_response,
+        video_cache_request=web_app.video_cache_request,
+        video_cache_metadata=web_app.video_cache_metadata,
+        with_download_cache_meta=web_app.with_download_cache_meta,
+        register_video=web_app.register_video,
+        register_from_payload=web_app.register_from_payload,
+        platform_for_url=web_app.platform_for_url,
+        video_source_hidden=web_app.video_source_hidden,
+        make_web_manual_visible=web_app.make_web_manual_visible,
+        start_social_context_job=web_app.start_social_context_job,
+        safe_filename=web_app.safe_filename,
+        analyzer_media_is_valid=web_app.analyzer_media_is_valid,
+        ensure_analyzer_media_or_delete=web_app.ensure_analyzer_media_or_delete,
+        ensure_us_proxy=web_app.ensure_us_proxy,
+        requests_get=requests_get or (lambda *_args, **_kwargs: None),
+        cache_log_label=web_app.cache_log_label,
+        normalize_video_source=web_app.normalize_video_source,
+        default_source=web_app.SOURCE_API_UPLOAD,
+        video_media_ttl_seconds=web_app.APP_CONFIG.video_media_ttl_seconds,
+        default_sociavault_api_base=web_app.DEFAULT_SOCIA_VAULT_API_BASE,
+    )
+
+
 def make_amazon_service(
     web_app: Any,
     registry: JobRegistry,
@@ -167,6 +212,12 @@ def make_shop_router(service: ShopService, *, sleep: Any = lambda _seconds: None
     return router
 
 
+def make_download_router(service: DownloadService, *, sleep: Any = lambda _seconds: None) -> Router:
+    router = Router()
+    register_download_routes(router, service, sleep=sleep)
+    return router
+
+
 def make_metrics_router(service: MetricsService, *, sleep: Any = lambda _seconds: None) -> Router:
     router = Router()
     register_metrics_api_routes(router, service, sleep=sleep)
@@ -185,6 +236,12 @@ def make_amazon_router(
 
 
 def dispatch_shop(router: Router, method: str, handler: FakeHandler) -> FakeHandler:
+    route = router.resolve(method, handler.path.partition("?")[0])
+    route.handler(handler, route.params)
+    return handler
+
+
+def dispatch_download(router: Router, method: str, handler: FakeHandler) -> FakeHandler:
     route = router.resolve(method, handler.path.partition("?")[0])
     route.handler(handler, route.params)
     return handler
@@ -231,7 +288,7 @@ def assert_event_headers(handler: FakeHandler) -> None:
 
 def make_jobs(web_app: Any) -> dict[str, Any]:
     download_result = {"filename": "fixture.mp4", "meta": {"source": "fixture"}}
-    download = web_app.DownloadJob(
+    download = DownloadJob(
         id="download-fixture",
         url="https://www.tiktok.com/@fixture/video/123",
         status="complete",
@@ -283,6 +340,8 @@ def make_jobs(web_app: Any) -> dict[str, Any]:
     write_json(web_app.OUTPUT_DIR / "tiktok_shop" / shop.id / "shop_analysis.json", {"summary": "analysis"})
     write_json(web_app.OUTPUT_DIR / "tiktok_api" / metrics.id / "result.json", {"metric": {"views": 7}})
     write_json(web_app.OUTPUT_DIR / "amazon" / amazon.id / "result.json", {"products": [{"asin": "B000FIXTURE"}]})
+    download_registry = JobRegistry()
+    download_registry.register(download.id, download)
     shop_registry = JobRegistry()
     shop_registry.register(shop.id, shop)
     metrics_registry = JobRegistry()
@@ -291,6 +350,8 @@ def make_jobs(web_app: Any) -> dict[str, Any]:
     amazon_registry.register(amazon.id, amazon)
     return {
         "download": download,
+        "download_registry": download_registry,
+        "download_service": make_download_service(web_app, download_registry),
         "shop": shop,
         "shop_registry": shop_registry,
         "shop_service": make_shop_service(web_app, shop_registry),
@@ -318,11 +379,12 @@ def public_amazon_payload(service: AmazonService, job: AmazonJob) -> dict[str, A
 def assert_public_payloads(web_app: Any, jobs: dict[str, Any]) -> dict[str, dict[str, Any]]:
     metrics_service = jobs["metrics_service"]
     payloads = {
-        "download": web_app.public_download_job(jobs["download"]),
+        "download": jobs["download_service"].payload_for(jobs["download"].id),
         "shop": public_shop_payload(jobs["shop_service"], jobs["shop"]),
         "metrics": metrics_service.payload_for(jobs["metrics"].id),
         "amazon": public_amazon_payload(jobs["amazon_service"], jobs["amazon"]),
     }
+    assert payloads["download"] is not None
     assert payloads["metrics"] is not None
     assert set(payloads["download"]) == {"id", "url", "status", "created_at", "updated_at", "filename", "error", "log", "result"}
     assert set(payloads["shop"]) == {"id", "url", "source_type", "region", "max_pages", "review_pages", "analyze", "related_videos", "status", "created_at", "updated_at", "output_dir", "error", "log", "extract", "analysis"}
@@ -403,8 +465,11 @@ def assert_public_payloads(web_app: Any, jobs: dict[str, Any]) -> dict[str, dict
     assert download_result["meta"]["source"] == "fixture"
     download_result["meta"]["source"] = "job-mutated"
     assert payloads["download"]["result"]["meta"]["source"] == "payload-mutated"
-    none_result = web_app.DownloadJob(id="download-none", url="https://example.invalid", result=None)
-    assert web_app.public_download_job(none_result)["result"] is None
+    none_registry = JobRegistry()
+    none_result = DownloadJob(id="download-none", url="https://example.invalid", result=None)
+    none_registry.register(none_result.id, none_result)
+    none_service = make_download_service(web_app, none_registry)
+    assert none_service.payload_for(none_result.id)["result"] is None
     assert payloads["shop"]["extract"] == {"items": [{"id": "extract"}]}
     assert payloads["shop"]["analysis"] == {"summary": "analysis"}
     assert payloads["metrics"]["result"] == {"metric": {"views": 7}}
@@ -508,27 +573,49 @@ def assert_no_download_legacy_store() -> None:
         and node.attr in {"_jobs", "_lock"}
     ]
     assert not private_registry_access
-    # Phase 4.4A freezes the pre-extraction Download ownership before the
-    # service/route migration deliberately flips these assertions.
-    definitions = {
+    obsolete_definitions = {
+        "DownloadJob", "validate_short_video_url", "append_download_log",
+        "run_download_command", "_score_media_candidate", "_iter_media_url_candidates",
+        "_sociavault_video_id", "_download_direct_media", "_sociavault_video_info_request",
+        "try_cached_download_result", "store_download_result", "_media_cache_payload",
+        "_try_media_cache_payload_download", "media_cache_is_stale",
+        "_try_video_info_payload_download", "try_cached_video_info_download",
+        "try_sociavault_video_info_download", "run_download_job", "public_download_job",
+    }
+    assert not {
         node.name
         for node in ast.walk(tree)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        and node.name in obsolete_definitions
     }
-    assert {
-        "DownloadJob",
-        "append_download_log",
-        "run_download_command",
-        "run_download_job",
-        "public_download_job",
-    } <= definitions
     handler = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "Handler")
     handler_methods = {
         node.name
         for node in handler.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
-    assert {"handle_download", "stream_download_events"} <= handler_methods
+    assert not {"handle_download", "stream_download_events"} & handler_methods
+    service_tree = ast.parse((SCRIPTS_DIR / "services" / "downloads.py").read_text(encoding="utf-8"))
+    service_definitions = {
+        node.name for node in ast.walk(service_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    }
+    assert {"DownloadJob", "DownloadService", "validate_short_video_url"} <= service_definitions
+    route_tree = ast.parse((SCRIPTS_DIR / "routes" / "downloads.py").read_text(encoding="utf-8"))
+    assert "register_download_routes" in {
+        node.name for node in ast.walk(route_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    for source_tree, forbidden in ((service_tree, {"web_app", "routes"}), (route_tree, {"web_app"})):
+        imported = {
+            alias.name.split(".", 1)[0]
+            for node in ast.walk(source_tree)
+            for alias in (node.names if isinstance(node, ast.Import) else [])
+        } | {
+            str(node.module or "").split(".", 1)[0]
+            for node in ast.walk(source_tree) if isinstance(node, ast.ImportFrom)
+        }
+        assert not imported & forbidden
 
 
 def assert_no_metrics_legacy_store() -> None:
@@ -839,54 +926,57 @@ def assert_post_order_contracts(web_app: Any) -> None:
         return DeferredThread
 
     download_url = "https://www.tiktok.com/@fixture/video/123"
-    original_download_registry = web_app.download_job_registry
-    download_registry = web_app.JobRegistry()
-    web_app.download_job_registry = download_registry
-    try:
-        order: list[str] = []
-        original_register = download_registry.register
-        original_snapshot = download_registry.snapshot
-        original_serializer = web_app.public_download_job
+    order: list[str] = []
+    download_registry = JobRegistry()
+    original_register = download_registry.register
+    original_snapshot = download_registry.snapshot
 
-        def recording_register(job_id: str, job: Any) -> None:
-            order.append("register")
-            assert job.url == download_url and job.source == web_app.SOURCE_WEB_MANUAL
-            return original_register(job_id, job)
+    def recording_register(job_id: str, job: Any) -> None:
+        order.append("register")
+        assert job.url == download_url and job.source == web_app.SOURCE_WEB_MANUAL
+        return original_register(job_id, job)
 
-        def recording_snapshot(job_id: str) -> Any:
-            order.append("snapshot")
-            return original_snapshot(job_id)
+    def recording_snapshot(job_id: str) -> Any:
+        order.append("snapshot")
+        return original_snapshot(job_id)
 
-        def recording_serializer(job: Any) -> dict[str, Any]:
-            order.append("serializer")
-            return original_serializer(job)
+    ids = iter(("download-post-fixture", "download-alias-manual", "download-alias-api", "download-alias-default", "download-alias-wins"))
+    download_service = make_download_service(
+        web_app,
+        download_registry,
+        thread_factory=deferred_thread(order),
+        job_id_factory=lambda: next(ids),
+    )
+    original_serializer = downloads_module.snapshot_download_job
 
-        handler = handler_for({"url": download_url, "source": "web"})
-        with patch.object(web_app.threading, "Thread", deferred_thread(order)), patch.object(
-            download_registry, "register", side_effect=recording_register
-        ), patch.object(download_registry, "snapshot", side_effect=recording_snapshot), patch.object(
-            web_app, "public_download_job", side_effect=recording_serializer
-        ):
-            web_app.Handler.handle_download(handler)
-        response = json.loads(handler.wfile.getvalue().decode("utf-8"))
-        assert handler.responses == [202]
-        assert response["url"] == download_url and response["status"] == "queued"
-        assert order == ["register", "thread.start", "snapshot", "serializer"]
+    def recording_serializer(job: Any) -> dict[str, Any]:
+        order.append("serializer")
+        return original_serializer(job)
 
-        for payload, expected_source in (
-            ({"url": download_url, "source_tag": "manual"}, web_app.SOURCE_WEB_MANUAL),
-            ({"url": download_url, "source": "api_url"}, web_app.SOURCE_API_UPLOAD),
-            ({"url": download_url}, web_app.SOURCE_API_UPLOAD),
-            ({"url": download_url, "source_tag": "web", "source": "api"}, web_app.SOURCE_WEB_MANUAL),
-        ):
-            alias_handler = handler_for(payload)
-            with patch.object(web_app.threading, "Thread", deferred_thread([])):
-                web_app.Handler.handle_download(alias_handler)
-            alias_payload = json.loads(alias_handler.wfile.getvalue().decode("utf-8"))
-            alias_job = download_registry.snapshot(alias_payload["id"])
-            assert alias_job is not None and alias_job.source == expected_source
-    finally:
-        web_app.download_job_registry = original_download_registry
+    download_router = make_download_router(download_service)
+    handler = handler_for({"url": download_url, "source": "web"})
+    handler.path = "/api/download"
+    with patch.object(download_registry, "register", side_effect=recording_register), patch.object(
+        download_registry, "snapshot", side_effect=recording_snapshot
+    ), patch.object(downloads_module, "snapshot_download_job", side_effect=recording_serializer):
+        dispatch_download(download_router, "POST", handler)
+    response = json.loads(handler.wfile.getvalue().decode("utf-8"))
+    assert handler.responses == [202]
+    assert response["url"] == download_url and response["status"] == "queued"
+    assert order == ["register", "thread.start", "snapshot", "serializer"]
+
+    for payload, expected_source in (
+        ({"url": download_url, "source_tag": "manual"}, web_app.SOURCE_WEB_MANUAL),
+        ({"url": download_url, "source": "api_url"}, web_app.SOURCE_API_UPLOAD),
+        ({"url": download_url}, web_app.SOURCE_API_UPLOAD),
+        ({"url": download_url, "source_tag": "web", "source": "api"}, web_app.SOURCE_WEB_MANUAL),
+    ):
+        alias_handler = handler_for(payload)
+        alias_handler.path = "/api/download"
+        dispatch_download(download_router, "POST", alias_handler)
+        alias_payload = json.loads(alias_handler.wfile.getvalue().decode("utf-8"))
+        alias_job = download_registry.snapshot(alias_payload["id"])
+        assert alias_job is not None and alias_job.source == expected_source
 
     shop_url = "https://shop.tiktok.com/view/product/fixture"
     order: list[str] = []
@@ -990,13 +1080,22 @@ def assert_post_order_contracts(web_app: Any) -> None:
 
 def assert_get_and_sse_contracts(web_app: Any, jobs: dict[str, Any]) -> None:
     download = jobs["download"]
-    web_app.download_job_registry.register(download.id, download)
-    expected = web_app.public_download_job(web_app.download_job_registry.snapshot(download.id))
-    assert_json_response(dispatch_get(web_app, f"/api/download-job?id={download.id}"), 200, expected)
-    assert_sse_response(dispatch_get(web_app, f"/api/download-events?id={download.id}"), expected)
-    assert_json_response(dispatch_get(web_app, "/api/download-job?id=missing"), 404, {"error": "Download job not found"})
+    download_service = jobs["download_service"]
+    download_router = make_download_router(download_service)
+    expected = download_service.payload_for(download.id)
+    assert expected is not None
+    assert_json_response(
+        dispatch_download(download_router, "GET", FakeHandler(f"/api/download-job?id={download.id}")), 200, expected
+    )
     assert_sse_response(
-        dispatch_get(web_app, "/api/download-events?id=missing"),
+        dispatch_download(download_router, "GET", FakeHandler(f"/api/download-events?id={download.id}")), expected
+    )
+    assert_json_response(
+        dispatch_download(download_router, "GET", FakeHandler("/api/download-job?id=missing")), 404,
+        {"error": "Download job not found"},
+    )
+    assert_sse_response(
+        dispatch_download(download_router, "GET", FakeHandler("/api/download-events?id=missing")),
         {"status": "missing", "error": "Download job not found"},
     )
 
@@ -1583,7 +1682,7 @@ def assert_shop_composition_contract(web_app: Any) -> None:
 
 
 def assert_sse_marker(web_app: Any) -> None:
-    job = web_app.DownloadJob(
+    job = DownloadJob(
         id="marker-fixture",
         url="https://www.tiktok.com/@fixture/video/marker",
         status="queued",
@@ -1591,13 +1690,11 @@ def assert_sse_marker(web_app: Any) -> None:
         updated_at=51.0,
         result={"version": 1},
     )
-    original_registry = web_app.download_job_registry
     timestamps = iter((52.0, 53.0, 54.0, 55.0))
-    registry = web_app.JobRegistry(clock=lambda: next(timestamps))
+    registry = JobRegistry(clock=lambda: next(timestamps))
     registry.register(job.id, job)
-    web_app.download_job_registry = registry
+    service = make_download_service(web_app, registry)
     handler = FakeHandler(f"/api/download-events?id={job.id}")
-    original_sleep = web_app.time.sleep
     calls = 0
 
     def advance(_seconds: float) -> None:
@@ -1612,12 +1709,7 @@ def assert_sse_marker(web_app: Any) -> None:
         else:
             registry.update_fields(job.id, {"status": "complete"})
 
-    try:
-        web_app.time.sleep = advance
-        web_app.Handler.stream_download_events(handler, job.id)
-    finally:
-        web_app.time.sleep = original_sleep
-        web_app.download_job_registry = original_registry
+    dispatch_download(make_download_router(service, sleep=advance), "GET", handler)
     frames = [json.loads(line[6:]) for line in handler.wfile.getvalue().decode("utf-8").splitlines() if line.startswith("data: ")]
     assert [frame["status"] for frame in frames] == ["queued", "queued", "queued", "queued", "complete"]
     assert frames[0]["result"] == {"version": 1}
@@ -1643,31 +1735,28 @@ def assert_download_sse_broken_pipe(web_app: Any) -> None:
         def flush(self) -> None:
             return None
 
-    original_registry = web_app.download_job_registry
-    registry = web_app.JobRegistry()
-    web_app.download_job_registry = registry
-    try:
-        missing = FakeHandler("/api/download-events?id=missing-download-job")
-        missing.wfile = BrokenPipeWriter()
-        web_app.Handler.stream_download_events(missing, "missing-download-job")
-        assert_event_headers(missing)
-        assert missing.close_connection is True
-        assert missing.wfile.write_attempts == 1
+    registry = JobRegistry()
+    service = make_download_service(web_app, registry)
+    router = make_download_router(service)
+    missing = FakeHandler("/api/download-events?id=missing-download-job")
+    missing.wfile = BrokenPipeWriter()
+    dispatch_download(router, "GET", missing)
+    assert_event_headers(missing)
+    assert missing.close_connection is True
+    assert missing.wfile.write_attempts == 1
 
-        job = web_app.DownloadJob(
-            id="download-broken-pipe",
-            url="https://www.tiktok.com/@fixture/video/broken-pipe",
-            status="complete",
-        )
-        registry.register(job.id, job)
-        payload = FakeHandler(f"/api/download-events?id={job.id}")
-        payload.wfile = BrokenPipeWriter()
-        web_app.Handler.stream_download_events(payload, job.id)
-        assert_event_headers(payload)
-        assert payload.close_connection is True
-        assert payload.wfile.write_attempts == 1
-    finally:
-        web_app.download_job_registry = original_registry
+    job = DownloadJob(
+        id="download-broken-pipe",
+        url="https://www.tiktok.com/@fixture/video/broken-pipe",
+        status="complete",
+    )
+    registry.register(job.id, job)
+    payload = FakeHandler(f"/api/download-events?id={job.id}")
+    payload.wfile = BrokenPipeWriter()
+    dispatch_download(router, "GET", payload)
+    assert_event_headers(payload)
+    assert payload.close_connection is True
+    assert payload.wfile.write_attempts == 1
 
 
 def assert_metrics_sse_marker(web_app: Any) -> None:

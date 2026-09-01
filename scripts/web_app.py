@@ -19,7 +19,6 @@ import time
 import uuid
 import zipfile
 import sys
-from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -39,8 +38,8 @@ sys.path.insert(0, str(_BOOTSTRAP_SCRIPTS_DIR))
 from core.config import AppConfig
 from core.json_store import atomic_write_json, read_json
 from jobs.registry import JobRegistry
-from jobs.snapshots import snapshot_download_job
 from routes.amazon import register_amazon_routes
+from routes.downloads import register_download_routes
 from routes.health import register_health_route
 from routes.extract import register_extract_page
 from routes.harness_certificate import register_harness_certificate_route
@@ -54,6 +53,7 @@ from routes.static_assets import register_static_asset_route
 from routes.taobao import register_taobao_page
 from routes.tool import register_tool_page
 from services.amazon import AmazonService
+from services.downloads import DownloadService, validate_short_video_url
 from services.metrics import MetricsService
 from services.shop import ShopService
 
@@ -224,9 +224,7 @@ MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 TOOL_MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 TOOL_MAX_FILES = 100
 SAFE_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
-AUDIO_ONLY_SUFFIXES = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav"}
 ANALYZER_VIDEO_SUFFIXES = {".m4v", ".mov", ".mp4", ".webm"}
-ALLOWED_SHORT_VIDEO_HOST_SUFFIXES = ("tiktok.com", "tiktokv.com", "douyin.com", "iesdouyin.com")
 PROMPT_FILE = DATA_DIR / "analysis_prompt.txt"
 FEEDBACK_PROMPT_FILE = DATA_DIR / "feedback_prompt.txt"
 LEGACY_PROMPT_FILE = ROOT / "analysis_prompt.txt"
@@ -281,7 +279,6 @@ DEFAULT_FEEDBACK_PROMPT = """请基于视频提取内容和分析结果，给出
 }"""
 DEFAULT_SOCIA_VAULT_API_BASE = "https://api.sociavault.com"
 VIDEO_INFO_TTL_SECONDS = 24 * 60 * 60
-VIDEO_MEDIA_TTL_SECONDS = APP_CONFIG.video_media_ttl_seconds
 SOCIAL_COMMENT_COUNT = APP_CONFIG.social_comment_count
 SOCIAL_API_TIMEOUT = APP_CONFIG.social_api_timeout
 CHAT_IMAGE_ALLOWED_MIME = {
@@ -327,20 +324,6 @@ def load_feedback_prompt() -> str:
 def save_feedback_prompt(text: str) -> None:
     FEEDBACK_PROMPT_FILE.parent.mkdir(parents=True, exist_ok=True)
     FEEDBACK_PROMPT_FILE.write_text(text.strip() + "\n", encoding="utf-8")
-
-
-@dataclass
-class DownloadJob:
-    id: str
-    url: str
-    source: str = SOURCE_API_UPLOAD
-    status: str = "queued"
-    created_at: float = field(default_factory=time.time)
-    updated_at: float = field(default_factory=time.time)
-    log: list[str] = field(default_factory=list)
-    filename: str | None = None
-    error: str | None = None
-    result: dict[str, Any] | None = None
 
 
 download_job_registry = JobRegistry()
@@ -778,7 +761,6 @@ def is_registered_post_route(path: str) -> bool:
         "/api/feishu/bitable/write-allowlist",
         "/api/tool/convert",
         "/api/upload",
-        "/api/download",
         "/api/chat/ask",
         "/api/chat/export-pdf",
         "/api/report/run",
@@ -1763,19 +1745,6 @@ def image_tool_archive_name(value: str) -> str:
     if not cleaned:
         raise ValueError("压缩包名称无效")
     return f"{cleaned}.zip"
-
-
-def validate_short_video_url(url: str) -> str:
-    cleaned = url.strip()
-    parsed = urlparse(cleaned)
-    if parsed.scheme not in {"http", "https"}:
-        raise ValueError("Only http/https short-video URLs are supported")
-    host = (parsed.hostname or "").lower().rstrip(".")
-    if not any(host == suffix or host.endswith(f".{suffix}") for suffix in ALLOWED_SHORT_VIDEO_HOST_SUFFIXES):
-        raise ValueError("Only TikTok or Douyin URLs are supported")
-    if len(cleaned) > 2048:
-        raise ValueError("URL is too long")
-    return cleaned
 
 
 def output_dir_for_filename(filename: str) -> Path:
@@ -3127,33 +3096,6 @@ def mode_from_analysis(analysis: Any) -> str | None:
     return None
 
 
-def append_download_log(job_id: str, line: str) -> None:
-    download_job_registry.append_log(job_id, line)
-
-
-def run_download_command(job_id: str, command: list[str]) -> None:
-    append_download_log(job_id, f"$ {' '.join(command)}")
-    timeout = int(os.getenv("DOWNLOAD_COMMAND_TIMEOUT", "210"))
-    try:
-        result = subprocess.run(
-            command,
-            cwd=ROOT,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired as exc:
-        if exc.stdout:
-            for line in str(exc.stdout).splitlines():
-                append_download_log(job_id, line)
-        raise RuntimeError(f"Command timed out after {timeout}s: {' '.join(command)}") from exc
-    for line in (result.stdout or "").splitlines():
-        append_download_log(job_id, line)
-    if result.returncode != 0:
-        raise RuntimeError(f"Command failed with exit code {result.returncode}: {' '.join(command)}")
-
-
 def cache_log_label(payload: Any) -> str | None:
     if not isinstance(payload, dict):
         return None
@@ -3165,341 +3107,6 @@ def cache_log_label(payload: Any) -> str | None:
         suffix = f" ({provider}/{endpoint})" if provider or endpoint else ""
         return label + suffix
     return None
-
-
-def _score_media_candidate(path: str, url: str) -> int:
-    lowered = f"{path} {url}".lower()
-    score = 0
-    if ".video.play_addr.url_list" in lowered and ".bit_rate." not in lowered:
-        score += 260
-    if "download_no_watermark_addr.url_list" in lowered:
-        score += 240
-    if "download_addr.url_list" in lowered:
-        score += 220
-    if ".bit_rate." in lowered:
-        score -= 120
-    for word, points in (
-        ("h264", 90),
-        ("download", 100),
-        ("no_watermark", 80),
-        ("nowatermark", 80),
-        ("play_addr", 70),
-        ("playaddr", 70),
-        ("video_url", 60),
-        ("video", 40),
-        (".mp4", 30),
-        ("bytevc2", -160),
-        ("bytevc1", -80),
-        ("watermark", -40),
-    ):
-        if word in lowered:
-            score += points
-    return score
-
-
-def _iter_media_url_candidates(value: Any, path: str = "") -> list[tuple[int, str, str]]:
-    candidates: list[tuple[int, str, str]] = []
-    if isinstance(value, dict):
-        for key, child in value.items():
-            child_path = f"{path}.{key}" if path else str(key)
-            candidates.extend(_iter_media_url_candidates(child, child_path))
-    elif isinstance(value, list):
-        for index, child in enumerate(value):
-            candidates.extend(_iter_media_url_candidates(child, f"{path}[{index}]"))
-    elif isinstance(value, str) and value.startswith(("http://", "https://")):
-        lowered = f"{path} {value}".lower()
-        if any(word in lowered for word in ("cover", "avatar", "thumbnail", "image", "music", "audio", "subtitle")):
-            return []
-        if not any(word in lowered for word in ("video", "download", "play", ".mp4", "mime_type=video", "mime=video")):
-            return []
-        candidates.append((_score_media_candidate(path, value), path, value))
-    return candidates
-
-
-def _sociavault_video_id(payload: Any, fallback_url: str) -> str:
-    def walk(value: Any) -> str | None:
-        if isinstance(value, dict):
-            for key in ("id", "video_id", "aweme_id", "item_id"):
-                raw = value.get(key)
-                if raw not in (None, ""):
-                    return str(raw)
-            for child in value.values():
-                found = walk(child)
-                if found:
-                    return found
-        elif isinstance(value, list):
-            for child in value:
-                found = walk(child)
-                if found:
-                    return found
-        return None
-
-    found = walk(payload)
-    if found:
-        return re.sub(r"[^A-Za-z0-9_-]+", "_", found).strip("_")[:80] or "unknown"
-    match = re.search(r"/video/(\d+)", fallback_url)
-    if match:
-        return match.group(1)
-    return uuid.uuid4().hex[:12]
-
-
-def _download_direct_media(job_id: str, media_url: str, source_url: str, payload: Any) -> dict[str, Any]:
-    import requests
-
-    ensure_us_proxy("tiktok", log=lambda line: append_download_log(job_id, line))
-    parsed = urlparse(media_url)
-    if parsed.scheme not in {"http", "https"}:
-        raise ValueError("SociaVault media URL is not http/https")
-    max_bytes = int(os.getenv("TIKTOK_MAX_BYTES", str(2 * 1024 * 1024 * 1024)))
-    video_id = _sociavault_video_id(payload, source_url)
-    suffix = Path(parsed.path).suffix.lower()
-    if suffix not in {".mp4", ".mov", ".m4v", ".webm"}:
-        suffix = ".mp4"
-    target = VIDEOS_DIR / safe_filename(f"shortvideo_SociaVault_{video_id}{suffix}")
-    temp_target = target.with_suffix(target.suffix + ".part")
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0 Safari/537.36",
-        "Referer": source_url,
-    }
-    proxy = os.getenv("TIKTOK_PROXY_URL", "").strip()
-    attempts: list[tuple[str, dict[str, str] | None]] = []
-    if proxy:
-        attempts.append((f"proxy={proxy}", {"http": proxy, "https": proxy}))
-    attempts.append(("direct", None))
-
-    append_download_log(job_id, f"SociaVault 媒体直链下载：{media_url[:180]}")
-    try:
-        errors = []
-        for attempt_label, proxies in attempts:
-            temp_target.unlink(missing_ok=True)
-            try:
-                append_download_log(job_id, f"SociaVault media direct attempt: {attempt_label}")
-                with requests.get(media_url, headers=headers, proxies=proxies, stream=True, timeout=(8, 60)) as response:
-                    response.raise_for_status()
-                    content_length = int(response.headers.get("Content-Length") or 0)
-                    if content_length > max_bytes:
-                        raise RuntimeError(f"SociaVault media is too large: {content_length} bytes")
-                    downloaded = 0
-                    with temp_target.open("wb") as file:
-                        for chunk in response.iter_content(chunk_size=1024 * 1024):
-                            if not chunk:
-                                continue
-                            downloaded += len(chunk)
-                            if downloaded > max_bytes:
-                                raise RuntimeError(f"SociaVault media exceeded max size: {downloaded} bytes")
-                            file.write(chunk)
-                break
-            except Exception as exc:
-                errors.append(f"{attempt_label}: {exc}")
-        else:
-            raise RuntimeError(" / ".join(errors))
-        if temp_target.stat().st_size < 500 * 1024:
-            size = temp_target.stat().st_size
-            raise RuntimeError(f"SociaVault media file is too small: {size} bytes")
-        temp_target.replace(target)
-        ensure_analyzer_media_or_delete(target)
-    except Exception:
-        temp_target.unlink(missing_ok=True)
-        raise
-    return {
-        "filename": target.name,
-        "path": str(target),
-        "size": target.stat().st_size,
-        "id": video_id,
-        "title": None,
-        "uploader": None,
-        "duration": None,
-        "webpage_url": source_url,
-        "downloader": "sociavault-video-info",
-        "media_url": media_url,
-    }
-
-
-def _sociavault_video_info_request(url: str) -> dict[str, Any]:
-    api_base = os.getenv("SOCIAVAULT_API_BASE", DEFAULT_SOCIA_VAULT_API_BASE).rstrip("/")
-    return {"api_base": api_base, "endpoint": "video-info", "params": {"url": url}}
-
-
-def try_cached_download_result(job_id: str, url: str, source: str, result_path: Path) -> bool:
-    cached = get_cached("short_video_download", "download", video_cache_request(url))
-    if not isinstance(cached, dict) or not cached.get("filename"):
-        return False
-    filename = safe_filename(str(cached["filename"]))
-    cached_path = VIDEOS_DIR / filename
-    if not cached_path.is_file():
-        append_download_log(job_id, f"下载结果缓存文件不存在，继续重新下载：{filename}")
-        return False
-    if cached_path.suffix.lower() in AUDIO_ONLY_SUFFIXES:
-        cached_path.unlink(missing_ok=True)
-        append_download_log(job_id, f"删除缓存命中的无效音频文件，重新下载：{filename}")
-        return False
-    if not analyzer_media_is_valid(cached_path):
-        cached_path.unlink(missing_ok=True)
-        append_download_log(job_id, f"删除缓存命中的无效视频文件，重新下载：{filename}")
-        return False
-    result = with_download_cache_meta(dict(cached), True)
-    result["path"] = str(cached_path)
-    if result.get("id"):
-        video_id = str(result.get("id"))
-        platform = platform_for_url(url)
-        register_video(
-            video_id=video_id,
-            platform=platform,
-            source_url=str(result.get("webpage_url") or url),
-            filename=filename,
-            title=str(result.get("title") or ""),
-            author=str(result.get("uploader") or ""),
-            source=source,
-            hidden_from_analyzer=video_source_hidden(source),
-        )
-        make_web_manual_visible(source, platform, video_id)
-    atomic_write_json(result_path, result)
-    append_download_log(job_id, "下载结果缓存命中，复用本地视频文件。")
-    return True
-
-
-def store_download_result(url: str, source: str, result: dict[str, Any]) -> dict[str, Any]:
-    if result.get("id"):
-        video_id = str(result.get("id"))
-        platform = platform_for_url(url)
-        register_video(
-            video_id=video_id,
-            platform=platform,
-            source_url=str(result.get("webpage_url") or url),
-            filename=str(result.get("filename") or ""),
-            title=str(result.get("title") or ""),
-            author=str(result.get("uploader") or ""),
-            source=source,
-            hidden_from_analyzer=video_source_hidden(source),
-        )
-        make_web_manual_visible(source, platform, video_id)
-    store_response(
-        "short_video_download",
-        "download",
-        video_cache_request(url),
-        result,
-        metadata=video_cache_metadata(result, url),
-    )
-    return with_download_cache_meta(result, False)
-
-
-def _media_cache_payload(url: str, payload: Any) -> dict[str, Any]:
-    candidates = sorted(_iter_media_url_candidates(payload), key=lambda item: item[0], reverse=True)
-    return {
-        "source_url": url,
-        "video_id": _sociavault_video_id(payload, url),
-        "candidates": [
-            {"score": score, "path": path, "url": media_url}
-            for score, path, media_url in candidates[:12]
-        ],
-    }
-
-
-def _try_media_cache_payload_download(job_id: str, url: str, source: str, payload: Any, result_path: Path, source_label: str) -> bool:
-    if source_label.startswith("缓存") and media_cache_is_stale(payload):
-        append_download_log(job_id, "媒体地址缓存已过期，刷新 SociaVault video-info。")
-        return False
-    raw_candidates = payload.get("candidates") if isinstance(payload, dict) else []
-    candidates = [item for item in raw_candidates if isinstance(item, dict) and item.get("url")]
-    for item in candidates:
-        item["score"] = _score_media_candidate(str(item.get("path") or ""), str(item.get("url") or ""))
-    candidates.sort(key=lambda item: int(item.get("score") or 0), reverse=True)
-    append_download_log(job_id, f"{source_label} 媒体地址缓存返回 {len(candidates)} 个候选地址。")
-    for item in candidates[:12]:
-        path = str(item.get("path") or "")
-        media_url = str(item.get("url") or "")
-        score = item.get("score")
-        try:
-            append_download_log(job_id, f"{source_label} 尝试候选地址 score={score} path={path}")
-            result = _download_direct_media(job_id, media_url, url, payload)
-            result["video_info_source"] = source_label
-            if isinstance(payload, dict) and isinstance(payload.get("_cache"), dict):
-                result["media_cache"] = payload["_cache"]
-            result = store_download_result(url, source, result)
-            atomic_write_json(result_path, result)
-            return True
-        except Exception as exc:
-            append_download_log(job_id, f"{source_label} 候选地址不可用：{exc}")
-    return False
-
-
-def media_cache_is_stale(payload: Any) -> bool:
-    if not isinstance(payload, dict):
-        return True
-    cache_meta = payload.get("_cache")
-    if not isinstance(cache_meta, dict):
-        return False
-    age = cache_meta.get("age_seconds")
-    if age is None:
-        return False
-    return float(age) > VIDEO_MEDIA_TTL_SECONDS
-
-
-def _try_video_info_payload_download(job_id: str, url: str, source: str, payload: Any, result_path: Path, source_label: str) -> bool:
-    record = register_from_payload(
-        payload,
-        source_url=url,
-        source=source,
-        hidden_from_analyzer=video_source_hidden(source),
-    )
-    if record:
-        make_web_manual_visible(source, str(record.get("platform") or platform_for_url(url)), str(record.get("video_id") or ""))
-    media_payload = _media_cache_payload(url, payload)
-    if media_payload["candidates"]:
-        store_response(
-            "sociavault_tiktok_media",
-            "video-info-media",
-            _sociavault_video_info_request(url),
-            media_payload,
-            ttl_seconds=VIDEO_MEDIA_TTL_SECONDS,
-            metadata={"entity_type": "tiktok_video_media", "entity_id": media_payload.get("video_id"), "source_url": url},
-        )
-    return _try_media_cache_payload_download(job_id, url, source, media_payload, result_path, source_label)
-
-
-def try_cached_video_info_download(job_id: str, url: str, source: str, result_path: Path) -> bool:
-    payload = get_cached(
-        "sociavault_tiktok_media",
-        "video-info-media",
-        _sociavault_video_info_request(url),
-        ttl_seconds=VIDEO_MEDIA_TTL_SECONDS,
-    )
-    if not isinstance(payload, dict):
-        append_download_log(job_id, "媒体地址缓存未命中。")
-        return False
-    return _try_media_cache_payload_download(job_id, url, source, payload, result_path, "缓存")
-
-
-def try_sociavault_video_info_download(job_id: str, url: str, source: str, result_path: Path) -> bool:
-    if not os.getenv("SOCIAVAULT_API_KEY", "").strip():
-        append_download_log(job_id, "未配置 SOCIAVAULT_API_KEY，跳过 SociaVault video-info。")
-        return False
-    output_path = result_path.with_suffix(".sociavault-video-info.json")
-    try:
-        run_download_command(
-            job_id,
-            [
-                "python",
-                str(SCRIPTS_DIR / "sociavault_tiktok.py"),
-                "--endpoint",
-                "video-info",
-                "--url",
-                url,
-                "--output",
-                str(output_path),
-            ],
-        )
-        payload = read_json(output_path)
-        if _try_video_info_payload_download(job_id, url, source, payload, result_path, "SociaVault API"):
-            result = read_json(result_path)
-            if isinstance(result, dict):
-                result["sociavault_video_info"] = str(output_path.relative_to(ROOT))
-                atomic_write_json(result_path, result)
-            return True
-        return False
-    except Exception as exc:
-        append_download_log(job_id, f"SociaVault video-info 下载链路失败，回退原下载器：{exc}")
-        return False
 
 
 def _shop_product_nodes(payload: Any, limit: int = 40) -> list[dict[str, Any]]:
@@ -3648,111 +3255,6 @@ def search_shop_catalog_products(payload: dict[str, Any]) -> dict[str, Any]:
     return {"mode": mode, "query": target, "products": products}
 
 
-def run_download_job(job_id: str) -> None:
-    initial = download_job_registry.snapshot(job_id)
-    if initial is None:
-        return
-    url = initial.url
-    source = initial.source
-    download_job_registry.update_fields(job_id, {"status": "running"})
-
-    result_path = OUTPUT_DIR / "download_jobs" / f"{job_id}.json"
-    try:
-        VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
-        result_path.parent.mkdir(parents=True, exist_ok=True)
-        if not try_cached_download_result(job_id, url, source, result_path) and not try_cached_video_info_download(job_id, url, source, result_path):
-            crawler_error: Exception | None = None
-            try:
-                append_download_log(job_id, "缓存地址不可用，使用原下载器下载。")
-                run_download_command(
-                    job_id,
-                    [
-                        "python",
-                        str(SCRIPTS_DIR / "tiktok_download.py"),
-                        url,
-                        "--output-dir",
-                        str(VIDEOS_DIR),
-                        "--result-json",
-                        str(result_path),
-                    ],
-                )
-                result = read_json(result_path)
-                filename = safe_filename(str(result.get("filename") or "")) if isinstance(result, dict) else ""
-                if filename and Path(filename).suffix.lower() in AUDIO_ONLY_SUFFIXES:
-                    audio_path = VIDEOS_DIR / filename
-                    audio_path.unlink(missing_ok=True)
-                    crawler_error = RuntimeError(f"original downloader returned audio-only media: {filename}")
-                    append_download_log(job_id, f"删除无效音频文件并降级到 SociaVault video-info：{filename}")
-                    if not try_sociavault_video_info_download(job_id, url, source, result_path):
-                        raise RuntimeError(
-                            "视频下载失败：原下载器只返回音频文件，SociaVault video-info 也没有可用下载地址。"
-                        ) from crawler_error
-                elif filename:
-                    try:
-                        ensure_analyzer_media_or_delete(VIDEOS_DIR / filename)
-                    except Exception as exc:
-                        crawler_error = exc
-                        append_download_log(job_id, f"删除无效视频文件并降级到 SociaVault video-info：{filename}，原因：{exc}")
-                        if not try_sociavault_video_info_download(job_id, url, source, result_path):
-                            raise RuntimeError(
-                                "视频下载失败：原下载器返回的文件不可分析，SociaVault video-info 也没有可用下载地址。"
-                            ) from crawler_error
-            except Exception as exc:
-                crawler_error = exc
-                append_download_log(job_id, f"原下载器失败，最后降级调用 SociaVault video-info：{exc}")
-                if not try_sociavault_video_info_download(job_id, url, source, result_path):
-                    raise RuntimeError(
-                        "视频下载失败：缓存地址不可用，原下载器失败，SociaVault video-info 也没有可用下载地址。"
-                    ) from crawler_error
-        result = read_json(result_path)
-        if not isinstance(result, dict) or not result.get("filename"):
-            raise RuntimeError("Downloader did not return a video filename")
-        cache_label = cache_log_label(result)
-        if cache_label:
-            append_download_log(job_id, cache_label)
-        filename = safe_filename(str(result["filename"]))
-        if not (VIDEOS_DIR / filename).is_file():
-            raise FileNotFoundError(f"Downloaded file not found: {filename}")
-        if result.get("id"):
-            video_id = str(result.get("id"))
-            platform = platform_for_url(url)
-            register_video(
-                video_id=video_id,
-                platform=platform,
-                source_url=str(result.get("webpage_url") or url),
-                filename=filename,
-                title=str(result.get("title") or ""),
-                author=str(result.get("uploader") or ""),
-                source=source,
-                hidden_from_analyzer=video_source_hidden(source),
-            )
-            make_web_manual_visible(source, platform, video_id)
-        download_job_registry.update_fields(
-            job_id,
-            {"filename": filename, "result": result, "status": "complete"},
-        )
-        start_social_context_job(filename, generate_insights=True)
-    except Exception as exc:
-        latest = download_job_registry.snapshot(job_id)
-        useful_log = next(
-            (
-                line
-                for line in reversed(latest.log if latest is not None else [])
-                if line and not line.startswith("$ ") and not line.startswith("Command failed with exit code")
-            ),
-            "",
-        )
-        download_job_registry.update_fields(
-            job_id,
-            {"status": "failed", "error": useful_log or str(exc)},
-            final_log=str(exc),
-        )
-
-
-def public_download_job(job: DownloadJob) -> dict[str, Any]:
-    return snapshot_download_job(job)
-
-
 def payload_has_content(value: Any) -> bool:
     if value is None:
         return False
@@ -3773,8 +3275,7 @@ def build_video_feedback(filename: str = "", download_job_id: str = "") -> dict[
     failure_reason = ""
 
     if download_job_id:
-        download_job = download_job_registry.snapshot(download_job_id)
-        download_payload = public_download_job(download_job) if download_job else None
+        download_payload = download_service.payload_for(download_job_id)
         if not download_payload:
             return {"ok": False, "state": "failed", "error": "Download job not found", "download_job_id": download_job_id}
         if not filename and download_payload.get("filename"):
@@ -10969,13 +10470,6 @@ class Handler(BaseHTTPRequestHandler):
             with frame_path.open("rb") as file:
                 shutil.copyfileobj(file, self.wfile)
             return
-        if parsed.path == "/api/download-job":
-            job_id = parse_qs(parsed.query).get("id", [""])[0]
-            job = download_job_registry.snapshot(job_id)
-            payload = public_download_job(job) if job else None
-            if payload is None:
-                return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Download job not found"})
-            return json_response(self, HTTPStatus.OK, payload)
         if parsed.path == "/api/video-feedback":
             query = parse_qs(parsed.query)
             try:
@@ -10987,9 +10481,6 @@ class Handler(BaseHTTPRequestHandler):
                 return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
             status = HTTPStatus.NOT_FOUND if payload.get("error") else HTTPStatus.OK
             return json_response(self, status, payload)
-        if parsed.path == "/api/download-events":
-            job_id = parse_qs(parsed.query).get("id", [""])[0]
-            return self.stream_download_events(job_id)
         if parsed.path == "/api/files":
             files = []
             for path in sorted(VIDEOS_DIR.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True):
@@ -11110,43 +10601,6 @@ class Handler(BaseHTTPRequestHandler):
                 filename=f"{filename}.{suffix}.pdf",
             )
         return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
-
-    def stream_download_events(self, job_id: str) -> None:
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "keep-alive")
-        self.end_headers()
-
-        last_marker: tuple[Any, ...] | None = None
-        while True:
-            job = download_job_registry.snapshot(job_id)
-            payload = public_download_job(job) if job else None
-            if payload is None:
-                try:
-                    write_sse_event(self, {"status": "missing", "error": "Download job not found"})
-                except (BrokenPipeError, ConnectionResetError):
-                    pass
-                self.close_connection = True
-                return
-
-            marker = (
-                payload.get("status"),
-                payload.get("updated_at"),
-                len(payload.get("log") or []),
-                payload.get("error"),
-            )
-            try:
-                if marker != last_marker:
-                    write_sse_event(self, payload)
-                    last_marker = marker
-                if payload.get("status") not in {"queued", "running"}:
-                    self.close_connection = True
-                    return
-                time.sleep(1)
-            except (BrokenPipeError, ConnectionResetError):
-                self.close_connection = True
-                return
 
     def stream_report_events(self, report_date: str | None) -> None:
         self.send_response(HTTPStatus.OK)
@@ -11301,8 +10755,6 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_tool_convert()
         if parsed.path == "/api/upload":
             return self.handle_upload()
-        if parsed.path == "/api/download":
-            return self.handle_download()
         if parsed.path == "/api/chat/ask":
             return self.handle_chat_ask()
         if parsed.path == "/api/chat/export-pdf":
@@ -11637,29 +11089,6 @@ class Handler(BaseHTTPRequestHandler):
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
         except Exception as exc:
             return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
-
-    def handle_download(self) -> None:
-        content_length = int(self.headers.get("Content-Length", "0"))
-        body = self.rfile.read(content_length)
-        attempted_url = ""
-        try:
-            payload = json.loads(body.decode("utf-8") or "{}")
-            attempted_url = str(payload.get("url", ""))
-            url = validate_short_video_url(attempted_url)
-            source = normalize_video_source(payload.get("source_tag") or payload.get("source"), SOURCE_API_UPLOAD)
-        except (json.JSONDecodeError, ValueError) as exc:
-            job = DownloadJob(id=str(uuid.uuid4()), url=attempted_url, status="failed")
-            job.error = str(exc)
-            job.log.append(str(exc))
-            download_job_registry.register(job.id, job)
-            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
-
-        job = DownloadJob(id=str(uuid.uuid4()), url=url, source=source)
-        download_job_registry.register(job.id, job)
-        thread = threading.Thread(target=run_download_job, args=(job.id,), daemon=True)
-        thread.start()
-        snapshot = download_job_registry.snapshot(job.id)
-        return json_response(self, HTTPStatus.ACCEPTED, public_download_job(snapshot))
 
     def handle_tool_convert(self) -> None:
         try:
@@ -12511,11 +11940,48 @@ PROXY_HTML = PROXY_HTML_PATH.read_text(encoding="utf-8") if PROXY_HTML_PATH.is_f
 TAOBAO_HTML_PATH = SCRIPTS_DIR / "static" / "taobao.html"
 TAOBAO_HTML = TAOBAO_HTML_PATH.read_text(encoding="utf-8") if TAOBAO_HTML_PATH.is_file() else ""
 
+download_service = DownloadService(
+    registry=download_job_registry,
+    root=ROOT,
+    videos_dir=VIDEOS_DIR,
+    output_dir=OUTPUT_DIR,
+    scripts_dir=SCRIPTS_DIR,
+    read_json_file=read_json,
+    write_json_file=atomic_write_json,
+    run_factory=subprocess.run,
+    thread_factory=threading.Thread,
+    job_id_factory=lambda: str(uuid.uuid4()),
+    fallback_video_id_factory=lambda: uuid.uuid4().hex[:12],
+    environ=os.environ,
+    get_cached=get_cached,
+    store_response=store_response,
+    video_cache_request=video_cache_request,
+    video_cache_metadata=video_cache_metadata,
+    with_download_cache_meta=with_download_cache_meta,
+    register_video=register_video,
+    register_from_payload=register_from_payload,
+    platform_for_url=platform_for_url,
+    video_source_hidden=video_source_hidden,
+    make_web_manual_visible=make_web_manual_visible,
+    start_social_context_job=start_social_context_job,
+    safe_filename=safe_filename,
+    analyzer_media_is_valid=analyzer_media_is_valid,
+    ensure_analyzer_media_or_delete=ensure_analyzer_media_or_delete,
+    ensure_us_proxy=ensure_us_proxy,
+    requests_get=lambda *args, **kwargs: __import__("requests").get(*args, **kwargs),
+    cache_log_label=cache_log_label,
+    normalize_video_source=normalize_video_source,
+    default_source=SOURCE_API_UPLOAD,
+    video_media_ttl_seconds=APP_CONFIG.video_media_ttl_seconds,
+    default_sociavault_api_base=DEFAULT_SOCIA_VAULT_API_BASE,
+)
+
 register_shop_page(WEB_ROUTER, html_snapshot=SHOP_HTML, inject_nav=inject_unified_nav)
 register_shop_api_routes(WEB_ROUTER, shop_service)
 register_metrics_page(WEB_ROUTER, html_snapshot=METRICS_HTML, inject_nav=inject_unified_nav)
 register_metrics_api_routes(WEB_ROUTER, metrics_service)
 register_amazon_routes(WEB_ROUTER, amazon_service)
+register_download_routes(WEB_ROUTER, download_service)
 register_taobao_page(WEB_ROUTER, html_snapshot=TAOBAO_HTML, inject_nav=inject_unified_nav)
 
 

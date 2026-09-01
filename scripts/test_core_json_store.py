@@ -226,10 +226,11 @@ class JsonStoreTests(unittest.TestCase):
         calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
         # Phase 4.1 moves Shop reads into its service. Phase 4.2 moves four
         # Metrics call sites behind two service-owned reads (worker + payload).
-        # Phase 4.3 moves Amazon artifact reads behind its service payload.
+        # Phase 4.3 moves Amazon artifact reads behind its service payload;
+        # Phase 4.4A moves four Download reads and three atomic writes.
         self.assertEqual(
             sum(isinstance(node.func, ast.Name) and node.func.id == "read_json" for node in calls),
-            42,
+            38,
         )
         shop_source_path = source_path.with_name("services") / "shop.py"
         shop_tree = ast.parse(shop_source_path.read_text(encoding="utf-8"), filename=str(shop_source_path))
@@ -270,7 +271,7 @@ class JsonStoreTests(unittest.TestCase):
         )
         self.assertEqual(
             sum(isinstance(node.func, ast.Name) and node.func.id == "atomic_write_json" for node in calls),
-            10,
+            7,
         )
         self.assertEqual(
             sum(
@@ -345,6 +346,40 @@ class JsonStoreTests(unittest.TestCase):
             self.assertIsInstance(keywords.get("read_json_file"), ast.Name)
             self.assertEqual(getattr(keywords.get("read_json_file"), "id", None), "read_json")
             self.assertIsInstance(keywords.get("write_json_file"), ast.Name)
+            self.assertEqual(getattr(keywords.get("write_json_file"), "id", None), "atomic_write_json")
+
+        download_source_path = source_path.with_name("services") / "downloads.py"
+        download_tree = ast.parse(
+            download_source_path.read_text(encoding="utf-8"),
+            filename=str(download_source_path),
+        )
+        download_reads = [
+            node for node in ast.walk(download_tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "self"
+            and node.func.attr == "_read_json_file"
+        ]
+        download_writes = [
+            node for node in ast.walk(download_tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "self"
+            and node.func.attr == "_write_json_file"
+        ]
+        self.assertEqual(len(download_reads), 4)
+        self.assertEqual(len(download_writes), 3)
+        download_service_assignment = next(
+            node for node in tree.body
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "download_service" for target in node.targets)
+        )
+        self.assertIsInstance(download_service_assignment.value, ast.Call)
+        if isinstance(download_service_assignment.value, ast.Call):
+            keywords = {keyword.arg: keyword.value for keyword in download_service_assignment.value.keywords}
+            self.assertEqual(getattr(keywords.get("read_json_file"), "id", None), "read_json")
             self.assertEqual(getattr(keywords.get("write_json_file"), "id", None), "atomic_write_json")
 
 
