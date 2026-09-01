@@ -2545,7 +2545,24 @@ def run_lifecycle() -> None:
             assert status == 200 and uploaded["files"] == [{"filename": "fixture.mp4", "size": 16}]
             assert upload_sources == [web_app.SOURCE_API_UPLOAD]
             filename = "fixture.mp4"
-            status, _headers, files = json_request(port, "GET", "/api/files")
+            files_router = Router()
+            register_video_files_routes(
+                files_router,
+                VideoFilesService(
+                    videos_dir=web_app.VIDEOS_DIR,
+                    suffixes=web_app.ANALYZER_VIDEO_SUFFIXES,
+                    media_validator=lambda _path: True,
+                    analyzer_visible_source=lambda _filename: True,
+                    queue_status=fake_queue.get_status,
+                    queue_status_meta=fake_queue.get_status_meta,
+                    queue_title=fake_queue.get_title,
+                    output_dir_for_filename=lambda requested: web_app.OUTPUT_DIR / requested,
+                    read_json_file=web_app.read_json,
+                    social_summary=web_app.summarize_social_status,
+                ),
+            )
+            with patch.object(web_app, "WEB_ROUTER", files_router):
+                status, _headers, files = json_request(port, "GET", "/api/files")
             assert status == 200 and any(item["name"] == filename for item in files)
 
             analyze_router = Router()
