@@ -583,6 +583,129 @@ def assert_analyze_http_contract(web_app: Any, port: int) -> None:
     assert not output_dir.exists()
 
 
+def assert_translate_http_contract(web_app: Any, port: int) -> None:
+    """Freeze the legacy Handler Translate input, file, and process contract."""
+
+    filename = "translate-contract.mp4"
+    requested_filename = f"nested/{filename}"
+    output_dir = web_app.OUTPUT_DIR / filename
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    output_dir.mkdir(parents=True)
+    run_calls: list[tuple[list[str], dict[str, Any]]] = []
+
+    def recording_run(command: list[str], **kwargs: Any) -> SimpleNamespace:
+        run_calls.append((list(command), dict(kwargs)))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    def request_payload(**values: Any) -> dict[str, Any]:
+        return {"filename": requested_filename, **values}
+
+    with patch.object(web_app, "subprocess", SimpleNamespace(run=recording_run)):
+        for payload, error in (
+            ({"filename": "", "tab": "content"}, "Missing filename"),
+            (request_payload(tab="unknown"), "tab must be content, direct, audit, or feedback"),
+            (request_payload(tab="content", analysis_source="other"), "analysis_source must be standard or direct"),
+        ):
+            status, _headers, response = json_request(port, "POST", "/api/translate", payload)
+            assert status == 400 and response == {"error": error}
+            assert run_calls == [] and list(output_dir.iterdir()) == []
+        status, _headers, malformed = json_request(
+            port, "POST", "/api/translate", body=b"{", content_type="application/json"
+        )
+        assert status == 400 and malformed.get("error") and run_calls == [] and list(output_dir.iterdir()) == []
+
+        def assert_run(source_name: str, output_name: str) -> None:
+            command, kwargs = run_calls[-1]
+            assert command == [
+                "python", str(web_app.SCRIPTS_DIR / "translate_analysis.py"),
+                str(output_dir / source_name), "--output", str(output_dir / output_name),
+            ]
+            assert kwargs["cwd"] == web_app.ROOT
+            assert kwargs["check"] is True and kwargs["capture_output"] is True and kwargs["text"] is True
+            assert kwargs["env"] == dict(os.environ) and kwargs["env"] is not os.environ
+
+        for values, source_name, output_name in (
+            ({"tab": "content"}, "analysis.json", "analysis_zh.json"),
+            ({"tab": "direct"}, "direct_analysis.json", "direct_analysis_zh.json"),
+            ({"tab": "audit"}, "audit_result.json", "audit_result_zh.json"),
+            ({"tab": "feedback"}, "feedback_result.json", "feedback_result_zh.json"),
+            ({"tab": "audit", "analysis_source": " direct ", "source": "standard"}, "direct_audit_result.json", "direct_audit_result_zh.json"),
+            ({"tab": "feedback", "source": "direct"}, "direct_feedback_result.json", "direct_feedback_result_zh.json"),
+        ):
+            source_path = output_dir / source_name
+            output_path = output_dir / output_name
+            source_path.write_text("fixture source", encoding="utf-8")
+            output_path.unlink(missing_ok=True)
+            status, _headers, translated = json_request(port, "POST", "/api/translate", request_payload(**values))
+            assert status == 200 and translated == {"status": "translated", "filename": filename, "tab": values["tab"]}
+            assert_run(source_name, output_name)
+            assert not output_path.exists()
+
+        missing_source = output_dir / "analysis.json"
+        missing_source.unlink(missing_ok=True)
+        before_missing = len(run_calls)
+        status, _headers, missing = json_request(port, "POST", "/api/translate", request_payload(tab="content"))
+        assert status == 400 and missing == {"error": f"analysis.json not found for {filename}"}
+        assert len(run_calls) == before_missing
+
+    source_path = output_dir / "analysis.json"
+    source_path.write_text("fixture source", encoding="utf-8")
+
+    class BlankCalledProcessError(subprocess.CalledProcessError):
+        def __str__(self) -> str:
+            return " "
+
+    for failure, expected_error in (
+        (subprocess.CalledProcessError(7, ["fixture"], output="stdout ignored", stderr=" stderr selected \n"), "stderr selected"),
+        (subprocess.CalledProcessError(7, ["fixture"], output=" stdout selected \n", stderr=""), "stdout selected"),
+        (subprocess.CalledProcessError(7, ["fixture"], output="", stderr=""), "Command '['fixture']' returned non-zero exit status 7."),
+        (BlankCalledProcessError(7, ["fixture"], output="", stderr=""), "Translation failed"),
+    ):
+        def failing_run(command: list[str], **kwargs: Any) -> SimpleNamespace:
+            run_calls.append((list(command), dict(kwargs)))
+            raise failure
+
+        with patch.object(
+            web_app, "subprocess", SimpleNamespace(run=failing_run, CalledProcessError=subprocess.CalledProcessError)
+        ):
+            status, _headers, failed = json_request(port, "POST", "/api/translate", request_payload(tab="content"))
+        assert status == 500 and failed == {"error": expected_error}
+
+    output_path = output_dir / "analysis_zh.json"
+    output_path.unlink(missing_ok=True)
+
+    def unavailable_run(command: list[str], **kwargs: Any) -> None:
+        run_calls.append((list(command), dict(kwargs)))
+        raise OSError("fixture translate runner unavailable")
+
+    before_oserror = len(run_calls)
+    with patch.object(
+        web_app, "subprocess", SimpleNamespace(run=unavailable_run, CalledProcessError=subprocess.CalledProcessError)
+    ):
+        try:
+            json_request(port, "POST", "/api/translate", request_payload(tab="content"))
+        except http.client.RemoteDisconnected:
+            pass
+        else:
+            raise AssertionError("non-CalledProcessError must keep the legacy connection failure")
+    assert len(run_calls) == before_oserror + 1
+    assert source_path.read_text(encoding="utf-8") == "fixture source" and not output_path.exists()
+
+    with patch.object(web_app, "ui_test_mode_allows_live_write", return_value=False), patch.object(
+        web_app.Handler, "handle_translate", side_effect=AssertionError("UI_TEST gate must run before Translate body parsing")
+    ):
+        status, _headers, blocked = json_request(
+            port, "POST", "/api/translate", body=b"{", content_type="application/json"
+        )
+    assert status == 409 and blocked == {
+        "error": "UI 测试模式已拦截写操作，未触发真实业务。",
+        "simulated": True,
+        "status": "blocked",
+        "path": "/api/translate",
+    }
+
+
 def assert_real_download_worker_registry_updates(web_app: Any) -> None:
     registry = JobRegistry()
     service = make_download_service(web_app, registry)
@@ -1572,6 +1695,7 @@ def run_lifecycle() -> None:
 
             assert_upload_http_contract(web_app, port)
             assert_analyze_http_contract(web_app, port)
+            assert_translate_http_contract(web_app, port)
 
             invalid_id = "00000000-0000-0000-0000-000000000001"
             with patch.object(web_app.uuid, "uuid4", return_value=UUID(invalid_id)):
