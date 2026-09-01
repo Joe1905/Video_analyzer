@@ -191,6 +191,366 @@ def assert_real_download_worker_registry_updates(web_app: Any, runner: Any) -> N
         assert failure.status == "failed"
         assert failure.error == "fixture useful failure"
         assert failure.log[-1] == "fixture raw failure"
+
+        for job_id, result, expected_error in (
+            ("worker-missing-filename", {}, "Downloader did not return a video filename"),
+            ("worker-missing-file", {"filename": "worker-absent.mp4"}, "Downloaded file not found: worker-absent.mp4"),
+        ):
+            registry.register(
+                job_id,
+                web_app.DownloadJob(id=job_id, url=f"https://www.tiktok.com/@fixture/video/{job_id}"),
+            )
+
+            def cached_incomplete(_job_id: str, _url: str, _source: str, result_path: Path, *, payload=result) -> bool:
+                result_path.write_text(json.dumps(payload), encoding="utf-8")
+                return True
+
+            with patch.object(web_app, "try_cached_download_result", side_effect=cached_incomplete):
+                runner(job_id)
+            failed = registry.snapshot(job_id)
+            assert failed is not None and failed.status == "failed"
+            assert failed.error == expected_error
+            assert failed.log[-1] == expected_error
+    finally:
+        web_app.download_job_registry = original_registry
+
+
+def assert_download_command_cache_and_fallback_contract(web_app: Any, runner: Any) -> None:
+    original_registry = web_app.download_job_registry
+    registry = web_app.JobRegistry()
+    web_app.download_job_registry = registry
+    try:
+        command_id = "download-command-success"
+        registry.register(command_id, web_app.DownloadJob(id=command_id, url="https://www.tiktok.com/@fixture/video/command"))
+        command = ["python", "fixture-download.py", "--url", "fixture"]
+        calls: list[tuple[list[str], dict[str, Any]]] = []
+
+        def successful_run(argv: list[str], **kwargs: Any) -> SimpleNamespace:
+            calls.append((argv, kwargs))
+            return SimpleNamespace(returncode=0, stdout="first stdout\nsecond stdout\n")
+
+        with patch.dict(os.environ, {"DOWNLOAD_COMMAND_TIMEOUT": "37"}), patch.object(
+            web_app.subprocess, "run", side_effect=successful_run
+        ):
+            web_app.run_download_command(command_id, command)
+        assert calls == [(
+            command,
+            {
+                "cwd": web_app.ROOT,
+                "stdout": web_app.subprocess.PIPE,
+                "stderr": web_app.subprocess.STDOUT,
+                "text": True,
+                "timeout": 37,
+            },
+        )]
+        command_job = registry.snapshot(command_id)
+        assert command_job is not None
+        assert command_job.log == ["$ python fixture-download.py --url fixture", "first stdout", "second stdout"]
+
+        failed_command_id = "download-command-failure"
+        registry.register(failed_command_id, web_app.DownloadJob(id=failed_command_id, url="https://www.tiktok.com/@fixture/video/failure"))
+        with patch.object(web_app.subprocess, "run", return_value=SimpleNamespace(returncode=7, stdout="failure stdout\n")):
+            try:
+                web_app.run_download_command(failed_command_id, command)
+            except RuntimeError as exc:
+                assert str(exc) == "Command failed with exit code 7: python fixture-download.py --url fixture"
+            else:
+                raise AssertionError("non-zero download command must fail")
+        failed_command = registry.snapshot(failed_command_id)
+        assert failed_command is not None
+        assert failed_command.log == ["$ python fixture-download.py --url fixture", "failure stdout"]
+
+        timeout_command_id = "download-command-timeout"
+        registry.register(timeout_command_id, web_app.DownloadJob(id=timeout_command_id, url="https://www.tiktok.com/@fixture/video/timeout"))
+        timeout_error = web_app.subprocess.TimeoutExpired(command, 37, output="timeout first\ntimeout second\n")
+        with patch.dict(os.environ, {"DOWNLOAD_COMMAND_TIMEOUT": "37"}), patch.object(
+            web_app.subprocess, "run", side_effect=timeout_error
+        ):
+            try:
+                web_app.run_download_command(timeout_command_id, command)
+            except RuntimeError as exc:
+                assert str(exc) == "Command timed out after 37s: python fixture-download.py --url fixture"
+            else:
+                raise AssertionError("timed-out download command must fail")
+        timed_out_command = registry.snapshot(timeout_command_id)
+        assert timed_out_command is not None
+        assert timed_out_command.log == [
+            "$ python fixture-download.py --url fixture",
+            "timeout first",
+            "timeout second",
+        ]
+
+        url = "https://www.tiktok.com/@fixture/video/cache"
+        cached_filename = "download-cache.mp4"
+        cached_path = web_app.VIDEOS_DIR / cached_filename
+        web_app.VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
+        cached_path.write_bytes(b"fixture")
+        cache_id = "download-cache-hit"
+        registry.register(cache_id, web_app.DownloadJob(id=cache_id, url=url, source=web_app.SOURCE_WEB_MANUAL))
+        registered: list[dict[str, Any]] = []
+        visible: list[tuple[str, str, str]] = []
+        cache_payload = {"filename": cached_filename, "id": "cache-video", "title": "fixture"}
+        result_path = web_app.OUTPUT_DIR / "download_jobs" / f"{cache_id}.json"
+        with patch.object(web_app, "get_cached", return_value=cache_payload) as get_cached, patch.object(
+            web_app, "analyzer_media_is_valid", return_value=True
+        ), patch.object(web_app, "register_video", side_effect=lambda **kwargs: registered.append(kwargs)), patch.object(
+            web_app, "make_web_manual_visible", side_effect=lambda *args: visible.append(args)
+        ):
+            assert web_app.try_cached_download_result(cache_id, url, web_app.SOURCE_WEB_MANUAL, result_path) is True
+        get_cached.assert_called_once_with("short_video_download", "download", web_app.video_cache_request(url))
+        cached_result = web_app.read_json(result_path)
+        assert cached_result["filename"] == cached_filename
+        assert cached_result["_cache"] == {
+            "hit": True,
+            "provider": "short_video_download",
+            "endpoint": "download",
+            "label": "缓存命中",
+        }
+        assert registered and registered[0]["source"] == web_app.SOURCE_WEB_MANUAL
+        assert visible == [(web_app.SOURCE_WEB_MANUAL, web_app.platform_for_url(url), "cache-video")]
+
+        for filename, valid_media, expected_log in (
+            ("cached-audio.mp3", True, "删除缓存命中的无效音频文件，重新下载：cached-audio.mp3"),
+            ("cached-invalid.mp4", False, "删除缓存命中的无效视频文件，重新下载：cached-invalid.mp4"),
+        ):
+            path = web_app.VIDEOS_DIR / filename
+            path.write_bytes(b"invalid")
+            job_id = f"download-{filename}"
+            registry.register(job_id, web_app.DownloadJob(id=job_id, url=url))
+            with patch.object(web_app, "get_cached", return_value={"filename": filename}), patch.object(
+                web_app, "analyzer_media_is_valid", return_value=valid_media
+            ):
+                assert web_app.try_cached_download_result(job_id, url, web_app.SOURCE_API_UPLOAD, web_app.OUTPUT_DIR / "download_jobs" / f"{job_id}.json") is False
+            assert not path.exists()
+            cached_job = registry.snapshot(job_id)
+            assert cached_job is not None and expected_log in cached_job.log
+
+        fallback_id = "download-sociavault-fallback"
+        fallback_url = "https://www.douyin.com/video/fallback"
+        fallback_filename = "fallback.mp4"
+        registry.register(fallback_id, web_app.DownloadJob(id=fallback_id, url=fallback_url, source=web_app.SOURCE_WEB_MANUAL))
+        fallback_result_path = web_app.OUTPUT_DIR / "download_jobs" / f"{fallback_id}.json"
+        fallback_registered: list[dict[str, Any]] = []
+        fallback_visible: list[tuple[str, str, str]] = []
+        social: list[tuple[str, bool]] = []
+        fallback_order: list[str] = []
+
+        def cache_result_miss(*_args: Any) -> bool:
+            fallback_order.append("download-cache")
+            return False
+
+        def video_info_cache_miss(*_args: Any) -> bool:
+            fallback_order.append("video-info-cache")
+            return False
+
+        def crawler_failure(*_args: Any, **_kwargs: Any) -> None:
+            fallback_order.append("original-downloader")
+            raise RuntimeError("fixture crawler failure")
+
+        def socia_fallback(job_id: str, actual_url: str, source: str, result_path: Path) -> bool:
+            fallback_order.append("sociavault-video-info")
+            assert (job_id, actual_url, source, result_path) == (
+                fallback_id, fallback_url, web_app.SOURCE_WEB_MANUAL, fallback_result_path,
+            )
+            (web_app.VIDEOS_DIR / fallback_filename).write_bytes(b"fixture")
+            result_path.write_text(json.dumps({"filename": fallback_filename, "id": "fallback-video"}), encoding="utf-8")
+            return True
+
+        with patch.object(web_app, "try_cached_download_result", side_effect=cache_result_miss), patch.object(
+            web_app, "try_cached_video_info_download", side_effect=video_info_cache_miss
+        ), patch.object(web_app, "run_download_command", side_effect=crawler_failure), patch.object(
+            web_app, "try_sociavault_video_info_download", side_effect=socia_fallback
+        ), patch.object(web_app, "register_video", side_effect=lambda **kwargs: fallback_registered.append(kwargs)), patch.object(
+            web_app, "make_web_manual_visible", side_effect=lambda *args: fallback_visible.append(args)
+        ), patch.object(web_app, "start_social_context_job", side_effect=lambda filename, *, generate_insights: social.append((filename, generate_insights))):
+            runner(fallback_id)
+        fallback = registry.snapshot(fallback_id)
+        assert fallback is not None and fallback.status == "complete"
+        assert fallback.filename == fallback_filename and fallback.result == {"filename": fallback_filename, "id": "fallback-video"}
+        assert any("原下载器失败，最后降级调用 SociaVault video-info：fixture crawler failure" == line for line in fallback.log)
+        assert fallback_registered and fallback_registered[0]["source"] == web_app.SOURCE_WEB_MANUAL
+        assert fallback_visible == [(web_app.SOURCE_WEB_MANUAL, web_app.platform_for_url(fallback_url), "fallback-video")]
+        assert social == [(fallback_filename, True)]
+        assert fallback_order == [
+            "download-cache",
+            "video-info-cache",
+            "original-downloader",
+            "sociavault-video-info",
+        ]
+
+        for suffix, expected_log in (
+            (".mp3", "删除无效音频文件并降级到 SociaVault video-info"),
+            (".mp4", "删除无效视频文件并降级到 SociaVault video-info"),
+        ):
+            job_id = f"download-original-{suffix[1:]}"
+            crawler_filename = f"crawler-output{suffix}"
+            recovered_filename = f"recovered-{suffix[1:]}.mp4"
+            registry.register(job_id, web_app.DownloadJob(id=job_id, url=url))
+            fallback_calls: list[tuple[str, str, str, Path]] = []
+
+            def crawler_output(_job_id: str, _command: list[str]) -> None:
+                (web_app.VIDEOS_DIR / crawler_filename).write_bytes(b"crawler")
+                (web_app.OUTPUT_DIR / "download_jobs" / f"{job_id}.json").write_text(
+                    json.dumps({"filename": crawler_filename}), encoding="utf-8"
+                )
+
+            def recover_from_sociavault(actual_job_id: str, actual_url: str, source: str, result_path: Path) -> bool:
+                fallback_calls.append((actual_job_id, actual_url, source, result_path))
+                (web_app.VIDEOS_DIR / recovered_filename).write_bytes(b"recovered")
+                result_path.write_text(json.dumps({"filename": recovered_filename}), encoding="utf-8")
+                return True
+
+            def reject_invalid_media(path: Path) -> None:
+                path.unlink(missing_ok=True)
+                raise RuntimeError("fixture invalid media")
+
+            invalid_media = reject_invalid_media if suffix == ".mp4" else None
+            with patch.object(web_app, "try_cached_download_result", return_value=False), patch.object(
+                web_app, "try_cached_video_info_download", return_value=False
+            ), patch.object(web_app, "run_download_command", side_effect=crawler_output), patch.object(
+                web_app, "try_sociavault_video_info_download", side_effect=recover_from_sociavault
+            ), patch.object(web_app, "ensure_analyzer_media_or_delete", side_effect=invalid_media), patch.object(
+                web_app, "start_social_context_job", return_value=False
+            ):
+                runner(job_id)
+            recovered = registry.snapshot(job_id)
+            assert recovered is not None and recovered.status == "complete"
+            assert recovered.filename == recovered_filename
+            assert not (web_app.VIDEOS_DIR / crawler_filename).exists()
+            assert any(expected_log in line for line in recovered.log)
+            assert fallback_calls == [
+                (job_id, url, web_app.SOURCE_API_UPLOAD, web_app.OUTPUT_DIR / "download_jobs" / f"{job_id}.json")
+            ]
+
+        dynamic_job_id = "download-dynamic-boundaries"
+        registry.register(dynamic_job_id, web_app.DownloadJob(id=dynamic_job_id, url=url))
+        proxy_attempts: list[dict[str, str] | None] = []
+
+        class DirectResponse:
+            headers = {"Content-Length": "524288"}
+
+            def __enter__(self) -> "DirectResponse":
+                return self
+
+            def __exit__(self, *_args: Any) -> None:
+                return None
+
+            @staticmethod
+            def raise_for_status() -> None:
+                return None
+
+            @staticmethod
+            def iter_content(*, chunk_size: int) -> list[bytes]:
+                assert chunk_size == 1024 * 1024
+                return [b"x" * 524288]
+
+        def direct_get(_media_url: str, **kwargs: Any) -> DirectResponse:
+            proxy_attempts.append(kwargs["proxies"])
+            if kwargs["proxies"] is not None:
+                raise RuntimeError("fixture proxy failure")
+            return DirectResponse()
+
+        requests_module = SimpleNamespace(get=direct_get)
+        with patch.dict(sys.modules, {"requests": requests_module}), patch.dict(
+            os.environ,
+            {"TIKTOK_MAX_BYTES": "600000", "TIKTOK_PROXY_URL": "http://proxy.fixture:8080"},
+        ), patch.object(web_app, "ensure_us_proxy", return_value=None), patch.object(
+            web_app, "ensure_analyzer_media_or_delete", return_value=None
+        ):
+            direct_result = web_app._download_direct_media(
+                dynamic_job_id,
+                "https://cdn.fixture/video.mp4",
+                url,
+                {"id": "dynamic-video"},
+            )
+        assert proxy_attempts == [{"http": "http://proxy.fixture:8080", "https": "http://proxy.fixture:8080"}, None]
+        assert direct_result["filename"] == "shortvideo_SociaVault_dynamic-video.mp4"
+        assert direct_result["size"] == 524288
+
+        max_bytes_error = RuntimeError("not raised")
+        with patch.dict(sys.modules, {"requests": SimpleNamespace(get=lambda *_args, **_kwargs: DirectResponse())}), patch.dict(
+            os.environ, {"TIKTOK_MAX_BYTES": "524287", "TIKTOK_PROXY_URL": ""}
+        ), patch.object(web_app, "ensure_us_proxy", return_value=None):
+            try:
+                web_app._download_direct_media(dynamic_job_id, "https://cdn.fixture/too-large.mp4", url, {"id": "too-large"})
+            except RuntimeError as exc:
+                max_bytes_error = exc
+        assert str(max_bytes_error) == "direct: SociaVault media is too large: 524288 bytes"
+
+        class StreamingTooLargeResponse:
+            headers: dict[str, str] = {}
+
+            def __enter__(self) -> "StreamingTooLargeResponse":
+                return self
+
+            def __exit__(self, *_args: Any) -> None:
+                return None
+
+            @staticmethod
+            def raise_for_status() -> None:
+                return None
+
+            @staticmethod
+            def iter_content(*, chunk_size: int) -> list[bytes]:
+                assert chunk_size == 1024 * 1024
+                return [b"a" * 400000, b"b" * 200000]
+
+        stream_target = web_app.VIDEOS_DIR / "shortvideo_SociaVault_stream-over-limit.mp4"
+        stream_part = stream_target.with_suffix(".mp4.part")
+        with patch.dict(sys.modules, {"requests": SimpleNamespace(get=lambda *_args, **_kwargs: StreamingTooLargeResponse())}), patch.dict(
+            os.environ, {"TIKTOK_MAX_BYTES": "500000", "TIKTOK_PROXY_URL": ""}
+        ), patch.object(web_app, "ensure_us_proxy", return_value=None):
+            try:
+                web_app._download_direct_media(dynamic_job_id, "https://cdn.fixture/stream-over-limit.mp4", url, {"id": "stream-over-limit"})
+            except RuntimeError as exc:
+                assert str(exc) == "direct: SociaVault media exceeded max size: 600000 bytes"
+            else:
+                raise AssertionError("streaming over-limit media must fail")
+        assert not stream_part.exists()
+        assert not stream_target.exists()
+
+        missing_key_id = "download-sociavault-missing-key"
+        registry.register(missing_key_id, web_app.DownloadJob(id=missing_key_id, url=url))
+        with patch.dict(os.environ, {"SOCIAVAULT_API_KEY": ""}), patch.object(
+            web_app, "run_download_command", side_effect=AssertionError("missing key must skip command")
+        ):
+            assert web_app.try_sociavault_video_info_download(
+                missing_key_id, url, web_app.SOURCE_API_UPLOAD, web_app.OUTPUT_DIR / "download_jobs" / f"{missing_key_id}.json"
+            ) is False
+        missing_key = registry.snapshot(missing_key_id)
+        assert missing_key is not None and missing_key.log == ["未配置 SOCIAVAULT_API_KEY，跳过 SociaVault video-info。"]
+
+        configured_id = "download-sociavault-configured"
+        registry.register(configured_id, web_app.DownloadJob(id=configured_id, url=url))
+        configured_result = web_app.OUTPUT_DIR / "download_jobs" / f"{configured_id}.json"
+        captured_sociavault_commands: list[list[str]] = []
+
+        def capture_sociavault_command(_job_id: str, command: list[str]) -> None:
+            captured_sociavault_commands.append(command)
+            output_path = Path(command[command.index("--output") + 1])
+            output_path.write_text(json.dumps({"data": "fixture"}), encoding="utf-8")
+
+        with patch.dict(os.environ, {"SOCIAVAULT_API_KEY": "fixture-key", "SOCIAVAULT_API_BASE": "https://api.fixture.test/"}), patch.object(
+            web_app, "run_download_command", side_effect=capture_sociavault_command
+        ), patch.object(web_app, "_try_video_info_payload_download", return_value=False):
+            assert web_app._sociavault_video_info_request(url) == {
+                "api_base": "https://api.fixture.test",
+                "endpoint": "video-info",
+                "params": {"url": url},
+            }
+            assert web_app.try_sociavault_video_info_download(
+                configured_id, url, web_app.SOURCE_API_UPLOAD, configured_result
+            ) is False
+        assert captured_sociavault_commands == [[
+            "python",
+            str(web_app.SCRIPTS_DIR / "sociavault_tiktok.py"),
+            "--endpoint",
+            "video-info",
+            "--url",
+            url,
+            "--output",
+            str(configured_result.with_suffix(".sociavault-video-info.json")),
+        ]]
     finally:
         web_app.download_job_registry = original_registry
 
@@ -761,6 +1121,8 @@ def run_lifecycle() -> None:
             output.write_text(json.dumps({"summary": "fixture translation"}), encoding="utf-8")
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
+        assert_download_command_cache_and_fallback_contract(web_app, real_download_worker)
+
         with ExitStack() as patches:
             patches.enter_context(
                 patch.object(web_app, "ui_test_mode_allows_live_write", side_effect=lambda path: path in allowed_writes)
@@ -802,10 +1164,43 @@ def run_lifecycle() -> None:
             assert invalid_job["status"] == "failed"
             assert invalid_job["error"] == invalid_download["error"]
             assert invalid_job["log"] == [invalid_download["error"]]
+            for payload, error in (
+                ({"url": "https://example.invalid/video"}, "Only TikTok or Douyin URLs are supported"),
+                ({"url": "https://www.tiktok.com/" + "x" * 2049}, "URL is too long"),
+            ):
+                status, _headers, invalid_download = json_request(port, "POST", "/api/download", payload)
+                assert status == 400 and invalid_download == {"error": error}
+            status, _headers, malformed_download = json_request(
+                port,
+                "POST",
+                "/api/download",
+                body=b"{not json",
+                content_type="application/json",
+            )
+            assert status == 400 and "Expecting property name enclosed in double quotes" in malformed_download["error"]
             status, health_headers, health = json_request(port, "GET", "/healthz")
             assert status == 200
             assert health_headers.get("content-type") == "application/json; charset=utf-8"
             assert health == {"status": "ok", "ui_test_mode": True}
+
+            with patch.object(web_app, "ui_test_mode_allows_live_write", return_value=False), patch.object(
+                web_app.Handler,
+                "handle_download",
+                side_effect=AssertionError("UI_TEST gate must run before the Download handler"),
+            ):
+                status, _headers, blocked_download = json_request(
+                    port,
+                    "POST",
+                    "/api/download",
+                    {"url": "https://www.tiktok.com/@fixture/video/blocked"},
+                )
+            assert status == 409
+            assert blocked_download == {
+                "error": "UI 测试模式已拦截写操作，未触发真实业务。",
+                "simulated": True,
+                "status": "blocked",
+                "path": "/api/download",
+            }
 
             status, _headers, download = json_request(
                 port, "POST", "/api/download", {"url": "https://www.tiktok.com/@fixture/video/123"}
@@ -817,6 +1212,8 @@ def run_lifecycle() -> None:
             assert status == 200 and running_download["status"] == "running"
             status, _headers, running_feedback = json_request(port, "GET", f"/api/video-feedback?download_job_id={download_id}")
             assert status == 200 and running_feedback["download"]["status"] == "running"
+            status, _headers, alias_feedback = json_request(port, "GET", f"/api/video-feedback?download_id={download_id}")
+            assert status == 200 and alias_feedback["state"] == "downloading"
             download_release.set()
             job = wait_for_job(port, f"/api/download-job?id={download_id}", "complete")
             assert job["result"] == {"filename": "fixture-download.mp4", "source": "fixture"}
@@ -826,6 +1223,12 @@ def run_lifecycle() -> None:
             assert status == 200
             assert complete_feedback["state"] == "uploaded"
             assert complete_feedback["download"] == job
+            web_app.download_job_registry.update_fields(download_id, {"status": "failed", "error": "fixture feedback failure"})
+            status, _headers, failed_feedback = json_request(port, "GET", f"/api/video-feedback?download_id={download_id}")
+            assert status == 200
+            assert failed_feedback["state"] == "failed"
+            assert failed_feedback["failure_stage"] == "download"
+            assert failed_feedback["failure_reason"] == "fixture feedback failure"
             status, _headers, missing_feedback = json_request(port, "GET", "/api/video-feedback?download_job_id=missing")
             assert status == 404 and missing_feedback == {
                 "ok": False,

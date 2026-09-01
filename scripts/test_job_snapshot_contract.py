@@ -508,6 +508,27 @@ def assert_no_download_legacy_store() -> None:
         and node.attr in {"_jobs", "_lock"}
     ]
     assert not private_registry_access
+    # Phase 4.4A freezes the pre-extraction Download ownership before the
+    # service/route migration deliberately flips these assertions.
+    definitions = {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    }
+    assert {
+        "DownloadJob",
+        "append_download_log",
+        "run_download_command",
+        "run_download_job",
+        "public_download_job",
+    } <= definitions
+    handler = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "Handler")
+    handler_methods = {
+        node.name
+        for node in handler.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert {"handle_download", "stream_download_events"} <= handler_methods
 
 
 def assert_no_metrics_legacy_store() -> None:
@@ -851,6 +872,19 @@ def assert_post_order_contracts(web_app: Any) -> None:
         assert handler.responses == [202]
         assert response["url"] == download_url and response["status"] == "queued"
         assert order == ["register", "thread.start", "snapshot", "serializer"]
+
+        for payload, expected_source in (
+            ({"url": download_url, "source_tag": "manual"}, web_app.SOURCE_WEB_MANUAL),
+            ({"url": download_url, "source": "api_url"}, web_app.SOURCE_API_UPLOAD),
+            ({"url": download_url}, web_app.SOURCE_API_UPLOAD),
+            ({"url": download_url, "source_tag": "web", "source": "api"}, web_app.SOURCE_WEB_MANUAL),
+        ):
+            alias_handler = handler_for(payload)
+            with patch.object(web_app.threading, "Thread", deferred_thread([])):
+                web_app.Handler.handle_download(alias_handler)
+            alias_payload = json.loads(alias_handler.wfile.getvalue().decode("utf-8"))
+            alias_job = download_registry.snapshot(alias_payload["id"])
+            assert alias_job is not None and alias_job.source == expected_source
     finally:
         web_app.download_job_registry = original_download_registry
 
@@ -1597,6 +1631,45 @@ def assert_sse_marker(web_app: Any) -> None:
     assert handler.close_connection is True
 
 
+def assert_download_sse_broken_pipe(web_app: Any) -> None:
+    class BrokenPipeWriter:
+        def __init__(self) -> None:
+            self.write_attempts = 0
+
+        def write(self, _data: bytes) -> int:
+            self.write_attempts += 1
+            raise BrokenPipeError
+
+        def flush(self) -> None:
+            return None
+
+    original_registry = web_app.download_job_registry
+    registry = web_app.JobRegistry()
+    web_app.download_job_registry = registry
+    try:
+        missing = FakeHandler("/api/download-events?id=missing-download-job")
+        missing.wfile = BrokenPipeWriter()
+        web_app.Handler.stream_download_events(missing, "missing-download-job")
+        assert_event_headers(missing)
+        assert missing.close_connection is True
+        assert missing.wfile.write_attempts == 1
+
+        job = web_app.DownloadJob(
+            id="download-broken-pipe",
+            url="https://www.tiktok.com/@fixture/video/broken-pipe",
+            status="complete",
+        )
+        registry.register(job.id, job)
+        payload = FakeHandler(f"/api/download-events?id={job.id}")
+        payload.wfile = BrokenPipeWriter()
+        web_app.Handler.stream_download_events(payload, job.id)
+        assert_event_headers(payload)
+        assert payload.close_connection is True
+        assert payload.wfile.write_attempts == 1
+    finally:
+        web_app.download_job_registry = original_registry
+
+
 def assert_metrics_sse_marker(web_app: Any) -> None:
     job = MetricsJob(
         id="metrics-marker-fixture",
@@ -1852,6 +1925,7 @@ def run_contract() -> None:
         assert_shop_route_defaults_and_broken_pipe(web_app)
         assert_shop_composition_contract(web_app)
         assert_sse_marker(web_app)
+        assert_download_sse_broken_pipe(web_app)
         assert_metrics_sse_marker(web_app)
         assert_shop_sse_marker(web_app)
         assert_amazon_sse_marker(web_app)
