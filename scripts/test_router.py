@@ -257,7 +257,7 @@ class RouterTests(unittest.TestCase):
                 allowed_imports.add("json")
                 allowed_from_modules.add("services.postprocess")
             elif route_file.name == "report.py":
-                allowed_imports.update({"json", "time"})
+                allowed_imports.update({"hmac", "json", "os", "re", "time"})
                 allowed_from_modules.add("services.report")
             elif route_file.name == "video_files.py":
                 allowed_from_modules.add("services.video_files")
@@ -390,9 +390,9 @@ class RouterTests(unittest.TestCase):
         self.assertNotIn('if parsed.path == "/api/files":', source)
         self.assertNotIn('if parsed.path == "/api/delete":', source)
         self.assertNotIn("def handle_delete(", source)
-        for path in ("/api/report/today", "/api/report", "/api/report/history", "/api/report/settings", "/api/report/events", "/api/report/run", "/api/report/delete", "/api/report/translate", "/api/report/backfill-covers"):
+        for path in ("/api/report/today", "/api/report", "/api/report/history", "/api/report/settings", "/api/report/events", "/api/report/feishu", "/api/report/run", "/api/report/delete", "/api/report/translate", "/api/report/backfill-covers"):
             self.assertNotIn(f'if parsed.path == "{path}"', source)
-        for name in ("stream_report_events", "handle_report_run", "handle_report_delete", "handle_report_settings", "handle_report_translate"):
+        for name in ("stream_report_events", "handle_report_run", "handle_report_delete", "handle_report_settings", "handle_report_translate", "_report_bot_authorized", "_report_detail_url", "_build_feishu_report_payload", "_coerce_int", "_compact_report_text", "_metric_from_video", "_format_report_count"):
             self.assertNotIn(f"def {name}(", source)
 
     def test_report_route_and_composition_are_explicit(self) -> None:
@@ -413,7 +413,7 @@ class RouterTests(unittest.TestCase):
         ]
         self.assertEqual(registrations, [
             ("get", "/api/report/today"), ("get", "/api/report"), ("get", "/api/report/history"),
-            ("get", "/api/report/settings"), ("get", "/api/report/events"), ("post", "/api/report/run"),
+            ("get", "/api/report/settings"), ("get", "/api/report/events"), ("get", "/api/report/feishu"), ("post", "/api/report/run"),
             ("post", "/api/report/delete"), ("post", "/api/report/settings"),
             ("post", "/api/report/translate"), ("post", "/api/report/backfill-covers"),
         ])
@@ -468,7 +468,7 @@ class RouterTests(unittest.TestCase):
             node.name for node in service_class.body
             if isinstance(node, ast.FunctionDef)
         }
-        self.assertTrue({"today", "dated_report", "run"}.issubset(methods))
+        self.assertTrue({"today", "dated_report", "feishu_payload", "run"}.issubset(methods))
         today_method = next(node for node in service_class.body if isinstance(node, ast.FunctionDef) and node.name == "today")
         self.assertFalse(any(
             isinstance(node, ast.Call)
@@ -479,6 +479,9 @@ class RouterTests(unittest.TestCase):
         ))
         route_run = next(node for node in route_tree.body if isinstance(node, ast.FunctionDef) and node.name == "register_report_routes")
         self.assertIn("ReportDisabledError", ast.unparse(route_run))
+        self.assertIn("REPORT_BOT_TOKEN", ast.unparse(route_run))
+        self.assertIn("compare_digest", ast.unparse(route_run))
+        self.assertIn("feishu_payload", ast.unparse(route_run))
         handler = next(node for node in web_app.body if isinstance(node, ast.ClassDef) and node.name == "Handler")
         post_method = next(node for node in handler.body if isinstance(node, ast.FunctionDef) and node.name == "do_POST")
         self.assertNotIn(

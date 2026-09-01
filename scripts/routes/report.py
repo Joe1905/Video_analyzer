@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import hmac
 from http import HTTPStatus
 import json
+import os
+import re
 import time
 from typing import Any, Callable, Mapping
 from urllib.parse import parse_qs, urlparse
@@ -18,6 +21,7 @@ def register_report_routes(
     service: ReportService,
     *,
     sleep: Callable[[float], None] = time.sleep,
+    getenv: Callable[[str, str], str] = os.getenv,
 ) -> None:
     """Register the daily report JSON APIs and dedicated event stream."""
 
@@ -43,6 +47,34 @@ def register_report_routes(
 
     def settings(handler: Any, params: Mapping[str, str]) -> None:
         return json_response(handler, HTTPStatus.OK, service.settings())
+
+    def report_feishu(handler: Any, params: Mapping[str, str]) -> None:
+        values = query(handler)
+        expected = getenv("REPORT_BOT_TOKEN", "").strip()
+        if expected:
+            authorization = handler.headers.get("Authorization", "").strip()
+            supplied = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
+            if not supplied:
+                supplied = values.get("token", [""])[0].strip()
+            if not supplied or not hmac.compare_digest(supplied, expected):
+                return json_response(handler, HTTPStatus.UNAUTHORIZED, {"error": "Unauthorized"})
+        report_date = values.get("date", [""])[0].strip() or None
+        if report_date and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", report_date):
+            return json_response(handler, HTTPStatus.BAD_REQUEST, {"error": "date must be YYYY-MM-DD"})
+        try:
+            limit = int(values.get("limit", ["10"])[0])
+        except ValueError:
+            limit = 10
+        host = handler.headers.get("Host", "").strip()
+        detail_origin = ""
+        if host:
+            proto = "https" if handler.headers.get("X-Forwarded-Proto", "").lower() == "https" else "http"
+            detail_origin = f"{proto}://{host}"
+        return json_response(
+            handler,
+            HTTPStatus.OK,
+            service.feishu_payload(report_date, limit=limit, detail_origin=detail_origin),
+        )
 
     def events(handler: Any, params: Mapping[str, str]) -> None:
         report_date = query(handler).get("date", [""])[0] or None
@@ -132,6 +164,7 @@ def register_report_routes(
     router.get("/api/report/history", history)
     router.get("/api/report/settings", settings)
     router.get("/api/report/events", events)
+    router.get("/api/report/feishu", report_feishu)
     router.post("/api/report/run", report_run)
     router.post("/api/report/delete", report_delete)
     router.post("/api/report/settings", report_settings)

@@ -41,6 +41,7 @@ from services.video_result import VideoResultService
 from jobs.registry import JobRegistry
 from routes.analyze import register_analyze_routes
 from routes.postprocess import register_postprocess_routes
+import routes.report as report_routes
 from routes.report import register_report_routes
 from routes.router import Router
 from routes.translate import register_translate_routes
@@ -1172,25 +1173,60 @@ def assert_report_feishu_http_contract(web_app: Any, port: int) -> None:
         calls.append((report_date, include_raw, detail))
         return report
 
-    def get(path: str, *, headers: dict[str, str] | None = None):
-        return json_request(port, "GET", path, extra_headers=headers)
+    def make_router(
+        report_callback: Any,
+        *,
+        token: str = "",
+        action_guard: Mock | None = None,
+        getenv: Any | None = None,
+    ) -> Router:
+        guard = action_guard or Mock()
+        service = ReportService(
+            is_enabled=lambda: True,
+            get_report=report_callback,
+            list_reports=lambda _limit: [],
+            get_settings=lambda: {},
+            get_runtime_status=lambda: {},
+            get_progress=lambda _date: {},
+            recover=guard,
+            enqueue=guard,
+            delete=lambda _date: {},
+            save=lambda _payload: {},
+            translate=lambda *_args: {},
+            backfill=guard,
+        )
+        router = Router()
+        register_report_routes(
+            router,
+            service,
+            getenv=getenv or (lambda name, default="": token if name == "REPORT_BOT_TOKEN" else default),
+        )
+        return router
+
+    def get(
+        path: str,
+        *,
+        headers: dict[str, str] | None = None,
+        report_callback: Any = fake_report,
+        token: str = "",
+        action_guard: Mock | None = None,
+        getenv: Any | None = None,
+    ):
+        router = make_router(report_callback, token=token, action_guard=action_guard, getenv=getenv)
+        with patch.object(web_app, "WEB_ROUTER", router):
+            return json_request(port, "GET", path, extra_headers=headers)
 
     recover = Mock()
-    enqueue = Mock()
-    backfill = Mock()
-    with patch.object(web_app, "get_report", side_effect=fake_report), patch.object(
-        web_app, "recover_interrupted_reports", recover
-    ), patch.object(web_app, "enqueue_report", enqueue), patch.object(
-        web_app, "backfill_cover_urls", backfill
-    ), patch.dict(os.environ, {"REPORT_BOT_TOKEN": "  "}):
-        status, _headers, payload = get(
-            "/api/report/feishu?date=2026-08-01&limit=99",
-            headers={
-                "Host": "trusted.example",
-                "X-Forwarded-Proto": "https",
-                "X-Forwarded-Host": "ignored.example",
-            },
-        )
+    status, _headers, payload = get(
+        "/api/report/feishu?date=2026-08-01&limit=99",
+        headers={
+            "Host": "trusted.example",
+            "X-Forwarded-Proto": "https",
+            "X-Forwarded-Host": "ignored.example",
+        },
+        token="  ",
+        action_guard=recover,
+    )
     assert status == 200 and payload["url"] == "https://trusted.example/report?date=2026-08-01"
     assert set(payload) == {
         "ok", "exists", "report_date", "status", "title", "summary", "url", "generated_at",
@@ -1220,16 +1256,10 @@ def assert_report_feishu_http_contract(web_app: Any, port: int) -> None:
     }
     assert calls == [("2026-08-01", False, True)] and report == report_before
     recover.assert_not_called()
-    enqueue.assert_not_called()
-    backfill.assert_not_called()
 
-    compare = Mock(wraps=web_app.hmac.compare_digest)
-    with patch.object(web_app, "get_report", side_effect=fake_report) as core, patch.object(
-        web_app.hmac, "compare_digest", compare
-    ), patch.object(web_app, "recover_interrupted_reports", side_effect=AssertionError("recover must be unreachable")), patch.object(
-        web_app, "enqueue_report", side_effect=AssertionError("enqueue must be unreachable")
-    ), patch.object(web_app, "backfill_cover_urls", side_effect=AssertionError("backfill must be unreachable")
-    ), patch.dict(os.environ, {"REPORT_BOT_TOKEN": "secret"}):
+    compare = Mock(wraps=report_routes.hmac.compare_digest)
+    action_guard = Mock(side_effect=AssertionError("report mutations must be unreachable"))
+    with patch.object(report_routes.hmac, "compare_digest", compare):
         for headers, suffix in (
             ({"Authorization": "bEaReR secret"}, ""),
             ({}, "?token=secret"),
@@ -1237,7 +1267,12 @@ def assert_report_feishu_http_contract(web_app: Any, port: int) -> None:
             ({"Authorization": "Basic ignored"}, "?token=secret"),
             ({"Authorization": "Bearer "}, "?token=secret"),
         ):
-            status, _headers, payload = get("/api/report/feishu" + suffix, headers=headers)
+            status, _headers, payload = get(
+                "/api/report/feishu" + suffix,
+                headers=headers,
+                token="secret",
+                action_guard=action_guard,
+            )
             assert status == 200 and payload["report_date"] == "2026-08-01"
         for headers, suffix in (
             ({}, ""),
@@ -1246,83 +1281,98 @@ def assert_report_feishu_http_contract(web_app: Any, port: int) -> None:
             ({"Authorization": "Basic secret"}, "&token=wrong"),
             ({"Authorization": "Bearer "}, "&token=wrong"),
         ):
-            status, _headers, payload = get("/api/report/feishu?date=bad" + suffix, headers=headers)
+            status, _headers, payload = get(
+                "/api/report/feishu?date=bad" + suffix,
+                headers=headers,
+                token="secret",
+                action_guard=action_guard,
+            )
             assert status == 401 and payload == {"error": "Unauthorized"}
-        assert core.call_count == 5
+    assert calls[-5:] == [(None, False, True)] * 5
+    action_guard.assert_not_called()
     assert compare.called and any(call.args == ("wrong", "secret") for call in compare.call_args_list)
 
-    with patch.object(web_app, "get_report", side_effect=fake_report), patch.dict(os.environ, {"REPORT_BOT_TOKEN": ""}):
-        calls.clear()
-        for path in (
-            "/api/report/feishu?date=",
-            "/api/report/feishu?date=%20",
-            "/api/report/feishu?date=2026-08-01&date=ignored",
-        ):
-            status, _headers, payload = get(path, headers={"Host": ""})
-            assert status == 200 and payload["report_date"] == "2026-08-01" and payload["url"] == "/report?date=2026-08-01"
-        assert calls[:3] == [(None, False, True), (None, False, True), ("2026-08-01", False, True)]
-        bad_core = Mock(side_effect=AssertionError("malformed date must not reach core"))
-        with patch.object(web_app, "get_report", bad_core):
-            status, _headers, payload = get("/api/report/feishu?date=bad")
-        assert status == 400 and payload == {"error": "date must be YYYY-MM-DD"}
-        bad_core.assert_not_called()
-        status, _headers, payload = get("/api/report/feishu?date=2026-13-40")
-        assert status == 200 and calls[-1] == ("2026-13-40", False, True)
-        for limit in ("", "nope", "-3", "999", "2&limit=99", "999&limit=2"):
-            status, _headers, payload = get(f"/api/report/feishu?limit={limit}")
-            expected = 10 if limit in {"", "nope"} else (1 if limit == "-3" else (2 if limit == "2&limit=99" else 20))
-            assert status == 200 and len(payload["videos"]) == expected
+    calls.clear()
+    for path in (
+        "/api/report/feishu?date=",
+        "/api/report/feishu?date=%20",
+        "/api/report/feishu?date=2026-08-01&date=ignored",
+    ):
+        status, _headers, payload = get(path, headers={"Host": ""})
+        assert status == 200 and payload["report_date"] == "2026-08-01" and payload["url"] == "/report?date=2026-08-01"
+    assert calls[:3] == [(None, False, True), (None, False, True), ("2026-08-01", False, True)]
+    bad_core = Mock(side_effect=AssertionError("malformed date must not reach core"))
+    status, _headers, payload = get("/api/report/feishu?date=bad", report_callback=bad_core)
+    assert status == 400 and payload == {"error": "date must be YYYY-MM-DD"}
+    bad_core.assert_not_called()
+    status, _headers, payload = get("/api/report/feishu?date=2026-13-40")
+    assert status == 200 and calls[-1] == ("2026-13-40", False, True)
+    for limit in ("", "nope", "-3", "999", "2&limit=99", "999&limit=2"):
+        status, _headers, payload = get(f"/api/report/feishu?limit={limit}")
+        expected = 10 if limit in {"", "nope"} else (1 if limit == "-3" else (2 if limit == "2&limit=99" else 20))
+        assert status == 200 and len(payload["videos"]) == expected
 
     fallback_report = {**report, "report": {"overall_conclusion": "fallback"}, "report_markdown": ""}
-    with patch.object(web_app, "get_report", return_value=fallback_report), patch.dict(os.environ, {"REPORT_BOT_TOKEN": ""}):
-        status, _headers, payload = get("/api/report/feishu?limit=20")
+    status, _headers, payload = get("/api/report/feishu?limit=20", report_callback=lambda *_args, **_kwargs: fallback_report)
     assert status == 200 and payload["summary"] == "fallback"
     assert "10. video 10" in payload["feishu_text"] and "11. video 11" not in payload["feishu_text"]
 
     markdown_fallback = {**report, "report": {}, "report_markdown": "  markdown fallback  "}
-    with patch.object(web_app, "get_report", return_value=markdown_fallback), patch.dict(os.environ, {"REPORT_BOT_TOKEN": ""}):
-        status, _headers, payload = get("/api/report/feishu")
+    status, _headers, payload = get("/api/report/feishu", report_callback=lambda *_args, **_kwargs: markdown_fallback)
     assert status == 200 and payload["summary"] == "markdown fallback" and payload["feishu_text"] == "markdown fallback"
 
     missing_report = {**report, "exists": False, "status": "missing", "videos": []}
-    with patch.object(web_app, "get_report", return_value=missing_report), patch.dict(os.environ, {"REPORT_BOT_TOKEN": ""}):
-        status, _headers, payload = get("/api/report/feishu?date=2026-08-02")
+    status, _headers, payload = get("/api/report/feishu?date=2026-08-02", report_callback=lambda *_args, **_kwargs: missing_report)
     assert status == 200 and payload["ok"] is False and payload["exists"] is False
 
     undated_report = {**report, "report_date": ""}
-    with patch.object(web_app, "get_report", return_value=undated_report), patch.dict(os.environ, {"REPORT_BOT_TOKEN": ""}):
-        status, _headers, payload = get("/api/report/feishu", headers={"Host": "trusted.example"})
+    status, _headers, payload = get(
+        "/api/report/feishu",
+        headers={"Host": "trusted.example"},
+        report_callback=lambda *_args, **_kwargs: undated_report,
+    )
     assert status == 200 and payload["report_date"] == "" and payload["url"] == "/report"
 
-    real_getenv = os.getenv
-    with patch.object(web_app.os, "getenv", side_effect=lambda name, default="": default if name == "REPORT_BOT_TOKEN" else real_getenv(name, default)), patch.object(
-        web_app, "get_report", side_effect=fake_report
-    ):
-        status, _headers, payload = get("/api/report/feishu")
+    status, _headers, payload = get(
+        "/api/report/feishu",
+        getenv=lambda _name, default="": default,
+    )
     assert status == 200 and payload["report_date"] == "2026-08-01"
 
-    assert web_app._report_detail_url(SimpleNamespace(headers={"Host": "host.example", "X-Forwarded-Proto": "HTTPS"}), "2026-08-01") == "https://host.example/report?date=2026-08-01"
-    assert web_app._report_detail_url(SimpleNamespace(headers={"Host": "host.example", "X-Forwarded-Proto": "https, http"}), "2026-08-01") == "http://host.example/report?date=2026-08-01"
-    assert web_app._report_detail_url(SimpleNamespace(headers={"Host": "host.example"}), "2026-08-01") == "http://host.example/report?date=2026-08-01"
-    assert web_app._report_detail_url(SimpleNamespace(headers={"Host": "", "X-Forwarded-Host": "spoof.example"}), "2026-08-01") == "/report?date=2026-08-01"
+    for headers, expected_url in (
+        ({"Host": "host.example", "X-Forwarded-Proto": "HTTPS"}, "https://host.example/report?date=2026-08-01"),
+        ({"Host": "host.example", "X-Forwarded-Proto": "https, http"}, "http://host.example/report?date=2026-08-01"),
+        ({"Host": "host.example"}, "http://host.example/report?date=2026-08-01"),
+        ({"Host": "", "X-Forwarded-Host": "spoof.example"}, "/report?date=2026-08-01"),
+    ):
+        status, _headers, payload = get("/api/report/feishu?date=2026-08-01", headers=headers)
+        assert status == 200 and payload["url"] == expected_url
 
-    direct = SimpleNamespace(headers={"Host": "host.example", "X-Forwarded-Proto": "HTTPS"})
-    with patch.object(web_app, "get_report", side_effect=RuntimeError("fixture builder failure")):
-        try:
-            web_app._build_feishu_report_payload(direct, "2026-08-01")
-        except RuntimeError as exc:
-            assert str(exc) == "fixture builder failure"
-        else:
-            raise AssertionError("builder errors must propagate")
+    builder_failure = Mock(side_effect=RuntimeError("fixture builder failure"))
+    try:
+        make_router(builder_failure).resolve("GET", "/api/report/feishu").handler(
+            SimpleNamespace(
+                path="/api/report/feishu",
+                headers={},
+                send_response=lambda _status: None,
+                send_header=lambda _name, _value: None,
+                end_headers=lambda: None,
+                wfile=SimpleNamespace(write=lambda _value: None),
+            ),
+            {},
+        )
+    except RuntimeError as exc:
+        assert str(exc) == "fixture builder failure"
+    else:
+        raise AssertionError("builder errors must propagate")
 
     failing_core = Mock(side_effect=RuntimeError("fixture core failure"))
-    with patch.object(web_app, "get_report", failing_core), patch.dict(os.environ, {"REPORT_BOT_TOKEN": ""}):
-        try:
-            get("/api/report/feishu")
-        except (http.client.RemoteDisconnected, ConnectionAbortedError, ConnectionResetError):
-            pass
-        else:
-            raise AssertionError("Feishu core failures must close without a JSON response")
+    try:
+        get("/api/report/feishu", report_callback=failing_core)
+    except (http.client.RemoteDisconnected, ConnectionAbortedError, ConnectionResetError):
+        pass
+    else:
+        raise AssertionError("Feishu core failures must close without a JSON response")
     failing_core.assert_called_once_with(None, include_raw=False, detail=True)
 
 
