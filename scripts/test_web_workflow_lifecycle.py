@@ -420,6 +420,30 @@ class RecordingAnalyzeQueue:
             raise RuntimeError(f"fixture {job_type} enqueue failure")
 
 
+class RecordingPostprocessQueue:
+    """Postprocess queue fake that records queue-time artifact state only."""
+
+    def __init__(self, output_dir: Path, *, fail_on: str | None = None) -> None:
+        self.calls: list[tuple[str, str]] = []
+        self.snapshots: list[tuple[str, str, dict[str, str]]] = []
+        self.output_dir = output_dir
+        self.fail_on = fail_on
+
+    def enqueue(self, filename: str, job_type: str) -> None:
+        self.calls.append((filename, job_type))
+        self.snapshots.append((
+            filename,
+            job_type,
+            {
+                path.name: path.read_text(encoding="utf-8")
+                for path in self.output_dir.iterdir()
+                if path.is_file()
+            },
+        ))
+        if job_type == self.fail_on:
+            raise RuntimeError(f"fixture {job_type} enqueue failure")
+
+
 def assert_analyze_http_contract(web_app: Any, port: int) -> None:
     """Freeze the legacy Handler Analyze request and side-effect contract."""
 
@@ -583,6 +607,164 @@ def assert_analyze_http_contract(web_app: Any, port: int) -> None:
         "path": "/api/analyze",
     }
     assert not output_dir.exists()
+
+
+def assert_postprocess_http_contract(web_app: Any, port: int) -> None:
+    """Freeze the legacy Postprocess JSON, artifact, and queue-time contract."""
+
+    filename = "postprocess-contract.mp4"
+    output_dir = web_app.OUTPUT_DIR / "registry-style-postprocess-output"
+    output_requests: list[str] = []
+
+    def registry_style_output_dir(requested_filename: str) -> Path:
+        output_requests.append(requested_filename)
+        assert requested_filename == filename
+        return output_dir
+
+    def reset_output() -> None:
+        if output_dir.exists():
+            shutil.rmtree(output_dir)
+        output_requests.clear()
+
+    def write_artifacts(*names: str) -> None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            (output_dir / name).write_text(f"fixture {name}", encoding="utf-8")
+
+    reset_output()
+    queue = RecordingPostprocessQueue(output_dir)
+    with patch.object(web_app, "output_dir_for_filename", side_effect=registry_style_output_dir), patch.object(
+        web_app, "video_queue", queue
+    ):
+        for payload, error in (
+            ({}, "Missing filename"),
+            ({"filename": filename, "analysis_source": "invalid"}, "analysis_source must be standard or direct"),
+            ({"filename": filename, "analysis_source": " ", "source": "direct"}, "analysis_source must be standard or direct"),
+        ):
+            status, _headers, invalid = json_request(port, "POST", "/api/postprocess", payload)
+            assert status == 400 and invalid == {"error": error}
+            assert queue.calls == [] and output_requests == [] and not output_dir.exists()
+
+        status, _headers, malformed = json_request(
+            port, "POST", "/api/postprocess", body=b"{", content_type="application/json"
+        )
+        assert status == 400 and malformed.get("error")
+        assert queue.calls == [] and output_requests == [] and not output_dir.exists()
+
+        status, _headers, standard_missing = json_request(
+            port,
+            "POST",
+            "/api/postprocess",
+            {"filename": filename, "analysis_source": "standard", "source": "direct"},
+        )
+        assert status == 400 and standard_missing == {"error": f"analysis.json not found for {filename}"}
+        assert queue.calls == [] and output_requests == [filename] and not output_dir.exists()
+
+        reset_output()
+        queue.calls.clear()
+        queue.snapshots.clear()
+        write_artifacts(
+            "analysis.json", "audit_result.json", "audit_result_zh.json",
+            "direct_analysis.json", "direct_audit_result.json", "direct_audit_result_zh.json",
+        )
+        status, _headers, standard = json_request(
+            port,
+            "POST",
+            "/api/postprocess",
+            {
+                "filename": f"nested/{filename}",
+                "analysis_source": "standard",
+                "source": "direct",
+                "analysis_prompt": "  standard prompt  ",
+            },
+        )
+        assert status == 202 and standard == {"status": "queued", "filename": filename}
+        assert queue.calls == [(filename, "report")]
+        queued_standard = queue.snapshots[-1][2]
+        assert queued_standard["report_source.txt"] == "standard"
+        assert queued_standard["analysis_prompt.txt"] == "standard prompt"
+        assert "audit_result.json" not in queued_standard and "audit_result_zh.json" not in queued_standard
+        assert (output_dir / "direct_audit_result.json").is_file()
+
+        write_artifacts("audit_result.json", "audit_result_zh.json")
+        (output_dir / "analysis_prompt.txt").write_text("existing prompt", encoding="utf-8")
+        queue.calls.clear()
+        queue.snapshots.clear()
+        status, _headers, empty_prompt = json_request(
+            port, "POST", "/api/postprocess", {"filename": filename, "analysis_prompt": "   "}
+        )
+        assert status == 202 and empty_prompt == {"status": "queued", "filename": filename}
+        assert queue.calls == [(filename, "report")]
+        assert (output_dir / "analysis_prompt.txt").read_text(encoding="utf-8") == "existing prompt"
+        assert "audit_result.json" not in queue.snapshots[-1][2]
+
+        write_artifacts("direct_audit_result.json", "direct_audit_result_zh.json", "audit_result.json")
+        queue.calls.clear()
+        queue.snapshots.clear()
+        status, _headers, direct = json_request(
+            port,
+            "POST",
+            "/api/postprocess",
+            {"filename": filename, "analysis_source": " direct ", "analysis_prompt": "  direct prompt  "},
+        )
+        assert status == 202 and direct == {"status": "queued", "filename": filename}
+        assert queue.calls == [(filename, "report")]
+        queued_direct = queue.snapshots[-1][2]
+        assert queued_direct["report_source.txt"] == "direct"
+        assert queued_direct["analysis_prompt.txt"] == "direct prompt"
+        assert "direct_audit_result.json" not in queued_direct and "direct_audit_result_zh.json" not in queued_direct
+        assert (output_dir / "audit_result.json").is_file()
+
+        reset_output()
+        queue.calls.clear()
+        queue.snapshots.clear()
+        status, _headers, direct_missing = json_request(
+            port,
+            "POST",
+            "/api/postprocess",
+            {"filename": filename, "source": "direct", "analysis_prompt": "must not persist"},
+        )
+        assert status == 202 and direct_missing == {
+            "status": "queued", "filename": filename, "queued": ["analyze", "report"],
+        }
+        assert queue.calls == [(filename, "analyze"), (filename, "report")]
+        for _queued_filename, _job_type, snapshot in queue.snapshots:
+            assert snapshot == {"analysis_mode.txt": "direct_video", "report_source.txt": "direct"}
+        assert not (output_dir / "analysis_prompt.txt").exists()
+
+        for failed_job, expected_calls in (
+            ("analyze", [(filename, "analyze")]),
+            ("report", [(filename, "analyze"), (filename, "report")]),
+        ):
+            reset_output()
+            failing_queue = RecordingPostprocessQueue(output_dir, fail_on=failed_job)
+            with patch.object(web_app, "video_queue", failing_queue):
+                try:
+                    json_request(port, "POST", "/api/postprocess", {"filename": filename, "source": "direct"})
+                except http.client.RemoteDisconnected:
+                    pass
+                else:
+                    raise AssertionError(f"{failed_job} enqueue failure must keep the legacy connection failure")
+            assert failing_queue.calls == expected_calls
+            assert (output_dir / "analysis_mode.txt").read_text(encoding="utf-8") == "direct_video"
+            assert (output_dir / "report_source.txt").read_text(encoding="utf-8") == "direct"
+
+        reset_output()
+        with patch.object(web_app, "ui_test_mode_allows_live_write", return_value=False), patch.object(
+            web_app.Handler,
+            "handle_postprocess",
+            side_effect=AssertionError("UI_TEST gate must run before Postprocess body parsing and business"),
+        ):
+            status, _headers, blocked = json_request(
+                port, "POST", "/api/postprocess", body=b"{", content_type="application/json"
+            )
+        assert status == 409 and blocked == {
+            "error": "UI 测试模式已拦截写操作，未触发真实业务。",
+            "simulated": True,
+            "status": "blocked",
+            "path": "/api/postprocess",
+        }
+        assert not output_dir.exists()
 
 
 def assert_translate_http_contract(web_app: Any, port: int) -> None:
@@ -1712,6 +1894,7 @@ def run_lifecycle() -> None:
 
             assert_upload_http_contract(web_app, port)
             assert_analyze_http_contract(web_app, port)
+            assert_postprocess_http_contract(web_app, port)
             assert_translate_http_contract(web_app, port)
 
             invalid_id = "00000000-0000-0000-0000-000000000001"
