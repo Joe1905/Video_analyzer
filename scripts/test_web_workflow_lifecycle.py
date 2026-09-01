@@ -668,6 +668,190 @@ def assert_result_http_contract(web_app: Any, port: int, server: Any) -> None:
         shutil.rmtree(fixture_root, ignore_errors=False)
 
 
+def assert_delete_http_contract(web_app: Any, port: int, server: Any) -> None:
+    """Freeze the legacy inline delete endpoint, including its partial failures."""
+
+    fixture_root = Path(tempfile.mkdtemp(prefix="delete-http-contract-", dir=web_app.ROOT))
+    videos_dir = fixture_root / "videos"
+    output_dir = fixture_root / "output"
+    registry_output = fixture_root / "registry-extraction"
+    videos_dir.mkdir()
+    output_dir.mkdir()
+    registry_output.mkdir()
+    (registry_output / "must-remain.txt").write_text("registry", encoding="utf-8")
+    output_calls: list[str] = []
+
+    def unexpected_output_dir(filename: str) -> Path:
+        output_calls.append(filename)
+        raise AssertionError("delete must use OUTPUT_DIR directly")
+
+    def unexpected_side_effect(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("delete must not touch queue, registry, or social context")
+
+    def expect_disconnect(
+        *,
+        body: bytes | None = None,
+        headers: dict[str, str] | None = None,
+        error_type: type[BaseException],
+    ) -> None:
+        reported_event.clear()
+        try:
+            request(
+                port,
+                "POST",
+                "/api/delete",
+                body=body,
+                content_type="application/json",
+                extra_headers=headers,
+            )
+        except http.client.RemoteDisconnected:
+            pass
+        else:
+            raise AssertionError("legacy delete exception should close the response")
+        assert reported_event.wait(timeout=5)
+        assert isinstance(reported[-1], error_type)
+
+    try:
+        with ExitStack() as patches:
+            patches.enter_context(patch.object(web_app, "VIDEOS_DIR", videos_dir))
+            patches.enter_context(patch.object(web_app, "OUTPUT_DIR", output_dir))
+            patches.enter_context(patch.object(web_app, "output_dir_for_filename", side_effect=unexpected_output_dir))
+            patches.enter_context(patch.object(web_app, "get_video_by_filename", side_effect=unexpected_side_effect))
+            patches.enter_context(patch.object(web_app, "register_video", side_effect=unexpected_side_effect))
+            patches.enter_context(patch.object(web_app, "start_social_context_job", side_effect=unexpected_side_effect))
+            patches.enter_context(patch.object(web_app, "video_queue", object()))
+
+            status, _headers, missing_length = json_request(
+                port,
+                "POST",
+                "/api/delete",
+                body=None,
+                content_type="application/json",
+            )
+            assert status == 400 and missing_length == {"error": "Missing filename"}
+            for body, expected in (
+                (b"", {"error": "Missing filename"}),
+                (b"{}", {"error": "Missing filename"}),
+                (b'{"filename": ""}', {"error": "Missing filename"}),
+                (b'{"filename": "???"}', {"error": "Invalid filename"}),
+                (
+                    b"\xff",
+                    {"error": "'utf-8' codec can't decode byte 0xff in position 0: invalid start byte"},
+                ),
+                (
+                    b"{",
+                    {"error": "Expecting property name enclosed in double quotes: line 1 column 2 (char 1)"},
+                ),
+            ):
+                status, _headers, payload = json_request(
+                    port,
+                    "POST",
+                    "/api/delete",
+                    body=body,
+                    content_type="application/json",
+                    extra_headers={"Content-Length": str(len(body))},
+                )
+                assert status == 400 and payload == expected
+            assert output_calls == []
+
+            reported: list[BaseException | None] = []
+            reported_event = threading.Event()
+            original_handle_error = server.handle_error
+
+            def capture_handler_error(_request: Any, _client_address: Any) -> None:
+                reported.append(sys.exc_info()[1])
+                reported_event.set()
+
+            server.handle_error = capture_handler_error
+            try:
+                expect_disconnect(body=b"[]", error_type=AttributeError)
+                expect_disconnect(headers={"Content-Length": "not-a-number"}, error_type=ValueError)
+            finally:
+                server.handle_error = original_handle_error
+
+            for raw_name, clean_name, has_video, has_output in (
+                ("none.mp4", "none.mp4", False, False),
+                ("video-only.mp4", "video-only.mp4", True, False),
+                ("output-only.mp4", "output-only.mp4", False, True),
+                ("nested/both?.mp4", "both.mp4", True, True),
+            ):
+                video_path = videos_dir / clean_name
+                artifact_path = output_dir / clean_name
+                if has_video:
+                    video_path.write_bytes(b"video")
+                if has_output:
+                    artifact_path.mkdir()
+                    (artifact_path / "artifact.txt").write_text("output", encoding="utf-8")
+                status, _headers, deleted = json_request(port, "POST", "/api/delete", {"filename": raw_name})
+                assert status == 200 and deleted == {
+                    "filename": clean_name,
+                    "deleted_video": has_video,
+                    "deleted_output": has_output,
+                }
+                assert not video_path.exists() and not artifact_path.exists()
+
+            status, _headers, converted = json_request(port, "POST", "/api/delete", {"filename": 123})
+            assert status == 200 and converted == {
+                "filename": "123",
+                "deleted_video": False,
+                "deleted_output": False,
+            }
+            assert output_calls == [] and (registry_output / "must-remain.txt").is_file()
+
+            broken_video = videos_dir / "unlink-failure.mp4"
+            broken_output = output_dir / "unlink-failure.mp4"
+            broken_video.write_bytes(b"video")
+            broken_output.mkdir()
+            reported = []
+            reported_event = threading.Event()
+            original_handle_error = server.handle_error
+            server.handle_error = capture_handler_error
+            try:
+                with patch.object(Path, "unlink", side_effect=PermissionError("fixture unlink failure")):
+                    expect_disconnect(body=b'{"filename": "unlink-failure.mp4"}', error_type=PermissionError)
+            finally:
+                server.handle_error = original_handle_error
+            assert broken_video.is_file() and broken_output.is_dir()
+
+            partial_video = videos_dir / "rmtree-failure.mp4"
+            partial_output = output_dir / "rmtree-failure.mp4"
+            partial_video.write_bytes(b"video")
+            partial_output.mkdir()
+            reported = []
+            reported_event = threading.Event()
+            original_handle_error = server.handle_error
+            server.handle_error = capture_handler_error
+            try:
+                with patch.object(web_app.shutil, "rmtree", side_effect=PermissionError("fixture rmtree failure")):
+                    expect_disconnect(body=b'{"filename": "rmtree-failure.mp4"}', error_type=PermissionError)
+            finally:
+                server.handle_error = original_handle_error
+            assert not partial_video.exists() and partial_output.is_dir()
+
+            blocked_video = videos_dir / "blocked.mp4"
+            blocked_output = output_dir / "blocked.mp4"
+            blocked_video.write_bytes(b"video")
+            blocked_output.mkdir()
+            with patch.object(web_app, "ui_test_mode_allows_live_write", return_value=False):
+                status, _headers, blocked = json_request(
+                    port,
+                    "POST",
+                    "/api/delete",
+                    body=b"{",
+                    content_type="application/json",
+                    extra_headers={"Content-Length": "not-a-number"},
+                )
+            assert status == 409 and blocked == {
+                "error": "UI 测试模式已拦截写操作，未触发真实业务。",
+                "simulated": True,
+                "status": "blocked",
+                "path": "/api/delete",
+            }
+            assert blocked_video.is_file() and blocked_output.is_dir()
+    finally:
+        shutil.rmtree(fixture_root, ignore_errors=False)
+
+
 class RecordingAnalyzeQueue:
     """Analyze-only queue fake that records production calls without artifacts."""
 
@@ -2202,6 +2386,7 @@ def run_lifecycle() -> None:
 
             assert_files_http_contract(web_app, port, server, fake_queue)
             assert_result_http_contract(web_app, port, server)
+            assert_delete_http_contract(web_app, port, server)
             assert_upload_http_contract(web_app, port)
             assert_analyze_http_contract(web_app, port)
             assert_postprocess_http_contract(web_app, port)
