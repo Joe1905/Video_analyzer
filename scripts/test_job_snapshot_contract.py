@@ -83,6 +83,12 @@ def sse_body(payload: dict[str, Any]) -> bytes:
     return b"data: " + json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n\n"
 
 
+def dispatch_get(web_app: Any, path: str) -> FakeHandler:
+    handler = FakeHandler(path)
+    web_app.Handler.do_GET(handler)
+    return handler
+
+
 def make_shop_service(
     web_app: Any,
     registry: JobRegistry,
