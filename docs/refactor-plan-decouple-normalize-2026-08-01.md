@@ -216,7 +216,7 @@ HOT_VIDEO_REPORT_ENABLED=0
 
 响应基线存放在 `scripts/contracts/`。快照生成时只允许规范化随机 ID、时间戳、临时绝对路径和日志时间前缀；字段缺失、状态码、重定向目标、SSE event/data 结构不得被归一掉。快照中只能使用合成数据，不得写入凭据、Cookie、真实账号或请求头。
 
-### 4.6 当前执行状态、并行边界与阶段级回归门禁
+### 4.6 当前执行状态、并行边界与阶段级增量门禁
 
 截至 2026-08-29 的执行状态：
 
@@ -267,15 +267,13 @@ HOT_VIDEO_REPORT_ENABLED=0
 
 Phase 0.5B 可以多智能体并行，但文件所有权必须互斥：一条线负责 Python 运行时与专用模块，一条线负责 MCP Bridge/Compose/env，一条线负责静态 UI 与受控文档；README、计划文档、资产版本、跨线冲突和最终集成由主任务统一处理。子智能体只运行专项测试，不得独立提交；主任务合并审计后统一提交和部署。
 
-“每个阶段全功能回归”定义为以下集合，适用于 Phase 0.5B、0.5C、0.5D，以及 Phase 1～7 中每个可执行代码子阶段；专项测试通过不能代替该集合。即使子阶段只新增尚未接线的 core/router 模块，也要执行完整门禁，防止导入、镜像内容或测试发现规则发生漂移：
+2026-09-01 起按用户确认改为“中间阶段增量测试、全部重构完成后一次全量回归”。Phase 0～4.1 的完整门禁记录属于已经发生的历史证据，不回写；Phase 4.2～7 使用以下规则：
 
-1. Windows 工作树完成 `git diff --check`、Python/Node 语法检查、依赖边界检查和仓库零遗留扫描；本地不构建 Docker。
-2. 源码提交并通过 GitHub 同步到 `/home/openclaw/Video_analyzer-ui-4004`，服务器只使用 `bash scripts/deploy_ui_4004.sh` 构建并部署 4004 专属镜像。
-3. 在新镜像中运行登记的全部确定性 Python 套件、带显式功能开关的专项套件和 Node Bridge 套件；不只运行本阶段改动对应的测试。
-4. 部署后检查 `/healthz`、全部活动页面和 API smoke；未注册路径必须是无 `Location` 的通用 404。
-5. 桌面与移动视口分别运行聊天滚动和邻聊上传队列 Playwright 回归，检查浏览器控制台和页面错误。
-6. 检查 4004 容器环境、生效 Compose 配置、进程和近期日志；不得出现未注册 provider、启动失败或触碰 4002/4003 的证据。
-7. 记录镜像 ID、提交 SHA、测试总数和失败数。任一项失败即留在当前阶段修复并重跑完整集合，不得带红灯进入下一阶段。
+1. Windows 工作树先建立影响清单，完成 `git diff --check`、相关 Python/Node 语法检查、CodeGraph/AST 依赖边界和仓库零遗留扫描；本地不构建 Docker。
+2. 只运行被迁移领域的单元/契约、直接共享边界、受影响 endpoint 黑盒；UI、Node Bridge、日报、provider、代理和部署专项仅在本次改动触及对应边界时运行。
+3. 运行时代码仍通过 GitHub 同步到 `/home/openclaw/Video_analyzer-ui-4004`，服务器只使用 `bash scripts/deploy_ui_4004.sh` 构建并部署 4004 专属镜像；部署后只验证 `/healthz`、受影响页面/API、近期日志、专属镜像和 clean checkout。
+4. 记录提交 SHA、影响清单、实际测试及通过/失败数。任一失败必须在当前阶段修复，并重跑该阶段完整影响清单；不得用无关测试通过抵消失败。
+5. Phase 4～7 全部结构迁移和审计完成后，对最终候选一次性运行当前登记的全部确定性 Python/Node/特殊套件、两个 Playwright、14 个页面、业务黑盒、未知 provider fail-closed、三端健康、日志和隔离检查；最终全量失败后从第 1 项重跑完整集合。
 
 固定计数口径：Phase 0.5 先在 4004 服务器新镜像中运行 **36 项构建前确定性回归**，即 32 个常规 Python、`test_hot_report_resume.py`、启用 `SELLERSPRITE_TOOL_MOCK_MODE=1` 的 `test_27_presets_mock_boundary.py`，以及 `scripts/test_mcp_bridge_cache.js`、`sellersprite_mcp_chat/test_stdio_mcp_client.js` 两个 Node 门禁；部署后再运行 **2 个 Playwright 脚本**，合计 38 个自动化脚本。Phase 1.1 新增 `test_core_http.py` 和 `test_http_response_contract.py`、Phase 1.2 新增 `test_core_config.py` 后，历史登记门禁为 **39 项构建前确定性回归 + 2 个部署后 Playwright = 41 个自动化脚本**。Phase 1.3 新增 `test_core_json_store.py` 后，当时登记门禁为 **40 项构建前确定性回归 + 2 个部署后 Playwright = 42 个自动化脚本**。Phase 1.R1 新增 `test_deploy_ui_4004_boundary.py` 后，当时登记门禁为 **41 项确定性回归 + 2 个部署后 Playwright = 43 个自动化脚本**。Phase 2.1 新增 `test_router.py` 后，当时登记门禁为 **42 项确定性回归 + 2 个部署后 Playwright = 44 个自动化脚本**。Phase 2.2A 新增 `test_health_route_contract.py` 后，当时登记门禁为 **43 项确定性回归 + 2 个部署后 Playwright = 45 个自动化脚本**。Phase 2.2B-1 新增 `test_report_page_routes_contract.py` 后，当时登记门禁为 **44 项确定性回归 + 2 个部署后 Playwright = 46 个自动化脚本**。Phase 2.2B-2 新增 `test_lan_tool_page_routes_contract.py` 后，当时登记门禁为 **45 项确定性回归 + 2 个部署后 Playwright = 47 个自动化脚本**。Phase 2.2B-3 新增 `test_harness_page_route_contract.py` 后，当时登记门禁为 **46 项确定性回归 + 2 个部署后 Playwright = 48 个自动化脚本**。Phase 2.2B-4 新增 `test_cached_page_routes_contract.py` 后，当时登记门禁为 **47 项确定性回归 + 2 个部署后 Playwright = 49 个自动化脚本**。Phase 2.2B-5 新增 `test_extract_page_route_contract.py` 后，当时登记门禁为 **48 项确定性回归 + 2 个部署后 Playwright = 50 个自动化脚本**。Phase 2.3A 新增 `test_static_asset_contract.py` 与 `test_harness_certificate_contract.py` 后，当前登记门禁为 **50 项确定性回归 + 2 个部署后 Playwright = 52 个自动化脚本**；其中部署边界脚本在服务器源码 checkout 执行，容器内执行 46 个常规确定性 Python、单独以 `HOT_VIDEO_REPORT_ENABLED=1` 和隔离临时根目录执行 `test_hot_report_resume.py`，再执行两个 Node 门禁。其他 smoke 容器显式使用 `HOT_VIDEO_REPORT_ENABLED=0` 与隔离 `APP_TEST_ROOT`。Node stdio 门禁的实际路径为 `sellersprite_mcp_chat/test_stdio_mcp_client.js`。两个 Playwright 都覆盖桌面和移动 viewport。`test_api.py` 是吞异常的固定历史数据探针，`test_low_reasoning_video_insight.py` 会调用付费外部模型且失败仍返回成功，二者只作为人工实验，不计入阶段门禁。
 
@@ -504,7 +502,7 @@ class JobSnapshot(TypedDict):
 
 ## 八、Phase 4：按业务垂直切片迁移 service 与 route
 
-本阶段补齐旧计划缺失的 services 实施步骤。每个垂直切片必须同时交付 `services/<domain>.py`、`routes/<domain>.py`、领域 contract test 和完整门禁；禁止只搬 route 后继续调用 `web_app` 全局函数。
+本阶段补齐旧计划缺失的 services 实施步骤。每个垂直切片必须同时交付 `services/<domain>.py`、`routes/<domain>.py`、领域 contract test 和该领域影响清单门禁；禁止只搬 route 后继续调用 `web_app` 全局函数。
 
 路由 handler 只允许做四件事：读取并校验 HTTP 参数、调用 service、把已登记的领域错误映射为 HTTP、写响应。Service 拥有业务编排但不认识 `BaseHTTPRequestHandler`，不写 HTTP header，不导入 route 或 web_app。跨域共享只能依赖 `jobs/core` 或已有稳定领域接口。
 
@@ -531,7 +529,7 @@ class JobSnapshot(TypedDict):
 
 ## 九、Phase 5：拆分代理子系统
 
-`proxy_pool.py` 不应与普通 web service 一起大搬。按事务边界拆，并在每个子阶段执行当前登记的至少 52 脚本门禁及代理专项故障注入：
+`proxy_pool.py` 不应与普通 web service 一起大搬。按事务边界拆；每个子阶段只执行代理模块、直接依赖边界和对应故障注入，不运行无关业务套件：
 
 1. `proxy/repository.py`：schema、migration、查询、事务函数。
 2. `proxy/nodes.py`：VLESS/VMess/static/direct 解析、端口作用域与序列化。
@@ -568,7 +566,7 @@ class JobSnapshot(TypedDict):
 
 不采用旧计划中单一 `call_llm(prompt, ...)` 覆盖所有调用的方案。统一的应是传输层能力：认证、URL、超时、重试、错误标准化、usage 提取；各调用方继续保留消息结构、system prompt、tools、response format、视觉输入和业务解析。
 
-先为现有 DeepSeek/Qwen 调用补 contract test，再引入 transport adapter。`hot_video_report.py` 保持显式 `max_tokens`，不能依赖隐式默认值。每个 transport/provider/chat 子阶段仍执行当时登记的完整门禁，专项测试不能替代完整门禁。
+先为现有 DeepSeek/Qwen 调用补 contract test，再引入 transport adapter。`hot_video_report.py` 保持显式 `max_tokens`，不能依赖隐式默认值。每个 transport/provider/chat 子阶段只执行对应 transport、provider、tool gateway、会话边界及受影响调用方契约；不重复运行代理、Amazon 等无关套件。
 
 Transport 规则必须显式化：只对连接失败、429 和可重试 5xx 在首个响应字节前重试；次数和退避由调用方配置；流式输出开始后不得自动重放；带副作用的工具调用不得由 transport 重试；错误类型和 usage 合并规则对调用方保持兼容。请求快照必须删除认证头、Cookie、真实媒体 URL 和用户内容，只保留合成 fixture。
 
@@ -583,7 +581,7 @@ Transport 规则必须显式化：只对连接失败、429 和可重试 5xx 在�
 - 数据请求、状态 store、drawer workflow 分成小型原生 JS 模块。
 - 共享导航继续由 `ui-system.css/js` 提供。
 
-静态资源变化必须更新 `UI_ASSET_VERSION`。聊天壳只服务 Home、SellerSprite、出海匠，不拆出三套页面。每个可独立部署的资源拆分子阶段执行当时登记的完整门禁，并检查两个 Playwright 的桌面/移动 viewport、控制台和页面错误。
+静态资源变化必须更新 `UI_ASSET_VERSION`。聊天壳只服务 Home、SellerSprite、出海匠，不拆出三套页面。每个资源拆分子阶段只运行受影响页面的 UI 契约与对应 Playwright 桌面/移动 viewport、控制台和页面错误检查，不运行无关后端业务套件。
 
 **Phase 7 验收：** 代理页桌面/窄屏浏览器回归；无控制台错误；所有写操作仍有确认、禁用和错误反馈。
 
@@ -649,10 +647,11 @@ Phase 0 测试基线
 - 4004 活动功能的 URL、API schema、SSE 格式、数据目录和 Compose 隔离保持兼容。
 - `core` 不包含 provider/tool/业务实体专属规则；provider adapter 注入的规则必须全部属于活动注册表。
 - CodeGraph 中不存在 `routes/services/jobs/core → web_app`、`services → routes` 或 `core → 领域模块` 的反向依赖。
+- 上述结构条件全部满足并完成阶段审计后，对最终候选一次性执行当前登记的完整自动化基线、14 个页面和全局隔离/日志检查；该次全量门禁通过才算重构完成。
 
 ## 十四、下一批实施任务
 
-Phase 0、0.5、1.1、2026-08-29 两个补漏阶段、Phase 1.2、Phase 1.3、**Phase 2.1～2.3D**、**Phase 3.0～3.4**、**Phase 4.1** 与脚本资产 TTL 治理已完成。Shop 已形成首个完整的 `web_app → routes → services → jobs/core` 垂直切片，TTL 治理删除过期脚本并建立最长 14 天的 fail-closed 门禁，两阶段均通过服务器 56/56 和阶段后审计。下一步实施 **Phase 4.2 Metrics**；第一批只能复用现有测试文件做只读盘点和独立行为冻结，不新建 `test_*.py`：锁定 endpoint/target 校验、`music-popular` 空 target、真实命令映射、worker 成败、`result.json` 缺失/无效 JSON、120 条日志、深复制、SSE marker/BrokenPipe、POST 精确时序、领域动态环境读取当前为 0，以及现有 UI_TEST 拦截顺序。冻结提交通过完整门禁后，下一独立结构提交再交付 `services/metrics.py` 与 `routes/metrics.py`。Amazon、Download、代理、聊天和日报不得在 4.2 顺手迁移。
+Phase 0、0.5、1.1、2026-08-29 两个补漏阶段、Phase 1.2、Phase 1.3、**Phase 2.1～2.3D**、**Phase 3.0～3.4**、**Phase 4.1** 与脚本资产 TTL 治理已完成。Shop 已形成首个完整的 `web_app → routes → services → jobs/core` 垂直切片，TTL 治理删除过期脚本并建立最长 14 天的 fail-closed 门禁，两阶段均通过服务器 56/56 和阶段后审计。下一步实施 **Phase 4.2 Metrics**；第一批只能复用现有测试文件做只读盘点和独立行为冻结，不新建 `test_*.py`：锁定 endpoint/target 校验、`music-popular` 空 target、真实命令映射、worker 成败、`result.json` 缺失/无效 JSON、120 条日志、深复制、SSE marker/BrokenPipe、POST 精确时序、领域动态环境读取当前为 0，以及现有 UI_TEST 拦截顺序。冻结提交只运行 Metrics 影响清单并通过后，下一独立结构提交再交付 `services/metrics.py` 与 `routes/metrics.py`；该阶段不运行 Amazon、Download、代理、聊天、日报或全站 Playwright。Amazon、Download、代理、聊天和日报不得在 4.2 顺手迁移。
 
 Phase 2.3 继续复用现有 Terra 子智能体，避免为同一长期任务无限新增执行记录，并按以下门槛推进：
 
