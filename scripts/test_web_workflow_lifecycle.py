@@ -847,6 +847,49 @@ def assert_delete_http_contract(web_app: Any, port: int, server: Any) -> None:
         shutil.rmtree(fixture_root, ignore_errors=False)
 
 
+def assert_proxy_publish_video_range_contract(web_app: Any, port: int) -> None:
+    """Freeze the proxy-published asset path's shared video-stream behavior."""
+
+    fixture_root = Path(tempfile.mkdtemp(prefix="proxy-publish-video-contract-", dir=web_app.ROOT))
+    video_path = fixture_root / "published.mp4"
+    video_path.write_bytes(b"abcdefghij")
+    asset_id = "asset/with space"
+    asset_calls: list[str] = []
+
+    def published_video_path(received_asset_id: str) -> Path:
+        asset_calls.append(received_asset_id)
+        return video_path
+
+    try:
+        with patch.object(web_app, "PROXY_POOL_ENABLED", True), patch.object(
+            web_app.tiktok_studio_publish, "video_path", side_effect=published_video_path
+        ):
+            status, headers, body = request(
+                port,
+                "GET",
+                "/api/proxy/publish/videos/asset%2Fwith%20space",
+                extra_headers={"Range": "bytes=2-5"},
+            )
+            assert status == 206 and body == b"cdef"
+            assert headers["content-type"] == "video/mp4"
+            assert headers["accept-ranges"] == "bytes"
+            assert headers["content-length"] == "4"
+            assert headers["content-range"] == "bytes 2-5/10"
+            assert asset_calls == [asset_id]
+
+            status, _headers, failure = json_request(
+                port,
+                "GET",
+                "/api/proxy/publish/videos/asset%2Fwith%20space",
+                extra_headers={"Range": "bytes=not-an-int"},
+            )
+            assert status == 500
+            assert failure == {"error": "invalid literal for int() with base 10: 'not'"}
+            assert asset_calls == [asset_id, asset_id]
+    finally:
+        shutil.rmtree(fixture_root, ignore_errors=False)
+
+
 class RecordingAnalyzeQueue:
     """Analyze-only queue fake that records production calls without artifacts."""
 
@@ -2382,6 +2425,7 @@ def run_lifecycle() -> None:
             assert_files_http_contract(web_app, port, server, fake_queue)
             assert_result_http_contract(web_app, port, server)
             assert_delete_http_contract(web_app, port, server)
+            assert_proxy_publish_video_range_contract(web_app, port)
             assert_upload_http_contract(web_app, port)
             assert_analyze_http_contract(web_app, port)
             assert_postprocess_http_contract(web_app, port)
