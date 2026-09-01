@@ -2040,9 +2040,20 @@ def run_lifecycle() -> None:
             status, _headers, files = json_request(port, "GET", "/api/files")
             assert status == 200 and any(item["name"] == filename for item in files)
 
-            status, _headers, analyzed = json_request(
-                port, "POST", "/api/analyze", {"filename": filename, "analysis_prompt": "fixture"}
+            analyze_router = Router()
+            register_analyze_routes(
+                analyze_router,
+                AnalyzeService(
+                    videos_dir=web_app.VIDEOS_DIR,
+                    output_dir_for_filename=lambda requested: web_app.OUTPUT_DIR / requested,
+                    safe_filename=web_app.safe_filename,
+                    queue_enqueue=fake_queue.enqueue,
+                ),
             )
+            with patch.object(web_app, "WEB_ROUTER", analyze_router):
+                status, _headers, analyzed = json_request(
+                    port, "POST", "/api/analyze", {"filename": filename, "analysis_prompt": "fixture"}
+                )
             assert status == 202 and analyzed["queued"] == ["analyze"]
             assert fake_queue.calls[-1] == (filename, "analyze")
 
