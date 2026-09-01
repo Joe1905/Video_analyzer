@@ -655,6 +655,17 @@ def assert_postprocess_http_contract(web_app: Any, port: int) -> None:
             assert status == 400 and invalid == {"error": error}
             assert queue.calls == [] and output_requests == [] and not output_dir.exists()
 
+        status, _headers, empty_body = json_request(
+            port,
+            "POST",
+            "/api/postprocess",
+            body=b"",
+            content_type="application/json",
+            extra_headers={"Content-Length": "0"},
+        )
+        assert status == 400 and empty_body == {"error": "Missing filename"}
+        assert queue.calls == [] and output_requests == [] and not output_dir.exists()
+
         status, _headers, malformed = json_request(
             port, "POST", "/api/postprocess", body=b"{", content_type="application/json"
         )
@@ -759,6 +770,28 @@ def assert_postprocess_http_contract(web_app: Any, port: int) -> None:
             assert failing_queue.calls == expected_calls
             assert (output_dir / "analysis_mode.txt").read_text(encoding="utf-8") == "direct_video"
             assert (output_dir / "report_source.txt").read_text(encoding="utf-8") == "direct"
+
+        reset_output()
+        write_artifacts("analysis.json", "audit_result.json", "audit_result_zh.json")
+        failing_queue = RecordingPostprocessQueue(output_dir, fail_on="report")
+        with patch.object(web_app, "WEB_ROUTER", router_for(failing_queue)):
+            try:
+                json_request(
+                    port,
+                    "POST",
+                    "/api/postprocess",
+                    {"filename": filename, "analysis_prompt": "  failure prompt  "},
+                )
+            except http.client.RemoteDisconnected:
+                pass
+            else:
+                raise AssertionError("report enqueue failure must keep the legacy connection failure")
+        assert failing_queue.calls == [(filename, "report")]
+        failed_snapshot = failing_queue.snapshots[-1][2]
+        assert failed_snapshot["report_source.txt"] == "standard"
+        assert failed_snapshot["analysis_prompt.txt"] == "failure prompt"
+        assert "audit_result.json" not in failed_snapshot
+        assert "audit_result_zh.json" not in failed_snapshot
 
         reset_output()
         blocked_router = Router()
