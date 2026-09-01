@@ -263,6 +263,9 @@ HOT_VIDEO_REPORT_ENABLED=0
 | Phase 3.3.D3 Shop 单域切换 | 已完成 | `a3e0a14`、`f6ab9b0`；创建、worker、GET、POST 与专用 SSE 切换到单 Registry，两份 artifact 在不可变快照后锁外读取，旧生产运行时字典/锁删除，服务器 56 项完整门禁全绿 |
 | Phase 3.3.D4 Amazon 单域切换 | 已完成 | `53eb409`、`95c2e1d`、`b1e405c`、`da88ede`；创建、日志、真实 worker、GET、POST 与专用 SSE 切换到单 Registry，删除旧生产字典/锁与无调用者的通用 SSE helper；服务器 56 项完整门禁全绿 |
 | Phase 3.4 共享业务基类复核 | 已完成 | `d09add4` 补齐四域 POST 精确启动时序和仅四个 Registry 真源门禁；确认共同机制已由 Registry 承载，领域模型、结果载体、日志窗口和状态机不足以支持继承，明确不引入共享业务基类或通用 SSE/service |
+| Phase 4.1 Shop 垂直切片 | 已完成 | `f700266`、`c424a0a`、`c8b433b`、`8a63493`；独立 service/route、行为冻结、服务器门禁与阶段后审计完成 |
+| Phase 4.2 Metrics 垂直切片 | 已完成 | `93653e1`、`a03b3b4`、`522faf0`；独立 service/route、专项 7/7、部署黑盒与阶段后审计完成 |
+| Phase 4.3 Amazon 垂直切片 | 已完成 | `79afe66`、`067ad77`、`a508170`、`d2669df`；独立 service/route、专项 8/8、部署黑盒与三路 Terra 审计完成；中间阶段未运行全量回归 |
 | 执行要求归一与门禁审计 | 已完成 | `df1c7a1`、`3937623`、`1b9f4aa`、`d715d93`；建立唯一要求入口，清除非活动域专项断言并保留通用 fail-closed 契约，服务器 52 项完整门禁全绿 |
 
 Phase 0.5B 可以多智能体并行，但文件所有权必须互斥：一条线负责 Python 运行时与专用模块，一条线负责 MCP Bridge/Compose/env，一条线负责静态 UI 与受控文档；README、计划文档、资产版本、跨线冲突和最终集成由主任务统一处理。子智能体只运行专项测试，不得独立提交；主任务合并审计后统一提交和部署。
@@ -535,6 +538,15 @@ class JobSnapshot(TypedDict):
 4. **部署与黑盒：** Windows 经 7892 推送，服务器经 7890 `pull --ff-only`，仅以 `bash scripts/deploy_ui_4004.sh` 部署运行时提交 `a03b3b4`；4004 专属镜像为 `sha256:1f0352d5f72bd6792f9492c464e96f05edae50a10b72debdf3f88118dea8dee4`，服务器最终 checkout 为测试收口提交 `522faf0` 且 clean。`/healthz`、`/metrics` 为 200，缺失 Metrics GET 为 404，缺失 SSE 为 200 且返回精确 missing 帧，无效 POST 为 400；近期日志无 traceback。4002/4003 镜像和启动时间未变化，三端健康均为 200。
 5. **阶段后审计与测试策略：** 三路 Terra 与主审最终为 P0/P1/P2 全 0；URL、状态码、JSON/SSE、数据目录、任务状态、result 注册及 UI 行为无需求漂移。新增、转正、删除临时/测试脚本均为 0，`script_lifecycle` 继续无活动条目。按 2026-09-01 增量门禁规则，本阶段未运行无关的代理、聊天、日报、Node、Playwright 或 56 项全量；完整基线保留到 Phase 4～7 全部完成后一次执行。
 
+### 8.3 Phase 4.3 Amazon 垂直切片（已完成）
+
+1. **行为冻结（`79afe66`、`067ad77`）：** 只修改两份既有聚合契约，冻结 URL/ASIN/keyword 与 pages 校验、动态 `AMAZON_MAX_PAGES`、精确 Docker argv 和环境副本、proxy/cache、混合 JSON 解析、结果缺失/无效、120 条日志、深复制、SSE marker/断连、POST 时序、UI_TEST 拦截和旧实现 AST。首轮服务器基线暴露测试夹具未恢复 `web_app.subprocess`，以独立测试提交修正后两项基线全绿。
+2. **结构迁移（`a508170`）：** 新增 `services/amazon.py` 与 `routes/amazon.py`，分别接管任务模型/worker/cache/artifact 和 GET/POST/SSE；`web_app.py` 删除 279 行旧类、常量、helper、adapter 与 Handler 分支，只新增 18 行组合根接线。生产代码净增 97 行来自明确的领域模块边界；没有通用 runner、通用 SSE、兼容导出、双实现或跨域抽象。
+3. **测试归属与漏洞收口（`d2669df`）：** `test_core_config.py` 将一个动态 getenv 归属迁到 route，`test_core_json_store.py` 锁定 service 读写注入，`test_router.py` 锁定唯一 API 注册，两份聚合契约改走真实 AmazonService/Router。首次结构门禁发现局部 SSE header helper 的作用域错误，提升为 Metrics/Amazon 共用 helper 后从影响清单第一项完整重跑；未新增 `test_*.py` 或一次性脚本。
+4. **影响清单与专项门禁：** 服务器执行 `test_job_snapshot_contract.py`、`test_web_workflow_lifecycle.py`、`test_job_snapshot_adapters.py`、`test_core_config.py`、`test_core_json_store.py`、`test_router.py`、`test_api_cache.py`、`test_cached_page_routes_contract.py` 共 8/8，通过容器 `/tmp` 字节码目录完成相关 `py_compile`，并通过 `git diff --check`、CodeGraph/import 方向、组合根关键字和旧符号零残留门禁。没有运行代理、聊天、日报、Node、Playwright 或 56 项全量。
+5. **部署与黑盒：** Windows 经 7892 推送，服务器经 7890 `pull --ff-only`，仅以 `bash scripts/deploy_ui_4004.sh` 构建部署；4004 镜像和运行容器均为 `sha256:74ba6cc9f7836379cb399fbca721ca33a8bb6523d840d2a68782c0ad73cdeb75`。`/healthz`、`/amazon` 为 200，缺失 job 为 404，缺失 SSE 为 200 且返回精确 missing 帧，无效 target 为 400；近期严重日志为 0，服务器 checkout clean，4002/4003 仅只读健康且均为 200。
+6. **阶段后审计：** 三路 Terra 与主审在补齐组合根全部注入关键字和 import alias 门禁后为 P0/P1/P2 全 0。URL、状态码、JSON/SSE、数据目录、任务生命周期和聊天域均无需求漂移；复用继续止于 Registry、snapshot adapter、Router/core HTTP 和现有 cache 接口，Phase 4.4 不得据此制造万能 VideoService。
+
 ## 九、Phase 5：拆分代理子系统
 
 `proxy_pool.py` 不应与普通 web service 一起大搬。按事务边界拆；每个子阶段只执行代理模块、直接依赖边界和对应故障注入，不运行无关业务套件：
@@ -659,7 +671,7 @@ Phase 0 测试基线
 
 ## 十四、下一批实施任务
 
-Phase 0、0.5、1.1、2026-08-29 两个补漏阶段、Phase 1.2、Phase 1.3、**Phase 2.1～2.3D**、**Phase 3.0～3.4**、**Phase 4.1～4.2** 与脚本资产 TTL 治理已完成。Shop、Metrics 已形成独立的 `web_app → routes → services → jobs/core` 垂直切片。下一步实施 **Phase 4.3 Amazon**：先复用既有测试建立影响清单并冻结 scraper argv/容器生命周期、`AMAZON_MAX_PAGES` 动态读取、target/target_type/pages 校验、结果 JSON 缺失/无效、120 条日志、深复制、SSE marker/断连、POST 时序、UI_TEST 拦截和旧实现 AST；行为基线与结构迁移继续分开提交。只允许新增 `services/amazon.py` 与 `routes/amazon.py`，并做必要调用方/既有测试接线；不迁移 Download、代理、聊天、日报或前端，不建立跨域 JobService、通用命令 runner 或通用 SSE。
+Phase 0、0.5、1.1、2026-08-29 两个补漏阶段、Phase 1.2、Phase 1.3、**Phase 2.1～2.3D**、**Phase 3.0～3.4**、**Phase 4.1～4.3** 与脚本资产 TTL 治理已完成。Shop、Metrics、Amazon 已形成独立的 `web_app → routes → services → jobs/core` 垂直切片。下一步实施 **Phase 4.4 下载与分析拆分**：先只读盘点 download/upload/analyze/translate/postprocess 的模型、命令、文件与 HTTP 边界，建立影响清单并分别冻结现状；按稳定边界拆成领域 service/route，禁止合成万能 VideoService。`tools.py` 只迁移视频子进程执行直接相关能力并保留活动调用方所需窄 facade；聊天工具归一、权限和 provider 路由严格留到 Phase 6。不得顺手迁移日报、代理、邻聊、淘宝或前端，也不得改变 Range、流式、下载安全、文件名/目录、API schema、状态码或任务生命周期。
 
 Phase 2.3 继续复用现有 Terra 子智能体，避免为同一长期任务无限新增执行记录，并按以下门槛推进：
 
@@ -689,4 +701,5 @@ Phase 3 下一批按以下门槛推进：
 14. **3.4 基类复核与 Phase 3 关闭（已完成，`d09add4`）：** 四域共同机制止于现有 Registry，模型、结果载体、日志窗口、失败语义与 SSE payload 均存在稳定领域差异，因此明确不引入继承、共享业务基类、通用 SSE 或万能 service；四域 POST 精确时序和仅四个 Registry 真源已自动化，Phase 3 验收通过。
 15. **Phase 4.1 Shop 垂直切片（已完成，`f700266`、`c424a0a`、`c8b433b`、`8a63493`）：** 行为冻结、service/route 迁移、动态配置归属修正、服务器 56/56、部署黑盒和阶段后审计均已通过；流程偏差及后续提交纯度规则已记录在 8.1。
 16. **Phase 4.2 Metrics（已完成，`93653e1`、`a03b3b4`、`522faf0`）：** 行为冻结、service/route 迁移、专项 7/7、部署黑盒与阶段后审计均已通过；没有新增测试/临时脚本，没有执行中间全量回归。
-17. **Phase 4.3 Amazon（下一步）：** 先做影响清单与独立行为冻结，再迁移 Amazon service/API route；保持 scraper 容器生命周期、动态环境读取、结果目录和错误映射，不建立跨域抽象，不顺手迁移其他业务域。
+17. **Phase 4.3 Amazon（已完成，`79afe66`、`067ad77`、`a508170`、`d2669df`）：** 行为冻结、service/route、专项 8/8、部署黑盒和阶段后审计全绿；没有新增测试/临时脚本，没有执行中间全量回归。
+18. **Phase 4.4 下载与分析（下一步）：** 先分别冻结 download、upload、analyze、translate、postprocess 的 HTTP/文件/进程/任务契约，再按领域拆分；禁止万能 VideoService，禁止提前迁移聊天工具归一与权限逻辑。
