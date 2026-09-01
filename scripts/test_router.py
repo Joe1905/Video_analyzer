@@ -250,6 +250,9 @@ class RouterTests(unittest.TestCase):
             elif route_file.name == "analyze.py":
                 allowed_imports.update({"json", "os"})
                 allowed_from_modules.add("services.analyze")
+            elif route_file.name == "translate.py":
+                allowed_imports.add("json")
+                allowed_from_modules.add("services.translate")
             for node in ast.walk(module):
                 if isinstance(node, ast.Import):
                     for alias in node.names:
@@ -257,7 +260,7 @@ class RouterTests(unittest.TestCase):
                 elif isinstance(node, ast.ImportFrom) and node.module:
                     self.assertIn(node.module, allowed_from_modules)
                     self.assertNotIn("web_app", node.module)
-                    if route_file.name not in {"shop.py", "metrics.py", "amazon.py", "downloads.py", "upload.py", "analyze.py"}:
+                    if route_file.name not in {"shop.py", "metrics.py", "amazon.py", "downloads.py", "upload.py", "analyze.py", "translate.py"}:
                         self.assertFalse(node.module.startswith("services."))
             if route_file.name == "router.py":
                 imports = {
@@ -289,6 +292,7 @@ class RouterTests(unittest.TestCase):
                 "routes.amazon",
                 "routes.analyze",
                 "routes.downloads",
+                "routes.translate",
                 "routes.upload",
                 "routes.health",
                 "routes.extract",
@@ -338,6 +342,7 @@ class RouterTests(unittest.TestCase):
         self.assertIn("register_amazon_routes(WEB_ROUTER, amazon_service)", source)
         self.assertIn("register_download_routes(WEB_ROUTER, download_service)", source)
         self.assertIn("register_analyze_routes(WEB_ROUTER, analyze_service)", source)
+        self.assertIn("register_translate_routes(WEB_ROUTER, translate_service)", source)
         self.assertNotIn('if parsed.path == "/api/shop-job":', source)
         self.assertNotIn('if parsed.path == "/api/video-metrics-job":', source)
         self.assertNotIn('if parsed.path == "/api/video-metrics-events":', source)
@@ -355,6 +360,7 @@ class RouterTests(unittest.TestCase):
         self.assertNotIn("def stream_download_events(", source)
         self.assertNotIn("def handle_download(", source)
         self.assertNotIn('if parsed.path == "/api/analyze":', source)
+        self.assertNotIn('if parsed.path == "/api/translate":', source)
 
     def test_upload_route_and_composition_are_explicit(self) -> None:
         root = Path(__file__).resolve().parent
@@ -534,6 +540,105 @@ class RouterTests(unittest.TestCase):
         )
         self.assertNotIn(
             "/api/analyze",
+            {node.value for node in ast.walk(registered_post) if isinstance(node, ast.Constant) and isinstance(node.value, str)},
+        )
+
+    def test_translate_route_and_composition_are_explicit(self) -> None:
+        root = Path(__file__).resolve().parent
+        translate_route = ast.parse((root / "routes" / "translate.py").read_text(encoding="utf-8"))
+        post_paths = [
+            node.args[0].value
+            for node in ast.walk(translate_route)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "post"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ]
+        self.assertEqual(post_paths, ["/api/translate"])
+
+        web_app = ast.parse((root / "web_app.py").read_text(encoding="utf-8"))
+        imported = {
+            (node.module, alias.name)
+            for node in ast.walk(web_app)
+            if isinstance(node, ast.ImportFrom) and node.module
+            for alias in node.names
+        }
+        self.assertIn(("routes.translate", "register_translate_routes"), imported)
+        self.assertIn(("services.translate", "TranslateService"), imported)
+
+        service_calls = [
+            node for node in ast.walk(web_app)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "TranslateService"
+        ]
+        self.assertEqual(len(service_calls), 1)
+        service_keywords = {keyword.arg: keyword.value for keyword in service_calls[0].keywords}
+        self.assertEqual(
+            {name: ast.unparse(service_keywords[name]) for name in service_keywords},
+            {
+                "root": "ROOT",
+                "scripts_dir": "SCRIPTS_DIR",
+                "output_dir_for_filename": "output_dir_for_filename",
+                "safe_filename": "safe_filename",
+                "run_factory": "subprocess.run",
+                "environ": "os.environ",
+            },
+        )
+
+        register_calls = [
+            node for node in ast.walk(web_app)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "register_translate_routes"
+        ]
+        self.assertEqual(len(register_calls), 1)
+        self.assertEqual(
+            [arg.id for arg in register_calls[0].args if isinstance(arg, ast.Name)],
+            ["WEB_ROUTER", "translate_service"],
+        )
+        self.assertEqual(register_calls[0].keywords, [])
+
+        service_path = root / "services" / "translate.py"
+        service_tree = ast.parse(service_path.read_text(encoding="utf-8"))
+        translate_service = next(
+            node for node in service_tree.body
+            if isinstance(node, ast.ClassDef) and node.name == "TranslateService"
+        )
+        constructor = next(
+            node for node in translate_service.body
+            if isinstance(node, ast.FunctionDef) and node.name == "__init__"
+        )
+        self.assertEqual(
+            [argument.arg for argument in constructor.args.args],
+            ["self", "root", "scripts_dir", "output_dir_for_filename", "safe_filename", "run_factory", "environ"],
+        )
+        service_source = service_path.read_text(encoding="utf-8")
+        for forbidden in ("video_queue", "postprocess", "threading", "JobRegistry", "run_job", "create_and_start"):
+            self.assertNotIn(forbidden, service_source)
+
+        for module_tree in (translate_route, service_tree):
+            for node in ast.walk(module_tree):
+                if isinstance(node, ast.Import):
+                    self.assertFalse(any(alias.name == "web_app" or alias.name.startswith("routes") for alias in node.names))
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    self.assertNotEqual(node.module, "web_app")
+                    if module_tree is service_tree:
+                        self.assertFalse(node.module == "routes" or node.module.startswith("routes."))
+
+        handler = next(node for node in web_app.body if isinstance(node, ast.ClassDef) and node.name == "Handler")
+        self.assertFalse(any(isinstance(node, ast.FunctionDef) and node.name == "handle_translate" for node in handler.body))
+        post_method = next(node for node in handler.body if isinstance(node, ast.FunctionDef) and node.name == "do_POST")
+        self.assertNotIn(
+            "/api/translate",
+            {node.value for node in ast.walk(post_method) if isinstance(node, ast.Constant) and isinstance(node.value, str)},
+        )
+        registered_post = next(
+            node for node in web_app.body
+            if isinstance(node, ast.FunctionDef) and node.name == "is_registered_post_route"
+        )
+        self.assertNotIn(
+            "/api/translate",
             {node.value for node in ast.walk(registered_post) if isinstance(node, ast.Constant) and isinstance(node.value, str)},
         )
 

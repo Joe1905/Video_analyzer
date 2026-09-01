@@ -30,10 +30,12 @@ from services.metrics import MetricsJob, MetricsService
 from services.amazon import AmazonJob, AmazonService, parse_json_from_process_output
 from services.analyze import AnalyzeService
 from services.downloads import DownloadJob, DownloadService
+from services.translate import TranslateService
 from services.upload import UploadService
 from jobs.registry import JobRegistry
 from routes.analyze import register_analyze_routes
 from routes.router import Router
+from routes.translate import register_translate_routes
 from routes.upload import MAX_UPLOAD_BYTES as UPLOAD_MAX_UPLOAD_BYTES, register_upload_routes
 
 
@@ -584,7 +586,7 @@ def assert_analyze_http_contract(web_app: Any, port: int) -> None:
 
 
 def assert_translate_http_contract(web_app: Any, port: int) -> None:
-    """Freeze the legacy Handler Translate input, file, and process contract."""
+    """Freeze the Translate route input, file, and process contract."""
 
     filename = "translate-contract.mp4"
     requested_filename = f"nested/{filename}"
@@ -601,7 +603,20 @@ def assert_translate_http_contract(web_app: Any, port: int) -> None:
     def request_payload(**values: Any) -> dict[str, Any]:
         return {"filename": requested_filename, **values}
 
-    with patch.object(web_app, "subprocess", SimpleNamespace(run=recording_run)):
+    def route_for(run_factory: Any) -> Router:
+        service = TranslateService(
+            root=web_app.ROOT,
+            scripts_dir=web_app.SCRIPTS_DIR,
+            output_dir_for_filename=lambda requested: web_app.OUTPUT_DIR / requested,
+            safe_filename=web_app.safe_filename,
+            run_factory=run_factory,
+            environ=os.environ,
+        )
+        router = Router()
+        register_translate_routes(router, service)
+        return router
+
+    with patch.object(web_app, "WEB_ROUTER", route_for(recording_run)):
         for payload, error in (
             ({"filename": "", "tab": "content"}, "Missing filename"),
             (request_payload(tab="unknown"), "tab must be content, direct, audit, or feedback"),
@@ -666,9 +681,7 @@ def assert_translate_http_contract(web_app: Any, port: int) -> None:
             run_calls.append((list(command), dict(kwargs)))
             raise failure
 
-        with patch.object(
-            web_app, "subprocess", SimpleNamespace(run=failing_run, CalledProcessError=subprocess.CalledProcessError)
-        ):
+        with patch.object(web_app, "WEB_ROUTER", route_for(failing_run)):
             status, _headers, failed = json_request(port, "POST", "/api/translate", request_payload(tab="content"))
         assert status == 500 and failed == {"error": expected_error}
 
@@ -680,9 +693,7 @@ def assert_translate_http_contract(web_app: Any, port: int) -> None:
         raise OSError("fixture translate runner unavailable")
 
     before_oserror = len(run_calls)
-    with patch.object(
-        web_app, "subprocess", SimpleNamespace(run=unavailable_run, CalledProcessError=subprocess.CalledProcessError)
-    ):
+    with patch.object(web_app, "WEB_ROUTER", route_for(unavailable_run)):
         try:
             json_request(port, "POST", "/api/translate", request_payload(tab="content"))
         except http.client.RemoteDisconnected:
@@ -692,8 +703,15 @@ def assert_translate_http_contract(web_app: Any, port: int) -> None:
     assert len(run_calls) == before_oserror + 1
     assert source_path.read_text(encoding="utf-8") == "fixture source" and not output_path.exists()
 
+    blocked_router = Router()
+    blocked_router.post(
+        "/api/translate",
+        lambda _handler, _params: (_ for _ in ()).throw(
+            AssertionError("UI_TEST gate must run before Translate route and body parsing")
+        ),
+    )
     with patch.object(web_app, "ui_test_mode_allows_live_write", return_value=False), patch.object(
-        web_app.Handler, "handle_translate", side_effect=AssertionError("UI_TEST gate must run before Translate body parsing")
+        web_app, "WEB_ROUTER", blocked_router
     ):
         status, _headers, blocked = json_request(
             port, "POST", "/api/translate", body=b"{", content_type="application/json"
@@ -1674,7 +1692,6 @@ def run_lifecycle() -> None:
             patches.enter_context(patch.object(web_app.metrics_service, "run_job", side_effect=complete_metrics))
             patches.enter_context(patch.object(web_app.amazon_service, "run_job", side_effect=complete_amazon))
             patches.enter_context(patch.object(web_app, "video_queue", fake_queue))
-            patches.enter_context(patch.object(web_app, "subprocess", SimpleNamespace(run=fake_translate)))
             patches.enter_context(patch.object(composed_download_service, "_ensure_analyzer_media_or_delete", side_effect=lambda _path: None))
             patches.enter_context(patch.object(composed_download_service, "_register_video", side_effect=lambda **_kwargs: None))
             patches.enter_context(patch.object(composed_download_service, "_make_web_manual_visible", side_effect=lambda *_args: None))
@@ -2181,9 +2198,22 @@ def run_lifecycle() -> None:
             assert status == 202 and analyzed["queued"] == ["analyze"]
             assert fake_queue.calls[-1] == (filename, "analyze")
 
-            status, _headers, translated = json_request(
-                port, "POST", "/api/translate", {"filename": filename, "tab": "content"}
+            translate_router = Router()
+            register_translate_routes(
+                translate_router,
+                TranslateService(
+                    root=web_app.ROOT,
+                    scripts_dir=web_app.SCRIPTS_DIR,
+                    output_dir_for_filename=lambda requested: web_app.OUTPUT_DIR / requested,
+                    safe_filename=web_app.safe_filename,
+                    run_factory=fake_translate,
+                    environ=os.environ,
+                ),
             )
+            with patch.object(web_app, "WEB_ROUTER", translate_router):
+                status, _headers, translated = json_request(
+                    port, "POST", "/api/translate", {"filename": filename, "tab": "content"}
+                )
             assert status == 200 and translated == {"status": "translated", "filename": filename, "tab": "content"}
 
             status, _headers, postprocessed = json_request(

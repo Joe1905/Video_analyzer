@@ -41,6 +41,7 @@ from jobs.registry import JobRegistry
 from routes.amazon import register_amazon_routes
 from routes.analyze import register_analyze_routes
 from routes.downloads import register_download_routes
+from routes.translate import register_translate_routes
 from routes.upload import register_upload_routes
 from routes.health import register_health_route
 from routes.extract import register_extract_page
@@ -59,6 +60,7 @@ from services.analyze import AnalyzeService
 from services.downloads import DownloadService, validate_short_video_url
 from services.metrics import MetricsService
 from services.shop import ShopService
+from services.translate import TranslateService
 from services.upload import UploadService
 
 APP_CONFIG = AppConfig.from_env(os.environ, root=_BOOTSTRAP_ROOT)
@@ -771,7 +773,6 @@ def is_registered_post_route(path: str) -> bool:
         "/api/report/translate",
         "/api/report/backfill-covers",
         "/api/postprocess",
-        "/api/translate",
         "/api/feedback",
         "/api/social-context/refresh",
         "/api/social-insights",
@@ -10773,8 +10774,6 @@ class Handler(BaseHTTPRequestHandler):
             return json_response(self, HTTPStatus.OK, result)
         if parsed.path == "/api/postprocess":
             return self.handle_postprocess()
-        if parsed.path == "/api/translate":
-            return self.handle_translate()
         if parsed.path == "/api/feedback":
             return self.handle_feedback()
         if parsed.path == "/api/social-context/refresh":
@@ -11204,60 +11203,6 @@ class Handler(BaseHTTPRequestHandler):
 
         video_queue.enqueue(filename, "report")
         return json_response(self, HTTPStatus.ACCEPTED, {"status": "queued", "filename": filename})
-
-    def handle_translate(self) -> None:
-        content_length = int(self.headers.get("Content-Length", "0"))
-        body = self.rfile.read(content_length)
-        try:
-            payload = json.loads(body.decode("utf-8") or "{}")
-            filename = safe_filename(str(payload.get("filename", "")))
-            tab = str(payload.get("tab") or "").strip()
-            source_mode = str(payload.get("analysis_source") or payload.get("source") or "standard").strip()
-            if source_mode not in {"standard", "direct"}:
-                raise ValueError("analysis_source must be standard or direct")
-            if tab not in {"content", "direct", "audit", "feedback"}:
-                raise ValueError("tab must be content, direct, audit, or feedback")
-        except (json.JSONDecodeError, ValueError) as exc:
-            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
-
-        output_dir = output_dir_for_filename(filename)
-        files = {
-            "content": ("analysis.json", "analysis_zh.json"),
-            "direct": ("direct_analysis.json", "direct_analysis_zh.json"),
-            "audit": ("audit_result.json", "audit_result_zh.json"),
-            "feedback": ("feedback_result.json", "feedback_result_zh.json"),
-        }
-        if source_mode == "direct":
-            if tab == "audit":
-                files["audit"] = ("direct_audit_result.json", "direct_audit_result_zh.json")
-            elif tab == "feedback":
-                files["feedback"] = ("direct_feedback_result.json", "direct_feedback_result_zh.json")
-        source_name, output_name = files[tab]
-        source_path = output_dir / source_name
-        output_path = output_dir / output_name
-        if not source_path.is_file():
-            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": f"{source_name} not found for {filename}"})
-
-        try:
-            subprocess.run(
-                [
-                    "python",
-                    str(SCRIPTS_DIR / "translate_analysis.py"),
-                    str(source_path),
-                    "--output",
-                    str(output_path),
-                ],
-                cwd=ROOT,
-                check=True,
-                env=os.environ.copy(),
-                capture_output=True,
-                text=True,
-            )
-        except subprocess.CalledProcessError as exc:
-            message = (exc.stderr or exc.stdout or str(exc)).strip()
-            return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": message or "Translation failed"})
-
-        return json_response(self, HTTPStatus.OK, {"status": "translated", "filename": filename, "tab": tab})
 
     def handle_feedback(self) -> None:
         content_length = int(self.headers.get("Content-Length", "0"))
@@ -11886,6 +11831,14 @@ analyze_service = AnalyzeService(
     safe_filename=safe_filename,
     queue_enqueue=video_queue.enqueue,
 )
+translate_service = TranslateService(
+    root=ROOT,
+    scripts_dir=SCRIPTS_DIR,
+    output_dir_for_filename=output_dir_for_filename,
+    safe_filename=safe_filename,
+    run_factory=subprocess.run,
+    environ=os.environ,
+)
 
 register_shop_page(WEB_ROUTER, html_snapshot=SHOP_HTML, inject_nav=inject_unified_nav)
 register_shop_api_routes(WEB_ROUTER, shop_service)
@@ -11900,6 +11853,7 @@ register_upload_routes(
     default_source=SOURCE_API_UPLOAD,
 )
 register_analyze_routes(WEB_ROUTER, analyze_service)
+register_translate_routes(WEB_ROUTER, translate_service)
 register_taobao_page(WEB_ROUTER, html_snapshot=TAOBAO_HTML, inject_nav=inject_unified_nav)
 
 
