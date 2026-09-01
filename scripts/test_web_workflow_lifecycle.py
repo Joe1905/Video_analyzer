@@ -46,6 +46,7 @@ import routes.report as report_routes
 from routes.report import register_report_routes
 from routes.report_cover import register_report_cover_routes
 from routes.router import Router
+from routes.taobao import register_taobao_api_routes
 from routes.translate import register_translate_routes
 from routes.upload import MAX_UPLOAD_BYTES as UPLOAD_MAX_UPLOAD_BYTES, register_upload_routes
 from routes.video_files import register_video_files_routes
@@ -1067,8 +1068,16 @@ def assert_taobao_http_contract(web_app: Any, port: int) -> None:
     collector = RecordingCollector()
     owner_cookie = {"Cookie": f"{web_app.GLOBAL_USER_COOKIE}=owner-fixture"}
     try:
+        router = Router()
+        unknown_post = register_taobao_api_routes(
+            router,
+            collector=collector,
+            current_global_user=web_app.current_global_user,
+            guess_type=web_app.mimetypes.guess_type,
+        )
         with (
-            patch.object(web_app, "taobao_collector", collector),
+            patch.object(web_app, "WEB_ROUTER", router),
+            patch.object(web_app, "taobao_unknown_post", unknown_post),
             patch.object(web_app, "_global_users", return_value=([public_user, owner_user], {})),
         ):
             status, _headers, state = json_request(
@@ -1178,6 +1187,14 @@ def assert_taobao_http_contract(web_app: Any, port: int) -> None:
                 assert status == 404 and payload == {"error": "Not found"}
                 status, _headers, payload = json_request(
                     port, "POST", "/api/taobao/unknown", body=b"{", content_type="application/json"
+                )
+                assert status == 400 and payload["error"]
+                status, _headers, payload = json_request(
+                    port,
+                    "POST",
+                    "/api/taobao/unknown/third/deep",
+                    body=b"{",
+                    content_type="application/json",
                 )
                 assert status == 400 and payload["error"]
                 status, _headers, payload = json_request(

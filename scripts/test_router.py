@@ -358,7 +358,6 @@ class RouterTests(unittest.TestCase):
         source = (root / "web_app.py").read_text(encoding="utf-8")
         self.assertIn('parsed.path.startswith("/api/lan-chat/") and handle_lan_chat_get', source)
         self.assertIn('if parsed.path == "/api/tool/convert":', source)
-        self.assertIn('if parsed.path.startswith("/api/taobao/"):', source)
         self.assertIn("register_shop_api_routes(WEB_ROUTER, shop_service)", source)
         self.assertIn("register_metrics_api_routes(WEB_ROUTER, metrics_service)", source)
         self.assertIn("register_amazon_routes(WEB_ROUTER, amazon_service)", source)
@@ -398,6 +397,110 @@ class RouterTests(unittest.TestCase):
             self.assertNotIn(f'if parsed.path == "{path}"', source)
         for name in ("stream_report_events", "handle_report_run", "handle_report_delete", "handle_report_settings", "handle_report_translate", "_report_bot_authorized", "_report_detail_url", "_build_feishu_report_payload", "_coerce_int", "_compact_report_text", "_metric_from_video", "_format_report_count"):
             self.assertNotIn(f"def {name}(", source)
+
+    def test_taobao_api_route_and_composition_are_explicit(self) -> None:
+        root = Path(__file__).resolve().parent
+        route_path = root / "routes" / "taobao.py"
+        route_tree = ast.parse(route_path.read_text(encoding="utf-8"))
+        route_function = next(
+            node for node in route_tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "register_taobao_api_routes"
+        )
+        registrations = [
+            (node.func.attr, node.args[0].value)
+            for node in ast.walk(route_function)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "router"
+            and node.func.attr in {"get", "post"}
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+        ]
+        self.assertEqual(registrations, [
+            ("get", "/api/taobao/state"),
+            ("get", "/api/taobao/archives"),
+            ("get", "/api/taobao/archives/{archive_id}/export"),
+            ("get", "/api/taobao/archives/{archive_id}/{filename}"),
+            ("post", "/api/taobao/session/start"),
+            ("post", "/api/taobao/session/stop"),
+            ("post", "/api/taobao/session/open-login"),
+            ("post", "/api/taobao/collect"),
+        ])
+        prefix_registrations = [
+            node.args[0].value
+            for node in ast.walk(route_function)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "router"
+            and node.func.attr == "get_prefix"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+        ]
+        self.assertEqual(prefix_registrations, ["/api/taobao/"])
+        route_imports = {
+            node.module
+            for node in ast.walk(route_tree)
+            if isinstance(node, ast.ImportFrom) and node.module
+        }
+        self.assertNotIn("web_app", route_imports)
+        self.assertFalse(any(module.startswith("services") for module in route_imports))
+
+        web_app = ast.parse((root / "web_app.py").read_text(encoding="utf-8"))
+        imports = {
+            (node.module, alias.name)
+            for node in ast.walk(web_app)
+            if isinstance(node, ast.ImportFrom) and node.module
+            for alias in node.names
+        }
+        self.assertIn(("routes.taobao", "register_taobao_api_routes"), imports)
+        register_calls = [
+            node for node in ast.walk(web_app)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "register_taobao_api_routes"
+        ]
+        self.assertEqual(len(register_calls), 1)
+        self.assertEqual([ast.unparse(arg) for arg in register_calls[0].args], ["WEB_ROUTER"])
+        self.assertEqual(
+            [(keyword.arg, ast.unparse(keyword.value)) for keyword in register_calls[0].keywords],
+            [
+                ("collector", "taobao_collector"),
+                ("current_global_user", "current_global_user"),
+                ("guess_type", "mimetypes.guess_type"),
+            ],
+        )
+        handler = next(
+            node for node in web_app.body
+            if isinstance(node, ast.ClassDef) and node.name == "Handler"
+        )
+        methods = {
+            node.name for node in handler.body
+            if isinstance(node, ast.FunctionDef)
+        }
+        self.assertNotIn("handle_taobao_api_get", methods)
+        self.assertNotIn("handle_taobao_api_post", methods)
+        for method_name in ("do_GET", "do_POST"):
+            method = next(node for node in handler.body if isinstance(node, ast.FunctionDef) and node.name == method_name)
+            if method_name == "do_POST":
+                continue
+            self.assertNotIn(
+                "/api/taobao/",
+                {node.value for node in ast.walk(method) if isinstance(node, ast.Constant) and isinstance(node.value, str)},
+            )
+        post_method = next(
+            node for node in handler.body
+            if isinstance(node, ast.FunctionDef) and node.name == "do_POST"
+        )
+        fallback_calls = [
+            ast.unparse(node)
+            for node in ast.walk(post_method)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "taobao_unknown_post"
+        ]
+        self.assertEqual(fallback_calls, ["taobao_unknown_post(self)"])
 
     def test_report_route_and_composition_are_explicit(self) -> None:
         root = Path(__file__).resolve().parent

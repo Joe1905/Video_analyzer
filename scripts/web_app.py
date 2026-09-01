@@ -60,7 +60,7 @@ from routes.report_pages import register_report_pages
 from routes.router import MethodNotAllowed, RouteNotFound, Router
 from routes.shop import register_shop_api_routes, register_shop_page
 from routes.static_assets import register_static_asset_route
-from routes.taobao import register_taobao_page
+from routes.taobao import register_taobao_api_routes, register_taobao_page
 from routes.tool import register_tool_page
 from services.amazon import AmazonService
 from services.analyze import AnalyzeService
@@ -10058,8 +10058,6 @@ class Handler(BaseHTTPRequestHandler):
             if not PROXY_POOL_ENABLED:
                 return text_response(self, HTTPStatus.NOT_FOUND, "Not found", "text/plain; charset=utf-8")
             return text_response(self, HTTPStatus.OK, inject_proxy_bootstrap(inject_unified_nav(PROXY_HTML, parsed.path)), "text/html; charset=utf-8")
-        if parsed.path.startswith("/api/taobao/"):
-            return self.handle_taobao_api_get(parsed.path, parsed.query)
         if parsed.path.startswith("/api/proxy/"):
             if not PROXY_POOL_ENABLED:
                 return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
@@ -10492,7 +10490,7 @@ class Handler(BaseHTTPRequestHandler):
                 return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
             return self.handle_proxy_api_post(parsed.path)
         if parsed.path.startswith("/api/taobao/"):
-            return self.handle_taobao_api_post(parsed.path)
+            return taobao_unknown_post(self)
         if parsed.path == "/api/tool/convert":
             return self.handle_tool_convert()
         if parsed.path == "/api/chat/ask":
@@ -10560,36 +10558,6 @@ class Handler(BaseHTTPRequestHandler):
                 asset_id = unquote(path.removeprefix("/api/proxy/publish/videos/"))
                 return self.serve_video(tiktok_studio_publish.video_path(asset_id))
             return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
-        except Exception as exc:
-            return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
-
-    def handle_taobao_api_get(self, path: str, query: str = "") -> None:
-        user = current_global_user(self)
-        try:
-            if path == "/api/taobao/state":
-                return json_response(self, HTTPStatus.OK, taobao_collector.state(user))
-            if path == "/api/taobao/archives":
-                return json_response(self, HTTPStatus.OK, {"archives": taobao_collector.list_archives(user)})
-            export_match = re.fullmatch(r"/api/taobao/archives/([0-9]{14}-[a-f0-9]{8})/export", path)
-            if export_match:
-                requested_format = str(parse_qs(query).get("format", ["json"])[0]).lower()
-                archive_id = export_match.group(1)
-                if requested_format == "md":
-                    return binary_response(self, HTTPStatus.OK, taobao_collector.export_markdown(user, archive_id).encode("utf-8"), "text/markdown; charset=utf-8", f"taobao-{archive_id}.md", "no-store")
-                if requested_format == "json":
-                    archive = taobao_collector.archive_path(user, archive_id, "metadata.json")
-                    return file_response(self, archive, "application/json; charset=utf-8", f"taobao-{archive_id}.json", archive.stat().st_size)
-                raise ValueError("导出格式仅支持 json 或 md")
-            file_match = re.fullmatch(r"/api/taobao/archives/([0-9]{14}-[a-f0-9]{8})/([A-Za-z0-9._-]+)", path)
-            if file_match:
-                archive = taobao_collector.archive_path(user, file_match.group(1), file_match.group(2))
-                content_type = mimetypes.guess_type(archive.name)[0] or "application/octet-stream"
-                return file_response(self, archive, content_type, archive.name, archive.stat().st_size, download=archive.suffix.lower() in {".html", ".json"})
-            return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
-        except FileNotFoundError:
-            return json_response(self, HTTPStatus.NOT_FOUND, {"error": "归档文件不存在"})
-        except ValueError as exc:
-            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
         except Exception as exc:
             return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
 
@@ -10705,24 +10673,6 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as exc:
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
         except sqlite3.IntegrityError as exc:
-            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
-        except Exception as exc:
-            return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
-
-    def handle_taobao_api_post(self, path: str) -> None:
-        user = current_global_user(self)
-        try:
-            payload = self.read_json_body()
-            if path == "/api/taobao/session/start":
-                return json_response(self, HTTPStatus.OK, taobao_collector.start_session(user))
-            if path == "/api/taobao/session/stop":
-                return json_response(self, HTTPStatus.OK, taobao_collector.stop_session(user))
-            if path == "/api/taobao/session/open-login":
-                return json_response(self, HTTPStatus.OK, taobao_collector.open_login(user))
-            if path == "/api/taobao/collect":
-                return json_response(self, HTTPStatus.OK, taobao_collector.collect(user, payload.get("keyword"), payload.get("url")))
-            return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
-        except ValueError as exc:
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
         except Exception as exc:
             return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
@@ -11512,6 +11462,12 @@ register_video_stream_routes(
     videos_dir=VIDEOS_DIR,
     safe_filename=safe_filename,
     serve_video=Handler.serve_video,
+)
+taobao_unknown_post = register_taobao_api_routes(
+    WEB_ROUTER,
+    collector=taobao_collector,
+    current_global_user=current_global_user,
+    guess_type=mimetypes.guess_type,
 )
 register_taobao_page(WEB_ROUTER, html_snapshot=TAOBAO_HTML, inject_nav=inject_unified_nav)
 
