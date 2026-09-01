@@ -40,6 +40,7 @@ from core.json_store import atomic_write_json, read_json
 from jobs.registry import JobRegistry
 from routes.amazon import register_amazon_routes
 from routes.downloads import register_download_routes
+from routes.upload import register_upload_routes
 from routes.health import register_health_route
 from routes.extract import register_extract_page
 from routes.harness_certificate import register_harness_certificate_route
@@ -56,6 +57,7 @@ from services.amazon import AmazonService
 from services.downloads import DownloadService, validate_short_video_url
 from services.metrics import MetricsService
 from services.shop import ShopService
+from services.upload import UploadService
 
 APP_CONFIG = AppConfig.from_env(os.environ, root=_BOOTSTRAP_ROOT)
 ROOT = APP_CONFIG.root
@@ -220,7 +222,6 @@ import proxy_pool
 import taobao_collector
 import tiktok_studio_publish
 import tiktok_studio_collect
-MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 TOOL_MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 TOOL_MAX_FILES = 100
 SAFE_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
@@ -760,7 +761,6 @@ def is_registered_post_route(path: str) -> bool:
         "/api/feishu/bitable/records/update",
         "/api/feishu/bitable/write-allowlist",
         "/api/tool/convert",
-        "/api/upload",
         "/api/chat/ask",
         "/api/chat/export-pdf",
         "/api/report/run",
@@ -10753,8 +10753,6 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_taobao_api_post(parsed.path)
         if parsed.path == "/api/tool/convert":
             return self.handle_tool_convert()
-        if parsed.path == "/api/upload":
-            return self.handle_upload()
         if parsed.path == "/api/chat/ask":
             return self.handle_chat_ask()
         if parsed.path == "/api/chat/export-pdf":
@@ -11167,59 +11165,6 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             with zip_path.open("rb") as archive_file:
                 shutil.copyfileobj(archive_file, self.wfile, length=64 * 1024)
-
-    def handle_upload(self) -> None:
-        content_length = int(self.headers.get("Content-Length", "0"))
-        if content_length <= 0 or content_length > MAX_UPLOAD_BYTES:
-            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Invalid upload size"})
-
-        form = cgi.FieldStorage(
-            fp=self.rfile,
-            headers=self.headers,
-            environ={
-                "REQUEST_METHOD": "POST",
-                "CONTENT_TYPE": self.headers.get("Content-Type", ""),
-                "CONTENT_LENGTH": str(content_length),
-            },
-        )
-        try:
-            raw_file_items = form["video"]
-        except KeyError:
-            raw_file_items = []
-        if not isinstance(raw_file_items, list):
-            raw_file_items = [raw_file_items]
-        file_items = [item for item in raw_file_items if getattr(item, "filename", None)]
-        if not file_items:
-            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Missing video file"})
-        source = normalize_video_source(form.getfirst("source_tag") or form.getfirst("source"), SOURCE_API_UPLOAD)
-
-        VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
-        files = []
-        errors = []
-        for file_item in file_items:
-            original_name = str(getattr(file_item, "filename", ""))
-            try:
-                filename = safe_filename(original_name)
-                target = VIDEOS_DIR / filename
-                with target.open("wb") as file:
-                    shutil.copyfileobj(file_item.file, file)
-                ensure_analyzer_media_or_delete(target)
-                register_video(
-                    video_id=filename,
-                    platform="local",
-                    filename=filename,
-                    title=filename,
-                    source=source,
-                    hidden_from_analyzer=video_source_hidden(source),
-                )
-                make_web_manual_visible(source, "local", filename)
-                files.append({"filename": filename, "size": target.stat().st_size})
-                start_social_context_job(filename, generate_insights=False)
-            except Exception as exc:
-                errors.append({"filename": original_name, "error": str(exc)})
-
-        status = HTTPStatus.OK if files else HTTPStatus.BAD_REQUEST
-        return json_response(self, status, {"files": files, "errors": errors})
 
     def handle_analyze(self) -> None:
         content_length = int(self.headers.get("Content-Length", "0"))
@@ -11975,6 +11920,15 @@ download_service = DownloadService(
     video_media_ttl_seconds=APP_CONFIG.video_media_ttl_seconds,
     default_sociavault_api_base=DEFAULT_SOCIA_VAULT_API_BASE,
 )
+upload_service = UploadService(
+    videos_dir=VIDEOS_DIR,
+    safe_filename=safe_filename,
+    ensure_analyzer_media_or_delete=ensure_analyzer_media_or_delete,
+    register_video=register_video,
+    video_source_hidden=video_source_hidden,
+    make_web_manual_visible=make_web_manual_visible,
+    start_social_context_job=start_social_context_job,
+)
 
 register_shop_page(WEB_ROUTER, html_snapshot=SHOP_HTML, inject_nav=inject_unified_nav)
 register_shop_api_routes(WEB_ROUTER, shop_service)
@@ -11982,6 +11936,12 @@ register_metrics_page(WEB_ROUTER, html_snapshot=METRICS_HTML, inject_nav=inject_
 register_metrics_api_routes(WEB_ROUTER, metrics_service)
 register_amazon_routes(WEB_ROUTER, amazon_service)
 register_download_routes(WEB_ROUTER, download_service)
+register_upload_routes(
+    WEB_ROUTER,
+    upload_service,
+    normalize_video_source=normalize_video_source,
+    default_source=SOURCE_API_UPLOAD,
+)
 register_taobao_page(WEB_ROUTER, html_snapshot=TAOBAO_HTML, inject_nav=inject_unified_nav)
 
 
