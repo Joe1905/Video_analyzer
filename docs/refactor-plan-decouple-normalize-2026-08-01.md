@@ -44,11 +44,11 @@ git merge-base --is-ancestor b364276 v2
 
 ## 二、当前代码总览
 
-CodeGraph 已在当前运行时代码 `8a63493` 上重新同步。主要热点如下：
+CodeGraph 已在当前运行时代码 `a03b3b4` 上重新同步。主要热点如下：
 
 | 文件 | 规模 | 当前职责 | 判断 |
 | --- | ---: | --- | --- |
-| `scripts/web_app.py` | 13,059 行 / 603,062 字节（`8a63493`） | composition root、页面装配、聊天 provider、三类仍内联的临时任务、下载/指标/Amazon、遗留 GET/POST 路由、后台线程启动 | 第一重构对象，但必须分批拆；Shop service/API route、HTTP response/SSE helper、导入期配置、JSON 文件原语、health 与八个纯页面路由已完成抽取 |
+| `scripts/web_app.py` | 12,883 行 / 595,695 字节（`a03b3b4`） | composition root、页面装配、聊天 provider、Download/Amazon 等仍内联业务、遗留 GET/POST 路由、后台线程启动 | 第一重构对象，但必须分批拆；Shop 与 Metrics 垂直切片、HTTP response/SSE helper、导入期配置、JSON 文件原语、health 与八个纯页面路由已完成抽取 |
 | `scripts/proxy_pool.py` | 5,319 行 / 238 KB | SQLite schema、代理解析、端口分配、mihomo/sing-box、账号会话、发布、采集、运行时状态 | 独立子系统，应在自己的包内拆分 |
 | `scripts/hot_video_report.py` | 4,032 行 / 178 KB | 日报采集、下载、单视频分析、LLM 摘要、恢复与持久化 | 已有清晰文件边界，先稳定接口，不优先内部大拆 |
 | `scripts/tools.py` | 1,470 行 / 72 KB | 聊天工具归一与执行、视频分析子进程 | 需要把“聊天工具”和“视频执行器”分开 |
@@ -527,6 +527,14 @@ class JobSnapshot(TypedDict):
 4. **最终验证：** Windows 工作树经 7892 推送 GitHub，服务器经 7890 执行 `pull --ff-only` 后，仅以 `bash scripts/deploy_ui_4004.sh` 部署；服务器提交 `8a634935`，4004 专属镜像 `sha256:55f905ee84cb690fdc3738629c5fe676b8cb36db33b4c12dc677cba30d38dbfa`，启动时间 `2026-08-31T09:06:45.425143654Z`。49 个普通确定性脚本、5 个特殊确定性门禁和 2 个 Playwright 共 56/56 通过；13 个页面、Shop missing/invalid/错误方法、4 个通用未知 provider、三端口健康、严格日志和 checkout/镜像/运行容器/持久化数据/Compose 环境五层零残留均通过。4002、4003 镜像与启动时间未变化，服务器 checkout clean。
 5. **阶段后审计：** 需求漂移、模块解耦、复用合理性、安全边界和测试有效性均无代码问题或假绿；`JobRegistry`、领域 snapshot adapter、Router/core HTTP 是唯一复用边界。流程上记录一次提交纯度偏差：`c8b433b` 除结构迁移所需的测试接线外，还补入了正常 payload SSE 断连覆盖。行为基线已在前置测试提交冻结，且该偏差未改变生产语义；不重写已部署历史。Phase 4.2 起必须先以独立测试提交冻结所有新增行为契约，再以结构提交只做迁移和必要的调用方接线，归属计数修正继续单独提交。
 
+### 8.2 Phase 4.2 Metrics 垂直切片（已完成）
+
+1. **行为冻结（`93653e1`）：** 只修改既有 `test_job_snapshot_contract.py` 与 `test_web_workflow_lifecycle.py`，冻结 endpoint/target 校验、`trending`/`music-popular` 空 target、完整 argv、worker 成败、`result.json` 缺失/无效 JSON、120 条日志、result 深复制、四元 SSE marker、missing/普通断连、POST 精确时序、领域动态环境读取为 0、UI_TEST 已注册路由拦截顺序和旧实现 AST；未新增 `test_*.py`。
+2. **结构迁移（`a03b3b4`）：** 新增 164 行的 `services/metrics.py`，接管 Metrics 任务模型、创建、线程、命令、artifact 读取与 `video-info` 注册；`routes/metrics.py` 接管 GET/POST/SSE。`web_app.py` 删除 191 行旧定义/Handler 分支，只保留 Registry、显式依赖注入和 Router 装配；旧 Metrics dataclass、worker、adapter、Handler 方法和内联 API 分支均为 0。CodeGraph 为 `web_app → routes.metrics → services.metrics → jobs/core`，无 `routes/services → web_app`、`services → routes`、兼容导出、通用 JobService/SSE、继承基类或跨域抽象。
+3. **影响清单与专项门禁：** 运行 `test_job_snapshot_contract.py`、`test_web_workflow_lifecycle.py`、`test_job_snapshot_adapters.py`、`test_core_config.py`、`test_core_json_store.py`、`test_router.py`、`test_cached_page_routes_contract.py` 共 7 个既有脚本，外加 `py_compile`、`git diff --check`、CodeGraph/import 方向和旧符号扫描。前两项是四类任务共享的聚合边界，会顺带执行相邻域快照断言，记录为直接共享边界，不等同于全量回归。首次服务器专项在第 1 项发现顺序夹具把深复制测试已修改的原始 Metrics 对象登记为第二真源；`522faf0` 仅复用既有 Registry 真源（1 增 2 删），不放宽 Content-Length，随后从第 1 项重跑 7/7 全绿。
+4. **部署与黑盒：** Windows 经 7892 推送，服务器经 7890 `pull --ff-only`，仅以 `bash scripts/deploy_ui_4004.sh` 部署运行时提交 `a03b3b4`；4004 专属镜像为 `sha256:1f0352d5f72bd6792f9492c464e96f05edae50a10b72debdf3f88118dea8dee4`，服务器最终 checkout 为测试收口提交 `522faf0` 且 clean。`/healthz`、`/metrics` 为 200，缺失 Metrics GET 为 404，缺失 SSE 为 200 且返回精确 missing 帧，无效 POST 为 400；近期日志无 traceback。4002/4003 镜像和启动时间未变化，三端健康均为 200。
+5. **阶段后审计与测试策略：** 三路 Terra 与主审最终为 P0/P1/P2 全 0；URL、状态码、JSON/SSE、数据目录、任务状态、result 注册及 UI 行为无需求漂移。新增、转正、删除临时/测试脚本均为 0，`script_lifecycle` 继续无活动条目。按 2026-09-01 增量门禁规则，本阶段未运行无关的代理、聊天、日报、Node、Playwright 或 56 项全量；完整基线保留到 Phase 4～7 全部完成后一次执行。
+
 ## 九、Phase 5：拆分代理子系统
 
 `proxy_pool.py` 不应与普通 web service 一起大搬。按事务边界拆；每个子阶段只执行代理模块、直接依赖边界和对应故障注入，不运行无关业务套件：
@@ -651,7 +659,7 @@ Phase 0 测试基线
 
 ## 十四、下一批实施任务
 
-Phase 0、0.5、1.1、2026-08-29 两个补漏阶段、Phase 1.2、Phase 1.3、**Phase 2.1～2.3D**、**Phase 3.0～3.4**、**Phase 4.1** 与脚本资产 TTL 治理已完成。Shop 已形成首个完整的 `web_app → routes → services → jobs/core` 垂直切片，TTL 治理删除过期脚本并建立最长 14 天的 fail-closed 门禁，两阶段均通过服务器 56/56 和阶段后审计。下一步实施 **Phase 4.2 Metrics**；第一批只能复用现有测试文件做只读盘点和独立行为冻结，不新建 `test_*.py`：锁定 endpoint/target 校验、`music-popular` 空 target、真实命令映射、worker 成败、`result.json` 缺失/无效 JSON、120 条日志、深复制、SSE marker/BrokenPipe、POST 精确时序、领域动态环境读取当前为 0，以及现有 UI_TEST 拦截顺序。冻结提交只运行 Metrics 影响清单并通过后，下一独立结构提交再交付 `services/metrics.py` 与 `routes/metrics.py`；该阶段不运行 Amazon、Download、代理、聊天、日报或全站 Playwright。Amazon、Download、代理、聊天和日报不得在 4.2 顺手迁移。
+Phase 0、0.5、1.1、2026-08-29 两个补漏阶段、Phase 1.2、Phase 1.3、**Phase 2.1～2.3D**、**Phase 3.0～3.4**、**Phase 4.1～4.2** 与脚本资产 TTL 治理已完成。Shop、Metrics 已形成独立的 `web_app → routes → services → jobs/core` 垂直切片。下一步实施 **Phase 4.3 Amazon**：先复用既有测试建立影响清单并冻结 scraper argv/容器生命周期、`AMAZON_MAX_PAGES` 动态读取、target/target_type/pages 校验、结果 JSON 缺失/无效、120 条日志、深复制、SSE marker/断连、POST 时序、UI_TEST 拦截和旧实现 AST；行为基线与结构迁移继续分开提交。只允许新增 `services/amazon.py` 与 `routes/amazon.py`，并做必要调用方/既有测试接线；不迁移 Download、代理、聊天、日报或前端，不建立跨域 JobService、通用命令 runner 或通用 SSE。
 
 Phase 2.3 继续复用现有 Terra 子智能体，避免为同一长期任务无限新增执行记录，并按以下门槛推进：
 
@@ -680,4 +688,5 @@ Phase 3 下一批按以下门槛推进：
 13. **3.3.D4 Amazon 单域切换（已完成，`53eb409`、`95c2e1d`、`b1e405c`、`da88ede`）：** Amazon 创建、日志、真实命令/worker、GET、POST 与专用 SSE 已切换到单 Registry；旧 store/lock、通用 SSE、私有访问和双写为 0，服务器 56 项完整门禁通过。
 14. **3.4 基类复核与 Phase 3 关闭（已完成，`d09add4`）：** 四域共同机制止于现有 Registry，模型、结果载体、日志窗口、失败语义与 SSE payload 均存在稳定领域差异，因此明确不引入继承、共享业务基类、通用 SSE 或万能 service；四域 POST 精确时序和仅四个 Registry 真源已自动化，Phase 3 验收通过。
 15. **Phase 4.1 Shop 垂直切片（已完成，`f700266`、`c424a0a`、`c8b433b`、`8a63493`）：** 行为冻结、service/route 迁移、动态配置归属修正、服务器 56/56、部署黑盒和阶段后审计均已通过；流程偏差及后续提交纯度规则已记录在 8.1。
-16. **Phase 4.2 Metrics（下一步）：** 先以独立测试提交冻结 `result.json` 缺失/无效 JSON 的 GET/SSE、public result 深复制、120 条日志、四元 marker、missing/normal BrokenPipe、endpoint/target 与 `music-popular` 空 target、完整命令、worker 成败、POST 时序、领域动态环境读取为 0、现有 UI_TEST 拦截顺序和旧实现 AST；再以独立结构提交迁移 `services/metrics.py` 与 `routes/metrics.py`。仅复用 Registry、Metrics snapshot adapter、Router/core HTTP，禁止 JobService、通用 SSE、继承基类、Shop facade 或跨域改动。
+16. **Phase 4.2 Metrics（已完成，`93653e1`、`a03b3b4`、`522faf0`）：** 行为冻结、service/route 迁移、专项 7/7、部署黑盒与阶段后审计均已通过；没有新增测试/临时脚本，没有执行中间全量回归。
+17. **Phase 4.3 Amazon（下一步）：** 先做影响清单与独立行为冻结，再迁移 Amazon service/API route；保持 scraper 容器生命周期、动态环境读取、结果目录和错误映射，不建立跨域抽象，不顺手迁移其他业务域。
