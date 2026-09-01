@@ -256,6 +256,9 @@ class RouterTests(unittest.TestCase):
             elif route_file.name == "postprocess.py":
                 allowed_imports.add("json")
                 allowed_from_modules.add("services.postprocess")
+            elif route_file.name == "report.py":
+                allowed_imports.update({"json", "time"})
+                allowed_from_modules.add("services.report")
             elif route_file.name == "video_files.py":
                 allowed_from_modules.add("services.video_files")
             elif route_file.name == "video_result.py":
@@ -270,7 +273,7 @@ class RouterTests(unittest.TestCase):
                 elif isinstance(node, ast.ImportFrom) and node.module:
                     self.assertIn(node.module, allowed_from_modules)
                     self.assertNotIn("web_app", node.module)
-                    if route_file.name not in {"shop.py", "metrics.py", "amazon.py", "downloads.py", "upload.py", "analyze.py", "translate.py", "postprocess.py", "video_files.py", "video_result.py", "video_delete.py"}:
+                    if route_file.name not in {"shop.py", "metrics.py", "amazon.py", "downloads.py", "upload.py", "analyze.py", "translate.py", "postprocess.py", "report.py", "video_files.py", "video_result.py", "video_delete.py"}:
                         self.assertFalse(node.module.startswith("services."))
             if route_file.name == "router.py":
                 imports = {
@@ -315,6 +318,7 @@ class RouterTests(unittest.TestCase):
                 "routes.harness_certificate",
                 "routes.lan_chat",
                 "routes.metrics",
+                "routes.report",
                 "routes.report_pages",
                 "routes.router",
                 "routes.static_assets",
@@ -362,6 +366,7 @@ class RouterTests(unittest.TestCase):
         self.assertIn("register_video_files_routes(WEB_ROUTER, video_files_service)", source)
         self.assertIn("register_video_result_routes(WEB_ROUTER, video_result_service, safe_filename=safe_filename)", source)
         self.assertIn("register_video_delete_routes(WEB_ROUTER, video_delete_service, safe_filename=safe_filename)", source)
+        self.assertIn("register_report_routes(WEB_ROUTER, report_service)", source)
         self.assertNotIn('if parsed.path == "/api/shop-job":', source)
         self.assertNotIn('if parsed.path == "/api/video-metrics-job":', source)
         self.assertNotIn('if parsed.path == "/api/video-metrics-events":', source)
@@ -385,6 +390,104 @@ class RouterTests(unittest.TestCase):
         self.assertNotIn('if parsed.path == "/api/files":', source)
         self.assertNotIn('if parsed.path == "/api/delete":', source)
         self.assertNotIn("def handle_delete(", source)
+        for path in ("/api/report/today", "/api/report", "/api/report/history", "/api/report/settings", "/api/report/events", "/api/report/run", "/api/report/delete", "/api/report/translate", "/api/report/backfill-covers"):
+            self.assertNotIn(f'if parsed.path == "{path}"', source)
+        for name in ("stream_report_events", "handle_report_run", "handle_report_delete", "handle_report_settings", "handle_report_translate"):
+            self.assertNotIn(f"def {name}(", source)
+
+    def test_report_route_and_composition_are_explicit(self) -> None:
+        root = Path(__file__).resolve().parent
+        route_path = root / "routes" / "report.py"
+        service_path = root / "services" / "report.py"
+        route_tree = ast.parse(route_path.read_text(encoding="utf-8"))
+        registrations = [
+            (node.func.attr, node.args[0].value)
+            for node in ast.walk(route_tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "router"
+            and node.func.attr in {"get", "post"}
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+        ]
+        self.assertEqual(registrations, [
+            ("get", "/api/report/today"), ("get", "/api/report"), ("get", "/api/report/history"),
+            ("get", "/api/report/settings"), ("get", "/api/report/events"), ("post", "/api/report/run"),
+            ("post", "/api/report/delete"), ("post", "/api/report/settings"),
+            ("post", "/api/report/translate"), ("post", "/api/report/backfill-covers"),
+        ])
+        route_source = route_path.read_text(encoding="utf-8")
+        self.assertNotIn("web_app", route_source)
+        service_tree = ast.parse(service_path.read_text(encoding="utf-8"))
+        imports = {
+            node.module
+            for node in ast.walk(service_tree)
+            if isinstance(node, ast.ImportFrom) and node.module
+        }
+        self.assertNotIn("hot_video_report", imports)
+        self.assertNotIn("web_app", imports)
+        self.assertFalse(any(module.startswith("routes") for module in imports))
+
+        web_app = ast.parse((root / "web_app.py").read_text(encoding="utf-8"))
+        imported = {
+            (node.module, alias.name)
+            for node in ast.walk(web_app)
+            if isinstance(node, ast.ImportFrom) and node.module
+            for alias in node.names
+        }
+        self.assertIn(("routes.report", "register_report_routes"), imported)
+        self.assertIn(("services.report", "ReportService"), imported)
+        service_calls = [
+            node for node in ast.walk(web_app)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "ReportService"
+        ]
+        self.assertEqual(len(service_calls), 1)
+        self.assertEqual(
+            [(keyword.arg, ast.unparse(keyword.value)) for keyword in service_calls[0].keywords],
+            [
+                ("is_enabled", "hot_report_enabled"), ("get_report", "get_report"), ("list_reports", "list_reports"),
+                ("get_settings", "get_report_settings"), ("get_runtime_status", "get_report_runtime_status"),
+                ("get_progress", "get_report_progress"), ("recover", "recover_interrupted_reports"),
+                ("enqueue", "enqueue_report"), ("delete", "delete_report"), ("save", "save_report_settings"),
+                ("translate", "translate_report_video_analysis"), ("backfill", "backfill_cover_urls"),
+            ],
+        )
+        registrations = [
+            node for node in ast.walk(web_app)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "register_report_routes"
+        ]
+        self.assertEqual(len(registrations), 1)
+        self.assertEqual([ast.unparse(arg) for arg in registrations[0].args], ["WEB_ROUTER", "report_service"])
+        self.assertEqual(registrations[0].keywords, [])
+        service_class = next(
+            node for node in service_tree.body
+            if isinstance(node, ast.ClassDef) and node.name == "ReportService"
+        )
+        methods = {
+            node.name for node in service_class.body
+            if isinstance(node, ast.FunctionDef)
+        }
+        self.assertTrue({"today", "dated_report", "run"}.issubset(methods))
+        today_method = next(node for node in service_class.body if isinstance(node, ast.FunctionDef) and node.name == "today")
+        self.assertFalse(any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "_get_report"
+            and bool(node.args)
+            for node in ast.walk(today_method)
+        ))
+        route_run = next(node for node in route_tree.body if isinstance(node, ast.FunctionDef) and node.name == "register_report_routes")
+        self.assertIn("ReportDisabledError", ast.unparse(route_run))
+        handler = next(node for node in web_app.body if isinstance(node, ast.ClassDef) and node.name == "Handler")
+        post_method = next(node for node in handler.body if isinstance(node, ast.FunctionDef) and node.name == "do_POST")
+        self.assertNotIn(
+            "/api/report/run",
+            {node.value for node in ast.walk(post_method) if isinstance(node, ast.Constant) and isinstance(node.value, str)},
+        )
+        registered_post = next(node for node in web_app.body if isinstance(node, ast.FunctionDef) and node.name == "is_registered_post_route")
+        for path in ("/api/report/run", "/api/report/delete", "/api/report/settings", "/api/report/translate", "/api/report/backfill-covers"):
+            self.assertNotIn(path, {node.value for node in ast.walk(registered_post) if isinstance(node, ast.Constant) and isinstance(node.value, str)})
 
     def test_video_stream_route_and_composition_are_explicit(self) -> None:
         root = Path(__file__).resolve().parent

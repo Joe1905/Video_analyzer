@@ -31,6 +31,7 @@ from services.amazon import AmazonJob, AmazonService, parse_json_from_process_ou
 from services.analyze import AnalyzeService
 from services.downloads import DownloadJob, DownloadService
 from services.postprocess import PostprocessService
+from services.report import ReportService
 from services.translate import TranslateService
 from services.upload import UploadService
 from services.video_files import VideoFilesService
@@ -39,6 +40,7 @@ from services.video_result import VideoResultService
 from jobs.registry import JobRegistry
 from routes.analyze import register_analyze_routes
 from routes.postprocess import register_postprocess_routes
+from routes.report import register_report_routes
 from routes.router import Router
 from routes.translate import register_translate_routes
 from routes.upload import MAX_UPLOAD_BYTES as UPLOAD_MAX_UPLOAD_BYTES, register_upload_routes
@@ -928,222 +930,225 @@ class RecordingPostprocessQueue:
 
 
 def assert_report_http_contract(web_app: Any, port: int) -> None:
-    """Freeze legacy report HTTP/SSE behavior without a report DB or scheduler."""
+    """Exercise the report API through its public Service and Router boundary."""
 
     report_calls: list[tuple[str | None, bool, bool]] = []
+    list_calls: list[int] = []
+    hooks: dict[str, Any] = {}
 
     def fake_report(report_date: str | None = None, *, include_raw: bool = False, detail: bool = False) -> dict[str, Any]:
         report_calls.append((report_date, include_raw, detail))
         return {"date": report_date or "today", "raw": include_raw, "detail": detail}
 
-    with patch.object(web_app, "get_report", side_effect=fake_report), patch.object(
-        web_app, "list_reports", side_effect=lambda limit: [{"limit": limit}]
-    ) as list_reports_mock, patch.object(
-        web_app, "get_report_settings", return_value={"shared": "settings", "setting": True}
-    ), patch.object(
-        web_app, "get_report_runtime_status", return_value={"shared": "runtime", "runtime": True}
-    ):
-        for path in ("/api/report/today?raw=1", "/api/report/today?raw=yes"):
-            status, headers, today = json_request(port, "GET", path)
-            assert status == 200 and headers["content-type"] == "application/json; charset=utf-8"
-            assert today == {"date": "today", "raw": True, "detail": True}
-        for path in ("/api/report/today?raw=false", "/api/report/today?raw=0", "/api/report/today"):
-            status, _headers, today = json_request(port, "GET", path)
-            assert status == 200 and today == {"date": "today", "raw": False, "detail": False}
-        status, _headers, report = json_request(port, "GET", "/api/report?date=2026-08-01&date=ignored&raw=true")
+    hooks.update({
+        "is_enabled": lambda: True,
+        "get_report": fake_report,
+        "list_reports": lambda limit: list_calls.append(limit) or [{"limit": limit}],
+        "get_settings": lambda: {"shared": "settings", "setting": True},
+        "get_runtime_status": lambda: {"shared": "runtime", "runtime": True},
+        "get_progress": lambda _date: {"status": "complete", "stage": "done", "progress": 100, "message": "complete", "updated_at": "fixture", "log": []},
+        "recover": lambda: None,
+        "enqueue": lambda: {"status": "queued", "id": "fixture-report"},
+        "delete": lambda value: {"deleted": value},
+        "save": lambda payload: {"saved": payload},
+        "translate": lambda *_args: {"translated": True},
+        "backfill": lambda: {"updated": 2},
+    })
+    service = ReportService(
+        is_enabled=lambda: hooks["is_enabled"](),
+        get_report=lambda *args, **kwargs: hooks["get_report"](*args, **kwargs),
+        list_reports=lambda limit: hooks["list_reports"](limit),
+        get_settings=lambda: hooks["get_settings"](),
+        get_runtime_status=lambda: hooks["get_runtime_status"](),
+        get_progress=lambda report_date: hooks["get_progress"](report_date),
+        recover=lambda: hooks["recover"](),
+        enqueue=lambda: hooks["enqueue"](),
+        delete=lambda report_date: hooks["delete"](report_date),
+        save=lambda payload: hooks["save"](payload),
+        translate=lambda report_date, platform, video_id, force: hooks["translate"](report_date, platform, video_id, force),
+        backfill=lambda: hooks["backfill"](),
+    )
+    router = Router()
+    register_report_routes(router, service, sleep=lambda _seconds: None)
+
+    def routed_request(*args: Any, **kwargs: Any) -> tuple[int, dict[str, str], bytes]:
+        with patch.object(web_app, "WEB_ROUTER", router), patch.object(web_app, "report_service", service):
+            return request(*args, **kwargs)
+
+    def routed_json(*args: Any, **kwargs: Any) -> tuple[int, dict[str, str], Any]:
+        with patch.object(web_app, "WEB_ROUTER", router), patch.object(web_app, "report_service", service):
+            return json_request(*args, **kwargs)
+
+    for path in ("/api/report/today?raw=1", "/api/report/today?raw=yes"):
+        status, headers, today = routed_json(port, "GET", path)
+        assert status == 200 and headers["content-type"] == "application/json; charset=utf-8"
+        assert today == {"date": "today", "raw": True, "detail": True}
+    for path in ("/api/report/today?raw=false", "/api/report/today?raw=0", "/api/report/today"):
+        status, _headers, today = routed_json(port, "GET", path)
+        assert status == 200 and today == {"date": "today", "raw": False, "detail": False}
+    for path in ("/api/report?date=2026-08-01&date=ignored&raw=true", "/api/report?date=2026-08-01&raw=yes"):
+        status, _headers, report = routed_json(port, "GET", path)
         assert status == 200 and report == {"date": "2026-08-01", "raw": True, "detail": True}
-        status, _headers, report = json_request(port, "GET", "/api/report?date=2026-08-01&raw=yes")
-        assert status == 200 and report == {"date": "2026-08-01", "raw": True, "detail": True}
-        for path in ("/api/report?date=&raw=false", "/api/report?date=&raw=0", "/api/report"):
-            status, _headers, report = json_request(port, "GET", path)
-            assert status == 200 and report == {"date": "today", "raw": False, "detail": True}
-        assert report_calls == [
-            (None, True, True), (None, True, True), (None, False, False),
-            (None, False, False), (None, False, False), ("2026-08-01", True, True),
-            ("2026-08-01", True, True), (None, False, True), (None, False, True),
-            (None, False, True),
-        ]
-        for path, expected_limit in (("/api/report/history", 30), ("/api/report/history?limit=nope", 30), ("/api/report/history?limit=7", 7)):
-            status, _headers, history = json_request(port, "GET", path)
-            assert status == 200 and history == [{"limit": expected_limit}]
-        assert [entry.args for entry in list_reports_mock.call_args_list] == [(30,), (30,), (7,)]
-        status, _headers, settings = json_request(port, "GET", "/api/report/settings")
-        assert status == 200 and settings == {"shared": "runtime", "setting": True, "runtime": True}
+    for path in ("/api/report?date=&raw=false", "/api/report?date=&raw=0", "/api/report"):
+        status, _headers, report = routed_json(port, "GET", path)
+        assert status == 200 and report == {"date": "today", "raw": False, "detail": True}
+    assert report_calls == [
+        (None, True, True), (None, True, True), (None, False, False), (None, False, False), (None, False, False),
+        ("2026-08-01", True, True), ("2026-08-01", True, True), (None, False, True), (None, False, True), (None, False, True),
+    ]
+    for path, expected_limit in (("/api/report/history", 30), ("/api/report/history?limit=nope", 30), ("/api/report/history?limit=7", 7)):
+        status, _headers, history = routed_json(port, "GET", path)
+        assert status == 200 and history == [{"limit": expected_limit}]
+    assert list_calls == [30, 30, 7]
+    status, _headers, settings = routed_json(port, "GET", "/api/report/settings")
+    assert status == 200 and settings == {"shared": "runtime", "setting": True, "runtime": True}
 
     running = {"status": "running", "stage": "collect", "progress": 1, "message": "first", "updated_at": "2026-08-01T00:00:00Z", "log": ["first"]}
-    duplicate_marker = {**running, "log": ["changed outside marker"]}
+    duplicate = {**running, "log": ["log-only"]}
     complete = {"status": "complete", "stage": "done", "progress": 100, "message": "complete", "updated_at": "2026-08-01T00:01:00Z", "log": ["complete"]}
     progress_calls: list[str | None] = []
-    progress = iter((running, duplicate_marker, complete))
-
-    def next_progress(report_date: str | None) -> dict[str, Any]:
-        progress_calls.append(report_date)
-        return next(progress)
-
-    with patch.object(web_app, "get_report_progress", side_effect=next_progress), patch.object(web_app.time, "sleep", side_effect=lambda _seconds: None):
-        status, headers, body = request(port, "GET", "/api/report/events?date=2026-08-01&date=ignored")
-    assert status == 200
-    assert headers["content-type"] == "text/event-stream; charset=utf-8"
-    assert headers["cache-control"] == "no-cache"
-    assert headers["connection"] == "keep-alive"
-    events = [json.loads(line[6:]) for line in body.decode("utf-8").splitlines() if line.startswith("data: ")]
-    assert events == [running, complete]
+    sequence = iter((running, duplicate, complete))
+    with patch.dict(hooks, {"get_progress": lambda date: progress_calls.append(date) or next(sequence)}):
+        status, headers, body = routed_request(port, "GET", "/api/report/events?date=2026-08-01&date=ignored")
+    assert status == 200 and headers["content-type"] == "text/event-stream; charset=utf-8"
+    assert headers["cache-control"] == "no-cache" and headers["connection"] == "keep-alive"
+    assert [json.loads(line[6:]) for line in body.decode("utf-8").splitlines() if line.startswith("data: ")] == [running, complete]
     assert progress_calls == ["2026-08-01", "2026-08-01", "2026-08-01"]
-
     for path in ("/api/report/events?date=", "/api/report/events"):
         calls: list[str | None] = []
-        with patch.object(web_app, "get_report_progress", side_effect=lambda value: calls.append(value) or complete):
-            status, _headers, body = request(port, "GET", path)
+        with patch.dict(hooks, {"get_progress": lambda date: calls.append(date) or complete}):
+            status, _headers, body = routed_request(port, "GET", path)
         assert status == 200 and calls == [None]
         assert [json.loads(line[6:]) for line in body.decode("utf-8").splitlines() if line.startswith("data: ")] == [complete]
 
     def stream_locally(payloads: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], Any]:
-        index = iter(payloads)
+        iterator = iter(payloads)
+        writer = SimpleNamespace(body=b"")
+        writer.write = lambda value: setattr(writer, "body", writer.body + value)
+        writer.flush = lambda: None
+        handler = SimpleNamespace(path="/api/report/events", send_response=lambda _status: None, send_header=lambda _name, _value: None, end_headers=lambda: None, wfile=writer, close_connection=False)
+        with patch.dict(hooks, {"get_progress": lambda _date: next(iterator)}):
+            route = router.resolve("GET", "/api/report/events")
+            route.handler(handler, route.params)
+        return [json.loads(line[6:]) for line in writer.body.decode("utf-8").splitlines() if line.startswith("data: ")], handler
 
-        class EventWriter:
-            def __init__(self) -> None:
-                self.body = b""
-
-            def write(self, value: bytes) -> None:
-                self.body += value
-
-            def flush(self) -> None:
-                return None
-
-        writer = EventWriter()
-        handler = SimpleNamespace(
-            send_response=lambda _status: None,
-            send_header=lambda _name, _value: None,
-            end_headers=lambda: None,
-            wfile=writer,
-            close_connection=False,
-        )
-        with patch.object(web_app, "get_report_progress", side_effect=lambda _date: next(index)), patch.object(web_app.time, "sleep", side_effect=lambda _seconds: None):
-            web_app.Handler.stream_report_events(handler, None)
-        frames = [json.loads(line[6:]) for line in writer.body.decode("utf-8").splitlines() if line.startswith("data: ")]
-        return frames, handler
-
-    marker_base = {"status": "queued", "stage": "collect", "progress": 1, "message": "first", "updated_at": "2026-08-01T00:00:00Z", "log": ["first"]}
-    marker_status = {**marker_base, "status": "running"}
-    marker_stage = {**marker_status, "stage": "extract"}
-    marker_progress = {**marker_stage, "progress": 2}
-    marker_message = {**marker_progress, "message": "second"}
-    marker_updated = {**marker_message, "updated_at": "2026-08-01T00:00:01Z"}
-    marker_final = {**marker_updated, "status": "complete"}
-    frames, handler = stream_locally([marker_base, {**marker_base, "log": ["log-only"]}, marker_status, marker_stage, marker_progress, marker_message, marker_updated, marker_final])
-    assert frames == [marker_base, marker_status, marker_stage, marker_progress, marker_message, marker_updated, marker_final]
-    assert handler.close_connection is True
-    for terminal_status in ("complete", "failed", "partial_failed", "paused_external"):
-        terminal = {**marker_base, "status": terminal_status}
-        frames, handler = stream_locally([terminal])
-        assert frames == [terminal] and handler.close_connection is True
-
+    marker = {"status": "queued", "stage": "collect", "progress": 1, "message": "first", "updated_at": "2026-08-01T00:00:00Z", "log": ["first"]}
+    marker_changes = [
+        {**marker, "status": "running"}, {**marker, "status": "running", "stage": "extract"},
+        {**marker, "status": "running", "stage": "extract", "progress": 2},
+        {**marker, "status": "running", "stage": "extract", "progress": 2, "message": "second"},
+        {**marker, "status": "running", "stage": "extract", "progress": 2, "message": "second", "updated_at": "2026-08-01T00:00:01Z"},
+    ]
+    final = {**marker_changes[-1], "status": "complete"}
+    frames, local_handler = stream_locally([marker, {**marker, "log": ["only-log"]}, *marker_changes, final])
+    assert frames == [marker, *marker_changes, final] and local_handler.close_connection is True
+    for terminal in ("complete", "failed", "partial_failed", "paused_external"):
+        frames, local_handler = stream_locally([{**marker, "status": terminal}])
+        assert len(frames) == 1 and local_handler.close_connection is True
     for transport_error in (BrokenPipeError, ConnectionResetError):
         writes: list[bytes] = []
-
-        class BrokenWriter:
-            def write(self, value: bytes) -> None:
-                writes.append(value)
-                raise transport_error()
-
-            def flush(self) -> None:
-                raise AssertionError("flush must not follow a broken write")
-
-        handler = SimpleNamespace(send_response=lambda _status: None, send_header=lambda _name, _value: None, end_headers=lambda: None, wfile=BrokenWriter(), close_connection=False)
-        with patch.object(web_app, "get_report_progress", return_value=complete):
-            web_app.Handler.stream_report_events(handler, None)
+        handler = SimpleNamespace(path="/api/report/events", send_response=lambda _status: None, send_header=lambda _name, _value: None, end_headers=lambda: None, close_connection=False)
+        handler.wfile = SimpleNamespace(write=lambda value: writes.append(value) or (_ for _ in ()).throw(transport_error()), flush=lambda: (_ for _ in ()).throw(AssertionError("unexpected flush")))
+        with patch.dict(hooks, {"get_progress": lambda _date: complete}):
+            route = router.resolve("GET", "/api/report/events")
+            route.handler(handler, route.params)
         assert writes == [b"data: "] and handler.close_connection is True
 
-    blocked_gate = Mock(side_effect=AssertionError("feature-off must precede the UI_TEST gate"))
-    recovery = Mock(side_effect=AssertionError("feature-off must not recover reports"))
-    with patch.object(web_app, "hot_report_enabled", return_value=False), patch.object(web_app, "ui_test_mode_allows_live_write", blocked_gate), patch.object(web_app, "recover_interrupted_reports", recovery):
-        status, _headers, payload = json_request(port, "POST", "/api/report/run", body=b"{not json", content_type="application/json")
+    blocked_gate = Mock(side_effect=AssertionError("feature-off must precede UI_TEST"))
+    recovery = Mock(side_effect=AssertionError("feature-off must not recover"))
+    with patch.dict(hooks, {"is_enabled": lambda: False, "recover": recovery}), patch.object(web_app, "ui_test_mode_allows_live_write", blocked_gate):
+        status, _headers, payload = routed_json(port, "POST", "/api/report/run", body=b"{not json", content_type="application/json")
     assert status == 503 and payload == {"error": "日报功能已暂停"}
     blocked_gate.assert_not_called()
     recovery.assert_not_called()
 
+    enabled_checks = iter((True, False))
+    with patch.dict(hooks, {"is_enabled": lambda: next(enabled_checks)}), patch.object(web_app, "ui_test_mode_allows_live_write", return_value=True):
+        status, _headers, payload = routed_json(port, "POST", "/api/report/run", body=b"{not json", content_type="application/json")
+    assert status == 503 and payload == {"error": "日报功能已暂停"}
+
     run_calls: list[tuple[str, Any]] = []
-
-    def recover() -> None:
-        run_calls.append(("recover", None))
-
-    def enqueue() -> dict[str, str]:
-        run_calls.append(("enqueue", None))
-        return {"status": "queued", "id": "fixture-report"}
-
-    def run_report_payload(report_date: str | None = None, *, include_raw: bool = False, detail: bool = False) -> dict[str, bool]:
-        run_calls.append(("report", (report_date, include_raw, detail)))
-        return {"raw": include_raw, "detail": detail}
-
-    with patch.object(web_app, "hot_report_enabled", return_value=True), patch.object(web_app, "ui_test_mode_allows_live_write", return_value=True), patch.object(web_app, "recover_interrupted_reports", side_effect=recover), patch.object(web_app, "enqueue_report", side_effect=enqueue), patch.object(web_app, "get_report", side_effect=run_report_payload):
-        status, _headers, payload = json_request(port, "POST", "/api/report/run", body=b"{not json", content_type="application/json")
+    with patch.dict(hooks, {
+        "is_enabled": lambda: True,
+        "recover": lambda: run_calls.append(("recover", None)),
+        "enqueue": lambda: run_calls.append(("enqueue", None)) or {"status": "queued", "id": "fixture-report"},
+        "get_report": lambda report_date=None, *, include_raw=False, detail=False: run_calls.append(("report", (report_date, include_raw, detail))) or {"raw": include_raw, "detail": detail},
+    }), patch.object(web_app, "ui_test_mode_allows_live_write", return_value=True):
+        status, _headers, payload = routed_json(port, "POST", "/api/report/run", body=b"{not json", content_type="application/json")
     assert status == 202 and payload == {"status": "queued", "id": "fixture-report", "report": {"raw": False, "detail": False}}
     assert run_calls == [("recover", None), ("enqueue", None), ("report", (None, False, False))]
-
-    for failing_step in ("recover", "enqueue", "report"):
+    for failing in ("recover", "enqueue", "report"):
         calls: list[str] = []
-
-        def step(name: str) -> None:
+        def step(name: str) -> Any:
             calls.append(name)
-            if name == failing_step:
+            if name == failing:
                 raise RuntimeError(f"fixture {name} failure")
-
-        with patch.object(web_app, "hot_report_enabled", return_value=True), patch.object(web_app, "ui_test_mode_allows_live_write", return_value=True), patch.object(web_app, "recover_interrupted_reports", side_effect=lambda: step("recover")), patch.object(web_app, "enqueue_report", side_effect=lambda: step("enqueue") or {"status": "queued"}), patch.object(web_app, "get_report", side_effect=lambda **_kwargs: step("report") or {"report": True}):
-            status, _headers, payload = json_request(port, "POST", "/api/report/run", body=b"{not json", content_type="application/json")
-        assert status == 500 and payload == {"error": f"fixture {failing_step} failure"}
-        assert calls == ["recover", "enqueue", "report"][:("recover", "enqueue", "report").index(failing_step) + 1]
+            return {"status": "queued"}
+        with patch.dict(hooks, {"is_enabled": lambda: True, "recover": lambda: step("recover"), "enqueue": lambda: step("enqueue"), "get_report": lambda **_kwargs: step("report")}), patch.object(web_app, "ui_test_mode_allows_live_write", return_value=True):
+            status, _headers, payload = routed_json(port, "POST", "/api/report/run", body=b"{not json", content_type="application/json")
+        assert status == 500 and payload == {"error": f"fixture {failing} failure"}
+        assert calls == ["recover", "enqueue", "report"][:("recover", "enqueue", "report").index(failing) + 1]
 
     with patch.object(web_app, "ui_test_mode_allows_live_write", return_value=True):
         delete_calls: list[str] = []
         settings_calls: list[dict[str, Any]] = []
         translate_calls: list[tuple[str, str, str, bool]] = []
-        with patch.object(web_app, "delete_report", side_effect=lambda value: delete_calls.append(value) or {"deleted": value}), patch.object(web_app, "save_report_settings", side_effect=lambda payload: settings_calls.append(payload) or {"saved": payload}), patch.object(web_app, "translate_report_video_analysis", side_effect=lambda *args: translate_calls.append(args) or {"translated": True}):
-            status, _headers, payload = json_request(port, "POST", "/api/report/delete", {"date": "primary", "report_date": "ignored"})
+        with patch.dict(hooks, {"delete": lambda value: delete_calls.append(value) or {"deleted": value}, "save": lambda payload: settings_calls.append(payload) or {"saved": payload}, "translate": lambda *args: translate_calls.append(args) or {"translated": True}}):
+            status, _headers, payload = routed_json(port, "POST", "/api/report/delete", {"date": "primary", "report_date": "ignored"})
             assert status == 200 and payload == {"deleted": "primary"}
-            status, _headers, payload = json_request(port, "POST", "/api/report/delete", {"date": "", "report_date": "fallback"})
+            status, _headers, payload = routed_json(port, "POST", "/api/report/delete", {"date": "", "report_date": "fallback"})
             assert status == 200 and payload == {"deleted": "fallback"}
             settings_payload = {"retention_days": 30}
-            status, _headers, payload = json_request(port, "POST", "/api/report/settings", settings_payload)
+            status, _headers, payload = routed_json(port, "POST", "/api/report/settings", settings_payload)
             assert status == 200 and payload == {"saved": settings_payload}
-            status, _headers, payload = json_request(port, "POST", "/api/report/translate", {"date": "", "report_date": "2026-08-01", "platform": "tiktok", "video_id": "video-1", "force": "false"})
+            status, _headers, payload = routed_json(port, "POST", "/api/report/translate", {"date": "", "report_date": "2026-08-01", "platform": "tiktok", "video_id": "video-1", "force": "false"})
             assert status == 200 and payload == {"translated": True}
-        assert delete_calls == ["primary", "fallback"]
-        assert settings_calls == [settings_payload]
+        assert delete_calls == ["primary", "fallback"] and settings_calls == [settings_payload]
         assert translate_calls == [("2026-08-01", "tiktok", "video-1", True)]
-
         for path in ("/api/report/delete", "/api/report/settings", "/api/report/translate"):
-            status, _headers, payload = json_request(port, "POST", path, body=b"{not json", content_type="application/json")
+            status, _headers, payload = routed_json(port, "POST", path, body=b"{not json", content_type="application/json")
             assert status == 400 and "Expecting property name enclosed in double quotes" in payload["error"]
-
-        for name, failure_path, payload in (("delete_report", "/api/report/delete", {"date": "bad"}), ("save_report_settings", "/api/report/settings", {"retention_days": 0}), ("translate_report_video_analysis", "/api/report/translate", {"date": "bad"})):
-            with patch.object(web_app, name, side_effect=ValueError("fixture invalid")):
-                status, _headers, response = json_request(port, "POST", failure_path, payload)
-            assert status == 400 and response == {"error": "fixture invalid"}
-            with patch.object(web_app, name, side_effect=RuntimeError("fixture unexpected")):
-                status, _headers, response = json_request(port, "POST", failure_path, payload)
-            assert status == 500 and response == {"error": "fixture unexpected"}
-
-        with patch.object(web_app, "backfill_cover_urls", return_value={"updated": 2}):
-            status, _headers, payload = json_request(port, "POST", "/api/report/backfill-covers", body=b"{not json", content_type="application/json")
+        for hook, path, body in (("delete", "/api/report/delete", {"date": "bad"}), ("save", "/api/report/settings", {"retention_days": 0}), ("translate", "/api/report/translate", {"date": "bad"})):
+            with patch.dict(hooks, {hook: Mock(side_effect=ValueError("fixture invalid"))}):
+                status, _headers, payload = routed_json(port, "POST", path, body)
+            assert status == 400 and payload == {"error": "fixture invalid"}
+            with patch.dict(hooks, {hook: Mock(side_effect=RuntimeError("fixture unexpected"))}):
+                status, _headers, payload = routed_json(port, "POST", path, body)
+            assert status == 500 and payload == {"error": "fixture unexpected"}
+        status, _headers, payload = routed_json(port, "POST", "/api/report/backfill-covers", body=b"{not json", content_type="application/json")
         assert status == 200 and payload == {"updated": 2}
-        with patch.object(web_app, "backfill_cover_urls", side_effect=RuntimeError("fixture backfill failure")):
+        backfill_error = RuntimeError("fixture backfill failure")
+        response_calls: list[tuple[Any, ...]] = []
+        direct_handler = SimpleNamespace(
+            send_response=lambda *args: response_calls.append(args),
+            send_header=lambda *args: response_calls.append(args),
+            end_headers=lambda: response_calls.append(()),
+        )
+        route_match = router.resolve("POST", "/api/report/backfill-covers")
+        with patch.dict(hooks, {"backfill": Mock(side_effect=backfill_error)}):
             try:
-                request(port, "POST", "/api/report/backfill-covers", body=b"{not json", content_type="application/json")
-            except http.client.RemoteDisconnected:
-                pass
+                route_match.handler(direct_handler, route_match.params)
+            except RuntimeError as exc:
+                assert exc is backfill_error
             else:
-                raise AssertionError("backfill failure must remain an unhandled Handler exception")
+                raise AssertionError("backfill failure must remain unhandled")
+        assert response_calls == []
         backfill_get = Mock(side_effect=AssertionError("GET backfill must not call report core"))
-        with patch.object(web_app, "backfill_cover_urls", backfill_get):
-            status, _headers, payload = json_request(port, "GET", "/api/report/backfill-covers")
+        with patch.dict(hooks, {"backfill": backfill_get}):
+            status, _headers, payload = routed_json(port, "GET", "/api/report/backfill-covers")
         assert status == 404 and payload == {"error": "Not found"}
         backfill_get.assert_not_called()
 
-    for path, core_name in (("/api/report/run", "recover_interrupted_reports"), ("/api/report/delete", "delete_report"), ("/api/report/settings", "save_report_settings"), ("/api/report/translate", "translate_report_video_analysis"), ("/api/report/backfill-covers", "backfill_cover_urls")):
-        core = Mock(side_effect=AssertionError("UI_TEST must block before body parsing and report core"))
-        with patch.object(web_app, "hot_report_enabled", return_value=True), patch.object(web_app, "ui_test_mode_allows_live_write", return_value=False), patch.object(web_app, core_name, core):
-            status, _headers, payload = json_request(port, "POST", path, body=b"{not json", content_type="application/json")
-        assert status == 409 and payload == {"error": "UI 测试模式已拦截写操作，未触发真实业务。", "simulated": True, "status": "blocked", "path": path}
+    for path, hook in (("/api/report/run", "recover"), ("/api/report/delete", "delete"), ("/api/report/settings", "save"), ("/api/report/translate", "translate"), ("/api/report/backfill-covers", "backfill")):
+        core = Mock(side_effect=AssertionError("UI_TEST must block before report core"))
+        with patch.dict(hooks, {"is_enabled": lambda: True, hook: core}), patch.object(web_app, "ui_test_mode_allows_live_write", return_value=False):
+            status, _headers, payload = routed_json(port, "POST", path, body=b"{not json", content_type="application/json")
+        assert status == 409 and payload == {
+            "error": "UI 测试模式已拦截写操作，未触发真实业务。",
+            "simulated": True,
+            "status": "blocked",
+            "path": path,
+        }
         core.assert_not_called()
 
 

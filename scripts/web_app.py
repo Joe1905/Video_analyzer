@@ -42,6 +42,7 @@ from routes.amazon import register_amazon_routes
 from routes.analyze import register_analyze_routes
 from routes.downloads import register_download_routes
 from routes.postprocess import register_postprocess_routes
+from routes.report import register_report_routes
 from routes.translate import register_translate_routes
 from routes.upload import register_upload_routes
 from routes.video_delete import register_video_delete_routes
@@ -65,6 +66,7 @@ from services.analyze import AnalyzeService
 from services.downloads import DownloadService, validate_short_video_url
 from services.metrics import MetricsService
 from services.postprocess import PostprocessService
+from services.report import ReportService
 from services.shop import ShopService
 from services.translate import TranslateService
 from services.upload import UploadService
@@ -776,11 +778,6 @@ def is_registered_post_route(path: str) -> bool:
         "/api/tool/convert",
         "/api/chat/ask",
         "/api/chat/export-pdf",
-        "/api/report/run",
-        "/api/report/delete",
-        "/api/report/settings",
-        "/api/report/translate",
-        "/api/report/backfill-covers",
         "/api/feedback",
         "/api/social-context/refresh",
         "/api/social-insights",
@@ -805,6 +802,15 @@ def is_registered_post_route(path: str) -> bool:
         r"/api/lan-chat/(?:files/[0-9a-f]{32}/(?:download|accept)|rooms/[^/]+/(?:media|files|file-archives|messages|rename|avatar|announcement|members/remove|members/transfer|preferences|leave|dissolve))",
         path,
     ))
+
+
+def report_mutation_preflight(handler: BaseHTTPRequestHandler, path: str) -> bool:
+    """Preserve the report-run feature gate before the UI-test mutation gate."""
+
+    if path == "/api/report/run" and not report_service.is_enabled():
+        json_response(handler, HTTPStatus.SERVICE_UNAVAILABLE, {"error": "日报功能已暂停"})
+        return True
+    return False
 
 
 def is_registered_delete_route(path: str) -> bool:
@@ -10339,9 +10345,6 @@ class Handler(BaseHTTPRequestHandler):
                     {"ok": False, "error": "额度更新失败", "cached": read_sociavault_credit_balance()},
                 )
             return json_response(self, HTTPStatus.OK, {"ok": True, **balance})
-        if parsed.path == "/api/report/today":
-            include_raw = parse_qs(parsed.query).get("raw", ["0"])[0] in {"1", "true", "yes"}
-            return json_response(self, HTTPStatus.OK, get_report(include_raw=include_raw, detail=include_raw))
         if parsed.path == "/api/report/feishu":
             qs = parse_qs(parsed.query)
             if not _report_bot_authorized(self, qs):
@@ -10354,25 +10357,6 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 limit = 10
             return json_response(self, HTTPStatus.OK, _build_feishu_report_payload(self, report_date, limit=limit))
-        if parsed.path == "/api/report":
-            qs = parse_qs(parsed.query)
-            include_raw = qs.get("raw", ["0"])[0] in {"1", "true", "yes"}
-            report_date = qs.get("date", [""])[0] or None
-            return json_response(self, HTTPStatus.OK, get_report(report_date, include_raw=include_raw, detail=True))
-        if parsed.path == "/api/report/history":
-            try:
-                limit = int(parse_qs(parsed.query).get("limit", ["30"])[0])
-            except ValueError:
-                limit = 30
-            return json_response(self, HTTPStatus.OK, list_reports(limit))
-        if parsed.path == "/api/report/settings":
-            return json_response(self, HTTPStatus.OK, {**get_report_settings(), **get_report_runtime_status()})
-        if parsed.path == "/api/report/events":
-            report_date = parse_qs(parsed.query).get("date", [""])[0] or None
-            return self.stream_report_events(report_date)
-        if parsed.path == "/api/report/backfill-covers" and self.command == "POST":
-            result = backfill_cover_urls()
-            return json_response(self, HTTPStatus.OK, result)
         if parsed.path.startswith("/report-cover/"):
             try:
                 filename = safe_filename(unquote(parsed.path.removeprefix("/report-cover/")))
@@ -10545,35 +10529,6 @@ class Handler(BaseHTTPRequestHandler):
             )
         return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
 
-    def stream_report_events(self, report_date: str | None) -> None:
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "keep-alive")
-        self.end_headers()
-
-        last_marker: tuple[Any, ...] | None = None
-        while True:
-            payload = get_report_progress(report_date)
-            marker = (
-                payload.get("status"),
-                payload.get("stage"),
-                payload.get("progress"),
-                payload.get("message"),
-                payload.get("updated_at"),
-            )
-            try:
-                if marker != last_marker:
-                    write_sse_event(self, payload)
-                    last_marker = marker
-                if payload.get("status") not in {"queued", "running"}:
-                    self.close_connection = True
-                    return
-                time.sleep(1)
-            except (BrokenPipeError, ConnectionResetError):
-                self.close_connection = True
-                return
-
     def serve_chat_attachment(self, attachment_id: str) -> None:
         if not chat_attachment_belongs_to_owner(attachment_id, current_global_owner_id(self)):
             return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Attachment not found"})
@@ -10642,8 +10597,8 @@ class Handler(BaseHTTPRequestHandler):
             return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
         # These feature-off responses are side-effect free.  Keep them observable
         # in UI test mode instead of returning the generic mutation-test response.
-        if parsed.path == "/api/report/run" and not hot_report_enabled():
-            return json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {"error": "日报功能已暂停"})
+        if report_mutation_preflight(self, parsed.path):
+            return
         if parsed.path.startswith("/api/proxy/") and not PROXY_POOL_ENABLED:
             return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
         if UI_TEST_MODE:
@@ -10702,17 +10657,6 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_chat_export_pdf()
         if parsed.path.startswith("/api/chat/sessions/") and parsed.path.endswith("/rename"):
             return self.handle_chat_rename_session(parsed.path)
-        if parsed.path == "/api/report/run":
-            return self.handle_report_run()
-        if parsed.path == "/api/report/delete":
-            return self.handle_report_delete()
-        if parsed.path == "/api/report/settings":
-            return self.handle_report_settings()
-        if parsed.path == "/api/report/translate":
-            return self.handle_report_translate()
-        if parsed.path == "/api/report/backfill-covers":
-            result = backfill_cover_urls()
-            return json_response(self, HTTPStatus.OK, result)
         if parsed.path == "/api/feedback":
             return self.handle_feedback()
         if parsed.path == "/api/social-context/refresh":
@@ -10970,58 +10914,6 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path.startswith("/chuhaijiang/"):
             return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
         return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
-
-    def handle_report_run(self) -> None:
-        if not hot_report_enabled():
-            return json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {"error": "日报功能已暂停"})
-        try:
-            recover_interrupted_reports()
-            payload = enqueue_report()
-            payload["report"] = get_report(include_raw=False, detail=False)
-            return json_response(self, HTTPStatus.ACCEPTED, payload)
-        except Exception as exc:
-            return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
-
-    def handle_report_delete(self) -> None:
-        content_length = int(self.headers.get("Content-Length", "0"))
-        body = self.rfile.read(content_length)
-        try:
-            payload = json.loads(body.decode("utf-8") or "{}")
-            result = delete_report(str(payload.get("date") or payload.get("report_date") or ""))
-            return json_response(self, HTTPStatus.OK, result)
-        except (json.JSONDecodeError, ValueError) as exc:
-            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
-        except Exception as exc:
-            return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
-
-    def handle_report_settings(self) -> None:
-        content_length = int(self.headers.get("Content-Length", "0"))
-        body = self.rfile.read(content_length)
-        try:
-            payload = json.loads(body.decode("utf-8") or "{}")
-            settings = save_report_settings(payload)
-            return json_response(self, HTTPStatus.OK, settings)
-        except (json.JSONDecodeError, ValueError) as exc:
-            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
-        except Exception as exc:
-            return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
-
-    def handle_report_translate(self) -> None:
-        content_length = int(self.headers.get("Content-Length", "0"))
-        body = self.rfile.read(content_length)
-        try:
-            payload = json.loads(body.decode("utf-8") or "{}")
-            result = translate_report_video_analysis(
-                str(payload.get("date") or payload.get("report_date") or ""),
-                str(payload.get("platform") or ""),
-                str(payload.get("video_id") or ""),
-                bool(payload.get("force", False)),
-            )
-            return json_response(self, HTTPStatus.OK, result)
-        except (json.JSONDecodeError, ValueError) as exc:
-            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
-        except Exception as exc:
-            return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
 
     def handle_tool_convert(self) -> None:
         try:
@@ -11732,6 +11624,20 @@ video_delete_service = VideoDeleteService(
     output_dir=OUTPUT_DIR,
     rmtree=shutil.rmtree,
 )
+report_service = ReportService(
+    is_enabled=hot_report_enabled,
+    get_report=get_report,
+    list_reports=list_reports,
+    get_settings=get_report_settings,
+    get_runtime_status=get_report_runtime_status,
+    get_progress=get_report_progress,
+    recover=recover_interrupted_reports,
+    enqueue=enqueue_report,
+    delete=delete_report,
+    save=save_report_settings,
+    translate=translate_report_video_analysis,
+    backfill=backfill_cover_urls,
+)
 
 register_shop_page(WEB_ROUTER, html_snapshot=SHOP_HTML, inject_nav=inject_unified_nav)
 register_shop_api_routes(WEB_ROUTER, shop_service)
@@ -11751,6 +11657,7 @@ register_postprocess_routes(WEB_ROUTER, postprocess_service)
 register_video_files_routes(WEB_ROUTER, video_files_service)
 register_video_result_routes(WEB_ROUTER, video_result_service, safe_filename=safe_filename)
 register_video_delete_routes(WEB_ROUTER, video_delete_service, safe_filename=safe_filename)
+register_report_routes(WEB_ROUTER, report_service)
 register_video_stream_routes(
     WEB_ROUTER,
     videos_dir=VIDEOS_DIR,
