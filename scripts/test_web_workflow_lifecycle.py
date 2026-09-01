@@ -33,12 +33,14 @@ from services.downloads import DownloadJob, DownloadService
 from services.postprocess import PostprocessService
 from services.translate import TranslateService
 from services.upload import UploadService
+from services.video_files import VideoFilesService
 from jobs.registry import JobRegistry
 from routes.analyze import register_analyze_routes
 from routes.postprocess import register_postprocess_routes
 from routes.router import Router
 from routes.translate import register_translate_routes
 from routes.upload import MAX_UPLOAD_BYTES as UPLOAD_MAX_UPLOAD_BYTES, register_upload_routes
+from routes.video_files import register_video_files_routes
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -410,7 +412,7 @@ class FakeVideoQueue:
 
 
 def assert_files_http_contract(web_app: Any, port: int, server: Any, fake_queue: FakeVideoQueue) -> None:
-    """Freeze the legacy Handler /api/files filtering and payload contract."""
+    """Freeze the /api/files filtering and payload contract through its public route."""
 
     fixture_root = web_app.ROOT / "files-http-contract"
     videos_dir = fixture_root / "videos"
@@ -451,16 +453,29 @@ def assert_files_http_contract(web_app: Any, port: int, server: Any, fake_queue:
         visible_calls.append(filename)
         return filename != hidden.name
 
-    def no_registry(filename: str) -> None:
+    def registry_style_output_dir(filename: str) -> Path:
         registry_calls.append(filename)
-        return None
+        return output_dir / filename
+
+    def router_for() -> Router:
+        service = VideoFilesService(
+            videos_dir=videos_dir,
+            suffixes=web_app.ANALYZER_VIDEO_SUFFIXES,
+            media_validator=media_is_valid,
+            analyzer_visible_source=is_visible,
+            queue_status=fake_queue.get_status,
+            queue_status_meta=fake_queue.get_status_meta,
+            queue_title=fake_queue.get_title,
+            output_dir_for_filename=registry_style_output_dir,
+            read_json_file=web_app.read_json,
+            social_summary=web_app.summarize_social_status,
+        )
+        router = Router()
+        register_video_files_routes(router, service)
+        return router
 
     try:
-        with patch.object(web_app, "VIDEOS_DIR", videos_dir), patch.object(web_app, "OUTPUT_DIR", output_dir), patch.object(
-            web_app, "analyzer_media_is_valid", side_effect=media_is_valid
-        ), patch.object(web_app, "analyzer_visible_source", side_effect=is_visible), patch.object(
-            web_app, "get_video_by_filename", side_effect=no_registry
-        ):
+        with patch.object(web_app, "WEB_ROUTER", router_for()):
             status, _headers, files = json_request(port, "GET", "/api/files")
             assert status == 200
             assert files == [

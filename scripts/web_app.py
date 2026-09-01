@@ -44,6 +44,7 @@ from routes.downloads import register_download_routes
 from routes.postprocess import register_postprocess_routes
 from routes.translate import register_translate_routes
 from routes.upload import register_upload_routes
+from routes.video_files import register_video_files_routes
 from routes.health import register_health_route
 from routes.extract import register_extract_page
 from routes.harness_certificate import register_harness_certificate_route
@@ -64,6 +65,7 @@ from services.postprocess import PostprocessService
 from services.shop import ShopService
 from services.translate import TranslateService
 from services.upload import UploadService
+from services.video_files import VideoFilesService
 
 APP_CONFIG = AppConfig.from_env(os.environ, root=_BOOTSTRAP_ROOT)
 ROOT = APP_CONFIG.root
@@ -10484,27 +10486,6 @@ class Handler(BaseHTTPRequestHandler):
                 return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
             status = HTTPStatus.NOT_FOUND if payload.get("error") else HTTPStatus.OK
             return json_response(self, status, payload)
-        if parsed.path == "/api/files":
-            files = []
-            for path in sorted(VIDEOS_DIR.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True):
-                if path.is_file():
-                    if path.suffix.lower() not in ANALYZER_VIDEO_SUFFIXES:
-                        continue
-                    if not analyzer_media_is_valid(path):
-                        continue
-                    name = path.name
-                    if not analyzer_visible_source(name):
-                        continue
-                    meta = video_queue.get_status_meta(name)
-                    social_meta = summarize_social_status(read_json(output_dir_for_filename(name) / "social_context.json"))
-                    files.append({
-                        "name": name, "size": path.stat().st_size, "mtime": path.stat().st_mtime,
-                        "status": video_queue.get_status(name),
-                        "status_label": meta["label"], "status_color": meta["color"], "status_bg": meta["bg"],
-                        "title": video_queue.get_title(name),
-                        **social_meta,
-                    })
-            return json_response(self, HTTPStatus.OK, files)
         if parsed.path == "/api/queue-state":
             return json_response(self, HTTPStatus.OK, video_queue.get_queue_state())
         if parsed.path == "/api/queue-progress":
@@ -11803,6 +11784,18 @@ postprocess_service = PostprocessService(
     safe_filename=safe_filename,
     queue_enqueue=video_queue.enqueue,
 )
+video_files_service = VideoFilesService(
+    videos_dir=VIDEOS_DIR,
+    suffixes=ANALYZER_VIDEO_SUFFIXES,
+    media_validator=analyzer_media_is_valid,
+    analyzer_visible_source=analyzer_visible_source,
+    queue_status=video_queue.get_status,
+    queue_status_meta=video_queue.get_status_meta,
+    queue_title=video_queue.get_title,
+    output_dir_for_filename=output_dir_for_filename,
+    read_json_file=read_json,
+    social_summary=summarize_social_status,
+)
 
 register_shop_page(WEB_ROUTER, html_snapshot=SHOP_HTML, inject_nav=inject_unified_nav)
 register_shop_api_routes(WEB_ROUTER, shop_service)
@@ -11819,6 +11812,7 @@ register_upload_routes(
 register_analyze_routes(WEB_ROUTER, analyze_service)
 register_translate_routes(WEB_ROUTER, translate_service)
 register_postprocess_routes(WEB_ROUTER, postprocess_service)
+register_video_files_routes(WEB_ROUTER, video_files_service)
 register_taobao_page(WEB_ROUTER, html_snapshot=TAOBAO_HTML, inject_nav=inject_unified_nav)
 
 
