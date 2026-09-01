@@ -378,9 +378,48 @@ class JsonStoreTests(unittest.TestCase):
         )
         self.assertIsInstance(download_service_assignment.value, ast.Call)
         if isinstance(download_service_assignment.value, ast.Call):
+            self.assertTrue(all(keyword.arg is not None for keyword in download_service_assignment.value.keywords))
             keywords = {keyword.arg: keyword.value for keyword in download_service_assignment.value.keywords}
-            self.assertEqual(getattr(keywords.get("read_json_file"), "id", None), "read_json")
-            self.assertEqual(getattr(keywords.get("write_json_file"), "id", None), "atomic_write_json")
+            expected_download_injection = {
+                "registry": "download_job_registry",
+                "root": "ROOT",
+                "videos_dir": "VIDEOS_DIR",
+                "output_dir": "OUTPUT_DIR",
+                "scripts_dir": "SCRIPTS_DIR",
+                "read_json_file": "read_json",
+                "write_json_file": "atomic_write_json",
+                "run_factory": "subprocess.run",
+                "thread_factory": "threading.Thread",
+                "job_id_factory": "lambda: str(uuid.uuid4())",
+                "fallback_video_id_factory": "lambda: uuid.uuid4().hex[:12]",
+                "environ": "os.environ",
+                "get_cached": "get_cached",
+                "store_response": "store_response",
+                "video_cache_request": "video_cache_request",
+                "video_cache_metadata": "video_cache_metadata",
+                "with_download_cache_meta": "with_download_cache_meta",
+                "register_video": "register_video",
+                "register_from_payload": "register_from_payload",
+                "platform_for_url": "platform_for_url",
+                "video_source_hidden": "video_source_hidden",
+                "make_web_manual_visible": "make_web_manual_visible",
+                "start_social_context_job": "start_social_context_job",
+                "safe_filename": "safe_filename",
+                "analyzer_media_is_valid": "analyzer_media_is_valid",
+                "ensure_analyzer_media_or_delete": "ensure_analyzer_media_or_delete",
+                "ensure_us_proxy": "ensure_us_proxy",
+                "requests_get": "lambda *args, **kwargs: __import__('requests').get(*args, **kwargs)",
+                "cache_log_label": "cache_log_label",
+                "normalize_video_source": "normalize_video_source",
+                "default_source": "SOURCE_API_UPLOAD",
+                "video_media_ttl_seconds": "APP_CONFIG.video_media_ttl_seconds",
+                "default_sociavault_api_base": "DEFAULT_SOCIA_VAULT_API_BASE",
+            }
+            self.assertEqual(set(keywords), set(expected_download_injection))
+            self.assertEqual(
+                {name: ast.unparse(keywords[name]) for name in expected_download_injection},
+                expected_download_injection,
+            )
 
 
 if __name__ == "__main__":
