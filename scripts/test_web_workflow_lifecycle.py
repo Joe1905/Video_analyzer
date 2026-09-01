@@ -34,6 +34,7 @@ from services.postprocess import PostprocessService
 from services.translate import TranslateService
 from services.upload import UploadService
 from services.video_files import VideoFilesService
+from services.video_result import VideoResultService
 from jobs.registry import JobRegistry
 from routes.analyze import register_analyze_routes
 from routes.postprocess import register_postprocess_routes
@@ -41,6 +42,7 @@ from routes.router import Router
 from routes.translate import register_translate_routes
 from routes.upload import MAX_UPLOAD_BYTES as UPLOAD_MAX_UPLOAD_BYTES, register_upload_routes
 from routes.video_files import register_video_files_routes
+from routes.video_result import register_video_result_routes
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -560,6 +562,17 @@ def assert_result_http_contract(web_app: Any, port: int, server: Any) -> None:
         output_calls.append(filename)
         return output_root / filename
 
+    router = Router()
+    register_video_result_routes(
+        router,
+        VideoResultService(
+            root=web_app.ROOT,
+            output_dir_for_filename=output_dir_for,
+            read_json_file=web_app.read_json,
+        ),
+        safe_filename=web_app.safe_filename,
+    )
+
     artifact_files = {
         "analysis": "analysis.json",
         "analysis_zh": "analysis_zh.json",
@@ -577,7 +590,7 @@ def assert_result_http_contract(web_app: Any, port: int, server: Any) -> None:
         "social_insights": "social_insights.json",
     }
     try:
-        with patch.object(web_app, "output_dir_for_filename", side_effect=output_dir_for):
+        with patch.object(web_app, "WEB_ROUTER", router):
             status, _headers, missing = json_request(port, "GET", "/api/result")
             assert status == 400 and missing == {"error": "Missing filename"}
             status, _headers, invalid = json_request(port, "GET", "/api/result?filename=%3F%3F%3F")

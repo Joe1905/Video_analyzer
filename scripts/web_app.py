@@ -45,6 +45,7 @@ from routes.postprocess import register_postprocess_routes
 from routes.translate import register_translate_routes
 from routes.upload import register_upload_routes
 from routes.video_files import register_video_files_routes
+from routes.video_result import register_video_result_routes
 from routes.health import register_health_route
 from routes.extract import register_extract_page
 from routes.harness_certificate import register_harness_certificate_route
@@ -66,6 +67,7 @@ from services.shop import ShopService
 from services.translate import TranslateService
 from services.upload import UploadService
 from services.video_files import VideoFilesService
+from services.video_result import VideoResultService
 
 APP_CONFIG = AppConfig.from_env(os.environ, root=_BOOTSTRAP_ROOT)
 ROOT = APP_CONFIG.root
@@ -3093,12 +3095,6 @@ def render_pdf_bytes(html: str) -> bytes:
             )
         finally:
             browser.close()
-
-
-def mode_from_analysis(analysis: Any) -> str | None:
-    if isinstance(analysis, dict):
-        return analysis.get("processing_mode")
-    return None
 
 
 def cache_log_label(payload: Any) -> str | None:
@@ -10492,39 +10488,6 @@ class Handler(BaseHTTPRequestHandler):
             return json_response(self, HTTPStatus.OK, video_queue.get_progress())
         if parsed.path == "/api/status-stream":
             return self.stream_status_events()
-        if parsed.path == "/api/result":
-            try:
-                filename = safe_filename(parse_qs(parsed.query).get("filename", [""])[0])
-            except ValueError as exc:
-                return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
-            output_dir = output_dir_for_filename(filename)
-            analysis = read_json(output_dir / "analysis.json")
-            social_context = read_json(output_dir / "social_context.json")
-            return json_response(
-                self,
-                HTTPStatus.OK,
-                {
-                    "filename": filename,
-                    "status": "saved",
-                    "output_dir": str(output_dir.relative_to(ROOT)),
-                    "analysis_mode": mode_from_analysis(analysis),
-                    "analysis": analysis,
-                    "analysis_zh": read_json(output_dir / "analysis_zh.json"),
-                    "direct_analysis": read_json(output_dir / "direct_analysis.json"),
-                    "direct_analysis_zh": read_json(output_dir / "direct_analysis_zh.json"),
-                    "audit_result": read_json(output_dir / "audit_result.json"),
-                    "audit_result_zh": read_json(output_dir / "audit_result_zh.json"),
-                    "direct_audit_result": read_json(output_dir / "direct_audit_result.json"),
-                    "direct_audit_result_zh": read_json(output_dir / "direct_audit_result_zh.json"),
-                    "feedback_result": read_json(output_dir / "feedback_result.json"),
-                    "feedback_result_zh": read_json(output_dir / "feedback_result_zh.json"),
-                    "direct_feedback_result": read_json(output_dir / "direct_feedback_result.json"),
-                    "direct_feedback_result_zh": read_json(output_dir / "direct_feedback_result_zh.json"),
-                    "social_context": social_context,
-                    "social_insights": read_json(output_dir / "social_insights.json"),
-                    "log": [],
-                },
-            )
         if parsed.path == "/api/social-context":
             try:
                 filename = safe_filename(parse_qs(parsed.query).get("filename", [""])[0])
@@ -11796,6 +11759,11 @@ video_files_service = VideoFilesService(
     read_json_file=read_json,
     social_summary=summarize_social_status,
 )
+video_result_service = VideoResultService(
+    root=ROOT,
+    output_dir_for_filename=output_dir_for_filename,
+    read_json_file=read_json,
+)
 
 register_shop_page(WEB_ROUTER, html_snapshot=SHOP_HTML, inject_nav=inject_unified_nav)
 register_shop_api_routes(WEB_ROUTER, shop_service)
@@ -11813,6 +11781,7 @@ register_analyze_routes(WEB_ROUTER, analyze_service)
 register_translate_routes(WEB_ROUTER, translate_service)
 register_postprocess_routes(WEB_ROUTER, postprocess_service)
 register_video_files_routes(WEB_ROUTER, video_files_service)
+register_video_result_routes(WEB_ROUTER, video_result_service, safe_filename=safe_filename)
 register_taobao_page(WEB_ROUTER, html_snapshot=TAOBAO_HTML, inject_nav=inject_unified_nav)
 
 
