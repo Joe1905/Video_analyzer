@@ -561,6 +561,9 @@ class JobSnapshot(TypedDict):
 10. **4.4B 影响清单与专项门禁：** 服务器每次测试修复后均从第一项重跑，最终 `test_web_workflow_lifecycle.py`、`test_router.py`、`test_http_response_contract.py` 共 3/3 全绿，并通过相关 `py_compile`、`git diff --check`、CodeGraph 单向依赖、唯一路由、组合根和旧符号零残留。没有运行聊天、代理、日报、Node、Playwright 或 56 项全量。
 11. **4.4B 部署与黑盒：** 服务器仅执行 `bash scripts/deploy_ui_4004.sh`，4004 镜像和运行容器均为 `sha256:5ba9b289c171b209d00ae4f7c9e4dac41423fdf0bbf1df155d5980bcba1cfb4e`。`/healthz` 为 200，空上传、缺失 video、超 2GiB 均为精确 400，近期严重日志为 0，服务器 checkout clean；4002/4003 健康为 200，镜像与启动时间未变化。
 12. **4.4B 阶段后审计：** 需求漂移、模块解耦、复用合理性、写盘/媒体安全、UI_TEST 前置拦截与测试有效性均为 P0/P1/P2 全 0。`safe_filename`、媒体校验、Registry、visibility 和 social starter 继续作为稳定外部边界注入，没有搬动 `/api/files`、`/api/result`、`/api/delete`、Range/视频流或 analyze/translate/postprocess。下一步是 **4.4C Analyze**，仍需先冻结现状并与 translate/postprocess 分开迁移。
+13. **4.4C Analyze 行为冻结（`1ce9cf8`）：** 只扩充既有 `test_web_workflow_lifecycle.py`，以真实 Handler/HTTP 冻结 Content-Length/JSON 错误边界、缺失与清洗 filename、动态默认/显式 mode、prompt trim/长度/空值保留、registry 风格输出目录、两种 reset、Python `bool(...)` 现状、`analyze → report` 入队顺序、第二次 enqueue 失败后的前序副作用和 UI_TEST 前置 409。新增的 `RecordingAnalyzeQueue` 只记录调用、不写 artifact；所有文件均位于 `APP_TEST_ROOT`，没有新增测试或临时脚本。
+14. **4.4C 结构迁移与夹具收口（`f0154cd`、`24020e2`）：** 新增 `services/analyze.py` 与 `routes/analyze.py`；route 负责 Content-Length、JSON/字段转换、每请求动态 `ANALYSIS_MODE` 与 400/202 映射，service 负责 safe filename、视频/模式/prompt 校验、输出目录/reset、mode/prompt 写入和入队编排。`web_app.py` 删除旧 `Handler.handle_analyze`、内联 POST 和手工 UI_TEST allowlist，仅显式注入四项依赖并注册唯一路由。首轮服务器门禁发现生命周期尾部仍 patch 已失效的全局 queue，`24020e2` 改为真实独立 AnalyzeService + Router 公共边界后从第一项重跑通过；没有兼容层、双实现、通用 runner 或万能 VideoService。
+15. **4.4C 影响清单、部署与审计：** 服务器最终 `test_web_workflow_lifecycle.py`、`test_router.py`、`test_core_config.py`、`test_http_response_contract.py` 共 4/4 全绿，并通过相关 `py_compile`、`git diff --check`、CodeGraph 单向依赖、组合根、动态配置归属与旧符号零残留；未运行聊天、代理、日报、Node、Playwright 或 56 项全量。仅执行 `bash scripts/deploy_ui_4004.sh`，4004 镜像/容器为 `sha256:5fccd9d7f14ec028007b4174351f8ed6c4839426e82fffb73d177d417768c3ce`；health、畸形 JSON、非法 mode、超长 prompt、缺失视频黑盒分别为 200/400，严重日志 0，服务器 checkout clean。4002/4003 健康均为 200，镜像与启动时间不变。三路 Terra 终审与主审的需求漂移、架构边界、复用合理性和测试假绿均为 P0/P1/P2 全 0。下一步是 **4.4D Translate**，继续与 postprocess、files/result/delete、Range/视频流分开迁移。
 
 ## 九、Phase 5：拆分代理子系统
 
@@ -686,7 +689,7 @@ Phase 0 测试基线
 
 ## 十四、下一批实施任务
 
-Phase 0、0.5、1.1、2026-08-29 两个补漏阶段、Phase 1.2、Phase 1.3、**Phase 2.1～2.3D**、**Phase 3.0～3.4**、**Phase 4.1～4.3**、**Phase 4.4A Download**、**Phase 4.4B Upload** 与脚本资产 TTL 治理已完成。Shop、Metrics、Amazon、Download、Upload 已形成独立的 `web_app → routes → services → jobs/core` 垂直切片。下一步实施 **Phase 4.4C Analyze**：先冻结 `/api/analyze` 的 JSON 校验、analysis mode/prompt、文件/输出目录、reset、queue 时序和响应，再只迁移 analyze；translate、postprocess、`/api/files`、`/api/result`、`/api/delete`、Range/视频流继续保持原位并分别处理。禁止合成万能 VideoService。`tools.py` 只迁移视频子进程执行直接相关能力并保留活动调用方所需窄 facade；聊天工具归一、权限和 provider 路由严格留到 Phase 6。不得顺手迁移日报、代理、邻聊、淘宝或前端，也不得改变 Range、流式、下载安全、文件名/目录、API schema、状态码或任务生命周期。
+Phase 0、0.5、1.1、2026-08-29 两个补漏阶段、Phase 1.2、Phase 1.3、**Phase 2.1～2.3D**、**Phase 3.0～3.4**、**Phase 4.1～4.3**、**Phase 4.4A Download**、**Phase 4.4B Upload**、**Phase 4.4C Analyze** 与脚本资产 TTL 治理已完成。Shop、Metrics、Amazon、Download、Upload、Analyze 已形成独立的 `web_app → routes → services → jobs/core` 垂直切片。下一步实施 **Phase 4.4D Translate**：先冻结 `/api/translate` 的 JSON 校验、tab/输入 artifact 选择、翻译调用、输出文件和响应/异常语义，再只迁移 translate；postprocess、`/api/files`、`/api/result`、`/api/delete`、Range/视频流继续保持原位并分别处理。禁止合成万能 VideoService。`tools.py` 只迁移视频子进程执行直接相关能力并保留活动调用方所需窄 facade；聊天工具归一、权限和 provider 路由严格留到 Phase 6。不得顺手迁移日报、代理、邻聊、淘宝或前端，也不得改变 Range、流式、下载安全、文件名/目录、API schema、状态码或任务生命周期。
 
 Phase 2.3 继续复用现有 Terra 子智能体，避免为同一长期任务无限新增执行记录，并按以下门槛推进：
 
@@ -717,4 +720,4 @@ Phase 3 下一批按以下门槛推进：
 15. **Phase 4.1 Shop 垂直切片（已完成，`f700266`、`c424a0a`、`c8b433b`、`8a63493`）：** 行为冻结、service/route 迁移、动态配置归属修正、服务器 56/56、部署黑盒和阶段后审计均已通过；流程偏差及后续提交纯度规则已记录在 8.1。
 16. **Phase 4.2 Metrics（已完成，`93653e1`、`a03b3b4`、`522faf0`）：** 行为冻结、service/route 迁移、专项 7/7、部署黑盒与阶段后审计均已通过；没有新增测试/临时脚本，没有执行中间全量回归。
 17. **Phase 4.3 Amazon（已完成，`79afe66`、`067ad77`、`a508170`、`d2669df`）：** 行为冻结、service/route、专项 8/8、部署黑盒和阶段后审计全绿；没有新增测试/临时脚本，没有执行中间全量回归。
-18. **Phase 4.4 下载与分析（进行中）：** 4.4A Download 与 4.4B Upload 均已完成行为冻结、service/route、定向门禁、4004 部署黑盒及 P0/P1/P2 全 0 审计；下一步为 4.4C Analyze，随后分别处理 translate、postprocess。每个子域独立冻结、迁移、定向回归和审计；禁止万能 VideoService，禁止提前迁移聊天工具归一与权限逻辑。
+18. **Phase 4.4 下载与分析（进行中）：** 4.4A Download、4.4B Upload、4.4C Analyze 均已完成行为冻结、service/route、定向门禁、4004 部署黑盒及 P0/P1/P2 全 0 审计；下一步为 4.4D Translate，随后独立处理 postprocess。每个子域独立冻结、迁移、定向回归和审计；禁止万能 VideoService，禁止提前迁移聊天工具归一与权限逻辑。
