@@ -409,6 +409,125 @@ class FakeVideoQueue:
         return {}
 
 
+def assert_files_http_contract(web_app: Any, port: int, server: Any, fake_queue: FakeVideoQueue) -> None:
+    """Freeze the legacy Handler /api/files filtering and payload contract."""
+
+    fixture_root = web_app.ROOT / "files-http-contract"
+    videos_dir = fixture_root / "videos"
+    output_dir = fixture_root / "output"
+    videos_dir.mkdir(parents=True)
+    previous_statuses = dict(fake_queue.statuses)
+    media_calls: list[str] = []
+    visible_calls: list[str] = []
+    registry_calls: list[str] = []
+    newest = videos_dir / "newest.mp4"
+    directory = videos_dir / "ignored-directory"
+    non_video = videos_dir / "ignored.txt"
+    hidden = videos_dir / "hidden.mp4"
+    invalid = videos_dir / "invalid.mp4"
+    oldest = videos_dir / "oldest.webm"
+    for path, content, mtime in (
+        (newest, b"newest", 1_700_000_500),
+        (non_video, b"text", 1_700_000_400),
+        (hidden, b"hidden", 1_700_000_300),
+        (invalid, b"invalid", 1_700_000_200),
+        (oldest, b"old", 1_700_000_100),
+    ):
+        path.write_bytes(content)
+        os.utime(path, (mtime, mtime))
+    directory.mkdir()
+    os.utime(directory, (1_700_000_450, 1_700_000_450))
+    (output_dir / newest.name).mkdir(parents=True)
+    (output_dir / newest.name / "social_context.json").write_text(
+        json.dumps({"status": "complete"}), encoding="utf-8"
+    )
+    fake_queue.statuses.update({newest.name: "queued_analyze", oldest.name: "complete"})
+
+    def media_is_valid(path: Path) -> bool:
+        media_calls.append(path.name)
+        return path.name != invalid.name
+
+    def is_visible(filename: str) -> bool:
+        visible_calls.append(filename)
+        return filename != hidden.name
+
+    def no_registry(filename: str) -> None:
+        registry_calls.append(filename)
+        return None
+
+    try:
+        with patch.object(web_app, "VIDEOS_DIR", videos_dir), patch.object(web_app, "OUTPUT_DIR", output_dir), patch.object(
+            web_app, "analyzer_media_is_valid", side_effect=media_is_valid
+        ), patch.object(web_app, "analyzer_visible_source", side_effect=is_visible), patch.object(
+            web_app, "get_video_by_filename", side_effect=no_registry
+        ):
+            status, _headers, files = json_request(port, "GET", "/api/files")
+            assert status == 200
+            assert files == [
+                {
+                    "name": newest.name,
+                    "size": newest.stat().st_size,
+                    "mtime": newest.stat().st_mtime,
+                    "status": "queued_analyze",
+                    "status_label": "测试队列",
+                    "status_color": "#000",
+                    "status_bg": "#fff",
+                    "title": newest.name,
+                    "social_status": "complete",
+                    "social_label": "数据已获取",
+                    "social_color": "#087443",
+                    "social_bg": "#ecfdf3",
+                },
+                {
+                    "name": oldest.name,
+                    "size": oldest.stat().st_size,
+                    "mtime": oldest.stat().st_mtime,
+                    "status": "complete",
+                    "status_label": "测试队列",
+                    "status_color": "#000",
+                    "status_bg": "#fff",
+                    "title": oldest.name,
+                    "social_status": "missing",
+                    "social_label": "未获取",
+                    "social_color": "#94a3b8",
+                    "social_bg": "#f1f5f9",
+                },
+            ]
+            assert media_calls == [newest.name, hidden.name, invalid.name, oldest.name]
+            assert visible_calls == [newest.name, hidden.name, oldest.name]
+            assert registry_calls == [newest.name, oldest.name]
+
+            broken = videos_dir / "broken-social.mp4"
+            broken.write_bytes(b"broken")
+            os.utime(broken, (1_700_000_600, 1_700_000_600))
+            (output_dir / broken.name).mkdir(parents=True)
+            (output_dir / broken.name / "social_context.json").write_text("{", encoding="utf-8")
+            reported: list[BaseException | None] = []
+            reported_event = threading.Event()
+            original_handle_error = server.handle_error
+
+            def capture_handler_error(_request: Any, _client_address: Any) -> None:
+                reported.append(sys.exc_info()[1])
+                reported_event.set()
+
+            server.handle_error = capture_handler_error
+            try:
+                try:
+                    request(port, "GET", "/api/files")
+                except http.client.RemoteDisconnected:
+                    pass
+                else:
+                    raise AssertionError("invalid social_context.json should close the legacy response")
+                assert reported_event.wait(timeout=5)
+                assert isinstance(reported[-1], json.JSONDecodeError)
+            finally:
+                server.handle_error = original_handle_error
+    finally:
+        fake_queue.statuses.clear()
+        fake_queue.statuses.update(previous_statuses)
+        shutil.rmtree(fixture_root, ignore_errors=False)
+
+
 class RecordingAnalyzeQueue:
     """Analyze-only queue fake that records production calls without artifacts."""
 
@@ -1941,6 +2060,7 @@ def run_lifecycle() -> None:
             thread.start()
             port = server.server_port
 
+            assert_files_http_contract(web_app, port, server, fake_queue)
             assert_upload_http_contract(web_app, port)
             assert_analyze_http_contract(web_app, port)
             assert_postprocess_http_contract(web_app, port)
