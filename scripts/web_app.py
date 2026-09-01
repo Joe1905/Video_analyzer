@@ -44,6 +44,7 @@ from routes.downloads import register_download_routes
 from routes.postprocess import register_postprocess_routes
 from routes.translate import register_translate_routes
 from routes.upload import register_upload_routes
+from routes.video_delete import register_video_delete_routes
 from routes.video_files import register_video_files_routes
 from routes.video_result import register_video_result_routes
 from routes.health import register_health_route
@@ -66,6 +67,7 @@ from services.postprocess import PostprocessService
 from services.shop import ShopService
 from services.translate import TranslateService
 from services.upload import UploadService
+from services.video_delete import VideoDeleteService
 from services.video_files import VideoFilesService
 from services.video_result import VideoResultService
 
@@ -782,7 +784,6 @@ def is_registered_post_route(path: str) -> bool:
         "/api/social-context/refresh",
         "/api/social-insights",
         "/api/prompt",
-        "/api/delete",
     }:
         return True
     if path.startswith(("/api/proxy/", "/api/taobao/", "/amazon/", "/chuhaijiang/")):
@@ -10725,8 +10726,6 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_social_insights()
         if parsed.path == "/api/prompt":
             return self.handle_save_prompt()
-        if parsed.path == "/api/delete":
-            return self.handle_delete()
         return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
 
     def do_HEAD(self) -> None:
@@ -11590,37 +11589,6 @@ class Handler(BaseHTTPRequestHandler):
             store.unregister_sse(stored_sid, self)
             self.close_connection = True
 
-    def handle_delete(self) -> None:
-        content_length = int(self.headers.get("Content-Length", "0"))
-        body = self.rfile.read(content_length)
-        try:
-            payload = json.loads(body.decode("utf-8") or "{}")
-            filename = safe_filename(str(payload.get("filename", "")))
-        except (json.JSONDecodeError, ValueError) as exc:
-            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
-
-        video_path = VIDEOS_DIR / filename
-        output_dir = OUTPUT_DIR / filename
-        deleted_video = False
-        deleted_output = False
-        if video_path.is_file():
-            video_path.unlink()
-            deleted_video = True
-        if output_dir.is_dir():
-            shutil.rmtree(output_dir)
-            deleted_output = True
-
-        return json_response(
-            self,
-            HTTPStatus.OK,
-            {
-                "filename": filename,
-                "deleted_video": deleted_video,
-                "deleted_output": deleted_output,
-            },
-        )
-
-
 class SellerSpriteRedirectHandler(BaseHTTPRequestHandler):
     server_version = "SellerSpriteRedirect/1.0"
     target_port: int = 4000
@@ -11764,6 +11732,11 @@ video_result_service = VideoResultService(
     output_dir_for_filename=output_dir_for_filename,
     read_json_file=read_json,
 )
+video_delete_service = VideoDeleteService(
+    videos_dir=VIDEOS_DIR,
+    output_dir=OUTPUT_DIR,
+    rmtree=shutil.rmtree,
+)
 
 register_shop_page(WEB_ROUTER, html_snapshot=SHOP_HTML, inject_nav=inject_unified_nav)
 register_shop_api_routes(WEB_ROUTER, shop_service)
@@ -11782,6 +11755,7 @@ register_translate_routes(WEB_ROUTER, translate_service)
 register_postprocess_routes(WEB_ROUTER, postprocess_service)
 register_video_files_routes(WEB_ROUTER, video_files_service)
 register_video_result_routes(WEB_ROUTER, video_result_service, safe_filename=safe_filename)
+register_video_delete_routes(WEB_ROUTER, video_delete_service, safe_filename=safe_filename)
 register_taobao_page(WEB_ROUTER, html_snapshot=TAOBAO_HTML, inject_nav=inject_unified_nav)
 
 

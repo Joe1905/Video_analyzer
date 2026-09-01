@@ -34,6 +34,7 @@ from services.postprocess import PostprocessService
 from services.translate import TranslateService
 from services.upload import UploadService
 from services.video_files import VideoFilesService
+from services.video_delete import VideoDeleteService
 from services.video_result import VideoResultService
 from jobs.registry import JobRegistry
 from routes.analyze import register_analyze_routes
@@ -42,6 +43,7 @@ from routes.router import Router
 from routes.translate import register_translate_routes
 from routes.upload import MAX_UPLOAD_BYTES as UPLOAD_MAX_UPLOAD_BYTES, register_upload_routes
 from routes.video_files import register_video_files_routes
+from routes.video_delete import register_video_delete_routes
 from routes.video_result import register_video_result_routes
 
 
@@ -669,7 +671,7 @@ def assert_result_http_contract(web_app: Any, port: int, server: Any) -> None:
 
 
 def assert_delete_http_contract(web_app: Any, port: int, server: Any) -> None:
-    """Freeze the legacy inline delete endpoint, including its partial failures."""
+    """Exercise the delete route/service through the live HTTP handler."""
 
     fixture_root = Path(tempfile.mkdtemp(prefix="delete-http-contract-", dir=web_app.ROOT))
     videos_dir = fixture_root / "videos"
@@ -679,14 +681,16 @@ def assert_delete_http_contract(web_app: Any, port: int, server: Any) -> None:
     output_dir.mkdir()
     registry_output.mkdir()
     (registry_output / "must-remain.txt").write_text("registry", encoding="utf-8")
-    output_calls: list[str] = []
-
-    def unexpected_output_dir(filename: str) -> Path:
-        output_calls.append(filename)
-        raise AssertionError("delete must use OUTPUT_DIR directly")
-
-    def unexpected_side_effect(*_args: Any, **_kwargs: Any) -> None:
-        raise AssertionError("delete must not touch queue, registry, or social context")
+    router = Router()
+    register_video_delete_routes(
+        router,
+        VideoDeleteService(
+            videos_dir=videos_dir,
+            output_dir=output_dir,
+            rmtree=lambda path: web_app.shutil.rmtree(path),
+        ),
+        safe_filename=web_app.safe_filename,
+    )
 
     def expect_disconnect(
         *,
@@ -712,14 +716,7 @@ def assert_delete_http_contract(web_app: Any, port: int, server: Any) -> None:
         assert isinstance(reported[-1], error_type)
 
     try:
-        with ExitStack() as patches:
-            patches.enter_context(patch.object(web_app, "VIDEOS_DIR", videos_dir))
-            patches.enter_context(patch.object(web_app, "OUTPUT_DIR", output_dir))
-            patches.enter_context(patch.object(web_app, "output_dir_for_filename", side_effect=unexpected_output_dir))
-            patches.enter_context(patch.object(web_app, "get_video_by_filename", side_effect=unexpected_side_effect))
-            patches.enter_context(patch.object(web_app, "register_video", side_effect=unexpected_side_effect))
-            patches.enter_context(patch.object(web_app, "start_social_context_job", side_effect=unexpected_side_effect))
-            patches.enter_context(patch.object(web_app, "video_queue", object()))
+        with patch.object(web_app, "WEB_ROUTER", router):
 
             status, _headers, missing_length = json_request(
                 port,
@@ -752,8 +749,6 @@ def assert_delete_http_contract(web_app: Any, port: int, server: Any) -> None:
                     extra_headers={"Content-Length": str(len(body))},
                 )
                 assert status == 400 and payload == expected
-            assert output_calls == []
-
             reported: list[BaseException | None] = []
             reported_event = threading.Event()
             original_handle_error = server.handle_error
@@ -796,7 +791,7 @@ def assert_delete_http_contract(web_app: Any, port: int, server: Any) -> None:
                 "deleted_video": False,
                 "deleted_output": False,
             }
-            assert output_calls == [] and (registry_output / "must-remain.txt").is_file()
+            assert (registry_output / "must-remain.txt").is_file()
 
             broken_video = videos_dir / "unlink-failure.mp4"
             broken_output = output_dir / "unlink-failure.mp4"
