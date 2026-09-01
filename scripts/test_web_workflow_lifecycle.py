@@ -1000,6 +1000,212 @@ def assert_report_cover_http_contract(web_app: Any, port: int, server: Any) -> N
         shutil.rmtree(fixture_root, ignore_errors=False)
 
 
+def assert_taobao_http_contract(web_app: Any, port: int) -> None:
+    """Freeze the current inline Taobao API before its route/service migration."""
+
+    assert web_app.APP_TEST_ROOT is not None
+    fixture_root = Path(
+        tempfile.mkdtemp(prefix="taobao-http-contract-", dir=web_app.APP_TEST_ROOT)
+    )
+    archive_id = "20260801010101-deadbeef"
+    archive_dir = fixture_root / archive_id
+    archive_dir.mkdir()
+    metadata_bytes = b'{"archive":"fixture"}'
+    html_bytes = b"<html>fixture archive</html>"
+    image_bytes = b"\x89PNG\r\nfixture archive"
+    (archive_dir / "metadata.json").write_bytes(metadata_bytes)
+    (archive_dir / "page.html").write_bytes(html_bytes)
+    (archive_dir / "page.png").write_bytes(image_bytes)
+
+    public_user = dict(web_app.PUBLIC_GLOBAL_USER)
+    owner_user = {"id": "owner-fixture", "name": "Owner Fixture", "kind": "feishu"}
+
+    class RecordingCollector:
+        def __init__(self) -> None:
+            self.calls: list[tuple[Any, ...]] = []
+            self.state_error: BaseException | None = None
+            self.collect_error: BaseException | None = None
+
+        def state(self, user: dict[str, Any]) -> dict[str, Any]:
+            self.calls.append(("state", dict(user)))
+            if self.state_error is not None:
+                raise self.state_error
+            return {"owner": user["id"], "state": "ready"}
+
+        def list_archives(self, user: dict[str, Any]) -> list[dict[str, str]]:
+            self.calls.append(("archives", dict(user)))
+            return [{"id": archive_id, "owner": str(user["id"])}]
+
+        def archive_path(self, user: dict[str, Any], requested_id: str, filename: str) -> Path:
+            self.calls.append(("archive_path", dict(user), requested_id, filename))
+            if requested_id != archive_id or filename == "missing.json":
+                raise FileNotFoundError(filename)
+            return archive_dir / filename
+
+        def export_markdown(self, user: dict[str, Any], requested_id: str) -> str:
+            self.calls.append(("export_markdown", dict(user), requested_id))
+            return "# fixture archive\n"
+
+        def start_session(self, user: dict[str, Any]) -> dict[str, Any]:
+            self.calls.append(("start", dict(user)))
+            return {"action": "start", "owner": user["id"]}
+
+        def stop_session(self, user: dict[str, Any]) -> dict[str, Any]:
+            self.calls.append(("stop", dict(user)))
+            return {"action": "stop", "owner": user["id"]}
+
+        def open_login(self, user: dict[str, Any]) -> dict[str, Any]:
+            self.calls.append(("open-login", dict(user)))
+            return {"action": "open-login", "owner": user["id"]}
+
+        def collect(self, user: dict[str, Any], keyword: Any, url: Any) -> dict[str, Any]:
+            self.calls.append(("collect", dict(user), keyword, url))
+            if self.collect_error is not None:
+                raise self.collect_error
+            return {"owner": user["id"], "keyword": keyword, "url": url}
+
+    collector = RecordingCollector()
+    owner_cookie = {"Cookie": f"{web_app.GLOBAL_USER_COOKIE}=owner-fixture"}
+    try:
+        with (
+            patch.object(web_app, "taobao_collector", collector),
+            patch.object(web_app, "_global_users", return_value=([public_user, owner_user], {})),
+        ):
+            status, _headers, state = json_request(
+                port, "GET", "/api/taobao/state?ignored=1", extra_headers=owner_cookie
+            )
+            assert status == 200 and state == {"owner": "owner-fixture", "state": "ready"}
+            status, _headers, archives = json_request(
+                port,
+                "GET",
+                "/api/taobao/archives?ignored=1",
+                extra_headers={"Cookie": f"{web_app.GLOBAL_USER_COOKIE}=unknown-owner"},
+            )
+            assert status == 200 and archives == {
+                "archives": [{"id": archive_id, "owner": "public"}]
+            }
+
+            status, headers, body = request(
+                port,
+                "GET",
+                f"/api/taobao/archives/{archive_id}/export?format=MD&format=json",
+                extra_headers=owner_cookie,
+            )
+            assert status == 200 and body == b"# fixture archive\n"
+            assert headers["content-type"] == "text/markdown; charset=utf-8"
+            assert headers["content-length"] == str(len(body))
+            assert headers["content-disposition"] == f'attachment; filename="taobao-{archive_id}.md"'
+            assert headers["cache-control"] == "no-store"
+            assert "accept-ranges" not in headers
+
+            status, headers, body = request(
+                port, "GET", f"/api/taobao/archives/{archive_id}/export", extra_headers=owner_cookie
+            )
+            assert status == 200 and body == metadata_bytes
+            assert headers["content-type"] == "application/json; charset=utf-8"
+            assert headers["content-length"] == str(len(metadata_bytes))
+            assert headers["accept-ranges"] == "bytes"
+            assert headers["content-disposition"] == (
+                f"attachment; filename=download; filename*=UTF-8''taobao-{archive_id}.json"
+            )
+            assert headers["cache-control"] == "no-store"
+
+            status, _headers, payload = json_request(
+                port, "GET", f"/api/taobao/archives/{archive_id}/export?format=csv"
+            )
+            assert status == 400 and payload == {"error": "导出格式仅支持 json 或 md"}
+            status, headers, body = request(
+                port, "GET", f"/api/taobao/archives/{archive_id}/page.html"
+            )
+            assert status == 200 and body == html_bytes
+            assert headers["content-type"] == "text/html"
+            assert headers["content-disposition"] == (
+                "attachment; filename=download; filename*=UTF-8''page.html"
+            )
+            assert headers["cache-control"] == "no-store"
+            status, headers, body = request(
+                port, "GET", f"/api/taobao/archives/{archive_id}/page.png"
+            )
+            assert status == 200 and body == image_bytes
+            assert headers["content-type"] == "image/png"
+            assert headers["accept-ranges"] == "bytes"
+            assert "content-disposition" not in headers and "cache-control" not in headers
+
+            for path, expected in (
+                (f"/api/taobao/archives/{archive_id}/missing.json", {"error": "归档文件不存在"}),
+                ("/api/taobao/archives/", {"error": "Not found"}),
+                ("/api/taobao", {"error": "Not found"}),
+            ):
+                status, _headers, payload = json_request(port, "GET", path)
+                assert status == 404 and payload == expected
+            collector.state_error = ValueError("fixture state invalid")
+            status, _headers, payload = json_request(port, "GET", "/api/taobao/state")
+            assert status == 400 and payload == {"error": "fixture state invalid"}
+            collector.state_error = RuntimeError("fixture state failed")
+            status, _headers, payload = json_request(port, "GET", "/api/taobao/state")
+            assert status == 500 and payload == {"error": "fixture state failed"}
+            collector.state_error = None
+
+            with patch.object(web_app, "ui_test_mode_allows_live_write", return_value=True):
+                for path, action in (
+                    ("/api/taobao/session/start", "start"),
+                    ("/api/taobao/session/stop", "stop"),
+                    ("/api/taobao/session/open-login", "open-login"),
+                ):
+                    status, _headers, payload = json_request(
+                        port, "POST", path, {}, extra_headers=owner_cookie
+                    )
+                    assert status == 200 and payload == {"action": action, "owner": "owner-fixture"}
+                status, _headers, payload = json_request(port, "POST", "/api/taobao/collect", {})
+                assert status == 200 and payload == {"owner": "public", "keyword": None, "url": None}
+                status, _headers, payload = json_request(
+                    port,
+                    "POST",
+                    "/api/taobao/collect",
+                    {"keyword": 7, "url": None},
+                    extra_headers=owner_cookie,
+                )
+                assert status == 200 and payload == {"owner": "owner-fixture", "keyword": 7, "url": None}
+                assert collector.calls[-1] == ("collect", owner_user, 7, None)
+                collector.collect_error = ValueError("fixture collect invalid")
+                status, _headers, payload = json_request(port, "POST", "/api/taobao/collect", {})
+                assert status == 400 and payload == {"error": "fixture collect invalid"}
+                collector.collect_error = RuntimeError("fixture collect failed")
+                status, _headers, payload = json_request(port, "POST", "/api/taobao/collect", {})
+                assert status == 500 and payload == {"error": "fixture collect failed"}
+                collector.collect_error = None
+                status, _headers, payload = json_request(port, "POST", "/api/taobao/unknown", {})
+                assert status == 404 and payload == {"error": "Not found"}
+                status, _headers, payload = json_request(
+                    port, "POST", "/api/taobao/unknown", body=b"{", content_type="application/json"
+                )
+                assert status == 400 and payload["error"]
+                status, _headers, payload = json_request(
+                    port, "POST", "/api/taobao/collect", body=b"[]", content_type="application/json"
+                )
+                assert status == 400 and payload == {"error": "JSON body must be an object"}
+
+            calls_before_block = len(collector.calls)
+            blocked_path = "/api/taobao/session/start"
+            status, _headers, payload = json_request(
+                port, "POST", blocked_path, body=b"{", content_type="application/json"
+            )
+            assert status == 409 and payload == {
+                "error": "UI 测试模式已拦截写操作，未触发真实业务。",
+                "simulated": True,
+                "status": "blocked",
+                "path": blocked_path,
+            }
+            assert len(collector.calls) == calls_before_block
+            status, _headers, payload = json_request(
+                port, "POST", "/api/taobao/unknown", body=b"{", content_type="application/json"
+            )
+            assert status == 409 and payload["path"] == "/api/taobao/unknown"
+            assert len(collector.calls) == calls_before_block
+    finally:
+        shutil.rmtree(fixture_root, ignore_errors=False)
+
+
 class RecordingAnalyzeQueue:
     """Analyze-only queue fake that records production calls without artifacts."""
 
@@ -3535,6 +3741,7 @@ def run_lifecycle() -> None:
             assert not web_app.output_dir_for_filename(filename).exists()
 
             assert_report_cover_http_contract(web_app, port, server)
+            assert_taobao_http_contract(web_app, port)
     finally:
         if server is not None:
             server.shutdown()
