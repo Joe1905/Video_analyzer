@@ -102,11 +102,14 @@ def request(
     *,
     body: bytes | None = None,
     content_type: str | None = None,
+    extra_headers: dict[str, str] | None = None,
 ) -> tuple[int, dict[str, str], bytes]:
     if body is None and payload is not None:
         body = json.dumps(payload).encode("utf-8")
         content_type = "application/json"
     headers = {"Content-Type": content_type} if content_type else {}
+    if extra_headers:
+        headers.update(extra_headers)
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     try:
         connection.request(method, path, body=body, headers=headers)
@@ -127,19 +130,33 @@ def json_request(
     return status, headers, json.loads(response_body.decode("utf-8"))
 
 
-def multipart_video(filename: str, content: bytes) -> tuple[bytes, str]:
+def multipart_videos(
+    files: list[tuple[str, bytes]], *, fields: dict[str, str] | None = None
+) -> tuple[bytes, str]:
     boundary = "----v2-workflow-test-boundary"
-    body = b"".join(
-        (
+    parts: list[bytes] = []
+    for name, value in (fields or {}).items():
+        parts.extend((
+            f"--{boundary}\r\n".encode(),
+            f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode(),
+            value.encode(),
+            b"\r\n",
+        ))
+    for filename, content in files:
+        parts.extend((
             f"--{boundary}\r\n".encode(),
             f'Content-Disposition: form-data; name="video"; filename="{filename}"\r\n'.encode(),
             b"Content-Type: video/mp4\r\n\r\n",
             content,
             b"\r\n",
-            f"--{boundary}--\r\n".encode(),
-        )
-    )
+        ))
+    parts.append(f"--{boundary}--\r\n".encode())
+    body = b"".join(parts)
     return body, f"multipart/form-data; boundary={boundary}"
+
+
+def multipart_video(filename: str, content: bytes) -> tuple[bytes, str]:
+    return multipart_videos([(filename, content)])
 
 
 def sse_payload(port: int, path: str) -> dict[str, Any]:
@@ -160,6 +177,144 @@ def wait_for_job(port: int, path: str, terminal_status: str) -> dict[str, Any]:
             return payload
         time.sleep(0.01)
     raise AssertionError(f"job did not reach {terminal_status}: {path}")
+
+
+def assert_upload_http_contract(web_app: Any, port: int) -> None:
+    calls: list[tuple[str, Any]] = []
+
+    def ensure_media(path: Path) -> None:
+        calls.append(("ensure", path.name))
+        if path.name == "invalid.mp4":
+            path.unlink()
+            raise RuntimeError("invalid analyzer video: invalid.mp4")
+
+    def register_upload(**kwargs: Any) -> dict[str, Any]:
+        calls.append(("register", dict(kwargs)))
+        return {}
+
+    def make_visible(source: str, platform: str, video_id: str) -> None:
+        calls.append(("visible", (source, platform, video_id)))
+
+    def start_social(filename: str, *, generate_insights: bool) -> bool:
+        calls.append(("social", (filename, generate_insights)))
+        if filename == "social-error.mp4":
+            raise RuntimeError("fixture social start failure")
+        return True
+
+    with ExitStack() as patches:
+        patches.enter_context(patch.object(web_app, "ensure_analyzer_media_or_delete", side_effect=ensure_media))
+        patches.enter_context(patch.object(web_app, "register_video", side_effect=register_upload))
+        patches.enter_context(patch.object(web_app, "make_web_manual_visible", side_effect=make_visible))
+        patches.enter_context(patch.object(web_app, "start_social_context_job", side_effect=start_social))
+
+        status, _headers, empty_upload = json_request(
+            port, "POST", "/api/upload", body=b"", content_type="multipart/form-data; boundary=fixture"
+        )
+        assert status == 400 and empty_upload == {"error": "Invalid upload size"}
+
+        status, _headers, too_large = json_request(
+            port,
+            "POST",
+            "/api/upload",
+            body=b"",
+            content_type="multipart/form-data; boundary=fixture",
+            extra_headers={"Content-Length": str(web_app.MAX_UPLOAD_BYTES + 1)},
+        )
+        assert status == 400 and too_large == {"error": "Invalid upload size"}
+        assert calls == []
+
+        missing_body, missing_type = multipart_videos([], fields={"source": "manual"})
+        status, _headers, missing_video = json_request(
+            port, "POST", "/api/upload", body=missing_body, content_type=missing_type
+        )
+        assert status == 400 and missing_video == {"error": "Missing video file"}
+
+        empty_name_body, empty_name_type = multipart_videos([("", b"")])
+        status, _headers, empty_name_video = json_request(
+            port, "POST", "/api/upload", body=empty_name_body, content_type=empty_name_type
+        )
+        assert status == 400 and empty_name_video == {"error": "Missing video file"}
+        assert calls == []
+
+        partial_body, partial_type = multipart_videos(
+            [("manual.mp4", b"manual"), ("invalid.mp4", b"invalid"), ("???", b"unsafe")],
+            fields={"source": "api", "source_tag": "manual"},
+        )
+        status, _headers, partial = json_request(
+            port, "POST", "/api/upload", body=partial_body, content_type=partial_type
+        )
+        assert status == 200 and partial == {
+            "files": [{"filename": "manual.mp4", "size": 6}],
+            "errors": [
+                {"filename": "invalid.mp4", "error": "invalid analyzer video: invalid.mp4"},
+                {"filename": "???", "error": "Invalid filename"},
+            ],
+        }
+        assert (web_app.VIDEOS_DIR / "manual.mp4").read_bytes() == b"manual"
+        assert not (web_app.VIDEOS_DIR / "invalid.mp4").exists()
+        assert calls == [
+            ("ensure", "manual.mp4"),
+            ("register", {
+                "video_id": "manual.mp4", "platform": "local", "filename": "manual.mp4",
+                "title": "manual.mp4", "source": web_app.SOURCE_WEB_MANUAL,
+                "hidden_from_analyzer": False,
+            }),
+            ("visible", (web_app.SOURCE_WEB_MANUAL, "local", "manual.mp4")),
+            ("social", ("manual.mp4", False)),
+            ("ensure", "invalid.mp4"),
+        ]
+
+        calls.clear()
+        failed_body, failed_type = multipart_videos(
+            [("invalid.mp4", b"invalid"), ("???", b"unsafe")]
+        )
+        status, _headers, all_failed = json_request(
+            port, "POST", "/api/upload", body=failed_body, content_type=failed_type
+        )
+        assert status == 400 and all_failed == {
+            "files": [],
+            "errors": [
+                {"filename": "invalid.mp4", "error": "invalid analyzer video: invalid.mp4"},
+                {"filename": "???", "error": "Invalid filename"},
+            ],
+        }
+        assert calls == [("ensure", "invalid.mp4")]
+
+        calls.clear()
+        social_body, social_type = multipart_video("social-error.mp4", b"social")
+        status, _headers, social_failure = json_request(
+            port, "POST", "/api/upload", body=social_body, content_type=social_type
+        )
+        assert status == 200 and social_failure == {
+            "files": [{"filename": "social-error.mp4", "size": 6}],
+            "errors": [{"filename": "social-error.mp4", "error": "fixture social start failure"}],
+        }
+        assert calls == [
+            ("ensure", "social-error.mp4"),
+            ("register", {
+                "video_id": "social-error.mp4", "platform": "local", "filename": "social-error.mp4",
+                "title": "social-error.mp4", "source": web_app.SOURCE_API_UPLOAD,
+                "hidden_from_analyzer": True,
+            }),
+            ("visible", (web_app.SOURCE_API_UPLOAD, "local", "social-error.mp4")),
+            ("social", ("social-error.mp4", False)),
+        ]
+
+        calls.clear()
+        blocked_body, blocked_type = multipart_video("blocked.mp4", b"blocked")
+        with patch.object(web_app, "ui_test_mode_allows_live_write", return_value=False), patch.object(
+            web_app.cgi, "FieldStorage", side_effect=AssertionError("UI_TEST gate must run before multipart parsing")
+        ):
+            status, _headers, blocked = json_request(
+                port, "POST", "/api/upload", body=blocked_body, content_type=blocked_type
+            )
+        assert status == 409 and blocked == {
+            "error": "UI 测试模式已拦截写操作，未触发真实业务。",
+            "simulated": True,
+            "status": "blocked",
+            "path": "/api/upload",
+        }
+        assert calls == []
 
 
 class FakeVideoQueue:
@@ -1185,6 +1340,8 @@ def run_lifecycle() -> None:
             thread.start()
             port = server.server_port
 
+            assert_upload_http_contract(web_app, port)
+
             invalid_id = "00000000-0000-0000-0000-000000000001"
             with patch.object(web_app.uuid, "uuid4", return_value=UUID(invalid_id)):
                 status, headers, invalid_download = json_request(
@@ -1630,11 +1787,18 @@ def run_lifecycle() -> None:
             failed_amazon_event = sse_payload(port, f"/api/amazon-events?id={failed_amazon_id}")
             assert failed_amazon_event["status"] == "failed" and failed_amazon_event["error"] == "fixture amazon failure"
 
+            upload_boundary_calls: list[str] = []
             upload_body, upload_type = multipart_video("fixture.mp4", b"not-a-real-video")
-            status, _headers, uploaded = json_request(
-                port, "POST", "/api/upload", body=upload_body, content_type=upload_type
-            )
+            with patch.object(web_app, "register_video", side_effect=lambda **_kwargs: upload_boundary_calls.append("register")), patch.object(
+                web_app, "make_web_manual_visible", side_effect=lambda *_args: upload_boundary_calls.append("visible")
+            ), patch.object(
+                web_app, "start_social_context_job", side_effect=lambda *_args, **_kwargs: upload_boundary_calls.append("social")
+            ):
+                status, _headers, uploaded = json_request(
+                    port, "POST", "/api/upload", body=upload_body, content_type=upload_type
+                )
             assert status == 200 and uploaded["files"] == [{"filename": "fixture.mp4", "size": 16}]
+            assert upload_boundary_calls == ["register", "visible", "social"]
             filename = "fixture.mp4"
             status, _headers, files = json_request(port, "GET", "/api/files")
             assert status == 200 and any(item["name"] == filename for item in files)
