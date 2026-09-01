@@ -403,6 +403,170 @@ class FakeVideoQueue:
         return {}
 
 
+class RecordingAnalyzeQueue:
+    """Analyze-only queue fake that records production calls without artifacts."""
+
+    def __init__(self, *, fail_on: str | None = None) -> None:
+        self.calls: list[tuple[str, str]] = []
+        self.fail_on = fail_on
+
+    def enqueue(self, filename: str, job_type: str) -> None:
+        self.calls.append((filename, job_type))
+        if job_type == self.fail_on:
+            raise RuntimeError(f"fixture {job_type} enqueue failure")
+
+
+def assert_analyze_http_contract(web_app: Any, port: int) -> None:
+    """Freeze the legacy Handler Analyze request and side-effect contract."""
+
+    filename = "analyze-contract.mp4"
+    cleaned_filename = "analyzecontract.mp4"
+    video_path = web_app.VIDEOS_DIR / filename
+    output_dir = web_app.OUTPUT_DIR / "registry-style-analyze-output"
+    web_app.VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
+    video_path.write_bytes(b"fixture analyze video")
+    (web_app.VIDEOS_DIR / cleaned_filename).write_bytes(b"fixture cleaned analyze video")
+
+    output_requests: list[str] = []
+
+    def registry_style_output_dir(requested_filename: str) -> Path:
+        output_requests.append(requested_filename)
+        assert requested_filename in {filename, cleaned_filename}
+        return output_dir
+
+    def remove_output_dir() -> None:
+        if output_dir.exists():
+            shutil.rmtree(output_dir)
+        output_requests.clear()
+
+    queue = RecordingAnalyzeQueue()
+    with patch.object(web_app, "output_dir_for_filename", side_effect=registry_style_output_dir), patch.object(
+        web_app, "video_queue", queue
+    ):
+        for payload, error in (
+            ({}, "Missing filename"),
+            ({"filename": ""}, "Missing filename"),
+            ({"filename": filename, "analysis_mode": "unsupported"}, "analysis_mode must be analyzer or direct_video"),
+            ({"filename": filename, "analysis_prompt": "x" * 12001}, "analysis_prompt is too long"),
+            ({"filename": "missing-analyze-contract.mp4"}, "Video file not found: missing-analyze-contract.mp4"),
+        ):
+            status, _headers, response = json_request(port, "POST", "/api/analyze", payload)
+            assert status == 400 and response == {"error": error}
+            assert queue.calls == [] and output_requests == [] and not output_dir.exists()
+
+        status, _headers, malformed = json_request(
+            port, "POST", "/api/analyze", body=b"{", content_type="application/json"
+        )
+        assert status == 400 and malformed.get("error")
+        assert queue.calls == [] and output_requests == [] and not output_dir.exists()
+
+        with patch.dict(os.environ, {"ANALYSIS_MODE": "direct_video"}):
+            status, _headers, queued_default = json_request(port, "POST", "/api/analyze", {"filename": filename})
+        assert status == 202 and queued_default == {
+            "status": "queued", "filename": filename, "queued": ["analyze"]
+        }
+        assert output_requests == [filename] and queue.calls == [(filename, "analyze")]
+        assert (output_dir / "analysis_mode.txt").read_text(encoding="utf-8") == "direct_video"
+
+        queue.calls.clear()
+        output_requests.clear()
+        status, _headers, queued_explicit = json_request(
+            port,
+            "POST",
+            "/api/analyze",
+            {"filename": filename, "analysis_mode": "analyzer", "analysis_prompt": "  trimmed prompt  ", "postprocess": "false"},
+        )
+        assert status == 202 and queued_explicit["queued"] == ["analyze", "report"]
+        assert output_requests == [filename]
+        assert queue.calls == [(filename, "analyze"), (filename, "report")]
+        assert (output_dir / "analysis_mode.txt").read_text(encoding="utf-8") == "analyzer"
+        prompt_path = output_dir / "analysis_prompt.txt"
+        assert prompt_path.read_text(encoding="utf-8") == "trimmed prompt"
+
+        queue.calls.clear()
+        output_requests.clear()
+        prompt_path.write_text("existing prompt", encoding="utf-8")
+        status, _headers, empty_prompt = json_request(
+            port, "POST", "/api/analyze", {"filename": filename, "analysis_prompt": "   "}
+        )
+        assert status == 202 and empty_prompt["queued"] == ["analyze"]
+        assert output_requests == [filename] and queue.calls == [(filename, "analyze")]
+        assert prompt_path.read_text(encoding="utf-8") == "existing prompt"
+
+        remove_output_dir()
+        queue.calls.clear()
+        status, _headers, cleaned = json_request(port, "POST", "/api/analyze", {"filename": "analyze!contract.mp4"})
+        assert status == 202 and cleaned == {
+            "status": "queued", "filename": cleaned_filename, "queued": ["analyze"]
+        }
+        assert output_requests == [cleaned_filename] and queue.calls == [(cleaned_filename, "analyze")]
+        assert (output_dir / "analysis_mode.txt").read_text(encoding="utf-8") == "analyzer"
+
+        remove_output_dir()
+        output_dir.mkdir(parents=True)
+        (output_dir / "obsolete.json").write_text("obsolete", encoding="utf-8")
+        (output_dir / "nested").mkdir()
+        (output_dir / "nested" / "obsolete.txt").write_text("obsolete", encoding="utf-8")
+        queue.calls.clear()
+        status, _headers, reset_analyzer = json_request(
+            port, "POST", "/api/analyze", {"filename": filename, "analysis_mode": "analyzer", "reset_output": True}
+        )
+        assert status == 202 and reset_analyzer["queued"] == ["analyze"]
+        assert queue.calls == [(filename, "analyze")]
+        assert not (output_dir / "obsolete.json").exists() and not (output_dir / "nested").exists()
+        assert (output_dir / "analysis_mode.txt").read_text(encoding="utf-8") == "analyzer"
+
+        (output_dir / "direct_analysis.json").write_text("direct", encoding="utf-8")
+        (output_dir / "direct_analysis_zh.json").write_text("direct zh", encoding="utf-8")
+        (output_dir / "analysis.json").write_text("keep analysis", encoding="utf-8")
+        (output_dir / "keep.txt").write_text("keep", encoding="utf-8")
+        queue.calls.clear()
+        status, _headers, reset_direct = json_request(
+            port, "POST", "/api/analyze", {"filename": filename, "analysis_mode": "direct_video", "reset_output": True}
+        )
+        assert status == 202 and reset_direct["queued"] == ["analyze"]
+        assert queue.calls == [(filename, "analyze")]
+        assert not (output_dir / "direct_analysis.json").exists()
+        assert not (output_dir / "direct_analysis_zh.json").exists()
+        assert (output_dir / "analysis.json").read_text(encoding="utf-8") == "keep analysis"
+        assert (output_dir / "keep.txt").read_text(encoding="utf-8") == "keep"
+
+    remove_output_dir()
+    failing_queue = RecordingAnalyzeQueue(fail_on="report")
+    with patch.object(web_app, "output_dir_for_filename", side_effect=registry_style_output_dir), patch.object(
+        web_app, "video_queue", failing_queue
+    ):
+        try:
+            json_request(port, "POST", "/api/analyze", {"filename": filename, "postprocess": True})
+        except http.client.RemoteDisconnected:
+            pass
+        else:
+            raise AssertionError("second enqueue failure must close the legacy Handler response")
+    assert output_requests == [filename]
+    assert failing_queue.calls == [(filename, "analyze"), (filename, "report")]
+    assert (output_dir / "analysis_mode.txt").read_text(encoding="utf-8") == "analyzer"
+
+    remove_output_dir()
+    blocked_queue = RecordingAnalyzeQueue(fail_on="analyze")
+    with patch.object(web_app, "ui_test_mode_allows_live_write", return_value=False), patch.object(
+        web_app, "video_queue", blocked_queue
+    ), patch.object(
+        web_app, "output_dir_for_filename", side_effect=AssertionError("UI_TEST gate must run before output lookup")
+    ), patch.object(
+        web_app.Handler, "handle_analyze", side_effect=AssertionError("UI_TEST gate must run before body parsing")
+    ):
+        status, _headers, blocked = json_request(
+            port, "POST", "/api/analyze", body=b"{", content_type="application/json"
+        )
+    assert status == 409 and blocked == {
+        "error": "UI 测试模式已拦截写操作，未触发真实业务。",
+        "simulated": True,
+        "status": "blocked",
+        "path": "/api/analyze",
+    }
+    assert blocked_queue.calls == [] and not output_dir.exists()
+
+
 def assert_real_download_worker_registry_updates(web_app: Any) -> None:
     registry = JobRegistry()
     service = make_download_service(web_app, registry)
@@ -1391,6 +1555,7 @@ def run_lifecycle() -> None:
             port = server.server_port
 
             assert_upload_http_contract(web_app, port)
+            assert_analyze_http_contract(web_app, port)
 
             invalid_id = "00000000-0000-0000-0000-000000000001"
             with patch.object(web_app.uuid, "uuid4", return_value=UUID(invalid_id)):
