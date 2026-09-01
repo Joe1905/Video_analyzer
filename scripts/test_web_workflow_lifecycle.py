@@ -1172,6 +1172,7 @@ def run_lifecycle() -> None:
             patches.enter_context(patch.object(composed_download_service, "_make_web_manual_visible", side_effect=lambda *_args: None))
             patches.enter_context(patch.object(composed_download_service, "_start_social_context_job", side_effect=lambda *_args, **_kwargs: None))
             patches.enter_context(patch.object(composed_download_service, "_analyzer_media_is_valid", side_effect=lambda _path: True))
+            patches.enter_context(patch.object(web_app, "analyzer_media_is_valid", side_effect=lambda _path: True))
 
             assert_real_download_worker_registry_updates(web_app)
             assert_real_shop_worker_registry_updates(web_app)
