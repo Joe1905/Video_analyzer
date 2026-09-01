@@ -641,16 +641,14 @@ def assert_result_http_contract(web_app: Any, port: int, server: Any) -> None:
 
             server.handle_error = capture_handler_error
             try:
-                broken_analysis = output_root / "broken-analysis.mp4"
-                broken_analysis.mkdir(parents=True)
-                (broken_analysis / "analysis.json").write_text("{", encoding="utf-8")
-                assert_json_disconnect("broken-analysis.mp4")
-
-                broken_later = output_root / "broken-later.mp4"
-                broken_later.mkdir(parents=True)
-                (broken_later / "analysis.json").write_text("{}", encoding="utf-8")
-                (broken_later / "analysis_zh.json").write_text("{", encoding="utf-8")
-                assert_json_disconnect("broken-later.mp4")
+                for index, broken_path_name in enumerate(artifact_files.values()):
+                    broken_name = f"broken-{index}.mp4"
+                    broken_dir = output_root / broken_name
+                    broken_dir.mkdir(parents=True)
+                    for path_name in artifact_files.values():
+                        content = "{" if path_name == broken_path_name else "{}"
+                        (broken_dir / path_name).write_text(content, encoding="utf-8")
+                    assert_json_disconnect(broken_name)
             finally:
                 server.handle_error = original_handle_error
     finally:
