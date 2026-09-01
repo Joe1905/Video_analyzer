@@ -29,7 +29,10 @@ from services.shop import ShopJob, ShopService
 from services.metrics import MetricsJob, MetricsService
 from services.amazon import AmazonJob, AmazonService, parse_json_from_process_output
 from services.downloads import DownloadJob, DownloadService
+from services.upload import UploadService
 from jobs.registry import JobRegistry
+from routes.router import Router
+from routes.upload import MAX_UPLOAD_BYTES as UPLOAD_MAX_UPLOAD_BYTES, register_upload_routes
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -201,12 +204,23 @@ def assert_upload_http_contract(web_app: Any, port: int) -> None:
             raise RuntimeError("fixture social start failure")
         return True
 
-    with ExitStack() as patches:
-        patches.enter_context(patch.object(web_app, "ensure_analyzer_media_or_delete", side_effect=ensure_media))
-        patches.enter_context(patch.object(web_app, "register_video", side_effect=register_upload))
-        patches.enter_context(patch.object(web_app, "make_web_manual_visible", side_effect=make_visible))
-        patches.enter_context(patch.object(web_app, "start_social_context_job", side_effect=start_social))
-
+    service = UploadService(
+        videos_dir=web_app.VIDEOS_DIR,
+        safe_filename=web_app.safe_filename,
+        ensure_analyzer_media_or_delete=ensure_media,
+        register_video=register_upload,
+        video_source_hidden=web_app.video_source_hidden,
+        make_web_manual_visible=make_visible,
+        start_social_context_job=start_social,
+    )
+    router = Router()
+    register_upload_routes(
+        router,
+        service,
+        normalize_video_source=web_app.normalize_video_source,
+        default_source=web_app.SOURCE_API_UPLOAD,
+    )
+    with patch.object(web_app, "WEB_ROUTER", router):
         status, _headers, empty_upload = json_request(
             port, "POST", "/api/upload", body=b"", content_type="multipart/form-data; boundary=fixture"
         )
@@ -218,7 +232,7 @@ def assert_upload_http_contract(web_app: Any, port: int) -> None:
             "/api/upload",
             body=b"",
             content_type="multipart/form-data; boundary=fixture",
-            extra_headers={"Content-Length": str(web_app.MAX_UPLOAD_BYTES + 1)},
+            extra_headers={"Content-Length": str(UPLOAD_MAX_UPLOAD_BYTES + 1)},
         )
         assert status == 400 and too_large == {"error": "Invalid upload size"}
         assert calls == []
@@ -303,7 +317,7 @@ def assert_upload_http_contract(web_app: Any, port: int) -> None:
         calls.clear()
         blocked_body, blocked_type = multipart_video("blocked.mp4", b"blocked")
         with patch.object(web_app, "ui_test_mode_allows_live_write", return_value=False), patch.object(
-            web_app.cgi, "FieldStorage", side_effect=AssertionError("UI_TEST gate must run before multipart parsing")
+            service, "upload", side_effect=AssertionError("UI_TEST gate must run before upload service")
         ):
             status, _headers, blocked = json_request(
                 port, "POST", "/api/upload", body=blocked_body, content_type=blocked_type
@@ -1787,18 +1801,23 @@ def run_lifecycle() -> None:
             failed_amazon_event = sse_payload(port, f"/api/amazon-events?id={failed_amazon_id}")
             assert failed_amazon_event["status"] == "failed" and failed_amazon_event["error"] == "fixture amazon failure"
 
-            upload_boundary_calls: list[str] = []
+            upload_sources: list[str] = []
+
+            def fixture_upload(file_items: list[Any], *, source: str) -> dict[str, list[dict[str, Any]]]:
+                upload_sources.append(source)
+                assert len(file_items) == 1 and file_items[0].filename == "fixture.mp4"
+                target = web_app.VIDEOS_DIR / "fixture.mp4"
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfileobj(file_items[0].file, target)
+                return {"files": [{"filename": target.name, "size": target.stat().st_size}], "errors": []}
+
             upload_body, upload_type = multipart_video("fixture.mp4", b"not-a-real-video")
-            with patch.object(web_app, "register_video", side_effect=lambda **_kwargs: upload_boundary_calls.append("register")), patch.object(
-                web_app, "make_web_manual_visible", side_effect=lambda *_args: upload_boundary_calls.append("visible")
-            ), patch.object(
-                web_app, "start_social_context_job", side_effect=lambda *_args, **_kwargs: upload_boundary_calls.append("social")
-            ):
+            with patch.object(web_app.upload_service, "upload", side_effect=fixture_upload):
                 status, _headers, uploaded = json_request(
                     port, "POST", "/api/upload", body=upload_body, content_type=upload_type
                 )
             assert status == 200 and uploaded["files"] == [{"filename": "fixture.mp4", "size": 16}]
-            assert upload_boundary_calls == ["register", "visible", "social"]
+            assert upload_sources == [web_app.SOURCE_API_UPLOAD]
             filename = "fixture.mp4"
             status, _headers, files = json_request(port, "GET", "/api/files")
             assert status == 200 and any(item["name"] == filename for item in files)

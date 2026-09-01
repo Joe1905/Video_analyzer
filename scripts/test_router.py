@@ -243,6 +243,9 @@ class RouterTests(unittest.TestCase):
             elif route_file.name == "downloads.py":
                 allowed_imports.update({"json", "time"})
                 allowed_from_modules.add("services.downloads")
+            elif route_file.name == "upload.py":
+                allowed_imports.add("cgi")
+                allowed_from_modules.add("services.upload")
             for node in ast.walk(module):
                 if isinstance(node, ast.Import):
                     for alias in node.names:
@@ -250,7 +253,7 @@ class RouterTests(unittest.TestCase):
                 elif isinstance(node, ast.ImportFrom) and node.module:
                     self.assertIn(node.module, allowed_from_modules)
                     self.assertNotIn("web_app", node.module)
-                    if route_file.name not in {"shop.py", "metrics.py", "amazon.py", "downloads.py"}:
+                    if route_file.name not in {"shop.py", "metrics.py", "amazon.py", "downloads.py", "upload.py"}:
                         self.assertFalse(node.module.startswith("services."))
             if route_file.name == "router.py":
                 imports = {
@@ -281,6 +284,7 @@ class RouterTests(unittest.TestCase):
             {
                 "routes.amazon",
                 "routes.downloads",
+                "routes.upload",
                 "routes.health",
                 "routes.extract",
                 "routes.harness",
@@ -345,6 +349,91 @@ class RouterTests(unittest.TestCase):
         self.assertNotIn("def stream_download_events(", source)
         self.assertNotIn("def handle_download(", source)
         self.assertIn('if parsed.path == "/api/analyze":', source)
+
+    def test_upload_route_and_composition_are_explicit(self) -> None:
+        root = Path(__file__).resolve().parent
+        upload_route = ast.parse((root / "routes" / "upload.py").read_text(encoding="utf-8"))
+        post_paths = [
+            node.args[0].value
+            for node in ast.walk(upload_route)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "post"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ]
+        self.assertEqual(post_paths, ["/api/upload"])
+
+        web_app = ast.parse((root / "web_app.py").read_text(encoding="utf-8"))
+        imported = {
+            (node.module, alias.name)
+            for node in ast.walk(web_app)
+            if isinstance(node, ast.ImportFrom) and node.module
+            for alias in node.names
+        }
+        self.assertIn(("routes.upload", "register_upload_routes"), imported)
+        self.assertIn(("services.upload", "UploadService"), imported)
+
+        upload_service_calls = [
+            node for node in ast.walk(web_app)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "UploadService"
+        ]
+        self.assertEqual(len(upload_service_calls), 1)
+        upload_keywords = {keyword.arg: keyword.value for keyword in upload_service_calls[0].keywords}
+        expected_upload_injection = {
+            "videos_dir": "VIDEOS_DIR",
+            "safe_filename": "safe_filename",
+            "ensure_analyzer_media_or_delete": "ensure_analyzer_media_or_delete",
+            "register_video": "register_video",
+            "video_source_hidden": "video_source_hidden",
+            "make_web_manual_visible": "make_web_manual_visible",
+            "start_social_context_job": "start_social_context_job",
+        }
+        self.assertEqual(
+            {name: ast.unparse(upload_keywords[name]) for name in upload_keywords},
+            expected_upload_injection,
+        )
+
+        register_calls = [
+            node for node in ast.walk(web_app)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "register_upload_routes"
+        ]
+        self.assertEqual(len(register_calls), 1)
+        register_call = register_calls[0]
+        self.assertEqual([arg.id for arg in register_call.args if isinstance(arg, ast.Name)], ["WEB_ROUTER", "upload_service"])
+        self.assertEqual(
+            [(keyword.arg, keyword.value.id if isinstance(keyword.value, ast.Name) else None) for keyword in register_call.keywords],
+            [("normalize_video_source", "normalize_video_source"), ("default_source", "SOURCE_API_UPLOAD")],
+        )
+
+        self.assertFalse(
+            any(
+                isinstance(node, (ast.Assign, ast.AnnAssign))
+                and any(
+                    isinstance(target, ast.Name) and target.id == "MAX_UPLOAD_BYTES"
+                    for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
+                )
+                for node in ast.walk(web_app)
+            )
+        )
+        handler = next(node for node in web_app.body if isinstance(node, ast.ClassDef) and node.name == "Handler")
+        self.assertFalse(any(isinstance(node, ast.FunctionDef) and node.name == "handle_upload" for node in handler.body))
+        post_method = next(node for node in handler.body if isinstance(node, ast.FunctionDef) and node.name == "do_POST")
+        self.assertNotIn(
+            "/api/upload",
+            {node.value for node in ast.walk(post_method) if isinstance(node, ast.Constant) and isinstance(node.value, str)},
+        )
+        registered_post = next(
+            node for node in web_app.body
+            if isinstance(node, ast.FunctionDef) and node.name == "is_registered_post_route"
+        )
+        self.assertNotIn(
+            "/api/upload",
+            {node.value for node in ast.walk(registered_post) if isinstance(node, ast.Constant) and isinstance(node.value, str)},
+        )
 
 
 if __name__ == "__main__":
