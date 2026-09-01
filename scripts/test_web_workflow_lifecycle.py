@@ -585,9 +585,11 @@ def assert_real_amazon_worker_registry_updates(web_app: Any, runner: Any) -> Non
 
         error_process_output = json.dumps({"status": "ERROR", "message": "fixture scraper error"}) + "\n"
         with patch.object(web_app, "ensure_us_proxy", side_effect=lambda *_args, **_kwargs: None), patch.object(
+            web_app,
+            "subprocess",
             subprocess,
-            "Popen",
-            return_value=FakeAmazonProcess([error_process_output], 9),
+        ), patch.object(
+            subprocess, "Popen", return_value=FakeAmazonProcess([error_process_output], 9)
         ), patch.object(web_app, "get_cached_or_call", side_effect=cache_result_error):
             runner(error_id)
         result_error = registry.snapshot(error_id)
