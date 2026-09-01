@@ -309,6 +309,16 @@ def assert_public_payloads(web_app: Any, jobs: dict[str, Any]) -> dict[str, dict
     assert payloads["metrics"]["result"] == {"metric": {"views": 7}}
     assert payloads["amazon"]["result"] == {"products": [{"asin": "B000FIXTURE"}]}
 
+    direct_metrics_result = {"metric": {"nested": ["fixture"]}}
+    direct_metrics_payload = web_app.public_metrics_job(jobs["metrics"], result=direct_metrics_result)
+    assert direct_metrics_payload["result"] == direct_metrics_result
+    assert direct_metrics_payload["result"] is not direct_metrics_result
+    assert direct_metrics_payload["result"]["metric"] is not direct_metrics_result["metric"]
+    direct_metrics_payload["result"]["metric"]["nested"].append("payload-mutated")
+    assert direct_metrics_result == {"metric": {"nested": ["fixture"]}}
+    direct_metrics_result["metric"]["nested"].append("source-mutated")
+    assert direct_metrics_payload["result"] == {"metric": {"nested": ["fixture", "payload-mutated"]}}
+
     original_shop_extract = payloads["shop"]["extract"]
     original_shop_analysis = payloads["shop"]["analysis"]
     original_metrics_result = payloads["metrics"]["result"]
@@ -401,6 +411,65 @@ def assert_no_metrics_legacy_store() -> None:
         and node.attr in {"_jobs", "_lock"}
     ]
     assert not private_registry_access
+
+    module_functions = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert {
+        "append_metrics_log",
+        "run_metrics_command",
+        "run_metrics_job",
+        "public_metrics_job",
+    } <= module_functions.keys()
+    handler = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "Handler"
+    )
+    handler_methods = {
+        node.name: node
+        for node in handler.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert {"do_POST", "stream_metrics_events", "handle_video_metrics"} <= handler_methods.keys()
+    metrics_scopes = [
+        *(module_functions[name] for name in ("append_metrics_log", "run_metrics_command", "run_metrics_job", "public_metrics_job")),
+        *(handler_methods[name] for name in ("stream_metrics_events", "handle_video_metrics")),
+    ]
+    assert not [
+        call
+        for scope in metrics_scopes
+        for call in ast.walk(scope)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and isinstance(call.func.value, ast.Name)
+        and call.func.value.id == "os"
+        and call.func.attr == "getenv"
+    ]
+
+    post = handler_methods["do_POST"]
+    registered_intercept = next(
+        call for call in ast.walk(post)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Name)
+        and call.func.id == "is_registered_post_route"
+    )
+    live_write_intercept = next(
+        call for call in ast.walk(post)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Name)
+        and call.func.id == "ui_test_mode_allows_live_write"
+    )
+    metrics_dispatch = next(
+        call for call in ast.walk(post)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and isinstance(call.func.value, ast.Name)
+        and call.func.value.id == "self"
+        and call.func.attr == "handle_video_metrics"
+    )
+    assert registered_intercept.lineno < live_write_intercept.lineno < metrics_dispatch.lineno
 
 
 def assert_no_shop_legacy_store() -> None:
@@ -845,6 +914,111 @@ def assert_get_and_sse_contracts(web_app: Any, jobs: dict[str, Any]) -> None:
         assert post_order == ["register", "thread.start", "snapshot", "result.json", "serializer"]
     finally:
         web_app.amazon_job_registry = original_amazon_registry
+
+
+def assert_metrics_artifact_failures_and_broken_pipe(web_app: Any) -> None:
+    original_registry = web_app.metrics_job_registry
+    registry = web_app.JobRegistry()
+    web_app.metrics_job_registry = registry
+    try:
+        missing_artifact = web_app.MetricsJob(
+            id="metrics-artifact-missing",
+            target="@fixture",
+            endpoint="profile",
+            status="complete",
+            created_at=35.0,
+            updated_at=36.0,
+            output_dir="output/tiktok_api/metrics-artifact-missing",
+        )
+        registry.register(missing_artifact.id, missing_artifact)
+        expected_missing = web_app.public_metrics_job(missing_artifact, result=None)
+        assert_json_response(
+            dispatch_get(web_app, f"/api/video-metrics-job?id={missing_artifact.id}"),
+            200,
+            expected_missing,
+        )
+        assert_sse_response(
+            dispatch_get(web_app, f"/api/video-metrics-events?id={missing_artifact.id}"),
+            expected_missing,
+        )
+
+        invalid_artifact = web_app.MetricsJob(
+            id="metrics-artifact-invalid",
+            target="@fixture-invalid",
+            endpoint="profile",
+            status="complete",
+            created_at=37.0,
+            updated_at=38.0,
+            output_dir="output/tiktok_api/metrics-artifact-invalid",
+        )
+        registry.register(invalid_artifact.id, invalid_artifact)
+        invalid_path = web_app.OUTPUT_DIR / "tiktok_api" / invalid_artifact.id / "result.json"
+        invalid_path.parent.mkdir(parents=True, exist_ok=True)
+        invalid_path.write_text("{invalid", encoding="utf-8")
+
+        invalid_get = FakeHandler(f"/api/video-metrics-job?id={invalid_artifact.id}")
+        try:
+            web_app.Handler.do_GET(invalid_get)
+        except json.JSONDecodeError:
+            pass
+        else:
+            raise AssertionError("invalid Metrics artifact must propagate from GET")
+        assert invalid_get.responses == []
+        assert invalid_get.response_headers == []
+        assert invalid_get.wfile.getvalue() == b""
+        assert invalid_get.ended is False
+
+        invalid_sse = FakeHandler(f"/api/video-metrics-events?id={invalid_artifact.id}")
+        invalid_sse.stream_metrics_events = web_app.Handler.stream_metrics_events.__get__(invalid_sse, FakeHandler)
+        try:
+            web_app.Handler.do_GET(invalid_sse)
+        except json.JSONDecodeError:
+            pass
+        else:
+            raise AssertionError("invalid Metrics artifact must propagate from SSE")
+        assert invalid_sse.responses == [200]
+        assert invalid_sse.header("Content-Type") == "text/event-stream; charset=utf-8"
+        assert invalid_sse.header("Cache-Control") == "no-cache"
+        assert invalid_sse.header("Connection") == "keep-alive"
+        assert invalid_sse.ended is True
+        assert invalid_sse.wfile.getvalue() == b""
+        assert invalid_sse.close_connection is False
+
+        class BrokenPipeWriter:
+            def __init__(self) -> None:
+                self.write_attempts = 0
+
+            def write(self, _data: bytes) -> int:
+                self.write_attempts += 1
+                raise BrokenPipeError
+
+            def flush(self) -> None:
+                return None
+
+        def assert_event_headers(handler: FakeHandler) -> None:
+            assert handler.responses == [200]
+            assert handler.header("Content-Type") == "text/event-stream; charset=utf-8"
+            assert handler.header("Cache-Control") == "no-cache"
+            assert handler.header("Connection") == "keep-alive"
+            assert handler.ended is True
+
+        missing_pipe = FakeHandler("/api/video-metrics-events?id=missing-metrics-job")
+        missing_pipe.wfile = BrokenPipeWriter()
+        missing_pipe.stream_metrics_events = web_app.Handler.stream_metrics_events.__get__(missing_pipe, FakeHandler)
+        web_app.Handler.do_GET(missing_pipe)
+        assert_event_headers(missing_pipe)
+        assert missing_pipe.wfile.write_attempts == 1
+        assert missing_pipe.close_connection is True
+
+        normal_pipe = FakeHandler(f"/api/video-metrics-events?id={missing_artifact.id}")
+        normal_pipe.wfile = BrokenPipeWriter()
+        normal_pipe.stream_metrics_events = web_app.Handler.stream_metrics_events.__get__(normal_pipe, FakeHandler)
+        web_app.Handler.do_GET(normal_pipe)
+        assert_event_headers(normal_pipe)
+        assert normal_pipe.wfile.write_attempts == 1
+        assert normal_pipe.close_connection is True
+    finally:
+        web_app.metrics_job_registry = original_registry
 
 
 def assert_shop_artifact_failure_contract(web_app: Any) -> None:
@@ -1392,6 +1566,7 @@ def run_contract() -> None:
         assert_public_payloads(web_app, jobs)
         assert_post_order_contracts(web_app)
         assert_get_and_sse_contracts(web_app, jobs)
+        assert_metrics_artifact_failures_and_broken_pipe(web_app)
         assert_shop_artifact_failure_contract(web_app)
         assert_shop_route_defaults_and_broken_pipe(web_app)
         assert_shop_composition_contract(web_app)

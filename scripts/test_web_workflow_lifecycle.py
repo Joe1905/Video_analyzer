@@ -298,11 +298,19 @@ def assert_real_metrics_worker_registry_updates(web_app: Any, runner: Any) -> No
             assert registry.status(job_id) == "complete"
             assert len(commands) == 1
             command = commands[0]
-            assert command[command.index("--endpoint") + 1] == endpoint
+            expected_command = [
+                "python",
+                str(web_app.SCRIPTS_DIR / "sociavault_tiktok.py"),
+                "--endpoint",
+                endpoint,
+                "--output",
+                str(web_app.OUTPUT_DIR / "tiktok_api" / job_id / "result.json"),
+            ]
             if expected_flag is None:
                 assert not target_flags & set(command)
             else:
-                assert command[command.index(expected_flag) + 1] == expected_value
+                expected_command.extend([expected_flag, expected_value])
+            assert command == expected_command
 
         failure_id = "metrics-worker-failure"
         registry.register(failure_id, web_app.MetricsJob(id=failure_id, target="@fixture", endpoint="profile"))
@@ -996,9 +1004,17 @@ def run_lifecycle() -> None:
                 {"target": "", "endpoint": "music-popular"},
             )
             assert status == 202 and music_popular_metrics["status"] in {"queued", "running"}
+            assert music_popular_metrics["target"] == ""
+            assert music_popular_metrics["endpoint"] == "music-popular"
             assert metrics_success_started.wait(timeout=5)
             metrics_success_release.set()
-            wait_for_job(port, f"/api/video-metrics-job?id={music_popular_metrics['id']}", "complete")
+            music_popular_job = wait_for_job(
+                port,
+                f"/api/video-metrics-job?id={music_popular_metrics['id']}",
+                "complete",
+            )
+            assert music_popular_job["target"] == ""
+            assert music_popular_job["endpoint"] == "music-popular"
 
             invalid_amazon_requests = (
                 ({}, "Amazon URL, ASIN, or keyword is required"),
