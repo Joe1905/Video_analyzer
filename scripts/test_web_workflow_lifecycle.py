@@ -1223,6 +1223,193 @@ def assert_taobao_http_contract(web_app: Any, port: int) -> None:
         shutil.rmtree(fixture_root, ignore_errors=False)
 
 
+def assert_lan_chat_http_contract(web_app: Any, port: int) -> None:
+    """Freeze LAN Chat's representative HTTP/SSE contract before route extraction."""
+
+    from io import BytesIO
+
+    users = [
+        dict(web_app.PUBLIC_GLOBAL_USER),
+        {"id": "feishu-1", "feishuId": "feishu-1", "name": "Fixture", "kind": "feishu"},
+        {"id": "feishu-2", "feishuId": "feishu-2", "name": "Other", "kind": "feishu"},
+    ]
+    class Store:
+        def __init__(self) -> None:
+            self.calls: list[tuple[Any, ...]] = []
+            self.batches: list[list[dict[str, Any]]] = []
+            self.writer: Any | None = None
+
+        def authenticate(self, token: str) -> dict[str, str]:
+            self.calls.append(("authenticate", token))
+            if token == "foreign-token":
+                return {"id": "device-2", "feishuUserId": "feishu-2"}
+            if token in {"header-token", "media-cookie-token", "sse-token"}:
+                return {"id": "device-1", "feishuUserId": "feishu-1"}
+            raise web_app.LanChatError("fixture invalid token", 401)
+
+        def public_bootstrap(self) -> dict[str, str]:
+            self.calls.append(("public_bootstrap",))
+            return {"scope": "public"}
+
+        def bootstrap(self, token: str) -> dict[str, str]:
+            self.calls.append(("bootstrap", token))
+            return {"scope": "private", "token": token}
+
+        def select_account(self, owner: str, account: str) -> dict[str, str]:
+            self.calls.append(("select_account", owner, account))
+            return {"accountId": account}
+
+        def open_direct(self, token: str, target: str) -> dict[str, str]:
+            self.calls.append(("open_direct", token, target))
+            return {"id": "room-fixture"}
+
+        def wait_for_message_events(self, token: str, cursor: int, timeout: float) -> list[dict[str, Any]]:
+            self.calls.append(("events", token, cursor, timeout))
+            result = self.batches.pop(0) if self.batches else []
+            if self.writer is not None:
+                self.writer.closed = True
+            return result
+
+    class Writer:
+        def __init__(self, disconnect: type[OSError] | None = None) -> None:
+            self.buffer, self.disconnect, self.closed, self.flushes = BytesIO(), disconnect, False, 0
+
+        def write(self, data: bytes) -> int:
+            if self.disconnect:
+                raise self.disconnect()
+            return self.buffer.write(data)
+
+        def flush(self) -> None:
+            self.flushes += 1
+
+        def getvalue(self) -> bytes:
+            return self.buffer.getvalue()
+
+    class SseHandler:
+        def __init__(self, token: str, writer: Writer) -> None:
+            self.headers = {"X-Lan-Chat-Token": token, "Cookie": f"{web_app.GLOBAL_USER_COOKIE}=feishu-1"}
+            self.wfile, self.responses, self.sent_headers, self.close_connection = writer, [], [], False
+
+        def send_response(self, status: Any) -> None:
+            self.responses.append(status)
+
+        def send_header(self, key: str, value: str) -> None:
+            self.sent_headers.append((key, value))
+
+        def end_headers(self) -> None:
+            pass
+
+    store = Store()
+    owner_cookie = {"Cookie": f"{web_app.GLOBAL_USER_COOKIE}=feishu-1"}
+    private_headers = {**owner_cookie, "X-Lan-Chat-Token": "header-token"}
+    priority_headers = {
+        "X-Lan-Chat-Token": "header-token",
+        "Cookie": f"{web_app.GLOBAL_USER_COOKIE}=feishu-1; {web_app.LAN_CHAT_MEDIA_COOKIE}=media-cookie-token",
+    }
+    try:
+        with patch.object(web_app, "lan_chat_store", store), patch.object(web_app, "_global_users", return_value=(users, {})):
+            status, _headers, payload = json_request(port, "GET", "/api/lan-chat/bootstrap")
+            assert status == 200 and payload == {"scope": "public"}
+            status, _headers, payload = json_request(port, "GET", "/api/lan-chat/bootstrap", extra_headers=priority_headers)
+            assert status == 200 and payload == {"scope": "private", "token": "header-token"}
+            assert ("authenticate", "header-token") in store.calls and ("bootstrap", "header-token") in store.calls
+            status, _headers, payload = json_request(
+                port,
+                "GET",
+                "/api/lan-chat/bootstrap",
+                extra_headers={"Cookie": f"{web_app.GLOBAL_USER_COOKIE}=feishu-1; {web_app.LAN_CHAT_MEDIA_COOKIE}=media-cookie-token"},
+            )
+            assert status == 200 and payload == {"scope": "private", "token": "media-cookie-token"}
+
+            status, _headers, payload = json_request(port, "POST", "/api/lan-chat/direct", {"targetUserId": "peer"})
+            assert status == 403 and payload == {"error": "公共账户为只读模式"}
+            status, _headers, payload = json_request(
+                port, "POST", "/api/lan-chat/direct", {"targetUserId": "peer"}, extra_headers={**owner_cookie, "X-Lan-Chat-Token": "foreign-token"}
+            )
+            assert status == 401 and payload == {"error": "设备账户不属于当前飞书用户，请重新选择账户"}
+            status, _headers, payload = json_request(
+                port, "POST", "/api/lan-chat/select-account", {"feishuUserId": "feishu-2", "accountId": "other"}, extra_headers=owner_cookie
+            )
+            assert status == 403 and payload == {"error": "不能选择其他飞书用户的设备账户"}
+
+            field_storage = Mock(side_effect=AssertionError("multipart body must not be parsed"))
+            with patch.object(web_app.cgi, "FieldStorage", field_storage):
+                for path in ("/api/lan-chat/rooms/room/media", "/api/lan-chat/rooms/room/files", "/api/lan-chat/rooms/room/file-archives"):
+                    for headers, code in (({"Content-Length": "invalid"}, 403), ({**owner_cookie, "X-Lan-Chat-Token": "foreign-token", "Content-Length": "invalid"}, 401)):
+                        status, _headers, payload = json_request(port, "POST", path, body=b"x", content_type="multipart/form-data; boundary=fixture", extra_headers=headers)
+                        assert status == code and payload["error"]
+            assert field_storage.call_count == 0
+
+            class ReadForbidden:
+                calls = 0
+
+                def read(self, _size: int = -1) -> bytes:
+                    self.calls += 1
+                    raise AssertionError("multipart body must not be read before authorization")
+
+            for path, headers, code in (
+                ("/api/lan-chat/rooms/room/media", {"Content-Length": "invalid"}, 403),
+                ("/api/lan-chat/rooms/room/files", {**owner_cookie, "X-Lan-Chat-Token": "foreign-token", "Content-Length": "invalid"}, 401),
+                ("/api/lan-chat/rooms/room/file-archives", {"Content-Length": "invalid"}, 403),
+            ):
+                sentinel_handler = SseHandler("unused", Writer())
+                sentinel_handler.headers = {"Content-Type": "multipart/form-data; boundary=fixture", **headers}
+                sentinel_handler.rfile = ReadForbidden()
+                assert web_app.handle_lan_chat_post(sentinel_handler, SimpleNamespace(path=path))
+                assert sentinel_handler.responses == [code] and sentinel_handler.rfile.calls == 0
+
+            limits = (
+                ("/api/lan-chat/rooms/room/media", web_app.MESSAGE_MEDIA_MAX_BYTES + 2 * 1024 * 1024 + 1, "上传内容为空或超过 100MB 限制"),
+                ("/api/lan-chat/rooms/room/files", web_app.FILE_TRANSFER_MAX_BYTES + 2 * 1024 * 1024 + 1, "上传内容为空或超过 10GB 限制"),
+                ("/api/lan-chat/rooms/room/file-archives", web_app.FILE_TRANSFER_MAX_BYTES + 2 * 1024 * 1024 + 1, "上传内容为空或超过 10GB 限制"),
+            )
+            for path, content_length, error in limits:
+                status, _headers, payload = json_request(port, "POST", path, body=b"x", content_type="multipart/form-data; boundary=fixture", extra_headers={**private_headers, "Content-Length": str(content_length)})
+                assert status == 413 and payload == {"error": error}
+            status, _headers, payload = json_request(port, "POST", "/api/lan-chat/rooms/room/media", body=b"x", content_type="application/octet-stream", extra_headers=private_headers)
+            assert status == 400 and payload == {"error": "媒体上传必须使用 multipart/form-data"}
+
+            with patch.object(web_app, "ui_test_mode_allows_live_write", return_value=True):
+                status, _headers, payload = json_request(
+                    port, "POST", "/api/lan-chat/direct", {"targetUserId": "live-write"}, extra_headers=private_headers
+                )
+            assert status == 200 and payload == {"room": {"id": "room-fixture"}}
+            assert ("open_direct", "header-token", "live-write") in store.calls
+
+            auth = SseHandler("bad-token", Writer())
+            try:
+                web_app.stream_lan_chat_events(auth, 0)
+            except web_app.LanChatError as exc:
+                assert exc.status == 401
+            else:
+                raise AssertionError("SSE must authenticate before sending headers")
+            assert auth.responses == [] and auth.sent_headers == []
+            message_writer = Writer()
+            message = SseHandler("sse-token", message_writer)
+            store.batches, store.writer = [[{"id": 9, "text": "中文消息"}]], message_writer
+            web_app.stream_lan_chat_events(message, 7)
+            assert message.responses == [200] and dict(message.sent_headers) == {
+                "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-cache, no-store", "Connection": "keep-alive", "X-Accel-Buffering": "no",
+            }
+            assert message_writer.getvalue() == b'event: message\ndata: {"id":9,"text":"\xe4\xb8\xad\xe6\x96\x87\xe6\xb6\x88\xe6\x81\xaf"}\n\n'
+            assert ("events", "sse-token", 7, 20.0) in store.calls and message_writer.flushes == 1 and message.close_connection
+            heartbeat_writer = Writer()
+            heartbeat = SseHandler("sse-token", heartbeat_writer)
+            store.batches, store.writer = [[]], heartbeat_writer
+            web_app.stream_lan_chat_events(heartbeat, 0)
+            assert heartbeat_writer.getvalue() == b"event: heartbeat\ndata: {}\n\n" and heartbeat.close_connection
+            disconnected = SseHandler("sse-token", Writer(BrokenPipeError))
+            store.batches, store.writer = [[{"id": 1}]], None
+            web_app.stream_lan_chat_events(disconnected, 0)
+            assert disconnected.close_connection
+            reset = SseHandler("sse-token", Writer(ConnectionResetError))
+            store.batches, store.writer = [[{"id": 1}]], None
+            web_app.stream_lan_chat_events(reset, 0)
+            assert reset.close_connection
+    finally:
+        store.writer = None
+
+
 class RecordingAnalyzeQueue:
     """Analyze-only queue fake that records production calls without artifacts."""
 
@@ -3759,6 +3946,7 @@ def run_lifecycle() -> None:
 
             assert_report_cover_http_contract(web_app, port, server)
             assert_taobao_http_contract(web_app, port)
+            assert_lan_chat_http_contract(web_app, port)
     finally:
         if server is not None:
             server.shutdown()
