@@ -820,8 +820,7 @@ def assert_get_and_sse_contracts(web_app: Any, jobs: dict[str, Any]) -> None:
     )
 
     call_order: list[str] = []
-    order_registry = JobRegistry()
-    order_registry.register(metrics.id, metrics)
+    order_registry = jobs["metrics_registry"]
     original_snapshot = order_registry.snapshot
 
     def recording_snapshot(job_id: str) -> Any:
