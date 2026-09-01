@@ -1808,7 +1808,8 @@ def run_lifecycle() -> None:
                 assert len(file_items) == 1 and file_items[0].filename == "fixture.mp4"
                 target = web_app.VIDEOS_DIR / "fixture.mp4"
                 target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfileobj(file_items[0].file, target)
+                with target.open("wb") as target_file:
+                    shutil.copyfileobj(file_items[0].file, target_file)
                 return {"files": [{"filename": target.name, "size": target.stat().st_size}], "errors": []}
 
             upload_body, upload_type = multipart_video("fixture.mp4", b"not-a-real-video")
