@@ -227,10 +227,26 @@ class JsonStoreTests(unittest.TestCase):
         # Phase 4.1 moves Shop reads into its service. Phase 4.2 moves four
         # Metrics call sites behind two service-owned reads (worker + payload).
         # Phase 4.3 moves Amazon artifact reads behind its service payload;
-        # Phase 4.4A moves four Download reads and three atomic writes.
+        # Phase 4.4A moves four Download reads and three atomic writes;
+        # Phase 4.4F moves the files endpoint social-context read into its service.
         self.assertEqual(
             sum(isinstance(node.func, ast.Name) and node.func.id == "read_json" for node in calls),
-            38,
+            37,
+        )
+        video_files_source_path = source_path.with_name("services") / "video_files.py"
+        video_files_tree = ast.parse(
+            video_files_source_path.read_text(encoding="utf-8"), filename=str(video_files_source_path)
+        )
+        self.assertEqual(
+            sum(
+                isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "self"
+                and node.func.attr == "_read_json_file"
+                for node in ast.walk(video_files_tree)
+                if isinstance(node, ast.Call)
+            ),
+            1,
         )
         shop_source_path = source_path.with_name("services") / "shop.py"
         shop_tree = ast.parse(shop_source_path.read_text(encoding="utf-8"), filename=str(shop_source_path))
