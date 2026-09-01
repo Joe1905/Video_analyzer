@@ -3362,7 +3362,11 @@ def run_lifecycle() -> None:
 
         with ExitStack() as patches:
             patches.enter_context(
-                patch.object(web_app, "ui_test_mode_allows_live_write", side_effect=lambda path: path in allowed_writes)
+                patch.object(
+                    web_app,
+                    "ui_test_mode_allows_live_write",
+                    side_effect=lambda path: path in allowed_writes or path.startswith("/api/lan-chat/"),
+                )
             )
             patches.enter_context(patch.object(composed_download_service, "run_job", side_effect=complete_download))
             patches.enter_context(patch.object(web_app.shop_service, "run_job", side_effect=complete_shop))
