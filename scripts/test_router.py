@@ -308,6 +308,7 @@ class RouterTests(unittest.TestCase):
                 "routes.video_delete",
                 "routes.video_files",
                 "routes.video_result",
+                "routes.video_stream",
                 "routes.health",
                 "routes.extract",
                 "routes.harness",
@@ -384,6 +385,93 @@ class RouterTests(unittest.TestCase):
         self.assertNotIn('if parsed.path == "/api/files":', source)
         self.assertNotIn('if parsed.path == "/api/delete":', source)
         self.assertNotIn("def handle_delete(", source)
+
+    def test_video_stream_route_and_composition_are_explicit(self) -> None:
+        root = Path(__file__).resolve().parent
+        route_path = root / "routes" / "video_stream.py"
+        route_tree = ast.parse(route_path.read_text(encoding="utf-8"))
+        prefix_paths = [
+            node.args[0].value
+            for node in ast.walk(route_tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "router"
+            and node.func.attr == "get_prefix"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ]
+        self.assertEqual(prefix_paths, ["/video/"])
+        route_source = route_path.read_text(encoding="utf-8")
+        for forbidden in (
+            "web_app",
+            "services",
+            "file_response",
+            "binary_response",
+            "output",
+            "registry",
+            "queue",
+            "social",
+            "tools",
+        ):
+            self.assertNotIn(forbidden, route_source)
+
+        web_app = ast.parse((root / "web_app.py").read_text(encoding="utf-8"))
+        imported = {
+            (node.module, alias.name)
+            for node in ast.walk(web_app)
+            if isinstance(node, ast.ImportFrom) and node.module
+            for alias in node.names
+        }
+        self.assertIn(("routes.video_stream", "register_video_stream_routes"), imported)
+        register_calls = [
+            node for node in ast.walk(web_app)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "register_video_stream_routes"
+        ]
+        self.assertEqual(len(register_calls), 1)
+        self.assertEqual(
+            [arg.id for arg in register_calls[0].args if isinstance(arg, ast.Name)],
+            ["WEB_ROUTER"],
+        )
+        self.assertEqual(
+            [(keyword.arg, ast.unparse(keyword.value)) for keyword in register_calls[0].keywords],
+            [
+                ("videos_dir", "VIDEOS_DIR"),
+                ("safe_filename", "safe_filename"),
+                ("serve_video", "Handler.serve_video"),
+            ],
+        )
+
+        handler = next(node for node in web_app.body if isinstance(node, ast.ClassDef) and node.name == "Handler")
+        get_method = next(node for node in handler.body if isinstance(node, ast.FunctionDef) and node.name == "do_GET")
+        self.assertNotIn(
+            "/video/",
+            {node.value for node in ast.walk(get_method) if isinstance(node, ast.Constant) and isinstance(node.value, str)},
+        )
+        self.assertEqual(
+            sum(isinstance(node, ast.FunctionDef) and node.name == "serve_video" for node in handler.body),
+            1,
+        )
+        proxy_get_method = next(
+            node for node in handler.body
+            if isinstance(node, ast.FunctionDef) and node.name == "handle_proxy_api_get"
+        )
+        proxy_calls = [
+            node for node in ast.walk(proxy_get_method)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "self"
+            and node.func.attr == "serve_video"
+        ]
+        self.assertEqual(len(proxy_calls), 1)
+        self.assertEqual(
+            ast.unparse(proxy_calls[0]),
+            "self.serve_video(tiktok_studio_publish.video_path(asset_id))",
+        )
 
     def test_upload_route_and_composition_are_explicit(self) -> None:
         root = Path(__file__).resolve().parent

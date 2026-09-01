@@ -21,6 +21,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import web_app  # noqa: E402
+from routes.router import Router  # noqa: E402
+from routes.video_stream import register_video_stream_routes  # noqa: E402
 
 
 class RecordingWriter(io.BytesIO):
@@ -180,6 +182,13 @@ def test_video_http_path_and_range_contract() -> None:
         server = web_app.ThreadingHTTPServer(("127.0.0.1", 0), web_app.Handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
+        router = Router()
+        register_video_stream_routes(
+            router,
+            videos_dir=videos_dir,
+            safe_filename=web_app.safe_filename,
+            serve_video=web_app.Handler.serve_video,
+        )
 
         def request(method: str, target: str, headers: dict[str, str] | None = None) -> tuple[int, dict[str, str], bytes]:
             connection = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
@@ -191,7 +200,7 @@ def test_video_http_path_and_range_contract() -> None:
                 connection.close()
 
         try:
-            with patch.object(web_app, "VIDEOS_DIR", videos_dir):
+            with patch.object(web_app, "WEB_ROUTER", router):
                 for target in ("/video/clip.mp4?cache=1", "/video/nested/clip.mp4", "/video/nested%2Fclip.mp4"):
                     status, headers, body = request("GET", target)
                     assert status == 200 and body == payload

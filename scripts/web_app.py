@@ -47,6 +47,7 @@ from routes.upload import register_upload_routes
 from routes.video_delete import register_video_delete_routes
 from routes.video_files import register_video_files_routes
 from routes.video_result import register_video_result_routes
+from routes.video_stream import register_video_stream_routes
 from routes.health import register_health_route
 from routes.extract import register_extract_page
 from routes.harness_certificate import register_harness_certificate_route
@@ -10382,12 +10383,6 @@ class Handler(BaseHTTPRequestHandler):
                 return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Cover not found"})
             content_type = mimetypes.guess_type(path.name)[0] or "image/jpeg"
             return binary_response(self, HTTPStatus.OK, path.read_bytes(), content_type)
-        if parsed.path.startswith("/video/"):
-            try:
-                filename = safe_filename(unquote(parsed.path.removeprefix("/video/")))
-            except ValueError as exc:
-                return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
-            return self.serve_video(VIDEOS_DIR / filename)
         if parsed.path == "/api/frames-sheet":
             query = parse_qs(parsed.query)
             try:
@@ -11756,6 +11751,12 @@ register_postprocess_routes(WEB_ROUTER, postprocess_service)
 register_video_files_routes(WEB_ROUTER, video_files_service)
 register_video_result_routes(WEB_ROUTER, video_result_service, safe_filename=safe_filename)
 register_video_delete_routes(WEB_ROUTER, video_delete_service, safe_filename=safe_filename)
+register_video_stream_routes(
+    WEB_ROUTER,
+    videos_dir=VIDEOS_DIR,
+    safe_filename=safe_filename,
+    serve_video=Handler.serve_video,
+)
 register_taobao_page(WEB_ROUTER, html_snapshot=TAOBAO_HTML, inject_nav=inject_unified_nav)
 
 
