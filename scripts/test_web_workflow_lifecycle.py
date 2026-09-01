@@ -549,6 +549,114 @@ def assert_files_http_contract(web_app: Any, port: int, server: Any, fake_queue:
         shutil.rmtree(fixture_root, ignore_errors=False)
 
 
+def assert_result_http_contract(web_app: Any, port: int, server: Any) -> None:
+    """Freeze the legacy /api/result payload and invalid-artifact behavior."""
+
+    fixture_root = Path(tempfile.mkdtemp(prefix="result-http-contract-", dir=web_app.ROOT))
+    output_root = fixture_root / "output"
+    output_calls: list[str] = []
+
+    def output_dir_for(filename: str) -> Path:
+        output_calls.append(filename)
+        return output_root / filename
+
+    artifact_files = {
+        "analysis": "analysis.json",
+        "analysis_zh": "analysis_zh.json",
+        "direct_analysis": "direct_analysis.json",
+        "direct_analysis_zh": "direct_analysis_zh.json",
+        "audit_result": "audit_result.json",
+        "audit_result_zh": "audit_result_zh.json",
+        "direct_audit_result": "direct_audit_result.json",
+        "direct_audit_result_zh": "direct_audit_result_zh.json",
+        "feedback_result": "feedback_result.json",
+        "feedback_result_zh": "feedback_result_zh.json",
+        "direct_feedback_result": "direct_feedback_result.json",
+        "direct_feedback_result_zh": "direct_feedback_result_zh.json",
+        "social_context": "social_context.json",
+        "social_insights": "social_insights.json",
+    }
+    try:
+        with patch.object(web_app, "output_dir_for_filename", side_effect=output_dir_for):
+            status, _headers, missing = json_request(port, "GET", "/api/result")
+            assert status == 400 and missing == {"error": "Missing filename"}
+            status, _headers, invalid = json_request(port, "GET", "/api/result?filename=%3F%3F%3F")
+            assert status == 400 and invalid == {"error": "Invalid filename"}
+            assert output_calls == []
+
+            unknown_name = "unknown-result.mp4"
+            status, _headers, unknown = json_request(port, "GET", f"/api/result?filename={unknown_name}")
+            assert status == 200
+            assert unknown == {
+                "filename": unknown_name,
+                "status": "saved",
+                "output_dir": str((output_root / unknown_name).relative_to(web_app.ROOT)),
+                "analysis_mode": None,
+                **{field: None for field in artifact_files},
+                "log": [],
+            }
+            assert output_calls == [unknown_name]
+
+            raw_name = "nested/result-contract.mp4"
+            clean_name = "result-contract.mp4"
+            result_dir = output_root / clean_name
+            result_dir.mkdir(parents=True)
+            expected_artifacts = {
+                field: {"artifact": field} for field in artifact_files
+            }
+            expected_artifacts["analysis"] = {"artifact": "analysis", "processing_mode": "direct_video"}
+            for field, path_name in artifact_files.items():
+                (result_dir / path_name).write_text(json.dumps(expected_artifacts[field]), encoding="utf-8")
+            output_calls.clear()
+            status, _headers, result = json_request(port, "GET", f"/api/result?filename={raw_name}")
+            assert status == 200
+            assert result == {
+                "filename": clean_name,
+                "status": "saved",
+                "output_dir": str(result_dir.relative_to(web_app.ROOT)),
+                "analysis_mode": "direct_video",
+                **expected_artifacts,
+                "log": [],
+            }
+            assert output_calls == [clean_name]
+
+            reported: list[BaseException | None] = []
+            reported_event = threading.Event()
+            original_handle_error = server.handle_error
+
+            def capture_handler_error(_request: Any, _client_address: Any) -> None:
+                reported.append(sys.exc_info()[1])
+                reported_event.set()
+
+            def assert_json_disconnect(filename: str) -> None:
+                reported_event.clear()
+                try:
+                    request(port, "GET", f"/api/result?filename={filename}")
+                except http.client.RemoteDisconnected:
+                    pass
+                else:
+                    raise AssertionError("invalid result artifact should close the legacy response")
+                assert reported_event.wait(timeout=5)
+                assert isinstance(reported[-1], json.JSONDecodeError)
+
+            server.handle_error = capture_handler_error
+            try:
+                broken_analysis = output_root / "broken-analysis.mp4"
+                broken_analysis.mkdir(parents=True)
+                (broken_analysis / "analysis.json").write_text("{", encoding="utf-8")
+                assert_json_disconnect("broken-analysis.mp4")
+
+                broken_later = output_root / "broken-later.mp4"
+                broken_later.mkdir(parents=True)
+                (broken_later / "analysis.json").write_text("{}", encoding="utf-8")
+                (broken_later / "analysis_zh.json").write_text("{", encoding="utf-8")
+                assert_json_disconnect("broken-later.mp4")
+            finally:
+                server.handle_error = original_handle_error
+    finally:
+        shutil.rmtree(fixture_root, ignore_errors=False)
+
+
 class RecordingAnalyzeQueue:
     """Analyze-only queue fake that records production calls without artifacts."""
 
@@ -2082,6 +2190,7 @@ def run_lifecycle() -> None:
             port = server.server_port
 
             assert_files_http_contract(web_app, port, server, fake_queue)
+            assert_result_http_contract(web_app, port, server)
             assert_upload_http_contract(web_app, port)
             assert_analyze_http_contract(web_app, port)
             assert_postprocess_http_contract(web_app, port)
