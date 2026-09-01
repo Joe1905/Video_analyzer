@@ -894,6 +894,104 @@ def assert_proxy_publish_video_range_contract(web_app: Any, port: int) -> None:
         shutil.rmtree(fixture_root, ignore_errors=False)
 
 
+def assert_report_cover_http_contract(web_app: Any, port: int, server: Any) -> None:
+    """Freeze the legacy report-cover file response and failure behavior."""
+
+    assert web_app.APP_TEST_ROOT is not None
+    fixture_root = Path(
+        tempfile.mkdtemp(prefix="report-cover-contract-", dir=web_app.APP_TEST_ROOT)
+    )
+    cover_dir = fixture_root / "report_covers"
+    cover_dir.mkdir()
+    cover_bytes = b"\x89PNG\r\nfixture cover"
+    unknown_bytes = b"unknown fixture cover"
+    (cover_dir / "coverfile.png").write_bytes(cover_bytes)
+    (cover_dir / "nested2Fcover20file.png").write_bytes(b"single unquote only")
+    (cover_dir / "unknown.asset").write_bytes(unknown_bytes)
+    unreadable = cover_dir / "unreadable.png"
+    unreadable.write_bytes(b"unreadable fixture")
+    original_read_bytes = Path.read_bytes
+
+    def read_bytes(path: Path) -> bytes:
+        if path == unreadable:
+            raise OSError("fixture cover read failure")
+        return original_read_bytes(path)
+
+    try:
+        with patch.object(web_app, "REPORT_COVER_DIR", cover_dir):
+            status, _headers, payload = json_request(port, "GET", "/report-cover/")
+            assert status == 400 and payload == {"error": "Missing filename"}
+            status, _headers, payload = json_request(port, "GET", "/report-cover")
+            assert status == 404 and payload == {"error": "Not found"}
+            for path, error in (
+                ("/report-cover/%3F%3F%3F", "Invalid filename"),
+                ("/report-cover/nested%2F..", "Invalid filename"),
+            ):
+                status, _headers, payload = json_request(port, "GET", path)
+                assert status == 400 and payload == {"error": error}
+
+            status, _headers, payload = json_request(port, "GET", "/report-cover/missing.png")
+            assert status == 404 and payload == {"error": "Cover not found"}
+
+            status, headers, body = request(
+                port,
+                "GET",
+                "/report-cover/nested/cover%20file.png?filename=unknown.asset",
+                extra_headers={"Range": "bytes=0-1"},
+            )
+            assert status == 200 and body == cover_bytes
+            assert set(headers) == {"server", "date", "content-type", "content-length"}
+            assert headers["content-type"] == "image/png"
+            assert headers["content-length"] == str(len(cover_bytes))
+            for header in (
+                "accept-ranges",
+                "content-range",
+                "cache-control",
+                "content-disposition",
+                "etag",
+            ):
+                assert header not in headers
+
+            status, headers, body = request(
+                port, "GET", "/report-cover/nested%252Fcover%2520file.png"
+            )
+            assert status == 200 and body == b"single unquote only"
+            assert headers["content-type"] == "image/png"
+            status, headers, body = request(port, "GET", "/report-cover/unknown.asset")
+            assert status == 200 and body == unknown_bytes
+            assert headers["content-type"] == "image/jpeg"
+            assert headers["content-length"] == str(len(unknown_bytes))
+
+            status, headers, body = request(port, "HEAD", "/report-cover/coverfile.png")
+            assert status == 404 and body == b""
+            assert "content-type" not in headers and "content-length" not in headers
+
+            reported: list[BaseException | None] = []
+            reported_event = threading.Event()
+            original_handle_error = server.handle_error
+
+            def capture_handler_error(_request: Any, _client_address: Any) -> None:
+                reported.append(sys.exc_info()[1])
+                reported_event.set()
+
+            server.handle_error = capture_handler_error
+            try:
+                with patch.object(Path, "read_bytes", new=read_bytes):
+                    try:
+                        request(port, "GET", "/report-cover/unreadable.png")
+                    except http.client.RemoteDisconnected:
+                        pass
+                    else:
+                        raise AssertionError("read_bytes failure should close the legacy response")
+                assert reported_event.wait(timeout=5)
+                assert isinstance(reported[-1], OSError)
+                assert str(reported[-1]) == "fixture cover read failure"
+            finally:
+                server.handle_error = original_handle_error
+    finally:
+        shutil.rmtree(fixture_root, ignore_errors=False)
+
+
 class RecordingAnalyzeQueue:
     """Analyze-only queue fake that records production calls without artifacts."""
 
@@ -3427,6 +3525,8 @@ def run_lifecycle() -> None:
             assert status == 200 and deleted["deleted_video"] and deleted["deleted_output"]
             assert not (web_app.VIDEOS_DIR / filename).exists()
             assert not web_app.output_dir_for_filename(filename).exists()
+
+            assert_report_cover_http_contract(web_app, port, server)
     finally:
         if server is not None:
             server.shutdown()
