@@ -39,7 +39,8 @@ sys.path.insert(0, str(_BOOTSTRAP_SCRIPTS_DIR))
 from core.config import AppConfig
 from core.json_store import atomic_write_json, read_json
 from jobs.registry import JobRegistry
-from jobs.snapshots import snapshot_amazon_job, snapshot_download_job
+from jobs.snapshots import snapshot_download_job
+from routes.amazon import register_amazon_routes
 from routes.health import register_health_route
 from routes.extract import register_extract_page
 from routes.harness_certificate import register_harness_certificate_route
@@ -52,6 +53,7 @@ from routes.shop import register_shop_api_routes, register_shop_page
 from routes.static_assets import register_static_asset_route
 from routes.taobao import register_taobao_page
 from routes.tool import register_tool_page
+from services.amazon import AmazonService
 from services.metrics import MetricsService
 from services.shop import ShopService
 
@@ -225,8 +227,6 @@ SAFE_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789
 AUDIO_ONLY_SUFFIXES = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav"}
 ANALYZER_VIDEO_SUFFIXES = {".m4v", ".mov", ".mp4", ".webm"}
 ALLOWED_SHORT_VIDEO_HOST_SUFFIXES = ("tiktok.com", "tiktokv.com", "douyin.com", "iesdouyin.com")
-ALLOWED_AMAZON_HOST_SUFFIXES = ("amazon.com",)
-ASIN_RE = re.compile(r"^[A-Z0-9]{10}$", re.IGNORECASE)
 PROMPT_FILE = DATA_DIR / "analysis_prompt.txt"
 FEEDBACK_PROMPT_FILE = DATA_DIR / "feedback_prompt.txt"
 LEGACY_PROMPT_FILE = ROOT / "analysis_prompt.txt"
@@ -343,25 +343,24 @@ class DownloadJob:
     result: dict[str, Any] | None = None
 
 
-@dataclass
-class AmazonJob:
-    id: str
-    target: str
-    target_type: str
-    url: str
-    pages: int
-    status: str = "queued"
-    created_at: float = field(default_factory=time.time)
-    updated_at: float = field(default_factory=time.time)
-    log: list[str] = field(default_factory=list)
-    output_dir: str | None = None
-    error: str | None = None
-
-
 download_job_registry = JobRegistry()
 shop_job_registry = JobRegistry()
 metrics_job_registry = JobRegistry()
 amazon_job_registry = JobRegistry()
+amazon_service = AmazonService(
+    registry=amazon_job_registry,
+    root=ROOT,
+    output_dir=OUTPUT_DIR,
+    read_json_file=read_json,
+    write_json_file=atomic_write_json,
+    popen_factory=subprocess.Popen,
+    thread_factory=threading.Thread,
+    job_id_factory=lambda: str(uuid.uuid4()),
+    environ=os.environ,
+    ensure_us_proxy=ensure_us_proxy,
+    get_cached_or_call=get_cached_or_call,
+    cache_log_label=lambda payload: cache_log_label(payload),
+)
 metrics_service = MetricsService(
     registry=metrics_job_registry,
     root=ROOT,
@@ -787,7 +786,6 @@ def is_registered_post_route(path: str) -> bool:
         "/api/report/settings",
         "/api/report/translate",
         "/api/report/backfill-covers",
-        "/api/amazon-scrape",
         "/api/analyze",
         "/api/postprocess",
         "/api/translate",
@@ -2360,37 +2358,6 @@ def social_processed_payload(filename: str) -> dict[str, Any]:
     }
 
 
-def validate_amazon_url(url: str) -> str:
-    cleaned = url.strip()
-    parsed = urlparse(cleaned)
-    if parsed.scheme not in {"http", "https"}:
-        raise ValueError("Only http/https Amazon URLs are supported")
-    host = (parsed.hostname or "").lower().rstrip(".")
-    if not any(host == suffix or host.endswith(f".{suffix}") for suffix in ALLOWED_AMAZON_HOST_SUFFIXES):
-        raise ValueError("Only amazon.com URLs are supported")
-    if len(cleaned) > 2048:
-        raise ValueError("URL is too long")
-    return cleaned
-
-
-def amazon_url_for_target(target: str, target_type: str) -> str:
-    cleaned = target.strip()
-    if not cleaned:
-        raise ValueError("Amazon URL, ASIN, or keyword is required")
-    if target_type == "url":
-        return validate_amazon_url(cleaned)
-    if target_type == "asin":
-        asin = cleaned.upper()
-        if not ASIN_RE.match(asin):
-            raise ValueError("ASIN must be 10 letters or digits")
-        return f"https://www.amazon.com/dp/{asin}"
-    if target_type == "keyword":
-        if len(cleaned) > 200:
-            raise ValueError("Keyword is too long")
-        return f"https://www.amazon.com/s?k={quote_plus(cleaned)}"
-    raise ValueError("target_type must be url, asin, or keyword")
-
-
 def _report_bot_authorized(handler: BaseHTTPRequestHandler, query: dict[str, list[str]]) -> bool:
     expected = os.getenv("REPORT_BOT_TOKEN", "").strip()
     if not expected:
@@ -3681,140 +3648,6 @@ def search_shop_catalog_products(payload: dict[str, Any]) -> dict[str, Any]:
     return {"mode": mode, "query": target, "products": products}
 
 
-def append_amazon_log(job_id: str, line: str) -> None:
-    amazon_job_registry.append_log(job_id, line)
-
-
-def parse_json_from_process_output(output: str) -> Any:
-    text = output.strip()
-    if not text:
-        raise ValueError("amazon-scraper returned no output")
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        decoder = json.JSONDecoder()
-        parsed_values = []
-        for match in re.finditer(r"{", text):
-            try:
-                value, _ = decoder.raw_decode(text[match.start() :])
-            except json.JSONDecodeError:
-                continue
-            parsed_values.append(value)
-        if not parsed_values:
-            raise ValueError("amazon-scraper output did not contain JSON")
-        # Return the largest parsed object — the scraper result is always the
-        # largest JSON, while nested empty objects like "details":{} are tiny.
-        parsed_values.sort(key=lambda v: len(json.dumps(v)), reverse=True)
-        return parsed_values[0]
-
-
-def run_amazon_command(job_id: str, command: list[str]) -> tuple[str, int]:
-    append_amazon_log(job_id, f"$ {' '.join(command)}")
-    env = os.environ.copy()
-    process = subprocess.Popen(
-        command,
-        cwd=ROOT,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-    )
-    assert process.stdout is not None
-    output_lines = []
-    for line in process.stdout:
-        output_lines.append(line)
-        append_amazon_log(job_id, line)
-    code = process.wait()
-    output = "".join(output_lines)
-    if code != 0:
-        append_amazon_log(job_id, f"Command exited with code {code}")
-    return output, code
-
-
-def run_amazon_job(job_id: str) -> None:
-    initial = amazon_job_registry.snapshot(job_id)
-    if initial is None:
-        return
-    url = initial.url
-    pages = initial.pages
-    amazon_job_registry.update_fields(job_id, {"status": "running"})
-
-    output_dir = OUTPUT_DIR / "amazon" / job_id
-    result_path = output_dir / "result.json"
-    try:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        amazon_job_registry.update_fields(job_id, {"output_dir": str(output_dir.relative_to(ROOT))})
-
-        def normalized_amazon_url(value: str) -> str:
-            parsed = urlparse(value.strip())
-            host = (parsed.hostname or "").lower()
-            return parsed._replace(scheme=(parsed.scheme or "https").lower(), netloc=host, fragment="").geturl()
-
-        def fetch_amazon() -> dict[str, Any]:
-            ensure_us_proxy("amazon", log=lambda line: append_amazon_log(job_id, line))
-            command = [
-                "docker",
-                "run",
-                "--rm",
-                "--network", "host",
-                "-e", "AMAZON_PROXY",
-                "-e", "AMAZON_PROXIES",
-                "amazon-scraper",
-                "node",
-                "assets/amazon_handler.js",
-                url,
-                "--pages",
-                str(pages),
-            ]
-            output, code = run_amazon_command(job_id, command)
-            parsed = parse_json_from_process_output(output)
-            if code != 0 and not (isinstance(parsed, dict) and parsed.get("status") == "ERROR"):
-                raise RuntimeError(f"amazon-scraper exited with code {code}")
-            return parsed
-
-        result = get_cached_or_call(
-            "amazon_scraper",
-            "web",
-            {"url": normalized_amazon_url(url), "pages": int(pages)},
-            fetch_amazon,
-            metadata_builder=lambda payload: {
-                "entity_type": "amazon",
-                "entity_id": str((payload.get("products") or [{}])[0].get("asin") or normalized_amazon_url(url)) if isinstance(payload, dict) else normalized_amazon_url(url),
-                "title": str((payload.get("products") or [{}])[0].get("title") or "") if isinstance(payload, dict) else "",
-                "source_url": normalized_amazon_url(url),
-            },
-        )
-        cache_label = cache_log_label(result)
-        if cache_label:
-            append_amazon_log(job_id, cache_label)
-        atomic_write_json(result_path, result)
-
-        if not (isinstance(result, dict) and result.get("status") == "ERROR"):
-            amazon_job_registry.update_fields(job_id, {"status": "complete"})
-        else:
-            amazon_job_registry.update_fields(
-                job_id,
-                {
-                    "status": "failed",
-                    "error": str(result.get("message") or "amazon-scraper failed") if isinstance(result, dict) else "amazon-scraper failed",
-                },
-            )
-    except FileNotFoundError:
-        message = "Docker CLI is not available in the web container"
-        amazon_job_registry.update_fields(
-            job_id,
-            {"status": "failed", "error": message},
-            final_log=message,
-        )
-    except Exception as exc:
-        amazon_job_registry.update_fields(
-            job_id,
-            {"status": "failed", "error": str(exc)},
-            final_log=str(exc),
-        )
-
-
 def run_download_job(job_id: str) -> None:
     initial = download_job_registry.snapshot(job_id)
     if initial is None:
@@ -4031,10 +3864,6 @@ def build_video_feedback(filename: str = "", download_job_id: str = "") -> dict[
         "download": download_payload,
         "updated_at": time.time(),
     }
-
-
-def public_amazon_job(job: AmazonJob, *, result: Any) -> dict[str, Any]:
-    return snapshot_amazon_job(job, result=result)
 
 
 def check_ip_route(name: str, proxy_url: str | None = None) -> dict[str, Any]:
@@ -11161,19 +10990,6 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/download-events":
             job_id = parse_qs(parsed.query).get("id", [""])[0]
             return self.stream_download_events(job_id)
-        if parsed.path == "/api/amazon-job":
-            job_id = parse_qs(parsed.query).get("id", [""])[0]
-            job = amazon_job_registry.snapshot(job_id)
-            payload = public_amazon_job(
-                job,
-                result=read_json(OUTPUT_DIR / "amazon" / job.id / "result.json"),
-            ) if job else None
-            if payload is None:
-                return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Amazon job not found"})
-            return json_response(self, HTTPStatus.OK, payload)
-        if parsed.path == "/api/amazon-events":
-            job_id = parse_qs(parsed.query).get("id", [""])[0]
-            return self.stream_amazon_events(job_id)
         if parsed.path == "/api/files":
             files = []
             for path in sorted(VIDEOS_DIR.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True):
@@ -11309,46 +11125,6 @@ class Handler(BaseHTTPRequestHandler):
             if payload is None:
                 try:
                     write_sse_event(self, {"status": "missing", "error": "Download job not found"})
-                except (BrokenPipeError, ConnectionResetError):
-                    pass
-                self.close_connection = True
-                return
-
-            marker = (
-                payload.get("status"),
-                payload.get("updated_at"),
-                len(payload.get("log") or []),
-                payload.get("error"),
-            )
-            try:
-                if marker != last_marker:
-                    write_sse_event(self, payload)
-                    last_marker = marker
-                if payload.get("status") not in {"queued", "running"}:
-                    self.close_connection = True
-                    return
-                time.sleep(1)
-            except (BrokenPipeError, ConnectionResetError):
-                self.close_connection = True
-                return
-
-    def stream_amazon_events(self, job_id: str) -> None:
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "keep-alive")
-        self.end_headers()
-
-        last_marker: tuple[Any, ...] | None = None
-        while True:
-            job = amazon_job_registry.snapshot(job_id)
-            payload = public_amazon_job(
-                job,
-                result=read_json(OUTPUT_DIR / "amazon" / job.id / "result.json"),
-            ) if job else None
-            if payload is None:
-                try:
-                    write_sse_event(self, {"status": "missing", "error": "Amazon job not found"})
                 except (BrokenPipeError, ConnectionResetError):
                     pass
                 self.close_connection = True
@@ -11544,8 +11320,6 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/report/backfill-covers":
             result = backfill_cover_urls()
             return json_response(self, HTTPStatus.OK, result)
-        if parsed.path == "/api/amazon-scrape":
-            return self.handle_amazon_scrape()
         if parsed.path == "/api/analyze":
             return self.handle_analyze()
         if parsed.path == "/api/postprocess":
@@ -11886,42 +11660,6 @@ class Handler(BaseHTTPRequestHandler):
         thread.start()
         snapshot = download_job_registry.snapshot(job.id)
         return json_response(self, HTTPStatus.ACCEPTED, public_download_job(snapshot))
-
-    def handle_amazon_scrape(self) -> None:
-        content_length = int(self.headers.get("Content-Length", "0"))
-        body = self.rfile.read(content_length)
-        try:
-            payload = json.loads(body.decode("utf-8") or "{}")
-            target = str(payload.get("target", "")).strip()
-            target_type = str(payload.get("target_type") or "url").strip()
-            max_pages = int(os.getenv("AMAZON_MAX_PAGES", "1") or "1")
-            max_pages = max(1, min(max_pages, 5))
-            pages = int(payload.get("pages") or max_pages)
-            if pages < 1 or pages > 5:
-                raise ValueError("pages must be between 1 and 5")
-            url = amazon_url_for_target(target, target_type)
-        except (json.JSONDecodeError, ValueError) as exc:
-            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
-
-        job = AmazonJob(
-            id=str(uuid.uuid4()),
-            target=target,
-            target_type=target_type,
-            url=url,
-            pages=pages,
-        )
-        amazon_job_registry.register(job.id, job)
-        thread = threading.Thread(target=run_amazon_job, args=(job.id,), daemon=True)
-        thread.start()
-        snapshot = amazon_job_registry.snapshot(job.id)
-        return json_response(
-            self,
-            HTTPStatus.ACCEPTED,
-            public_amazon_job(
-                snapshot,
-                result=read_json(OUTPUT_DIR / "amazon" / snapshot.id / "result.json"),
-            ),
-        )
 
     def handle_tool_convert(self) -> None:
         try:
@@ -12777,6 +12515,7 @@ register_shop_page(WEB_ROUTER, html_snapshot=SHOP_HTML, inject_nav=inject_unifie
 register_shop_api_routes(WEB_ROUTER, shop_service)
 register_metrics_page(WEB_ROUTER, html_snapshot=METRICS_HTML, inject_nav=inject_unified_nav)
 register_metrics_api_routes(WEB_ROUTER, metrics_service)
+register_amazon_routes(WEB_ROUTER, amazon_service)
 register_taobao_page(WEB_ROUTER, html_snapshot=TAOBAO_HTML, inject_nav=inject_unified_nav)
 
 

@@ -27,6 +27,7 @@ from uuid import UUID
 
 from services.shop import ShopJob, ShopService
 from services.metrics import MetricsJob, MetricsService
+from services.amazon import AmazonJob, AmazonService, parse_json_from_process_output
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -407,241 +408,203 @@ def assert_real_shop_worker_registry_updates(web_app: Any) -> None:
     assert failure.log[-2:] == ["fixture prior shop failure", "fixture raw shop failure"]
 
 
-def assert_real_amazon_worker_registry_updates(web_app: Any, runner: Any) -> None:
-    original_registry = web_app.amazon_job_registry
+def assert_real_amazon_worker_registry_updates(web_app: Any) -> None:
     registry = web_app.JobRegistry()
-    web_app.amazon_job_registry = registry
-    try:
-        class FakeAmazonProcess:
-            def __init__(self, lines: list[str], returncode: int) -> None:
-                self.stdout = iter(lines)
-                self.returncode = returncode
 
-            def wait(self) -> int:
-                return self.returncode
-
-        command_success_id = "amazon-command-success"
-        command = ["docker", "fixture-amazon"]
-        registry.register(
-            command_success_id,
-            web_app.AmazonJob(
-                id=command_success_id,
-                target="B000COMMAND",
-                target_type="asin",
-                url="https://www.amazon.com/dp/B000COMMAND",
-                pages=1,
-            ),
-        )
-        with patch.object(web_app, "subprocess", subprocess), patch.object(
-            subprocess, "Popen", return_value=FakeAmazonProcess(["first stdout  \n", "second stdout\r\n"], 0)
-        ) as popen:
-            output, code = web_app.run_amazon_command(command_success_id, command)
-        assert (output, code) == ("first stdout  \nsecond stdout\r\n", 0)
-        assert popen.call_args.args == (command,)
-        assert popen.call_args.kwargs["cwd"] == web_app.ROOT
-        assert popen.call_args.kwargs["stdout"] is subprocess.PIPE
-        assert popen.call_args.kwargs["stderr"] is subprocess.STDOUT
-        assert popen.call_args.kwargs["text"] is True
-        assert popen.call_args.kwargs["env"] == dict(os.environ)
-        assert popen.call_args.kwargs["env"] is not os.environ
-        assert registry.snapshot(command_success_id).log == [
-            "$ docker fixture-amazon", "first stdout", "second stdout",
-        ]
-
-        command_failure_id = "amazon-command-failure"
-        registry.register(
-            command_failure_id,
-            web_app.AmazonJob(
-                id=command_failure_id,
-                target="B000COMMANDFAIL",
-                target_type="asin",
-                url="https://www.amazon.com/dp/B000COMMANDFAIL",
-                pages=1,
-            ),
-        )
-        with patch.object(web_app, "subprocess", subprocess), patch.object(
-            subprocess, "Popen", return_value=FakeAmazonProcess(["failure stdout  \n"], 7)
-        ) as popen:
-            output, code = web_app.run_amazon_command(command_failure_id, ["docker", "fixture-amazon-fail"])
-        assert (output, code) == ("failure stdout  \n", 7)
-        assert popen.call_args.args == (["docker", "fixture-amazon-fail"],)
-        assert registry.snapshot(command_failure_id).log == [
-            "$ docker fixture-amazon-fail", "failure stdout", "Command exited with code 7",
-        ]
-
-        for output, expected in (
-            ('{"products":[{"asin":"B000PURE01"}]}', {"products": [{"asin": "B000PURE01"}]}),
-            (
-                'scraper booting\n{"small":true}\nresult={"products":[{"asin":"B000LARGEST","title":"fixture product"}]}\n',
-                {"products": [{"asin": "B000LARGEST", "title": "fixture product"}]},
-            ),
-        ):
-            assert web_app.parse_json_from_process_output(output) == expected
-        for output, message in (("", "amazon-scraper returned no output"), ("scraper only logs", "amazon-scraper output did not contain JSON")):
-            try:
-                web_app.parse_json_from_process_output(output)
-            except ValueError as exc:
-                assert str(exc) == message
-            else:
-                raise AssertionError("invalid amazon-scraper output must fail")
-
-        success_id = "amazon-worker-success"
-        success_url = "https://www.amazon.com/dp/B000WORKER"
-        registry.register(
-            success_id,
-            web_app.AmazonJob(
-                id=success_id,
-                target="B000WORKER",
-                target_type="asin",
-                url=success_url,
-                pages=3,
-            ),
-        )
-        command_payload = {"products": [{"asin": "B000WORKER", "title": "fixture product"}]}
-        proxy_calls: list[str] = []
-        cache_calls: list[tuple[str, str, dict[str, Any]]] = []
-        commands: list[list[str]] = []
-
-        def ensure_proxy(name: str, *, log: Any) -> None:
-            proxy_calls.append(name)
-            log("fixture amazon proxy ready")
-
-        def command_success(job_id: str, command: list[str]) -> tuple[str, int]:
-            assert job_id == success_id
-            commands.append(command)
-            assert command == [
-                "docker", "run", "--rm", "--network", "host",
-                "-e", "AMAZON_PROXY", "-e", "AMAZON_PROXIES",
-                "amazon-scraper", "node", "assets/amazon_handler.js",
-                success_url, "--pages", "3",
-            ]
-            return json.dumps(command_payload), 0
-
-        def cache_success(service: str, operation: str, request: dict[str, Any], fetch: Any, *, metadata_builder: Any) -> dict[str, Any]:
-            cache_calls.append((service, operation, request))
-            assert metadata_builder(command_payload) == {
-                "entity_type": "amazon",
-                "entity_id": "B000WORKER",
-                "title": "fixture product",
-                "source_url": success_url,
-            }
-            registry.update_fields(
-                success_id,
-                {"url": "https://www.amazon.com/dp/B000MUTATED", "pages": 5},
-            )
-            return fetch()
-
-        worker_snapshot_ids: list[str] = []
-        original_snapshot = registry.snapshot
-
-        def recording_worker_snapshot(job_id: str) -> Any:
-            worker_snapshot_ids.append(job_id)
-            return original_snapshot(job_id)
-
-        with patch.object(web_app, "ensure_us_proxy", side_effect=ensure_proxy), patch.object(
-            web_app, "run_amazon_command", side_effect=command_success
-        ), patch.object(web_app, "get_cached_or_call", side_effect=cache_success), patch.object(
-            registry, "snapshot", side_effect=recording_worker_snapshot
-        ):
-            runner(success_id)
-        assert worker_snapshot_ids == [success_id]
-        success = registry.snapshot(success_id)
-        assert success is not None
-        assert success.status == "complete"
-        output_dir = web_app.OUTPUT_DIR / "amazon" / success_id
-        assert success.output_dir == str(output_dir.relative_to(web_app.ROOT))
-        assert proxy_calls == ["amazon"]
-        assert cache_calls == [("amazon_scraper", "web", {"url": success_url, "pages": 3})]
-        assert len(commands) == 1
-        assert success.url == "https://www.amazon.com/dp/B000MUTATED"
-        assert success.pages == 5
-        result_path = output_dir / "result.json"
-        assert web_app.read_json(result_path) == command_payload
-        payload = web_app.public_amazon_job(success, result=web_app.read_json(result_path))
-        assert payload["result"] == command_payload
-        payload["result"]["products"][0]["title"] = "mutated"
-        assert web_app.read_json(result_path) == command_payload
-
-        error_id = "amazon-worker-result-error"
-        registry.register(
-            error_id,
-            web_app.AmazonJob(
-                id=error_id,
-                target="B000ERROR1",
-                target_type="asin",
-                url="https://www.amazon.com/dp/B000ERROR1",
-                pages=1,
-            ),
-        )
-        def cache_result_error(
-            _service: str,
-            _operation: str,
-            _request: dict[str, Any],
-            fetch: Any,
-            *,
-            metadata_builder: Any,
-        ) -> dict[str, Any]:
-            return fetch()
-
-        error_process_output = json.dumps({"status": "ERROR", "message": "fixture scraper error"}) + "\n"
-        with patch.object(web_app, "ensure_us_proxy", side_effect=lambda *_args, **_kwargs: None), patch.object(
-            web_app,
-            "subprocess",
-            subprocess,
-        ), patch.object(
-            subprocess, "Popen", return_value=FakeAmazonProcess([error_process_output], 9)
-        ), patch.object(web_app, "get_cached_or_call", side_effect=cache_result_error):
-            runner(error_id)
-        result_error = registry.snapshot(error_id)
-        assert result_error is not None
-        assert result_error.status == "failed"
-        assert result_error.error == "fixture scraper error"
-        assert result_error.log[-1] == "Command exited with code 9"
-        assert "fixture scraper error" not in result_error.log
-        assert web_app.read_json(web_app.OUTPUT_DIR / "amazon" / error_id / "result.json") == {
-            "status": "ERROR", "message": "fixture scraper error",
+    def make_service(**overrides: Any) -> AmazonService:
+        dependencies = {
+            "registry": registry,
+            "root": web_app.ROOT,
+            "output_dir": web_app.OUTPUT_DIR,
+            "read_json_file": web_app.read_json,
+            "write_json_file": web_app.atomic_write_json,
+            "popen_factory": lambda *args, **kwargs: subprocess.Popen(*args, **kwargs),
+            "thread_factory": threading.Thread,
+            "job_id_factory": lambda: "amazon-worker-fixture",
+            "environ": os.environ,
+            "ensure_us_proxy": lambda *_args, **_kwargs: None,
+            "get_cached_or_call": lambda _service, _operation, _request, fetch, **_kwargs: fetch(),
+            "cache_log_label": lambda _payload: None,
         }
+        dependencies.update(overrides)
+        return AmazonService(**dependencies)
 
-        docker_missing_id = "amazon-worker-docker-missing"
-        registry.register(
-            docker_missing_id,
-            web_app.AmazonJob(
-                id=docker_missing_id,
-                target="B000DOCKER",
-                target_type="asin",
-                url="https://www.amazon.com/dp/B000DOCKER",
-                pages=1,
-            ),
-        )
-        with patch.object(web_app, "get_cached_or_call", side_effect=FileNotFoundError):
-            runner(docker_missing_id)
-        docker_missing = registry.snapshot(docker_missing_id)
-        assert docker_missing is not None
-        assert docker_missing.status == "failed"
-        assert docker_missing.error == "Docker CLI is not available in the web container"
-        assert docker_missing.log[-1] == docker_missing.error
+    class FakeAmazonProcess:
+        def __init__(self, lines: list[str], returncode: int) -> None:
+            self.stdout = iter(lines)
+            self.returncode = returncode
 
-        failure_id = "amazon-worker-failure"
-        registry.register(
-            failure_id,
-            web_app.AmazonJob(
-                id=failure_id,
-                target="B000FAILURE",
-                target_type="asin",
-                url="https://www.amazon.com/dp/B000FAILURE",
-                pages=1,
-            ),
-        )
-        with patch.object(web_app, "get_cached_or_call", side_effect=RuntimeError("fixture raw amazon failure")):
-            runner(failure_id)
-        failure = registry.snapshot(failure_id)
-        assert failure is not None
-        assert failure.status == "failed"
-        assert failure.error == "fixture raw amazon failure"
-        assert failure.log[-1] == failure.error
-    finally:
-        web_app.amazon_job_registry = original_registry
+        def wait(self) -> int:
+            return self.returncode
 
+    service = make_service()
+    command_success_id = "amazon-command-success"
+    command = ["docker", "fixture-amazon"]
+    registry.register(
+        command_success_id,
+        AmazonJob(
+            id=command_success_id,
+            target="B000COMMAND",
+            target_type="asin",
+            url="https://www.amazon.com/dp/B000COMMAND",
+            pages=1,
+        ),
+    )
+    with patch.object(
+        subprocess, "Popen", return_value=FakeAmazonProcess(["first stdout  \n", "second stdout\r\n"], 0)
+    ) as popen:
+        output, code = service.run_command(command_success_id, command)
+    assert (output, code) == ("first stdout  \nsecond stdout\r\n", 0)
+    assert popen.call_args.args == (command,)
+    assert popen.call_args.kwargs["cwd"] == web_app.ROOT
+    assert popen.call_args.kwargs["stdout"] is subprocess.PIPE
+    assert popen.call_args.kwargs["stderr"] is subprocess.STDOUT
+    assert popen.call_args.kwargs["text"] is True
+    assert popen.call_args.kwargs["env"] == dict(os.environ)
+    assert popen.call_args.kwargs["env"] is not os.environ
+    assert registry.snapshot(command_success_id).log == [
+        "$ docker fixture-amazon", "first stdout", "second stdout",
+    ]
+
+    command_failure_id = "amazon-command-failure"
+    registry.register(
+        command_failure_id,
+        AmazonJob(
+            id=command_failure_id,
+            target="B000COMMANDFAIL",
+            target_type="asin",
+            url="https://www.amazon.com/dp/B000COMMANDFAIL",
+            pages=1,
+        ),
+    )
+    with patch.object(
+        subprocess, "Popen", return_value=FakeAmazonProcess(["failure stdout  \n"], 7)
+    ) as popen:
+        output, code = service.run_command(command_failure_id, ["docker", "fixture-amazon-fail"])
+    assert (output, code) == ("failure stdout  \n", 7)
+    assert popen.call_args.args == (["docker", "fixture-amazon-fail"],)
+    assert registry.snapshot(command_failure_id).log == [
+        "$ docker fixture-amazon-fail", "failure stdout", "Command exited with code 7",
+    ]
+
+    for output, expected in (
+        ('{"products":[{"asin":"B000PURE01"}]}', {"products": [{"asin": "B000PURE01"}]}),
+        (
+            'scraper booting\n{"small":true}\nresult={"products":[{"asin":"B000LARGEST","title":"fixture product"}]}\n',
+            {"products": [{"asin": "B000LARGEST", "title": "fixture product"}]},
+        ),
+    ):
+        assert parse_json_from_process_output(output) == expected
+    for output, message in (("", "amazon-scraper returned no output"), ("scraper only logs", "amazon-scraper output did not contain JSON")):
+        try:
+            parse_json_from_process_output(output)
+        except ValueError as exc:
+            assert str(exc) == message
+        else:
+            raise AssertionError("invalid amazon-scraper output must fail")
+
+    success_id = "amazon-worker-success"
+    success_url = "https://www.amazon.com/dp/B000WORKER"
+    registry.register(
+        success_id,
+        AmazonJob(id=success_id, target="B000WORKER", target_type="asin", url=success_url, pages=3),
+    )
+    command_payload = {"products": [{"asin": "B000WORKER", "title": "fixture product"}]}
+    proxy_calls: list[str] = []
+    cache_calls: list[tuple[str, str, dict[str, Any]]] = []
+    commands: list[list[str]] = []
+
+    def ensure_proxy(name: str, *, log: Any) -> None:
+        proxy_calls.append(name)
+        log("fixture amazon proxy ready")
+
+    def command_success(job_id: str, command: list[str]) -> tuple[str, int]:
+        assert job_id == success_id
+        commands.append(command)
+        assert command == [
+            "docker", "run", "--rm", "--network", "host",
+            "-e", "AMAZON_PROXY", "-e", "AMAZON_PROXIES",
+            "amazon-scraper", "node", "assets/amazon_handler.js",
+            success_url, "--pages", "3",
+        ]
+        return json.dumps(command_payload), 0
+
+    def cache_success(service_name: str, operation: str, request: dict[str, Any], fetch: Any, *, metadata_builder: Any) -> dict[str, Any]:
+        cache_calls.append((service_name, operation, request))
+        assert metadata_builder(command_payload) == {
+            "entity_type": "amazon", "entity_id": "B000WORKER", "title": "fixture product", "source_url": success_url,
+        }
+        registry.update_fields(success_id, {"url": "https://www.amazon.com/dp/B000MUTATED", "pages": 5})
+        return fetch()
+
+    worker_service = make_service(ensure_us_proxy=ensure_proxy, get_cached_or_call=cache_success)
+    worker_snapshot_ids: list[str] = []
+    original_snapshot = registry.snapshot
+
+    def recording_worker_snapshot(job_id: str) -> Any:
+        worker_snapshot_ids.append(job_id)
+        return original_snapshot(job_id)
+
+    with patch.object(worker_service, "run_command", side_effect=command_success), patch.object(
+        registry, "snapshot", side_effect=recording_worker_snapshot
+    ):
+        worker_service.run_job(success_id)
+    assert worker_snapshot_ids == [success_id]
+    success = registry.snapshot(success_id)
+    assert success is not None and success.status == "complete"
+    output_dir = web_app.OUTPUT_DIR / "amazon" / success_id
+    assert success.output_dir == str(output_dir.relative_to(web_app.ROOT))
+    assert proxy_calls == ["amazon"]
+    assert cache_calls == [("amazon_scraper", "web", {"url": success_url, "pages": 3})]
+    assert len(commands) == 1
+    assert success.url == "https://www.amazon.com/dp/B000MUTATED" and success.pages == 5
+    result_path = output_dir / "result.json"
+    assert web_app.read_json(result_path) == command_payload
+    payload = worker_service.payload_for(success_id)
+    assert payload is not None and payload["result"] == command_payload
+    payload["result"]["products"][0]["title"] = "mutated"
+    assert web_app.read_json(result_path) == command_payload
+
+    error_id = "amazon-worker-result-error"
+    registry.register(
+        error_id,
+        AmazonJob(id=error_id, target="B000ERROR1", target_type="asin", url="https://www.amazon.com/dp/B000ERROR1", pages=1),
+    )
+    error_process_output = json.dumps({"status": "ERROR", "message": "fixture scraper error"}) + "\n"
+    with patch.object(
+        subprocess, "Popen", return_value=FakeAmazonProcess([error_process_output], 9)
+    ):
+        service.run_job(error_id)
+    result_error = registry.snapshot(error_id)
+    assert result_error is not None and result_error.status == "failed"
+    assert result_error.error == "fixture scraper error"
+    assert result_error.log[-1] == "Command exited with code 9"
+    assert "fixture scraper error" not in result_error.log
+    assert web_app.read_json(web_app.OUTPUT_DIR / "amazon" / error_id / "result.json") == {
+        "status": "ERROR", "message": "fixture scraper error",
+    }
+
+    docker_missing_id = "amazon-worker-docker-missing"
+    registry.register(
+        docker_missing_id,
+        AmazonJob(id=docker_missing_id, target="B000DOCKER", target_type="asin", url="https://www.amazon.com/dp/B000DOCKER", pages=1),
+    )
+    make_service(get_cached_or_call=lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError())).run_job(docker_missing_id)
+    docker_missing = registry.snapshot(docker_missing_id)
+    assert docker_missing is not None and docker_missing.status == "failed"
+    assert docker_missing.error == "Docker CLI is not available in the web container"
+    assert docker_missing.log[-1] == docker_missing.error
+
+    failure_id = "amazon-worker-failure"
+    registry.register(
+        failure_id,
+        AmazonJob(id=failure_id, target="B000FAILURE", target_type="asin", url="https://www.amazon.com/dp/B000FAILURE", pages=1),
+    )
+    make_service(get_cached_or_call=lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("fixture raw amazon failure"))).run_job(failure_id)
+    failure = registry.snapshot(failure_id)
+    assert failure is not None and failure.status == "failed"
+    assert failure.error == "fixture raw amazon failure"
+    assert failure.log[-1] == failure.error
 
 def run_lifecycle() -> None:
     # Production result payloads expose output paths relative to the repository
@@ -656,8 +619,8 @@ def run_lifecycle() -> None:
         os.environ["HOT_VIDEO_REPORT_ENABLED"] = "0"
         web_app = importlib.import_module("web_app")
         real_download_worker = web_app.run_download_job
-        real_amazon_worker = web_app.run_amazon_job
         composed_metrics_registry = web_app.metrics_job_registry
+        composed_amazon_registry = web_app.amazon_job_registry
         fake_queue = FakeVideoQueue(web_app.output_dir_for_filename)
         download_release = threading.Event()
         download_started = threading.Event()
@@ -763,7 +726,7 @@ def run_lifecycle() -> None:
             )
 
         def complete_amazon(job_id: str) -> None:
-            registry = web_app.amazon_job_registry
+            registry = composed_amazon_registry
             current = registry.snapshot(job_id)
             assert current is not None
             registry.update_fields(job_id, {"status": "running"})
@@ -805,7 +768,7 @@ def run_lifecycle() -> None:
             patches.enter_context(patch.object(web_app, "run_download_job", side_effect=complete_download))
             patches.enter_context(patch.object(web_app.shop_service, "run_job", side_effect=complete_shop))
             patches.enter_context(patch.object(web_app.metrics_service, "run_job", side_effect=complete_metrics))
-            patches.enter_context(patch.object(web_app, "run_amazon_job", side_effect=complete_amazon))
+            patches.enter_context(patch.object(web_app.amazon_service, "run_job", side_effect=complete_amazon))
             patches.enter_context(patch.object(web_app, "video_queue", fake_queue))
             patches.enter_context(patch.object(web_app, "subprocess", SimpleNamespace(run=fake_translate)))
             patches.enter_context(patch.object(web_app, "ensure_analyzer_media_or_delete", side_effect=lambda _path: None))
@@ -818,7 +781,7 @@ def run_lifecycle() -> None:
             assert_real_download_worker_registry_updates(web_app, real_download_worker)
             assert_real_shop_worker_registry_updates(web_app)
             assert_real_metrics_worker_registry_updates(web_app)
-            assert_real_amazon_worker_registry_updates(web_app, real_amazon_worker)
+            assert_real_amazon_worker_registry_updates(web_app)
 
             server = web_app.ThreadingHTTPServer(("127.0.0.1", 0), web_app.Handler)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -1086,8 +1049,8 @@ def run_lifecycle() -> None:
                 assert status == 400 and invalid_amazon == {"error": error}
 
             with patch.object(web_app, "ui_test_mode_allows_live_write", return_value=False), patch.object(
-                web_app.Handler,
-                "handle_amazon_scrape",
+                web_app.amazon_service,
+                "create_and_start",
                 side_effect=AssertionError("UI_TEST gate must run before the Amazon handler"),
             ):
                 status, _headers, blocked_amazon = json_request(

@@ -16,6 +16,7 @@ from core.config import AppConfig  # noqa: E402
 
 WEB_APP_PATH = SCRIPTS_DIR / "web_app.py"
 SHOP_ROUTE_PATH = SCRIPTS_DIR / "routes" / "shop.py"
+AMAZON_ROUTE_PATH = SCRIPTS_DIR / "routes" / "amazon.py"
 METRICS_ROUTE_PATH = SCRIPTS_DIR / "routes" / "metrics.py"
 METRICS_SERVICE_PATH = SCRIPTS_DIR / "services" / "metrics.py"
 _MODULE_CONFIG_BINDINGS = {
@@ -88,6 +89,7 @@ _SHOP_ROUTE_GETENV_KEY_COUNTS = Counter(
         "SOCIAVAULT_REVIEW_PAGES": 1,
     }
 )
+_AMAZON_ROUTE_GETENV_KEY_COUNTS = Counter({"AMAZON_MAX_PAGES": 1})
 
 
 def web_app_module_tree() -> ast.Module:
@@ -98,6 +100,13 @@ def shop_route_module_tree() -> ast.Module:
     return ast.parse(
         SHOP_ROUTE_PATH.read_text(encoding="utf-8"),
         filename=str(SHOP_ROUTE_PATH),
+    )
+
+
+def amazon_route_module_tree() -> ast.Module:
+    return ast.parse(
+        AMAZON_ROUTE_PATH.read_text(encoding="utf-8"),
+        filename=str(AMAZON_ROUTE_PATH),
     )
 
 
@@ -176,6 +185,43 @@ def getenv_calls_by_scope(tree: ast.Module) -> tuple[list[ast.Call], list[ast.Ca
     return module_calls, function_calls
 
 
+def injected_getenv_contract(
+    tree: ast.Module,
+    register_name: str,
+) -> tuple[list[ast.Call], list[ast.Call], list[ast.Call], list[str], ast.expr | None]:
+    module_calls, function_calls = getenv_calls_by_scope(tree)
+    getenv_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "getenv"
+    ]
+    parents = {
+        child: parent
+        for parent in ast.walk(tree)
+        for child in ast.iter_child_nodes(parent)
+    }
+    scopes: list[str] = []
+    for call in getenv_calls:
+        ancestor = parents.get(call)
+        while ancestor is not None and not isinstance(ancestor, ast.FunctionDef):
+            ancestor = parents.get(ancestor)
+        scopes.append(ancestor.name if isinstance(ancestor, ast.FunctionDef) else "")
+    register = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == register_name
+    )
+    keyword_defaults = dict(
+        zip(
+            (argument.arg for argument in register.args.kwonlyargs),
+            register.args.kw_defaults,
+        )
+    )
+    return module_calls, function_calls, getenv_calls, scopes, keyword_defaults["getenv"]
+
+
 class AppConfigTests(unittest.TestCase):
     def test_phase_1_2c_web_app_uses_one_explicit_app_config_factory(self) -> None:
         tree = web_app_module_tree()
@@ -218,42 +264,37 @@ class AppConfigTests(unittest.TestCase):
     def test_phase_1_2c_only_functions_and_methods_keep_dynamic_getenv_reads(self) -> None:
         module_calls, function_calls = getenv_calls_by_scope(web_app_module_tree())
         shop_tree = shop_route_module_tree()
-        shop_module_calls, shop_function_calls = getenv_calls_by_scope(shop_tree)
-        shop_getenv_calls = [
-            node
-            for node in ast.walk(shop_tree)
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "getenv"
-        ]
-        shop_parents = {
-            child: parent
-            for parent in ast.walk(shop_tree)
-            for child in ast.iter_child_nodes(parent)
-        }
-        shop_getenv_scopes: list[str] = []
-        for call in shop_getenv_calls:
-            ancestor = shop_parents.get(call)
-            while ancestor is not None and not isinstance(ancestor, ast.FunctionDef):
-                ancestor = shop_parents.get(ancestor)
-            shop_getenv_scopes.append(ancestor.name if isinstance(ancestor, ast.FunctionDef) else "")
-        register = next(
-            node
-            for node in shop_tree.body
-            if isinstance(node, ast.FunctionDef)
-            and node.name == "register_shop_api_routes"
-        )
-        keyword_defaults = dict(
-            zip(
-                (argument.arg for argument in register.args.kwonlyargs),
-                register.args.kw_defaults,
-            )
-        )
-        getenv_default = keyword_defaults["getenv"]
+        (
+            shop_module_calls,
+            shop_function_calls,
+            shop_getenv_calls,
+            shop_getenv_scopes,
+            shop_getenv_default,
+        ) = injected_getenv_contract(shop_tree, "register_shop_api_routes")
+        amazon_tree = amazon_route_module_tree()
+        (
+            amazon_module_calls,
+            amazon_function_calls,
+            amazon_getenv_calls,
+            amazon_getenv_scopes,
+            amazon_getenv_default,
+        ) = injected_getenv_contract(amazon_tree, "register_amazon_routes")
+
+        for route_module_calls, route_function_calls in (
+            (shop_module_calls, shop_function_calls),
+            (amazon_module_calls, amazon_function_calls),
+        ):
+            self.assertEqual(route_module_calls, [])
+            self.assertEqual(route_function_calls, [])
+        for getenv_default in (shop_getenv_default, amazon_getenv_default):
+            self.assertIsInstance(getenv_default, ast.Attribute)
+            if isinstance(getenv_default, ast.Attribute):
+                self.assertIsInstance(getenv_default.value, ast.Name)
+                if isinstance(getenv_default.value, ast.Name):
+                    self.assertEqual(getenv_default.value.id, "os")
+                self.assertEqual(getenv_default.attr, "getenv")
 
         self.assertEqual(module_calls, [])
-        self.assertEqual(shop_module_calls, [])
-        self.assertEqual(shop_function_calls, [])
         for metrics_tree in metrics_module_trees():
             metrics_module_calls, metrics_function_calls = getenv_calls_by_scope(metrics_tree)
             self.assertEqual(metrics_module_calls, [])
@@ -265,25 +306,27 @@ class AppConfigTests(unittest.TestCase):
                 and isinstance(node.func, ast.Name)
                 and node.func.id == "getenv"
             ])
-        self.assertEqual(len(function_calls), 53)
+        self.assertEqual(len(function_calls), 52)
         self.assertEqual(len(shop_getenv_calls), 3)
         self.assertEqual(shop_getenv_scopes, ["shop_extract"] * 3)
-        self.assertIsInstance(getenv_default, ast.Attribute)
-        if isinstance(getenv_default, ast.Attribute):
-            self.assertIsInstance(getenv_default.value, ast.Name)
-            if isinstance(getenv_default.value, ast.Name):
-                self.assertEqual(getenv_default.value.id, "os")
-            self.assertEqual(getenv_default.attr, "getenv")
+        self.assertEqual(len(amazon_getenv_calls), 1)
+        self.assertEqual(amazon_getenv_scopes, ["amazon_scrape"])
         self.assertEqual(
             Counter(getenv_key(call) for call in function_calls),
-            _DYNAMIC_GETENV_KEY_COUNTS - _SHOP_ROUTE_GETENV_KEY_COUNTS,
+            _DYNAMIC_GETENV_KEY_COUNTS
+            - _SHOP_ROUTE_GETENV_KEY_COUNTS
+            - _AMAZON_ROUTE_GETENV_KEY_COUNTS,
         )
         self.assertEqual(
             Counter(getenv_key(call) for call in shop_getenv_calls),
             _SHOP_ROUTE_GETENV_KEY_COUNTS,
         )
         self.assertEqual(
-            len(function_calls) + len(shop_getenv_calls),
+            Counter(getenv_key(call) for call in amazon_getenv_calls),
+            _AMAZON_ROUTE_GETENV_KEY_COUNTS,
+        )
+        self.assertEqual(
+            len(function_calls) + len(shop_getenv_calls) + len(amazon_getenv_calls),
             sum(_DYNAMIC_GETENV_KEY_COUNTS.values()),
         )
 

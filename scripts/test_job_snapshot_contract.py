@@ -22,11 +22,13 @@ SCRIPTS_DIR = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 from jobs.registry import JobRegistry
+from routes.amazon import register_amazon_routes
 from routes.metrics import register_metrics_api_routes
 from routes.router import Router
 from routes.shop import register_shop_api_routes
 from services import metrics as metrics_module
 from services import shop as shop_module
+from services.amazon import AmazonJob, AmazonService
 from services.metrics import MetricsJob, MetricsService
 from services.shop import ShopJob, ShopService
 
@@ -80,10 +82,7 @@ def sse_body(payload: dict[str, Any]) -> bytes:
 
 def dispatch_get(web_app: Any, path: str) -> FakeHandler:
     handler = FakeHandler(path)
-    for name in (
-        "stream_download_events",
-        "stream_amazon_events",
-    ):
+    for name in ("stream_download_events",):
         setattr(handler, name, getattr(web_app.Handler, name).__get__(handler, FakeHandler))
     web_app.Handler.do_GET(handler)
     return handler
@@ -132,6 +131,36 @@ def make_metrics_service(
     )
 
 
+def make_amazon_service(
+    web_app: Any,
+    registry: JobRegistry,
+    *,
+    read_json_file: Any | None = None,
+    write_json_file: Any | None = None,
+    popen_factory: Any | None = None,
+    thread_factory: Any | None = None,
+    job_id_factory: Any | None = None,
+    environ: Any | None = None,
+    ensure_us_proxy: Any | None = None,
+    get_cached_or_call: Any | None = None,
+    cache_log_label: Any | None = None,
+) -> AmazonService:
+    return AmazonService(
+        registry=registry,
+        root=web_app.ROOT,
+        output_dir=web_app.OUTPUT_DIR,
+        read_json_file=read_json_file or web_app.read_json,
+        write_json_file=write_json_file or web_app.atomic_write_json,
+        popen_factory=popen_factory or (lambda *_args, **_kwargs: None),
+        thread_factory=thread_factory or (lambda **_kwargs: None),
+        job_id_factory=job_id_factory or (lambda: "amazon-post-fixture"),
+        environ=environ if environ is not None else os.environ,
+        ensure_us_proxy=ensure_us_proxy or (lambda *_args, **_kwargs: None),
+        get_cached_or_call=get_cached_or_call or (lambda _provider, _scope, _request, fetch, **_kwargs: fetch()),
+        cache_log_label=cache_log_label or (lambda _payload: None),
+    )
+
+
 def make_shop_router(service: ShopService, *, sleep: Any = lambda _seconds: None) -> Router:
     router = Router()
     register_shop_api_routes(router, service, sleep=sleep)
@@ -144,6 +173,17 @@ def make_metrics_router(service: MetricsService, *, sleep: Any = lambda _seconds
     return router
 
 
+def make_amazon_router(
+    service: AmazonService,
+    *,
+    getenv: Any = lambda _name, default: default,
+    sleep: Any = lambda _seconds: None,
+) -> Router:
+    router = Router()
+    register_amazon_routes(router, service, getenv=getenv, sleep=sleep)
+    return router
+
+
 def dispatch_shop(router: Router, method: str, handler: FakeHandler) -> FakeHandler:
     route = router.resolve(method, handler.path.partition("?")[0])
     route.handler(handler, route.params)
@@ -151,6 +191,12 @@ def dispatch_shop(router: Router, method: str, handler: FakeHandler) -> FakeHand
 
 
 def dispatch_metrics(router: Router, method: str, handler: FakeHandler) -> FakeHandler:
+    route = router.resolve(method, handler.path.partition("?")[0])
+    route.handler(handler, route.params)
+    return handler
+
+
+def dispatch_amazon(router: Router, method: str, handler: FakeHandler) -> FakeHandler:
     route = router.resolve(method, handler.path.partition("?")[0])
     route.handler(handler, route.params)
     return handler
@@ -213,7 +259,7 @@ def make_jobs(web_app: Any) -> dict[str, Any]:
         log=[f"metrics-{index}" for index in range(122)],
         output_dir="output/tiktok_api/metrics-fixture",
     )
-    amazon = web_app.AmazonJob(
+    amazon = AmazonJob(
         id="amazon-fixture",
         target="B000FIXTURE",
         target_type="asin",
@@ -233,6 +279,8 @@ def make_jobs(web_app: Any) -> dict[str, Any]:
     shop_registry.register(shop.id, shop)
     metrics_registry = JobRegistry()
     metrics_registry.register(metrics.id, metrics)
+    amazon_registry = JobRegistry()
+    amazon_registry.register(amazon.id, amazon)
     return {
         "download": download,
         "shop": shop,
@@ -242,6 +290,8 @@ def make_jobs(web_app: Any) -> dict[str, Any]:
         "metrics_registry": metrics_registry,
         "metrics_service": make_metrics_service(web_app, metrics_registry),
         "amazon": amazon,
+        "amazon_registry": amazon_registry,
+        "amazon_service": make_amazon_service(web_app, amazon_registry),
     }
 
 
@@ -251,9 +301,10 @@ def public_shop_payload(service: ShopService, job: ShopJob) -> dict[str, Any]:
     return payload
 
 
-def public_amazon_payload(web_app: Any, job: Any) -> dict[str, Any]:
-    result = web_app.read_json(web_app.OUTPUT_DIR / "amazon" / job.id / "result.json")
-    return web_app.public_amazon_job(job, result=result)
+def public_amazon_payload(service: AmazonService, job: AmazonJob) -> dict[str, Any]:
+    payload = service.payload_for(job.id)
+    assert payload is not None
+    return payload
 
 
 def assert_public_payloads(web_app: Any, jobs: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -262,7 +313,7 @@ def assert_public_payloads(web_app: Any, jobs: dict[str, Any]) -> dict[str, dict
         "download": web_app.public_download_job(jobs["download"]),
         "shop": public_shop_payload(jobs["shop_service"], jobs["shop"]),
         "metrics": metrics_service.payload_for(jobs["metrics"].id),
-        "amazon": public_amazon_payload(web_app, jobs["amazon"]),
+        "amazon": public_amazon_payload(jobs["amazon_service"], jobs["amazon"]),
     }
     assert payloads["metrics"] is not None
     assert set(payloads["download"]) == {"id", "url", "status", "created_at", "updated_at", "filename", "error", "log", "result"}
@@ -380,7 +431,7 @@ def assert_public_payloads(web_app: Any, jobs: dict[str, Any]) -> dict[str, dict
     write_json(web_app.OUTPUT_DIR / "amazon" / jobs["amazon"].id / "result.json", {"products": [{"asin": "B000FIXTUREV2"}]})
     refreshed_shop = public_shop_payload(jobs["shop_service"], jobs["shop"])
     refreshed_metrics = metrics_service.payload_for(jobs["metrics"].id)
-    refreshed_amazon = public_amazon_payload(web_app, jobs["amazon"])
+    refreshed_amazon = public_amazon_payload(jobs["amazon_service"], jobs["amazon"])
     assert refreshed_shop["extract"] == {"items": [{"id": "extract-v2"}]}
     assert refreshed_shop["analysis"] == {"summary": "analysis-v2"}
     assert refreshed_metrics["result"] == {"metric": {"views": 8}}
@@ -432,7 +483,7 @@ def assert_public_payloads(web_app: Any, jobs: dict[str, Any]) -> dict[str, dict
     assert final_metrics_payload["result"] == {
         "metric": {"views": 8}
     }
-    assert public_amazon_payload(web_app, jobs["amazon"])["result"] == {"products": [{"asin": "B000FIXTUREV2"}]}
+    assert public_amazon_payload(jobs["amazon_service"], jobs["amazon"])["result"] == {"products": [{"asin": "B000FIXTUREV2"}]}
     return payloads
 
 
@@ -601,7 +652,7 @@ def assert_no_amazon_legacy_store() -> None:
         for node in tree.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
     }
-    assert {
+    assert not {
         "AmazonJob",
         "append_amazon_log",
         "amazon_url_for_target",
@@ -610,7 +661,7 @@ def assert_no_amazon_legacy_store() -> None:
         "run_amazon_job",
         "public_amazon_job",
         "validate_amazon_url",
-    } <= top_level_definitions
+    } & top_level_definitions
     top_level_assignments = {
         target.id
         for node in tree.body
@@ -620,14 +671,60 @@ def assert_no_amazon_legacy_store() -> None:
         )
         if isinstance(target, ast.Name)
     }
-    assert {"ALLOWED_AMAZON_HOST_SUFFIXES", "ASIN_RE"} <= top_level_assignments
+    assert not {"ALLOWED_AMAZON_HOST_SUFFIXES", "ASIN_RE"} & top_level_assignments
+    amazon_imports = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom) and node.module == "services.amazon"
+    ]
+    assert len(amazon_imports) == 1
+    assert [(alias.name, alias.asname) for alias in amazon_imports[0].names] == [("AmazonService", None)]
+    amazon_service_assignment = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "amazon_service" for target in node.targets)
+    )
+    assert isinstance(amazon_service_assignment.value, ast.Call)
+    assert isinstance(amazon_service_assignment.value.func, ast.Name)
+    assert amazon_service_assignment.value.func.id == "AmazonService"
+    amazon_service_keywords = {
+        keyword.arg: keyword.value for keyword in amazon_service_assignment.value.keywords
+    }
+    assert set(amazon_service_keywords) == {
+        "registry",
+        "root",
+        "output_dir",
+        "read_json_file",
+        "write_json_file",
+        "popen_factory",
+        "thread_factory",
+        "job_id_factory",
+        "environ",
+        "ensure_us_proxy",
+        "get_cached_or_call",
+        "cache_log_label",
+    }
+    for keyword, expected_name in {
+        "registry": "amazon_job_registry",
+        "root": "ROOT",
+        "output_dir": "OUTPUT_DIR",
+        "read_json_file": "read_json",
+        "write_json_file": "atomic_write_json",
+        "thread_factory": "threading.Thread",
+        "popen_factory": "subprocess.Popen",
+        "environ": "os.environ",
+        "ensure_us_proxy": "ensure_us_proxy",
+        "get_cached_or_call": "get_cached_or_call",
+    }.items():
+        assert ast.unparse(amazon_service_keywords[keyword]) == expected_name
     handler = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "Handler")
     handler_methods = {
         node.name
         for node in handler.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
-    assert {"stream_amazon_events", "handle_amazon_scrape"} <= handler_methods
+    assert not {"stream_amazon_events", "handle_amazon_scrape"} & handler_methods
     get_method = next(node for node in handler.body if isinstance(node, ast.FunctionDef) and node.name == "do_GET")
     post_method = next(node for node in handler.body if isinstance(node, ast.FunctionDef) and node.name == "do_POST")
     get_constants = {
@@ -635,13 +732,11 @@ def assert_no_amazon_legacy_store() -> None:
         for node in ast.walk(get_method)
         if isinstance(node, ast.Constant) and isinstance(node.value, str)
     }
-    assert {"/api/amazon-job", "/api/amazon-events"} <= get_constants
-    assert any(
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and isinstance(node.func.value, ast.Name)
-        and node.func.value.id == "self"
-        and node.func.attr == "handle_amazon_scrape"
+    assert not {"/api/amazon-job", "/api/amazon-events"} & get_constants
+    assert not any(
+        isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and node.value == "/api/amazon-scrape"
         for node in ast.walk(post_method)
     )
     top_level_registries = [
@@ -672,6 +767,26 @@ def assert_no_amazon_legacy_store() -> None:
         "metrics_job_registry",
         "amazon_job_registry",
     }
+    service_tree = ast.parse((SCRIPTS_DIR / "services" / "amazon.py").read_text(encoding="utf-8"))
+    route_tree = ast.parse((SCRIPTS_DIR / "routes" / "amazon.py").read_text(encoding="utf-8"))
+    service_definitions = {
+        node.name for node in service_tree.body if isinstance(node, (ast.FunctionDef, ast.ClassDef))
+    }
+    assert {"AmazonJob", "AmazonService", "validate_amazon_url", "amazon_url_for_target", "parse_json_from_process_output"} <= service_definitions
+    route_definitions = {
+        node.name for node in route_tree.body if isinstance(node, (ast.FunctionDef, ast.ClassDef))
+    }
+    assert "register_amazon_routes" in route_definitions
+    for source_tree, forbidden in ((service_tree, {"web_app", "routes"}), (route_tree, {"web_app"})):
+        imported = {
+            alias.name.split(".", 1)[0]
+            for node in ast.walk(source_tree)
+            for alias in (node.names if isinstance(node, ast.Import) else [])
+        } | {
+            str(node.module or "").split(".", 1)[0]
+            for node in ast.walk(source_tree) if isinstance(node, ast.ImportFrom)
+        }
+        assert not imported & forbidden
 
 
 def assert_post_order_contracts(web_app: Any) -> None:
@@ -934,95 +1049,95 @@ def assert_get_and_sse_contracts(web_app: Any, jobs: dict[str, Any]) -> None:
     assert call_order == ["snapshot", "shop_extract.json", "shop_analysis.json"]
 
     amazon = jobs["amazon"]
-    original_amazon_registry = web_app.amazon_job_registry
-    amazon_registry = web_app.JobRegistry()
-    web_app.amazon_job_registry = amazon_registry
-    try:
-        amazon_registry.register(amazon.id, amazon)
-        snapshot = amazon_registry.snapshot(amazon.id)
-        assert snapshot is not None
-        expected = public_amazon_payload(web_app, snapshot)
-        assert_json_response(dispatch_get(web_app, f"/api/amazon-job?id={amazon.id}"), 200, expected)
-        assert_sse_response(dispatch_get(web_app, f"/api/amazon-events?id={amazon.id}"), expected)
+    amazon_registry = jobs["amazon_registry"]
+    amazon_service = jobs["amazon_service"]
+    amazon_router = make_amazon_router(amazon_service)
+    expected = public_amazon_payload(amazon_service, amazon)
+    assert_json_response(
+        dispatch_amazon(amazon_router, "GET", FakeHandler(f"/api/amazon-job?id={amazon.id}")), 200, expected
+    )
+    assert_sse_response(
+        dispatch_amazon(amazon_router, "GET", FakeHandler(f"/api/amazon-events?id={amazon.id}")), expected
+    )
+    assert_json_response(
+        dispatch_amazon(amazon_router, "GET", FakeHandler("/api/amazon-job?id=missing")),
+        404,
+        {"error": "Amazon job not found"},
+    )
+    assert_sse_response(
+        dispatch_amazon(amazon_router, "GET", FakeHandler("/api/amazon-events?id=missing")),
+        {"status": "missing", "error": "Amazon job not found"},
+    )
+
+    call_order: list[str] = []
+    original_snapshot = amazon_registry.snapshot
+
+    def recording_snapshot(job_id: str) -> Any:
+        call_order.append("snapshot")
+        return original_snapshot(job_id)
+
+    def recording_read_json(path: Path) -> Any:
+        call_order.append(path.name)
+        return web_app.read_json(path)
+
+    ordered_router = make_amazon_router(
+        make_amazon_service(web_app, amazon_registry, read_json_file=recording_read_json)
+    )
+    with patch.object(amazon_registry, "snapshot", side_effect=recording_snapshot):
         assert_json_response(
-            dispatch_get(web_app, "/api/amazon-job?id=missing"), 404, {"error": "Amazon job not found"}
+            dispatch_amazon(ordered_router, "GET", FakeHandler(f"/api/amazon-job?id={amazon.id}")), 200, expected
         )
-        assert_sse_response(
-            dispatch_get(web_app, "/api/amazon-events?id=missing"),
-            {"status": "missing", "error": "Amazon job not found"},
+    assert call_order == ["snapshot", "result.json"]
+
+    post_order: list[str] = []
+
+    class DeferredThread:
+        def __init__(self, *, target: Any, args: tuple[Any, ...], daemon: bool) -> None:
+            self.target = target
+            self.args = args
+            self.daemon = daemon
+
+        def start(self) -> None:
+            post_order.append("thread.start")
+
+    def recording_post_register(job_id: str, job: Any) -> None:
+        post_order.append("register")
+        assert (job.target, job.target_type, job.url, job.pages) == (
+            "B000POST01", "asin", "https://www.amazon.com/dp/B000POST01", 3,
         )
+        return original_register(job_id, job)
 
-        call_order: list[str] = []
-        original_snapshot = amazon_registry.snapshot
-        original_read_json = web_app.read_json
+    def recording_post_snapshot(job_id: str) -> Any:
+        post_order.append("snapshot")
+        return original_snapshot(job_id)
 
-        def recording_snapshot(job_id: str) -> Any:
-            call_order.append("snapshot")
-            return original_snapshot(job_id)
+    def recording_post_read_json(path: Path) -> Any:
+        post_order.append(path.name)
+        return web_app.read_json(path)
 
-        def recording_read_json(path: Path) -> Any:
-            call_order.append(path.name)
-            return original_read_json(path)
-
-        with patch.object(amazon_registry, "snapshot", side_effect=recording_snapshot), patch.object(
-            web_app, "read_json", side_effect=recording_read_json
-        ):
-            assert_json_response(dispatch_get(web_app, f"/api/amazon-job?id={amazon.id}"), 200, expected)
-        assert call_order == ["snapshot", "result.json"]
-
-        class DeferredThread:
-            def __init__(self, *, target: Any, args: tuple[Any, ...], daemon: bool) -> None:
-                self.target = target
-                self.args = args
-                self.daemon = daemon
-
-            def start(self) -> None:
-                post_order.append("thread.start")
-                return None
-
-        post_body = json.dumps({"target": "B000POST01", "target_type": "asin", "pages": 3}).encode("utf-8")
-        post_handler = FakeHandler()
-        post_handler.headers = {"Content-Length": str(len(post_body))}
-        post_handler.rfile = io.BytesIO(post_body)
-        post_order: list[str] = []
-
-        def recording_post_snapshot(job_id: str) -> Any:
-            post_order.append("snapshot")
-            return original_snapshot(job_id)
-
-        def recording_post_register(job_id: str, job: Any) -> None:
-            post_order.append("register")
-            assert (job.target, job.target_type, job.url, job.pages) == (
-                "B000POST01", "asin", "https://www.amazon.com/dp/B000POST01", 3,
-            )
-            return original_register(job_id, job)
-
-        def recording_post_read_json(path: Path) -> Any:
-            post_order.append(path.name)
-            return original_read_json(path)
-
-        def recording_post_serializer(job: Any, *, result: Any) -> dict[str, Any]:
-            post_order.append("serializer")
-            return original_serializer(job, result=result)
-
-        original_register = amazon_registry.register
-        original_serializer = web_app.public_amazon_job
-        with patch.object(web_app.threading, "Thread", DeferredThread), patch.object(
-            amazon_registry, "register", side_effect=recording_post_register
-        ), patch.object(
-            amazon_registry, "snapshot", side_effect=recording_post_snapshot
-        ), patch.object(web_app, "read_json", side_effect=recording_post_read_json), patch.object(
-            web_app, "public_amazon_job", side_effect=recording_post_serializer
-        ):
-            web_app.Handler.handle_amazon_scrape(post_handler)
-        response = json.loads(post_handler.wfile.getvalue().decode("utf-8"))
-        assert post_handler.responses == [202]
-        assert (response["target"], response["target_type"], response["url"], response["pages"], response["status"]) == (
-            "B000POST01", "asin", "https://www.amazon.com/dp/B000POST01", 3, "queued",
-        )
-        assert post_order == ["register", "thread.start", "snapshot", "result.json", "serializer"]
-    finally:
-        web_app.amazon_job_registry = original_amazon_registry
+    post_service = make_amazon_service(
+        web_app,
+        amazon_registry,
+        read_json_file=recording_post_read_json,
+        thread_factory=DeferredThread,
+        job_id_factory=lambda: "amazon-post-fixture",
+    )
+    post_router = make_amazon_router(post_service)
+    post_body = json.dumps({"target": "B000POST01", "target_type": "asin", "pages": 3}).encode("utf-8")
+    post_handler = FakeHandler("/api/amazon-scrape")
+    post_handler.headers = {"Content-Length": str(len(post_body))}
+    post_handler.rfile = io.BytesIO(post_body)
+    original_register = amazon_registry.register
+    with patch.object(amazon_registry, "register", side_effect=recording_post_register), patch.object(
+        amazon_registry, "snapshot", side_effect=recording_post_snapshot
+    ):
+        dispatch_amazon(post_router, "POST", post_handler)
+    response = json.loads(post_handler.wfile.getvalue().decode("utf-8"))
+    assert post_handler.responses == [202]
+    assert (response["target"], response["target_type"], response["url"], response["pages"], response["status"]) == (
+        "B000POST01", "asin", "https://www.amazon.com/dp/B000POST01", 3, "queued",
+    )
+    assert post_order == ["register", "thread.start", "snapshot", "result.json"]
 
 
 def assert_metrics_artifact_failures_and_broken_pipe(web_app: Any) -> None:
@@ -1126,9 +1241,8 @@ def assert_metrics_artifact_failures_and_broken_pipe(web_app: Any) -> None:
 
 
 def assert_amazon_artifact_failures_and_broken_pipe(web_app: Any) -> None:
-    registry = web_app.JobRegistry()
-    original_registry = web_app.amazon_job_registry
-    missing_artifact = web_app.AmazonJob(
+    registry = JobRegistry()
+    missing_artifact = AmazonJob(
         id="amazon-artifact-missing",
         target="B000MISSING",
         target_type="asin",
@@ -1139,7 +1253,7 @@ def assert_amazon_artifact_failures_and_broken_pipe(web_app: Any) -> None:
         updated_at=46.0,
         output_dir="output/amazon/amazon-artifact-missing",
     )
-    invalid_artifact = web_app.AmazonJob(
+    invalid_artifact = AmazonJob(
         id="amazon-artifact-invalid",
         target="B000INVALID",
         target_type="asin",
@@ -1155,72 +1269,60 @@ def assert_amazon_artifact_failures_and_broken_pipe(web_app: Any) -> None:
     invalid_path = web_app.OUTPUT_DIR / "amazon" / invalid_artifact.id / "result.json"
     invalid_path.parent.mkdir(parents=True, exist_ok=True)
     invalid_path.write_text("{invalid", encoding="utf-8")
-    web_app.amazon_job_registry = registry
+    service = make_amazon_service(web_app, registry)
+    router = make_amazon_router(service)
+    expected_missing = service.payload_for(missing_artifact.id)
+    assert expected_missing is not None
+    assert_json_response(
+        dispatch_amazon(router, "GET", FakeHandler(f"/api/amazon-job?id={missing_artifact.id}")),
+        200,
+        expected_missing,
+    )
+    assert_sse_response(
+        dispatch_amazon(router, "GET", FakeHandler(f"/api/amazon-events?id={missing_artifact.id}")),
+        expected_missing,
+    )
+
+    invalid_get = FakeHandler(f"/api/amazon-job?id={invalid_artifact.id}")
     try:
-        missing_snapshot = registry.snapshot(missing_artifact.id)
-        assert missing_snapshot is not None
-        expected_missing = web_app.public_amazon_job(missing_snapshot, result=None)
-        assert_json_response(
-            dispatch_get(web_app, f"/api/amazon-job?id={missing_artifact.id}"),
-            200,
-            expected_missing,
-        )
-        assert_sse_response(
-            dispatch_get(web_app, f"/api/amazon-events?id={missing_artifact.id}"),
-            expected_missing,
-        )
+        dispatch_amazon(router, "GET", invalid_get)
+    except json.JSONDecodeError:
+        pass
+    else:
+        raise AssertionError("invalid Amazon artifact must propagate from GET")
+    assert invalid_get.responses == []
+    assert invalid_get.response_headers == []
+    assert invalid_get.wfile.getvalue() == b""
+    assert invalid_get.ended is False
 
-        invalid_get = FakeHandler(f"/api/amazon-job?id={invalid_artifact.id}")
-        try:
-            web_app.Handler.do_GET(invalid_get)
-        except json.JSONDecodeError:
-            pass
-        else:
-            raise AssertionError("invalid Amazon artifact must propagate from GET")
-        assert invalid_get.responses == []
-        assert invalid_get.response_headers == []
-        assert invalid_get.wfile.getvalue() == b""
-        assert invalid_get.ended is False
+    invalid_sse = FakeHandler(f"/api/amazon-events?id={invalid_artifact.id}")
+    try:
+        dispatch_amazon(router, "GET", invalid_sse)
+    except json.JSONDecodeError:
+        pass
+    else:
+        raise AssertionError("invalid Amazon artifact must propagate from SSE")
+    assert_event_headers(invalid_sse)
+    assert invalid_sse.wfile.getvalue() == b""
+    assert invalid_sse.close_connection is False
 
-        invalid_sse = FakeHandler(f"/api/amazon-events?id={invalid_artifact.id}")
-        invalid_sse.stream_amazon_events = web_app.Handler.stream_amazon_events.__get__(invalid_sse, FakeHandler)
-        try:
-            web_app.Handler.do_GET(invalid_sse)
-        except json.JSONDecodeError:
-            pass
-        else:
-            raise AssertionError("invalid Amazon artifact must propagate from SSE")
-        assert invalid_sse.responses == [200]
-        assert invalid_sse.header("Content-Type") == "text/event-stream; charset=utf-8"
-        assert invalid_sse.header("Cache-Control") == "no-cache"
-        assert invalid_sse.header("Connection") == "keep-alive"
-        assert invalid_sse.ended is True
-        assert invalid_sse.wfile.getvalue() == b""
-        assert invalid_sse.close_connection is False
+    class BrokenPipeWriter:
+        def __init__(self) -> None:
+            self.write_attempts = 0
 
-        class BrokenPipeWriter:
-            def __init__(self) -> None:
-                self.write_attempts = 0
+        def write(self, _data: bytes) -> int:
+            self.write_attempts += 1
+            raise BrokenPipeError
 
-            def write(self, _data: bytes) -> int:
-                self.write_attempts += 1
-                raise BrokenPipeError
+        def flush(self) -> None:
+            return None
 
-            def flush(self) -> None:
-                return None
-
-        normal_pipe = FakeHandler()
-        normal_pipe.wfile = BrokenPipeWriter()
-        web_app.Handler.stream_amazon_events(normal_pipe, missing_artifact.id)
-        assert normal_pipe.responses == [200]
-        assert normal_pipe.header("Content-Type") == "text/event-stream; charset=utf-8"
-        assert normal_pipe.header("Cache-Control") == "no-cache"
-        assert normal_pipe.header("Connection") == "keep-alive"
-        assert normal_pipe.ended is True
-        assert normal_pipe.wfile.write_attempts == 1
-        assert normal_pipe.close_connection is True
-    finally:
-        web_app.amazon_job_registry = original_registry
+    normal_pipe = FakeHandler(f"/api/amazon-events?id={missing_artifact.id}")
+    normal_pipe.wfile = BrokenPipeWriter()
+    dispatch_amazon(router, "GET", normal_pipe)
+    assert_event_headers(normal_pipe)
+    assert normal_pipe.wfile.write_attempts == 1
+    assert normal_pipe.close_connection is True
 
 
 def assert_shop_artifact_failure_contract(web_app: Any) -> None:
@@ -1635,7 +1737,7 @@ def assert_shop_sse_marker(web_app: Any) -> None:
 
 
 def assert_amazon_sse_marker(web_app: Any) -> None:
-    job = web_app.AmazonJob(
+    job = AmazonJob(
         id="amazon-marker-fixture",
         target="B000MARKER",
         target_type="asin",
@@ -1648,12 +1750,8 @@ def assert_amazon_sse_marker(web_app: Any) -> None:
     )
     result_path = web_app.OUTPUT_DIR / "amazon" / job.id / "result.json"
     write_json(result_path, {"products": [{"asin": "B000MARKER", "title": "v1"}]})
-    original_registry = web_app.amazon_job_registry
-    registry = web_app.JobRegistry()
+    registry = JobRegistry()
     registry.register(job.id, job)
-    web_app.amazon_job_registry = registry
-    handler = FakeHandler()
-    original_sleep = web_app.time.sleep
     original_read_json = web_app.read_json
     read_order: list[str] = []
     calls = 0
@@ -1688,15 +1786,11 @@ def assert_amazon_sse_marker(web_app: Any) -> None:
         read_order.append(path.name)
         return original_read_json(path)
 
-    try:
-        web_app.time.sleep = advance
-        with patch.object(registry, "snapshot", side_effect=recording_snapshot), patch.object(
-            web_app, "read_json", side_effect=recording_read_json
-        ):
-            web_app.Handler.stream_amazon_events(handler, job.id)
-    finally:
-        web_app.time.sleep = original_sleep
-        web_app.amazon_job_registry = original_registry
+    service = make_amazon_service(web_app, registry, read_json_file=recording_read_json)
+    router = make_amazon_router(service, sleep=advance)
+    handler = FakeHandler(f"/api/amazon-events?id={job.id}")
+    with patch.object(registry, "snapshot", side_effect=recording_snapshot):
+        dispatch_amazon(router, "GET", handler)
     frames = [json.loads(line[6:]) for line in handler.wfile.getvalue().decode("utf-8").splitlines() if line.startswith("data: ")]
     assert [frame["status"] for frame in frames] == ["queued", "queued", "queued", "complete"]
     assert [frame["result"] for frame in frames] == [
@@ -1722,11 +1816,9 @@ def assert_amazon_sse_marker(web_app: Any) -> None:
 
     missing_handler = FakeHandler()
     missing_handler.wfile = BrokenPipeWriter()
-    web_app.amazon_job_registry = type("MissingRegistry", (), {"snapshot": lambda _self, _job_id: None})()
-    try:
-        web_app.Handler.stream_amazon_events(missing_handler, "missing-amazon-job")
-    finally:
-        web_app.amazon_job_registry = original_registry
+    missing_router = make_amazon_router(make_amazon_service(web_app, JobRegistry()))
+    missing_handler.path = "/api/amazon-events?id=missing-amazon-job"
+    dispatch_amazon(missing_router, "GET", missing_handler)
     assert missing_handler.responses == [200]
     assert missing_handler.ended is True
     assert missing_handler.close_connection is True

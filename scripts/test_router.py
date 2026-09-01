@@ -237,6 +237,9 @@ class RouterTests(unittest.TestCase):
             elif route_file.name == "metrics.py":
                 allowed_imports.update({"json", "time"})
                 allowed_from_modules.add("services.metrics")
+            elif route_file.name == "amazon.py":
+                allowed_imports.update({"json", "os", "time"})
+                allowed_from_modules.add("services.amazon")
             for node in ast.walk(module):
                 if isinstance(node, ast.Import):
                     for alias in node.names:
@@ -244,7 +247,7 @@ class RouterTests(unittest.TestCase):
                 elif isinstance(node, ast.ImportFrom) and node.module:
                     self.assertIn(node.module, allowed_from_modules)
                     self.assertNotIn("web_app", node.module)
-                    if route_file.name not in {"shop.py", "metrics.py"}:
+                    if route_file.name not in {"shop.py", "metrics.py", "amazon.py"}:
                         self.assertFalse(node.module.startswith("services."))
             if route_file.name == "router.py":
                 imports = {
@@ -273,6 +276,7 @@ class RouterTests(unittest.TestCase):
         self.assertEqual(
             route_imports,
             {
+                "routes.amazon",
                 "routes.health",
                 "routes.extract",
                 "routes.harness",
@@ -318,12 +322,18 @@ class RouterTests(unittest.TestCase):
         self.assertIn('if parsed.path.startswith("/api/taobao/"):', source)
         self.assertIn("register_shop_api_routes(WEB_ROUTER, shop_service)", source)
         self.assertIn("register_metrics_api_routes(WEB_ROUTER, metrics_service)", source)
+        self.assertIn("register_amazon_routes(WEB_ROUTER, amazon_service)", source)
         self.assertNotIn('if parsed.path == "/api/shop-job":', source)
         self.assertNotIn('if parsed.path == "/api/video-metrics-job":', source)
         self.assertNotIn('if parsed.path == "/api/video-metrics-events":', source)
         self.assertNotIn('if parsed.path == "/api/video-metrics":', source)
         self.assertNotIn("def stream_metrics_events(", source)
         self.assertNotIn("def handle_video_metrics(", source)
+        self.assertNotIn('if parsed.path == "/api/amazon-job":', source)
+        self.assertNotIn('if parsed.path == "/api/amazon-events":', source)
+        self.assertNotIn('if parsed.path == "/api/amazon-scrape":', source)
+        self.assertNotIn("def stream_amazon_events(", source)
+        self.assertNotIn("def handle_amazon_scrape(", source)
         self.assertIn('if parsed.path == "/api/analyze":', source)
 
 

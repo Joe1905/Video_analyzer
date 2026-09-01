@@ -226,9 +226,10 @@ class JsonStoreTests(unittest.TestCase):
         calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
         # Phase 4.1 moves Shop reads into its service. Phase 4.2 moves four
         # Metrics call sites behind two service-owned reads (worker + payload).
+        # Phase 4.3 moves Amazon artifact reads behind its service payload.
         self.assertEqual(
             sum(isinstance(node.func, ast.Name) and node.func.id == "read_json" for node in calls),
-            45,
+            42,
         )
         shop_source_path = source_path.with_name("services") / "shop.py"
         shop_tree = ast.parse(shop_source_path.read_text(encoding="utf-8"), filename=str(shop_source_path))
@@ -269,7 +270,7 @@ class JsonStoreTests(unittest.TestCase):
         )
         self.assertEqual(
             sum(isinstance(node.func, ast.Name) and node.func.id == "atomic_write_json" for node in calls),
-            11,
+            10,
         )
         self.assertEqual(
             sum(
@@ -299,17 +300,30 @@ class JsonStoreTests(unittest.TestCase):
             0,
         )
 
-        run_amazon_job = next(
-            node
-            for node in tree.body
-            if isinstance(node, ast.FunctionDef) and node.name == "run_amazon_job"
+        amazon_source_path = source_path.with_name("services") / "amazon.py"
+        amazon_tree = ast.parse(
+            amazon_source_path.read_text(encoding="utf-8"),
+            filename=str(amazon_source_path),
+        )
+        self.assertEqual(
+            sum(
+                isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "self"
+                and node.func.attr == "_read_json_file"
+                for node in ast.walk(amazon_tree)
+                if isinstance(node, ast.Call)
+            ),
+            1,
         )
         amazon_atomic_writes = [
             node
-            for node in ast.walk(run_amazon_job)
+            for node in ast.walk(amazon_tree)
             if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "atomic_write_json"
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "self"
+            and node.func.attr == "_write_json_file"
         ]
         self.assertEqual(len(amazon_atomic_writes), 1)
         self.assertEqual(
@@ -319,6 +333,19 @@ class JsonStoreTests(unittest.TestCase):
             ],
             ["result_path", "result"],
         )
+        amazon_service_assignment = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "amazon_service" for target in node.targets)
+        )
+        self.assertIsInstance(amazon_service_assignment.value, ast.Call)
+        if isinstance(amazon_service_assignment.value, ast.Call):
+            keywords = {keyword.arg: keyword.value for keyword in amazon_service_assignment.value.keywords}
+            self.assertIsInstance(keywords.get("read_json_file"), ast.Name)
+            self.assertEqual(getattr(keywords.get("read_json_file"), "id", None), "read_json")
+            self.assertIsInstance(keywords.get("write_json_file"), ast.Name)
+            self.assertEqual(getattr(keywords.get("write_json_file"), "id", None), "atomic_write_json")
 
 
 if __name__ == "__main__":
