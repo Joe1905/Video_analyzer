@@ -221,6 +221,14 @@ def assert_sse_response(handler: FakeHandler, payload: dict[str, Any]) -> None:
     assert handler.close_connection is True
 
 
+def assert_event_headers(handler: FakeHandler) -> None:
+    assert handler.responses == [200]
+    assert handler.header("Content-Type") == "text/event-stream; charset=utf-8"
+    assert handler.header("Cache-Control") == "no-cache"
+    assert handler.header("Connection") == "keep-alive"
+    assert handler.ended is True
+
+
 def make_jobs(web_app: Any) -> dict[str, Any]:
     download_result = {"filename": "fixture.mp4", "meta": {"source": "fixture"}}
     download = web_app.DownloadJob(
@@ -1217,13 +1225,6 @@ def assert_metrics_artifact_failures_and_broken_pipe(web_app: Any) -> None:
 
         def flush(self) -> None:
             return None
-
-    def assert_event_headers(handler: FakeHandler) -> None:
-        assert handler.responses == [200]
-        assert handler.header("Content-Type") == "text/event-stream; charset=utf-8"
-        assert handler.header("Cache-Control") == "no-cache"
-        assert handler.header("Connection") == "keep-alive"
-        assert handler.ended is True
 
     missing_pipe = FakeHandler("/api/video-metrics-events?id=missing-metrics-job")
     missing_pipe.wfile = BrokenPipeWriter()
