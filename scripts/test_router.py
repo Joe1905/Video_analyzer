@@ -259,6 +259,8 @@ class RouterTests(unittest.TestCase):
             elif route_file.name == "report.py":
                 allowed_imports.update({"hmac", "json", "os", "re", "time"})
                 allowed_from_modules.add("services.report")
+            elif route_file.name == "report_cover.py":
+                allowed_from_modules.add("services.report_cover")
             elif route_file.name == "video_files.py":
                 allowed_from_modules.add("services.video_files")
             elif route_file.name == "video_result.py":
@@ -273,7 +275,7 @@ class RouterTests(unittest.TestCase):
                 elif isinstance(node, ast.ImportFrom) and node.module:
                     self.assertIn(node.module, allowed_from_modules)
                     self.assertNotIn("web_app", node.module)
-                    if route_file.name not in {"shop.py", "metrics.py", "amazon.py", "downloads.py", "upload.py", "analyze.py", "translate.py", "postprocess.py", "report.py", "video_files.py", "video_result.py", "video_delete.py"}:
+                    if route_file.name not in {"shop.py", "metrics.py", "amazon.py", "downloads.py", "upload.py", "analyze.py", "translate.py", "postprocess.py", "report.py", "report_cover.py", "video_files.py", "video_result.py", "video_delete.py"}:
                         self.assertFalse(node.module.startswith("services."))
             if route_file.name == "router.py":
                 imports = {
@@ -308,6 +310,7 @@ class RouterTests(unittest.TestCase):
                 "routes.postprocess",
                 "routes.translate",
                 "routes.upload",
+                "routes.report_cover",
                 "routes.video_delete",
                 "routes.video_files",
                 "routes.video_result",
@@ -367,6 +370,7 @@ class RouterTests(unittest.TestCase):
         self.assertIn("register_video_result_routes(WEB_ROUTER, video_result_service, safe_filename=safe_filename)", source)
         self.assertIn("register_video_delete_routes(WEB_ROUTER, video_delete_service, safe_filename=safe_filename)", source)
         self.assertIn("register_report_routes(WEB_ROUTER, report_service)", source)
+        self.assertIn("register_report_cover_routes(WEB_ROUTER, report_cover_service, safe_filename=safe_filename)", source)
         self.assertNotIn('if parsed.path == "/api/shop-job":', source)
         self.assertNotIn('if parsed.path == "/api/video-metrics-job":', source)
         self.assertNotIn('if parsed.path == "/api/video-metrics-events":', source)
@@ -577,6 +581,79 @@ class RouterTests(unittest.TestCase):
         self.assertEqual(
             ast.unparse(proxy_calls[0]),
             "self.serve_video(tiktok_studio_publish.video_path(asset_id))",
+        )
+
+    def test_report_cover_route_and_composition_are_explicit(self) -> None:
+        root = Path(__file__).resolve().parent
+        route_path = root / "routes" / "report_cover.py"
+        service_path = root / "services" / "report_cover.py"
+        route_tree = ast.parse(route_path.read_text(encoding="utf-8"))
+        prefix_paths = [
+            node.args[0].value
+            for node in ast.walk(route_tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "router"
+            and node.func.attr == "get_prefix"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ]
+        self.assertEqual(prefix_paths, ["/report-cover/"])
+        route_source = route_path.read_text(encoding="utf-8")
+        self.assertNotIn("web_app", route_source)
+        self.assertNotIn("file_response", route_source)
+
+        service_tree = ast.parse(service_path.read_text(encoding="utf-8"))
+        service_imports = {
+            node.module
+            for node in ast.walk(service_tree)
+            if isinstance(node, ast.ImportFrom) and node.module
+        }
+        self.assertNotIn("web_app", service_imports)
+        self.assertFalse(any(module.startswith("routes") for module in service_imports))
+        self.assertNotIn("hot_video_report", service_imports)
+        self.assertTrue(any(
+            isinstance(node, ast.ClassDef) and node.name == "ReportCoverNotFoundError"
+            for node in service_tree.body
+        ))
+
+        web_app = ast.parse((root / "web_app.py").read_text(encoding="utf-8"))
+        imported = {
+            (node.module, alias.name)
+            for node in ast.walk(web_app)
+            if isinstance(node, ast.ImportFrom) and node.module
+            for alias in node.names
+        }
+        self.assertIn(("routes.report_cover", "register_report_cover_routes"), imported)
+        self.assertIn(("services.report_cover", "ReportCoverService"), imported)
+        service_calls = [
+            node for node in ast.walk(web_app)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "ReportCoverService"
+        ]
+        self.assertEqual(len(service_calls), 1)
+        self.assertEqual(
+            [(keyword.arg, ast.unparse(keyword.value)) for keyword in service_calls[0].keywords],
+            [("cover_dir", "REPORT_COVER_DIR"), ("guess_type", "mimetypes.guess_type")],
+        )
+        registrations = [
+            node for node in ast.walk(web_app)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "register_report_cover_routes"
+        ]
+        self.assertEqual(len(registrations), 1)
+        self.assertEqual([ast.unparse(arg) for arg in registrations[0].args], ["WEB_ROUTER", "report_cover_service"])
+        self.assertEqual(
+            [(keyword.arg, ast.unparse(keyword.value)) for keyword in registrations[0].keywords],
+            [("safe_filename", "safe_filename")],
+        )
+        handler = next(node for node in web_app.body if isinstance(node, ast.ClassDef) and node.name == "Handler")
+        get_method = next(node for node in handler.body if isinstance(node, ast.FunctionDef) and node.name == "do_GET")
+        self.assertNotIn(
+            "/report-cover/",
+            {node.value for node in ast.walk(get_method) if isinstance(node, ast.Constant) and isinstance(node.value, str)},
         )
 
     def test_upload_route_and_composition_are_explicit(self) -> None:

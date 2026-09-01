@@ -43,6 +43,7 @@ from routes.analyze import register_analyze_routes
 from routes.downloads import register_download_routes
 from routes.postprocess import register_postprocess_routes
 from routes.report import register_report_routes
+from routes.report_cover import register_report_cover_routes
 from routes.translate import register_translate_routes
 from routes.upload import register_upload_routes
 from routes.video_delete import register_video_delete_routes
@@ -67,6 +68,7 @@ from services.downloads import DownloadService, validate_short_video_url
 from services.metrics import MetricsService
 from services.postprocess import PostprocessService
 from services.report import ReportService
+from services.report_cover import ReportCoverService
 from services.shop import ShopService
 from services.translate import TranslateService
 from services.upload import UploadService
@@ -10209,16 +10211,6 @@ class Handler(BaseHTTPRequestHandler):
                     {"ok": False, "error": "额度更新失败", "cached": read_sociavault_credit_balance()},
                 )
             return json_response(self, HTTPStatus.OK, {"ok": True, **balance})
-        if parsed.path.startswith("/report-cover/"):
-            try:
-                filename = safe_filename(unquote(parsed.path.removeprefix("/report-cover/")))
-            except ValueError as exc:
-                return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
-            path = REPORT_COVER_DIR / filename
-            if not path.is_file():
-                return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Cover not found"})
-            content_type = mimetypes.guess_type(path.name)[0] or "image/jpeg"
-            return binary_response(self, HTTPStatus.OK, path.read_bytes(), content_type)
         if parsed.path == "/api/frames-sheet":
             query = parse_qs(parsed.query)
             try:
@@ -11490,6 +11482,10 @@ report_service = ReportService(
     translate=translate_report_video_analysis,
     backfill=backfill_cover_urls,
 )
+report_cover_service = ReportCoverService(
+    cover_dir=REPORT_COVER_DIR,
+    guess_type=mimetypes.guess_type,
+)
 
 register_shop_page(WEB_ROUTER, html_snapshot=SHOP_HTML, inject_nav=inject_unified_nav)
 register_shop_api_routes(WEB_ROUTER, shop_service)
@@ -11510,6 +11506,7 @@ register_video_files_routes(WEB_ROUTER, video_files_service)
 register_video_result_routes(WEB_ROUTER, video_result_service, safe_filename=safe_filename)
 register_video_delete_routes(WEB_ROUTER, video_delete_service, safe_filename=safe_filename)
 register_report_routes(WEB_ROUTER, report_service)
+register_report_cover_routes(WEB_ROUTER, report_cover_service, safe_filename=safe_filename)
 register_video_stream_routes(
     WEB_ROUTER,
     videos_dir=VIDEOS_DIR,

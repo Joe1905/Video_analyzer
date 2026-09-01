@@ -33,6 +33,7 @@ from services.analyze import AnalyzeService
 from services.downloads import DownloadJob, DownloadService
 from services.postprocess import PostprocessService
 from services.report import ReportService
+from services.report_cover import ReportCoverService
 from services.translate import TranslateService
 from services.upload import UploadService
 from services.video_files import VideoFilesService
@@ -43,6 +44,7 @@ from routes.analyze import register_analyze_routes
 from routes.postprocess import register_postprocess_routes
 import routes.report as report_routes
 from routes.report import register_report_routes
+from routes.report_cover import register_report_cover_routes
 from routes.router import Router
 from routes.translate import register_translate_routes
 from routes.upload import MAX_UPLOAD_BYTES as UPLOAD_MAX_UPLOAD_BYTES, register_upload_routes
@@ -917,8 +919,14 @@ def assert_report_cover_http_contract(web_app: Any, port: int, server: Any) -> N
             raise OSError("fixture cover read failure")
         return original_read_bytes(path)
 
+    router = Router()
+    register_report_cover_routes(
+        router,
+        ReportCoverService(cover_dir=cover_dir, guess_type=web_app.mimetypes.guess_type),
+        safe_filename=web_app.safe_filename,
+    )
     try:
-        with patch.object(web_app, "REPORT_COVER_DIR", cover_dir):
+        with patch.object(web_app, "WEB_ROUTER", router):
             status, _headers, payload = json_request(port, "GET", "/report-cover/")
             assert status == 400 and payload == {"error": "Missing filename"}
             status, _headers, payload = json_request(port, "GET", "/report-cover")
