@@ -28,9 +28,11 @@ from uuid import UUID
 from services.shop import ShopJob, ShopService
 from services.metrics import MetricsJob, MetricsService
 from services.amazon import AmazonJob, AmazonService, parse_json_from_process_output
+from services.analyze import AnalyzeService
 from services.downloads import DownloadJob, DownloadService
 from services.upload import UploadService
 from jobs.registry import JobRegistry
+from routes.analyze import register_analyze_routes
 from routes.router import Router
 from routes.upload import MAX_UPLOAD_BYTES as UPLOAD_MAX_UPLOAD_BYTES, register_upload_routes
 
@@ -440,9 +442,15 @@ def assert_analyze_http_contract(web_app: Any, port: int) -> None:
         output_requests.clear()
 
     queue = RecordingAnalyzeQueue()
-    with patch.object(web_app, "output_dir_for_filename", side_effect=registry_style_output_dir), patch.object(
-        web_app, "video_queue", queue
-    ):
+    service = AnalyzeService(
+        videos_dir=web_app.VIDEOS_DIR,
+        output_dir_for_filename=registry_style_output_dir,
+        safe_filename=web_app.safe_filename,
+        queue_enqueue=queue.enqueue,
+    )
+    router = Router()
+    register_analyze_routes(router, service)
+    with patch.object(web_app, "WEB_ROUTER", router):
         for payload, error in (
             ({}, "Missing filename"),
             ({"filename": ""}, "Missing filename"),
@@ -533,9 +541,15 @@ def assert_analyze_http_contract(web_app: Any, port: int) -> None:
 
     remove_output_dir()
     failing_queue = RecordingAnalyzeQueue(fail_on="report")
-    with patch.object(web_app, "output_dir_for_filename", side_effect=registry_style_output_dir), patch.object(
-        web_app, "video_queue", failing_queue
-    ):
+    failing_service = AnalyzeService(
+        videos_dir=web_app.VIDEOS_DIR,
+        output_dir_for_filename=registry_style_output_dir,
+        safe_filename=web_app.safe_filename,
+        queue_enqueue=failing_queue.enqueue,
+    )
+    failing_router = Router()
+    register_analyze_routes(failing_router, failing_service)
+    with patch.object(web_app, "WEB_ROUTER", failing_router):
         try:
             json_request(port, "POST", "/api/analyze", {"filename": filename, "postprocess": True})
         except http.client.RemoteDisconnected:
@@ -547,13 +561,15 @@ def assert_analyze_http_contract(web_app: Any, port: int) -> None:
     assert (output_dir / "analysis_mode.txt").read_text(encoding="utf-8") == "analyzer"
 
     remove_output_dir()
-    blocked_queue = RecordingAnalyzeQueue(fail_on="analyze")
+    blocked_router = Router()
+    blocked_router.post(
+        "/api/analyze",
+        lambda _handler, _params: (_ for _ in ()).throw(
+            AssertionError("UI_TEST gate must run before the Analyze route and body parsing")
+        ),
+    )
     with patch.object(web_app, "ui_test_mode_allows_live_write", return_value=False), patch.object(
-        web_app, "video_queue", blocked_queue
-    ), patch.object(
-        web_app, "output_dir_for_filename", side_effect=AssertionError("UI_TEST gate must run before output lookup")
-    ), patch.object(
-        web_app.Handler, "handle_analyze", side_effect=AssertionError("UI_TEST gate must run before body parsing")
+        web_app, "WEB_ROUTER", blocked_router
     ):
         status, _headers, blocked = json_request(
             port, "POST", "/api/analyze", body=b"{", content_type="application/json"
@@ -564,7 +580,7 @@ def assert_analyze_http_contract(web_app: Any, port: int) -> None:
         "status": "blocked",
         "path": "/api/analyze",
     }
-    assert blocked_queue.calls == [] and not output_dir.exists()
+    assert not output_dir.exists()
 
 
 def assert_real_download_worker_registry_updates(web_app: Any) -> None:

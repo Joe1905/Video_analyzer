@@ -17,6 +17,7 @@ from core.config import AppConfig  # noqa: E402
 WEB_APP_PATH = SCRIPTS_DIR / "web_app.py"
 SHOP_ROUTE_PATH = SCRIPTS_DIR / "routes" / "shop.py"
 AMAZON_ROUTE_PATH = SCRIPTS_DIR / "routes" / "amazon.py"
+ANALYZE_ROUTE_PATH = SCRIPTS_DIR / "routes" / "analyze.py"
 METRICS_ROUTE_PATH = SCRIPTS_DIR / "routes" / "metrics.py"
 METRICS_SERVICE_PATH = SCRIPTS_DIR / "services" / "metrics.py"
 DOWNLOAD_SERVICE_PATH = SCRIPTS_DIR / "services" / "downloads.py"
@@ -90,6 +91,7 @@ _SHOP_ROUTE_GETENV_KEY_COUNTS = Counter(
     }
 )
 _AMAZON_ROUTE_GETENV_KEY_COUNTS = Counter({"AMAZON_MAX_PAGES": 1})
+_ANALYZE_ROUTE_GETENV_KEY_COUNTS = Counter({"ANALYSIS_MODE": 1})
 _DOWNLOAD_SERVICE_ENV_KEY_COUNTS = Counter({
     "DOWNLOAD_COMMAND_TIMEOUT": 1,
     "TIKTOK_MAX_BYTES": 1,
@@ -114,6 +116,13 @@ def amazon_route_module_tree() -> ast.Module:
     return ast.parse(
         AMAZON_ROUTE_PATH.read_text(encoding="utf-8"),
         filename=str(AMAZON_ROUTE_PATH),
+    )
+
+
+def analyze_route_module_tree() -> ast.Module:
+    return ast.parse(
+        ANALYZE_ROUTE_PATH.read_text(encoding="utf-8"),
+        filename=str(ANALYZE_ROUTE_PATH),
     )
 
 
@@ -286,14 +295,23 @@ class AppConfigTests(unittest.TestCase):
             amazon_getenv_scopes,
             amazon_getenv_default,
         ) = injected_getenv_contract(amazon_tree, "register_amazon_routes")
+        analyze_tree = analyze_route_module_tree()
+        (
+            analyze_module_calls,
+            analyze_function_calls,
+            analyze_getenv_calls,
+            analyze_getenv_scopes,
+            analyze_getenv_default,
+        ) = injected_getenv_contract(analyze_tree, "register_analyze_routes")
 
         for route_module_calls, route_function_calls in (
             (shop_module_calls, shop_function_calls),
             (amazon_module_calls, amazon_function_calls),
+            (analyze_module_calls, analyze_function_calls),
         ):
             self.assertEqual(route_module_calls, [])
             self.assertEqual(route_function_calls, [])
-        for getenv_default in (shop_getenv_default, amazon_getenv_default):
+        for getenv_default in (shop_getenv_default, amazon_getenv_default, analyze_getenv_default):
             self.assertIsInstance(getenv_default, ast.Attribute)
             if isinstance(getenv_default, ast.Attribute):
                 self.assertIsInstance(getenv_default.value, ast.Name)
@@ -334,16 +352,19 @@ class AppConfigTests(unittest.TestCase):
             and isinstance(node.args[0].value, str)
         ]
         self.assertEqual(Counter(download_environ_keys), _DOWNLOAD_SERVICE_ENV_KEY_COUNTS)
-        self.assertEqual(len(function_calls), 47)
+        self.assertEqual(len(function_calls), 46)
         self.assertEqual(len(shop_getenv_calls), 3)
         self.assertEqual(shop_getenv_scopes, ["shop_extract"] * 3)
         self.assertEqual(len(amazon_getenv_calls), 1)
         self.assertEqual(amazon_getenv_scopes, ["amazon_scrape"])
+        self.assertEqual(len(analyze_getenv_calls), 1)
+        self.assertEqual(analyze_getenv_scopes, ["analyze"])
         self.assertEqual(
             Counter(getenv_key(call) for call in function_calls),
             _DYNAMIC_GETENV_KEY_COUNTS
             - _SHOP_ROUTE_GETENV_KEY_COUNTS
             - _AMAZON_ROUTE_GETENV_KEY_COUNTS
+            - _ANALYZE_ROUTE_GETENV_KEY_COUNTS
             - _DOWNLOAD_SERVICE_ENV_KEY_COUNTS,
         )
         self.assertEqual(
@@ -355,7 +376,11 @@ class AppConfigTests(unittest.TestCase):
             _AMAZON_ROUTE_GETENV_KEY_COUNTS,
         )
         self.assertEqual(
-            len(function_calls) + len(shop_getenv_calls) + len(amazon_getenv_calls) + len(download_environ_keys),
+            Counter(getenv_key(call) for call in analyze_getenv_calls),
+            _ANALYZE_ROUTE_GETENV_KEY_COUNTS,
+        )
+        self.assertEqual(
+            len(function_calls) + len(shop_getenv_calls) + len(amazon_getenv_calls) + len(analyze_getenv_calls) + len(download_environ_keys),
             sum(_DYNAMIC_GETENV_KEY_COUNTS.values()),
         )
 

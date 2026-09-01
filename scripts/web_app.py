@@ -39,6 +39,7 @@ from core.config import AppConfig
 from core.json_store import atomic_write_json, read_json
 from jobs.registry import JobRegistry
 from routes.amazon import register_amazon_routes
+from routes.analyze import register_analyze_routes
 from routes.downloads import register_download_routes
 from routes.upload import register_upload_routes
 from routes.health import register_health_route
@@ -54,6 +55,7 @@ from routes.static_assets import register_static_asset_route
 from routes.taobao import register_taobao_page
 from routes.tool import register_tool_page
 from services.amazon import AmazonService
+from services.analyze import AnalyzeService
 from services.downloads import DownloadService, validate_short_video_url
 from services.metrics import MetricsService
 from services.shop import ShopService
@@ -768,7 +770,6 @@ def is_registered_post_route(path: str) -> bool:
         "/api/report/settings",
         "/api/report/translate",
         "/api/report/backfill-covers",
-        "/api/analyze",
         "/api/postprocess",
         "/api/translate",
         "/api/feedback",
@@ -10770,8 +10771,6 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/report/backfill-covers":
             result = backfill_cover_urls()
             return json_response(self, HTTPStatus.OK, result)
-        if parsed.path == "/api/analyze":
-            return self.handle_analyze()
         if parsed.path == "/api/postprocess":
             return self.handle_postprocess()
         if parsed.path == "/api/translate":
@@ -11165,54 +11164,6 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             with zip_path.open("rb") as archive_file:
                 shutil.copyfileobj(archive_file, self.wfile, length=64 * 1024)
-
-    def handle_analyze(self) -> None:
-        content_length = int(self.headers.get("Content-Length", "0"))
-        body = self.rfile.read(content_length)
-        try:
-            payload = json.loads(body.decode("utf-8") or "{}")
-            filename = safe_filename(str(payload.get("filename", "")))
-            postprocess = bool(payload.get("postprocess", False))
-            reset_output = bool(payload.get("reset_output", False))
-            analysis_mode = str(payload.get("analysis_mode") or os.getenv("ANALYSIS_MODE", "analyzer"))
-            analysis_prompt = str(payload.get("analysis_prompt") or "").strip()
-            if analysis_mode not in {"analyzer", "direct_video"}:
-                raise ValueError("analysis_mode must be analyzer or direct_video")
-            if len(analysis_prompt) > 12000:
-                raise ValueError("analysis_prompt is too long")
-        except (json.JSONDecodeError, ValueError) as exc:
-            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
-
-        if not (VIDEOS_DIR / filename).is_file():
-            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": f"Video file not found: {filename}"})
-
-        output_dir = output_dir_for_filename(filename)
-        if reset_output:
-            if analysis_mode == "direct_video":
-                output_dir.mkdir(parents=True, exist_ok=True)
-                for output_name in ("direct_analysis.json", "direct_analysis_zh.json"):
-                    output_path = output_dir / output_name
-                    if output_path.is_file():
-                        output_path.unlink()
-            elif output_dir.is_dir():
-                shutil.rmtree(output_dir)
-
-        # Save user prompt to file so queue executor can use it
-        output_dir.mkdir(parents=True, exist_ok=True)
-        (output_dir / "analysis_mode.txt").write_text(analysis_mode, encoding="utf-8")
-        if analysis_prompt:
-            (output_dir / "analysis_prompt.txt").write_text(analysis_prompt, encoding="utf-8")
-
-        queued = ["analyze"]
-        video_queue.enqueue(filename, "analyze")
-        if postprocess:
-            video_queue.enqueue(filename, "report")
-            queued.append("report")
-        return json_response(
-            self,
-            HTTPStatus.ACCEPTED,
-            {"status": "queued", "filename": filename, "queued": queued},
-        )
 
     def handle_postprocess(self) -> None:
         content_length = int(self.headers.get("Content-Length", "0"))
@@ -11929,6 +11880,12 @@ upload_service = UploadService(
     make_web_manual_visible=make_web_manual_visible,
     start_social_context_job=start_social_context_job,
 )
+analyze_service = AnalyzeService(
+    videos_dir=VIDEOS_DIR,
+    output_dir_for_filename=output_dir_for_filename,
+    safe_filename=safe_filename,
+    queue_enqueue=video_queue.enqueue,
+)
 
 register_shop_page(WEB_ROUTER, html_snapshot=SHOP_HTML, inject_nav=inject_unified_nav)
 register_shop_api_routes(WEB_ROUTER, shop_service)
@@ -11942,6 +11899,7 @@ register_upload_routes(
     normalize_video_source=normalize_video_source,
     default_source=SOURCE_API_UPLOAD,
 )
+register_analyze_routes(WEB_ROUTER, analyze_service)
 register_taobao_page(WEB_ROUTER, html_snapshot=TAOBAO_HTML, inject_nav=inject_unified_nav)
 
 
