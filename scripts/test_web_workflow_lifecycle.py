@@ -250,6 +250,28 @@ def assert_upload_http_contract(web_app: Any, port: int) -> None:
         assert status == 400 and empty_name_video == {"error": "Missing video file"}
         assert calls == []
 
+        for original_name, fields, source, filename, hidden in (
+            ("source-only.mp4", {"source": "manual"}, web_app.SOURCE_WEB_MANUAL, "source-only.mp4", False),
+            ("fallback!name.mp4", {"source": "manual", "source_tag": ""}, web_app.SOURCE_WEB_MANUAL, "fallbackname.mp4", False),
+        ):
+            calls.clear()
+            source_body, source_type = multipart_videos([(original_name, b"source")], fields=fields)
+            status, _headers, source_upload = json_request(
+                port, "POST", "/api/upload", body=source_body, content_type=source_type
+            )
+            assert status == 200 and source_upload == {"files": [{"filename": filename, "size": 6}], "errors": []}
+            assert (web_app.VIDEOS_DIR / filename).read_bytes() == b"source"
+            assert calls == [
+                ("ensure", filename),
+                ("register", {
+                    "video_id": filename, "platform": "local", "filename": filename, "title": filename,
+                    "source": source, "hidden_from_analyzer": hidden,
+                }),
+                ("visible", (source, "local", filename)),
+                ("social", (filename, False)),
+            ]
+
+        calls.clear()
         partial_body, partial_type = multipart_videos(
             [("manual.mp4", b"manual"), ("invalid.mp4", b"invalid"), ("???", b"unsafe")],
             fields={"source": "api", "source_tag": "manual"},
@@ -316,7 +338,21 @@ def assert_upload_http_contract(web_app: Any, port: int) -> None:
 
         calls.clear()
         blocked_body, blocked_type = multipart_video("blocked.mp4", b"blocked")
-        with patch.object(web_app, "ui_test_mode_allows_live_write", return_value=False), patch.object(
+        blocked_router = Router()
+
+        def blocked_field_storage(**_kwargs: Any) -> Any:
+            raise AssertionError("UI_TEST gate must run before multipart parsing")
+
+        register_upload_routes(
+            blocked_router,
+            service,
+            field_storage_factory=blocked_field_storage,
+            normalize_video_source=web_app.normalize_video_source,
+            default_source=web_app.SOURCE_API_UPLOAD,
+        )
+        with patch.object(web_app, "WEB_ROUTER", blocked_router), patch.object(
+            web_app, "ui_test_mode_allows_live_write", return_value=False
+        ), patch.object(
             service, "upload", side_effect=AssertionError("UI_TEST gate must run before upload service")
         ):
             status, _headers, blocked = json_request(

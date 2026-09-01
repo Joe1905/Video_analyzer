@@ -11,6 +11,7 @@ from routes.router import (
     RouteNotFound,
     Router,
 )
+from routes.upload import MAX_UPLOAD_BYTES
 
 
 def _handler(*args: object, **kwargs: object) -> object:
@@ -352,6 +353,7 @@ class RouterTests(unittest.TestCase):
 
     def test_upload_route_and_composition_are_explicit(self) -> None:
         root = Path(__file__).resolve().parent
+        self.assertEqual(MAX_UPLOAD_BYTES, 2 * 1024 * 1024 * 1024)
         upload_route = ast.parse((root / "routes" / "upload.py").read_text(encoding="utf-8"))
         post_paths = [
             node.args[0].value
