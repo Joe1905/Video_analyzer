@@ -442,6 +442,8 @@ def assert_real_amazon_worker_registry_updates(web_app: Any, runner: Any) -> Non
         assert popen.call_args.kwargs["stdout"] is subprocess.PIPE
         assert popen.call_args.kwargs["stderr"] is subprocess.STDOUT
         assert popen.call_args.kwargs["text"] is True
+        assert popen.call_args.kwargs["env"] == dict(os.environ)
+        assert popen.call_args.kwargs["env"] is not os.environ
         assert registry.snapshot(command_success_id).log == [
             "$ docker fixture-amazon", "first stdout", "second stdout",
         ]
@@ -466,6 +468,22 @@ def assert_real_amazon_worker_registry_updates(web_app: Any, runner: Any) -> Non
         assert registry.snapshot(command_failure_id).log == [
             "$ docker fixture-amazon-fail", "failure stdout", "Command exited with code 7",
         ]
+
+        for output, expected in (
+            ('{"products":[{"asin":"B000PURE01"}]}', {"products": [{"asin": "B000PURE01"}]}),
+            (
+                'scraper booting\n{"small":true}\nresult={"products":[{"asin":"B000LARGEST","title":"fixture product"}]}\n',
+                {"products": [{"asin": "B000LARGEST", "title": "fixture product"}]},
+            ),
+        ):
+            assert web_app.parse_json_from_process_output(output) == expected
+        for output, message in (("", "amazon-scraper returned no output"), ("scraper only logs", "amazon-scraper output did not contain JSON")):
+            try:
+                web_app.parse_json_from_process_output(output)
+            except ValueError as exc:
+                assert str(exc) == message
+            else:
+                raise AssertionError("invalid amazon-scraper output must fail")
 
         success_id = "amazon-worker-success"
         success_url = "https://www.amazon.com/dp/B000WORKER"
@@ -555,15 +573,29 @@ def assert_real_amazon_worker_registry_updates(web_app: Any, runner: Any) -> Non
                 pages=1,
             ),
         )
-        with patch.object(
-            web_app, "get_cached_or_call", return_value={"status": "ERROR", "message": "fixture scraper error"}
-        ):
+        def cache_result_error(
+            _service: str,
+            _operation: str,
+            _request: dict[str, Any],
+            fetch: Any,
+            *,
+            metadata_builder: Any,
+        ) -> dict[str, Any]:
+            return fetch()
+
+        error_process_output = json.dumps({"status": "ERROR", "message": "fixture scraper error"}) + "\n"
+        with patch.object(web_app, "ensure_us_proxy", side_effect=lambda *_args, **_kwargs: None), patch.object(
+            subprocess,
+            "Popen",
+            return_value=FakeAmazonProcess([error_process_output], 9),
+        ), patch.object(web_app, "get_cached_or_call", side_effect=cache_result_error):
             runner(error_id)
         result_error = registry.snapshot(error_id)
         assert result_error is not None
         assert result_error.status == "failed"
         assert result_error.error == "fixture scraper error"
-        assert result_error.log == []
+        assert result_error.log[-1] == "Command exited with code 9"
+        assert "fixture scraper error" not in result_error.log
         assert web_app.read_json(web_app.OUTPUT_DIR / "amazon" / error_id / "result.json") == {
             "status": "ERROR", "message": "fixture scraper error",
         }
@@ -1051,6 +1083,25 @@ def run_lifecycle() -> None:
                 status, _headers, invalid_amazon = json_request(port, "POST", "/api/amazon-scrape", payload)
                 assert status == 400 and invalid_amazon == {"error": error}
 
+            with patch.object(web_app, "ui_test_mode_allows_live_write", return_value=False), patch.object(
+                web_app.Handler,
+                "handle_amazon_scrape",
+                side_effect=AssertionError("UI_TEST gate must run before the Amazon handler"),
+            ):
+                status, _headers, blocked_amazon = json_request(
+                    port,
+                    "POST",
+                    "/api/amazon-scrape",
+                    {"target": "B000BLOCK1", "target_type": "asin"},
+                )
+            assert status == 409
+            assert blocked_amazon == {
+                "error": "UI 测试模式已拦截写操作，未触发真实业务。",
+                "simulated": True,
+                "status": "blocked",
+                "path": "/api/amazon-scrape",
+            }
+
             def run_amazon_success(payload: dict[str, Any], expected_fields: dict[str, Any]) -> dict[str, Any]:
                 amazon_success_started.clear()
                 amazon_success_release.clear()
@@ -1084,16 +1135,53 @@ def run_lifecycle() -> None:
             )
             assert amazon["output_dir"] == expected_amazon_output_dir
             assert amazon["result"] == {"products": [{"asin": "B000AMZ001", "title": "fixture amazon"}]}
-            with patch.dict(os.environ, {"AMAZON_MAX_PAGES": "3"}):
+            with patch.dict(os.environ, {"AMAZON_MAX_PAGES": "99"}):
                 run_amazon_success(
                     {"target": "B000ZERO01", "target_type": "asin", "pages": 0},
                     {
                         "target": "B000ZERO01",
                         "target_type": "asin",
                         "url": "https://www.amazon.com/dp/B000ZERO01",
-                        "pages": 3,
+                        "pages": 5,
                     },
                 )
+            with patch.dict(os.environ, {"AMAZON_MAX_PAGES": "-2"}):
+                run_amazon_success(
+                    {"target": "B000LOW001", "target_type": "asin", "pages": 0},
+                    {
+                        "target": "B000LOW001",
+                        "target_type": "asin",
+                        "url": "https://www.amazon.com/dp/B000LOW001",
+                        "pages": 1,
+                    },
+                )
+            with patch.dict(os.environ, {"AMAZON_MAX_PAGES": "3"}):
+                status, _headers, string_zero_pages = json_request(
+                    port,
+                    "POST",
+                    "/api/amazon-scrape",
+                    {"target": "B000STR001", "target_type": "asin", "pages": "0"},
+                )
+                assert status == 400 and string_zero_pages == {"error": "pages must be between 1 and 5"}
+                run_amazon_success(
+                    {"target": "B000STR002", "target_type": "asin", "pages": "2"},
+                    {
+                        "target": "B000STR002",
+                        "target_type": "asin",
+                        "url": "https://www.amazon.com/dp/B000STR002",
+                        "pages": 2,
+                    },
+                )
+            with patch.dict(os.environ, {"AMAZON_MAX_PAGES": "not-a-number"}):
+                status, _headers, invalid_max_pages = json_request(
+                    port,
+                    "POST",
+                    "/api/amazon-scrape",
+                    {"target": "B000ENV001", "target_type": "asin"},
+                )
+            assert status == 400 and invalid_max_pages == {
+                "error": "invalid literal for int() with base 10: 'not-a-number'"
+            }
             run_amazon_success(
                 {"target": "https://www.amazon.com/dp/B000URL001", "target_type": "url", "pages": 1},
                 {

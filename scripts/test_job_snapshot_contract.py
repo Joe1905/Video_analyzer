@@ -596,6 +596,54 @@ def assert_no_amazon_legacy_store() -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "stream_events"
     ]
     assert not generic_streams
+    top_level_definitions = {
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    }
+    assert {
+        "AmazonJob",
+        "append_amazon_log",
+        "amazon_url_for_target",
+        "parse_json_from_process_output",
+        "run_amazon_command",
+        "run_amazon_job",
+        "public_amazon_job",
+        "validate_amazon_url",
+    } <= top_level_definitions
+    top_level_assignments = {
+        target.id
+        for node in tree.body
+        if isinstance(node, (ast.Assign, ast.AnnAssign))
+        for target in (
+            node.targets if isinstance(node, ast.Assign) else [node.target]
+        )
+        if isinstance(target, ast.Name)
+    }
+    assert {"ALLOWED_AMAZON_HOST_SUFFIXES", "ASIN_RE"} <= top_level_assignments
+    handler = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "Handler")
+    handler_methods = {
+        node.name
+        for node in handler.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert {"stream_amazon_events", "handle_amazon_scrape"} <= handler_methods
+    get_method = next(node for node in handler.body if isinstance(node, ast.FunctionDef) and node.name == "do_GET")
+    post_method = next(node for node in handler.body if isinstance(node, ast.FunctionDef) and node.name == "do_POST")
+    get_constants = {
+        node.value
+        for node in ast.walk(get_method)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    assert {"/api/amazon-job", "/api/amazon-events"} <= get_constants
+    assert any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "self"
+        and node.func.attr == "handle_amazon_scrape"
+        for node in ast.walk(post_method)
+    )
     top_level_registries = [
         node
         for node in tree.body
@@ -1075,6 +1123,104 @@ def assert_metrics_artifact_failures_and_broken_pipe(web_app: Any) -> None:
     assert_event_headers(normal_pipe)
     assert normal_pipe.wfile.write_attempts == 1
     assert normal_pipe.close_connection is True
+
+
+def assert_amazon_artifact_failures_and_broken_pipe(web_app: Any) -> None:
+    registry = web_app.JobRegistry()
+    original_registry = web_app.amazon_job_registry
+    missing_artifact = web_app.AmazonJob(
+        id="amazon-artifact-missing",
+        target="B000MISSING",
+        target_type="asin",
+        url="https://www.amazon.com/dp/B000MISSING",
+        pages=1,
+        status="complete",
+        created_at=45.0,
+        updated_at=46.0,
+        output_dir="output/amazon/amazon-artifact-missing",
+    )
+    invalid_artifact = web_app.AmazonJob(
+        id="amazon-artifact-invalid",
+        target="B000INVALID",
+        target_type="asin",
+        url="https://www.amazon.com/dp/B000INVALID",
+        pages=1,
+        status="complete",
+        created_at=47.0,
+        updated_at=48.0,
+        output_dir="output/amazon/amazon-artifact-invalid",
+    )
+    registry.register(missing_artifact.id, missing_artifact)
+    registry.register(invalid_artifact.id, invalid_artifact)
+    invalid_path = web_app.OUTPUT_DIR / "amazon" / invalid_artifact.id / "result.json"
+    invalid_path.parent.mkdir(parents=True, exist_ok=True)
+    invalid_path.write_text("{invalid", encoding="utf-8")
+    web_app.amazon_job_registry = registry
+    try:
+        missing_snapshot = registry.snapshot(missing_artifact.id)
+        assert missing_snapshot is not None
+        expected_missing = web_app.public_amazon_job(missing_snapshot, result=None)
+        assert_json_response(
+            dispatch_get(web_app, f"/api/amazon-job?id={missing_artifact.id}"),
+            200,
+            expected_missing,
+        )
+        assert_sse_response(
+            dispatch_get(web_app, f"/api/amazon-events?id={missing_artifact.id}"),
+            expected_missing,
+        )
+
+        invalid_get = FakeHandler(f"/api/amazon-job?id={invalid_artifact.id}")
+        try:
+            web_app.Handler.do_GET(invalid_get)
+        except json.JSONDecodeError:
+            pass
+        else:
+            raise AssertionError("invalid Amazon artifact must propagate from GET")
+        assert invalid_get.responses == []
+        assert invalid_get.response_headers == []
+        assert invalid_get.wfile.getvalue() == b""
+        assert invalid_get.ended is False
+
+        invalid_sse = FakeHandler(f"/api/amazon-events?id={invalid_artifact.id}")
+        invalid_sse.stream_amazon_events = web_app.Handler.stream_amazon_events.__get__(invalid_sse, FakeHandler)
+        try:
+            web_app.Handler.do_GET(invalid_sse)
+        except json.JSONDecodeError:
+            pass
+        else:
+            raise AssertionError("invalid Amazon artifact must propagate from SSE")
+        assert invalid_sse.responses == [200]
+        assert invalid_sse.header("Content-Type") == "text/event-stream; charset=utf-8"
+        assert invalid_sse.header("Cache-Control") == "no-cache"
+        assert invalid_sse.header("Connection") == "keep-alive"
+        assert invalid_sse.ended is True
+        assert invalid_sse.wfile.getvalue() == b""
+        assert invalid_sse.close_connection is False
+
+        class BrokenPipeWriter:
+            def __init__(self) -> None:
+                self.write_attempts = 0
+
+            def write(self, _data: bytes) -> int:
+                self.write_attempts += 1
+                raise BrokenPipeError
+
+            def flush(self) -> None:
+                return None
+
+        normal_pipe = FakeHandler()
+        normal_pipe.wfile = BrokenPipeWriter()
+        web_app.Handler.stream_amazon_events(normal_pipe, missing_artifact.id)
+        assert normal_pipe.responses == [200]
+        assert normal_pipe.header("Content-Type") == "text/event-stream; charset=utf-8"
+        assert normal_pipe.header("Cache-Control") == "no-cache"
+        assert normal_pipe.header("Connection") == "keep-alive"
+        assert normal_pipe.ended is True
+        assert normal_pipe.wfile.write_attempts == 1
+        assert normal_pipe.close_connection is True
+    finally:
+        web_app.amazon_job_registry = original_registry
 
 
 def assert_shop_artifact_failure_contract(web_app: Any) -> None:
@@ -1608,6 +1754,7 @@ def run_contract() -> None:
         assert_post_order_contracts(web_app)
         assert_get_and_sse_contracts(web_app, jobs)
         assert_metrics_artifact_failures_and_broken_pipe(web_app)
+        assert_amazon_artifact_failures_and_broken_pipe(web_app)
         assert_shop_artifact_failure_contract(web_app)
         assert_shop_route_defaults_and_broken_pipe(web_app)
         assert_shop_composition_contract(web_app)
