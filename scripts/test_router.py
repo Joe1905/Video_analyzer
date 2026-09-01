@@ -234,6 +234,9 @@ class RouterTests(unittest.TestCase):
             if route_file.name == "shop.py":
                 allowed_imports.update({"json", "os", "time"})
                 allowed_from_modules.add("services.shop")
+            elif route_file.name == "metrics.py":
+                allowed_imports.update({"json", "time"})
+                allowed_from_modules.add("services.metrics")
             for node in ast.walk(module):
                 if isinstance(node, ast.Import):
                     for alias in node.names:
@@ -241,7 +244,7 @@ class RouterTests(unittest.TestCase):
                 elif isinstance(node, ast.ImportFrom) and node.module:
                     self.assertIn(node.module, allowed_from_modules)
                     self.assertNotIn("web_app", node.module)
-                    if route_file.name != "shop.py":
+                    if route_file.name not in {"shop.py", "metrics.py"}:
                         self.assertFalse(node.module.startswith("services."))
             if route_file.name == "router.py":
                 imports = {
@@ -314,8 +317,13 @@ class RouterTests(unittest.TestCase):
         self.assertIn('if parsed.path == "/api/tool/convert":', source)
         self.assertIn('if parsed.path.startswith("/api/taobao/"):', source)
         self.assertIn("register_shop_api_routes(WEB_ROUTER, shop_service)", source)
+        self.assertIn("register_metrics_api_routes(WEB_ROUTER, metrics_service)", source)
         self.assertNotIn('if parsed.path == "/api/shop-job":', source)
-        self.assertIn('if parsed.path == "/api/video-metrics-job":', source)
+        self.assertNotIn('if parsed.path == "/api/video-metrics-job":', source)
+        self.assertNotIn('if parsed.path == "/api/video-metrics-events":', source)
+        self.assertNotIn('if parsed.path == "/api/video-metrics":', source)
+        self.assertNotIn("def stream_metrics_events(", source)
+        self.assertNotIn("def handle_video_metrics(", source)
         self.assertIn('if parsed.path == "/api/analyze":', source)
 
 

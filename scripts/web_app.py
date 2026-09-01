@@ -39,46 +39,21 @@ sys.path.insert(0, str(_BOOTSTRAP_SCRIPTS_DIR))
 from core.config import AppConfig
 from core.json_store import atomic_write_json, read_json
 from jobs.registry import JobRegistry
-from jobs.snapshots import snapshot_amazon_job, snapshot_download_job, snapshot_metrics_job
+from jobs.snapshots import snapshot_amazon_job, snapshot_download_job
 from routes.health import register_health_route
 from routes.extract import register_extract_page
 from routes.harness_certificate import register_harness_certificate_route
 from routes.harness import register_harness_page
 from routes.lan_chat import register_lan_chat_page
-from routes.metrics import register_metrics_page
+from routes.metrics import register_metrics_api_routes, register_metrics_page
 from routes.report_pages import register_report_pages
 from routes.router import MethodNotAllowed, RouteNotFound, Router
 from routes.shop import register_shop_api_routes, register_shop_page
 from routes.static_assets import register_static_asset_route
 from routes.taobao import register_taobao_page
 from routes.tool import register_tool_page
+from services.metrics import MetricsService
 from services.shop import ShopService
-
-# SociaVault TikTok endpoints (mirrored from sociavault_tiktok.py)
-TIKTOK_ENDPOINTS: dict[str, str] = {
-    "profile": "/v1/scrape/tiktok/profile",
-    "videos": "/v1/scrape/tiktok/videos",
-    "videos-popular": "/v1/scrape/tiktok/videos/popular",
-    "followers": "/v1/scrape/tiktok/followers",
-    "following": "/v1/scrape/tiktok/following",
-    "video-info": "/v1/scrape/tiktok/video-info",
-    "comments": "/v1/scrape/tiktok/comments",
-    "comment-replies": "/v1/scrape/tiktok/comment-replies",
-    "transcript": "/v1/scrape/tiktok/transcript",
-    "demographics": "/v1/scrape/tiktok/demographics",
-    "live": "/v1/scrape/tiktok/live",
-    "search-users": "/v1/scrape/tiktok/search/users",
-    "search-hashtag": "/v1/scrape/tiktok/search/hashtag",
-    "search-keyword": "/v1/scrape/tiktok/search/keyword",
-    "search-music": "/v1/scrape/tiktok/search/music",
-    "search-top": "/v1/scrape/tiktok/search/top",
-    "trending": "/v1/scrape/tiktok/trending",
-    "creators-popular": "/v1/scrape/tiktok/creators/popular",
-    "hashtags-popular": "/v1/scrape/tiktok/hashtags/popular",
-    "music-popular": "/v1/scrape/tiktok/music/popular",
-    "music-info": "/v1/scrape/tiktok/music/info",
-    "music-videos": "/v1/scrape/tiktok/music/videos",
-}
 
 APP_CONFIG = AppConfig.from_env(os.environ, root=_BOOTSTRAP_ROOT)
 ROOT = APP_CONFIG.root
@@ -369,19 +344,6 @@ class DownloadJob:
 
 
 @dataclass
-class MetricsJob:
-    id: str
-    target: str
-    endpoint: str
-    status: str = "queued"
-    created_at: float = field(default_factory=time.time)
-    updated_at: float = field(default_factory=time.time)
-    log: list[str] = field(default_factory=list)
-    output_dir: str | None = None
-    error: str | None = None
-
-
-@dataclass
 class AmazonJob:
     id: str
     target: str
@@ -400,6 +362,17 @@ download_job_registry = JobRegistry()
 shop_job_registry = JobRegistry()
 metrics_job_registry = JobRegistry()
 amazon_job_registry = JobRegistry()
+metrics_service = MetricsService(
+    registry=metrics_job_registry,
+    root=ROOT,
+    output_dir=OUTPUT_DIR,
+    scripts_dir=SCRIPTS_DIR,
+    read_json_file=read_json,
+    popen_factory=subprocess.Popen,
+    thread_factory=threading.Thread,
+    job_id_factory=lambda: str(uuid.uuid4()),
+    register_from_payload=register_from_payload,
+)
 shop_service = ShopService(
     registry=shop_job_registry,
     root=ROOT,
@@ -809,7 +782,6 @@ def is_registered_post_route(path: str) -> bool:
         "/api/download",
         "/api/chat/ask",
         "/api/chat/export-pdf",
-        "/api/video-metrics",
         "/api/report/run",
         "/api/report/delete",
         "/api/report/settings",
@@ -3709,75 +3681,6 @@ def search_shop_catalog_products(payload: dict[str, Any]) -> dict[str, Any]:
     return {"mode": mode, "query": target, "products": products}
 
 
-def append_metrics_log(job_id: str, line: str) -> None:
-    metrics_job_registry.append_log(job_id, line)
-
-
-def run_metrics_command(job_id: str, command: list[str]) -> None:
-    append_metrics_log(job_id, f"$ {' '.join(command)}")
-    process = subprocess.Popen(
-        command,
-        cwd=ROOT,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-    )
-    assert process.stdout is not None
-    for line in process.stdout:
-        append_metrics_log(job_id, line)
-    code = process.wait()
-    if code != 0:
-        raise RuntimeError(f"Command failed with exit code {code}: {' '.join(command)}")
-
-
-def run_metrics_job(job_id: str) -> None:
-    initial = metrics_job_registry.snapshot(job_id)
-    if initial is None:
-        return
-    target = initial.target
-    endpoint = initial.endpoint
-    metrics_job_registry.update_fields(job_id, {"status": "running"})
-
-    output_dir = OUTPUT_DIR / "tiktok_api" / job_id
-    metrics_path = output_dir / "result.json"
-    try:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        metrics_job_registry.update_fields(job_id, {"output_dir": str(output_dir.relative_to(ROOT))})
-
-        cmd = [
-            "python",
-            str(SCRIPTS_DIR / "sociavault_tiktok.py"),
-            "--endpoint", endpoint,
-            "--output", str(metrics_path),
-        ]
-        if target:
-            if target.startswith("http"):
-                cmd.extend(["--url", target])
-            elif target.startswith("#"):
-                cmd.extend(["--hashtag", target.lstrip("#")])
-            elif target.startswith("@"):
-                cmd.extend(["--handle", target.lstrip("@")])
-            elif endpoint in ("music-info", "music-videos"):
-                cmd.extend(["--sound-id", target])
-            elif endpoint.startswith("search-"):
-                cmd.extend(["--query", target])
-            else:
-                cmd.extend(["--handle", target])
-
-        run_metrics_command(job_id, cmd)
-        if endpoint == "video-info" and metrics_path.is_file():
-            register_from_payload(read_json(metrics_path), source_url=target)
-
-        metrics_job_registry.update_fields(job_id, {"status": "complete"})
-    except Exception as exc:
-        metrics_job_registry.update_fields(
-            job_id,
-            {"status": "failed", "error": str(exc)},
-            final_log=str(exc),
-        )
-
-
 def append_amazon_log(job_id: str, line: str) -> None:
     amazon_job_registry.append_log(job_id, line)
 
@@ -4128,10 +4031,6 @@ def build_video_feedback(filename: str = "", download_job_id: str = "") -> dict[
         "download": download_payload,
         "updated_at": time.time(),
     }
-
-
-def public_metrics_job(job: MetricsJob, result: Any) -> dict[str, Any]:
-    return snapshot_metrics_job(job, result=result)
 
 
 def public_amazon_job(job: AmazonJob, *, result: Any) -> dict[str, Any]:
@@ -11262,16 +11161,6 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/download-events":
             job_id = parse_qs(parsed.query).get("id", [""])[0]
             return self.stream_download_events(job_id)
-        if parsed.path == "/api/video-metrics-job":
-            job_id = parse_qs(parsed.query).get("id", [""])[0]
-            job = metrics_job_registry.snapshot(job_id)
-            payload = public_metrics_job(job, read_json(OUTPUT_DIR / "tiktok_api" / job.id / "result.json")) if job else None
-            if payload is None:
-                return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Video metrics job not found"})
-            return json_response(self, HTTPStatus.OK, payload)
-        if parsed.path == "/api/video-metrics-events":
-            job_id = parse_qs(parsed.query).get("id", [""])[0]
-            return self.stream_metrics_events(job_id)
         if parsed.path == "/api/amazon-job":
             job_id = parse_qs(parsed.query).get("id", [""])[0]
             job = amazon_job_registry.snapshot(job_id)
@@ -11420,43 +11309,6 @@ class Handler(BaseHTTPRequestHandler):
             if payload is None:
                 try:
                     write_sse_event(self, {"status": "missing", "error": "Download job not found"})
-                except (BrokenPipeError, ConnectionResetError):
-                    pass
-                self.close_connection = True
-                return
-
-            marker = (
-                payload.get("status"),
-                payload.get("updated_at"),
-                len(payload.get("log") or []),
-                payload.get("error"),
-            )
-            try:
-                if marker != last_marker:
-                    write_sse_event(self, payload)
-                    last_marker = marker
-                if payload.get("status") not in {"queued", "running"}:
-                    self.close_connection = True
-                    return
-                time.sleep(1)
-            except (BrokenPipeError, ConnectionResetError):
-                self.close_connection = True
-                return
-
-    def stream_metrics_events(self, job_id: str) -> None:
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "keep-alive")
-        self.end_headers()
-
-        last_marker: tuple[Any, ...] | None = None
-        while True:
-            job = metrics_job_registry.snapshot(job_id)
-            payload = public_metrics_job(job, read_json(OUTPUT_DIR / "tiktok_api" / job.id / "result.json")) if job else None
-            if payload is None:
-                try:
-                    write_sse_event(self, {"status": "missing", "error": "Video metrics job not found"})
                 except (BrokenPipeError, ConnectionResetError):
                     pass
                 self.close_connection = True
@@ -11681,8 +11533,6 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_chat_export_pdf()
         if parsed.path.startswith("/api/chat/sessions/") and parsed.path.endswith("/rename"):
             return self.handle_chat_rename_session(parsed.path)
-        if parsed.path == "/api/video-metrics":
-            return self.handle_video_metrics()
         if parsed.path == "/api/report/run":
             return self.handle_report_run()
         if parsed.path == "/api/report/delete":
@@ -12036,33 +11886,6 @@ class Handler(BaseHTTPRequestHandler):
         thread.start()
         snapshot = download_job_registry.snapshot(job.id)
         return json_response(self, HTTPStatus.ACCEPTED, public_download_job(snapshot))
-
-    def handle_video_metrics(self) -> None:
-        content_length = int(self.headers.get("Content-Length", "0"))
-        body = self.rfile.read(content_length)
-        try:
-            payload = json.loads(body.decode("utf-8") or "{}")
-            target = str(payload.get("target", "")).strip()
-            endpoint = str(payload.get("endpoint", "video-info")).strip()
-            if endpoint not in TIKTOK_ENDPOINTS:
-                raise ValueError(f"Unknown endpoint: {endpoint}")
-            if not target and endpoint not in ("trending", "music-popular"):
-                raise ValueError("target is required for this endpoint")
-            if len(target) > 2048:
-                raise ValueError("target is too long")
-        except (json.JSONDecodeError, ValueError) as exc:
-            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
-
-        job = MetricsJob(id=str(uuid.uuid4()), target=target, endpoint=endpoint)
-        metrics_job_registry.register(job.id, job)
-        thread = threading.Thread(target=run_metrics_job, args=(job.id,), daemon=True)
-        thread.start()
-        snapshot = metrics_job_registry.snapshot(job.id)
-        return json_response(
-            self,
-            HTTPStatus.ACCEPTED,
-            public_metrics_job(snapshot, read_json(OUTPUT_DIR / "tiktok_api" / snapshot.id / "result.json")),
-        )
 
     def handle_amazon_scrape(self) -> None:
         content_length = int(self.headers.get("Content-Length", "0"))
@@ -12953,6 +12776,7 @@ TAOBAO_HTML = TAOBAO_HTML_PATH.read_text(encoding="utf-8") if TAOBAO_HTML_PATH.i
 register_shop_page(WEB_ROUTER, html_snapshot=SHOP_HTML, inject_nav=inject_unified_nav)
 register_shop_api_routes(WEB_ROUTER, shop_service)
 register_metrics_page(WEB_ROUTER, html_snapshot=METRICS_HTML, inject_nav=inject_unified_nav)
+register_metrics_api_routes(WEB_ROUTER, metrics_service)
 register_taobao_page(WEB_ROUTER, html_snapshot=TAOBAO_HTML, inject_nav=inject_unified_nav)
 
 

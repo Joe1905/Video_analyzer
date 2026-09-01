@@ -224,11 +224,11 @@ class JsonStoreTests(unittest.TestCase):
         self.assertEqual(definitions, [])
 
         calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
-        # D2 and D4 add explicit GET/SSE/POST reads; 4.1 moves the six Shop
-        # reads into ShopService.payload_for, keeping web_app at this baseline.
+        # Phase 4.1 moves Shop reads into its service. Phase 4.2 moves four
+        # Metrics call sites behind two service-owned reads (worker + payload).
         self.assertEqual(
             sum(isinstance(node.func, ast.Name) and node.func.id == "read_json" for node in calls),
-            49,
+            45,
         )
         shop_source_path = source_path.with_name("services") / "shop.py"
         shop_tree = ast.parse(shop_source_path.read_text(encoding="utf-8"), filename=str(shop_source_path))
@@ -243,6 +243,22 @@ class JsonStoreTests(unittest.TestCase):
                 and node.func.value.id == "self"
                 and node.func.attr == "_read_json_file"
                 for node in ast.walk(payload_for)
+                if isinstance(node, ast.Call)
+            ),
+            2,
+        )
+        metrics_source_path = source_path.with_name("services") / "metrics.py"
+        metrics_tree = ast.parse(
+            metrics_source_path.read_text(encoding="utf-8"),
+            filename=str(metrics_source_path),
+        )
+        self.assertEqual(
+            sum(
+                isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "self"
+                and node.func.attr == "_read_json_file"
+                for node in ast.walk(metrics_tree)
                 if isinstance(node, ast.Call)
             ),
             2,

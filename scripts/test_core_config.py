@@ -16,6 +16,8 @@ from core.config import AppConfig  # noqa: E402
 
 WEB_APP_PATH = SCRIPTS_DIR / "web_app.py"
 SHOP_ROUTE_PATH = SCRIPTS_DIR / "routes" / "shop.py"
+METRICS_ROUTE_PATH = SCRIPTS_DIR / "routes" / "metrics.py"
+METRICS_SERVICE_PATH = SCRIPTS_DIR / "services" / "metrics.py"
 _MODULE_CONFIG_BINDINGS = {
     "ROOT": "root",
     "UI_TEST_MODE": "ui_test_mode",
@@ -96,6 +98,13 @@ def shop_route_module_tree() -> ast.Module:
     return ast.parse(
         SHOP_ROUTE_PATH.read_text(encoding="utf-8"),
         filename=str(SHOP_ROUTE_PATH),
+    )
+
+
+def metrics_module_trees() -> tuple[ast.Module, ast.Module]:
+    return (
+        ast.parse(METRICS_ROUTE_PATH.read_text(encoding="utf-8"), filename=str(METRICS_ROUTE_PATH)),
+        ast.parse(METRICS_SERVICE_PATH.read_text(encoding="utf-8"), filename=str(METRICS_SERVICE_PATH)),
     )
 
 
@@ -245,6 +254,17 @@ class AppConfigTests(unittest.TestCase):
         self.assertEqual(module_calls, [])
         self.assertEqual(shop_module_calls, [])
         self.assertEqual(shop_function_calls, [])
+        for metrics_tree in metrics_module_trees():
+            metrics_module_calls, metrics_function_calls = getenv_calls_by_scope(metrics_tree)
+            self.assertEqual(metrics_module_calls, [])
+            self.assertEqual(metrics_function_calls, [])
+            self.assertFalse([
+                node
+                for node in ast.walk(metrics_tree)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "getenv"
+            ])
         self.assertEqual(len(function_calls), 53)
         self.assertEqual(len(shop_getenv_calls), 3)
         self.assertEqual(shop_getenv_scopes, ["shop_extract"] * 3)

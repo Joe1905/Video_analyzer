@@ -22,9 +22,12 @@ SCRIPTS_DIR = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 from jobs.registry import JobRegistry
+from routes.metrics import register_metrics_api_routes
 from routes.router import Router
 from routes.shop import register_shop_api_routes
+from services import metrics as metrics_module
 from services import shop as shop_module
+from services.metrics import MetricsJob, MetricsService
 from services.shop import ShopJob, ShopService
 
 
@@ -79,7 +82,6 @@ def dispatch_get(web_app: Any, path: str) -> FakeHandler:
     handler = FakeHandler(path)
     for name in (
         "stream_download_events",
-        "stream_metrics_events",
         "stream_amazon_events",
     ):
         setattr(handler, name, getattr(web_app.Handler, name).__get__(handler, FakeHandler))
@@ -107,13 +109,48 @@ def make_shop_service(
     )
 
 
+def make_metrics_service(
+    web_app: Any,
+    registry: JobRegistry,
+    *,
+    read_json_file: Any | None = None,
+    popen_factory: Any | None = None,
+    thread_factory: Any | None = None,
+    job_id_factory: Any | None = None,
+    register_from_payload: Any | None = None,
+) -> MetricsService:
+    return MetricsService(
+        registry=registry,
+        root=web_app.ROOT,
+        output_dir=web_app.OUTPUT_DIR,
+        scripts_dir=web_app.SCRIPTS_DIR,
+        read_json_file=read_json_file or web_app.read_json,
+        popen_factory=popen_factory or (lambda *_args, **_kwargs: None),
+        thread_factory=thread_factory or (lambda **_kwargs: None),
+        job_id_factory=job_id_factory or (lambda: "metrics-post-fixture"),
+        register_from_payload=register_from_payload or (lambda *_args, **_kwargs: None),
+    )
+
+
 def make_shop_router(service: ShopService, *, sleep: Any = lambda _seconds: None) -> Router:
     router = Router()
     register_shop_api_routes(router, service, sleep=sleep)
     return router
 
 
+def make_metrics_router(service: MetricsService, *, sleep: Any = lambda _seconds: None) -> Router:
+    router = Router()
+    register_metrics_api_routes(router, service, sleep=sleep)
+    return router
+
+
 def dispatch_shop(router: Router, method: str, handler: FakeHandler) -> FakeHandler:
+    route = router.resolve(method, handler.path.partition("?")[0])
+    route.handler(handler, route.params)
+    return handler
+
+
+def dispatch_metrics(router: Router, method: str, handler: FakeHandler) -> FakeHandler:
     route = router.resolve(method, handler.path.partition("?")[0])
     route.handler(handler, route.params)
     return handler
@@ -166,7 +203,7 @@ def make_jobs(web_app: Any) -> dict[str, Any]:
         log=[f"shop-{index}" for index in range(122)],
         output_dir="output/tiktok_shop/shop-fixture",
     )
-    metrics = web_app.MetricsJob(
+    metrics = MetricsJob(
         id="metrics-fixture",
         target="@fixture",
         endpoint="video-info",
@@ -194,12 +231,16 @@ def make_jobs(web_app: Any) -> dict[str, Any]:
     write_json(web_app.OUTPUT_DIR / "amazon" / amazon.id / "result.json", {"products": [{"asin": "B000FIXTURE"}]})
     shop_registry = JobRegistry()
     shop_registry.register(shop.id, shop)
+    metrics_registry = JobRegistry()
+    metrics_registry.register(metrics.id, metrics)
     return {
         "download": download,
         "shop": shop,
         "shop_registry": shop_registry,
         "shop_service": make_shop_service(web_app, shop_registry),
         "metrics": metrics,
+        "metrics_registry": metrics_registry,
+        "metrics_service": make_metrics_service(web_app, metrics_registry),
         "amazon": amazon,
     }
 
@@ -216,13 +257,14 @@ def public_amazon_payload(web_app: Any, job: Any) -> dict[str, Any]:
 
 
 def assert_public_payloads(web_app: Any, jobs: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    metrics_result_path = web_app.OUTPUT_DIR / "tiktok_api" / jobs["metrics"].id / "result.json"
+    metrics_service = jobs["metrics_service"]
     payloads = {
         "download": web_app.public_download_job(jobs["download"]),
         "shop": public_shop_payload(jobs["shop_service"], jobs["shop"]),
-        "metrics": web_app.public_metrics_job(jobs["metrics"], result=web_app.read_json(metrics_result_path)),
+        "metrics": metrics_service.payload_for(jobs["metrics"].id),
         "amazon": public_amazon_payload(web_app, jobs["amazon"]),
     }
+    assert payloads["metrics"] is not None
     assert set(payloads["download"]) == {"id", "url", "status", "created_at", "updated_at", "filename", "error", "log", "result"}
     assert set(payloads["shop"]) == {"id", "url", "source_type", "region", "max_pages", "review_pages", "analyze", "related_videos", "status", "created_at", "updated_at", "output_dir", "error", "log", "extract", "analysis"}
     assert set(payloads["metrics"]) == {"id", "target", "endpoint", "status", "created_at", "updated_at", "output_dir", "error", "log", "result"}
@@ -310,7 +352,16 @@ def assert_public_payloads(web_app: Any, jobs: dict[str, Any]) -> dict[str, dict
     assert payloads["amazon"]["result"] == {"products": [{"asin": "B000FIXTURE"}]}
 
     direct_metrics_result = {"metric": {"nested": ["fixture"]}}
-    direct_metrics_payload = web_app.public_metrics_job(jobs["metrics"], result=direct_metrics_result)
+    direct_metrics_registry = JobRegistry()
+    direct_metrics_job = MetricsJob(id="metrics-direct-copy", target="@fixture", endpoint="profile")
+    direct_metrics_registry.register(direct_metrics_job.id, direct_metrics_job)
+    direct_metrics_service = make_metrics_service(
+        web_app,
+        direct_metrics_registry,
+        read_json_file=lambda _path: direct_metrics_result,
+    )
+    direct_metrics_payload = direct_metrics_service.payload_for(direct_metrics_job.id)
+    assert direct_metrics_payload is not None
     assert direct_metrics_payload["result"] == direct_metrics_result
     assert direct_metrics_payload["result"] is not direct_metrics_result
     assert direct_metrics_payload["result"]["metric"] is not direct_metrics_result["metric"]
@@ -328,7 +379,7 @@ def assert_public_payloads(web_app: Any, jobs: dict[str, Any]) -> dict[str, dict
     write_json(web_app.OUTPUT_DIR / "tiktok_api" / jobs["metrics"].id / "result.json", {"metric": {"views": 8}})
     write_json(web_app.OUTPUT_DIR / "amazon" / jobs["amazon"].id / "result.json", {"products": [{"asin": "B000FIXTUREV2"}]})
     refreshed_shop = public_shop_payload(jobs["shop_service"], jobs["shop"])
-    refreshed_metrics = web_app.public_metrics_job(jobs["metrics"], result=web_app.read_json(metrics_result_path))
+    refreshed_metrics = metrics_service.payload_for(jobs["metrics"].id)
     refreshed_amazon = public_amazon_payload(web_app, jobs["amazon"])
     assert refreshed_shop["extract"] == {"items": [{"id": "extract-v2"}]}
     assert refreshed_shop["analysis"] == {"summary": "analysis-v2"}
@@ -376,7 +427,9 @@ def assert_public_payloads(web_app: Any, jobs: dict[str, Any]) -> dict[str, dict
     assert web_app.read_json(web_app.OUTPUT_DIR / "tiktok_shop" / jobs["shop"].id / "shop_analysis.json") == {
         "summary": "analysis-v3"
     }
-    assert web_app.public_metrics_job(jobs["metrics"], result=web_app.read_json(metrics_result_path))["result"] == {
+    final_metrics_payload = metrics_service.payload_for(jobs["metrics"].id)
+    assert final_metrics_payload is not None
+    assert final_metrics_payload["result"] == {
         "metric": {"views": 8}
     }
     assert public_amazon_payload(web_app, jobs["amazon"])["result"] == {"products": [{"asin": "B000FIXTUREV2"}]}
@@ -411,18 +464,6 @@ def assert_no_metrics_legacy_store() -> None:
         and node.attr in {"_jobs", "_lock"}
     ]
     assert not private_registry_access
-
-    module_functions = {
-        node.name: node
-        for node in tree.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
-    assert {
-        "append_metrics_log",
-        "run_metrics_command",
-        "run_metrics_job",
-        "public_metrics_job",
-    } <= module_functions.keys()
     handler = next(
         node for node in tree.body
         if isinstance(node, ast.ClassDef) and node.name == "Handler"
@@ -432,44 +473,57 @@ def assert_no_metrics_legacy_store() -> None:
         for node in handler.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
-    assert {"do_POST", "stream_metrics_events", "handle_video_metrics"} <= handler_methods.keys()
-    metrics_scopes = [
-        *(module_functions[name] for name in ("append_metrics_log", "run_metrics_command", "run_metrics_job", "public_metrics_job")),
-        *(handler_methods[name] for name in ("stream_metrics_events", "handle_video_metrics")),
-    ]
-    assert not [
-        call
-        for scope in metrics_scopes
-        for call in ast.walk(scope)
-        if isinstance(call, ast.Call)
-        and isinstance(call.func, ast.Attribute)
-        and isinstance(call.func.value, ast.Name)
-        and call.func.value.id == "os"
-        and call.func.attr == "getenv"
-    ]
+    obsolete_definitions = {
+        "MetricsJob", "append_metrics_log", "run_metrics_command", "run_metrics_job", "public_metrics_job",
+    }
+    assert not {
+        node.name for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        and node.name in obsolete_definitions
+    }
+    assert not {"stream_metrics_events", "handle_video_metrics"} & handler_methods.keys()
 
-    post = handler_methods["do_POST"]
-    registered_intercept = next(
-        call for call in ast.walk(post)
-        if isinstance(call, ast.Call)
-        and isinstance(call.func, ast.Name)
-        and call.func.id == "is_registered_post_route"
-    )
-    live_write_intercept = next(
-        call for call in ast.walk(post)
-        if isinstance(call, ast.Call)
-        and isinstance(call.func, ast.Name)
-        and call.func.id == "ui_test_mode_allows_live_write"
-    )
-    metrics_dispatch = next(
-        call for call in ast.walk(post)
-        if isinstance(call, ast.Call)
-        and isinstance(call.func, ast.Attribute)
-        and isinstance(call.func.value, ast.Name)
-        and call.func.value.id == "self"
-        and call.func.attr == "handle_video_metrics"
-    )
-    assert registered_intercept.lineno < live_write_intercept.lineno < metrics_dispatch.lineno
+    metrics_tree = ast.parse((SCRIPTS_DIR / "services" / "metrics.py").read_text(encoding="utf-8"))
+    route_tree = ast.parse((SCRIPTS_DIR / "routes" / "metrics.py").read_text(encoding="utf-8"))
+    for module in (metrics_tree, route_tree):
+        assert not [
+            node for node in ast.walk(module)
+            if (
+                isinstance(node, ast.ImportFrom)
+                and node.module
+                and (node.module == "web_app" or node.module.startswith("web_app."))
+            )
+            or (
+                isinstance(node, ast.Import)
+                and any(
+                    alias.name == "web_app" or alias.name.startswith("web_app.")
+                    for alias in node.names
+                )
+            )
+        ]
+        assert not [
+            node for node in ast.walk(module)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "os"
+            and node.func.attr == "getenv"
+        ]
+    assert not [
+        node for node in ast.walk(metrics_tree)
+        if (
+            isinstance(node, ast.ImportFrom)
+            and node.module
+            and (node.module == "routes" or node.module.startswith("routes."))
+        )
+        or (
+            isinstance(node, ast.Import)
+            and any(
+                alias.name == "routes" or alias.name.startswith("routes.")
+                for alias in node.names
+            )
+        )
+    ]
 
 
 def assert_no_shop_legacy_store() -> None:
@@ -686,46 +740,47 @@ def assert_post_order_contracts(web_app: Any) -> None:
     assert order == ["register", "thread.start", "snapshot", "shop_extract.json", "shop_analysis.json", "serializer"]
 
     metrics_target = "https://www.tiktok.com/@fixture/video/456"
-    original_metrics_registry = web_app.metrics_job_registry
-    metrics_registry = web_app.JobRegistry()
-    web_app.metrics_job_registry = metrics_registry
-    try:
-        order = []
-        original_register = metrics_registry.register
-        original_snapshot = metrics_registry.snapshot
-        original_serializer = web_app.public_metrics_job
+    metrics_registry = JobRegistry()
+    order: list[str] = []
+    original_register = metrics_registry.register
+    original_snapshot = metrics_registry.snapshot
+    original_serializer = metrics_module.snapshot_metrics_job
 
-        def recording_register(job_id: str, job: Any) -> None:
-            order.append("register")
-            assert (job.target, job.endpoint) == (metrics_target, "video-info")
-            return original_register(job_id, job)
+    def recording_register(job_id: str, job: Any) -> None:
+        order.append("register")
+        assert (job.target, job.endpoint) == (metrics_target, "video-info")
+        return original_register(job_id, job)
 
-        def recording_snapshot(job_id: str) -> Any:
-            order.append("snapshot")
-            return original_snapshot(job_id)
+    def recording_snapshot(job_id: str) -> Any:
+        order.append("snapshot")
+        return original_snapshot(job_id)
 
-        def recording_read_json(path: Path) -> Any:
-            order.append(path.name)
-            return {"metric": "fixture"}
+    def recording_read_json(path: Path) -> Any:
+        order.append(path.name)
+        return {"metric": "fixture"}
 
-        def recording_serializer(job: Any, result: Any) -> dict[str, Any]:
-            order.append("serializer")
-            return original_serializer(job, result)
+    def recording_serializer(job: Any, result: Any) -> dict[str, Any]:
+        order.append("serializer")
+        return original_serializer(job, result=result)
 
-        handler = handler_for({"target": metrics_target, "endpoint": "video-info"})
-        with patch.object(web_app.threading, "Thread", deferred_thread(order)), patch.object(
-            metrics_registry, "register", side_effect=recording_register
-        ), patch.object(metrics_registry, "snapshot", side_effect=recording_snapshot), patch.object(
-            web_app, "read_json", side_effect=recording_read_json
-        ), patch.object(web_app, "public_metrics_job", side_effect=recording_serializer):
-            web_app.Handler.handle_video_metrics(handler)
-        response = json.loads(handler.wfile.getvalue().decode("utf-8"))
-        assert handler.responses == [202]
-        assert response["target"] == metrics_target and response["endpoint"] == "video-info"
-        assert response["status"] == "queued"
-        assert order == ["register", "thread.start", "snapshot", "result.json", "serializer"]
-    finally:
-        web_app.metrics_job_registry = original_metrics_registry
+    metrics_service = make_metrics_service(
+        web_app,
+        metrics_registry,
+        read_json_file=recording_read_json,
+        thread_factory=deferred_thread(order),
+    )
+    metrics_router = make_metrics_router(metrics_service)
+    handler = handler_for({"target": metrics_target, "endpoint": "video-info"})
+    handler.path = "/api/video-metrics"
+    with patch.object(metrics_registry, "register", side_effect=recording_register), patch.object(
+        metrics_registry, "snapshot", side_effect=recording_snapshot
+    ), patch.object(metrics_module, "snapshot_metrics_job", side_effect=recording_serializer):
+        dispatch_metrics(metrics_router, "POST", handler)
+    response = json.loads(handler.wfile.getvalue().decode("utf-8"))
+    assert handler.responses == [202]
+    assert response["target"] == metrics_target and response["endpoint"] == "video-info"
+    assert response["status"] == "queued"
+    assert order == ["register", "thread.start", "snapshot", "result.json", "serializer"]
 
 
 def assert_get_and_sse_contracts(web_app: Any, jobs: dict[str, Any]) -> None:
@@ -741,44 +796,51 @@ def assert_get_and_sse_contracts(web_app: Any, jobs: dict[str, Any]) -> None:
     )
 
     metrics = jobs["metrics"]
-    original_metrics_registry = web_app.metrics_job_registry
-    metrics_registry = web_app.JobRegistry()
-    web_app.metrics_job_registry = metrics_registry
-    try:
-        metrics_registry.register(metrics.id, metrics)
-        result_path = web_app.OUTPUT_DIR / "tiktok_api" / metrics.id / "result.json"
-        expected = web_app.public_metrics_job(metrics_registry.snapshot(metrics.id), result=web_app.read_json(result_path))
-        assert_json_response(dispatch_get(web_app, f"/api/video-metrics-job?id={metrics.id}"), 200, expected)
-        assert_sse_response(dispatch_get(web_app, f"/api/video-metrics-events?id={metrics.id}"), expected)
+    metrics_service = jobs["metrics_service"]
+    metrics_router = make_metrics_router(metrics_service)
+    expected = metrics_service.payload_for(metrics.id)
+    assert expected is not None
+    assert_json_response(
+        dispatch_metrics(metrics_router, "GET", FakeHandler(f"/api/video-metrics-job?id={metrics.id}")),
+        200,
+        expected,
+    )
+    assert_sse_response(
+        dispatch_metrics(metrics_router, "GET", FakeHandler(f"/api/video-metrics-events?id={metrics.id}")),
+        expected,
+    )
+    assert_json_response(
+        dispatch_metrics(metrics_router, "GET", FakeHandler("/api/video-metrics-job?id=missing")),
+        404,
+        {"error": "Video metrics job not found"},
+    )
+    assert_sse_response(
+        dispatch_metrics(metrics_router, "GET", FakeHandler("/api/video-metrics-events?id=missing")),
+        {"status": "missing", "error": "Video metrics job not found"},
+    )
+
+    call_order: list[str] = []
+    order_registry = JobRegistry()
+    order_registry.register(metrics.id, metrics)
+    original_snapshot = order_registry.snapshot
+
+    def recording_snapshot(job_id: str) -> Any:
+        call_order.append("snapshot")
+        return original_snapshot(job_id)
+
+    def recording_read_json(path: Path) -> Any:
+        call_order.append("read")
+        return web_app.read_json(path)
+
+    order_service = make_metrics_service(web_app, order_registry, read_json_file=recording_read_json)
+    order_router = make_metrics_router(order_service)
+    with patch.object(order_registry, "snapshot", side_effect=recording_snapshot):
         assert_json_response(
-            dispatch_get(web_app, "/api/video-metrics-job?id=missing"),
-            404,
-            {"error": "Video metrics job not found"},
+            dispatch_metrics(order_router, "GET", FakeHandler(f"/api/video-metrics-job?id={metrics.id}")),
+            200,
+            expected,
         )
-        assert_sse_response(
-            dispatch_get(web_app, "/api/video-metrics-events?id=missing"),
-            {"status": "missing", "error": "Video metrics job not found"},
-        )
-
-        call_order: list[str] = []
-        original_snapshot = metrics_registry.snapshot
-        original_read_json = web_app.read_json
-
-        def recording_snapshot(job_id: str) -> Any:
-            call_order.append("snapshot")
-            return original_snapshot(job_id)
-
-        def recording_read_json(path: Path) -> Any:
-            call_order.append("read")
-            return original_read_json(path)
-
-        with patch.object(metrics_registry, "snapshot", side_effect=recording_snapshot), patch.object(
-            web_app, "read_json", side_effect=recording_read_json
-        ):
-            assert_json_response(dispatch_get(web_app, f"/api/video-metrics-job?id={metrics.id}"), 200, expected)
-        assert call_order == ["snapshot", "read"]
-    finally:
-        web_app.metrics_job_registry = original_metrics_registry
+    assert call_order == ["snapshot", "read"]
 
     shop = jobs["shop"]
     shop_registry = jobs["shop_registry"]
@@ -917,108 +979,103 @@ def assert_get_and_sse_contracts(web_app: Any, jobs: dict[str, Any]) -> None:
 
 
 def assert_metrics_artifact_failures_and_broken_pipe(web_app: Any) -> None:
-    original_registry = web_app.metrics_job_registry
-    registry = web_app.JobRegistry()
-    web_app.metrics_job_registry = registry
+    registry = JobRegistry()
+    service = make_metrics_service(web_app, registry)
+    router = make_metrics_router(service)
+    missing_artifact = MetricsJob(
+        id="metrics-artifact-missing",
+        target="@fixture",
+        endpoint="profile",
+        status="complete",
+        created_at=35.0,
+        updated_at=36.0,
+        output_dir="output/tiktok_api/metrics-artifact-missing",
+    )
+    registry.register(missing_artifact.id, missing_artifact)
+    expected_missing = service.payload_for(missing_artifact.id)
+    assert expected_missing is not None
+    assert_json_response(
+        dispatch_metrics(router, "GET", FakeHandler(f"/api/video-metrics-job?id={missing_artifact.id}")),
+        200,
+        expected_missing,
+    )
+    assert_sse_response(
+        dispatch_metrics(router, "GET", FakeHandler(f"/api/video-metrics-events?id={missing_artifact.id}")),
+        expected_missing,
+    )
+
+    invalid_artifact = MetricsJob(
+        id="metrics-artifact-invalid",
+        target="@fixture-invalid",
+        endpoint="profile",
+        status="complete",
+        created_at=37.0,
+        updated_at=38.0,
+        output_dir="output/tiktok_api/metrics-artifact-invalid",
+    )
+    registry.register(invalid_artifact.id, invalid_artifact)
+    invalid_path = web_app.OUTPUT_DIR / "tiktok_api" / invalid_artifact.id / "result.json"
+    invalid_path.parent.mkdir(parents=True, exist_ok=True)
+    invalid_path.write_text("{invalid", encoding="utf-8")
+
+    invalid_get = FakeHandler(f"/api/video-metrics-job?id={invalid_artifact.id}")
     try:
-        missing_artifact = web_app.MetricsJob(
-            id="metrics-artifact-missing",
-            target="@fixture",
-            endpoint="profile",
-            status="complete",
-            created_at=35.0,
-            updated_at=36.0,
-            output_dir="output/tiktok_api/metrics-artifact-missing",
-        )
-        registry.register(missing_artifact.id, missing_artifact)
-        expected_missing = web_app.public_metrics_job(missing_artifact, result=None)
-        assert_json_response(
-            dispatch_get(web_app, f"/api/video-metrics-job?id={missing_artifact.id}"),
-            200,
-            expected_missing,
-        )
-        assert_sse_response(
-            dispatch_get(web_app, f"/api/video-metrics-events?id={missing_artifact.id}"),
-            expected_missing,
-        )
+        dispatch_metrics(router, "GET", invalid_get)
+    except json.JSONDecodeError:
+        pass
+    else:
+        raise AssertionError("invalid Metrics artifact must propagate from GET")
+    assert invalid_get.responses == []
+    assert invalid_get.response_headers == []
+    assert invalid_get.wfile.getvalue() == b""
+    assert invalid_get.ended is False
 
-        invalid_artifact = web_app.MetricsJob(
-            id="metrics-artifact-invalid",
-            target="@fixture-invalid",
-            endpoint="profile",
-            status="complete",
-            created_at=37.0,
-            updated_at=38.0,
-            output_dir="output/tiktok_api/metrics-artifact-invalid",
-        )
-        registry.register(invalid_artifact.id, invalid_artifact)
-        invalid_path = web_app.OUTPUT_DIR / "tiktok_api" / invalid_artifact.id / "result.json"
-        invalid_path.parent.mkdir(parents=True, exist_ok=True)
-        invalid_path.write_text("{invalid", encoding="utf-8")
+    invalid_sse = FakeHandler(f"/api/video-metrics-events?id={invalid_artifact.id}")
+    try:
+        dispatch_metrics(router, "GET", invalid_sse)
+    except json.JSONDecodeError:
+        pass
+    else:
+        raise AssertionError("invalid Metrics artifact must propagate from SSE")
+    assert invalid_sse.responses == [200]
+    assert invalid_sse.header("Content-Type") == "text/event-stream; charset=utf-8"
+    assert invalid_sse.header("Cache-Control") == "no-cache"
+    assert invalid_sse.header("Connection") == "keep-alive"
+    assert invalid_sse.ended is True
+    assert invalid_sse.wfile.getvalue() == b""
+    assert invalid_sse.close_connection is False
 
-        invalid_get = FakeHandler(f"/api/video-metrics-job?id={invalid_artifact.id}")
-        try:
-            web_app.Handler.do_GET(invalid_get)
-        except json.JSONDecodeError:
-            pass
-        else:
-            raise AssertionError("invalid Metrics artifact must propagate from GET")
-        assert invalid_get.responses == []
-        assert invalid_get.response_headers == []
-        assert invalid_get.wfile.getvalue() == b""
-        assert invalid_get.ended is False
+    class BrokenPipeWriter:
+        def __init__(self) -> None:
+            self.write_attempts = 0
 
-        invalid_sse = FakeHandler(f"/api/video-metrics-events?id={invalid_artifact.id}")
-        invalid_sse.stream_metrics_events = web_app.Handler.stream_metrics_events.__get__(invalid_sse, FakeHandler)
-        try:
-            web_app.Handler.do_GET(invalid_sse)
-        except json.JSONDecodeError:
-            pass
-        else:
-            raise AssertionError("invalid Metrics artifact must propagate from SSE")
-        assert invalid_sse.responses == [200]
-        assert invalid_sse.header("Content-Type") == "text/event-stream; charset=utf-8"
-        assert invalid_sse.header("Cache-Control") == "no-cache"
-        assert invalid_sse.header("Connection") == "keep-alive"
-        assert invalid_sse.ended is True
-        assert invalid_sse.wfile.getvalue() == b""
-        assert invalid_sse.close_connection is False
+        def write(self, _data: bytes) -> int:
+            self.write_attempts += 1
+            raise BrokenPipeError
 
-        class BrokenPipeWriter:
-            def __init__(self) -> None:
-                self.write_attempts = 0
+        def flush(self) -> None:
+            return None
 
-            def write(self, _data: bytes) -> int:
-                self.write_attempts += 1
-                raise BrokenPipeError
+    def assert_event_headers(handler: FakeHandler) -> None:
+        assert handler.responses == [200]
+        assert handler.header("Content-Type") == "text/event-stream; charset=utf-8"
+        assert handler.header("Cache-Control") == "no-cache"
+        assert handler.header("Connection") == "keep-alive"
+        assert handler.ended is True
 
-            def flush(self) -> None:
-                return None
+    missing_pipe = FakeHandler("/api/video-metrics-events?id=missing-metrics-job")
+    missing_pipe.wfile = BrokenPipeWriter()
+    dispatch_metrics(router, "GET", missing_pipe)
+    assert_event_headers(missing_pipe)
+    assert missing_pipe.wfile.write_attempts == 1
+    assert missing_pipe.close_connection is True
 
-        def assert_event_headers(handler: FakeHandler) -> None:
-            assert handler.responses == [200]
-            assert handler.header("Content-Type") == "text/event-stream; charset=utf-8"
-            assert handler.header("Cache-Control") == "no-cache"
-            assert handler.header("Connection") == "keep-alive"
-            assert handler.ended is True
-
-        missing_pipe = FakeHandler("/api/video-metrics-events?id=missing-metrics-job")
-        missing_pipe.wfile = BrokenPipeWriter()
-        missing_pipe.stream_metrics_events = web_app.Handler.stream_metrics_events.__get__(missing_pipe, FakeHandler)
-        web_app.Handler.do_GET(missing_pipe)
-        assert_event_headers(missing_pipe)
-        assert missing_pipe.wfile.write_attempts == 1
-        assert missing_pipe.close_connection is True
-
-        normal_pipe = FakeHandler(f"/api/video-metrics-events?id={missing_artifact.id}")
-        normal_pipe.wfile = BrokenPipeWriter()
-        normal_pipe.stream_metrics_events = web_app.Handler.stream_metrics_events.__get__(normal_pipe, FakeHandler)
-        web_app.Handler.do_GET(normal_pipe)
-        assert_event_headers(normal_pipe)
-        assert normal_pipe.wfile.write_attempts == 1
-        assert normal_pipe.close_connection is True
-    finally:
-        web_app.metrics_job_registry = original_registry
+    normal_pipe = FakeHandler(f"/api/video-metrics-events?id={missing_artifact.id}")
+    normal_pipe.wfile = BrokenPipeWriter()
+    dispatch_metrics(router, "GET", normal_pipe)
+    assert_event_headers(normal_pipe)
+    assert normal_pipe.wfile.write_attempts == 1
+    assert normal_pipe.close_connection is True
 
 
 def assert_shop_artifact_failure_contract(web_app: Any) -> None:
@@ -1257,7 +1314,7 @@ def assert_sse_marker(web_app: Any) -> None:
     registry = web_app.JobRegistry(clock=lambda: next(timestamps))
     registry.register(job.id, job)
     web_app.download_job_registry = registry
-    handler = FakeHandler()
+    handler = FakeHandler(f"/api/download-events?id={job.id}")
     original_sleep = web_app.time.sleep
     calls = 0
 
@@ -1293,7 +1350,7 @@ def assert_sse_marker(web_app: Any) -> None:
 
 
 def assert_metrics_sse_marker(web_app: Any) -> None:
-    job = web_app.MetricsJob(
+    job = MetricsJob(
         id="metrics-marker-fixture",
         target="@fixture",
         endpoint="profile",
@@ -1304,15 +1361,11 @@ def assert_metrics_sse_marker(web_app: Any) -> None:
     )
     result_path = web_app.OUTPUT_DIR / "tiktok_api" / job.id / "result.json"
     write_json(result_path, {"metric": {"views": 1}})
-    original_registry = web_app.metrics_job_registry
     timestamps = iter((62.0, 63.0, 64.0))
-    registry = web_app.JobRegistry(clock=lambda: next(timestamps))
+    registry = JobRegistry(clock=lambda: next(timestamps))
     registry.register(job.id, job)
-    web_app.metrics_job_registry = registry
-    handler = FakeHandler()
-    original_sleep = web_app.time.sleep
+    handler = FakeHandler(f"/api/video-metrics-events?id={job.id}")
     original_snapshot = registry.snapshot
-    original_read_json = web_app.read_json
     read_order: list[str] = []
     calls = 0
 
@@ -1334,23 +1387,12 @@ def assert_metrics_sse_marker(web_app: Any) -> None:
 
     def recording_read_json(path: Path) -> Any:
         read_order.append("read")
-        return original_read_json(path)
+        return web_app.read_json(path)
 
-    try:
-        web_app.time.sleep = advance
-        with patch.object(
-            registry,
-            "snapshot",
-            side_effect=recording_snapshot,
-        ), patch.object(
-            web_app,
-            "read_json",
-            side_effect=recording_read_json,
-        ):
-            web_app.Handler.stream_metrics_events(handler, job.id)
-    finally:
-        web_app.time.sleep = original_sleep
-        web_app.metrics_job_registry = original_registry
+    service = make_metrics_service(web_app, registry, read_json_file=recording_read_json)
+    router = make_metrics_router(service, sleep=advance)
+    with patch.object(registry, "snapshot", side_effect=recording_snapshot):
+        dispatch_metrics(router, "GET", handler)
     frames = [json.loads(line[6:]) for line in handler.wfile.getvalue().decode("utf-8").splitlines() if line.startswith("data: ")]
     assert [frame["status"] for frame in frames] == ["queued", "queued", "queued", "complete"]
     assert [frame["result"] for frame in frames] == [

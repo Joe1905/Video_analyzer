@@ -26,6 +26,7 @@ from unittest.mock import patch
 from uuid import UUID
 
 from services.shop import ShopJob, ShopService
+from services.metrics import MetricsJob, MetricsService
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -193,85 +194,88 @@ def assert_real_download_worker_registry_updates(web_app: Any, runner: Any) -> N
         web_app.download_job_registry = original_registry
 
 
-def assert_real_metrics_worker_registry_updates(web_app: Any, runner: Any) -> None:
-    original_registry = web_app.metrics_job_registry
+def assert_real_metrics_worker_registry_updates(web_app: Any) -> None:
     registry = web_app.JobRegistry()
-    web_app.metrics_job_registry = registry
-    try:
-        success_id = "metrics-worker-success"
-        success_target = "https://www.tiktok.com/@fixture/video/metrics-worker"
-        registry.register(success_id, web_app.MetricsJob(id=success_id, target=success_target, endpoint="video-info"))
-        registered_payloads: list[tuple[dict[str, Any], str]] = []
+    registered_payloads: list[tuple[dict[str, Any], str]] = []
 
-        def command_success(job_id: str, command: list[str]) -> None:
-            assert job_id == success_id
-            assert command[command.index("--endpoint") + 1] == "video-info"
-            assert command[command.index("--url") + 1] == success_target
-            result_path = Path(command[command.index("--output") + 1])
-            result_path.parent.mkdir(parents=True, exist_ok=True)
-            result_path.write_text(json.dumps({"metric": {"views": 7}}), encoding="utf-8")
+    def record_video(payload: dict[str, Any], *, source_url: str) -> None:
+        registered_payloads.append((payload, source_url))
 
-        def record_video(payload: dict[str, Any], *, source_url: str) -> None:
-            registered_payloads.append((payload, source_url))
+    service = MetricsService(
+        registry=registry,
+        root=web_app.ROOT,
+        output_dir=web_app.OUTPUT_DIR,
+        scripts_dir=web_app.SCRIPTS_DIR,
+        read_json_file=web_app.read_json,
+        popen_factory=lambda *args, **kwargs: subprocess.Popen(*args, **kwargs),
+        thread_factory=threading.Thread,
+        job_id_factory=lambda: "unused",
+        register_from_payload=record_video,
+    )
+    success_id = "metrics-worker-success"
+    success_target = "https://www.tiktok.com/@fixture/video/metrics-worker"
+    registry.register(success_id, MetricsJob(id=success_id, target=success_target, endpoint="video-info"))
 
-        with patch.object(web_app, "run_metrics_command", side_effect=command_success), patch.object(
-            web_app, "register_from_payload", side_effect=record_video
-        ):
-            runner(success_id)
-        success = registry.snapshot(success_id)
-        assert success is not None
-        assert success.status == "complete"
-        expected_output_dir = str((web_app.OUTPUT_DIR / "tiktok_api" / success_id).relative_to(web_app.ROOT))
-        assert success.output_dir == expected_output_dir
-        result_path = web_app.OUTPUT_DIR / "tiktok_api" / success_id / "result.json"
-        assert web_app.read_json(result_path) == {"metric": {"views": 7}}
-        payload = web_app.public_metrics_job(success, result=web_app.read_json(result_path))
-        assert payload["result"] == {"metric": {"views": 7}}
-        assert registered_payloads == [({"metric": {"views": 7}}, success_target)]
-        payload["result"]["metric"]["views"] = 99
-        assert web_app.read_json(result_path) == {"metric": {"views": 7}}
+    def command_success(job_id: str, command: list[str]) -> None:
+        assert job_id == success_id
+        assert command[command.index("--endpoint") + 1] == "video-info"
+        assert command[command.index("--url") + 1] == success_target
+        result_path = Path(command[command.index("--output") + 1])
+        result_path.parent.mkdir(parents=True, exist_ok=True)
+        result_path.write_text(json.dumps({"metric": {"views": 7}}), encoding="utf-8")
 
-        class FakeMetricsProcess:
-            def __init__(self, lines: list[str], returncode: int) -> None:
-                self.stdout = iter(lines)
-                self.returncode = returncode
+    with patch.object(service, "run_command", side_effect=command_success):
+        service.run_job(success_id)
+    success = registry.snapshot(success_id)
+    assert success is not None
+    assert success.status == "complete"
+    expected_output_dir = str((web_app.OUTPUT_DIR / "tiktok_api" / success_id).relative_to(web_app.ROOT))
+    assert success.output_dir == expected_output_dir
+    result_path = web_app.OUTPUT_DIR / "tiktok_api" / success_id / "result.json"
+    assert web_app.read_json(result_path) == {"metric": {"views": 7}}
+    payload = service.payload_for(success_id)
+    assert payload is not None and payload["result"] == {"metric": {"views": 7}}
+    assert registered_payloads == [({"metric": {"views": 7}}, success_target)]
+    payload["result"]["metric"]["views"] = 99
+    assert web_app.read_json(result_path) == {"metric": {"views": 7}}
 
-            def wait(self) -> int:
-                return self.returncode
+    class FakeMetricsProcess:
+        def __init__(self, lines: list[str], returncode: int) -> None:
+            self.stdout = iter(lines)
+            self.returncode = returncode
 
-        command_log_id = "metrics-command-log"
-        registry.register(command_log_id, web_app.MetricsJob(id=command_log_id, target="@fixture", endpoint="profile"))
-        command = ["python", "fixture-metrics.py"]
-        with patch.object(web_app, "subprocess", subprocess), patch.object(
-            subprocess,
-            "Popen",
-            return_value=FakeMetricsProcess(["fixture stdout  \n", "second stdout\r\n"], 0),
-        ) as popen:
-            web_app.run_metrics_command(command_log_id, command)
-        popen.assert_called_once()
-        command_log = registry.snapshot(command_log_id)
-        assert command_log is not None
-        assert command_log.log == ["$ python fixture-metrics.py", "fixture stdout", "second stdout"]
+        def wait(self) -> int:
+            return self.returncode
 
-        command_failure_id = "metrics-command-failure"
-        registry.register(command_failure_id, web_app.MetricsJob(id=command_failure_id, target="@fixture", endpoint="profile"))
-        failure_command = ["python", "fixture-metrics-fail.py"]
-        with patch.object(web_app, "subprocess", subprocess), patch.object(
-            subprocess,
-            "Popen",
-            return_value=FakeMetricsProcess([], 9),
-        ):
-            try:
-                web_app.run_metrics_command(command_failure_id, failure_command)
-            except RuntimeError as exc:
-                assert str(exc) == "Command failed with exit code 9: python fixture-metrics-fail.py"
-            else:
-                raise AssertionError("non-zero metrics command must fail")
-        command_failure = registry.snapshot(command_failure_id)
-        assert command_failure is not None
-        assert command_failure.log == ["$ python fixture-metrics-fail.py"]
+    command_log_id = "metrics-command-log"
+    registry.register(command_log_id, MetricsJob(id=command_log_id, target="@fixture", endpoint="profile"))
+    command = ["python", "fixture-metrics.py"]
+    with patch.object(
+        subprocess,
+        "Popen",
+        return_value=FakeMetricsProcess(["fixture stdout  \n", "second stdout\r\n"], 0),
+    ) as popen:
+        service.run_command(command_log_id, command)
+    popen.assert_called_once()
+    command_log = registry.snapshot(command_log_id)
+    assert command_log is not None
+    assert command_log.log == ["$ python fixture-metrics.py", "fixture stdout", "second stdout"]
 
-        command_cases = (
+    command_failure_id = "metrics-command-failure"
+    registry.register(command_failure_id, MetricsJob(id=command_failure_id, target="@fixture", endpoint="profile"))
+    failure_command = ["python", "fixture-metrics-fail.py"]
+    with patch.object(subprocess, "Popen", return_value=FakeMetricsProcess([], 9)):
+        try:
+            service.run_command(command_failure_id, failure_command)
+        except RuntimeError as exc:
+            assert str(exc) == "Command failed with exit code 9: python fixture-metrics-fail.py"
+        else:
+            raise AssertionError("non-zero metrics command must fail")
+    command_failure = registry.snapshot(command_failure_id)
+    assert command_failure is not None
+    assert command_failure.log == ["$ python fixture-metrics-fail.py"]
+
+    command_cases = (
             ("#fixture-tag", "profile", "--hashtag", "fixture-tag"),
             ("@fixture-handle", "profile", "--handle", "fixture-handle"),
             ("music-fixture", "music-info", "--sound-id", "music-fixture"),
@@ -279,55 +283,53 @@ def assert_real_metrics_worker_registry_updates(web_app: Any, runner: Any) -> No
             ("fixture query", "search-keyword", "--query", "fixture query"),
             ("fixture-fallback", "profile", "--handle", "fixture-fallback"),
             ("", "music-popular", None, None),
-        )
-        target_flags = {"--url", "--hashtag", "--handle", "--sound-id", "--query"}
-        for index, (target, endpoint, expected_flag, expected_value) in enumerate(command_cases):
-            job_id = f"metrics-command-{index}"
-            registry.register(job_id, web_app.MetricsJob(id=job_id, target=target, endpoint=endpoint))
-            commands: list[list[str]] = []
+    )
+    target_flags = {"--url", "--hashtag", "--handle", "--sound-id", "--query"}
+    for index, (target, endpoint, expected_flag, expected_value) in enumerate(command_cases):
+        job_id = f"metrics-command-{index}"
+        registry.register(job_id, MetricsJob(id=job_id, target=target, endpoint=endpoint))
+        commands: list[list[str]] = []
 
-            def capture_command(captured_job_id: str, command: list[str]) -> None:
-                assert captured_job_id == job_id
-                commands.append(command)
-                result_path = Path(command[command.index("--output") + 1])
-                result_path.parent.mkdir(parents=True, exist_ok=True)
-                result_path.write_text(json.dumps({"metric": {"case": index}}), encoding="utf-8")
+        def capture_command(captured_job_id: str, command: list[str]) -> None:
+            assert captured_job_id == job_id
+            commands.append(command)
+            result_path = Path(command[command.index("--output") + 1])
+            result_path.parent.mkdir(parents=True, exist_ok=True)
+            result_path.write_text(json.dumps({"metric": {"case": index}}), encoding="utf-8")
 
-            with patch.object(web_app, "run_metrics_command", side_effect=capture_command):
-                runner(job_id)
-            assert registry.status(job_id) == "complete"
-            assert len(commands) == 1
-            command = commands[0]
-            expected_command = [
-                "python",
-                str(web_app.SCRIPTS_DIR / "sociavault_tiktok.py"),
-                "--endpoint",
-                endpoint,
-                "--output",
-                str(web_app.OUTPUT_DIR / "tiktok_api" / job_id / "result.json"),
-            ]
-            if expected_flag is None:
-                assert not target_flags & set(command)
-            else:
-                expected_command.extend([expected_flag, expected_value])
-            assert command == expected_command
+        with patch.object(service, "run_command", side_effect=capture_command):
+            service.run_job(job_id)
+        assert registry.status(job_id) == "complete"
+        assert len(commands) == 1
+        command = commands[0]
+        expected_command = [
+            "python",
+            str(web_app.SCRIPTS_DIR / "sociavault_tiktok.py"),
+            "--endpoint",
+            endpoint,
+            "--output",
+            str(web_app.OUTPUT_DIR / "tiktok_api" / job_id / "result.json"),
+        ]
+        if expected_flag is None:
+            assert not target_flags & set(command)
+        else:
+            expected_command.extend([expected_flag, expected_value])
+        assert command == expected_command
 
-        failure_id = "metrics-worker-failure"
-        registry.register(failure_id, web_app.MetricsJob(id=failure_id, target="@fixture", endpoint="profile"))
+    failure_id = "metrics-worker-failure"
+    registry.register(failure_id, MetricsJob(id=failure_id, target="@fixture", endpoint="profile"))
 
-        def command_failure(job_id: str, _command: list[str]) -> None:
-            web_app.append_metrics_log(job_id, "fixture prior failure")
-            raise RuntimeError("fixture raw metrics failure")
+    def command_failure(job_id: str, _command: list[str]) -> None:
+        service.append_log(job_id, "fixture prior failure")
+        raise RuntimeError("fixture raw metrics failure")
 
-        with patch.object(web_app, "run_metrics_command", side_effect=command_failure):
-            runner(failure_id)
-        failure = registry.snapshot(failure_id)
-        assert failure is not None
-        assert failure.status == "failed"
-        assert failure.error == "fixture raw metrics failure"
-        assert failure.log[-2:] == ["fixture prior failure", "fixture raw metrics failure"]
-    finally:
-        web_app.metrics_job_registry = original_registry
+    with patch.object(service, "run_command", side_effect=command_failure):
+        service.run_job(failure_id)
+    failure = registry.snapshot(failure_id)
+    assert failure is not None
+    assert failure.status == "failed"
+    assert failure.error == "fixture raw metrics failure"
+    assert failure.log[-2:] == ["fixture prior failure", "fixture raw metrics failure"]
 
 
 def assert_real_shop_worker_registry_updates(web_app: Any) -> None:
@@ -620,8 +622,8 @@ def run_lifecycle() -> None:
         os.environ["HOT_VIDEO_REPORT_ENABLED"] = "0"
         web_app = importlib.import_module("web_app")
         real_download_worker = web_app.run_download_job
-        real_metrics_worker = web_app.run_metrics_job
         real_amazon_worker = web_app.run_amazon_job
+        composed_metrics_registry = web_app.metrics_job_registry
         fake_queue = FakeVideoQueue(web_app.output_dir_for_filename)
         download_release = threading.Event()
         download_started = threading.Event()
@@ -699,7 +701,7 @@ def run_lifecycle() -> None:
             )
 
         def complete_metrics(job_id: str) -> None:
-            registry = web_app.metrics_job_registry
+            registry = composed_metrics_registry
             current = registry.snapshot(job_id)
             assert current is not None
             registry.update_fields(job_id, {"status": "running"})
@@ -768,7 +770,7 @@ def run_lifecycle() -> None:
             )
             patches.enter_context(patch.object(web_app, "run_download_job", side_effect=complete_download))
             patches.enter_context(patch.object(web_app.shop_service, "run_job", side_effect=complete_shop))
-            patches.enter_context(patch.object(web_app, "run_metrics_job", side_effect=complete_metrics))
+            patches.enter_context(patch.object(web_app.metrics_service, "run_job", side_effect=complete_metrics))
             patches.enter_context(patch.object(web_app, "run_amazon_job", side_effect=complete_amazon))
             patches.enter_context(patch.object(web_app, "video_queue", fake_queue))
             patches.enter_context(patch.object(web_app, "subprocess", SimpleNamespace(run=fake_translate)))
@@ -781,7 +783,7 @@ def run_lifecycle() -> None:
 
             assert_real_download_worker_registry_updates(web_app, real_download_worker)
             assert_real_shop_worker_registry_updates(web_app)
-            assert_real_metrics_worker_registry_updates(web_app, real_metrics_worker)
+            assert_real_metrics_worker_registry_updates(web_app)
             assert_real_amazon_worker_registry_updates(web_app, real_amazon_worker)
 
             server = web_app.ThreadingHTTPServer(("127.0.0.1", 0), web_app.Handler)
@@ -940,6 +942,25 @@ def run_lifecycle() -> None:
                 {"target": "x" * 2049, "endpoint": "profile"},
             )
             assert status == 400 and long_metrics_target == {"error": "target is too long"}
+
+            with patch.object(web_app, "ui_test_mode_allows_live_write", return_value=False), patch.object(
+                web_app.metrics_service,
+                "create_and_start",
+                side_effect=AssertionError("UI_TEST gate must run before the Metrics route"),
+            ):
+                status, _headers, blocked_metrics = json_request(
+                    port,
+                    "POST",
+                    "/api/video-metrics",
+                    {"target": "@blocked-fixture", "endpoint": "profile"},
+                )
+            assert status == 409
+            assert blocked_metrics == {
+                "error": "UI 测试模式已拦截写操作，未触发真实业务。",
+                "simulated": True,
+                "status": "blocked",
+                "path": "/api/video-metrics",
+            }
 
             status, _headers, metrics = json_request(
                 port,
