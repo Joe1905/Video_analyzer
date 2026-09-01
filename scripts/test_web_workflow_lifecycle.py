@@ -414,10 +414,12 @@ class FakeVideoQueue:
 def assert_files_http_contract(web_app: Any, port: int, server: Any, fake_queue: FakeVideoQueue) -> None:
     """Freeze the /api/files filtering and payload contract through its public route."""
 
-    fixture_root = web_app.ROOT / "files-http-contract"
+    fixture_root = Path(tempfile.mkdtemp(prefix="files-http-contract-", dir=web_app.ROOT))
     videos_dir = fixture_root / "videos"
+    empty_videos_dir = fixture_root / "empty-videos"
     output_dir = fixture_root / "output"
     videos_dir.mkdir(parents=True)
+    empty_videos_dir.mkdir()
     previous_statuses = dict(fake_queue.statuses)
     media_calls: list[str] = []
     visible_calls: list[str] = []
@@ -457,9 +459,9 @@ def assert_files_http_contract(web_app: Any, port: int, server: Any, fake_queue:
         registry_calls.append(filename)
         return output_dir / filename
 
-    def router_for() -> Router:
+    def router_for(catalog_dir: Path = videos_dir) -> Router:
         service = VideoFilesService(
-            videos_dir=videos_dir,
+            videos_dir=catalog_dir,
             suffixes=web_app.ANALYZER_VIDEO_SUFFIXES,
             media_validator=media_is_valid,
             analyzer_visible_source=is_visible,
@@ -475,6 +477,10 @@ def assert_files_http_contract(web_app: Any, port: int, server: Any, fake_queue:
         return router
 
     try:
+        with patch.object(web_app, "WEB_ROUTER", router_for(empty_videos_dir)):
+            status, _headers, empty_files = json_request(port, "GET", "/api/files")
+        assert status == 200 and empty_files == []
+
         with patch.object(web_app, "WEB_ROUTER", router_for()):
             status, _headers, files = json_request(port, "GET", "/api/files")
             assert status == 200
