@@ -555,6 +555,12 @@ class JobSnapshot(TypedDict):
 4. **4.4A 影响清单与专项门禁：** 服务器从第一项完整执行 `test_job_snapshot_contract.py`、`test_web_workflow_lifecycle.py`、`test_job_snapshot_adapters.py`、`test_core_config.py`、`test_core_json_store.py`、`test_router.py`、`test_api_cache.py`、`test_cached_page_routes_contract.py` 共 8/8，并通过相关 `py_compile`、`git diff --check`、CodeGraph/import 方向、组合根精确接线和旧符号零残留。没有运行聊天、代理、日报、Node、Playwright 或 56 项全量。
 5. **4.4A 部署与黑盒：** Windows 经 7892 推送，服务器经 7890 `pull --ff-only`，仅以 `bash scripts/deploy_ui_4004.sh` 构建部署；4004 镜像和运行容器均为 `sha256:dc66215afa95f1ab5b532b5b53b4096ac120c08eab0d4bd91f38c78500878c71`。`/healthz` 为 200，缺失 download GET 为 404，缺失 SSE 为 200 且返回精确 missing 帧，畸形 JSON 与非法 host 均为 400，缺失 feedback 为 404；近期严重日志为 0，服务器 checkout clean，4002/4003 只读健康均为 200 且镜像与启动时间未变化。
 6. **4.4A 阶段后审计：** 生产交叉审计、架构审计以及补齐组合根门禁后的测试审计均为 P0/P1/P2 全 0。下载安全、状态码、JSON/SSE、任务时序、fallback 顺序、数据路径和跨域 feedback 消费均无漂移。下一步是 **4.4B Upload**：仍先冻结行为，再只迁移 `/api/upload`；`/api/files`、`/api/result`、`/api/delete`、Range/视频流保持原位，待各自明确的跨域切片再处理。
+7. **4.4B Upload 行为冻结（`ff46650`）：** 只扩充既有 `test_web_workflow_lifecycle.py`，以真实 Handler/multipart 冻结 Content-Length 0/超 2GiB、缺失/空 filename、单/多文件、部分成功/全部失败、原始错误文件名、来源优先级、文件名清洗、直接写盘、媒体删除、Registry/visibility/social 顺序、social 启动异常后的成功+错误并存，以及 UI_TEST 在解析和写入前拦截。原有 lifecycle 对真实 Registry 和后台 social 线程的污染风险同时改为构造期记录型 fake；没有新增测试或临时脚本。
+8. **4.4B 结构迁移（`dada4f7`）：** 新增 `services/upload.py` 与 `routes/upload.py`；route 只负责 Content-Length、`cgi.FieldStorage`、`video` 提取、`source_tag/source` 归一和 HTTP 映射，service 只负责 `mkdir → safe_filename → 直接写盘 → media validate/delete → register → visibility → files append → social`。`web_app.py` 删除旧常量、手工 UI_TEST allowlist、内联 POST 分支和 `Handler.handle_upload`，仅保留七项显式注入与 Router 注册。生产代码净增 72 行，`web_app.py` 净减 40 行；无兼容层、双实现、通用上传框架或万能 VideoService。
+9. **4.4B 测试接线与审计补强（`fe47e3f`、`78a1d39`、`fbbfd12`）：** 行为契约改为隔离的真实 UploadService + Router，不 patch service 私有依赖；Router AST 锁定唯一 POST、七项精确组合根注入、source/default 绑定和旧实现归零。首轮服务器门禁发现测试 fake 把 `Path` 而非文件句柄传给 `copyfileobj`，以独立测试提交修复；终审提出的 2GiB 精确值、source-only、空 source_tag 回退、可清理 filename、FieldStorage/service 双不可达哨兵全部收口后 P0/P1/P2 为 0。两份既有测试净增 311 行，属于高风险 multipart/写盘/外部边界契约，没有新增脚本。
+10. **4.4B 影响清单与专项门禁：** 服务器每次测试修复后均从第一项重跑，最终 `test_web_workflow_lifecycle.py`、`test_router.py`、`test_http_response_contract.py` 共 3/3 全绿，并通过相关 `py_compile`、`git diff --check`、CodeGraph 单向依赖、唯一路由、组合根和旧符号零残留。没有运行聊天、代理、日报、Node、Playwright 或 56 项全量。
+11. **4.4B 部署与黑盒：** 服务器仅执行 `bash scripts/deploy_ui_4004.sh`，4004 镜像和运行容器均为 `sha256:5ba9b289c171b209d00ae4f7c9e4dac41423fdf0bbf1df155d5980bcba1cfb4e`。`/healthz` 为 200，空上传、缺失 video、超 2GiB 均为精确 400，近期严重日志为 0，服务器 checkout clean；4002/4003 健康为 200，镜像与启动时间未变化。
+12. **4.4B 阶段后审计：** 需求漂移、模块解耦、复用合理性、写盘/媒体安全、UI_TEST 前置拦截与测试有效性均为 P0/P1/P2 全 0。`safe_filename`、媒体校验、Registry、visibility 和 social starter 继续作为稳定外部边界注入，没有搬动 `/api/files`、`/api/result`、`/api/delete`、Range/视频流或 analyze/translate/postprocess。下一步是 **4.4C Analyze**，仍需先冻结现状并与 translate/postprocess 分开迁移。
 
 ## 九、Phase 5：拆分代理子系统
 
@@ -680,7 +686,7 @@ Phase 0 测试基线
 
 ## 十四、下一批实施任务
 
-Phase 0、0.5、1.1、2026-08-29 两个补漏阶段、Phase 1.2、Phase 1.3、**Phase 2.1～2.3D**、**Phase 3.0～3.4**、**Phase 4.1～4.3**、**Phase 4.4A Download** 与脚本资产 TTL 治理已完成。Shop、Metrics、Amazon、Download 已形成独立的 `web_app → routes → services → jobs/core` 垂直切片。下一步实施 **Phase 4.4B Upload**：先冻结 multipart、文件名、媒体校验、Registry/visibility 与 social-context 启动的现状，再只迁移 `/api/upload`；`/api/files`、`/api/result`、`/api/delete`、Range/视频流保持原位，待各自明确的跨域切片处理。之后依次推进 analyze、translate、postprocess；禁止合成万能 VideoService。`tools.py` 只迁移视频子进程执行直接相关能力并保留活动调用方所需窄 facade；聊天工具归一、权限和 provider 路由严格留到 Phase 6。不得顺手迁移日报、代理、邻聊、淘宝或前端，也不得改变 Range、流式、下载安全、文件名/目录、API schema、状态码或任务生命周期。
+Phase 0、0.5、1.1、2026-08-29 两个补漏阶段、Phase 1.2、Phase 1.3、**Phase 2.1～2.3D**、**Phase 3.0～3.4**、**Phase 4.1～4.3**、**Phase 4.4A Download**、**Phase 4.4B Upload** 与脚本资产 TTL 治理已完成。Shop、Metrics、Amazon、Download、Upload 已形成独立的 `web_app → routes → services → jobs/core` 垂直切片。下一步实施 **Phase 4.4C Analyze**：先冻结 `/api/analyze` 的 JSON 校验、analysis mode/prompt、文件/输出目录、reset、queue 时序和响应，再只迁移 analyze；translate、postprocess、`/api/files`、`/api/result`、`/api/delete`、Range/视频流继续保持原位并分别处理。禁止合成万能 VideoService。`tools.py` 只迁移视频子进程执行直接相关能力并保留活动调用方所需窄 facade；聊天工具归一、权限和 provider 路由严格留到 Phase 6。不得顺手迁移日报、代理、邻聊、淘宝或前端，也不得改变 Range、流式、下载安全、文件名/目录、API schema、状态码或任务生命周期。
 
 Phase 2.3 继续复用现有 Terra 子智能体，避免为同一长期任务无限新增执行记录，并按以下门槛推进：
 
@@ -711,4 +717,4 @@ Phase 3 下一批按以下门槛推进：
 15. **Phase 4.1 Shop 垂直切片（已完成，`f700266`、`c424a0a`、`c8b433b`、`8a63493`）：** 行为冻结、service/route 迁移、动态配置归属修正、服务器 56/56、部署黑盒和阶段后审计均已通过；流程偏差及后续提交纯度规则已记录在 8.1。
 16. **Phase 4.2 Metrics（已完成，`93653e1`、`a03b3b4`、`522faf0`）：** 行为冻结、service/route 迁移、专项 7/7、部署黑盒与阶段后审计均已通过；没有新增测试/临时脚本，没有执行中间全量回归。
 17. **Phase 4.3 Amazon（已完成，`79afe66`、`067ad77`、`a508170`、`d2669df`）：** 行为冻结、service/route、专项 8/8、部署黑盒和阶段后审计全绿；没有新增测试/临时脚本，没有执行中间全量回归。
-18. **Phase 4.4 下载与分析（进行中）：** 4.4A Download 已完成行为冻结、service/route、专项 8/8、4004 部署黑盒与 P0/P1/P2 全 0 审计；下一步为 4.4B Upload，随后依次处理 analyze、translate、postprocess。每个子域独立冻结、迁移、定向回归和审计；禁止万能 VideoService，禁止提前迁移聊天工具归一与权限逻辑。
+18. **Phase 4.4 下载与分析（进行中）：** 4.4A Download 与 4.4B Upload 均已完成行为冻结、service/route、定向门禁、4004 部署黑盒及 P0/P1/P2 全 0 审计；下一步为 4.4C Analyze，随后分别处理 translate、postprocess。每个子域独立冻结、迁移、定向回归和审计；禁止万能 VideoService，禁止提前迁移聊天工具归一与权限逻辑。
