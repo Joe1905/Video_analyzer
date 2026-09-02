@@ -428,6 +428,12 @@ def test_wait_for_mihomo_node_allows_reload_visibility_delay() -> None:
     assert calls["count"] == 3
 
 
+def test_yaml_scalar_quotes_numeric_proxy_names() -> None:
+    assert proxy_pool._yaml_scalar("108.84") == '"108.84"'
+    assert proxy_pool._yaml_scalar("on") == '"on"'
+    assert proxy_pool._yaml_scalar("proxy-node") == '"proxy-node"'
+
+
 def test_stale_mihomo_listener_cleanup_preserves_unmanaged_config() -> None:
     with isolated_proxy_db():
         stale = create_manual_pool("deleted-static", "203.0.113.60")
@@ -542,6 +548,7 @@ def main() -> None:
     test_background_recheck_rebinds_semidynamic_ip()
     test_source_uri_change_refreshes_exit_ip_and_account_state()
     test_wait_for_mihomo_node_allows_reload_visibility_delay()
+    test_yaml_scalar_quotes_numeric_proxy_names()
     test_stale_mihomo_listener_cleanup_preserves_unmanaged_config()
     test_account_state_exposes_instagram_login_without_cookie_value()
     print("proxy pool lifecycle tests passed")

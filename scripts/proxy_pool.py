@@ -5245,7 +5245,15 @@ def _yaml_scalar(value: Any) -> str:
     if isinstance(value, (int, float)):
         return str(value)
     text = str(value)
-    if not text or any(ch in text for ch in ":#{}[],-&*?!|>'\"%@`") or text.strip() != text:
+    yaml_typed_literal = text.lower() in {"true", "false", "yes", "no", "on", "off", "null", "~"}
+    numeric_literal = bool(re.fullmatch(r"[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?", text))
+    if (
+        not text
+        or yaml_typed_literal
+        or numeric_literal
+        or any(ch in text for ch in ":#{}[],-&*?!|>'\"%@`")
+        or text.strip() != text
+    ):
         return json.dumps(text, ensure_ascii=False)
     return text
 
