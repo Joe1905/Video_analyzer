@@ -407,6 +407,27 @@ def test_source_uri_change_refreshes_exit_ip_and_account_state() -> None:
         assert account["last_check_status"] == "通过"
 
 
+def test_wait_for_mihomo_node_allows_reload_visibility_delay() -> None:
+    original_request = proxy_pool._mihomo_request
+    original_sleep = proxy_pool.time.sleep
+    calls = {"count": 0}
+
+    def delayed_proxy_map(_method: str, _path: str, timeout: float = 0.0):
+        calls["count"] += 1
+        proxies = {} if calls["count"] < 3 else {"delayed-node": {}}
+        return True, {"proxies": proxies}, ""
+
+    proxy_pool._mihomo_request = delayed_proxy_map
+    proxy_pool.time.sleep = lambda _seconds: None
+    try:
+        proxy_pool._wait_for_mihomo_node("delayed-node", attempts=3)
+    finally:
+        proxy_pool._mihomo_request = original_request
+        proxy_pool.time.sleep = original_sleep
+
+    assert calls["count"] == 3
+
+
 def test_stale_mihomo_listener_cleanup_preserves_unmanaged_config() -> None:
     with isolated_proxy_db():
         stale = create_manual_pool("deleted-static", "203.0.113.60")
@@ -520,6 +541,7 @@ def main() -> None:
     test_semidynamic_pool_rebinds_changed_ip_on_check()
     test_background_recheck_rebinds_semidynamic_ip()
     test_source_uri_change_refreshes_exit_ip_and_account_state()
+    test_wait_for_mihomo_node_allows_reload_visibility_delay()
     test_stale_mihomo_listener_cleanup_preserves_unmanaged_config()
     test_account_state_exposes_instagram_login_without_cookie_value()
     print("proxy pool lifecycle tests passed")
