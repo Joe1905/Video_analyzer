@@ -3465,6 +3465,19 @@ def _resolve_system_proxy_dialer(node_name: str) -> str:
     raise ProxyConfigurationError("系统代理策略组嵌套过深")
 
 
+def _wait_for_mihomo_node(node_name: str, attempts: int = 100) -> None:
+    """Wait for a completed Mihomo reload to expose a managed node."""
+    error = ""
+    for attempt in range(attempts):
+        ok, body, error = _mihomo_request("GET", "/proxies", timeout=8)
+        proxies = body.get("proxies") if ok and isinstance(body, dict) and isinstance(body.get("proxies"), dict) else {}
+        if node_name in proxies:
+            return
+        if attempt + 1 < attempts:
+            time.sleep(0.1)
+    raise ProxyConfigurationError(f"mihomo 重载后仍未发现节点 {node_name}：{error}")
+
+
 def _sync_mihomo_pool_config(pool: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     source_type = str(_pool_value(pool, "source_type") or "")
     direct = source_type == "direct"
@@ -3515,10 +3528,7 @@ def _sync_mihomo_pool_config(pool: sqlite3.Row | dict[str, Any]) -> dict[str, An
     _atomic_write(path, updated, mode)
     try:
         _reload_mihomo_config()
-        ok, body, error = _mihomo_request("GET", "/proxies", timeout=8)
-        proxies = body.get("proxies") if ok and isinstance(body, dict) and isinstance(body.get("proxies"), dict) else {}
-        if node_name not in proxies:
-            raise ProxyConfigurationError(f"mihomo 重载后仍未发现节点 {node_name}：{error}")
+        _wait_for_mihomo_node(node_name)
         # mihomo may acknowledge a reload before its new listeners finish binding.
         for _attempt in range(100):
             if _port_open("127.0.0.1", local_port, timeout=0.2):

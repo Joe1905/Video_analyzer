@@ -196,6 +196,27 @@ def test_delete_pool_preserves_archived_history_and_releases_port() -> None:
         assert replacement["local_port"] == pool["local_port"]
 
 
+def test_wait_for_mihomo_node_allows_reload_visibility_delay() -> None:
+    original_request = proxy_pool._mihomo_request
+    original_sleep = proxy_pool.time.sleep
+    calls = {"count": 0}
+
+    def delayed_proxy_map(_method: str, _path: str, timeout: float = 0.0):
+        calls["count"] += 1
+        proxies = {} if calls["count"] < 3 else {"delayed-node": {}}
+        return True, {"proxies": proxies}, ""
+
+    proxy_pool._mihomo_request = delayed_proxy_map
+    proxy_pool.time.sleep = lambda _seconds: None
+    try:
+        proxy_pool._wait_for_mihomo_node("delayed-node", attempts=3)
+    finally:
+        proxy_pool._mihomo_request = original_request
+        proxy_pool.time.sleep = original_sleep
+
+    assert calls["count"] == 3
+
+
 def test_account_state_exposes_instagram_login_without_cookie_value() -> None:
     with isolated_proxy_db():
         pool = create_manual_pool("instagram", "203.0.113.40")
@@ -256,6 +277,7 @@ def main() -> None:
     test_duplicate_exit_ip_is_terminal_until_manual_recheck()
     test_existing_duplicate_error_is_migrated_without_retry()
     test_delete_pool_preserves_archived_history_and_releases_port()
+    test_wait_for_mihomo_node_allows_reload_visibility_delay()
     test_account_state_exposes_instagram_login_without_cookie_value()
     print("proxy pool lifecycle tests passed")
 
