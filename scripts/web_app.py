@@ -172,6 +172,7 @@ from video_registry import (
     register_video,
     set_hidden_from_analyzer,
 )
+from viral_elements import ViralElementError, ViralElementStore, analyze_elements, generate_scripts, validate_review
 from proxy_state import ensure_us_proxy
 import instagram_content_collect
 import proxy_pool
@@ -380,6 +381,7 @@ social_jobs_running: set[str] = set()
 # Chat system
 chat_store = ChatStore(DATA_DIR / "sessions.json")
 lan_chat_store = LanChatStore(DATA_DIR / "lan_chat.sqlite")
+viral_element_store = ViralElementStore(DATA_DIR)
 feishu_capability_client = FeishuCapabilityClient()
 chat_provider_stores = {
     "home": chat_store,
@@ -408,6 +410,7 @@ NAV_ITEMS = [
     {"key": "tool", "href": "/tool", "label": "工具", "title": "图片标签工具", "icon": '<path d="M4 5h16v14H4z"/><path d="m8 15 3-3 2 2 3-4 3 5"/><circle cx="9" cy="9" r="1"/>'},
     {"key": "metrics", "href": "/metrics", "label": "\u6570\u636e", "title": "\u6570\u636e", "icon": '<path d="M4 19V5"/><path d="M20 19H4"/><path d="M8 16v-5"/><path d="M12 16V8"/><path d="M16 16v-7"/>'},
     {"key": "extract", "href": "/extract", "label": "\u5206\u6790", "title": "\u89c6\u9891\u5206\u6790", "icon": '<path d="M4 5h16v14H4z"/><path d="m10 9 5 3-5 3z"/><path d="M8 21h8"/><path d="M12 19v2"/>'},
+    {"key": "viral-elements", "href": "/viral-elements", "label": "\u5143\u7d20\u5e93", "title": "\u7206\u6b3e\u5143\u7d20\u5e93", "icon": '<path d="M4 4h6v6H4z"/><path d="M14 4h6v6h-6z"/><path d="M4 14h6v6H4z"/><path d="M14 14h6v6h-6z"/>'},
 ]
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
@@ -14155,6 +14158,9 @@ class Handler(BaseHTTPRequestHandler):
                 os.getenv("ANALYSIS_MODE", "analyzer"),
             )
             return text_response(self, HTTPStatus.OK, inject_unified_nav(html, parsed.path), "text/html; charset=utf-8")
+        if parsed.path == "/viral-elements":
+            page = (SCRIPTS_DIR / "static" / "viral_elements.html").read_text(encoding="utf-8")
+            return text_response(self, HTTPStatus.OK, inject_unified_nav(page, parsed.path), "text/html; charset=utf-8")
         if parsed.path == "/shop":
             return text_response(self, HTTPStatus.OK, inject_unified_nav(SHOP_HTML, parsed.path), "text/html; charset=utf-8")
         if parsed.path == "/tool":
@@ -14531,6 +14537,16 @@ class Handler(BaseHTTPRequestHandler):
                     "log": [],
                 },
             )
+        if parsed.path == "/api/viral-elements":
+            try:
+                filename = safe_filename(parse_qs(parsed.query).get("filename", [""])[0])
+            except ValueError as exc:
+                return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            return json_response(self, HTTPStatus.OK, {
+                "filename": filename,
+                "review": viral_element_store.get_review(filename),
+                "latest_scripts": viral_element_store.latest_scripts(filename),
+            })
         if parsed.path == "/api/social-context":
             try:
                 filename = safe_filename(parse_qs(parsed.query).get("filename", [""])[0])
@@ -14784,6 +14800,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_amazon_scrape()
         if parsed.path == "/api/analyze":
             return self.handle_analyze()
+        if parsed.path == "/api/viral-elements/analyze":
+            return self.handle_viral_elements_analyze()
+        if parsed.path == "/api/viral-elements/review":
+            return self.handle_viral_elements_review()
+        if parsed.path == "/api/viral-elements/scripts":
+            return self.handle_viral_elements_scripts()
         if parsed.path == "/api/postprocess":
             return self.handle_postprocess()
         if parsed.path == "/api/translate":
@@ -14816,6 +14838,60 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(data, dict):
             raise ValueError("JSON body must be an object")
         return data
+
+    def handle_viral_elements_analyze(self) -> None:
+        try:
+            payload = self.read_json_body()
+            filename = safe_filename(str(payload.get("filename") or ""))
+            if not (VIDEOS_DIR / filename).is_file():
+                return json_response(self, HTTPStatus.NOT_FOUND, {"error": "视频文件不存在"})
+            output_dir = output_dir_for_filename(filename)
+            source = (
+                read_json(output_dir / "analysis_zh.json")
+                or read_json(output_dir / "direct_analysis_zh.json")
+                or read_json(output_dir / "analysis.json")
+                or read_json(output_dir / "direct_analysis.json")
+            )
+            if not source:
+                return json_response(self, HTTPStatus.CONFLICT, {
+                    "error": "该视频还没有内容分析结果，请先到“分析”页面完成视频分析。"
+                })
+            review = viral_element_store.save_review(filename, analyze_elements(filename, source))
+            return json_response(self, HTTPStatus.OK, {"review": review})
+        except ViralElementError as exc:
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+        except (ValueError, json.JSONDecodeError) as exc:
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+        except Exception as exc:
+            return json_response(self, HTTPStatus.BAD_GATEWAY, {"error": f"元素拆解失败：{exc}"})
+
+    def handle_viral_elements_review(self) -> None:
+        try:
+            review = validate_review(self.read_json_body())
+            saved = viral_element_store.save_review(review["filename"], review)
+            return json_response(self, HTTPStatus.OK, {"review": saved})
+        except (ViralElementError, ValueError, json.JSONDecodeError) as exc:
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+
+    def handle_viral_elements_scripts(self) -> None:
+        try:
+            payload = self.read_json_body()
+            filename = safe_filename(str(payload.get("filename") or ""))
+            brief = payload.get("brief")
+            if not isinstance(brief, dict):
+                raise ViralElementError("brief 必须是对象")
+            review = viral_element_store.get_review(filename)
+            if not review:
+                return json_response(self, HTTPStatus.CONFLICT, {"error": "请先完成元素拆解与审核"})
+            if not any(item.get("approved") for item in review.get("elements", [])):
+                return json_response(self, HTTPStatus.CONFLICT, {"error": "至少审核通过一个元素后才能生成脚本"})
+            scripts = generate_scripts(filename, review, brief)
+            saved = viral_element_store.save_scripts(filename, brief, scripts)
+            return json_response(self, HTTPStatus.OK, saved)
+        except (ViralElementError, ValueError, json.JSONDecodeError) as exc:
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+        except Exception as exc:
+            return json_response(self, HTTPStatus.BAD_GATEWAY, {"error": f"脚本生成失败：{exc}"})
 
     def handle_proxy_api_get(self, path: str, query: str = "") -> None:
         try:
