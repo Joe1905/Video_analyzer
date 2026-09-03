@@ -1686,6 +1686,27 @@ def _wait_for_linked_product(page: Any, product_name: str, timeout_ms: int = 100
     return None
 
 
+def _submission_succeeded(page: Any) -> bool:
+    try:
+        current_url = str(page.url or "")
+    except Exception:
+        current_url = ""
+    if re.search(r"/tiktokstudio/(?:content|manage)(?:[/?#]|$)", current_url, re.I):
+        return True
+    success = _first_visible([
+        page.get_by_text(
+            re.compile(
+                r"^(?:(?:your\s+)?(?:video|post)\s+(?:has\s+been\s+)?)?"
+                r"(?:uploaded|published|scheduled)(?:\s+successfully)?[.!]?$"
+                r"|^(?:视频)?(?:上传成功|发布成功|已发布|已排程|排程成功|已定时|定时成功|已成功(?:上传|发布|排程|定时))[！。]?$",
+                re.I,
+            ),
+            exact=True,
+        ),
+    ])
+    return bool(success)
+
+
 def _trigger_product_search(page: Any, search: Any) -> None:
     wrapper = search.locator("xpath=..")
     search_button = _first_visible([
@@ -1746,7 +1767,7 @@ def _scan_product_pages(page: Any, product_id: str, log_dir: Path) -> Any | None
     return None
 
 
-def _add_product_link(page: Any, product_id: str, log_dir: Path) -> None:
+def _add_product_link(page: Any, product_id: str, log_dir: Path) -> bool:
     product = _selected_product(product_id)
     add_link = _first_visible([
         page.locator("button[data-e2e*='add-link' i]"),
@@ -1867,9 +1888,13 @@ def _add_product_link(page: Any, product_id: str, log_dir: Path) -> None:
         raise ManualReviewRequired("点击 Add 后商品绑定弹窗未关闭") from exc
     product_name = _wait_for_linked_product(page, product["product_name"])
     if not product_name:
+        if _submission_succeeded(page):
+            page.screenshot(path=str(log_dir / "product-link-submission-succeeded.png"), full_page=True)
+            return True
         page.screenshot(path=str(log_dir / "product-link-unconfirmed.png"), full_page=True)
-        raise ManualReviewRequired("商品弹窗已关闭，但页面未显示所选商品，无法确认绑定成功")
+        raise ResultUncertain("商品弹窗已关闭，但页面未显示商品或明确提交成功信号，请人工确认，系统不会自动重试")
     page.screenshot(path=str(log_dir / "product-linked.png"), full_page=True)
+    return False
 
 
 def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[str, str]:
@@ -1949,8 +1974,19 @@ def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[str,
             except BrowserPageBlocked as exc:
                 raise ManualReviewRequired(str(exc)) from exc
             page.screenshot(path=str(log_dir / "ready-to-publish.png"), full_page=True)
+            submitted_during_product_link = False
             if job["product_link"]:
-                _add_product_link(page, str(job["product_link"]), log_dir)
+                submitted_during_product_link = _add_product_link(page, str(job["product_link"]), log_dir)
+            if submitted_during_product_link:
+                _set_job(
+                    job["id"],
+                    "publishing",
+                    "submission_detected",
+                    session_id=session["id"],
+                    final_click_at=_iso(),
+                    status_detail="商品绑定后已检测到 TikTok 提交成功信号",
+                )
+                return ("scheduled_on_tiktok" if job["schedule_mode"] == "tiktok" else "published"), page.url
             if DRY_RUN or not FINAL_CLICK_ENABLED:
                 return "dry_run", page.url
             _set_job(job["id"], "publishing", "final_click", session_id=session["id"], final_click_at=_iso())
@@ -1959,10 +1995,7 @@ def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[str,
             try:
                 page.wait_for_url(re.compile(r"tiktokstudio(?!/upload)|manage|content"), timeout=45000)
             except Exception:
-                success = _first_visible([
-                    page.get_by_text(re.compile(r"uploaded|published|scheduled|上传成功|发布成功|已定时", re.I)),
-                ])
-                if not success:
+                if not _submission_succeeded(page):
                     raise ResultUncertain("已点击发布，但未收到明确成功信号，请人工确认，系统不会自动重试")
             return ("scheduled_on_tiktok" if job["schedule_mode"] == "tiktok" else "published"), page.url
         except (ManualReviewRequired, ManualPublishReady, ProductLinkReviewRequired, ProductLinkUnavailable, ResultUncertain):
