@@ -14547,6 +14547,15 @@ class Handler(BaseHTTPRequestHandler):
                 "review": viral_element_store.get_review(filename),
                 "latest_scripts": viral_element_store.latest_scripts(filename),
             })
+        if parsed.path == "/api/viral-elements/library":
+            query = parse_qs(parsed.query)
+            approved_only = query.get("approved_only", ["1"])[0] != "0"
+            try:
+                limit = int(query.get("limit", ["300"])[0])
+            except ValueError:
+                return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "limit 必须是整数"})
+            items = viral_element_store.list_library(approved_only=approved_only, limit=limit)
+            return json_response(self, HTTPStatus.OK, {"items": items, "count": len(items)})
         if parsed.path == "/api/social-context":
             try:
                 filename = safe_filename(parse_qs(parsed.query).get("filename", [""])[0])
@@ -14856,6 +14865,9 @@ class Handler(BaseHTTPRequestHandler):
                 return json_response(self, HTTPStatus.CONFLICT, {
                     "error": "该视频还没有内容分析结果，请先到“分析”页面完成视频分析。"
                 })
+            social_context = read_json(output_dir / "social_context.json")
+            if isinstance(social_context, dict):
+                source = {**source, "social_context": social_context}
             review = viral_element_store.save_review(filename, analyze_elements(filename, source))
             return json_response(self, HTTPStatus.OK, {"review": review})
         except ViralElementError as exc:

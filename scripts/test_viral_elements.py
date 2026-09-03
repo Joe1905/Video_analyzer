@@ -42,6 +42,21 @@ class ViralElementsTests(unittest.TestCase):
                 {"product": "A", "audience": "B", "duration": "30s"},
             )
 
+    def test_heat_score_and_approved_library(self):
+        source = {"metadata": {"views": 1000, "likes": 100, "comments": 10, "favorites": 20, "shares": 5}}
+        with patch.object(viral_elements, "_model_json", return_value={"elements": []}):
+            review = viral_elements.analyze_elements("demo.mp4", source)
+        self.assertEqual(18.0, review["heat_score"])
+        review["elements"][0]["approved"] = True
+        review = viral_elements.validate_review(review)
+        with tempfile.TemporaryDirectory() as tmp:
+            store = viral_elements.ViralElementStore(Path(tmp))
+            store.save_review("demo.mp4", review)
+            library = store.list_library()
+        self.assertEqual(1, len(library))
+        self.assertEqual("demo.mp4", library[0]["filename"])
+        self.assertEqual("已审核", review["review_status"])
+
 
 if __name__ == "__main__":
     unittest.main()

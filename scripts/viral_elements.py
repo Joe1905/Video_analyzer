@@ -120,6 +120,30 @@ class ViralElementStore:
         return {"id": row["id"], "filename": filename, "brief": json.loads(row["brief_json"]),
                 "scripts": json.loads(row["payload_json"]), "created_at": row["created_at"]}
 
+    def list_library(self, approved_only: bool = True, limit: int = 300) -> list[dict[str, Any]]:
+        """Return reusable elements across videos without exposing SQLite details to the UI."""
+        limit = max(1, min(int(limit), 1000))
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                "SELECT filename, payload_json, updated_at FROM viral_reviews ORDER BY updated_at DESC"
+            ).fetchall()
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            review = json.loads(row["payload_json"])
+            for element in review.get("elements", []):
+                if approved_only and not element.get("approved"):
+                    continue
+                items.append({
+                    **element,
+                    "filename": row["filename"],
+                    "review_summary": review.get("summary", ""),
+                    "heat_score": review.get("heat_score"),
+                    "updated_at": row["updated_at"],
+                })
+                if len(items) >= limit:
+                    return items
+        return items
+
 
 def _model_json(prompt: str, max_tokens: int = 6000) -> dict[str, Any]:
     from deepseek_postprocess import call_deepseek, extract_content, parse_json_content
@@ -172,7 +196,40 @@ schema={json.dumps(schema, ensure_ascii=False)}
             "evidence": str(item.get("evidence") or "")[:4000],
             "time_range": str(item.get("time_range") or "")[:80], "approved": bool(item.get("approved", False)),
         })
-    return {"filename": filename, "summary": str(result.get("summary") or ""), "elements": elements, "schema_version": 1}
+    metrics = _source_metrics(source)
+    return {"filename": filename, "summary": str(result.get("summary") or ""), "elements": elements,
+            "source_metrics": metrics, "heat_score": _heat_score(metrics),
+            "review_status": "待审核", "schema_version": 2}
+
+
+def _source_metrics(source: dict[str, Any]) -> dict[str, int]:
+    metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+    social = source.get("social_context") if isinstance(source.get("social_context"), dict) else {}
+    merged = {**metadata, **social}
+    aliases = {
+        "views": ("views", "view_count", "play_count", "plays"),
+        "likes": ("likes", "like_count", "digg_count"),
+        "comments": ("comments", "comment_count"),
+        "favorites": ("favorites", "favorite_count", "collect_count", "saves"),
+        "shares": ("shares", "share_count"),
+    }
+    result: dict[str, int] = {}
+    for key, names in aliases.items():
+        value = next((merged.get(name) for name in names if merged.get(name) is not None), 0)
+        try:
+            result[key] = max(0, int(float(str(value).replace(",", ""))))
+        except (TypeError, ValueError):
+            result[key] = 0
+    return result
+
+
+def _heat_score(metrics: dict[str, int]) -> float | None:
+    views = metrics.get("views", 0)
+    if not views:
+        return None
+    weighted = metrics.get("likes", 0) + metrics.get("comments", 0) * 3
+    weighted += metrics.get("favorites", 0) * 2 + metrics.get("shares", 0) * 2
+    return round(weighted / views * 100, 2)
 
 
 def validate_review(payload: dict[str, Any]) -> dict[str, Any]:
@@ -192,7 +249,16 @@ def validate_review(payload: dict[str, Any]) -> dict[str, Any]:
                          "value": str(item.get("value") or "未识别")[:4000], "confidence": confidence,
                          "evidence": str(item.get("evidence") or "")[:4000],
                          "time_range": str(item.get("time_range") or "")[:80], "approved": bool(item.get("approved"))})
-    return {"filename": filename, "summary": str(payload.get("summary") or "")[:4000], "elements": elements, "schema_version": 1}
+    approved_count = sum(bool(item.get("approved")) for item in elements)
+    metrics = payload.get("source_metrics") if isinstance(payload.get("source_metrics"), dict) else {}
+    heat_score = payload.get("heat_score")
+    try:
+        heat_score = None if heat_score in (None, "") else round(float(heat_score), 2)
+    except (TypeError, ValueError):
+        heat_score = None
+    return {"filename": filename, "summary": str(payload.get("summary") or "")[:4000], "elements": elements,
+            "source_metrics": metrics, "heat_score": heat_score,
+            "review_status": "已审核" if approved_count else "待审核", "schema_version": 2}
 
 
 def generate_scripts(filename: str, review: dict[str, Any], brief: dict[str, Any]) -> dict[str, Any]:
@@ -206,8 +272,9 @@ def generate_scripts(filename: str, review: dict[str, Any], brief: dict[str, Any
         raise ViralElementError("请至少审核通过一个元素后再生成脚本")
     prompt = f"""你是短视频转化脚本总监。根据产品 Brief 和已审核元素生成三个差异明显、可直接拍摄的脚本版本：
 V1 稳妥转化、V2 平衡创意、V3 探索突破。产品事实只能来自 Brief，不能从参考元素继承。
-每版必须返回 strategy、hook、duration、shots（数组，每项含 time_range、visual、voiceover、on_screen_text、selling_point）、cta、source_elements（key 数组）、risks（数组）。
+每版必须返回 strategy（中文）、hook、duration、shots（数组，每项含 time_range、visual、voiceover、on_screen_text、selling_point）、cta、video_prompt（独立完整英文提示词）、source_elements（实际使用的 key 数组）、risks（数组）。
 三版至少在 Hook、POV、素材结构、场景、视觉风格、CTA 中改变三项。镜头时长之和应匹配目标时长。
+如 Brief 指定精确秒数，必须严格使用；voiceover、on_screen_text、cta 默认英文。每个卖点必须落实到至少一个镜头。
 严格返回 JSON：{{"versions":[{{"id":"V1","name":"稳妥转化",...}},...]}}，不要 Markdown。
 Brief={json.dumps(cleaned, ensure_ascii=False)}
 已审核元素={json.dumps(approved, ensure_ascii=False)}"""
