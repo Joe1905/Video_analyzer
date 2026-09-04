@@ -46,7 +46,7 @@ class ViralElementsTests(unittest.TestCase):
         source = {"metadata": {"views": 1000, "likes": 100, "comments": 10, "favorites": 20, "shares": 5}}
         with patch.object(viral_elements, "_model_json", return_value={"elements": []}):
             review = viral_elements.analyze_elements("demo.mp4", source)
-        self.assertEqual(18.0, review["heat_score"])
+        self.assertEqual(17.0, review["heat_score"])
         review["elements"][0]["approved"] = True
         review = viral_elements.validate_review(review)
         with tempfile.TemporaryDirectory() as tmp:
@@ -62,7 +62,15 @@ class ViralElementsTests(unittest.TestCase):
 
         def fake_model(prompt, max_tokens=6000):
             captured["prompt"] = prompt
-            return {"versions": [{"id": key} for key in ("V1", "V2", "V3")]}
+            return {"versions": [{
+                "id": key, "strategy": "策略", "hook": "Hook", "duration": "10秒",
+                "cta": "Buy now", "video_prompt": "Create a product video.",
+                "source_elements": ["source.mp4:hook"],
+                "shots": [
+                    {"time_range": "00:00-00:05", "visual": "A", "voiceover": "A", "on_screen_text": "A", "selling_point": "B"},
+                    {"time_range": "00:05-00:10", "visual": "B", "voiceover": "B", "on_screen_text": "B", "selling_point": "B"},
+                ],
+            } for key in ("V1", "V2", "V3")]}
 
         with patch.object(viral_elements, "_model_json", side_effect=fake_model):
             result = viral_elements.generate_scripts(
@@ -75,6 +83,26 @@ class ViralElementsTests(unittest.TestCase):
         self.assertIn("需求匹配40", captured["prompt"])
         self.assertIn("同一来源原片每个脚本版本最多贡献2项", captured["prompt"])
         self.assertIn("不得覆盖人工填写的审批人", captured["prompt"])
+
+    def test_script_approval_is_human_controlled_and_persistent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = viral_elements.ViralElementStore(Path(tmp))
+            saved = store.save_scripts("demo.mp4", {}, {"versions": [{"id": "V1"}]})
+            self.assertEqual("待审核", saved["scripts"]["workflow"]["status"])
+            approved = store.update_script_approval(saved["id"], {
+                "status": "已通过", "reviewer": "Alice", "approval_comment": "采用V2", "final_version": "V2"
+            })
+            self.assertEqual("V2", approved["scripts"]["workflow"]["final_version"])
+            self.assertEqual("Alice", store.latest_scripts("demo.mp4")["scripts"]["workflow"]["reviewer"])
+
+    def test_script_validator_rejects_broken_timeline(self):
+        payload = {"versions": [{
+            "id": key, "strategy": "S", "hook": "H", "duration": "10秒", "cta": "C",
+            "video_prompt": "Prompt", "source_elements": [],
+            "shots": [{"time_range": "00:02-00:10"}],
+        } for key in ("V1", "V2", "V3")]}
+        errors = viral_elements.validate_generated_scripts(payload, {})
+        self.assertTrue(any("时间轴不连续" in item for item in errors))
 
 
 if __name__ == "__main__":

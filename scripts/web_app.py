@@ -3339,14 +3339,12 @@ def public_viral_pipeline_job(job: ViralPipelineJob) -> dict[str, Any]:
 
 def _viral_pipeline_source(filename: str) -> dict[str, Any] | None:
     output_dir = output_dir_for_filename(filename)
-    source = (
-        read_json(output_dir / "analysis_zh.json")
-        or read_json(output_dir / "direct_analysis_zh.json")
-        or read_json(output_dir / "analysis.json")
-        or read_json(output_dir / "direct_analysis.json")
-    )
+    b_source = read_json(output_dir / "analysis_zh.json") or read_json(output_dir / "analysis.json")
+    a_source = read_json(output_dir / "direct_analysis_zh.json") or read_json(output_dir / "direct_analysis.json")
+    source = b_source or a_source
     if not isinstance(source, dict):
         return None
+    source = {**source, "source_channel": "B" if b_source else "A"}
     social_context = read_json(output_dir / "social_context.json")
     return {**source, "social_context": social_context} if isinstance(social_context, dict) else source
 
@@ -14949,6 +14947,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_viral_elements_review()
         if parsed.path == "/api/viral-elements/scripts":
             return self.handle_viral_elements_scripts()
+        if parsed.path == "/api/viral-elements/scripts/approval":
+            return self.handle_viral_elements_script_approval()
         if parsed.path == "/api/postprocess":
             return self.handle_postprocess()
         if parsed.path == "/api/translate":
@@ -15058,6 +15058,17 @@ class Handler(BaseHTTPRequestHandler):
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
         except Exception as exc:
             return json_response(self, HTTPStatus.BAD_GATEWAY, {"error": f"脚本生成失败：{exc}"})
+
+    def handle_viral_elements_script_approval(self) -> None:
+        try:
+            payload = self.read_json_body()
+            script_id = int(payload.get("id") or 0)
+            if script_id <= 0:
+                raise ViralElementError("脚本记录 id 必填")
+            saved = viral_element_store.update_script_approval(script_id, payload)
+            return json_response(self, HTTPStatus.OK, saved)
+        except (ViralElementError, ValueError, json.JSONDecodeError) as exc:
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
     def handle_proxy_api_get(self, path: str, query: str = "") -> None:
         try:
