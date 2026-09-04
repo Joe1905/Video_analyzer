@@ -319,6 +319,22 @@ class DownloadJob:
 
 
 @dataclass
+class ViralPipelineJob:
+    id: str
+    url: str = ""
+    filename: str = ""
+    status: str = "queued"
+    stage: str = "queued"
+    progress: int = 0
+    message: str = "已创建拆解任务"
+    created_at: float = field(default_factory=time.time)
+    updated_at: float = field(default_factory=time.time)
+    log: list[str] = field(default_factory=list)
+    error: str | None = None
+    review: dict[str, Any] | None = None
+
+
+@dataclass
 class ShopJob:
     id: str
     url: str
@@ -369,6 +385,8 @@ jobs: dict[str, Job] = {}
 jobs_lock = threading.Lock()
 download_jobs: dict[str, DownloadJob] = {}
 download_jobs_lock = threading.Lock()
+viral_pipeline_jobs: dict[str, ViralPipelineJob] = {}
+viral_pipeline_jobs_lock = threading.Lock()
 shop_jobs: dict[str, ShopJob] = {}
 shop_jobs_lock = threading.Lock()
 metrics_jobs: dict[str, MetricsJob] = {}
@@ -3308,6 +3326,108 @@ def public_download_job(job: DownloadJob) -> dict[str, Any]:
         "log": job.log[-80:],
         "result": job.result,
     }
+
+
+def public_viral_pipeline_job(job: ViralPipelineJob) -> dict[str, Any]:
+    return {
+        "id": job.id, "url": job.url, "filename": job.filename,
+        "status": job.status, "stage": job.stage, "progress": job.progress,
+        "message": job.message, "created_at": job.created_at, "updated_at": job.updated_at,
+        "log": job.log[-80:], "error": job.error, "review": job.review,
+    }
+
+
+def _viral_pipeline_source(filename: str) -> dict[str, Any] | None:
+    output_dir = output_dir_for_filename(filename)
+    source = (
+        read_json(output_dir / "analysis_zh.json")
+        or read_json(output_dir / "direct_analysis_zh.json")
+        or read_json(output_dir / "analysis.json")
+        or read_json(output_dir / "direct_analysis.json")
+    )
+    if not isinstance(source, dict):
+        return None
+    social_context = read_json(output_dir / "social_context.json")
+    return {**source, "social_context": social_context} if isinstance(social_context, dict) else source
+
+
+def _update_viral_pipeline(job: ViralPipelineJob, stage: str, progress: int, message: str) -> None:
+    with viral_pipeline_jobs_lock:
+        job.stage = stage
+        job.progress = max(0, min(int(progress), 100))
+        job.message = message
+        job.updated_at = time.time()
+        if not job.log or job.log[-1] != message:
+            job.log.append(message)
+
+
+def run_viral_pipeline_job(job_id: str) -> None:
+    with viral_pipeline_jobs_lock:
+        job = viral_pipeline_jobs[job_id]
+        job.status = "running"
+        job.updated_at = time.time()
+    try:
+        filename = safe_filename(job.filename) if job.filename else ""
+        if job.url:
+            _update_viral_pipeline(job, "downloading", 8, "正在下载并校验视频")
+            download = DownloadJob(id=str(uuid.uuid4()), url=validate_short_video_url(job.url), source=SOURCE_API_UPLOAD)
+            with download_jobs_lock:
+                download_jobs[download.id] = download
+            run_download_job(download.id)
+            if download.status != "complete" or not download.filename:
+                raise RuntimeError(download.error or "视频下载失败")
+            filename = safe_filename(download.filename)
+            with viral_pipeline_jobs_lock:
+                job.filename = filename
+            _update_viral_pipeline(job, "downloaded", 24, f"视频下载完成：{filename}")
+        if not filename or not (VIDEOS_DIR / filename).is_file():
+            raise FileNotFoundError("视频文件不存在")
+
+        existing_review = viral_element_store.get_review(filename)
+        source = _viral_pipeline_source(filename)
+        if existing_review and source:
+            with viral_pipeline_jobs_lock:
+                job.review = existing_review
+                job.status = "complete"
+            _update_viral_pipeline(job, "complete", 100, "已复用现有分析和元素记录")
+            return
+
+        if not source:
+            _update_viral_pipeline(job, "queued_analysis", 30, "已加入视频分析队列")
+            video_queue.enqueue(filename, "analyze")
+            deadline = time.time() + max(300, int(os.getenv("VIRAL_PIPELINE_ANALYSIS_TIMEOUT_SECONDS", "3600")))
+            while time.time() < deadline:
+                source = _viral_pipeline_source(filename)
+                queue_status = video_queue.get_status(filename)
+                queue_progress = video_queue.get_progress()
+                if source and queue_status in {"analyzed", "complete"}:
+                    break
+                if queue_status == "idle":
+                    raise RuntimeError("视频分析任务失败，请查看分析日志")
+                percent = 36
+                label = "等待视频分析"
+                if queue_status == "analyzing":
+                    raw_percent = queue_progress.get("percent", 0) if queue_progress.get("current") == filename else 0
+                    percent = 36 + int(max(0, min(int(raw_percent or 0), 100)) * 0.42)
+                    label = str(queue_progress.get("label") or "正在分析视频")
+                _update_viral_pipeline(job, "analyzing", percent, label)
+                time.sleep(1)
+            else:
+                raise TimeoutError("视频分析超时")
+        if not source:
+            raise RuntimeError("视频分析完成但未找到分析结果")
+
+        _update_viral_pipeline(job, "extracting_elements", 82, "正在提取 18 个爆款元素")
+        review = viral_element_store.save_review(filename, analyze_elements(filename, source))
+        with viral_pipeline_jobs_lock:
+            job.review = review
+            job.status = "complete"
+        _update_viral_pipeline(job, "complete", 100, "18 个元素已入库，等待人工审核")
+    except Exception as exc:
+        with viral_pipeline_jobs_lock:
+            job.status = "failed"
+            job.error = str(exc)
+        _update_viral_pipeline(job, "failed", 100, f"拆解失败：{exc}")
 
 
 def payload_has_content(value: Any) -> bool:
@@ -14556,6 +14676,18 @@ class Handler(BaseHTTPRequestHandler):
                 return json_response(self, HTTPStatus.BAD_REQUEST, {"error": "limit 必须是整数"})
             items = viral_element_store.list_library(approved_only=approved_only, limit=limit)
             return json_response(self, HTTPStatus.OK, {"items": items, "count": len(items)})
+        if parsed.path == "/api/viral-elements/pipeline":
+            job_id = parse_qs(parsed.query).get("id", [""])[0]
+            with viral_pipeline_jobs_lock:
+                job = viral_pipeline_jobs.get(job_id)
+                payload = public_viral_pipeline_job(job) if job else None
+            if payload is None:
+                return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Pipeline job not found"})
+            return json_response(self, HTTPStatus.OK, payload)
+        if parsed.path == "/api/viral-elements/pipeline-events":
+            job_id = parse_qs(parsed.query).get("id", [""])[0]
+            return self.stream_events(job_id, viral_pipeline_jobs_lock, viral_pipeline_jobs,
+                                      public_viral_pipeline_job, "Pipeline job not found")
         if parsed.path == "/api/social-context":
             try:
                 filename = safe_filename(parse_qs(parsed.query).get("filename", [""])[0])
@@ -14811,6 +14943,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_analyze()
         if parsed.path == "/api/viral-elements/analyze":
             return self.handle_viral_elements_analyze()
+        if parsed.path == "/api/viral-elements/pipeline":
+            return self.handle_viral_elements_pipeline()
         if parsed.path == "/api/viral-elements/review":
             return self.handle_viral_elements_review()
         if parsed.path == "/api/viral-elements/scripts":
@@ -14876,6 +15010,25 @@ class Handler(BaseHTTPRequestHandler):
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
         except Exception as exc:
             return json_response(self, HTTPStatus.BAD_GATEWAY, {"error": f"元素拆解失败：{exc}"})
+
+    def handle_viral_elements_pipeline(self) -> None:
+        try:
+            payload = self.read_json_body()
+            url = str(payload.get("url") or "").strip()
+            filename = safe_filename(str(payload.get("filename") or "")) if payload.get("filename") else ""
+            if bool(url) == bool(filename):
+                raise ViralElementError("url 和 filename 必须且只能提供一个")
+            if url:
+                url = validate_short_video_url(url)
+            elif not (VIDEOS_DIR / filename).is_file():
+                return json_response(self, HTTPStatus.NOT_FOUND, {"error": "视频文件不存在"})
+            job = ViralPipelineJob(id=str(uuid.uuid4()), url=url, filename=filename)
+            with viral_pipeline_jobs_lock:
+                viral_pipeline_jobs[job.id] = job
+            threading.Thread(target=run_viral_pipeline_job, args=(job.id,), daemon=True).start()
+            return json_response(self, HTTPStatus.ACCEPTED, public_viral_pipeline_job(job))
+        except (ViralElementError, ValueError, json.JSONDecodeError) as exc:
+            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
     def handle_viral_elements_review(self) -> None:
         try:
