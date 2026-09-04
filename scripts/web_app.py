@@ -173,6 +173,7 @@ from video_registry import (
     set_hidden_from_analyzer,
 )
 from viral_elements import ViralElementError, ViralElementStore, analyze_elements, generate_scripts, validate_review
+from viral_feishu_sync import ViralFeishuSync
 from proxy_state import ensure_us_proxy
 import instagram_content_collect
 import proxy_pool
@@ -401,6 +402,7 @@ chat_store = ChatStore(DATA_DIR / "sessions.json")
 lan_chat_store = LanChatStore(DATA_DIR / "lan_chat.sqlite")
 viral_element_store = ViralElementStore(DATA_DIR)
 feishu_capability_client = FeishuCapabilityClient()
+viral_feishu_sync = ViralFeishuSync(viral_element_store, feishu_capability_client)
 chat_provider_stores = {
     "home": chat_store,
     "amazon": ChatStore(SELLERSPRITE_CHAT_DATA_DIR / "chat_sessions.json"),
@@ -3359,6 +3361,20 @@ def _update_viral_pipeline(job: ViralPipelineJob, stage: str, progress: int, mes
             job.log.append(message)
 
 
+def _sync_viral_review(review: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return viral_feishu_sync.sync_review(review)
+    except Exception as exc:
+        return {"enabled": viral_feishu_sync.enabled, "status": "failed", "error": str(exc)}
+
+
+def _sync_viral_scripts(saved: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return viral_feishu_sync.sync_scripts(saved, viral_element_store.get_review(saved["filename"]))
+    except Exception as exc:
+        return {"enabled": viral_feishu_sync.enabled, "status": "failed", "error": str(exc)}
+
+
 def run_viral_pipeline_job(job_id: str) -> None:
     with viral_pipeline_jobs_lock:
         job = viral_pipeline_jobs[job_id]
@@ -3416,11 +3432,15 @@ def run_viral_pipeline_job(job_id: str) -> None:
             raise RuntimeError("视频分析完成但未找到分析结果")
 
         _update_viral_pipeline(job, "extracting_elements", 82, "正在提取 18 个爆款元素")
-        review = viral_element_store.save_review(filename, analyze_elements(filename, source))
+        review_payload = analyze_elements(filename, source)
+        review_payload["source_url"] = job.url
+        review = viral_element_store.save_review(filename, review_payload)
+        sync = _sync_viral_review(review)
         with viral_pipeline_jobs_lock:
             job.review = review
             job.status = "complete"
-        _update_viral_pipeline(job, "complete", 100, "18 个元素已入库，等待人工审核")
+        suffix = "并已同步飞书" if sync.get("status") == "synced" else "，等待人工审核"
+        _update_viral_pipeline(job, "complete", 100, "18 个元素已入库" + suffix)
     except Exception as exc:
         with viral_pipeline_jobs_lock:
             job.status = "failed"
@@ -15003,7 +15023,7 @@ class Handler(BaseHTTPRequestHandler):
             if isinstance(social_context, dict):
                 source = {**source, "social_context": social_context}
             review = viral_element_store.save_review(filename, analyze_elements(filename, source))
-            return json_response(self, HTTPStatus.OK, {"review": review})
+            return json_response(self, HTTPStatus.OK, {"review": review, "feishu_sync": _sync_viral_review(review)})
         except ViralElementError as exc:
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
         except (ValueError, json.JSONDecodeError) as exc:
@@ -15034,7 +15054,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             review = validate_review(self.read_json_body())
             saved = viral_element_store.save_review(review["filename"], review)
-            return json_response(self, HTTPStatus.OK, {"review": saved})
+            return json_response(self, HTTPStatus.OK, {"review": saved, "feishu_sync": _sync_viral_review(saved)})
         except (ViralElementError, ValueError, json.JSONDecodeError) as exc:
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
@@ -15053,7 +15073,7 @@ class Handler(BaseHTTPRequestHandler):
             scripts = generate_scripts(filename, review, brief,
                                        viral_element_store.list_library(approved_only=True, limit=300))
             saved = viral_element_store.save_scripts(filename, brief, scripts)
-            return json_response(self, HTTPStatus.OK, saved)
+            return json_response(self, HTTPStatus.OK, {**saved, "feishu_sync": _sync_viral_scripts(saved)})
         except (ViralElementError, ValueError, json.JSONDecodeError) as exc:
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
         except Exception as exc:
@@ -15066,7 +15086,7 @@ class Handler(BaseHTTPRequestHandler):
             if script_id <= 0:
                 raise ViralElementError("脚本记录 id 必填")
             saved = viral_element_store.update_script_approval(script_id, payload)
-            return json_response(self, HTTPStatus.OK, saved)
+            return json_response(self, HTTPStatus.OK, {**saved, "feishu_sync": _sync_viral_scripts(saved)})
         except (ViralElementError, ValueError, json.JSONDecodeError) as exc:
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 

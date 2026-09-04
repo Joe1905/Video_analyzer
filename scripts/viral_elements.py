@@ -96,6 +96,15 @@ class ViralElementStore:
                     payload_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS viral_feishu_links (
+                    entity_type TEXT NOT NULL,
+                    local_key TEXT NOT NULL,
+                    table_url TEXT NOT NULL,
+                    record_id TEXT NOT NULL DEFAULT '',
+                    last_error TEXT NOT NULL DEFAULT '',
+                    synced_at TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY(entity_type, local_key)
+                );
                 """
             )
             conn.commit()
@@ -207,6 +216,29 @@ class ViralElementStore:
                 if len(items) >= limit:
                     return items
         return items
+
+    def get_feishu_link(self, entity_type: str, local_key: str) -> dict[str, str] | None:
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                "SELECT table_url, record_id, last_error, synced_at FROM viral_feishu_links WHERE entity_type=? AND local_key=?",
+                (entity_type, local_key),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def save_feishu_link(self, entity_type: str, local_key: str, table_url: str,
+                         record_id: str = "", error: str = "") -> dict[str, str]:
+        synced_at = datetime.now(timezone.utc).isoformat() if not error else ""
+        with closing(self._connect()) as conn:
+            conn.execute(
+                """INSERT INTO viral_feishu_links(entity_type, local_key, table_url, record_id, last_error, synced_at)
+                   VALUES(?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(entity_type, local_key) DO UPDATE SET table_url=excluded.table_url,
+                   record_id=CASE WHEN excluded.record_id='' THEN viral_feishu_links.record_id ELSE excluded.record_id END,
+                   last_error=excluded.last_error, synced_at=excluded.synced_at""",
+                (entity_type, local_key, table_url, record_id, error[:2000], synced_at),
+            )
+            conn.commit()
+        return self.get_feishu_link(entity_type, local_key) or {}
 
 
 def _model_json(prompt: str, max_tokens: int = 6000) -> dict[str, Any]:
@@ -323,10 +355,16 @@ def validate_review(payload: dict[str, Any]) -> dict[str, Any]:
         heat_score = None if heat_score in (None, "") else round(float(heat_score), 2)
     except (TypeError, ValueError):
         heat_score = None
+    requested_status = str(payload.get("review_status") or "").strip()
+    if requested_status not in {"待审核", "需修改", "已通过"}:
+        requested_status = "已通过" if approved_count == len(ELEMENT_DEFS) else "待审核"
     return {"filename": filename, "summary": str(payload.get("summary") or "")[:4000], "elements": elements,
             "source_metrics": metrics, "heat_score": heat_score,
             "source_channel": str(payload.get("source_channel") or "B")[:1],
-            "review_status": "已审核" if approved_count else "待审核", "schema_version": 3}
+            "source_url": str(payload.get("source_url") or "")[:2000],
+            "reviewer": str(payload.get("reviewer") or "")[:120],
+            "review_comment": str(payload.get("review_comment") or "")[:4000],
+            "review_status": requested_status, "schema_version": 4}
 
 
 def generate_scripts(filename: str, review: dict[str, Any], brief: dict[str, Any],
@@ -334,6 +372,7 @@ def generate_scripts(filename: str, review: dict[str, Any], brief: dict[str, Any
     required = {"product": "产品名称", "selling_points": "核心卖点", "audience": "目标人群"}
     cleaned = {key: str(brief.get(key) or "").strip()[:4000] for key in required}
     cleaned["duration"] = str(brief.get("duration") or "").strip()[:80]
+    cleaned["supplemental_requirements"] = str(brief.get("supplemental_requirements") or "").strip()[:4000]
     missing = [label for key, label in required.items() if not cleaned[key]]
     if missing:
         raise ViralElementError("缺少：" + "、".join(missing))

@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import viral_elements
+import viral_feishu_sync
 
 
 class ViralElementsTests(unittest.TestCase):
@@ -55,7 +56,7 @@ class ViralElementsTests(unittest.TestCase):
             library = store.list_library()
         self.assertEqual(1, len(library))
         self.assertEqual("demo.mp4", library[0]["filename"])
-        self.assertEqual("已审核", review["review_status"])
+        self.assertEqual("待审核", review["review_status"])
 
     def test_pdf_composer_rules_are_applied_and_duration_is_optional(self):
         captured = {}
@@ -103,6 +104,45 @@ class ViralElementsTests(unittest.TestCase):
         } for key in ("V1", "V2", "V3")]}
         errors = viral_elements.validate_generated_scripts(payload, {})
         self.assertTrue(any("时间轴不连续" in item for item in errors))
+
+    def test_pdf_feishu_field_mapping_covers_elements_and_scripts(self):
+        review = viral_elements.validate_review({
+            "filename": "demo.mp4", "source_channel": "B", "review_status": "已通过",
+            "reviewer": "刘鹏飞", "review_comment": "通过",
+            "source_metrics": {"views": 100, "likes": 10, "favorites": 2, "comments": 1},
+            "elements": [{"key": key, "value": label, "approved": True}
+                         for _, key, label in viral_elements.ELEMENT_DEFS],
+        })
+        fields = viral_feishu_sync.review_fields(review, "刘鹏飞")
+        self.assertEqual("已通过", fields["元素审核状态"])
+        self.assertEqual("视频类型", fields["视频类型"])
+        self.assertTrue(fields["豆包Work.模型输出B"])
+        saved = {"id": 7, "filename": "demo.mp4", "brief": {
+            "product": "产品", "selling_points": "卖点", "audience": "人群",
+            "supplemental_requirements": "补充",
+        }, "scripts": {"versions": [{"id": key, "video_prompt": f"{key} prompt",
+            "strategy": "策略", "source_elements": ["demo.mp4:hook"]} for key in ("V1", "V2", "V3")],
+            "workflow": {"status": "待审核"}}, "created_at": "now"}
+        script = viral_feishu_sync.script_fields(saved, review, "刘鹏飞")
+        self.assertEqual("V2 prompt", script["V2视频提示词"])
+        self.assertEqual("demo.mp4:hook", script["采用元素"])
+
+    def test_feishu_record_id_is_persisted_for_update(self):
+        class Client:
+            def __init__(self): self.created = 0; self.updated = 0
+            def create_bitable_record(self, payload): self.created += 1; return {"recordId": "rec1"}
+            def update_bitable_record(self, payload): self.updated += 1; return {"recordId": "rec1"}
+        with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", {
+            "VIRAL_FEISHU_ELEMENTS_URL": "https://example.feishu.cn/base/app?table=tbl1",
+            "VIRAL_FEISHU_SCRIPTS_URL": "https://example.feishu.cn/base/app?table=tbl2",
+        }):
+            store = viral_elements.ViralElementStore(Path(tmp)); client = Client()
+            sync = viral_feishu_sync.ViralFeishuSync(store, client)
+            review = viral_elements.validate_review({"filename": "demo.mp4", "elements": []})
+            first = sync.sync_review(review); second = sync.sync_review(review)
+        self.assertEqual("rec1", first["record_id"])
+        self.assertEqual("updated", second["action"])
+        self.assertEqual((1, 1), (client.created, client.updated))
 
 
 if __name__ == "__main__":
