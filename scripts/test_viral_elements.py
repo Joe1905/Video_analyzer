@@ -117,6 +117,7 @@ class ViralElementsTests(unittest.TestCase):
         self.assertEqual("已通过", fields["元素审核状态"])
         self.assertEqual("视频类型", fields["视频类型"])
         self.assertTrue(fields["豆包Work.模型输出B"])
+        self.assertEqual("demo.mp4", fields["本地文件ID"])
         saved = {"id": 7, "filename": "demo.mp4", "brief": {
             "product": "产品", "selling_points": "卖点", "audience": "人群",
             "supplemental_requirements": "补充",
@@ -126,6 +127,21 @@ class ViralElementsTests(unittest.TestCase):
         script = viral_feishu_sync.script_fields(saved, review, "刘鹏飞")
         self.assertEqual("V2 prompt", script["V2视频提示词"])
         self.assertEqual("demo.mp4:hook", script["采用元素"])
+
+    def test_native_feishu_people_video_and_relation_values(self):
+        review = viral_elements.validate_review({
+            "filename": "演示 视频.mp4", "reviewer": "刘鹏飞",
+            "source_url": "https://example.com/video", "elements": [],
+        })
+        fields = viral_feishu_sync.review_fields(
+            review, "刘鹏飞", "ou_owner", "http://127.0.0.1:4003/video"
+        )
+        self.assertEqual([{"id": "ou_owner"}], fields["负责人"])
+        self.assertEqual([{"id": "ou_owner"}], fields["审核人"])
+        self.assertEqual("http://127.0.0.1:4003/video/%E6%BC%94%E7%A4%BA%20%E8%A7%86%E9%A2%91.mp4", fields["对标视频"])
+        saved = {"id": 1, "scripts": {"versions": [], "workflow": {}}}
+        script = viral_feishu_sync.script_fields(saved, review, "刘鹏飞", "ou_owner", ["rec1"])
+        self.assertEqual(["rec1"], script["采用元素"])
 
     def test_feishu_record_id_is_persisted_for_update(self):
         class Client:
