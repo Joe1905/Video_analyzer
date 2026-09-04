@@ -249,14 +249,12 @@ CHAT_IMAGE_ALLOWED_MIME = {
     "image/jpeg": ".jpg",
     "image/webp": ".webp",
     "image/gif": ".gif",
-    "image/bmp": ".bmp",
 }
 CHAT_IMAGE_MAX_BYTES = int(os.getenv("CHAT_IMAGE_MAX_BYTES", "6291456"))
 CHAT_IMAGE_MAX_COUNT = int(os.getenv("CHAT_IMAGE_MAX_COUNT", "6"))
-OCR_API_URL = os.getenv("OCR_API_URL", "http://127.0.0.1:4000/v1/ocr/extract")
-OCR_SHARED_DIR = Path(os.getenv("OCR_SHARED_DIR", "/home/openclaw/ocr-shared"))
-OCR_SERVER_SHARED_DIR = os.getenv("OCR_SERVER_SHARED_DIR", "/home/openclaw/ocr-shared").rstrip("/")
-CHAT_ATTACHMENT_DIR = OCR_SHARED_DIR / "incoming" / "chat"
+CHAT_IMAGE_MAX_TOTAL_BYTES = int(os.getenv("CHAT_IMAGE_MAX_TOTAL_BYTES", "31457280"))
+CHAT_ATTACHMENT_DIR = DATA_DIR / "chat_attachments"
+LEGACY_CHAT_ATTACHMENT_DIR = Path(os.getenv("OCR_SHARED_DIR", "/home/openclaw/ocr-shared")) / "incoming" / "chat"
 
 
 def load_prompt() -> str:
@@ -6534,12 +6532,6 @@ def tools_for_chat_intent(user_text: str, enabled: set[str] | None) -> tuple[lis
     return get_tools_for_model(selected), route
 
 
-class ChatAttachmentError(ValueError):
-    def __init__(self, message: str, attachments: list[dict[str, Any]] | None = None):
-        super().__init__(message)
-        self.attachments = attachments or []
-
-
 def chat_attachment_public_url(attachment_id: str) -> str:
     return f"/api/chat/attachments/{quote_plus(attachment_id)}"
 
@@ -6547,10 +6539,11 @@ def chat_attachment_public_url(attachment_id: str) -> str:
 def chat_attachment_path(attachment_id: str) -> Path | None:
     if not re.fullmatch(r"[0-9a-f]{32}", str(attachment_id or "")):
         return None
-    for suffix in CHAT_IMAGE_ALLOWED_MIME.values():
-        path = CHAT_ATTACHMENT_DIR / f"{attachment_id}{suffix}"
-        if path.is_file():
-            return path
+    for directory in (CHAT_ATTACHMENT_DIR, LEGACY_CHAT_ATTACHMENT_DIR):
+        for suffix in (*CHAT_IMAGE_ALLOWED_MIME.values(), ".bmp"):
+            path = directory / f"{attachment_id}{suffix}"
+            if path.is_file():
+                return path
     return None
 
 
@@ -6576,91 +6569,6 @@ def _decode_chat_image_data_url(item: dict[str, Any], index: int) -> tuple[str, 
     return name, mime, data
 
 
-def _server_ocr_path(local_path: Path) -> str:
-    relative = local_path.relative_to(OCR_SHARED_DIR).as_posix()
-    return f"{OCR_SERVER_SHARED_DIR}/{relative}"
-
-
-def _compact_ocr_text(value: Any, max_chars: int = 8000) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return re.sub(r"\s+", " ", value).strip()[:max_chars]
-    if isinstance(value, list):
-        parts = [_compact_ocr_text(item, max_chars=max_chars) for item in value]
-        return "\n".join(part for part in parts if part).strip()[:max_chars]
-    if isinstance(value, dict):
-        preferred = []
-        for key in ("text", "markdown", "content", "plainText", "plain_text", "fullText", "full_text", "result"):
-            if key in value:
-                text = _compact_ocr_text(value.get(key), max_chars=max_chars)
-                if text:
-                    preferred.append(text)
-        if preferred:
-            return "\n".join(preferred).strip()[:max_chars]
-        leaf_parts = []
-        for key, child in value.items():
-            if key.lower() in {"image", "base64", "dataurl", "data_url"}:
-                continue
-            child_text = _compact_ocr_text(child, max_chars=max_chars)
-            if child_text:
-                leaf_parts.append(f"{key}: {child_text}")
-        if leaf_parts:
-            return "\n".join(leaf_parts).strip()[:max_chars]
-        try:
-            return json.dumps(value, ensure_ascii=False, separators=(",", ":"))[:max_chars]
-        except TypeError:
-            return str(value)[:max_chars]
-    return str(value).strip()[:max_chars]
-
-
-def call_chat_ocr(server_file_path: str, document_hint: str) -> tuple[str, dict[str, Any]]:
-    import requests as req
-
-    started = time.monotonic()
-    payload = {
-        "filePath": server_file_path,
-        "serverFilePath": server_file_path,
-        "documentHint": document_hint or "chat image",
-        "structured": True,
-    }
-    response = req.post(
-        OCR_API_URL,
-        headers={"Content-Type": "application/json"},
-        json=payload,
-        timeout=90,
-    )
-    if response.status_code >= 400:
-        print(f"[CHAT OCR] {response.status_code}: {response.text[:500]}", flush=True)
-        try:
-            error_body = response.json()
-        except ValueError:
-            error_body = {}
-        ocr_run = error_body.get("ocrRun") if isinstance(error_body, dict) else None
-        detail = ""
-        if isinstance(ocr_run, dict):
-            detail = str(ocr_run.get("error") or ocr_run.get("status") or "").strip()
-        if not detail and isinstance(error_body, dict):
-            detail = str(error_body.get("error") or error_body.get("message") or "").strip()
-        raise RuntimeError(detail or f"OCR service returned HTTP {response.status_code}")
-    data = response.json()
-    record_api_call(
-        "ocr",
-        "chat_image_extract",
-        {
-            "api_url": OCR_API_URL,
-            "server_file_path": server_file_path,
-            "document_hint": document_hint,
-        },
-        data,
-        elapsed_ms=int((time.monotonic() - started) * 1000),
-    )
-    text = _compact_ocr_text(data)
-    if not text:
-        raise ValueError("OCR did not return readable text")
-    return text, data
-
-
 def process_chat_attachments(raw_attachments: Any, user_text: str) -> list[dict[str, Any]]:
     if raw_attachments in (None, ""):
         return []
@@ -6668,15 +6576,17 @@ def process_chat_attachments(raw_attachments: Any, user_text: str) -> list[dict[
         raise ValueError("attachments must be an array")
     if len(raw_attachments) > CHAT_IMAGE_MAX_COUNT:
         raise ValueError(f"Too many images; maximum is {CHAT_IMAGE_MAX_COUNT}")
+    decoded = [_decode_chat_image_data_url(item, index) for index, item in enumerate(raw_attachments)]
+    total_bytes = sum(len(data) for _, _, data in decoded)
+    if total_bytes > CHAT_IMAGE_MAX_TOTAL_BYTES:
+        raise ValueError(f"Images exceed the combined {CHAT_IMAGE_MAX_TOTAL_BYTES} byte limit")
     CHAT_ATTACHMENT_DIR.mkdir(parents=True, exist_ok=True)
     processed = []
-    for index, item in enumerate(raw_attachments):
-        name, mime, data = _decode_chat_image_data_url(item, index)
+    for name, mime, data in decoded:
         attachment_id = uuid.uuid4().hex
         suffix = CHAT_IMAGE_ALLOWED_MIME[mime]
         local_path = CHAT_ATTACHMENT_DIR / f"{attachment_id}{suffix}"
         local_path.write_bytes(data)
-        server_file_path = _server_ocr_path(local_path)
         meta = {
             "id": attachment_id,
             "name": name,
@@ -6684,13 +6594,6 @@ def process_chat_attachments(raw_attachments: Any, user_text: str) -> list[dict[
             "size": len(data),
             "url": chat_attachment_public_url(attachment_id),
         }
-        try:
-            ocr_text, _ocr_raw = call_chat_ocr(server_file_path, (user_text or name or "chat image")[:120])
-            meta["ocr_text"] = ocr_text
-        except Exception as exc:
-            meta["ocr_error"] = str(exc)
-            processed.append(meta)
-            raise ChatAttachmentError(f"{name}: OCR failed: {exc}", processed) from exc
         processed.append(meta)
     return processed
 
@@ -6707,8 +6610,33 @@ def chat_ocr_context(attachments: list[dict] | None) -> str:
     return "\n\n".join(lines).strip()
 
 
-def chat_message_content_for_model(message: Message) -> str:
+def chat_attachment_image_parts(attachments: list[dict] | None) -> list[dict[str, Any]]:
+    parts = []
+    for item in attachments or []:
+        if not isinstance(item, dict):
+            continue
+        mime = str(item.get("type") or "").lower()
+        if mime not in CHAT_IMAGE_ALLOWED_MIME:
+            continue
+        path = chat_attachment_path(str(item.get("id") or ""))
+        if not path:
+            continue
+        encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+        parts.append({
+            "type": "image_url",
+            "image_url": {
+                "url": f"data:{mime};base64,{encoded}",
+                "detail": "auto",
+            },
+        })
+    return parts
+
+
+def chat_message_content_for_model(message: Message, include_images: bool = False) -> Any:
     content = str(message.content or "")
+    image_parts = chat_attachment_image_parts(message.attachments) if include_images and message.role == "user" else []
+    if image_parts:
+        return [{"type": "text", "text": content.strip() or "User sent an image."}, *image_parts]
     ocr_context = chat_ocr_context(message.attachments)
     if not ocr_context:
         return content
@@ -11298,10 +11226,20 @@ def build_chat_history_context(
         (item for item in reversed(selected) if item.id != current_assistant_id and item.role == "assistant"),
         None,
     )
+    latest_image_message_id = next(
+        (
+            item.id for item in reversed(selected)
+            if item.id != current_assistant_id and item.role == "user" and item.attachments
+        ),
+        "",
+    )
     for message in selected:
         if message.id == current_assistant_id:
             continue
-        content = chat_message_content_for_model(message)
+        content = chat_message_content_for_model(
+            message,
+            include_images=message.id == latest_image_message_id,
+        )
         tool_calls = list(message.tool_calls or [])
         tool_results = list(message.tool_results or [])
         if message.status == "error":
@@ -11321,8 +11259,8 @@ def build_chat_history_context(
                 }, ensure_ascii=False)
                 priority = "normal"
         else:
-            priority = "normal"
-            content = _truncate_chat_context_text(content, text_limit)
+            priority = "keep" if message.id == latest_image_message_id else "normal"
+            content = _truncate_chat_message_content(content, text_limit)
             if tool_calls:
                 summary = _chat_tool_counts(tool_calls)
                 content = (content + "\n\n" if content else "") + (
@@ -11355,8 +11293,52 @@ def _chat_request_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any
     ]
 
 
+def chat_messages_have_images(messages: list[dict[str, Any]]) -> bool:
+    return any(
+        isinstance(message.get("content"), list)
+        and any(
+            isinstance(part, dict) and part.get("type") == "image_url"
+            for part in message["content"]
+        )
+        for message in messages
+    )
+
+
+def _chat_content_for_token_estimate(value: Any) -> Any:
+    if not isinstance(value, list):
+        return value
+    estimated = []
+    for part in value:
+        if isinstance(part, dict) and part.get("type") == "image_url":
+            estimated.append({"type": "text", "text": "i" * 1152})
+        else:
+            estimated.append(part)
+    return estimated
+
+
+def _truncate_chat_message_content(value: Any, max_chars: int) -> Any:
+    if not isinstance(value, list):
+        return _truncate_chat_context_text(value, max_chars)
+    remaining = max_chars
+    compacted = []
+    for part in value:
+        if not isinstance(part, dict) or part.get("type") != "text":
+            compacted.append(part)
+            continue
+        text = _truncate_chat_context_text(part.get("text"), remaining)
+        compacted.append({**part, "text": text})
+        remaining = max(0, remaining - len(text))
+    return compacted
+
+
 def estimate_chat_context_tokens(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None) -> int:
-    payload = {"messages": _chat_request_messages(messages), "tools": tools or None}
+    estimated_messages = []
+    for message in _chat_request_messages(messages):
+        estimated_messages.append({
+            **message,
+            "content": _chat_content_for_token_estimate(message.get("content")),
+        })
+    payload = {"messages": estimated_messages, "tools": tools or None}
     byte_count = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
     return (byte_count + 2) // 3
 
@@ -11424,7 +11406,7 @@ def manage_chat_context(
                 continue
             priority = message.get("_context_priority")
             limit = 12000 if priority == "recovery" else compact_limit
-            message["content"] = _truncate_chat_context_text(message.get("content"), limit)
+            message["content"] = _truncate_chat_message_content(message.get("content"), limit)
 
     while estimate_chat_context_tokens(working, request_tools) > token_limit:
         removable = next(
@@ -11443,7 +11425,7 @@ def manage_chat_context(
     if estimate_chat_context_tokens(working, request_tools) > token_limit:
         for message in working:
             if message.get("_context_priority") == "recovery":
-                message["content"] = _truncate_chat_context_text(message.get("content"), 8000)
+                message["content"] = _truncate_chat_message_content(message.get("content"), 8000)
 
     tools_removed = False
     protocol_collapsed = False
@@ -11472,7 +11454,7 @@ def manage_chat_context(
         for message in working:
             priority = message.get("_context_priority")
             if priority in {"keep", "recovery"}:
-                message["content"] = _truncate_chat_context_text(message.get("content"), 3000)
+                message["content"] = _truncate_chat_message_content(message.get("content"), 3000)
 
     if estimate_chat_context_tokens(working, request_tools) > token_limit and request_tools:
         request_tools = []
@@ -12241,7 +12223,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
     provider = normalize_chat_provider(provider)
     api_key = os.getenv("DEEPSEEK_API_KEY", "")
     api_url = os.getenv("DEEPSEEK_API_URL", "https://api.deepseek.com/v1")
-    model = os.getenv("DEEPSEEK_CHAT_MODEL", "deepseek-v4-flash")
+    model = os.getenv("DEEPSEEK_CHAT_MODEL", "deepseek-v4-flash-vision-exp")
     report_model = fastmoss_report_model() if provider == "fastmoss" else chat_report_model()
     current_date_shanghai = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
 
@@ -12725,7 +12707,9 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 )
             request_model = (
                 report_model
-                if not request_tools and chat_route_uses_report_model(provider, route)
+                if not request_tools
+                and not chat_messages_have_images(request_messages)
+                and chat_route_uses_report_model(provider, route)
                 else model
             )
             payload = {"model": request_model, "messages": request_messages, "tools": request_tools or None, "temperature": 0.2}
@@ -15555,34 +15539,6 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             attachments = process_chat_attachments(raw_attachments, text)
-        except ChatAttachmentError as exc:
-            attachments = exc.attachments
-            user_msg = Message(id=str(uuid.uuid4()), role="user", content=text, attachments=attachments)
-            store.add_message(session, user_msg)
-            if not session.title:
-                title_seed = text or (attachments[0].get("name") if attachments else "Image")
-                session.title = str(title_seed)[:40] + ("..." if len(str(title_seed)) > 40 else "")
-            assistant_msg = Message(id=str(uuid.uuid4()), role="assistant", content=str(exc), status="error")
-            store.add_message(session, assistant_msg)
-            return json_response(self, HTTPStatus.ACCEPTED, {
-                "sessionId": session_id,
-                "provider": provider,
-                "userMessage": {
-                    "id": user_msg.id,
-                    "role": "user",
-                    "content": user_msg.content,
-                    "attachments": user_msg.attachments,
-                    "status": user_msg.status,
-                    "created_at": user_msg.created_at,
-                },
-                "message": {
-                    "id": assistant_msg.id,
-                    "role": "assistant",
-                    "content": assistant_msg.content,
-                    "status": "error",
-                    "created_at": assistant_msg.created_at,
-                },
-            })
         except ValueError as exc:
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
@@ -15592,7 +15548,7 @@ class Handler(BaseHTTPRequestHandler):
             title_seed = text or (attachments[0].get("name") if attachments else "Image")
             session.title = str(title_seed)[:40] + ("..." if len(str(title_seed)) > 40 else "")
 
-        model_text = chat_message_content_for_model(user_msg)
+        model_text = text or "User sent an image."
         assistant_msg = Message(id=str(uuid.uuid4()), role="assistant", content="", status="pending")
         store.add_message(session, assistant_msg)
 

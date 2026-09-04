@@ -52,7 +52,7 @@ services:
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       DEEPSEEK_API_URL: ${DEEPSEEK_API_URL:-https://api.deepseek.com/v1}
       DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-v4-flash}
-      DEEPSEEK_CHAT_MODEL: ${DEEPSEEK_CHAT_MODEL:-deepseek-v4-flash}
+      DEEPSEEK_CHAT_MODEL: ${DEEPSEEK_CHAT_MODEL:-deepseek-v4-flash-vision-exp}
       DEEPSEEK_REPORT_MODEL: ${DEEPSEEK_REPORT_MODEL:-deepseek-v4-pro}
       DEEPSEEK_V4_PRO_MODEL: ${DEEPSEEK_V4_PRO_MODEL:-deepseek-v4-pro}
       FASTMOSS_REPORT_MODEL: ${FASTMOSS_REPORT_MODEL:-deepseek-v4-flash}
@@ -84,6 +84,7 @@ services:
       OCR_SERVER_SHARED_DIR: ${OCR_SERVER_SHARED_DIR:-/home/openclaw/ocr-shared}
       CHAT_IMAGE_MAX_BYTES: ${CHAT_IMAGE_MAX_BYTES:-6291456}
       CHAT_IMAGE_MAX_COUNT: ${CHAT_IMAGE_MAX_COUNT:-6}
+      CHAT_IMAGE_MAX_TOTAL_BYTES: ${CHAT_IMAGE_MAX_TOTAL_BYTES:-31457280}
       MAX_FRAMES: ${MAX_FRAMES:-20}
       WHISPER_MODEL: ${WHISPER_MODEL:-small}
       LANGUAGE: ${LANGUAGE:-zh}
@@ -179,7 +180,7 @@ services:
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       DEEPSEEK_API_URL: ${DEEPSEEK_API_URL:-https://api.deepseek.com/v1}
       DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-v4-flash}
-      DEEPSEEK_CHAT_MODEL: ${DEEPSEEK_CHAT_MODEL:-deepseek-v4-flash}
+      DEEPSEEK_CHAT_MODEL: ${DEEPSEEK_CHAT_MODEL:-deepseek-v4-flash-vision-exp}
       DEEPSEEK_REPORT_MODEL: ${DEEPSEEK_REPORT_MODEL:-deepseek-v4-pro}
       DEEPSEEK_V4_PRO_MODEL: ${DEEPSEEK_V4_PRO_MODEL:-deepseek-v4-pro}
       FASTMOSS_REPORT_MODEL: ${FASTMOSS_REPORT_MODEL:-deepseek-v4-flash}
