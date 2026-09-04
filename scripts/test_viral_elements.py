@@ -57,6 +57,25 @@ class ViralElementsTests(unittest.TestCase):
         self.assertEqual("demo.mp4", library[0]["filename"])
         self.assertEqual("已审核", review["review_status"])
 
+    def test_pdf_composer_rules_are_applied_and_duration_is_optional(self):
+        captured = {}
+
+        def fake_model(prompt, max_tokens=6000):
+            captured["prompt"] = prompt
+            return {"versions": [{"id": key} for key in ("V1", "V2", "V3")]}
+
+        with patch.object(viral_elements, "_model_json", side_effect=fake_model):
+            result = viral_elements.generate_scripts(
+                "demo.mp4",
+                {"elements": [{"key": "hook", "approved": True, "value": "结果前置"}]},
+                {"product": "A", "selling_points": "B", "audience": "C"},
+                [{"key": "hook", "approved": True, "filename": "source.mp4", "value": "结果前置"}],
+            )
+        self.assertEqual("", result["brief"]["duration"])
+        self.assertIn("需求匹配40", captured["prompt"])
+        self.assertIn("同一来源原片每个脚本版本最多贡献2项", captured["prompt"])
+        self.assertIn("不得覆盖人工填写的审批人", captured["prompt"])
+
 
 if __name__ == "__main__":
     unittest.main()

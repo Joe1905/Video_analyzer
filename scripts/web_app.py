@@ -15050,7 +15050,8 @@ class Handler(BaseHTTPRequestHandler):
                 return json_response(self, HTTPStatus.CONFLICT, {"error": "请先完成元素拆解与审核"})
             if not any(item.get("approved") for item in review.get("elements", [])):
                 return json_response(self, HTTPStatus.CONFLICT, {"error": "至少审核通过一个元素后才能生成脚本"})
-            scripts = generate_scripts(filename, review, brief)
+            scripts = generate_scripts(filename, review, brief,
+                                       viral_element_store.list_library(approved_only=True, limit=300))
             saved = viral_element_store.save_scripts(filename, brief, scripts)
             return json_response(self, HTTPStatus.OK, saved)
         except (ViralElementError, ValueError, json.JSONDecodeError) as exc:

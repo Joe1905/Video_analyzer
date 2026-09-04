@@ -38,6 +38,28 @@ GROUP_LABELS = {
     "expression": "表达",
 }
 
+ELEMENT_ANALYSIS_RULES = """【模式A：TikTok采集与拆解】
+- 只根据真实画面、声音和已有分析证据输出，禁止分析 caption、hashtag、账号名、评论区和平台按钮。
+- 不猜品牌、参数、价格、功效或人物身份；无法可靠识别时写“存在但无法可靠识别”，并列入缺失项。
+- 18 个元素不得为空；确实不存在时写“无该元素｜实际替代方式”。
+- 类型和品类必须保持口径稳定，多个内容使用“｜”分隔。
+- 输出必须可供人工审核，AI 不得代替人工把元素设为通过。
+"""
+
+SCRIPT_COMPOSER_RULES = """【模式B：生成三版脚本】
+- 产品、卖点、目标人群为必填；产品固定，类型、品类和产品不得混淆。
+- 只使用状态已审核/已通过的有效元素；忽略空值、null、公式错误和“无法识别”。
+- 每个元素独立建立候选池，并按需求匹配40、用途匹配30、可执行性20、热度10评分；每池从前5名选择。
+- 同一来源原片每个脚本版本最多贡献2项元素；来源不足时允许跨品类迁移或AI原创，但必须标记。
+- 检查人物、场景、情绪、Hook、字幕、镜头、CTA、时间轴和卖点的一致性；不照抄原片，不编造产品事实。
+- 同时生成V1稳妥转化、V2平衡创意、V3探索突破；相邻版本至少改变Hook、POV、素材结构、场景、视觉风格、CTA中的3项。
+- 用户指定时长时三版严格遵守；未指定时各版可独立确定，并以V1时长作为记录时长。
+- 每版时间轴连续，所有镜头时长之和必须等于总时长；每个卖点至少进入一个镜头。
+- 每版包含中文策略、人物/场景设定、英文口播、英文字幕、英文CTA、分镜表和独立英文视频提示词。
+- source_elements 只能列出该版本实际使用的元素记录，格式为“来源文件:key”；原创项需明确标记“AI原创:key”。
+- 只生成V1/V2/V3，不生成第四版；不得覆盖人工填写的审批人、审批意见、最终采用版本或需修改/已通过状态。
+"""
+
 
 class ViralElementError(RuntimeError):
     pass
@@ -175,8 +197,10 @@ def _compact_source(source: dict[str, Any]) -> dict[str, Any]:
 
 def analyze_elements(filename: str, source: dict[str, Any]) -> dict[str, Any]:
     schema = [{"group": g, "key": k, "label": label} for g, k, label in ELEMENT_DEFS]
-    prompt = f"""你是短视频创意拆解分析师。只根据给定的视频分析证据，提取恰好 18 个元素。
-禁止猜测品牌、价格、参数或人物身份。证据不足时 value 写“未识别”，confidence 不高于 0.3。
+    prompt = f"""你是短视频创意拆解分析师。执行以下从豆包工作流程迁移的规则：
+{ELEMENT_ANALYSIS_RULES}
+只根据给定的视频分析证据，提取恰好 18 个元素。
+证据不足时 value 写“存在但无法可靠识别”，confidence 不高于 0.3，并把元素名加入 missing_items。
 返回严格 JSON：{{"summary":"一句话总结","elements":[{{"group":"positioning","key":"type","label":"视频类型","value":"...","confidence":0.0,"evidence":"具体依据","time_range":"00:00-00:03","approved":false}}]}}。
 elements 必须严格按下面 schema 顺序、每项一次；confidence 范围 0-1；time_range 无法确定时为空字符串。
 schema={json.dumps(schema, ensure_ascii=False)}
@@ -192,7 +216,7 @@ schema={json.dumps(schema, ensure_ascii=False)}
             confidence = 0.0
         elements.append({
             "group": group, "group_label": GROUP_LABELS[group], "key": key, "label": label,
-            "value": str(item.get("value") or "未识别")[:4000], "confidence": confidence,
+            "value": str(item.get("value") or "存在但无法可靠识别")[:4000], "confidence": confidence,
             "evidence": str(item.get("evidence") or "")[:4000],
             "time_range": str(item.get("time_range") or "")[:80], "approved": bool(item.get("approved", False)),
         })
@@ -246,7 +270,7 @@ def validate_review(payload: dict[str, Any]) -> dict[str, Any]:
         except (TypeError, ValueError):
             confidence = 0.0
         elements.append({"group": group, "group_label": GROUP_LABELS[group], "key": key, "label": label,
-                         "value": str(item.get("value") or "未识别")[:4000], "confidence": confidence,
+                         "value": str(item.get("value") or "存在但无法可靠识别")[:4000], "confidence": confidence,
                          "evidence": str(item.get("evidence") or "")[:4000],
                          "time_range": str(item.get("time_range") or "")[:80], "approved": bool(item.get("approved"))})
     approved_count = sum(bool(item.get("approved")) for item in elements)
@@ -261,23 +285,26 @@ def validate_review(payload: dict[str, Any]) -> dict[str, Any]:
             "review_status": "已审核" if approved_count else "待审核", "schema_version": 2}
 
 
-def generate_scripts(filename: str, review: dict[str, Any], brief: dict[str, Any]) -> dict[str, Any]:
-    required = {"product": "产品名称", "selling_points": "核心卖点", "audience": "目标人群", "duration": "视频时长"}
+def generate_scripts(filename: str, review: dict[str, Any], brief: dict[str, Any],
+                     library: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    required = {"product": "产品名称", "selling_points": "核心卖点", "audience": "目标人群"}
     cleaned = {key: str(brief.get(key) or "").strip()[:4000] for key in required}
+    cleaned["duration"] = str(brief.get("duration") or "").strip()[:80]
     missing = [label for key, label in required.items() if not cleaned[key]]
     if missing:
         raise ViralElementError("缺少：" + "、".join(missing))
     approved = [item for item in review.get("elements", []) if item.get("approved")]
     if not approved:
         raise ViralElementError("请至少审核通过一个元素后再生成脚本")
-    prompt = f"""你是短视频转化脚本总监。根据产品 Brief 和已审核元素生成三个差异明显、可直接拍摄的脚本版本：
-V1 稳妥转化、V2 平衡创意、V3 探索突破。产品事实只能来自 Brief，不能从参考元素继承。
+    candidate_elements = [item for item in (library or approved) if item.get("approved")]
+    prompt = f"""你是短视频转化脚本总监。执行以下从 tiktok-viral-script-composer 工作提示词迁移的规则：
+{SCRIPT_COMPOSER_RULES}
+根据产品 Brief 和候选元素生成三个差异明显、可直接拍摄的脚本版本。产品事实只能来自 Brief，不能从参考元素继承。
 每版必须返回 strategy（中文）、hook、duration、shots（数组，每项含 time_range、visual、voiceover、on_screen_text、selling_point）、cta、video_prompt（独立完整英文提示词）、source_elements（实际使用的 key 数组）、risks（数组）。
-三版至少在 Hook、POV、素材结构、场景、视觉风格、CTA 中改变三项。镜头时长之和应匹配目标时长。
-如 Brief 指定精确秒数，必须严格使用；voiceover、on_screen_text、cta 默认英文。每个卖点必须落实到至少一个镜头。
 严格返回 JSON：{{"versions":[{{"id":"V1","name":"稳妥转化",...}},...]}}，不要 Markdown。
 Brief={json.dumps(cleaned, ensure_ascii=False)}
-已审核元素={json.dumps(approved, ensure_ascii=False)}"""
+当前视频已审核元素={json.dumps(approved, ensure_ascii=False)}
+跨视频候选元素库={json.dumps(candidate_elements[:300], ensure_ascii=False)}"""
     result = _model_json(prompt, max_tokens=8000)
     versions = result.get("versions")
     if not isinstance(versions, list) or len(versions) != 3:
