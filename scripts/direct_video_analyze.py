@@ -13,6 +13,7 @@ from typing import Any
 
 import requests
 from api_cache import record_api_call
+from vision_provider import require_direct_video, observe_response, mark_unavailable
 
 
 ROOT = Path.cwd()
@@ -139,38 +140,45 @@ def call_vision_api(
     max_tokens: int,
 ) -> tuple[dict[str, Any], float]:
     started = time.monotonic()
-    response = requests.post(
-        api_url.rstrip("/") + "/chat/completions",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "video_url",
-                            "video_url": {
-                                "url": video_url,
-                                "fps": fps,
+    require_direct_video()
+    try:
+        response = requests.post(
+            api_url.rstrip("/") + "/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": model,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "video_url",
+                                "video_url": {
+                                    "url": video_url,
+                                    "fps": fps,
+                                },
                             },
-                        },
-                        {
-                            "type": "text",
-                            "text": build_prompt(transcript, analysis_prompt),
-                        },
-                    ],
-                }
-            ],
-            "temperature": 0.1,
-            "max_tokens": max_tokens,
-        },
-        timeout=300,
-    )
+                            {
+                                "type": "text",
+                                "text": build_prompt(transcript, analysis_prompt),
+                            },
+                        ],
+                    }
+                ],
+                "temperature": 0.1,
+                "max_tokens": max_tokens,
+            },
+            timeout=300,
+        )
+    except requests.RequestException:
+        mark_unavailable("ConnectionFailed", "Qwen 连接失败或请求超时")
+        raise RuntimeError("Qwen 连接失败，已切换备用帧分析线路；视频直连分析已禁用") from None
     elapsed = time.monotonic() - started
+    if not response.ok:
+        observe_response(response)
     response.raise_for_status()
     data = response.json()
     record_api_call(
@@ -252,6 +260,7 @@ def write_json(path: Path, payload: Any) -> None:
 
 def main() -> int:
     load_env_file()
+    require_direct_video()
     parser = argparse.ArgumentParser(description="Analyze a full video with an OpenAI-compatible Qwen API.")
     parser.add_argument("video_name", help="Video file name under videos/.")
     parser.add_argument("--output-dir", default=None)
