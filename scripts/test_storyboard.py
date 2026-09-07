@@ -90,7 +90,19 @@ class StoryboardTests(unittest.TestCase):
             self.assertEqual(result["difference_threshold"], 10)
             self.assertEqual(self.source.read_bytes(), original)
             self.assertEqual((old_output / "analysis.json").read_text(), 'original analysis')
-            self.assertFalse(list(service.job_dir(job["id"]).glob('source.*')))
+            self.assertTrue(result["video_available"])
+            self.assertEqual(request('/api/storyboard/video?id=' + job["id"]), original)
+            for byte_range, expected in [('bytes=10-29', original[10:30]), ('bytes=-20', original[-20:])]:
+                req = urllib.request.Request(base + '/api/storyboard/video?id=' + job["id"], headers={'Range': byte_range})
+                with urllib.request.urlopen(req) as response:
+                    self.assertEqual(response.status, 206)
+                    self.assertEqual(response.read(), expected)
+            req = urllib.request.Request(base + '/api/storyboard/video?id=' + job["id"], headers={'Range': 'bytes=999999999-'})
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                urllib.request.urlopen(req)
+            self.assertEqual(error.exception.code, 416)
+            service.video_path(job).unlink()
+            self.assertFalse(service.load(job["id"])["video_available"])
             png = request('/api/storyboard/export?id=' + job["id"])
             self.assertTrue(png.startswith(b'\x89PNG'))
             archive = request('/api/storyboard/export?id=' + job["id"] + '&format=zip')

@@ -2,6 +2,7 @@
 import argparse
 import json
 import math
+import mimetypes
 import re
 import shutil
 import subprocess
@@ -113,7 +114,56 @@ class StoryboardService:
             job.update(status="failed", error="服务重启中断了任务，请重新提取")
         if job["status"] == "complete":
             job.update(json.loads((directory / "frames.json").read_text(encoding="utf-8")))
+        job["video_available"] = self.video_path(job).is_file()
         return job
+
+    def video_path(self, job):
+        suffix = Path(job["filename"]).suffix.lower()
+        if suffix not in VIDEO_SUFFIXES:
+            raise ValueError("无效的视频类型")
+        return self.job_dir(job["id"]) / ("source" + suffix)
+
+    def serve_video(self, handler, job):
+        path = self.video_path(job)
+        with path.open("rb") as stream:
+            size = path.stat().st_size
+            start, end = 0, size - 1
+            requested = handler.headers.get("Range")
+            if requested:
+                match = re.fullmatch(r"bytes=(\d*)-(\d*)", requested)
+                if match and any(match.groups()):
+                    left, right = match.groups()
+                    if left:
+                        start = int(left)
+                        end = min(int(right), end) if right else end
+                    else:
+                        start = max(0, size - int(right))
+                else:
+                    start = size
+                if start > end or start >= size:
+                    handler.send_response(416)
+                    handler.send_header("Content-Range", f"bytes */{size}")
+                    handler.send_header("Content-Length", "0")
+                    handler.end_headers()
+                    return
+            handler.send_response(206 if requested else 200)
+            handler.send_header("Content-Type", mimetypes.guess_type(path.name)[0] or "video/mp4")
+            handler.send_header("Accept-Ranges", "bytes")
+            handler.send_header("Content-Length", str(end - start + 1))
+            if requested:
+                handler.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+            handler.end_headers()
+            stream.seek(start)
+            remaining = end - start + 1
+            try:
+                while remaining:
+                    chunk = stream.read(min(256 * 1024, remaining))
+                    if not chunk:
+                        break
+                    handler.wfile.write(chunk)
+                    remaining -= len(chunk)
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # Browser abandoned a range when seeking or closing the player.
 
     def run(self, job, source):
         directory = self.job_dir(job["id"])
@@ -132,7 +182,6 @@ class StoryboardService:
             job.update(status="failed", error=str(exc))
         finally:
             try:
-                source.unlink(missing_ok=True)
                 save_json(directory / "job.json", job)
             finally:
                 with self.lock:
@@ -230,7 +279,7 @@ class StoryboardService:
                 for item in paths[:30]:
                     jobs.append(self.load(item.parent.name))
                 self.reply(handler, 200, {"jobs": jobs})
-            elif path in {"/api/storyboard/jobs", "/api/storyboard/image", "/api/storyboard/export"}:
+            elif path in {"/api/storyboard/jobs", "/api/storyboard/image", "/api/storyboard/export", "/api/storyboard/video"}:
                 job_id = query.get("id", [""])[0]
                 result = self.load(job_id)
                 directory = self.job_dir(job_id)
@@ -238,6 +287,8 @@ class StoryboardService:
                     self.reply(handler, 200, result)
                 elif result["status"] != "complete":
                     self.reply(handler, 409, {"error": "任务尚未完成"})
+                elif path == "/api/storyboard/video":
+                    self.serve_video(handler, result)
                 elif path == "/api/storyboard/image":
                     name = query.get("frame", [""])[0]
                     if name not in {item["name"] for item in result["frames"]}:
