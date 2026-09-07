@@ -47,8 +47,15 @@ def main():
     from video_analyzer.clients.generic_openai_api import GenericOpenAIAPIClient
 
     class RoutedClient(GenericOpenAIAPIClient):
-        def generate(self, *args, **kwargs):
-            return generate(config, *args, **kwargs)
+        frames_seen = 0
+
+        def generate(self, prompt, image_path=None, **kwargs):
+            if config["provider"] == "deepseek" and not image_path and not self.frames_seen:
+                raise SystemExit("未获得有效视频帧，无法生成视觉分析；Qwen 视频直连分析已禁用")
+            result = generate(config, prompt, image_path, **kwargs)
+            if image_path:
+                self.frames_seen += 1
+            return result
 
     # CLI's factory is the single construction point; no installed package edits.
     cli.GenericOpenAIAPIClient = RoutedClient
