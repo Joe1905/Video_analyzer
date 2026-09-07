@@ -1241,11 +1241,25 @@ def _run_video_analyze(filename: str, timeout_seconds: Any | None = None) -> dic
     return {"output": result.stdout}
 
 
-def _run_video_direct_analyze(filename: str) -> dict:
+def _run_video_direct_analyze(
+    filename: str,
+    audio_mode: str = "whisper",
+    timeout_seconds: int | None = None,
+    prompt: str = "",
+    public_url: str = "",
+) -> dict:
     out_dir = _video_output_dir(filename)
-    cmd = ["python", str(SCRIPTS_DIR / "direct_video_analyze.py"), filename, "--output-dir", str(out_dir)]
+    cmd = [
+        "python", str(SCRIPTS_DIR / "direct_video_analyze.py"), filename,
+        "--output-dir", str(out_dir), "--audio-mode", audio_mode,
+    ]
+    if prompt:
+        cmd.extend(["--prompt", prompt])
+    if public_url:
+        cmd.extend(["--public-url", public_url])
     env = os.environ.copy()
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600, cwd=ROOT, env=env)
+    timeout = _video_analyze_timeout_seconds(timeout_seconds) if timeout_seconds is not None else 600
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=ROOT, env=env)
     if result.returncode != 0:
         raise RuntimeError(result.stderr or result.stdout or f"Exit code {result.returncode}")
     analysis = out_dir / "analysis.json"
@@ -1342,7 +1356,7 @@ TOOLS: list[dict[str, Any]] = [
     {"name": "video_analyze", "description": "对已下载的视频进行关键帧提取分析（Qwen 视觉 + Whisper 转写）。需要先用 video_download 下载。",
      "parameters": {"type": "object", "properties": {"filename": {"type": "string", "description": "videos/ 目录下的视频文件名"}, "timeout_seconds": {"type": "integer", "description": "分析子进程超时秒数（30-1800），默认读取 VIDEO_ANALYZE_TIMEOUT"}}, "required": ["filename"]}},
     {"name": "video_direct_analyze", "description": "对视频进行端到端分析（Qwen vision API），适用于7MB以下小视频。",
-     "parameters": {"type": "object", "properties": {"filename": {"type": "string", "description": "videos/ 目录下的视频文件名"}}, "required": ["filename"]}},
+     "parameters": {"type": "object", "properties": {"filename": {"type": "string", "description": "videos/ 目录下的视频文件名"}, "audio_mode": {"type": "string", "enum": ["whisper", "none"], "description": "none 会跳过本地转写，仅分析可见视频内容。"}, "timeout_seconds": {"type": "integer", "description": "可选子进程超时秒数（30-1800）。"}, "public_url": {"type": "string", "description": "可选、可被视觉模型访问的公开视频 CDN 地址。"}}, "required": ["filename"]}},
 ]
 
 
@@ -1442,7 +1456,13 @@ def execute_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
         elif name == "video_analyze":
             data = _run_video_analyze(str(args["filename"]), args.get("timeout_seconds"))
         elif name == "video_direct_analyze":
-            data = _run_video_direct_analyze(str(args["filename"]))
+            data = _run_video_direct_analyze(
+                str(args["filename"]),
+                str(args.get("audio_mode") or "whisper"),
+                args.get("timeout_seconds"),
+                str(args.get("prompt") or ""),
+                str(args.get("public_url") or ""),
+            )
         else:
             return {"ok": False, "error": f"Unknown tool: {name}"}
         return {"ok": True, "data": data, "elapsed": round(time.monotonic() - started, 2)}

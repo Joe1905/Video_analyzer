@@ -32,6 +32,13 @@ DB_PATH = ROOT / "data" / "hot_video_report.sqlite"
 REPORT_COVER_DIR = ROOT / "data" / "report_covers"
 DEFAULT_API_BASE = "https://api.sociavault.com"
 DEFAULT_TZ = "Asia/Shanghai"
+REPORT_DIRECT_VIDEO_PROMPT = (
+    "你正在为短视频爆款日报做视频直连降级解析。只返回严格 JSON，不要 Markdown。"
+    "必须包含 summary、timeline、visual_evidence 三个键；summary 用中文概括内容、开头钩子、"
+    "画面节奏和可复用创意，timeline 是按时间顺序的数组，每项包含 time_range、visual、audio，"
+    "visual_evidence 是可核验的画面事实。没有可靠 ASR 时，不得臆造、引用或总结口播；"
+    "audio 字段应写“未可靠识别”或仅描述可直接观察到的声音线索。"
+)
 
 _scheduler_started = False
 _scheduler_lock = threading.Lock()
@@ -48,6 +55,10 @@ _initialized_db_path: Path | None = None
 
 def today_key() -> str:
     return datetime.now(ZoneInfo(DEFAULT_TZ)).strftime("%Y-%m-%d")
+
+
+def hot_report_enabled() -> bool:
+    return os.getenv("HOT_VIDEO_REPORT_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 
 
 def initialize_hot_report_db() -> None:
@@ -1529,6 +1540,8 @@ def _analysis_sha256(analysis: Any) -> str:
 
 
 def translate_report_video_analysis(report_date: str, platform: str, video_id: str, force: bool = False) -> dict[str, Any]:
+    if not _auto_translate_enabled():
+        raise ValueError("日报逐视频翻译已关闭")
     date = str(report_date or today_key()).strip()
     platform = str(platform or "").strip()
     video_id = str(video_id or "").strip()
@@ -1589,7 +1602,7 @@ def translate_report_video_analysis(report_date: str, platform: str, video_id: s
 
 
 def _auto_translate_enabled() -> bool:
-    return os.getenv("REPORT_AUTO_TRANSLATE_ANALYSIS", "1").strip().lower() not in {"0", "false", "no", "off"}
+    return os.getenv("REPORT_AUTO_TRANSLATE_ANALYSIS", "0").strip().lower() not in {"0", "false", "no", "off"}
 
 
 def _run_report_video_translation_job(report_date: str, platform: str, video_id: str) -> None:
@@ -2294,7 +2307,26 @@ def _process_video(conn: sqlite3.Connection, report_date: str, item: dict[str, A
                 {"filename": filename, "timeout_seconds": _report_video_analyze_timeout_seconds(item.get("duration_ms"))},
             )
             if not result.get("ok"):
-                raise RuntimeError(str(result.get("error") or "video extraction failed"))
+                primary_error = str(result.get("error") or "video extraction failed")
+                if os.getenv("REPORT_DIRECT_VIDEO_FALLBACK", "1").strip().lower() not in {"0", "false", "no", "off"}:
+                    fallback = execute_tool(
+                        "video_direct_analyze",
+                        {
+                            "filename": filename,
+                            "audio_mode": "none",
+                            "timeout_seconds": _report_video_analyze_timeout_seconds(item.get("duration_ms")),
+                            "prompt": REPORT_DIRECT_VIDEO_PROMPT,
+                        },
+                    )
+                    if fallback.get("ok"):
+                        analysis_path = output_dir / "analysis.json"
+                    else:
+                        raise RuntimeError(
+                            f"primary analyzer failed: {primary_error}; "
+                            f"direct video fallback failed: {fallback.get('error') or 'unknown error'}"
+                        )
+                else:
+                    raise RuntimeError(primary_error)
         output_dir = _output_dir_for_filename(filename)
         analysis = _json_loads((output_dir / "analysis.json").read_text(encoding="utf-8") if (output_dir / "analysis.json").is_file() else "", {})
         analysis_sha256 = _analysis_sha256(analysis)
@@ -3654,6 +3686,8 @@ def refresh_report_hot_scores(report_date: str) -> int:
 
 def regenerate_daily_report_summary(report_date: str) -> dict[str, Any]:
     """Regenerate only the final daily summary from completed video checkpoints."""
+    if not hot_report_enabled():
+        raise RuntimeError("日报功能已暂停")
     refresh_report_hot_scores(report_date)
     with closing(_connect()) as conn:
         row = conn.execute(
@@ -3755,6 +3789,8 @@ def _heartbeat_report(conn: sqlite3.Connection, report_id: str, report_date: str
 
 
 def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[str, Any]:
+    if not hot_report_enabled():
+        raise RuntimeError("日报功能已暂停")
     settings = get_settings()
     date = report_date or today_key()
     region = os.getenv("SOCIAVAULT_REGION", "US").strip() or "US"
@@ -3951,10 +3987,12 @@ def run_report(report_date: str | None = None, scheduled: bool = False) -> dict[
 def get_report_runtime_status() -> dict[str, Any]:
     with _active_job_lock:
         active = _active_job
-    return {"active_date": active, "queued": list(_job_queue.queue)}
+    return {"enabled": hot_report_enabled(), "active_date": active, "queued": list(_job_queue.queue)}
 
 
 def enqueue_report(report_date: str | None = None) -> dict[str, Any]:
+    if not hot_report_enabled():
+        raise RuntimeError("日报功能已暂停")
     date = report_date or today_key()
     _job_queue.put(date)
     _progress_payload(date, "queued", "queued", 0, "日报任务已排队", {})
@@ -4011,6 +4049,8 @@ def _scheduler_loop() -> None:
 
 def start_report_scheduler(enable_timer: bool = True) -> None:
     global _scheduler_started
+    if not hot_report_enabled():
+        return
     with _scheduler_lock:
         if _scheduler_started:
             return

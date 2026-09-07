@@ -19,6 +19,7 @@ import subprocess
 import threading
 import time
 import uuid
+from functools import wraps
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
@@ -76,10 +77,20 @@ STATUS_ERROR = "不可用"
 STATUS_DUPLICATE = "IP重复"
 _LOGIN_CAPTURE_LOCK = threading.Lock()
 _X_IDLE_LOCK = threading.Lock()
+_MIHOMO_CONFIG_LOCK = threading.RLock()
 
 
 class ProxyConfigurationError(ValueError):
     """Raised when the local proxy core is not configured to load a parsed pool."""
+
+
+def _mihomo_config_locked(function):
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        with _MIHOMO_CONFIG_LOCK:
+            return function(*args, **kwargs)
+
+    return wrapped
 
 
 STATUS_MAP = {
@@ -2496,14 +2507,23 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
         "mihomo_proxy_json": json.dumps(mihomo_proxy, ensure_ascii=False, separators=(",", ":")),
         "updated_at": now,
     }
+    source_changed = False
+    refresh_ip_after_save = False
     with connect() as conn:
         if pool_id:
             exists = conn.execute(
-                "SELECT id FROM proxy_profiles WHERE id = ? AND deleted_at = ''",
+                """SELECT id, source_type, source_uri
+                   FROM proxy_profiles WHERE id = ? AND deleted_at = ''""",
                 (pool_id,),
             ).fetchone()
             if not exists:
                 raise ValueError("proxy profile not found")
+            source_changed = (
+                source_type != str(exists["source_type"] or "")
+                or source_uri != str(exists["source_uri"] or "")
+            )
+            if source_changed and source_type != "direct":
+                values["expected_exit_ip"] = ""
             values["local_port"] = _allocate_port(conn, pool_id)
             conn.execute(
                 """
@@ -2517,6 +2537,28 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
                 """,
                 {**values, "id": pool_id},
             )
+            if source_changed:
+                conn.execute(
+                    """UPDATE proxy_profiles
+                       SET detected_exit_ip = '', detected_country = '', detected_region = '',
+                           detected_city = '', detected_address = '', detected_at = '',
+                           parse_error = '', auto_check_failures = 0,
+                           last_auto_check_at = '', next_auto_check_at = ''
+                       WHERE id = ?""",
+                    (pool_id,),
+                )
+                conn.execute(
+                    """UPDATE tiktok_accounts
+                       SET last_checked_ip = '', last_check_status = ?, last_check_at = '',
+                           last_error = ?, updated_at = ?
+                       WHERE proxy_profile_id = ? AND proxy_bound = 1 AND deleted_at = ''""",
+                    (
+                        "通过" if source_type == "direct" else "待校验",
+                        "" if source_type == "direct" else "代理链接已更新，等待重新校验出口 IP",
+                        now,
+                        pool_id,
+                    ),
+                )
         else:
             values["local_port"] = _allocate_port(conn, 0)
             cur = conn.execute(
@@ -2534,7 +2576,8 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
                 {**values, "created_at": now},
             )
             pool_id = int(cur.lastrowid)
-        duplicate = _duplicate_exit_ip_pool(conn, pool_id, expected_exit_ip)
+            source_changed = source_type != "direct" and bool(source_uri)
+        duplicate = _duplicate_exit_ip_pool(conn, pool_id, str(values["expected_exit_ip"] or ""))
         if duplicate:
             duplicate_reason = _duplicate_exit_ip_reason(duplicate, expected_exit_ip)
             conn.execute(
@@ -2544,6 +2587,12 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
                 (STATUS_DUPLICATE, duplicate_reason, now, pool_id),
             )
         conn.commit()
+    refresh_ip_after_save = bool(
+        source_changed
+        and source_type != "direct"
+        and parse_status == "ok"
+        and normalized_status != STATUS_PAUSED
+    )
     pool = get_pool(pool_id)
     if _sing_box_reality_pool(pool):
         core = ensure_proxy_cores(restart=True, required=True)
@@ -2555,7 +2604,18 @@ def upsert_pool(payload: dict[str, Any]) -> dict[str, Any]:
             core = {"mihomo_sync": _sync_mihomo_pool_config(pool)}
     else:
         core = {}
-    return {"pool": get_pool(pool_id), **list_state(), **core}
+    ip_refresh: dict[str, Any] = {}
+    if refresh_ip_after_save:
+        try:
+            ip_refresh = check_binding({"proxy_profile_id": pool_id, "bind": True})
+        except Exception as exc:
+            ip_refresh = {"allowed": False, "error": str(exc)}
+    return {
+        "pool": get_pool(pool_id),
+        **list_state(),
+        **core,
+        **({"ip_refresh": ip_refresh} if refresh_ip_after_save else {}),
+    }
 
 
 def get_pool(pool_id: int) -> dict[str, Any]:
@@ -2722,8 +2782,9 @@ def _restart_sing_box_container(required: bool = False) -> dict[str, Any]:
 
 
 def ensure_proxy_cores(restart: bool = False, required: bool = False) -> dict[str, Any]:
+    mihomo_cleanup = cleanup_stale_mihomo_pool_configs()
     if not _sing_box_reality_enabled():
-        return {"sing_box": {"enabled": False}}
+        return {"sing_box": {"enabled": False}, "mihomo_cleanup": mihomo_cleanup}
     exported = _write_sing_box_config()
     runtime = _restart_sing_box_container(required=required) if restart else {"restarted": False, "containers": []}
     return {
@@ -2732,8 +2793,24 @@ def ensure_proxy_cores(restart: bool = False, required: bool = False) -> dict[st
             "config_path": str(SING_BOX_CONFIG_PATH),
             "pools": exported["pools"],
             **runtime,
-        }
+        },
+        "mihomo_cleanup": mihomo_cleanup,
     }
+
+
+def _profile_without_proxy_binding(raw_profile: str) -> str:
+    profile = _json_loads(raw_profile, {})
+    if not isinstance(profile, dict):
+        profile = {}
+    profile.pop("proxy_binding", None)
+    browser_settings = profile.get("browser_settings")
+    if isinstance(browser_settings, dict):
+        browser_settings.pop("proxy_server", None)
+        if browser_settings:
+            profile["browser_settings"] = browser_settings
+        else:
+            profile.pop("browser_settings", None)
+    return json.dumps(profile, ensure_ascii=False, separators=(",", ":"))
 
 
 def delete_pool(pool_id: int) -> dict[str, Any]:
@@ -2753,18 +2830,65 @@ def delete_pool(pool_id: int) -> dict[str, Any]:
         if active_session:
             raise ValueError("代理仍有运行中的浏览器或观测通道，请先释放")
 
-        count = conn.execute(
-            "SELECT COUNT(*) AS count FROM tiktok_accounts WHERE proxy_profile_id = ? AND deleted_at = ''",
+        conn.execute("BEGIN IMMEDIATE")
+        active_job = conn.execute(
+            """SELECT id FROM publish_jobs
+               WHERE proxy_profile_id = ? AND deleted_at = ''
+                 AND status IN ('preparing','uploading','publishing')
+               UNION ALL
+               SELECT id FROM collect_jobs
+               WHERE proxy_profile_id = ? AND status IN ('preparing','collecting')
+               LIMIT 1""",
+            (pool_id, pool_id),
+        ).fetchone()
+        if active_job:
+            conn.rollback()
+            raise ValueError("代理仍有执行中的任务，请等待完成后再删除")
+        bound_accounts = conn.execute(
+            """SELECT id, profile_json FROM tiktok_accounts
+               WHERE proxy_profile_id = ? AND proxy_bound = 1 AND deleted_at = ''""",
             (pool_id,),
-        ).fetchone()["count"]
-        if int(count):
-            raise ValueError("代理仍绑定账号，请先删除或迁移账号")
+        ).fetchall()
 
         sing_box_managed = _sing_box_reality_pool(pool)
         cleanup, backup = ({"removed": False, "port": int(pool["local_port"] or 0)}, None)
         if not sing_box_managed:
             cleanup, backup = _remove_mihomo_pool_config(pool)
         try:
+            unbound_reason = "原绑定代理已删除，请重新选择代理或直连"
+            for account in bound_accounts:
+                conn.execute(
+                    """UPDATE tiktok_accounts
+                       SET proxy_bound = 0, profile_json = ?, last_checked_ip = '',
+                           last_check_status = '未绑定', last_check_at = '',
+                           last_error = ?, updated_at = ?
+                       WHERE id = ?""",
+                    (
+                        _profile_without_proxy_binding(str(account["profile_json"] or "{}")),
+                        unbound_reason,
+                        now_iso(),
+                        int(account["id"]),
+                    ),
+                )
+                conn.execute(
+                    "UPDATE collect_settings SET enabled = 0, updated_at = ? WHERE account_id = ?",
+                    (now_iso(), int(account["id"])),
+                )
+            publish_jobs = conn.execute(
+                """UPDATE publish_jobs
+                   SET status = 'delayed', stage = 'waiting_proxy', next_attempt_at = '',
+                       last_error = ?, updated_at = ?
+                   WHERE proxy_profile_id = ? AND deleted_at = ''
+                     AND status IN ('queued','delayed')""",
+                (unbound_reason, now_iso(), pool_id),
+            ).rowcount
+            collect_jobs = conn.execute(
+                """UPDATE collect_jobs
+                   SET status = 'delayed', stage = 'waiting_proxy', next_attempt_at = '',
+                       last_error = ?, updated_at = ?
+                   WHERE proxy_profile_id = ? AND status IN ('queued','delayed')""",
+                (unbound_reason, now_iso(), pool_id),
+            ).rowcount
             conn.execute("DELETE FROM browser_sessions WHERE proxy_profile_id = ?", (pool_id,))
             deleted_at = now_iso()
             conn.execute(
@@ -2775,6 +2899,7 @@ def delete_pool(pool_id: int) -> dict[str, Any]:
             )
             conn.commit()
         except Exception:
+            conn.rollback()
             if backup is not None:
                 try:
                     _restore_mihomo_listener_config(*backup)
@@ -2782,7 +2907,13 @@ def delete_pool(pool_id: int) -> dict[str, Any]:
                     pass
             raise
     core = ensure_proxy_cores(restart=True, required=True) if sing_box_managed else {}
-    return {**list_state(), "mihomo_cleanup": cleanup, **core}
+    return {
+        **list_state(),
+        "mihomo_cleanup": cleanup,
+        "unbound_accounts": len(bound_accounts),
+        "delayed_jobs": {"publish": publish_jobs, "collect": collect_jobs},
+        **core,
+    }
 
 
 def upsert_account(payload: dict[str, Any]) -> dict[str, Any]:
@@ -3099,7 +3230,12 @@ def require_account_proxy_bound(account: sqlite3.Row | dict[str, Any]) -> None:
         raise ValueError("账号未绑定代理，无法执行任务或观测")
 
 
-def _require_account_binding_idle(conn: sqlite3.Connection, account_id: int) -> None:
+def _require_account_binding_idle(
+    conn: sqlite3.Connection,
+    account_id: int,
+    *,
+    allow_waiting_proxy: bool = False,
+) -> None:
     active_session = conn.execute(
         """SELECT id FROM browser_sessions
            WHERE account_id = ? AND status IN ('starting','running','observing')
@@ -3108,20 +3244,30 @@ def _require_account_binding_idle(conn: sqlite3.Connection, account_id: int) -> 
     ).fetchone()
     if active_session:
         raise ValueError("账号仍处于唤醒或运行状态，请先休眠账号")
+    publish_statuses = (
+        "('preparing','uploading','publishing')"
+        if allow_waiting_proxy
+        else "('queued','delayed','preparing','uploading','publishing')"
+    )
     active_publish = conn.execute(
-        """SELECT id FROM publish_jobs
-           WHERE account_id = ? AND deleted_at = ''
-             AND status IN ('queued','delayed','preparing','uploading','publishing')
-           LIMIT 1""",
+        f"""SELECT id FROM publish_jobs
+            WHERE account_id = ? AND deleted_at = ''
+              AND status IN {publish_statuses}
+            LIMIT 1""",
         (account_id,),
     ).fetchone()
     if active_publish:
         raise ValueError("账号仍有待发布或运行中的发布任务，请先取消或等待完成")
+    collect_statuses = (
+        "('preparing','collecting')"
+        if allow_waiting_proxy
+        else "('queued','delayed','preparing','collecting')"
+    )
     active_collect = conn.execute(
-        """SELECT id FROM collect_jobs
-           WHERE account_id = ?
-             AND status IN ('queued','delayed','preparing','collecting')
-           LIMIT 1""",
+        f"""SELECT id FROM collect_jobs
+            WHERE account_id = ?
+              AND status IN {collect_statuses}
+            LIMIT 1""",
         (account_id,),
     ).fetchone()
     if active_collect:
@@ -3130,7 +3276,8 @@ def _require_account_binding_idle(conn: sqlite3.Connection, account_id: int) -> 
 
 def update_account_proxy_binding(payload: dict[str, Any]) -> dict[str, Any]:
     action = _clean_text(payload.get("action"), 20).lower()
-    pool_id = int(payload.get("proxy_profile_id") or payload.get("pool_id") or 0)
+    requested_pool = str(payload.get("proxy_profile_id") or payload.get("pool_id") or "").strip()
+    pool_id = _direct_login_pool_id() if action == "bind" and requested_pool == "direct" else int(requested_pool or 0)
     if action not in {"bind", "unbind"}:
         raise ValueError("action must be bind or unbind")
     if not pool_id:
@@ -3159,12 +3306,14 @@ def update_account_proxy_binding(payload: dict[str, Any]) -> dict[str, Any]:
                 raise ValueError("该代理当前未绑定账号")
             account_id = int(bound_account["id"])
             _require_account_binding_idle(conn, account_id)
+            profile_json = _profile_without_proxy_binding(str(bound_account["profile_json"] or "{}"))
             conn.execute(
                 """UPDATE tiktok_accounts
-                   SET proxy_bound = 0, last_check_status = '未绑定',
+                   SET proxy_bound = 0, profile_json = ?, last_checked_ip = '',
+                       last_check_status = '未绑定', last_check_at = '',
                        last_error = '账号未绑定代理，无法执行任务或观测', updated_at = ?
                    WHERE id = ?""",
-                (now, account_id),
+                (profile_json, now, account_id),
             )
             conn.execute(
                 "UPDATE collect_settings SET enabled = 0, updated_at = ? WHERE account_id = ?",
@@ -3184,7 +3333,7 @@ def update_account_proxy_binding(payload: dict[str, Any]) -> dict[str, Any]:
                 raise ValueError("account not found")
             if account_proxy_bound(account):
                 raise ValueError("该账号已绑定其他代理，请先解绑")
-            _require_account_binding_idle(conn, account_id)
+            _require_account_binding_idle(conn, account_id, allow_waiting_proxy=True)
             profile = _json_loads(account["profile_json"], {})
             if not isinstance(profile, dict):
                 profile = {}
@@ -3213,8 +3362,26 @@ def update_account_proxy_binding(payload: dict[str, Any]) -> dict[str, Any]:
                     account_id,
                 ),
             )
+            publish_jobs = conn.execute(
+                """UPDATE publish_jobs
+                   SET proxy_profile_id = ?, status = 'queued', stage = 'proxy_rebound',
+                       next_attempt_at = '', last_error = '', updated_at = ?
+                   WHERE account_id = ? AND deleted_at = ''
+                     AND status = 'delayed' AND stage = 'waiting_proxy'""",
+                (pool_id, now, account_id),
+            ).rowcount
+            collect_jobs = conn.execute(
+                """UPDATE collect_jobs
+                   SET proxy_profile_id = ?, status = 'queued', stage = 'proxy_rebound',
+                       next_attempt_at = '', last_error = '', updated_at = ?
+                   WHERE account_id = ? AND status = 'delayed' AND stage = 'waiting_proxy'""",
+                (pool_id, now, account_id),
+            ).rowcount
         conn.commit()
-    return {"account": get_account(account_id), **list_state()}
+    result = {"account": get_account(account_id), **list_state()}
+    if action == "bind":
+        result["resumed"] = {"publish_jobs": publish_jobs, "collect_jobs": collect_jobs}
+    return result
 
 
 def _pool_for_check(conn: sqlite3.Connection, payload: dict[str, Any]) -> tuple[sqlite3.Row | None, sqlite3.Row | None]:
@@ -3478,6 +3645,7 @@ def _wait_for_mihomo_node(node_name: str, attempts: int = 100) -> None:
     raise ProxyConfigurationError(f"mihomo 重载后仍未发现节点 {node_name}：{error}")
 
 
+@_mihomo_config_locked
 def _sync_mihomo_pool_config(pool: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     source_type = str(_pool_value(pool, "source_type") or "")
     direct = source_type == "direct"
@@ -3571,12 +3739,133 @@ def ensure_static_proxy_configs() -> dict[str, Any]:
     return {"synced": synced, "errors": errors}
 
 
+def _managed_yaml_pool_id(block: list[str]) -> int:
+    for line in block:
+        match = re.search(r"proxy-pool-managed(?:-[A-Za-z0-9_.-]+)?-id:\s*(\d+)", line)
+        if match:
+            return int(match.group(1))
+    return 0
+
+
+@_mihomo_config_locked
+def cleanup_stale_mihomo_pool_configs() -> dict[str, Any]:
+    """Remove managed Mihomo items that no active pool still owns.
+
+    In particular, a deleted Mihomo listener must not reclaim a port that has
+    since been assigned to a sing-box Reality pool.
+    """
+    config_value = os.getenv("MIHOMO_CONFIG_PATH", "").strip()
+    if not config_value:
+        return {"configured": False, "removed": [], "removed_ports": []}
+    path = Path(config_value)
+    if not path.is_file():
+        return {"configured": False, "removed": [], "removed_ports": []}
+
+    with connect() as conn:
+        pools = conn.execute(
+            """SELECT * FROM proxy_profiles
+               WHERE parse_status = 'ok' AND status <> ? AND deleted_at = ''
+               ORDER BY id""",
+            (STATUS_PAUSED,),
+        ).fetchall()
+    desired_proxies: dict[int, str] = {}
+    desired_listeners: dict[int, tuple[str, int, str]] = {}
+    sing_box_ports: set[int] = set()
+    for pool in pools:
+        pool_id = int(pool["id"])
+        local_port = int(pool["local_port"] or 0)
+        if _sing_box_reality_pool(pool):
+            if local_port:
+                sing_box_ports.add(local_port)
+            continue
+        node_name = _runtime_mihomo_name(pool)
+        if str(pool["source_type"] or "") != "direct":
+            desired_proxies[pool_id] = node_name
+        if local_port:
+            desired_listeners[pool_id] = (
+                _runtime_mihomo_listener_name(pool),
+                local_port,
+                node_name,
+            )
+
+    original = path.read_bytes()
+    mode = path.stat().st_mode & 0o777
+    lines = original.decode("utf-8").splitlines(keepends=True)
+    remove_indexes: set[int] = set()
+    removed: list[dict[str, Any]] = []
+    seen: dict[str, set[int]] = {"proxies": set(), "listeners": set()}
+    for section in ("proxies", "listeners"):
+        start, end = _yaml_section_bounds(lines, section)
+        if start < 0:
+            continue
+        for left, right in _yaml_list_item_ranges(lines, start, end):
+            block = lines[left:right]
+            pool_id = _managed_yaml_pool_id(block)
+            port = _listener_port(block) if section == "listeners" else 0
+            remove = False
+            reason = ""
+            if pool_id:
+                if pool_id in seen[section]:
+                    remove, reason = True, "duplicate"
+                elif section == "proxies":
+                    expected_name = desired_proxies.get(pool_id)
+                    if not expected_name:
+                        remove, reason = True, "deleted_or_sing_box"
+                    elif not _yaml_block_field_matches(block, "name", expected_name):
+                        remove, reason = True, "stale_mapping"
+                else:
+                    expected = desired_listeners.get(pool_id)
+                    if not expected:
+                        remove, reason = True, "deleted_or_sing_box"
+                    elif not (
+                        _yaml_block_field_matches(block, "name", expected[0])
+                        and port == expected[1]
+                        and _yaml_block_field_matches(block, "proxy", expected[2])
+                    ):
+                        remove, reason = True, "stale_mapping"
+                seen[section].add(pool_id)
+            elif section == "listeners" and port in sing_box_ports:
+                # Only remove unmarked legacy listeners that still use the
+                # application's own naming convention.
+                if any("name: tiktok-" in line or 'name: "tiktok-' in line for line in block):
+                    remove, reason = True, "sing_box_port_conflict"
+            if remove:
+                remove_indexes.update(range(left, right))
+                removed.append({
+                    "section": section,
+                    "pool_id": pool_id,
+                    "port": port,
+                    "reason": reason,
+                })
+
+    if not remove_indexes:
+        return {"configured": True, "removed": [], "removed_ports": []}
+    updated = "".join(
+        line for index, line in enumerate(lines) if index not in remove_indexes
+    ).encode("utf-8")
+    backup_path = path.with_name(path.name + ".proxy-pool.bak")
+    _atomic_write(backup_path, original, mode)
+    _atomic_write(path, updated, mode)
+    try:
+        _reload_mihomo_config()
+    except Exception as exc:
+        _restore_mihomo_config(path, original, mode)
+        raise ProxyConfigurationError(f"mihomo 陈旧监听清理失败：{exc}") from exc
+    return {
+        "configured": True,
+        "removed": removed,
+        "removed_ports": sorted({item["port"] for item in removed if item["port"]}),
+        "backup_path": str(backup_path),
+    }
+
+
 def reconcile_mihomo_pool_configs() -> dict[str, Any]:
     """Rebuild every managed Mihomo listener from the persisted pool binding.
 
     A listener can remain open while still pointing at a previous node.  In that
     case a reachability check alone cannot tell Mihomo to replace the mapping.
     """
+    cleanup = cleanup_stale_mihomo_pool_configs()
     with connect() as conn:
         pools = conn.execute(
             """
@@ -3598,9 +3887,10 @@ def reconcile_mihomo_pool_configs() -> dict[str, Any]:
             synced.append(_sync_mihomo_pool_config(pool))
         except Exception as exc:
             errors.append({"id": pool_id, "name": str(pool["name"]), "error": str(exc)})
-    return {"synced": synced, "skipped": skipped, "errors": errors}
+    return {"cleanup": cleanup, "synced": synced, "skipped": skipped, "errors": errors}
 
 
+@_mihomo_config_locked
 def _remove_mihomo_pool_config(
     pool: sqlite3.Row | dict[str, Any],
 ) -> tuple[dict[str, Any], tuple[Path, bytes, int] | None]:
@@ -3634,6 +3924,7 @@ def _remove_mihomo_pool_config(
     }, (path, original, mode)
 
 
+@_mihomo_config_locked
 def _restore_mihomo_listener_config(path: Path, original: bytes, mode: int) -> None:
     _atomic_write(path, original, mode)
     _reload_mihomo_config()
@@ -3676,6 +3967,7 @@ def _mihomo_listener_matches(pool: sqlite3.Row | dict[str, Any]) -> bool:
     return False
 
 
+@_mihomo_config_locked
 def _remove_mihomo_listener_config(
     required_port: int,
 ) -> tuple[dict[str, Any], tuple[Path, bytes, int] | None]:
@@ -3694,20 +3986,14 @@ def _remove_mihomo_listener_config(
     original = path.read_bytes()
     mode = path.stat().st_mode & 0o777
     lines = original.decode("utf-8").splitlines(keepends=True)
-    start = next((index for index, line in enumerate(lines) if line.startswith("listeners:")), -1)
+    start, end = _yaml_section_bounds(lines, "listeners")
     if start < 0:
         if _port_open("127.0.0.1", required_port, timeout=0.5):
             raise ValueError(f"mihomo 仍监听 {required_port}，但配置中找不到 listeners 段")
         return {"configured": True, "removed_ports": []}, None
-    end = next(
-        (index for index in range(start + 1, len(lines)) if re.match(r"^[A-Za-z0-9_-]+:", lines[index])),
-        len(lines),
-    )
-    item_starts = [index for index in range(start + 1, end) if lines[index].startswith("-")]
     remove_ranges: list[tuple[int, int]] = []
     removed_ports: list[int] = []
-    for position, item_start in enumerate(item_starts):
-        item_end = item_starts[position + 1] if position + 1 < len(item_starts) else end
+    for item_start, item_end in _yaml_list_item_ranges(lines, start, end):
         port = _listener_port(lines[item_start:item_end])
         if port == required_port:
             remove_ranges.append((item_start, item_end))
@@ -4078,13 +4364,22 @@ def check_binding(payload: dict[str, Any], require_account: bool = False) -> dic
                     "expected_exit_ip": str(pool["expected_exit_ip"] or "").strip(),
                 }
         direct = str(pool["source_type"] or "") == "direct"
-        expected_ip = "" if direct else str(pool["expected_exit_ip"] or "").strip()
-        should_bind = str(payload.get("bind") or "").lower() in {"1", "true", "yes", "on"}
-        if not direct and not expected_ip and should_bind:
+        previous_expected_ip = "" if direct else str(pool["expected_exit_ip"] or "").strip()
+        expected_ip = previous_expected_ip
+        bind_value = payload.get("bind")
+        should_bind = not direct and (
+            bind_value is None
+            or str(bind_value).lower() in {"1", "true", "yes", "on"}
+        )
+        if not direct and should_bind:
             expected_ip = observed_ip
+        ip_updated = bool(not direct and should_bind and expected_ip != previous_expected_ip)
         pool_status = _clean_status(pool["status"])
         if direct:
-            next_pool_status = pool_status
+            # Reaching this branch means both the exit-IP lookup and TikTok
+            # reachability checks succeeded. A transient failure must not leave
+            # the server-global outlet permanently stuck in the error state.
+            next_pool_status = STATUS_PAUSED if pool_status == STATUS_PAUSED else STATUS_ACTIVE
             allowed = next_pool_status == STATUS_ACTIVE
             reason = "通过（使用服务器代理出口，不绑定固定 IP）" if allowed else f"代理状态为 {next_pool_status}"
         else:
@@ -4097,6 +4392,10 @@ def check_binding(payload: dict[str, Any], require_account: bool = False) -> dic
                 reason = f"当前出口 IP {observed_ip} 与绑定 IP {expected_ip} 不一致"
             elif next_pool_status != STATUS_ACTIVE:
                 reason = f"代理状态为 {next_pool_status}"
+            elif ip_updated and previous_expected_ip:
+                reason = f"通过（出口 IP 已从 {previous_expected_ip} 更新为 {expected_ip}）"
+            elif ip_updated:
+                reason = f"通过（出口 IP 已绑定为 {expected_ip}）"
             else:
                 reason = "通过"
             duplicate = _duplicate_exit_ip_pool(conn, int(pool["id"]), observed_ip)
@@ -4125,6 +4424,14 @@ def check_binding(payload: dict[str, Any], require_account: bool = False) -> dic
         resumed = {"publish_jobs": 0, "collect_jobs": 0}
         if allowed:
             resumed = _clear_proxy_recheck(conn, int(pool["id"]), observed_ip, now)
+            if ip_updated:
+                conn.execute(
+                    """UPDATE tiktok_accounts
+                       SET last_checked_ip = ?, last_check_status = '通过', last_check_at = ?,
+                           last_error = '', updated_at = ?
+                       WHERE proxy_profile_id = ? AND proxy_bound = 1 AND deleted_at = ''""",
+                    (observed_ip, now, now, int(pool["id"])),
+                )
         elif next_pool_status == STATUS_ERROR:
             _schedule_proxy_recheck(conn, int(pool["id"]), reason, recheck_token)
         if account is not None:
@@ -4162,6 +4469,8 @@ def check_binding(payload: dict[str, Any], require_account: bool = False) -> dic
             "reason": reason,
             "observed_ip": observed_ip,
             "expected_exit_ip": expected_ip,
+            "previous_expected_exit_ip": previous_expected_ip,
+            "ip_updated": ip_updated,
             "checked_at": now,
             "pool": _row_to_pool(pool),
             "account": _row_to_account(account) if account is not None else None,
@@ -4936,7 +5245,15 @@ def _yaml_scalar(value: Any) -> str:
     if isinstance(value, (int, float)):
         return str(value)
     text = str(value)
-    if not text or any(ch in text for ch in ":#{}[],-&*?!|>'\"%@`") or text.strip() != text:
+    yaml_typed_literal = text.lower() in {"true", "false", "yes", "no", "on", "off", "null", "~"}
+    numeric_literal = bool(re.fullmatch(r"[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?", text))
+    if (
+        not text
+        or yaml_typed_literal
+        or numeric_literal
+        or any(ch in text for ch in ":#{}[],-&*?!|>'\"%@`")
+        or text.strip() != text
+    ):
         return json.dumps(text, ensure_ascii=False)
     return text
 

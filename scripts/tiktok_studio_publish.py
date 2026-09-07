@@ -1592,11 +1592,12 @@ def _set_video_file(page: Any, video: Path, display: str = "", log_dir: Path | N
         _set_video_file_via_cdp(page, video, file_input, trace_dir)
         return
     except Exception as cdp_error:
+        cdp_error_message = str(cdp_error)
         _append_file_input_trace(
             trace_dir,
             "cdp_direct_injection_failed",
             error_type=type(cdp_error).__name__,
-            error=str(cdp_error),
+            error=cdp_error_message,
             cdp_state=_cdp_file_input_state(page),
         )
     _append_file_input_trace(
@@ -1619,7 +1620,7 @@ def _set_video_file(page: Any, video: Path, display: str = "", log_dir: Path | N
             cdp_state=_cdp_file_input_state(page),
         )
         raise RuntimeError(
-            f"CDP 直接文件注入失败：{cdp_error}; 系统文件选择器降级也失败：{native_error}"
+            f"CDP 直接文件注入失败：{cdp_error_message}; 系统文件选择器降级也失败：{native_error}"
         ) from native_error
 
 
