@@ -6,6 +6,16 @@ from unittest.mock import patch
 from visual_analysis_cache import best_analysis, valid_analysis, archive_invalid_analysis
 
 class CacheTests(unittest.TestCase):
+    def test_silent_video_does_not_need_whisper(self):
+        from frame_vision_analyze import has_audio
+        with patch('frame_vision_analyze.subprocess.run') as run:
+            run.return_value.stdout='{"streams":[]}'
+            self.assertFalse(has_audio('silent.mp4'))
+            run.return_value.stdout='{"streams":[{"index":1}]}'
+            self.assertTrue(has_audio('speech.mp4'))
+            run.return_value.stdout='invalid'
+            self.assertTrue(has_audio('unknown.mp4'))
+
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
         self.root=Path(self.tmp.name)
