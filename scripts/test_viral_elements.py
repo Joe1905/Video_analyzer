@@ -16,7 +16,7 @@ class ViralElementsTests(unittest.TestCase):
             "time_range": "00:00-00:02",
         }]}
         with patch.object(viral_elements, "_model_json", return_value=fake):
-            result = viral_elements.analyze_elements("demo.mp4", {"summary": "demo"})
+            result = viral_elements.analyze_elements("demo.mp4", {"summary": "demo", "visual_evidence": [{"description": "首帧展示结果"}]})
         self.assertEqual(18, len(result["elements"]))
         hook = next(item for item in result["elements"] if item["key"] == "hook")
         self.assertEqual("Hook", hook["label"])
@@ -44,7 +44,7 @@ class ViralElementsTests(unittest.TestCase):
             )
 
     def test_heat_score_and_approved_library(self):
-        source = {"metadata": {"views": 1000, "likes": 100, "comments": 10, "favorites": 20, "shares": 5}}
+        source = {"metadata": {"views": 1000, "likes": 100, "comments": 10, "favorites": 20, "shares": 5}, "visual_evidence": [{"description": "首帧展示结果"}]}
         with patch.object(viral_elements, "_model_json", return_value={"elements": []}):
             review = viral_elements.analyze_elements("demo.mp4", source)
         self.assertEqual(17.0, review["heat_score"])

@@ -177,6 +177,8 @@ from video_registry import (
 )
 from viral_elements import ViralElementError, ViralElementStore, analyze_elements, generate_scripts, validate_review
 from viral_feishu_sync import ViralFeishuSync
+from replication_workflow import ReplicationWorkflow, handle_http as handle_replication_http
+from viral_elements import require_visual_evidence
 from proxy_state import ensure_us_proxy
 import instagram_content_collect
 import proxy_pool
@@ -404,6 +406,7 @@ lan_chat_store = LanChatStore(DATA_DIR / "lan_chat.sqlite")
 viral_element_store = ViralElementStore(DATA_DIR)
 feishu_capability_client = FeishuCapabilityClient()
 viral_feishu_sync = ViralFeishuSync(viral_element_store, feishu_capability_client)
+replication_workflow = ReplicationWorkflow(DATA_DIR, VIDEOS_DIR, OUTPUT_DIR)
 chat_provider_stores = {
     "home": chat_store,
     "amazon": ChatStore(SELLERSPRITE_CHAT_DATA_DIR / "chat_sessions.json"),
@@ -3401,6 +3404,8 @@ def run_viral_pipeline_job(job_id: str) -> None:
 
         existing_review = viral_element_store.get_review(filename)
         source = _viral_pipeline_source(filename)
+        if source:
+            require_visual_evidence(source)
         if existing_review and source:
             with viral_pipeline_jobs_lock:
                 job.review = existing_review
@@ -14256,6 +14261,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/replication":
+            page = (SCRIPTS_DIR / "static" / "replication.html").read_text(encoding="utf-8")
+            return text_response(self, HTTPStatus.OK, inject_unified_nav(page, parsed.path), "text/html; charset=utf-8")
+        if handle_replication_http(self, parsed, replication_workflow, "GET"):
+            return
         if storyboard_service.handle(self, parsed, inject_unified_nav):
             return
         if parsed.path == "/healthz":
@@ -14904,6 +14914,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if handle_replication_http(self, parsed, replication_workflow, "POST"):
+            return
         if storyboard_service.handle(self, parsed, inject_unified_nav):
             return
         if handle_feishu_capability_post(self, parsed):

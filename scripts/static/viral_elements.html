@@ -20,6 +20,7 @@
 <section class="panel" style="margin:0 16px 16px"><div class="panel-head"><div><h3>已审核元素库</h3><span class="muted" style="font-size:12px">跨视频复用；按最近审核排序</span></div><button id="refreshLibrary">刷新元素库</button></div><div id="library" class="library"><span class="muted">正在加载…</span></div></section>
 <script>
 const $=id=>document.getElementById(id);const S={file:"",files:[],review:null,scripts:null,pipeline:null};
+const replicationButton=document.createElement('button');replicationButton.textContent='用此视频复刻';replicationButton.onclick=()=>{location.href='/replication'+(S.file?'?filename='+encodeURIComponent(S.file):'')};document.querySelector('.workspace-bar').appendChild(replicationButton);
 const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 function message(text,type=""){const el=$("status");el.className="status "+type;el.textContent=text}
 function pipelineProgress(job){const box=$("pipelineProgress");box.classList.add('show');$("progressFill").style.width=`${job.progress||0}%`;$("progressPercent").textContent=`${job.progress||0}%`;$("progressStage").textContent=job.message||job.stage||'处理中'}
