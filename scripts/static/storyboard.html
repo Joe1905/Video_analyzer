@@ -34,14 +34,14 @@ body.preview-open{overflow:hidden}.preview{width:min(1100px,calc(100vw - 32px));
 </dialog>
 <dialog class="preview" id="player" aria-labelledby="playerTitle">
 <div class="preview-head"><h2 id="playerTitle">原视频播放</h2><button id="playerClose" type="button" autofocus aria-label="关闭视频">关闭 ×</button></div>
-<div class="player-note" id="playerNote" hidden>这条旧记录的原视频已清理。请选择本地原视频进行审核，仅在浏览器播放，不会上传。<label for="localVideo">选择原视频</label><input id="localVideo" type="file" accept="video/*"></div>
+<div class="player-note" id="playerNote" hidden>原视频已过期或已清理（保留 24 小时）。请选择本地原视频进行审核，仅在浏览器播放，不会上传。<label for="localVideo">选择原视频</label><input id="localVideo" type="file" accept="video/*"></div>
 <video id="videoPlayer" controls playsinline preload="metadata"></video><div class="player-note" id="playerError" role="status"></div>
 </dialog>
 <script>
 const $=id=>document.getElementById(id);let timer=null,selected=null,busy=false;
 let previewJob=null,previewIndex=0;
 let localVideoUrl=null;
-function playVideo(job){$('playerTitle').textContent=job.filename;$('playerNote').hidden=job.video_available;$('playerError').textContent='';$('localVideo').value='';if(job.video_available)$('videoPlayer').src=`/api/storyboard/video?id=${job.id}`;else $('videoPlayer').removeAttribute('src');$('player').showModal();document.body.classList.add('preview-open')}
+async function playVideo(job){try{job=await api('/api/storyboard/jobs?id='+job.id);$('playerTitle').textContent=job.filename;$('playerNote').hidden=job.video_available;$('playerError').textContent=job.video_available?`原视频保留 24 小时，将于 ${new Date(job.video_expires_at*1000).toLocaleString()} 到期清理。`:'';$('localVideo').value='';if(job.video_available)$('videoPlayer').src=`/api/storyboard/video?id=${job.id}`;else $('videoPlayer').removeAttribute('src');$('player').showModal();document.body.classList.add('preview-open')}catch(error){status(error.message,true)}}
 $('playerClose').onclick=()=>$('player').close();
 $('player').addEventListener('close',()=>{$('videoPlayer').pause();$('videoPlayer').removeAttribute('src');$('videoPlayer').load();if(localVideoUrl){URL.revokeObjectURL(localVideoUrl);localVideoUrl=null}document.body.classList.remove('preview-open')});
 $('localVideo').onchange=()=>{const file=$('localVideo').files[0];if(!file)return;if(localVideoUrl)URL.revokeObjectURL(localVideoUrl);localVideoUrl=URL.createObjectURL(file);$('playerError').textContent='';$('videoPlayer').src=localVideoUrl};

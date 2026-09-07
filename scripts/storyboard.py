@@ -18,6 +18,7 @@ from urllib.parse import parse_qs
 
 DEFAULT_DIFFERENCE_THRESHOLD = 10.0
 MAX_UPLOAD_BYTES = 512 * 1024 * 1024
+VIDEO_TTL_SECONDS = 24 * 60 * 60
 VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v", ".webm"}
 
 
@@ -99,6 +100,24 @@ class StoryboardService:
         self.slot = threading.BoundedSemaphore(1)
         self.active = set()
         self.lock = threading.Lock()
+        self.cleanup_started = False
+
+    def cleanup_expired_videos(self):
+        for path in self.directory.glob("*/source.*"):
+            if path.suffix.lower() not in VIDEO_SUFFIXES:
+                continue
+            with self.lock:
+                active = path.parent.name in self.active
+            try:
+                if not active and time.time() >= path.stat().st_mtime + VIDEO_TTL_SECONDS:
+                    path.unlink(missing_ok=True)
+            except OSError:
+                continue
+
+    def cleanup_loop(self):
+        while True:
+            self.cleanup_expired_videos()
+            time.sleep(600)
 
     def job_dir(self, job_id):
         if not re.fullmatch(r"[0-9a-f]{32}", job_id):
@@ -114,7 +133,12 @@ class StoryboardService:
             job.update(status="failed", error="服务重启中断了任务，请重新提取")
         if job["status"] == "complete":
             job.update(json.loads((directory / "frames.json").read_text(encoding="utf-8")))
-        job["video_available"] = self.video_path(job).is_file()
+        source = self.video_path(job)
+        try:
+            job["video_expires_at"] = source.stat().st_mtime + VIDEO_TTL_SECONDS
+            job["video_available"] = time.time() < job["video_expires_at"]
+        except FileNotFoundError:
+            job["video_available"] = False
         return job
 
     def video_path(self, job):
@@ -124,6 +148,8 @@ class StoryboardService:
         return self.job_dir(job["id"]) / ("source" + suffix)
 
     def serve_video(self, handler, job):
+        if not job["video_available"]:
+            raise FileNotFoundError("原视频已过期或已清理，请选择本地原视频播放")
         path = self.video_path(job)
         with path.open("rb") as stream:
             size = path.stat().st_size
@@ -260,6 +286,10 @@ class StoryboardService:
         path = parsed.path
         if path != "/storyboard" and not path.startswith("/api/storyboard/"):
             return False
+        with self.lock:
+            if not self.cleanup_started:
+                self.cleanup_started = True
+                threading.Thread(target=self.cleanup_loop, daemon=True).start()
         query = parse_qs(parsed.query)
         try:
             if handler.command == "POST" and path == "/api/storyboard/jobs":

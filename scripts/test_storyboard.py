@@ -1,5 +1,6 @@
 """Real decoder and HTTP checks; all media/state live in a temporary directory."""
 import json
+import os
 import tempfile
 import threading
 import time
@@ -15,7 +16,7 @@ from urllib.parse import urlencode, urlparse
 import cv2
 import numpy as np
 from video_analyzer.frame import VideoProcessor
-from storyboard import StoryboardService, extract_frames
+from storyboard import StoryboardService, extract_frames, VIDEO_TTL_SECONDS
 
 
 def video(path, levels):
@@ -54,6 +55,20 @@ class StoryboardTests(unittest.TestCase):
         self.assertEqual(still["frames"][0]["timestamp"], 0)
         with self.assertRaises(ValueError):
             extract_frames(self.source, self.root / "bad", 41)
+
+    def test_video_ttl_preserves_frames_and_fresh_sources(self):
+        expired = self.service.job_dir('a' * 32)
+        fresh = self.service.job_dir('b' * 32)
+        for directory in (expired, fresh):
+            directory.mkdir(parents=True)
+            (directory / 'source.mp4').write_bytes(b'video')
+            (directory / 'frames.json').write_text('{}')
+        old = time.time() - VIDEO_TTL_SECONDS - 1
+        os.utime(expired / 'source.mp4', (old, old))
+        self.service.cleanup_expired_videos()
+        self.assertFalse((expired / 'source.mp4').exists())
+        self.assertTrue((expired / 'frames.json').exists())
+        self.assertTrue((fresh / 'source.mp4').exists())
 
     def test_http_jobs_exports_and_isolation(self):
         service = self.service
