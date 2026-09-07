@@ -8,7 +8,7 @@ from playwright.sync_api import sync_playwright
 def main():
     state = {"direct_video_enabled": False, "message": "Qwen 欠费；DeepSeek 帧分析；视频直连分析已禁用",
              "next_check_at": 1788835043}
-    html = """<!doctype html><html><body>
+    html = """<!doctype html><html><head><meta charset="utf-8"></head><body>
     <label><input id="directMode" type="checkbox" checked>直接调用 LLM</label>
     <div id="existingDirectResult">已有直接提取内容</div>
     <script>
