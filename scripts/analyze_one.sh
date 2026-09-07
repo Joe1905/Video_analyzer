@@ -36,7 +36,7 @@ VISION_MODEL="${VISION_MODEL:-qwen3-vl-flash}"
 HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 export HF_ENDPOINT
 
-required_vars=(VISION_API_KEY VISION_API_URL VISION_MODEL)
+required_vars=(VISION_API_URL VISION_MODEL)
 for name in "${required_vars[@]}"; do
   if [ "${!name:-}" = "" ]; then
     echo "Missing required environment variable: $name"
@@ -91,9 +91,9 @@ if [ "${ANALYSIS_PROMPT_FILE:-}" != "" ] && [ -f "$ANALYSIS_PROMPT_FILE" ]; then
 fi
 
 log "starting video-analyzer"
-video-analyzer "$video_path" \
+python scripts/frame_vision_analyze.py "$video_path" \
   --client openai_api \
-  --api-key "$VISION_API_KEY" \
+  --api-key "${VISION_API_KEY:-}" \
   --api-url "$VISION_API_URL" \
   --model "$VISION_MODEL" \
   --output "$output_dir" \
@@ -157,6 +157,8 @@ PY
     if [ -f "${output_dir}/analysis_raw.json" ]; then
       cp "${output_dir}/analysis_raw.json" "${output_dir}/analysis_raw_analyzer_zero_frames.json"
     fi
+    # An unavailable direct route must not leave a zero-frame result as a cache hit.
+    rm -f "${output_dir}/analysis.json"
     direct_args=("$video_name" --output-dir "$output_dir")
     if [ "${ANALYSIS_PROMPT_FILE:-}" != "" ] && [ -f "$ANALYSIS_PROMPT_FILE" ]; then
       direct_args+=(--prompt-file "$ANALYSIS_PROMPT_FILE")

@@ -31,6 +31,7 @@ from html import escape as html_escape
 from html import unescape as html_unescape
 from io import BytesIO
 from storyboard import StoryboardService
+from vision_provider import get_status as get_vision_status
 
 # SociaVault TikTok endpoints (mirrored from sociavault_tiktok.py)
 TIKTOK_ENDPOINTS: dict[str, str] = {
@@ -14260,6 +14261,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/healthz":
             return json_response(self, HTTPStatus.OK, {"status": "ok"})
+        if parsed.path == "/api/vision-status":
+            return json_response(self, HTTPStatus.OK, get_vision_status())
         if parsed.path == "/amazon":
             return serve_chat_template(self, "amazon", parsed.path)
         if parsed.path == "/fastmoss":
@@ -14285,6 +14288,8 @@ class Handler(BaseHTTPRequestHandler):
                 "__DEFAULT_ANALYSIS_MODE__",
                 os.getenv("ANALYSIS_MODE", "analyzer"),
             )
+            html = html.replace("Qwen 输出内容", "视觉模型输出内容").replace("Qwen Video Extraction", "Video Extraction")
+            html = html.replace("</body>", '<script src="/assets/vision-status.js?v=20260907-1"></script></body>')
             return text_response(self, HTTPStatus.OK, inject_unified_nav(html, parsed.path), "text/html; charset=utf-8")
         if parsed.path == "/viral-elements":
             page = (SCRIPTS_DIR / "static" / "viral_elements.html").read_text(encoding="utf-8")
@@ -15564,6 +15569,14 @@ class Handler(BaseHTTPRequestHandler):
         if not (VIDEOS_DIR / filename).is_file():
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": f"Video file not found: {filename}"})
 
+        vision_status = get_vision_status()
+        if analysis_mode == "direct_video" and not vision_status["direct_video_enabled"]:
+            return json_response(self, HTTPStatus.CONFLICT, {
+                "error": vision_status["message"], "code": "DIRECT_VIDEO_DISABLED", "vision_status": vision_status})
+        if analysis_mode == "analyzer" and not vision_status["frame_analysis_enabled"]:
+            return json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {
+                "error": vision_status["message"], "code": "FRAME_ANALYSIS_UNAVAILABLE", "vision_status": vision_status})
+
         output_dir = output_dir_for_filename(filename)
         if reset_output:
             if analysis_mode == "direct_video":
@@ -15582,7 +15595,7 @@ class Handler(BaseHTTPRequestHandler):
             (output_dir / "analysis_prompt.txt").write_text(analysis_prompt, encoding="utf-8")
 
         video_queue.enqueue(filename, "analyze")
-        return json_response(self, HTTPStatus.ACCEPTED, {"status": "queued", "filename": filename})
+        return json_response(self, HTTPStatus.ACCEPTED, {"status": "queued", "filename": filename, "vision_status": vision_status})
 
     def handle_postprocess(self) -> None:
         content_length = int(self.headers.get("Content-Length", "0"))
@@ -15602,6 +15615,10 @@ class Handler(BaseHTTPRequestHandler):
         audit_names = ("direct_audit_result.json", "direct_audit_result_zh.json") if analysis_source == "direct" else ("audit_result.json", "audit_result_zh.json")
         if not (output_dir / analysis_name).is_file():
             if analysis_source == "direct":
+                vision_status = get_vision_status()
+                if not vision_status["direct_video_enabled"]:
+                    return json_response(self, HTTPStatus.CONFLICT, {
+                        "error": vision_status["message"], "code": "DIRECT_VIDEO_DISABLED", "vision_status": vision_status})
                 output_dir.mkdir(parents=True, exist_ok=True)
                 (output_dir / "analysis_mode.txt").write_text("direct_video", encoding="utf-8")
                 (output_dir / "report_source.txt").write_text("direct", encoding="utf-8")
