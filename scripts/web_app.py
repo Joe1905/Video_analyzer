@@ -180,6 +180,7 @@ from viral_elements import ViralElementError, ViralElementStore, analyze_element
 from viral_feishu_sync import ViralFeishuSync
 from replication_workflow import ReplicationWorkflow, handle_http as handle_replication_http
 from viral_elements import require_visual_evidence
+from visual_analysis_cache import best_analysis, valid_analysis, archive_invalid_analysis
 from proxy_state import ensure_us_proxy
 import instagram_content_collect
 import proxy_pool
@@ -3347,12 +3348,9 @@ def public_viral_pipeline_job(job: ViralPipelineJob) -> dict[str, Any]:
 
 def _viral_pipeline_source(filename: str) -> dict[str, Any] | None:
     output_dir = output_dir_for_filename(filename)
-    b_source = read_json(output_dir / "analysis_zh.json") or read_json(output_dir / "analysis.json")
-    a_source = read_json(output_dir / "direct_analysis_zh.json") or read_json(output_dir / "direct_analysis.json")
-    source = b_source or a_source
+    source = best_analysis(output_dir)
     if not isinstance(source, dict):
         return None
-    source = {**source, "source_channel": "B" if b_source else "A"}
     social_context = read_json(output_dir / "social_context.json")
     return {**source, "social_context": social_context} if isinstance(social_context, dict) else source
 
@@ -3405,8 +3403,6 @@ def run_viral_pipeline_job(job_id: str) -> None:
 
         existing_review = viral_element_store.get_review(filename)
         source = _viral_pipeline_source(filename)
-        if source:
-            require_visual_evidence(source)
         if existing_review and source:
             with viral_pipeline_jobs_lock:
                 job.review = existing_review
@@ -3415,7 +3411,7 @@ def run_viral_pipeline_job(job_id: str) -> None:
             return
 
         if not source:
-            _update_viral_pipeline(job, "queued_analysis", 30, "已加入视频分析队列")
+            _update_viral_pipeline(job, "queued_analysis", 30, "缺少有效视觉结果，正在重新分析（旧失败结果不会复用）")
             video_queue.enqueue(filename, "analyze")
             deadline = time.time() + max(300, int(os.getenv("VIRAL_PIPELINE_ANALYSIS_TIMEOUT_SECONDS", "3600")))
             while time.time() < deadline:
@@ -13509,6 +13505,8 @@ def execute_queue_job(filename: str, job_type: str, progress: dict) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if job_type == "analyze":
+        # A failed JSON artifact must never short-circuit a requested retry.
+        archive_invalid_analysis(output_dir)
         video_queue.set_progress(filename, "extracting", 10, job_type, f"{filename}: 开始解析视频")
         mode_file = output_dir / "analysis_mode.txt"
         analysis_mode = os.getenv("ANALYSIS_MODE", "analyzer")
@@ -13517,19 +13515,22 @@ def execute_queue_job(filename: str, job_type: str, progress: dict) -> None:
             if mode_value in {"analyzer", "direct_video"}:
                 analysis_mode = mode_value
         is_direct = analysis_mode == "direct_video"
+        if is_direct and not get_vision_status()["direct_video_enabled"]:
+            is_direct = False
+            video_queue.set_progress(filename, "extracting", 12, job_type, "视频直连不可用，自动使用可用视觉模型逐帧分析")
         analysis_path = output_dir / ("direct_analysis.json" if is_direct else "analysis.json")
         # Skip if already analyzed or complete
         current = video_queue.get_status(filename)
-        if current in ("analyzed", "complete") and analysis_path.is_file():
+        if current in ("analyzed", "complete") and valid_analysis(analysis_path):
             video_queue.set_progress(filename, "completed", 100, job_type, f"{filename}: 已有解析结果，跳过")
             return
         if not is_direct and registry_record and registry_record.get("extracted_at") and registry_record.get("extraction_dir"):
             existing_dir = OUTPUT_DIR / str(registry_record["extraction_dir"])
-            if (existing_dir / "analysis.json").is_file():
+            if valid_analysis(existing_dir / "analysis.json"):
                 video_queue.set_status(filename, "analyzed")
                 video_queue.set_progress(filename, "completed", 100, job_type, f"{filename}: 同一 TikTok 视频已提取，跳过重复提取")
                 return
-        if analysis_path.is_file():
+        if valid_analysis(analysis_path):
             video_queue.set_status(filename, "analyzed")
             video_queue.set_progress(filename, "completed", 100, job_type, f"{filename}: 已加载已有解析结果")
             return
@@ -13568,6 +13569,7 @@ def execute_queue_job(filename: str, job_type: str, progress: dict) -> None:
             cmd = ["bash", str(SCRIPTS_DIR / "analyze_one.sh"), filename]
             subprocess.run(cmd, cwd=ROOT, check=True, env=env)
             mark_extracted(filename, extraction_dir_name)
+        require_visual_evidence(read_json(analysis_path) or {})
         video_queue.set_status(filename, "analyzed")
         video_queue.set_progress(filename, "extracting", 65, job_type, f"{filename}: 视频解析完成")
 
@@ -15018,16 +15020,13 @@ class Handler(BaseHTTPRequestHandler):
             if not (VIDEOS_DIR / filename).is_file():
                 return json_response(self, HTTPStatus.NOT_FOUND, {"error": "视频文件不存在"})
             output_dir = output_dir_for_filename(filename)
-            source = (
-                read_json(output_dir / "analysis_zh.json")
-                or read_json(output_dir / "direct_analysis_zh.json")
-                or read_json(output_dir / "analysis.json")
-                or read_json(output_dir / "direct_analysis.json")
-            )
+            source = _viral_pipeline_source(filename)
             if not source:
-                return json_response(self, HTTPStatus.CONFLICT, {
-                    "error": "该视频还没有内容分析结果，请先到“分析”页面完成视频分析。"
-                })
+                job = ViralPipelineJob(id=str(uuid.uuid4()), filename=filename)
+                with viral_pipeline_jobs_lock:
+                    viral_pipeline_jobs[job.id] = job
+                threading.Thread(target=run_viral_pipeline_job, args=(job.id,), daemon=True).start()
+                return json_response(self, HTTPStatus.ACCEPTED, public_viral_pipeline_job(job))
             social_context = read_json(output_dir / "social_context.json")
             if isinstance(social_context, dict):
                 source = {**source, "social_context": social_context}
