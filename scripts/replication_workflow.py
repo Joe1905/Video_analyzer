@@ -85,14 +85,19 @@ def media_info(path):
 def model_json(prompt, images=()):
     """Use existing configured services; preserve safe provider error codes."""
     vision = bool(images)
-    prefix = "VISION" if vision else "DEEPSEEK"
+    # Replication has its own provider choice; never mutate shared VISION settings.
+    prefix = os.getenv("REPLICATION_VISION_PROVIDER", "DEEPSEEK").strip().upper() if vision else "DEEPSEEK"
+    if prefix not in {"VISION", "DEEPSEEK"}:
+        raise WorkflowError("REPLICATION_VISION_PROVIDER必须为VISION或DEEPSEEK")
     key = os.getenv(prefix + "_API_KEY", "").strip()
     if not key:
         raise WorkflowError(f"未配置{prefix}模型服务，请先完成服务器配置")
     url = os.getenv(prefix + "_API_URL", "https://api.deepseek.com/v1").rstrip("/")
     if not url.endswith("/chat/completions"):
         url += "/chat/completions"
-    model = os.getenv("VISION_MODEL" if vision else "DEEPSEEK_CHAT_MODEL", "qwen3-vl-flash" if vision else "deepseek-v4-flash")
+    model = os.getenv("VISION_MODEL" if prefix == "VISION" else "DEEPSEEK_CHAT_MODEL", "qwen3-vl-flash" if prefix == "VISION" else "deepseek-v4-flash")
+    if vision:
+        model = os.getenv("REPLICATION_VISION_MODEL", "").strip() or model
     content = [{"type": "text", "text": COMMON + "\n" + prompt}]
     for label, path in images:
         content.append({"type": "text", "text": label})

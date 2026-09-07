@@ -1,16 +1,33 @@
 """Offline regression checks. Run in the analyzer Docker image."""
 import copy
 import io
+import os
 import tempfile
 import unittest
 import zipfile
 from pathlib import Path
 from unittest.mock import patch
 from PIL import Image
-from replication_workflow import ReplicationWorkflow, WorkflowError, QC_KEYS, VIDEO_QC_KEYS, validate_analysis, validate_blueprint
+from replication_workflow import ReplicationWorkflow, WorkflowError, QC_KEYS, VIDEO_QC_KEYS, validate_analysis, validate_blueprint, model_json
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_replication_provider_is_isolated(self):
+        env = {'VISION_API_KEY':'old-key','VISION_API_URL':'https://old.invalid/v1','VISION_MODEL':'old-model',
+               'DEEPSEEK_API_KEY':'new-key','DEEPSEEK_API_URL':'https://new.invalid/v1','DEEPSEEK_CHAT_MODEL':'new-vision'}
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(d)/'test.png';Image.new('RGB',(4,4)).save(p)
+            with patch.dict(os.environ,env,clear=True), patch('replication_workflow.requests.post') as post:
+                post.return_value.ok=True
+                post.return_value.json.return_value={'choices':[{'message':{'content':'{"ok":true}'}}]}
+                self.assertTrue(model_json('test',[('test',p)])['ok'])
+                self.assertEqual(post.call_args.args[0],'https://new.invalid/v1/chat/completions')
+                self.assertEqual(post.call_args.kwargs['json']['model'],'new-vision')
+                self.assertEqual(os.environ['VISION_MODEL'],'old-model')
+                os.environ['REPLICATION_VISION_PROVIDER']='VISION'
+                model_json('test',[('test',p)])
+                self.assertEqual(post.call_args.kwargs['json']['model'],'old-model')
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
