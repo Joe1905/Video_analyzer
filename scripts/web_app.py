@@ -30,6 +30,7 @@ import cgi
 from html import escape as html_escape
 from html import unescape as html_unescape
 from io import BytesIO
+from storyboard import StoryboardService
 
 # SociaVault TikTok endpoints (mirrored from sociavault_tiktok.py)
 TIKTOK_ENDPOINTS: dict[str, str] = {
@@ -63,6 +64,7 @@ VIDEOS_DIR = ROOT / "videos"
 OUTPUT_DIR = ROOT / "output"
 SCRIPTS_DIR = ROOT / "scripts"
 INDEX_HTML_PATH = SCRIPTS_DIR / "web_index.html"
+storyboard_service = StoryboardService(ROOT)
 SELLERSPRITE_CHAT_DIR = ROOT / "sellersprite_mcp_chat"
 SELLERSPRITE_CHAT_DATA_DIR = DATA_DIR / "sellersprite_mcp"
 SELLERSPRITE_CHAT_PROCESS: subprocess.Popen | None = None
@@ -430,6 +432,7 @@ NAV_ITEMS = [
     {"key": "metrics", "href": "/metrics", "label": "\u6570\u636e", "title": "\u6570\u636e", "icon": '<path d="M4 19V5"/><path d="M20 19H4"/><path d="M8 16v-5"/><path d="M12 16V8"/><path d="M16 16v-7"/>'},
     {"key": "extract", "href": "/extract", "label": "\u5206\u6790", "title": "\u89c6\u9891\u5206\u6790", "icon": '<path d="M4 5h16v14H4z"/><path d="m10 9 5 3-5 3z"/><path d="M8 21h8"/><path d="M12 19v2"/>'},
     {"key": "viral-elements", "href": "/viral-elements", "label": "\u5143\u7d20\u5e93", "title": "\u7206\u6b3e\u5143\u7d20\u5e93", "icon": '<path d="M4 4h6v6H4z"/><path d="M14 4h6v6h-6z"/><path d="M4 14h6v6H4z"/><path d="M14 14h6v6h-6z"/>'},
+    {"key": "storyboard", "href": "/storyboard", "label": "分镜", "title": "分镜提取", "icon": '<path d="M3 5h18v14H3zM9 5v14M15 5v14"/>'},
 ]
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
@@ -14253,6 +14256,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        if storyboard_service.handle(self, parsed, inject_unified_nav):
+            return
         if parsed.path == "/healthz":
             return json_response(self, HTTPStatus.OK, {"status": "ok"})
         if parsed.path == "/amazon":
@@ -14899,6 +14904,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if storyboard_service.handle(self, parsed, inject_unified_nav):
+            return
         if handle_feishu_capability_post(self, parsed):
             return
         if parsed.path.startswith("/api/lan-chat/") and handle_lan_chat_post(self, parsed):
