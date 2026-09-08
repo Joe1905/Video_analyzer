@@ -268,6 +268,9 @@ class RouterTests(unittest.TestCase):
             elif route_file.name == "video_delete.py":
                 allowed_imports.add("json")
                 allowed_from_modules.add("services.video_delete")
+            elif route_file.name == "lan_chat.py":
+                allowed_imports.update({"json", "re"})
+                allowed_from_modules.update({"feishu_capabilities", "http.server", "lan_chat"})
             for node in ast.walk(module):
                 if isinstance(node, ast.Import):
                     for alias in node.names:
@@ -356,7 +359,32 @@ class RouterTests(unittest.TestCase):
         self.assertNotIn("/metrics", exact_route_branches)
         self.assertNotIn("/taobao", exact_route_branches)
         source = (root / "web_app.py").read_text(encoding="utf-8")
-        self.assertIn('parsed.path.startswith("/api/lan-chat/") and handle_lan_chat_get', source)
+        self.assertIn("register_lan_chat_api_routes(", source)
+        self.assertNotIn("handle_lan_chat_get", source)
+        self.assertNotIn("handle_lan_chat_post", source)
+        self.assertNotIn("stream_lan_chat_events", source)
+        self.assertNotIn("_lan_chat_request_json", source)
+        lan_route = ast.parse((root / "routes" / "lan_chat.py").read_text(encoding="utf-8"))
+        self.assertFalse(any(
+            isinstance(node, ast.ImportFrom) and node.module == "web_app"
+            for node in ast.walk(lan_route)
+        ))
+        lan_registration = [
+            node for node in ast.walk(web_app)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "register_lan_chat_api_routes"
+        ]
+        self.assertEqual(len(lan_registration), 1)
+        self.assertEqual(
+            {keyword.arg for keyword in lan_registration[0].keywords},
+            {
+                "store", "current_global_user", "current_global_owner_id", "cookie_value",
+                "media_cookie", "feishu_login_options", "message_media_max_bytes",
+                "file_transfer_max_bytes", "profile_avatar_max_bytes", "file_archive_max_files",
+                "field_storage",
+            },
+        )
         self.assertIn('if parsed.path == "/api/tool/convert":', source)
         self.assertIn("register_shop_api_routes(WEB_ROUTER, shop_service)", source)
         self.assertIn("register_metrics_api_routes(WEB_ROUTER, metrics_service)", source)

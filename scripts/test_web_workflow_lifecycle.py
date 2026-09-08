@@ -46,6 +46,7 @@ import routes.report as report_routes
 from routes.report import register_report_routes
 from routes.report_cover import register_report_cover_routes
 from routes.router import Router
+from routes.lan_chat import register_lan_chat_api_routes
 from routes.taobao import register_taobao_api_routes
 from routes.translate import register_translate_routes
 from routes.upload import MAX_UPLOAD_BYTES as UPLOAD_MAX_UPLOAD_BYTES, register_upload_routes
@@ -1307,7 +1308,22 @@ def assert_lan_chat_http_contract(web_app: Any, port: int) -> None:
         "Cookie": f"{web_app.GLOBAL_USER_COOKIE}=feishu-1; {web_app.LAN_CHAT_MEDIA_COOKIE}=media-cookie-token",
     }
     try:
-        with patch.object(web_app, "lan_chat_store", store), patch.object(web_app, "_global_users", return_value=(users, {})):
+        router = Router()
+        lan_post, lan_head, lan_stream = register_lan_chat_api_routes(
+            router,
+            store=store,
+            current_global_user=web_app.current_global_user,
+            current_global_owner_id=web_app.current_global_owner_id,
+            cookie_value=web_app._cookie_value,
+            media_cookie=web_app.LAN_CHAT_MEDIA_COOKIE,
+            feishu_login_options=web_app._feishu_login_options,
+            message_media_max_bytes=web_app.MESSAGE_MEDIA_MAX_BYTES,
+            file_transfer_max_bytes=web_app.FILE_TRANSFER_MAX_BYTES,
+            profile_avatar_max_bytes=web_app.PROFILE_AVATAR_MAX_BYTES,
+            file_archive_max_files=web_app.FILE_ARCHIVE_MAX_FILES,
+            field_storage=lambda *args, **kwargs: web_app.cgi.FieldStorage(*args, **kwargs),
+        )
+        with patch.object(web_app, "WEB_ROUTER", router), patch.object(web_app, "lan_chat_post", lan_post), patch.object(web_app, "lan_chat_head", lan_head), patch.object(web_app, "_global_users", return_value=(users, {})):
             status, _headers, payload = json_request(port, "GET", "/api/lan-chat/bootstrap")
             assert status == 200 and payload == {"scope": "public"}
             status, _headers, payload = json_request(port, "GET", "/api/lan-chat/bootstrap", extra_headers=priority_headers)
@@ -1354,8 +1370,9 @@ def assert_lan_chat_http_contract(web_app: Any, port: int) -> None:
             ):
                 sentinel_handler = SseHandler("unused", Writer())
                 sentinel_handler.headers = {"Content-Type": "multipart/form-data; boundary=fixture", **headers}
+                sentinel_handler.path = path
                 sentinel_handler.rfile = ReadForbidden()
-                assert web_app.handle_lan_chat_post(sentinel_handler, SimpleNamespace(path=path))
+                assert lan_post(sentinel_handler)
                 assert sentinel_handler.responses == [code] and sentinel_handler.rfile.calls == 0
 
             limits = (
@@ -1378,7 +1395,7 @@ def assert_lan_chat_http_contract(web_app: Any, port: int) -> None:
 
             auth = SseHandler("bad-token", Writer())
             try:
-                web_app.stream_lan_chat_events(auth, 0)
+                lan_stream(auth, 0)
             except web_app.LanChatError as exc:
                 assert exc.status == 401
             else:
@@ -1387,7 +1404,7 @@ def assert_lan_chat_http_contract(web_app: Any, port: int) -> None:
             message_writer = Writer()
             message = SseHandler("sse-token", message_writer)
             store.batches, store.writer = [[{"id": 9, "text": "中文消息"}]], message_writer
-            web_app.stream_lan_chat_events(message, 7)
+            lan_stream(message, 7)
             assert message.responses == [200] and dict(message.sent_headers) == {
                 "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-cache, no-store", "Connection": "keep-alive", "X-Accel-Buffering": "no",
             }
@@ -1396,15 +1413,15 @@ def assert_lan_chat_http_contract(web_app: Any, port: int) -> None:
             heartbeat_writer = Writer()
             heartbeat = SseHandler("sse-token", heartbeat_writer)
             store.batches, store.writer = [[]], heartbeat_writer
-            web_app.stream_lan_chat_events(heartbeat, 0)
+            lan_stream(heartbeat, 0)
             assert heartbeat_writer.getvalue() == b"event: heartbeat\ndata: {}\n\n" and heartbeat.close_connection
             disconnected = SseHandler("sse-token", Writer(BrokenPipeError))
             store.batches, store.writer = [[{"id": 1}]], None
-            web_app.stream_lan_chat_events(disconnected, 0)
+            lan_stream(disconnected, 0)
             assert disconnected.close_connection
             reset = SseHandler("sse-token", Writer(ConnectionResetError))
             store.batches, store.writer = [[{"id": 1}]], None
-            web_app.stream_lan_chat_events(reset, 0)
+            lan_stream(reset, 0)
             assert reset.close_connection
     finally:
         store.writer = None
