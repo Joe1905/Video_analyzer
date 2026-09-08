@@ -176,25 +176,36 @@ def exercise_ui(
             identity_modal.locator(".ui-global-user-panel [data-global-user-close]").click()
             expect(identity_modal).to_be_hidden()
         pool_row = page.locator(f'[data-proxy-pool-detail="{pool_id}"]')
-        expect(pool_row).to_be_visible()
+        if viewport_name == "mobile":
+            expect(pool_row).to_be_hidden()
+        else:
+            expect(pool_row).to_be_visible()
         page.screenshot(path=str(run_dir / "initial.png"), full_page=False)
         (run_dir / "initial-dom.html").write_text(page.content(), encoding="utf-8")
 
-        pool_row.click()
-        delete_button = page.locator(f'[data-proxy-pool-delete="{pool_id}"]')
-        expect(delete_button).to_be_visible()
-        page.once("dialog", lambda dialog: dialog.accept())
-        with page.expect_response(lambda response: response.url == f"{base_url}/api/proxy/pools/delete" and response.request.method == "POST") as deleted:
-            delete_button.click()
-        assert deleted.value.status == 200
+        if viewport_name == "mobile":
+            # SYS-004: no visible delete entry below 820px; exercise the real HTTP boundary.
+            deleted = context.request.post(f"{base_url}/api/proxy/pools/delete", data={"id": pool_id})
+            assert deleted.status == 200
+            page.get_by_role("button", name="刷新运行状态").click()
+        else:
+            pool_row.click()
+            delete_button = page.locator(f'[data-proxy-pool-delete="{pool_id}"]')
+            expect(delete_button).to_be_visible()
+            page.once("dialog", lambda dialog: dialog.accept())
+            with page.expect_response(lambda response: response.url == f"{base_url}/api/proxy/pools/delete" and response.request.method == "POST") as deleted:
+                delete_button.click()
+            assert deleted.value.status == 200
         expect(pool_row).to_have_count(0)
         # SYS-003: unchanged UI calls a private success helper, then reopens the missing pool.
-        expect(page.locator("#pool-drawer")).to_contain_text("该出口信息暂时无法读取")
+        if viewport_name != "mobile":
+            expect(page.locator("#pool-drawer")).to_contain_text("该出口信息暂时无法读取")
         page.screenshot(path=str(run_dir / "after-delete.png"), full_page=False)
         (run_dir / "after-delete-dom.html").write_text(page.content(), encoding="utf-8")
         after_delete()
-        page.locator("#pool-drawer [data-close]").click()
-        expect(page.locator("#pool-overlay")).not_to_have_class(re.compile(r".*\bopen\b.*"))
+        if viewport_name != "mobile":
+            page.locator("#pool-drawer [data-close]").click()
+            expect(page.locator("#pool-overlay")).not_to_have_class(re.compile(r".*\bopen\b.*"))
 
         binding_action = page.locator("[data-open='binding']").first
         expect(binding_action).to_be_visible()
