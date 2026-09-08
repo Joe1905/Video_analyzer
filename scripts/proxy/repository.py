@@ -1,22 +1,24 @@
-"""SQLite schema and existing data migrations for the proxy subsystem."""
+"""SQLite connections, schema migrations, and proxy queries."""
 
 from __future__ import annotations
 
 import json
 import sqlite3
-from typing import Any, Callable
+
+from proxy import nodes, settings
 
 
-def init_db(
-    conn: sqlite3.Connection,
-    *,
-    clean_port_scope: Callable[[Any], str],
-    port_range: Callable[[str], tuple[int, int]],
-    now_iso: Callable[[], str],
-    system_proxy_dialer: str,
-    status_duplicate: str,
-    status_error: str,
-) -> None:
+def connect() -> sqlite3.Connection:
+    nodes._validate_port_ranges()
+    settings.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(settings.DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    init_db(conn)
+    return conn
+
+
+def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS proxy_profiles (
@@ -372,7 +374,7 @@ def init_db(
             mihomo_proxy = {}
         if not isinstance(mihomo_proxy, dict):
             mihomo_proxy = {}
-        dialer_proxy = system_proxy_dialer if row["source_type"] == "static" else ""
+        dialer_proxy = settings.SYSTEM_PROXY_DIALER if row["source_type"] == "static" else ""
         if dialer_proxy:
             mihomo_proxy["dialer-proxy"] = dialer_proxy
         else:
@@ -387,12 +389,12 @@ def init_db(
             )
     used_ports: set[int] = set()
     for row in conn.execute("SELECT id, local_port, port_scope FROM proxy_profiles WHERE deleted_at = '' ORDER BY id"):
-        port_scope = clean_port_scope(row["port_scope"])
-        start_port, end_port = port_range(port_scope)
+        port_scope = nodes._clean_port_scope(row["port_scope"])
+        start_port, end_port = nodes._port_range(port_scope)
         local_port = int(row["local_port"] or 0)
         if start_port <= local_port <= end_port and local_port not in used_ports:
             if str(row["port_scope"] or "") != port_scope:
-                conn.execute("UPDATE proxy_profiles SET port_scope = ?, updated_at = ? WHERE id = ?", (port_scope, now_iso(), row["id"]))
+                conn.execute("UPDATE proxy_profiles SET port_scope = ?, updated_at = ? WHERE id = ?", (port_scope, settings.now_iso(), row["id"]))
             used_ports.add(local_port)
             continue
         replacement = next(
@@ -403,7 +405,7 @@ def init_db(
             raise ValueError(f"{port_scope} proxy port range exhausted: {start_port}-{end_port}")
         conn.execute(
             "UPDATE proxy_profiles SET local_port = ?, port_scope = ?, updated_at = ? WHERE id = ?",
-            (replacement, port_scope, now_iso(), row["id"]),
+            (replacement, port_scope, settings.now_iso(), row["id"]),
         )
         used_ports.add(replacement)
     for row in conn.execute(
@@ -433,7 +435,7 @@ def init_db(
         if serialized != row["profile_json"]:
             conn.execute(
                 "UPDATE tiktok_accounts SET profile_json = ?, updated_at = ? WHERE id = ?",
-                (serialized, now_iso(), row["id"]),
+                (serialized, settings.now_iso(), row["id"]),
             )
     conn.execute(
         """UPDATE proxy_profiles
@@ -448,6 +450,88 @@ def init_db(
                updated_at = ?
            WHERE deleted_at = '' AND status IN (?, ?)
              AND parse_error LIKE '出口 IP %已被代理%重复 IP%'""",
-        (status_duplicate, now_iso(), status_error, status_duplicate),
+        (settings.STATUS_DUPLICATE, settings.now_iso(), settings.STATUS_ERROR, settings.STATUS_DUPLICATE),
     )
     conn.commit()
+
+
+def allocate_port(conn: sqlite3.Connection, current_id: int = 0, port_scope: str = settings.PORT_SCOPE_DEFAULT) -> int:
+    port_scope = nodes._clean_port_scope(port_scope)
+    start_port, end_port = nodes._port_range(port_scope)
+    if current_id:
+        row = conn.execute(
+            "SELECT local_port, port_scope FROM proxy_profiles WHERE id = ? AND deleted_at = ''",
+            (current_id,),
+        ).fetchone()
+        if row and nodes._clean_port_scope(row["port_scope"]) == port_scope and start_port <= int(row["local_port"] or 0) <= end_port:
+            return int(row["local_port"])
+    used = {
+        int(row["local_port"])
+        for row in conn.execute(
+            "SELECT local_port FROM proxy_profiles WHERE local_port > 0 AND deleted_at = ''"
+        )
+    }
+    for port in range(start_port, end_port + 1):
+        if port not in used:
+            return port
+    raise ValueError(f"{port_scope} proxy port range exhausted: {start_port}-{end_port}")
+
+
+def duplicate_exit_ip_pool(conn: sqlite3.Connection, pool_id: int, observed_ip: str) -> sqlite3.Row | None:
+    if not observed_ip:
+        return None
+    return conn.execute(
+        """
+        SELECT id, name, local_port
+        FROM proxy_profiles
+        WHERE id < ? AND deleted_at = '' AND source_type <> 'direct'
+          AND (detected_exit_ip = ? OR expected_exit_ip = ?)
+        ORDER BY id
+        LIMIT 1
+        """,
+        (pool_id, observed_ip, observed_ip),
+    ).fetchone()
+
+
+def list_sing_box_pools() -> list[sqlite3.Row]:
+    with connect() as conn:
+        return conn.execute(
+            "SELECT * FROM proxy_profiles WHERE status <> ? AND deleted_at = '' ORDER BY id",
+            (settings.STATUS_PAUSED,),
+        ).fetchall()
+
+
+def list_static_runtime_pools() -> list[sqlite3.Row]:
+    with connect() as conn:
+        return conn.execute(
+            """SELECT * FROM proxy_profiles
+               WHERE source_type IN ('static','direct') AND parse_status = 'ok'
+                 AND status <> ? AND deleted_at = ''
+               ORDER BY id""",
+            (settings.STATUS_PAUSED,),
+        ).fetchall()
+
+
+def list_reconcilable_mihomo_pools() -> list[sqlite3.Row]:
+    with connect() as conn:
+        return conn.execute(
+            """
+            SELECT * FROM proxy_profiles
+            WHERE parse_status = 'ok' AND status <> ? AND deleted_at = ''
+            ORDER BY local_port, id
+            """,
+            (settings.STATUS_PAUSED,),
+        ).fetchall()
+
+
+def list_mihomo_export_pools() -> list[sqlite3.Row]:
+    with connect() as conn:
+        return conn.execute(
+            """SELECT * FROM proxy_profiles
+               WHERE deleted_at = '' AND (
+                    parse_status = 'ok'
+                    OR status IN (?, 'active', '可用', '已绑定', '未绑定')
+               )
+               ORDER BY id""",
+            (settings.STATUS_ACTIVE,),
+        ).fetchall()

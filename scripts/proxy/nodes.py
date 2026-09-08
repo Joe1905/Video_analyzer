@@ -1,16 +1,104 @@
-"""Pure proxy node URI parsing."""
+"""Proxy node parsing, port rules, and row serialization."""
 
 from __future__ import annotations
 
 import base64
 import binascii
 import json
+import sqlite3
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
+
+from proxy import settings
 
 
 def _clean_text(value: Any, max_len: int = 1000) -> str:
     return str(value or "").strip()[:max_len]
+
+
+def _json_loads(value: str, fallback: Any) -> Any:
+    try:
+        return json.loads(value or "")
+    except Exception:
+        return fallback
+
+
+def _clean_status(value: Any, default: str = settings.STATUS_ACTIVE) -> str:
+    raw = _clean_text(value, 40)
+    if not raw:
+        return default
+    return settings.STATUS_MAP.get(
+        raw.lower(),
+        settings.STATUS_MAP.get(
+            raw,
+            raw if raw in {settings.STATUS_ACTIVE, settings.STATUS_PAUSED, settings.STATUS_ERROR, settings.STATUS_DUPLICATE} else default,
+        ),
+    )
+
+
+def _clean_account_status(value: Any, default: str = settings.ACCOUNT_STATUS_ACTIVE) -> str:
+    raw = _clean_text(value, 40)
+    if not raw:
+        return default
+    return settings.ACCOUNT_STATUS_MAP.get(
+        raw.lower(),
+        settings.ACCOUNT_STATUS_MAP.get(
+            raw,
+            raw if raw in {settings.ACCOUNT_STATUS_ACTIVE, settings.ACCOUNT_STATUS_PAUSED, settings.ACCOUNT_STATUS_ERROR} else default,
+        ),
+    )
+
+
+def _clean_port_scope(value: Any) -> str:
+    return settings.PORT_SCOPE_DEFAULT
+
+
+def _port_range(port_scope: str = settings.PORT_SCOPE_DEFAULT) -> tuple[int, int]:
+    return settings.PROXY_PORT_START, settings.PROXY_PORT_END
+
+
+def _validate_port_ranges() -> None:
+    if settings.PROXY_PORT_START < 1024 or settings.PROXY_PORT_END < settings.PROXY_PORT_START or settings.PROXY_PORT_END > 65535:
+        raise ValueError(f"IP 池代理端口范围无效：{settings.PROXY_PORT_START}-{settings.PROXY_PORT_END}")
+
+
+def _row_to_pool(
+    row: sqlite3.Row,
+    account_count: int = 0,
+    account_names: list[str] | None = None,
+    pending_job_count: int = 0,
+) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "source_type": row["source_type"],
+        "source_uri": row["source_uri"],
+        "dialer_proxy": row["dialer_proxy"],
+        "expected_exit_ip": row["expected_exit_ip"],
+        "region": row["region"],
+        "local_port": row["local_port"],
+        "detected_exit_ip": row["detected_exit_ip"],
+        "detected_country": row["detected_country"],
+        "detected_region": row["detected_region"],
+        "detected_city": row["detected_city"],
+        "detected_address": row["detected_address"],
+        "detected_at": row["detected_at"],
+        "auto_check_failures": int(row["auto_check_failures"] or 0),
+        "next_auto_check_at": row["next_auto_check_at"],
+        "last_auto_check_at": row["last_auto_check_at"],
+        "status": _clean_status(row["status"]),
+        "notes": row["notes"],
+        "parse_status": row["parse_status"],
+        "parse_error": row["parse_error"],
+        "mihomo_name": row["mihomo_name"],
+        "parsed": _json_loads(row["parsed_json"], {}),
+        "mihomo_proxy": _json_loads(row["mihomo_proxy_json"], {}),
+        "account_count": account_count,
+        "account_names": account_names or [],
+        "pending_job_count": pending_job_count,
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
 
 
 def parse_vless_uri(uri: str, fallback_name: str = "") -> dict[str, Any]:
