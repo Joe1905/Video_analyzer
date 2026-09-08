@@ -17,18 +17,16 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import proxy_pool  # noqa: E402
-from proxy import repository, runtime, settings  # noqa: E402
+from proxy import accounts, pools, repository, runtime, settings, state  # noqa: E402
 
 
 @contextmanager
 def isolated_proxy_db() -> Iterator[None]:
     original_settings_data_dir = settings.DATA_DIR
     original_settings_db_path = settings.DB_PATH
-    original_data_dir = proxy_pool.DATA_DIR
-    original_db_path = proxy_pool.DB_PATH
-    original_lookup = proxy_pool.lookup_ip_geo
-    original_remove = proxy_pool._remove_mihomo_pool_config
-    original_sync = proxy_pool._sync_mihomo_pool_config
+    original_lookup = pools.lookup_ip_geo
+    original_remove = pools._remove_mihomo_pool_config
+    original_sync = pools._sync_mihomo_pool_config
     original_sqlite_connect = sqlite3.connect
     connections: list[sqlite3.Connection] = []
 
@@ -42,19 +40,17 @@ def isolated_proxy_db() -> Iterator[None]:
     sqlite3.connect = tracked_connect
     settings.DATA_DIR = data_dir
     settings.DB_PATH = data_dir / "proxy_pool.sqlite"
-    proxy_pool.DATA_DIR = data_dir
-    proxy_pool.DB_PATH = data_dir / "proxy_pool.sqlite"
-    proxy_pool.lookup_ip_geo = lambda _ip: {
+    pools.lookup_ip_geo = lambda _ip: {
         "country": "",
         "region": "",
         "city": "",
         "address": "",
     }
-    proxy_pool._remove_mihomo_pool_config = lambda pool: (
+    pools._remove_mihomo_pool_config = lambda pool: (
         {"removed": True, "port": int(pool["local_port"] or 0)},
         None,
     )
-    proxy_pool._sync_mihomo_pool_config = lambda pool: {
+    pools._sync_mihomo_pool_config = lambda pool: {
         "loaded": True,
         "listener_port": int(pool["local_port"] or 0),
     }
@@ -63,11 +59,9 @@ def isolated_proxy_db() -> Iterator[None]:
     finally:
         settings.DATA_DIR = original_settings_data_dir
         settings.DB_PATH = original_settings_db_path
-        proxy_pool.DATA_DIR = original_data_dir
-        proxy_pool.DB_PATH = original_db_path
-        proxy_pool.lookup_ip_geo = original_lookup
-        proxy_pool._remove_mihomo_pool_config = original_remove
-        proxy_pool._sync_mihomo_pool_config = original_sync
+        pools.lookup_ip_geo = original_lookup
+        pools._remove_mihomo_pool_config = original_remove
+        pools._sync_mihomo_pool_config = original_sync
         sqlite3.connect = original_sqlite_connect
         for conn in connections:
             conn.close()
@@ -640,11 +634,11 @@ def test_login_session_start_failure_marks_persisted_session_failed() -> None:
     with isolated_proxy_db():
         pool = create_manual_pool("session-start", "203.0.113.61")
         with ExitStack() as stack:
-            stack.enter_context(patch.object(proxy_pool, "check_binding", return_value={"allowed": True}))
-            stack.enter_context(patch.object(proxy_pool, "_slot_ports_available", return_value=True))
-            launch = stack.enter_context(patch.object(proxy_pool, "_launch_observation_channel", side_effect=RuntimeError("channel failed")))
-            terminate = stack.enter_context(patch.object(proxy_pool, "_terminate_session_processes"))
-            remove_profile = stack.enter_context(patch.object(proxy_pool, "_remove_unbound_session_profile"))
+            stack.enter_context(patch.object(accounts, "check_binding", return_value={"allowed": True}))
+            stack.enter_context(patch.object(state, "_slot_ports_available", return_value=True))
+            launch = stack.enter_context(patch.object(accounts, "_launch_observation_channel", side_effect=RuntimeError("channel failed")))
+            terminate = stack.enter_context(patch.object(accounts, "_terminate_session_processes"))
+            remove_profile = stack.enter_context(patch.object(accounts, "_remove_unbound_session_profile"))
             try:
                 proxy_pool.start_login_session({
                     "proxy_profile_id": pool["id"], "username": "pending-user", "feishu_user_id": "user-1",
@@ -679,8 +673,10 @@ def test_stop_and_expired_session_cleanup_release_process_state() -> None:
             ).lastrowid)
             conn.commit()
         with ExitStack() as stack:
-            terminate = stack.enter_context(patch.object(proxy_pool, "_terminate_session_processes"))
-            remove_profile = stack.enter_context(patch.object(proxy_pool, "_remove_unbound_session_profile"))
+            terminate = stack.enter_context(patch.object(accounts, "_terminate_session_processes"))
+            remove_profile = stack.enter_context(patch.object(accounts, "_remove_unbound_session_profile"))
+            stack.enter_context(patch.object(state, "_terminate_session_processes", terminate))
+            stack.enter_context(patch.object(state, "_remove_unbound_session_profile", remove_profile))
             proxy_pool.stop_login_session({"session_id": stopped_id, "reason": "operator stop"})
             with proxy_pool.connect() as conn:
                 assert proxy_pool._active_sessions(conn) == []
@@ -944,7 +940,7 @@ def test_runtime_status_freezes_public_keys_and_dynamic_vnc_values() -> None:
 def test_account_state_exposes_instagram_login_without_cookie_value() -> None:
     with isolated_proxy_db():
         pool = create_manual_pool("instagram", "203.0.113.40")
-        profile_dir = proxy_pool.DATA_DIR / "tiktok_browser_profiles" / "account" / "user-data"
+        profile_dir = settings.DATA_DIR / "tiktok_browser_profiles" / "account" / "user-data"
         cookie_path = profile_dir / "Default" / "Cookies"
         cookie_path.parent.mkdir(parents=True)
         with sqlite3.connect(cookie_path) as cookie_conn:
