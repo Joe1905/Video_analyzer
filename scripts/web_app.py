@@ -60,7 +60,6 @@ from routes.report_pages import register_report_pages
 from routes.router import MethodNotAllowed, RouteNotFound, Router
 from routes.shop import register_shop_api_routes, register_shop_page
 from routes.static_assets import register_static_asset_route
-from routes.taobao import register_taobao_api_routes, register_taobao_page
 from routes.tool import register_tool_page
 from services.amazon import AmazonService
 from services.analyze import AnalyzeService
@@ -236,7 +235,6 @@ from video_registry import (
 from proxy_state import ensure_us_proxy
 import instagram_content_collect
 import proxy_pool
-import taobao_collector
 import tiktok_studio_publish
 import tiktok_studio_collect
 TOOL_MAX_UPLOAD_BYTES = 200 * 1024 * 1024
@@ -786,7 +784,7 @@ def is_registered_post_route(path: str) -> bool:
         "/api/prompt",
     }:
         return True
-    if path.startswith(("/api/proxy/", "/api/taobao/", "/amazon/", "/chuhaijiang/")):
+    if path.startswith(("/api/proxy/", "/amazon/", "/chuhaijiang/")):
         return True
     if path.startswith("/api/chat/sessions/") and path.endswith("/rename"):
         return True
@@ -851,7 +849,7 @@ NAV_ITEMS = [
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
 
-UI_ASSET_VERSION = "20260828-49"
+UI_ASSET_VERSION = "20260908-50"
 APP_UI_ASSETS = f"""
 <script id="ui-nav-state-boot">
 let uiNavExpanded = false;
@@ -9956,8 +9954,6 @@ class Handler(BaseHTTPRequestHandler):
             if not PROXY_POOL_ENABLED:
                 return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
             return self.handle_proxy_api_post(parsed.path)
-        if parsed.path.startswith("/api/taobao/"):
-            return taobao_unknown_post(self)
         if parsed.path == "/api/tool/convert":
             return self.handle_tool_convert()
         if parsed.path == "/api/chat/ask":
@@ -10797,8 +10793,6 @@ SHOP_HTML_PATH = SCRIPTS_DIR / "static" / "shop.html"
 SHOP_HTML = SHOP_HTML_PATH.read_text(encoding="utf-8") if SHOP_HTML_PATH.is_file() else ""
 PROXY_HTML_PATH = SCRIPTS_DIR / "static" / "proxy.html"
 PROXY_HTML = PROXY_HTML_PATH.read_text(encoding="utf-8") if PROXY_HTML_PATH.is_file() else ""
-TAOBAO_HTML_PATH = SCRIPTS_DIR / "static" / "taobao.html"
-TAOBAO_HTML = TAOBAO_HTML_PATH.read_text(encoding="utf-8") if TAOBAO_HTML_PATH.is_file() else ""
 
 download_service = DownloadService(
     registry=download_job_registry,
@@ -10944,13 +10938,6 @@ register_video_stream_routes(
     safe_filename=safe_filename,
     serve_video=Handler.serve_video,
 )
-taobao_unknown_post = register_taobao_api_routes(
-    WEB_ROUTER,
-    collector=taobao_collector,
-    current_global_user=current_global_user,
-    guess_type=mimetypes.guess_type,
-)
-register_taobao_page(WEB_ROUTER, html_snapshot=TAOBAO_HTML, inject_nav=inject_unified_nav)
 
 
 def proxy_session_janitor() -> None:
@@ -10961,12 +10948,6 @@ def proxy_session_janitor() -> None:
                 print(f"Released {released} expired proxy browser session(s)", flush=True)
         except Exception as exc:
             print(f"Proxy session cleanup failed: {exc}", flush=True)
-        try:
-            released = taobao_collector.cleanup_expired_sessions()
-            if released:
-                print(f"Released {released} expired Taobao browser resource(s)", flush=True)
-        except Exception as exc:
-            print(f"Taobao session cleanup failed: {exc}", flush=True)
         try:
             recheck = proxy_pool.recheck_unavailable_proxies()
             if recheck["attempted"]:

@@ -41,10 +41,7 @@ SING_BOX_COMPOSE_PROJECT = os.getenv("SING_BOX_COMPOSE_PROJECT", "short-video-an
 SING_BOX_COMPOSE_SERVICE = os.getenv("SING_BOX_COMPOSE_SERVICE", "sing-box").strip() or "sing-box"
 PROXY_PORT_START = int(os.getenv("PROXY_POOL_PORT_START", "19300") or "19300")
 PROXY_PORT_END = int(os.getenv("PROXY_POOL_PORT_END", "19399") or "19399")
-TAOBAO_PROXY_PORT_START = int(os.getenv("TAOBAO_PROXY_PORT_START", "19400") or "19400")
-TAOBAO_PROXY_PORT_END = int(os.getenv("TAOBAO_PROXY_PORT_END", "19419") or "19419")
 PORT_SCOPE_DEFAULT = "default"
-PORT_SCOPE_TAOBAO = "taobao"
 PROXY_REQUEST_ATTEMPTS = max(1, int(os.getenv("PROXY_REQUEST_ATTEMPTS", "3") or "3"))
 PROXY_REACHABILITY_ATTEMPTS = max(1, int(os.getenv("PROXY_REACHABILITY_ATTEMPTS", "10") or "10"))
 PROXY_RECHECK_DELAYS_SECONDS = (5 * 60, 10 * 60, 30 * 60)
@@ -211,24 +208,16 @@ def is_retryable_proxy_error(error: Exception | str) -> bool:
 
 
 def _clean_port_scope(value: Any) -> str:
-    return PORT_SCOPE_TAOBAO if str(value or "").strip().lower() == PORT_SCOPE_TAOBAO else PORT_SCOPE_DEFAULT
+    return PORT_SCOPE_DEFAULT
 
 
 def _port_range(port_scope: str = PORT_SCOPE_DEFAULT) -> tuple[int, int]:
-    if _clean_port_scope(port_scope) == PORT_SCOPE_TAOBAO:
-        return TAOBAO_PROXY_PORT_START, TAOBAO_PROXY_PORT_END
     return PROXY_PORT_START, PROXY_PORT_END
 
 
 def _validate_port_ranges() -> None:
-    for label, start, end in (
-        ("IP 池", PROXY_PORT_START, PROXY_PORT_END),
-        ("淘宝", TAOBAO_PROXY_PORT_START, TAOBAO_PROXY_PORT_END),
-    ):
-        if start < 1024 or end < start or end > 65535:
-            raise ValueError(f"{label}代理端口范围无效：{start}-{end}")
-    if not (TAOBAO_PROXY_PORT_END < PROXY_PORT_START or TAOBAO_PROXY_PORT_START > PROXY_PORT_END):
-        raise ValueError("淘宝代理端口范围不能与 IP 池端口范围重叠")
+    if PROXY_PORT_START < 1024 or PROXY_PORT_END < PROXY_PORT_START or PROXY_PORT_END > 65535:
+        raise ValueError(f"IP 池代理端口范围无效：{PROXY_PORT_START}-{PROXY_PORT_END}")
 
 
 def connect() -> sqlite3.Connection:
@@ -301,64 +290,6 @@ def _allocate_port(conn: sqlite3.Connection, current_id: int = 0, port_scope: st
         if port not in used:
             return port
     raise ValueError(f"{port_scope} proxy port range exhausted: {start_port}-{end_port}")
-
-
-def reserve_pool_port_scope(pool_id: int, port_scope: str) -> dict[str, Any]:
-    """Move an unused proxy listener into an isolated port scope and resync it."""
-    port_scope = _clean_port_scope(port_scope)
-    with connect() as conn:
-        row = conn.execute(
-            "SELECT * FROM proxy_profiles WHERE id = ? AND deleted_at = ''",
-            (int(pool_id),),
-        ).fetchone()
-        if not row:
-            raise ValueError("代理出口不存在，无法迁移到独立端口范围")
-        old_pool = dict(row)
-        if _clean_port_scope(row["port_scope"]) == port_scope:
-            return _row_to_pool(row, 0, [], _proxy_pending_job_count(conn, int(pool_id)))
-        account = conn.execute(
-            "SELECT 1 FROM tiktok_accounts WHERE proxy_profile_id = ? AND proxy_bound = 1 AND deleted_at = '' LIMIT 1",
-            (int(pool_id),),
-        ).fetchone()
-        session = conn.execute(
-            "SELECT 1 FROM browser_sessions WHERE proxy_profile_id = ? AND status IN ('starting','running','observing') LIMIT 1",
-            (int(pool_id),),
-        ).fetchone()
-        if account or session:
-            raise ValueError("代理出口正在被 IP 池账号使用，不能迁移到淘宝独立端口范围")
-        new_port = _allocate_port(conn, 0, port_scope)
-
-    listener_restore = None
-    if not _sing_box_reality_pool(old_pool):
-        _cleanup, listener_restore = _remove_mihomo_pool_config(old_pool)
-    try:
-        with connect() as conn:
-            conn.execute(
-                "UPDATE proxy_profiles SET local_port = ?, port_scope = ?, updated_at = ? WHERE id = ?",
-                (new_port, port_scope, now_iso(), int(pool_id)),
-            )
-            conn.commit()
-        pool = get_pool(int(pool_id))
-        if _sing_box_reality_pool(pool):
-            ensure_proxy_cores(restart=True, required=True)
-        else:
-            _sync_mihomo_pool_config(pool)
-        return get_pool(int(pool_id))
-    except Exception:
-        with connect() as conn:
-            conn.execute(
-                "UPDATE proxy_profiles SET local_port = ?, port_scope = ?, updated_at = ? WHERE id = ?",
-                (int(old_pool["local_port"] or 0), _clean_port_scope(old_pool.get("port_scope")), now_iso(), int(pool_id)),
-            )
-            conn.commit()
-        try:
-            if listener_restore is not None:
-                _restore_mihomo_listener_config(*listener_restore)
-            elif not _sing_box_reality_pool(old_pool):
-                _sync_mihomo_pool_config(old_pool)
-        except Exception:
-            pass
-        raise
 
 
 def _duplicate_exit_ip_pool(
@@ -1230,7 +1161,6 @@ def _abs_workspace_path(value: str) -> Path:
 def _prepare_browser_profile_dir(user_data_dir: Path) -> dict[str, Path]:
     profiles_roots = (
         (DATA_DIR / "tiktok_browser_profiles").resolve(),
-        (DATA_DIR / "taobao_browser_profiles").resolve(),
     )
     profile_root = user_data_dir.parent.resolve()
     if not any(profile_root == root or root in profile_root.parents for root in profiles_roots):
