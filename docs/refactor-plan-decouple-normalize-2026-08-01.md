@@ -616,6 +616,25 @@ class JobSnapshot(TypedDict):
 
 **Phase 5 验收：** `test_proxy_pool_lifecycle.py` 全绿；用合成账号/代理 seed 在 `/proxy` 完成删池、未绑定、重新绑定、任务恢复。浏览器固定验证 1440×900 和 390×844 两个 viewport，保存 DOM 契约、控制台错误和截图，测试后删除 seed 数据；`proxy` 包和 route 均不导入 `web_app`。
 
+### 9.1 Phase 5.0 盘点与 5.1A/B schema 首批（2026-09-08）
+
+Phase 5.0 已完成三路 Terra 只读盘点和主审 CodeGraph/AST 复核。`init_db` 管理 10 张表；发布、采集、Instagram 和淘宝仍直接消费 `proxy_pool.connect()`。`proxy_state.ensure_us_proxy` 的 selector/probe 语义继续由下载、Amazon 等既有调用方复用，不复制实现。文件所有权按 repository → nodes → runtime → accounts → publishing/collection → route 顺序移交，写入不交叠。
+
+- **5.1A 测试基线（`8934cce`、`55b0206`）：** 复用 `test_proxy_pool_lifecycle.py`，由 10 项增至 13 项；用合成旧库及 SQLite backup 副本冻结升级、完整快照幂等、升级后读取、迁移 DML 失败及 commit 失败。源 fixture 保持不变，所有测试连接在退出时显式关闭并断言临时目录不存在。早期 DDL 可保留、后续数据回填回滚是当前实际边界，不宣称整体 migration 原子性。
+- **5.1B schema 提取（`08f443a`）：** 仅将 `init_db` 的 schema/迁移逻辑迁入 `scripts/proxy/repository.py`；六项现有规则显式注入，`proxy_pool.init_db` 为有删除条件的窄入口，`connect()`、调用方和事务时序不变。AST 逆重命名后函数体与旧实现完全相同，repository 仅导入标准库；Terra 交叉审计及主审 P0/P1/P2 均为 0。
+- **影响清单与服务器验证：** `test_proxy_pool_lifecycle.py` 13 项、直接依赖方 `test_tiktok_studio_publish_description.py` 和 `test_instagram_content_collect.py` 三个脚本均通过；语法、`git diff --check`、CodeGraph/AST 依赖方向及 TTL 检查通过。未修改 UI，未运行 Playwright 或 56 项全量回归。没有新增测试脚本、临时脚本、转正或删除脚本；新增的两个文件是正式 proxy 包模块。
+- **剩余范围：** 5.1 连接和业务查询/事务归属尚未全部迁移，nodes/runtime/accounts/任务状态机/route 尚未实施，不能将 schema 首批等同 Phase 5 完成。现有浏览器 smoke 禁用代理；最终代理 UI seed 必须另用隔离数据目录与假 runtime，并验证退出后记录/文件清理，不能向真实 4004 数据造 seed。`list_state()` 会清理会话，不能充当无副作用的只读数据探针。
+- **4004 部署证据：** `08f443a` 经 GitHub 同步，唯一入口 `bash scripts/deploy_ui_4004.sh` 部署镜像 `sha256:2f80178032ed05349fea9b966406840b350463b7d5103cd8a7b94bc4c96f5eae`，启动时间 `2026-09-08T08:20:46.900111247Z`；三端 `/healthz`、4004 `/proxy` 和 `/api/proxy/products` 均 200，服务器 checkout clean。4002/4003 镜像和启动时间与交接记录一致；4004 启动日志无新增 traceback，既有三个静态代理 DIRECT 同步提示仍在，未修改真实配置以消除提示。
+- **流程纠偏：** 测试交叉检查曾在 Windows 运行隔离 lifecycle，暴露未关闭连接导致的临时库清理失败；已修正 fixture 并在服务器重跑完整本批清单，后续 runtime 检查仅走服务器 Docker。该次遗留目录 `C:\Users\admin\AppData\Local\Temp\tmpmdsvri3s` 的删除被执行策略阻止，未绕过策略；目录仅含合成 SQLite fixture，不含真实业务数据。
+
+### 9.2 继续实施前的补偿决策（待用户确认）
+
+主审与 Terra 均确认现有 `delete_pool` 的 sing-box 分支先提交软删、解绑和任务等待，再重启代理核心；重启失败后原删除 API 因 pool 已软删而不能重试。启动时全量重启可再次尝试，但没有对应删除操作的持久失败状态或立即重试入口。Mihomo 的数据库回滚补偿也会吞掉配置恢复失败。这是现有行为缺口，本批未改动。
+
+建议方案：保留已提交的删除与解绑结果，等待任务继续保持 `delayed/waiting_proxy`；将运行时清理失败持久化为可观测、按代理标识幂等重试的待清理操作，复用现有配置生成/重启/恢复 helper，成功后清除待处理状态，不自动恢复旧绑定。数据库未提交的失败仍回滚数据库，并显式记录或报告配置恢复失败。具体字段与入口在批准此行为后再冻结契约，不预先新增框架。
+
+该方案改变失败后的外部状态与持久数据语义，按执行要求及交接文档 §8.4/§12 请求用户决策后才能实施；不能把主代理自行选择补偿方向当成纯结构迁移。schema 首批的既有 DDL 边界也没有被本次提取修复。
+
 ## 十、Phase 6：聊天、LLM 与聊天路由归一
 
 ### 10.1 聊天边界
@@ -718,7 +737,7 @@ Phase 0 测试基线
 
 ## 十四、下一批实施任务
 
-Phase 0～4 与脚本资产 TTL 治理均已完成。Phase 4 的 Shop、Metrics、Amazon、下载/上传/分析/翻译/后处理、文件/结果/删除/视频流、analyzer execution、日报 web adapter、淘宝和邻聊均形成明确的垂直边界；没有万能 VideoService、跨域文件框架或反向依赖。下一步是 **Phase 5 代理子系统**：先按数据库、节点、运行时、账号绑定、发布/采集的事务边界只读盘点并建立影响清单，再从 repository migration 与失败回滚契约开始。不得提前迁移 Phase 6 的聊天工具归一/LLM transport 或 Phase 7 前端资源；不得因启动时既有静态代理 DIRECT 状态提示而跳过 fixture、事务补偿和 4002/4003 隔离门禁。
+Phase 0～4 与脚本资产 TTL 治理均已完成。Phase 5.0 盘点和 5.1A/B schema 首批已推进，证据及剩余范围见 §9.1。下一步先确认 §9.2 的运行时失败补偿方向，再继续 repository 连接/查询/事务归属和 nodes → runtime → accounts → publishing/collection → route；不得重复宣称 Phase 5 已整体完成。不得提前迁移 Phase 6 的聊天工具归一/LLM transport 或 Phase 7 前端资源；不得因启动时既有静态代理 DIRECT 状态提示而跳过 fixture、事务补偿和 4002/4003 隔离门禁。
 
 Phase 2.3 继续复用现有 Terra 子智能体，避免为同一长期任务无限新增执行记录，并按以下门槛推进：
 
