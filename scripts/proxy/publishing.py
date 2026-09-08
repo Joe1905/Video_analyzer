@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
-import proxy_pool
+from proxy import accounts, pools, repository, settings
 from browser_page_state import (
     BrowserPageBlocked,
     BrowserPageTimeout,
@@ -179,7 +179,7 @@ def _job_query(where: str = "", params: tuple[Any, ...] = ()) -> list[dict[str, 
     if where:
         sql += "AND (" + where + ") "
     sql += "ORDER BY j.created_at DESC"
-    with proxy_pool.connect() as conn:
+    with repository.connect() as conn:
         return [_row_to_job(row) for row in conn.execute(sql, params).fetchall()]
 
 
@@ -231,11 +231,11 @@ def create_job(form: Any) -> dict[str, Any]:
     if not original_name or suffix not in ALLOWED_SUFFIXES:
         raise ValueError("仅支持 MP4、MOV、M4V 或 WebM 视频")
 
-    with proxy_pool.connect() as conn:
+    with repository.connect() as conn:
         account = conn.execute("SELECT * FROM tiktok_accounts WHERE id = ? AND deleted_at = ''", (account_id,)).fetchone()
         if not account:
             raise ValueError("account not found")
-        proxy_pool.require_account_proxy_bound(account)
+        pools.require_account_proxy_bound(account)
         proxy_profile_id = int(account["proxy_profile_id"])
 
     asset_id = uuid.uuid4().hex
@@ -261,7 +261,7 @@ def create_job(form: Any) -> dict[str, Any]:
         now = _iso()
         stored_path = target.relative_to(ROOT).as_posix()
         content_type = _clean_text(getattr(file_item, "type", ""), 120) or mimetypes.guess_type(original_name)[0] or "video/mp4"
-        with proxy_pool.connect() as conn:
+        with repository.connect() as conn:
             conn.execute(
                 "INSERT INTO publish_assets (id, account_id, original_name, stored_path, content_type, size_bytes, sha256, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (asset_id, account_id, original_name, stored_path, content_type, size, digest.hexdigest(), now),
@@ -304,7 +304,7 @@ def update_job(payload: dict[str, Any]) -> dict[str, Any]:
     job_id = _clean_text(payload.get("id") or payload.get("job_id"), 80)
     if not job_id:
         raise ValueError("job_id is required")
-    with proxy_pool.connect() as conn:
+    with repository.connect() as conn:
         row = conn.execute("SELECT * FROM publish_jobs WHERE id = ? AND deleted_at = ''", (job_id,)).fetchone()
         if not row:
             raise ValueError("publish job not found")
@@ -314,7 +314,7 @@ def update_job(payload: dict[str, Any]) -> dict[str, Any]:
         ).fetchone()
         if not account:
             raise ValueError("account not found")
-        proxy_pool.require_account_proxy_bound(account)
+        pools.require_account_proxy_bound(account)
         if row["status"] not in EDITABLE_STATUSES:
             raise ValueError("当前任务状态不能编辑")
         scheduled = _parse_schedule(payload.get("scheduled_at") or row["scheduled_at"])
@@ -360,7 +360,7 @@ def update_job(payload: dict[str, Any]) -> dict[str, Any]:
 
 def cancel_job(payload: dict[str, Any]) -> dict[str, Any]:
     job_id = _clean_text(payload.get("id") or payload.get("job_id"), 80)
-    with proxy_pool.connect() as conn:
+    with repository.connect() as conn:
         row = conn.execute("SELECT * FROM publish_jobs WHERE id = ? AND deleted_at = ''", (job_id,)).fetchone()
         if not row:
             raise ValueError("publish job not found")
@@ -376,7 +376,7 @@ def retry_job(payload: dict[str, Any]) -> dict[str, Any]:
     job_id = _clean_text(payload.get("id") or payload.get("job_id"), 80)
     if not job_id:
         raise ValueError("job_id is required")
-    with proxy_pool.connect() as conn:
+    with repository.connect() as conn:
         row = conn.execute("SELECT * FROM publish_jobs WHERE id = ? AND deleted_at = ''", (job_id,)).fetchone()
         if not row:
             raise ValueError("publish job not found")
@@ -386,7 +386,7 @@ def retry_job(payload: dict[str, Any]) -> dict[str, Any]:
         ).fetchone()
         if not account:
             raise ValueError("account not found")
-        proxy_pool.require_account_proxy_bound(account)
+        pools.require_account_proxy_bound(account)
         if row["status"] not in RETRYABLE_STATUSES:
             raise ValueError("只有发布失败的任务可以重试")
         video_path(str(row["asset_id"]))
@@ -423,7 +423,7 @@ def delete_job(payload: dict[str, Any]) -> dict[str, Any]:
     job_id = _clean_text(payload.get("id") or payload.get("job_id"), 80)
     if not job_id:
         raise ValueError("job_id is required")
-    with proxy_pool.connect() as conn:
+    with repository.connect() as conn:
         row = conn.execute("SELECT * FROM publish_jobs WHERE id = ? AND deleted_at = ''", (job_id,)).fetchone()
         if not row:
             raise ValueError("publish job not found")
@@ -441,7 +441,7 @@ def delete_job(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def video_path(asset_id: str) -> Path:
-    with proxy_pool.connect() as conn:
+    with repository.connect() as conn:
         row = conn.execute("SELECT stored_path FROM publish_assets WHERE id = ?", (_clean_text(asset_id, 80),)).fetchone()
     if not row:
         raise ValueError("publish video not found")
@@ -455,7 +455,7 @@ def video_path(asset_id: str) -> Path:
 
 
 def runtime_status() -> dict[str, Any]:
-    with proxy_pool.connect() as conn:
+    with repository.connect() as conn:
         counts = {row["status"]: int(row["count"]) for row in conn.execute("SELECT status, COUNT(*) AS count FROM publish_jobs WHERE deleted_at = '' GROUP BY status")}
     with _worker_lock:
         active = sorted(_active_jobs)
@@ -464,7 +464,7 @@ def runtime_status() -> dict[str, Any]:
         "dry_run": DRY_RUN,
         "final_click_enabled": FINAL_CLICK_ENABLED,
         "timezone": TIMEZONE_NAME,
-        "max_automatic_slots": proxy_pool.browser_max_slots(),
+        "max_automatic_slots": settings.browser_max_slots(),
         "active_jobs": active,
         "counts": counts,
         "native_schedule_lead_seconds": 0,
@@ -482,13 +482,13 @@ def _set_job(job_id: str, status: str, stage: str = "", error: str = "", **value
             fields.append(f"{key} = ?")
             params.append(value)
     params.append(job_id)
-    with proxy_pool.connect() as conn:
+    with repository.connect() as conn:
         conn.execute(f"UPDATE publish_jobs SET {', '.join(fields)} WHERE id = ?", params)
         conn.commit()
 
 
 def _update_account(account_id: int, error: str = "", published_at: str = "") -> None:
-    with proxy_pool.connect() as conn:
+    with repository.connect() as conn:
         conn.execute(
             "UPDATE tiktok_accounts SET last_error = ?, last_publish_at = COALESCE(NULLIF(?, ''), last_publish_at), updated_at = ? WHERE id = ?",
             (_clean_text(error, 2000), published_at, _iso(), account_id),
@@ -498,10 +498,10 @@ def _update_account(account_id: int, error: str = "", published_at: str = "") ->
 
 def _delay_for_proxy(job_id: str, job: dict[str, Any], error: Exception | str) -> None:
     message = str(error)
-    next_attempt_at = _iso(_utc_now() + timedelta(seconds=proxy_pool.PROXY_QUEUE_RECHECK_SECONDS))
+    next_attempt_at = _iso(_utc_now() + timedelta(seconds=settings.PROXY_QUEUE_RECHECK_SECONDS))
     _set_job(job_id, "delayed", "waiting_proxy", message, session_id=None, next_attempt_at=next_attempt_at)
     _update_account(int(job["account_id"]), error=message)
-    proxy_pool.schedule_proxy_recheck_for_pending_job(int(job["proxy_profile_id"]), message)
+    pools.schedule_proxy_recheck_for_pending_job(int(job["proxy_profile_id"]), message)
 
 
 def _delay_for_page(job_id: str, job: dict[str, Any], error: Exception | str) -> None:
@@ -1625,7 +1625,7 @@ def _set_video_file(page: Any, video: Path, display: str = "", log_dir: Path | N
 
 
 def _selected_product(product_id: str) -> dict[str, Any]:
-    conn = proxy_pool.connect()
+    conn = repository.connect()
     try:
         row = conn.execute(
             "SELECT product_id, product_name FROM tiktok_products WHERE product_id = ?",
@@ -1978,7 +1978,7 @@ def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[str,
                     current_page.screenshot(path=str(log_dir / "last-state.png"), full_page=True)
             except Exception:
                 pass
-            # Leaving the CDP browser alive here lets proxy_pool own process cleanup
+            # Leaving the CDP browser alive here lets the account workflow own process cleanup
             # and preserves the same noVNC channel for manual review when required.
 
 
@@ -1994,11 +1994,11 @@ def _run_job(job_id: str) -> None:
         job = jobs[0]
         keep_observing = bool(job.get("keep_observing"))
         requested_session_id = int(job.get("session_id") or 0)
-        session = proxy_pool.claim_observation_session_for_job(int(job["account_id"]), requested_session_id, job_id)
+        session = accounts.claim_observation_session_for_job(int(job["account_id"]), requested_session_id, job_id)
         if session is not None:
             reused_observation = True
         else:
-            session = proxy_pool.start_automation_session(int(job["account_id"]), job_id)["session"]
+            session = accounts.start_automation_session(int(job["account_id"]), job_id)["session"]
         session_id = int(session["id"])
         _set_job(job_id, "preparing", "browser_ready", session_id=session_id)
         status, result_url = _execute_browser(job, session)
@@ -2008,43 +2008,43 @@ def _run_job(job_id: str) -> None:
             _update_account(int(job["account_id"]), published_at=actual)
         if status == "dry_run" and session_id:
             keep_for_review = True
-            proxy_pool.handoff_automation_session(session_id, "演练已到达最终发布前，保留观测通道")
+            accounts.handoff_automation_session(session_id, "演练已到达最终发布前，保留观测通道")
         elif keep_observing and session_id:
             keep_for_review = True
-            proxy_pool.handoff_automation_session(session_id, "立即发布完成，保留观测通道")
+            accounts.handoff_automation_session(session_id, "立即发布完成，保留观测通道")
     except ProductLinkReviewRequired as exc:
         keep_for_review = True
         _set_job(job_id, "product_link_review", "product_link_review", str(exc), session_id=session_id or None)
         if session_id:
-            proxy_pool.handoff_automation_session(session_id, str(exc))
+            accounts.handoff_automation_session(session_id, str(exc))
     except ManualPublishReady as exc:
         keep_for_review = True
         _set_job(job_id, "manual_ready", "manual_ready", str(exc), session_id=session_id or None)
         if session_id:
-            proxy_pool.handoff_automation_session(session_id, str(exc))
+            accounts.handoff_automation_session(session_id, str(exc))
     except ProductLinkUnavailable as exc:
         keep_for_review = True
         _set_job(job_id, "product_link_failed", "product_link_failed", str(exc), session_id=session_id or None)
         _update_account(int(job["account_id"]), error=str(exc))
         if session_id:
-            proxy_pool.handoff_automation_session(session_id, str(exc))
+            accounts.handoff_automation_session(session_id, str(exc))
     except ManualReviewRequired as exc:
         keep_for_review = True
         _set_job(job_id, "failed", "manual_review", str(exc), session_id=session_id or None)
         _update_account(int(job["account_id"]), error=str(exc))
         if session_id:
-            proxy_pool.handoff_automation_session(session_id, str(exc))
+            accounts.handoff_automation_session(session_id, str(exc))
     except ResultUncertain as exc:
         keep_for_review = True
         _set_job(job_id, "result_uncertain", "confirm_required", str(exc), session_id=session_id or None)
         _update_account(int(job["account_id"]), error=str(exc))
         if session_id:
-            proxy_pool.handoff_automation_session(session_id, str(exc))
+            accounts.handoff_automation_session(session_id, str(exc))
     except Exception as exc:
         message = str(exc)
         if "槽位已满" in message or "已经处于唤醒状态" in message:
             _set_job(job_id, "delayed", "waiting_slot", message, next_attempt_at=_iso(_utc_now() + timedelta(seconds=30)))
-        elif 'job' in locals() and proxy_pool.is_retryable_proxy_error(message):
+        elif 'job' in locals() and settings.is_retryable_proxy_error(message):
             _delay_for_proxy(job_id, job, message)
         elif 'job' in locals() and isinstance(exc, BrowserPageTimeout) and int(job.get("attempt_count") or 0) < 3:
             _delay_for_page(job_id, job, message)
@@ -2054,16 +2054,16 @@ def _run_job(job_id: str) -> None:
                 _update_account(int(job["account_id"]), error=message)
             if session_id and (DRY_RUN or reused_observation or keep_observing):
                 keep_for_review = True
-                proxy_pool.handoff_automation_session(session_id, f"发布失败，保留观测通道：{message}")
+                accounts.handoff_automation_session(session_id, f"发布失败，保留观测通道：{message}")
     finally:
         if session_id and reused_observation and not keep_for_review:
             try:
-                proxy_pool.release_observation_session_job(session_id, job_id)
+                accounts.release_observation_session_job(session_id, job_id)
             except Exception as exc:
                 print(f"Publish observation session release failed for {job_id}: {exc}", flush=True)
         elif session_id and not keep_for_review:
             try:
-                proxy_pool.finish_automation_session(session_id)
+                accounts.finish_automation_session(session_id)
             except Exception as exc:
                 print(f"Publish session cleanup failed for {job_id}: {exc}", flush=True)
         with _worker_lock:
@@ -2073,11 +2073,11 @@ def _run_job(job_id: str) -> None:
 def _claim_due_jobs() -> list[str]:
     now = _utc_now()
     with _worker_lock:
-        capacity = max(0, proxy_pool.browser_max_slots() - len(_active_jobs))
+        capacity = max(0, settings.browser_max_slots() - len(_active_jobs))
     if capacity <= 0:
         return []
     claimed: list[str] = []
-    with proxy_pool.connect() as conn:
+    with repository.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         rows = conn.execute(
             """
@@ -2125,18 +2125,18 @@ def _claim_due_jobs() -> list[str]:
 def _recover_interrupted() -> None:
     now = _iso()
     proxy_failures: list[tuple[int, str]] = []
-    with proxy_pool.connect() as conn:
+    with repository.connect() as conn:
         conn.execute(
             "UPDATE publish_jobs SET status = CASE WHEN final_click_at <> '' THEN 'result_uncertain' ELSE 'queued' END, stage = 'recovered', status_detail = '服务器重启，任务状态已恢复', last_error = '服务器重启后恢复任务', session_id = NULL, next_attempt_at = '', updated_at = ? WHERE status IN ('preparing','uploading','publishing')",
             (now,),
         )
-        retry_at = _iso(_utc_now() + timedelta(seconds=proxy_pool.PROXY_QUEUE_RECHECK_SECONDS))
+        retry_at = _iso(_utc_now() + timedelta(seconds=settings.PROXY_QUEUE_RECHECK_SECONDS))
         rows = conn.execute(
             "SELECT id, proxy_profile_id, last_error FROM publish_jobs WHERE status = 'failed' AND final_click_at = '' AND deleted_at = ''"
         ).fetchall()
         for row in rows:
             message = str(row["last_error"] or "")
-            if not proxy_pool.is_retryable_proxy_error(message):
+            if not settings.is_retryable_proxy_error(message):
                 continue
             conn.execute(
                 "UPDATE publish_jobs SET status = 'delayed', stage = 'waiting_proxy', status_detail = '', session_id = NULL, next_attempt_at = ?, updated_at = ? WHERE id = ?",
@@ -2145,7 +2145,7 @@ def _recover_interrupted() -> None:
             proxy_failures.append((int(row["proxy_profile_id"]), message))
         conn.commit()
     for pool_id, message in proxy_failures:
-        proxy_pool.schedule_proxy_recheck_for_pending_job(pool_id, message)
+        pools.schedule_proxy_recheck_for_pending_job(pool_id, message)
 
 
 def _worker_loop() -> None:
@@ -2170,7 +2170,7 @@ def start_worker() -> None:
         _worker_started = True
     PUBLISH_ROOT.mkdir(parents=True, exist_ok=True)
     LOG_ROOT.mkdir(parents=True, exist_ok=True)
-    with proxy_pool.connect():
+    with repository.connect():
         pass
     _recover_interrupted()
     threading.Thread(target=_worker_loop, daemon=True, name="tiktok-publish-scheduler").start()

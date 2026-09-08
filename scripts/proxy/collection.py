@@ -13,7 +13,7 @@ from typing import Any
 from urllib.parse import urljoin, urlparse
 from zoneinfo import ZoneInfo
 
-import proxy_pool
+from proxy import accounts, pools, repository, settings
 from browser_page_state import (
     BrowserPageBlocked,
     BrowserPageLoadError,
@@ -260,7 +260,7 @@ def dashboard(account_id: int, platform: str = "tiktok") -> dict[str, Any]:
     if not account_id:
         raise ValueError("account_id is required")
     platform = _collect_platform(platform)
-    with proxy_pool.connect() as conn:
+    with repository.connect() as conn:
         account = _account(conn, account_id)
         setting = conn.execute("SELECT * FROM collect_settings WHERE account_id = ?", (account_id,)).fetchone()
         jobs = [
@@ -330,9 +330,9 @@ def save_settings(payload: dict[str, Any]) -> dict[str, Any]:
     feishu_target = _validate_feishu_target(payload.get("feishu_target"))
     feishu_target_json = json.dumps(feishu_target, ensure_ascii=False, separators=(",", ":"))
     now = _iso()
-    with proxy_pool.connect() as conn:
+    with repository.connect() as conn:
         account = _account(conn, account_id)
-        proxy_pool.require_account_proxy_bound(account)
+        pools.require_account_proxy_bound(account)
         conn.execute(
             """
             INSERT INTO collect_settings (
@@ -405,9 +405,9 @@ def create_job(payload: dict[str, Any]) -> dict[str, Any]:
     if not account_id:
         raise ValueError("account_id is required")
     platform = _collect_platform(payload.get("platform"))
-    with proxy_pool.connect() as conn:
+    with repository.connect() as conn:
         account = _account(conn, account_id)
-        proxy_pool.require_account_proxy_bound(account)
+        pools.require_account_proxy_bound(account)
         publish_date_start, publish_date_end = _validate_publish_range(
             payload.get("publish_date_start"), payload.get("publish_date_end")
         )
@@ -445,12 +445,12 @@ def retry_job(payload: dict[str, Any]) -> dict[str, Any]:
     job_id = _clean_text(payload.get("job_id") or payload.get("id"), 80)
     if not job_id:
         raise ValueError("job_id is required")
-    with proxy_pool.connect() as conn:
+    with repository.connect() as conn:
         row = conn.execute("SELECT * FROM collect_jobs WHERE id = ?", (job_id,)).fetchone()
         if not row:
             raise ValueError("collect job not found")
         account = _account(conn, int(row["account_id"]))
-        proxy_pool.require_account_proxy_bound(account)
+        pools.require_account_proxy_bound(account)
         if str(row["status"]) not in JOB_RETRYABLE_STATUSES:
             raise ValueError("只有失败、部分失败或已取消的采集任务可以重试")
         now = _iso()
@@ -474,7 +474,7 @@ def cancel_job(payload: dict[str, Any]) -> dict[str, Any]:
     job_id = _clean_text(payload.get("job_id") or payload.get("id"), 80)
     if not job_id:
         raise ValueError("job_id is required")
-    with proxy_pool.connect() as conn:
+    with repository.connect() as conn:
         row = conn.execute("SELECT * FROM collect_jobs WHERE id = ?", (job_id,)).fetchone()
         if not row:
             raise ValueError("collect job not found")
@@ -491,7 +491,7 @@ def cancel_job(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def runtime_status() -> dict[str, Any]:
-    with proxy_pool.connect() as conn:
+    with repository.connect() as conn:
         counts = {
             str(row["status"]): int(row["count"])
             for row in conn.execute("SELECT status, COUNT(*) AS count FROM collect_jobs GROUP BY status").fetchall()
@@ -503,7 +503,7 @@ def runtime_status() -> dict[str, Any]:
         "timezone": TIMEZONE_NAME,
         "active_jobs": active,
         "counts": counts,
-        "max_automatic_slots": proxy_pool.browser_max_slots(),
+        "max_automatic_slots": settings.browser_max_slots(),
         "retention_max_seconds": RETENTION_MAX_SECONDS,
     }
 
@@ -521,13 +521,13 @@ def _set_job(job_id: str, status: str, stage: str = "", error: str = "", **value
             fields.append(f"{key} = ?")
             params.append(value)
     params.append(job_id)
-    with proxy_pool.connect() as conn:
+    with repository.connect() as conn:
         conn.execute(f"UPDATE collect_jobs SET {', '.join(fields)} WHERE id = ?", params)
         conn.commit()
 
 
 def _record_error(job: dict[str, Any], video_id: str, video_url: str, stage: str, error: Exception | str) -> None:
-    with proxy_pool.connect() as conn:
+    with repository.connect() as conn:
         conn.execute(
             "INSERT INTO collect_errors (job_id, account_id, video_id, video_url, stage, message, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
@@ -618,7 +618,7 @@ def _feishu_fields(target: dict[str, Any], payload: dict[str, Any]) -> dict[str,
 
 
 def _set_result_sync(result_id: int, status: str, record_id: str = "", error: str = "") -> None:
-    with proxy_pool.connect() as conn:
+    with repository.connect() as conn:
         conn.execute(
             """
             UPDATE collect_results
@@ -646,7 +646,7 @@ def _sync_result_to_feishu(result_id: int, job: dict[str, Any], payload: dict[st
             "tableId": target.get("tableId"),
             "fields": fields,
         }
-        with proxy_pool.connect() as conn:
+        with repository.connect() as conn:
             current = conn.execute(
                 "SELECT feishu_record_id FROM collect_results WHERE id = ?",
                 (result_id,),
@@ -694,7 +694,7 @@ def _save_result(job: dict[str, Any], payload: dict[str, Any]) -> None:
         _job_feishu_target(job), ensure_ascii=False, separators=(",", ":")
     )
     sync_status = "pending" if job.get("auto_sync", True) else "not_synced"
-    with proxy_pool.connect() as conn:
+    with repository.connect() as conn:
         conn.execute(
             """
             INSERT INTO collect_results (
@@ -749,7 +749,7 @@ def restore_uncollected_videos(
     recovered = 0
     skipped = 0
     now = _iso()
-    with proxy_pool.connect() as conn:
+    with repository.connect() as conn:
         job_row = conn.execute("SELECT * FROM collect_jobs WHERE id = ?", (clean_job_id,)).fetchone()
         if not job_row:
             raise ValueError("collect job not found")
@@ -896,11 +896,11 @@ def _run_discovery_rescan(job_id: str) -> None:
         original_status = str(job["status"])
         _set_job(job_id, original_status, "rescan_discovery", "正在按新滚动逻辑重新扫描视频列表")
         requested_session_id = int(job.get("session_id") or 0)
-        session = proxy_pool.claim_observation_session_for_job(job["account_id"], requested_session_id, job_id)
+        session = accounts.claim_observation_session_for_job(job["account_id"], requested_session_id, job_id)
         if session is not None:
             reused_observation = True
         else:
-            session = proxy_pool.start_automation_session(job["account_id"], f"rescan_{job_id}")["session"]
+            session = accounts.start_automation_session(job["account_id"], f"rescan_{job_id}")["session"]
         session_id = int(session["id"])
         sources = _scan_job_video_list(job, session)
         completed_ids = _completed_video_ids(job_id)
@@ -918,12 +918,12 @@ def _run_discovery_rescan(job_id: str) -> None:
     finally:
         if session_id and reused_observation:
             try:
-                proxy_pool.release_observation_session_job(session_id, job_id)
+                accounts.release_observation_session_job(session_id, job_id)
             except Exception:
                 pass
         elif session_id:
             try:
-                proxy_pool.finish_automation_session(session_id, "列表重扫结束")
+                accounts.finish_automation_session(session_id, "列表重扫结束")
             except Exception:
                 pass
         with _worker_lock:
@@ -978,7 +978,7 @@ def retry_failed_feishu_sync(payload: dict[str, Any]) -> dict[str, Any]:
     if result_ids:
         clauses.append(f"r.id IN ({','.join('?' for _ in result_ids)})")
         params.extend(result_ids)
-    with proxy_pool.connect() as conn:
+    with repository.connect() as conn:
         rows = conn.execute(
             f"""
             SELECT r.id, r.account_id, r.payload_json, r.feishu_target_json,
@@ -999,7 +999,7 @@ def retry_failed_feishu_sync(payload: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(target, dict):
             target = {}
         result_id = int(row["id"])
-        with proxy_pool.connect() as conn:
+        with repository.connect() as conn:
             conn.execute(
                 """
                 UPDATE collect_results
@@ -1015,7 +1015,7 @@ def retry_failed_feishu_sync(payload: dict[str, Any]) -> dict[str, Any]:
             {"account_id": int(row["account_id"]), "feishu_target": target},
             _json_loads(row["payload_json"], {}),
         )
-        with proxy_pool.connect() as conn:
+        with repository.connect() as conn:
             updated = conn.execute(
                 """
                 SELECT id, feishu_sync_status, feishu_record_id,
@@ -1689,7 +1689,7 @@ def _collect_video(page: Any, job: dict[str, Any], source: dict[str, str], log_d
 
 
 def _load_job(job_id: str) -> dict[str, Any] | None:
-    with proxy_pool.connect() as conn:
+    with repository.connect() as conn:
         row = conn.execute(
             """
             SELECT j.*, a.username, a.last_checked_ip, a.profile_json
@@ -1708,7 +1708,7 @@ def _load_job(job_id: str) -> dict[str, Any] | None:
 
 
 def _completed_video_ids(job_id: str) -> set[str]:
-    with proxy_pool.connect() as conn:
+    with repository.connect() as conn:
         return {
             str(row["video_id"])
             for row in conn.execute(
@@ -1719,7 +1719,7 @@ def _completed_video_ids(job_id: str) -> set[str]:
 
 
 def _pending_video_sources(job_id: str) -> list[dict[str, str]]:
-    with proxy_pool.connect() as conn:
+    with repository.connect() as conn:
         rows = conn.execute(
             """
             SELECT video_id, video_url, title, published_at
@@ -1892,7 +1892,7 @@ def _execute_instagram_browser(job: dict[str, Any], session: dict[str, Any]) -> 
         # Binding/login success performs the avatar click once and persists the
         # Reels entry.  A collection run only needs that saved entry; retry the
         # bootstrap solely for legacy accounts where it is absent.
-        bootstrap = proxy_pool.bootstrap_instagram_profile(int(job["account_id"]), int(session["id"]))
+        bootstrap = accounts.bootstrap_instagram_profile(int(job["account_id"]), int(session["id"]))
         if not bootstrap.get("configured"):
             raise RuntimeError(str(bootstrap.get("reason") or "Instagram 账号主页初始化失败"))
         refreshed = _load_job(job["id"])
@@ -2071,7 +2071,7 @@ def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[int,
             failed_videos=0,
         )
         for source in links:
-            with proxy_pool.connect() as conn:
+            with repository.connect() as conn:
                 current = conn.execute("SELECT status FROM collect_jobs WHERE id = ?", (job["id"],)).fetchone()
             if current and str(current["status"]) == "cancelled":
                 break
@@ -2120,7 +2120,7 @@ def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[int,
 
 
 def _update_account(account_id: int, collected_at: str = "", error: str = "") -> None:
-    with proxy_pool.connect() as conn:
+    with repository.connect() as conn:
         conn.execute(
             """
             UPDATE tiktok_accounts
@@ -2135,7 +2135,7 @@ def _update_account(account_id: int, collected_at: str = "", error: str = "") ->
 
 def _delay_for_proxy(job_id: str, job: dict[str, Any], error: Exception | str) -> None:
     message = str(error)
-    next_attempt_at = _iso(_utc_now() + timedelta(seconds=proxy_pool.PROXY_QUEUE_RECHECK_SECONDS))
+    next_attempt_at = _iso(_utc_now() + timedelta(seconds=settings.PROXY_QUEUE_RECHECK_SECONDS))
     _set_job(
         job_id,
         "delayed",
@@ -2146,7 +2146,7 @@ def _delay_for_proxy(job_id: str, job: dict[str, Any], error: Exception | str) -
         next_attempt_at=next_attempt_at,
     )
     _update_account(int(job["account_id"]), error=message)
-    proxy_pool.schedule_proxy_recheck_for_pending_job(int(job["proxy_profile_id"]), message)
+    pools.schedule_proxy_recheck_for_pending_job(int(job["proxy_profile_id"]), message)
 
 
 def _delay_for_page(job_id: str, job: dict[str, Any], error: Exception | str) -> None:
@@ -2172,11 +2172,11 @@ def _run_job(job_id: str) -> None:
         if not job:
             return
         requested_session_id = int(job.get("session_id") or 0)
-        session = proxy_pool.claim_observation_session_for_job(job["account_id"], requested_session_id, job_id)
+        session = accounts.claim_observation_session_for_job(job["account_id"], requested_session_id, job_id)
         if session is not None:
             reused_observation = True
         else:
-            session = proxy_pool.start_automation_session(
+            session = accounts.start_automation_session(
                 job["account_id"], job_id, start_platform=_collect_platform(job.get("platform"))
             )["session"]
         session_id = int(session["id"])
@@ -2211,7 +2211,7 @@ def _run_job(job_id: str) -> None:
         message = str(exc)
         if "槽位已满" in message or "已经处于唤醒状态" in message:
             _set_job(job_id, "delayed", "waiting_slot", message, next_attempt_at=_iso(_utc_now() + timedelta(seconds=30)))
-        elif 'job' in locals() and proxy_pool.is_retryable_proxy_error(message):
+        elif 'job' in locals() and settings.is_retryable_proxy_error(message):
             _delay_for_proxy(job_id, job, message)
         elif 'job' in locals() and isinstance(exc, (BrowserPageTimeout, BrowserPageLoadError)) and int(job.get("attempt_count") or 0) < 3:
             _delay_for_page(job_id, job, message)
@@ -2224,12 +2224,12 @@ def _run_job(job_id: str) -> None:
     finally:
         if session_id and reused_observation:
             try:
-                proxy_pool.release_observation_session_job(session_id, job_id)
+                accounts.release_observation_session_job(session_id, job_id)
             except Exception as exc:
                 print(f"Collect observation session release failed for {job_id}: {exc}", flush=True)
         elif session_id:
             try:
-                proxy_pool.finish_automation_session(session_id, "自动采集任务结束")
+                accounts.finish_automation_session(session_id, "自动采集任务结束")
             except Exception as exc:
                 print(f"Collect session cleanup failed for {job_id}: {exc}", flush=True)
         with _worker_lock:
@@ -2241,7 +2241,7 @@ def _schedule_daily_jobs() -> None:
     local_day = local_now.date()
     local_date = local_day.isoformat()
     local_time = local_now.strftime("%H:%M")
-    with proxy_pool.connect() as conn:
+    with repository.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         settings = conn.execute(
             """
@@ -2285,11 +2285,11 @@ def _schedule_daily_jobs() -> None:
 
 def _claim_due_jobs() -> list[str]:
     with _worker_lock:
-        capacity = max(0, proxy_pool.browser_max_slots() - len(_active_jobs))
+        capacity = max(0, settings.browser_max_slots() - len(_active_jobs))
     if capacity <= 0:
         return []
     claimed: list[str] = []
-    with proxy_pool.connect() as conn:
+    with repository.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         rows = conn.execute(
             """
@@ -2338,7 +2338,7 @@ def _claim_due_jobs() -> list[str]:
 
 def _recover_interrupted() -> None:
     proxy_failures: list[tuple[int, str]] = []
-    with proxy_pool.connect() as conn:
+    with repository.connect() as conn:
         conn.execute(
             """
             UPDATE collect_jobs
@@ -2350,13 +2350,13 @@ def _recover_interrupted() -> None:
             (_iso(),),
         )
         now = _iso()
-        retry_at = _iso(_utc_now() + timedelta(seconds=proxy_pool.PROXY_QUEUE_RECHECK_SECONDS))
+        retry_at = _iso(_utc_now() + timedelta(seconds=settings.PROXY_QUEUE_RECHECK_SECONDS))
         rows = conn.execute(
             "SELECT id, proxy_profile_id, last_error FROM collect_jobs WHERE status = 'failed' AND completed_videos = 0"
         ).fetchall()
         for row in rows:
             message = str(row["last_error"] or "")
-            if not proxy_pool.is_retryable_proxy_error(message):
+            if not settings.is_retryable_proxy_error(message):
                 continue
             conn.execute(
                 "UPDATE collect_jobs SET status = 'delayed', stage = 'waiting_proxy', status_detail = '', session_id = NULL, completed_at = '', next_attempt_at = ?, updated_at = ? WHERE id = ?",
@@ -2365,7 +2365,7 @@ def _recover_interrupted() -> None:
             proxy_failures.append((int(row["proxy_profile_id"]), message))
         conn.commit()
     for pool_id, message in proxy_failures:
-        proxy_pool.schedule_proxy_recheck_for_pending_job(pool_id, message)
+        pools.schedule_proxy_recheck_for_pending_job(pool_id, message)
 
 
 def _worker_loop() -> None:

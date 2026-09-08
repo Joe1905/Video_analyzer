@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-import proxy_pool
+from proxy import accounts, repository, settings, state
 
 
 ROOT = Path.cwd()
@@ -90,7 +90,7 @@ def _resolve_workspace_path(value: str) -> Path:
 
 
 def _account_and_profile(account_id: int) -> tuple[sqlite3.Row, Path, int]:
-    with proxy_pool.connect() as conn:
+    with repository.connect() as conn:
         account = conn.execute(
             """SELECT a.*, p.local_port, p.status AS proxy_status
                FROM tiktok_accounts a
@@ -102,7 +102,7 @@ def _account_and_profile(account_id: int) -> tuple[sqlite3.Row, Path, int]:
             raise InstagramCollectionError("账号不存在或已删除")
         if not int(account["proxy_bound"] or 0):
             raise InstagramCollectionError("账号未绑定代理，不能启动隔离浏览器")
-        if str(account["proxy_status"] or "") != proxy_pool.STATUS_ACTIVE:
+        if str(account["proxy_status"] or "") != settings.STATUS_ACTIVE:
             raise InstagramCollectionError("绑定代理未启用，不能启动隔离浏览器")
         try:
             profile = json.loads(str(account["profile_json"] or "{}"))
@@ -164,7 +164,7 @@ def _borrow_observation_session(account_id: int, session_id: int, job_id: str) -
     helper here would see the collector process's runtime ID and incorrectly
     release the browser that is owned by the Web service.
     """
-    with proxy_pool.connect() as conn:
+    with repository.connect() as conn:
         row = conn.execute("SELECT * FROM browser_sessions WHERE id = ?", (session_id,)).fetchone()
         if not row or int(row["account_id"] or 0) != int(account_id):
             raise InstagramCollectionError("观测通道不属于当前账号")
@@ -178,7 +178,7 @@ def _borrow_observation_session(account_id: int, session_id: int, job_id: str) -
             (job_id, now_iso(), now_iso(), session_id),
         )
         conn.commit()
-        return proxy_pool._row_to_session(conn.execute("SELECT * FROM browser_sessions WHERE id = ?", (session_id,)).fetchone())
+        return state._row_to_session(conn.execute("SELECT * FROM browser_sessions WHERE id = ?", (session_id,)).fetchone())
 
 
 def _exclusive_lock(profile_dir: Path) -> Path:
@@ -332,7 +332,7 @@ def run_simulation(account_id: int, max_videos: int, check_login_only: bool, ses
                 raise InstagramCollectionError("指定观测通道未运行，无法执行 INS 采集")
             borrowed_observation = True
         else:
-            started = proxy_pool.start_automation_session(account_id, job_id)
+            started = accounts.start_automation_session(account_id, job_id)
             session = started["session"]
         active_session_id = int(session["id"])
         debug_port = int(session["debug_port"])
@@ -372,9 +372,9 @@ def run_simulation(account_id: int, max_videos: int, check_login_only: bool, ses
     finally:
         if active_session_id:
             if borrowed_observation:
-                proxy_pool.release_observation_session_job(active_session_id, job_id)
+                accounts.release_observation_session_job(active_session_id, job_id)
             else:
-                proxy_pool.finish_automation_session(active_session_id, "Instagram 内容采集模拟结束")
+                accounts.finish_automation_session(active_session_id, "Instagram 内容采集模拟结束")
         lock_path.unlink(missing_ok=True)
 
 

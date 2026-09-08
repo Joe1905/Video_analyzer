@@ -235,8 +235,8 @@ from video_registry import (
 from proxy_state import ensure_us_proxy
 import instagram_content_collect
 import proxy_pool
-import tiktok_studio_publish
-import tiktok_studio_collect
+from proxy import publishing as tiktok_studio_publish
+from proxy import collection as tiktok_studio_collect
 TOOL_MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 TOOL_MAX_FILES = 100
 SAFE_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
