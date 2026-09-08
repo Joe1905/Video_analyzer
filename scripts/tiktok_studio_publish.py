@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import mimetypes
@@ -15,10 +14,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 import proxy_pool
+from vision_provider import recognize_image
 from browser_page_state import (
     BrowserPageBlocked,
     BrowserPageTimeout,
@@ -724,14 +723,6 @@ def _dialog_details(dialog: Any) -> tuple[str, list[str]]:
 
 
 def _vision_popup_decision(snapshot: Path, step: str, dialog_text: str, buttons: list[str]) -> dict[str, Any]:
-    api_key = os.getenv("VISION_API_KEY", "").strip()
-    api_url = os.getenv("VISION_API_URL", "").strip().rstrip("/")
-    model = os.getenv("VISION_MODEL", "qwen3-vl-flash").strip() or "qwen3-vl-flash"
-    if not api_key or not api_url:
-        return {"action": "manual_review", "reason": "视觉模型未配置"}
-    if not api_url.endswith("/chat/completions"):
-        api_url += "/chat/completions"
-    encoded = base64.b64encode(snapshot.read_bytes()).decode("ascii")
     prompt = (
         "分析 TikTok Studio 参数页的弹窗。只能返回 JSON："
         '{"action":"click|manual_review","button_text":"","x":0,"y":0,"reason":""}。'
@@ -741,27 +732,7 @@ def _vision_popup_decision(snapshot: Path, step: str, dialog_text: str, buttons:
         "禁止选择 Post、Publish、Next、Confirm、Delete。"
         f"\n当前步骤：{step}\n弹窗文字：{dialog_text}\n候选按钮：{buttons}"
     )
-    payload = {
-            "model": model,
-            "messages": [{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{encoded}"}},
-                ],
-            }],
-            "temperature": 0,
-            "max_tokens": 240,
-        }
-    request = Request(
-        api_url,
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        method="POST",
-    )
-    with urlopen(request, timeout=45) as response:
-        response_body = json.loads(response.read().decode("utf-8"))
-    content = str(response_body["choices"][0]["message"]["content"])
+    content = recognize_image(snapshot, prompt, max_tokens=240, temperature=0, timeout=45)
     match = re.search(r"\{.*\}", content, re.S)
     if not match:
         return {"action": "manual_review", "reason": "视觉模型未返回 JSON"}
@@ -880,14 +851,6 @@ def _vision_page_recovery_decision(
     buttons: list[str],
     error: str,
 ) -> dict[str, Any]:
-    api_key = os.getenv("VISION_API_KEY", "").strip()
-    api_url = os.getenv("VISION_API_URL", "").strip().rstrip("/")
-    model = os.getenv("VISION_MODEL", "qwen3-vl-flash").strip() or "qwen3-vl-flash"
-    if not api_key or not api_url:
-        return {"action": "manual_review", "reason": "视觉模型未配置"}
-    if not api_url.endswith("/chat/completions"):
-        api_url += "/chat/completions"
-    encoded = base64.b64encode(snapshot.read_bytes()).decode("ascii")
     prompt = (
         "分析 TikTok Studio 自动发布过程中遇到的异常页面，只返回 JSON："
         '{"action":"reload|click|manual_review","button_text":"","x":0,"y":0,"reason":""}。'
@@ -897,27 +860,7 @@ def _vision_page_recovery_decision(
         "不能确定时必须选择 manual_review。"
         f"\n步骤：{step}\nURL：{page_url}\n错误：{error}\n页面文字：{page_text}\n候选按钮：{buttons}"
     )
-    payload = {
-        "model": model,
-        "messages": [{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{encoded}"}},
-            ],
-        }],
-        "temperature": 0,
-        "max_tokens": 260,
-    }
-    request = Request(
-        api_url,
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        method="POST",
-    )
-    with urlopen(request, timeout=45) as response:
-        response_body = json.loads(response.read().decode("utf-8"))
-    content = str(response_body["choices"][0]["message"]["content"])
+    content = recognize_image(snapshot, prompt, max_tokens=260, temperature=0, timeout=45)
     match = re.search(r"\{.*\}", content, re.S)
     if not match:
         return {"action": "manual_review", "reason": "视觉模型未返回 JSON"}

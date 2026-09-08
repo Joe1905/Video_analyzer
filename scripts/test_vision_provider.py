@@ -92,28 +92,62 @@ class VisionStateTests(unittest.TestCase):
 
     def test_deepseek_frame_request_and_failure_isolation(self):
         vp.mark_unavailable("Arrearage", "欠费")
-        config = vp.frame_config()
         image = Path(self.tmp.name) / "frame.jpg"
         image.write_bytes(b"test-jpeg")
-        with patch.object(frames.requests, "post", return_value=reply()) as post:
-            self.assertEqual(frames.generate(config, "Describe", image), {"response": "white"})
+        with patch.object(vp.requests, "post", return_value=reply()) as post:
+            self.assertEqual(frames.generate("Describe", image), {"response": "white"})
         payload = post.call_args.kwargs["json"]
         self.assertEqual(payload["model"], vp.DEEPSEEK_VISION_MODEL)
         self.assertEqual(payload["thinking"], {"type": "disabled"})
         self.assertEqual(payload["messages"][0]["content"][1]["type"], "image_url")
         before = vp.get_status()
-        with patch.object(frames.requests, "post", return_value=reply(503)):
+        with patch.object(vp.requests, "post", return_value=reply(503)):
             with self.assertRaises(SystemExit):
-                frames.generate(config, "Describe", image)
+                frames.generate("Describe", image)
         self.assertEqual(vp.get_status(), before)
 
     def test_qwen_frame_failure_aborts_instead_of_saving_fake_success(self):
         with patch.object(vp, "_probe", return_value=(True, "", "")):
-            config = vp.frame_config()
-        with patch.object(frames.requests, "post", return_value=reply(403)):
+            vp.get_status()
+        with patch.object(vp.requests, "post", return_value=reply(403)):
             with self.assertRaises(SystemExit):
-                frames.generate(config, "Describe")
+                frames.generate("Describe")
         self.assertEqual(vp.frame_config()["provider"], "deepseek")
+
+    def test_shared_entry_routes_ocr_without_model_call(self):
+        image = Path(self.tmp.name) / "page.png"
+        with patch.dict(os.environ, {"OCR_SHARED_DIR": self.tmp.name, "OCR_SERVER_SHARED_DIR": "/ocr"}), \
+             patch.object(vp, "urlopen") as open_ocr, patch.object(vp, "frame_config") as model:
+            open_ocr.return_value.__enter__.return_value.read.return_value = b'{"text":"Loading"}'
+            self.assertEqual(vp.recognize_image(image, "page", purpose="text", timeout=20), {"text": "Loading"})
+            payload = json.loads(open_ocr.call_args.args[0].data)
+            self.assertEqual(payload["serverFilePath"], "/ocr/page.png")
+            model.assert_not_called()
+
+    def test_publish_uses_shared_fallback_and_png(self):
+        import tiktok_studio_publish as publish
+        image = Path(self.tmp.name) / "page.png"
+        image.write_bytes(b"test-png")
+        with patch.object(vp, "_probe", return_value=(True, "", "")):
+            vp.get_status()
+        answer = reply(payload={"choices": [{"message": {"content": '{"action":"manual_review","reason":"unknown"}'}}]})
+        with patch.object(vp.requests, "post", side_effect=[reply(400, {"error": {"code": "Arrearage"}}), answer, answer]) as post:
+            self.assertEqual(publish._vision_popup_decision(image, "test", "unknown", [])["action"], "manual_review")
+            self.assertEqual(publish._vision_page_recovery_decision(image, "test", "https://www.tiktok.com", "", [], "error")["action"], "manual_review")
+        self.assertEqual([c.kwargs["json"]["model"] for c in post.call_args_list],
+                         ["qwen-test", vp.DEEPSEEK_VISION_MODEL, vp.DEEPSEEK_VISION_MODEL])
+        payload = post.call_args.kwargs["json"]
+        self.assertTrue(payload["messages"][0]["content"][1]["image_url"]["url"].startswith("data:image/png;base64,"))
+        self.assertEqual(payload["thinking"], {"type": "disabled"})
+
+    def test_invalid_request_does_not_retry_or_switch(self):
+        with patch.object(vp, "_probe", return_value=(True, "", "")):
+            vp.get_status()
+        with patch.object(vp.requests, "post", return_value=reply(400, {"error": {"code": "InvalidParameter"}})) as post:
+            with self.assertRaisesRegex(RuntimeError, "HTTP 400"):
+                vp.recognize_image(prompt="Describe")
+            post.assert_called_once()
+        self.assertTrue(vp.get_status()["direct_video_enabled"])
 
     def test_direct_video_guard_runs_before_video_upload(self):
         import direct_video_analyze as direct
