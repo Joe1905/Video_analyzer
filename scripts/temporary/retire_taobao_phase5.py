@@ -48,18 +48,18 @@ def _require_schema(connection: sqlite3.Connection) -> None:
         raise RetirementRefused("database does not contain the expected retirement schema")
 
 
-def _foreign_keys_valid(connection: sqlite3.Connection) -> None:
-    if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
-        raise RetirementRefused("foreign key check failed")
+def _foreign_keys_valid(connection: sqlite3.Connection, expected: set[tuple] | frozenset[tuple] = frozenset()) -> None:
+    if set(connection.execute("PRAGMA foreign_key_check")) != expected:
+        raise RetirementRefused("foreign key violations changed")
 
 
 def _count(connection: sqlite3.Connection, query: str, params: tuple = ()) -> int:
     return int(connection.execute(query, params).fetchone()[0])
 
 
-def _preflight(connection: sqlite3.Connection) -> dict[str, int]:
+def _preflight(connection: sqlite3.Connection, existing_foreign_keys: set[tuple] | frozenset[tuple] = frozenset()) -> dict[str, int]:
     _require_schema(connection)
-    _foreign_keys_valid(connection)
+    _foreign_keys_valid(connection, existing_foreign_keys)
     placeholders = ", ".join("?" for _ in ACTIVE_SESSION_STATUSES)
     active_sessions = _count(
         connection,
@@ -85,7 +85,7 @@ def _preflight(connection: sqlite3.Connection) -> dict[str, int]:
     }
 
 
-def _backup(database: Path, source: sqlite3.Connection, counts: dict[str, int]) -> Path:
+def _backup(database: Path, source: sqlite3.Connection, counts: dict[str, int], existing_foreign_keys: set[tuple]) -> Path:
     backup_dir = database.parent / "taobao-retirement-backups" / (
         datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex
     )
@@ -107,7 +107,7 @@ def _backup(database: Path, source: sqlite3.Connection, counts: dict[str, int]) 
         if check.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
             raise RetirementRefused("backup integrity check failed")
         _require_schema(check)
-        _foreign_keys_valid(check)
+        _foreign_keys_valid(check, existing_foreign_keys)
         for name, expected in counts.items():
             if name.startswith("linked_"):
                 continue
@@ -122,18 +122,21 @@ def _backup(database: Path, source: sqlite3.Connection, counts: dict[str, int]) 
 def retire(data_dir: Path, *, apply: bool) -> dict:
     database, connection = _open_database(data_dir)
     try:
-        counts = _preflight(connection)
+        existing_foreign_keys = set(connection.execute("PRAGMA foreign_key_check"))
+        if any(row[0] in TAOBAO_TABLES or row[2] in TAOBAO_TABLES for row in existing_foreign_keys):
+            raise RetirementRefused("retired tables have existing foreign key violations")
+        counts = _preflight(connection, existing_foreign_keys)
         if not apply:
             return {"ok": True, "mode": "dry-run", "database": str(database), "would_remove": counts}
-        backup_path = _backup(database, connection, counts)
+        backup_path = _backup(database, connection, counts, existing_foreign_keys)
         connection.execute("BEGIN IMMEDIATE")
         try:
-            removed = _preflight(connection)
+            removed = _preflight(connection, existing_foreign_keys)
             connection.execute("DROP TABLE taobao_sessions")
             connection.execute("DROP TABLE taobao_proxy_bindings")
             connection.execute("DROP TABLE taobao_profiles")
             connection.execute("DELETE FROM proxy_profiles WHERE port_scope = 'taobao'")
-            _foreign_keys_valid(connection)
+            _foreign_keys_valid(connection, existing_foreign_keys)
             connection.commit()
         except Exception:
             connection.rollback()
@@ -151,8 +154,8 @@ def _self_test_schema(database: Path) -> None:
             """
             CREATE TABLE proxy_profiles (id INTEGER PRIMARY KEY, port_scope TEXT NOT NULL);
             CREATE TABLE tiktok_accounts (proxy_profile_id INTEGER REFERENCES proxy_profiles(id));
-            CREATE TABLE browser_sessions (proxy_profile_id INTEGER REFERENCES proxy_profiles(id));
-            CREATE TABLE publish_jobs (proxy_profile_id INTEGER REFERENCES proxy_profiles(id));
+            CREATE TABLE browser_sessions (id INTEGER PRIMARY KEY, proxy_profile_id INTEGER REFERENCES proxy_profiles(id));
+            CREATE TABLE publish_jobs (proxy_profile_id INTEGER REFERENCES proxy_profiles(id), session_id INTEGER REFERENCES browser_sessions(id));
             CREATE TABLE collect_jobs (proxy_profile_id INTEGER REFERENCES proxy_profiles(id));
             CREATE TABLE taobao_profiles (owner_id TEXT PRIMARY KEY, proxy_profile_id INTEGER REFERENCES proxy_profiles(id));
             CREATE TABLE taobao_proxy_bindings (owner_id TEXT REFERENCES taobao_profiles(owner_id));
@@ -187,6 +190,7 @@ def self_test() -> dict:
         assert dry_run["mode"] == "dry-run"
         connection = sqlite3.connect(database)
         try:
+            connection.execute("INSERT INTO publish_jobs VALUES (1, 999)")
             connection.execute("UPDATE taobao_sessions SET status = 'running'")
             connection.commit()
         finally:
@@ -215,7 +219,7 @@ def self_test() -> dict:
             assert not set(TAOBAO_TABLES) & names
             assert _count(check, "SELECT COUNT(*) FROM proxy_profiles WHERE id = 1 AND port_scope = 'default'") == 1
             assert _count(check, "SELECT COUNT(*) FROM proxy_profiles WHERE port_scope = 'taobao'") == 0
-            assert check.execute("PRAGMA foreign_key_check").fetchone() is None
+            assert check.execute("PRAGMA foreign_key_check").fetchall() == [("publish_jobs", 1, "browser_sessions", 0)]
         finally:
             check.close()
         backup_check = sqlite3.connect(f"file:{backup}?mode=ro", uri=True)
