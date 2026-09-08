@@ -635,6 +635,16 @@ Phase 5.0 已完成三路 Terra 只读盘点和主审 CodeGraph/AST 复核。`in
 
 该用户决定优先于本阶段关于理想补偿结果的原验收表述：故障注入仍须验证重构前后等价且没有新回归，SYS-001 已登记缺陷可以保留，不构成阶段阻塞，也不标记为已修复。schema 首批的既有 DDL 边界保持不变。
 
+### 9.3 Phase 5.2A/B 节点 URI 解析（2026-09-08）
+
+- **测试基线 `2257f7a`：** 复用 lifecycle，13 项增至 16 项，冻结 VLESS/VMess/static 的完整解析字典、错误消息及 `upsert_pool` 的合法持久化与非法输入不写库。没有新增测试或临时脚本。
+- **结构提交 `107e9ba`：** 三个解析器及原 `_clean_text` 移入 `proxy/nodes.py`，`proxy_pool` 显式导入保留调用路径；四个函数 AST 与旧实现一致，nodes 仅使用标准库，无反向导入、wrapper 或新配置层。`_clean_text` 暂由旧 facade 私有复用，后续按实际领域归属处理，不扩展为通用 utils。8 行 `connect()` 暂留原位，避免为形式拆分增加回调层。
+- **影响清单与验证：** 服务器 Docker 的 lifecycle 16 项、TikTok 发布描述和 Instagram 采集两个直接边界脚本均通过；语法、diff check、CodeGraph/AST 与 TTL 检查通过。未改 UI，未运行 Playwright 或 56 项全量回归；没有新增、转正或删除临时脚本。
+- **阶段后审计：** Terra 交叉审查与主审的需求漂移、解耦、复用、安全和测试有效性均通过，P0/P1/P2 为 0；隔离现场待确认单列，不以静态审计替代运维归因。
+- **4004 部署：** 唯一入口部署镜像 `sha256:69c80fa1062cbc98568de44573e54f515fde08926c3ddc171092b2e06fd24063`，启动时间 `2026-09-08T08:46:56.599839852Z`。服务器源码 `107e9ba` 且 clean，三端健康、4004 `/proxy`、`/api/proxy/products` 均 200，近期日志未见 traceback。
+- **隔离核对待确认：** 4002/4003 镜像未变，但启动时间分别变为 `08:46:39.684586977Z` / `08:46:39.931288682Z`。Docker daemon 未重启，日志显示两个容器被停止后启动，早于本次 4004 替换容器；本任务部署脚本只指定 4004，未发出其他环境修改命令。已询问用户是否并行运维，不能宣称启动时间未变或隔离核对已全部通过；核实前继续安全的静态准备。
+- **网络路径：** 约 `08:42:44Z` 服务器经 7890 代理访问 GitHub HTTPS 的 pull 持续无输出，超过 77 秒未结束；没有可归因的 TLS 错误。确认目标 checkout 与该次 Git 进程后终止，切换既有 deploy key 经 7890 CONNECT 到 `ssh.github.com:443`，fetch/fast-forward 成功，无源码旁路传输。
+
 ## 十、Phase 6：聊天、LLM 与聊天路由归一
 
 ### 10.1 聊天边界
@@ -737,7 +747,7 @@ Phase 0 测试基线
 
 ## 十四、下一批实施任务
 
-Phase 0～4 与脚本资产 TTL 治理均已完成。Phase 5.0 盘点和 5.1A/B schema 首批已推进，证据及剩余范围见 §9.1。继续 repository 连接/查询/事务归属和 nodes → runtime → accounts → publishing/collection → route；SYS-001 按用户决定仅落档、不修复、不阻塞主线。不得重复宣称 Phase 5 已整体完成，不得提前迁移 Phase 6 的聊天工具归一/LLM transport 或 Phase 7 前端资源；继续遵守隔离 fixture、受影响故障契约和 4002/4003 隔离门禁。
+Phase 0～4 与脚本资产 TTL 治理均已完成。Phase 5.0 盘点、5.1A/B schema 和 5.2A/B URI 解析已推进，证据及剩余范围见 §9.1～9.3；本批隔离现场待确认，不阻止静态准备。下一批先冻结并迁移节点端口作用域常量、规范化与范围校验，暂不混入 SQL 分配、运行时补偿或账户序列化；然后继续 repository 查询/事务归属和 runtime → accounts → publishing/collection → route。SYS-001 按用户决定仅落档、不修复、不阻塞主线。不得重复宣称 Phase 5 已整体完成，不得提前迁移 Phase 6 的聊天工具归一/LLM transport 或 Phase 7 前端资源；继续遵守隔离 fixture、受影响故障契约和 4002/4003 隔离门禁。
 
 Phase 2.3 继续复用现有 Terra 子智能体，避免为同一长期任务无限新增执行记录，并按以下门槛推进：
 
