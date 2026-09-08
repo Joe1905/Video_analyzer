@@ -24,8 +24,17 @@ def isolated_proxy_db() -> Iterator[None]:
     original_lookup = proxy_pool.lookup_ip_geo
     original_remove = proxy_pool._remove_mihomo_pool_config
     original_sync = proxy_pool._sync_mihomo_pool_config
+    original_sqlite_connect = sqlite3.connect
+    connections: list[sqlite3.Connection] = []
+
+    def tracked_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
+        conn = original_sqlite_connect(*args, **kwargs)
+        connections.append(conn)
+        return conn
+
     temporary = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
     data_dir = Path(temporary.name)
+    sqlite3.connect = tracked_connect
     proxy_pool.DATA_DIR = data_dir
     proxy_pool.DB_PATH = data_dir / "proxy_pool.sqlite"
     proxy_pool.lookup_ip_geo = lambda _ip: {
@@ -50,6 +59,9 @@ def isolated_proxy_db() -> Iterator[None]:
         proxy_pool.lookup_ip_geo = original_lookup
         proxy_pool._remove_mihomo_pool_config = original_remove
         proxy_pool._sync_mihomo_pool_config = original_sync
+        sqlite3.connect = original_sqlite_connect
+        for conn in connections:
+            conn.close()
         temporary.cleanup()
         assert not data_dir.exists()
 
