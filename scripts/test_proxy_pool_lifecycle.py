@@ -692,7 +692,8 @@ def test_delete_pool_commit_failure_rolls_back_db_and_restores_mihomo_backup() -
             else:
                 raise AssertionError("delete commit failure was not injected")
 
-        assert restore.call_args_list == [((backup[0], backup[1], backup[2]), {})]
+        assert restore.call_count == 1
+        assert restore.call_args.args == backup
         with proxy_pool.connect() as conn:
             pool_row = conn.execute("SELECT deleted_at FROM proxy_profiles WHERE id = ?", (pool["id"],)).fetchone()
             account = conn.execute("SELECT proxy_bound FROM tiktok_accounts WHERE id = ?", (account_id,)).fetchone()

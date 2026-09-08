@@ -8,8 +8,8 @@ import os
 from pathlib import Path
 
 import proxy_pool
-import tiktok_studio_collect
-import tiktok_studio_publish
+from proxy import collection as tiktok_studio_collect
+from proxy import publishing as tiktok_studio_publish
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -51,7 +51,7 @@ def test_direct_proxy_and_mihomo_reconcile_contracts_exist() -> None:
 
 
 def test_collection_resume_and_rescan_contracts_exist() -> None:
-    source = (ROOT / "scripts" / "tiktok_studio_collect.py").read_text(encoding="utf-8")
+    source = inspect.getsource(tiktok_studio_collect)
     assert "def start_discovery_rescans(" in source
     assert "def _write_discovery_snapshot(" in source
     assert "def _list_scroll(" in source
@@ -77,7 +77,7 @@ def test_publish_file_input_state_is_resilient() -> None:
     }
     assert tiktok_studio_publish._file_input_selection_state(DetachedInput()) == {}
 
-    source = (ROOT / "scripts" / "tiktok_studio_publish.py").read_text(encoding="utf-8")
+    source = inspect.getsource(tiktok_studio_publish)
     assert "def _append_file_input_trace(" in source
     assert "def _set_video_file_via_cdp(" in source
     assert '"DOM.setFileInputFiles"' in source

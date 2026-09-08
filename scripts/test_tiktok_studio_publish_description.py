@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Offline simulation for TikTok Studio's prefilled description editor."""
 
-import tiktok_studio_publish as publish
+from proxy import publishing as publish
 
 
 class FakeEditor:
