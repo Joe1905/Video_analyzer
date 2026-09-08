@@ -636,6 +636,66 @@ def test_direct_pool_recovers_after_successful_recheck() -> None:
         assert checked["pool"]["parse_error"] == ""
 
 
+def test_login_session_start_failure_marks_persisted_session_failed() -> None:
+    with isolated_proxy_db():
+        pool = create_manual_pool("session-start", "203.0.113.61")
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(proxy_pool, "check_binding", return_value={"allowed": True}))
+            stack.enter_context(patch.object(proxy_pool, "_slot_ports_available", return_value=True))
+            launch = stack.enter_context(patch.object(proxy_pool, "_launch_observation_channel", side_effect=RuntimeError("channel failed")))
+            terminate = stack.enter_context(patch.object(proxy_pool, "_terminate_session_processes"))
+            remove_profile = stack.enter_context(patch.object(proxy_pool, "_remove_unbound_session_profile"))
+            try:
+                proxy_pool.start_login_session({
+                    "proxy_profile_id": pool["id"], "username": "pending-user", "feishu_user_id": "user-1",
+                })
+            except ValueError as exc:
+                assert str(exc) == "观测浏览器启动失败：channel failed"
+            else:
+                raise AssertionError("failed channel start was accepted")
+        assert launch.call_count == 1 and terminate.call_count == 1 and remove_profile.call_count == 1
+        with proxy_pool.connect() as conn:
+            row = conn.execute("SELECT status, last_error FROM browser_sessions").fetchone()
+        assert (row["status"], row["last_error"]) == ("failed", "channel failed")
+
+
+def test_stop_and_expired_session_cleanup_release_process_state() -> None:
+    with isolated_proxy_db():
+        pool = create_manual_pool("session-stop", "203.0.113.62")
+        now = proxy_pool.now_iso()
+        with proxy_pool.connect() as conn:
+            stopped_id = int(conn.execute(
+                """INSERT INTO browser_sessions
+                   (slot, proxy_profile_id, username, status, runtime_id, pid, xvfb_pid, x11vnc_pid,
+                    websockify_pid, created_at, updated_at)
+                   VALUES (1, ?, 'stopped-user', 'observing', ?, 11, 12, 13, 14, ?, ?)""",
+                (pool["id"], proxy_pool.RUNTIME_ID, now, now),
+            ).lastrowid)
+            expired_id = int(conn.execute(
+                """INSERT INTO browser_sessions
+                   (slot, proxy_profile_id, username, status, runtime_id, created_at, updated_at)
+                   VALUES (2, ?, 'expired-user', 'running', ?, '1970-01-01T00:00:00Z', ?)""",
+                (pool["id"], proxy_pool.RUNTIME_ID, now),
+            ).lastrowid)
+            conn.commit()
+        with ExitStack() as stack:
+            terminate = stack.enter_context(patch.object(proxy_pool, "_terminate_session_processes"))
+            remove_profile = stack.enter_context(patch.object(proxy_pool, "_remove_unbound_session_profile"))
+            proxy_pool.stop_login_session({"session_id": stopped_id, "reason": "operator stop"})
+            with proxy_pool.connect() as conn:
+                assert proxy_pool._active_sessions(conn) == []
+        assert terminate.call_count == 2 and remove_profile.call_count == 2
+        assert terminate.call_args_list[0].args[0]["pid"] == 11
+        with proxy_pool.connect() as conn:
+            rows = {
+                row["id"]: (row["status"], row["last_error"])
+                for row in conn.execute("SELECT id, status, last_error FROM browser_sessions")
+            }
+        assert rows[stopped_id] == ("stopped", "operator stop")
+        assert rows[expired_id][0] == "stopped"
+        assert rows[expired_id][1] == "未完成账号登记，临时登录通道超时自动释放"
+
+
 def test_v2_proxy_page_exposes_account_rebind_flow() -> None:
     source = (ROOT / "scripts" / "static" / "proxy.html").read_text(encoding="utf-8")
     assert "/api/proxy/accounts/proxy-binding" in source
@@ -949,6 +1009,8 @@ def main() -> None:
     test_delete_pool_preserves_archived_history_and_releases_port()
     test_delete_bound_pool_unbinds_account_until_explicit_rebind()
     test_direct_pool_recovers_after_successful_recheck()
+    test_login_session_start_failure_marks_persisted_session_failed()
+    test_stop_and_expired_session_cleanup_release_process_state()
     test_v2_proxy_page_exposes_account_rebind_flow()
     test_v2_sing_box_default_stays_in_4004_project()
     test_port_migration_updates_bound_account_profile()
