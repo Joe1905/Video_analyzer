@@ -10,12 +10,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from vision_provider import recognize_image
 
 
 OCR_API_URL = os.getenv("OCR_API_URL", "http://127.0.0.1:4000/v1/ocr/extract").strip()
 OCR_SHARED_DIR = Path(os.getenv("OCR_SHARED_DIR", "/home/openclaw/ocr-shared"))
-OCR_SERVER_SHARED_DIR = os.getenv("OCR_SERVER_SHARED_DIR", "/home/openclaw/ocr-shared").rstrip("/")
 OCR_ENABLED = os.getenv("TIKTOK_BROWSER_STATE_OCR_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
 DEFAULT_TIMEOUT_SECONDS = max(15, int(os.getenv("TIKTOK_BROWSER_PAGE_TIMEOUT_SECONDS", "60") or "60"))
 DEFAULT_POLL_MILLISECONDS = max(250, int(os.getenv("TIKTOK_BROWSER_PAGE_POLL_MILLISECONDS", "1000") or "1000"))
@@ -104,11 +103,6 @@ def classify_ocr_text(text: str) -> str:
     return "unknown"
 
 
-def _ocr_server_path(local_path: Path) -> str:
-    relative = local_path.relative_to(OCR_SHARED_DIR).as_posix()
-    return f"{OCR_SERVER_SHARED_DIR}/{relative}"
-
-
 def _ocr_page(page: Any, label: str) -> tuple[str, str]:
     if not OCR_ENABLED or not OCR_API_URL:
         return "unknown", ""
@@ -117,21 +111,7 @@ def _ocr_page(page: Any, label: str) -> tuple[str, str]:
     snapshot = folder / f"state-{uuid.uuid4().hex}.png"
     try:
         page.screenshot(path=str(snapshot), full_page=False)
-        server_path = _ocr_server_path(snapshot)
-        payload = {
-            "filePath": server_path,
-            "serverFilePath": server_path,
-            "documentHint": f"TikTok browser state: {label}",
-            "structured": True,
-        }
-        request = Request(
-            OCR_API_URL,
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urlopen(request, timeout=20) as response:
-            body = json.loads(response.read().decode("utf-8"))
+        body = recognize_image(snapshot, f"TikTok browser state: {label}", purpose="text", timeout=20)
         text = _compact_text(body)
         return classify_ocr_text(text), text
     except (HTTPError, URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError):

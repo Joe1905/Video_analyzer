@@ -3,10 +3,12 @@ import base64
 import hashlib
 import io
 import json
+import mimetypes
 import os
 import sqlite3
 import time
 from pathlib import Path
+from urllib.request import Request, urlopen
 
 import requests
 
@@ -164,3 +166,60 @@ def frame_config():
         raise RuntimeError(status["message"])
     return {"api_key": key, "api_url": os.getenv("DEEPSEEK_API_URL", "https://api.deepseek.com/v1/chat/completions"),
             "model": DEEPSEEK_VISION_MODEL, "provider": "deepseek"}
+
+
+def recognize_image(image_path=None, prompt="", *, purpose="vision", max_tokens=256,
+                    temperature=0.2, timeout=300):
+    """Single image entry point: local OCR for text, routed models for understanding."""
+    if purpose not in {"text", "vision"}:
+        raise ValueError("Unknown image recognition purpose")
+    if purpose == "text":
+        shared_dir = Path(os.getenv("OCR_SHARED_DIR", "/home/openclaw/ocr-shared"))
+        relative = Path(image_path).resolve().relative_to(shared_dir.resolve()).as_posix()
+        server_path = os.getenv("OCR_SERVER_SHARED_DIR", "/home/openclaw/ocr-shared").rstrip("/") + "/" + relative
+        request = Request(
+            os.getenv("OCR_API_URL", "http://127.0.0.1:4000/v1/ocr/extract").strip(),
+            data=json.dumps({"filePath": server_path, "serverFilePath": server_path,
+                             "documentHint": prompt, "structured": True}).encode("utf-8"),
+            headers={"Content-Type": "application/json"}, method="POST")
+        with urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    content = prompt
+    if image_path:
+        path = Path(image_path)
+        mime = mimetypes.guess_type(path.name)[0]
+        if mime not in {"image/png", "image/jpeg", "image/webp", "image/gif"}:
+            raise ValueError("Unsupported image format")
+        encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+        content = [{"type": "text", "text": prompt},
+                   {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{encoded}"}}]
+    config = frame_config()
+    for attempt in range(2):
+        payload = {"model": config["model"], "messages": [{"role": "user", "content": content}],
+                   "temperature": temperature, "max_tokens": max_tokens, "stream": False}
+        if config["provider"] == "deepseek":
+            payload["thinking"] = {"type": "disabled"}
+        status = None
+        try:
+            response = requests.post(completion_url(config["api_url"]),
+                headers={"Authorization": "Bearer " + config["api_key"]},
+                json=payload, timeout=(10, timeout))
+        except requests.RequestException:
+            if config["provider"] == "qwen":
+                status = mark_unavailable("ConnectionFailed", "Qwen 连接失败或请求超时")
+            error = config["provider"] + " 视觉识别连接失败或请求超时"
+        else:
+            if response.ok:
+                try:
+                    result = response.json()["choices"][0]["message"]["content"]
+                    if not isinstance(result, str) or not result.strip():
+                        raise ValueError("empty content")
+                    return result
+                except (ValueError, KeyError, IndexError, TypeError):
+                    raise RuntimeError(config["provider"] + " 视觉识别未返回有效内容") from None
+            status = observe_response(response) if config["provider"] == "qwen" else None
+            error = config["provider"] + " 视觉识别请求失败，HTTP " + str(response.status_code)
+        if attempt == 0 and status and os.getenv("DEEPSEEK_API_KEY"):
+            config = frame_config()
+            continue
+        raise RuntimeError(error) from None
