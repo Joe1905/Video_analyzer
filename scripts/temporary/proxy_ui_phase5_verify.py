@@ -170,6 +170,10 @@ def exercise_ui(
     page.on("pageerror", lambda error: page_errors.append(str(error)))
     try:
         page.goto(f"{base_url}/proxy", wait_until="networkidle")
+        identity_modal = page.locator("#ui-global-user-modal")
+        if identity_modal.is_visible():
+            identity_modal.locator(".ui-global-user-panel [data-global-user-close]").click()
+            expect(identity_modal).to_be_hidden()
         pool_row = page.locator(f'[data-proxy-pool-detail="{pool_id}"]')
         expect(pool_row).to_be_visible()
         page.screenshot(path=str(run_dir / "initial.png"), full_page=False)
