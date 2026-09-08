@@ -8,9 +8,10 @@ import os
 import sqlite3
 import sys
 import tempfile
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Iterator
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -742,6 +743,103 @@ def test_sing_box_detection_accepts_serialized_pool_dict() -> None:
             os.environ["PROXY_REALITY_CORE"] = previous
 
 
+def test_mihomo_managed_yaml_is_namespaced_and_restored_after_failed_reload() -> None:
+    module = sys.modules[proxy_pool._sync_mihomo_pool_config.__module__]
+    original = (
+        b"proxies:\n"
+        b"  - name: foreign\n"
+        b"    type: ss\n"
+        b"listeners:\n"
+        b"  - name: foreign-listener\n"
+        b"    type: mixed\n"
+        b"    port: 19301\n"
+        b"    proxy: foreign\n"
+    )
+    pool = {
+        "id": 8, "name": "managed", "mihomo_name": "managed", "source_type": "vless",
+        "local_port": 19302, "mihomo_proxy": {"type": "vless", "server": "node.example", "port": 443},
+    }
+    with tempfile.TemporaryDirectory() as directory:
+        config = Path(directory) / "config.yaml"
+        config.write_bytes(original)
+        with ExitStack() as stack:
+            stack.enter_context(patch.dict(os.environ, {"MIHOMO_CONFIG_PATH": str(config)}, clear=False))
+            stack.enter_context(patch.object(module, "_mihomo_listener_matches", return_value=True))
+            stack.enter_context(patch.object(module, "_reload_mihomo_config"))
+            stack.enter_context(patch.object(module, "_mihomo_request", return_value=(True, {"proxies": {"v2-managed": {}, "v2-replacement": {}, proxy_pool.SYSTEM_PROXY_DIALER: {}}}, "")))
+            stack.enter_context(patch.object(module, "_port_open", return_value=True))
+            proxy_pool._sync_mihomo_pool_config(pool)
+            pool["mihomo_name"] = "replacement"
+            proxy_pool._sync_mihomo_pool_config(pool)
+            direct = {**pool, "source_type": "direct", "mihomo_proxy": {}}
+            proxy_pool._sync_mihomo_pool_config(direct)
+        updated = config.read_text(encoding="utf-8")
+        assert "foreign-listener" in updated and "proxy: foreign" in updated
+        assert "proxy-pool-managed-v2-id: 8" in updated
+        assert "v2-managed" not in updated
+        assert "v2-replacement" not in updated
+
+        config.write_bytes(original)
+        with ExitStack() as stack:
+            stack.enter_context(patch.dict(os.environ, {"MIHOMO_CONFIG_PATH": str(config)}, clear=False))
+            stack.enter_context(patch.object(module, "_mihomo_listener_matches", return_value=True))
+            stack.enter_context(patch.object(module, "_reload_mihomo_config", side_effect=ValueError("reload failed")))
+            try:
+                proxy_pool._sync_mihomo_pool_config(pool)
+            except proxy_pool.ProxyConfigurationError as exc:
+                assert str(exc) == "mihomo 自动同步失败：reload failed"
+            else:
+                raise AssertionError("reload failure was accepted")
+        assert config.read_bytes() == original
+        assert config.with_name("config.yaml.proxy-pool.bak").read_bytes() == original
+
+
+def test_sing_box_export_and_restart_stay_local_to_4004() -> None:
+    module = sys.modules[proxy_pool._restart_sing_box_container.__module__]
+    with isolated_proxy_db(), patch.dict(os.environ, {"PROXY_REALITY_CORE": "mihomo", "PROXY_REALITY_DEFAULT_FINGERPRINT": "safari"}), tempfile.TemporaryDirectory() as directory:
+        pool = proxy_pool.upsert_pool({
+            "name": "reality", "source_uri": "vless://123e4567-e89b-12d3-a456-426614174000@node.example:443?security=reality&pbk=key&sid=id&sni=edge.example#Reality",
+            "status": proxy_pool.STATUS_ACTIVE,
+        })["pool"]
+        config = Path(directory) / "sing-box" / "config.json"
+        success = module.subprocess.CompletedProcess([], 0, "container-4004\n", "")
+        failed = module.subprocess.CompletedProcess([], 1, "", "blocked")
+        with ExitStack() as stack:
+            stack.enter_context(patch.dict(os.environ, {"PROXY_REALITY_CORE": "sing-box"}, clear=False))
+            stack.enter_context(patch.object(module, "SING_BOX_CONFIG_PATH", config))
+            run = stack.enter_context(patch.object(module.subprocess, "run", side_effect=[success, success]))
+            exported = proxy_pool._write_sing_box_config()
+            restarted = proxy_pool._restart_sing_box_container(required=True)
+        assert exported["pools"] == [{"id": pool["id"], "name": "reality", "local_port": pool["local_port"], "fingerprint": "safari"}]
+        assert json.loads(config.read_text(encoding="utf-8"))["inbounds"][0]["listen_port"] == pool["local_port"]
+        assert restarted == {"restarted": True, "containers": ["container-4004"]}
+        assert run.call_args_list[0].args[0] == ["docker", "ps", "-aq", "--filter", "label=com.docker.compose.project=short-video-analyzer-ui-4004", "--filter", "label=com.docker.compose.service=sing-box"]
+        assert run.call_args_list[1].args[0] == ["docker", "restart", "container-4004"]
+        with patch.object(module.subprocess, "run", side_effect=[success, failed]):
+            try:
+                proxy_pool._restart_sing_box_container(required=True)
+            except ValueError as exc:
+                assert str(exc) == "重启 sing-box 代理核心失败：blocked"
+            else:
+                raise AssertionError("sing-box restart failure was accepted")
+
+
+def test_exit_ip_repair_is_attempted_once() -> None:
+    module = sys.modules[proxy_pool._detect_exit_ip_with_single_repair.__module__]
+    pool = {"id": 8}
+    with patch.object(module, "detect_exit_ip_for_pool", side_effect=[ValueError("first"), {"ip": "203.0.113.8"}]) as detect, patch.object(module, "_repair_proxy_core_once", return_value={"attempted": True, "core": "mihomo", "result": {}}) as repair:
+        assert proxy_pool._detect_exit_ip_with_single_repair(pool)["auto_repair"]["core"] == "mihomo"
+        assert detect.call_count == 2 and repair.call_count == 1
+    with patch.object(module, "detect_exit_ip_for_pool", side_effect=[ValueError("first"), ValueError("second")]), patch.object(module, "_repair_proxy_core_once", return_value={"attempted": True, "core": "mihomo", "result": {}}) as repair:
+        try:
+            proxy_pool._detect_exit_ip_with_single_repair(pool)
+        except proxy_pool.ProxyConfigurationError as exc:
+            assert str(exc) == "mihomo 已自动修复一次，但出口校验仍失败：second"
+        else:
+            raise AssertionError("second exit IP failure was accepted")
+        assert repair.call_count == 1
+
+
 def test_account_state_exposes_instagram_login_without_cookie_value() -> None:
     with isolated_proxy_db():
         pool = create_manual_pool("instagram", "203.0.113.40")
@@ -814,6 +912,9 @@ def main() -> None:
     test_v2_sing_box_default_stays_in_4004_project()
     test_port_migration_updates_bound_account_profile()
     test_sing_box_detection_accepts_serialized_pool_dict()
+    test_mihomo_managed_yaml_is_namespaced_and_restored_after_failed_reload()
+    test_sing_box_export_and_restart_stay_local_to_4004()
+    test_exit_ip_repair_is_attempted_once()
     test_account_state_exposes_instagram_login_without_cookie_value()
     print("proxy pool lifecycle tests passed")
 
