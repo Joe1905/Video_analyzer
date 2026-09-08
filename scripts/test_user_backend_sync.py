@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import inspect
 import os
 from pathlib import Path
 
@@ -41,12 +42,12 @@ def test_browser_slot_partition_and_legacy_three_slot_compatibility() -> None:
 
 
 def test_direct_proxy_and_mihomo_reconcile_contracts_exist() -> None:
-    source = (ROOT / "scripts" / "proxy_pool.py").read_text(encoding="utf-8")
+    source = inspect.getsource(proxy_pool.upsert_pool)
     assert 'source_type not in {"vless", "vmess", "static", "direct", "demo"}' in source
     assert 'if source_type == "direct":' in source
-    assert "def _direct_login_pool_id() -> int:" in source
-    assert "def reconcile_mihomo_pool_configs() -> dict[str, Any]:" in source
-    assert "def _mihomo_listener_matches(" in source
+    assert "def _direct_login_pool_id() -> int:" in inspect.getsource(proxy_pool._direct_login_pool_id)
+    assert "def reconcile_mihomo_pool_configs() -> dict[str, Any]:" in inspect.getsource(proxy_pool.reconcile_mihomo_pool_configs)
+    assert "def _mihomo_listener_matches(" in inspect.getsource(proxy_pool._mihomo_listener_matches)
 
 
 def test_collection_resume_and_rescan_contracts_exist() -> None:
