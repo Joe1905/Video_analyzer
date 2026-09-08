@@ -690,6 +690,22 @@ fixture `40b1663` 统一临时 settings 数据根，mock 精确落在 accounts/s
 
 服务器 `b8e5f7d` clean，唯一入口部署镜像 `sha256:1f7248ec0838c5271178e07a03de8beb1f470a0146465a7a9bc2f67bd6208f74`，启动 `2026-09-08T10:13:42.338527693Z`；三端健康及 4004 代理页面、商品、代理/发布/采集 runtime API 均 200，4002/4003 镜像和启动时间不变。下一批只完成 proxy route 与两视口隔离 UI 验收，再关闭 Phase 5。
 
+### 9.8 Phase 5.6 代理路由与最终阶段验收（2026-09-08）
+
+结构 `7148d59` 新增 `routes/proxy.py`，复用 GET 注册加窄 POST dispatcher 的既有模式；不增加 Router 能力、service 类或反向依赖。GET/POST 原 try/except 业务体 AST 完全一致。保留功能禁用 404 优先测试写入 409、非法 JSON 400、Instagram 409、Feishu 绑定边界和原 Handler 视频 Range；`list_state` 的清理副作用与调用位置不变。`proxy_pool.py` 为零函数/类的显式 facade，仍服务 web composition、janitor、路由注入和既有测试；仅在这些实际调用方迁走后删除相应导出。
+
+测试 `1c33a01`、`d58ddaf` 更新真实 Router/POST 注入与源码归属，并补非法 JSON 实际经过 route 的 400 断言。初次专项发现 backend-sync 仍到旧文件找路由字符串，修正后从本批清单第一项重跑。服务器七脚本全部通过：Router 24、web workflow、proxy lifecycle 25、user backend sync、web smoke、UI contract 16、部署边界；部署边界在容器跳过的宿主检查另跑 7/7 通过。没有运行无关 provider/日报/Node Bridge 或最终全量 56 项。
+
+最终隔离 UI 证据为服务器 `output/phase5-proxy-ui-21db84f/`，两视口各三张截图、三份 DOM、console/page-errors/unexpected-requests JSON，共 18 份；错误数组均空。1440×900 真实点击删池、确认、关闭既有错误提示、重新绑定；390×844 保持既有隐藏入口，真实 HTTP 删除准备未绑定态，再真实刷新、打开绑定并原生键盘 Enter 提交。两端均断言删除后软删/解绑、两类任务 delayed/waiting_proxy，以及重绑后 direct 绑定和 queued/proxy_rebound；等待最终已绑定 DOM 与 opacity=1 后拍摄，主审已检查截图。临时 HTTP/SQLite/文件目录在退出前关闭并删除，未造真实 4004 seed。
+
+验收限制明确保留：SYS-003 是删除成功提示私有作用域异常；SYS-004 是窄屏隐藏出口管理栏及绑定 footer 越界。桌面可完成真实点击流程，窄屏的删除按钮及触摸/鼠标完整可达性**未通过**，不能用 API/键盘覆盖替代该结论。按用户“缺陷落档、主线重构”边界仅记录，不改生产 UI；此次行为等价结构验收不要求修复上述既有缺陷。SYS-001/002 同样保持未修复。
+
+临时 UI 脚本创建时已登记 TTL，完成后经调用扫描确认仅清单引用、无运行或恢复用途，最终由 `36e6737` 删除并清空 active_phase。Phase 5 共使用并删除两个一次性工具（退役备份清理、隔离 UI），转正 0、新增正式测试脚本 0；正式套件仍为 56。备份与 output 证据是恢复/审计资产，保留且不提交业务数据。三个 Terra 与主审的架构、边界、复用和测试有效性检查均无新增 P0/P1/P2。
+
+网络记录：约 10:22Z，服务器经 7890 代理的 GitHub HTTPS/HTTP1.1 拉取无输出并超时退出；改用同一代理的 SSH 443 与现有部署 key 后同步成功，未旁路传输源码。后续同步沿已验证通道执行。
+
+最终部署经唯一入口构建 `d407fbe`（生产路由代码 `7148d59`），4004 镜像 `sha256:28a165356794d44be941423839a1971deb4ccb3d6437dc79cc7cfcb7dc8fc6fc`，启动 `2026-09-08T10:30:45.205821169Z`。三端健康、4004 `/proxy`、商品和代理/发布/采集 runtime API 均 200，近期 traceback 为 0，4002/4003 镜像和启动时间不变。补拍和删除临时脚本仅为测试资产变更，不影响该生产镜像代码，不另行构建。Phase 5 行为等价结构迁移已完成；以上既有缺陷与窄屏未覆盖的 pointer 操作作为明确限制保留，未伪称全功能无缺陷。后续 Phase 6/7 尚未实施。
+
 ## 十、Phase 6：聊天、LLM 与聊天路由归一
 
 ### 10.1 聊天边界
@@ -792,7 +808,7 @@ Phase 0 测试基线
 
 ## 十四、下一批实施任务
 
-Phase 0～4 与脚本资产 TTL 治理均已完成。Phase 5 盘点、schema/URI、整项功能退役、配置/连接/runtime、共享 state、池工作流、accounts 和 publishing/collection 已完成，证据见 §9.1～9.7。下一批完成 proxy route 和两视口隔离 UI 验收；已取消的专用端口不再迁移。SYS-001、SYS-002 仅落档，不以修复既有隐患扩大本次重构。不得在子批完成后结束整个主线；不提前迁移 Phase 6 聊天/LLM 或 Phase 7 前端资源。继续遵守隔离 fixture、受影响故障契约和 4002/4003 隔离门禁。
+Phase 0～5 与脚本资产 TTL 治理均已完成，Phase 5 完整证据及验收限制见 §9.1～9.8。代理子系统、任务模块和 route 已完成行为等价迁移；SYS-001～004 仅落档，窄屏删除入口与 pointer 可达性缺口保持明确，不以修复旧缺陷扩大本次重构。后续工作是 Phase 6 聊天/LLM、Phase 7 前端资源；本次仅执行到 Phase 5，不提前开工下一阶段。全部结构阶段完成后再运行冻结的 56 项最终全量门禁。
 
 Phase 2.3 继续复用现有 Terra 子智能体，避免为同一长期任务无限新增执行记录，并按以下门槛推进：
 
