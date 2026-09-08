@@ -180,7 +180,7 @@ def exercise_ui(
             expect(pool_row).to_be_hidden()
         else:
             expect(pool_row).to_be_visible()
-        page.screenshot(path=str(run_dir / "initial.png"), full_page=False)
+        page.screenshot(path=str(run_dir / "initial.png"), full_page=False, animations="disabled")
         (run_dir / "initial-dom.html").write_text(page.content(), encoding="utf-8")
 
         if viewport_name == "mobile":
@@ -200,7 +200,7 @@ def exercise_ui(
         # SYS-003: unchanged UI calls a private success helper, then reopens the missing pool.
         if viewport_name != "mobile":
             expect(page.locator("#pool-drawer")).to_contain_text("该出口信息暂时无法读取")
-        page.screenshot(path=str(run_dir / "after-delete.png"), full_page=False)
+        page.screenshot(path=str(run_dir / "after-delete.png"), full_page=False, animations="disabled")
         (run_dir / "after-delete-dom.html").write_text(page.content(), encoding="utf-8")
         after_delete()
         if viewport_name != "mobile":
@@ -220,7 +220,7 @@ def exercise_ui(
         else:
             submit.click()
         expect(page.locator("#live-binding-notice")).to_contain_text("2 个等待任务已恢复排队")
-        page.screenshot(path=str(run_dir / "after-rebind.png"), full_page=False)
+        page.screenshot(path=str(run_dir / "after-rebind.png"), full_page=False, animations="disabled")
         (run_dir / "after-rebind-dom.html").write_text(page.content(), encoding="utf-8")
         if unexpected_requests:
             raise AssertionError(f"{viewport_name} unexpected external requests: {unexpected_requests}")
@@ -228,7 +228,7 @@ def exercise_ui(
             errors = {"consoleErrors": console_errors, "pageErrors": page_errors}
             raise AssertionError(f"{viewport_name} browser errors: {errors}")
     except Exception as exc:
-        page.screenshot(path=str(run_dir / "failed.png"), full_page=False)
+        page.screenshot(path=str(run_dir / "failed.png"), full_page=False, animations="disabled")
         if unexpected_requests:
             raise AssertionError(f"{viewport_name} unexpected external requests: {unexpected_requests}") from exc
         raise
