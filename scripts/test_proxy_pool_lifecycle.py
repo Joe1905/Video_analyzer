@@ -24,32 +24,207 @@ def isolated_proxy_db() -> Iterator[None]:
     original_lookup = proxy_pool.lookup_ip_geo
     original_remove = proxy_pool._remove_mihomo_pool_config
     original_sync = proxy_pool._sync_mihomo_pool_config
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
-        data_dir = Path(temp_dir)
-        proxy_pool.DATA_DIR = data_dir
-        proxy_pool.DB_PATH = data_dir / "proxy_pool.sqlite"
-        proxy_pool.lookup_ip_geo = lambda _ip: {
-            "country": "",
-            "region": "",
-            "city": "",
-            "address": "",
-        }
-        proxy_pool._remove_mihomo_pool_config = lambda pool: (
-            {"removed": True, "port": int(pool["local_port"] or 0)},
-            None,
+    temporary = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+    data_dir = Path(temporary.name)
+    proxy_pool.DATA_DIR = data_dir
+    proxy_pool.DB_PATH = data_dir / "proxy_pool.sqlite"
+    proxy_pool.lookup_ip_geo = lambda _ip: {
+        "country": "",
+        "region": "",
+        "city": "",
+        "address": "",
+    }
+    proxy_pool._remove_mihomo_pool_config = lambda pool: (
+        {"removed": True, "port": int(pool["local_port"] or 0)},
+        None,
+    )
+    proxy_pool._sync_mihomo_pool_config = lambda pool: {
+        "loaded": True,
+        "listener_port": int(pool["local_port"] or 0),
+    }
+    try:
+        yield
+    finally:
+        proxy_pool.DATA_DIR = original_data_dir
+        proxy_pool.DB_PATH = original_db_path
+        proxy_pool.lookup_ip_geo = original_lookup
+        proxy_pool._remove_mihomo_pool_config = original_remove
+        proxy_pool._sync_mihomo_pool_config = original_sync
+        temporary.cleanup()
+        assert not data_dir.exists()
+
+
+def create_legacy_proxy_db(path: Path, source_type: str = "vless") -> None:
+    conn = sqlite3.connect(path)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE proxy_profiles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                source_type TEXT NOT NULL DEFAULT 'vless',
+                source_uri TEXT NOT NULL DEFAULT '',
+                expected_exit_ip TEXT NOT NULL DEFAULT '',
+                region TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'active',
+                notes TEXT NOT NULL DEFAULT '',
+                parse_status TEXT NOT NULL DEFAULT 'manual',
+                parse_error TEXT NOT NULL DEFAULT '',
+                mihomo_name TEXT NOT NULL DEFAULT '',
+                parsed_json TEXT NOT NULL DEFAULT '{}',
+                mihomo_proxy_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            """
         )
-        proxy_pool._sync_mihomo_pool_config = lambda pool: {
-            "loaded": True,
-            "listener_port": int(pool["local_port"] or 0),
-        }
+        conn.execute(
+            """INSERT INTO proxy_profiles
+               (name, source_type, expected_exit_ip, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            ("legacy", source_type, "203.0.113.60", proxy_pool.now_iso(), proxy_pool.now_iso()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def copy_sqlite(source_path: Path, target_path: Path) -> None:
+    source = sqlite3.connect(source_path)
+    target = sqlite3.connect(target_path)
+    try:
+        source.backup(target)
+    finally:
+        target.close()
+        source.close()
+
+
+def sqlite_snapshot(path: Path) -> tuple[str, ...]:
+    conn = sqlite3.connect(path)
+    try:
+        return tuple(conn.iterdump())
+    finally:
+        conn.close()
+
+
+def test_legacy_schema_upgrade_is_idempotent_and_readable() -> None:
+    with isolated_proxy_db():
+        legacy_path = proxy_pool.DATA_DIR / "legacy.sqlite"
+        create_legacy_proxy_db(legacy_path)
+        legacy_snapshot = sqlite_snapshot(legacy_path)
+        copy_sqlite(legacy_path, proxy_pool.DB_PATH)
+        assert sqlite_snapshot(legacy_path) == legacy_snapshot
+
+        original_now_iso = proxy_pool.now_iso
+        proxy_pool.now_iso = lambda: "2026-09-08T00:00:00Z"
+        conn = sqlite3.connect(proxy_pool.DB_PATH)
         try:
-            yield
+            conn.row_factory = sqlite3.Row
+            proxy_pool.init_db(conn)
+            conn.close()
+            first_snapshot = sqlite_snapshot(proxy_pool.DB_PATH)
+
+            conn = sqlite3.connect(proxy_pool.DB_PATH)
+            conn.row_factory = sqlite3.Row
+            proxy_pool.init_db(conn)
+            conn.close()
+            assert sqlite_snapshot(proxy_pool.DB_PATH) == first_snapshot
+
+            upgraded = proxy_pool.get_pool(1)
+            assert upgraded["name"] == "legacy"
+            assert sqlite_snapshot(proxy_pool.DB_PATH) == first_snapshot
         finally:
-            proxy_pool.DATA_DIR = original_data_dir
-            proxy_pool.DB_PATH = original_db_path
-            proxy_pool.lookup_ip_geo = original_lookup
-            proxy_pool._remove_mihomo_pool_config = original_remove
-            proxy_pool._sync_mihomo_pool_config = original_sync
+            if conn:
+                conn.close()
+            proxy_pool.now_iso = original_now_iso
+
+        conn = sqlite3.connect(proxy_pool.DB_PATH)
+        try:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT name, local_port, port_scope, dialer_proxy FROM proxy_profiles WHERE name = 'legacy'"
+            ).fetchone()
+            columns = {item[1] for item in conn.execute("PRAGMA table_info(proxy_profiles)")}
+        finally:
+            conn.close()
+        assert row is not None
+        assert row["local_port"] == proxy_pool.PROXY_PORT_START
+        assert row["port_scope"] == proxy_pool.PORT_SCOPE_DEFAULT
+        assert row["dialer_proxy"] == ""
+        assert {"local_port", "port_scope", "dialer_proxy", "deleted_at"} <= columns
+
+
+def test_migration_dml_failure_rolls_back_after_existing_schema() -> None:
+    class FailingMigrationConnection(sqlite3.Connection):
+        def execute(self, sql: str, parameters: object = ()) -> sqlite3.Cursor:
+            if "UPDATE proxy_profiles SET status = ?" in " ".join(sql.split()):
+                raise sqlite3.OperationalError("injected migration DML failure")
+            return super().execute(sql, parameters)
+
+    with isolated_proxy_db():
+        legacy_path = proxy_pool.DATA_DIR / "legacy-dml.sqlite"
+        create_legacy_proxy_db(legacy_path, source_type="static")
+        copy_sqlite(legacy_path, proxy_pool.DB_PATH)
+
+        # Early schema DDL commits before this fault. This freezes that
+        # existing non-atomic boundary while requiring later port/dialer
+        # backfill DML to roll back.
+        conn = sqlite3.connect(proxy_pool.DB_PATH, factory=FailingMigrationConnection)
+        conn.row_factory = sqlite3.Row
+        try:
+            try:
+                proxy_pool.init_db(conn)
+            except sqlite3.OperationalError as exc:
+                assert str(exc) == "injected migration DML failure"
+            else:
+                raise AssertionError("migration DML failure was not injected")
+        finally:
+            conn.close()
+
+        conn = sqlite3.connect(proxy_pool.DB_PATH)
+        try:
+            columns = {item[1] for item in conn.execute("PRAGMA table_info(proxy_profiles)")}
+            local_port, dialer_proxy = conn.execute(
+                "SELECT local_port, dialer_proxy FROM proxy_profiles WHERE name = 'legacy'"
+            ).fetchone()
+        finally:
+            conn.close()
+        assert {"local_port", "port_scope", "dialer_proxy"} <= columns
+        assert local_port == 0
+        assert dialer_proxy == ""
+
+
+def test_migration_commit_failure_rolls_back_migration_dml() -> None:
+    class FailingCommitConnection(sqlite3.Connection):
+        def commit(self) -> None:
+            raise sqlite3.OperationalError("injected migration commit failure")
+
+    with isolated_proxy_db():
+        legacy_path = proxy_pool.DATA_DIR / "legacy-commit.sqlite"
+        create_legacy_proxy_db(legacy_path, source_type="static")
+        copy_sqlite(legacy_path, proxy_pool.DB_PATH)
+
+        conn = sqlite3.connect(proxy_pool.DB_PATH, factory=FailingCommitConnection)
+        conn.row_factory = sqlite3.Row
+        try:
+            try:
+                proxy_pool.init_db(conn)
+            except sqlite3.OperationalError as exc:
+                assert str(exc) == "injected migration commit failure"
+            else:
+                raise AssertionError("migration commit failure was not injected")
+        finally:
+            conn.close()
+
+        conn = sqlite3.connect(proxy_pool.DB_PATH)
+        try:
+            local_port, dialer_proxy = conn.execute(
+                "SELECT local_port, dialer_proxy FROM proxy_profiles WHERE name = 'legacy'"
+            ).fetchone()
+        finally:
+            conn.close()
+        assert local_port == 0
+        assert dialer_proxy == ""
 
 
 def create_manual_pool(name: str, expected_ip: str) -> dict:
@@ -476,6 +651,9 @@ def test_account_state_exposes_instagram_login_without_cookie_value() -> None:
 
 
 def main() -> None:
+    test_legacy_schema_upgrade_is_idempotent_and_readable()
+    test_migration_dml_failure_rolls_back_after_existing_schema()
+    test_migration_commit_failure_rolls_back_migration_dml()
     test_duplicate_exit_ip_is_terminal_until_manual_recheck()
     test_existing_duplicate_error_is_migrated_without_retry()
     test_delete_pool_preserves_archived_history_and_releases_port()
