@@ -271,6 +271,8 @@ class RouterTests(unittest.TestCase):
             elif route_file.name == "lan_chat.py":
                 allowed_imports.update({"json", "re"})
                 allowed_from_modules.update({"feishu_capabilities", "http.server", "lan_chat"})
+            elif route_file.name == "proxy.py":
+                allowed_imports.update({"cgi", "sqlite3"})
             for node in ast.walk(module):
                 if isinstance(node, ast.Import):
                     for alias in node.names:
@@ -323,6 +325,7 @@ class RouterTests(unittest.TestCase):
                 "routes.harness",
                 "routes.harness_certificate",
                 "routes.lan_chat",
+                "routes.proxy",
                 "routes.metrics",
                 "routes.report",
                 "routes.report_pages",
@@ -590,8 +593,9 @@ class RouterTests(unittest.TestCase):
             sum(isinstance(node, ast.FunctionDef) and node.name == "serve_video" for node in handler.body),
             1,
         )
+        proxy_tree = ast.parse((root / "routes" / "proxy.py").read_text(encoding="utf-8"))
         proxy_get_method = next(
-            node for node in handler.body
+            node for node in ast.walk(proxy_tree)
             if isinstance(node, ast.FunctionDef) and node.name == "handle_proxy_api_get"
         )
         proxy_calls = [

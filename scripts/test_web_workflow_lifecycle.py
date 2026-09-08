@@ -42,6 +42,7 @@ from services.video_result import VideoResultService
 from jobs.registry import JobRegistry
 from routes.analyze import register_analyze_routes
 from routes.postprocess import register_postprocess_routes
+from routes.proxy import register_proxy_routes
 import routes.report as report_routes
 from routes.report import register_report_routes
 from routes.report_cover import register_report_cover_routes
@@ -898,7 +899,7 @@ def assert_proxy_publish_video_range_contract(web_app: Any, port: int) -> None:
 
 
 def assert_proxy_http_handler_contract(web_app: Any, port: int) -> None:
-    """Freeze the pre-route proxy HTTP boundary without a proxy database or core."""
+    """Freeze the proxy HTTP boundary without a proxy database or core."""
 
     def avatar(account_id: int) -> tuple[bytes, str]:
         if account_id != 7:
@@ -922,8 +923,22 @@ def assert_proxy_http_handler_contract(web_app: Any, port: int) -> None:
     }
 
     with ExitStack() as patches:
-        patches.enter_context(patch.object(web_app, "proxy_pool", fake_proxy))
-        patches.enter_context(patch.object(web_app, "scoped_proxy_state", return_value=state))
+        router = Router()
+        proxy_post = register_proxy_routes(
+            router,
+            proxy_pool=fake_proxy,
+            tiktok_studio_publish=web_app.tiktok_studio_publish,
+            tiktok_studio_collect=web_app.tiktok_studio_collect,
+            instagram_content_collect=web_app.instagram_content_collect,
+            scoped_proxy_state=lambda handler: state,
+            _proxy_feishu_binding=web_app._proxy_feishu_binding,
+            current_global_user=lambda handler: web_app.current_global_user(handler),
+            search_shop_catalog_products=web_app.search_shop_catalog_products,
+            enabled=lambda: web_app.PROXY_POOL_ENABLED,
+            render_proxy_page=lambda: "fixture proxy page",
+        )
+        patches.enter_context(patch.object(web_app, "WEB_ROUTER", router))
+        patches.enter_context(patch.object(web_app, "proxy_post", proxy_post))
         patches.enter_context(patch.object(web_app, "PROXY_POOL_ENABLED", True))
 
         status, _headers, payload = json_request(port, "GET", "/api/proxy/pools")
@@ -960,6 +975,10 @@ def assert_proxy_http_handler_contract(web_app: Any, port: int) -> None:
             assert not fake_proxy.upsert_pool.called
 
         with patch.object(web_app, "UI_TEST_MODE", False):
+            status, _headers, payload = json_request(port, "POST", "/api/proxy/pools", body=b"{", content_type="application/json")
+            assert status == 400 and payload.get("error")
+            assert not fake_proxy.upsert_pool.called
+
             status, _headers, payload = json_request(port, "POST", "/api/proxy/pools/delete", {"id": 3})
             assert status == 200 and payload == {"deleted": 3}
             fake_proxy.delete_pool.assert_called_once_with(3)
