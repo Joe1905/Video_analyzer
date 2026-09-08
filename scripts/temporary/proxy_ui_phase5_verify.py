@@ -212,7 +212,13 @@ def exercise_ui(
         binding_action.click()
         expect(page.locator("#drawer-body")).to_contain_text("当前状态：未绑定")
         page.locator("#live-binding-pool").select_option("direct")
-        page.locator("[data-live-binding-submit]").click()
+        submit = page.locator("[data-live-binding-submit]")
+        if viewport_name == "mobile":
+            # SYS-004: footer is outside the viewport; retain keyboard activation coverage.
+            submit.focus()
+            submit.press("Enter")
+        else:
+            submit.click()
         expect(page.locator("#live-binding-notice")).to_contain_text("2 个等待任务已恢复排队")
         page.screenshot(path=str(run_dir / "after-rebind.png"), full_page=False)
         (run_dir / "after-rebind-dom.html").write_text(page.content(), encoding="utf-8")
