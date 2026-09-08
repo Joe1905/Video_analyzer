@@ -682,6 +682,14 @@ fixture `40b1663` 统一临时 settings 数据根，mock 精确落在 accounts/s
 
 部署证据：服务器 `40b1663` clean；4004 镜像 `sha256:f09389063c5a258b587dbc9deb7f2f801ceaf1e37d147c4c53c3cf6fd644fe14`，启动 `2026-09-08T09:57:18.391793277Z`；三端健康、4004 `/proxy`、`/api/proxy/products`、`/api/proxy/runtime` 均 200，4002/4003 镜像和启动时间不变。阶段后静态审计与主审通过；另识别最终故障门禁仍需补删池流程自身的 commit/清理/重启失败断言，不能用 schema 或 runtime helper 的测试替代，补测仍冻结 SYS-001 现状，不修业务。
 
+### 9.7 Phase 5.5 发布与采集任务（2026-09-08）
+
+结构 `a215ce5` 将两个原发布/采集模块整域迁入 `proxy/publishing.py`、`proxy/collection.py`，Instagram CLI 保留入口并改为显式领域依赖；web composition 保留原模块别名。三模块规范化 import 名后 AST 等价，常量、锁、worker、路径和任务状态机不变；旧实现文件已删除，无反向导入或新增转发层。测试 `b8e5f7d` 只更新导入归属及源码位置断言。
+
+删池故障基线 `d5c6bce` 将 lifecycle 增为 25 项：真实删除工作流的数据库 commit 失败、运行时清理失败及 sing-box 重启失败均断言池、账号和等待任务结果；冻结 SYS-001 的既有不可重试状态，不宣称补偿缺陷已修复。迁移后服务器 Docker 的 lifecycle、用户后端同步、TikTok 发布描述、Instagram 采集、web workflow 五个影响脚本全部通过。两路 Terra 与主审等价性、依赖方向和测试有效性审计通过。无 UI 源码修改，未运行全量 56 项。
+
+服务器 `b8e5f7d` clean，唯一入口部署镜像 `sha256:1f7248ec0838c5271178e07a03de8beb1f470a0146465a7a9bc2f67bd6208f74`，启动 `2026-09-08T10:13:42.338527693Z`；三端健康及 4004 代理页面、商品、代理/发布/采集 runtime API 均 200，4002/4003 镜像和启动时间不变。下一批只完成 proxy route 与两视口隔离 UI 验收，再关闭 Phase 5。
+
 ## 十、Phase 6：聊天、LLM 与聊天路由归一
 
 ### 10.1 聊天边界
@@ -784,7 +792,7 @@ Phase 0 测试基线
 
 ## 十四、下一批实施任务
 
-Phase 0～4 与脚本资产 TTL 治理均已完成。Phase 5.0 盘点、schema/URI、整项功能退役及配置/连接/runtime 边界已完成，证据及剩余范围见 §9.1～9.5。下一批继续共享 state、池工作流与 accounts，再到 publishing/collection → route；已取消的专用端口不再迁移。SYS-001、SYS-002 仅落档，不以修复既有隐患扩大本次重构。不得重复宣称 Phase 5 已整体完成，也不得在一个子批完成后结束整个主线；不提前迁移 Phase 6 聊天/LLM 或 Phase 7 前端资源。继续遵守隔离 fixture、受影响故障契约和 4002/4003 隔离门禁。
+Phase 0～4 与脚本资产 TTL 治理均已完成。Phase 5 盘点、schema/URI、整项功能退役、配置/连接/runtime、共享 state、池工作流、accounts 和 publishing/collection 已完成，证据见 §9.1～9.7。下一批完成 proxy route 和两视口隔离 UI 验收；已取消的专用端口不再迁移。SYS-001、SYS-002 仅落档，不以修复既有隐患扩大本次重构。不得在子批完成后结束整个主线；不提前迁移 Phase 6 聊天/LLM 或 Phase 7 前端资源。继续遵守隔离 fixture、受影响故障契约和 4002/4003 隔离门禁。
 
 Phase 2.3 继续复用现有 Terra 子智能体，避免为同一长期任务无限新增执行记录，并按以下门槛推进：
 
