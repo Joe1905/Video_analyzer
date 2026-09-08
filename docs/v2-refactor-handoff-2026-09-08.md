@@ -4,6 +4,8 @@
 交接分支：`v2`
 文档用途：让没有当前对话上下文的后续主智能体可以安全接手 Phase 5，并继续完成 Phase 6、Phase 7 与最终全量门禁。
 
+后续范围更新：2026-09-08 用户在 Phase 5 明确删除整个淘宝采集功能，当前现场以主计划 §9.4 为准；本文早期功能保留和端口作用域盘点属于历史快照。现存页面数量改为 13，正式套件仍为 56 项。既有补偿缺陷已由用户决定仅落档，不再等待设计决策；不得将子批完成作为主线结束。
+
 ## 1. 一页结论
 
 - 功能对齐已先于重构完成，Phase 0～Phase 4 已完成并通过阶段审计。
@@ -404,7 +406,7 @@ Phase 5～7 全部完成、各自审计和计划收口后，才首次执行最�
 
 1. 自动发现全部正式套件；
 2. 按 `scripts/test_deploy_ui_4004_boundary.py`、当前实际发现结果和主计划维护的口径，运行登记的 49 个普通 Python、3 个特殊门禁、2 个 Node 和 2 个 Playwright；合计仍表述为 54 项确定性回归加 2 项 Playwright，如长期门禁增加则同步增加计数；不得凭本文手抄一份可能过期的文件清单；
-3. 检查 14 个现存页面：`/`、`/chat`、`/amazon`、`/chuhaijiang`、`/report`、`/report/player`、`/extract`、`/shop`、`/tool`、`/metrics`、`/lan-chat`、`/proxy`、`/taobao`、`/harness`；
+3. 检查 13 个现存页面：`/`、`/chat`、`/amazon`、`/chuhaijiang`、`/report`、`/report/player`、`/extract`、`/shop`、`/tool`、`/metrics`、`/lan-chat`、`/proxy`、`/harness`；
 4. 检查受影响业务黑盒和未知 provider fail-closed；
 5. 检查三端健康、4004 日志/镜像/checkout；
 6. 核对 4002/4003 未被改动；
