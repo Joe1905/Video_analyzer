@@ -280,6 +280,7 @@ class LanChatFileTransferTest(unittest.TestCase):
             encoding="utf-8"
         )
         web_source = (scripts_dir / "web_app.py").read_text(encoding="utf-8")
+        route_source = (scripts_dir / "routes" / "lan_chat.py").read_text(encoding="utf-8")
         self.assertIn('if(files.length>1){setDraftAttachment({kind:"batch"', template)
         self.assertIn('class="draft-thumb"', template)
         self.assertIn('Path=/api/lan-chat/media/; SameSite=Strict', template)
@@ -287,7 +288,7 @@ class LanChatFileTransferTest(unittest.TestCase):
             'LAN_CHAT_MEDIA_COOKIE = "video_analyzer_lan_chat_media"', web_source
         )
         self.assertIn(
-            "or _cookie_value(handler, LAN_CHAT_MEDIA_COOKIE).strip()", web_source
+            "or _cookie_value(handler, LAN_CHAT_MEDIA_COOKIE).strip()", route_source
         )
 
     def test_streamed_media_is_paginated_and_emits_events(self) -> None:

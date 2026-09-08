@@ -300,7 +300,7 @@ class LanChatGroupManagementTest(unittest.TestCase):
     def test_group_identity_ui_and_assets_are_shipped(self) -> None:
         script_dir = Path(__file__).parent
         html = (script_dir / "static" / "lan_chat.html").read_text(encoding="utf-8")
-        source = (script_dir / "web_app.py").read_text(encoding="utf-8")
+        source = (script_dir / "routes" / "lan_chat.py").read_text(encoding="utf-8")
         self.assertIn('id="manageGroupAvatarPreview"', html)
         self.assertIn('id="announcementModal"', html)
         self.assertIn('id="announcementEditor"', html)

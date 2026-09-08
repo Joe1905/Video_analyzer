@@ -86,7 +86,7 @@ class LanChatAvatarProfileTests(unittest.TestCase):
             self.assertTrue(avatar.is_file(), avatar)
 
     def test_profile_route_accepts_avatar_sized_json_requests(self) -> None:
-        source = (Path(__file__).parent / "web_app.py").read_text(encoding="utf-8")
+        source = (Path(__file__).parent / "routes" / "lan_chat.py").read_text(encoding="utf-8")
 
         self.assertIn("PROFILE_AVATAR_MAX_BYTES", source)
         self.assertIn('is_profile_request = path == "/api/lan-chat/profile"', source)
