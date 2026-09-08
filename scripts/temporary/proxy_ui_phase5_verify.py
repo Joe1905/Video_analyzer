@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sqlite3
 import sys
 import tempfile
@@ -183,11 +184,17 @@ def exercise_ui(
         delete_button = page.locator(f'[data-proxy-pool-delete="{pool_id}"]')
         expect(delete_button).to_be_visible()
         page.once("dialog", lambda dialog: dialog.accept())
-        delete_button.click()
-        expect(page.locator(".proxy-action-error.success")).to_contain_text("出口已删除")
+        with page.expect_response(lambda response: response.url == f"{base_url}/api/proxy/pools/delete" and response.request.method == "POST") as deleted:
+            delete_button.click()
+        assert deleted.value.status == 200
+        expect(pool_row).to_have_count(0)
+        # SYS-003: unchanged UI calls a private success helper, then reopens the missing pool.
+        expect(page.locator("#pool-drawer")).to_contain_text("该出口信息暂时无法读取")
         page.screenshot(path=str(run_dir / "after-delete.png"), full_page=False)
         (run_dir / "after-delete-dom.html").write_text(page.content(), encoding="utf-8")
         after_delete()
+        page.locator("#pool-drawer [data-close]").click()
+        expect(page.locator("#pool-overlay")).not_to_have_class(re.compile(r".*\bopen\b.*"))
 
         binding_action = page.locator("[data-open='binding']").first
         expect(binding_action).to_be_visible()
