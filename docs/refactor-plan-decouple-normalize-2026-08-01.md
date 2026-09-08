@@ -266,6 +266,9 @@ HOT_VIDEO_REPORT_ENABLED=0
 | Phase 4.1 Shop 垂直切片 | 已完成 | `f700266`、`c424a0a`、`c8b433b`、`8a63493`；独立 service/route、行为冻结、服务器门禁与阶段后审计完成 |
 | Phase 4.2 Metrics 垂直切片 | 已完成 | `93653e1`、`a03b3b4`、`522faf0`；独立 service/route、专项 7/7、部署黑盒与阶段后审计完成 |
 | Phase 4.3 Amazon 垂直切片 | 已完成 | `79afe66`、`067ad77`、`a508170`、`d2669df`；独立 service/route、专项 8/8、部署黑盒与三路 Terra 审计完成；中间阶段未运行全量回归 |
+| Phase 4.4 下载与分析垂直切片 | 已完成 | Download、Upload、Analyze、Translate、Postprocess、Files、Result、Delete、Video Stream 与 analyzer execution 均完成行为冻结、独立迁移、服务器专项门禁、4004 黑盒和阶段审计；中间阶段未运行全量回归 |
+| Phase 4.5 日报 web adapter | 已完成 | `1ecd51d`～`8f39c71`；日报 API、飞书适配与封面响应分别迁移，核心报告逻辑和既有恢复语义保持原位，服务器专项门禁与 4004 黑盒通过 |
+| Phase 4.6 邻聊与淘宝 | 已完成 | `df9581d`、`6b9e204`、`c841d12`、`6261e58`、`51cfc0f`、`218e671`；先冻结授权/文件/SSE 边界，再迁移窄 route；服务器专项门禁、4004 黑盒与 Terra 审计通过 |
 | 执行要求归一与门禁审计 | 已完成 | `df1c7a1`、`3937623`、`1b9f4aa`、`d715d93`；建立唯一要求入口，清除非活动域专项断言并保留通用 fail-closed 契约，服务器 52 项完整门禁全绿 |
 
 Phase 0.5B 可以多智能体并行，但文件所有权必须互斥：一条线负责 Python 运行时与专用模块，一条线负责 MCP Bridge/Compose/env，一条线负责静态 UI 与受控文档；README、计划文档、资产版本、跨线冲突和最终集成由主任务统一处理。子智能体只运行专项测试，不得独立提交；主任务合并审计后统一提交和部署。
@@ -547,7 +550,7 @@ class JobSnapshot(TypedDict):
 5. **部署与黑盒：** Windows 经 7892 推送，服务器经 7890 `pull --ff-only`，仅以 `bash scripts/deploy_ui_4004.sh` 构建部署；4004 镜像和运行容器均为 `sha256:74ba6cc9f7836379cb399fbca721ca33a8bb6523d840d2a68782c0ad73cdeb75`。`/healthz`、`/amazon` 为 200，缺失 job 为 404，缺失 SSE 为 200 且返回精确 missing 帧，无效 target 为 400；近期严重日志为 0，服务器 checkout clean，4002/4003 仅只读健康且均为 200。
 6. **阶段后审计：** 三路 Terra 与主审在补齐组合根全部注入关键字和 import alias 门禁后为 P0/P1/P2 全 0。URL、状态码、JSON/SSE、数据目录、任务生命周期和聊天域均无需求漂移；复用继续止于 Registry、snapshot adapter、Router/core HTTP 和现有 cache 接口，Phase 4.4 不得据此制造万能 VideoService。
 
-### 8.4 Phase 4.4 下载与分析（进行中）
+### 8.4 Phase 4.4 下载与分析（已完成）
 
 1. **4.4A Download 行为冻结（`8767dfa`）：** 仅扩充既有 `test_job_snapshot_contract.py` 与 `test_web_workflow_lifecycle.py`，冻结 URL/source 校验、失败任务登记、UI_TEST 拦截、POST 登记→线程→快照时序、GET/SSE schema 与断连、feedback alias/state、真实下载 argv/cwd/timeout/stdout/nonzero、缓存→视频信息缓存→原下载器→SociaVault 顺序、音频/无效媒体删除与 fallback、proxy→direct、最大字节数、`.part` 清理以及 API key/base 环境语义。没有新增测试脚本或一次性脚本。
 2. **4.4A 结构迁移（`7dddbfe`）：** 新增 `services/downloads.py` 与 `routes/downloads.py`，service 接管 DownloadJob、校验、命令、缓存、直链媒体、fallback、worker 与 snapshot，route 接管 `/api/download`、`/api/download-job`、`/api/download-events`；`web_app.py` 保留 Registry、组合根和 feedback 消费，删除旧模型/helper/worker/adapter/Handler 分支。`web_app.py` 净减 534 行，生产代码整体净增 171 行来自明确垂直切片；没有通用 VideoService、通用 SSE、兼容导出或双实现。
@@ -571,6 +574,25 @@ class JobSnapshot(TypedDict):
 20. **4.4E 测试漏洞收口（`51e77bb`）：** 终审发现两处低风险契约空白后，仅在既有 lifecycle 中补齐 `Content-Length: 0` 的精确 400，以及已有 standard analysis 时 report enqueue 失败前已完成 source/prompt 写入和匹配 audit pair 删除的快照/断连语义。服务器从影响清单第一项重跑 `test_web_workflow_lifecycle.py`、`test_router.py`、`test_http_response_contract.py` 共 3/3 全绿；未运行聊天、代理、日报、Node、Playwright 或 56 项全量。
 21. **4.4E 部署与黑盒：** Windows 经 7892 推送，服务器经 7890 `pull --ff-only`，仅执行 `bash scripts/deploy_ui_4004.sh`；4004 镜像/容器为 `sha256:8a46a67bfcebfc6b53bccb88d8e5b2d2bf8946abd22b87e1d6996d49d9588f77`。`/healthz` 为 200，畸形 JSON、非法 source、缺失 standard analysis 均为 400，近期严重日志为 0，服务器 checkout clean；4002/4003 镜像与启动时间未变化。
 22. **4.4E 阶段后审计：** 行为等价、依赖方向、复用合理性和测试有效性经三路 Terra 与主审复核后为 P0/P1/P2 全 0。Postprocess route/service 未导入 `web_app`，未触碰 queue worker、DeepSeek/日报核心、files/result/delete、Range/视频流、`tools.py` 或聊天权限。4.4 尚不提前关闭：下一步先只读盘点 `tools.py` 的视频子进程活动调用方，并分别确认 files/result/delete 与 Range/视频流的稳定边界，再按最小互斥切片完成剩余迁移。
+
+23. **4.4F Files/Result/Delete 行为冻结与垂直迁移（`05ad755`～`9c262f9`）：** 三个边界分别以既有 lifecycle/Router/store 契约冻结后迁入 `routes/video_files.py`、`routes/video_result.py`、`routes/video_delete.py` 及对应 service；保留文件可见性、artifact 选择、JSON 错误、删除副作用和 HTTP 状态，不建立通用文件 API 或兼容层。
+24. **4.4G Video Stream（`8b8d1e1`、`3e87f2e`）：** 先冻结 Range、HEAD、Content-Length/Range、路径与缺失语义，再只把公开视频流接入窄 route；继续复用原有流式发送边界，没有把授权附件、封面或普通静态资源合并为通用下载框架。
+25. **4.4H Analyzer execution（`088d69f`、`83a9452`）：** 将 `tools.py` 中活动的视频子进程执行能力迁入 `services/analyzer_execution.py`，保留超时、进程清理、prompt 和压缩回退契约；`tools.py` 仅保留活动调用方需要的窄 facade，聊天工具归一与权限仍留在 Phase 6。
+26. **Phase 4.4 收口：** 上述子域均通过各自既有专项、语法、diff、CodeGraph/import 和旧符号扫描，并分别完成 4004 部署黑盒；没有新增测试脚本、临时脚本、万能 VideoService、通用 subprocess runner 或跨域文件响应抽象，也没有运行无关套件或 56 项全量回归。
+
+### 8.5 Phase 4.5 日报 web adapter（已完成）
+
+1. **行为冻结（`1ecd51d`、`43398ce`、`2f8a615`）：** 在既有生命周期/路由契约中分别冻结日报 API、飞书报告适配和封面响应，覆盖暂停/恢复、状态与 SSE、请求校验、封面存在/缺失和既有错误映射；不访问外网、不改真实数据。
+2. **结构迁移（`06a74e6`、`52ddfe7`、`8f39c71`）：** `routes/report.py` 与 `services/report.py` 接管 HTTP/调度适配，`routes/report_cover.py` 与 `services/report_cover.py` 接管封面；`hot_video_report.py` 的显式 `max_tokens`、resume、候选备份、单视频 cache 和数据库生命周期保持原位。
+3. **阶段出口：** 相关既有专项、语法、diff、Router/组合根和单向依赖门禁在服务器通过，4004 页面/API/日志黑盒通过；没有抽取新的报告核心、通用 LLM transport 或临时脚本，没有运行代理、聊天、Node、Playwright 或 56 项全量回归。
+
+### 8.6 Phase 4.6 邻聊与淘宝（已完成）
+
+1. **淘宝切片（`df9581d`、`6b9e204`）：** 先冻结 API 契约，再扩充既有 `routes/taobao.py` 接管窄 API；保持文件、任务状态、SSE/JSON 和错误映射，不建立与邻聊共享的文件框架。
+2. **LAN Chat 行为冻结（`c841d12`、`6261e58`）：** 只扩充既有 `test_web_workflow_lifecycle.py`，冻结 public/owner/header/cookie 优先级、跨 owner 拒绝、账号选择、鉴权早于 multipart 解析、大小限制、测试根写入、SSE 鉴权/headers/message/heartbeat/断连；独立修复测试外层写操作白名单，未新增脚本。
+3. **LAN Chat 路由迁移（`51cfc0f`、`218e671`）：** `routes/lan_chat.py` 接管 API GET/POST/HEAD 与 SSE，显式注入 store、全局用户/owner、cookie、媒体 cookie、飞书选项和上传边界；`web_app.py` 删除旧 helper/Handler 主体，只保留组合根。Router 尚无前缀 POST/HEAD，因此两者保留在领域 route 的窄 Handler fallback，而不是扩展全局 Router。
+4. **服务器专项与部署出口：** Router 25 项、workflow lifecycle、主账号 1 项、群管理 8 项、文件传输 12 项、头像资料 6 项全部通过；4004 `/healthz`、`/lan-chat`、公开 bootstrap 为 200，匿名账号选项 403，未知 GET 与无效媒体 HEAD 为 404。最终镜像 `sha256:b0cccd7a700a45f8d603537d8ff792dfd54a46d22378755ded7046409632b42e`，启动时间 `2026-09-08T07:35:03.261963607Z`；4002/4003 镜像和启动时间未变化，三端健康均为 200。
+5. **阶段后审计：** Terra 与主审确认 P0/P1 为 0；授权、账号模型、文件写入、SSE 和 Feishu 请求读取语义无漂移，`routes/lan_chat.py` 不反向导入 `web_app`。启动日志仅保留一个 Phase 5 范围的既有静态代理 DIRECT 状态提示，没有本阶段 traceback/异常。新增、转正、删除的测试/临时脚本均为 0；未运行无关套件或 56 项全量回归。
 
 ## 九、Phase 5：拆分代理子系统
 
@@ -696,7 +718,7 @@ Phase 0 测试基线
 
 ## 十四、下一批实施任务
 
-Phase 0、0.5、1.1、2026-08-29 两个补漏阶段、Phase 1.2、Phase 1.3、**Phase 2.1～2.3D**、**Phase 3.0～3.4**、**Phase 4.1～4.3**、**Phase 4.4A Download**、**Phase 4.4B Upload**、**Phase 4.4C Analyze**、**Phase 4.4D Translate**、**Phase 4.4E Postprocess** 与脚本资产 TTL 治理已完成。Shop、Metrics、Amazon、Download、Upload、Analyze、Translate、Postprocess 已形成独立的 `web_app → routes → services → jobs/core` 垂直切片。下一步是 **Phase 4.4 剩余边界盘点与收口**：先只读识别 `tools.py` 中视频子进程执行的活动调用方和窄 facade 删除条件，再分别冻结并迁移 `/api/files`、`/api/result`、`/api/delete` 与 Range/视频流；其中 Range/流式/下载安全语义一旦需要改变必须停止并请求决策。禁止合成万能 VideoService。聊天工具归一、权限和 provider 路由严格留到 Phase 6；不得顺手迁移日报、代理、邻聊、淘宝或前端，也不得改变文件名/目录、API schema、状态码或任务生命周期。
+Phase 0～4 与脚本资产 TTL 治理均已完成。Phase 4 的 Shop、Metrics、Amazon、下载/上传/分析/翻译/后处理、文件/结果/删除/视频流、analyzer execution、日报 web adapter、淘宝和邻聊均形成明确的垂直边界；没有万能 VideoService、跨域文件框架或反向依赖。下一步是 **Phase 5 代理子系统**：先按数据库、节点、运行时、账号绑定、发布/采集的事务边界只读盘点并建立影响清单，再从 repository migration 与失败回滚契约开始。不得提前迁移 Phase 6 的聊天工具归一/LLM transport 或 Phase 7 前端资源；不得因启动时既有静态代理 DIRECT 状态提示而跳过 fixture、事务补偿和 4002/4003 隔离门禁。
 
 Phase 2.3 继续复用现有 Terra 子智能体，避免为同一长期任务无限新增执行记录，并按以下门槛推进：
 
@@ -727,4 +749,6 @@ Phase 3 下一批按以下门槛推进：
 15. **Phase 4.1 Shop 垂直切片（已完成，`f700266`、`c424a0a`、`c8b433b`、`8a63493`）：** 行为冻结、service/route 迁移、动态配置归属修正、服务器 56/56、部署黑盒和阶段后审计均已通过；流程偏差及后续提交纯度规则已记录在 8.1。
 16. **Phase 4.2 Metrics（已完成，`93653e1`、`a03b3b4`、`522faf0`）：** 行为冻结、service/route 迁移、专项 7/7、部署黑盒与阶段后审计均已通过；没有新增测试/临时脚本，没有执行中间全量回归。
 17. **Phase 4.3 Amazon（已完成，`79afe66`、`067ad77`、`a508170`、`d2669df`）：** 行为冻结、service/route、专项 8/8、部署黑盒和阶段后审计全绿；没有新增测试/临时脚本，没有执行中间全量回归。
-18. **Phase 4.4 下载与分析（进行中）：** 4.4A Download、4.4B Upload、4.4C Analyze、4.4D Translate 均已完成行为冻结、service/route、定向门禁、4004 部署黑盒及 P0/P1/P2 全 0 审计；下一步为 4.4E Postprocess。每个子域独立冻结、迁移、定向回归和审计；禁止万能 VideoService，禁止提前迁移聊天工具归一与权限逻辑。
+18. **Phase 4.4 下载与分析（已完成，`8767dfa`～`83a9452`）：** Download、Upload、Analyze、Translate、Postprocess、Files、Result、Delete、Video Stream 与 analyzer execution 均完成行为冻结、窄 service/route 或执行 service、定向门禁、4004 黑盒和审计；没有万能 VideoService、通用文件框架、新测试脚本或中间全量回归。
+19. **Phase 4.5 日报 web adapter（已完成，`1ecd51d`～`8f39c71`）：** 日报 API、飞书适配与封面分别冻结并迁移；核心日报、恢复和缓存语义保持原位，专项、部署黑盒与审计通过。
+20. **Phase 4.6 邻聊与淘宝（已完成，`df9581d`～`218e671`）：** 两域独立冻结和迁移，LAN Chat 六个影响脚本全绿；最终 4004 镜像、接口黑盒、三端隔离和 Terra/主审均通过，Phase 4 关闭。
