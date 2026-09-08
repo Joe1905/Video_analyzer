@@ -670,6 +670,18 @@ Phase 5.0 已完成三路 Terra 只读盘点和主审 CodeGraph/AST 复核。`in
 - **下一批：** 先冻结账号会话失败/清理现状，再将共享 state、池工作流、账号会话和商品业务按实际依赖搬迁；`list_state()` 的清理副作用及调用位置不改。随后发布/采集整域和 proxy route，继续 Phase 5；SYS-001/002 保持记录，不扩大修复范围。
 - **阶段后审计：** Terra 交叉审查和主审均通过需求漂移、依赖解耦、复用、安全边界及测试有效性检查，P0/P1/P2 为 0。
 
+### 9.6 Phase 5.4 共享状态、池工作流和账号会话（2026-09-08）
+
+账号会话基线 `6f25ff2` 将 lifecycle 增为 22 项，冻结启动失败后已持久化会话的 failed 状态，以及手动停止/临时会话超时清理。用户后端同步测试原有“到旧文件寻找 runtime 定义”的位置断言遗漏，由 `47188dd` 改为检查实际函数源码；补入该影响脚本后，迁移前四脚本重新通过。HTTP 基线 `0b1ce89` 另冻结代理 dispatch、错误分类、禁用 404 优先 UI_TEST 409、真实非法 JSON 拦截、头像与飞书绑定边界，服务器 web workflow 通过，为下一 route 批准备。
+
+结构 `8549749` 将 65 个函数分为 state 11、pools 18、accounts 30、products 6。共享 state 保留 `_active_sessions` 和 `list_state` 的清理/提交副作用及所有原调用位置；accounts 单向依赖 pools，pools 单向依赖 state，杜绝返回值包装或循环注入。产品 URL 校验、发布任务阻断保留商品业务模块，不放进通用 repository。原 facade 仅显式导出活动调用方使用的符号，无函数或类实现。路径只把原 Name 引用收口至 settings，规范化后 65 个函数 AST 全等。
+
+fixture `40b1663` 统一临时 settings 数据根，mock 精确落在 accounts/state/pools 的实际调用点，清理所有 SQLite 连接后删除临时目录。迁移后 lifecycle 22、用户后端同步、TikTok 发布描述、Instagram 采集四个服务器 Docker 脚本全部通过；两路 Terra 和主审静态 P0/P1/P2 为 0。未改 UI，无 Playwright/全量 56 项；无新增/转正/删除临时或正式测试脚本。
+
+网络记录：约 09:53Z 经服务器 7890 CONNECT 到 `ssh.github.com:443` 的 fetch 等待 55 秒无输出；确认本次 git/ssh/nc 进程后终止，改用同一 7890 代理下 GitHub HTTPS/HTTP1.1，fetch/fast-forward 与四脚本验证成功。后续优先该已验证路径并保留连接超时，不盲目重试 SSH 通道。
+
+部署证据：服务器 `40b1663` clean；4004 镜像 `sha256:f09389063c5a258b587dbc9deb7f2f801ceaf1e37d147c4c53c3cf6fd644fe14`，启动 `2026-09-08T09:57:18.391793277Z`；三端健康、4004 `/proxy`、`/api/proxy/products`、`/api/proxy/runtime` 均 200，4002/4003 镜像和启动时间不变。阶段后静态审计与主审通过；另识别最终故障门禁仍需补删池流程自身的 commit/清理/重启失败断言，不能用 schema 或 runtime helper 的测试替代，补测仍冻结 SYS-001 现状，不修业务。
+
 ## 十、Phase 6：聊天、LLM 与聊天路由归一
 
 ### 10.1 聊天边界
