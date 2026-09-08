@@ -647,8 +647,6 @@ def test_v2_sing_box_default_stays_in_4004_project() -> None:
     assert 'os.getenv("PROXY_POOL_MIHOMO_PREFIX", "v2-")' in source
     assert 'os.getenv("PROXY_POOL_PORT_START", "19300")' in source
     assert 'os.getenv("PROXY_POOL_PORT_END", "19399")' in source
-    assert 'os.getenv("TAOBAO_PROXY_PORT_START", "19400")' in source
-    assert 'os.getenv("TAOBAO_PROXY_PORT_END", "19419")' in source
 
     compose_path = ROOT / "docker-compose.yml"
     if compose_path.is_file():
@@ -656,7 +654,6 @@ def test_v2_sing_box_default_stays_in_4004_project() -> None:
         assert compose.count("PROXY_POOL_CONFIG_NAMESPACE: ${PROXY_POOL_CONFIG_NAMESPACE:-v2}") == 2
         assert compose.count("PROXY_POOL_MIHOMO_PREFIX: ${PROXY_POOL_MIHOMO_PREFIX:-v2-}") == 2
         assert compose.count("PROXY_POOL_PORT_START: ${PROXY_POOL_PORT_START:-19300}") == 2
-        assert compose.count("TAOBAO_PROXY_PORT_START: ${TAOBAO_PROXY_PORT_START:-19400}") == 2
         assert "WEB_PORT: ${WEB_PORT:-4004}" in compose
 
     deploy = (ROOT / "scripts" / "deploy_ui_4004.sh").read_text(encoding="utf-8")

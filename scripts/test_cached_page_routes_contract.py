@@ -9,7 +9,6 @@ import unittest
 from routes.router import Router
 from routes.metrics import register_metrics_page
 from routes.shop import register_shop_page
-from routes.taobao import register_taobao_page
 
 
 @dataclass
@@ -38,7 +37,6 @@ class CachedPageRoutesTests(unittest.TestCase):
         cases = (
             (register_shop_page, "/shop", "shop"),
             (register_metrics_page, "/metrics", "metrics"),
-            (register_taobao_page, "/taobao", ""),
         )
         for registrar, _path, snapshot in cases:
             registrar(router, html_snapshot=snapshot, inject_nav=inject)
@@ -53,7 +51,7 @@ class CachedPageRoutesTests(unittest.TestCase):
             self.assertEqual(headers["Content-Type"], "text/html; charset=utf-8")
             self.assertEqual(headers["Content-Length"], str(len(body)))
             self.assertEqual(headers["Cache-Control"], "no-cache, no-store, must-revalidate")
-        self.assertEqual(calls, [("shop", "/shop"), ("metrics", "/metrics"), ("", "/taobao")])
+        self.assertEqual(calls, [("shop", "/shop"), ("metrics", "/metrics")])
 
     def test_web_app_keeps_snapshot_loading_and_late_registration_contracts(self) -> None:
         root = Path(__file__).resolve().parent
@@ -76,16 +74,12 @@ class CachedPageRoutesTests(unittest.TestCase):
                     calls[function.id] = node.lineno
         metrics = ast.unparse(assignments["METRICS_HTML"])
         shop = ast.unparse(assignments["SHOP_HTML"])
-        taobao = ast.unparse(assignments["TAOBAO_HTML"])
         self.assertEqual(metrics, "(SCRIPTS_DIR / 'static' / 'metrics.html').read_text(encoding='utf-8')")
         self.assertIn("SHOP_HTML_PATH.is_file()", shop)
         self.assertTrue(shop.endswith("else ''"))
-        self.assertIn("TAOBAO_HTML_PATH.is_file()", taobao)
-        self.assertTrue(taobao.endswith("else ''"))
         for registrar, snapshot in (
             ("register_shop_page", "SHOP_HTML"),
             ("register_metrics_page", "METRICS_HTML"),
-            ("register_taobao_page", "TAOBAO_HTML"),
         ):
             self.assertGreater(calls[registrar], next(
                 node.lineno for node in tree.body
@@ -96,7 +90,7 @@ class CachedPageRoutesTests(unittest.TestCase):
 
     def test_cached_route_modules_do_not_read_files_or_import_web_app(self) -> None:
         routes_dir = Path(__file__).resolve().parent / "routes"
-        for name in ("shop.py", "metrics.py", "taobao.py"):
+        for name in ("shop.py", "metrics.py"):
             source = (routes_dir / name).read_text(encoding="utf-8")
             for forbidden in ("Path", "read_text", "open(", "web_app"):
                 self.assertNotIn(forbidden, source, name)

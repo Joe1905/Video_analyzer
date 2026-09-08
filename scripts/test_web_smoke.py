@@ -31,7 +31,6 @@ ACTIVE_PAGES = (
     "/shop",
     "/tool",
     "/metrics",
-    "/taobao",
     "/harness",
 )
 
@@ -164,7 +163,7 @@ def run_smoke(port: int) -> None:
     assert head_body == b""
     assert "allow" not in head_headers
 
-    for path in ("/shop", "/metrics", "/taobao"):
+    for path in ("/shop", "/metrics"):
         status, headers, body = request(port, "GET", path)
         assert status == 200, (path, status)
         query_status, query_headers, query_body = request(port, "GET", f"{path}?probe=1")
