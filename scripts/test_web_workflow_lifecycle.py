@@ -897,6 +897,108 @@ def assert_proxy_publish_video_range_contract(web_app: Any, port: int) -> None:
         shutil.rmtree(fixture_root, ignore_errors=False)
 
 
+def assert_proxy_http_handler_contract(web_app: Any, port: int) -> None:
+    """Freeze the pre-route proxy HTTP boundary without a proxy database or core."""
+
+    def avatar(account_id: int) -> tuple[bytes, str]:
+        if account_id != 7:
+            raise FileNotFoundError()
+        return b"fixture-avatar", "image/png"
+
+    fake_proxy = SimpleNamespace(
+        account_avatar_bytes=Mock(side_effect=avatar),
+        upsert_pool=Mock(),
+        delete_pool=Mock(return_value={"deleted": 3}),
+        runtime_status=Mock(return_value={"core": "fixture"}),
+        update_account_proxy_binding=Mock(return_value={"bound": True}),
+        upsert_account=Mock(side_effect=lambda payload: {"account": payload}),
+    )
+    state = {"pools": [{"id": 3}], "accounts": [], "sessions": []}
+    feishu_user = {
+        "id": "fixture-user",
+        "feishuId": "fixture-feishu",
+        "name": "Fixture User",
+        "avatarUrl": "https://avatar.invalid/fixture.png",
+    }
+
+    with ExitStack() as patches:
+        patches.enter_context(patch.object(web_app, "proxy_pool", fake_proxy))
+        patches.enter_context(patch.object(web_app, "scoped_proxy_state", return_value=state))
+        patches.enter_context(patch.object(web_app, "PROXY_POOL_ENABLED", True))
+
+        status, _headers, payload = json_request(port, "GET", "/api/proxy/pools")
+        assert status == 200 and payload == state
+        status, _headers, payload = json_request(port, "GET", "/api/proxy/runtime")
+        assert status == 200 and payload == {"core": "fixture"}
+
+        status, headers, body = request(port, "GET", "/api/proxy/accounts/avatar/7")
+        assert status == 200 and body == b"fixture-avatar"
+        assert headers["content-type"] == "image/png"
+        status, _headers, payload = json_request(port, "GET", "/api/proxy/accounts/avatar/8")
+        assert status == 404 and payload == {"error": "Account avatar not found"}
+
+        fake_proxy.runtime_status.side_effect = RuntimeError("fixture runtime failure")
+        status, _headers, payload = json_request(port, "GET", "/api/proxy/runtime")
+        assert status == 500 and payload == {"error": "fixture runtime failure"}
+        fake_proxy.runtime_status.side_effect = None
+
+        with patch.object(web_app, "UI_TEST_MODE", True), patch.object(
+            web_app, "ui_test_mode_allows_live_write", return_value=False
+        ):
+            status, _headers, payload = json_request(port, "POST", "/api/proxy/pools", body=b"{", content_type="application/json")
+            assert status == 409 and payload == {
+                "error": "UI 测试模式已拦截写操作，未触发真实业务。",
+                "simulated": True,
+                "status": "blocked",
+                "path": "/api/proxy/pools",
+            }
+            assert not fake_proxy.upsert_pool.called
+
+            with patch.object(web_app, "PROXY_POOL_ENABLED", False):
+                status, _headers, payload = json_request(port, "POST", "/api/proxy/pools", body=b"{", content_type="application/json")
+            assert status == 404 and payload == {"error": "Not found"}
+            assert not fake_proxy.upsert_pool.called
+
+        with patch.object(web_app, "UI_TEST_MODE", False):
+            status, _headers, payload = json_request(port, "POST", "/api/proxy/pools/delete", {"id": 3})
+            assert status == 200 and payload == {"deleted": 3}
+            fake_proxy.delete_pool.assert_called_once_with(3)
+
+            fake_proxy.delete_pool.side_effect = ValueError("fixture delete failure")
+            status, _headers, payload = json_request(port, "POST", "/api/proxy/pools/delete", {"id": 3})
+            assert status == 400 and payload == {"error": "fixture delete failure"}
+            fake_proxy.delete_pool.side_effect = None
+
+            status, _headers, payload = json_request(
+                port, "POST", "/api/proxy/accounts/proxy-binding", {"account_id": 7, "proxy_profile_id": 3}
+            )
+            assert status == 200 and payload == {"bound": True}
+            fake_proxy.update_account_proxy_binding.assert_called_once_with({"account_id": 7, "proxy_profile_id": 3})
+
+            with patch.object(web_app, "current_global_user", return_value=feishu_user), patch.object(
+                web_app, "_feishu_users", return_value=[feishu_user]
+            ), patch.object(web_app.lan_chat_store, "login_options", return_value={"feishuUsers": [feishu_user]}):
+                status, _headers, payload = json_request(port, "POST", "/api/proxy/accounts", {"platform": "tiktok"})
+                assert status == 200
+                assert payload == {
+                    "account": {
+                        "platform": "tiktok",
+                        "feishu_user_id": "fixture-feishu",
+                        "feishu_user_name": "Fixture User",
+                        "feishu_avatar_url": "https://avatar.invalid/fixture.png",
+                        "feishu_user_active": True,
+                    }
+                }
+                status, _headers, payload = json_request(
+                    port, "POST", "/api/proxy/accounts", {"feishu_user_id": "other-user"}
+                )
+                assert status == 400 and payload == {"error": "当前飞书身份不能绑定其他用户的账号"}
+            assert fake_proxy.upsert_account.call_count == 1
+
+            status, _headers, payload = json_request(port, "POST", "/api/proxy/unknown", {})
+            assert status == 404 and payload == {"error": "Not found"}
+
+
 def assert_report_cover_http_contract(web_app: Any, port: int, server: Any) -> None:
     """Freeze the legacy report-cover file response and failure behavior."""
 
@@ -3188,6 +3290,7 @@ def run_lifecycle() -> None:
             assert_files_http_contract(web_app, port, server, fake_queue)
             assert_result_http_contract(web_app, port, server)
             assert_delete_http_contract(web_app, port, server)
+            assert_proxy_http_handler_contract(web_app, port)
             assert_proxy_publish_video_range_contract(web_app, port)
             assert_upload_http_contract(web_app, port)
             assert_report_http_contract(web_app, port)
