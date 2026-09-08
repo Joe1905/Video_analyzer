@@ -2,6 +2,7 @@
 """Focused regression tests for proxy IP uniqueness and safe proxy deletion."""
 from __future__ import annotations
 
+import base64
 import json
 import os
 import sqlite3
@@ -237,6 +238,144 @@ def test_migration_commit_failure_rolls_back_migration_dml() -> None:
             conn.close()
         assert local_port == 0
         assert dialer_proxy == ""
+
+
+def test_proxy_uri_parsers_preserve_node_and_mihomo_fields() -> None:
+    vless = proxy_pool.parse_vless_uri(
+        " vless://123e4567-e89b-12d3-a456-426614174000@node.example:8443?type=ws&security=reality&pbk=public-key&sid=abcd&sni=edge.example&fp=safari&flow=xtls-rprx-vision&path=%2Fsocket&host=cdn.example#Reality%20WS "
+    )
+    assert set(vless) == {"parse_status", "mihomo_name", "parsed", "mihomo_proxy"}
+    assert vless == {
+        "parse_status": "ok",
+        "mihomo_name": "Reality WS",
+        "parsed": {
+            "uuid": "123e4567-e89b-12d3-a456-426614174000",
+            "server": "node.example",
+            "port": 8443,
+            "network": "ws",
+            "security": "reality",
+            "query": {
+                "type": "ws", "security": "reality", "pbk": "public-key", "sid": "abcd",
+                "sni": "edge.example", "fp": "safari", "flow": "xtls-rprx-vision",
+                "path": "/socket", "host": "cdn.example",
+            },
+            "name": "Reality WS",
+        },
+        "mihomo_proxy": {
+            "name": "Reality WS", "type": "vless", "server": "node.example", "port": 8443,
+            "uuid": "123e4567-e89b-12d3-a456-426614174000", "network": "ws", "udp": True,
+            "flow": "xtls-rprx-vision", "tls": True,
+            "reality-opts": {"public-key": "public-key", "short-id": "abcd"},
+            "servername": "edge.example", "client-fingerprint": "safari",
+            "ws-opts": {"path": "/socket", "headers": {"Host": "cdn.example"}},
+        },
+    }
+
+    vmess_json = base64.urlsafe_b64encode(json.dumps({
+        "ps": "VMess JSON", "add": "vmess.example", "port": "443",
+        "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "aid": "0", "scy": "auto",
+        "net": "ws", "tls": "tls", "host": "cdn.example", "path": "/ws",
+        "sni": "edge.example", "fp": "chrome",
+    }, separators=(",", ":")).encode()).decode()
+    assert proxy_pool.parse_vmess_uri(f"vmess://{vmess_json}") == {
+        "parse_status": "ok", "mihomo_name": "VMess JSON",
+        "parsed": {
+            "uuid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "server": "vmess.example",
+            "port": 443, "alter_id": 0, "cipher": "auto", "network": "ws",
+            "security": "tls", "query": {}, "name": "VMess JSON",
+        },
+        "mihomo_proxy": {
+            "name": "VMess JSON", "type": "vmess", "server": "vmess.example", "port": 443,
+            "uuid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "alterId": 0, "cipher": "auto",
+            "network": "ws", "udp": True, "tls": True, "servername": "edge.example",
+            "client-fingerprint": "chrome", "ws-opts": {"path": "/ws", "headers": {"Host": "cdn.example"}},
+        },
+    }
+
+    authority = base64.urlsafe_b64encode(
+        b"aes-128-gcm:11111111-2222-3333-4444-555555555555@authority.example:8443"
+    ).decode()
+    assert proxy_pool.parse_vmess_uri(
+        f"vmess://{authority}?remarks=Authority%20VMess&type=grpc&security=tls&serviceName=grpc-service&udp=0&peer=edge.example&fp=firefox&alterId=4"
+    ) == {
+        "parse_status": "ok", "mihomo_name": "Authority VMess",
+        "parsed": {
+            "uuid": "11111111-2222-3333-4444-555555555555", "server": "authority.example",
+            "port": 8443, "alter_id": 4, "cipher": "aes-128-gcm", "network": "grpc",
+            "security": "tls",
+            "query": {"remarks": "Authority VMess", "type": "grpc", "security": "tls", "serviceName": "grpc-service", "udp": "0", "peer": "edge.example", "fp": "firefox", "alterId": "4"},
+            "name": "Authority VMess",
+        },
+        "mihomo_proxy": {
+            "name": "Authority VMess", "type": "vmess", "server": "authority.example", "port": 8443,
+            "uuid": "11111111-2222-3333-4444-555555555555", "alterId": 4,
+            "cipher": "aes-128-gcm", "network": "grpc", "udp": False, "tls": True,
+            "servername": "edge.example", "client-fingerprint": "firefox",
+            "grpc-opts": {"grpc-service-name": "grpc-service"},
+        },
+    }
+
+    encoded_socks = base64.urlsafe_b64encode(b"user%20name:p%40ss@[2001:db8::1]:1080").decode()
+    assert proxy_pool.parse_static_proxy_uri(f"socks://{encoded_socks}", "Encoded SOCKS") == {
+        "parse_status": "ok", "mihomo_name": "Encoded SOCKS",
+        "parsed": {"scheme": "socks5", "server": "2001:db8::1", "port": 1080, "username": "user name", "has_password": True, "name": "Encoded SOCKS"},
+        "mihomo_proxy": {"name": "Encoded SOCKS", "type": "socks5", "server": "2001:db8::1", "port": 1080, "username": "user name", "password": "p@ss", "udp": True},
+    }
+    assert proxy_pool.parse_static_proxy_uri("  https://user%20name:p%40ss@[2001:db8::2]:443#HTTPS%20Node\n") == {
+        "parse_status": "ok", "mihomo_name": "HTTPS Node",
+        "parsed": {"scheme": "https", "server": "2001:db8::2", "port": 443, "username": "user name", "has_password": True, "name": "HTTPS Node"},
+        "mihomo_proxy": {"name": "HTTPS Node", "type": "http", "server": "2001:db8::2", "port": 443, "username": "user name", "password": "p@ss", "tls": True},
+    }
+
+    for parser in (proxy_pool.parse_vless_uri, proxy_pool.parse_vmess_uri, proxy_pool.parse_static_proxy_uri):
+        assert parser("", "fallback") == {
+            "parse_status": "manual", "parsed": {}, "mihomo_proxy": {}, "mihomo_name": "fallback",
+        }
+
+
+def test_proxy_uri_parser_errors_are_explicit() -> None:
+    for parser, uri, expected in (
+        (proxy_pool.parse_vless_uri, "https://node.example:443", "Only vless:// URI is supported"),
+        (proxy_pool.parse_vmess_uri, "vmess://a", "VMess URI payload is not valid Base64"),
+        (proxy_pool.parse_static_proxy_uri, "ftp://node.example:21", "静态代理仅支持 socks://、socks5://、http:// 或 https://"),
+    ):
+        try:
+            parser(uri)
+        except ValueError as exc:
+            assert str(exc) == expected
+        else:
+            raise AssertionError(f"expected ValueError for {uri}")
+
+
+def test_upsert_pool_persists_static_node_and_rejects_invalid_vless_before_insert() -> None:
+    with isolated_proxy_db():
+        saved = proxy_pool.upsert_pool({
+            "name": "stored static",
+            "source_uri": "https://user%20name:p%40ss@proxy.example:8443#Stored%20Static",
+            "status": proxy_pool.STATUS_ACTIVE,
+        })["pool"]
+        assert saved["source_type"] == "static"
+        assert saved["parse_status"] == "ok"
+        assert saved["dialer_proxy"] == proxy_pool.SYSTEM_PROXY_DIALER
+        assert saved["parsed"] == {
+            "scheme": "https", "server": "proxy.example", "port": 8443,
+            "username": "user name", "has_password": True, "name": "Stored Static",
+        }
+        assert saved["mihomo_proxy"] == {
+            "name": "Stored Static", "type": "http", "server": "proxy.example", "port": 8443,
+            "username": "user name", "password": "p@ss", "tls": True,
+            "dialer-proxy": proxy_pool.SYSTEM_PROXY_DIALER,
+        }
+
+        try:
+            proxy_pool.upsert_pool({"name": "invalid vless", "source_uri": "vless://uuid@node.example"})
+        except ValueError as exc:
+            assert str(exc) == "代理 URI 解析失败：VLESS URI must include uuid, server and port"
+        else:
+            raise AssertionError("invalid VLESS URI was accepted")
+
+        with proxy_pool.connect() as conn:
+            assert conn.execute("SELECT COUNT(*) FROM proxy_profiles WHERE name = 'invalid vless'").fetchone()[0] == 0
 
 
 def create_manual_pool(name: str, expected_ip: str) -> dict:
@@ -666,6 +805,9 @@ def main() -> None:
     test_legacy_schema_upgrade_is_idempotent_and_readable()
     test_migration_dml_failure_rolls_back_after_existing_schema()
     test_migration_commit_failure_rolls_back_migration_dml()
+    test_proxy_uri_parsers_preserve_node_and_mihomo_fields()
+    test_proxy_uri_parser_errors_are_explicit()
+    test_upsert_pool_persists_static_node_and_rejects_invalid_vless_before_insert()
     test_duplicate_exit_ip_is_terminal_until_manual_recheck()
     test_existing_duplicate_error_is_migrated_without_retry()
     test_delete_pool_preserves_archived_history_and_releases_port()
