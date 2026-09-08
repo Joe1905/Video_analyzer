@@ -17,10 +17,13 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import proxy_pool  # noqa: E402
+from proxy import repository, runtime, settings  # noqa: E402
 
 
 @contextmanager
 def isolated_proxy_db() -> Iterator[None]:
+    original_settings_data_dir = settings.DATA_DIR
+    original_settings_db_path = settings.DB_PATH
     original_data_dir = proxy_pool.DATA_DIR
     original_db_path = proxy_pool.DB_PATH
     original_lookup = proxy_pool.lookup_ip_geo
@@ -37,6 +40,8 @@ def isolated_proxy_db() -> Iterator[None]:
     temporary = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
     data_dir = Path(temporary.name)
     sqlite3.connect = tracked_connect
+    settings.DATA_DIR = data_dir
+    settings.DB_PATH = data_dir / "proxy_pool.sqlite"
     proxy_pool.DATA_DIR = data_dir
     proxy_pool.DB_PATH = data_dir / "proxy_pool.sqlite"
     proxy_pool.lookup_ip_geo = lambda _ip: {
@@ -56,6 +61,8 @@ def isolated_proxy_db() -> Iterator[None]:
     try:
         yield
     finally:
+        settings.DATA_DIR = original_settings_data_dir
+        settings.DB_PATH = original_settings_db_path
         proxy_pool.DATA_DIR = original_data_dir
         proxy_pool.DB_PATH = original_db_path
         proxy_pool.lookup_ip_geo = original_lookup
@@ -123,36 +130,34 @@ def sqlite_snapshot(path: Path) -> tuple[str, ...]:
 
 def test_legacy_schema_upgrade_is_idempotent_and_readable() -> None:
     with isolated_proxy_db():
-        legacy_path = proxy_pool.DATA_DIR / "legacy.sqlite"
+        legacy_path = settings.DATA_DIR / "legacy.sqlite"
         create_legacy_proxy_db(legacy_path)
         legacy_snapshot = sqlite_snapshot(legacy_path)
-        copy_sqlite(legacy_path, proxy_pool.DB_PATH)
+        copy_sqlite(legacy_path, settings.DB_PATH)
         assert sqlite_snapshot(legacy_path) == legacy_snapshot
 
-        original_now_iso = proxy_pool.now_iso
-        proxy_pool.now_iso = lambda: "2026-09-08T00:00:00Z"
-        conn = sqlite3.connect(proxy_pool.DB_PATH)
-        try:
-            conn.row_factory = sqlite3.Row
-            proxy_pool.init_db(conn)
-            conn.close()
-            first_snapshot = sqlite_snapshot(proxy_pool.DB_PATH)
-
-            conn = sqlite3.connect(proxy_pool.DB_PATH)
-            conn.row_factory = sqlite3.Row
-            proxy_pool.init_db(conn)
-            conn.close()
-            assert sqlite_snapshot(proxy_pool.DB_PATH) == first_snapshot
-
-            upgraded = proxy_pool.get_pool(1)
-            assert upgraded["name"] == "legacy"
-            assert sqlite_snapshot(proxy_pool.DB_PATH) == first_snapshot
-        finally:
-            if conn:
+        with patch.object(settings, "now_iso", return_value="2026-09-08T00:00:00Z"):
+            conn = sqlite3.connect(settings.DB_PATH)
+            try:
+                conn.row_factory = sqlite3.Row
+                repository.init_db(conn)
                 conn.close()
-            proxy_pool.now_iso = original_now_iso
+                first_snapshot = sqlite_snapshot(settings.DB_PATH)
 
-        conn = sqlite3.connect(proxy_pool.DB_PATH)
+                conn = sqlite3.connect(settings.DB_PATH)
+                conn.row_factory = sqlite3.Row
+                repository.init_db(conn)
+                conn.close()
+                assert sqlite_snapshot(settings.DB_PATH) == first_snapshot
+
+                upgraded = proxy_pool.get_pool(1)
+                assert upgraded["name"] == "legacy"
+                assert sqlite_snapshot(settings.DB_PATH) == first_snapshot
+            finally:
+                if conn:
+                    conn.close()
+
+        conn = sqlite3.connect(settings.DB_PATH)
         try:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
@@ -162,7 +167,7 @@ def test_legacy_schema_upgrade_is_idempotent_and_readable() -> None:
         finally:
             conn.close()
         assert row is not None
-        assert row["local_port"] == proxy_pool.PROXY_PORT_START
+        assert row["local_port"] == settings.PROXY_PORT_START
         assert row["port_scope"] == proxy_pool.PORT_SCOPE_DEFAULT
         assert row["dialer_proxy"] == ""
         assert {"local_port", "port_scope", "dialer_proxy", "deleted_at"} <= columns
@@ -176,18 +181,18 @@ def test_migration_dml_failure_rolls_back_after_existing_schema() -> None:
             return super().execute(sql, parameters)
 
     with isolated_proxy_db():
-        legacy_path = proxy_pool.DATA_DIR / "legacy-dml.sqlite"
+        legacy_path = settings.DATA_DIR / "legacy-dml.sqlite"
         create_legacy_proxy_db(legacy_path, source_type="static")
-        copy_sqlite(legacy_path, proxy_pool.DB_PATH)
+        copy_sqlite(legacy_path, settings.DB_PATH)
 
         # Early schema DDL commits before this fault. This freezes that
         # existing non-atomic boundary while requiring later port/dialer
         # backfill DML to roll back.
-        conn = sqlite3.connect(proxy_pool.DB_PATH, factory=FailingMigrationConnection)
+        conn = sqlite3.connect(settings.DB_PATH, factory=FailingMigrationConnection)
         conn.row_factory = sqlite3.Row
         try:
             try:
-                proxy_pool.init_db(conn)
+                repository.init_db(conn)
             except sqlite3.OperationalError as exc:
                 assert str(exc) == "injected migration DML failure"
             else:
@@ -195,7 +200,7 @@ def test_migration_dml_failure_rolls_back_after_existing_schema() -> None:
         finally:
             conn.close()
 
-        conn = sqlite3.connect(proxy_pool.DB_PATH)
+        conn = sqlite3.connect(settings.DB_PATH)
         try:
             columns = {item[1] for item in conn.execute("PRAGMA table_info(proxy_profiles)")}
             local_port, dialer_proxy = conn.execute(
@@ -214,15 +219,15 @@ def test_migration_commit_failure_rolls_back_migration_dml() -> None:
             raise sqlite3.OperationalError("injected migration commit failure")
 
     with isolated_proxy_db():
-        legacy_path = proxy_pool.DATA_DIR / "legacy-commit.sqlite"
+        legacy_path = settings.DATA_DIR / "legacy-commit.sqlite"
         create_legacy_proxy_db(legacy_path, source_type="static")
-        copy_sqlite(legacy_path, proxy_pool.DB_PATH)
+        copy_sqlite(legacy_path, settings.DB_PATH)
 
-        conn = sqlite3.connect(proxy_pool.DB_PATH, factory=FailingCommitConnection)
+        conn = sqlite3.connect(settings.DB_PATH, factory=FailingCommitConnection)
         conn.row_factory = sqlite3.Row
         try:
             try:
-                proxy_pool.init_db(conn)
+                repository.init_db(conn)
             except sqlite3.OperationalError as exc:
                 assert str(exc) == "injected migration commit failure"
             else:
@@ -230,7 +235,7 @@ def test_migration_commit_failure_rolls_back_migration_dml() -> None:
         finally:
             conn.close()
 
-        conn = sqlite3.connect(proxy_pool.DB_PATH)
+        conn = sqlite3.connect(settings.DB_PATH)
         try:
             local_port, dialer_proxy = conn.execute(
                 "SELECT local_port, dialer_proxy FROM proxy_profiles WHERE name = 'legacy'"
@@ -623,10 +628,9 @@ def test_direct_pool_recovers_after_successful_recheck() -> None:
             )
             conn.commit()
 
-        checked = proxy_pool.check_binding({
-            "proxy_profile_id": pool["id"],
-            "observed_ip": "203.0.113.50",
-        })
+        with patch.object(runtime, "detect_exit_ip_for_pool", return_value={"ip": "203.0.113.50"}) as detect:
+            checked = proxy_pool.check_binding({"proxy_profile_id": pool["id"]})
+        assert detect.call_count == 1
         assert checked["allowed"] is True
         assert checked["pool"]["status"] == proxy_pool.STATUS_ACTIVE
         assert checked["pool"]["parse_error"] == ""
@@ -642,7 +646,7 @@ def test_v2_proxy_page_exposes_account_rebind_flow() -> None:
 
 
 def test_v2_sing_box_default_stays_in_4004_project() -> None:
-    source = (ROOT / "scripts" / "proxy_pool.py").read_text(encoding="utf-8")
+    source = Path(settings.__file__).read_text(encoding="utf-8")
     assert 'os.getenv("SING_BOX_COMPOSE_PROJECT", "short-video-analyzer-ui-4004")' in source
     assert 'os.getenv("PROXY_POOL_CONFIG_NAMESPACE", "v2")' in source
     assert 'os.getenv("PROXY_POOL_MIHOMO_PREFIX", "v2-")' in source
@@ -719,9 +723,9 @@ def test_port_migration_updates_bound_account_profile() -> None:
             ).fetchone()
 
         profile = json.loads(migrated["profile_json"])
-        assert migrated["local_port"] == proxy_pool.PROXY_PORT_START
-        assert profile["proxy_binding"]["local_port"] == proxy_pool.PROXY_PORT_START
-        assert profile["browser_settings"]["proxy_server"] == f"127.0.0.1:{proxy_pool.PROXY_PORT_START}"
+        assert migrated["local_port"] == settings.PROXY_PORT_START
+        assert profile["proxy_binding"]["local_port"] == settings.PROXY_PORT_START
+        assert profile["browser_settings"]["proxy_server"] == f"127.0.0.1:{settings.PROXY_PORT_START}"
         assert profile["preserved"] is True
 
 
@@ -729,11 +733,11 @@ def test_sing_box_detection_accepts_serialized_pool_dict() -> None:
     previous = os.environ.get("PROXY_REALITY_CORE")
     os.environ["PROXY_REALITY_CORE"] = "sing-box"
     try:
-        assert proxy_pool._sing_box_reality_pool(
+        assert runtime._sing_box_reality_pool(
             {
                 "source_type": "vless",
                 "parsed": {},
-                "local_port": proxy_pool.PROXY_PORT_START,
+                "local_port": settings.PROXY_PORT_START,
             }
         ) is False
     finally:
@@ -744,7 +748,7 @@ def test_sing_box_detection_accepts_serialized_pool_dict() -> None:
 
 
 def test_mihomo_managed_yaml_is_namespaced_and_restored_after_failed_reload() -> None:
-    module = sys.modules[proxy_pool._sync_mihomo_pool_config.__module__]
+    module = sys.modules[runtime._sync_mihomo_pool_config.__module__]
     original = (
         b"proxies:\n"
         b"  - name: foreign\n"
@@ -766,13 +770,13 @@ def test_mihomo_managed_yaml_is_namespaced_and_restored_after_failed_reload() ->
             stack.enter_context(patch.dict(os.environ, {"MIHOMO_CONFIG_PATH": str(config)}, clear=False))
             stack.enter_context(patch.object(module, "_mihomo_listener_matches", return_value=True))
             stack.enter_context(patch.object(module, "_reload_mihomo_config"))
-            stack.enter_context(patch.object(module, "_mihomo_request", return_value=(True, {"proxies": {"v2-managed": {}, "v2-replacement": {}, proxy_pool.SYSTEM_PROXY_DIALER: {}}}, "")))
+            stack.enter_context(patch.object(module, "_mihomo_request", return_value=(True, {"proxies": {f"{settings.PROXY_MIHOMO_NAME_PREFIX}managed": {}, f"{settings.PROXY_MIHOMO_NAME_PREFIX}replacement": {}, settings.SYSTEM_PROXY_DIALER: {}}}, "")))
             stack.enter_context(patch.object(module, "_port_open", return_value=True))
-            proxy_pool._sync_mihomo_pool_config(pool)
+            runtime._sync_mihomo_pool_config(pool)
             pool["mihomo_name"] = "replacement"
-            proxy_pool._sync_mihomo_pool_config(pool)
+            runtime._sync_mihomo_pool_config(pool)
             direct = {**pool, "source_type": "direct", "mihomo_proxy": {}}
-            proxy_pool._sync_mihomo_pool_config(direct)
+            runtime._sync_mihomo_pool_config(direct)
         updated = config.read_text(encoding="utf-8")
         assert "foreign-listener" in updated and "proxy: foreign" in updated
         assert "proxy-pool-managed-v2-id: 8" in updated
@@ -785,8 +789,8 @@ def test_mihomo_managed_yaml_is_namespaced_and_restored_after_failed_reload() ->
             stack.enter_context(patch.object(module, "_mihomo_listener_matches", return_value=True))
             stack.enter_context(patch.object(module, "_reload_mihomo_config", side_effect=ValueError("reload failed")))
             try:
-                proxy_pool._sync_mihomo_pool_config(pool)
-            except proxy_pool.ProxyConfigurationError as exc:
+                runtime._sync_mihomo_pool_config(pool)
+            except runtime.ProxyConfigurationError as exc:
                 assert str(exc) == "mihomo 自动同步失败：reload failed"
             else:
                 raise AssertionError("reload failure was accepted")
@@ -795,7 +799,7 @@ def test_mihomo_managed_yaml_is_namespaced_and_restored_after_failed_reload() ->
 
 
 def test_sing_box_export_and_restart_stay_local_to_4004() -> None:
-    module = sys.modules[proxy_pool._restart_sing_box_container.__module__]
+    module = sys.modules[runtime._restart_sing_box_container.__module__]
     with isolated_proxy_db(), patch.dict(os.environ, {"PROXY_REALITY_CORE": "mihomo", "PROXY_REALITY_DEFAULT_FINGERPRINT": "safari"}), tempfile.TemporaryDirectory() as directory:
         pool = proxy_pool.upsert_pool({
             "name": "reality", "source_uri": "vless://123e4567-e89b-12d3-a456-426614174000@node.example:443?security=reality&pbk=key&sid=id&sni=edge.example#Reality",
@@ -806,10 +810,10 @@ def test_sing_box_export_and_restart_stay_local_to_4004() -> None:
         failed = module.subprocess.CompletedProcess([], 1, "", "blocked")
         with ExitStack() as stack:
             stack.enter_context(patch.dict(os.environ, {"PROXY_REALITY_CORE": "sing-box"}, clear=False))
-            stack.enter_context(patch.object(module, "SING_BOX_CONFIG_PATH", config))
+            stack.enter_context(patch.object(settings, "SING_BOX_CONFIG_PATH", config))
             run = stack.enter_context(patch.object(module.subprocess, "run", side_effect=[success, success]))
-            exported = proxy_pool._write_sing_box_config()
-            restarted = proxy_pool._restart_sing_box_container(required=True)
+            exported = runtime._write_sing_box_config()
+            restarted = runtime._restart_sing_box_container(required=True)
         assert exported["pools"] == [{"id": pool["id"], "name": "reality", "local_port": pool["local_port"], "fingerprint": "safari"}]
         assert json.loads(config.read_text(encoding="utf-8"))["inbounds"][0]["listen_port"] == pool["local_port"]
         assert restarted == {"restarted": True, "containers": ["container-4004"]}
@@ -817,7 +821,7 @@ def test_sing_box_export_and_restart_stay_local_to_4004() -> None:
         assert run.call_args_list[1].args[0] == ["docker", "restart", "container-4004"]
         with patch.object(module.subprocess, "run", side_effect=[success, failed]):
             try:
-                proxy_pool._restart_sing_box_container(required=True)
+                runtime._restart_sing_box_container(required=True)
             except ValueError as exc:
                 assert str(exc) == "重启 sing-box 代理核心失败：blocked"
             else:
@@ -825,19 +829,56 @@ def test_sing_box_export_and_restart_stay_local_to_4004() -> None:
 
 
 def test_exit_ip_repair_is_attempted_once() -> None:
-    module = sys.modules[proxy_pool._detect_exit_ip_with_single_repair.__module__]
+    module = sys.modules[runtime._detect_exit_ip_with_single_repair.__module__]
     pool = {"id": 8}
     with patch.object(module, "detect_exit_ip_for_pool", side_effect=[ValueError("first"), {"ip": "203.0.113.8"}]) as detect, patch.object(module, "_repair_proxy_core_once", return_value={"attempted": True, "core": "mihomo", "result": {}}) as repair:
-        assert proxy_pool._detect_exit_ip_with_single_repair(pool)["auto_repair"]["core"] == "mihomo"
+        assert runtime._detect_exit_ip_with_single_repair(pool)["auto_repair"]["core"] == "mihomo"
         assert detect.call_count == 2 and repair.call_count == 1
     with patch.object(module, "detect_exit_ip_for_pool", side_effect=[ValueError("first"), ValueError("second")]), patch.object(module, "_repair_proxy_core_once", return_value={"attempted": True, "core": "mihomo", "result": {}}) as repair:
         try:
-            proxy_pool._detect_exit_ip_with_single_repair(pool)
-        except proxy_pool.ProxyConfigurationError as exc:
+            runtime._detect_exit_ip_with_single_repair(pool)
+        except runtime.ProxyConfigurationError as exc:
             assert str(exc) == "mihomo 已自动修复一次，但出口校验仍失败：second"
         else:
             raise AssertionError("second exit IP failure was accepted")
         assert repair.call_count == 1
+
+
+def test_runtime_status_freezes_public_keys_and_dynamic_vnc_values() -> None:
+    module = sys.modules[proxy_pool.runtime_status.__module__]
+    expected_keys = {
+        "checked_at", "novnc_url", "novnc_local_port", "novnc_ports", "vnc_port",
+        "mihomo_proxy_port", "mihomo_api_url", "checks", "mihomo_version", "mihomo_error",
+        "port_range", "pending_login_ttl_seconds", "manual_observation_idle_seconds",
+        "browser_locale", "browser_notice",
+    }
+    with ExitStack() as stack:
+        stack.enter_context(patch.dict(os.environ, {
+            "TIKTOK_BROWSER_MAX_SLOTS": "5", "TIKTOK_BROWSER_HIDDEN_AUTOMATION_SLOTS": "2",
+            "VNC_PORT": "5999", "MIHOMO_PROXY_PORT": "7999",
+            "TIKTOK_PENDING_LOGIN_TTL_SECONDS": "120", "TIKTOK_MANUAL_OBSERVATION_IDLE_SECONDS": "180",
+        }, clear=False))
+        stack.enter_context(patch.object(settings, "now_iso", return_value="2026-09-08T00:00:00Z"))
+        stack.enter_context(patch.object(settings, "NOVNC_PORT", 6080))
+        stack.enter_context(patch.object(settings, "NOVNC_MANUAL_PORTS", 1))
+        request = stack.enter_context(patch.object(module, "_http_get_json", return_value=(True, {"version": "test"}, "")))
+        stack.enter_context(patch.object(module, "_port_open", side_effect=lambda _host, port: port == 5999))
+        status = proxy_pool.runtime_status()
+    assert set(status) == expected_keys
+    assert status["checked_at"] == "2026-09-08T00:00:00Z"
+    assert status["vnc_port"] == 5999 and status["mihomo_proxy_port"] == 7999
+    assert status["novnc_ports"] == {
+        "base_port": 6081, "reserved_port": 6080, "manual_ports": 1, "max_slots": 5,
+        "hidden_automation_slots": 2, "visible_observation_slots": 3, "total_ports": 4,
+        "allowed_ports": [6081, 6082, 6083, 6084], "allowed_range": "6081-6084",
+    }
+    assert status["checks"] == {
+        "novnc_local": False, "novnc_ports": {"6081": False, "6082": False, "6083": False, "6084": False},
+        "vnc_local": True, "mihomo_proxy_local": False, "mihomo_api_local": True,
+    }
+    assert status["mihomo_version"] == "test" and status["mihomo_error"] == ""
+    assert status["pending_login_ttl_seconds"] == 120 and status["manual_observation_idle_seconds"] == 180
+    assert request.call_args.args == (settings.DEFAULT_MIHOMO_API.rstrip("/") + "/version",)
 
 
 def test_account_state_exposes_instagram_login_without_cookie_value() -> None:
@@ -915,6 +956,7 @@ def main() -> None:
     test_mihomo_managed_yaml_is_namespaced_and_restored_after_failed_reload()
     test_sing_box_export_and_restart_stay_local_to_4004()
     test_exit_ip_repair_is_attempted_once()
+    test_runtime_status_freezes_public_keys_and_dynamic_vnc_values()
     test_account_state_exposes_instagram_login_without_cookie_value()
     print("proxy pool lifecycle tests passed")
 
