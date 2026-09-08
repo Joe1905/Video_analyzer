@@ -55,6 +55,7 @@ from routes.extract import register_extract_page
 from routes.harness_certificate import register_harness_certificate_route
 from routes.harness import register_harness_page
 from routes.lan_chat import register_lan_chat_api_routes, register_lan_chat_page
+from routes.proxy import register_proxy_routes
 from routes.metrics import register_metrics_api_routes, register_metrics_page
 from routes.report_pages import register_report_pages
 from routes.router import MethodNotAllowed, RouteNotFound, Router
@@ -9521,14 +9522,6 @@ class Handler(BaseHTTPRequestHandler):
             return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
         if parsed.path == "/" or parsed.path == "/chat":
             return serve_chat_template(self, "home", parsed.path)
-        if parsed.path == "/proxy":
-            if not PROXY_POOL_ENABLED:
-                return text_response(self, HTTPStatus.NOT_FOUND, "Not found", "text/plain; charset=utf-8")
-            return text_response(self, HTTPStatus.OK, inject_proxy_bootstrap(inject_unified_nav(PROXY_HTML, parsed.path)), "text/html; charset=utf-8")
-        if parsed.path.startswith("/api/proxy/"):
-            if not PROXY_POOL_ENABLED:
-                return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
-            return self.handle_proxy_api_get(parsed.path, parsed.query)
         if parsed.path == "/api/global-user":
             payload = global_user_payload(self)
             requested_id = _cookie_value(self, GLOBAL_USER_COOKIE)
@@ -9953,7 +9946,7 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path.startswith("/api/proxy/"):
             if not PROXY_POOL_ENABLED:
                 return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
-            return self.handle_proxy_api_post(parsed.path)
+            return proxy_post(self)
         if parsed.path == "/api/tool/convert":
             return self.handle_tool_convert()
         if parsed.path == "/api/chat/ask":
@@ -9988,157 +9981,6 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(data, dict):
             raise ValueError("JSON body must be an object")
         return data
-
-    def handle_proxy_api_get(self, path: str, query: str = "") -> None:
-        try:
-            if path == "/api/proxy/pools":
-                return json_response(self, HTTPStatus.OK, scoped_proxy_state(self))
-            if path == "/api/proxy/mihomo-export":
-                return json_response(self, HTTPStatus.OK, proxy_pool.mihomo_export())
-            if path == "/api/proxy/runtime":
-                return json_response(self, HTTPStatus.OK, proxy_pool.runtime_status())
-            avatar_match = re.fullmatch(r"/api/proxy/accounts/avatar/(\d+)", path)
-            if avatar_match:
-                try:
-                    body, content_type = proxy_pool.account_avatar_bytes(int(avatar_match.group(1)))
-                except FileNotFoundError:
-                    return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Account avatar not found"})
-                return binary_response(self, HTTPStatus.OK, body, content_type)
-            if path == "/api/proxy/publish/jobs":
-                account_id = int(parse_qs(query).get("account_id", ["0"])[0] or 0)
-                return json_response(self, HTTPStatus.OK, tiktok_studio_publish.list_jobs(account_id))
-            if path == "/api/proxy/products":
-                return json_response(self, HTTPStatus.OK, proxy_pool.list_products())
-            if path == "/api/proxy/publish/runtime":
-                return json_response(self, HTTPStatus.OK, tiktok_studio_publish.runtime_status())
-            if path == "/api/proxy/collect/dashboard":
-                account_id = int(parse_qs(query).get("account_id", ["0"])[0] or 0)
-                platform = parse_qs(query).get("platform", ["tiktok"])[0]
-                return json_response(self, HTTPStatus.OK, tiktok_studio_collect.dashboard(account_id, platform))
-            if path == "/api/proxy/collect/runtime":
-                return json_response(self, HTTPStatus.OK, tiktok_studio_collect.runtime_status())
-            if path.startswith("/api/proxy/publish/videos/"):
-                asset_id = unquote(path.removeprefix("/api/proxy/publish/videos/"))
-                return self.serve_video(tiktok_studio_publish.video_path(asset_id))
-            return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
-        except Exception as exc:
-            return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
-
-    def handle_proxy_api_post(self, path: str) -> None:
-        try:
-            if path == "/api/proxy/publish/jobs":
-                content_length = int(self.headers.get("Content-Length", "0") or "0")
-                if content_length <= 0 or content_length > tiktok_studio_publish.MAX_UPLOAD_BYTES + 2 * 1024 * 1024:
-                    raise ValueError("上传内容为空或超过 2GB 限制")
-                form = cgi.FieldStorage(
-                    fp=self.rfile,
-                    headers=self.headers,
-                    environ={
-                        "REQUEST_METHOD": "POST",
-                        "CONTENT_TYPE": self.headers.get("Content-Type", ""),
-                        "CONTENT_LENGTH": str(content_length),
-                    },
-                )
-                return json_response(self, HTTPStatus.ACCEPTED, tiktok_studio_publish.create_job(form))
-            payload = self.read_json_body()
-            if path == "/api/proxy/pools":
-                return json_response(self, HTTPStatus.OK, proxy_pool.upsert_pool(payload))
-            if path == "/api/proxy/pools/delete":
-                return json_response(self, HTTPStatus.OK, proxy_pool.delete_pool(int(payload.get("id") or payload.get("proxy_profile_id") or 0)))
-            if path == "/api/proxy/mihomo-reconcile":
-                return json_response(self, HTTPStatus.OK, proxy_pool.reconcile_mihomo_pool_configs())
-            if path == "/api/proxy/accounts":
-                payload = _proxy_feishu_binding(payload, required=not int(payload.get("id") or 0), global_user=current_global_user(self))
-                return json_response(self, HTTPStatus.OK, proxy_pool.upsert_account(payload))
-            if path == "/api/proxy/accounts/delete":
-                return json_response(self, HTTPStatus.OK, proxy_pool.delete_account(int(payload.get("id") or payload.get("account_id") or 0)))
-            if path == "/api/proxy/accounts/platform/delete":
-                return json_response(
-                    self,
-                    HTTPStatus.OK,
-                    proxy_pool.delete_account_platform(
-                        int(payload.get("id") or payload.get("account_id") or 0),
-                        str(payload.get("platform") or ""),
-                    ),
-                )
-            if path == "/api/proxy/instagram/collect":
-                max_videos = int(payload.get("max_videos") or 5)
-                if not 1 <= max_videos <= 20:
-                    raise ValueError("max_videos 必须在 1 至 20 之间")
-                try:
-                    result = instagram_content_collect.run_simulation(
-                        int(payload.get("account_id") or 0),
-                        max_videos,
-                        False,
-                        int(payload.get("session_id") or 0),
-                    )
-                except instagram_content_collect.InstagramCollectionError as exc:
-                    return json_response(self, HTTPStatus.CONFLICT, {"error": str(exc)})
-                login = result.get("login")
-                if isinstance(login, dict):
-                    result["login"] = {"profile_has_instagram_login": bool(login.get("profile_has_instagram_login"))}
-                return json_response(
-                    self,
-                    HTTPStatus.OK,
-                    result,
-                )
-            if path == "/api/proxy/accounts/proxy-binding":
-                return json_response(self, HTTPStatus.OK, proxy_pool.update_account_proxy_binding(payload))
-            if path == "/api/proxy/check":
-                return json_response(self, HTTPStatus.OK, proxy_pool.check_binding(payload, require_account=False))
-            if path == "/api/proxy/accounts/preflight":
-                return json_response(self, HTTPStatus.OK, proxy_pool.check_binding(payload, require_account=True))
-            if path == "/api/proxy/accounts/status":
-                return json_response(self, HTTPStatus.OK, proxy_pool.update_account_status(payload))
-            if path == "/api/proxy/products/search":
-                return json_response(self, HTTPStatus.OK, search_shop_catalog_products(payload))
-            if path == "/api/proxy/products":
-                action = str(payload.get("action") or "create").strip().lower()
-                if action == "create":
-                    return json_response(self, HTTPStatus.CREATED, proxy_pool.create_product(payload))
-                if action == "update":
-                    return json_response(self, HTTPStatus.OK, proxy_pool.update_product(payload))
-                raise ValueError("商品操作必须是 create 或 update")
-            if path == "/api/proxy/products/delete":
-                return json_response(self, HTTPStatus.OK, proxy_pool.delete_product(str(payload.get("product_id") or "")))
-            if path == "/api/proxy/login-session/start":
-                payload = _proxy_feishu_binding(payload, required=not int(payload.get("account_id") or 0), global_user=current_global_user(self))
-                return json_response(self, HTTPStatus.OK, proxy_pool.start_login_session(payload))
-            if path == "/api/proxy/login-session/open-platform":
-                return json_response(self, HTTPStatus.OK, proxy_pool.open_observation_platform(payload))
-            if path == "/api/proxy/login-session/stop":
-                return json_response(self, HTTPStatus.OK, proxy_pool.stop_login_session(payload))
-            if path == "/api/proxy/login-session/status":
-                return json_response(self, HTTPStatus.OK, proxy_pool.inspect_login_session(payload))
-            if path == "/api/proxy/login-session/capture":
-                return json_response(self, HTTPStatus.OK, proxy_pool.inspect_login_session(payload))
-            if path == "/api/proxy/publish/jobs/update":
-                return json_response(self, HTTPStatus.OK, tiktok_studio_publish.update_job(payload))
-            if path == "/api/proxy/publish/jobs/cancel":
-                return json_response(self, HTTPStatus.OK, tiktok_studio_publish.cancel_job(payload))
-            if path == "/api/proxy/publish/jobs/retry":
-                return json_response(self, HTTPStatus.OK, tiktok_studio_publish.retry_job(payload))
-            if path == "/api/proxy/publish/jobs/delete":
-                return json_response(self, HTTPStatus.OK, tiktok_studio_publish.delete_job(payload))
-            if path == "/api/proxy/collect/settings":
-                return json_response(self, HTTPStatus.OK, tiktok_studio_collect.save_settings(payload))
-            if path == "/api/proxy/collect/jobs":
-                return json_response(self, HTTPStatus.ACCEPTED, tiktok_studio_collect.create_job(payload))
-            if path == "/api/proxy/collect/jobs/retry":
-                return json_response(self, HTTPStatus.OK, tiktok_studio_collect.retry_job(payload))
-            if path == "/api/proxy/collect/jobs/rescan-discovery":
-                return json_response(self, HTTPStatus.ACCEPTED, tiktok_studio_collect.start_discovery_rescans(payload))
-            if path == "/api/proxy/collect/jobs/cancel":
-                return json_response(self, HTTPStatus.OK, tiktok_studio_collect.cancel_job(payload))
-            if path == "/api/proxy/collect/results/resync":
-                return json_response(self, HTTPStatus.OK, tiktok_studio_collect.retry_failed_feishu_sync(payload))
-            return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
-        except ValueError as exc:
-            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
-        except sqlite3.IntegrityError as exc:
-            return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
-        except Exception as exc:
-            return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
 
     def do_DELETE(self) -> None:
         parsed = urlparse(self.path)
@@ -10918,6 +10760,19 @@ register_video_result_routes(WEB_ROUTER, video_result_service, safe_filename=saf
 register_video_delete_routes(WEB_ROUTER, video_delete_service, safe_filename=safe_filename)
 register_report_routes(WEB_ROUTER, report_service)
 register_report_cover_routes(WEB_ROUTER, report_cover_service, safe_filename=safe_filename)
+proxy_post = register_proxy_routes(
+    WEB_ROUTER,
+    proxy_pool=proxy_pool,
+    tiktok_studio_publish=tiktok_studio_publish,
+    tiktok_studio_collect=tiktok_studio_collect,
+    instagram_content_collect=instagram_content_collect,
+    scoped_proxy_state=scoped_proxy_state,
+    _proxy_feishu_binding=_proxy_feishu_binding,
+    current_global_user=current_global_user,
+    search_shop_catalog_products=search_shop_catalog_products,
+    enabled=lambda: PROXY_POOL_ENABLED,
+    render_proxy_page=lambda: inject_proxy_bootstrap(inject_unified_nav(PROXY_HTML, "/proxy")),
+)
 lan_chat_post, lan_chat_head, lan_chat_stream = register_lan_chat_api_routes(
     WEB_ROUTER,
     store=lan_chat_store,
