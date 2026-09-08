@@ -661,6 +661,15 @@ Phase 5.0 已完成三路 Terra 只读盘点和主审 CodeGraph/AST 复核。`in
 
 9 个影响脚本全部通过：lifecycle 16 项、TikTok 发布、Instagram 采集、Router 24 项、缓存页面 3 项、web workflow、web smoke、UI contract 16 项、部署边界。部署边界在容器跳过的 Compose 源码检查已由宿主 7/7 补齐。未执行全量 56 项。4004 镜像 `sha256:f0d38fa7553df88bb5e31738fde9460cb3990443b17505c2962c2515c24e2e92`，启动 `2026-09-08T09:12:43.498749161Z`；三端健康、4004 `/proxy`、`/chat`、`/api/proxy/products` 均 200，服务器 clean，4002/4003 镜像和本批启动时间不变。近期日志无新增 traceback，保留原有静态代理 DIRECT 提示。Terra 后审与主审 P0/P1/P2 均为 0。
 
+### 9.5 Phase 5.3 配置、连接与完整运行时边界（2026-09-08）
+
+- **提交：** 运行时故障基线 `5b64cf8`；结构迁移 `c57ac07`；测试注入归属与运行时状态契约 `eb02549`。`settings.py` 收口原配置/状态/时钟，nodes 承接纯端口规则和序列化，repository 拥有 connect、schema、端口分配和四类原样查询，runtime 拥有代理核心和浏览器进程闭包。没有回调配置类、动态 facade 或反向 import；旧 facade 删除重复实现，仅显式保留活动调用入口。
+- **等价性：** 顶层配置逐项 AST 等价；剩余 pool、节点及纯配置函数等价；runtime 规范化配置名后仅四条具名 repository 查询替换，四条过滤/排序不合并。主审在提交前纠正默认前缀、运行时状态字段和动态 VNC 读取的机械迁移差异，并增加公开字段契约，未部署错误草稿。
+- **影响清单：** proxy lifecycle（20 项，含 YAML 失败恢复、4004 sing-box argv、单次出口修复、运行时字段/动态 VNC）、TikTok 发布描述、Instagram 采集，共三个服务器 Docker 脚本通过。静态语法、diff、CodeGraph/AST、零反向导入和 TTL 通过；无 UI 修改，无 Playwright 或 56 项中间全量回归。无新增/转正/删除测试脚本或临时脚本。
+- **部署：** 服务器 `eb02549` clean；唯一部署入口生成镜像 `sha256:f6c033b744991ffb4e935235ad6e000c39022fa4d1bc8de49cc974901d5d3191`，启动 `2026-09-08T09:40:04.328691285Z`。三端健康、4004 `/proxy`、`/api/proxy/products`、`/api/proxy/runtime` 均 200；4002/4003 镜像和启动时间不变，近期日志无新增 traceback，两个静态代理 DIRECT 提示保持原状。
+- **下一批：** 先冻结账号会话失败/清理现状，再将共享 state、池工作流、账号会话和商品业务按实际依赖搬迁；`list_state()` 的清理副作用及调用位置不改。随后发布/采集整域和 proxy route，继续 Phase 5；SYS-001/002 保持记录，不扩大修复范围。
+- **阶段后审计：** Terra 交叉审查和主审均通过需求漂移、依赖解耦、复用、安全边界及测试有效性检查，P0/P1/P2 为 0。
+
 ## 十、Phase 6：聊天、LLM 与聊天路由归一
 
 ### 10.1 聊天边界
@@ -763,7 +772,7 @@ Phase 0 测试基线
 
 ## 十四、下一批实施任务
 
-Phase 0～4 与脚本资产 TTL 治理均已完成。Phase 5.0 盘点、5.1A/B schema、5.2A/B URI 解析及用户追加的整项功能退役已完成，证据及剩余范围见 §9.1～9.4。下一批继续 repository 查询/连接归属及 runtime 完整依赖边界，随后 accounts → publishing/collection → route；已取消的专用端口不再迁移。SYS-001、SYS-002 仅落档，不以修复既有隐患扩大本次重构。不得重复宣称 Phase 5 已整体完成，也不得在一个子批完成后结束整个主线；不提前迁移 Phase 6 聊天/LLM 或 Phase 7 前端资源。继续遵守隔离 fixture、受影响故障契约和 4002/4003 隔离门禁。
+Phase 0～4 与脚本资产 TTL 治理均已完成。Phase 5.0 盘点、schema/URI、整项功能退役及配置/连接/runtime 边界已完成，证据及剩余范围见 §9.1～9.5。下一批继续共享 state、池工作流与 accounts，再到 publishing/collection → route；已取消的专用端口不再迁移。SYS-001、SYS-002 仅落档，不以修复既有隐患扩大本次重构。不得重复宣称 Phase 5 已整体完成，也不得在一个子批完成后结束整个主线；不提前迁移 Phase 6 聊天/LLM 或 Phase 7 前端资源。继续遵守隔离 fixture、受影响故障契约和 4002/4003 隔离门禁。
 
 Phase 2.3 继续复用现有 Terra 子智能体，避免为同一长期任务无限新增执行记录，并按以下门槛推进：
 
