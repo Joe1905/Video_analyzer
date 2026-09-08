@@ -10,6 +10,7 @@ from pathlib import Path
 import proxy_pool
 from proxy import collection as tiktok_studio_collect
 from proxy import publishing as tiktok_studio_publish
+from routes.proxy import register_proxy_routes
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -85,7 +86,7 @@ def test_publish_file_input_state_is_resilient() -> None:
 
 
 def test_web_and_compose_expose_only_backend_sync_contracts() -> None:
-    web_source = (ROOT / "scripts" / "web_app.py").read_text(encoding="utf-8")
+    web_source = inspect.getsource(register_proxy_routes)
     assert '"/api/proxy/mihomo-reconcile"' in web_source
     assert '"/api/proxy/collect/jobs/rescan-discovery"' in web_source
 
