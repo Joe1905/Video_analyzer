@@ -389,6 +389,50 @@ def create_manual_pool(name: str, expected_ip: str) -> dict:
     )["pool"]
 
 
+def seed_bound_delete_target(pool: dict, suffix: str) -> tuple[int, str, str]:
+    now = proxy_pool.now_iso()
+    publish_id = f"publish-delete-{suffix}"
+    collect_id = f"collect-delete-{suffix}"
+    with proxy_pool.connect() as conn:
+        account_id = int(
+            conn.execute(
+                """INSERT INTO tiktok_accounts (
+                       username, proxy_profile_id, proxy_bound, status, profile_json,
+                       created_at, updated_at
+                   ) VALUES (?, ?, 1, ?, ?, ?, ?)""",
+                (
+                    f"delete_target_{suffix}",
+                    pool["id"],
+                    proxy_pool.ACCOUNT_STATUS_ACTIVE,
+                    json.dumps({"proxy_binding": {"proxy_profile_id": pool["id"]}}),
+                    now,
+                    now,
+                ),
+            ).lastrowid
+        )
+        asset_id = f"asset-delete-{suffix}"
+        conn.execute(
+            """INSERT INTO publish_assets (id, account_id, original_name, stored_path, created_at)
+               VALUES (?, ?, 'video.mp4', 'data/video.mp4', ?)""",
+            (asset_id, account_id, now),
+        )
+        conn.execute(
+            """INSERT INTO publish_jobs (
+                   id, account_id, proxy_profile_id, asset_id, scheduled_at,
+                   status, created_at, updated_at
+               ) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)""",
+            (publish_id, account_id, pool["id"], asset_id, now, now, now),
+        )
+        conn.execute(
+            """INSERT INTO collect_jobs (
+                   id, account_id, proxy_profile_id, status, created_at, updated_at
+               ) VALUES (?, ?, ?, 'delayed', ?, ?)""",
+            (collect_id, account_id, pool["id"], now, now),
+        )
+        conn.commit()
+    return account_id, publish_id, collect_id
+
+
 def test_duplicate_exit_ip_is_terminal_until_manual_recheck() -> None:
     with isolated_proxy_db():
         older = create_manual_pool("existing", "203.0.113.10")
@@ -606,6 +650,123 @@ def test_delete_bound_pool_unbinds_account_until_explicit_rebind() -> None:
             assert (publish["status"], publish["stage"]) == ("queued", "proxy_rebound")
             assert collect["proxy_profile_id"] == direct_pool["id"]
             assert (collect["status"], collect["stage"]) == ("queued", "proxy_rebound")
+
+
+def test_delete_pool_commit_failure_rolls_back_db_and_restores_mihomo_backup() -> None:
+    class FailingDeleteCommitConnection(sqlite3.Connection):
+        fail_delete_commit = False
+
+        def execute(self, sql: str, parameters: object = ()) -> sqlite3.Cursor:
+            cursor = super().execute(sql, parameters)
+            if " ".join(sql.split()).upper() == "BEGIN IMMEDIATE":
+                self.fail_delete_commit = True
+            return cursor
+
+        def commit(self) -> None:
+            if self.fail_delete_commit:
+                raise sqlite3.OperationalError("injected delete commit failure")
+            super().commit()
+
+    @contextmanager
+    def failing_delete_connect() -> Iterator[sqlite3.Connection]:
+        conn = sqlite3.connect(settings.DB_PATH, factory=FailingDeleteCommitConnection)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        try:
+            yield conn
+        finally:
+            conn.close()
+
+    with isolated_proxy_db():
+        pool = create_manual_pool("commit-failure", "203.0.113.26")
+        account_id, publish_id, collect_id = seed_bound_delete_target(pool, "commit")
+        backup = (Path("ignored-mihomo.yaml"), b"before-delete", 0o600)
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(pools, "connect", failing_delete_connect))
+            stack.enter_context(patch.object(pools, "_remove_mihomo_pool_config", return_value=({"removed": True}, backup)))
+            restore = stack.enter_context(patch.object(pools, "_restore_mihomo_listener_config"))
+            try:
+                proxy_pool.delete_pool(pool["id"])
+            except sqlite3.OperationalError as exc:
+                assert str(exc) == "injected delete commit failure"
+            else:
+                raise AssertionError("delete commit failure was not injected")
+
+        assert restore.call_args_list == [((backup[0], backup[1], backup[2]), {})]
+        with proxy_pool.connect() as conn:
+            pool_row = conn.execute("SELECT deleted_at FROM proxy_profiles WHERE id = ?", (pool["id"],)).fetchone()
+            account = conn.execute("SELECT proxy_bound FROM tiktok_accounts WHERE id = ?", (account_id,)).fetchone()
+            publish = conn.execute("SELECT status, stage FROM publish_jobs WHERE id = ?", (publish_id,)).fetchone()
+            collect = conn.execute("SELECT status, stage FROM collect_jobs WHERE id = ?", (collect_id,)).fetchone()
+        assert pool_row["deleted_at"] == ""
+        assert account["proxy_bound"] == 1
+        assert (publish["status"], publish["stage"]) == ("queued", "")
+        assert (collect["status"], collect["stage"]) == ("delayed", "")
+
+
+def test_delete_pool_mihomo_cleanup_failure_leaves_db_unchanged() -> None:
+    with isolated_proxy_db():
+        pool = create_manual_pool("cleanup-failure", "203.0.113.27")
+        account_id, publish_id, collect_id = seed_bound_delete_target(pool, "cleanup")
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(pools, "_remove_mihomo_pool_config", side_effect=ValueError("injected mihomo cleanup failure")))
+            restore = stack.enter_context(patch.object(pools, "_restore_mihomo_listener_config"))
+            try:
+                proxy_pool.delete_pool(pool["id"])
+            except ValueError as exc:
+                assert str(exc) == "injected mihomo cleanup failure"
+            else:
+                raise AssertionError("mihomo cleanup failure was not injected")
+
+        assert restore.call_count == 0
+        with proxy_pool.connect() as conn:
+            pool_row = conn.execute("SELECT deleted_at FROM proxy_profiles WHERE id = ?", (pool["id"],)).fetchone()
+            account = conn.execute("SELECT proxy_bound FROM tiktok_accounts WHERE id = ?", (account_id,)).fetchone()
+            publish = conn.execute("SELECT status, stage FROM publish_jobs WHERE id = ?", (publish_id,)).fetchone()
+            collect = conn.execute("SELECT status, stage FROM collect_jobs WHERE id = ?", (collect_id,)).fetchone()
+        assert pool_row["deleted_at"] == ""
+        assert account["proxy_bound"] == 1
+        assert (publish["status"], publish["stage"]) == ("queued", "")
+        assert (collect["status"], collect["stage"]) == ("delayed", "")
+
+
+def test_delete_sing_box_restart_failure_keeps_committed_delete_unretryable() -> None:
+    with isolated_proxy_db(), patch.dict(os.environ, {"PROXY_REALITY_CORE": "mihomo"}, clear=False):
+        pool = proxy_pool.upsert_pool(
+            {
+                "name": "sing-box-delete-failure",
+                "source_uri": "vless://123e4567-e89b-12d3-a456-426614174000@node.example:443?security=reality&pbk=key&sid=id&sni=edge.example#Reality",
+                "status": proxy_pool.STATUS_ACTIVE,
+            }
+        )["pool"]
+        account_id, publish_id, collect_id = seed_bound_delete_target(pool, "singbox")
+        with ExitStack() as stack:
+            stack.enter_context(patch.dict(os.environ, {"PROXY_REALITY_CORE": "sing-box"}, clear=False))
+            core = stack.enter_context(patch.object(pools, "ensure_proxy_cores", side_effect=ValueError("injected sing-box restart failure")))
+            try:
+                proxy_pool.delete_pool(pool["id"])
+            except ValueError as exc:
+                assert str(exc) == "injected sing-box restart failure"
+            else:
+                raise AssertionError("sing-box restart failure was not injected")
+        assert core.call_args_list == [((), {"restart": True, "required": True})]
+
+        with proxy_pool.connect() as conn:
+            pool_row = conn.execute("SELECT deleted_at FROM proxy_profiles WHERE id = ?", (pool["id"],)).fetchone()
+            account = conn.execute("SELECT proxy_bound FROM tiktok_accounts WHERE id = ?", (account_id,)).fetchone()
+            publish = conn.execute("SELECT status, stage FROM publish_jobs WHERE id = ?", (publish_id,)).fetchone()
+            collect = conn.execute("SELECT status, stage FROM collect_jobs WHERE id = ?", (collect_id,)).fetchone()
+        assert pool_row["deleted_at"]
+        assert account["proxy_bound"] == 0
+        assert (publish["status"], publish["stage"]) == ("delayed", "waiting_proxy")
+        assert (collect["status"], collect["stage"]) == ("delayed", "waiting_proxy")
+
+        try:
+            proxy_pool.delete_pool(pool["id"])
+        except ValueError as exc:
+            assert str(exc) == "proxy profile not found"
+        else:
+            raise AssertionError("committed sing-box delete unexpectedly retried")
 
 
 def test_direct_pool_recovers_after_successful_recheck() -> None:
@@ -1004,6 +1165,9 @@ def main() -> None:
     test_existing_duplicate_error_is_migrated_without_retry()
     test_delete_pool_preserves_archived_history_and_releases_port()
     test_delete_bound_pool_unbinds_account_until_explicit_rebind()
+    test_delete_pool_commit_failure_rolls_back_db_and_restores_mihomo_backup()
+    test_delete_pool_mihomo_cleanup_failure_leaves_db_unchanged()
+    test_delete_sing_box_restart_failure_keeps_committed_delete_unretryable()
     test_direct_pool_recovers_after_successful_recheck()
     test_login_session_start_failure_marks_persisted_session_failed()
     test_stop_and_expired_session_cleanup_release_process_state()
