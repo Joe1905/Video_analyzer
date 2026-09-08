@@ -89,13 +89,14 @@ def _backup(database: Path, source: sqlite3.Connection, counts: dict[str, int]) 
     backup_dir = database.parent / "taobao-retirement-backups" / (
         datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex
     )
-    backup_dir.mkdir(parents=True, exist_ok=False)
+    backup_dir.mkdir(parents=True, exist_ok=False, mode=0o700)
     backup_path = backup_dir / "proxy_pool.sqlite"
     target = sqlite3.connect(backup_path)
     try:
         source.backup(target)
     finally:
         target.close()
+    backup_path.chmod(0o600)
     if not backup_path.is_file() or backup_path.stat().st_size == 0:
         raise RetirementRefused("backup was not created")
     check = sqlite3.connect(f"file:{backup_path}?mode=ro", uri=True)
