@@ -14273,6 +14273,22 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/healthz":
             return json_response(self, HTTPStatus.OK, {"status": "ok"})
+        if parsed.path == "/api/viral-elements/links":
+            target = viral_feishu_sync.elements_url
+            url = urlparse(target)
+            host = (url.hostname or "").lower()
+            allowed = url.scheme == "https" and not url.username and not url.password and any(host == d or host.endswith("." + d) for d in ("feishu.cn", "larksuite.com"))
+            return json_response(self, HTTPStatus.OK, {"elements_url": target if allowed else ""})
+        if parsed.path == "/viral-elements-library":
+            content = (SCRIPTS_DIR / "static" / "viral_elements_library.html").read_text(encoding="utf-8")
+            body = inject_unified_nav(content, parsed.path).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if parsed.path == "/api/vision-status":
             return json_response(self, HTTPStatus.OK, get_vision_status())
         if parsed.path == "/amazon":
