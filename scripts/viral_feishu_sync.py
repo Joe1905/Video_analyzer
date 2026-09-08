@@ -24,8 +24,8 @@ def _record_id(result: dict[str, Any]) -> str:
     return str(result.get("recordId") or result.get("record_id") or record.get("record_id") or record.get("recordId") or "")
 
 
-def _person(open_id: str) -> list[dict[str, str]] | str:
-    return [{"id": open_id}] if open_id else ""
+def _person(open_id: str) -> list[dict[str, str]]:
+    return [{"id": open_id}] if open_id else []
 
 
 def review_fields(review: dict[str, Any], owner: str = "", owner_id: str = "",
@@ -47,8 +47,8 @@ def review_fields(review: dict[str, Any], owner: str = "", owner_id: str = "",
         "内容.模型输出A": model_json if channel == "A" else "",
         "豆包Work.模型输出B": model_json if channel != "A" else "",
         "最终模型输出": model_json, "状态": "已解析", "热度分": review.get("heat_score") or 0,
-        "采集状态": "已完成", "负责人": _person(owner_id) or owner,
-        "审核人": _person(owner_id) if owner_id and review.get("reviewer") == owner else "",
+        "采集状态": "已完成", "负责人": _person(owner_id),
+        "审核人": _person(owner_id) if owner_id and review.get("reviewer") == owner else [],
         "元素审核状态": review.get("review_status", "待审核"),
         "元素审核意见": review.get("review_comment", ""), "元素证据": _text(evidence),
     }
@@ -79,8 +79,8 @@ def script_fields(saved: dict[str, Any], review: dict[str, Any] | None = None, o
         "目标人群": brief.get("audience", ""), "补充需求": brief.get("supplemental_requirements", ""),
         "类型": elements.get("type", ""), "品类": elements.get("category", ""),
         "时长": (versions.get("V1") or {}).get("duration") or brief.get("duration", ""),
-        "脚本负责人": _person(owner_id) or owner,
-        "审核人": _person(owner_id) if owner_id and workflow.get("reviewer") == owner else "",
+        "脚本负责人": _person(owner_id),
+        "审核人": _person(owner_id) if owner_id and workflow.get("reviewer") == owner else [],
         "协作状态": workflow.get("status", "待审核"), "审核意见": workflow.get("approval_comment", ""),
         "最终采用版本": workflow.get("final_version", ""),
         "采用元素": source_record_ids if source_record_ids is not None else "\n".join(source_elements),
