@@ -36,6 +36,8 @@ if __name__ == '__main__':
     replace('app/services/voice.py', '    script_lines = utils.split_string_by_punctuations(text)',
         '    from app.services.script_subtitle import split_narration\n'
         '    script_lines = split_narration(text, max_chars=0) if subtitle_auto_wrap else utils.split_string_by_punctuations(text)')
+    replace('app/services/voice.py', '            return _line_.strip()',
+        '            return _line.strip() if subtitle_auto_wrap else _line_.strip()')
     replace('app/services/voice.py', 'voice_pitch: float, tts_engine: str = "azure"):',
         'voice_pitch: float, tts_engine: str = "azure", subtitle_auto_wrap: bool = True):')
     replace('app/services/voice.py', 'create_subtitle(sub_maker=sub_maker, text=text, subtitle_file=subtitle_file)',

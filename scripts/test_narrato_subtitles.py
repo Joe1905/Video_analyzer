@@ -42,7 +42,7 @@ with TemporaryDirectory() as directory:
         assert script_subtitle.split_narration(sentence, max_chars=0) == [sentence]
         maker = voice.new_sub_maker()
         for i, char in enumerate(sentence):
-            voice.add_subtitle_event(maker, i * 1000000, 1000000, char)
+            voice.add_subtitle_event(maker, i * 1000000, (i + 1) * 1000000, char)
         voice.create_subtitle(maker, sentence, str(srt), subtitle_auto_wrap=True)
         assert srt.read_text().count('-->') == 1 and sentence in srt.read_text()
         for enabled in (True, False):
