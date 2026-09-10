@@ -63,12 +63,19 @@ if __name__ == "__main__":
     source = patch(path.read_text(encoding="utf-8"))
     check(source)
     path.write_text(source, encoding="utf-8")
-    # This trial deliberately has no TTS service; generated clips retain source audio.
-    service = Path("/NarratoAI/app/services/documentary/frame_analysis_service.py")
+    # Shared by video generation and Jianying export; retain clips when TTS is absent.
+    service = Path("/NarratoAI/app/services/voice.py")
     source = service.read_text(encoding="utf-8")
-    before = 'final_script = [{**item, "OST": 2} for item in narration_items]'
-    after = 'final_script = [{**item, "OST": 1} for item in narration_items]'
-    assert source.count(before) == 1, "Pinned narration defaults changed"
+    before = '''            if sub_maker is None:
+                logger.error(f"无法为时间戳 {timestamp} 生成音频; "
+                             f"如果您在中国，请使用VPN; "
+                             f"或者使用其他 tts 引擎")
+                continue'''
+    after = '''            if sub_maker is None:
+                item["OST"] = 1
+                logger.warning(f"片段 {item['_id']} 配音不可用，跳过配音并保留原声")
+                continue'''
+    assert source.count(before) == 1, "Pinned TTS failure handling changed"
     source = source.replace(before, after, 1)
     compile(source, str(service), "exec")
     service.write_text(source, encoding="utf-8")

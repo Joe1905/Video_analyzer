@@ -40,6 +40,21 @@ def main():
     assert {"video", "audio"} <= {s["codec_type"] for s in info["streams"]}
     print("PASS: original no-TTS pipeline, two clips, original audio:", output)
 
+    # A selected but unavailable TTS engine must preserve both kinds of voiced clips.
+    voice.tts = lambda **kwargs: None
+    rows = json.loads(script.read_text(encoding="utf-8"))
+    rows[0]["OST"], rows[1]["OST"] = 0, 2
+    script.write_text(json.dumps(rows), encoding="utf-8")
+    task.start_subclip_unified(job + "-fallback", params)
+    output = Path("/NarratoAI/storage/tasks") / (job + "-fallback") / "combined.mp4"
+    info = json.loads(subprocess.check_output([
+        "ffprobe", "-v", "error", "-show_format", "-show_streams", "-of", "json", str(output)
+    ], timeout=30))
+    assert 1.8 <= float(info["format"]["duration"]) <= 2.3
+    assert {"video", "audio"} <= {s["codec_type"] for s in info["streams"]}
+    assert [row["OST"] for row in json.loads(script.read_text())] == [0, 2]
+    print("PASS: unavailable TTS falls back to original audio without rewriting saved script:", output)
+
 
 if __name__ == "__main__":
     main()
