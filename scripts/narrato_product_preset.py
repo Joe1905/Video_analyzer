@@ -123,7 +123,8 @@ if __name__ == "__main__":
         path = Path(filename)
         source = path.read_text(encoding="utf-8")
         for before, after in replacements:
-            assert source.count(before) == 1, f"Pinned source changed: {filename}: {before}"
-            source = source.replace(before, after, 1)
+            count = 2 if before == '    if has_original_audio_segments:' else 1
+            assert source.count(before) == count, f"Pinned source changed: {filename}: {before}"
+            source = source.replace(before, after, count)
         compile(source, filename, "exec")
         path.write_text(source, encoding="utf-8")
