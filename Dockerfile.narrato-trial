@@ -1,0 +1,3 @@
+FROM narratoai-trial:8c6dd58
+COPY scripts/narrato_product_preset.py /tmp/narrato_product_preset.py
+RUN /opt/venv/bin/python /tmp/narrato_product_preset.py

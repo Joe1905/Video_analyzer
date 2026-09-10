@@ -1,7 +1,10 @@
 version: "2.4"
 services:
   narratoai:
-    image: narratoai-trial:8c6dd58
+    image: narratoai-trial:8c6dd58-product
+    build:
+      context: .
+      dockerfile: Dockerfile.narrato-trial
     container_name: short-video-analyzer-dev-narratoai
     entrypoint: ["/opt/venv/bin/streamlit"]
     command: ["run", "webui.py", "--server.address=0.0.0.0", "--server.port=8501", "--server.headless=true", "--browser.gatherUsageStats=false"]
