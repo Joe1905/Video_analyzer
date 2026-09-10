@@ -99,3 +99,31 @@ if __name__ == "__main__":
     source = source.replace(before, before + '\n                    video_paths=st.session_state.get("video_origin_paths"),\n                    script_language=st.session_state.get("product_script_language", "English"),\n                    product_description=st.session_state.get("product_description", ""),\n                    product_mode=st.session_state.get("script_mode_selection") == "商品展示",')
     compile(source, str(generator), "exec")
     generator.write_text(source, encoding="utf-8")
+    patches = {
+        "/NarratoAI/webui.py": [
+            ('        params = VideoClipParams(**all_params)',
+             '        if st.session_state.get("script_mode_selection") == "商品展示":\n            all_params["original_volume"] = 0.0\n        params = VideoClipParams(**all_params)'),
+        ],
+        "/NarratoAI/app/services/task.py": [
+            ('    if has_original_audio_segments:',
+             '    if getattr(params, "original_volume", None) == 0:\n        final_original_volume = 0.0\n    elif has_original_audio_segments:'),
+            ('    original_subtitle_paths = _get_original_subtitle_paths(params)',
+             '    if list_script and all(item.get("subtitle") and path.isfile(item["subtitle"]) for item in list_script):\n        return subtitle_merger.merge_subtitle_files(list_script, path.join(utils.task_dir(task_id), "tts_subtitles.srt"))\n    original_subtitle_paths = _get_original_subtitle_paths(params)'),
+        ],
+        "/NarratoAI/app/services/generate_video.py": [
+            ('            f"Fontname={font_family}",',
+             '            f"PlayResX={video_width}",\n            f"PlayResY={video_height}",\n            f"Fontname={font_family}",'),
+        ],
+        "/NarratoAI/app/services/subtitle_merger.py": [
+            ("map(int, start_time_str.split(':'))", "map(float, start_time_str.replace(',', '.').split(':'))"),
+            ("map(int, end_time_str.split(':'))", "map(float, end_time_str.replace(',', '.').split(':'))"),
+        ],
+    }
+    for filename, replacements in patches.items():
+        path = Path(filename)
+        source = path.read_text(encoding="utf-8")
+        for before, after in replacements:
+            assert source.count(before) == 1, f"Pinned source changed: {filename}: {before}"
+            source = source.replace(before, after, 1)
+        compile(source, filename, "exec")
+        path.write_text(source, encoding="utf-8")
