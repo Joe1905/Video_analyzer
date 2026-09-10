@@ -5,6 +5,8 @@ import ast
 
 def patch(source):
     replacements = [
+        ('        tr("Generation Prompt"),',
+         '        "商品卖点" if product_preset else tr("Generation Prompt"),'),
         ('        tr("Auto Generate"): MODE_AUTO,',
          '        tr("Auto Generate"): MODE_AUTO,\n        "商品展示": MODE_AUTO,'),
         ("    video_theme = st.text_input(tr(\"Video Theme\"))\n    custom_prompt = st.text_area(",
@@ -14,7 +16,8 @@ def patch(source):
         ("        value=st.session_state.get('video_plot', ''),\n        help=tr(\"Custom prompt for LLM, leave empty to use default prompt\"),",
          '        value="" if product_preset else st.session_state.get("video_plot", ""),\n'
          '        key="product_display_extra" if product_preset else "frame_analysis_prompt",\n'
-         '        help=tr("Custom prompt for LLM, leave empty to use default prompt"),'),
+         '        placeholder="例如：指尖旋转、解压、发光、光剑、炫酷" if product_preset else "",\n'
+         '        help="填写想突出的特点或体验词，可用逗号或换行分隔。模型会结合画面证据选择镜头；抽象词用于表达方向，不作为已证实的功效。" if product_preset else tr("Custom prompt for LLM, leave empty to use default prompt"),'),
     ]
     for before, after in replacements:
         if source.count(before) != 1:
@@ -40,11 +43,13 @@ def check(source):
     app.run()
     assert not app.exception
     assert app.session_state["custom_prompt"] == ""
-    app.text_area[0].input("突出上包效果").run()
-    assert app.session_state["custom_prompt"] == "突出上包效果"
+    assert app.text_area[0].label == "商品卖点"
+    app.text_area[0].input("指尖旋转、解压、发光、炫酷").run()
+    assert app.session_state["custom_prompt"] == "指尖旋转、解压、发光、炫酷"
     app.session_state["script_mode_selection"] = "逐帧分析"
     app.run()
     assert not app.exception
+    assert app.text_area[0].label == "Generation Prompt"
     assert app.session_state["custom_prompt"] == ""
 
 

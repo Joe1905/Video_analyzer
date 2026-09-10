@@ -30,10 +30,13 @@ async def real():
         "2026-09-07_224135.MOV", "2026-09-07_230442.MOV", "2026-09-07_224115.MOV")]
     script = await MultiMaterialAnalysisService().generate_documentary_script(
         video_path=paths[0], video_paths=paths, product_mode=True, video_theme="发光玩具商品展示",
+        custom_prompt="指尖旋转、解压、发光、光剑、炫酷",
         progress_callback=lambda value, message: print(value, message, flush=True))
     path = Path("/NarratoAI/resource/scripts/product-multi-trial.json")
     path.write_text(json.dumps(script, ensure_ascii=False, indent=2), encoding="utf-8")
     print("Selected sources:", [item["video_id"] for item in script], flush=True)
+    if "--analyze-only" in sys.argv:
+        return
     params = VideoClipParams(video_origin_path=paths[0], video_origin_paths=paths,
         video_clip_json_path=str(path), subtitle_enabled=False, bgm_type="", bgm_name="", n_threads=2,
         tts_engine="indextts", voice_name="")

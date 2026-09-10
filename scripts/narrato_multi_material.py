@@ -10,6 +10,10 @@ from app.services.llm.unified_service import UnifiedLLMService
 from app.services.short_drama_narration_validation import normalize_script_video_sources
 
 PRODUCT_PROMPT = """创作真实自然的商品展示视频。关注商品外观、可见细节、实际操作和使用场景。
+用户填写的是希望突出的商品卖点，不是已经证实的事实。具体卖点须匹配可见证据：发光看实际灯光，旋转须看连续帧中的动作变化，不能凭静态外形推断玩法。
+抽象卖点先转为可观察线索与表达方向：解压可寻找轻松反复把玩、流畅动作；炫酷可寻找鲜明光色、光效或有冲击力的构图。这些只是可用于表达的线索，不能证明解压功效或用户实际感受。
+逐帧观察中区分可见事实、可用于表达的卖点和缺少证据的卖点。不把用户的词直接复述成观察结果；跨帧不足以确认动作时明确说明不确定。
+编排时优先覆盖有证据且不同的卖点，再选择适合抽象定位的镜头。文案可表达玩法或氛围，不许许诺未证实的效果。在编排理由中列明卖点对应镜头、抽象表达依据、缺少素材的卖点。
 根据素材组织整体展示、细节、使用演示和回顾，缺失环节略过。优先选择提供不同信息的清晰镜头，避免重复展示。
 同一机位、同一构图、同一卖点的细微变化视为重复，优先只留最有代表性的一段；新增镜头必须提供新的展示信息。
 宁可精简，不把整条素材拆段后全部选回，也不为每条素材分配名额。避开遮挡和拍摄准备动作。
@@ -42,7 +46,8 @@ class MultiMaterialAnalysisService(DocumentaryFrameAnalysisService):
         theme = kwargs.get("video_theme", "")
         extra = kwargs.get("custom_prompt", "")
         brief = PRODUCT_PROMPT if product_mode else "根据真实画面编排连贯的短视频脚本。"
-        kwargs["custom_prompt"] = brief + "\n补充要求：" + extra
+        context = ("商品卖点：" if product_mode else "补充要求：") + extra
+        kwargs["custom_prompt"] = brief + "\n" + context
         root = Path("/NarratoAI/storage/temp/multi-material") / uuid.uuid4().hex
         root.mkdir(parents=True)
         candidates, sources = [], []
@@ -73,7 +78,7 @@ class MultiMaterialAnalysisService(DocumentaryFrameAnalysisService):
                                    "timestamp": f"{stamp(start)}-{stamp(end)}", "picture": obs["observation"]})
             sources.append({"video_id": video_id, "video_name": Path(path).name, "frames": len(frames)})
         progress(75, "全部素材分析完成，正在统一选择和编排镜头")
-        prompt = (f"主题：{theme}\n补充要求：{extra}\n"
+        prompt = (f"主题：{theme}\n{context}\n"
                   "从以下候选镜头选取有信息价值的片段，编排成完整视频。综合比较所有素材，避免只看第一条；"
                   "不要为凑素材数量硬选重复或无关镜头。每个镜头最多一次。"
                   '只输出 JSON：{"items":[{"clip_id":"候选编号","narration":"简短文案"}],"reason":"编排与舍弃依据"}。\n'
