@@ -10,6 +10,7 @@ from app.services.llm.unified_service import UnifiedLLMService
 from app.services.short_drama_narration_validation import normalize_script_video_sources
 
 PRODUCT_PROMPT = """创作真实自然的商品展示视频。关注商品外观、可见细节、实际操作和使用场景。
+商品描述用于明确商品身份、结构和玩法，帮助解释画面，不因外观相似擅自改称其他商品；描述与画面冲突或画面无法证实的内容须明确区分。
 用户填写的是希望突出的商品卖点，不是已经证实的事实。具体卖点须匹配可见证据：发光看实际灯光，旋转须看连续帧中的动作变化，不能凭静态外形推断玩法。
 抽象卖点先转为可观察线索与表达方向：解压可寻找轻松反复把玩、流畅动作；炫酷可寻找鲜明光色、光效或有冲击力的构图。这些只是可用于表达的线索，不能证明解压功效或用户实际感受。
 逐帧观察中区分可见事实、可用于表达的卖点和缺少证据的卖点。不把用户的词直接复述成观察结果；跨帧不足以确认动作时明确说明不确定。
@@ -38,7 +39,9 @@ def resolve_selection(items, candidates, paths):
 
 
 class MultiMaterialAnalysisService(DocumentaryFrameAnalysisService):
-    async def generate_documentary_script(self, *, video_paths=None, product_mode=False, **kwargs):
+    async def generate_documentary_script(self, *, video_paths=None, product_mode=False, product_description="", **kwargs):
+        if product_mode and (not isinstance(product_description, str) or not product_description.strip()):
+            raise ValueError("请先填写商品描述，说明商品是什么及基本玩法")
         paths = list(dict.fromkeys(video_paths or [kwargs["video_path"]]))
         if len(paths) == 1 and not product_mode:
             return await super().generate_documentary_script(**kwargs)
@@ -47,6 +50,8 @@ class MultiMaterialAnalysisService(DocumentaryFrameAnalysisService):
         extra = kwargs.get("custom_prompt", "")
         brief = PRODUCT_PROMPT if product_mode else "根据真实画面编排连贯的短视频脚本。"
         context = ("商品卖点：" if product_mode else "补充要求：") + extra
+        if product_mode:
+            context = "商品描述：" + product_description.strip() + "\n" + context
         kwargs["custom_prompt"] = brief + "\n" + context
         root = Path("/NarratoAI/storage/temp/multi-material") / uuid.uuid4().hex
         root.mkdir(parents=True)
@@ -91,7 +96,7 @@ class MultiMaterialAnalysisService(DocumentaryFrameAnalysisService):
         (root / "selection.txt").write_text(raw, encoding="utf-8")
         payload = json.loads(self._strip_code_fence(raw))
         script = resolve_selection(payload["items"], candidates, paths)
-        (root / "manifest.json").write_text(json.dumps({"sources": sources, "candidates": candidates,
+        (root / "manifest.json").write_text(json.dumps({"product_description": product_description if product_mode else "", "sources": sources, "candidates": candidates,
             "selection": payload, "script": script}, ensure_ascii=False, indent=2), encoding="utf-8")
         progress(100, f"已分析 {len(paths)} 条素材，生成 {len(script)} 个镜头")
         return script

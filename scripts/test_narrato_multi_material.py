@@ -8,6 +8,14 @@ from app.services.narrato_multi_material import MultiMaterialAnalysisService, re
 
 
 def check():
+    for description in ["", " \n\t", None]:
+        try:
+            asyncio.run(MultiMaterialAnalysisService().generate_documentary_script(
+                product_mode=True, product_description=description, video_path="/missing.mp4"))
+        except ValueError as exc:
+            assert "商品描述" in str(exc)
+        else:
+            raise AssertionError("Empty product description accepted")
     paths = ["/tmp/a.mp4", "/tmp/b.mp4"]
     candidates = [{"clip_id": "b1", "video_id": 2, "timestamp": "00:00:01,000-00:00:02,000", "picture": "detail"}]
     result = resolve_selection([{"clip_id": "b1", "narration": "detail"}], candidates, paths)
@@ -30,6 +38,7 @@ async def real():
         "2026-09-07_224135.MOV", "2026-09-07_230442.MOV", "2026-09-07_224115.MOV")]
     script = await MultiMaterialAnalysisService().generate_documentary_script(
         video_path=paths[0], video_paths=paths, product_mode=True, video_theme="发光玩具商品展示",
+        product_description="指尖旋转发光玩具，可组合成光剑，用手指支撑中心旋转把玩。",
         custom_prompt="指尖旋转、解压、发光、光剑、炫酷",
         progress_callback=lambda value, message: print(value, message, flush=True))
     path = Path("/NarratoAI/resource/scripts/product-multi-trial.json")
