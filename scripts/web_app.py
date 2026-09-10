@@ -439,6 +439,7 @@ NAV_ITEMS = [
     {"key": "viral-elements", "href": "/viral-elements", "label": "\u5143\u7d20\u5e93", "title": "\u7206\u6b3e\u5143\u7d20\u5e93", "icon": '<path d="M4 4h6v6H4z"/><path d="M14 4h6v6h-6z"/><path d="M4 14h6v6H4z"/><path d="M14 14h6v6h-6z"/>'},
     {"key": "storyboard", "href": "/storyboard", "label": "分镜", "title": "分镜提取", "icon": '<path d="M3 5h18v14H3zM9 5v14M15 5v14"/>'},
 ]
+NAV_ITEMS.append({"key": "video-production", "href": "http://192.168.1.254:8501", "label": "视频制作", "title": "NarratoAI 原版制作试验", "icon": '<path d="M3 5h18v14H3z"/><path d="m10 9 5 3-5 3z"/>'})
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
 APP_NAV_CSS = """
