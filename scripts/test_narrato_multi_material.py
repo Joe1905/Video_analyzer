@@ -3,11 +3,27 @@ import asyncio
 import json
 import sys
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 from app.services.narrato_multi_material import MultiMaterialAnalysisService, resolve_selection
 
 
 def check():
+    service = MultiMaterialAnalysisService()
+    analyzed = {"analysis_artifact": {"batches": [{"status": "success", "frame_observations": [{"observation": "发光玩具"}]}]}, "keyframe_files": ["frame.jpg"]}
+    for language in (None, "Español"):
+        with patch.object(service, "analyze_video", new_callable=AsyncMock, return_value=analyzed) as vision, \
+                patch.object(service, "_timestamp_from_keyframe_name", return_value="00:00:00,000"), \
+                patch("app.services.narrato_multi_material.subprocess.check_output", return_value=b"3"), \
+                patch("app.services.narrato_multi_material.UnifiedLLMService.generate_text", new_callable=AsyncMock,
+                      return_value='{"items":[{"clip_id":"v1f1","narration":"Light up your play."}]}') as llm:
+            options = {} if language is None else {"script_language": language}
+            result = asyncio.run(service.generate_documentary_script(
+                product_mode=True, product_description="发光玩具", video_path="/tmp/a.mp4", **options))
+            expected = "成片脚本语言：" + (language or "English")
+            assert expected in llm.call_args.kwargs["system_prompt"]
+            assert expected in vision.call_args.kwargs["custom_prompt"]
+            assert result[0]["narration"] == "Light up your play."
     for description in ["", " \n\t", None]:
         try:
             asyncio.run(MultiMaterialAnalysisService().generate_documentary_script(

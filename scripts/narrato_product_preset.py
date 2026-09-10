@@ -13,6 +13,8 @@ def patch(source):
          '    product_preset = st.session_state.get("script_mode_selection") == "商品展示"\n'
          '    video_theme = st.text_input(tr("Video Theme"))\n'
          '    if product_preset:\n'
+         '        from app.services.narrato_multi_material import SCRIPT_LANGUAGES\n'
+         '        st.selectbox("脚本语言", SCRIPT_LANGUAGES, key="product_script_language", help="生成的解说文案、字幕和配音使用此语言；商品描述和卖点仍可用中文填写。")\n'
          '        st.text_input("商品描述（必填）", key="product_description", placeholder="例如：指尖旋转发光玩具，可组合成光剑，用手指支撑中心旋转把玩。")\n'
          '    custom_prompt = st.text_area('),
         ("        value=st.session_state.get('video_plot', ''),\n        help=tr(\"Custom prompt for LLM, leave empty to use default prompt\"),",
@@ -47,6 +49,9 @@ def check(source):
     assert app.session_state["custom_prompt"] == ""
     assert app.text_area[0].label == "商品卖点"
     assert app.text_input[1].label == "商品描述（必填）"
+    assert app.selectbox[0].value == "English"
+    app.selectbox[0].select("Español").run()
+    assert app.session_state["product_script_language"] == "Español"
     app.text_input[1].input("指尖旋转发光玩具").run()
     assert app.session_state["product_description"] == "指尖旋转发光玩具"
     app.text_area[0].input("指尖旋转、解压、发光、炫酷").run()
@@ -56,6 +61,7 @@ def check(source):
     assert not app.exception
     assert app.text_area[0].label == "Generation Prompt"
     assert len(app.text_input) == 1
+    assert len(app.selectbox) == 0
     assert app.session_state["custom_prompt"] == ""
 
 
@@ -90,6 +96,6 @@ if __name__ == "__main__":
     source = source.replace(before, '    if st.session_state.get("script_mode_selection") == "商品展示" and not st.session_state.get("product_description", "").strip():\n        st.error("请先填写商品描述，说明商品是什么及基本玩法")\n        return\n' + before)
     before = "                    video_path=params.video_origin_path,"
     assert source.count(before) == 1
-    source = source.replace(before, before + '\n                    video_paths=st.session_state.get("video_origin_paths"),\n                    product_description=st.session_state.get("product_description", ""),\n                    product_mode=st.session_state.get("script_mode_selection") == "商品展示",')
+    source = source.replace(before, before + '\n                    video_paths=st.session_state.get("video_origin_paths"),\n                    script_language=st.session_state.get("product_script_language", "English"),\n                    product_description=st.session_state.get("product_description", ""),\n                    product_mode=st.session_state.get("script_mode_selection") == "商品展示",')
     compile(source, str(generator), "exec")
     generator.write_text(source, encoding="utf-8")

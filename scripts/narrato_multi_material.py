@@ -18,7 +18,9 @@ PRODUCT_PROMPT = """创作真实自然的商品展示视频。关注商品外观
 根据素材组织整体展示、细节、使用演示和回顾，缺失环节略过。优先选择提供不同信息的清晰镜头，避免重复展示。
 同一机位、同一构图、同一卖点的细微变化视为重复，优先只留最有代表性的一段；新增镜头必须提供新的展示信息。
 宁可精简，不把整条素材拆段后全部选回，也不为每条素材分配名额。避开遮挡和拍摄准备动作。
-每段文案控制在8至20个汉字，用简短自然的中文，不用夸张悬念、反转套话，不虚构品牌、材质、尺寸、价格、销量、功效或优惠。"""
+每段文案简短自然，适合在对应镜头时长内读完，不用夸张悬念、反转套话，不虚构品牌、材质、尺寸、价格、销量、功效或优惠。"""
+
+SCRIPT_LANGUAGES = ("English", "简体中文", "Español", "日本語", "Deutsch", "Français")
 
 
 def resolve_selection(items, candidates, paths):
@@ -39,7 +41,7 @@ def resolve_selection(items, candidates, paths):
 
 
 class MultiMaterialAnalysisService(DocumentaryFrameAnalysisService):
-    async def generate_documentary_script(self, *, video_paths=None, product_mode=False, product_description="", **kwargs):
+    async def generate_documentary_script(self, *, video_paths=None, product_mode=False, product_description="", script_language="English", **kwargs):
         if product_mode and (not isinstance(product_description, str) or not product_description.strip()):
             raise ValueError("请先填写商品描述，说明商品是什么及基本玩法")
         paths = list(dict.fromkeys(video_paths or [kwargs["video_path"]]))
@@ -49,6 +51,12 @@ class MultiMaterialAnalysisService(DocumentaryFrameAnalysisService):
         theme = kwargs.get("video_theme", "")
         extra = kwargs.get("custom_prompt", "")
         brief = PRODUCT_PROMPT if product_mode else "根据真实画面编排连贯的短视频脚本。"
+        if product_mode:
+            if script_language not in SCRIPT_LANGUAGES:
+                raise ValueError("请选择支持的脚本语言")
+            brief += (f"\n成片脚本语言：{script_language}。所有 narration 必须使用该语言，"
+                      "不受商品描述、卖点或主题的输入语言影响，不附带双语翻译。"
+                      "画面观察及编排理由仍可用中文，JSON 字段名与素材标识保持原样。")
         context = ("商品卖点：" if product_mode else "补充要求：") + extra
         if product_mode:
             context = "商品描述：" + product_description.strip() + "\n" + context
@@ -96,7 +104,7 @@ class MultiMaterialAnalysisService(DocumentaryFrameAnalysisService):
         (root / "selection.txt").write_text(raw, encoding="utf-8")
         payload = json.loads(self._strip_code_fence(raw))
         script = resolve_selection(payload["items"], candidates, paths)
-        (root / "manifest.json").write_text(json.dumps({"product_description": product_description if product_mode else "", "sources": sources, "candidates": candidates,
+        (root / "manifest.json").write_text(json.dumps({"script_language": script_language if product_mode else "", "product_description": product_description if product_mode else "", "sources": sources, "candidates": candidates,
             "selection": payload, "script": script}, ensure_ascii=False, indent=2), encoding="utf-8")
         progress(100, f"已分析 {len(paths)} 条素材，生成 {len(script)} 个镜头")
         return script
