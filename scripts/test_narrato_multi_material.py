@@ -38,6 +38,8 @@ def check():
             assert expected in vision.call_args.kwargs["custom_prompt"]
             assert "广告口播" in llm.call_args.kwargs["system_prompt"]
             assert "广告口播" not in vision.call_args.kwargs["custom_prompt"]
+            assert "先构思整条广告" in llm.call_args.kwargs["system_prompt"]
+            assert "新增镜头必须提供新的展示信息" not in llm.call_args.kwargs["system_prompt"]
             assert result[0]["narration"] == "Light up your play."
     for description in ["", " \n\t", None]:
         try:
@@ -72,6 +74,30 @@ def check():
             raise AssertionError("Invalid selection accepted")
 
 
+async def review_copy(manifest_path):
+    """Reuse saved visual evidence; call only the text model, never TTS or rendering."""
+    from app.services.llm.providers import register_all_providers
+    register_all_providers()
+    manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    service = MultiMaterialAnalysisService()
+    paths, analyses, durations = [], [], []
+    for source in manifest["sources"]:
+        clips = [c for c in manifest["candidates"] if c["video_id"] == source["video_id"]]
+        paths.append("/NarratoAI/resource/videos/" + source["video_name"])
+        analyses.append({"analysis_artifact": {"batches": [{"status": "success", "frame_observations": [
+            {"observation": c["picture"]} for c in clips]}]},
+            "keyframe_files": [c["timestamp"].split("-")[0] for c in clips]})
+        durations.append(str(service._timestamp_to_milliseconds(clips[-1]["timestamp"].split("-")[1]) / 1000).encode())
+    with patch.object(service, "analyze_video", new_callable=AsyncMock, side_effect=analyses), \
+            patch.object(service, "_timestamp_from_keyframe_name", side_effect=lambda name: name), \
+            patch("app.services.narrato_multi_material.subprocess.check_output", side_effect=durations):
+        script = await service.generate_documentary_script(
+            video_path=paths[0], video_paths=paths, product_mode=True,
+            product_description=manifest["product_description"], script_language=manifest["script_language"],
+            custom_prompt="指尖旋转、解压、发光、光剑、炫酷")
+    print(json.dumps([{k: row[k] for k in ("video_id", "timestamp", "narration")} for row in script], ensure_ascii=False, indent=2))
+
+
 async def real():
     from app.models.schema import VideoClipParams
     from app.services import task
@@ -95,7 +121,10 @@ async def real():
 
 
 if __name__ == "__main__":
-    check()
-    if "--real" in sys.argv:
-        asyncio.run(real())
+    if "--review-copy" in sys.argv:
+        asyncio.run(review_copy(sys.argv[sys.argv.index("--review-copy") + 1]))
+    else:
+        check()
+        if "--real" in sys.argv:
+            asyncio.run(real())
     print("PASS")

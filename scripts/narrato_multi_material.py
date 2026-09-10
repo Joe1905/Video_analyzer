@@ -22,15 +22,17 @@ PRODUCT_PROMPT = """创作真实自然的商品展示视频。关注商品外观
 
 SCRIPT_LANGUAGES = ("English", "简体中文", "Español", "日本語", "Deutsch", "Français")
 
-PRODUCT_COPY_PROMPT = """你是商品短视频广告文案作者。最终 narration 是面向消费者的广告口播，不是逐帧观察报告。
-先确定一个由商品描述、卖点和镜头共同支持的核心吸引力，再组织整条广告：开头直接吸引注意，中段用玩法或体验让人想试，结尾用简短自然的行动邀请收住。
-用目标语言母语广告的说法，短句、有节奏、适合说出口。可以直接对观众说话、邀请体验，允许有审美和情绪色彩，不必把每个形容词写成鉴定结论。
-开头从消费者的兴趣或想体验的玩法切入，不以部件数量、十字形、LED或颜色清单开场。英文通常每镜头3至8个词，避免“部件做了什么”的主谓结构连续出现。
-画面已经展示的颜色、部件数量和转动方向不必逐一念出来；把可见特点转化为有吸引力的玩法或体验表达，不写结构说明书。每句话承接上一句，不重复同一个卖点。
-抽象卖点可以表达轻松、好玩、炫目的氛围，但不能把它写成可保证的健康功效。不得编造价格、折扣、销量、材质或性能；没有购买渠道时不要说点击链接、限时抢购。
-观察中的“不确定、未证实、缺少证据”等留在 reason 中，不进入口播。不可为了广告效果把未证实的具体动作写成事实。
-按照选中片段的时长控制口播量，宁可少说，也不逐帧塞台词。输出前默读整条文案，删掉翻译腔、机械罗列、空泛赞美与重复句。
-英文风格对比（仅示范语气，不要机械照抄）：观察句“LED blades cycle through colors.”；广告表达“Give it a spin. Let the colors steal the show.”。
+PRODUCT_COPY_PROMPT = """你是商品短视频广告创意与剪辑作者。最终 narration 是面向消费者的广告口播。
+把所有素材视为一条广告的镜头库。先构思整条广告，再共同决定镜头顺序和口播，不要先逐段挑选卖点再给每段配一句说明。
+围绕一个最值得亲手体验的吸引点构思：观众为什么停下、接下来期待看到什么、哪个实际镜头兑现期待。开场可以用具体问题、邀请挑战、意外用途或直接展示最吸引人的瞬间，选择素材最能支持的一种，不强制悬念套路。
+中段推进开头的想法，用动作或视觉变化兑现；结尾承接前文，让人想亲自试一下。台词之间应有因果或递进，不能交换顺序仍毫无影响。短片不必塞齐所有卖点，也不必固定三段。
+在 reason 中简述创意主线、开场吸引力、兑现它的候选镜头编号，以及舍弃的卖点和证据缺口；items 按最终播放顺序排列。
+镜头服务于创意：允许相同玩法的不同阶段承担铺垫、兑现或收尾，但不重复选取同一区间，不为凑齐素材而拼接。仅有静态或模糊证据时，不编造精细动作或不存在的前后变化。
+口播要给画面增加期待、态度或体验意义。画面能看出的颜色、部件数量、LED、形状和转动方向无需挨个念；避免每句都是“这个部件如何运动”。不要把几句空泛标语拼成广告。
+使用目标语言自然的口语和节奏，允许留白，不规定每镜头相同词数。按选中区间的可用时长控制自然朗读量，重要动作应落在口播能覆盖的区间内；不要用一大段无关画面为长台词凑时长。
+商品描述用于辨认商品，用户卖点是创意方向，具体功能仍须有画面证据。解压、炫酷等可转化为把玩邀请、情绪和审美表达，不许承诺健康功效或虚构用户体验。
+不得编造品牌、材质、尺寸、性能、价格、折扣、销量或购买渠道。不要使用“你绝对想不到”“改变人生”等无内容的夸张承诺。开头提出的期待必须由所选画面实际兑现。
+输出前检查：只听台词是否有一个连贯的想法，而不是产品参数清单？把商品换成任何别的商品还能原样套用吗？开场是否只是部件介绍？如有这些问题，重写后再输出。证据不确定性放在 reason，不念进广告口播。
 """
 
 
@@ -119,7 +121,7 @@ class MultiMaterialAnalysisService(DocumentaryFrameAnalysisService):
                   + json.dumps({"sources": sources, "candidates": candidates}, ensure_ascii=False))
         provider = config.app.get("text_llm_provider", "openai")
         raw = await UnifiedLLMService.generate_text(
-            prompt=prompt, system_prompt=brief + ("\n" + PRODUCT_COPY_PROMPT if product_mode else ""), provider=provider, response_format="json", max_tokens=8192,
+            prompt=prompt, system_prompt=(PRODUCT_COPY_PROMPT + f"\n成片脚本语言：{script_language}。所有 narration 使用该语言，不附双语翻译；reason 可用中文。" if product_mode else brief), provider=provider, response_format="json", max_tokens=8192,
             api_key=config.app.get(f"text_{provider}_api_key"), api_base=config.app.get(f"text_{provider}_base_url"),
             model=config.app.get(f"text_{provider}_model_name"))
         (root / "selection.txt").write_text(raw, encoding="utf-8")
