@@ -26,4 +26,14 @@ with TemporaryDirectory() as directory:
         assert not app.exception
         assert "Hello" in app.code[0].value
         assert app.selectbox[0].value.name == "speech.srt"
+    with patch("app.services.narrato_history.history", return_value=[older]), patch("streamlit.video") as video:
+        app = AppTest.from_string("from app.services.narrato_history import render_browser\nrender_browser()").run()
+        assert not app.exception
+        video.assert_not_called()
+        assert not app.get("download_button")
+        next(b for b in app.button if b.label == "加载播放预览").click().run()
+        assert not app.exception
+        video.assert_called_once_with(str(older / "combined.mp4"))
+        next(b for b in app.button if b.label == "准备下载文件").click().run()
+        assert not app.exception and len(app.get("download_button")) == 1
 print("PASS: existing outputs indexed, intermediates excluded, history UI opens and previews subtitles")

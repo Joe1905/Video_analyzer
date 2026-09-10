@@ -22,6 +22,8 @@ def render_history():
     def open_history():
         render_browser()
     if st.button("历史记录", icon="🕘", key="open_narrato_history"):
+        st.session_state.pop("history_media_target", None)
+        st.session_state.pop("history_download_target", None)
         open_history()
 
 
@@ -71,10 +73,16 @@ def render_browser():
                     "combined_fixed.mp4": "修复版", "combined.mp4": "原版",
                     "merger_audio.mp3": "完整配音",
                 }.get(p.name, p.name), key="history_asset_" + selected.name + kind)
-                if target.suffix == ".mp4":
-                    st.video(str(target))
-                elif target.suffix in {".mp3", ".wav"}:
-                    st.audio(str(target))
+                if target.suffix in {".mp4", ".mp3", ".wav"}:
+                    if st.button("加载播放预览", key="history_play_" + str(target), use_container_width=True):
+                        st.session_state["history_media_target"] = str(target)
+                    if st.session_state.get("history_media_target") == str(target):
+                        if target.suffix == ".mp4":
+                            st.video(str(target))
+                        else:
+                            st.audio(str(target))
+                    else:
+                        st.info("点击上方按钮后加载媒体。仅查看记录不会请求音视频文件。")
                 else:
                     st.code(target.read_text(encoding="utf-8-sig"), language="text")
                 download(target)
@@ -101,8 +109,11 @@ def render_browser():
 
 def download(target):
     import streamlit as st
-    with target.open("rb") as file:
-        st.download_button("下载当前文件", file, file_name=target.name, key="history_download", use_container_width=True)
+    if st.button("准备下载文件", key="history_prepare_" + str(target), use_container_width=True):
+        st.session_state["history_download_target"] = str(target)
+    if st.session_state.get("history_download_target") == str(target):
+        with target.open("rb") as file:
+            st.download_button("确认下载", file, file_name=target.name, key="history_download", use_container_width=True)
 
 
 if __name__ == "__main__":
