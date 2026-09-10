@@ -21,8 +21,9 @@ with TemporaryDirectory() as directory:
     with patch("app.services.narrato_history.history", return_value=[newer]):
         app = AppTest.from_string("from app.services.narrato_history import render_history\nrender_history()").run()
         assert not app.exception and not app.selectbox
-        app.checkbox[0].check().run()
+        assert app.button[0].label == "历史记录"
+        app = AppTest.from_string("from app.services.narrato_history import render_browser\nrender_browser()").run()
         assert not app.exception
         assert "Hello" in app.code[0].value
-        assert app.selectbox[1].value.name == "speech.srt"
+        assert app.selectbox[0].value.name == "speech.srt"
 print("PASS: existing outputs indexed, intermediates excluded, history UI opens and previews subtitles")
