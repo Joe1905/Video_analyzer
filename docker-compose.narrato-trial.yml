@@ -14,9 +14,17 @@ services:
       OMP_NUM_THREADS: "2"
       OPENBLAS_NUM_THREADS: "2"
       TZ: Asia/Shanghai
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      ALL_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+      all_proxy: ""
     volumes:
       - narrato-storage:/NarratoAI/storage
+      - narrato-resource:/NarratoAI/resource
       - /home/openclaw/NarratoAI-trial/config.toml:/NarratoAI/config.toml
     restart: unless-stopped
 volumes:
   narrato-storage:
+  narrato-resource:
