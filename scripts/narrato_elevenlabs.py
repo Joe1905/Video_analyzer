@@ -1,11 +1,36 @@
 """ElevenLabs adapter and build-time hooks for the pinned NarratoAI image."""
 import base64
 import math
+import re
 from pathlib import Path
 from urllib.parse import quote
 
 import requests
 from loguru import logger
+
+
+def report_error(message, key=""):
+    message = str(message).replace(key, "[REDACTED]") if key else str(message)
+    message = re.sub(r"sk_[A-Za-z0-9_-]+", "[REDACTED]", message)
+    message = " ".join(message.split())[:1500]
+    logger.error(message)
+    from streamlit.runtime.scriptrunner import get_script_run_ctx
+    if get_script_run_ctx(suppress_warning=True):
+        import streamlit as st
+        st.error(message)
+    return message
+
+
+def response_error(response, operation, key):
+    try:
+        data = response.json()
+        detail = data.get("detail", data.get("error", "未提供错误详情"))
+    except ValueError:
+        detail = response.text
+    return report_error(
+        f"ElevenLabs {operation}失败：HTTP {response.status_code}; "
+        f"request-id={response.headers.get('request-id', response.headers.get('x-request-id', '未提供'))}; "
+        f"content-type={response.headers.get('content-type', '未提供')}; {detail}", key)
 
 
 def synthesize(text, voice_id, voice_file):
@@ -25,7 +50,7 @@ def synthesize(text, voice_id, voice_file):
             timeout=(10, 120),
         )
         if response.status_code != 200:
-            logger.error(f"ElevenLabs 配音失败：HTTP {response.status_code}，请检查密钥权限、额度、音色和模型")
+            response_error(response, "配音", key)
             return None
         data = response.json()
         audio = base64.b64decode(data["audio_base64"], validate=True)
@@ -45,8 +70,28 @@ def synthesize(text, voice_id, voice_file):
         Path(voice_file).write_bytes(audio)
         return sub_maker
     except (requests.RequestException, ValueError, KeyError, TypeError, OSError) as exc:
-        # Do not log request headers or provider response bodies containing credentials.
-        logger.error(f"ElevenLabs 配音失败：{type(exc).__name__}")
+        report_error(f"ElevenLabs 配音失败：{type(exc).__name__}: {exc}", key)
+        return None
+
+
+def get_preview(voice_id, key):
+    if not voice_id.strip() or not key.strip():
+        report_error("请先填写 ElevenLabs API Key 和 Voice ID")
+        return None
+    try:
+        response = requests.get(
+            f"https://api.elevenlabs.io/v1/voices/{quote(voice_id.strip(), safe='')}",
+            headers={"xi-api-key": key.strip()}, timeout=(10, 30))
+        if response.status_code != 200:
+            response_error(response, "获取音色预览", key)
+            return None
+        url = response.json().get("preview_url")
+        if not isinstance(url, str) or not url.startswith("https://"):
+            report_error("该音色没有可用的预设音频；可更换音色或使用合成试听")
+            return None
+        return url
+    except (requests.RequestException, ValueError, TypeError) as exc:
+        report_error(f"ElevenLabs 音色预览失败：{type(exc).__name__}: {exc}", key)
         return None
 
 
@@ -65,7 +110,15 @@ def render_settings(tr):
     config.ui["voice_name"] = config.app["elevenlabs_voice_id"]
     st.session_state["voice_rate"] = 1.0
     st.session_state["voice_pitch"] = 1.0
-    st.caption("在 ElevenLabs 音色库复制 Voice ID；填好后可点击下方试听。配音会同时生成时间戳字幕。")
+    if st.button("保存 ElevenLabs 配置"):
+        config.save_config()
+        st.success("ElevenLabs 配置已保存")
+    st.caption("音色预览播放已有示例，不生成新语音、不消耗合成积分；示例不代表当前模型和文案的效果。")
+    if st.button("播放音色预设音频（不合成）"):
+        url = get_preview(config.app["elevenlabs_voice_id"], config.app["elevenlabs_api_key"])
+        if url:
+            st.audio(url, format="audio/mp3")
+    st.caption("下方合成试听会调用 TTS API 并消耗积分；正式配音同时生成时间戳字幕。")
 
 
 def install():
@@ -75,6 +128,8 @@ def install():
              '    if tts_engine == "elevenlabs":\n        from app.services.narrato_elevenlabs import synthesize\n        return synthesize(text, voice_name, voice_file)\n\n    if tts_engine == "tencent_tts":'),
         ],
         "/NarratoAI/webui/components/audio_settings.py": [
+            ('    if st.button(tr("Preview Voice Synthesis"), use_container_width=True):',
+             '    if st.button("合成试听（消耗积分）" if selected_engine == "elevenlabs" else tr("Preview Voice Synthesis"), use_container_width=True):'),
             ('        "azure_speech": "Azure Speech Services"',
              '        "elevenlabs": "ElevenLabs",\n        "azure_speech": "Azure Speech Services"'),
             ('    if selected_engine == "edge_tts":\n        render_edge_tts_settings(tr)',

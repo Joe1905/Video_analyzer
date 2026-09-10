@@ -22,7 +22,7 @@ def check():
             "characters": list(text), "character_start_times_seconds": [i * .2 for i in range(len(text))],
             "character_end_times_seconds": [(i + 1) * .2 for i in range(len(text))],
         }}
-        response = Mock(status_code=200)
+        response = Mock(status_code=200, headers={})
         response.json.return_value = payload
         script = [{"_id": 1, "OST": 2, "timestamp": "00:00:00,000-00:00:03,000", "narration": text}]
         with patch.object(eleven.requests, "post", return_value=response) as post, \
@@ -47,6 +47,22 @@ def check():
             payload["alignment"]["character_end_times_seconds"] = []
             assert eleven.synthesize(text, "testVoice", str(Path(directory) / "bad.mp3")) is None
             assert not (Path(directory) / "bad.mp3").exists()
+
+        response.json.return_value = {"preview_url": "https://example.com/preview.mp3"}
+        with patch.object(eleven.requests, "get", return_value=response) as get, \
+                patch.object(eleven.requests, "post") as post:
+            assert eleven.get_preview("testVoice", "test-only-key") == "https://example.com/preview.mp3"
+            get.assert_called_once()
+            post.assert_not_called()
+            response.json.return_value = {"preview_url": None}
+            assert eleven.get_preview("testVoice", "test-only-key") is None
+        response.status_code = 400
+        response.json.return_value = {"detail": {"status": "voice_not_found", "message": "test-only-key"}}
+        error = eleven.response_error(response, "test", "test-only-key")
+        assert "voice_not_found" in error and "400" in error and "test-only-key" not in error
+        response.json.side_effect = ValueError()
+        response.text = "Gateway rejected test-only-key"
+        assert "Gateway rejected [REDACTED]" in eleven.response_error(response, "test", "test-only-key")
 
     from streamlit.testing.v1 import AppTest
     with patch.dict(config.app), patch.dict(config.ui):
