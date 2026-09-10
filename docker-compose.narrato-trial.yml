@@ -1,0 +1,22 @@
+version: "2.4"
+services:
+  narratoai:
+    image: narratoai-trial:8c6dd58
+    container_name: short-video-analyzer-dev-narratoai
+    entrypoint: ["/opt/venv/bin/streamlit"]
+    command: ["run", "webui.py", "--server.address=0.0.0.0", "--server.port=8501", "--server.headless=true", "--browser.gatherUsageStats=false"]
+    ports:
+      - "192.168.1.254:8501:8501"
+    mem_limit: 3g
+    memswap_limit: 3g
+    cpus: 2
+    environment:
+      OMP_NUM_THREADS: "2"
+      OPENBLAS_NUM_THREADS: "2"
+      TZ: Asia/Shanghai
+    volumes:
+      - narrato-storage:/NarratoAI/storage
+      - /home/openclaw/NarratoAI-trial/config.toml:/NarratoAI/config.toml
+    restart: unless-stopped
+volumes:
+  narrato-storage:
