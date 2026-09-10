@@ -22,6 +22,16 @@ PRODUCT_PROMPT = """创作真实自然的商品展示视频。关注商品外观
 
 SCRIPT_LANGUAGES = ("English", "简体中文", "Español", "日本語", "Deutsch", "Français")
 
+PRODUCT_COPY_PROMPT = """你是商品短视频广告文案作者。最终 narration 是面向消费者的广告口播，不是逐帧观察报告。
+先确定一个由商品描述、卖点和镜头共同支持的核心吸引力，再组织整条广告：开头直接吸引注意，中段用玩法或体验让人想试，结尾用简短自然的行动邀请收住。
+用目标语言母语广告的说法，短句、有节奏、适合说出口。可以直接对观众说话、邀请体验，允许有审美和情绪色彩，不必把每个形容词写成鉴定结论。
+画面已经展示的颜色、部件数量和转动方向不必逐一念出来；把可见特点转化为有吸引力的玩法或体验表达，不写结构说明书。每句话承接上一句，不重复同一个卖点。
+抽象卖点可以表达轻松、好玩、炫目的氛围，但不能把它写成可保证的健康功效。不得编造价格、折扣、销量、材质或性能；没有购买渠道时不要说点击链接、限时抢购。
+观察中的“不确定、未证实、缺少证据”等留在 reason 中，不进入口播。不可为了广告效果把未证实的具体动作写成事实。
+按照选中片段的时长控制口播量，宁可少说，也不逐帧塞台词。输出前默读整条文案，删掉翻译腔、机械罗列、空泛赞美与重复句。
+英文风格对比（仅示范语气，不要机械照抄）：观察句“LED blades cycle through colors.”；广告表达“Give it a spin. Let the colors steal the show.”。
+"""
+
 
 def resolve_selection(items, candidates, paths):
     by_id = {item["clip_id"]: item for item in candidates}
@@ -108,7 +118,7 @@ class MultiMaterialAnalysisService(DocumentaryFrameAnalysisService):
                   + json.dumps({"sources": sources, "candidates": candidates}, ensure_ascii=False))
         provider = config.app.get("text_llm_provider", "openai")
         raw = await UnifiedLLMService.generate_text(
-            prompt=prompt, system_prompt=brief, provider=provider, response_format="json", max_tokens=8192,
+            prompt=prompt, system_prompt=brief + ("\n" + PRODUCT_COPY_PROMPT if product_mode else ""), provider=provider, response_format="json", max_tokens=8192,
             api_key=config.app.get(f"text_{provider}_api_key"), api_base=config.app.get(f"text_{provider}_base_url"),
             model=config.app.get(f"text_{provider}_model_name"))
         (root / "selection.txt").write_text(raw, encoding="utf-8")

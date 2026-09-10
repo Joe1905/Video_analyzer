@@ -36,6 +36,8 @@ def check():
             expected = "成片脚本语言：" + (language or "English")
             assert expected in llm.call_args.kwargs["system_prompt"]
             assert expected in vision.call_args.kwargs["custom_prompt"]
+            assert "广告口播" in llm.call_args.kwargs["system_prompt"]
+            assert "广告口播" not in vision.call_args.kwargs["custom_prompt"]
             assert result[0]["narration"] == "Light up your play."
     for description in ["", " \n\t", None]:
         try:
