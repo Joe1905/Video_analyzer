@@ -18,12 +18,10 @@ def patch(source):
         ("    video_theme = st.text_input(tr(\"Video Theme\"))\n    custom_prompt = st.text_area(",
          '    product_preset = st.session_state.get("script_mode_selection") == "商品展示"\n'
          '    video_theme = st.text_input(tr("Video Theme"))\n'
-         '    if product_preset:\n'
-         '        st.caption("商品展示预设：复用逐帧分析，以下提示词可编辑；音频设置仍需在脚本中选择。")\n'
          '    custom_prompt = st.text_area('),
         ("        value=st.session_state.get('video_plot', ''),\n        help=tr(\"Custom prompt for LLM, leave empty to use default prompt\"),",
-         f'        value={PRODUCT_PROMPT!r} if product_preset else st.session_state.get("video_plot", ""),\n'
-         '        key="product_display_prompt" if product_preset else "frame_analysis_prompt",\n'
+         '        value="" if product_preset else st.session_state.get("video_plot", ""),\n'
+         '        key="product_display_extra" if product_preset else "frame_analysis_prompt",\n'
          '        help=tr("Custom prompt for LLM, leave empty to use default prompt"),'),
     ]
     for before, after in replacements:
@@ -49,7 +47,7 @@ def check(source):
     app.session_state["script_mode_selection"] = "商品展示"
     app.run()
     assert not app.exception
-    assert app.session_state["custom_prompt"] == PRODUCT_PROMPT
+    assert app.session_state["custom_prompt"] == ""
     app.text_area[0].input("突出上包效果").run()
     assert app.session_state["custom_prompt"] == "突出上包效果"
     app.session_state["script_mode_selection"] = "逐帧分析"
@@ -79,3 +77,13 @@ if __name__ == "__main__":
     source = source.replace(before, after, 1)
     compile(source, str(service), "exec")
     service.write_text(source, encoding="utf-8")
+    generator = Path("/NarratoAI/webui/tools/generate_script_docu.py")
+    source = generator.read_text(encoding="utf-8")
+    before = "from app.services.documentary.frame_analysis_service import DocumentaryFrameAnalysisService"
+    assert source.count(before) == 1
+    source = source.replace(before, "from app.services.narrato_multi_material import MultiMaterialAnalysisService as DocumentaryFrameAnalysisService")
+    before = "                    video_path=params.video_origin_path,"
+    assert source.count(before) == 1
+    source = source.replace(before, before + '\n                    video_paths=st.session_state.get("video_origin_paths"),\n                    product_mode=st.session_state.get("script_mode_selection") == "商品展示",')
+    compile(source, str(generator), "exec")
+    generator.write_text(source, encoding="utf-8")
