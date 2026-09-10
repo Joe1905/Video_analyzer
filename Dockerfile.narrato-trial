@@ -2,3 +2,5 @@ FROM narratoai-trial:8c6dd58
 COPY scripts/narrato_multi_material.py /NarratoAI/app/services/narrato_multi_material.py
 COPY scripts/narrato_product_preset.py /tmp/narrato_product_preset.py
 RUN /opt/venv/bin/python /tmp/narrato_product_preset.py
+COPY scripts/narrato_elevenlabs.py /NarratoAI/app/services/narrato_elevenlabs.py
+RUN /opt/venv/bin/python /NarratoAI/app/services/narrato_elevenlabs.py
