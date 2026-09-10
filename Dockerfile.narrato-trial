@@ -6,3 +6,5 @@ COPY scripts/narrato_elevenlabs.py /NarratoAI/app/services/narrato_elevenlabs.py
 RUN /opt/venv/bin/python /NarratoAI/app/services/narrato_elevenlabs.py
 COPY scripts/narrato_tts_cache.py /NarratoAI/app/services/narrato_tts_cache.py
 RUN /opt/venv/bin/python /NarratoAI/app/services/narrato_tts_cache.py
+COPY scripts/narrato_history.py /NarratoAI/app/services/narrato_history.py
+RUN /opt/venv/bin/python /NarratoAI/app/services/narrato_history.py
