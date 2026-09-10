@@ -36,7 +36,7 @@ def check():
             assert post.call_args.args[0].endswith("/testVoice/with-timestamps")
             assert post.call_args.kwargs["json"]["model_id"] == "eleven_multilingual_v2"
             response.status_code = 401
-            assert voice.tts_multiple("test", script, "testVoice", 1, 1, "elevenlabs") == []
+            assert voice.tts_multiple("test", script, "failedVoice", 1, 1, "elevenlabs") == []
             assert script[0]["OST"] == 1
             config.app["elevenlabs_api_key"] = ""
             post.reset_mock()

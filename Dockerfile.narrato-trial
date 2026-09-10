@@ -4,3 +4,5 @@ COPY scripts/narrato_product_preset.py /tmp/narrato_product_preset.py
 RUN PYTHONPATH=/NarratoAI /opt/venv/bin/python /tmp/narrato_product_preset.py
 COPY scripts/narrato_elevenlabs.py /NarratoAI/app/services/narrato_elevenlabs.py
 RUN /opt/venv/bin/python /NarratoAI/app/services/narrato_elevenlabs.py
+COPY scripts/narrato_tts_cache.py /NarratoAI/app/services/narrato_tts_cache.py
+RUN /opt/venv/bin/python /NarratoAI/app/services/narrato_tts_cache.py
