@@ -269,7 +269,18 @@ def _compact_source(source: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def require_visual_evidence(source: dict[str, Any]) -> None:
+    """Do not treat serialized provider errors as successful visual evidence."""
+    items = source.get("visual_evidence") or source.get("timeline") or []
+    failures = ("error analyzing", "error reconstructing", "bad request", "arrearage", "分析失败")
+    texts = [json.dumps(x, ensure_ascii=False).lower() for x in items]
+    valid = [x for x in texts if x not in ("{}", "null", '""') and not any(e in x for e in failures)]
+    if not valid or len(valid) != len(texts):
+        raise ViralElementError("视觉分析缺失或失败，不能提取完整18项。请检查模型账号并在视频分析页重新分析，勿复用旧失败结果。")
+
+
 def analyze_elements(filename: str, source: dict[str, Any]) -> dict[str, Any]:
+    require_visual_evidence(source)
     schema = [{"group": g, "key": k, "label": label} for g, k, label in ELEMENT_DEFS]
     prompt = f"""你是短视频创意拆解分析师。执行以下从豆包工作流程迁移的规则：
 {ELEMENT_ANALYSIS_RULES}
@@ -292,7 +303,7 @@ schema={json.dumps(schema, ensure_ascii=False)}
             "group": group, "group_label": GROUP_LABELS[group], "key": key, "label": label,
             "value": str(item.get("value") or "存在但无法可靠识别")[:4000], "confidence": confidence,
             "evidence": str(item.get("evidence") or "")[:4000],
-            "time_range": str(item.get("time_range") or "")[:80], "approved": bool(item.get("approved", False)),
+            "time_range": str(item.get("time_range") or "")[:80], "approved": False,
         })
     metrics = _source_metrics(source)
     return {"filename": filename, "summary": str(result.get("summary") or ""), "elements": elements,

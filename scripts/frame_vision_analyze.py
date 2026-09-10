@@ -1,7 +1,20 @@
 """Run the existing analyzer with a status-aware OpenAI-compatible client."""
+import json
+import subprocess
 import sys
 
 from vision_provider import frame_config, recognize_image
+
+
+def has_audio(video_path):
+    """Avoid downloading/loading Whisper for an explicitly silent video."""
+    try:
+        result = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'a',
+            '-show_entries', 'stream=index', '-of', 'json', str(video_path)],
+            check=True, capture_output=True, text=True, timeout=30)
+        return bool(json.loads(result.stdout)['streams'])
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+        return True  # Unknown is not evidence of silence; preserve normal processing.
 
 
 def generate(prompt, image_path=None, stream=False, model=None, temperature=0.2, num_predict=256):
@@ -18,6 +31,16 @@ def main():
     print("[vision] 帧分析线路：" + config["provider"] + " / " + config["model"], flush=True)
     from video_analyzer import cli
     from video_analyzer.clients.generic_openai_api import GenericOpenAIAPIClient
+
+    if len(sys.argv) > 1 and not sys.argv[1].startswith('-') and not has_audio(sys.argv[1]):
+        class SilentAudioProcessor:
+            def __init__(self, **kwargs):
+                pass
+
+            def extract_audio(self, *args, **kwargs):
+                return None
+
+        cli.AudioProcessor = SilentAudioProcessor
 
     class RoutedClient(GenericOpenAIAPIClient):
         frames_seen = 0
