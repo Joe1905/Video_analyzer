@@ -2,6 +2,8 @@
 import asyncio
 import json
 import sys
+import subprocess
+from tempfile import TemporaryDirectory
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -9,6 +11,17 @@ from app.services.narrato_multi_material import MultiMaterialAnalysisService, re
 
 
 def check():
+    from app.services.clip_video import _process_mixed_segment
+    with TemporaryDirectory() as directory:
+        source = str(Path(directory) / "source.mp4")
+        subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=s=160x120:r=25",
+                        "-t", "5", "-c:v", "libx264", source], check=True)
+        output = _process_mixed_segment(source,
+            {"_id": 1, "timestamp": "00:00:00,000-00:00:01,000", "OST": 2},
+            {1: {"duration": 2.8}}, directory,
+            {"video_codec": "libx264", "audio_codec": "aac", "pixel_format": "yuv420p", "preset": "ultrafast", "quality_value": "23"}, [])
+        duration = float(subprocess.check_output(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", output]))
+        assert 2.7 < duration < 3.1, duration
     service = MultiMaterialAnalysisService()
     analyzed = {"analysis_artifact": {"batches": [{"status": "success", "frame_observations": [{"observation": "发光玩具"}]}]}, "keyframe_files": ["frame.jpg"]}
     for language in (None, "Español"):
@@ -37,6 +50,17 @@ def check():
     result = resolve_selection([{"clip_id": "b1", "narration": "detail"}], candidates, paths)
     assert result[0]["video_name"] == "b.mp4" and result[0]["video_id"] == 2
     assert result[0]["timestamp"] == candidates[0]["timestamp"]
+    ranged = candidates + [{"clip_id": "b2", "video_id": 2, "timestamp": "00:00:02,000-00:00:04,000", "picture": "rotation"}]
+    result = resolve_selection([{"clip_id": "b1", "end_clip_id": "b2", "narration": "detail"}], ranged, paths)
+    assert result[0]["timestamp"] == "00:00:01,000-00:00:04,000"
+    for items in ([{"clip_id": "b2", "end_clip_id": "b1"}],
+                  [{"clip_id": "b1", "end_clip_id": "b2"}, {"clip_id": "b2"}]):
+        try:
+            resolve_selection(items, ranged, paths)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("Invalid range accepted")
     for invalid in [[], [{"clip_id": "unknown"}], [{"clip_id": "b1"}] * 2]:
         try:
             resolve_selection(invalid, candidates, paths)

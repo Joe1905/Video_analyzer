@@ -25,15 +25,22 @@ SCRIPT_LANGUAGES = ("English", "简体中文", "Español", "日本語", "Deutsch
 
 def resolve_selection(items, candidates, paths):
     by_id = {item["clip_id"]: item for item in candidates}
+    positions = {item["clip_id"]: index for index, item in enumerate(candidates)}
     selected, seen = [], set()
     for item in items:
         clip_id = item.get("clip_id")
-        if clip_id not in by_id or clip_id in seen:
+        end_id = item.get("end_clip_id", clip_id)
+        if clip_id not in by_id or end_id not in by_id:
             raise ValueError(f"模型选择了不存在或重复的镜头: {clip_id}")
-        seen.add(clip_id)
+        start, end = positions[clip_id], positions[end_id]
+        span = candidates[start:end + 1]
+        if not span or any(c["video_id"] != by_id[clip_id]["video_id"] or c["clip_id"] in seen for c in span):
+            raise ValueError("镜头区间逆序、跨素材或重复")
+        seen.update(c["clip_id"] for c in span)
         clip = by_id[clip_id]
         selected.append({"_id": len(selected) + 1, "video_id": clip["video_id"],
-                         "timestamp": clip["timestamp"], "picture": clip["picture"],
+                         "timestamp": clip["timestamp"].split("-")[0] + "-" + span[-1]["timestamp"].split("-")[1],
+                         "picture": "\n".join(dict.fromkeys(c["picture"] for c in span)),
                          "narration": str(item.get("narration", "")), "OST": 2})
     if not selected:
         raise ValueError("模型没有选出可剪辑镜头")
@@ -94,7 +101,10 @@ class MultiMaterialAnalysisService(DocumentaryFrameAnalysisService):
         prompt = (f"主题：{theme}\n{context}\n"
                   "从以下候选镜头选取有信息价值的片段，编排成完整视频。综合比较所有素材，避免只看第一条；"
                   "不要为凑素材数量硬选重复或无关镜头。每个镜头最多一次。"
-                  '只输出 JSON：{"items":[{"clip_id":"候选编号","narration":"简短文案"}],"reason":"编排与舍弃依据"}。\n'
+                  "候选区间只是观察采样粒度，不是最终剪辑长度。每段用 clip_id 和 end_clip_id 选择同一素材内连续的完整动作区间（含首尾）。"
+                  "不要机械地每段只选一个采样区间；结合动作起落、镜头切换及文案自然朗读所需时间选择终点。"
+                  "区间不能重叠、跨素材或越过不相关画面。文案过长时缩短文案，不能靠加速朗读硬塞。"
+                  '只输出 JSON：{"items":[{"clip_id":"起始候选编号","end_clip_id":"结束候选编号","narration":"简短文案"}],"reason":"编排与舍弃依据"}。\n'
                   + json.dumps({"sources": sources, "candidates": candidates}, ensure_ascii=False))
         provider = config.app.get("text_llm_provider", "openai")
         raw = await UnifiedLLMService.generate_text(
