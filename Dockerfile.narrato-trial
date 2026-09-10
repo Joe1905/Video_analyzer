@@ -10,3 +10,5 @@ COPY scripts/narrato_history.py /NarratoAI/app/services/narrato_history.py
 RUN /opt/venv/bin/python /NarratoAI/app/services/narrato_history.py
 COPY scripts/narrato_subtitle_wrap.py /tmp/narrato_subtitle_wrap.py
 RUN /opt/venv/bin/python /tmp/narrato_subtitle_wrap.py
+COPY scripts/narrato_script_preview.py /NarratoAI/app/services/narrato_script_preview.py
+RUN /opt/venv/bin/python /NarratoAI/app/services/narrato_script_preview.py
