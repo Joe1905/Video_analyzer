@@ -58,6 +58,29 @@ if __name__ == '__main__':
         '            f"WrapStyle={0 if subtitle_auto_wrap else 2}",\n'
         '            f"MarginL={round(video_width * 0.05)}",\n'
         '            f"MarginR={round(video_width * 0.05)}",')
+    replace(filename, '    font_family = _resolve_font_family(font_path, subtitle_font)',
+        '    if subtitle_auto_wrap and font_path:\n'
+        '        # Keep a task-local layout artifact; some libass builds cannot wrap CJK automatically.\n'
+        '        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".srt",\n'
+        '                prefix="subtitle_wrapped_", dir=os.path.dirname(os.path.abspath(subtitle_path)), delete=False) as wrapped:\n'
+        '            for index, (start, end, text) in enumerate(_parse_srt_subtitles(subtitle_path), 1):\n'
+        '                lines = "\\n".join(wrap_text(line, video_width * 0.9, font_path, subtitle_font_size)[0] for line in text.splitlines())\n'
+        '                wrapped.write(utils.text_to_srt(index, lines, start, end) + "\\n")\n'
+        '            subtitle_path = wrapped.name\n'
+        '    font_family = _resolve_font_family(font_path, subtitle_font)')
+    replace(filename, '''    for word in chars:
+        _txt_ += word
+        _width, _height = get_text_size(_txt_)
+        if _width <= max_width:
+            continue
+        else:
+            _wrapped_lines_.append(_txt_)
+            _txt_ = ""''', '''    for word in chars:
+        _width, _height = get_text_size(_txt_ + word)
+        if _txt_ and _width > max_width:
+            _wrapped_lines_.append(_txt_)
+            _txt_ = ""
+        _txt_ += word''')
     # libass centers every line; drawtext centers only its bounding box.
     replace(filename, '        if has_drawtext_filter:\n',
         '        if has_drawtext_filter and not options.get("subtitle_auto_wrap", True):\n')
