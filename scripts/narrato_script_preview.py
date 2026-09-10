@@ -27,15 +27,15 @@ def resolve_preview(row, paths):
 
 
 def create_preview(source, start, end, root=Path('/NarratoAI/storage/temp/script-preview')):
-    duration = float(_probe_video(str(source))['duration'])
-    if start >= duration or end > duration + 0.05:
-        raise ValueError(f'选中区间超出素材时长（{duration:.3f} 秒）')
     stat = source.stat()
     identity = json.dumps([str(source), stat.st_size, stat.st_mtime_ns, start, end])
     root.mkdir(parents=True, exist_ok=True)
     target = root / (hashlib.sha256(identity.encode()).hexdigest() + '.mp4')
     if target.is_file():
         return target
+    duration = float(_probe_video(str(source))['duration'])
+    if start >= duration or end > duration + 0.05:
+        raise ValueError(f'选中区间超出素材时长（{duration:.3f} 秒）')
     with tempfile.NamedTemporaryFile(suffix='.mp4', dir=root, delete=False) as file:
         temporary = Path(file.name)
     try:
