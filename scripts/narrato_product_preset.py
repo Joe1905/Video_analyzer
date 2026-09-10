@@ -7,8 +7,8 @@ def patch(source):
     replacements = [
         ('        tr("Generation Prompt"),',
          '        "商品卖点" if product_preset else tr("Generation Prompt"),'),
-        ('        tr("Auto Generate"): MODE_AUTO,',
-         '        tr("Auto Generate"): MODE_AUTO,\n        "商品展示": MODE_AUTO,'),
+        ('        tr("Film TV Narration"): MODE_FILM_SUMMARY,',
+         '        "商品展示": MODE_AUTO,\n        tr("Film TV Narration"): MODE_FILM_SUMMARY,'),
         ("    video_theme = st.text_input(tr(\"Video Theme\"))\n    custom_prompt = st.text_area(",
          '    product_preset = st.session_state.get("script_mode_selection") == "商品展示"\n'
          '    video_theme = st.text_input(tr("Video Theme"))\n'
@@ -35,6 +35,21 @@ def check(source):
     from streamlit.testing.v1 import AppTest
 
     tree = ast.parse(source)
+    selector = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                    and node.name == "render_script_file")
+    selector_app = AppTest.from_string(
+        'import streamlit as st\nfrom types import SimpleNamespace\n'
+        'MODE_AUTO="auto"\nMODE_FILM_SUMMARY="film_summary"\nMODE_SHORT_SUMMARY="summary"\nMODE_SHORT="short"\nMODE_FILE="file"\n'
+        + ast.get_source_segment(source, selector)
+        + '\nrender_script_file(lambda text: text, SimpleNamespace())\n')
+    selector_app.run()
+    assert not selector_app.exception and selector_app.selectbox[0].value == "商品展示"
+    assert selector_app.session_state["video_clip_json_path"] == "auto"
+    selector_app.selectbox[0].select("Film TV Narration").run()
+    assert not selector_app.exception and selector_app.selectbox[0].value == "Film TV Narration"
+    selector_app.selectbox[0].select("商品展示").run()
+    selector_app.run()
+    assert not selector_app.exception and selector_app.selectbox[0].value == "商品展示"
     function = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
                     and node.name == "render_video_details")
     app = AppTest.from_string(
