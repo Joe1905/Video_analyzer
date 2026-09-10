@@ -63,3 +63,12 @@ if __name__ == "__main__":
     source = patch(path.read_text(encoding="utf-8"))
     check(source)
     path.write_text(source, encoding="utf-8")
+    # This trial deliberately has no TTS service; generated clips retain source audio.
+    service = Path("/NarratoAI/app/services/documentary/frame_analysis_service.py")
+    source = service.read_text(encoding="utf-8")
+    before = 'final_script = [{**item, "OST": 2} for item in narration_items]'
+    after = 'final_script = [{**item, "OST": 1} for item in narration_items]'
+    assert source.count(before) == 1, "Pinned narration defaults changed"
+    source = source.replace(before, after, 1)
+    compile(source, str(service), "exec")
+    service.write_text(source, encoding="utf-8")
