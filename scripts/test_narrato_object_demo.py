@@ -62,6 +62,8 @@ def checks(root):
     clips = d.intervals(points, manifest['products'], 5, 'v1')
     assert len(clips) == 2 and clips[0]['end'] > clips[1]['start'], clips
     uncertain = [dict(points[2], objects=objects('present')), dict(points[3], objects=objects('uncertain')), dict(points[4], objects=objects('present'))]
+    for i, point in enumerate(uncertain):
+        point['time'] = i * .25
     assert len(d.intervals(uncertain, manifest['products'], 5, 'v1')) == 3
     with patch.object(d, 'identify', new_callable=AsyncMock, return_value=[dict(p, objects=objects('present')[:1]) for p in uncertain]) as check:
         asyncio.run(d.review_continuity(None, uncertain, manifest['products'][:1], root, lambda _: None))
