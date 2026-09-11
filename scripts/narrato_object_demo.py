@@ -3,11 +3,13 @@ import asyncio
 import json
 import math
 import os
+import re
 from pathlib import Path
 import subprocess
 import time
 import uuid
 import zipfile
+from contextlib import contextmanager
 
 from PIL import Image, ImageOps
 from app.config import config
@@ -34,6 +36,17 @@ def save(path, value):
     temporary = path.with_suffix('.tmp')
     temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding='utf-8')
     os.replace(temporary, path)
+
+
+@contextmanager
+def job_lock(root):
+    import fcntl
+    with (root / '.lock').open('w') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError('该任务正在处理，请稍后刷新') from None
+        yield
 
 
 def validate_result(raw, frames, products):
@@ -68,12 +81,15 @@ def frame_at(source, at, destination):
 def coarse_frames(source, step, directory):
     directory.mkdir(exist_ok=True)
     duration = source['duration']
-    times = [round(i * step, 4) for i in range(math.ceil(duration / step)) if i * step < duration]
     # Sequential decoding avoids opening the same video for each regular sample.
-    subprocess.run([_get_ffmpeg_binary(), '-v', 'error', '-y', '-i', source['path'],
-        '-vf', f'fps=1/{step}:start_time=0,scale=1024:1024:force_original_aspect_ratio=decrease',
+    result = subprocess.run([_get_ffmpeg_binary(), '-v', 'info', '-y', '-i', source['path'],
+        '-vf', f"select='isnan(prev_selected_t)+gte(t-prev_selected_t,{step})',showinfo,scale=1024:1024:force_original_aspect_ratio=decrease",
+        '-fps_mode', 'vfr',
         '-q:v', '3', '-threads', '2', '-start_number', '0', str(directory / 'f%06d.jpg')],
         check=True, capture_output=True, timeout=max(90, duration * 3))
+    times = [float(t) for t in re.findall(r'Parsed_showinfo[^\n]*\bn:\s*\d+[^\n]*pts_time:([\d.eE+-]+)', result.stderr.decode(errors='replace'))]
+    if not times or any(not math.isfinite(t) or t < 0 for t in times):
+        raise ValueError('无法读取采样帧的真实时间戳')
     frames = []
     for i, at in enumerate(times):
         path = directory / f'f{i:06d}.jpg'
@@ -153,6 +169,7 @@ async def identify(provider, frames, products, log):
                 messages=[{'role': 'user', 'content': content}], response_format={'type': 'json_object'},
                 **provider._build_chat_completion_options('vision', temperature=0.1, max_tokens=8192))
         record.update(raw=response.choices[0].message.content or '', finish_reason=response.choices[0].finish_reason,
+                      request_id=getattr(response, '_request_id', None),
                       usage=response.usage.model_dump() if response.usage else {})
         if record['finish_reason'] != 'stop':
             raise ValueError('模型响应未完整结束')
@@ -160,7 +177,11 @@ async def identify(provider, frames, products, log):
         record['status'] = 'success'
         return result
     except Exception as exc:
-        record.update(status='failed', error_type=type(exc).__name__)
+        message = str(exc)
+        if provider.api_key:
+            message = message.replace(provider.api_key, '[REDACTED]')
+        record.update(status='failed', error_type=type(exc).__name__,
+                      http_status=getattr(exc, 'status_code', None), error=re.sub(r'sk[-_][\w-]+', '[REDACTED]', message)[:1000])
         raise
     finally:
         record['elapsed_seconds'] = round(time.monotonic() - started, 2)
@@ -168,6 +189,11 @@ async def identify(provider, frames, products, log):
 
 
 async def analyze(root, progress=lambda text: None):
+    with job_lock(root):
+        return await _analyze(root, progress)
+
+
+async def _analyze(root, progress):
     path = root / 'manifest.json'
     manifest = json.loads(path.read_text(encoding='utf-8'))
     model = config.app.get('vision_openai_model_name', '')
@@ -177,6 +203,12 @@ async def analyze(root, progress=lambda text: None):
         raise ValueError('重试需保持原视觉模型；切换模型请创建新任务')
     provider = OpenAICompatibleVisionProvider(api_key=config.app.get('vision_openai_api_key'),
         model_name=model, base_url=config.app.get('vision_openai_base_url'))
+    for source in manifest['sources']:
+        stat = Path(source['path']).stat()
+        fingerprint = [stat.st_size, stat.st_mtime_ns]
+        if source.get('fingerprint', fingerprint) != fingerprint:
+            raise ValueError('原素材已变化，请创建新任务')
+        source['fingerprint'] = fingerprint
     manifest.update(status='running', model=model, clips=[])
     save(path, manifest)
     try:
@@ -210,6 +242,11 @@ async def analyze(root, progress=lambda text: None):
 
 
 def export(root, selected):
+    with job_lock(root):
+        return _export(root, selected)
+
+
+def _export(root, selected):
     path = root / 'manifest.json'
     manifest = json.loads(path.read_text(encoding='utf-8'))
     if manifest['status'] not in ('review', 'complete'):
@@ -301,6 +338,10 @@ def render():
     root = chosen.parent
     manifest = json.loads(chosen.read_text(encoding='utf-8'))
     st.caption(f"状态：{manifest['status']} · 模型：{manifest.get('model', '尚未调用')}")
+    with st.expander('任务日志'):
+        logs = [json.loads(p.read_text(encoding='utf-8')) for p in root.glob('v*/*.json') if p.name != 'observations.json']
+        st.write({'批次数': len(logs), '总token': sum(l.get('usage', {}).get('total_tokens', 0) for l in logs)})
+        st.json(logs)
     if manifest['status'] in ('pending', 'running', 'failed'):
         if st.button('继续 / 重试此任务'):
             try:
@@ -338,10 +379,6 @@ def render():
     if manifest.get('archive') and st.button('准备下载结果 ZIP'):
         archive = Path(manifest['archive'])
         st.download_button('下载分类片段', archive.read_bytes(), file_name=archive.name, mime='application/zip')
-    with st.expander('任务日志'):
-        logs = [json.loads(p.read_text(encoding='utf-8')) for p in root.glob('v*/*.json') if p.name != 'observations.json']
-        st.write({'批次数': len(logs), '总token': sum(l.get('usage', {}).get('total_tokens', 0) for l in logs)})
-        st.json(logs)
 
 
 if __name__ == '__main__':
