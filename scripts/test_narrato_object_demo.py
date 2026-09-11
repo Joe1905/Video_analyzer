@@ -104,6 +104,7 @@ def checks(root):
         except ValueError:
             pass
     content = client.chat.completions.create.call_args.kwargs['messages'][0]['content']
+    assert client.chat.completions.create.call_args.kwargs['extra_body']['reasoning_effort'] == 'low'
     assert len(content) == 5 and 'reference_image_numbers' in content[0]['text']
     assert json.loads((root/'truncated.json').read_text())['status'] == 'failed'
     print('PASS: multiple targets, interval gaps/overlap, schema rejection, export, UI and reference payload')

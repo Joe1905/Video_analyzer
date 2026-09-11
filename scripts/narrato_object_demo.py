@@ -172,7 +172,7 @@ async def identify(provider, frames, products, log, continuity=False):
             client.max_retries = 0
             response = await client.chat.completions.create(model=provider.model_name,
                 messages=[{'role': 'user', 'content': content}], response_format={'type': 'json_object'},
-                **provider._build_chat_completion_options('vision', temperature=0.1, max_tokens=8192))
+                **provider._build_chat_completion_options('vision', temperature=0.1, max_tokens=8192, thinking_level='low'))
         record.update(raw=response.choices[0].message.content or '', finish_reason=response.choices[0].finish_reason,
                       request_id=getattr(response, '_request_id', None),
                       usage=response.usage.model_dump() if response.usage else {})
@@ -241,6 +241,7 @@ async def _analyze(root, progress):
             raise ValueError('原素材已变化，请创建新任务')
         source['fingerprint'] = fingerprint
     manifest.update(status='running', model=model, clips=[])
+    manifest.pop('archive', None)
     save(path, manifest)
     try:
         for source in manifest['sources']:
