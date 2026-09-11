@@ -68,7 +68,7 @@ def checks(root):
     archive = d.export(root, [0, 1])
     assert archive.is_file()
     with d.zipfile.ZipFile(archive) as file:
-        assert any(n.startswith('p1/') for n in file.namelist()) and any(n.startswith('p2/') for n in file.namelist())
+        assert any(n.startswith('p1_') for n in file.namelist()) and any(n.startswith('p2_') for n in file.namelist())
     for file in archive.with_suffix('').glob('*/*.mp4'):
         assert d._probe_video(str(file))['width'] == 640
     app = AppTest.from_string('from app.services.narrato_object_demo import render\nrender()')
@@ -98,7 +98,29 @@ def checks(root):
 
 
 if __name__ == '__main__':
-    if '--live' in sys.argv:
+    if '--live-existing' in sys.argv:
+        root = d.ROOT / ('real-smoke-' + d.uuid.uuid4().hex[:12])
+        manifest = fixture(root)
+        resource = Path('/NarratoAI/resource/videos')
+        ref = root/'toy.jpg'
+        d.frame_at(str(resource/'2026-09-07_224115_20260910161454.MOV'), 1, ref)
+        with Image.open(ref) as img:
+            img.crop((0, round(img.height*.17), img.width, round(img.height*.73))).save(root/'toy-crop.jpg')
+        sources = []
+        for i, (filename, start) in enumerate([('2026-09-08_221416_20260910161454.MOV', 5), ('2026-08-20_223002_20260910161454.MOV', 1)]):
+            dest = root / f'real-{i}.mp4'
+            subprocess.run([d._get_ffmpeg_binary(), '-v', 'error', '-y', '-ss', str(start), '-i', str(resource/filename),
+                '-t', '2', '-an', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', str(dest)], check=True)
+            sources.append({'id': f'v{i+1}', 'name': filename, 'path': str(dest), 'duration': 2.0})
+        sources.append(dict(manifest['sources'][1], id='v3', name='无目标对照素材'))
+        manifest.update(sources=sources, products=[{'id': 'p1', 'name': '组合发光光剑',
+            'description': '彩色透明发光剑身，有圆形中心连接结构，可多把互相组合旋转。不同颜色、两把或多把组合均算同一商品；只看到类似光轨而看不清商品结构时不能确认。',
+            'references': [str(root/'toy-crop.jpg')]}])
+        d.save(root/'manifest.json', manifest)
+        result = asyncio.run(d.analyze(root, lambda text: print(text, flush=True)))
+        d.export(root, [i for i,c in enumerate(result['clips']) if c['status'] == 'present'])
+        print('REAL_RESULT', root, json.dumps(result['clips'], ensure_ascii=False), flush=True)
+    elif '--live' in sys.argv:
         root = d.ROOT / ('smoke-' + d.uuid.uuid4().hex[:12])
         fixture(root)
         result = asyncio.run(d.analyze(root, lambda text: print(text, flush=True)))

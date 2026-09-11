@@ -259,7 +259,9 @@ def _export(root, selected):
         if clip['status'] != 'present':
             raise ValueError('不确定片段不能自动导出')
         source = next(s for s in manifest['sources'] if s['id'] == clip['source_id'])
-        folder = output / clip['product_id']
+        product = next(p for p in manifest['products'] if p['id'] == clip['product_id'])
+        label = re.sub(r'[^\w-]+', '_', product['name'])[:48]
+        folder = output / f"{clip['product_id']}_{label}"
         folder.mkdir(exist_ok=True)
         dest = folder / f"{source['id']}_{clip['start']:.3f}-{clip['end']:.3f}.mp4"
         subprocess.run([_get_ffmpeg_binary(), '-v', 'error', '-y', '-ss', str(clip['start']), '-i', source['path'],
@@ -316,16 +318,18 @@ def render():
                         paths.append(str(dest))
                     targets.append({k: product[k] for k in ('id', 'name', 'description')} | {'references': paths})
                 videos = list(existing)
+                upload_names = {}
                 for i, upload in enumerate(uploads):
                     dest = root / f'upload-{i}{Path(upload.name).suffix.lower()}'
                     dest.write_bytes(upload.getbuffer())
                     videos.append(dest)
+                    upload_names[str(dest)] = upload.name
                 sources = []
                 for i, video in enumerate(videos):
                     duration = float(_probe_video(str(video))['duration'])
                     if not math.isfinite(duration) or duration <= 0:
                         raise ValueError('视频时长无效')
-                    sources.append({'id': f'v{i+1}', 'name': video.name, 'path': str(video), 'duration': duration})
+                    sources.append({'id': f'v{i+1}', 'name': upload_names.get(str(video), video.name), 'path': str(video), 'duration': duration})
                 save(root / 'manifest.json', {'status': 'pending', 'products': targets, 'sources': sources, 'step': step, 'clips': []})
                 st.session_state['object_job'] = str(root)
                 asyncio.run(analyze(root, st.empty().info))
@@ -334,10 +338,11 @@ def render():
     jobs = sorted(ROOT.glob('*/manifest.json'), key=lambda p: p.stat().st_mtime, reverse=True) if ROOT.exists() else []
     if not jobs:
         return
-    chosen = st.selectbox('识别任务记录', jobs, format_func=lambda p: p.parent.name[:12])
+    chosen = st.selectbox('识别任务记录', jobs, format_func=lambda p: time.strftime('%m-%d %H:%M', time.localtime(p.stat().st_mtime)) + ' · ' + p.parent.name[:12])
     root = chosen.parent
     manifest = json.loads(chosen.read_text(encoding='utf-8'))
-    st.caption(f"状态：{manifest['status']} · 模型：{manifest.get('model', '尚未调用')}")
+    state_label = {'pending': '等待识别', 'running': '处理中或上次处理被中断', 'failed': '未完成，可重试', 'review': '识别完成，待导出', 'complete': '已导出'}
+    st.caption(f"状态：{state_label[manifest['status']]} · 模型：{manifest.get('model', '尚未调用')}")
     with st.expander('任务日志'):
         logs = [json.loads(p.read_text(encoding='utf-8')) for p in root.glob('v*/*.json') if p.name != 'observations.json']
         st.write({'批次数': len(logs), '总token': sum(l.get('usage', {}).get('total_tokens', 0) for l in logs)})
