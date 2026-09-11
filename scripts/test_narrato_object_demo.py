@@ -77,6 +77,12 @@ def checks(root):
         assert not app.exception
         app.button[0].click().run()
         assert not app.exception and app.error
+    history_app = AppTest.from_string('from app.services.narrato_object_demo import render\nrender()')
+    with patch.object(d, 'ROOT', root.parent), patch('streamlit.video') as video, patch.object(d, 'create_preview', return_value=Path(manifest['sources'][0]['path'])):
+        history_app.run()
+        assert not history_app.exception and not video.called
+        next(b for b in history_app.button if b.label == '播放此片段').click().run()
+        assert not history_app.exception and video.called
     # Confirm references and every target frame share one request, and truncation stops the task.
     class Response:
         choices = [type('Choice', (), {'finish_reason': 'length', 'message': type('Message', (), {'content': '{}'})()})()]
