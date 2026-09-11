@@ -63,6 +63,10 @@ def checks(root):
     assert len(clips) == 2 and clips[0]['end'] > clips[1]['start'], clips
     uncertain = [dict(points[2], objects=objects('present')), dict(points[3], objects=objects('uncertain')), dict(points[4], objects=objects('present'))]
     assert len(d.intervals(uncertain, manifest['products'], 5, 'v1')) == 3
+    with patch.object(d, 'identify', new_callable=AsyncMock, return_value=[dict(p, objects=objects('present')[:1]) for p in uncertain]) as check:
+        asyncio.run(d.review_continuity(None, uncertain, manifest['products'][:1], root, lambda _: None))
+        assert check.call_args.kwargs['continuity'] is True
+        assert len(d.intervals(uncertain, manifest['products'], 5, 'v1')) == 1
     manifest.update(status='review', clips=clips)
     d.save(root/'manifest.json', manifest)
     archive = d.export(root, [0, 1])
@@ -104,7 +108,12 @@ def checks(root):
 
 
 if __name__ == '__main__':
-    if '--live-existing' in sys.argv:
+    if '--resume' in sys.argv:
+        root = Path(sys.argv[sys.argv.index('--resume')+1])
+        result = asyncio.run(d.analyze(root, lambda text: print(text, flush=True)))
+        d.export(root, [i for i,c in enumerate(result['clips']) if c['status'] == 'present'])
+        print('RESUMED', root, json.dumps([{k:v for k,v in c.items() if k != 'evidence'} for c in result['clips']], ensure_ascii=False))
+    elif '--live-existing' in sys.argv:
         root = d.ROOT / ('real-smoke-' + d.uuid.uuid4().hex[:12])
         manifest = fixture(root)
         resource = Path('/NarratoAI/resource/videos')

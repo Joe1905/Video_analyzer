@@ -137,7 +137,7 @@ def intervals(points, products, duration, source_id):
     return rows
 
 
-async def identify(provider, frames, products, log):
+async def identify(provider, frames, products, log, continuity=False):
     if log.is_file():
         prior = json.loads(log.read_text(encoding='utf-8'))
         if prior.get('status') == 'success':
@@ -153,7 +153,12 @@ async def identify(provider, frames, products, log):
     for frame in frames:
         images.append(frame['path'])
         samples.append({'frame_id': frame['id'], 'time_seconds': frame['time'], 'image_number': len(images)})
-    content = [{'type': 'text', 'text': PROMPT + '\n' + json.dumps({'targets': catalog, 'video_frames': samples}, ensure_ascii=False)}]
+    instruction = PROMPT
+    if continuity:
+        instruction += '''\n本批是短区间连续性复核。前后帧是待核对的身份锚点，仍须自行对照参考图确认。
+中间帧若目标仍可见、外观/位置/轨迹连续、无镜头切换或替换迹象，且前后身份都明确，允许利用这些时间证据确认运动模糊中的同一商品。
+这不是机械沿用前一帧判断：完全遮挡、商品不可见、出现其他相似物或发生切镜时不得用连续性判 present；依据不足保留 uncertain。reason 必须说明连续性依据。'''
+    content = [{'type': 'text', 'text': instruction + '\n' + json.dumps({'targets': catalog, 'video_frames': samples}, ensure_ascii=False)}]
     for path in images:
         with Image.open(path) as image:
             image = ImageOps.exif_transpose(image).convert('RGB')
@@ -186,6 +191,32 @@ async def identify(provider, frames, products, log):
     finally:
         record['elapsed_seconds'] = round(time.monotonic() - started, 2)
         save(log, record)
+
+
+async def review_continuity(provider, points, products, directory, progress):
+    for product in products:
+        def observation(point):
+            return next(o for o in point['objects'] if o['id'] == product['id'])
+        i = 0
+        while i < len(points):
+            if observation(points[i])['status'] != 'uncertain':
+                i += 1
+                continue
+            start = i
+            while i < len(points) and observation(points[i])['status'] == 'uncertain':
+                i += 1
+            # ponytail: only bridge <=1s uncertain islands with two confirmed anchors; longer gaps require review.
+            if start == 0 or i == len(points) or points[i]['time'] - points[start-1]['time'] > 1:
+                continue
+            if observation(points[start-1])['status'] != 'present' or observation(points[i])['status'] != 'present':
+                continue
+            progress(f"连续性复核：{product['name']} {points[start]['time']:.2f} 秒附近")
+            window = points[start-1:i+1]
+            checked = await identify(provider, window, [product], directory / f"continuity-{product['id']}-{start}.json", continuity=True)
+            if checked[0]['objects'][0]['status'] != 'present' or checked[-1]['objects'][0]['status'] != 'present':
+                continue
+            for old, new in zip(window[1:-1], checked[1:-1]):
+                observation(old).update(new['objects'][0])
 
 
 async def analyze(root, progress=lambda text: None):
@@ -229,6 +260,7 @@ async def _analyze(root, progress):
                 progress(f"复查 {source['name']}：{min(start+4, len(fine))}/{len(fine)} 帧")
                 points.extend(await identify(provider, fine[start:start+4], manifest['products'], directory / f'refine-{start}.json'))
             points.sort(key=lambda p: p['time'])
+            await review_continuity(provider, points, manifest['products'], directory, progress)
             save(directory / 'observations.json', points)
             manifest['clips'].extend(intervals(points, manifest['products'], source['duration'], source['id']))
             save(path, manifest)
@@ -298,7 +330,7 @@ def render():
     resources = sorted(p for p in Path('/NarratoAI/resource/videos').glob('*') if p.suffix.lower() in {'.mp4', '.mov', '.mkv', '.avi'})
     existing = st.multiselect('或选择服务器已有素材', resources, format_func=lambda p: p.name)
     step = st.selectbox('检查间隔（秒）', [0.25, 0.5, 1.0], index=1)
-    st.caption(f'每分钟约检查 {round(60/step)} 帧，另加边界复查。间隔越小越慢、调用量越大；短于间隔的闪现仍可能漏检。不设置总帧数上限。')
+    st.caption(f'每分钟约检查 {round(60/step)} 帧，另加边界和短暂模糊复查。间隔越小越慢、调用量越大；短于间隔的闪现仍可能漏检。不设置总帧数上限。')
     if st.button('开始识别', type='primary'):
         if not (uploads or existing) or any(not p['name'].strip() or not p['description'].strip() or not 1 <= len(p['uploads']) <= 3 for p in products):
             st.error('请填写每个商品的名称、描述和 1～3 张参考图，并选择视频。')
