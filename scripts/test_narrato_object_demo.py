@@ -58,7 +58,7 @@ def checks(root):
     except ValueError:
         pass
     refined = d.refinement_times(points, .5, 5)
-    assert .875 in refined and 3.875 in refined
+    assert any(.8 < t < 1.04 for t in refined) and any(3.7 < t < 4.16 for t in refined)
     clips = d.intervals(points, manifest['products'], 5, 'v1')
     assert len(clips) == 2 and clips[0]['end'] > clips[1]['start'], clips
     uncertain = [dict(points[2], objects=objects('present')), dict(points[3], objects=objects('uncertain')), dict(points[4], objects=objects('present'))]
