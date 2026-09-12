@@ -7,7 +7,7 @@ services:
       dockerfile: Dockerfile.narrato-trial
     container_name: short-video-analyzer-dev-narratoai
     entrypoint: ["/opt/venv/bin/streamlit"]
-    command: ["run", "webui.py", "--server.address=0.0.0.0", "--server.port=8501", "--server.headless=true", "--browser.gatherUsageStats=false"]
+    command: ["run", "webui.py", "--server.address=0.0.0.0", "--server.port=8501", "--server.headless=true", "--server.maxUploadSize=2048", "--browser.gatherUsageStats=false"]
     ports:
       - "192.168.1.254:8501:8501"
     mem_limit: 3g

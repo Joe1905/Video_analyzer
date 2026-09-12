@@ -520,7 +520,13 @@ def get_workbench_rules():
 
 
 def patch_streamlit_server():
-    """Hook Streamlit's Server._create_app to prepend our workbench rules."""
+    """Hook Streamlit's Server._create_app to prepend our workbench rules and enlarge upload limit."""
+    from streamlit import config as st_config
+    try:
+        st_config.set_option("server.maxUploadSize", 2048)
+    except Exception:
+        pass
+
     from streamlit.web.server.server import Server
     if getattr(Server, "_workbench_patched", False):
         return
@@ -1376,7 +1382,6 @@ RENDERED_HTML = '''<!DOCTYPE html>
       const formData = new FormData();
       for (const f of files) {
         formData.append('files', f);
-        formData.append('file', f);
       }
       input.value = '';
 
@@ -1593,30 +1598,61 @@ RENDERED_HTML = '''<!DOCTYPE html>
 
     async function handleMaterialUpload(input) {
       if (!input.files || !input.files.length) return;
-      const formData = new FormData();
-      for (let i = 0; i < input.files.length; i++) {
-        formData.append('files', input.files[i]);
-        formData.append('file', input.files[i]);
-      }
+      const files = Array.from(input.files);
       input.value = '';
-      try {
-        const resp = await fetch('/api/materials/upload', {
-          method: 'POST',
-          body: formData
-        });
-        if (!resp.ok) {
-          const text = await resp.text();
-          throw new Error(`HTTP ${resp.status}: ${text.slice(0, 80)}`);
+
+      const badge = document.getElementById('material-count-badge');
+      const origText = badge ? badge.innerText : '';
+
+      let successCount = 0;
+      let errors = [];
+
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        if (badge) {
+          badge.innerText = `上传中 (${i + 1}/${files.length})...`;
         }
-      } catch (e) {
-        alert('导入素材失败：' + e.message);
-        return;
+
+        const formData = new FormData();
+        formData.append('file', file);
+
+        try {
+          const resp = await fetch('/api/materials/upload', {
+            method: 'POST',
+            body: formData
+          });
+          if (!resp.ok) {
+            const text = await resp.text();
+            throw new Error(`HTTP ${resp.status}: ${text.slice(0, 60)}`);
+          }
+          const data = await resp.json();
+          if (data.status === 'success') {
+            successCount++;
+          } else {
+            throw new Error(data.error || '上传异常');
+          }
+        } catch (e) {
+          console.error('Upload error for', file.name, e);
+          errors.push(`${file.name}: ${e.message}`);
+        }
       }
-      const sResp = await fetch('/api/state');
-      const sData = await sResp.json();
-      appState.materials = sData.materials || [];
-      renderMaterials();
-      alert('已成功导入素材视频');
+
+      if (badge) {
+        badge.innerText = origText;
+      }
+
+      try {
+        const sResp = await fetch('/api/state');
+        const sData = await sResp.json();
+        appState.materials = sData.materials || [];
+        renderMaterials();
+      } catch (e) {}
+
+      if (errors.length) {
+        alert(`导入素材完成 (${successCount} 成功, ${errors.length} 失败)：\n` + errors.join('\n'));
+      } else if (successCount > 0) {
+        alert(`已成功导入 ${successCount} 个素材视频！`);
+      }
     }
 
     function handleBgmUpload(input) {
