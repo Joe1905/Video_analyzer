@@ -33,6 +33,10 @@ ACTIVE_JOBS = {}
 
 
 class BaseHandler(tornado.web.RequestHandler):
+    def check_xsrf_cookie(self):
+        # Disable XSRF cookie checking for workbench REST APIs
+        pass
+
     def set_default_headers(self):
         self.set_header("Access-Control-Allow-Origin", "*")
         self.set_header("Access-Control-Allow-Headers", "x-requested-with, content-type")
@@ -221,26 +225,51 @@ class ObjectAnalyzeHandler(BaseHandler):
     """Run object detection scan."""
     def post(self):
         body = json.loads(self.request.body.decode("utf-8") or "{}")
-        job_id = body.get("job_id") or f"real-smoke-{uuid.uuid4().hex[:12]}"
+        job_id = body.get("job_id") or ""
+        if not job_id or job_id == "空白任务":
+            job_id = f"task-{uuid.uuid4().hex[:8]}"
         step = float(body.get("step", 0.5))
 
         target_dir = OBJECT_ROOT / job_id
-        if not target_dir.exists():
-            target_dir.mkdir(parents=True, exist_ok=True)
-            # Init manifest with products and sources
-            manifest = {
-                "status": "pending",
-                "products": body.get("products", [{
-                    "id": "p1",
-                    "name": "组合发光光剑",
-                    "description": "彩色透明发光剑身，有圆形中心连接结构，多把互相组合旋转。",
-                    "references": []
-                }]),
-                "sources": body.get("sources", []),
-                "step": step,
-                "clips": []
-            }
-            obj_demo.save(target_dir / "manifest.json", manifest)
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        # Resolve media urls in references to local container file paths
+        products = body.get("products", [])
+        for prod in products:
+            clean_refs = []
+            for ref in prod.get("references", []):
+                if isinstance(ref, str) and ref.startswith("/api/media/"):
+                    sub = ref.replace("/api/media/", "", 1).lstrip("/")
+                    p = Path("/NarratoAI") / sub
+                    if p.is_file():
+                        clean_refs.append(str(p))
+                    else:
+                        clean_refs.append(ref)
+                else:
+                    clean_refs.append(ref)
+            prod["references"] = clean_refs
+
+        # Collect sources if not provided
+        sources = body.get("sources", [])
+        if not sources and VIDEO_RESOURCE.exists():
+            for vp in sorted(VIDEO_RESOURCE.glob("*.*")):
+                if vp.suffix.lower() in [".mp4", ".mov", ".mkv", ".avi", ".webm"]:
+                    dur = _probe_video(vp)
+                    sources.append({
+                        "id": vp.stem,
+                        "name": vp.name,
+                        "path": str(vp),
+                        "duration": round(dur, 2)
+                    })
+
+        manifest = {
+            "status": "pending",
+            "products": products,
+            "sources": sources,
+            "step": step,
+            "clips": []
+        }
+        obj_demo.save(target_dir / "manifest.json", manifest)
 
         # Run async analyze
         ACTIVE_JOBS[job_id] = {"status": "running", "progress": "正在抽帧采样与特征比对...", "clips": []}
@@ -306,34 +335,78 @@ class ObjectDownloadHandler(BaseHandler):
 class MaterialUploadHandler(BaseHandler):
     """Save uploaded video material to /NarratoAI/resource/videos."""
     def post(self):
-        files = self.request.files.get("file", [])
-        if not files:
+        uploaded_files = []
+        for key in ["files", "file"]:
+            if key in self.request.files:
+                uploaded_files.extend(self.request.files[key])
+
+        seen = set()
+        unique_files = []
+        for uf in uploaded_files:
+            sig = (uf.get("filename", ""), len(uf.get("body", b"")))
+            if sig not in seen:
+                seen.add(sig)
+                unique_files.append(uf)
+
+        if not unique_files:
             self.write_json({"error": "No file uploaded"}, status=400)
             return
-        uploaded = files[0]
-        fname = uploaded["filename"]
+
         VIDEO_RESOURCE.mkdir(parents=True, exist_ok=True)
-        dest = VIDEO_RESOURCE / fname
-        with open(dest, "wb") as f:
-            f.write(uploaded["body"])
-        self.write_json({"status": "success", "filename": fname, "path": str(dest)})
+        saved = []
+        for uf in unique_files:
+            orig_name = re.sub(r"[^\w\.-]", "_", uf.get("filename", "video.mp4"))
+            dest = VIDEO_RESOURCE / orig_name
+            with open(dest, "wb") as f:
+                f.write(uf["body"])
+            saved.append({"filename": orig_name, "path": str(dest)})
+
+        self.write_json({
+            "status": "success",
+            "files": saved,
+            "filename": saved[0]["filename"] if saved else "",
+            "path": saved[0]["path"] if saved else ""
+        })
 
 
 class ProductRefUploadHandler(BaseHandler):
-    """Save uploaded product reference image."""
+    """Save uploaded product reference images."""
     def post(self):
-        files = self.request.files.get("file", [])
-        if not files:
+        uploaded_files = []
+        for key in ["files", "file"]:
+            if key in self.request.files:
+                uploaded_files.extend(self.request.files[key])
+
+        seen = set()
+        unique_files = []
+        for uf in uploaded_files:
+            sig = (uf.get("filename", ""), len(uf.get("body", b"")))
+            if sig not in seen:
+                seen.add(sig)
+                unique_files.append(uf)
+
+        if not unique_files:
             self.write_json({"error": "No file uploaded"}, status=400)
             return
-        uploaded = files[0]
+
         ref_dir = OBJECT_ROOT / "references"
         ref_dir.mkdir(parents=True, exist_ok=True)
-        fname = f"ref_{uuid.uuid4().hex[:8]}_{uploaded['filename']}"
-        dest = ref_dir / fname
-        with open(dest, "wb") as f:
-            f.write(uploaded["body"])
-        self.write_json({"status": "success", "filename": fname, "path": str(dest), "url": f"/api/media/storage/object-demo/references/{fname}"})
+        saved = []
+        for uf in unique_files:
+            orig_name = re.sub(r"[^\w\.-]", "_", uf.get("filename", "ref.png"))
+            fname = f"ref_{uuid.uuid4().hex[:8]}_{orig_name}"
+            dest = ref_dir / fname
+            with open(dest, "wb") as f:
+                f.write(uf["body"])
+            url = f"/api/media/storage/object-demo/references/{fname}"
+            saved.append({"filename": fname, "path": str(dest), "url": url})
+
+        self.write_json({
+            "status": "success",
+            "files": saved,
+            "urls": [s["url"] for s in saved],
+            "url": saved[0]["url"] if saved else ""
+        })
 
 
 class VoicesHandler(BaseHandler):
@@ -807,11 +880,15 @@ RENDERED_HTML = '''<!DOCTYPE html>
         </div>
 
         <div>
-          <label class="block text-slate-700 font-semibold mb-1.5">实拍参考图</label>
+          <div class="flex items-center justify-between mb-1.5">
+            <label class="block text-slate-700 font-semibold">实拍参考图 (支持多选)</label>
+            <span id="modal-ref-count" class="text-[11px] text-slate-400 font-mono">0 张</span>
+          </div>
           <div class="flex items-center gap-2.5 flex-wrap" id="modal-ref-images">
-            <label class="w-14 h-14 rounded-xl border-2 border-dashed border-slate-300 hover:border-slate-700 flex items-center justify-center text-slate-400 hover:text-slate-800 cursor-pointer shrink-0 transition-colors">
+            <label id="ref-upload-btn" class="w-14 h-14 rounded-xl border-2 border-dashed border-slate-300 hover:border-slate-800 flex flex-col items-center justify-center text-slate-400 hover:text-slate-800 cursor-pointer shrink-0 transition-all hover:bg-slate-50">
               <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-              <input type="file" accept="image/*" class="hidden" onchange="handleProductRefUpload(this)">
+              <span class="text-[9px] font-medium mt-0.5">上传</span>
+              <input type="file" accept="image/*" multiple class="hidden" onchange="handleProductRefUpload(this)">
             </label>
           </div>
         </div>
@@ -906,21 +983,34 @@ RENDERED_HTML = '''<!DOCTYPE html>
         return;
       }
 
-      list.innerHTML = products.map((p, idx) => `
-        <div onclick="openProductModal('edit', '${p.id}')" class="p-3 rounded-xl border border-slate-200/80 hover:border-slate-400 hover:bg-slate-50/60 bg-slate-50/30 cursor-pointer group transition-all flex items-center justify-between shadow-2xs spring-hover">
-          <div class="flex items-center gap-3 min-w-0">
-            <div class="w-12 h-12 rounded-lg bg-slate-900 text-slate-100 flex items-center justify-center font-bold text-xs shrink-0 relative overflow-hidden shadow-xs">
-              ${p.name.slice(0, 2)}
-              <span class="absolute bottom-0 inset-x-0 bg-black/60 text-[9px] text-center text-slate-300 font-mono py-0.2">${(p.references && p.references.length) ? p.references.length + '张实拍' : '参考图'}</span>
+      list.innerHTML = products.map((p, idx) => {
+        const hasRefs = p.references && p.references.length > 0;
+        const refCount = hasRefs ? p.references.length : 0;
+        const thumbUrl = hasRefs ? p.references[0] : '';
+
+        return `
+          <div onclick="openProductModal('edit', '${p.id}')" class="p-3 rounded-xl border border-slate-200/80 hover:border-slate-400 hover:bg-slate-50/60 bg-slate-50/30 cursor-pointer group transition-all flex items-center justify-between shadow-2xs spring-hover">
+            <div class="flex items-center gap-3 min-w-0">
+              ${hasRefs ? `
+                <div class="w-12 h-12 rounded-lg border border-slate-200 overflow-hidden relative shrink-0 bg-slate-100 shadow-xs">
+                  <img src="${thumbUrl}" class="w-full h-full object-cover">
+                  <span class="absolute bottom-0 inset-x-0 bg-black/60 text-[9px] text-center text-white font-mono py-0.5">${refCount} 张实拍</span>
+                </div>
+              ` : `
+                <div class="w-12 h-12 rounded-lg bg-slate-900 text-slate-100 flex items-center justify-center font-bold text-xs shrink-0 relative overflow-hidden shadow-xs">
+                  ${p.name.slice(0, 2)}
+                  <span class="absolute bottom-0 inset-x-0 bg-black/60 text-[9px] text-center text-slate-300 font-mono py-0.2">无图</span>
+                </div>
+              `}
+              <div class="min-w-0">
+                <div class="font-bold text-slate-900 text-sm truncate">${p.name}</div>
+                <div class="text-xs text-slate-500 truncate mt-0.5">${p.description || '暂无规则描述'}</div>
+              </div>
             </div>
-            <div class="min-w-0">
-              <div class="font-bold text-slate-900 text-sm truncate">${p.name}</div>
-              <div class="text-xs text-slate-500 truncate mt-0.5">${p.description}</div>
-            </div>
+            <span class="text-slate-400 group-hover:text-slate-700 text-xs font-semibold p-1">✎</span>
           </div>
-          <span class="text-slate-400 group-hover:text-slate-700 text-xs font-semibold p-1">✎</span>
-        </div>
-      `).join('');
+        `;
+      }).join('');
     }
 
     function renderMaterials() {
@@ -1262,35 +1352,61 @@ RENDERED_HTML = '''<!DOCTYPE html>
 
     function renderModalRefImages() {
       const container = document.getElementById('modal-ref-images');
+      const countLabel = document.getElementById('modal-ref-count');
+      if (countLabel) {
+        countLabel.innerText = `${modalUploadedRefs.length} 张`;
+      }
       container.innerHTML = modalUploadedRefs.map((r, i) => `
-        <div class="w-14 h-14 rounded-xl border border-slate-200 overflow-hidden relative group shrink-0">
+        <div class="w-14 h-14 rounded-xl border border-slate-200 overflow-hidden relative group shrink-0 shadow-2xs">
           <img src="${r}" class="w-full h-full object-cover">
-          <button onclick="modalUploadedRefs.splice(${i}, 1); renderModalRefImages();" class="absolute inset-0 bg-black/50 text-white opacity-0 group-hover:opacity-100 flex items-center justify-center text-xs font-bold transition-opacity cursor-pointer">✕</button>
+          <button type="button" onclick="modalUploadedRefs.splice(${i}, 1); renderModalRefImages();" class="absolute inset-0 bg-black/60 text-white opacity-0 group-hover:opacity-100 flex items-center justify-center text-xs font-bold transition-opacity cursor-pointer">✕</button>
         </div>
       `).join('') + `
-        <label class="w-14 h-14 rounded-xl border-2 border-dashed border-slate-300 hover:border-slate-700 flex items-center justify-center text-slate-400 hover:text-slate-800 cursor-pointer shrink-0 transition-colors">
+        <label id="ref-upload-btn" class="w-14 h-14 rounded-xl border-2 border-dashed border-slate-300 hover:border-slate-800 flex flex-col items-center justify-center text-slate-400 hover:text-slate-800 cursor-pointer shrink-0 transition-all hover:bg-slate-50">
           <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-          <input type="file" accept="image/*" class="hidden" onchange="handleProductRefUpload(this)">
+          <span class="text-[9px] font-medium mt-0.5">上传</span>
+          <input type="file" accept="image/*" multiple class="hidden" onchange="handleProductRefUpload(this)">
         </label>
       `;
     }
 
     async function handleProductRefUpload(input) {
       if (!input.files || !input.files.length) return;
+      const files = Array.from(input.files);
       const formData = new FormData();
-      formData.append('file', input.files[0]);
+      for (const f of files) {
+        formData.append('files', f);
+        formData.append('file', f);
+      }
+      input.value = '';
+
+      const btn = document.getElementById('ref-upload-btn');
+      if (btn) {
+        btn.innerHTML = `<span class="w-4 h-4 border-2 border-slate-400 border-t-slate-800 rounded-full animate-spin"></span>`;
+        btn.style.pointerEvents = 'none';
+      }
+
       try {
         const resp = await fetch('/api/products/upload-ref', {
           method: 'POST',
           body: formData
         });
+        if (!resp.ok) {
+          const text = await resp.text();
+          throw new Error(`HTTP ${resp.status}: ${text.slice(0, 80)}`);
+        }
         const res = await resp.json();
-        if (res.url) {
+        if (res.urls && res.urls.length) {
+          modalUploadedRefs.push(...res.urls);
+        } else if (res.url) {
           modalUploadedRefs.push(res.url);
-          renderModalRefImages();
+        } else if (res.error) {
+          alert('上传失败: ' + res.error);
         }
       } catch (e) {
         alert('上传参考图失败: ' + e.message);
+      } finally {
+        renderModalRefImages();
       }
     }
 
@@ -1477,15 +1593,24 @@ RENDERED_HTML = '''<!DOCTYPE html>
 
     async function handleMaterialUpload(input) {
       if (!input.files || !input.files.length) return;
+      const formData = new FormData();
       for (let i = 0; i < input.files.length; i++) {
-        const formData = new FormData();
+        formData.append('files', input.files[i]);
         formData.append('file', input.files[i]);
-        try {
-          await fetch('/api/materials/upload', {
-            method: 'POST',
-            body: formData
-          });
-        } catch (e) {}
+      }
+      input.value = '';
+      try {
+        const resp = await fetch('/api/materials/upload', {
+          method: 'POST',
+          body: formData
+        });
+        if (!resp.ok) {
+          const text = await resp.text();
+          throw new Error(`HTTP ${resp.status}: ${text.slice(0, 80)}`);
+        }
+      } catch (e) {
+        alert('导入素材失败：' + e.message);
+        return;
       }
       const sResp = await fetch('/api/state');
       const sData = await sResp.json();

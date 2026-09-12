@@ -146,6 +146,11 @@ async def identify(provider, frames, products, log, continuity=False):
     for product in products:
         indices = []
         for path in product['references']:
+            if isinstance(path, str) and path.startswith('/api/media/'):
+                clean_path = path.replace('/api/media/', '', 1).lstrip('/')
+                cand = Path('/NarratoAI') / clean_path
+                if cand.is_file():
+                    path = str(cand)
             images.append(path)
             indices.append(len(images))
         catalog.append({'id': product['id'], 'name': product['name'], 'description': product['description'], 'reference_image_numbers': indices})
