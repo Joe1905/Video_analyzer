@@ -41,7 +41,7 @@ def main():
     print("PASS: original no-TTS pipeline, two clips, original audio:", output)
 
     # A selected but unavailable TTS engine must preserve both kinds of voiced clips.
-    voice.tts = lambda **kwargs: None
+    voice.tts = lambda *args, **kwargs: None
     rows = json.loads(script.read_text(encoding="utf-8"))
     rows[0]["OST"], rows[1]["OST"] = 0, 2
     script.write_text(json.dumps(rows), encoding="utf-8")
