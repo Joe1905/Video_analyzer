@@ -110,15 +110,10 @@ class StateHandler(BaseHandler):
                 except Exception:
                     pass
 
-        # 2. Pick current task or create default
+        # 2. Pick current task or create clean empty task
         current_task = None
         if object_tasks:
-            # Prefer real-smoke task if exists
             target_id = object_tasks[0]["id"]
-            for t in object_tasks:
-                if "real-smoke" in t["id"]:
-                    target_id = t["id"]
-                    break
             manifest_path = OBJECT_ROOT / target_id / "manifest.json"
             if manifest_path.is_file():
                 try:
@@ -129,18 +124,14 @@ class StateHandler(BaseHandler):
 
         if not current_task:
             current_task = {
-                "id": "real-smoke-6d40",
-                "status": "complete",
-                "products": [{
-                    "id": "p1",
-                    "name": "组合发光光剑",
-                    "description": "彩色透明剑身，圆形中心连接结构，多把旋转组合均算同款；仅微弱光轨不予确认。",
-                    "references": []
-                }],
+                "id": "空白任务",
+                "status": "pending",
+                "products": [],
                 "sources": [],
                 "clips": [],
                 "step": 0.5
             }
+
 
         # 3. Materials
         materials = []
@@ -312,7 +303,41 @@ class ObjectDownloadHandler(BaseHandler):
                 self.write(chunk)
 
 
+class MaterialUploadHandler(BaseHandler):
+    """Save uploaded video material to /NarratoAI/resource/videos."""
+    def post(self):
+        files = self.request.files.get("file", [])
+        if not files:
+            self.write_json({"error": "No file uploaded"}, status=400)
+            return
+        uploaded = files[0]
+        fname = uploaded["filename"]
+        VIDEO_RESOURCE.mkdir(parents=True, exist_ok=True)
+        dest = VIDEO_RESOURCE / fname
+        with open(dest, "wb") as f:
+            f.write(uploaded["body"])
+        self.write_json({"status": "success", "filename": fname, "path": str(dest)})
+
+
+class ProductRefUploadHandler(BaseHandler):
+    """Save uploaded product reference image."""
+    def post(self):
+        files = self.request.files.get("file", [])
+        if not files:
+            self.write_json({"error": "No file uploaded"}, status=400)
+            return
+        uploaded = files[0]
+        ref_dir = OBJECT_ROOT / "references"
+        ref_dir.mkdir(parents=True, exist_ok=True)
+        fname = f"ref_{uuid.uuid4().hex[:8]}_{uploaded['filename']}"
+        dest = ref_dir / fname
+        with open(dest, "wb") as f:
+            f.write(uploaded["body"])
+        self.write_json({"status": "success", "filename": fname, "path": str(dest), "url": f"/api/media/storage/object-demo/references/{fname}"})
+
+
 class VoicesHandler(BaseHandler):
+
     """List ElevenLabs voices."""
     def get(self):
         api_key = config.app.get("elevenlabs_api_key", "").strip()
@@ -411,6 +436,8 @@ def get_workbench_rules():
         tornado.web.Rule(tornado.routing.PathMatches(r"^/api/object/analyze$"), ObjectAnalyzeHandler),
         tornado.web.Rule(tornado.routing.PathMatches(r"^/api/object/export$"), ObjectExportHandler),
         tornado.web.Rule(tornado.routing.PathMatches(r"^/api/object/download/(?P<job_id>[^/]+)$"), ObjectDownloadHandler),
+        tornado.web.Rule(tornado.routing.PathMatches(r"^/api/materials/upload$"), MaterialUploadHandler),
+        tornado.web.Rule(tornado.routing.PathMatches(r"^/api/products/upload-ref$"), ProductRefUploadHandler),
         tornado.web.Rule(tornado.routing.PathMatches(r"^/api/voices$"), VoicesHandler),
         tornado.web.Rule(tornado.routing.PathMatches(r"^/api/auto/script$"), AutoScriptHandler),
         tornado.web.Rule(tornado.routing.PathMatches(r"^/api/auto/render$"), AutoRenderHandler),
@@ -650,10 +677,8 @@ RENDERED_HTML = '''<!DOCTYPE html>
     <section class="w-full lg:w-[360px] shrink-0 bg-white border border-slate-200/90 rounded-2xl p-5 shadow-sm flex flex-col gap-4">
       <div>
         <span class="font-bold text-slate-900 text-sm tracking-tight block mb-2">商品卖点与口播诉求</span>
-        <input type="text" id="auto-theme-input" value="多功能组合发光光剑玩具" class="w-full text-xs font-medium border border-slate-200 rounded-xl px-3 py-2 text-slate-800 focus:outline-none focus:border-slate-800">
-        <textarea id="auto-prompt-input" rows="3" class="w-full text-xs border border-slate-200 rounded-xl p-3 text-slate-700 resize-none leading-relaxed mt-2 focus:outline-none focus:border-slate-800">1. 多把任意组合旋转，高亮呼吸发光超酷炫。
-2. 顺滑轴承不卡顿，解压夜市/户外聚会焦点。
-3. 环保安全圆润边角，亲子互动绝佳好物。</textarea>
+        <input type="text" id="auto-theme-input" value="" placeholder="输入视频主题，如：便携挂脖风扇" class="w-full text-xs font-medium border border-slate-200 rounded-xl px-3 py-2 text-slate-800 focus:outline-none focus:border-slate-800">
+        <textarea id="auto-prompt-input" rows="3" placeholder="输入商品卖点与解说文案方向，例如：&#10;1. 双涡轮静音大风力，三档随心调节&#10;2. 挂脖免手持设计，运动通勤夏日降温神器" class="w-full text-xs border border-slate-200 rounded-xl p-3 text-slate-700 resize-none leading-relaxed mt-2 focus:outline-none focus:border-slate-800"></textarea>
       </div>
 
       <!-- 合成音视频关键参数区 -->
@@ -783,16 +808,14 @@ RENDERED_HTML = '''<!DOCTYPE html>
 
         <div>
           <label class="block text-slate-700 font-semibold mb-1.5">实拍参考图</label>
-          <div class="flex items-center gap-2.5" id="modal-ref-images">
-            <div class="w-14 h-14 rounded-xl bg-slate-900 text-slate-200 flex items-center justify-center text-xs font-bold shrink-0">
-              主图
-            </div>
+          <div class="flex items-center gap-2.5 flex-wrap" id="modal-ref-images">
             <label class="w-14 h-14 rounded-xl border-2 border-dashed border-slate-300 hover:border-slate-700 flex items-center justify-center text-slate-400 hover:text-slate-800 cursor-pointer shrink-0 transition-colors">
               <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-              <input type="file" accept="image/*" class="hidden" onchange="alert('已添加参考图: ' + this.files[0].name)">
+              <input type="file" accept="image/*" class="hidden" onchange="handleProductRefUpload(this)">
             </label>
           </div>
         </div>
+
       </div>
 
       <div class="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-100">
@@ -875,7 +898,11 @@ RENDERED_HTML = '''<!DOCTYPE html>
       countBadge.innerText = products.length + ' 个';
 
       if (!products.length) {
-        list.innerHTML = '<div class="text-xs text-slate-400 py-2">暂无商品，请点击右上角添加</div>';
+        list.innerHTML = `
+          <div onclick="openProductModal('add')" class="p-4 rounded-xl border border-dashed border-slate-200 hover:border-slate-400 bg-slate-50/50 hover:bg-slate-50 flex flex-col items-center justify-center text-center cursor-pointer transition-colors group">
+            <span class="text-xs text-slate-500 group-hover:text-slate-800 font-medium">+ 点击添加目标商品</span>
+          </div>
+        `;
         return;
       }
 
@@ -903,7 +930,12 @@ RENDERED_HTML = '''<!DOCTYPE html>
       countBadge.innerText = mats.length + ' 个';
 
       if (!mats.length) {
-        list.innerHTML = '<div class="text-xs text-slate-400 py-2">无视频素材</div>';
+        list.innerHTML = `
+          <label class="p-4 rounded-xl border border-dashed border-slate-200 hover:border-slate-400 bg-slate-50/50 hover:bg-slate-50 flex flex-col items-center justify-center text-center cursor-pointer transition-colors group">
+            <span class="text-xs text-slate-500 group-hover:text-slate-800 font-medium">+ 导入本地素材视频</span>
+            <input type="file" class="hidden" multiple accept="video/*" onchange="handleMaterialUpload(this)">
+          </label>
+        `;
         return;
       }
 
@@ -926,9 +958,18 @@ RENDERED_HTML = '''<!DOCTYPE html>
       document.getElementById('export-count').innerText = clips.length;
 
       if (!clips.length) {
-        list.innerHTML = '<div class="bg-white border border-slate-200/90 rounded-2xl p-8 text-center text-slate-400 text-xs">暂无切片数据，请点击左侧【开始智能识别切片】</div>';
+        list.innerHTML = `
+          <div class="bg-white border border-slate-200/90 rounded-2xl p-12 flex flex-col items-center justify-center text-center shadow-xs">
+            <div class="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center text-slate-400 mb-3">
+              <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+            </div>
+            <h3 class="text-sm font-semibold text-slate-800">暂无命中切片</h3>
+            <p class="text-xs text-slate-400 mt-1 max-w-sm">请在左侧添加目标商品规则与待检视频素材，设置采样间隔后点击【开始智能识别切片】。</p>
+          </div>
+        `;
         return;
       }
+
 
       list.innerHTML = clips.map((c, idx) => {
         const timeSpan = `${c.start.toFixed(2)}s — ${c.end.toFixed(2)}s`;
@@ -1190,6 +1231,8 @@ RENDERED_HTML = '''<!DOCTYPE html>
 
     // Product Modal
     let editingProductId = null;
+    let modalUploadedRefs = [];
+
     function openProductModal(mode, id) {
       editingProductId = id;
       const modal = document.getElementById('product-modal');
@@ -1201,17 +1244,54 @@ RENDERED_HTML = '''<!DOCTYPE html>
         title.innerText = '新增目标商品';
         nameInput.value = '';
         descInput.value = '';
+        modalUploadedRefs = [];
       } else {
-        const p = appState.currentTask.products.find(x => x.id === id);
+        const p = (appState.currentTask && appState.currentTask.products) ? appState.currentTask.products.find(x => x.id === id) : null;
         if (p) {
           title.innerText = '设置商品 · ' + p.name;
           nameInput.value = p.name;
           descInput.value = p.description;
+          modalUploadedRefs = (p.references || []).slice();
         }
       }
 
+      renderModalRefImages();
       modal.classList.remove('hidden');
       modal.classList.add('flex');
+    }
+
+    function renderModalRefImages() {
+      const container = document.getElementById('modal-ref-images');
+      container.innerHTML = modalUploadedRefs.map((r, i) => `
+        <div class="w-14 h-14 rounded-xl border border-slate-200 overflow-hidden relative group shrink-0">
+          <img src="${r}" class="w-full h-full object-cover">
+          <button onclick="modalUploadedRefs.splice(${i}, 1); renderModalRefImages();" class="absolute inset-0 bg-black/50 text-white opacity-0 group-hover:opacity-100 flex items-center justify-center text-xs font-bold transition-opacity cursor-pointer">✕</button>
+        </div>
+      `).join('') + `
+        <label class="w-14 h-14 rounded-xl border-2 border-dashed border-slate-300 hover:border-slate-700 flex items-center justify-center text-slate-400 hover:text-slate-800 cursor-pointer shrink-0 transition-colors">
+          <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+          <input type="file" accept="image/*" class="hidden" onchange="handleProductRefUpload(this)">
+        </label>
+      `;
+    }
+
+    async function handleProductRefUpload(input) {
+      if (!input.files || !input.files.length) return;
+      const formData = new FormData();
+      formData.append('file', input.files[0]);
+      try {
+        const resp = await fetch('/api/products/upload-ref', {
+          method: 'POST',
+          body: formData
+        });
+        const res = await resp.json();
+        if (res.url) {
+          modalUploadedRefs.push(res.url);
+          renderModalRefImages();
+        }
+      } catch (e) {
+        alert('上传参考图失败: ' + e.message);
+      }
     }
 
     function closeProductModal() {
@@ -1228,6 +1308,9 @@ RENDERED_HTML = '''<!DOCTYPE html>
         return;
       }
 
+      if (!appState.currentTask) {
+        appState.currentTask = { id: '空白任务', status: 'pending', products: [], sources: [], clips: [], step: 0.5 };
+      }
       if (!appState.currentTask.products) appState.currentTask.products = [];
 
       if (editingProductId) {
@@ -1235,13 +1318,14 @@ RENDERED_HTML = '''<!DOCTYPE html>
         if (p) {
           p.name = name;
           p.description = desc;
+          p.references = modalUploadedRefs;
         }
       } else {
         appState.currentTask.products.push({
           id: 'p' + (appState.currentTask.products.length + 1),
           name: name,
           description: desc,
-          references: []
+          references: modalUploadedRefs
         });
       }
 
@@ -1251,12 +1335,17 @@ RENDERED_HTML = '''<!DOCTYPE html>
 
     // Auto Workflow & Storyboards
     function loadDefaultStoryboard() {
-      regenerateScript();
+      appState.storyboard = [];
+      renderStoryboard();
     }
 
     async function regenerateScript() {
-      const theme = document.getElementById('auto-theme-input').value;
-      const prompt = document.getElementById('auto-prompt-input').value;
+      const theme = document.getElementById('auto-theme-input').value.trim();
+      const prompt = document.getElementById('auto-prompt-input').value.trim();
+      if (!theme) {
+        alert('请先填写视频主题（如：便携挂脖风扇）');
+        return;
+      }
       const txt = document.getElementById('regen-script-text');
       txt.innerText = 'AI 分镜编排中...';
 
@@ -1281,6 +1370,19 @@ RENDERED_HTML = '''<!DOCTYPE html>
       const badge = document.getElementById('storyboard-summary-badge');
       const shots = appState.storyboard || [];
       badge.innerText = `${shots.length} 段 · 预估 18.0s`;
+
+      if (!shots.length) {
+        list.innerHTML = `
+          <div class="bg-white border border-slate-200/90 rounded-2xl p-12 flex flex-col items-center justify-center text-center shadow-xs">
+            <div class="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center text-slate-400 mb-3">
+              <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
+            </div>
+            <h3 class="text-sm font-semibold text-slate-800">暂无分镜脚本</h3>
+            <p class="text-xs text-slate-400 mt-1 max-w-sm">请在左侧填写商品主题与卖点诉求，点击【重新生成 AI 脚本】编排分镜故事板。</p>
+          </div>
+        `;
+        return;
+      }
 
       list.innerHTML = shots.map((s, idx) => `
         <div class="bg-white border border-slate-200/90 rounded-2xl p-4 flex items-center justify-between gap-5 spring-hover shadow-xs">
@@ -1373,17 +1475,37 @@ RENDERED_HTML = '''<!DOCTYPE html>
       setTimeout(() => backdrop.classList.add('hidden'), 300);
     }
 
-    function handleMaterialUpload(input) {
-      if (input.files && input.files.length) {
-        alert('已成功载入素材文件：' + input.files[0].name);
+    async function handleMaterialUpload(input) {
+      if (!input.files || !input.files.length) return;
+      for (let i = 0; i < input.files.length; i++) {
+        const formData = new FormData();
+        formData.append('file', input.files[i]);
+        try {
+          await fetch('/api/materials/upload', {
+            method: 'POST',
+            body: formData
+          });
+        } catch (e) {}
       }
+      const sResp = await fetch('/api/state');
+      const sData = await sResp.json();
+      appState.materials = sData.materials || [];
+      renderMaterials();
+      alert('已成功导入素材视频');
     }
 
     function handleBgmUpload(input) {
       if (input.files && input.files.length) {
+        const sel = document.getElementById('auto-bgm-select');
+        const opt = document.createElement('option');
+        opt.value = input.files[0].name;
+        opt.innerText = input.files[0].name + ' (已导入)';
+        opt.selected = true;
+        sel.prepend(opt);
         alert('已导入自定义背景音乐：' + input.files[0].name);
       }
     }
+
 
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
