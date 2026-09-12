@@ -782,6 +782,7 @@ def get_workbench_rules():
         tornado.web.Rule(tornado.routing.PathMatches(r"^/api/auto/script$"), AutoScriptHandler),
         tornado.web.Rule(tornado.routing.PathMatches(r"^/api/auto/render$"), AutoRenderHandler),
         tornado.web.Rule(tornado.routing.PathMatches(r"^/api/auto/status/(?P<task_id>[^/]+)$"), AutoStatusHandler),
+        tornado.web.Rule(tornado.routing.PathMatches(r"^/api/workbench-assets/(?P<path>.*)$"), tornado.web.StaticFileHandler, {"path": "/NarratoAI/workbench-assets"}),
         tornado.web.Rule(tornado.routing.PathMatches(r"^/api/media/(?P<path>.*)$"), MediaStreamHandler, {"path": "/NarratoAI"}),
     ]
 
@@ -820,7 +821,7 @@ RENDERED_HTML = '''<!DOCTYPE html>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>NarratoAI · 智能剪辑工作台</title>
-  <script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>
+  <script src="/api/workbench-assets/tailwindcss.min.js?v=1"></script>
   <style>
     /* Same native player as storyboard.html; bound portrait media to the viewport. */
     #theater-modal > .theater-panel { width:min(960px,100%); height:min(760px,calc(100dvh - 48px)); min-height:0; display:flex; flex-direction:column; }
