@@ -824,6 +824,12 @@ RENDERED_HTML = '''<!DOCTYPE html>
   <title>NarratoAI · 智能剪辑工作台</title>
   <script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>
   <style>
+    /* Same native player as storyboard.html; bound portrait media to the viewport. */
+    #theater-modal > .theater-panel { width:min(960px,100%); height:min(760px,calc(100dvh - 48px)); min-height:0; display:flex; flex-direction:column; }
+    #theater-modal .theater-header { flex:0 0 auto; min-width:0; }
+    #theater-modal .theater-stage { flex:1 1 0; min-height:0; position:relative; background:#000; }
+    #theater-video { position:absolute; inset:0; display:block; width:100%; height:100%; object-fit:contain; }
+    #theater-sub { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     ::-webkit-scrollbar { width: 5px; height: 5px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 9999px; }
@@ -1116,20 +1122,20 @@ RENDERED_HTML = '''<!DOCTYPE html>
   <!-- 浮窗全屏影院播放器 (Theater Modal) -->
   <!-- ============================================== -->
   <div id="theater-modal" class="fixed inset-0 bg-slate-950/75 backdrop-blur-md z-50 hidden items-center justify-center p-4 sm:p-6 transition-all">
-    <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-4xl w-full overflow-hidden shadow-2xl flex flex-col animate-in fade-in zoom-in-95 duration-150">
-      <div class="px-5 py-3 bg-slate-950/95 border-b border-slate-800 flex items-center justify-between text-white">
-        <div class="flex items-center gap-2.5">
+    <div class="theater-panel bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="theater-title">
+      <div class="theater-header px-5 py-3 bg-slate-950/95 border-b border-slate-800 flex items-center justify-between text-white">
+        <div class="flex items-center gap-2.5 min-w-0">
           <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
           <span id="theater-title" class="font-semibold text-sm text-slate-100">画面精准回放</span>
           <span id="theater-sub" class="text-xs text-slate-400 font-mono">2026-09-08_原片.MOV</span>
         </div>
-        <button onclick="closeTheaterModal()" class="w-7 h-7 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center transition-colors cursor-pointer">
+        <button aria-label="关闭播放器" onclick="closeTheaterModal()" class="w-7 h-7 shrink-0 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center transition-colors cursor-pointer">
           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
         </button>
       </div>
 
-      <div class="w-full aspect-video bg-black relative flex flex-col items-center justify-center">
-        <video id="theater-video" class="w-full h-full object-contain" controls autoplay loop playsinline></video>
+      <div class="theater-stage">
+        <video id="theater-video" aria-label="视频播放器" controls autoplay playsinline preload="metadata"></video>
       </div>
     </div>
   </div>
