@@ -172,10 +172,12 @@ def render_settings(tr):
                 return f"{item['name']}{desc}"
             current_id = config.app.get("elevenlabs_voice_id", "")
             default_index = voice_ids.index(current_id) if current_id in voice_ids else 0
-            chosen_id = st.selectbox("从已拉取音色库选择", voice_ids, index=default_index, format_func=format_voice, key="elevenlabs_voice_picker")
-            if chosen_id and chosen_id != current_id:
-                config.app["elevenlabs_voice_id"] = chosen_id
-                config.ui["voice_name"] = chosen_id
+            def _on_voice_pick():
+                picked = st.session_state.get("elevenlabs_voice_picker")
+                if picked:
+                    config.app["elevenlabs_voice_id"] = picked
+                    config.ui["voice_name"] = picked
+            st.selectbox("从已拉取音色库选择", voice_ids, index=default_index, format_func=format_voice, key="elevenlabs_voice_picker", on_change=_on_voice_pick)
 
     config.ui["voice_name"] = config.app["elevenlabs_voice_id"]
     st.session_state["voice_rate"] = 1.0
