@@ -218,13 +218,11 @@ class StateHandler(BaseHandler):
             current_task = {
                 "id": "空白任务",
                 "status": "pending",
-                "products": [dict(p) for p in global_products],
+                "products": [],
                 "sources": [],
                 "clips": [],
                 "step": 0.5
             }
-        elif not current_task.get("products") and global_products:
-            current_task["products"] = [dict(p) for p in global_products]
 
 
         # 3. Materials
@@ -1229,16 +1227,13 @@ RENDERED_HTML = '''<!DOCTYPE html>
         appState.currentTask = data.current_task;
         appState.globalProducts = data.global_products || [];
         appState.objectTasks = data.object_tasks || [];
-        appState.materials = data.materials || [];
+        restoreTaskMaterials();
         appState.voices = data.voices || [];
         appState.autoTasks = data.auto_tasks || [];
         const bgmSelect = document.getElementById('auto-bgm-select');
         bgmSelect.replaceChildren(new Option('无背景音乐', ''));
         (data.bgms || []).forEach(b => bgmSelect.add(new Option(b.name, b.path)));
 
-        if (appState.currentTask && (!appState.currentTask.products || !appState.currentTask.products.length) && appState.globalProducts.length) {
-          appState.currentTask.products = appState.globalProducts.map(p => Object.assign({}, p));
-        }
 
         renderTopTaskBadge();
         renderProducts();
@@ -1274,9 +1269,18 @@ RENDERED_HTML = '''<!DOCTYPE html>
 
     function renderTopTaskBadge() {
       const nameElem = document.getElementById('top-task-name');
-      if (appState.currentTask) {
-        nameElem.innerText = appState.currentTask.id.slice(0, 16);
-      }
+      const task = appState.currentTask;
+      nameElem.innerText = task && task.status !== 'pending'
+        ? (task.products || []).map(p => p.name).filter(Boolean).join(' / ') || '识别任务'
+        : '新建任务';
+    }
+
+    function restoreTaskMaterials() {
+      appState.materials = ((appState.currentTask || {}).sources || []).map(s => ({
+        ...s, duration: typeof s.duration === 'number'
+          ? Math.floor(s.duration / 60).toString().padStart(2, '0') + ':' + Math.round(s.duration % 60).toString().padStart(2, '0')
+          : s.duration || ''
+      }));
     }
 
     function renderProducts() {
@@ -1383,7 +1387,8 @@ RENDERED_HTML = '''<!DOCTYPE html>
         }
         const data = await resp.json();
         if (data.materials) {
-          appState.materials = data.materials;
+          const paths = new Set(appState.materials.map(m => m.path));
+          appState.materials = data.materials.filter(m => paths.has(m.path));
         } else {
           appState.materials = (appState.materials || []).filter(m => m.name !== name);
         }
@@ -1483,7 +1488,7 @@ RENDERED_HTML = '''<!DOCTYPE html>
             <div class="flex items-center justify-between">
               <div class="flex items-center gap-2">
                 <span class="w-2 h-2 rounded-full ${t.status === 'complete' ? 'bg-emerald-500' : 'bg-amber-500'}"></span>
-                <span class="font-mono font-bold text-xs text-slate-900">${t.id.slice(0, 16)}</span>
+                <span class="font-bold text-xs text-slate-900">${String(t.title || '识别任务').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')}</span>
               </div>
               <span class="text-[10px] font-semibold text-emerald-800 bg-emerald-100/80 px-2 py-0.5 rounded-full">${t.clips_count} 切片</span>
             </div>
@@ -1558,6 +1563,7 @@ RENDERED_HTML = '''<!DOCTYPE html>
         const resp = await fetch('/api/object/task/' + taskId);
         if (!resp.ok) throw new Error('Failed to load task');
         appState.currentTask = await resp.json();
+        restoreTaskMaterials();
         renderMaterials();
         renderTopTaskBadge();
         renderProducts();
@@ -1571,25 +1577,20 @@ RENDERED_HTML = '''<!DOCTYPE html>
 
     function createNewTask() {
       const newId = 'task-' + Math.random().toString(36).substring(2, 10);
-      renderMaterials();
-      const initialProducts = (appState.globalProducts && appState.globalProducts.length)
-        ? appState.globalProducts.map(p => Object.assign({}, p))
-        : [];
+      appState.materials = [];
       appState.currentTask = {
         id: newId,
         status: 'pending',
-        products: initialProducts,
+        products: [],
         sources: [],
         clips: [],
         step: 0.5
       };
       renderTopTaskBadge();
+      renderMaterials();
       renderProducts();
       renderClips();
       closeTaskDrawer();
-      if (!initialProducts.length) {
-        openProductModal('add');
-      }
     }
 
     function setIntervalStep(step, btn) {
@@ -1632,6 +1633,7 @@ RENDERED_HTML = '''<!DOCTYPE html>
         const activeJobId = res.job_id || (appState.currentTask ? appState.currentTask.id : '');
         if (appState.currentTask && res.job_id) {
           appState.currentTask.id = res.job_id;
+          appState.currentTask.status = 'running';
           renderTopTaskBadge();
         }
 
@@ -2160,6 +2162,7 @@ RENDERED_HTML = '''<!DOCTYPE html>
           }
           const data = await resp.json();
           if (data.status === 'success') {
+            appState.materials.push({path: data.path, name: data.path.split('/').pop(), duration: ''});
             successCount++;
           } else {
             throw new Error(data.error || '上传异常');
@@ -2177,7 +2180,8 @@ RENDERED_HTML = '''<!DOCTYPE html>
       try {
         const sResp = await fetch('/api/state');
         const sData = await sResp.json();
-        appState.materials = sData.materials || [];
+        const paths = new Set(appState.materials.map(m => m.path));
+        appState.materials = (sData.materials || []).filter(m => paths.has(m.path));
         renderMaterials();
       } catch (e) {}
 
