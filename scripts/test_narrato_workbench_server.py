@@ -20,7 +20,7 @@ class WorkbenchServerTestCase(tornado.testing.AsyncHTTPTestCase):
                         patch.object(wb, 'VIDEO_RESOURCE', self.root/'videos'),
                         patch.object(wb, 'TASKS_ROOT', self.root/'tasks'),
                         patch.object(wb, 'GLOBAL_PRODUCTS_FILE', self.root/'products.json'),
-                        patch.dict(wb.config.app, {'elevenlabs_api_key':'', 'vision_openai_model_name':'deepseek-test-vision'})]
+                        patch.dict(wb.config.app, {'elevenlabs_api_key':'', 'vision_openai_api_key':'test', 'vision_openai_model_name':'deepseek-test-vision'})]
         for p in self.patches:
             p.start()
         for p in (wb.OBJECT_ROOT, wb.VIDEO_RESOURCE, wb.TASKS_ROOT):
