@@ -14,3 +14,6 @@ COPY scripts/narrato_script_preview.py /NarratoAI/app/services/narrato_script_pr
 RUN /opt/venv/bin/python /NarratoAI/app/services/narrato_script_preview.py
 COPY scripts/narrato_object_demo.py /NarratoAI/app/services/narrato_object_demo.py
 RUN /opt/venv/bin/python /NarratoAI/app/services/narrato_object_demo.py
+COPY scripts/narrato_workbench_server.py /NarratoAI/app/services/narrato_workbench_server.py
+COPY scripts/sitecustomize.py /opt/venv/lib/python3.12/site-packages/sitecustomize.py
+

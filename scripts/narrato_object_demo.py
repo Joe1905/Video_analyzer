@@ -953,15 +953,24 @@ def render_workbench(tr):
 
 def install():
     path = Path('/NarratoAI/webui.py')
+    if not path.is_file():
+        return
     source = path.read_text(encoding='utf-8')
-    before = '    basic_settings.render_basic_settings(tr)'
-    assert source.count(before) == 1, "Pinned source changed: basic_settings"
-    replacement = '    from app.services.narrato_object_demo import render_workbench\n    render_workbench(tr)\n    return'
-    source = source.replace(before, replacement, 1)
-    compile(source, str(path), 'exec')
-    path.write_text(source, encoding='utf-8')
+    if 'st.title(f"Narrato:blue[AI]:sunglasses: 📽️")' in source:
+        pattern = re.compile(
+            r'    st\.title\(f"Narrato:blue\[AI\]:sunglasses: 📽️"\)[\s\S]*?(?:render_workbench\(tr\)\s+return|basic_settings\.render_basic_settings\(tr\))'
+        )
+        source, n = pattern.subn('    # Modern Workbench: legacy header and controls removed\n    return', source, count=1)
+        assert n == 1, "Failed to strip legacy header from webui.py"
+        compile(source, str(path), 'exec')
+        path.write_text(source, encoding='utf-8')
+    elif 'basic_settings.render_basic_settings(tr)' in source:
+        source = source.replace('    basic_settings.render_basic_settings(tr)', '    # Modern Workbench: legacy header and controls removed\n    return', 1)
+        compile(source, str(path), 'exec')
+        path.write_text(source, encoding='utf-8')
 
 
 if __name__ == '__main__':
     install()
+
 

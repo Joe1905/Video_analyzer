@@ -212,8 +212,12 @@ def install():
     }
     for filename, replacements in patches.items():
         path = Path(filename)
+        if not path.is_file():
+            continue
         source = path.read_text(encoding="utf-8")
         for before, after in replacements:
+            if source.count(before) == 0 and after in source:
+                continue
             assert source.count(before) == 1, f"Pinned source changed: {filename}: {before}"
             source = source.replace(before, after, 1)
         compile(source, filename, "exec")
@@ -222,3 +226,4 @@ def install():
 
 if __name__ == "__main__":
     install()
+
