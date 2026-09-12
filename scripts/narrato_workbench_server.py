@@ -212,7 +212,11 @@ class GlobalProductsHandler(BaseHandler):
         self.write_json({"status": "success", "products": load_global_products()})
 
     def post(self):
-        body = json.loads(self.request.body.decode("utf-8") or "{}")
+        try:
+            body = json.loads(self.request.body.decode("utf-8") or "{}")
+        except Exception:
+            self.write_json({"error": "无效的JSON数据"}, status=400)
+            return
         action = body.get("action", "save")
         products = load_global_products()
 
