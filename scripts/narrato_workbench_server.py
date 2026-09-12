@@ -554,6 +554,16 @@ class ObjectExportHandler(BaseHandler):
                     obj_demo.save(target_dir / 'export.json', record)
                 try:
                     archive = obj_demo.export(target_dir, selected, progress=progress)
+                    # Replace only after the new archive is complete; failure keeps the old result.
+                    for old in target_dir.glob('export-*'):
+                        if old in (archive, archive.with_suffix('')) or not re.fullmatch(r'export-[a-f0-9]{8}(?:\.zip)?', old.name):
+                            continue
+                        if old.is_symlink():
+                            old.unlink()
+                        elif old.is_dir():
+                            shutil.rmtree(old)
+                        else:
+                            old.unlink()
                     record.update(status='complete', message='导出完成', archive_path=str(archive),
                                   download_url=f'/api/object/download/{job_id}?file={archive.name}')
                 except Exception as exc:
@@ -1129,7 +1139,7 @@ RENDERED_HTML = '''<!DOCTYPE html>
 
         <button onclick="exportClips()" id="export-clips-btn" class="px-4 py-2 rounded-xl bg-slate-950 hover:bg-slate-800 text-white font-semibold text-xs transition-all shadow-xs flex items-center gap-1.5 cursor-pointer active:scale-98">
           <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
-          <span><span id="export-label">按商品分类导出 ZIP</span> (<span id="export-count">0</span>)</span>
+          <span><span id="export-label">导出 ZIP</span> (<span id="export-count">0</span>)</span>
         </button>
       </div>
 
@@ -1560,7 +1570,7 @@ RENDERED_HTML = '''<!DOCTYPE html>
         return `
           <div class="bg-white border border-slate-200/90 rounded-2xl p-4 flex items-center justify-between gap-5 spring-hover shadow-xs">
             <div class="flex items-center gap-4 min-w-0 flex-1">
-              <input type="checkbox" ${c.status === 'present' ? 'checked' : 'disabled'} onchange="updateCount()" data-idx="${idx}" class="clip-box w-4 h-4 rounded border-slate-300 text-slate-900 focus:ring-0 cursor-pointer shrink-0">
+              <input type="checkbox" ${c.status !== 'present' ? 'disabled' : (!appState.currentTask.export_selected || appState.currentTask.export_selected.includes(idx) ? 'checked' : '')} onchange="updateCount()" data-idx="${idx}" class="clip-box w-4 h-4 rounded border-slate-300 text-slate-900 focus:ring-0 cursor-pointer shrink-0">
               <div onclick="previewClip(${idx})"
                    class="w-[120px] h-[68px] rounded-xl bg-slate-950 overflow-hidden relative group cursor-pointer shrink-0 border border-slate-200 shadow-xs flex items-center justify-center play-glow">
                 ${mediaPath ? `<img src="${streamUrl}" class="w-full h-full object-cover opacity-85 group-hover:opacity-100 transition-opacity">` : `
@@ -1797,18 +1807,23 @@ RENDERED_HTML = '''<!DOCTYPE html>
     }
 
     let exportPoll;
+    let lastExportState = {status:'idle'};
     function showExportState(data) {
+      lastExportState = data;
       const btn = document.getElementById('export-clips-btn');
       const status = document.getElementById('export-status');
       btn.disabled = data.status === 'running';
-      document.getElementById('export-label').textContent = btn.disabled ? '后台导出中' : '按商品分类导出 ZIP';
+      document.getElementById('export-label').textContent = btn.disabled ? '后台导出中' : '导出 ZIP';
       status.classList.remove('hidden');
       status.textContent = data.status === 'idle' ? '任务、视频素材及导出结果保留 7 天，商品和参考图长期保留。' : (data.message || '') + (btn.disabled ? ' · 可刷新或切换任务，后台继续处理。' : '');
-      if (data.download_url) {
+      const selected = Array.from(document.querySelectorAll('.clip-box:checked')).map(b => Number(b.getAttribute('data-idx'))).sort((a,b) => a-b);
+      const matches = JSON.stringify(selected) === JSON.stringify(data.selected || []);
+      if (data.status === 'complete' && !matches) status.textContent = '勾选已变化，请重新导出；成功后将替换旧压缩包。';
+      if (data.download_url && matches) {
         const link = document.createElement('a');
         link.href = data.download_url;
-        link.textContent = '下载已生成的 ZIP';
-        link.className = 'underline ml-2';
+        link.textContent = '下载 ZIP';
+        link.className = 'inline-block rounded-lg bg-slate-900 text-white px-3 py-2 ml-2';
         status.appendChild(link);
       }
     }
@@ -1869,6 +1884,7 @@ RENDERED_HTML = '''<!DOCTYPE html>
     function updateCount() {
       const count = document.querySelectorAll('.clip-box:checked').length;
       document.getElementById('export-count').innerText = count;
+      showExportState(lastExportState);
     }
 
     // Theater Modal

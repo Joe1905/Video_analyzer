@@ -162,6 +162,16 @@ class WorkbenchServerTestCase(tornado.testing.AsyncHTTPTestCase):
         reused = self.post_json('/api/object/export', {'job_id':'sample','selected_indices':[0]})
         self.assertEqual(json.loads(reused.body)['download_url'], download)
         self.assertEqual(self.fetch(download).code, 200)
+        manifest_path = wb.OBJECT_ROOT/'sample/manifest.json'
+        manifest = json.loads(manifest_path.read_text())
+        manifest['clips'].append(dict(manifest['clips'][0], end=0.5))
+        wb.obj_demo.save(manifest_path, manifest)
+        response = self.post_json('/api/object/export', {'job_id':'sample','selected_indices':[1]})
+        self.assertEqual(response.code, 202)
+        replacement = self.wait_job('/api/object/export-status/', 'sample')
+        self.assertNotEqual(replacement['download_url'], download)
+        self.assertFalse(Path(exported['archive_path']).exists())
+        self.assertTrue(Path(replacement['archive_path']).exists())
         from app.services.narrato_multi_material import MultiMaterialAnalysisService
         script = [{'_id':1,'video_id':1,'video_name':video.name,'video_path':str(video),
                    'timestamp':'00:00:00,000-00:00:01,000','picture':'red','narration':'Red.', 'OST':0}]

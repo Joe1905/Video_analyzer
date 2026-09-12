@@ -27,7 +27,7 @@ vm.runInContext(code, context);
   await pending;
   assert.equal(elements['export-clips-btn'].disabled, true);
   const polling = context.refreshExportStatus();
-  finish({ok:true, json:async () => ({status:'complete', download_url:'/result.zip'})});
+  finish({ok:true, json:async () => ({status:'complete', selected:[0], download_url:'/result.zip'})});
   await polling;
   assert.equal(elements['export-clips-btn'].disabled, false);
   assert.equal(elements['export-status'].link.href, '/result.zip');

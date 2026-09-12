@@ -319,7 +319,7 @@ def _export(root, selected, progress=lambda message: None):
         for file in output.rglob('*'):
             if file.is_file():
                 zip_file.write(file, file.relative_to(output))
-    manifest.update(status='complete', archive=str(archive))
+    manifest.update(status='complete', archive=str(archive), export_selected=selected)
     save(path, manifest)
     return archive
 
