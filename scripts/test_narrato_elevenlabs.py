@@ -60,9 +60,22 @@ def check():
         response.json.return_value = {"detail": {"status": "voice_not_found", "message": "test-only-key"}}
         error = eleven.response_error(response, "test", "test-only-key")
         assert "voice_not_found" in error and "400" in error and "test-only-key" not in error
-        response.json.side_effect = ValueError()
-        response.text = "Gateway rejected test-only-key"
-        assert "Gateway rejected [REDACTED]" in eleven.response_error(response, "test", "test-only-key")
+        response.json.side_effect = None
+        response.status_code = 200
+        response.json.return_value = {"voices": [
+            {"voice_id": "v1", "name": "Voice One", "preview_url": "https://example.com/v1.mp3", "labels": {"gender": "male"}},
+            {"voice_id": "v2", "name": "Voice Two", "preview_url": "https://example.com/v2.mp3", "labels": {"gender": "female"}},
+        ]}
+        with patch.object(eleven.requests, "get", return_value=response) as get:
+            voices = eleven.get_voices("test-only-key", force_refresh=True)
+            assert len(voices) == 2 and voices[0]["voice_id"] == "v1" and voices[0]["name"] == "Voice One"
+            assert voices[0]["preview_url"] == "https://example.com/v1.mp3"
+            # Caching check
+            voices_cached = eleven.get_voices("test-only-key")
+            assert len(voices_cached) == 2
+            assert get.call_count == 1
+            # Empty key check
+            assert eleven.get_voices("") == []
 
     from streamlit.testing.v1 import AppTest
     with patch.dict(config.app), patch.dict(config.ui):

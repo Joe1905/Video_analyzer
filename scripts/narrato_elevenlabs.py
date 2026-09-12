@@ -95,6 +95,55 @@ def get_preview(voice_id, key):
         return None
 
 
+_VOICES_CACHE = {}
+
+
+def get_voices(key=None, force_refresh=False):
+    """Retrieve available ElevenLabs voices with their names, preview URLs and labels."""
+    if not key:
+        try:
+            from app.config import config
+            key = config.app.get("elevenlabs_api_key", "").strip()
+        except Exception:
+            key = ""
+    if not key or not str(key).strip():
+        return []
+    key_str = str(key).strip()
+    import time
+    now = time.monotonic()
+    cached = _VOICES_CACHE.get(key_str)
+    if cached and not force_refresh and (now - cached["time"] < 300):
+        return cached["voices"]
+    try:
+        response = requests.get(
+            "https://api.elevenlabs.io/v1/voices",
+            headers={"xi-api-key": key_str},
+            timeout=(5, 15)
+        )
+        if response.status_code != 200:
+            logger.warning(f"ElevenLabs 获取音色列表失败：HTTP {response.status_code}")
+            return []
+        data = response.json()
+        voices = []
+        for v in data.get("voices", []):
+            vid = v.get("voice_id", "")
+            if not vid:
+                continue
+            voices.append({
+                "voice_id": vid,
+                "name": v.get("name", vid),
+                "category": v.get("category", ""),
+                "preview_url": v.get("preview_url", "") or "",
+                "labels": v.get("labels") or {},
+                "description": v.get("description") or "",
+            })
+        _VOICES_CACHE[key_str] = {"time": now, "voices": voices}
+        return voices
+    except Exception as exc:
+        logger.warning(f"ElevenLabs 获取音色列表异常：{exc}")
+        return []
+
+
 def render_settings(tr):
     import streamlit as st
     from app.config import config
@@ -107,6 +156,27 @@ def render_settings(tr):
         key = f"elevenlabs_{name}"
         config.app[key] = st.text_input(label, value=config.app.get(key, default),
                                         type="password" if name == "api_key" else "default", key=key).strip()
+
+    # If API Key is present, provide a convenient quick voice selection list
+    api_key = config.app.get("elevenlabs_api_key", "").strip()
+    if api_key:
+        voices = get_voices(api_key)
+        if voices:
+            voice_ids = [v["voice_id"] for v in voices]
+            def format_voice(vid):
+                item = next((v for v in voices if v["voice_id"] == vid), None)
+                if not item:
+                    return vid
+                lbls = item.get("labels", {})
+                desc = f" ({lbls.get('gender', '')} {lbls.get('accent', '')})".strip() if lbls else ""
+                return f"{item['name']}{desc}"
+            current_id = config.app.get("elevenlabs_voice_id", "")
+            default_index = voice_ids.index(current_id) if current_id in voice_ids else 0
+            chosen_id = st.selectbox("从已拉取音色库选择", voice_ids, index=default_index, format_func=format_voice, key="elevenlabs_voice_picker")
+            if chosen_id and chosen_id != current_id:
+                config.app["elevenlabs_voice_id"] = chosen_id
+                config.ui["voice_name"] = chosen_id
+
     config.ui["voice_name"] = config.app["elevenlabs_voice_id"]
     st.session_state["voice_rate"] = 1.0
     st.session_state["voice_pitch"] = 1.0
