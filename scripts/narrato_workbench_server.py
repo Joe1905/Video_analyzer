@@ -44,6 +44,46 @@ def save_global_products(products):
     GLOBAL_PRODUCTS_FILE.write_text(json.dumps(products, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+MATERIAL_DURATION_CACHE = {}
+
+
+def format_duration(dur_val) -> str:
+    try:
+        if isinstance(dur_val, dict):
+            sec = float(dur_val.get("duration", 0))
+        else:
+            sec = float(dur_val)
+        secs = int(round(sec))
+        m = secs // 60
+        s = secs % 60
+        return f"{m:02d}:{s:02d}"
+    except Exception:
+        return "00:08"
+
+
+def get_materials_list():
+    materials = []
+    if VIDEO_RESOURCE.exists():
+        valid_exts = {".mov", ".mp4", ".mkv", ".avi", ".webm"}
+        v_files = [f for f in VIDEO_RESOURCE.iterdir() if f.is_file() and f.suffix.lower() in valid_exts]
+        for v in sorted(v_files, key=os.path.getmtime, reverse=True)[:50]:
+            dur_str = MATERIAL_DURATION_CACHE.get(v.name)
+            if not dur_str:
+                try:
+                    dur_val = _probe_video(v)
+                    dur_str = format_duration(dur_val)
+                except Exception:
+                    dur_str = "00:08"
+                MATERIAL_DURATION_CACHE[v.name] = dur_str
+            materials.append({
+                "name": v.name,
+                "duration": dur_str,
+                "path": str(v),
+                "size": v.stat().st_size
+            })
+    return materials
+
+
 # Background job tracking
 ACTIVE_JOBS = {}
 
@@ -159,15 +199,7 @@ class StateHandler(BaseHandler):
 
 
         # 3. Materials
-        materials = []
-        if VIDEO_RESOURCE.exists():
-            for v in sorted(VIDEO_RESOURCE.glob("*.MOV"), key=os.path.getmtime, reverse=True)[:10]:
-                materials.append({
-                    "name": v.name,
-                    "duration": "00:08",
-                    "path": str(v),
-                    "size": v.stat().st_size
-                })
+        materials = get_materials_list()
 
         # 4. Voices
         voices = []
@@ -453,13 +485,48 @@ class MaterialUploadHandler(BaseHandler):
             dest = VIDEO_RESOURCE / orig_name
             with open(dest, "wb") as f:
                 f.write(uf["body"])
+            MATERIAL_DURATION_CACHE.pop(orig_name, None)
             saved.append({"filename": orig_name, "path": str(dest)})
 
         self.write_json({
             "status": "success",
             "files": saved,
             "filename": saved[0]["filename"] if saved else "",
-            "path": saved[0]["path"] if saved else ""
+            "path": saved[0]["path"] if saved else "",
+            "materials": get_materials_list()
+        })
+
+
+class MaterialDeleteHandler(BaseHandler):
+    """Delete an uploaded material video."""
+    def post(self):
+        try:
+            body = json.loads(self.request.body.decode("utf-8") or "{}")
+        except Exception:
+            self.write_json({"error": "无效的JSON数据"}, status=400)
+            return
+
+        filename = body.get("name") or body.get("filename")
+        if not filename:
+            self.write_json({"error": "缺少素材名称"}, status=400)
+            return
+
+        safe_name = Path(filename).name
+        target = VIDEO_RESOURCE / safe_name
+        deleted = False
+        if target.is_file():
+            try:
+                target.unlink()
+                deleted = True
+            except Exception as e:
+                self.write_json({"error": f"删除素材失败: {str(e)}"}, status=500)
+                return
+
+        MATERIAL_DURATION_CACHE.pop(safe_name, None)
+        self.write_json({
+            "status": "success",
+            "message": f"素材 {safe_name} 已删除" if deleted else f"未找到素材 {safe_name}",
+            "materials": get_materials_list()
         })
 
 
@@ -604,6 +671,7 @@ def get_workbench_rules():
         tornado.web.Rule(tornado.routing.PathMatches(r"^/api/object/export$"), ObjectExportHandler),
         tornado.web.Rule(tornado.routing.PathMatches(r"^/api/object/download/(?P<job_id>[^/]+)$"), ObjectDownloadHandler),
         tornado.web.Rule(tornado.routing.PathMatches(r"^/api/materials/upload$"), MaterialUploadHandler),
+        tornado.web.Rule(tornado.routing.PathMatches(r"^/api/materials/delete$"), MaterialDeleteHandler),
         tornado.web.Rule(tornado.routing.PathMatches(r"^/api/products$"), GlobalProductsHandler),
         tornado.web.Rule(tornado.routing.PathMatches(r"^/api/products/upload-ref$"), ProductRefUploadHandler),
         tornado.web.Rule(tornado.routing.PathMatches(r"^/api/voices$"), VoicesHandler),
@@ -1157,11 +1225,51 @@ RENDERED_HTML = '''<!DOCTYPE html>
       }
 
       list.innerHTML = mats.map(m => `
-        <div class="flex items-center justify-between px-3 py-2 rounded-xl bg-slate-50/80 border border-slate-200/80 text-xs">
-          <span class="truncate font-mono text-slate-800 font-medium">${m.name}</span>
-          <span class="text-xs text-slate-400 font-mono shrink-0 ml-2">${m.duration || '00:08'}</span>
+        <div class="group flex items-center justify-between px-3 py-2 rounded-xl bg-slate-50/80 hover:bg-slate-100/90 border border-slate-200/80 hover:border-slate-300 transition-all text-xs">
+          <div onclick="openTheaterModal('${m.name}', '${m.duration || ''}', '素材视频预览 · ${m.name}')" class="flex items-center gap-2 min-w-0 flex-1 cursor-pointer" title="点击播放预览素材视频">
+            <div class="w-6 h-6 rounded-lg bg-slate-200/80 group-hover:bg-slate-900 group-hover:text-white flex items-center justify-center text-slate-600 transition-colors shrink-0">
+              <svg class="w-3 h-3 ml-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+            </div>
+            <span class="truncate font-mono text-slate-800 font-medium group-hover:text-slate-950">${m.name}</span>
+          </div>
+          <div class="flex items-center gap-2 shrink-0 ml-2">
+            <span class="text-xs text-slate-400 font-mono">${m.duration || '00:08'}</span>
+            <button type="button" onclick="deleteMaterial(event, '${m.name}')" title="删除素材" class="opacity-0 group-hover:opacity-100 w-6 h-6 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 flex items-center justify-center text-xs transition-opacity cursor-pointer">
+              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+            </button>
+          </div>
         </div>
       `).join('');
+    }
+
+    async function deleteMaterial(e, name) {
+      if (e) e.stopPropagation();
+      if (!name) return;
+      if (!confirm('确定要删除视频素材“' + name + '”吗？')) return;
+
+      try {
+        const resp = await fetch('/api/materials/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: name })
+        });
+        if (!resp.ok) {
+          const err = await resp.json();
+          throw new Error(err.error || ('HTTP ' + resp.status));
+        }
+        const data = await resp.json();
+        if (data.materials) {
+          appState.materials = data.materials;
+        } else {
+          appState.materials = (appState.materials || []).filter(m => m.name !== name);
+        }
+        if (appState.currentTask && appState.currentTask.sources) {
+          appState.currentTask.sources = appState.currentTask.sources.filter(s => s !== name && (typeof s !== 'object' || s.name !== name));
+        }
+        renderMaterials();
+      } catch (err) {
+        alert('删除素材失败: ' + err.message);
+      }
     }
 
     function renderClips() {
@@ -1433,11 +1541,17 @@ RENDERED_HTML = '''<!DOCTYPE html>
 
     // Theater Modal
     function openTheaterModal(source, time, title) {
-      document.getElementById('theater-title').innerText = title;
-      document.getElementById('theater-sub').innerText = source + ' (' + time + ')';
+      document.getElementById('theater-title').innerText = title || '画面精准回放';
+      document.getElementById('theater-sub').innerText = source + (time ? ' (' + time + ')' : '');
       const videoElem = document.getElementById('theater-video');
-      const fname = (source || '').split('/').pop().split(String.fromCharCode(92)).pop();
-      videoElem.src = '/api/media/resource/videos/' + encodeURIComponent(fname);
+      let videoSrc = '';
+      if (source && (source.startsWith('/api/media/') || source.startsWith('http'))) {
+        videoSrc = source;
+      } else {
+        const fname = (source || '').split('/').pop().split(String.fromCharCode(92)).pop();
+        videoSrc = '/api/media/resource/videos/' + encodeURIComponent(fname);
+      }
+      videoElem.src = videoSrc;
       videoElem.play().catch(() => {});
 
       const modal = document.getElementById('theater-modal');
