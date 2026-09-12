@@ -25,15 +25,17 @@ def check():
         response = Mock(status_code=200, headers={})
         response.json.return_value = payload
         script = [{"_id": 1, "OST": 2, "timestamp": "00:00:00,000-00:00:03,000", "narration": text}]
+        import uuid
+        test_voice = "testVoice_" + uuid.uuid4().hex[:8]
         with patch.object(eleven.requests, "post", return_value=response) as post, \
                 patch.object(voice.utils, "task_dir", return_value=directory):
-            results = voice.tts_multiple("test", script, "testVoice", 1, 1, "elevenlabs")
+            results = voice.tts_multiple("test", script, test_voice, 1, 1, "elevenlabs")
             assert len(results) == 1 and results[0]["duration"] > 0
             assert Path(results[0]["audio_file"]).read_bytes() == audio.read_bytes()
             subtitles = Path(results[0]["subtitle_file"]).read_text()
             assert "指尖旋转" in subtitles and "彩色发光" in subtitles and "-->" in subtitles
             assert post.call_args.kwargs["headers"]["xi-api-key"] == "test-only-key"
-            assert post.call_args.args[0].endswith("/testVoice/with-timestamps")
+            assert post.call_args.args[0].endswith(f"/{test_voice}/with-timestamps")
             assert post.call_args.kwargs["json"]["model_id"] == "eleven_multilingual_v2"
             response.status_code = 401
             assert voice.tts_multiple("test", script, "failedVoice", 1, 1, "elevenlabs") == []

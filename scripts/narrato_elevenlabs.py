@@ -100,7 +100,7 @@ _VOICES_CACHE = {}
 
 def get_voices(key=None, force_refresh=False):
     """Retrieve available ElevenLabs voices with their names, preview URLs and labels."""
-    if not key:
+    if key is None:
         try:
             from app.config import config
             key = config.app.get("elevenlabs_api_key", "").strip()
