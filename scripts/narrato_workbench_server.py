@@ -114,7 +114,7 @@ def media_path(value):
 def selected_sources(body):
     values = body.get('sources', [])
     if not isinstance(values, list) or not values:
-        raise tornado.web.HTTPError(400, '请先勾选待处理素材')
+        raise tornado.web.HTTPError(400, '请先上传待处理素材')
     sources = []
     for value in values:
         p = media_path(value.get('path') if isinstance(value, dict) else value)
@@ -390,8 +390,8 @@ class ObjectAnalyzeHandler(BaseHandler):
                 raise tornado.web.HTTPError(400, '商品名称、描述和唯一编号必填')
             ids.add(p['id'])
             refs = p.get('references', [])
-            if not isinstance(refs, list) or not 1 <= len(refs) <= 3:
-                raise tornado.web.HTTPError(400, '每个商品需 1～3 张参考图')
+            if not isinstance(refs, list) or not refs:
+                raise tornado.web.HTTPError(400, '每个商品至少需要一张参考图')
             p['references'] = [str(media_path(ref)) for ref in refs]
             from PIL import Image
             for ref in p['references']:
@@ -1055,7 +1055,7 @@ RENDERED_HTML = '''<!DOCTYPE html>
 
         <label class="block">商品描述（必填）<input id="auto-desc-input" class="w-full border rounded p-2" placeholder="说明商品是什么及基本玩法"></label>
         <label>脚本语言 <select id="auto-language"><option>English</option><option>简体中文</option><option>Español</option><option>日本語</option><option>Deutsch</option><option>Français</option></select></label>
-        <p class="text-xs text-slate-500">使用「物品识别剪辑」页勾选的素材。没有配音配置时跳过配音。</p>
+        <p class="text-xs text-slate-500">使用当前待检素材列表。没有配音配置时跳过配音。</p>
         <!-- 3. 背景音乐 (BGM) -->
         <div class="flex items-center justify-between">
           <span class="text-slate-600 font-medium">背景音乐 (BGM)</span>
@@ -1202,7 +1202,6 @@ RENDERED_HTML = '''<!DOCTYPE html>
       globalProducts: [],
       objectTasks: [],
       materials: [],
-      selectedSources: [],
       scriptJobId: '',
       voices: [],
       autoTasks: [],
@@ -1225,7 +1224,6 @@ RENDERED_HTML = '''<!DOCTYPE html>
         appState.materials = data.materials || [];
         appState.voices = data.voices || [];
         appState.autoTasks = data.auto_tasks || [];
-        appState.selectedSources = (appState.currentTask?.sources || []).map(s => s.path);
         const bgmSelect = document.getElementById('auto-bgm-select');
         bgmSelect.replaceChildren(new Option('无背景音乐', ''));
         (data.bgms || []).forEach(b => bgmSelect.add(new Option(b.name, b.path)));
@@ -1291,7 +1289,7 @@ RENDERED_HTML = '''<!DOCTYPE html>
       list.innerHTML = products.map((p, idx) => {
         const hasRefs = p.references && p.references.length > 0;
         const refCount = hasRefs ? p.references.length : 0;
-        const thumbUrl = hasRefs ? p.references[0] : '';
+        const thumbUrl = hasRefs ? mediaUrl(p.references[0]) : '';
 
         return `
           <div onclick="openProductModal('edit', '${p.id}')" class="p-3 rounded-xl border border-slate-200/80 hover:border-slate-400 hover:bg-slate-50/60 bg-slate-50/30 cursor-pointer group transition-all flex items-center justify-between shadow-2xs spring-hover">
@@ -1339,7 +1337,6 @@ RENDERED_HTML = '''<!DOCTYPE html>
 
       list.innerHTML = mats.map(m => `
         <div class="group flex items-center justify-between px-3 py-2 rounded-xl bg-slate-50/80 hover:bg-slate-100/90 border border-slate-200/80 hover:border-slate-300 transition-all text-xs">
-          <input type="checkbox" aria-label="选择素材" ${appState.selectedSources.includes(m.path) ? 'checked' : ''} onchange="chooseSource(${mats.indexOf(m)}, this.checked)">
           <div onclick="openTheaterModal('${m.name}', '${m.duration || ''}', '素材视频预览 · ${m.name}')" class="flex items-center gap-2 min-w-0 flex-1 cursor-pointer" title="点击播放预览素材视频">
             <div class="w-6 h-6 rounded-lg bg-slate-200/80 group-hover:bg-slate-900 group-hover:text-white flex items-center justify-center text-slate-600 transition-colors shrink-0">
               <svg class="w-3 h-3 ml-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
@@ -1356,10 +1353,9 @@ RENDERED_HTML = '''<!DOCTYPE html>
       `).join('');
     }
 
-    function chooseSource(index, checked) {
-      const path = appState.materials[index].path;
-      appState.selectedSources = appState.selectedSources.filter(p => p !== path);
-      if (checked) appState.selectedSources.push(path);
+    function mediaUrl(path) {
+      if (path.startsWith('/NarratoAI/')) return '/api/media/' + path.slice('/NarratoAI/'.length).split('/').map(encodeURIComponent).join('/');
+      return path;
     }
 
     async function deleteMaterial(e, name) {
@@ -1549,7 +1545,6 @@ RENDERED_HTML = '''<!DOCTYPE html>
         const resp = await fetch('/api/object/task/' + taskId);
         if (!resp.ok) throw new Error('Failed to load task');
         appState.currentTask = await resp.json();
-        appState.selectedSources = (appState.currentTask.sources || []).map(s => s.path);
         renderMaterials();
         renderTopTaskBadge();
         renderProducts();
@@ -1563,7 +1558,6 @@ RENDERED_HTML = '''<!DOCTYPE html>
 
     function createNewTask() {
       const newId = 'task-' + Math.random().toString(36).substring(2, 10);
-      appState.selectedSources = [];
       renderMaterials();
       const initialProducts = (appState.globalProducts && appState.globalProducts.length)
         ? appState.globalProducts.map(p => Object.assign({}, p))
@@ -1608,7 +1602,7 @@ RENDERED_HTML = '''<!DOCTYPE html>
           body: JSON.stringify({
             job_id: appState.currentTask ? appState.currentTask.id : '',
             step: appState.step,
-            sources: appState.selectedSources,
+            sources: appState.materials.map(m => m.path),
             products: appState.currentTask ? appState.currentTask.products : []
           })
         });
@@ -1847,7 +1841,7 @@ RENDERED_HTML = '''<!DOCTYPE html>
       }
       container.innerHTML = modalUploadedRefs.map((r, i) => `
         <div class="w-14 h-14 rounded-xl border border-slate-200 overflow-hidden relative group shrink-0 shadow-2xs">
-          <img src="${r}" class="w-full h-full object-cover">
+          <img src="${mediaUrl(r)}" class="w-full h-full object-cover">
           <button type="button" onclick="modalUploadedRefs.splice(${i}, 1); renderModalRefImages();" class="absolute inset-0 bg-black/60 text-white opacity-0 group-hover:opacity-100 flex items-center justify-center text-xs font-bold transition-opacity cursor-pointer">✕</button>
         </div>
       `).join('') + `
@@ -1990,7 +1984,7 @@ RENDERED_HTML = '''<!DOCTYPE html>
         const resp = await fetch('/api/auto/script', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ theme, prompt, desc: document.getElementById('auto-desc-input').value, language: document.getElementById('auto-language').value, sources: appState.selectedSources })
+          body: JSON.stringify({ theme, prompt, desc: document.getElementById('auto-desc-input').value, language: document.getElementById('auto-language').value, sources: appState.materials.map(m => m.path) })
         });
         const data = await resp.json();
         if (!resp.ok) throw new Error(data.error || '生成失败');
