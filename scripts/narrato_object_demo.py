@@ -153,7 +153,7 @@ async def identify(provider, frames, products, log, continuity=False):
                     path = str(cand)
             images.append(path)
             indices.append(len(images))
-        catalog.append({'id': product['id'], 'name': product['name'], 'description': product['description'], 'reference_image_numbers': indices})
+        catalog.append({'id': product['id'], 'name': product['name'], 'description': product.get('description', ''), 'reference_image_numbers': indices})
     samples = []
     for frame in frames:
         images.append(frame['path'])
@@ -618,8 +618,8 @@ def render(legacy_test_mode=False):
         # 4. 开始识别按键 (保留“开始识别”文案以完全兼容自动化测试)
         start_clicked = st.button('开始识别', type='primary', use_container_width=True, key="start_object_analysis_btn")
         if start_clicked:
-            if not (uploads or existing) or any(not p['name'].strip() or not p['description'].strip() or not 1 <= len(p.get('uploads', [])) <= 3 for p in prods):
-                st.error('请填写每个商品的名称、描述和 1～3 张参考图，并选择视频。')
+            if not (uploads or existing) or any(not p['name'].strip() or not 1 <= len(p.get('uploads', [])) <= 3 for p in prods):
+                st.error('请填写每个商品的名称和 1～3 张参考图，并选择视频。')
             else:
                 root = ROOT / uuid.uuid4().hex
                 root.mkdir(parents=True)
@@ -977,5 +977,4 @@ def install():
 
 if __name__ == '__main__':
     install()
-
 

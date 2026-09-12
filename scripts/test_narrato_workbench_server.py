@@ -124,7 +124,7 @@ class WorkbenchServerTestCase(tornado.testing.AsyncHTTPTestCase):
         ref = wb.OBJECT_ROOT/'ref.jpg'
         Image.new('RGB',(20,20),'red').save(ref)
         body = {'job_id':'sample','step':.5,'sources':[str(video)],
-            'products':[{'id':'p1','name':'red','description':'red object','references':[str(ref)] * 5}]}
+            'products':[{'id':'p1','name':'red','description':'','references':[str(ref)] * 5}]}
         async def identify(provider, frames, products, log, **kwargs):
             return [dict(f,objects=[{'id':'p1','status':'present','reason':'test'}]) for f in frames]
         with patch.object(wb.obj_demo, 'identify', side_effect=identify):

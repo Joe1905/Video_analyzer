@@ -386,8 +386,10 @@ class ObjectAnalyzeHandler(BaseHandler):
             raise tornado.web.HTTPError(400, '请选择 1～3 个商品')
         ids = set()
         for p in products:
-            if not isinstance(p, dict) or not p.get('name', '').strip() or not p.get('description', '').strip() or not p.get('id') or p['id'] in ids:
-                raise tornado.web.HTTPError(400, '商品名称、描述和唯一编号必填')
+            if not isinstance(p, dict) or not p.get('name', '').strip() or not p.get('id') or p['id'] in ids:
+                raise tornado.web.HTTPError(400, '商品名称和唯一编号必填')
+            if not isinstance(p.get('description', ''), str):
+                raise tornado.web.HTTPError(400, '同款判定规则应为文本')
             ids.add(p['id'])
             refs = p.get('references', [])
             if not isinstance(refs, list) or not refs:
@@ -1163,8 +1165,8 @@ RENDERED_HTML = '''<!DOCTYPE html>
         </div>
 
         <div>
-          <label class="block text-slate-700 font-semibold mb-1">同款判定规则 (供视觉模型特征比对)</label>
-          <textarea id="modal-input-desc" rows="3" class="w-full border border-slate-200 rounded-xl p-3 text-slate-700 focus:outline-none focus:border-slate-800 resize-none leading-relaxed text-xs"></textarea>
+          <label class="block text-slate-700 font-semibold mb-1">同款判定规则（选填）</label>
+          <textarea id="modal-input-desc" rows="3" placeholder="不填则按参考图判断；可补充不同颜色、组合状态是否算同款。" class="w-full border border-slate-200 rounded-xl p-3 text-slate-700 focus:outline-none focus:border-slate-800 resize-none leading-relaxed text-xs"></textarea>
         </div>
 
         <div>
