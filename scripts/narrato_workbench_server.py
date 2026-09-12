@@ -1018,11 +1018,12 @@ RENDERED_HTML = '''<!DOCTYPE html>
 
         <button onclick="exportClips()" id="export-clips-btn" class="px-4 py-2 rounded-xl bg-slate-950 hover:bg-slate-800 text-white font-semibold text-xs transition-all shadow-xs flex items-center gap-1.5 cursor-pointer active:scale-98">
           <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
-          <span>按商品分类导出 ZIP (<span id="export-count">0</span>)</span>
+          <span><span id="export-label">按商品分类导出 ZIP</span> (<span id="export-count">0</span>)</span>
         </button>
       </div>
 
       <!-- 切片列表容器 -->
+      <p id="export-status" role="status" aria-live="polite" class="hidden text-xs text-slate-600 px-2 shrink-0"></p>
       <div id="clips-list-container" class="flex flex-col gap-3.5">
         <!-- Dynamically filled -->
       </div>
@@ -1681,12 +1682,22 @@ RENDERED_HTML = '''<!DOCTYPE html>
     }
 
     async function exportClips() {
+      const btn = document.getElementById('export-clips-btn');
+      if (btn.disabled) return;
       const boxes = document.querySelectorAll('.clip-box:checked');
       if (!boxes.length) {
         alert('请至少勾选一个切片');
         return;
       }
       const selected = Array.from(boxes).map(b => parseInt(b.getAttribute('data-idx')));
+      const label = document.getElementById('export-label');
+      const status = document.getElementById('export-status');
+      btn.disabled = true;
+      btn.setAttribute('aria-busy', 'true');
+      btn.classList.add('opacity-60', 'cursor-wait');
+      label.textContent = '正在导出';
+      status.classList.remove('hidden');
+      status.textContent = '正在剪辑并打包 ' + selected.length + ' 个片段，可能需要几分钟，请勿重复点击。';
       try {
         const resp = await fetch('/api/object/export', {
           method: 'POST',
@@ -1697,13 +1708,24 @@ RENDERED_HTML = '''<!DOCTYPE html>
           })
         });
         const data = await resp.json();
-        if (data.download_url) {
+        if (resp.ok && data.download_url) {
+          status.textContent = '导出完成，正在下载 ZIP。';
+          const link = document.createElement('a');
+          link.href = data.download_url;
+          link.textContent = '未开始下载？点击这里';
+          link.className = 'underline ml-2';
+          status.appendChild(link);
           window.location.href = data.download_url;
         } else {
           throw new Error(data.error || '导出失败，未返回文件');
         }
       } catch (e) {
-        alert('导出失败：' + e.message);
+        status.textContent = '导出失败：' + e.message;
+      } finally {
+        btn.disabled = false;
+        btn.removeAttribute('aria-busy');
+        btn.classList.remove('opacity-60', 'cursor-wait');
+        label.textContent = '按商品分类导出 ZIP';
       }
     }
 
