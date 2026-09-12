@@ -302,10 +302,14 @@ def _export(root, selected):
         folder = output / f"{clip['product_id']}_{label}"
         folder.mkdir(exist_ok=True)
         dest = folder / f"{source['id']}_{clip['start']:.3f}-{clip['end']:.3f}.mp4"
-        subprocess.run([_get_ffmpeg_binary(), '-v', 'error', '-y', '-ss', str(clip['start']), '-i', source['path'],
-            '-t', str(clip['end'] - clip['start']), '-map', '0:v:0', '-map', '0:a?', '-c:v', 'libx264',
-            '-preset', 'fast', '-crf', '18', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-threads', '2',
-            '-movflags', '+faststart', str(dest)], check=True, capture_output=True, timeout=max(180, (clip['end']-clip['start'])*10))
+        try:
+            subprocess.run([_get_ffmpeg_binary(), '-v', 'error', '-y', '-ss', str(clip['start']), '-i', source['path'],
+                '-t', str(clip['end'] - clip['start']), '-map', '0:v:0', '-map', '0:a:0?', '-c:v', 'libx264',
+                '-preset', 'fast', '-crf', '18', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-threads', '2',
+                '-movflags', '+faststart', str(dest)], check=True, capture_output=True, timeout=max(180, (clip['end']-clip['start'])*10))
+        except subprocess.CalledProcessError as exc:
+            detail = exc.stderr.decode('utf-8', errors='replace').strip()
+            raise RuntimeError(f"素材 {source['name']} 导出失败：{detail[-2000:]}") from exc
         files.append(dict(clip, file=str(dest.relative_to(output))))
     save(output / 'index.json', {'products': manifest['products'], 'sources': manifest['sources'], 'clips': files})
     archive = output.with_suffix('.zip')
@@ -977,4 +981,3 @@ def install():
 
 if __name__ == '__main__':
     install()
-
