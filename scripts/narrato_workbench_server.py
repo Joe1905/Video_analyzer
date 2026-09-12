@@ -1471,6 +1471,11 @@ RENDERED_HTML = '''<!DOCTYPE html>
       const tasks = appState.objectTasks || [];
       const curId = appState.currentTask ? appState.currentTask.id : '';
 
+      if (!tasks.length) {
+        container.textContent = '暂无任务记录，开始识别后会自动保存。';
+        return;
+      }
+
       container.innerHTML = tasks.map(t => {
         const isCurrent = t.id === curId;
         return `
@@ -2097,12 +2102,23 @@ RENDERED_HTML = '''<!DOCTYPE html>
     }
 
     // Task Drawer
-    function openTaskDrawer() {
+    async function openTaskDrawer() {
       const drawer = document.getElementById('task-drawer');
       const backdrop = document.getElementById('drawer-backdrop');
       backdrop.classList.remove('hidden');
       setTimeout(() => backdrop.classList.remove('opacity-0'), 10);
       drawer.classList.remove('translate-x-full');
+      const list = document.getElementById('drawer-task-list');
+      list.textContent = '正在加载任务记录...';
+      try {
+        const resp = await fetch('/api/state', { cache: 'no-store' });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const data = await resp.json();
+        appState.objectTasks = data.object_tasks || [];
+        renderTaskDrawer();
+      } catch (err) {
+        list.textContent = '任务记录加载失败，请关闭后重试：' + err.message;
+      }
     }
 
     function closeTaskDrawer() {
