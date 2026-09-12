@@ -1073,8 +1073,8 @@ RENDERED_HTML = '''<!DOCTYPE html>
         const sourceName = c.source_id || '素材';
         const evidenceStr = (c.evidence && c.evidence[0] && c.evidence[0].reason) ? c.evidence[0].reason : '画面中商品轮廓与实拍参考图结构吻合。';
         const mediaPath = (c.evidence && c.evidence[0] && c.evidence[0].frame) ? c.evidence[0].frame : '';
-        const cleanPath = mediaPath ? mediaPath.replace('/NarratoAI/', '').replace(/^\/+/, '') : '';
-        const streamUrl = cleanPath ? ('/api/media/' + cleanPath) : '';
+        const cleanPath = mediaPath ? mediaPath.replace('/NarratoAI/', '').replace('NarratoAI/', '') : '';
+        const streamUrl = cleanPath ? ('/api/media/' + (cleanPath.startsWith('/') ? cleanPath.slice(1) : cleanPath)) : '';
 
         return `
           <div class="bg-white border border-slate-200/90 rounded-2xl p-4 flex items-center justify-between gap-5 spring-hover shadow-xs">
@@ -1310,7 +1310,7 @@ RENDERED_HTML = '''<!DOCTYPE html>
       document.getElementById('theater-title').innerText = title;
       document.getElementById('theater-sub').innerText = source + ' (' + time + ')';
       const videoElem = document.getElementById('theater-video');
-      const fname = source.split(/[\/\\]/).pop();
+      const fname = (source || '').split('/').pop().split(String.fromCharCode(92)).pop();
       videoElem.src = '/api/media/resource/videos/' + encodeURIComponent(fname);
       videoElem.play().catch(() => {});
 
@@ -1651,7 +1651,7 @@ RENDERED_HTML = '''<!DOCTYPE html>
       } catch (e) {}
 
       if (errors.length) {
-        alert(`导入素材完成 (${successCount} 成功, ${errors.length} 失败)：\n` + errors.join('\n'));
+        alert(`导入素材完成 (${successCount} 成功, ${errors.length} 失败)：` + String.fromCharCode(10) + errors.join(String.fromCharCode(10)));
       } else if (successCount > 0) {
         alert(`已成功导入 ${successCount} 个素材视频！`);
       }
