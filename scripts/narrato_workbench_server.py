@@ -1813,19 +1813,15 @@ RENDERED_HTML = '''<!DOCTYPE html>
       const btn = document.getElementById('export-clips-btn');
       const status = document.getElementById('export-status');
       btn.disabled = data.status === 'running';
-      document.getElementById('export-label').textContent = btn.disabled ? '后台导出中' : '导出 ZIP';
-      status.classList.remove('hidden');
-      status.textContent = data.status === 'idle' ? '任务、视频素材及导出结果保留 7 天，商品和参考图长期保留。' : (data.message || '') + (btn.disabled ? ' · 可刷新或切换任务，后台继续处理。' : '');
       const selected = Array.from(document.querySelectorAll('.clip-box:checked')).map(b => Number(b.getAttribute('data-idx'))).sort((a,b) => a-b);
       const matches = JSON.stringify(selected) === JSON.stringify(data.selected || []);
-      if (data.status === 'complete' && !matches) status.textContent = '勾选已变化，请重新导出；成功后将替换旧压缩包。';
-      if (data.download_url && matches) {
-        const link = document.createElement('a');
-        link.href = data.download_url;
-        link.textContent = '下载 ZIP';
-        link.className = 'inline-block rounded-lg bg-slate-900 text-white px-3 py-2 ml-2';
-        status.appendChild(link);
-      }
+      btn.dataset.downloadUrl = data.status === 'complete' && matches ? data.download_url || '' : '';
+      document.getElementById('export-label').textContent = btn.disabled ? (data.message || '后台导出中')
+        : btn.dataset.downloadUrl ? '下载 ZIP' : data.status === 'complete' ? '重新导出 ZIP' : '导出 ZIP';
+      btn.title = btn.disabled ? '可刷新或切换任务，后台继续处理。' : btn.dataset.downloadUrl ? '下载已生成的压缩包，不会重新剪辑。'
+        : '按当前勾选后台导出；新结果将替换旧包。任务和素材保留 7 天，商品长期保留。';
+      status.textContent = data.status === 'failed' ? data.message || '导出失败，请重试' : '';
+      status.classList[status.textContent ? 'remove' : 'add']('hidden');
     }
 
     async function refreshExportStatus() {
@@ -1849,6 +1845,10 @@ RENDERED_HTML = '''<!DOCTYPE html>
     async function exportClips() {
       const btn = document.getElementById('export-clips-btn');
       if (btn.disabled) return;
+      if (btn.dataset.downloadUrl) {
+        window.location.href = btn.dataset.downloadUrl;
+        return;
+      }
       const boxes = document.querySelectorAll('.clip-box:checked');
       if (!boxes.length) {
         alert('请至少勾选一个切片');
