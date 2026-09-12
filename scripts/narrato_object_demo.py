@@ -279,12 +279,12 @@ async def _analyze(root, progress):
     return manifest
 
 
-def export(root, selected):
+def export(root, selected, progress=lambda message: None):
     with job_lock(root):
-        return _export(root, selected)
+        return _export(root, selected, progress)
 
 
-def _export(root, selected):
+def _export(root, selected, progress=lambda message: None):
     path = root / 'manifest.json'
     manifest = json.loads(path.read_text(encoding='utf-8'))
     if manifest['status'] not in ('review', 'complete'):
@@ -293,6 +293,7 @@ def _export(root, selected):
     output.mkdir()
     files = []
     for index in selected:
+        progress(f'正在剪辑 {len(files) + 1}/{len(selected)}')
         clip = manifest['clips'][index]
         if clip['status'] != 'present':
             raise ValueError('不确定片段不能自动导出')
@@ -313,6 +314,7 @@ def _export(root, selected):
         files.append(dict(clip, file=str(dest.relative_to(output))))
     save(output / 'index.json', {'products': manifest['products'], 'sources': manifest['sources'], 'clips': files})
     archive = output.with_suffix('.zip')
+    progress('正在打包 ZIP')
     with zipfile.ZipFile(archive, 'w', compression=zipfile.ZIP_STORED) as zip_file:
         for file in output.rglob('*'):
             if file.is_file():

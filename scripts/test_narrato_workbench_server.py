@@ -28,6 +28,7 @@ class WorkbenchServerTestCase(tornado.testing.AsyncHTTPTestCase):
         for p in (wb.OBJECT_ROOT, wb.VIDEO_RESOURCE, wb.TASKS_ROOT):
             p.mkdir()
         wb.ACTIVE_JOBS.clear()
+        wb.EXPORT_JOBS.clear()
         super().setUp()
 
     def tearDown(self):
@@ -116,6 +117,28 @@ class WorkbenchServerTestCase(tornado.testing.AsyncHTTPTestCase):
         response = self.fetch('/api/object/download/busy?file=../../config.toml')
         self.assertEqual(response.code, 400)
 
+    def test_retention_keeps_products_and_shared_materials(self):
+        shared = wb.VIDEO_RESOURCE / 'shared.mp4'
+        old = wb.VIDEO_RESOURCE / 'old.mp4'
+        shared.touch()
+        old.touch()
+        ref = wb.OBJECT_ROOT / 'references' / 'product.png'
+        ref.parent.mkdir()
+        ref.touch()
+        wb.save_global_products([{'name':'product','references':[str(ref)]}])
+        for name, sources, expiry in [('expired', [shared, old], 1), ('current', [shared], time.time()+1000)]:
+            root = wb.OBJECT_ROOT / name
+            root.mkdir()
+            wb.obj_demo.save(root/'manifest.json', dict(sources=[{'path':str(p)} for p in sources], expires_at=expiry))
+            (root/'export.zip').touch()
+        wb.cleanup_object_media()
+        self.assertFalse((wb.OBJECT_ROOT/'expired').exists())
+        self.assertFalse(old.exists())
+        self.assertTrue(shared.exists())
+        self.assertTrue(ref.exists())
+        self.assertEqual(len(wb.load_global_products()), 1)
+        self.assertTrue((wb.OBJECT_ROOT/'current/export.zip').exists())
+
     def test_object_and_auto_pipeline(self):
         from PIL import Image
         video = wb.VIDEO_RESOURCE/'sample.mp4'
@@ -133,8 +156,11 @@ class WorkbenchServerTestCase(tornado.testing.AsyncHTTPTestCase):
             result = self.wait_job('/api/object/status/', 'sample')
         self.assertEqual(len(result['clips']), 1)
         response = self.post_json('/api/object/export', {'job_id':'sample','selected_indices':[0]})
-        self.assertEqual(response.code, 200, response.body)
-        download = json.loads(response.body)['download_url']
+        self.assertEqual(response.code, 202, response.body)
+        exported = self.wait_job('/api/object/export-status/', 'sample')
+        download = exported['download_url']
+        reused = self.post_json('/api/object/export', {'job_id':'sample','selected_indices':[0]})
+        self.assertEqual(json.loads(reused.body)['download_url'], download)
         self.assertEqual(self.fetch(download).code, 200)
         from app.services.narrato_multi_material import MultiMaterialAnalysisService
         script = [{'_id':1,'video_id':1,'video_name':video.name,'video_path':str(video),

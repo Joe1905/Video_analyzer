@@ -18,6 +18,8 @@ from urllib.parse import urlsplit
 import tornado.web
 import tornado.routing
 import tornado.httputil
+import tornado.ioloop
+import logging
 
 from app.config import config
 from app.services import narrato_object_demo as obj_demo
@@ -88,6 +90,75 @@ def get_materials_list():
 
 # Background job tracking
 ACTIVE_JOBS = {}
+EXPORT_JOBS = {}
+TASK_TTL = 7 * 24 * 3600
+
+
+def export_state(root):
+    path = root / 'export.json'
+    state = json.loads(path.read_text()) if path.is_file() else {'status': 'idle'}
+    if state['status'] == 'idle':
+        manifest = json.loads((root / 'manifest.json').read_text())
+        archive = Path(manifest.get('archive') or '/nonexistent')
+        index = archive.with_suffix('') / 'index.json'
+        if archive.is_file() and index.is_file():
+            exported = json.loads(index.read_text()).get('clips', [])
+            keys = ('source_id', 'product_id', 'start', 'end')
+            selected = [i for i, clip in enumerate(manifest.get('clips', []))
+                        if any(all(clip.get(k) == old.get(k) for k in keys) for old in exported)]
+            state = dict(status='complete', message='导出完成', selected=selected, archive_path=str(archive),
+                         download_url=f'/api/object/download/{root.name}?file={archive.name}')
+    if state['status'] == 'running' and root.name not in EXPORT_JOBS:
+        state.update(status='failed', message='服务重启中断了导出，请重新提交')
+    return state
+
+
+def cleanup_object_media():
+    """Expire object-task media; shared videos survive while another task needs them."""
+    now = time.time()
+    protected, expired = set(), []
+    for path in OBJECT_ROOT.glob('*/manifest.json'):
+        try:
+            data = json.loads(path.read_text())
+            # Existing tasks receive a full week from rollout, not immediate deletion.
+            if 'expires_at' not in data:
+                data['expires_at'] = now + TASK_TTL
+                obj_demo.save(path, data)
+            busy = path.parent.name in EXPORT_JOBS or ACTIVE_JOBS.get(path.parent.name, {}).get('status') == 'running'
+            if data['expires_at'] > now or busy:
+                protected.update(s['path'] for s in data.get('sources', []))
+            else:
+                expired.append((path, data))
+        except Exception:
+            logging.exception('Task retention scan failed: %s', path)
+            return  # Fail closed: do not delete when references cannot be read.
+    # Automatic-production tasks also share this video directory.
+    for path in TASKS_ROOT.rglob('*.json'):
+        try:
+            raw = path.read_text()
+            protected.update(str(p) for p in VIDEO_RESOURCE.iterdir() if str(p) in raw)
+        except Exception:
+            logging.exception('Shared media reference scan failed: %s', path)
+            return
+    for path, data in expired:
+        try:
+            with obj_demo.job_lock(path.parent):
+                for source in data.get('sources', []):
+                    video = Path(source['path']).resolve()
+                    if video.parent == VIDEO_RESOURCE.resolve() and str(video) not in protected:
+                        video.unlink(missing_ok=True)
+                if path.parent.resolve().parent != OBJECT_ROOT.resolve():
+                    raise ValueError('Invalid task cleanup path')
+                shutil.rmtree(path.parent)
+        except Exception:
+            logging.exception('Task retention cleanup failed: %s', path)
+    for video in VIDEO_RESOURCE.glob('*'):
+        if video.is_file() and not video.is_symlink() and video.suffix.lower() in {'.mp4', '.mov', '.mkv', '.avi', '.webm'} and str(video) not in protected and video.stat().st_mtime + TASK_TTL <= now:
+            video.unlink()
+
+
+async def run_retention_cleanup():
+    await asyncio.to_thread(cleanup_object_media)
 RENDER_LOCK = threading.Lock()  # ponytail: upstream renderer uses module globals; serialize renders.
 
 
@@ -182,6 +253,8 @@ class StateHandler(BaseHandler):
             for p in sorted(OBJECT_ROOT.glob("*/manifest.json"), key=os.path.getmtime, reverse=True):
                 try:
                     data = json.loads(p.read_text(encoding="utf-8"))
+                    if data.get('expires_at', float('inf')) <= time.time():
+                        continue
                     task_id = p.parent.name
                     prod_names = [x.get("name", "") for x in data.get("products", [])]
                     clips_cnt = len(data.get("clips", []))
@@ -333,6 +406,8 @@ class ObjectTasksHandler(BaseHandler):
             for p in sorted(OBJECT_ROOT.glob("*/manifest.json"), key=os.path.getmtime, reverse=True):
                 try:
                     data = json.loads(p.read_text(encoding="utf-8"))
+                    if data.get('expires_at', float('inf')) <= time.time():
+                        continue
                     tasks.append({
                         "id": p.parent.name,
                         "title": " / ".join(x.get("name", "") for x in data.get("products", [])),
@@ -403,7 +478,7 @@ class ObjectAnalyzeHandler(BaseHandler):
         try:
             sources = await asyncio.to_thread(selected_sources, body)
             root.mkdir(parents=True)
-            obj_demo.save(root / 'manifest.json', dict(status='pending', products=products, sources=sources, step=step, clips=[]))
+            obj_demo.save(root / 'manifest.json', dict(status='pending', products=products, sources=sources, step=step, clips=[], expires_at=time.time() + TASK_TTL))
         except Exception:
             ACTIVE_JOBS.pop(job_id, None)
             raise
@@ -459,14 +534,46 @@ class ObjectExportHandler(BaseHandler):
             if not isinstance(selected_indices, list) or not selected_indices or any(type(i) is not int or i < 0 or i >= len(manifest['clips']) or manifest['clips'][i]['status'] != 'present' for i in selected_indices):
                 self.write_json({'error': '仅可导出确认出现的片段'}, 400)
                 return
-            archive_path = await asyncio.to_thread(obj_demo.export, target_dir, list(dict.fromkeys(selected_indices)))
-            self.write_json({
-                "status": "success",
-                "archive_path": str(archive_path),
-                "download_url": f"/api/object/download/{job_id}?file={archive_path.name}"
-            })
+            if manifest.get('expires_at', float('inf')) <= time.time():
+                raise ValueError('任务已过期，请新建任务')
+            selected = sorted(set(selected_indices))
+            previous = export_state(target_dir)
+            if job_id in EXPORT_JOBS:
+                self.write_json(previous)
+                return
+            if previous.get('selected') == selected and previous['status'] == 'complete' and Path(previous.get('archive_path', '')).is_file():
+                self.write_json(previous)
+                return
+            record = dict(status='running', message='等待剪辑', selected=selected)
+            EXPORT_JOBS[job_id] = record
+            obj_demo.save(target_dir / 'export.json', record)
+
+            def worker():
+                def progress(message):
+                    record.update(message=message)
+                    obj_demo.save(target_dir / 'export.json', record)
+                try:
+                    archive = obj_demo.export(target_dir, selected, progress=progress)
+                    record.update(status='complete', message='导出完成', archive_path=str(archive),
+                                  download_url=f'/api/object/download/{job_id}?file={archive.name}')
+                except Exception as exc:
+                    record.update(status='failed', message=str(exc))
+                    logging.exception('Export failed: %s', job_id)
+                finally:
+                    obj_demo.save(target_dir / 'export.json', record)
+                    EXPORT_JOBS.pop(job_id, None)
+            threading.Thread(target=worker, daemon=True).start()
+            self.write_json(record, status=202)
         except Exception as e:
             self.write_json({"error": str(e)}, status=500)
+
+
+class ObjectExportStatusHandler(BaseHandler):
+    def get(self, job_id):
+        root = task_dir(job_id)
+        if not (root / 'manifest.json').is_file():
+            raise tornado.web.HTTPError(404, '任务不存在或已过期')
+        self.write_json(export_state(root))
 
 
 class ObjectDownloadHandler(BaseHandler):
@@ -773,6 +880,7 @@ def get_workbench_rules():
         tornado.web.Rule(tornado.routing.PathMatches(r"^/api/object/analyze$"), ObjectAnalyzeHandler),
         tornado.web.Rule(tornado.routing.PathMatches(r"^/api/object/status/(?P<job_id>[^/]+)$"), ObjectStatusHandler),
         tornado.web.Rule(tornado.routing.PathMatches(r"^/api/object/export$"), ObjectExportHandler),
+        tornado.web.Rule(tornado.routing.PathMatches(r"^/api/object/export-status/(?P<job_id>[^/]+)$"), ObjectExportStatusHandler),
         tornado.web.Rule(tornado.routing.PathMatches(r"^/api/object/download/(?P<job_id>[^/]+)$"), ObjectDownloadHandler),
         tornado.web.Rule(tornado.routing.PathMatches(r"^/api/materials/upload$"), MaterialUploadHandler),
         tornado.web.Rule(tornado.routing.PathMatches(r"^/api/materials/delete$"), MaterialDeleteHandler),
@@ -803,6 +911,9 @@ def patch_streamlit_server():
 
     def patched_create_app(self):
         app = orig_create_app(self)
+        tornado.ioloop.IOLoop.current().spawn_callback(run_retention_cleanup)
+        app._retention_cleanup = tornado.ioloop.PeriodicCallback(run_retention_cleanup, 3600 * 1000)
+        app._retention_cleanup.start()
         rules = get_workbench_rules()
         for rule in reversed(rules):
             app.wildcard_router.rules.insert(0, rule)
@@ -1251,6 +1362,7 @@ RENDERED_HTML = '''<!DOCTYPE html>
         renderMaterials();
         renderClips();
         renderTaskDrawer();
+        refreshExportStatus();
         renderVoices();
         loadDefaultStoryboard();
       } catch (err) {
@@ -1580,6 +1692,7 @@ RENDERED_HTML = '''<!DOCTYPE html>
         renderProducts();
         renderClips();
         renderTaskDrawer();
+        refreshExportStatus();
         closeTaskDrawer();
       } catch (e) {
         alert('加载任务失败：' + e.message);
@@ -1589,6 +1702,8 @@ RENDERED_HTML = '''<!DOCTYPE html>
     function createNewTask() {
       const newId = 'task-' + Math.random().toString(36).substring(2, 10);
       appState.materials = [];
+      clearTimeout(exportPoll);
+      showExportState({status: 'idle'});
       appState.currentTask = {
         id: newId,
         status: 'pending',
@@ -1681,6 +1796,41 @@ RENDERED_HTML = '''<!DOCTYPE html>
       }
     }
 
+    let exportPoll;
+    function showExportState(data) {
+      const btn = document.getElementById('export-clips-btn');
+      const status = document.getElementById('export-status');
+      btn.disabled = data.status === 'running';
+      document.getElementById('export-label').textContent = btn.disabled ? '后台导出中' : '按商品分类导出 ZIP';
+      status.classList.remove('hidden');
+      status.textContent = data.status === 'idle' ? '任务、视频素材及导出结果保留 7 天，商品和参考图长期保留。' : (data.message || '') + (btn.disabled ? ' · 可刷新或切换任务，后台继续处理。' : '');
+      if (data.download_url) {
+        const link = document.createElement('a');
+        link.href = data.download_url;
+        link.textContent = '下载已生成的 ZIP';
+        link.className = 'underline ml-2';
+        status.appendChild(link);
+      }
+    }
+
+    async function refreshExportStatus() {
+      clearTimeout(exportPoll);
+      const id = appState.currentTask && appState.currentTask.id;
+      if (!id || appState.currentTask.status === 'pending') return showExportState({status:'idle'});
+      try {
+        const resp = await fetch('/api/object/export-status/' + encodeURIComponent(id));
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const data = await resp.json();
+        if (id !== appState.currentTask.id) return;
+        showExportState(data);
+        if (data.status === 'running') exportPoll = setTimeout(refreshExportStatus, 2000);
+      } catch (e) {
+        if (id !== appState.currentTask.id) return;
+        showExportState({status:'failed', message:'暂时无法获取导出进度，正在重试：' + e.message});
+        exportPoll = setTimeout(refreshExportStatus, 5000);
+      }
+    }
+
     async function exportClips() {
       const btn = document.getElementById('export-clips-btn');
       if (btn.disabled) return;
@@ -1690,42 +1840,24 @@ RENDERED_HTML = '''<!DOCTYPE html>
         return;
       }
       const selected = Array.from(boxes).map(b => parseInt(b.getAttribute('data-idx')));
-      const label = document.getElementById('export-label');
-      const status = document.getElementById('export-status');
-      btn.disabled = true;
-      btn.setAttribute('aria-busy', 'true');
-      btn.classList.add('opacity-60', 'cursor-wait');
-      label.textContent = '正在导出';
-      status.classList.remove('hidden');
-      status.textContent = '正在剪辑并打包 ' + selected.length + ' 个片段，可能需要几分钟，请勿重复点击。';
+      const id = appState.currentTask.id;
+      showExportState({status:'running', message:'正在提交后台导出'});
       try {
         const resp = await fetch('/api/object/export', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            job_id: appState.currentTask ? appState.currentTask.id : '',
+            job_id: id,
             selected_indices: selected
           })
         });
         const data = await resp.json();
-        if (resp.ok && data.download_url) {
-          status.textContent = '导出完成，正在下载 ZIP。';
-          const link = document.createElement('a');
-          link.href = data.download_url;
-          link.textContent = '未开始下载？点击这里';
-          link.className = 'underline ml-2';
-          status.appendChild(link);
-          window.location.href = data.download_url;
-        } else {
-          throw new Error(data.error || '导出失败，未返回文件');
-        }
+        if (!resp.ok) throw new Error(data.error || '导出提交失败');
+        if (id !== appState.currentTask.id) return;
+        showExportState(data);
+        if (data.status === 'running') exportPoll = setTimeout(refreshExportStatus, 2000);
       } catch (e) {
-        status.textContent = '导出失败：' + e.message;
-      } finally {
-        btn.disabled = false;
-        btn.removeAttribute('aria-busy');
-        btn.classList.remove('opacity-60', 'cursor-wait');
-        label.textContent = '按商品分类导出 ZIP';
+        if (id === appState.currentTask.id) showExportState({status:'failed', message:'导出失败：' + e.message});
       }
     }
 
