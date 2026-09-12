@@ -27,6 +27,22 @@ OBJECT_ROOT = Path("/NarratoAI/storage/object-demo")
 VIDEO_RESOURCE = Path("/NarratoAI/resource/videos")
 AUDIO_RESOURCE = Path("/NarratoAI/resource/songs")
 TASKS_ROOT = Path("/NarratoAI/storage/tasks")
+GLOBAL_PRODUCTS_FILE = OBJECT_ROOT / "global_products.json"
+
+
+def load_global_products():
+    if GLOBAL_PRODUCTS_FILE.is_file():
+        try:
+            return json.loads(GLOBAL_PRODUCTS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+    return []
+
+
+def save_global_products(products):
+    OBJECT_ROOT.mkdir(parents=True, exist_ok=True)
+    GLOBAL_PRODUCTS_FILE.write_text(json.dumps(products, ensure_ascii=False, indent=2), encoding="utf-8")
+
 
 # Background job tracking
 ACTIVE_JOBS = {}
@@ -88,6 +104,9 @@ class WorkbenchHomeHandler(BaseHandler):
 class StateHandler(BaseHandler):
     """Aggregated state for initial hydration."""
     def get(self):
+        # 0. Global Products
+        global_products = load_global_products()
+
         # 1. Object tasks
         object_tasks = []
         if OBJECT_ROOT.exists():
@@ -130,11 +149,13 @@ class StateHandler(BaseHandler):
             current_task = {
                 "id": "空白任务",
                 "status": "pending",
-                "products": [],
+                "products": [dict(p) for p in global_products],
                 "sources": [],
                 "clips": [],
                 "step": 0.5
             }
+        elif not current_task.get("products") and global_products:
+            current_task["products"] = [dict(p) for p in global_products]
 
 
         # 3. Materials
@@ -143,9 +164,9 @@ class StateHandler(BaseHandler):
             for v in sorted(VIDEO_RESOURCE.glob("*.MOV"), key=os.path.getmtime, reverse=True)[:10]:
                 materials.append({
                     "name": v.name,
+                    "duration": "00:08",
                     "path": str(v),
-                    "size_mb": round(v.stat().st_size / (1024 * 1024), 1),
-                    "duration": "00:08"
+                    "size": v.stat().st_size
                 })
 
         # 4. Voices
@@ -177,10 +198,66 @@ class StateHandler(BaseHandler):
 
         self.write_json({
             "current_task": current_task,
+            "global_products": global_products,
             "object_tasks": object_tasks,
             "materials": materials,
             "voices": voices,
             "auto_tasks": auto_tasks
+        })
+
+
+class GlobalProductsHandler(BaseHandler):
+    """Manage global products repository for re-use across all tasks."""
+    def get(self):
+        self.write_json({"status": "success", "products": load_global_products()})
+
+    def post(self):
+        body = json.loads(self.request.body.decode("utf-8") or "{}")
+        action = body.get("action", "save")
+        products = load_global_products()
+
+        if action == "delete":
+            prod_id = body.get("id")
+            products = [p for p in products if p.get("id") != prod_id]
+            save_global_products(products)
+            self.write_json({"status": "success", "products": products})
+            return
+
+        prod_data = body.get("product") or body
+        prod_id = prod_data.get("id") or f"p_{uuid.uuid4().hex[:8]}"
+        prod_name = prod_data.get("name", "").strip()
+        prod_desc = prod_data.get("description", "").strip()
+        prod_refs = prod_data.get("references", [])
+
+        if not prod_name:
+            self.write_json({"error": "商品名称不能为空"}, status=400)
+            return
+
+        # Update if exists, else append
+        existing = False
+        for p in products:
+            if p.get("id") == prod_id or p.get("name") == prod_name:
+                p["id"] = prod_id
+                p["name"] = prod_name
+                p["description"] = prod_desc
+                p["references"] = prod_refs
+                p["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                existing = True
+                break
+        if not existing:
+            products.append({
+                "id": prod_id,
+                "name": prod_name,
+                "description": prod_desc,
+                "references": prod_refs,
+                "created_at": time.strftime("%Y-%m-%d %H:%M:%S")
+            })
+
+        save_global_products(products)
+        self.write_json({
+            "status": "success",
+            "product": {"id": prod_id, "name": prod_name, "description": prod_desc, "references": prod_refs},
+            "products": products
         })
 
 
@@ -270,6 +347,19 @@ class ObjectAnalyzeHandler(BaseHandler):
             "clips": []
         }
         obj_demo.save(target_dir / "manifest.json", manifest)
+
+        # Sync products to global repository
+        existing_globals = {p.get("name"): p for p in load_global_products()}
+        for p in body.get("products", []):
+            if p.get("name"):
+                existing_globals[p["name"]] = {
+                    "id": p.get("id") or f"p_{uuid.uuid4().hex[:8]}",
+                    "name": p["name"],
+                    "description": p.get("description", ""),
+                    "references": p.get("references", []),
+                    "updated_at": time.strftime("%Y-%m-%d %H:%M:%S")
+                }
+        save_global_products(list(existing_globals.values()))
 
         # Run async analyze
         ACTIVE_JOBS[job_id] = {"status": "running", "progress": "正在抽帧采样与特征比对...", "clips": []}
@@ -510,6 +600,7 @@ def get_workbench_rules():
         tornado.web.Rule(tornado.routing.PathMatches(r"^/api/object/export$"), ObjectExportHandler),
         tornado.web.Rule(tornado.routing.PathMatches(r"^/api/object/download/(?P<job_id>[^/]+)$"), ObjectDownloadHandler),
         tornado.web.Rule(tornado.routing.PathMatches(r"^/api/materials/upload$"), MaterialUploadHandler),
+        tornado.web.Rule(tornado.routing.PathMatches(r"^/api/products$"), GlobalProductsHandler),
         tornado.web.Rule(tornado.routing.PathMatches(r"^/api/products/upload-ref$"), ProductRefUploadHandler),
         tornado.web.Rule(tornado.routing.PathMatches(r"^/api/voices$"), VoicesHandler),
         tornado.web.Rule(tornado.routing.PathMatches(r"^/api/auto/script$"), AutoScriptHandler),
@@ -874,6 +965,18 @@ RENDERED_HTML = '''<!DOCTYPE html>
         </button>
       </div>
 
+      <!-- 全局商品库一键复用栏 -->
+      <div id="modal-library-bar" class="hidden flex-col gap-1.5 p-2.5 bg-slate-50 border border-slate-200/80 rounded-xl">
+        <div class="flex items-center justify-between text-[11px] text-slate-500 font-medium">
+          <span class="flex items-center gap-1">
+            <svg class="w-3.5 h-3.5 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
+            从已存商品库复用 (点击填入)
+          </span>
+          <span class="text-[10px] text-slate-400">跨任务长期可用</span>
+        </div>
+        <div id="modal-library-chips" class="flex flex-wrap gap-1.5"></div>
+      </div>
+
       <div class="flex flex-col gap-3 text-xs">
         <div>
           <label class="block text-slate-700 font-semibold mb-1">商品名称</label>
@@ -901,9 +1004,14 @@ RENDERED_HTML = '''<!DOCTYPE html>
 
       </div>
 
-      <div class="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-100">
-        <button onclick="closeProductModal()" class="px-4 py-2 rounded-xl text-slate-600 hover:bg-slate-100 text-xs font-medium cursor-pointer">取消</button>
-        <button onclick="saveProductModal()" class="px-4 py-2 rounded-xl bg-slate-950 hover:bg-slate-800 text-white font-semibold text-xs shadow-xs cursor-pointer">保存规则</button>
+      <div class="flex items-center justify-between pt-2 border-t border-slate-100">
+        <button type="button" id="modal-delete-btn" onclick="deleteCurrentProduct()" class="hidden px-3 py-2 rounded-xl text-rose-600 hover:bg-rose-50 text-xs font-medium cursor-pointer transition-colors">
+          删除商品
+        </button>
+        <div class="flex items-center gap-2.5 ml-auto">
+          <button type="button" onclick="closeProductModal()" class="px-4 py-2 rounded-xl text-slate-600 hover:bg-slate-100 text-xs font-medium cursor-pointer">取消</button>
+          <button type="button" onclick="saveProductModal()" class="px-4 py-2 rounded-xl bg-slate-950 hover:bg-slate-800 text-white font-semibold text-xs shadow-xs cursor-pointer">保存并同步商品库</button>
+        </div>
       </div>
     </div>
   </div>
@@ -912,6 +1020,7 @@ RENDERED_HTML = '''<!DOCTYPE html>
   <script>
     let appState = {
       currentTask: null,
+      globalProducts: [],
       objectTasks: [],
       materials: [],
       voices: [],
@@ -930,10 +1039,15 @@ RENDERED_HTML = '''<!DOCTYPE html>
         if (!resp.ok) throw new Error('Failed to load state');
         const data = await resp.json();
         appState.currentTask = data.current_task;
+        appState.globalProducts = data.global_products || [];
         appState.objectTasks = data.object_tasks || [];
         appState.materials = data.materials || [];
         appState.voices = data.voices || [];
         appState.autoTasks = data.auto_tasks || [];
+
+        if (appState.currentTask && (!appState.currentTask.products || !appState.currentTask.products.length) && appState.globalProducts.length) {
+          appState.currentTask.products = appState.globalProducts.map(p => Object.assign({}, p));
+        }
 
         renderTopTaskBadge();
         renderProducts();
@@ -1013,7 +1127,10 @@ RENDERED_HTML = '''<!DOCTYPE html>
                 <div class="text-xs text-slate-500 truncate mt-0.5">${p.description || '暂无规则描述'}</div>
               </div>
             </div>
-            <span class="text-slate-400 group-hover:text-slate-700 text-xs font-semibold p-1">✎</span>
+            <div class="flex items-center gap-1 shrink-0">
+              <button type="button" onclick="removeProductFromTask(event, '${p.id}')" title="从当前任务移除" class="opacity-0 group-hover:opacity-100 w-6 h-6 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 flex items-center justify-center text-xs transition-opacity cursor-pointer">✕</button>
+              <span class="text-slate-400 group-hover:text-slate-700 text-xs font-semibold p-1">✎</span>
+            </div>
           </div>
         `;
       }).join('');
@@ -1212,10 +1329,13 @@ RENDERED_HTML = '''<!DOCTYPE html>
 
     function createNewTask() {
       const newId = 'task-' + Math.random().toString(36).substring(2, 10);
+      const initialProducts = (appState.globalProducts && appState.globalProducts.length)
+        ? appState.globalProducts.map(p => Object.assign({}, p))
+        : [];
       appState.currentTask = {
         id: newId,
         status: 'pending',
-        products: [],
+        products: initialProducts,
         sources: [],
         clips: [],
         step: 0.5
@@ -1224,7 +1344,9 @@ RENDERED_HTML = '''<!DOCTYPE html>
       renderProducts();
       renderClips();
       closeTaskDrawer();
-      openProductModal('add');
+      if (!initialProducts.length) {
+        openProductModal('add');
+      }
     }
 
     function setIntervalStep(step, btn) {
@@ -1337,18 +1459,27 @@ RENDERED_HTML = '''<!DOCTYPE html>
       const title = document.getElementById('modal-product-title');
       const nameInput = document.getElementById('modal-input-name');
       const descInput = document.getElementById('modal-input-desc');
+      const libBar = document.getElementById('modal-library-bar');
+      const delBtn = document.getElementById('modal-delete-btn');
 
       if (mode === 'add') {
         title.innerText = '新增目标商品';
         nameInput.value = '';
         descInput.value = '';
         modalUploadedRefs = [];
+        if (delBtn) delBtn.classList.add('hidden');
+        renderLibraryBar();
       } else {
-        const p = (appState.currentTask && appState.currentTask.products) ? appState.currentTask.products.find(x => x.id === id) : null;
+        if (libBar) libBar.classList.add('hidden');
+        if (delBtn) delBtn.classList.remove('hidden');
+        let p = (appState.currentTask && appState.currentTask.products) ? appState.currentTask.products.find(x => x.id === id) : null;
+        if (!p && appState.globalProducts) {
+          p = appState.globalProducts.find(x => x.id === id);
+        }
         if (p) {
           title.innerText = '设置商品 · ' + p.name;
           nameInput.value = p.name;
-          descInput.value = p.description;
+          descInput.value = p.description || '';
           modalUploadedRefs = (p.references || []).slice();
         }
       }
@@ -1356,6 +1487,68 @@ RENDERED_HTML = '''<!DOCTYPE html>
       renderModalRefImages();
       modal.classList.remove('hidden');
       modal.classList.add('flex');
+    }
+
+    function renderLibraryBar() {
+      const libBar = document.getElementById('modal-library-bar');
+      const chipsContainer = document.getElementById('modal-library-chips');
+      if (!libBar || !chipsContainer) return;
+      const prods = appState.globalProducts || [];
+      if (!prods.length) {
+        libBar.classList.add('hidden');
+        return;
+      }
+      libBar.classList.remove('hidden');
+      chipsContainer.innerHTML = prods.map((gp, idx) => {
+        const count = (gp.references && gp.references.length) ? gp.references.length : 0;
+        return `
+          <button type="button" onclick="autofillFromGlobal(${idx})" class="px-2.5 py-1 rounded-lg bg-white border border-slate-200 hover:border-slate-800 hover:text-slate-900 text-slate-700 text-[11px] font-medium transition-all shadow-2xs cursor-pointer flex items-center gap-1">
+            <span class="text-indigo-500">✨</span>
+            <span>${gp.name}</span>
+            <span class="text-[10px] text-slate-400">(${count}图)</span>
+          </button>
+        `;
+      }).join('');
+    }
+
+    function autofillFromGlobal(idx) {
+      const gp = appState.globalProducts ? appState.globalProducts[idx] : null;
+      if (!gp) return;
+      document.getElementById('modal-input-name').value = gp.name || '';
+      document.getElementById('modal-input-desc').value = gp.description || '';
+      modalUploadedRefs = (gp.references || []).slice();
+      renderModalRefImages();
+    }
+
+    function removeProductFromTask(e, id) {
+      if (e) e.stopPropagation();
+      if (!appState.currentTask || !appState.currentTask.products) return;
+      appState.currentTask.products = appState.currentTask.products.filter(p => p.id !== id);
+      renderProducts();
+    }
+
+    async function deleteCurrentProduct() {
+      if (!editingProductId) return;
+      const name = document.getElementById('modal-input-name').value.trim();
+      if (!confirm('确定要从全局商品库中彻底删除商品“' + (name || '此商品') + '”吗？')) return;
+      try {
+        const resp = await fetch('/api/products', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'delete', id: editingProductId })
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          appState.globalProducts = data.products || [];
+        }
+      } catch (err) {
+        console.error('Delete product error:', err);
+      }
+      if (appState.currentTask && appState.currentTask.products) {
+        appState.currentTask.products = appState.currentTask.products.filter(p => p.id !== editingProductId);
+      }
+      closeProductModal();
+      renderProducts();
     }
 
     function renderModalRefImages() {
@@ -1423,7 +1616,7 @@ RENDERED_HTML = '''<!DOCTYPE html>
       modal.classList.remove('flex');
     }
 
-    function saveProductModal() {
+    async function saveProductModal() {
       const name = document.getElementById('modal-input-name').value.trim();
       const desc = document.getElementById('modal-input-desc').value.trim();
       if (!name) {
@@ -1436,20 +1629,42 @@ RENDERED_HTML = '''<!DOCTYPE html>
       }
       if (!appState.currentTask.products) appState.currentTask.products = [];
 
+      const targetId = editingProductId || ('p_' + Math.random().toString(36).substring(2, 10));
+      const productPayload = {
+        id: targetId,
+        name: name,
+        description: desc,
+        references: modalUploadedRefs
+      };
+
       if (editingProductId) {
         const p = appState.currentTask.products.find(x => x.id === editingProductId);
         if (p) {
           p.name = name;
           p.description = desc;
           p.references = modalUploadedRefs;
+        } else {
+          appState.currentTask.products.push(productPayload);
         }
       } else {
-        appState.currentTask.products.push({
-          id: 'p' + (appState.currentTask.products.length + 1),
-          name: name,
-          description: desc,
-          references: modalUploadedRefs
+        appState.currentTask.products.push(productPayload);
+      }
+
+      // Persist to global library
+      try {
+        const resp = await fetch('/api/products', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'save', product: productPayload })
         });
+        if (resp.ok) {
+          const data = await resp.json();
+          if (data.products) {
+            appState.globalProducts = data.products;
+          }
+        }
+      } catch (err) {
+        console.error('Save global product error:', err);
       }
 
       renderProducts();
