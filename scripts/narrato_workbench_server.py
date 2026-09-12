@@ -367,12 +367,16 @@ class ObjectAnalyzeHandler(BaseHandler):
         if not sources and VIDEO_RESOURCE.exists():
             for vp in sorted(VIDEO_RESOURCE.glob("*.*")):
                 if vp.suffix.lower() in [".mp4", ".mov", ".mkv", ".avi", ".webm"]:
-                    dur = _probe_video(vp)
+                    probe_res = _probe_video(vp)
+                    if isinstance(probe_res, dict):
+                        dur_sec = float(probe_res.get("duration", 0))
+                    else:
+                        dur_sec = float(probe_res or 0)
                     sources.append({
                         "id": vp.stem,
                         "name": vp.name,
                         "path": str(vp),
-                        "duration": round(dur, 2)
+                        "duration": round(dur_sec, 2)
                     })
 
         manifest = {
@@ -404,13 +408,37 @@ class ObjectAnalyzeHandler(BaseHandler):
             try:
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
-                res = loop.run_until_complete(obj_demo.analyze(target_dir, step=step))
+                def _prog(msg):
+                    if job_id in ACTIVE_JOBS:
+                        ACTIVE_JOBS[job_id]["progress"] = msg
+                res = loop.run_until_complete(obj_demo.analyze(target_dir, progress=_prog))
                 ACTIVE_JOBS[job_id] = {"status": "complete", "progress": "识别完成", "clips": res.get("clips", [])}
             except Exception as exc:
                 ACTIVE_JOBS[job_id] = {"status": "error", "message": str(exc)}
 
         threading.Thread(target=_worker, daemon=True).start()
         self.write_json({"job_id": job_id, "status": "started"})
+
+
+class ObjectStatusHandler(BaseHandler):
+    """Poll object analyze progress."""
+    def get(self, job_id):
+        status_info = ACTIVE_JOBS.get(job_id)
+        if not status_info:
+            manifest_path = OBJECT_ROOT / job_id / "manifest.json"
+            if manifest_path.is_file():
+                try:
+                    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    status_info = {
+                        "status": data.get("status", "complete"),
+                        "progress": "识别完成" if data.get("status") in ["complete", "review"] else data.get("status", ""),
+                        "clips": data.get("clips", [])
+                    }
+                except Exception:
+                    status_info = {"status": "unknown", "progress": ""}
+            else:
+                status_info = {"status": "not_found", "progress": ""}
+        self.write_json(status_info)
 
 
 class ObjectExportHandler(BaseHandler):
@@ -668,6 +696,7 @@ def get_workbench_rules():
         tornado.web.Rule(tornado.routing.PathMatches(r"^/api/object/tasks$"), ObjectTasksHandler),
         tornado.web.Rule(tornado.routing.PathMatches(r"^/api/object/task/(?P<job_id>[^/]+)$"), ObjectTaskDetailHandler),
         tornado.web.Rule(tornado.routing.PathMatches(r"^/api/object/analyze$"), ObjectAnalyzeHandler),
+        tornado.web.Rule(tornado.routing.PathMatches(r"^/api/object/status/(?P<job_id>[^/]+)$"), ObjectStatusHandler),
         tornado.web.Rule(tornado.routing.PathMatches(r"^/api/object/export$"), ObjectExportHandler),
         tornado.web.Rule(tornado.routing.PathMatches(r"^/api/object/download/(?P<job_id>[^/]+)$"), ObjectDownloadHandler),
         tornado.web.Rule(tornado.routing.PathMatches(r"^/api/materials/upload$"), MaterialUploadHandler),
@@ -1475,6 +1504,7 @@ RENDERED_HTML = '''<!DOCTYPE html>
       const txt = document.getElementById('start-analysis-text');
       txt.innerText = 'AI 扫描比对中...';
       btn.classList.add('opacity-75');
+      btn.style.pointerEvents = 'none';
 
       try {
         const resp = await fetch('/api/object/analyze', {
@@ -1486,18 +1516,51 @@ RENDERED_HTML = '''<!DOCTYPE html>
             products: appState.currentTask ? appState.currentTask.products : []
           })
         });
+        if (!resp.ok) {
+          const errText = await resp.text();
+          let msg = '服务响应异常 (' + resp.status + ')';
+          try {
+            const errObj = JSON.parse(errText);
+            if (errObj.error) msg = errObj.error;
+          } catch (_) {}
+          throw new Error(msg);
+        }
         const res = await resp.json();
-        setTimeout(async () => {
-          txt.innerText = '开始智能识别切片';
-          btn.classList.remove('opacity-75');
-          alert('识别切片已完成！');
-          if (appState.currentTask) {
-            selectTask(appState.currentTask.id);
-          }
-        }, 2500);
+        const activeJobId = res.job_id || (appState.currentTask ? appState.currentTask.id : '');
+        if (appState.currentTask && res.job_id) {
+          appState.currentTask.id = res.job_id;
+          renderTopTaskBadge();
+        }
+
+        const pollInterval = setInterval(async () => {
+          try {
+            const sResp = await fetch('/api/object/status/' + encodeURIComponent(activeJobId));
+            if (!sResp.ok) return;
+            const sData = await sResp.json();
+            if (sData.progress) {
+              txt.innerText = sData.progress;
+            }
+            if (sData.status === 'complete' || sData.status === 'review') {
+              clearInterval(pollInterval);
+              txt.innerText = '开始智能识别切片';
+              btn.classList.remove('opacity-75');
+              btn.style.pointerEvents = 'auto';
+              await selectTask(activeJobId);
+              const clipsCount = (sData.clips && sData.clips.length) ? sData.clips.length : 0;
+              alert('识别切片已完成！共发现 ' + clipsCount + ' 个目标命中片段');
+            } else if (sData.status === 'error' || sData.status === 'failed') {
+              clearInterval(pollInterval);
+              txt.innerText = '开始智能识别切片';
+              btn.classList.remove('opacity-75');
+              btn.style.pointerEvents = 'auto';
+              alert('识别分析失败：' + (sData.message || sData.error || '未知错误'));
+            }
+          } catch (_) {}
+        }, 1500);
       } catch (e) {
         txt.innerText = '开始智能识别切片';
         btn.classList.remove('opacity-75');
+        btn.style.pointerEvents = 'auto';
         alert('启动分析失败：' + e.message);
       }
     }
