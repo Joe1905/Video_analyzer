@@ -12,6 +12,8 @@ import subprocess
 import threading
 import time
 import uuid
+import math
+from urllib.parse import urlsplit
 
 import tornado.web
 import tornado.routing
@@ -86,15 +88,54 @@ def get_materials_list():
 
 # Background job tracking
 ACTIVE_JOBS = {}
+RENDER_LOCK = threading.Lock()  # ponytail: upstream renderer uses module globals; serialize renders.
+
+
+def task_dir(job_id):
+    if not isinstance(job_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', job_id):
+        raise tornado.web.HTTPError(400, '无效的任务编号')
+    return OBJECT_ROOT / job_id
+
+
+def media_path(value):
+    if not isinstance(value, str):
+        raise tornado.web.HTTPError(400, '无效媒体路径')
+    value = value.removeprefix('/api/media/')
+    candidate = Path(value) if value.startswith('/NarratoAI/') else Path('/NarratoAI') / value.lstrip('/')
+    candidate = candidate.resolve()
+    allowed = [OBJECT_ROOT, VIDEO_RESOURCE, AUDIO_RESOURCE, TASKS_ROOT, Path('/NarratoAI/storage/uploaded_bgms')]
+    if not any(candidate.is_relative_to(p.resolve()) for p in allowed) or candidate.suffix.lower() not in {'.jpg', '.jpeg', '.png', '.webp', '.mp4', '.mov', '.mkv', '.avi', '.webm', '.mp3', '.wav', '.m4a', '.srt', '.zip'}:
+        raise tornado.web.HTTPError(403, '禁止访问此文件')
+    if not candidate.is_file():
+        raise tornado.web.HTTPError(404, '媒体不存在')
+    return candidate
+
+
+def selected_sources(body):
+    values = body.get('sources', [])
+    if not isinstance(values, list) or not values:
+        raise tornado.web.HTTPError(400, '请先勾选待处理素材')
+    sources = []
+    for value in values:
+        p = media_path(value.get('path') if isinstance(value, dict) else value)
+        if not p.is_relative_to(VIDEO_RESOURCE.resolve()) or p.suffix.lower() not in {'.mp4', '.mov', '.mkv', '.avi', '.webm'}:
+            raise tornado.web.HTTPError(400, '请从素材库选择视频')
+        if any(s['path'] == str(p) for s in sources):
+            continue
+        duration = float(_probe_video(str(p))['duration'])
+        if not math.isfinite(duration) or duration <= 0:
+            raise tornado.web.HTTPError(400, '视频时长无效')
+        sources.append(dict(id=f'v{len(sources)+1}', name=p.name, path=str(p), duration=duration))
+    return sources
 
 
 class BaseHandler(tornado.web.RequestHandler):
     def check_xsrf_cookie(self):
-        # Disable XSRF cookie checking for workbench REST APIs
-        pass
+        origin = self.request.headers.get('Origin')
+        if origin and urlsplit(origin).netloc != self.request.host:
+            raise tornado.web.HTTPError(403, '不允许跨站写入')
 
     def set_default_headers(self):
-        self.set_header("Access-Control-Allow-Origin", "*")
         self.set_header("Access-Control-Allow-Headers", "x-requested-with, content-type")
         self.set_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
 
@@ -107,31 +148,19 @@ class BaseHandler(tornado.web.RequestHandler):
         self.set_header("Content-Type", "application/json; charset=UTF-8")
         self.write(json.dumps(data, ensure_ascii=False))
 
+    def write_error(self, status_code, **kwargs):
+        exc = kwargs.get('exc_info', (None, None, None))[1]
+        self.write_json({'error': (exc.log_message if isinstance(exc, tornado.web.HTTPError) else None) or '请求失败，请检查输入与服务器日志'}, status_code)
+
 
 class MediaStreamHandler(tornado.web.StaticFileHandler):
     """Streams media files with Range support for fluent browser video playback."""
     @classmethod
     def get_absolute_path(cls, root, path):
-        clean_path = path.lstrip("/")
-        candidate = Path("/NarratoAI") / clean_path
-        if candidate.is_file():
-            return str(candidate.resolve())
-        # Check if direct absolute path
-        abs_candidate = Path(path)
-        if abs_candidate.is_file():
-            return str(abs_candidate.resolve())
-        # Check in storage or resource
-        for base in [OBJECT_ROOT, VIDEO_RESOURCE, AUDIO_RESOURCE, TASKS_ROOT]:
-            p = base / clean_path
-            if p.is_file():
-                return str(p.resolve())
-        return str(candidate)
+        return str(media_path(path))
 
     def validate_absolute_path(self, root, absolute_path):
-        p = Path(absolute_path)
-        if not p.is_file():
-            raise tornado.web.HTTPError(404, "File not found")
-        return str(p)
+        return str(media_path(absolute_path))
 
 
 class WorkbenchHomeHandler(BaseHandler):
@@ -229,6 +258,7 @@ class StateHandler(BaseHandler):
                 })
 
         self.write_json({
+            "bgms": [{"path":str(p), "name":p.name} for base in [AUDIO_RESOURCE, Path("/NarratoAI/storage/uploaded_bgms")] if base.exists() for p in base.iterdir() if p.suffix.lower() in {".mp3",".wav",".m4a"}],
             "current_task": current_task,
             "global_products": global_products,
             "object_tasks": object_tasks,
@@ -322,7 +352,7 @@ class ObjectTasksHandler(BaseHandler):
 class ObjectTaskDetailHandler(BaseHandler):
     """Get single task details."""
     def get(self, job_id):
-        manifest_path = OBJECT_ROOT / job_id / "manifest.json"
+        manifest_path = task_dir(job_id) / "manifest.json"
         if not manifest_path.is_file():
             self.write_json({"error": "Task not found"}, status=404)
             return
@@ -335,94 +365,63 @@ class ObjectTaskDetailHandler(BaseHandler):
 
 
 class ObjectAnalyzeHandler(BaseHandler):
-    """Run object detection scan."""
-    def post(self):
-        body = json.loads(self.request.body.decode("utf-8") or "{}")
-        job_id = body.get("job_id") or ""
-        if not job_id or job_id == "空白任务":
-            job_id = f"task-{uuid.uuid4().hex[:8]}"
-        step = float(body.get("step", 0.5))
+    """Start once; never rewrite a running task or reuse changed-input caches."""
+    async def post(self):
+        body = json.loads(self.request.body or b'{}')
+        job_id = body.get('job_id') or f'task-{uuid.uuid4().hex[:12]}'
+        if job_id == '空白任务':
+            job_id = f'task-{uuid.uuid4().hex[:12]}'
+        root = task_dir(job_id)
+        current = ACTIVE_JOBS.get(job_id)
+        if current and current['status'] == 'running':
+            self.write_json({'job_id': job_id, 'status': 'running'})
+            return
+        if root.exists():
+            raise tornado.web.HTTPError(409, '此任务已有记录，请新建任务后识别')
+        step = body.get('step', 0.5)
+        if step not in (0.25, 0.5, 1):
+            raise tornado.web.HTTPError(400, '无效采样间隔')
+        products = body.get('products', [])
+        if not isinstance(products, list) or not 1 <= len(products) <= 3:
+            raise tornado.web.HTTPError(400, '请选择 1～3 个商品')
+        ids = set()
+        for p in products:
+            if not isinstance(p, dict) or not p.get('name', '').strip() or not p.get('description', '').strip() or not p.get('id') or p['id'] in ids:
+                raise tornado.web.HTTPError(400, '商品名称、描述和唯一编号必填')
+            ids.add(p['id'])
+            refs = p.get('references', [])
+            if not isinstance(refs, list) or not 1 <= len(refs) <= 3:
+                raise tornado.web.HTTPError(400, '每个商品需 1～3 张参考图')
+            p['references'] = [str(media_path(ref)) for ref in refs]
+            from PIL import Image
+            for ref in p['references']:
+                with Image.open(ref) as image:
+                    image.verify()
+        # Reserve before yielding to probes; a second request cannot replace this job.
+        record = {'status': 'running', 'progress': '正在检查素材', 'clips': []}
+        ACTIVE_JOBS[job_id] = record
+        try:
+            sources = await asyncio.to_thread(selected_sources, body)
+            root.mkdir(parents=True)
+            obj_demo.save(root / 'manifest.json', dict(status='pending', products=products, sources=sources, step=step, clips=[]))
+        except Exception:
+            ACTIVE_JOBS.pop(job_id, None)
+            raise
 
-        target_dir = OBJECT_ROOT / job_id
-        target_dir.mkdir(parents=True, exist_ok=True)
-
-        # Resolve media urls in references to local container file paths
-        products = body.get("products", [])
-        for prod in products:
-            clean_refs = []
-            for ref in prod.get("references", []):
-                if isinstance(ref, str) and ref.startswith("/api/media/"):
-                    sub = ref.replace("/api/media/", "", 1).lstrip("/")
-                    p = Path("/NarratoAI") / sub
-                    if p.is_file():
-                        clean_refs.append(str(p))
-                    else:
-                        clean_refs.append(ref)
-                else:
-                    clean_refs.append(ref)
-            prod["references"] = clean_refs
-
-        # Collect sources if not provided
-        sources = body.get("sources", [])
-        if not sources and VIDEO_RESOURCE.exists():
-            for vp in sorted(VIDEO_RESOURCE.glob("*.*")):
-                if vp.suffix.lower() in [".mp4", ".mov", ".mkv", ".avi", ".webm"]:
-                    probe_res = _probe_video(vp)
-                    if isinstance(probe_res, dict):
-                        dur_sec = float(probe_res.get("duration", 0))
-                    else:
-                        dur_sec = float(probe_res or 0)
-                    sources.append({
-                        "id": vp.stem,
-                        "name": vp.name,
-                        "path": str(vp),
-                        "duration": round(dur_sec, 2)
-                    })
-
-        manifest = {
-            "status": "pending",
-            "products": products,
-            "sources": sources,
-            "step": step,
-            "clips": []
-        }
-        obj_demo.save(target_dir / "manifest.json", manifest)
-
-        # Sync products to global repository
-        existing_globals = {p.get("name"): p for p in load_global_products()}
-        for p in body.get("products", []):
-            if p.get("name"):
-                existing_globals[p["name"]] = {
-                    "id": p.get("id") or f"p_{uuid.uuid4().hex[:8]}",
-                    "name": p["name"],
-                    "description": p.get("description", ""),
-                    "references": p.get("references", []),
-                    "updated_at": time.strftime("%Y-%m-%d %H:%M:%S")
-                }
-        save_global_products(list(existing_globals.values()))
-
-        # Run async analyze
-        ACTIVE_JOBS[job_id] = {"status": "running", "progress": "正在抽帧采样与特征比对...", "clips": []}
-
-        def _worker():
+        def worker():
             try:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                def _prog(msg):
-                    if job_id in ACTIVE_JOBS:
-                        ACTIVE_JOBS[job_id]["progress"] = msg
-                res = loop.run_until_complete(obj_demo.analyze(target_dir, progress=_prog))
-                ACTIVE_JOBS[job_id] = {"status": "complete", "progress": "识别完成", "clips": res.get("clips", [])}
+                result = asyncio.run(obj_demo.analyze(root, progress=lambda msg: record.update(progress=msg)))
+                record.update(status='complete', progress='识别完成', clips=result['clips'])
             except Exception as exc:
-                ACTIVE_JOBS[job_id] = {"status": "error", "message": str(exc)}
-
-        threading.Thread(target=_worker, daemon=True).start()
-        self.write_json({"job_id": job_id, "status": "started"})
+                record.update(status='error', message=str(exc))
+        threading.Thread(target=worker, daemon=True).start()
+        self.write_json({'job_id': job_id, 'status': 'started'})
 
 
 class ObjectStatusHandler(BaseHandler):
     """Poll object analyze progress."""
     def get(self, job_id):
+        task_dir(job_id)
         status_info = ACTIVE_JOBS.get(job_id)
         if not status_info:
             manifest_path = OBJECT_ROOT / job_id / "manifest.json"
@@ -434,6 +433,8 @@ class ObjectStatusHandler(BaseHandler):
                         "progress": "识别完成" if data.get("status") in ["complete", "review"] else data.get("status", ""),
                         "clips": data.get("clips", [])
                     }
+                    if status_info['status'] in ('running', 'pending'):
+                        status_info.update(status='failed', message='服务重启中断了任务，请新建任务后运行')
                 except Exception:
                     status_info = {"status": "unknown", "progress": ""}
             else:
@@ -443,18 +444,22 @@ class ObjectStatusHandler(BaseHandler):
 
 class ObjectExportHandler(BaseHandler):
     """Export ZIP package for selected clips."""
-    def post(self):
+    async def post(self):
         body = json.loads(self.request.body.decode("utf-8") or "{}")
         job_id = body.get("job_id", "")
         selected_indices = body.get("selected_indices", None)
 
-        target_dir = OBJECT_ROOT / job_id
+        target_dir = task_dir(job_id)
         if not (target_dir / "manifest.json").is_file():
             self.write_json({"error": "Manifest not found"}, status=404)
             return
 
         try:
-            archive_path = obj_demo.export(target_dir, selected_indices)
+            manifest = json.loads((target_dir / 'manifest.json').read_text())
+            if not isinstance(selected_indices, list) or not selected_indices or any(type(i) is not int or i < 0 or i >= len(manifest['clips']) or manifest['clips'][i]['status'] != 'present' for i in selected_indices):
+                self.write_json({'error': '仅可导出确认出现的片段'}, 400)
+                return
+            archive_path = await asyncio.to_thread(obj_demo.export, target_dir, list(dict.fromkeys(selected_indices)))
             self.write_json({
                 "status": "success",
                 "archive_path": str(archive_path),
@@ -467,9 +472,11 @@ class ObjectExportHandler(BaseHandler):
 class ObjectDownloadHandler(BaseHandler):
     """Download exported ZIP file."""
     def get(self, job_id):
-        target_dir = OBJECT_ROOT / job_id
+        target_dir = task_dir(job_id)
         fname = self.get_argument("file", None)
         if fname:
+            if Path(fname).name != fname or not re.fullmatch(r'export-[a-zA-Z0-9_-]+\.zip', fname):
+                raise tornado.web.HTTPError(400, '无效下载文件名')
             zip_file = target_dir / fname
         else:
             zips = list(target_dir.glob("*.zip"))
@@ -510,7 +517,11 @@ class MaterialUploadHandler(BaseHandler):
         saved = []
         for uf in unique_files:
             orig_name = re.sub(r"[^\w\.-]", "_", uf.get("filename", "video.mp4"))
+            if Path(orig_name).suffix.lower() not in {'.mp4', '.mov', '.mkv', '.avi', '.webm'}:
+                raise tornado.web.HTTPError(400, '不支持的视频格式')
             dest = VIDEO_RESOURCE / orig_name
+            if dest.exists():
+                dest = VIDEO_RESOURCE / f'{uuid.uuid4().hex[:8]}_{orig_name}'
             with open(dest, "wb") as f:
                 f.write(uf["body"])
             MATERIAL_DURATION_CACHE.pop(orig_name, None)
@@ -541,6 +552,10 @@ class MaterialDeleteHandler(BaseHandler):
 
         safe_name = Path(filename).name
         target = VIDEO_RESOURCE / safe_name
+        for manifest_path in OBJECT_ROOT.glob('*/manifest.json'):
+            manifest = json.loads(manifest_path.read_text())
+            if any(s.get('path') == str(target) for s in manifest.get('sources', [])):
+                raise tornado.web.HTTPError(409, '此素材被任务引用，请保留以便预览和导出')
         deleted = False
         if target.is_file():
             try:
@@ -583,6 +598,10 @@ class ProductRefUploadHandler(BaseHandler):
         saved = []
         for uf in unique_files:
             orig_name = re.sub(r"[^\w\.-]", "_", uf.get("filename", "ref.png"))
+            from PIL import Image
+            import io
+            image = Image.open(io.BytesIO(uf['body']))
+            image.verify()
             fname = f"ref_{uuid.uuid4().hex[:8]}_{orig_name}"
             dest = ref_dir / fname
             with open(dest, "wb") as f:
@@ -618,74 +637,129 @@ class VoicesHandler(BaseHandler):
         self.write_json({"voices": voices})
 
 
-class AutoScriptHandler(BaseHandler):
-    """Generate or mock AI storyboard script."""
-    def post(self):
-        body = json.loads(self.request.body.decode("utf-8") or "{}")
-        theme = body.get("theme", "发光光剑玩具")
-        desc = body.get("desc", "发光光剑玩具，旋转组合")
-        prompt = body.get("prompt", "")
+def launch_auto_job(work):
+    job_id = str(uuid.uuid4())
+    root = TASKS_ROOT / job_id
+    root.mkdir(parents=True)
+    record = {'status': 'running', 'progress': 0, 'message': '正在处理'}
+    ACTIVE_JOBS[job_id] = record
+    obj_demo.save(root / 'workbench.json', record)
+    def worker():
+        try:
+            result = work(job_id, root, record)
+            record.update(result, status='complete', progress=100, message='处理完成')
+        except Exception as exc:
+            record.update(status='error', message=str(exc))
+        finally:
+            obj_demo.save(root / 'workbench.json', record)
+    threading.Thread(target=worker, daemon=True).start()
+    return job_id
 
-        shots = [
-            {
-                "timestamp": "00:00 - 00:04 (4.0s)",
-                "video": "2026-09-08_原片.MOV",
-                "narration": f"想要一款既能发光又能旋转解压的神仙玩具吗？看看这个让全网都抢着玩的{theme}！",
-                "description": "展示玩具突然点亮并单手旋转的强视觉冲击特写，快速抓住眼球。"
-            },
-            {
-                "timestamp": "00:04 - 00:09 (5.0s)",
-                "video": "2026-08-20_旋转.MOV",
-                "narration": "两把、四把甚至多把任意磁吸拼接，风车式旋转如行云流水，顺滑轴承丝滑不卡顿！",
-                "description": "高速旋转发光轨迹，中心圆形卡扣顺滑拼接展示。"
-            },
-            {
-                "timestamp": "00:09 - 00:14 (5.0s)",
-                "video": "2026-09-08_原片.MOV",
-                "narration": "环保高韧性透明材质，边缘细腻圆润绝不刮手；多档呼吸光效，晚上拿出去拉满氛围！",
-                "description": "手部抚摸展现材质圆润，暗光发光律动细节。"
-            },
-            {
-                "timestamp": "00:14 - 00:18 (4.0s)",
-                "video": "2026-08-20_旋转.MOV",
-                "narration": f"不仅是孩子的心头好，大人随手转转也超解压。现在备上几个，随时开启酷炫光刃风暴！",
-                "description": "多把组合全景把玩，呼吁点击了解详情。"
-            }
-        ]
-        self.write_json({"shots": shots, "total_duration": "18.0s", "shot_count": len(shots)})
+
+class AutoScriptHandler(BaseHandler):
+    async def post(self):
+        from app.services.narrato_multi_material import MultiMaterialAnalysisService, SCRIPT_LANGUAGES
+        body = json.loads(self.request.body or b'{}')
+        if not body.get('theme', '').strip() or not body.get('desc', '').strip():
+            raise tornado.web.HTTPError(400, '请填写主题和商品描述')
+        language = body.get('language', 'English')
+        if language not in SCRIPT_LANGUAGES:
+            raise tornado.web.HTTPError(400, '不支持的脚本语言')
+        sources = await asyncio.to_thread(selected_sources, body)
+        def work(job_id, root, record):
+            paths = [s['path'] for s in sources]
+            script = asyncio.run(MultiMaterialAnalysisService().generate_documentary_script(
+                video_paths=paths, video_path=paths[0], product_mode=True,
+                product_description=body['desc'], script_language=language,
+                video_theme=body['theme'], custom_prompt=body.get('prompt', ''),
+                frame_interval_input=3, vision_batch_size=4, vision_llm_provider='openai',
+                vision_api_key=config.app.get('vision_openai_api_key'),
+                vision_model_name=config.app.get('vision_openai_model_name'),
+                vision_base_url=config.app.get('vision_openai_base_url'), max_concurrency=1,
+                progress_callback=lambda p, msg: record.update(progress=p, message=msg)))
+            obj_demo.save(root / 'script.json', script)
+            obj_demo.save(root / 'sources.json', sources)
+            shots = [dict(s, video=sources[int(s['video_id'])-1]['name'], description=s.get('picture','')) for s in script]
+            return {'shots': shots, 'script_job_id': job_id}
+        self.write_json({'task_id': launch_auto_job(work)})
 
 
 class AutoRenderHandler(BaseHandler):
-    """Triggers background video rendering using tm.start_subclip_unified."""
     def post(self):
-        body = json.loads(self.request.body.decode("utf-8") or "{}")
-        task_id = str(uuid.uuid4())
-        task_root = TASKS_ROOT / task_id
-        task_root.mkdir(parents=True, exist_ok=True)
-
-        ACTIVE_JOBS[task_id] = {
-            "status": "running",
-            "progress": 5,
-            "message": "任务已创建，正在初始化视频与配音合成引擎..."
-        }
-
-        def _run():
+        from app.models.schema import VideoClipParams
+        from app.services import task as tm
+        body = json.loads(self.request.body or b'{}')
+        script_id = body.get('script_job_id', '')
+        task_dir(script_id)  # validate identifier, even though auto jobs live in TASKS_ROOT
+        source_root = TASKS_ROOT / script_id
+        if not (source_root / 'script.json').is_file():
+            raise tornado.web.HTTPError(400, '请先生成真实脚本')
+        script = json.loads((source_root / 'script.json').read_text())
+        sources = json.loads((source_root / 'sources.json').read_text())
+        edits = body.get('storyboard', [])
+        if len(edits) != len(script):
+            raise tornado.web.HTTPError(400, '脚本段数不一致，请重新加载')
+        for row, edit in zip(script, edits):
+            if not isinstance(edit.get('narration'), str):
+                raise tornado.web.HTTPError(400, '台词格式错误')
+            row['narration'] = edit['narration']
+        bgm = str(media_path(body['bgm'])) if body.get('bgm') else ''
+        if bgm and Path(bgm).suffix.lower() not in {'.mp3','.wav','.m4a'}:
+            raise tornado.web.HTTPError(400, 'BGM 必须是音频')
+        voice = body.get('voice_id', '')
+        has_tts = bool(voice and config.app.get('elevenlabs_api_key'))
+        for row in script:
+            row['OST'] = 0 if has_tts else 1
+        params = VideoClipParams(video_origin_paths=[s['path'] for s in sources],
+            video_origin_path=sources[0]['path'], video_aspect=body.get('aspect','9:16'),
+            voice_name=voice, tts_engine='elevenlabs' if has_tts else '',
+            bgm_type='custom' if bgm else '', bgm_file=bgm,
+            subtitle_enabled=bool(body.get('subtitle_enabled', True)), original_volume=0,
+            n_threads=2, subtitle_auto_wrap=True)
+        if not RENDER_LOCK.acquire(blocking=False):
+            raise tornado.web.HTTPError(409, '已有成片任务运行，请等它完成')
+        def work(job_id, root, record):
             try:
-                for p, msg in [(20, "正在生成解说配音音频..."), (45, "正在对齐音视频分镜并烧录双行字幕..."), (75, "正在混合背景音乐并硬件加速编码 MP4..."), (100, "成片合成完毕！")]:
-                    time.sleep(1.2)
-                    ACTIVE_JOBS[task_id] = {"status": "running" if p < 100 else "complete", "progress": p, "message": msg, "output_url": f"/api/media/storage/tasks/{task_id}/combined.mp4"}
-            except Exception as e:
-                ACTIVE_JOBS[task_id] = {"status": "error", "message": str(e)}
-
-        threading.Thread(target=_run, daemon=True).start()
-        self.write_json({"task_id": task_id, "status": "started"})
+                obj_demo.save(root / 'script.json', script)
+                params.video_clip_json_path = str(root / 'script.json')
+                record.update(message='正在生成配音并合成视频')
+                result = tm.start_subclip_unified(job_id, params)
+                videos = result.get('videos', []) if result else []
+                if not videos or not Path(videos[0]).is_file():
+                    raise ValueError('合成未生成成片，请查看任务日志')
+                _probe_video(videos[0])
+                return {'output_url': '/api/media/' + str(Path(videos[0]).relative_to('/NarratoAI'))}
+            finally:
+                RENDER_LOCK.release()
+        try:
+            job_id = launch_auto_job(work)
+        except Exception:
+            RENDER_LOCK.release()
+            raise
+        self.write_json({'task_id': job_id})
 
 
 class AutoStatusHandler(BaseHandler):
-    """Poll rendering progress."""
     def get(self, task_id):
-        status_info = ACTIVE_JOBS.get(task_id, {"status": "pending", "progress": 0, "message": "排队中"})
-        self.write_json(status_info)
+        task_dir(task_id)
+        record = ACTIVE_JOBS.get(task_id)
+        saved = TASKS_ROOT / task_id / 'workbench.json'
+        if record is None and saved.is_file():
+            record = json.loads(saved.read_text())
+            if record['status'] == 'running':
+                record.update(status='error', message='服务重启导致任务中断，请重新发起')
+        self.write_json(record or {'status':'error', 'message':'任务不存在'})
+
+
+class BgmUploadHandler(BaseHandler):
+    def post(self):
+        files = self.request.files.get('file', [])
+        if len(files) != 1 or Path(files[0]['filename']).suffix.lower() not in {'.mp3','.wav','.m4a'}:
+            raise tornado.web.HTTPError(400, '请选择音频文件')
+        dest = AUDIO_RESOURCE / (uuid.uuid4().hex[:12] + Path(files[0]['filename']).suffix.lower())
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(files[0]['body'])
+        self.write_json({'path':str(dest), 'name':files[0]['filename']})
 
 
 def get_workbench_rules():
@@ -693,6 +767,7 @@ def get_workbench_rules():
     return [
         tornado.web.Rule(tornado.routing.PathMatches(r"^/$"), WorkbenchHomeHandler),
         tornado.web.Rule(tornado.routing.PathMatches(r"^/api/state$"), StateHandler),
+        tornado.web.Rule(tornado.routing.PathMatches(r"^/api/bgm/upload$"), BgmUploadHandler),
         tornado.web.Rule(tornado.routing.PathMatches(r"^/api/object/tasks$"), ObjectTasksHandler),
         tornado.web.Rule(tornado.routing.PathMatches(r"^/api/object/task/(?P<job_id>[^/]+)$"), ObjectTaskDetailHandler),
         tornado.web.Rule(tornado.routing.PathMatches(r"^/api/object/analyze$"), ObjectAnalyzeHandler),
@@ -959,8 +1034,8 @@ RENDERED_HTML = '''<!DOCTYPE html>
         <div class="flex items-center justify-between">
           <span class="text-slate-600 font-medium">画幅比例</span>
           <select id="auto-aspect-select" class="border border-slate-200 rounded-lg px-2.5 py-1 bg-white text-slate-800 font-medium text-xs">
-            <option value="portrait">9:16 (竖屏短视频)</option>
-            <option value="landscape">16:9 (横屏视频)</option>
+            <option value="9:16">9:16 (竖屏短视频)</option>
+            <option value="16:9">16:9 (横屏视频)</option>
           </select>
         </div>
 
@@ -978,6 +1053,9 @@ RENDERED_HTML = '''<!DOCTYPE html>
           </div>
         </div>
 
+        <label class="block">商品描述（必填）<input id="auto-desc-input" class="w-full border rounded p-2" placeholder="说明商品是什么及基本玩法"></label>
+        <label>脚本语言 <select id="auto-language"><option>English</option><option>简体中文</option><option>Español</option><option>日本語</option><option>Deutsch</option><option>Français</option></select></label>
+        <p class="text-xs text-slate-500">使用「物品识别剪辑」页勾选的素材。没有配音配置时跳过配音。</p>
         <!-- 3. 背景音乐 (BGM) -->
         <div class="flex items-center justify-between">
           <span class="text-slate-600 font-medium">背景音乐 (BGM)</span>
@@ -1124,6 +1202,8 @@ RENDERED_HTML = '''<!DOCTYPE html>
       globalProducts: [],
       objectTasks: [],
       materials: [],
+      selectedSources: [],
+      scriptJobId: '',
       voices: [],
       autoTasks: [],
       step: 0.5,
@@ -1145,6 +1225,10 @@ RENDERED_HTML = '''<!DOCTYPE html>
         appState.materials = data.materials || [];
         appState.voices = data.voices || [];
         appState.autoTasks = data.auto_tasks || [];
+        appState.selectedSources = (appState.currentTask?.sources || []).map(s => s.path);
+        const bgmSelect = document.getElementById('auto-bgm-select');
+        bgmSelect.replaceChildren(new Option('无背景音乐', ''));
+        (data.bgms || []).forEach(b => bgmSelect.add(new Option(b.name, b.path)));
 
         if (appState.currentTask && (!appState.currentTask.products || !appState.currentTask.products.length) && appState.globalProducts.length) {
           appState.currentTask.products = appState.globalProducts.map(p => Object.assign({}, p));
@@ -1159,7 +1243,7 @@ RENDERED_HTML = '''<!DOCTYPE html>
         loadDefaultStoryboard();
       } catch (err) {
         console.error('Init error:', err);
-        document.getElementById('top-task-name').innerText = '未连接';
+        document.getElementById('top-task-name').innerText = '未连接：' + err.message;
       }
     }
 
@@ -1255,6 +1339,7 @@ RENDERED_HTML = '''<!DOCTYPE html>
 
       list.innerHTML = mats.map(m => `
         <div class="group flex items-center justify-between px-3 py-2 rounded-xl bg-slate-50/80 hover:bg-slate-100/90 border border-slate-200/80 hover:border-slate-300 transition-all text-xs">
+          <input type="checkbox" aria-label="选择素材" ${appState.selectedSources.includes(m.path) ? 'checked' : ''} onchange="chooseSource(${mats.indexOf(m)}, this.checked)">
           <div onclick="openTheaterModal('${m.name}', '${m.duration || ''}', '素材视频预览 · ${m.name}')" class="flex items-center gap-2 min-w-0 flex-1 cursor-pointer" title="点击播放预览素材视频">
             <div class="w-6 h-6 rounded-lg bg-slate-200/80 group-hover:bg-slate-900 group-hover:text-white flex items-center justify-center text-slate-600 transition-colors shrink-0">
               <svg class="w-3 h-3 ml-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
@@ -1269,6 +1354,12 @@ RENDERED_HTML = '''<!DOCTYPE html>
           </div>
         </div>
       `).join('');
+    }
+
+    function chooseSource(index, checked) {
+      const path = appState.materials[index].path;
+      appState.selectedSources = appState.selectedSources.filter(p => p !== path);
+      if (checked) appState.selectedSources.push(path);
     }
 
     async function deleteMaterial(e, name) {
@@ -1309,7 +1400,7 @@ RENDERED_HTML = '''<!DOCTYPE html>
       let totalDuration = 0;
       clips.forEach(c => totalDuration += (c.end - c.start));
       summary.innerText = `${clips.length} 个切片 · 累计 ${totalDuration.toFixed(2)}s`;
-      document.getElementById('export-count').innerText = clips.length;
+      document.getElementById('export-count').innerText = clips.filter(c => c.status === 'present').length;
 
       if (!clips.length) {
         list.innerHTML = `
@@ -1337,8 +1428,8 @@ RENDERED_HTML = '''<!DOCTYPE html>
         return `
           <div class="bg-white border border-slate-200/90 rounded-2xl p-4 flex items-center justify-between gap-5 spring-hover shadow-xs">
             <div class="flex items-center gap-4 min-w-0 flex-1">
-              <input type="checkbox" checked onchange="updateCount()" data-idx="${idx}" class="clip-box w-4 h-4 rounded border-slate-300 text-slate-900 focus:ring-0 cursor-pointer shrink-0">
-              <div onclick="openTheaterModal('${sourceName}', '${timeSpan}', '命中商品切片 #${idx+1}')"
+              <input type="checkbox" ${c.status === 'present' ? 'checked' : 'disabled'} onchange="updateCount()" data-idx="${idx}" class="clip-box w-4 h-4 rounded border-slate-300 text-slate-900 focus:ring-0 cursor-pointer shrink-0">
+              <div onclick="previewClip(${idx})"
                    class="w-[120px] h-[68px] rounded-xl bg-slate-950 overflow-hidden relative group cursor-pointer shrink-0 border border-slate-200 shadow-xs flex items-center justify-center play-glow">
                 ${mediaPath ? `<img src="${streamUrl}" class="w-full h-full object-cover opacity-85 group-hover:opacity-100 transition-opacity">` : `
                   <div class="w-full h-full bg-gradient-to-tr from-slate-900 via-slate-850 to-slate-800 flex flex-col justify-between p-1.5">
@@ -1357,7 +1448,7 @@ RENDERED_HTML = '''<!DOCTYPE html>
               <div class="min-w-0 flex-1">
                 <div class="flex items-center gap-2.5 flex-wrap">
                   <span class="font-mono font-bold text-slate-900 text-sm">${timeSpan}</span>
-                  <span class="text-xs font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md">连续复核通过</span>
+                  <span class="text-xs font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md">${c.status === 'present' ? '确认出现' : '不确定，不导出'}</span>
                   <span class="text-xs font-semibold text-slate-800 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-md font-mono">${c.product_id ? '#' + c.product_id.toUpperCase() : '#P1'}</span>
                   <span class="text-xs text-slate-400 font-mono truncate">${sourceName}</span>
                 </div>
@@ -1458,6 +1549,8 @@ RENDERED_HTML = '''<!DOCTYPE html>
         const resp = await fetch('/api/object/task/' + taskId);
         if (!resp.ok) throw new Error('Failed to load task');
         appState.currentTask = await resp.json();
+        appState.selectedSources = (appState.currentTask.sources || []).map(s => s.path);
+        renderMaterials();
         renderTopTaskBadge();
         renderProducts();
         renderClips();
@@ -1470,6 +1563,8 @@ RENDERED_HTML = '''<!DOCTYPE html>
 
     function createNewTask() {
       const newId = 'task-' + Math.random().toString(36).substring(2, 10);
+      appState.selectedSources = [];
+      renderMaterials();
       const initialProducts = (appState.globalProducts && appState.globalProducts.length)
         ? appState.globalProducts.map(p => Object.assign({}, p))
         : [];
@@ -1513,6 +1608,7 @@ RENDERED_HTML = '''<!DOCTYPE html>
           body: JSON.stringify({
             job_id: appState.currentTask ? appState.currentTask.id : '',
             step: appState.step,
+            sources: appState.selectedSources,
             products: appState.currentTask ? appState.currentTask.products : []
           })
         });
@@ -1585,7 +1681,7 @@ RENDERED_HTML = '''<!DOCTYPE html>
         if (data.download_url) {
           window.location.href = data.download_url;
         } else {
-          alert('导出完成！');
+          throw new Error(data.error || '导出失败，未返回文件');
         }
       } catch (e) {
         alert('导出失败：' + e.message);
@@ -1593,7 +1689,7 @@ RENDERED_HTML = '''<!DOCTYPE html>
     }
 
     function toggleClips(val) {
-      document.querySelectorAll('.clip-box').forEach(b => b.checked = val);
+      document.querySelectorAll('.clip-box:not(:disabled)').forEach(b => b.checked = val);
       updateCount();
     }
 
@@ -1603,7 +1699,14 @@ RENDERED_HTML = '''<!DOCTYPE html>
     }
 
     // Theater Modal
-    function openTheaterModal(source, time, title) {
+    function previewClip(index) {
+      const c = appState.currentTask.clips[index];
+      const source = appState.currentTask.sources.find(s => s.id === c.source_id);
+      if (!source) return alert('找不到片段素材');
+      openTheaterModal('/api/media/' + source.path.replace('/NarratoAI/', ''), '', '片段预览', c.start, c.end);
+    }
+
+    function openTheaterModal(source, time, title, start = 0, end = null) {
       document.getElementById('theater-title').innerText = title || '画面精准回放';
       document.getElementById('theater-sub').innerText = source + (time ? ' (' + time + ')' : '');
       const videoElem = document.getElementById('theater-video');
@@ -1614,6 +1717,8 @@ RENDERED_HTML = '''<!DOCTYPE html>
         const fname = (source || '').split('/').pop().split(String.fromCharCode(92)).pop();
         videoSrc = '/api/media/resource/videos/' + encodeURIComponent(fname);
       }
+      videoElem.onloadedmetadata = () => { videoElem.currentTime = start; };
+      videoElem.ontimeupdate = () => { if (end !== null && videoElem.currentTime >= end) videoElem.pause(); };
       videoElem.src = videoSrc;
       videoElem.play().catch(() => {});
 
@@ -1626,6 +1731,8 @@ RENDERED_HTML = '''<!DOCTYPE html>
       const modal = document.getElementById('theater-modal');
       const videoElem = document.getElementById('theater-video');
       videoElem.pause();
+      videoElem.removeAttribute('src');
+      videoElem.load();
       modal.classList.add('hidden');
       modal.classList.remove('flex');
     }
@@ -1858,6 +1965,17 @@ RENDERED_HTML = '''<!DOCTYPE html>
       renderStoryboard();
     }
 
+    async function pollAuto(taskId, onProgress) {
+      while (true) {
+        const resp = await fetch('/api/auto/status/' + encodeURIComponent(taskId));
+        const data = await resp.json();
+        if (!resp.ok || data.status === 'error') throw new Error(data.error || data.message || '处理失败');
+        onProgress(data.message || '正在处理');
+        if (data.status === 'complete') return data;
+        await new Promise(resolve => setTimeout(resolve, 1500));
+      }
+    }
+
     async function regenerateScript() {
       const theme = document.getElementById('auto-theme-input').value.trim();
       const prompt = document.getElementById('auto-prompt-input').value.trim();
@@ -1872,13 +1990,16 @@ RENDERED_HTML = '''<!DOCTYPE html>
         const resp = await fetch('/api/auto/script', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ theme, prompt })
+          body: JSON.stringify({ theme, prompt, desc: document.getElementById('auto-desc-input').value, language: document.getElementById('auto-language').value, sources: appState.selectedSources })
         });
         const data = await resp.json();
-        appState.storyboard = data.shots || [];
+        if (!resp.ok) throw new Error(data.error || '生成失败');
+        const result = await pollAuto(data.task_id, msg => txt.innerText = msg);
+        appState.scriptJobId = result.script_job_id;
+        appState.storyboard = result.shots || [];
         renderStoryboard();
       } catch (e) {
-        console.error('Script gen error:', e);
+        alert('脚本生成失败：' + e.message);
       } finally {
         txt.innerText = '重新生成 AI 脚本';
       }
@@ -1888,7 +2009,7 @@ RENDERED_HTML = '''<!DOCTYPE html>
       const list = document.getElementById('storyboard-list-container');
       const badge = document.getElementById('storyboard-summary-badge');
       const shots = appState.storyboard || [];
-      badge.innerText = `${shots.length} 段 · 预估 18.0s`;
+      badge.innerText = `${shots.length} 段 · 按实际配音对齐`;
 
       if (!shots.length) {
         list.innerHTML = `
@@ -1914,7 +2035,7 @@ RENDERED_HTML = '''<!DOCTYPE html>
                 <span class="text-xs text-slate-400 font-mono truncate">素材: ${s.video}</span>
               </div>
 
-              <input type="text" value="${s.narration}" class="w-full text-sm font-medium border-b border-transparent hover:border-slate-300 focus:border-slate-800 text-slate-800 py-1.5 transition-colors focus:outline-none bg-transparent">
+              <input type="text" onchange="appState.storyboard[${idx}].narration = this.value" value="${s.narration.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;')}" class="w-full text-sm font-medium border-b border-transparent hover:border-slate-300 focus:border-slate-800 text-slate-800 py-1.5 transition-colors focus:outline-none bg-transparent">
               
               <div class="text-xs text-slate-400 truncate">
                 场景：${s.description}
@@ -1953,22 +2074,18 @@ RENDERED_HTML = '''<!DOCTYPE html>
             aspect: document.getElementById('auto-aspect-select').value,
             voice_id: document.getElementById('auto-voice-select').value,
             subtitle_enabled: document.getElementById('auto-subtitle-check').checked,
-            storyboard: appState.storyboard
+            storyboard: appState.storyboard,
+            script_job_id: appState.scriptJobId,
+            bgm: document.getElementById('auto-bgm-select').value
           })
         });
         const data = await resp.json();
-        const taskId = data.task_id;
-        
-        let timer = setInterval(async () => {
-          const sResp = await fetch('/api/auto/status/' + taskId);
-          const sData = await sResp.json();
-          if (sData.status === 'complete' || sData.progress >= 100) {
-            clearInterval(timer);
-            btn.disabled = false;
-            btn.classList.remove('opacity-75');
-            alert('🎉 成片全自动合成完毕！已生成高质量 MP4。');
-          }
-        }, 1200);
+        if (!resp.ok) throw new Error(data.error || '启动失败');
+        const result = await pollAuto(data.task_id, msg => btn.innerText = msg);
+        openTheaterModal(result.output_url, '', '生成的成片');
+        btn.innerText = '一键全自动成片 (MP4)';
+        btn.disabled = false;
+        btn.classList.remove('opacity-75');
 
       } catch (e) {
         btn.disabled = false;
@@ -2053,16 +2170,16 @@ RENDERED_HTML = '''<!DOCTYPE html>
       }
     }
 
-    function handleBgmUpload(input) {
-      if (input.files && input.files.length) {
-        const sel = document.getElementById('auto-bgm-select');
-        const opt = document.createElement('option');
-        opt.value = input.files[0].name;
-        opt.innerText = input.files[0].name + ' (已导入)';
-        opt.selected = true;
-        sel.prepend(opt);
-        alert('已导入自定义背景音乐：' + input.files[0].name);
-      }
+    async function handleBgmUpload(input) {
+      if (!input.files.length) return;
+      try {
+        const form = new FormData(); form.append('file', input.files[0]);
+        const resp = await fetch('/api/bgm/upload', {method:'POST', body:form});
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || '上传失败');
+        const option = new Option(data.name, data.path, true, true);
+        document.getElementById('auto-bgm-select').add(option);
+      } catch (e) { alert(e.message); }
     }
 
 
