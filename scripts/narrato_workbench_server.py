@@ -828,6 +828,15 @@ RENDERED_HTML = '''<!DOCTYPE html>
     #theater-modal .theater-stage { flex:1 1 0; min-height:0; position:relative; background:#000; }
     #theater-video { position:absolute; inset:0; display:block; width:100%; height:100%; object-fit:contain; }
     #theater-sub { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    @media (min-width:1024px) {
+      body > header { flex-shrink:0; }
+      #page-object { height:calc(100dvh - 56px); min-height:0; flex:none; overflow:hidden; }
+      #page-object > section:first-child { max-height:100%; overflow-y:auto; }
+      #page-object > section:last-child { height:100%; min-height:0; }
+      #page-object > section:last-child > div:first-child { flex-shrink:0; }
+      #clips-list-container { flex:1; min-height:0; overflow-y:auto; overscroll-behavior:contain; padding:3px; }
+      #clips-list-container > * { flex-shrink:0; }
+    }
     ::-webkit-scrollbar { width: 5px; height: 5px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 9999px; }
