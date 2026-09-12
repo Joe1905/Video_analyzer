@@ -1542,7 +1542,7 @@ RENDERED_HTML = '''<!DOCTYPE html>
       let totalDuration = 0;
       clips.forEach(c => totalDuration += (c.end - c.start));
       summary.innerText = `${clips.length} 个切片 · 累计 ${totalDuration.toFixed(2)}s`;
-      document.getElementById('export-count').innerText = clips.filter(c => c.status === 'present').length;
+      document.getElementById('export-count').innerText = clips.filter((c, i) => c.status === 'present' && (!appState.currentTask.export_selected || appState.currentTask.export_selected.includes(i))).length;
 
       if (!clips.length) {
         list.innerHTML = `
