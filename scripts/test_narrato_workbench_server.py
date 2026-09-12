@@ -10,6 +10,7 @@ import tornado.web
 import tornado.routing
 import tornado.testing
 from app.services import narrato_workbench_server as wb
+from app.utils import utils
 
 
 class WorkbenchServerTestCase(tornado.testing.AsyncHTTPTestCase):
@@ -20,6 +21,7 @@ class WorkbenchServerTestCase(tornado.testing.AsyncHTTPTestCase):
                         patch.object(wb, 'VIDEO_RESOURCE', self.root/'videos'),
                         patch.object(wb, 'TASKS_ROOT', self.root/'tasks'),
                         patch.object(wb, 'GLOBAL_PRODUCTS_FILE', self.root/'products.json'),
+                        patch.object(utils, 'task_dir', side_effect=lambda sub_dir='': str(self.root/'tasks'/sub_dir)),
                         patch.dict(wb.config.app, {'elevenlabs_api_key':'', 'vision_openai_api_key':'test', 'vision_openai_model_name':'deepseek-test-vision'})]
         for p in self.patches:
             p.start()

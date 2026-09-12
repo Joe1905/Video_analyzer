@@ -172,7 +172,7 @@ class WorkbenchHomeHandler(BaseHandler):
 
 class StateHandler(BaseHandler):
     """Aggregated state for initial hydration."""
-    def get(self):
+    async def get(self):
         # 0. Global Products
         global_products = load_global_products()
 
@@ -228,14 +228,14 @@ class StateHandler(BaseHandler):
 
 
         # 3. Materials
-        materials = get_materials_list()
+        materials = await asyncio.to_thread(get_materials_list)
 
         # 4. Voices
         voices = []
         api_key = config.app.get("elevenlabs_api_key", "").strip()
         if api_key:
             try:
-                voices = elevenlabs.get_voices(api_key)
+                voices = await asyncio.to_thread(elevenlabs.get_voices, api_key)
             except Exception:
                 voices = []
         if not voices:
