@@ -291,7 +291,7 @@ def video_detail(detail, video):
     author = detail.get("author") or {}
     media = detail.get("video") or {}
     for key, val in {"title": detail.get("desc"), "author": author.get("nickname"),
-                     "cover_url": first_url(media.get("cover"), image=True),
+                     "cover_url": first_url([media.get("cover"), media.get("origin_cover"), media.get("dynamic_cover")], image=True),
                      "media_url": first_url(media.get("play_addr"))}.items():
         if val:
             update[key] = val
