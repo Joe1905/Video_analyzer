@@ -67,7 +67,7 @@ function renderVideos() {
   $("visibleVideos").textContent=visible.length;
   const latest=Math.max(0,...state.videos.map(v=>v.updated_at||v.basic_updated_at||0));
   $("lastUpdated").textContent=latest?`最近数据时间 ${date(latest,true)} · 点击更新获取最新指标` : "按需查询，不会自动消耗接口额度";
-  const markup=state.loading?'<div class="empty">正在读取已保存的视频…</div>':visible.length?visible.map(card).join(""):state.videos.length?'<div class="empty">没有匹配的视频，试试其他关键词。</div>':`<div class="empty"><h3>${state.job?"暂无已收录的视频":"还没有查询这个商品"}</h3><p>${state.job?"本次没有返回关联视频，不代表没有带货内容。":"查询该商品的关联视频，并保存播放、点赞等表现数据。"}</p><button class="primary" data-refresh-all ${busy()?"disabled":""}>${busy()?"正在查询…":"查询关联视频"}</button></div>`;
+  const markup=state.loading?'<div class="empty">正在读取已保存的视频…</div>':visible.length?visible.map(card).join(""):state.videos.length?'<div class="empty">没有匹配的视频，试试其他关键词。</div>':busy()?'<div class="empty"><h3>正在查找关联视频…</h3><p>结果会自动显示，可以稍后回来查看。</p></div>':`<div class="empty"><h3>${state.job?"暂无已收录的视频":"还没有查询这个商品"}</h3><p>${state.job?"本次没有返回关联视频，不代表没有带货内容。":"查询该商品的关联视频，并保存播放、点赞等表现数据。"}</p><button class="primary" data-refresh-all>查询关联视频</button></div>`;
   if($("videos").innerHTML!==markup)$("videos").innerHTML=markup;
 }
 async function startJob(action="refresh", vid="") {

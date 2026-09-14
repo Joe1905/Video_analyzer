@@ -140,11 +140,13 @@ def safe_url(value):
     return value if parsed.scheme in {"http", "https"} and parsed.hostname and not parsed.username and not parsed.password else ""
 
 
-def first_url(node):
+def first_url(node, *, image=False):
     if isinstance(node, str):
+        if image and urlparse(node).path.lower().endswith((".heic", ".heif")):
+            return ""
         return safe_url(node)
     for child in rows(node):
-        result = first_url(child)
+        result = first_url(child, image=image)
         if result:
             return result
     return ""
@@ -185,7 +187,7 @@ def refresh_video(api, video):
     author = detail.get("author") or {}
     media = detail.get("video") or {}
     for key, val in {"title": detail.get("desc"), "author": author.get("nickname"),
-                     "cover_url": first_url(media.get("cover")),
+                     "cover_url": first_url(media.get("cover"), image=True),
                      "media_url": first_url(media.get("play_addr"))}.items():
         if val:
             update[key] = val
@@ -292,9 +294,18 @@ def validate_media_url(url):
     allowed = ("tiktokcdn.com", "tiktokcdn-us.com", "ttcdn-us.com", "tiktokcdn-eu.com", "byteoversea.com", "ibytedtos.com")
     if parsed.scheme != "https" or parsed.username or parsed.password or parsed.port not in (None, 443) or not any(host == d or host.endswith("." + d) for d in allowed):
         raise ValueError("仅支持 TikTok CDN 的 HTTPS 图片和视频链接")
-    addresses = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+    addresses = socket.getaddrinfo(host, 443, family=socket.AF_INET, type=socket.SOCK_STREAM)
     if not addresses or any(not ipaddress.ip_address(a[4][0]).is_global for a in addresses):
         raise ValueError("媒体地址不是公网地址")
+
+
+class IPv4Adapter(requests.adapters.HTTPAdapter):
+    """Bind only this downloader to IPv4; the server has unusable CDN IPv6 DNS answers."""
+    def init_poolmanager(self, *args, **kwargs):
+        return super().init_poolmanager(*args, source_address=("0.0.0.0", 0), **kwargs)
+
+    def proxy_manager_for(self, proxy, **kwargs):
+        return super().proxy_manager_for(proxy, source_address=("0.0.0.0", 0), **kwargs)
 
 
 def download_media(url, target, limit):
@@ -308,6 +319,7 @@ def download_media(url, target, limit):
         try:
             with requests.Session() as session:
                 session.trust_env = False
+                session.mount("https://", IPv4Adapter())
                 with session.get(url, stream=True, allow_redirects=False, timeout=(8, 30),
                                  proxies={"http": route, "https": route} if route else {},
                                  headers={"User-Agent": "Mozilla/5.0"}) as response:

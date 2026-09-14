@@ -36,6 +36,7 @@ def backend_checks(directory):
     proxy_pool.create_product(CATALOG)
     normalized = app.normalize_related(RELATED)
     assert normalized["video_id"] == VID and normalized["duration"] == 15.117
+    assert app.first_url({"url_list":{"0":"https://cdn.test/a.heic", "1":"https://cdn.test/a.jpeg"}}, image=True).endswith(".jpeg")
     with patch.object(app, "client", return_value=API()):
         first = job()
         app.run_job(first)
