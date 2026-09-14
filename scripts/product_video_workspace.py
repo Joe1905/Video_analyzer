@@ -122,7 +122,7 @@ def product(product_id):
 
 def accounts():
     with database() as conn:
-        records = conn.execute("SELECT id,username,display_name,status,profile_json FROM tiktok_accounts WHERE deleted_at='' ORDER BY id").fetchall()
+        records = conn.execute("SELECT id,username,display_name,feishu_user_name,status,profile_json FROM tiktok_accounts WHERE deleted_at='' ORDER BY id").fetchall()
     result = []
     for row in records:
         profile = json.loads(row["profile_json"] or "{}")
@@ -131,6 +131,7 @@ def accounts():
         handle = row["username"].lstrip("@")
         result.append({"product_id": f"account:{row['id']}", "product_name": row["display_name"] or handle,
                        "handle": handle, "price": "@" + handle, "stock": "", "status": row["status"],
+                       "feishu_user_name": row["feishu_user_name"],
                        "product_url": "https://www.tiktok.com/@" + handle,
                        "image_url": f"/api/proxy/accounts/avatar/{row['id']}" if proxy_pool._account_avatar_path(row["id"]).is_file() else ""})
     return result

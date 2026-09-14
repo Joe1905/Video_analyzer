@@ -115,6 +115,10 @@ def account_checks():
         conn.execute("INSERT INTO proxy_profiles(id,name,created_at,updated_at) VALUES (1,'test','','')")
         conn.execute("INSERT INTO tiktok_accounts(id,username,display_name,proxy_profile_id,created_at,updated_at) VALUES (1,'test_creator','Test creator',1,'','')")
     account = app.accounts()[0]
+    assert account["feishu_user_name"] == ""
+    with app.database() as conn:
+        conn.execute("UPDATE tiktok_accounts SET feishu_user_name='测试同事' WHERE id=1")
+    assert app.accounts()[0]["feishu_user_name"] == "测试同事"
     assert account["product_id"] == "account:1" and account["handle"] == "test_creator"
     assert "profile" not in account and "proxy_profile_id" not in account
     calls = []
@@ -226,6 +230,7 @@ def browser_checks():
                 page.wait_for_function("document.querySelector('#selectedName').textContent === 'Test creator'")
                 assert page.locator('.video-card').count() == 2
                 assert page.locator('#videoSort').input_value() == 'published_at'
+                assert page.locator('#products .row-id').first.inner_text() == '测试同事'
                 assert not page.locator('#addProduct').is_visible()
                 assert '1 credit' in page.locator('#refreshAll').inner_text()
                 page.locator('#productsTab').click()
