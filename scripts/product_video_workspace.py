@@ -89,7 +89,18 @@ def database():
                 CREATE TABLE IF NOT EXISTS account_video_jobs (product_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS account_video_pages (
                     product_id TEXT PRIMARY KEY, cursor TEXT NOT NULL, has_more INTEGER NOT NULL);
+                CREATE TABLE IF NOT EXISTS shared_video_items (video_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
             """)
+            legacy = {}
+            for table in ("product_video_items", "account_video_items"):
+                for row in conn.execute(f"SELECT video_id,payload FROM {table} WHERE video_id NOT IN (SELECT video_id FROM shared_video_items)"):
+                    legacy.setdefault(row[0], []).append(json.loads(row[1]))
+            for vid, copies in legacy.items():
+                merged = {"video_id": vid}
+                for copy in sorted(copies, key=lambda v: max(v.get("updated_at") or 0, v.get("basic_updated_at") or 0)):
+                    merged = merge_video(merged, copy)
+                conn.execute("INSERT INTO shared_video_items VALUES (?,?)", (vid, json.dumps(merged, ensure_ascii=False)))
+            conn.commit()
             _initialized = True
     try:
         yield conn
@@ -148,7 +159,7 @@ def snapshot(product_id):
     items_table, jobs_table = video_tables(product_id)
     with database() as conn:
         videos = [json.loads(row[0]) for row in conn.execute(
-            f"SELECT payload FROM {items_table} WHERE product_id=?", (product_id,))]
+            f"SELECT shared.payload FROM {items_table} AS links JOIN shared_video_items AS shared ON shared.video_id=links.video_id WHERE links.product_id=?", (product_id,))]
         row = conn.execute(f"SELECT payload FROM {jobs_table} WHERE product_id=?", (product_id,)).fetchone()
         page = conn.execute("SELECT cursor,has_more FROM account_video_pages WHERE product_id=?", (product_id,)).fetchone()
     job = json.loads(row[0]) if row else None
@@ -169,15 +180,28 @@ def item(product_id, video_id):
     raise ValueError("该商品尚未收录此视频")
 
 
+def merge_video(old, video):
+    merged = dict(old)
+    incoming_time = max(video.get("updated_at") or 0, video.get("basic_updated_at") or 0)
+    current_time = max(old.get("updated_at") or 0, old.get("basic_updated_at") or 0)
+    for key, value in video.items():
+        if key != "error" and (value is None or value == "" or (key == "duration" and value == 0)):
+            continue
+        if incoming_time and incoming_time < current_time and key in old:
+            continue
+        merged[key] = value
+    return merged
+
+
 def save_video(product_id, video):
     items_table, _ = video_tables(product_id)
-    with database() as conn:
-        old = conn.execute(f"SELECT payload FROM {items_table} WHERE product_id=? AND video_id=?",
-                           (product_id, video["video_id"])).fetchone()
-        merged = json.loads(old[0]) if old else {}
-        merged.update(video)
-        conn.execute(f"INSERT OR REPLACE INTO {items_table} VALUES (?, ?, ?)",
-                     (product_id, video["video_id"], json.dumps(merged, ensure_ascii=False)))
+    vid = identifier(video["video_id"])
+    with _lock, database() as conn:
+        old = conn.execute("SELECT payload FROM shared_video_items WHERE video_id=?", (vid,)).fetchone()
+        merged = merge_video(json.loads(old[0]) if old else {}, video)
+        conn.execute("INSERT OR REPLACE INTO shared_video_items VALUES (?, ?)", (vid, json.dumps(merged, ensure_ascii=False)))
+        # Existing tables retain source membership and legacy payloads for migration.
+        conn.execute(f"INSERT OR IGNORE INTO {items_table} VALUES (?, ?, ?)", (product_id, vid, "{}"))
 
 
 def client():

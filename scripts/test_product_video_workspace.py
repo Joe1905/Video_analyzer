@@ -137,6 +137,7 @@ def account_checks():
         assert first["status"] == "complete" and len(calls) == 1
         snapshot = app.snapshot("account:1")
         assert snapshot["has_more"] and snapshot["videos"][0]["views"] == 0
+        assert app.media_state("account:1", VID) == app.media_state(PID, VID), "Video and audio files must be shared across sources"
         assert len(app.snapshot(PID)["videos"]) == 1, "Account results must not mix into product videos"
         with patch.object(app._pool, "submit"):
             more = app.start({"product_id":"account:1", "action":"more"})
@@ -151,6 +152,34 @@ def account_checks():
         assert len(app.snapshot("account:1")["videos"]) == 2
         assert app.snapshot("account:1")["cursor"] == "page2"
     print("PASS: shared accounts, one request per page, cursor, account/product isolation, failed refresh preserves videos", flush=True)
+
+
+def shared_video_checks():
+    vid = "991"
+    old = {"video_id":vid,"title":"Shared title","views":100,"comments":7,"cover_url":"https://cdn.test/cover.jpg","updated_at":100}
+    new = {"video_id":vid,"title":"Shared title","views":0,"cover_url":"","updated_at":200}
+    with app.database() as conn:
+        conn.execute("INSERT INTO product_video_items VALUES (?,?,?)", (PID,vid,json.dumps(old)))
+        conn.execute("INSERT INTO account_video_items VALUES (?,?,?)", ("account:1",vid,json.dumps(new)))
+    app._initialized = False
+    migrated = app.item(PID,vid)
+    assert migrated == app.item("account:1",vid)
+    assert migrated["views"] == 0 and migrated["comments"] == 7 and migrated["cover_url"] == old["cover_url"]
+    app.save_video("account:1", {"video_id":vid,"views":50,"updated_at":300})
+    assert app.item(PID,vid)["views"] == 50
+    app.save_video(PID, {"video_id":vid,"likes":9,"updated_at":400})
+    assert app.item("account:1",vid)["likes"] == 9
+    app.save_video(PID, old)
+    assert app.item(PID,vid)["views"] == 50, "Older source data must not overwrite shared data"
+    app.save_video(PID, {"video_id":"992","title":"Shared title","views":999})
+    assert app.item("account:1",vid)["views"] == 50, "Same title with another ID must remain separate"
+    with app.database() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM shared_video_items WHERE video_id=?",(vid,)).fetchone()[0] == 1
+        conn.execute("DELETE FROM product_video_items WHERE product_id=? AND video_id=?",(PID,vid))
+    assert app.item("account:1",vid)["views"] == 50
+    app._initialized = False
+    assert app.item("account:1",vid)["views"] == 50, "Restart must not restore stale legacy payloads"
+    print("PASS: shared video ID, migration, bidirectional updates, stale/empty protection, independent memberships", flush=True)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -254,6 +283,7 @@ def main():
             backend_checks(directory)
             account_checks()
             browser_checks()
+            shared_video_checks()
     print("All product video workspace checks passed.",flush=True)
 
 
