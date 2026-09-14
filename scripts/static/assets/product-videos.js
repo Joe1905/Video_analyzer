@@ -1,6 +1,6 @@
 "use strict";
 const $ = id => document.getElementById(id);
-const state = {products:[], selected:"", videos:[], job:null, loading:false, timer:null, seq:0, editing:null, imports:[], media:null, mediaState:null, playRequested:"", submitting:false};
+const state = {mode:"products", hasMore:false, librarySeq:0, products:[], selected:"", videos:[], job:null, loading:false, timer:null, seq:0, editing:null, imports:[], media:null, mediaState:null, playRequested:"", submitting:false};
 const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
 const fmt = value => value == null ? "—" : Number(value).toLocaleString("zh-CN");
 const date = (value, full=false) => value ? new Date(value*1000).toLocaleString("zh-CN", full ? {month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"} : {year:"numeric",month:"2-digit",day:"2-digit"}) : "—";
@@ -8,7 +8,7 @@ const busy = () => state.submitting || ["running","queued"].includes(state.job?.
 const current = () => state.products.find(p => p.product_id === state.selected);
 function endpoint(name, pid=state.selected, vid="") {return `/api/product-videos/${name}?`+new URLSearchParams({product_id:pid,...(vid?{video_id:vid}:{})});}
 function url(value) {try {const u = new URL(value);return ["http:","https:"].includes(u.protocol)?u.href:"";}catch{return "";}}
-function imageURL(p, v=null) {return endpoint("image",p.product_id,v?.video_id||"")+"&v="+encodeURIComponent(v?.cover_url || p.image_url || "");}
+function imageURL(p, v=null) {if(!v&&p.handle)return p.image_url;return endpoint("image",p.product_id,v?.video_id||"")+"&v="+encodeURIComponent(v?.cover_url || p.image_url || "");}
 function image(p, v=null, lazy=true) {return (v?.cover_url || (!v && p.image_url)) ? `<img src="${esc(imageURL(p,v))}" alt="${v?"视频封面":"商品主图"}" ${lazy?'loading="lazy"':""} decoding="async">` : "▧";}
 let toastTimer;
 function toast(message, error=false) {$("toast").textContent=message;$("toast").className="toast"+(error?" error":"");$("toast").hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$("toast").hidden=true,6000);}
@@ -19,33 +19,46 @@ async function api(path, body) {
 }
 function renderProducts() {
   const q=$("productFilter").value.trim().toLowerCase();
-  const products=state.products.filter(p=>(p.product_name+" "+p.product_id).toLowerCase().includes(q));
+  const products=state.products.filter(p=>(p.product_name+" "+p.product_id+" "+(p.handle||"")).toLowerCase().includes(q));
   $("productCount").textContent=state.products.length;
-  $("products").innerHTML=products.map(p=>`<button class="product-row ${p.product_id===state.selected?"active":""}" data-product="${esc(p.product_id)}" aria-pressed="${p.product_id===state.selected}"><span class="product-thumb">${image(p)}</span><span class="product-row-copy"><strong>${esc(p.product_name)}</strong><span class="row-meta"><span>${esc(p.price||"价格未知")}</span><span>${esc(p.status||"状态未知")}</span></span><span class="row-id">${esc(p.product_id)}</span></span></button>`).join("")||`<div class="empty small">${state.products.length?"没有匹配的商品":"商品库还是空的，点击 ＋ 添加商品"}</div>`;
+  $("products").innerHTML=products.map(p=>`<button class="product-row ${p.product_id===state.selected?"active":""}" data-product="${esc(p.product_id)}" aria-pressed="${p.product_id===state.selected}"><span class="product-thumb">${image(p)}</span><span class="product-row-copy"><strong>${esc(p.product_name)}</strong><span class="row-meta"><span>${esc(p.price||"价格未知")}</span><span>${esc(p.status||"状态未知")}</span></span><span class="row-id">${esc(p.handle?"@"+p.handle:p.product_id)}</span></span></button>`).join("")||`<div class="empty small">${state.products.length?"没有匹配的结果":state.mode==="accounts"?"IP 池暂无 TikTok 账号，请到 IP 池添加":"商品库还是空的，点击 ＋ 添加商品"}</div>`;
 }
 async function loadProducts(preferred=state.selected) {
-  const result=await api("/api/proxy/products");state.products=result.products||[];renderProducts();
+  const token=++state.librarySeq;const result=await api(state.mode==="accounts"?endpoint("accounts"):"/api/proxy/products");if(token!==state.librarySeq)return;state.products=result.products||[];renderProducts();
   const selected=state.products.find(p=>p.product_id===preferred)||state.products[0];
   if(selected)await selectProduct(selected.product_id);
   else {state.selected="";state.seq++;clearTimeout(state.timer);$("productWorkspace").hidden=true;$("workspaceEmpty").hidden=false;}
+}
+async function switchLibrary(mode) {
+  if(mode===state.mode||state.submitting)return;
+  state.mode=mode;state.selected="";state.products=[];state.videos=[];state.job=null;state.hasMore=false;state.seq++;clearTimeout(state.timer);
+  const account=mode==="accounts";
+  $("productsTab").setAttribute("aria-pressed",String(!account));$("accountsTab").setAttribute("aria-pressed",String(account));
+  $("libraryTitle").textContent=account?"账号池":"商品库";$("addProduct").hidden=account;
+  $("productFilter").value="";$("productFilter").placeholder=account?"搜索账号名称或 @账号":"搜索商品名称或 ID";$("productFilter").setAttribute("aria-label",account?"搜索账号池":"搜索商品库");
+  $("libraryMeta").textContent=account?"复用 IP 池账号 · 切换不扣额度":"与视频发布共用商品库";$("libraryFoot").textContent=account?"账号维护请前往 IP 池":"主图本地缓存 · 无需重复远程加载";
+  $("productWorkspace").hidden=true;$("workspaceEmpty").hidden=false;renderProducts();await loadProducts();
 }
 function renderOverview() {
   const p=current();if(!p)return;
   $("workspaceEmpty").hidden=true;$("productWorkspace").hidden=false;
   $("selectedName").textContent=p.product_name;
   $("selectedImage").innerHTML=image(p,null,false);
-  $("selectedMeta").textContent=`ID ${p.product_id} · ${p.price||"价格未知"} · 库存 ${p.stock||"未知"}`;
+  $("selectedMeta").textContent=p.handle?`@${p.handle} · 来自 IP 池`:`ID ${p.product_id} · ${p.price||"价格未知"} · 库存 ${p.stock||"未知"}`;
+  $("editProduct").hidden=Boolean(p.handle);$("deleteProduct").hidden=Boolean(p.handle);$("shopLink").textContent=p.handle?"账号主页 ↗":"商品主页 ↗";
+  $("sourceEyebrow").textContent=p.handle?"ACCOUNT VIDEO LIBRARY":"PRODUCT VIDEO LIBRARY";
+  $("summaryNote").innerHTML=p.handle?"查询最新一页 · 1 credit<br><span>历史视频手动加载，已有数据持续保留。</span>":"发现关联内容，持续更新表现。<br><span>接口返回部分关联视频，不代表全量。</span>";
   $("shopLink").href=url(p.product_url)||`https://www.tiktok.com/shop/pdp/${p.product_id}`;
 }
 async function selectProduct(pid) {
-  clearTimeout(state.timer);state.seq++;state.selected=pid;state.videos=[];state.job=null;state.loading=true;
+  clearTimeout(state.timer);state.seq++;state.selected=pid;state.videos=[];state.job=null;state.hasMore=false;state.loading=true;
   $("videoFilter").value="";renderProducts();renderOverview();renderVideos();await loadVideos();
 }
 async function loadVideos() {
   const pid=state.selected, seq=state.seq;if(!pid)return;
   try {
     const result=await api(endpoint("list",pid));if(seq!==state.seq)return;
-    state.videos=result.videos;state.job=result.job;state.loading=false;renderVideos();
+    state.videos=result.videos;state.job=result.job;state.hasMore=Boolean(result.has_more);state.loading=false;renderVideos();
     if(state.media && $("mediaDialog").open)await renderMedia();
   } catch(e) {if(seq===state.seq){state.loading=false;renderVideos();toast(e.message,true);}}
   if(seq===state.seq && busy()){clearTimeout(state.timer);state.timer=setTimeout(loadVideos,2500);}
@@ -57,7 +70,9 @@ function card(v) {
 function renderVideos() {
   const p=current();if(!p)return;
   $("refreshAll").disabled=busy()||state.loading;$("editProduct").disabled=busy();$("deleteProduct").disabled=busy();
-  $("refreshAll").textContent=busy()?"↻ 正在处理…":"↻ 更新全部视频";
+  $("refreshAll").textContent=busy()?"↻ 正在处理…":p.handle?"↻ 查询最新一页 · 1 credit":"↻ 更新全部视频";
+  $("loadMore").hidden=!p.handle||!state.hasMore;$("loadMore").disabled=busy()||state.loading;
+  $("productsTab").disabled=state.submitting;$("accountsTab").disabled=state.submitting;
   $("totalVideos").textContent=state.loading?"—":state.videos.length;
   for(const [key,id] of [["views","totalViews"],["likes","totalLikes"]]) {const known=state.videos.filter(v=>v[key]!=null);$(id).textContent=known.length?fmt(known.reduce((n,v)=>n+Number(v[key]),0)):"—";}
   $("jobStatus").hidden=!state.job;$("jobStatus").className="job-status "+(state.job?.status||"");$("jobMessage").textContent=state.job?.message||"";
@@ -67,7 +82,7 @@ function renderVideos() {
   $("visibleVideos").textContent=visible.length;
   const latest=Math.max(0,...state.videos.map(v=>v.updated_at||v.basic_updated_at||0));
   $("lastUpdated").textContent=latest?`最近数据时间 ${date(latest,true)} · 点击更新获取最新指标` : "按需查询，不会自动消耗接口额度";
-  const markup=state.loading?'<div class="empty">正在读取已保存的视频…</div>':visible.length?visible.map(card).join(""):state.videos.length?'<div class="empty">没有匹配的视频，试试其他关键词。</div>':busy()?'<div class="empty"><h3>正在查找关联视频…</h3><p>结果会自动显示，可以稍后回来查看。</p></div>':`<div class="empty"><h3>${state.job?"暂无已收录的视频":"还没有查询这个商品"}</h3><p>${state.job?"本次没有返回关联视频，不代表没有带货内容。":"查询该商品的关联视频，并保存播放、点赞等表现数据。"}</p><button class="primary" data-refresh-all>查询关联视频</button></div>`;
+  const markup=state.loading?'<div class="empty">正在读取已保存的视频…</div>':visible.length?visible.map(card).join(""):state.videos.length?'<div class="empty">没有匹配的视频，试试其他关键词。</div>':busy()?'<div class="empty"><h3>正在查找关联视频…</h3><p>结果会自动显示，可以稍后回来查看。</p></div>':`<div class="empty"><h3>${state.job?"暂无已收录的视频":(p.handle?"还没有查询这个账号":"还没有查询这个商品")}</h3><p>${state.job?"本次没有返回关联视频，不代表没有带货内容。":(p.handle?"查询账号最新一页视频及指标，本次消耗 1 credit。":"查询该商品的关联视频，并保存播放、点赞等表现数据。")}</p><button class="primary" data-refresh-all>${p.handle?"查询最新一页 · 1 credit":"查询关联视频"}</button></div>`;
   if($("videos").innerHTML!==markup)$("videos").innerHTML=markup;
 }
 async function startJob(action="refresh", vid="") {
@@ -116,7 +131,7 @@ async function renderMedia() {
   $("originalText").textContent=media.transcript?.text||(media.transcript?"未识别到可翻译的语音。":"提取音频后显示原文。");
   $("translatedText").textContent=media.translation?.text||"识别完成后翻译为简体中文。";
   $("audioLanguage").textContent=media.transcript?.language||"";
-  const related=state.job?.video_id===video.video_id&&state.job.action!=="refresh";
+  const related=state.job?.video_id===video.video_id&&!["refresh","more"].includes(state.job.action);
   $("mediaStatus").className="job-status "+(related?state.job.status:"");
   $("mediaStatus").textContent=related?state.job.message:busy()?"当前商品有任务正在处理，请稍候。":media.translation?"音频与翻译已保存，可直接查看。":media.downloaded?"视频已缓存，可直接播放或提取音频。":"点击封面在线播放，或直接提取音频并翻译。";
   if($("playVideo")){$("playVideo").disabled=busy();$("playVideo").innerHTML=busy()?"正在准备…":"<span>▷</span>在线播放";}
@@ -128,12 +143,13 @@ document.addEventListener("click",event=>{
   const target=event.target.closest("button");if(!target||target.disabled)return;
   const run=async()=>{
     if(target.dataset.close){$(target.dataset.close).close();return;}
+    if(target.dataset.library)return switchLibrary(target.dataset.library);
     if(target.dataset.product)return selectProduct(target.dataset.product);
     if(target.dataset.media)return openMedia(target.dataset.media);
     if(target.dataset.refresh)return startJob("refresh",target.dataset.refresh);
     if(target.hasAttribute("data-refresh-all"))return startJob();
     if(target.dataset.import!=null){fillForm(state.imports[Number(target.dataset.import)]);$("productForm").elements.product_name.focus();return;}
-    switch(target.id){case "addProduct":return openEditor();case "editProduct":return openEditor(true);case "reloadProducts":return loadProducts();case "refreshAll":return startJob();case "searchImport":return searchImport();case "deleteProduct":return openDelete();case "confirmDelete":return deleteProduct();case "playVideo":state.playRequested=state.media.video_id;return startJob("play",state.media.video_id);case "extractAudio":return startJob("audio",state.media.video_id);}
+    switch(target.id){case "loadMore":return startJob("more");case "addProduct":return openEditor();case "editProduct":return openEditor(true);case "reloadProducts":return loadProducts();case "refreshAll":return startJob();case "searchImport":return searchImport();case "deleteProduct":return openDelete();case "confirmDelete":return deleteProduct();case "playVideo":state.playRequested=state.media.video_id;return startJob("play",state.media.video_id);case "extractAudio":return startJob("audio",state.media.video_id);}
   };run().catch(e=>toast(e.message,true));
 });
 $("productFilter").addEventListener("input",renderProducts);$("videoFilter").addEventListener("input",renderVideos);$("videoSort").addEventListener("change",renderVideos);$("productForm").addEventListener("submit",saveProduct);

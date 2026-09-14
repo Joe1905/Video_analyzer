@@ -83,6 +83,12 @@ def database():
                 CREATE TABLE IF NOT EXISTS product_video_jobs (
                     product_id TEXT PRIMARY KEY REFERENCES tiktok_products(product_id) ON DELETE CASCADE,
                     payload TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS account_video_items (
+                    product_id TEXT NOT NULL, video_id TEXT NOT NULL, payload TEXT NOT NULL,
+                    PRIMARY KEY(product_id, video_id));
+                CREATE TABLE IF NOT EXISTS account_video_jobs (product_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS account_video_pages (
+                    product_id TEXT PRIMARY KEY, cursor TEXT NOT NULL, has_more INTEGER NOT NULL);
             """)
             _initialized = True
     try:
@@ -100,6 +106,12 @@ def identifier(value):
 
 
 def product(product_id):
+    if str(product_id).startswith("account:"):
+        identifier(product_id.removeprefix("account:"))
+        for account in accounts():
+            if account["product_id"] == product_id:
+                return account
+        raise ValueError("账号已从 IP 池移除，请刷新账号列表")
     product_id = identifier(product_id)
     with database() as conn:
         row = conn.execute("SELECT * FROM tiktok_products WHERE product_id=?", (product_id,)).fetchone()
@@ -108,12 +120,36 @@ def product(product_id):
     return dict(row)
 
 
+def accounts():
+    with database() as conn:
+        records = conn.execute("SELECT id,username,display_name,status,profile_json FROM tiktok_accounts WHERE deleted_at='' ORDER BY id").fetchall()
+    result = []
+    for row in records:
+        profile = json.loads(row["profile_json"] or "{}")
+        if profile.get("platform_deletions", {}).get("tiktok"):
+            continue
+        handle = row["username"].lstrip("@")
+        result.append({"product_id": f"account:{row['id']}", "product_name": row["display_name"] or handle,
+                       "handle": handle, "price": "@" + handle, "stock": "", "status": row["status"],
+                       "product_url": "https://www.tiktok.com/@" + handle,
+                       "image_url": f"/api/proxy/accounts/avatar/{row['id']}" if proxy_pool._account_avatar_path(row["id"]).is_file() else ""})
+    return result
+
+
+def video_tables(pid):
+    prefix = "account" if str(pid).startswith("account:") else "product"
+    identifier(str(pid).removeprefix("account:"))
+    return prefix + "_video_items", prefix + "_video_jobs"
+
+
 def snapshot(product_id):
     selected = product(product_id)
+    items_table, jobs_table = video_tables(product_id)
     with database() as conn:
         videos = [json.loads(row[0]) for row in conn.execute(
-            "SELECT payload FROM product_video_items WHERE product_id=?", (product_id,))]
-        row = conn.execute("SELECT payload FROM product_video_jobs WHERE product_id=?", (product_id,)).fetchone()
+            f"SELECT payload FROM {items_table} WHERE product_id=?", (product_id,))]
+        row = conn.execute(f"SELECT payload FROM {jobs_table} WHERE product_id=?", (product_id,)).fetchone()
+        page = conn.execute("SELECT cursor,has_more FROM account_video_pages WHERE product_id=?", (product_id,)).fetchone()
     job = json.loads(row[0]) if row else None
     if job and job.get("status") in {"queued", "running"} and job.get("owner") != _owner:
         job.update(status="failed", message="服务已重启，本次任务中断；已保存的数据仍可查看，请重新更新。")
@@ -121,7 +157,7 @@ def snapshot(product_id):
         folder = MEDIA / video["video_id"]
         video["downloaded"] = video_expiry(folder) > time.time()
         video["audio_ready"] = (folder / "audio.mp3").is_file()
-    return {"product": selected, "videos": videos, "job": job}
+    return {"product": selected, "videos": videos, "job": job, "has_more": bool(page and page[1]), "cursor": page[0] if page else ""}
 
 
 def item(product_id, video_id):
@@ -133,12 +169,13 @@ def item(product_id, video_id):
 
 
 def save_video(product_id, video):
+    items_table, _ = video_tables(product_id)
     with database() as conn:
-        old = conn.execute("SELECT payload FROM product_video_items WHERE product_id=? AND video_id=?",
+        old = conn.execute(f"SELECT payload FROM {items_table} WHERE product_id=? AND video_id=?",
                            (product_id, video["video_id"])).fetchone()
         merged = json.loads(old[0]) if old else {}
         merged.update(video)
-        conn.execute("INSERT OR REPLACE INTO product_video_items VALUES (?, ?, ?)",
+        conn.execute(f"INSERT OR REPLACE INTO {items_table} VALUES (?, ?, ?)",
                      (product_id, video["video_id"], json.dumps(merged, ensure_ascii=False)))
 
 
@@ -208,6 +245,10 @@ def normalize_related(raw):
 def refresh_video(api, video):
     data = unwrap(api.get("/v1/scrape/tiktok/video-info", {"url": video["url"], "region": "US"}, cache_policy="record_only"))
     detail = data.get("aweme_detail") or data.get("video") or data
+    return video_detail(detail, video)
+
+
+def video_detail(detail, video):
     if not isinstance(detail, dict) or str(detail.get("aweme_id") or detail.get("id") or "") != video["video_id"]:
         raise ValueError("视频详情 ID 不匹配或视频已不可用，已保留旧数据")
     stats = detail.get("statistics") or detail.get("stats") or {}
@@ -232,16 +273,18 @@ def refresh_video(api, video):
 
 def save_job(job):
     job["updated_at"] = time.time()
+    _, jobs_table = video_tables(job["product_id"])
     with database() as conn:
-        conn.execute("INSERT OR REPLACE INTO product_video_jobs VALUES (?, ?)",
+        conn.execute(f"INSERT OR REPLACE INTO {jobs_table} VALUES (?, ?)",
                      (job["product_id"], json.dumps(job, ensure_ascii=False)))
 
 
 def start(payload):
-    pid = identifier(payload.get("product_id"))
+    pid = str(payload.get("product_id") or "")
+    video_tables(pid)
     kind = payload.get("action", "refresh")
     vid = str(payload.get("video_id") or "")
-    if kind not in {"refresh", "play", "download", "audio"}:
+    if kind not in {"refresh", "more", "play", "download", "audio"}:
         raise ValueError("不支持的任务类型")
     with _lock:
         state = snapshot(pid)
@@ -249,13 +292,17 @@ def start(payload):
             return state["job"]
         if vid:
             item(pid, vid)
-        elif kind != "refresh":
+        elif kind not in {"refresh", "more"}:
             raise ValueError("请先选择视频")
-        if kind == "refresh":
+        if kind == "more" and (not pid.startswith("account:") or vid or not state["has_more"]):
+            raise ValueError("没有可加载的下一页")
+        if kind in {"refresh", "more"}:
             client()
         job = {"id": uuid.uuid4().hex, "owner": _owner, "product_id": pid, "video_id": vid,
                "action": kind, "status": "queued", "done": 0, "total": 0, "failures": 0,
                "message": "已加入队列", "started_at": time.time()}
+        if kind == "more":
+            job["cursor"] = state["cursor"]
         save_job(job)
         _pool.submit(run_job, job)
     return job
@@ -266,7 +313,9 @@ def run_job(job):
     try:
         job.update(status="running", message="正在读取商品关联视频…")
         save_job(job)
-        if job["action"] != "refresh":
+        if pid.startswith("account:") and not vid and job["action"] in {"refresh", "more"}:
+            fetch_account_page(job)
+        elif job["action"] != "refresh":
             prepare_media(job)
         else:
             api = client()
@@ -314,6 +363,41 @@ def run_job(job):
             save_job(job)
         except Exception:
             pass  # Product may have been removed while a request was in flight.
+
+
+def fetch_account_page(job):
+    pid = job["product_id"]
+    account = product(pid)
+    params = {"handle": account["handle"], "sort_by": "latest"}
+    if job.get("cursor"):
+        params["max_cursor"] = job["cursor"]
+    job["message"] = "正在查询账号视频（本页 1 credit）…"
+    save_job(job)
+    response = client().get("/v1/scrape/tiktok/videos", params, cache_policy="record_only")
+    data = unwrap(response)
+    if data.get("status_code", 0) != 0 or not isinstance(data.get("aweme_list"), (dict, list)):
+        raise ValueError("账号视频列表查询失败，已保留原列表和翻页位置")
+    videos = []
+    for raw in rows(data["aweme_list"]):
+        if raw.get("image_post_info"):
+            continue
+        author = raw.get("author") or {}
+        if author.get("unique_id") and author["unique_id"].lower() != account["handle"].lower():
+            raise ValueError("返回视频的账号不匹配，已保留原列表")
+        base = normalize_related({"item_id": raw.get("aweme_id"), "title": raw.get("desc"),
+                                  "author_id": author.get("uid"), "author_name": author.get("nickname"),
+                                  "upload_time": raw.get("create_time"), "duration": (raw.get("video") or {}).get("duration")})
+        base["url"] = account["product_url"] + "/video/" + base["video_id"]
+        base.update(video_detail(raw, base))
+        videos.append(base)
+    for video in videos:
+        save_video(pid, video)
+    cursor = str(data.get("max_cursor") or "")
+    more = data.get("has_more") in (1, True, "1") and bool(cursor) and cursor != job.get("cursor", "")
+    with database() as conn:
+        conn.execute("INSERT OR REPLACE INTO account_video_pages VALUES (?,?,?)", (pid, cursor, int(more)))
+    job.update(done=len(videos), total=len(videos), credits_used=response.get("credits_used", 1),
+               message=f"本页已更新 {len(videos)} 条视频 · 1 credit" + ("，可手动加载下一页。" if more else "，已到末页。"))
 
 
 def public_error(exc):
@@ -530,6 +614,8 @@ def handle(handler, parsed, serve_file):
             reply(handler, 202, start(payload))
         elif handler.command != "GET":
             reply(handler, 405, {"error": "不支持的操作"})
+        elif endpoint == "accounts":
+            reply(handler, 200, {"products": accounts()})
         elif endpoint == "list":
             reply(handler, 200, snapshot(pid))
         elif endpoint == "image":

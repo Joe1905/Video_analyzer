@@ -1,23 +1,23 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>商品视频工作台</title><link rel="stylesheet" href="/assets/product-videos.css?v=__UI_ASSET_VERSION__"><script src="/assets/product-videos.js?v=__UI_ASSET_VERSION__" defer></script></head>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>视频列表</title><link rel="stylesheet" href="/assets/product-videos.css?v=__UI_ASSET_VERSION__"><script src="/assets/product-videos.js?v=__UI_ASSET_VERSION__" defer></script></head>
 <body>
-<header class="site-header"><a class="wordmark" href="/metrics"><span class="brand-symbol">▤</span><span>商品视频<span class="wordmark-sub">CONTENT LIBRARY</span></span></a><nav class="app-nav" aria-label="主导航"></nav></header>
+<header class="site-header"><a class="wordmark" href="/metrics"><span class="brand-symbol">▤</span><span>视频列表<span class="wordmark-sub">CONTENT LIBRARY</span></span></a><nav class="app-nav" aria-label="主导航"></nav></header>
 <main class="studio">
 <aside class="library" aria-label="商品库">
- <div class="library-head"><div><span class="eyebrow">YOUR CATALOG</span><h1>商品库 <span id="productCount" class="count">0</span></h1></div><button id="addProduct" class="icon-button" aria-label="添加商品" title="添加商品">＋</button></div>
+ <nav class="library-tabs" aria-label="视频来源"><button id="productsTab" data-library="products" aria-pressed="true">商品库</button><button id="accountsTab" data-library="accounts" aria-pressed="false">账号池</button></nav><div class="library-head"><h1><span id="libraryTitle">商品库</span> <span id="productCount" class="count">0</span></h1><button id="addProduct" class="icon-button" aria-label="添加商品" title="添加商品">＋</button></div>
  <label class="search-box"><span aria-hidden="true">⌕</span><input id="productFilter" type="search" placeholder="搜索商品名称或 ID" aria-label="搜索商品库"></label>
- <div class="library-meta"><span>与视频发布共用商品库</span><button id="reloadProducts" class="text-button">刷新列表</button></div>
+ <div class="library-meta"><span id="libraryMeta">与视频发布共用商品库</span><button id="reloadProducts" class="text-button">刷新列表</button></div>
  <div id="products" class="product-list" aria-live="polite"><div class="empty small">正在读取商品库…</div></div>
- <div class="library-foot"><span class="status-dot"></span>主图本地缓存 · 无需重复远程加载</div>
+ <div class="library-foot"><span class="status-dot"></span><span id="libraryFoot">主图本地缓存 · 无需重复远程加载</span></div>
 </aside>
 <section class="workspace" aria-label="关联视频">
- <div id="workspaceEmpty" class="welcome"><span class="eyebrow">PRODUCT → VIDEO → INSIGHT</span><h2>从一个商品，<br>找到内容的线索。</h2><p>选择左侧商品，查看带货视频与表现。<br>下载素材，在这里完成音频提取与中文翻译。</p><span class="welcome-mark" aria-hidden="true">↗</span></div>
+ <div id="workspaceEmpty" class="welcome"><span class="eyebrow">PRODUCT → VIDEO → INSIGHT</span><h2>选择来源，<br>查看视频表现。</h2><p>选择左侧商品或账号，查看已保存的视频。<br>支持在线播放、音频提取与中文翻译。</p><span class="welcome-mark" aria-hidden="true">↗</span></div>
  <div id="productWorkspace" hidden>
-  <section class="product-overview"><div class="selected-product"><div id="selectedImage" class="selected-image"></div><div class="selected-copy"><span class="eyebrow">PRODUCT VIDEO LIBRARY</span><h2 id="selectedName"></h2><div id="selectedMeta" class="subtle"></div><div class="product-tools"><a id="shopLink" target="_blank" rel="noopener noreferrer">商品主页 ↗</a><button id="editProduct" class="text-button">编辑商品</button><button id="deleteProduct" class="text-button danger-text">删除</button></div></div></div><button id="refreshAll" class="primary">↻ 更新全部视频</button></section>
-  <div class="summary-strip"><div><span>已收录视频</span><strong id="totalVideos">—</strong></div><div><span>累计播放 <small>已收录</small></span><strong id="totalViews">—</strong></div><div><span>累计点赞 <small>已收录</small></span><strong id="totalLikes">—</strong></div><div class="summary-note">发现关联内容，持续更新表现。<br><span>接口返回部分关联视频，不代表全量。</span></div></div>
+  <section class="product-overview"><div class="selected-product"><div id="selectedImage" class="selected-image"></div><div class="selected-copy"><span id="sourceEyebrow" class="eyebrow">PRODUCT VIDEO LIBRARY</span><h2 id="selectedName"></h2><div id="selectedMeta" class="subtle"></div><div class="product-tools"><a id="shopLink" target="_blank" rel="noopener noreferrer">商品主页 ↗</a><button id="editProduct" class="text-button">编辑商品</button><button id="deleteProduct" class="text-button danger-text">删除</button></div></div></div><button id="refreshAll" class="primary">↻ 更新全部视频</button></section>
+  <div class="summary-strip"><div><span>已收录视频</span><strong id="totalVideos">—</strong></div><div><span>累计播放 <small>已收录</small></span><strong id="totalViews">—</strong></div><div><span>累计点赞 <small>已收录</small></span><strong id="totalLikes">—</strong></div><div id="summaryNote" class="summary-note">发现关联内容，持续更新表现。<br><span>接口返回部分关联视频，不代表全量。</span></div></div>
   <div id="jobStatus" class="job-status" role="status" hidden><span id="jobMessage"></span><progress id="jobProgress"></progress></div>
   <div class="video-toolbar"><div><h3>关联视频 <span id="visibleVideos" class="count">0</span></h3><p id="lastUpdated" class="subtle">尚未查询</p></div><div class="video-filters"><input id="videoFilter" type="search" placeholder="搜索视频或作者" aria-label="搜索视频或作者"><select id="videoSort" aria-label="视频排序"><option value="views">播放量最高</option><option value="likes">点赞最多</option><option value="published_at">最新发布</option></select></div></div>
-  <div id="videos" class="video-grid"></div>
+  <div id="videos" class="video-grid"></div><button id="loadMore" class="secondary load-more" hidden>加载下一页 · 1 credit</button>
  </div>
 </section></main>
 <div id="toast" class="toast" role="status" hidden></div>

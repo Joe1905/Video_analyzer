@@ -110,6 +110,45 @@ def backend_checks(directory):
     print("PASS: fresh updates, zero metrics, partial failure, empty discovery, duplicate jobs, safe IDs/URLs, local image cache, ffmpeg download/audio + translation persistence", flush=True)
 
 
+def account_checks():
+    with app.database() as conn:
+        conn.execute("INSERT INTO proxy_profiles(id,name,created_at,updated_at) VALUES (1,'test','','')")
+        conn.execute("INSERT INTO tiktok_accounts(id,username,display_name,proxy_profile_id,created_at,updated_at) VALUES (1,'test_creator','Test creator',1,'','')")
+    account = app.accounts()[0]
+    assert account["product_id"] == "account:1" and account["handle"] == "test_creator"
+    assert "profile" not in account and "proxy_profile_id" not in account
+    calls = []
+    class AccountAPI:
+        def get(self, path, params, **kwargs):
+            calls.append((path, params.copy()))
+            assert path == "/v1/scrape/tiktok/videos" and kwargs["cache_policy"] == "record_only"
+            second = bool(params.get("max_cursor"))
+            return {"data":{"aweme_list":[{"aweme_id":str(int(VID) + int(second)), "desc":"Account video", "create_time":123,
+                    "author":{"uid":"12345", "unique_id":"test_creator", "nickname":"Test creator"},
+                    "video":{"duration":15000}, "statistics":{"play_count":0,"digg_count":3,"comment_count":2}}],
+                    "has_more":0 if second else 1,"max_cursor":"page2" if second else "page1"},"credits_used":1}
+    with patch.object(app, "client", return_value=AccountAPI()):
+        first = {**job(), "product_id":"account:1"}
+        app.run_job(first)
+        assert first["status"] == "complete" and len(calls) == 1
+        snapshot = app.snapshot("account:1")
+        assert snapshot["has_more"] and snapshot["videos"][0]["views"] == 0
+        assert len(app.snapshot(PID)["videos"]) == 1, "Account results must not mix into product videos"
+        with patch.object(app._pool, "submit"):
+            more = app.start({"product_id":"account:1", "action":"more"})
+        assert more["cursor"] == "page1"
+        app.run_job(more)
+        assert more["status"] == "complete" and len(calls) == 2
+        assert calls[1][1]["max_cursor"] == "page1"
+        snapshot = app.snapshot("account:1")
+        assert not snapshot["has_more"] and len(snapshot["videos"]) == 2
+        with patch.object(app, "client", side_effect=ValueError("test failure")):
+            app.run_job({**job(), "product_id":"account:1"})
+        assert len(app.snapshot("account:1")["videos"]) == 2
+        assert app.snapshot("account:1")["cursor"] == "page2"
+    print("PASS: shared accounts, one request per page, cursor, account/product isolation, failed refresh preserves videos", flush=True)
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args): pass
     def do_GET(self):
@@ -182,6 +221,17 @@ def browser_checks():
             page.locator("#deleteProduct").click();page.locator("#confirmDelete").click()
             page.wait_for_function("document.querySelector('#selectedName').textContent === 'Renamed product'")
             page.set_viewport_size({"width":390,"height":844})
+            with patch.object(app, "client", side_effect=AssertionError("Switching tabs must not call SociaVault")):
+                page.locator('#accountsTab').click()
+                page.wait_for_function("document.querySelector('#selectedName').textContent === 'Test creator'")
+                assert page.locator('.video-card').count() == 2
+                assert not page.locator('#addProduct').is_visible()
+                assert '1 credit' in page.locator('#refreshAll').inner_text()
+                page.locator('#productsTab').click()
+                page.wait_for_function("document.querySelector('#selectedName').textContent === 'Renamed product'")
+                assert page.locator('.video-card').count() == 1
+            assert page.title() == '视频列表'
+            assert page.locator('#addProduct').evaluate("el => getComputedStyle(el).borderTopWidth === '0px'")
             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), "Mobile overflow"
             assert not errors, errors
             browser.close()
@@ -195,6 +245,7 @@ def main():
         with patch.object(proxy_pool,"DATA_DIR",directory),patch.object(proxy_pool,"DB_PATH",directory/"test.sqlite"),patch.object(app,"DIRECTORY",directory/"cache"),patch.object(app,"MEDIA",directory/"media"):
             app._initialized=False
             backend_checks(directory)
+            account_checks()
             browser_checks()
     print("All product video workspace checks passed.",flush=True)
 
