@@ -225,11 +225,13 @@ def browser_checks():
                 page.locator('#accountsTab').click()
                 page.wait_for_function("document.querySelector('#selectedName').textContent === 'Test creator'")
                 assert page.locator('.video-card').count() == 2
+                assert page.locator('#videoSort').input_value() == 'published_at'
                 assert not page.locator('#addProduct').is_visible()
                 assert '1 credit' in page.locator('#refreshAll').inner_text()
                 page.locator('#productsTab').click()
                 page.wait_for_function("document.querySelector('#selectedName').textContent === 'Renamed product'")
                 assert page.locator('.video-card').count() == 1
+                assert page.locator('#videoSort').input_value() == 'views'
             assert page.title() == '视频列表'
             assert page.locator('#addProduct').evaluate("el => getComputedStyle(el).borderTopWidth === '0px'")
             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), "Mobile overflow"

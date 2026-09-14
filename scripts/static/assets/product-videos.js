@@ -33,6 +33,7 @@ async function switchLibrary(mode) {
   if(mode===state.mode||state.submitting)return;
   state.mode=mode;state.selected="";state.products=[];state.videos=[];state.job=null;state.hasMore=false;state.seq++;clearTimeout(state.timer);
   const account=mode==="accounts";
+  $("videoSort").value=account?"published_at":"views";
   $("productsTab").setAttribute("aria-pressed",String(!account));$("accountsTab").setAttribute("aria-pressed",String(account));
   $("libraryTitle").textContent=account?"账号池":"商品库";$("addProduct").hidden=account;
   $("productFilter").value="";$("productFilter").placeholder=account?"搜索账号名称或 @账号":"搜索商品名称或 ID";$("productFilter").setAttribute("aria-label",account?"搜索账号池":"搜索商品库");
