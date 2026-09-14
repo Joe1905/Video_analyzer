@@ -1598,7 +1598,7 @@ def _find_product_row(page: Any, product_id: str) -> Any | None:
         for index in range(min(rows.count(), 80)):
             row = rows.nth(index)
             try:
-                if row.is_visible() and product_id in row.inner_text():
+                if row.is_visible() and re.search(rf"(?<!\d){re.escape(product_id)}(?!\d)", row.inner_text()):
                     return row
             except Exception:
                 continue
@@ -1615,16 +1615,15 @@ def _wait_for_product_row(page: Any, product_id: str, timeout_ms: int = 8000) ->
     return None
 
 
-def _wait_for_linked_product(page: Any, product_name: str, timeout_ms: int = 10000) -> Any | None:
+def _wait_for_linked_product(page: Any, product_name: str, timeout_ms: int = 10000, previous_count: int = 0) -> Any | None:
     product_name = product_name.strip()
     if not product_name:
         return None
-    locator = page.get_by_text(re.compile(re.escape(product_name[:24]), re.I))
+    locator = page.get_by_text(product_name, exact=True).filter(visible=True)
     deadline = time.monotonic() + timeout_ms / 1000
     while time.monotonic() < deadline:
-        linked_product = _first_visible([locator])
-        if linked_product:
-            return linked_product
+        if locator.count() > previous_count:
+            return locator.last
         page.wait_for_timeout(250)
     return None
 
@@ -1817,6 +1816,9 @@ def _add_product_link(page: Any, product_id: str, log_dir: Path) -> bool:
     ])
     if not product_name_input or not str(product_name_input.input_value() or "").strip():
         raise ManualReviewRequired("商品名称确认页没有可用的默认商品名称")
+    # Identity was checked by product ID; this label only confirms the Add transition.
+    linked_name = str(product_name_input.input_value()).strip()
+    previous_count = page.get_by_text(linked_name, exact=True).filter(visible=True).count()
     add_button = _first_visible([
         detail_dialog.get_by_role("button", name=re.compile(r"^add$|^添加$", re.I)),
     ])
@@ -1829,7 +1831,7 @@ def _add_product_link(page: Any, product_id: str, log_dir: Path) -> bool:
     except Exception as exc:
         page.screenshot(path=str(log_dir / "product-add-failed.png"), full_page=True)
         raise ManualReviewRequired("点击 Add 后商品绑定弹窗未关闭") from exc
-    product_name = _wait_for_linked_product(page, product["product_name"])
+    product_name = _wait_for_linked_product(page, linked_name, previous_count=previous_count)
     if not product_name:
         if _submission_succeeded(page):
             page.screenshot(path=str(log_dir / "product-link-submission-succeeded.png"), full_page=True)
