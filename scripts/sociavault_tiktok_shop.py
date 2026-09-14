@@ -99,7 +99,7 @@ class SociaVaultClient:
         self.api_base = api_base.rstrip("/")
         self.timeout = timeout
 
-    def get(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
+    def get(self, path: str, params: dict[str, Any], *, cache_policy: str = "read_write") -> dict[str, Any]:
         cleaned_params = {key: value for key, value in params.items() if value not in (None, "")}
         request_key = {"api_base": self.api_base, "path": path, "params": cleaned_params}
 
@@ -131,6 +131,7 @@ class SociaVaultClient:
             path,
             request_key,
             fetch,
+            cache_policy=cache_policy,
             metadata_builder=lambda data: {
                 "entity_type": "tiktok_shop",
                 "entity_id": str(first_present(cleaned_params, ("url", "product_id", "query")) or path),
