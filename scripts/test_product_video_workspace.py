@@ -138,6 +138,16 @@ def browser_checks():
             page.locator(".video-cover").click()
             page.wait_for_function("document.querySelector('#translatedText').textContent === '你好，世界'")
             assert page.locator("#mediaDialog audio").count()==1 and page.locator("#mediaDialog video").count()==1
+            page.wait_for_function("document.querySelector('#player video').readyState >= 1")
+            for width, height in ((1120, 624), (390, 844)):
+                page.set_viewport_size({"width":width,"height":height})
+                assert page.evaluate("""() => {
+                    const player = document.querySelector('#player').getBoundingClientRect();
+                    const video = document.querySelector('#player video').getBoundingClientRect();
+                    return video.bottom <= player.bottom + 1 && video.top >= player.top - 1 && video.right <= player.right + 1;
+                }"""), "Native video controls must stay inside the player"
+                assert page.locator('#mediaDialog .icon-button').evaluate("el => getComputedStyle(el).borderTopWidth === '0px'")
+            page.set_viewport_size({"width":1440,"height":1000})
             page.keyboard.press("Escape")
             page.locator("#addProduct").click()
             page.locator('[name="product_id"]').fill("123456789")
