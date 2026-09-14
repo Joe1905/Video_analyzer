@@ -1,6 +1,6 @@
 "use strict";
 const $ = id => document.getElementById(id);
-const state = {products:[], selected:"", videos:[], job:null, loading:false, timer:null, seq:0, editing:null, imports:[], media:null, mediaState:null, submitting:false};
+const state = {products:[], selected:"", videos:[], job:null, loading:false, timer:null, seq:0, editing:null, imports:[], media:null, mediaState:null, playRequested:"", submitting:false};
 const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
 const fmt = value => value == null ? "—" : Number(value).toLocaleString("zh-CN");
 const date = (value, full=false) => value ? new Date(value*1000).toLocaleString("zh-CN", full ? {month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"} : {year:"numeric",month:"2-digit",day:"2-digit"}) : "—";
@@ -52,7 +52,7 @@ async function loadVideos() {
 }
 function card(v) {
   const p=current();const stats=[["views","播放"],["likes","点赞"],["comments","评论"],["shares","分享"],["saves","收藏"]];
-  return `<article class="video-card"><button class="video-cover" data-media="${esc(v.video_id)}" aria-label="查看视频：${esc(v.title||v.video_id)}">${v.cover_url?image(p,v):'<span class="cover-empty">暂无封面</span>'}<span class="play-icon" aria-hidden="true">▷</span>${v.downloaded?'<span class="download-badge">已下载</span>':""}<span class="cover-meta"><span>${date(v.published_at)}</span><span>${Math.round(v.duration||0)}s</span></span></button><div class="video-body"><div class="video-author">${esc(v.author||"未知作者")}</div><h4 class="video-title">${esc(v.title||"无标题视频")}</h4><div class="video-stats">${stats.map(([key,label])=>`<div><b>${fmt(v[key])}</b><span>${label}</span></div>`).join("")}<div><b>${v.duration?Math.round(v.duration)+"s":"—"}</b><span>时长</span></div></div><div class="video-actions"><a href="${esc(url(v.url))}" target="_blank" rel="noopener noreferrer">原视频 ↗</a><button data-refresh="${esc(v.video_id)}" ${busy()?"disabled":""}>更新数据</button><button data-media="${esc(v.video_id)}">下载 / 音频</button></div><div class="video-time">${v.updated_at?"详细数据更新于 "+date(v.updated_at,true):"基础数据获取于 "+date(v.basic_updated_at,true)}</div>${v.error?`<div class="video-error">${esc(v.error)}</div>`:""}</div></article>`;
+  return `<article class="video-card"><button class="video-cover" data-media="${esc(v.video_id)}" aria-label="查看视频：${esc(v.title||v.video_id)}">${v.cover_url?image(p,v):'<span class="cover-empty">暂无封面</span>'}<span class="play-icon" aria-hidden="true">▷</span>${v.downloaded?'<span class="download-badge">已缓存</span>':""}<span class="cover-meta"><span>${date(v.published_at)}</span><span>${Math.round(v.duration||0)}s</span></span></button><div class="video-body"><div class="video-author">${esc(v.author||"未知作者")}</div><h4 class="video-title">${esc(v.title||"无标题视频")}</h4><div class="video-stats">${stats.map(([key,label])=>`<div><b>${fmt(v[key])}</b><span>${label}</span></div>`).join("")}<div><b>${v.duration?Math.round(v.duration)+"s":"—"}</b><span>时长</span></div></div><div class="video-actions"><a href="${esc(url(v.url))}" target="_blank" rel="noopener noreferrer">原视频 ↗</a><button data-refresh="${esc(v.video_id)}" ${busy()?"disabled":""}>更新数据</button><button data-media="${esc(v.video_id)}">播放 / 音频</button></div><div class="video-time">${v.updated_at?"详细数据更新于 "+date(v.updated_at,true):"基础数据获取于 "+date(v.basic_updated_at,true)}</div>${v.error?`<div class="video-error">${esc(v.error)}</div>`:""}</div></article>`;
 }
 function renderVideos() {
   const p=current();if(!p)return;
@@ -98,9 +98,9 @@ async function saveProduct(event) {
 function openDelete() {$("deleteName").textContent=current()?.product_name;inlineError("deleteError");$("deleteDialog").showModal();}
 async function deleteProduct() {$("confirmDelete").disabled=true;try{await api("/api/proxy/products/delete",{product_id:state.selected});$("deleteDialog").close();await loadProducts();toast("商品已删除");}catch(e){inlineError("deleteError",e.message);}finally{$("confirmDelete").disabled=false;}}
 async function openMedia(vid) {
-  state.media=state.videos.find(v=>v.video_id===vid);state.mediaState=null;if(!state.media)return;
+  state.media=state.videos.find(v=>v.video_id===vid);state.mediaState=null;state.playRequested="";if(!state.media)return;
   $("mediaCaption").textContent=state.media.title||"无标题视频";$("mediaOriginal").href=url(state.media.url);
-  $("player").innerHTML=image(current(),state.media,false);$("audioPlayer").innerHTML="";$("downloadLinks").innerHTML="";
+  $("player").innerHTML=image(current(),state.media,false)+'<button id="playVideo" class="play-overlay" aria-label="在线播放"><span>▷</span>在线播放</button>';$("audioPlayer").innerHTML="";$("downloadLinks").innerHTML="";
   $("originalText").textContent="提取音频后显示原文。";$("translatedText").textContent="识别完成后翻译为简体中文。";$("audioLanguage").textContent="";
   $("mediaDialog").showModal();await renderMedia();
 }
@@ -109,17 +109,18 @@ async function renderMedia() {
   const media=await api(endpoint("media",pid,video.video_id));
   if(state.media?.video_id!==video.video_id||state.selected!==pid||!$("mediaDialog").open)return;
   const file=kind=>endpoint("file",pid,video.video_id)+"&kind="+kind;
-  if(media.downloaded&&!state.mediaState?.downloaded)$("player").innerHTML=`<video controls playsinline preload="metadata" src="${esc(file("video"))}"></video>`;
+  if(media.downloaded&&!state.mediaState?.downloaded){$("player").innerHTML=`<video controls playsinline preload="metadata" src="${esc(file("video"))}"></video>`;if(state.playRequested===video.video_id){state.playRequested="";$("player").querySelector("video").play().catch(()=>toast("视频已就绪，点击播放器即可播放"));}}
+  if(!media.downloaded&&state.mediaState?.downloaded)$("player").innerHTML=image(current(),video,false)+'<button id="playVideo" class="play-overlay" aria-label="在线播放"><span>▷</span>在线播放</button>';
   if(media.audio_ready&&!state.mediaState?.audio_ready)$("audioPlayer").innerHTML=`<audio controls preload="metadata" src="${esc(file("audio"))}"></audio>`;
-  $("downloadLinks").innerHTML=(media.downloaded?`<a href="${esc(file("video"))}&download=1" download>保存视频到电脑 ↓</a>`:"")+(media.audio_ready?`<a href="${esc(file("audio"))}&download=1" download>保存音频 ↓</a>`:"");
+  $("downloadLinks").innerHTML=(media.audio_ready?`<a href="${esc(file("audio"))}&download=1" download>保存音频 ↓</a>`:"");
   $("originalText").textContent=media.transcript?.text||(media.transcript?"未识别到可翻译的语音。":"提取音频后显示原文。");
   $("translatedText").textContent=media.translation?.text||"识别完成后翻译为简体中文。";
   $("audioLanguage").textContent=media.transcript?.language||"";
-  const related=state.job?.video_id===video.video_id;
+  const related=state.job?.video_id===video.video_id&&state.job.action!=="refresh";
   $("mediaStatus").className="job-status "+(related?state.job.status:"");
-  $("mediaStatus").textContent=related?state.job.message:busy()?"当前商品有任务正在处理，请稍候。":media.translation?"音频与翻译已保存，可直接查看。":media.downloaded?"视频已保存，可继续提取音频并翻译。":"先下载视频，再提取音频并翻译。";
-  $("downloadVideo").disabled=busy()||media.downloaded;$("downloadVideo").textContent=media.downloaded?"✓ 视频已下载":"下载视频到本地";
-  $("extractAudio").disabled=busy()||!media.downloaded||Boolean(media.translation);$("extractAudio").textContent=media.translation?"✓ 翻译已完成":media.transcript?"继续翻译":"提取音频并翻译";
+  $("mediaStatus").textContent=related?state.job.message:busy()?"当前商品有任务正在处理，请稍候。":media.translation?"音频与翻译已保存，可直接查看。":media.downloaded?"视频已缓存，可直接播放或提取音频。":"点击封面在线播放，或直接提取音频并翻译。";
+  if($("playVideo")){$("playVideo").disabled=busy();$("playVideo").innerHTML=busy()?"正在准备…":"<span>▷</span>在线播放";}
+  $("extractAudio").disabled=busy()||Boolean(media.translation);$("extractAudio").textContent=media.translation?"✓ 翻译已完成":media.transcript?"继续翻译":"提取音频并翻译";
   state.mediaState=media;
 }
 document.addEventListener("error",event=>{if(event.target.tagName==="IMG"){event.target.replaceWith(Object.assign(document.createElement("span"),{textContent:"暂无图片"}));}},true);
@@ -132,7 +133,7 @@ document.addEventListener("click",event=>{
     if(target.dataset.refresh)return startJob("refresh",target.dataset.refresh);
     if(target.hasAttribute("data-refresh-all"))return startJob();
     if(target.dataset.import!=null){fillForm(state.imports[Number(target.dataset.import)]);$("productForm").elements.product_name.focus();return;}
-    switch(target.id){case "addProduct":return openEditor();case "editProduct":return openEditor(true);case "reloadProducts":return loadProducts();case "refreshAll":return startJob();case "searchImport":return searchImport();case "deleteProduct":return openDelete();case "confirmDelete":return deleteProduct();case "downloadVideo":return startJob("download",state.media.video_id);case "extractAudio":return startJob("audio",state.media.video_id);}
+    switch(target.id){case "addProduct":return openEditor();case "editProduct":return openEditor(true);case "reloadProducts":return loadProducts();case "refreshAll":return startJob();case "searchImport":return searchImport();case "deleteProduct":return openDelete();case "confirmDelete":return deleteProduct();case "playVideo":state.playRequested=state.media.video_id;return startJob("play",state.media.video_id);case "extractAudio":return startJob("audio",state.media.video_id);}
   };run().catch(e=>toast(e.message,true));
 });
 $("productFilter").addEventListener("input",renderProducts);$("videoFilter").addEventListener("input",renderVideos);$("videoSort").addEventListener("change",renderVideos);$("productForm").addEventListener("submit",saveProduct);

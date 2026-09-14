@@ -31,6 +31,42 @@ _audio_lock = threading.Lock()
 _pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="product-videos")
 _owner = uuid.uuid4().hex
 _initialized = False
+_cleanup_started = False
+
+
+def video_expiry(folder):
+    target = folder / "video.mp4"
+    if not target.is_file():
+        return 0
+    try:
+        return float(json.loads((folder / "cache.json").read_text())["expires_at"])
+    except (OSError, ValueError, KeyError, TypeError):
+        try:
+            return target.stat().st_mtime + (7 if (folder / "audio.mp3").is_file() else 1) * 86400
+        except FileNotFoundError:
+            return 0
+
+
+def cleanup_media():
+    # ponytail: share the media lock so cleanup never deletes a video being extracted.
+    if not _audio_lock.acquire(blocking=False):
+        return
+    try:
+        for target in MEDIA.glob("*/video.mp4"):
+            if target.parent.name.isascii() and target.parent.name.isdigit() and video_expiry(target.parent) <= time.time():
+                target.unlink(missing_ok=True)
+                (target.parent / "cache.json").unlink(missing_ok=True)
+    finally:
+        _audio_lock.release()
+
+
+def cleanup_worker():
+    while True:
+        try:
+            cleanup_media()
+        except OSError:
+            pass  # Retry transient filesystem failures on the next sweep.
+        time.sleep(60)
 
 
 @contextmanager
@@ -83,7 +119,7 @@ def snapshot(product_id):
         job.update(status="failed", message="服务已重启，本次任务中断；已保存的数据仍可查看，请重新更新。")
     for video in videos:
         folder = MEDIA / video["video_id"]
-        video["downloaded"] = (folder / "video.mp4").is_file()
+        video["downloaded"] = video_expiry(folder) > time.time()
         video["audio_ready"] = (folder / "audio.mp3").is_file()
     return {"product": selected, "videos": videos, "job": job}
 
@@ -205,7 +241,7 @@ def start(payload):
     pid = identifier(payload.get("product_id"))
     kind = payload.get("action", "refresh")
     vid = str(payload.get("video_id") or "")
-    if kind not in {"refresh", "download", "audio"}:
+    if kind not in {"refresh", "play", "download", "audio"}:
         raise ValueError("不支持的任务类型")
     with _lock:
         state = snapshot(pid)
@@ -377,7 +413,8 @@ def image_path(pid, vid=""):
 def media_state(pid, vid):
     item(pid, vid)
     folder = MEDIA / identifier(vid)
-    result = {"video_id": vid, "downloaded": (folder / "video.mp4").is_file(), "audio_ready": (folder / "audio.mp3").is_file()}
+    expires_at = video_expiry(folder)
+    result = {"video_id": vid, "downloaded": expires_at > time.time(), "expires_at": expires_at, "audio_ready": (folder / "audio.mp3").is_file()}
     for key in ("transcript", "translation"):
         file = folder / (key + ".json")
         result[key] = json.loads(file.read_text(encoding="utf-8")) if file.is_file() else None
@@ -400,7 +437,8 @@ def prepare_media(job):
     job["message"] = "等待下载 / 音频处理…"
     save_job(job)
     with _audio_lock:
-        if not target.is_file():
+        expires_at = video_expiry(folder)
+        if expires_at <= time.time():
             job["message"] = "正在下载视频到本地…"
             save_job(job)
             api = client()
@@ -418,8 +456,9 @@ def prepare_media(job):
                 pending.replace(target)
             finally:
                 pending.unlink(missing_ok=True)
-        if job["action"] == "download":
-            job["message"] = "视频已保存到服务器，可下载到电脑或继续提取音频。"
+        write_json(folder / "cache.json", {"expires_at": max(expires_at, time.time() + (7 if job["action"] == "audio" else 1) * 86400)})
+        if job["action"] in {"play", "download"}:
+            job["message"] = "视频已就绪，可以播放。"
             return
         audio = folder / "audio.mp3"
         if not audio.is_file():
@@ -471,6 +510,11 @@ def reply(handler, code, data, content_type="application/json; charset=utf-8", c
 def handle(handler, parsed, serve_file):
     if not parsed.path.startswith("/api/product-videos/"):
         return False
+    global _cleanup_started
+    with _lock:
+        if not _cleanup_started:
+            _cleanup_started = True
+            threading.Thread(target=cleanup_worker, daemon=True, name="product-video-cleanup").start()
     query = parse_qs(parsed.query)
     pid = query.get("product_id", [""])[0]
     vid = query.get("video_id", [""])[0]
@@ -499,8 +543,8 @@ def handle(handler, parsed, serve_file):
             if kind not in {"audio", "video"}:
                 raise ValueError("无效的文件类型")
             path = MEDIA / vid / ("audio.mp3" if kind == "audio" else "video.mp4")
-            if not path.is_file():
-                raise FileNotFoundError("请先下载视频或提取音频")
+            if not path.is_file() or (kind == "video" and video_expiry(path.parent) <= time.time()):
+                raise FileNotFoundError("视频缓存已过期，请点击在线播放或提取音频")
             serve_file(handler, path, "audio/mpeg" if kind == "audio" else "video/mp4", f"{vid}.{path.suffix[1:]}", path.stat().st_size, download=query.get("download", ["0"])[0] == "1")
         else:
             reply(handler, 404, {"error": "接口不存在"})

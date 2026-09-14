@@ -83,7 +83,25 @@ def backend_checks(directory):
             return subprocess.CompletedProcess(command, 0)
         return real_run(command, **kwargs)
     with patch.object(app, "client", return_value=API()), patch.object(app, "refresh_video", return_value={"video_id":VID,"media_url":"https://v16.tiktokcdn.com/sample.mp4"}), patch.object(app,"download_media",side_effect=lambda source,target,limit:shutil.copyfile(sample,target)), patch.object(app.subprocess,"run",side_effect=run_command), patch.dict(app.os.environ, {"DEEPSEEK_API_KEY":"test"}), patch("translate_analysis.translate_text_chunked", return_value="你好，世界"):
-        app.run_job(job("download",VID))
+        with patch.object(app, "download_media", wraps=app.download_media) as download:
+            app.run_job(job("play",VID))
+            folder = app.MEDIA / VID
+            assert 86390 < app.video_expiry(folder) - time.time() <= 86400
+            audio_job=job("audio",VID)
+            app.run_job(audio_job)
+            assert audio_job["status"]=="complete", audio_job
+            assert download.call_count == 1, "Play then audio must reuse one download"
+            expiry = app.video_expiry(folder)
+            assert 604790 < expiry - time.time() <= 604800
+            app.run_job(job("play",VID))
+            assert app.video_expiry(folder) == expiry, "Playback must not shorten audio retention"
+            with patch.object(app.time, "time", return_value=expiry + 1):
+                assert not app.media_state(PID, VID)["downloaded"]
+                app.cleanup_media()
+            assert not (folder / "video.mp4").exists()
+            assert (folder / "audio.mp3").exists() and (folder / "translation.json").exists()
+            app.run_job(job("audio", VID))
+            assert download.call_count == 2, "Expired video is downloaded automatically for extraction"
         audio_job=job("audio",VID)
         app.run_job(audio_job)
         assert audio_job["status"]=="complete", audio_job
@@ -148,6 +166,13 @@ def browser_checks():
                 }"""), "Native video controls must stay inside the player"
                 assert page.locator('#mediaDialog .icon-button').evaluate("el => getComputedStyle(el).borderTopWidth === '0px'")
             page.set_viewport_size({"width":1440,"height":1000})
+            page.keyboard.press("Escape")
+            (app.MEDIA / VID / "video.mp4").unlink()
+            (app.MEDIA / VID / "translation.json").unlink()
+            page.locator(".video-cover").click()
+            page.wait_for_function("document.querySelector('#extractAudio').disabled === false")
+            assert page.locator('#playVideo').is_visible()
+            assert page.locator('#downloadVideo').count() == 0
             page.keyboard.press("Escape")
             page.locator("#addProduct").click()
             page.locator('[name="product_id"]').fill("123456789")
