@@ -1,6 +1,6 @@
 "use strict";
 const $ = id => document.getElementById(id);
-const state = {mode:"products", hasMore:false, librarySeq:0, products:[], selected:"", videos:[], job:null, loading:false, timer:null, seq:0, editing:null, imports:[], media:null, mediaState:null, playRequested:"", submitting:false};
+const state = {mode:"products", page:1, hasMore:false, librarySeq:0, products:[], selected:"", videos:[], job:null, loading:false, timer:null, seq:0, editing:null, imports:[], media:null, mediaState:null, playRequested:"", submitting:false};
 const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
 const fmt = value => value == null ? "—" : Number(value).toLocaleString("zh-CN");
 const date = (value, full=false) => value ? new Date(value*1000).toLocaleString("zh-CN", full ? {month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"} : {year:"numeric",month:"2-digit",day:"2-digit"}) : "—";
@@ -52,7 +52,7 @@ function renderOverview() {
   $("shopLink").href=url(p.product_url)||`https://www.tiktok.com/shop/pdp/${p.product_id}`;
 }
 async function selectProduct(pid) {
-  clearTimeout(state.timer);state.seq++;state.selected=pid;state.videos=[];state.job=null;state.hasMore=false;state.loading=true;
+  clearTimeout(state.timer);state.seq++;state.selected=pid;state.page=1;state.videos=[];state.job=null;state.hasMore=false;state.loading=true;
   $("videoFilter").value="";renderProducts();renderOverview();renderVideos();await loadVideos();
 }
 async function loadVideos() {
@@ -81,9 +81,13 @@ function renderVideos() {
   const q=$("videoFilter").value.trim().toLowerCase(), key=$("videoSort").value;
   const visible=state.videos.filter(v=>(v.title+" "+v.author+" "+v.video_id).toLowerCase().includes(q)).sort((a,b)=>(b[key]??-1)-(a[key]??-1));
   $("visibleVideos").textContent=visible.length;
+  const pages=Math.max(1,Math.ceil(visible.length/10));state.page=Math.min(state.page,pages);
+  $("videoPagination").hidden=state.loading||!visible.length;
+  $("pageInfo").textContent=`第 ${state.page} / ${pages} 页 · 共 ${visible.length} 条`;
+  $("previousPage").disabled=state.page===1;$("nextPage").disabled=state.page===pages;
   const latest=Math.max(0,...state.videos.map(v=>v.updated_at||v.basic_updated_at||0));
   $("lastUpdated").textContent=latest?`最近数据时间 ${date(latest,true)} · 点击更新获取最新指标` : "按需查询，不会自动消耗接口额度";
-  const markup=state.loading?'<div class="empty">正在读取已保存的视频…</div>':visible.length?visible.map(card).join(""):state.videos.length?'<div class="empty">没有匹配的视频，试试其他关键词。</div>':busy()?'<div class="empty"><h3>正在查找关联视频…</h3><p>结果会自动显示，可以稍后回来查看。</p></div>':`<div class="empty"><h3>${state.job?"暂无已收录的视频":(p.handle?"还没有查询这个账号":"还没有查询这个商品")}</h3><p>${state.job?"本次没有返回关联视频，不代表没有带货内容。":(p.handle?"查询账号最新一页视频及指标。":"查询该商品的关联视频，并保存播放、点赞等表现数据。")}</p><button class="primary" data-refresh-all>${p.handle?"查询最新一页":"查询关联视频"}</button></div>`;
+  const markup=state.loading?'<div class="empty">正在读取已保存的视频…</div>':visible.length?visible.slice((state.page-1)*10,state.page*10).map(card).join(""):state.videos.length?'<div class="empty">没有匹配的视频，试试其他关键词。</div>':busy()?'<div class="empty"><h3>正在查找关联视频…</h3><p>结果会自动显示，可以稍后回来查看。</p></div>':`<div class="empty"><h3>${state.job?"暂无已收录的视频":(p.handle?"还没有查询这个账号":"还没有查询这个商品")}</h3><p>${state.job?"本次没有返回关联视频，不代表没有带货内容。":(p.handle?"查询账号最新一页视频及指标。":"查询该商品的关联视频，并保存播放、点赞等表现数据。")}</p><button class="primary" data-refresh-all>${p.handle?"查询最新一页":"查询关联视频"}</button></div>`;
   if($("videos").innerHTML!==markup)$("videos").innerHTML=markup;
 }
 async function startJob(action="refresh", vid="") {
@@ -145,6 +149,7 @@ document.addEventListener("click",event=>{
   const run=async()=>{
     if(target.dataset.close){$(target.dataset.close).close();return;}
     if(target.dataset.library)return switchLibrary(target.dataset.library);
+    if(target.dataset.page){state.page+=Number(target.dataset.page);renderVideos();$("videos").scrollIntoView({block:"start"});return;}
     if(target.dataset.product)return selectProduct(target.dataset.product);
     if(target.dataset.media)return openMedia(target.dataset.media);
     if(target.dataset.refresh)return startJob("refresh",target.dataset.refresh);
@@ -153,7 +158,7 @@ document.addEventListener("click",event=>{
     switch(target.id){case "loadMore":return startJob("more");case "addProduct":return openEditor();case "editProduct":return openEditor(true);case "reloadProducts":return loadProducts();case "refreshAll":return startJob();case "searchImport":return searchImport();case "deleteProduct":return openDelete();case "confirmDelete":return deleteProduct();case "playVideo":state.playRequested=state.media.video_id;return startJob("play",state.media.video_id);case "extractAudio":return startJob("audio",state.media.video_id);}
   };run().catch(e=>toast(e.message,true));
 });
-$("productFilter").addEventListener("input",renderProducts);$("videoFilter").addEventListener("input",renderVideos);$("videoSort").addEventListener("change",renderVideos);$("productForm").addEventListener("submit",saveProduct);
+$("productFilter").addEventListener("input",renderProducts);$("videoFilter").addEventListener("input",()=>{state.page=1;renderVideos();});$("videoSort").addEventListener("change",()=>{state.page=1;renderVideos();});$("productForm").addEventListener("submit",saveProduct);
 $("importQuery").addEventListener("keydown",event=>{if(event.key==="Enter"){event.preventDefault();searchImport();}});
 $("mediaDialog").addEventListener("close",()=>{document.querySelectorAll("#mediaDialog video,#mediaDialog audio").forEach(el=>el.pause());state.media=null;});
 loadProducts().catch(e=>{$("products").innerHTML='<div class="empty small">商品库加载失败，请点击刷新列表重试。</div>';toast(e.message,true);});

@@ -275,6 +275,32 @@ def browser_checks():
                 page.wait_for_function("document.querySelector('#selectedName').textContent === 'Renamed product'")
                 assert page.locator('.video-card').count() == 1
                 assert page.locator('#videoSort').input_value() == 'views'
+                for i in range(21):
+                    app.save_video(PID, {"video_id":str(9000+i),"title":f"Pagination {i}","author":"Tester","views":i,"published_at":i})
+                page.locator('#reloadProducts').click()
+                page.wait_for_function("document.querySelector('#pageInfo').textContent.includes('共 22 条')")
+                seen = []
+                for count in (10,10,2):
+                    assert page.locator('.video-card').count() == count
+                    seen += page.locator('.video-cover').evaluate_all("els => els.map(el => el.dataset.media)")
+                    if count == 10:
+                        page.locator('#nextPage').click()
+                assert len(set(seen)) == 22
+                assert page.locator('#nextPage').is_disabled()
+                page.locator('#videoFilter').fill('Pagination 0')
+                assert page.locator('.video-card').count() == 1
+                assert page.locator('#previousPage').is_disabled()
+                page.locator('#videoFilter').fill('')
+                page.locator('#nextPage').click()
+                page.locator('#videoSort').select_option('published_at')
+                assert page.locator('#previousPage').is_disabled()
+                page.locator('#nextPage').click()
+                page.locator('#previousPage').click()
+                assert page.locator('.video-card').count() == 10
+                page.locator('#accountsTab').click()
+                page.wait_for_function("document.querySelector('#visibleVideos').textContent === '2'")
+                assert page.locator('#previousPage').is_disabled()
+                assert page.locator('#nextPage').is_disabled()
             assert page.title() == '视频列表'
             assert page.locator('#addProduct').evaluate("el => getComputedStyle(el).borderTopWidth === '0px'")
             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), "Mobile overflow"
