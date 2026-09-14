@@ -42,6 +42,8 @@ def backend_checks(directory):
         app.run_job(first)
         video = app.item(PID, VID)
         assert first["status"] == "complete" and video["views"] == 0 and video["comments"] == 28
+        app.run_job(job())
+        assert len(app.snapshot(PID)["videos"]) == 1, "Refreshing a product again must not duplicate videos"
         with patch.object(app, "refresh_video", side_effect=ValueError("test error")):
             failed = job(vid=VID)
             app.run_job(failed)
@@ -147,10 +149,17 @@ def account_checks():
         assert calls[1][1]["max_cursor"] == "page1"
         snapshot = app.snapshot("account:1")
         assert not snapshot["has_more"] and len(snapshot["videos"]) == 2
+        app.run_job(more)
+        app.run_job({**job(), "product_id":"account:1"})
+        ids = [v["video_id"] for v in app.snapshot("account:1")["videos"]]
+        assert len(ids) == len(set(ids)) == 2, "Repeated pages and refreshes must not duplicate videos"
+        more["message"] = "本页已更新 10 条视频 · 1 credit，可手动加载下一页。"
+        app.save_job(more)
+        assert "credit" not in app.snapshot("account:1")["job"]["message"]
         with patch.object(app, "client", side_effect=ValueError("test failure")):
             app.run_job({**job(), "product_id":"account:1"})
         assert len(app.snapshot("account:1")["videos"]) == 2
-        assert app.snapshot("account:1")["cursor"] == "page2"
+        assert app.snapshot("account:1")["cursor"] == "page1"
     print("PASS: shared accounts, one request per page, cursor, account/product isolation, failed refresh preserves videos", flush=True)
 
 
@@ -261,7 +270,7 @@ def browser_checks():
                 assert page.locator('#videoSort').input_value() == 'published_at'
                 assert page.locator('#products .row-id').first.inner_text() == '测试同事'
                 assert not page.locator('#addProduct').is_visible()
-                assert '1 credit' in page.locator('#refreshAll').inner_text()
+                assert 'credit' not in page.locator('body').inner_text()
                 page.locator('#productsTab').click()
                 page.wait_for_function("document.querySelector('#selectedName').textContent === 'Renamed product'")
                 assert page.locator('.video-card').count() == 1

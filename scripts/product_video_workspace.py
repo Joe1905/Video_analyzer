@@ -163,6 +163,8 @@ def snapshot(product_id):
         row = conn.execute(f"SELECT payload FROM {jobs_table} WHERE product_id=?", (product_id,)).fetchone()
         page = conn.execute("SELECT cursor,has_more FROM account_video_pages WHERE product_id=?", (product_id,)).fetchone()
     job = json.loads(row[0]) if row else None
+    if job:
+        job["message"] = job.get("message", "").replace(" · 1 credit", "").replace("（本页 1 credit）", "")
     if job and job.get("status") in {"queued", "running"} and job.get("owner") != _owner:
         job.update(status="failed", message="服务已重启，本次任务中断；已保存的数据仍可查看，请重新更新。")
     for video in videos:
@@ -396,7 +398,7 @@ def fetch_account_page(job):
     params = {"handle": account["handle"], "sort_by": "latest"}
     if job.get("cursor"):
         params["max_cursor"] = job["cursor"]
-    job["message"] = "正在查询账号视频（本页 1 credit）…"
+    job["message"] = "正在查询账号视频…"
     save_job(job)
     response = client().get("/v1/scrape/tiktok/videos", params, cache_policy="record_only")
     data = unwrap(response)
@@ -422,7 +424,7 @@ def fetch_account_page(job):
     with database() as conn:
         conn.execute("INSERT OR REPLACE INTO account_video_pages VALUES (?,?,?)", (pid, cursor, int(more)))
     job.update(done=len(videos), total=len(videos), credits_used=response.get("credits_used", 1),
-               message=f"本页已更新 {len(videos)} 条视频 · 1 credit" + ("，可手动加载下一页。" if more else "，已到末页。"))
+               message=f"本页已更新 {len(videos)} 条视频" + ("，可手动加载下一页。" if more else "，已到末页。"))
 
 
 def public_error(exc):

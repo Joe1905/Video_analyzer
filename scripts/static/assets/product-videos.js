@@ -48,7 +48,7 @@ function renderOverview() {
   $("selectedMeta").textContent=p.handle?`@${p.handle} · 来自 IP 池`:`ID ${p.product_id} · ${p.price||"价格未知"} · 库存 ${p.stock||"未知"}`;
   $("editProduct").hidden=Boolean(p.handle);$("deleteProduct").hidden=Boolean(p.handle);$("shopLink").textContent=p.handle?"账号主页 ↗":"商品主页 ↗";
   $("sourceEyebrow").textContent=p.handle?"ACCOUNT VIDEO LIBRARY":"PRODUCT VIDEO LIBRARY";
-  $("summaryNote").innerHTML=p.handle?"查询最新一页 · 1 credit<br><span>历史视频手动加载，已有数据持续保留。</span>":"发现关联内容，持续更新表现。<br><span>接口返回部分关联视频，不代表全量。</span>";
+  $("summaryNote").innerHTML=p.handle?"查询最新一页<br><span>历史视频手动加载，已有数据持续保留。</span>":"发现关联内容，持续更新表现。<br><span>接口返回部分关联视频，不代表全量。</span>";
   $("shopLink").href=url(p.product_url)||`https://www.tiktok.com/shop/pdp/${p.product_id}`;
 }
 async function selectProduct(pid) {
@@ -71,7 +71,7 @@ function card(v) {
 function renderVideos() {
   const p=current();if(!p)return;
   $("refreshAll").disabled=busy()||state.loading;$("editProduct").disabled=busy();$("deleteProduct").disabled=busy();
-  $("refreshAll").textContent=busy()?"↻ 正在处理…":p.handle?"↻ 查询最新一页 · 1 credit":"↻ 更新全部视频";
+  $("refreshAll").textContent=busy()?"↻ 正在处理…":p.handle?"↻ 查询最新一页":"↻ 更新全部视频";
   $("loadMore").hidden=!p.handle||!state.hasMore;$("loadMore").disabled=busy()||state.loading;
   $("productsTab").disabled=state.submitting;$("accountsTab").disabled=state.submitting;
   $("totalVideos").textContent=state.loading?"—":state.videos.length;
@@ -83,7 +83,7 @@ function renderVideos() {
   $("visibleVideos").textContent=visible.length;
   const latest=Math.max(0,...state.videos.map(v=>v.updated_at||v.basic_updated_at||0));
   $("lastUpdated").textContent=latest?`最近数据时间 ${date(latest,true)} · 点击更新获取最新指标` : "按需查询，不会自动消耗接口额度";
-  const markup=state.loading?'<div class="empty">正在读取已保存的视频…</div>':visible.length?visible.map(card).join(""):state.videos.length?'<div class="empty">没有匹配的视频，试试其他关键词。</div>':busy()?'<div class="empty"><h3>正在查找关联视频…</h3><p>结果会自动显示，可以稍后回来查看。</p></div>':`<div class="empty"><h3>${state.job?"暂无已收录的视频":(p.handle?"还没有查询这个账号":"还没有查询这个商品")}</h3><p>${state.job?"本次没有返回关联视频，不代表没有带货内容。":(p.handle?"查询账号最新一页视频及指标，本次消耗 1 credit。":"查询该商品的关联视频，并保存播放、点赞等表现数据。")}</p><button class="primary" data-refresh-all>${p.handle?"查询最新一页 · 1 credit":"查询关联视频"}</button></div>`;
+  const markup=state.loading?'<div class="empty">正在读取已保存的视频…</div>':visible.length?visible.map(card).join(""):state.videos.length?'<div class="empty">没有匹配的视频，试试其他关键词。</div>':busy()?'<div class="empty"><h3>正在查找关联视频…</h3><p>结果会自动显示，可以稍后回来查看。</p></div>':`<div class="empty"><h3>${state.job?"暂无已收录的视频":(p.handle?"还没有查询这个账号":"还没有查询这个商品")}</h3><p>${state.job?"本次没有返回关联视频，不代表没有带货内容。":(p.handle?"查询账号最新一页视频及指标。":"查询该商品的关联视频，并保存播放、点赞等表现数据。")}</p><button class="primary" data-refresh-all>${p.handle?"查询最新一页":"查询关联视频"}</button></div>`;
   if($("videos").innerHTML!==markup)$("videos").innerHTML=markup;
 }
 async function startJob(action="refresh", vid="") {
