@@ -229,6 +229,12 @@ def browser_checks():
             page=browser.new_page(viewport={"width":1440,"height":1000})
             errors=[];page.on("pageerror",lambda error:errors.append(str(error)))
             page.goto(f"http://127.0.0.1:{server.server_port}/metrics",wait_until="networkidle")
+            assert page.locator('.library-tabs button').first.get_attribute('id') == 'accountsTab'
+            assert page.locator('#accountsTab').get_attribute('aria-pressed') == 'true'
+            assert page.locator('#videoSort').input_value() == 'published_at'
+            assert page.locator('.video-card').count() == 2
+            page.locator('#productsTab').click()
+            page.wait_for_function("document.querySelector('#visibleVideos').textContent === '1'")
             assert page.locator(".video-card").count()==1
             assert page.locator("#videos script").count()==0
             page.locator("#productFilter").fill("not found")
