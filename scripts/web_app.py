@@ -14270,6 +14270,7 @@ class Handler(BaseHTTPRequestHandler):
             page = (SCRIPTS_DIR / "static" / "replication.html").read_text(encoding="utf-8")
             return text_response(self, HTTPStatus.OK, inject_unified_nav(page, parsed.path), "text/html; charset=utf-8")
         if handle_replication_http(self, parsed, replication_workflow, "GET"):
+            return
         if product_video_workspace.handle(self, parsed, file_response):
             return
         if storyboard_service.handle(self, parsed, inject_unified_nav):
@@ -14941,6 +14942,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         if handle_replication_http(self, parsed, replication_workflow, "POST"):
+            return
         if product_video_workspace.handle(self, parsed, file_response):
             return
         if storyboard_service.handle(self, parsed, inject_unified_nav):
