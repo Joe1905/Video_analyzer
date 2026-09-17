@@ -3613,6 +3613,7 @@ def _runtime_mihomo_listener_name(pool: sqlite3.Row | dict[str, Any]) -> str:
 
 def _resolve_system_proxy_dialer(node_name: str) -> str:
     current = SYSTEM_PROXY_DIALER
+    parent = ""
     visited: set[str] = set()
     for _attempt in range(8):
         if current == node_name:
@@ -3624,11 +3625,20 @@ def _resolve_system_proxy_dialer(node_name: str) -> str:
         visited.add(current)
         ok, body, error = _mihomo_request("GET", f"/proxies/{quote_path(current)}", timeout=8)
         if not ok or not isinstance(body, dict):
+            if parent and error.startswith("HTTP 404:"):
+                provider_ok, providers, _ = _mihomo_request("GET", "/providers/proxies", timeout=8)
+                if provider_ok and isinstance(providers, dict) and any(
+                    proxy.get("name") == current
+                    for provider in providers.get("providers", {}).values()
+                    for proxy in provider.get("proxies", [])
+                ):
+                    # Subscription nodes are dialed through their owning group.
+                    return parent
             raise ProxyConfigurationError(f"无法读取系统代理当前节点 {current}：{error}")
         selected = str(body.get("now") or "").strip()
         if not selected or selected == current:
             return current
-        current = selected
+        parent, current = current, selected
     raise ProxyConfigurationError("系统代理策略组嵌套过深")
 
 

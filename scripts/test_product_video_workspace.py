@@ -164,6 +164,10 @@ def account_checks():
 
 
 def shared_video_checks():
+    detail = {"aweme_id":VID,"statistics":{"play_count":0},"video":{"cover":{"url_list":{"0":"https://cdn.test/cover.heic"}},"origin_cover":{"url_list":{"0":"https://cdn.test/origin.heic","1":"https://cdn.test/origin.jpeg"}}}}
+    assert app.video_detail(detail, {"video_id":VID})["cover_url"] == "https://cdn.test/origin.jpeg"
+    detail["video"]["cover"]["url_list"]["1"] = "https://cdn.test/cover.jpg"
+    assert app.video_detail(detail, {"video_id":VID})["cover_url"] == "https://cdn.test/cover.jpg"
     vid = "991"
     old = {"video_id":vid,"title":"Shared title","views":100,"comments":7,"cover_url":"https://cdn.test/cover.jpg","updated_at":100}
     new = {"video_id":vid,"title":"Shared title","views":0,"cover_url":"","updated_at":200}
@@ -225,6 +229,12 @@ def browser_checks():
             page=browser.new_page(viewport={"width":1440,"height":1000})
             errors=[];page.on("pageerror",lambda error:errors.append(str(error)))
             page.goto(f"http://127.0.0.1:{server.server_port}/metrics",wait_until="networkidle")
+            assert page.locator('.library-tabs button').first.get_attribute('id') == 'accountsTab'
+            assert page.locator('#accountsTab').get_attribute('aria-pressed') == 'true'
+            assert page.locator('#videoSort').input_value() == 'published_at'
+            assert page.locator('.video-card').count() == 2
+            page.locator('#productsTab').click()
+            page.wait_for_function("document.querySelector('#visibleVideos').textContent === '1'")
             assert page.locator(".video-card").count()==1
             assert page.locator("#videos script").count()==0
             page.locator("#productFilter").fill("not found")
