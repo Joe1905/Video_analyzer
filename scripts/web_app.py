@@ -15153,7 +15153,11 @@ class Handler(BaseHTTPRequestHandler):
                 return json_response(self, HTTPStatus.OK, tiktok_studio_collect.runtime_status())
             if path.startswith("/api/proxy/publish/videos/"):
                 asset_id = unquote(path.removeprefix("/api/proxy/publish/videos/"))
-                return self.serve_video(tiktok_studio_publish.video_path(asset_id))
+                try:
+                    video_file = tiktok_studio_publish.video_path(asset_id)
+                except ValueError as exc:
+                    return json_response(self, HTTPStatus.NOT_FOUND, {"error": str(exc)})
+                return self.serve_video(video_file)
             return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
         except (BrokenPipeError, ConnectionResetError):
             return
