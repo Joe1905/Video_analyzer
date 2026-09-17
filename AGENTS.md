@@ -22,20 +22,33 @@ Two Compose services are defined:
 - `analyzer`: one-shot/manual jobs, default command `bash`
 - `web`: persistent HTTP server, command `python scripts/web_app.py`
 
-Always include the Compose project name `-p short-video-analyzer` to avoid collisions with other Docker projects on the same host.
+Two rules apply to every Compose command:
+
+1. Use the hyphenated standalone binary `docker-compose`, never `docker compose`.
+   This host has only legacy Compose v1.29.2 (`/usr/bin/docker-compose`) and the
+   Docker CLI has no Compose v2 plugin, so `docker compose ...` fails with
+   `unknown command: docker compose`.
+2. Always pass an explicit project name with `-p`, so a command cannot touch a
+   different environment. The project name selects the environment:
+   `short-video-analyzer` (4002 production), `short-video-analyzer-dev` (4003
+   development), `short-video-analyzer-ui-4004` (4004). See
+   "Server ports, deployed trees, and local worktrees" below.
+
+The examples in this section use the 4002 production project name; substitute the
+project name of the environment you are actually working on.
 
 ## Critical Commands
 
 Build:
 
 ```bash
-docker compose -p short-video-analyzer build
+docker-compose -p short-video-analyzer build
 ```
 
 Start the web UI directly:
 
 ```bash
-docker compose -p short-video-analyzer up web
+docker-compose -p short-video-analyzer up web
 ```
 
 Start the web UI with automatic port selection and Amazon scraper setup:
@@ -47,25 +60,25 @@ bash scripts/run_web.sh
 Run analyzer mode:
 
 ```bash
-docker compose -p short-video-analyzer run --rm analyzer bash scripts/analyze_one.sh test.mp4
+docker-compose -p short-video-analyzer run --rm analyzer bash scripts/analyze_one.sh test.mp4
 ```
 
 Run direct-video mode:
 
 ```bash
-docker compose -p short-video-analyzer run --rm analyzer python scripts/direct_video_analyze.py test.mp4
+docker-compose -p short-video-analyzer run --rm analyzer python scripts/direct_video_analyze.py test.mp4
 ```
 
 Run DeepSeek postprocess:
 
 ```bash
-docker compose -p short-video-analyzer run --rm analyzer python scripts/deepseek_postprocess.py output/test.mp4
+docker-compose -p short-video-analyzer run --rm analyzer python scripts/deepseek_postprocess.py output/test.mp4
 ```
 
 Open a shell in the analyzer container:
 
 ```bash
-docker compose -p short-video-analyzer run --rm analyzer bash
+docker-compose -p short-video-analyzer run --rm analyzer bash
 ```
 
 ## Verification
@@ -75,8 +88,8 @@ There is no pytest/tox/lint/typecheck/CI configuration. Do not invent commands.
 Use the relevant ad-hoc scripts when touched code maps to them:
 
 ```bash
-docker compose -p short-video-analyzer run --rm analyzer python scripts/test_api_cache.py
-docker compose -p short-video-analyzer run --rm analyzer python scripts/test_chat_tool_normalization.py
+docker-compose -p short-video-analyzer run --rm analyzer python scripts/test_api_cache.py
+docker-compose -p short-video-analyzer run --rm analyzer python scripts/test_chat_tool_normalization.py
 ```
 
 For web changes, prefer starting the web service and manually/API-checking the affected endpoint or page. If Docker is unavailable or required API keys are missing, say that clearly in the final response.
@@ -112,7 +125,7 @@ API responses are cached in `data/api_cache.sqlite` by default with a 7-day TTL.
 - `docker-compose.yml`: defines `analyzer` and `web`, binds `videos/`, `output/`, `data/`, and mounts `scripts/` read-only.
 - `analysis_prompt.txt`: Chinese prompt template used by DeepSeek postprocess for TikTok/script analysis.
 - `scripts/`: Python and shell scripts. In containers this directory is mounted read-only, so generated data must go to `videos/`, `output/`, or `data/`.
-- `scripts/static/`: HTML templates loaded by `web_app.py` (`web_index.html`, `report.html`, `shop.html`, `metrics.html`, `amazon.html`, `chat.html`).
+- `scripts/static/`: HTML templates loaded by `web_app.py` (`web_index.html`, `report.html`, `report_player.html`, `shop.html`, `metrics.html`, `amazon.html`, `chat.html`, `lan_chat.html`, `tool.html`, `proxy.html`, `storyboard.html`, `replication.html`, `viral_elements.html`, `viral_elements_library.html`). See "Web Pages and Main Endpoints" for the route each one serves.
 - `videos/`: input videos, gitignored.
 - `output/`: job outputs, gitignored.
 - `data/`: SQLite state and caches, gitignored.
@@ -178,13 +191,28 @@ the normal AI chat, SellerSprite (`/amazon`), and FastMoss (`/fastmoss`).
 
 ## Web Pages and Main Endpoints
 
-Pages:
+Pages (routes are kebab-case and deliberately do **not** match the template
+filenames under `scripts/static/`; `/lan_chat`, `/report_player`,
+`/viral_elements` and `/viral_elements_library` are **404 by design**, not bugs):
 
-- `/` or `/chat`: main analyzer/chat landing behavior from `web_app.py`
-- `/report`: daily hot-video report
-- `/shop`: TikTok Shop extraction
-- `/metrics`: social-video metrics
-- `/amazon`: Amazon scraper
+- `/` or `/chat`: main analyzer/chat landing behavior from `web_app.py` (`chat.html`)
+- `/extract`: single-video analysis (`web_index.html`)
+- `/report`: daily hot-video report (`report.html`)
+- `/report/player`: report video player (`report_player.html`)
+- `/shop`: TikTok Shop extraction (`shop.html`)
+- `/metrics`: video list / social-video metrics (`metrics.html`)
+- `/amazon`: Amazon scraper (`amazon.html`)
+- `/fastmoss`: FastMoss chat
+- `/proxy`: account IP pool (`proxy.html`)
+- `/tool`: image tagging tool (`tool.html`)
+- `/lan-chat`: LAN chat (`lan_chat.html`)
+- `/viral-elements`, `/viral-elements-library`: viral elements library (`viral_elements.html`, `viral_elements_library.html`)
+- `/storyboard`: storyboard extraction (`storyboard.html`)
+- `/replication`: benchmark replication (`replication.html`)
+- `/healthz`: health check, returns `{"status":"ok"}`
+
+The canonical navigation list is `NAV_ITEMS` in `web_app.py`. Add a new page to
+both that list and `Handler.do_GET`.
 
 Common API groups:
 
@@ -346,11 +374,17 @@ GitHub access rules:
 Server-direct workflow (when Codex is already running in the server checkout):
 
 1. Check the current server checkout with `git status --short --branch` and preserve unrelated changes.
-2. Make the change directly in `/home/openclaw/Video_analyzer`.
-3. Verify the change in Docker Compose using the project name `-p short-video-analyzer`.
+2. Make the change directly in that checkout, for example `/home/openclaw/Video_analyzer` (4002), `/home/openclaw/Video_analyzer-dev` (4003), or `/home/openclaw/Video_analyzer-ui-4004` (4004).
+3. Verify the change with the Compose project name that matches that checkout (`short-video-analyzer`, `short-video-analyzer-dev`, or `short-video-analyzer-ui-4004`). Never verify one environment's change with another environment's project name.
 4. Commit the verified change in the current checkout.
 5. Push the commit to GitHub through the server proxy.
 6. Rebuild or restart the affected service directly on the current server, then verify the endpoint or workflow.
+
+`scripts/` is bind-mounted read-only from the checkout, so changes to Python,
+HTML, CSS, or JS are picked up by a container restart alone. Run
+`docker-compose -p <project> up -d web` for those changes; only rebuild
+(`build web` then `up -d web`) when dependencies, the `Dockerfile`, or Compose
+definitions changed.
 
 All production changes must still be committed and synchronized through GitHub. Do not leave manual-only or uncommitted code changes in the server checkout. If GitHub push is blocked by proxy or authentication, stop and report the blocker instead of treating the deployment as complete.
 
@@ -364,8 +398,8 @@ Example rebuild/restart on the current server:
 
 ```bash
 cd /home/openclaw/Video_analyzer
-docker compose -p short-video-analyzer build
-docker compose -p short-video-analyzer up -d web
+docker-compose -p short-video-analyzer build
+docker-compose -p short-video-analyzer up -d web
 ```
 
 Do not use SCP, SFTP, rsync, archive piping, or a second checkout to synchronize code. From a Windows checkout, SSH may be used only for the operational commands listed above; all source changes must reach the server through GitHub.
