@@ -381,10 +381,17 @@ Server-direct workflow (when Codex is already running in the server checkout):
 6. Rebuild or restart the affected service directly on the current server, then verify the endpoint or workflow.
 
 `scripts/` is bind-mounted read-only from the checkout, so changes to Python,
-HTML, CSS, or JS are picked up by a container restart alone. Run
-`docker-compose -p <project> up -d web` for those changes; only rebuild
-(`build web` then `up -d web`) when dependencies, the `Dockerfile`, or Compose
-definitions changed.
+HTML, CSS, or JS take effect on a container **restart**:
+
+```bash
+docker-compose -p <project> restart web
+```
+
+`up -d web` alone is not enough for a code-only change: Compose reports the
+container as up-to-date and the old process keeps serving the previous code,
+because Compose only recreates a container when its configuration changes.
+Rebuild (`build web` then `up -d web`) only when dependencies, the `Dockerfile`,
+or Compose definitions changed.
 
 All production changes must still be committed and synchronized through GitHub. Do not leave manual-only or uncommitted code changes in the server checkout. If GitHub push is blocked by proxy or authentication, stop and report the blocker instead of treating the deployment as complete.
 
