@@ -14921,15 +14921,18 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
         self.end_headers()
 
-        with path.open("rb") as file:
-            file.seek(start)
-            remaining = length
-            while remaining > 0:
-                chunk = file.read(min(1024 * 1024, remaining))
-                if not chunk:
-                    break
-                self.wfile.write(chunk)
-                remaining -= len(chunk)
+        try:
+            with path.open("rb") as file:
+                file.seek(start)
+                remaining = length
+                while remaining > 0:
+                    chunk = file.read(min(1024 * 1024, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
@@ -15142,6 +15145,8 @@ class Handler(BaseHTTPRequestHandler):
                 asset_id = unquote(path.removeprefix("/api/proxy/publish/videos/"))
                 return self.serve_video(tiktok_studio_publish.video_path(asset_id))
             return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
+        except (BrokenPipeError, ConnectionResetError):
+            return
         except Exception as exc:
             return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
 
@@ -15258,6 +15263,8 @@ class Handler(BaseHTTPRequestHandler):
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
         except sqlite3.IntegrityError as exc:
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+        except (BrokenPipeError, ConnectionResetError):
+            return
         except Exception as exc:
             return json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
 
