@@ -85,7 +85,7 @@ mkdir -p videos output
 cp .env.example .env
 nano .env
 bash scripts/setup_amazon_scraper.sh
-docker compose -p short-video-analyzer build
+docker-compose -p short-video-analyzer build
 ```
 
 If the server uses legacy Compose:
@@ -362,7 +362,7 @@ For `analyzer`, token counts are `0` unless the upstream tool exposes token usag
 After `analysis.json` is generated:
 
 ```bash
-docker compose -p short-video-analyzer run --rm analyzer python scripts/deepseek_postprocess.py output/test.mp4
+docker-compose -p short-video-analyzer run --rm analyzer python scripts/deepseek_postprocess.py output/test.mp4
 ```
 
 With legacy Compose:
@@ -383,17 +383,17 @@ output/test.mp4/audit_result_zh.json
 Run analyzer mode inside the container:
 
 ```bash
-docker compose -p short-video-analyzer run --rm analyzer bash scripts/analyze_one.sh test.mp4
+docker-compose -p short-video-analyzer run --rm analyzer bash scripts/analyze_one.sh test.mp4
 ```
 
 Run direct-video mode inside the container:
 
 ```bash
-docker compose -p short-video-analyzer run --rm analyzer python scripts/direct_video_analyze.py test.mp4
+docker-compose -p short-video-analyzer run --rm analyzer python scripts/direct_video_analyze.py test.mp4
 ```
 
 Open a shell in the container:
 
 ```bash
-docker compose -p short-video-analyzer run --rm analyzer bash
+docker-compose -p short-video-analyzer run --rm analyzer bash
 ```
