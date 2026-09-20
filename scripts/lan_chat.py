@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import hmac
 import html
 import json
 import mimetypes
@@ -78,6 +79,7 @@ class LanChatStore:
         self.avatar_dir = Path(avatar_dir or self.db_path.parent / "lan_chat_avatars")
         self.media_dir = Path(media_dir or self.db_path.parent / "lan_chat_media")
         self.file_dir = Path(file_dir or self.db_path.parent / "lan_chat_files")
+        self._drive_preview_key = secrets.token_bytes(32)
         self._avatar_lock = threading.Lock()
         self._feishu_avatar_lock = threading.Lock()
         self._avatar_jobs: set[str] = set()
@@ -1309,15 +1311,41 @@ class LanChatStore:
 
     def drive_info(self, token: str, file_id: str) -> tuple[Path, str, str, int]:
         user = self.authenticate(token)
+        return self._drive_owned_info(user["id"], file_id)
+
+    def _drive_owned_info(self, user_id: str, file_id: str) -> tuple[Path, str, str, int]:
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM drive_files WHERE id = ? AND user_id = ? AND expires_at > ?",
-                               (file_id, user["id"], time.time())).fetchone()
+                               (file_id, user_id, time.time())).fetchone()
         if not row or not re.fullmatch(r"[0-9a-f]{32}", file_id):
             raise LanChatError("文件不存在或已过期", 404)
         path = self.drive_dir / file_id
         if not path.is_file():
             raise LanChatError("文件不存在或已过期", 404)
         return path, row["name"], mimetypes.guess_type(row["name"])[0] or "application/octet-stream", row["size"]
+
+    def drive_preview(self, token: str, file_id: str) -> str:
+        user_id = self.authenticate(token)["id"]
+        _, name, _, size = self._drive_owned_info(user_id, file_id)
+        if Path(name).suffix.lower() not in {".mp4", ".mov", ".m4v", ".webm"} or size > 2 * 1024**3:
+            raise LanChatError("请选择不超过 2GB 的视频")
+        expires = int(time.time()) + 15 * 60
+        body = f"{file_id}:{user_id}:{expires}"
+        signature = hmac.new(self._drive_preview_key, body.encode(), hashlib.sha256).hexdigest()
+        return f"{user_id}:{expires}:{signature}"
+
+    def drive_preview_info(self, file_id: str, ticket: str) -> tuple[Path, str, str, int]:
+        try:
+            user_id, expires, signature = ticket.split(":")
+            if int(expires) <= time.time():
+                raise ValueError("expired")
+            body = f"{file_id}:{user_id}:{expires}"
+            expected = hmac.new(self._drive_preview_key, body.encode(), hashlib.sha256).hexdigest()
+            if not hmac.compare_digest(signature, expected):
+                raise ValueError("invalid")
+        except (ValueError, TypeError):
+            raise LanChatError("预览已过期，请重新选择视频", 403) from None
+        return self._drive_owned_info(user_id, file_id)
 
     def drive_delete(self, token: str, file_id: str) -> None:
         path, _, _, _ = self.drive_info(token, file_id)
