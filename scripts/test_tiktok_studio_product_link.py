@@ -16,6 +16,7 @@ def main() -> None:
     with sync_playwright() as playwright, TemporaryDirectory() as directory:
         browser = playwright.chromium.launch(headless=True, args=["--no-sandbox"])
         page = browser.new_page()
+        page.route("**/*", lambda route: route.abort())
         try:
             page.set_content(f"""
                 <p>{label}</p>
@@ -27,6 +28,7 @@ def main() -> None:
                   <button onclick="document.querySelector('#detail').hidden=false">Next</button>
                   <div id="detail" hidden>
                     <p>Product name will appear on your video</p>
+                    <p>{label}</p>
                     <input value="{label}">
                     <button onclick="document.querySelector('[role=dialog]').hidden=true;
                       const tag=document.createElement('span');
@@ -39,11 +41,17 @@ def main() -> None:
             with patch.object(publish, "_selected_product", return_value=product):
                 assert publish._add_product_link(page, product_id, Path(directory)) is False
             assert page.locator("input[type=radio]").is_checked()
-            assert page.get_by_text(label, exact=True).count() == 2
+            assert page.get_by_text(label, exact=True).filter(visible=True).count() == 2
 
             # An existing description, hidden label, or shared title prefix is not a new binding.
             page.set_content(f"<p>{label}</p><span hidden>{label}</span><p>{label} OTHER</p>")
             assert publish._wait_for_linked_product(page, label, 10, previous_count=1) is None
+            page.set_content(f'<div contenteditable="true">{label}</div><div role="dialog">{label}</div>')
+            assert publish._wait_for_linked_product(page, label, 10) is None
+            page.set_content(f'<span title="{label}">Rechargeable RC…</span>')
+            assert publish._wait_for_linked_product(page, label, 10) is not None
+            page.set_content(f'<span title="{label} OTHER">Rechargeable RC…</span>')
+            assert publish._wait_for_linked_product(page, label, 10) is None
             page.set_content(f"<table><tr><td>{product_id}0</td></tr></table>")
             assert publish._find_product_row(page, product_id) is None
             print("PASS: exact product ID selection and renamed-label binding regression")

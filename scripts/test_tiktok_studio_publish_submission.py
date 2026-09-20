@@ -44,6 +44,10 @@ def main() -> None:
     assert not publish._submission_succeeded(
         FakePage("https://www.tiktok.com/tiktokstudio/upload", ["Schedule", "Uploaded videos"])
     )
+    for text in ["Uploaded", "Video uploaded successfully", "上传成功", "视频已成功上传"]:
+        assert not publish._submission_succeeded(FakePage("https://www.tiktok.com/tiktokstudio/upload", [text]))
+    assert not publish._submission_succeeded(FakePage("https://example.test/tiktokstudio/content"))
+    assert not publish._submission_succeeded(FakePage("https://www.tiktok.com/tiktokstudio/upload?redirect=/content"))
 
     print("PASS: TikTok Studio 发布成功信号判定模拟通过")
 

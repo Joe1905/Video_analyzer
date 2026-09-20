@@ -1365,6 +1365,39 @@ def _cdp_file_input_state(page: Any) -> dict[str, Any]:
                 pass
 
 
+def _video_upload_state(page: Any) -> str:
+    if _first_visible([page.get_by_text(re.compile(r"upload failed|couldn't upload|上传失败|处理失败", re.I))]):
+        return "failed"
+    if _first_visible([page.locator(
+        "[data-e2e*='caption'] [contenteditable='true'], "
+        ".public-DraftEditor-content[contenteditable='true'], "
+        "[contenteditable='true'][role='combobox'], "
+        "textarea[placeholder*='description' i]"
+    )]):
+        return "editor"
+    if _first_visible([
+        page.locator("button[data-e2e='select_video_button'][data-loading='true']"),
+        page.locator(".upload-text-container").filter(has_text=re.compile(r"uploading|processing|上传中|处理中|\d+\s*%", re.I)),
+    ]):
+        return "uploading"
+    inputs = page.locator("input[type='file']")
+    if inputs.count() and _file_input_selected(inputs.first):
+        return "selected"
+    button = _first_visible([page.get_by_role("button", name=re.compile(r"^select video$|^选择视频$", re.I))])
+    if inputs.count() and button and button.is_enabled():
+        return "idle"
+    return "unknown"
+
+
+def _wait_for_upload_editor(page: Any, log_dir: Path, on_status: Any = None) -> None:
+    wait_for_page_state(
+        page, label="视频编辑页", ready=lambda: _video_upload_state(page) == "editor",
+        failure=lambda: "TikTok Studio 报告视频上传或处理失败" if _video_upload_state(page) == "failed" else "",
+        timeout_seconds=UPLOAD_TIMEOUT_SECONDS, reload_attempts=0,
+        on_status=on_status, diagnostic_dir=log_dir, diagnostic_step="upload-editor",
+    )
+
+
 def _set_video_file_via_cdp(page: Any, video: Path, file_input: Any, log_dir: Path) -> None:
     """Set the file through Chrome DevTools directly, bypassing Playwright's stalled wrapper."""
     selector = "input[type='file'][accept*='video'], input[type='file']"
@@ -1389,19 +1422,23 @@ def _set_video_file_via_cdp(page: Any, video: Path, file_input: Any, log_dir: Pa
             {"files": [str(video)], "backendNodeId": backend_node_id},
         )
         selection_state: dict[str, Any] = {}
-        for _ in range(25):
+        for _ in range(75):
             selection_state = _file_input_selection_state(input_handle)
-            if selection_state.get("files") or selection_state.get("connected") is False:
+            upload_state = _video_upload_state(page)
+            if upload_state == "failed":
+                raise RuntimeError("TikTok Studio 报告视频上传或处理失败")
+            if selection_state.get("files") or upload_state in {"selected", "uploading", "editor"}:
                 break
             page.wait_for_timeout(200)
         else:
-            raise RuntimeError("CDP 已返回但视频未写入 TikTok 上传控件")
+            raise RuntimeError("CDP 返回后未检测到已选文件、上传进度或编辑页")
         _append_file_input_trace(
             log_dir,
             "cdp_direct_injection_succeeded",
             elapsed_seconds=round(time.monotonic() - started_at, 3),
             backend_node_id=backend_node_id,
             selection_state=selection_state,
+            upload_state=upload_state,
             cdp_state=_cdp_file_input_state(page),
         )
     finally:
@@ -1504,7 +1541,7 @@ def _set_video_file_via_native_chooser(
             _append_file_input_trace(log_dir, "native_chooser_selected", selection_state="files")
             return
         selection_state = _file_input_selection_state(input_handle)
-        if chooser_window not in visible_windows() and selection_state.get("connected") is False:
+        if chooser_window not in visible_windows() and _video_upload_state(page) in {"uploading", "editor"}:
             _append_file_input_trace(
                 log_dir,
                 "native_chooser_selected",
@@ -1543,6 +1580,14 @@ def _set_video_file(page: Any, video: Path, display: str = "", log_dir: Path | N
             error=cdp_error_message,
             cdp_state=_cdp_file_input_state(page),
         )
+    upload_state = _video_upload_state(page)
+    if upload_state in {"selected", "uploading", "editor"}:
+        _append_file_input_trace(trace_dir, "upload_already_started", upload_state=upload_state)
+        return
+    if upload_state != "idle":
+        raise ManualReviewRequired(
+            f"上传状态为 {upload_state}，不重复选择文件，请检查观测页面；原始错误：{cdp_error_message}"
+        )
     _append_file_input_trace(
         trace_dir,
         "native_chooser_fallback_start",
@@ -1562,6 +1607,9 @@ def _set_video_file(page: Any, video: Path, display: str = "", log_dir: Path | N
             error=str(native_error),
             cdp_state=_cdp_file_input_state(page),
         )
+        if _video_upload_state(page) in {"selected", "uploading", "editor"}:
+            _append_file_input_trace(trace_dir, "upload_already_started", source="native_chooser")
+            return
         raise RuntimeError(
             f"CDP 直接文件注入失败：{cdp_error_message}; 系统文件选择器降级也失败：{native_error}"
         ) from native_error
@@ -1615,15 +1663,23 @@ def _wait_for_product_row(page: Any, product_id: str, timeout_ms: int = 8000) ->
     return None
 
 
+def _linked_product_labels(page: Any, product_name: str) -> list[Any]:
+    candidates = page.get_by_text(product_name, exact=True).or_(page.get_by_title(product_name, exact=True)).filter(visible=True)
+    return [label for label in candidates.all() if not label.locator(
+        "xpath=ancestor-or-self::*[@role='dialog' or @aria-modal='true' or self::dialog "
+        "or @contenteditable='true' or self::textarea or self::input]"
+    ).count()]
+
+
 def _wait_for_linked_product(page: Any, product_name: str, timeout_ms: int = 10000, previous_count: int = 0) -> Any | None:
     product_name = product_name.strip()
     if not product_name:
         return None
-    locator = page.get_by_text(product_name, exact=True).filter(visible=True)
     deadline = time.monotonic() + timeout_ms / 1000
     while time.monotonic() < deadline:
-        if locator.count() > previous_count:
-            return locator.last
+        labels = _linked_product_labels(page, product_name)
+        if len(labels) > previous_count:
+            return labels[-1]
         page.wait_for_timeout(250)
     return None
 
@@ -1633,20 +1689,55 @@ def _submission_succeeded(page: Any) -> bool:
         current_url = str(page.url or "")
     except Exception:
         current_url = ""
-    if re.search(r"/tiktokstudio/(?:content|manage)(?:[/?#]|$)", current_url, re.I):
+    parsed = urlparse(current_url)
+    if parsed.hostname not in {"www.tiktok.com", "tiktok.com"}:
+        return False
+    if re.search(r"^/tiktokstudio/(?:content|manage)(?:/|$)", parsed.path, re.I):
         return True
     success = _first_visible([
         page.get_by_text(
             re.compile(
                 r"^(?:(?:your\s+)?(?:video|post)\s+(?:has\s+been\s+)?)?"
-                r"(?:uploaded|published|scheduled)(?:\s+successfully)?[.!]?$"
-                r"|^(?:视频)?(?:上传成功|发布成功|已发布|已排程|排程成功|已定时|定时成功|已成功(?:上传|发布|排程|定时))[！。]?$",
+                r"(?:published|scheduled)(?:\s+successfully)?[.!]?$"
+                r"|^(?:视频)?(?:发布成功|已发布|已排程|排程成功|已定时|定时成功|已成功(?:发布|排程|定时))[！。]?$",
                 re.I,
             ),
             exact=True,
         ),
     ])
     return bool(success)
+
+
+def _wait_for_submission_result(page: Any, timeout_seconds: float = 45) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        confirmation = _first_visible([page.get_by_text(
+            re.compile(r"^continue to post\?$|^(?:是否)?继续发布[？?]?$", re.I), exact=True,
+        )])
+        if confirmation:
+            raise ResultUncertain(
+                "TikTok 出现“Continue to post?”二次确认，尚未确认提交；"
+                "请在观测窗口核对检查结果及原定时时间，系统未点击 Post now，也不会自动重发"
+            )
+        if _submission_succeeded(page):
+            return
+        page.wait_for_timeout(250)
+    raise ResultUncertain("已点击发布，但未收到明确成功信号，请人工确认，系统不会自动重试")
+
+
+def _record_publish_error(log_dir: Path, error: Exception) -> None:
+    # Diagnostics must never hide the original browser/parameter error.
+    try:
+        chain = []
+        seen = set()
+        current = error
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            chain.append({"type": type(current).__name__, "message": str(current)})
+            current = current.__cause__ or current.__context__
+        (log_dir / "error.json").write_text(json.dumps(chain, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
 
 
 def _trigger_product_search(page: Any, search: Any) -> None:
@@ -1818,7 +1909,7 @@ def _add_product_link(page: Any, product_id: str, log_dir: Path) -> bool:
         raise ManualReviewRequired("商品名称确认页没有可用的默认商品名称")
     # Identity was checked by product ID; this label only confirms the Add transition.
     linked_name = str(product_name_input.input_value()).strip()
-    previous_count = page.get_by_text(linked_name, exact=True).filter(visible=True).count()
+    previous_count = len(_linked_product_labels(page, linked_name))
     add_button = _first_visible([
         detail_dialog.get_by_role("button", name=re.compile(r"^add$|^添加$", re.I)),
     ])
@@ -1845,7 +1936,7 @@ def _add_product_link(page: Any, product_id: str, log_dir: Path) -> bool:
 def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[str, str]:
     from playwright.sync_api import sync_playwright
 
-    log_dir = LOG_ROOT / job["id"]
+    log_dir = LOG_ROOT / job["id"] / f"attempt-{job.get('attempt_count', 0)}-{uuid.uuid4().hex[:8]}"
     log_dir.mkdir(parents=True, exist_ok=True)
     video = video_path(job["asset_id"])
     final_clicked = False
@@ -1879,7 +1970,7 @@ def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[str,
             _discard_stale_edit(page, log_dir)
             _set_job(job["id"], "uploading", "uploading", session_id=session["id"])
             _set_video_file(page, video, str(session.get("display") or ""), log_dir)
-            page.wait_for_timeout(3000)
+            _wait_for_upload_editor(page, log_dir, page_status("uploading", "loading_editor"))
             _dismiss_upload_prompts(page)
             if job["manual_publish"]:
                 page.screenshot(path=str(log_dir / "manual-ready.png"), full_page=True)
@@ -1937,15 +2028,13 @@ def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[str,
             _set_job(job["id"], "publishing", "final_click", session_id=session["id"], final_click_at=_iso())
             post_button.click()
             final_clicked = True
-            try:
-                page.wait_for_url(re.compile(r"tiktokstudio(?!/upload)|manage|content"), timeout=45000)
-            except Exception:
-                if not _submission_succeeded(page):
-                    raise ResultUncertain("已点击发布，但未收到明确成功信号，请人工确认，系统不会自动重试")
+            _wait_for_submission_result(page)
             return ("scheduled_on_tiktok" if job["schedule_mode"] == "tiktok" else "published"), page.url
-        except (ManualReviewRequired, ManualPublishReady, ProductLinkReviewRequired, ProductLinkUnavailable, ResultUncertain):
+        except (ManualReviewRequired, ManualPublishReady, ProductLinkReviewRequired, ProductLinkUnavailable, ResultUncertain) as exc:
+            _record_publish_error(log_dir, exc)
             raise
         except Exception as exc:
+            _record_publish_error(log_dir, exc)
             if final_clicked:
                 raise ResultUncertain(f"最终发布后页面异常：{exc}") from exc
             raise
