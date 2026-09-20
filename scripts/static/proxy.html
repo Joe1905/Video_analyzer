@@ -433,7 +433,7 @@ savePool=async function(id){_configureDirectPoolType();if($("pType")&&$("pType")
 checkPool=async function(id){const pool=state.pools.find(item=>item.id===id);if(!pool||pool.source_type!=="direct")return _legacyCheckPool(id);try{setStatus("正在检测服务器代理出口连通性...");const result=await api("/api/proxy/check",{proxy_profile_id:id,bind:false});await loadAll();const updated=state.pools.find(item=>item.id===id);if(updated)renderPoolForm(updated);$("detail").textContent=JSON.stringify(result,null,2);setStatus(result.allowed?"服务器代理出口连通，不绑定固定 IP。":"服务器代理出口不可用："+result.reason,result.allowed?"ok":"bad")}catch(error){setStatus(apiError(error),"bad")}};
 </script>
 <link rel="stylesheet" href="/assets/user-drive.css?v=20260920-4">
-<script src="/assets/user-drive.js?v=20260920-4"></script>
+<script src="/assets/user-drive.js?v=20260920-5"></script>
 <script>
 const resetPublishFormLocal=resetPublishForm;
 resetPublishForm=function(){state.driveFile=null;state.driveToken="";resetPublishFormLocal()};

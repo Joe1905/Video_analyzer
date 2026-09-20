@@ -10,7 +10,7 @@
   const dialog = document.createElement('dialog');
   dialog.className = 'ud-dialog'; dialog.setAttribute('aria-labelledby', 'ud-title');
   dialog.innerHTML = `<div class="ud-head"><div class="ud-mark">${icon('folder')}</div><div class="ud-title"><h2 id="ud-title">我的网盘</h2><p data-subtitle>让视频随手可用，也让文件井井有条。</p></div><button class="ud-icon-btn" data-close aria-label="关闭网盘">${icon('close')}</button></div>
-    <div class="ud-body"><div class="ud-overview"><div class="ud-person"><span class="ud-avatar" data-avatar>·</span><div><div class="ud-owner" data-owner>正在读取账户</div><div class="ud-private">${icon('lock')}仅当前邻聊账户可见</div></div></div><div class="ud-retention">${icon('clock')}保留 7 天 · 到期自动清理</div></div>
+    <div class="ud-body"><div class="ud-overview"><div class="ud-person"><span class="ud-avatar" data-avatar>·</span><div><div class="ud-owner" data-owner>正在读取账户</div><div class="ud-private">${icon('lock')}仅当前邻聊账户可见</div></div></div><div class="ud-retention">${icon('clock')}保留 15 天 · 到期自动清理</div></div>
     <div class="ud-drop" data-drop><span class="ud-drop-icon">${icon('upload')}</span><div class="ud-drop-copy"><strong>把文件拖到这里</strong><p>支持批量上传，单个文件最大 10 GB</p></div><button class="ud-btn ud-primary" data-upload>${icon('upload')}上传文件</button><input type="file" multiple hidden data-input aria-label="上传网盘文件"></div>
     <div class="ud-progress" data-progress hidden><div class="ud-progress-line"><span class="ud-progress-name" data-progress-name></span><span class="ud-percent" data-percent>0%</span><button class="ud-icon-btn" data-cancel-upload aria-label="取消上传">${icon('close')}</button></div><progress max="100" value="0" aria-label="文件上传进度"></progress><div class="ud-progress-note" data-progress-note></div></div>
     <div class="ud-tools"><div class="ud-tabs" aria-label="文件类型"><button class="ud-tab" data-filter="all" aria-pressed="true">全部文件</button><button class="ud-tab" data-filter="video" aria-pressed="false">视频</button><button class="ud-tab" data-filter="other" aria-pressed="false">其他</button></div><label class="ud-search">${icon('search')}<input type="search" placeholder="搜索文件名" aria-label="搜索网盘文件"></label><button class="ud-icon-btn" data-refresh aria-label="刷新文件列表">${icon('refresh')}</button></div>
@@ -144,7 +144,7 @@
         $('progress').value = 0; $('[data-percent]').textContent = '0%';
         await upload(file); completed++;
       }
-      notice(`已上传 ${completed} 个文件，保留至 ${date(Date.now() / 1000 + 7 * 86400)}。`);
+      notice(`已上传 ${completed} 个文件，保留至 ${date(Date.now() / 1000 + 15 * 86400)}。`);
     } catch (error) { notice(`${completed ? `已完成 ${completed} 个文件。` : ''}${error.message}`, !cancelled); }
     finally { xhr = null; busy = false; $('[data-progress]').hidden = true; $('[data-input]').disabled = false; $('[data-input]').value = ''; await refresh(); }
   }
