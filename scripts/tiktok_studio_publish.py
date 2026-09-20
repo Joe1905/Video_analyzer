@@ -1427,7 +1427,7 @@ def _set_video_file_via_cdp(page: Any, video: Path, file_input: Any, log_dir: Pa
             upload_state = _video_upload_state(page)
             if upload_state == "failed":
                 raise RuntimeError("TikTok Studio 报告视频上传或处理失败")
-            if selection_state.get("files") or upload_state in {"selected", "uploading", "editor"}:
+            if upload_state in {"selected", "uploading", "editor"}:
                 break
             page.wait_for_timeout(200)
         else:
@@ -1465,7 +1465,6 @@ def _set_video_file_via_native_chooser(
     if not select_button:
         raise RuntimeError("未找到 TikTok Studio 的选择视频按钮")
     _append_file_input_trace(log_dir, "native_chooser_opening", display=display, video=str(video))
-    input_handle = file_input.element_handle(timeout=1000)
     x11_env = {**os.environ, "DISPLAY": display}
 
     def xdotool(*args: str, allow_failure: bool = False) -> subprocess.CompletedProcess[str]:
@@ -1540,7 +1539,6 @@ def _set_video_file_via_native_chooser(
         if _file_input_selected(file_input):
             _append_file_input_trace(log_dir, "native_chooser_selected", selection_state="files")
             return
-        selection_state = _file_input_selection_state(input_handle)
         if chooser_window not in visible_windows() and _video_upload_state(page) in {"uploading", "editor"}:
             _append_file_input_trace(
                 log_dir,
