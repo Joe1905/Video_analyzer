@@ -2,6 +2,8 @@
 import ast
 import cgi
 import io
+import json
+import re
 import sqlite3
 import tempfile
 import unittest
@@ -10,6 +12,7 @@ from email.message import Message
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlencode, urlparse
 
 from lan_chat import DEFAULT_FEISHU_USER_ID, LanChatError, LanChatStore
 
@@ -29,6 +32,7 @@ class DriveTest(unittest.TestCase):
 
     def test_owner_and_expiry(self):
         item = self.upload()
+        self.assertEqual(self.store.drive_info(self.a, item["id"])[2], "video/mp4")
         self.assertEqual(item["expires_at"] - item["created_at"], 7 * 86400)
         self.assertEqual(self.store.drive_list(self.b), [])
         for operation in (self.store.drive_info, self.store.drive_delete):
@@ -91,6 +95,39 @@ class DriveTest(unittest.TestCase):
         self.store.cleanup_expired_files(item["expires_at"])
         self.assertEqual(created[0].read_bytes(), b"test video")
         self.assertEqual(call(self.a)[0], 404)
+
+    def test_http_upload_list_download_delete(self):
+        source = Path(__file__).with_name("web_app.py").read_text(encoding="utf-8")
+        functions = [n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef)
+                     and n.name in {"handle_lan_chat_get", "handle_lan_chat_post"}]
+        namespace = {"cgi": cgi, "HTTPStatus": HTTPStatus, "LanChatError": LanChatError,
+                     "BaseHTTPRequestHandler": object, "re": re, "parse_qs": parse_qs,
+                     "FILE_TRANSFER_MAX_BYTES": 10 * 1024**3, "lan_chat_store": self.store,
+                     "_lan_chat_token": lambda h: h.headers.get("X-Lan-Chat-Token", ""),
+                     "_lan_chat_request_json": lambda h: json.loads(h.rfile.read()),
+                     "json_response": lambda h, status, payload: setattr(h, "result", (status, payload)),
+                     "file_response": lambda h, path, kind, name, size: setattr(h, "result", (200, path.read_bytes(), kind, name, size))}
+        exec(compile(ast.Module(body=functions, type_ignores=[]), "web_app.py", "exec"), namespace)
+        def call(method, path, token, body=b"{}", kind="application/json"):
+            headers = Message()
+            headers["Content-Length"] = str(len(body))
+            headers["Content-Type"] = kind
+            headers["X-Lan-Chat-Token"] = token
+            handler = SimpleNamespace(headers=headers, rfile=io.BytesIO(body))
+            namespace[f"handle_lan_chat_{method}"](handler, urlparse(path))
+            return handler.result
+        self.assertEqual(call("get", "/api/lan-chat/drive", "")[0], 401)
+        body = b'--drive\r\nContent-Disposition: form-data; name="file"; filename="video.mp4"\r\nContent-Type: video/mp4\r\n\r\nvideo bytes\r\n--drive--\r\n'
+        status, uploaded = call("post", "/api/lan-chat/drive/upload", self.a, body, "multipart/form-data; boundary=drive")
+        self.assertEqual(status, 201)
+        file_id = uploaded["file"]["id"]
+        self.assertEqual(call("get", "/api/lan-chat/drive", self.a)[1]["files"][0]["id"], file_id)
+        path = f"/api/lan-chat/drive/{file_id}"
+        body = urlencode({"token": self.a}).encode()
+        self.assertEqual(call("post", path + "/download", "", body, "application/x-www-form-urlencoded"),
+                         (200, b"video bytes", "video/mp4", "video.mp4", 11))
+        self.assertEqual(call("post", path + "/delete", self.b)[0], 404)
+        self.assertEqual(call("post", path + "/delete", self.a)[0], 200)
 
 
 if __name__ == "__main__":
