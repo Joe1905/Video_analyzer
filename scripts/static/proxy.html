@@ -429,7 +429,8 @@ syncPoolSourceForm=function(){const select=$("pType"),uri=$("pUri"),direct=selec
 savePool=async function(id){_configureDirectPoolType();if($("pType")&&$("pType").value!=="direct")return _legacySavePool(id);try{const current=state.pools.find(x=>x.id===id)||{},result=await api("/api/proxy/pools",{id,name:$("pName").value||nextPoolName(),source_type:"direct",source_uri:"",dialer_proxy:"",status:current.status||"启用",expected_exit_ip:"",region:current.region||"",notes:$("pNotes").value});state.pools=result.pools;state.accounts=result.accounts;state.selectedPool=result.pool.id;renderPools();renderAccounts();renderPoolForm(result.pool);$("detail").textContent=JSON.stringify(result.pool,null,2);setStatus("服务器代理直连通道已保存。","ok")}catch(error){setStatus(apiError(error),"bad")}};
 checkPool=async function(id){const pool=state.pools.find(item=>item.id===id);if(!pool||pool.source_type!=="direct")return _legacyCheckPool(id);try{setStatus("正在检测服务器代理出口连通性...");const result=await api("/api/proxy/check",{proxy_profile_id:id,bind:false});await loadAll();const updated=state.pools.find(item=>item.id===id);if(updated)renderPoolForm(updated);$("detail").textContent=JSON.stringify(result,null,2);setStatus(result.allowed?"服务器代理出口连通，不绑定固定 IP。":"服务器代理出口不可用："+result.reason,result.allowed?"ok":"bad")}catch(error){setStatus(apiError(error),"bad")}};
 </script>
-<script src="/assets/user-drive.js?v=20260920-1"></script>
+<link rel="stylesheet" href="/assets/user-drive.css?v=20260920-2">
+<script src="/assets/user-drive.js?v=20260920-2"></script>
 <script>
 const resetPublishFormLocal=resetPublishForm;
 resetPublishForm=function(){state.driveFile=null;state.driveToken="";resetPublishFormLocal()};
