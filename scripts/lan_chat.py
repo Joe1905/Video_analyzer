@@ -7,6 +7,7 @@ import binascii
 import hashlib
 import html
 import json
+import mimetypes
 import os
 import re
 import secrets
@@ -1316,7 +1317,7 @@ class LanChatStore:
         path = self.drive_dir / file_id
         if not path.is_file():
             raise LanChatError("文件不存在或已过期", 404)
-        return path, row["name"], "application/octet-stream", row["size"]
+        return path, row["name"], mimetypes.guess_type(row["name"])[0] or "application/octet-stream", row["size"]
 
     def drive_delete(self, token: str, file_id: str) -> None:
         path, _, _, _ = self.drive_info(token, file_id)
