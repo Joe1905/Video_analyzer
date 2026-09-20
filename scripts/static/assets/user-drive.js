@@ -117,7 +117,7 @@
   $('[data-use]').onclick = () => { try { ensureOwner(); const file = files.find(f => f.id === selected); if (!file || file.expires_at <= Date.now() / 1000) throw new Error('视频已过期，请刷新后重新选择。'); selectVideo(file, ownerToken); dialog.close(); } catch (error) { notice(error.message, true); } };
   function close() { if (busy) { notice('文件正在上传，完成后可关闭；也可以点击进度条旁的取消按钮。'); return; } dialog.close(); generation++; }
   $('[data-close]').onclick = close; $('[data-done]').onclick = close;
-  dialog.oncancel = event => { event.preventDefault(); close(); };
+  dialog.oncancel = event => { if (event.target !== dialog) return; event.preventDefault(); close(); };
   window.openUserDrive = async callback => {
     if (busy) return;
     selectVideo = typeof callback === 'function' ? callback : null; ownerToken = token(); files = []; selected = ''; pendingDelete = ''; authenticated = false; filter = selectVideo ? 'video' : 'all';
