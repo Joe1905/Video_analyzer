@@ -50,7 +50,7 @@ class DriveTest(unittest.TestCase):
     def test_owner_and_expiry(self):
         item = self.upload()
         self.assertEqual(self.store.drive_info(self.a, item["id"])[2], "video/mp4")
-        self.assertEqual(item["expires_at"] - item["created_at"], 7 * 86400)
+        self.assertEqual(item["expires_at"] - item["created_at"], 15 * 86400)
         self.assertEqual(self.store.drive_list(self.b), [])
         for operation in (self.store.drive_info, self.store.drive_delete):
             with self.assertRaises(LanChatError) as error:
@@ -62,6 +62,22 @@ class DriveTest(unittest.TestCase):
                 self.store.drive_info(self.a, item["id"])
         self.store.cleanup_expired_files(item["expires_at"])
         self.assertFalse((self.store.drive_dir / item["id"]).exists())
+
+    def test_existing_active_files_extend_from_upload_time_once(self):
+        active = self.upload()
+        expired = self.upload()
+        with sqlite3.connect(self.store.db_path) as conn:
+            conn.execute("UPDATE drive_files SET expires_at = created_at + ? WHERE id = ?",
+                         (7 * 86400, active["id"]))
+            conn.execute("UPDATE drive_files SET created_at = ?, expires_at = ? WHERE id = ?",
+                         (expired["created_at"] - 8 * 86400, expired["created_at"] - 86400, expired["id"]))
+        for _ in range(2):
+            with patch.object(self.store, "_start_file_janitor"):
+                self.store.initialize()
+            files = self.store.drive_list(self.a)
+            self.assertEqual(len(files), 1)
+            self.assertEqual(files[0]["expires_at"], active["created_at"] + 15 * 86400)
+        self.assertFalse((self.store.drive_dir / expired["id"]).exists())
 
     def test_upload_failure_cleanup_and_delete(self):
         for name, data in (("x.mp4", b""), ("bad\n.mp4", b"x")):

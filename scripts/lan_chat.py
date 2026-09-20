@@ -50,6 +50,7 @@ MESSAGE_MEDIA_TYPES = {
 }
 FILE_TRANSFER_MAX_BYTES = 10 * 1024 * 1024 * 1024
 FILE_TRANSFER_RETENTION_SECONDS = 7 * 24 * 60 * 60
+DRIVE_RETENTION_SECONDS = 15 * 24 * 60 * 60
 FILE_TRANSFER_CLEANUP_INTERVAL_SECONDS = 60 * 60
 FILE_COPY_CHUNK_BYTES = 1024 * 1024
 FEISHU_AVATAR_MAX_BYTES = 5 * 1024 * 1024
@@ -102,6 +103,11 @@ class LanChatStore:
                 id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL,
                 size INTEGER NOT NULL, created_at REAL NOT NULL, expires_at REAL NOT NULL
             )""")
+            conn.execute(
+                "UPDATE drive_files SET expires_at = created_at + ? "
+                "WHERE expires_at > ? AND expires_at = created_at + ?",
+                (DRIVE_RETENTION_SECONDS, time.time(), 7 * 24 * 60 * 60),
+            )
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS feishu_users (
@@ -1302,9 +1308,9 @@ class LanChatStore:
             now = time.time()
             with self._connect() as conn:
                 conn.execute("INSERT INTO drive_files VALUES (?, ?, ?, ?, ?, ?)",
-                             (file_id, user["id"], name, size, now, now + FILE_TRANSFER_RETENTION_SECONDS))
+                             (file_id, user["id"], name, size, now, now + DRIVE_RETENTION_SECONDS))
             return {"id": file_id, "name": name, "size": size,
-                    "created_at": now, "expires_at": now + FILE_TRANSFER_RETENTION_SECONDS}
+                    "created_at": now, "expires_at": now + DRIVE_RETENTION_SECONDS}
         except Exception:
             target.unlink(missing_ok=True)
             raise

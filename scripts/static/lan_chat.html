@@ -96,7 +96,7 @@ body{max-width:100vw}
     <div class="profile-card">
       <img class="avatar" id="profileAvatar" alt="我的头像">
       <div class="profile-meta"><strong id="profileName">请选择账户</strong><span><i class="online-dot"></i>当前浏览器在线</span></div>
-      <div class="profile-actions"><button type="button" onclick="openUserDrive()" title="我的网盘 · 保留一周">网盘</button><button class="icon-button switch-account" id="switchAccount" aria-label="切换账户" title="切换账户"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h13m0 0-3.2-3.2M17 8l-3.2 3.2M20 16H7m0 0 3.2-3.2M7 16l3.2 3.2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button class="icon-button" id="editProfile" aria-label="编辑资料" title="编辑资料">⋯</button></div>
+      <div class="profile-actions"><button type="button" onclick="openUserDrive()" title="我的网盘 · 保留 15 天">网盘</button><button class="icon-button switch-account" id="switchAccount" aria-label="切换账户" title="切换账户"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h13m0 0-3.2-3.2M17 8l-3.2 3.2M20 16H7m0 0 3.2-3.2M7 16l3.2 3.2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button class="icon-button" id="editProfile" aria-label="编辑资料" title="编辑资料">⋯</button></div>
     </div>
     <div class="rail-scroll">
       <section class="section"><div class="section-head"><span class="section-label">公共频道 <i class="section-unread" id="publicUnread" hidden></i></span></div><div class="room-list" id="publicRooms"></div></section>
@@ -293,6 +293,6 @@ async function init(){syncViewportHeight();window.addEventListener("resize",sync
 init();
 </script>
 <link rel="stylesheet" href="/assets/user-drive.css?v=20260920-4">
-<script src="/assets/user-drive.js?v=20260920-4"></script>
+<script src="/assets/user-drive.js?v=20260920-5"></script>
 </body>
 </html>
