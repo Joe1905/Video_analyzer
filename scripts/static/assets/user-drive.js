@@ -30,7 +30,65 @@
     return result;
   }
   function empty(title, description) { return `<div class="ud-empty"><span class="ud-empty-icon">${icon('folder')}</span><strong>${esc(title)}</strong><p>${esc(description)}</p></div>`; }
+  const thumbnailCache = new Map();
+  let stopThumbnails = () => {};
+  function firstFrame(url, signal) {
+    return new Promise((resolve, reject) => {
+      const media = document.createElement('video');
+      media.muted = true; media.playsInline = true; media.preload = 'auto';
+      let timer;
+      function finish(value) {
+        clearTimeout(timer); signal.removeEventListener('abort', cancel);
+        media.onloadeddata = media.onerror = null;
+        media.removeAttribute('src'); media.load();
+        if (value) resolve(value); else reject(new Error('Thumbnail unavailable'));
+      }
+      function cancel() { finish(null); }
+      media.onloadeddata = () => {
+        try {
+          const canvas = document.createElement('canvas'); canvas.width = 76; canvas.height = 88;
+          const context = canvas.getContext('2d'); context.fillStyle = '#000'; context.fillRect(0, 0, 76, 88);
+          const scale = Math.min(76 / media.videoWidth, 88 / media.videoHeight);
+          const width = media.videoWidth * scale, height = media.videoHeight * scale;
+          context.drawImage(media, (76 - width) / 2, (88 - height) / 2, width, height);
+          finish(canvas.toDataURL('image/jpeg', 0.85));
+        } catch (_) { finish(null); }
+      };
+      media.onerror = cancel;
+      signal.addEventListener('abort', cancel, {once:true});
+      if (signal.aborted) { cancel(); return; }
+      timer = setTimeout(cancel, 12000); media.src = url;
+    });
+  }
+  function loadThumbnails() {
+    const abort = new AbortController(), queue = []; let active = 0;
+    function show(element, image) {
+      if (!image || abort.signal.aborted || !element.isConnected) return;
+      const img = document.createElement('img'); img.alt = '视频首帧'; img.src = image;
+      element.replaceChildren(img);
+    }
+    async function next() {
+      if (active >= 2 || !queue.length || abort.signal.aborted) return;
+      const element = queue.shift(), id = element.dataset.thumbnail; active++;
+      try {
+        const payload = await request('/api/lan-chat/drive/' + id + '/preview', {method:'POST', signal:abort.signal});
+        const image = await firstFrame(payload.url, abort.signal);
+        if (!abort.signal.aborted) { if (thumbnailCache.size >= 100) thumbnailCache.delete(thumbnailCache.keys().next().value); thumbnailCache.set(id, image); show(element, image); }
+      } catch (_) { /* Keep the video icon when the browser cannot decode this file. */ }
+      finally { active--; next(); }
+    }
+    const observer = new IntersectionObserver(entries => {
+      for (const entry of entries) if (entry.isIntersecting) { observer.unobserve(entry.target); queue.push(entry.target); next(); }
+    }, {root:$('.ud-body'), rootMargin:'80px'});
+    stopThumbnails = () => { abort.abort(); observer.disconnect(); queue.length = 0; };
+    dialog.querySelectorAll('[data-thumbnail]').forEach(element => {
+      const cached = thumbnailCache.get(element.dataset.thumbnail);
+      if (cached) show(element, cached); else observer.observe(element);
+    });
+  }
+  dialog.addEventListener('close', () => { stopThumbnails(); thumbnailCache.clear(); });
   function render() {
+    stopThumbnails();
     const query = $('input[type=search]').value.trim().toLowerCase();
     const eligible = files.filter(f => !selectVideo || (video(f) && f.size <= 2 * 1024 ** 3));
     const visible = eligible.filter(f => (filter === 'all' || (filter === 'video' ? video(f) : !video(f))) && f.name.toLowerCase().includes(query));
@@ -39,8 +97,9 @@
       const remaining = f.expires_at - Date.now() / 1000;
       const ttl = remaining <= 0 ? '已过期' : remaining < 86400 ? '不足 1 天' : `${Math.ceil(remaining / 86400)} 天`;
       const suffix = f.name.includes('.') ? f.name.split('.').pop().slice(0, 8) : 'FILE';
-      return `<div class="ud-file ${selected === f.id ? 'ud-selected' : ''}" data-id="${esc(f.id)}"><div class="ud-file-main">${selectVideo ? `<input type="radio" name="ud-video" value="${esc(f.id)}" aria-label="选择 ${esc(f.name)}" ${selected === f.id ? 'checked' : ''}>` : ''}<span class="ud-file-icon ${video(f) ? '' : 'ud-other'}">${icon(video(f) ? 'video' : 'file')}</span><div class="ud-file-meta"><div class="ud-file-name" title="${esc(f.name)}">${esc(f.name)}</div><div class="ud-file-sub">${esc(suffix)} · ${date(f.created_at)} 上传<span class="ud-mobile-size"> · ${size(f.size)}</span></div></div></div><span class="ud-file-size">${size(f.size)}</span><span class="ud-expiry ${remaining < 86400 ? 'ud-soon' : ''}">${ttl}<small>${date(f.expires_at)} 到期</small></span><div class="ud-file-actions">${selectVideo ? `<span class="ud-file-size">${selected === f.id ? '已选中' : '选择'}</span>` : `<button class="ud-icon-btn" data-download="${esc(f.id)}" aria-label="下载 ${esc(f.name)}" title="下载">${icon('download')}</button><button class="ud-icon-btn ud-delete" data-delete="${esc(f.id)}" aria-label="删除 ${esc(f.name)}" title="删除">${icon('trash')}</button>`}</div>${pendingDelete === f.id ? '<div class="ud-confirm"><span>删除这个文件？已创建的任务不受影响。</span><button class="ud-btn" data-keep>取消</button><button class="ud-btn ud-danger" data-confirm-delete>确认删除</button></div>' : ''}</div>`;
+      return `<div class="ud-file ${selected === f.id ? 'ud-selected' : ''}" data-id="${esc(f.id)}"><div class="ud-file-main">${selectVideo ? `<input type="radio" name="ud-video" value="${esc(f.id)}" aria-label="选择 ${esc(f.name)}" ${selected === f.id ? 'checked' : ''}>` : ''}<span class="ud-file-icon ${video(f) ? 'ud-video-thumb' : 'ud-other'}" ${video(f) ? `data-thumbnail="${esc(f.id)}"` : ''}>${icon(video(f) ? 'video' : 'file')}</span><div class="ud-file-meta"><div class="ud-file-name" title="${esc(f.name)}">${esc(f.name)}</div><div class="ud-file-sub">${esc(suffix)} · ${date(f.created_at)} 上传<span class="ud-mobile-size"> · ${size(f.size)}</span></div></div></div><span class="ud-file-size">${size(f.size)}</span><span class="ud-expiry ${remaining < 86400 ? 'ud-soon' : ''}">${ttl}<small>${date(f.expires_at)} 到期</small></span><div class="ud-file-actions">${selectVideo ? `<span class="ud-file-size">${selected === f.id ? '已选中' : '选择'}</span>` : `<button class="ud-icon-btn" data-download="${esc(f.id)}" aria-label="下载 ${esc(f.name)}" title="下载">${icon('download')}</button><button class="ud-icon-btn ud-delete" data-delete="${esc(f.id)}" aria-label="删除 ${esc(f.name)}" title="删除">${icon('trash')}</button>`}</div>${pendingDelete === f.id ? '<div class="ud-confirm"><span>删除这个文件？已创建的任务不受影响。</span><button class="ud-btn" data-keep>取消</button><button class="ud-btn ud-danger" data-confirm-delete>确认删除</button></div>' : ''}</div>`;
     }).join('') || empty(query ? '没有找到这个文件' : selectVideo ? '还没有可用的视频' : '这里是你的临时文件空间', query ? '换个关键词，或清空搜索试试。' : selectVideo ? '请先在邻聊网盘上传 MP4、MOV、M4V 或 WebM 视频，单个不超过 2 GB。' : '拖入视频或文件，之后可直接在 Proxy 发布任务中选用。');
+    loadThumbnails();
     $('[data-use]').disabled = !eligible.some(f => f.id === selected);
     if (selectVideo) $('[data-footer-note]').textContent = selected ? `已选：${files.find(f => f.id === selected)?.name || ''}` : '选中一个视频后，点击“使用此视频”。';
   }
@@ -120,6 +179,7 @@
   dialog.oncancel = event => { if (event.target !== dialog) return; event.preventDefault(); close(); };
   window.openUserDrive = async callback => {
     if (busy) return;
+    stopThumbnails(); thumbnailCache.clear();
     selectVideo = typeof callback === 'function' ? callback : null; ownerToken = token(); files = []; selected = ''; pendingDelete = ''; authenticated = false; filter = selectVideo ? 'video' : 'all';
     dialog.classList.toggle('ud-picker', Boolean(selectVideo));
     $('[data-action-title]').textContent = selectVideo ? '选择' : '操作';
