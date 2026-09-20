@@ -91,8 +91,14 @@ class LanChatStore:
         self.avatar_dir.mkdir(parents=True, exist_ok=True)
         self.media_dir.mkdir(parents=True, exist_ok=True)
         self.file_dir.mkdir(parents=True, exist_ok=True)
+        self.drive_dir = self.file_dir.parent / "lan_chat_drive"
+        self.drive_dir.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("""CREATE TABLE IF NOT EXISTS drive_files (
+                id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL,
+                size INTEGER NOT NULL, created_at REAL NOT NULL, expires_at REAL NOT NULL
+            )""")
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS feishu_users (
@@ -1239,6 +1245,13 @@ class LanChatStore:
         cutoff = float(now if now is not None else time.time())
         cleaned = 0
         with self._connect() as conn:
+            for row in conn.execute("SELECT id FROM drive_files WHERE expires_at <= ?", (cutoff,)).fetchall():
+                try:
+                    (self.drive_dir / row["id"]).unlink(missing_ok=True)
+                except OSError:
+                    continue
+                conn.execute("DELETE FROM drive_files WHERE id = ?", (row["id"],))
+                cleaned += 1
             rows = conn.execute(
                 """SELECT id, stored_filename FROM file_attachments
                    WHERE deleted_at IS NULL AND expires_at <= ?""",
@@ -1256,6 +1269,60 @@ class LanChatStore:
                 )
                 cleaned += 1
         return cleaned
+
+    def drive_list(self, token: str) -> list[dict[str, Any]]:
+        user = self.authenticate(token)
+        with self._connect() as conn:
+            return [dict(row) for row in conn.execute(
+                "SELECT id, name, size, created_at, expires_at FROM drive_files "
+                "WHERE user_id = ? AND expires_at > ? ORDER BY created_at DESC",
+                (user["id"], time.time()),
+            )]
+
+    def drive_upload(self, token: str, name: str, source: BinaryIO) -> dict[str, Any]:
+        user = self.authenticate(token)
+        name = str(name or "").replace("\\", "/").split("/")[-1].strip()
+        if not name or len(name) > 255 or any(ord(c) < 32 for c in name):
+            raise LanChatError("文件名无效")
+        file_id = uuid.uuid4().hex
+        target = self.drive_dir / file_id
+        size = 0
+        try:
+            with target.open("xb") as output:
+                while chunk := source.read(FILE_COPY_CHUNK_BYTES):
+                    size += len(chunk)
+                    if size > FILE_TRANSFER_MAX_BYTES:
+                        raise LanChatError("文件超过 10GB 限制", 413)
+                    output.write(chunk)
+            if not size:
+                raise LanChatError("文件为空")
+            now = time.time()
+            with self._connect() as conn:
+                conn.execute("INSERT INTO drive_files VALUES (?, ?, ?, ?, ?, ?)",
+                             (file_id, user["id"], name, size, now, now + FILE_TRANSFER_RETENTION_SECONDS))
+            return {"id": file_id, "name": name, "size": size,
+                    "created_at": now, "expires_at": now + FILE_TRANSFER_RETENTION_SECONDS}
+        except Exception:
+            target.unlink(missing_ok=True)
+            raise
+
+    def drive_info(self, token: str, file_id: str) -> tuple[Path, str, str, int]:
+        user = self.authenticate(token)
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM drive_files WHERE id = ? AND user_id = ? AND expires_at > ?",
+                               (file_id, user["id"], time.time())).fetchone()
+        if not row or not re.fullmatch(r"[0-9a-f]{32}", file_id):
+            raise LanChatError("文件不存在或已过期", 404)
+        path = self.drive_dir / file_id
+        if not path.is_file():
+            raise LanChatError("文件不存在或已过期", 404)
+        return path, row["name"], "application/octet-stream", row["size"]
+
+    def drive_delete(self, token: str, file_id: str) -> None:
+        path, _, _, _ = self.drive_info(token, file_id)
+        path.unlink(missing_ok=True)
+        with self._connect() as conn:
+            conn.execute("DELETE FROM drive_files WHERE id = ?", (file_id,))
 
     def cleanup_expired_media(self, now: float | None = None) -> int:
         cutoff = float(now if now is not None else time.time())
