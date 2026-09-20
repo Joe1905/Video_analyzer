@@ -30,6 +30,23 @@ class DriveTest(unittest.TestCase):
     def upload(self):
         return self.store.drive_upload(self.a, "测试.mp4", io.BytesIO(b"test video"))
 
+    def test_preview_permissions_expiry_and_file_binding(self):
+        item = self.upload()
+        with self.assertRaises(LanChatError):
+            self.store.drive_preview(self.b, item["id"])
+        ticket = self.store.drive_preview(self.a, item["id"])
+        self.assertEqual(self.store.drive_preview_info(item["id"], ticket)[0].read_bytes(), b"test video")
+        for file_id, value in (("0" * 32, ticket), (item["id"], ticket + "bad"), (item["id"], "")):
+            with self.assertRaises(LanChatError) as error:
+                self.store.drive_preview_info(file_id, value)
+            self.assertEqual(error.exception.status, 403)
+        with patch("lan_chat.time.time", return_value=int(ticket.split(":")[1])):
+            with self.assertRaises(LanChatError):
+                self.store.drive_preview_info(item["id"], ticket)
+        self.store.drive_delete(self.a, item["id"])
+        with self.assertRaises(LanChatError):
+            self.store.drive_preview_info(item["id"], ticket)
+
     def test_owner_and_expiry(self):
         item = self.upload()
         self.assertEqual(self.store.drive_info(self.a, item["id"])[2], "video/mp4")
@@ -106,7 +123,7 @@ class DriveTest(unittest.TestCase):
                      "_lan_chat_token": lambda h: h.headers.get("X-Lan-Chat-Token", ""),
                      "_lan_chat_request_json": lambda h: json.loads(h.rfile.read()),
                      "json_response": lambda h, status, payload: setattr(h, "result", (status, payload)),
-                     "file_response": lambda h, path, kind, name, size: setattr(h, "result", (200, path.read_bytes(), kind, name, size))}
+                     "file_response": lambda h, path, kind, name, size, download=True: setattr(h, "result", (200, path.read_bytes(), kind, name, size))}
         exec(compile(ast.Module(body=functions, type_ignores=[]), "web_app.py", "exec"), namespace)
         def call(method, path, token, body=b"{}", kind="application/json"):
             headers = Message()
@@ -123,6 +140,12 @@ class DriveTest(unittest.TestCase):
         file_id = uploaded["file"]["id"]
         self.assertEqual(call("get", "/api/lan-chat/drive", self.a)[1]["files"][0]["id"], file_id)
         path = f"/api/lan-chat/drive/{file_id}"
+        preview_path = path + "/preview"
+        self.assertEqual(call("post", preview_path, self.b)[0], 404)
+        status, preview = call("post", preview_path, self.a, b"")
+        self.assertEqual(status, 200)
+        self.assertEqual(call("get", preview["url"], "")[1], b"video bytes")
+        self.assertEqual(call("get", preview_path, "")[0], 403)
         body = urlencode({"token": self.a}).encode()
         self.assertEqual(call("post", path + "/download", "", body, "application/x-www-form-urlencoded"),
                          (200, b"video bytes", "video/mp4", "video.mp4", 11))
