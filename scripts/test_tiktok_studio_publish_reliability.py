@@ -54,7 +54,7 @@ def main():
                 expect_error(RuntimeError, lambda: publish._set_video_file_via_cdp(page, video, page.locator('input'), folder), "未检测到")
             assert publish._video_upload_state(page) == "unknown"
             for markup, state in [
-                ('<p>Upload failed</p><div class="upload-text-container">Uploading</div>', "failed"),
+                ('<input type="file"><p>Upload failed</p><div class="upload-text-container">Uploading</div>', "failed"),
                 ('<input type="file"><button aria-label="Select video">Select video</button>', "idle"),
                 ('<input type="file"><div class="upload-text-container">Uploading</div>', "uploading"),
                 ('<input type="file">', "unknown"),
