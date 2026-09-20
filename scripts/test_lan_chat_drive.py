@@ -6,6 +6,7 @@ import sqlite3
 import tempfile
 import unittest
 from http import HTTPStatus
+from email.message import Message
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -78,9 +79,11 @@ class DriveTest(unittest.TestCase):
         body = ("--test\r\nContent-Disposition: form-data; name=\"drive_file_id\"\r\n\r\n"
                 + item["id"] + "\r\n--test--\r\n").encode()
         def call(token):
-            request = SimpleNamespace(headers={"Content-Length": str(len(body)),
-                                      "Content-Type": "multipart/form-data; boundary=test",
-                                      "X-Lan-Chat-Token": token}, rfile=io.BytesIO(body))
+            headers = Message()
+            headers["Content-Length"] = str(len(body))
+            headers["Content-Type"] = "multipart/form-data; boundary=test"
+            headers["X-Lan-Chat-Token"] = token
+            request = SimpleNamespace(headers=headers, rfile=io.BytesIO(body))
             return namespace["handle_proxy_api_post"](request, "/api/proxy/publish/jobs")
         self.assertEqual(call(self.b)[0], 404)
         self.assertEqual(created, [])
