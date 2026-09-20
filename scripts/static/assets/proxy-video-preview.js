@@ -10,8 +10,21 @@
   const name = document.getElementById('publishPreviewName');
   const duration = document.getElementById('publishPreviewDuration');
   const error = document.getElementById('publishPreviewError');
+  const player = document.createElement('dialog');
+  player.className = 'publish-player'; player.setAttribute('aria-labelledby', 'publishPlayerTitle');
+  player.innerHTML = '<div class="publish-player-head"><strong id="publishPlayerTitle"></strong><button type="button" aria-label="关闭播放窗口" title="关闭"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M6 18 18 6"/></svg></button></div><video controls playsinline preload="metadata"></video><p role="status" hidden></p>';
+  document.body.append(player);
+  const playerVideo = player.querySelector('video');
+  const playerMessage = player.querySelector('p');
+  function stopPlayer() { playerVideo.pause(); playerVideo.removeAttribute('src'); playerVideo.removeAttribute('poster'); playerVideo.load(); }
+  function closePlayer() { if (player.open) player.close(); stopPlayer(); }
+  player.querySelector('button').onclick = closePlayer;
+  player.onclose = stopPlayer;
+  player.oncancel = event => { if (event.target !== player) return; event.preventDefault(); closePlayer(); };
+  playerVideo.onerror = () => { if (player.open) { playerMessage.hidden = false; playerMessage.textContent = '视频暂时无法播放，请关闭后重试或重新选择视频。'; } };
   let objectUrl = '', revision = 0, controller = null;
   function release() {
+    closePlayer();
     revision++; controller?.abort(); controller = null;
     video.onloadedmetadata = video.onloadeddata = video.onerror = null;
     video.pause(); video.removeAttribute('src'); video.removeAttribute('poster'); video.load();
@@ -69,8 +82,13 @@
     } catch (failure) { if (current === revision && failure.name !== 'AbortError') { duration.textContent = '时长暂不可用'; error.textContent = failure.message; } }
   };
   play.onclick = async () => {
-    try { video.controls = true; await video.play(); play.hidden = true; }
-    catch (_) { error.textContent = '无法播放，请重试或更换视频。'; }
+    if (!video.currentSrc || play.disabled) return;
+    document.getElementById('publishPlayerTitle').textContent = name.textContent;
+    playerMessage.hidden = true; playerMessage.textContent = '';
+    playerVideo.src = video.currentSrc; playerVideo.poster = video.poster;
+    if (!player.open) player.showModal();
+    try { await playerVideo.play(); }
+    catch (_) { if (player.open) { playerMessage.hidden = false; playerMessage.textContent = '请点击播放按钮重试。'; } }
   };
   document.getElementById('publishPreviewCancel').onclick = () => {
     if (state.publishBusy) { error.textContent = '正在创建任务，请完成后再取消视频。'; return; }

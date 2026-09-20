@@ -443,7 +443,7 @@ const editPublishJobLocal=editPublishJob;
 editPublishJob=function(id){state.driveFile=null;state.driveToken="";editPublishJobLocal(id)};
 function chooseDriveVideo(){if(state.publishEditing){$("publishHint").textContent="编辑任务时保留原视频；请先取消编辑，再选择网盘视频创建任务。";return}openUserDrive((file,token)=>{state.driveFile=file;state.driveToken=token;$("publishVideo").value="";$("publishFileLabel").textContent=`网盘：${file.name} · ${(file.size/1024/1024).toFixed(1)} MB`;showPublishDrivePreview(file,token)})}
 </script>
-<link rel="stylesheet" href="/assets/proxy-video-preview.css?v=20260920-1">
-<script src="/assets/proxy-video-preview.js?v=20260920-1"></script>
+<link rel="stylesheet" href="/assets/proxy-video-preview.css?v=20260920-2">
+<script src="/assets/proxy-video-preview.js?v=20260920-2"></script>
 </body>
 </html>
