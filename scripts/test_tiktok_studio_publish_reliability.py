@@ -32,6 +32,29 @@ def main():
         page = context.new_page()
         page.goto("https://www.tiktok.com/tiktokstudio/upload")
         try:
+            page.set_content('''<p>Loading</p><script>setTimeout(() => {
+                document.body.innerHTML = '<input type="file" hidden><button data-e2e="select_video_button">Select video</button>';
+                }, 1200)</script>''')
+            with patch("browser_page_state._ocr_page", return_value=("", "")):
+                publish._wait_for_file_control(page, folder)
+            assert page.locator('input[type=file]').count() == 1
+            handler = lambda dialog: publish._dismiss_native_dialog(dialog, folder)
+            context.on('dialog', handler)
+            page.evaluate("alert('offline native dialog')")
+            context.remove_listener('dialog', handler)
+            class AlreadyClosedDialog:
+                def dismiss(self):
+                    raise RuntimeError('No dialog is showing')
+            publish._dismiss_native_dialog(AlreadyClosedDialog(), folder)
+            assert 'No dialog is showing' in (folder / 'native-dialog-errors.jsonl').read_text()
+            markup = (Path(__file__).parent / 'static/proxy.html').read_text(encoding='utf-8')
+            status_js = next(line for line in markup.splitlines() if line.startswith('function accountRuntimeStatus'))
+            page.evaluate('''() => { window.state={pools:[{id:1,status:'可用'}],automationPending:new Set()};
+                window.activeSessionForAccount=()=>window.fixtureSession; }''')
+            page.evaluate(status_js + '; window.accountRuntimeStatus=accountRuntimeStatus;')
+            for session, expected in [({'status':'starting'}, '启动中'), ({'status':'observing'}, '已唤醒'), ({'status':'running'}, '已唤醒'), ({'status':'observing','current_job_id':'job'}, '发布中'), (None, '休眠中')]:
+                assert page.evaluate('''s => {window.fixtureSession=s; return accountRuntimeStatus({id:15,proxy_bound:true,proxy_profile_id:1});}''', session) == expected
+            print('PASS: delayed file control, native dialog race, account status labels', flush=True)
             page.set_content('''<input type="file" accept="video/*"><button aria-label="Select video">Select video</button>
                 <script>document.querySelector('input').onchange = event => {
                   event.target.value = '';
