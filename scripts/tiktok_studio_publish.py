@@ -1935,7 +1935,10 @@ def _dismiss_native_dialog(dialog: Any, log_dir: Path) -> None:
     # Explicit handling avoids an unhandled driver auto-dismiss promise when
     # another CDP client or the user has already closed the native dialog.
     try:
-        dialog.dismiss()
+        if dialog.type == "beforeunload":
+            dialog.accept()
+        else:
+            dialog.dismiss()
     except Exception as exc:
         with (log_dir / "native-dialog-errors.jsonl").open("a", encoding="utf-8") as handle:
             handle.write(json.dumps({"time": _iso(), "error": str(exc)}, ensure_ascii=False) + "\n")
