@@ -43,6 +43,7 @@ def main():
             page.evaluate("alert('offline native dialog')")
             context.remove_listener('dialog', handler)
             class AlreadyClosedDialog:
+                type = 'alert'
                 def dismiss(self):
                     raise RuntimeError('No dialog is showing')
             publish._dismiss_native_dialog(AlreadyClosedDialog(), folder)
