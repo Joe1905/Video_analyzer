@@ -51,7 +51,7 @@ def main():
             status_js = next(line for line in markup.splitlines() if line.startswith('function accountRuntimeStatus'))
             page.evaluate('''() => { window.state={pools:[{id:1,status:'可用'}],automationPending:new Set()};
                 window.activeSessionForAccount=()=>window.fixtureSession; }''')
-            page.evaluate(status_js + '; window.accountRuntimeStatus=accountRuntimeStatus;')
+            page.evaluate('() => { ' + status_js + '; window.accountRuntimeStatus=accountRuntimeStatus; }')
             for session, expected in [({'status':'starting'}, '启动中'), ({'status':'observing'}, '已唤醒'), ({'status':'running'}, '已唤醒'), ({'status':'observing','current_job_id':'job'}, '发布中'), (None, '休眠中')]:
                 assert page.evaluate('''s => {window.fixtureSession=s; return accountRuntimeStatus({id:15,proxy_bound:true,proxy_profile_id:1});}''', session) == expected
             print('PASS: delayed file control, native dialog race, account status labels', flush=True)
