@@ -1931,6 +1931,25 @@ def _add_product_link(page: Any, product_id: str, log_dir: Path) -> bool:
     return False
 
 
+def _dismiss_native_dialog(dialog: Any, log_dir: Path) -> None:
+    # Explicit handling avoids an unhandled driver auto-dismiss promise when
+    # another CDP client or the user has already closed the native dialog.
+    try:
+        dialog.dismiss()
+    except Exception as exc:
+        with (log_dir / "native-dialog-errors.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"time": _iso(), "error": str(exc)}, ensure_ascii=False) + "\n")
+
+
+def _wait_for_file_control(page: Any, log_dir: Path, on_status: Any = None) -> None:
+    wait_for_page_state(
+        page, label="视频选择控件", on_status=on_status,
+        ready=lambda: page.locator("input[type='file']").count() > 0 and _upload_page_ready(page),
+        timeout_seconds=75, reload_attempts=0,
+        diagnostic_dir=log_dir, diagnostic_step="file-control",
+    )
+
+
 def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[str, str]:
     from playwright.sync_api import sync_playwright
 
@@ -1942,6 +1961,7 @@ def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[str,
         browser = playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{session['debug_port']}")
         try:
             context = browser.contexts[0]
+            context.on("dialog", lambda dialog: _dismiss_native_dialog(dialog, log_dir))
             page = context.pages[0] if context.pages else context.new_page()
             try:
                 page.wait_for_load_state("domcontentloaded", timeout=20000)
@@ -1966,6 +1986,7 @@ def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[str,
             _skip_onboarding(page)
             _assert_account_ready(page)
             _discard_stale_edit(page, log_dir)
+            _wait_for_file_control(page, log_dir, page_status("preparing", "waiting_file_control"))
             _set_job(job["id"], "uploading", "uploading", session_id=session["id"])
             _set_video_file(page, video, str(session.get("display") or ""), log_dir)
             _wait_for_upload_editor(page, log_dir, page_status("uploading", "loading_editor"))
@@ -2059,7 +2080,7 @@ def _run_job(job_id: str) -> None:
         job = jobs[0]
         keep_observing = bool(job.get("keep_observing"))
         requested_session_id = int(job.get("session_id") or 0)
-        session = proxy_pool.claim_observation_session_for_job(int(job["account_id"]), requested_session_id, job_id)
+        session = proxy_pool.claim_observation_session_for_job(int(job["account_id"]), requested_session_id, job_id, reuse_idle=True)
         if session is not None:
             reused_observation = True
         else:
@@ -2107,7 +2128,7 @@ def _run_job(job_id: str) -> None:
             proxy_pool.handoff_automation_session(session_id, str(exc))
     except Exception as exc:
         message = str(exc)
-        if "槽位已满" in message or "已经处于唤醒状态" in message:
+        if any(marker in message for marker in ("槽位已满", "已经处于唤醒状态", "正在执行其他任务", "账号正在唤醒")):
             _set_job(job_id, "delayed", "waiting_slot", message, next_attempt_at=_iso(_utc_now() + timedelta(seconds=30)))
         elif 'job' in locals() and proxy_pool.is_retryable_proxy_error(message):
             _delay_for_proxy(job_id, job, message)

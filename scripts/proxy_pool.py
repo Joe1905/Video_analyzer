@@ -4993,24 +4993,42 @@ def start_automation_session(account_id: int, job_id: str, start_platform: str =
     )
 
 
-def claim_observation_session_for_job(account_id: int, session_id: int, job_id: str) -> dict[str, Any] | None:
-    if not session_id:
+def claim_observation_session_for_job(account_id: int, session_id: int, job_id: str, *, reuse_idle: bool = False) -> dict[str, Any] | None:
+    if not session_id and not reuse_idle:
         return None
     conn = connect()
     try:
         _active_sessions(conn)
-        row = _session_by_id(conn, session_id)
+        conn.execute("BEGIN IMMEDIATE")
+        row = _session_by_id(conn, session_id) if session_id else None
+        if row is not None and int(row["account_id"] or 0) != int(account_id):
+            raise ValueError("观测通道不属于当前账号")
+        if reuse_idle and (row is None or row["status"] not in {"starting", "running", "observing"}):
+            row = conn.execute(
+                "SELECT * FROM browser_sessions WHERE account_id = ? "
+                "AND status IN ('starting','running','observing') ORDER BY updated_at DESC LIMIT 1",
+                (account_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        session_id = int(row["id"])
         if int(row["account_id"] or 0) != int(account_id):
             raise ValueError("观测通道不属于当前账号")
         if row["status"] not in {"starting", "running", "observing"}:
             return None
+        if reuse_idle and row["status"] == "starting":
+            raise ValueError("账号正在唤醒，请等待浏览器就绪")
         current_job_id = str(row["current_job_id"] or "")
         if current_job_id and current_job_id != job_id:
             raise ValueError("观测通道正在执行其他任务")
-        conn.execute(
-            "UPDATE browser_sessions SET current_job_id = ?, last_activity_at = ?, updated_at = ? WHERE id = ?",
-            (_clean_text(job_id, 80), now_iso(), now_iso(), session_id),
+        changed = conn.execute(
+            "UPDATE browser_sessions SET current_job_id = ?, last_activity_at = ?, updated_at = ? "
+            "WHERE id = ? AND status IN ('starting','running','observing') "
+            "AND COALESCE(current_job_id, '') IN ('', ?)",
+            (_clean_text(job_id, 80), now_iso(), now_iso(), session_id, job_id),
         )
+        if changed.rowcount != 1:
+            raise ValueError("观测通道正在执行其他任务")
         conn.commit()
         return _row_to_session(_session_by_id(conn, session_id))
     finally:
