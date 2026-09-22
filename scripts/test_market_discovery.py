@@ -4,6 +4,7 @@ import json
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch, Mock
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlencode, urlparse
@@ -89,6 +90,28 @@ class ResearchTests(unittest.TestCase):
         self.assertEqual(manifest["execution_mode"], "external_agent")
         self.assertIn("market-feasibility/SKILL.md", manifest["skills"])
         self.assertIn("sociavault-market-discovery/references/category-memory.md", manifest["skills"])
+
+    def test_expanded_social_routes_and_argument_boundary(self):
+        specs = md.socia_tools()
+        self.assertEqual(len({s["name"] for s in specs}), len(specs))
+        examples = [
+            ("twitter_search", {"query": "removable wallpaper"}, "/v1/scrape/twitter/search"),
+            ("facebook_group_posts", {"url": "https://www.facebook.com/groups/example"}, "/v1/scrape/facebook/group/posts"),
+            ("youtube_video_transcript", {"url": "https://www.youtube.com/watch?v=example"}, "/v1/scrape/youtube/video/transcript"),
+        ]
+        for name, args, path in examples:
+            response = Mock(ok=True)
+            response.json.return_value = {"success": True, "data": {"items": []}}
+            with patch.dict(md.os.environ, {"SOCIAVAULT_API_KEY": "test-only", "SOCIAVAULT_API_BASE": "https://api.sociavault.com"}), \
+                 patch("requests.get", return_value=response) as get, \
+                 patch("sociavault_usage.update_sociavault_usage_from_response"):
+                md.execute("sociavault__" + name, args, seller_tools, lambda *a: None)
+                self.assertEqual(get.call_args.args[0], "https://api.sociavault.com" + path)
+                for key, value in args.items():
+                    self.assertEqual(get.call_args.kwargs["params"][key], value)
+                with self.assertRaises(md.ApiError):
+                    md.execute("sociavault__" + name, {**args, "endpoint": "/override"}, seller_tools, lambda *a: None)
+                self.assertEqual(get.call_count, 1)
 
     def test_http_success_can_contain_business_failure(self):
         envelope = {"isError": False, "content": [{"type": "text", "text": '{"code":"ERROR_PARAM","message":"日期参数错误"}'}]}

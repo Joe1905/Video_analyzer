@@ -567,5 +567,700 @@
       "additionalProperties": false,
       "$schema": "http://json-schema.org/draft-07/schema#"
     }
+  },
+  {
+    "name": "youtube_video_transcript",
+    "path": "/v1/scrape/youtube/video/transcript",
+    "description": "Get the transcript/captions of a YouTube video by URL.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "description": "Full YouTube video URL."
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    }
+  },
+  {
+    "name": "youtube_video_comment_replies",
+    "path": "/v1/scrape/youtube/video/comment-replies",
+    "description": "Get replies to a YouTube comment using the continuation token from a comments response.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "continuationToken": {
+          "type": "string",
+          "description": "Continuation token identifying the comment thread."
+        }
+      },
+      "required": [
+        "continuationToken"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    }
+  },
+  {
+    "name": "youtube_channel_videos",
+    "path": "/v1/scrape/youtube/channel-videos",
+    "description": "List a channel's uploaded videos. Paginate with continuationToken.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "channelId": {
+          "type": "string",
+          "description": "YouTube channel id (or use handle)."
+        },
+        "handle": {
+          "type": "string",
+          "description": "YouTube @handle (or use channelId)."
+        },
+        "sort": {
+          "type": "string",
+          "description": "Sort order, e.g. 'newest', 'oldest', 'popular'."
+        },
+        "continuationToken": {
+          "type": "string",
+          "description": "Pagination token from a previous response."
+        }
+      },
+      "required": [],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    }
+  },
+  {
+    "name": "twitter_search",
+    "path": "/v1/scrape/twitter/search",
+    "description": "Search tweets/users on Twitter/X. Paginate with cursor.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Search text (supports X search operators)."
+        },
+        "type": {
+          "type": "string",
+          "description": "Result type, e.g. 'Top', 'Latest', 'People', 'Media'."
+        },
+        "cursor": {
+          "type": "string",
+          "description": "Pagination cursor from a previous response's output. Omit for the first page."
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    }
+  },
+  {
+    "name": "twitter_tweet",
+    "path": "/v1/scrape/twitter/tweet",
+    "description": "Get a single tweet by URL with engagement metrics.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "description": "Full tweet URL."
+        },
+        "trim": {
+          "type": "boolean",
+          "description": "Return a smaller, AI-friendly response by stripping verbose/raw fields. Recommended to save tokens.",
+          "default": true
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    }
+  },
+  {
+    "name": "twitter_comments",
+    "path": "/v1/scrape/twitter/comments",
+    "description": "Get replies/comments on a tweet by its post id (pid). Paginate with cursor.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "pid": {
+          "type": "string",
+          "description": "Tweet/post id."
+        },
+        "rankingMode": {
+          "type": "string",
+          "description": "Reply ranking, e.g. 'Relevance' or 'Recency'."
+        },
+        "cursor": {
+          "type": "string",
+          "description": "Pagination cursor from a previous response's output. Omit for the first page."
+        }
+      },
+      "required": [
+        "pid"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    }
+  },
+  {
+    "name": "twitter_quotes",
+    "path": "/v1/scrape/twitter/quotes",
+    "description": "Get quote tweets of a tweet by its post id (pid). Paginate with cursor.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "pid": {
+          "type": "string",
+          "description": "Tweet/post id."
+        },
+        "cursor": {
+          "type": "string",
+          "description": "Pagination cursor from a previous response's output. Omit for the first page."
+        }
+      },
+      "required": [
+        "pid"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    }
+  },
+  {
+    "name": "twitter_tweet_transcript",
+    "path": "/v1/scrape/twitter/tweet/transcript",
+    "description": "Get the transcript of a video attached to a tweet, by URL.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "description": "Full tweet URL containing a video."
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    }
+  },
+  {
+    "name": "facebook_profile_posts",
+    "path": "/v1/scrape/facebook/profile/posts",
+    "description": "List posts from a Facebook page/profile. Provide url or pageId. Paginate with cursor.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "description": "Full Facebook page/profile URL (or use pageId)."
+        },
+        "pageId": {
+          "type": "string",
+          "description": "Facebook page id (or use url)."
+        },
+        "cursor": {
+          "type": "string",
+          "description": "Pagination cursor from a previous response's output. Omit for the first page."
+        }
+      },
+      "required": [],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    }
+  },
+  {
+    "name": "facebook_profile_reels",
+    "path": "/v1/scrape/facebook/profile/reels",
+    "description": "List reels from a Facebook page/profile. Paginate with next_page_id/cursor.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "description": "Full Facebook page/profile URL."
+        },
+        "next_page_id": {
+          "type": "string",
+          "description": "Pagination id from a previous response."
+        },
+        "cursor": {
+          "type": "string",
+          "description": "Pagination cursor from a previous response's output. Omit for the first page."
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    }
+  },
+  {
+    "name": "facebook_group_posts",
+    "path": "/v1/scrape/facebook/group/posts",
+    "description": "List posts from a public Facebook group. Provide url or group_id.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "description": "Full Facebook group URL (or use group_id)."
+        },
+        "group_id": {
+          "type": "string",
+          "description": "Facebook group id (or use url)."
+        },
+        "sort_by": {
+          "type": "string",
+          "description": "Sort order, e.g. 'recent' or 'top'."
+        },
+        "cursor": {
+          "type": "string",
+          "description": "Pagination cursor from a previous response's output. Omit for the first page."
+        }
+      },
+      "required": [],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    }
+  },
+  {
+    "name": "facebook_post",
+    "path": "/v1/scrape/facebook/post",
+    "description": "Get a single Facebook post by URL with engagement metrics.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "description": "Full Facebook post URL."
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    }
+  },
+  {
+    "name": "facebook_post_comments",
+    "path": "/v1/scrape/facebook/post/comments",
+    "description": "Get comments on a Facebook post by URL. Paginate with cursor.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "description": "Full Facebook post URL."
+        },
+        "cursor": {
+          "type": "string",
+          "description": "Pagination cursor from a previous response's output. Omit for the first page."
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    }
+  },
+  {
+    "name": "facebook_comment_replies",
+    "path": "/v1/scrape/facebook/comment/replies",
+    "description": "Get replies to a Facebook comment using its feedback_id and expansion_token (from a comments response).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "feedback_id": {
+          "type": "string",
+          "description": "Comment feedback id."
+        },
+        "expansion_token": {
+          "type": "string",
+          "description": "Expansion token from the comments response."
+        },
+        "cursor": {
+          "type": "string",
+          "description": "Pagination cursor from a previous response's output. Omit for the first page."
+        }
+      },
+      "required": [
+        "feedback_id",
+        "expansion_token"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    }
+  },
+  {
+    "name": "facebook_post_transcript",
+    "path": "/v1/scrape/facebook/post/transcript",
+    "description": "Get the transcript of a Facebook video/reel by URL.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "description": "Full Facebook video/reel URL."
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    }
+  },
+  {
+    "name": "facebook_ad_library_search",
+    "path": "/v1/scrape/facebook-ad-library/search",
+    "description": "Search the Facebook/Meta Ad Library by keyword with country, media-type, status, and date filters.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Keyword to search for."
+        },
+        "sort_by": {
+          "type": "string",
+          "description": "Sort order."
+        },
+        "search_type": {
+          "type": "string",
+          "description": "Search type, e.g. 'keyword_unordered'."
+        },
+        "ad_type": {
+          "type": "string",
+          "description": "Ad category, e.g. 'all', 'political_and_issue_ads'."
+        },
+        "country": {
+          "type": "string",
+          "description": "Two-letter country code (e.g. 'US')."
+        },
+        "status": {
+          "type": "string",
+          "description": "Ad status, e.g. 'active', 'inactive', 'all'."
+        },
+        "media_type": {
+          "type": "string",
+          "description": "Media type, e.g. 'all', 'image', 'video'."
+        },
+        "start_date": {
+          "type": "string",
+          "description": "Start date filter (YYYY-MM-DD)."
+        },
+        "end_date": {
+          "type": "string",
+          "description": "End date filter (YYYY-MM-DD)."
+        },
+        "cursor": {
+          "type": "string",
+          "description": "Pagination cursor from a previous response's output. Omit for the first page."
+        },
+        "trim": {
+          "type": "boolean",
+          "description": "Return a smaller, AI-friendly response by stripping verbose/raw fields. Recommended to save tokens.",
+          "default": true
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    }
+  },
+  {
+    "name": "facebook_ad_library_ad_details",
+    "path": "/v1/scrape/facebook-ad-library/ad-details",
+    "description": "Get details for a single Facebook/Instagram ad. Provide the ad id or url; optionally fetch the video transcript.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Ad archive id (or use url)."
+        },
+        "url": {
+          "type": "string",
+          "description": "Ad Library ad URL (or use id)."
+        },
+        "get_transcript": {
+          "type": "boolean",
+          "description": "Also fetch the ad video transcript."
+        },
+        "trim": {
+          "type": "boolean",
+          "description": "Return a smaller, AI-friendly response by stripping verbose/raw fields. Recommended to save tokens.",
+          "default": true
+        }
+      },
+      "required": [],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    }
+  },
+  {
+    "name": "instagram_posts",
+    "path": "/v1/scrape/instagram/posts",
+    "description": "List an Instagram user's recent posts with captions, like/comment counts, and media. Paginate with next_max_id.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "handle": {
+          "type": "string",
+          "description": "Instagram username without the @."
+        },
+        "next_max_id": {
+          "type": "string",
+          "description": "Pagination id from a previous response."
+        },
+        "trim": {
+          "type": "boolean",
+          "description": "Return a smaller, AI-friendly response by stripping verbose/raw fields. Recommended to save tokens.",
+          "default": true
+        }
+      },
+      "required": [
+        "handle"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    }
+  },
+  {
+    "name": "instagram_post_info",
+    "path": "/v1/scrape/instagram/post-info",
+    "description": "Get full details of a single Instagram post/reel by URL.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "description": "Full Instagram post/reel URL."
+        },
+        "trim": {
+          "type": "boolean",
+          "description": "Return a smaller, AI-friendly response by stripping verbose/raw fields. Recommended to save tokens.",
+          "default": true
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    }
+  },
+  {
+    "name": "instagram_comments",
+    "path": "/v1/scrape/instagram/comments",
+    "description": "Get comments on an Instagram post by URL. Paginate with cursor.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "description": "Full Instagram post URL."
+        },
+        "cursor": {
+          "type": "string",
+          "description": "Pagination cursor from a previous response's output. Omit for the first page."
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    }
+  },
+  {
+    "name": "instagram_reels",
+    "path": "/v1/scrape/instagram/reels",
+    "description": "List an Instagram user's reels with play/like counts. Provide handle or user_id.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "user_id": {
+          "type": "string",
+          "description": "Instagram numeric user id (or use handle)."
+        },
+        "handle": {
+          "type": "string",
+          "description": "Instagram username without the @ (or use user_id)."
+        },
+        "max_id": {
+          "type": "string",
+          "description": "Pagination id from a previous response."
+        },
+        "trim": {
+          "type": "boolean",
+          "description": "Return a smaller, AI-friendly response by stripping verbose/raw fields. Recommended to save tokens.",
+          "default": true
+        }
+      },
+      "required": [],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    }
+  },
+  {
+    "name": "instagram_transcript",
+    "path": "/v1/scrape/instagram/transcript",
+    "description": "Get the transcript of an Instagram video/reel by URL.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "description": "Full Instagram reel/video URL."
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    }
+  },
+  {
+    "name": "threads_search",
+    "path": "/v1/scrape/threads/search",
+    "description": "Search Threads posts by keyword.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Search text."
+        },
+        "trim": {
+          "type": "boolean",
+          "description": "Return a smaller, AI-friendly response by stripping verbose/raw fields. Recommended to save tokens.",
+          "default": true
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    }
+  },
+  {
+    "name": "threads_post",
+    "path": "/v1/scrape/threads/post",
+    "description": "Get a single Threads post by URL.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "description": "Full Threads post URL."
+        },
+        "trim": {
+          "type": "boolean",
+          "description": "Return a smaller, AI-friendly response by stripping verbose/raw fields. Recommended to save tokens.",
+          "default": true
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    }
+  },
+  {
+    "name": "threads_user_posts",
+    "path": "/v1/scrape/threads/user-posts",
+    "description": "Get a Threads user's recent posts with engagement metrics.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "handle": {
+          "type": "string",
+          "description": "Threads username without the @."
+        },
+        "trim": {
+          "type": "boolean",
+          "description": "Return a smaller, AI-friendly response by stripping verbose/raw fields. Recommended to save tokens.",
+          "default": true
+        }
+      },
+      "required": [
+        "handle"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    }
+  },
+  {
+    "name": "pinterest_search",
+    "path": "/v1/scrape/pinterest/search",
+    "description": "Search Pinterest pins by keyword. Paginate with cursor.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Search text."
+        },
+        "cursor": {
+          "type": "string",
+          "description": "Pagination cursor from a previous response's output. Omit for the first page."
+        },
+        "trim": {
+          "type": "boolean",
+          "description": "Return a smaller, AI-friendly response by stripping verbose/raw fields. Recommended to save tokens.",
+          "default": true
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    }
+  },
+  {
+    "name": "pinterest_pin",
+    "path": "/v1/scrape/pinterest/pin",
+    "description": "Get details for a single Pinterest pin by URL.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "description": "Full Pinterest pin URL."
+        },
+        "trim": {
+          "type": "boolean",
+          "description": "Return a smaller, AI-friendly response by stripping verbose/raw fields. Recommended to save tokens.",
+          "default": true
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    }
   }
 ]

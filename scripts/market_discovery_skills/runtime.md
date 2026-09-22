@@ -16,3 +16,5 @@
 
 独立数据文件为 `data/market_discovery/research.sqlite`，保存类目、历史版本、Markdown、候选记录和工具调用原始结果。证据使用 `<workspace>/<category-id>/<证据ID>` 或文档 key 与 call_id 保持引用稳定。每期日报留存当时判断；复核时更新类目当前记录并保留变更原因。模型自主选择取证路线；API 不替模型评分、选品或判定哪些市场必定成立。
 
+SociaVault 固定研究目录现覆盖 TikTok/Shop、YouTube、X、Facebook、Instagram、Threads、Pinterest、Reddit 和 Google 搜索；具体能力以 tools 为准。Facebook/Instagram 需先定位公开账号、群组或帖子 URL，不能编造通用帖子搜索。Meta 广告工具只用于广告与供给证据。重复阅读使用 calls/{call_id}，不重新执行付费 tools/call。
+

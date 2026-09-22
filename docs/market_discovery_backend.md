@@ -28,6 +28,8 @@ SellerSprite 使用现有 MCP 桥和服务端凭据，仅开放代码中明确�
 
 Google Trends 的 `google_trend` 是指定关键词趋势验证；候选应先来自 ABA 趋势发现或 TikTok 趋势等真实列表。具体日期和参数以实时 schema 为准。
 
+SociaVault 研究白名单含 46 个工具：原有 19 个，加 YouTube 转录/回复/频道视频，X 搜索/原帖/评论/引用/转录，Facebook 公开主页/群组/帖子/评论/转录与 Meta 广告搜索，Instagram 内容/评论/转录、Threads 搜索/内容、Pinterest 搜索/pin。新增 schema 与路径来自官方 npm sociavault-mcp@2.0.0 的 dist/endpoints.js；保留现有工具定义。Facebook/Instagram 没有通用帖子关键词搜索，需定位公开 URL 后取数；官方预设权限不变。
+
 ## 验证
 
 在 4003 checkout：
