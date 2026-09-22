@@ -1107,7 +1107,13 @@ def _run_parameter_step(page: Any, log_dir: Path, step: str, action: Any) -> Non
     except ManualReviewRequired:
         raise
     except Exception as first_error:
-        _popup_snapshot(page, log_dir, f"{step}-error")
+        _record_publish_error(log_dir, first_error)
+        try:
+            _popup_snapshot(page, log_dir, f"{step}-error")
+        except Exception as diagnostic_error:
+            raise ManualReviewRequired(
+                f"{step} 参数设置失败：{first_error}；诊断截图不可用：{diagnostic_error}"
+            ) from first_error
         if _handle_parameter_popup(page, log_dir, step):
             try:
                 action()
@@ -1798,17 +1804,38 @@ def _scan_product_pages(page: Any, product_id: str, log_dir: Path) -> Any | None
     return None
 
 
-def _add_product_link(page: Any, product_id: str, log_dir: Path) -> bool:
-    product = _selected_product(product_id)
+def _open_product_link(page: Any) -> None:
     add_link = _first_visible([
         page.locator("button[data-e2e*='add-link' i]"),
-        page.get_by_role("button", name=re.compile(r"^add$|^add link$|^添加$", re.I)),
-        page.locator("button:has-text('Add')"),
+        page.get_by_role("button", name=re.compile(r"^add link$|^添加链接$", re.I)),
+        page.get_by_text(re.compile(r"^add link$|^添加链接$", re.I), exact=True)
+            .locator("..").get_by_role("button", name=re.compile(r"^add$|^添加$", re.I)),
     ])
     if not add_link:
         raise ManualReviewRequired("已填写商品信息，但未找到 TikTok Studio 的 Add link 控件")
+    panel = _first_visible([page.locator("aside, div.aside").filter(
+        has=page.locator("[class*='MusicPanel'], [class*='Timeline__'], [class*='SideModuleRenderBox__']")
+    )])
+    if panel:
+        close = _first_visible([panel.get_by_role("button", name=re.compile(r"^close$|^cancel$|^关闭$|^取消$", re.I))])
+        if not close:
+            raise ManualReviewRequired("音乐/视频编辑面板遮挡商品入口，未找到明确关闭按钮，请人工关闭后重试")
+        close.click(timeout=5000)
+        try:
+            panel.wait_for(state="hidden", timeout=5000)
+        except Exception as exc:
+            raise ManualReviewRequired("编辑面板仍未关闭，请人工确认后重试商品绑定") from exc
     add_link.scroll_into_view_if_needed(timeout=3000)
+    try:
+        add_link.click(timeout=5000, trial=True)
+    except Exception as exc:
+        raise ManualReviewRequired("商品入口仍被遮挡或未就绪，请人工确认；未强制点击") from exc
     add_link.click(timeout=5000)
+
+
+def _add_product_link(page: Any, product_id: str, log_dir: Path) -> bool:
+    product = _selected_product(product_id)
+    _open_product_link(page)
     page.wait_for_timeout(800)
     dialog = _first_visible([
         page.get_by_role("dialog"),
