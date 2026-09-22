@@ -305,6 +305,12 @@ Do not write generated files into `scripts/` at runtime. Do not commit files fro
 
 ## Server-Direct Development and Deployment
 
+### Deployment order (user instruction, 2026-09-22)
+
+All changes must be deployed and tested on 4003 first. Promote the verified changes to 4002 only after 4003 validation passes. Preserve environment-specific features and data; do not blanket-merge experimental development features into production. The 2026-09-22 reverse synchronization of already-tested fixes is a one-time exception.
+
+
+
 ### Server ports, deployed trees, and local worktrees
 
 The three long-running web ports on `192.168.1.254` are separate environments.
