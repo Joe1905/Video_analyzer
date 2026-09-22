@@ -257,6 +257,33 @@ def execute(name, args, list_seller, call_seller):
     return body
 
 
+def provider_ok(result):
+    """Expose known business failures without replacing the original envelope."""
+    if not isinstance(result, dict):
+        return None
+    if result.get("isError") is True:
+        return False
+    candidates = [result, result.get("data"), result.get("structuredContent")]
+    for item in result.get("content", []):
+        if isinstance(item, dict) and item.get("type") == "text":
+            try:
+                candidates.append(json.loads(item["text"]))
+            except (ValueError, KeyError):
+                pass
+    known_success = False
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+        if item.get("success") is False or item.get("isError") is True:
+            return False
+        code = item.get("code")
+        if isinstance(code, str) and (code.startswith("ERROR") or code in {"FAIL", "FAILED"}):
+            return False
+        if item.get("success") is True or code in ("OK", "SUCCESS", "0", 0, 200):
+            known_success = True
+    return True if known_success else None
+
+
 def manifest():
     files = {}
     for name in ("sociavault-market-discovery", "market-feasibility"):
@@ -310,7 +337,7 @@ def handle(handler, parsed, list_seller, call_seller, store=None):
             except Exception as exc:
                 result = {"isError": True, "error": "Provider request failed", "error_type": type(exc).__name__}
             call_id = store.save_call(workspace, name, args, result, started)
-            result = {"call_id": call_id, "result": result}
+            result = {"call_id": call_id, "provider_ok": provider_ok(result), "result": result}
         elif handler.command == "GET" and route.startswith("calls/"):
             result = store.call(workspace, route.removeprefix("calls/"))
         elif handler.command == "GET" and route == "categories":

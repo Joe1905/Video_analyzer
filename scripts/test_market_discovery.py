@@ -90,6 +90,13 @@ class ResearchTests(unittest.TestCase):
         self.assertIn("market-feasibility/SKILL.md", manifest["skills"])
         self.assertIn("sociavault-market-discovery/references/category-memory.md", manifest["skills"])
 
+    def test_http_success_can_contain_business_failure(self):
+        envelope = {"isError": False, "content": [{"type": "text", "text": '{"code":"ERROR_PARAM","message":"日期参数错误"}'}]}
+        self.assertFalse(md.provider_ok(envelope))
+        self.assertTrue(md.provider_ok({"content": [{"type": "text", "text": '{"code":"OK","data":{}}'}]}))
+        self.assertFalse(md.provider_ok({"success": True, "data": {"success": False}}))
+        self.assertIsNone(md.provider_ok({"content": [{"type": "text", "text": "unknown"}]}))
+
     def test_http_markdown_history_and_raw_call(self):
         store = self.store
         class Handler(BaseHTTPRequestHandler):
