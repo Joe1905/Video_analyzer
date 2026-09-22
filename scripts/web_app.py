@@ -31,6 +31,7 @@ from html import escape as html_escape
 from html import unescape as html_unescape
 from io import BytesIO
 from storyboard import StoryboardService
+import market_discovery
 from vision_provider import get_status as get_vision_status
 
 # SociaVault TikTok endpoints (mirrored from sociavault_tiktok.py)
@@ -14320,6 +14321,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        if market_discovery.handle(self, parsed, list_mcp_bridge_tools, execute_prefixed_tool):
+            return
         if parsed.path == "/replication":
             page = (SCRIPTS_DIR / "static" / "replication.html").read_text(encoding="utf-8")
             return text_response(self, HTTPStatus.OK, inject_unified_nav(page, parsed.path), "text/html; charset=utf-8")
@@ -14998,6 +15001,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if market_discovery.handle(self, parsed, list_mcp_bridge_tools, execute_prefixed_tool):
+            return
         if handle_replication_http(self, parsed, replication_workflow, "POST"):
             return
         if product_video_workspace.handle(self, parsed, file_response):

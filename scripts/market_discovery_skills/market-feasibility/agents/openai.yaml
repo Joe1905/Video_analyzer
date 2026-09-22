@@ -1,0 +1,4 @@
+interface:
+  display_name: "市场可行性复核"
+  short_description: "跨研究阶段复核机会可行性，保存判断依据，随新证据调整继续或淘汰决定"
+  default_prompt: "使用 $market-feasibility 复核当前方向是否值得投入下一步研究，并将判断依据和变化同步到研究记录。"

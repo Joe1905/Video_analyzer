@@ -1,0 +1,10 @@
+interface:
+  display_name: "SociaVault 市场机会发现"
+  short_description: "自主寻找多个市场机会，逐个复核可行性并保存研究，形成供市场运营使用的日报"
+  default_prompt: "使用 $sociavault-market-discovery 先从真实趋势建立候选池，检索和更新类目档案，自主研究多个市场并逐个评判可行性，输出市场运营日报。"
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "sociavault"
+      description: "SociaVault 多平台公开社媒数据工具"
