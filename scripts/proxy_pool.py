@@ -9,6 +9,7 @@ import http.client
 import hashlib
 import ipaddress
 import json
+from browser_dialogs import observe_dialogs, own_page_dialogs
 import os
 import re
 import signal
@@ -960,9 +961,11 @@ def bootstrap_instagram_profile(account_id: int, session_id: int) -> dict[str, A
 
         with sync_playwright() as playwright:
             browser = playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{debug_port}")
+            observe_dialogs(browser)
             if not browser.contexts:
                 raise ValueError("Chrome 没有可用的浏览器上下文")
             page = browser.contexts[0].pages[0] if browser.contexts[0].pages else browser.contexts[0].new_page()
+            own_page_dialogs(page)
             page.goto(PLATFORM_START_URLS["instagram"], wait_until="domcontentloaded", timeout=30000)
             page.wait_for_timeout(1200)
             href = ""
@@ -1830,6 +1833,7 @@ def _browser_account_avatar(debug_port: int) -> bytes:
 
         with sync_playwright() as playwright:
             browser = playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{debug_port}")
+            observe_dialogs(browser)
             if not browser.contexts or not browser.contexts[0].pages:
                 raise ValueError("Chrome 没有可用的 TikTok 页面")
             page = browser.contexts[0].pages[0]
@@ -1901,6 +1905,7 @@ def _detect_browser_exit_ip(debug_port: int) -> str:
 
         with sync_playwright() as playwright:
             browser = playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{debug_port}")
+            observe_dialogs(browser)
             if not browser.contexts:
                 raise ValueError("Chrome 没有可用的浏览器上下文")
             for target in _browser_ip_check_urls():
@@ -4954,11 +4959,13 @@ def open_observation_platform(payload: dict[str, Any]) -> dict[str, Any]:
 
         with sync_playwright() as playwright:
             browser = playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{debug_port}")
+            observe_dialogs(browser)
             if not browser.contexts:
                 raise ValueError("Chrome 没有可用的浏览器上下文")
             # Reuse the browser's initial business page. A platform switch must
             # not leave a startup TikTok tab plus a newly-created Instagram tab.
             page = browser.contexts[0].pages[0] if browser.contexts[0].pages else browser.contexts[0].new_page()
+            own_page_dialogs(page)
             target_url = (
                 "https://www.tiktok.com/login?lang=en"
                 if login_platform and platform == "tiktok"
