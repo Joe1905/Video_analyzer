@@ -1804,13 +1804,36 @@ def _scan_product_pages(page: Any, product_id: str, log_dir: Path) -> Any | None
     return None
 
 
+def _product_link_field_button(page: Any) -> Any | None:
+    labels = page.get_by_text(re.compile(r"^add link$|^添加链接$", re.I), exact=True)
+    for index in range(labels.count()):
+        label = labels.nth(index)
+        if not label.is_visible():
+            continue
+        field = label
+        # TikTok wraps the label separately from the sibling button. Walk only
+        # the small field, never fall back to an unrelated Add elsewhere.
+        for _ in range(5):
+            field = field.locator("..")
+            if field.evaluate("el => ['BODY','HTML','MAIN'].includes(el.tagName)"):
+                break
+            text = re.sub(r"\s+", " ", field.inner_text()).strip()
+            if not re.fullmatch(r"(?:add link|添加链接)\s*[+＋]?\s*(?:add|添加)", text, re.I):
+                continue
+            buttons = field.get_by_role("button", name=re.compile(r"^[+＋]?\s*(?:add|添加)$", re.I))
+            visible = [buttons.nth(i) for i in range(buttons.count()) if buttons.nth(i).is_visible()]
+            if len(visible) == 1:
+                return visible[0]
+    return None
+
+
 def _open_product_link(page: Any) -> None:
     add_link = _first_visible([
         page.locator("button[data-e2e*='add-link' i]"),
         page.get_by_role("button", name=re.compile(r"^add link$|^添加链接$", re.I)),
-        page.get_by_text(re.compile(r"^add link$|^添加链接$", re.I), exact=True)
-            .locator("..").get_by_role("button", name=re.compile(r"^add$|^添加$", re.I)),
     ])
+    if not add_link:
+        add_link = _product_link_field_button(page)
     if not add_link:
         raise ManualReviewRequired("已填写商品信息，但未找到 TikTok Studio 的 Add link 控件")
     panel = _first_visible([page.locator("aside, div.aside").filter(

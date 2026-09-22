@@ -18,6 +18,18 @@ def main():
         page = browser.new_page()
         page.route('**/*', lambda route: route.abort())
         try:
+            for title, button in [('Add link', 'Add'), ('Add link', '+ Add'), ('添加链接', '＋ 添加')]:
+                page.set_content(f'''<button onclick="window.bad=true">Add</button>
+                    <section><div><div><span>{title}</span></div></div>
+                    <div><button onclick="window.good=true">{button}</button></div></section>''')
+                page.evaluate('window.good=false;window.bad=false')
+                publish._open_product_link(page)
+                assert page.evaluate('window.good && !window.bad')
+            page.set_content('<section><div>Add link</div></section><section><button>Add</button></section>')
+            assert publish._product_link_field_button(page) is None
+            page.set_content('<section><div>Add link</div><button>Add</button><button>Add</button></section>')
+            assert publish._product_link_field_button(page) is None
+            print('PASS: nested field label, plus Add, Chinese field, unrelated and ambiguous Add rejected')
             page.set_content('''<button onclick="window.wrong=true">Add</button>
                 <button onclick="window.linked=(window.linked||0)+1">Add link</button>
                 <div class="aside" style="position:fixed;inset:0;background:white">
