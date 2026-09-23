@@ -1714,15 +1714,24 @@ def _submission_succeeded(page: Any) -> bool:
 
 def _wait_for_submission_result(page: Any, timeout_seconds: float = 45) -> None:
     deadline = time.monotonic() + timeout_seconds
+    confirmation_clicked = False
     while time.monotonic() < deadline:
         confirmation = _first_visible([page.get_by_text(
             re.compile(r"^continue to post\?$|^(?:是否)?继续发布[？?]?$", re.I), exact=True,
         )])
-        if confirmation:
-            raise ResultUncertain(
-                "TikTok 出现“Continue to post?”二次确认，尚未确认提交；"
-                "请在观测窗口核对检查结果及原定时时间，系统未点击 Post now，也不会自动重发"
+        if confirmation and not confirmation_clicked:
+            # Only accept the unfinished-check prompt, not arbitrary warnings.
+            panel = confirmation.locator("xpath=ancestor::*[.//button][1]")
+            pending = re.search(
+                r"still checking your video|before the check is complete|检查尚未完成|检查完成前",
+                panel.inner_text() if panel.count() else "", re.I,
             )
+            button = panel.get_by_role("button", name=re.compile(r"^post now$|^立即发布$", re.I))
+            if not pending or button.count() != 1 or not button.is_visible():
+                raise ResultUncertain("TikTok 出现未知发布确认，需人工核对，系统不会自动重发")
+            confirmation_clicked = True
+            button.click(timeout=5000)
+            deadline = time.monotonic() + timeout_seconds
         if _submission_succeeded(page):
             return
         page.wait_for_timeout(250)
