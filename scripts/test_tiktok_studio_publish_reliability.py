@@ -96,15 +96,24 @@ def main():
             print("PASS: detached input alone is not success; explicit failure wins; fallback only from idle", flush=True)
 
             page.set_content('''<input id="schedule" value="2026-09-25 10:25"><div role="dialog"><h2>Continue to post?</h2>
-                <button onclick="window.posts=(window.posts||0)+1">Post now</button></div>''')
-            expect_error(publish.ResultUncertain, lambda: publish._wait_for_submission_result(page, .5), "二次确认")
-            assert page.evaluate("window.posts || 0") == 0
+                <p>We're still checking your video for potential issues. Do you want to continue posting before the check is complete?</p>
+                <button onclick="window.posts=(window.posts||0)+1;this.parentElement.innerHTML='Video scheduled successfully'">Post now</button></div>''')
+            publish._wait_for_submission_result(page, 1)
+            assert page.evaluate("window.posts") == 1
             assert page.locator('#schedule').input_value() == "2026-09-25 10:25"
+            page.set_content('''<div role="dialog"><h2>Continue to post?</h2><p>We're still checking your video</p>
+                <button onclick="window.posts++">Post now</button></div>''')
+            expect_error(publish.ResultUncertain, lambda: publish._wait_for_submission_result(page, .5), "未收到明确成功信号")
+            assert page.evaluate("window.posts") == 2  # No repeated click while the dialog remains visible.
+            page.set_content('''<div role="dialog"><h2>Continue to post?</h2><p>Other warning</p>
+                <button onclick="window.posts++">Post now</button></div>''')
+            expect_error(publish.ResultUncertain, lambda: publish._wait_for_submission_result(page, .5), "未知发布确认")
+            assert page.evaluate("window.posts") == 2
             page.set_content('<p>Uploaded</p>')
             expect_error(publish.ResultUncertain, lambda: publish._wait_for_submission_result(page, .1), "未收到明确成功信号")
             page.set_content('<p id="status">Uploading</p><script>setTimeout(()=>document.querySelector("#status").textContent="Video scheduled successfully", 300)</script>')
             publish._wait_for_submission_result(page, 2)
-            print("PASS: confirmation is explicit, no Post now click; upload alone is not a publish receipt", flush=True)
+            print("PASS: unfinished-check confirmation clicked once; unknown warnings blocked; success receipt required", flush=True)
 
             # Exercise the actual browser job wrapper twice; no live account or database is used.
             class BrowserHandle:
