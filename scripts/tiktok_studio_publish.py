@@ -1273,8 +1273,19 @@ def _select_custom_time(page: Any, time_field: Any, target: datetime) -> None:
     if open_picker():
         time_field.locator("xpath=..").click(timeout=5000)
         page.wait_for_timeout(150)
-    if time_field.input_value() != expected:
-        raise RuntimeError(f"TikTok 时间设置未生效：期望 {expected}，当前 {time_field.input_value()}")
+    deadline = time.monotonic() + 5
+    stable_since = None
+    current = ""
+    while time.monotonic() < deadline:
+        current = time_field.input_value().strip()
+        if current == expected:
+            stable_since = stable_since or time.monotonic()
+            if time.monotonic() - stable_since >= .5:
+                return
+        else:
+            stable_since = None
+        page.wait_for_timeout(100)
+    raise RuntimeError(f"TikTok 时间设置未生效：期望 {expected}，当前 {current}")
 
 
 def _set_schedule(page: Any, mode: str, scheduled_at: str, log_dir: Path) -> None:
@@ -1668,6 +1679,20 @@ def _wait_for_product_row(page: Any, product_id: str, timeout_ms: int = 8000) ->
 
 
 def _linked_product_labels(page: Any, product_name: str) -> list[Any]:
+    # TikTok removes punctuation/spaces from the confirmed display name.
+    # Restrict tolerant matching to the actual Add link field, not descriptions.
+    field = _product_link_field(page)
+    if field:
+        normalized = "".join(c for c in product_name.casefold() if c.isalnum())
+        matches = []
+        for node in field.locator("span, a, [title]").all():
+            if not node.is_visible():
+                continue
+            values = [node.inner_text(), node.get_attribute("title") or ""]
+            if normalized and any("".join(c for c in v.casefold() if c.isalnum()) == normalized for v in values):
+                matches.append(node)
+        if matches:
+            return matches
     candidates = page.get_by_text(product_name, exact=True).or_(page.get_by_title(product_name, exact=True)).filter(visible=True)
     return [label for label in candidates.all() if not label.locator(
         "xpath=ancestor-or-self::*[@role='dialog' or @aria-modal='true' or self::dialog "
@@ -1813,7 +1838,7 @@ def _scan_product_pages(page: Any, product_id: str, log_dir: Path) -> Any | None
     return None
 
 
-def _product_link_field_button(page: Any) -> Any | None:
+def _product_link_field(page: Any) -> Any | None:
     labels = page.get_by_text(re.compile(r"^add link$|^添加链接$", re.I), exact=True)
     for index in range(labels.count()):
         label = labels.nth(index)
@@ -1827,16 +1852,25 @@ def _product_link_field_button(page: Any) -> Any | None:
             if field.evaluate("el => ['BODY','HTML','MAIN'].includes(el.tagName)"):
                 break
             text = re.sub(r"\s+", " ", field.inner_text()).strip()
-            if not re.fullmatch(r"(?:add link|添加链接)\s*[+＋]?\s*(?:add|添加)", text, re.I):
+            if len(text) > 500 or field.locator("input, textarea, select, [contenteditable='true']").count():
                 continue
             buttons = field.get_by_role("button", name=re.compile(r"^[+＋]?\s*(?:add|添加)$", re.I))
             visible = [buttons.nth(i) for i in range(buttons.count()) if buttons.nth(i).is_visible()]
             if len(visible) == 1:
-                return visible[0]
+                return field
+    return None
+
+
+def _product_link_field_button(page: Any) -> Any | None:
+    field = _product_link_field(page)
+    if field:
+        return _first_visible([field.get_by_role("button", name=re.compile(r"^[+＋]?\s*(?:add|添加)$", re.I))])
     return None
 
 
 def _open_product_link(page: Any) -> None:
+    if _submission_succeeded(page):
+        raise ResultUncertain("商品绑定前出现提交成功提示，需核对平台记录，系统不会重复提交")
     add_link = _first_visible([
         page.locator("button[data-e2e*='add-link' i]"),
         page.get_by_role("button", name=re.compile(r"^add link$|^添加链接$", re.I)),
@@ -1867,6 +1901,18 @@ def _open_product_link(page: Any) -> None:
 
 def _add_product_link(page: Any, product_id: str, log_dir: Path) -> bool:
     product = _selected_product(product_id)
+    if _submission_succeeded(page):
+        raise ResultUncertain("商品绑定前出现提交成功提示，需核对平台记录，系统不会重复提交")
+    field = _product_link_field(page)
+    if field:
+        text = re.sub(r"\s+", " ", field.inner_text()).strip()
+        if not re.fullmatch(r"(?:add link|添加链接)\s*[+＋]?\s*(?:add|添加)", text, re.I):
+            # A display name alone cannot establish product identity.
+            linked_ids = set(field.locator("[data-product-id]").evaluate_all(
+                "nodes => nodes.map(n => n.getAttribute('data-product-id'))"))
+            if linked_ids == {product["product_id"]}:
+                return False
+            raise ProductLinkReviewRequired("页面已有商品关联，无法确认与目标商品 ID 一致，请核对；未重复添加或提交")
     _open_product_link(page)
     page.wait_for_timeout(800)
     dialog = _first_visible([
@@ -1944,9 +1990,11 @@ def _add_product_link(page: Any, product_id: str, log_dir: Path) -> bool:
         re.compile(r"product name will appear on your video|商品名称.*视频", re.I)
     )
     try:
-        product_name_hint.wait_for(state="visible", timeout=15000)
+        product_name_hint.wait_for(state="visible", timeout=60000)
     except Exception as exc:
         page.screenshot(path=str(log_dir / "product-next-failed.png"), full_page=True)
+        if _find_product_row(page, product["product_id"]):
+            raise ManualReviewRequired("商品已选中，但 Next 后 60 秒仍停留商品列表，可能仍在加载；请核对，未重复点击 Next") from exc
         if _handle_parameter_popup(page, log_dir, "product-next"):
             try:
                 product_name_hint.wait_for(state="visible", timeout=10000)
