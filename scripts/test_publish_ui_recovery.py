@@ -43,6 +43,23 @@ def main():
             assert not page.evaluate("window.clicked || false")
             print("PASS: normalized field-only label, existing ID guard, success conflict")
 
+            page.set_content('''<section id="links"><div>Add link</div>
+                <button onclick="document.querySelector('[role=dialog]').hidden=false">+ Add</button></section>
+                <div role="dialog" hidden><h2>Add product links</h2>
+                  <table><tr><td>12345</td><td><input type="radio"></td></tr></table>
+                  <button onclick="this.disabled=true;setTimeout(()=>document.querySelector('#detail').hidden=false,16000)">Next</button>
+                  <div id="detail" hidden><p>Product name will appear on your video</p>
+                    <input value="Light Sword – 360° Spin + RGB">
+                    <button onclick="document.querySelector('[role=dialog]').hidden=true;
+                      document.querySelector('#links').insertAdjacentHTML('beforeend','<span>Light Sword 360Spin RGB</span>')">Add</button>
+                  </div>
+                </div>''')
+            with patch.object(publish, "_selected_product", return_value=product), patch.object(
+                publish, "_handle_parameter_popup", side_effect=AssertionError("Loading is not an unknown popup")
+            ):
+                assert publish._add_product_link(page, "12345", Path(tmp)) is False
+            print("PASS: Next loading beyond 15 seconds and normalized binding complete without popup recovery")
+
             page.set_content('''<div><input id="time" value="08:00"></div>
                 <div class="tiktok-timepicker-time-picker-container" style="height:100px">
                   <div class="tiktok-timepicker-option-list"><span class="tiktok-timepicker-option-text">05</span></div>
