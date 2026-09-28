@@ -14,6 +14,6 @@ function observationUrl(value) {
   if (!/^\d+$/.test(source.port)) throw new Error("观测通道端口无效");
   const prefix = `/proxy/observation/${source.port}/`;
   const target = new URL(prefix + "vnc.html", window.location.origin);
-  target.search = new URLSearchParams({autoconnect: "1", resize: "scale", path: prefix.slice(1) + "websockify"});
+  target.search = new URLSearchParams({autoconnect: "1", resize: "scale", path: prefix + "websockify"});
   return target.href;
 }
