@@ -16,6 +16,11 @@ for (const origin of ["https://apps.ruitech.hk", "https://apps.example", "http:/
   const result = new URL(resolve(origin));
   assert.equal(result.origin, origin);
   assert.equal(result.pathname, "/proxy/observation/6082/vnc.html");
-  assert.equal(result.searchParams.get("path"), "proxy/observation/6082/websockify");
+  // Installed noVNC resolves path against location.href when host is unset.
+  const websocket = new URL(result.searchParams.get("path"), result.href);
+  websocket.protocol = result.protocol === "https:" ? "wss:" : "ws:";
+  assert.equal(websocket.pathname, "/proxy/observation/6082/websockify");
+  assert.equal(websocket.host, result.host);
+  assert.equal(websocket.protocol, result.protocol === "https:" ? "wss:" : "ws:");
 }
 console.log("Observation URL routing passed");
