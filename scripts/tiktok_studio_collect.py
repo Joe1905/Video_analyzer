@@ -21,7 +21,7 @@ from browser_page_state import (
     navigate_with_retries,
     wait_for_page_state,
 )
-from feishu_capabilities import FeishuCapabilityClient, FeishuCapabilityError
+from feishu_capabilities import FeishuCapabilityClient, FeishuCapabilityError, bitable_record_payload
 
 
 ROOT = Path.cwd()
@@ -640,12 +640,7 @@ def _sync_result_to_feishu(result_id: int, job: dict[str, Any], payload: dict[st
     target = _job_feishu_target(job)
     try:
         fields = _feishu_fields(target, payload)
-        request = {
-            "appToken": target.get("appToken"),
-            "wikiToken": target.get("wikiToken"),
-            "tableId": target.get("tableId"),
-            "fields": fields,
-        }
+        request = bitable_record_payload(target, fields)
         with proxy_pool.connect() as conn:
             current = conn.execute(
                 "SELECT feishu_record_id FROM collect_results WHERE id = ?",

@@ -20,7 +20,7 @@ import requests
 from PIL import Image
 
 import proxy_pool
-from feishu_capabilities import FeishuCapabilityClient, FeishuCapabilityError
+from feishu_capabilities import FeishuCapabilityClient, FeishuCapabilityError, bitable_record_payload
 from sociavault_tiktok_shop import SociaVaultClient, DEFAULT_API_BASE
 
 ROOT = Path.cwd()
@@ -662,8 +662,7 @@ def write_table(payload):
     if not fields:
         raise ValueError("所选表格没有匹配的视频字段")
     key = (target["appToken"], target["tableId"], video["video_id"])
-    request = {"appToken": key[0], "wikiToken": target.get("wikiToken"),
-               "tableId": key[1], "fields": fields}
+    request = bitable_record_payload(target, fields)
     with _table_lock:
         with database() as conn:
             row = conn.execute("SELECT record_id FROM video_bitable_records WHERE app_token=? AND table_id=? AND video_id=?", key).fetchone()
