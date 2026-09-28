@@ -20,6 +20,7 @@ import requests
 from PIL import Image
 
 import proxy_pool
+from feishu_capabilities import FeishuCapabilityClient, FeishuCapabilityError
 from sociavault_tiktok_shop import SociaVaultClient, DEFAULT_API_BASE
 
 ROOT = Path.cwd()
@@ -28,6 +29,7 @@ MEDIA = ROOT / "output" / "product_videos"
 _lock = threading.RLock()
 _images_lock = threading.Lock()
 _audio_lock = threading.Lock()
+_table_lock = threading.Lock()
 _pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="product-videos")
 _owner = uuid.uuid4().hex
 _initialized = False
@@ -90,6 +92,9 @@ def database():
                 CREATE TABLE IF NOT EXISTS account_video_pages (
                     product_id TEXT PRIMARY KEY, cursor TEXT NOT NULL, has_more INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS shared_video_items (video_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS video_bitable_records (
+                    app_token TEXT NOT NULL, table_id TEXT NOT NULL, video_id TEXT NOT NULL,
+                    record_id TEXT NOT NULL, PRIMARY KEY(app_token, table_id, video_id));
             """)
             legacy = {}
             for table in ("product_video_items", "account_video_items"):
@@ -607,6 +612,73 @@ def prepare_media(job):
         job["message"] = "音频提取、语音转写和中文翻译已完成。"
 
 
+def table_fields(target, video, source):
+    values = {"视频ID": video.get("video_id"), "视频标题": video.get("title"),
+              "视频链接": video.get("url"), "原视频链接": video.get("url"),
+              "账号名称": source.get("handle") or video.get("author"), "作者": video.get("author"),
+              "发布时间": video.get("published_at"), "播放量": video.get("views"),
+              "累计播放量": video.get("views"), "点赞": video.get("likes"), "点赞数": video.get("likes"),
+              "评论": video.get("comments"), "评论数": video.get("comments"),
+              "分享": video.get("shares"), "分享数": video.get("shares"),
+              "收藏": video.get("saves"), "收藏数": video.get("saves"), "时长": video.get("duration")}
+    result = {}
+    for field in target.get("fields", []):
+        name, kind = field.get("name"), field.get("type")
+        value = values.get(name)
+        if value is None or value == "" or kind not in {1, 2, 3, 5, 15}:
+            continue
+        if name == "发布时间":
+            if kind == 5:
+                value = int(value * 1000)
+            elif kind == 1:
+                from datetime import datetime, timezone
+                value = datetime.fromtimestamp(value, timezone.utc).isoformat()
+            else:
+                continue
+        elif kind == 5:
+            continue
+        if kind == 15:
+            if name not in {"视频链接", "原视频链接"} or not safe_url(value):
+                continue
+            value = {"text": "原视频", "link": value}
+        elif kind == 2:
+            if not isinstance(value, (int, float)):
+                continue
+        elif kind in {1, 3}:
+            value = str(value)
+        result[name] = value
+    return result
+
+
+def write_table(payload):
+    video = item(str(payload.get("product_id") or ""), str(payload.get("video_id") or ""))
+    source = product(payload["product_id"])
+    client = FeishuCapabilityClient()
+    target = next((t for t in client.list_bitable_targets()["targets"]
+                   if t.get("appToken") == payload.get("appToken") and t.get("tableId") == payload.get("tableId")), None)
+    if not target:
+        raise ValueError("请选择当前白名单中的多维表格")
+    fields = table_fields(target, video, source)
+    if not fields:
+        raise ValueError("所选表格没有匹配的视频字段")
+    key = (target["appToken"], target["tableId"], video["video_id"])
+    request = {"appToken": key[0], "tableId": key[1], "fields": fields}
+    with _table_lock:
+        with database() as conn:
+            row = conn.execute("SELECT record_id FROM video_bitable_records WHERE app_token=? AND table_id=? AND video_id=?", key).fetchone()
+        if row:
+            request["recordId"] = row[0]
+            result = client.update_bitable_record(request)
+        else:
+            result = client.create_bitable_record(request)
+        record_id = result.get("recordId") or (row[0] if row else "")
+        if not record_id:
+            raise FeishuCapabilityError("飞书未返回记录 ID，请先核查表格，避免重复新增")
+        with database() as conn:
+            conn.execute("INSERT OR REPLACE INTO video_bitable_records VALUES (?,?,?,?)", (*key, record_id))
+    return {"video_id": video["video_id"], "record_id": record_id, "updated": bool(row)}
+
+
 def reply(handler, code, data, content_type="application/json; charset=utf-8", cache="no-store"):
     body = data if isinstance(data, bytes) else json.dumps(data, ensure_ascii=False).encode("utf-8")
     handler.send_response(code)
@@ -631,18 +703,25 @@ def handle(handler, parsed, serve_file):
     vid = query.get("video_id", [""])[0]
     endpoint = parsed.path.removeprefix("/api/product-videos/")
     try:
-        if handler.command == "POST" and endpoint == "jobs":
+        if handler.command == "POST" and endpoint in {"jobs", "write-table"}:
             length = int(handler.headers.get("Content-Length", "0"))
             if not 0 < length <= 16384:
                 raise ValueError("请求大小无效")
             payload = json.loads(handler.rfile.read(length))
             if not isinstance(payload, dict):
                 raise ValueError("请求必须为 JSON 对象")
-            reply(handler, 202, start(payload))
+            reply(handler, 202 if endpoint == "jobs" else 200, start(payload) if endpoint == "jobs" else write_table(payload))
         elif handler.command != "GET":
             reply(handler, 405, {"error": "不支持的操作"})
         elif endpoint == "accounts":
             reply(handler, 200, {"products": accounts()})
+        elif endpoint == "tables":
+            state = snapshot(pid)
+            targets = FeishuCapabilityClient().list_bitable_targets()["targets"]
+            for target in targets:
+                target["matched_fields"] = sorted({name for video in state["videos"]
+                                                   for name in table_fields(target, video, state["product"])})
+            reply(handler, 200, {"targets": targets})
         elif endpoint == "list":
             reply(handler, 200, snapshot(pid))
         elif endpoint == "image":
@@ -661,6 +740,8 @@ def handle(handler, parsed, serve_file):
             serve_file(handler, path, "audio/mpeg" if kind == "audio" else "video/mp4", f"{vid}.{path.suffix[1:]}", path.stat().st_size, download=query.get("download", ["0"])[0] == "1")
         else:
             reply(handler, 404, {"error": "接口不存在"})
+    except FeishuCapabilityError as exc:
+        reply(handler, exc.status, {"error": str(exc)})
     except (ValueError, FileNotFoundError) as exc:
         reply(handler, 404 if isinstance(exc, FileNotFoundError) else 400, {"error": public_error(exc)})
     except Exception as exc:

@@ -233,8 +233,28 @@ def browser_checks():
             assert page.locator('#accountsTab').get_attribute('aria-pressed') == 'true'
             assert page.locator('#videoSort').input_value() == 'published_at'
             assert page.locator('.video-card').count() == 2
+            page.route("**/api/product-videos/tables?*", lambda route: route.fulfill(json={"targets":[{"appToken":"test-app","tableId":"test-table","appName":"测试表格","tableName":"视频","matched_fields":["点赞"]}]}))
+            writes=[]
+            def write_route(route):
+                writes.append(route.request.post_data_json)
+                route.fulfill(json={"record_id":"test-record"})
+            page.route("**/api/product-videos/write-table", write_route)
+            page.locator('#toggleSelection').click()
+            page.locator('#selectPage').check()
+            assert '已选 2 条' in page.locator('#selectionCount').inner_text()
+            page.locator('#batchAction').select_option('write')
+            page.locator('#tableChoice').select_option('0')
+            assert '点赞' in page.locator('#tableFields').inner_text()
+            page.locator('#confirmTable').click()
+            page.wait_for_function("document.querySelector('#tableProgress').textContent.includes('成功 2 条')")
+            assert len(writes)==2 and all(w['product_id'].startswith('account:') for w in writes)
+            assert page.locator('#confirmTable').is_disabled()
+            page.keyboard.press('Escape')
+            page.locator('#selectPage').check()
             page.locator('#productsTab').click()
             page.wait_for_function("document.querySelector('#visibleVideos').textContent === '1'")
+            assert '已选 0 条' in page.locator('#selectionCount').inner_text()
+            page.locator('#toggleSelection').click()
             assert page.locator(".video-card").count()==1
             assert page.locator("#videos script").count()==0
             page.locator("#productFilter").fill("not found")
@@ -290,12 +310,17 @@ def browser_checks():
                 page.locator('#reloadProducts').click()
                 page.wait_for_function("document.querySelector('#pageInfo').textContent.includes('共 22 条')")
                 seen = []
+                page.locator('#toggleSelection').click()
+                page.locator('#selectPage').check()
                 for count in (10,10,2):
                     assert page.locator('.video-card').count() == count
                     seen += page.locator('.video-cover').evaluate_all("els => els.map(el => el.dataset.media)")
                     if count == 10:
                         page.locator('#nextPage').click()
                 assert len(set(seen)) == 22
+                assert '已选 10 条' in page.locator('#selectionCount').inner_text()
+                assert not page.locator('#selectPage').is_checked()
+                page.locator('#toggleSelection').click()
                 assert page.locator('#nextPage').is_disabled()
                 page.locator('#videoFilter').fill('Pagination 0')
                 assert page.locator('.video-card').count() == 1
@@ -320,12 +345,40 @@ def browser_checks():
     finally:server.shutdown();server.server_close()
 
 
+def table_checks():
+    from unittest.mock import Mock
+    target={"appToken":"app-test","tableId":"tbl-test","fields":[
+        {"name":"视频ID","type":1},{"name":"点赞","type":2},
+        {"name":"视频链接","type":15},{"name":"发布时间","type":5},
+        {"name":"24小时播放量","type":1},{"name":"累计播放量","type":1}]}
+    video={"video_id":VID,"likes":0,"views":123,"published_at":1700000000,"url":"https://www.tiktok.com/@test/video/"+VID}
+    fields=app.table_fields(target,video,{})
+    assert fields['点赞']==0 and fields['累计播放量']=='123'
+    assert fields['发布时间']==1700000000000 and '24小时播放量' not in fields
+    assert fields['视频链接']['link']==video['url']
+    fake=Mock()
+    fake.list_bitable_targets.return_value={"targets":[target]}
+    fake.create_bitable_record.return_value={"recordId":"rec-test"}
+    fake.update_bitable_record.return_value={"recordId":"rec-test"}
+    payload={"product_id":PID,"video_id":VID,"appToken":"app-test","tableId":"tbl-test"}
+    with patch.object(app,'FeishuCapabilityClient',return_value=fake):
+        assert not app.write_table(payload)['updated']
+        assert app.write_table(payload)['updated']
+        assert fake.create_bitable_record.call_count==1 and fake.update_bitable_record.call_count==1
+        for invalid in ({**payload,'tableId':'unauthorized'},{**payload,'video_id':'999999'}):
+            try:app.write_table(invalid)
+            except ValueError:pass
+            else:raise AssertionError('Invalid target or source membership accepted')
+    print('PASS: table mapping, zero metrics, allowlist, membership, repeat update',flush=True)
+
+
 def main():
     with tempfile.TemporaryDirectory() as temp:
         directory=Path(temp)
         with patch.object(proxy_pool,"DATA_DIR",directory),patch.object(proxy_pool,"DB_PATH",directory/"test.sqlite"),patch.object(app,"DIRECTORY",directory/"cache"),patch.object(app,"MEDIA",directory/"media"):
             app._initialized=False
             backend_checks(directory)
+            table_checks()
             account_checks()
             browser_checks()
             shared_video_checks()
