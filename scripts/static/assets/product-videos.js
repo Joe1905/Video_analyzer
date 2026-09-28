@@ -1,6 +1,7 @@
 "use strict";
 const $ = id => document.getElementById(id);
 const state = {mode:"products", page:1, hasMore:false, librarySeq:0, products:[], selected:"", videos:[], job:null, loading:false, timer:null, seq:0, editing:null, imports:[], media:null, mediaState:null, playRequested:"", submitting:false};
+Object.assign(state,{selecting:false,checked:new Set(),pageVideos:[],tables:[],writing:false});
 const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
 const fmt = value => value == null ? "—" : Number(value).toLocaleString("zh-CN");
 const date = (value, full=false) => value ? new Date(value*1000).toLocaleString("zh-CN", full ? {month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"} : {year:"numeric",month:"2-digit",day:"2-digit"}) : "—";
@@ -52,6 +53,7 @@ function renderOverview() {
   $("shopLink").href=url(p.product_url)||`https://www.tiktok.com/shop/pdp/${p.product_id}`;
 }
 async function selectProduct(pid) {
+  state.checked.clear();
   clearTimeout(state.timer);state.seq++;state.selected=pid;state.page=1;state.videos=[];state.job=null;state.hasMore=false;state.loading=true;
   $("videoFilter").value="";renderProducts();renderOverview();renderVideos();await loadVideos();
 }
@@ -68,6 +70,46 @@ function card(v) {
   const p=current();const stats=[["views","播放"],["likes","点赞"],["comments","评论"],["shares","分享"],["saves","收藏"]];
   return `<article class="video-card"><button class="video-cover" data-media="${esc(v.video_id)}" aria-label="查看视频：${esc(v.title||v.video_id)}">${v.cover_url?image(p,v):'<span class="cover-empty">暂无封面</span>'}<span class="play-icon" aria-hidden="true">▷</span>${v.downloaded?'<span class="download-badge">已缓存</span>':""}<span class="cover-meta"><span>${date(v.published_at)}</span><span>${Math.round(v.duration||0)}s</span></span></button><div class="video-body"><div class="video-author">${esc(v.author||"未知作者")}</div><h4 class="video-title">${esc(v.title||"无标题视频")}</h4><div class="video-stats">${stats.map(([key,label])=>`<div><b>${fmt(v[key])}</b><span>${label}</span></div>`).join("")}<div><b>${v.duration?Math.round(v.duration)+"s":"—"}</b><span>时长</span></div></div><div class="video-actions"><a href="${esc(url(v.url))}" target="_blank" rel="noopener noreferrer">原视频 ↗</a><button data-refresh="${esc(v.video_id)}" ${busy()?"disabled":""}>更新数据</button><button data-media="${esc(v.video_id)}">播放 / 音频</button></div><div class="video-time">${v.updated_at?"详细数据更新于 "+date(v.updated_at,true):"基础数据获取于 "+date(v.basic_updated_at,true)}</div>${v.error?`<div class="video-error">${esc(v.error)}</div>`:""}</div></article>`;
 }
+function renderSelection() {
+  $("toggleSelection").textContent=state.selecting?"取消多选":"多选";
+  $("toggleSelection").setAttribute("aria-pressed",String(state.selecting));
+  for(const id of ["selectPageLabel","selectionCount","batchAction"])$(id).hidden=!state.selecting;
+  $("selectionCount").textContent=`已选 ${state.checked.size} 条（含其他页）`;
+  $("batchAction").disabled=!state.checked.size;
+  const count=state.pageVideos.filter(v=>state.checked.has(v.video_id)).length;
+  $("selectPage").checked=count>0&&count===state.pageVideos.length;
+  $("selectPage").indeterminate=count>0&&count<state.pageVideos.length;
+  $("selectPage").disabled=!state.pageVideos.length;
+  document.querySelectorAll(".video-card").forEach((el,i)=>{
+    const v=state.pageVideos[i];if(!v)return;
+    el.classList.toggle("is-selected",state.checked.has(v.video_id));
+    if(state.selecting){const label=document.createElement("label");label.className="video-select";label.innerHTML=`<input type="checkbox" data-select-video="${esc(v.video_id)}" ${state.checked.has(v.video_id)?"checked":""} aria-label="选择视频：${esc(v.title||v.video_id)}">选择`;el.prepend(label);}
+  });
+}
+async function openTable() {
+  if(!state.checked.size)return;
+  state.tables=[];$("tableSummary").textContent=`将写入已选的 ${state.checked.size} 条视频`;
+  $("tableChoice").innerHTML='<option value="">正在加载表格…</option>';$("confirmTable").disabled=true;
+  $("tableFields").textContent="";$("tableProgress").textContent="";inlineError("tableError");$("tableDialog").showModal();
+  try {const data=await api(endpoint("tables"));state.tables=data.targets||[];
+    $("tableChoice").innerHTML='<option value="">请选择表格</option>'+state.tables.map((t,i)=>`<option value="${i}" ${t.matched_fields.length?"":"disabled"}>${esc(t.appName||t.appToken)} / ${esc(t.tableName||t.tableId)}${t.matched_fields.length?"":"（无匹配字段）"}</option>`).join("");
+    if(!state.tables.length)inlineError("tableError","暂无已授权表格，请先在飞书表格配置中添加。");
+  }catch(e){$("tableChoice").innerHTML='<option value="">表格加载失败</option>';inlineError("tableError",e.message);}
+}
+async function writeTable() {
+  const target=state.tables[$("tableChoice").value];if(state.writing||!target||!state.checked.size)return;
+  state.writing=true;const ids=[...state.checked],pid=state.selected;let success=0;const failures=[];
+  $("confirmTable").disabled=true;$("tableChoice").disabled=true;inlineError("tableError");
+  document.querySelectorAll('[data-close="tableDialog"]').forEach(el=>el.disabled=true);
+  try {for(const video_id of ids){
+    $("tableProgress").textContent=`正在写入 ${success+failures.length+1} / ${ids.length}…`;
+    try {await api("/api/product-videos/write-table",{product_id:pid,video_id,appToken:target.appToken,tableId:target.tableId});success++;state.checked.delete(video_id);}
+    catch(e){failures.push(`${video_id}：${e.message}`);}
+  }}finally{state.writing=false;$("tableChoice").disabled=false;document.querySelectorAll('[data-close="tableDialog"]').forEach(el=>el.disabled=false);renderVideos();}
+  $("tableProgress").textContent=`写入完成：成功 ${success} 条，失败 ${failures.length} 条。`;
+  inlineError("tableError",failures.join("\n"));$("confirmTable").disabled=!failures.length;
+  $("tableSummary").textContent=failures.length?`仍选中 ${failures.length} 条未成功的视频，可核查后重试。`:"已选视频全部写入完成。";
+}
 function renderVideos() {
   const p=current();if(!p)return;
   $("refreshAll").disabled=busy()||state.loading;$("editProduct").disabled=busy();$("deleteProduct").disabled=busy();
@@ -82,6 +124,7 @@ function renderVideos() {
   const visible=state.videos.filter(v=>(v.title+" "+v.author+" "+v.video_id).toLowerCase().includes(q)).sort((a,b)=>(b[key]??-1)-(a[key]??-1));
   $("visibleVideos").textContent=visible.length;
   const pages=Math.max(1,Math.ceil(visible.length/10));state.page=Math.min(state.page,pages);
+  state.pageVideos=state.loading?[]:visible.slice((state.page-1)*10,state.page*10);
   $("videoPagination").hidden=state.loading||!visible.length;
   $("pageInfo").textContent=`第 ${state.page} / ${pages} 页 · 共 ${visible.length} 条`;
   $("previousPage").disabled=state.page===1;$("nextPage").disabled=state.page===pages;
@@ -89,6 +132,7 @@ function renderVideos() {
   $("lastUpdated").textContent=latest?`最近数据时间 ${date(latest,true)} · 点击更新获取最新指标` : "按需查询，不会自动消耗接口额度";
   const markup=state.loading?'<div class="empty">正在读取已保存的视频…</div>':visible.length?visible.slice((state.page-1)*10,state.page*10).map(card).join(""):state.videos.length?'<div class="empty">没有匹配的视频，试试其他关键词。</div>':busy()?'<div class="empty"><h3>正在查找关联视频…</h3><p>结果会自动显示，可以稍后回来查看。</p></div>':`<div class="empty"><h3>${state.job?"暂无已收录的视频":(p.handle?"还没有查询这个账号":"还没有查询这个商品")}</h3><p>${state.job?"本次没有返回关联视频，不代表没有带货内容。":(p.handle?"查询账号最新一页视频及指标。":"查询该商品的关联视频，并保存播放、点赞等表现数据。")}</p><button class="primary" data-refresh-all>${p.handle?"查询最新一页":"查询关联视频"}</button></div>`;
   if($("videos").innerHTML!==markup)$("videos").innerHTML=markup;
+  renderSelection();
 }
 async function startJob(action="refresh", vid="") {
   if(busy())return;
@@ -147,6 +191,8 @@ document.addEventListener("error",event=>{if(event.target.tagName==="IMG"){event
 document.addEventListener("click",event=>{
   const target=event.target.closest("button");if(!target||target.disabled)return;
   const run=async()=>{
+    if(target.id==="toggleSelection"){state.selecting=!state.selecting;state.checked.clear();renderVideos();return;}
+    if(target.id==="confirmTable")return writeTable();
     if(target.dataset.close){$(target.dataset.close).close();return;}
     if(target.dataset.library)return switchLibrary(target.dataset.library);
     if(target.dataset.page){state.page+=Number(target.dataset.page);renderVideos();$("videos").scrollIntoView({block:"start"});return;}
@@ -161,4 +207,9 @@ document.addEventListener("click",event=>{
 $("productFilter").addEventListener("input",renderProducts);$("videoFilter").addEventListener("input",()=>{state.page=1;renderVideos();});$("videoSort").addEventListener("change",()=>{state.page=1;renderVideos();});$("productForm").addEventListener("submit",saveProduct);
 $("importQuery").addEventListener("keydown",event=>{if(event.key==="Enter"){event.preventDefault();searchImport();}});
 $("mediaDialog").addEventListener("close",()=>{document.querySelectorAll("#mediaDialog video,#mediaDialog audio").forEach(el=>el.pause());state.media=null;});
+$("videos").addEventListener("change",event=>{const id=event.target.dataset.selectVideo;if(id){if(event.target.checked)state.checked.add(id);else state.checked.delete(id);renderVideos();}});
+$("selectPage").addEventListener("change",event=>{for(const v of state.pageVideos){if(event.target.checked)state.checked.add(v.video_id);else state.checked.delete(v.video_id);}renderVideos();});
+$("batchAction").addEventListener("change",()=>{if($("batchAction").value==="write")openTable();$("batchAction").value="";});
+$("tableChoice").addEventListener("change",()=>{const target=state.tables[$("tableChoice").value];$("confirmTable").disabled=!target||!state.checked.size;$("tableFields").textContent=target?"可写入字段："+target.matched_fields.join("、"):"";});
+$("tableDialog").addEventListener("cancel",event=>{if(state.writing)event.preventDefault();});
 switchLibrary("accounts").catch(e=>{$("products").innerHTML='<div class="empty small">账号池加载失败，请点击刷新列表重试。</div>';toast(e.message,true);});
