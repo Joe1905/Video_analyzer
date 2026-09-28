@@ -2,6 +2,10 @@
 const $ = id => document.getElementById(id);
 const state = {mode:"products", page:1, hasMore:false, librarySeq:0, products:[], selected:"", videos:[], job:null, loading:false, timer:null, seq:0, editing:null, imports:[], media:null, mediaState:null, playRequested:"", submitting:false};
 Object.assign(state,{selecting:false,checked:new Set(),pageVideos:[],tables:[],writing:false});
+const tableCacheKey="video-table-targets-v1";
+const videoTableNames=["视频数据表-鹏飞","视频数据表-丽娜","视频数据表-小周"];
+let tableRequest=null;
+try {const cached=JSON.parse(sessionStorage.getItem(tableCacheKey));if(Array.isArray(cached))state.tables=cached.filter(t=>videoTableNames.includes(t.appName)&&t.tableName==="数据表");}catch{}
 const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
 const fmt = value => value == null ? "—" : Number(value).toLocaleString("zh-CN");
 const date = (value, full=false) => value ? new Date(value*1000).toLocaleString("zh-CN", full ? {month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"} : {year:"numeric",month:"2-digit",day:"2-digit"}) : "—";
@@ -83,29 +87,52 @@ function renderSelection() {
   document.querySelectorAll(".video-card").forEach((el,i)=>{
     const v=state.pageVideos[i];if(!v)return;
     el.classList.toggle("is-selected",state.checked.has(v.video_id));
-    if(state.selecting){const label=document.createElement("label");label.className="video-select";label.innerHTML=`<input type="checkbox" data-select-video="${esc(v.video_id)}" ${state.checked.has(v.video_id)?"checked":""} aria-label="选择视频：${esc(v.title||v.video_id)}">选择`;el.prepend(label);}
+    let label=el.querySelector(".video-select");
+    if(!label&&state.selecting){label=document.createElement("label");label.className="video-select";label.innerHTML=`<input type="checkbox" data-select-video="${esc(v.video_id)}" aria-label="选择视频：${esc(v.title||v.video_id)}">选择`;el.prepend(label);}
+    if(label){label.hidden=!state.selecting;label.querySelector("input").checked=state.checked.has(v.video_id);}
   });
+}
+function tableChoiceChanged() {
+  const target=state.tables[$("tableChoice").value];
+  $("confirmTable").disabled=state.writing||!target||!state.checked.size;
+  $("tableFields").textContent=target?"表格支持字段："+(target.matched_fields||[]).join("、"):"";
+  const link=url(target?.url);$("openTableLink").hidden=!link;
+  if(link)$("openTableLink").href=link;else $("openTableLink").removeAttribute("href");
+}
+async function loadTables(refresh=false) {
+  $("refreshTables").disabled=true;inlineError("tableError");
+  try {
+    if(refresh||!state.tables.length){
+      $("tableChoice").innerHTML='<option value="">正在加载表格…</option>';tableChoiceChanged();
+      if(!tableRequest)tableRequest=api(endpoint("tables")).then(data=>{
+        state.tables=(data.targets||[]).filter(t=>videoTableNames.includes(t.appName)&&t.tableName==="数据表").sort((a,b)=>videoTableNames.indexOf(a.appName)-videoTableNames.indexOf(b.appName));
+        try {sessionStorage.setItem(tableCacheKey,JSON.stringify(state.tables));}catch{}
+      }).finally(()=>{tableRequest=null;});
+      await tableRequest;
+    }
+    $("tableChoice").innerHTML='<option value="">请选择表格</option>'+state.tables.map((t,i)=>`<option value="${i}">${esc(t.appName)} / ${esc(t.tableName)}</option>`).join("");
+    tableChoiceChanged();
+    if(!state.tables.length)inlineError("tableError","暂无可用的视频数据表，请检查表格授权后刷新。");
+  }catch(e){$("tableChoice").innerHTML='<option value="">表格加载失败</option>';tableChoiceChanged();inlineError("tableError",e.message);}
+  finally{$("refreshTables").disabled=false;}
 }
 async function openTable() {
   if(!state.checked.size)return;
-  state.tables=[];$("tableSummary").textContent=`将写入已选的 ${state.checked.size} 条视频`;
-  $("tableChoice").innerHTML='<option value="">正在加载表格…</option>';$("confirmTable").disabled=true;
+  $("tableSummary").textContent=`将写入已选的 ${state.checked.size} 条视频`;
+  $("confirmTable").disabled=true;
   $("tableFields").textContent="";$("tableProgress").textContent="";inlineError("tableError");$("tableDialog").showModal();
-  try {const data=await api(endpoint("tables"));state.tables=data.targets||[];
-    $("tableChoice").innerHTML='<option value="">请选择表格</option>'+state.tables.map((t,i)=>`<option value="${i}" ${t.matched_fields.length?"":"disabled"}>${esc(t.appName||t.appToken)} / ${esc(t.tableName||t.tableId)}${t.matched_fields.length?"":"（无匹配字段）"}</option>`).join("");
-    if(!state.tables.length)inlineError("tableError","暂无已授权表格，请先在飞书表格配置中添加。");
-  }catch(e){$("tableChoice").innerHTML='<option value="">表格加载失败</option>';inlineError("tableError",e.message);}
+  await loadTables();
 }
 async function writeTable() {
   const target=state.tables[$("tableChoice").value];if(state.writing||!target||!state.checked.size)return;
   state.writing=true;const ids=[...state.checked],pid=state.selected;let success=0;const failures=[];
-  $("confirmTable").disabled=true;$("tableChoice").disabled=true;inlineError("tableError");
+  $("confirmTable").disabled=true;$("tableChoice").disabled=true;$("refreshTables").disabled=true;inlineError("tableError");
   document.querySelectorAll('[data-close="tableDialog"]').forEach(el=>el.disabled=true);
   try {for(const video_id of ids){
     $("tableProgress").textContent=`正在写入 ${success+failures.length+1} / ${ids.length}…`;
     try {await api("/api/product-videos/write-table",{product_id:pid,video_id,appToken:target.appToken,tableId:target.tableId});success++;state.checked.delete(video_id);}
     catch(e){failures.push(`${video_id}：${e.message}`);}
-  }}finally{state.writing=false;$("tableChoice").disabled=false;document.querySelectorAll('[data-close="tableDialog"]').forEach(el=>el.disabled=false);renderVideos();}
+  }}finally{state.writing=false;$("tableChoice").disabled=false;$("refreshTables").disabled=false;document.querySelectorAll('[data-close="tableDialog"]').forEach(el=>el.disabled=false);renderSelection();}
   $("tableProgress").textContent=`写入完成：成功 ${success} 条，失败 ${failures.length} 条。`;
   inlineError("tableError",failures.join("\n"));$("confirmTable").disabled=!failures.length;
   $("tableSummary").textContent=failures.length?`仍选中 ${failures.length} 条未成功的视频，可核查后重试。`:"已选视频全部写入完成。";
@@ -191,7 +218,8 @@ document.addEventListener("error",event=>{if(event.target.tagName==="IMG"){event
 document.addEventListener("click",event=>{
   const target=event.target.closest("button");if(!target||target.disabled)return;
   const run=async()=>{
-    if(target.id==="toggleSelection"){state.selecting=!state.selecting;state.checked.clear();renderVideos();return;}
+    if(target.id==="toggleSelection"){state.selecting=!state.selecting;state.checked.clear();renderSelection();return;}
+    if(target.id==="refreshTables")return loadTables(true);
     if(target.id==="confirmTable")return writeTable();
     if(target.dataset.close){$(target.dataset.close).close();return;}
     if(target.dataset.library)return switchLibrary(target.dataset.library);
@@ -207,9 +235,9 @@ document.addEventListener("click",event=>{
 $("productFilter").addEventListener("input",renderProducts);$("videoFilter").addEventListener("input",()=>{state.page=1;renderVideos();});$("videoSort").addEventListener("change",()=>{state.page=1;renderVideos();});$("productForm").addEventListener("submit",saveProduct);
 $("importQuery").addEventListener("keydown",event=>{if(event.key==="Enter"){event.preventDefault();searchImport();}});
 $("mediaDialog").addEventListener("close",()=>{document.querySelectorAll("#mediaDialog video,#mediaDialog audio").forEach(el=>el.pause());state.media=null;});
-$("videos").addEventListener("change",event=>{const id=event.target.dataset.selectVideo;if(id){if(event.target.checked)state.checked.add(id);else state.checked.delete(id);renderVideos();}});
-$("selectPage").addEventListener("change",event=>{for(const v of state.pageVideos){if(event.target.checked)state.checked.add(v.video_id);else state.checked.delete(v.video_id);}renderVideos();});
+$("videos").addEventListener("change",event=>{const id=event.target.dataset.selectVideo;if(id){if(event.target.checked)state.checked.add(id);else state.checked.delete(id);renderSelection();}});
+$("selectPage").addEventListener("change",event=>{for(const v of state.pageVideos){if(event.target.checked)state.checked.add(v.video_id);else state.checked.delete(v.video_id);}renderSelection();});
 $("batchAction").addEventListener("change",()=>{if($("batchAction").value==="write")openTable();$("batchAction").value="";});
-$("tableChoice").addEventListener("change",()=>{const target=state.tables[$("tableChoice").value];$("confirmTable").disabled=!target||!state.checked.size;$("tableFields").textContent=target?"可写入字段："+target.matched_fields.join("、"):"";});
+$("tableChoice").addEventListener("change",tableChoiceChanged);
 $("tableDialog").addEventListener("cancel",event=>{if(state.writing)event.preventDefault();});
 switchLibrary("accounts").catch(e=>{$("products").innerHTML='<div class="empty small">账号池加载失败，请点击刷新列表重试。</div>';toast(e.message,true);});

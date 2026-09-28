@@ -233,17 +233,47 @@ def browser_checks():
             assert page.locator('#accountsTab').get_attribute('aria-pressed') == 'true'
             assert page.locator('#videoSort').input_value() == 'published_at'
             assert page.locator('.video-card').count() == 2
-            page.route("**/api/product-videos/tables?*", lambda route: route.fulfill(json={"targets":[{"appToken":"test-app","tableId":"test-table","appName":"测试表格","tableName":"视频","matched_fields":["点赞"]}]}))
+            table_requests=[]
+            def tables_route(route):
+                table_requests.append(route.request.url)
+                route.fulfill(json={"targets":[{"appToken":"test-app","tableId":str(i),"appName":name,"tableName":"数据表" if i<3 else "爆款元素库","url":"https://example.com/table/"+str(i),"matched_fields":["点赞"]} for i,name in enumerate(["视频数据表-鹏飞","视频数据表-丽娜","视频数据表-小周","TikTok爆款元素库"])]})
+            page.route("**/api/product-videos/tables?*", tables_route)
             writes=[]
             def write_route(route):
                 writes.append(route.request.post_data_json)
                 route.fulfill(json={"record_id":"test-record"})
             page.route("**/api/product-videos/write-table", write_route)
+            cover=page.locator('.video-cover').first.element_handle()
+            page.locator('#toggleSelection').click()
+            page.locator('[data-select-video]').first.check()
+            assert cover.evaluate('el => el.isConnected'), 'Selecting must preserve the cover DOM'
+            page.locator('#toggleSelection').click()
+            assert cover.evaluate('el => el.isConnected'), 'Cancelling selection must preserve the cover DOM'
             page.locator('#toggleSelection').click()
             page.locator('#selectPage').check()
+            assert cover.evaluate('el => el.isConnected'), 'Select-all must preserve the cover DOM'
             assert '已选 2 条' in page.locator('#selectionCount').inner_text()
             page.locator('#batchAction').select_option('write')
             page.locator('#tableChoice').select_option('0')
+            assert page.locator('#tableChoice option').count()==4
+            assert 'TikTok爆款元素库' not in page.locator('#tableChoice').inner_text()
+            assert page.locator('#openTableLink').get_attribute('href')=='https://example.com/table/0'
+            assert page.locator('#openTableLink').get_attribute('target')=='_blank'
+            page.keyboard.press('Escape')
+            page.locator('#batchAction').select_option('write')
+            page.locator('#tableChoice').select_option('1')
+            assert len(table_requests)==1, 'Reopening must use the frontend cache'
+            assert page.locator('#openTableLink').get_attribute('href')=='https://example.com/table/1'
+            page.keyboard.press('Escape')
+            page.reload(wait_until='networkidle')
+            page.locator('#toggleSelection').click()
+            page.locator('#selectPage').check()
+            page.locator('#batchAction').select_option('write')
+            page.locator('#tableChoice').select_option('0')
+            assert len(table_requests)==1, 'Reloading this tab must retain its table cache'
+            page.locator('#refreshTables').click()
+            page.locator('#tableChoice').select_option('0')
+            assert len(table_requests)==2, 'Explicit refresh must reload the table list'
             assert '点赞' in page.locator('#tableFields').inner_text()
             page.locator('#confirmTable').click()
             page.wait_for_function("document.querySelector('#tableProgress').textContent.includes('成功 2 条')")
