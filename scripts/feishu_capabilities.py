@@ -14,6 +14,16 @@ DEFAULT_BASE_URL = "http://127.0.0.1:4000"
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 
 
+def bitable_record_payload(target: dict[str, Any], fields: dict[str, Any]) -> dict[str, Any]:
+    """Preserve the allowlisted wiki identity used by Proxy's record writes."""
+    return {
+        "appToken": target.get("appToken"),
+        "wikiToken": target.get("wikiToken"),
+        "tableId": target.get("tableId"),
+        "fields": fields,
+    }
+
+
 class FeishuCapabilityError(Exception):
     def __init__(self, message: str, status: int = 502):
         super().__init__(message)
