@@ -662,7 +662,8 @@ def write_table(payload):
     if not fields:
         raise ValueError("所选表格没有匹配的视频字段")
     key = (target["appToken"], target["tableId"], video["video_id"])
-    request = {"appToken": key[0], "tableId": key[1], "fields": fields}
+    request = {"appToken": key[0], "wikiToken": target.get("wikiToken"),
+               "tableId": key[1], "fields": fields}
     with _table_lock:
         with database() as conn:
             row = conn.execute("SELECT record_id FROM video_bitable_records WHERE app_token=? AND table_id=? AND video_id=?", key).fetchone()

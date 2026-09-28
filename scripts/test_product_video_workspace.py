@@ -347,7 +347,7 @@ def browser_checks():
 
 def table_checks():
     from unittest.mock import Mock
-    target={"appToken":"app-test","tableId":"tbl-test","fields":[
+    target={"appToken":"app-test","wikiToken":"wiki-allowed","tableId":"tbl-test","fields":[
         {"name":"视频ID","type":1},{"name":"点赞","type":2},
         {"name":"视频链接","type":15},{"name":"发布时间","type":5},
         {"name":"24小时播放量","type":1},{"name":"累计播放量","type":1}]}
@@ -360,7 +360,13 @@ def table_checks():
     fake.list_bitable_targets.return_value={"targets":[target]}
     fake.create_bitable_record.return_value={"recordId":"rec-test"}
     fake.update_bitable_record.return_value={"recordId":"rec-test"}
-    payload={"product_id":PID,"video_id":VID,"appToken":"app-test","tableId":"tbl-test"}
+    payload={"product_id":PID,"video_id":VID,"appToken":"app-test","tableId":"tbl-test","wikiToken":"untrusted-browser-value"}
+    def require_wiki_target(request):
+        if request.get('wikiToken') != target['wikiToken']:
+            raise app.FeishuCapabilityError('feishu_bitable_write_not_allowed',403)
+        return {"recordId":"rec-test"}
+    fake.create_bitable_record.side_effect=require_wiki_target
+    fake.update_bitable_record.side_effect=require_wiki_target
     with patch.object(app,'FeishuCapabilityClient',return_value=fake):
         assert not app.write_table(payload)['updated']
         assert app.write_table(payload)['updated']
