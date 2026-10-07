@@ -2223,6 +2223,40 @@ def test_dynamic_provider_capability_graph_uses_task_scope_and_evidence() -> Non
     )
 
 
+def test_sellersprite_asin_guard_accepts_adjacent_chinese() -> None:
+    message = SimpleNamespace(tool_calls=[], tool_results=[])
+    for text in (
+        "B0HJTZ1LKS分析一下这个产品以及市场情况",
+        "分析B0HJTZ1LKS",
+        "分析b0hjtz1lks的市场",
+        "B0HJTZ1LKS 分析一下",
+        "分析（B0HJTZ1LKS）",
+        "https://www.amazon.com/dp/B0HJTZ1LKS?th=1",
+    ):
+        assert web_app._collect_asins(text) == {"B0HJTZ1LKS"}, text
+        for tool in ("asin_detail", "asin_prediction", "keepa_info", "asin_coupon_trend",
+                     "traffic_source", "traffic_keyword_stat", "review", "asin_sales_trend"):
+            assert web_app.sellersprite_deep_dive_call_error(
+                "sellersprite__" + tool,
+                {"request": {"marketplace": "US", "asin": "B0HJTZ1LKS"}},
+                text,
+                message,
+            ) is None, (text, tool)
+    assert web_app._collect_asins("分析0306406152和123456789x") == {"0306406152", "123456789X"}
+    for text in ("XB0HJTZ1LKS", "B0HJTZ1LKS9", "_B0HJTZ1LKS", "B0HJTZ1LKS_", "分析产品"):
+        assert not web_app._collect_asins(text), text
+        assert "未经用户输入" in web_app.sellersprite_deep_dive_call_error(
+            "sellersprite__asin_detail", {"asin": "B0HJTZ1LKS"}, text, message,
+        ), text
+    evidence = SimpleNamespace(tool_results=[{
+        "tool_name": "sellersprite__product_research",
+        "result": {"ok": True, "mcp_data": {"items": [{"asin": "B0HJTZ1LKS"}]}},
+    }])
+    assert web_app.sellersprite_deep_dive_call_error(
+        "sellersprite__asin_detail", {"asin": "B0HJTZ1LKS"}, "分析这个产品", evidence,
+    ) is None
+
+
 def test_dynamic_provider_planner_does_not_cap_repeated_calls() -> None:
     task = {"objective": "opportunity_discovery", "scope": "cross_category"}
     state = {
@@ -4396,6 +4430,7 @@ if __name__ == "__main__":
     test_semantic_brace_residue_python_mapping_is_naturalized()
     test_sellersprite_semantic_report_and_pro_synthesis()
     test_dynamic_provider_capability_graph_uses_task_scope_and_evidence()
+    test_sellersprite_asin_guard_accepts_adjacent_chinese()
     test_dynamic_provider_planner_does_not_cap_repeated_calls()
     test_llm_orchestration_exposes_full_provider_tools_and_keeps_hard_guards()
     test_region_default_only_applies_when_schema_supports_it()

@@ -5443,7 +5443,8 @@ def _collect_asins(value: Any) -> set[str]:
         for item in value:
             found.update(_collect_asins(item))
     elif isinstance(value, str):
-        found.update(match.upper() for match in re.findall(r"\b(?:B0[A-Z0-9]{8}|[0-9]{9}[0-9X])\b", value, re.IGNORECASE))
+        # Chinese text can directly adjoin an ASIN; Unicode word boundaries reject it.
+        found.update(match.upper() for match in re.findall(r"(?<![A-Z0-9_])(?:B0[A-Z0-9]{8}|[0-9]{9}[0-9X])(?![A-Z0-9_])", value, re.IGNORECASE))
     return found
 
 
