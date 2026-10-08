@@ -14,6 +14,7 @@
 .native-review-video select{width:100%;margin-bottom:16px}
 .native-review-content{padding:24px;min-width:0;max-height:75vh;overflow:auto}
 .native-review-summary{margin:20px 0 24px;padding-bottom:20px;border-bottom:1px solid #dce4df}
+.native-review-summary button{margin-top:12px;padding:7px 12px;border:1px solid #bdd5ca;border-radius:7px;color:var(--green)}
 .native-review-content h3{margin:18px 0 12px;font-size:16px}
 .native-review-summary p,.native-review-card span,.native-review-content details p{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.8;font-size:13px}
 .native-review-card{padding:16px;margin:12px 0;border:1px solid #dce4df;border-radius:10px}
