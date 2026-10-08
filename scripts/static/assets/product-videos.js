@@ -255,3 +255,4 @@ $("tableChoice").addEventListener("change",tableChoiceChanged);
 $("tableDialog").addEventListener("cancel",event=>{if(state.writing)event.preventDefault();});
 switchLibrary("accounts").catch(e=>{$("products").innerHTML='<div class="empty small">账号池加载失败，请点击刷新列表重试。</div>';toast(e.message,true);});
 loadReviewLinks();
+$("reloadProducts").addEventListener("click", loadReviewLinks);
