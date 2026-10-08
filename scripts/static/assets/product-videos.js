@@ -231,9 +231,15 @@ async function renderMedia() {
 }
 function reviewText(value) {
   if(Array.isArray(value))return value.map(reviewText).join("；");
-  if(value&&typeof value==="object")return Object.entries(value).map(([k,v])=>`${k}：${reviewText(v)}`).join("\n");
-  return String(value??"");
+  if(value&&typeof value==="object")return Object.entries(value).map(([k,v])=>{
+    const timeLabel={start:'开始',end:'结束',timestamp_seconds:'时间'}[k];
+    return timeLabel&&typeof v==='number'?`${timeLabel}：${reviewSeconds(v)}秒`:`${k}：${reviewText(v)}`;
+  }).join("\n");
+  return String(value??"").replace(/(\d+(?:\.\d+)?)(\s*(?:–|—|-|→|至)\s*)(\d+(?:\.\d+)?)(\s*秒)/g,
+    (_,start,separator,end)=>`${reviewSeconds(start)}–${reviewSeconds(end)}秒`)
+    .replace(/\d+\.\d+(?=\s*秒)/g,reviewSeconds);
 }
+function reviewSeconds(value) {return String(Number(Number(value).toFixed(1)));}
 function reviewFields(value) {
   const labels={play_count:'播放量',avg_watch_time:'平均观看时长',completion_rate:'完播率',可能原因:'可能原因 · 待验证'};
   return Object.entries(value||{}).map(([k,v])=>`<p><strong>${esc(labels[k]||k)}</strong><span>${esc(reviewText(v))}</span></p>`).join("");
@@ -241,7 +247,7 @@ function reviewFields(value) {
 function showReview(report, videoURL) {
   const source=report['采集数据来源']||{};
   const section=(title,items)=>Array.isArray(items)&&items.length?`<section><h3>${title}</h3>${items.map(item=>`<article class="native-review-card">${reviewFields(item)}</article>`).join("")}</section>`:"";
-  $("nativeReviewResult").innerHTML=`<div class="native-review-summary"><h3>复盘要点</h3><p>${esc(report.summary)}</p><button id="copyNativeReview">复制要点</button></div>${source.overview?`<details class="native-review-data"><summary>本次依据的表现数据 · ${esc(String(source.collected_at||'采集时间未知').slice(0,10))}</summary>${reviewFields(source.overview)}</details>`:""}${section('表现诊断',report['表现诊断'])}${section('优先调整',report['优先修改'])}<details><summary>内容与镜头细节</summary>${reviewFields(report['内容拆解'])}${section('原片镜头拆解',report['原片镜头拆解'])}</details><details><summary>数据范围与判断限制</summary><p>${esc(reviewText(report['数据限制']))}</p></details>`;
+  $("nativeReviewResult").innerHTML=`<div class="native-review-summary"><h3>复盘要点</h3><p>${esc(reviewText(report.summary))}</p><button id="copyNativeReview">复制要点</button></div>${source.overview?`<details class="native-review-data"><summary>本次依据的表现数据 · ${esc(String(source.collected_at||'采集时间未知').slice(0,10))}</summary>${reviewFields(source.overview)}</details>`:""}${section('表现诊断',report['表现诊断'])}${section('优先调整',report['优先修改'])}<details><summary>内容与镜头细节</summary>${reviewFields(report['内容拆解'])}${section('原片镜头拆解',report['原片镜头拆解'])}</details><details><summary>数据范围与判断限制</summary><p>${esc(reviewText(report['数据限制']))}</p></details>`;
   if(videoURL)$("nativeReviewPreview").innerHTML=`<video controls playsinline preload="metadata" src="${esc(videoURL)}"></video>`;
   state.review.report=report;
   if(source.title)$("nativeReviewCaption").textContent=source.title;
