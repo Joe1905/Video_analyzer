@@ -13,7 +13,7 @@ import requests
 from api_cache import record_api_call
 from standardize_analysis import EVIDENCE_VERSION, standardize_analyzer
 from video_performance_context import (REPORT_INSTRUCTIONS, REPORT_VERSION, external_video_id,
-                                       load_performance_context, validate_report)
+                                       load_performance_context, validate_report, build_report_facts)
 
 
 DEFAULT_API_URL = "https://api.deepseek.com/v1/chat/completions"
@@ -121,6 +121,8 @@ def build_prompt(analysis: dict, user_prompt: str = "", performance: dict | None
         + "\n\nProxy采集证据（available=false时不得补造指标）：\n"
         + json.dumps(performance or {"available": False, "limitations": ["未提供表现数据"]},
                      ensure_ascii=False, indent=2)
+        + "\n\n脚本事实摘要（不包含内容归因）：\n"
+        + json.dumps(build_report_facts(analysis, performance), ensure_ascii=False, indent=2)
     )
 
 
