@@ -5,12 +5,18 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from shot_analysis import analyze_shots, validate_events
+from shot_analysis import analyze_shots, validate_events, parse_shot_response
 from video_performance_context import validate_edit_plan
 import vision_provider
 
 
 class ShotPlanTests(unittest.TestCase):
+    def test_joint_json_fence_is_accepted_but_broken_content_rejected(self):
+        for text in ('{"shots":[]}', '```json\n{"shots":[]}\n```'):
+            self.assertEqual(parse_shot_response(text),{'shots':[]})
+        for text in ('```json\n{"shots":', 'explanation without JSON', '[]'):
+            with self.assertRaises(ValueError):parse_shot_response(text)
+
     def fixture(self):
         analysis = {"metadata": {"duration_seconds": 6}, "shot_evidence": {"shots": [
             {"id": "shot_0", "start": 0, "end": 6}]}}

@@ -11,6 +11,21 @@ from vision_provider import recognize_image
 SHOT_EVIDENCE_VERSION = 2
 
 
+def parse_shot_response(content):
+    # A JSON code fence is presentation, not invalid or missing evidence.
+    text = content.strip()
+    fenced = re.fullmatch(r'```(?:json)?\s*\n?(.*?)\n?```', text, flags=re.DOTALL | re.IGNORECASE)
+    if fenced:
+        text = fenced.group(1).strip()
+    try:
+        result = json.loads(text)
+    except (ValueError, TypeError) as exc:
+        raise ValueError('联合镜头识别返回的JSON格式无效') from exc
+    if not isinstance(result, dict):
+        raise ValueError('联合镜头识别返回的JSON必须为对象')
+    return result
+
+
 def validate_events(events, frames):
     """The model identifies an event; capture timestamps come only from stored frames."""
     if not isinstance(events, list):
@@ -85,7 +100,7 @@ def analyze_shots(analysis, folder, video, model=None, cut_detector=None):
         frames = [f for f in timeline if start <= f["timestamp_seconds"] < end]
         candidates.append({"id": f"shot_{index}", "start": start, "end": end,
                            "frame_ids": [f["evidence_id"] for f in frames]})
-    model = model or (lambda prompt, images: json.loads(recognize_image(
+    model = model or (lambda prompt, images: parse_shot_response(recognize_image(
         prompt=prompt, image_paths=images, max_tokens=8192, temperature=0, timeout=300)))
     shots, calls = [], 0
     for shot in candidates:
