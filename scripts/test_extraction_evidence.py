@@ -49,6 +49,7 @@ class EvidenceTests(unittest.TestCase):
             result = standardize_analyzer({"frame_analyses": [{"response": '{"visual":"ok"}'},
                 {"response": '{"visual":'}], "video_description": {"response": '{"summary":"ok"}'}}, root, 1)
             self.assertEqual(result["metadata"]["extraction_quality"], "partial")
+            self.assertEqual(result["summary"], "")
             path = root / "analysis.json"
             path.write_text(json.dumps(result))
             self.assertIsNone(valid_analysis(path))

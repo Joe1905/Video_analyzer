@@ -126,6 +126,9 @@ def standardize_analyzer(raw: dict[str, Any], output_dir: Path, elapsed_seconds:
     except ValueError as exc:
         summary = ""
         issues.append({"evidence_id": "summary", "reason": str(exc)})
+    if issues:
+        # A narrative reconstructed from broken frame responses is not clean evidence.
+        summary = ""
     model = metadata.get("model") or os.getenv("VISION_MODEL", "")
     api_calls = len(frame_analyses) + (1 if video_description else 0)
     prompt_path = output_dir / "analysis_prompt.txt"
@@ -192,7 +195,7 @@ def main() -> int:
                 write_json(backup, raw)
             raw = raw["raw_model_output"]
         else:
-            return 0
+            return 1 if raw.get("metadata", {}).get("extraction_quality") == "partial" else 0
     if not isinstance(raw, dict):
         raise ValueError("analysis must be an object")
     standardized = standardize_analyzer(raw, output_dir, args.elapsed_seconds)
