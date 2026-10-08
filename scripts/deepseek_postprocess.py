@@ -13,7 +13,8 @@ import requests
 from api_cache import record_api_call
 from standardize_analysis import EVIDENCE_VERSION, standardize_analyzer
 from video_performance_context import (REPORT_INSTRUCTIONS, REPORT_VERSION, external_video_id,
-                                       load_performance_context, validate_report, build_report_facts)
+                                       load_performance_context, validate_report, build_report_facts, validate_edit_plan)
+from shot_analysis import analyze_shots
 
 
 DEFAULT_API_URL = "https://api.deepseek.com/v1/chat/completions"
@@ -51,6 +52,9 @@ def compact_transcript(transcript: Any) -> dict:
         "successful": transcript.get("successful", transcript.get("success")),
         "segments": [{k: item[k] for k in ("start", "end", "text") if k in item}
                      for item in transcript.get("segments", []) if isinstance(item, dict)],
+        "words": [{k: word[k] for k in ("word", "start", "end") if k in word}
+                  for item in transcript.get("segments", []) if isinstance(item, dict)
+                  for word in item.get("words", []) if isinstance(word, dict)],
     }
 
 
@@ -94,6 +98,7 @@ def compact_analysis(analysis: dict) -> dict:
         },
         "summary": truncate_text(analysis.get("summary", ""), 6000),
         "evidence_overview": analysis.get("evidence_overview"),
+        "shot_evidence": analysis.get("shot_evidence"),
         "transcript": compact_transcript(analysis.get("transcript")),
         "timeline": analysis.get("timeline") if structured else compact_items(analysis.get("timeline")),
         "visual_evidence": [] if structured else compact_items(analysis.get("visual_evidence")),
@@ -267,6 +272,7 @@ def main() -> int:
         media_name = Path(args.video_filename or analysis_path.parent.name).name
         metadata["duration_seconds"] = video_duration(Path.cwd() / "videos" / media_name)
         analysis["metadata"] = metadata
+        analysis["shot_evidence"] = analyze_shots(analysis, analysis_path.parent, Path.cwd() / "videos" / media_name)
         video_id = external_video_id(args.video_id or analysis_path.parent.name)
         performance = load_performance_context(Path.cwd(), video_id)
         api_response = call_deepseek(
@@ -280,6 +286,7 @@ def main() -> int:
         content = extract_content(api_response)
         audit_result = parse_json_content(content)
         validate_report(audit_result)
+        validate_edit_plan(audit_result, analysis)
         audit_result["report_version"] = REPORT_VERSION
         audit_result["采集数据来源"] = performance
 

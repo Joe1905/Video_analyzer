@@ -169,7 +169,7 @@ def frame_config():
 
 
 def recognize_image(image_path=None, prompt="", *, purpose="vision", max_tokens=256,
-                    temperature=0.2, timeout=300):
+                    temperature=0.2, timeout=300, image_paths=None):
     """Single image entry point: local OCR for text, routed models for understanding."""
     if purpose not in {"text", "vision"}:
         raise ValueError("Unknown image recognition purpose")
@@ -185,14 +185,17 @@ def recognize_image(image_path=None, prompt="", *, purpose="vision", max_tokens=
         with urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
     content = prompt
-    if image_path:
-        path = Path(image_path)
+    paths = [("当前帧", image_path)] if image_path else (image_paths or [])
+    if paths:
+        content = [{"type": "text", "text": prompt}]
+    for label, image in paths:
+        path = Path(image)
         mime = mimetypes.guess_type(path.name)[0]
         if mime not in {"image/png", "image/jpeg", "image/webp", "image/gif"}:
             raise ValueError("Unsupported image format")
         encoded = base64.b64encode(path.read_bytes()).decode("ascii")
-        content = [{"type": "text", "text": prompt},
-                   {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{encoded}"}}]
+        content.extend([{"type": "text", "text": label},
+                        {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{encoded}"}}])
     config = frame_config()
     for attempt in range(2):
         payload = {"model": config["model"], "messages": [{"role": "user", "content": content}],
