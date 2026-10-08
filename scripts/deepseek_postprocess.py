@@ -255,6 +255,7 @@ def main() -> int:
                         default="high", help="Report analysis thinking effort (default: high).")
     parser.add_argument("--video-id", default="", help="Exact external TikTok video ID for collected evidence.")
     parser.add_argument("--video-filename", default="", help="Original local media filename for duration probing.")
+    parser.add_argument("--performance-context", default="", help="Saved library metrics fallback when Proxy evidence is unavailable.")
     args = parser.parse_args()
 
     api_key = os.getenv("DEEPSEEK_API_KEY")
@@ -275,6 +276,11 @@ def main() -> int:
         analysis["shot_evidence"] = analyze_shots(analysis, analysis_path.parent, Path.cwd() / "videos" / media_name)
         video_id = external_video_id(args.video_id or analysis_path.parent.name)
         performance = load_performance_context(Path.cwd(), video_id)
+        if not performance.get("available") and args.performance_context:
+            fallback = load_analysis(Path(args.performance_context))
+            if fallback.get('source') != 'video_library' or str(fallback.get('video_id')) != str(video_id):
+                raise ValueError('视频列表指标与当前视频不匹配')
+            performance = fallback
         prompt = build_prompt(analysis, args.prompt, performance)
         output_path = Path(args.output) if args.output else analysis_path.parent / "audit_result.json"
         for attempt in range(2):

@@ -316,7 +316,7 @@ def start(payload):
     video_tables(pid)
     kind = payload.get("action", "refresh")
     vid = str(payload.get("video_id") or "")
-    if kind not in {"refresh", "more", "play", "download", "audio"}:
+    if kind not in {"refresh", "more", "play", "download", "audio", "review"}:
         raise ValueError("不支持的任务类型")
     with _lock:
         state = snapshot(pid)
@@ -345,7 +345,10 @@ def run_job(job):
     try:
         job.update(status="running", message="正在读取商品关联视频…")
         save_job(job)
-        if pid.startswith("account:") and not vid and job["action"] in {"refresh", "more"}:
+        if job["action"] == "review":
+            from native_video_review import run_review
+            run_review(sys.modules[__name__], job)
+        elif pid.startswith("account:") and not vid and job["action"] in {"refresh", "more"}:
             fetch_account_page(job)
         elif job["action"] != "refresh":
             prepare_media(job)
@@ -573,7 +576,7 @@ def prepare_media(job):
             finally:
                 pending.unlink(missing_ok=True)
         write_json(folder / "cache.json", {"expires_at": max(expires_at, time.time() + (7 if job["action"] == "audio" else 1) * 86400)})
-        if job["action"] in {"play", "download"}:
+        if job["action"] in {"play", "download", "review"}:
             job["message"] = "视频已就绪，可以播放。"
             return
         audio = folder / "audio.mp3"
@@ -729,6 +732,9 @@ def handle(handler, parsed, serve_file):
             reply(handler, 200, path.read_bytes(), "image/jpeg", "public, max-age=86400")
         elif endpoint == "media":
             reply(handler, 200, media_state(pid, vid))
+        elif endpoint == "review":
+            from native_video_review import review_state
+            reply(handler, 200, review_state(sys.modules[__name__], pid, vid))
         elif endpoint == "file":
             item(pid, vid)
             kind = query.get("kind", ["video"])[0]

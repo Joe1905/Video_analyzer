@@ -2,11 +2,12 @@
 const $ = id => document.getElementById(id);
 const state = {mode:"products", page:1, hasMore:false, librarySeq:0, products:[], selected:"", videos:[], job:null, loading:false, timer:null, seq:0, editing:null, imports:[], media:null, mediaState:null, playRequested:"", submitting:false};
 Object.assign(state,{selecting:false,checked:new Set(),pageVideos:[],tables:[],writing:false});
-state.reviews = new Map();
+state.reviews = new Map();state.savedReviews=[];state.review=null;state.reviewSeq=0;state.reviewTimer=null;
 async function loadReviewLinks() {
   try {
     const files=await api('/api/files');
     const count=(Array.isArray(files)?files:[]).filter(f=>f.review_available).length;
+    state.savedReviews=(Array.isArray(files)?files:[]).filter(f=>f.review_available);
     $("reviewLibraryCount").textContent=`（${count}）`;
     state.reviews=new Map((Array.isArray(files)?files:[]).filter(f=>f.review_available&&/^\d{15,25}$/.test(String(f.review_video_id||''))).map(f=>[String(f.review_video_id),f]));
     renderVideos();
@@ -14,8 +15,7 @@ async function loadReviewLinks() {
 }
 function reviewSnippet(video) {
   const review=state.reviews.get(String(video.video_id));if(!review)return '';
-  const href='/extract?'+new URLSearchParams({review:'1',source:review.review_source||'standard'})+'#detail='+encodeURIComponent(review.name);
-  return `<section class="video-review"><div><strong>复盘启发</strong><a href="${esc(href)}" target="_blank" rel="noopener noreferrer">查看复盘 ↗</a></div><p>${esc(review.review_summary||'已有复盘，可查看问题、证据和调整方向')}</p><small>复盘依据 ${esc(String(review.review_collected_at||'未标注采集时间').slice(0,10))} 历史快照，与上方最新指标分开阅读。</small></section>`;
+  return `<section class="video-review"><strong>复盘摘要</strong><p>${esc(review.review_summary||'已有复盘，可直接查看')}</p><small>依据 ${esc(String(review.review_collected_at||'未标注采集时间').slice(0,10))} 的历史指标。</small></section>`;
 }
 const tableCacheKey="video-table-targets-v1";
 const videoTableNames=["视频数据表-鹏飞","视频数据表-丽娜","视频数据表-小周"];
@@ -87,7 +87,7 @@ async function loadVideos() {
 }
 function card(v) {
   const p=current();const stats=[["views","播放"],["likes","点赞"],["comments","评论"],["shares","分享"],["saves","收藏"]];
-  return `<article class="video-card"><button class="video-cover" data-media="${esc(v.video_id)}" aria-label="查看视频：${esc(v.title||v.video_id)}">${v.cover_url?image(p,v):'<span class="cover-empty">暂无封面</span>'}<span class="play-icon" aria-hidden="true">▷</span>${v.downloaded?'<span class="download-badge">已缓存</span>':""}<span class="cover-meta"><span>${date(v.published_at)}</span><span>${Math.round(v.duration||0)}s</span></span></button><div class="video-body"><div class="video-author">${esc(v.author||"未知作者")}</div><h4 class="video-title">${esc(v.title||"无标题视频")}</h4><div class="video-stats">${stats.map(([key,label])=>`<div><b>${fmt(v[key])}</b><span>${label}</span></div>`).join("")}<div><b>${v.duration?Math.round(v.duration)+"s":"—"}</b><span>时长</span></div></div>${reviewSnippet(v)}<div class="video-actions"><a href="${esc(url(v.url))}" target="_blank" rel="noopener noreferrer">原视频 ↗</a><button data-refresh="${esc(v.video_id)}" ${busy()?"disabled":""}>更新数据</button><button data-media="${esc(v.video_id)}">播放 / 音频</button></div><div class="video-time">${v.updated_at?"详细数据更新于 "+date(v.updated_at,true):"基础数据获取于 "+date(v.basic_updated_at,true)}</div>${v.error?`<div class="video-error">${esc(v.error)}</div>`:""}</div></article>`;
+  return `<article class="video-card"><button class="video-cover" data-media="${esc(v.video_id)}" aria-label="查看视频：${esc(v.title||v.video_id)}">${v.cover_url?image(p,v):'<span class="cover-empty">暂无封面</span>'}<span class="play-icon" aria-hidden="true">▷</span>${v.downloaded?'<span class="download-badge">已缓存</span>':""}<span class="cover-meta"><span>${date(v.published_at)}</span><span>${Math.round(v.duration||0)}s</span></span></button><div class="video-body"><div class="video-author">${esc(v.author||"未知作者")}</div><h4 class="video-title">${esc(v.title||"无标题视频")}</h4><div class="video-stats">${stats.map(([key,label])=>`<div><b>${fmt(v[key])}</b><span>${label}</span></div>`).join("")}<div><b>${v.duration?Math.round(v.duration)+"s":"—"}</b><span>时长</span></div></div>${reviewSnippet(v)}<button class="video-review-button" data-review="${esc(v.video_id)}">内容复盘</button><div class="video-actions"><a href="${esc(url(v.url))}" target="_blank" rel="noopener noreferrer">原视频 ↗</a><button data-refresh="${esc(v.video_id)}" ${busy()?"disabled":""}>更新数据</button><button data-media="${esc(v.video_id)}">播放 / 音频</button></div><div class="video-time">${v.updated_at?"详细数据更新于 "+date(v.updated_at,true):"基础数据获取于 "+date(v.basic_updated_at,true)}</div>${v.error?`<div class="video-error">${esc(v.error)}</div>`:""}</div></article>`;
 }
 function renderSelection() {
   $("toggleSelection").textContent=state.selecting?"取消多选":"多选";
@@ -229,10 +229,80 @@ async function renderMedia() {
   $("extractAudio").disabled=busy()||Boolean(media.translation);$("extractAudio").textContent=media.translation?"✓ 翻译已完成":media.transcript?"继续翻译":"提取音频并翻译";
   state.mediaState=media;
 }
+function reviewText(value) {
+  if(Array.isArray(value))return value.map(reviewText).join("；");
+  if(value&&typeof value==="object")return Object.entries(value).map(([k,v])=>`${k}：${reviewText(v)}`).join("\n");
+  return String(value??"");
+}
+function reviewFields(value) {
+  return Object.entries(value||{}).map(([k,v])=>`<p><strong>${esc(k==="可能原因"?"可能原因 · 待验证":k)}</strong><span>${esc(reviewText(v))}</span></p>`).join("");
+}
+function showReview(report, videoURL) {
+  const source=report['采集数据来源']||{};
+  const section=(title,items)=>Array.isArray(items)&&items.length?`<section><h3>${title}</h3>${items.map(item=>`<article class="native-review-card">${reviewFields(item)}</article>`).join("")}</section>`:"";
+  $("nativeReviewResult").innerHTML=`<div class="native-review-summary"><h3>复盘要点</h3><p>${esc(report.summary)}</p><button id="copyNativeReview">复制要点</button></div>${source.overview?`<details class="native-review-data"><summary>本次依据的表现数据 · ${esc(String(source.collected_at||'采集时间未知').slice(0,10))}</summary>${reviewFields(source.overview)}</details>`:""}${section('表现诊断',report['表现诊断'])}${section('优先调整',report['优先修改'])}<details><summary>内容与镜头细节</summary>${reviewFields(report['内容拆解'])}${section('原片镜头拆解',report['原片镜头拆解'])}</details><details><summary>数据范围与判断限制</summary><p>${esc(reviewText(report['数据限制']))}</p></details>`;
+  if(videoURL)$("nativeReviewPreview").innerHTML=`<video controls playsinline preload="metadata" src="${esc(videoURL)}"></video>`;
+  state.review.report=report;
+}
+function reviewFailure(error) {$("nativeReviewStatus").textContent=error.message||"暂时无法读取复盘，请重试。";$("nativeReviewRetry").hidden=false;}
+async function copyReview() {
+  const text=reviewText({复盘要点:state.review.report.summary,表现诊断:state.review.report['表现诊断'],优先调整:state.review.report['优先修改']});
+  if(navigator.clipboard?.writeText)await navigator.clipboard.writeText(text);
+  else {const field=document.createElement('textarea');field.value=text;$("reviewDialog").appendChild(field);field.select();const copied=document.execCommand('copy');field.remove();if(!copied)throw new Error('复制失败，请选中复盘文字复制。');}
+  toast("复盘要点已复制");
+}
+async function pollReview(token, start=false) {
+  const ref=state.review;if(!ref||token!==state.reviewSeq||!$("reviewDialog").open)return;
+  try {
+    const result=await api(endpoint("review",ref.pid,ref.vid));
+    if(token!==state.reviewSeq||!$("reviewDialog").open)return;
+    $("nativeReviewStatus").textContent=result.message;$("nativeReviewRetry").hidden=true;
+    if(result.status==="ready"){showReview(result.report,result.video_url);loadReviewLinks();return;}
+    if(result.status==="failed"&&!start){$("nativeReviewRetry").hidden=false;return;}
+    if(["missing","failed"].includes(result.status)) {
+      await api("/api/product-videos/jobs",{action:"review",product_id:ref.pid,video_id:ref.vid});
+      if(token!==state.reviewSeq)return;
+      $("nativeReviewStatus").textContent="正在生成复盘，关闭窗口后仍会继续。";
+    }
+    state.reviewTimer=setTimeout(()=>pollReview(token),2500);
+  } catch(error){if(token===state.reviewSeq)reviewFailure(error);}
+}
+function prepareReview(caption) {
+  clearTimeout(state.reviewTimer);state.reviewSeq++;
+  $("nativeReviewCaption").textContent=caption;$("nativeReviewResult").innerHTML="";$("nativeReviewPreview").innerHTML="";
+  $("nativeReviewRetry").hidden=true;$("nativeReviewStatus").textContent="正在读取复盘…";
+  if($("mediaDialog").open)$("mediaDialog").close();
+  if(!$("reviewDialog").open)$("reviewDialog").showModal();
+}
+async function openReview(vid) {
+  const video=state.videos.find(v=>String(v.video_id)===String(vid));if(!video)return;
+  prepareReview(video.title||"无标题视频");state.review={pid:state.selected,vid:String(vid)};
+  $("nativeReviewSaved").hidden=true;
+  $("nativeReviewPreview").innerHTML=image(current(),video,false);
+  await pollReview(state.reviewSeq);
+}
+async function openSavedReview(name) {
+  if(!state.savedReviews.length){toast("暂无已生成的复盘，请点击视频卡片上的内容复盘。");return;}
+  const file=state.savedReviews.find(f=>f.name===name)||state.savedReviews[0];
+  prepareReview(file.review_summary||"已有视频复盘");state.review={filename:file.name};const token=state.reviewSeq;
+  $("nativeReviewSaved").hidden=false;$("nativeReviewSaved").innerHTML=state.savedReviews.map((f,i)=>`<option value="${esc(f.name)}">视频 ${i+1} · ${esc(f.review_summary||f.name)}</option>`).join("");$("nativeReviewSaved").value=file.name;
+  try {const result=await api('/api/result?filename='+encodeURIComponent(file.name));if(token!==state.reviewSeq)return;
+    const report=result.audit_result||result.audit_result_zh;if(!report)throw new Error("复盘结果暂时不可用，请重试。");
+    showReview(report,'/video/'+encodeURIComponent(file.name));$("nativeReviewStatus").textContent="复盘已完成 · 数据来自采集时的历史快照。";
+  }catch(error){if(token===state.reviewSeq)reviewFailure(error);}
+}
+$("nativeReviewSaved").addEventListener("change",()=>openSavedReview($("nativeReviewSaved").value));
+$("reviewDialog").addEventListener("close",()=>{clearTimeout(state.reviewTimer);state.reviewSeq++;$("nativeReviewPreview").querySelectorAll("video").forEach(v=>v.pause());state.review=null;});
+document.querySelector("#mediaDialog .media-actions").insertAdjacentHTML("afterbegin",'<button id="mediaReviewButton" class="primary">内容复盘</button>');
 document.addEventListener("error",event=>{if(event.target.tagName==="IMG"){event.target.replaceWith(Object.assign(document.createElement("span"),{textContent:"暂无图片"}));}},true);
 document.addEventListener("click",event=>{
   const target=event.target.closest("button");if(!target||target.disabled)return;
   const run=async()=>{
+    if(target.dataset.review)return openReview(target.dataset.review);
+    if(target.id==="mediaReviewButton")return openReview(state.media.video_id);
+    if(target.id==="reviewLibraryLink")return openSavedReview();
+    if(target.id==="nativeReviewRetry"){target.hidden=true;return state.review.filename?openSavedReview(state.review.filename):pollReview(state.reviewSeq,true);}
+    if(target.id==="copyNativeReview")return copyReview();
     if(target.id==="toggleSelection"){state.selecting=!state.selecting;state.checked.clear();renderSelection();return;}
     if(target.id==="refreshTables")return loadTables(true);
     if(target.id==="confirmTable")return writeTable();

@@ -69,15 +69,17 @@ def main():
         library_page.set_viewport_size({'width':390,'height':844})
         assert library_page.locator('#reviewLibraryLink').is_visible()
         library_page.screenshot(path='/tmp/review-entry-real-mobile.png')
-        with library_page.expect_popup() as actual_popup:
-            library_page.locator('#reviewLibraryLink').click()
-        actual=actual_popup.value
-        actual.locator('#homeFiles .open-review').first.wait_for()
-        assert actual.locator('#reviewFilter').input_value()=='ready'
-        assert actual.locator('#homeFiles .file-item').count()>=2
-        actual.locator('#homeFiles .file-item[data-filename="shortvideo_SociaVault_7684226408121503007.mp4"] .open-review').click()
-        actual.get_by_role('heading', name='表现诊断', exact=True).wait_for()
-        actual.close(); library_page.close()
+        library_page.locator('#reviewLibraryLink').click()
+        library_page.locator('#nativeReviewResult h3').filter(has_text='表现诊断').wait_for()
+        assert '/metrics' in library_page.url
+        assert library_page.locator('#nativeReviewSaved option').count()>=2
+        library_page.locator('#nativeReviewSaved').select_option('shortvideo_SociaVault_7684226408121503007.mp4')
+        library_page.wait_for_function("document.getElementById('nativeReviewResult').innerText.includes('68')")
+        library_page.screenshot(path='/tmp/native-review-mobile.png')
+        assert library_page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
+        library_page.set_viewport_size({'width':1440,'height':1000})
+        library_page.screenshot(path='/tmp/native-review-desktop.png')
+        library_page.close()
         # Library transport is stubbed using the real saved review samples; no collection jobs run.
         videos = []
         for vid in ('7683856958457253150', '7684226408121503007'):
@@ -95,20 +97,41 @@ def main():
         page.route('**/api/product-videos/list?*', lambda route: route.fulfill(json={'videos':videos,'job':None,'has_more':False}))
         page.set_viewport_size({'width':1440,'height':1000})
         page.goto(base+'/metrics', wait_until='domcontentloaded')
-        page.locator('.video-review a').first.wait_for()
+        page.locator('[data-review]').first.wait_for()
         assert page.locator('.video-review').count() == 2
         assert page.get_by_role('button', name='播放 / 音频', exact=True).count() == 2
-        assert '历史快照' in page.locator('.video-review').first.inner_text()
+        assert '历史指标' in page.locator('.video-review').first.inner_text()
         page.screenshot(path='/tmp/readable-review-metrics-fixture.png')
         page.set_viewport_size({'width':390,'height':844})
         page.locator('.video-review').first.scroll_into_view_if_needed()
         page.screenshot(path='/tmp/readable-review-metrics-mobile-fixture.png')
-        with page.expect_popup() as popup:
-            page.locator('.video-review a').first.click()
-        review_page=popup.value
-        review_page.get_by_role('heading', name='表现诊断', exact=True).wait_for()
-        assert '/extract?review=1' in review_page.url
-        review_page.close()
+        states={'value':'missing','starts':0}
+        def review_response(route):
+            vid=route.request.url.split('video_id=')[1].split('&')[0]
+            report=json.loads((Path('/workspace/output')/('shortvideo_SociaVault_'+vid+'.mp4')/'audit_result.json').read_text())
+            route.fulfill(json={'status':states['value'],'message':'测试处理中' if states['value']=='processing' else '复盘状态',
+                'report':report if states['value']=='ready' else None,'video_url':'/video/shortvideo_SociaVault_'+vid+'.mp4'})
+        def start_review(route):
+            assert route.request.post_data_json['action']=='review'
+            states.update(value='processing',starts=states['starts']+1)
+            route.fulfill(json={'status':'running','action':'review'})
+        page.route('**/api/product-videos/review?*',review_response)
+        page.route('**/api/product-videos/jobs',start_review)
+        page.locator('[data-review]').first.click()
+        page.wait_for_function("document.getElementById('nativeReviewStatus').innerText.includes('测试处理中')")
+        assert states['starts']==1
+        states['value']='failed'
+        page.locator('#nativeReviewRetry').wait_for(state='visible')
+        page.locator('#nativeReviewRetry').click()
+        page.wait_for_function("document.getElementById('nativeReviewStatus').innerText.includes('测试处理中')")
+        assert states['starts']==2
+        states['value']='ready'
+        page.get_by_role('heading',name='表现诊断',exact=True).wait_for()
+        assert '/metrics' in page.url
+        page.locator('#copyNativeReview').click()
+        assert '待验证' in page.evaluate('window.testCopies.at(-1)')
+        page.locator('[data-close="reviewDialog"]').click()
+        assert not page.locator('#reviewDialog').evaluate('(el)=>el.open')
         assert not errors, errors
         assert not console_errors, console_errors
         print('Console warnings:', len(console_warnings))

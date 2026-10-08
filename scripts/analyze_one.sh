@@ -32,6 +32,9 @@ if [ -f ".env" ]; then
 fi
 
 VISION_API_URL="${VISION_API_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}"
+if [ "${ANALYSIS_LANGUAGE_OVERRIDE:-}" != "" ]; then
+  LANGUAGE="$ANALYSIS_LANGUAGE_OVERRIDE"
+fi
 VISION_MODEL="${VISION_MODEL:-qwen3-vl-flash}"
 HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 export HF_ENDPOINT
