@@ -17,7 +17,7 @@ def main():
         page.locator('[data-tab="audit"]').click()
         page.get_by_role("heading", name="表现诊断", exact=True).wait_for()
         text = page.locator("#out").inner_text()
-        for expected in ("内容拆解", "优先修改", "下一条脚本", "采集数据来源", "389", "7.7%"):
+        for expected in ("内容拆解", "优先修改", "表现快照", "观察事实", "可能原因 · 待验证", "389", "7.7%"):
             assert expected in text, expected
         page.screenshot(path="/tmp/commerce-review-desktop.png", full_page=True)
         page.locator("#detailPrompt").click()
@@ -40,6 +40,7 @@ def main():
             page.goto(base + "/extract#detail=shortvideo_SociaVault_" + video_id + ".mp4", wait_until="domcontentloaded")
             page.locator("#out .hero h2").wait_for()
             page.locator('[data-tab="audit"]').click()
+            page.locator('.review-reference > summary').click()
             page.get_by_role("heading", name="原片改剪表", exact=True).wait_for()
             page.get_by_role("heading", name="逐镜头执行表", exact=True).wait_for()
             page.get_by_role("heading", name="原片镜头拆解", exact=True).wait_for()
