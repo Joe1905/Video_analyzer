@@ -1,5 +1,6 @@
 """Regression checks for truncated responses, timestamps and evidence preservation."""
 import json
+import argparse
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +14,20 @@ from visual_analysis_cache import valid_analysis
 
 
 class EvidenceTests(unittest.TestCase):
+    def test_upstream_output_argument_maps_to_actual_directory(self):
+        from video_analyzer import cli
+        originals = {k:getattr(cli,k) for k in ('Config','VideoProcessor','VideoAnalyzer','GenericOpenAIAPIClient')}
+        def inspect_config():
+            config=cli.Config('config')
+            config.update_from_args(argparse.Namespace(output='output/isolated-check'))
+            self.assertEqual(config.get('output_dir'),'output/isolated-check')
+        try:
+            with patch.object(frames,'frame_config',return_value={'provider':'deepseek','model':'test','api_key':'test','api_url':'http://unused'}), \
+                 patch.object(frames.sys,'argv',['script']), patch.object(cli,'main',side_effect=inspect_config):
+                frames.main()
+        finally:
+            for key,value in originals.items():setattr(cli,key,value)
+
     def test_capture_time_wins_over_model_time_including_zero(self):
         timeline, issues = frame_evidence([{"timestamp": 0.0, "response": json.dumps({
             "timeline": [{"time_range": "99-100", "visual": "Red toy"}]})}])

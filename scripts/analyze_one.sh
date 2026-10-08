@@ -74,7 +74,7 @@ if command -v ffprobe >/dev/null 2>&1; then
 else
   log "ffprobe unavailable"
 fi
-rm -f output/analysis.json output/audio.wav
+rm -f output/analysis.json output/audio.wav output/sampling_manifest.json
 rm -rf output/frames
 
 start_epoch="$(date +%s)"
@@ -115,6 +115,9 @@ fi
 if [ ! -f "${output_dir}/analysis.json" ] && [ -f output/analysis.json ]; then
   log "moving legacy output artifacts into ${output_dir}"
   mv output/analysis.json "$output_dir/"
+  if [ -f output/sampling_manifest.json ]; then
+    mv output/sampling_manifest.json "$output_dir/"
+  fi
   if [ -f output/audio.wav ]; then
     mv output/audio.wav "$output_dir/"
   fi

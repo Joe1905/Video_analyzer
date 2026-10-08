@@ -38,6 +38,15 @@ def main():
     print("[vision] 帧分析线路：" + config["provider"] + " / " + config["model"], flush=True)
     from video_analyzer import cli
     from video_analyzer.clients.generic_openai_api import GenericOpenAIAPIClient
+    original_config = cli.Config
+
+    class OutputConfig(original_config):
+        def update_from_args(self, args):
+            super().update_from_args(args)
+            if args.output:
+                self.config["output_dir"] = args.output
+
+    cli.Config = OutputConfig
     from video_analyzer.frame import Frame
     from coverage_sampler import extract
     original_processor = cli.VideoProcessor
