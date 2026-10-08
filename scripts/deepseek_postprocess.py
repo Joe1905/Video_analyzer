@@ -18,7 +18,7 @@ from video_performance_context import (REPORT_INSTRUCTIONS, REPORT_VERSION, exte
 
 DEFAULT_API_URL = "https://api.deepseek.com/v1/chat/completions"
 DEFAULT_MODEL = "deepseek-v4-flash"
-DEFAULT_MAX_TOKENS = 8192
+DEFAULT_MAX_TOKENS = 32768
 
 
 def normalize_chat_completions_url(api_url: str) -> str:
@@ -152,6 +152,7 @@ def call_deepseek(
     }
     if reasoning_effort and reasoning_effort != "disabled":
         payload["reasoning_effort"] = reasoning_effort
+        payload["thinking"] = {"type": "enabled"}
     if reasoning_effort == "disabled":
         payload["thinking"] = {"type": "disabled"}
 
@@ -162,7 +163,7 @@ def call_deepseek(
             "Content-Type": "application/json",
         },
         json=payload,
-        timeout=120,
+        timeout=600 if reasoning_effort and reasoning_effort != "disabled" else 120,
     )
     response.raise_for_status()
     data = response.json()
@@ -239,8 +240,10 @@ def main() -> int:
         "--max-tokens",
         type=int,
         default=int(os.getenv("DEEPSEEK_POSTPROCESS_MAX_TOKENS", str(DEFAULT_MAX_TOKENS))),
-        help="Maximum DeepSeek output tokens for audit JSON.",
+        help="Maximum combined reasoning and audit JSON output tokens.",
     )
+    parser.add_argument("--reasoning-effort", choices=("disabled", "low", "high", "max"),
+                        default="high", help="Report analysis thinking effort (default: high).")
     parser.add_argument("--video-id", default="", help="Exact external TikTok video ID for collected evidence.")
     parser.add_argument("--video-filename", default="", help="Original local media filename for duration probing.")
     args = parser.parse_args()
@@ -268,7 +271,7 @@ def main() -> int:
             api_url=args.api_url,
             model=args.model,
             max_tokens=args.max_tokens,
-            reasoning_effort="disabled",
+            reasoning_effort=args.reasoning_effort,
         )
         content = extract_content(api_response)
         audit_result = parse_json_content(content)
@@ -285,6 +288,11 @@ def main() -> int:
         temporary_path.replace(output_path)
 
         print(f"Wrote {output_path}")
+        print(json.dumps({"model": api_response.get("model", args.model),
+                          "reasoning_effort": args.reasoning_effort,
+                          "max_tokens": args.max_tokens,
+                          "finish_reason": api_response["choices"][0].get("finish_reason"),
+                          "usage": api_response.get("usage", {})}, ensure_ascii=False))
         return 0
     except Exception as exc:
         print(f"DeepSeek postprocess failed: {exc}", file=sys.stderr)

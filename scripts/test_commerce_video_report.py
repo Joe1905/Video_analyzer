@@ -13,6 +13,26 @@ from video_performance_context import external_video_id, load_performance_contex
 
 
 class CommerceReportTests(unittest.TestCase):
+    def test_explicit_thinking_payload_and_timeout(self):
+        for effort in ("high", "disabled", None):
+            with patch.object(post.requests, "post", return_value=Mock()) as request, \
+                 patch.object(post, "record_api_call"):
+                post.call_deepseek("test", "{}", "https://example.com", "test", 32768, effort)
+            payload = request.call_args.kwargs["json"]
+            if effort == "high":
+                self.assertEqual(payload["thinking"], {"type": "enabled"})
+                self.assertEqual(payload["reasoning_effort"], "high")
+                self.assertEqual(request.call_args.kwargs["timeout"], 600)
+            elif effort == "disabled":
+                self.assertEqual(payload["thinking"], {"type": "disabled"})
+                self.assertNotIn("reasoning_effort", payload)
+            else:
+                self.assertNotIn("thinking", payload)
+
+    def test_truncated_report_is_rejected(self):
+        with self.assertRaises(ValueError):
+            post.extract_content({"choices": [{"finish_reason": "length", "message": {"content": "{}"}}]})
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
