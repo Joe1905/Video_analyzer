@@ -120,6 +120,7 @@ def standardize_analyzer(raw: dict[str, Any], output_dir: Path, elapsed_seconds:
     frame_analyses = raw.get("frame_analyses") if isinstance(raw.get("frame_analyses"), list) else []
     video_description = raw.get("video_description")
     timeline, issues = frame_evidence(frame_analyses)
+    description = {}
     try:
         description = parse_response(video_description)
         summary = description.get("summary") or description.get("visual") or ""
@@ -146,7 +147,8 @@ def standardize_analyzer(raw: dict[str, Any], output_dir: Path, elapsed_seconds:
             for row, sample in zip(timeline, expected):
                 row["selection_reason"] = sample["reason"]
     model = metadata.get("model") or os.getenv("VISION_MODEL", "")
-    api_calls = len(frame_analyses) + (1 if video_description else 0)
+    scripted_summary = isinstance(video_description, dict) and video_description.get("processing_source") == "script"
+    api_calls = len(frame_analyses) + (1 if video_description and not scripted_summary else 0)
     prompt_path = output_dir / "analysis_prompt.txt"
     analysis_prompt = prompt_path.read_text(encoding="utf-8").strip() if prompt_path.is_file() else ""
     frames_dir = output_dir / "frames"
@@ -177,8 +179,10 @@ def standardize_analyzer(raw: dict[str, Any], output_dir: Path, elapsed_seconds:
             "sampling_coverage": coverage,
             "evidence_issues": issues,
             "coverage_note": "离散采样帧不能证明帧间动作或未采样区间；旧模型时间未经抽帧记录核实",
+            "summary_source": "script" if scripted_summary else "model",
         },
         "summary": summary,
+        "evidence_overview": description.get("evidence_overview") if scripted_summary else None,
         "transcript": {
             "text": transcript.get("text", ""),
             "segments": transcript.get("segments", []),

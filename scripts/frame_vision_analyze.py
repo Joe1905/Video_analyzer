@@ -5,6 +5,7 @@ import sys
 
 from vision_provider import frame_config, recognize_image
 from standardize_analysis import parse_response
+from evidence_overview import build_video_description
 
 
 def has_audio(video_path):
@@ -67,6 +68,10 @@ def main():
             result = super().analyze_frame(frame)
             result.update(timestamp=float(frame.timestamp), frame_number=frame.number)
             return result
+
+        def reconstruct_video(self, frame_analyses, frames, transcript=None):
+            audio = {"segments": getattr(transcript, "segments", [])} if transcript else {}
+            return build_video_description(frame_analyses, audio)
 
     cli.VideoAnalyzer = TimestampedAnalyzer
 
