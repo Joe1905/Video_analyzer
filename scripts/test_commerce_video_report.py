@@ -67,6 +67,19 @@ class CommerceReportTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_report([])
 
+    def test_duration_uses_media_probe_not_sample_timestamps(self):
+        media = self.root / "sample.mp4"
+        media.touch()
+        with patch.object(post.subprocess, "run", return_value=Mock(stdout="11.239\n")):
+            duration = post.video_duration(media)
+        self.assertEqual(duration, 11.239)
+        self.assertIsNone(post.video_duration(self.root / "missing.mp4"))
+        with patch.object(post.subprocess, "run", return_value=Mock(stdout="NaN")):
+            self.assertIsNone(post.video_duration(media))
+        prompt = post.build_prompt({"metadata": {"duration_seconds": duration}})
+        self.assertIn('"duration_seconds": 11.239', prompt)
+        self.assertIn("禁止用完播率乘视频时长", prompt)
+
     def test_report_queue_does_not_reuse_extraction_prompt(self):
         import web_app as app
         folder = self.root / "sample.mp4"
