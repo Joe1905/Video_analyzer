@@ -45,5 +45,17 @@ class CoverageTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'Coverage needs'):
                 extract(self.video(root,12),root/'frames',hard_limit=3)
 
+    def test_slow_cumulative_change_can_add_frame(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); path=root/'slow.avi'
+            writer=cv2.VideoWriter(str(path),cv2.VideoWriter_fourcc(*'MJPG'),20,(160,90))
+            for i in range(160):
+                writer.write(np.full((90,160,3),i,dtype=np.uint8))
+            writer.release()
+            result=extract(path,root/'frames')
+            self.assertGreater(result['selected_count'],result['baseline_count'])
+            bonus=[x for x in result['frames'] if x['reason']=='difference_bonus']
+            self.assertTrue(all(x['adjacent_difference']<=10 for x in bonus))
+
 
 if __name__=='__main__': unittest.main()

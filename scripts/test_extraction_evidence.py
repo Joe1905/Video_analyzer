@@ -63,6 +63,18 @@ class EvidenceTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 frames.generate("frame", "image.png")
 
+    def test_manifest_cannot_certify_wrong_timestamps(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            (root/'sampling_manifest.json').write_text(json.dumps({'coverage_ok':True,
+                'frames':[{'timestamp_seconds':9,'reason':'endpoint'}]}))
+            raw={'frame_analyses':[{'timestamp':0,'response':'{"visual":"toy"}'}],
+                 'video_description':{'response':'{"summary":"toy"}'}}
+            result=standardize_analyzer(raw,root,1)
+            self.assertEqual(result['metadata']['response_quality'],'complete')
+            self.assertFalse(result['metadata']['sampling_coverage']['coverage_ok'])
+            self.assertEqual(result['metadata']['extraction_quality'],'partial')
+
     def test_finish_length_rejected_even_if_json_parses(self):
         response = Mock(ok=True)
         response.json.return_value = {"choices": [{"finish_reason": "length", "message": {"content": '{"visual":"toy"}'}}]}
