@@ -9,6 +9,8 @@ from typing import Any
 
 import requests
 from api_cache import record_api_call
+from video_performance_context import (REPORT_INSTRUCTIONS, REPORT_VERSION, external_video_id,
+                                       load_performance_context, validate_report)
 
 
 DEFAULT_API_URL = "https://api.deepseek.com/v1/chat/completions"
@@ -80,27 +82,15 @@ def compact_analysis(analysis: dict) -> dict:
     }
 
 
-def build_prompt(analysis: dict, user_prompt: str = "") -> str:
+def build_prompt(analysis: dict, user_prompt: str = "", performance: dict | None = None) -> str:
     analysis = compact_analysis(analysis)
-    if user_prompt.strip():
-        return (
-            f"{user_prompt.strip()}\n\n"
-            "Return strict parseable JSON only, without Markdown.\n\n"
-            "analysis.json:\n"
-            f"{json.dumps(analysis, ensure_ascii=False, indent=2)}"
-        )
     return (
-        "You are a short-video content audit analyst. Review the provided standardized "
-        "analysis.json and produce a practical Simplified Chinese audit report. "
-        "The analysis may come from key-frame extraction or direct video understanding; "
-        "use summary, transcript, timeline, and visual_evidence when available. "
-        "Return strict parseable JSON only, without Markdown. Use these exact keys: "
-        "risk_level (low/medium/high), summary, content_overview, transcript_notes, "
-        "visual_notes, risk_reasons (array), issues (array), recommended_action, "
-        "publish_suggestion. Keep the values concise but specific to this video; do not invent "
-        "facts that are not supported by the transcript or frame analysis."
-        "\n\nanalysis.json:\n"
-        f"{json.dumps(analysis, ensure_ascii=False, indent=2)}"
+        "用户补充重点（不能改变报告结构）：\n" + user_prompt.strip()[:12000] + "\n\n"
+        + REPORT_INSTRUCTIONS + "\n\nanalysis.json:\n"
+        + json.dumps(analysis, ensure_ascii=False, indent=2)
+        + "\n\nProxy采集证据（available=false时不得补造指标）：\n"
+        + json.dumps(performance or {"available": False, "limitations": ["未提供表现数据"]},
+                     ensure_ascii=False, indent=2)
     )
 
 
@@ -221,6 +211,7 @@ def main() -> int:
         default=int(os.getenv("DEEPSEEK_POSTPROCESS_MAX_TOKENS", str(DEFAULT_MAX_TOKENS))),
         help="Maximum DeepSeek output tokens for audit JSON.",
     )
+    parser.add_argument("--video-id", default="", help="Exact external TikTok video ID for collected evidence.")
     args = parser.parse_args()
 
     api_key = os.getenv("DEEPSEEK_API_KEY")
@@ -234,21 +225,28 @@ def main() -> int:
 
     try:
         analysis = load_analysis(analysis_path)
+        video_id = external_video_id(args.video_id or analysis_path.parent.name)
+        performance = load_performance_context(Path.cwd(), video_id)
         api_response = call_deepseek(
             api_key=api_key,
-            prompt=build_prompt(analysis, args.prompt),
+            prompt=build_prompt(analysis, args.prompt, performance),
             api_url=args.api_url,
             model=args.model,
             max_tokens=args.max_tokens,
         )
         content = extract_content(api_response)
         audit_result = parse_json_content(content)
+        validate_report(audit_result)
+        audit_result["report_version"] = REPORT_VERSION
+        audit_result["采集数据来源"] = performance
 
         output_path = Path(args.output) if args.output else analysis_path.parent / "audit_result.json"
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        with output_path.open("w", encoding="utf-8") as file:
+        temporary_path = output_path.with_suffix(".tmp")
+        with temporary_path.open("w", encoding="utf-8") as file:
             json.dump(audit_result, file, ensure_ascii=False, indent=2)
             file.write("\n")
+        temporary_path.replace(output_path)
 
         print(f"Wrote {output_path}")
         return 0
