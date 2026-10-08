@@ -11,7 +11,11 @@ def main():
         browser = api.chromium.launch(headless=True, args=['--no-sandbox'])
         page = browser.new_page(viewport={'width': 1440, 'height': 1000})
         errors = []
+        console_errors = []
+        console_warnings = []
         page.on('pageerror', lambda error: errors.append(str(error)))
+        page.on('console', lambda message: console_errors.append(message.text) if message.type == 'error'
+                else console_warnings.append(message.text) if message.type == 'warning' else None)
         page.add_init_script("window.testCopies=[];Object.defineProperty(navigator,'clipboard',{value:{writeText:async text=>window.testCopies.push(text)}})")
         page.goto(base + '/extract', wait_until='domcontentloaded')
         page.locator('#homeFiles .file-item').first.wait_for()
@@ -61,8 +65,12 @@ def main():
         for vid in ('7683856958457253150', '7684226408121503007'):
             report = json.loads((Path('/workspace/output') / ('shortvideo_SociaVault_'+vid+'.mp4') / 'audit_result.json').read_text())
             context = report['采集数据来源']
+            extracted = json.loads((Path('/workspace/output') / ('shortvideo_SociaVault_'+vid+'.mp4') / 'analysis.json').read_text())
             videos.append({'video_id':vid,'title':context['title'],'author':'neurobuddiestudio',
                            'views':int(context['overview']['play_count']), 'likes':int(context['engagement']['likes']),
+                           'comments':int(context['engagement']['comments']), 'shares':int(context['engagement']['shares']),
+                           'saves':int(context['engagement']['favorites']),
+                           'duration':extracted['metadata'].get('duration_seconds') or extracted['metadata']['sampling_coverage']['duration_seconds'],
                            'url':'https://www.tiktok.com/@neurobuddiestudio/video/'+vid})
         page.route('**/api/product-videos/accounts?*', lambda route: route.fulfill(json={'products':[
             {'product_id':'account:24','product_name':'neurobuddiestudio','handle':'neurobuddiestudio'}]}))
@@ -84,6 +92,8 @@ def main():
         assert '/extract?review=1' in review_page.url
         review_page.close()
         assert not errors, errors
+        assert not console_errors, console_errors
+        print('Console warnings:', len(console_warnings))
         print('PASS: list search/filter, review cards, clipboard, real video dialog, folded references, desktop/mobile, empty state, metrics links (saved-sample transport fixture); no JS errors')
         browser.close()
 
