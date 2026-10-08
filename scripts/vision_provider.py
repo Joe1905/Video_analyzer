@@ -194,8 +194,9 @@ def recognize_image(image_path=None, prompt="", *, purpose="vision", max_tokens=
         if mime not in {"image/png", "image/jpeg", "image/webp", "image/gif"}:
             raise ValueError("Unsupported image format")
         encoded = base64.b64encode(path.read_bytes()).decode("ascii")
-        content.extend([{"type": "text", "text": label},
-                        {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{encoded}"}}])
+        if not image_path:
+            content.append({"type": "text", "text": label})
+        content.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{encoded}"}})
     config = frame_config()
     for attempt in range(2):
         payload = {"model": config["model"], "messages": [{"role": "user", "content": content}],
