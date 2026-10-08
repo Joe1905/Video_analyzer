@@ -36,6 +36,15 @@ class ShotPlanTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "口播过长"):
             validate_edit_plan(report, analysis)
 
+    def test_composite_edit_and_millisecond_rounding(self):
+        analysis, report = self.fixture()
+        report["原片改剪表"][0]["操作"] = "前移/替换"
+        analysis["shot_evidence"]["shots"][0]["start"] = .000333
+        validate_edit_plan(report, analysis)
+        report["新版分镜脚本"]["镜头列表"][0]["原片区间"][0]["start"] = -.1
+        with self.assertRaises(ValueError):
+            validate_edit_plan(report, analysis)
+
     def test_reject_gap_wrong_source_duration_and_missing_copy(self):
         analysis, base = self.fixture()
         for mutation in (lambda s: s.update(start=.5), lambda s: s["原片区间"][0].update(shot_id="invented"),
