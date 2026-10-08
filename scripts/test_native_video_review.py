@@ -57,5 +57,27 @@ class ReviewTests(unittest.TestCase):
         self.ws.prepare_media.assert_not_called()
         self.assertEqual(self.job['done'],1)
 
+    def test_missing_extraction_runs_extract_then_analysis(self):
+        media=self.root/'videos'/review.filename(self.vid)
+        media.parent.mkdir();media.write_bytes(b'video')
+        with patch.object(review,'saved_report',side_effect=[None,{'summary':'done'}]), \
+             patch.object(review,'valid_analysis',side_effect=[None,{'timeline':[]}]), \
+             patch.object(review.subprocess,'run') as run:
+            review.run_review(self.ws,self.job)
+        self.assertEqual(run.call_count,2)
+        first,second=run.call_args_list
+        self.assertTrue(first.args[0][1].endswith('analyze_one.sh'))
+        self.assertEqual(first.kwargs['env']['ANALYSIS_LANGUAGE_OVERRIDE'],'auto')
+        self.assertTrue(second.args[0][1].endswith('deepseek_postprocess.py'))
+
+    def test_failed_postprocess_does_not_claim_success(self):
+        media=self.root/'videos'/review.filename(self.vid)
+        media.parent.mkdir();media.write_bytes(b'video')
+        with patch.object(review,'saved_report',return_value=None), \
+             patch.object(review,'valid_analysis',return_value={'timeline':[]}), \
+             patch.object(review.subprocess,'run',side_effect=RuntimeError('failed')):
+            with self.assertRaises(RuntimeError):review.run_review(self.ws,self.job)
+        self.assertNotIn('done',self.job)
+
 
 if __name__=='__main__':unittest.main()
