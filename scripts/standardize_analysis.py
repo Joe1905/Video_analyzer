@@ -211,6 +211,9 @@ def main() -> int:
     )
     if metadata.get("extraction_quality") != "complete":
         log("提取证据不完整，已保存原始输出及问题清单，不能标记为成功")
+        if not raw.get("frame_analyses") and standardized.get("summary"):
+            # analyze_one.sh handles its existing zero-frame direct-video fallback.
+            return 0
         return 1
     return 0
 
