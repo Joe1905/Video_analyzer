@@ -98,6 +98,7 @@ def main():
         page.set_viewport_size({'width':1440,'height':1000})
         page.goto(base+'/metrics', wait_until='domcontentloaded')
         page.locator('[data-review]').first.wait_for()
+        page.locator('.video-review').first.wait_for()
         assert page.locator('.video-review').count() == 2
         assert page.get_by_role('button', name='播放 / 音频', exact=True).count() == 2
         assert '历史指标' in page.locator('.video-review').first.inner_text()
