@@ -12,6 +12,8 @@ def valid_analysis(path):
         source = json.loads(data)
         if not isinstance(source, dict):
             return None
+        if source.get("metadata", {}).get("extraction_quality") == "partial":
+            return None
         require_visual_evidence(source)
         return source
     except (OSError, ValueError, TypeError, ViralElementError):

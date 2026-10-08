@@ -9,6 +9,57 @@ from typing import Any
 
 
 SCHEMA_VERSION = "1.0"
+EVIDENCE_VERSION = 2
+
+
+def parse_response(value: Any) -> dict:
+    """Parse structured responses without repairing or inventing missing content."""
+    if isinstance(value, dict) and "response" not in value:
+        return value
+    text = response_text(value).strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[-1]
+        if text.rstrip().endswith("```"):
+            text = text.rstrip()[:-3].strip()
+    try:
+        result = json.loads(text)
+    except (ValueError, TypeError):
+        if text.startswith(("{", "[")):
+            raise ValueError("incomplete_or_invalid_json") from None
+        if not text or text.lower().startswith("error "):
+            raise ValueError("missing_or_failed_response")
+        return {"visual": text}
+    if not isinstance(result, dict):
+        raise ValueError("response_not_object")
+    return result
+
+
+def frame_evidence(frames: list) -> tuple[list, list]:
+    timeline, issues = [], []
+    for index, frame in enumerate(frames):
+        try:
+            parsed = parse_response(frame)
+            items = parsed.get("timeline") or [parsed]
+            if not isinstance(items, list):
+                raise ValueError("invalid_timeline")
+            frame_rows = []
+            for item in items:
+                visual = item.get("visual") or item.get("description")
+                if not isinstance(visual, str) or not visual.strip():
+                    raise ValueError("missing_visual")
+                timestamp = frame.get("timestamp")
+                captured = isinstance(timestamp, (int, float)) and not isinstance(timestamp, bool)
+                frame_rows.append({"index": index, "evidence_id": f"frame_{index}",
+                    "time_range": str(timestamp) if captured else str(item.get("time_range") or frame.get("time_range") or ""),
+                    "timestamp_seconds": timestamp if captured else None,
+                    "time_source": "capture" if captured else "model_reported_unverified",
+                    "evidence_type": "sampled_frame", "visual": visual,
+                    "visible_text": item.get("visible_text", []),
+                    "uncertainties": item.get("uncertainties", [])})
+            timeline.extend(frame_rows)
+        except (ValueError, TypeError, AttributeError) as exc:
+            issues.append({"evidence_id": f"frame_{index}", "reason": str(exc)})
+    return timeline, issues
 
 
 def log(message: str) -> None:
@@ -68,6 +119,13 @@ def standardize_analyzer(raw: dict[str, Any], output_dir: Path, elapsed_seconds:
     transcript = raw.get("transcript") if isinstance(raw.get("transcript"), dict) else {}
     frame_analyses = raw.get("frame_analyses") if isinstance(raw.get("frame_analyses"), list) else []
     video_description = raw.get("video_description")
+    timeline, issues = frame_evidence(frame_analyses)
+    try:
+        description = parse_response(video_description)
+        summary = description.get("summary") or description.get("visual") or ""
+    except ValueError as exc:
+        summary = ""
+        issues.append({"evidence_id": "summary", "reason": str(exc)})
     model = metadata.get("model") or os.getenv("VISION_MODEL", "")
     api_calls = len(frame_analyses) + (1 if video_description else 0)
     prompt_path = output_dir / "analysis_prompt.txt"
@@ -94,29 +152,21 @@ def standardize_analyzer(raw: dict[str, Any], output_dir: Path, elapsed_seconds:
             "output_dir": str(output_dir),
             "standardized_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "analysis_prompt": analysis_prompt,
+            "evidence_version": EVIDENCE_VERSION,
+            "extraction_quality": "complete" if timeline and not issues else "partial",
+            "evidence_issues": issues,
+            "coverage_note": "离散采样帧不能证明帧间动作或未采样区间；旧模型时间未经抽帧记录核实",
         },
-        "summary": response_text(video_description),
+        "summary": summary,
         "transcript": {
             "text": transcript.get("text", ""),
             "segments": transcript.get("segments", []),
-            "language": metadata.get("audio_language") or os.getenv("LANGUAGE", "zh"),
+            "language": transcript.get("language") or metadata.get("audio_language") or None,
             "successful": bool(metadata.get("transcription_successful", bool(transcript.get("text")))),
         },
-        "timeline": [
-            {
-                "index": index,
-                "time_range": frame.get("time_range") or frame.get("timestamp") or "",
-                "visual": response_text(frame),
-            }
-            for index, frame in enumerate(frame_analyses)
-        ],
-        "visual_evidence": [
-            {
-                "index": index,
-                "description": response_text(frame),
-            }
-            for index, frame in enumerate(frame_analyses)
-        ],
+        "timeline": timeline,
+        "visual_evidence": [{"evidence_id": item["evidence_id"], "time_range": item["time_range"],
+                             "description": item["visual"]} for item in timeline],
         "raw_model_output": raw,
         "usage": usage_block(api_calls=api_calls, elapsed_seconds=elapsed_seconds),
     }
@@ -136,15 +186,15 @@ def main() -> int:
 
     raw = read_json(analysis_path)
     if isinstance(raw, dict) and raw.get("schema_version") == SCHEMA_VERSION:
-        metadata = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
-        log(
-            "analysis already standardized "
-            f"frames_extracted={metadata.get('frames_extracted')} "
-            f"frames_processed={metadata.get('frames_processed')} "
-            f"timeline={len(raw.get('timeline') or [])}"
-        )
-        return 0
-
+        if raw.get("processing_mode") == "analyzer" and raw.get("metadata", {}).get("evidence_version") != EVIDENCE_VERSION and isinstance(raw.get("raw_model_output"), dict):
+            backup = output_dir / "analysis_before_evidence_v2.json"
+            if not backup.exists():
+                write_json(backup, raw)
+            raw = raw["raw_model_output"]
+        else:
+            return 0
+    if not isinstance(raw, dict):
+        raise ValueError("analysis must be an object")
     standardized = standardize_analyzer(raw, output_dir, args.elapsed_seconds)
     write_json(output_dir / "analysis_raw.json", raw)
     write_json(analysis_path, standardized)
@@ -156,6 +206,9 @@ def main() -> int:
         f"timeline={len(standardized.get('timeline') or [])} "
         f"summary_chars={len(standardized.get('summary') or '')}"
     )
+    if metadata.get("extraction_quality") != "complete":
+        log("提取证据不完整，已保存原始输出及问题清单，不能标记为成功")
+        return 1
     return 0
 
 

@@ -211,7 +211,10 @@ def recognize_image(image_path=None, prompt="", *, purpose="vision", max_tokens=
         else:
             if response.ok:
                 try:
-                    result = response.json()["choices"][0]["message"]["content"]
+                    choice = response.json()["choices"][0]
+                    if choice.get("finish_reason") not in (None, "stop"):
+                        raise RuntimeError(config["provider"] + " 视觉输出未完整结束：" + str(choice.get("finish_reason")))
+                    result = choice["message"]["content"]
                     if not isinstance(result, str) or not result.strip():
                         raise ValueError("empty content")
                     return result

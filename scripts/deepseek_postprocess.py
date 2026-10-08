@@ -11,6 +11,7 @@ from typing import Any
 
 import requests
 from api_cache import record_api_call
+from standardize_analysis import EVIDENCE_VERSION, standardize_analyzer
 from video_performance_context import (REPORT_INSTRUCTIONS, REPORT_VERSION, external_video_id,
                                        load_performance_context, validate_report)
 
@@ -48,6 +49,8 @@ def compact_transcript(transcript: Any) -> dict:
         "text": truncate_text(transcript.get("text", ""), 6000),
         "language": transcript.get("language"),
         "successful": transcript.get("successful", transcript.get("success")),
+        "segments": [{k: item[k] for k in ("start", "end", "text") if k in item}
+                     for item in transcript.get("segments", []) if isinstance(item, dict)],
     }
 
 
@@ -67,6 +70,12 @@ def compact_items(value: Any, limit: int = 80) -> Any:
 
 def compact_analysis(analysis: dict) -> dict:
     metadata = analysis.get("metadata") if isinstance(analysis.get("metadata"), dict) else {}
+    if (analysis.get("processing_mode") == "analyzer" and metadata.get("evidence_version") != EVIDENCE_VERSION
+            and isinstance(analysis.get("raw_model_output"), dict)):
+        analysis = standardize_analyzer(analysis["raw_model_output"], Path("."), None)
+        analysis["metadata"]["duration_seconds"] = metadata.get("duration_seconds")
+        metadata = analysis["metadata"]
+    structured = metadata.get("evidence_version") == EVIDENCE_VERSION
     return {
         "schema_version": analysis.get("schema_version"),
         "processing_mode": analysis.get("processing_mode"),
@@ -77,11 +86,14 @@ def compact_analysis(analysis: dict) -> dict:
             "duration_processed": metadata.get("duration_processed"),
             "duration_seconds": metadata.get("duration_seconds"),
             "audio_language": metadata.get("audio_language"),
+            "extraction_quality": metadata.get("extraction_quality"),
+            "evidence_issues": metadata.get("evidence_issues", []),
+            "coverage_note": metadata.get("coverage_note"),
         },
         "summary": truncate_text(analysis.get("summary", ""), 6000),
         "transcript": compact_transcript(analysis.get("transcript")),
-        "timeline": compact_items(analysis.get("timeline")),
-        "visual_evidence": compact_items(analysis.get("visual_evidence")),
+        "timeline": analysis.get("timeline") if structured else compact_items(analysis.get("timeline")),
+        "visual_evidence": [] if structured else compact_items(analysis.get("visual_evidence")),
     }
 
 
