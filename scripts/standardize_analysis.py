@@ -129,6 +129,22 @@ def standardize_analyzer(raw: dict[str, Any], output_dir: Path, elapsed_seconds:
     if issues:
         # A narrative reconstructed from broken frame responses is not clean evidence.
         summary = ""
+    response_quality = "complete" if timeline and not issues else "partial"
+    coverage = {"coverage_ok": None, "reason": "未记录抽帧覆盖信息"}
+    manifest_path = output_dir / "sampling_manifest.json"
+    if manifest_path.is_file():
+        manifest = read_json(manifest_path)
+        expected = manifest.get("frames", [])
+        matching = len(expected) == len(timeline) and all(
+            row.get("timestamp_seconds") == sample.get("timestamp_seconds")
+            for row, sample in zip(timeline, expected))
+        coverage = {k:v for k,v in manifest.items() if k not in ("frames", "candidates")}
+        coverage["coverage_ok"] = bool(manifest.get("coverage_ok") and matching)
+        if not coverage["coverage_ok"]:
+            issues.append({"evidence_id": "coverage", "reason": "sampling_manifest_mismatch_or_gap"})
+        else:
+            for row, sample in zip(timeline, expected):
+                row["selection_reason"] = sample["reason"]
     model = metadata.get("model") or os.getenv("VISION_MODEL", "")
     api_calls = len(frame_analyses) + (1 if video_description else 0)
     prompt_path = output_dir / "analysis_prompt.txt"
@@ -157,6 +173,8 @@ def standardize_analyzer(raw: dict[str, Any], output_dir: Path, elapsed_seconds:
             "analysis_prompt": analysis_prompt,
             "evidence_version": EVIDENCE_VERSION,
             "extraction_quality": "complete" if timeline and not issues else "partial",
+            "response_quality": response_quality,
+            "sampling_coverage": coverage,
             "evidence_issues": issues,
             "coverage_note": "离散采样帧不能证明帧间动作或未采样区间；旧模型时间未经抽帧记录核实",
         },

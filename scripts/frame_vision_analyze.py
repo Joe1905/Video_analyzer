@@ -38,6 +38,19 @@ def main():
     print("[vision] 帧分析线路：" + config["provider"] + " / " + config["model"], flush=True)
     from video_analyzer import cli
     from video_analyzer.clients.generic_openai_api import GenericOpenAIAPIClient
+    from video_analyzer.frame import Frame
+    from coverage_sampler import extract
+    original_processor = cli.VideoProcessor
+
+    class CoverageProcessor(original_processor):
+        def extract_keyframes(self, frames_per_minute=60, duration=None, max_frames=None):
+            manifest = extract(self.video_path, self.output_dir, rate=frames_per_minute / 60,
+                               hard_limit=max_frames or 240, duration=duration)
+            self.frames = [Frame(r["number"], self.output_dir / f'frame_{r["number"]}.jpg',
+                                 r["timestamp_seconds"], r["retained_difference"]) for r in manifest["frames"]]
+            return self.frames
+
+    cli.VideoProcessor = CoverageProcessor
     original_analyzer = cli.VideoAnalyzer
 
     class TimestampedAnalyzer(original_analyzer):

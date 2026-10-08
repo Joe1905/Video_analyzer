@@ -56,14 +56,14 @@ fi
 mkdir -p "$output_dir"
 # A rerun must not let artifacts from the previous analysis participate in
 # frame discovery or standardization for the current video.
-rm -f "${output_dir}/analysis.json" "${output_dir}/analysis_raw.json" "${output_dir}/audio.wav"
+rm -f "${output_dir}/analysis.json" "${output_dir}/analysis_raw.json" "${output_dir}/audio.wav" "${output_dir}/sampling_manifest.json"
 rm -rf "${output_dir}/frames"
 log "video_name=${video_name}"
 log "video_path=${video_path}"
 log "output_dir=${output_dir}"
 log "VISION_API_URL=${VISION_API_URL}"
 log "VISION_MODEL=${VISION_MODEL}"
-log "MAX_FRAMES=${MAX_FRAMES:-20}"
+log "FRAME_HARD_LIMIT=${FRAME_HARD_LIMIT:-240} (linear coverage plus bounded difference extras)"
 log "WHISPER_MODEL=${WHISPER_MODEL:-small}"
 log "LANGUAGE=${LANGUAGE:-zh}"
 if command -v ffprobe >/dev/null 2>&1; then
@@ -97,7 +97,7 @@ python scripts/frame_vision_analyze.py "$video_path" \
   --api-url "$VISION_API_URL" \
   --model "$VISION_MODEL" \
   --output "$output_dir" \
-  --max-frames "${MAX_FRAMES:-20}" \
+  --max-frames "${FRAME_HARD_LIMIT:-240}" \
   --keep-frames \
   --whisper-model "${WHISPER_MODEL:-small}" \
   --language "${LANGUAGE:-zh}" \

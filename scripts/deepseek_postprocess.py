@@ -89,6 +89,7 @@ def compact_analysis(analysis: dict) -> dict:
             "extraction_quality": metadata.get("extraction_quality"),
             "evidence_issues": metadata.get("evidence_issues", []),
             "coverage_note": metadata.get("coverage_note"),
+            "sampling_coverage": metadata.get("sampling_coverage"),
         },
         "summary": truncate_text(analysis.get("summary", ""), 6000),
         "transcript": compact_transcript(analysis.get("transcript")),
