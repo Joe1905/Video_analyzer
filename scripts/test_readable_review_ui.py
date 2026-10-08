@@ -60,6 +60,24 @@ def main():
         page.locator('#back').click()
         page.locator('#reviewSearch').fill('no-such-video-987654321')
         page.get_by_text('没有匹配的视频', exact=True).wait_for()
+        # Verify the always-visible entry against the real library, before installing fixtures.
+        library_page=browser.new_page(viewport={'width':1440,'height':1000})
+        library_page.goto(base+'/metrics', wait_until='domcontentloaded')
+        library_page.locator('#reviewLibraryLink').wait_for()
+        library_page.wait_for_function("/\\d+/.test(document.getElementById('reviewLibraryCount').textContent)")
+        library_page.screenshot(path='/tmp/review-entry-real-desktop.png')
+        library_page.set_viewport_size({'width':390,'height':844})
+        assert library_page.locator('#reviewLibraryLink').is_visible()
+        library_page.screenshot(path='/tmp/review-entry-real-mobile.png')
+        with library_page.expect_popup() as actual_popup:
+            library_page.locator('#reviewLibraryLink').click()
+        actual=actual_popup.value
+        actual.locator('#homeFiles .open-review').first.wait_for()
+        assert actual.locator('#reviewFilter').input_value()=='ready'
+        assert actual.locator('#homeFiles .file-item').count()>=2
+        actual.locator('#homeFiles .file-item[data-filename="shortvideo_SociaVault_7684226408121503007.mp4"] .open-review').click()
+        actual.get_by_role('heading', name='表现诊断', exact=True).wait_for()
+        actual.close(); library_page.close()
         # Library transport is stubbed using the real saved review samples; no collection jobs run.
         videos = []
         for vid in ('7683856958457253150', '7684226408121503007'):

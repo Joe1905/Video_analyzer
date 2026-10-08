@@ -6,6 +6,8 @@ state.reviews = new Map();
 async function loadReviewLinks() {
   try {
     const files=await api('/api/files');
+    const count=(Array.isArray(files)?files:[]).filter(f=>f.review_available).length;
+    $("reviewLibraryCount").textContent=`（${count}）`;
     state.reviews=new Map((Array.isArray(files)?files:[]).filter(f=>f.review_available&&/^\d{15,25}$/.test(String(f.review_video_id||''))).map(f=>[String(f.review_video_id),f]));
     renderVideos();
   } catch { /* Reviews are optional; collection, playback and audio remain available. */ }
