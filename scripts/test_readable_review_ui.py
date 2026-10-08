@@ -1,5 +1,7 @@
 """Read-only UI checks; clipboard is stubbed and no analysis jobs are submitted."""
 import os
+import json
+from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 
@@ -37,6 +39,7 @@ def main():
         page.wait_for_function("document.getElementById('reviewVideo').readyState>=1")
         assert '7684226408121503007' in page.locator('#reviewVideo').get_attribute('src')
         page.locator('#reviewPlayerClose').click()
+        page.wait_for_function("document.getElementById('reviewVideo').paused")
         assert page.locator('#reviewVideo').evaluate('(v)=>v.paused')
         page.locator('.review-reference > summary').click()
         page.get_by_role('heading', name='逐镜头执行表', exact=True).wait_for()
@@ -53,8 +56,31 @@ def main():
         page.locator('#back').click()
         page.locator('#reviewSearch').fill('no-such-video-987654321')
         page.get_by_text('没有匹配的视频', exact=True).wait_for()
+        # Library transport is stubbed using the real saved review samples; no collection jobs run.
+        videos = []
+        for vid in ('7683856958457253150', '7684226408121503007'):
+            report = json.loads((Path('/workspace/output') / ('shortvideo_SociaVault_'+vid+'.mp4') / 'audit_result.json').read_text())
+            context = report['采集数据来源']
+            videos.append({'video_id':vid,'title':context['title'],'author':'neurobuddiestudio',
+                           'views':int(context['overview']['play_count']), 'likes':int(context['engagement']['likes']),
+                           'url':'https://www.tiktok.com/@neurobuddiestudio/video/'+vid})
+        page.route('**/api/product-videos/accounts?*', lambda route: route.fulfill(json={'products':[
+            {'product_id':'account:24','product_name':'neurobuddiestudio','handle':'neurobuddiestudio'}]}))
+        page.route('**/api/product-videos/list?*', lambda route: route.fulfill(json={'videos':videos,'job':None,'has_more':False}))
+        page.goto(base+'/metrics', wait_until='domcontentloaded')
+        page.locator('.video-review a').first.wait_for()
+        assert page.locator('.video-review').count() == 2
+        assert page.get_by_role('button', name='播放 / 音频', exact=True).count() == 2
+        assert '历史快照' in page.locator('.video-review').first.inner_text()
+        page.screenshot(path='/tmp/readable-review-metrics-fixture.png')
+        with page.expect_popup() as popup:
+            page.locator('.video-review a').first.click()
+        review_page=popup.value
+        review_page.get_by_role('heading', name='表现诊断', exact=True).wait_for()
+        assert '/extract?review=1' in review_page.url
+        review_page.close()
         assert not errors, errors
-        print('PASS: list search/filter, review cards, clipboard, real video dialog, folded references, desktop/mobile, empty state; no JS errors')
+        print('PASS: list search/filter, review cards, clipboard, real video dialog, folded references, desktop/mobile, empty state, metrics links (saved-sample transport fixture); no JS errors')
         browser.close()
 
 

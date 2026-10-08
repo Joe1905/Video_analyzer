@@ -2,6 +2,19 @@
 const $ = id => document.getElementById(id);
 const state = {mode:"products", page:1, hasMore:false, librarySeq:0, products:[], selected:"", videos:[], job:null, loading:false, timer:null, seq:0, editing:null, imports:[], media:null, mediaState:null, playRequested:"", submitting:false};
 Object.assign(state,{selecting:false,checked:new Set(),pageVideos:[],tables:[],writing:false});
+state.reviews = new Map();
+async function loadReviewLinks() {
+  try {
+    const files=await api('/api/files');
+    state.reviews=new Map((Array.isArray(files)?files:[]).filter(f=>f.review_available&&/^\d{15,25}$/.test(String(f.review_video_id||''))).map(f=>[String(f.review_video_id),f]));
+    renderVideos();
+  } catch { /* Reviews are optional; collection, playback and audio remain available. */ }
+}
+function reviewSnippet(video) {
+  const review=state.reviews.get(String(video.video_id));if(!review)return '';
+  const href='/extract?'+new URLSearchParams({review:'1',source:review.review_source||'standard'})+'#detail='+encodeURIComponent(review.name);
+  return `<section class="video-review"><div><strong>复盘启发</strong><a href="${esc(href)}" target="_blank" rel="noopener noreferrer">查看复盘 ↗</a></div><p>${esc(review.review_summary||'已有复盘，可查看问题、证据和调整方向')}</p><small>复盘依据 ${esc(String(review.review_collected_at||'未标注采集时间').slice(0,10))} 历史快照，与上方最新指标分开阅读。</small></section>`;
+}
 const tableCacheKey="video-table-targets-v1";
 const videoTableNames=["视频数据表-鹏飞","视频数据表-丽娜","视频数据表-小周"];
 let tableRequest=null;
@@ -72,7 +85,7 @@ async function loadVideos() {
 }
 function card(v) {
   const p=current();const stats=[["views","播放"],["likes","点赞"],["comments","评论"],["shares","分享"],["saves","收藏"]];
-  return `<article class="video-card"><button class="video-cover" data-media="${esc(v.video_id)}" aria-label="查看视频：${esc(v.title||v.video_id)}">${v.cover_url?image(p,v):'<span class="cover-empty">暂无封面</span>'}<span class="play-icon" aria-hidden="true">▷</span>${v.downloaded?'<span class="download-badge">已缓存</span>':""}<span class="cover-meta"><span>${date(v.published_at)}</span><span>${Math.round(v.duration||0)}s</span></span></button><div class="video-body"><div class="video-author">${esc(v.author||"未知作者")}</div><h4 class="video-title">${esc(v.title||"无标题视频")}</h4><div class="video-stats">${stats.map(([key,label])=>`<div><b>${fmt(v[key])}</b><span>${label}</span></div>`).join("")}<div><b>${v.duration?Math.round(v.duration)+"s":"—"}</b><span>时长</span></div></div><div class="video-actions"><a href="${esc(url(v.url))}" target="_blank" rel="noopener noreferrer">原视频 ↗</a><button data-refresh="${esc(v.video_id)}" ${busy()?"disabled":""}>更新数据</button><button data-media="${esc(v.video_id)}">播放 / 音频</button></div><div class="video-time">${v.updated_at?"详细数据更新于 "+date(v.updated_at,true):"基础数据获取于 "+date(v.basic_updated_at,true)}</div>${v.error?`<div class="video-error">${esc(v.error)}</div>`:""}</div></article>`;
+  return `<article class="video-card"><button class="video-cover" data-media="${esc(v.video_id)}" aria-label="查看视频：${esc(v.title||v.video_id)}">${v.cover_url?image(p,v):'<span class="cover-empty">暂无封面</span>'}<span class="play-icon" aria-hidden="true">▷</span>${v.downloaded?'<span class="download-badge">已缓存</span>':""}<span class="cover-meta"><span>${date(v.published_at)}</span><span>${Math.round(v.duration||0)}s</span></span></button><div class="video-body"><div class="video-author">${esc(v.author||"未知作者")}</div><h4 class="video-title">${esc(v.title||"无标题视频")}</h4><div class="video-stats">${stats.map(([key,label])=>`<div><b>${fmt(v[key])}</b><span>${label}</span></div>`).join("")}<div><b>${v.duration?Math.round(v.duration)+"s":"—"}</b><span>时长</span></div></div>${reviewSnippet(v)}<div class="video-actions"><a href="${esc(url(v.url))}" target="_blank" rel="noopener noreferrer">原视频 ↗</a><button data-refresh="${esc(v.video_id)}" ${busy()?"disabled":""}>更新数据</button><button data-media="${esc(v.video_id)}">播放 / 音频</button></div><div class="video-time">${v.updated_at?"详细数据更新于 "+date(v.updated_at,true):"基础数据获取于 "+date(v.basic_updated_at,true)}</div>${v.error?`<div class="video-error">${esc(v.error)}</div>`:""}</div></article>`;
 }
 function renderSelection() {
   $("toggleSelection").textContent=state.selecting?"取消多选":"多选";
@@ -241,3 +254,4 @@ $("batchAction").addEventListener("change",()=>{if($("batchAction").value==="wri
 $("tableChoice").addEventListener("change",tableChoiceChanged);
 $("tableDialog").addEventListener("cancel",event=>{if(state.writing)event.preventDefault();});
 switchLibrary("accounts").catch(e=>{$("products").innerHTML='<div class="empty small">账号池加载失败，请点击刷新列表重试。</div>';toast(e.message,true);});
+loadReviewLinks();

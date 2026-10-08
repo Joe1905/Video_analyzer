@@ -407,6 +407,8 @@ toc.addEventListener('click',event=>{const button=event.target.closest('button[d
 $('reviewSearch').addEventListener('input',renderFiles);$('reviewFilter').addEventListener('change',renderFiles);
 $('reviewVideoSelect').addEventListener('change',event=>{toDetail(event.target.value)});
 $('reviewPlayerClose').onclick=()=>{$('reviewPlayer').close()};$('reviewPlayer').addEventListener('close',()=>{$('reviewVideo').pause()});$('reviewReplay').onclick=()=>{const video=$('reviewVideo');video.currentTime=reviewClip.start;video.play().catch(()=>{})};
+// Review links from the account/product video library open the report directly.
+if(new URLSearchParams(location.search).get('review')==='1'){S.tab='audit';$('directMode').checked=new URLSearchParams(location.search).get('source')==='direct';document.querySelectorAll('.tab-btn').forEach(button=>button.classList.toggle('active',button.dataset.tab==='audit'))}
 const safeBind=(id,ev,fn)=>{const el=$(id);if(el)el[ev]=fn};
 safeBind("download","onclick",startDownload);safeBind("network","onclick",checkNet);safeBind("upload","onclick",()=>upload());safeBind("refresh","onclick",()=>refresh().then(()=>addLog("已刷新视频列表。")));
 async function detailAnalyzeAction(){if(!sourceRawAnalysis()){await analyze()}else{await postprocess()}}safeBind("detailAnalyze","onclick",detailAnalyzeAction);
