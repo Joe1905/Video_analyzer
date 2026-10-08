@@ -67,12 +67,16 @@ def main():
         page.route('**/api/product-videos/accounts?*', lambda route: route.fulfill(json={'products':[
             {'product_id':'account:24','product_name':'neurobuddiestudio','handle':'neurobuddiestudio'}]}))
         page.route('**/api/product-videos/list?*', lambda route: route.fulfill(json={'videos':videos,'job':None,'has_more':False}))
+        page.set_viewport_size({'width':1440,'height':1000})
         page.goto(base+'/metrics', wait_until='domcontentloaded')
         page.locator('.video-review a').first.wait_for()
         assert page.locator('.video-review').count() == 2
         assert page.get_by_role('button', name='播放 / 音频', exact=True).count() == 2
         assert '历史快照' in page.locator('.video-review').first.inner_text()
         page.screenshot(path='/tmp/readable-review-metrics-fixture.png')
+        page.set_viewport_size({'width':390,'height':844})
+        page.locator('.video-review').first.scroll_into_view_if_needed()
+        page.screenshot(path='/tmp/readable-review-metrics-mobile-fixture.png')
         with page.expect_popup() as popup:
             page.locator('.video-review a').first.click()
         review_page=popup.value
