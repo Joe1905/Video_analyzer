@@ -15737,9 +15737,6 @@ class Handler(BaseHTTPRequestHandler):
             return json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
         output_dir = output_dir_for_filename(filename)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        # Report instructions must never overwrite visual extraction instructions.
-        (output_dir / "report_prompt.txt").write_text(analysis_prompt, encoding="utf-8")
         analysis_name = "direct_analysis.json" if analysis_source == "direct" else "analysis.json"
         audit_names = ("direct_audit_result.json", "direct_audit_result_zh.json") if analysis_source == "direct" else ("audit_result.json", "audit_result_zh.json")
         if not (output_dir / analysis_name).is_file():
@@ -15751,6 +15748,7 @@ class Handler(BaseHTTPRequestHandler):
                 output_dir.mkdir(parents=True, exist_ok=True)
                 (output_dir / "analysis_mode.txt").write_text("direct_video", encoding="utf-8")
                 (output_dir / "report_source.txt").write_text("direct", encoding="utf-8")
+                (output_dir / "report_prompt.txt").write_text(analysis_prompt, encoding="utf-8")
                 video_queue.enqueue(filename, "analyze")
                 video_queue.enqueue(filename, "report")
                 return json_response(self, HTTPStatus.ACCEPTED, {"status": "queued", "filename": filename, "queued": ["analyze", "report"]})
@@ -15758,6 +15756,7 @@ class Handler(BaseHTTPRequestHandler):
 
         # Save user prompt for DeepSeek report
         output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "report_prompt.txt").write_text(analysis_prompt, encoding="utf-8")
         (output_dir / "report_source.txt").write_text(analysis_source, encoding="utf-8")
         for report_name in audit_names:
             report_path = output_dir / report_name
