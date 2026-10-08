@@ -22,6 +22,9 @@ def main():
         page.screenshot(path='/tmp/readable-review-list-desktop.png')
         row.get_by_role('button', name='查看复盘', exact=True).click()
         page.get_by_role('heading', name='表现诊断', exact=True).wait_for()
+        assert page.evaluate("reviewTime('1秒→2秒').start") == 1
+        assert page.evaluate("reviewTime('0:01–0:03').end") == 3
+        assert page.evaluate("reviewTime('采集快照2026-09-23')") is None
         assert not page.locator('.review-reference').evaluate('(el)=>el.open')
         assert '观察事实' in page.locator('.review-card').first.inner_text()
         assert '可能原因 · 待验证' in page.locator('.review-card').first.inner_text()
