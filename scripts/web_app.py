@@ -13645,6 +13645,7 @@ def execute_queue_job(filename: str, job_type: str, progress: dict) -> None:
             return
         video_queue.set_progress(filename, "auditing", 25, job_type, f"{filename}: 正在调用 DeepSeek 生成报告")
         cmd = ["python", str(SCRIPTS_DIR / "deepseek_postprocess.py"), str(analysis_path), "--output", str(audit_path)]
+        cmd.extend(["--video-filename", filename])
         prompt_file = output_dir / "report_prompt.txt"
         if prompt_file.is_file():
             cmd.extend(["--prompt", prompt_file.read_text(encoding="utf-8").strip()])

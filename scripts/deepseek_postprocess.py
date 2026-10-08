@@ -2,6 +2,8 @@
 import argparse
 import json
 import os
+import math
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -73,6 +75,7 @@ def compact_analysis(analysis: dict) -> dict:
         "metadata": {
             "frames_processed": metadata.get("frames_processed") or metadata.get("frames_extracted"),
             "duration_processed": metadata.get("duration_processed"),
+            "duration_seconds": metadata.get("duration_seconds"),
             "audio_language": metadata.get("audio_language"),
         },
         "summary": truncate_text(analysis.get("summary", ""), 6000),
@@ -80,6 +83,20 @@ def compact_analysis(analysis: dict) -> dict:
         "timeline": compact_items(analysis.get("timeline")),
         "visual_evidence": compact_items(analysis.get("visual_evidence")),
     }
+
+
+def video_duration(path: Path) -> float | None:
+    if not path.is_file():
+        return None
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of",
+             "default=noprint_wrappers=1:nokey=1", str(path)],
+            capture_output=True, text=True, check=True, timeout=15)
+        value = float(result.stdout.strip())
+        return value if math.isfinite(value) and value > 0 else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
 
 
 def build_prompt(analysis: dict, user_prompt: str = "", performance: dict | None = None) -> str:
@@ -212,6 +229,7 @@ def main() -> int:
         help="Maximum DeepSeek output tokens for audit JSON.",
     )
     parser.add_argument("--video-id", default="", help="Exact external TikTok video ID for collected evidence.")
+    parser.add_argument("--video-filename", default="", help="Original local media filename for duration probing.")
     args = parser.parse_args()
 
     api_key = os.getenv("DEEPSEEK_API_KEY")
@@ -225,6 +243,10 @@ def main() -> int:
 
     try:
         analysis = load_analysis(analysis_path)
+        metadata = dict(analysis.get("metadata") or {})
+        media_name = Path(args.video_filename or analysis_path.parent.name).name
+        metadata["duration_seconds"] = video_duration(Path.cwd() / "videos" / media_name)
+        analysis["metadata"] = metadata
         video_id = external_video_id(args.video_id or analysis_path.parent.name)
         performance = load_performance_context(Path.cwd(), video_id)
         api_response = call_deepseek(
