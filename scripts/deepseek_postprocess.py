@@ -15,7 +15,7 @@ from video_performance_context import (REPORT_INSTRUCTIONS, REPORT_VERSION, exte
 
 DEFAULT_API_URL = "https://api.deepseek.com/v1/chat/completions"
 DEFAULT_MODEL = "deepseek-v4-flash"
-DEFAULT_MAX_TOKENS = 4096
+DEFAULT_MAX_TOKENS = 8192
 
 
 def normalize_chat_completions_url(api_url: str) -> str:
@@ -233,6 +233,7 @@ def main() -> int:
             api_url=args.api_url,
             model=args.model,
             max_tokens=args.max_tokens,
+            reasoning_effort="disabled",
         )
         content = extract_content(api_response)
         audit_result = parse_json_content(content)
