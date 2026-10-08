@@ -1,6 +1,7 @@
 """One-click review orchestration for the video library; reuse the analyzer pipeline."""
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -46,6 +47,35 @@ def library_context(video):
                             '商品关联或视频主题不证明实际挂车绑定；内容原因属于待验证假设']}
 
 
+def run_stage(command, root, folder, env, stage):
+    """Keep sanitized diagnostics instead of discarding a failed subprocess's error."""
+    log = Path(folder) / (stage + '_failure.json')
+    try:
+        result = subprocess.run(command, cwd=root, env=env, capture_output=True,
+                                text=True, timeout=1800, check=True)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        detail = exc.stderr or ''
+        if isinstance(detail, bytes):
+            detail = detail.decode('utf-8', errors='replace')
+        for key, value in env.items():
+            if value and any(part in key.upper() for part in ('KEY', 'TOKEN', 'PASSWORD', 'SECRET')):
+                detail = detail.replace(value, '[redacted]')
+        detail = re.sub(r'https?://\S+', '[endpoint]', detail)
+        detail = re.sub(r'(?i)Bearer\s+\S+|sk-[\w-]+', '[redacted]', detail)
+        log.write_text(json.dumps({'stage': stage, 'error_type': type(exc).__name__,
+            'returncode': getattr(exc, 'returncode', None), 'stderr': detail[-12000:],
+            'recorded_at': datetime.now(timezone.utc).isoformat()}, ensure_ascii=False), encoding='utf-8')
+        if stage == 'extraction':
+            message = '视频内容识别未完成，已下载的视频保留，可重试。'
+        else:
+            message = '视频内容已识别，复盘生成暂未完成；可重试，无需重新提取。'
+        if isinstance(exc, subprocess.TimeoutExpired):
+            message = '视频内容识别超时，可重试。' if stage == 'extraction' else '复盘生成超时；可重试，无需重新提取。'
+        raise ValueError(message) from exc
+    log.unlink(missing_ok=True)
+    return result
+
+
 def run_review(workspace, job):
     vid, pid = job['video_id'], job['product_id']
     root = Path(workspace.ROOT)
@@ -70,18 +100,17 @@ def run_review(workspace, job):
             job['message'] = '正在理解视频内容…'
             workspace.save_job(job)
             env.update(ANALYSIS_OUTPUT_DIR=str(folder), ANALYSIS_LANGUAGE_OVERRIDE='auto')
-            subprocess.run(['bash', str(scripts / 'analyze_one.sh'), media.name], cwd=root,
-                           env=env, capture_output=True, timeout=1800, check=True)
+            run_stage(['bash', str(scripts / 'analyze_one.sh'), media.name], root, folder, env, 'extraction')
             if not valid_analysis(folder / 'analysis.json'):
                 raise ValueError('视频内容未能完整识别，已保存的结果会保留，可重试。')
         job['message'] = '正在整理复盘结果…'
         workspace.save_job(job)
         context = folder / 'library_performance.json'
         workspace.write_json(context, library_context(workspace.item(pid, vid)))
-        subprocess.run([sys.executable, str(scripts / 'deepseek_postprocess.py'),
+        run_stage([sys.executable, str(scripts / 'deepseek_postprocess.py'),
                         str(folder / 'analysis.json'), '--video-id', vid,
                         '--video-filename', media.name, '--performance-context', str(context)],
-                       cwd=root, env=env, capture_output=True, timeout=1800, check=True)
+                       root, folder, env, 'review')
         if not saved_report(root, vid):
             raise ValueError('复盘结果未通过检查，请重试。')
         job.update(done=1, message='复盘已完成。')

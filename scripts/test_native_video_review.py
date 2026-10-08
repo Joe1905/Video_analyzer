@@ -1,5 +1,7 @@
 """Native review orchestration checks; no paid API calls."""
 import tempfile
+import json
+import subprocess
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -78,6 +80,20 @@ class ReviewTests(unittest.TestCase):
              patch.object(review.subprocess,'run',side_effect=RuntimeError('failed')):
             with self.assertRaises(RuntimeError):review.run_review(self.ws,self.job)
         self.assertNotIn('done',self.job)
+
+    def test_stage_failure_is_recorded_safely_and_can_be_retried(self):
+        secret='my-private-token'
+        failed=subprocess.CalledProcessError(1,['python'],stderr='failed '+secret+' https://api.example.com?token=hidden')
+        with patch.object(review.subprocess,'run',side_effect=failed):
+            with self.assertRaisesRegex(ValueError,'无需重新提取'):
+                review.run_stage(['python'],self.root,self.root,{'API_KEY':secret},'review')
+        diagnostic=json.loads((self.root/'review_failure.json').read_text())
+        self.assertEqual(diagnostic['returncode'],1)
+        self.assertNotIn(secret,diagnostic['stderr'])
+        self.assertNotIn('token=hidden',diagnostic['stderr'])
+        with patch.object(review.subprocess,'run'):
+            review.run_stage(['python'],self.root,self.root,{},'review')
+        self.assertFalse((self.root/'review_failure.json').exists())
 
 
 if __name__=='__main__':unittest.main()
