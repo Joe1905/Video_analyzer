@@ -29,6 +29,13 @@ class ShotPlanTests(unittest.TestCase):
         shot.update(素材来源="补拍", 原片区间=[])
         validate_edit_plan(report, analysis)
 
+    def test_reject_impossible_english_voiceover(self):
+        analysis, report = self.fixture()
+        analysis["transcript"] = {"language": "en"}
+        report["新版分镜脚本"]["镜头列表"][0]["台词原文"] = "word " * 20
+        with self.assertRaisesRegex(ValueError, "口播过长"):
+            validate_edit_plan(report, analysis)
+
     def test_reject_gap_wrong_source_duration_and_missing_copy(self):
         analysis, base = self.fixture()
         for mutation in (lambda s: s.update(start=.5), lambda s: s["原片区间"][0].update(shot_id="invented"),

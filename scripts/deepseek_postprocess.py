@@ -275,22 +275,28 @@ def main() -> int:
         analysis["shot_evidence"] = analyze_shots(analysis, analysis_path.parent, Path.cwd() / "videos" / media_name)
         video_id = external_video_id(args.video_id or analysis_path.parent.name)
         performance = load_performance_context(Path.cwd(), video_id)
-        api_response = call_deepseek(
-            api_key=api_key,
-            prompt=build_prompt(analysis, args.prompt, performance),
-            api_url=args.api_url,
-            model=args.model,
-            max_tokens=args.max_tokens,
-            reasoning_effort=args.reasoning_effort,
-        )
-        content = extract_content(api_response)
-        audit_result = parse_json_content(content)
-        validate_report(audit_result)
-        validate_edit_plan(audit_result, analysis)
+        prompt = build_prompt(analysis, args.prompt, performance)
+        output_path = Path(args.output) if args.output else analysis_path.parent / "audit_result.json"
+        for attempt in range(2):
+            api_response = call_deepseek(api_key=api_key, prompt=prompt, api_url=args.api_url,
+                model=args.model, max_tokens=args.max_tokens, reasoning_effort=args.reasoning_effort)
+            content = extract_content(api_response)
+            try:
+                audit_result = parse_json_content(content)
+                validate_report(audit_result)
+                validate_edit_plan(audit_result, analysis)
+                break
+            except ValueError as error:
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.with_name(output_path.stem + f".attempt{attempt+1}.txt").write_text(content, encoding="utf-8")
+                if attempt:
+                    raise
+                print(f"Report validation rejected first attempt: {error}; regenerating once", flush=True)
+                prompt += "\n上次输出未通过执行校验：" + str(error) + "。本次严格检查所有时间、素材引用与口播长度后重新生成完整JSON。"
         audit_result["report_version"] = REPORT_VERSION
         audit_result["采集数据来源"] = performance
+        audit_result["原片镜头拆解"] = analysis["shot_evidence"].get("shots", [])
 
-        output_path = Path(args.output) if args.output else analysis_path.parent / "audit_result.json"
         output_path.parent.mkdir(parents=True, exist_ok=True)
         temporary_path = output_path.with_suffix(".tmp")
         with temporary_path.open("w", encoding="utf-8") as file:

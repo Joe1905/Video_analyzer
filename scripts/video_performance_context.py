@@ -29,9 +29,10 @@ summary: 字符串，一句话说明内容机制和最需要验证的问题。
 表现诊断: 数组，最多5项，每项包含观察事实、时间点、内容证据、可能原因、其他解释、置信度；无表现数据时不编造指标。
 优先修改: 数组，最多3项，每项包含优先级、问题、具体修改、验证指标；写清换什么画面、哪句文案或剪掉哪段，不承诺提升幅度。
 下一条脚本: 对象，包含开头、中段、结尾、需补拍素材；基于当前商品已知事实，不编造卖点、价格或优惠。
-原片改剪表: 非空数组，每项包含start、end（原片秒数）、操作（保留/删除/前移/替换）、具体改法、理由。不得只有问题清单，必须明确哪段如何改、哪句如何说。
+原片改剪表: 非空数组，每项包含start、end（原片秒数）、操作（保留/删除/前移/替换，组合操作用/连接）、具体改法、理由。不得只有问题清单，必须明确哪段如何改、哪句如何说。
 新版分镜脚本: 对象，包含目标时长（数字秒）、主要验证变量（字符串）、验证指标（字符串）、镜头列表（至少3项）。只选一个主要验证变量，其他必要改动说明其影响，不能承诺改善。
 镜头列表每项必须包含start、end（新版秒数，从0连续到目标时长）、画面、动作、景别机位、台词原文、中文含义、字幕原文、素材来源（复用或补拍）、原片区间（数组，每项{start,end,shot_id}）。台词必须完整可直接录制，沿用ASR语言；无口播写“无口播”，禁止写“补一句”“结果导向口播”等占位建议。
+英文口播以每秒2至3词规划，每个镜头不得超过4.5词/秒，时间不足时缩短台词。原片关于孔位用途的疑问不得自行改成“确实可穿手指”等肯定卖点；只有已核实功能可使用肯定句。
 复用镜头必须引用已存在shot_evidence.shots的ID，原片区间须在该镜头范围内；新版复用时长不得超过所引用片段时长，不暗中假设慢放、循环或定格。需补拍则原片区间为空，画面动作说明操作细节。shot_evidence不可用时全部用补拍方案并披露限制。
 shot_evidence是多帧联合观察，function仍为表达作用假设，边界为场景变化候选而非人工确认。不得忽略区间内人物或机位变化。缺少商品信息不要编造商品名、规格、安全、价格、销量和优惠；无成交数据不将补CTA视为已证实解决方案。优先提供可控的改剪实验。
 数据限制: 字符串数组，明确缺失数据、样本限制和因果归因限制。
@@ -184,7 +185,8 @@ def validate_edit_plan(report, analysis):
         raise ValueError("缺少原片改剪表")
     for edit in edits:
         if (not isinstance(edit, dict) or not 0 <= number(edit.get("start")) < number(edit.get("end")) <= duration
-                or edit.get("操作") not in {"保留", "删除", "前移", "替换"}
+                or not isinstance(edit.get("操作"), str)
+                or not all(action in {"保留", "删除", "前移", "替换"} for action in edit["操作"].split("/"))
                 or any(not isinstance(edit.get(k), str) or not edit[k].strip() for k in ("具体改法", "理由"))):
             raise ValueError("原片改剪表区间或改法无效")
     plan = report.get("新版分镜脚本")
@@ -217,11 +219,16 @@ def validate_edit_plan(report, analysis):
                 raise ValueError("原片引用必须为对象")
             source = sources.get(ref.get("shot_id"))
             left, right = number(ref.get("start")), number(ref.get("end"))
-            if not source or not source["start"] <= left < right <= source["end"]:
+            if not source or not (0 <= left < right <= duration + .001
+                                  and source["start"] - .001 <= left and right <= source["end"] + .001):
                 raise ValueError("引用镜头不存在或素材区间越界")
             supply += right - left
         if refs and end - start > supply + .01:
             raise ValueError("复用素材时长不足，需要明确补拍")
+        if analysis.get("transcript", {}).get("language") == "en":
+            count = len(re.findall(r"[A-Za-z]+(?:'[A-Za-z]+)?", shot["台词原文"]))
+            if count / (end - start) > 4.5:
+                raise ValueError(f"新版{start}-{end}秒口播过长，请缩短台词或增加时长")
         previous = end
     if abs(previous - target) > .01:
         raise ValueError("新版分镜总时长不匹配")
