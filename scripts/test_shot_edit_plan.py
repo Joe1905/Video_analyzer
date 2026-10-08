@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from shot_analysis import analyze_shots
+from shot_analysis import analyze_shots, validate_events
 from video_performance_context import validate_edit_plan
 import vision_provider
 
@@ -67,7 +67,8 @@ class ShotPlanTests(unittest.TestCase):
             def model(prompt, images):
                 self.assertLessEqual(len(images), 12)
                 return {"shots": [{"id": "shot_0", "visual": "toy", "action": "uncertain",
-                                  "camera": "close", "function": "demo", "uncertainties": []}]}
+                                  "camera": "close", "function": "demo", "uncertainties": [],
+                                  "events": [{'kind':'object_visible','subject':'toy','frame_id':'frame_0','evidence':'visible'}]}]}
             callback = Mock(side_effect=model)
             result = analyze_shots(analysis, root, video, model=callback, cut_detector=lambda _: [])
             self.assertEqual(result["shots"][0]["end"], 10)
@@ -75,6 +76,16 @@ class ShotPlanTests(unittest.TestCase):
             self.assertEqual(len(result["shots"][0]["frame_ids"]), 20)
             analyze_shots(analysis, root, video, model=callback, cut_detector=lambda _: [])
             self.assertEqual(callback.call_count, 1)
+
+    def test_event_timestamps_use_capture_and_different_kinds_remain_separate(self):
+        frames=[{'evidence_id':'early','timestamp_seconds':4.8},{'evidence_id':'late','timestamp_seconds':15.2}]
+        events=[{'kind':'object_visible','subject':'pink toy','frame_id':'early','evidence':'on bag','timestamp_seconds':15},
+                {'kind':'close_up','subject':'blue toy','frame_id':'late','evidence':'close view'}]
+        result=validate_events(events,frames)
+        self.assertEqual([e['timestamp_seconds'] for e in result],[4.8,15.2])
+        self.assertEqual([e['kind'] for e in result],['object_visible','close_up'])
+        events[0]['frame_id']='invented'
+        with self.assertRaises(ValueError):validate_events(events,frames)
 
     def test_multiple_images_use_same_route_and_disabled_thinking(self):
         with tempfile.TemporaryDirectory() as directory:

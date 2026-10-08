@@ -8,6 +8,24 @@ from pathlib import Path
 
 from vision_provider import recognize_image
 
+SHOT_EVIDENCE_VERSION = 2
+
+
+def validate_events(events, frames):
+    """The model identifies an event; capture timestamps come only from stored frames."""
+    if not isinstance(events, list):
+        raise ValueError('镜头缺少逐帧事件证据')
+    by_id = {f['evidence_id']: f for f in frames}
+    checked = []
+    for event in events:
+        if not isinstance(event, dict) or event.get('kind') not in {'object_visible', 'interaction', 'close_up', 'feature_demo'}:
+            raise ValueError('镜头事件类型无效')
+        frame = by_id.get(event.get('frame_id'))
+        if not frame or any(not isinstance(event.get(k), str) or not event[k].strip() for k in ('subject', 'evidence')):
+            raise ValueError('镜头事件未引用实际查看的帧')
+        checked.append({k: event[k] for k in ('kind', 'subject', 'frame_id', 'evidence')} |
+                       {'timestamp_seconds': frame['timestamp_seconds']})
+    return sorted(checked, key=lambda e: e['timestamp_seconds'])
 
 def detect_cuts(video):
     result = subprocess.run(["ffmpeg", "-hide_banner", "-i", str(video), "-vf",
@@ -55,8 +73,10 @@ def analyze_shots(analysis, folder, video, model=None, cut_detector=None):
     cache = folder / "shot_evidence.json"
     if cache.is_file():
         saved = json.loads(cache.read_text())
-        if saved.get("version") == 1 and saved.get("input_sha256") == signature:
+        if saved.get("version") == SHOT_EVIDENCE_VERSION and saved.get("input_sha256") == signature:
             validate_shots(saved.get("shots"), saved.get("shots", []))
+            for shot in saved['shots']:
+                validate_events(shot.get('events'), [f for f in timeline if f['evidence_id'] in shot.get('inspected_frame_ids', [])])
             return saved
     cuts = sorted(set(t for t in (cut_detector or detect_cuts)(video) if 0 < t < duration))
     bounds = [0, *cuts, duration]
@@ -72,7 +92,7 @@ def analyze_shots(analysis, folder, video, model=None, cut_detector=None):
         frame_ids = shot["frame_ids"]
         if not frame_ids:
             shots.append({**shot, "visual": "无区间内采样帧", "action": "未知", "camera": "未知",
-                          "function": "未知", "uncertainties": ["此区间无法通过采样图像核实"]})
+                          "function": "未知", "events": [], "uncertainties": ["此区间无法通过采样图像核实"]})
             continue
         # Use evenly spaced images from the complete evidence list; never claim all frames were viewed.
         chosen = frame_ids if len(frame_ids) <= 12 else [frame_ids[round(i*(len(frame_ids)-1)/11)] for i in range(12)]
@@ -82,18 +102,24 @@ def analyze_shots(analysis, folder, video, model=None, cut_detector=None):
                   "区间来自ffmpeg场景变化候选，不保证恰好等于人工分镜。比较人物、机位、产品状态变化。"
                   "动作只能按可见手部位置、形态变化或动态模糊提出有依据的判断，不得将无法确认运动写成静止。"
                   "function是表达作用假设；不从静态图推测音效或已确认商品功能。"
-                  "只返回严格JSON {shots:[{id,visual,action,camera,function,uncertainties:数组}]}。"
+                  "只返回严格JSON {shots:[{id,visual,action,camera,function,uncertainties:数组,events:数组}]}。"
+                  "events逐项为{kind,subject,frame_id,evidence}，kind仅限object_visible（物体可见）、interaction（人物与物体互动）、close_up（特写）、feature_demo（可见功能演示）。"
+                  "对主要展示物体分别记录这些事件在本区间已查看帧中的最早证据。subject描述外观，不凭颜色或名称认定不同物体为同一商品。"
+                  "挂在包上或处于背景也算可见，不能因为未特写而写未出现；拿起、使用属于互动，不是首次露出。"
+                  "frame_id只能引用实际提供图像；evidence说明该帧可见事实，不自行生成时间戳。不确定功能不写feature_demo。"
                   "禁止修改区间和ID。区间=" + json.dumps(shot, ensure_ascii=False)
                   + "\n实际提供图像=" + json.dumps(chosen)
                   + "\nASR=" + json.dumps(analysis.get("transcript", {}), ensure_ascii=False))
         response = model(prompt, images)
         checked = validate_shots(response.get("shots"), [shot])
+        checked[0]['events'] = validate_events(response['shots'][0].get('events'), [by_id[fid] for fid in chosen])
         checked[0]["inspected_frame_ids"] = chosen
         shots.extend(checked)
         calls += 1
-    result = {"available": True, "version": 1, "input_sha256": signature, "api_calls": calls,
+    result = {"available": True, "version": SHOT_EVIDENCE_VERSION, "input_sha256": signature, "api_calls": calls,
               "boundary_source": "ffmpeg_scene_0.3_candidates", "shots": shots,
-              "limitations": ["场景变化候选不等于精确人工分镜；采样联合识别仍不能证明全部连续动作。"]}
+              "limitations": ["场景变化候选不等于精确人工分镜；采样联合识别仍不能证明全部连续动作。",
+                               "events时间来自实际查看的采样帧，表示最早已观察到，不能当成连续视频中的精确首次；不同外观物体不证明同款商品。"]}
     temp = cache.with_suffix(".tmp")
     temp.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     temp.replace(cache)
