@@ -326,6 +326,7 @@ def browser_checks():
             with patch.object(app, "client", side_effect=AssertionError("Switching tabs must not call SociaVault")):
                 page.locator('#accountsTab').click()
                 page.wait_for_function("document.querySelector('#selectedName').textContent === 'Test creator'")
+                page.wait_for_function("document.querySelectorAll('.video-card').length === 2")
                 assert page.locator('.video-card').count() == 2
                 assert page.locator('#videoSort').input_value() == 'published_at'
                 assert page.locator('#products .row-id').first.inner_text() == '测试同事'
