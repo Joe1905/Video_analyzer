@@ -266,8 +266,9 @@ function showEvidenceReview(report) {
     const values=row.retention;
     const retention=values?`${values.start_percent}% → ${values.end_percent}%<br>${values.drop_percentage_points>0?'下降':values.drop_percentage_points<0?'回升':'变化'} ${reviewSeconds(Math.abs(values.drop_percentage_points))} 个百分点`:(row.start_percent!=null?`${row.start_percent}%（区间数据不完整）`:'未提供');
     const visuals=row.visuals.map(f=>`<p><small>${reviewSeconds(f.seconds)}秒</small> ${esc(f.text)}</p>`).join('')||'<p>此秒无采样帧，不补造画面。</p>';
-    const preview=row.visuals[0]?.text||'此秒无采样帧';
-    return `<tr id="review-row-${row.id}"><td><button class="review-seek" data-review-seek="${row.start}">${reviewSeconds(row.start)}–${reviewSeconds(row.end)}秒 ↗</button></td><td><p>${esc(preview.length>65?preview.slice(0,65)+'…':preview)}</p>${row.speech.map(s=>`<p><small>语音原文${s.precision==='segment'?' · 整段引用':''}</small> ${esc(s.text)}</p>`).join('')}<details><summary>展开 ${row.visuals.length} 张采样证据</summary>${visuals}</details></td><td>${beats.map(b=>`<p>${esc(b['逻辑作用'])}</p>`).join('')||'未标注逻辑作用'}</td><td>${retention}</td></tr>`;
+    const unique=row.visuals.filter((f,i,a)=>i===0||f.text!==a[i-1].text);
+    const preview=(unique.length>1?[unique[0],unique.at(-1)]:unique).map(f=>`<p><small>${reviewSeconds(f.seconds)}秒</small> ${esc(f.text.length>55?f.text.slice(0,55)+'…':f.text)}</p>`).join('')||'<p>此秒无采样帧</p>';
+    return `<tr id="review-row-${row.id}"><td><button class="review-seek" data-review-seek="${row.start}">${reviewSeconds(row.start)}–${reviewSeconds(row.end)}秒 ↗</button></td><td>${preview}${row.speech.map(s=>`<p><small>语音原文${s.precision==='segment'?' · 整段引用':''}</small> ${esc(s.text)}</p>`).join('')}<details><summary>展开 ${row.visuals.length} 张采样证据</summary>${visuals}</details></td><td>${beats.map(b=>`<p>${esc(b['逻辑作用'])}</p>`).join('')||'未标注逻辑作用'}</td><td>${retention}</td></tr>`;
   }).join('');
   const contexts=ids=>(ids||[]).map(id=>{
     const row=rows.find(r=>r.id===id);if(!row)return '';
