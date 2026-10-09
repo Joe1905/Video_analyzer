@@ -17,6 +17,7 @@ INSTRUCTIONS = '''你是电商内部辅助分析助手。先理解原片意图�
 注意因果时间顺序：变化之后才出现的台词、画面不能解释此前已经发生的下降。逐秒words原文只属于对应时间轴行，不得提前或后移；整段引用只能按段时间说明不确定性。解释区间内及之前可感知内容，区间后的内容只用于说明后续承接。
 解释候选不要重复秒数、指标和完整台词（脚本已经展示事实），只解释可感知内容与逻辑关系。若引用原文，必须来自区间前或区间内的实际词级口播/画面文字，不能从整段转写截取后续台词。
 后段平稳不能证明内容优秀；留下来的观众与开头观众不同。留存分母未知，不换算人数。
+不能声称分母随播放进度变小或百分比因此被压缩：剩余观众变少不证明留存计算分母改变。
 缺少留存时留存分析必须为空；播放互动不能替代留存、点击或成交。均值不是退出峰值。
 每个结论引用时间轴ID；留存分析引用给定重点区间ID，不能自行新增指标或区间。
 无需完整拍摄脚本或自动评分；不承诺提升。可尝试方向最多两项，说明应保留的原片机制。
@@ -132,6 +133,8 @@ def validate(report, evidence):
         if any(i not in window['before']+window['during']+window['after'] for i in item['依据']):raise ValueError('留存分析依据不在对应前后文中')
         seen.add(key)
         if not item.get('解释候选') or not item.get('其他解释') or item.get('证据强度') not in ('低','中'):raise ValueError('留存分析缺少解释边界')
+        if re.search(r'分母(?:变小|变少|缩小|减少)',item['解释候选']+item['其他解释']):
+            raise ValueError('留存分母未知，不能把剩余观众变少解释为留存分母变小')
         # Prevent later English/Spanish utterances from becoming an earlier drop's cause.
         normalize=lambda s:re.sub(r'[^a-záéíóúñü]+',' ',str(s).lower()).strip()
         context=' '.join(' '.join(s['text'] for s in ids[i]['speech'])+' '+
