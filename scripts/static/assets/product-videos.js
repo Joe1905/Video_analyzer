@@ -14,8 +14,11 @@ async function loadReviewLinks() {
   } catch { /* Reviews are optional; collection, playback and audio remain available. */ }
 }
 function reviewSnippet(video) {
-  const review=state.reviews.get(String(video.video_id));if(!review)return '';
-  return `<section class="video-review"><strong>复盘摘要</strong><p>${esc(review.review_summary||'已有复盘，可直接查看')}</p><small>依据 ${esc(String(review.review_collected_at||'未标注采集时间').slice(0,10))} 的历史指标。</small></section>`;
+  const review=state.reviews.get(String(video.video_id));
+  const link=video.collection_link;
+  const badge=link?`<p class="review-collection-link">${link.retention_available?'已关联采集留存':'已关联采集记录'} · ${esc(String(link.collected_at||'').slice(0,10))}</p>`:'';
+  if(!review)return badge;
+  return badge+`<section class="video-review"><strong>复盘摘要</strong><p>${esc(review.review_summary||'已有复盘，可直接查看')}</p><small>依据 ${esc(String(review.review_collected_at||'未标注采集时间').slice(0,10))} 的历史指标。</small></section>`;
 }
 const tableCacheKey="video-table-targets-v1";
 const videoTableNames=["视频数据表-鹏飞","视频数据表-丽娜","视频数据表-小周"];

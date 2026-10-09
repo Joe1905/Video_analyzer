@@ -1,0 +1,13 @@
+# Optional read-only collection source. Explicitly select alongside the existing
+# Compose files; never replace environment-specific data/video/output mounts.
+services:
+  web:
+    environment:
+      REVIEW_COLLECTION_DB: /workspace/shared-collection/proxy_pool.sqlite
+    volumes:
+      - ${REVIEW_COLLECTION_DB_HOST:?Specify the collection database}:/workspace/shared-collection/proxy_pool.sqlite:ro
+  analyzer:
+    environment:
+      REVIEW_COLLECTION_DB: /workspace/shared-collection/proxy_pool.sqlite
+    volumes:
+      - ${REVIEW_COLLECTION_DB_HOST:?Specify the collection database}:/workspace/shared-collection/proxy_pool.sqlite:ro

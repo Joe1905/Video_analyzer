@@ -3,6 +3,7 @@ import json
 import re
 import sqlite3
 import math
+import os
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -117,52 +118,68 @@ def build_report_facts(analysis, performance):
     }
 
 
+def _collection_rows(root, video_ids):
+    paths=[(Path(root)/'data'/'proxy_pool.sqlite','local_collect')]
+    shared=os.getenv('REVIEW_COLLECTION_DB','').strip()
+    if shared and Path(shared).resolve()!=paths[0][0].resolve():paths.append((Path(shared),'shared_collect'))
+    rows=[]
+    for path,source in paths:
+        if not path.is_file():continue
+        conn=sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True,timeout=10);conn.row_factory=sqlite3.Row
+        try:
+            for offset in range(0,len(video_ids),400):
+                batch=video_ids[offset:offset+400]
+                query="SELECT r.* FROM collect_results r JOIN collect_jobs j ON j.id=r.job_id WHERE j.platform='tiktok' AND r.video_id IN ("+','.join('?' for _ in batch)+')'
+                rows.extend((dict(r),source) for r in conn.execute(query,batch))
+        except sqlite3.OperationalError as exc:
+            if 'no such table' not in str(exc) and 'no such column' not in str(exc):raise
+        finally:conn.close()
+    return sorted(rows,key=lambda r:(str(r[0].get('collected_at') or ''),r[0]['id']),reverse=True)
+
+
+def _select_collection(rows):
+    valid=[]
+    for row,source in rows:
+        try:payload=json.loads(row['payload_json'])
+        except (ValueError,TypeError):continue
+        if not isinstance(payload,dict) or not any(isinstance(payload.get(k),dict) and payload[k] for k in ('overview','engagement','retention')):continue
+        facts=build_report_facts({'timeline':[]},{'available':True,'retention':payload.get('retention') if isinstance(payload.get('retention'),dict) else {}})
+        valid.append((row,source,payload,bool(facts['retention']['adjacent_second_changes'])))
+    return next((v for v in valid if v[3]),valid[0] if valid else None)
+
+
+def collection_links(root, video_ids):
+    ids=[str(v) for v in video_ids if re.fullmatch(r'\d{15,25}',str(v))]
+    if not ids:return {}
+    rows=_collection_rows(root,ids);links={}
+    for vid in ids:
+        selected=_select_collection([r for r in rows if r[0]['video_id']==vid])
+        if selected:
+            row,source,_,retention=selected
+            links[vid]={'collection_id':row['id'],'collected_at':row['collected_at'],
+                        'source':source,'retention_available':retention}
+    return links
+
+
 def load_performance_context(root, video_id):
     context = {"video_id": video_id, "source": "proxy_collect", "available": False,
                "limitations": []}
     if not video_id or not re.fullmatch(r"\d{15,25}", str(video_id)):
         context["limitations"].append("未关联外部视频ID，无法匹配Proxy采集数据")
         return context
-    path = Path(root) / "data" / "proxy_pool.sqlite"
-    if not path.is_file():
-        context["limitations"].append("当前环境没有Proxy采集数据库")
-        return context
-    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=10)
-    conn.row_factory = sqlite3.Row
-    try:
-        rows = conn.execute("""SELECT r.* FROM collect_results r JOIN collect_jobs j ON j.id=r.job_id
-            WHERE r.video_id=? AND j.platform='tiktok' ORDER BY r.collected_at DESC,r.id DESC LIMIT 20""",
-                            (video_id,)).fetchall()
-        for row in rows:
-            try:
-                payload = json.loads(row["payload_json"])
-            except (ValueError, TypeError):
-                continue
-            if not isinstance(payload, dict) or not any(
-                isinstance(payload.get(k), dict) and payload[k] for k in ("overview", "engagement", "retention")
-            ):
-                continue
-            # Never send browser sessions, proxy details or Feishu credentials to the model.
-            context.update(available=True, collection_id=row["id"], job_id=row["job_id"],
-                           account_id=row["account_id"], published_at=row["published_at"],
-                           collected_at=row["collected_at"], title=row["title"])
-            for key in ("overview", "engagement", "retention", "retention_complete", "retention_reason",
-                        "traffic_sources", "traffic_sources_available", "traffic_sources_reason",
-                        "search_queries", "search_queries_available", "search_queries_reason", "data_complete"):
-                if key in payload:
-                    context[key] = payload[key]
-            if row["id"] != rows[0]["id"]:
-                context["limitations"].append("最新记录没有有效指标，使用最近可用的历史采集快照")
-            context["limitations"].append("这是标注采集时间的历史快照，未重新采集；未提供点击、订单、GMV和投流记录")
-            context["limitations"].append("未核实当前挂车商品，不能将视频主题当作商品绑定证据")
-            return context
-        context["limitations"].append("未找到此视频的有效TikTok采集快照")
-    except sqlite3.OperationalError as exc:
-        if "no such table" not in str(exc) and "no such column" not in str(exc):
-            raise
-        context["limitations"].append("当前环境尚无兼容的采集数据表")
-    finally:
-        conn.close()
+    rows=_collection_rows(root,[video_id]);selected=_select_collection(rows)
+    if not selected:
+        context['limitations'].append('未找到此视频的有效TikTok采集快照');return context
+    row,source,payload,_=selected
+    context.update(available=True,collection_id=row['id'],job_id=row['job_id'],account_id=row['account_id'],
+                   published_at=row['published_at'],collected_at=row['collected_at'],title=row['title'],collection_source=source)
+    for key in ('overview','engagement','retention','retention_complete','retention_reason','traffic_sources',
+                'traffic_sources_available','traffic_sources_reason','search_queries','search_queries_available','search_queries_reason','data_complete'):
+        if key in payload:context[key]=payload[key]
+    if rows and (row['id'],source)!=(rows[0][0]['id'],rows[0][1]):
+        context['limitations'].append('较新记录没有可用留存或有效指标，采用最近带有效留存的整份历史快照，不混入其他时间的指标')
+    context['limitations'].extend(['这是标注采集时间的历史快照，未重新采集；未提供点击、订单、GMV和投流记录',
+                                  '未核实当前挂车商品，不能将视频主题当作商品绑定证据'])
     return context
 
 

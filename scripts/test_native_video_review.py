@@ -2,6 +2,7 @@
 import tempfile
 import json
 import subprocess
+import os
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,6 +13,7 @@ import native_video_review as review
 
 class ReviewTests(unittest.TestCase):
     def setUp(self):
+        env=patch.dict(os.environ,{'REVIEW_COLLECTION_DB':''});env.start();self.addCleanup(env.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
@@ -46,6 +48,14 @@ class ReviewTests(unittest.TestCase):
             state=review.review_state(self.ws,'account:24',self.vid)
             self.assertEqual(state['status'],'processing')
             self.assertEqual(state['message'],'更新中')
+
+    def test_new_collection_invalidates_missing_retention_without_retry_loop(self):
+        current={'available':True,'collection_id':1,'retention':{'0:00':'100%','0:01':'50%'}}
+        old={'summary':'old','采集数据来源':{'source':'video_library'}}
+        with patch.object(review,'saved_report',return_value=old),patch.object(review,'load_performance_context',return_value=current):
+            self.assertEqual(review.review_state(self.ws,'account:24',self.vid)['status'],'missing')
+            self.ws.snapshot.return_value={'job':{'action':'review','video_id':self.vid,'status':'failed','message':'failed'}}
+            self.assertEqual(review.review_state(self.ws,'account:24',self.vid)['status'],'failed')
 
     def test_user_logic_note_is_membership_checked_and_preserved(self):
         import product_video_workspace as workspace

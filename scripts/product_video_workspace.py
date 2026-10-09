@@ -172,7 +172,10 @@ def snapshot(product_id):
         job["message"] = job.get("message", "").replace(" · 1 credit", "").replace("（本页 1 credit）", "")
     if job and job.get("status") in {"queued", "running"} and job.get("owner") != _owner:
         job.update(status="failed", message="服务已重启，本次任务中断；已保存的数据仍可查看，请重新更新。")
+    from video_performance_context import collection_links
+    links=collection_links(ROOT,[video['video_id'] for video in videos])
     for video in videos:
+        video['collection_link']=links.get(video['video_id'])
         folder = MEDIA / video["video_id"]
         video["downloaded"] = video_expiry(folder) > time.time()
         video["audio_ready"] = (folder / "audio.mp3").is_file()

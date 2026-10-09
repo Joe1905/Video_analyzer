@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from video_performance_context import validate_report
+from video_performance_context import load_performance_context, build_report_facts
 from visual_analysis_cache import valid_analysis
 
 _review_lock = threading.Lock()
@@ -19,6 +20,12 @@ REPORT_KEYS = ('report_version','summary', '内容拆解', '表现诊断', '优�
 
 def filename(video_id):
     return 'shortvideo_SociaVault_' + str(video_id) + '.mp4'
+
+
+def needs_collection_refresh(report, current):
+    if not report or not build_report_facts({'timeline':[]},current)['retention']['adjacent_second_changes']:return False
+    previous=report.get('采集数据来源',{})
+    return any(previous.get(k)!=current.get(k) for k in ('collection_id','collected_at','collection_source','retention'))
 
 
 def saved_report(root, video_id):
@@ -84,7 +91,10 @@ def run_review(workspace, job):
     job.update(message='等待生成复盘…', total=1)
     workspace.save_job(job)
     with _review_lock:
-        if saved_report(root, vid) and not job.get('force'):
+        cached=saved_report(root,vid)
+        current=load_performance_context(root,vid)
+        refresh=needs_collection_refresh(cached,current)
+        if cached and not job.get('force') and not refresh:
             job.update(done=1, message='复盘已完成。')
             return
         media = root / 'videos' / filename(vid)
@@ -126,7 +136,9 @@ def review_state(workspace, pid, vid):
     job = workspace.snapshot(pid).get('job')
     related = job and job.get('action') == 'review' and job.get('video_id') == vid
     active = job and job['status'] in ('running', 'queued')
-    status = 'processing' if related and active else 'ready' if report else 'waiting' if active else 'failed' if related and job['status'] == 'failed' else 'missing'
+    current=load_performance_context(workspace.ROOT,vid)
+    outdated=needs_collection_refresh(report,current)
+    status = 'processing' if related and active else 'failed' if outdated and related and job['status']=='failed' else 'missing' if outdated else 'ready' if report else 'waiting' if active else 'failed' if related and job['status'] == 'failed' else 'missing'
     media = Path(workspace.ROOT) / 'videos' / filename(vid)
     return {'video_id': vid, 'status': status, 'report': report,
             'message': job.get('message') if related and active else '本次更新未完成，已保留上次复盘；可再次提交补充。' if report and related and job['status']=='failed' else '复盘已完成。' if report else job.get('message') if related else '正在等待当前任务完成…' if active else '点击生成内容复盘。',
