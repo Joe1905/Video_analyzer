@@ -272,7 +272,7 @@ function showEvidenceReview(report) {
   }).join('');
   const contexts=ids=>(ids||[]).map(id=>{
     const row=rows.find(r=>r.id===id);if(!row)return '';
-    return `<div class="review-context-row">${evidenceRefs([id])}<details><summary>查看画面与口播</summary>${row.visuals.map(f=>`<p>${reviewSeconds(f.seconds)}秒：${esc(f.text)}</p>`).join('')||'<p>无采样帧</p>'}${row.speech.map(s=>`<p><strong>语音原文</strong>${esc(s.full_text)}</p>`).join('')}</details></div>`;
+    return `<div class="review-context-row">${evidenceRefs([id])}<details><summary>查看画面与口播</summary>${row.visuals.map(f=>`<p>${reviewSeconds(f.seconds)}秒：${esc(f.text)}</p>`).join('')||'<p>无采样帧</p>'}${row.speech.map(s=>`<p><strong>${s.precision==='segment'?'整段引用 · '+reviewSeconds(s.start)+'–'+reviewSeconds(s.end)+'秒':'该秒语音原文'}</strong>${esc(s.text)}</p>`).join('')}</details></div>`;
   }).join('');
   const windows=evidence.retention_windows.map(w=>`<article class="native-review-card"><h4>${esc(w.label)} · ${w.start_seconds}–${w.end_seconds}秒</h4><p>${w.start_percent}% → ${w.end_percent}% · ${w.drop_percentage_points<0?'回升':'下降'} ${reviewSeconds(Math.abs(w.drop_percentage_points))} 个百分点</p><div class="review-context"><section><strong>变化前</strong>${contexts(w.before)||'<p>已在开头，无前段。</p>'}</section><section><strong>变化中</strong>${contexts(w.during)}</section><section><strong>变化后</strong>${contexts(w.after)||'<p>已到片尾。</p>'}</section></div></article>`).join('');
   const judgmentCard=j=>`<article class="native-review-card"><span class="review-judgment">${esc(j['判断'])}</span><h4>${esc(j['要点'])}</h4><p>${esc(j['解释'])}</p>${evidenceRefs(j['依据'])}</article>`;
