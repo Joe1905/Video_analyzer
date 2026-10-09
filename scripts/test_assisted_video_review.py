@@ -46,5 +46,14 @@ class EvidenceReviewTests(unittest.TestCase):
             r=copy.deepcopy(base);mutate(r)
             with self.assertRaises(ValueError):validate(r,e)
 
+    def test_later_utterance_cannot_explain_earlier_drop(self):
+        e,r=self.fixture()
+        e['timeline'][2]['speech'][0]['text']='this is later'
+        r['留存分析'][0]['解释候选']='“this is later”可能影响此处留存'
+        with self.assertRaisesRegex(ValueError,'区间前/区间内'):validate(r,e)
+        r['留存分析'][0]['解释候选']='“hello world here”可能影响此处留存'
+        e['timeline'][0]['speech'][0]['text']='hello world here'
+        validate(r,e)
+
 
 if __name__=='__main__':unittest.main()
