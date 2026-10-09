@@ -72,5 +72,11 @@ class EvidenceReviewTests(unittest.TestCase):
         self.assertNotIn('future phrase',first)
         self.assertNotIn('full_text',first)
 
+    def test_denominator_guard_does_not_reject_a_warning(self):
+        e,r=self.fixture();r['留存分析'][0]['其他解释']='分母未知，不能认为分母变小。'
+        validate(r,e)
+        r['留存分析'][0]['其他解释']='可能因为分母变小，压缩百分比。'
+        with self.assertRaisesRegex(ValueError,'分母未知'):validate(r,e)
+
 
 if __name__=='__main__':unittest.main()

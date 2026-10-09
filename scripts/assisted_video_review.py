@@ -154,7 +154,9 @@ def validate(report, evidence):
         if any(i not in window['before']+window['during']+window['after'] for i in item['依据']):raise ValueError('留存分析依据不在对应前后文中')
         seen.add(key)
         if not item.get('解释候选') or not item.get('其他解释') or item.get('证据强度') not in ('低','中'):raise ValueError('留存分析缺少解释边界')
-        if re.search(r'分母(?:变小|变少|缩小|减少)',item['解释候选']+item['其他解释']):
+        text=item['解释候选']+'。'+item['其他解释']
+        text=re.sub(r'(?:不能|不得|不可|不证明)[^。；\n]{0,24}分母(?:变小|变少|缩小|减少)','',text)
+        if re.search(r'分母(?:变小|变少|缩小|减少)',text):
             raise ValueError('留存分母未知，不能把剩余观众变少解释为留存分母变小')
         # Prevent later English/Spanish utterances from becoming an earlier drop's cause.
         normalize=lambda s:re.sub(r'[^a-záéíóúñü]+',' ',str(s).lower()).strip()
