@@ -139,7 +139,10 @@ def review_state(workspace, pid, vid):
     current=load_performance_context(workspace.ROOT,vid)
     outdated=needs_collection_refresh(report,current)
     status = 'processing' if related and active else 'failed' if outdated and related and job['status']=='failed' else 'missing' if outdated else 'ready' if report else 'waiting' if active else 'failed' if related and job['status'] == 'failed' else 'missing'
+    completed='复盘已完成。'
+    if report and report.get('采集数据来源',{}).get('collected_at'):
+        completed='复盘已完成 · 指标与留存来自 '+str(report['采集数据来源']['collected_at'])[:10]+' 的同一快照。'
     media = Path(workspace.ROOT) / 'videos' / filename(vid)
     return {'video_id': vid, 'status': status, 'report': report,
-            'message': job.get('message') if related and active else '本次更新未完成，已保留上次复盘；可再次提交补充。' if report and related and job['status']=='failed' else '复盘已完成。' if report else job.get('message') if related else '正在等待当前任务完成…' if active else '点击生成内容复盘。',
+            'message': job.get('message') if related and active else '本次更新未完成，已保留上次复盘；可再次提交补充。' if report and related and job['status']=='failed' else '找到关联的采集留存，正在更新复盘。' if outdated else completed if report else job.get('message') if related else '正在等待当前任务完成…' if active else '点击生成内容复盘。',
             'video_url': '/video/' + media.name if media.is_file() else None}
