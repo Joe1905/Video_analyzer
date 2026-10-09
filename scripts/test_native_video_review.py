@@ -40,6 +40,21 @@ class ReviewTests(unittest.TestCase):
         with patch.object(review,'saved_report',return_value=None):
             self.assertEqual(review.review_state(self.ws,'account:24',self.vid)['status'],'waiting')
 
+    def test_update_shows_processing_even_with_saved_result(self):
+        self.ws.snapshot.return_value={'job':{'action':'review','video_id':self.vid,'status':'running','message':'更新中'}}
+        with patch.object(review,'saved_report',return_value={'summary':'old'}):
+            state=review.review_state(self.ws,'account:24',self.vid)
+            self.assertEqual(state['status'],'processing')
+            self.assertEqual(state['message'],'更新中')
+
+    def test_user_logic_note_is_membership_checked_and_preserved(self):
+        import product_video_workspace as workspace
+        with patch.object(workspace,'video_tables'),patch.object(workspace,'snapshot',return_value={'job':None}), \
+             patch.object(workspace,'item') as member,patch.object(workspace,'save_job'),patch.object(workspace._pool,'submit'):
+            job=workspace.start({'action':'review','product_id':'account:24','video_id':self.vid,'force':True,'logic_note':'主推玩偶，胸针是剧情道具'})
+        member.assert_called_once_with('account:24',self.vid)
+        self.assertTrue(job['force']);self.assertEqual(job['logic_note'],'主推玩偶，胸针是剧情道具')
+
     def test_cached_report_does_not_start_pipeline(self):
         with patch.object(review,'saved_report',return_value={'summary':'cached'}),patch.object(review.subprocess,'run') as run:
             review.run_review(self.ws,self.job)
