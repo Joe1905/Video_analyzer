@@ -167,6 +167,11 @@ def load_performance_context(root, video_id):
 
 
 def validate_report(report):
+    if isinstance(report,dict) and report.get('report_version') == 'commerce-review-v3-evidence':
+        from assisted_video_review import validate
+        if not isinstance(report.get('证据时间轴'),dict):raise ValueError('缺少证据时间轴')
+        validate(report,report['证据时间轴'])
+        return
     required = {"summary": str, "内容拆解": dict, "表现诊断": list, "优先修改": list,
                 "下一条脚本": dict, "数据限制": list}
     if not isinstance(report, dict) or any(not isinstance(report.get(k), t) or not report[k]

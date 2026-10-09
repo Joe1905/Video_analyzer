@@ -333,6 +333,10 @@ def start(payload):
         job = {"id": uuid.uuid4().hex, "owner": _owner, "product_id": pid, "video_id": vid,
                "action": kind, "status": "queued", "done": 0, "total": 0, "failures": 0,
                "message": "已加入队列", "started_at": time.time()}
+        if kind == 'review':
+            note = payload.get('logic_note','')
+            if not isinstance(note,str):raise ValueError('逻辑补充必须为文字')
+            job.update(force=payload.get('force') is True,logic_note=note[:4000])
         if kind == "more":
             job["cursor"] = state["cursor"]
         save_job(job)

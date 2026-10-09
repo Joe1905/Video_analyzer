@@ -251,10 +251,49 @@ function showReview(report, videoURL) {
   if(videoURL)$("nativeReviewPreview").innerHTML=`<video controls playsinline preload="metadata" src="${esc(videoURL)}"></video>`;
   state.review.report=report;
   if(source.title)$("nativeReviewCaption").textContent=source.title;
+  if(report['证据时间轴'])showEvidenceReview(report);
+}
+function evidenceRefs(ids) {
+  const rows=state.review.report['证据时间轴'].timeline;
+  return (ids||[]).map(id=>{const row=rows.find(r=>r.id===id);return row?`<button class="review-seek" data-review-seek="${row.start}">${reviewSeconds(row.start)}–${reviewSeconds(row.end)}秒 ↗</button>`:'';}).join(' ');
+}
+function showEvidenceReview(report) {
+  const evidence=report['证据时间轴'],logic=report['视频逻辑'],rows=evidence.timeline;
+  const chain=logic['推进'].map(beat=>`<article class="native-review-card"><button class="review-seek" data-review-seek="${beat.start}">${reviewSeconds(beat.start)}–${reviewSeconds(beat.end)}秒 ↗</button>${reviewFields({事件:beat['事件'],逻辑作用:beat['逻辑作用'],承接:beat['承接']})}</article>`).join('');
+  const table=rows.map(row=>{
+    const beats=logic['推进'].filter(b=>b.start<row.end&&b.end>row.start);
+    const values=row.retention;
+    const retention=values?`${values.start_percent}% → ${values.end_percent}%<br>${values.drop_percentage_points>0?'下降':values.drop_percentage_points<0?'回升':'变化'} ${reviewSeconds(Math.abs(values.drop_percentage_points))} 个百分点`:(row.start_percent!=null?`${row.start_percent}%（区间数据不完整）`:'未提供');
+    const visuals=row.visuals.map(f=>`<p><small>${reviewSeconds(f.seconds)}秒</small> ${esc(f.text)}</p>`).join('')||'<p>此秒无采样帧，不补造画面。</p>';
+    return `<tr id="review-row-${row.id}"><td><button class="review-seek" data-review-seek="${row.start}">${reviewSeconds(row.start)}–${reviewSeconds(row.end)}秒 ↗</button></td><td><details><summary>${row.visuals.length} 张采样 · ${row.speech.length?'有口播':'无转写记录'}</summary>${visuals}${row.speech.map(s=>`<p><strong>语音原文</strong>${esc(s.text)}</p>`).join('')}</details></td><td>${beats.map(b=>`<p>${esc(b['逻辑作用'])}</p>`).join('')||'未标注逻辑作用'}</td><td>${retention}</td></tr>`;
+  }).join('');
+  const contexts=ids=>(ids||[]).map(id=>{
+    const row=rows.find(r=>r.id===id);if(!row)return '';
+    return `<div class="review-context-row">${evidenceRefs([id])}<details><summary>查看画面与口播</summary>${row.visuals.map(f=>`<p>${reviewSeconds(f.seconds)}秒：${esc(f.text)}</p>`).join('')||'<p>无采样帧</p>'}${row.speech.map(s=>`<p><strong>语音原文</strong>${esc(s.full_text)}</p>`).join('')}</details></div>`;
+  }).join('');
+  const windows=evidence.retention_windows.map(w=>`<article class="native-review-card"><h4>${esc(w.label)} · ${w.start_seconds}–${w.end_seconds}秒</h4><p>${w.start_percent}% → ${w.end_percent}% · ${w.drop_percentage_points<0?'回升':'下降'} ${reviewSeconds(Math.abs(w.drop_percentage_points))} 个百分点</p><div class="review-context"><section><strong>变化前</strong>${contexts(w.before)||'<p>已在开头，无前段。</p>'}</section><section><strong>变化中</strong>${contexts(w.during)}</section><section><strong>变化后</strong>${contexts(w.after)||'<p>已到片尾。</p>'}</section></div></article>`).join('');
+  const judgments=report['逻辑合理性'].map(j=>`<article class="native-review-card"><span class="review-judgment">${esc(j['判断'])}</span><h4>${esc(j['要点'])}</h4><p>${esc(j['解释'])}</p>${evidenceRefs(j['依据'])}</article>`).join('');
+  const analyses=report['留存分析'].map(a=>{const w=evidence.retention_windows.find(w=>w.id===a['区间ID']);return `<article class="native-review-card"><h4>${esc(w?.label||'')} · ${w?.start_seconds}–${w?.end_seconds}秒</h4>${reviewFields({解释候选:a['解释候选'],其他解释:a['其他解释'],证据强度:a['证据强度']})}${evidenceRefs(a['依据'])}</article>`;}).join('');
+  const source=report['采集数据来源']||{};
+  $("nativeReviewResult").innerHTML=`<section><h3>1. 视频逻辑与统一时间轴</h3>${reviewFields({核心表达:logic['核心表达'],主体与道具:logic['主体与道具']})}<details open><summary>剧情与信息推进</summary>${chain}</details><details open><summary>逐秒证据与留存 · 点击时间回看</summary><div class="review-table-scroll"><table class="review-timeline"><thead><tr><th>时间</th><th>画面与口播事实</th><th>逻辑作用 · 模型理解</th><th>留存</th></tr></thead><tbody>${table}</tbody></table></div></details></section><section><h3>2. 留存变化与画面前后文</h3><p class="review-note">前后文是时间关系，不代表已经证明因果。相对平稳也不代表内容优秀。</p>${windows||'<div class="job-status">未提供有效逐秒留存，无法对齐变化区间。播放和互动不替代留存。</div>'}</section><section><h3>3. 逻辑合理性判断</h3>${judgments}</section><section><h3>4. 留存分析</h3>${analyses||'<p>缺少留存数据，本次不作留存归因。</p>'}</section><details><summary>可尝试的方向 · 由你判断</summary>${report['可尝试方向'].map(d=>`<article class="native-review-card">${reviewFields(d)}</article>`).join('')||'暂无充分依据提出调整方向。'}</details><details><summary>数据与判断范围</summary><p>采集时间：${esc(source.collected_at||'未知')}</p>${reviewFields(source.overview)}<p>${esc(reviewText(report['数据限制']))}</p><p>${esc(reviewText(logic['待核实']))}</p></details><details><summary>补充或纠正视频逻辑</summary><p class="review-note">你的解释会单独保存，重新分析会复用已提取的视频证据。</p><label for="nativeLogicNote">主推商品、剧情含义或需要纠正的理解</label><textarea id="nativeLogicNote" maxlength="4000" rows="4">${esc(report['人工补充']||'')}</textarea><button id="regenerateNativeReview" class="primary">按补充重新分析</button><p id="nativeCorrectionStatus" role="status"></p></details><button id="copyNativeReview">复制复盘要点</button>`;
+}
+async function reviseReview() {
+  const ref=state.review,note=$("nativeLogicNote").value.trim();
+  let pid=ref.pid,vid=ref.vid;
+  if(!pid&&ref.filename){vid=state.savedReviews.find(f=>f.name===ref.filename)?.review_video_id;pid=state.selected;}
+  if(!pid||!vid)throw new Error('请从所属账号或商品的视频卡片打开，再补充逻辑。');
+  const token=state.reviewSeq;$("regenerateNativeReview").disabled=true;
+  try {
+    const job=await api('/api/product-videos/jobs',{action:'review',product_id:pid,video_id:String(vid),force:true,logic_note:note});
+    if(token!==state.reviewSeq)return;
+    if(job.action!=='review'||job.video_id!==String(vid)){$("nativeCorrectionStatus").textContent='当前有其他任务，请完成后再提交补充。';return;}
+    state.review={pid,vid:String(vid)};$("nativeReviewResult").innerHTML='';await pollReview(token);
+  }finally{if($("regenerateNativeReview"))$("regenerateNativeReview").disabled=false;}
 }
 function reviewFailure(error) {$("nativeReviewStatus").textContent=error.message||"暂时无法读取复盘，请重试。";$("nativeReviewRetry").hidden=false;}
 async function copyReview() {
-  const text=reviewText({复盘要点:state.review.report.summary,表现诊断:state.review.report['表现诊断'],优先调整:state.review.report['优先修改']});
+  const report=state.review.report;
+  const text=reviewText(report['证据时间轴']?{视频逻辑:report['视频逻辑'],逻辑合理性:report['逻辑合理性'],留存数据:report['证据时间轴'].retention_windows,留存分析:report['留存分析']}: {复盘要点:report.summary,表现诊断:report['表现诊断'],优先调整:report['优先修改']});
   if(navigator.clipboard?.writeText)await navigator.clipboard.writeText(text);
   else {const field=document.createElement('textarea');field.value=text;$("reviewDialog").appendChild(field);field.select();const copied=document.execCommand('copy');field.remove();if(!copied)throw new Error('复制失败，请选中复盘文字复制。');}
   toast("复盘要点已复制");
@@ -295,7 +334,7 @@ async function openSavedReview(name) {
   prepareReview(file.review_summary||"已有视频复盘");state.review={filename:file.name};const token=state.reviewSeq;
   $("nativeReviewSaved").hidden=false;$("nativeReviewSaved").innerHTML=state.savedReviews.map((f,i)=>`<option value="${esc(f.name)}">视频 ${i+1} · ${esc(f.review_summary||f.name)}</option>`).join("");$("nativeReviewSaved").value=file.name;
   try {const result=await api('/api/result?filename='+encodeURIComponent(file.name));if(token!==state.reviewSeq)return;
-    const report=result.audit_result||result.audit_result_zh;if(!report)throw new Error("复盘结果暂时不可用，请重试。");
+    const report=result.assisted_review||result.audit_result||result.audit_result_zh;if(!report)throw new Error("复盘结果暂时不可用，请重试。");
     showReview(report,'/video/'+encodeURIComponent(file.name));$("nativeReviewStatus").textContent="复盘已完成 · 数据来自采集时的历史快照。";
   }catch(error){if(token===state.reviewSeq)reviewFailure(error);}
 }
@@ -306,6 +345,13 @@ document.addEventListener("error",event=>{if(event.target.tagName==="IMG"){event
 document.addEventListener("click",event=>{
   const target=event.target.closest("button");if(!target||target.disabled)return;
   const run=async()=>{
+    if(target.hasAttribute('data-review-seek')){
+      const video=$("nativeReviewPreview").querySelector('video');if(!video)throw new Error('视频暂不可播放');
+      const seconds=Number(target.dataset.reviewSeek);const seek=()=>{video.currentTime=seconds;video.play().catch(()=>toast('已定位画面，点击播放即可。'));};
+      if(video.readyState>=1)seek();else video.addEventListener('loadedmetadata',seek,{once:true});
+      $("nativeReviewPreview").scrollIntoView({block:'nearest'});return;
+    }
+    if(target.id==='regenerateNativeReview')return reviseReview();
     if(target.dataset.review)return openReview(target.dataset.review);
     if(target.id==="mediaReviewButton")return openReview(state.media.video_id);
     if(target.id==="reviewLibraryLink")return openSavedReview();

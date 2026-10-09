@@ -256,6 +256,8 @@ def main() -> int:
     parser.add_argument("--video-id", default="", help="Exact external TikTok video ID for collected evidence.")
     parser.add_argument("--video-filename", default="", help="Original local media filename for duration probing.")
     parser.add_argument("--performance-context", default="", help="Saved library metrics fallback when Proxy evidence is unavailable.")
+    parser.add_argument('--review-format', choices=['legacy','evidence'], default='legacy')
+    parser.add_argument('--logic-note', default='', help='User interpretation, kept separate from observed evidence.')
     args = parser.parse_args()
 
     api_key = os.getenv("DEEPSEEK_API_KEY")
@@ -278,10 +280,18 @@ def main() -> int:
         performance = load_performance_context(Path.cwd(), video_id)
         if not performance.get("available") and args.performance_context:
             fallback = load_analysis(Path(args.performance_context))
-            if fallback.get('source') != 'video_library' or str(fallback.get('video_id')) != str(video_id):
+            if fallback.get('source') not in ('video_library','saved_review') or str(fallback.get('video_id')) != str(video_id):
                 raise ValueError('视频列表指标与当前视频不匹配')
             performance = fallback
         prompt = build_prompt(analysis, args.prompt, performance)
+        evidence = None
+        if args.review_format == 'evidence':
+            import assisted_video_review as assisted
+            evidence = assisted.build_evidence(analysis, build_report_facts(analysis, performance))
+            prompt = assisted.INSTRUCTIONS + '\n原始提取：\n' + json.dumps(compact_analysis(analysis),ensure_ascii=False) + \
+                '\n脚本证据：\n' + json.dumps(evidence,ensure_ascii=False) + \
+                '\n真实表现：\n' + json.dumps(performance,ensure_ascii=False) + \
+                '\n用户补充（用户判断，不能覆盖原片事实）：\n' + args.logic_note[:4000]
         output_path = Path(args.output) if args.output else analysis_path.parent / "audit_result.json"
         for attempt in range(2):
             api_response = call_deepseek(api_key=api_key, prompt=prompt, api_url=args.api_url,
@@ -289,8 +299,11 @@ def main() -> int:
             content = extract_content(api_response)
             try:
                 audit_result = parse_json_content(content)
-                validate_report(audit_result)
-                validate_edit_plan(audit_result, analysis)
+                if evidence is not None:
+                    assisted.validate(audit_result, evidence)
+                else:
+                    validate_report(audit_result)
+                    validate_edit_plan(audit_result, analysis)
                 break
             except ValueError as error:
                 output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -299,7 +312,10 @@ def main() -> int:
                     raise
                 print(f"Report validation rejected first attempt: {error}; regenerating once", flush=True)
                 prompt += "\n上次输出未通过执行校验：" + str(error) + "。本次严格检查所有时间、素材引用与口播长度后重新生成完整JSON。"
-        audit_result["report_version"] = REPORT_VERSION
+        audit_result["report_version"] = assisted.VERSION if evidence is not None else REPORT_VERSION
+        if evidence is not None:
+            audit_result['证据时间轴'] = evidence
+            audit_result['人工补充'] = args.logic_note[:4000]
         audit_result["采集数据来源"] = performance
         audit_result["原片镜头拆解"] = analysis["shot_evidence"].get("shots", [])
 

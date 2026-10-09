@@ -13,7 +13,8 @@ from video_performance_context import validate_report
 from visual_analysis_cache import valid_analysis
 
 _review_lock = threading.Lock()
-REPORT_KEYS = ('summary', '内容拆解', '表现诊断', '优先修改', '原片镜头拆解', '数据限制', '采集数据来源')
+REPORT_KEYS = ('report_version','summary', '内容拆解', '表现诊断', '优先修改', '原片镜头拆解', '数据限制', '采集数据来源',
+               '证据时间轴','视频逻辑','逻辑合理性','留存分析','可尝试方向','人工补充')
 
 
 def filename(video_id):
@@ -21,15 +22,16 @@ def filename(video_id):
 
 
 def saved_report(root, video_id):
-    path = Path(root) / 'output' / filename(video_id) / 'audit_result.json'
-    try:
-        report = json.loads(path.read_text(encoding='utf-8'))
-        validate_report(report)
-        if str(report.get('采集数据来源', {}).get('video_id')) != str(video_id):
-            return None
-        return {k: report[k] for k in REPORT_KEYS if k in report}
-    except (OSError, ValueError, TypeError, AttributeError):
-        return None
+    for name in ('assisted_review.json','audit_result.json'):
+        path = Path(root) / 'output' / filename(video_id) / name
+        try:
+            report = json.loads(path.read_text(encoding='utf-8'))
+            validate_report(report)
+            if str(report.get('采集数据来源', {}).get('video_id')) == str(video_id):
+                return {k: report[k] for k in REPORT_KEYS if k in report}
+        except (OSError, ValueError, TypeError, AttributeError, KeyError):
+            continue
+    return None
 
 
 def library_context(video):
@@ -82,7 +84,7 @@ def run_review(workspace, job):
     job.update(message='等待生成复盘…', total=1)
     workspace.save_job(job)
     with _review_lock:
-        if saved_report(root, vid):
+        if saved_report(root, vid) and not job.get('force'):
             job.update(done=1, message='复盘已完成。')
             return
         media = root / 'videos' / filename(vid)
@@ -109,7 +111,9 @@ def run_review(workspace, job):
         workspace.write_json(context, library_context(workspace.item(pid, vid)))
         run_stage([sys.executable, str(scripts / 'deepseek_postprocess.py'),
                         str(folder / 'analysis.json'), '--video-id', vid,
-                        '--video-filename', media.name, '--performance-context', str(context)],
+                        '--video-filename', media.name, '--performance-context', str(context),
+                        '--review-format','evidence','--output',str(folder/'assisted_review.json'),
+                        '--logic-note',job.get('logic_note','')],
                        root, folder, env, 'review')
         if not saved_report(root, vid):
             raise ValueError('复盘结果未通过检查，请重试。')
@@ -122,8 +126,8 @@ def review_state(workspace, pid, vid):
     job = workspace.snapshot(pid).get('job')
     related = job and job.get('action') == 'review' and job.get('video_id') == vid
     active = job and job['status'] in ('running', 'queued')
-    status = 'ready' if report else 'processing' if related and active else 'waiting' if active else 'failed' if related and job['status'] == 'failed' else 'missing'
+    status = 'processing' if related and active else 'ready' if report else 'waiting' if active else 'failed' if related and job['status'] == 'failed' else 'missing'
     media = Path(workspace.ROOT) / 'videos' / filename(vid)
     return {'video_id': vid, 'status': status, 'report': report,
-            'message': '复盘已完成。' if report else job.get('message') if related else '正在等待当前任务完成…' if active else '点击生成内容复盘。',
+            'message': job.get('message') if related and active else '本次更新未完成，已保留上次复盘；可再次提交补充。' if report and related and job['status']=='failed' else '复盘已完成。' if report else job.get('message') if related else '正在等待当前任务完成…' if active else '点击生成内容复盘。',
             'video_url': '/video/' + media.name if media.is_file() else None}
