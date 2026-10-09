@@ -300,6 +300,7 @@ def main() -> int:
             try:
                 audit_result = parse_json_content(content)
                 if evidence is not None:
+                    assisted.ground_logic(audit_result,evidence)
                     assisted.validate(audit_result, evidence)
                 else:
                     validate_report(audit_result)

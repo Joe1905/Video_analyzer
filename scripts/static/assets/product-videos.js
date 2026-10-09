@@ -260,9 +260,9 @@ function evidenceRefs(ids) {
 }
 function showEvidenceReview(report) {
   const evidence=report['证据时间轴'],logic=report['视频逻辑'],rows=evidence.timeline;
-  const chain=logic['推进'].map(beat=>`<article class="native-review-card"><button class="review-seek" data-review-seek="${beat.start}">${reviewSeconds(beat.start)}–${reviewSeconds(beat.end)}秒 ↗</button>${reviewFields({事件:beat['事件'],逻辑作用:beat['逻辑作用'],承接:beat['承接']})}</article>`).join('');
+  const chain=logic['推进'].map(beat=>`<article class="native-review-card"><button class="review-seek" data-review-seek="${beat.start}">依据 ${reviewSeconds(beat.start)}–${reviewSeconds(beat.end)}秒 ↗</button>${reviewFields({事件:beat['事件'],逻辑作用:beat['逻辑作用'],承接:beat['承接']})}</article>`).join('');
   const table=rows.map(row=>{
-    const beats=logic['推进'].filter(b=>b.start<row.end&&b.end>row.start);
+    const beats=logic['推进'].filter(b=>b['依据'].includes(row.id));
     const values=row.retention;
     const retention=values?`${values.start_percent}% → ${values.end_percent}%<br>${values.drop_percentage_points>0?'下降':values.drop_percentage_points<0?'回升':'变化'} ${reviewSeconds(Math.abs(values.drop_percentage_points))} 个百分点`:(row.start_percent!=null?`${row.start_percent}%（区间数据不完整）`:'未提供');
     const visuals=row.visuals.map(f=>`<p><small>${reviewSeconds(f.seconds)}秒</small> ${esc(f.text)}</p>`).join('')||'<p>此秒无采样帧，不补造画面。</p>';

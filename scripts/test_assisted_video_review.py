@@ -1,7 +1,7 @@
 """Evidence-first review checks, without model API calls."""
 import copy
 import unittest
-from assisted_video_review import build_evidence, validate
+from assisted_video_review import build_evidence, validate, ground_logic
 from video_performance_context import build_report_facts, validate_report
 
 
@@ -53,6 +53,13 @@ class EvidenceReviewTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'区间前/区间内'):validate(r,e)
         r['留存分析'][0]['解释候选']='“hello world here”可能影响此处留存'
         e['timeline'][0]['speech'][0]['text']='hello world here'
+        validate(r,e)
+
+    def test_logic_time_is_derived_from_references(self):
+        e,r=self.fixture();r['视频逻辑']['推进'][0].update(start=15,end=18)
+        ground_logic(r,e)
+        self.assertEqual(r['视频逻辑']['推进'][0]['start'],0)
+        self.assertEqual(r['视频逻辑']['推进'][0]['end'],3)
         validate(r,e)
 
 

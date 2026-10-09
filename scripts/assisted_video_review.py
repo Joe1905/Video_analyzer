@@ -22,7 +22,7 @@ INSTRUCTIONS = '''你是电商内部辅助分析助手。先理解原片意图�
 无需完整拍摄脚本或自动评分；不承诺提升。可尝试方向最多两项，说明应保留的原片机制。
 只输出严格JSON，结构如下：
 summary:简短字符串；
-视频逻辑:{核心表达:字符串,主体与道具:字符串,推进:[{start:原片秒数,end:原片秒数,事件:字符串,逻辑作用:字符串,承接:字符串,依据:[时间轴ID]}],待核实:[字符串]}；
+视频逻辑:{核心表达:字符串,主体与道具:字符串,推进:[{事件:字符串,逻辑作用:字符串,承接:字符串,依据:[时间轴ID]}],待核实:[字符串]}；推进的参考时间由脚本从依据行计算，不自行生成start/end。
 逻辑合理性:[{判断:"成立"或"疑点"或"未知",要点:字符串,依据:[时间轴ID],解释:字符串}]；
 留存分析:[{区间ID:字符串,解释候选:字符串,其他解释:字符串,证据强度:"低"或"中",依据:[时间轴ID]}]；
 可尝试方向:[{方向:字符串,依据:[时间轴ID],保留:字符串,验证:字符串,限制:字符串}]；
@@ -86,6 +86,18 @@ def build_evidence(analysis, facts):
     return {'duration_seconds':duration,'timeline':rows,'retention_points':[{'seconds':s,'percent':p} for s,p in sorted(points.items())],
             'retention_windows':windows,'retention_gaps':facts['retention']['gaps'],
             'note':'画面是离散采样；前后关系不证明因果。平稳区间按连续有效相邻秒、单秒变化绝对值不超过1个百分点筛选，不代表无流失。'}
+
+
+def ground_logic(report, evidence):
+    """Logic reference spans are calculated, not guessed by the model."""
+    ids={r['id']:r for r in evidence['timeline']}
+    for beat in report.get('视频逻辑',{}).get('推进',[]):
+        refs=beat.get('依据',[]) if isinstance(beat,dict) else []
+        if not isinstance(refs,list) or not refs or any(not isinstance(i,str) or i not in ids for i in refs):
+            raise ValueError('逻辑段引用了无效时间轴')
+        beat['start']=min(ids[i]['start'] for i in refs)
+        beat['end']=max(ids[i]['end'] for i in refs)
+    return report
 
 
 def validate(report, evidence):
