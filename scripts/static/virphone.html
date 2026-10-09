@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>virPhone · 虚拟手机</title>
+<style>
+:root{--bg:#f5f7fa;--text:#172334;--muted:#637187;--line:#dce3ed;--blue:#2563eb}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:"Segoe UI","Microsoft YaHei",sans-serif}header{height:66px;padding:0 24px;display:flex;align-items:center;justify-content:space-between;gap:16px;background:#fff;border-bottom:1px solid var(--line)}h1{margin:0;font-size:20px}main{max-width:1200px;margin:auto;padding:24px}.toolbar{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:20px}h2{font-size:24px;margin:0 0 8px}.muted{margin:0;color:var(--muted);line-height:1.6}.actions{display:flex;gap:10px;flex-wrap:wrap}button,.button{font:inherit;font-size:14px;border:1px solid var(--line);border-radius:8px;padding:10px 16px;background:#fff;color:var(--text);cursor:pointer;text-decoration:none}button:hover,.button:hover{background:#eef3fa}.primary{background:var(--blue);color:#fff;border-color:var(--blue)}.primary:hover{background:#1d4ed8}button:disabled{opacity:.5;cursor:default}.status{display:flex;gap:12px;align-items:center;background:#fff;border:1px solid var(--line);border-radius:12px;padding:18px;margin-bottom:18px}.badge{flex-shrink:0;background:#eef2f7;color:var(--muted);padding:6px 10px;border-radius:6px;font-size:13px}.badge.ready{background:#e8f7ee;color:#167348}.badge.error,.badge.unavailable{background:#fff0ee;color:#b42318}#message{margin:0;line-height:1.6;overflow-wrap:anywhere}.screen{min-height:480px;border:1px solid var(--line);border-radius:12px;background:#fff;overflow:hidden;display:grid;place-items:center}.empty{text-align:center;padding:36px}.empty svg{width:48px;height:48px;stroke:#91a1b6;fill:none;stroke-width:1.5;margin-bottom:16px}.empty strong{display:block;font-size:18px;margin-bottom:10px}iframe{width:100%;height:720px;border:0}[hidden]{display:none!important}@media(max-width:700px){header{padding:0 14px}main{padding:18px 14px}.toolbar{align-items:flex-start;flex-direction:column}.screen{min-height:360px}.status{align-items:flex-start}iframe{height:650px}}
+</style>
+</head>
+<body>
+<header><h1>virPhone</h1><nav class="app-nav" aria-label="主导航"></nav></header>
+<main>
+<div class="toolbar"><div><h2>虚拟手机</h2><p class="muted">在浏览器中查看并操作 Android 手机。</p></div><div class="actions"><button id="refresh">刷新状态</button><button id="connect" class="primary" disabled>连接手机</button><a id="open" class="button" target="_blank" rel="noopener noreferrer" hidden>新窗口打开</a></div></div>
+<section class="status" aria-live="polite"><span id="badge" class="badge">检查中</span><p id="message">正在读取手机状态…</p></section>
+<section class="screen"><div id="empty" class="empty"><svg viewBox="0 0 48 48" aria-hidden="true"><rect x="13" y="3" width="22" height="42" rx="4"/><path d="M21 38h6"/></svg><strong id="empty-title">等待手机连接</strong><p id="empty-message" class="muted">手机就绪后，可连接或在新窗口中打开控制台。</p></div><iframe id="viewer" title="Android 手机控制台" allow="fullscreen; clipboard-read; clipboard-write" hidden></iframe></section>
+</main>
+<script>
+const $=id=>document.getElementById(id);let current=null;
+async function refresh(){
+ $('refresh').disabled=true;
+ try{
+  const response=await fetch('/api/virphone/status',{cache:'no-store'});
+  if(!response.ok)throw new Error('status');
+  current=await response.json();
+  const labels={ready:'已就绪',starting:'启动中',stopped:'已停止',error:'启动异常',unavailable:'服务未连接'};
+  $('badge').textContent=labels[current.state]||'状态未知';$('badge').className='badge '+current.state;
+  $('message').textContent=current.message||'手机状态已更新。';
+  const ready=current.state==='ready'&&Boolean(current.viewer_url);
+  $('connect').disabled=!ready;$('open').hidden=!ready;
+  if(ready)$('open').href=current.viewer_url;else{$('open').removeAttribute('href');$('viewer').hidden=true;$('viewer').removeAttribute('src');$('empty').hidden=false;}
+  $('empty-title').textContent=ready?'手机已就绪':'手机暂未就绪';
+  $('empty-message').textContent=ready?'点击连接手机，开始操作。':'控制台将在手机就绪后开放，请稍后刷新。';
+ }catch(error){current=null;$('badge').textContent='读取失败';$('badge').className='badge error';$('message').textContent='无法读取手机状态，请稍后刷新。';$('connect').disabled=true;$('open').hidden=true;$('viewer').hidden=true;$('viewer').removeAttribute('src');$('empty').hidden=false;}
+ finally{$('refresh').disabled=false;}
+}
+$('refresh').addEventListener('click',refresh);
+$('connect').addEventListener('click',()=>{if(!current||current.state!=='ready'||!current.viewer_url)return;if(current.embed_allowed){$('viewer').src=current.viewer_url;$('viewer').hidden=false;$('empty').hidden=true;}else{$('open').click();}});
+refresh();
+</script>
+</body>
+</html>
