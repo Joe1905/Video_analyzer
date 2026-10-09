@@ -1,7 +1,7 @@
 """Evidence-first review checks, without model API calls."""
 import copy
 import unittest
-from assisted_video_review import build_evidence, validate, ground_logic
+from assisted_video_review import build_evidence, validate, ground_logic, retention_prompt
 from video_performance_context import build_report_facts, validate_report
 
 
@@ -61,6 +61,16 @@ class EvidenceReviewTests(unittest.TestCase):
         self.assertEqual(r['视频逻辑']['推进'][0]['start'],0)
         self.assertEqual(r['视频逻辑']['推进'][0]['end'],3)
         validate(r,e)
+
+    def test_focused_cause_prompt_excludes_future_full_utterances(self):
+        import json
+        e,r=self.fixture()
+        e['timeline'][2]['speech'][0].update(text='future phrase',full_text='future phrase')
+        prompt=retention_prompt(e,r['视频逻辑'],{})
+        contexts=json.loads(prompt.split('窗口证据：')[1].split('\n已知表现快照：')[0])
+        first=json.dumps(contexts[0],ensure_ascii=False)
+        self.assertNotIn('future phrase',first)
+        self.assertNotIn('full_text',first)
 
 
 if __name__=='__main__':unittest.main()

@@ -313,6 +313,22 @@ def main() -> int:
                     raise
                 print(f"Report validation rejected first attempt: {error}; regenerating once", flush=True)
                 prompt += "\n上次输出未通过执行校验：" + str(error) + "。本次严格检查所有时间、素材引用与口播长度后重新生成完整JSON。"
+        if evidence is not None and evidence['retention_windows']:
+            focused_prompt=assisted.retention_prompt(evidence,audit_result['视频逻辑'],performance)
+            for attempt in range(2):
+                focused_response=call_deepseek(api_key=api_key,prompt=focused_prompt,api_url=args.api_url,
+                    model=args.model,max_tokens=8192,reasoning_effort=args.reasoning_effort)
+                focused_content=extract_content(focused_response)
+                try:
+                    focused=parse_json_content(focused_content)
+                    candidate=dict(audit_result,留存分析=focused.get('留存分析'))
+                    assisted.validate(candidate,evidence)
+                    audit_result=candidate
+                    break
+                except ValueError as error:
+                    output_path.with_name(output_path.stem+f'.retention_attempt{attempt+1}.txt').write_text(focused_content,encoding='utf-8')
+                    if attempt:raise
+                    focused_prompt+='\n校验失败，请严格纠正：'+str(error)
         audit_result["report_version"] = assisted.VERSION if evidence is not None else REPORT_VERSION
         if evidence is not None:
             audit_result['证据时间轴'] = evidence

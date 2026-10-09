@@ -1,6 +1,7 @@
 """Evidence-first review: deterministic timeline/retention, model judgments with references."""
 import math
 import re
+import json
 
 VERSION = 'commerce-review-v3-evidence'
 INSTRUCTIONS = '''你是电商内部辅助分析助手。先理解原片意图，再根据证据辅助人判断，不替人决定好坏。
@@ -99,6 +100,26 @@ def ground_logic(report, evidence):
         beat['start']=min(ids[i]['start'] for i in refs)
         beat['end']=max(ids[i]['end'] for i in refs)
     return report
+
+
+def retention_prompt(evidence, logic, performance):
+    """Keep future utterances and whole-segment text out of cause generation."""
+    contexts=[]
+    for window in evidence['retention_windows']:
+        allowed=set(window['before']+window['during'])
+        rows=[]
+        for row in evidence['timeline']:
+            if row['id'] not in allowed:continue
+            rows.append({'id':row['id'],'start':row['start'],'end':row['end'],'visuals':row['visuals'],
+                'speech':[{'text':s['text'],'precision':s['precision']} for s in row['speech']],
+                'logic_roles':[b['逻辑作用'] for b in logic['推进'] if row['id'] in b['依据']]})
+        contexts.append({'window':{k:v for k,v in window.items() if k!='after'},'prior_and_current_evidence':rows})
+    return '''根据每个窗口自身之前和区间内的证据，生成留存解释候选。只输出严格JSON {"留存分析":[{区间ID,解释候选,其他解释,证据强度:"低"或"中",依据:[时间轴ID]}]}。
+不得引用未提供的后续台词/画面；不要重复时间数值和完整台词；解释当前可感知的信息及其逻辑作用，不替人断言原因。
+最多每个窗口一项，必须覆盖全部窗口。依据只引用该窗口提供的ID。
+后段平稳不能证明内容优秀，剩余观众不同不证明留存分母变小。不换算观众人数。
+没有留存分母、流量、对照或成交数据，必须保留其他解释和不确定性。
+'''+'\n窗口证据：'+json.dumps(contexts,ensure_ascii=False)+'\n已知表现快照：'+json.dumps({k:performance.get(k) for k in ('overview','engagement','limitations')},ensure_ascii=False)
 
 
 def validate(report, evidence):
