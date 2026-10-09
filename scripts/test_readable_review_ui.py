@@ -78,7 +78,7 @@ def main():
         assert '/metrics' in library_page.url
         assert library_page.locator('#nativeReviewSaved option').count()>=2
         library_page.locator('#nativeReviewSaved').select_option('shortvideo_SociaVault_7684226408121503007.mp4')
-        library_page.wait_for_function("state.review.report['采集数据来源'].overview.play_count == 68")
+        library_page.wait_for_function("state.review?.report?.['采集数据来源']?.overview?.play_count == 68")
         library_page.screenshot(path='/tmp/native-review-mobile.png')
         assert library_page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
         library_page.set_viewport_size({'width':1440,'height':1000})
