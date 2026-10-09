@@ -5,7 +5,7 @@ from urllib.parse import urlsplit
 
 
 def get_status():
-    connection = http.client.HTTPConnection("127.0.0.1", 18444, timeout=3)
+    connection = http.client.HTTPConnection("127.0.0.1", 18445, timeout=3)
     try:
         connection.request("GET", "/api/status", headers={"Accept": "application/json"})
         response = connection.getresponse()
