@@ -74,6 +74,18 @@ class ReviewTests(unittest.TestCase):
         self.ws.prepare_media.assert_not_called()
         self.assertEqual(self.job['done'],1)
 
+    def test_correction_forces_analysis_but_reuses_extraction(self):
+        media=self.root/'videos'/review.filename(self.vid);media.parent.mkdir();media.write_bytes(b'video')
+        self.job.update(force=True,logic_note='胸针是剧情道具')
+        with patch.object(review,'saved_report',side_effect=[{'summary':'old'},{'summary':'new'}]), \
+             patch.object(review,'valid_analysis',return_value=True),patch.object(review.subprocess,'run') as run:
+            review.run_review(self.ws,self.job)
+        self.assertEqual(run.call_count,1)
+        args=run.call_args.args[0]
+        self.assertIn('--review-format',args);self.assertIn('evidence',args)
+        self.assertIn('胸针是剧情道具',args)
+        self.ws.prepare_media.assert_not_called()
+
     def test_missing_extraction_runs_extract_then_analysis(self):
         media=self.root/'videos'/review.filename(self.vid)
         media.parent.mkdir();media.write_bytes(b'video')
