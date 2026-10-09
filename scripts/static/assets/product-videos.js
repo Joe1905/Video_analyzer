@@ -252,6 +252,7 @@ function showReview(report, videoURL) {
   state.review.report=report;
   if(source.title)$("nativeReviewCaption").textContent=source.title;
   if(report['证据时间轴'])showEvidenceReview(report);
+  else $("nativeReviewResult").insertAdjacentHTML('beforeend','<button id="regenerateNativeReview" class="primary">更新为时间轴复盘</button>');
 }
 function evidenceRefs(ids) {
   const rows=state.review.report['证据时间轴'].timeline;
@@ -265,7 +266,8 @@ function showEvidenceReview(report) {
     const values=row.retention;
     const retention=values?`${values.start_percent}% → ${values.end_percent}%<br>${values.drop_percentage_points>0?'下降':values.drop_percentage_points<0?'回升':'变化'} ${reviewSeconds(Math.abs(values.drop_percentage_points))} 个百分点`:(row.start_percent!=null?`${row.start_percent}%（区间数据不完整）`:'未提供');
     const visuals=row.visuals.map(f=>`<p><small>${reviewSeconds(f.seconds)}秒</small> ${esc(f.text)}</p>`).join('')||'<p>此秒无采样帧，不补造画面。</p>';
-    return `<tr id="review-row-${row.id}"><td><button class="review-seek" data-review-seek="${row.start}">${reviewSeconds(row.start)}–${reviewSeconds(row.end)}秒 ↗</button></td><td><details><summary>${row.visuals.length} 张采样 · ${row.speech.length?'有口播':'无转写记录'}</summary>${visuals}${row.speech.map(s=>`<p><strong>语音原文</strong>${esc(s.text)}</p>`).join('')}</details></td><td>${beats.map(b=>`<p>${esc(b['逻辑作用'])}</p>`).join('')||'未标注逻辑作用'}</td><td>${retention}</td></tr>`;
+    const preview=row.visuals[0]?.text||'此秒无采样帧';
+    return `<tr id="review-row-${row.id}"><td><button class="review-seek" data-review-seek="${row.start}">${reviewSeconds(row.start)}–${reviewSeconds(row.end)}秒 ↗</button></td><td><p>${esc(preview.length>65?preview.slice(0,65)+'…':preview)}</p>${row.speech.map(s=>`<p><small>语音原文${s.precision==='segment'?' · 整段引用':''}</small> ${esc(s.text)}</p>`).join('')}<details><summary>展开 ${row.visuals.length} 张采样证据</summary>${visuals}</details></td><td>${beats.map(b=>`<p>${esc(b['逻辑作用'])}</p>`).join('')||'未标注逻辑作用'}</td><td>${retention}</td></tr>`;
   }).join('');
   const contexts=ids=>(ids||[]).map(id=>{
     const row=rows.find(r=>r.id===id);if(!row)return '';
@@ -276,9 +278,15 @@ function showEvidenceReview(report) {
   const analyses=report['留存分析'].map(a=>{const w=evidence.retention_windows.find(w=>w.id===a['区间ID']);return `<article class="native-review-card"><h4>${esc(w?.label||'')} · ${w?.start_seconds}–${w?.end_seconds}秒</h4>${reviewFields({解释候选:a['解释候选'],其他解释:a['其他解释'],证据强度:a['证据强度']})}${evidenceRefs(a['依据'])}</article>`;}).join('');
   const source=report['采集数据来源']||{};
   $("nativeReviewResult").innerHTML=`<section><h3>1. 视频逻辑与统一时间轴</h3>${reviewFields({核心表达:logic['核心表达'],主体与道具:logic['主体与道具']})}<details open><summary>剧情与信息推进</summary>${chain}</details><details open><summary>逐秒证据与留存 · 点击时间回看</summary><div class="review-table-scroll"><table class="review-timeline"><thead><tr><th>时间</th><th>画面与口播事实</th><th>逻辑作用 · 模型理解</th><th>留存</th></tr></thead><tbody>${table}</tbody></table></div></details></section><section><h3>2. 留存变化与画面前后文</h3><p class="review-note">前后文是时间关系，不代表已经证明因果。相对平稳也不代表内容优秀。</p>${windows||'<div class="job-status">未提供有效逐秒留存，无法对齐变化区间。播放和互动不替代留存。</div>'}</section><section><h3>3. 逻辑合理性判断</h3>${judgments}</section><section><h3>4. 留存分析</h3>${analyses||'<p>缺少留存数据，本次不作留存归因。</p>'}</section><details><summary>可尝试的方向 · 由你判断</summary>${report['可尝试方向'].map(d=>`<article class="native-review-card">${reviewFields(d)}</article>`).join('')||'暂无充分依据提出调整方向。'}</details><details><summary>数据与判断范围</summary><p>采集时间：${esc(source.collected_at||'未知')}</p>${reviewFields(source.overview)}<p>${esc(reviewText(report['数据限制']))}</p><p>${esc(reviewText(logic['待核实']))}</p></details><details><summary>补充或纠正视频逻辑</summary><p class="review-note">你的解释会单独保存，重新分析会复用已提取的视频证据。</p><label for="nativeLogicNote">主推商品、剧情含义或需要纠正的理解</label><textarea id="nativeLogicNote" maxlength="4000" rows="4">${esc(report['人工补充']||'')}</textarea><button id="regenerateNativeReview" class="primary">按补充重新分析</button><p id="nativeCorrectionStatus" role="status"></p></details><button id="copyNativeReview">复制复盘要点</button>`;
+  $("nativeReviewResult").querySelector('details').open=false;
+  $("nativeReviewResult").querySelectorAll('details').forEach(details=>{
+    if(details.querySelector(':scope > summary')?.textContent==='可尝试的方向 · 由你判断'){
+      details.innerHTML='<summary>可尝试的方向 · 由你判断</summary>'+report['可尝试方向'].map(d=>`<article class="native-review-card">${reviewFields({方向:d['方向'],保留:d['保留'],验证:d['验证'],限制:d['限制']})}${evidenceRefs(d['依据'])}</article>`).join('');
+    }
+  });
 }
 async function reviseReview() {
-  const ref=state.review,note=$("nativeLogicNote").value.trim();
+  const ref=state.review,note=$("nativeLogicNote")?.value.trim()||'';
   let pid=ref.pid,vid=ref.vid;
   if(!pid&&ref.filename){vid=state.savedReviews.find(f=>f.name===ref.filename)?.review_video_id;pid=state.selected;}
   if(!pid||!vid)throw new Error('请从所属账号或商品的视频卡片打开，再补充逻辑。');
@@ -286,7 +294,7 @@ async function reviseReview() {
   try {
     const job=await api('/api/product-videos/jobs',{action:'review',product_id:pid,video_id:String(vid),force:true,logic_note:note});
     if(token!==state.reviewSeq)return;
-    if(job.action!=='review'||job.video_id!==String(vid)){$("nativeCorrectionStatus").textContent='当前有其他任务，请完成后再提交补充。';return;}
+    if(job.action!=='review'||job.video_id!==String(vid)){toast('当前有其他任务，请完成后再提交补充。');return;}
     state.review={pid,vid:String(vid)};$("nativeReviewResult").innerHTML='';await pollReview(token);
   }finally{if($("regenerateNativeReview"))$("regenerateNativeReview").disabled=false;}
 }

@@ -24,6 +24,7 @@ class EvidenceReviewTests(unittest.TestCase):
         e,r=self.fixture()
         self.assertEqual(e['timeline'][0]['speech'][0]['text'],'hello')
         self.assertEqual(e['timeline'][2]['speech'][0]['text'],'world')
+        self.assertFalse(e['timeline'][1]['speech'])
         self.assertEqual(e['timeline'][0]['retention']['drop_percentage_points'],40)
         self.assertEqual(e['timeline'][-1]['end'],5.3)
         self.assertIsNone(e['timeline'][-1]['retention'])

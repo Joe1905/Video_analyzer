@@ -43,8 +43,10 @@ def build_evidence(analysis, facts):
         for index, segment in enumerate(segments):
             if segment.get('start',duration) < end and segment.get('end',0) > second:
                 words = [w.get('word','') for w in segment.get('words',[]) if w.get('start',duration) < end and w.get('end',0) > second]
+                if segment.get('words') and not words:continue
                 speech.append({'segment_index':index,'start':segment['start'],'end':segment['end'],
                                'text':''.join(words).strip() if words else segment.get('text',''),
+                               'precision':'words' if segment.get('words') else 'segment',
                                'full_text':segment.get('text','')})
         change = next((s for s in changes if s['start_seconds']==second and s['end_seconds']==end),None)
         rows.append({'id':f't{second}','start':second,'end':end,'visuals':visuals,'speech':speech,

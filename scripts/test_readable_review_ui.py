@@ -1,6 +1,7 @@
 """Read-only UI checks; clipboard is stubbed and no analysis jobs are submitted."""
 import os
 import json
+import re
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
@@ -73,7 +74,7 @@ def main():
         assert library_page.evaluate("reviewText('0–15.033333秒；11.466666666666667–13.0秒')")=='0–15秒；11.5–13秒'
         assert library_page.evaluate("reviewText('完播率3.234567%，2026-10-08，商品123456789')")=='完播率3.234567%，2026-10-08，商品123456789'
         assert library_page.evaluate("reviewText({start:4.8,end:15.033333})")=='开始：4.8秒\n结束：15秒'
-        library_page.locator('#nativeReviewResult h3').filter(has_text='表现诊断|逻辑合理性').first.wait_for()
+        library_page.locator('#nativeReviewResult h3').filter(has_text=re.compile('表现诊断|逻辑合理性')).first.wait_for()
         assert '/metrics' in library_page.url
         assert library_page.locator('#nativeReviewSaved option').count()>=2
         library_page.locator('#nativeReviewSaved').select_option('shortvideo_SociaVault_7684226408121503007.mp4')
