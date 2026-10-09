@@ -177,7 +177,7 @@ def load_performance_context(root, video_id):
                 'traffic_sources_available','traffic_sources_reason','search_queries','search_queries_available','search_queries_reason','data_complete'):
         if key in payload:context[key]=payload[key]
     if rows and (row['id'],source)!=(rows[0][0]['id'],rows[0][1]):
-        context['limitations'].append('较新记录没有可用留存或有效指标，采用最近带有效留存的整份历史快照，不混入其他时间的指标')
+        context['limitations'].append('较新记录没有可用留存或有效指标，采用最近带有效留存的整份历史采集快照，不混入其他时间的指标')
     context['limitations'].extend(['这是标注采集时间的历史快照，未重新采集；未提供点击、订单、GMV和投流记录',
                                   '未核实当前挂车商品，不能将视频主题当作商品绑定证据'])
     return context
