@@ -299,6 +299,11 @@ def video_detail(detail, video):
             update[name] = val
     author = detail.get("author") or {}
     media = detail.get("video") or {}
+    play_addr = media.get("play_addr") or {}
+    if isinstance(play_addr, dict):
+        update["media_urls"] = list(dict.fromkeys(
+            safe_url(url) for url in play_addr.get("url_list", [])
+            if isinstance(url, str) and safe_url(url)))[:4]
     for key, val in {"title": detail.get("desc"), "author": author.get("nickname"),
                      "cover_url": first_url([media.get("cover"), media.get("origin_cover"), media.get("dynamic_cover")], image=True),
                      "media_url": first_url(media.get("play_addr"))}.items():
@@ -574,9 +579,16 @@ def prepare_media(job):
             url = fresh.get("media_url") or video.get("media_url")
             if not url:
                 raise ValueError("视频没有可用的下载地址")
+            urls = list(dict.fromkeys([url] + fresh.get("media_urls", [])))
             pending = folder / "video.pending.mp4"
             try:
-                download_media(url, pending, 512 * 1024 * 1024)
+                for index, candidate in enumerate(urls):
+                    try:
+                        download_media(candidate, pending, 512 * 1024 * 1024)
+                        break
+                    except (requests.RequestException, ValueError, OSError) as exc:
+                        if index == len(urls) - 1:
+                            raise ValueError("视频下载失败，已尝试可用备用地址；请稍后重试，已有数据已保留。") from exc
                 probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(pending)], capture_output=True, text=True, timeout=30, check=True)
                 if "video" not in probe.stdout:
                     raise ValueError("下载结果没有有效视频流")
