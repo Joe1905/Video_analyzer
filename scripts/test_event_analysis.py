@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock
 
-from event_analysis import analyze_events, apply_checks, validate_events
+from event_analysis import analyze_events, apply_checks, validate_events, observed_events
 from assisted_video_review import build_logic_evidence, retention_prompt
 
 
@@ -31,6 +31,8 @@ class EventTests(unittest.TestCase):
         self.assertEqual(result['observed'], check['observed'])
         self.assertEqual(result['intended_meaning'], '')
         self.assertEqual(result['proposed_observed'], '插入设备')
+        self.assertNotIn('proposed_observed', observed_events({'events': [result]})[0])
+        self.assertNotIn('intended_meaning', observed_events({'events': [dict(result, verification='supported', intended_meaning='假设的扫描功能')]})[0])
         for bad in ({'checks': []}, {'checks': [dict(check, id='other')]}, {'checks': [dict(check, status='sure')]}):
             with self.assertRaises(ValueError): apply_checks(events, bad)
 

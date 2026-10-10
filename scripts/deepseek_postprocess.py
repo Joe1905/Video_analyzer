@@ -287,13 +287,13 @@ def main() -> int:
         evidence = None
         if args.review_format == 'evidence':
             import assisted_video_review as assisted
-            from event_analysis import analyze_events
+            from event_analysis import analyze_events, observed_events
             event_evidence = analyze_events(analysis, analysis_path.parent)
             evidence = assisted.build_evidence(analysis, build_report_facts(analysis, performance))
             blind_evidence = assisted.build_logic_evidence(analysis)
             # Frame prose and shot function guesses remain in the source artifacts,
             # but only visually rechecked observations enter narrative reasoning.
-            events = [{k: v for k, v in e.items() if k != 'proposed_observed'} for e in event_evidence['events']]
+            events = observed_events(event_evidence)
             prompt = assisted.INSTRUCTIONS + '\n本阶段只梳理内容，尚未读取表现数据。留存分析必须为空。' + \
                 '区分可见事件、剧情表达意图与现实商品能力；不能因为无法验证真实能力而否定剧情表达。' + \
                 'uncertain和contradicted事件只能使用核验后的observed，不恢复先前猜测；表达假设不是事实。' + \

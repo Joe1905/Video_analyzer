@@ -65,6 +65,12 @@ def apply_checks(events, payload):
     return result
 
 
+def observed_events(evidence):
+    """Keep visual-stage interpretation and rejected prose out of downstream facts."""
+    return [{k: v for k, v in event.items() if k not in {'proposed_observed', 'intended_meaning'}}
+            for event in evidence['events']]
+
+
 def analyze_events(analysis, folder, model=None):
     folder = Path(folder)
     frames = sorted((f for f in analysis.get('timeline', []) if f.get('time_source') == 'capture'),
