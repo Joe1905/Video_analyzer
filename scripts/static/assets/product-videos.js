@@ -21,6 +21,18 @@ function reviewSnippet(video) {
   if(!review)return badge+inputs;
   return badge+`<section class="video-review"><strong>复盘摘要</strong><p>${esc(review.review_summary||'已有复盘，可直接查看')}</p><small>依据 ${esc(String(review.review_collected_at||'未标注采集时间').slice(0,10))} 的历史指标。</small></section>`+inputs;
 }
+function videoStatus(video) {
+  if(['queued','delayed','preparing','collecting','retrying'].includes(video.collection_status))return ['collecting','采集中'];
+  if(state.reviews.has(String(video.video_id)))return ['reviewed','复盘完成'];
+  if(video.collection_link?.retention_available)return ['collected','采集完成'];
+  return video.downloaded?['cached','已缓存']:['uncached','未缓存'];
+}
+function updateVideoStatuses() {
+  document.querySelectorAll('[data-video-status]').forEach(badge=>{
+    const video=state.videos.find(v=>String(v.video_id)===badge.dataset.videoStatus);if(!video)return;
+    const [status,label]=videoStatus(video);badge.dataset.status=status;badge.textContent=label;
+  });
+}
 const tableCacheKey="video-table-targets-v1";
 const videoTableNames=["视频数据表-鹏飞","视频数据表-丽娜","视频数据表-小周"];
 let tableRequest=null;
@@ -83,6 +95,13 @@ async function selectProduct(pid) {
 async function loadVideos() {
   const pid=state.selected, seq=state.seq;if(!pid)return;
   try {
+    const collecting=state.loading?[]:state.videos.filter(v=>videoStatus(v)[0]==='collecting');
+    if(collecting.length) {
+      const results=await Promise.all(collecting.map(v=>api(endpoint('review-inputs',pid,v.video_id))));if(seq!==state.seq)return;
+      results.forEach((data,index)=>{collecting[index].collection_status=data.collection_job?.status;collecting[index].collection_link=data.collection_link;});
+      updateVideoStatuses();
+      if(state.videos.some(v=>videoStatus(v)[0]==='collecting')){clearTimeout(state.timer);state.timer=setTimeout(loadVideos,2500);return;}
+    }
     if(!state.loading && state.job?.action==="review" && busy()) {
       const progress=await api(endpoint("review",pid,state.job.video_id));if(seq!==state.seq)return;
       if(["processing","waiting"].includes(progress.status)) {
@@ -94,11 +113,11 @@ async function loadVideos() {
     state.videos=result.videos;state.job=result.job;state.hasMore=Boolean(result.has_more);state.loading=false;renderVideos();
     if(state.media && $("mediaDialog").open)await renderMedia();
   } catch(e) {if(seq===state.seq){state.loading=false;renderVideos();toast(e.message,true);}}
-  if(seq===state.seq && busy()){clearTimeout(state.timer);state.timer=setTimeout(loadVideos,2500);}
+  if(seq===state.seq && (busy()||state.videos.some(v=>videoStatus(v)[0]==='collecting'))){clearTimeout(state.timer);state.timer=setTimeout(loadVideos,2500);}
 }
 function card(v) {
   const p=current();const stats=[["views","播放"],["likes","点赞"],["comments","评论"],["shares","分享"],["saves","收藏"]];
-  return `<article class="video-card"><button class="video-cover" data-media="${esc(v.video_id)}" aria-label="查看视频：${esc(v.title||v.video_id)}">${v.cover_url?image(p,v):'<span class="cover-empty">暂无封面</span>'}<span class="play-icon" aria-hidden="true">▷</span>${v.downloaded?'<span class="download-badge">已缓存</span>':""}<span class="cover-meta"><span>${date(v.published_at)}</span><span>${Math.round(v.duration||0)}s</span></span></button><div class="video-body"><div class="video-author">${esc(v.author||"未知作者")}</div><h4 class="video-title">${esc(v.title||"无标题视频")}</h4><div class="video-stats">${stats.map(([key,label])=>`<div><b>${fmt(v[key])}</b><span>${label}</span></div>`).join("")}<div><b>${v.duration?Math.round(v.duration)+"s":"—"}</b><span>时长</span></div></div>${reviewSnippet(v)}<button class="video-review-button" data-review="${esc(v.video_id)}">内容复盘</button><div class="video-actions"><a href="${esc(url(v.url))}" target="_blank" rel="noopener noreferrer">原视频 ↗</a><button data-refresh="${esc(v.video_id)}" ${busy()?"disabled":""}>更新数据</button><button data-media="${esc(v.video_id)}">播放 / 音频</button></div><div class="video-time">${v.updated_at?"详细数据更新于 "+date(v.updated_at,true):"基础数据获取于 "+date(v.basic_updated_at,true)}</div>${v.error?`<div class="video-error">${esc(v.error)}</div>`:""}</div></article>`;
+  return `<article class="video-card"><button class="video-cover" data-media="${esc(v.video_id)}" aria-label="查看视频：${esc(v.title||v.video_id)}">${v.cover_url?image(p,v):'<span class="cover-empty">暂无封面</span>'}<span class="play-icon" aria-hidden="true">▷</span><span class="download-badge" data-video-status="${esc(v.video_id)}" data-status="${videoStatus(v)[0]}">${videoStatus(v)[1]}</span><span class="cover-meta"><span>${date(v.published_at)}</span><span>${Math.round(v.duration||0)}s</span></span></button><div class="video-body"><div class="video-author">${esc(v.author||"未知作者")}</div><h4 class="video-title">${esc(v.title||"无标题视频")}</h4><div class="video-stats">${stats.map(([key,label])=>`<div><b>${fmt(v[key])}</b><span>${label}</span></div>`).join("")}<div><b>${v.duration?Math.round(v.duration)+"s":"—"}</b><span>时长</span></div></div>${reviewSnippet(v)}<button class="video-review-button" data-review="${esc(v.video_id)}">内容复盘</button><div class="video-actions"><a href="${esc(url(v.url))}" target="_blank" rel="noopener noreferrer">原视频 ↗</a><button data-refresh="${esc(v.video_id)}" ${busy()?"disabled":""}>更新数据</button><button data-media="${esc(v.video_id)}">播放 / 音频</button></div><div class="video-time">${v.updated_at?"详细数据更新于 "+date(v.updated_at,true):"基础数据获取于 "+date(v.basic_updated_at,true)}</div>${v.error?`<div class="video-error">${esc(v.error)}</div>`:""}</div></article>`;
 }
 function renderSelection() {
   $("toggleSelection").textContent=state.selecting?"取消多选":"多选";
@@ -388,6 +407,9 @@ function updateReviewCollection(data,ref) {
   ref.allowed=!!data.collection_allowed;
   ref.active=!!job&&['queued','delayed','preparing','collecting','retrying'].includes(job.status);
   const link=data.collection_link;
+  const video=state.videos.find(v=>String(v.video_id)===ref.vid);
+  if(video){video.collection_status=job?.status;video.collection_link=link;updateVideoStatuses();}
+  if(ref.active){clearTimeout(state.timer);state.timer=setTimeout(loadVideos,2500);}
   $("reviewCollectionStatus").textContent=job?`${job.status_label} · ${job.completed_videos}/${job.total_videos||'?'}${job.last_error?' · '+job.last_error:job.status_detail?' · '+job.status_detail:''}`:link?`${link.retention_available?'已有留存':'已有采集记录，留存不完整'} · ${String(link.collected_at||'').slice(0,10)}`:"尚未采集留存";
   $("collectReviewRetention").disabled=ref.active||!ref.allowed||ref.busy;
   $("reviewAfterInputs").disabled=ref.active||ref.busy;

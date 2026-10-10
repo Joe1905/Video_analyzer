@@ -168,6 +168,13 @@ def snapshot(product_id):
             f"SELECT shared.payload FROM {items_table} AS links JOIN shared_video_items AS shared ON shared.video_id=links.video_id WHERE links.product_id=?", (product_id,))]
         row = conn.execute(f"SELECT payload FROM {jobs_table} WHERE product_id=?", (product_id,)).fetchone()
         page = conn.execute("SELECT cursor,has_more FROM account_video_pages WHERE product_id=?", (product_id,)).fetchone()
+        collecting = {}
+        for target, current_video, status in conn.execute(
+                "SELECT target_video_id,current_video_id,status FROM collect_jobs WHERE platform='tiktok' "
+                "AND status IN ('queued','delayed','preparing','collecting','retrying') ORDER BY created_at"):
+            for vid in (target, current_video):
+                if vid:
+                    collecting[vid] = status
     job = json.loads(row[0]) if row else None
     if job:
         job["message"] = job.get("message", "").replace(" · 1 credit", "").replace("（本页 1 credit）", "")
@@ -177,6 +184,7 @@ def snapshot(product_id):
     links=collection_links(ROOT,[video['video_id'] for video in videos])
     for video in videos:
         video['collection_link']=links.get(video['video_id'])
+        video['collection_status']=collecting.get(video['video_id'])
         folder = MEDIA / video["video_id"]
         video["downloaded"] = video_expiry(folder) > time.time()
         video["audio_ready"] = (folder / "audio.mp3").is_file()
