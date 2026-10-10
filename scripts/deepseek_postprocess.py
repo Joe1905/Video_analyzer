@@ -345,7 +345,7 @@ def main() -> int:
                     focused=parse_json_content(focused_content)
                     if not isinstance(focused.get('可尝试方向'), list):
                         raise ValueError('数据分析阶段缺少调整方向')
-                    candidate=dict(audit_result,留存分析=focused.get('留存分析'),可尝试方向=focused['可尝试方向'])
+                    candidate=dict(audit_result,summary=focused.get('summary'),留存分析=focused.get('留存分析'),可尝试方向=focused['可尝试方向'])
                     assisted.validate(candidate,evidence)
                     audit_result=candidate
                     break

@@ -239,7 +239,16 @@ function reviewText(value) {
     const timeLabel={start:'开始',end:'结束',timestamp_seconds:'时间'}[k];
     return timeLabel&&typeof v==='number'?`${timeLabel}：${reviewSeconds(v)}秒`:`${k}：${reviewText(v)}`;
   }).join("\n");
-  return String(value??"").replace(/(\d+(?:\.\d+)?)(\s*(?:–|—|-|→|至)\s*)(\d+(?:\.\d+)?)(\s*秒)/g,
+  const evidence=state.review?.report?.['证据时间轴'];
+  const readable=String(value??"").replace(/\b(r\d+|t\d+|frame_\d+)\b/g,id=>{
+    const window=evidence?.retention_windows.find(w=>w.id===id);
+    if(window)return `${reviewSeconds(window.start_seconds)}–${reviewSeconds(window.end_seconds)}秒`;
+    const row=evidence?.timeline.find(r=>r.id===id);
+    if(row)return `${reviewSeconds(row.start)}–${reviewSeconds(row.end)}秒`;
+    const frame=evidence?.timeline.flatMap(r=>r.visuals).find(f=>f.frame_id===id);
+    return frame?`${reviewSeconds(frame.seconds)}秒画面`:id;
+  });
+  return readable.replace(/(\d+(?:\.\d+)?)(\s*(?:–|—|-|→|至)\s*)(\d+(?:\.\d+)?)(\s*秒)/g,
     (_,start,separator,end)=>`${reviewSeconds(start)}–${reviewSeconds(end)}秒`)
     .replace(/\d+\.\d+(?=\s*秒)/g,reviewSeconds);
 }
@@ -249,6 +258,7 @@ function reviewFields(value) {
   return Object.entries(value||{}).map(([k,v])=>`<p><strong>${esc(labels[k]||k)}</strong><span>${esc(reviewText(v))}</span></p>`).join("");
 }
 function showReview(report, videoURL) {
+  state.review.report=report;
   const source=report['采集数据来源']||{};
   const section=(title,items)=>Array.isArray(items)&&items.length?`<section><h3>${title}</h3>${items.map(item=>`<article class="native-review-card">${reviewFields(item)}</article>`).join("")}</section>`:"";
   $("nativeReviewResult").innerHTML=`<div class="native-review-summary"><h3>复盘要点</h3><p>${esc(reviewText(report.summary))}</p><button id="copyNativeReview">复制要点</button></div>${source.overview?`<details class="native-review-data"><summary>本次依据的表现数据 · ${esc(String(source.collected_at||'采集时间未知').slice(0,10))}</summary>${reviewFields(source.overview)}</details>`:""}${section('表现诊断',report['表现诊断'])}${section('优先调整',report['优先修改'])}<details><summary>内容与镜头细节</summary>${reviewFields(report['内容拆解'])}${section('原片镜头拆解',report['原片镜头拆解'])}</details><details><summary>数据范围与判断限制</summary><p>${esc(reviewText(report['数据限制']))}</p></details>`;
@@ -291,6 +301,12 @@ function showEvidenceReview(report) {
       details.innerHTML='<summary>可尝试的方向 · 由你判断</summary>'+report['可尝试方向'].map(d=>`<article class="native-review-card">${reviewFields({方向:d['方向'],保留:d['保留'],验证:d['验证'],限制:d['限制']})}${evidenceRefs(d['依据'])}</article>`).join('');
     }
   });
+  const result=$("nativeReviewResult"),detail=document.createElement('details');
+  detail.className='review-deep-dive';detail.innerHTML='<summary>展开完整复盘与逐秒证据</summary>';
+  [...result.children].filter(node=>node.id!=='copyNativeReview').forEach(node=>detail.appendChild(node));
+  result.prepend(detail);
+  const main=[...evidence.retention_windows].filter(w=>w.drop_percentage_points>0).sort((a,b)=>b.drop_percentage_points-a.drop_percentage_points)[0];
+  result.insertAdjacentHTML('afterbegin',`<section class="native-review-summary"><h3>复盘重点</h3><p>${esc(reviewText(report.summary))}</p>${main?`<p class="review-note">数据依据：${reviewSeconds(main.start_seconds)}–${reviewSeconds(main.end_seconds)}秒，留存 ${main.start_percent}% → ${main.end_percent}%（下降 ${reviewSeconds(main.drop_percentage_points)} 个百分点）。</p>${evidenceRefs(main.during)}`:''}</section>`);
 }
 async function reviseReview() {
   const ref=state.review,note=$("nativeLogicNote")?.value.trim()||'';
@@ -308,7 +324,7 @@ async function reviseReview() {
 function reviewFailure(error) {$("nativeReviewStatus").textContent=error.message||"暂时无法读取复盘，请重试。";$("nativeReviewRetry").hidden=false;}
 async function copyReview() {
   const report=state.review.report;
-  const text=reviewText(report['证据时间轴']?{视频逻辑:report['视频逻辑'],逻辑合理性:report['逻辑合理性'],留存数据:report['证据时间轴'].retention_windows,留存分析:report['留存分析']}: {复盘要点:report.summary,表现诊断:report['表现诊断'],优先调整:report['优先修改']});
+  const text=reviewText(report['证据时间轴']?{复盘要点:report.summary,视频逻辑:report['视频逻辑'],逻辑合理性:report['逻辑合理性'],留存数据:report['证据时间轴'].retention_windows,留存分析:report['留存分析'],可尝试方向:report['可尝试方向']}: {复盘要点:report.summary,表现诊断:report['表现诊断'],优先调整:report['优先修改']});
   if(navigator.clipboard?.writeText)await navigator.clipboard.writeText(text);
   else {const field=document.createElement('textarea');field.value=text;$("reviewDialog").appendChild(field);field.select();const copied=document.execCommand('copy');field.remove();if(!copied)throw new Error('复制失败，请选中复盘文字复制。');}
   toast("复盘要点已复制");
