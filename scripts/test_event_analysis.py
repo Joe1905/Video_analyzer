@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 from event_analysis import analyze_events, apply_checks, validate_events
-from assisted_video_review import build_logic_evidence
+from assisted_video_review import build_logic_evidence, retention_prompt
 
 
 class EventTests(unittest.TestCase):
@@ -59,6 +59,13 @@ class EventTests(unittest.TestCase):
         self.assertNotIn('未经核验的插入动作', serialized)
         self.assertEqual(evidence['retention_points'], [])
         self.assertEqual(evidence['retention_windows'], [])
+
+    def test_later_event_not_exposed_to_earlier_retention_window(self):
+        evidence = {'timeline': [], 'retention_windows': [{'id': 'r0', 'before': [], 'during': [], 'after': [], 'end_seconds': 2}]}
+        prompt = retention_prompt(evidence, {'推进': []}, {}, [
+            {'end': 1, 'observed': '前面的观察'}, {'end': 3, 'observed': '后续结果不能解释此前流失'}])
+        self.assertIn('前面的观察', prompt)
+        self.assertNotIn('后续结果不能解释此前流失', prompt)
 
 
 if __name__ == '__main__':

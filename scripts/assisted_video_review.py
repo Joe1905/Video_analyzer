@@ -111,7 +111,7 @@ def ground_logic(report, evidence):
     return report
 
 
-def retention_prompt(evidence, logic, performance):
+def retention_prompt(evidence, logic, performance, events=()):
     """Keep future utterances and whole-segment text out of cause generation."""
     contexts=[]
     for window in evidence['retention_windows']:
@@ -122,7 +122,8 @@ def retention_prompt(evidence, logic, performance):
             rows.append({'id':row['id'],'start':row['start'],'end':row['end'],'visuals':row['visuals'],
                 'speech':[{'text':s['text'],'precision':s['precision']} for s in row['speech']],
                 'logic_roles':[b['逻辑作用'] for b in logic['推进'] if row['id'] in b['依据']]})
-        contexts.append({'window':{k:v for k,v in window.items() if k!='after'},'prior_and_current_evidence':rows})
+        contexts.append({'window':{k:v for k,v in window.items() if k!='after'},'prior_and_current_evidence':rows,
+                         'verified_prior_and_current_events': [e for e in events if e['end'] <= window['end_seconds']]})
     return '''根据每个窗口自身之前和区间内的证据，生成留存解释候选。只输出严格JSON {"留存分析":[{区间ID,解释候选,其他解释,证据强度:"低"或"中",依据:[时间轴ID]}]}。
 不得引用未提供的后续台词/画面；不要重复时间数值和完整台词；解释当前可感知的信息及其逻辑作用，不替人断言原因。
 最多每个窗口一项，必须覆盖全部窗口。依据只引用该窗口提供的ID。
