@@ -287,10 +287,20 @@ def main() -> int:
         evidence = None
         if args.review_format == 'evidence':
             import assisted_video_review as assisted
+            from event_analysis import analyze_events
+            event_evidence = analyze_events(analysis, analysis_path.parent)
             evidence = assisted.build_evidence(analysis, build_report_facts(analysis, performance))
-            prompt = assisted.INSTRUCTIONS + '\n原始提取：\n' + json.dumps(compact_analysis(analysis),ensure_ascii=False) + \
-                '\n脚本证据：\n' + json.dumps(evidence,ensure_ascii=False) + \
-                '\n真实表现：\n' + json.dumps(performance,ensure_ascii=False) + \
+            blind_evidence = assisted.build_logic_evidence(analysis)
+            # Frame prose and shot function guesses remain in the source artifacts,
+            # but only visually rechecked observations enter narrative reasoning.
+            events = [{k: v for k, v in e.items() if k != 'proposed_observed'} for e in event_evidence['events']]
+            prompt = assisted.INSTRUCTIONS + '\n本阶段只梳理内容，尚未读取表现数据。留存分析必须为空。' + \
+                '区分可见事件、剧情表达意图与现实商品能力；不能因为无法验证真实能力而否定剧情表达。' + \
+                'uncertain和contradicted事件只能使用核验后的observed，不恢复先前猜测；表达假设不是事实。' + \
+                '每个动作必须对应事件的前后帧，静态位置不能改写为动作。不要补播放、留存等数字。\n核验后的跨镜头事件：\n' + \
+                json.dumps(events,ensure_ascii=False) + '\n原始ASR（按时间归属，不提前使用后续口播）：\n' + \
+                json.dumps(analysis.get('transcript',{}),ensure_ascii=False) + \
+                '\n脚本证据：\n' + json.dumps(blind_evidence,ensure_ascii=False) + \
                 '\n用户补充（用户判断，不能覆盖原片事实）：\n' + args.logic_note[:4000]
         output_path = Path(args.output) if args.output else analysis_path.parent / "audit_result.json"
         for attempt in range(2):
@@ -300,8 +310,8 @@ def main() -> int:
             try:
                 audit_result = parse_json_content(content)
                 if evidence is not None:
-                    assisted.ground_logic(audit_result,evidence)
-                    assisted.validate(audit_result, evidence)
+                    assisted.ground_logic(audit_result,blind_evidence)
+                    assisted.validate(audit_result, blind_evidence)
                 else:
                     validate_report(audit_result)
                     validate_edit_plan(audit_result, analysis)
@@ -315,6 +325,7 @@ def main() -> int:
                 prompt += "\n上次输出未通过执行校验：" + str(error) + "。本次严格检查所有时间、素材引用与口播长度后重新生成完整JSON。"
         if evidence is not None and evidence['retention_windows']:
             focused_prompt=assisted.retention_prompt(evidence,audit_result['视频逻辑'],performance)
+            focused_prompt += '\n核验后的跨镜头事件（优先于未核验的单帧动作猜测；不得改写已经梳理的视频逻辑）：\n' + json.dumps(events,ensure_ascii=False)
             for attempt in range(2):
                 focused_response=call_deepseek(api_key=api_key,prompt=focused_prompt,api_url=args.api_url,
                     model=args.model,max_tokens=8192,reasoning_effort=args.reasoning_effort)
@@ -333,6 +344,12 @@ def main() -> int:
         if evidence is not None:
             audit_result['证据时间轴'] = evidence
             audit_result['人工补充'] = args.logic_note[:4000]
+            audit_result['事件拆解'] = event_evidence
+            audit_result['拆解流程'] = {'version': 1, 'logic_blinded_to_performance': True,
+                'analysis_model': args.model, 'reasoning_effort': args.reasoning_effort}
+            audit_result['数据限制'] = list(dict.fromkeys(audit_result['数据限制'] + [
+                '业务指标来自历史采集快照；未提供点击、订单、GMV和投流记录，不能判断成交效果。',
+                '逐秒留存分母及口径未知，不换算人数，内容与变化的时间关系不证明因果。']))
         audit_result["采集数据来源"] = performance
         audit_result["原片镜头拆解"] = analysis["shot_evidence"].get("shots", [])
 

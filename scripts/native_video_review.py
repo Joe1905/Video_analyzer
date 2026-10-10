@@ -12,10 +12,11 @@ from pathlib import Path
 from video_performance_context import validate_report
 from video_performance_context import load_performance_context, build_report_facts
 from visual_analysis_cache import valid_analysis
+from assisted_video_review import VERSION as REVIEW_VERSION
 
 _review_lock = threading.Lock()
 REPORT_KEYS = ('report_version','summary', '内容拆解', '表现诊断', '优先修改', '原片镜头拆解', '数据限制', '采集数据来源',
-               '证据时间轴','视频逻辑','逻辑合理性','留存分析','可尝试方向','人工补充')
+               '证据时间轴','视频逻辑','逻辑合理性','留存分析','可尝试方向','人工补充','事件拆解','拆解流程')
 
 
 def filename(video_id):
@@ -93,7 +94,7 @@ def run_review(workspace, job):
     with _review_lock:
         cached=saved_report(root,vid)
         current=load_performance_context(root,vid)
-        refresh=needs_collection_refresh(cached,current)
+        refresh=needs_collection_refresh(cached,current) or bool(cached and cached.get('report_version') != REVIEW_VERSION)
         if cached and not job.get('force') and not refresh:
             job.update(done=1, message='复盘已完成。')
             return
@@ -137,12 +138,13 @@ def review_state(workspace, pid, vid):
     related = job and job.get('action') == 'review' and job.get('video_id') == vid
     active = job and job['status'] in ('running', 'queued')
     current=load_performance_context(workspace.ROOT,vid)
-    outdated=needs_collection_refresh(report,current)
+    decomposition_outdated=bool(report and report.get('report_version') != REVIEW_VERSION)
+    outdated=needs_collection_refresh(report,current) or decomposition_outdated
     status = 'processing' if related and active else 'failed' if outdated and related and job['status']=='failed' else 'missing' if outdated else 'ready' if report else 'waiting' if active else 'failed' if related and job['status'] == 'failed' else 'missing'
     completed='复盘已完成。'
     if report and report.get('采集数据来源',{}).get('collected_at'):
         completed='复盘已完成 · 指标与留存来自 '+str(report['采集数据来源']['collected_at'])[:10]+' 的同一快照。'
     media = Path(workspace.ROOT) / 'videos' / filename(vid)
     return {'video_id': vid, 'status': status, 'report': report,
-            'message': job.get('message') if related and active else '本次更新未完成，已保留上次复盘；可再次提交补充。' if report and related and job['status']=='failed' else '找到关联的采集留存，正在更新复盘。' if outdated else completed if report else job.get('message') if related else '正在等待当前任务完成…' if active else '点击生成内容复盘。',
+            'message': job.get('message') if related and active else '本次更新未完成，已保留上次复盘；可再次提交补充。' if report and related and job['status']=='failed' else '视频拆解已更新，正在生成新版复盘。' if decomposition_outdated else '找到关联的采集留存，正在更新复盘。' if outdated else completed if report else job.get('message') if related else '正在等待当前任务完成…' if active else '点击生成内容复盘。',
             'video_url': '/video/' + media.name if media.is_file() else None}

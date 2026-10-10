@@ -66,10 +66,19 @@ class ReviewTests(unittest.TestCase):
         self.assertTrue(job['force']);self.assertEqual(job['logic_note'],'主推玩偶，胸针是剧情道具')
 
     def test_cached_report_does_not_start_pipeline(self):
-        with patch.object(review,'saved_report',return_value={'summary':'cached'}),patch.object(review.subprocess,'run') as run:
+        with patch.object(review,'saved_report',return_value={'summary':'cached','report_version':review.REVIEW_VERSION}),patch.object(review.subprocess,'run') as run:
             review.run_review(self.ws,self.job)
         run.assert_not_called();self.ws.prepare_media.assert_not_called()
         self.assertEqual(self.job['done'],1)
+
+    def test_previous_decomposition_version_reuses_extraction_but_refreshes_review(self):
+        media=self.root/'videos'/review.filename(self.vid);media.parent.mkdir();media.write_bytes(b'video')
+        with patch.object(review,'saved_report',side_effect=[{'summary':'old','report_version':'commerce-review-v3-evidence'},{'summary':'new'}]), \
+             patch.object(review,'valid_analysis',return_value=True),patch.object(review.subprocess,'run') as run:
+            review.run_review(self.ws,self.job)
+        self.assertEqual(run.call_count,1)
+        self.assertTrue(run.call_args.args[0][1].endswith('deepseek_postprocess.py'))
+        self.ws.prepare_media.assert_not_called()
 
     def test_saved_extraction_reused_for_existing_pipeline(self):
         media=self.root/'videos'/review.filename(self.vid)
