@@ -304,7 +304,8 @@ def main() -> int:
                 '区分可见事件、剧情表达意图与现实商品能力；不能因为无法验证真实能力而否定剧情表达。' + \
                 'uncertain和contradicted事件只能使用核验后的observed，不恢复先前猜测；表达假设不是事实。' + \
                 '每个动作必须对应事件的前后帧，静态位置不能改写为动作。不要补播放、留存等数字。\n核验后的跨镜头事件：\n' + \
-                json.dumps(events,ensure_ascii=False) + '\n原始ASR（按时间归属，不提前使用后续口播）：\n' + \
+                json.dumps(events,ensure_ascii=False) + '\n核验逐帧观察（时间见脚本证据）：\n' + \
+                json.dumps(event_evidence.get('frame_observations',[]),ensure_ascii=False) + '\n原始ASR（按时间归属，不提前使用后续口播）：\n' + \
                 json.dumps(analysis.get('transcript',{}),ensure_ascii=False) + \
                 '\n脚本证据：\n' + json.dumps(blind_evidence,ensure_ascii=False) + \
                 '\n用户补充（用户判断，不能覆盖原片事实）：\n' + args.logic_note[:4000]
