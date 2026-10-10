@@ -48,6 +48,10 @@ class EvidenceReviewTests(unittest.TestCase):
             self.assertEqual(main['during'],['t0','t1'])
             self.assertTrue(any(w['start_seconds']==5 and w['end_seconds']==7 for w in evidence['retention_windows']))
             self.assertTrue(all('后段' not in w['label'] for w in evidence['retention_windows']))
+            if expected==33:
+                self.assertTrue(any(w['start_seconds']==11 and w['end_seconds']==13 for w in evidence['retention_windows']))
+            else:
+                self.assertTrue(any(w['label']=='相对平稳' for w in evidence['retention_windows']))
 
     def test_retention_merge_does_not_bridge_missing_seconds(self):
         analysis={'metadata':{'duration_seconds':5},'timeline':[],'transcript':{}}
