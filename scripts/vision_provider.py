@@ -169,7 +169,7 @@ def frame_config():
 
 
 def recognize_image(image_path=None, prompt="", *, purpose="vision", max_tokens=256,
-                    temperature=0.2, timeout=300, image_paths=None):
+                    temperature=0.2, timeout=300, image_paths=None, reasoning_effort=None):
     """Single image entry point: local OCR for text, routed models for understanding."""
     if purpose not in {"text", "vision"}:
         raise ValueError("Unknown image recognition purpose")
@@ -202,7 +202,8 @@ def recognize_image(image_path=None, prompt="", *, purpose="vision", max_tokens=
         payload = {"model": config["model"], "messages": [{"role": "user", "content": content}],
                    "temperature": temperature, "max_tokens": max_tokens, "stream": False}
         if config["provider"] == "deepseek":
-            payload["thinking"] = {"type": "disabled"}
+            payload["thinking"] = {"type": "enabled" if reasoning_effort else "disabled"}
+            if reasoning_effort:payload["reasoning_effort"] = reasoning_effort
         status = None
         try:
             response = requests.post(completion_url(config["api_url"]),
