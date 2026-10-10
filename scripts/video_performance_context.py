@@ -188,6 +188,21 @@ def validate_report(report):
         from assisted_video_review import validate
         if not isinstance(report.get('证据时间轴'),dict):raise ValueError('缺少证据时间轴')
         validate(report,report['证据时间轴'])
+        if report['report_version'] == 'commerce-review-v4-events':
+            from event_analysis import validate_events
+            events = report.get('事件拆解')
+            if not isinstance(events, dict) or events.get('available') is not True or events.get('version') != 1:
+                raise ValueError('缺少核验后的跨镜头事件')
+            frames = [{'evidence_id': f['frame_id'], 'timestamp_seconds': f['seconds']}
+                      for row in report['证据时间轴']['timeline'] for f in row['visuals']]
+            inspected = events.get('inspected_frame_ids')
+            if not isinstance(inspected, list) or not inspected or any(f not in {r['evidence_id'] for r in frames} for f in inspected):
+                raise ValueError('事件查看帧不属于原始时间轴')
+            checked = validate_events(events, [f for f in frames if f['evidence_id'] in inspected])
+            if any(e.get('verification') not in {'supported','uncertain','contradicted'} or not e.get('verification_reason') for e in checked):
+                raise ValueError('跨镜头事件尚未完成核验')
+            if not isinstance(report.get('拆解流程'), dict) or report['拆解流程'].get('logic_blinded_to_performance') is not True:
+                raise ValueError('内容逻辑未与表现数据分离')
         return
     required = {"summary": str, "内容拆解": dict, "表现诊断": list, "优先修改": list,
                 "下一条脚本": dict, "数据限制": list}
