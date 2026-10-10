@@ -30,6 +30,7 @@ async function refresh(){
   const labels={ready:'已就绪',starting:'启动中',stopping:'关闭中',stopped:'已停止',error:'运行异常',unavailable:'服务未连接'};
   $('badge').textContent=labels[current.state]||'状态未知';$('badge').className='badge '+current.state;
   $('message').textContent=current.message||'手机状态已更新。';
+  if(current.operation?.id&&current.operation.state==='failed')$('power-message').textContent=current.operation.message||'手机操作失败，请稍后重试。';
   $('device').textContent=current.binding?.device_id||'phone-1';
   $('network').textContent=current.state==='stopped'?'手机已关机，磁盘与数据保留。':(current.network_verified?'出口已验证':'出口尚未验证')+(current.binding?.expected_exit_ip?' · '+current.binding.expected_exit_ip:'');
   const ready=current.state==='ready'&&Boolean(current.viewer_url);

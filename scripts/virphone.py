@@ -52,7 +52,9 @@ def get_status():
         payload = json.loads(raw)
         if not isinstance(payload, dict):
             raise ValueError("Invalid phone status payload")
-        if not isinstance(payload.get("binding", {}), dict) or not isinstance(payload.get("allowed_actions", []), list):
+        if (not isinstance(payload.get("binding", {}), dict)
+                or not isinstance(payload.get("allowed_actions", []), list)
+                or not isinstance(payload.get("operation") or {}, dict)):
             raise ValueError("Invalid phone status metadata")
         state = payload.get("state")
         if state not in {"ready", "starting", "stopping", "stopped", "error"}:
@@ -69,6 +71,8 @@ def get_status():
                 "embed_allowed": payload.get("embed_allowed") is True,
                 "network_verified": payload.get("network_verified") is True,
                 "control_mode": str(payload.get("control_mode") or "")[:80],
+                "operation": {key: str((payload.get("operation") or {}).get(key) or "")[:1000]
+                              for key in ("id", "action", "state", "message")},
                 "binding": {key: str((payload.get("binding") or {}).get(key) or "")[:100]
                             for key in ("device_id", "expected_exit_ip")},
                 "allowed_actions": [action for action in payload.get("allowed_actions", [])
