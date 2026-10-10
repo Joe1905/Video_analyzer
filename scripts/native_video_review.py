@@ -24,6 +24,8 @@ def filename(video_id):
 
 
 def needs_collection_refresh(report, current):
+    if report and report.get('采集数据来源', {}).get('manual_orders') != current.get('manual_orders'):
+        return True
     if not report or not build_report_facts({'timeline':[]},current)['retention']['adjacent_second_changes']:return False
     previous=report.get('采集数据来源',{})
     return any(previous.get(k)!=current.get(k) for k in ('collection_id','collected_at','collection_source','retention'))
@@ -151,5 +153,5 @@ def review_state(workspace, pid, vid):
         completed='复盘已完成 · 指标与留存来自 '+str(report['采集数据来源']['collected_at'])[:10]+' 的同一快照。'
     media = Path(workspace.ROOT) / 'videos' / filename(vid)
     return {'video_id': vid, 'status': status, 'report': report,
-            'message': job.get('message') if related and active else '本次更新未完成，已保留上次复盘；可再次提交补充。' if report and related and job['status']=='failed' else '视频拆解已更新，正在生成新版复盘。' if decomposition_outdated else '找到关联的采集留存，正在更新复盘。' if outdated else completed if report else job.get('message') if related else '正在等待当前任务完成…' if active else '点击生成内容复盘。',
+            'message': job.get('message') if related and active else '本次更新未完成，已保留上次复盘；可再次提交补充。' if report and related and job['status']=='failed' else '视频拆解已更新，正在生成新版复盘。' if decomposition_outdated else '补充数据已变化，正在更新复盘。' if outdated else completed if report else job.get('message') if related else '正在等待当前任务完成…' if active else '点击生成内容复盘。',
             'video_url': '/video/' + media.name if media.is_file() else None}

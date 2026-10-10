@@ -92,6 +92,7 @@ def database():
                 CREATE TABLE IF NOT EXISTS account_video_pages (
                     product_id TEXT PRIMARY KEY, cursor TEXT NOT NULL, has_more INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS shared_video_items (video_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS video_manual_orders (video_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS video_bitable_records (
                     app_token TEXT NOT NULL, table_id TEXT NOT NULL, video_id TEXT NOT NULL,
                     record_id TEXT NOT NULL, PRIMARY KEY(app_token, table_id, video_id));
@@ -713,14 +714,19 @@ def handle(handler, parsed, serve_file):
     vid = query.get("video_id", [""])[0]
     endpoint = parsed.path.removeprefix("/api/product-videos/")
     try:
-        if handler.command == "POST" and endpoint in {"jobs", "write-table"}:
+        if handler.command == "POST" and endpoint in {"jobs", "write-table", "orders", "collect-retention"}:
             length = int(handler.headers.get("Content-Length", "0"))
             if not 0 < length <= 16384:
                 raise ValueError("请求大小无效")
             payload = json.loads(handler.rfile.read(length))
             if not isinstance(payload, dict):
                 raise ValueError("请求必须为 JSON 对象")
-            reply(handler, 202 if endpoint == "jobs" else 200, start(payload) if endpoint == "jobs" else write_table(payload))
+            if endpoint in {'orders', 'collect-retention'}:
+                from video_review_inputs import save_orders, start_collection
+                result = (save_orders if endpoint == 'orders' else start_collection)(sys.modules[__name__], payload)
+                reply(handler, 200 if endpoint == 'orders' else 202, result)
+            else:
+                reply(handler, 202 if endpoint == "jobs" else 200, start(payload) if endpoint == "jobs" else write_table(payload))
         elif handler.command != "GET":
             reply(handler, 405, {"error": "不支持的操作"})
         elif endpoint == "accounts":
@@ -742,6 +748,13 @@ def handle(handler, parsed, serve_file):
         elif endpoint == "review":
             from native_video_review import review_state
             reply(handler, 200, review_state(sys.modules[__name__], pid, vid))
+        elif endpoint == 'review-inputs':
+            from video_review_inputs import input_state
+            reply(handler, 200, input_state(sys.modules[__name__], pid, vid))
+        elif endpoint == 'collection-targets':
+            item(pid, vid)
+            from tiktok_studio_collect import list_feishu_targets
+            reply(handler, 200, list_feishu_targets())
         elif endpoint == "file":
             item(pid, vid)
             kind = query.get("kind", ["video"])[0]

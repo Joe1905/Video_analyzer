@@ -551,6 +551,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             "publish_date_end": "TEXT NOT NULL DEFAULT ''",
             "status_detail": "TEXT NOT NULL DEFAULT ''",
             "auto_sync": "INTEGER NOT NULL DEFAULT 1",
+            "target_video_id": "TEXT NOT NULL DEFAULT ''",
         },
         "collect_results": {
             "feishu_target_json": "TEXT NOT NULL DEFAULT '{}'",

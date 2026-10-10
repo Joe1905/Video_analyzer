@@ -150,6 +150,7 @@ def _job_row(row: Any) -> dict[str, Any]:
         "trigger_type": str(row["trigger_type"]),
         "schedule_date": str(row["schedule_date"]),
         "max_videos": int(row["max_videos"]),
+        "target_video_id": str(row["target_video_id"]) if "target_video_id" in columns else "",
         "publish_date_start": str(row["publish_date_start"]),
         "publish_date_end": str(row["publish_date_end"]),
         "feishu_target": _json_loads(row["feishu_target_json"], {}),
@@ -405,6 +406,9 @@ def create_job(payload: dict[str, Any]) -> dict[str, Any]:
     if not account_id:
         raise ValueError("account_id is required")
     platform = _collect_platform(payload.get("platform"))
+    target_video_id = str(payload.get("target_video_id") or "")
+    if target_video_id and (platform != "tiktok" or not re.fullmatch(r"\d{15,25}", target_video_id)):
+        raise ValueError("单视频采集需要有效的 TikTok 视频 ID")
     with proxy_pool.connect() as conn:
         account = _account(conn, account_id)
         proxy_pool.require_account_proxy_bound(account)
@@ -425,6 +429,7 @@ def create_job(payload: dict[str, Any]) -> dict[str, Any]:
             platform=platform,
         )
         now = _iso()
+        conn.execute("UPDATE collect_jobs SET target_video_id=? WHERE id=?", (target_video_id, job_id))
         conn.execute(
             """
             INSERT INTO collect_settings (account_id, feishu_target_json, created_at, updated_at)
@@ -872,12 +877,12 @@ def _scan_job_video_list(job: dict[str, Any], session: dict[str, Any]) -> list[d
         _assert_account_ready(page)
         if list_state.state == "empty":
             raise RuntimeError("TikTok Studio 视频列表已加载，但账号当前没有视频")
-        return _discover_video_links(
+        return _target_video_links(job, _discover_video_links(
             page,
             job["publish_date_start"],
             job["publish_date_end"],
             diagnostic_path=log_dir / "video-list-discovery.json",
-        )
+        ))
 
 
 def _run_discovery_rescan(job_id: str) -> None:
@@ -1989,6 +1994,16 @@ def _execute_instagram_browser(job: dict[str, Any], session: dict[str, Any]) -> 
     return matched, completed, failed
 
 
+def _target_video_links(job, links):
+    target = job.get('target_video_id')
+    if not target:
+        return links
+    matched = [source for source in links if source['id'] == target]
+    if not matched:
+        raise ValueError('当前账号的 Studio 列表未发现目标视频，请检查账号及发布日期；不会采集其他视频。')
+    return matched
+
+
 def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[int, int, int]:
     if _collect_platform(job.get("platform")) == "instagram":
         return _execute_instagram_browser(job, session)
@@ -2055,7 +2070,8 @@ def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[int,
                 "TikTok Studio 没有发现发布日期位于 "
                 f"{job['publish_date_start']} 至 {job['publish_date_end']} 的视频"
             )
-        total_videos = len(known_links | completed_ids)
+        links = _target_video_links(job, links)
+        total_videos = len({source['id'] for source in links} | completed_ids)
         _set_job(
             job["id"],
             "collecting",

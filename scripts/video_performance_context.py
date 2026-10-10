@@ -162,8 +162,9 @@ def collection_links(root, video_ids):
 
 
 def load_performance_context(root, video_id):
+    from video_review_inputs import load_orders
     context = {"video_id": video_id, "source": "proxy_collect", "available": False,
-               "limitations": []}
+               "limitations": [], "manual_orders": load_orders(root, video_id)}
     if not video_id or not re.fullmatch(r"\d{15,25}", str(video_id)):
         context["limitations"].append("未关联外部视频ID，无法匹配Proxy采集数据")
         return context
@@ -178,7 +179,7 @@ def load_performance_context(root, video_id):
         if key in payload:context[key]=payload[key]
     if rows and (row['id'],source)!=(rows[0][0]['id'],rows[0][1]):
         context['limitations'].append('较新记录没有可用留存或有效指标，采用最近带有效留存的整份历史采集快照，不混入其他时间的指标')
-    context['limitations'].extend(['这是标注采集时间的历史快照，未重新采集；未提供点击、订单、GMV和投流记录',
+    context['limitations'].extend(['这是标注采集时间的历史快照，未重新采集；未提供点击、系统订单、GMV和投流记录；人工累计出单另标填写时间，不能与历史留存计算转化率',
                                   '未核实当前挂车商品，不能将视频主题当作商品绑定证据'])
     return context
 

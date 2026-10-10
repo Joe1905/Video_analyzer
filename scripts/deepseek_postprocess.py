@@ -282,6 +282,7 @@ def main() -> int:
             fallback = load_analysis(Path(args.performance_context))
             if fallback.get('source') not in ('video_library','saved_review') or str(fallback.get('video_id')) != str(video_id):
                 raise ValueError('视频列表指标与当前视频不匹配')
+            fallback['manual_orders'] = performance.get('manual_orders')
             performance = fallback
         prompt = build_prompt(analysis, args.prompt, performance)
         evidence = None
@@ -360,7 +361,7 @@ def main() -> int:
             audit_result['拆解流程'] = {'version': assisted.LOGIC_VERSION, 'logic_blinded_to_performance': True,
                 'analysis_model': args.model, 'reasoning_effort': args.reasoning_effort}
             audit_result['数据限制'] = list(dict.fromkeys(audit_result['数据限制'] + [
-                '业务指标来自历史采集快照；未提供点击、订单、GMV和投流记录，不能判断成交效果。',
+                '业务指标来自历史采集快照；人工累计出单数另标填写时间，未经平台核验，不与历史播放计算转化率；未提供点击、系统订单、GMV和投流记录。',
                 '逐秒留存分母及口径未知，不换算人数，内容与变化的时间关系不证明因果。']))
         audit_result["采集数据来源"] = performance
         audit_result["原片镜头拆解"] = analysis["shot_evidence"].get("shots", [])
