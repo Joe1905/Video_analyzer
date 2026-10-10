@@ -11,7 +11,7 @@ import tiktok_studio_collect as collect
 import video_review_inputs as inputs
 from native_video_review import needs_collection_refresh
 from video_performance_context import load_performance_context
-from test_proxy_pool_lifecycle import isolated_proxy_db, create_manual_pool
+from test_proxy_pool_lifecycle import isolated_proxy_db
 
 VID='7655159328738954509'
 PID='1732457689950426021'
@@ -52,10 +52,10 @@ class InputTests(unittest.TestCase):
                 self.assertTrue(needs_collection_refresh({'采集数据来源':current},{'manual_orders':None}))
 
     def account(self,bound=True):
-        pool=create_manual_pool('test','203.0.113.20')
         with proxy_pool.connect() as conn:
             now=proxy_pool.now_iso()
-            return conn.execute('INSERT INTO tiktok_accounts(username,proxy_profile_id,proxy_bound,created_at,updated_at) VALUES (?,?,?,?,?)',('test',pool['id'],int(bound),now,now)).lastrowid
+            pool_id=conn.execute('INSERT INTO proxy_profiles(name,source_type,local_port,created_at,updated_at) VALUES (?,?,?,?,?)',('test','vless',29999,now,now)).lastrowid
+            return conn.execute('INSERT INTO tiktok_accounts(username,proxy_profile_id,proxy_bound,created_at,updated_at) VALUES (?,?,?,?,?)',('test',pool_id,int(bound),now,now)).lastrowid
 
     def test_collection_uses_existing_creator_and_persists_target(self):
         account=self.account()
