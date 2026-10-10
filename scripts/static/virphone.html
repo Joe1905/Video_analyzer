@@ -13,30 +13,44 @@
 <main>
 <div class="toolbar"><div><h2>虚拟手机</h2><p class="muted">在浏览器中查看并操作 Android 手机。</p></div><div class="actions"><button id="refresh">刷新状态</button><button id="connect" class="primary" disabled>连接手机</button><a id="open" class="button" target="_blank" rel="noopener noreferrer" hidden>新窗口打开</a></div></div>
 <section class="status" aria-live="polite"><span id="badge" class="badge">检查中</span><p id="message">正在读取手机状态…</p></section>
+<section class="status" aria-label="手机管理"><div><strong id="device">phone-1</strong><p id="network" class="muted">正在读取出口状态…</p></div><div class="actions"><button id="start" disabled>开机</button><button id="stop" disabled>关机</button><button id="restart" disabled>重启</button></div></section>
+<p id="power-message" class="muted" role="status" style="margin-bottom:18px"></p>
 <section class="screen"><div id="empty" class="empty"><svg viewBox="0 0 48 48" aria-hidden="true"><rect x="13" y="3" width="22" height="42" rx="4"/><path d="M21 38h6"/></svg><strong id="empty-title">等待手机连接</strong><p id="empty-message" class="muted">手机就绪后，可连接或在新窗口中打开控制台。</p></div><iframe id="viewer" title="Android 手机控制台" allow="fullscreen; clipboard-read; clipboard-write" hidden></iframe></section>
 </main>
 <script>
-const $=id=>document.getElementById(id);let current=null;
+const $=id=>document.getElementById(id);let current=null,busy=false,reading=false;
+function updateControls(){const allowed=current&&Array.isArray(current.allowed_actions)?current.allowed_actions:[];for(const action of ['start','stop','restart'])$(action).disabled=busy||!allowed.includes(action);}
 async function refresh(){
+ if(reading)return;reading=true;
  $('refresh').disabled=true;
  try{
   const response=await fetch('/api/virphone/status',{cache:'no-store'});
   if(!response.ok)throw new Error('status');
   current=await response.json();
-  const labels={ready:'已就绪',starting:'启动中',stopped:'已停止',error:'启动异常',unavailable:'服务未连接'};
+  const labels={ready:'已就绪',starting:'启动中',stopping:'关闭中',stopped:'已停止',error:'运行异常',unavailable:'服务未连接'};
   $('badge').textContent=labels[current.state]||'状态未知';$('badge').className='badge '+current.state;
   $('message').textContent=current.message||'手机状态已更新。';
+  $('device').textContent=current.binding?.device_id||'phone-1';
+  $('network').textContent=current.state==='stopped'?'手机已关机，磁盘与数据保留。':(current.network_verified?'出口已验证':'出口尚未验证')+(current.binding?.expected_exit_ip?' · '+current.binding.expected_exit_ip:'');
   const ready=current.state==='ready'&&Boolean(current.viewer_url);
   $('connect').disabled=!ready;$('open').hidden=!ready;
   if(ready)$('open').href=current.viewer_url;else{$('open').removeAttribute('href');$('viewer').hidden=true;$('viewer').removeAttribute('src');$('empty').hidden=false;}
   $('empty-title').textContent=ready?'手机已就绪':'手机暂未就绪';
   $('empty-message').textContent=ready?'点击连接手机，开始操作。':'控制台将在手机就绪后开放，请稍后刷新。';
  }catch(error){current=null;$('badge').textContent='读取失败';$('badge').className='badge error';$('message').textContent='无法读取手机状态，请稍后刷新。';$('connect').disabled=true;$('open').hidden=true;$('viewer').hidden=true;$('viewer').removeAttribute('src');$('empty').hidden=false;}
- finally{$('refresh').disabled=false;}
+ finally{reading=false;$('refresh').disabled=false;updateControls();}
 }
+async function power(action){
+ if(busy||!current?.allowed_actions?.includes(action))return;
+ busy=true;updateControls();$('power-message').textContent='正在提交'+({start:'开机',stop:'关机',restart:'重启'})[action]+'操作…';
+ try{const response=await fetch('/api/virphone/power',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action})});const result=await response.json();if(!response.ok)throw new Error(result.error||'操作未成功');$('power-message').textContent=result.message||'操作已提交，正在更新手机状态。';}
+ catch(error){$('power-message').textContent=error.message;}
+ finally{busy=false;await refresh();updateControls();}
+}
+for(const action of ['start','stop','restart'])$(action).addEventListener('click',()=>power(action));
 $('refresh').addEventListener('click',refresh);
 $('connect').addEventListener('click',()=>{if(!current||current.state!=='ready'||!current.viewer_url)return;if(current.embed_allowed){$('viewer').src=current.viewer_url;$('viewer').hidden=false;$('empty').hidden=true;}else{$('open').click();}});
-refresh();
+refresh();const statusTimer=setInterval(()=>{if(!document.hidden)refresh();},3000);window.addEventListener('pagehide',()=>clearInterval(statusTimer));
 </script>
 </body>
 </html>
