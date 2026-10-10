@@ -1,0 +1,22 @@
+# Use with the base Compose file to isolate Proxy runtime without changing mounts.
+services:
+  web:
+    environment:
+      PROXY_POOL_CONFIG_NAMESPACE: dev
+      PROXY_POOL_MIHOMO_PREFIX: dev-
+      PROXY_POOL_PORT_START: "19000"
+      PROXY_POOL_PORT_END: "19099"
+      SING_BOX_COMPOSE_PROJECT: short-video-analyzer-dev
+      NOVNC_PORT: "6180"
+      VNC_PORT: "6000"
+      TIKTOK_CDP_PORT_START: "19420"
+      TIKTOK_XVFB_DISPLAY_BASE: "190"
+      HOT_VIDEO_REPORT_SCHEDULER_ENABLED: "0"
+  analyzer:
+    environment:
+      PROXY_POOL_CONFIG_NAMESPACE: dev
+      PROXY_POOL_MIHOMO_PREFIX: dev-
+      PROXY_POOL_PORT_START: "19000"
+      PROXY_POOL_PORT_END: "19099"
+      SING_BOX_COMPOSE_PROJECT: short-video-analyzer-dev
+      HOT_VIDEO_REPORT_SCHEDULER_ENABLED: "0"
