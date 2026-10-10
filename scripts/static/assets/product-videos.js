@@ -307,6 +307,7 @@ function showEvidenceReview(report) {
   result.prepend(detail);
   const main=[...evidence.retention_windows].filter(w=>w.drop_percentage_points>0).sort((a,b)=>b.drop_percentage_points-a.drop_percentage_points)[0];
   result.insertAdjacentHTML('afterbegin',`<section class="native-review-summary"><h3>复盘重点</h3><p>${esc(reviewText(report.summary))}</p>${main?`<p class="review-note">数据依据：${reviewSeconds(main.start_seconds)}–${reviewSeconds(main.end_seconds)}秒，留存 ${main.start_percent}% → ${main.end_percent}%（下降 ${reviewSeconds(main.drop_percentage_points)} 个百分点）。</p>${evidenceRefs(main.during)}`:''}</section>`);
+  result.querySelector('.native-review-summary').insertAdjacentHTML('beforeend','<p class="review-note">流失解释与调整方向仍需对照验证。</p>');
 }
 async function reviseReview() {
   const ref=state.review,note=$("nativeLogicNote")?.value.trim()||'';
