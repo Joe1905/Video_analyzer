@@ -37,6 +37,22 @@ class EvidenceReviewTests(unittest.TestCase):
         r['留存分析']=[{'区间ID':'r0','依据':['t0']}]
         with self.assertRaises(ValueError):validate(r,e)
 
+    def test_event_review_requires_verified_provenance_and_blind_logic(self):
+        e,r=self.fixture()
+        r.update(report_version='commerce-review-v4-events',证据时间轴=e,
+                 拆解流程={'logic_blinded_to_performance':True},
+                 事件拆解={'available':True,'version':1,'inspected_frame_ids':['frame_0','frame_1'],
+                     'events':[{'id':'e0','frame_ids':['frame_0','frame_1'],'subject':'人物',
+                                'observed':'人物进入画面','intended_meaning':'','uncertainties':[],
+                                'verification':'supported','verification_reason':'前后采样可见'}]})
+        validate_report(r)
+        for mutate in (lambda v:v.pop('事件拆解'),
+                       lambda v:v['事件拆解']['events'][0].update(frame_ids=['frame_99']),
+                       lambda v:v['事件拆解']['events'][0].pop('verification'),
+                       lambda v:v['拆解流程'].update(logic_blinded_to_performance=False)):
+            bad=copy.deepcopy(r);mutate(bad)
+            with self.assertRaises(ValueError):validate_report(bad)
+
     def test_reject_invented_or_misaligned_references(self):
         e,base=self.fixture()
         for mutate in (lambda r:r['视频逻辑']['推进'][0].update(end=6),
