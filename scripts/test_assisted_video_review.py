@@ -37,6 +37,25 @@ class EvidenceReviewTests(unittest.TestCase):
         r['留存分析']=[{'区间ID':'r0','依据':['t0']}]
         with self.assertRaises(ValueError):validate(r,e)
 
+    def test_adjacent_opening_losses_are_merged_and_other_runs_retained(self):
+        for values,expected in (([100,85,76,73,69,64,62,59,57,56,55,53,51,49,48,47],24),
+                                ([100,82,67,62,58,55,51,47,44,42,41,39,36,33,32,29],33)):
+            analysis={'metadata':{'duration_seconds':15.1},'timeline':[],'transcript':{}}
+            performance={'available':True,'retention':{f'0:{i:02d}':str(v)+'%' for i,v in enumerate(values)}}
+            evidence=build_evidence(analysis,build_report_facts(analysis,performance))
+            main=evidence['retention_windows'][0]
+            self.assertEqual((main['start_seconds'],main['end_seconds'],main['drop_percentage_points']),(0,2,expected))
+            self.assertEqual(main['during'],['t0','t1'])
+            self.assertTrue(any(w['start_seconds']==5 and w['end_seconds']==7 for w in evidence['retention_windows']))
+            self.assertTrue(all('后段' not in w['label'] for w in evidence['retention_windows']))
+
+    def test_retention_merge_does_not_bridge_missing_seconds(self):
+        analysis={'metadata':{'duration_seconds':5},'timeline':[],'transcript':{}}
+        performance={'available':True,'retention':{'0:00':'100%','0:01':'80%','0:03':'50%','0:04':'35%'}}
+        evidence=build_evidence(analysis,build_report_facts(analysis,performance))
+        self.assertEqual(evidence['retention_windows'][0]['end_seconds'],1)
+        self.assertFalse(any(w['start_seconds']<3 and w['end_seconds']>1 for w in evidence['retention_windows']))
+
     def test_event_review_requires_verified_provenance_and_blind_logic(self):
         e,r=self.fixture()
         r.update(report_version='commerce-review-v4-events',证据时间轴=e,

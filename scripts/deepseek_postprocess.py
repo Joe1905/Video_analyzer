@@ -289,6 +289,9 @@ def main() -> int:
             import assisted_video_review as assisted
             from event_analysis import analyze_events, observed_events
             event_evidence = analyze_events(analysis, analysis_path.parent)
+            analysis['timeline'] = sorted(analysis.get('timeline',[]) + [
+                {k:v for k,v in f.items() if k != '_image_path'} for f in event_evidence.get('supplemental_frames',[])],
+                key=lambda f:f['timestamp_seconds'])
             evidence = assisted.build_evidence(analysis, build_report_facts(analysis, performance))
             blind_evidence = assisted.build_logic_evidence(analysis)
             # Frame prose and shot function guesses remain in the source artifacts,

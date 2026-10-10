@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock
 
-from event_analysis import analyze_events, apply_checks, validate_events, observed_events
+from event_analysis import analyze_events, apply_checks, validate_events, observed_events, supplement_frames
 from assisted_video_review import build_logic_evidence, retention_prompt
 
 
@@ -61,6 +61,25 @@ class EventTests(unittest.TestCase):
         self.assertNotIn('未经核验的插入动作', serialized)
         self.assertEqual(evidence['retention_points'], [])
         self.assertEqual(evidence['retention_windows'], [])
+
+    def test_real_video_gap_frames_preserve_originals_and_actual_timestamps(self):
+        import cv2
+        import numpy as np
+        with tempfile.TemporaryDirectory() as name:
+            root=Path(name);(root/'videos').mkdir();folder=root/'output/clip.mp4';(folder/'frames').mkdir(parents=True)
+            writer=cv2.VideoWriter(str(root/'videos/clip.mp4'),cv2.VideoWriter_fourcc(*'mp4v'),10,(32,32))
+            self.assertTrue(writer.isOpened())
+            for i in range(20):writer.write(np.full((32,32,3),i*10,dtype=np.uint8))
+            writer.release()
+            frames=[dict(self.frames[i],timestamp_seconds=t) for i,t in enumerate([0,1,1.9])]
+            for f in frames:(folder/'frames'/(f['evidence_id']+'.jpg')).write_bytes(b'original')
+            extra=supplement_frames(frames,folder,limit=9)
+            self.assertTrue(any(f['timestamp_seconds']==.5 for f in extra))
+            self.assertTrue(any(f['timestamp_seconds']==.8 for f in extra))
+            self.assertLessEqual(len(extra),6)
+            self.assertTrue(all(Path(f['_image_path']).is_file() for f in extra))
+            self.assertTrue(all((folder/'frames'/(f['evidence_id']+'.jpg')).read_bytes()==b'original' for f in frames))
+            self.assertEqual(supplement_frames(frames,folder,limit=3),[])
 
     def test_later_event_not_exposed_to_earlier_retention_window(self):
         evidence = {'timeline': [], 'retention_windows': [{'id': 'r0', 'before': [], 'during': [], 'after': [], 'end_seconds': 2}]}
